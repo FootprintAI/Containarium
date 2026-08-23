@@ -62,6 +62,24 @@ resolve_remote() {
 	REMOTE_HOST="$ip"
 	REMOTE_SSH_PORT="22"
 	log "resolved ${vm_name} -> ${REMOTE_HOST}"
+
+	# A TCP port being open (what 00-create-vm.sh's own readiness check
+	# uses) doesn't mean sshd will accept a real login yet — cloud-init can
+	# still be mid-way through injecting the authorized key, and sshd is
+	# sometimes bounced by a later cloud-init stage after the port first
+	# opens. Retry an actual command instead of trusting the port alone;
+	# hit this exact race live during the first real run.
+	log "waiting for SSH to actually accept connections (cloud-init can still be settling)"
+	local i
+	for i in $(seq 1 40); do
+		if ssh -p "$REMOTE_SSH_PORT" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 \
+			${BENCH_SSH_KEY_FILE:+-i "$BENCH_SSH_KEY_FILE"} \
+			"${REMOTE_SSH_USER:+$REMOTE_SSH_USER@}${REMOTE_HOST}" true 2>/dev/null; then
+			return 0
+		fi
+		sleep 5
+	done
+	die "SSH to ${REMOTE_HOST} never became ready after ~200s"
 }
 
 # ssh_or_local runs a command inside the guest under test — over SSH to
