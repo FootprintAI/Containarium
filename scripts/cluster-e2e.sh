@@ -143,15 +143,28 @@ if [ -z "${CONTAINARIUM_POSTGRES_URL:-}" ]; then
     -e POSTGRES_USER=containarium -e POSTGRES_PASSWORD=e2e -e POSTGRES_DB=containarium \
     -p "127.0.0.1:${PG_PORT}:5432" postgres:16-alpine >/dev/null
   export CONTAINARIUM_POSTGRES_URL="postgres://containarium:e2e@127.0.0.1:${PG_PORT}/containarium?sslmode=disable"
-  # 90s, not 30s. Run 18 died here: on a cold runner the image pull is
-  # followed by initdb on contended IO, and 30s was not always enough.
-  # A flake at this line costs a full lane run (~15 min) and produces a
-  # red build that has nothing to do with the product.
+  # Probe over TCP (-h 127.0.0.1), never the Unix socket (#1514).
+  #
+  # The postgres entrypoint starts TWO servers: a temporary one for the
+  # init phase, run with listen_addresses='"'"''"'"' so it is reachable only
+  # over the Unix socket, and then -- after CREATE DATABASE and any init
+  # scripts -- it SHUTS THAT ONE DOWN and starts the real server, which
+  # is the first to listen on TCP. A default probe answers "ready"
+  # about the temporary one, so this loop broke early, the entrypoint
+  # shut that server down, and the confirming check below landed in the
+  # shutdown window: red seven seconds into a ninety-second bound.
+  #
+  # The bound was previously raised 30s -> 90s against this symptom, on
+  # the reading that a cold runner'"'"'s image pull plus initdb needed
+  # longer. It could not help: the loop never reached its bound. 90s is
+  # kept because a cold pull genuinely is slow, but the flake was never
+  # a duration problem -- it was a check that answered about the wrong
+  # server.
   for _ in $(seq 1 90); do
-    "$CONTAINER_RUNTIME" exec "$PG_CONTAINER" pg_isready -U containarium >/dev/null 2>&1 && break
+    "$CONTAINER_RUNTIME" exec "$PG_CONTAINER" pg_isready -h 127.0.0.1 -U containarium >/dev/null 2>&1 && break
     sleep 1
   done
-  if ! "$CONTAINER_RUNTIME" exec "$PG_CONTAINER" pg_isready -U containarium >/dev/null 2>&1; then
+  if ! "$CONTAINER_RUNTIME" exec "$PG_CONTAINER" pg_isready -h 127.0.0.1 -U containarium >/dev/null 2>&1; then
     # Say why, rather than just that. Without this the failure is
     # indistinguishable between "still starting", "crashed on startup"
     # and "port already bound".
