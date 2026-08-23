@@ -71,9 +71,13 @@ create_box() {
 box_ready() {
 	local name="$1"
 	local state
+	# NOTE: this backend's `list` JSON shape differs from what it looked
+	# like on the k8s backend — confirmed live: {"containers":[...]}, not
+	# a bare array, with capitalized Username/State fields and the full
+	# enum value CONTAINER_STATE_RUNNING, not a short "RUNNING".
 	state=$(ssh_or_local "containarium list --format json --server ${CTN_SERVER} --http --token ${CTN_TOKEN} 2>/dev/null" |
-		jq -r --arg n "$name" '.[] | select(.username==$n) | .state' 2>/dev/null || true)
-	[[ "$state" == "RUNNING" ]]
+		jq -r --arg n "$name" '.containers[] | select(.Username==$n) | .State' 2>/dev/null || true)
+	[[ "$state" == "CONTAINER_STATE_RUNNING" ]]
 }
 
 cleanup_box() {

@@ -53,7 +53,15 @@ ssh_or_local "sudo bash -s" <<'REMOTE'
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq curl jq
+# iptables found missing live too — without it the daemon's
+# PassthroughSyncJob logs a retry failure every 5s (same class of gap as
+# jq/git elsewhere in this benchmark; the base image is minimal). Whether
+# it was also the cause of a slow first-boot core-container init isn't
+# fully confirmed — installing it and restarting is what got past the
+# stall live, but the timing doesn't rule out it just needing more time
+# regardless. Installed upfront either way since the log noise alone is
+# worth avoiding.
+apt-get install -y -qq curl jq iptables
 curl -fsSL https://pkgs.zabbly.com/get/incus-stable | sudo sh
 incus admin init --auto
 REMOTE
