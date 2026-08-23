@@ -33,6 +33,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Container nodes on a nested host no longer advertise the host's capacity,
+  which silently disabled autoscaling** (#1466). cadvisor derives node capacity
+  from `/proc/cpuinfo` and `/proc/meminfo`, and on a nested Incus host — one
+  whose own Incus creates the node containers — lxcfs masking does not reach the
+  inner instance. A node limited to 2 cpu / 3GB advertised the outer host's
+  8 cpu / 64GB. The scheduler packs pods against allocatable and
+  cluster-autoscaler's fit simulation reads the same number, so pods were
+  scheduled where they could not run and **scale-up never triggered**: no error,
+  no event, just a cluster that never grew.
+
+  The correction now depends on what the node itself reports, read from inside
+  it after boot — the only vantage point that separates a nested host from a
+  plain one, where lxcfs works and any reservation would exceed the node's whole
+  capacity and stop kubelet starting (the failure #1456 removed). Excess over
+  the requested size is reserved; no excess reserves nothing. A node whose
+  `/proc` cannot be read fails the provision rather than proceeding
+  uncorrected. VM nodes are untouched — they get their own kernel and report
+  honestly.
+
+  Fixed alongside it: a provision that failed *after* the instance was created
+  left that instance behind, and the reconciler only recreates a **missing**
+  node — so the orphan was never retried and never replaced, holding its full
+  size while the cluster sat in error.
+
+- **Scale-down is no longer undone by the reconciler, and a released node name
+  can rejoin** (#1498). `DeleteNodes` destroyed the instance and lowered the
+  group's target afterwards. The reconciler ticks every 15s and derives each
+  group's desired minimum from that target, so a pass landing in between saw a
+  group short of a target that still counted the node, and rebuilt the node the
+  autoscaler had just drained.
+
+  The rebuilt node reused the released name, which k3s refuses permanently: it
+  stores a per-node password secret that outlives the Kubernetes Node object, so
+  the new agent's fresh password never matched and the control plane answered
+  `403 ... hash does not match` indefinitely. That node never registered —
+  invisible to `kubectl`, absent from `cluster status` — while consuming its
+  full size.
+
+  The target is now lowered before anything is destroyed, node removal clears
+  the k3s node-password secret, and the reconciler reads a cluster's desired
+  state *after* observing the host rather than before. A removal that cannot
+  clear the secret is reported as a distinct condition and recorded on the
+  cluster's scale history rather than being retried or silently dropped.
+
 - **`sync-accounts` restores every key from a container, not just the first**
   (#1477). Recovery read a container's `authorized_keys` and returned on the
   first valid line, so a box reachable by several keys — an operator key, a
