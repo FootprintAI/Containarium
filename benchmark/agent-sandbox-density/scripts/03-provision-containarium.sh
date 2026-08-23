@@ -60,6 +60,14 @@ ssh_or_local "curl -fsSL https://raw.githubusercontent.com/helm/helm/main/script
 log "resolving Containarium ${CONTAINARIUM_VERSION} and fetching the chart + CLI"
 ssh_or_local "sudo bash -s" <<REMOTE
 set -euo pipefail
+# jq is needed below to resolve "latest" — install it FIRST. Found live:
+# installing it at the end of this same block (after it's already used)
+# means "latest" resolution silently fails (jq: command not found breaks
+# the curl|jq pipe, which then makes curl itself fail with "Failure
+# writing output to destination" — a confusing secondary symptom of the
+# real, primary cause).
+apt-get install -y -qq jq >/dev/null
+
 TAG="${CONTAINARIUM_VERSION}"
 if [[ "\$TAG" == "latest" ]]; then
 	TAG=\$(curl -fsSL https://api.github.com/repos/FootprintAI/Containarium/releases/latest | jq -r .tag_name)
@@ -78,7 +86,6 @@ containarium version
 
 rm -rf /opt/containarium-src
 git clone --depth 1 --branch "\$TAG" https://github.com/FootprintAI/Containarium.git /opt/containarium-src
-apt-get install -y -qq jq >/dev/null
 REMOTE
 
 log "helm installing the Containarium daemon (runtimeClass=${GVISOR_RUNTIME_CLASS}, gateway disabled)"
