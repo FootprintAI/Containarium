@@ -64,12 +64,19 @@ done
 [[ -n "$VM_NAME" ]] || die "usage: $0 --name <vm-name>"
 
 load_config
-require_vars SANDBOX_CPU_LIMIT SANDBOX_MEM_LIMIT FAILURE_STREAK_TO_STOP CREATE_TIMEOUT_SECONDS BENCH_SSH_KEY_FILE
+require_vars SANDBOX_MEM_LIMIT FAILURE_STREAK_TO_STOP CREATE_TIMEOUT_SECONDS BENCH_SSH_KEY_FILE
+
+# LXC_SANDBOX_CPU_LIMIT overrides SANDBOX_CPU_LIMIT for this scenario —
+# see config.env.example's comment on it for why (an LXC box has to fully
+# boot an OS before it's usable; a too-tight CPU profile makes DHCP
+# acquisition time out before boot finishes, unlike a k8s pod which just
+# starts an existing process). Falls back to SANDBOX_CPU_LIMIT if unset.
+LXC_CPU_LIMIT="${LXC_SANDBOX_CPU_LIMIT:-${SANDBOX_CPU_LIMIT:-200m}}"
 resolve_remote "$VM_NAME"
 
 INCUS_MEM_LIMIT="${SANDBOX_MEM_LIMIT/Mi/MiB}"
 INCUS_MEM_LIMIT="${INCUS_MEM_LIMIT/Gi/GiB}"
-log "sandbox profile on the LXC workhorse side: cpu=${SANDBOX_CPU_LIMIT} memory=${INCUS_MEM_LIMIT} (Incus limits.cpu/limits.memory, single ceiling)"
+log "sandbox profile on the LXC workhorse side: cpu=${LXC_CPU_LIMIT} memory=${INCUS_MEM_LIMIT} (Incus limits.cpu/limits.memory, single ceiling)"
 
 RESULTS_DIR="${BENCH_ROOT}/results"
 mkdir -p "$RESULTS_DIR"
@@ -83,7 +90,7 @@ CTN_TOKEN=$(ssh_or_local "sudo containarium token generate --username bench-admi
 
 create_box() {
 	local name="$1"
-	ssh_or_local "containarium create ${name} --no-ssh-key --podman=false --cpu ${SANDBOX_CPU_LIMIT} --memory ${INCUS_MEM_LIMIT} --server ${CTN_SERVER} --http --token ${CTN_TOKEN}" >/dev/null 2>&1
+	ssh_or_local "containarium create ${name} --no-ssh-key --podman=false --cpu ${LXC_CPU_LIMIT} --memory ${INCUS_MEM_LIMIT} --server ${CTN_SERVER} --http --token ${CTN_TOKEN}" >/dev/null 2>&1
 }
 
 box_ready() {
@@ -105,7 +112,7 @@ cleanup_box() {
 
 resource_snapshot "before" "$RESULTS_FILE"
 {
-	echo "profile: cpu ${SANDBOX_CPU_LIMIT}, mem ${INCUS_MEM_LIMIT} (Incus native, single ceiling)"
+	echo "profile: cpu ${LXC_CPU_LIMIT}, mem ${INCUS_MEM_LIMIT} (Incus native, single ceiling; cpu overridden from the k8s scenarios' value — see this script's header)"
 	echo "backend: native LXC/Incus, no k8s, no gVisor"
 	echo
 } >>"$RESULTS_FILE"
