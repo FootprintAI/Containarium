@@ -19,6 +19,24 @@
 # enforced ceiling, not a request+limit pair), converting Mi->MiB (a
 # rename, not a real unit conversion — MiB *is* what k8s' "Mi" means).
 #
+# `--podman=false`: found live that `create`'s default (--podman=true)
+# installs Podman + pip + podman-compose inside every box
+# (pkg/core/container/manager.go's installPackages) — under this
+# benchmark's tiny 50m CPU limit, that single install chain took several
+# minutes per unit (watched it firsthand: still running `apt-get install
+# python3-pip` six minutes in). That's not a density measurement, it's a
+# package-manager-under-extreme-CPU-starvation measurement, and neither
+# the control group's busybox pods nor the k8s-backend's agent-box image
+# do anything comparable at create time. Disabling it drops the per-unit cost to just the base package set
+# (openssh-server, sudo, curl, git, vim, htop, net-tools, iputils-ping —
+# pkg/core/ospkg/debian.go, still installed via apt at create time either
+# way). That's still not perfectly comparable to the other two scenarios
+# — neither installs anything at create time at all (bare busybox for
+# the control group; a pre-baked agent-box image for the k8s-backend
+# Containarium group) — but it's the closest this backend gets without
+# baking its own base image, and it's the real difference worth reporting
+# rather than a multi-minute artifact worth reporting.
+#
 # Usage:
 #   scripts/06-run-density-containarium-lxc.sh --name <vm-name>
 
@@ -65,7 +83,7 @@ CTN_TOKEN=$(ssh_or_local "sudo containarium token generate --username bench-admi
 
 create_box() {
 	local name="$1"
-	ssh_or_local "containarium create ${name} --no-ssh-key --cpu ${SANDBOX_CPU_LIMIT} --memory ${INCUS_MEM_LIMIT} --server ${CTN_SERVER} --http --token ${CTN_TOKEN}" >/dev/null 2>&1
+	ssh_or_local "containarium create ${name} --no-ssh-key --podman=false --cpu ${SANDBOX_CPU_LIMIT} --memory ${INCUS_MEM_LIMIT} --server ${CTN_SERVER} --http --token ${CTN_TOKEN}" >/dev/null 2>&1
 }
 
 box_ready() {
