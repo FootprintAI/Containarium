@@ -77,6 +77,10 @@
       "description": "SandboxService is the two-digit-ms spawn path\n(docs/architecture/two-digit-ms-sandbox-spawn.md): an isolated Linux\nprocess for an agent inner loop, claimed against a pool rather than\ncreated fresh per request.\n\nA sandbox is NOT a persistent box. It has no per-tenant Linux account and\nno SSH — access is exclusively these RPCs, over a connection the daemon\nalready holds open. That is the scope cut that makes the latency target\nreachable (see the design note's \"What's in it\" section); a caller that\nneeds `ssh \u003cuser\u003e@box` wants ContainerService instead.\n\nPhase 1 (this contract's first implementation) is the cold path only —\nevery SpawnSandbox call creates a fresh container, same floor as\nContainerService.CreateContainer minus identity seeding. served_from is\nalways COLD until Phase 3 adds the warm pool; the field exists now so\nthat Phase 3 is not a breaking proto change."
     },
     {
+      "name": "SpawnService",
+      "description": "SpawnService is agent-box's resident, low-latency counterpart to\nSandboxService's per-call Incus round-trips (#1488 Phase 2). Each Incus\nexec websocket-upgrades at ~50-150ms; a warm gRPC connection straight to\nthe box does the same work in ~3ms. The daemon reaches this over a\nbind-mounted unix socket (see the design note's \"Transport\" section),\nnever over the network.\n\nThis is deliberately the only service in this package with NO\ngoogle.api.http annotations: it is not part of the public API surface —\nSandboxService is what external callers (CLI, MCP, SDK) talk to, and its\nimplementation is what will route through SpawnService once a warm pool\nexists (Phase 3). Nothing here is reachable through the REST gateway,\nand it must not be registered there.\n\nagent-box runs as PID 1 inside a pool member (see the design note's flow\ndiagram), so it owns reaping every process it forks — a design this\nservice inherits from the existing process_start/shell_exec MCP tools in\ninternal/agentbox, not a new mechanism."
+    },
+    {
       "name": "SecurityService",
       "description": "SecurityService provides container security scanning and reporting"
     },
