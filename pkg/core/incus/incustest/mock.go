@@ -37,6 +37,7 @@ type MockBackend struct {
 	WaitForNetworkFunc        func(containerName string, timeout time.Duration) (string, error)
 	ExecFunc                  func(containerName string, command []string) error
 	ExecWithOutputFunc        func(containerName string, command []string) (string, string, error)
+	ExecWithExitCodeFunc      func(containerName string, command []string) (string, string, int, error)
 	WriteFileFunc             func(containerName, path string, content []byte, mode string) error
 	ReadFileFunc              func(containerName, path string) ([]byte, error)
 	SetConfigFunc             func(containerName, key, value string) error
@@ -159,6 +160,13 @@ func (m *MockBackend) ExecWithOutput(containerName string, command []string) (st
 		return m.ExecWithOutputFunc(containerName, command)
 	}
 	return "", "", nil
+}
+
+func (m *MockBackend) ExecWithExitCode(containerName string, command []string) (string, string, int, error) {
+	if m.ExecWithExitCodeFunc != nil {
+		return m.ExecWithExitCodeFunc(containerName, command)
+	}
+	return "", "", 0, nil
 }
 
 func (m *MockBackend) WriteFile(containerName, path string, content []byte, mode string) error {

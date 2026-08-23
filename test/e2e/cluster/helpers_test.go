@@ -1,6 +1,7 @@
 package clustere2e
 
 import (
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -355,5 +356,47 @@ func TestClusterInstanceNames(t *testing.T) {
 				t.Fatalf("ClusterInstanceNames = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// #1514: the probe must not be answerable by the entrypoint's
+// temporary init server, which listens on the Unix socket only.
+//
+// Asserted against the SCRIPT, not against a Go constant the script
+// does not read. A helper checked only against itself is decorative:
+// the bash could drift back to a socket probe and this would stay
+// green, which is the same mistake — asserting on a representation
+// instead of on what actually runs — that this sprint has now
+// collected four times.
+func TestLaneScriptProbesPostgresOverTCP(t *testing.T) {
+	raw, err := os.ReadFile("../../../scripts/cluster-e2e.sh")
+	if err != nil {
+		t.Fatalf("read lane script: %v", err)
+	}
+	script := string(raw)
+
+	var probes []string
+	for _, line := range strings.Split(script, "\n") {
+		trimmed := strings.TrimSpace(line)
+		// Comments talk ABOUT the probe; only what runs counts.
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if strings.Contains(trimmed, "pg_isready") {
+			probes = append(probes, trimmed)
+		}
+	}
+	if len(probes) == 0 {
+		t.Fatal("the lane script has no pg_isready probe at all; this test is checking nothing")
+	}
+
+	want := strings.Join(PostgresReadyArgs("containarium"), " ")
+	for _, p := range probes {
+		if !strings.Contains(p, want) {
+			t.Errorf("probe %q does not force TCP (want %q).\n"+
+				"A default pg_isready uses the Unix socket, so it answers \"ready\" about the "+
+				"entrypoint's TEMPORARY init server — which is then shut down, and the confirming "+
+				"probe fails seven seconds into a ninety-second bound (#1514).", p, want)
+		}
 	}
 }

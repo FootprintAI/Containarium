@@ -198,3 +198,68 @@ message DeleteSandboxRequest {
 message DeleteSandboxResponse {
   string message = 1;
 }
+
+// SpawnService is agent-box's resident, low-latency counterpart to
+// SandboxService's per-call Incus round-trips (#1488 Phase 2). Each Incus
+// exec websocket-upgrades at ~50-150ms; a warm gRPC connection straight to
+// the box does the same work in ~3ms. The daemon reaches this over a
+// bind-mounted unix socket (see the design note's "Transport" section),
+// never over the network.
+//
+// This is deliberately the only service in this package with NO
+// google.api.http annotations: it is not part of the public API surface —
+// SandboxService is what external callers (CLI, MCP, SDK) talk to, and its
+// implementation is what will route through SpawnService once a warm pool
+// exists (Phase 3). Nothing here is reachable through the REST gateway,
+// and it must not be registered there.
+//
+// agent-box runs as PID 1 inside a pool member (see the design note's flow
+// diagram), so it owns reaping every process it forks — a design this
+// service inherits from the existing process_start/shell_exec MCP tools in
+// internal/agentbox, not a new mechanism.
+service SpawnService {
+  // Spawn starts a long-running background process and returns immediately
+  // with its pid. The process is reaped (waited on), never left a zombie,
+  // when it exits.
+  rpc Spawn(SpawnRequest) returns (SpawnResponse);
+
+  // Exec runs one command to completion and returns its stdout, stderr,
+  // and exit code — the fast-path equivalent of
+  // SandboxService.ExecInSandbox, minus the Incus round-trip.
+  rpc Exec(AgentExecRequest) returns (AgentExecResponse);
+}
+
+message SpawnRequest {
+  // Shell command to run, e.g. "npm run dev". Runs under /bin/sh -c,
+  // matching process_start's existing MCP contract.
+  string command = 1;
+  // Stable identifier for later reference. Auto-generated if empty. Must
+  // be unique among this box's currently-registered processes.
+  string name = 2;
+  // Working directory. Empty = agent-box's own cwd.
+  string cwd = 3;
+}
+
+message SpawnResponse {
+  string name = 1;
+  int64 pid = 2;
+  // Absolute path to the captured stdout+stderr log, matching
+  // process_start's existing MCP contract.
+  string log_path = 3;
+}
+
+message AgentExecRequest {
+  // Shell command to run under /bin/sh -c.
+  string command = 1;
+  // Working directory. Empty = agent-box's own cwd.
+  string cwd = 2;
+  // Hard timeout in seconds. 0 = agent-box's default (matches
+  // shell_exec's existing MCP contract).
+  int32 timeout_seconds = 3;
+}
+
+message AgentExecResponse {
+  string stdout = 1;
+  string stderr = 2;
+  int32 exit_code = 3;
+}

@@ -524,6 +524,16 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	pb.RegisterVolumeServiceServer(grpcServer, NewVolumeServer())
 	log.Printf("Volume service enabled")
 
+	// Register SandboxService — ephemeral, no-SSH sandboxes (#1488 Phase 1,
+	// the two-digit-ms spawn path's cold-path implementation). Own incus
+	// client, same pattern as the other feature servers in this function.
+	if sandboxIncusClient, err := incus.New(); err == nil {
+		pb.RegisterSandboxServiceServer(grpcServer, NewSandboxServer(sandboxIncusClient))
+		log.Printf("Sandbox service enabled")
+	} else {
+		log.Printf("Warning: SandboxService disabled — incus client init failed: %v", err)
+	}
+
 	// Register ClusterService — managed Kubernetes clusters (#1413).
 	// Lifecycle state only; VM provisioning is the reconciler's job
 	// (#1414). Starts on the in-memory store and is swapped to Postgres

@@ -27,6 +27,7 @@ type GRPCClient struct {
 	agentClient   pb.AgentSkillServiceClient
 	crewClient    pb.CrewServiceClient
 	clusterClient pb.ClusterServiceClient
+	sandboxClient pb.SandboxServiceClient
 }
 
 // NewGRPCClient creates a new gRPC client
@@ -85,6 +86,7 @@ func NewGRPCClient(serverAddr string, certsDir string, insecureConn bool) (*GRPC
 	agentClient := pb.NewAgentSkillServiceClient(conn)
 	crewClient := pb.NewCrewServiceClient(conn)
 	clusterClient := pb.NewClusterServiceClient(conn)
+	sandboxClient := pb.NewSandboxServiceClient(conn)
 
 	return &GRPCClient{
 		conn:          conn,
@@ -98,6 +100,7 @@ func NewGRPCClient(serverAddr string, certsDir string, insecureConn bool) (*GRPC
 		agentClient:   agentClient,
 		crewClient:    crewClient,
 		clusterClient: clusterClient,
+		sandboxClient: sandboxClient,
 	}, nil
 }
 
@@ -904,6 +907,45 @@ func (c *GRPCClient) DetachVolume(volume, container string) (*pb.DetachVolumeRes
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	return c.volumeClient.DetachVolume(ctx, &pb.DetachVolumeRequest{Volume: volume, Container: container})
+}
+
+// SpawnSandbox creates an ephemeral, no-SSH sandbox via gRPC (#1488 Phase
+// 1). 60s covers the cold-path floor (image clone + boot + network wait);
+// Phase 3's warm-pool claim will be far under this.
+func (c *GRPCClient) SpawnSandbox(req *pb.SpawnSandboxRequest) (*pb.SpawnSandboxResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	return c.sandboxClient.SpawnSandbox(ctx, req)
+}
+
+// ExecInSandbox runs one command inside a sandbox via gRPC. Longer timeout
+// than the other sandbox verbs — the command itself, not the RPC
+// round-trip, is what can legitimately take a while.
+func (c *GRPCClient) ExecInSandbox(req *pb.ExecInSandboxRequest) (*pb.ExecInSandboxResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	return c.sandboxClient.ExecInSandbox(ctx, req)
+}
+
+// WriteFileInSandbox writes a file into a sandbox via gRPC.
+func (c *GRPCClient) WriteFileInSandbox(req *pb.WriteFileInSandboxRequest) (*pb.WriteFileInSandboxResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	return c.sandboxClient.WriteFileInSandbox(ctx, req)
+}
+
+// ReadFileInSandbox reads a file back out of a sandbox via gRPC.
+func (c *GRPCClient) ReadFileInSandbox(sandboxID, path string) (*pb.ReadFileInSandboxResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	return c.sandboxClient.ReadFileInSandbox(ctx, &pb.ReadFileInSandboxRequest{SandboxId: sandboxID, Path: path})
+}
+
+// DeleteSandbox destroys a sandbox immediately via gRPC.
+func (c *GRPCClient) DeleteSandbox(sandboxID string) (*pb.DeleteSandboxResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return c.sandboxClient.DeleteSandbox(ctx, &pb.DeleteSandboxRequest{SandboxId: sandboxID})
 }
 
 // GetKMSStatus reports the active KMS backend + envelope state via gRPC.
