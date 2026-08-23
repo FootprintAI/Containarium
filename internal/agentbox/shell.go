@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"syscall"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -106,6 +107,25 @@ func runShellCommand(ctx context.Context, command, cwd string, timeout time.Dura
 	if cwd != "" {
 		cmd.Dir = cwd
 	}
+
+	// /bin/sh -c "<command>" does not reliably exec-replace itself into
+	// <command> — on this host it forks a genuine child and stays around
+	// as the parent. CommandContext's DEFAULT cancel behavior only kills
+	// cmd.Process (the shell), so on timeout the shell dies but a
+	// still-running grandchild keeps the stdout/stderr pipe's write end
+	// open, and Wait() then blocks until that grandchild exits on its
+	// own — observed hanging the full 5s of a `sleep 5` despite a 1s
+	// timeout. Setpgid puts the whole command tree in its own process
+	// group; Cancel kills the group (negative pid), not just the shell.
+	// WaitDelay is the backstop if even that leaves an orphan (e.g. a
+	// double-forked daemon that detached before the signal arrived): it
+	// bounds how long Wait() waits for the pipes to drain before force-
+	// closing them, so a pathological command still can't hang forever.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	cmd.WaitDelay = 2 * time.Second
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &cappedWriter{buf: &stdout, limit: shellExecOutputLimit}

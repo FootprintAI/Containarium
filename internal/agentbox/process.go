@@ -2,6 +2,7 @@ package agentbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -15,6 +16,16 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
+
+// ErrProcessNameInUse is returned by spawnBackgroundProcess when name
+// already names a registered process. Sentinel (rather than a plain
+// fmt.Errorf) because SpawnService.Spawn (gRPC, #1488 Phase 2) needs to
+// map it to codes.AlreadyExists specifically — a client-correctable
+// conflict, not a server malfunction — without string-matching the
+// message. The MCP handler doesn't need to distinguish it (it only
+// surfaces the message text), so it keeps using %v/%w against this error
+// like any other.
+var ErrProcessNameInUse = errors.New("process name already in use")
 
 // Process management.
 //
@@ -124,7 +135,7 @@ func spawnBackgroundProcess(name, command, cwd string) (*managedProcess, error) 
 		name = fmt.Sprintf("proc-%d", time.Now().UnixNano())
 	}
 	if _, exists := processRegistry[name]; exists {
-		return nil, fmt.Errorf("a process named %q is already running; kill it first or pick a different name", name)
+		return nil, fmt.Errorf("%w: a process named %q is already running; kill it first or pick a different name", ErrProcessNameInUse, name)
 	}
 
 	if err := os.MkdirAll(processLogDir, 0o750); err != nil {
