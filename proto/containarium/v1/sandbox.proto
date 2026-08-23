@@ -1,0 +1,200 @@
+syntax = "proto3";
+
+package containarium.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+import "protoc-gen-openapiv2/options/annotations.proto";
+
+option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
+
+// SandboxService is the two-digit-ms spawn path
+// (docs/architecture/two-digit-ms-sandbox-spawn.md): an isolated Linux
+// process for an agent inner loop, claimed against a pool rather than
+// created fresh per request.
+//
+// A sandbox is NOT a persistent box. It has no per-tenant Linux account and
+// no SSH — access is exclusively these RPCs, over a connection the daemon
+// already holds open. That is the scope cut that makes the latency target
+// reachable (see the design note's "What's in it" section); a caller that
+// needs `ssh <user>@box` wants ContainerService instead.
+//
+// Phase 1 (this contract's first implementation) is the cold path only —
+// every SpawnSandbox call creates a fresh container, same floor as
+// ContainerService.CreateContainer minus identity seeding. served_from is
+// always COLD until Phase 3 adds the warm pool; the field exists now so
+// that Phase 3 is not a breaking proto change.
+service SandboxService {
+  // SpawnSandbox creates (Phase 1) or claims (Phase 3+) a sandbox and
+  // returns as soon as it can accept ExecInSandbox — the two-digit-ms path.
+  rpc SpawnSandbox(SpawnSandboxRequest) returns (SpawnSandboxResponse) {
+    option (google.api.http) = {
+      post: "/v1/sandboxes"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Spawn a sandbox";
+      description: "Creates an ephemeral, unauthenticated-shell-free sandbox. Phase 1: always the cold path (served_from = COLD); Phase 3+: a pool claim when a warm member is ready, else RESOURCE_EXHAUSTED unless allow_cold_start is set.";
+      tags: "Sandboxes";
+    };
+  }
+
+  // ExecInSandbox runs one command inside the sandbox and returns its
+  // output. The sandbox's only access surface — there is no SSH.
+  rpc ExecInSandbox(ExecInSandboxRequest) returns (ExecInSandboxResponse) {
+    option (google.api.http) = {
+      post: "/v1/sandboxes/{sandbox_id}/exec"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Execute a command in a sandbox";
+      tags: "Sandboxes";
+    };
+  }
+
+  // WriteFileInSandbox writes a file into the sandbox via the Incus file
+  // push API — never through a shell, so file content can never be
+  // interpreted as a command.
+  rpc WriteFileInSandbox(WriteFileInSandboxRequest) returns (WriteFileInSandboxResponse) {
+    option (google.api.http) = {
+      put: "/v1/sandboxes/{sandbox_id}/files"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Write a file into a sandbox";
+      tags: "Sandboxes";
+    };
+  }
+
+  // ReadFileInSandbox reads a file back out of the sandbox.
+  rpc ReadFileInSandbox(ReadFileInSandboxRequest) returns (ReadFileInSandboxResponse) {
+    option (google.api.http) = {
+      get: "/v1/sandboxes/{sandbox_id}/files"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Read a file from a sandbox";
+      description: "path is passed as a query parameter, e.g. ?path=/workspace/out.txt.";
+      tags: "Sandboxes";
+    };
+  }
+
+  // DeleteSandbox destroys the sandbox immediately. Sandboxes are never
+  // reset and reused (see the design note's Isolation section) — delete
+  // always means destroy, never "return to a pool".
+  rpc DeleteSandbox(DeleteSandboxRequest) returns (DeleteSandboxResponse) {
+    option (google.api.http) = {
+      delete: "/v1/sandboxes/{sandbox_id}"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Delete a sandbox";
+      tags: "Sandboxes";
+    };
+  }
+}
+
+// SandboxState is the lifecycle state of a sandbox. Deliberately smaller
+// than ContainerState (container.proto) — no Frozen, no Provisioning — a
+// sandbox has no pause/resume story and Phase 1 has no baked-image install
+// step to be "provisioning" through.
+enum SandboxState {
+  SANDBOX_STATE_UNSPECIFIED = 0;
+  // Accepted, not yet ready for ExecInSandbox.
+  SANDBOX_STATE_PENDING = 1;
+  // Ready for ExecInSandbox.
+  SANDBOX_STATE_RUNNING = 2;
+  // Destroyed (via DeleteSandbox or the idle-TTL sweeper).
+  SANDBOX_STATE_EXITED = 3;
+  // Spawn or a subsequent operation failed unrecoverably.
+  SANDBOX_STATE_ERROR = 4;
+}
+
+// ServedFrom names which path actually served a SpawnSandbox call, so a
+// caller measuring the two-digit-ms SLO can tell a fast sample from a slow
+// one instead of an opaque latency number. See the design note's "Latency
+// budget" section: a latency SLO whose slow path is invisible isn't one.
+enum ServedFrom {
+  SERVED_FROM_UNSPECIFIED = 0;
+  // Fresh container, no warm pool involved. Always this value in Phase 1.
+  SERVED_FROM_COLD = 1;
+  // Claimed from an already-booted, already-provisioned pool member.
+  // Phase 3+ only.
+  SERVED_FROM_POOL = 2;
+}
+
+// SandboxTemplate selects the guest image + provisioning a sandbox starts
+// from. v1 ships SANDBOX_TEMPLATE_BASE only — no python/node template is
+// declared here until one is actually implemented; a proto that advertises
+// unsupported values invites callers to depend on them.
+enum SandboxTemplate {
+  SANDBOX_TEMPLATE_UNSPECIFIED = 0;
+  SANDBOX_TEMPLATE_BASE = 1;
+}
+
+// Sandbox describes one sandbox's identity and lifecycle state.
+message Sandbox {
+  string sandbox_id = 1;
+  SandboxState state = 2;
+  SandboxTemplate template = 3;
+  ServedFrom served_from = 4;
+  google.protobuf.Timestamp created_at = 5;
+  // Idle-TTL reap horizon. Unset (zero) means no TTL was requested.
+  google.protobuf.Timestamp expires_at = 6;
+}
+
+message SpawnSandboxRequest {
+  SandboxTemplate template = 1;
+  // Idle TTL in seconds before the sweeper reaps an unclaimed sandbox.
+  // 0 = daemon default.
+  int32 idle_ttl_seconds = 2;
+  // When set, a pool-exhausted claim falls back to the cold path instead
+  // of returning RESOURCE_EXHAUSTED. No effect in Phase 1 (there is no
+  // pool to be exhausted, and the field starts wired so Phase 3 needs no
+  // client-visible contract change).
+  bool allow_cold_start = 3;
+}
+
+message SpawnSandboxResponse {
+  Sandbox sandbox = 1;
+}
+
+message ExecInSandboxRequest {
+  string sandbox_id = 1;
+  repeated string command = 2;
+  // 0 = daemon default.
+  int32 timeout_seconds = 3;
+}
+
+message ExecInSandboxResponse {
+  string stdout = 1;
+  string stderr = 2;
+  int32 exit_code = 3;
+}
+
+message WriteFileInSandboxRequest {
+  string sandbox_id = 1;
+  string path = 2;
+  bytes content = 3;
+  // e.g. "0644". Empty = daemon default.
+  string mode = 4;
+}
+
+message WriteFileInSandboxResponse {
+  string message = 1;
+}
+
+message ReadFileInSandboxRequest {
+  string sandbox_id = 1;
+  string path = 2;
+}
+
+message ReadFileInSandboxResponse {
+  bytes content = 1;
+}
+
+message DeleteSandboxRequest {
+  string sandbox_id = 1;
+}
+
+message DeleteSandboxResponse {
+  string message = 1;
+}
