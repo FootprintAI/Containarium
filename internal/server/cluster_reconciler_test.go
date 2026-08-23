@@ -37,6 +37,9 @@ type stateHost struct {
 	// deleteErr makes every Delete fail, so a test can drive the
 	// retry path without racing anything.
 	deleteErr error
+	// deleteErrFor fails only the named instances, so a test can make
+	// a batch succeed partway through — the state #1505 wedges on.
+	deleteErrFor map[string]error
 	// onObserve fires after ClusterVMs has read the host, so a test
 	// can land a scale-down between the observation and the decision
 	// that consumes it (#1498 review).
@@ -119,8 +122,11 @@ func (h *stateHost) Stop(name string) error {
 
 func (h *stateHost) Delete(name string) error {
 	h.mu.Lock()
-	if h.deleteErr != nil {
-		err := h.deleteErr
+	if err := h.deleteErr; err != nil {
+		h.mu.Unlock()
+		return err
+	}
+	if err := h.deleteErrFor[name]; err != nil {
 		h.mu.Unlock()
 		return err
 	}

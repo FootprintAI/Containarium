@@ -199,10 +199,55 @@ func (s *CAProviderServer) NodeGroupDeleteNodes(ctx context.Context, req *capb.N
 			inGroup[n.VMName] = true
 		}
 	}
-	// Validate the whole batch before deleting anything.
+	// Validate the whole batch before deleting anything, and work out
+	// which of its nodes there is still anything to do about (#1505).
+	//
+	// The check used to reject the entire request if any named node
+	// was missing from the store. But the delete loop below aborts on
+	// the first error AFTER removing earlier nodes and their rows, so
+	// a batch [A, B] where A succeeds and B fails left every retry
+	// naming A refused outright — and B could never be removed. A
+	// retry naming A is the likely case, not a corner: nothing here
+	// deletes A's Kubernetes Node object, and upstream
+	// cluster-autoscaler derives its retry set from Node objects.
+	//
+	// So a node absent from this group's rows is now two different
+	// situations, told apart by the host:
+	//
+	//   - absent from the host too — already gone. Skipped, because
+	//     the end state the caller asked for already holds.
+	//   - still present on the host — NOT gone. Refused, because this
+	//     is a caller naming the wrong group (or store drift), and
+	//     reporting success would leave a running instance nobody
+	//     accounts for. That is what the original check was worth, and
+	//     it is kept.
+	//
+	// A host we cannot see refuses, as before: "already gone" is a
+	// claim, and an unobservable host cannot support it.
+	observed, obsErr := s.mgr.Observe(owner, name)
+	onHost := make(map[string]bool)
+	if obsErr == nil {
+		if observed.CP != nil {
+			onHost[observed.CP.Name] = true
+		}
+		for _, ws := range observed.Workers {
+			for _, w := range ws {
+				onHost[w.Name] = true
+			}
+		}
+	}
+	toDelete := make([]string, 0, len(req.Nodes))
 	for _, n := range req.Nodes {
-		if !inGroup[n.GetName()] {
-			return nil, status.Errorf(codes.NotFound, "node %q is not in group %q", n.GetName(), g.Name)
+		switch {
+		case inGroup[n.GetName()]:
+			toDelete = append(toDelete, n.GetName())
+		case obsErr != nil:
+			return nil, status.Errorf(codes.NotFound,
+				"node %q is not in group %q, and the host could not be observed to confirm it is gone: %v",
+				n.GetName(), g.Name, obsErr)
+		case onHost[n.GetName()]:
+			return nil, status.Errorf(codes.NotFound,
+				"node %q is not in group %q but still exists on the host", n.GetName(), g.Name)
 		}
 	}
 	// The target is lowered BEFORE anything is destroyed (#1498).
@@ -238,7 +283,7 @@ func (s *CAProviderServer) NodeGroupDeleteNodes(ctx context.Context, req *capb.N
 			inGroupCount++
 		}
 	}
-	target := inGroupCount - int32(len(req.Nodes)) //nolint:gosec // batch length is bounded by the group's int32 max_nodes (validated above)
+	target := inGroupCount - int32(len(toDelete)) //nolint:gosec // batch length is bounded by the group's int32 max_nodes (validated above)
 	if target < g.MinNodes {
 		target = g.MinNodes
 	}
@@ -246,24 +291,30 @@ func (s *CAProviderServer) NodeGroupDeleteNodes(ctx context.Context, req *capb.N
 		return nil, err
 	}
 	var staleSecrets []string
-	for _, n := range req.Nodes {
+	for _, vmName := range toDelete {
 		// CA has already drained the node; removing the VM is safe.
 		// ForgetNode also clears the control plane's node-password
 		// secret, without which a later node of the same name can
 		// never join (#1498).
-		if err := s.mgr.ForgetNode(owner, name, n.GetName()); err != nil {
+		if err := s.mgr.ForgetNode(owner, name, vmName); err != nil {
 			if !errors.Is(err, clustercore.ErrNodePasswordNotCleared) {
-				return nil, status.Errorf(codes.Internal, "delete %s: %v", n.GetName(), err)
+				return nil, status.Errorf(codes.Internal, "delete %s: %v", vmName, err)
 			}
 			// The instance IS gone, so the removal must not be
 			// retried — but the residue is not harmless, and a log
 			// line is not where anyone looks. Record it on the
 			// cluster's own history.
-			staleSecrets = append(staleSecrets, n.GetName())
+			staleSecrets = append(staleSecrets, vmName)
 		}
-		_ = s.store.DeleteNode(ctx, owner, name, n.GetName())
+		_ = s.store.DeleteNode(ctx, owner, name, vmName)
 	}
-	reason := fmt.Sprintf("autoscaler removed %d drained node(s); target now %d", len(req.Nodes), target)
+	if len(toDelete) == 0 {
+		// Every named node was already gone. Nothing changed, so
+		// nothing is recorded — a scale-down event for work that did
+		// not happen is noise in the one history operators read.
+		return &capb.NodeGroupDeleteNodesResponse{}, nil
+	}
+	reason := fmt.Sprintf("autoscaler removed %d drained node(s); target now %d", len(toDelete), target)
 	if len(staleSecrets) > 0 {
 		reason += fmt.Sprintf("; WARNING: node-password secret still present for %s — a future node of that name will be refused until it is removed",
 			strings.Join(staleSecrets, ", "))
