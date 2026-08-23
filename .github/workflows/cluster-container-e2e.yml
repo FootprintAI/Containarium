@@ -188,7 +188,11 @@ jobs:
     name: sabotage run (tenant path must be checked)
     if: github.event_name == 'workflow_dispatch' && inputs.sabotage == 'drop-prerouting'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Same budget rule as every other job that runs the suite (#1458):
+    # the go timeout plus provisioning has to fit, or a slow proof run
+    # is cancelled and reports "the lane cannot fail" for a lane that
+    # was merely slow.
+    timeout-minutes: 60
     env:
       CONTAINARIUM_E2E_ISOLATION: container
       CONTAINARIUM_CLUSTER_ALLOW_CONTAINER_NODES: 'true'
