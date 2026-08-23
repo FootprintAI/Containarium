@@ -448,6 +448,12 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to register volume service gateway: %w", err)
 	}
 
+	// Register SandboxService gateway handler — ephemeral, no-SSH sandboxes
+	// (#1488 Phase 1).
+	if err := pb.RegisterSandboxServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
+		return fmt.Errorf("failed to register sandbox service gateway: %w", err)
+	}
+
 	// Register ClusterService gateway handler — managed K8s clusters (#1413)
 	if err := pb.RegisterClusterServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
 		return fmt.Errorf("failed to register cluster service gateway: %w", err)
