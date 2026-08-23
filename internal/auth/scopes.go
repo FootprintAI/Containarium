@@ -121,6 +121,14 @@ const (
 	ScopeAuditRead         = "audit:read"          // audit-log query
 	ScopeNetworkPolicyRead = "network-policy:read" // NetworkPolicyService Get/List
 	ScopeTokensRead        = "tokens:read"         // token listing
+
+	// ephemeral sandboxes (SandboxServer, #1488). A sandbox has no
+	// per-tenant Linux account and no SSH — spawn/exec/file/delete is its
+	// entire access surface, and an agent's own token is what reaches it,
+	// so it's gated separately from the persistent-box containers scope
+	// rather than folded into it.
+	ScopeSandboxesRead  = "sandboxes:read"
+	ScopeSandboxesWrite = "sandboxes:write"
 )
 
 // AllScopes is the catalog of every known scope. It backs IsKnownScope so
