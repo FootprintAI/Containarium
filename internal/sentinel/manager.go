@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -72,6 +73,19 @@ type Config struct {
 	// alert chain (#514 follow-up). Empty disables the webhook; the
 	// /metrics endpoint (counters) is always served regardless.
 	AlertWebhookURL string
+	// SelfCheckFailureThreshold is the number of consecutive failed
+	// end-to-end self-checks (see selfCheckProxyPath) while actively
+	// proxying before the sentinel treats its OWN forwarding pipeline as
+	// wedged and exits — systemd's Restart=always (sentinel_unit.go)
+	// then recreates it with fresh listeners/dispatch state. This exists
+	// because healthCheckAll only proves the BACKEND is reachable: if the
+	// backend's health endpoint stays up throughout (as it did during a
+	// real incident) while the sentinel's own ConnMux/dispatch pipeline
+	// wedges — TCP accepts succeed, nothing downstream ever responds —
+	// nothing else here notices, and only a by-hand restart clears it.
+	// Zero disables the self-check. Only armed in ConnMux/hybrid mode
+	// (httpsDispatch != nil).
+	SelfCheckFailureThreshold int
 }
 
 // Manager is the core sentinel orchestrator.
@@ -164,6 +178,16 @@ type Manager struct {
 	// test failing. Same injection pattern as byocDial below. nil = the real
 	// method; tests substitute a stub.
 	switchToProxyFn func(*Backend) error
+
+	// selfCheckFn is the seam over selfCheckProxyPath so runSelfCheckLoop's
+	// wiring is testable without a real listener. nil = the real method
+	// (probes 127.0.0.1:HTTPSPort); tests substitute a stub. exitFn is
+	// invoked once SelfCheckFailureThreshold consecutive failures are
+	// observed; defaults to os.Exit(1) in NewManager so systemd's
+	// Restart=always recreates the process. Tests override it to observe
+	// the trigger without actually exiting.
+	selfCheckFn func() error
+	exitFn      func()
 
 	// hmacSecret is the shared HMAC secret used to sign
 	// /sentinel/peers responses (and reused for keysync/certsync
@@ -335,6 +359,7 @@ func NewManager(config Config, provider CloudProvider) *Manager {
 		byocRoutes: NewBYOCRouteRegistry(),
 		certStore:  NewCertStore(),
 		keyStore:   NewKeyStore(),
+		exitFn:     func() { os.Exit(1) },
 	}
 	if raw := os.Getenv(appconfig.EnvSentinelAuthSecret); raw != "" {
 		if len(raw) < auth.SentinelMinSecretLen {
@@ -681,6 +706,13 @@ func (m *Manager) Run(ctx context.Context) error {
 		}()
 	}
 
+	// Independent end-to-end self-check of the sentinel's OWN proxy
+	// pipeline — see runSelfCheckLoop / selfCheckProxyPath. Runs on its
+	// own goroutine/ticker rather than piggybacking on the main loop
+	// below so a wedged pipeline (the exact thing it's checking for)
+	// can't also stall event processing.
+	go m.runSelfCheckLoop(ctx)
+
 	ticker := time.NewTicker(m.config.CheckInterval)
 	defer ticker.Stop()
 
@@ -1000,6 +1032,105 @@ func (m *Manager) startHTTPSProxy(backendIP string) {
 	fallback := net.JoinHostPort(backendIP, fmt.Sprintf("%d", m.config.HTTPSPort))
 	m.httpsDispatch.SetHandler(m.buildSNIRoutingHandler(fallback))
 	log.Printf("[sentinel] HTTPS proxy started → fallback %s (SNI routing via primary registry)", fallback)
+}
+
+// selfCheckProxyPath dials the sentinel's own HTTPS listener and verifies
+// the ConnMux → dispatch → routing pipeline actually reacts within timeout.
+// It does not care WHAT the pipeline does with the probe (forward the byte,
+// fail the SNI peek, dial-timeout to a fallback and close) — only that
+// something happens. A read that hits its own deadline with no data, EOF,
+// or reset is exactly the wedge this exists to catch: the listener is alive
+// (TCP accepts succeed) but nothing downstream is servicing connections.
+func (m *Manager) selfCheckProxyPath(timeout time.Duration) error {
+	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(m.config.HTTPSPort))
+	conn, err := net.DialTimeout("tcp", addr, timeout)
+	if err != nil {
+		return fmt.Errorf("dial self %s: %w", addr, err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	_ = conn.SetDeadline(time.Now().Add(timeout))
+	// A single TLS record-layer byte (0x16) so ConnMux.route() sends this
+	// down the HTTPS path rather than mistaking it for a tunnel handshake
+	// (which starts with '{').
+	if _, err := conn.Write([]byte{0x16}); err != nil {
+		return fmt.Errorf("write probe: %w", err)
+	}
+
+	buf := make([]byte, 1)
+	if _, err := conn.Read(buf); err != nil {
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
+			return fmt.Errorf("proxy path unresponsive after %s: %w", timeout, err)
+		}
+		// Any other outcome (EOF, connection reset, a real backend
+		// response) proves the pipeline reacted within the deadline —
+		// only a hard timeout indicates the wedge.
+	}
+	return nil
+}
+
+// selfCheckOnce runs one self-check iteration given the current
+// consecutive-failure count, returning the updated count and whether the
+// threshold was reached (and exitFn invoked) this call. Split out from
+// runSelfCheckLoop so tests can drive it synchronously without a real
+// ticker, goroutine, or listener.
+func (m *Manager) selfCheckOnce(failures int) (newFailures int, triggered bool) {
+	if m.currentState() != StateProxy {
+		return 0, false
+	}
+
+	check := m.selfCheckFn
+	if check == nil {
+		check = func() error { return m.selfCheckProxyPath(20 * time.Second) }
+	}
+
+	if err := check(); err != nil {
+		failures++
+		log.Printf("[sentinel] self-check failed (%d/%d consecutive): %v",
+			failures, m.config.SelfCheckFailureThreshold, err)
+		if failures >= m.config.SelfCheckFailureThreshold {
+			log.Printf("[sentinel] self-check failed %d times in a row while the backend reports healthy — the proxy pipeline is wedged; restarting process (systemd Restart=always recreates it)", failures)
+			m.exitFn()
+			return failures, true
+		}
+		return failures, false
+	}
+	return 0, false
+}
+
+// runSelfCheckLoop periodically probes the sentinel's OWN externally-facing
+// proxy path end-to-end (selfCheckProxyPath), independent of and in
+// addition to healthCheckAll's backend-only health check. See
+// Config.SelfCheckFailureThreshold for why this exists. No-op when the
+// self-check is disabled (threshold <= 0) or the sentinel isn't running
+// ConnMux/hybrid mode (httpsDispatch == nil), since that's the pipeline
+// being probed.
+func (m *Manager) runSelfCheckLoop(ctx context.Context) {
+	if m.config.SelfCheckFailureThreshold <= 0 || m.httpsDispatch == nil {
+		return
+	}
+	interval := m.config.CheckInterval
+	if interval <= 0 {
+		interval = 15 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	failures := 0
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		var triggered bool
+		failures, triggered = m.selfCheckOnce(failures)
+		if triggered {
+			return
+		}
+	}
 }
 
 // buildSNIRoutingHandler returns a connection handler that peeks SNI from
