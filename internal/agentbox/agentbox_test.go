@@ -59,11 +59,24 @@ func TestShellExec_NonZeroExit(t *testing.T) {
 	}
 }
 
+// TestShellExec_Timeout previously only checked the output for the word
+// "timeout" — which let the command's exit be reported correctly (via
+// ctx.Err()) even though the process itself wasn't actually killed early;
+// /bin/sh -c "sleep 5" forks a genuine child rather than exec-replacing
+// itself, so killing just the shell (exec.CommandContext's default) left
+// the grandchild running and holding the stdout/stderr pipe open, and
+// Wait() blocked for the full natural 5s before returning. Asserting
+// elapsed time is what actually catches that class of bug; a bare
+// string-in-output check does not, and silently didn't for a while.
 func TestShellExec_Timeout(t *testing.T) {
+	start := time.Now()
 	out, _ := callTool(t, handleShellExec, map[string]interface{}{
 		"command":         "sleep 5",
 		"timeout_seconds": float64(1),
 	})
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Errorf("took %s, want well under the 5s sleep (timeout should kill the whole command tree around 1s)", elapsed)
+	}
 	if !strings.Contains(out, "timeout") {
 		t.Errorf("expected timeout marker in:\n%s", out)
 	}
