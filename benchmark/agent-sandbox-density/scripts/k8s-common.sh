@@ -119,10 +119,21 @@ mv runsc containerd-shim-runsc-v1 /usr/local/bin/
 
 cat <<TOML >>/etc/containerd/config.toml
 
-[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.${GVISOR_RUNTIME_CLASS}]
+[plugins."io.containerd.cri.v1.runtime".containerd.runtimes.${GVISOR_RUNTIME_CLASS}]
   runtime_type = "io.containerd.${GVISOR_RUNTIME_CLASS}.v1"
 TOML
 systemctl restart containerd
+sleep 2
+# Confirm the CRI plugin actually picked up the new runtime handler before
+# moving on — found live that the wrong plugin ID (an older containerd
+# v1-era path, io.containerd.grpc.v1.cri) silently creates an inert config
+# tree on containerd v2.x: no error, no warning, just "no runtime for
+# \"${GVISOR_RUNTIME_CLASS}\" is configured" at first pod creation, several
+# steps later. containerd 2.x's actual CRI plugin id is
+# io.containerd.cri.v1.runtime (see the existing runc entry
+# \`containerd config default\` already generates, in the same file).
+crictl info 2>/dev/null | grep -q "\"${GVISOR_RUNTIME_CLASS}\"" ||
+	{ echo "containerd did not pick up the ${GVISOR_RUNTIME_CLASS} runtime handler after restart" >&2; exit 1; }
 
 cat <<EOF | kubectl apply -f -
 apiVersion: node.k8s.io/v1
