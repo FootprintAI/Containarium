@@ -209,3 +209,27 @@ func MaxRestartDelta(before, after map[string]int32) int32 {
 	}
 	return max
 }
+
+// PostgresReadyArgs is how the lane asks whether its throwaway
+// postgres is actually up (#1514).
+//
+// `-h 127.0.0.1` is the entire point, and it is not a stylistic
+// preference. The official postgres entrypoint starts TWO servers: a
+// temporary one for the init phase, run with `listen_addresses=”` so
+// it is reachable only over the Unix socket, and then — after
+// CREATE DATABASE and any init scripts — it SHUTS THAT ONE DOWN and
+// starts the real server, which is the first to listen on TCP.
+//
+// A default `pg_isready` talks to the Unix socket, so it answers "ready"
+// about the temporary server. The lane's wait loop broke on that
+// answer, the entrypoint then shut that server down, and the
+// confirming probe landed in the shutdown window: a red build seven
+// seconds into a bound of ninety, with nothing wrong with postgres or
+// the product.
+//
+// Probing over TCP cannot see the init server at all, so it cannot
+// break early. Raising the timeout — which is what was tried before —
+// cannot help something that never reaches its timeout.
+func PostgresReadyArgs(user string) []string {
+	return []string{"pg_isready", "-h", "127.0.0.1", "-U", user}
+}

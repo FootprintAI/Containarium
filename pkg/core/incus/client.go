@@ -139,6 +139,13 @@ type Backend interface {
 	// Exec & file I/O
 	Exec(containerName string, command []string) error
 	ExecWithOutput(containerName string, command []string) (string, string, error)
+	// ExecWithExitCode is ExecWithOutput's sibling for a caller that needs
+	// the command's exit status as data, not folded into err (SandboxService
+	// ExecInSandbox, #1488: an agent inner loop branches on exit code as
+	// normal control flow). err is non-nil only for a genuine
+	// execution/transport failure — a non-zero exit is reported via
+	// exitCode with err == nil.
+	ExecWithExitCode(containerName string, command []string) (stdout, stderr string, exitCode int, err error)
 	WriteFile(containerName, path string, content []byte, mode string) error
 	ReadFile(containerName, path string) ([]byte, error)
 
@@ -2387,6 +2394,50 @@ func (c *Client) ExecWithOutput(containerName string, command []string) (string,
 		return nil
 	})
 	return stdout.String(), stderr.String(), err
+}
+
+// ExecWithExitCode is ExecWithOutput's sibling that reports a non-zero exit
+// as data (exitCode) rather than folding it into err. See the Backend
+// interface doc for why this exists.
+//
+// err == nil and a nonzero exitCode both mean "the command ran and exited
+// nonzero" — the same event ExecWithOutput reports as
+// fmt.Errorf("command exited with code %d", ...). Returning nil here (not
+// that error) is deliberate: execWithRetry's isTransientExecErr only
+// matches liblxc-socket-wedge error strings, so returning nil is what
+// stops the retry loop after one attempt, exactly as the folded-error
+// version did — just without inventing an error value only to immediately
+// discard its meaning into an int.
+func (c *Client) ExecWithExitCode(containerName string, command []string) (stdout, stderr string, exitCode int, err error) {
+	var stdoutBuf, stderrBuf bytes.Buffer
+
+	req := api.InstanceExecPost{
+		Command:     command,
+		WaitForWS:   true,
+		Interactive: false,
+	}
+
+	err = execWithRetry("exec "+containerName, func() error {
+		stdoutBuf.Reset()
+		stderrBuf.Reset()
+		exitCode = 0
+		args := &incus.InstanceExecArgs{Stdout: &stdoutBuf, Stderr: &stderrBuf}
+
+		op, opErr := c.server.ExecInstance(containerName, req, args)
+		if opErr != nil {
+			return fmt.Errorf("failed to execute command: %w", opErr)
+		}
+		if opErr := op.Wait(); opErr != nil {
+			return fmt.Errorf("command execution failed: %w", opErr)
+		}
+		if opMeta := op.Get(); opMeta.Metadata != nil {
+			if returnVal, ok := opMeta.Metadata["return"].(float64); ok {
+				exitCode = int(returnVal)
+			}
+		}
+		return nil
+	})
+	return stdoutBuf.String(), stderrBuf.String(), exitCode, err
 }
 
 // CleanupDisk frees disk space inside a container by removing temp files,

@@ -46,6 +46,9 @@ func (*UnavailableBackend) Exec(string, []string) error { return ErrUnavailable 
 func (*UnavailableBackend) ExecWithOutput(string, []string) (string, string, error) {
 	return "", "", ErrUnavailable
 }
+func (*UnavailableBackend) ExecWithExitCode(string, []string) (string, string, int, error) {
+	return "", "", 0, ErrUnavailable
+}
 func (*UnavailableBackend) WriteFile(string, string, []byte, string) error { return ErrUnavailable }
 func (*UnavailableBackend) ReadFile(string, string) ([]byte, error)        { return nil, ErrUnavailable }
 func (*UnavailableBackend) SetConfig(string, string, string) error         { return ErrUnavailable }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"syscall"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -65,17 +66,66 @@ func handleShellExec(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 
 	cwd, _ := args["cwd"].(string)
 
+	res := runShellCommand(ctx, command, cwd, timeout)
+
+	// Encode result as a single text block — agents parse this readily and
+	// MCP clients render it inline. Using structured key=value sections so
+	// the agent can grep for "exit_code:" without regex over JSON escapes.
+	body := fmt.Sprintf(
+		"exit_code: %d\n"+
+			"timeout_seconds: %d\n"+
+			"--- stdout ---\n%s\n"+
+			"--- stderr ---\n%s",
+		res.ExitCode, int(timeout.Seconds()), res.Stdout, res.Stderr,
+	)
+	return mcp.NewToolResultText(body), nil
+}
+
+// shellExecResult is the outcome of running one command to completion.
+type shellExecResult struct {
+	Stdout   string
+	Stderr   string
+	ExitCode int
+}
+
+// runShellCommand runs command under /bin/sh -c with the given cwd and
+// timeout, capturing stdout/stderr up to shellExecOutputLimit each and
+// appending a note to stderr if the timeout fired.
+//
+// Shared core between the shell_exec MCP tool (handleShellExec) and
+// SpawnService.Exec (gRPC, #1488 Phase 2) — one implementation, two
+// transports.
+func runShellCommand(ctx context.Context, command, cwd string, timeout time.Duration) shellExecResult {
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// #nosec G204 -- shell_exec's contract is to run agent-supplied shell
-	// commands; arbitrary command execution is the entire feature, not a
-	// vulnerability. Sandboxing is the operator's responsibility (run
-	// agent-box inside an LXC container with limited filesystem reach).
+	// #nosec G204 -- running agent-supplied shell commands is the entire
+	// feature, on both transports this function serves. Sandboxing is the
+	// operator's responsibility (run agent-box inside an LXC container
+	// with limited filesystem reach).
 	cmd := exec.CommandContext(execCtx, "/bin/sh", "-c", command)
 	if cwd != "" {
 		cmd.Dir = cwd
 	}
+
+	// /bin/sh -c "<command>" does not reliably exec-replace itself into
+	// <command> — on this host it forks a genuine child and stays around
+	// as the parent. CommandContext's DEFAULT cancel behavior only kills
+	// cmd.Process (the shell), so on timeout the shell dies but a
+	// still-running grandchild keeps the stdout/stderr pipe's write end
+	// open, and Wait() then blocks until that grandchild exits on its
+	// own — observed hanging the full 5s of a `sleep 5` despite a 1s
+	// timeout. Setpgid puts the whole command tree in its own process
+	// group; Cancel kills the group (negative pid), not just the shell.
+	// WaitDelay is the backstop if even that leaves an orphan (e.g. a
+	// double-forked daemon that detached before the signal arrived): it
+	// bounds how long Wait() waits for the pipes to drain before force-
+	// closing them, so a pathological command still can't hang forever.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	cmd.WaitDelay = 2 * time.Second
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &cappedWriter{buf: &stdout, limit: shellExecOutputLimit}
@@ -96,17 +146,7 @@ func handleShellExec(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 		fmt.Fprintf(&stderr, "\n[agent-box] command exceeded timeout of %s and was killed", timeout)
 	}
 
-	// Encode result as a single text block — agents parse this readily and
-	// MCP clients render it inline. Using structured key=value sections so
-	// the agent can grep for "exit_code:" without regex over JSON escapes.
-	body := fmt.Sprintf(
-		"exit_code: %d\n"+
-			"timeout_seconds: %d\n"+
-			"--- stdout ---\n%s\n"+
-			"--- stderr ---\n%s",
-		exitCode, int(timeout.Seconds()), stdout.String(), stderr.String(),
-	)
-	return mcp.NewToolResultText(body), nil
+	return shellExecResult{Stdout: stdout.String(), Stderr: stderr.String(), ExitCode: exitCode}
 }
 
 // cappedWriter discards writes once limit bytes have landed. Used to protect

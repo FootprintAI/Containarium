@@ -15,6 +15,13 @@
 //
 // The MCP transport is stdio; the SSH command on the user side wraps it.
 //
+// A pool member (#1488 Phase 2, not yet in production — nothing sets
+// AGENTBOX_SPAWN_SOCKET today) also serves SpawnService over a resident
+// gRPC listener on a unix socket, in parallel with stdio MCP. This
+// removes the daemon's per-call Incus round-trip (~50-150ms) for the two
+// operations a claimed sandbox needs on its hot path: spawning the task's
+// process and running commands in it.
+//
 // Tools (imperative): shell_exec, read_file, write_file, list_directory,
 // move_file, delete_file, tail_log, process_start, process_list,
 // process_kill. See internal/agentbox/server.go for the canonical list.
@@ -71,6 +78,17 @@ func main() {
 
 	agentbox.RegisterTools(mcpServer)
 	agentbox.RegisterResources(mcpServer)
+
+	// Second transport (#1488 Phase 2): opt-in via AGENTBOX_SPAWN_SOCKET,
+	// unset on every box today. Runs alongside stdio MCP, not instead of
+	// it — see the package doc comment above.
+	if socketPath := os.Getenv(agentbox.SpawnSocketEnv); socketPath != "" {
+		spawnServer, err := agentbox.StartSpawnListener(socketPath)
+		if err != nil {
+			log.Fatalf("[agent-box] failed to start SpawnService listener: %v", err)
+		}
+		defer spawnServer.GracefulStop()
+	}
 
 	log.Printf("[agent-box] starting MCP server on stdio (version %s)", version.Version)
 	if err := server.ServeStdio(mcpServer); err != nil {
