@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/safecast"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc/codes"
@@ -225,7 +226,7 @@ func (s *SandboxServer) ExecInSandbox(ctx context.Context, req *pb.ExecInSandbox
 	return &pb.ExecInSandboxResponse{
 		Stdout:   stdout,
 		Stderr:   stderr,
-		ExitCode: int32(exitCode),
+		ExitCode: safecast.I32(exitCode),
 	}, nil
 }
 
