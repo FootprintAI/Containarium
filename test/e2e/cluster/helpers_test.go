@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A minimal but real kubeconfig shape — two clusters, so the test can
@@ -398,5 +399,168 @@ func TestLaneScriptProbesPostgresOverTCP(t *testing.T) {
 				"entrypoint's TEMPORARY init server — which is then shut down, and the confirming "+
 				"probe fails seven seconds into a ninety-second bound (#1514).", p, want)
 		}
+	}
+}
+
+// The knob: unset must not silently claim the tenant-facing path was
+// verified, and a typo must not degrade to "none" — that is how a lane
+// ends up reporting "reachable from outside" having never left the
+// host (#1468).
+func TestParseOffHostProbe(t *testing.T) {
+	tests := []struct {
+		value   string
+		want    OffHostProbe
+		wantErr bool
+	}{
+		{"", OffHostProbeNone, false},
+		{"none", OffHostProbeNone, false},
+		{"netns", OffHostProbeNetns, false},
+		{" netns ", OffHostProbeNetns, false},
+		{"netnss", OffHostProbeNone, true},
+		{"true", OffHostProbeNone, true},
+		{"1", OffHostProbeNone, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.value, func(t *testing.T) {
+			got, err := ParseOffHostProbe(tt.value)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("ParseOffHostProbe(%q) = %v, want an error", tt.value, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ParseOffHostProbe(%q): %v", tt.value, err)
+			}
+			if got != tt.want {
+				t.Errorf("ParseOffHostProbe(%q) = %v, want %v", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
+// The setup sequence is the contract, and its ORDER is the failure
+// mode: address the peer before moving it into the namespace and the
+// address is lost with the move; add the default route before the link
+// is up and it is rejected. Asserted here so a reordering fails on any
+// machine rather than only on a runner with root.
+func TestOffHostSetupCommandOrder(t *testing.T) {
+	cmds := OffHostSetupCommands()
+	idx := func(match ...string) int {
+		for i, c := range cmds {
+			joined := strings.Join(c, " ")
+			all := true
+			for _, m := range match {
+				if !strings.Contains(joined, m) {
+					all = false
+					break
+				}
+			}
+			if all {
+				return i
+			}
+		}
+		return -1
+	}
+
+	addNetns := idx("netns", "add")
+	createVeth := idx("link", "add", OffHostVethHost)
+	movePeer := idx("link", "set", OffHostVethPeer, "netns")
+	addrPeer := idx("netns", "exec", "addr", "add", OffHostPeerAddr)
+	upPeer := idx("netns", "exec", "link", "set", OffHostVethPeer, "up")
+	route := idx("netns", "exec", "route", "add", "default")
+
+	for name, got := range map[string]int{
+		"netns add": addNetns, "veth add": createVeth, "move peer": movePeer,
+		"address peer": addrPeer, "peer up": upPeer, "default route": route,
+	} {
+		if got < 0 {
+			t.Fatalf("setup sequence has no %q step: %v", name, cmds)
+		}
+	}
+	if addNetns > createVeth {
+		t.Error("the namespace must exist before a link can be moved into it")
+	}
+	if movePeer > addrPeer {
+		t.Error("the peer must be moved into the namespace BEFORE it is addressed; moving it discards the address")
+	}
+	if upPeer > route {
+		t.Error("the default route needs the peer link up first")
+	}
+	if addrPeer > route {
+		t.Error("the default route's gateway is only reachable once the peer is addressed")
+	}
+}
+
+// The probe must accept any TCP answer. An unauthenticated dial to the
+// API server is expected to be refused at the AUTH layer — that is a
+// pass, because reaching the auth layer means the packet traversed
+// PREROUTING. Asserting on a 200 would make the probe fail for the one
+// reason it must not care about.
+func TestOffHostDialCommandProbesConnectivityNotAuth(t *testing.T) {
+	got := strings.Join(OffHostDialCommand("203.0.113.7:36443", 10*time.Second), " ")
+	for _, want := range []string{
+		"ip netns exec " + OffHostNetns,
+		"https://203.0.113.7:36443/version",
+		"--connect-timeout 10",
+		"-k",           // the cluster CA is not in the namespace's trust store
+		"-o /dev/null", // the body is irrelevant; reachability is not
+		"%{http_code}", // what the caller inspects
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("dial command %q is missing %q", got, want)
+		}
+	}
+	if strings.Contains(got, "--fail") {
+		t.Error("--fail would turn a 401 into a probe failure, but a 401 proves the packet arrived")
+	}
+}
+
+// A leaked namespace from a killed run must not make the next run
+// fail: teardown removes it by a fixed name, so the next setup can
+// clear it first.
+func TestOffHostTeardownRemovesTheNamespace(t *testing.T) {
+	got := OffHostTeardownCommands()
+	if len(got) == 0 {
+		t.Fatal("teardown does nothing, so a killed run leaks a namespace and a veth forever")
+	}
+	joined := strings.Join(got[0], " ")
+	if !strings.Contains(joined, "netns del "+OffHostNetns) {
+		t.Errorf("teardown does not delete the namespace: %v", got)
+	}
+}
+
+// The proof mode for #1468. A typo here is worse than elsewhere: a
+// sabotage value that silently degrades to "none" produces a green
+// suite, which the job then reports as "the lane cannot fail" — the
+// exact inversion the guardrail exists to prevent.
+func TestParseSabotageKnowsDropPrerouting(t *testing.T) {
+	got, err := ParseSabotage("drop-prerouting")
+	if err != nil {
+		t.Fatalf("ParseSabotage(drop-prerouting): %v", err)
+	}
+	if got != SabotageDropPrerouting {
+		t.Errorf("ParseSabotage(drop-prerouting) = %v, want SabotageDropPrerouting", got)
+	}
+	if _, err := ParseSabotage("drop-preroute"); err == nil {
+		t.Error("a near-miss must be an error, not a silent SabotageNone")
+	}
+}
+
+// The sabotage must delete the rule the PRODUCT installs, not a
+// lookalike: it targets the nat table's PREROUTING chain by protocol
+// and destination port, and must not touch OUTPUT — leaving OUTPUT in
+// place is precisely what makes the host still able to connect while
+// nothing else can.
+func TestDropPreroutingCommandTargetsTheInboundRuleOnly(t *testing.T) {
+	got := strings.Join(DropPreroutingCommand(36443), " ")
+	for _, want := range []string{"-t nat", "-D PREROUTING", "-p tcp", "--dport 36443"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("drop command %q is missing %q", got, want)
+		}
+	}
+	if strings.Contains(got, "OUTPUT") {
+		t.Error("the sabotage must leave the OUTPUT rule alone; removing both would break the host's own dial too, " +
+			"and the suite would go red without proving anything about the tenant-facing path")
 	}
 }
