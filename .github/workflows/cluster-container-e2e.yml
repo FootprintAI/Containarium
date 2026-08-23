@@ -155,7 +155,12 @@ jobs:
     name: sabotage run (suite must go red)
     if: github.event_name == 'workflow_dispatch' && inputs.sabotage == 'join-token'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Same rule as the journey job above, and it matters MORE here: a
+    # proof run cancelled at the cap reports "the lane cannot fail" for
+    # a lane that was merely slow — the inversion this job exists to
+    # prevent. 35m of go timeout plus ~10m of provisioning does not fit
+    # in 45.
+    timeout-minutes: 60
     env:
       CONTAINARIUM_E2E_ISOLATION: container
       CONTAINARIUM_CLUSTER_ALLOW_CONTAINER_NODES: 'true'

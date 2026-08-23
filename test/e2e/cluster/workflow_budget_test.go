@@ -50,43 +50,65 @@ func TestContainerLaneJobCapExceedsItsTestBudget(t *testing.T) {
 		t.Fatalf("parse workflow: %v", err)
 	}
 
-	job, ok := wf.Jobs["container-e2e"]
-	if !ok {
-		t.Fatalf("no container-e2e job in %s; jobs=%v", containerLaneWorkflow, keys(wf))
-	}
-	if job.TimeoutMinutes == 0 {
-		t.Fatal("container-e2e has no timeout-minutes, so a hung run burns a whole runner")
-	}
-	jobCap := time.Duration(job.TimeoutMinutes) * time.Minute
+	// EVERY job that runs the suite, not just the happy-path one.
+	// Checking only container-e2e would leave the identical latent
+	// bug sitting in the job next to it — and the sabotage jobs are
+	// the ones whose output matters most when they do time out,
+	// because a cancelled proof run reports "cannot fail" for a lane
+	// that was merely slow.
+	checked := 0
+	for name, job := range wf.Jobs {
+		if _, runsSuite := job.Env["CONTAINARIUM_E2E_GO_TIMEOUT"]; !runsSuite {
+			continue
+		}
+		checked++
+		t.Run(name, func(t *testing.T) {
+			if job.TimeoutMinutes == 0 {
+				t.Fatal("no timeout-minutes, so a hung run burns a whole runner")
+			}
+			jobCap := time.Duration(job.TimeoutMinutes) * time.Minute
+			goTimeout := mustDuration(t, job.Env, "CONTAINARIUM_E2E_GO_TIMEOUT")
 
-	goTimeout := mustDuration(t, job.Env, "CONTAINARIUM_E2E_GO_TIMEOUT")
+			// Step budgets are optional per job: the sabotage jobs
+			// tighten only what they need. Sum whichever are present.
+			var stepTotal time.Duration
+			var present int
+			for _, key := range []string{
+				"CONTAINARIUM_E2E_READY_TIMEOUT",
+				"CONTAINARIUM_E2E_SCALEUP_TIMEOUT",
+				"CONTAINARIUM_E2E_VPA_TIMEOUT",
+				"CONTAINARIUM_E2E_SCALEDOWN_TIMEOUT",
+				"CONTAINARIUM_E2E_DELETE_TIMEOUT",
+			} {
+				if _, ok := job.Env[key]; !ok {
+					continue
+				}
+				present++
+				stepTotal += mustDuration(t, job.Env, key)
+			}
 
-	// Every per-step budget the journey can spend in sequence.
-	var stepTotal time.Duration
-	for _, key := range []string{
-		"CONTAINARIUM_E2E_READY_TIMEOUT",
-		"CONTAINARIUM_E2E_SCALEUP_TIMEOUT",
-		"CONTAINARIUM_E2E_VPA_TIMEOUT",
-		"CONTAINARIUM_E2E_SCALEDOWN_TIMEOUT",
-		"CONTAINARIUM_E2E_DELETE_TIMEOUT",
-	} {
-		stepTotal += mustDuration(t, job.Env, key)
+			// 1. The suite must be able to spend every budget it
+			//    advertises — only meaningful where the job sets the
+			//    full set; a job that tightens one step relies on the
+			//    test's own defaults for the rest.
+			if present == 5 && stepTotal > goTimeout {
+				t.Errorf("step budgets total %v but the go timeout is %v: the suite can be killed "+
+					"mid-journey while every individual step is still inside its own bound",
+					stepTotal, goTimeout)
+			}
+
+			// 2. The GO TEST must be what times out, never the job.
+			//    Otherwise the run ends with no diagnostics (#1458).
+			if want := goTimeout + laneSetupBudget; jobCap <= want {
+				t.Errorf("job cap %v does not exceed the go timeout %v plus %v of setup: "+
+					"a slow run is CANCELLED rather than failed, and a cancelled job produces "+
+					"no diagnostics at all (#1458). Raise timeout-minutes to at least %v.",
+					jobCap, goTimeout, laneSetupBudget, want+time.Minute)
+			}
+		})
 	}
-
-	// 1. The suite must be able to spend every budget it advertises.
-	if stepTotal > goTimeout {
-		t.Errorf("step budgets total %v but the go timeout is %v: the suite can be killed "+
-			"mid-journey while every individual step is still inside its own bound",
-			stepTotal, goTimeout)
-	}
-
-	// 2. The GO TEST must be what times out, never the job. Otherwise
-	//    the run ends with no diagnostics, which is what #1458 is.
-	if want := goTimeout + laneSetupBudget; jobCap <= want {
-		t.Errorf("job cap %v does not exceed the go timeout %v plus %v of setup: "+
-			"a slow run is CANCELLED rather than failed, and a cancelled job produces "+
-			"no diagnostics at all (#1458). Raise timeout-minutes to at least %v.",
-			jobCap, goTimeout, laneSetupBudget, want+time.Minute)
+	if checked == 0 {
+		t.Fatalf("no job in %s sets CONTAINARIUM_E2E_GO_TIMEOUT; this test is checking nothing", containerLaneWorkflow)
 	}
 }
 
