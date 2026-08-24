@@ -72,6 +72,22 @@ require_vars SANDBOX_MEM_LIMIT FAILURE_STREAK_TO_STOP CREATE_TIMEOUT_SECONDS BEN
 # acquisition time out before boot finishes, unlike a k8s pod which just
 # starts an existing process). Falls back to SANDBOX_CPU_LIMIT if unset.
 LXC_CPU_LIMIT="${LXC_SANDBOX_CPU_LIMIT:-${SANDBOX_CPU_LIMIT:-200m}}"
+
+# lib.sh's run_density_loop starts its per-unit clock BEFORE calling
+# create_box, and create_box here is synchronous — it blocks until
+# `containarium create` itself returns, which on this backend means a
+# full OS boot (~44s under a 200m CPU ceiling, confirmed via
+# systemd-analyze) plus the base package install (~50s, confirmed via
+# /var/log/apt/history.log) have already completed. That alone is close
+# to or past the shared CREATE_TIMEOUT_SECONDS default (60s), so the
+# ready_fn poll loop below would start with its window already expired
+# and misreport every unit as "never became ready" even though it's
+# already running. LXC_CREATE_TIMEOUT_SECONDS overrides the shared
+# CREATE_TIMEOUT_SECONDS for this scenario only — the k8s-backed
+# scenarios (02/04) don't pay this synchronous boot+install cost, so
+# their 60s default stays correct as-is.
+CREATE_TIMEOUT_SECONDS="${LXC_CREATE_TIMEOUT_SECONDS:-$CREATE_TIMEOUT_SECONDS}"
+
 resolve_remote "$VM_NAME"
 
 INCUS_MEM_LIMIT="${SANDBOX_MEM_LIMIT/Mi/MiB}"
