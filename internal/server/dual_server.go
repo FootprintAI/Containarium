@@ -104,6 +104,22 @@ type DualServerConfig struct {
 	// Standalone mode: skip all PostgreSQL/core container dependencies
 	Standalone bool
 
+	// DisableSecurityScanner/DisablePentestScanner/DisableZapScanner turn
+	// off the three passive/active scanners that otherwise start
+	// automatically whenever PostgresConnString is set (there's no
+	// independent opt-out today — each is gated purely on Postgres being
+	// configured). All three run background work triggered by container
+	// creation (the security scanner subscribes to CONTAINER_CREATED
+	// events; ClamAV + a network pentest scan then run against every new
+	// tenant), which is real, deliberate product behavior for a
+	// production daemon but adds real per-create latency that a
+	// throughput-sensitive deployment (or a benchmark) may want to skip.
+	// Independent flags rather than one umbrella flag since an operator
+	// may want e.g. malware scanning without the network pentest scan.
+	DisableSecurityScanner bool
+	DisablePentestScanner  bool
+	DisableZapScanner      bool
+
 	// Multi-backend peer settings
 	SentinelURL    string   // URL for auto-discovering tunnel peers (e.g., "http://10.128.0.5:8081")
 	Peers          []string // Static peer addresses (e.g., ["10.128.0.5:18001"])
@@ -1338,7 +1354,7 @@ skipAppHosting:
 	var securityScanner *security.Scanner
 	var securityStore *security.Store
 	var securityServerInstance *SecurityServer
-	if postgresConnString != "" {
+	if postgresConnString != "" && !config.DisableSecurityScanner {
 		securityPool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
 		if poolErr != nil {
 			log.Printf("Warning: Failed to connect to PostgreSQL for security store: %v", poolErr)
@@ -1391,7 +1407,7 @@ skipAppHosting:
 	// Setup pentest manager
 	var pentestManager *pentest.Manager
 	var pentestStore *pentest.Store
-	if postgresConnString != "" {
+	if postgresConnString != "" && !config.DisablePentestScanner {
 		pentestPool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
 		if poolErr != nil {
 			log.Printf("Warning: Failed to connect to PostgreSQL for pentest store: %v", poolErr)
@@ -1427,7 +1443,7 @@ skipAppHosting:
 	// Setup ZAP scanner manager
 	var zapManager *zapscanner.Manager
 	var zapStore *zapscanner.Store
-	if postgresConnString != "" {
+	if postgresConnString != "" && !config.DisableZapScanner {
 		zapPool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
 		if poolErr != nil {
 			log.Printf("Warning: Failed to connect to PostgreSQL for ZAP store: %v", poolErr)
