@@ -115,6 +115,80 @@ Notes / anomalies:
   provisioning both VMs was fully automated this time end-to-end.
 - `containarium-agent-box` image and gateway workaround unchanged from run 1.
 
+### 2026-08-24 — third scenario: Containarium native LXC workhorse (no k8s, no gVisor)
+
+Hard cap per VM: 20 vCPU / 48GiB RAM / 200GB disk (Incus KVM VM)
+Sandbox profile: cpu 200m (LXC-scenario-specific floor, see README.md "Third
+scenario"), mem 256Mi — same declared ceiling as the other two runs' Containarium side.
+Containarium version: local build off `main` + this scenario's provisioning fixes (image-bake — #1037).
+Backend: native LXC/Incus, no Kubernetes, no gVisor, no pooling (#1488/#1523 out of scope — see README.md).
+
+| | native LXC (this run) |
+|---|---|
+| Sandboxes reached RUNNING | **181** |
+| Attempted (incl. failures) | 186 |
+| Host memory at stop | 11GiB / 46GiB used (**24%** — 35GiB still free) |
+| Host disk at stop | 4.2GB / 181GB used (**2%**) |
+| Wall-clock for the density loop | ~87 min |
+
+**This number is NOT directly comparable to the other two scenarios' counts,
+and should not be read as a ranked "181 vs 373 vs 186" table.** Three
+distinct things were learned running it:
+
+1. **Per-create latency was never about scanning.** Individual creates
+   originally took ~80-150s. ClamAV/pentest/zap scanning was a plausible
+   early hypothesis (a controlled test with them fully disabled showed no
+   improvement) — the real cost was a from-scratch OS boot + `apt-get
+   install` of the base package set on every single create, on the stock
+   cloud image (confirmed via `systemd-analyze` + `/var/log/apt/history.log`).
+   Containarium already ships the fix for this (#1037, `containarium
+   image-bake`) — the provisioning script just never called it. Baking once
+   and re-testing: **112s -> 15.7s** for an identical create. Filed #1530
+   documenting the investigation for anyone else who hits this.
+
+2. **This scenario is not memory-bound the way the k8s scenarios are, so
+   its ceiling isn't comparable to theirs.** k8s's scheduler reserves the
+   full *declared* memory request against node capacity regardless of
+   actual usage — that's why the other two runs stopped almost exactly at
+   `48GiB / declared-request`. Incus's `limits.memory` is a cgroup
+   *ceiling*, not a reservation: these boxes only use ~50MiB of their
+   256MiB ceiling (idle, no workload), so the same 48GiB budget could fit
+   roughly (46×1024−overhead)/50MiB ≈ **900 boxes** by actual usage, not
+   ~186. If a true apples-to-apples comparison against the k8s scenarios'
+   *declared-ceiling* admission model is wanted, the closest anchor is
+   `49152Mi/256Mi ≈ 192` — notably not far from what this run reached
+   before stopping, but for an unrelated reason (see next point).
+3. **The run did not stop due to a resource wall at all** — host memory
+   and disk both had large headroom left (see table above). It stopped
+   because `containarium list` (which the density loop polls to confirm
+   `RUNNING` state) started intermittently exceeding a 10s deadline past
+   ~180 containers on one host, misreporting units as "never became
+   ready" even when the underlying container was already up. Filed #1532.
+   **181 is therefore an artificially low number** — fixing #1532 would
+   very likely let a fresh run continue well past it, closer to the ~900
+   actual-usage ceiling above, not stop where it did.
+
+Also found and filed independently (both real, both apply beyond this
+benchmark): #1531, host-side jump-server account creation has been
+silently failing since roughly the 10th tenant created on any one host
+(a `useradd` subuid/subgid pool collision with Incus's own reserved root
+range) — 175 of this run's 181 tenants have no SSH jump-server account,
+with only a warning-level log line as a signal.
+
+Notes / anomalies:
+- Not a test of #1488's warm-pool/pooling feature — confirmed not wired
+  (`SpawnSandbox` still serves the Phase 1 cold path, see #1523). This
+  measures the same cold-create path #1522/#1527 already cover on the k8s
+  backend, on Containarium's original backend instead.
+- `--podman=false` used for creates (the default installs Podman + pip +
+  podman-compose, an asymmetry vs. the other two scenarios' create-time
+  cost — see the density script's header comment for the full rationale).
+- Scanner subsystems (ClamAV/pentest/zap) disabled via new
+  `--disable-{security,pentest,zap}-scanner` daemon flags (independent
+  product feature, not benchmark-specific — real background CPU
+  competition worth avoiding for a clean measurement, even though it
+  wasn't the create-latency root cause).
+
 ## Template
 
 ```
