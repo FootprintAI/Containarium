@@ -45,6 +45,9 @@ var (
 	skipInfraInit          bool
 	requireIsolatedStorage bool
 	standaloneMode         bool
+	disableSecurityScanner bool
+	disablePentestScanner  bool
+	disableZapScanner      bool
 	enableAppHosting       bool
 	postgresConnString     string
 	baseDomain             string
@@ -139,6 +142,9 @@ func init() {
 	daemonCmd.Flags().BoolVar(&skipInfraInit, "skip-infra-init", false, "Skip automatic infrastructure initialization (storage, network, profile)")
 	daemonCmd.Flags().BoolVar(&requireIsolatedStorage, "require-isolated-storage", false, "Refuse to start on a storage pool that does not give each container its own volume. The dir driver puts every tenant rootfs on one filesystem, so they share one journal and one tenant's writeback can stall another tenant's fsync (see #1206). Off by default: a shared journal is harmless on a dev host or a single-tenant box. Turn it on for backends running mutually untrusting tenants.")
 	daemonCmd.Flags().BoolVar(&standaloneMode, "standalone", false, "Standalone mode: skip core containers (PostgreSQL, Caddy) and start immediately")
+	daemonCmd.Flags().BoolVar(&disableSecurityScanner, "disable-security-scanner", false, "Disable the ClamAV malware scanner that otherwise starts automatically whenever Postgres is configured and auto-scans every newly created container. No independent opt-out existed before this flag — it was purely gated on Postgres being present. Off by default (scanner stays on); set true to skip it, e.g. for a throughput-sensitive deployment or a benchmark where its background work would otherwise add real per-create latency.")
+	daemonCmd.Flags().BoolVar(&disablePentestScanner, "disable-pentest-scanner", false, "Disable the network pentest scanner (headers/TLS/ports/web/DNS) that otherwise starts automatically whenever Postgres is configured. Same rationale as --disable-security-scanner; independent flag since an operator may want one scanner without the other.")
+	daemonCmd.Flags().BoolVar(&disableZapScanner, "disable-zap-scanner", false, "Disable the ZAP web-app scanner that otherwise starts automatically whenever Postgres is configured. Same rationale as --disable-security-scanner.")
 
 	// App hosting settings
 	daemonCmd.Flags().BoolVar(&enableAppHosting, "app-hosting", false, "Enable app hosting feature (requires PostgreSQL)")
@@ -544,44 +550,47 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	// Create dual server config
 	config := &server.DualServerConfig{
-		GRPCAddress:          daemonAddress,
-		GRPCPort:             daemonPort,
-		EnableMTLS:           enableMTLS,
-		CertsDir:             daemonCertsDir,
-		HTTPPort:             daemonHTTPPort,
-		EnableREST:           enableREST,
-		JWTSecret:            finalJWTSecret,
-		SwaggerDir:           swaggerDir,
-		EnableAppHosting:     enableAppHosting,
-		PostgresConnString:   postgresConnString,
-		BaseDomain:           baseDomain,
-		CaddyAdminURL:        caddyAdminURL,
-		HostIP:               hostIPFromCIDR(networkSubnet),
-		DaemonConfigStore:    daemonConfigStore,
-		CaddyCertDir:         caddyCertDir,
-		VictoriaMetricsURL:   victoriaMetricsURL,
-		Standalone:           standaloneMode,
-		AlertWebhookURL:      alertWebhookURL,
-		AlertWebhookSecret:   alertWebhookSecret,
-		SentinelURL:          sentinelURL,
-		SSHHost:              sshHost,
-		Peers:                peerAddrs,
-		LocalBackendID:       resolveBackendID(localBackendID),
-		Pool:                 pool,
-		Region:               region,
-		CPUOvercommitFactor:  cpuOvercommitFactor,
-		CPUOvercommitEnforce: cpuOvercommitEnforce,
-		PlacementCPUAware:    placementCPUAware,
-		PublicHostname:       publicHostname,
-		PublicAliases:        publicAliases,
-		PublicBaseDomains:    resolvePublicBaseDomains(publicBaseDomains, baseDomain),
-		PublicPort:           publicPort,
-		ProxyProtocol:        proxyProtocol,
-		ProxyProtocolTrusted: proxyProtocolTrusted,
-		OTelDropLabels:       otelDropLabels,
-		Runtime:              runtime,
-		ZFSTenantRoot:        zfsTenantRoot,
-		ZFSKeysDir:           zfsKeysDir,
+		GRPCAddress:            daemonAddress,
+		GRPCPort:               daemonPort,
+		EnableMTLS:             enableMTLS,
+		CertsDir:               daemonCertsDir,
+		HTTPPort:               daemonHTTPPort,
+		EnableREST:             enableREST,
+		JWTSecret:              finalJWTSecret,
+		SwaggerDir:             swaggerDir,
+		EnableAppHosting:       enableAppHosting,
+		PostgresConnString:     postgresConnString,
+		BaseDomain:             baseDomain,
+		CaddyAdminURL:          caddyAdminURL,
+		HostIP:                 hostIPFromCIDR(networkSubnet),
+		DaemonConfigStore:      daemonConfigStore,
+		CaddyCertDir:           caddyCertDir,
+		VictoriaMetricsURL:     victoriaMetricsURL,
+		Standalone:             standaloneMode,
+		DisableSecurityScanner: disableSecurityScanner,
+		DisablePentestScanner:  disablePentestScanner,
+		DisableZapScanner:      disableZapScanner,
+		AlertWebhookURL:        alertWebhookURL,
+		AlertWebhookSecret:     alertWebhookSecret,
+		SentinelURL:            sentinelURL,
+		SSHHost:                sshHost,
+		Peers:                  peerAddrs,
+		LocalBackendID:         resolveBackendID(localBackendID),
+		Pool:                   pool,
+		Region:                 region,
+		CPUOvercommitFactor:    cpuOvercommitFactor,
+		CPUOvercommitEnforce:   cpuOvercommitEnforce,
+		PlacementCPUAware:      placementCPUAware,
+		PublicHostname:         publicHostname,
+		PublicAliases:          publicAliases,
+		PublicBaseDomains:      resolvePublicBaseDomains(publicBaseDomains, baseDomain),
+		PublicPort:             publicPort,
+		ProxyProtocol:          proxyProtocol,
+		ProxyProtocolTrusted:   proxyProtocolTrusted,
+		OTelDropLabels:         otelDropLabels,
+		Runtime:                runtime,
+		ZFSTenantRoot:          zfsTenantRoot,
+		ZFSKeysDir:             zfsKeysDir,
 	}
 
 	// Create dual server
