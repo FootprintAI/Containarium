@@ -38,7 +38,15 @@
 # rather than a multi-minute artifact worth reporting.
 #
 # Usage:
-#   scripts/06-run-density-containarium-lxc.sh --name <vm-name>
+#   scripts/06-run-density-containarium-lxc.sh --name <vm-name> [--start-index N]
+#
+# --start-index: resume numbering after a prior run stopped for a reason
+# that wasn't actually resource exhaustion (e.g. #1532 — `containarium
+# list` itself was timing out past ~180 containers on one host, not the
+# host running out of memory/CPU/disk; once that's fixed, re-running from
+# scratch would just re-create the same 180 units for no reason). Existing
+# units below start-index are left alone — this only affects where the
+# loop's own counter begins.
 
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
@@ -46,10 +54,15 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 source ./lib.sh
 
 VM_NAME=""
+START_INDEX=1
 while [[ $# -gt 0 ]]; do
 	case "$1" in
 	--name)
 		VM_NAME="$2"
+		shift 2
+		;;
+	--start-index)
+		START_INDEX="$2"
 		shift 2
 		;;
 	-h | --help)
@@ -61,7 +74,7 @@ while [[ $# -gt 0 ]]; do
 		;;
 	esac
 done
-[[ -n "$VM_NAME" ]] || die "usage: $0 --name <vm-name>"
+[[ -n "$VM_NAME" ]] || die "usage: $0 --name <vm-name> [--start-index N]"
 
 load_config
 require_vars SANDBOX_MEM_LIMIT FAILURE_STREAK_TO_STOP CREATE_TIMEOUT_SECONDS BENCH_SSH_KEY_FILE
@@ -133,7 +146,7 @@ resource_snapshot "before" "$RESULTS_FILE"
 	echo
 } >>"$RESULTS_FILE"
 
-run_density_loop "sbdens" create_box box_ready cleanup_box "$RESULTS_FILE"
+run_density_loop "sbdens" create_box box_ready cleanup_box "$RESULTS_FILE" "$START_INDEX"
 
 resource_snapshot "after (${DENSITY_RESULT_COUNT} ready)" "$RESULTS_FILE"
 {
