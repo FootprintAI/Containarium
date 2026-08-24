@@ -19,6 +19,7 @@ import (
 	"github.com/footprintai/containarium/internal/safecast"
 	incus "github.com/lxc/incus/v6/client"
 	"github.com/lxc/incus/v6/shared/api"
+	"golang.org/x/sync/errgroup"
 )
 
 // detectZFSContainersDataset checks if the "incus-local/containers" ZFS dataset exists.
@@ -921,6 +922,18 @@ func (c *Client) DeleteContainer(name string) error {
 }
 
 // ListContainers lists all containers
+// listContainersConcurrency bounds how many containers' details
+// (GetInstance + GetInstanceState) ListContainers fetches from Incus at
+// once. Found live (#1532): fetching sequentially — one GetInstance plus
+// one GetInstanceState round-trip per container, one after another — made
+// `containarium list` itself exceed a 10s client deadline past ~180
+// containers on one host (roughly 2 round-trips x 180 = 360 sequential
+// Incus API calls). 32 is generous headroom over Incus's own local
+// unix-socket API, which is designed for concurrent HTTP-style access;
+// pick a number that keeps `list` well under a second at a few hundred
+// containers without hammering the Incus daemon.
+const listContainersConcurrency = 32
+
 func (c *Client) ListContainers() ([]ContainerInfo, error) {
 	// Get list of instance names (both containers and VMs)
 	names, err := c.server.GetInstanceNames(api.InstanceTypeAny)
@@ -928,12 +941,53 @@ func (c *Client) ListContainers() ([]ContainerInfo, error) {
 		return nil, fmt.Errorf("failed to list containers: %w", err)
 	}
 
-	var containers []ContainerInfo
-	for _, name := range names {
+	return fetchAllConcurrently(names, listContainersConcurrency, c.fetchContainerInfo), nil
+}
+
+// fetchAllConcurrently runs fetch(name) for every name with at most
+// concurrency in flight at once, returning only the results fetch reported
+// ok for (in no particular order — callers that need a stable order sort
+// afterward). Split out from ListContainers, real Incus calls injected only
+// via fetch, so the fan-out/skip logic is testable without a live Incus
+// server — same "generic loop, production function injected by the caller"
+// shape as waitForIP in wait_network.go.
+func fetchAllConcurrently[T any](names []string, concurrency int, fetch func(name string) (T, bool)) []T {
+	results := make([]T, len(names))
+	found := make([]bool, len(names))
+
+	var g errgroup.Group
+	g.SetLimit(concurrency)
+	for i, name := range names {
+		i, name := i, name
+		g.Go(func() error {
+			v, ok := fetch(name)
+			results[i] = v
+			found[i] = ok
+			return nil
+		})
+	}
+	_ = g.Wait() // fetch never returns an error of its own; per-item failures are dropped via found[i]
+
+	out := make([]T, 0, len(names))
+	for i, ok := range found {
+		if ok {
+			out = append(out, results[i])
+		}
+	}
+	return out
+}
+
+// fetchContainerInfo fetches one container's full ListContainers entry.
+// The second return is false when the container's details couldn't be
+// fetched (e.g. deleted between GetInstanceNames and GetInstance) — the
+// same "skip it" behavior ListContainers had inline before this was
+// split out for concurrent use.
+func (c *Client) fetchContainerInfo(name string) (ContainerInfo, bool) {
+	{
 		// Get full instance details for each container
 		inst, _, err := c.server.GetInstance(name)
 		if err != nil {
-			continue // Skip containers we can't get details for
+			return ContainerInfo{}, false // Skip containers we can't get details for
 		}
 
 		info := ContainerInfo{
@@ -1052,10 +1106,8 @@ func (c *Client) ListContainers() ([]ContainerInfo, error) {
 			}
 		}
 
-		containers = append(containers, info)
+		return info, true
 	}
-
-	return containers, nil
 }
 
 // GetContainer gets information about a specific container
