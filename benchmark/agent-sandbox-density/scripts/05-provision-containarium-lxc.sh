@@ -109,6 +109,16 @@ containarium version
 REMOTE
 
 log "starting the daemon (default mode: core services on, LXC backend)"
+# --disable-{security,pentest,zap}-scanner: found live that the daemon's
+# default (non-standalone) mode auto-runs a ClamAV malware scan + a
+# network pentest scan against every newly created container — real,
+# deliberate product behavior, but it added tens of seconds of real
+# per-create latency in this benchmark's tiny (200m CPU) boxes, competing
+# with the create flow for the host's CPU. Requires a Containarium build
+# that has these flags (added specifically for this — check
+# CONTAINARIUM_VERSION in config.env resolves to a version that includes
+# them, or this ExecStart line will just get three unrecognized-flag
+# errors from an older binary).
 ssh_or_local "sudo bash -s" <<'REMOTE'
 set -euo pipefail
 mkdir -p /etc/containarium
@@ -122,7 +132,7 @@ After=network-online.target incus.service
 Wants=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/containarium daemon --address 0.0.0.0 --rest --http-port 8080 --jwt-secret-file /etc/containarium/jwt.secret
+ExecStart=/usr/local/bin/containarium daemon --address 0.0.0.0 --rest --http-port 8080 --jwt-secret-file /etc/containarium/jwt.secret --disable-security-scanner --disable-pentest-scanner --disable-zap-scanner
 Restart=on-failure
 RestartSec=5s
 
