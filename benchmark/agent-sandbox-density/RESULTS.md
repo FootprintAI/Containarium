@@ -123,24 +123,35 @@ scenario"), mem 256Mi — same declared ceiling as the other two runs' Containar
 Containarium version: local build off `main` + this scenario's fixes (image-bake #1037, list() concurrency #1532/#1533).
 Backend: native LXC/Incus, no Kubernetes, no gVisor, no pooling (#1488/#1523 out of scope — see README.md).
 
-Run in two segments — the first stopped on a bug, not a resource wall, so it
-was resumed (`--start-index`, added for exactly this) after fixing the bug
-live rather than treated as final:
+Run in four segments — each of the first three stopped on something that
+turned out to be a bug or an unsized default, not a resource wall, so each
+was resumed (`--start-index`, added for exactly this) after fixing the
+problem live rather than treated as final. Only the fourth segment hit a
+wall that held up:
 
-| | segment 1 (stopped by #1532) | segment 2 (resumed, real wall) | **combined** |
-|---|---|---|---|
-| Sandboxes reached RUNNING | 181 | 70 | **251** |
-| Attempted (incl. failures) | 186 | 73 (from index 184) | 259 |
-| Wall-clock | ~87 min | ~17 min | ~104 min |
+| | seg 1 (#1532 bug) | seg 2 (real /24 wall) | seg 3 (self-inflicted pg_hba gap) | seg 4 (real wall) | **combined** |
+|---|---|---|---|---|---|
+| Sandboxes reached RUNNING | 181 | 70 | 313 | 5 | **569** |
+| Attempted (incl. failures) | 186 | 73 (from 184) | 317 (from 260) | 13 (from 580) | 589 |
+| Wall-clock | ~87 min | ~17 min | ~2h23min | ~33 min | ~4h |
 
-**Final host state (251 tenant + 2 core = 253 containers):** memory 26GiB/46GiB
-used (19GiB reclaimable buff/cache, 1.1GiB genuinely free), disk 18GB/181GB
-(10%). Per-container actual memory grew from ~50MiB (at 181) to ~90-95MiB
-(at 253) over the run — not yet investigated further, memory wasn't the
-thing that actually stopped it (see below).
+**Final host state (569 tenant + 2 core = 571 containers):** memory 39GiB/46GiB
+used (7.9GiB reclaimable buff/cache, 1.0GiB genuinely free), i.e. still not
+memory-exhausted. Per-container actual memory grew from ~50MiB (at 181) to
+~90-95MiB (at 253) to higher still by 571 — noted but not root-caused.
+**What actually stopped segment 4 was CPU, and specifically not the tenant
+containers' own CPU** (each capped at 200m) — `incusd` itself was consuming
+1025% CPU (10+ cores) on the 20-core host, driving a load average of ~117
+(≈6x the core count) purely from Incus's own per-container management
+overhead at ~570 live containers. Filed #1541. Load dropped to ~43 within
+~15 minutes of the loop stopping, confirming it's churn-driven contention
+scaling with container count, not a permanent steady-state cost — but a
+real wall a production single-host deployment would hit regardless of
+available RAM.
 
 **This number is still not directly comparable to the other two scenarios'
-counts as a ranked table** — four distinct things were learned running it:
+counts as a ranked table** — six distinct things were learned pushing it
+this far:
 
 1. **Per-create latency was never about scanning.** Individual creates
    originally took ~80-150s. ClamAV/pentest/zap scanning was a plausible
@@ -186,14 +197,36 @@ counts as a ranked table** — four distinct things were learned running it:
    Incus's bridge subnet is a config choice (`ipv4.address` on network
    create) — a `/20` (~4094 usable) or `/16` (~65534 usable, matching the
    k8s side) would move this ceiling substantially with no code change.
-   Not tested in this run; noted for whoever picks up a future re-run
-   wanting a genuinely apples-to-apples address-space comparison.
+5. **Widened `incusbr0` to a `/16` live (`10.183.0.1/16`, keeping the
+   existing `10.183.188.0/24` range as a subset so the 253 already-running
+   containers' leases stayed valid) and resumed — this immediately hit a
+   self-inflicted problem, not a new discovery.** `containarium-core-postgres`'s
+   `pg_hba.conf` had a rule scoped to exactly `10.183.188.1/24`; once the
+   bridge's own gateway/source IP became `10.183.0.1` (outside that /24),
+   the daemon's own Postgres connections started failing
+   (`FATAL: no pg_hba.conf entry for host "10.183.0.1"`), breaking cluster
+   reconcile, passthrough sync, and token revocation lookups — which
+   degraded overall daemon responsiveness enough to cause a run of
+   readiness timeouts. Fixed live (widened the `pg_hba.conf` rule to
+   `10.183.0.0/16`, reloaded), verified via journalctl (errors stopped
+   immediately), and resumed again. Not filed as a Containarium issue —
+   this is benchmark-environment fallout from resizing the network
+   ourselves, not a bug in the shipped product.
+6. **The real, final wall: Incus's own daemon CPU overhead, not memory,
+   not network, not the tenant workload.** After the pg_hba fix, segment 3
+   ran cleanly to 313 (562 combined) before a batch of failures right at
+   the fix boundary (already-started units that had blown their timeout
+   during the outage). Segment 4 resumed once more and found the actual
+   ceiling: at ~570 containers, `incusd` alone consumes 10+ CPU cores
+   (1025% CPU, load average ~117 on a 20-core host) — see point-by-point
+   detail above and #1541. This is the first wall in this investigation
+   that isn't a fixable default or a script bug.
 
 Also found and filed independently (real, applies beyond this benchmark):
 #1531, host-side jump-server account creation has been silently failing
 since roughly the 10th tenant created on any one host (a `useradd`
 subuid/subgid pool collision with Incus's own reserved root range) — the
-large majority of this run's 251 tenants have no SSH jump-server account,
+large majority of this run's 569 tenants have no SSH jump-server account,
 with only a warning-level log line as a signal. Not yet fixed (proposed
 fix documented on the issue).
 
