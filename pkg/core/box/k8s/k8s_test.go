@@ -706,3 +706,118 @@ func TestCreatePerBoxStorageClassEmpty(t *testing.T) {
 		t.Errorf("StorageClassName = %v; want standard (global default)", pvc.Spec.StorageClassName)
 	}
 }
+
+// --- #1524: LXC-style image references reaching the k8s backend -------------
+
+// TestCreateFallsBackWhenImageIsNotAnOCIReference pins #1524: the create
+// path's --image default is an Incus remote alias ("images:ubuntu/24.04"),
+// which kubelet rejects with InvalidImageName. Create must land on the
+// configured box image instead of stamping the unusable string into the pod.
+func TestCreateFallsBackWhenImageIsNotAnOCIReference(t *testing.T) {
+	b, _, sc := testBackend() // Config.BoxImage = "registry.k8s.io/pause:3.9"
+
+	if _, err := b.Create(context.Background(), box.BoxSpec{
+		Ref:   box.BoxRef{Tenant: "bob"},
+		Image: "images:ubuntu/24.04", // the CLI's --image default, verbatim
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got := getSandbox(t, sc, "tenant-bob").Spec.PodTemplate.Spec.Containers[0].Image
+	if got != "registry.k8s.io/pause:3.9" {
+		t.Errorf("pod image = %q, want the configured box image", got)
+	}
+}
+
+// TestCreateKeepsAnExplicitOCIImage guards the fallback against being
+// over-permissive: a caller that names a real image must still get it.
+func TestCreateKeepsAnExplicitOCIImage(t *testing.T) {
+	b, _, sc := testBackend()
+
+	if _, err := b.Create(context.Background(), box.BoxSpec{
+		Ref:   box.BoxRef{Tenant: "carol"},
+		Image: "ghcr.io/footprintai/containarium-agent-box:v0.67.0",
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got := getSandbox(t, sc, "tenant-carol").Spec.PodTemplate.Spec.Containers[0].Image
+	if got != "ghcr.io/footprintai/containarium-agent-box:v0.67.0" {
+		t.Errorf("pod image = %q, want the caller's image unchanged", got)
+	}
+}
+
+// TestCreateDefaultsAnAbsentImage covers the path the Box CR documents
+// ("Image ... Empty uses the daemon's configured default").
+func TestCreateDefaultsAnAbsentImage(t *testing.T) {
+	b, _, sc := testBackend()
+
+	if _, err := b.Create(context.Background(), box.BoxSpec{Ref: box.BoxRef{Tenant: "erin"}}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got := getSandbox(t, sc, "tenant-erin").Spec.PodTemplate.Spec.Containers[0].Image
+	if got != "registry.k8s.io/pause:3.9" {
+		t.Errorf("pod image = %q, want the configured box image", got)
+	}
+}
+
+// TestCreateRejectsWhenNoImageIsUsable covers the other half of #1524's ask:
+// with nothing runnable, fail the create instead of leaving a Sandbox whose
+// pod can never start. Both causes report themselves distinctly.
+func TestCreateRejectsWhenNoImageIsUsable(t *testing.T) {
+	cases := []struct {
+		name     string
+		image    string
+		wantSubs string
+		tenant   string
+	}{
+		{"unusable reference", "images:ubuntu/24.04", "images:ubuntu/24.04", "dave"},
+		{"no image requested", "", "none requested", "frank"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cs, sc := fake.NewSimpleClientset(), sandboxfake.NewSimpleClientset()
+			b := NewWithClientset(cs, sc, Config{GatewayHost: "gw.example.com"}) // no BoxImage
+
+			_, err := b.Create(context.Background(), box.BoxSpec{Ref: box.BoxRef{Tenant: tc.tenant}, Image: tc.image})
+			if err == nil {
+				t.Fatal("Create succeeded; want an error")
+			}
+			if !strings.Contains(err.Error(), tc.wantSubs) {
+				t.Errorf("error %q does not mention %q", err, tc.wantSubs)
+			}
+			ns := "tenant-" + tc.tenant
+			if _, gerr := sc.AgentsV1beta1().Sandboxes(ns).Get(context.Background(), sandboxName, metav1.GetOptions{}); gerr == nil {
+				t.Error("Sandbox was created despite the error")
+			}
+		})
+	}
+}
+
+func TestIsOCIImageReference(t *testing.T) {
+	// One input per branch. "x" is not arbitrary: the Create tests throughout
+	// this file pass it, so it guards the suite against a stricter rule here.
+	valid := []string{
+		"x",
+		"ghcr.io/footprintai/containarium-agent-box:v0.67.0",
+		"ghcr.io/footprintai/containarium-agent-box@sha256:" + strings.Repeat("a", 64),
+		"localhost:5000/agent-box",
+		"[fd00::1]:5000/agent-box:v2", // bracketed IPv6 host + port
+		"[fd00::1]/agent-box",         // bracketed IPv6 host, no port
+	}
+	for _, ref := range valid {
+		if !isOCIImageReference(ref) {
+			t.Errorf("isOCIImageReference(%q) = false, want true", ref)
+		}
+	}
+	invalid := []string{
+		"images:ubuntu/24.04", // the Incus alias behind #1524
+		"registry:/agent-box", // colon present, port empty
+	}
+	for _, ref := range invalid {
+		if isOCIImageReference(ref) {
+			t.Errorf("isOCIImageReference(%q) = true, want false", ref)
+		}
+	}
+}

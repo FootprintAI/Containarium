@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -214,6 +215,46 @@ func (b *Backend) memDefaults() memDefaults {
 	return memDefaults{request: b.cfg.DefaultMemoryRequest, limit: b.cfg.DefaultMemoryLimit}
 }
 
+// isOCIImageReference reports whether ref is shaped like an OCI image
+// reference, i.e. whether kubelet can parse it at all. Create handles the
+// empty case separately, so this is only asked about a non-empty ref.
+//
+// It exists because the create path's image default is an Incus remote alias
+// ("images:ubuntu/24.04"), which is a valid image on the LXC backend and
+// garbage here (#1524). The two grammars overlap almost everywhere - "x",
+// "nginx:1.25" and "ubuntu:24.04" are legal in both - and separate on exactly
+// one point: an OCI reference's registry component (everything before the
+// first "/") may carry a ":" only as a port, while an Incus alias puts the
+// remote name there. That single rule is all this checks. It is a shape test
+// against the alias grammar, not validation of the whole reference grammar,
+// so a slash-free alias ("ubuntu:24.04") still passes - that one is a legal
+// OCI reference, and fails at pull time rather than at parse time.
+func isOCIImageReference(ref string) bool {
+	registry, _, ok := strings.Cut(ref, "/")
+	if !ok {
+		// No registry component: "name[:tag][@digest]" is shape-valid either way.
+		return true
+	}
+	// An IPv6 registry host is bracketed ("[::1]:5000"), so the port's colon is
+	// the one after the closing bracket, not the ones inside the address.
+	if i := strings.LastIndex(registry, "]"); i >= 0 {
+		registry = registry[i+1:]
+	}
+	_, port, ok := strings.Cut(registry, ":")
+	if !ok {
+		return true
+	}
+	if port == "" {
+		return false
+	}
+	for _, c := range port {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func buildRestConfig(kubeconfig string) (*rest.Config, error) {
 	if kubeconfig != "" {
 		return clientcmd.BuildConfigFromFlags("", kubeconfig)
@@ -247,8 +288,22 @@ func (b *Backend) namespaceFor(tenant string) string {
 func (b *Backend) Create(ctx context.Context, spec box.BoxSpec) (*box.BoxStatus, error) {
 	ns := b.namespaceFor(spec.Ref.Tenant)
 	tenant := spec.Ref.Tenant
+	// A reference kubelet cannot parse - in practice the create path's
+	// Incus-style default (#1524) - is treated like an absent one and replaced
+	// by the configured agent-box image; see isOCIImageReference. Either way,
+	// with nothing usable to run we fail here rather than hand the apiserver a
+	// Sandbox whose pod can never start while create reports success.
 	if spec.Image == "" {
 		spec.Image = b.cfg.BoxImage // default to the configured agent-box image
+		if spec.Image == "" {
+			return nil, fmt.Errorf("k8s: no image for box %s: none requested and no default box image is configured", tenant)
+		}
+	} else if !isOCIImageReference(spec.Image) {
+		if b.cfg.BoxImage == "" {
+			return nil, fmt.Errorf("k8s: %q is not an OCI image reference and no default box image is configured", spec.Image)
+		}
+		log.Printf("[k8s] image %q is not an OCI reference; falling back to the configured box image %q", spec.Image, b.cfg.BoxImage)
+		spec.Image = b.cfg.BoxImage
 	}
 
 	if _, err := b.clientset.CoreV1().Namespaces().Create(ctx, namespaceObject(ns, tenant), metav1.CreateOptions{}); ignoreExists(err) != nil {
