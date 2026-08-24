@@ -120,20 +120,27 @@ Notes / anomalies:
 Hard cap per VM: 20 vCPU / 48GiB RAM / 200GB disk (Incus KVM VM)
 Sandbox profile: cpu 200m (LXC-scenario-specific floor, see README.md "Third
 scenario"), mem 256Mi — same declared ceiling as the other two runs' Containarium side.
-Containarium version: local build off `main` + this scenario's provisioning fixes (image-bake — #1037).
+Containarium version: local build off `main` + this scenario's fixes (image-bake #1037, list() concurrency #1532/#1533).
 Backend: native LXC/Incus, no Kubernetes, no gVisor, no pooling (#1488/#1523 out of scope — see README.md).
 
-| | native LXC (this run) |
-|---|---|
-| Sandboxes reached RUNNING | **181** |
-| Attempted (incl. failures) | 186 |
-| Host memory at stop | 11GiB / 46GiB used (**24%** — 35GiB still free) |
-| Host disk at stop | 4.2GB / 181GB used (**2%**) |
-| Wall-clock for the density loop | ~87 min |
+Run in two segments — the first stopped on a bug, not a resource wall, so it
+was resumed (`--start-index`, added for exactly this) after fixing the bug
+live rather than treated as final:
 
-**This number is NOT directly comparable to the other two scenarios' counts,
-and should not be read as a ranked "181 vs 373 vs 186" table.** Three
-distinct things were learned running it:
+| | segment 1 (stopped by #1532) | segment 2 (resumed, real wall) | **combined** |
+|---|---|---|---|
+| Sandboxes reached RUNNING | 181 | 70 | **251** |
+| Attempted (incl. failures) | 186 | 73 (from index 184) | 259 |
+| Wall-clock | ~87 min | ~17 min | ~104 min |
+
+**Final host state (251 tenant + 2 core = 253 containers):** memory 26GiB/46GiB
+used (19GiB reclaimable buff/cache, 1.1GiB genuinely free), disk 18GB/181GB
+(10%). Per-container actual memory grew from ~50MiB (at 181) to ~90-95MiB
+(at 253) over the run — not yet investigated further, memory wasn't the
+thing that actually stopped it (see below).
+
+**This number is still not directly comparable to the other two scenarios'
+counts as a ranked table** — four distinct things were learned running it:
 
 1. **Per-create latency was never about scanning.** Individual creates
    originally took ~80-150s. ClamAV/pentest/zap scanning was a plausible
@@ -146,34 +153,49 @@ distinct things were learned running it:
    and re-testing: **112s -> 15.7s** for an identical create. Filed #1530
    documenting the investigation for anyone else who hits this.
 
-2. **This scenario is not memory-bound the way the k8s scenarios are, so
-   its ceiling isn't comparable to theirs.** k8s's scheduler reserves the
-   full *declared* memory request against node capacity regardless of
-   actual usage — that's why the other two runs stopped almost exactly at
-   `48GiB / declared-request`. Incus's `limits.memory` is a cgroup
-   *ceiling*, not a reservation: these boxes only use ~50MiB of their
-   256MiB ceiling (idle, no workload), so the same 48GiB budget could fit
-   roughly (46×1024−overhead)/50MiB ≈ **900 boxes** by actual usage, not
-   ~186. If a true apples-to-apples comparison against the k8s scenarios'
-   *declared-ceiling* admission model is wanted, the closest anchor is
-   `49152Mi/256Mi ≈ 192` — notably not far from what this run reached
-   before stopping, but for an unrelated reason (see next point).
-3. **The run did not stop due to a resource wall at all** — host memory
-   and disk both had large headroom left (see table above). It stopped
-   because `containarium list` (which the density loop polls to confirm
+2. **Segment 1 didn't stop on a resource wall — it stopped on a `list()`
+   scaling bug.** k8s's scheduler reserves the full *declared* memory
+   request against node capacity regardless of actual usage (why the other
+   two runs stopped almost exactly at `48GiB / declared-request`); Incus's
+   `limits.memory` is a cgroup *ceiling*, not a reservation, so the boxes'
+   ~50MiB actual usage left plenty of real headroom at 181. What actually
+   stopped it: `containarium list` (which the density loop polls for
    `RUNNING` state) started intermittently exceeding a 10s deadline past
-   ~180 containers on one host, misreporting units as "never became
-   ready" even when the underlying container was already up. Filed #1532.
-   **181 is therefore an artificially low number** — fixing #1532 would
-   very likely let a fresh run continue well past it, closer to the ~900
-   actual-usage ceiling above, not stop where it did.
+   ~180 containers — `ListContainers` made 2 sequential Incus API
+   round-trips per container, ~360 sequential calls at that count. Filed
+   #1532, fixed in #1533 (bounded-concurrency fetch instead of
+   sequential — 32 at a time). Live-verified the fix against this exact
+   host: **>10s (timeout) -> consistently under 2s** for the same `list`
+   call at 181 containers.
+3. **Resumed past the fix with `--start-index 184` and pushed to a real
+   wall.** Segment 2 stopped on an actual `create` rejection this time —
+   `failed to get container IP: timeout waiting for container network`.
+   The bridge (`incusbr0`) is a `/24` (`10.183.188.1/24`, 253 usable
+   addresses); the host had exactly 253 containers (251 tenant + 2 core)
+   when it stopped. **This is a genuine, real resource wall** — DHCP
+   address space, not a bug — and matches the very first hypothesis from
+   when segment 1 stopped (before #1532 was found and fixed), now
+   confirmed precisely rather than guessed.
+4. **This wall isn't a fair fixed comparison point either — the k8s side
+   never had a /24 to begin with.** The k8s scenarios' `podSubnet` is
+   `192.168.0.0/16` (`scripts/k8s-common.sh`) — 65,536 addresses, 256x
+   Incus's default `/24`. Calico also allocates in small per-node blocks
+   (default /26, 64 addresses) and grabs more as pod count grows, so a
+   single node never hits a flat ceiling the way one static Incus bridge
+   subnet does. This is an unsized default, not a discovered limitation:
+   Incus's bridge subnet is a config choice (`ipv4.address` on network
+   create) — a `/20` (~4094 usable) or `/16` (~65534 usable, matching the
+   k8s side) would move this ceiling substantially with no code change.
+   Not tested in this run; noted for whoever picks up a future re-run
+   wanting a genuinely apples-to-apples address-space comparison.
 
-Also found and filed independently (both real, both apply beyond this
-benchmark): #1531, host-side jump-server account creation has been
-silently failing since roughly the 10th tenant created on any one host
-(a `useradd` subuid/subgid pool collision with Incus's own reserved root
-range) — 175 of this run's 181 tenants have no SSH jump-server account,
-with only a warning-level log line as a signal.
+Also found and filed independently (real, applies beyond this benchmark):
+#1531, host-side jump-server account creation has been silently failing
+since roughly the 10th tenant created on any one host (a `useradd`
+subuid/subgid pool collision with Incus's own reserved root range) — the
+large majority of this run's 251 tenants have no SSH jump-server account,
+with only a warning-level log line as a signal. Not yet fixed (proposed
+fix documented on the issue).
 
 Notes / anomalies:
 - Not a test of #1488's warm-pool/pooling feature — confirmed not wired
@@ -183,11 +205,17 @@ Notes / anomalies:
 - `--podman=false` used for creates (the default installs Podman + pip +
   podman-compose, an asymmetry vs. the other two scenarios' create-time
   cost — see the density script's header comment for the full rationale).
-- Scanner subsystems (ClamAV/pentest/zap) disabled via new
+- Scanner subsystems (ClamAV/pentest/zap) disabled via
   `--disable-{security,pentest,zap}-scanner` daemon flags (independent
   product feature, not benchmark-specific — real background CPU
   competition worth avoiding for a clean measurement, even though it
   wasn't the create-latency root cause).
+- Sharding across multiple smaller Containarium daemon instances (sentinel
+  routing tenants to the right backend, per the existing multi-backend
+  architecture) was discussed as an alternative to one large host, but
+  wouldn't have avoided the #1531 subuid wall — that one bites per-host at
+  ~10-14 tenants, well under any reasonable shard size. Not attempted in
+  this run.
 
 ## Template
 
