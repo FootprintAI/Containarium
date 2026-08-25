@@ -104,8 +104,9 @@ If Containarium loses on density, that's a real, reportable result.
 6. Tear the VM down, repeat for the other side.
 
 Results get appended to [`RESULTS.md`](RESULTS.md) as an actual run
-happens — this PR ships the plan and the scripts; a follow-up records
-numbers once the benchmark has actually been executed.
+happens. All three scenarios below have now been run end-to-end — see
+[Results so far](#results-so-far-373--186--929) for the headline numbers
+and [`RESULTS.md`](RESULTS.md) for every run's full data.
 
 ## Sandbox resource profile
 
@@ -301,24 +302,87 @@ Incus-backed), and the default `--image` works as documented (no
 [#1524](https://github.com/FootprintAI/Containarium/issues/1524)-style
 `InvalidImageName` — that bug is k8s-backend-specific too).
 
+## Results so far: 373 / 186 / 929
+
+Three scenarios have actually been run end-to-end on the same host (full
+numbers, host specs, and every fix's before/after data are in
+[`RESULTS.md`](RESULTS.md)):
+
+| Scenario | Sandboxes | Notes |
+|---|---|---|
+| Control — k8s + gVisor + agent-sandbox | **373** | pods request `128Mi`; k8s admission-bound |
+| Experiment — k8s + gVisor + Containarium (`pod → gVisor → containarium`) | **186** | `create` sets request=limit=`256Mi` (2x); same admission model, reproduced exactly (186/189) on a re-run |
+| Third scenario — Containarium native LXC/Incus, no k8s, no gVisor | **929** | `limits.memory` is a cgroup ceiling, not a k8s reservation — different deployment mode, not a gVisor comparison |
+
+A write-up of what those three numbers actually mean (and why 186 vs. 373,
+not 929 vs. 373, is the fair comparison) is drafted in
+[`BLOG-DRAFT.md`](BLOG-DRAFT.md) — see [FootprintAI/Containarium#1553](https://github.com/FootprintAI/Containarium/pull/1553)
+for the in-review version and a rendered preview.
+
+## Fixing daemon overhead at scale (#1541)
+
+Pushing the third scenario past a few hundred sandboxes surfaced real
+Containarium daemon overhead, unrelated to the LXC-vs-k8s question the
+benchmark is actually asking — tracked and closed as
+[#1541](https://github.com/FootprintAI/Containarium/issues/1541), two
+independent fixes:
+
+1. **The benchmark's own polling was O(N).** `box_ready()` called
+   `containarium list` — which fetches every container's full state —
+   every ~2s while waiting on *one* box to boot. Fixed by adding
+   `containarium get <name>`, an O(1) single-container lookup
+   ([#1543](https://github.com/FootprintAI/Containarium/pull/1543)), and
+   switching `06-run-density-containarium-lxc.sh` to use it.
+2. **The daemon's own traffic-attribution cache had the same bug,
+   independent of the benchmark.** `internal/traffic.ContainerCache`
+   relisted and refetched *every* container every 30s, forever, regardless
+   of churn. Fixed to diff incrementally — only fetch names not already
+   cached, drop names that disappeared, leave the rest alone
+   ([#1546](https://github.com/FootprintAI/Containarium/pull/1546)).
+
+Both fixes were live-verified on fresh VMs with load-average checkpoints at
+matching container counts (see RESULTS.md's 2026-08-25 entries). Neither
+fix moved the actual ceiling: it's a real ~930-sandbox physical-memory wall
+on the 46GiB test host, hit cleanly (`context deadline exceeded` under
+memory pressure) instead of stalling early on self-inflicted daemon CPU
+load. Two smaller bugs found along the way and folded into the
+provisioning script below:
+
+- `incus admin init --auto`'s storage-driver detection is unreliable — it
+  picked `dir` over `zfs` on a fresh VM twice, despite `zfsutils-linux`
+  being installed. `05-provision-containarium-lxc.sh` now passes
+  `--storage-backend=zfs` explicitly rather than trusting `--auto`.
+- Host account creation (`useradd`, for the SSH jump-server path) silently
+  broke after about a dozen tenants from subuid-pool exhaustion — fixed in
+  [#1542](https://github.com/FootprintAI/Containarium/pull/1542) (`-K
+  SUB_UID_COUNT=0 -K SUB_GID_COUNT=0`).
+
+If you're pushing density further than ~900 on a similarly-sized host, the
+bridge network's default `/24` DHCP range (~253 usable addresses) becomes
+the next wall before RAM does — widen it first (`incus network set
+incusbr0 ipv4.address=<superset-of-current-subnet>/16`), and remember to
+widen the matching `pg_hba.conf` rule for the daemon's own Postgres
+connection to the same range, then `kill -HUP <postgres-pid>` to reload it.
+
 ## Layout
 
 ```
 benchmark/agent-sandbox-density/
 ├── README.md                    — this file
+├── BLOG-DRAFT.md                 — write-up of the 373/186/929 result (in review, PR #1553)
 ├── config.env.example           — copy to config.env, fill in your host's numbers
-├── RESULTS.md                   — reviewed summary of actual runs (template for now)
+├── RESULTS.md                   — reviewed summary of actual runs, one dated entry per run
 ├── manifests/
 │   └── sandbox-template.yaml    — Sandbox CR (agents.x-k8s.io/v1beta1) with the resource profile above
 └── scripts/
-    ├── lib.sh                       — shared logging / resource-snapshot / stop-on-N-failures helpers
+    ├── lib.sh                       — shared logging / resource-snapshot / stop-on-N-failures helpers (density loop supports resuming via --start-index)
     ├── k8s-common.sh                — shared kubeadm+CNI+agent-sandbox-controller base, used by both 01 and 03
     ├── 00-create-vm.sh              — Incus: create a KVM-backed VM with a hard CPU/mem/disk cap
     ├── 01-provision-k8s-control.sh  — the shared k8s base, nothing more (control group)
     ├── 02-run-density-k8s.sh        — create Sandbox CRs until the stopping rule triggers
     ├── 03-provision-containarium.sh — shared k8s base + gVisor/runsc RuntimeClass + Helm-installed Containarium daemon
     ├── 04-run-density-containarium.sh — `containarium create` (pod -> gVisor -> containarium) until the stopping rule triggers
-    ├── 05-provision-containarium-lxc.sh — third scenario: Incus + Containarium daemon, native LXC backend, no k8s/gVisor
-    ├── 06-run-density-containarium-lxc.sh — `containarium create` on the LXC backend until the stopping rule triggers
+    ├── 05-provision-containarium-lxc.sh — third scenario: Incus + Containarium daemon, native LXC backend, no k8s/gVisor (explicit zfs storage backend, image-bake, scanners disabled)
+    ├── 06-run-density-containarium-lxc.sh — `containarium create` on the LXC backend until the stopping rule triggers (--start-index to resume a stopped run)
     └── 99-teardown-vm.sh            — stop + delete the VM
 ```

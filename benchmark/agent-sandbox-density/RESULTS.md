@@ -323,6 +323,75 @@ the full comment history: what got fixed, what's still open, and why the
 daemon-CPU framing in the issue's original title turned out to be only
 part of the picture).
 
+### 2026-08-25 — #1541's second fix verified: `ContainerCache` incremental refresh
+
+Same host and profile as the two runs above. #1546 made `internal/traffic.
+ContainerCache`'s background refresh incremental (O(Δ) instead of O(N) per
+~30s cycle — only genuinely new/changed container names are re-fetched from
+Incus, not the whole fleet every tick) — this run confirms its effect live,
+on a fresh VM, against the exact same checkpoint counts as the prior run.
+
+| container count | get-fix-only run (previous) | both fixes (this run) |
+|---|---|---|
+| ~365-400 | load ~19, `incusd` 914% CPU | load 4-8, `incusd` 48% CPU |
+| ~430 | load ~26 | load ~11 |
+| ~548-570 | load 32-40 | load 15-21 |
+| ~760-762 | load 125-182 (exceeded the *original* unfixed run's peak) | load 38-40 — the wall that reappeared here before is gone |
+
+**Result: 929 sandboxes reached RUNNING** (933 attempted) — essentially
+identical to the previous run's 931, confirming the memory ceiling is a
+real, reproducible physical limit independent of the CPU fix, not
+something either fix should (or does) move. The stop was cleaner this
+time: journalctl showed Postgres and internal daemon operations timing
+out (`context deadline exceeded`) under severe memory pressure, but
+`dmesg` recorded no kernel OOM-kill of `incusd` this run (vs. the
+previous run, where it did) — plausibly because `incusd` itself now runs
+with a smaller memory footprint under load, so it wasn't the OOM
+killer's top-scored target this time. Same underlying cause (the host
+ran out of real RAM at ~930 tenants), different specific casualty.
+
+**Both #1541 fixes compound as designed**: the `get`-based polling
+fix (#1543) cut load roughly 3x at mid-scale; the `ContainerCache`
+incremental-refresh fix (#1546) removed the remaining climb that
+previously reappeared past ~600 containers, holding load flat (single
+digits to ~40) all the way to the same real memory ceiling both runs
+independently found. #1541 is now fully closed out — every identified
+contributor has a landed, live-verified fix; the memory ceiling itself is
+a genuine hardware limit, not a bug.
+
+### 2026-08-25 — reproducibility check: k8s + gVisor + Containarium re-run
+
+The second scenario (`pod -> gVisor -> containarium`, the real integration
+path — see README.md's original scoping) was re-run from scratch on a
+fresh k8s cluster, this time with a daemon image built from current `main`
+(carrying every #1541-adjacent fix — #1529, #1533, #1542, #1543, #1546 —
+plus everything else merged since v0.66.0) and the matching current Helm
+chart, rather than the pinned v0.66.0 release used originally.
+
+**Result: 186 sandboxes reached RUNNING, 189 attempted — an exact match**
+to the original 2026-08-24 run's numbers, down to the node memory
+snapshot at the stopping point (47856Mi/48GiB, 99%, identical both times).
+None of the #1541-related daemon fixes moved this number, which is
+exactly what should happen: this scenario's ceiling is Kubernetes' own
+memory-request admission control (`48GiB ÷ 256Mi ≈ 186`), not daemon
+performance — the daemon-side bugs found and fixed in the third scenario
+never had anywhere to bite here.
+
+One environment-only snag hit and worked around, not a product bug: the
+provisioning script's git-cloned chart is pinned to the resolved
+`CONTAINARIUM_VERSION` release tag (v0.66.0), which predates the Helm
+chart's `gateway.upstreamKeySecret` -> `CONTAINARIUM_K8S_GATEWAY_UPSTREAM_KEY_SECRET`
+env var wiring. Swapping in a current-`main`-built daemon image against
+that old chart crash-loops the pod (the newer binary validates the env
+var; the old chart never sets it). Re-pointing the chart clone at `main`
+instead of the pinned tag resolved it — a real thing to note for anyone
+mixing a custom daemon build with an old chart checkout, not something
+this benchmark's scripts needed to change (they use matched
+chart+binary versions by design).
+
+This confirms the blog draft's 186 figure is solid and independently
+reproducible, not a one-off measurement.
+
 ## Template
 
 ```
