@@ -33,6 +33,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"sort"
 	"sync"
 	"time"
 
@@ -161,6 +162,47 @@ func (p *Pool) ReadyCount(template pb.SandboxTemplate) int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return len(p.ready[template])
+}
+
+// TemplateStatus is one template's pool state, for operator visibility
+// (SandboxServer.GetPoolStatus, #1488 Phase 4). A named struct rather than
+// a positional tuple or map — see the design note's Contracts section on
+// why this package favors typed views over "was it templates[i][0] or
+// [1]?" ambiguity.
+type TemplateStatus struct {
+	Template pb.SandboxTemplate
+	// Ready is how many members are claimable right now (same count
+	// ReadyCount reports for this template).
+	Ready int
+	// Warming is how many members are being created/started/network-
+	// provisioned, not yet claimable.
+	Warming int
+	// MinWarm is the operator-configured floor Ready+Warming is being
+	// reconciled toward.
+	MinWarm int
+}
+
+// Status returns one TemplateStatus per template configured in
+// Config.MinWarm, sorted by template value for a deterministic result —
+// an operator diagnosing "why is my pool empty" needs to see the
+// configured floor even when Ready and Warming are both zero, so this
+// reports every configured template rather than only ones with current
+// ready/warming activity.
+func (p *Pool) Status() []TemplateStatus {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	statuses := make([]TemplateStatus, 0, len(p.cfg.MinWarm))
+	for template, minWarm := range p.cfg.MinWarm {
+		statuses = append(statuses, TemplateStatus{
+			Template: template,
+			Ready:    len(p.ready[template]),
+			Warming:  p.warming[template],
+			MinWarm:  minWarm,
+		})
+	}
+	sort.Slice(statuses, func(i, j int) bool { return statuses[i].Template < statuses[j].Template })
+	return statuses
 }
 
 // Reconcile brings every configured template's ready+warming count to

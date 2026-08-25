@@ -515,3 +515,33 @@ func (s *SandboxServer) DeleteSandbox(ctx context.Context, req *pb.DeleteSandbox
 
 	return &pb.DeleteSandboxResponse{Message: fmt.Sprintf("sandbox %s deleted", req.SandboxId)}, nil
 }
+
+// GetPoolStatus reports the warm pool's per-template ready/warming counts
+// against the configured min_warm floor (#1488 Phase 4: "pool exhaustion
+// is visible"). Read-only, no ownership scoping — pool state isn't
+// per-tenant data, it's operator/observability visibility into the
+// daemon's own admission-control posture. Returns an empty templates list
+// when no pool is configured (s.pool == nil, today's production default;
+// see the type doc), rather than an error — "the pool feature isn't
+// configured" is a legitimate, expected response, not a failure.
+func (s *SandboxServer) GetPoolStatus(ctx context.Context, _ *pb.GetPoolStatusRequest) (*pb.GetPoolStatusResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeSandboxesRead); err != nil {
+		return nil, err
+	}
+
+	if s.pool == nil {
+		return &pb.GetPoolStatusResponse{}, nil
+	}
+
+	statuses := s.pool.Status()
+	templates := make([]*pb.PoolTemplateStatus, 0, len(statuses))
+	for _, st := range statuses {
+		templates = append(templates, &pb.PoolTemplateStatus{
+			Template: st.Template,
+			Ready:    safecast.I32(st.Ready),
+			Warming:  safecast.I32(st.Warming),
+			MinWarm:  safecast.I32(st.MinWarm),
+		})
+	}
+	return &pb.GetPoolStatusResponse{Templates: templates}, nil
+}

@@ -462,3 +462,85 @@ func TestMember_TypedNotStringlyTyped(t *testing.T) {
 	}
 	_ = fmt.Sprintf("%+v", m)
 }
+
+// ---- Status ---------------------------------------------------------
+
+// TestStatus_ReportsReadyWarmingAndMinWarm exercises all three
+// TemplateStatus fields at once: MinWarm=3, only 2 warmed so far because
+// the third is gated mid-warm — so Ready must be 2 and Warming must be 1,
+// not e.g. Ready=3 (which would mean a still-warming member leaked into
+// the ready count Status reports) or Warming=0 (which would mean Status
+// missed in-flight work entirely).
+func TestStatus_ReportsReadyWarmingAndMinWarm(t *testing.T) {
+	backend := newFakeBackend()
+	backend.gate = make(chan struct{})
+	p := New(backend, testAllocator(t), testConfig(3))
+
+	done := make(chan struct{})
+	go func() {
+		p.Reconcile(context.Background())
+		close(done)
+	}()
+
+	// Let 2 of the 3 warms clear the gate, then re-close it so the 3rd
+	// stays wedged — fakeBackend's gate is read-once-per-call inside
+	// CreateContainer (see newFakeBackend's doc comment / usage above),
+	// so signal exactly twice.
+	backend.gate <- struct{}{}
+	backend.gate <- struct{}{}
+	// Give the two released warms a moment to finish and update the ring
+	// before asserting — Status must not race a still-settling Reconcile.
+	deadline := time.Now().Add(2 * time.Second)
+	for p.ReadyCount(pb.SandboxTemplate_SANDBOX_TEMPLATE_BASE) < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+
+	statuses := p.Status()
+	if len(statuses) != 1 {
+		t.Fatalf("Status() returned %d entries, want 1 (one configured template)", len(statuses))
+	}
+	st := statuses[0]
+	if st.Template != pb.SandboxTemplate_SANDBOX_TEMPLATE_BASE {
+		t.Errorf("Template = %v, want BASE", st.Template)
+	}
+	if st.MinWarm != 3 {
+		t.Errorf("MinWarm = %d, want 3 (the configured floor)", st.MinWarm)
+	}
+	if st.Ready != 2 {
+		t.Errorf("Ready = %d, want 2", st.Ready)
+	}
+	if st.Warming != 1 {
+		t.Errorf("Warming = %d, want 1 (the still-gated 3rd member)", st.Warming)
+	}
+
+	close(backend.gate)
+	<-done
+}
+
+// TestStatus_UnconfiguredTemplateReportsZeroesNotOmitted pins that Status
+// still reports a template present in Config.MinWarm even when nothing
+// has been reconciled yet — an operator diagnosing "why is my pool empty"
+// needs zero counts against the configured floor, not an empty list that
+// looks identical to "no pool configured at all".
+func TestStatus_UnconfiguredTemplateReportsZeroesNotOmitted(t *testing.T) {
+	p := New(newFakeBackend(), testAllocator(t), testConfig(5))
+
+	statuses := p.Status()
+	if len(statuses) != 1 {
+		t.Fatalf("Status() returned %d entries, want 1", len(statuses))
+	}
+	if got := statuses[0]; got.Ready != 0 || got.Warming != 0 || got.MinWarm != 5 {
+		t.Errorf("Status() before any Reconcile = %+v, want Ready=0 Warming=0 MinWarm=5", got)
+	}
+}
+
+// TestStatus_NoConfiguredTemplatesReturnsEmpty pins the other end: a pool
+// with an empty Config.MinWarm (the "pool exists but warms nothing"
+// shape SpawnSandbox's own tests already use for pool-exhausted cases)
+// reports no entries at all, not a spurious BASE row.
+func TestStatus_NoConfiguredTemplatesReturnsEmpty(t *testing.T) {
+	p := New(newFakeBackend(), testAllocator(t), Config{})
+	if statuses := p.Status(); len(statuses) != 0 {
+		t.Errorf("Status() on an unconfigured pool = %+v, want empty", statuses)
+	}
+}

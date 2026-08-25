@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,8 +17,16 @@ import (
 // fakeSandboxBackend is a minimal, map-backed incus.Backend fake: real
 // enough that GetContainer after CreateContainer sees the labels/tenant
 // the create call stamped, without depending on a live Incus daemon.
+//
+// mu guards instances/deleteCalls: pool.Reconcile warms multiple members
+// for the same template concurrently (one goroutine per warm, see
+// pool.go's Reconcile), so any test with min_warm > 1 drives concurrent
+// CreateContainer/StartContainer calls into this single fake — without a
+// lock that's a genuine, `-race`-catchable data race, not just a
+// theoretical one.
 type fakeSandboxBackend struct {
 	incus.Backend
+	mu        sync.Mutex
 	instances map[string]incus.ContainerInfo
 
 	waitNetworkErr     error
@@ -52,6 +61,8 @@ func (b *fakeSandboxBackend) CreateContainer(c incus.ContainerConfig) error {
 			info.TTLExpiresAt = t
 		}
 	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	b.instances[c.Name] = info
 	return nil
 }
@@ -61,6 +72,8 @@ func (b *fakeSandboxBackend) CreateContainer(c incus.ContainerConfig) error {
 // exactly (Name, Labels, TTLExpiresAt), all of which CreateContainer/
 // SetConfig/SetLabels already populate above.
 func (b *fakeSandboxBackend) ListContainers() ([]incus.ContainerInfo, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	out := make([]incus.ContainerInfo, 0, len(b.instances))
 	for _, info := range b.instances {
 		out = append(out, info)
@@ -84,6 +97,8 @@ func (b *fakeSandboxBackend) StartContainer(name string) error {
 	if b.startErr != nil {
 		return b.startErr
 	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if info, ok := b.instances[name]; ok {
 		info.State = "Running"
 		b.instances[name] = info
@@ -94,6 +109,8 @@ func (b *fakeSandboxBackend) StartContainer(name string) error {
 func (b *fakeSandboxBackend) StopContainer(string, bool) error { return nil }
 
 func (b *fakeSandboxBackend) DeleteContainer(name string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	b.deleteCalls++
 	if b.deleteContainerErr != nil {
 		return b.deleteContainerErr
@@ -110,6 +127,8 @@ func (b *fakeSandboxBackend) WaitForNetwork(string, time.Duration) (string, erro
 }
 
 func (b *fakeSandboxBackend) GetContainer(name string) (*incus.ContainerInfo, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	info, ok := b.instances[name]
 	if !ok {
 		return nil, errors.New("not found")
@@ -137,6 +156,8 @@ func (b *fakeSandboxBackend) SetConfig(name, key, value string) error {
 	if b.setConfigErr != nil {
 		return b.setConfigErr
 	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	info, ok := b.instances[name]
 	if !ok {
 		return errors.New("not found")
@@ -164,6 +185,8 @@ func (b *fakeSandboxBackend) SetLabels(name string, labels map[string]string) er
 	if b.setLabelsErr != nil {
 		return b.setLabelsErr
 	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	info, ok := b.instances[name]
 	if !ok {
 		return errors.New("not found")

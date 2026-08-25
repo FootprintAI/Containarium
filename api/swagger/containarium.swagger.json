@@ -4989,6 +4989,30 @@
         ]
       }
     },
+    "/v1/sandboxes:poolStatus": {
+      "get": {
+        "summary": "Get warm pool status",
+        "description": "Reports per-template ready/warming counts against the configured min_warm floor. Empty templates list when no pool is configured.",
+        "operationId": "SandboxService_GetPoolStatus",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetPoolStatusResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "tags": [
+          "Sandboxes"
+        ]
+      }
+    },
     "/v1/secrets": {
       "post": {
         "summary": "Create or update a tenant secret",
@@ -9928,6 +9952,19 @@
         }
       }
     },
+    "GetPoolStatusResponse": {
+      "type": "object",
+      "properties": {
+        "templates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/PoolTemplateStatus"
+          },
+          "description": "One entry per template the pool is configured to warm (Config.MinWarm\nin internal/sandbox/pool). Empty when no pool is configured at all —\ndistinct from a configured-but-untargeted pool, which still reports\nits template(s) with ready = warming = 0."
+        }
+      }
+    },
     "GetRecipeResponse": {
       "type": "object",
       "properties": {
@@ -11475,6 +11512,30 @@
         }
       },
       "description": "PgConnection carries the connection parameters pg_dump / pg_restore use\n*inside the container*. Defaults target a per-container local Postgres\nreached over loopback. db_password is never logged and is passed to the\nchild process via the PGPASSWORD environment variable, not argv."
+    },
+    "PoolTemplateStatus": {
+      "type": "object",
+      "properties": {
+        "template": {
+          "$ref": "#/definitions/SandboxTemplate"
+        },
+        "ready": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Members claimable right now."
+        },
+        "warming": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Members currently being created/started/network-provisioned, not yet\nclaimable."
+        },
+        "minWarm": {
+          "type": "integer",
+          "format": "int32",
+          "description": "The operator-configured floor ready + warming is being reconciled\ntoward."
+        }
+      },
+      "description": "PoolTemplateStatus is one template's warm-pool state."
     },
     "PrepareEncryptedMigrationBody": {
       "type": "object",

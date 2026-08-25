@@ -948,6 +948,14 @@ func (c *GRPCClient) DeleteSandbox(sandboxID string) (*pb.DeleteSandboxResponse,
 	return c.sandboxClient.DeleteSandbox(ctx, &pb.DeleteSandboxRequest{SandboxId: sandboxID})
 }
 
+// GetPoolStatus reports the warm pool's per-template ready/warming counts
+// via gRPC (#1488 Phase 4).
+func (c *GRPCClient) GetPoolStatus() (*pb.GetPoolStatusResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return c.sandboxClient.GetPoolStatus(ctx, &pb.GetPoolStatusRequest{})
+}
+
 // GetKMSStatus reports the active KMS backend + envelope state via gRPC.
 func (c *GRPCClient) GetKMSStatus() (*pb.GetKMSStatusResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

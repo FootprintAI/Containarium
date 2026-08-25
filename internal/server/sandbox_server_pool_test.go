@@ -184,3 +184,70 @@ func TestSpawnSandbox_ClaimSetupFailureDestroysTheMember(t *testing.T) {
 		t.Errorf("ReadyCount = %d, want 0 (the failed member must not be silently re-added to the ring)", got)
 	}
 }
+
+// TestGetPoolStatus_NilPoolReturnsEmptyTemplates pins the "no pool
+// configured" branch: an empty list, not an error — see the RPC's own doc
+// comment on why "the feature isn't configured" must not look like a
+// failure to a caller/CLI polling this for dashboards.
+func TestGetPoolStatus_NilPoolReturnsEmptyTemplates(t *testing.T) {
+	s := NewSandboxServer(newFakeSandboxBackend(), nil)
+
+	resp, err := s.GetPoolStatus(ctxAs("alice", false), &pb.GetPoolStatusRequest{})
+	if err != nil {
+		t.Fatalf("GetPoolStatus: %v", err)
+	}
+	if len(resp.Templates) != 0 {
+		t.Errorf("Templates = %+v, want empty (no pool configured)", resp.Templates)
+	}
+}
+
+// TestGetPoolStatus_ReportsConfiguredPoolCounts is the sibling for an
+// actually-configured pool: after Reconcile warms to min_warm and one
+// claim, GetPoolStatus must reflect the post-claim ready count (2, not
+// the original 3) plus the unchanged min_warm floor — proving the RPC
+// reads live pool.Status() state, not a value cached at spawn time.
+func TestGetPoolStatus_ReportsConfiguredPoolCounts(t *testing.T) {
+	backend := newFakeSandboxBackend()
+	allocator, err := ipam.New("10.100.0.10", "10.100.0.250", "10.100.0.1", 0)
+	if err != nil {
+		t.Fatalf("ipam.New: %v", err)
+	}
+	p := pool.New(backend, allocator, pool.Config{
+		MinWarm:    map[pb.SandboxTemplate]int{pb.SandboxTemplate_SANDBOX_TEMPLATE_BASE: 3},
+		Image:      map[pb.SandboxTemplate]string{pb.SandboxTemplate_SANDBOX_TEMPLATE_BASE: "images:ubuntu/24.04"},
+		NICNetwork: "incusbr0",
+	})
+	p.Reconcile(context.Background())
+	s := NewSandboxServer(backend, p)
+
+	if _, err := s.SpawnSandbox(ctxAs("alice", false), &pb.SpawnSandboxRequest{}); err != nil {
+		t.Fatalf("SpawnSandbox: %v", err)
+	}
+
+	resp, err := s.GetPoolStatus(ctxAs("alice", false), &pb.GetPoolStatusRequest{})
+	if err != nil {
+		t.Fatalf("GetPoolStatus: %v", err)
+	}
+	if len(resp.Templates) != 1 {
+		t.Fatalf("Templates = %+v, want exactly 1 entry", resp.Templates)
+	}
+	got := resp.Templates[0]
+	if got.Template != pb.SandboxTemplate_SANDBOX_TEMPLATE_BASE {
+		t.Errorf("Template = %v, want BASE", got.Template)
+	}
+	if got.Ready != 2 {
+		t.Errorf("Ready = %d, want 2 (3 warmed, 1 claimed)", got.Ready)
+	}
+	if got.MinWarm != 3 {
+		t.Errorf("MinWarm = %d, want 3", got.MinWarm)
+	}
+}
+
+// TestGetPoolStatus_RequiresReadScope pins that this is scope-gated like
+// every other sandbox RPC, not an unauthenticated status endpoint.
+func TestGetPoolStatus_RequiresReadScope(t *testing.T) {
+	s := NewSandboxServer(newFakeSandboxBackend(), nil)
+	if _, err := s.GetPoolStatus(context.Background(), &pb.GetPoolStatusRequest{}); err == nil {
+		t.Fatal("GetPoolStatus with no subject in context should fail")
+	}
+}
