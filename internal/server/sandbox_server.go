@@ -44,9 +44,11 @@ const SandboxKindLabelValue = "sandbox"
 const sandboxNamePrefix = "sandbox-"
 
 // defaultSandboxIdleTTL applies when SpawnSandboxRequest.idle_ttl_seconds is
-// unset (0). No sweeper enforces it yet in Phase 1 (see the design note's
-// Phase 4) — expires_at is reported so a caller can see the horizon its
-// sandbox will eventually be reaped against once the sweeper exists.
+// unset (0). Enforced by the ttlsweeper.Manager wired in dual_server.go
+// (#1488 Phase 4, via ttlsweeperSandboxAdapter and SandboxServer's own
+// DeleteContainer method in sandbox_ttlsweeper_adapter.go) — expires_at
+// is reported so a caller can see the horizon its sandbox will actually
+// be reaped against.
 const defaultSandboxIdleTTL = 30 * time.Minute
 
 // spawnNetworkTimeout bounds how long SpawnSandbox waits for the guest's
@@ -211,6 +213,12 @@ func (s *SandboxServer) SpawnSandbox(ctx context.Context, req *pb.SpawnSandboxRe
 
 	extraConfig := qualifyLabels(sandboxLabelSuffixes(template, ttl))
 	extraConfig[incus.TenantLabelKey] = subject
+	// Stamp the exact key/format ttlsweeper.Decide reads (see
+	// stampTTL's doc comment in container_server_ttl.go) via
+	// ContainerConfig.ExtraConfig rather than a follow-up SetConfig
+	// call — one fewer Incus round trip on the cold path, which is
+	// the path this design note is trying to make fast.
+	extraConfig[incus.TTLExpiresAtKey] = now.Add(ttl).UTC().Format(time.RFC3339)
 	config := incus.ContainerConfig{
 		Name:        id,
 		Image:       image,
@@ -299,14 +307,14 @@ func qualifyLabels(suffixes map[string]string) map[string]string {
 // for everyone but an admin, including the tenant who thinks they just
 // spawned it).
 //
-// Two Incus round-trip PAIRS on the claim path — SetConfig for the tenant
-// key (outside the label namespace, see sandboxLabelSuffixes) plus
-// SetLabels for kind/template/ttl — because no existing incus.Backend
-// primitive sets both a raw config key and a batch of labels in one call.
-// This is real, and it's the piece of "two-digit ms" this integration
-// does not yet fully deliver on; a combined bulk-set primitive is a
-// legitimate follow-up once real latency numbers (Phase 3's own exit
-// criterion) show it's worth adding.
+// Three Incus round trips on the claim path — SetConfig for the tenant key
+// and for the TTL-expiry key (both outside the label namespace, see
+// sandboxLabelSuffixes) plus SetLabels for kind/template/ttl — because no
+// existing incus.Backend primitive sets a batch of raw config keys and
+// labels in one call. This is real, and it's the piece of "two-digit ms"
+// this integration does not yet fully deliver on; a combined bulk-set
+// primitive is a legitimate follow-up once real latency numbers (Phase 3's
+// own exit criterion) show it's worth adding.
 func (s *SandboxServer) claimFromPool(template pb.SandboxTemplate, subject string, req *pb.SpawnSandboxRequest) (*pb.SpawnSandboxResponse, error) {
 	member, err := s.pool.Claim(template)
 	if err != nil {
@@ -319,6 +327,13 @@ func (s *SandboxServer) claimFromPool(template pb.SandboxTemplate, subject strin
 	if err := s.incus.SetConfig(member.ID, incus.TenantLabelKey, subject); err != nil {
 		s.releaseFailedClaim(member, "set tenant", err)
 		return nil, status.Errorf(codes.Internal, "claimed a warm sandbox but failed to set its owner: %v", err)
+	}
+	// Same key/format the cold path stamps via ExtraConfig and
+	// ttlsweeper.Decide reads — see stampTTL's doc comment in
+	// container_server_ttl.go.
+	if err := s.incus.SetConfig(member.ID, incus.TTLExpiresAtKey, now.Add(ttl).UTC().Format(time.RFC3339)); err != nil {
+		s.releaseFailedClaim(member, "set ttl expiry", err)
+		return nil, status.Errorf(codes.Internal, "claimed a warm sandbox but failed to set its expiry: %v", err)
 	}
 	if err := s.incus.SetLabels(member.ID, sandboxLabelSuffixes(template, ttl)); err != nil {
 		s.releaseFailedClaim(member, "set labels", err)

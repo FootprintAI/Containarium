@@ -40,14 +40,32 @@ func newFakeSandboxBackend() *fakeSandboxBackend {
 }
 
 func (b *fakeSandboxBackend) CreateContainer(c incus.ContainerConfig) error {
-	b.instances[c.Name] = incus.ContainerInfo{
+	info := incus.ContainerInfo{
 		Name:   c.Name,
 		State:  "Stopped",
 		Labels: extractTestLabels(c.ExtraConfig),
 		Tenant: c.ExtraConfig[incus.TenantLabelKey],
 		Image:  c.Image,
 	}
+	if raw := c.ExtraConfig[incus.TTLExpiresAtKey]; raw != "" {
+		if t, err := time.Parse(time.RFC3339, raw); err == nil {
+			info.TTLExpiresAt = t
+		}
+	}
+	b.instances[c.Name] = info
 	return nil
+}
+
+// ListContainers returns every tracked instance, mirroring the real
+// backend closely enough for ttlsweeperSandboxAdapter's tests: it reads
+// exactly (Name, Labels, TTLExpiresAt), all of which CreateContainer/
+// SetConfig/SetLabels already populate above.
+func (b *fakeSandboxBackend) ListContainers() ([]incus.ContainerInfo, error) {
+	out := make([]incus.ContainerInfo, 0, len(b.instances))
+	for _, info := range b.instances {
+		out = append(out, info)
+	}
+	return out, nil
 }
 
 // extractTestLabels mirrors incus's own LabelPrefix-stripping so the fake's
@@ -112,8 +130,9 @@ func (b *fakeSandboxBackend) ReadFile(string, string) ([]byte, error) {
 }
 
 // SetConfig mirrors the real client's semantics closely enough for these
-// tests: TenantLabelKey is the only raw key claimFromPool sets this way,
-// so that's the only one this fake bothers reflecting into .Tenant.
+// tests: TenantLabelKey and TTLExpiresAtKey are the only raw keys
+// claimFromPool sets this way, so those are the only ones this fake
+// bothers reflecting back into ContainerInfo.
 func (b *fakeSandboxBackend) SetConfig(name, key, value string) error {
 	if b.setConfigErr != nil {
 		return b.setConfigErr
@@ -122,8 +141,15 @@ func (b *fakeSandboxBackend) SetConfig(name, key, value string) error {
 	if !ok {
 		return errors.New("not found")
 	}
-	if key == incus.TenantLabelKey {
+	switch key {
+	case incus.TenantLabelKey:
 		info.Tenant = value
+	case incus.TTLExpiresAtKey:
+		t, err := time.Parse(time.RFC3339, value)
+		if err != nil {
+			return err
+		}
+		info.TTLExpiresAt = t
 	}
 	b.instances[name] = info
 	return nil

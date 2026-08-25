@@ -198,42 +198,44 @@ func managementRouteDomains(cfg *DualServerConfig) []string {
 
 // DualServer runs both gRPC and HTTP/REST servers
 type DualServer struct {
-	config                *DualServerConfig
-	grpcServer            *grpc.Server
-	containerServer       *ContainerServer
-	appServer             *AppServer
-	networkServer         *NetworkServer
-	trafficServer         *TrafficServer
-	trafficCollector      *traffic.Collector
-	gatewayServer         *gateway.GatewayServer
-	tokenManager          *auth.TokenManager
-	authMiddleware        *auth.AuthMiddleware
-	routeStore            *app.RouteStore
-	routeSyncJob          *app.RouteSyncJob
-	passthroughStore      network.PassthroughStore
-	passthroughSyncJob    *network.PassthroughSyncJob
-	collaboratorStore     *collaborator.Store
-	daemonConfigStore     *app.DaemonConfigStore
-	metricsCollector      *metrics.Collector
-	securityScanner       *security.Scanner
-	securityStore         *security.Store
-	securityServer        *SecurityServer
-	auditStore            *audit.Store
-	auditEventSubscriber  *audit.EventSubscriber
-	sshCollector          *audit.SSHCollector
-	revocationStore       *auth.PgRevocationStore // Phase 1.2 — kill-switch for issued JWTs
-	alertStore            *alert.Store
-	alertManager          *alert.Manager
-	alertDeliveryStore    *alert.DeliveryStore
-	pentestManager        *pentest.Manager
-	pentestStore          *pentest.Store
-	zapManager            *zapscanner.Manager
-	zapStore              *zapscanner.Store
-	peerPool              *PeerPool
-	autoSleepManager      *autosleep.Manager
-	ttlSweeperManager     *ttlsweeper.Manager    // ephemeral CI box auto-delete (#299)
-	secretsReconciler     *secretsReconciler     // Phase 4.3 Phase B-3
-	networkPolicyEnforcer *NetworkPolicyEnforcer // #315 Phase A — eBPF per-tenant net policy (off unless configured)
+	config                   *DualServerConfig
+	grpcServer               *grpc.Server
+	containerServer          *ContainerServer
+	appServer                *AppServer
+	networkServer            *NetworkServer
+	trafficServer            *TrafficServer
+	trafficCollector         *traffic.Collector
+	gatewayServer            *gateway.GatewayServer
+	tokenManager             *auth.TokenManager
+	authMiddleware           *auth.AuthMiddleware
+	routeStore               *app.RouteStore
+	routeSyncJob             *app.RouteSyncJob
+	passthroughStore         network.PassthroughStore
+	passthroughSyncJob       *network.PassthroughSyncJob
+	collaboratorStore        *collaborator.Store
+	daemonConfigStore        *app.DaemonConfigStore
+	metricsCollector         *metrics.Collector
+	securityScanner          *security.Scanner
+	securityStore            *security.Store
+	securityServer           *SecurityServer
+	auditStore               *audit.Store
+	auditEventSubscriber     *audit.EventSubscriber
+	sshCollector             *audit.SSHCollector
+	revocationStore          *auth.PgRevocationStore // Phase 1.2 — kill-switch for issued JWTs
+	alertStore               *alert.Store
+	alertManager             *alert.Manager
+	alertDeliveryStore       *alert.DeliveryStore
+	pentestManager           *pentest.Manager
+	pentestStore             *pentest.Store
+	zapManager               *zapscanner.Manager
+	zapStore                 *zapscanner.Store
+	peerPool                 *PeerPool
+	autoSleepManager         *autosleep.Manager
+	ttlSweeperManager        *ttlsweeper.Manager    // ephemeral CI box auto-delete (#299)
+	sandboxServer            *SandboxServer         // set in NewDualServer when incus.New succeeds; nil otherwise (#1488)
+	sandboxTTLSweeperManager *ttlsweeper.Manager    // ephemeral sandbox auto-delete (#1488 Phase 4)
+	secretsReconciler        *secretsReconciler     // Phase 4.3 Phase B-3
+	networkPolicyEnforcer    *NetworkPolicyEnforcer // #315 Phase A — eBPF per-tenant net policy (off unless configured)
 
 	// k8sNetPolicyReconciler converges tenant NetworkPolicy objects on the K8s
 	// backend from the same store the eBPF enforcer reads (#1188). Nil on
@@ -555,8 +557,10 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// why nil is also the ONLY safe default (a configured-but-empty pool
 	// would silently start rejecting every caller that hasn't set
 	// allow_cold_start=true).
+	var sandboxServer *SandboxServer
 	if sandboxIncusClient, err := incus.New(); err == nil {
-		pb.RegisterSandboxServiceServer(grpcServer, NewSandboxServer(sandboxIncusClient, nil))
+		sandboxServer = NewSandboxServer(sandboxIncusClient, nil)
+		pb.RegisterSandboxServiceServer(grpcServer, sandboxServer)
 		log.Printf("Sandbox service enabled")
 	} else {
 		log.Printf("Warning: SandboxService disabled — incus client init failed: %v", err)
@@ -1942,6 +1946,7 @@ skipAppHosting:
 		k8sNetPolicyReconciler: k8sNetPolicyReconciler,
 		cloudClient:            cloudClient,
 		startTime:              time.Now(),
+		sandboxServer:          sandboxServer,
 	}
 
 	// Auto-sleep ticker is constructed in Start() once the traffic
@@ -2344,6 +2349,28 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		log.Printf("[ttlsweeper] incus client unavailable: %v (sweeper disabled)", err)
 	}
 
+	// Sandbox TTL sweeper (#1488 Phase 4: "no sandbox leaks past
+	// idle_ttl"). Separate Manager instance from the persistent-box one
+	// above, scoped to SandboxService's own container population and
+	// deletion routing: ds.sandboxServer implements ttlsweeper.Deleter
+	// directly (its DeleteContainer method), which routes an expired
+	// pool-claimed sandbox through pool.Release exactly like
+	// DeleteSandbox does — the persistent-box ttlsweeperDeleter above only
+	// knows the "<username>-container" naming convention and would refuse
+	// every sandbox_id. Independent of whether a pool is actually
+	// configured (nil today, see NewDualServer): a cold-path sandbox
+	// carries the same user.containarium.ttl_expires_at stamp a
+	// pool-claimed one does, so sweeping is safe and needed the moment
+	// SandboxService itself is enabled.
+	if ds.sandboxServer != nil {
+		ds.sandboxTTLSweeperManager = ttlsweeper.NewManager(
+			&ttlsweeperSandboxAdapter{backend: ds.sandboxServer.incus},
+			ds.sandboxServer,
+			ttlsweeper.Options{},
+		)
+		ds.sandboxTTLSweeperManager.Start(ctx)
+	}
+
 	// Orphan reaper (#835): periodically userdel host accounts whose
 	// container no longer exists. userdel -r on container delete can fail
 	// under lock contention (google-guest-agent race on GCP), leaving stale
@@ -2677,6 +2704,9 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		}
 		if ds.ttlSweeperManager != nil {
 			ds.ttlSweeperManager.Stop()
+		}
+		if ds.sandboxTTLSweeperManager != nil {
+			ds.sandboxTTLSweeperManager.Stop()
 		}
 		if ds.secretsReconciler != nil {
 			ds.secretsReconciler.Stop()
