@@ -12099,6 +12099,14 @@
         "storageClass": {
           "type": "string",
           "description": "storage_class is the K8s StorageClass for the box's data PVC (K8s\nruntime only). Empty means use the backend's cluster-wide default\n(CONTAINARIUM_K8S_STORAGE_CLASS). Ignored by the LXC backend.\nExample: \"fast-nvme\", \"standard\", \"ceph-block\"."
+        },
+        "memoryRequest": {
+          "type": "string",
+          "description": "memory_request is the K8s memory *request* (what the scheduler reserves\nagainst node capacity), separate from the `memory` field above, which is\nalways applied as the *limit* (K8s runtime only; ignored by the LXC\nbackend, which has no separate request concept for `limits.memory`).\nEmpty (the default) preserves today's behavior: `memory`'s value is used\nfor both request and limit (Guaranteed QoS). Set this to something\nsmaller than `memory` for Burstable QoS — e.g. request 128Mi, limit\n256Mi, matching how most upstream Kubernetes workloads size a pod."
+        },
+        "cpuRequest": {
+          "type": "string",
+          "description": "cpu_request is the K8s CPU *request*, separate from the `cpu` field\nabove (always applied as the limit). Same defaulting and K8s-only scope\nas memory_request."
         }
       },
       "title": "ResourceLimits defines resource constraints for a container"

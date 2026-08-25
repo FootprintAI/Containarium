@@ -321,7 +321,11 @@ type memDefaults struct {
 // resourceRequirements maps the runtime-neutral limits onto K8s requests/limits.
 // CPU and Memory strings that aren't valid K8s quantities (e.g. incus-native
 // "4GB") are silently skipped so the pod doesn't fail admission. Explicit CPU
-// and Memory pin request==limit (Guaranteed for that resource).
+// and Memory pin request==limit (Guaranteed for that resource) unless the
+// caller also set CPURequest/MemoryRequest (#1557), in which case that value
+// is used for the request instead — an invalid or larger-than-limit request
+// string is ignored (falls back to request==limit) rather than failing
+// admission or silently exceeding the limit.
 //
 // When the spec sets no valid memory limit, the resolved default memory floor
 // (def.request < def.limit) is applied so the scheduler can bin-pack the box
@@ -343,12 +347,22 @@ func resourceRequirements(r box.ResourceLimits, gpuCount int, def memDefaults) *
 		if q, err := resource.ParseQuantity(r.CPU); err == nil {
 			requests[corev1.ResourceCPU] = q
 			limits[corev1.ResourceCPU] = q
+			if r.CPURequest != "" {
+				if reqQ, err := resource.ParseQuantity(r.CPURequest); err == nil && reqQ.Cmp(q) <= 0 {
+					requests[corev1.ResourceCPU] = reqQ
+				}
+			}
 		}
 	}
 	if r.Memory != "" {
 		if q, err := resource.ParseQuantity(r.Memory); err == nil {
 			requests[corev1.ResourceMemory] = q
 			limits[corev1.ResourceMemory] = q
+			if r.MemoryRequest != "" {
+				if reqQ, err := resource.ParseQuantity(r.MemoryRequest); err == nil && reqQ.Cmp(q) <= 0 {
+					requests[corev1.ResourceMemory] = reqQ
+				}
+			}
 		}
 	}
 	// Apply the default memory floor when the spec set no valid memory limit.

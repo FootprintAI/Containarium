@@ -395,6 +395,8 @@ func buildDaemonAPI() (runner.DaemonAPI, runner.DaemonCreator, error) {
 				0,                       // delete-after-stopped: not applicable to runner boxes
 				"",                      // storage-class: runner boxes use cluster default
 				client.EncryptionOpts{}, // encryption: runner boxes carry no tenant data (#1198)
+				"",                      // memory-request: runner boxes use request==limit (#1557)
+				"",                      // cpu-request: ditto
 			)
 			if err != nil {
 				return "", "", err
@@ -434,6 +436,8 @@ func buildDaemonAPI() (runner.DaemonAPI, runner.DaemonCreator, error) {
 			0,                       // delete-after-stopped: not applicable to runner boxes
 			"",                      // storage-class: runner boxes use cluster default
 			client.EncryptionOpts{}, // encryption: runner boxes carry no tenant data (#1198)
+			"",                      // memory-request: runner boxes use request==limit (#1557)
+			"",                      // cpu-request: ditto
 		)
 		if err != nil {
 			return "", "", err
