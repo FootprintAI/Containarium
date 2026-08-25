@@ -115,6 +115,11 @@ func TestAddPassthroughRoute_RejectsMissingArgsAndBadProtocol(t *testing.T) {
 		{"no target_ip", map[string]interface{}{"external_port": float64(80), "target_port": float64(80)}},
 		{"no target_port", map[string]interface{}{"external_port": float64(80), "target_ip": "10.0.3.150"}},
 		{"bad protocol", map[string]interface{}{"external_port": float64(80), "target_ip": "10.0.3.150", "target_port": float64(80), "protocol": "sctp"}},
+		{"external_port out of range", map[string]interface{}{"external_port": float64(70000), "target_ip": "10.0.3.150", "target_port": float64(80)}},
+		{"external_port zero", map[string]interface{}{"external_port": float64(0), "target_ip": "10.0.3.150", "target_port": float64(80)}},
+		{"target_port out of range", map[string]interface{}{"external_port": float64(80), "target_ip": "10.0.3.150", "target_port": float64(-1)}},
+		{"external_port fractional", map[string]interface{}{"external_port": float64(9443.7), "target_ip": "10.0.3.150", "target_port": float64(80)}},
+		{"target_port fractional", map[string]interface{}{"external_port": float64(80), "target_ip": "10.0.3.150", "target_port": float64(50051.5)}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -174,4 +179,46 @@ func TestDeletePassthroughRoute_RejectsMissingPort(t *testing.T) {
 	client := NewClient("http://unused", "token")
 	_, err := handleDeletePassthroughRoute(client, map[string]interface{}{})
 	require.Error(t, err)
+}
+
+func TestDeletePassthroughRoute_RejectsInvalidPort(t *testing.T) {
+	client := NewClient("http://unused", "token")
+	cases := []struct {
+		name string
+		args map[string]interface{}
+	}{
+		{"out of range", map[string]interface{}{"external_port": float64(70000)}},
+		{"zero", map[string]interface{}{"external_port": float64(0)}},
+		{"fractional", map[string]interface{}{"external_port": float64(9443.5)}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := handleDeletePassthroughRoute(client, tc.args)
+			require.Error(t, err)
+		})
+	}
+}
+
+// TestGetPortArg_RejectsFractionalPorts is the regression guard for a
+// review finding on #1550: a fractional JSON number (e.g. an agent-side
+// computation bug producing 9443.7) used to silently truncate to 9443 via
+// getIntArg, with no error — routing traffic to a port the caller never
+// actually specified.
+func TestGetPortArg_RejectsFractionalPorts(t *testing.T) {
+	_, err := getPortArg(map[string]interface{}{"port": float64(9443.7)}, "port")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "whole number")
+}
+
+func TestGetPortArg_AcceptsWholeNumberFloats(t *testing.T) {
+	got, err := getPortArg(map[string]interface{}{"port": float64(9443)}, "port")
+	require.NoError(t, err)
+	assert.EqualValues(t, 9443, got)
+}
+
+func TestGetPortArg_RejectsOutOfRange(t *testing.T) {
+	for _, v := range []float64{0, -1, 65536, 100000} {
+		_, err := getPortArg(map[string]interface{}{"port": v}, "port")
+		require.Error(t, err, "port %v should be rejected", v)
+	}
 }

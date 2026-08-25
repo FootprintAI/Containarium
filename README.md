@@ -182,16 +182,17 @@ Same surface as the platform MCP, plus deeper administration. Top-level
 verbs:
 
 ```
-containarium create        Create a new container
-containarium list          List all containers
-containarium delete        Delete a container
-containarium expose-port   Expose container:port on a public hostname
-containarium ssh-config    Generate self-contained ssh_config
-containarium route         Manage proxy routes (low-level)
-containarium passthrough   Manage TCP/UDP passthrough rules
-containarium token         Issue JWT tokens for the API
-containarium info          System info
-containarium version       Print version
+containarium create             Create a new container
+containarium list               List all containers
+containarium delete             Delete a container
+containarium expose-port        Expose container:port on a public hostname
+containarium ssh-config         Generate self-contained ssh_config
+containarium route              Manage proxy routes (low-level)
+containarium passthrough        Manage TCP/UDP passthrough rules (local iptables)
+containarium passthrough-route  Manage TCP/UDP passthrough routes (daemon API)
+containarium token              Issue JWT tokens for the API
+containarium info               System info
+containarium version            Print version
 ```
 
 Run `containarium <verb> --help` for full options.

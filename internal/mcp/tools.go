@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1116,7 +1117,7 @@ func (s *Server) registerTools() {
 				"properties": map[string]interface{}{
 					"external_port": map[string]interface{}{
 						"type":        "integer",
-						"description": "Port to open on the daemon's host, e.g. 9443.",
+						"description": "Port to open on the daemon's host, e.g. 9443. Must be a whole number in 1..65535.",
 					},
 					"target_ip": map[string]interface{}{
 						"type":        "string",
@@ -1124,7 +1125,7 @@ func (s *Server) registerTools() {
 					},
 					"target_port": map[string]interface{}{
 						"type":        "integer",
-						"description": "Port the app listens on inside the container.",
+						"description": "Port the app listens on inside the container. Must be a whole number in 1..65535.",
 					},
 					"protocol": map[string]interface{}{
 						"type":        "string",
@@ -1156,7 +1157,7 @@ func (s *Server) registerTools() {
 				"properties": map[string]interface{}{
 					"external_port": map[string]interface{}{
 						"type":        "integer",
-						"description": "External port to remove (the `externalPort` from list_passthrough_routes).",
+						"description": "External port to remove (the `externalPort` from list_passthrough_routes). Must be a whole number in 1..65535.",
 					},
 					"protocol": map[string]interface{}{
 						"type":        "string",
@@ -2327,6 +2328,24 @@ func protoProtocolToFriendly(s string) string {
 	}
 }
 
+// getPortArg reads a TCP/UDP port argument as a validated int32: present,
+// a whole number (a JSON float like 9443.7 would otherwise silently
+// truncate to 9443 via getIntArg — routing traffic to a port the caller
+// never actually specified, with no error to say so), and in 1..65535.
+func getPortArg(args map[string]interface{}, key string) (int32, error) {
+	if f, ok := args[key].(float64); ok && f != math.Trunc(f) {
+		return 0, fmt.Errorf("%s must be a whole number, got %v", key, f)
+	}
+	v, ok := getIntArg(args, key)
+	if !ok {
+		return 0, fmt.Errorf("%s is required", key)
+	}
+	if v <= 0 || v > 65535 {
+		return 0, fmt.Errorf("%s must be between 1 and 65535, got %d", key, v)
+	}
+	return safecast.I32(v), nil
+}
+
 func handleListPassthroughRoutes(client API, _ map[string]interface{}) (string, error) {
 	resp, err := client.ListPassthroughRoutes()
 	if err != nil {
@@ -2341,17 +2360,17 @@ func handleListPassthroughRoutes(client API, _ map[string]interface{}) (string, 
 }
 
 func handleAddPassthroughRoute(client API, args map[string]interface{}) (string, error) {
-	externalPort, ok := getIntArg(args, "external_port")
-	if !ok {
-		return "", fmt.Errorf("external_port is required")
+	externalPort, err := getPortArg(args, "external_port")
+	if err != nil {
+		return "", err
 	}
 	targetIP := getStringArg(args, "target_ip", "")
 	if targetIP == "" {
 		return "", fmt.Errorf("target_ip is required")
 	}
-	targetPort, ok := getIntArg(args, "target_port")
-	if !ok {
-		return "", fmt.Errorf("target_port is required")
+	targetPort, err := getPortArg(args, "target_port")
+	if err != nil {
+		return "", err
 	}
 	protocol, err := passthroughProtocolToProto(getStringArg(args, "protocol", ""))
 	if err != nil {
@@ -2359,9 +2378,9 @@ func handleAddPassthroughRoute(client API, args map[string]interface{}) (string,
 	}
 
 	resp, err := client.AddPassthroughRoute(AddPassthroughRouteRequest{
-		ExternalPort:  safecast.I32(externalPort),
+		ExternalPort:  externalPort,
 		TargetIP:      targetIP,
-		TargetPort:    safecast.I32(targetPort),
+		TargetPort:    targetPort,
 		Protocol:      protocol,
 		ContainerName: getStringArg(args, "container_name", ""),
 		Description:   getStringArg(args, "description", ""),
@@ -2384,15 +2403,15 @@ func handleAddPassthroughRoute(client API, args map[string]interface{}) (string,
 }
 
 func handleDeletePassthroughRoute(client API, args map[string]interface{}) (string, error) {
-	externalPort, ok := getIntArg(args, "external_port")
-	if !ok {
-		return "", fmt.Errorf("external_port is required")
+	externalPort, err := getPortArg(args, "external_port")
+	if err != nil {
+		return "", err
 	}
 	protocol, err := passthroughProtocolToProto(getStringArg(args, "protocol", ""))
 	if err != nil {
 		return "", err
 	}
-	if err := client.DeletePassthroughRoute(safecast.I32(externalPort), protocol); err != nil {
+	if err := client.DeletePassthroughRoute(externalPort, protocol); err != nil {
 		return "", fmt.Errorf("failed to delete passthrough route %d/%s: %w", externalPort, protoProtocolToFriendly(protocol), err)
 	}
 	return fmt.Sprintf("✅ Deleted passthrough route %s:%d — it no longer forwards to any container.",

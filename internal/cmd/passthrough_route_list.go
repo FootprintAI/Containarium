@@ -52,7 +52,7 @@ func runPassthroughRouteList(cmd *cobra.Command, args []string) error {
 	case "table":
 		printPassthroughRouteTableFormat(routes, totalCount)
 	case "json":
-		return printPassthroughRouteJSONFormat(routes)
+		return printPassthroughRouteJSONFormat(routes, totalCount)
 	default:
 		return fmt.Errorf("unknown format: %s (use: table, json)", passthroughRouteListFormat)
 	}
@@ -93,10 +93,10 @@ func printPassthroughRouteTableFormat(routes []*pb.PassthroughRoute, totalCount 
 	fmt.Printf("Total: %d passthrough routes\n", totalCount)
 }
 
-func printPassthroughRouteJSONFormat(routes []*pb.PassthroughRoute) error {
+func printPassthroughRouteJSONFormat(routes []*pb.PassthroughRoute, totalCount int32) error {
 	output := map[string]interface{}{
 		"routes":      routes,
-		"total_count": len(routes),
+		"total_count": totalCount,
 	}
 
 	data, err := json.MarshalIndent(output, "", "  ")

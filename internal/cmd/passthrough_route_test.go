@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -37,5 +39,32 @@ func TestParsePassthroughRouteProtocol(t *testing.T) {
 				t.Errorf("parsePassthroughRouteProtocol(%q) = %v; want %v", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestPrintPassthroughRouteJSONFormat_UsesServerTotalCount is the
+// regression guard for a review finding on #1550: the JSON output
+// recomputed total_count as len(routes) instead of using the server's
+// actual totalCount, so the two would silently diverge the moment the
+// daemon's count and the returned page disagree (e.g. once passthrough
+// listing paginates).
+func TestPrintPassthroughRouteJSONFormat_UsesServerTotalCount(t *testing.T) {
+	routes := []*pb.PassthroughRoute{
+		{ExternalPort: 9443, TargetIp: "10.0.3.150", TargetPort: 50051},
+	}
+	out := captureStdout(t, func() {
+		if err := printPassthroughRouteJSONFormat(routes, 42); err != nil {
+			t.Fatalf("printPassthroughRouteJSONFormat: %v", err)
+		}
+	})
+
+	var decoded struct {
+		TotalCount int `json:"total_count"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &decoded); err != nil {
+		t.Fatalf("unmarshal output: %v\noutput: %s", err, out)
+	}
+	if decoded.TotalCount != 42 {
+		t.Errorf("total_count = %d; want the server-reported 42 (got len(routes)=%d instead)", decoded.TotalCount, len(routes))
 	}
 }
