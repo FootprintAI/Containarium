@@ -2359,9 +2359,9 @@ func handleAddPassthroughRoute(client API, args map[string]interface{}) (string,
 	}
 
 	resp, err := client.AddPassthroughRoute(AddPassthroughRouteRequest{
-		ExternalPort:  int32(externalPort),
+		ExternalPort:  safecast.I32(externalPort),
 		TargetIP:      targetIP,
-		TargetPort:    int32(targetPort),
+		TargetPort:    safecast.I32(targetPort),
 		Protocol:      protocol,
 		ContainerName: getStringArg(args, "container_name", ""),
 		Description:   getStringArg(args, "description", ""),
@@ -2392,7 +2392,7 @@ func handleDeletePassthroughRoute(client API, args map[string]interface{}) (stri
 	if err != nil {
 		return "", err
 	}
-	if err := client.DeletePassthroughRoute(int32(externalPort), protocol); err != nil {
+	if err := client.DeletePassthroughRoute(safecast.I32(externalPort), protocol); err != nil {
 		return "", fmt.Errorf("failed to delete passthrough route %d/%s: %w", externalPort, protoProtocolToFriendly(protocol), err)
 	}
 	return fmt.Sprintf("✅ Deleted passthrough route %s:%d — it no longer forwards to any container.",
