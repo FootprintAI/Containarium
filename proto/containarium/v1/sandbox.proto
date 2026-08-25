@@ -90,6 +90,27 @@ service SandboxService {
       tags: "Sandboxes";
     };
   }
+
+  // GetPoolStatus reports the warm pool's current state per template —
+  // how many members are ready to claim right now, how many are still
+  // warming, and the operator-configured min_warm floor each is being
+  // reconciled toward (#1488 Phase 4: "pool exhaustion is visible").
+  // Read-only operator/observability visibility, not a pre-flight check a
+  // SpawnSandbox caller needs to poll first — RESOURCE_EXHAUSTED on an
+  // actual claim attempt remains the source of truth for whether a
+  // specific call would succeed right now. Returns an empty templates
+  // list when no pool is configured (the current production default —
+  // see SandboxServer's own type doc).
+  rpc GetPoolStatus(GetPoolStatusRequest) returns (GetPoolStatusResponse) {
+    option (google.api.http) = {
+      get: "/v1/sandboxes:poolStatus"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get warm pool status";
+      description: "Reports per-template ready/warming counts against the configured min_warm floor. Empty templates list when no pool is configured.";
+      tags: "Sandboxes";
+    };
+  }
 }
 
 // SandboxState is the lifecycle state of a sandbox. Deliberately smaller
@@ -197,6 +218,29 @@ message DeleteSandboxRequest {
 
 message DeleteSandboxResponse {
   string message = 1;
+}
+
+message GetPoolStatusRequest {}
+
+message GetPoolStatusResponse {
+  // One entry per template the pool is configured to warm (Config.MinWarm
+  // in internal/sandbox/pool). Empty when no pool is configured at all —
+  // distinct from a configured-but-untargeted pool, which still reports
+  // its template(s) with ready = warming = 0.
+  repeated PoolTemplateStatus templates = 1;
+}
+
+// PoolTemplateStatus is one template's warm-pool state.
+message PoolTemplateStatus {
+  SandboxTemplate template = 1;
+  // Members claimable right now.
+  int32 ready = 2;
+  // Members currently being created/started/network-provisioned, not yet
+  // claimable.
+  int32 warming = 3;
+  // The operator-configured floor ready + warming is being reconciled
+  // toward.
+  int32 min_warm = 4;
 }
 
 // SpawnService is agent-box's resident, low-latency counterpart to

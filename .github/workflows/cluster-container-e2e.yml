@@ -28,8 +28,9 @@ name: Managed clusters container-mode e2e
 # operator makes on a single-tenant host, never a product default.
 #
 # Prove-the-lane-can-fail (#1418 guardrail, reused): dispatch with
-# sabotage=join-token. Worker join tokens are corrupted so no node can
-# register; the JOB goes green only if the SUITE goes red. Run it once
+# sabotage=join-token (no node registers) or sabotage=drop-prerouting
+# (the endpoint stays reachable from the daemon host and from nowhere
+# else). The JOB goes green only if the SUITE goes red. Run them once
 # after this lane first lands, and after any change to the journey's
 # assertions — a green lane that has never failed proves nothing.
 
@@ -60,9 +61,16 @@ on:
   workflow_dispatch:
     inputs:
       sabotage:
-        description: 'Deliberate breakage; join-token proves the lane can fail'
+        description: 'Deliberate breakage; the JOB is green only if the SUITE goes red'
         type: choice
-        options: ['none', 'join-token']
+        # join-token: no node can register, so the cluster never reaches
+        #   READY — proves the journey can fail at all (#1418).
+        # drop-prerouting: the published endpoint keeps its OUTPUT rule
+        #   and loses its inbound DNAT rule, so the daemon host can still
+        #   reach it and nothing else can — proves the "from outside"
+        #   step actually leaves the host (#1468). Before that step had
+        #   an off-host probe, this breakage left the lane GREEN.
+        options: ['none', 'join-token', 'drop-prerouting']
         default: 'none'
 
 permissions:
@@ -80,16 +88,43 @@ jobs:
     name: six-step journey (container nodes, no KVM)
     if: github.event_name != 'workflow_dispatch' || inputs.sabotage == 'none'
     runs-on: ubuntu-latest
-    # Budget: create ~8m + scale-up ~8m + larger class ~8m + VPA ~12m +
-    # scale-down ~30m (stock cluster-autoscaler: 10m delay-after-add +
-    # 10m unneeded — irreducible without retuning CA) + delete ~8m, plus
-    # ~10m of runner provisioning. Container nodes boot in seconds where
-    # VMs take minutes, which is why this fits well inside the KVM lane's
-    # 150m.
-    timeout-minutes: 100
+    # Budget, and the rule that ties it together (#1458):
+    #
+    #   sum(step budgets) <= CONTAINARIUM_E2E_GO_TIMEOUT < timeout-minutes - setup
+    #
+    # The step budgets below total 70m; the go timeout is 85m; runner
+    # provisioning (Incus, ZFS pool, build, Postgres pull) is ~10m.
+    #
+    # The right-hand inequality is the one that matters: the GO TEST has
+    # to be what runs out of time, never the job. A job cancelled at
+    # timeout-minutes never reaches "Diagnostics on failure" or the
+    # suite's own dumpDiagnostics, so it produces NO evidence — run 12
+    # burned 1h40m and told us nothing, which from the outside is
+    # indistinguishable from a lane that is merely slow.
+    #
+    # 150 matches the KVM lane running the same journey. It is not
+    # generosity: scale-down is stock cluster-autoscaler scheduling (10m
+    # delay-after-add + 10m unneeded) rather than anything this code
+    # controls, and it has been measured at both 703s and 1606s on
+    # identical code (runs 22 and 23). A step that varies 2.3x is the one
+    # that walks a run into a cap.
+    #
+    # Changing any budget here without moving this cap fails
+    # TestContainerLaneJobCapExceedsItsTestBudget, so this comment is a
+    # description of an assertion rather than a request.
+    timeout-minutes: 150
     env:
       # The journey, in the class this lane exists to cover.
       CONTAINARIUM_E2E_ISOLATION: container
+      # Dial the advertised endpoint from a network namespace with a
+      # veth into the host, so the packet ARRIVES from elsewhere and
+      # traverses PREROUTING — the DNAT path every tenant uses (#1468).
+      # Without this the "from outside" step never leaves the daemon
+      # host: its packets are locally generated, skip PREROUTING, and
+      # exercise only the OUTPUT rule added for the lane's own benefit
+      # (#1459). Deleting the PREROUTING rule left this suite green
+      # while no tenant could reach any cluster.
+      CONTAINARIUM_E2E_OFFHOST_PROBE: netns
       # Operator opt-in (see header): a throwaway runner is one trust
       # domain. Without this the daemon refuses the create, by design.
       CONTAINARIUM_CLUSTER_ALLOW_CONTAINER_NODES: 'true'
@@ -137,7 +172,12 @@ jobs:
     name: sabotage run (suite must go red)
     if: github.event_name == 'workflow_dispatch' && inputs.sabotage == 'join-token'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Same rule as the journey job above, and it matters MORE here: a
+    # proof run cancelled at the cap reports "the lane cannot fail" for
+    # a lane that was merely slow — the inversion this job exists to
+    # prevent. 35m of go timeout plus ~10m of provisioning does not fit
+    # in 45.
+    timeout-minutes: 60
     env:
       CONTAINARIUM_E2E_ISOLATION: container
       CONTAINARIUM_CLUSTER_ALLOW_CONTAINER_NODES: 'true'
@@ -166,3 +206,48 @@ jobs:
             exit 1
           fi
           echo "lane went red under sabotage: it can fail, and its green is evidence."
+
+  prerouting-sabotage:
+    name: sabotage run (tenant path must be checked)
+    if: github.event_name == 'workflow_dispatch' && inputs.sabotage == 'drop-prerouting'
+    runs-on: ubuntu-latest
+    # Same budget rule as every other job that runs the suite (#1458):
+    # the go timeout plus provisioning has to fit, or a slow proof run
+    # is cancelled and reports "the lane cannot fail" for a lane that
+    # was merely slow.
+    timeout-minutes: 60
+    env:
+      CONTAINARIUM_E2E_ISOLATION: container
+      CONTAINARIUM_CLUSTER_ALLOW_CONTAINER_NODES: 'true'
+      CONTAINARIUM_REQUIRE_INCUS: '1'
+      CONTAINARIUM_E2E_SABOTAGE: drop-prerouting
+      # Essential, not incidental: without the off-host probe this run
+      # goes GREEN under the sabotage, because every dial the suite
+      # makes is locally generated and uses the OUTPUT rule the
+      # sabotage leaves intact. That green was the #1468 bug.
+      CONTAINARIUM_E2E_OFFHOST_PROBE: netns
+      # The break is detected at step 1, so nothing needs the long
+      # production bounds.
+      CONTAINARIUM_E2E_READY_TIMEOUT: 10m
+      CONTAINARIUM_E2E_GO_TIMEOUT: 35m
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Provision Incus (the incus-create.yml precedent, minus KVM)
+        run: bash scripts/ci-incus-container-host.sh
+
+      - name: Delete the inbound DNAT rule and expect the suite to fail
+        # The endpoint keeps its OUTPUT rule, so the daemon host can
+        # still reach it — exactly the state in which this lane used to
+        # report "reachable from outside". Green here means the lane
+        # noticed that no one else could connect.
+        run: |
+          if bash scripts/cluster-e2e.sh; then
+            echo "::error::lane stayed GREEN with the tenant-facing DNAT rule deleted — its \"from outside\" step never leaves the daemon host (#1468)"
+            exit 1
+          fi
+          echo "lane went red with only the OUTPUT rule left: the from-outside check really leaves the host."

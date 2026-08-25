@@ -27,7 +27,8 @@ seeding). See docs/architecture/two-digit-ms-sandbox-spawn.md.
   containarium sandbox exec <sandbox-id> --server <host> -- echo hello
   containarium sandbox write-file <sandbox-id> /workspace/in.txt --from ./local.txt --server <host>
   containarium sandbox read-file <sandbox-id> /workspace/out.txt --server <host>
-  containarium sandbox delete <sandbox-id> --server <host>`,
+  containarium sandbox delete <sandbox-id> --server <host>
+  containarium sandbox pool-status --server <host>`,
 }
 
 var (
@@ -79,9 +80,21 @@ var sandboxDeleteCmd = &cobra.Command{
 	RunE:  runSandboxDelete,
 }
 
+var sandboxPoolStatusCmd = &cobra.Command{
+	Use:   "pool-status",
+	Short: "Show the warm pool's per-template ready/warming counts",
+	Long: `Show the warm pool's per-template ready/warming counts against the
+operator-configured min_warm floor (#1488 Phase 4).
+
+Prints "no warm pool configured" when the daemon has no pool set up
+(the current production default) — this is expected, not an error.`,
+	Args: cobra.NoArgs,
+	RunE: runSandboxPoolStatus,
+}
+
 func init() {
 	rootCmd.AddCommand(sandboxCmd)
-	sandboxCmd.AddCommand(sandboxSpawnCmd, sandboxExecCmd, sandboxWriteFileCmd, sandboxReadFileCmd, sandboxDeleteCmd)
+	sandboxCmd.AddCommand(sandboxSpawnCmd, sandboxExecCmd, sandboxWriteFileCmd, sandboxReadFileCmd, sandboxDeleteCmd, sandboxPoolStatusCmd)
 
 	sandboxSpawnCmd.Flags().Int32Var(&sandboxIdleTTLSeconds, "idle-ttl-seconds", 0, "idle TTL before the sweeper reaps an unclaimed sandbox (0 = daemon default)")
 	sandboxSpawnCmd.Flags().BoolVar(&sandboxAllowCold, "allow-cold-start", false, "fall back to the cold path instead of RESOURCE_EXHAUSTED when the warm pool is empty (no effect in Phase 1 — there is no pool yet)")
@@ -236,5 +249,27 @@ func runSandboxDelete(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	fmt.Printf("✓ %s\n", resp.Message)
+	return nil
+}
+
+func runSandboxPoolStatus(cmd *cobra.Command, args []string) error {
+	c, err := newSandboxGRPCClient()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = c.Close() }()
+
+	resp, err := c.GetPoolStatus()
+	if err != nil {
+		return err
+	}
+	if len(resp.Templates) == 0 {
+		fmt.Println("no warm pool configured")
+		return nil
+	}
+	fmt.Printf("%-28s %6s %8s %8s\n", "TEMPLATE", "READY", "WARMING", "MIN_WARM")
+	for _, t := range resp.Templates {
+		fmt.Printf("%-28s %6d %8d %8d\n", t.Template, t.Ready, t.Warming, t.MinWarm)
+	}
 	return nil
 }

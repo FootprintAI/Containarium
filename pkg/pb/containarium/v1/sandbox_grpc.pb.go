@@ -24,6 +24,7 @@ const (
 	SandboxService_WriteFileInSandbox_FullMethodName = "/containarium.v1.SandboxService/WriteFileInSandbox"
 	SandboxService_ReadFileInSandbox_FullMethodName  = "/containarium.v1.SandboxService/ReadFileInSandbox"
 	SandboxService_DeleteSandbox_FullMethodName      = "/containarium.v1.SandboxService/DeleteSandbox"
+	SandboxService_GetPoolStatus_FullMethodName      = "/containarium.v1.SandboxService/GetPoolStatus"
 )
 
 // SandboxServiceClient is the client API for SandboxService service.
@@ -63,6 +64,17 @@ type SandboxServiceClient interface {
 	// reset and reused (see the design note's Isolation section) — delete
 	// always means destroy, never "return to a pool".
 	DeleteSandbox(ctx context.Context, in *DeleteSandboxRequest, opts ...grpc.CallOption) (*DeleteSandboxResponse, error)
+	// GetPoolStatus reports the warm pool's current state per template —
+	// how many members are ready to claim right now, how many are still
+	// warming, and the operator-configured min_warm floor each is being
+	// reconciled toward (#1488 Phase 4: "pool exhaustion is visible").
+	// Read-only operator/observability visibility, not a pre-flight check a
+	// SpawnSandbox caller needs to poll first — RESOURCE_EXHAUSTED on an
+	// actual claim attempt remains the source of truth for whether a
+	// specific call would succeed right now. Returns an empty templates
+	// list when no pool is configured (the current production default —
+	// see SandboxServer's own type doc).
+	GetPoolStatus(ctx context.Context, in *GetPoolStatusRequest, opts ...grpc.CallOption) (*GetPoolStatusResponse, error)
 }
 
 type sandboxServiceClient struct {
@@ -123,6 +135,16 @@ func (c *sandboxServiceClient) DeleteSandbox(ctx context.Context, in *DeleteSand
 	return out, nil
 }
 
+func (c *sandboxServiceClient) GetPoolStatus(ctx context.Context, in *GetPoolStatusRequest, opts ...grpc.CallOption) (*GetPoolStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetPoolStatusResponse)
+	err := c.cc.Invoke(ctx, SandboxService_GetPoolStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SandboxServiceServer is the server API for SandboxService service.
 // All implementations must embed UnimplementedSandboxServiceServer
 // for forward compatibility.
@@ -160,6 +182,17 @@ type SandboxServiceServer interface {
 	// reset and reused (see the design note's Isolation section) — delete
 	// always means destroy, never "return to a pool".
 	DeleteSandbox(context.Context, *DeleteSandboxRequest) (*DeleteSandboxResponse, error)
+	// GetPoolStatus reports the warm pool's current state per template —
+	// how many members are ready to claim right now, how many are still
+	// warming, and the operator-configured min_warm floor each is being
+	// reconciled toward (#1488 Phase 4: "pool exhaustion is visible").
+	// Read-only operator/observability visibility, not a pre-flight check a
+	// SpawnSandbox caller needs to poll first — RESOURCE_EXHAUSTED on an
+	// actual claim attempt remains the source of truth for whether a
+	// specific call would succeed right now. Returns an empty templates
+	// list when no pool is configured (the current production default —
+	// see SandboxServer's own type doc).
+	GetPoolStatus(context.Context, *GetPoolStatusRequest) (*GetPoolStatusResponse, error)
 	mustEmbedUnimplementedSandboxServiceServer()
 }
 
@@ -184,6 +217,9 @@ func (UnimplementedSandboxServiceServer) ReadFileInSandbox(context.Context, *Rea
 }
 func (UnimplementedSandboxServiceServer) DeleteSandbox(context.Context, *DeleteSandboxRequest) (*DeleteSandboxResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteSandbox not implemented")
+}
+func (UnimplementedSandboxServiceServer) GetPoolStatus(context.Context, *GetPoolStatusRequest) (*GetPoolStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetPoolStatus not implemented")
 }
 func (UnimplementedSandboxServiceServer) mustEmbedUnimplementedSandboxServiceServer() {}
 func (UnimplementedSandboxServiceServer) testEmbeddedByValue()                        {}
@@ -296,6 +332,24 @@ func _SandboxService_DeleteSandbox_Handler(srv interface{}, ctx context.Context,
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SandboxService_GetPoolStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetPoolStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SandboxServiceServer).GetPoolStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SandboxService_GetPoolStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SandboxServiceServer).GetPoolStatus(ctx, req.(*GetPoolStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // SandboxService_ServiceDesc is the grpc.ServiceDesc for SandboxService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -322,6 +376,10 @@ var SandboxService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteSandbox",
 			Handler:    _SandboxService_DeleteSandbox_Handler,
+		},
+		{
+			MethodName: "GetPoolStatus",
+			Handler:    _SandboxService_GetPoolStatus_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

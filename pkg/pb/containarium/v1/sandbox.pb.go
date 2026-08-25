@@ -807,6 +807,164 @@ func (x *DeleteSandboxResponse) GetMessage() string {
 	return ""
 }
 
+type GetPoolStatusRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetPoolStatusRequest) Reset() {
+	*x = GetPoolStatusRequest{}
+	mi := &file_containarium_v1_sandbox_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetPoolStatusRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetPoolStatusRequest) ProtoMessage() {}
+
+func (x *GetPoolStatusRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_sandbox_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetPoolStatusRequest.ProtoReflect.Descriptor instead.
+func (*GetPoolStatusRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_sandbox_proto_rawDescGZIP(), []int{11}
+}
+
+type GetPoolStatusResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// One entry per template the pool is configured to warm (Config.MinWarm
+	// in internal/sandbox/pool). Empty when no pool is configured at all —
+	// distinct from a configured-but-untargeted pool, which still reports
+	// its template(s) with ready = warming = 0.
+	Templates     []*PoolTemplateStatus `protobuf:"bytes,1,rep,name=templates,proto3" json:"templates,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetPoolStatusResponse) Reset() {
+	*x = GetPoolStatusResponse{}
+	mi := &file_containarium_v1_sandbox_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetPoolStatusResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetPoolStatusResponse) ProtoMessage() {}
+
+func (x *GetPoolStatusResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_sandbox_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetPoolStatusResponse.ProtoReflect.Descriptor instead.
+func (*GetPoolStatusResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_sandbox_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *GetPoolStatusResponse) GetTemplates() []*PoolTemplateStatus {
+	if x != nil {
+		return x.Templates
+	}
+	return nil
+}
+
+// PoolTemplateStatus is one template's warm-pool state.
+type PoolTemplateStatus struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Template SandboxTemplate        `protobuf:"varint,1,opt,name=template,proto3,enum=containarium.v1.SandboxTemplate" json:"template,omitempty"`
+	// Members claimable right now.
+	Ready int32 `protobuf:"varint,2,opt,name=ready,proto3" json:"ready,omitempty"`
+	// Members currently being created/started/network-provisioned, not yet
+	// claimable.
+	Warming int32 `protobuf:"varint,3,opt,name=warming,proto3" json:"warming,omitempty"`
+	// The operator-configured floor ready + warming is being reconciled
+	// toward.
+	MinWarm       int32 `protobuf:"varint,4,opt,name=min_warm,json=minWarm,proto3" json:"min_warm,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PoolTemplateStatus) Reset() {
+	*x = PoolTemplateStatus{}
+	mi := &file_containarium_v1_sandbox_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PoolTemplateStatus) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PoolTemplateStatus) ProtoMessage() {}
+
+func (x *PoolTemplateStatus) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_sandbox_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PoolTemplateStatus.ProtoReflect.Descriptor instead.
+func (*PoolTemplateStatus) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_sandbox_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *PoolTemplateStatus) GetTemplate() SandboxTemplate {
+	if x != nil {
+		return x.Template
+	}
+	return SandboxTemplate_SANDBOX_TEMPLATE_UNSPECIFIED
+}
+
+func (x *PoolTemplateStatus) GetReady() int32 {
+	if x != nil {
+		return x.Ready
+	}
+	return 0
+}
+
+func (x *PoolTemplateStatus) GetWarming() int32 {
+	if x != nil {
+		return x.Warming
+	}
+	return 0
+}
+
+func (x *PoolTemplateStatus) GetMinWarm() int32 {
+	if x != nil {
+		return x.MinWarm
+	}
+	return 0
+}
+
 type SpawnRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Shell command to run, e.g. "npm run dev". Runs under /bin/sh -c,
@@ -823,7 +981,7 @@ type SpawnRequest struct {
 
 func (x *SpawnRequest) Reset() {
 	*x = SpawnRequest{}
-	mi := &file_containarium_v1_sandbox_proto_msgTypes[11]
+	mi := &file_containarium_v1_sandbox_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -835,7 +993,7 @@ func (x *SpawnRequest) String() string {
 func (*SpawnRequest) ProtoMessage() {}
 
 func (x *SpawnRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_sandbox_proto_msgTypes[11]
+	mi := &file_containarium_v1_sandbox_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -848,7 +1006,7 @@ func (x *SpawnRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SpawnRequest.ProtoReflect.Descriptor instead.
 func (*SpawnRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_sandbox_proto_rawDescGZIP(), []int{11}
+	return file_containarium_v1_sandbox_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *SpawnRequest) GetCommand() string {
@@ -885,7 +1043,7 @@ type SpawnResponse struct {
 
 func (x *SpawnResponse) Reset() {
 	*x = SpawnResponse{}
-	mi := &file_containarium_v1_sandbox_proto_msgTypes[12]
+	mi := &file_containarium_v1_sandbox_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -897,7 +1055,7 @@ func (x *SpawnResponse) String() string {
 func (*SpawnResponse) ProtoMessage() {}
 
 func (x *SpawnResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_sandbox_proto_msgTypes[12]
+	mi := &file_containarium_v1_sandbox_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -910,7 +1068,7 @@ func (x *SpawnResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SpawnResponse.ProtoReflect.Descriptor instead.
 func (*SpawnResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_sandbox_proto_rawDescGZIP(), []int{12}
+	return file_containarium_v1_sandbox_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *SpawnResponse) GetName() string {
@@ -949,7 +1107,7 @@ type AgentExecRequest struct {
 
 func (x *AgentExecRequest) Reset() {
 	*x = AgentExecRequest{}
-	mi := &file_containarium_v1_sandbox_proto_msgTypes[13]
+	mi := &file_containarium_v1_sandbox_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -961,7 +1119,7 @@ func (x *AgentExecRequest) String() string {
 func (*AgentExecRequest) ProtoMessage() {}
 
 func (x *AgentExecRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_sandbox_proto_msgTypes[13]
+	mi := &file_containarium_v1_sandbox_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -974,7 +1132,7 @@ func (x *AgentExecRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentExecRequest.ProtoReflect.Descriptor instead.
 func (*AgentExecRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_sandbox_proto_rawDescGZIP(), []int{13}
+	return file_containarium_v1_sandbox_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *AgentExecRequest) GetCommand() string {
@@ -1009,7 +1167,7 @@ type AgentExecResponse struct {
 
 func (x *AgentExecResponse) Reset() {
 	*x = AgentExecResponse{}
-	mi := &file_containarium_v1_sandbox_proto_msgTypes[14]
+	mi := &file_containarium_v1_sandbox_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1021,7 +1179,7 @@ func (x *AgentExecResponse) String() string {
 func (*AgentExecResponse) ProtoMessage() {}
 
 func (x *AgentExecResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_sandbox_proto_msgTypes[14]
+	mi := &file_containarium_v1_sandbox_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1034,7 +1192,7 @@ func (x *AgentExecResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentExecResponse.ProtoReflect.Descriptor instead.
 func (*AgentExecResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_sandbox_proto_rawDescGZIP(), []int{14}
+	return file_containarium_v1_sandbox_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *AgentExecResponse) GetStdout() string {
@@ -1107,7 +1265,15 @@ const file_containarium_v1_sandbox_proto_rawDesc = "" +
 	"\n" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\"1\n" +
 	"\x15DeleteSandboxResponse\x12\x18\n" +
-	"\amessage\x18\x01 \x01(\tR\amessage\"N\n" +
+	"\amessage\x18\x01 \x01(\tR\amessage\"\x16\n" +
+	"\x14GetPoolStatusRequest\"Z\n" +
+	"\x15GetPoolStatusResponse\x12A\n" +
+	"\ttemplates\x18\x01 \x03(\v2#.containarium.v1.PoolTemplateStatusR\ttemplates\"\x9d\x01\n" +
+	"\x12PoolTemplateStatus\x12<\n" +
+	"\btemplate\x18\x01 \x01(\x0e2 .containarium.v1.SandboxTemplateR\btemplate\x12\x14\n" +
+	"\x05ready\x18\x02 \x01(\x05R\x05ready\x12\x18\n" +
+	"\awarming\x18\x03 \x01(\x05R\awarming\x12\x19\n" +
+	"\bmin_warm\x18\x04 \x01(\x05R\aminWarm\"N\n" +
 	"\fSpawnRequest\x12\x18\n" +
 	"\acommand\x18\x01 \x01(\tR\acommand\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x10\n" +
@@ -1137,7 +1303,7 @@ const file_containarium_v1_sandbox_proto_rawDesc = "" +
 	"\x10SERVED_FROM_POOL\x10\x02*N\n" +
 	"\x0fSandboxTemplate\x12 \n" +
 	"\x1cSANDBOX_TEMPLATE_UNSPECIFIED\x10\x00\x12\x19\n" +
-	"\x15SANDBOX_TEMPLATE_BASE\x10\x012\xb4\t\n" +
+	"\x15SANDBOX_TEMPLATE_BASE\x10\x012\xe1\v\n" +
 	"\x0eSandboxService\x12\xf2\x02\n" +
 	"\fSpawnSandbox\x12$.containarium.v1.SpawnSandboxRequest\x1a%.containarium.v1.SpawnSandboxResponse\"\x94\x02\x92A\xf8\x01\n" +
 	"\tSandboxes\x12\x0fSpawn a sandbox\x1a\xd9\x01Creates an ephemeral, unauthenticated-shell-free sandbox. Phase 1: always the cold path (served_from = COLD); Phase 3+: a pool claim when a warm member is ready, else RESOURCE_EXHAUSTED unless allow_cold_start is set.\x82\xd3\xe4\x93\x02\x12:\x01*\"\r/v1/sandboxes\x12\xb8\x01\n" +
@@ -1148,7 +1314,9 @@ const file_containarium_v1_sandbox_proto_rawDesc = "" +
 	"\x11ReadFileInSandbox\x12).containarium.v1.ReadFileInSandboxRequest\x1a*.containarium.v1.ReadFileInSandboxResponse\"\x97\x01\x92Al\n" +
 	"\tSandboxes\x12\x1aRead a file from a sandbox\x1aCpath is passed as a query parameter, e.g. ?path=/workspace/out.txt.\x82\xd3\xe4\x93\x02\"\x12 /v1/sandboxes/{sandbox_id}/files\x12\xa2\x01\n" +
 	"\rDeleteSandbox\x12%.containarium.v1.DeleteSandboxRequest\x1a&.containarium.v1.DeleteSandboxResponse\"B\x92A\x1d\n" +
-	"\tSandboxes\x12\x10Delete a sandbox\x82\xd3\xe4\x93\x02\x1c*\x1a/v1/sandboxes/{sandbox_id}2\xa5\x01\n" +
+	"\tSandboxes\x12\x10Delete a sandbox\x82\xd3\xe4\x93\x02\x1c*\x1a/v1/sandboxes/{sandbox_id}\x12\xaa\x02\n" +
+	"\rGetPoolStatus\x12%.containarium.v1.GetPoolStatusRequest\x1a&.containarium.v1.GetPoolStatusResponse\"\xc9\x01\x92A\xa5\x01\n" +
+	"\tSandboxes\x12\x14Get warm pool status\x1a\x81\x01Reports per-template ready/warming counts against the configured min_warm floor. Empty templates list when no pool is configured.\x82\xd3\xe4\x93\x02\x1a\x12\x18/v1/sandboxes:poolStatus2\xa5\x01\n" +
 	"\fSpawnService\x12F\n" +
 	"\x05Spawn\x12\x1d.containarium.v1.SpawnRequest\x1a\x1e.containarium.v1.SpawnResponse\x12M\n" +
 	"\x04Exec\x12!.containarium.v1.AgentExecRequest\x1a\".containarium.v1.AgentExecResponseBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
@@ -1166,7 +1334,7 @@ func file_containarium_v1_sandbox_proto_rawDescGZIP() []byte {
 }
 
 var file_containarium_v1_sandbox_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_containarium_v1_sandbox_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
+var file_containarium_v1_sandbox_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
 var file_containarium_v1_sandbox_proto_goTypes = []any{
 	(SandboxState)(0),                  // 0: containarium.v1.SandboxState
 	(ServedFrom)(0),                    // 1: containarium.v1.ServedFrom
@@ -1182,39 +1350,46 @@ var file_containarium_v1_sandbox_proto_goTypes = []any{
 	(*ReadFileInSandboxResponse)(nil),  // 11: containarium.v1.ReadFileInSandboxResponse
 	(*DeleteSandboxRequest)(nil),       // 12: containarium.v1.DeleteSandboxRequest
 	(*DeleteSandboxResponse)(nil),      // 13: containarium.v1.DeleteSandboxResponse
-	(*SpawnRequest)(nil),               // 14: containarium.v1.SpawnRequest
-	(*SpawnResponse)(nil),              // 15: containarium.v1.SpawnResponse
-	(*AgentExecRequest)(nil),           // 16: containarium.v1.AgentExecRequest
-	(*AgentExecResponse)(nil),          // 17: containarium.v1.AgentExecResponse
-	(*timestamppb.Timestamp)(nil),      // 18: google.protobuf.Timestamp
+	(*GetPoolStatusRequest)(nil),       // 14: containarium.v1.GetPoolStatusRequest
+	(*GetPoolStatusResponse)(nil),      // 15: containarium.v1.GetPoolStatusResponse
+	(*PoolTemplateStatus)(nil),         // 16: containarium.v1.PoolTemplateStatus
+	(*SpawnRequest)(nil),               // 17: containarium.v1.SpawnRequest
+	(*SpawnResponse)(nil),              // 18: containarium.v1.SpawnResponse
+	(*AgentExecRequest)(nil),           // 19: containarium.v1.AgentExecRequest
+	(*AgentExecResponse)(nil),          // 20: containarium.v1.AgentExecResponse
+	(*timestamppb.Timestamp)(nil),      // 21: google.protobuf.Timestamp
 }
 var file_containarium_v1_sandbox_proto_depIdxs = []int32{
 	0,  // 0: containarium.v1.Sandbox.state:type_name -> containarium.v1.SandboxState
 	2,  // 1: containarium.v1.Sandbox.template:type_name -> containarium.v1.SandboxTemplate
 	1,  // 2: containarium.v1.Sandbox.served_from:type_name -> containarium.v1.ServedFrom
-	18, // 3: containarium.v1.Sandbox.created_at:type_name -> google.protobuf.Timestamp
-	18, // 4: containarium.v1.Sandbox.expires_at:type_name -> google.protobuf.Timestamp
+	21, // 3: containarium.v1.Sandbox.created_at:type_name -> google.protobuf.Timestamp
+	21, // 4: containarium.v1.Sandbox.expires_at:type_name -> google.protobuf.Timestamp
 	2,  // 5: containarium.v1.SpawnSandboxRequest.template:type_name -> containarium.v1.SandboxTemplate
 	3,  // 6: containarium.v1.SpawnSandboxResponse.sandbox:type_name -> containarium.v1.Sandbox
-	4,  // 7: containarium.v1.SandboxService.SpawnSandbox:input_type -> containarium.v1.SpawnSandboxRequest
-	6,  // 8: containarium.v1.SandboxService.ExecInSandbox:input_type -> containarium.v1.ExecInSandboxRequest
-	8,  // 9: containarium.v1.SandboxService.WriteFileInSandbox:input_type -> containarium.v1.WriteFileInSandboxRequest
-	10, // 10: containarium.v1.SandboxService.ReadFileInSandbox:input_type -> containarium.v1.ReadFileInSandboxRequest
-	12, // 11: containarium.v1.SandboxService.DeleteSandbox:input_type -> containarium.v1.DeleteSandboxRequest
-	14, // 12: containarium.v1.SpawnService.Spawn:input_type -> containarium.v1.SpawnRequest
-	16, // 13: containarium.v1.SpawnService.Exec:input_type -> containarium.v1.AgentExecRequest
-	5,  // 14: containarium.v1.SandboxService.SpawnSandbox:output_type -> containarium.v1.SpawnSandboxResponse
-	7,  // 15: containarium.v1.SandboxService.ExecInSandbox:output_type -> containarium.v1.ExecInSandboxResponse
-	9,  // 16: containarium.v1.SandboxService.WriteFileInSandbox:output_type -> containarium.v1.WriteFileInSandboxResponse
-	11, // 17: containarium.v1.SandboxService.ReadFileInSandbox:output_type -> containarium.v1.ReadFileInSandboxResponse
-	13, // 18: containarium.v1.SandboxService.DeleteSandbox:output_type -> containarium.v1.DeleteSandboxResponse
-	15, // 19: containarium.v1.SpawnService.Spawn:output_type -> containarium.v1.SpawnResponse
-	17, // 20: containarium.v1.SpawnService.Exec:output_type -> containarium.v1.AgentExecResponse
-	14, // [14:21] is the sub-list for method output_type
-	7,  // [7:14] is the sub-list for method input_type
-	7,  // [7:7] is the sub-list for extension type_name
-	7,  // [7:7] is the sub-list for extension extendee
-	0,  // [0:7] is the sub-list for field type_name
+	16, // 7: containarium.v1.GetPoolStatusResponse.templates:type_name -> containarium.v1.PoolTemplateStatus
+	2,  // 8: containarium.v1.PoolTemplateStatus.template:type_name -> containarium.v1.SandboxTemplate
+	4,  // 9: containarium.v1.SandboxService.SpawnSandbox:input_type -> containarium.v1.SpawnSandboxRequest
+	6,  // 10: containarium.v1.SandboxService.ExecInSandbox:input_type -> containarium.v1.ExecInSandboxRequest
+	8,  // 11: containarium.v1.SandboxService.WriteFileInSandbox:input_type -> containarium.v1.WriteFileInSandboxRequest
+	10, // 12: containarium.v1.SandboxService.ReadFileInSandbox:input_type -> containarium.v1.ReadFileInSandboxRequest
+	12, // 13: containarium.v1.SandboxService.DeleteSandbox:input_type -> containarium.v1.DeleteSandboxRequest
+	14, // 14: containarium.v1.SandboxService.GetPoolStatus:input_type -> containarium.v1.GetPoolStatusRequest
+	17, // 15: containarium.v1.SpawnService.Spawn:input_type -> containarium.v1.SpawnRequest
+	19, // 16: containarium.v1.SpawnService.Exec:input_type -> containarium.v1.AgentExecRequest
+	5,  // 17: containarium.v1.SandboxService.SpawnSandbox:output_type -> containarium.v1.SpawnSandboxResponse
+	7,  // 18: containarium.v1.SandboxService.ExecInSandbox:output_type -> containarium.v1.ExecInSandboxResponse
+	9,  // 19: containarium.v1.SandboxService.WriteFileInSandbox:output_type -> containarium.v1.WriteFileInSandboxResponse
+	11, // 20: containarium.v1.SandboxService.ReadFileInSandbox:output_type -> containarium.v1.ReadFileInSandboxResponse
+	13, // 21: containarium.v1.SandboxService.DeleteSandbox:output_type -> containarium.v1.DeleteSandboxResponse
+	15, // 22: containarium.v1.SandboxService.GetPoolStatus:output_type -> containarium.v1.GetPoolStatusResponse
+	18, // 23: containarium.v1.SpawnService.Spawn:output_type -> containarium.v1.SpawnResponse
+	20, // 24: containarium.v1.SpawnService.Exec:output_type -> containarium.v1.AgentExecResponse
+	17, // [17:25] is the sub-list for method output_type
+	9,  // [9:17] is the sub-list for method input_type
+	9,  // [9:9] is the sub-list for extension type_name
+	9,  // [9:9] is the sub-list for extension extendee
+	0,  // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_sandbox_proto_init() }
@@ -1228,7 +1403,7 @@ func file_containarium_v1_sandbox_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_sandbox_proto_rawDesc), len(file_containarium_v1_sandbox_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   15,
+			NumMessages:   18,
 			NumExtensions: 0,
 			NumServices:   2,
 		},

@@ -33,6 +33,7 @@ import (
 	"github.com/footprintai/containarium/internal/modelgateway"
 	"github.com/footprintai/containarium/internal/mtls"
 	"github.com/footprintai/containarium/internal/pentest"
+	"github.com/footprintai/containarium/internal/sandbox/ratelimit"
 	secretsstore "github.com/footprintai/containarium/internal/secrets"
 	"github.com/footprintai/containarium/internal/security"
 	"github.com/footprintai/containarium/internal/traffic"
@@ -103,6 +104,22 @@ type DualServerConfig struct {
 
 	// Standalone mode: skip all PostgreSQL/core container dependencies
 	Standalone bool
+
+	// DisableSecurityScanner/DisablePentestScanner/DisableZapScanner turn
+	// off the three passive/active scanners that otherwise start
+	// automatically whenever PostgresConnString is set (there's no
+	// independent opt-out today — each is gated purely on Postgres being
+	// configured). All three run background work triggered by container
+	// creation (the security scanner subscribes to CONTAINER_CREATED
+	// events; ClamAV + a network pentest scan then run against every new
+	// tenant), which is real, deliberate product behavior for a
+	// production daemon but adds real per-create latency that a
+	// throughput-sensitive deployment (or a benchmark) may want to skip.
+	// Independent flags rather than one umbrella flag since an operator
+	// may want e.g. malware scanning without the network pentest scan.
+	DisableSecurityScanner bool
+	DisablePentestScanner  bool
+	DisableZapScanner      bool
 
 	// Multi-backend peer settings
 	SentinelURL    string   // URL for auto-discovering tunnel peers (e.g., "http://10.128.0.5:8081")
@@ -182,42 +199,44 @@ func managementRouteDomains(cfg *DualServerConfig) []string {
 
 // DualServer runs both gRPC and HTTP/REST servers
 type DualServer struct {
-	config                *DualServerConfig
-	grpcServer            *grpc.Server
-	containerServer       *ContainerServer
-	appServer             *AppServer
-	networkServer         *NetworkServer
-	trafficServer         *TrafficServer
-	trafficCollector      *traffic.Collector
-	gatewayServer         *gateway.GatewayServer
-	tokenManager          *auth.TokenManager
-	authMiddleware        *auth.AuthMiddleware
-	routeStore            *app.RouteStore
-	routeSyncJob          *app.RouteSyncJob
-	passthroughStore      network.PassthroughStore
-	passthroughSyncJob    *network.PassthroughSyncJob
-	collaboratorStore     *collaborator.Store
-	daemonConfigStore     *app.DaemonConfigStore
-	metricsCollector      *metrics.Collector
-	securityScanner       *security.Scanner
-	securityStore         *security.Store
-	securityServer        *SecurityServer
-	auditStore            *audit.Store
-	auditEventSubscriber  *audit.EventSubscriber
-	sshCollector          *audit.SSHCollector
-	revocationStore       *auth.PgRevocationStore // Phase 1.2 — kill-switch for issued JWTs
-	alertStore            *alert.Store
-	alertManager          *alert.Manager
-	alertDeliveryStore    *alert.DeliveryStore
-	pentestManager        *pentest.Manager
-	pentestStore          *pentest.Store
-	zapManager            *zapscanner.Manager
-	zapStore              *zapscanner.Store
-	peerPool              *PeerPool
-	autoSleepManager      *autosleep.Manager
-	ttlSweeperManager     *ttlsweeper.Manager    // ephemeral CI box auto-delete (#299)
-	secretsReconciler     *secretsReconciler     // Phase 4.3 Phase B-3
-	networkPolicyEnforcer *NetworkPolicyEnforcer // #315 Phase A — eBPF per-tenant net policy (off unless configured)
+	config                   *DualServerConfig
+	grpcServer               *grpc.Server
+	containerServer          *ContainerServer
+	appServer                *AppServer
+	networkServer            *NetworkServer
+	trafficServer            *TrafficServer
+	trafficCollector         *traffic.Collector
+	gatewayServer            *gateway.GatewayServer
+	tokenManager             *auth.TokenManager
+	authMiddleware           *auth.AuthMiddleware
+	routeStore               *app.RouteStore
+	routeSyncJob             *app.RouteSyncJob
+	passthroughStore         network.PassthroughStore
+	passthroughSyncJob       *network.PassthroughSyncJob
+	collaboratorStore        *collaborator.Store
+	daemonConfigStore        *app.DaemonConfigStore
+	metricsCollector         *metrics.Collector
+	securityScanner          *security.Scanner
+	securityStore            *security.Store
+	securityServer           *SecurityServer
+	auditStore               *audit.Store
+	auditEventSubscriber     *audit.EventSubscriber
+	sshCollector             *audit.SSHCollector
+	revocationStore          *auth.PgRevocationStore // Phase 1.2 — kill-switch for issued JWTs
+	alertStore               *alert.Store
+	alertManager             *alert.Manager
+	alertDeliveryStore       *alert.DeliveryStore
+	pentestManager           *pentest.Manager
+	pentestStore             *pentest.Store
+	zapManager               *zapscanner.Manager
+	zapStore                 *zapscanner.Store
+	peerPool                 *PeerPool
+	autoSleepManager         *autosleep.Manager
+	ttlSweeperManager        *ttlsweeper.Manager    // ephemeral CI box auto-delete (#299)
+	sandboxServer            *SandboxServer         // set in NewDualServer when incus.New succeeds; nil otherwise (#1488)
+	sandboxTTLSweeperManager *ttlsweeper.Manager    // ephemeral sandbox auto-delete (#1488 Phase 4)
+	secretsReconciler        *secretsReconciler     // Phase 4.3 Phase B-3
+	networkPolicyEnforcer    *NetworkPolicyEnforcer // #315 Phase A — eBPF per-tenant net policy (off unless configured)
 
 	// k8sNetPolicyReconciler converges tenant NetworkPolicy objects on the K8s
 	// backend from the same store the eBPF enforcer reads (#1188). Nil on
@@ -524,11 +543,43 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	pb.RegisterVolumeServiceServer(grpcServer, NewVolumeServer())
 	log.Printf("Volume service enabled")
 
-	// Register SandboxService — ephemeral, no-SSH sandboxes (#1488 Phase 1,
-	// the two-digit-ms spawn path's cold-path implementation). Own incus
-	// client, same pattern as the other feature servers in this function.
+	// Register SandboxService — ephemeral, no-SSH sandboxes (#1488). Own
+	// incus client, same pattern as the other feature servers in this
+	// function.
+	//
+	// Pool is nil: SandboxServer can use a configured *pool.Pool (#1520)
+	// to serve spawns from a warm ring instead of always creating cold,
+	// but nothing constructs one here yet. A pool needs operator-facing
+	// config this daemon doesn't have a source for yet (min_warm per
+	// template, an image per template, the IPAM range, the NIC network)
+	// — and those need validating against a live host before they're
+	// safe defaults, which this can't do. Every spawn takes the cold
+	// path until that config lands; see SandboxServer's own type doc for
+	// why nil is also the ONLY safe default (a configured-but-empty pool
+	// would silently start rejecting every caller that hasn't set
+	// allow_cold_start=true).
+	var sandboxServer *SandboxServer
 	if sandboxIncusClient, err := incus.New(); err == nil {
-		pb.RegisterSandboxServiceServer(grpcServer, NewSandboxServer(sandboxIncusClient))
+		sandboxServer = NewSandboxServer(sandboxIncusClient, nil)
+
+		// Per-tenant spawn rate limit (#1488 Phase 4). Off by default
+		// (ratelimit.Disabled(), same as NewSandboxServer's own zero
+		// value) — CONTAINARIUM_SANDBOX_SPAWN_RATE_PER_MINUTE opts in.
+		// A malformed value fails closed (every spawn refused, not
+		// silently unlimited) rather than aborting daemon startup —
+		// same posture as clusterCaps.configErr below, applied to a
+		// feature that's off by default instead of one with a
+		// meaningful "unset" ceiling.
+		spawnLimiter := ratelimit.NewFromEnv(
+			os.Getenv("CONTAINARIUM_SANDBOX_SPAWN_RATE_PER_MINUTE"),
+			os.Getenv("CONTAINARIUM_SANDBOX_SPAWN_BURST"),
+		)
+		if limiterErr := spawnLimiter.Err(); limiterErr != nil {
+			log.Printf("ERROR: %v — sandbox spawns will be refused until the rate limit config is fixed", limiterErr)
+		}
+		sandboxServer.SetRateLimiter(spawnLimiter)
+
+		pb.RegisterSandboxServiceServer(grpcServer, sandboxServer)
 		log.Printf("Sandbox service enabled")
 	} else {
 		log.Printf("Warning: SandboxService disabled — incus client init failed: %v", err)
@@ -1338,7 +1389,7 @@ skipAppHosting:
 	var securityScanner *security.Scanner
 	var securityStore *security.Store
 	var securityServerInstance *SecurityServer
-	if postgresConnString != "" {
+	if postgresConnString != "" && !config.DisableSecurityScanner {
 		securityPool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
 		if poolErr != nil {
 			log.Printf("Warning: Failed to connect to PostgreSQL for security store: %v", poolErr)
@@ -1391,7 +1442,7 @@ skipAppHosting:
 	// Setup pentest manager
 	var pentestManager *pentest.Manager
 	var pentestStore *pentest.Store
-	if postgresConnString != "" {
+	if postgresConnString != "" && !config.DisablePentestScanner {
 		pentestPool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
 		if poolErr != nil {
 			log.Printf("Warning: Failed to connect to PostgreSQL for pentest store: %v", poolErr)
@@ -1427,7 +1478,7 @@ skipAppHosting:
 	// Setup ZAP scanner manager
 	var zapManager *zapscanner.Manager
 	var zapStore *zapscanner.Store
-	if postgresConnString != "" {
+	if postgresConnString != "" && !config.DisableZapScanner {
 		zapPool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
 		if poolErr != nil {
 			log.Printf("Warning: Failed to connect to PostgreSQL for ZAP store: %v", poolErr)
@@ -1914,6 +1965,7 @@ skipAppHosting:
 		k8sNetPolicyReconciler: k8sNetPolicyReconciler,
 		cloudClient:            cloudClient,
 		startTime:              time.Now(),
+		sandboxServer:          sandboxServer,
 	}
 
 	// Auto-sleep ticker is constructed in Start() once the traffic
@@ -2316,6 +2368,28 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		log.Printf("[ttlsweeper] incus client unavailable: %v (sweeper disabled)", err)
 	}
 
+	// Sandbox TTL sweeper (#1488 Phase 4: "no sandbox leaks past
+	// idle_ttl"). Separate Manager instance from the persistent-box one
+	// above, scoped to SandboxService's own container population and
+	// deletion routing: ds.sandboxServer implements ttlsweeper.Deleter
+	// directly (its DeleteContainer method), which routes an expired
+	// pool-claimed sandbox through pool.Release exactly like
+	// DeleteSandbox does — the persistent-box ttlsweeperDeleter above only
+	// knows the "<username>-container" naming convention and would refuse
+	// every sandbox_id. Independent of whether a pool is actually
+	// configured (nil today, see NewDualServer): a cold-path sandbox
+	// carries the same user.containarium.ttl_expires_at stamp a
+	// pool-claimed one does, so sweeping is safe and needed the moment
+	// SandboxService itself is enabled.
+	if ds.sandboxServer != nil {
+		ds.sandboxTTLSweeperManager = ttlsweeper.NewManager(
+			&ttlsweeperSandboxAdapter{backend: ds.sandboxServer.incus},
+			ds.sandboxServer,
+			ttlsweeper.Options{},
+		)
+		ds.sandboxTTLSweeperManager.Start(ctx)
+	}
+
 	// Orphan reaper (#835): periodically userdel host accounts whose
 	// container no longer exists. userdel -r on container delete can fail
 	// under lock contention (google-guest-agent race on GCP), leaving stale
@@ -2649,6 +2723,9 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		}
 		if ds.ttlSweeperManager != nil {
 			ds.ttlSweeperManager.Stop()
+		}
+		if ds.sandboxTTLSweeperManager != nil {
+			ds.sandboxTTLSweeperManager.Stop()
 		}
 		if ds.secretsReconciler != nil {
 			ds.secretsReconciler.Stop()

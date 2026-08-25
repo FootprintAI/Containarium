@@ -4,11 +4,16 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"log"
+	"sync"
 	"time"
 
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/safecast"
+	"github.com/footprintai/containarium/internal/sandbox/pool"
+	"github.com/footprintai/containarium/internal/sandbox/ratelimit"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc/codes"
@@ -40,9 +45,11 @@ const SandboxKindLabelValue = "sandbox"
 const sandboxNamePrefix = "sandbox-"
 
 // defaultSandboxIdleTTL applies when SpawnSandboxRequest.idle_ttl_seconds is
-// unset (0). No sweeper enforces it yet in Phase 1 (see the design note's
-// Phase 4) — expires_at is reported so a caller can see the horizon its
-// sandbox will eventually be reaped against once the sweeper exists.
+// unset (0). Enforced by the ttlsweeper.Manager wired in dual_server.go
+// (#1488 Phase 4, via ttlsweeperSandboxAdapter and SandboxServer's own
+// DeleteContainer method in sandbox_ttlsweeper_adapter.go) — expires_at
+// is reported so a caller can see the horizon its sandbox will actually
+// be reaped against.
 const defaultSandboxIdleTTL = 30 * time.Minute
 
 // spawnNetworkTimeout bounds how long SpawnSandbox waits for the guest's
@@ -50,9 +57,9 @@ const defaultSandboxIdleTTL = 30 * time.Minute
 // equivalent wait.
 const spawnNetworkTimeout = 30 * time.Second
 
-// SandboxServer implements SandboxService (#1488 Phase 1): the two-digit-ms
-// spawn path's cold-path implementation. A sandbox has no per-tenant Linux
-// account and no SSH — these five RPCs are its entire access surface.
+// SandboxServer implements SandboxService: the two-digit-ms spawn path. A
+// sandbox has no per-tenant Linux account and no SSH — these five RPCs are
+// its entire access surface.
 //
 // Talks to incus.Backend directly rather than going through
 // pkg/core/container.Manager: Manager.Create is the full persistent-box
@@ -60,14 +67,88 @@ const spawnNetworkTimeout = 30 * time.Second
 // sandboxes are explicitly scoped to skip. Reusing it would mean threading
 // a "skip everything" option through a function whose entire shape is that
 // provisioning.
+//
+// pool is optional (#1488 Phase 3). nil means every spawn takes the cold
+// path — today's exact Phase 1 behavior, including for a caller that never
+// sets allow_cold_start (its zero value is false): admission control
+// (RESOURCE_EXHAUSTED on an exhausted pool) only ever applies when a pool
+// is actually configured. A configured-but-untargeted pool (no ready
+// member for a requested template) is indistinguishable from "no pool at
+// all" from SpawnSandbox's perspective — both fall through to cold,
+// subject to the same allow_cold_start gate.
 type SandboxServer struct {
 	pb.UnimplementedSandboxServiceServer
 	incus incus.Backend
+	pool  *pool.Pool
+
+	// rateLimiter gates SpawnSandbox per-tenant (#1488 Phase 4). Always
+	// non-nil after NewSandboxServer (ratelimit.Disabled(): every spawn
+	// allowed) — set via SetRateLimiter to actually enforce a limit, so
+	// SpawnSandbox never needs its own nil check here.
+	rateLimiter *ratelimit.Limiter
+
+	// claimed tracks, per pool-claimed sandbox_id, the pool.Member Claim
+	// returned — DeleteSandbox needs it to route to pool.Release (which
+	// also frees the member's IPAM address) instead of destroy() (which
+	// doesn't know about IPAM at all; a cold-path sandbox never has an
+	// address to free). In-memory only: like container_server.go's own
+	// pendingCreations, a claimed-but-not-yet-deleted sandbox's tracking
+	// doesn't survive a daemon restart — no different in kind from every
+	// other piece of this daemon's in-flight state, and sandboxes are
+	// short-lived by design.
+	claimedMu sync.Mutex
+	claimed   map[string]*pool.Member
 }
 
 // NewSandboxServer constructs a SandboxServer over the given Incus backend.
-func NewSandboxServer(backend incus.Backend) *SandboxServer {
-	return &SandboxServer{incus: backend}
+// p is optional; nil disables pool-backed spawns (see the type doc). The
+// spawn rate limiter starts disabled (ratelimit.Disabled()) — call
+// SetRateLimiter to enable one.
+func NewSandboxServer(backend incus.Backend, p *pool.Pool) *SandboxServer {
+	return &SandboxServer{
+		incus:       backend,
+		pool:        p,
+		rateLimiter: ratelimit.Disabled(),
+		claimed:     make(map[string]*pool.Member),
+	}
+}
+
+// SetRateLimiter installs a per-tenant spawn rate limiter (#1488 Phase
+// 4). Optional — call after NewSandboxServer; passing nil restores
+// ratelimit.Disabled() rather than leaving a real nil pointer around,
+// mirroring ClusterServer.SetCaps's own optional-config-after-
+// construction shape.
+func (s *SandboxServer) SetRateLimiter(l *ratelimit.Limiter) {
+	if l == nil {
+		l = ratelimit.Disabled()
+	}
+	s.rateLimiter = l
+}
+
+// StartReconciler runs pool.Reconcile on interval until ctx is done. No-op
+// if s.pool is nil (no pool configured). Same ticker shape as this
+// package's other background loops (see startIntegrityHeartbeat in
+// dual_server.go): one immediate reconcile so a freshly-started daemon
+// doesn't wait a full interval before warming its first members, then on
+// the cadence.
+func (s *SandboxServer) StartReconciler(ctx context.Context, interval time.Duration) {
+	if s.pool == nil {
+		return
+	}
+
+	s.pool.Reconcile(ctx)
+	go func() {
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				s.pool.Reconcile(ctx)
+			}
+		}
+	}()
 }
 
 // newSandboxID generates a sandbox_id / Incus container name: sandbox- plus
@@ -109,9 +190,20 @@ func (s *SandboxServer) destroy(name string) error {
 	return s.incus.DeleteContainer(name)
 }
 
-// SpawnSandbox implements the two-digit-ms spawn path's Phase 1 cold
-// fallback: every call creates a fresh container. served_from is always
-// COLD until Phase 3 adds the warm pool.
+// SpawnSandbox tries the warm pool first (#1488 Phase 3, served_from =
+// POOL) when one is configured, and falls back to the cold path
+// (served_from = COLD) otherwise: pool disabled, or the requested
+// template's ready ring is empty and the caller set allow_cold_start. An
+// exhausted pool with allow_cold_start unset (false) returns
+// RESOURCE_EXHAUSTED instead of silently paying the cold path's cost — a
+// latency SLO whose slow path is invisible isn't an SLO.
+//
+// Per-tenant rate limiting (#1488 Phase 4) is checked immediately after
+// authentication, before template resolution or any pool/cold work — a
+// throttled caller shouldn't pay (or cause) any of that. It gates every
+// spawn regardless of path: a caller hammering SpawnSandbox is exactly as
+// disruptive to shared pool capacity via a fast POOL claim loop as via
+// slow COLD creates, so this isn't scoped to one path or the other.
 func (s *SandboxServer) SpawnSandbox(ctx context.Context, req *pb.SpawnSandboxRequest) (*pb.SpawnSandboxResponse, error) {
 	if err := auth.RequireScope(ctx, auth.ScopeSandboxesWrite); err != nil {
 		return nil, err
@@ -121,9 +213,34 @@ func (s *SandboxServer) SpawnSandbox(ctx context.Context, req *pb.SpawnSandboxRe
 		return nil, status.Error(codes.Unauthenticated, "no authenticated subject")
 	}
 
+	if !s.rateLimiter.Allow(subject) {
+		if err := s.rateLimiter.Err(); err != nil {
+			return nil, status.Errorf(codes.Internal, "sandbox spawn rate limiting misconfigured: %v", err)
+		}
+		return nil, status.Errorf(codes.ResourceExhausted, "spawn rate limit exceeded for %s; retry after a short backoff", subject)
+	}
+
 	template, image, err := resolveTemplate(req.Template)
 	if err != nil {
 		return nil, err
+	}
+
+	if s.pool != nil {
+		resp, err := s.claimFromPool(template, subject, req)
+		switch {
+		case err == nil:
+			return resp, nil
+		case !errors.Is(err, pool.ErrPoolExhausted):
+			// A member was actually claimed (removed from the ring) but
+			// setup failed after that — a real error, not "no pool
+			// member available." claimFromPool already unwound it.
+			return nil, err
+		case !req.AllowColdStart:
+			return nil, status.Errorf(codes.ResourceExhausted,
+				"no warm %s sandbox available; retry, or set allow_cold_start=true for the slower cold-create path", template)
+		}
+		// Exhausted, but the caller opted into the cold path — fall
+		// through to it below, exactly like a nil pool would.
 	}
 
 	id, err := newSandboxID()
@@ -131,21 +248,21 @@ func (s *SandboxServer) SpawnSandbox(ctx context.Context, req *pb.SpawnSandboxRe
 		return nil, status.Errorf(codes.Internal, "%v", err)
 	}
 
-	ttl := time.Duration(req.IdleTtlSeconds) * time.Second
-	if ttl <= 0 {
-		ttl = defaultSandboxIdleTTL
-	}
+	ttl := sandboxTTL(req.IdleTtlSeconds)
 	now := time.Now()
 
+	extraConfig := qualifyLabels(sandboxLabelSuffixes(template, ttl))
+	extraConfig[incus.TenantLabelKey] = subject
+	// Stamp the exact key/format ttlsweeper.Decide reads (see
+	// stampTTL's doc comment in container_server_ttl.go) via
+	// ContainerConfig.ExtraConfig rather than a follow-up SetConfig
+	// call — one fewer Incus round trip on the cold path, which is
+	// the path this design note is trying to make fast.
+	extraConfig[incus.TTLExpiresAtKey] = now.Add(ttl).UTC().Format(time.RFC3339)
 	config := incus.ContainerConfig{
-		Name:  id,
-		Image: image,
-		ExtraConfig: map[string]string{
-			SandboxKindLabelKey:                         SandboxKindLabelValue,
-			incus.TenantLabelKey:                        subject,
-			incus.LabelPrefix + "sandbox-template":      template.String(),
-			incus.LabelPrefix + "sandbox-idle-ttl-secs": fmt.Sprintf("%d", int64(ttl.Seconds())),
-		},
+		Name:        id,
+		Image:       image,
+		ExtraConfig: extraConfig,
 	}
 
 	if err := s.incus.CreateContainer(config); err != nil {
@@ -170,6 +287,142 @@ func (s *SandboxServer) SpawnSandbox(ctx context.Context, req *pb.SpawnSandboxRe
 			ExpiresAt:  timestamppb.New(now.Add(ttl)),
 		},
 	}, nil
+}
+
+// sandboxTTL resolves a request's idle_ttl_seconds to a concrete duration,
+// applying defaultSandboxIdleTTL when unset (<= 0).
+func sandboxTTL(idleTTLSeconds int32) time.Duration {
+	ttl := time.Duration(idleTTLSeconds) * time.Second
+	if ttl <= 0 {
+		ttl = defaultSandboxIdleTTL
+	}
+	return ttl
+}
+
+// sandboxLabelSuffixes builds the (bare, unqualified) label keys every
+// sandbox carries once fully provisioned, regardless of which path
+// created it — shared by the cold path (via qualifyLabels, below) and
+// claimFromPool's post-claim SetLabels so the two constructions can't
+// drift into stamping different keys.
+//
+// Bare because that's SetLabels' own contract — it adds incus.LabelPrefix
+// itself, so passing an already-prefixed key double-prefixes it. This
+// deliberately does NOT include incus.TenantLabelKey: that key lives
+// outside the LabelPrefix namespace entirely (SetLabels can't touch it —
+// it only clears/rewrites LabelPrefix-prefixed keys), so it's set
+// separately via SetConfig everywhere it's needed.
+func sandboxLabelSuffixes(template pb.SandboxTemplate, ttl time.Duration) map[string]string {
+	return map[string]string{
+		sandboxKindLabelSuffix:  SandboxKindLabelValue,
+		"sandbox-template":      template.String(),
+		"sandbox-idle-ttl-secs": fmt.Sprintf("%d", int64(ttl.Seconds())),
+	}
+}
+
+// qualifyLabels prefixes each key with incus.LabelPrefix, for a caller
+// (the cold path's CreateContainer ExtraConfig) that needs fully-qualified
+// keys rather than SetLabels' bare ones.
+func qualifyLabels(suffixes map[string]string) map[string]string {
+	qualified := make(map[string]string, len(suffixes))
+	for k, v := range suffixes {
+		qualified[incus.LabelPrefix+k] = v
+	}
+	return qualified
+}
+
+// claimFromPool attempts to serve a spawn from the warm pool: claim a
+// ready member, then stamp its ownership — a warmed-but-unclaimed member
+// carries none of it, since the pool has no notion of tenant — so the
+// existing ownership/lookup path (lookupOwnedSandbox) recognizes it
+// exactly like a cold-path sandbox.
+//
+// Returns pool.ErrPoolExhausted unchanged when there is simply no ready
+// member; the caller (SpawnSandbox) decides whether that's RESOURCE_EXHAUSTED
+// or a signal to fall back to the cold path. Any OTHER error means a
+// member WAS claimed (removed from the ring) but setup failed after that —
+// claimFromPool destroys it via pool.Release before returning, rather than
+// leaking a claimed member with no sandbox_id a caller could ever use to
+// clean it up: unlabeled (lookupOwnedSandbox wouldn't recognize it as a
+// sandbox at all) or unowned (info.Tenant == "" fails the ownership check
+// for everyone but an admin, including the tenant who thinks they just
+// spawned it).
+//
+// Three Incus round trips on the claim path — SetConfig for the tenant key
+// and for the TTL-expiry key (both outside the label namespace, see
+// sandboxLabelSuffixes) plus SetLabels for kind/template/ttl — because no
+// existing incus.Backend primitive sets a batch of raw config keys and
+// labels in one call. This is real, and it's the piece of "two-digit ms"
+// this integration does not yet fully deliver on; a combined bulk-set
+// primitive is a legitimate follow-up once real latency numbers (Phase 3's
+// own exit criterion) show it's worth adding.
+func (s *SandboxServer) claimFromPool(template pb.SandboxTemplate, subject string, req *pb.SpawnSandboxRequest) (*pb.SpawnSandboxResponse, error) {
+	member, err := s.pool.Claim(template)
+	if err != nil {
+		return nil, err
+	}
+
+	ttl := sandboxTTL(req.IdleTtlSeconds)
+	now := time.Now()
+
+	if err := s.incus.SetConfig(member.ID, incus.TenantLabelKey, subject); err != nil {
+		s.releaseFailedClaim(member, "set tenant", err)
+		return nil, status.Errorf(codes.Internal, "claimed a warm sandbox but failed to set its owner: %v", err)
+	}
+	// Same key/format the cold path stamps via ExtraConfig and
+	// ttlsweeper.Decide reads — see stampTTL's doc comment in
+	// container_server_ttl.go.
+	if err := s.incus.SetConfig(member.ID, incus.TTLExpiresAtKey, now.Add(ttl).UTC().Format(time.RFC3339)); err != nil {
+		s.releaseFailedClaim(member, "set ttl expiry", err)
+		return nil, status.Errorf(codes.Internal, "claimed a warm sandbox but failed to set its expiry: %v", err)
+	}
+	if err := s.incus.SetLabels(member.ID, sandboxLabelSuffixes(template, ttl)); err != nil {
+		s.releaseFailedClaim(member, "set labels", err)
+		return nil, status.Errorf(codes.Internal, "claimed a warm sandbox but failed to label it: %v", err)
+	}
+
+	s.trackClaimed(member)
+
+	return &pb.SpawnSandboxResponse{
+		Sandbox: &pb.Sandbox{
+			SandboxId:  member.ID,
+			State:      pb.SandboxState_SANDBOX_STATE_RUNNING,
+			Template:   template,
+			ServedFrom: pb.ServedFrom_SERVED_FROM_POOL,
+			CreatedAt:  timestamppb.New(member.WarmedAt),
+			ExpiresAt:  timestamppb.New(now.Add(ttl)),
+		},
+	}, nil
+}
+
+// releaseFailedClaim destroys member after a post-claim setup step
+// (naming which one, for the log) failed, so a member that can never be
+// correctly reached or owned doesn't sit around leaked instead of going
+// back through the normal destroy-on-release path. Best-effort: if the
+// release ALSO fails, there is nothing left to do but say so loudly —
+// this member is now genuinely leaked and needs an operator, not a retry.
+func (s *SandboxServer) releaseFailedClaim(m *pool.Member, step string, causeErr error) {
+	if err := s.pool.Release(m); err != nil {
+		log.Printf("[sandbox] claim %s: %s failed (%v) AND cleanup failed (%v) — this member is now leaked", m.ID, step, causeErr, err)
+	}
+}
+
+// trackClaimed records that sandbox_id came from the pool, for
+// DeleteSandbox to find later.
+func (s *SandboxServer) trackClaimed(m *pool.Member) {
+	s.claimedMu.Lock()
+	s.claimed[m.ID] = m
+	s.claimedMu.Unlock()
+}
+
+// untrackClaimed removes and returns the tracked pool.Member for id, or
+// nil if id was never claimed from the pool (a cold-path sandbox, or an
+// id this server has no record of).
+func (s *SandboxServer) untrackClaimed(id string) *pool.Member {
+	s.claimedMu.Lock()
+	defer s.claimedMu.Unlock()
+	m := s.claimed[id]
+	delete(s.claimed, id)
+	return m
 }
 
 // lookupOwnedSandbox fetches sandbox id and enforces ownership in one step:
@@ -277,7 +530,10 @@ func (s *SandboxServer) ReadFileInSandbox(ctx context.Context, req *pb.ReadFileI
 
 // DeleteSandbox destroys the sandbox immediately. Sandboxes are never reset
 // and reused (see the design note's Isolation section) — delete always
-// means destroy, never "return to a pool".
+// means destroy, never "return to a pool". A pool-claimed sandbox routes
+// through pool.Release rather than destroy() directly, since Release also
+// frees the member's IPAM-allocated address — destroy() knows nothing
+// about IPAM and a cold-path sandbox never held an allocation to free.
 func (s *SandboxServer) DeleteSandbox(ctx context.Context, req *pb.DeleteSandboxRequest) (*pb.DeleteSandboxResponse, error) {
 	if err := auth.RequireScope(ctx, auth.ScopeSandboxesWrite); err != nil {
 		return nil, err
@@ -289,9 +545,43 @@ func (s *SandboxServer) DeleteSandbox(ctx context.Context, req *pb.DeleteSandbox
 		return nil, err
 	}
 
-	if err := s.destroy(req.SandboxId); err != nil {
+	if member := s.untrackClaimed(req.SandboxId); member != nil {
+		if err := s.pool.Release(member); err != nil {
+			return nil, status.Errorf(codes.Internal, "failed to delete sandbox: %v", err)
+		}
+	} else if err := s.destroy(req.SandboxId); err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to delete sandbox: %v", err)
 	}
 
 	return &pb.DeleteSandboxResponse{Message: fmt.Sprintf("sandbox %s deleted", req.SandboxId)}, nil
+}
+
+// GetPoolStatus reports the warm pool's per-template ready/warming counts
+// against the configured min_warm floor (#1488 Phase 4: "pool exhaustion
+// is visible"). Read-only, no ownership scoping — pool state isn't
+// per-tenant data, it's operator/observability visibility into the
+// daemon's own admission-control posture. Returns an empty templates list
+// when no pool is configured (s.pool == nil, today's production default;
+// see the type doc), rather than an error — "the pool feature isn't
+// configured" is a legitimate, expected response, not a failure.
+func (s *SandboxServer) GetPoolStatus(ctx context.Context, _ *pb.GetPoolStatusRequest) (*pb.GetPoolStatusResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeSandboxesRead); err != nil {
+		return nil, err
+	}
+
+	if s.pool == nil {
+		return &pb.GetPoolStatusResponse{}, nil
+	}
+
+	statuses := s.pool.Status()
+	templates := make([]*pb.PoolTemplateStatus, 0, len(statuses))
+	for _, st := range statuses {
+		templates = append(templates, &pb.PoolTemplateStatus{
+			Template: st.Template,
+			Ready:    safecast.I32(st.Ready),
+			Warming:  safecast.I32(st.Warming),
+			MinWarm:  safecast.I32(st.MinWarm),
+		})
+	}
+	return &pb.GetPoolStatusResponse{Templates: templates}, nil
 }
