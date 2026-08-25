@@ -10,9 +10,18 @@ import (
 	"github.com/footprintai/containarium/pkg/core/incus"
 )
 
+// containerLister is the subset of *incus.Client's surface Refresh needs,
+// split out so the incremental-refresh logic (#1541) is unit-testable
+// without a live Incus server — same "generic loop, production function
+// injected by the caller" shape as fetchAllConcurrently in pkg/core/incus.
+type containerLister interface {
+	GetInstanceNames() ([]string, error)
+	GetContainerWithNetwork(name string) (*incus.ContainerInfo, error)
+}
+
 // ContainerCache maps IP addresses to container names
 type ContainerCache struct {
-	incusClient *incus.Client
+	incusClient containerLister
 	network     *net.IPNet
 
 	mu       sync.RWMutex
@@ -85,32 +94,75 @@ func (c *ContainerCache) GetAllContainers() map[string]string {
 	return result
 }
 
-// Refresh updates the cache from Incus
+// Refresh updates the cache from Incus incrementally (#1541): a full
+// relist-and-refetch of every container on every cycle was found live to
+// be a real, unconditional contributor to Incus daemon CPU load at high
+// container counts — 2 Incus API round-trips per EXISTING container, every
+// cycle, regardless of whether anything actually changed. A container's IP
+// essentially never changes once DHCP-assigned, so only names not already
+// holding a cached IP (genuinely new, or one that hasn't gotten an IP yet)
+// pay the per-container lookup; names that disappeared are dropped, and
+// everything else is left untouched. Trade-off: a container that somehow
+// gets reassigned a different IP without a name change (rare — e.g. a
+// stop/start after DHCP lease exhaustion) goes undetected until it's
+// deleted and recreated. Acceptable here — every caller of Lookup*/
+// GetAllContainers uses this for traffic/egress *attribution* (metrics),
+// not security or routing enforcement (see internal/traffic/collector.go,
+// fanout.go) — a stale mapping briefly misattributes a metric, not a
+// security decision.
 func (c *ContainerCache) Refresh() error {
-	containers, err := c.incusClient.ListContainers()
+	names, err := c.incusClient.GetInstanceNames()
 	if err != nil {
 		return err
+	}
+
+	c.mu.RLock()
+	currentSet := make(map[string]bool, len(names))
+	toFetch := make([]string, 0)
+	for _, name := range names {
+		currentSet[name] = true
+		if _, known := c.nameToIP[name]; !known {
+			toFetch = append(toFetch, name)
+		}
+	}
+	c.mu.RUnlock()
+
+	fetched := make(map[string]*incus.ContainerInfo, len(toFetch))
+	for _, name := range toFetch {
+		info, err := c.incusClient.GetContainerWithNetwork(name)
+		if err != nil {
+			// Deleted between GetInstanceNames and this fetch, or a
+			// transient error — skip it this cycle, same "best effort,
+			// try again next tick" behavior ListContainers has always had.
+			continue
+		}
+		fetched[name] = info
 	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Clear and rebuild
-	c.ipToName = make(map[string]string)
-	c.nameToIP = make(map[string]string)
-	c.nameToID = make(map[string]string)
-
-	for _, container := range containers {
-		if container.IPAddress != "" {
-			c.ipToName[container.IPAddress] = container.Name
-			c.nameToIP[container.Name] = container.IPAddress
-		}
-		if id := container.Labels["cloud_container_id"]; id != "" {
-			c.nameToID[container.Name] = id
+	// Drop names no longer present.
+	for name, ip := range c.nameToIP {
+		if !currentSet[name] {
+			delete(c.nameToIP, name)
+			delete(c.nameToID, name)
+			delete(c.ipToName, ip)
 		}
 	}
 
-	log.Printf("Container cache refreshed: %d containers", len(c.ipToName))
+	// Add newly-fetched names.
+	for name, info := range fetched {
+		if info.IPAddress != "" {
+			c.ipToName[info.IPAddress] = name
+			c.nameToIP[name] = info.IPAddress
+		}
+		if id := info.Labels["cloud_container_id"]; id != "" {
+			c.nameToID[name] = id
+		}
+	}
+
+	log.Printf("Container cache refreshed: %d containers (%d fetched, %d unchanged)", len(c.nameToIP), len(toFetch), len(names)-len(toFetch))
 	return nil
 }
 
