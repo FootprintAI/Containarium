@@ -1009,9 +1009,9 @@ func (s *Server) registerTools() {
 				"    public URLs.\n" +
 				"  - Filter by `username` to see only one container's routes, or " +
 				"    `active_only=true` to skip disabled ones.\n\n" +
-				"Read-only — no side effects. For TCP passthrough routes (raw L4, not HTTPS), " +
-				"those live on a different daemon endpoint and aren't included here yet — " +
-				"file a request if you need them surfaced.",
+				"Read-only — no side effects. For TCP/UDP passthrough routes (raw L4, not " +
+				"HTTPS), those live on a different daemon endpoint — use " +
+				"list_passthrough_routes instead.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -1086,6 +1086,87 @@ func (s *Server) registerTools() {
 				"required": []string{"username", "container_port", "domain"},
 			},
 			Handler: handleExposePort,
+		},
+		{
+			Name: "list_passthrough_routes",
+			Description: "List the TCP/UDP passthrough routes currently registered on the " +
+				"daemon — raw L4 port-forwarding rules (no TLS termination) created by " +
+				"`add_passthrough_route`. This is the passthrough counterpart of " +
+				"`list_routes`, which only covers HTTPS proxy routes.\n\n" +
+				"Use this to audit what raw ports are currently forwarded before adding a " +
+				"new one, or to find the external port/protocol of a stale passthrough " +
+				"route you need to remove.\n\n" +
+				"Read-only — no side effects.",
+			InputSchema: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+			Handler: handleListPassthroughRoutes,
+		},
+		{
+			Name: "add_passthrough_route",
+			Description: "Create a TCP/UDP passthrough route: forwards an external port on " +
+				"the daemon's host directly to a container's IP:port, with no TLS " +
+				"termination (raw L4). Use this instead of `expose_port` when the traffic " +
+				"needs end-to-end encryption the sentinel shouldn't terminate (e.g. mTLS " +
+				"gRPC) or isn't HTTP at all.\n\n" +
+				"You'll typically need the container's IP from `get_container` first.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"external_port": map[string]interface{}{
+						"type":        "integer",
+						"description": "Port to open on the daemon's host, e.g. 9443.",
+					},
+					"target_ip": map[string]interface{}{
+						"type":        "string",
+						"description": "Target container's IP address (from get_container).",
+					},
+					"target_port": map[string]interface{}{
+						"type":        "integer",
+						"description": "Port the app listens on inside the container.",
+					},
+					"protocol": map[string]interface{}{
+						"type":        "string",
+						"enum":        []string{"tcp", "udp"},
+						"description": "Protocol to forward. Defaults to 'tcp' if omitted.",
+					},
+					"container_name": map[string]interface{}{
+						"type":        "string",
+						"description": "Optional: associated container name, shown in list_passthrough_routes.",
+					},
+					"description": map[string]interface{}{
+						"type":        "string",
+						"description": "Optional human-readable note for the route.",
+					},
+				},
+				"required": []string{"external_port", "target_ip", "target_port"},
+			},
+			Handler: handleAddPassthroughRoute,
+		},
+		{
+			Name: "delete_passthrough_route",
+			Description: "Remove a TCP/UDP passthrough route by its external port and " +
+				"protocol — the unexpose counterpart of `add_passthrough_route`. After " +
+				"this, the external port no longer forwards to any container.\n\n" +
+				"Idempotent: deleting an already-gone route succeeds (no error). Pass the " +
+				"`externalPort`/`protocol` shown by `list_passthrough_routes`.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"external_port": map[string]interface{}{
+						"type":        "integer",
+						"description": "External port to remove (the `externalPort` from list_passthrough_routes).",
+					},
+					"protocol": map[string]interface{}{
+						"type":        "string",
+						"enum":        []string{"tcp", "udp"},
+						"description": "Protocol of the route to remove. Defaults to 'tcp' if omitted.",
+					},
+				},
+				"required": []string{"external_port"},
+			},
+			Handler: handleDeletePassthroughRoute,
 		},
 		{
 			Name: "list_recipes",
@@ -1337,6 +1418,12 @@ func toolScopeAssignments() map[string]string {
 		"list_routes":  auth.ScopeRoutesRead,
 		"expose_port":  auth.ScopeRoutesWrite,
 		"delete_route": auth.ScopeRoutesWrite,
+		// passthrough routes (raw L4, #1550) — scoped the same as their
+		// HTTPS proxy-route siblings above rather than introducing a new
+		// scope for one feature (see set_metrics_export for the same call).
+		"list_passthrough_routes":  auth.ScopeRoutesRead,
+		"add_passthrough_route":    auth.ScopeRoutesWrite,
+		"delete_passthrough_route": auth.ScopeRoutesWrite,
 		// recipes — declarative GPU/app deploys
 		"list_recipes":  auth.ScopeContainersRead,
 		"deploy_recipe": auth.ScopeContainersWrite,
@@ -2208,6 +2295,108 @@ func handleExposePort(client API, args map[string]interface{}) (string, error) {
 	out += fmt.Sprintf("`curl https://%s/` should reach the app inside %s.",
 		res.Domain, getStringArg(args, "username", ""))
 	return out, nil
+}
+
+// passthroughProtocolToProto maps the tool's friendly "tcp"/"udp" input to
+// the proto enum's wire name, matching how the daemon's grpc-gateway
+// (UseEnumNumbers: false) both emits and accepts RouteProtocol. Empty
+// defaults to TCP — the same default network_server.go's AddPassthroughRoute
+// applies when the protocol is unset.
+func passthroughProtocolToProto(s string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "tcp":
+		return "ROUTE_PROTOCOL_TCP", nil
+	case "udp":
+		return "ROUTE_PROTOCOL_UDP", nil
+	default:
+		return "", fmt.Errorf("protocol must be 'tcp' or 'udp', got %q", s)
+	}
+}
+
+// protoProtocolToFriendly is the inverse of passthroughProtocolToProto, for
+// rendering a route's protocol back to callers as "tcp"/"udp" instead of
+// the proto enum name.
+func protoProtocolToFriendly(s string) string {
+	switch s {
+	case "ROUTE_PROTOCOL_UDP":
+		return "udp"
+	case "ROUTE_PROTOCOL_TCP":
+		return "tcp"
+	default:
+		return s
+	}
+}
+
+func handleListPassthroughRoutes(client API, _ map[string]interface{}) (string, error) {
+	resp, err := client.ListPassthroughRoutes()
+	if err != nil {
+		return "", fmt.Errorf("failed to list passthrough routes: %w", err)
+	}
+
+	out, err := json.MarshalIndent(resp, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal response: %w", err)
+	}
+	return string(out), nil
+}
+
+func handleAddPassthroughRoute(client API, args map[string]interface{}) (string, error) {
+	externalPort, ok := getIntArg(args, "external_port")
+	if !ok {
+		return "", fmt.Errorf("external_port is required")
+	}
+	targetIP := getStringArg(args, "target_ip", "")
+	if targetIP == "" {
+		return "", fmt.Errorf("target_ip is required")
+	}
+	targetPort, ok := getIntArg(args, "target_port")
+	if !ok {
+		return "", fmt.Errorf("target_port is required")
+	}
+	protocol, err := passthroughProtocolToProto(getStringArg(args, "protocol", ""))
+	if err != nil {
+		return "", err
+	}
+
+	resp, err := client.AddPassthroughRoute(AddPassthroughRouteRequest{
+		ExternalPort:  int32(externalPort),
+		TargetIP:      targetIP,
+		TargetPort:    int32(targetPort),
+		Protocol:      protocol,
+		ContainerName: getStringArg(args, "container_name", ""),
+		Description:   getStringArg(args, "description", ""),
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to add passthrough route: %w", err)
+	}
+
+	out := fmt.Sprintf("✅ Passthrough route added: %s:%d → %s:%d\n\n",
+		protoProtocolToFriendly(protocol), externalPort, targetIP, targetPort)
+	out += fmt.Sprintf("External:  %d\n", resp.Route.ExternalPort)
+	out += fmt.Sprintf("Target:    %s:%d\n", resp.Route.TargetIP, resp.Route.TargetPort)
+	if resp.Route.ContainerName != "" {
+		out += fmt.Sprintf("Container: %s\n", resp.Route.ContainerName)
+	}
+	if resp.Message != "" {
+		out += fmt.Sprintf("\n%s", resp.Message)
+	}
+	return out, nil
+}
+
+func handleDeletePassthroughRoute(client API, args map[string]interface{}) (string, error) {
+	externalPort, ok := getIntArg(args, "external_port")
+	if !ok {
+		return "", fmt.Errorf("external_port is required")
+	}
+	protocol, err := passthroughProtocolToProto(getStringArg(args, "protocol", ""))
+	if err != nil {
+		return "", err
+	}
+	if err := client.DeletePassthroughRoute(int32(externalPort), protocol); err != nil {
+		return "", fmt.Errorf("failed to delete passthrough route %d/%s: %w", externalPort, protoProtocolToFriendly(protocol), err)
+	}
+	return fmt.Sprintf("✅ Deleted passthrough route %s:%d — it no longer forwards to any container.",
+		protoProtocolToFriendly(protocol), externalPort), nil
 }
 
 func handleListRecipes(client API, _ map[string]interface{}) (string, error) {

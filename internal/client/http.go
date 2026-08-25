@@ -2017,6 +2017,96 @@ func (c *HTTPClient) DeleteRoute(domain string) error {
 	return nil
 }
 
+// --- Passthrough routes (#1550) --------------------------------------------
+//
+// TCP/UDP passthrough routes (raw L4, no TLS termination) mirror the proxy
+// route methods above but talk to /v1/network/passthrough[...]. These RPCs
+// existed server-side with no external caller until this issue; see
+// AddPassthroughRoute/ListPassthroughRoutes/DeletePassthroughRoute in
+// internal/server/network_server.go.
+
+// ListPassthroughRoutes returns the TCP/UDP passthrough routes (GET
+// /v1/network/passthrough). Mirrors GRPCClient.ListPassthroughRoutes.
+func (c *HTTPClient) ListPassthroughRoutes() ([]*pb.PassthroughRoute, int32, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := c.doRequest(ctx, http.MethodGet, "/v1/network/passthrough", nil)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list passthrough routes: %w", err)
+	}
+	defer drainClose(resp)
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, 0, httpErr("list passthrough routes", resp.StatusCode, bodyBytes)
+	}
+	out := &pb.ListPassthroughRoutesResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, 0, fmt.Errorf("decode list-passthrough-routes response: %w", err)
+	}
+	return out.GetRoutes(), out.GetTotalCount(), nil
+}
+
+// AddPassthroughRoute registers a TCP/UDP port-forwarding rule (POST
+// /v1/network/passthrough). Mirrors GRPCClient.AddPassthroughRoute.
+func (c *HTTPClient) AddPassthroughRoute(externalPort, targetPort int32, targetIP string, protocol pb.RouteProtocol, containerName, description string) (*pb.PassthroughRoute, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	body, err := json.Marshal(addPassthroughRouteRequest{
+		ExternalPort:  externalPort,
+		TargetIP:      targetIP,
+		TargetPort:    targetPort,
+		Protocol:      protocol,
+		ContainerName: containerName,
+		Description:   description,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/network/passthrough", body)
+	if err != nil {
+		return nil, fmt.Errorf("add passthrough route: %w", err)
+	}
+	defer drainClose(resp)
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, httpErr("add passthrough route", resp.StatusCode, bodyBytes)
+	}
+	out := &pb.AddPassthroughRouteResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode add-passthrough-route response: %w", err)
+	}
+	return out.GetRoute(), nil
+}
+
+// DeletePassthroughRoute removes a TCP/UDP passthrough route (DELETE
+// /v1/network/passthrough/{external_port}?protocol=...). Protocol travels as
+// a query param (grpc-gateway accepts either the enum name or its numeric
+// value; we send the name for readability). Mirrors
+// GRPCClient.DeletePassthroughRoute.
+func (c *HTTPClient) DeletePassthroughRoute(externalPort int32, protocol pb.RouteProtocol) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	q := url.Values{}
+	q.Set("protocol", protocol.String())
+	path := fmt.Sprintf("/v1/network/passthrough/%d?%s", externalPort, q.Encode())
+	resp, err := c.doRequest(ctx, http.MethodDelete, path, nil)
+	if err != nil {
+		return fmt.Errorf("delete passthrough route: %w", err)
+	}
+	defer drainClose(resp)
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return httpErr("delete passthrough route", resp.StatusCode, bodyBytes)
+	}
+	return nil
+}
+
 // httpErr builds an error from a >=400 REST response, preferring the daemon's
 // {"error": ...} body over a bare status code.
 func httpErr(op string, status int, body []byte) error {

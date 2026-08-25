@@ -539,9 +539,15 @@ containarium route add api.example.com --target 10.0.3.42:3000
 containarium route list
 containarium route delete api.example.com
 
-# Raw TCP/UDP passthrough (no TLS termination)
+# Raw TCP/UDP passthrough via local iptables (host running the CLI only)
 containarium passthrough add --port 50051 \
   --target-ip 10.0.3.150 --target-port 50051
+
+# Raw TCP/UDP passthrough via the daemon API (works against a remote box)
+containarium passthrough-route add --port 9443 \
+  --target-ip 10.0.3.150 --target-port 50051 --server <host:port>
+containarium passthrough-route list --server <host:port>
+containarium passthrough-route remove --port 9443 --server <host:port>
 ```
 
 ### SSH config
