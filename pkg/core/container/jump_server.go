@@ -196,8 +196,21 @@ func EnsureJumpServerAccount(username string) error {
 		_ = exec.Command("usermod", "-s", shellPath, username).Run()
 	} else {
 		// Create user with containarium-shell
+		// -K SUB_UID_COUNT=0 / SUB_GID_COUNT=0: this account only ever runs
+		// containarium-shell (exec into the tenant's own container) — it
+		// never needs a user-namespace subuid/subgid mapping. Without this,
+		// useradd auto-allocates one from /etc/subuid's small free window
+		// below Incus's own root reservation (#1531): found live that the
+		// window exhausts after ~10-14 accounts on a fresh host, after
+		// which every subsequent EnsureJumpServerAccount call fails outright
+		// (useradd exit 16) — not a degraded state, no jump-server account
+		// at all. retryUseraddWithLockWait (CreateJumpServerAccount's own
+		// useradd, used by the SSH-key create path) already carries these
+		// same two flags; this call site was the one gap.
 		// #nosec G204 -- username validated by isValidUsername above
 		if err := exec.Command("useradd", "-m", "-s", shellPath,
+			"-K", "SUB_UID_COUNT=0",
+			"-K", "SUB_GID_COUNT=0",
 			"-c", fmt.Sprintf("Containarium user - %s", username),
 			username).Run(); err != nil {
 			return fmt.Errorf("useradd failed: %w", err)

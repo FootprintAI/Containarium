@@ -129,15 +129,21 @@ resource_snapshot() {
 #   $3 - name of a function: ready_fn <unit-name>   -> returns 0 once ready, non-zero while pending
 #   $4 - name of a function: cleanup_fn <unit-name> -> best-effort teardown of a failed/half-created unit
 #   $5 - results file to append the run log to
+#   $6 - starting index (optional, default 1) — lets a re-run continue
+#        numbering after a prior run stopped for a non-resource reason
+#        (e.g. #1532: fixed a bug that was misreported as the stopping
+#        rule, resume from where the earlier run actually left off
+#        instead of re-creating units 1..N from scratch)
 #
 # On return, sets DENSITY_RESULT_COUNT to the number of units that reached
 # ready state before the stopping rule triggered.
 run_density_loop() {
 	local prefix="$1" create_fn="$2" ready_fn="$3" cleanup_fn="$4" results_file="$5"
-	local i=0 ready_count=0 fail_streak=0
+	local start_index="${6:-1}"
+	local i=$((start_index - 1)) ready_count=0 fail_streak=0
 	local unit_name start_ts
 
-	log "starting density loop: prefix=${prefix} stop-after=${FAILURE_STREAK_TO_STOP} consecutive failures, per-unit timeout=${CREATE_TIMEOUT_SECONDS}s"
+	log "starting density loop: prefix=${prefix} start-index=${start_index} stop-after=${FAILURE_STREAK_TO_STOP} consecutive failures, per-unit timeout=${CREATE_TIMEOUT_SECONDS}s"
 	echo "## density run: ${prefix} ($(date -u +%Y-%m-%dT%H:%M:%SZ))" >>"$results_file"
 
 	while true; do

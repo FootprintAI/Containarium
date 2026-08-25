@@ -258,11 +258,48 @@ scripts/00-create-vm.sh --name sandbox-bench-containarium
 scripts/03-provision-containarium.sh --name sandbox-bench-containarium
 scripts/04-run-density-containarium.sh --name sandbox-bench-containarium
 scripts/99-teardown-vm.sh --name sandbox-bench-containarium
+
+# Third scenario (optional) — see "Third scenario: native LXC workhorse"
+scripts/00-create-vm.sh --name sandbox-bench-containarium-lxc
+scripts/05-provision-containarium-lxc.sh --name sandbox-bench-containarium-lxc
+scripts/06-run-density-containarium-lxc.sh --name sandbox-bench-containarium-lxc
+scripts/99-teardown-vm.sh --name sandbox-bench-containarium-lxc
 ```
 
 Each density script writes a timestamped results file under `results/`
 (gitignored — see `RESULTS.md` for the reviewed/committed summary format)
 and prints a one-line summary at the end.
+
+## Third scenario: native LXC workhorse
+
+A third comparison point, alongside the two k8s-based groups above:
+Containarium's original backend — plain LXC/Incus containers, no
+Kubernetes, no gVisor, no pooling. Same host, same hard resource cap,
+same sandbox resource profile as whatever run it's compared against
+(convert `Mi`→`MiB` for Incus's native `limits.memory` format — see
+`06-run-density-containarium-lxc.sh`'s header comment for why the
+conversion is a rename, not a real unit change).
+
+**This is not a test of the `#1488` warm-pool/`SpawnSandbox` feature.**
+As of this writing `SpawnSandbox` still serves the Phase 1 cold path —
+the pool/reconciler code is in the tree but not wired into the request
+path (tracked in
+[#1523](https://github.com/FootprintAI/Containarium/issues/1523)). This
+scenario uses plain `containarium create`, the same cold-create
+mechanism the k8s scenarios' `create` already exercises — it isolates
+the *backend* (LXC vs. k8s+gVisor), not pooling. Once `#1523` lands, a
+real pooling comparison would need a different metric entirely (spawn
+latency P50/P99, cold vs. warm — not simultaneous density; an active
+pool member is a whole dedicated container, same footprint as a cold
+one, per the pool's own design doc).
+
+Unlike the k8s scenarios, `containarium list` works normally here (its
+"incus backend not available" failure —
+[#1525](https://github.com/FootprintAI/Containarium/issues/1525) — only
+fires against a `--runtime=k8s` daemon; this one genuinely is
+Incus-backed), and the default `--image` works as documented (no
+[#1524](https://github.com/FootprintAI/Containarium/issues/1524)-style
+`InvalidImageName` — that bug is k8s-backend-specific too).
 
 ## Layout
 
@@ -281,5 +318,7 @@ benchmark/agent-sandbox-density/
     ├── 02-run-density-k8s.sh        — create Sandbox CRs until the stopping rule triggers
     ├── 03-provision-containarium.sh — shared k8s base + gVisor/runsc RuntimeClass + Helm-installed Containarium daemon
     ├── 04-run-density-containarium.sh — `containarium create` (pod -> gVisor -> containarium) until the stopping rule triggers
+    ├── 05-provision-containarium-lxc.sh — third scenario: Incus + Containarium daemon, native LXC backend, no k8s/gVisor
+    ├── 06-run-density-containarium-lxc.sh — `containarium create` on the LXC backend until the stopping rule triggers
     └── 99-teardown-vm.sh            — stop + delete the VM
 ```
