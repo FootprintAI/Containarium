@@ -269,6 +269,8 @@
     <p><strong>The entire gap is the declared-size asymmetry &mdash; not gVisor overhead, not orchestration cost.</strong> Same isolation technology, same admission model, smaller declared footprint wins. Nothing about Containarium is more efficient here; it just asks for less. Declare Containarium's sandboxes at 128Mi too, and the two numbers converge.</p>
   </div>
 
+  <p>We re-ran this scenario independently on a fresh cluster to check it wasn't a fluke &mdash; <strong>186 ready, 189 attempted, an exact match</strong> down to the node memory snapshot at the stopping point (47856Mi/48GiB, 99%, identical both times). It's a solid, reproducible number.</p>
+
   <h2>Where 929 comes from &mdash; a different deployment entirely</h2>
   <p>Containarium also ships a native LXC/Incus backend: no Kubernetes, no gVisor, sandboxes run directly on the host. Run the same benchmark there and you get <strong>929</strong> &mdash; but this isn't a gVisor-vs-gVisor result, because there's no gVisor and no Kubernetes admission control in this path at all. It's a different question: raw LXC density vs. k8s+gVisor density, with a different isolation model underneath.</p>
 

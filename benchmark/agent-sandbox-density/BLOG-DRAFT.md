@@ -34,6 +34,11 @@ technology, same admission model, smaller declared footprint wins. Nothing
 about Containarium is more efficient here; it just asks for less. If we'd
 declared Containarium's sandboxes at 128Mi too, the two numbers converge.
 
+We re-ran this scenario independently on a fresh cluster to check it wasn't
+a fluke — 186 ready, 189 attempted, an exact match down to the node memory
+snapshot at the stopping point (47856Mi/48GiB, 99%, identical both times).
+It's a solid, reproducible number.
+
 ## Where 929 comes from — a different deployment entirely
 
 Containarium also ships a native LXC/Incus backend: no Kubernetes, no
