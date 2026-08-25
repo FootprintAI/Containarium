@@ -1,0 +1,35 @@
+# Sandbox CR template for the density benchmark (kubernetes-sigs/agent-sandbox,
+# agents.x-k8s.io/v1beta1). scripts/02-run-density-k8s.sh substitutes
+# __NAME__ and the resource placeholders with sed before `kubectl apply -f
+# -`; see config.env.example for the values.
+#
+# runtimeClassName is set here too — this benchmark runs BOTH sides under
+# gVisor deliberately, so gVisor itself isn't a variable in the comparison;
+# see README.md "What's actually under test".
+#
+# Deliberately minimal — no volumes, no extensions, a single small container
+# — this benchmark measures orchestration overhead, not any particular
+# sandbox image's footprint.
+apiVersion: agents.x-k8s.io/v1beta1
+kind: Sandbox
+metadata:
+  name: __NAME__
+  namespace: sandbox-density-bench
+  labels:
+    benchmark: agent-sandbox-density
+spec:
+  podTemplate:
+    spec:
+      runtimeClassName: __GVISOR_RUNTIME_CLASS__
+      containers:
+        - name: sandbox
+          image: busybox:1.36
+          command: ["sleep", "infinity"]
+          resources:
+            requests:
+              cpu: "__SANDBOX_CPU_REQUEST__"
+              memory: "__SANDBOX_MEM_REQUEST__"
+            limits:
+              cpu: "__SANDBOX_CPU_LIMIT__"
+              memory: "__SANDBOX_MEM_LIMIT__"
+      restartPolicy: Never

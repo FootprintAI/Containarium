@@ -104,6 +104,22 @@ type DualServerConfig struct {
 	// Standalone mode: skip all PostgreSQL/core container dependencies
 	Standalone bool
 
+	// DisableSecurityScanner/DisablePentestScanner/DisableZapScanner turn
+	// off the three passive/active scanners that otherwise start
+	// automatically whenever PostgresConnString is set (there's no
+	// independent opt-out today — each is gated purely on Postgres being
+	// configured). All three run background work triggered by container
+	// creation (the security scanner subscribes to CONTAINER_CREATED
+	// events; ClamAV + a network pentest scan then run against every new
+	// tenant), which is real, deliberate product behavior for a
+	// production daemon but adds real per-create latency that a
+	// throughput-sensitive deployment (or a benchmark) may want to skip.
+	// Independent flags rather than one umbrella flag since an operator
+	// may want e.g. malware scanning without the network pentest scan.
+	DisableSecurityScanner bool
+	DisablePentestScanner  bool
+	DisableZapScanner      bool
+
 	// Multi-backend peer settings
 	SentinelURL    string   // URL for auto-discovering tunnel peers (e.g., "http://10.128.0.5:8081")
 	Peers          []string // Static peer addresses (e.g., ["10.128.0.5:18001"])
@@ -524,11 +540,23 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	pb.RegisterVolumeServiceServer(grpcServer, NewVolumeServer())
 	log.Printf("Volume service enabled")
 
-	// Register SandboxService — ephemeral, no-SSH sandboxes (#1488 Phase 1,
-	// the two-digit-ms spawn path's cold-path implementation). Own incus
-	// client, same pattern as the other feature servers in this function.
+	// Register SandboxService — ephemeral, no-SSH sandboxes (#1488). Own
+	// incus client, same pattern as the other feature servers in this
+	// function.
+	//
+	// Pool is nil: SandboxServer can use a configured *pool.Pool (#1520)
+	// to serve spawns from a warm ring instead of always creating cold,
+	// but nothing constructs one here yet. A pool needs operator-facing
+	// config this daemon doesn't have a source for yet (min_warm per
+	// template, an image per template, the IPAM range, the NIC network)
+	// — and those need validating against a live host before they're
+	// safe defaults, which this can't do. Every spawn takes the cold
+	// path until that config lands; see SandboxServer's own type doc for
+	// why nil is also the ONLY safe default (a configured-but-empty pool
+	// would silently start rejecting every caller that hasn't set
+	// allow_cold_start=true).
 	if sandboxIncusClient, err := incus.New(); err == nil {
-		pb.RegisterSandboxServiceServer(grpcServer, NewSandboxServer(sandboxIncusClient))
+		pb.RegisterSandboxServiceServer(grpcServer, NewSandboxServer(sandboxIncusClient, nil))
 		log.Printf("Sandbox service enabled")
 	} else {
 		log.Printf("Warning: SandboxService disabled — incus client init failed: %v", err)
@@ -1338,7 +1366,7 @@ skipAppHosting:
 	var securityScanner *security.Scanner
 	var securityStore *security.Store
 	var securityServerInstance *SecurityServer
-	if postgresConnString != "" {
+	if postgresConnString != "" && !config.DisableSecurityScanner {
 		securityPool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
 		if poolErr != nil {
 			log.Printf("Warning: Failed to connect to PostgreSQL for security store: %v", poolErr)
@@ -1391,7 +1419,7 @@ skipAppHosting:
 	// Setup pentest manager
 	var pentestManager *pentest.Manager
 	var pentestStore *pentest.Store
-	if postgresConnString != "" {
+	if postgresConnString != "" && !config.DisablePentestScanner {
 		pentestPool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
 		if poolErr != nil {
 			log.Printf("Warning: Failed to connect to PostgreSQL for pentest store: %v", poolErr)
@@ -1427,7 +1455,7 @@ skipAppHosting:
 	// Setup ZAP scanner manager
 	var zapManager *zapscanner.Manager
 	var zapStore *zapscanner.Store
-	if postgresConnString != "" {
+	if postgresConnString != "" && !config.DisableZapScanner {
 		zapPool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
 		if poolErr != nil {
 			log.Printf("Warning: Failed to connect to PostgreSQL for ZAP store: %v", poolErr)

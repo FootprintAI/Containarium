@@ -31,6 +31,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   falling back there would install a long-lived key to paper over a
   control-plane fault and never mention it.
 
+- **Sentinel now self-checks its OWN proxy pipeline, not just the backend.**
+  `healthCheckAll` only ever proved the backend was reachable. During a live
+  incident the backend's health endpoint stayed up throughout a spot-instance
+  restart, so the sentinel never left `PROXY` state — while its own
+  ConnMux/dispatch pipeline had wedged: TCP connections were still accepted,
+  but nothing downstream ever forwarded or responded, on every port (HTTPS,
+  SSH). Cloudflare surfaced this as a 522 with no useful signal on which side
+  was actually broken. Only a by-hand `systemctl restart` of the sentinel
+  cleared it.
+
+  A new background loop (`--self-check-failure-threshold`, default 3, 0
+  disables) periodically probes the sentinel's own externally-facing HTTPS
+  listener end-to-end and treats any consecutive run of unresponsive probes as
+  a wedge, independent of what the backend health check reports. Past the
+  threshold, the sentinel exits and lets systemd's existing `Restart=always`
+  recreate it with fresh listener/dispatch state — the same fix that worked by
+  hand, now automatic. Only armed in ConnMux/hybrid mode, where the incident
+  occurred.
+
 ### Fixed
 
 - **Container nodes on a nested host no longer advertise the host's capacity,
