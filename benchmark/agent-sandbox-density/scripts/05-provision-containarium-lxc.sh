@@ -64,18 +64,20 @@ apt-get update -qq
 apt-get install -y -qq curl jq iptables zfsutils-linux
 curl -fsSL https://pkgs.zabbly.com/get/incus-stable | sudo sh
 
-# `incus admin init --auto` picks its storage driver from what's on the
-# host: with zfsutils-linux installed first (above), it sets up a
-# loop-backed zpool instead of falling back to the plain "dir" driver.
-# This matters a lot, not just cosmetically — found live that "dir"
-# does a full recursive filesystem copy per container create (no
-# copy-on-write), and the daemon's own startup log already warns about
-# exactly this (see docs referenced in that warning, issue #1206):
-# single creates took 80-90s, almost entirely inside that copy, dwarfing
-# every other stage in the daemon's own documented latency breakdown
-# (docs/architecture/two-digit-ms-sandbox-spawn.md). ZFS gives instant
-# COW clones instead.
-incus admin init --auto
+# `incus admin init --auto`'s storage-driver auto-detection is NOT
+# reliable even with zfsutils-linux installed and the zfs kernel module
+# loaded — found live twice now: one run picked zfs, a later run on an
+# otherwise-identical host picked "dir" anyway (confirmed post-hoc:
+# zfsutils-linux was installed, `lsmod | grep zfs` showed the module
+# loaded — auto-detection just didn't pick it). This matters a lot, not
+# just cosmetically: "dir" does a full recursive filesystem copy per
+# container create (no copy-on-write) — the daemon's own startup log
+# warns about exactly this (issue #1206) — and with no COW, real disk
+# usage grows roughly linearly with container count until the pool
+# fills outright ("Unable to unpack image, run out of disk space" at
+# 215 containers on a 181GB disk, live). Stop trusting --auto for this;
+# request zfs explicitly.
+incus admin init --auto --storage-backend=zfs
 
 DRIVER=$(incus storage show default | grep '^driver:' | awk '{print $2}')
 echo "storage pool driver: ${DRIVER}"
