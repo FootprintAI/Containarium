@@ -359,6 +359,39 @@ independently found. #1541 is now fully closed out — every identified
 contributor has a landed, live-verified fix; the memory ceiling itself is
 a genuine hardware limit, not a bug.
 
+### 2026-08-25 — reproducibility check: k8s + gVisor + Containarium re-run
+
+The second scenario (`pod -> gVisor -> containarium`, the real integration
+path — see README.md's original scoping) was re-run from scratch on a
+fresh k8s cluster, this time with a daemon image built from current `main`
+(carrying every #1541-adjacent fix — #1529, #1533, #1542, #1543, #1546 —
+plus everything else merged since v0.66.0) and the matching current Helm
+chart, rather than the pinned v0.66.0 release used originally.
+
+**Result: 186 sandboxes reached RUNNING, 189 attempted — an exact match**
+to the original 2026-08-24 run's numbers, down to the node memory
+snapshot at the stopping point (47856Mi/48GiB, 99%, identical both times).
+None of the #1541-related daemon fixes moved this number, which is
+exactly what should happen: this scenario's ceiling is Kubernetes' own
+memory-request admission control (`48GiB ÷ 256Mi ≈ 186`), not daemon
+performance — the daemon-side bugs found and fixed in the third scenario
+never had anywhere to bite here.
+
+One environment-only snag hit and worked around, not a product bug: the
+provisioning script's git-cloned chart is pinned to the resolved
+`CONTAINARIUM_VERSION` release tag (v0.66.0), which predates the Helm
+chart's `gateway.upstreamKeySecret` -> `CONTAINARIUM_K8S_GATEWAY_UPSTREAM_KEY_SECRET`
+env var wiring. Swapping in a current-`main`-built daemon image against
+that old chart crash-loops the pod (the newer binary validates the env
+var; the old chart never sets it). Re-pointing the chart clone at `main`
+instead of the pinned tag resolved it — a real thing to note for anyone
+mixing a custom daemon build with an old chart checkout, not something
+this benchmark's scripts needed to change (they use matched
+chart+binary versions by design).
+
+This confirms the blog draft's 186 figure is solid and independently
+reproducible, not a one-off measurement.
+
 ## Template
 
 ```
