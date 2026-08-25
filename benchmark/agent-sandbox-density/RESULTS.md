@@ -250,6 +250,79 @@ Notes / anomalies:
   ~10-14 tenants, well under any reasonable shard size. Not attempted in
   this run.
 
+### 2026-08-25 — #1541 fix verification: fresh run with `get`-based polling + forced zfs
+
+Same host, VM profile, and sandbox profile as the run above. Goal: confirm
+whether #1543's `containarium get` (O(1) single-container lookup, replacing
+`list`'s O(N)-per-poll cost in `box_ready()`) actually reduces the Incus
+daemon CPU overhead #1541 found — live, on a fresh VM, rather than just by
+code inspection.
+
+**First attempt hit a different, unrelated bug**: `incus admin init --auto`
+picked the "dir" storage driver again despite zfsutils-linux installed and
+the zfs kernel module loaded (the SAME condition that picked zfs
+successfully in an earlier run — auto-detection is not reliable). Stopped
+at 215 containers on "Unable to unpack image, run out of disk space" (no
+copy-on-write with "dir"). Fixed by requesting `--storage-backend=zfs`
+explicitly instead of trusting `--auto` (script fix, same PR as the `get`
+polling switch).
+
+**Second attempt, with zfs forced + `/16` bridge + `get`-based polling —
+reached 931 sandboxes** (936 attempted) before the daemon's Incus
+management process itself was OOM-killed by the kernel (`dmesg`: `Out of
+memory: Killed process 4343 (incusd)`) — a hard stop, not a graceful
+per-unit rejection.
+
+| container count | this run's load average | the original run's load average (same rough point) |
+|---|---|---|
+| ~180 (unfixed run's #1532 stop) | — | timeout/degraded (list() itself exceeded 10s) |
+| ~400 | 13.9-19.1 | not directly comparable (unfixed run never reached this cleanly) |
+| ~552-570 | 32-40 | **~117** (unfixed run's peak, at 569 total) |
+| ~762 | 125-182 | n/a — unfixed run had already stopped by here |
+| ~931 | OOM-killed `incusd` | n/a |
+
+**The `get`-based fix is real and substantial, not a full fix.** At the
+directly comparable point (~570 containers), load average dropped from
+~117 to ~32-40 — roughly 3x lower. But load still climbed and eventually
+exceeded the old peak, just at a meaningfully higher container count
+(~762 vs. 569, a ~34% higher ceiling before hitting a comparable wall).
+The remaining, still-unaddressed contributor: `internal/traffic.
+ContainerCache`'s background refresh (`internal/traffic/collector.go`,
+`StartRefresh(ctx, 30*time.Second)`) does its own unconditional full
+`ListContainers()` call every ~30s regardless of container count or
+activity — confirmed still running on this cadence throughout the run via
+its own "Container cache refreshed: N containers" log line. This is
+independent of anything the benchmark's own polling does, and is a
+genuine remaining candidate for a follow-up fix (e.g., an
+incremental/delta refresh, or an interval that backs off with N).
+
+**The true final wall this time was real, severe memory exhaustion** —
+not a software bug, not a config default. Per-container actual memory
+usage grew over the run (~50MiB at 181 in the earlier run → ~90-100MiB by
+253-571 → presumably higher still by 931), and at just under 1000
+containers the aggregate consumed essentially the entire 46GiB host,
+severely enough that the kernel OOM-killed `incusd` itself rather than a
+single tenant container. Not root-caused further (why per-container
+memory keeps growing over a run's lifetime — journal/log accumulation
+inside each idle container is one plausible candidate, not confirmed).
+
+**How this compares to the k8s + agent-sandbox control group's 373**:
+931 is over 2x that number, but — same caveat as documented above, worth
+repeating because it's easy to miss in a single "which is bigger" glance
+— the two are not admission-bound the same way. k8s reserves the full
+*declared* 128Mi request per pod regardless of actual usage; Incus's
+`limits.memory` only enforces actual usage against a 256Mi ceiling. This
+run's boxes only ever used ~90-100MiB (a fraction of what k8s would have
+reserved for a similarly-sized pod), which is *why* it could pack more —
+a real, legitimate operational property of Incus's cgroup-ceiling model,
+not evidence that gVisor/orchestration overhead makes k8s "worse."
+
+Filed follow-up: #1541 updated with this finding rather than a new issue
+(same underlying investigation, refined conclusion — see the issue for
+the full comment history: what got fixed, what's still open, and why the
+daemon-CPU framing in the issue's original title turned out to be only
+part of the picture).
+
 ## Template
 
 ```
