@@ -540,11 +540,23 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	pb.RegisterVolumeServiceServer(grpcServer, NewVolumeServer())
 	log.Printf("Volume service enabled")
 
-	// Register SandboxService — ephemeral, no-SSH sandboxes (#1488 Phase 1,
-	// the two-digit-ms spawn path's cold-path implementation). Own incus
-	// client, same pattern as the other feature servers in this function.
+	// Register SandboxService — ephemeral, no-SSH sandboxes (#1488). Own
+	// incus client, same pattern as the other feature servers in this
+	// function.
+	//
+	// Pool is nil: SandboxServer can use a configured *pool.Pool (#1520)
+	// to serve spawns from a warm ring instead of always creating cold,
+	// but nothing constructs one here yet. A pool needs operator-facing
+	// config this daemon doesn't have a source for yet (min_warm per
+	// template, an image per template, the IPAM range, the NIC network)
+	// — and those need validating against a live host before they're
+	// safe defaults, which this can't do. Every spawn takes the cold
+	// path until that config lands; see SandboxServer's own type doc for
+	// why nil is also the ONLY safe default (a configured-but-empty pool
+	// would silently start rejecting every caller that hasn't set
+	// allow_cold_start=true).
 	if sandboxIncusClient, err := incus.New(); err == nil {
-		pb.RegisterSandboxServiceServer(grpcServer, NewSandboxServer(sandboxIncusClient))
+		pb.RegisterSandboxServiceServer(grpcServer, NewSandboxServer(sandboxIncusClient, nil))
 		log.Printf("Sandbox service enabled")
 	} else {
 		log.Printf("Warning: SandboxService disabled — incus client init failed: %v", err)
