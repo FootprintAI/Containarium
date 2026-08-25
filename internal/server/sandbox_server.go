@@ -13,6 +13,7 @@ import (
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/safecast"
 	"github.com/footprintai/containarium/internal/sandbox/pool"
+	"github.com/footprintai/containarium/internal/sandbox/ratelimit"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc/codes"
@@ -80,6 +81,12 @@ type SandboxServer struct {
 	incus incus.Backend
 	pool  *pool.Pool
 
+	// rateLimiter gates SpawnSandbox per-tenant (#1488 Phase 4). Always
+	// non-nil after NewSandboxServer (ratelimit.Disabled(): every spawn
+	// allowed) — set via SetRateLimiter to actually enforce a limit, so
+	// SpawnSandbox never needs its own nil check here.
+	rateLimiter *ratelimit.Limiter
+
 	// claimed tracks, per pool-claimed sandbox_id, the pool.Member Claim
 	// returned — DeleteSandbox needs it to route to pool.Release (which
 	// also frees the member's IPAM address) instead of destroy() (which
@@ -94,9 +101,28 @@ type SandboxServer struct {
 }
 
 // NewSandboxServer constructs a SandboxServer over the given Incus backend.
-// p is optional; nil disables pool-backed spawns (see the type doc).
+// p is optional; nil disables pool-backed spawns (see the type doc). The
+// spawn rate limiter starts disabled (ratelimit.Disabled()) — call
+// SetRateLimiter to enable one.
 func NewSandboxServer(backend incus.Backend, p *pool.Pool) *SandboxServer {
-	return &SandboxServer{incus: backend, pool: p, claimed: make(map[string]*pool.Member)}
+	return &SandboxServer{
+		incus:       backend,
+		pool:        p,
+		rateLimiter: ratelimit.Disabled(),
+		claimed:     make(map[string]*pool.Member),
+	}
+}
+
+// SetRateLimiter installs a per-tenant spawn rate limiter (#1488 Phase
+// 4). Optional — call after NewSandboxServer; passing nil restores
+// ratelimit.Disabled() rather than leaving a real nil pointer around,
+// mirroring ClusterServer.SetCaps's own optional-config-after-
+// construction shape.
+func (s *SandboxServer) SetRateLimiter(l *ratelimit.Limiter) {
+	if l == nil {
+		l = ratelimit.Disabled()
+	}
+	s.rateLimiter = l
 }
 
 // StartReconciler runs pool.Reconcile on interval until ctx is done. No-op
@@ -171,6 +197,13 @@ func (s *SandboxServer) destroy(name string) error {
 // exhausted pool with allow_cold_start unset (false) returns
 // RESOURCE_EXHAUSTED instead of silently paying the cold path's cost — a
 // latency SLO whose slow path is invisible isn't an SLO.
+//
+// Per-tenant rate limiting (#1488 Phase 4) is checked immediately after
+// authentication, before template resolution or any pool/cold work — a
+// throttled caller shouldn't pay (or cause) any of that. It gates every
+// spawn regardless of path: a caller hammering SpawnSandbox is exactly as
+// disruptive to shared pool capacity via a fast POOL claim loop as via
+// slow COLD creates, so this isn't scoped to one path or the other.
 func (s *SandboxServer) SpawnSandbox(ctx context.Context, req *pb.SpawnSandboxRequest) (*pb.SpawnSandboxResponse, error) {
 	if err := auth.RequireScope(ctx, auth.ScopeSandboxesWrite); err != nil {
 		return nil, err
@@ -178,6 +211,13 @@ func (s *SandboxServer) SpawnSandbox(ctx context.Context, req *pb.SpawnSandboxRe
 	subject, _, ok := auth.SubjectFromGRPCContext(ctx)
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "no authenticated subject")
+	}
+
+	if !s.rateLimiter.Allow(subject) {
+		if err := s.rateLimiter.Err(); err != nil {
+			return nil, status.Errorf(codes.Internal, "sandbox spawn rate limiting misconfigured: %v", err)
+		}
+		return nil, status.Errorf(codes.ResourceExhausted, "spawn rate limit exceeded for %s; retry after a short backoff", subject)
 	}
 
 	template, image, err := resolveTemplate(req.Template)

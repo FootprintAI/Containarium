@@ -33,6 +33,7 @@ import (
 	"github.com/footprintai/containarium/internal/modelgateway"
 	"github.com/footprintai/containarium/internal/mtls"
 	"github.com/footprintai/containarium/internal/pentest"
+	"github.com/footprintai/containarium/internal/sandbox/ratelimit"
 	secretsstore "github.com/footprintai/containarium/internal/secrets"
 	"github.com/footprintai/containarium/internal/security"
 	"github.com/footprintai/containarium/internal/traffic"
@@ -560,6 +561,24 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	var sandboxServer *SandboxServer
 	if sandboxIncusClient, err := incus.New(); err == nil {
 		sandboxServer = NewSandboxServer(sandboxIncusClient, nil)
+
+		// Per-tenant spawn rate limit (#1488 Phase 4). Off by default
+		// (ratelimit.Disabled(), same as NewSandboxServer's own zero
+		// value) — CONTAINARIUM_SANDBOX_SPAWN_RATE_PER_MINUTE opts in.
+		// A malformed value fails closed (every spawn refused, not
+		// silently unlimited) rather than aborting daemon startup —
+		// same posture as clusterCaps.configErr below, applied to a
+		// feature that's off by default instead of one with a
+		// meaningful "unset" ceiling.
+		spawnLimiter := ratelimit.NewFromEnv(
+			os.Getenv("CONTAINARIUM_SANDBOX_SPAWN_RATE_PER_MINUTE"),
+			os.Getenv("CONTAINARIUM_SANDBOX_SPAWN_BURST"),
+		)
+		if limiterErr := spawnLimiter.Err(); limiterErr != nil {
+			log.Printf("ERROR: %v — sandbox spawns will be refused until the rate limit config is fixed", limiterErr)
+		}
+		sandboxServer.SetRateLimiter(spawnLimiter)
+
 		pb.RegisterSandboxServiceServer(grpcServer, sandboxServer)
 		log.Printf("Sandbox service enabled")
 	} else {
