@@ -144,8 +144,6 @@
     padding: 18px 20px;
   }
 
-  .headline-stat.win { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
-
   .headline-stat .n {
     font-family: 'JetBrains Mono', monospace;
     font-weight: 600;
@@ -153,8 +151,6 @@
     color: var(--ink);
     line-height: 1;
   }
-
-  .headline-stat.win .n { color: var(--accent); }
 
   .headline-stat .l {
     font-size: 0.82rem;
@@ -192,6 +188,7 @@
   }
 
   svg text { font-family: 'JetBrains Mono', monospace; }
+  figure svg { width: 100%; height: auto; display: block; }
 
   ol, ul { color: var(--ink-soft); padding-left: 1.3em; }
   li { margin: 0.6em 0; }
@@ -249,7 +246,7 @@
       <div class="n">186</div>
       <div class="l"><strong>k8s + gVisor + Containarium</strong><br>same isolation, same host</div>
     </div>
-    <div class="headline-stat win">
+    <div class="headline-stat">
       <div class="n">929</div>
       <div class="l"><strong>Containarium native LXC</strong><br>no k8s, no gVisor</div>
     </div>
@@ -258,15 +255,15 @@
   <p>If you only remember one of those numbers, remember that the <strong>gVisor-matched comparison is 186 vs. 373 &mdash; and Containarium is the smaller one.</strong> That's not a caveat buried in the fine print; it's the fair fight, and it's worth understanding exactly why before the 929 number means anything.</p>
 
   <h2>The apples-to-apples result: 186 vs. 373</h2>
-  <p>Same host, same hard resource cap (48GiB RAM / 20 vCPU), same sandbox profile family, both under Kubernetes with the identical <code>runsc</code> (gVisor) RuntimeClass. The only real difference is how each side declares its sandbox's memory:</p>
+  <p>Same host, same hard resource cap (48GiB RAM / 20 vCPU), same sandbox profile family, both under Kubernetes with the identical <code>runsc</code> (gVisor) RuntimeClass. The clearest, most quantifiable difference between the two runs is how each side declares its sandbox's memory:</p>
   <ul>
     <li>agent-sandbox's pods request <strong>128Mi</strong></li>
     <li>Containarium's <code>create</code> sets request and limit to the same value &mdash; <strong>256Mi</strong>, exactly 2&times;</li>
   </ul>
-  <p>Kubernetes' scheduler reserves the full <strong>declared request</strong> against node capacity the instant a pod is scheduled, whether the pod ever touches that memory or not. 48GiB &divide; 128Mi &asymp; 373. 48GiB &divide; 256Mi &asymp; 186. Halve 373 and you land almost exactly on 186.</p>
+  <p>Kubernetes' scheduler reserves the full <strong>declared request</strong> against node capacity the instant a pod is scheduled, whether the pod ever touches that memory or not. At the stopping point, node memory requests hit 47984Mi/48GiB (99%) for agent-sandbox and 47856Mi/48GiB (99%) for Containarium &mdash; both sides essentially saturated the same total memory budget, just divided into differently-sized chunks: 373 &times; 128Mi &asymp; 46.6GiB, 186 &times; 256Mi &asymp; 46.5GiB. Halving the request size, not halving anything else, is what produces almost exactly half the count.</p>
 
   <div class="callout">
-    <p><strong>The entire gap is the declared-size asymmetry &mdash; not gVisor overhead, not orchestration cost.</strong> Same isolation technology, same admission model, smaller declared footprint wins. Nothing about Containarium is more efficient here; it just asks for less. Declare Containarium's sandboxes at 128Mi too, and the two numbers converge.</p>
+    <p><strong>That declared-size asymmetry accounts for the ~2:1 gap we observed &mdash; not gVisor overhead, not orchestration cost.</strong> Same isolation technology, same admission model, smaller declared footprint wins. Nothing about Containarium is more efficient here; it just asks for less. Declare Containarium's sandboxes at 128Mi too, and the two numbers converge. One other asymmetry worth naming honestly rather than glossing over: agent-sandbox's pods run a minimal <code>busybox</code> image, while Containarium's boxes run its real, heavier <code>containarium-agent-box</code> runtime &mdash; a structural difference neither side can equalize with a flag (see the README's "Fairness notes" for the full accounting).</p>
   </div>
 
   <p>We re-ran this scenario independently on a fresh cluster to check it wasn't a fluke &mdash; <strong>186 ready, 189 attempted, an exact match</strong> down to the node memory snapshot at the stopping point (47856Mi/48GiB, 99%, identical both times). It's a solid, reproducible number.</p>
@@ -294,7 +291,6 @@
         <text x="312" y="11" text-anchor="middle">256Mi</text>
         <rect x="350" y="20" width="34" height="210" fill="#4c5fd5"/>
         <text x="367" y="11" text-anchor="middle">256Mi</text>
-        <text x="335" y="-4" text-anchor="middle" font-size="10" fill-opacity="0.6" dy="14">reserved = used, same as agent-sandbox</text>
 
         <!-- group 3: native LXC -->
         <text x="565" y="252" text-anchor="middle" font-size="12" font-weight="600">Containarium native</text>
@@ -315,20 +311,21 @@
     <figcaption>Kubernetes reserves the full declared amount either way &mdash; that's why the middle bars match. Only the native LXC path (right) ever counts less than what's declared, and that gap is the entire density difference.</figcaption>
   </figure>
 
-  <p>The mechanism is the same <em>kind</em> of gap, just triggered differently. Kubernetes reserves what's <em>declared</em>, always, both for agent-sandbox's pods and for Containarium's own pods above &mdash; that's why 186 tracks 373 so cleanly. Incus's <code>limits.memory</code>, when there's no Kubernetes scheduler in front of it, is a cgroup <strong>ceiling</strong>, not a reservation: a box declared at 256Mi that's only using ~90MiB only counts ~90MiB against the host.</p>
+  <p>The mechanism is the same <em>kind</em> of gap, just triggered differently. Kubernetes reserves what's <em>declared</em>, always, both for agent-sandbox's pods and for Containarium's own pods above &mdash; that's why 186 tracks 373 so cleanly. Incus's <code>limits.memory</code>, when there's no Kubernetes scheduler in front of it, is a cgroup <strong>ceiling</strong>, not a reservation: through most of this run, boxes declared at 256Mi were only actually using something like 90&ndash;100MiB (measured at checkpoints along the way, not a number we confirmed still held at the final count) &mdash; and only that much counted against the host.</p>
 
   <div class="callout">
     <p>That's a real, legitimate operational property of running LXC directly &mdash; and a real trade-off. No admission backpressure means nothing tells the platform "stop" until the host actually runs out. When we pushed far enough, that's exactly what happened: the host ran out of real RAM at ~930 sandboxes, full stop, independent of anything else we fixed along the way.</p>
   </div>
 
   <h2>What we actually hit pushing the LXC path to 929</h2>
-  <p>Getting there wasn't one clean run &mdash; it took three real fixes, found live, in order:</p>
+  <p>Getting there wasn't one clean run &mdash; two real fixes, found live, then a wall that held:</p>
 
   <ol>
     <li><strong><code>containarium list</code> didn't scale.</strong> The benchmark's own polling loop called <code>list</code> &mdash; which fetches every container's full state &mdash; every ~2 seconds while waiting on one sandbox to boot. At a few hundred containers that put real, unnecessary load on the management daemon. Fix: a <code>get</code> command for the one-container case.</li>
     <li><strong>A background cache had the same bug, independent of the benchmark.</strong> Containarium's own traffic-attribution cache re-fetched every container's details every 30 seconds, forever, regardless of whether anything changed. Fixed to only re-fetch what actually changed.</li>
-    <li><strong>The real wall was RAM, not CPU</strong> &mdash; and it landed at ~930 sandboxes on both the buggy and the fixed run. That's the confirmation we wanted: fixing the software bugs didn't move the physical ceiling, it just let us actually reach it cleanly instead of stalling early on self-inflicted overhead.</li>
   </ol>
+
+  <p><strong>Then the real wall: RAM, not CPU.</strong> It landed at ~930 sandboxes on both the fixed run and the earlier, buggy one &mdash; not because fixing the software bugs moved the physical ceiling, but because the fixes let us actually <em>reach</em> it cleanly instead of stalling early on self-inflicted daemon CPU overhead.</p>
 
   <p>Each fix, measured live at the same checkpoint container counts:</p>
 
@@ -338,10 +335,10 @@
         <tr><th>containers</th><th>before either fix</th><th>get fix only</th><th>both fixes</th></tr>
       </thead>
       <tbody>
-        <tr><td>~400</td><td class="bad">incusd 914% cpu</td><td>load ~19</td><td class="good">load 4&ndash;8</td></tr>
-        <tr><td>~570</td><td class="bad">load ~117</td><td>load 32&ndash;40</td><td class="good">load 15&ndash;21</td></tr>
-        <tr><td>~760</td><td>&mdash; (had already stopped)</td><td class="bad">load 125&ndash;182</td><td class="good">load 38&ndash;40</td></tr>
-        <tr><td>~930</td><td>569 (stopped: bug)</td><td>931 (stopped: RAM)</td><td class="good">929 (stopped: RAM)</td></tr>
+        <tr><td>~400</td><td>n/a &mdash; unfixed run never got a clean reading this early</td><td>load ~19, incusd 914% cpu</td><td class="good">load 4&ndash;8, incusd 48% cpu</td></tr>
+        <tr><td>~570</td><td class="bad">incusd 1025% cpu, load ~117 &mdash; stopped here</td><td>load 32&ndash;40</td><td class="good">load 15&ndash;21</td></tr>
+        <tr><td>~760</td><td>&mdash;</td><td class="bad">load 125&ndash;182</td><td class="good">load 38&ndash;40</td></tr>
+        <tr><td>final count</td><td class="bad">569 (stopped: incusd CPU wall)</td><td>931 (stopped: RAM, incusd OOM-killed)</td><td class="good">929 (stopped: RAM)</td></tr>
       </tbody>
     </table>
   </div>
