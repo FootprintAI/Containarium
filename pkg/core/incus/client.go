@@ -944,6 +944,32 @@ func (c *Client) ListContainers() ([]ContainerInfo, error) {
 	return fetchAllConcurrently(names, listContainersConcurrency, c.fetchContainerInfo), nil
 }
 
+// GetInstanceNames returns every instance name on this backend — the cheap
+// (1 round-trip) first half of ListContainers, exposed separately so a
+// caller that mostly cares "did the set of names change" doesn't have to
+// pay for every container's full details just to find out (#1541).
+func (c *Client) GetInstanceNames() ([]string, error) {
+	names, err := c.server.GetInstanceNames(api.InstanceTypeAny)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list instance names: %w", err)
+	}
+	return names, nil
+}
+
+// GetContainerWithNetwork fetches one container's full info including
+// network/IP state — the same per-container work ListContainers does for
+// every container, for exactly one. Unlike GetContainer (1 round-trip, no
+// network lookup), this costs 2 (GetInstance + GetInstanceState), the same
+// as one iteration of ListContainers' fan-out. For a caller that needs the
+// IP of one specific, already-known container name.
+func (c *Client) GetContainerWithNetwork(name string) (*ContainerInfo, error) {
+	info, ok := c.fetchContainerInfo(name)
+	if !ok {
+		return nil, fmt.Errorf("container not found: %s", name)
+	}
+	return &info, nil
+}
+
 // fetchAllConcurrently runs fetch(name) for every name with at most
 // concurrency in flight at once, returning only the results fetch reported
 // ok for (in no particular order — callers that need a stable order sort
