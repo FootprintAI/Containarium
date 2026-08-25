@@ -125,11 +125,18 @@ create_box() {
 box_ready() {
 	local name="$1"
 	local state
-	# NOTE: this backend's `list` JSON shape differs from what it looked
-	# like on the k8s backend — confirmed live: {"containers":[...]}, not
-	# a bare array, with capitalized Username/State fields and the full
-	# enum value CONTAINER_STATE_RUNNING, not a short "RUNNING".
-	state=$(ssh_or_local "containarium list --format json --server ${CTN_SERVER} --http --token ${CTN_TOKEN} 2>/dev/null" |
+	# `get` (#1543), not `list`: found live (#1541) that polling `list` in
+	# this loop — every ~2s while waiting on each unit — makes the backend
+	# redo 2 Incus API round-trips per EXISTING container on every single
+	# poll, not just the one this loop actually cares about. At a few
+	# hundred containers that's real, unnecessary load on the Incus daemon
+	# itself, compounding as density grows. `get <name>` costs exactly one
+	# round-trip for the one container asked about, independent of how
+	# many others exist. Its --format json output reuses the same
+	# {"containers":[...]} wrapper `list` uses (capitalized Username/State,
+	# full CONTAINER_STATE_RUNNING enum value), so the jq query is
+	# unchanged from before this switch.
+	state=$(ssh_or_local "containarium get ${name} --format json --server ${CTN_SERVER} --http --token ${CTN_TOKEN} 2>/dev/null" |
 		jq -r --arg n "$name" '.containers[] | select(.Username==$n) | .State' 2>/dev/null || true)
 	[[ "$state" == "CONTAINER_STATE_RUNNING" ]]
 }
