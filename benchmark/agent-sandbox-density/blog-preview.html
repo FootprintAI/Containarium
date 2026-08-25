@@ -1,0 +1,338 @@
+<title>929 Sandboxes</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
+
+<style>
+  :root {
+    --ink: #1a1d29;
+    --ink-soft: #3a3e4d;
+    --paper: #f4f5f8;
+    --paper-raised: #ffffff;
+    --accent: #4c5fd5;
+    --accent-ink: #333f99;
+    --accent-soft: #eef0fc;
+    --muted: #6b7280;
+    --rule: #d8dbe6;
+    --good: #1f7a52;
+    --bad: #b8452f;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ink: #e8e9f0;
+      --ink-soft: #c7cad9;
+      --paper: #14161f;
+      --paper-raised: #1c1f2c;
+      --accent: #8b9aff;
+      --accent-ink: #b7c0ff;
+      --accent-soft: #21254a;
+      --muted: #9498a8;
+      --rule: #2a2e3d;
+      --good: #4fbf8f;
+      --bad: #e2795f;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ink: #e8e9f0;
+    --ink-soft: #c7cad9;
+    --paper: #14161f;
+    --paper-raised: #1c1f2c;
+    --accent: #8b9aff;
+    --accent-ink: #b7c0ff;
+    --accent-soft: #21254a;
+    --muted: #9498a8;
+    --rule: #2a2e3d;
+    --good: #4fbf8f;
+    --bad: #e2795f;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-size: 17px;
+    line-height: 1.65;
+    margin: 0;
+    padding: 0 24px 96px;
+  }
+
+  main {
+    max-width: 680px;
+    margin: 0 auto;
+  }
+
+  .kicker {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-top: 64px;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+  }
+
+  .kicker::before {
+    content: "";
+    width: 22px;
+    height: 1px;
+    background: var(--accent);
+    display: inline-block;
+  }
+
+  h1 {
+    font-family: 'Newsreader', Georgia, serif;
+    font-weight: 500;
+    font-size: clamp(2rem, 5vw, 2.65rem);
+    line-height: 1.15;
+    letter-spacing: -0.01em;
+    margin: 18px 0 8px;
+    text-wrap: balance;
+  }
+
+  .dek {
+    font-family: 'Newsreader', Georgia, serif;
+    font-style: italic;
+    font-size: 1.2rem;
+    color: var(--ink-soft);
+    line-height: 1.5;
+    margin: 0 0 40px;
+    text-wrap: balance;
+  }
+
+  h2 {
+    font-family: 'Newsreader', Georgia, serif;
+    font-weight: 500;
+    font-size: 1.55rem;
+    margin: 3em 0 0.6em;
+    letter-spacing: -0.005em;
+  }
+
+  p { margin: 1.1em 0; color: var(--ink-soft); }
+  p strong { color: var(--ink); font-weight: 600; }
+
+  a { color: var(--accent-ink); text-decoration-color: var(--rule); text-underline-offset: 3px; }
+  a:hover { text-decoration-color: var(--accent-ink); }
+
+  code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.87em;
+    background: var(--accent-soft);
+    color: var(--accent-ink);
+    padding: 0.15em 0.4em;
+    border-radius: 4px;
+  }
+
+  .headline-figure {
+    display: flex;
+    gap: 28px;
+    margin: 36px 0 8px;
+    flex-wrap: wrap;
+  }
+
+  .headline-stat {
+    flex: 1;
+    min-width: 200px;
+    background: var(--paper-raised);
+    border: 1px solid var(--rule);
+    border-radius: 12px;
+    padding: 22px 24px;
+  }
+
+  .headline-stat .n {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 600;
+    font-size: 2.3rem;
+    color: var(--ink);
+    line-height: 1;
+  }
+
+  .headline-stat.hi .n { color: var(--accent); }
+
+  .headline-stat .l {
+    font-size: 0.85rem;
+    color: var(--muted);
+    margin-top: 8px;
+    line-height: 1.4;
+  }
+
+  .callout {
+    background: var(--accent-soft);
+    border-left: 3px solid var(--accent);
+    border-radius: 0 10px 10px 0;
+    padding: 20px 24px;
+    margin: 32px 0;
+  }
+
+  .callout p {
+    color: var(--ink);
+    margin: 0.6em 0;
+    font-size: 0.98rem;
+  }
+
+  .callout p:first-child { margin-top: 0; }
+  .callout p:last-child { margin-bottom: 0; }
+
+  figure { margin: 40px 0; }
+  figcaption {
+    font-size: 0.85rem;
+    color: var(--muted);
+    text-align: center;
+    margin-top: 14px;
+    line-height: 1.5;
+  }
+
+  svg text { font-family: 'JetBrains Mono', monospace; }
+
+  ol, ul { color: var(--ink-soft); padding-left: 1.3em; }
+  li { margin: 0.6em 0; }
+  li strong { color: var(--ink); }
+
+  .tablewrap { overflow-x: auto; margin: 28px 0; border: 1px solid var(--rule); border-radius: 10px; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.88rem; min-width: 480px; }
+  th, td {
+    text-align: left;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--rule);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.83rem;
+    white-space: nowrap;
+  }
+  th {
+    font-family: 'Inter', sans-serif;
+    font-weight: 600;
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    background: var(--paper);
+  }
+  tr:last-child td { border-bottom: none; }
+  td.bad { color: var(--bad); }
+  td.good { color: var(--good); }
+
+  hr.end {
+    border: none;
+    border-top: 1px solid var(--rule);
+    margin: 56px 0 28px;
+  }
+
+  .byline {
+    font-size: 0.9rem;
+    color: var(--muted);
+    line-height: 1.6;
+  }
+</style>
+
+<main>
+  <p class="kicker">Containarium engineering</p>
+  <h1>We packed 929 sandboxes on one box — and it's not about gVisor</h1>
+  <p class="dek">A live density benchmark, three real bugs found and fixed along the way, and the honest mechanism behind the headline number.</p>
+
+  <p>We wanted to know a simple thing: how many isolated agent sandboxes can you actually fit on one machine? So we ran a real, live density benchmark &mdash; Kubernetes + <a href="https://github.com/kubernetes-sigs/agent-sandbox">agent-sandbox</a> on one side, Containarium's native LXC backend on the other &mdash; pushed both until they broke, and fixed what we broke along the way.</p>
+
+  <div class="headline-figure">
+    <div class="headline-stat hi">
+      <div class="n">929</div>
+      <div class="l">Containarium sandboxes<br>native LXC backend</div>
+    </div>
+    <div class="headline-stat">
+      <div class="n">373</div>
+      <div class="l">agent-sandbox pods<br>Kubernetes + Calico</div>
+    </div>
+  </div>
+
+  <p>If you stop at that comparison you'll walk away with the wrong lesson. The real story is more interesting &mdash; and more useful, whichever side of this you're building on.</p>
+
+  <h2>The setup</h2>
+  <p>Same host, same hard resource cap (48GiB RAM / 20 vCPU), same sandbox profile (200m CPU / 256Mi memory) on every side. Two groups:</p>
+  <ul>
+    <li><strong>Control</strong> &mdash; kubeadm + Calico + agent-sandbox, sandboxes as pods</li>
+    <li><strong>Experiment</strong> &mdash; Containarium's native LXC/Incus backend, no Kubernetes, same host</li>
+  </ul>
+  <p>Both groups' actual boxes idle at roughly the same real memory footprint &mdash; tens of MiB. The difference isn't the sandbox. It's what each system does with the <em>declared</em> resource size when deciding whether to admit one more.</p>
+
+  <h2>The mechanism, not the marketing</h2>
+  <p>Kubernetes' scheduler reserves the full <strong>declared request</strong> against node capacity the instant a pod is scheduled &mdash; 128Mi requested means 128Mi reserved, whether the pod ever touches it or not. That's a deliberate, sane default: it protects every other tenant on the node from a noisy neighbor. Our control group hit its wall at exactly 48GiB &divide; 128Mi &asymp; 373 &mdash; textbook admission-controlled scheduling, working exactly as designed.</p>
+  <p>Incus's <code>limits.memory</code>, by contrast, is a cgroup <strong>ceiling</strong>, not a reservation. A box declared at 256Mi that's only using 90MiB only counts 90MiB against the host.</p>
+
+  <figure>
+    <svg viewBox="0 0 640 260" role="img" aria-label="Bar chart comparing declared memory reservation versus actual memory used, for Kubernetes agent-sandbox and for Containarium. Kubernetes' declared and actual bars are equal at 128 mebibytes. Containarium's declared bar is 256 mebibytes but its actual bar is only about 90 mebibytes, showing the gap that explains the density difference.">
+      <g font-size="12.5" fill="currentColor">
+        <!-- axis -->
+        <line x1="70" y1="210" x2="620" y2="210" stroke="currentColor" stroke-opacity="0.25"/>
+
+        <!-- k8s group -->
+        <text x="150" y="234" text-anchor="middle" font-size="13" font-weight="600">k8s + agent-sandbox</text>
+        <!-- declared -->
+        <rect x="95" y="82" width="42" height="128" fill="currentColor" fill-opacity="0.35"/>
+        <text x="116" y="72" text-anchor="middle">128Mi</text>
+        <text x="116" y="228" text-anchor="middle" font-size="11" fill-opacity="0.6">declared</text>
+        <!-- actual -->
+        <rect x="163" y="82" width="42" height="128" fill="#4c5fd5"/>
+        <text x="184" y="72" text-anchor="middle">128Mi</text>
+        <text x="184" y="228" text-anchor="middle" font-size="11" fill-opacity="0.6">actual used</text>
+
+        <!-- containarium group -->
+        <text x="470" y="234" text-anchor="middle" font-size="13" font-weight="600">Containarium (LXC)</text>
+        <!-- declared -->
+        <rect x="415" y="10" width="42" height="200" fill="currentColor" fill-opacity="0.35"/>
+        <text x="436" y="0" text-anchor="middle" dy="8">256Mi</text>
+        <text x="436" y="228" text-anchor="middle" font-size="11" fill-opacity="0.6">declared</text>
+        <!-- actual -->
+        <rect x="483" y="140" width="42" height="70" fill="#4c5fd5"/>
+        <text x="504" y="130" text-anchor="middle">~90Mi</text>
+        <text x="504" y="228" text-anchor="middle" font-size="11" fill-opacity="0.6">actual used</text>
+
+        <!-- gap annotation -->
+        <line x1="483" y1="10" x2="483" y2="140" stroke="#4c5fd5" stroke-dasharray="3,3" stroke-opacity="0.6"/>
+        <text x="560" y="75" font-size="11" fill="#4c5fd5" font-weight="600">unreserved</text>
+        <text x="560" y="90" font-size="11" fill="#4c5fd5" font-weight="600">headroom</text>
+      </g>
+    </svg>
+    <figcaption>Kubernetes reserves what's declared, whether it's used or not. Incus only ever counts what's actually used against the host &mdash; that gap is the entire density difference.</figcaption>
+  </figure>
+
+  <div class="callout">
+    <p>Containarium's density number is higher because it's <strong>not reserving headroom nobody's using</strong> &mdash; a real, legitimate operational property, and also a real trade-off: no admission backpressure means nothing tells the platform "stop" until the host actually runs out. When we pushed far enough, that's exactly what happened.</p>
+  </div>
+
+  <p><strong>If we'd held both sides to the same admission model</strong> &mdash; memory request == memory limit, same as Containarium's <code>create</code> always does &mdash; Containarium's own earlier k8s+gVisor run actually landed <em>behind</em> the control group (186 vs. 373), because its declared ceiling (256Mi) is exactly 2&times; the control group's declared request (128Mi). Same host, same math, opposite conclusion. The admission model is the variable, not the sandboxing technology.</p>
+
+  <h2>What we actually hit pushing to 929</h2>
+  <p>Getting there wasn't one clean run &mdash; it took three real fixes, found live, in order:</p>
+
+  <ol>
+    <li><strong><code>containarium list</code> didn't scale.</strong> The benchmark's own polling loop called <code>list</code> &mdash; which fetches every container's full state &mdash; every ~2 seconds while waiting on one sandbox to boot. At a few hundred containers that put real, unnecessary load on the management daemon. Fix: a <code>get</code> command for the one-container case.</li>
+    <li><strong>A background cache had the same bug, independent of the benchmark.</strong> Containarium's own traffic-attribution cache re-fetched every container's details every 30 seconds, forever, regardless of whether anything changed. Fixed to only re-fetch what actually changed.</li>
+    <li><strong>The real wall was RAM, not CPU</strong> &mdash; and it landed at ~930 sandboxes on both the buggy and the fixed run. That's the confirmation we wanted: fixing the software bugs didn't move the physical ceiling, it just let us actually reach it cleanly instead of stalling early on self-inflicted overhead.</li>
+  </ol>
+
+  <p>Each fix, measured live at the same checkpoint container counts:</p>
+
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr><th>containers</th><th>before either fix</th><th>get fix only</th><th>both fixes</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>~400</td><td class="bad">incusd 914% cpu</td><td>load ~19</td><td class="good">load 4&ndash;8</td></tr>
+        <tr><td>~570</td><td class="bad">load ~117</td><td>load 32&ndash;40</td><td class="good">load 15&ndash;21</td></tr>
+        <tr><td>~760</td><td>&mdash; (had already stopped)</td><td class="bad">load 125&ndash;182</td><td class="good">load 38&ndash;40</td></tr>
+        <tr><td>~930</td><td>569 (stopped: bug)</td><td>931 (stopped: RAM)</td><td class="good">929 (stopped: RAM)</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>We also found and fixed a couple of smaller things along the way &mdash; a per-create install step that should've been baked into an image once instead of repeated on every create, and a host account creation bug that silently broke after about a dozen tenants.</p>
+
+  <h2>What this means if you're running agent-sandbox</h2>
+  <p>Not "switch to Containarium." The actual, portable takeaway: <strong>if your agents are idle-heavy</strong> &mdash; and most agent sandboxes spend most of their time waiting, not computing &mdash; your real memory usage is probably far below whatever you've declared as the request. Kubernetes gives you the lever to close that gap yourself: lower requests, a VPA tuned to actual usage, or a <code>LimitRange</code> that keeps limits generous while requests track reality &mdash; without touching gVisor, without touching agent-sandbox's own code.</p>
+  <p>The density gap we measured isn't a verdict on either project. It's a measurement of two different default postures toward the same trade-off, and it's one you can dial on either side.</p>
+
+  <hr class="end">
+  <p class="byline">Full methodology, every host spec, every raw number, and the complete bug-by-bug investigation live in <code>benchmark/agent-sandbox-density/</code> in the Containarium repo &mdash; reproduce it yourself, or tell us where the comparison should go next.</p>
+</main>
