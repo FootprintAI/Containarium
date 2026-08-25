@@ -1,60 +1,66 @@
-# We packed 929 sandboxes on one box — and it's not about gVisor
+# 929, 373, 186: what actually explains agent sandbox density
 
 We wanted to know a simple thing: how many isolated agent sandboxes can you
-actually fit on one machine? So we ran a real, live density benchmark —
-Kubernetes + [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox)
-on one side, Containarium's native LXC backend on the other — pushed both
-until they broke, and fixed what we broke along the way.
+actually fit on one machine? So we ran a real, live density benchmark
+across three deployment modes on the same host, pushed each until it
+broke, and fixed what we broke along the way.
 
-The headline number: **929 Containarium sandboxes vs. 373 agent-sandbox
-pods**, both under a 48GiB / 20-vCPU host. But if you stop at that number
-you'll walk away with the wrong lesson. The real story is more interesting
-— and more useful, whichever side of this you're building on.
+- **373** — Kubernetes + [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox), sandboxes as gVisor pods
+- **186** — Containarium running the same way: `pod → gVisor → Containarium`, same Kubernetes, same isolation
+- **929** — Containarium's native LXC backend, no Kubernetes, no gVisor at all
 
-## The setup
+If you only remember one of those numbers, remember that the **gVisor-matched
+comparison is 186 vs. 373 — and Containarium is the smaller one.** That's not
+a caveat buried in the fine print; it's the fair fight, and it's worth
+understanding exactly why before the 929 number means anything.
 
-Same host, same hard resource cap, same sandbox profile (200m CPU /
-256Mi memory) on every side. Two groups:
+## The apples-to-apples result: 186 vs. 373
 
-- **Control**: kubeadm + Calico + agent-sandbox, sandboxes as pods
-- **Experiment**: Containarium's native LXC/Incus backend — no
-  Kubernetes, same host
+Same host, same hard resource cap (48GiB RAM / 20 vCPU), same sandbox
+profile family, both under Kubernetes with the identical `runsc` (gVisor)
+RuntimeClass. The only real difference is how each side declares its
+sandbox's memory:
 
-Both groups' actual boxes idle at roughly the same real memory footprint
-(tens of MiB). The difference isn't the sandbox — it's what each system
-does with the *declared* resource size when deciding whether to admit one
-more.
-
-## The mechanism, not the marketing
+- agent-sandbox's pods request **128Mi**
+- Containarium's `create` sets request and limit to the same value —
+  **256Mi**, exactly 2x
 
 Kubernetes' scheduler reserves the full **declared request** against node
-capacity the instant a pod is scheduled — 128Mi requested means 128Mi
-reserved, whether the pod ever touches it or not. That's a deliberate,
-sane default: it protects every *other* tenant on the node from a noisy
-neighbor. Our control group hit its wall at exactly `48GiB / 128Mi ≈ 373`
-— textbook admission-controlled scheduling, working exactly as designed.
+capacity the instant a pod is scheduled, whether the pod ever touches that
+memory or not. `48GiB ÷ 128Mi ≈ 373`. `48GiB ÷ 256Mi ≈ 186`. Halve 373 and
+you land almost exactly on 186. **The entire gap is the declared-size
+asymmetry — not gVisor overhead, not orchestration cost.** Same isolation
+technology, same admission model, smaller declared footprint wins. Nothing
+about Containarium is more efficient here; it just asks for less. If we'd
+declared Containarium's sandboxes at 128Mi too, the two numbers converge.
 
-Incus's `limits.memory`, by contrast, is a cgroup **ceiling**, not a
-reservation. A box declared at 256Mi that's only using 90MiB only counts
-90MiB against the host. Containarium's density number is higher because
-it's *not reserving headroom nobody's using* — which is a real,
-legitimate operational property, and also a real trade-off: no admission
-backpressure means nothing tells the platform "stop" until the host
-actually runs out. When we pushed far enough, that's exactly what
-happened — the host ran out of real RAM at ~930 sandboxes, full stop,
-independent of anything else we fixed along the way.
+## Where 929 comes from — a different deployment entirely
 
-**If we'd held both sides to the same admission model — memory *request*
-== memory *limit*, same as Containarium's `create` always does — Container-
-ium's own earlier k8s+gVisor run actually landed *behind* the control
-group** (186 vs. 373), because its declared ceiling (256Mi) is exactly 2x
-the control group's declared request (128Mi). Same host, same math,
-opposite conclusion. The admission model is the variable, not the
-sandboxing technology.
+Containarium also ships a native LXC/Incus backend: no Kubernetes, no
+gVisor, sandboxes run directly on the host. Run the same benchmark there
+and you get **929** — but this isn't a gVisor-vs-gVisor result, because
+there's no gVisor and no Kubernetes admission control in this path at all.
+It's a different question: raw LXC density vs. k8s+gVisor density, with a
+different isolation model underneath.
 
-## What we actually hit pushing to 929
+<!-- diagram: declared vs. actual used, three columns — see blog-preview.html -->
 
-Getting there wasn't one clean run — it took three real fixes, found live:
+The mechanism is the same *kind* of gap, just triggered differently.
+Kubernetes reserves what's *declared*, always, both for agent-sandbox's
+pods and for Containarium's own pods above — that's why 186 tracks 373 so
+cleanly. Incus's `limits.memory`, when there's no Kubernetes scheduler in
+front of it, is a cgroup **ceiling**, not a reservation: a box declared at
+256Mi that's only using ~90MiB only counts ~90MiB against the host. That's
+a real, legitimate operational property of running LXC directly — and a
+real trade-off. No admission backpressure means nothing tells the platform
+"stop" until the host actually runs out. When we pushed far enough, that's
+exactly what happened: the host ran out of real RAM at ~930 sandboxes,
+full stop, independent of anything else we fixed along the way.
+
+## What we actually hit pushing the LXC path to 929
+
+Getting there wasn't one clean run — it took three real fixes, found live,
+in order:
 
 1. **`containarium list` didn't scale.** The benchmark's own polling loop
    called `list` (which fetches every container's full state) every ~2s
@@ -69,11 +75,20 @@ Getting there wasn't one clean run — it took three real fixes, found live:
    ([#1546](https://github.com/FootprintAI/Containarium/pull/1546)) — the daemon CPU wall that had crept back in past ~600
    containers disappeared entirely; load stayed flat (single digits) all
    the way to the same real memory ceiling.
-3. **The real wall was RAM, not CPU** — and it stayed at ~930 sandboxes on
+3. **The real wall was RAM, not CPU** — and it landed at ~930 sandboxes on
    both the buggy and the fixed run, which is exactly the confirmation we
    wanted: fixing the software bugs didn't move the physical ceiling, it
    just let us actually reach it cleanly instead of stalling early on
    self-inflicted overhead.
+
+Each fix, measured live at the same checkpoint container counts:
+
+| containers | before either fix | `get` fix only | both fixes |
+|---|---|---|---|
+| ~400 | `incusd` at 914% CPU | load ~19 | load 4-8 |
+| ~570 | load ~117 | load 32-40 | load 15-21 |
+| ~760 | — (had already stopped) | load 125-182 | load 38-40 |
+| ~930 | 569 (stopped: bug) | 931 (stopped: RAM) | 929 (stopped: RAM) |
 
 We also found and fixed a couple of smaller things along the way — a
 per-create install step that should've been baked into an image once
@@ -81,18 +96,26 @@ instead of repeated on every create, and a host account creation bug that
 silently broke after about a dozen tenants. Full detail, every number,
 every commit: [`RESULTS.md`](RESULTS.md) in the benchmark folder.
 
-## What this means if you're running agent-sandbox
+## What this actually means
 
-Not "switch to Containarium." The actual, portable takeaway: **if your
-agents are idle-heavy** (most agent sandboxes spend most of their time
-waiting, not computing), your real memory usage is probably far below
-whatever you've declared as the request. Kubernetes gives you the lever
-to close that gap yourself — lower requests, a VPA tuned to actual usage,
-or a `LimitRange` that keeps limits generous while requests track reality
-— without touching gVisor, without touching agent-sandbox's own code.
-The density gap we measured isn't a verdict on either project; it's a
-measurement of two different default postures toward the same trade-off,
-and it's one you can dial on either side.
+Two separate, honest takeaways, not one flattering headline:
+
+**If you need gVisor-grade isolation under Kubernetes**, Containarium's
+sandboxes don't magically pack denser than agent-sandbox's — on this
+benchmark they packed for fewer, purely because of a declared-size choice
+that's easy to change. If your agents are idle-heavy (most agent sandboxes
+spend most of their time waiting, not computing), the real lever for
+*either* system is the same: your actual memory usage is probably far
+below whatever you've declared as the request. Lower it, or tune a VPA to
+track reality — without touching gVisor, without touching either
+project's code.
+
+**If you're willing to leave Kubernetes and gVisor's isolation model
+behind**, Containarium's native LXC backend can pack meaningfully more —
+because it isn't reserving headroom nobody's using. That's a real,
+different trade-off (weaker isolation boundary, no admission
+backpressure, a hard wall when you finally exhaust real memory), not a
+strictly-better number.
 
 ---
 
