@@ -97,7 +97,7 @@ data:
     mkdir -p /etc/containarium
     openssl rand -hex 32 >/etc/containarium/jwt.secret
     chmod 0400 /etc/containarium/jwt.secret
-    nohup containarium daemon --address 0.0.0.0 --rest --http-port 8080 \
+    nohup containarium daemon --runtime=lxc --address 0.0.0.0 --rest --http-port 8080 \
       --jwt-secret-file /etc/containarium/jwt.secret \
       --disable-security-scanner --disable-pentest-scanner --disable-zap-scanner \
       >/var/log/containarium-daemon.log 2>&1 &

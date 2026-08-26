@@ -621,7 +621,7 @@ call — with the benchmark's own 200m/256MiB profile, and even with zero
 explicit `--cpu`/`--memory` flags (containarium's own defaults, 4
 cores/4GB) — fails identically:
 
-```
+```text
 Error: failed to create container via HTTP API: failed to create
 container: ... failed to start container (operation failed): Failed to
 run: /opt/incus/bin/incusd forklxc <name>-container ...: exit status 1
@@ -629,7 +629,7 @@ run: /opt/incus/bin/incusd forklxc <name>-container ...: exit status 1
 
 The container-specific LXC log names it precisely:
 
-```
+```text
 cgfsng - Device or resource busy - Could not enable "+cpuset +cpu +io
 +memory +hugetlb +pids +rdma +misc" controllers in the unified cgroup 11
 cgfsng - No such file or directory - Failed to set "memory.max" to
