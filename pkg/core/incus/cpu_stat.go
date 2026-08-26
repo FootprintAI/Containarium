@@ -2,6 +2,7 @@ package incus
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -101,6 +102,9 @@ func cgroupV2PathFromProc(content string) string {
 // log per container per scrape — just because a host mounts its cgroups
 // differently or the container exited between the state read and this one.
 func readCPUThrottle(procCgroupPath, cgroupRoot string) (cpuThrottle, bool) {
+	// #nosec G304 -- callers build this as /proc/<pid>/cgroup from an int64
+	// PID that Incus reported; it is a parameter only so the resolve-and-read
+	// path is testable against a fixture tree.
 	raw, err := os.ReadFile(procCgroupPath)
 	if err != nil {
 		return cpuThrottle{}, false
@@ -110,13 +114,25 @@ func readCPUThrottle(procCgroupPath, cgroupRoot string) (cpuThrottle, bool) {
 	if rel == "" {
 		return cpuThrottle{}, false
 	}
-	// The path comes from /proc, but it is still untrusted input being joined
-	// onto a host path — refuse anything that could climb out of the hierarchy.
-	if rel != filepath.Clean(rel) || strings.HasPrefix(rel, "..") {
+
+	// The cgroup path is read out of /proc, so it is host-derived rather than
+	// tenant-supplied — but it is still a variable path being resolved against
+	// a host directory, so contain it at the OS level instead of by inspection.
+	// os.Root refuses any traversal out of cgroupRoot, symlinks included, which
+	// a filepath.Clean check cannot promise.
+	root, err := os.OpenRoot(cgroupRoot)
+	if err != nil {
 		return cpuThrottle{}, false
 	}
+	defer func() { _ = root.Close() }()
 
-	stat, err := os.ReadFile(filepath.Join(cgroupRoot, rel, "cpu.stat"))
+	f, err := root.Open(filepath.Join(rel, "cpu.stat"))
+	if err != nil {
+		return cpuThrottle{}, false
+	}
+	defer func() { _ = f.Close() }()
+
+	stat, err := io.ReadAll(f)
 	if err != nil {
 		return cpuThrottle{}, false
 	}
