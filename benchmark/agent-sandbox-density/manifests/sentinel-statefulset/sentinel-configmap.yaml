@@ -1,0 +1,33 @@
+# Stock nginx reverse proxy standing in for a "containarium-sentinel"
+# component fronting the daemon's own control-plane API — see README.md in
+# this directory for why this is a generic proxy, not the real
+# `internal/sentinel` binary (which does something else entirely: iptables
+# DNAT to spot VMs, not HTTP forwarding to a k8s StatefulSet).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: containarium-bench-sentinel-nginx
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/name: containarium-bench-sentinel
+    app.kubernetes.io/instance: containarium-bench
+    benchmark: agent-sandbox-density
+data:
+  nginx.conf: |
+    events {}
+    http {
+      server {
+        listen 8080;
+        location / {
+          # Fully-qualified, not the short in-namespace form: nginx-alpine's
+          # musl libc resolver does not expand k8s search-domain suffixes
+          # the way glibc does, so the short name NXDOMAINs here even
+          # though it resolves fine everywhere else in the cluster
+          # (confirmed live) — found running this exact scenario.
+          proxy_pass http://containarium-bench-daemon-0.containarium-bench-daemon-headless.__NAMESPACE__.svc.cluster.local:8080;
+          proxy_http_version 1.1;
+          proxy_set_header Host $host;
+          proxy_set_header Connection "";
+        }
+      }
+    }

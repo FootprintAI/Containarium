@@ -1,0 +1,25 @@
+# Headless Service pairing for the benchmark-only daemon StatefulSet
+# (see README.md in this directory). clusterIP: None gives each pod a
+# stable DNS name (containarium-bench-daemon-0.containarium-bench-daemon-headless),
+# which the sentinel's nginx.conf proxies to directly — with a single
+# replica there's no load-balancing to do, so a headless Service is used
+# for its pod-identity DNS, not for balancing.
+apiVersion: v1
+kind: Service
+metadata:
+  name: containarium-bench-daemon-headless
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/name: containarium-bench-daemon
+    app.kubernetes.io/instance: containarium-bench
+    benchmark: agent-sandbox-density
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: containarium-bench-daemon
+    app.kubernetes.io/instance: containarium-bench
+  ports:
+    - name: api
+      port: 8080
+      targetPort: api
+      protocol: TCP

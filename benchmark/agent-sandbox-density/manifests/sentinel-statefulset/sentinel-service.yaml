@@ -1,0 +1,24 @@
+# Stable in-cluster address for the sentinel — this is what
+# 08-run-density-containarium-sentinel.sh points CTN_SERVER at, so every
+# `containarium create` call actually traverses the sentinel hop instead
+# of hitting the daemon Service directly (see README.md in this
+# directory).
+apiVersion: v1
+kind: Service
+metadata:
+  name: containarium-bench-sentinel
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/name: containarium-bench-sentinel
+    app.kubernetes.io/instance: containarium-bench
+    benchmark: agent-sandbox-density
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: containarium-bench-sentinel
+    app.kubernetes.io/instance: containarium-bench
+  ports:
+    - name: api
+      port: 8080
+      targetPort: api
+      protocol: TCP

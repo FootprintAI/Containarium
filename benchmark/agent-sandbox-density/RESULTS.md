@@ -470,6 +470,108 @@ number was a real, honestly-reported result of a real CLI gap, not a
 measurement error; #1557 closes that gap. `BLOG-DRAFT.md` needs a
 follow-up pass to fold this in before it's treated as final.
 
+### 2026-08-26 — sentinel-statefulset: the real topology, benchmarked
+
+README.md's "The experiment group's k8s footprint" describes Containarium's
+k8s deployment mode as conceptually `Service → Deployment
+(containarium-sentinel, traffic forwarding) → StatefulSet
+(containarium-daemon, provisions boxes)` — three k8s-native layers in front
+of box provisioning, versus the third scenario's single bare process. That
+was prose with no number behind it. This run builds it for real and
+measures what it actually costs.
+
+**This is a benchmark-only exploration, not a production chart change** —
+`charts/containarium-k8s/` is untouched. The daemon is stateless (no PVCs,
+all durable state in the k8s API/etcd via CRDs), so a StatefulSet buys it
+nothing architecturally; there is no real `containarium-sentinel` binary
+that forwards HTTP/gRPC to the daemon's own API (`internal/sentinel` does
+something unrelated — iptables DNAT to spot VMs — see
+`manifests/sentinel-statefulset/README.md`). The sentinel here is a stock
+`nginx:1.27-alpine` reverse proxy standing in for one. New files only:
+`manifests/sentinel-statefulset/`, `scripts/07-provision-containarium-sentinel.sh`,
+`scripts/08-run-density-containarium-sentinel.sh`.
+
+How the daemon's container spec got into the StatefulSet without
+hand-duplicating Helm's env-var logic: `helm install` the real chart with
+`daemon.replicaCount=0` (so its own Deployment never runs a pod), read
+back the resulting (0-replica but fully-specced) Deployment with `kubectl
+get -o json`, and reshape `spec.template.spec` into a StatefulSet with
+`jq` — the container spec is copied exactly, not re-typed.
+
+Same host cap as every other k8s scenario (20 vCPU / 48GiB RAM / 200GB
+disk Incus KVM VM), same profile as the 373 baseline (cpu 25m/50m, mem
+request `128Mi` / limit `256Mi` via #1557's `--memory-request`/
+`--cpu-request`).
+
+**Daemon version snag, found live, same shape as the #1558 entry above:**
+the CLI and daemon image this VM resolves via `CONTAINARIUM_VERSION=latest`
+are the last *released* tag (v0.66.0) — #1557 is on `main`, unreleased.
+`containarium create --cpu-request ...` failed outright with `unknown
+flag`. Built a `containarium` CLI binary from the current `main` checkout
+(`go build cmd/containarium/main.go` — needed `docker run --network=host`
+for the build container too; same TLS-over-bridge-network issue the
+#1558 daemon image build hit) and reused the `containarium-daemon:bench-1558`
+image already built for that earlier run (same #1557 source, still
+functionally current). Swapping the image surfaced a second, unrelated
+issue: the newer daemon binary enforces #1496's upstream-gateway-key
+startup check more strictly than v0.66.0's build did, and the
+`CONTAINARIUM_K8S_GATEWAY_UPSTREAM_KEY_SECRET`/`_PUBLIC_KEY` env vars
+were absent from the reshaped StatefulSet even though the same `helm
+install --set gateway.upstreamKeySecret=...` flags 03's proven pattern
+uses were passed — recovered the public key from the already-created
+Secret (`ssh-keygen -y`) and patched both env vars onto the StatefulSet
+directly. Not yet root-caused *why* the values didn't land in the first
+place (a Helm `--set` edge case with the specific value shape, or a
+timing issue in this script's install step) — flagged, not chased
+further, since the workaround is clean and the resulting container spec
+is byte-identical to what 03's own pattern produces.
+
+**Third issue, also found live: nginx's static DNS resolution.** The
+sentinel's `proxy_pass` targets the daemon StatefulSet pod's own DNS name
+(`containarium-bench-daemon-0.containarium-bench-daemon-headless`) —
+nginx resolves that hostname *once*, at container startup, and caches the
+IP for its lifetime. Restarting the daemon pod (twice, chasing the two
+issues above) gave it a new IP each time, silently stranding the
+sentinel's cached resolution — `upstream timed out` on every request
+until the sentinel itself was restarted. Fixed by restarting
+`containarium-bench-sentinel` once daemon was finally stable, immediately
+before the density loop. A production sentinel would need dynamic
+resolution (nginx's `resolver` directive + a variable in `proxy_pass`) to
+survive pod restarts; not needed for a one-shot measurement where nothing
+restarts mid-run.
+
+| | plain Deployment (baseline) | sentinel-statefulset |
+|---|---|---|
+| Sandboxes reached RUNNING | **373** | **373** |
+| Attempted (incl. failures) | 376 | 376 |
+| Node memory requests at stop | 47984Mi/48GiB (99%) | 47984Mi/48GiB (99%) |
+| Node CPU requests at stop | 10425m/20000m (52%) | 10425m/20000m (52%) |
+| Wall-clock for the density loop | ~15 min (original run) / ~77 min (#1558's runsc leg, same profile) | ~77 min |
+| Pods by RuntimeClass (sanity check) | `runsc` on all 373 | `runsc` on all 373 |
+
+**Exact match — 373 vs. 373, identical node memory snapshot down to the
+Mi.** The extra Service → Deployment(sentinel) → StatefulSet(daemon) hop
+is invisible to density: the bottleneck is still k8s memory-request
+admission for sandbox pods, which this topology change doesn't touch at
+all. Wall-clock also landed within noise of the #1558 runsc leg's ~77
+minutes (same profile, same gVisor cost, no sentinel) — an extra
+in-cluster HTTP hop through nginx per `create` call didn't move the
+needle against gVisor's own per-sandbox startup cost, which already
+dominates that number.
+
+**What this settles and what it doesn't.** It settles the question the
+prose in README.md couldn't: this specific topology shape, built for
+real, costs nothing measurable in density or wall-clock at 373 sandboxes
+on a 48GiB host. It does *not* validate the topology as a production
+design — the daemon is still stateless, the "sentinel" here is a generic
+proxy standing in for a component that doesn't exist yet, and a real
+implementation would carry real engineering cost (build, operate, secure
+an actual forwarding layer) that this benchmark can't measure. Nor does
+it rule out cost at a different scale — one StatefulSet pod and one
+sentinel replica were never going to bottleneck 373 sequential creates;
+whether either component becomes a real bottleneck under concurrent load
+or many daemon replicas is a different, unasked question.
+
 ## Template
 
 ```

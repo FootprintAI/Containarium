@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: containarium-bench-sentinel
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/name: containarium-bench-sentinel
+    app.kubernetes.io/instance: containarium-bench
+    benchmark: agent-sandbox-density
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: containarium-bench-sentinel
+      app.kubernetes.io/instance: containarium-bench
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: containarium-bench-sentinel
+        app.kubernetes.io/instance: containarium-bench
+    spec:
+      containers:
+        - name: sentinel
+          image: nginx:1.27-alpine
+          ports:
+            - name: api
+              containerPort: 8080
+              protocol: TCP
+          volumeMounts:
+            - name: nginx-conf
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+              readOnly: true
+          readinessProbe:
+            tcpSocket:
+              port: api
+            initialDelaySeconds: 2
+            periodSeconds: 5
+      volumes:
+        - name: nginx-conf
+          configMap:
+            name: containarium-bench-sentinel-nginx

@@ -103,17 +103,32 @@ path simply never carries — it doesn't scale with sandbox count, but it
 isn't free either, and it's worth naming rather than folding silently
 into "one extra pod."
 
-**This is the general, conceptually intended shape of the architecture —
-not the literal chart this benchmark deploys.** `charts/containarium-k8s/`
-(what `03-provision-containarium.sh` actually installs) runs the daemon
-as a single `Deployment` with `sshpiper` as its gateway component — no
-separate `containarium-sentinel` and no `StatefulSet`. The sentinel/
-StatefulSet split above is how Containarium's k8s deployment mode is
-intended to work architecturally; this benchmark's numbers measure
-density and wall-clock, not this fixed k8s scheduling/networking cost,
-and don't currently distinguish between the two shapes. If that
-distinction turns out to matter for the fixed-overhead comparison, that's
-a follow-up benchmark note, not something to assume from this doc alone.
+**Not the literal chart this benchmark's primary run deploys —
+`charts/containarium-k8s/`** (what `03-provision-containarium.sh` installs)
+runs the daemon as a single `Deployment` with `sshpiper` as its gateway
+component, no separate `containarium-sentinel` and no `StatefulSet`. But
+this topology has since actually been built and benchmarked, not just
+described — see `scripts/07-provision-containarium-sentinel.sh` /
+`08-run-density-containarium-sentinel.sh` and RESULTS.md's 2026-08-26
+"sentinel-statefulset" entry: **373 sandboxes, an exact match to the
+plain-Deployment baseline, with wall-clock landing within noise of
+gVisor's own cost.** The extra Service → Deployment(sentinel) →
+StatefulSet(daemon) hop is measurably invisible to both density and
+speed at this scale — the bottleneck stays k8s memory-request admission
+for sandbox pods either way.
+
+That settles the fixed-overhead question this section originally raised,
+but it's still a benchmark-only exploration, not a production
+recommendation: the daemon is stateless (no PVCs, all durable state in
+the k8s API/etcd via CRDs) so the StatefulSet buys nothing
+architecturally, and the "sentinel" in that run is a stock nginx reverse
+proxy standing in for a `containarium-sentinel` component that doesn't
+exist yet (the real `internal/sentinel` binary does something unrelated
+— see `manifests/sentinel-statefulset/README.md`). One StatefulSet pod
+and one sentinel replica also were never going to bottleneck 373
+sequential creates — whether either becomes a real bottleneck under
+concurrent load or many daemon replicas is a different, unmeasured
+question.
 
 ## Why this matters
 
@@ -428,7 +443,8 @@ benchmark/agent-sandbox-density/
 ├── config.env.example           — copy to config.env, fill in your host's numbers
 ├── RESULTS.md                   — reviewed summary of actual runs, one dated entry per run
 ├── manifests/
-│   └── sandbox-template.yaml    — Sandbox CR (agents.x-k8s.io/v1beta1) with the resource profile above
+│   ├── sandbox-template.yaml     — Sandbox CR (agents.x-k8s.io/v1beta1) with the resource profile above
+│   └── sentinel-statefulset/     — benchmark-only Service/Deployment(sentinel)/StatefulSet(daemon) manifests, see its own README.md
 └── scripts/
     ├── lib.sh                       — shared logging / resource-snapshot / stop-on-N-failures helpers (density loop supports resuming via --start-index)
     ├── k8s-common.sh                — shared kubeadm+CNI+agent-sandbox-controller base, used by both 01 and 03
@@ -439,5 +455,7 @@ benchmark/agent-sandbox-density/
     ├── 04-run-density-containarium.sh — `containarium create` (pod -> gVisor -> containarium) until the stopping rule triggers
     ├── 05-provision-containarium-lxc.sh — third scenario: Incus + Containarium daemon, native LXC backend, no k8s/gVisor (explicit zfs storage backend, image-bake, scanners disabled)
     ├── 06-run-density-containarium-lxc.sh — `containarium create` on the LXC backend until the stopping rule triggers (--start-index to resume a stopped run)
+    ├── 07-provision-containarium-sentinel.sh — benchmark-only: same base as 03, daemon.replicaCount=0 + jq-reshaped into manifests/sentinel-statefulset/
+    ├── 08-run-density-containarium-sentinel.sh — `containarium create` through the sentinel hop until the stopping rule triggers
     └── 99-teardown-vm.sh            — stop + delete the VM
 ```
