@@ -1,0 +1,122 @@
+# Startup script for the nested-Incus-in-a-k8s-pod benchmark scenario
+# (issue #1565). Runs `incusd` and `containarium daemon --runtime=lxc`
+# INSIDE this one pod — every `containarium create` becomes a real LXC
+# container, cgroup-ceilinged by this nested Incus, invisible to
+# Kubernetes' own admission accounting (which only ever sees this one
+# pod's declared request/limit). See README.md in this directory.
+#
+# No systemd in a bare ubuntu:24.04 container image — incusd and the
+# containarium daemon are started directly (nohup'd background
+# processes), not via systemctl. The zabbly Incus package's postinst
+# scripts still try to touch systemd unit files (harmless — no init is
+# actually running them); the real daemon binary lives at
+# /opt/incus/lib/systemd/incusd, not on $PATH as `incusd`.
+#
+# Every `incus`/`containarium` invocation that spawns a nested process
+# (launch, exec, image-bake) is redirected from /dev/null — found live
+# (matches this repo's own documented gotcha) that piping a multi-line
+# script into a shell over `kubectl exec -i` can let a subprocess like
+# `incus launch` steal bytes meant for the *outer* script's remaining
+# lines if its stdin isn't explicitly detached.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nested-incus-pod-start
+  namespace: __NAMESPACE__
+  labels:
+    benchmark: agent-sandbox-density
+    scenario: nested-incus-pod
+data:
+  start.sh: |
+    set -euo pipefail
+    export DEBIAN_FRONTEND=noninteractive
+    LOG=/var/log/nested-incus-pod-start.log
+    # Tee, not a plain redirect — `kubectl logs` only ever sees this
+    # container's own stdout/stderr, and once the container exits
+    # `kubectl exec` stops working entirely (found live: a plain redirect
+    # here left both `kubectl logs` empty AND the log file unreachable
+    # after a failure, with no way to see what happened).
+    exec > >(tee "$LOG") 2>&1
+
+    echo "[start.sh] installing curl + Incus"
+    apt-get update -qq
+    apt-get install -y -qq curl jq
+    curl -fsSL https://pkgs.zabbly.com/get/incus-stable | sh
+
+    echo "[start.sh] starting incusd (no systemd here — direct background start)"
+    mkdir -p /var/log/incus
+    nohup /opt/incus/lib/systemd/incusd --group incus-admin --logfile /var/log/incus/incusd.log >/var/log/incus/incusd.stdout.log 2>&1 &
+    disown
+    i=0
+    while ! incus list </dev/null >/dev/null 2>&1; do
+      i=$((i + 1))
+      [ "$i" -lt 30 ] || { echo "[start.sh] incusd never became ready"; exit 1; }
+      sleep 2
+    done
+    echo "[start.sh] incusd ready after ${i} checks"
+
+    echo "[start.sh] incus admin init (dir storage backend — no block device inside a pod)"
+    incus admin init --auto --storage-backend=dir </dev/null
+
+    echo "[start.sh] installing containarium ${CONTAINARIUM_VERSION}"
+    if [ -n "${CONTAINARIUM_BINARY_URL:-}" ]; then
+      # Override for when the released tag predates a flag this scenario's
+      # daemon invocation needs (same class of snag #1558's entry hit:
+      # --disable-{security,pentest,zap}-scanner postdates v0.66.0). Points
+      # at a binary built from `main` and served over plain HTTP from
+      # somewhere the pod can reach (e.g. the VM's own host network) —
+      # checksum-verified against a SHA256SUMS file served alongside it,
+      # same as the release-download path below.
+      echo "[start.sh] using override binary URL: ${CONTAINARIUM_BINARY_URL}"
+      curl -fsSL -o /tmp/containarium "${CONTAINARIUM_BINARY_URL}"
+      curl -fsSL -o /tmp/containarium.sha256 "${CONTAINARIUM_BINARY_URL}.sha256"
+      EXPECTED=$(awk '{print $1}' /tmp/containarium.sha256)
+    else
+      TAG="${CONTAINARIUM_VERSION}"
+      if [ "$TAG" = "latest" ]; then
+        TAG=$(curl -fsSL https://api.github.com/repos/FootprintAI/Containarium/releases/latest | jq -r .tag_name)
+      fi
+      echo "[start.sh] resolved tag: ${TAG}"
+      BASE_URL="https://github.com/FootprintAI/Containarium/releases/download/${TAG}"
+      curl -fsSL -o /tmp/containarium "${BASE_URL}/containarium-linux-amd64"
+      curl -fsSL -o /tmp/SHA256SUMS.txt "${BASE_URL}/SHA256SUMS.txt"
+      EXPECTED=$(grep 'containarium-linux-amd64$' /tmp/SHA256SUMS.txt | awk '{print $1}')
+    fi
+    ACTUAL=$(sha256sum /tmp/containarium | awk '{print $1}')
+    [ "$EXPECTED" = "$ACTUAL" ] || { echo "[start.sh] SHA256 mismatch: expected $EXPECTED, got $ACTUAL"; exit 1; }
+    install -m 0755 /tmp/containarium /usr/local/bin/containarium
+    containarium version
+
+    echo "[start.sh] starting the containarium daemon (LXC backend, pointed at the nested incusd)"
+    # Default (non-standalone) mode, same as scenario 3's 05-provision-
+    # containarium-lxc.sh — the daemon spins up its own core services
+    # (Postgres, Caddy, otel collector) as nested LXC containers via this
+    # same nested incusd, so the fixed overhead this scenario pays matches
+    # what scenario 3 already pays, keeping the comparison fair rather
+    # than quietly giving this scenario a lighter footprint.
+    mkdir -p /etc/containarium
+    openssl rand -hex 32 >/etc/containarium/jwt.secret
+    chmod 0400 /etc/containarium/jwt.secret
+    nohup containarium daemon --address 0.0.0.0 --rest --http-port 8080 \
+      --jwt-secret-file /etc/containarium/jwt.secret \
+      --disable-security-scanner --disable-pentest-scanner --disable-zap-scanner \
+      >/var/log/containarium-daemon.log 2>&1 &
+    disown
+    i=0
+    while ! curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1; do
+      i=$((i + 1))
+      if [ "$i" -ge 90 ]; then
+        echo "[start.sh] containarium daemon never became healthy — dumping its log:"
+        cat /var/log/containarium-daemon.log
+        exit 1
+      fi
+      sleep 3
+    done
+    echo "[start.sh] containarium daemon healthy after ${i} checks"
+
+    echo "[start.sh] baking the base image (#1037) so creates clone instead of re-installing packages every time"
+    containarium image-bake --image images:ubuntu/24.04 --podman=false </dev/null
+
+    echo "[start.sh] ready"
+    touch /tmp/ready
+    sleep infinity

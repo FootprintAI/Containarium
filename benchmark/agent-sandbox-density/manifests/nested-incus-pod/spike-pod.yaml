@@ -1,0 +1,43 @@
+# Throwaway spike pod for the nested-Incus-in-a-k8s-pod benchmark scenario
+# (issue #1565). NOT the real benchmark manifest — this is Milestone 0's
+# go/no-go check: can a nested `incusd` even start and create one LXC
+# container inside a real k8s pod at all? That has never been tried in
+# this repo. See manifests/nested-incus-pod/README.md once Milestone 0
+# resolves either way.
+#
+# No runtimeClassName (defaults to plain runc) — gVisor cannot host this:
+# Incus performs mount/cgroup/namespace-creation syscalls against its own
+# child containers, exactly what gVisor intercepts and blocks.
+#
+# privileged: true is a fast-POC choice for the spike only; capability
+# scoping is explicitly out of scope for this benchmark-only exploration.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nested-incus-spike
+  namespace: __NAMESPACE__
+  labels:
+    benchmark: agent-sandbox-density
+    scenario: nested-incus-pod
+spec:
+  restartPolicy: Never
+  containers:
+    - name: nested-incus
+      image: ubuntu:24.04
+      command: ["sleep", "infinity"]
+      securityContext:
+        privileged: true
+      resources:
+        requests:
+          cpu: "4"
+          memory: "8Gi"
+        limits:
+          cpu: "4"
+          memory: "8Gi"
+      volumeMounts:
+        - name: incus-data
+          mountPath: /var/lib/incus
+  volumes:
+    - name: incus-data
+      emptyDir:
+        sizeLimit: 150Gi

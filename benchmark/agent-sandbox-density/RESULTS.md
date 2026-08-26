@@ -572,6 +572,122 @@ sentinel replica were never going to bottleneck 373 sequential creates;
 whether either component becomes a real bottleneck under concurrent load
 or many daemon replicas is a different, unasked question.
 
+### 2026-08-26 — nested-incus-pod (#1565): mechanism validated, resource-limit enforcement blocked
+
+Fourth scenario, tracked from #1565: put a nested `incusd` inside one k8s
+pod, run the existing `containarium daemon --runtime=lxc` alongside it
+pointed at that nested Incus, and see whether every `containarium create`
+becoming a real LXC container — cgroup-ceilinged by the nested Incus,
+invisible to Kubernetes' own admission accounting beyond the one pod's
+declared request/limit — could reach scenario 3's (929) density from
+*inside* a k8s-scheduled pod. **Result: the mechanism itself works, but
+the specific thing this whole benchmark series measures — a per-container
+resource *limit* actually being enforced — does not, in this environment.
+No density number came out of this run.**
+
+Host cap: 20 vCPU / 48GiB RAM / 200GB disk (Incus KVM VM), same as every
+other k8s scenario. Base cluster: `provision_base_k8s` (kubeadm + Calico)
+with `install_gvisor` deliberately *not* called — this pod must run under
+plain `runc` (gVisor blocks the mount/cgroup/namespace syscalls Incus
+itself needs; see manifests/nested-incus-pod/README.md). Pod: single
+`ubuntu:24.04` container, `privileged: true`, no `runtimeClassName`,
+`resources.requests == limits` = 16 CPU / 40Gi (the one declared number
+the whole experiment is about), `emptyDir` at `/var/lib/incus` (`dir`
+storage backend — no block device inside a pod). Daemon built from
+`main` (same snag as the #1558 and sentinel-statefulset entries above:
+the released tag, v0.66.0, predates `--disable-{security,pentest,zap}-
+scanner`) and served to the pod over a throwaway HTTP endpoint on the VM
+itself, since the pod can reach the VM's own IP directly.
+
+**Milestone 0 (spike) passed cleanly, no caveats.** A bare `incus admin
+init --auto --storage-backend=dir` plus `incus launch images:ubuntu/24.04
+test1` — Incus's own default profile, no explicit resource limits —
+worked exactly like on bare metal: `incusd` started as a plain background
+process (no systemd inside the container; the real binary is
+`/opt/incus/lib/systemd/incusd`, not on `$PATH`), the container reached
+`RUNNING`, `incus exec test1 -- echo ok` succeeded, and Incus's own
+`incusbr0` bridge came up nested *inside* the pod's own Calico-managed
+network namespace with a real DHCP-assigned IP (`10.224.76.16`) — the
+single biggest risk this scenario's design doc flagged (Incus's bridge
+creation conflicting with Calico's veth/netns setup) turned out to be a
+complete non-issue.
+
+**Milestone 1 (the real pod) also came up clean** — daemon healthy, core
+services attempted (see below), base image baked (#1037) — but revealed
+the real wall the moment box creation was actually tried.
+
+**What actually blocks the density run:** every `containarium create`
+call — with the benchmark's own 200m/256MiB profile, and even with zero
+explicit `--cpu`/`--memory` flags (containarium's own defaults, 4
+cores/4GB) — fails identically:
+
+```
+Error: failed to create container via HTTP API: failed to create
+container: ... failed to start container (operation failed): Failed to
+run: /opt/incus/bin/incusd forklxc <name>-container ...: exit status 1
+```
+
+The container-specific LXC log names it precisely:
+
+```
+cgfsng - Device or resource busy - Could not enable "+cpuset +cpu +io
++memory +hugetlb +pids +rdma +misc" controllers in the unified cgroup 11
+cgfsng - No such file or directory - Failed to set "memory.max" to
+"268435456"
+start - Failed to setup cgroup limits for container "<name>-container"
+```
+
+An *unconstrained* create (Incus's bare default profile — the spike's
+`test1`, and confirmed again live via a direct `incus launch` with no
+`-c limits.*`) starts fine in this same pod. Only a create that asks
+Incus to enforce a per-container cgroup ceiling fails — which is every
+single `containarium create` call, since the CLI always sets
+`limits.cpu`/`limits.memory` to something (explicit values, or its own
+4-core/4GB default). That is precisely the mechanism this entire
+benchmark series exists to measure (declared-vs-actual cgroup
+accounting), so this scenario cannot produce a comparable density number
+without it.
+
+**Root cause, as far as this run diagnosed it (not fixed, not chased
+further — see below):** `/proc/self/cgroup` inside the pod reads
+`0::/kubepods.slice/kubepods-pod<uid>.slice/cri-containerd-<id>.scope` —
+a full, host-rooted path, not `/`. That means this cluster's containerd/
+runc is *not* giving even a `privileged: true` pod its own cgroup
+namespace; nested Incus is creating its LXC containers' cgroups as real
+siblings of the pod's own live-managed cgroup subtree, contending with
+whatever kubelet/containerd are simultaneously doing there. `cgroup.
+subtree_control` already listed every controller as available and
+enabled at the point Incus tried to delegate further — the failure isn't
+missing controllers, it's contention/depth at that specific host-rooted
+path. The zabbly Incus package's own (unused here) systemd unit sets
+`Delegate=yes` on `incus.service` — systemd's mechanism for exactly this
+kind of controlled sub-delegation — which this pod never gets, since
+there's no systemd (no init at all) running as PID 1 inside a bare
+`ubuntu:24.04` container.
+
+**Two plausible fixes, neither attempted in this run** (real engineering
+effort, judged out of scope for a benchmark-only exploration — see
+manifests/nested-incus-pod/README.md): (1) run systemd as the pod's PID 1
+(the standard "systemd-in-a-container" pattern — needs a systemd-capable
+image/boot sequence, not just `apt-get install systemd` inside a running
+bare container) so the shipped `incus.service`'s `Delegate=yes` actually
+takes effect; (2) a node-level containerd/CRI config change so privileged
+pods get a private cgroup namespace (`cgroupns_mode`), which is outside
+what a Pod manifest alone can request and would need touching this
+cluster's base provisioning, not just this scenario's own files.
+
+**What this settles and what it doesn't.** It settles that the shared-
+process-hosting mechanism itself is sound — a nested Incus genuinely runs
+inside a k8s pod, with working storage, networking, and exec, no fictional
+kernel wall. It does *not* produce a density number, because the one
+thing that mechanism needs to actually work (per-box resource ceilings)
+doesn't, in this specific cluster's cgroup delegation setup. This is a
+narrower, more specific finding than "nested Incus in a pod doesn't
+work" — it's "nested Incus in a pod doesn't work *for resource-limited
+containers*, in a cluster where privileged pods don't get their own
+cgroup namespace" — which is exactly the kind of precise, actionable
+negative result worth keeping rather than silently abandoning.
+
 ## Template
 
 ```

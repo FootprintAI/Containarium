@@ -370,6 +370,37 @@ Incus-backed), and the default `--image` works as documented (no
 [#1524](https://github.com/FootprintAI/Containarium/issues/1524)-style
 `InvalidImageName` — that bug is k8s-backend-specific too).
 
+## Fourth scenario: nested Incus inside a k8s pod
+
+An exploration of the idea sketched in ["The experiment group's k8s
+footprint"](#the-experiment-groups-k8s-footprint) above, taken further:
+what if, instead of one k8s pod per box, one k8s pod hosted a **nested
+`incusd`**, running the existing, unmodified `containarium daemon
+--runtime=lxc` inside it? Kubernetes would then only ever admit the one
+pod's own declared request/limit, while the nested Incus packs however
+many boxes it can inside — the same declared-vs-actual accounting trick
+that makes the third scenario (929) denser than the k8s scenarios (373),
+attempted *inside* a k8s-scheduled pod instead of on a bare VM. Tracked in
+[#1565](https://github.com/FootprintAI/Containarium/issues/1565); manifests
+and scripts in `manifests/nested-incus-pod/`,
+`scripts/09-provision-nested-incus-pod.sh`,
+`scripts/10-run-density-nested-incus-pod.sh`.
+
+**No density number came out of this.** The mechanism itself works —
+nested Incus starts cleanly inside a real k8s pod, with working storage
+and networking, no fictional kernel wall (the biggest flagged risk,
+Incus's bridge conflicting with Calico's pod networking, turned out to be
+a non-issue). What doesn't work, in this cluster: Incus enforcing a
+per-container cgroup *resource limit* — which is every single
+`containarium create` call, and precisely the mechanism this whole
+benchmark series measures. See [`RESULTS.md`](RESULTS.md)'s 2026-08-26
+entry for the full, precise diagnosis (a cgroup-namespace/delegation gap,
+not a hard architectural block) and
+`manifests/nested-incus-pod/README.md` for what a follow-up attempt would
+need to try next. Like the third scenario, this is a benchmark-only
+exploration — it does not touch `charts/containarium-k8s/` and is not a
+proposed production architecture.
+
 ## Results so far: 373 / 373 / 929
 
 Three scenarios have actually been run end-to-end on the same host (full
@@ -381,6 +412,7 @@ numbers, host specs, and every fix's before/after data are in
 | Control — k8s + gVisor + agent-sandbox | **373** | pods request `128Mi`; k8s admission-bound |
 | Experiment — k8s + gVisor + Containarium (`pod → gVisor → containarium`) | **373** | request=`128Mi`/limit=`256Mi` via [#1557](https://github.com/FootprintAI/Containarium/issues/1557)'s `--memory-request` — exact match once the request-size asymmetry was fixed (was **186** before the fix; see RESULTS.md's 2026-08-26 entry) |
 | Third scenario — Containarium native LXC/Incus, no k8s, no gVisor | **929** | `limits.memory` is a cgroup ceiling, not a k8s reservation — different deployment mode, not a gVisor comparison |
+| Fourth scenario — nested Incus inside one k8s pod | *(none)* | Mechanism validated, but per-container cgroup resource limits don't enforce in this cluster — see [Fourth scenario](#fourth-scenario-nested-incus-inside-a-k8s-pod) above |
 
 A write-up of what those three numbers actually mean (the 186-vs-373 gap,
 the CLI fix, and the 373-vs-373 re-run) lives in the marketing blog, not
@@ -444,7 +476,8 @@ benchmark/agent-sandbox-density/
 ├── RESULTS.md                   — reviewed summary of actual runs, one dated entry per run
 ├── manifests/
 │   ├── sandbox-template.yaml     — Sandbox CR (agents.x-k8s.io/v1beta1) with the resource profile above
-│   └── sentinel-statefulset/     — benchmark-only Service/Deployment(sentinel)/StatefulSet(daemon) manifests, see its own README.md
+│   ├── sentinel-statefulset/     — benchmark-only Service/Deployment(sentinel)/StatefulSet(daemon) manifests, see its own README.md
+│   └── nested-incus-pod/         — benchmark-only nested-Incus-in-a-pod manifests, see its own README.md
 └── scripts/
     ├── lib.sh                       — shared logging / resource-snapshot / stop-on-N-failures helpers (density loop supports resuming via --start-index)
     ├── k8s-common.sh                — shared kubeadm+CNI+agent-sandbox-controller base, used by both 01 and 03
@@ -457,5 +490,7 @@ benchmark/agent-sandbox-density/
     ├── 06-run-density-containarium-lxc.sh — `containarium create` on the LXC backend until the stopping rule triggers (--start-index to resume a stopped run)
     ├── 07-provision-containarium-sentinel.sh — benchmark-only: same base as 03, daemon.replicaCount=0 + jq-reshaped into manifests/sentinel-statefulset/
     ├── 08-run-density-containarium-sentinel.sh — `containarium create` through the sentinel hop until the stopping rule triggers
+    ├── 09-provision-nested-incus-pod.sh — benchmark-only: shared k8s base (no gVisor) + a privileged pod running nested incusd + containarium daemon
+    ├── 10-run-density-nested-incus-pod.sh — `containarium create` inside the nested-Incus pod until the stopping rule triggers (blocked — see RESULTS.md)
     └── 99-teardown-vm.sh            — stop + delete the VM
 ```

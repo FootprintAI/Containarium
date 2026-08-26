@@ -1,0 +1,59 @@
+# The real nested-Incus-in-a-k8s-pod benchmark pod (issue #1565). Runs a
+# nested `incusd` plus `containarium daemon --runtime=lxc` (bootstrapped
+# via the ConfigMap-mounted start.sh) inside ONE pod. Every
+# `containarium create` becomes a real LXC container, cgroup-ceilinged
+# by the nested Incus — but Kubernetes only ever admits the ONE declared
+# request/limit below for the whole pod, regardless of how many boxes
+# the nested Incus packs inside it. That's the entire experiment.
+#
+# No runtimeClassName (defaults to plain runc) — gVisor cannot host
+# this: Incus performs mount/cgroup/namespace-creation syscalls against
+# its own child containers, exactly what gVisor intercepts and blocks.
+# securityContext.privileged: true is a benchmark-only simplification —
+# capability scoping is explicitly out of scope here (see README.md).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nested-incus-pod
+  namespace: __NAMESPACE__
+  labels:
+    benchmark: agent-sandbox-density
+    scenario: nested-incus-pod
+spec:
+  restartPolicy: Never
+  containers:
+    - name: nested-incus
+      image: ubuntu:24.04
+      command: ["/bin/bash", "/scripts/start.sh"]
+      env:
+        - name: CONTAINARIUM_VERSION
+          value: __CONTAINARIUM_VERSION__
+        - name: CONTAINARIUM_BINARY_URL
+          value: __CONTAINARIUM_BINARY_URL__
+      securityContext:
+        privileged: true
+      resources:
+        requests:
+          cpu: __POD_CPU__
+          memory: __POD_MEM__
+        limits:
+          cpu: __POD_CPU__
+          memory: __POD_MEM__
+      volumeMounts:
+        - name: incus-data
+          mountPath: /var/lib/incus
+        - name: start-script
+          mountPath: /scripts
+      readinessProbe:
+        exec:
+          command: ["cat", "/tmp/ready"]
+        periodSeconds: 5
+        failureThreshold: 200 # apt+incus-init+image-bake all run at startup
+  volumes:
+    - name: incus-data
+      emptyDir:
+        sizeLimit: 150Gi
+    - name: start-script
+      configMap:
+        name: nested-incus-pod-start
+        defaultMode: 0755
