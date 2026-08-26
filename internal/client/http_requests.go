@@ -118,6 +118,10 @@ type resizeContainerRequest struct {
 	CPU    string `json:"cpu"`
 	Memory string `json:"memory"`
 	Disk   string `json:"disk"`
+	// K8s scheduler-request counterparts to Memory/CPU (#1572); only sent
+	// when explicitly requested. Ignored on the LXC backend.
+	MemoryRequest string `json:"memoryRequest,omitempty"`
+	CPURequest    string `json:"cpuRequest,omitempty"`
 }
 
 // toggleMonitoringRequest is POST /v1/containers/{name}/monitoring.

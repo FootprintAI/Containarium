@@ -105,7 +105,7 @@ func TestHTTPRequestBodiesAreJSONObjects(t *testing.T) {
 			name:     "ResizeContainer (same defect, unreported)",
 			response: `{"message":"resized"}`,
 			call: func(c *HTTPClient) error {
-				_, err := c.ResizeContainer("alice", "4", "8GB", "50GB")
+				_, err := c.ResizeContainer("alice", "4", "8GB", "50GB", "", "")
 				return err
 			},
 			wantPath: "/v1/containers/alice/resize",

@@ -1724,15 +1724,15 @@ func (s *ContainerServer) ResizeContainer(ctx context.Context, req *pb.ResizeCon
 	}
 
 	// At least one resource must be specified
-	if req.Cpu == "" && req.Memory == "" && req.Disk == "" {
-		return nil, fmt.Errorf("at least one resource (cpu, memory, or disk) must be specified")
+	if req.Cpu == "" && req.Memory == "" && req.Disk == "" && req.CpuRequest == "" && req.MemoryRequest == "" {
+		return nil, fmt.Errorf("at least one resource (cpu, memory, disk, cpu_request, or memory_request) must be specified")
 	}
 
 	containerName := fmt.Sprintf("%s-container", req.Username)
 
 	if bb, isK8s := s.k8sBoxes(); isK8s {
 		ref := box.BoxRef{Tenant: req.Username}
-		if err := bb.Resize(ctx, ref, box.ResourceLimits{CPU: req.Cpu, Memory: req.Memory, Disk: req.Disk}); err != nil {
+		if err := bb.Resize(ctx, ref, box.ResourceLimits{CPU: req.Cpu, Memory: req.Memory, Disk: req.Disk, CPURequest: req.CpuRequest, MemoryRequest: req.MemoryRequest}); err != nil {
 			return nil, fmt.Errorf("failed to resize container: %w", err)
 		}
 		// The agent-sandbox controller doesn't restart a live pod on template

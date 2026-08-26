@@ -323,7 +323,7 @@ func (s *Server) registerTools() {
 		},
 		{
 			Name:        "resize_container",
-			Description: "Change a container's CPU / memory / disk allocation in place. At least one of cpu, memory, or disk must be provided; the others default to no change. Disk can only grow — the server rejects shrinks. The container stays running (no restart needed for CPU/memory; disk resize is online via ZFS).",
+			Description: "Change a container's CPU / memory / disk allocation in place. At least one of cpu, memory, disk, cpu_request, or memory_request must be provided; the others default to no change. Disk can only grow — the server rejects shrinks. The container stays running (no restart needed for CPU/memory; disk resize is online via ZFS).",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -342,6 +342,14 @@ func (s *Server) registerTools() {
 					"disk": map[string]interface{}{
 						"type":        "string",
 						"description": "New disk size (e.g. \"100GB\"). Can only grow — shrinks are rejected. Empty/omitted = no change.",
+					},
+					"cpu_request": map[string]interface{}{
+						"type":        "string",
+						"description": "K8s CPU *request* (K8s backend only, ignored on LXC), separate from cpu which is always applied as the limit. Empty/omitted = the existing request is left alone, even when cpu changes the limit. May be set alone to adjust only the reservation.",
+					},
+					"memory_request": map[string]interface{}{
+						"type":        "string",
+						"description": "K8s memory *request* (K8s backend only, ignored on LXC), separate from memory which is always applied as the limit. Same defaulting as cpu_request.",
 					},
 				},
 				"required": []string{"username"},
@@ -1822,11 +1830,13 @@ func handleResizeContainer(client API, args map[string]interface{}) (string, err
 	cpu, _ := args["cpu"].(string)
 	memory, _ := args["memory"].(string)
 	disk, _ := args["disk"].(string)
-	if cpu == "" && memory == "" && disk == "" {
-		return "", fmt.Errorf("at least one of cpu, memory, or disk must be provided")
+	cpuRequest, _ := args["cpu_request"].(string)
+	memoryRequest, _ := args["memory_request"].(string)
+	if cpu == "" && memory == "" && disk == "" && cpuRequest == "" && memoryRequest == "" {
+		return "", fmt.Errorf("at least one of cpu, memory, disk, cpu_request, or memory_request must be provided")
 	}
 
-	resp, err := client.ResizeContainer(username, cpu, memory, disk)
+	resp, err := client.ResizeContainer(username, cpu, memory, disk, memoryRequest, cpuRequest)
 	if err != nil {
 		return "", fmt.Errorf("failed to resize container: %w", err)
 	}

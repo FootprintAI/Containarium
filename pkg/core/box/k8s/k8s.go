@@ -519,23 +519,25 @@ func (b *Backend) boxAuthorizedKeys(agentKeys []string) []string {
 	return agentKeys
 }
 
-// Resize updates the box container's resource limits on the Sandbox's pod
-// template. Unparseable (incus-native) quantities are skipped; a no-op resize
-// returns nil.
+// Resize updates the box container's resource limits/requests on the
+// Sandbox's pod template. Unparseable (incus-native) quantities are skipped;
+// a no-op resize (nothing set on r) returns nil without reading the Sandbox.
 //
 // Get→mutate→Update rather than a patch: CRDs don't support strategic merge,
 // and a plain merge patch would replace the whole containers list.
+//
+// The merge (mergeResizeRequirements, #1572) starts from the container's
+// current Resources rather than building a fresh one: a resize that mentions
+// only CPU must not wipe the box's existing memory limits, and a resize that
+// mentions only a limit must not silently re-pin the existing request to it —
+// "empty = unchanged" applies per-field, not per-call.
 //
 // Behavioral note vs the old StatefulSet path: the agent-sandbox controller
 // does not recreate a live pod on template drift, so a resize takes effect at
 // the NEXT pod creation (the next Stop→Start cycle), not immediately. The
 // server-side dispatch layer decides whether to bounce the box.
 func (b *Backend) Resize(ctx context.Context, ref box.BoxRef, r box.ResourceLimits) error {
-	// Resize does not change GPU count, and passes no memory default: the floor
-	// is a create-time concern, so an explicit resize honors "empty = unchanged"
-	// rather than re-stamping the default.
-	res := resourceRequirements(r, 0, memDefaults{})
-	if res == nil {
+	if r.CPU == "" && r.Memory == "" && r.CPURequest == "" && r.MemoryRequest == "" {
 		return nil
 	}
 	ns := b.namespaceFor(ref.Tenant)
@@ -544,8 +546,8 @@ func (b *Backend) Resize(ctx context.Context, ref box.BoxRef, r box.ResourceLimi
 		return err
 	}
 	for i := range sb.Spec.PodTemplate.Spec.Containers {
-		if sb.Spec.PodTemplate.Spec.Containers[i].Name == "agent-box" {
-			sb.Spec.PodTemplate.Spec.Containers[i].Resources = *res
+		if sb.Spec.PodTemplate.Spec.Containers[i].Name == boxContainerName {
+			sb.Spec.PodTemplate.Spec.Containers[i].Resources = mergeResizeRequirements(sb.Spec.PodTemplate.Spec.Containers[i].Resources, r)
 		}
 	}
 	_, err = b.sandboxes.AgentsV1beta1().Sandboxes(ns).Update(ctx, sb, metav1.UpdateOptions{})

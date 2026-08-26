@@ -850,6 +850,18 @@ message ResizeContainerRequest {
   // New disk size (e.g., "100GB") - empty means no change
   // Note: Can only increase, cannot shrink
   string disk = 4;
+
+  // memory_request is the K8s memory *request* (K8s backend only), mirroring
+  // CreateContainerRequest.memory_request. Empty means "no change" — the
+  // box's existing request is left alone (even when `memory` changes the
+  // limit), NOT re-derived from the new limit. Set together with `memory`,
+  // or alone to adjust only the reservation. Ignored by the LXC backend.
+  string memory_request = 5;
+
+  // cpu_request is the K8s CPU *request*, the resize-time counterpart to
+  // CreateContainerRequest.cpu_request. Same "empty = no change" and
+  // K8s-only scope as memory_request.
+  string cpu_request = 6;
 }
 
 // ResizeContainerResponse is the response from resizing a container

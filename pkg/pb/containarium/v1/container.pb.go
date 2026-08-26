@@ -3196,7 +3196,17 @@ type ResizeContainerRequest struct {
 	Memory string `protobuf:"bytes,3,opt,name=memory,proto3" json:"memory,omitempty"`
 	// New disk size (e.g., "100GB") - empty means no change
 	// Note: Can only increase, cannot shrink
-	Disk          string `protobuf:"bytes,4,opt,name=disk,proto3" json:"disk,omitempty"`
+	Disk string `protobuf:"bytes,4,opt,name=disk,proto3" json:"disk,omitempty"`
+	// memory_request is the K8s memory *request* (K8s backend only), mirroring
+	// CreateContainerRequest.memory_request. Empty means "no change" — the
+	// box's existing request is left alone (even when `memory` changes the
+	// limit), NOT re-derived from the new limit. Set together with `memory`,
+	// or alone to adjust only the reservation. Ignored by the LXC backend.
+	MemoryRequest string `protobuf:"bytes,5,opt,name=memory_request,json=memoryRequest,proto3" json:"memory_request,omitempty"`
+	// cpu_request is the K8s CPU *request*, the resize-time counterpart to
+	// CreateContainerRequest.cpu_request. Same "empty = no change" and
+	// K8s-only scope as memory_request.
+	CpuRequest    string `protobuf:"bytes,6,opt,name=cpu_request,json=cpuRequest,proto3" json:"cpu_request,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3255,6 +3265,20 @@ func (x *ResizeContainerRequest) GetMemory() string {
 func (x *ResizeContainerRequest) GetDisk() string {
 	if x != nil {
 		return x.Disk
+	}
+	return ""
+}
+
+func (x *ResizeContainerRequest) GetMemoryRequest() string {
+	if x != nil {
+		return x.MemoryRequest
+	}
+	return ""
+}
+
+func (x *ResizeContainerRequest) GetCpuRequest() string {
+	if x != nil {
+		return x.CpuRequest
 	}
 	return ""
 }
@@ -6171,12 +6195,15 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\x11GetMetricsRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\"Q\n" +
 	"\x12GetMetricsResponse\x12;\n" +
-	"\ametrics\x18\x01 \x03(\v2!.containarium.v1.ContainerMetricsR\ametrics\"r\n" +
+	"\ametrics\x18\x01 \x03(\v2!.containarium.v1.ContainerMetricsR\ametrics\"\xba\x01\n" +
 	"\x16ResizeContainerRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x10\n" +
 	"\x03cpu\x18\x02 \x01(\tR\x03cpu\x12\x16\n" +
 	"\x06memory\x18\x03 \x01(\tR\x06memory\x12\x12\n" +
-	"\x04disk\x18\x04 \x01(\tR\x04disk\"m\n" +
+	"\x04disk\x18\x04 \x01(\tR\x04disk\x12%\n" +
+	"\x0ememory_request\x18\x05 \x01(\tR\rmemoryRequest\x12\x1f\n" +
+	"\vcpu_request\x18\x06 \x01(\tR\n" +
+	"cpuRequest\"m\n" +
 	"\x17ResizeContainerResponse\x12\x18\n" +
 	"\amessage\x18\x01 \x01(\tR\amessage\x128\n" +
 	"\tcontainer\x18\x02 \x01(\v2\x1a.containarium.v1.ContainerR\tcontainer\"\xf3\x02\n" +
