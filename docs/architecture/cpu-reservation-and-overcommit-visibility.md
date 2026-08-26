@@ -105,18 +105,76 @@ produces the floor guarantee.
 
 ### A. Resize is admitted through the same gate as create
 
-`ResizeContainer` (LXC path) calls `admitCPUCapacity` the same way
-`CreateContainer` does, but checked against the **delta**
-(`newCores - currentCores`), not the full new value — a resize that lowers
-CPU, or one that doesn't touch CPU at all, is never blocked by admission.
+`ResizeContainer` (LXC path) calls `admitCPUCapacity` unchanged — the exact
+function `CreateContainer` already calls — passing the resize's **full new
+CPU value**, not a delta. This works with no new formula because
 `committedCoresExcluding` already excludes the tenant's own current
-container from the sum, so the delta check composes with it directly: admit
-iff `committed + delta ≤ physical × factor`.
+container from the sum: admitting `newCores` against `committed_excl` is the
+same "would this fit if the box were (re)created at this size" check create
+already performs. A resize that does not increase CPU (`newCores ≤
+currentCores`) skips the call entirely and is never blocked.
+
+(An earlier draft of this section proposed checking `committed_excl + delta`
+where `delta = newCores − currentCores`. That double-subtracts the tenant's
+own current allocation — `committed_excl` already has it removed once, and
+adding a delta computed against it removes it again — and silently admits
+resizes it should reject. Worked example: an 8-core host at factor 1
+(ceiling 8 cores), other tenants committing 4, this tenant currently at 4
+(host exactly at the ceiling). Resizing to 8 should be **rejected** — the
+true post-resize total is `4 + 8 = 12 > 8`. The delta formula computes
+`4 + (8−4) = 8 ≤ 8` and wrongly admits. Passing the full `newCores` avoids
+the bug entirely: `4 + 8 = 12 > 8` → correctly rejected. This is caught here
+so it doesn't get carried into the implementation issue as a hidden
+correctness bug.)
+
+Two things this call site must account for that create's didn't have to:
+
+- **The cluster reconciler shares this function.** `dual_server.go:1287`
+  already wires `admitCPUCapacity` into `NewClusterReconciler(...).SetAdmission(...)`
+  for cluster VM creation. The resize path must call the existing function
+  as-is (or add a new function alongside it), not change
+  `admitCPUCapacity`'s signature — a delta-aware or otherwise incompatible
+  signature change breaks that call site silently. (Cluster VM *resize*, if
+  the reconciler supports it, is not scoped here — a separate unguarded path
+  to note but not fix in this pass.)
+- **Peer-forwarded resizes must not check the wrong host.** `ResizeContainer`
+  tries the container locally first and, only on a not-found error, forwards
+  the request over HTTP to the peer that actually holds it
+  (`internal/server/container_server.go`, the `peerPool.FindContainerPeer` /
+  `ForwardRequest` block). The admission check must run only once the
+  container is confirmed to live on **this** host — placed unconditionally
+  before the local attempt, it would evaluate this host's committed cores
+  against a container that isn't even here, and could reject a resize that
+  the actual owning host (reached via the existing forward path) would have
+  admitted fine. The forwarded HTTP call already re-enters the peer's own
+  `ResizeContainer` handler, so once this fix lands there, the peer runs its
+  own gate against its own host automatically — no forwarding-side admission
+  logic is needed, only correct placement on the local side.
 
 This does not change the gate's off-by-default / advisory-first rollout
 posture (`docs/CPU-CAPACITY-ADMISSION.md`'s existing guidance stands
 unchanged) — it closes the specific hole where resize bypasses a gate that
 create already goes through.
+
+**Caveat on the floor guarantee's precision.** "Sum of hard quotas ≤
+physical capacity ⇒ every box gets its declared share" assumes quota is
+fungible across any physical core. In practice every numeric CPU request
+also gets a `limits.cpu` cpuset (`Count`, sized `ceil(cores)` — see
+`pkg/core/incus/cpu_limits.go`) confining its bandwidth to a specific set of
+visible cores, and Incus periodically rebalances which physical cores back
+that set. The floor is therefore accurate in aggregate and over time, not a
+kernel-enforced instantaneous guarantee — momentary co-pinning onto the same
+physical cores can still cause transient contention within a bounded-total
+host. This doesn't change the recommendation (it is still a real,
+substantially-better floor than today's none-at-all, and the alternative
+knob discussed and rejected above doesn't offer a stronger guarantee
+either), but the design should not be read as claiming a hard per-instant
+kernel guarantee. Separately, a manually CPU-pinned box (`--cpu 0-3` set
+notation) carries no allowance/quota at all and is unthrottled within its
+pinned set — `CommittedCores`' cardinality count for such a box is a rougher
+proxy of its real impact than the quota-based accounting used elsewhere;
+this is a pre-existing property of `CommittedCores`, not something this
+design changes or fixes.
 
 ### B. `SystemInfo.committed_cpu_cores`
 
@@ -182,14 +240,18 @@ produces more CPU.
 ## Test strategy
 
 - `pkg/core/incus`: no change (`CommittedCores` already covered).
-- `internal/server/cpu_admission_test.go`: extend with a delta-based
-  admission test — table-driven, reusing the existing `seedServer` /
+- `internal/server/cpu_admission_test.go`: extend with a resize-admission
+  test — table-driven, reusing the existing `seedServer` /
   `incustest.NewMockBackend` harness already in this file (see
-  `TestAdmitCPURequest`, `seedServer`). Cases: a CPU-decrease resize always
-  admits regardless of host load; a CPU-increase resize is admitted/rejected
-  by the same `physical × factor` rule as create, checked against the delta
-  only (not the full new value); a resize that doesn't touch CPU never calls
-  admission at all.
+  `TestAdmitCPURequest`, `seedServer`). Cases: a CPU-decrease (or unchanged)
+  resize never calls admission and always proceeds regardless of host load;
+  a CPU-increase resize is admitted/rejected by calling `admitCPUCapacity`
+  with the resize's full new CPU value (not a delta) — including the
+  boundary case from the worked example above (host exactly at ceiling,
+  resize to a value that would exceed it once the tenant's own current
+  allocation is added back in) to pin the bug the corrected formula avoids;
+  and a resize forwarded to a peer (container not found locally) does not
+  evaluate admission against the local host at all.
 - New `TestSystemInfoCommittedCores` (or extend an existing
   `container_server_*_test.go`): seed a mock backend with known tenant
   containers via `seedServer`, assert `GetSystemInfo` returns
