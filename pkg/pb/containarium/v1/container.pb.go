@@ -486,7 +486,20 @@ type ResourceLimits struct {
 	// runtime only). Empty means use the backend's cluster-wide default
 	// (CONTAINARIUM_K8S_STORAGE_CLASS). Ignored by the LXC backend.
 	// Example: "fast-nvme", "standard", "ceph-block".
-	StorageClass  string `protobuf:"bytes,6,opt,name=storage_class,json=storageClass,proto3" json:"storage_class,omitempty"`
+	StorageClass string `protobuf:"bytes,6,opt,name=storage_class,json=storageClass,proto3" json:"storage_class,omitempty"`
+	// memory_request is the K8s memory *request* (what the scheduler reserves
+	// against node capacity), separate from the `memory` field above, which is
+	// always applied as the *limit* (K8s runtime only; ignored by the LXC
+	// backend, which has no separate request concept for `limits.memory`).
+	// Empty (the default) preserves today's behavior: `memory`'s value is used
+	// for both request and limit (Guaranteed QoS). Set this to something
+	// smaller than `memory` for Burstable QoS — e.g. request 128Mi, limit
+	// 256Mi, matching how most upstream Kubernetes workloads size a pod.
+	MemoryRequest string `protobuf:"bytes,7,opt,name=memory_request,json=memoryRequest,proto3" json:"memory_request,omitempty"`
+	// cpu_request is the K8s CPU *request*, separate from the `cpu` field
+	// above (always applied as the limit). Same defaulting and K8s-only scope
+	// as memory_request.
+	CpuRequest    string `protobuf:"bytes,8,opt,name=cpu_request,json=cpuRequest,proto3" json:"cpu_request,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -559,6 +572,20 @@ func (x *ResourceLimits) GetGpus() []string {
 func (x *ResourceLimits) GetStorageClass() string {
 	if x != nil {
 		return x.StorageClass
+	}
+	return ""
+}
+
+func (x *ResourceLimits) GetMemoryRequest() string {
+	if x != nil {
+		return x.MemoryRequest
+	}
+	return ""
+}
+
+func (x *ResourceLimits) GetCpuRequest() string {
+	if x != nil {
+		return x.CpuRequest
 	}
 	return ""
 }
@@ -5924,14 +5951,17 @@ var File_containarium_v1_container_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_container_proto_rawDesc = "" +
 	"\n" +
-	"\x1fcontainarium/v1/container.proto\x12\x0fcontainarium.v1\x1a google/protobuf/descriptor.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x99\x01\n" +
+	"\x1fcontainarium/v1/container.proto\x12\x0fcontainarium.v1\x1a google/protobuf/descriptor.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe1\x01\n" +
 	"\x0eResourceLimits\x12\x10\n" +
 	"\x03cpu\x18\x01 \x01(\tR\x03cpu\x12\x16\n" +
 	"\x06memory\x18\x02 \x01(\tR\x06memory\x12\x12\n" +
 	"\x04disk\x18\x03 \x01(\tR\x04disk\x12\x10\n" +
 	"\x03gpu\x18\x04 \x01(\tR\x03gpu\x12\x12\n" +
 	"\x04gpus\x18\x05 \x03(\tR\x04gpus\x12#\n" +
-	"\rstorage_class\x18\x06 \x01(\tR\fstorageClass\"\x83\x01\n" +
+	"\rstorage_class\x18\x06 \x01(\tR\fstorageClass\x12%\n" +
+	"\x0ememory_request\x18\a \x01(\tR\rmemoryRequest\x12\x1f\n" +
+	"\vcpu_request\x18\b \x01(\tR\n" +
+	"cpuRequest\"\x83\x01\n" +
 	"\vNetworkInfo\x12\x1d\n" +
 	"\n" +
 	"ip_address\x18\x01 \x01(\tR\tipAddress\x12\x1f\n" +

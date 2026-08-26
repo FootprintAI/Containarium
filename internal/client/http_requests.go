@@ -33,6 +33,9 @@ type containerResources struct {
 	Disk   string `json:"disk"`
 	// Only sent when a storage class was requested.
 	StorageClass string `json:"storageClass,omitempty"`
+	// Only sent when a request override was given (#1557).
+	MemoryRequest string `json:"memoryRequest,omitempty"`
+	CPURequest    string `json:"cpuRequest,omitempty"`
 }
 
 // createContainerRequest is POST /v1/containers.
