@@ -247,3 +247,13 @@ type addRouteRequest struct {
 	ContainerName string `json:"container_name"`
 	Description   string `json:"description"`
 }
+
+// addPassthroughRouteRequest is POST /v1/network/passthrough.
+type addPassthroughRouteRequest struct {
+	ExternalPort  int32            `json:"external_port"`
+	TargetIP      string           `json:"target_ip"`
+	TargetPort    int32            `json:"target_port"`
+	Protocol      pb.RouteProtocol `json:"protocol"`
+	ContainerName string           `json:"container_name"`
+	Description   string           `json:"description"`
+}

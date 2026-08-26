@@ -1212,6 +1212,59 @@ func (c *GRPCClient) DeleteRoute(domain string) error {
 	return nil
 }
 
+// ListPassthroughRoutes lists all TCP/UDP passthrough routes via gRPC
+func (c *GRPCClient) ListPassthroughRoutes() ([]*pb.PassthroughRoute, int32, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := c.networkClient.ListPassthroughRoutes(ctx, &pb.ListPassthroughRoutesRequest{})
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to list passthrough routes: %w", err)
+	}
+
+	return resp.Routes, resp.TotalCount, nil
+}
+
+// AddPassthroughRoute adds a new TCP/UDP passthrough route via gRPC
+func (c *GRPCClient) AddPassthroughRoute(externalPort, targetPort int32, targetIP string, protocol pb.RouteProtocol, containerName, description string) (*pb.PassthroughRoute, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	req := &pb.AddPassthroughRouteRequest{
+		ExternalPort:  externalPort,
+		TargetIp:      targetIP,
+		TargetPort:    targetPort,
+		Protocol:      protocol,
+		ContainerName: containerName,
+		Description:   description,
+	}
+
+	resp, err := c.networkClient.AddPassthroughRoute(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to add passthrough route: %w", err)
+	}
+
+	return resp.Route, nil
+}
+
+// DeletePassthroughRoute deletes a TCP/UDP passthrough route via gRPC
+func (c *GRPCClient) DeletePassthroughRoute(externalPort int32, protocol pb.RouteProtocol) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	req := &pb.DeletePassthroughRouteRequest{
+		ExternalPort: externalPort,
+		Protocol:     protocol,
+	}
+
+	_, err := c.networkClient.DeletePassthroughRoute(ctx, req)
+	if err != nil {
+		return fmt.Errorf("failed to delete passthrough route: %w", err)
+	}
+
+	return nil
+}
+
 // StartEgressProxy asks the daemon to bridge a host-loopback SOCKS (exposed by
 // the caller via `ssh -R`) into a box's netns (#808 egress-via-client). Returns
 // the in-box SOCKS address to point the box's apps at.

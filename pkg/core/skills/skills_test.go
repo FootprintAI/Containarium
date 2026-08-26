@@ -133,6 +133,63 @@ func TestEmbeddedCatalogLoads(t *testing.T) {
 	if cr.Model != "" {
 		t.Errorf("code-review should not pin a model (provider-agnostic), got %q", cr.Model)
 	}
+
+	// deploy-branch provisions a fresh box from a git ref and must declare
+	// the write scopes it needs to create the box and SSH into it.
+	deploy, err := m.Get("deploy-branch")
+	if err != nil {
+		t.Fatalf("deploy-branch skill missing: %v", err)
+	}
+	if deploy.GetRecipeId() != "agent-runtime" {
+		t.Errorf("deploy-branch recipe_id = %q, want agent-runtime", deploy.GetRecipeId())
+	}
+	if deploy.SystemPrompt == "" {
+		t.Error("deploy-branch has empty system_prompt")
+	}
+	hasScope := func(scopes []string, want string) bool {
+		for _, s := range scopes {
+			if s == want {
+				return true
+			}
+		}
+		return false
+	}
+	requireScope := func(scopes []string, want string) {
+		t.Helper()
+		if !hasScope(scopes, want) {
+			t.Errorf("deploy-branch missing expected scope %q, got %v", want, scopes)
+		}
+	}
+	requireScope(deploy.AllowedScopes, "containers:write")
+	requireScope(deploy.AllowedScopes, "ssh:write")
+	// deploy-branch deliberately does NOT request routes:write: AddRoute
+	// requires RoleAdmin unconditionally (see
+	// TestAddRoute_RejectsScopeOnlyToken, internal/server), and a skill
+	// token is minted with scopes only, never a role — so routes:write on a
+	// skill manifest would be a scope that can never actually be exercised.
+	// Locking this in as a regression guard: if this starts failing because
+	// someone re-added routes:write, the authorization gap needs to be
+	// fixed first (see the skill's comment in skills.yaml), not just this
+	// assertion deleted.
+	if hasScope(deploy.AllowedScopes, "routes:write") {
+		t.Error("deploy-branch requests routes:write, but AddRoute requires RoleAdmin unconditionally and skill tokens are never granted roles — this scope can never be exercised (see skills.yaml comment)")
+	}
+
+	// verify-endpoint drives a live URL with a browser, so it declares its
+	// own browser-capable box rather than the plain agent-runtime one.
+	verify, err := m.Get("verify-endpoint")
+	if err != nil {
+		t.Fatalf("verify-endpoint skill missing: %v", err)
+	}
+	if verify.GetRecipeId() != "agent-runtime-browser" {
+		t.Errorf("verify-endpoint recipe_id = %q, want agent-runtime-browser", verify.GetRecipeId())
+	}
+	if verify.SystemPrompt == "" {
+		t.Error("verify-endpoint has empty system_prompt")
+	}
+	if len(verify.AllowedScopes) == 0 {
+		t.Error("verify-endpoint declares no allowed_scopes")
+	}
 }
 
 func TestValidateRejectsBadManifests(t *testing.T) {

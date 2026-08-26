@@ -6,14 +6,19 @@
 # run_density_loop triggers.
 #
 # The k8s backend parses --cpu/--memory with Kubernetes' native quantity
-# parser (resource.ParseQuantity) and sets BOTH request and limit to that
-# same value — see pkg/core/box/k8s/objects.go. So this passes
-# SANDBOX_CPU_LIMIT/SANDBOX_MEM_LIMIT straight through, no unit conversion
-# needed (unlike the old LXC-backend version of this script). Worth noting
-# as a fairness asymmetry, not hidden: the control group's Sandbox pods
-# request the lower REQUEST value (k8s admission packs on requests, not
-# limits), while Containarium's boxes request the full LIMIT value — see
-# README.md "Fairness notes".
+# parser (resource.ParseQuantity) — see pkg/core/box/k8s/objects.go. So this
+# passes SANDBOX_CPU_LIMIT/SANDBOX_MEM_LIMIT straight through, no unit
+# conversion needed (unlike the old LXC-backend version of this script).
+#
+# SANDBOX_CPU_REQUEST/SANDBOX_MEM_REQUEST (#1557) set a *separate* request
+# below the limit via `--cpu-request`/`--memory-request`, matching how the
+# control group's Sandbox pods are sized (request lower than limit — k8s
+# admission packs on requests, not limits). Before #1557 there was no
+# request knob on the CLI at all: `create --cpu/--memory` pinned request to
+# the same value as the limit, a real fairness asymmetry against
+# Containarium that's now fixable — see README.md "Fairness notes" and
+# RESULTS.md's #1541/#1557 entries for the density cost that asymmetry
+# turned out to have.
 #
 # Two more things found live, worth knowing before reading this script:
 #
@@ -62,10 +67,10 @@ done
 [[ -n "$VM_NAME" ]] || die "usage: $0 --name <vm-name>"
 
 load_config
-require_vars SANDBOX_CPU_LIMIT SANDBOX_MEM_LIMIT FAILURE_STREAK_TO_STOP CREATE_TIMEOUT_SECONDS BENCH_SSH_KEY_FILE
+require_vars SANDBOX_CPU_LIMIT SANDBOX_MEM_LIMIT SANDBOX_CPU_REQUEST SANDBOX_MEM_REQUEST FAILURE_STREAK_TO_STOP CREATE_TIMEOUT_SECONDS BENCH_SSH_KEY_FILE
 resolve_remote "$VM_NAME"
 
-log "sandbox profile on the Containarium side: cpu=${SANDBOX_CPU_LIMIT} memory=${SANDBOX_MEM_LIMIT} (k8s-native quantities, request==limit)"
+log "sandbox profile on the Containarium side: cpu=${SANDBOX_CPU_REQUEST}/${SANDBOX_CPU_LIMIT} memory=${SANDBOX_MEM_REQUEST}/${SANDBOX_MEM_LIMIT} (request/limit, k8s-native quantities)"
 
 RESULTS_DIR="${BENCH_ROOT}/results"
 mkdir -p "$RESULTS_DIR"
@@ -88,7 +93,7 @@ CTN_TOKEN=$(ssh_or_local "containarium token generate --username bench-admin --r
 
 create_box() {
 	local name="$1"
-	ssh_or_local "containarium create ${name} --no-ssh-key --cpu ${SANDBOX_CPU_LIMIT} --memory ${SANDBOX_MEM_LIMIT} --image ${AGENT_BOX_IMAGE} --server ${CTN_SERVER} --http --token ${CTN_TOKEN}" >/dev/null 2>&1
+	ssh_or_local "containarium create ${name} --no-ssh-key --cpu ${SANDBOX_CPU_LIMIT} --memory ${SANDBOX_MEM_LIMIT} --cpu-request ${SANDBOX_CPU_REQUEST} --memory-request ${SANDBOX_MEM_REQUEST} --image ${AGENT_BOX_IMAGE} --server ${CTN_SERVER} --http --token ${CTN_TOKEN}" >/dev/null 2>&1
 }
 
 box_ready() {
