@@ -49,18 +49,71 @@ constant are:
 
 1. **The daemon hop.** `containarium create` → Containarium daemon →
    `Sandbox` CR, versus `kubectl apply` → `Sandbox` CR directly. The daemon
-   itself is one extra pod's worth of fixed overhead, not a per-sandbox
-   cost — see [Fairness notes](#fairness-notes).
+   itself is fixed overhead, not a per-sandbox cost — but "fixed" doesn't
+   mean "one pod": see
+   [The experiment group's k8s footprint](#the-experiment-groups-k8s-footprint)
+   below for what that hop is actually made of, and
+   [Fairness notes](#fairness-notes) for how it's accounted for here.
 2. **Request == limit.** `containarium create --cpu/--memory` sets both to
    the same value; the control group's pods get a lower separate request.
    Since Kubernetes admission packs on requests, this is a real,
    per-sandbox cost multiplier — see [Fairness notes](#fairness-notes) for
-   why it should bias the result *against* Containarium, not for it.
+   why it should bias the result *against* Containarium, not for it. Fixed
+   in [#1557](https://github.com/FootprintAI/Containarium/issues/1557) —
+   see [Results so far](#results-so-far-373--373--929).
 
 If the numbers come back close, that says Containarium's orchestration is
 close to free on top of gVisor. If they don't, the gap is attributable to
-one of the two items above, not to gVisor itself — and (2) is a fixable
-CLI gap, not an architectural one.
+one of the two items above, not to gVisor itself — and (2) was a fixable
+CLI gap, not an architectural one (now fixed; see below).
+
+## The experiment group's k8s footprint
+
+Item 1 above says the daemon hop is "fixed overhead, not a per-sandbox
+cost" — true, but worth being precise about what that fixed cost actually
+*is*, since "one extra pod" understates it. Containarium's k8s deployment
+mode is conceptually a small stack of Kubernetes-native primitives in
+front of the actual provisioning logic, not a single process:
+
+```
+client / agent
+      │
+      ▼
+  Service            (stable in-cluster address)
+      │
+      ▼
+  Deployment          containarium-sentinel — traffic forwarding
+      │
+      ▼
+  StatefulSet         containarium-daemon — actually provisions boxes
+      │
+      ▼
+  Sandbox CR  →  agent-sandbox controller  →  pod (runsc)
+```
+
+Three Kubernetes-native scheduling and networking layers — a `Service`,
+a `Deployment` running the `containarium-sentinel` component that forwards
+traffic, and a `StatefulSet` running the `containarium-daemon` itself —
+sit between a client and the point where a sandbox actually gets
+provisioned. Compare that to the [third scenario](#third-scenario-native-lxc-workhorse)'s
+native LXC backend: a single `containarium daemon` process on the host,
+talking directly to the Incus API, no Kubernetes layer at all. That
+three-layer stack is real, fixed, per-deployment infrastructure the LXC
+path simply never carries — it doesn't scale with sandbox count, but it
+isn't free either, and it's worth naming rather than folding silently
+into "one extra pod."
+
+**This is the general, conceptually intended shape of the architecture —
+not the literal chart this benchmark deploys.** `charts/containarium-k8s/`
+(what `03-provision-containarium.sh` actually installs) runs the daemon
+as a single `Deployment` with `sshpiper` as its gateway component — no
+separate `containarium-sentinel` and no `StatefulSet`. The sentinel/
+StatefulSet split above is how Containarium's k8s deployment mode is
+intended to work architecturally; this benchmark's numbers measure
+density and wall-clock, not this fixed k8s scheduling/networking cost,
+and don't currently distinguish between the two shapes. If that
+distinction turns out to matter for the fixed-overhead comparison, that's
+a follow-up benchmark note, not something to assume from this doc alone.
 
 ## Why this matters
 
@@ -302,7 +355,7 @@ Incus-backed), and the default `--image` works as documented (no
 [#1524](https://github.com/FootprintAI/Containarium/issues/1524)-style
 `InvalidImageName` — that bug is k8s-backend-specific too).
 
-## Results so far: 373 / 186 / 929
+## Results so far: 373 / 373 / 929
 
 Three scenarios have actually been run end-to-end on the same host (full
 numbers, host specs, and every fix's before/after data are in
@@ -311,13 +364,16 @@ numbers, host specs, and every fix's before/after data are in
 | Scenario | Sandboxes | Notes |
 |---|---|---|
 | Control — k8s + gVisor + agent-sandbox | **373** | pods request `128Mi`; k8s admission-bound |
-| Experiment — k8s + gVisor + Containarium (`pod → gVisor → containarium`) | **186** | `create` sets request=limit=`256Mi` (2x); same admission model, reproduced exactly (186/189) on a re-run |
+| Experiment — k8s + gVisor + Containarium (`pod → gVisor → containarium`) | **373** | request=`128Mi`/limit=`256Mi` via [#1557](https://github.com/FootprintAI/Containarium/issues/1557)'s `--memory-request` — exact match once the request-size asymmetry was fixed (was **186** before the fix; see RESULTS.md's 2026-08-26 entry) |
 | Third scenario — Containarium native LXC/Incus, no k8s, no gVisor | **929** | `limits.memory` is a cgroup ceiling, not a k8s reservation — different deployment mode, not a gVisor comparison |
 
-A write-up of what those three numbers actually mean (and why 186 vs. 373,
-not 929 vs. 373, is the fair comparison) is drafted in
-[`BLOG-DRAFT.md`](BLOG-DRAFT.md) — see [FootprintAI/Containarium#1553](https://github.com/FootprintAI/Containarium/pull/1553)
-for the in-review version and a rendered preview.
+A write-up of what those three numbers actually mean (the 186-vs-373 gap,
+the CLI fix, and the 373-vs-373 re-run) lives in the marketing blog, not
+this repo — see
+[FootprintAI/Containarium-cloud#1329](https://github.com/FootprintAI/Containarium-cloud/pull/1329)
+(in review) or, once merged, <https://containarium.dev/blog/agent-sandbox-density-benchmark>.
+This repo keeps the methodology, scripts, and raw results; the write-up
+of what they mean lives with the rest of the marketing site.
 
 ## Fixing daemon overhead at scale (#1541)
 
@@ -369,7 +425,6 @@ connection to the same range, then `kill -HUP <postgres-pid>` to reload it.
 ```
 benchmark/agent-sandbox-density/
 ├── README.md                    — this file
-├── BLOG-DRAFT.md                 — write-up of the 373/186/929 result (in review, PR #1553)
 ├── config.env.example           — copy to config.env, fill in your host's numbers
 ├── RESULTS.md                   — reviewed summary of actual runs, one dated entry per run
 ├── manifests/
