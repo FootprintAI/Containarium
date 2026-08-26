@@ -1950,6 +1950,11 @@ type ContainerMetrics struct {
 	NetworkRxBytes   int64 `json:"networkRxBytes,string"`
 	NetworkTxBytes   int64 `json:"networkTxBytes,string"`
 	ProcessCount     int32 `json:"processCount"`
+	// CFS throttling counters (#1573) — cumulative, like CPUUsageSeconds.
+	// All zero means the runtime reported no signal, not "never throttled".
+	CPUNrPeriods     int64 `json:"cpuNrPeriods,string"`
+	CPUNrThrottled   int64 `json:"cpuNrThrottled,string"`
+	CPUThrottledUsec int64 `json:"cpuThrottledUsec,string"`
 }
 
 type SystemInfo struct {

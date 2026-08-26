@@ -238,7 +238,10 @@ func TestMetaDelegation(t *testing.T) {
 func TestMetricsDelegation(t *testing.T) {
 	mock := incustest.NewMockBackend()
 	mock.GetContainerMetricsFunc = func(name string) (*incus.ContainerMetrics, error) {
-		return &incus.ContainerMetrics{Name: name, CPUUsageSeconds: 42, MemoryUsageBytes: 1024, ProcessCount: 7}, nil
+		return &incus.ContainerMetrics{
+			Name: name, CPUUsageSeconds: 42, MemoryUsageBytes: 1024, ProcessCount: 7,
+			CPUNrPeriods: 900, CPUNrThrottled: 120, CPUThrottledUsec: 3400,
+		}, nil
 	}
 	b := newTestBackend(mock)
 	m, err := b.Metrics(context.Background(), box.BoxRef{Tenant: "alice"})
@@ -247,6 +250,12 @@ func TestMetricsDelegation(t *testing.T) {
 	}
 	if m.CPUUsageSeconds != 42 || m.MemoryUsageBytes != 1024 || m.ProcessCount != 7 {
 		t.Errorf("Metrics mapping = %+v", m)
+	}
+	// Throttling counters must survive the mapping — dropping one here would
+	// silently return "not reported" for every box (#1573).
+	if m.CPUNrPeriods != 900 || m.CPUNrThrottled != 120 || m.CPUThrottledUsec != 3400 {
+		t.Errorf("throttling mapping = periods %d, throttled %d, usec %d; want 900/120/3400",
+			m.CPUNrPeriods, m.CPUNrThrottled, m.CPUThrottledUsec)
 	}
 }
 

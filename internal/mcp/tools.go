@@ -2021,10 +2021,33 @@ func handleGetMetrics(client API, args map[string]interface{}) (string, error) {
 		result += fmt.Sprintf("   Network: ↓%d MB ↑%d MB\n",
 			m.NetworkRxBytes/1024/1024, m.NetworkTxBytes/1024/1024)
 		result += fmt.Sprintf("   Processes: %d\n", m.ProcessCount)
+		result += formatCPUThrottling(m)
 		result += "\n"
 	}
 
 	return result, nil
+}
+
+// formatCPUThrottling renders the CFS throttling counters as a one-line
+// diagnostic (#1573).
+//
+// This is the line that separates a *throttled* box from an *idle* one. CPU
+// usage alone reads as the same low number in both cases, which is what made
+// "give the box more CPU" look like a plausible remedy for a slow box — a
+// remedy that cannot work, because Containarium's CPU numbers are ceilings
+// rather than reservations (#1571).
+//
+// A zero period count means the runtime reported no signal at all (K8s boxes,
+// a cgroup with no bandwidth limit, a stopped container) — say so explicitly
+// rather than printing "0% throttled", which would read as a positive finding
+// of "not throttled" when nothing was actually measured.
+func formatCPUThrottling(m ContainerMetrics) string {
+	if m.CPUNrPeriods == 0 {
+		return "   CPU Throttling: not reported\n"
+	}
+	pct := float64(m.CPUNrThrottled) / float64(m.CPUNrPeriods) * 100
+	return fmt.Sprintf("   CPU Throttling: %d/%d periods (%.1f%%), %.1fs throttled\n",
+		m.CPUNrThrottled, m.CPUNrPeriods, pct, float64(m.CPUThrottledUsec)/1e6)
 }
 
 func handleGetSystemInfo(client API, args map[string]interface{}) (string, error) {

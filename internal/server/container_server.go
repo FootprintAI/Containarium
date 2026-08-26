@@ -3572,6 +3572,9 @@ func toProtoMetrics(m *incus.ContainerMetrics) *pb.ContainerMetrics {
 		NetworkRxBytes:   m.NetworkRxBytes,
 		NetworkTxBytes:   m.NetworkTxBytes,
 		ProcessCount:     m.ProcessCount,
+		CpuNrPeriods:     m.CPUNrPeriods,
+		CpuNrThrottled:   m.CPUNrThrottled,
+		CpuThrottledUsec: m.CPUThrottledUsec,
 	}
 }
 

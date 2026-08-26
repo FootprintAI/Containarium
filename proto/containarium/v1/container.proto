@@ -335,6 +335,30 @@ message ContainerMetrics {
 
   // Number of running processes in container
   int32 process_count = 8;
+
+  // CFS bandwidth-throttling counters, cumulative over the container's
+  // lifetime — like cpu_usage_seconds, callers take deltas between two reads.
+  //
+  // These are what separate a *throttled* box from an *idle* one: cumulative
+  // CPU time alone reads as the same low number in both cases, which left a
+  // starved tenant with no observable signal at all (#1573). A climbing
+  // cpu_nr_throttled means the box is hitting its own CFS quota (the
+  // limits.cpu.allowance ceiling); flat counters with low usage mean the box
+  // is idle or losing the host CPU race to neighbours — a distinction its own
+  // cgroup cannot make (#1571).
+  //
+  // All three zero means "no signal available" — the runtime doesn't expose
+  // cpu.stat, or the cgroup carries no CPU bandwidth limit — NOT "never
+  // throttled". Only the LXC/Incus backend populates these today.
+
+  // CFS periods elapsed
+  int64 cpu_nr_periods = 9;
+
+  // CFS periods in which the container was throttled
+  int64 cpu_nr_throttled = 10;
+
+  // Total time the container spent throttled, in microseconds
+  int64 cpu_throttled_usec = 11;
 }
 
 // CreateContainerRequest is the request to create a new container

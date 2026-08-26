@@ -1023,9 +1023,15 @@ type ContainerMetrics struct {
 	// Network bytes transmitted (all interfaces except loopback)
 	NetworkTxBytes int64 `protobuf:"varint,7,opt,name=network_tx_bytes,json=networkTxBytes,proto3" json:"network_tx_bytes,omitempty"`
 	// Number of running processes in container
-	ProcessCount  int32 `protobuf:"varint,8,opt,name=process_count,json=processCount,proto3" json:"process_count,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	ProcessCount int32 `protobuf:"varint,8,opt,name=process_count,json=processCount,proto3" json:"process_count,omitempty"`
+	// CFS periods elapsed
+	CpuNrPeriods int64 `protobuf:"varint,9,opt,name=cpu_nr_periods,json=cpuNrPeriods,proto3" json:"cpu_nr_periods,omitempty"`
+	// CFS periods in which the container was throttled
+	CpuNrThrottled int64 `protobuf:"varint,10,opt,name=cpu_nr_throttled,json=cpuNrThrottled,proto3" json:"cpu_nr_throttled,omitempty"`
+	// Total time the container spent throttled, in microseconds
+	CpuThrottledUsec int64 `protobuf:"varint,11,opt,name=cpu_throttled_usec,json=cpuThrottledUsec,proto3" json:"cpu_throttled_usec,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *ContainerMetrics) Reset() {
@@ -1110,6 +1116,27 @@ func (x *ContainerMetrics) GetNetworkTxBytes() int64 {
 func (x *ContainerMetrics) GetProcessCount() int32 {
 	if x != nil {
 		return x.ProcessCount
+	}
+	return 0
+}
+
+func (x *ContainerMetrics) GetCpuNrPeriods() int64 {
+	if x != nil {
+		return x.CpuNrPeriods
+	}
+	return 0
+}
+
+func (x *ContainerMetrics) GetCpuNrThrottled() int64 {
+	if x != nil {
+		return x.CpuNrThrottled
+	}
+	return 0
+}
+
+func (x *ContainerMetrics) GetCpuThrottledUsec() int64 {
+	if x != nil {
+		return x.CpuThrottledUsec
 	}
 	return 0
 }
@@ -6010,7 +6037,7 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\x10encryption_state\x18\x1c \x01(\x0e2 .containarium.v1.EncryptionStateR\x0fencryptionState\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xcf\x02\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xcd\x03\n" +
 	"\x10ContainerMetrics\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12*\n" +
 	"\x11cpu_usage_seconds\x18\x02 \x01(\x03R\x0fcpuUsageSeconds\x12,\n" +
@@ -6019,7 +6046,11 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\x10disk_usage_bytes\x18\x05 \x01(\x03R\x0ediskUsageBytes\x12(\n" +
 	"\x10network_rx_bytes\x18\x06 \x01(\x03R\x0enetworkRxBytes\x12(\n" +
 	"\x10network_tx_bytes\x18\a \x01(\x03R\x0enetworkTxBytes\x12#\n" +
-	"\rprocess_count\x18\b \x01(\x05R\fprocessCount\"\xc1\b\n" +
+	"\rprocess_count\x18\b \x01(\x05R\fprocessCount\x12$\n" +
+	"\x0ecpu_nr_periods\x18\t \x01(\x03R\fcpuNrPeriods\x12(\n" +
+	"\x10cpu_nr_throttled\x18\n" +
+	" \x01(\x03R\x0ecpuNrThrottled\x12,\n" +
+	"\x12cpu_throttled_usec\x18\v \x01(\x03R\x10cpuThrottledUsec\"\xc1\b\n" +
 	"\x16CreateContainerRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12=\n" +
 	"\tresources\x18\x02 \x01(\v2\x1f.containarium.v1.ResourceLimitsR\tresources\x12\x19\n" +
