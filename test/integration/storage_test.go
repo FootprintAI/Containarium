@@ -108,6 +108,8 @@ func testCreateContainerWithQuota(t *testing.T, ctx context.Context, grpcClient 
 		0,                            // No stopped→delete
 		"",                           // No storage-class override
 		client.EncryptionOpts{},      // No per-tenant dataset encryption (#1198)
+		"",                           // No memory-request override (#1557)
+		"",                           // No cpu-request override (#1557)
 	)
 	require.NoError(t, err, "Failed to create container")
 	require.NotNil(t, container)
@@ -161,6 +163,8 @@ func testQuotaEnforcement(t *testing.T, ctx context.Context, grpcClient *client.
 		0,                       // No stopped→delete
 		"",                      // No storage-class override
 		client.EncryptionOpts{}, // No per-tenant dataset encryption (#1198)
+		"",                      // No memory-request override (#1557)
+		"",                      // No cpu-request override (#1557)
 	)
 	require.NoError(t, err)
 	require.NotNil(t, container)
@@ -197,11 +201,11 @@ func testMultiContainerIsolation(t *testing.T, ctx context.Context, grpcClient *
 	t.Log("Creating multiple containers to test quota isolation...")
 
 	// Create two containers with different quotas
-	_, err := grpcClient.CreateContainer(user1, "images:ubuntu/24.04", "1", "1GB", "10GB", []string{}, false, "", nil, 0, false, "", "", client.GitSourceOpts{}, 0, 0, 0, "", client.EncryptionOpts{})
+	_, err := grpcClient.CreateContainer(user1, "images:ubuntu/24.04", "1", "1GB", "10GB", []string{}, false, "", nil, 0, false, "", "", client.GitSourceOpts{}, 0, 0, 0, "", client.EncryptionOpts{}, "", "")
 	require.NoError(t, err)
 	defer func() { _ = grpcClient.DeleteContainer(user1, true) }()
 
-	_, err = grpcClient.CreateContainer(user2, "images:ubuntu/24.04", "1", "1GB", "15GB", []string{}, false, "", nil, 0, false, "", "", client.GitSourceOpts{}, 0, 0, 0, "", client.EncryptionOpts{})
+	_, err = grpcClient.CreateContainer(user2, "images:ubuntu/24.04", "1", "1GB", "15GB", []string{}, false, "", nil, 0, false, "", "", client.GitSourceOpts{}, 0, 0, 0, "", client.EncryptionOpts{}, "", "")
 	require.NoError(t, err)
 	defer func() { _ = grpcClient.DeleteContainer(user2, true) }()
 
@@ -227,7 +231,7 @@ func testCompression(t *testing.T, ctx context.Context, grpcClient *client.GRPCC
 
 	t.Log("Creating container to test compression...")
 
-	_, err := grpcClient.CreateContainer(username, "images:ubuntu/24.04", "1", "1GB", "10GB", []string{}, false, "", nil, 0, false, "", "", client.GitSourceOpts{}, 0, 0, 0, "", client.EncryptionOpts{})
+	_, err := grpcClient.CreateContainer(username, "images:ubuntu/24.04", "1", "1GB", "10GB", []string{}, false, "", nil, 0, false, "", "", client.GitSourceOpts{}, 0, 0, 0, "", client.EncryptionOpts{}, "", "")
 	require.NoError(t, err)
 	defer func() { _ = grpcClient.DeleteContainer(username, true) }()
 
@@ -250,7 +254,7 @@ func testPrepareRebootData(t *testing.T, ctx context.Context, grpcClient *client
 	t.Logf("Creating container for persistence test: %s", username)
 
 	// Create container
-	container, err := grpcClient.CreateContainer(username, "images:ubuntu/24.04", "2", "2GB", "20GB", []string{}, false, "", nil, 0, false, "", "", client.GitSourceOpts{}, 0, 0, 0, "", client.EncryptionOpts{})
+	container, err := grpcClient.CreateContainer(username, "images:ubuntu/24.04", "2", "2GB", "20GB", []string{}, false, "", nil, 0, false, "", "", client.GitSourceOpts{}, 0, 0, 0, "", client.EncryptionOpts{}, "", "")
 	require.NoError(t, err)
 	require.NotNil(t, container)
 

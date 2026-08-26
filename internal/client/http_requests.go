@@ -33,6 +33,9 @@ type containerResources struct {
 	Disk   string `json:"disk"`
 	// Only sent when a storage class was requested.
 	StorageClass string `json:"storageClass,omitempty"`
+	// Only sent when a request override was given (#1557).
+	MemoryRequest string `json:"memoryRequest,omitempty"`
+	CPURequest    string `json:"cpuRequest,omitempty"`
 }
 
 // createContainerRequest is POST /v1/containers.
@@ -243,4 +246,14 @@ type addRouteRequest struct {
 	TargetPort    int32  `json:"target_port"`
 	ContainerName string `json:"container_name"`
 	Description   string `json:"description"`
+}
+
+// addPassthroughRouteRequest is POST /v1/network/passthrough.
+type addPassthroughRouteRequest struct {
+	ExternalPort  int32            `json:"external_port"`
+	TargetIP      string           `json:"target_ip"`
+	TargetPort    int32            `json:"target_port"`
+	Protocol      pb.RouteProtocol `json:"protocol"`
+	ContainerName string           `json:"container_name"`
+	Description   string           `json:"description"`
 }

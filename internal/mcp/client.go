@@ -1226,6 +1226,52 @@ func (c *Client) ListRoutes(username string, activeOnly bool) (*ListRoutesRespon
 	return &resp, nil
 }
 
+// AddPassthroughRoute creates a raw TCP/UDP port-forwarding rule (no TLS
+// termination) on the daemon. Used by the add_passthrough_route tool — the
+// passthrough counterpart of AddRoute, for callers who need L4 passthrough
+// (e.g. mTLS gRPC) instead of the HTTPS reverse proxy. See #1550.
+func (c *Client) AddPassthroughRoute(req AddPassthroughRouteRequest) (*AddPassthroughRouteResponse, error) {
+	respBody, err := c.doRequest("POST", "/v1/network/passthrough", req)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp AddPassthroughRouteResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+
+	return &resp, nil
+}
+
+// DeletePassthroughRoute removes a TCP/UDP passthrough route by its
+// external port and protocol — the unexpose counterpart of
+// AddPassthroughRoute. Mirrors DELETE /v1/network/passthrough/{external_port}.
+// Used by the delete_passthrough_route tool.
+func (c *Client) DeletePassthroughRoute(externalPort int32, protocol string) error {
+	path := fmt.Sprintf("/v1/network/passthrough/%d", externalPort)
+	if protocol != "" {
+		path += "?protocol=" + url.QueryEscape(protocol)
+	}
+	_, err := c.doRequest("DELETE", path, nil)
+	return err
+}
+
+// ListPassthroughRoutes returns all TCP/UDP passthrough routes the daemon
+// currently forwards. Mirrors GET /v1/network/passthrough. Used by the
+// list_passthrough_routes tool.
+func (c *Client) ListPassthroughRoutes() (*ListPassthroughRoutesResponse, error) {
+	respBody, err := c.doRequest("GET", "/v1/network/passthrough", nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp ListPassthroughRoutesResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
 // ListBackends returns the cluster topology — the local daemon plus any
 // tunnel-connected peers. Used by the list_backends MCP tool so an
 // agent can reason about peer health, container counts, and GPU
@@ -1818,6 +1864,45 @@ type ProxyRoute struct {
 type ListRoutesResponse struct {
 	Routes     []ProxyRoute `json:"routes"`
 	TotalCount int          `json:"totalCount"`
+}
+
+// AddPassthroughRouteRequest mirrors network.proto's
+// AddPassthroughRouteRequest. JSON field names match the grpc-gateway HTTP
+// shape (camelCase). Protocol is the proto enum's name (e.g.
+// "ROUTE_PROTOCOL_TCP") — see passthroughProtocolToProto in tools.go for
+// the friendly-string → proto-name mapping the tool handlers use.
+type AddPassthroughRouteRequest struct {
+	ExternalPort  int32  `json:"externalPort"`
+	TargetIP      string `json:"targetIp"`
+	TargetPort    int32  `json:"targetPort"`
+	Protocol      string `json:"protocol,omitempty"`
+	ContainerName string `json:"containerName,omitempty"`
+	Description   string `json:"description,omitempty"`
+}
+
+type AddPassthroughRouteResponse struct {
+	Route   PassthroughRoute `json:"route"`
+	Message string           `json:"message,omitempty"`
+}
+
+// PassthroughRoute mirrors network.proto's PassthroughRoute — unlike
+// ProxyRoute, its field names match the proto directly (no domain/fullDomain
+// split), so no fallback dance is needed in the handlers.
+type PassthroughRoute struct {
+	ExternalPort  int32  `json:"externalPort"`
+	TargetIP      string `json:"targetIp"`
+	TargetPort    int32  `json:"targetPort"`
+	Protocol      string `json:"protocol,omitempty"`
+	Active        bool   `json:"active,omitempty"`
+	ContainerName string `json:"containerName,omitempty"`
+	Description   string `json:"description,omitempty"`
+}
+
+// ListPassthroughRoutesResponse mirrors the daemon's
+// ListPassthroughRoutesResponse.
+type ListPassthroughRoutesResponse struct {
+	Routes     []PassthroughRoute `json:"routes"`
+	TotalCount int                `json:"totalCount"`
 }
 
 type Container struct {

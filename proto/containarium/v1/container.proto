@@ -108,6 +108,21 @@ message ResourceLimits {
   // (CONTAINARIUM_K8S_STORAGE_CLASS). Ignored by the LXC backend.
   // Example: "fast-nvme", "standard", "ceph-block".
   string storage_class = 6;
+
+  // memory_request is the K8s memory *request* (what the scheduler reserves
+  // against node capacity), separate from the `memory` field above, which is
+  // always applied as the *limit* (K8s runtime only; ignored by the LXC
+  // backend, which has no separate request concept for `limits.memory`).
+  // Empty (the default) preserves today's behavior: `memory`'s value is used
+  // for both request and limit (Guaranteed QoS). Set this to something
+  // smaller than `memory` for Burstable QoS — e.g. request 128Mi, limit
+  // 256Mi, matching how most upstream Kubernetes workloads size a pod.
+  string memory_request = 7;
+
+  // cpu_request is the K8s CPU *request*, separate from the `cpu` field
+  // above (always applied as the limit). Same defaulting and K8s-only scope
+  // as memory_request.
+  string cpu_request = 8;
 }
 
 // NetworkInfo contains network configuration for a container

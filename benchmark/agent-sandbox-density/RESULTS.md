@@ -392,6 +392,84 @@ chart+binary versions by design).
 This confirms the blog draft's 186 figure is solid and independently
 reproducible, not a one-off measurement.
 
+### 2026-08-26 — #1558: isolating gVisor's own density cost (request-matched)
+
+Every prior k8s+Containarium run (including the "reproducibility check"
+above) used `create --memory 256Mi` with no separate request — before
+#1557 there was no flag to set one, so every Containarium box was pinned
+to request==limit (256Mi), double agent-sandbox's own pods' 128Mi
+request. That asymmetry, not gVisor, was the entire explanation for
+186-vs-373. #1557 added `--memory-request`/`--cpu-request`; this run
+uses them to set Containarium's boxes to the *same* profile as
+agent-sandbox's pods — request 128Mi / limit 256Mi, cpu request 25m /
+limit 50m (`SANDBOX_MEM_REQUEST`/`SANDBOX_CPU_REQUEST` in
+`config.env.example`, wired into the create call by a script fix,
+[#1561](https://github.com/FootprintAI/Containarium/pull/1561)) — then
+runs the identical profile twice on the identical cluster: once under
+`gVisor` (`runtimeClass: runsc`), once under plain `runc`. If the two
+counts match, gVisor's own per-pod density cost is negligible at this
+sandbox size and the whole 186-vs-373 gap really was the declared-size
+asymmetry, full stop. If they differ, that delta is gVisor's own cost.
+
+**Methodology deviation from the first three scenarios, deliberate:**
+one VM/cluster reused for both legs, not two freshly-provisioned VMs.
+The first three scenarios needed separate VMs because they compared
+different *systems* (agent-sandbox vs. Containarium, or k8s vs. no k8s);
+this run toggles exactly one variable (`runtimeClass`) on the *same*
+system, so a fresh VM per leg would add provisioning noise without
+isolating anything extra. Between legs: every `tenant-sbdens-*`
+namespace was deleted and confirmed gone (`kubectl get ns` count back to
+0), node `Allocated resources` confirmed back to baseline (240Mi/48GiB
+memory requests — just system pods), then `helm upgrade --reuse-values
+--set runtimeClass=""` flipped the daemon to schedule new boxes on
+plain `runc`, and the daemon pod's rollout was confirmed healthy before
+starting the second leg.
+
+Host cap and versions unchanged from the runs above (20 vCPU / 48GiB RAM
+/ 200GB disk Incus KVM VM). Daemon built from
+`feat/1557-memory-cpu-request` (commit `c009427`, PR
+[#1560](https://github.com/FootprintAI/Containarium/pull/1560), open at
+the time of this run) — carries #1557 plus everything on `main` as of
+that branch point. Helm chart at `main`.
+
+| | gVisor (`runsc`) | plain `runc` |
+|---|---|---|
+| Sandboxes reached RUNNING | **373** | **373** |
+| Attempted (incl. failures) | 376 | 376 |
+| Node memory requests at stop | 47984Mi / 48GiB (**99%**) | 47984Mi / 48GiB (**99%**) |
+| Node CPU requests at stop | 10425m / 20000m (52%) | 10425m / 20000m (52%) |
+| Wall-clock for the density loop | ~77 min | ~40 min |
+| Pod RuntimeClass (sanity check) | `runsc` on all 373 | `<none>` on all 373 |
+
+**Exact match: 373 vs. 373, identical node memory snapshot down to the
+Mi.** This is as clean a confirmation as this kind of live benchmark
+ever produces. It also lands within a rounding error of agent-sandbox's
+own control-group result (373, from the 2026-08-24 run) — with the
+request/limit asymmetry removed, Containarium's k8s+gVisor path doesn't
+just close the gap with agent-sandbox, it matches it almost exactly.
+**gVisor's own per-pod density cost is not measurable at this sandbox
+size (25m/50m CPU, 128Mi/256Mi memory) against a 48GiB host** — every
+prior 186-vs-373 comparison was measuring the declared-size asymmetry
+end to end, not gVisor overhead, exactly as the original write-up
+theorized but couldn't rule out.
+
+**The one real difference between the two legs was wall-clock, not
+density: ~77 min (runsc) vs. ~40 min (runc), roughly 2x.** Same total
+work, same stopping point, but gVisor's per-pod sandbox startup cost
+measurably slows down how fast the cluster gets *to* that density —
+without changing how *dense* it can get. A real, separate cost worth
+knowing about (create latency, not packing efficiency), consistent with
+gVisor's own documented syscall-interception overhead.
+
+**Implication for the blog draft:** the "186 vs. 373, Containarium is
+the smaller one" framing was accurate for the profile actually shipped
+at the time (`create` with no request/limit split) but is now stale —
+with #1557 available, a fairly-configured Containarium k8s+gVisor
+deployment matches agent-sandbox's density, not half of it. The 186
+number was a real, honestly-reported result of a real CLI gap, not a
+measurement error; #1557 closes that gap. `BLOG-DRAFT.md` needs a
+follow-up pass to fold this in before it's treated as final.
+
 ## Template
 
 ```

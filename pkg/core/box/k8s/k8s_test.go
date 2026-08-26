@@ -314,6 +314,58 @@ func TestExplicitMemoryOverridesDefault(t *testing.T) {
 	}
 }
 
+// TestMemoryRequestOverride verifies MemoryRequest (#1557) sets a request
+// below the limit — Burstable QoS — instead of the default request==limit
+// (Guaranteed) behavior.
+func TestMemoryRequestOverride(t *testing.T) {
+	r := resourceRequirements(box.ResourceLimits{Memory: "256Mi", MemoryRequest: "128Mi"}, 0, builtinMemDefaults())
+	lim := r.Limits["memory"]
+	req := r.Requests["memory"]
+	if lim.String() != "256Mi" {
+		t.Errorf("memory limit = %q, want 256Mi (MemoryRequest must not change the limit)", lim.String())
+	}
+	if req.String() != "128Mi" {
+		t.Errorf("memory request = %q, want 128Mi", req.String())
+	}
+}
+
+// TestCPURequestOverride is the CPU analog of TestMemoryRequestOverride.
+func TestCPURequestOverride(t *testing.T) {
+	r := resourceRequirements(box.ResourceLimits{CPU: "200m", CPURequest: "100m"}, 0, builtinMemDefaults())
+	lim := r.Limits["cpu"]
+	req := r.Requests["cpu"]
+	if lim.String() != "200m" {
+		t.Errorf("cpu limit = %q, want 200m", lim.String())
+	}
+	if req.String() != "100m" {
+		t.Errorf("cpu request = %q, want 100m", req.String())
+	}
+}
+
+// TestMemoryRequestOverrideExceedingLimitIsIgnored verifies a request larger
+// than the limit is ignored (falls back to request==limit) rather than
+// producing an invalid pod spec (request must not exceed limit).
+func TestMemoryRequestOverrideExceedingLimitIsIgnored(t *testing.T) {
+	r := resourceRequirements(box.ResourceLimits{Memory: "128Mi", MemoryRequest: "256Mi"}, 0, builtinMemDefaults())
+	lim := r.Limits["memory"]
+	req := r.Requests["memory"]
+	if req.String() != lim.String() {
+		t.Errorf("request/limit = %q/%q, want equal (oversized request override ignored)", req.String(), lim.String())
+	}
+}
+
+// TestMemoryRequestOverrideInvalidQuantityIsIgnored verifies a request that
+// isn't a valid K8s quantity is ignored (falls back to request==limit)
+// rather than failing admission.
+func TestMemoryRequestOverrideInvalidQuantityIsIgnored(t *testing.T) {
+	r := resourceRequirements(box.ResourceLimits{Memory: "256Mi", MemoryRequest: "not-a-quantity"}, 0, builtinMemDefaults())
+	lim := r.Limits["memory"]
+	req := r.Requests["memory"]
+	if req.String() != lim.String() {
+		t.Errorf("request/limit = %q/%q, want equal (invalid request override ignored)", req.String(), lim.String())
+	}
+}
+
 // TestSpecInvalidMemoryFallsBackToDefault verifies an incus-native quantity in
 // the spec that isn't a valid K8s quantity ("4GB") is skipped and the default
 // floor applies, rather than leaving the box unconstrained.

@@ -552,6 +552,8 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 		spec.Resources.Memory = req.Resources.Memory
 		spec.Resources.Disk = req.Resources.Disk
 		spec.Resources.StorageClass = req.Resources.StorageClass
+		spec.Resources.MemoryRequest = req.Resources.MemoryRequest
+		spec.Resources.CPURequest = req.Resources.CpuRequest
 	}
 
 	// Use defaults if not specified (os_type takes precedence in manager.go)
@@ -622,10 +624,12 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 				Username: req.Username,
 				State:    pb.ContainerState_CONTAINER_STATE_CREATING,
 				Resources: &pb.ResourceLimits{
-					Cpu:          spec.Resources.CPU,
-					Memory:       spec.Resources.Memory,
-					Disk:         spec.Resources.Disk,
-					StorageClass: spec.Resources.StorageClass,
+					Cpu:           spec.Resources.CPU,
+					Memory:        spec.Resources.Memory,
+					Disk:          spec.Resources.Disk,
+					StorageClass:  spec.Resources.StorageClass,
+					MemoryRequest: spec.Resources.MemoryRequest,
+					CpuRequest:    spec.Resources.CPURequest,
 				},
 			},
 			Message: fmt.Sprintf("Box CR created for user %s; the operator is reconciling it. Poll GET /v1/containers/%s to check status.", req.Username, req.Username),
@@ -788,10 +792,12 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 				Username: req.Username,
 				State:    pb.ContainerState_CONTAINER_STATE_CREATING,
 				Resources: &pb.ResourceLimits{
-					Cpu:          spec.Resources.CPU,
-					Memory:       spec.Resources.Memory,
-					Disk:         spec.Resources.Disk,
-					StorageClass: spec.Resources.StorageClass,
+					Cpu:           spec.Resources.CPU,
+					Memory:        spec.Resources.Memory,
+					Disk:          spec.Resources.Disk,
+					StorageClass:  spec.Resources.StorageClass,
+					MemoryRequest: spec.Resources.MemoryRequest,
+					CpuRequest:    spec.Resources.CPURequest,
 				},
 			},
 			Message: fmt.Sprintf("Container creation started for user %s. Poll GET /v1/containers/%s to check status.", req.Username, req.Username),
@@ -3592,10 +3598,12 @@ func toProtoContainer(st *box.BoxStatus) *pb.Container {
 		Username: st.Ref.Tenant,
 		State:    st.State,
 		Resources: &pb.ResourceLimits{
-			Cpu:          st.Resources.CPU,
-			Memory:       st.Resources.Memory,
-			Disk:         st.Resources.Disk,
-			StorageClass: st.Resources.StorageClass,
+			Cpu:           st.Resources.CPU,
+			Memory:        st.Resources.Memory,
+			Disk:          st.Resources.Disk,
+			StorageClass:  st.Resources.StorageClass,
+			MemoryRequest: st.Resources.MemoryRequest,
+			CpuRequest:    st.Resources.CPURequest,
 		},
 		Network: &pb.NetworkInfo{
 			IpAddress: st.IPAddress,

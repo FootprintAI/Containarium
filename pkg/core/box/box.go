@@ -50,6 +50,15 @@ type ResourceLimits struct {
 	// Empty = use the backend's default (Config.StorageClass).
 	// Only meaningful on the K8s backend; ignored by LXC.
 	StorageClass string
+	// MemoryRequest is the K8s memory *request*, separate from Memory
+	// (always applied as the limit). Empty = request equals Memory
+	// (today's Guaranteed-QoS behavior). Only meaningful on the K8s
+	// backend; ignored by LXC, which has no separate request concept.
+	MemoryRequest string
+	// CPURequest is the K8s CPU *request*, separate from CPU (always
+	// applied as the limit). Same defaulting and K8s-only scope as
+	// MemoryRequest.
+	CPURequest string
 }
 
 // BoxSpec is the declarative input to Create. The backend makes a box matching

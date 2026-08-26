@@ -61,6 +61,9 @@ func TestRequestPayloadWireFormat(t *testing.T) {
 		{"addRouteRequest", addRouteRequest{}, []string{
 			"container_name", "description", "domain", "target_ip", "target_port",
 		}},
+		{"addPassthroughRouteRequest", addPassthroughRouteRequest{}, []string{
+			"container_name", "description", "external_port", "protocol", "target_ip", "target_port",
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := marshalKeys(t, tc.payload)

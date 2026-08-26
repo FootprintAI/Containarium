@@ -6,8 +6,9 @@
 # /etc/containarium/agent, and the in-box agent loop takes it from there.
 #
 # This catalog ships the GENERIC MECHANISM plus a small set of broadly-useful,
-# task-AGNOSTIC skills that work for any user (a neutral reference skill and a
-# code reviewer). OPINIONATED / DOMAIN catalogs — product-management packs,
+# task-AGNOSTIC skills that work for any user (a neutral reference skill, a
+# code reviewer, and a deploy/verify pair for standing up and checking a live
+# instance of a git ref). OPINIONATED / DOMAIN catalogs — product-management packs,
 # compliance packs (ISO 27001, …), research crews, customer-specific
 # workflows — are built on this same mechanism and ship as EXTERNAL packs,
 # loaded at runtime via CONTAINARIUM_SKILLS_DIR (and, for the curated set,
@@ -92,3 +93,95 @@ skills:
         - code-review
         - bug-detection
         - security-review
+
+  # deploy-branch is a generic provisioning skill: stand up a live, reachable
+  # instance of a git ref. It has no knowledge of what's calling it or why —
+  # verification, demos, and preview environments are all just "deploy this
+  # ref and give me a reachable address" to this skill.
+  #
+  # Deliberately does NOT expose a public route: AddRoute (network_server.go)
+  # requires RoleAdmin unconditionally, and every skill token is minted with
+  # scopes only, zero roles (agent_server.go RunAgentSkill) — a skill can
+  # never hold RoleAdmin, so calling AddRoute would always fail closed. There
+  # is no existing precedent for a scope-only bypass on a route WRITE path
+  # (RequireRoleOrScope elsewhere in this codebase is documented and used for
+  # READ paths only). Rather than weaken that admin gate for a generic skill,
+  # this skill returns the box's private IP (via GetContainer, which — like
+  # CreateContainer — is scope-gated only, no role requirement) instead of a
+  # public URL. Callers that need public reachability (e.g. an end-user demo
+  # link) are responsible for their own route, via a caller with the
+  # appropriate role — not this skill.
+  - id: deploy-branch
+    name: Deploy Branch
+    description: Provisions a new box from a git repo/ref, builds and starts the app inside it, and returns its reachable private address (or a typed failure). Does not expose a public route — see recipe comment.
+    recipe_id: agent-runtime
+    system_prompt: >-
+      You deploy a git branch as a live, reachable web app. The task input is
+      JSON: {"repo_url": "...", "ref": "<branch or SHA>", "build_command":
+      "<shell command, may be empty>", "start_command": "<shell command>",
+      "port": <int>, "health_check_path": "<path, default \"/\">"}.
+
+      Steps: (1) provision a new box with --git-source=repo_url and
+      --git-ref=ref so the daemon clones the ref into the box's workspace at
+      create time; (2) once the box is ready, run build_command (if
+      non-empty) then start_command inside the box as a background process,
+      logging stdout/stderr to a file you can inspect on failure; (3) look up
+      the box's private IP address (GetContainer); (4) poll
+      health_check_path on http://<private_ip>:<port> until it responds or a
+      reasonable timeout elapses; (5) return ONLY a JSON artifact: on success
+      {"status": "deployed", "url": "http://<private_ip>:<port>",
+      "container_name": "<name>"}; on failure {"status": "failed", "reason":
+      "deploy_error|timeout|build_failed", "detail": "<what happened,
+      include relevant log output>"}. Never fabricate success — if you
+      cannot confirm the health check passed, report failure with the real
+      reason. The returned url is reachable on the box's private network,
+      not the public internet — this skill provisions and starts the app,
+      it does not expose it publicly. Clean up (delete the box) on failure
+      so failed attempts don't leak resources; leave it running on success —
+      the caller owns its lifecycle from there.
+    allowed_scopes:
+      - containers:read
+      - containers:write
+      - ssh:write
+    allowed_peers: []
+    agent_card:
+      id: deploy-branch
+      name: Deploy Branch
+      description: Deploys a git branch to a live box and returns its private network address.
+      capabilities:
+        - deploy
+        - provisioning
+
+  # verify-endpoint is a generic verification skill: drive a live URL with a
+  # headless browser and check a described behavior. Like deploy-branch, it
+  # has no knowledge of what deployed the URL or why the check matters to the
+  # caller — it just reports what it actually observed, with evidence.
+  - id: verify-endpoint
+    name: Verify Endpoint
+    description: Drives a live URL with a headless browser to check a described behavior, returning pass/fail plus a screenshot and transcript as evidence.
+    recipe_id: agent-runtime-browser
+    system_prompt: >-
+      You verify that a live web app behaves as described. The task input is
+      JSON: {"url": "...", "check": "<plain-language description of what
+      should be true — a scenario to complete, or a specific bug that should
+      no longer reproduce>"}.
+
+      Use the pre-installed headless Chromium (via Playwright) to navigate to
+      url and drive whatever steps the check describes. Capture a screenshot
+      of the final state and a short transcript of what you did (each action
+      and what you observed). Return ONLY a JSON artifact: {"status":
+      "pass|fail", "detail": "<what you found>", "screenshot_base64": "<PNG,
+      base64>", "transcript": ["<step 1>", "<step 2>", ...]}. If url is
+      unreachable or times out, that is "fail" with detail explaining why —
+      never report "pass" without actually completing and observing the
+      check.
+    allowed_scopes:
+      - containers:read
+    allowed_peers: []
+    agent_card:
+      id: verify-endpoint
+      name: Verify Endpoint
+      description: Verifies a live URL's behavior via headless browser, with screenshot + transcript evidence.
+      capabilities:
+        - verification
+        - browser-automation

@@ -86,6 +86,36 @@ func TestAgentWorkspaceRecipe(t *testing.T) {
 	}
 }
 
+func TestAgentRuntimeBrowserRecipe(t *testing.T) {
+	m := New()
+	if err := m.LoadEmbedded(); err != nil {
+		t.Fatalf("LoadEmbedded: %v", err)
+	}
+	r, err := m.Get("agent-runtime-browser")
+	if err != nil {
+		t.Fatalf("expected built-in recipe agent-runtime-browser: %v", err)
+	}
+	if r.RequiresGpu {
+		t.Error("agent-runtime-browser should not require a GPU")
+	}
+	if r.Image == "" {
+		t.Error("agent-runtime-browser has empty image")
+	}
+	// It's agent-runtime plus a headless browser: the in-box agent loop must
+	// still get assembled, and Chromium must actually get installed — not
+	// just Playwright's package with no browser binary.
+	joined := strings.Join(r.PostStart, "\n")
+	for _, want := range []string{
+		"install-agent-runtime.sh", // same in-box agent loop assembly as agent-runtime
+		"playwright",
+		"chromium",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("agent-runtime-browser post_start missing %q", want)
+		}
+	}
+}
+
 func TestOCIServiceRecipe(t *testing.T) {
 	m := New()
 	if err := m.LoadEmbedded(); err != nil {

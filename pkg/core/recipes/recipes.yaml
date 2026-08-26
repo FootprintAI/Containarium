@@ -114,6 +114,39 @@ recipes:
       # artifacts (|| echo keeps the line green under `set -e`).
       - 'if [ -n "$CONTAINARIUM_PARAM_RELEASE" ]; then curl -fsSL "https://raw.githubusercontent.com/$CONTAINARIUM_PARAM_REPO/$CONTAINARIUM_PARAM_RELEASE/scripts/install-agent-runtime.sh" | REPO="$CONTAINARIUM_PARAM_REPO" RELEASE="$CONTAINARIUM_PARAM_RELEASE" bash || echo "agent-runtime assembly skipped/failed for release=$CONTAINARIUM_PARAM_RELEASE; box runs without the in-box loop"; fi'
 
+  # agent-runtime-browser is agent-runtime plus a headless Chromium (via
+  # Playwright), for skills that need to drive or inspect a live web UI
+  # rather than just call APIs. Kept as its own recipe — same "a skill that
+  # needs [...] declares its own box" convention agent-runtime's own comment
+  # states above — so skills that don't need a browser (the common case)
+  # don't pay the extra provisioning cost of installing it.
+  - id: agent-runtime-browser
+    name: Agent Runtime (Browser)
+    description: Agent Runtime plus a headless Chromium via Playwright, for skills that need to drive or inspect a live web UI.
+    image: images:ubuntu/24.04
+    requires_gpu: false
+    resources:
+      cpu: "2"
+      memory: 4GB
+      disk: 20GB
+    parameters:
+      - name: release
+        label: Release tag
+        description: Containarium release tag to pull agent-box + the agent-runtime bundle from (e.g. v0.27.0). Empty skips assembly.
+        type: string
+      - name: repo
+        label: Source repo
+        description: GitHub owner/repo the release artifacts live in.
+        type: string
+        default: FootprintAI/Containarium
+    post_start:
+      - mkdir -p /etc/containarium/agent
+      - 'curl -fsSL https://deb.nodesource.com/setup_20.x | bash -'
+      - DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs
+      - 'if [ -n "$CONTAINARIUM_PARAM_RELEASE" ]; then curl -fsSL "https://raw.githubusercontent.com/$CONTAINARIUM_PARAM_REPO/$CONTAINARIUM_PARAM_RELEASE/scripts/install-agent-runtime.sh" | REPO="$CONTAINARIUM_PARAM_REPO" RELEASE="$CONTAINARIUM_PARAM_RELEASE" bash || echo "agent-runtime assembly skipped/failed for release=$CONTAINARIUM_PARAM_RELEASE; box runs without the in-box loop"; fi'
+      - npm install -g playwright@1.48.0
+      - npx --yes playwright install --with-deps chromium
+
   # agent-workspace is the HUMAN-IN-THE-LOOP chat workspace: a web chat UI
   # (Claude/ChatGPT-style) with a live preview pane and multiple persisted
   # conversations, all running inside one always-on box. Where agent-runtime is

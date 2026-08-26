@@ -155,6 +155,65 @@ func TestAddRoute_RejectsNonAdmin(t *testing.T) {
 	}
 }
 
+// TestAddRoute_RejectsScopeOnlyToken pins down the exact gap a code review
+// caught on PR #1559: AddRoute requires RoleAdmin unconditionally, with no
+// scope-based bypass, but every AgentSkill token is minted with scopes only
+// and zero roles (RunAgentSkill, agent_server.go). A skill declaring
+// routes:write can therefore never successfully call AddRoute — this test
+// exercises the actual authorization path (not just scope-string presence
+// on a manifest) so that gap can't silently reappear. It's why the
+// deploy-branch skill (pkg/core/skills/skills.yaml) does not request
+// routes:write and returns a private container address instead of calling
+// AddRoute — see that skill's comment for the full rationale.
+func TestAddRoute_RejectsScopeOnlyToken(t *testing.T) {
+	srv := &NetworkServer{}
+	// A skill-shaped token: no roles at all, but holds the exact scope AddRoute
+	// checks first. If AddRoute ever grew a RequireRoleOrScope-style bypass for
+	// routes:write, this would start passing the auth gate (and fail later, on
+	// nil s.incusClient/store dependencies, not on PermissionDenied) — which is
+	// the signal a future change actually closed this gap and this test (and
+	// deploy-branch's scope list) should be revisited.
+	ctx := auth.ContextWithTestSubjectScopes(context.Background(), "agent-deploy-branch", nil, []string{auth.ScopeRoutesWrite})
+	_, err := srv.AddRoute(ctx, &pb.AddRouteRequest{Domain: "x", TargetIp: "1.2.3.4", TargetPort: 80})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("got %v want PermissionDenied — a scope-only, zero-role token must not be able to call AddRoute", err)
+	}
+}
+
+// TestCreateContainer_AllowsScopeOnlyToken is the positive-side companion to
+// TestAddRoute_RejectsScopeOnlyToken: it proves a skill-shaped token (scopes
+// only, zero roles) DOES clear CreateContainer's auth gate — confirming
+// deploy-branch's actual design (provision + inspect a box, no route) is
+// authorization-viable, unlike the original AddRoute-based design.
+//
+// Driven with IdleStopMinutes: -1, a request shape that trips
+// CreateContainer's own early InvalidArgument validation
+// (container_server.go) — a clean, backend-free error that proves auth AND
+// request-validation were both reached, without going far enough to hit the
+// real provisioning pipeline (which needs a live backend/key-provider this
+// zero-value server doesn't have). The assertion is specifically that the
+// failure is InvalidArgument, not PermissionDenied — i.e. auth was not the
+// blocker.
+//
+// GetContainer is not exercised the same way here: unlike CreateContainer,
+// it has no request-level validation to safely trip before reaching the box
+// backend, and this test deliberately avoids reaching for a backend fake
+// just to get a clean stopping point. Its auth gate is the identical
+// two-line RequireScope(ctx, ScopeContainersRead)-only check, no
+// RequireRole (container_server.go:1126-1129, read directly, not assumed).
+func TestCreateContainer_AllowsScopeOnlyToken(t *testing.T) {
+	ctx := auth.ContextWithTestSubjectScopes(context.Background(), "agent-deploy-branch", nil, []string{auth.ScopeContainersWrite, auth.ScopeContainersRead})
+
+	srv := &ContainerServer{}
+	_, err := srv.CreateContainer(ctx, &pb.CreateContainerRequest{Username: "agent-deploy-branch", IdleStopMinutes: -1})
+	if status.Code(err) == codes.PermissionDenied {
+		t.Fatalf("CreateContainer rejected a scope-only token on the auth check: %v", err)
+	}
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected the IdleStopMinutes validation error (proving auth passed and validation was reached), got %v", err)
+	}
+}
+
 func TestUpdateRoute_RejectsNonAdmin(t *testing.T) {
 	srv := &NetworkServer{}
 	_, err := srv.UpdateRoute(nonAdminCtx(), &pb.UpdateRouteRequest{Domain: "x"})
