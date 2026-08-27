@@ -31,6 +31,10 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          # Full history + tags: the changelog step below diffs this ref
+          # against the previous tag, which a depth-1 clone cannot see.
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v7
@@ -86,6 +90,47 @@ jobs:
         # Produces bin/agent-runtime-bundle.tar.gz, pulled in-box by
         # scripts/install-agent-runtime.sh alongside agent-box-linux-amd64.
         run: make bundle-agent-runtime
+
+      - name: Generate changelog
+        # The boilerplate below is identical on every release, so without
+        # this a release page never says what actually changed in it (#1600).
+        # Categorised from conventional-commit subjects since the previous
+        # tag; anything not following the convention still lands in "Other"
+        # so nothing is silently dropped.
+        run: |
+          REF="${{ github.ref_name }}"
+          git rev-parse -q --verify "refs/tags/$REF" >/dev/null 2>&1 || REF=HEAD
+          PREV="$(git describe --tags --abbrev=0 "${REF}^" 2>/dev/null || true)"
+          if [ -n "$PREV" ]; then RANGE="${PREV}..${REF}"; else RANGE="$REF"; fi
+
+          emit() {
+            out="$(git log --no-merges --pretty=format:'%s' $RANGE 2>/dev/null | grep -E "$2" || true)"
+            [ -z "$out" ] && return 0
+            printf '### %s\n\n' "$1"
+            printf '%s\n' "$out" | sed -E 's/^[a-z]+(\([^)]*\))?!?: *//' | sed 's/^/- /'
+            printf '\n'
+          }
+
+          {
+            printf '## What changed\n\n'
+            emit "Added"         '^feat(\(|:|!)'
+            emit "Fixed"         '^fix(\(|:|!)'
+            emit "Documentation" '^docs(\(|:|!)'
+            emit "Internal"      '^(chore|refactor|test|ci|build|perf)(\(|:|!)'
+            OTHER="$(git log --no-merges --pretty=format:'%s' $RANGE 2>/dev/null | grep -vE '^(feat|fix|docs|chore|refactor|test|ci|build|perf)(\(|:|!)' || true)"
+            if [ -n "$OTHER" ]; then
+              printf '### Other\n\n'
+              printf '%s\n' "$OTHER" | sed 's/^/- /'
+              printf '\n'
+            fi
+            if [ -n "$PREV" ]; then
+              printf '**Full diff**: https://github.com/footprintai/containarium/compare/%s...%s\n\n' "$PREV" "$REF"
+            fi
+            printf -- '---\n\n'
+          } > release_changelog.md
+
+          echo "--- generated changelog ---"
+          cat release_changelog.md
 
       - name: Create release notes
         id: release_notes
@@ -172,6 +217,11 @@ jobs:
           See [README.md](https://github.com/footprintai/containarium#quick-start) for the full agent-native walkthrough.
           EOF
 
+          # Changelog first, boilerplate under it — a reader wants to know
+          # what changed before they read install instructions (#1600).
+          cat release_changelog.md release_notes.md > release_notes.combined.md
+          mv release_notes.combined.md release_notes.md
+
       - name: Create GitHub Release
         # Tag pushes only. A rehearsal builds every artifact above and stops
         # here — that is the whole point of the workflow_dispatch trigger.
@@ -181,6 +231,11 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: Containarium ${{ github.ref_name }}
           body_path: release_notes.md
+          # Without this the action REPLACES the release body, silently
+          # destroying notes an author wrote at publish time — whoever wrote
+          # last won, and that depended on how long the build took (#1600).
+          # Same reasoning as append_files on the bundle job below.
+          append_body: true
           files: |
             bin/containarium-linux-amd64
             bin/containarium-darwin-amd64
