@@ -97,8 +97,14 @@ jobs:
         # Categorised from conventional-commit subjects since the previous
         # tag; anything not following the convention still lands in "Other"
         # so nothing is silently dropped.
+        env:
+          # github.ref_name is attacker-controllable (a tag name may contain
+          # shell metacharacters). Routing it through env makes the shell treat
+          # it as data; interpolating ${{ }} straight into a run block would
+          # let a crafted tag execute commands on the runner.
+          RELEASE_REF: ${{ github.ref_name }}
         run: |
-          REF="${{ github.ref_name }}"
+          REF="$RELEASE_REF"
           git rev-parse -q --verify "refs/tags/$REF" >/dev/null 2>&1 || REF=HEAD
           PREV="$(git describe --tags --abbrev=0 "${REF}^" 2>/dev/null || true)"
           if [ -n "$PREV" ]; then RANGE="${PREV}..${REF}"; else RANGE="$REF"; fi
@@ -219,7 +225,14 @@ jobs:
 
           # Changelog first, boilerplate under it — a reader wants to know
           # what changed before they read install instructions (#1600).
-          cat release_changelog.md release_notes.md > release_notes.combined.md
+          # Wrapped in markers so a workflow rerun REPLACES this block rather
+          # than appending a second copy (see "Apply release notes" below).
+          {
+            printf '%s\n' '<!-- generated-release-notes:start -->'
+            cat release_changelog.md
+            cat release_notes.md
+            printf '%s\n' '<!-- generated-release-notes:end -->'
+          } > release_notes.combined.md
           mv release_notes.combined.md release_notes.md
 
       - name: Create GitHub Release
@@ -230,12 +243,10 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: Containarium ${{ github.ref_name }}
-          body_path: release_notes.md
-          # Without this the action REPLACES the release body, silently
-          # destroying notes an author wrote at publish time — whoever wrote
-          # last won, and that depended on how long the build took (#1600).
-          # Same reasoning as append_files on the bundle job below.
-          append_body: true
+          # Deliberately no body/body_path here. This action REPLACES the body
+          # on update, which silently destroyed notes an author wrote at
+          # publish time (#1600), and append_body instead duplicates the block
+          # on any rerun. The body is composed idempotently in the next step.
           files: |
             bin/containarium-linux-amd64
             bin/containarium-darwin-amd64
@@ -251,6 +262,49 @@ jobs:
             bin/SHA256SUMS.txt
           draft: false
           prerelease: false
+
+      - name: Apply release notes
+        # Composes the release body idempotently (#1600).
+        #
+        # Two failure modes this avoids:
+        #   - REPLACING the body (what action-gh-release does by default)
+        #     silently destroyed notes an author wrote at publish time.
+        #   - APPENDING it (append_body: true) duplicates the whole generated
+        #     block on any workflow rerun for the same tag.
+        #
+        # So: strip any previously-generated block by its markers, keep
+        # everything else the author put there, and append a fresh block.
+        # Rerunning converges on the same body instead of growing it.
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Untrusted: a tag name may contain shell metacharacters.
+          RELEASE_REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          gh release view "$RELEASE_REF" --json body --jq '.body' > existing_body.md 2>/dev/null || : > existing_body.md
+
+          # Drop a prior generated block, if this is a rerun.
+          python3 - <<'PYEOF' > preserved.md
+          import re
+          try:
+              body = open('existing_body.md').read()
+          except FileNotFoundError:
+              body = ''
+          body = re.sub(
+              r'<!-- generated-release-notes:start -->.*?<!-- generated-release-notes:end -->\n?',
+              '', body, flags=re.S)
+          print(body.rstrip())
+          PYEOF
+
+          if [ -s preserved.md ]; then
+            printf '\n\n' >> preserved.md
+          fi
+          cat preserved.md release_notes.md > final_body.md
+
+          gh release edit "$RELEASE_REF" --notes-file final_body.md
+          echo "release body applied ($(wc -l < final_body.md) lines; preserved $(wc -l < preserved.md) authored)"
 
   # Air-gapped install bundle (E3a/E3b).
   # Per prd/cloud/air-gapped-install-bundle.md, ship a self-contained
