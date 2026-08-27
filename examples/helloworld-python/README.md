@@ -39,7 +39,11 @@ mcp__<your-cluster>__expose_port(
 )
 ```
 
-That's it. The first request to `https://helloworld.demo.containarium.dev/` will trigger Caddy's ACME-on-demand to mint the cert, then proxy through to the Python server.
+That's it. Registering the route also registers the hostname as a Caddy TLS
+automation subject, so Caddy obtains the certificate for it (or it's already
+covered by the cluster's `*.<base-domain>` wildcard) and proxies through to the
+Python server. Certificates come from that registration, not from issuance on
+first request — Caddy's ACME-on-demand mode is not enabled (see #1586).
 
 ### Via CLI
 

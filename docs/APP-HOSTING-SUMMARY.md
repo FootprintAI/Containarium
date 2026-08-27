@@ -61,7 +61,13 @@ Containarium's App Hosting feature enables users to deploy web applications dire
 
 ### TLS Certificate Management
 
-- **Automatic**: Caddy provisions Let's Encrypt certificates on-demand
+- **Automatic**: Caddy obtains Let's Encrypt certificates for hostnames the
+  daemon registers as TLS automation subjects — on `expose_port` / route
+  registration, or from the `*.<base-domain>` wildcard. This is *not*
+  on-demand issuance: Caddy's `on_demand` mode is not enabled anywhere in
+  this codebase (see #1586), so a hostname the daemon never registers gets
+  no certificate and fails the TLS handshake rather than being minted on
+  first request.
 - **Zero configuration**: No manual certificate management needed
 - **Auto-renewal**: Certificates renewed before expiration
 - **Storage**: Certificates stored in Caddy's persistent volume
