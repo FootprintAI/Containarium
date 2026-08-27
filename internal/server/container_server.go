@@ -1761,6 +1761,22 @@ func (s *ContainerServer) ResizeContainer(ctx context.Context, req *pb.ResizeCon
 		}, nil
 	}
 
+	// CPU capacity admission (#1579): only when the gate is enabled and the
+	// resize actually names a new CPU value, and only once the container is
+	// confirmed to live on THIS host — checked here, before the local resize
+	// attempt below, rather than unconditionally before the local/peer
+	// dispatch decision, so a resize routed to a peer is never evaluated
+	// against the wrong host's capacity. The peer's own ResizeContainer
+	// handler runs this same check against its own host once the request is
+	// forwarded, so no forwarding-side admission logic is needed here.
+	if s.cpuOvercommitFactor > 0 && req.Cpu != "" {
+		if current, gerr := s.manager.GetInfo(containerName); gerr == nil && current != nil {
+			if aerr := s.admitCPUResize(req.Username, current.CPU, req.Cpu); aerr != nil {
+				return nil, aerr
+			}
+		}
+	}
+
 	// Perform resize — try local first, then peer
 	if err := s.manager.Resize(containerName, req.Cpu, req.Memory, req.Disk, false); err != nil {
 		// Container not found locally — check peers

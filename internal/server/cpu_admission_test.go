@@ -1,16 +1,27 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"testing"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/pkg/core/container"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/footprintai/containarium/pkg/core/incus/incustest"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
+
+// resizeCtx builds an authenticated context for a tenant resizing their own
+// box, matching what ResizeContainer's auth.RequireScope/AuthorizeTenant
+// gates require.
+func resizeCtx(username string) context.Context {
+	return auth.ContextWithTestSubjectScopes(context.Background(),
+		username, []string{"user"}, []string{auth.ScopeContainersWrite})
+}
 
 // TestAdmitCPURequest pins the pure policy: fits iff committed+request stays
 // within physical×factor, and unknown capacity (physical<=0) always fits so
@@ -195,5 +206,124 @@ func TestCommittedCoresExcluding_UnchangedAfterRefactor(t *testing.T) {
 	}
 	if want := 4.0; got != want {
 		t.Errorf("committedCoresExcluding(\"me\") = %v, want %v", got, want)
+	}
+}
+
+// Known gap, not covered by any test below: committedCoresExcluding (which
+// admitCPUResize calls into via admitCPUCapacity) excludes every container
+// whose Tenant matches the given username, not only the specific container
+// being resized. A tenant that owns more than one container would have all
+// of them excluded from the committed sum during a resize of just one,
+// understating true commitment. This is pre-existing — CreateContainer's
+// admission already has the identical exposure via the same helper — not
+// introduced by routing resize through it, and it is out of scope for
+// #1579 to fix (would mean threading a container identity, not just a
+// tenant string, through the shared helper for every caller). Flagged here
+// so this test suite is not read as proving the check airtight for every
+// tenant shape; see docs/architecture/cpu-reservation-and-overcommit-visibility.md
+// section A for the full discussion.
+
+// TestAdmitCPUResize_DecreaseNeverBlocked: a resize that doesn't increase CPU
+// (lower value, or exactly the current value) must never be blocked, even on
+// a host that is already over its ceiling — a legacy, pre-gate fleet must
+// still be able to shrink a box. #1579.
+func TestAdmitCPUResize_DecreaseNeverBlocked(t *testing.T) {
+	// 8-core host, other tenants already committing 10 (over the 8-core
+	// ceiling before this tenant's own 4 cores are even added) — a
+	// pre-existing overcommit scenario the gate must not retroactively punish.
+	s := seedServer(t, 8, []incus.ContainerInfo{tenant("other", "10")})
+	s.SetCPUOvercommitPolicy(1, true)
+
+	if err := s.admitCPUResize("me", "4", "2"); err != nil {
+		t.Fatalf("a decrease must never be blocked, got %v", err)
+	}
+	if err := s.admitCPUResize("me", "4", "4"); err != nil {
+		t.Fatalf("an unchanged value must never be blocked, got %v", err)
+	}
+}
+
+// TestAdmitCPUResize_IncreaseUsesFullNewValueNotDelta pins the exact bug an
+// earlier draft of #1579 nearly shipped: checking committed_excl + delta
+// double-subtracts the tenant's own current allocation (committed_excl
+// already has it removed once) and wrongly admits a resize that would push
+// the host over its ceiling. The worked counterexample from the issue: an
+// 8-core host at factor 1 (ceiling 8), other tenants committing 4, this
+// tenant currently at 4 (host exactly at the ceiling). Resizing to 8 must be
+// REJECTED — true post-resize total is 4+8=12 > 8. The (wrong) delta formula
+// computes 4+(8-4)=8 <= 8 and would wrongly admit it.
+func TestAdmitCPUResize_IncreaseUsesFullNewValueNotDelta(t *testing.T) {
+	s := seedServer(t, 8, []incus.ContainerInfo{tenant("other", "4"), tenant("me", "4")})
+	s.SetCPUOvercommitPolicy(1, true)
+
+	err := s.admitCPUResize("me", "4", "8")
+	if err == nil {
+		t.Fatal("resize to 8 must be rejected (4 other + 8 new = 12 > 8-core ceiling); the delta formula would wrongly admit this")
+	}
+	if status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("want ResourceExhausted, got %v (%v)", status.Code(err), err)
+	}
+}
+
+// TestAdmitCPUResize_IncreaseWithinCeilingAdmitted is the fitting mirror of
+// the above: a resize that stays within the ceiling once the tenant's own
+// current allocation is properly accounted for is admitted.
+func TestAdmitCPUResize_IncreaseWithinCeilingAdmitted(t *testing.T) {
+	s := seedServer(t, 8, []incus.ContainerInfo{tenant("other", "4"), tenant("me", "2")})
+	s.SetCPUOvercommitPolicy(1, true)
+
+	// committed_excl("me") = 4 (other only, "me" itself is excluded); 4 + 4 == 8-core ceiling.
+	if err := s.admitCPUResize("me", "2", "4"); err != nil {
+		t.Fatalf("resize to 4 should fit (4 other + 4 new = 8 == ceiling), got %v", err)
+	}
+}
+
+// TestAdmitCPUResize_DisabledGateNeverBlocks: with the gate off (the
+// default), a resize increase is never blocked, matching create's behavior.
+func TestAdmitCPUResize_DisabledGateNeverBlocks(t *testing.T) {
+	s := seedServer(t, 8, []incus.ContainerInfo{tenant("other", "8")})
+	// factor stays 0 (disabled)
+	if err := s.admitCPUResize("me", "2", "16"); err != nil {
+		t.Fatalf("disabled gate must never reject a resize, got %v", err)
+	}
+}
+
+// TestResizeContainer_AdmissionRejectsOverCeiling drives ResizeContainer
+// end to end (not just the pure admitCPUResize helper) for a local box: an
+// enforcing gate must reject a CPU increase that would push the host over
+// its ceiling, and the underlying CPU limit must be left untouched.
+func TestResizeContainer_AdmissionRejectsOverCeiling(t *testing.T) {
+	s := seedServer(t, 8, []incus.ContainerInfo{tenant("other", "4"), tenant("me", "4")})
+	s.SetCPUOvercommitPolicy(1, true) // 8-core ceiling, strict
+
+	_, err := s.ResizeContainer(resizeCtx("me"), &pb.ResizeContainerRequest{Username: "me", Cpu: "8"})
+	if err == nil {
+		t.Fatal("resize to 8 should be rejected (4 other + 8 new = 12 > 8-core ceiling)")
+	}
+	if status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("want ResourceExhausted, got %v (%v)", status.Code(err), err)
+	}
+}
+
+// TestResizeContainer_AdmissionAllowsWithinCeiling is the fitting mirror,
+// also end to end: a resize that stays within the ceiling succeeds.
+func TestResizeContainer_AdmissionAllowsWithinCeiling(t *testing.T) {
+	s := seedServer(t, 8, []incus.ContainerInfo{tenant("other", "4"), tenant("me", "2")})
+	s.SetCPUOvercommitPolicy(1, true)
+
+	if _, err := s.ResizeContainer(resizeCtx("me"), &pb.ResizeContainerRequest{Username: "me", Cpu: "4"}); err != nil {
+		t.Fatalf("resize to 4 should fit (4 other + 4 new = 8 == ceiling), got %v", err)
+	}
+}
+
+// TestResizeContainer_AdmissionSkippedForDecrease: end to end, a resize that
+// lowers CPU is never blocked by admission, even on an already-overcommitted
+// host (the legacy-fleet scenario admitCPUResize's pure test already covers;
+// this proves the same holds through the full ResizeContainer path).
+func TestResizeContainer_AdmissionSkippedForDecrease(t *testing.T) {
+	s := seedServer(t, 8, []incus.ContainerInfo{tenant("other", "10"), tenant("me", "4")})
+	s.SetCPUOvercommitPolicy(1, true)
+
+	if _, err := s.ResizeContainer(resizeCtx("me"), &pb.ResizeContainerRequest{Username: "me", Cpu: "2"}); err != nil {
+		t.Fatalf("a decrease must never be blocked, got %v", err)
 	}
 }

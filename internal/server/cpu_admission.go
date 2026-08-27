@@ -59,6 +59,16 @@ func admitCPURequest(physicalCores, committedCores, requestCores, factor float64
 // and the request would exceed the ceiling; otherwise nil (including every
 // fail-open path). username is the tenant being (re)created — its own existing
 // container, if any, is excluded so a resize-by-recreate doesn't double-count.
+//
+// Known gap (#1588): this is a check-then-act read with no lock or
+// reservation held across the caller's subsequent mutation. Two concurrent
+// callers (create, resize, or the cluster reconciler — every caller of this
+// function) can each admit against a stale snapshot and jointly exceed the
+// ceiling. Pre-existing since #1029 for create; #1579 extends the same
+// window to resize without introducing a new kind of gap. Not fixed here —
+// closing it needs serialization (or a reservation step) shared across
+// every local operation that commits CPU, which is bigger than any one
+// caller's scope.
 func (s *ContainerServer) admitCPUCapacity(username, cpuRequest string) error {
 	if s.cpuOvercommitFactor <= 0 {
 		return nil // gate disabled (the default)
@@ -92,6 +102,42 @@ func (s *ContainerServer) admitCPUCapacity(username, cpuRequest string) error {
 	log.Printf("[cpu-admission] REJECT %s — %s", username, detail)
 	return status.Errorf(codes.ResourceExhausted,
 		"CPU capacity exceeded on this backend: %s. Retry on a less-loaded backend/pool or a larger host, or ask an operator to raise the overcommit factor.", detail)
+}
+
+// admitCPUResize applies the capacity gate to a CPU-increasing resize
+// (#1579 — closes the resize-side hole: a resize could push a host past
+// capacity with no check at all, even though create already goes through
+// admitCPUCapacity).
+//
+// It reuses admitCPUCapacity UNCHANGED rather than adding a delta-aware
+// variant of it — do not change admitCPUCapacity's own signature, since
+// dual_server.go wires that exact function into the cluster reconciler's
+// SetAdmission for VM creation, and a signature change breaks that call site
+// silently.
+//
+// committedCoresExcluding already excludes the tenant's own current
+// container from the committed sum, so passing the resize's full new CPU
+// value performs the same "would this fit if the box were (re)created at
+// this size" check create already does — no delta is needed, and a delta
+// would be wrong: checking committed_excl + (newCores - currentCores) would
+// double-subtract the tenant's current allocation (committed_excl already
+// has it removed once) and could silently admit a resize that should be
+// rejected. Worked example: an 8-core host at factor 1 (ceiling 8), another
+// tenant committing 4, this tenant currently at 4 (host exactly at the
+// ceiling). Resizing to 8 must be rejected — true post-resize total is
+// 4+8=12>8. The delta formula computes 4+(8-4)=8<=8 and wrongly admits it;
+// passing the full new value correctly computes 4+8=12>8 and rejects.
+//
+// A resize that does not increase CPU is never blocked: if the new value
+// parses to no more committed cores than the box's current one, the check
+// is skipped outright rather than relying on the arithmetic to always admit
+// a decrease — a host that is already over its ceiling (a legacy, pre-gate
+// fleet) would otherwise have a decrease wrongly rejected too.
+func (s *ContainerServer) admitCPUResize(username, currentCPU, newCPU string) error {
+	if incus.CommittedCores(newCPU) <= incus.CommittedCores(currentCPU) {
+		return nil
+	}
+	return s.admitCPUCapacity(username, newCPU)
 }
 
 // hostPhysicalCores reports the host's logical CPU count (vCPUs — Incus's
