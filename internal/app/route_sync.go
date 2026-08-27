@@ -217,7 +217,47 @@ func (j *RouteSyncJob) sync(ctx context.Context) error {
 		}
 	}
 
+	// Reconcile TLS automation subjects for every route that should have a
+	// certificate. Deliberately AFTER syncHTTPRoutes, so routes added on this
+	// tick are included, and deliberately not gated on that call succeeding —
+	// the subjects of already-synced routes still need checking when one route
+	// fails.
+	//
+	// syncHTTPRoutes only provisions TLS for routes it ADDS to Caddy; a route
+	// already present takes the needsUpdate path, which never looks at TLS
+	// subjects. Without this call a route whose subject went missing is never
+	// repaired (#1584).
+	if err := j.syncTLSSubjects(dbRoutes); err != nil {
+		log.Printf("[RouteSyncJob] TLS subject reconcile error: %v", err)
+	}
+
 	return nil
+}
+
+// syncTLSSubjects ensures every active route that Caddy terminates TLS for has
+// a subject in Caddy's TLS automation policies (#1584).
+//
+// Excludes TLS-passthrough routes: those terminate TLS at the backend, so
+// Caddy must not chase a certificate for them. Excludes inactive routes for
+// the same reason RemoveTLSSubject exists — no point spending ACME budget on a
+// hostname nothing serves.
+func (j *RouteSyncJob) syncTLSSubjects(dbRoutes []*RouteRecord) error {
+	if j.proxyManager == nil {
+		return nil
+	}
+
+	domains := make([]string, 0, len(dbRoutes))
+	for _, r := range dbRoutes {
+		if r == nil || !r.Active || r.FullDomain == "" {
+			continue
+		}
+		if r.Protocol == string(RouteProtocolTLSPassthrough) {
+			continue
+		}
+		domains = append(domains, r.FullDomain)
+	}
+
+	return j.proxyManager.EnsureTLSSubjects(domains)
 }
 
 // syncHTTPRoutes synchronizes HTTP/gRPC routes to the Caddy HTTP server

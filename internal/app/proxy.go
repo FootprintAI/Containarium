@@ -250,11 +250,25 @@ func (p *ProxyManager) addRouteWithProtocol(subdomain, containerIP string, port 
 		return fmt.Errorf("caddy returned error (status %d): %s", resp.StatusCode, string(body))
 	}
 
-	// Provision TLS certificate for the domain
+	// Provision TLS certificate for the domain.
+	//
+	// The route itself is already live at this point, so a TLS failure isn't
+	// returned as an error — doing so would tell the caller the route wasn't
+	// added, which is false, and invite a rollback of a working route.
+	//
+	// But it must not vanish either (#1585). This used to be a bare
+	// fmt.Printf to stdout: no timestamp, no prefix, invisible to the log
+	// scraping every other line in this file supports, and the caller
+	// (expose_port) reported unqualified success while HTTPS for the
+	// hostname was permanently dead.
+	//
+	// Two things make that safe now: this logs like everything else, and
+	// RouteSyncJob re-checks TLS subjects on every tick (#1584), so a failure
+	// here is repaired on the next sync rather than persisting forever.
 	if err := p.ProvisionTLS(fullDomain); err != nil {
-		// Log warning but don't fail - route is added, TLS might work with existing wildcard cert
-		// or the domain might already have a certificate
-		fmt.Printf("Warning: Failed to provision TLS for %s: %v\n", fullDomain, err)
+		log.Printf("[ProxyManager] route for %s is live but TLS provisioning failed: %v — "+
+			"HTTPS will fail for this host until the next route-sync tick reconciles it (#1584/#1585)",
+			fullDomain, err)
 	}
 
 	return nil
@@ -330,8 +344,6 @@ func (p *ProxyManager) RemoveTLSSubject(domain string) error {
 	return nil
 }
 
-// ProvisionTLS provisions a TLS certificate for the given domain via Caddy's on-demand TLS
-// or by adding it to the TLS automation policy
 // ensureDNSIssuers gives a policy's issuers the configured DNS-01 challenge
 // config, reporting whether it changed anything.
 //
@@ -393,6 +405,22 @@ func (p *ProxyManager) patchTLSPolicies(url string, policies []CaddyTLSAutomatio
 	return nil
 }
 
+// ProvisionTLS puts `domain` under Caddy's TLS automation by adding it as an
+// explicit subject in /config/apps/tls/automation/policies, bootstrapping the
+// TLS app first if this host has never had one.
+//
+// Note this is NOT on-demand issuance. Caddy's `on_demand` mode — where a cert
+// is minted lazily on first TLS handshake for an unknown SNI host, gated by an
+// `ask` endpoint — is never enabled anywhere in this codebase
+// (CaddyTLSAutomationPolicy.OnDemand is declared but never set; see #1586).
+// Every certificate this daemon obtains comes from an explicit subject written
+// here, or from the `*.<base-domain>` wildcard written by ProvisionWildcardTLS.
+//
+// The practical consequence, and the reason this distinction is worth a
+// comment: a hostname that never reaches this function never gets a
+// certificate, and Caddy reports that as a TLS handshake failure (alert 80,
+// "no peer certificate available") rather than an HTTP error. Reconciliation
+// for that state lives in EnsureTLSSubjects (#1584).
 func (p *ProxyManager) ProvisionTLS(domain string) error {
 	// Caddy's admin API returns 400 "invalid traversal path" when you
 	// PATCH/POST a sub-path whose parent doesn't exist yet. On a fresh
@@ -489,6 +517,148 @@ func (p *ProxyManager) ProvisionTLS(domain string) error {
 		return fmt.Errorf("caddy returned error creating TLS policy (status %d): %s", resp.StatusCode, string(body))
 	}
 
+	return nil
+}
+
+// subjectCovers reports whether TLS automation subject `subject` already
+// obtains a certificate valid for `domain`.
+//
+// Either the subject is the host itself, or it's a wildcard one label above
+// it. The one-label rule is the actual X.509/ACME semantic: `*.example.com`
+// covers `app.example.com` but NOT `a.b.example.com`. Getting this wrong in
+// either direction has a real cost — too permissive leaves a deeper host with
+// no certificate and no signal (#1584), too strict adds a redundant per-host
+// subject that burns Let's Encrypt rate-limit budget the wildcard exists to
+// conserve (#378).
+func subjectCovers(subject, domain string) bool {
+	if subject == domain {
+		return true
+	}
+	rest, ok := strings.CutPrefix(subject, "*.")
+	if !ok {
+		return false
+	}
+	// domain must be exactly one label deeper than the wildcard's base.
+	host, found := strings.CutSuffix(domain, "."+rest)
+	return found && host != "" && !strings.Contains(host, ".")
+}
+
+// EnsureTLSSubjects reconciles Caddy's TLS automation subjects against the set
+// of hostnames that should have certificates, adding any that are missing.
+//
+// This is the repair path for #1584. TLS subjects were previously written
+// exactly once, by ProvisionTLS at route-add time. If that write didn't land —
+// ProvisionTLS failed and the error was swallowed (#1585), Caddy reverted to
+// its stub config (#400), or the route reached Caddy some other way — nothing
+// ever put the subject back. RouteSyncJob couldn't help: it re-provisions only
+// when a route is MISSING from Caddy, and needsUpdate compares upstream IP,
+// port and protocol, never TLS subjects. "Route present, subject absent" was
+// therefore indistinguishable from "in sync", and the host served on :80 while
+// :443 returned `tls: internal error` — alert 80, no peer certificate — with
+// no error anywhere and no path to recovery short of manual admin-API surgery.
+//
+// Called on every sync tick, so the no-change case must be cheap and silent:
+// one GET, no write. Missing subjects are batched into a single write rather
+// than one call per domain, because rewriting the policy array repeatedly
+// churns certificate management for every subject on the host.
+//
+// Only adds. Removal stays with RemoveTLSSubject on the delete cascade, so a
+// transiently-empty route list can never strip live subjects.
+func (p *ProxyManager) EnsureTLSSubjects(domains []string) error {
+	if len(domains) == 0 {
+		return nil
+	}
+
+	if err := p.ensureTLSApp(); err != nil {
+		return fmt.Errorf("bootstrap TLS app: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/config/apps/tls/automation/policies", p.caddyAdminURL)
+	resp, err := p.httpClient.Get(url)
+	if err != nil {
+		return fmt.Errorf("get TLS policies: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var policies []CaddyTLSAutomationPolicy
+	if resp.StatusCode == http.StatusOK {
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return fmt.Errorf("read TLS policies: %w", err)
+		}
+		// A TLS app that exists but has no policies serializes as `null`.
+		if err := json.Unmarshal(body, &policies); err != nil {
+			return fmt.Errorf("unmarshal TLS policies: %w", err)
+		}
+	}
+
+	// Collect what's missing, deduplicating the input: two routes can share a
+	// hostname, and the same host must not land in the subjects array twice.
+	var missing []string
+	seen := make(map[string]bool, len(domains))
+	for _, d := range domains {
+		if d == "" || seen[d] {
+			continue
+		}
+		seen[d] = true
+
+		covered := false
+		for _, pol := range policies {
+			for _, subject := range pol.Subjects {
+				if subjectCovers(subject, d) {
+					covered = true
+					break
+				}
+			}
+			if covered {
+				break
+			}
+		}
+		if !covered {
+			missing = append(missing, d)
+		}
+	}
+
+	if len(missing) == 0 {
+		return nil
+	}
+
+	log.Printf("[ProxyManager] reconciling %d TLS subject(s) missing from Caddy's automation "+
+		"policies: %v — these hosts would otherwise serve on :80 with no certificate (#1584)",
+		len(missing), missing)
+
+	if len(policies) > 0 {
+		policies[0].Subjects = append(policies[0].Subjects, missing...)
+		// The policy we're appending to may predate DNS-01 being configured,
+		// in which case its issuers cannot satisfy the subject we just added
+		// and Caddy would never attempt it (#1066).
+		p.ensureDNSIssuers(&policies[0])
+		return p.patchTLSPolicies(url, policies)
+	}
+
+	// No policies at all — create one carrying every missing subject.
+	newPolicy := NewTLSPolicyWithDNS(missing, p.dnsChallenge)
+	policyJSON, err := json.Marshal([]CaddyTLSAutomationPolicy{newPolicy})
+	if err != nil {
+		return fmt.Errorf("marshal new TLS policy: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", url, bytes.NewReader(policyJSON))
+	if err != nil {
+		return fmt.Errorf("create TLS policy request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	postResp, err := p.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("create TLS policy: %w", err)
+	}
+	defer postResp.Body.Close()
+
+	if postResp.StatusCode != http.StatusOK && postResp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(postResp.Body)
+		return fmt.Errorf("caddy returned %d creating TLS policy: %s", postResp.StatusCode, string(body))
+	}
 	return nil
 }
 
