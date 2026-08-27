@@ -13,16 +13,25 @@ advisory mode, logged) if it would push the host's committed cores past
 
 ## When a declared CPU is a real floor, not just a ceiling
 
-A box's `--cpu` (or `resize --cpu`) always bounds a *ceiling* — the hard CFS
-quota #1034 gives every numeric CPU request. Whether that number is also a
-**floor** — a guarantee the box actually gets that much CPU under
-contention — depends entirely on this gate's configuration, and only one
-configuration delivers that guarantee:
+**This section is about the LXC/Incus backend specifically** — the runtime
+this gate applies to (see "Runtime" under "Semantics and scope" below; on
+K8s the gate no-ops entirely, and the analogous concept is the backend's own
+`--cpu-request`/`limits.requests.cpu` split, a separate mechanism, not this
+gate).
+
+On LXC/Incus, a box's `--cpu` (or `resize --cpu`) always bounds a *ceiling* —
+the hard CFS quota #1034 gives every numeric CPU request. Whether that
+number is also a **floor** — a guarantee the box actually gets that much CPU
+under contention — depends entirely on this gate's configuration, and only
+one configuration delivers that guarantee:
 
 - **The gate must be enforced, not merely advisory.** `--cpu-overcommit-enforce`
   off (the default posture even with a factor set) blocks nothing — a host
   can already be arbitrarily oversubscribed.
-- **The factor must be `1` or less.** A factor above `1` is *deliberate*
+- **The factor must be greater than `0` and no greater than `1`
+  (`0 < factor ≤ 1`).** `0` (or negative) does not mean "strict" — it
+  disables the gate entirely (see "Configuration" below), which is the
+  ceiling-only case, not a floor. A factor above `1` is *deliberate*
   overcommit: the example later in this doc (`--cpu-overcommit-factor 4
   --cpu-overcommit-enforce`) explicitly permits committed quotas up to 4×
   physical capacity, which is a ceiling-only regime by design, not a floor.
@@ -36,15 +45,15 @@ configuration delivers that guarantee:
   factor slightly under `1`, or `(physical_cores − core_infra_cores) /
   physical_cores`), not exactly `1`.
 
-Any other configuration — the off-by-default posture, advisory mode, or a
-factor above `1` — means a declared CPU is a **ceiling only**. That is a
-deliberate, named trade-off documented here, not an oversight: existing
-fleets are frequently already well past 1× overcommit (see below), and nothing
-about `resize --cpu <bigger>` on such a host changes what it delivers, because
-the box was never CPU-starved by its own ceiling in the first place — it was
-starved by every co-located box's ceiling being unenforced together. Reaching
-for a bigger `--cpu` is not the remedy; enabling and enforcing this gate
-(with realistic headroom) is.
+Any other configuration on LXC/Incus — the off-by-default posture, advisory
+mode, a factor of `0` or below, or a factor above `1` — means a declared CPU
+is a **ceiling only**. That is a deliberate, named trade-off documented
+here, not an oversight: existing fleets are frequently already well past 1×
+overcommit (see below), and nothing about `resize --cpu <bigger>` on such a
+host changes what it delivers, because the box was never CPU-starved by its
+own ceiling in the first place — it was starved by every co-located box's
+ceiling being unenforced together. Reaching for a bigger `--cpu` is not the
+remedy; enabling and enforcing this gate (with realistic headroom) is.
 
 `get_system_info` / `SystemInfo.committed_cpu_cores` (paired with
 `total_cpus`) gives an operator or agent a live read on how committed a host
