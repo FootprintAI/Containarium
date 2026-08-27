@@ -68,13 +68,16 @@ something to automate here.
 
 ### Why hard quotas + bounded overcommit already are a floor
 
-`parseCPULimit` (post-#1034) gives every box a **hard** CFS quota — the
-kernel schedules exactly the declared share to that box whenever it demands
-it, capped at that share. If the *sum* of every co-located box's quota never
-exceeds the host's physical capacity, then even under simultaneous full
-demand from every box on the host, CFS has enough total bandwidth to honor
-every one of them — which is precisely a floor, delivered by hard quotas
-already in the tree, with no new primitive.
+`parseCPULimit` (post-#1034) gives every box with a **numeric** CPU request
+(whole-core, millicpu, or decimal — not a manually pinned CPU-set) a
+**hard** CFS quota — the kernel schedules exactly the declared share to
+that box whenever it demands it, capped at that share. A CPU-set box
+(`--cpu 0-3`) carries no allowance/quota at all (see the caveat later in
+this section) and is out of scope for this argument. If the *sum* of every
+co-located numeric-quota box's quota never exceeds the host's physical
+capacity, then even under simultaneous full demand from every one of them,
+CFS has enough total bandwidth to honor every one — which is precisely a
+floor, delivered by hard quotas already in the tree, with no new primitive.
 
 The gap is not a missing mechanism, it's that nothing today keeps committed
 quotas within physical capacity: `internal/server/cpu_admission.go` (#1029
@@ -82,7 +85,31 @@ direction 2) already does exactly this job, but:
 
 - it is **off by default** and only enforced once an operator opts in
   (`--cpu-overcommit-factor` + `--cpu-overcommit-enforce`, documented in
-  `docs/CPU-CAPACITY-ADMISSION.md`);
+  `docs/CPU-CAPACITY-ADMISSION.md`). **The floor claim holds only for
+  `--cpu-overcommit-enforce` on *and* a factor of `1` or less.** Advisory
+  mode (`enforce=false`) blocks nothing, so committed quotas can still
+  exceed capacity even with a factor configured. A factor greater than `1`
+  is *deliberate* overcommit — `docs/CPU-CAPACITY-ADMISSION.md`'s own
+  example (`--cpu-overcommit-factor 4 --cpu-overcommit-enforce`) explicitly
+  permits committed quotas up to 4× physical capacity, which is the
+  ceiling-only regime, not a floor. Any other configuration — including the
+  default — should be described as ceiling-only or advisory, never as
+  providing a floor;
+- **it does not budget core-role containers.** `committedCoresExcluding`
+  (the function both `CreateContainer`'s admission check and this design's
+  proposed resize check use) explicitly skips every core-role container
+  (`c.Role.IsCoreRole()`) — the platform's own Postgres/Caddy/control-plane
+  containers, which carry real, non-trivial CPU requests today
+  (`internal/server/core_services.go` sets `CPU: "2"`, `"1"`, `"1"`, `"4"`
+  across the core services actually provisioned). So even a factor-1,
+  enforced host can be pushed past its true physical capacity once core-infra
+  CPU is added on top of a tenant-committed total that itself sits exactly
+  at `physical × 1`. Closing this is an operator-configuration concern, not
+  a code change this design scopes: set the tenant-facing factor low enough
+  to leave headroom for the host's known core-infra footprint (e.g.
+  `physical_cores − core_infra_cores`, expressed as a factor below 1), or
+  treat `committed_cpu_cores` (item B below) explicitly as *tenant* capacity
+  rather than total host capacity when sizing that headroom;
 - it only runs on **create** (`container_server.go:578`) — a **resize** can
   push a host arbitrarily further past capacity with *zero* check, which is
   the sharper version of #1571's own repro ("`resize --cpu 16` succeeds ...
@@ -95,11 +122,15 @@ direction 2) already does exactly this job, but:
   commitment ... would let operators see a host's overcommit ... without
   grepping logs").
 
-Closing those three gaps is shape (2) from the issue, done completely: not
-just per-box throttling counters (already in flight via #1573/PR #1574) but
-the host-level overcommit signal those counters need to be interpretable
-against, plus closing the resize-side hole in the gate that actually
-produces the floor guarantee.
+Closing the resize and visibility gaps is shape (2) from the issue, done
+completely: not just per-box throttling counters (already in flight via
+#1573/PR #1574) but the host-level overcommit signal those counters need to
+be interpretable against, plus closing the resize-side hole in the gate
+that actually produces the floor guarantee. The core-role and
+factor-configuration points above are not new code — they are conditions an
+operator must meet for the floor claim to hold, and this design states them
+explicitly rather than letting "the gate is enabled" be mistaken for
+"the floor is guaranteed."
 
 ## What this design adds
 
@@ -127,7 +158,7 @@ the bug entirely: `4 + 8 = 12 > 8` → correctly rejected. This is caught here
 so it doesn't get carried into the implementation issue as a hidden
 correctness bug.)
 
-Two things this call site must account for that create's didn't have to:
+Three things this call site must account for that create's didn't have to:
 
 - **The cluster reconciler shares this function.** `dual_server.go:1287`
   already wires `admitCPUCapacity` into `NewClusterReconciler(...).SetAdmission(...)`
@@ -150,6 +181,22 @@ Two things this call site must account for that create's didn't have to:
   `ResizeContainer` handler, so once this fix lands there, the peer runs its
   own gate against its own host automatically — no forwarding-side admission
   logic is needed, only correct placement on the local side.
+- **The exclusion is by tenant, not by container — a pre-existing
+  imprecision, not a new one.** `committedCoresExcluding` excludes every
+  container whose `Tenant` matches the given username
+  (`c.Tenant == username`), not only the specific container being resized.
+  `ContainerInfo.Tenant`'s own doc comment describes it as an explicit,
+  independent ownership label (`user.containarium.tenant`), separate from
+  container naming — so a tenant with more than one container under that
+  label would have *all* of them excluded from the sum during a resize of
+  just one, understating true commitment and potentially over-admitting.
+  This is not introduced by reusing the function for resize: `CreateContainer`
+  already has the identical exposure today. It is out of scope to fix here —
+  doing so means threading a container identity (not just a tenant string)
+  through the shared helper for every caller, a larger change than one
+  resize-admission issue — but the follow-up issue and its test plan should
+  say so explicitly rather than implying the check is airtight for every
+  tenant shape.
 
 This does not change the gate's off-by-default / advisory-first rollout
 posture (`docs/CPU-CAPACITY-ADMISSION.md`'s existing guidance stands
@@ -180,26 +227,58 @@ design changes or fixes.
 
 New field on `SystemInfo` (proto/containarium/v1/config.proto, next field
 number 24), populated by summing `incus.CommittedCores` over the host's
-tenant containers (the same logic `committedCoresExcluding` already has,
-minus the "exclude this tenant" parameter — a plain total, not an admission
-check). `total_cpus` already exists on the same message; a caller derives
-the ratio as `committed_cpu_cores / total_cpus`. This is exactly the
-"read surface for current commitment" `docs/CPU-CAPACITY-ADMISSION.md`
-already lists as a known gap, not a new concept.
+**tenant** containers (the same logic `committedCoresExcluding` already
+has, minus the "exclude this tenant" parameter — a plain total, not an
+admission check). Core-role containers (platform Postgres/Caddy/control-
+plane) are excluded from this sum, same as they are from the admission
+check — so `committed_cpu_cores` reports **tenant** capacity, not total
+host capacity. This is deliberate, not an oversight: it is the number an
+operator sizing a tenant-facing overcommit factor actually wants, and it
+matches the core-role budgeting caveat in the section above — an operator
+combining `committed_cpu_cores` with `total_cpus` to size a factor must
+still separately account for the host's known core-infra CPU footprint,
+the same requirement that applies to the admission gate itself. `total_cpus`
+already exists on the same message; a caller derives the tenant-only ratio
+as `committed_cpu_cores / total_cpus`, understanding that ratio does not
+yet subtract core-infra. This is exactly the "read surface for current
+commitment" `docs/CPU-CAPACITY-ADMISSION.md` already lists as a known gap,
+not a new concept.
 
 K8s runtime: `total_cpus` is already `0` there today (the Incus resource
 read no-ops per that doc's "Runtime" note); `committed_cpu_cores` follows
 the same no-op, `0` = "not applicable to this runtime," consistent with how
 the rest of `SystemInfo` already degrades on K8s.
 
+**Mixed-version peer fleet, acknowledged and accepted.** `GetSystemInfo`'s
+peer fan-out (`container_server.go`, the `ForwardGetSystemInfo` /
+`protojson.Unmarshal(body, &peerResp)` block) decodes each peer's JSON
+response with default `protojson` options, which reject unknown fields — so
+a daemon that hasn't yet upgraded to carry `committed_cpu_cores` in its
+compiled proto will fail to parse a newer peer's response and drop that
+peer from its fleet view entirely for the duration of a rolling upgrade
+window. This is a real, generalizable characteristic of adding *any* field
+to `SystemInfo`, not something specific to this one: the same exposure
+already exists, unaddressed, for every prior addition
+(`daemon_version` #354, `ssh_ingress_host` #1011, `storage` #1209). This
+design does not introduce a new mixed-version compatibility scheme, because
+no prior `SystemInfo` field addition has — that would be a separate,
+larger piece of work (e.g. `DiscardUnknown: true` on the peer-forwarding
+unmarshal, decided once for the whole message, not per-field) worth its own
+issue if the rolling-upgrade window's fleet-visibility gap is judged worth
+closing generally. `committed_cpu_cores` accepts the same transient
+blind spot every other field already carries.
+
 ### C. Documentation: name the gate as the floor mechanism
 
 `docs/CPU-CAPACITY-ADMISSION.md` gains a short paragraph stating explicitly
 what section "Why hard quotas + bounded overcommit already are a floor"
-above says: with the gate enabled at a factor an operator's workload
-actually supports, the declared CPU is a real floor, not just a ceiling; with
-the gate off (the default), it is a ceiling only, and that is a deliberate,
-named trade-off rather than an oversight. `containarium resize --help` and
+above says: the declared CPU is a real floor **only** when the gate is
+enforced (not merely advisory) at a factor of `1` or less, *and* the
+operator has left headroom for the host's known core-infra CPU footprint on
+top of that; any other configuration — including the off-by-default
+posture, advisory mode, or a factor above `1` — is ceiling-only or
+advisory, not a floor, and should be described as such rather than implied
+to be safe. `containarium resize --help` and
 `containarium create --help` get one line pointing at the doc so an operator
 hits the explanation at the point they'd reach for `resize --cpu` as a
 remedy — directly answering the issue's own complaint that today's help text
@@ -251,7 +330,12 @@ produces more CPU.
   resize to a value that would exceed it once the tenant's own current
   allocation is added back in) to pin the bug the corrected formula avoids;
   and a resize forwarded to a peer (container not found locally) does not
-  evaluate admission against the local host at all.
+  evaluate admission against the local host at all. Note in the test file
+  (as a comment, not necessarily a new case) that the tenant-level exclusion
+  is coarser than the single container being resized — pre-existing in
+  `committedCoresExcluding`, not introduced here — so a future test covering
+  a tenant with more than one container is a known gap, not silently assumed
+  covered.
 - New `TestSystemInfoCommittedCores` (or extend an existing
   `container_server_*_test.go`): seed a mock backend with known tenant
   containers via `seedServer`, assert `GetSystemInfo` returns
