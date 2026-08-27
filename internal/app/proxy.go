@@ -440,15 +440,28 @@ func (p *ProxyManager) ProvisionTLS(domain string) error {
 	}
 	defer resp.Body.Close()
 
+	// Anything other than 200 must abort. Treating a failed read as "this host
+	// has no policies" falls through to the create branch below, and POST to a
+	// Caddy admin API array path APPENDS — so a transient failure would graft a
+	// duplicate policy alongside the real ones rather than appending a subject
+	// to the existing one. Caddy matches the first policy whose subjects match,
+	// so a duplicate carrying different issuers can shadow the intended one
+	// (#1590).
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("caddy returned %d reading TLS policies: %s",
+			resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read TLS policies response: %w", err)
+	}
 	var policies []CaddyTLSAutomationPolicy
-	if resp.StatusCode == http.StatusOK {
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return fmt.Errorf("failed to read TLS policies response: %w", err)
-		}
-		if err := json.Unmarshal(body, &policies); err != nil {
-			return fmt.Errorf("failed to unmarshal TLS policies: %w", err)
-		}
+	// A TLS app that exists with no policies serializes as `null`, which
+	// unmarshals to a nil slice — not an error.
+	if err := json.Unmarshal(body, &policies); err != nil {
+		return fmt.Errorf("failed to unmarshal TLS policies: %w", err)
 	}
 
 	// Check if domain is already in a policy
