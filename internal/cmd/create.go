@@ -87,11 +87,14 @@ Examples:
   # Force recreate if container already exists
   containarium create alice --ssh-key ~/.ssh/id_rsa.pub --force
 
-Note on --cpu (LXC backend): it sets a ceiling this box may not exceed, not
-automatically a guaranteed floor. On a host without the CPU admission gate
-enabled and enforced (the default), a declared --cpu can go unmet under
-contention from other boxes — see docs/CPU-CAPACITY-ADMISSION.md for when
-it becomes a real guarantee and how to configure it. On the K8s backend,
+Note on --cpu (LXC backend, --server/daemon mode): it sets a ceiling this
+box may not exceed, not automatically a guaranteed floor. On a host without
+the CPU admission gate enabled and enforced (the default), a declared --cpu
+can go unmet under contention from other boxes — see
+docs/CPU-CAPACITY-ADMISSION.md for when it becomes a real guarantee and how
+to configure it. Local mode (no --server) talks to Incus directly and never
+goes through the daemon, so this gate does not apply there regardless of
+configuration. On the K8s backend,
 --cpu-request (a separate flag, mirrored on resize) is the mechanism for a
 scheduling reservation instead — Kubernetes uses it for placement and
 relative CPU weighting under contention, not as a hard runtime floor

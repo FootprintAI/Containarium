@@ -50,14 +50,16 @@ Resource Limits:
   Disk:   Size with unit (e.g., 50GB, 100GB, 500GB)
 
 Notes:
-  - CPU (LXC backend): raising --cpu is subject to the CPU admission gate
-    (off by default) — an enforced, over-ceiling resize is rejected; when
-    the gate is off, it only raises the box's ceiling and whether that
-    delivers any additional CPU depends on the same gate — see "CPU is a
-    ceiling, not automatically a floor" below before using resize as a
-    remedy for a slow box. On the K8s backend the ceiling/reservation
-    split is instead --cpu (limit) vs --cpu-request (reservation) — see
-    below.
+  - CPU (LXC backend, --server/daemon mode): raising --cpu is subject to
+    the CPU admission gate (off by default) — an enforced, over-ceiling
+    resize is rejected; when the gate is off, it only raises the box's
+    ceiling and whether that delivers any additional CPU depends on the
+    same gate — see "CPU is a ceiling, not automatically a floor" below
+    before using resize as a remedy for a slow box. Local mode (no
+    --server) talks to Incus directly and never goes through the daemon,
+    so this gate does not apply there regardless of configuration. On the
+    K8s backend the ceiling/reservation split is instead --cpu (limit) vs
+    --cpu-request (reservation) — see below.
   - Memory: Check usage before decreasing (avoid OOM kills)
   - Disk: Can only increase (cannot shrink below usage)
   - LXC backend: all changes are instant with no downtime
@@ -68,7 +70,8 @@ Notes:
     reservation is unchanged even when --cpu/--memory move the ceiling.
     Ignored on the LXC backend.
 
-CPU is a ceiling, not automatically a floor (LXC backend):
+CPU is a ceiling, not automatically a floor (LXC backend, --server/daemon
+mode — local mode never runs this gate):
   A box's declared CPU bounds what it may use, but on an oversubscribed
   host that says nothing about what it actually gets. "resize --cpu
   bigger" only helps if the host's CPU admission gate is enabled AND
