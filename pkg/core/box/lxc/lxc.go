@@ -158,6 +158,9 @@ func (b *Backend) Metrics(_ context.Context, ref box.BoxRef) (*box.BoxMetrics, e
 		NetworkRxBytes:   m.NetworkRxBytes,
 		NetworkTxBytes:   m.NetworkTxBytes,
 		ProcessCount:     m.ProcessCount,
+		CPUNrPeriods:     m.CPUNrPeriods,
+		CPUNrThrottled:   m.CPUNrThrottled,
+		CPUThrottledUsec: m.CPUThrottledUsec,
 	}, nil
 }
 

@@ -1126,6 +1126,13 @@ func sampleContainerMetrics() map[string]*pb.ContainerMetrics {
 			DiskUsageBytes:   2 << 30,
 			NetworkRxBytes:   1000,
 			NetworkTxBytes:   500,
+			// alice reports a throttling signal and bob does not, so tests
+			// built on this fixture cover both #1575 paths. The conditional
+			// series are filtered out of the golden count below, which
+			// counts only the unconditional five.
+			CpuNrPeriods:     40031,
+			CpuNrThrottled:   12847,
+			CpuThrottledUsec: 98765432,
 		},
 		"bob-container": {
 			Name:             "bob-container",
@@ -1147,6 +1154,17 @@ var containerMetricNames = map[string]bool{
 	MetricContainerDiskUsageBytes:   true,
 	MetricContainerNetworkRxBytes:   true,
 	MetricContainerNetworkTxBytes:   true,
+}
+
+// containerThrottlingMetricNames is the #1575 subset: part of the same
+// container group, but emitted CONDITIONALLY — only for containers whose
+// runtime reported a throttling signal. They are deliberately kept out of
+// containerMetricNames above, which means "must be present for every live
+// container"; asserting that of a conditional series would be wrong.
+var containerThrottlingMetricNames = map[string]bool{
+	MetricContainerCPUCFSPeriods:       true,
+	MetricContainerCPUThrottledPeriods: true,
+	MetricContainerCPUThrottledUsec:    true,
 }
 
 // pointsByNameAndContainer indexes flattened points by (series name,
@@ -1270,7 +1288,7 @@ func TestNoTenantLabels_ContainerSeries(t *testing.T) {
 
 	var pts []point
 	for _, p := range all {
-		if containerMetricNames[p.name] {
+		if containerMetricNames[p.name] || containerThrottlingMetricNames[p.name] {
 			pts = append(pts, p)
 		}
 	}
@@ -1333,4 +1351,87 @@ func TestContainerGroup_SourcesErrorSkipsTickWithoutPanic(t *testing.T) {
 		}
 	}
 	heartbeatOf(t, pts) // heartbeat still present; fails if absent.
+}
+
+// sampleThrottledContainerMetrics pairs a container whose runtime reported CFS
+// throttling with one that reported none — the two cases #1575 must render
+// differently.
+func sampleThrottledContainerMetrics() map[string]*pb.ContainerMetrics {
+	return map[string]*pb.ContainerMetrics{
+		"throttled-container": {
+			Name:             "throttled-container",
+			CpuUsageSeconds:  120,
+			CpuNrPeriods:     40031,
+			CpuNrThrottled:   12847,
+			CpuThrottledUsec: 98765432,
+		},
+		"unreported-container": {
+			Name:            "unreported-container",
+			CpuUsageSeconds: 30,
+			// No throttling signal — a K8s box, or a cgroup with no CPU
+			// bandwidth limit.
+		},
+	}
+}
+
+// TestExportedSeries_ContainerThrottlingGolden is #1575's acceptance criterion:
+// a container whose runtime reports CFS throttling emits all three counters
+// with the exact values AllContainerMetrics reports.
+func TestExportedSeries_ContainerThrottlingGolden(t *testing.T) {
+	containerGroup := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_CONTAINER
+	rm := collectGroupsOnce(t, []pb.CloudMetricsGroup{containerGroup},
+		&fakeSources{containers: sampleThrottledContainerMetrics()}, nil, sampleLabels())
+	byNameContainer := pointsByNameAndContainer(flattenPoints(t, rm))
+
+	checks := []struct {
+		metric string
+		want   int64
+	}{
+		{MetricContainerCPUCFSPeriods, 40031},
+		{MetricContainerCPUThrottledPeriods, 12847},
+		{MetricContainerCPUThrottledUsec, 98765432},
+	}
+	for _, c := range checks {
+		p, ok := byNameContainer[c.metric]["throttled-container"]
+		if !ok {
+			t.Errorf("missing %s{container_name=%q}", c.metric, "throttled-container")
+			continue
+		}
+		if p.ival != c.want {
+			t.Errorf("%s{container_name=%q} = %d, want %d", c.metric, "throttled-container", p.ival, c.want)
+		}
+	}
+}
+
+// TestUnreportedThrottlingEmitsNoSeries is the other half of #1575's contract,
+// and the reason the observation is conditional rather than unconditional: a
+// container whose runtime reports no throttling signal must emit NO point, not
+// a zero.
+//
+// A zero-valued cumulative counter is indistinguishable from a box that has
+// genuinely never been throttled, so exporting one would make a throttling
+// alert read "all clear" for precisely the boxes it cannot see — a false
+// negative that is worse than having no series at all.
+func TestUnreportedThrottlingEmitsNoSeries(t *testing.T) {
+	containerGroup := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_CONTAINER
+	rm := collectGroupsOnce(t, []pb.CloudMetricsGroup{containerGroup},
+		&fakeSources{containers: sampleThrottledContainerMetrics()}, nil, sampleLabels())
+	byNameContainer := pointsByNameAndContainer(flattenPoints(t, rm))
+
+	for _, name := range []string{
+		MetricContainerCPUCFSPeriods,
+		MetricContainerCPUThrottledPeriods,
+		MetricContainerCPUThrottledUsec,
+	} {
+		if p, ok := byNameContainer[name]["unreported-container"]; ok {
+			t.Errorf("%s{container_name=%q} was emitted with value %d — a container with no throttling signal must emit no point, not a zero",
+				name, "unreported-container", p.ival)
+		}
+	}
+
+	// The unconditional series are unaffected: the container is still exported,
+	// it just carries no throttling data.
+	if _, ok := byNameContainer[MetricContainerCPUUsageSeconds]["unreported-container"]; !ok {
+		t.Error("unreported-container lost its cpu.usage_seconds series — only the throttling series should be withheld")
+	}
 }

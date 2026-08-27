@@ -195,6 +195,14 @@ type BoxMetrics struct {
 	NetworkRxBytes   int64
 	NetworkTxBytes   int64
 	ProcessCount     int32
+
+	// CFS bandwidth-throttling counters, cumulative like CPUUsageSeconds.
+	// They distinguish a throttled box from an idle one (#1573); all zero
+	// means "no signal available", not "never throttled". Populated by the
+	// LXC backend only — K8s exposes no equivalent read today.
+	CPUNrPeriods     int64
+	CPUNrThrottled   int64
+	CPUThrottledUsec int64
 }
 
 // BoxBackend is the runtime-neutral seam. LXC/incus and Kubernetes both

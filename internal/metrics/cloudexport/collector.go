@@ -56,6 +56,27 @@ const (
 	MetricContainerNetworkRxBytes   = "containarium.container.network.rx_bytes"
 	MetricContainerNetworkTxBytes   = "containarium.container.network.tx_bytes"
 
+	// MetricContainerCPUCFSPeriods / ThrottledPeriods / ThrottledUsec are
+	// the container group's CFS-throttling series (#1575), the alertable
+	// half of #1573. cpu.usage_seconds above cannot distinguish a box
+	// pinned at its CFS quota from an idle one — both read as a low
+	// number — so it is the one CPU series exported and it has exactly
+	// the blind spot the counters exist to close.
+	//
+	// Both the numerator and the denominator are exported because the
+	// alert worth writing is a *ratio* ("throttled >30% of its periods
+	// for 15 minutes"), which cannot be reconstructed from the throttled
+	// count alone. All three are cumulative counters, matching the
+	// container's own cgroup accounting and the usage/network series
+	// beside them.
+	//
+	// A box whose runtime reports no signal (K8s boxes, a cgroup with no
+	// bandwidth limit, a stopped container) has NO point observed rather
+	// than a zero — see registerContainerInstruments.
+	MetricContainerCPUCFSPeriods       = "containarium.container.cpu.cfs_periods"
+	MetricContainerCPUThrottledPeriods = "containarium.container.cpu.throttled_periods"
+	MetricContainerCPUThrottledUsec    = "containarium.container.cpu.throttled_usec"
+
 	// MetricHeartbeat is the liveness/up series (#1072): a constant 1
 	// emitted every export interval while the daemon runs. It is the
 	// out-of-band dead-man signal — a metric-absence alert policy in the
@@ -664,10 +685,12 @@ func registerHostInstruments(mp *sdkmetric.MeterProvider, sources Sources, label
 	return err
 }
 
-// registerContainerInstruments creates the container group's five
-// per-container series (#1071) and wires one callback that pulls a
-// single AllContainerMetrics snapshot per tick and observes all five for
-// every container currently reported. CPU/network are counters
+// registerContainerInstruments creates the container group's per-container
+// series — the original five (#1071) plus the three CFS-throttling counters
+// (#1575) — and wires one callback that pulls a single AllContainerMetrics
+// snapshot per tick and observes them for every container currently reported.
+// The five are observed unconditionally; the throttling three only when the
+// runtime reported a signal. CPU/network are counters
 // (cumulative, matching incus's own CPU-seconds and byte counters);
 // memory/disk are gauges (point-in-time). A container absent from the
 // snapshot — because AllContainerMetrics enumerates live containers
@@ -703,6 +726,21 @@ func registerContainerInstruments(mp *sdkmetric.MeterProvider, sources Sources, 
 	if err != nil {
 		return err
 	}
+	cfsPeriods, err := meter.Int64ObservableCounter(MetricContainerCPUCFSPeriods,
+		metric.WithUnit("{period}"), metric.WithDescription("Cumulative CFS bandwidth periods elapsed for the container. The denominator for a throttled-share alert."))
+	if err != nil {
+		return err
+	}
+	throttledPeriods, err := meter.Int64ObservableCounter(MetricContainerCPUThrottledPeriods,
+		metric.WithUnit("{period}"), metric.WithDescription("Cumulative CFS periods in which the container was throttled against its CPU ceiling."))
+	if err != nil {
+		return err
+	}
+	throttledUsec, err := meter.Int64ObservableCounter(MetricContainerCPUThrottledUsec,
+		metric.WithUnit("us"), metric.WithDescription("Cumulative time the container spent throttled, in microseconds."))
+	if err != nil {
+		return err
+	}
 
 	_, err = meter.RegisterCallback(
 		func(ctx context.Context, o metric.Observer) error {
@@ -724,10 +762,25 @@ func registerContainerInstruments(mp *sdkmetric.MeterProvider, sources Sources, 
 				o.ObserveInt64(disk, m.DiskUsageBytes, observeOpt)
 				o.ObserveInt64(rx, m.NetworkRxBytes, observeOpt)
 				o.ObserveInt64(tx, m.NetworkTxBytes, observeOpt)
+
+				// Throttling counters are observed only when the runtime
+				// actually reported them (#1575). A zero period count means
+				// "no signal available" — a K8s box, a cgroup with no CPU
+				// bandwidth limit, a container that just stopped — and
+				// emitting a flat zero for those would read as a confident
+				// "never throttled", silencing a throttling alert for exactly
+				// the boxes it cannot see. Absence is the honest answer, and
+				// it is already this collector's idiom for "nothing to
+				// report" (see the deleted-container behavior above).
+				if m.CpuNrPeriods > 0 {
+					o.ObserveInt64(cfsPeriods, m.CpuNrPeriods, observeOpt)
+					o.ObserveInt64(throttledPeriods, m.CpuNrThrottled, observeOpt)
+					o.ObserveInt64(throttledUsec, m.CpuThrottledUsec, observeOpt)
+				}
 			}
 			return nil
 		},
-		cpu, mem, disk, rx, tx,
+		cpu, mem, disk, rx, tx, cfsPeriods, throttledPeriods, throttledUsec,
 	)
 	return err
 }

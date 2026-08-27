@@ -8334,6 +8334,21 @@
           "type": "integer",
           "format": "int32",
           "title": "Number of running processes in container"
+        },
+        "cpuNrPeriods": {
+          "type": "string",
+          "format": "int64",
+          "title": "CFS periods elapsed"
+        },
+        "cpuNrThrottled": {
+          "type": "string",
+          "format": "int64",
+          "title": "CFS periods in which the container was throttled"
+        },
+        "cpuThrottledUsec": {
+          "type": "string",
+          "format": "int64",
+          "title": "Total time the container spent throttled, in microseconds"
         }
       },
       "title": "ContainerMetrics contains runtime metrics for a container"
