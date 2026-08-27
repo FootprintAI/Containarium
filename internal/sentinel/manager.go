@@ -1034,13 +1034,35 @@ func (m *Manager) startHTTPSProxy(backendIP string) {
 	log.Printf("[sentinel] HTTPS proxy started → fallback %s (SNI routing via primary registry)", fallback)
 }
 
+// selfCheckSNI is the ServerName the self-check probe presents. It is
+// deliberately unroutable (`.invalid` is reserved by RFC 2606) so the probe
+// exercises the SNI peek and routing decision without ever being forwarded
+// to a real backend — the pipeline reacts, no tenant connection is opened.
+const selfCheckSNI = "sentinel-self-check.invalid"
+
 // selfCheckProxyPath dials the sentinel's own HTTPS listener and verifies
 // the ConnMux → dispatch → routing pipeline actually reacts within timeout.
-// It does not care WHAT the pipeline does with the probe (forward the byte,
-// fail the SNI peek, dial-timeout to a fallback and close) — only that
-// something happens. A read that hits its own deadline with no data, EOF,
-// or reset is exactly the wedge this exists to catch: the listener is alive
-// (TCP accepts succeed) but nothing downstream is servicing connections.
+// It does not care WHAT the pipeline decides (complete a handshake, refuse
+// with a TLS alert, fail the SNI lookup and close) — only that something
+// happens. A handshake that hits its deadline with no reaction at all is the
+// wedge this exists to catch: the listener is alive (TCP accepts succeed) but
+// nothing downstream is servicing connections.
+//
+// The probe sends a complete TLS ClientHello, not a fragment (#1598). It
+// previously wrote a single record-layer byte (0x16) and waited to read one
+// back — but a TLS server handed one byte of a record header does exactly
+// what it should: it waits for the rest of the ClientHello. It neither
+// responds nor closes, so the probe timed out against a perfectly healthy
+// pipeline and the sentinel killed itself every ~2 minutes. Letting
+// crypto/tls compose the ClientHello gives the pipeline something it can
+// actually act on, so "no reaction" once again means what it claims to.
+//
+// The two failure kinds are kept distinct:
+//   - a TCP dial failure means our own listener is gone — reported as-is
+//   - a handshake timeout means accepted-but-not-serviced — the wedge
+//
+// Any other handshake outcome, including a certificate or protocol error, is
+// proof of life and reports healthy.
 func (m *Manager) selfCheckProxyPath(timeout time.Duration) error {
 	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(m.config.HTTPSPort))
 	conn, err := net.DialTimeout("tcp", addr, timeout)
@@ -1050,22 +1072,23 @@ func (m *Manager) selfCheckProxyPath(timeout time.Duration) error {
 	defer func() { _ = conn.Close() }()
 
 	_ = conn.SetDeadline(time.Now().Add(timeout))
-	// A single TLS record-layer byte (0x16) so ConnMux.route() sends this
-	// down the HTTPS path rather than mistaking it for a tunnel handshake
-	// (which starts with '{').
-	if _, err := conn.Write([]byte{0x16}); err != nil {
-		return fmt.Errorf("write probe: %w", err)
-	}
 
-	buf := make([]byte, 1)
-	if _, err := conn.Read(buf); err != nil {
+	// InsecureSkipVerify is correct here and not a weakening: this is a
+	// liveness probe against our own loopback listener that sends no data
+	// and reads no response body. Verifying the peer would make the probe
+	// fail on exactly the certificate problems it is not measuring — and
+	// during an incident the served cert may legitimately be a fallback.
+	tlsConn := tls.Client(conn, &tls.Config{
+		ServerName:         selfCheckSNI,
+		InsecureSkipVerify: true, // #nosec G402 -- liveness probe, see above
+	})
+	if err := tlsConn.Handshake(); err != nil {
 		var netErr net.Error
 		if errors.As(err, &netErr) && netErr.Timeout() {
 			return fmt.Errorf("proxy path unresponsive after %s: %w", timeout, err)
 		}
-		// Any other outcome (EOF, connection reset, a real backend
-		// response) proves the pipeline reacted within the deadline —
-		// only a hard timeout indicates the wedge.
+		// Alert, EOF, reset, unknown-SNI refusal: the pipeline serviced the
+		// connection within the deadline, which is all this probe asserts.
 	}
 	return nil
 }
