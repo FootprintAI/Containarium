@@ -219,6 +219,27 @@ message SystemInfo {
   // SystemInfo so peers report it through the GetSystemInfo fan-out that
   // ListBackends already uses, BYOC tunnel hosts included. See #1209.
   BackendStorage storage = 23;
+
+  // committed_cpu_cores is the sum of this host's TENANT containers'
+  // committed CPU (limits.cpu / limits.cpu.allowance, summed via
+  // incus.CommittedCores) — the "how much is actually spoken for" number
+  // that pairs with total_cpus to answer "is this host over its CPU
+  // overcommit ceiling right now" (#1580). A caller derives the ratio as
+  // committed_cpu_cores / total_cpus.
+  //
+  // This is TENANT capacity, not total host capacity: the platform's own
+  // core-infra containers (Postgres, Caddy, control-plane — not tenant
+  // workload) are deliberately excluded, the same exclusion the CPU
+  // admission gate (docs/CPU-CAPACITY-ADMISSION.md, #1029) already applies.
+  // An operator combining this with total_cpus to size an overcommit factor
+  // must still separately budget the host's own known core-infra CPU
+  // footprint on top of it.
+  //
+  // 0 on the K8s runtime, same as total_cpus (the Incus resource read
+  // no-ops there) — "not applicable to this runtime," not "nothing
+  // committed." See #1571/#1578 for the design this closes the visibility
+  // half of.
+  double committed_cpu_cores = 24;
 }
 
 // StorageDriver identifies the incus storage-pool driver backing a backend's

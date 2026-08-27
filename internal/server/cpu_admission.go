@@ -170,16 +170,41 @@ func (s *ContainerServer) committedCoresExcluding(username string) (float64, err
 		return 0, err
 	}
 	selfName := username + "-container"
+	return committedTenantCores(containers, func(c *incus.ContainerInfo) bool {
+		return c.Name == selfName || c.Tenant == username
+	}), nil
+}
+
+// committedTenantCores sums incus.CommittedCores over containers, always
+// skipping core-role infra (postgres/caddy/control-plane — not tenant
+// workload), and any container for which skip returns true (skip may be nil
+// for a plain, unfiltered total).
+//
+// Shared between committedCoresExcluding (the admission check above, which
+// additionally excludes the tenant being (re)sized/created) and
+// SystemInfo.committed_cpu_cores (#1580, a plain total with no tenant
+// excluded) so there is one summation to keep correct, not two independent
+// copies that could drift apart.
+//
+// It deliberately reports TENANT capacity, not total host capacity: excluding
+// core-role containers means this total does not include the platform's own
+// Postgres/Caddy/control-plane CPU footprint. That is intentional — it is
+// the number an operator sizing a tenant-facing overcommit factor actually
+// wants — but it means committed_cpu_cores / total_cpus is a tenant-only
+// ratio; an operator must separately budget the host's known core-infra CPU
+// on top of it. See docs/architecture/cpu-reservation-and-overcommit-visibility.md
+// section A/B for the full discussion.
+func committedTenantCores(containers []incus.ContainerInfo, skip func(c *incus.ContainerInfo) bool) float64 {
 	var sum float64
 	for i := range containers {
 		c := &containers[i]
 		if c.Role.IsCoreRole() {
 			continue
 		}
-		if c.Name == selfName || c.Tenant == username {
+		if skip != nil && skip(c) {
 			continue
 		}
 		sum += incus.CommittedCores(c.CPU)
 	}
-	return sum, nil
+	return sum
 }
