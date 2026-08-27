@@ -11,6 +11,9 @@ import (
 	"sync"
 	"testing"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/pkg/core/container"
 	"github.com/footprintai/containarium/pkg/core/incus"
@@ -355,6 +358,63 @@ func TestIntegration_ResizeContainerForwardsRequestFields(t *testing.T) {
 	}
 	if forwarded["memoryRequest"] != "1Gi" {
 		t.Errorf("forwarded memoryRequest = %q, want %q (raw body: %s)", forwarded["memoryRequest"], "1Gi", lastReq.Body)
+	}
+}
+
+// TestIntegration_ResizeAdmissionNotEvaluatedForPeerForwardedContainer proves
+// the #1579 requirement that a peer-forwarded resize is never evaluated
+// against the LOCAL host's capacity. The local gate here is configured to
+// reject absolutely everything (factor effectively 0 capacity headroom) —
+// if the admission check ran unconditionally before the local/peer dispatch
+// decision (rather than only once the container is confirmed local), this
+// resize would be wrongly rejected with ResourceExhausted before ever
+// reaching the peer. It must instead sail through to the peer unblocked.
+func TestIntegration_ResizeAdmissionNotEvaluatedForPeerForwardedContainer(t *testing.T) {
+	gpu := newFakeBackend("tunnel-gpu", []fakeContainer{
+		{Name: "charlie-container", Username: "charlie", State: "CONTAINER_STATE_RUNNING"},
+	}, fakeSystemInfo{})
+	gpuSrv := httptest.NewServer(gpu.handler())
+	defer gpuSrv.Close()
+
+	pool := NewPeerPool("local", "", nil, "")
+	pool.mu.Lock()
+	pool.peers["tunnel-gpu"] = &PeerClient{
+		ID: "tunnel-gpu", Addr: gpuSrv.Listener.Addr().String(),
+		Healthy: true, client: gpuSrv.Client(),
+	}
+	pool.mu.Unlock()
+
+	// charlie's box is not local: GetContainer errors so ResizeContainer
+	// falls through to the peer-forward path.
+	mock := incustest.NewMockBackend()
+	mock.GetContainerFunc = func(name string) (*incus.ContainerInfo, error) {
+		return nil, fmt.Errorf("not found")
+	}
+	s := &ContainerServer{
+		manager:  container.NewWithBackend(mock),
+		peerPool: pool,
+	}
+	// A maximally strict local gate: 0 physical cores of headroom would
+	// reject any nonzero CPU request outright if evaluated against THIS
+	// host. hostCoresFn reports a nonzero host (so the gate doesn't fail
+	// open on "capacity unknown") with zero factor-adjusted ceiling.
+	s.hostCoresFn = func() (float64, error) { return 8, nil }
+	s.SetCPUOvercommitPolicy(0.0001, true) // effectively zero headroom, strictly enforced
+
+	ctx := auth.ContextWithTestSubjectScopes(context.Background(),
+		"charlie", []string{"user"}, []string{auth.ScopeContainersWrite})
+
+	_, err := s.ResizeContainer(ctx, &pb.ResizeContainerRequest{Username: "charlie", Cpu: "8"})
+	if err != nil {
+		t.Fatalf("peer-forwarded resize must not be evaluated against local capacity, got %v", err)
+	}
+	if status.Code(err) == codes.ResourceExhausted {
+		t.Fatalf("resize was rejected by the LOCAL admission gate despite the container living on a peer")
+	}
+
+	lastReq := gpu.lastRequest()
+	if lastReq.Method != "PUT" || lastReq.Path != "/v1/containers/charlie/resize" {
+		t.Fatalf("resize never reached the peer: %s %s", lastReq.Method, lastReq.Path)
 	}
 }
 
