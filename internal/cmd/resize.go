@@ -53,7 +53,9 @@ Notes:
   - CPU: Always safe to increase or decrease
   - Memory: Check usage before decreasing (avoid OOM kills)
   - Disk: Can only increase (cannot shrink below usage)
-  - All changes are instant with no downtime
+  - LXC backend: all changes are instant with no downtime
+  - K8s backend: a running box is stopped and restarted (pod recreate) to
+    apply the new limits; a stopped box picks them up at its next start
   - --cpu-request/--memory-request (K8s backend only): the scheduler
     reservation, separate from the ceiling. Left unspecified, the existing
     reservation is unchanged even when --cpu/--memory move the ceiling.

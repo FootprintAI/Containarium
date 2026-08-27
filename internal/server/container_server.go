@@ -1771,9 +1771,11 @@ func (s *ContainerServer) ResizeContainer(ctx context.Context, req *pb.ResizeCon
 			if peer != nil {
 				log.Printf("[resize] found %s on peer %s, forwarding", containerName, peer.ID)
 				body, _ := json.Marshal(map[string]string{
-					"cpu":    req.Cpu,
-					"memory": req.Memory,
-					"disk":   req.Disk,
+					"cpu":           req.Cpu,
+					"memory":        req.Memory,
+					"disk":          req.Disk,
+					"memoryRequest": req.MemoryRequest,
+					"cpuRequest":    req.CpuRequest,
 				})
 				respBody, statusCode, fwdErr := peer.ForwardRequest("PUT", fmt.Sprintf("/v1/containers/%s/resize", req.Username), authToken, body)
 				if fwdErr != nil {

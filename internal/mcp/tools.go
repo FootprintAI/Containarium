@@ -323,7 +323,7 @@ func (s *Server) registerTools() {
 		},
 		{
 			Name:        "resize_container",
-			Description: "Change a container's CPU / memory / disk allocation in place. At least one of cpu, memory, disk, cpu_request, or memory_request must be provided; the others default to no change. Disk can only grow — the server rejects shrinks. The container stays running (no restart needed for CPU/memory; disk resize is online via ZFS).",
+			Description: "Change a container's CPU / memory / disk allocation in place. At least one of cpu, memory, disk, cpu_request, or memory_request must be provided; the others default to no change. Disk can only grow — the server rejects shrinks. LXC backend: the container stays running, no restart needed for CPU/memory (disk resize is online via ZFS). K8s backend: a running box is stopped and restarted (pod recreate) to apply the new limits; a stopped box picks them up at its next start.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
