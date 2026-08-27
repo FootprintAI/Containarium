@@ -16,7 +16,7 @@ advisory mode, logged) if it would push the host's committed cores past
 **This section is about the LXC/Incus backend specifically** — the runtime
 this gate applies to (see "Runtime" under "Semantics and scope" below; on
 K8s the gate no-ops entirely, and the analogous concept is the backend's own
-`--cpu-request`/`limits.requests.cpu` split, a separate mechanism, not this
+`--cpu-request`/`resources.requests.cpu` split, a separate mechanism, not this
 gate).
 
 On LXC/Incus, a box's `--cpu` (or `resize --cpu`) always bounds a *ceiling* —

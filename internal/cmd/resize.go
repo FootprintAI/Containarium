@@ -50,12 +50,14 @@ Resource Limits:
   Disk:   Size with unit (e.g., 50GB, 100GB, 500GB)
 
 Notes:
-  - CPU (LXC backend): raising --cpu always runs, but it only raises the
-    box's ceiling. Whether it delivers any additional CPU depends on the
-    host's CPU admission gate (off by default) — see "CPU is a ceiling,
-    not automatically a floor" below before using resize as a remedy for
-    a slow box. On the K8s backend the ceiling/floor split is instead
-    --cpu (limit) vs --cpu-request (reservation) — see below.
+  - CPU (LXC backend): raising --cpu is subject to the CPU admission gate
+    (off by default) — an enforced, over-ceiling resize is rejected; when
+    the gate is off, it only raises the box's ceiling and whether that
+    delivers any additional CPU depends on the same gate — see "CPU is a
+    ceiling, not automatically a floor" below before using resize as a
+    remedy for a slow box. On the K8s backend the ceiling/reservation
+    split is instead --cpu (limit) vs --cpu-request (reservation) — see
+    below.
   - Memory: Check usage before decreasing (avoid OOM kills)
   - Disk: Can only increase (cannot shrink below usage)
   - LXC backend: all changes are instant with no downtime
@@ -75,7 +77,8 @@ CPU is a ceiling, not automatically a floor (LXC backend):
   place, and raising it changes nothing. See
   docs/CPU-CAPACITY-ADMISSION.md for how to check and configure this.
   On the K8s backend this gate does not apply; use --cpu-request instead
-  for a guaranteed reservation.`,
+  for a scheduling reservation (placement and relative weighting under
+  contention, not a hard runtime floor).`,
 	Args: cobra.ExactArgs(1),
 	RunE: runResize,
 }
