@@ -580,22 +580,34 @@ func (p *ProxyManager) EnsureTLSSubjects(domains []string) error {
 	}
 	defer resp.Body.Close()
 
+	// Anything other than 200 must abort. Treating a failed read as "no
+	// policies" would fall through to the create branch below, and POST to a
+	// Caddy array path APPENDS — so a transient admin-API error would graft a
+	// duplicate policy alongside the real ones. This runs on every sync tick,
+	// so a flapping admin API would accumulate them.
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("caddy returned %d reading TLS policies: %s",
+			resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read TLS policies: %w", err)
+	}
 	var policies []CaddyTLSAutomationPolicy
-	if resp.StatusCode == http.StatusOK {
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return fmt.Errorf("read TLS policies: %w", err)
-		}
-		// A TLS app that exists but has no policies serializes as `null`.
-		if err := json.Unmarshal(body, &policies); err != nil {
-			return fmt.Errorf("unmarshal TLS policies: %w", err)
-		}
+	// A TLS app that exists but has no policies serializes as `null`, which
+	// unmarshals to a nil slice — not an error.
+	if err := json.Unmarshal(body, &policies); err != nil {
+		return fmt.Errorf("unmarshal TLS policies: %w", err)
 	}
 
 	// Collect what's missing, deduplicating the input: two routes can share a
 	// hostname, and the same host must not land in the subjects array twice.
+	// Also note which policies are doing the covering — see below.
 	var missing []string
 	seen := make(map[string]bool, len(domains))
+	covering := make(map[int]bool)
 	for _, d := range domains {
 		if d == "" || seen[d] {
 			continue
@@ -603,10 +615,11 @@ func (p *ProxyManager) EnsureTLSSubjects(domains []string) error {
 		seen[d] = true
 
 		covered := false
-		for _, pol := range policies {
+		for i, pol := range policies {
 			for _, subject := range pol.Subjects {
 				if subjectCovers(subject, d) {
 					covered = true
+					covering[i] = true
 					break
 				}
 			}
@@ -619,7 +632,29 @@ func (p *ProxyManager) EnsureTLSSubjects(domains []string) error {
 		}
 	}
 
+	// A covering subject is only worth anything if its policy can actually be
+	// issued. A wildcard covered by a policy whose issuers predate DNS-01 is
+	// the #1066 trap one level up: `*.example.com` "covers" app.example.com on
+	// paper, but HTTP-01 / TLS-ALPN-01 categorically cannot solve a wildcard,
+	// so no certificate is ever obtained and the host shows exactly the #1584
+	// symptom. Skipping the repair because coverage looked satisfied is how
+	// this reconciler would recreate the bug it exists to fix.
+	//
+	// A no-op when DNS-01 isn't configured or the issuers already carry it, so
+	// the every-tick no-change path still performs no write.
+	repaired := false
+	for i := range policies {
+		if covering[i] && p.ensureDNSIssuers(&policies[i]) {
+			repaired = true
+		}
+	}
+
 	if len(missing) == 0 {
+		if repaired {
+			log.Printf("[ProxyManager] repaired issuers on TLS policies covering %d host(s) so "+
+				"their wildcard subject can actually be issued (#1066)", len(seen))
+			return p.patchTLSPolicies(url, policies)
+		}
 		return nil
 	}
 

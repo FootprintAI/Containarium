@@ -1,6 +1,8 @@
 package app
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -250,5 +252,92 @@ func TestEnsureTLSSubjects_DeduplicatesInput(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("want subject exactly once, got %d occurrences", count)
+	}
+}
+
+// --- CodeRabbit review findings on PR #1589 ---
+
+// A non-200 on the policies GET left `policies` empty, and the code then fell
+// through to the "no policies exist" branch and POSTed a fresh one. POST to a
+// Caddy array path APPENDS, so a transient admin-API failure would graft a
+// duplicate policy alongside the real ones — and this reconciler runs every
+// tick, so a flapping admin API would accumulate them. Fail instead.
+func TestEnsureTLSSubjects_ErrorsOnUnexpectedPolicyGetStatus(t *testing.T) {
+	var wrote bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		// ensureTLSApp's probe: report the app as present so we reach the
+		// policies GET rather than short-circuiting into createTLSApp.
+		case r.URL.Path == "/config/apps/tls" && r.Method == http.MethodGet:
+			_, _ = w.Write([]byte(`{"automation":{"policies":[]}}`))
+		case r.URL.Path == "/config/apps/tls/automation/policies" && r.Method == http.MethodGet:
+			http.Error(w, "boom", http.StatusInternalServerError)
+		default:
+			wrote = true
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer srv.Close()
+
+	p := NewProxyManager(srv.URL, "example.com")
+
+	err := p.EnsureTLSSubjects([]string{"app.example.com"})
+	if err == nil {
+		t.Fatal("want an error when the policies GET returns an unexpected status, got nil — " +
+			"falling through would POST a duplicate policy")
+	}
+	if wrote {
+		t.Fatal("must not write configuration after a failed policies read")
+	}
+}
+
+// The wildcard-coverage shortcut can reintroduce #1066 one level up: a policy
+// holding `*.example.com` with pre-DNS-01 issuers covers app.example.com on
+// paper, but those issuers categorically cannot solve a wildcard, so the cert
+// is never issued and the host has no certificate — exactly the #1584 symptom,
+// reached by skipping the repair ProvisionTLS would have done.
+func TestEnsureTLSSubjects_RepairsIssuersOfCoveringWildcardPolicy(t *testing.T) {
+	srv, fc := newRWFakeCaddy(tlsConfigWithPolicy(
+		[]string{"*.example.com"},
+		[]CaddyTLSIssuer{NewACMEIssuer(), NewZeroSSLIssuer()}, // no DNS-01
+	))
+	defer srv.Close()
+
+	p := NewProxyManager(srv.URL, "example.com").WithDNSChallenge(testDNSChallenge())
+
+	if err := p.EnsureTLSSubjects([]string{"app.example.com"}); err != nil {
+		t.Fatalf("EnsureTLSSubjects: %v", err)
+	}
+
+	policies := readPolicies(t, fc)
+	if len(policies) != 1 {
+		t.Fatalf("want 1 policy, got %d", len(policies))
+	}
+	assertAllIssuersSolveDNS(t, policies[0])
+
+	// Still no redundant per-host subject — the wildcard genuinely covers it
+	// once its issuers can solve it.
+	if hasSubject(policies, "app.example.com") {
+		t.Error("wildcard covers this host; an explicit subject burns ACME budget (#378)")
+	}
+}
+
+// Repairing covering policies must stay silent when there is nothing to repair,
+// or the every-tick reconciler churns Caddy's config forever.
+func TestEnsureTLSSubjects_NoWriteWhenCoveringWildcardIssuersAlreadySolveDNS(t *testing.T) {
+	srv, fc := newRWFakeCaddy(tlsConfigWithPolicy(
+		[]string{"*.example.com"},
+		issuersFor(testDNSChallenge()),
+	))
+	defer srv.Close()
+
+	p := NewProxyManager(srv.URL, "example.com").WithDNSChallenge(testDNSChallenge())
+	before := fc.puts
+
+	if err := p.EnsureTLSSubjects([]string{"app.example.com"}); err != nil {
+		t.Fatalf("EnsureTLSSubjects: %v", err)
+	}
+	if fc.puts != before {
+		t.Fatalf("issuers already solve DNS-01; want no write, got %d", fc.puts-before)
 	}
 }
