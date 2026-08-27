@@ -470,16 +470,21 @@ func (c *GRPCClient) RefreshSecrets(username string) (string, int32, error) {
 
 // ResizeContainer changes a container's CPU / memory / disk via gRPC.
 // Empty string for any field means "no change". Disk can only grow —
-// the server rejects shrinks.
-func (c *GRPCClient) ResizeContainer(username, cpu, memory, disk string) (string, error) {
+// the server rejects shrinks. memoryRequest/cpuRequest are the K8s
+// scheduler-request counterparts to memory/cpu (K8s backend only, ignored on
+// LXC); empty means the existing request is left alone, even when the
+// matching limit changes.
+func (c *GRPCClient) ResizeContainer(username, cpu, memory, disk, memoryRequest, cpuRequest string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	req := &pb.ResizeContainerRequest{
-		Username: username,
-		Cpu:      cpu,
-		Memory:   memory,
-		Disk:     disk,
+		Username:      username,
+		Cpu:           cpu,
+		Memory:        memory,
+		Disk:          disk,
+		MemoryRequest: memoryRequest,
+		CpuRequest:    cpuRequest,
 	}
 	resp, err := c.client.ResizeContainer(ctx, req)
 	if err != nil {

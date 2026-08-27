@@ -710,12 +710,17 @@ func (c *Client) ToggleMonitoring(username string, enabled bool) (*ToggleMonitor
 
 // ResizeContainer changes a container's CPU / memory / disk
 // allocation. Empty string for any field means "no change"; disk
-// can only grow (server rejects shrinks).
-func (c *Client) ResizeContainer(username, cpu, memory, disk string) (*ResizeContainerResponse, error) {
+// can only grow (server rejects shrinks). memoryRequest/cpuRequest are the
+// K8s scheduler-request counterparts to memory/cpu (K8s backend only,
+// ignored on LXC); empty leaves the existing request alone, even when the
+// matching limit changes.
+func (c *Client) ResizeContainer(username, cpu, memory, disk, memoryRequest, cpuRequest string) (*ResizeContainerResponse, error) {
 	body, err := json.Marshal(map[string]string{
-		"cpu":    cpu,
-		"memory": memory,
-		"disk":   disk,
+		"cpu":           cpu,
+		"memory":        memory,
+		"disk":          disk,
+		"memoryRequest": memoryRequest,
+		"cpuRequest":    cpuRequest,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
@@ -1950,6 +1955,11 @@ type ContainerMetrics struct {
 	NetworkRxBytes   int64 `json:"networkRxBytes,string"`
 	NetworkTxBytes   int64 `json:"networkTxBytes,string"`
 	ProcessCount     int32 `json:"processCount"`
+	// CFS throttling counters (#1573) — cumulative, like CPUUsageSeconds.
+	// All zero means the runtime reported no signal, not "never throttled".
+	CPUNrPeriods     int64 `json:"cpuNrPeriods,string"`
+	CPUNrThrottled   int64 `json:"cpuNrThrottled,string"`
+	CPUThrottledUsec int64 `json:"cpuThrottledUsec,string"`
 }
 
 type SystemInfo struct {

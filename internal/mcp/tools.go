@@ -323,7 +323,7 @@ func (s *Server) registerTools() {
 		},
 		{
 			Name:        "resize_container",
-			Description: "Change a container's CPU / memory / disk allocation in place. At least one of cpu, memory, or disk must be provided; the others default to no change. Disk can only grow — the server rejects shrinks. The container stays running (no restart needed for CPU/memory; disk resize is online via ZFS).",
+			Description: "Change a container's CPU / memory / disk allocation in place. At least one of cpu, memory, disk, cpu_request, or memory_request must be provided; the others default to no change. Disk can only grow — the server rejects shrinks. LXC backend: the container stays running, no restart needed for CPU/memory (disk resize is online via ZFS). K8s backend: a running box is stopped and restarted (pod recreate) to apply the new limits; a stopped box picks them up at its next start.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -342,6 +342,14 @@ func (s *Server) registerTools() {
 					"disk": map[string]interface{}{
 						"type":        "string",
 						"description": "New disk size (e.g. \"100GB\"). Can only grow — shrinks are rejected. Empty/omitted = no change.",
+					},
+					"cpu_request": map[string]interface{}{
+						"type":        "string",
+						"description": "K8s CPU *request* (K8s backend only, ignored on LXC), separate from cpu which is always applied as the limit. Empty/omitted = the existing request is left alone, even when cpu changes the limit. May be set alone to adjust only the reservation.",
+					},
+					"memory_request": map[string]interface{}{
+						"type":        "string",
+						"description": "K8s memory *request* (K8s backend only, ignored on LXC), separate from memory which is always applied as the limit. Same defaulting as cpu_request.",
 					},
 				},
 				"required": []string{"username"},
@@ -1822,11 +1830,13 @@ func handleResizeContainer(client API, args map[string]interface{}) (string, err
 	cpu, _ := args["cpu"].(string)
 	memory, _ := args["memory"].(string)
 	disk, _ := args["disk"].(string)
-	if cpu == "" && memory == "" && disk == "" {
-		return "", fmt.Errorf("at least one of cpu, memory, or disk must be provided")
+	cpuRequest, _ := args["cpu_request"].(string)
+	memoryRequest, _ := args["memory_request"].(string)
+	if cpu == "" && memory == "" && disk == "" && cpuRequest == "" && memoryRequest == "" {
+		return "", fmt.Errorf("at least one of cpu, memory, disk, cpu_request, or memory_request must be provided")
 	}
 
-	resp, err := client.ResizeContainer(username, cpu, memory, disk)
+	resp, err := client.ResizeContainer(username, cpu, memory, disk, memoryRequest, cpuRequest)
 	if err != nil {
 		return "", fmt.Errorf("failed to resize container: %w", err)
 	}
@@ -2021,10 +2031,33 @@ func handleGetMetrics(client API, args map[string]interface{}) (string, error) {
 		result += fmt.Sprintf("   Network: ↓%d MB ↑%d MB\n",
 			m.NetworkRxBytes/1024/1024, m.NetworkTxBytes/1024/1024)
 		result += fmt.Sprintf("   Processes: %d\n", m.ProcessCount)
+		result += formatCPUThrottling(m)
 		result += "\n"
 	}
 
 	return result, nil
+}
+
+// formatCPUThrottling renders the CFS throttling counters as a one-line
+// diagnostic (#1573).
+//
+// This is the line that separates a *throttled* box from an *idle* one. CPU
+// usage alone reads as the same low number in both cases, which is what made
+// "give the box more CPU" look like a plausible remedy for a slow box — a
+// remedy that cannot work, because Containarium's CPU numbers are ceilings
+// rather than reservations (#1571).
+//
+// A zero period count means the runtime reported no signal at all (K8s boxes,
+// a cgroup with no bandwidth limit, a stopped container) — say so explicitly
+// rather than printing "0% throttled", which would read as a positive finding
+// of "not throttled" when nothing was actually measured.
+func formatCPUThrottling(m ContainerMetrics) string {
+	if m.CPUNrPeriods == 0 {
+		return "   CPU Throttling: not reported\n"
+	}
+	pct := float64(m.CPUNrThrottled) / float64(m.CPUNrPeriods) * 100
+	return fmt.Sprintf("   CPU Throttling: %d/%d periods (%.1f%%), %.1fs throttled\n",
+		m.CPUNrThrottled, m.CPUNrPeriods, pct, float64(m.CPUThrottledUsec)/1e6)
 }
 
 func handleGetSystemInfo(client API, args map[string]interface{}) (string, error) {

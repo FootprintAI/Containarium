@@ -526,16 +526,20 @@ func (b *Backend) boxAuthorizedKeys(agentKeys []string) []string {
 // Get→mutate→Update rather than a patch: CRDs don't support strategic merge,
 // and a plain merge patch would replace the whole containers list.
 //
+// The mutation MERGES into the container's existing requirements rather than
+// replacing them (#1582). Replacing meant every axis the caller did not name
+// was dropped — `resize --cpu 4` deleted the box's memory limit outright,
+// leaving an already-running box memory-unbounded on a shared kernel, which is
+// exactly the guarantee the create-time memory floor exists to provide. The
+// contract this function's comment always claimed, "empty = unchanged", is now
+// what it does.
+//
 // Behavioral note vs the old StatefulSet path: the agent-sandbox controller
 // does not recreate a live pod on template drift, so a resize takes effect at
 // the NEXT pod creation (the next Stop→Start cycle), not immediately. The
 // server-side dispatch layer decides whether to bounce the box.
 func (b *Backend) Resize(ctx context.Context, ref box.BoxRef, r box.ResourceLimits) error {
-	// Resize does not change GPU count, and passes no memory default: the floor
-	// is a create-time concern, so an explicit resize honors "empty = unchanged"
-	// rather than re-stamping the default.
-	res := resourceRequirements(r, 0, memDefaults{})
-	if res == nil {
+	if r.CPU == "" && r.Memory == "" && r.CPURequest == "" && r.MemoryRequest == "" {
 		return nil
 	}
 	ns := b.namespaceFor(ref.Tenant)
@@ -543,13 +547,71 @@ func (b *Backend) Resize(ctx context.Context, ref box.BoxRef, r box.ResourceLimi
 	if err != nil {
 		return err
 	}
+	found := false
 	for i := range sb.Spec.PodTemplate.Spec.Containers {
 		if sb.Spec.PodTemplate.Spec.Containers[i].Name == "agent-box" {
-			sb.Spec.PodTemplate.Spec.Containers[i].Resources = *res
+			mergeResizeInto(&sb.Spec.PodTemplate.Spec.Containers[i].Resources, r)
+			found = true
 		}
+	}
+	if !found {
+		return nil
 	}
 	_, err = b.sandboxes.AgentsV1beta1().Sandboxes(ns).Update(ctx, sb, metav1.UpdateOptions{})
 	return err
+}
+
+// mergeResizeInto applies a resize onto a container's existing resource
+// requirements in place, leaving untouched everything the caller did not name.
+//
+// Per axis:
+//   - A new limit replaces the old limit. An unparseable quantity (an
+//     incus-native "4GB" reaching the K8s path) is skipped, matching
+//     resourceRequirements, so a bad string can't fail pod admission.
+//   - An explicit request replaces the old request.
+//   - With no explicit request, the existing request is KEPT — a limit-only
+//     resize must not move the box's scheduler reservation, which is what
+//     silently flipped a deliberately Burstable box to Guaranteed (#1572).
+//   - A box with no request at all gets request == limit, matching what
+//     create would have produced for it.
+//   - A request may never exceed its limit (K8s rejects the pod), so a request
+//     carried over from a larger previous limit is clamped down to the new one.
+func mergeResizeInto(cur *corev1.ResourceRequirements, r box.ResourceLimits) {
+	if cur.Limits == nil {
+		cur.Limits = corev1.ResourceList{}
+	}
+	if cur.Requests == nil {
+		cur.Requests = corev1.ResourceList{}
+	}
+
+	apply := func(name corev1.ResourceName, limit, request string) {
+		if limit != "" {
+			if q, err := resource.ParseQuantity(limit); err == nil {
+				cur.Limits[name] = q
+			}
+		}
+		if request != "" {
+			if q, err := resource.ParseQuantity(request); err == nil {
+				cur.Requests[name] = q
+			}
+		} else if _, ok := cur.Requests[name]; !ok {
+			// No existing reservation to preserve — mirror create's
+			// request == limit default.
+			if lim, ok := cur.Limits[name]; ok {
+				cur.Requests[name] = lim
+			}
+		}
+		// A request above its limit fails admission; clamp rather than write a
+		// spec the API server will reject.
+		lim, hasLim := cur.Limits[name]
+		req, hasReq := cur.Requests[name]
+		if hasLim && hasReq && req.Cmp(lim) > 0 {
+			cur.Requests[name] = lim
+		}
+	}
+
+	apply(corev1.ResourceCPU, r.CPU, r.CPURequest)
+	apply(corev1.ResourceMemory, r.Memory, r.MemoryRequest)
 }
 
 // SetMeta writes the runtime-neutral metadata as prefixed Sandbox annotations.

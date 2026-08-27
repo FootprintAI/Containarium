@@ -8334,6 +8334,21 @@
           "type": "integer",
           "format": "int32",
           "title": "Number of running processes in container"
+        },
+        "cpuNrPeriods": {
+          "type": "string",
+          "format": "int64",
+          "title": "CFS periods elapsed"
+        },
+        "cpuNrThrottled": {
+          "type": "string",
+          "format": "int64",
+          "title": "CFS periods in which the container was throttled"
+        },
+        "cpuThrottledUsec": {
+          "type": "string",
+          "format": "int64",
+          "title": "Total time the container spent throttled, in microseconds"
         }
       },
       "title": "ContainerMetrics contains runtime metrics for a container"
@@ -12051,6 +12066,14 @@
         "disk": {
           "type": "string",
           "title": "New disk size (e.g., \"100GB\") - empty means no change\nNote: Can only increase, cannot shrink"
+        },
+        "memoryRequest": {
+          "type": "string",
+          "description": "memory_request is the K8s memory *request* (K8s backend only), mirroring\nCreateContainerRequest.memory_request. Empty means \"no change\" — the\nbox's existing request is left alone (even when `memory` changes the\nlimit), NOT re-derived from the new limit. Set together with `memory`,\nor alone to adjust only the reservation. Ignored by the LXC backend."
+        },
+        "cpuRequest": {
+          "type": "string",
+          "description": "cpu_request is the K8s CPU *request*, the resize-time counterpart to\nCreateContainerRequest.cpu_request. Same \"empty = no change\" and\nK8s-only scope as memory_request."
         }
       },
       "title": "ResizeContainerRequest is the request to resize container resources"

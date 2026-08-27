@@ -1,12 +1,21 @@
 package server
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
+
+	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/pkg/core/container"
+	"github.com/footprintai/containarium/pkg/core/incus"
+	"github.com/footprintai/containarium/pkg/core/incus/incustest"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // fakeBackend simulates a remote containarium daemon.
@@ -62,10 +71,14 @@ func newFakeBackend(id string, containers []fakeContainer, sysInfo fakeSystemInf
 
 func (fb *fakeBackend) handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bodyBytes, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+
 		fb.mu.Lock()
 		fb.requests = append(fb.requests, fakeRequest{
 			Method: r.Method,
 			Path:   r.URL.Path,
+			Body:   string(bodyBytes),
 		})
 		fb.mu.Unlock()
 
@@ -279,6 +292,69 @@ func TestIntegration_PeerForwardResize(t *testing.T) {
 	lastReq := gpu.lastRequest()
 	if lastReq.Method != "PUT" || lastReq.Path != "/v1/containers/charlie/resize" {
 		t.Errorf("unexpected request: %s %s", lastReq.Method, lastReq.Path)
+	}
+}
+
+// TestIntegration_ResizeContainerForwardsRequestFields verifies that
+// ContainerServer.ResizeContainer's peer-forward path (the container isn't
+// local, so the request is forwarded over HTTP) carries CpuRequest and
+// MemoryRequest along with cpu/memory/disk. The forward body used to be
+// built from a map literal naming only cpu/memory/disk, silently dropping
+// the two request fields on any resize routed through a peer (#1572,
+// caught in review on PR #1577).
+func TestIntegration_ResizeContainerForwardsRequestFields(t *testing.T) {
+	gpu := newFakeBackend("tunnel-gpu", []fakeContainer{
+		{Name: "charlie-container", Username: "charlie", State: "CONTAINER_STATE_RUNNING"},
+	}, fakeSystemInfo{})
+	gpuSrv := httptest.NewServer(gpu.handler())
+	defer gpuSrv.Close()
+
+	pool := NewPeerPool("local", "", nil, "")
+	pool.mu.Lock()
+	pool.peers["tunnel-gpu"] = &PeerClient{
+		ID: "tunnel-gpu", Addr: gpuSrv.Listener.Addr().String(),
+		Healthy: true, client: gpuSrv.Client(),
+	}
+	pool.mu.Unlock()
+
+	// The container is not local: GetContainer errors, so
+	// container.Manager.Resize returns "not found" and ResizeContainer
+	// falls through to the peer-forward path above.
+	mock := incustest.NewMockBackend()
+	mock.GetContainerFunc = func(name string) (*incus.ContainerInfo, error) {
+		return nil, fmt.Errorf("not found")
+	}
+	s := &ContainerServer{
+		manager:  container.NewWithBackend(mock),
+		peerPool: pool,
+	}
+
+	ctx := auth.ContextWithTestSubjectScopes(context.Background(),
+		"charlie", []string{"user"}, []string{auth.ScopeContainersWrite})
+
+	_, err := s.ResizeContainer(ctx, &pb.ResizeContainerRequest{
+		Username:      "charlie",
+		Cpu:           "4",
+		CpuRequest:    "500m",
+		MemoryRequest: "1Gi",
+	})
+	if err != nil {
+		t.Fatalf("ResizeContainer: %v", err)
+	}
+
+	lastReq := gpu.lastRequest()
+	if lastReq.Method != "PUT" || lastReq.Path != "/v1/containers/charlie/resize" {
+		t.Fatalf("unexpected request: %s %s", lastReq.Method, lastReq.Path)
+	}
+	var forwarded map[string]string
+	if err := json.Unmarshal([]byte(lastReq.Body), &forwarded); err != nil {
+		t.Fatalf("forwarded body not valid JSON: %v (%s)", err, lastReq.Body)
+	}
+	if forwarded["cpuRequest"] != "500m" {
+		t.Errorf("forwarded cpuRequest = %q, want %q (raw body: %s)", forwarded["cpuRequest"], "500m", lastReq.Body)
+	}
+	if forwarded["memoryRequest"] != "1Gi" {
+		t.Errorf("forwarded memoryRequest = %q, want %q (raw body: %s)", forwarded["memoryRequest"], "1Gi", lastReq.Body)
 	}
 }
 

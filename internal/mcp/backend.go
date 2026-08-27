@@ -32,7 +32,7 @@ type API interface {
 	DeleteContainer(username string, force bool) (*DeleteContainerResponse, error)
 	StartContainer(username string, waitForReady bool) (*StartContainerResponse, error)
 	StopContainer(username string, force bool) (*StopContainerResponse, error)
-	ResizeContainer(username, cpu, memory, disk string) (*ResizeContainerResponse, error)
+	ResizeContainer(username, cpu, memory, disk, memoryRequest, cpuRequest string) (*ResizeContainerResponse, error)
 	ToggleMonitoring(username string, enabled bool) (*ToggleMonitoringResponse, error)
 	ToggleAutoSleep(username string, enabled bool, idleThresholdMinutes int32) (*ToggleAutoSleepResponse, error)
 	GetMetrics(username string) (*GetMetricsResponse, error)

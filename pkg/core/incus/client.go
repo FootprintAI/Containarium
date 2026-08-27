@@ -663,6 +663,13 @@ type ContainerMetrics struct {
 	NetworkRxBytes   int64 // Network bytes received
 	NetworkTxBytes   int64 // Network bytes transmitted
 	ProcessCount     int32 // Number of running processes
+
+	// CFS bandwidth-throttling counters from the container's cgroup cpu.stat,
+	// cumulative like CPUUsageSeconds. All zero means "no signal available"
+	// (see cpuThrottle in cpu_stat.go), not "never throttled".
+	CPUNrPeriods     int64 // CFS periods elapsed
+	CPUNrThrottled   int64 // CFS periods in which the container was throttled
+	CPUThrottledUsec int64 // Total time spent throttled, in microseconds
 }
 
 // ServerInfo holds information about the Incus server
@@ -2053,6 +2060,19 @@ func (c *Client) GetContainerMetrics(name string) (*ContainerMetrics, error) {
 			metrics.NetworkRxBytes += network.Counters.BytesReceived
 			metrics.NetworkTxBytes += network.Counters.BytesSent
 		}
+	}
+
+	// CFS throttling counters (#1573). Incus's own InstanceState reports CPU
+	// *usage* but no throttling, so this reads the container's cgroup directly
+	// on the host, resolved through the container's init PID. A container that
+	// isn't running, a host that mounts cgroups differently, or a cgroup with
+	// no bandwidth limit all leave the fields at zero rather than failing the
+	// whole metrics read — throttling is a diagnostic signal, not a reason to
+	// lose usage/memory/disk numbers.
+	if t, ok := containerCPUThrottle(state.Pid); ok {
+		metrics.CPUNrPeriods = t.NrPeriods
+		metrics.CPUNrThrottled = t.NrThrottled
+		metrics.CPUThrottledUsec = t.ThrottledUsec
 	}
 
 	return metrics, nil

@@ -1724,15 +1724,15 @@ func (s *ContainerServer) ResizeContainer(ctx context.Context, req *pb.ResizeCon
 	}
 
 	// At least one resource must be specified
-	if req.Cpu == "" && req.Memory == "" && req.Disk == "" {
-		return nil, fmt.Errorf("at least one resource (cpu, memory, or disk) must be specified")
+	if req.Cpu == "" && req.Memory == "" && req.Disk == "" && req.CpuRequest == "" && req.MemoryRequest == "" {
+		return nil, fmt.Errorf("at least one resource (cpu, memory, disk, cpu_request, or memory_request) must be specified")
 	}
 
 	containerName := fmt.Sprintf("%s-container", req.Username)
 
 	if bb, isK8s := s.k8sBoxes(); isK8s {
 		ref := box.BoxRef{Tenant: req.Username}
-		if err := bb.Resize(ctx, ref, box.ResourceLimits{CPU: req.Cpu, Memory: req.Memory, Disk: req.Disk}); err != nil {
+		if err := bb.Resize(ctx, ref, box.ResourceLimits{CPU: req.Cpu, Memory: req.Memory, Disk: req.Disk, CPURequest: req.CpuRequest, MemoryRequest: req.MemoryRequest}); err != nil {
 			return nil, fmt.Errorf("failed to resize container: %w", err)
 		}
 		// The agent-sandbox controller doesn't restart a live pod on template
@@ -1771,9 +1771,11 @@ func (s *ContainerServer) ResizeContainer(ctx context.Context, req *pb.ResizeCon
 			if peer != nil {
 				log.Printf("[resize] found %s on peer %s, forwarding", containerName, peer.ID)
 				body, _ := json.Marshal(map[string]string{
-					"cpu":    req.Cpu,
-					"memory": req.Memory,
-					"disk":   req.Disk,
+					"cpu":           req.Cpu,
+					"memory":        req.Memory,
+					"disk":          req.Disk,
+					"memoryRequest": req.MemoryRequest,
+					"cpuRequest":    req.CpuRequest,
 				})
 				respBody, statusCode, fwdErr := peer.ForwardRequest("PUT", fmt.Sprintf("/v1/containers/%s/resize", req.Username), authToken, body)
 				if fwdErr != nil {
@@ -3572,6 +3574,9 @@ func toProtoMetrics(m *incus.ContainerMetrics) *pb.ContainerMetrics {
 		NetworkRxBytes:   m.NetworkRxBytes,
 		NetworkTxBytes:   m.NetworkTxBytes,
 		ProcessCount:     m.ProcessCount,
+		CpuNrPeriods:     m.CPUNrPeriods,
+		CpuNrThrottled:   m.CPUNrThrottled,
+		CpuThrottledUsec: m.CPUThrottledUsec,
 	}
 }
 

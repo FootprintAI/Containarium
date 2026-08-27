@@ -9,9 +9,11 @@ import (
 )
 
 var (
-	newCPU    string
-	newMemory string
-	newDisk   string
+	newCPU           string
+	newMemory        string
+	newDisk          string
+	newMemoryRequest string
+	newCPURequest    string
 )
 
 var resizeCmd = &cobra.Command{
@@ -34,6 +36,9 @@ Examples:
   # Resize all at once
   containarium resize alice --cpu 4 --memory 8GB --disk 100GB
 
+  # Adjust only the K8s scheduler reservation, leaving the ceiling alone
+  containarium resize alice --cpu-request 1
+
   # Remote mode
   containarium resize alice --cpu 4 --memory 8GB \
       --server 35.229.246.67:50051 \
@@ -48,7 +53,13 @@ Notes:
   - CPU: Always safe to increase or decrease
   - Memory: Check usage before decreasing (avoid OOM kills)
   - Disk: Can only increase (cannot shrink below usage)
-  - All changes are instant with no downtime`,
+  - LXC backend: all changes are instant with no downtime
+  - K8s backend: a running box is stopped and restarted (pod recreate) to
+    apply the new limits; a stopped box picks them up at its next start
+  - --cpu-request/--memory-request (K8s backend only): the scheduler
+    reservation, separate from the ceiling. Left unspecified, the existing
+    reservation is unchanged even when --cpu/--memory move the ceiling.
+    Ignored on the LXC backend.`,
 	Args: cobra.ExactArgs(1),
 	RunE: runResize,
 }
@@ -57,6 +68,8 @@ func init() {
 	resizeCmd.Flags().StringVar(&newCPU, "cpu", "", "New CPU limit (e.g., 4, 2-4, 0-3)")
 	resizeCmd.Flags().StringVar(&newMemory, "memory", "", "New memory limit (e.g., 8GB, 4096MB)")
 	resizeCmd.Flags().StringVar(&newDisk, "disk", "", "New disk size (e.g., 100GB, 500GB)")
+	resizeCmd.Flags().StringVar(&newMemoryRequest, "memory-request", "", "K8s memory *request* (K8s backend only), separate from --memory which is always applied as the limit. Empty = no change to the existing request, even when --memory changes the limit. Ignored on the LXC backend.")
+	resizeCmd.Flags().StringVar(&newCPURequest, "cpu-request", "", "K8s CPU *request* (K8s backend only), separate from --cpu which is always applied as the limit. Same defaulting and K8s-only scope as --memory-request. May be set alone to adjust only the reservation, without changing --cpu.")
 
 	rootCmd.AddCommand(resizeCmd)
 }
@@ -66,8 +79,8 @@ func runResize(cmd *cobra.Command, args []string) error {
 	containerName := username + "-container"
 
 	// Check that at least one resource flag is provided
-	if newCPU == "" && newMemory == "" && newDisk == "" {
-		return fmt.Errorf("at least one resource flag must be specified (--cpu, --memory, or --disk)")
+	if newCPU == "" && newMemory == "" && newDisk == "" && newCPURequest == "" && newMemoryRequest == "" {
+		return fmt.Errorf("at least one resource flag must be specified (--cpu, --memory, --disk, --cpu-request, or --memory-request)")
 	}
 
 	if verbose {
@@ -127,14 +140,14 @@ func runResizeRemote(username, containerName string) error {
 			return herr
 		}
 		defer func() { _ = httpClient.Close() }()
-		msg, err = httpClient.ResizeContainer(username, newCPU, newMemory, newDisk)
+		msg, err = httpClient.ResizeContainer(username, newCPU, newMemory, newDisk, newMemoryRequest, newCPURequest)
 	} else {
 		grpcClient, gerr := client.NewGRPCClient(serverAddr, certsDir, insecure)
 		if gerr != nil {
 			return gerr
 		}
 		defer func() { _ = grpcClient.Close() }()
-		msg, err = grpcClient.ResizeContainer(username, newCPU, newMemory, newDisk)
+		msg, err = grpcClient.ResizeContainer(username, newCPU, newMemory, newDisk, newMemoryRequest, newCPURequest)
 	}
 	if err != nil {
 		return err

@@ -1006,15 +1006,20 @@ func parseErr(body []byte, status int, op string) error {
 
 // ResizeContainer changes a container's CPU / memory / disk via HTTP.
 // Empty string for any field means "no change". Disk can only grow.
-func (c *HTTPClient) ResizeContainer(username, cpu, memory, disk string) (string, error) {
+// memoryRequest/cpuRequest are the K8s scheduler-request counterparts to
+// memory/cpu (K8s backend only, ignored on LXC); empty leaves the existing
+// request alone, even when the matching limit changes.
+func (c *HTTPClient) ResizeContainer(username, cpu, memory, disk, memoryRequest, cpuRequest string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	path := fmt.Sprintf("/v1/containers/%s/resize", url.PathEscape(username))
 	body, err := json.Marshal(resizeContainerRequest{
-		CPU:    cpu,
-		Memory: memory,
-		Disk:   disk,
+		CPU:           cpu,
+		Memory:        memory,
+		Disk:          disk,
+		MemoryRequest: memoryRequest,
+		CPURequest:    cpuRequest,
 	})
 	if err != nil {
 		return "", fmt.Errorf("marshal request: %w", err)

@@ -42,6 +42,7 @@ func TestRequestPayloadWireFormat(t *testing.T) {
 		{"startContainerRequest", startContainerRequest{}, []string{"ready_timeout_seconds", "wait_for_ready"}},
 		{"stopContainerRequest", stopContainerRequest{}, []string{"force"}},
 		{"resizeContainerRequest", resizeContainerRequest{}, []string{"cpu", "disk", "memory"}},
+		{"resizeContainerRequest with requests", resizeContainerRequest{CPURequest: "1", MemoryRequest: "1Gi"}, []string{"cpu", "cpuRequest", "disk", "memory", "memoryRequest"}},
 		{"toggleMonitoringRequest", toggleMonitoringRequest{}, []string{"enabled"}},
 		{"setSecretRequest", setSecretRequest{}, []string{"name", "username", "value"}},
 		{"setMetricsExportRequest", setMetricsExportRequest{}, []string{"enabled", "provider"}},
