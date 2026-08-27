@@ -134,3 +134,66 @@ func TestAdmitCPUCapacity_FailOpenOnUnknownCores(t *testing.T) {
 		t.Fatalf("must fail open when host cores unknown, got %v", err)
 	}
 }
+
+// TestCommittedTenantCores_TotalExcludesOnlyCoreRole is the SystemInfo report
+// case (#1580, no username to exclude): every tenant container counts,
+// core-role infra does not.
+func TestCommittedTenantCores_TotalExcludesOnlyCoreRole(t *testing.T) {
+	containers := []incus.ContainerInfo{
+		{Name: "postgres", CPU: "4", Role: incus.RolePostgres},
+		tenant("alice", "2"),
+		tenant("bob", "1.5"),
+	}
+	got := committedTenantCores(containers, nil)
+	if want := 3.5; got != want {
+		t.Errorf("committedTenantCores(total) = %v, want %v (2 + 1.5, core-role excluded)", got, want)
+	}
+}
+
+// TestCommittedTenantCores_SkipExcludesMatchedContainers verifies the skip
+// predicate composes correctly with the core-role exclusion — this is the
+// exact shape committedCoresExcluding uses, pinned here so the shared helper
+// can't silently regress admission behavior while being reused for reporting.
+func TestCommittedTenantCores_SkipExcludesMatchedContainers(t *testing.T) {
+	containers := []incus.ContainerInfo{
+		{Name: "postgres", CPU: "8", Role: incus.RolePostgres},
+		tenant("me", "8"),
+		tenant("other", "4"),
+	}
+	got := committedTenantCores(containers, func(c *incus.ContainerInfo) bool {
+		return c.Tenant == "me"
+	})
+	if want := 4.0; got != want {
+		t.Errorf("committedTenantCores(skip me) = %v, want %v (core-role and \"me\" excluded, only \"other\" counts)", got, want)
+	}
+}
+
+// TestCommittedTenantCores_EmptyIsZero: no containers at all sums to zero,
+// not an error or a panic.
+func TestCommittedTenantCores_EmptyIsZero(t *testing.T) {
+	if got := committedTenantCores(nil, nil); got != 0 {
+		t.Errorf("committedTenantCores(nil) = %v, want 0", got)
+	}
+}
+
+// TestCommittedCoresExcluding_UnchangedAfterRefactor pins that
+// committedCoresExcluding's own observable behavior (used for admission) is
+// unchanged now that its summation is shared with the SystemInfo report via
+// committedTenantCores — the existing TestAdmitCPUCapacity_ExcludesCoreAndSelf
+// exercises this indirectly through admitCPUCapacity; this test calls the
+// method directly so a regression here fails with a smaller, more direct
+// signal.
+func TestCommittedCoresExcluding_UnchangedAfterRefactor(t *testing.T) {
+	s := seedServer(t, 8, []incus.ContainerInfo{
+		{Name: "postgres", CPU: "8", Role: incus.RolePostgres},
+		tenant("me", "8"),
+		tenant("other", "4"),
+	})
+	got, err := s.committedCoresExcluding("me")
+	if err != nil {
+		t.Fatalf("committedCoresExcluding: %v", err)
+	}
+	if want := 4.0; got != want {
+		t.Errorf("committedCoresExcluding(\"me\") = %v, want %v", got, want)
+	}
+}

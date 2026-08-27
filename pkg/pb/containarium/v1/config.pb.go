@@ -1182,9 +1182,29 @@ type SystemInfo struct {
 	// "we don't know" must stay distinguishable from "isolated". Carried on
 	// SystemInfo so peers report it through the GetSystemInfo fan-out that
 	// ListBackends already uses, BYOC tunnel hosts included. See #1209.
-	Storage       *BackendStorage `protobuf:"bytes,23,opt,name=storage,proto3" json:"storage,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Storage *BackendStorage `protobuf:"bytes,23,opt,name=storage,proto3" json:"storage,omitempty"`
+	// committed_cpu_cores is the sum of this host's TENANT containers'
+	// committed CPU (limits.cpu / limits.cpu.allowance, summed via
+	// incus.CommittedCores) — the "how much is actually spoken for" number
+	// that pairs with total_cpus to answer "is this host over its CPU
+	// overcommit ceiling right now" (#1580). A caller derives the ratio as
+	// committed_cpu_cores / total_cpus.
+	//
+	// This is TENANT capacity, not total host capacity: the platform's own
+	// core-infra containers (Postgres, Caddy, control-plane — not tenant
+	// workload) are deliberately excluded, the same exclusion the CPU
+	// admission gate (docs/CPU-CAPACITY-ADMISSION.md, #1029) already applies.
+	// An operator combining this with total_cpus to size an overcommit factor
+	// must still separately budget the host's own known core-infra CPU
+	// footprint on top of it.
+	//
+	// 0 on the K8s runtime, same as total_cpus (the Incus resource read
+	// no-ops there) — "not applicable to this runtime," not "nothing
+	// committed." See #1571/#1578 for the design this closes the visibility
+	// half of.
+	CommittedCpuCores float64 `protobuf:"fixed64,24,opt,name=committed_cpu_cores,json=committedCpuCores,proto3" json:"committed_cpu_cores,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *SystemInfo) Reset() {
@@ -1376,6 +1396,13 @@ func (x *SystemInfo) GetStorage() *BackendStorage {
 		return x.Storage
 	}
 	return nil
+}
+
+func (x *SystemInfo) GetCommittedCpuCores() float64 {
+	if x != nil {
+		return x.CommittedCpuCores
+	}
+	return 0
 }
 
 // BackendStorage describes the storage pool backing a backend's containers.
@@ -4928,7 +4955,7 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"updateMask\"a\n" +
 	"\x14UpdateConfigResponse\x12\x18\n" +
 	"\amessage\x18\x01 \x01(\tR\amessage\x12/\n" +
-	"\x06config\x18\x02 \x01(\v2\x17.containarium.v1.ConfigR\x06config\"\xb5\a\n" +
+	"\x06config\x18\x02 \x01(\v2\x17.containarium.v1.ConfigR\x06config\"\xe5\a\n" +
 	"\n" +
 	"SystemInfo\x12#\n" +
 	"\rincus_version\x18\x01 \x01(\tR\fincusVersion\x12\x0e\n" +
@@ -4956,7 +4983,8 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"\x17otel_collector_endpoint\x18\x14 \x01(\tR\x15otelCollectorEndpoint\x12%\n" +
 	"\x0edaemon_version\x18\x15 \x01(\tR\rdaemonVersion\x12(\n" +
 	"\x10ssh_ingress_host\x18\x16 \x01(\tR\x0esshIngressHost\x129\n" +
-	"\astorage\x18\x17 \x01(\v2\x1f.containarium.v1.BackendStorageR\astorage\"\xbe\x01\n" +
+	"\astorage\x18\x17 \x01(\v2\x1f.containarium.v1.BackendStorageR\astorage\x12.\n" +
+	"\x13committed_cpu_cores\x18\x18 \x01(\x01R\x11committedCpuCores\"\xbe\x01\n" +
 	"\x0eBackendStorage\x12\x12\n" +
 	"\x04pool\x18\x01 \x01(\tR\x04pool\x126\n" +
 	"\x06driver\x18\x02 \x01(\x0e2\x1e.containarium.v1.StorageDriverR\x06driver\x12?\n" +

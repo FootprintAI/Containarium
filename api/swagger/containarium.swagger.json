@@ -13268,6 +13268,11 @@
         "storage": {
           "$ref": "#/definitions/BackendStorage",
           "description": "The storage pool backing this backend's containers, and whether that\npool isolates tenant volumes. Null when the pool could not be read —\n\"we don't know\" must stay distinguishable from \"isolated\". Carried on\nSystemInfo so peers report it through the GetSystemInfo fan-out that\nListBackends already uses, BYOC tunnel hosts included. See #1209."
+        },
+        "committedCpuCores": {
+          "type": "number",
+          "format": "double",
+          "description": "committed_cpu_cores is the sum of this host's TENANT containers'\ncommitted CPU (limits.cpu / limits.cpu.allowance, summed via\nincus.CommittedCores) — the \"how much is actually spoken for\" number\nthat pairs with total_cpus to answer \"is this host over its CPU\novercommit ceiling right now\" (#1580). A caller derives the ratio as\ncommitted_cpu_cores / total_cpus.\n\nThis is TENANT capacity, not total host capacity: the platform's own\ncore-infra containers (Postgres, Caddy, control-plane — not tenant\nworkload) are deliberately excluded, the same exclusion the CPU\nadmission gate (docs/CPU-CAPACITY-ADMISSION.md, #1029) already applies.\nAn operator combining this with total_cpus to size an overcommit factor\nmust still separately budget the host's own known core-infra CPU\nfootprint on top of it.\n\n0 on the K8s runtime, same as total_cpus (the Incus resource read\nno-ops there) — \"not applicable to this runtime,\" not \"nothing\ncommitted.\" See #1571/#1578 for the design this closes the visibility\nhalf of."
         }
       },
       "title": "SystemInfo contains information about the host system"

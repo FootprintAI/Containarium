@@ -2721,6 +2721,12 @@ func (s *ContainerServer) GetSystemInfo(ctx context.Context, req *pb.GetSystemIn
 		// direct/in-network mode — so an agent can tell from get_system_info
 		// whether an external SSH/deploy entrypoint exists. See #1011.
 		SshIngressHost: s.sshHost,
+		// Tenant-committed CPU cores on this host — pairs with TotalCpus to
+		// answer "is this host over its CPU overcommit ceiling right now"
+		// (#1580). Reuses the same containers list already fetched above,
+		// and the same core-role exclusion the admission gate (#1029) uses,
+		// via committedTenantCores — one summation shared by both, not two.
+		CommittedCpuCores: committedTenantCores(containers, nil),
 	}
 
 	// The storage pool backing this backend's containers, and whether it
