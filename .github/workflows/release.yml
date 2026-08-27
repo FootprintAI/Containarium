@@ -283,11 +283,16 @@ jobs:
         run: |
           set -euo pipefail
 
-          gh release view "$RELEASE_REF" --json body --jq '.body' > existing_body.md 2>/dev/null || : > existing_body.md
+          # Deliberately NOT tolerant of failure. The release was created by
+          # the step above, so a read error here is anomalous — and treating
+          # it as "empty body" would overwrite authored notes with generated
+          # ones, which is the exact data loss #1600 is about. Fail instead;
+          # a rerun is idempotent and safe.
+          gh release view "$RELEASE_REF" --json body --jq '.body' > existing_body.md
 
           # Drop a prior generated block, if this is a rerun.
           python3 - <<'PYEOF' > preserved.md
-          import re
+          import re, sys
           try:
               body = open('existing_body.md').read()
           except FileNotFoundError:
@@ -295,7 +300,10 @@ jobs:
           body = re.sub(
               r'<!-- generated-release-notes:start -->.*?<!-- generated-release-notes:end -->\n?',
               '', body, flags=re.S)
-          print(body.rstrip())
+          # write(), not print(): print's trailing newline would make an empty
+          # body a 1-byte file that passes the -s test below, producing three
+          # blank lines above the generated block.
+          sys.stdout.write(body.rstrip())
           PYEOF
 
           if [ -s preserved.md ]; then
