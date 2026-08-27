@@ -51,7 +51,7 @@ func TestSelfCheckProxyPath_HealthyTLSServerIsNotAWedge(t *testing.T) {
 // Accepts TCP, never reads, never writes.
 func TestSelfCheckProxyPath_WedgedListenerStillDetected(t *testing.T) {
 	w := newWedgedListener(t)
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	m := selfCheckManager(w.port)
 
@@ -73,7 +73,7 @@ func TestSelfCheckProxyPath_ImmediateCloseIsHealthy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	go func() {
 		for {
 			conn, err := ln.Accept()
@@ -98,7 +98,7 @@ func TestSelfCheckProxyPath_TLSAlertIsHealthy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	go func() {
 		for {
 			conn, err := ln.Accept()
@@ -106,7 +106,7 @@ func TestSelfCheckProxyPath_TLSAlertIsHealthy(t *testing.T) {
 				return
 			}
 			go func(c net.Conn) {
-				defer c.Close()
+				defer func() { _ = c.Close() }()
 				// A tls.Server with no certificates reads the ClientHello
 				// and answers with a handshake failure alert.
 				_ = tls.Server(c, &tls.Config{}).Handshake()
