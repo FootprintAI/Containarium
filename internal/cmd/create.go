@@ -85,7 +85,13 @@ Examples:
   containarium create charlie --ssh-key ~/.ssh/id_rsa.pub --labels team=dev,project=web
 
   # Force recreate if container already exists
-  containarium create alice --ssh-key ~/.ssh/id_rsa.pub --force`,
+  containarium create alice --ssh-key ~/.ssh/id_rsa.pub --force
+
+Note on --cpu: it sets a ceiling this box may not exceed, not automatically
+a guaranteed floor. On a host without the CPU admission gate enabled and
+enforced (the default), a declared --cpu can go unmet under contention from
+other boxes — see docs/CPU-CAPACITY-ADMISSION.md for when it becomes a real
+guarantee and how to configure it.`,
 	Args: cobra.ExactArgs(1),
 	RunE: runCreate,
 }
@@ -134,7 +140,7 @@ func init() {
 	// with --no-ssh-key. Enforce "exactly one of the two" in runCreate (cobra's
 	// MarkFlagRequired can't express the either/or).
 	createCmd.MarkFlagsMutuallyExclusive("ssh-key", "no-ssh-key")
-	createCmd.Flags().StringVar(&cpuLimit, "cpu", "4", "CPU limit (number of cores)")
+	createCmd.Flags().StringVar(&cpuLimit, "cpu", "4", "CPU limit (number of cores). A ceiling, not automatically a floor: see docs/CPU-CAPACITY-ADMISSION.md for when this box is actually guaranteed to get it.")
 	createCmd.Flags().StringVar(&memoryLimit, "memory", "4GB", "Memory limit (e.g., 4GB, 2048MB)")
 	createCmd.Flags().StringVar(&diskLimit, "disk", "50GB", "Disk limit (e.g., 50GB, 100GB)")
 	createCmd.Flags().StringVar(&staticIP, "static-ip", "", "Static IP address (e.g., 10.100.0.100) - empty for DHCP")

@@ -50,7 +50,11 @@ Resource Limits:
   Disk:   Size with unit (e.g., 50GB, 100GB, 500GB)
 
 Notes:
-  - CPU: Always safe to increase or decrease
+  - CPU: Raising --cpu is always safe to run, but it only raises the box's
+    ceiling. Whether it delivers any additional CPU depends on the host's
+    CPU admission gate (off by default) — see "CPU is a ceiling, not
+    automatically a floor" below before using resize as a remedy for a
+    slow box.
   - Memory: Check usage before decreasing (avoid OOM kills)
   - Disk: Can only increase (cannot shrink below usage)
   - LXC backend: all changes are instant with no downtime
@@ -59,7 +63,16 @@ Notes:
   - --cpu-request/--memory-request (K8s backend only): the scheduler
     reservation, separate from the ceiling. Left unspecified, the existing
     reservation is unchanged even when --cpu/--memory move the ceiling.
-    Ignored on the LXC backend.`,
+    Ignored on the LXC backend.
+
+CPU is a ceiling, not automatically a floor:
+  A box's declared CPU bounds what it may use, but on an oversubscribed
+  host that says nothing about what it actually gets. "resize --cpu
+  bigger" only helps if the host's CPU admission gate is enabled AND
+  enforced AND its overcommit factor leaves headroom for the increase —
+  otherwise the box was never CPU-starved by its own ceiling in the first
+  place, and raising it changes nothing. See
+  docs/CPU-CAPACITY-ADMISSION.md for how to check and configure this.`,
 	Args: cobra.ExactArgs(1),
 	RunE: runResize,
 }
