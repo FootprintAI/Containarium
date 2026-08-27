@@ -59,6 +59,16 @@ func admitCPURequest(physicalCores, committedCores, requestCores, factor float64
 // and the request would exceed the ceiling; otherwise nil (including every
 // fail-open path). username is the tenant being (re)created — its own existing
 // container, if any, is excluded so a resize-by-recreate doesn't double-count.
+//
+// Known gap (#1588): this is a check-then-act read with no lock or
+// reservation held across the caller's subsequent mutation. Two concurrent
+// callers (create, resize, or the cluster reconciler — every caller of this
+// function) can each admit against a stale snapshot and jointly exceed the
+// ceiling. Pre-existing since #1029 for create; #1579 extends the same
+// window to resize without introducing a new kind of gap. Not fixed here —
+// closing it needs serialization (or a reservation step) shared across
+// every local operation that commits CPU, which is bigger than any one
+// caller's scope.
 func (s *ContainerServer) admitCPUCapacity(username, cpuRequest string) error {
 	if s.cpuOvercommitFactor <= 0 {
 		return nil // gate disabled (the default)
