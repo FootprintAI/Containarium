@@ -36,7 +36,7 @@ func (s *ContainerServer) SetSecret(ctx context.Context, req *pb.SetSecretReques
 	if req.Username == "" {
 		return nil, status.Error(codes.InvalidArgument, "username is required")
 	}
-	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+	if err := auth.AuthorizeSecretTenant(ctx, req.Username, auth.ScopeSecretsWrite); err != nil {
 		return nil, err
 	}
 
@@ -77,7 +77,7 @@ func (s *ContainerServer) GetSecret(ctx context.Context, req *pb.GetSecretReques
 	if req.Username == "" {
 		return nil, status.Error(codes.InvalidArgument, "username is required")
 	}
-	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+	if err := auth.AuthorizeSecretTenant(ctx, req.Username, auth.ScopeSecretsRead); err != nil {
 		return nil, err
 	}
 
@@ -105,7 +105,7 @@ func (s *ContainerServer) ListSecrets(ctx context.Context, req *pb.ListSecretsRe
 	if req.Username == "" {
 		return nil, status.Error(codes.InvalidArgument, "username is required")
 	}
-	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+	if err := auth.AuthorizeSecretTenant(ctx, req.Username, auth.ScopeSecretsRead); err != nil {
 		return nil, err
 	}
 
@@ -135,7 +135,7 @@ func (s *ContainerServer) DeleteSecret(ctx context.Context, req *pb.DeleteSecret
 	if req.Username == "" {
 		return nil, status.Error(codes.InvalidArgument, "username is required")
 	}
-	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+	if err := auth.AuthorizeSecretTenant(ctx, req.Username, auth.ScopeSecretsWrite); err != nil {
 		return nil, err
 	}
 
@@ -163,7 +163,7 @@ func (s *ContainerServer) RefreshSecrets(ctx context.Context, req *pb.RefreshSec
 	if req.Username == "" {
 		return nil, status.Error(codes.InvalidArgument, "username is required")
 	}
-	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+	if err := auth.AuthorizeSecretTenant(ctx, req.Username, auth.ScopeSecretsWrite); err != nil {
 		return nil, err
 	}
 
@@ -176,6 +176,63 @@ func (s *ContainerServer) RefreshSecrets(ctx context.Context, req *pb.RefreshSec
 	return &pb.RefreshSecretsResponse{
 		Message: refreshSecretsMessage(s.boxes().Kind(), req.Username, stamped),
 		Stamped: safecast.I32(stamped),
+	}, nil
+}
+
+// SetTenantKMSKey sets or clears a tenant's per-tenant KEK for secrets
+// envelope encryption, re-wrapping their existing secrets (#1630).
+//
+// Unlike every other RPC in this file, this does NOT use
+// AuthorizeSecretTenant's self-access exception: admin role + the
+// secrets:write scope granted EXPLICITLY on the token are required
+// unconditionally, even when the caller's own subject happens to equal
+// req.Username. Changing which key encrypts a tenant's secrets is a
+// privileged operation performed on a tenant's behalf in this
+// platform's actual usage (the cloud control plane, not the tenant
+// itself) — see SetTenantKMSKeyRequest's proto comment.
+func (s *ContainerServer) SetTenantKMSKey(ctx context.Context, req *pb.SetTenantKMSKeyRequest) (*pb.SetTenantKMSKeyResponse, error) {
+	// Auth runs FIRST, before the store/argument checks below — an
+	// unauthenticated or under-privileged caller must not be able to
+	// learn whether this daemon even has a secrets store configured,
+	// or probe argument validation (CodeRabbit finding on #1631).
+	_, roles, ok := auth.SubjectFromGRPCContext(ctx)
+	if !ok {
+		return nil, status.Error(codes.Unauthenticated, "no authenticated subject in request context")
+	}
+	if !auth.HasRole(roles, auth.RoleAdmin) {
+		return nil, status.Error(codes.PermissionDenied, "SetTenantKMSKey requires the admin role")
+	}
+	scopes, _ := auth.ScopesFromGRPCContext(ctx)
+	if !auth.HasExplicitScope(scopes, auth.ScopeSecretsWrite) {
+		return nil, status.Error(codes.PermissionDenied,
+			"SetTenantKMSKey requires the "+auth.ScopeSecretsWrite+
+				" scope to be granted explicitly on this token; the admin role alone does not imply it "+
+				"(re-mint with `containarium token generate --scopes "+auth.ScopeSecretsWrite+" ...`)")
+	}
+
+	if s.secretsStore == nil {
+		return nil, status.Error(codes.Unavailable, "secrets store not configured on this daemon")
+	}
+	if req.Username == "" {
+		return nil, status.Error(codes.InvalidArgument, "username is required")
+	}
+
+	if err := s.secretsStore.SetTenantKMSKey(ctx, req.Username, req.KekResourceName); err != nil {
+		return nil, mapSecretError(err)
+	}
+
+	hasTenantKey := req.KekResourceName != ""
+	msg := fmt.Sprintf("tenant %s reverted to the shared KEK", req.Username)
+	if hasTenantKey {
+		msg = fmt.Sprintf("tenant %s now on its own KMS key", req.Username)
+	}
+	// Audit. Never log the key resource name's full path isn't
+	// sensitive (GCP resource names aren't secrets), but keep the log
+	// line's shape consistent with the other secrets RPCs regardless.
+	log.Printf("[secrets] set-tenant-kms-key %s has_tenant_key=%v", req.Username, hasTenantKey)
+	return &pb.SetTenantKMSKeyResponse{
+		Message:      msg,
+		HasTenantKey: hasTenantKey,
 	}, nil
 }
 
@@ -323,10 +380,13 @@ func (s *ContainerServer) stampSecretsOnLXC(ctx context.Context, username string
 }
 
 // mapSecretError maps store errors to gRPC status codes. Centralized
-// so the five RPC methods stay short.
+// so the RPC methods in this file stay short.
 func mapSecretError(err error) error {
 	if errors.Is(err, secrets.ErrNotFound) {
 		return status.Error(codes.NotFound, "secret not found")
+	}
+	if errors.Is(err, secrets.ErrTenantKMSNotSupported) {
+		return status.Error(codes.FailedPrecondition, err.Error())
 	}
 	// pkg/core/secrets validation errors carry the right message for
 	// the caller — surface as InvalidArgument.

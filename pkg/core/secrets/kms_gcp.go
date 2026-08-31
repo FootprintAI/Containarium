@@ -104,11 +104,14 @@ type GCPKMS struct {
 	cachedAt  time.Time
 }
 
-// gcpKEKPrefix labels a kek_id as "wrap was done by GCP
+// GCPKEKPrefix labels a kek_id as "wrap was done by GCP
 // Cloud KMS." Future readers (an operator who migrated
 // from GCP to Vault, for instance) refuse rows that don't
-// match their backend's prefix.
-const gcpKEKPrefix = "gcp:"
+// match their backend's prefix. Exported so callers outside this
+// package (internal/secrets.Store's per-tenant KEK dispatch, #1630)
+// can parse a kek_id's key resource name back out without duplicating
+// the literal.
+const GCPKEKPrefix = "gcp:"
 
 // gcpDefaultEndpoint is the public Cloud KMS endpoint.
 // Override via GCPConfig.Endpoint for private endpoints
@@ -150,7 +153,7 @@ func NewGCPKMS(cfg GCPConfig) (*GCPKMS, error) {
 	// Rows wrapped under different keys (or different
 	// projects) get distinct kek_ids; cross-deployment
 	// confusion is structurally impossible.
-	kekID := gcpKEKPrefix + cfg.KeyName
+	kekID := GCPKEKPrefix + cfg.KeyName
 	return &GCPKMS{
 		cfg:    cfg,
 		client: &http.Client{Timeout: cfg.Timeout},
@@ -192,8 +195,8 @@ func (g *GCPKMS) Wrap(ctx context.Context, plaintextDEK []byte) ([]byte, string,
 // rather than spending a Cloud KMS call on a guaranteed
 // mismatch.
 func (g *GCPKMS) Unwrap(ctx context.Context, wrappedDEK []byte, kekID string) ([]byte, error) {
-	if !strings.HasPrefix(kekID, gcpKEKPrefix) {
-		return nil, fmt.Errorf("GCPKMS: refusing to unwrap row whose kek_id=%q (no %q prefix)", kekID, gcpKEKPrefix)
+	if !strings.HasPrefix(kekID, GCPKEKPrefix) {
+		return nil, fmt.Errorf("GCPKMS: refusing to unwrap row whose kek_id=%q (no %q prefix)", kekID, GCPKEKPrefix)
 	}
 	body := map[string]string{
 		"ciphertext": string(wrappedDEK),

@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Cross-tenant secret access now requires an explicitly granted scope.**
+  Reading or writing *another* tenant's secrets needs the admin role **and**
+  `secrets:read` / `secrets:write` stated on the token. The admin role alone no
+  longer implies it.
+
+  Two reasonable behaviors composed into an unintended one. `HasScope` treats an
+  absent scopes claim as unrestricted — `token generate` without `--scopes` is
+  documented that way — so the scope check could not deny such a token anything.
+  And `AuthorizeTenant` short-circuits on the admin role, so the requested
+  username was never compared against the caller. Together, a token minted
+  `--roles admin` with no `--scopes` — the ordinary shape for an orchestrator,
+  CI runner, or automation account — could call `GetSecret` for **any** tenant
+  and receive the decrypted value. Envelope encryption does not help there: the
+  daemon decrypts on demand for the caller.
+
+  **Same-tenant access is unchanged**, including from unscoped tokens. That path
+  is not the problem and is what every ordinary `containarium secrets` call
+  uses, so narrowing it would break working deployments to no security end.
+
+  **If you have automation that manages other tenants' secrets**, re-mint its
+  token with `--scopes secrets:read` (or `secrets:write`, or both) alongside
+  whatever else it needs. The denial names the missing scope and the flag.
+  Automation that does *not* need cross-tenant secret access — most of it —
+  should be left without the scope, which is the point.
+
+  `HasScope`'s nil semantics are deliberately unchanged: flipping those globally
+  would revoke every existing unscoped token across every RPC at once, a far
+  larger blast radius than the one being closed.
+
+### Fixed
+
+- **Model-gateway tokens can now actually be revoked.** `MintToken` has always
+  stamped a `jti` into every gateway token, but nothing consulted it:
+  `VerifyToken` checked signature, issuer and expiry, and `handleModel` checked
+  the provider and the allowed-model set. So an issued gateway token was good
+  until its TTL ran out, with no kill-switch.
+
+  That gap mattered most where the TTL is longest. A skill box's token lives 30
+  minutes; a recipe box's lives a **year**, and that year was chosen on the
+  stated assumption that revocation was the way to kill one early. It wasn't
+  there.
+
+  `handleModel` now checks the token's `jti` against a revocation list, after
+  the provider check and before the real provider key is touched — so a revoked
+  token never causes the key to be injected and never reaches the upstream. The
+  daemon supplies the same jti store it already uses for platform JWTs; that
+  store is issuer-agnostic, so `containarium token revoke --jti <id>` kills a
+  gateway token with no new verb, RPC, or schema.
+
+  The lookup **fails open**, matching the platform JWT path. The token's
+  signature, issuer, expiry and provider binding are already checked when it
+  runs, and the allowed-model ceiling is applied further down the same request,
+  so a database outage degrades to exactly the protection that existed before
+  this check rather than taking every tenant's model traffic down with the
+  database. A daemon with no Postgres has no store to consult and logs a warning
+  at startup saying its gateway tokens cannot be killed early.
+
 ## [0.67.0] - 2026-08-21
 
 ### Added

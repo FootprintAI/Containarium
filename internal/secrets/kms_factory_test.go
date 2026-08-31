@@ -1,8 +1,12 @@
 package secrets
 
 import (
+	"context"
 	"crypto/rand"
+	"encoding/json"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -405,5 +409,120 @@ func TestLoadKMSClient_AWSTimeoutParse(t *testing.T) {
 	t.Setenv("CONTAINARIUM_AWS_KMS_TIMEOUT", "garbage")
 	if _, _, err := LoadKMSClient(mkMaster(t)); err == nil {
 		t.Fatal("malformed duration should error")
+	}
+}
+
+// --- LoadTenantKMSFactory (#1630) ---
+
+func TestLoadTenantKMSFactory_NilWhenBackendIsNotGCP(t *testing.T) {
+	for _, backend := range []string{"", "none", "inproc", "vault", "aws"} {
+		t.Run(backend, func(t *testing.T) {
+			clearKMSEnv(t)
+			if backend != "" {
+				t.Setenv("CONTAINARIUM_KMS_BACKEND", backend)
+			}
+			// vault/aws would otherwise error on missing config — but
+			// LoadTenantKMSFactory must return before ever reading
+			// their env vars, since only "gcp" is in scope for #1630.
+			f, err := LoadTenantKMSFactory()
+			if err != nil {
+				t.Fatalf("unexpected error for backend %q: %v", backend, err)
+			}
+			if f != nil {
+				t.Fatalf("backend %q: expected nil factory", backend)
+			}
+		})
+	}
+}
+
+// fakeTenantKMSEndpoint is a minimal local stand-in for Cloud KMS's
+// :encrypt endpoint — no real network call, no real ADC. Base64s the
+// plaintext back as the "ciphertext" so the test only needs to check
+// which key resource path the request was addressed to, which is the
+// thing under test here (per-tenant routing), not the crypto itself
+// (already covered in pkg/core/secrets/kms_gcp_test.go).
+func fakeTenantKMSEndpoint(t *testing.T, gotPath *string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*gotPath = r.URL.Path
+		var body struct {
+			Plaintext string `json:"plaintext"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"ciphertext": body.Plaintext})
+	}))
+}
+
+func TestLoadTenantKMSFactory_GCPBuildsAClientPerKey(t *testing.T) {
+	clearKMSEnv(t)
+	var gotPath string
+	srv := fakeTenantKMSEndpoint(t, &gotPath)
+	defer srv.Close()
+
+	t.Setenv("CONTAINARIUM_KMS_BACKEND", "gcp")
+	t.Setenv("CONTAINARIUM_GCP_KMS_KEY_NAME", factoryTestKeyName)
+	t.Setenv("CONTAINARIUM_GCP_KMS_TOKEN", "access-token-xyz")
+	t.Setenv("CONTAINARIUM_GCP_KMS_ENDPOINT", srv.URL)
+
+	f, err := LoadTenantKMSFactory()
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if f == nil {
+		t.Fatal("expected a non-nil factory for backend=gcp")
+	}
+
+	otherKey := "projects/p/locations/us-west1/keyRings/r/cryptoKeys/tenant-1"
+	client, err := f(otherKey)
+	if err != nil {
+		t.Fatalf("build client for tenant key: %v", err)
+	}
+	if client == nil {
+		t.Fatal("expected a non-nil client")
+	}
+
+	// The built client must be scoped to the KEY PASSED TO THE FACTORY,
+	// not the daemon's shared CONTAINARIUM_GCP_KMS_KEY_NAME.
+	dek := make([]byte, corecrypto.DEKSize)
+	if _, err := io.ReadFull(rand.Reader, dek); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	_, kekID, err := client.Wrap(context.Background(), dek)
+	if err != nil {
+		t.Fatalf("Wrap against fake endpoint: %v", err)
+	}
+	if kekID != "gcp:"+otherKey {
+		t.Fatalf("kek_id = %q; want %q (the per-tenant key, not the shared one)", kekID, "gcp:"+otherKey)
+	}
+	wantPath := "/v1/" + otherKey + ":encrypt"
+	if gotPath != wantPath {
+		t.Fatalf("request path = %q; want %q — the client called the wrong key's endpoint", gotPath, wantPath)
+	}
+}
+
+func TestLoadTenantKMSFactory_GCPPropagatesConfigError(t *testing.T) {
+	clearKMSEnv(t)
+	t.Setenv("CONTAINARIUM_KMS_BACKEND", "gcp")
+	// No CONTAINARIUM_GCP_KMS_KEY_NAME / token — gcpConfigFromEnv must
+	// error, and LoadTenantKMSFactory must surface that rather than
+	// silently returning a factory that will fail on first use.
+	if _, err := LoadTenantKMSFactory(); err == nil {
+		t.Fatal("missing shared GCP config should error, not return a usable factory")
+	}
+}
+
+func TestLoadTenantKMSFactory_RejectsMalformedKeyResourceName(t *testing.T) {
+	clearKMSEnv(t)
+	t.Setenv("CONTAINARIUM_KMS_BACKEND", "gcp")
+	t.Setenv("CONTAINARIUM_GCP_KMS_KEY_NAME", factoryTestKeyName)
+	t.Setenv("CONTAINARIUM_GCP_KMS_TOKEN", "access-token-xyz")
+
+	f, err := LoadTenantKMSFactory()
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if _, err := f("not-a-key-resource-name"); err == nil {
+		t.Fatal("malformed per-tenant key resource name should be rejected (NewGCPKMS's own shape check)")
 	}
 }

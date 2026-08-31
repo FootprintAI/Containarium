@@ -80,6 +80,7 @@ const (
 	ContainerService_ListSecrets_FullMethodName               = "/containarium.v1.ContainerService/ListSecrets"
 	ContainerService_DeleteSecret_FullMethodName              = "/containarium.v1.ContainerService/DeleteSecret"
 	ContainerService_RefreshSecrets_FullMethodName            = "/containarium.v1.ContainerService/RefreshSecrets"
+	ContainerService_SetTenantKMSKey_FullMethodName           = "/containarium.v1.ContainerService/SetTenantKMSKey"
 )
 
 // ContainerServiceClient is the client API for ContainerService service.
@@ -377,6 +378,13 @@ type ContainerServiceClient interface {
 	// useful after rotation when the next exec'd process should see
 	// the new value without a full container restart.
 	RefreshSecrets(ctx context.Context, in *RefreshSecretsRequest, opts ...grpc.CallOption) (*RefreshSecretsResponse, error)
+	// SetTenantKMSKey sets or clears a tenant's per-tenant KMS key for
+	// secrets envelope encryption, re-wrapping the tenant's existing
+	// secrets under the new key (or back to the shared KEK on clear).
+	// Admin role + explicit secrets:write scope required unconditionally
+	// — see SetTenantKMSKeyRequest's comment for why this RPC doesn't get
+	// the self-access exception the other secrets RPCs have.
+	SetTenantKMSKey(ctx context.Context, in *SetTenantKMSKeyRequest, opts ...grpc.CallOption) (*SetTenantKMSKeyResponse, error)
 }
 
 type containerServiceClient struct {
@@ -997,6 +1005,16 @@ func (c *containerServiceClient) RefreshSecrets(ctx context.Context, in *Refresh
 	return out, nil
 }
 
+func (c *containerServiceClient) SetTenantKMSKey(ctx context.Context, in *SetTenantKMSKeyRequest, opts ...grpc.CallOption) (*SetTenantKMSKeyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetTenantKMSKeyResponse)
+	err := c.cc.Invoke(ctx, ContainerService_SetTenantKMSKey_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ContainerServiceServer is the server API for ContainerService service.
 // All implementations must embed UnimplementedContainerServiceServer
 // for forward compatibility.
@@ -1292,6 +1310,13 @@ type ContainerServiceServer interface {
 	// useful after rotation when the next exec'd process should see
 	// the new value without a full container restart.
 	RefreshSecrets(context.Context, *RefreshSecretsRequest) (*RefreshSecretsResponse, error)
+	// SetTenantKMSKey sets or clears a tenant's per-tenant KMS key for
+	// secrets envelope encryption, re-wrapping the tenant's existing
+	// secrets under the new key (or back to the shared KEK on clear).
+	// Admin role + explicit secrets:write scope required unconditionally
+	// — see SetTenantKMSKeyRequest's comment for why this RPC doesn't get
+	// the self-access exception the other secrets RPCs have.
+	SetTenantKMSKey(context.Context, *SetTenantKMSKeyRequest) (*SetTenantKMSKeyResponse, error)
 	mustEmbedUnimplementedContainerServiceServer()
 }
 
@@ -1484,6 +1509,9 @@ func (UnimplementedContainerServiceServer) DeleteSecret(context.Context, *Delete
 }
 func (UnimplementedContainerServiceServer) RefreshSecrets(context.Context, *RefreshSecretsRequest) (*RefreshSecretsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RefreshSecrets not implemented")
+}
+func (UnimplementedContainerServiceServer) SetTenantKMSKey(context.Context, *SetTenantKMSKeyRequest) (*SetTenantKMSKeyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetTenantKMSKey not implemented")
 }
 func (UnimplementedContainerServiceServer) mustEmbedUnimplementedContainerServiceServer() {}
 func (UnimplementedContainerServiceServer) testEmbeddedByValue()                          {}
@@ -2604,6 +2632,24 @@ func _ContainerService_RefreshSecrets_Handler(srv interface{}, ctx context.Conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ContainerService_SetTenantKMSKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetTenantKMSKeyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).SetTenantKMSKey(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_SetTenantKMSKey_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).SetTenantKMSKey(ctx, req.(*SetTenantKMSKeyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ContainerService_ServiceDesc is the grpc.ServiceDesc for ContainerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -2854,6 +2900,10 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RefreshSecrets",
 			Handler:    _ContainerService_RefreshSecrets_Handler,
+		},
+		{
+			MethodName: "SetTenantKMSKey",
+			Handler:    _ContainerService_SetTenantKMSKey_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

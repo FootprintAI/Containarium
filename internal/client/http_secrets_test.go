@@ -3,6 +3,7 @@ package client
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -149,5 +150,79 @@ func TestListSecretsReportsDecodeFailure(t *testing.T) {
 	}
 	if _, err := c.ListSecrets("alice"); err == nil {
 		t.Error("a malformed response must be an error, not an empty list")
+	}
+}
+
+// TestSetTenantKMSKeyDecodesGatewayCamelCase (#1630) pins the same class
+// of bug TestListSecretsDecodesGatewayCamelCase guards against:
+// grpc-gateway emits lowerCamelCase (hasTenantKey), not the Go struct's
+// snake_case json tag (has_tenant_key) — decoding against the wrong key
+// silently produces the zero value instead of an error.
+func TestSetTenantKMSKeyDecodesGatewayCamelCase(t *testing.T) {
+	var gotPath, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		b := make([]byte, r.ContentLength)
+		_, _ = r.Body.Read(b)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"message":"tenant alice now on its own KMS key","hasTenantKey":true}`))
+	}))
+	defer srv.Close()
+
+	c, err := NewHTTPClient(srv.URL, "tok")
+	if err != nil {
+		t.Fatalf("NewHTTPClient: %v", err)
+	}
+	msg, hasKey, err := c.SetTenantKMSKey("alice", "projects/p/locations/l/keyRings/r/cryptoKeys/k")
+	if err != nil {
+		t.Fatalf("SetTenantKMSKey: %v", err)
+	}
+	if !hasKey {
+		t.Error("hasTenantKey decoded false; the gateway sent true — camelCase mismatch")
+	}
+	if msg != "tenant alice now on its own KMS key" {
+		t.Errorf("message = %q", msg)
+	}
+	if gotPath != "/v1/secrets/alice/kms-key" {
+		t.Errorf("path = %q, want /v1/secrets/alice/kms-key", gotPath)
+	}
+	// username must NOT be repeated in the body — it's path-bound, same
+	// convention as RefreshSecretsRequest.
+	if strings.Contains(gotBody, "username") {
+		t.Errorf("body should not repeat the path-bound username: %s", gotBody)
+	}
+	if !strings.Contains(gotBody, "kek_resource_name") {
+		t.Errorf("body missing kek_resource_name: %s", gotBody)
+	}
+}
+
+// Clearing (empty keyResourceName) must still round-trip cleanly — the
+// json tag is `omitempty`, so the field is simply absent from the body,
+// which the server-side proto treats identically to an explicit "".
+func TestSetTenantKMSKeyClearOmitsField(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b := make([]byte, r.ContentLength)
+		_, _ = r.Body.Read(b)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"message":"tenant alice reverted to the shared KEK","hasTenantKey":false}`))
+	}))
+	defer srv.Close()
+
+	c, err := NewHTTPClient(srv.URL, "tok")
+	if err != nil {
+		t.Fatalf("NewHTTPClient: %v", err)
+	}
+	_, hasKey, err := c.SetTenantKMSKey("alice", "")
+	if err != nil {
+		t.Fatalf("SetTenantKMSKey (clear): %v", err)
+	}
+	if hasKey {
+		t.Error("expected hasTenantKey=false after clear")
+	}
+	if strings.Contains(gotBody, "kek_resource_name") {
+		t.Errorf("empty key should omit the field entirely: %s", gotBody)
 	}
 }

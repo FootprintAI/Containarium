@@ -48,6 +48,16 @@ What's already protected (today):
 - **Cross-tenant exposure**: secrets are scoped per `username` in the
   `secrets` table, encrypted with AES-256-GCM at rest, and stamped
   into exactly one LXC. Another tenant's container can't read them.
+
+  On the API side this is `auth.AuthorizeSecretTenant`, which is
+  stricter than the `AuthorizeTenant` used elsewhere: reaching another
+  tenant's secrets needs the admin role **and** `secrets:read` /
+  `secrets:write` granted explicitly on the token. The admin role alone
+  does not imply it, because a token minted `--roles admin` with no
+  `--scopes` — the ordinary shape for an orchestrator or automation
+  account — otherwise passed both gates for every tenant. Automation
+  that does not need cross-tenant secret access should simply not carry
+  the scope.
 - **Operator audit trail**: every `set_secret` / `get_secret` is
   audit-logged.
 - **At-rest encryption**: the master key lives at
