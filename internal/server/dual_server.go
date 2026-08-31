@@ -1675,6 +1675,13 @@ skipAppHosting:
 		}
 		if sink != nil {
 			threatDetectEngine = threatdetect.NewEngine(sink, "", degraded, networkPolicyEnforcer.TenantForIP, nil)
+			// Fence-probe rules (#1642): a breached fence (cross-tenant
+			// flow) and a probed fence (deny-burst) are both continuous
+			// forms of checks that previously only ran one-shot or landed
+			// in the audit log with nothing watching. Zero-value N/window
+			// falls back to the rule's own defaults.
+			threatDetectEngine.Register(threatdetect.NewCrossTenantFlowRule())
+			threatDetectEngine.Register(threatdetect.NewDenyBurstRule(threatCfg.DenyBurstN, threatCfg.DenyBurstWindow))
 			networkPolicyEnforcer.SetFlowHook(threatDetectEngine.OnFlows)
 			networkPolicyEnforcer.SetDenyHook(threatDetectEngine.OnDeny)
 			if degraded {
