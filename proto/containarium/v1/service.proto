@@ -983,4 +983,22 @@ service ContainerService {
       tags: "Secrets";
     };
   }
+
+  // SetTenantKMSKey sets or clears a tenant's per-tenant KMS key for
+  // secrets envelope encryption, re-wrapping the tenant's existing
+  // secrets under the new key (or back to the shared KEK on clear).
+  // Admin role + explicit secrets:write scope required unconditionally
+  // — see SetTenantKMSKeyRequest's comment for why this RPC doesn't get
+  // the self-access exception the other secrets RPCs have.
+  rpc SetTenantKMSKey(SetTenantKMSKeyRequest) returns (SetTenantKMSKeyResponse) {
+    option (google.api.http) = {
+      post: "/v1/secrets/{username}/kms-key"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Set or clear a tenant's per-tenant KMS key";
+      description: "Re-wraps the tenant's existing secrets under the given GCP KMS CryptoKey (or back to the shared KEK if kek_resource_name is empty). Requires CONTAINARIUM_KMS_BACKEND=gcp. Admin role + explicit secrets:write scope required, unconditionally.";
+      tags: "Secrets";
+    };
+  }
 }

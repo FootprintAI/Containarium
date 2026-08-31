@@ -468,6 +468,22 @@ func (c *GRPCClient) RefreshSecrets(username string) (string, int32, error) {
 	return resp.Message, resp.Stamped, nil
 }
 
+// SetTenantKMSKey sets (or, with an empty keyResourceName, clears) a
+// tenant's per-tenant KMS key via gRPC (#1630). Admin role + explicit
+// secrets:write scope required on the token — see
+// ContainerServer.SetTenantKMSKey's doc comment.
+func (c *GRPCClient) SetTenantKMSKey(username, keyResourceName string) (string, bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.client.SetTenantKMSKey(ctx, &pb.SetTenantKMSKeyRequest{
+		Username: username, KekResourceName: keyResourceName,
+	})
+	if err != nil {
+		return "", false, fmt.Errorf("set tenant kms key: %w", err)
+	}
+	return resp.Message, resp.HasTenantKey, nil
+}
+
 // ResizeContainer changes a container's CPU / memory / disk via gRPC.
 // Empty string for any field means "no change". Disk can only grow —
 // the server rejects shrinks. memoryRequest/cpuRequest are the K8s

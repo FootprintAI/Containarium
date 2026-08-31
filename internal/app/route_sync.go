@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 )
@@ -310,6 +311,35 @@ func (j *RouteSyncJob) syncHTTPRoutes(dbRoutes []*RouteRecord) error {
 				continue
 			}
 			removed++
+
+			// The route is gone; its TLS automation subject must go too
+			// (#1618). RemoveRoute only deletes the route, and
+			// EnsureTLSSubjects is add-only by design, so without this the
+			// subject survives forever: Caddy keeps trying to obtain a
+			// certificate for a hostname that routes nowhere, and repeated
+			// failed validations accumulate against the ACME account — Let's
+			// Encrypt pauses accounts that rack them up. RemoveTLSSubject's
+			// own doc names that cost; previously only the container-delete
+			// cascade called it, so a route removed any other way leaked one.
+			//
+			// Deliberately AFTER a successful RemoveRoute: dropping the
+			// subject while the route still serves would strand a live
+			// hostname with no certificate, which is #1584's symptom.
+			//
+			// Wildcards are skipped. `*.<base-domain>` is per-cluster
+			// (ProvisionWildcardTLS), not route-derived, and covers every
+			// sibling host — removing it because one route disappeared would
+			// take TLS away from all of them.
+			if strings.HasPrefix(domain, "*.") {
+				continue
+			}
+			if err := j.proxyManager.RemoveTLSSubject(domain); err != nil {
+				// Non-fatal: the route is already gone, which is the
+				// user-visible half. A leftover subject costs ACME retries,
+				// not availability, and the next reap attempt will retry.
+				log.Printf("[RouteSyncJob] Removed route %s but failed to drop its TLS subject: %v "+
+					"— it will keep retrying ACME until cleaned up (#1618)", domain, err)
+			}
 		}
 	}
 
