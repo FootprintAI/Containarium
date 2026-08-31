@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Model-gateway tokens can now actually be revoked.** `MintToken` has always
+  stamped a `jti` into every gateway token, but nothing consulted it:
+  `VerifyToken` checked signature, issuer and expiry, and `handleModel` checked
+  the provider and the allowed-model set. So an issued gateway token was good
+  until its TTL ran out, with no kill-switch.
+
+  That gap mattered most where the TTL is longest. A skill box's token lives 30
+  minutes; a recipe box's lives a **year**, and that year was chosen on the
+  stated assumption that revocation was the way to kill one early. It wasn't
+  there.
+
+  `handleModel` now checks the token's `jti` against a revocation list, after
+  the provider check and before the real provider key is touched — so a revoked
+  token never causes the key to be injected and never reaches the upstream. The
+  daemon supplies the same jti store it already uses for platform JWTs; that
+  store is issuer-agnostic, so `containarium token revoke --jti <id>` kills a
+  gateway token with no new verb, RPC, or schema.
+
+  The lookup **fails open**, matching the platform JWT path. The token's
+  signature, issuer, expiry and provider binding are already checked when it
+  runs, and the allowed-model ceiling is applied further down the same request,
+  so a database outage degrades to exactly the protection that existed before
+  this check rather than taking every tenant's model traffic down with the
+  database. A daemon with no Postgres has no store to consult and logs a warning
+  at startup saying its gateway tokens cannot be killed early.
+
 ## [0.67.0] - 2026-08-21
 
 ### Added
