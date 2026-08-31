@@ -70,6 +70,42 @@ func newRWFakeCaddy(initial map[string]interface{}) (*httptest.Server, *rwFakeCa
 		}
 		_ = json.NewEncoder(w).Encode(node)
 	})
+	// DELETE /id/<route-id> — real Caddy's @id addressing, used by
+	// ProxyManager.RemoveRoute. Removes the matching route from the http
+	// server's route list. Additive: no pre-existing test uses this path.
+	mux.HandleFunc("/id/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		id := strings.TrimPrefix(r.URL.Path, "/id/")
+		apps, _ := fc.config["apps"].(map[string]interface{})
+		httpApp, _ := apps["http"].(map[string]interface{})
+		servers, _ := httpApp["servers"].(map[string]interface{})
+		srv, _ := servers[DefaultCaddyServerName].(map[string]interface{})
+		routes, _ := srv["routes"].([]interface{})
+
+		kept := make([]interface{}, 0, len(routes))
+		found := false
+		for _, rt := range routes {
+			m, _ := rt.(map[string]interface{})
+			if m != nil {
+				if got, _ := m["@id"].(string); got == id {
+					found = true
+					continue
+				}
+			}
+			kept = append(kept, rt)
+		}
+		if !found {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		srv["routes"] = kept
+		fc.puts++
+		w.WriteHeader(http.StatusOK)
+	})
+
 	mux.HandleFunc("/load", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var newCfg map[string]interface{}

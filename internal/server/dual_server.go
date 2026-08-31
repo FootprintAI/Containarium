@@ -835,6 +835,16 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 							kms = nil
 							kdesc = "disabled (config error)"
 						}
+						// #1630 — per-tenant KEK factory, only non-nil
+						// when CONTAINARIUM_KMS_BACKEND=gcp. A config
+						// error here degrades the SAME way the shared
+						// client does: log and disable, don't fail the
+						// whole secrets store over it.
+						tenantKMSFactory, tkerr := secretsstore.LoadTenantKMSFactory()
+						if tkerr != nil {
+							log.Printf("Warning: per-tenant KMS factory config error: %v. SetTenantKMSKey will be unavailable.", tkerr)
+							tenantKMSFactory = nil
+						}
 						// Phase 4.1 Phase-E — master-key retirement
 						// gate. CONTAINARIUM_REQUIRE_ENVELOPE=true
 						// means every decrypt must go through KMS;
@@ -858,6 +868,9 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 							}
 							if requireEnvelope {
 								opts = append(opts, secretsstore.WithRequireEnvelope(true))
+							}
+							if tenantKMSFactory != nil {
+								opts = append(opts, secretsstore.WithTenantKMSFactory(tenantKMSFactory))
 							}
 							if store, serr := secretsstore.NewStore(context.Background(), secretsPool, cipher, opts...); serr != nil {
 								log.Printf("Warning: Failed to init secrets store: %v. Secrets disabled.", serr)
@@ -1690,6 +1703,23 @@ skipAppHosting:
 			} else {
 				gwSink = sink
 			}
+			// Kill-switch for issued gateway tokens: the SAME jti revocation
+			// store already wired for platform JWTs. It is issuer-agnostic
+			// (keyed on jti alone), so `containarium token revoke --jti <id>`
+			// kills a gateway token too — no new verb, RPC, or schema.
+			//
+			// Assigned through a nil check rather than directly: a nil
+			// *auth.PgRevocationStore placed in an interface field yields a
+			// NON-nil interface holding a nil pointer, so the `Revocations ==
+			// nil` guard in the gateway would not fire and every model call
+			// would dereference nil. A daemon without Postgres reaches here
+			// with a nil store, so this is the common path, not a corner case.
+			var gwRevocations modelgateway.RevocationChecker
+			if revocationStoreLocal != nil {
+				gwRevocations = revocationStoreLocal
+			} else {
+				log.Printf("Warning: model-gateway has no revocation store (no Postgres) — issued gateway tokens cannot be killed before they expire")
+			}
 			// Per-tenant quota + the graduated response ladder. Nil unless the
 			// operator configured a budget or turned the detectors on, so an
 			// existing deployment's behavior is unchanged by the upgrade.
@@ -1702,6 +1732,7 @@ skipAppHosting:
 				Providers:    modelgateway.DefaultProviders(),
 				ProviderKeys: keys,
 				Sink:         gwSink,
+				Revocations:  gwRevocations,
 				Policy:       gwPolicy,
 				// Redact system-prompt (skill persona) leakage on the streaming
 				// chat path (#670 layer 2). Default on; set

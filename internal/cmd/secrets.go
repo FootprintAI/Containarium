@@ -96,6 +96,40 @@ without restarting the box.`,
 	RunE: runSecretsRefresh,
 }
 
+var secretsSetKMSKeyCmd = &cobra.Command{
+	Use:   "set-kms-key <username> <key-resource-name>",
+	Short: "Set a tenant's per-tenant KMS key for secrets (admin only)",
+	Long: `Sets username's own GCP Cloud KMS CryptoKey as the key their secrets
+are wrapped under going forward, and re-wraps every secret they
+currently own under it (#1630).
+
+Requires the daemon's CONTAINARIUM_KMS_BACKEND=gcp, and a token with
+the admin role AND the secrets:write scope granted EXPLICITLY — the
+admin role alone is not enough for this RPC, unlike the other
+'secrets' subcommands. Mint one with:
+  containarium token generate --roles admin --scopes secrets:write ...
+
+key-resource-name is a full GCP Cloud KMS CryptoKey resource path:
+  projects/<project>/locations/<location>/keyRings/<ring>/cryptoKeys/<key>
+
+Use 'secrets clear-kms-key' to revert username to the shared KEK.`,
+	Args: cobra.ExactArgs(2),
+	RunE: runSecretsSetKMSKey,
+}
+
+var secretsClearKMSKeyCmd = &cobra.Command{
+	Use:   "clear-kms-key <username>",
+	Short: "Revert a tenant to the shared KMS key (admin only)",
+	Long: `Reverts username from its own per-tenant KMS key back to the
+daemon's shared KEK, re-wrapping every secret they currently own.
+Idempotent — clearing a tenant with no override still succeeds.
+
+Same authz requirement as 'secrets set-kms-key': admin role + the
+secrets:write scope granted explicitly on the token.`,
+	Args: cobra.ExactArgs(1),
+	RunE: runSecretsClearKMSKey,
+}
+
 // secretsDelivery is the value bound to `--delivery` on
 // `secrets set` (Phase 4.3 Phase A). Allowed values: "",
 // "env" (default; server normalizes ""→"env"), "file"
@@ -116,6 +150,8 @@ func init() {
 	secretsCmd.AddCommand(secretsListCmd)
 	secretsCmd.AddCommand(secretsDeleteCmd)
 	secretsCmd.AddCommand(secretsRefreshCmd)
+	secretsCmd.AddCommand(secretsSetKMSKeyCmd)
+	secretsCmd.AddCommand(secretsClearKMSKeyCmd)
 }
 
 func runSecretsSet(cmd *cobra.Command, args []string) error {
@@ -315,4 +351,65 @@ func secretDeliveryLabel(d pb.SecretDelivery) string {
 	default:
 		return ""
 	}
+}
+
+func runSecretsSetKMSKey(cmd *cobra.Command, args []string) error {
+	username, keyResourceName := args[0], args[1]
+	if serverAddr == "" {
+		return fmt.Errorf("--server is required for secrets commands")
+	}
+
+	var msg string
+	var hasKey bool
+	var err error
+	if httpMode {
+		h, herr := client.NewHTTPClient(serverAddr, authToken)
+		if herr != nil {
+			return herr
+		}
+		defer func() { _ = h.Close() }()
+		msg, hasKey, err = h.SetTenantKMSKey(username, keyResourceName)
+	} else {
+		g, gerr := client.NewGRPCClient(serverAddr, certsDir, insecure)
+		if gerr != nil {
+			return gerr
+		}
+		defer func() { _ = g.Close() }()
+		msg, hasKey, err = g.SetTenantKMSKey(username, keyResourceName)
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Printf("✓ %s (has_tenant_key=%v)\n", msg, hasKey)
+	return nil
+}
+
+func runSecretsClearKMSKey(cmd *cobra.Command, args []string) error {
+	username := args[0]
+	if serverAddr == "" {
+		return fmt.Errorf("--server is required for secrets commands")
+	}
+
+	var msg string
+	var err error
+	if httpMode {
+		h, herr := client.NewHTTPClient(serverAddr, authToken)
+		if herr != nil {
+			return herr
+		}
+		defer func() { _ = h.Close() }()
+		msg, _, err = h.SetTenantKMSKey(username, "")
+	} else {
+		g, gerr := client.NewGRPCClient(serverAddr, certsDir, insecure)
+		if gerr != nil {
+			return gerr
+		}
+		defer func() { _ = g.Close() }()
+		msg, _, err = g.SetTenantKMSKey(username, "")
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Printf("✓ %s\n", msg)
+	return nil
 }

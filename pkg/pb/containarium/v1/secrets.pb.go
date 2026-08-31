@@ -768,6 +768,133 @@ func (x *RefreshSecretsResponse) GetStamped() int32 {
 	return 0
 }
 
+// SetTenantKMSKeyRequest sets or clears a tenant's per-tenant KEK for
+// secrets envelope encryption. This is a privileged, admin-only
+// operation performed ON BEHALF OF a tenant — unlike SetSecret/GetSecret,
+// it always requires the admin role and an explicitly granted
+// secrets:write scope, even when the caller's own subject equals
+// username, because changing which key encrypts a tenant's secrets is
+// not something a tenant does to itself in the platform's actual usage.
+type SetTenantKMSKeyRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Username (tenant) whose KEK to set or clear.
+	Username string `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"`
+	// GCP Cloud KMS CryptoKey resource name
+	// (projects/P/locations/L/keyRings/R/cryptoKeys/K) that this tenant's
+	// secrets will be wrapped under going forward. The daemon re-wraps
+	// every existing secret the tenant owns under this key.
+	//
+	// Empty clears the override: existing secrets are re-wrapped back
+	// under the daemon's shared KEK (CONTAINARIUM_GCP_KMS_KEY_NAME)
+	// before the tenant's own key can be invalidated by whoever manages
+	// it upstream.
+	//
+	// Requires CONTAINARIUM_KMS_BACKEND=gcp — per-tenant keys are not
+	// yet supported for the vault/aws/inproc backends.
+	KekResourceName string `protobuf:"bytes,2,opt,name=kek_resource_name,json=kekResourceName,proto3" json:"kek_resource_name,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *SetTenantKMSKeyRequest) Reset() {
+	*x = SetTenantKMSKeyRequest{}
+	mi := &file_containarium_v1_secrets_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetTenantKMSKeyRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetTenantKMSKeyRequest) ProtoMessage() {}
+
+func (x *SetTenantKMSKeyRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_secrets_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetTenantKMSKeyRequest.ProtoReflect.Descriptor instead.
+func (*SetTenantKMSKeyRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_secrets_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *SetTenantKMSKeyRequest) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+func (x *SetTenantKMSKeyRequest) GetKekResourceName() string {
+	if x != nil {
+		return x.KekResourceName
+	}
+	return ""
+}
+
+type SetTenantKMSKeyResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Operator-facing summary, including how many secrets were re-wrapped.
+	Message string `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
+	// True if the tenant now has a per-tenant key (kek_resource_name was
+	// non-empty in the request); false if cleared back to the shared KEK.
+	HasTenantKey  bool `protobuf:"varint,2,opt,name=has_tenant_key,json=hasTenantKey,proto3" json:"has_tenant_key,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetTenantKMSKeyResponse) Reset() {
+	*x = SetTenantKMSKeyResponse{}
+	mi := &file_containarium_v1_secrets_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetTenantKMSKeyResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetTenantKMSKeyResponse) ProtoMessage() {}
+
+func (x *SetTenantKMSKeyResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_secrets_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetTenantKMSKeyResponse.ProtoReflect.Descriptor instead.
+func (*SetTenantKMSKeyResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_secrets_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *SetTenantKMSKeyResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *SetTenantKMSKeyResponse) GetHasTenantKey() bool {
+	if x != nil {
+		return x.HasTenantKey
+	}
+	return false
+}
+
 var File_containarium_v1_secrets_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_secrets_proto_rawDesc = "" +
@@ -811,7 +938,13 @@ const file_containarium_v1_secrets_proto_rawDesc = "" +
 	"\busername\x18\x01 \x01(\tR\busername\"L\n" +
 	"\x16RefreshSecretsResponse\x12\x18\n" +
 	"\amessage\x18\x01 \x01(\tR\amessage\x12\x18\n" +
-	"\astamped\x18\x02 \x01(\x05R\astamped*\x81\x01\n" +
+	"\astamped\x18\x02 \x01(\x05R\astamped\"`\n" +
+	"\x16SetTenantKMSKeyRequest\x12\x1a\n" +
+	"\busername\x18\x01 \x01(\tR\busername\x12*\n" +
+	"\x11kek_resource_name\x18\x02 \x01(\tR\x0fkekResourceName\"Y\n" +
+	"\x17SetTenantKMSKeyResponse\x12\x18\n" +
+	"\amessage\x18\x01 \x01(\tR\amessage\x12$\n" +
+	"\x0ehas_tenant_key\x18\x02 \x01(\bR\fhasTenantKey*\x81\x01\n" +
 	"\x0eSecretDelivery\x12\x1f\n" +
 	"\x1bSECRET_DELIVERY_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13SECRET_DELIVERY_ENV\x10\x01\x12\x18\n" +
@@ -831,20 +964,22 @@ func file_containarium_v1_secrets_proto_rawDescGZIP() []byte {
 }
 
 var file_containarium_v1_secrets_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_containarium_v1_secrets_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_containarium_v1_secrets_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_containarium_v1_secrets_proto_goTypes = []any{
-	(SecretDelivery)(0),            // 0: containarium.v1.SecretDelivery
-	(*SecretMetadata)(nil),         // 1: containarium.v1.SecretMetadata
-	(*SetSecretRequest)(nil),       // 2: containarium.v1.SetSecretRequest
-	(*SetSecretResponse)(nil),      // 3: containarium.v1.SetSecretResponse
-	(*GetSecretRequest)(nil),       // 4: containarium.v1.GetSecretRequest
-	(*GetSecretResponse)(nil),      // 5: containarium.v1.GetSecretResponse
-	(*ListSecretsRequest)(nil),     // 6: containarium.v1.ListSecretsRequest
-	(*ListSecretsResponse)(nil),    // 7: containarium.v1.ListSecretsResponse
-	(*DeleteSecretRequest)(nil),    // 8: containarium.v1.DeleteSecretRequest
-	(*DeleteSecretResponse)(nil),   // 9: containarium.v1.DeleteSecretResponse
-	(*RefreshSecretsRequest)(nil),  // 10: containarium.v1.RefreshSecretsRequest
-	(*RefreshSecretsResponse)(nil), // 11: containarium.v1.RefreshSecretsResponse
+	(SecretDelivery)(0),             // 0: containarium.v1.SecretDelivery
+	(*SecretMetadata)(nil),          // 1: containarium.v1.SecretMetadata
+	(*SetSecretRequest)(nil),        // 2: containarium.v1.SetSecretRequest
+	(*SetSecretResponse)(nil),       // 3: containarium.v1.SetSecretResponse
+	(*GetSecretRequest)(nil),        // 4: containarium.v1.GetSecretRequest
+	(*GetSecretResponse)(nil),       // 5: containarium.v1.GetSecretResponse
+	(*ListSecretsRequest)(nil),      // 6: containarium.v1.ListSecretsRequest
+	(*ListSecretsResponse)(nil),     // 7: containarium.v1.ListSecretsResponse
+	(*DeleteSecretRequest)(nil),     // 8: containarium.v1.DeleteSecretRequest
+	(*DeleteSecretResponse)(nil),    // 9: containarium.v1.DeleteSecretResponse
+	(*RefreshSecretsRequest)(nil),   // 10: containarium.v1.RefreshSecretsRequest
+	(*RefreshSecretsResponse)(nil),  // 11: containarium.v1.RefreshSecretsResponse
+	(*SetTenantKMSKeyRequest)(nil),  // 12: containarium.v1.SetTenantKMSKeyRequest
+	(*SetTenantKMSKeyResponse)(nil), // 13: containarium.v1.SetTenantKMSKeyResponse
 }
 var file_containarium_v1_secrets_proto_depIdxs = []int32{
 	0, // 0: containarium.v1.SecretMetadata.delivery_mode:type_name -> containarium.v1.SecretDelivery
@@ -870,7 +1005,7 @@ func file_containarium_v1_secrets_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_secrets_proto_rawDesc), len(file_containarium_v1_secrets_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   11,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
