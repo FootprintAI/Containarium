@@ -58,7 +58,7 @@
     },
     {
       "name": "ThreatDetectionService",
-      "description": "ThreatDetectionService serves the background security-sentry's status and\nfindings. GetSentryStatus ships with #1640 (background detection loop);\nthe findings/rule-config RPCs are added by later stories in the same\numbrella (#1641-#1643) — see docs/architecture/continuous-threat-detection.md."
+      "description": "ThreatDetectionService serves the background security-sentry's status and\nfindings. GetSentryStatus ships with #1640 (background detection loop);\n*BadDestination* ships with #1641 (known-bad destination rule); the\nfindings/rule-config RPCs are added by later stories in the same umbrella\n(#1642-#1643) — see docs/architecture/continuous-threat-detection.md."
     },
     {
       "name": "EventService",
@@ -5241,6 +5241,95 @@
         ]
       }
     },
+    "/v1/security/bad-destinations": {
+      "get": {
+        "summary": "List known-bad destinations",
+        "description": "Returns the merged baseline (embedded, versioned) and operator-added known-bad-destination list.",
+        "operationId": "ThreatDetectionService_ListBadDestinations",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListBadDestinationsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "tags": [
+          "Security"
+        ]
+      },
+      "post": {
+        "summary": "Add a known-bad destination",
+        "description": "Adds an operator-supplied CIDR or exact IP to the known-bad-destination list.",
+        "operationId": "ThreatDetectionService_AddBadDestination",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/AddBadDestinationResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/AddBadDestinationRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Security"
+        ]
+      }
+    },
+    "/v1/security/bad-destinations/{cidr}": {
+      "delete": {
+        "summary": "Remove an operator-added bad destination",
+        "description": "Removes a previously operator-added entry from the known-bad-destination list. Baseline entries cannot be removed.",
+        "operationId": "ThreatDetectionService_RemoveBadDestination",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/RemoveBadDestinationResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "cidr",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "pattern": ".+"
+          }
+        ],
+        "tags": [
+          "Security"
+        ]
+      }
+    },
     "/v1/security/clamav-reports": {
       "get": {
         "summary": "List ClamAV scan reports",
@@ -6755,6 +6844,25 @@
       "description": "- ACCESS_TYPE_SSH: SSH access (default for Linux containers)\n - ACCESS_TYPE_RDP: RDP access (for Windows VMs, via Guacamole browser-based client)",
       "title": "AccessType indicates how to connect to an instance"
     },
+    "AddBadDestinationRequest": {
+      "type": "object",
+      "properties": {
+        "cidr": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        }
+      }
+    },
+    "AddBadDestinationResponse": {
+      "type": "object",
+      "properties": {
+        "entry": {
+          "$ref": "#/definitions/BadDestinationEntry"
+        }
+      }
+    },
     "AddCollaboratorBody": {
       "type": "object",
       "properties": {
@@ -7548,6 +7656,23 @@
         }
       },
       "description": "BackupVerification is the audit artifact for one restore test: who ran\nit, when, against what, and what the engine said. Persisted on the\nBackupRecord so `ListBackups` can answer \"last verified\" and so the\nevidence outlives the run that produced it (ISO 27001 A.8.13 wants\nbackups *tested*, not just taken)."
+    },
+    "BadDestinationEntry": {
+      "type": "object",
+      "properties": {
+        "cidr": {
+          "type": "string",
+          "description": "Exact IP (\"203.0.113.7\") or CIDR (\"203.0.113.0/24\")."
+        },
+        "label": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string",
+          "description": "\"baseline\" (embedded, versioned list, shipped with the daemon) or\n\"operator\" (added via AddBadDestination, without a daemon rebuild)."
+        }
+      },
+      "description": "BadDestinationEntry is one entry in the known-bad-destination list (#1641)\nmatched against flow destination IPs — a mining pool or other known-bad\nendpoint."
     },
     "BuildpackOptions": {
       "type": "object",
@@ -10720,6 +10845,18 @@
         }
       }
     },
+    "ListBadDestinationsResponse": {
+      "type": "object",
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/BadDestinationEntry"
+          }
+        }
+      }
+    },
     "ListClamavReportsResponse": {
       "type": "object",
       "properties": {
@@ -12166,6 +12303,9 @@
         }
       },
       "description": "RemediatePentestFindingResponse returns the result of the remediation attempt."
+    },
+    "RemoveBadDestinationResponse": {
+      "type": "object"
     },
     "RemoveCollaboratorResponse": {
       "type": "object",

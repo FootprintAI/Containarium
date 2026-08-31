@@ -81,6 +81,11 @@ type API interface {
 	// Threat-detection sentry (#1640).
 	GetSentryStatus() (*SentryStatusResponse, error)
 
+	// Known-bad destination rule (#1641).
+	ListBadDestinations() (*ListBadDestinationsResponse, error)
+	AddBadDestination(cidr, label string) (*BadDestinationEntry, error)
+	RemoveBadDestination(cidr string) error
+
 	// Tokens.
 	RevokeToken(jti, reason, expiresAt string) (string, error)
 

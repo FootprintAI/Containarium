@@ -633,7 +633,6 @@ type MigrateToEnvelopeResponse struct {
 	Errors      []MigrateRowError `json:"errors"`
 }
 
-// GetKMSStatus reports the active KMS backend + envelope state.
 // GetSentryStatus reports the threat-detection sentry's on/off state and
 // per-rule health (#1640).
 func (c *Client) GetSentryStatus() (*SentryStatusResponse, error) {
@@ -646,6 +645,43 @@ func (c *Client) GetSentryStatus() (*SentryStatusResponse, error) {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 	return &resp, nil
+}
+
+// ListBadDestinations returns the merged baseline + operator-added
+// known-bad-destination list the bad-destination rule (#1641) matches
+// against.
+func (c *Client) ListBadDestinations() (*ListBadDestinationsResponse, error) {
+	respBody, err := c.doRequest("GET", "/v1/security/bad-destinations", nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp ListBadDestinationsResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
+// AddBadDestination adds an operator-supplied entry, effective immediately.
+func (c *Client) AddBadDestination(cidr, label string) (*BadDestinationEntry, error) {
+	respBody, err := c.doRequest("POST", "/v1/security/bad-destinations", map[string]string{
+		"cidr": cidr, "label": label,
+	})
+	if err != nil {
+		return nil, err
+	}
+	var resp AddBadDestinationResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp.Entry, nil
+}
+
+// RemoveBadDestination removes a previously operator-added entry. Baseline
+// entries cannot be removed.
+func (c *Client) RemoveBadDestination(cidr string) error {
+	_, err := c.doRequest("DELETE", "/v1/security/bad-destinations/"+cidr, nil)
+	return err
 }
 
 func (c *Client) GetKMSStatus() (*KMSStatusResponse, error) {

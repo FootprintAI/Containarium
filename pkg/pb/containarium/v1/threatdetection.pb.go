@@ -786,6 +786,328 @@ func (x *GetSentryStatusResponse) GetRules() []*RuleStatus {
 	return nil
 }
 
+// BadDestinationEntry is one entry in the known-bad-destination list (#1641)
+// matched against flow destination IPs — a mining pool or other known-bad
+// endpoint.
+type BadDestinationEntry struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Exact IP ("203.0.113.7") or CIDR ("203.0.113.0/24").
+	Cidr  string `protobuf:"bytes,1,opt,name=cidr,proto3" json:"cidr,omitempty"`
+	Label string `protobuf:"bytes,2,opt,name=label,proto3" json:"label,omitempty"`
+	// "baseline" (embedded, versioned list, shipped with the daemon) or
+	// "operator" (added via AddBadDestination, without a daemon rebuild).
+	Source        string `protobuf:"bytes,3,opt,name=source,proto3" json:"source,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BadDestinationEntry) Reset() {
+	*x = BadDestinationEntry{}
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BadDestinationEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BadDestinationEntry) ProtoMessage() {}
+
+func (x *BadDestinationEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BadDestinationEntry.ProtoReflect.Descriptor instead.
+func (*BadDestinationEntry) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *BadDestinationEntry) GetCidr() string {
+	if x != nil {
+		return x.Cidr
+	}
+	return ""
+}
+
+func (x *BadDestinationEntry) GetLabel() string {
+	if x != nil {
+		return x.Label
+	}
+	return ""
+}
+
+func (x *BadDestinationEntry) GetSource() string {
+	if x != nil {
+		return x.Source
+	}
+	return ""
+}
+
+type ListBadDestinationsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListBadDestinationsRequest) Reset() {
+	*x = ListBadDestinationsRequest{}
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListBadDestinationsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListBadDestinationsRequest) ProtoMessage() {}
+
+func (x *ListBadDestinationsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListBadDestinationsRequest.ProtoReflect.Descriptor instead.
+func (*ListBadDestinationsRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{8}
+}
+
+type ListBadDestinationsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Entries       []*BadDestinationEntry `protobuf:"bytes,1,rep,name=entries,proto3" json:"entries,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListBadDestinationsResponse) Reset() {
+	*x = ListBadDestinationsResponse{}
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListBadDestinationsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListBadDestinationsResponse) ProtoMessage() {}
+
+func (x *ListBadDestinationsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListBadDestinationsResponse.ProtoReflect.Descriptor instead.
+func (*ListBadDestinationsResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *ListBadDestinationsResponse) GetEntries() []*BadDestinationEntry {
+	if x != nil {
+		return x.Entries
+	}
+	return nil
+}
+
+type AddBadDestinationRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Cidr          string                 `protobuf:"bytes,1,opt,name=cidr,proto3" json:"cidr,omitempty"`
+	Label         string                 `protobuf:"bytes,2,opt,name=label,proto3" json:"label,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AddBadDestinationRequest) Reset() {
+	*x = AddBadDestinationRequest{}
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AddBadDestinationRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AddBadDestinationRequest) ProtoMessage() {}
+
+func (x *AddBadDestinationRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AddBadDestinationRequest.ProtoReflect.Descriptor instead.
+func (*AddBadDestinationRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *AddBadDestinationRequest) GetCidr() string {
+	if x != nil {
+		return x.Cidr
+	}
+	return ""
+}
+
+func (x *AddBadDestinationRequest) GetLabel() string {
+	if x != nil {
+		return x.Label
+	}
+	return ""
+}
+
+type AddBadDestinationResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Entry         *BadDestinationEntry   `protobuf:"bytes,1,opt,name=entry,proto3" json:"entry,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AddBadDestinationResponse) Reset() {
+	*x = AddBadDestinationResponse{}
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AddBadDestinationResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AddBadDestinationResponse) ProtoMessage() {}
+
+func (x *AddBadDestinationResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AddBadDestinationResponse.ProtoReflect.Descriptor instead.
+func (*AddBadDestinationResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *AddBadDestinationResponse) GetEntry() *BadDestinationEntry {
+	if x != nil {
+		return x.Entry
+	}
+	return nil
+}
+
+type RemoveBadDestinationRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Cidr          string                 `protobuf:"bytes,1,opt,name=cidr,proto3" json:"cidr,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RemoveBadDestinationRequest) Reset() {
+	*x = RemoveBadDestinationRequest{}
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RemoveBadDestinationRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RemoveBadDestinationRequest) ProtoMessage() {}
+
+func (x *RemoveBadDestinationRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RemoveBadDestinationRequest.ProtoReflect.Descriptor instead.
+func (*RemoveBadDestinationRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *RemoveBadDestinationRequest) GetCidr() string {
+	if x != nil {
+		return x.Cidr
+	}
+	return ""
+}
+
+type RemoveBadDestinationResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RemoveBadDestinationResponse) Reset() {
+	*x = RemoveBadDestinationResponse{}
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RemoveBadDestinationResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RemoveBadDestinationResponse) ProtoMessage() {}
+
+func (x *RemoveBadDestinationResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RemoveBadDestinationResponse.ProtoReflect.Descriptor instead.
+func (*RemoveBadDestinationResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{13}
+}
+
 var File_containarium_v1_threatdetection_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_threatdetection_proto_rawDesc = "" +
@@ -835,7 +1157,22 @@ const file_containarium_v1_threatdetection_proto_rawDesc = "" +
 	"\x17GetSentryStatusResponse\x122\n" +
 	"\x05state\x18\x01 \x01(\x0e2\x1c.containarium.v1.SentryStateR\x05state\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\x121\n" +
-	"\x05rules\x18\x03 \x03(\v2\x1b.containarium.v1.RuleStatusR\x05rules*\x9e\x01\n" +
+	"\x05rules\x18\x03 \x03(\v2\x1b.containarium.v1.RuleStatusR\x05rules\"W\n" +
+	"\x13BadDestinationEntry\x12\x12\n" +
+	"\x04cidr\x18\x01 \x01(\tR\x04cidr\x12\x14\n" +
+	"\x05label\x18\x02 \x01(\tR\x05label\x12\x16\n" +
+	"\x06source\x18\x03 \x01(\tR\x06source\"\x1c\n" +
+	"\x1aListBadDestinationsRequest\"]\n" +
+	"\x1bListBadDestinationsResponse\x12>\n" +
+	"\aentries\x18\x01 \x03(\v2$.containarium.v1.BadDestinationEntryR\aentries\"D\n" +
+	"\x18AddBadDestinationRequest\x12\x12\n" +
+	"\x04cidr\x18\x01 \x01(\tR\x04cidr\x12\x14\n" +
+	"\x05label\x18\x02 \x01(\tR\x05label\"W\n" +
+	"\x19AddBadDestinationResponse\x12:\n" +
+	"\x05entry\x18\x01 \x01(\v2$.containarium.v1.BadDestinationEntryR\x05entry\"1\n" +
+	"\x1bRemoveBadDestinationRequest\x12\x12\n" +
+	"\x04cidr\x18\x01 \x01(\tR\x04cidr\"\x1e\n" +
+	"\x1cRemoveBadDestinationResponse*\x9e\x01\n" +
 	"\x0eThreatSeverity\x12\x1f\n" +
 	"\x1bTHREAT_SEVERITY_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13THREAT_SEVERITY_LOW\x10\x01\x12\x1a\n" +
@@ -856,10 +1193,16 @@ const file_containarium_v1_threatdetection_proto_rawDesc = "" +
 	"\x15SENTRY_STATE_DISABLED\x10\x01\x12\x1c\n" +
 	"\x18SENTRY_STATE_UNAVAILABLE\x10\x02\x12\x19\n" +
 	"\x15SENTRY_STATE_DEGRADED\x10\x03\x12\x13\n" +
-	"\x0fSENTRY_STATE_OK\x10\x042\xc9\x02\n" +
+	"\x0fSENTRY_STATE_OK\x10\x042\xd6\t\n" +
 	"\x16ThreatDetectionService\x12\xae\x02\n" +
 	"\x0fGetSentryStatus\x12'.containarium.v1.GetSentryStatusRequest\x1a(.containarium.v1.GetSentryStatusResponse\"\xc7\x01\x92A\xa1\x01\n" +
-	"\bSecurity\x12\"Get threat-detection sentry status\x1aqReturns the background detection engine's on/off state (disabled, unavailable, degraded, ok) and per-rule health.\x82\xd3\xe4\x93\x02\x1c\x12\x1a/v1/security/sentry/statusBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
+	"\bSecurity\x12\"Get threat-detection sentry status\x1aqReturns the background detection engine's on/off state (disabled, unavailable, degraded, ok) and per-rule health.\x82\xd3\xe4\x93\x02\x1c\x12\x1a/v1/security/sentry/status\x12\xa5\x02\n" +
+	"\x13ListBadDestinations\x12+.containarium.v1.ListBadDestinationsRequest\x1a,.containarium.v1.ListBadDestinationsResponse\"\xb2\x01\x92A\x89\x01\n" +
+	"\bSecurity\x12\x1bList known-bad destinations\x1a`Returns the merged baseline (embedded, versioned) and operator-added known-bad-destination list.\x82\xd3\xe4\x93\x02\x1f\x12\x1d/v1/security/bad-destinations\x12\x8e\x02\n" +
+	"\x11AddBadDestination\x12).containarium.v1.AddBadDestinationRequest\x1a*.containarium.v1.AddBadDestinationResponse\"\xa1\x01\x92Av\n" +
+	"\bSecurity\x12\x1bAdd a known-bad destination\x1aMAdds an operator-supplied CIDR or exact IP to the known-bad-destination list.\x82\xd3\xe4\x93\x02\":\x01*\"\x1d/v1/security/bad-destinations\x12\xd1\x02\n" +
+	"\x14RemoveBadDestination\x12,.containarium.v1.RemoveBadDestinationRequest\x1a-.containarium.v1.RemoveBadDestinationResponse\"\xdb\x01\x92A\xa8\x01\n" +
+	"\bSecurity\x12(Remove an operator-added bad destination\x1arRemoves a previously operator-added entry from the known-bad-destination list. Baseline entries cannot be removed.\x82\xd3\xe4\x93\x02)*'/v1/security/bad-destinations/{cidr=**}BKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
 
 var (
 	file_containarium_v1_threatdetection_proto_rawDescOnce sync.Once
@@ -874,20 +1217,27 @@ func file_containarium_v1_threatdetection_proto_rawDescGZIP() []byte {
 }
 
 var file_containarium_v1_threatdetection_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_containarium_v1_threatdetection_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_containarium_v1_threatdetection_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
 var file_containarium_v1_threatdetection_proto_goTypes = []any{
-	(ThreatSeverity)(0),             // 0: containarium.v1.ThreatSeverity
-	(ThreatRuleId)(0),               // 1: containarium.v1.ThreatRuleId
-	(FindingState)(0),               // 2: containarium.v1.FindingState
-	(SentryState)(0),                // 3: containarium.v1.SentryState
-	(*FlowEvidence)(nil),            // 4: containarium.v1.FlowEvidence
-	(*DenyEvidence)(nil),            // 5: containarium.v1.DenyEvidence
-	(*Evidence)(nil),                // 6: containarium.v1.Evidence
-	(*Finding)(nil),                 // 7: containarium.v1.Finding
-	(*RuleStatus)(nil),              // 8: containarium.v1.RuleStatus
-	(*GetSentryStatusRequest)(nil),  // 9: containarium.v1.GetSentryStatusRequest
-	(*GetSentryStatusResponse)(nil), // 10: containarium.v1.GetSentryStatusResponse
-	(*timestamppb.Timestamp)(nil),   // 11: google.protobuf.Timestamp
+	(ThreatSeverity)(0),                  // 0: containarium.v1.ThreatSeverity
+	(ThreatRuleId)(0),                    // 1: containarium.v1.ThreatRuleId
+	(FindingState)(0),                    // 2: containarium.v1.FindingState
+	(SentryState)(0),                     // 3: containarium.v1.SentryState
+	(*FlowEvidence)(nil),                 // 4: containarium.v1.FlowEvidence
+	(*DenyEvidence)(nil),                 // 5: containarium.v1.DenyEvidence
+	(*Evidence)(nil),                     // 6: containarium.v1.Evidence
+	(*Finding)(nil),                      // 7: containarium.v1.Finding
+	(*RuleStatus)(nil),                   // 8: containarium.v1.RuleStatus
+	(*GetSentryStatusRequest)(nil),       // 9: containarium.v1.GetSentryStatusRequest
+	(*GetSentryStatusResponse)(nil),      // 10: containarium.v1.GetSentryStatusResponse
+	(*BadDestinationEntry)(nil),          // 11: containarium.v1.BadDestinationEntry
+	(*ListBadDestinationsRequest)(nil),   // 12: containarium.v1.ListBadDestinationsRequest
+	(*ListBadDestinationsResponse)(nil),  // 13: containarium.v1.ListBadDestinationsResponse
+	(*AddBadDestinationRequest)(nil),     // 14: containarium.v1.AddBadDestinationRequest
+	(*AddBadDestinationResponse)(nil),    // 15: containarium.v1.AddBadDestinationResponse
+	(*RemoveBadDestinationRequest)(nil),  // 16: containarium.v1.RemoveBadDestinationRequest
+	(*RemoveBadDestinationResponse)(nil), // 17: containarium.v1.RemoveBadDestinationResponse
+	(*timestamppb.Timestamp)(nil),        // 18: google.protobuf.Timestamp
 }
 var file_containarium_v1_threatdetection_proto_depIdxs = []int32{
 	4,  // 0: containarium.v1.Evidence.flows:type_name -> containarium.v1.FlowEvidence
@@ -896,19 +1246,27 @@ var file_containarium_v1_threatdetection_proto_depIdxs = []int32{
 	0,  // 3: containarium.v1.Finding.severity:type_name -> containarium.v1.ThreatSeverity
 	2,  // 4: containarium.v1.Finding.state:type_name -> containarium.v1.FindingState
 	6,  // 5: containarium.v1.Finding.evidence:type_name -> containarium.v1.Evidence
-	11, // 6: containarium.v1.Finding.first_seen:type_name -> google.protobuf.Timestamp
-	11, // 7: containarium.v1.Finding.last_seen:type_name -> google.protobuf.Timestamp
+	18, // 6: containarium.v1.Finding.first_seen:type_name -> google.protobuf.Timestamp
+	18, // 7: containarium.v1.Finding.last_seen:type_name -> google.protobuf.Timestamp
 	1,  // 8: containarium.v1.RuleStatus.rule:type_name -> containarium.v1.ThreatRuleId
-	11, // 9: containarium.v1.RuleStatus.last_error_at:type_name -> google.protobuf.Timestamp
+	18, // 9: containarium.v1.RuleStatus.last_error_at:type_name -> google.protobuf.Timestamp
 	3,  // 10: containarium.v1.GetSentryStatusResponse.state:type_name -> containarium.v1.SentryState
 	8,  // 11: containarium.v1.GetSentryStatusResponse.rules:type_name -> containarium.v1.RuleStatus
-	9,  // 12: containarium.v1.ThreatDetectionService.GetSentryStatus:input_type -> containarium.v1.GetSentryStatusRequest
-	10, // 13: containarium.v1.ThreatDetectionService.GetSentryStatus:output_type -> containarium.v1.GetSentryStatusResponse
-	13, // [13:14] is the sub-list for method output_type
-	12, // [12:13] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	11, // 12: containarium.v1.ListBadDestinationsResponse.entries:type_name -> containarium.v1.BadDestinationEntry
+	11, // 13: containarium.v1.AddBadDestinationResponse.entry:type_name -> containarium.v1.BadDestinationEntry
+	9,  // 14: containarium.v1.ThreatDetectionService.GetSentryStatus:input_type -> containarium.v1.GetSentryStatusRequest
+	12, // 15: containarium.v1.ThreatDetectionService.ListBadDestinations:input_type -> containarium.v1.ListBadDestinationsRequest
+	14, // 16: containarium.v1.ThreatDetectionService.AddBadDestination:input_type -> containarium.v1.AddBadDestinationRequest
+	16, // 17: containarium.v1.ThreatDetectionService.RemoveBadDestination:input_type -> containarium.v1.RemoveBadDestinationRequest
+	10, // 18: containarium.v1.ThreatDetectionService.GetSentryStatus:output_type -> containarium.v1.GetSentryStatusResponse
+	13, // 19: containarium.v1.ThreatDetectionService.ListBadDestinations:output_type -> containarium.v1.ListBadDestinationsResponse
+	15, // 20: containarium.v1.ThreatDetectionService.AddBadDestination:output_type -> containarium.v1.AddBadDestinationResponse
+	17, // 21: containarium.v1.ThreatDetectionService.RemoveBadDestination:output_type -> containarium.v1.RemoveBadDestinationResponse
+	18, // [18:22] is the sub-list for method output_type
+	14, // [14:18] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_threatdetection_proto_init() }
@@ -922,7 +1280,7 @@ func file_containarium_v1_threatdetection_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_threatdetection_proto_rawDesc), len(file_containarium_v1_threatdetection_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   7,
+			NumMessages:   14,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

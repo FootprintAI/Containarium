@@ -19,7 +19,10 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ThreatDetectionService_GetSentryStatus_FullMethodName = "/containarium.v1.ThreatDetectionService/GetSentryStatus"
+	ThreatDetectionService_GetSentryStatus_FullMethodName      = "/containarium.v1.ThreatDetectionService/GetSentryStatus"
+	ThreatDetectionService_ListBadDestinations_FullMethodName  = "/containarium.v1.ThreatDetectionService/ListBadDestinations"
+	ThreatDetectionService_AddBadDestination_FullMethodName    = "/containarium.v1.ThreatDetectionService/AddBadDestination"
+	ThreatDetectionService_RemoveBadDestination_FullMethodName = "/containarium.v1.ThreatDetectionService/RemoveBadDestination"
 )
 
 // ThreatDetectionServiceClient is the client API for ThreatDetectionService service.
@@ -28,12 +31,24 @@ const (
 //
 // ThreatDetectionService serves the background security-sentry's status and
 // findings. GetSentryStatus ships with #1640 (background detection loop);
-// the findings/rule-config RPCs are added by later stories in the same
-// umbrella (#1641-#1643) — see docs/architecture/continuous-threat-detection.md.
+// *BadDestination* ships with #1641 (known-bad destination rule); the
+// findings/rule-config RPCs are added by later stories in the same umbrella
+// (#1642-#1643) — see docs/architecture/continuous-threat-detection.md.
 type ThreatDetectionServiceClient interface {
 	// GetSentryStatus returns the detection engine's on/off state and the
 	// health of every registered rule.
 	GetSentryStatus(ctx context.Context, in *GetSentryStatusRequest, opts ...grpc.CallOption) (*GetSentryStatusResponse, error)
+	// ListBadDestinations returns the merged baseline + operator-added
+	// known-bad-destination list the bad-destination rule matches against.
+	ListBadDestinations(ctx context.Context, in *ListBadDestinationsRequest, opts ...grpc.CallOption) (*ListBadDestinationsResponse, error)
+	// AddBadDestination adds an operator-supplied entry to the known-bad
+	// destination list, persisted so it survives a daemon restart, without a
+	// daemon rebuild.
+	AddBadDestination(ctx context.Context, in *AddBadDestinationRequest, opts ...grpc.CallOption) (*AddBadDestinationResponse, error)
+	// RemoveBadDestination removes a previously operator-added entry. Baseline
+	// (embedded) entries cannot be removed this way — a bare "not found" error
+	// covers the case since only additions are ever tracked as removable.
+	RemoveBadDestination(ctx context.Context, in *RemoveBadDestinationRequest, opts ...grpc.CallOption) (*RemoveBadDestinationResponse, error)
 }
 
 type threatDetectionServiceClient struct {
@@ -54,18 +69,60 @@ func (c *threatDetectionServiceClient) GetSentryStatus(ctx context.Context, in *
 	return out, nil
 }
 
+func (c *threatDetectionServiceClient) ListBadDestinations(ctx context.Context, in *ListBadDestinationsRequest, opts ...grpc.CallOption) (*ListBadDestinationsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListBadDestinationsResponse)
+	err := c.cc.Invoke(ctx, ThreatDetectionService_ListBadDestinations_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *threatDetectionServiceClient) AddBadDestination(ctx context.Context, in *AddBadDestinationRequest, opts ...grpc.CallOption) (*AddBadDestinationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AddBadDestinationResponse)
+	err := c.cc.Invoke(ctx, ThreatDetectionService_AddBadDestination_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *threatDetectionServiceClient) RemoveBadDestination(ctx context.Context, in *RemoveBadDestinationRequest, opts ...grpc.CallOption) (*RemoveBadDestinationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RemoveBadDestinationResponse)
+	err := c.cc.Invoke(ctx, ThreatDetectionService_RemoveBadDestination_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ThreatDetectionServiceServer is the server API for ThreatDetectionService service.
 // All implementations must embed UnimplementedThreatDetectionServiceServer
 // for forward compatibility.
 //
 // ThreatDetectionService serves the background security-sentry's status and
 // findings. GetSentryStatus ships with #1640 (background detection loop);
-// the findings/rule-config RPCs are added by later stories in the same
-// umbrella (#1641-#1643) — see docs/architecture/continuous-threat-detection.md.
+// *BadDestination* ships with #1641 (known-bad destination rule); the
+// findings/rule-config RPCs are added by later stories in the same umbrella
+// (#1642-#1643) — see docs/architecture/continuous-threat-detection.md.
 type ThreatDetectionServiceServer interface {
 	// GetSentryStatus returns the detection engine's on/off state and the
 	// health of every registered rule.
 	GetSentryStatus(context.Context, *GetSentryStatusRequest) (*GetSentryStatusResponse, error)
+	// ListBadDestinations returns the merged baseline + operator-added
+	// known-bad-destination list the bad-destination rule matches against.
+	ListBadDestinations(context.Context, *ListBadDestinationsRequest) (*ListBadDestinationsResponse, error)
+	// AddBadDestination adds an operator-supplied entry to the known-bad
+	// destination list, persisted so it survives a daemon restart, without a
+	// daemon rebuild.
+	AddBadDestination(context.Context, *AddBadDestinationRequest) (*AddBadDestinationResponse, error)
+	// RemoveBadDestination removes a previously operator-added entry. Baseline
+	// (embedded) entries cannot be removed this way — a bare "not found" error
+	// covers the case since only additions are ever tracked as removable.
+	RemoveBadDestination(context.Context, *RemoveBadDestinationRequest) (*RemoveBadDestinationResponse, error)
 	mustEmbedUnimplementedThreatDetectionServiceServer()
 }
 
@@ -78,6 +135,15 @@ type UnimplementedThreatDetectionServiceServer struct{}
 
 func (UnimplementedThreatDetectionServiceServer) GetSentryStatus(context.Context, *GetSentryStatusRequest) (*GetSentryStatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetSentryStatus not implemented")
+}
+func (UnimplementedThreatDetectionServiceServer) ListBadDestinations(context.Context, *ListBadDestinationsRequest) (*ListBadDestinationsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListBadDestinations not implemented")
+}
+func (UnimplementedThreatDetectionServiceServer) AddBadDestination(context.Context, *AddBadDestinationRequest) (*AddBadDestinationResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AddBadDestination not implemented")
+}
+func (UnimplementedThreatDetectionServiceServer) RemoveBadDestination(context.Context, *RemoveBadDestinationRequest) (*RemoveBadDestinationResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RemoveBadDestination not implemented")
 }
 func (UnimplementedThreatDetectionServiceServer) mustEmbedUnimplementedThreatDetectionServiceServer() {
 }
@@ -119,6 +185,60 @@ func _ThreatDetectionService_GetSentryStatus_Handler(srv interface{}, ctx contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ThreatDetectionService_ListBadDestinations_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListBadDestinationsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ThreatDetectionServiceServer).ListBadDestinations(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ThreatDetectionService_ListBadDestinations_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ThreatDetectionServiceServer).ListBadDestinations(ctx, req.(*ListBadDestinationsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ThreatDetectionService_AddBadDestination_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AddBadDestinationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ThreatDetectionServiceServer).AddBadDestination(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ThreatDetectionService_AddBadDestination_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ThreatDetectionServiceServer).AddBadDestination(ctx, req.(*AddBadDestinationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ThreatDetectionService_RemoveBadDestination_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RemoveBadDestinationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ThreatDetectionServiceServer).RemoveBadDestination(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ThreatDetectionService_RemoveBadDestination_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ThreatDetectionServiceServer).RemoveBadDestination(ctx, req.(*RemoveBadDestinationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ThreatDetectionService_ServiceDesc is the grpc.ServiceDesc for ThreatDetectionService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -129,6 +249,18 @@ var ThreatDetectionService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetSentryStatus",
 			Handler:    _ThreatDetectionService_GetSentryStatus_Handler,
+		},
+		{
+			MethodName: "ListBadDestinations",
+			Handler:    _ThreatDetectionService_ListBadDestinations_Handler,
+		},
+		{
+			MethodName: "AddBadDestination",
+			Handler:    _ThreatDetectionService_AddBadDestination_Handler,
+		},
+		{
+			MethodName: "RemoveBadDestination",
+			Handler:    _ThreatDetectionService_RemoveBadDestination_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
