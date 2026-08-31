@@ -40,6 +40,39 @@ SENTINEL_SERVICE="${SENTINEL_SERVICE:-containarium-sentinel}"
 # Space-separated peer hostnames; defaults are placeholders.
 PEERS=(${PEERS:-<peer-a> <peer-b>})
 
+# Expected checksum of the binary we are shipping. Every transfer below is
+# verified against this BEFORE the receiving host's service is stopped.
+#
+# This is not belt-and-braces: scp has been observed exiting 0 having written
+# a truncated file — twice to the same peer, delivering 31MB then 65MB of a
+# 143MB binary, with no error and plenty of free disk. Installing that and
+# restarting leaves a host with a corrupt binary and a stopped daemon, which
+# on a peer carrying tenant containers is an outage rather than a retry.
+#
+# Verifying before the stop means a bad transfer costs a retry instead.
+verify_remote() {
+    # verify_remote <label> <sha-command-runner...>
+    # The runner is invoked with the remote shell command as its last argument.
+    local label="$1"; shift
+    local got
+    got="$("$@" "sha256sum /tmp/containarium 2>/dev/null | cut -d' ' -f1" 2>/dev/null || true)"
+    got="$(printf '%s' "$got" | tr -d '[:space:]')"
+    if [ -z "$got" ]; then
+        echo "  ERROR: could not read the uploaded binary's checksum on $label" >&2
+        return 1
+    fi
+    if [ "$got" != "$EXPECTED_SHA" ]; then
+        echo "  ERROR: checksum mismatch on $label — refusing to install." >&2
+        echo "         expected $EXPECTED_SHA" >&2
+        echo "         got      $got" >&2
+        echo "         The transfer was corrupted or truncated. Nothing was stopped;" >&2
+        echo "         re-run to retry. If scp keeps truncating on this link, try:" >&2
+        echo "           cat '$BINARY' | ssh <host> 'cat > /tmp/containarium'" >&2
+        return 1
+    fi
+    echo "  checksum OK on $label"
+}
+
 # Parse flags
 BUILD=false
 for arg in "$@"; do
@@ -115,6 +148,17 @@ else
     echo "  OK: secret present on sentinel and primary"
 fi
 
+# Compute the expected checksum once, after any --build has produced the binary.
+if [ ! -f "$BINARY" ]; then
+    echo "ERROR: $BINARY not found (use --build, or build it first)" >&2
+    exit 1
+fi
+EXPECTED_SHA="$(sha256sum "$BINARY" 2>/dev/null | cut -d' ' -f1)"
+if [ -z "$EXPECTED_SHA" ]; then
+    EXPECTED_SHA="$(shasum -a 256 "$BINARY" | cut -d' ' -f1)"   # macOS
+fi
+echo "==> Shipping $BINARY (sha256 $EXPECTED_SHA)"
+
 # 2. Upload to sentinel
 echo "==> Uploading to sentinel..."
 gcloud compute scp "$BINARY" "$SENTINEL_VM:/tmp/containarium" \
@@ -122,6 +166,9 @@ gcloud compute scp "$BINARY" "$SENTINEL_VM:/tmp/containarium" \
 # Sentinel daemon holds /usr/local/bin/containarium open, so a plain `cp`
 # fails with "Text file busy". Stop the service before copying, mirroring
 # the primary-VM pattern below.
+verify_remote "sentinel ($SENTINEL_VM)" \
+    gcloud compute ssh "$SENTINEL_VM" --zone="$ZONE" --project="$PROJECT" \
+    --tunnel-through-iap --ssh-flag="-p 2222" --command
 gcloud compute ssh "$SENTINEL_VM" --zone="$ZONE" --project="$PROJECT" \
     --tunnel-through-iap --ssh-flag="-p 2222" \
     --command="sudo systemctl stop $SENTINEL_SERVICE && sleep 1 && sudo cp /tmp/containarium /usr/local/bin/containarium && sudo chmod +x /usr/local/bin/containarium && sudo systemctl start $SENTINEL_SERVICE"
@@ -131,6 +178,9 @@ echo "  Sentinel updated and restarted ($SENTINEL_SERVICE)"
 echo "==> Deploying on primary ($PRIMARY_VM)..."
 gcloud compute scp "$BINARY" "$PRIMARY_VM:/tmp/containarium" \
     --zone="$ZONE" --project="$PROJECT" --tunnel-through-iap
+verify_remote "primary ($PRIMARY_VM)" \
+    gcloud compute ssh "$PRIMARY_VM" --zone="$ZONE" --project="$PROJECT" \
+    --tunnel-through-iap --command
 gcloud compute ssh "$PRIMARY_VM" --zone="$ZONE" --project="$PROJECT" \
     --tunnel-through-iap \
     --command="sudo systemctl stop $PRIMARY_SERVICE && sleep 1 && sudo cp /tmp/containarium /usr/local/bin/containarium && sudo chmod +x /usr/local/bin/containarium && sudo systemctl start $PRIMARY_SERVICE"
@@ -147,6 +197,12 @@ if (( ${#PEERS[@]} > 0 )); then
         echo "  Warning: failed to upload to $peer (skipping)"
         continue
     }
+    # Verify before telling the operator to install it. Printing the install
+    # command for a truncated upload is how a corrupt binary gets run by hand.
+    if ! verify_remote "peer ($peer)" ssh "$peer"; then
+        echo "  Warning: skipping $peer — re-run to retry the upload"
+        continue
+    fi
     # Peers need interactive sudo — print the command for the user
     echo "  Binary uploaded to $peer:/tmp/containarium"
     echo "  Run on $peer:"
