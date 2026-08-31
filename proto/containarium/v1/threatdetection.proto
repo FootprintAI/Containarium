@@ -1,0 +1,87 @@
+syntax = "proto3";
+
+package containarium.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
+
+// ThreatSeverity ranks a security finding. Higher values are more severe.
+enum ThreatSeverity {
+  THREAT_SEVERITY_UNSPECIFIED = 0;
+  THREAT_SEVERITY_LOW = 1;
+  THREAT_SEVERITY_MEDIUM = 2;
+  THREAT_SEVERITY_HIGH = 3;
+  THREAT_SEVERITY_CRITICAL = 4;
+}
+
+// ThreatRuleId identifies which detection rule raised a finding.
+enum ThreatRuleId {
+  THREAT_RULE_ID_UNSPECIFIED = 0;
+  // Flow to a known-bad destination (e.g. a mining pool).
+  THREAT_RULE_ID_BAD_DESTINATION = 1;
+  // Flow whose source and destination belong to different tenants.
+  THREAT_RULE_ID_CROSS_TENANT_FLOW = 2;
+  // Burst of policy denies for one tenant within a time window.
+  THREAT_RULE_ID_DENY_BURST = 3;
+}
+
+// FindingState is the lifecycle state of a security finding.
+enum FindingState {
+  FINDING_STATE_UNSPECIFIED = 0;
+  FINDING_STATE_OPEN = 1;
+  FINDING_STATE_RESOLVED = 2;
+}
+
+// FlowEvidence captures one triggering flow's 5-tuple and volume, attached to
+// a finding as supporting evidence.
+message FlowEvidence {
+  string src_ip = 1;
+  string dst_ip = 2;
+  uint32 src_port = 3;
+  uint32 dst_port = 4;
+  // IP protocol name, e.g. "tcp", "udp", "icmp".
+  string protocol = 5;
+  int64 bytes = 6;
+  int64 packets = 7;
+}
+
+// DenyEvidence captures an aggregated count of policy-deny events matching a
+// destination/reason pair, attached to a finding as supporting evidence.
+message DenyEvidence {
+  string dst_ip = 1;
+  uint32 dst_port = 2;
+  string protocol = 3;
+  // Human-readable deny reason, e.g. "policy", "virtual_patch", "signature".
+  string reason = 4;
+  int64 count = 5;
+}
+
+// Evidence bundles the flow and deny records that triggered a finding.
+// Capped by the store to the most recent entries — see FindingStore.
+message Evidence {
+  repeated FlowEvidence flows = 1;
+  repeated DenyEvidence denies = 2;
+}
+
+// Finding is a single security finding raised by the threat-detection
+// engine: an open or resolved instance of a rule firing for one tenant.
+message Finding {
+  int64 id = 1;
+  ThreatRuleId rule = 2;
+  ThreatSeverity severity = 3;
+  string tenant_id = 4;
+  // Container name, when the finding is attributable to one container.
+  string container = 5;
+  string backend_id = 6;
+  // Dedupe scope within (rule, tenant_id): destination IP, peer tenant id,
+  // or "" — see FindingStore's open-finding unique index.
+  string subject = 7;
+  FindingState state = 8;
+  // How many times this rule has fired for this (tenant, subject) since
+  // first_seen, without a new row being created.
+  int64 count = 9;
+  Evidence evidence = 10;
+  google.protobuf.Timestamp first_seen = 11;
+  google.protobuf.Timestamp last_seen = 12;
+}

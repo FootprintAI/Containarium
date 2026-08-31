@@ -3390,7 +3390,7 @@
         "parameters": [
           {
             "name": "resourceTypes",
-            "description": "Filter by resource types (empty = all types)\n\n - RESOURCE_TYPE_UNSPECIFIED: Unspecified resource type\n - RESOURCE_TYPE_CONTAINER: Container resource\n - RESOURCE_TYPE_APP: App resource\n - RESOURCE_TYPE_ROUTE: Route resource\n - RESOURCE_TYPE_METRICS: Metrics resource\n - RESOURCE_TYPE_TRAFFIC: Traffic resource",
+            "description": "Filter by resource types (empty = all types)\n\n - RESOURCE_TYPE_UNSPECIFIED: Unspecified resource type\n - RESOURCE_TYPE_CONTAINER: Container resource\n - RESOURCE_TYPE_APP: App resource\n - RESOURCE_TYPE_ROUTE: Route resource\n - RESOURCE_TYPE_METRICS: Metrics resource\n - RESOURCE_TYPE_TRAFFIC: Traffic resource\n - RESOURCE_TYPE_SECURITY_FINDING: Security finding resource",
             "in": "query",
             "required": false,
             "type": "array",
@@ -3402,7 +3402,8 @@
                 "RESOURCE_TYPE_APP",
                 "RESOURCE_TYPE_ROUTE",
                 "RESOURCE_TYPE_METRICS",
-                "RESOURCE_TYPE_TRAFFIC"
+                "RESOURCE_TYPE_TRAFFIC",
+                "RESOURCE_TYPE_SECURITY_FINDING"
               ]
             },
             "collectionFormat": "multi"
@@ -9048,6 +9049,30 @@
         }
       }
     },
+    "DenyEvidence": {
+      "type": "object",
+      "properties": {
+        "dstIp": {
+          "type": "string"
+        },
+        "dstPort": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "protocol": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string",
+          "description": "Human-readable deny reason, e.g. \"policy\", \"virtual_patch\", \"signature\"."
+        },
+        "count": {
+          "type": "string",
+          "format": "int64"
+        }
+      },
+      "description": "DenyEvidence captures an aggregated count of policy-deny events matching a\ndestination/reason pair, attached to a finding as supporting evidence."
+    },
     "DeployAppRequest": {
       "type": "object",
       "properties": {
@@ -9432,6 +9457,9 @@
         },
         "trafficEvent": {
           "$ref": "#/definitions/TrafficEvent"
+        },
+        "securityFindingEvent": {
+          "$ref": "#/definitions/SecurityFindingEvent"
         }
       },
       "title": "Event is the top-level event message sent to clients"
@@ -9453,11 +9481,32 @@
         "EVENT_TYPE_ROUTE_ADDED",
         "EVENT_TYPE_ROUTE_DELETED",
         "EVENT_TYPE_METRICS_UPDATE",
-        "EVENT_TYPE_TRAFFIC_UPDATE"
+        "EVENT_TYPE_TRAFFIC_UPDATE",
+        "EVENT_TYPE_SECURITY_FINDING"
       ],
       "default": "EVENT_TYPE_UNSPECIFIED",
-      "description": "- EVENT_TYPE_UNSPECIFIED: Unspecified event type (should not be used)\n - EVENT_TYPE_CONTAINER_CREATED: Container events (1-9)\nContainer was created\n - EVENT_TYPE_CONTAINER_DELETED: Container was deleted\n - EVENT_TYPE_CONTAINER_STARTED: Container was started\n - EVENT_TYPE_CONTAINER_STOPPED: Container was stopped\n - EVENT_TYPE_CONTAINER_STATE_CHANGED: Container state changed\n - EVENT_TYPE_APP_DEPLOYED: App events (10-19)\nApp was deployed\n - EVENT_TYPE_APP_DELETED: App was deleted\n - EVENT_TYPE_APP_STARTED: App was started\n - EVENT_TYPE_APP_STOPPED: App was stopped\n - EVENT_TYPE_APP_STATE_CHANGED: App state changed\n - EVENT_TYPE_ROUTE_ADDED: Network events (20-29)\nRoute was added\n - EVENT_TYPE_ROUTE_DELETED: Route was deleted\n - EVENT_TYPE_METRICS_UPDATE: System events (30-39)\nMetrics update\n - EVENT_TYPE_TRAFFIC_UPDATE: Traffic events (40-49)\nTraffic/connection update",
+      "description": "- EVENT_TYPE_UNSPECIFIED: Unspecified event type (should not be used)\n - EVENT_TYPE_CONTAINER_CREATED: Container events (1-9)\nContainer was created\n - EVENT_TYPE_CONTAINER_DELETED: Container was deleted\n - EVENT_TYPE_CONTAINER_STARTED: Container was started\n - EVENT_TYPE_CONTAINER_STOPPED: Container was stopped\n - EVENT_TYPE_CONTAINER_STATE_CHANGED: Container state changed\n - EVENT_TYPE_APP_DEPLOYED: App events (10-19)\nApp was deployed\n - EVENT_TYPE_APP_DELETED: App was deleted\n - EVENT_TYPE_APP_STARTED: App was started\n - EVENT_TYPE_APP_STOPPED: App was stopped\n - EVENT_TYPE_APP_STATE_CHANGED: App state changed\n - EVENT_TYPE_ROUTE_ADDED: Network events (20-29)\nRoute was added\n - EVENT_TYPE_ROUTE_DELETED: Route was deleted\n - EVENT_TYPE_METRICS_UPDATE: System events (30-39)\nMetrics update\n - EVENT_TYPE_TRAFFIC_UPDATE: Traffic events (40-49)\nTraffic/connection update\n - EVENT_TYPE_SECURITY_FINDING: Security events (50-59)\nA security finding was created or updated by the threat-detection engine",
       "title": "EventType represents the type of resource change event"
+    },
+    "Evidence": {
+      "type": "object",
+      "properties": {
+        "flows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/FlowEvidence"
+          }
+        },
+        "denies": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/DenyEvidence"
+          }
+        }
+      },
+      "description": "Evidence bundles the flow and deny records that triggered a finding.\nCapped by the store to the most recent entries — see FindingStore."
     },
     "ExecInSandboxBody": {
       "type": "object",
@@ -9489,6 +9538,97 @@
           "format": "int32"
         }
       }
+    },
+    "Finding": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "int64"
+        },
+        "rule": {
+          "$ref": "#/definitions/ThreatRuleId"
+        },
+        "severity": {
+          "$ref": "#/definitions/ThreatSeverity"
+        },
+        "tenantId": {
+          "type": "string"
+        },
+        "container": {
+          "type": "string",
+          "description": "Container name, when the finding is attributable to one container."
+        },
+        "backendId": {
+          "type": "string"
+        },
+        "subject": {
+          "type": "string",
+          "description": "Dedupe scope within (rule, tenant_id): destination IP, peer tenant id,\nor \"\" — see FindingStore's open-finding unique index."
+        },
+        "state": {
+          "$ref": "#/definitions/FindingState"
+        },
+        "count": {
+          "type": "string",
+          "format": "int64",
+          "description": "How many times this rule has fired for this (tenant, subject) since\nfirst_seen, without a new row being created."
+        },
+        "evidence": {
+          "$ref": "#/definitions/Evidence"
+        },
+        "firstSeen": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "lastSeen": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "description": "Finding is a single security finding raised by the threat-detection\nengine: an open or resolved instance of a rule firing for one tenant."
+    },
+    "FindingState": {
+      "type": "string",
+      "enum": [
+        "FINDING_STATE_UNSPECIFIED",
+        "FINDING_STATE_OPEN",
+        "FINDING_STATE_RESOLVED"
+      ],
+      "default": "FINDING_STATE_UNSPECIFIED",
+      "description": "FindingState is the lifecycle state of a security finding."
+    },
+    "FlowEvidence": {
+      "type": "object",
+      "properties": {
+        "srcIp": {
+          "type": "string"
+        },
+        "dstIp": {
+          "type": "string"
+        },
+        "srcPort": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "dstPort": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "protocol": {
+          "type": "string",
+          "description": "IP protocol name, e.g. \"tcp\", \"udp\", \"icmp\"."
+        },
+        "bytes": {
+          "type": "string",
+          "format": "int64"
+        },
+        "packets": {
+          "type": "string",
+          "format": "int64"
+        }
+      },
+      "description": "FlowEvidence captures one triggering flow's 5-tuple and volume, attached to\na finding as supporting evidence."
     },
     "GPUInfo": {
       "type": "object",
@@ -12183,10 +12323,11 @@
         "RESOURCE_TYPE_APP",
         "RESOURCE_TYPE_ROUTE",
         "RESOURCE_TYPE_METRICS",
-        "RESOURCE_TYPE_TRAFFIC"
+        "RESOURCE_TYPE_TRAFFIC",
+        "RESOURCE_TYPE_SECURITY_FINDING"
       ],
       "default": "RESOURCE_TYPE_UNSPECIFIED",
-      "description": "- RESOURCE_TYPE_UNSPECIFIED: Unspecified resource type\n - RESOURCE_TYPE_CONTAINER: Container resource\n - RESOURCE_TYPE_APP: App resource\n - RESOURCE_TYPE_ROUTE: Route resource\n - RESOURCE_TYPE_METRICS: Metrics resource\n - RESOURCE_TYPE_TRAFFIC: Traffic resource",
+      "description": "- RESOURCE_TYPE_UNSPECIFIED: Unspecified resource type\n - RESOURCE_TYPE_CONTAINER: Container resource\n - RESOURCE_TYPE_APP: App resource\n - RESOURCE_TYPE_ROUTE: Route resource\n - RESOURCE_TYPE_METRICS: Metrics resource\n - RESOURCE_TYPE_TRAFFIC: Traffic resource\n - RESOURCE_TYPE_SECURITY_FINDING: Security finding resource",
       "title": "ResourceType identifies which resource type an event pertains to"
     },
     "RestartAppBody": {
@@ -12595,6 +12736,15 @@
         }
       },
       "description": "SecretMetadata is the public-safe view of a stored secret.\n`value` is never returned by `ListSecrets` — only per-name `GetSecret`."
+    },
+    "SecurityFindingEvent": {
+      "type": "object",
+      "properties": {
+        "finding": {
+          "$ref": "#/definitions/Finding"
+        }
+      },
+      "description": "SecurityFindingEvent contains a security finding raised or updated by the\nthreat-detection engine."
     },
     "SelfMeasurement": {
       "type": "object",
@@ -13363,6 +13513,29 @@
         }
       },
       "title": "TestWebhookResponse returns the result of the test"
+    },
+    "ThreatRuleId": {
+      "type": "string",
+      "enum": [
+        "THREAT_RULE_ID_UNSPECIFIED",
+        "THREAT_RULE_ID_BAD_DESTINATION",
+        "THREAT_RULE_ID_CROSS_TENANT_FLOW",
+        "THREAT_RULE_ID_DENY_BURST"
+      ],
+      "default": "THREAT_RULE_ID_UNSPECIFIED",
+      "description": "ThreatRuleId identifies which detection rule raised a finding.\n\n - THREAT_RULE_ID_BAD_DESTINATION: Flow to a known-bad destination (e.g. a mining pool).\n - THREAT_RULE_ID_CROSS_TENANT_FLOW: Flow whose source and destination belong to different tenants.\n - THREAT_RULE_ID_DENY_BURST: Burst of policy denies for one tenant within a time window."
+    },
+    "ThreatSeverity": {
+      "type": "string",
+      "enum": [
+        "THREAT_SEVERITY_UNSPECIFIED",
+        "THREAT_SEVERITY_LOW",
+        "THREAT_SEVERITY_MEDIUM",
+        "THREAT_SEVERITY_HIGH",
+        "THREAT_SEVERITY_CRITICAL"
+      ],
+      "default": "THREAT_SEVERITY_UNSPECIFIED",
+      "description": "ThreatSeverity ranks a security finding. Higher values are more severe."
     },
     "ToggleAutoSleepBody": {
       "type": "object",
