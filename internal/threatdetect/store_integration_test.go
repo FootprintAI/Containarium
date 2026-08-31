@@ -35,10 +35,15 @@ func threatdetectPool(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(pool.Close)
-	for _, q := range []string{`DROP TABLE IF EXISTS security_findings`, `DROP TABLE IF EXISTS audit_logs`} {
-		if _, err := pool.Exec(context.Background(), q); err != nil {
-			t.Fatalf("reset (%s): %v", q, err)
-		}
+	// Only reset security_findings: it's this package's own table. audit_logs
+	// belongs to internal/audit, whose own integration tests run concurrently
+	// against this same database in CI (`go test ./pkgA/ ./pkgB/ ...` runs
+	// package binaries in parallel) — dropping it here raced their schema
+	// setup and produced spurious "relation does not exist" / duplicate
+	// pg_type failures. audit.NewStore's initSchema is idempotent and safe
+	// to call against a table this package doesn't own.
+	if _, err := pool.Exec(context.Background(), `DROP TABLE IF EXISTS security_findings`); err != nil {
+		t.Fatalf("reset (security_findings): %v", err)
 	}
 	return pool
 }

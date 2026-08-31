@@ -38,7 +38,7 @@ func TestEvidence_Capped(t *testing.T) {
 				t.Errorf("Denies = %d, want %d", len(got.Denies), tt.wantDenies)
 			}
 			// "most recent" means the tail, not an arbitrary EvidenceCap-sized slice.
-			if tt.flows > EvidenceCap && got.Flows[len(got.Flows)-1].DstPort != uint32(tt.flows-1) {
+			if tt.flows > EvidenceCap && int(got.Flows[len(got.Flows)-1].DstPort) != tt.flows-1 {
 				t.Errorf("last kept flow DstPort = %d, want %d (the most recent)", got.Flows[len(got.Flows)-1].DstPort, tt.flows-1)
 			}
 		})
