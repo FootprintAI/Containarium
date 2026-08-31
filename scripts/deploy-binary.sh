@@ -153,9 +153,19 @@ if [ ! -f "$BINARY" ]; then
     echo "ERROR: $BINARY not found (use --build, or build it first)" >&2
     exit 1
 fi
-EXPECTED_SHA="$(sha256sum "$BINARY" 2>/dev/null | cut -d' ' -f1)"
-if [ -z "$EXPECTED_SHA" ]; then
-    EXPECTED_SHA="$(shasum -a 256 "$BINARY" | cut -d' ' -f1)"   # macOS
+# Pick the checksum tool by availability, not by letting one fail. Under
+# `set -euo pipefail` a failed command substitution aborts the script, so a
+# "try sha256sum, fall back to shasum" shape would exit before ever reaching
+# the fallback — the fallback would be dead code, and running from macOS
+# (shasum, no sha256sum) would abort the deploy here.
+if command -v sha256sum >/dev/null 2>&1; then
+    EXPECTED_SHA="$(sha256sum "$BINARY" | cut -d' ' -f1)"
+elif command -v shasum >/dev/null 2>&1; then
+    EXPECTED_SHA="$(shasum -a 256 "$BINARY" | cut -d' ' -f1)"
+else
+    echo "ERROR: neither sha256sum nor shasum found — cannot verify transfers." >&2
+    echo "       Refusing to deploy unverified; install one and re-run." >&2
+    exit 1
 fi
 echo "==> Shipping $BINARY (sha256 $EXPECTED_SHA)"
 
