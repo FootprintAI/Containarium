@@ -3,17 +3,25 @@ package threatdetect
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/events"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
+
+// pgUniqueViolation is Postgres' SQLSTATE for a unique-constraint conflict —
+// what Upsert's INSERT branch hits if two callers race to create the first
+// open finding for the same (rule, tenant_id, subject) key at once (the
+// FOR UPDATE lock below only serializes callers once a row exists).
+const pgUniqueViolation = "23505"
 
 // auditResourceType is the audit_logs.resource_type value every finding is
 // logged under, per the design doc's "category security.finding".
@@ -153,6 +161,145 @@ func (s *FindingStore) deleteOrphan(ctx context.Context, id int64) {
 	if _, err := s.pool.Exec(ctx, `DELETE FROM security_findings WHERE id = $1`, id); err != nil {
 		log.Printf("threatdetect: failed to roll back orphaned finding %d after an audit-log failure: %v", id, err)
 	}
+}
+
+// Upsert dedupes an open (rule, tenant_id, subject) finding: a repeat
+// increments count and bumps last_seen (merging evidence, capped) instead of
+// creating a new row. This is the detection engine's entry point (#1640) —
+// Insert always creates a new row (#1639's job) and is unaffected.
+//
+// On the caller-supplied f: Rule, Severity, TenantID, Container, BackendID,
+// Subject, and Evidence are read; ID/State/Count/FirstSeen/LastSeen are
+// ignored (set by this method) except that a caller-supplied Evidence is
+// merged into (not replacing) an existing open finding's evidence.
+func (s *FindingStore) Upsert(ctx context.Context, f *Finding) (*Finding, error) {
+	const maxAttempts = 3
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		out, retry, err := s.tryUpsert(ctx, f)
+		if !retry {
+			return out, err
+		}
+		lastErr = err
+	}
+	return nil, fmt.Errorf("threatdetect: upsert finding: exhausted retries after a concurrent insert race: %w", lastErr)
+}
+
+// tryUpsert is one attempt at Upsert. retry is true only when a concurrent
+// caller won the race to insert the first row for this key between our
+// SELECT and our INSERT — Upsert retries that case (it becomes a plain
+// update on the next attempt) rather than surfacing a transient conflict as
+// a permanent error.
+func (s *FindingStore) tryUpsert(ctx context.Context, f *Finding) (out *Finding, retry bool, err error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, false, fmt.Errorf("threatdetect: begin upsert: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback(ctx)
+		}
+	}()
+
+	now := time.Now()
+	row := tx.QueryRow(ctx, `
+		SELECT id, count, evidence
+		FROM security_findings
+		WHERE rule = $1 AND tenant_id = $2 AND subject = $3 AND state = 'open'
+		FOR UPDATE
+	`, f.Rule.String(), f.TenantID, f.Subject)
+
+	var id, count int64
+	var evidenceJSON []byte
+	selErr := row.Scan(&id, &count, &evidenceJSON)
+
+	switch {
+	case selErr == nil:
+		var existing Evidence
+		if uerr := json.Unmarshal(evidenceJSON, &existing); uerr != nil {
+			return nil, false, fmt.Errorf("threatdetect: unmarshal existing evidence: %w", uerr)
+		}
+		merged := Evidence{
+			Flows:  append(existing.Flows, f.Evidence.Flows...),
+			Denies: append(existing.Denies, f.Evidence.Denies...),
+		}.Capped()
+		mergedJSON, merr := json.Marshal(merged)
+		if merr != nil {
+			return nil, false, fmt.Errorf("threatdetect: marshal merged evidence: %w", merr)
+		}
+		newCount := count + 1
+		if _, uerr := tx.Exec(ctx, `
+			UPDATE security_findings SET count = $1, last_seen = $2, evidence = $3 WHERE id = $4
+		`, newCount, now, mergedJSON, id); uerr != nil {
+			return nil, false, fmt.Errorf("threatdetect: update finding: %w", uerr)
+		}
+		out = &Finding{
+			ID: id, Rule: f.Rule, Severity: f.Severity, TenantID: f.TenantID,
+			Container: f.Container, BackendID: f.BackendID, Subject: f.Subject,
+			State: FindingStateOpen, Count: newCount, Evidence: merged, LastSeen: now,
+		}
+	case errors.Is(selErr, pgx.ErrNoRows):
+		f.FirstSeen, f.LastSeen = now, now
+		f.State = FindingStateOpen
+		f.Count = 1
+		f.Evidence = f.Evidence.Capped()
+		evJSON, merr := json.Marshal(f.Evidence)
+		if merr != nil {
+			return nil, false, fmt.Errorf("threatdetect: marshal evidence: %w", merr)
+		}
+		insertRow := tx.QueryRow(ctx, `
+			INSERT INTO security_findings
+				(rule, severity, tenant_id, container, backend_id, subject, state, count, evidence, first_seen, last_seen)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			RETURNING id
+		`, f.Rule.String(), f.Severity.String(), f.TenantID, f.Container, f.BackendID,
+			f.Subject, string(f.State), f.Count, evJSON, f.FirstSeen, f.LastSeen)
+		if serr := insertRow.Scan(&f.ID); serr != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(serr, &pgErr) && pgErr.Code == pgUniqueViolation {
+				return nil, true, serr // lost the race — caller retries as an update
+			}
+			return nil, false, fmt.Errorf("threatdetect: insert finding: %w", serr)
+		}
+		out = f
+	default:
+		return nil, false, fmt.Errorf("threatdetect: select existing finding: %w", selErr)
+	}
+
+	if cerr := tx.Commit(ctx); cerr != nil {
+		return nil, false, fmt.Errorf("threatdetect: commit upsert: %w", cerr)
+	}
+	committed = true
+
+	// Audit + emit after commit, mirroring Insert's ordering and compensation:
+	// a finding must never be visible to a subscriber or missing from the
+	// audit chain relative to each other. Unlike Insert, an update-path
+	// failure here can't be compensated by deleting the row (it predates this
+	// call and already carries an audit trail from its creation) — best
+	// effort is logging; the row's count/evidence still correctly reflect
+	// what happened, only missing one audit entry for THIS repeat.
+	detail, merr := json.Marshal(out.Evidence)
+	if merr != nil {
+		log.Printf("threatdetect: marshal audit detail for finding %d: %v", out.ID, merr)
+		return out, false, nil
+	}
+	auditErr := s.audit.Log(ctx, &audit.AuditEntry{
+		Action:       "create",
+		ResourceType: auditResourceType,
+		ResourceID:   fmt.Sprintf("%d", out.ID),
+		Detail:       fmt.Sprintf("rule=%s severity=%s tenant=%s subject=%s count=%d evidence=%s", out.Rule, out.Severity, out.TenantID, out.Subject, out.Count, detail),
+	})
+	if auditErr != nil {
+		if out.Count == 1 {
+			// First-seen row: same guarantee Insert gives — no finding is ever
+			// left visible without an audit trail backing it.
+			s.deleteOrphan(ctx, out.ID)
+		}
+		return nil, false, fmt.Errorf("threatdetect: audit log finding: %w", auditErr)
+	}
+	s.emitter.EmitSecurityFinding(out.ToProto())
+	return out, false, nil
 }
 
 // Get returns the finding with the given id.

@@ -96,6 +96,14 @@ type NetworkPolicyEnforcer struct {
 	flowPoll        time.Duration // how often to read the BPF flows map
 	flowIdleTimeout time.Duration // #632: idle age past which a flow is reaped to history
 
+	// flowHook and denyHook feed the threat-detection engine (#1640): the
+	// same per-poll flow batch and per-event deny stream this enforcer
+	// already collects, fanned out to a second consumer. nil = sentry
+	// disabled. Same one-callback pattern as Scanner.SetScanResultHook /
+	// auto_quarantine.go — the one existing detect→act template.
+	flowHook func(flows []netbpf.FlowRecord)
+	denyHook func(ev netbpf.DenyEvent)
+
 	loader *netbpf.Loader
 
 	// vethCache maps a running container name -> its host veth name, so a steady
@@ -151,6 +159,42 @@ func NewNetworkPolicyEnforcer(objPath string, store NetworkPolicyStore, registry
 // accounting read from the BPF flows map (#627). Must be called before Start.
 // Nil leaves flow accounting off.
 func (e *NetworkPolicyEnforcer) SetFlowSink(s FlowSink) { e.flowSink = s }
+
+// SetFlowHook wires the threat-detection engine's flow consumer (#1640).
+// Called synchronously at the end of every flow-accounting poll (15s
+// cadence) with that poll's active flow batch — the same records
+// flowsToEBPF turns into traffic-view rows. Must be called before Start.
+// Nil (default) leaves detection off.
+func (e *NetworkPolicyEnforcer) SetFlowHook(fn func(flows []netbpf.FlowRecord)) { e.flowHook = fn }
+
+// SetDenyHook wires the threat-detection engine's deny-event consumer
+// (#1640). Called synchronously from OnDenyEvent, alongside the existing
+// audit-log write. Must be called before Start. Nil (default) leaves
+// detection off.
+func (e *NetworkPolicyEnforcer) SetDenyHook(fn func(ev netbpf.DenyEvent)) { e.denyHook = fn }
+
+// TenantForIP resolves a container IP to its owning tenant id via the
+// ip_tenant cache this enforcer already maintains (refreshed every 10s
+// reconcile — see reconcile/applyIPTenant). Exposed for
+// threatdetect.RuleContext so rules can attribute a flow endpoint without
+// talking to Incus or the DB themselves. ok is false for an IP this backend
+// doesn't recognize.
+func (e *NetworkPolicyEnforcer) TenantForIP(ip netip.Addr) (tenantID string, ok bool) {
+	if !ip.Is4() {
+		return "", false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	id, found := e.ipTenantInstalled[ip.As4()]
+	if !found {
+		return "", false
+	}
+	name, found := e.idName[id]
+	if !found {
+		return "", false
+	}
+	return name, true
+}
 
 // SetSignaturesEnabled opts into Tier 2 (#661) cleartext exploit-signature
 // scanning on the inbound (container-receive) path: the curated built-in set is
@@ -412,6 +456,12 @@ func (e *NetworkPolicyEnforcer) Stop() {
 // audit log. Action network_policy.deny; the tenant name is resolved from the
 // id->name map built during reconcile.
 func (e *NetworkPolicyEnforcer) OnDenyEvent(ctx context.Context, ev netbpf.DenyEvent) {
+	// #1640: hand every deny event to the threat-detection engine, same as
+	// the audit write below — nil hook is the default (sentry disabled).
+	if e.denyHook != nil {
+		e.denyHook(ev)
+	}
+
 	e.mu.Lock()
 	tenant := e.idName[ev.TenantID]
 	dropped := e.enforced[ev.TenantID]
@@ -511,6 +561,14 @@ func (e *NetworkPolicyEnforcer) pollFlows() {
 	// Live view = currently-active flows only (an idle flow being reaped this
 	// poll shouldn't show as a live connection).
 	e.flowSink.IngestEBPFFlows(flowsToEBPF(active, attached, now))
+
+	// #1640: hand this poll's active batch to the threat-detection engine,
+	// synchronously — worst-case detection latency is one poll interval
+	// (15s), well inside the engine's 60s budget. Runs in observation mode
+	// (no ENFORCE requirement); nil hook is the default (sentry disabled).
+	if e.flowHook != nil {
+		e.flowHook(active)
+	}
 
 	// Idle reaper (#632): a flow whose last packet is older than the idle
 	// timeout has effectively closed. Persist its final counters to history,

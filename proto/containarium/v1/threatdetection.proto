@@ -3,6 +3,8 @@ syntax = "proto3";
 package containarium.v1;
 
 import "google/protobuf/timestamp.proto";
+import "google/api/annotations.proto";
+import "protoc-gen-openapiv2/options/annotations.proto";
 
 option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
 
@@ -84,4 +86,60 @@ message Finding {
   Evidence evidence = 10;
   google.protobuf.Timestamp first_seen = 11;
   google.protobuf.Timestamp last_seen = 12;
+}
+
+// SentryState is the overall on/off state of the background threat-detection
+// engine, as reported by GetSentryStatus.
+enum SentryState {
+  SENTRY_STATE_UNSPECIFIED = 0;
+  // CONTAINARIUM_THREAT_SENTRY is not set — the engine was never constructed.
+  SENTRY_STATE_DISABLED = 1;
+  // Sentry is enabled but the eBPF object isn't loaded (no flow/deny
+  // signals to evaluate), or the FindingStore has no Postgres connection.
+  // Never silently report "no findings" — always UNAVAILABLE with a reason.
+  SENTRY_STATE_UNAVAILABLE = 2;
+  // Running, but FindingStore has no Postgres connection: findings/events/
+  // audit entries still flow, backed by a bounded in-memory ring instead of
+  // persisted rows — they do not survive a daemon restart.
+  SENTRY_STATE_DEGRADED = 3;
+  // Running normally with Postgres-backed persistence.
+  SENTRY_STATE_OK = 4;
+}
+
+// RuleStatus is one registered rule's health, so a single panicking rule is
+// visible without taking down the sentry status as a whole.
+message RuleStatus {
+  ThreatRuleId rule = 1;
+  bool healthy = 2;
+  // Empty when healthy. Set to the last recovered panic/error otherwise.
+  string last_error = 3;
+  google.protobuf.Timestamp last_error_at = 4;
+}
+
+message GetSentryStatusRequest {}
+
+message GetSentryStatusResponse {
+  SentryState state = 1;
+  // Human-readable explanation, always set for DISABLED/UNAVAILABLE.
+  string reason = 2;
+  repeated RuleStatus rules = 3;
+}
+
+// ThreatDetectionService serves the background security-sentry's status and
+// findings. GetSentryStatus ships with #1640 (background detection loop);
+// the findings/rule-config RPCs are added by later stories in the same
+// umbrella (#1641-#1643) — see docs/architecture/continuous-threat-detection.md.
+service ThreatDetectionService {
+  // GetSentryStatus returns the detection engine's on/off state and the
+  // health of every registered rule.
+  rpc GetSentryStatus(GetSentryStatusRequest) returns (GetSentryStatusResponse) {
+    option (google.api.http) = {
+      get: "/v1/security/sentry/status"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get threat-detection sentry status";
+      description: "Returns the background detection engine's on/off state (disabled, unavailable, degraded, ok) and per-rule health.";
+      tags: "Security";
+    };
+  }
 }

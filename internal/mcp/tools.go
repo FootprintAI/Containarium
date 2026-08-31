@@ -900,6 +900,23 @@ func (s *Server) registerTools() {
 			Handler: handleSecurityRemediate,
 		},
 		{
+			Name: "security_sentry_status",
+			Description: "Report the background threat-detection engine's on/off state (#1640): " +
+				"'OK' (running, findings persisted), 'DEGRADED' (running, but no Postgres — " +
+				"findings don't survive a daemon restart), 'UNAVAILABLE' (no eBPF object loaded, " +
+				"or no audit store — nothing is being detected; check `reason`), or 'DISABLED' " +
+				"(CONTAINARIUM_THREAT_SENTRY unset). Also lists every registered detection rule's " +
+				"health — a rule that panicked shows healthy=false with lastError set, but the " +
+				"engine and every other rule keep running.\n\n" +
+				"Call this before trusting the absence of security findings: UNAVAILABLE/DISABLED " +
+				"mean nothing is watching, not that nothing is wrong. Takes no arguments.",
+			InputSchema: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+			Handler: handleSecuritySentryStatus,
+		},
+		{
 			Name: "install_zap",
 			Description: "Download and install OWASP ZAP into this host's security container. " +
 				"Admin-only, one-time-per-host setup — `security_scan` (kind=zap) and the " +
@@ -1455,9 +1472,10 @@ func toolScopeAssignments() map[string]string {
 		"kms_envelope_coverage":   auth.ScopeKMSAdmin,
 		"kms_migrate_to_envelope": auth.ScopeKMSAdmin,
 		// security tools
-		"security_scan":      auth.ScopeSecurityWrite,
-		"security_remediate": auth.ScopeSecurityWrite,
-		"security_findings":  auth.ScopeSecurityRead,
+		"security_scan":          auth.ScopeSecurityWrite,
+		"security_remediate":     auth.ScopeSecurityWrite,
+		"security_findings":      auth.ScopeSecurityRead,
+		"security_sentry_status": auth.ScopeSecurityRead,
 		// install_zap is admin-only (the daemon also enforces
 		// RoleAdmin server-side); scope-gated the same as the other
 		// security-write tools at the MCP layer.
