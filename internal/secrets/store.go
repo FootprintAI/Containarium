@@ -608,6 +608,13 @@ func (s *Store) rewrapTenant(ctx context.Context, username string) error {
 // a secret at the exact moment an admin rewraps their key).
 const rewrapMaxAttempts = 5
 
+// rewrapOneTestHook, when non-nil, is invoked by rewrapOne once per
+// attempt, right after its read and before its conditional write —
+// tests use it to deterministically force a version mismatch on a
+// chosen attempt, so the retry branch is directly testable instead of
+// depending on real goroutine timing. Always nil outside tests.
+var rewrapOneTestHook func(username, name string, attempt int)
+
 // rewrapOne re-encrypts a single secret under the currently-resolved
 // KMS client, via a version-guarded conditional UPDATE rather than
 // Get-then-Set. A plain Get-then-Set is a read-modify-write race: if a
@@ -629,6 +636,14 @@ func (s *Store) rewrapOne(ctx context.Context, username, name string) error {
 				return nil // deleted concurrently — nothing left to rewrap
 			}
 			return fmt.Errorf("read: %w", err)
+		}
+		// Test-only seam: lets tests deterministically inject a
+		// concurrent write between this read and the conditional
+		// write below, so the retry branch is directly exercisable
+		// instead of relying on real goroutine timing. Nil (and this
+		// call a no-op) in production.
+		if rewrapOneTestHook != nil {
+			rewrapOneTestHook(username, name, attempt)
 		}
 		nonce, ct, wrappedDEK, kekID, err := s.encryptForStorage(ctx, username, name, []byte(value))
 		if err != nil {
