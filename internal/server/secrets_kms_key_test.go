@@ -33,8 +33,17 @@ func kmsKeyTestCtx(username, roles, scopes string) context.Context {
 	return metadata.NewIncomingContext(context.Background(), metadata.Pairs(pairs...))
 }
 
+// These three denial tests use an UNCONFIGURED server (nil secretsStore,
+// on purpose): the auth checks run BEFORE the store/argument checks, so
+// an unauthenticated or under-privileged caller is denied without ever
+// touching Postgres — and without an unauthenticated caller being able
+// to learn whether this daemon even has a secrets store configured.
+// (CodeRabbit finding on #1631: the first version of this handler
+// checked the store first, which both leaked that distinction and
+// forced every authz test onto CONTAINARIUM_TEST_DSN.)
+
 func TestSetTenantKMSKey_NoAuthContext(t *testing.T) {
-	s := &ContainerServer{secretsStore: mustTestSecretsStore(t)}
+	s := &ContainerServer{}
 	_, err := s.SetTenantKMSKey(context.Background(),
 		&pb.SetTenantKMSKeyRequest{Username: "alice", KekResourceName: "k"})
 	if status.Code(err) != codes.Unauthenticated {
@@ -43,7 +52,7 @@ func TestSetTenantKMSKey_NoAuthContext(t *testing.T) {
 }
 
 func TestSetTenantKMSKey_NonAdminDenied(t *testing.T) {
-	s := &ContainerServer{secretsStore: mustTestSecretsStore(t)}
+	s := &ContainerServer{}
 	ctx := kmsKeyTestCtx("alice", "member", "secrets:write")
 	_, err := s.SetTenantKMSKey(ctx, &pb.SetTenantKMSKeyRequest{Username: "alice", KekResourceName: "k"})
 	if status.Code(err) != codes.PermissionDenied {
@@ -56,7 +65,7 @@ func TestSetTenantKMSKey_AdminWithoutExplicitScopeDenied(t *testing.T) {
 	// token must NOT be enough, even for changing its own tenant's
 	// key — this is a privileged operation with no self-access
 	// exception (see the handler's doc comment).
-	s := &ContainerServer{secretsStore: mustTestSecretsStore(t)}
+	s := &ContainerServer{}
 	ctx := kmsKeyTestCtx("cloud-daemon", "admin", "")
 	_, err := s.SetTenantKMSKey(ctx, &pb.SetTenantKMSKeyRequest{Username: "cloud-daemon", KekResourceName: "k"})
 	if status.Code(err) != codes.PermissionDenied {

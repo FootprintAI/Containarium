@@ -585,10 +585,7 @@ func (s *Store) ClearTenantKMSKey(ctx context.Context, username string) error {
 
 // rewrapTenant re-encrypts every secret username owns under whatever
 // resolveEncryptKMS currently resolves for username — i.e., the
-// override SetTenantKMSKey/ClearTenantKMSKey just committed. Reuses
-// Get (decrypts via each row's own kek_id) + Set (re-encrypts via the
-// current resolver) rather than any bespoke SQL, so it inherits both
-// functions' existing tests and correctness.
+// override SetTenantKMSKey/ClearTenantKMSKey just committed.
 //
 // Not optimized to skip rows already on the target key — tenants carry
 // a handful of secrets, not thousands, so a harmless re-encrypt of an
@@ -599,15 +596,74 @@ func (s *Store) rewrapTenant(ctx context.Context, username string) error {
 		return fmt.Errorf("list secrets for rewrap: %w", err)
 	}
 	for _, m := range metas {
-		_, value, err := s.Get(ctx, username, m.Name)
-		if err != nil {
-			return fmt.Errorf("rewrap %s/%s: read: %w", username, m.Name, err)
-		}
-		if _, err := s.Set(ctx, username, m.Name, value, m.Delivery); err != nil {
-			return fmt.Errorf("rewrap %s/%s: write: %w", username, m.Name, err)
+		if err := s.rewrapOne(ctx, username, m.Name); err != nil {
+			return fmt.Errorf("rewrap %s/%s: %w", username, m.Name, err)
 		}
 	}
 	return nil
+}
+
+// rewrapMaxAttempts bounds rewrapOne's retry loop — generous for what
+// should be, in practice, at most one real collision (a tenant setting
+// a secret at the exact moment an admin rewraps their key).
+const rewrapMaxAttempts = 5
+
+// rewrapOne re-encrypts a single secret under the currently-resolved
+// KMS client, via a version-guarded conditional UPDATE rather than
+// Get-then-Set. A plain Get-then-Set is a read-modify-write race: if a
+// tenant calls SetSecret on the same (username, name) between rewrapOne's
+// read and write, the unconditional Set would silently overwrite the
+// tenant's new value with the old plaintext re-encrypted, AND bump the
+// version again — a silent rollback with no error anywhere (CodeRabbit
+// finding on #1631). The conditional UPDATE affects zero rows if the
+// version moved since the read; rewrapOne detects that and retries with
+// a fresh read instead of clobbering.
+//
+// Preserves the row's version and delivery on success — a rewrap isn't
+// a value change, so it shouldn't look like one (no version bump).
+func (s *Store) rewrapOne(ctx context.Context, username, name string) error {
+	for attempt := 0; attempt < rewrapMaxAttempts; attempt++ {
+		meta, value, err := s.Get(ctx, username, name)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return nil // deleted concurrently — nothing left to rewrap
+			}
+			return fmt.Errorf("read: %w", err)
+		}
+		nonce, ct, wrappedDEK, kekID, err := s.encryptForStorage(ctx, username, name, []byte(value))
+		if err != nil {
+			return fmt.Errorf("encrypt: %w", err)
+		}
+		ok, err := s.tryRewrapAtVersion(ctx, username, name, nonce, ct, wrappedDEK, kekID, meta.Version)
+		if err != nil {
+			return fmt.Errorf("write: %w", err)
+		}
+		if ok {
+			return nil
+		}
+		// meta.Version no longer matches the row — something else
+		// wrote (or deleted) it since the read above. Retry with a
+		// fresh Get rather than overwrite whatever that write did.
+	}
+	return fmt.Errorf("gave up after %d attempts: concurrent writes to %s/%s kept racing the rewrap", rewrapMaxAttempts, username, name)
+}
+
+// tryRewrapAtVersion attempts the single conditional UPDATE rewrapOne
+// needs, split out so it's testable without needing to actually win a
+// race: a test can set up a row at version N, advance it to N+1 via an
+// ordinary Set, and then assert that a rewrap attempt still targeting
+// version N affects zero rows and leaves the N+1 row untouched.
+func (s *Store) tryRewrapAtVersion(ctx context.Context, username, name string, nonce, ct, wrappedDEK []byte, kekID string, expectedVersion int32) (bool, error) {
+	const q = `
+		UPDATE secrets
+		SET nonce = $1, ciphertext = $2, wrapped_dek = $3, kek_id = $4, updated_at = NOW()
+		WHERE username = $5 AND name = $6 AND version = $7
+	`
+	tag, err := s.pool.Exec(ctx, q, nonce, ct, wrappedDEK, kekID, username, name, expectedVersion)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
 }
 
 // Get reads a single secret's decrypted plaintext value. Returns

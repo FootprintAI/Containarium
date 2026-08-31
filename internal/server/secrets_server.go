@@ -191,12 +191,10 @@ func (s *ContainerServer) RefreshSecrets(ctx context.Context, req *pb.RefreshSec
 // platform's actual usage (the cloud control plane, not the tenant
 // itself) — see SetTenantKMSKeyRequest's proto comment.
 func (s *ContainerServer) SetTenantKMSKey(ctx context.Context, req *pb.SetTenantKMSKeyRequest) (*pb.SetTenantKMSKeyResponse, error) {
-	if s.secretsStore == nil {
-		return nil, status.Error(codes.Unavailable, "secrets store not configured on this daemon")
-	}
-	if req.Username == "" {
-		return nil, status.Error(codes.InvalidArgument, "username is required")
-	}
+	// Auth runs FIRST, before the store/argument checks below — an
+	// unauthenticated or under-privileged caller must not be able to
+	// learn whether this daemon even has a secrets store configured,
+	// or probe argument validation (CodeRabbit finding on #1631).
 	_, roles, ok := auth.SubjectFromGRPCContext(ctx)
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "no authenticated subject in request context")
@@ -210,6 +208,13 @@ func (s *ContainerServer) SetTenantKMSKey(ctx context.Context, req *pb.SetTenant
 			"SetTenantKMSKey requires the "+auth.ScopeSecretsWrite+
 				" scope to be granted explicitly on this token; the admin role alone does not imply it "+
 				"(re-mint with `containarium token generate --scopes "+auth.ScopeSecretsWrite+" ...`)")
+	}
+
+	if s.secretsStore == nil {
+		return nil, status.Error(codes.Unavailable, "secrets store not configured on this daemon")
+	}
+	if req.Username == "" {
+		return nil, status.Error(codes.InvalidArgument, "username is required")
 	}
 
 	if err := s.secretsStore.SetTenantKMSKey(ctx, req.Username, req.KekResourceName); err != nil {
