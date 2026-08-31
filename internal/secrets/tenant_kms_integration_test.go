@@ -450,11 +450,17 @@ func TestTryRewrapAtVersion_StaleVersionIsNoOp(t *testing.T) {
 	}
 }
 
-// TestRewrapOne_RetriesOnceTheRaceClears proves the other half: once
-// there's no more contention, rewrapOne's retry loop succeeds and
-// produces a correctly re-encrypted row under the NEW key — not stuck
-// forever just because a single stale attempt was rejected once.
-func TestRewrapOne_RetriesOnceTheRaceClears(t *testing.T) {
+// TestRewrapOne_HappyPathConvergesWithoutVersionBump proves the
+// uncontended case: with no concurrent writer, rewrapOne's first
+// attempt succeeds and produces a correctly re-encrypted row under the
+// NEW key, and — since a rewrap isn't a value change — without bumping
+// version. (This does NOT exercise the retry branch itself: that would
+// need a seam to force a version change between rewrapOne's read and
+// its conditional write, which doesn't exist and isn't worth adding
+// for this. TestTryRewrapAtVersion_StaleVersionIsNoOp covers the
+// mechanism the retry loop depends on — that a stale write is rejected,
+// not silently applied — directly.)
+func TestRewrapOne_HappyPathConvergesWithoutVersionBump(t *testing.T) {
 	fk := &fakeMultiKeyGCPKMS{t: t}
 	srv := httptest.NewServer(http.HandlerFunc(fk.handle))
 	defer srv.Close()
