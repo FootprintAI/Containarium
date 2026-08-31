@@ -114,12 +114,24 @@ func TestFindingStore_InsertRidesTheAuditChain(t *testing.T) {
 		t.Fatalf("VerifyChainSinceID reported a broken chain at row %d over a window containing findings", firstBad)
 	}
 
-	rows, _, err := auditStore.Query(ctx, audit.QueryParams{ResourceType: "security.finding", Limit: 10})
+	// Filtered to rows this test actually wrote (id > beforeID): audit_logs is
+	// shared with internal/audit's own tests (see threatdetectPool), and a
+	// bare resource_type filter would also pick up rows a previous run left
+	// behind, or (were this ever run with t.Parallel) a concurrent test's
+	// rows — an unrelated leftover row would silently change the count this
+	// asserts on.
+	rows, _, err := auditStore.Query(ctx, audit.QueryParams{ResourceType: "security.finding", Limit: 1000})
 	if err != nil {
 		t.Fatalf("Query: %v", err)
 	}
-	if len(rows) != 3 {
-		t.Fatalf("expected 3 audit rows for security.finding, got %d", len(rows))
+	var ours int
+	for _, r := range rows {
+		if r.ID > beforeID {
+			ours++
+		}
+	}
+	if ours != 3 {
+		t.Fatalf("expected 3 audit rows for security.finding with id > %d, got %d (of %d total)", beforeID, ours, len(rows))
 	}
 }
 
@@ -248,5 +260,61 @@ func TestFindingStore_EvidenceIsCapped(t *testing.T) {
 	}
 	if len(got.Evidence.Flows) != EvidenceCap {
 		t.Fatalf("persisted flow evidence count = %d, want %d", len(got.Evidence.Flows), EvidenceCap)
+	}
+}
+
+// If the audit write fails, the finding must not be left visible: not
+// readable back, and not published on the event bus. A finding whose row
+// exists but was never audited — or that reached subscribers but never made
+// the chain — is exactly the "log line nobody watches" gap #1639 exists to
+// close.
+func TestFindingStore_AuditFailureLeavesNoOrphanFinding(t *testing.T) {
+	ctx := context.Background()
+	dsn := os.Getenv("CONTAINARIUM_TEST_DSN")
+	pool := threatdetectPool(t) // resets security_findings; owns the "good" side
+
+	// A second, independent pool backs the audit store. Its schema is set up
+	// successfully, then the pool is closed — so audit.Store.Log fails on
+	// every call from here on, while FindingStore's own pool (above) stays
+	// open and can prove what did or didn't end up visible.
+	auditPool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect (audit pool): %v", err)
+	}
+	auditStore, err := audit.NewStore(ctx, auditPool)
+	if err != nil {
+		t.Fatalf("audit.NewStore: %v", err)
+	}
+	auditPool.Close()
+
+	bus := events.NewBus()
+	sub := bus.Subscribe(&pb.SubscribeEventsRequest{
+		ResourceTypes: []pb.ResourceType{pb.ResourceType_RESOURCE_TYPE_SECURITY_FINDING},
+	})
+	defer bus.Unsubscribe(sub.ID)
+
+	fs, err := NewFindingStore(ctx, pool, events.NewEmitter(bus), auditStore)
+	if err != nil {
+		t.Fatalf("NewFindingStore: %v", err)
+	}
+
+	_, err = fs.Insert(ctx, sampleFinding())
+	if err == nil {
+		t.Fatal("Insert succeeded despite a broken audit store; want an error")
+	}
+
+	var count int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM security_findings`).Scan(&count); err != nil {
+		t.Fatalf("count security_findings: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("security_findings has %d rows after a failed audit write, want 0 (no orphan finding)", count)
+	}
+
+	select {
+	case ev := <-sub.Events:
+		t.Fatalf("event bus published a finding despite the audit write failing: %+v", ev)
+	case <-time.After(200 * time.Millisecond):
+		// Expected: no event.
 	}
 }

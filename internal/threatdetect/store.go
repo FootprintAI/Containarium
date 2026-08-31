@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -29,8 +30,18 @@ type FindingStore struct {
 }
 
 // NewFindingStore creates a finding store sharing the given pool, emitting
-// through emitter and logging through auditStore.
+// through emitter and logging through auditStore. Both dependencies are
+// required: a store that could silently skip the event or the audit entry
+// would violate the #1639 acceptance criteria (findings are queryable,
+// streamable, and tamper-evident — not log lines) for every finding it
+// wrote, not just some.
 func NewFindingStore(ctx context.Context, pool *pgxpool.Pool, emitter *events.Emitter, auditStore *audit.Store) (*FindingStore, error) {
+	if emitter == nil {
+		return nil, fmt.Errorf("threatdetect: emitter is required")
+	}
+	if auditStore == nil {
+		return nil, fmt.Errorf("threatdetect: auditStore is required")
+	}
 	s := &FindingStore{pool: pool, emitter: emitter, audit: auditStore}
 	if err := s.initSchema(ctx); err != nil {
 		return nil, fmt.Errorf("threatdetect: init schema: %w", err)
@@ -104,22 +115,44 @@ func (s *FindingStore) Insert(ctx context.Context, f *Finding) (*Finding, error)
 		return nil, fmt.Errorf("threatdetect: insert finding: %w", err)
 	}
 
-	if s.emitter != nil {
-		s.emitter.EmitSecurityFinding(f.ToProto())
+	// Audit before emit, and roll back the row on an audit failure: a
+	// finding that reached subscribers but never made the tamper-evident
+	// chain — or that sits in security_findings with no audit trail at
+	// all — is exactly the "log line nobody watches" gap #1639 exists to
+	// close. audit.Store.Log manages its own transaction against its own
+	// pool checkout, so this can't be one shared DB transaction without
+	// changing that package's API (out of scope — "use it as-is" per the
+	// design doc); a compensating delete gives the same guarantee an
+	// operator cares about: no finding is ever visible without an audit
+	// entry backing it.
+	detail, err := json.Marshal(f.Evidence)
+	if err != nil {
+		s.deleteOrphan(ctx, f.ID)
+		return nil, fmt.Errorf("threatdetect: marshal audit detail: %w", err)
 	}
-	if s.audit != nil {
-		detail, _ := json.Marshal(f.Evidence)
-		if err := s.audit.Log(ctx, &audit.AuditEntry{
-			Action:       "create",
-			ResourceType: auditResourceType,
-			ResourceID:   fmt.Sprintf("%d", f.ID),
-			Detail:       fmt.Sprintf("rule=%s severity=%s tenant=%s subject=%s evidence=%s", f.Rule, f.Severity, f.TenantID, f.Subject, detail),
-		}); err != nil {
-			return nil, fmt.Errorf("threatdetect: audit log finding: %w", err)
-		}
+	if err := s.audit.Log(ctx, &audit.AuditEntry{
+		Action:       "create",
+		ResourceType: auditResourceType,
+		ResourceID:   fmt.Sprintf("%d", f.ID),
+		Detail:       fmt.Sprintf("rule=%s severity=%s tenant=%s subject=%s evidence=%s", f.Rule, f.Severity, f.TenantID, f.Subject, detail),
+	}); err != nil {
+		s.deleteOrphan(ctx, f.ID)
+		return nil, fmt.Errorf("threatdetect: audit log finding: %w", err)
 	}
 
+	s.emitter.EmitSecurityFinding(f.ToProto())
+
 	return f, nil
+}
+
+// deleteOrphan removes a finding row whose audit entry failed to write, so a
+// finding is never left visible without an audit trail backing it. Best
+// effort: if the delete itself fails there is nothing further to compensate
+// with, so it only logs.
+func (s *FindingStore) deleteOrphan(ctx context.Context, id int64) {
+	if _, err := s.pool.Exec(ctx, `DELETE FROM security_findings WHERE id = $1`, id); err != nil {
+		log.Printf("threatdetect: failed to roll back orphaned finding %d after an audit-log failure: %v", id, err)
+	}
 }
 
 // Get returns the finding with the given id.
