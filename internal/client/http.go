@@ -991,6 +991,34 @@ func (c *HTTPClient) RefreshSecrets(username string) (string, int32, error) {
 	return result.Message, result.Stamped, nil
 }
 
+// SetTenantKMSKey sets (or, with an empty keyResourceName, clears) a
+// tenant's per-tenant KMS key via HTTP (#1630). Admin role + explicit
+// secrets:write scope required on the token.
+func (c *HTTPClient) SetTenantKMSKey(username, keyResourceName string) (string, bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	body, err := json.Marshal(setTenantKMSKeyRequest{KekResourceName: keyResourceName})
+	if err != nil {
+		return "", false, fmt.Errorf("marshal request: %w", err)
+	}
+	path := fmt.Sprintf("/v1/secrets/%s/kms-key", url.PathEscape(username))
+	resp, err := c.doRequest(ctx, http.MethodPost, path, body)
+	if err != nil {
+		return "", false, fmt.Errorf("set tenant kms key: %w", err)
+	}
+	defer drainClose(resp)
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return "", false, parseErr(b, resp.StatusCode, "set tenant kms key")
+	}
+	var result struct {
+		Message      string `json:"message"`
+		HasTenantKey bool   `json:"hasTenantKey"`
+	}
+	_ = json.Unmarshal(b, &result)
+	return result.Message, result.HasTenantKey, nil
+}
+
 // parseErr is a tiny helper used across the secrets HTTP methods to
 // surface the server's structured error body (`{"error":"..."}`)
 // when present, falling back to the status code otherwise.

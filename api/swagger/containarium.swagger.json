@@ -5081,6 +5081,47 @@
         ]
       }
     },
+    "/v1/secrets/{username}/kms-key": {
+      "post": {
+        "summary": "Set or clear a tenant's per-tenant KMS key",
+        "description": "Re-wraps the tenant's existing secrets under the given GCP KMS CryptoKey (or back to the shared KEK if kek_resource_name is empty). Requires CONTAINARIUM_KMS_BACKEND=gcp. Admin role + explicit secrets:write scope required, unconditionally.",
+        "operationId": "ContainerService_SetTenantKMSKey",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SetTenantKMSKeyResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "Username (tenant) whose KEK to set or clear.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/SetTenantKMSKeyBody"
+            }
+          }
+        ],
+        "tags": [
+          "Secrets"
+        ]
+      }
+    },
     "/v1/secrets/{username}/refresh": {
       "post": {
         "summary": "Re-stamp tenant secrets into the LXC env",
@@ -12841,6 +12882,29 @@
         "secret": {
           "$ref": "#/definitions/SecretMetadata",
           "description": "Resulting metadata after the write."
+        }
+      }
+    },
+    "SetTenantKMSKeyBody": {
+      "type": "object",
+      "properties": {
+        "kekResourceName": {
+          "type": "string",
+          "description": "GCP Cloud KMS CryptoKey resource name\n(projects/P/locations/L/keyRings/R/cryptoKeys/K) that this tenant's\nsecrets will be wrapped under going forward. The daemon re-wraps\nevery existing secret the tenant owns under this key.\n\nEmpty clears the override: existing secrets are re-wrapped back\nunder the daemon's shared KEK (CONTAINARIUM_GCP_KMS_KEY_NAME)\nbefore the tenant's own key can be invalidated by whoever manages\nit upstream.\n\nRequires CONTAINARIUM_KMS_BACKEND=gcp — per-tenant keys are not\nyet supported for the vault/aws/inproc backends."
+        }
+      },
+      "description": "SetTenantKMSKeyRequest sets or clears a tenant's per-tenant KEK for\nsecrets envelope encryption. This is a privileged, admin-only\noperation performed ON BEHALF OF a tenant — unlike SetSecret/GetSecret,\nit always requires the admin role and an explicitly granted\nsecrets:write scope, even when the caller's own subject equals\nusername, because changing which key encrypts a tenant's secrets is\nnot something a tenant does to itself in the platform's actual usage."
+    },
+    "SetTenantKMSKeyResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string",
+          "description": "Operator-facing summary, including how many secrets were re-wrapped."
+        },
+        "hasTenantKey": {
+          "type": "boolean",
+          "description": "True if the tenant now has a per-tenant key (kek_resource_name was\nnon-empty in the request); false if cleared back to the shared KEK."
         }
       }
     },

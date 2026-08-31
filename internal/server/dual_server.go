@@ -835,6 +835,16 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 							kms = nil
 							kdesc = "disabled (config error)"
 						}
+						// #1630 — per-tenant KEK factory, only non-nil
+						// when CONTAINARIUM_KMS_BACKEND=gcp. A config
+						// error here degrades the SAME way the shared
+						// client does: log and disable, don't fail the
+						// whole secrets store over it.
+						tenantKMSFactory, tkerr := secretsstore.LoadTenantKMSFactory()
+						if tkerr != nil {
+							log.Printf("Warning: per-tenant KMS factory config error: %v. SetTenantKMSKey will be unavailable.", tkerr)
+							tenantKMSFactory = nil
+						}
 						// Phase 4.1 Phase-E — master-key retirement
 						// gate. CONTAINARIUM_REQUIRE_ENVELOPE=true
 						// means every decrypt must go through KMS;
@@ -858,6 +868,9 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 							}
 							if requireEnvelope {
 								opts = append(opts, secretsstore.WithRequireEnvelope(true))
+							}
+							if tenantKMSFactory != nil {
+								opts = append(opts, secretsstore.WithTenantKMSFactory(tenantKMSFactory))
 							}
 							if store, serr := secretsstore.NewStore(context.Background(), secretsPool, cipher, opts...); serr != nil {
 								log.Printf("Warning: Failed to init secrets store: %v. Secrets disabled.", serr)

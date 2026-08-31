@@ -87,6 +87,37 @@ func LoadKMSClient(masterKey []byte) (corecrypto.KMSClient, string, error) {
 	}
 }
 
+// TenantKMSFactory builds a KMSClient scoped to one caller-supplied key
+// resource name, reusing the daemon's own KMS auth config (token/token
+// file/endpoint/timeout). Returns an error if the resource name is
+// malformed for the backend.
+type TenantKMSFactory func(keyResourceName string) (corecrypto.KMSClient, error)
+
+// LoadTenantKMSFactory returns a TenantKMSFactory for per-tenant KEKs
+// (#1630) — platform-managed keys in the SAME GCP project the daemon's
+// shared KEK lives in, not cross-project BYOK (that's a later,
+// separately-scoped feature).
+//
+// Returns (nil, nil) when CONTAINARIUM_KMS_BACKEND isn't "gcp": per-tenant
+// keys aren't supported for the other backends yet, and a nil factory is
+// how internal/secrets.Store knows to reject SetTenantKMSKey up front
+// rather than silently no-op it.
+func LoadTenantKMSFactory() (TenantKMSFactory, error) {
+	backend := strings.ToLower(strings.TrimSpace(os.Getenv(config.EnvKMSBackend)))
+	if backend != KMSBackendGCP {
+		return nil, nil
+	}
+	cfg, err := gcpConfigFromEnv()
+	if err != nil {
+		return nil, fmt.Errorf("KMS backend gcp: %w", err)
+	}
+	return func(keyResourceName string) (corecrypto.KMSClient, error) {
+		perTenant := cfg
+		perTenant.KeyName = keyResourceName
+		return corecrypto.NewGCPKMS(perTenant)
+	}, nil
+}
+
 // vaultConfigFromEnv reads the Vault Transit config from env. Required:
 // CONTAINARIUM_VAULT_ADDR, CONTAINARIUM_VAULT_TOKEN (or _TOKEN_FILE),
 // CONTAINARIUM_VAULT_TRANSIT_KEY. Optional: CONTAINARIUM_VAULT_TRANSIT_MOUNT

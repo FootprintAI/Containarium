@@ -140,6 +140,13 @@ type setSecretRequest struct {
 	Delivery string `json:"delivery,omitempty"`
 }
 
+// setTenantKMSKeyRequest is POST /v1/secrets/{username}/kms-key (#1630).
+// username is path-bound (like RefreshSecretsRequest's), not repeated
+// in the body.
+type setTenantKMSKeyRequest struct {
+	KekResourceName string `json:"kek_resource_name,omitempty"`
+}
+
 // setMetricsExportRequest is POST /v1/system/metrics-export.
 type setMetricsExportRequest struct {
 	Enabled bool `json:"enabled"`
