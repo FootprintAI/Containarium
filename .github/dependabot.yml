@@ -10,6 +10,35 @@ updates:
     labels:
       - "dependencies"
       - "security"
+    groups:
+      # The k8s.io modules are released as a set and are NOT independently
+      # upgradable. Bumping one alone can leave a sibling behind at a version
+      # whose generated code references symbols the other no longer exports,
+      # e.g. k8s.io/apimachinery v0.37.0 against k8s.io/api v0.36.4:
+      #
+      #   k8s.io/api@v0.36.4/extensions/v1beta1/zz_generated.validations.go:128:33:
+      #     undefined: validate.EachSliceVal
+      #
+      # That failed build, unit, kind e2e, golangci-lint and govulncheck on a
+      # single-module PR. One grouped PR moves the set together instead.
+      #
+      # controller-runtime and structured-merge-diff track the same Kubernetes
+      # release line, so they belong in the group. sigs.k8s.io/agent-sandbox is
+      # deliberately NOT here: it versions independently (v1.x while k8s.io is
+      # v0.3x) and its bumps require a paired change to the controller version
+      # pinned in scripts/k8s-e2e.sh, which is easier to review on its own.
+      kubernetes:
+        patterns:
+          - "k8s.io/*"
+          - "sigs.k8s.io/controller-runtime"
+          - "sigs.k8s.io/structured-merge-diff/*"
+      # The OpenTelemetry modules share a release train, and a split bump
+      # leaves instrumentation packages straddling two contrib releases
+      # (otelgrpc v0.70.0 alongside otelhttp v0.71.0). Harmless so far, but
+      # they are meant to move together.
+      opentelemetry:
+        patterns:
+          - "go.opentelemetry.io/*"
 
   # GitHub Actions
   - package-ecosystem: "github-actions"
