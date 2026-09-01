@@ -222,7 +222,7 @@ func (s *ContainerServer) SetTenantKMSKey(ctx context.Context, req *pb.SetTenant
 	}
 
 	hasTenantKey := req.KekResourceName != ""
-	msg := fmt.Sprintf("tenant %s reverted to the shared KEK", req.Username)
+	msg := fmt.Sprintf("tenant %s's KMS key override cleared; new secrets use the shared KEK, existing ones keep their current key", req.Username)
 	if hasTenantKey {
 		msg = fmt.Sprintf("tenant %s now on its own KMS key", req.Username)
 	}
