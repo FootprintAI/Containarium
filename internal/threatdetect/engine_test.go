@@ -37,6 +37,14 @@ func (s *fakeSink) calls() []*Finding {
 	return append([]*Finding(nil), s.upserts...)
 }
 
+// reset clears recorded upserts, for a multi-phase test that reuses one
+// engine/sink across sequential scenarios.
+func (s *fakeSink) reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.upserts = nil
+}
+
 // testRule is a Rule test double whose behavior is supplied per-test via
 // closures, so each test stays a short table-driven case instead of a new
 // named type.
