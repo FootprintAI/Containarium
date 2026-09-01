@@ -23,7 +23,7 @@ import (
 // alerting once, not once per delivery path.
 const (
 	webhookURLConfigKey    = "alert_webhook_url"
-	webhookSecretConfigKey = "alert_webhook_secret"
+	webhookSecretConfigKey = "alert_webhook_secret" // #nosec G101 -- a DaemonConfigStore key NAME, not a credential value
 )
 
 const (
