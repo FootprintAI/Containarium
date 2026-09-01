@@ -1,0 +1,402 @@
+name: Fence-probe two-org e2e
+
+# Proves #1642's fence-probe rules (CrossTenantFlowRule, DenyBurstRule) for
+# real: two real tenant containers on one real Incus/ZFS backend, real
+# cross-tenant traffic, the real eBPF network-policy object (#1663) loaded
+# and attached, and the real DualServer -> NetworkPolicyEnforcer -> Engine
+# -> FindingStore wiring (CONTAINARIUM_THREAT_SENTRY=1) — not the fake
+# RuleContext/FindingSink internal/threatdetect/fence_probe_e2e_test.go
+# uses. See #1664 (split from #1660, umbrella #1645) and the two lanes this
+# one combines for the first time: incus-create.yml (real Incus+ZFS) and
+# ebpf-load.yml (#1663, real eBPF build+load).
+#
+# auditStore — and therefore threat-sentry availability at all — requires a
+# real Postgres connection (internal/server/dual_server.go: sentryAvailable
+# = networkPolicyEnforcer != nil && auditStore != nil; auditStore is nil
+# without --postgres). The degraded in-memory FindingStore path #1664's own
+# issue text allows does NOT apply here: that path only kicks in when
+# Postgres is configured but unreachable, not when it's absent entirely.
+# So this lane runs a real `postgres:16-alpine` service container
+# (store-integration.yml's own proven pattern) alongside Incus/ZFS.
+#
+# --standalone (skip auto-provisioned core LXCs: Postgres, Caddy) is used
+# together with --postgres pointing at the service container above — the
+# daemon gets real Postgres-backed persistence without provisioning an
+# extra Incus container for it, keeping this already-heavy lane from
+# growing a third real backend.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'internal/threatdetect/**'
+      - 'internal/server/network_policy_enforcer.go'
+      - 'internal/server/dual_server.go'
+      - 'internal/netbpf/**'
+      - 'experimental/ebpf-phaseA/**'
+      - '.github/workflows/fence-probe-e2e.yml'
+  # No `branches:` filter — a base filter leaves stacked PRs with no checks
+  # at all, which looks the same as checks not having started (#1215, same
+  # reasoning incus-create.yml and ebpf-load.yml document).
+  pull_request:
+    paths:
+      - 'internal/threatdetect/**'
+      - 'internal/server/network_policy_enforcer.go'
+      - 'internal/server/dual_server.go'
+      - 'internal/netbpf/**'
+      - 'experimental/ebpf-phaseA/**'
+      - '.github/workflows/fence-probe-e2e.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fence-probe-e2e:
+    name: Two-org fence-probe e2e (real Incus + real eBPF + real daemon)
+    runs-on: ubuntu-latest
+    # Generous, matching incus-create.yml's own budget: real image pull +
+    # real container boot, twice (two tenants), plus a real eBPF build.
+    timeout-minutes: 45
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: containarium
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: containarium
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U containarium"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      CONTAINARIUM_LANE_IMAGE: lane-box
+      POSTGRES_DSN: postgres://containarium:test@127.0.0.1:5432/containarium?sslmode=disable
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      # Same hygiene incus-create.yml keeps — this lane installs an eBPF
+      # toolchain on top of ZFS+Incus, so headroom matters even more here.
+      - name: Free disk space
+        run: |
+          set -euo pipefail
+          echo "--- before ---"; df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost || true
+          echo "--- after ---"; df -h /
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Install ZFS
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends zfsutils-linux
+          if ! sudo modprobe zfs 2>/dev/null; then
+            sudo apt-get install -y "linux-modules-extra-$(uname -r)"
+            sudo modprobe zfs
+          fi
+          zfs version
+          test -e /dev/zfs || { echo "::error::/dev/zfs absent — the module cannot be driven"; exit 1; }
+
+      # Named incus-local/containers because that's what the daemon's own
+      # storage detection probes for — see incus-create.yml, same reasoning.
+      - name: Create the ZFS pool the daemon detects
+        run: |
+          set -euo pipefail
+          sudo truncate -s 20G /mnt/incus-zfs.img
+          sudo zpool create -f -m /mnt/incus-local incus-local /mnt/incus-zfs.img
+          sudo zfs create incus-local/containers
+          sudo zpool list
+          sudo zfs list
+
+      - name: Install Incus
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y --no-install-recommends incus dnsmasq-base
+          sudo incus version
+
+      - name: Make the runner able to host containers
+        run: |
+          set -euo pipefail
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          sudo iptables -P FORWARD ACCEPT
+          grep -q '^root:' /etc/subuid || echo 'root:1000000:1000000000' | sudo tee -a /etc/subuid
+          grep -q '^root:' /etc/subgid || echo 'root:1000000:1000000000' | sudo tee -a /etc/subgid
+
+      - name: Pre-pull the box image
+        run: |
+          set -euo pipefail
+          pulled=""
+          for attempt in 1 2 3 4 5; do
+            if sudo incus image copy images:ubuntu/24.04 local: --alias lane-box >/dev/null 2>&1; then
+              pulled=yes; break
+            fi
+            echo "image pull attempt $attempt failed; retrying in 15s"
+            sleep 15
+          done
+          if [ -z "$pulled" ]; then
+            echo "::error::could not pull images:ubuntu/24.04 — the mirror is unavailable, not the code under test"
+            exit 1
+          fi
+          sudo incus image list
+
+      - name: Verify Incus is actually usable (fail, don't skip)
+        run: |
+          set -euo pipefail
+          test -S /var/lib/incus/unix.socket || {
+            echo "::error::no Incus socket — the daemon did not come up"
+            sudo systemctl status incus.service --no-pager || true
+            sudo journalctl -u incus.service --no-pager -n 100 || true
+            exit 1
+          }
+          sudo incus info | head -30
+          command -v dnsmasq >/dev/null || { echo "::error::dnsmasq is absent"; exit 1; }
+          sudo zfs list incus-local/containers >/dev/null || { echo "::error::incus-local/containers is absent"; exit 1; }
+          echo "Incus and ZFS are usable; the lane will not skip."
+
+      # ebpf-load.yml's (#1663) proven recipe, copied verbatim — not shared
+      # cross-workflow, same reasoning both lanes already document.
+      - name: Install eBPF toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y clang llvm libbpf-dev linux-libc-dev
+
+      - name: Compile the eBPF network-policy object
+        run: |
+          set -euo pipefail
+          make build-bpf
+          test -s internal/netbpf/netpolicy.bpf.o || {
+            echo "::error::make build-bpf reported success but netpolicy.bpf.o is missing or empty"
+            exit 1
+          }
+
+      - name: Wait for Postgres
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 30); do
+            if PGPASSWORD=test psql -h 127.0.0.1 -U containarium -d containarium -c 'select 1' >/dev/null 2>&1; then
+              echo "Postgres ready"; exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Postgres never became ready"; exit 1
+
+      # #1614's fix (incus-create.yml), matched here for the same reason:
+      # sudo go build/test must run with -E and an explicit $PATH, or the
+      # next privileged Go invocation inherits a root-owned, unreadable
+      # build cache under the plain runner user's $HOME.
+      - name: Build the daemon (with the eBPF object available)
+        run: |
+          set -euo pipefail
+          sudo -E env "PATH=$PATH" go build -o /tmp/containarium ./cmd/containarium
+
+      # Two tenants ("orgs" at this daemon's own tenant boundary — see the
+      # design doc / issue #1664: containarium create <username> is what
+      # scopes ownership, there is no separate cloud-org concept in the OSS
+      # daemon). --standalone skips auto-provisioned core LXCs; --postgres
+      # points at the real service container above so audit/FindingStore
+      # persistence is real regardless. CONTAINARIUM_THREAT_DENY_BURST_N/
+      # _WINDOW_MINUTES are lowered from the 20/5min production defaults —
+      # both are operator-tunable per the design, and the issue explicitly
+      # allows tuning them for a CI-time-bounded test.
+      - name: Start the daemon (real eBPF + real Postgres + threat sentry)
+        env:
+          JWT_SECRET: lane-only-secret-not-a-credential
+          CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT: ${{ github.workspace }}/internal/netbpf/netpolicy.bpf.o
+          CONTAINARIUM_THREAT_SENTRY: '1'
+          CONTAINARIUM_THREAT_DENY_BURST_N: '5'
+          CONTAINARIUM_THREAT_DENY_BURST_WINDOW_MINUTES: '2'
+        run: |
+          set -euo pipefail
+          sudo -E env "PATH=$PATH" \
+            CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT="$CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT" \
+            CONTAINARIUM_THREAT_SENTRY="$CONTAINARIUM_THREAT_SENTRY" \
+            CONTAINARIUM_THREAT_DENY_BURST_N="$CONTAINARIUM_THREAT_DENY_BURST_N" \
+            CONTAINARIUM_THREAT_DENY_BURST_WINDOW_MINUTES="$CONTAINARIUM_THREAT_DENY_BURST_WINDOW_MINUTES" \
+            /tmp/containarium daemon --standalone --rest \
+              --jwt-secret "$JWT_SECRET" \
+              --postgres "$POSTGRES_DSN" \
+              > /tmp/daemon.log 2>&1 &
+          echo $! > /tmp/daemon.pid
+
+          TOKEN=$(/tmp/containarium token generate --username admin --roles admin \
+                    --expiry 24h --secret "$JWT_SECRET" | tr -d " \t" | grep -E "^ey" | head -1)
+          test -n "$TOKEN" || { echo "::error::could not mint a token"; exit 1; }
+          echo "CONTAINARIUM_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+          echo "CONTAINARIUM_HTTP=true" >> "$GITHUB_ENV"
+          echo "SERVER=http://localhost:8080" >> "$GITHUB_ENV"
+
+          ready=""
+          for i in $(seq 1 60); do
+            if CONTAINARIUM_TOKEN="$TOKEN" CONTAINARIUM_HTTP=true /tmp/containarium --server http://localhost:8080 list >/tmp/probe.log 2>&1; then
+              ready=yes; break
+            fi
+            sleep 5
+          done
+          if [ -z "$ready" ]; then
+            echo "::error::the daemon never answered the CLI"
+            echo "--- last CLI probe ---"; cat /tmp/probe.log || true
+            echo "--- daemon log tail ---"; tail -60 /tmp/daemon.log
+            exit 1
+          fi
+          grep -E "\[threatdetect\]|Threat-detection|network-policy" /tmp/daemon.log || true
+
+      # Never trust the daemon's own "sentry enabled" log line as proof —
+      # ask it, the same way an operator would (containarium security
+      # sentry status), and fail loud if it isn't actually OK. UNAVAILABLE
+      # here means either the eBPF object didn't load or Postgres wasn't
+      # reachable — both preconditions this lane just spent several minutes
+      # setting up, so a failure here should point straight at which one.
+      - name: Assert the sentry is actually OK, not silently unavailable
+        run: |
+          set -euo pipefail
+          STATUS=$(/tmp/containarium --server "$SERVER" security sentry status --json)
+          echo "$STATUS"
+          echo "$STATUS" | grep -q '"state"[[:space:]]*:[[:space:]]*"SENTRY_STATE_OK"' || {
+            echo "::error::sentry status is not OK — see daemon log for why"
+            tail -80 /tmp/daemon.log
+            exit 1
+          }
+
+      - name: Create two tenant containers (alice, bob)
+        run: |
+          set -euo pipefail
+          for TENANT in alice bob; do
+            /tmp/containarium --server "$SERVER" create "$TENANT" \
+              --no-ssh-key --podman=false --disk 5GB --image "$CONTAINARIUM_LANE_IMAGE"
+          done
+          /tmp/containarium --server "$SERVER" list
+
+      # The point: alice's container reaching bob's container is a
+      # cross-tenant flow. CrossTenantFlowRule fires CRITICAL on this —
+      # observation mode, so the packet still goes through; the rule only
+      # has to SEE it, not block it (#1642 is detection-only per its own
+      # design). Resolve each container's IP from the daemon's own
+      # GetContainer report rather than guessing incusbr0's allocation.
+      - name: Generate real cross-tenant traffic (alice -> bob)
+        run: |
+          set -euo pipefail
+          # `get <username> --format json` wraps a single-element list in
+          # {"containers": [...], "total_count": N} (see internal/cmd/list.go
+          # listJSON) — ContainerInfo itself carries no json tags, so its
+          # fields serialize under their exact Go names (IPAddress, not ip).
+          ALICE_IP=$(/tmp/containarium --server "$SERVER" get alice --format json | jq -r '.containers[0].IPAddress')
+          BOB_IP=$(/tmp/containarium --server "$SERVER" get bob --format json | jq -r '.containers[0].IPAddress')
+          test -n "$ALICE_IP" && test "$ALICE_IP" != "null" && test -n "$BOB_IP" && test "$BOB_IP" != "null" || {
+            echo "::error::could not resolve both container IPs"
+            /tmp/containarium --server "$SERVER" get alice --format json
+            /tmp/containarium --server "$SERVER" get bob --format json
+            exit 1
+          }
+          echo "alice=$ALICE_IP bob=$BOB_IP"
+          echo "ALICE_IP=$ALICE_IP" >> "$GITHUB_ENV"
+          echo "BOB_IP=$BOB_IP" >> "$GITHUB_ENV"
+
+          for i in 1 2 3; do
+            sudo incus exec alice-container -- ping -c 3 -W 2 "$BOB_IP" || true
+            sleep 2
+          done
+
+      - name: Wait for a CRITICAL cross-tenant-flow finding
+        run: |
+          set -euo pipefail
+          found=""
+          for i in $(seq 1 30); do
+            OUT=$(/tmp/containarium --server "$SERVER" security findings --severity critical --json || true)
+            if echo "$OUT" | grep -q 'THREAT_RULE_ID_CROSS_TENANT_FLOW\|CROSS_TENANT_FLOW'; then
+              found=yes
+              echo "$OUT"
+              break
+            fi
+            sleep 5
+          done
+          if [ -z "$found" ]; then
+            echo "::error::no CRITICAL cross-tenant-flow finding appeared within 150s"
+            /tmp/containarium --server "$SERVER" security findings --json || true
+            tail -100 /tmp/daemon.log
+            exit 1
+          fi
+          echo "Real CRITICAL cross-tenant-flow finding confirmed."
+
+      # DenyBurstRule needs >= N (here: 5, tuned down from the 20 default —
+      # see the daemon-start step) policy-deny events for one tenant within
+      # the window. A deny is generated by traffic the network-policy
+      # enforcer's own policy would refuse — the enforcer runs in
+      # observation mode here too (no explicit ENFORCE arming), and per
+      # network_policy_enforcer.go a deny is recorded for a flow that
+      # doesn't match any allow rule for the tenant. Simplest reliable
+      # trigger: bob has no configured egress allow-list entries, so
+      # bob's container attempting several distinct outbound connections
+      # each produce their own deny event.
+      - name: Generate a real deny-burst for bob
+        run: |
+          set -euo pipefail
+          for port in 1 2 3 4 5 6; do
+            sudo incus exec bob-container -- timeout 2 bash -c "echo > /dev/tcp/93.184.216.34/${port}" || true
+          done
+
+      - name: Wait for a MEDIUM deny-burst finding
+        run: |
+          set -euo pipefail
+          found=""
+          for i in $(seq 1 30); do
+            OUT=$(/tmp/containarium --server "$SERVER" security findings --severity medium --json || true)
+            if echo "$OUT" | grep -q 'THREAT_RULE_ID_DENY_BURST\|DENY_BURST'; then
+              found=yes
+              echo "$OUT"
+              break
+            fi
+            sleep 5
+          done
+          if [ -z "$found" ]; then
+            echo "::error::no MEDIUM deny-burst finding appeared within 150s"
+            /tmp/containarium --server "$SERVER" security findings --json || true
+            tail -100 /tmp/daemon.log
+            exit 1
+          fi
+          echo "Real MEDIUM deny-burst finding confirmed."
+
+      - name: Assert nothing was skipped
+        if: always()
+        run: |
+          set -euo pipefail
+          test -f /tmp/daemon.log || { echo "::error::no daemon log — the daemon never ran"; exit 1; }
+          echo "Fence-probe e2e ran against a real daemon; see prior steps' assertions for pass/fail."
+
+      - name: Collect diagnostics on failure
+        if: failure()
+        run: |
+          echo "--- daemon log (last 200 lines) ---"
+          tail -200 /tmp/daemon.log || true
+          echo "--- incus list ---"
+          sudo incus list --format compact || true
+          echo "--- incus info alice-container ---"
+          sudo incus info --show-log alice-container || true
+          echo "--- incus info bob-container ---"
+          sudo incus info --show-log bob-container || true
+          echo "--- sentry status ---"
+          /tmp/containarium --server "$SERVER" security sentry status --json || true
+          echo "--- findings (all) ---"
+          /tmp/containarium --server "$SERVER" security findings --json || true
+          sudo journalctl -u incus.service --no-pager -n 100 || true
+          sudo zfs list -r -t all || true
+          sudo dmesg | tail -50 || true
+
+      - name: Tear down
+        if: always()
+        run: |
+          [ -f /tmp/daemon.pid ] && sudo kill "$(cat /tmp/daemon.pid)" 2>/dev/null || true
+          sudo incus delete -f alice-container bob-container 2>/dev/null || true

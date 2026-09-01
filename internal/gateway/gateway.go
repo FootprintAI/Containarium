@@ -24,6 +24,7 @@ import (
 	"github.com/footprintai/containarium/internal/releases"
 	"github.com/footprintai/containarium/internal/security"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+	"github.com/footprintai/containarium/pkg/version"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/rs/cors"
 	"google.golang.org/grpc"
@@ -495,6 +496,11 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to register tokens service gateway: %w", err)
 	}
 
+	// Register ThreatDetectionService gateway handler (#1640)
+	if err := pb.RegisterThreatDetectionServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
+		return fmt.Errorf("failed to register threat-detection service gateway: %w", err)
+	}
+
 	// Create HTTP handler with authentication middleware, then audit middleware.
 	// Audit wraps the inner handler so auth runs first (sets username in context),
 	// then audit captures the response on the way out.
@@ -719,11 +725,7 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	httpMux.HandleFunc("/internal/alert-relay", gs.handleAlertRelay)
 
 	// Health check endpoint (no auth required)
-	httpMux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"healthy"}`))
-	})
+	httpMux.HandleFunc("/health", healthHandler)
 
 	mountInternalProxies(httpMux, gs)
 
@@ -888,4 +890,30 @@ func getAllowedOrigins() []string {
 		"http://localhost:8080",
 		"http://localhost",
 	}
+}
+
+// healthResponse is the /health payload. A named struct rather than an inline
+// literal so the shape is one reviewable thing — this endpoint is
+// unauthenticated, so what it carries is a deliberate decision.
+type healthResponse struct {
+	Status string `json:"status"`
+	// Version answers "what is this box running" without shell access (#1647).
+	// Previously the only way to tell was SSH plus `containarium version`,
+	// which made fleet audits, drift detection, and confirming a fix landed
+	// all require per-host credentials.
+	//
+	// Deliberately just the version: git commit and build time would narrow an
+	// anonymous caller's CVE search without helping the operational question.
+	Version string `json:"version"`
+}
+
+// healthHandler serves the unauthenticated liveness endpoint. Split out of the
+// mux wiring so it can be tested directly.
+func healthHandler(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(healthResponse{
+		Status:  "healthy",
+		Version: version.GetVersion(),
+	})
 }

@@ -1,0 +1,137 @@
+name: eBPF load path
+
+# Proves the compiled netpolicy eBPF object (internal/netbpf/netpolicy.bpf.o)
+# actually loads into a real kernel, actually attaches its TC hooks via
+# AttachTCX, and its attached program actually evaluates real traffic — not
+# just that it compiles. See docs/EBPF-CI-LOADING-LANE-DESIGN.md (#1663,
+# split from #1660, umbrella #1645) for the full design.
+#
+# release.yml already proves the OTHER half (`make build-bpf` succeeds in
+# CI); this lane exists because nothing anywhere proved the load/attach
+# half, and a verifier-rejected instruction or a broken AttachTCX call would
+# ship invisibly today.
+#
+# Deliberately NOT built on incus-create.yml's Incus/ZFS setup: AttachVeth
+# takes any real interface's ifindex, so this lane needs neither — a
+# throwaway veth pair + netns created directly on the bare runner is
+# sufficient. Coupling this to an unrelated Incus/ZFS dependency would make
+# every netbpf-only change wait on an image pull for no benefit, the same
+# reasoning incus-create.yml's own header gives for staying separate from
+# zfs-encryption.yml. That's also why this lane is fast (minutes, not
+# incus-create.yml's 45-minute budget).
+#
+# Runs as root (sudo) inside the ephemeral, secret-less runner VM this job
+# gets on a `pull_request` trigger (not `pull_request_target` — a fork's PR
+# never sees repo secrets or a write-capable GITHUB_TOKEN regardless of
+# what runs as root inside the VM). The kernel's own eBPF verifier is the
+# actual safety boundary for what a loaded program can do, not this
+# workflow's permission scoping — see the design doc's Security section.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'internal/netbpf/**'
+      - 'experimental/ebpf-phaseA/**'
+      - '.github/workflows/ebpf-load.yml'
+  # No `branches:` filter — a base filter leaves stacked PRs with no checks
+  # at all, which looks the same as checks not having started (#1215, same
+  # reasoning incus-create.yml documents).
+  pull_request:
+    paths:
+      - 'internal/netbpf/**'
+      - 'experimental/ebpf-phaseA/**'
+      - '.github/workflows/ebpf-load.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ebpf-load:
+    name: Load + attach the real eBPF network-policy object
+    runs-on: ubuntu-latest
+    # No image pull, no Incus — this is a compile + a few `ip` commands + a
+    # short Go test. Generous headroom over the expected ~1-2 minutes for a
+    # first-run apt-get on a cold cache.
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # release.yml's already-proven recipe (see its "Compile eBPF
+      # network-policy object" step) — copied verbatim rather than shared
+      # via a composite action, since it's three lines and this is the only
+      # other place that needs it.
+      - name: Install eBPF toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y clang llvm libbpf-dev linux-libc-dev
+
+      - name: Compile the eBPF network-policy object
+        run: |
+          set -euo pipefail
+          make build-bpf
+          test -s internal/netbpf/netpolicy.bpf.o || {
+            echo "::error::make build-bpf reported success but netpolicy.bpf.o is missing or empty"
+            exit 1
+          }
+
+      # sudo -E env "PATH=$PATH" is incus-create.yml's own fix for #1614:
+      # plain `sudo go test` drops $PATH (no `go` binary found) and, if it
+      # DOES find go some other way, leaves $HOME pointing at the invoking
+      # user's dir while running as root — writing root-owned build-cache
+      # entries a later same-user step then can't read. Matching that exact
+      # invocation here avoids rediscovering the same failure mode.
+      #
+      # -v so a failure's own test log (not just the exit code) is visible
+      # in the CI log directly; -count=1 disables Go's test cache, which
+      # would be actively wrong here (a cached PASS from a previous kernel
+      # state proves nothing about this run's kernel).
+      - name: Load, attach, and evaluate real traffic against the object
+        working-directory: internal/netbpf
+        run: |
+          set -euo pipefail
+          sudo -E env "PATH=$PATH" go test -tags=ebpf_load -v -count=1 -timeout 5m . | tee ebpf-load-test.log
+
+      # A skip here means the build tag or the environment silently didn't
+      # engage — a lane whose entire purpose is proving real-kernel behavior
+      # must fail loud on that, not report green (same #1234 reasoning
+      # incus-create.yml's own "Assert nothing was skipped" step documents).
+      - name: Assert nothing was skipped
+        if: always()
+        run: |
+          set -euo pipefail
+          test -f internal/netbpf/ebpf-load-test.log || {
+            echo "::error::no test log — the load/attach test step never produced output"
+            exit 1
+          }
+          if grep -q -- "--- SKIP" internal/netbpf/ebpf-load-test.log; then
+            echo "::error::an ebpf_load test SKIPPED on a runner where it should have run for real"
+            grep -- "--- SKIP" internal/netbpf/ebpf-load-test.log
+            exit 1
+          fi
+          echo "No skips — the load/attach/evaluate path actually ran."
+
+      - name: Collect diagnostics on failure
+        if: failure()
+        run: |
+          echo "--- kernel version ---"
+          uname -a
+          echo "--- ip link (detail) ---"
+          sudo ip -d link show || true
+          echo "--- ip netns list ---"
+          sudo ip netns list || true
+          echo "--- dmesg tail ---"
+          sudo dmesg | tail -80 || true
+          echo "--- bpftool prog list (if available) ---"
+          sudo bpftool prog list 2>/dev/null || echo "bpftool not installed"

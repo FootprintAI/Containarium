@@ -268,7 +268,16 @@ func TestSetTenantKMSKey_IsolatesFromOtherTenants(t *testing.T) {
 	}
 }
 
-func TestClearTenantKMSKey_RewrapsBackToSharedAndIsIdempotent(t *testing.T) {
+// TestClearTenantKMSKey_LeavesExistingRowsOnTheirOwnKeyAndIsIdempotent pins
+// the cryptographic-shred contract (Containarium-cloud's per-org-CMEK
+// disclosure-gap design correction, FootprintAI/Containarium#1637):
+// disabling per-org CMEK must NOT rewrap a tenant's existing secrets back
+// to the shared KEK. Clear only stops routing NEW writes to the tenant's
+// dedicated key — existing rows keep the kek_id they were already wrapped
+// under, so once the cloud side destroys that GCP key, those rows become
+// permanently unreadable. Rewrapping them to the shared key here would
+// silently preserve access to pre-disable values, defeating the shred.
+func TestClearTenantKMSKey_LeavesExistingRowsOnTheirOwnKeyAndIsIdempotent(t *testing.T) {
 	fk := &fakeMultiKeyGCPKMS{t: t}
 	srv := httptest.NewServer(http.HandlerFunc(fk.handle))
 	defer srv.Close()
@@ -284,11 +293,27 @@ func TestClearTenantKMSKey_RewrapsBackToSharedAndIsIdempotent(t *testing.T) {
 	_, _ = pool.Exec(ctx, "DELETE FROM tenant_kms_keys WHERE username = $1", user)
 
 	tenantKey := "projects/p/locations/l/keyRings/r/cryptoKeys/" + user
+	wantTenantKekID := corecrypto.GCPKEKPrefix + tenantKey
 	if err := store.SetTenantKMSKey(ctx, user, tenantKey); err != nil {
 		t.Fatalf("SetTenantKMSKey: %v", err)
 	}
 	if _, err := store.Set(ctx, user, "API_KEY", "under-tenant-key", ""); err != nil {
 		t.Fatalf("Set: %v", err)
+	}
+
+	kekIDOf := func(name string) string {
+		t.Helper()
+		var kekID string
+		if err := pool.QueryRow(ctx,
+			`SELECT kek_id FROM secrets WHERE username = $1 AND name = $2`, user, name,
+		).Scan(&kekID); err != nil {
+			t.Fatalf("query kek_id for %s: %v", name, err)
+		}
+		return kekID
+	}
+
+	if got := kekIDOf("API_KEY"); got != wantTenantKekID {
+		t.Fatalf("kek_id before clear = %q, want the tenant key %q", got, wantTenantKekID)
 	}
 
 	if err := store.ClearTenantKMSKey(ctx, user); err != nil {
@@ -299,23 +324,19 @@ func TestClearTenantKMSKey_RewrapsBackToSharedAndIsIdempotent(t *testing.T) {
 		t.Fatalf("second ClearTenantKMSKey: %v", err)
 	}
 
+	// The pre-clear secret must still decrypt correctly RIGHT NOW — the
+	// tenant's dedicated GCP key is still alive in this test (only the
+	// cloud side ever calls GCP KMS destroy). But its kek_id must be
+	// UNCHANGED, not moved to the shared key: that's the whole point.
 	_, value, err := store.Get(ctx, user, "API_KEY")
 	if err != nil {
 		t.Fatalf("Get after clear: %v", err)
 	}
 	if value != "under-tenant-key" {
-		t.Fatalf("value after clear-rewrap = %q, want %q", value, "under-tenant-key")
+		t.Fatalf("value after clear = %q, want %q", value, "under-tenant-key")
 	}
-
-	var kekID string
-	if err := pool.QueryRow(ctx,
-		`SELECT kek_id FROM secrets WHERE username = $1 AND name = $2`, user, "API_KEY",
-	).Scan(&kekID); err != nil {
-		t.Fatalf("query kek_id: %v", err)
-	}
-	wantSharedKekID := corecrypto.GCPKEKPrefix + "projects/p/locations/l/keyRings/r/cryptoKeys/shared"
-	if kekID != wantSharedKekID {
-		t.Fatalf("kek_id after clear = %q, want the shared key %q", kekID, wantSharedKekID)
+	if got := kekIDOf("API_KEY"); got != wantTenantKekID {
+		t.Fatalf("kek_id after clear = %q, want UNCHANGED tenant key %q (clear must not rewrap)", got, wantTenantKekID)
 	}
 
 	var stillOverridden int
@@ -326,6 +347,17 @@ func TestClearTenantKMSKey_RewrapsBackToSharedAndIsIdempotent(t *testing.T) {
 	}
 	if stillOverridden != 0 {
 		t.Fatal("tenant_kms_keys row should be gone after clear")
+	}
+
+	// A NEW write after clear must route to the shared key — the
+	// override is gone, so this is the shared fallback, unrelated to the
+	// pre-clear row above.
+	if _, err := store.Set(ctx, user, "NEW_AFTER_CLEAR", "new-value", ""); err != nil {
+		t.Fatalf("Set after clear: %v", err)
+	}
+	wantSharedKekID := corecrypto.GCPKEKPrefix + "projects/p/locations/l/keyRings/r/cryptoKeys/shared"
+	if got := kekIDOf("NEW_AFTER_CLEAR"); got != wantSharedKekID {
+		t.Fatalf("kek_id of a write after clear = %q, want the shared key %q", got, wantSharedKekID)
 	}
 }
 

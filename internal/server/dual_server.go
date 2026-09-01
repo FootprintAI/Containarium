@@ -36,6 +36,7 @@ import (
 	"github.com/footprintai/containarium/internal/sandbox/ratelimit"
 	secretsstore "github.com/footprintai/containarium/internal/secrets"
 	"github.com/footprintai/containarium/internal/security"
+	"github.com/footprintai/containarium/internal/threatdetect"
 	"github.com/footprintai/containarium/internal/traffic"
 	"github.com/footprintai/containarium/internal/ttlsweeper"
 	"github.com/footprintai/containarium/internal/waf"
@@ -245,6 +246,16 @@ type DualServer struct {
 	k8sNetPolicyReconciler *K8sNetworkPolicyReconciler
 	cloudClient            *cloud.Client // #354 — cloud-actuation client (nil unless host is enrolled)
 	startTime              time.Time
+
+	// threatDetectEngine is nil unless CONTAINARIUM_THREAT_SENTRY=1 AND the
+	// eBPF network-policy object is loaded (#1640). threatDetectServer
+	// always exists once networkPolicyEnforcer's block runs — it serves
+	// GetSentryStatus regardless, reporting DISABLED/UNAVAILABLE explicitly
+	// when the engine itself wasn't constructed.
+	threatDetectEngine    *threatdetect.Engine
+	threatDetectServer    *ThreatDetectionServer
+	threatDetectNotifier  *threatdetect.WebhookNotifier // nil unless threatDetectEngine is also non-nil (#1643)
+	threatDetectSweepStop context.CancelFunc
 }
 
 // bridgeDNSRaw builds the incusbr0 `raw.dnsmasq` value for container DNS.
@@ -1623,6 +1634,115 @@ skipAppHosting:
 		}
 	}
 
+	// Background threat-detection sentry (#1640): built independent of
+	// whether every prerequisite is actually met, so GetSentryStatus can
+	// report DISABLED/UNAVAILABLE explicitly instead of the RPC simply not
+	// existing (design doc: "never silently report no findings"). Detection
+	// itself only runs when CONTAINARIUM_THREAT_SENTRY=1, the eBPF object
+	// loaded (networkPolicyEnforcer != nil), and the audit store is up —
+	// every finding must ride the audit hash chain unconditionally (#1639),
+	// so no audit store means no sentry, not a degraded one.
+	threatCfg := appconfig.LoadThreatDetect()
+	var threatDetectEngine *threatdetect.Engine
+	var threatDetectStore threatdetect.FindingReader
+	var threatDetectNotifier *threatdetect.WebhookNotifier
+	sentryAvailable := networkPolicyEnforcer != nil && auditStore != nil
+	sentryUnavailableReason := ""
+	switch {
+	case networkPolicyEnforcer == nil:
+		sentryUnavailableReason = "eBPF object not loaded (set CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT)"
+	case auditStore == nil:
+		sentryUnavailableReason = "audit store unavailable (every finding must ride the audit hash chain; requires Postgres)"
+	}
+	if threatCfg.SentryEnabled && sentryAvailable {
+		var sink threatdetect.FindingSink
+		var findingsPool *pgxpool.Pool
+		degraded := true
+		if postgresConnString != "" {
+			if fsPool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second); poolErr != nil {
+				log.Printf("Warning: threat-detection FindingStore Postgres connect failed (%v); sentry running DEGRADED (in-memory, no persistence)", poolErr)
+			} else if fs, fsErr := threatdetect.NewFindingStore(context.Background(), fsPool, events.NewEmitter(events.GetBus()), auditStore); fsErr != nil {
+				log.Printf("Warning: threat-detection FindingStore init failed (%v); sentry running DEGRADED (in-memory, no persistence)", fsErr)
+				fsPool.Close()
+			} else {
+				sink = fs
+				degraded = false
+				findingsPool = fsPool
+			}
+		}
+		if sink == nil {
+			memStore, memErr := threatdetect.NewMemFindingStore(events.NewEmitter(events.GetBus()), auditStore)
+			if memErr != nil {
+				log.Printf("Warning: threat-detection MemFindingStore init failed (%v); sentry disabled", memErr)
+			} else {
+				sink = memStore
+			}
+		}
+		if sink != nil {
+			if reader, ok := sink.(threatdetect.FindingReader); ok {
+				threatDetectStore = reader
+			}
+			// Webhook delivery (#1643): deliberately independent of
+			// config.VictoriaMetricsURL — that's the vmalert/alertmanager
+			// pipeline this notifier bypasses on purpose (design doc): a
+			// direct POST works on any backend, including a minimal BYOC
+			// host with no VictoriaMetrics container. Reuses the same
+			// webhook URL/secret config (DaemonConfigStore) as the
+			// existing alert-webhook relay, and — when Postgres-backed —
+			// the same delivery-record table on findingsPool, not a
+			// second connection pool.
+			if config.DaemonConfigStore != nil {
+				var deliveryStore *alert.DeliveryStore
+				if findingsPool != nil {
+					if store, derr := alert.NewDeliveryStore(context.Background(), findingsPool); derr != nil {
+						log.Printf("Warning: threat-detection webhook delivery store init failed (%v); deliveries will be attempted but not recorded", derr)
+					} else {
+						deliveryStore = store
+					}
+				}
+				threatDetectNotifier = threatdetect.NewWebhookNotifier(config.DaemonConfigStore, deliveryStore)
+				switch st := sink.(type) {
+				case *threatdetect.FindingStore:
+					st.SetNotifier(threatDetectNotifier)
+				case *threatdetect.MemFindingStore:
+					st.SetNotifier(threatDetectNotifier)
+				}
+			}
+
+			threatDetectEngine = threatdetect.NewEngine(sink, "", degraded, networkPolicyEnforcer.TenantForIP, nil)
+			// Fence-probe rules (#1642): a breached fence (cross-tenant
+			// flow) and a probed fence (deny-burst) are both continuous
+			// forms of checks that previously only ran one-shot or landed
+			// in the audit log with nothing watching. Zero-value N/window
+			// falls back to the rule's own defaults.
+			threatDetectEngine.Register(threatdetect.NewCrossTenantFlowRule())
+			threatDetectEngine.Register(threatdetect.NewDenyBurstRule(threatCfg.DenyBurstN, threatCfg.DenyBurstWindow))
+			networkPolicyEnforcer.SetFlowHook(threatDetectEngine.OnFlows)
+			networkPolicyEnforcer.SetDenyHook(threatDetectEngine.OnDeny)
+			if degraded {
+				log.Printf("Threat-detection sentry enabled (CONTAINARIUM_THREAT_SENTRY=1) — DEGRADED (no Postgres persistence for findings)")
+			} else {
+				log.Printf("Threat-detection sentry enabled (CONTAINARIUM_THREAT_SENTRY=1)")
+			}
+		}
+	}
+	threatDetectServer := NewThreatDetectionServer(threatDetectEngine, threatCfg.SentryEnabled, sentryAvailable, sentryUnavailableReason)
+	threatDetectServer.SetFindingStore(threatDetectStore)
+
+	// Known-bad-destination rule (#1641): constructed independent of
+	// threatCfg.SentryEnabled — an operator can curate the list via CLI/MCP
+	// before ever turning the sentry on. Registered with the engine only
+	// when one was actually constructed above (sentry enabled + available).
+	if badDestRule, bdErr := threatdetect.NewBadDestinationRule(context.Background(), config.DaemonConfigStore); bdErr != nil {
+		log.Printf("Warning: threat-detection bad-destination rule init failed (%v); ListBadDestinations/Add/Remove unavailable", bdErr)
+	} else {
+		threatDetectServer.SetBadDestinationRule(badDestRule)
+		if threatDetectEngine != nil {
+			threatDetectEngine.Register(badDestRule)
+		}
+	}
+	pb.RegisterThreatDetectionServiceServer(grpcServer, threatDetectServer)
+
 	// Setup alert store and manager
 	var alertStore *alert.Store
 	var alertManager *alert.Manager
@@ -2010,6 +2130,9 @@ skipAppHosting:
 		cloudClient:            cloudClient,
 		startTime:              time.Now(),
 		sandboxServer:          sandboxServer,
+		threatDetectEngine:     threatDetectEngine,
+		threatDetectServer:     threatDetectServer,
+		threatDetectNotifier:   threatDetectNotifier,
 	}
 
 	// Auto-sleep ticker is constructed in Start() once the traffic
@@ -2130,6 +2253,39 @@ func (ds *DualServer) startIntegrityHeartbeat(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+// threatDetectSweepInterval is how often Engine.Sweep runs — the cadence
+// time-window rules (deny-burst, #1642) resolve on, independent of flow/deny
+// traffic (design doc: 30s).
+const threatDetectSweepInterval = 30 * time.Second
+
+// startThreatDetectSweep drives the threat-detection engine's time-window
+// rules on a fixed tick, separate from ctx so it can be stopped independent
+// of the daemon's own shutdown (Stop() cancels it via threatDetectSweepStop
+// before the rest of teardown runs). Only called once the enforcer this
+// engine is hooked into has actually started. Also starts the webhook
+// notifier's delivery worker (#1643) on the same lifecycle — both only make
+// sense once the engine they're downstream of is actually running.
+func (ds *DualServer) startThreatDetectSweep(ctx context.Context) {
+	sweepCtx, cancel := context.WithCancel(ctx)
+	ds.threatDetectSweepStop = cancel
+	engine := ds.threatDetectEngine
+	go func() {
+		t := time.NewTicker(threatDetectSweepInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-sweepCtx.Done():
+				return
+			case now := <-t.C:
+				engine.Sweep(now)
+			}
+		}
+	}()
+	if ds.threatDetectNotifier != nil {
+		ds.threatDetectNotifier.Start(sweepCtx)
+	}
 }
 
 // handleBackendSystemInfo returns system info for a specific backend.
@@ -2319,6 +2475,14 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		// Wire peer pool into security server so peer containers show in summaries
 		if ds.securityServer != nil {
 			ds.securityServer.SetPeerPool(ds.peerPool)
+		}
+
+		// Stamp the now-known local backend id onto every finding the threat
+		// sentry writes from here on (#1640) — same reason SetPeerPool itself
+		// is deferred to Start(): localBackendID() isn't resolved until the
+		// peer pool starts a few lines up.
+		if ds.threatDetectEngine != nil {
+			ds.threatDetectEngine.SetBackendID(ds.peerPool.LocalBackendID())
 		}
 
 		// Register /v1/backends endpoint on gateway
@@ -2602,8 +2766,19 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		if err := ds.networkPolicyEnforcer.Start(ctx); err != nil {
 			log.Printf("Warning: network-policy enforcer failed to start: %v (continuing without it)", err)
 			ds.networkPolicyEnforcer = nil
+			// The threat sentry's hooks (SetFlowHook/SetDenyHook) were wired
+			// onto an enforcer that never actually started — nothing will
+			// drive them. Flip the reported state so GetSentryStatus says
+			// UNAVAILABLE instead of a stale OK.
+			if ds.threatDetectServer != nil {
+				ds.threatDetectServer.SetUnavailable("eBPF network-policy enforcer failed to start: " + err.Error())
+			}
+			ds.threatDetectEngine = nil
 		} else {
 			log.Printf("NetworkPolicy enforcer started")
+			if ds.threatDetectEngine != nil {
+				ds.startThreatDetectSweep(ctx)
+			}
 		}
 	}
 
@@ -2782,6 +2957,9 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		}
 		if ds.networkPolicyEnforcer != nil {
 			ds.networkPolicyEnforcer.Stop()
+		}
+		if ds.threatDetectSweepStop != nil {
+			ds.threatDetectSweepStop()
 		}
 		if ds.k8sNetPolicyReconciler != nil {
 			ds.k8sNetPolicyReconciler.Stop()

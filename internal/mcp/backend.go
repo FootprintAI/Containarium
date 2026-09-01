@@ -78,6 +78,18 @@ type API interface {
 	ListSecurityFindings(kind, containerName string) ([]SecurityFinding, error)
 	RemediateSecurityFinding(findingID int64) (*SecurityRemediateResponse, error)
 
+	// Threat-detection sentry (#1640).
+	GetSentryStatus() (*SentryStatusResponse, error)
+
+	// Known-bad destination rule (#1641).
+	ListBadDestinations() (*ListBadDestinationsResponse, error)
+	AddBadDestination(cidr, label string) (*BadDestinationEntry, error)
+	RemoveBadDestination(cidr string) error
+
+	// Findings delivery + triage (#1643).
+	ListSecuritySentryFindings(severity, tenant, since, state string, limit int) (*ListSentryFindingsResponse, error)
+	ResolveSecuritySentryFinding(id int64) (*ResolveSentryFindingResponse, error)
+
 	// Tokens.
 	RevokeToken(jti, reason, expiresAt string) (string, error)
 

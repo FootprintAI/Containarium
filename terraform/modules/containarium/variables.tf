@@ -444,7 +444,7 @@ variable "enable_proxy_protocol" {
 }
 
 variable "proxy_protocol_trusted_cidrs" {
-  description = "CIDR blocks the backend's Caddy will trust as sources of PROXY v2 frames. Typically the sentinel's internal IP plus loopback. Required when enable_proxy_protocol=true. Wildcard 0.0.0.0/0 is rejected at startup to prevent IP spoofing."
+  description = "Additional CIDR blocks the backend's Caddy will trust as sources of PROXY v2 frames — typically the sentinel's internal IP plus loopback. The incus bridge gateway (10.0.3.1/32) is appended automatically when enable_proxy_protocol=true and does NOT need listing here: Caddy runs inside the core-caddy LXC, so frames cross the bridge and arrive from 10.0.3.1 rather than the sentinel's own address, and a list without it silently drops every client IP. Wildcard 0.0.0.0/0 is rejected at startup to prevent IP spoofing."
   type        = list(string)
   default     = []
 }

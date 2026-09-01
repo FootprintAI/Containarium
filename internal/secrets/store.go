@@ -564,10 +564,17 @@ func (s *Store) SetTenantKMSKey(ctx context.Context, username, keyResourceName s
 	return s.rewrapTenant(ctx, username)
 }
 
-// ClearTenantKMSKey reverts username to the shared/default KEK,
-// re-wrapping every secret they currently own back under it. Idempotent
-// — clearing a tenant with no override just re-wraps (a no-op-shaped
-// rewrap, since every row is already on the shared key) and succeeds.
+// ClearTenantKMSKey stops routing username's NEW secret writes to their
+// dedicated KMS key — it does NOT touch any existing secret. This is the
+// cryptographic-shred half of per-org CMEK disable
+// (FootprintAI/Containarium-cloud#1386, #1387): the caller (the cloud
+// control plane) destroys the underlying GCP key right after this call
+// returns, and every row still carrying that key's kek_id becomes
+// permanently unreadable — resolveDecryptKMS resolves strictly from each
+// row's own persisted kek_id, never from this override, so leaving old
+// rows alone here is exactly what makes that destroy a real shred rather
+// than a no-op. Idempotent: clearing a tenant with no override is just a
+// delete of zero rows, still succeeds.
 func (s *Store) ClearTenantKMSKey(ctx context.Context, username string) error {
 	username = strings.TrimSpace(username)
 	if username == "" {
@@ -580,12 +587,16 @@ func (s *Store) ClearTenantKMSKey(ctx context.Context, username string) error {
 	delete(s.tenantKEK, username)
 	s.tenantKEKMu.Unlock()
 
-	return s.rewrapTenant(ctx, username)
+	return nil
 }
 
 // rewrapTenant re-encrypts every secret username owns under whatever
 // resolveEncryptKMS currently resolves for username — i.e., the
-// override SetTenantKMSKey/ClearTenantKMSKey just committed.
+// dedicated key SetTenantKMSKey just committed. Only SetTenantKMSKey
+// calls this (migrating live secrets onto a NEW key they're keeping);
+// ClearTenantKMSKey does NOT — see its doc comment for why leaving old
+// rows alone is what makes per-org CMEK disable a real cryptographic
+// shred instead of a silent preserve-under-a-different-key.
 //
 // Not optimized to skip rows already on the target key — tenants carry
 // a handful of secrets, not thousands, so a harmless re-encrypt of an

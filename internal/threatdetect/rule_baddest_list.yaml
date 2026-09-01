@@ -1,0 +1,10 @@
+# Baseline known-bad-destination list for the bad-destination rule (#1641).
+# Embedded into the daemon binary via go:embed — versioned so an operator
+# can tell which baseline a given daemon build shipped with. Extend without
+# a rebuild via `containarium security bad-destinations add`.
+version: 1
+entries:
+  - cidr: "203.0.113.10/32"
+    label: "known mining pool (example range, RFC 5737 TEST-NET-3)"
+  - cidr: "203.0.113.32/28"
+    label: "known mining pool range (example range, RFC 5737 TEST-NET-3)"
