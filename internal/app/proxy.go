@@ -366,6 +366,75 @@ func (p *ProxyManager) ensureDNSIssuers(policy *CaddyTLSAutomationPolicy) bool {
 	return true
 }
 
+// ensureIssuerEmail gives a policy's issuers the configured ACME contact
+// address, reporting whether it changed anything.
+//
+// Every host we run already has TLS policies, and both ProvisionTLS and
+// EnsureTLSSubjects only ever append *subjects* — issuers on an existing
+// policy are left exactly as they were written. So configuring
+// CONTAINARIUM_ACME_EMAIL would fix nothing anywhere without a repair here:
+// the address would only reach hosts that had never provisioned TLS before,
+// which is none of them (#1616).
+//
+// A no-op when no email is configured — in particular it never blanks an
+// address an operator set by hand through Caddy's admin API — and a no-op
+// when every issuer already carries the right one, so the every-tick
+// no-change path performs no write.
+func (p *ProxyManager) ensureIssuerEmail(policy *CaddyTLSAutomationPolicy) bool {
+	email := ACMEEmailFromEnv()
+
+	// Nothing configured: there is no address to write, but there may still be
+	// a ZeroSSL issuer that can never register sitting in the policy — which
+	// is the state every host in the fleet is in today. Drop it, for the same
+	// reason issuersFor no longer emits it: a fallback that cannot register is
+	// worse than no fallback, because the policy reads as redundant while
+	// every issuance pays a failed round trip for it.
+	//
+	// An issuer carrying its own address (set by hand through Caddy's admin
+	// API) can register, so it is left alone — as is any address already
+	// there.
+	if email == "" {
+		return p.dropUnregisterableZeroSSL(policy)
+	}
+
+	changed := false
+	for i := range policy.Issuers {
+		if policy.Issuers[i].Email != email {
+			policy.Issuers[i].Email = email
+			changed = true
+		}
+	}
+	return changed
+}
+
+// dropUnregisterableZeroSSL removes ZeroSSL issuers that carry no contact
+// address at all, reporting whether it removed any. Idempotent: once removed
+// there is nothing left to match, so the reconcile tick goes back to writing
+// nothing.
+func (p *ProxyManager) dropUnregisterableZeroSSL(policy *CaddyTLSAutomationPolicy) bool {
+	kept := make([]CaddyTLSIssuer, 0, len(policy.Issuers))
+	dropped := false
+	for _, issuer := range policy.Issuers {
+		if issuer.CA == zeroSSLDirectory && issuer.Email == "" {
+			dropped = true
+			continue
+		}
+		kept = append(kept, issuer)
+	}
+	if !dropped {
+		return false
+	}
+	// `issuers` is omitempty: an empty array vanishes from the emitted JSON
+	// and Caddy falls back to its own defaults — which include the ZeroSSL
+	// issuer we just removed. Substitute the issuers we would emit for a fresh
+	// policy instead, so the field is always explicitly present.
+	if len(kept) == 0 {
+		kept = issuersFor(p.dnsChallenge)
+	}
+	policy.Issuers = kept
+	return true
+}
+
 // policyHasDNSChallenge reports whether EVERY issuer can solve DNS-01.
 //
 // Every, not any: Caddy tries issuers in order, and one that cannot solve the
@@ -479,9 +548,23 @@ func (p *ProxyManager) ProvisionTLS(domain string) error {
 				// host that ALREADY hit the bug. Such a host has the subject
 				// in the array from a previous run, so an append-only fix
 				// would return early every time and never heal it.
-				if p.ensureDNSIssuers(&policies[i]) {
-					log.Printf("[ProxyManager] policy for %s had no DNS-01 issuers; adding them so the "+
-						"wildcard subject can actually be issued (#1066)", domain)
+				dnsRepaired := p.ensureDNSIssuers(&policies[i])
+				// Same reasoning one field over (#1616): a policy written
+				// before an ACME email was configured carries issuers with no
+				// contact, so ZeroSSL can never register and neither CA can
+				// mail an expiry warning. An append-only fix would return
+				// early here forever and never reach a host already in that
+				// state, which is every host that has provisioned TLS.
+				emailRepaired := p.ensureIssuerEmail(&policies[i])
+				if dnsRepaired || emailRepaired {
+					if dnsRepaired {
+						log.Printf("[ProxyManager] policy for %s had no DNS-01 issuers; adding them so the "+
+							"wildcard subject can actually be issued (#1066)", domain)
+					}
+					if emailRepaired {
+						log.Printf("[ProxyManager] policy for %s had issuers with no ACME contact address; "+
+							"setting it so ZeroSSL can register and expiry warnings are delivered (#1616)", domain)
+					}
 					return p.patchTLSPolicies(url, policies)
 				}
 				return nil
@@ -496,10 +579,13 @@ func (p *ProxyManager) ProvisionTLS(domain string) error {
 		policies[0].Subjects = append(policies[0].Subjects, domain)
 
 		// The policy we are appending to may predate DNS-01 being configured,
-		// in which case its issuers cannot satisfy a wildcard subject (#1066).
-		// The create-new-policy branch below gets this right via
-		// NewTLSPolicyWithDNS; this branch has to do the same explicitly.
+		// in which case its issuers cannot satisfy a wildcard subject (#1066),
+		// or predate the ACME email being configured, leaving a ZeroSSL issuer
+		// that can never register (#1616). The create-new-policy branch below
+		// gets both right via NewTLSPolicyWithDNS; this branch has to do the
+		// same explicitly.
 		p.ensureDNSIssuers(&policies[0])
+		p.ensureIssuerEmail(&policies[0])
 
 		return p.patchTLSPolicies(url, policies)
 	}
@@ -657,15 +743,22 @@ func (p *ProxyManager) EnsureTLSSubjects(domains []string) error {
 	// the every-tick no-change path still performs no write.
 	repaired := false
 	for i := range policies {
-		if covering[i] && p.ensureDNSIssuers(&policies[i]) {
+		if !covering[i] {
+			continue
+		}
+		if p.ensureDNSIssuers(&policies[i]) {
+			repaired = true
+		}
+		if p.ensureIssuerEmail(&policies[i]) {
 			repaired = true
 		}
 	}
 
 	if len(missing) == 0 {
 		if repaired {
-			log.Printf("[ProxyManager] repaired issuers on TLS policies covering %d host(s) so "+
-				"their wildcard subject can actually be issued (#1066)", len(seen))
+			log.Printf("[ProxyManager] repaired issuers on TLS policies covering %d host(s): DNS-01 "+
+				"challenge config and/or the ACME contact address were missing, either of which "+
+				"leaves a subject that is never successfully issued (#1066, #1616)", len(seen))
 			return p.patchTLSPolicies(url, policies)
 		}
 		return nil
@@ -679,8 +772,10 @@ func (p *ProxyManager) EnsureTLSSubjects(domains []string) error {
 		policies[0].Subjects = append(policies[0].Subjects, missing...)
 		// The policy we're appending to may predate DNS-01 being configured,
 		// in which case its issuers cannot satisfy the subject we just added
-		// and Caddy would never attempt it (#1066).
+		// and Caddy would never attempt it (#1066) — or predate the ACME email
+		// being configured, leaving an issuer that can never register (#1616).
 		p.ensureDNSIssuers(&policies[0])
+		p.ensureIssuerEmail(&policies[0])
 		return p.patchTLSPolicies(url, policies)
 	}
 

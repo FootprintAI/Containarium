@@ -7,23 +7,45 @@ import (
 )
 
 // TestIssuersFor_NoDNS_MatchesLegacyDefault locks in that, without a DNS
-// challenge, the emitted issuers JSON is byte-identical to the pre-#378
-// default (acme + zerossl, no `challenges` field) — so existing HTTP-01
-// deployments are unaffected.
+// challenge, the emitted issuers JSON carries no `challenges` field — so
+// existing HTTP-01 deployments are unaffected by #378.
+//
+// The issuer *set* now depends on CONTAINARIUM_ACME_EMAIL. ZeroSSL refuses
+// ACME registration without a contact address, so emitting it unconfigured
+// wrote a fallback issuer that could never obtain a certificate; #1616 emits
+// only the issuer that can work instead. Both branches are pinned here.
 func TestIssuersFor_NoDNS_MatchesLegacyDefault(t *testing.T) {
-	got, err := json.Marshal(issuersFor(nil))
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := `[{"module":"acme"},{"module":"acme","ca":"https://acme.zerossl.com/v2/DV90"}]`
-	if string(got) != want {
-		t.Errorf("no-DNS issuers changed shape:\n got: %s\nwant: %s", got, want)
-	}
+	t.Run("with an email → both CAs, each carrying it", func(t *testing.T) {
+		t.Setenv("CONTAINARIUM_ACME_EMAIL", "ops@example.com")
+		got, err := json.Marshal(issuersFor(nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := `[{"module":"acme","email":"ops@example.com"},` +
+			`{"module":"acme","ca":"https://acme.zerossl.com/v2/DV90","email":"ops@example.com"}]`
+		if string(got) != want {
+			t.Errorf("no-DNS issuers changed shape:\n got: %s\nwant: %s", got, want)
+		}
+	})
+
+	t.Run("without an email → Let's Encrypt only", func(t *testing.T) {
+		t.Setenv("CONTAINARIUM_ACME_EMAIL", "")
+		got, err := json.Marshal(issuersFor(nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := `[{"module":"acme"}]`
+		if string(got) != want {
+			t.Errorf("no-DNS issuers changed shape:\n got: %s\nwant: %s", got, want)
+		}
+	})
 }
 
 // TestIssuersFor_DNS_AttachesChallengeToBoth verifies the DNS-01 challenge
 // block lands on both the ACME and ZeroSSL issuers.
 func TestIssuersFor_DNS_AttachesChallengeToBoth(t *testing.T) {
+	// Both issuers only exist when an email is configured (#1616).
+	t.Setenv("CONTAINARIUM_ACME_EMAIL", "ops@example.com")
 	dns := &CaddyACMEChallenges{DNS: &CaddyDNSChallenge{Provider: map[string]interface{}{
 		"name": "cloudflare", "api_token": "{env.CF_API_TOKEN}",
 	}}}
