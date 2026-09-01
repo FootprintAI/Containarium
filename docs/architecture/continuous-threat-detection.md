@@ -4,6 +4,7 @@
 **Status:** proposed
 **Stack:** protobuf/gRPC (grpc-gateway) + existing daemon; Go 1.24 (no new deployable, no new language)
 **PRD:** `docs/product/continuous-threat-detection.md` — stories #1639 #1640 #1641 #1642 #1643
+**Operator guide:** [THREAT-DETECTION-SENTRY-GUIDE.md](../THREAT-DETECTION-SENTRY-GUIDE.md) — how to turn this on and use it
 
 ## Problem
 
