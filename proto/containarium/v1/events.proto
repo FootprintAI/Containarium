@@ -9,6 +9,7 @@ import "containarium/v1/container.proto";
 import "containarium/v1/app.proto";
 import "containarium/v1/network.proto";
 import "containarium/v1/traffic.proto";
+import "containarium/v1/threatdetection.proto";
 
 option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
 
@@ -54,6 +55,10 @@ enum EventType {
   // Traffic events (40-49)
   // Traffic/connection update
   EVENT_TYPE_TRAFFIC_UPDATE = 40;
+
+  // Security events (50-59)
+  // A security finding was created or updated by the threat-detection engine
+  EVENT_TYPE_SECURITY_FINDING = 50;
 }
 
 // ResourceType identifies which resource type an event pertains to
@@ -70,6 +75,8 @@ enum ResourceType {
   RESOURCE_TYPE_METRICS = 4;
   // Traffic resource
   RESOURCE_TYPE_TRAFFIC = 5;
+  // Security finding resource
+  RESOURCE_TYPE_SECURITY_FINDING = 6;
 }
 
 // ContainerEvent contains container-specific event data
@@ -102,6 +109,12 @@ message MetricsEvent {
   repeated ContainerMetrics metrics = 1;
 }
 
+// SecurityFindingEvent contains a security finding raised or updated by the
+// threat-detection engine.
+message SecurityFindingEvent {
+  Finding finding = 1;
+}
+
 // Event is the top-level event message sent to clients
 message Event {
   // Unique event ID for deduplication
@@ -126,6 +139,7 @@ message Event {
     RouteEvent route_event = 12;
     MetricsEvent metrics_event = 13;
     TrafficEvent traffic_event = 14;
+    SecurityFindingEvent security_finding_event = 15;
   }
 }
 

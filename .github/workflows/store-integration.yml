@@ -30,6 +30,7 @@ on:
       - 'internal/security/**'
       - 'internal/traffic/**'
       - 'internal/zap/**'
+      - 'internal/threatdetect/**'
       - '.github/workflows/store-integration.yml'
   push:
     branches: [main]
@@ -46,6 +47,7 @@ on:
       - 'internal/security/**'
       - 'internal/traffic/**'
       - 'internal/zap/**'
+      - 'internal/threatdetect/**'
       - '.github/workflows/store-integration.yml'
 
 permissions:
@@ -94,8 +96,20 @@ jobs:
           set -o pipefail
 
           go test -tags=integration -count=1 -timeout 10m -v \
-            ./internal/server/ ./internal/cluster/ ./internal/audit/ ./internal/auth/ \
+            ./internal/server/ ./internal/cluster/ ./internal/auth/ \
             ./internal/alert/ ./internal/collaborator/ 2>&1 | tee integration.log
+
+          # internal/audit and internal/threatdetect both write to the same
+          # audit_logs table, and each package's own tests reset it (DROP
+          # TABLE / DROP + recreate the schema) on the assumption that it
+          # owns the table exclusively. `go test pkgA pkgB` runs package
+          # binaries in parallel by default, which raced the two suites
+          # against each other — one package's reset landed mid-run of the
+          # other's chain-verification test (found adding #1639; see that
+          # PR for the reproduction). -p 1 forces this pair to run
+          # sequentially so neither's reset can land under the other.
+          go test -tags=integration -p 1 -count=1 -timeout 5m -v \
+            ./internal/audit/ ./internal/threatdetect/ 2>&1 | tee -a integration.log
 
           # internal/secrets and internal/app carry their Postgres tests
           # without a build tag, gated on the DSN. Run them here too — they
@@ -117,7 +131,7 @@ jobs:
 
           # And a run that matched nothing would also be green. Require that
           # the suite actually executed.
-          for want in TestAgentTaskQueue_ConcurrentLeasesAreDistinct TestAuditChain_ConcurrentAppendersDoNotFork TestSecretsStore_Roundtrip TestStoreOperations TestRevocationStore_RevokedTokenReadsAsRevoked TestCollaboratorStore_ListingIsScopedToTheSubject TestRouteStore_SaveIsAnUpsertByDomain TestAlertStore_RuleRoundTrips TestPassthroughStore_PortAndProtocolAreDistinctRoutes TestDaemonConfigStore_SetAllRollsBackAPartialBatch TestIntegrationIdle_OpenConnectionReportsActivityAsOfNow TestPentestStore_ConcurrentClaimsGetDistinctJobs TestSecurityStore_FailedJobRetriesThenGivesUp TestTrafficStore_SavedConnectionIsQueryableWithItsCounters TestTrafficStore_AggregatesGroupedByDestIPAreReadable TestZapStore_MarkResolvedClosesOnlyWhatThisScanDidNotSee TestZapStore_RiskCountsAreCaseInsensitive TestClusterStore_ContractHoldsForBothImpls; do
+          for want in TestAgentTaskQueue_ConcurrentLeasesAreDistinct TestAuditChain_ConcurrentAppendersDoNotFork TestSecretsStore_Roundtrip TestStoreOperations TestRevocationStore_RevokedTokenReadsAsRevoked TestCollaboratorStore_ListingIsScopedToTheSubject TestRouteStore_SaveIsAnUpsertByDomain TestAlertStore_RuleRoundTrips TestPassthroughStore_PortAndProtocolAreDistinctRoutes TestDaemonConfigStore_SetAllRollsBackAPartialBatch TestIntegrationIdle_OpenConnectionReportsActivityAsOfNow TestPentestStore_ConcurrentClaimsGetDistinctJobs TestSecurityStore_FailedJobRetriesThenGivesUp TestTrafficStore_SavedConnectionIsQueryableWithItsCounters TestTrafficStore_AggregatesGroupedByDestIPAreReadable TestZapStore_MarkResolvedClosesOnlyWhatThisScanDidNotSee TestZapStore_RiskCountsAreCaseInsensitive TestClusterStore_ContractHoldsForBothImpls TestFindingStore_InsertRidesTheAuditChain TestFindingStore_InsertEmitsSecurityFindingEvent TestFindingStore_PersistsAcrossRestart TestFindingStore_AuditFailureLeavesNoOrphanFinding; do
             if ! grep -q -- "--- PASS: $want" integration.log; then
               echo "::error::$want did not run — renamed, retagged, or filtered out."
               exit 1

@@ -119,9 +119,15 @@ Use 'secrets clear-kms-key' to revert username to the shared KEK.`,
 
 var secretsClearKMSKeyCmd = &cobra.Command{
 	Use:   "clear-kms-key <username>",
-	Short: "Revert a tenant to the shared KMS key (admin only)",
-	Long: `Reverts username from its own per-tenant KMS key back to the
-daemon's shared KEK, re-wrapping every secret they currently own.
+	Short: "Stop using a tenant's per-tenant KMS key (admin only)",
+	Long: `Stops routing username's NEW secrets to their per-tenant KMS key —
+future writes fall back to the daemon's shared KEK. This does NOT
+touch any secret username already owns: each existing row stays
+wrapped under whatever key it was already wrapped under. If that key
+is later destroyed (the cloud control plane does this right after
+calling this command, as the cryptographic-shred half of per-org CMEK
+disable), those pre-existing secrets become permanently unreadable —
+this is not a reversible "revert," it's the last step before a shred.
 Idempotent — clearing a tenant with no override still succeeds.
 
 Same authz requirement as 'secrets set-kms-key': admin role + the

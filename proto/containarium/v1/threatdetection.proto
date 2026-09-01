@@ -1,0 +1,277 @@
+syntax = "proto3";
+
+package containarium.v1;
+
+import "google/protobuf/timestamp.proto";
+import "google/api/annotations.proto";
+import "protoc-gen-openapiv2/options/annotations.proto";
+
+option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
+
+// ThreatSeverity ranks a security finding. Higher values are more severe.
+enum ThreatSeverity {
+  THREAT_SEVERITY_UNSPECIFIED = 0;
+  THREAT_SEVERITY_LOW = 1;
+  THREAT_SEVERITY_MEDIUM = 2;
+  THREAT_SEVERITY_HIGH = 3;
+  THREAT_SEVERITY_CRITICAL = 4;
+}
+
+// ThreatRuleId identifies which detection rule raised a finding.
+enum ThreatRuleId {
+  THREAT_RULE_ID_UNSPECIFIED = 0;
+  // Flow to a known-bad destination (e.g. a mining pool).
+  THREAT_RULE_ID_BAD_DESTINATION = 1;
+  // Flow whose source and destination belong to different tenants.
+  THREAT_RULE_ID_CROSS_TENANT_FLOW = 2;
+  // Burst of policy denies for one tenant within a time window.
+  THREAT_RULE_ID_DENY_BURST = 3;
+}
+
+// FindingState is the lifecycle state of a security finding.
+enum FindingState {
+  FINDING_STATE_UNSPECIFIED = 0;
+  FINDING_STATE_OPEN = 1;
+  FINDING_STATE_RESOLVED = 2;
+}
+
+// FlowEvidence captures one triggering flow's 5-tuple and volume, attached to
+// a finding as supporting evidence.
+message FlowEvidence {
+  string src_ip = 1;
+  string dst_ip = 2;
+  uint32 src_port = 3;
+  uint32 dst_port = 4;
+  // IP protocol name, e.g. "tcp", "udp", "icmp".
+  string protocol = 5;
+  int64 bytes = 6;
+  int64 packets = 7;
+}
+
+// DenyEvidence captures an aggregated count of policy-deny events matching a
+// destination/reason pair, attached to a finding as supporting evidence.
+message DenyEvidence {
+  string dst_ip = 1;
+  uint32 dst_port = 2;
+  string protocol = 3;
+  // Human-readable deny reason, e.g. "policy", "virtual_patch", "signature".
+  string reason = 4;
+  int64 count = 5;
+}
+
+// Evidence bundles the flow and deny records that triggered a finding.
+// Capped by the store to the most recent entries — see FindingStore.
+message Evidence {
+  repeated FlowEvidence flows = 1;
+  repeated DenyEvidence denies = 2;
+}
+
+// Finding is a single security finding raised by the threat-detection
+// engine: an open or resolved instance of a rule firing for one tenant.
+message Finding {
+  int64 id = 1;
+  ThreatRuleId rule = 2;
+  ThreatSeverity severity = 3;
+  string tenant_id = 4;
+  // Container name, when the finding is attributable to one container.
+  string container = 5;
+  string backend_id = 6;
+  // Dedupe scope within (rule, tenant_id): destination IP, peer tenant id,
+  // or "" — see FindingStore's open-finding unique index.
+  string subject = 7;
+  FindingState state = 8;
+  // How many times this rule has fired for this (tenant, subject) since
+  // first_seen, without a new row being created.
+  int64 count = 9;
+  Evidence evidence = 10;
+  google.protobuf.Timestamp first_seen = 11;
+  google.protobuf.Timestamp last_seen = 12;
+}
+
+// SentryState is the overall on/off state of the background threat-detection
+// engine, as reported by GetSentryStatus.
+enum SentryState {
+  SENTRY_STATE_UNSPECIFIED = 0;
+  // CONTAINARIUM_THREAT_SENTRY is not set — the engine was never constructed.
+  SENTRY_STATE_DISABLED = 1;
+  // Sentry is enabled but the eBPF object isn't loaded (no flow/deny
+  // signals to evaluate), or the FindingStore has no Postgres connection.
+  // Never silently report "no findings" — always UNAVAILABLE with a reason.
+  SENTRY_STATE_UNAVAILABLE = 2;
+  // Running, but FindingStore has no Postgres connection: findings/events/
+  // audit entries still flow, backed by a bounded in-memory ring instead of
+  // persisted rows — they do not survive a daemon restart.
+  SENTRY_STATE_DEGRADED = 3;
+  // Running normally with Postgres-backed persistence.
+  SENTRY_STATE_OK = 4;
+}
+
+// RuleStatus is one registered rule's health, so a single panicking rule is
+// visible without taking down the sentry status as a whole.
+message RuleStatus {
+  ThreatRuleId rule = 1;
+  bool healthy = 2;
+  // Empty when healthy. Set to the last recovered panic/error otherwise.
+  string last_error = 3;
+  google.protobuf.Timestamp last_error_at = 4;
+}
+
+message GetSentryStatusRequest {}
+
+message GetSentryStatusResponse {
+  SentryState state = 1;
+  // Human-readable explanation, always set for DISABLED/UNAVAILABLE.
+  string reason = 2;
+  repeated RuleStatus rules = 3;
+}
+
+// BadDestinationEntry is one entry in the known-bad-destination list (#1641)
+// matched against flow destination IPs — a mining pool or other known-bad
+// endpoint.
+message BadDestinationEntry {
+  // Exact IP ("203.0.113.7") or CIDR ("203.0.113.0/24").
+  string cidr = 1;
+  string label = 2;
+  // "baseline" (embedded, versioned list, shipped with the daemon) or
+  // "operator" (added via AddBadDestination, without a daemon rebuild).
+  string source = 3;
+}
+
+message ListBadDestinationsRequest {}
+
+message ListBadDestinationsResponse {
+  repeated BadDestinationEntry entries = 1;
+}
+
+message AddBadDestinationRequest {
+  string cidr = 1;
+  string label = 2;
+}
+
+message AddBadDestinationResponse {
+  BadDestinationEntry entry = 1;
+}
+
+message RemoveBadDestinationRequest {
+  string cidr = 1;
+}
+
+message RemoveBadDestinationResponse {}
+
+// ListFindingsRequest filters ListFindings. Every field is optional; an
+// unset field matches everything. tenant_id is enforced by the server's RBAC
+// interceptor the same way ListContainersRequest.username is: a non-admin
+// caller may only ever see their own tenant_id, regardless of what (if
+// anything) they set here.
+message ListFindingsRequest {
+  // Exact match. THREAT_SEVERITY_UNSPECIFIED (default) matches any severity.
+  ThreatSeverity severity = 1;
+  string tenant_id = 2;
+  // Only findings last seen at or after this time. Unset matches everything.
+  google.protobuf.Timestamp since = 3;
+  // Exact match. FINDING_STATE_UNSPECIFIED (default) matches any state.
+  FindingState state = 4;
+  // <= 0 or > 200 is treated as the server default (50).
+  int32 limit = 5;
+}
+
+message ListFindingsResponse {
+  repeated Finding findings = 1;
+}
+
+message ResolveFindingRequest {
+  int64 id = 1;
+}
+
+message ResolveFindingResponse {
+  Finding finding = 1;
+}
+
+// ThreatDetectionService serves the background security-sentry's status and
+// findings. GetSentryStatus ships with #1640 (background detection loop);
+// *BadDestination* ships with #1641 (known-bad destination rule);
+// ListFindings/ResolveFinding ship with #1643 (findings delivery + triage);
+// rule-config RPCs remain unimplemented — see
+// docs/architecture/continuous-threat-detection.md.
+service ThreatDetectionService {
+  // GetSentryStatus returns the detection engine's on/off state and the
+  // health of every registered rule.
+  rpc GetSentryStatus(GetSentryStatusRequest) returns (GetSentryStatusResponse) {
+    option (google.api.http) = {
+      get: "/v1/security/sentry/status"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get threat-detection sentry status";
+      description: "Returns the background detection engine's on/off state (disabled, unavailable, degraded, ok) and per-rule health.";
+      tags: "Security";
+    };
+  }
+
+  // ListBadDestinations returns the merged baseline + operator-added
+  // known-bad-destination list the bad-destination rule matches against.
+  rpc ListBadDestinations(ListBadDestinationsRequest) returns (ListBadDestinationsResponse) {
+    option (google.api.http) = {
+      get: "/v1/security/bad-destinations"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List known-bad destinations";
+      description: "Returns the merged baseline (embedded, versioned) and operator-added known-bad-destination list.";
+      tags: "Security";
+    };
+  }
+
+  // AddBadDestination adds an operator-supplied entry to the known-bad
+  // destination list, persisted so it survives a daemon restart, without a
+  // daemon rebuild.
+  rpc AddBadDestination(AddBadDestinationRequest) returns (AddBadDestinationResponse) {
+    option (google.api.http) = {
+      post: "/v1/security/bad-destinations"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Add a known-bad destination";
+      description: "Adds an operator-supplied CIDR or exact IP to the known-bad-destination list.";
+      tags: "Security";
+    };
+  }
+
+  // RemoveBadDestination removes a previously operator-added entry. Baseline
+  // (embedded) entries cannot be removed this way — a bare "not found" error
+  // covers the case since only additions are ever tracked as removable.
+  rpc RemoveBadDestination(RemoveBadDestinationRequest) returns (RemoveBadDestinationResponse) {
+    option (google.api.http) = {
+      delete: "/v1/security/bad-destinations/{cidr=**}"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Remove an operator-added bad destination";
+      description: "Removes a previously operator-added entry from the known-bad-destination list. Baseline entries cannot be removed.";
+      tags: "Security";
+    };
+  }
+
+  // ListFindings lists security findings, most recently seen first.
+  // Tenant-scoped: a non-admin caller only ever sees their own tenant_id.
+  rpc ListFindings(ListFindingsRequest) returns (ListFindingsResponse) {
+    option (google.api.http) = {
+      get: "/v1/security/findings"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List security findings";
+      description: "Lists security findings with optional severity/tenant/since/state filters, most recently seen first. Non-admin callers only see their own tenant.";
+      tags: "Security";
+    };
+  }
+
+  // ResolveFinding transitions an open finding to resolved. Fails if the
+  // finding is already resolved or doesn't exist.
+  rpc ResolveFinding(ResolveFindingRequest) returns (ResolveFindingResponse) {
+    option (google.api.http) = {
+      post: "/v1/security/findings/{id}/resolve"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Resolve a security finding";
+      description: "Marks an open finding as resolved. Fails with FAILED_PRECONDITION if it's already resolved, NOT_FOUND if it doesn't exist.";
+      tags: "Security";
+    };
+  }
+}

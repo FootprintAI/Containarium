@@ -58,6 +58,108 @@ type InstallZapResponse struct {
 	Message string `json:"message"`
 }
 
+// SentryRuleStatus is one registered detection rule's health.
+type SentryRuleStatus struct {
+	Rule        string `json:"rule"`
+	Healthy     bool   `json:"healthy"`
+	LastError   string `json:"lastError,omitempty"`
+	LastErrorAt string `json:"lastErrorAt,omitempty"`
+}
+
+// SentryStatusResponse mirrors the daemon's GetSentryStatusResponse
+// (#1640): the background threat-detection engine's on/off state — one of
+// DISABLED, UNAVAILABLE, DEGRADED, OK (SentryState enum names, unprefixed)
+// — and every registered rule's health.
+type SentryStatusResponse struct {
+	State  string             `json:"state"`
+	Reason string             `json:"reason,omitempty"`
+	Rules  []SentryRuleStatus `json:"rules,omitempty"`
+}
+
+// BadDestinationEntry is one entry in the known-bad-destination list
+// (#1641), mirroring the daemon's BadDestinationEntry.
+type BadDestinationEntry struct {
+	CIDR   string `json:"cidr"`
+	Label  string `json:"label,omitempty"`
+	Source string `json:"source"`
+}
+
+// ListBadDestinationsResponse mirrors the daemon's
+// ListBadDestinationsResponse.
+type ListBadDestinationsResponse struct {
+	Entries []BadDestinationEntry `json:"entries"`
+}
+
+// AddBadDestinationResponse mirrors the daemon's AddBadDestinationResponse.
+type AddBadDestinationResponse struct {
+	Entry BadDestinationEntry `json:"entry"`
+}
+
+// FlowEvidence mirrors the daemon's FlowEvidence (#1639): one triggering
+// flow's 5-tuple and volume.
+// Bytes/Packets are string, not int64 — see SentryFinding's doc comment on
+// why (protojson int64 encoding).
+type FlowEvidence struct {
+	SrcIP    string `json:"srcIp"`
+	DstIP    string `json:"dstIp"`
+	SrcPort  uint32 `json:"srcPort"`
+	DstPort  uint32 `json:"dstPort"`
+	Protocol string `json:"protocol"`
+	Bytes    string `json:"bytes"`
+	Packets  string `json:"packets"`
+}
+
+// DenyEvidence mirrors the daemon's DenyEvidence (#1639): an aggregated
+// count of policy-deny events matching a destination/reason pair. Count is
+// string, not int64 — see SentryFinding's doc comment.
+type DenyEvidence struct {
+	DstIP    string `json:"dstIp"`
+	DstPort  uint32 `json:"dstPort"`
+	Protocol string `json:"protocol"`
+	Reason   string `json:"reason"`
+	Count    string `json:"count"`
+}
+
+// SentryEvidence mirrors the daemon's Evidence message — the wire shape
+// nested under Finding.evidence, not flattened onto SentryFinding.
+type SentryEvidence struct {
+	Flows  []FlowEvidence `json:"flows,omitempty"`
+	Denies []DenyEvidence `json:"denies,omitempty"`
+}
+
+// SentryFinding mirrors the daemon's Finding (#1639/#1643): a single
+// security finding raised by the threat-detection sentry. Named
+// SentryFinding, not Finding, to keep it unambiguous next to
+// SecurityFinding (the unrelated scanner-findings shape above).
+//
+// ID and Count are string, not int64: protojson serializes proto3 int64
+// fields as JSON strings (to survive JS's float64 precision limit), and
+// encoding/json refuses to unmarshal a JSON string into an int64 field.
+type SentryFinding struct {
+	ID        string         `json:"id"`
+	Rule      string         `json:"rule"`
+	Severity  string         `json:"severity"`
+	TenantID  string         `json:"tenantId"`
+	Container string         `json:"container,omitempty"`
+	BackendID string         `json:"backendId,omitempty"`
+	Subject   string         `json:"subject,omitempty"`
+	State     string         `json:"state"`
+	Count     string         `json:"count"`
+	Evidence  SentryEvidence `json:"evidence"`
+	FirstSeen string         `json:"firstSeen,omitempty"`
+	LastSeen  string         `json:"lastSeen,omitempty"`
+}
+
+// ListSentryFindingsResponse mirrors the daemon's ListFindingsResponse.
+type ListSentryFindingsResponse struct {
+	Findings []SentryFinding `json:"findings"`
+}
+
+// ResolveSentryFindingResponse mirrors the daemon's ResolveFindingResponse.
+type ResolveSentryFindingResponse struct {
+	Finding SentryFinding `json:"finding"`
+}
+
 // --- MCP handlers ----------------------------------------------------------
 
 // handleSecurityScan triggers one or more scanners against a container.
@@ -116,6 +218,114 @@ func handleSecurityFindings(client API, args map[string]interface{}) (string, er
 		"findings":   findings,
 	}
 	out, _ := json.MarshalIndent(envelope, "", "  ")
+	return string(out), nil
+}
+
+// handleSecuritySentryStatus reports the background threat-detection
+// engine's on/off state and per-rule health. Takes no arguments — like
+// GetClamavSummary/GetScanStatus, this is a fleet-position read, not
+// scoped to a container.
+func handleSecuritySentryStatus(client API, args map[string]interface{}) (string, error) {
+	resp, err := client.GetSentryStatus()
+	if err != nil {
+		return "", fmt.Errorf("get sentry status: %w", err)
+	}
+	// Strip the enum's repeated prefix so the agent sees "OK"/"DISABLED"/...
+	// rather than "SENTRY_STATE_OK" — same normalization the CLI applies.
+	resp.State = strings.TrimPrefix(resp.State, "SENTRY_STATE_")
+	for i := range resp.Rules {
+		resp.Rules[i].Rule = strings.TrimPrefix(resp.Rules[i].Rule, "THREAT_RULE_ID_")
+	}
+	out, _ := json.MarshalIndent(resp, "", "  ")
+	return string(out), nil
+}
+
+// handleListBadDestinations lists the merged baseline + operator-added
+// known-bad-destination list the bad-destination rule (#1641) matches flow
+// destinations against. Takes no arguments.
+func handleListBadDestinations(client API, args map[string]interface{}) (string, error) {
+	resp, err := client.ListBadDestinations()
+	if err != nil {
+		return "", fmt.Errorf("list bad destinations: %w", err)
+	}
+	out, _ := json.MarshalIndent(resp, "", "  ")
+	return string(out), nil
+}
+
+// handleAddBadDestination adds an operator-supplied entry to the
+// known-bad-destination list, effective immediately — no daemon rebuild or
+// restart required.
+func handleAddBadDestination(client API, args map[string]interface{}) (string, error) {
+	cidr := getStringArg(args, "cidr", "")
+	if cidr == "" {
+		return "", fmt.Errorf("cidr is required")
+	}
+	label := getStringArg(args, "label", "")
+	entry, err := client.AddBadDestination(cidr, label)
+	if err != nil {
+		return "", fmt.Errorf("add bad destination: %w", err)
+	}
+	out, _ := json.MarshalIndent(entry, "", "  ")
+	return string(out), nil
+}
+
+// handleRemoveBadDestination removes a previously operator-added entry.
+// Baseline entries cannot be removed this way.
+func handleRemoveBadDestination(client API, args map[string]interface{}) (string, error) {
+	cidr := getStringArg(args, "cidr", "")
+	if cidr == "" {
+		return "", fmt.Errorf("cidr is required")
+	}
+	if err := client.RemoveBadDestination(cidr); err != nil {
+		return "", fmt.Errorf("remove bad destination: %w", err)
+	}
+	return fmt.Sprintf("Removed %s from the known-bad-destination list.", cidr), nil
+}
+
+// handleListSecuritySentryFindings lists findings raised by the background
+// threat-detection sentry (#1639-#1643), most recently seen first. Named
+// distinctly from security_findings (the unrelated scanner-findings tool
+// above) — same naming collision the CLI has between `security findings`
+// (this) and `security-findings <username>` (scanner findings).
+func handleListSecuritySentryFindings(client API, args map[string]interface{}) (string, error) {
+	severity := getStringArg(args, "severity", "")
+	tenant := getStringArg(args, "tenant", "")
+	since := getStringArg(args, "since", "")
+	state := getStringArg(args, "state", "")
+	limit := 0
+	if v, ok := getInt64Arg(args, "limit"); ok {
+		limit = int(v)
+	}
+
+	resp, err := client.ListSecuritySentryFindings(severity, tenant, since, state, limit)
+	if err != nil {
+		return "", fmt.Errorf("list sentry findings: %w", err)
+	}
+	// Strip the enums' repeated prefixes, same normalization
+	// handleSecuritySentryStatus applies.
+	for i := range resp.Findings {
+		f := &resp.Findings[i]
+		f.Rule = strings.TrimPrefix(f.Rule, "THREAT_RULE_ID_")
+		f.Severity = strings.TrimPrefix(f.Severity, "THREAT_SEVERITY_")
+		f.State = strings.TrimPrefix(f.State, "FINDING_STATE_")
+	}
+	out, _ := json.MarshalIndent(resp, "", "  ")
+	return string(out), nil
+}
+
+// handleResolveSecuritySentryFinding marks an open sentry finding as
+// resolved.
+func handleResolveSecuritySentryFinding(client API, args map[string]interface{}) (string, error) {
+	id, ok := getInt64Arg(args, "id")
+	if !ok {
+		return "", fmt.Errorf("id is required")
+	}
+	resp, err := client.ResolveSecuritySentryFinding(id)
+	if err != nil {
+		return "", fmt.Errorf("resolve sentry finding: %w", err)
+	}
+	resp.Finding.State = strings.TrimPrefix(resp.Finding.State, "FINDING_STATE_")
+	out, _ := json.MarshalIndent(resp, "", "  ")
 	return string(out), nil
 }
 

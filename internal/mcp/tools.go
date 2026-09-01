@@ -900,6 +900,122 @@ func (s *Server) registerTools() {
 			Handler: handleSecurityRemediate,
 		},
 		{
+			Name: "security_sentry_status",
+			Description: "Report the background threat-detection engine's on/off state (#1640): " +
+				"'OK' (running, findings persisted), 'DEGRADED' (running, but no Postgres — " +
+				"findings don't survive a daemon restart), 'UNAVAILABLE' (no eBPF object loaded, " +
+				"or no audit store — nothing is being detected; check `reason`), or 'DISABLED' " +
+				"(CONTAINARIUM_THREAT_SENTRY unset). Also lists every registered detection rule's " +
+				"health — a rule that panicked shows healthy=false with lastError set, but the " +
+				"engine and every other rule keep running.\n\n" +
+				"Call this before trusting the absence of security findings: UNAVAILABLE/DISABLED " +
+				"mean nothing is watching, not that nothing is wrong. Takes no arguments.",
+			InputSchema: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+			Handler: handleSecuritySentryStatus,
+		},
+		{
+			Name: "list_bad_destinations",
+			Description: "List the known-bad-destination list (#1641) the threat-detection sentry's " +
+				"bad-destination rule matches flow destinations against — a merged view of the " +
+				"embedded baseline (mining pools, versioned) and any operator-added entries. " +
+				"Takes no arguments.",
+			InputSchema: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+			Handler: handleListBadDestinations,
+		},
+		{
+			Name: "add_bad_destination",
+			Description: "Add an operator-supplied entry (exact IP or CIDR) to the known-bad-destination " +
+				"list, effective immediately — no daemon rebuild or restart required. Use this to " +
+				"extend detection to a destination the embedded baseline list doesn't cover yet.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"cidr": map[string]interface{}{
+						"type":        "string",
+						"description": "Exact IP (\"203.0.113.7\") or CIDR (\"203.0.113.0/24\").",
+					},
+					"label": map[string]interface{}{
+						"type":        "string",
+						"description": "Human-readable reason, e.g. \"reported mining pool\".",
+					},
+				},
+				"required": []string{"cidr"},
+			},
+			Handler: handleAddBadDestination,
+		},
+		{
+			Name: "remove_bad_destination",
+			Description: "Remove a previously operator-added entry from the known-bad-destination list. " +
+				"Baseline (embedded, versioned) entries cannot be removed this way.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"cidr": map[string]interface{}{
+						"type":        "string",
+						"description": "Exact IP or CIDR to remove, as it was added.",
+					},
+				},
+				"required": []string{"cidr"},
+			},
+			Handler: handleRemoveBadDestination,
+		},
+		{
+			Name: "list_security_sentry_findings",
+			Description: "List security findings raised by the background threat-detection sentry " +
+				"(#1639-#1642) — mining-abuse egress, cross-tenant flow, and deny-burst detections — " +
+				"with evidence (triggering flow 5-tuples / deny counts). Distinct from " +
+				"`security_findings`, which is the unrelated ClamAV/pentest/ZAP scanner surface.\n\n" +
+				"Every filter is optional. Non-admin callers only ever see their own tenant, " +
+				"regardless of what (if anything) `tenant` is set to.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"severity": map[string]interface{}{
+						"type":        "string",
+						"description": "Filter by severity: low, medium, high, critical. Omit for any severity.",
+					},
+					"tenant": map[string]interface{}{
+						"type":        "string",
+						"description": "Filter by tenant id (admin only — a non-admin caller's own tenant is used regardless).",
+					},
+					"since": map[string]interface{}{
+						"type":        "string",
+						"description": "RFC3339 timestamp; only findings last seen at or after this time.",
+					},
+					"state": map[string]interface{}{
+						"type":        "string",
+						"description": "Filter by state: open, resolved. Omit for any state.",
+					},
+					"limit": map[string]interface{}{
+						"type":        "integer",
+						"description": "Max findings to return. 0 (default) means the server default (50, capped at 200).",
+					},
+				},
+			},
+			Handler: handleListSecuritySentryFindings,
+		},
+		{
+			Name:        "resolve_security_sentry_finding",
+			Description: "Mark an open threat-detection sentry finding as resolved, after triaging and handling it.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"id": map[string]interface{}{
+						"type":        "integer",
+						"description": "Finding id, from list_security_sentry_findings.",
+					},
+				},
+				"required": []string{"id"},
+			},
+			Handler: handleResolveSecuritySentryFinding,
+		},
+		{
 			Name: "install_zap",
 			Description: "Download and install OWASP ZAP into this host's security container. " +
 				"Admin-only, one-time-per-host setup — `security_scan` (kind=zap) and the " +
@@ -1455,9 +1571,21 @@ func toolScopeAssignments() map[string]string {
 		"kms_envelope_coverage":   auth.ScopeKMSAdmin,
 		"kms_migrate_to_envelope": auth.ScopeKMSAdmin,
 		// security tools
-		"security_scan":      auth.ScopeSecurityWrite,
-		"security_remediate": auth.ScopeSecurityWrite,
-		"security_findings":  auth.ScopeSecurityRead,
+		"security_scan":          auth.ScopeSecurityWrite,
+		"security_remediate":     auth.ScopeSecurityWrite,
+		"security_findings":      auth.ScopeSecurityRead,
+		"security_sentry_status": auth.ScopeSecurityRead,
+		// bad-destination list (#1641): list is a read, add/remove mutate
+		// detection config — same split as security_findings vs
+		// security_scan/security_remediate above.
+		"list_bad_destinations":  auth.ScopeSecurityRead,
+		"add_bad_destination":    auth.ScopeSecurityWrite,
+		"remove_bad_destination": auth.ScopeSecurityWrite,
+		// findings delivery + triage (#1643): listing is a read,
+		// resolving mutates a finding's lifecycle state — same split as
+		// the bad-destination list above.
+		"list_security_sentry_findings":   auth.ScopeSecurityRead,
+		"resolve_security_sentry_finding": auth.ScopeSecurityWrite,
 		// install_zap is admin-only (the daemon also enforces
 		// RoleAdmin server-side); scope-gated the same as the other
 		// security-write tools at the MCP layer.

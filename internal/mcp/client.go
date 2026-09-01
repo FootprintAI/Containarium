@@ -633,7 +633,108 @@ type MigrateToEnvelopeResponse struct {
 	Errors      []MigrateRowError `json:"errors"`
 }
 
-// GetKMSStatus reports the active KMS backend + envelope state.
+// GetSentryStatus reports the threat-detection sentry's on/off state and
+// per-rule health (#1640).
+func (c *Client) GetSentryStatus() (*SentryStatusResponse, error) {
+	respBody, err := c.doRequest("GET", "/v1/security/sentry/status", nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp SentryStatusResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
+// ListBadDestinations returns the merged baseline + operator-added
+// known-bad-destination list the bad-destination rule (#1641) matches
+// against.
+func (c *Client) ListBadDestinations() (*ListBadDestinationsResponse, error) {
+	respBody, err := c.doRequest("GET", "/v1/security/bad-destinations", nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp ListBadDestinationsResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
+// AddBadDestination adds an operator-supplied entry, effective immediately.
+func (c *Client) AddBadDestination(cidr, label string) (*BadDestinationEntry, error) {
+	respBody, err := c.doRequest("POST", "/v1/security/bad-destinations", map[string]string{
+		"cidr": cidr, "label": label,
+	})
+	if err != nil {
+		return nil, err
+	}
+	var resp AddBadDestinationResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp.Entry, nil
+}
+
+// RemoveBadDestination removes a previously operator-added entry. Baseline
+// entries cannot be removed.
+func (c *Client) RemoveBadDestination(cidr string) error {
+	_, err := c.doRequest("DELETE", "/v1/security/bad-destinations/"+cidr, nil)
+	return err
+}
+
+// ListSecuritySentryFindings lists findings raised by the background
+// threat-detection sentry (#1643), most recently seen first. Every filter
+// is optional; pass "" / 0 to skip it. severity/state are the lowercase
+// CLI-style names ("high", "open") — this converts them to the wire enum
+// names, same normalization the CLI applies.
+func (c *Client) ListSecuritySentryFindings(severity, tenant, since, state string, limit int) (*ListSentryFindingsResponse, error) {
+	q := url.Values{}
+	if severity != "" {
+		q.Set("severity", "THREAT_SEVERITY_"+strings.ToUpper(severity))
+	}
+	if tenant != "" {
+		q.Set("tenant_id", tenant)
+	}
+	if since != "" {
+		q.Set("since", since)
+	}
+	if state != "" {
+		q.Set("state", "FINDING_STATE_"+strings.ToUpper(state))
+	}
+	if limit > 0 {
+		q.Set("limit", strconv.Itoa(limit))
+	}
+	path := "/v1/security/findings"
+	if enc := q.Encode(); enc != "" {
+		path += "?" + enc
+	}
+	respBody, err := c.doRequest("GET", path, nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp ListSentryFindingsResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
+// ResolveSecuritySentryFinding marks an open finding as resolved.
+func (c *Client) ResolveSecuritySentryFinding(id int64) (*ResolveSentryFindingResponse, error) {
+	path := "/v1/security/findings/" + strconv.FormatInt(id, 10) + "/resolve"
+	respBody, err := c.doRequest("POST", path, []byte("{}"))
+	if err != nil {
+		return nil, err
+	}
+	var resp ResolveSentryFindingResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
 func (c *Client) GetKMSStatus() (*KMSStatusResponse, error) {
 	respBody, err := c.doRequest("GET", "/v1/kms/status", nil)
 	if err != nil {

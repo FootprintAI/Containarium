@@ -222,6 +222,24 @@ func (e *Emitter) EmitMetricsUpdate(metrics []*pb.ContainerMetrics) {
 	e.bus.Publish(event)
 }
 
+// Security Events
+
+// EmitSecurityFinding emits an event when the threat-detection engine
+// creates or updates a security finding.
+func (e *Emitter) EmitSecurityFinding(finding *pb.Finding) {
+	event := newEvent(
+		pb.EventType_EVENT_TYPE_SECURITY_FINDING,
+		pb.ResourceType_RESOURCE_TYPE_SECURITY_FINDING,
+		finding.TenantId,
+	)
+	event.Payload = &pb.Event_SecurityFindingEvent{
+		SecurityFindingEvent: &pb.SecurityFindingEvent{
+			Finding: finding,
+		},
+	}
+	e.bus.Publish(event)
+}
+
 // Traffic Events
 
 // EmitTrafficEvent emits a traffic event for connection updates

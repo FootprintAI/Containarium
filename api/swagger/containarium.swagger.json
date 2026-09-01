@@ -57,6 +57,10 @@
       "description": "TrafficService provides container traffic monitoring capabilities"
     },
     {
+      "name": "ThreatDetectionService",
+      "description": "ThreatDetectionService serves the background security-sentry's status and\nfindings. GetSentryStatus ships with #1640 (background detection loop);\n*BadDestination* ships with #1641 (known-bad destination rule);\nListFindings/ResolveFinding ship with #1643 (findings delivery + triage);\nrule-config RPCs remain unimplemented — see\ndocs/architecture/continuous-threat-detection.md."
+    },
+    {
       "name": "EventService",
       "description": "EventService provides real-time event streaming"
     },
@@ -3390,7 +3394,7 @@
         "parameters": [
           {
             "name": "resourceTypes",
-            "description": "Filter by resource types (empty = all types)\n\n - RESOURCE_TYPE_UNSPECIFIED: Unspecified resource type\n - RESOURCE_TYPE_CONTAINER: Container resource\n - RESOURCE_TYPE_APP: App resource\n - RESOURCE_TYPE_ROUTE: Route resource\n - RESOURCE_TYPE_METRICS: Metrics resource\n - RESOURCE_TYPE_TRAFFIC: Traffic resource",
+            "description": "Filter by resource types (empty = all types)\n\n - RESOURCE_TYPE_UNSPECIFIED: Unspecified resource type\n - RESOURCE_TYPE_CONTAINER: Container resource\n - RESOURCE_TYPE_APP: App resource\n - RESOURCE_TYPE_ROUTE: Route resource\n - RESOURCE_TYPE_METRICS: Metrics resource\n - RESOURCE_TYPE_TRAFFIC: Traffic resource\n - RESOURCE_TYPE_SECURITY_FINDING: Security finding resource",
             "in": "query",
             "required": false,
             "type": "array",
@@ -3402,7 +3406,8 @@
                 "RESOURCE_TYPE_APP",
                 "RESOURCE_TYPE_ROUTE",
                 "RESOURCE_TYPE_METRICS",
-                "RESOURCE_TYPE_TRAFFIC"
+                "RESOURCE_TYPE_TRAFFIC",
+                "RESOURCE_TYPE_SECURITY_FINDING"
               ]
             },
             "collectionFormat": "multi"
@@ -5236,6 +5241,95 @@
         ]
       }
     },
+    "/v1/security/bad-destinations": {
+      "get": {
+        "summary": "List known-bad destinations",
+        "description": "Returns the merged baseline (embedded, versioned) and operator-added known-bad-destination list.",
+        "operationId": "ThreatDetectionService_ListBadDestinations",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListBadDestinationsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "tags": [
+          "Security"
+        ]
+      },
+      "post": {
+        "summary": "Add a known-bad destination",
+        "description": "Adds an operator-supplied CIDR or exact IP to the known-bad-destination list.",
+        "operationId": "ThreatDetectionService_AddBadDestination",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/AddBadDestinationResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/AddBadDestinationRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Security"
+        ]
+      }
+    },
+    "/v1/security/bad-destinations/{cidr}": {
+      "delete": {
+        "summary": "Remove an operator-added bad destination",
+        "description": "Removes a previously operator-added entry from the known-bad-destination list. Baseline entries cannot be removed.",
+        "operationId": "ThreatDetectionService_RemoveBadDestination",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/RemoveBadDestinationResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "cidr",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "pattern": ".+"
+          }
+        ],
+        "tags": [
+          "Security"
+        ]
+      }
+    },
     "/v1/security/clamav-reports": {
       "get": {
         "summary": "List ClamAV scan reports",
@@ -5364,6 +5458,115 @@
         ]
       }
     },
+    "/v1/security/findings": {
+      "get": {
+        "summary": "List security findings",
+        "description": "Lists security findings with optional severity/tenant/since/state filters, most recently seen first. Non-admin callers only see their own tenant.",
+        "operationId": "ThreatDetectionService_ListFindings",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListFindingsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "severity",
+            "description": "Exact match. THREAT_SEVERITY_UNSPECIFIED (default) matches any severity.",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "enum": [
+              "THREAT_SEVERITY_UNSPECIFIED",
+              "THREAT_SEVERITY_LOW",
+              "THREAT_SEVERITY_MEDIUM",
+              "THREAT_SEVERITY_HIGH",
+              "THREAT_SEVERITY_CRITICAL"
+            ],
+            "default": "THREAT_SEVERITY_UNSPECIFIED"
+          },
+          {
+            "name": "tenantId",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "since",
+            "description": "Only findings last seen at or after this time. Unset matches everything.",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "format": "date-time"
+          },
+          {
+            "name": "state",
+            "description": "Exact match. FINDING_STATE_UNSPECIFIED (default) matches any state.",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "enum": [
+              "FINDING_STATE_UNSPECIFIED",
+              "FINDING_STATE_OPEN",
+              "FINDING_STATE_RESOLVED"
+            ],
+            "default": "FINDING_STATE_UNSPECIFIED"
+          },
+          {
+            "name": "limit",
+            "description": "\u003c= 0 or \u003e 200 is treated as the server default (50).",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          }
+        ],
+        "tags": [
+          "Security"
+        ]
+      }
+    },
+    "/v1/security/findings/{id}/resolve": {
+      "post": {
+        "summary": "Resolve a security finding",
+        "description": "Marks an open finding as resolved. Fails with FAILED_PRECONDITION if it's already resolved, NOT_FOUND if it doesn't exist.",
+        "operationId": "ThreatDetectionService_ResolveFinding",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ResolveFindingResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "format": "int64"
+          }
+        ],
+        "tags": [
+          "Security"
+        ]
+      }
+    },
     "/v1/security/scan-status": {
       "get": {
         "summary": "Get scan job queue status",
@@ -5374,6 +5577,30 @@
             "description": "A successful response.",
             "schema": {
               "$ref": "#/definitions/GetScanStatusResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "tags": [
+          "Security"
+        ]
+      }
+    },
+    "/v1/security/sentry/status": {
+      "get": {
+        "summary": "Get threat-detection sentry status",
+        "description": "Returns the background detection engine's on/off state (disabled, unavailable, degraded, ok) and per-rule health.",
+        "operationId": "ThreatDetectionService_GetSentryStatus",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetSentryStatusResponse"
             }
           },
           "default": {
@@ -6726,6 +6953,25 @@
       "description": "- ACCESS_TYPE_SSH: SSH access (default for Linux containers)\n - ACCESS_TYPE_RDP: RDP access (for Windows VMs, via Guacamole browser-based client)",
       "title": "AccessType indicates how to connect to an instance"
     },
+    "AddBadDestinationRequest": {
+      "type": "object",
+      "properties": {
+        "cidr": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        }
+      }
+    },
+    "AddBadDestinationResponse": {
+      "type": "object",
+      "properties": {
+        "entry": {
+          "$ref": "#/definitions/BadDestinationEntry"
+        }
+      }
+    },
     "AddCollaboratorBody": {
       "type": "object",
       "properties": {
@@ -7519,6 +7765,23 @@
         }
       },
       "description": "BackupVerification is the audit artifact for one restore test: who ran\nit, when, against what, and what the engine said. Persisted on the\nBackupRecord so `ListBackups` can answer \"last verified\" and so the\nevidence outlives the run that produced it (ISO 27001 A.8.13 wants\nbackups *tested*, not just taken)."
+    },
+    "BadDestinationEntry": {
+      "type": "object",
+      "properties": {
+        "cidr": {
+          "type": "string",
+          "description": "Exact IP (\"203.0.113.7\") or CIDR (\"203.0.113.0/24\")."
+        },
+        "label": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string",
+          "description": "\"baseline\" (embedded, versioned list, shipped with the daemon) or\n\"operator\" (added via AddBadDestination, without a daemon rebuild)."
+        }
+      },
+      "description": "BadDestinationEntry is one entry in the known-bad-destination list (#1641)\nmatched against flow destination IPs — a mining pool or other known-bad\nendpoint."
     },
     "BuildpackOptions": {
       "type": "object",
@@ -9048,6 +9311,30 @@
         }
       }
     },
+    "DenyEvidence": {
+      "type": "object",
+      "properties": {
+        "dstIp": {
+          "type": "string"
+        },
+        "dstPort": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "protocol": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string",
+          "description": "Human-readable deny reason, e.g. \"policy\", \"virtual_patch\", \"signature\"."
+        },
+        "count": {
+          "type": "string",
+          "format": "int64"
+        }
+      },
+      "description": "DenyEvidence captures an aggregated count of policy-deny events matching a\ndestination/reason pair, attached to a finding as supporting evidence."
+    },
     "DeployAppRequest": {
       "type": "object",
       "properties": {
@@ -9432,6 +9719,9 @@
         },
         "trafficEvent": {
           "$ref": "#/definitions/TrafficEvent"
+        },
+        "securityFindingEvent": {
+          "$ref": "#/definitions/SecurityFindingEvent"
         }
       },
       "title": "Event is the top-level event message sent to clients"
@@ -9453,11 +9743,32 @@
         "EVENT_TYPE_ROUTE_ADDED",
         "EVENT_TYPE_ROUTE_DELETED",
         "EVENT_TYPE_METRICS_UPDATE",
-        "EVENT_TYPE_TRAFFIC_UPDATE"
+        "EVENT_TYPE_TRAFFIC_UPDATE",
+        "EVENT_TYPE_SECURITY_FINDING"
       ],
       "default": "EVENT_TYPE_UNSPECIFIED",
-      "description": "- EVENT_TYPE_UNSPECIFIED: Unspecified event type (should not be used)\n - EVENT_TYPE_CONTAINER_CREATED: Container events (1-9)\nContainer was created\n - EVENT_TYPE_CONTAINER_DELETED: Container was deleted\n - EVENT_TYPE_CONTAINER_STARTED: Container was started\n - EVENT_TYPE_CONTAINER_STOPPED: Container was stopped\n - EVENT_TYPE_CONTAINER_STATE_CHANGED: Container state changed\n - EVENT_TYPE_APP_DEPLOYED: App events (10-19)\nApp was deployed\n - EVENT_TYPE_APP_DELETED: App was deleted\n - EVENT_TYPE_APP_STARTED: App was started\n - EVENT_TYPE_APP_STOPPED: App was stopped\n - EVENT_TYPE_APP_STATE_CHANGED: App state changed\n - EVENT_TYPE_ROUTE_ADDED: Network events (20-29)\nRoute was added\n - EVENT_TYPE_ROUTE_DELETED: Route was deleted\n - EVENT_TYPE_METRICS_UPDATE: System events (30-39)\nMetrics update\n - EVENT_TYPE_TRAFFIC_UPDATE: Traffic events (40-49)\nTraffic/connection update",
+      "description": "- EVENT_TYPE_UNSPECIFIED: Unspecified event type (should not be used)\n - EVENT_TYPE_CONTAINER_CREATED: Container events (1-9)\nContainer was created\n - EVENT_TYPE_CONTAINER_DELETED: Container was deleted\n - EVENT_TYPE_CONTAINER_STARTED: Container was started\n - EVENT_TYPE_CONTAINER_STOPPED: Container was stopped\n - EVENT_TYPE_CONTAINER_STATE_CHANGED: Container state changed\n - EVENT_TYPE_APP_DEPLOYED: App events (10-19)\nApp was deployed\n - EVENT_TYPE_APP_DELETED: App was deleted\n - EVENT_TYPE_APP_STARTED: App was started\n - EVENT_TYPE_APP_STOPPED: App was stopped\n - EVENT_TYPE_APP_STATE_CHANGED: App state changed\n - EVENT_TYPE_ROUTE_ADDED: Network events (20-29)\nRoute was added\n - EVENT_TYPE_ROUTE_DELETED: Route was deleted\n - EVENT_TYPE_METRICS_UPDATE: System events (30-39)\nMetrics update\n - EVENT_TYPE_TRAFFIC_UPDATE: Traffic events (40-49)\nTraffic/connection update\n - EVENT_TYPE_SECURITY_FINDING: Security events (50-59)\nA security finding was created or updated by the threat-detection engine",
       "title": "EventType represents the type of resource change event"
+    },
+    "Evidence": {
+      "type": "object",
+      "properties": {
+        "flows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/FlowEvidence"
+          }
+        },
+        "denies": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/DenyEvidence"
+          }
+        }
+      },
+      "description": "Evidence bundles the flow and deny records that triggered a finding.\nCapped by the store to the most recent entries — see FindingStore."
     },
     "ExecInSandboxBody": {
       "type": "object",
@@ -9489,6 +9800,97 @@
           "format": "int32"
         }
       }
+    },
+    "Finding": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "int64"
+        },
+        "rule": {
+          "$ref": "#/definitions/ThreatRuleId"
+        },
+        "severity": {
+          "$ref": "#/definitions/ThreatSeverity"
+        },
+        "tenantId": {
+          "type": "string"
+        },
+        "container": {
+          "type": "string",
+          "description": "Container name, when the finding is attributable to one container."
+        },
+        "backendId": {
+          "type": "string"
+        },
+        "subject": {
+          "type": "string",
+          "description": "Dedupe scope within (rule, tenant_id): destination IP, peer tenant id,\nor \"\" — see FindingStore's open-finding unique index."
+        },
+        "state": {
+          "$ref": "#/definitions/FindingState"
+        },
+        "count": {
+          "type": "string",
+          "format": "int64",
+          "description": "How many times this rule has fired for this (tenant, subject) since\nfirst_seen, without a new row being created."
+        },
+        "evidence": {
+          "$ref": "#/definitions/Evidence"
+        },
+        "firstSeen": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "lastSeen": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "description": "Finding is a single security finding raised by the threat-detection\nengine: an open or resolved instance of a rule firing for one tenant."
+    },
+    "FindingState": {
+      "type": "string",
+      "enum": [
+        "FINDING_STATE_UNSPECIFIED",
+        "FINDING_STATE_OPEN",
+        "FINDING_STATE_RESOLVED"
+      ],
+      "default": "FINDING_STATE_UNSPECIFIED",
+      "description": "FindingState is the lifecycle state of a security finding."
+    },
+    "FlowEvidence": {
+      "type": "object",
+      "properties": {
+        "srcIp": {
+          "type": "string"
+        },
+        "dstIp": {
+          "type": "string"
+        },
+        "srcPort": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "dstPort": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "protocol": {
+          "type": "string",
+          "description": "IP protocol name, e.g. \"tcp\", \"udp\", \"icmp\"."
+        },
+        "bytes": {
+          "type": "string",
+          "format": "int64"
+        },
+        "packets": {
+          "type": "string",
+          "format": "int64"
+        }
+      },
+      "description": "FlowEvidence captures one triggering flow's 5-tuple and volume, attached to\na finding as supporting evidence."
     },
     "GPUInfo": {
       "type": "object",
@@ -10103,6 +10505,25 @@
       },
       "description": "GetSelfMeasurementResponse returns the freshly computed signed measurement."
     },
+    "GetSentryStatusResponse": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "$ref": "#/definitions/SentryState"
+        },
+        "reason": {
+          "type": "string",
+          "description": "Human-readable explanation, always set for DISABLED/UNAVAILABLE."
+        },
+        "rules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/RuleStatus"
+          }
+        }
+      }
+    },
     "GetSystemInfoResponse": {
       "type": "object",
       "properties": {
@@ -10533,6 +10954,18 @@
         }
       }
     },
+    "ListBadDestinationsResponse": {
+      "type": "object",
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/BadDestinationEntry"
+          }
+        }
+      }
+    },
     "ListClamavReportsResponse": {
       "type": "object",
       "properties": {
@@ -10659,6 +11092,18 @@
         }
       },
       "title": "ListDefaultAlertRulesResponse returns the built-in default alert rules"
+    },
+    "ListFindingsResponse": {
+      "type": "object",
+      "properties": {
+        "findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/Finding"
+          }
+        }
+      }
     },
     "ListNetworkPoliciesResponse": {
       "type": "object",
@@ -11980,6 +12425,9 @@
       },
       "description": "RemediatePentestFindingResponse returns the result of the remediation attempt."
     },
+    "RemoveBadDestinationResponse": {
+      "type": "object"
+    },
     "RemoveCollaboratorResponse": {
       "type": "object",
       "properties": {
@@ -12133,6 +12581,14 @@
       },
       "title": "ResizeContainerResponse is the response from resizing a container"
     },
+    "ResolveFindingResponse": {
+      "type": "object",
+      "properties": {
+        "finding": {
+          "$ref": "#/definitions/Finding"
+        }
+      }
+    },
     "ResourceLimits": {
       "type": "object",
       "properties": {
@@ -12183,10 +12639,11 @@
         "RESOURCE_TYPE_APP",
         "RESOURCE_TYPE_ROUTE",
         "RESOURCE_TYPE_METRICS",
-        "RESOURCE_TYPE_TRAFFIC"
+        "RESOURCE_TYPE_TRAFFIC",
+        "RESOURCE_TYPE_SECURITY_FINDING"
       ],
       "default": "RESOURCE_TYPE_UNSPECIFIED",
-      "description": "- RESOURCE_TYPE_UNSPECIFIED: Unspecified resource type\n - RESOURCE_TYPE_CONTAINER: Container resource\n - RESOURCE_TYPE_APP: App resource\n - RESOURCE_TYPE_ROUTE: Route resource\n - RESOURCE_TYPE_METRICS: Metrics resource\n - RESOURCE_TYPE_TRAFFIC: Traffic resource",
+      "description": "- RESOURCE_TYPE_UNSPECIFIED: Unspecified resource type\n - RESOURCE_TYPE_CONTAINER: Container resource\n - RESOURCE_TYPE_APP: App resource\n - RESOURCE_TYPE_ROUTE: Route resource\n - RESOURCE_TYPE_METRICS: Metrics resource\n - RESOURCE_TYPE_TRAFFIC: Traffic resource\n - RESOURCE_TYPE_SECURITY_FINDING: Security finding resource",
       "title": "ResourceType identifies which resource type an event pertains to"
     },
     "RestartAppBody": {
@@ -12368,6 +12825,26 @@
       "default": "ROUTE_PROTOCOL_UNSPECIFIED",
       "description": "- ROUTE_PROTOCOL_UNSPECIFIED: Unspecified protocol (defaults to HTTP)\n - ROUTE_PROTOCOL_HTTP: HTTP/1.1 and HTTP/2 (standard web traffic) - for proxy routes\n - ROUTE_PROTOCOL_GRPC: gRPC (requires HTTP/2 transport) - for proxy routes\n - ROUTE_PROTOCOL_TCP: TCP passthrough - for passthrough routes\n - ROUTE_PROTOCOL_UDP: UDP passthrough - for passthrough routes\n - ROUTE_PROTOCOL_TLS_PASSTHROUGH: TLS passthrough - SNI-based routing without TLS termination (for mTLS gRPC)",
       "title": "RouteProtocol represents the protocol type for a route"
+    },
+    "RuleStatus": {
+      "type": "object",
+      "properties": {
+        "rule": {
+          "$ref": "#/definitions/ThreatRuleId"
+        },
+        "healthy": {
+          "type": "boolean"
+        },
+        "lastError": {
+          "type": "string",
+          "description": "Empty when healthy. Set to the last recovered panic/error otherwise."
+        },
+        "lastErrorAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "description": "RuleStatus is one registered rule's health, so a single panicking rule is\nvisible without taking down the sentry status as a whole."
     },
     "RunAgentSkillBody": {
       "type": "object",
@@ -12596,6 +13073,15 @@
       },
       "description": "SecretMetadata is the public-safe view of a stored secret.\n`value` is never returned by `ListSecrets` — only per-name `GetSecret`."
     },
+    "SecurityFindingEvent": {
+      "type": "object",
+      "properties": {
+        "finding": {
+          "$ref": "#/definitions/Finding"
+        }
+      },
+      "description": "SecurityFindingEvent contains a security finding raised or updated by the\nthreat-detection engine."
+    },
     "SelfMeasurement": {
       "type": "object",
       "properties": {
@@ -12684,6 +13170,18 @@
         }
       },
       "description": "SendAgentTaskResponse returns the peer's artifact."
+    },
+    "SentryState": {
+      "type": "string",
+      "enum": [
+        "SENTRY_STATE_UNSPECIFIED",
+        "SENTRY_STATE_DISABLED",
+        "SENTRY_STATE_UNAVAILABLE",
+        "SENTRY_STATE_DEGRADED",
+        "SENTRY_STATE_OK"
+      ],
+      "default": "SENTRY_STATE_UNSPECIFIED",
+      "description": "SentryState is the overall on/off state of the background threat-detection\nengine, as reported by GetSentryStatus.\n\n - SENTRY_STATE_DISABLED: CONTAINARIUM_THREAT_SENTRY is not set — the engine was never constructed.\n - SENTRY_STATE_UNAVAILABLE: Sentry is enabled but the eBPF object isn't loaded (no flow/deny\nsignals to evaluate), or the FindingStore has no Postgres connection.\nNever silently report \"no findings\" — always UNAVAILABLE with a reason.\n - SENTRY_STATE_DEGRADED: Running, but FindingStore has no Postgres connection: findings/events/\naudit entries still flow, backed by a bounded in-memory ring instead of\npersisted rows — they do not survive a daemon restart.\n - SENTRY_STATE_OK: Running normally with Postgres-backed persistence."
     },
     "ServedFrom": {
       "type": "string",
@@ -13363,6 +13861,29 @@
         }
       },
       "title": "TestWebhookResponse returns the result of the test"
+    },
+    "ThreatRuleId": {
+      "type": "string",
+      "enum": [
+        "THREAT_RULE_ID_UNSPECIFIED",
+        "THREAT_RULE_ID_BAD_DESTINATION",
+        "THREAT_RULE_ID_CROSS_TENANT_FLOW",
+        "THREAT_RULE_ID_DENY_BURST"
+      ],
+      "default": "THREAT_RULE_ID_UNSPECIFIED",
+      "description": "ThreatRuleId identifies which detection rule raised a finding.\n\n - THREAT_RULE_ID_BAD_DESTINATION: Flow to a known-bad destination (e.g. a mining pool).\n - THREAT_RULE_ID_CROSS_TENANT_FLOW: Flow whose source and destination belong to different tenants.\n - THREAT_RULE_ID_DENY_BURST: Burst of policy denies for one tenant within a time window."
+    },
+    "ThreatSeverity": {
+      "type": "string",
+      "enum": [
+        "THREAT_SEVERITY_UNSPECIFIED",
+        "THREAT_SEVERITY_LOW",
+        "THREAT_SEVERITY_MEDIUM",
+        "THREAT_SEVERITY_HIGH",
+        "THREAT_SEVERITY_CRITICAL"
+      ],
+      "default": "THREAT_SEVERITY_UNSPECIFIED",
+      "description": "ThreatSeverity ranks a security finding. Higher values are more severe."
     },
     "ToggleAutoSleepBody": {
       "type": "object",
