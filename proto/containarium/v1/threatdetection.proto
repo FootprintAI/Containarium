@@ -125,10 +125,44 @@ message GetSentryStatusResponse {
   repeated RuleStatus rules = 3;
 }
 
+// BadDestinationEntry is one entry in the known-bad-destination list (#1641)
+// matched against flow destination IPs — a mining pool or other known-bad
+// endpoint.
+message BadDestinationEntry {
+  // Exact IP ("203.0.113.7") or CIDR ("203.0.113.0/24").
+  string cidr = 1;
+  string label = 2;
+  // "baseline" (embedded, versioned list, shipped with the daemon) or
+  // "operator" (added via AddBadDestination, without a daemon rebuild).
+  string source = 3;
+}
+
+message ListBadDestinationsRequest {}
+
+message ListBadDestinationsResponse {
+  repeated BadDestinationEntry entries = 1;
+}
+
+message AddBadDestinationRequest {
+  string cidr = 1;
+  string label = 2;
+}
+
+message AddBadDestinationResponse {
+  BadDestinationEntry entry = 1;
+}
+
+message RemoveBadDestinationRequest {
+  string cidr = 1;
+}
+
+message RemoveBadDestinationResponse {}
+
 // ThreatDetectionService serves the background security-sentry's status and
 // findings. GetSentryStatus ships with #1640 (background detection loop);
-// the findings/rule-config RPCs are added by later stories in the same
-// umbrella (#1641-#1643) — see docs/architecture/continuous-threat-detection.md.
+// *BadDestination* ships with #1641 (known-bad destination rule); the
+// findings/rule-config RPCs are added by later stories in the same umbrella
+// (#1642-#1643) — see docs/architecture/continuous-threat-detection.md.
 service ThreatDetectionService {
   // GetSentryStatus returns the detection engine's on/off state and the
   // health of every registered rule.
@@ -139,6 +173,48 @@ service ThreatDetectionService {
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Get threat-detection sentry status";
       description: "Returns the background detection engine's on/off state (disabled, unavailable, degraded, ok) and per-rule health.";
+      tags: "Security";
+    };
+  }
+
+  // ListBadDestinations returns the merged baseline + operator-added
+  // known-bad-destination list the bad-destination rule matches against.
+  rpc ListBadDestinations(ListBadDestinationsRequest) returns (ListBadDestinationsResponse) {
+    option (google.api.http) = {
+      get: "/v1/security/bad-destinations"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List known-bad destinations";
+      description: "Returns the merged baseline (embedded, versioned) and operator-added known-bad-destination list.";
+      tags: "Security";
+    };
+  }
+
+  // AddBadDestination adds an operator-supplied entry to the known-bad
+  // destination list, persisted so it survives a daemon restart, without a
+  // daemon rebuild.
+  rpc AddBadDestination(AddBadDestinationRequest) returns (AddBadDestinationResponse) {
+    option (google.api.http) = {
+      post: "/v1/security/bad-destinations"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Add a known-bad destination";
+      description: "Adds an operator-supplied CIDR or exact IP to the known-bad-destination list.";
+      tags: "Security";
+    };
+  }
+
+  // RemoveBadDestination removes a previously operator-added entry. Baseline
+  // (embedded) entries cannot be removed this way — a bare "not found" error
+  // covers the case since only additions are ever tracked as removable.
+  rpc RemoveBadDestination(RemoveBadDestinationRequest) returns (RemoveBadDestinationResponse) {
+    option (google.api.http) = {
+      delete: "/v1/security/bad-destinations/{cidr=**}"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Remove an operator-added bad destination";
+      description: "Removes a previously operator-added entry from the known-bad-destination list. Baseline entries cannot be removed.";
       tags: "Security";
     };
   }

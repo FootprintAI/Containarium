@@ -1685,6 +1685,19 @@ skipAppHosting:
 		}
 	}
 	threatDetectServer := NewThreatDetectionServer(threatDetectEngine, threatCfg.SentryEnabled, sentryAvailable, sentryUnavailableReason)
+
+	// Known-bad-destination rule (#1641): constructed independent of
+	// threatCfg.SentryEnabled — an operator can curate the list via CLI/MCP
+	// before ever turning the sentry on. Registered with the engine only
+	// when one was actually constructed above (sentry enabled + available).
+	if badDestRule, bdErr := threatdetect.NewBadDestinationRule(context.Background(), config.DaemonConfigStore); bdErr != nil {
+		log.Printf("Warning: threat-detection bad-destination rule init failed (%v); ListBadDestinations/Add/Remove unavailable", bdErr)
+	} else {
+		threatDetectServer.SetBadDestinationRule(badDestRule)
+		if threatDetectEngine != nil {
+			threatDetectEngine.Register(badDestRule)
+		}
+	}
 	pb.RegisterThreatDetectionServiceServer(grpcServer, threatDetectServer)
 
 	// Setup alert store and manager

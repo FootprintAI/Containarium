@@ -76,6 +76,25 @@ type SentryStatusResponse struct {
 	Rules  []SentryRuleStatus `json:"rules,omitempty"`
 }
 
+// BadDestinationEntry is one entry in the known-bad-destination list
+// (#1641), mirroring the daemon's BadDestinationEntry.
+type BadDestinationEntry struct {
+	CIDR   string `json:"cidr"`
+	Label  string `json:"label,omitempty"`
+	Source string `json:"source"`
+}
+
+// ListBadDestinationsResponse mirrors the daemon's
+// ListBadDestinationsResponse.
+type ListBadDestinationsResponse struct {
+	Entries []BadDestinationEntry `json:"entries"`
+}
+
+// AddBadDestinationResponse mirrors the daemon's AddBadDestinationResponse.
+type AddBadDestinationResponse struct {
+	Entry BadDestinationEntry `json:"entry"`
+}
+
 // --- MCP handlers ----------------------------------------------------------
 
 // handleSecurityScan triggers one or more scanners against a container.
@@ -154,6 +173,48 @@ func handleSecuritySentryStatus(client API, args map[string]interface{}) (string
 	}
 	out, _ := json.MarshalIndent(resp, "", "  ")
 	return string(out), nil
+}
+
+// handleListBadDestinations lists the merged baseline + operator-added
+// known-bad-destination list the bad-destination rule (#1641) matches flow
+// destinations against. Takes no arguments.
+func handleListBadDestinations(client API, args map[string]interface{}) (string, error) {
+	resp, err := client.ListBadDestinations()
+	if err != nil {
+		return "", fmt.Errorf("list bad destinations: %w", err)
+	}
+	out, _ := json.MarshalIndent(resp, "", "  ")
+	return string(out), nil
+}
+
+// handleAddBadDestination adds an operator-supplied entry to the
+// known-bad-destination list, effective immediately — no daemon rebuild or
+// restart required.
+func handleAddBadDestination(client API, args map[string]interface{}) (string, error) {
+	cidr := getStringArg(args, "cidr", "")
+	if cidr == "" {
+		return "", fmt.Errorf("cidr is required")
+	}
+	label := getStringArg(args, "label", "")
+	entry, err := client.AddBadDestination(cidr, label)
+	if err != nil {
+		return "", fmt.Errorf("add bad destination: %w", err)
+	}
+	out, _ := json.MarshalIndent(entry, "", "  ")
+	return string(out), nil
+}
+
+// handleRemoveBadDestination removes a previously operator-added entry.
+// Baseline entries cannot be removed this way.
+func handleRemoveBadDestination(client API, args map[string]interface{}) (string, error) {
+	cidr := getStringArg(args, "cidr", "")
+	if cidr == "" {
+		return "", fmt.Errorf("cidr is required")
+	}
+	if err := client.RemoveBadDestination(cidr); err != nil {
+		return "", fmt.Errorf("remove bad destination: %w", err)
+	}
+	return fmt.Sprintf("Removed %s from the known-bad-destination list.", cidr), nil
 }
 
 // handleSecurityRemediate calls the daemon's RemediatePentestFinding

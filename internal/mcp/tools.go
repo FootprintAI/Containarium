@@ -917,6 +917,55 @@ func (s *Server) registerTools() {
 			Handler: handleSecuritySentryStatus,
 		},
 		{
+			Name: "list_bad_destinations",
+			Description: "List the known-bad-destination list (#1641) the threat-detection sentry's " +
+				"bad-destination rule matches flow destinations against — a merged view of the " +
+				"embedded baseline (mining pools, versioned) and any operator-added entries. " +
+				"Takes no arguments.",
+			InputSchema: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+			Handler: handleListBadDestinations,
+		},
+		{
+			Name: "add_bad_destination",
+			Description: "Add an operator-supplied entry (exact IP or CIDR) to the known-bad-destination " +
+				"list, effective immediately — no daemon rebuild or restart required. Use this to " +
+				"extend detection to a destination the embedded baseline list doesn't cover yet.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"cidr": map[string]interface{}{
+						"type":        "string",
+						"description": "Exact IP (\"203.0.113.7\") or CIDR (\"203.0.113.0/24\").",
+					},
+					"label": map[string]interface{}{
+						"type":        "string",
+						"description": "Human-readable reason, e.g. \"reported mining pool\".",
+					},
+				},
+				"required": []string{"cidr"},
+			},
+			Handler: handleAddBadDestination,
+		},
+		{
+			Name: "remove_bad_destination",
+			Description: "Remove a previously operator-added entry from the known-bad-destination list. " +
+				"Baseline (embedded, versioned) entries cannot be removed this way.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"cidr": map[string]interface{}{
+						"type":        "string",
+						"description": "Exact IP or CIDR to remove, as it was added.",
+					},
+				},
+				"required": []string{"cidr"},
+			},
+			Handler: handleRemoveBadDestination,
+		},
+		{
 			Name: "install_zap",
 			Description: "Download and install OWASP ZAP into this host's security container. " +
 				"Admin-only, one-time-per-host setup — `security_scan` (kind=zap) and the " +
@@ -1476,6 +1525,12 @@ func toolScopeAssignments() map[string]string {
 		"security_remediate":     auth.ScopeSecurityWrite,
 		"security_findings":      auth.ScopeSecurityRead,
 		"security_sentry_status": auth.ScopeSecurityRead,
+		// bad-destination list (#1641): list is a read, add/remove mutate
+		// detection config — same split as security_findings vs
+		// security_scan/security_remediate above.
+		"list_bad_destinations":  auth.ScopeSecurityRead,
+		"add_bad_destination":    auth.ScopeSecurityWrite,
+		"remove_bad_destination": auth.ScopeSecurityWrite,
 		// install_zap is admin-only (the daemon also enforces
 		// RoleAdmin server-side); scope-gated the same as the other
 		// security-write tools at the MCP layer.
