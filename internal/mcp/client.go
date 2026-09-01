@@ -684,6 +684,57 @@ func (c *Client) RemoveBadDestination(cidr string) error {
 	return err
 }
 
+// ListSecuritySentryFindings lists findings raised by the background
+// threat-detection sentry (#1643), most recently seen first. Every filter
+// is optional; pass "" / 0 to skip it. severity/state are the lowercase
+// CLI-style names ("high", "open") — this converts them to the wire enum
+// names, same normalization the CLI applies.
+func (c *Client) ListSecuritySentryFindings(severity, tenant, since, state string, limit int) (*ListSentryFindingsResponse, error) {
+	q := url.Values{}
+	if severity != "" {
+		q.Set("severity", "THREAT_SEVERITY_"+strings.ToUpper(severity))
+	}
+	if tenant != "" {
+		q.Set("tenant_id", tenant)
+	}
+	if since != "" {
+		q.Set("since", since)
+	}
+	if state != "" {
+		q.Set("state", "FINDING_STATE_"+strings.ToUpper(state))
+	}
+	if limit > 0 {
+		q.Set("limit", strconv.Itoa(limit))
+	}
+	path := "/v1/security/findings"
+	if enc := q.Encode(); enc != "" {
+		path += "?" + enc
+	}
+	respBody, err := c.doRequest("GET", path, nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp ListSentryFindingsResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
+// ResolveSecuritySentryFinding marks an open finding as resolved.
+func (c *Client) ResolveSecuritySentryFinding(id int64) (*ResolveSentryFindingResponse, error) {
+	path := "/v1/security/findings/" + strconv.FormatInt(id, 10) + "/resolve"
+	respBody, err := c.doRequest("POST", path, []byte("{}"))
+	if err != nil {
+		return nil, err
+	}
+	var resp ResolveSentryFindingResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
 func (c *Client) GetKMSStatus() (*KMSStatusResponse, error) {
 	respBody, err := c.doRequest("GET", "/v1/kms/status", nil)
 	if err != nil {

@@ -62,6 +62,17 @@ type FindingSink interface {
 	Upsert(ctx context.Context, f *Finding) (*Finding, error)
 }
 
+// FindingReader is what ThreatDetectionServer's ListFindings/ResolveFinding
+// (#1643) need from a finding store — read/lifecycle operations, distinct
+// from FindingSink's write path so the two stores' Get/List/Resolve
+// implementations (identical contract, Postgres vs. bounded in-memory ring)
+// both satisfy it without the engine's hot-path callers depending on it.
+type FindingReader interface {
+	Get(ctx context.Context, id int64) (*Finding, error)
+	List(ctx context.Context, filter ListFilter) ([]*Finding, error)
+	Resolve(ctx context.Context, id int64) (*Finding, error)
+}
+
 // ruleHealth tracks one rule's panic-recovery state for GetSentryStatus. A
 // rule starts healthy; a recovered panic flips it unhealthy until the
 // process restarts (there's no auto-recovery — an operator should notice and

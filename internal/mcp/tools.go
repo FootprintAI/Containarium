@@ -966,6 +966,56 @@ func (s *Server) registerTools() {
 			Handler: handleRemoveBadDestination,
 		},
 		{
+			Name: "list_security_sentry_findings",
+			Description: "List security findings raised by the background threat-detection sentry " +
+				"(#1639-#1642) — mining-abuse egress, cross-tenant flow, and deny-burst detections — " +
+				"with evidence (triggering flow 5-tuples / deny counts). Distinct from " +
+				"`security_findings`, which is the unrelated ClamAV/pentest/ZAP scanner surface.\n\n" +
+				"Every filter is optional. Non-admin callers only ever see their own tenant, " +
+				"regardless of what (if anything) `tenant` is set to.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"severity": map[string]interface{}{
+						"type":        "string",
+						"description": "Filter by severity: low, medium, high, critical. Omit for any severity.",
+					},
+					"tenant": map[string]interface{}{
+						"type":        "string",
+						"description": "Filter by tenant id (admin only — a non-admin caller's own tenant is used regardless).",
+					},
+					"since": map[string]interface{}{
+						"type":        "string",
+						"description": "RFC3339 timestamp; only findings last seen at or after this time.",
+					},
+					"state": map[string]interface{}{
+						"type":        "string",
+						"description": "Filter by state: open, resolved. Omit for any state.",
+					},
+					"limit": map[string]interface{}{
+						"type":        "integer",
+						"description": "Max findings to return. 0 (default) means the server default (50, capped at 200).",
+					},
+				},
+			},
+			Handler: handleListSecuritySentryFindings,
+		},
+		{
+			Name:        "resolve_security_sentry_finding",
+			Description: "Mark an open threat-detection sentry finding as resolved, after triaging and handling it.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"id": map[string]interface{}{
+						"type":        "integer",
+						"description": "Finding id, from list_security_sentry_findings.",
+					},
+				},
+				"required": []string{"id"},
+			},
+			Handler: handleResolveSecuritySentryFinding,
+		},
+		{
 			Name: "install_zap",
 			Description: "Download and install OWASP ZAP into this host's security container. " +
 				"Admin-only, one-time-per-host setup — `security_scan` (kind=zap) and the " +
@@ -1531,6 +1581,11 @@ func toolScopeAssignments() map[string]string {
 		"list_bad_destinations":  auth.ScopeSecurityRead,
 		"add_bad_destination":    auth.ScopeSecurityWrite,
 		"remove_bad_destination": auth.ScopeSecurityWrite,
+		// findings delivery + triage (#1643): listing is a read,
+		// resolving mutates a finding's lifecycle state — same split as
+		// the bad-destination list above.
+		"list_security_sentry_findings":   auth.ScopeSecurityRead,
+		"resolve_security_sentry_finding": auth.ScopeSecurityWrite,
 		// install_zap is admin-only (the daemon also enforces
 		// RoleAdmin server-side); scope-gated the same as the other
 		// security-write tools at the MCP layer.

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 
@@ -9,6 +10,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/threatdetect"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -16,9 +18,8 @@ import (
 // ThreatDetectionServer implements ThreatDetectionService. GetSentryStatus
 // ships with #1640 (background detection loop); ListBadDestinations/
 // AddBadDestination/RemoveBadDestination ship with #1641 (known-bad
-// destination rule); ListFindings/ResolveFinding/rule-config RPCs are added
-// by later stories in the same umbrella (#1642-#1643) — see
-// docs/architecture/continuous-threat-detection.md.
+// destination rule); ListFindings/ResolveFinding ship with #1643 (findings
+// delivery + triage) — see docs/architecture/continuous-threat-detection.md.
 type ThreatDetectionServer struct {
 	pb.UnimplementedThreatDetectionServiceServer
 
@@ -34,6 +35,13 @@ type ThreatDetectionServer struct {
 	// itself failed (malformed embedded baseline list — a build-time bug,
 	// not a runtime condition).
 	badDestRule *threatdetect.BadDestinationRule
+
+	// store backs ListFindings/ResolveFinding (#1643). Independent of
+	// sentryEnabled/ebpfAvailable — an operator can triage findings a
+	// now-disabled sentry already recorded. nil (both Postgres and the
+	// in-memory fallback failed to construct) reports Unavailable rather
+	// than panicking, same as badDestRule.
+	store threatdetect.FindingReader
 
 	mu                sync.Mutex // guards the two fields below — SetUnavailable can flip them after Start()
 	ebpfAvailable     bool       // eBPF object loaded (networkPolicyEnforcer != nil) AND still running
@@ -64,6 +72,15 @@ func NewThreatDetectionServer(engine *threatdetect.Engine, sentryEnabled, ebpfAv
 // three handlers report that explicitly rather than panicking.
 func (s *ThreatDetectionServer) SetBadDestinationRule(r *threatdetect.BadDestinationRule) {
 	s.badDestRule = r
+}
+
+// SetFindingStore wires the finding store (#1643) into ListFindings and
+// ResolveFinding — *threatdetect.FindingStore (Postgres) or
+// *threatdetect.MemFindingStore (degraded) both satisfy FindingReader. nil
+// is valid (neither store could be constructed); the two handlers report
+// that explicitly rather than panicking.
+func (s *ThreatDetectionServer) SetFindingStore(store threatdetect.FindingReader) {
+	s.store = store
 }
 
 // SetUnavailable flips the server to UNAVAILABLE after construction — for
@@ -182,6 +199,96 @@ func (s *ThreatDetectionServer) RemoveBadDestination(ctx context.Context, req *p
 		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
 	return &pb.RemoveBadDestinationResponse{}, nil
+}
+
+// ListFindings lists security findings, most recently seen first.
+// Tenant-scoped the same way ContainerServer.ListContainers scopes by
+// username: a non-admin caller's tenant_id filter is forced to their own
+// subject, and an explicit different tenant_id is denied — findings are the
+// same "who can see whose stuff" boundary as containers.
+func (s *ThreatDetectionServer) ListFindings(ctx context.Context, req *pb.ListFindingsRequest) (*pb.ListFindingsResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeSecurityRead); err != nil {
+		return nil, err
+	}
+	if s.store == nil {
+		return nil, status.Errorf(codes.Unavailable, "finding store not available")
+	}
+	subject, roles, ok := auth.SubjectFromGRPCContext(ctx)
+	if !ok {
+		return nil, status.Error(codes.Unauthenticated, "no authenticated subject")
+	}
+	tenantID := req.GetTenantId()
+	if !auth.HasRole(roles, auth.RoleAdmin) {
+		if tenantID != "" && tenantID != subject {
+			return nil, status.Error(codes.PermissionDenied, "not authorized for this tenant")
+		}
+		tenantID = subject
+	}
+
+	filter := threatdetect.ListFilter{
+		Severity: req.GetSeverity(),
+		TenantID: tenantID,
+		Limit:    int(req.GetLimit()),
+	}
+	if req.GetState() != pb.FindingState_FINDING_STATE_UNSPECIFIED {
+		filter.State = findingStateFromProto(req.GetState())
+	}
+	if req.GetSince() != nil {
+		filter.Since = req.GetSince().AsTime()
+	}
+
+	findings, err := s.store.List(ctx, filter)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "list findings: %v", err)
+	}
+	out := make([]*pb.Finding, 0, len(findings))
+	for _, f := range findings {
+		out = append(out, f.ToProto())
+	}
+	return &pb.ListFindingsResponse{Findings: out}, nil
+}
+
+// ResolveFinding transitions an open finding to resolved. Any authenticated
+// caller with security:write may resolve any finding — findings aren't
+// filtered per-tenant here the way ListFindings is, since resolving one is
+// an operator/on-call action, not a tenant self-service one (matches
+// RemediateSecurityFinding's scoping, the closest existing precedent).
+func (s *ThreatDetectionServer) ResolveFinding(ctx context.Context, req *pb.ResolveFindingRequest) (*pb.ResolveFindingResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeSecurityWrite); err != nil {
+		return nil, err
+	}
+	if s.store == nil {
+		return nil, status.Errorf(codes.Unavailable, "finding store not available")
+	}
+	if req.GetId() <= 0 {
+		return nil, status.Errorf(codes.InvalidArgument, "id is required")
+	}
+	f, err := s.store.Resolve(ctx, req.GetId())
+	if err != nil {
+		switch {
+		case errors.Is(err, threatdetect.ErrFindingNotFound):
+			return nil, status.Errorf(codes.NotFound, "%v", err)
+		case errors.Is(err, threatdetect.ErrFindingNotOpen):
+			return nil, status.Errorf(codes.FailedPrecondition, "%v", err)
+		default:
+			return nil, status.Errorf(codes.Internal, "resolve finding: %v", err)
+		}
+	}
+	return &pb.ResolveFindingResponse{Finding: f.ToProto()}, nil
+}
+
+// findingStateFromProto converts the wire enum to the store's string-typed
+// state — the store's FindingState is a Go string type (matches the
+// security_findings.state column), not the proto enum.
+func findingStateFromProto(s pb.FindingState) threatdetect.FindingState {
+	switch s {
+	case pb.FindingState_FINDING_STATE_OPEN:
+		return threatdetect.FindingStateOpen
+	case pb.FindingState_FINDING_STATE_RESOLVED:
+		return threatdetect.FindingStateResolved
+	default:
+		return ""
+	}
 }
 
 // isBadDestNotFound reports whether err is BadDestinationRule.RemoveDestination's
