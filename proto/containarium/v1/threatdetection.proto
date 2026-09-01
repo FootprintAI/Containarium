@@ -158,11 +158,41 @@ message RemoveBadDestinationRequest {
 
 message RemoveBadDestinationResponse {}
 
+// ListFindingsRequest filters ListFindings. Every field is optional; an
+// unset field matches everything. tenant_id is enforced by the server's RBAC
+// interceptor the same way ListContainersRequest.username is: a non-admin
+// caller may only ever see their own tenant_id, regardless of what (if
+// anything) they set here.
+message ListFindingsRequest {
+  // Exact match. THREAT_SEVERITY_UNSPECIFIED (default) matches any severity.
+  ThreatSeverity severity = 1;
+  string tenant_id = 2;
+  // Only findings last seen at or after this time. Unset matches everything.
+  google.protobuf.Timestamp since = 3;
+  // Exact match. FINDING_STATE_UNSPECIFIED (default) matches any state.
+  FindingState state = 4;
+  // <= 0 or > 200 is treated as the server default (50).
+  int32 limit = 5;
+}
+
+message ListFindingsResponse {
+  repeated Finding findings = 1;
+}
+
+message ResolveFindingRequest {
+  int64 id = 1;
+}
+
+message ResolveFindingResponse {
+  Finding finding = 1;
+}
+
 // ThreatDetectionService serves the background security-sentry's status and
 // findings. GetSentryStatus ships with #1640 (background detection loop);
-// *BadDestination* ships with #1641 (known-bad destination rule); the
-// findings/rule-config RPCs are added by later stories in the same umbrella
-// (#1642-#1643) — see docs/architecture/continuous-threat-detection.md.
+// *BadDestination* ships with #1641 (known-bad destination rule);
+// ListFindings/ResolveFinding ship with #1643 (findings delivery + triage);
+// rule-config RPCs remain unimplemented — see
+// docs/architecture/continuous-threat-detection.md.
 service ThreatDetectionService {
   // GetSentryStatus returns the detection engine's on/off state and the
   // health of every registered rule.
@@ -215,6 +245,32 @@ service ThreatDetectionService {
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Remove an operator-added bad destination";
       description: "Removes a previously operator-added entry from the known-bad-destination list. Baseline entries cannot be removed.";
+      tags: "Security";
+    };
+  }
+
+  // ListFindings lists security findings, most recently seen first.
+  // Tenant-scoped: a non-admin caller only ever sees their own tenant_id.
+  rpc ListFindings(ListFindingsRequest) returns (ListFindingsResponse) {
+    option (google.api.http) = {
+      get: "/v1/security/findings"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List security findings";
+      description: "Lists security findings with optional severity/tenant/since/state filters, most recently seen first. Non-admin callers only see their own tenant.";
+      tags: "Security";
+    };
+  }
+
+  // ResolveFinding transitions an open finding to resolved. Fails if the
+  // finding is already resolved or doesn't exist.
+  rpc ResolveFinding(ResolveFindingRequest) returns (ResolveFindingResponse) {
+    option (google.api.http) = {
+      post: "/v1/security/findings/{id}/resolve"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Resolve a security finding";
+      description: "Marks an open finding as resolved. Fails with FAILED_PRECONDITION if it's already resolved, NOT_FOUND if it doesn't exist.";
       tags: "Security";
     };
   }

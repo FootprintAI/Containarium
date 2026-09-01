@@ -1108,6 +1108,223 @@ func (*RemoveBadDestinationResponse) Descriptor() ([]byte, []int) {
 	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{13}
 }
 
+// ListFindingsRequest filters ListFindings. Every field is optional; an
+// unset field matches everything. tenant_id is enforced by the server's RBAC
+// interceptor the same way ListContainersRequest.username is: a non-admin
+// caller may only ever see their own tenant_id, regardless of what (if
+// anything) they set here.
+type ListFindingsRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Exact match. THREAT_SEVERITY_UNSPECIFIED (default) matches any severity.
+	Severity ThreatSeverity `protobuf:"varint,1,opt,name=severity,proto3,enum=containarium.v1.ThreatSeverity" json:"severity,omitempty"`
+	TenantId string         `protobuf:"bytes,2,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	// Only findings last seen at or after this time. Unset matches everything.
+	Since *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=since,proto3" json:"since,omitempty"`
+	// Exact match. FINDING_STATE_UNSPECIFIED (default) matches any state.
+	State FindingState `protobuf:"varint,4,opt,name=state,proto3,enum=containarium.v1.FindingState" json:"state,omitempty"`
+	// <= 0 or > 200 is treated as the server default (50).
+	Limit         int32 `protobuf:"varint,5,opt,name=limit,proto3" json:"limit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListFindingsRequest) Reset() {
+	*x = ListFindingsRequest{}
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListFindingsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListFindingsRequest) ProtoMessage() {}
+
+func (x *ListFindingsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListFindingsRequest.ProtoReflect.Descriptor instead.
+func (*ListFindingsRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *ListFindingsRequest) GetSeverity() ThreatSeverity {
+	if x != nil {
+		return x.Severity
+	}
+	return ThreatSeverity_THREAT_SEVERITY_UNSPECIFIED
+}
+
+func (x *ListFindingsRequest) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+func (x *ListFindingsRequest) GetSince() *timestamppb.Timestamp {
+	if x != nil {
+		return x.Since
+	}
+	return nil
+}
+
+func (x *ListFindingsRequest) GetState() FindingState {
+	if x != nil {
+		return x.State
+	}
+	return FindingState_FINDING_STATE_UNSPECIFIED
+}
+
+func (x *ListFindingsRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+type ListFindingsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Findings      []*Finding             `protobuf:"bytes,1,rep,name=findings,proto3" json:"findings,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListFindingsResponse) Reset() {
+	*x = ListFindingsResponse{}
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListFindingsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListFindingsResponse) ProtoMessage() {}
+
+func (x *ListFindingsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListFindingsResponse.ProtoReflect.Descriptor instead.
+func (*ListFindingsResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *ListFindingsResponse) GetFindings() []*Finding {
+	if x != nil {
+		return x.Findings
+	}
+	return nil
+}
+
+type ResolveFindingRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            int64                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ResolveFindingRequest) Reset() {
+	*x = ResolveFindingRequest{}
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ResolveFindingRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ResolveFindingRequest) ProtoMessage() {}
+
+func (x *ResolveFindingRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ResolveFindingRequest.ProtoReflect.Descriptor instead.
+func (*ResolveFindingRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *ResolveFindingRequest) GetId() int64 {
+	if x != nil {
+		return x.Id
+	}
+	return 0
+}
+
+type ResolveFindingResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Finding       *Finding               `protobuf:"bytes,1,opt,name=finding,proto3" json:"finding,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ResolveFindingResponse) Reset() {
+	*x = ResolveFindingResponse{}
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ResolveFindingResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ResolveFindingResponse) ProtoMessage() {}
+
+func (x *ResolveFindingResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ResolveFindingResponse.ProtoReflect.Descriptor instead.
+func (*ResolveFindingResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *ResolveFindingResponse) GetFinding() *Finding {
+	if x != nil {
+		return x.Finding
+	}
+	return nil
+}
+
 var File_containarium_v1_threatdetection_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_threatdetection_proto_rawDesc = "" +
@@ -1172,7 +1389,19 @@ const file_containarium_v1_threatdetection_proto_rawDesc = "" +
 	"\x05entry\x18\x01 \x01(\v2$.containarium.v1.BadDestinationEntryR\x05entry\"1\n" +
 	"\x1bRemoveBadDestinationRequest\x12\x12\n" +
 	"\x04cidr\x18\x01 \x01(\tR\x04cidr\"\x1e\n" +
-	"\x1cRemoveBadDestinationResponse*\x9e\x01\n" +
+	"\x1cRemoveBadDestinationResponse\"\xec\x01\n" +
+	"\x13ListFindingsRequest\x12;\n" +
+	"\bseverity\x18\x01 \x01(\x0e2\x1f.containarium.v1.ThreatSeverityR\bseverity\x12\x1b\n" +
+	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x120\n" +
+	"\x05since\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\x05since\x123\n" +
+	"\x05state\x18\x04 \x01(\x0e2\x1d.containarium.v1.FindingStateR\x05state\x12\x14\n" +
+	"\x05limit\x18\x05 \x01(\x05R\x05limit\"L\n" +
+	"\x14ListFindingsResponse\x124\n" +
+	"\bfindings\x18\x01 \x03(\v2\x18.containarium.v1.FindingR\bfindings\"'\n" +
+	"\x15ResolveFindingRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\x03R\x02id\"L\n" +
+	"\x16ResolveFindingResponse\x122\n" +
+	"\afinding\x18\x01 \x01(\v2\x18.containarium.v1.FindingR\afinding*\x9e\x01\n" +
 	"\x0eThreatSeverity\x12\x1f\n" +
 	"\x1bTHREAT_SEVERITY_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13THREAT_SEVERITY_LOW\x10\x01\x12\x1a\n" +
@@ -1193,7 +1422,7 @@ const file_containarium_v1_threatdetection_proto_rawDesc = "" +
 	"\x15SENTRY_STATE_DISABLED\x10\x01\x12\x1c\n" +
 	"\x18SENTRY_STATE_UNAVAILABLE\x10\x02\x12\x19\n" +
 	"\x15SENTRY_STATE_DEGRADED\x10\x03\x12\x13\n" +
-	"\x0fSENTRY_STATE_OK\x10\x042\xd6\t\n" +
+	"\x0fSENTRY_STATE_OK\x10\x042\xc5\x0e\n" +
 	"\x16ThreatDetectionService\x12\xae\x02\n" +
 	"\x0fGetSentryStatus\x12'.containarium.v1.GetSentryStatusRequest\x1a(.containarium.v1.GetSentryStatusResponse\"\xc7\x01\x92A\xa1\x01\n" +
 	"\bSecurity\x12\"Get threat-detection sentry status\x1aqReturns the background detection engine's on/off state (disabled, unavailable, degraded, ok) and per-rule health.\x82\xd3\xe4\x93\x02\x1c\x12\x1a/v1/security/sentry/status\x12\xa5\x02\n" +
@@ -1202,7 +1431,11 @@ const file_containarium_v1_threatdetection_proto_rawDesc = "" +
 	"\x11AddBadDestination\x12).containarium.v1.AddBadDestinationRequest\x1a*.containarium.v1.AddBadDestinationResponse\"\xa1\x01\x92Av\n" +
 	"\bSecurity\x12\x1bAdd a known-bad destination\x1aMAdds an operator-supplied CIDR or exact IP to the known-bad-destination list.\x82\xd3\xe4\x93\x02\":\x01*\"\x1d/v1/security/bad-destinations\x12\xd1\x02\n" +
 	"\x14RemoveBadDestination\x12,.containarium.v1.RemoveBadDestinationRequest\x1a-.containarium.v1.RemoveBadDestinationResponse\"\xdb\x01\x92A\xa8\x01\n" +
-	"\bSecurity\x12(Remove an operator-added bad destination\x1arRemoves a previously operator-added entry from the known-bad-destination list. Baseline entries cannot be removed.\x82\xd3\xe4\x93\x02)*'/v1/security/bad-destinations/{cidr=**}BKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
+	"\bSecurity\x12(Remove an operator-added bad destination\x1arRemoves a previously operator-added entry from the known-bad-destination list. Baseline entries cannot be removed.\x82\xd3\xe4\x93\x02)*'/v1/security/bad-destinations/{cidr=**}\x12\xb5\x02\n" +
+	"\fListFindings\x12$.containarium.v1.ListFindingsRequest\x1a%.containarium.v1.ListFindingsResponse\"\xd7\x01\x92A\xb6\x01\n" +
+	"\bSecurity\x12\x16List security findings\x1a\x91\x01Lists security findings with optional severity/tenant/since/state filters, most recently seen first. Non-admin callers only see their own tenant.\x82\xd3\xe4\x93\x02\x17\x12\x15/v1/security/findings\x12\xb4\x02\n" +
+	"\x0eResolveFinding\x12&.containarium.v1.ResolveFindingRequest\x1a'.containarium.v1.ResolveFindingResponse\"\xd0\x01\x92A\xa2\x01\n" +
+	"\bSecurity\x12\x1aResolve a security finding\x1azMarks an open finding as resolved. Fails with FAILED_PRECONDITION if it's already resolved, NOT_FOUND if it doesn't exist.\x82\xd3\xe4\x93\x02$\"\"/v1/security/findings/{id}/resolveBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
 
 var (
 	file_containarium_v1_threatdetection_proto_rawDescOnce sync.Once
@@ -1217,7 +1450,7 @@ func file_containarium_v1_threatdetection_proto_rawDescGZIP() []byte {
 }
 
 var file_containarium_v1_threatdetection_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_containarium_v1_threatdetection_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
+var file_containarium_v1_threatdetection_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
 var file_containarium_v1_threatdetection_proto_goTypes = []any{
 	(ThreatSeverity)(0),                  // 0: containarium.v1.ThreatSeverity
 	(ThreatRuleId)(0),                    // 1: containarium.v1.ThreatRuleId
@@ -1237,7 +1470,11 @@ var file_containarium_v1_threatdetection_proto_goTypes = []any{
 	(*AddBadDestinationResponse)(nil),    // 15: containarium.v1.AddBadDestinationResponse
 	(*RemoveBadDestinationRequest)(nil),  // 16: containarium.v1.RemoveBadDestinationRequest
 	(*RemoveBadDestinationResponse)(nil), // 17: containarium.v1.RemoveBadDestinationResponse
-	(*timestamppb.Timestamp)(nil),        // 18: google.protobuf.Timestamp
+	(*ListFindingsRequest)(nil),          // 18: containarium.v1.ListFindingsRequest
+	(*ListFindingsResponse)(nil),         // 19: containarium.v1.ListFindingsResponse
+	(*ResolveFindingRequest)(nil),        // 20: containarium.v1.ResolveFindingRequest
+	(*ResolveFindingResponse)(nil),       // 21: containarium.v1.ResolveFindingResponse
+	(*timestamppb.Timestamp)(nil),        // 22: google.protobuf.Timestamp
 }
 var file_containarium_v1_threatdetection_proto_depIdxs = []int32{
 	4,  // 0: containarium.v1.Evidence.flows:type_name -> containarium.v1.FlowEvidence
@@ -1246,27 +1483,36 @@ var file_containarium_v1_threatdetection_proto_depIdxs = []int32{
 	0,  // 3: containarium.v1.Finding.severity:type_name -> containarium.v1.ThreatSeverity
 	2,  // 4: containarium.v1.Finding.state:type_name -> containarium.v1.FindingState
 	6,  // 5: containarium.v1.Finding.evidence:type_name -> containarium.v1.Evidence
-	18, // 6: containarium.v1.Finding.first_seen:type_name -> google.protobuf.Timestamp
-	18, // 7: containarium.v1.Finding.last_seen:type_name -> google.protobuf.Timestamp
+	22, // 6: containarium.v1.Finding.first_seen:type_name -> google.protobuf.Timestamp
+	22, // 7: containarium.v1.Finding.last_seen:type_name -> google.protobuf.Timestamp
 	1,  // 8: containarium.v1.RuleStatus.rule:type_name -> containarium.v1.ThreatRuleId
-	18, // 9: containarium.v1.RuleStatus.last_error_at:type_name -> google.protobuf.Timestamp
+	22, // 9: containarium.v1.RuleStatus.last_error_at:type_name -> google.protobuf.Timestamp
 	3,  // 10: containarium.v1.GetSentryStatusResponse.state:type_name -> containarium.v1.SentryState
 	8,  // 11: containarium.v1.GetSentryStatusResponse.rules:type_name -> containarium.v1.RuleStatus
 	11, // 12: containarium.v1.ListBadDestinationsResponse.entries:type_name -> containarium.v1.BadDestinationEntry
 	11, // 13: containarium.v1.AddBadDestinationResponse.entry:type_name -> containarium.v1.BadDestinationEntry
-	9,  // 14: containarium.v1.ThreatDetectionService.GetSentryStatus:input_type -> containarium.v1.GetSentryStatusRequest
-	12, // 15: containarium.v1.ThreatDetectionService.ListBadDestinations:input_type -> containarium.v1.ListBadDestinationsRequest
-	14, // 16: containarium.v1.ThreatDetectionService.AddBadDestination:input_type -> containarium.v1.AddBadDestinationRequest
-	16, // 17: containarium.v1.ThreatDetectionService.RemoveBadDestination:input_type -> containarium.v1.RemoveBadDestinationRequest
-	10, // 18: containarium.v1.ThreatDetectionService.GetSentryStatus:output_type -> containarium.v1.GetSentryStatusResponse
-	13, // 19: containarium.v1.ThreatDetectionService.ListBadDestinations:output_type -> containarium.v1.ListBadDestinationsResponse
-	15, // 20: containarium.v1.ThreatDetectionService.AddBadDestination:output_type -> containarium.v1.AddBadDestinationResponse
-	17, // 21: containarium.v1.ThreatDetectionService.RemoveBadDestination:output_type -> containarium.v1.RemoveBadDestinationResponse
-	18, // [18:22] is the sub-list for method output_type
-	14, // [14:18] is the sub-list for method input_type
-	14, // [14:14] is the sub-list for extension type_name
-	14, // [14:14] is the sub-list for extension extendee
-	0,  // [0:14] is the sub-list for field type_name
+	0,  // 14: containarium.v1.ListFindingsRequest.severity:type_name -> containarium.v1.ThreatSeverity
+	22, // 15: containarium.v1.ListFindingsRequest.since:type_name -> google.protobuf.Timestamp
+	2,  // 16: containarium.v1.ListFindingsRequest.state:type_name -> containarium.v1.FindingState
+	7,  // 17: containarium.v1.ListFindingsResponse.findings:type_name -> containarium.v1.Finding
+	7,  // 18: containarium.v1.ResolveFindingResponse.finding:type_name -> containarium.v1.Finding
+	9,  // 19: containarium.v1.ThreatDetectionService.GetSentryStatus:input_type -> containarium.v1.GetSentryStatusRequest
+	12, // 20: containarium.v1.ThreatDetectionService.ListBadDestinations:input_type -> containarium.v1.ListBadDestinationsRequest
+	14, // 21: containarium.v1.ThreatDetectionService.AddBadDestination:input_type -> containarium.v1.AddBadDestinationRequest
+	16, // 22: containarium.v1.ThreatDetectionService.RemoveBadDestination:input_type -> containarium.v1.RemoveBadDestinationRequest
+	18, // 23: containarium.v1.ThreatDetectionService.ListFindings:input_type -> containarium.v1.ListFindingsRequest
+	20, // 24: containarium.v1.ThreatDetectionService.ResolveFinding:input_type -> containarium.v1.ResolveFindingRequest
+	10, // 25: containarium.v1.ThreatDetectionService.GetSentryStatus:output_type -> containarium.v1.GetSentryStatusResponse
+	13, // 26: containarium.v1.ThreatDetectionService.ListBadDestinations:output_type -> containarium.v1.ListBadDestinationsResponse
+	15, // 27: containarium.v1.ThreatDetectionService.AddBadDestination:output_type -> containarium.v1.AddBadDestinationResponse
+	17, // 28: containarium.v1.ThreatDetectionService.RemoveBadDestination:output_type -> containarium.v1.RemoveBadDestinationResponse
+	19, // 29: containarium.v1.ThreatDetectionService.ListFindings:output_type -> containarium.v1.ListFindingsResponse
+	21, // 30: containarium.v1.ThreatDetectionService.ResolveFinding:output_type -> containarium.v1.ResolveFindingResponse
+	25, // [25:31] is the sub-list for method output_type
+	19, // [19:25] is the sub-list for method input_type
+	19, // [19:19] is the sub-list for extension type_name
+	19, // [19:19] is the sub-list for extension extendee
+	0,  // [0:19] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_threatdetection_proto_init() }
@@ -1280,7 +1526,7 @@ func file_containarium_v1_threatdetection_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_threatdetection_proto_rawDesc), len(file_containarium_v1_threatdetection_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   14,
+			NumMessages:   18,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -4,12 +4,27 @@
 package threatdetect
 
 import (
+	"errors"
 	"time"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
+
+// ErrFindingNotFound reports that Get/Resolve was called with an id that
+// doesn't exist. Both FindingStore and MemFindingStore return this exact
+// sentinel (wrapped, checked with errors.Is) rather than leaking a
+// backend-specific not-found signal (pgx.ErrNoRows for FindingStore) past
+// the store boundary — callers like ThreatDetectionServer.ResolveFinding
+// map it to codes.NotFound without knowing which backend is in play.
+var ErrFindingNotFound = errors.New("finding not found")
+
+// ErrFindingNotOpen reports that Resolve was called on a finding that
+// exists but isn't currently open (already resolved). Distinct from
+// ErrFindingNotFound so callers can map the two to different response
+// codes (NotFound vs. FailedPrecondition).
+var ErrFindingNotOpen = errors.New("finding is not open")
 
 // timestampProto converts a zero-safe time.Time to a *timestamppb.Timestamp,
 // returning nil for a zero time rather than the protobuf epoch.
@@ -75,6 +90,21 @@ const (
 	FindingStateOpen     FindingState = "open"
 	FindingStateResolved FindingState = "resolved"
 )
+
+// ListFilter narrows FindingStore.List / MemFindingStore.List (#1643). Zero
+// values mean "no filter on this field" — Severity's zero value is
+// THREAT_SEVERITY_UNSPECIFIED, which no real finding has, so an unset
+// filter matches every severity rather than none. TenantID empty means
+// "every tenant" — callers enforce the RBAC scoping (admin-only for that
+// case) before reaching the store, same division of responsibility
+// ListPentestFindings uses.
+type ListFilter struct {
+	Severity pb.ThreatSeverity // exact match; unset = any severity
+	TenantID string
+	Since    time.Time
+	State    FindingState // "" = any state
+	Limit    int          // <= 0 or > 200 => default/cap 50/200
+}
 
 // Finding is a single security finding: an open or resolved instance of a
 // rule firing for one tenant. Mirrors the security_findings table.

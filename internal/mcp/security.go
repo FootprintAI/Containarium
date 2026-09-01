@@ -95,6 +95,71 @@ type AddBadDestinationResponse struct {
 	Entry BadDestinationEntry `json:"entry"`
 }
 
+// FlowEvidence mirrors the daemon's FlowEvidence (#1639): one triggering
+// flow's 5-tuple and volume.
+// Bytes/Packets are string, not int64 — see SentryFinding's doc comment on
+// why (protojson int64 encoding).
+type FlowEvidence struct {
+	SrcIP    string `json:"srcIp"`
+	DstIP    string `json:"dstIp"`
+	SrcPort  uint32 `json:"srcPort"`
+	DstPort  uint32 `json:"dstPort"`
+	Protocol string `json:"protocol"`
+	Bytes    string `json:"bytes"`
+	Packets  string `json:"packets"`
+}
+
+// DenyEvidence mirrors the daemon's DenyEvidence (#1639): an aggregated
+// count of policy-deny events matching a destination/reason pair. Count is
+// string, not int64 — see SentryFinding's doc comment.
+type DenyEvidence struct {
+	DstIP    string `json:"dstIp"`
+	DstPort  uint32 `json:"dstPort"`
+	Protocol string `json:"protocol"`
+	Reason   string `json:"reason"`
+	Count    string `json:"count"`
+}
+
+// SentryEvidence mirrors the daemon's Evidence message — the wire shape
+// nested under Finding.evidence, not flattened onto SentryFinding.
+type SentryEvidence struct {
+	Flows  []FlowEvidence `json:"flows,omitempty"`
+	Denies []DenyEvidence `json:"denies,omitempty"`
+}
+
+// SentryFinding mirrors the daemon's Finding (#1639/#1643): a single
+// security finding raised by the threat-detection sentry. Named
+// SentryFinding, not Finding, to keep it unambiguous next to
+// SecurityFinding (the unrelated scanner-findings shape above).
+//
+// ID and Count are string, not int64: protojson serializes proto3 int64
+// fields as JSON strings (to survive JS's float64 precision limit), and
+// encoding/json refuses to unmarshal a JSON string into an int64 field.
+type SentryFinding struct {
+	ID        string         `json:"id"`
+	Rule      string         `json:"rule"`
+	Severity  string         `json:"severity"`
+	TenantID  string         `json:"tenantId"`
+	Container string         `json:"container,omitempty"`
+	BackendID string         `json:"backendId,omitempty"`
+	Subject   string         `json:"subject,omitempty"`
+	State     string         `json:"state"`
+	Count     string         `json:"count"`
+	Evidence  SentryEvidence `json:"evidence"`
+	FirstSeen string         `json:"firstSeen,omitempty"`
+	LastSeen  string         `json:"lastSeen,omitempty"`
+}
+
+// ListSentryFindingsResponse mirrors the daemon's ListFindingsResponse.
+type ListSentryFindingsResponse struct {
+	Findings []SentryFinding `json:"findings"`
+}
+
+// ResolveSentryFindingResponse mirrors the daemon's ResolveFindingResponse.
+type ResolveSentryFindingResponse struct {
+	Finding SentryFinding `json:"finding"`
+}
+
 // --- MCP handlers ----------------------------------------------------------
 
 // handleSecurityScan triggers one or more scanners against a container.
@@ -215,6 +280,53 @@ func handleRemoveBadDestination(client API, args map[string]interface{}) (string
 		return "", fmt.Errorf("remove bad destination: %w", err)
 	}
 	return fmt.Sprintf("Removed %s from the known-bad-destination list.", cidr), nil
+}
+
+// handleListSecuritySentryFindings lists findings raised by the background
+// threat-detection sentry (#1639-#1643), most recently seen first. Named
+// distinctly from security_findings (the unrelated scanner-findings tool
+// above) — same naming collision the CLI has between `security findings`
+// (this) and `security-findings <username>` (scanner findings).
+func handleListSecuritySentryFindings(client API, args map[string]interface{}) (string, error) {
+	severity := getStringArg(args, "severity", "")
+	tenant := getStringArg(args, "tenant", "")
+	since := getStringArg(args, "since", "")
+	state := getStringArg(args, "state", "")
+	limit := 0
+	if v, ok := getInt64Arg(args, "limit"); ok {
+		limit = int(v)
+	}
+
+	resp, err := client.ListSecuritySentryFindings(severity, tenant, since, state, limit)
+	if err != nil {
+		return "", fmt.Errorf("list sentry findings: %w", err)
+	}
+	// Strip the enums' repeated prefixes, same normalization
+	// handleSecuritySentryStatus applies.
+	for i := range resp.Findings {
+		f := &resp.Findings[i]
+		f.Rule = strings.TrimPrefix(f.Rule, "THREAT_RULE_ID_")
+		f.Severity = strings.TrimPrefix(f.Severity, "THREAT_SEVERITY_")
+		f.State = strings.TrimPrefix(f.State, "FINDING_STATE_")
+	}
+	out, _ := json.MarshalIndent(resp, "", "  ")
+	return string(out), nil
+}
+
+// handleResolveSecuritySentryFinding marks an open sentry finding as
+// resolved.
+func handleResolveSecuritySentryFinding(client API, args map[string]interface{}) (string, error) {
+	id, ok := getInt64Arg(args, "id")
+	if !ok {
+		return "", fmt.Errorf("id is required")
+	}
+	resp, err := client.ResolveSecuritySentryFinding(id)
+	if err != nil {
+		return "", fmt.Errorf("resolve sentry finding: %w", err)
+	}
+	resp.Finding.State = strings.TrimPrefix(resp.Finding.State, "FINDING_STATE_")
+	out, _ := json.MarshalIndent(resp, "", "  ")
+	return string(out), nil
 }
 
 // handleSecurityRemediate calls the daemon's RemediatePentestFinding

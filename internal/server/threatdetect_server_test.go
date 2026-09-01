@@ -5,6 +5,10 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/netbpf"
 	"github.com/footprintai/containarium/internal/threatdetect"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -159,6 +163,180 @@ func TestRemoveBadDestination_RoundTrip(t *testing.T) {
 			t.Errorf("entry still listed after removal: %+v", e)
 		}
 	}
+}
+
+func TestListFindings_NoStore_ReturnsUnavailable(t *testing.T) {
+	s := NewThreatDetectionServer(nil, false, false, "")
+	ctx := auth.ContextWithTestSubject(context.Background(), "alice", auth.RoleAdmin)
+	_, err := s.ListFindings(ctx, &pb.ListFindingsRequest{})
+	if status.Code(err) != codes.Unavailable {
+		t.Errorf("code = %v, want Unavailable", status.Code(err))
+	}
+}
+
+func TestListFindings_Unauthenticated(t *testing.T) {
+	s := NewThreatDetectionServer(nil, false, false, "")
+	s.SetFindingStore(&fakeFindingReader{})
+	if _, err := s.ListFindings(context.Background(), &pb.ListFindingsRequest{}); err == nil {
+		t.Fatal("ListFindings with no authenticated subject should error, got nil")
+	}
+}
+
+// Admin sees every tenant: an explicit tenant_id filter passes through
+// unchanged to the store.
+func TestListFindings_Admin_SeesRequestedTenant(t *testing.T) {
+	store := &fakeFindingReader{
+		findings: []*threatdetect.Finding{{ID: 1, TenantID: "bob", Severity: pb.ThreatSeverity_THREAT_SEVERITY_HIGH, State: threatdetect.FindingStateOpen}},
+	}
+	s := NewThreatDetectionServer(nil, false, false, "")
+	s.SetFindingStore(store)
+
+	ctx := auth.ContextWithTestSubject(context.Background(), "alice", auth.RoleAdmin)
+	resp, err := s.ListFindings(ctx, &pb.ListFindingsRequest{TenantId: "bob"})
+	if err != nil {
+		t.Fatalf("ListFindings: %v", err)
+	}
+	if store.lastFilter.TenantID != "bob" {
+		t.Errorf("store received TenantID = %q, want %q (admin's explicit filter passed through)", store.lastFilter.TenantID, "bob")
+	}
+	if len(resp.Findings) != 1 || resp.Findings[0].TenantId != "bob" {
+		t.Errorf("Findings = %+v, want the one bob finding", resp.Findings)
+	}
+}
+
+// Non-admin: an unset tenant_id filter is forced to the caller's own
+// subject, same as ListContainersRequest.username — findings are the same
+// "who can see whose stuff" boundary as containers.
+func TestListFindings_NonAdmin_ForcedToOwnTenant(t *testing.T) {
+	store := &fakeFindingReader{}
+	s := NewThreatDetectionServer(nil, false, false, "")
+	s.SetFindingStore(store)
+
+	ctx := auth.ContextWithTestSubject(context.Background(), "alice", "member")
+	if _, err := s.ListFindings(ctx, &pb.ListFindingsRequest{}); err != nil {
+		t.Fatalf("ListFindings: %v", err)
+	}
+	if store.lastFilter.TenantID != "alice" {
+		t.Errorf("store received TenantID = %q, want %q (forced to subject)", store.lastFilter.TenantID, "alice")
+	}
+}
+
+// Non-admin requesting a different tenant's findings is denied outright —
+// never silently rewritten to their own (that would look like "it worked"
+// while actually returning the wrong data).
+func TestListFindings_NonAdmin_ExplicitOtherTenant_Denied(t *testing.T) {
+	store := &fakeFindingReader{}
+	s := NewThreatDetectionServer(nil, false, false, "")
+	s.SetFindingStore(store)
+
+	ctx := auth.ContextWithTestSubject(context.Background(), "alice", "member")
+	if _, err := s.ListFindings(ctx, &pb.ListFindingsRequest{TenantId: "bob"}); err == nil {
+		t.Fatal("ListFindings for another tenant as non-admin should error, got nil")
+	}
+}
+
+func TestListFindings_FiltersPassThrough(t *testing.T) {
+	store := &fakeFindingReader{}
+	s := NewThreatDetectionServer(nil, false, false, "")
+	s.SetFindingStore(store)
+
+	ctx := auth.ContextWithTestSubject(context.Background(), "alice", auth.RoleAdmin)
+	_, err := s.ListFindings(ctx, &pb.ListFindingsRequest{
+		Severity: pb.ThreatSeverity_THREAT_SEVERITY_CRITICAL,
+		State:    pb.FindingState_FINDING_STATE_OPEN,
+		Limit:    10,
+	})
+	if err != nil {
+		t.Fatalf("ListFindings: %v", err)
+	}
+	if store.lastFilter.Severity != pb.ThreatSeverity_THREAT_SEVERITY_CRITICAL {
+		t.Errorf("Severity = %v, want CRITICAL", store.lastFilter.Severity)
+	}
+	if store.lastFilter.State != threatdetect.FindingStateOpen {
+		t.Errorf("State = %v, want open", store.lastFilter.State)
+	}
+	if store.lastFilter.Limit != 10 {
+		t.Errorf("Limit = %d, want 10", store.lastFilter.Limit)
+	}
+}
+
+func TestResolveFinding_NoStore_ReturnsUnavailable(t *testing.T) {
+	s := NewThreatDetectionServer(nil, false, false, "")
+	ctx := auth.ContextWithTestSubject(context.Background(), "alice", auth.RoleAdmin)
+	_, err := s.ResolveFinding(ctx, &pb.ResolveFindingRequest{Id: 1})
+	if status.Code(err) != codes.Unavailable {
+		t.Errorf("code = %v, want Unavailable", status.Code(err))
+	}
+}
+
+func TestResolveFinding_MissingID(t *testing.T) {
+	s := NewThreatDetectionServer(nil, false, false, "")
+	s.SetFindingStore(&fakeFindingReader{})
+	ctx := auth.ContextWithTestSubject(context.Background(), "alice", auth.RoleAdmin)
+	_, err := s.ResolveFinding(ctx, &pb.ResolveFindingRequest{})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Errorf("code = %v, want InvalidArgument", status.Code(err))
+	}
+}
+
+func TestResolveFinding_NotFound(t *testing.T) {
+	s := NewThreatDetectionServer(nil, false, false, "")
+	s.SetFindingStore(&fakeFindingReader{resolveErr: threatdetect.ErrFindingNotFound})
+	ctx := auth.ContextWithTestSubject(context.Background(), "alice", auth.RoleAdmin)
+	_, err := s.ResolveFinding(ctx, &pb.ResolveFindingRequest{Id: 99})
+	if status.Code(err) != codes.NotFound {
+		t.Errorf("code = %v, want NotFound", status.Code(err))
+	}
+}
+
+func TestResolveFinding_AlreadyResolved(t *testing.T) {
+	s := NewThreatDetectionServer(nil, false, false, "")
+	s.SetFindingStore(&fakeFindingReader{resolveErr: threatdetect.ErrFindingNotOpen})
+	ctx := auth.ContextWithTestSubject(context.Background(), "alice", auth.RoleAdmin)
+	_, err := s.ResolveFinding(ctx, &pb.ResolveFindingRequest{Id: 1})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Errorf("code = %v, want FailedPrecondition", status.Code(err))
+	}
+}
+
+func TestResolveFinding_Success(t *testing.T) {
+	store := &fakeFindingReader{
+		resolved: &threatdetect.Finding{ID: 1, State: threatdetect.FindingStateResolved},
+	}
+	s := NewThreatDetectionServer(nil, false, false, "")
+	s.SetFindingStore(store)
+	ctx := auth.ContextWithTestSubject(context.Background(), "alice", auth.RoleAdmin)
+	resp, err := s.ResolveFinding(ctx, &pb.ResolveFindingRequest{Id: 1})
+	if err != nil {
+		t.Fatalf("ResolveFinding: %v", err)
+	}
+	if resp.Finding.State != pb.FindingState_FINDING_STATE_RESOLVED {
+		t.Errorf("state = %v, want RESOLVED", resp.Finding.State)
+	}
+}
+
+// fakeFindingReader is a minimal threatdetect.FindingReader test double.
+type fakeFindingReader struct {
+	findings   []*threatdetect.Finding
+	lastFilter threatdetect.ListFilter
+	resolved   *threatdetect.Finding
+	resolveErr error
+}
+
+func (f *fakeFindingReader) Get(ctx context.Context, id int64) (*threatdetect.Finding, error) {
+	return nil, threatdetect.ErrFindingNotFound
+}
+
+func (f *fakeFindingReader) List(ctx context.Context, filter threatdetect.ListFilter) ([]*threatdetect.Finding, error) {
+	f.lastFilter = filter
+	return f.findings, nil
+}
+
+func (f *fakeFindingReader) Resolve(ctx context.Context, id int64) (*threatdetect.Finding, error) {
+	if f.resolveErr != nil {
+		return nil, f.resolveErr
+	}
+	return f.resolved, nil
 }
 
 // fakeFindingSink and fakeRule are minimal threatdetect.FindingSink /

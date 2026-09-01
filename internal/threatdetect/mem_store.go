@@ -3,11 +3,14 @@ package threatdetect
 import (
 	"context"
 	"fmt"
+	"log"
+	"sort"
 	"sync"
 	"time"
 
 	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/events"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // memFindingRingCap bounds the degraded-mode store so a sustained attack
@@ -31,13 +34,19 @@ type dedupeKey struct {
 // knows detection is running without persistence, rather than silently
 // looking identical to the healthy path.
 type MemFindingStore struct {
-	emitter *events.Emitter
-	audit   *audit.Store
+	emitter  *events.Emitter
+	audit    *audit.Store
+	notifier Notifier // nil = no webhook delivery
 
 	mu     sync.Mutex
 	nextID int64
 	byKey  map[dedupeKey]*Finding // open findings only
 	ring   []*Finding             // insertion order, capped at memFindingRingCap
+}
+
+// SetNotifier wires webhook delivery (#1643) — see FindingStore.SetNotifier.
+func (s *MemFindingStore) SetNotifier(notifier Notifier) {
+	s.notifier = notifier
 }
 
 // NewMemFindingStore builds a degraded-mode store. Both dependencies are
@@ -120,5 +129,91 @@ func (s *MemFindingStore) Upsert(ctx context.Context, f *Finding) (*Finding, err
 		return nil, fmt.Errorf("threatdetect: audit log finding (degraded mode): %w", err)
 	}
 	s.emitter.EmitSecurityFinding(out.ToProto())
+	if s.notifier != nil {
+		s.notifier.Notify(out)
+	}
 	return out, nil
+}
+
+// Get returns the finding with the given id (mirrors FindingStore.Get).
+func (s *MemFindingStore) Get(ctx context.Context, id int64) (*Finding, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, f := range s.ring {
+		if f.ID == id {
+			return f, nil
+		}
+	}
+	return nil, fmt.Errorf("threatdetect: finding %d: %w", id, ErrFindingNotFound)
+}
+
+// List returns findings matching filter, ordered most-recently-seen first
+// (mirrors FindingStore.List — same ListFilter, same zero-value semantics).
+func (s *MemFindingStore) List(ctx context.Context, filter ListFilter) ([]*Finding, error) {
+	limit := filter.Limit
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	matches := make([]*Finding, 0, len(s.ring))
+	for _, f := range s.ring {
+		if filter.Severity != pb.ThreatSeverity_THREAT_SEVERITY_UNSPECIFIED && f.Severity != filter.Severity {
+			continue
+		}
+		if filter.TenantID != "" && f.TenantID != filter.TenantID {
+			continue
+		}
+		if !filter.Since.IsZero() && f.LastSeen.Before(filter.Since) {
+			continue
+		}
+		if filter.State != "" && f.State != filter.State {
+			continue
+		}
+		matches = append(matches, f)
+	}
+	sort.Slice(matches, func(i, j int) bool { return matches[i].LastSeen.After(matches[j].LastSeen) })
+	if len(matches) > limit {
+		matches = matches[:limit]
+	}
+	return matches, nil
+}
+
+// Resolve transitions a finding to FindingStateResolved (mirrors
+// FindingStore.Resolve, including the ErrFindingNotOpen distinction between
+// "no such finding" and "already resolved").
+func (s *MemFindingStore) Resolve(ctx context.Context, id int64) (*Finding, error) {
+	s.mu.Lock()
+	var f *Finding
+	for _, cand := range s.ring {
+		if cand.ID == id {
+			f = cand
+			break
+		}
+	}
+	if f == nil {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("threatdetect: finding %d: %w", id, ErrFindingNotFound)
+	}
+	if f.State != FindingStateOpen {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("threatdetect: finding %d is not open (state=%s): %w", id, f.State, ErrFindingNotOpen)
+	}
+	f.State = FindingStateResolved
+	key := dedupeKey{rule: f.Rule.String(), tenant: f.TenantID, subject: f.Subject}
+	if s.byKey[key] == f {
+		delete(s.byKey, key)
+	}
+	s.mu.Unlock()
+
+	if err := s.audit.Log(ctx, &audit.AuditEntry{
+		Action:       "resolve",
+		ResourceType: auditResourceType,
+		ResourceID:   fmt.Sprintf("%d", f.ID),
+		Detail:       fmt.Sprintf("rule=%s tenant=%s subject=%s", f.Rule, f.TenantID, f.Subject),
+	}); err != nil {
+		log.Printf("threatdetect: audit log resolve for finding %d (degraded mode): %v", f.ID, err)
+	}
+	s.emitter.EmitSecurityFinding(f.ToProto())
+	return f, nil
 }

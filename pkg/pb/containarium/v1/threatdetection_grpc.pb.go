@@ -23,6 +23,8 @@ const (
 	ThreatDetectionService_ListBadDestinations_FullMethodName  = "/containarium.v1.ThreatDetectionService/ListBadDestinations"
 	ThreatDetectionService_AddBadDestination_FullMethodName    = "/containarium.v1.ThreatDetectionService/AddBadDestination"
 	ThreatDetectionService_RemoveBadDestination_FullMethodName = "/containarium.v1.ThreatDetectionService/RemoveBadDestination"
+	ThreatDetectionService_ListFindings_FullMethodName         = "/containarium.v1.ThreatDetectionService/ListFindings"
+	ThreatDetectionService_ResolveFinding_FullMethodName       = "/containarium.v1.ThreatDetectionService/ResolveFinding"
 )
 
 // ThreatDetectionServiceClient is the client API for ThreatDetectionService service.
@@ -31,9 +33,10 @@ const (
 //
 // ThreatDetectionService serves the background security-sentry's status and
 // findings. GetSentryStatus ships with #1640 (background detection loop);
-// *BadDestination* ships with #1641 (known-bad destination rule); the
-// findings/rule-config RPCs are added by later stories in the same umbrella
-// (#1642-#1643) — see docs/architecture/continuous-threat-detection.md.
+// *BadDestination* ships with #1641 (known-bad destination rule);
+// ListFindings/ResolveFinding ship with #1643 (findings delivery + triage);
+// rule-config RPCs remain unimplemented — see
+// docs/architecture/continuous-threat-detection.md.
 type ThreatDetectionServiceClient interface {
 	// GetSentryStatus returns the detection engine's on/off state and the
 	// health of every registered rule.
@@ -49,6 +52,12 @@ type ThreatDetectionServiceClient interface {
 	// (embedded) entries cannot be removed this way — a bare "not found" error
 	// covers the case since only additions are ever tracked as removable.
 	RemoveBadDestination(ctx context.Context, in *RemoveBadDestinationRequest, opts ...grpc.CallOption) (*RemoveBadDestinationResponse, error)
+	// ListFindings lists security findings, most recently seen first.
+	// Tenant-scoped: a non-admin caller only ever sees their own tenant_id.
+	ListFindings(ctx context.Context, in *ListFindingsRequest, opts ...grpc.CallOption) (*ListFindingsResponse, error)
+	// ResolveFinding transitions an open finding to resolved. Fails if the
+	// finding is already resolved or doesn't exist.
+	ResolveFinding(ctx context.Context, in *ResolveFindingRequest, opts ...grpc.CallOption) (*ResolveFindingResponse, error)
 }
 
 type threatDetectionServiceClient struct {
@@ -99,15 +108,36 @@ func (c *threatDetectionServiceClient) RemoveBadDestination(ctx context.Context,
 	return out, nil
 }
 
+func (c *threatDetectionServiceClient) ListFindings(ctx context.Context, in *ListFindingsRequest, opts ...grpc.CallOption) (*ListFindingsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListFindingsResponse)
+	err := c.cc.Invoke(ctx, ThreatDetectionService_ListFindings_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *threatDetectionServiceClient) ResolveFinding(ctx context.Context, in *ResolveFindingRequest, opts ...grpc.CallOption) (*ResolveFindingResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ResolveFindingResponse)
+	err := c.cc.Invoke(ctx, ThreatDetectionService_ResolveFinding_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ThreatDetectionServiceServer is the server API for ThreatDetectionService service.
 // All implementations must embed UnimplementedThreatDetectionServiceServer
 // for forward compatibility.
 //
 // ThreatDetectionService serves the background security-sentry's status and
 // findings. GetSentryStatus ships with #1640 (background detection loop);
-// *BadDestination* ships with #1641 (known-bad destination rule); the
-// findings/rule-config RPCs are added by later stories in the same umbrella
-// (#1642-#1643) — see docs/architecture/continuous-threat-detection.md.
+// *BadDestination* ships with #1641 (known-bad destination rule);
+// ListFindings/ResolveFinding ship with #1643 (findings delivery + triage);
+// rule-config RPCs remain unimplemented — see
+// docs/architecture/continuous-threat-detection.md.
 type ThreatDetectionServiceServer interface {
 	// GetSentryStatus returns the detection engine's on/off state and the
 	// health of every registered rule.
@@ -123,6 +153,12 @@ type ThreatDetectionServiceServer interface {
 	// (embedded) entries cannot be removed this way — a bare "not found" error
 	// covers the case since only additions are ever tracked as removable.
 	RemoveBadDestination(context.Context, *RemoveBadDestinationRequest) (*RemoveBadDestinationResponse, error)
+	// ListFindings lists security findings, most recently seen first.
+	// Tenant-scoped: a non-admin caller only ever sees their own tenant_id.
+	ListFindings(context.Context, *ListFindingsRequest) (*ListFindingsResponse, error)
+	// ResolveFinding transitions an open finding to resolved. Fails if the
+	// finding is already resolved or doesn't exist.
+	ResolveFinding(context.Context, *ResolveFindingRequest) (*ResolveFindingResponse, error)
 	mustEmbedUnimplementedThreatDetectionServiceServer()
 }
 
@@ -144,6 +180,12 @@ func (UnimplementedThreatDetectionServiceServer) AddBadDestination(context.Conte
 }
 func (UnimplementedThreatDetectionServiceServer) RemoveBadDestination(context.Context, *RemoveBadDestinationRequest) (*RemoveBadDestinationResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RemoveBadDestination not implemented")
+}
+func (UnimplementedThreatDetectionServiceServer) ListFindings(context.Context, *ListFindingsRequest) (*ListFindingsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListFindings not implemented")
+}
+func (UnimplementedThreatDetectionServiceServer) ResolveFinding(context.Context, *ResolveFindingRequest) (*ResolveFindingResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ResolveFinding not implemented")
 }
 func (UnimplementedThreatDetectionServiceServer) mustEmbedUnimplementedThreatDetectionServiceServer() {
 }
@@ -239,6 +281,42 @@ func _ThreatDetectionService_RemoveBadDestination_Handler(srv interface{}, ctx c
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ThreatDetectionService_ListFindings_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListFindingsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ThreatDetectionServiceServer).ListFindings(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ThreatDetectionService_ListFindings_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ThreatDetectionServiceServer).ListFindings(ctx, req.(*ListFindingsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ThreatDetectionService_ResolveFinding_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ResolveFindingRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ThreatDetectionServiceServer).ResolveFinding(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ThreatDetectionService_ResolveFinding_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ThreatDetectionServiceServer).ResolveFinding(ctx, req.(*ResolveFindingRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ThreatDetectionService_ServiceDesc is the grpc.ServiceDesc for ThreatDetectionService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -261,6 +339,14 @@ var ThreatDetectionService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RemoveBadDestination",
 			Handler:    _ThreatDetectionService_RemoveBadDestination_Handler,
+		},
+		{
+			MethodName: "ListFindings",
+			Handler:    _ThreatDetectionService_ListFindings_Handler,
+		},
+		{
+			MethodName: "ResolveFinding",
+			Handler:    _ThreatDetectionService_ResolveFinding_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

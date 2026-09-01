@@ -254,6 +254,7 @@ type DualServer struct {
 	// when the engine itself wasn't constructed.
 	threatDetectEngine    *threatdetect.Engine
 	threatDetectServer    *ThreatDetectionServer
+	threatDetectNotifier  *threatdetect.WebhookNotifier // nil unless threatDetectEngine is also non-nil (#1643)
 	threatDetectSweepStop context.CancelFunc
 }
 
@@ -1643,6 +1644,8 @@ skipAppHosting:
 	// so no audit store means no sentry, not a degraded one.
 	threatCfg := appconfig.LoadThreatDetect()
 	var threatDetectEngine *threatdetect.Engine
+	var threatDetectStore threatdetect.FindingReader
+	var threatDetectNotifier *threatdetect.WebhookNotifier
 	sentryAvailable := networkPolicyEnforcer != nil && auditStore != nil
 	sentryUnavailableReason := ""
 	switch {
@@ -1653,6 +1656,7 @@ skipAppHosting:
 	}
 	if threatCfg.SentryEnabled && sentryAvailable {
 		var sink threatdetect.FindingSink
+		var findingsPool *pgxpool.Pool
 		degraded := true
 		if postgresConnString != "" {
 			if fsPool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second); poolErr != nil {
@@ -1663,6 +1667,7 @@ skipAppHosting:
 			} else {
 				sink = fs
 				degraded = false
+				findingsPool = fsPool
 			}
 		}
 		if sink == nil {
@@ -1674,6 +1679,36 @@ skipAppHosting:
 			}
 		}
 		if sink != nil {
+			if reader, ok := sink.(threatdetect.FindingReader); ok {
+				threatDetectStore = reader
+			}
+			// Webhook delivery (#1643): deliberately independent of
+			// config.VictoriaMetricsURL — that's the vmalert/alertmanager
+			// pipeline this notifier bypasses on purpose (design doc): a
+			// direct POST works on any backend, including a minimal BYOC
+			// host with no VictoriaMetrics container. Reuses the same
+			// webhook URL/secret config (DaemonConfigStore) as the
+			// existing alert-webhook relay, and — when Postgres-backed —
+			// the same delivery-record table on findingsPool, not a
+			// second connection pool.
+			if config.DaemonConfigStore != nil {
+				var deliveryStore *alert.DeliveryStore
+				if findingsPool != nil {
+					if store, derr := alert.NewDeliveryStore(context.Background(), findingsPool); derr != nil {
+						log.Printf("Warning: threat-detection webhook delivery store init failed (%v); deliveries will be attempted but not recorded", derr)
+					} else {
+						deliveryStore = store
+					}
+				}
+				threatDetectNotifier = threatdetect.NewWebhookNotifier(config.DaemonConfigStore, deliveryStore)
+				switch st := sink.(type) {
+				case *threatdetect.FindingStore:
+					st.SetNotifier(threatDetectNotifier)
+				case *threatdetect.MemFindingStore:
+					st.SetNotifier(threatDetectNotifier)
+				}
+			}
+
 			threatDetectEngine = threatdetect.NewEngine(sink, "", degraded, networkPolicyEnforcer.TenantForIP, nil)
 			// Fence-probe rules (#1642): a breached fence (cross-tenant
 			// flow) and a probed fence (deny-burst) are both continuous
@@ -1692,6 +1727,7 @@ skipAppHosting:
 		}
 	}
 	threatDetectServer := NewThreatDetectionServer(threatDetectEngine, threatCfg.SentryEnabled, sentryAvailable, sentryUnavailableReason)
+	threatDetectServer.SetFindingStore(threatDetectStore)
 
 	// Known-bad-destination rule (#1641): constructed independent of
 	// threatCfg.SentryEnabled — an operator can curate the list via CLI/MCP
@@ -2096,6 +2132,7 @@ skipAppHosting:
 		sandboxServer:          sandboxServer,
 		threatDetectEngine:     threatDetectEngine,
 		threatDetectServer:     threatDetectServer,
+		threatDetectNotifier:   threatDetectNotifier,
 	}
 
 	// Auto-sleep ticker is constructed in Start() once the traffic
@@ -2227,7 +2264,9 @@ const threatDetectSweepInterval = 30 * time.Second
 // rules on a fixed tick, separate from ctx so it can be stopped independent
 // of the daemon's own shutdown (Stop() cancels it via threatDetectSweepStop
 // before the rest of teardown runs). Only called once the enforcer this
-// engine is hooked into has actually started.
+// engine is hooked into has actually started. Also starts the webhook
+// notifier's delivery worker (#1643) on the same lifecycle — both only make
+// sense once the engine they're downstream of is actually running.
 func (ds *DualServer) startThreatDetectSweep(ctx context.Context) {
 	sweepCtx, cancel := context.WithCancel(ctx)
 	ds.threatDetectSweepStop = cancel
@@ -2244,6 +2283,9 @@ func (ds *DualServer) startThreatDetectSweep(ctx context.Context) {
 			}
 		}
 	}()
+	if ds.threatDetectNotifier != nil {
+		ds.threatDetectNotifier.Start(sweepCtx)
+	}
 }
 
 // handleBackendSystemInfo returns system info for a specific backend.

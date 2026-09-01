@@ -251,6 +251,12 @@ func TestEverythingStartedIsAlsoStopped(t *testing.T) {
 	// Start needs no separate stop — it returns when the context is done.
 	noStopMethod := map[string]string{
 		"gatewayServer": "Start(ctx) blocks and returns when ctx is done; GatewayServer has no Stop",
+		// threatDetectNotifier.Start is called with the same sweepCtx as the
+		// threat-detect sweep ticker (startThreatDetectSweep, #1643) —
+		// ds.threatDetectSweepStop() cancels that shared context on
+		// shutdown, which stops the notifier's delivery-worker goroutine
+		// too. WebhookNotifier has no separate Stop method by design.
+		"threatDetectNotifier": "Start(sweepCtx) — shares threatDetectSweepStop's context; no separate Stop needed",
 	}
 
 	started := regexp.MustCompile(`ds\.(\w+)\.Start\(`).FindAllStringSubmatch(src, -1)

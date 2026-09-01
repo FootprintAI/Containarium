@@ -58,7 +58,7 @@
     },
     {
       "name": "ThreatDetectionService",
-      "description": "ThreatDetectionService serves the background security-sentry's status and\nfindings. GetSentryStatus ships with #1640 (background detection loop);\n*BadDestination* ships with #1641 (known-bad destination rule); the\nfindings/rule-config RPCs are added by later stories in the same umbrella\n(#1642-#1643) — see docs/architecture/continuous-threat-detection.md."
+      "description": "ThreatDetectionService serves the background security-sentry's status and\nfindings. GetSentryStatus ships with #1640 (background detection loop);\n*BadDestination* ships with #1641 (known-bad destination rule);\nListFindings/ResolveFinding ship with #1643 (findings delivery + triage);\nrule-config RPCs remain unimplemented — see\ndocs/architecture/continuous-threat-detection.md."
     },
     {
       "name": "EventService",
@@ -5453,6 +5453,115 @@
             }
           }
         },
+        "tags": [
+          "Security"
+        ]
+      }
+    },
+    "/v1/security/findings": {
+      "get": {
+        "summary": "List security findings",
+        "description": "Lists security findings with optional severity/tenant/since/state filters, most recently seen first. Non-admin callers only see their own tenant.",
+        "operationId": "ThreatDetectionService_ListFindings",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListFindingsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "severity",
+            "description": "Exact match. THREAT_SEVERITY_UNSPECIFIED (default) matches any severity.",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "enum": [
+              "THREAT_SEVERITY_UNSPECIFIED",
+              "THREAT_SEVERITY_LOW",
+              "THREAT_SEVERITY_MEDIUM",
+              "THREAT_SEVERITY_HIGH",
+              "THREAT_SEVERITY_CRITICAL"
+            ],
+            "default": "THREAT_SEVERITY_UNSPECIFIED"
+          },
+          {
+            "name": "tenantId",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "since",
+            "description": "Only findings last seen at or after this time. Unset matches everything.",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "format": "date-time"
+          },
+          {
+            "name": "state",
+            "description": "Exact match. FINDING_STATE_UNSPECIFIED (default) matches any state.",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "enum": [
+              "FINDING_STATE_UNSPECIFIED",
+              "FINDING_STATE_OPEN",
+              "FINDING_STATE_RESOLVED"
+            ],
+            "default": "FINDING_STATE_UNSPECIFIED"
+          },
+          {
+            "name": "limit",
+            "description": "\u003c= 0 or \u003e 200 is treated as the server default (50).",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          }
+        ],
+        "tags": [
+          "Security"
+        ]
+      }
+    },
+    "/v1/security/findings/{id}/resolve": {
+      "post": {
+        "summary": "Resolve a security finding",
+        "description": "Marks an open finding as resolved. Fails with FAILED_PRECONDITION if it's already resolved, NOT_FOUND if it doesn't exist.",
+        "operationId": "ThreatDetectionService_ResolveFinding",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ResolveFindingResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "format": "int64"
+          }
+        ],
         "tags": [
           "Security"
         ]
@@ -10984,6 +11093,18 @@
       },
       "title": "ListDefaultAlertRulesResponse returns the built-in default alert rules"
     },
+    "ListFindingsResponse": {
+      "type": "object",
+      "properties": {
+        "findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/Finding"
+          }
+        }
+      }
+    },
     "ListNetworkPoliciesResponse": {
       "type": "object",
       "properties": {
@@ -12459,6 +12580,14 @@
         }
       },
       "title": "ResizeContainerResponse is the response from resizing a container"
+    },
+    "ResolveFindingResponse": {
+      "type": "object",
+      "properties": {
+        "finding": {
+          "$ref": "#/definitions/Finding"
+        }
+      }
     },
     "ResourceLimits": {
       "type": "object",

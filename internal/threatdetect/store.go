@@ -32,9 +32,17 @@ const auditResourceType = "security.finding"
 // into the tamper-evident audit hash chain — findings ride the existing
 // chain rather than growing new chain code.
 type FindingStore struct {
-	pool    *pgxpool.Pool
-	emitter *events.Emitter
-	audit   *audit.Store
+	pool     *pgxpool.Pool
+	emitter  *events.Emitter
+	audit    *audit.Store
+	notifier Notifier // nil = no webhook delivery (e.g. #1639/#1640 tests)
+}
+
+// SetNotifier wires webhook delivery (#1643): every finding this store
+// writes from here on is handed to notifier.Notify after the event/audit
+// write succeeds. nil is valid (no delivery) and is the zero-value default.
+func (s *FindingStore) SetNotifier(notifier Notifier) {
+	s.notifier = notifier
 }
 
 // NewFindingStore creates a finding store sharing the given pool, emitting
@@ -149,6 +157,9 @@ func (s *FindingStore) Insert(ctx context.Context, f *Finding) (*Finding, error)
 	}
 
 	s.emitter.EmitSecurityFinding(f.ToProto())
+	if s.notifier != nil {
+		s.notifier.Notify(f)
+	}
 
 	return f, nil
 }
@@ -299,6 +310,9 @@ func (s *FindingStore) tryUpsert(ctx context.Context, f *Finding) (out *Finding,
 		return nil, false, fmt.Errorf("threatdetect: audit log finding: %w", auditErr)
 	}
 	s.emitter.EmitSecurityFinding(out.ToProto())
+	if s.notifier != nil {
+		s.notifier.Notify(out)
+	}
 	return out, false, nil
 }
 
@@ -312,19 +326,41 @@ func (s *FindingStore) Get(ctx context.Context, id int64) (*Finding, error) {
 	return scanFinding(row)
 }
 
-// List returns findings ordered by most recently seen first, up to limit
-// (default/cap 200).
-func (s *FindingStore) List(ctx context.Context, limit int) ([]*Finding, error) {
+// List returns findings matching filter, ordered by most recently seen
+// first. See ListFilter for the zero-value ("no filter") semantics of each
+// field.
+func (s *FindingStore) List(ctx context.Context, filter ListFilter) ([]*Finding, error) {
+	limit := filter.Limit
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	rows, err := s.pool.Query(ctx, `
+	query := `
 		SELECT id, rule, severity, tenant_id, container, backend_id, subject,
 		       state, count, evidence, first_seen, last_seen
 		FROM security_findings
-		ORDER BY last_seen DESC
-		LIMIT $1
-	`, limit)
+		WHERE 1 = 1
+	`
+	var args []any
+	if filter.Severity != pb.ThreatSeverity_THREAT_SEVERITY_UNSPECIFIED {
+		args = append(args, filter.Severity.String())
+		query += fmt.Sprintf(" AND severity = $%d", len(args))
+	}
+	if filter.TenantID != "" {
+		args = append(args, filter.TenantID)
+		query += fmt.Sprintf(" AND tenant_id = $%d", len(args))
+	}
+	if !filter.Since.IsZero() {
+		args = append(args, filter.Since)
+		query += fmt.Sprintf(" AND last_seen >= $%d", len(args))
+	}
+	if filter.State != "" {
+		args = append(args, string(filter.State))
+		query += fmt.Sprintf(" AND state = $%d", len(args))
+	}
+	args = append(args, limit)
+	query += fmt.Sprintf(" ORDER BY last_seen DESC LIMIT $%d", len(args))
+
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("threatdetect: list findings: %w", err)
 	}
@@ -344,6 +380,39 @@ func (s *FindingStore) List(ctx context.Context, limit int) ([]*Finding, error) 
 	return out, nil
 }
 
+// Resolve transitions a finding to FindingStateResolved. Also emits an
+// updated event and an audit entry (action "resolve") — a resolution is
+// itself an auditable operator action, same as create.
+func (s *FindingStore) Resolve(ctx context.Context, id int64) (*Finding, error) {
+	tag, err := s.pool.Exec(ctx, `UPDATE security_findings SET state = 'resolved' WHERE id = $1 AND state = 'open'`, id)
+	if err != nil {
+		return nil, fmt.Errorf("threatdetect: resolve finding %d: %w", id, err)
+	}
+	if tag.RowsAffected() == 0 {
+		// Distinguish "no such finding" from "already resolved" for the
+		// caller (server maps the two to NotFound vs FailedPrecondition).
+		existing, gerr := s.Get(ctx, id)
+		if gerr != nil {
+			return nil, gerr
+		}
+		return nil, fmt.Errorf("threatdetect: finding %d is not open (state=%s): %w", id, existing.State, ErrFindingNotOpen)
+	}
+	f, err := s.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.audit.Log(ctx, &audit.AuditEntry{
+		Action:       "resolve",
+		ResourceType: auditResourceType,
+		ResourceID:   fmt.Sprintf("%d", f.ID),
+		Detail:       fmt.Sprintf("rule=%s tenant=%s subject=%s", f.Rule, f.TenantID, f.Subject),
+	}); err != nil {
+		log.Printf("threatdetect: audit log resolve for finding %d: %v", f.ID, err)
+	}
+	s.emitter.EmitSecurityFinding(f.ToProto())
+	return f, nil
+}
+
 // rowScanner is the subset of pgx.Row / pgx.Rows that scanFinding needs.
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -356,8 +425,8 @@ func scanFinding(row rowScanner) (*Finding, error) {
 	err := row.Scan(&f.ID, &rule, &severity, &f.TenantID, &f.Container, &f.BackendID,
 		&f.Subject, &state, &f.Count, &evidenceJSON, &f.FirstSeen, &f.LastSeen)
 	if err != nil {
-		if err == pgx.ErrNoRows {
-			return nil, err
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrFindingNotFound
 		}
 		return nil, fmt.Errorf("threatdetect: scan finding: %w", err)
 	}
