@@ -7,6 +7,8 @@
 package containariumv1
 
 import (
+	_ "github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2/options"
+	_ "google.golang.org/genproto/googleapis/api/annotations"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
@@ -182,6 +184,71 @@ func (x FindingState) Number() protoreflect.EnumNumber {
 // Deprecated: Use FindingState.Descriptor instead.
 func (FindingState) EnumDescriptor() ([]byte, []int) {
 	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{2}
+}
+
+// SentryState is the overall on/off state of the background threat-detection
+// engine, as reported by GetSentryStatus.
+type SentryState int32
+
+const (
+	SentryState_SENTRY_STATE_UNSPECIFIED SentryState = 0
+	// CONTAINARIUM_THREAT_SENTRY is not set — the engine was never constructed.
+	SentryState_SENTRY_STATE_DISABLED SentryState = 1
+	// Sentry is enabled but the eBPF object isn't loaded (no flow/deny
+	// signals to evaluate), or the FindingStore has no Postgres connection.
+	// Never silently report "no findings" — always UNAVAILABLE with a reason.
+	SentryState_SENTRY_STATE_UNAVAILABLE SentryState = 2
+	// Running, but FindingStore has no Postgres connection: findings/events/
+	// audit entries still flow, backed by a bounded in-memory ring instead of
+	// persisted rows — they do not survive a daemon restart.
+	SentryState_SENTRY_STATE_DEGRADED SentryState = 3
+	// Running normally with Postgres-backed persistence.
+	SentryState_SENTRY_STATE_OK SentryState = 4
+)
+
+// Enum value maps for SentryState.
+var (
+	SentryState_name = map[int32]string{
+		0: "SENTRY_STATE_UNSPECIFIED",
+		1: "SENTRY_STATE_DISABLED",
+		2: "SENTRY_STATE_UNAVAILABLE",
+		3: "SENTRY_STATE_DEGRADED",
+		4: "SENTRY_STATE_OK",
+	}
+	SentryState_value = map[string]int32{
+		"SENTRY_STATE_UNSPECIFIED": 0,
+		"SENTRY_STATE_DISABLED":    1,
+		"SENTRY_STATE_UNAVAILABLE": 2,
+		"SENTRY_STATE_DEGRADED":    3,
+		"SENTRY_STATE_OK":          4,
+	}
+)
+
+func (x SentryState) Enum() *SentryState {
+	p := new(SentryState)
+	*p = x
+	return p
+}
+
+func (x SentryState) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (SentryState) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_threatdetection_proto_enumTypes[3].Descriptor()
+}
+
+func (SentryState) Type() protoreflect.EnumType {
+	return &file_containarium_v1_threatdetection_proto_enumTypes[3]
+}
+
+func (x SentryState) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use SentryState.Descriptor instead.
+func (SentryState) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{3}
 }
 
 // FlowEvidence captures one triggering flow's 5-tuple and volume, attached to
@@ -551,11 +618,179 @@ func (x *Finding) GetLastSeen() *timestamppb.Timestamp {
 	return nil
 }
 
+// RuleStatus is one registered rule's health, so a single panicking rule is
+// visible without taking down the sentry status as a whole.
+type RuleStatus struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Rule    ThreatRuleId           `protobuf:"varint,1,opt,name=rule,proto3,enum=containarium.v1.ThreatRuleId" json:"rule,omitempty"`
+	Healthy bool                   `protobuf:"varint,2,opt,name=healthy,proto3" json:"healthy,omitempty"`
+	// Empty when healthy. Set to the last recovered panic/error otherwise.
+	LastError     string                 `protobuf:"bytes,3,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`
+	LastErrorAt   *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=last_error_at,json=lastErrorAt,proto3" json:"last_error_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RuleStatus) Reset() {
+	*x = RuleStatus{}
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RuleStatus) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RuleStatus) ProtoMessage() {}
+
+func (x *RuleStatus) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RuleStatus.ProtoReflect.Descriptor instead.
+func (*RuleStatus) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *RuleStatus) GetRule() ThreatRuleId {
+	if x != nil {
+		return x.Rule
+	}
+	return ThreatRuleId_THREAT_RULE_ID_UNSPECIFIED
+}
+
+func (x *RuleStatus) GetHealthy() bool {
+	if x != nil {
+		return x.Healthy
+	}
+	return false
+}
+
+func (x *RuleStatus) GetLastError() string {
+	if x != nil {
+		return x.LastError
+	}
+	return ""
+}
+
+func (x *RuleStatus) GetLastErrorAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.LastErrorAt
+	}
+	return nil
+}
+
+type GetSentryStatusRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetSentryStatusRequest) Reset() {
+	*x = GetSentryStatusRequest{}
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetSentryStatusRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetSentryStatusRequest) ProtoMessage() {}
+
+func (x *GetSentryStatusRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetSentryStatusRequest.ProtoReflect.Descriptor instead.
+func (*GetSentryStatusRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{5}
+}
+
+type GetSentryStatusResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	State SentryState            `protobuf:"varint,1,opt,name=state,proto3,enum=containarium.v1.SentryState" json:"state,omitempty"`
+	// Human-readable explanation, always set for DISABLED/UNAVAILABLE.
+	Reason        string        `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	Rules         []*RuleStatus `protobuf:"bytes,3,rep,name=rules,proto3" json:"rules,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetSentryStatusResponse) Reset() {
+	*x = GetSentryStatusResponse{}
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetSentryStatusResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetSentryStatusResponse) ProtoMessage() {}
+
+func (x *GetSentryStatusResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetSentryStatusResponse.ProtoReflect.Descriptor instead.
+func (*GetSentryStatusResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *GetSentryStatusResponse) GetState() SentryState {
+	if x != nil {
+		return x.State
+	}
+	return SentryState_SENTRY_STATE_UNSPECIFIED
+}
+
+func (x *GetSentryStatusResponse) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *GetSentryStatusResponse) GetRules() []*RuleStatus {
+	if x != nil {
+		return x.Rules
+	}
+	return nil
+}
+
 var File_containarium_v1_threatdetection_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_threatdetection_proto_rawDesc = "" +
 	"\n" +
-	"%containarium/v1/threatdetection.proto\x12\x0fcontainarium.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xbe\x01\n" +
+	"%containarium/v1/threatdetection.proto\x12\x0fcontainarium.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1cgoogle/api/annotations.proto\x1a.protoc-gen-openapiv2/options/annotations.proto\"\xbe\x01\n" +
 	"\fFlowEvidence\x12\x15\n" +
 	"\x06src_ip\x18\x01 \x01(\tR\x05srcIp\x12\x15\n" +
 	"\x06dst_ip\x18\x02 \x01(\tR\x05dstIp\x12\x19\n" +
@@ -588,7 +823,19 @@ const file_containarium_v1_threatdetection_proto_rawDesc = "" +
 	" \x01(\v2\x19.containarium.v1.EvidenceR\bevidence\x129\n" +
 	"\n" +
 	"first_seen\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\tfirstSeen\x127\n" +
-	"\tlast_seen\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\blastSeen*\x9e\x01\n" +
+	"\tlast_seen\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\blastSeen\"\xb8\x01\n" +
+	"\n" +
+	"RuleStatus\x121\n" +
+	"\x04rule\x18\x01 \x01(\x0e2\x1d.containarium.v1.ThreatRuleIdR\x04rule\x12\x18\n" +
+	"\ahealthy\x18\x02 \x01(\bR\ahealthy\x12\x1d\n" +
+	"\n" +
+	"last_error\x18\x03 \x01(\tR\tlastError\x12>\n" +
+	"\rlast_error_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\vlastErrorAt\"\x18\n" +
+	"\x16GetSentryStatusRequest\"\x98\x01\n" +
+	"\x17GetSentryStatusResponse\x122\n" +
+	"\x05state\x18\x01 \x01(\x0e2\x1c.containarium.v1.SentryStateR\x05state\x12\x16\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\x121\n" +
+	"\x05rules\x18\x03 \x03(\v2\x1b.containarium.v1.RuleStatusR\x05rules*\x9e\x01\n" +
 	"\x0eThreatSeverity\x12\x1f\n" +
 	"\x1bTHREAT_SEVERITY_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13THREAT_SEVERITY_LOW\x10\x01\x12\x1a\n" +
@@ -603,7 +850,16 @@ const file_containarium_v1_threatdetection_proto_rawDesc = "" +
 	"\fFindingState\x12\x1d\n" +
 	"\x19FINDING_STATE_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12FINDING_STATE_OPEN\x10\x01\x12\x1a\n" +
-	"\x16FINDING_STATE_RESOLVED\x10\x02BKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
+	"\x16FINDING_STATE_RESOLVED\x10\x02*\x94\x01\n" +
+	"\vSentryState\x12\x1c\n" +
+	"\x18SENTRY_STATE_UNSPECIFIED\x10\x00\x12\x19\n" +
+	"\x15SENTRY_STATE_DISABLED\x10\x01\x12\x1c\n" +
+	"\x18SENTRY_STATE_UNAVAILABLE\x10\x02\x12\x19\n" +
+	"\x15SENTRY_STATE_DEGRADED\x10\x03\x12\x13\n" +
+	"\x0fSENTRY_STATE_OK\x10\x042\xc9\x02\n" +
+	"\x16ThreatDetectionService\x12\xae\x02\n" +
+	"\x0fGetSentryStatus\x12'.containarium.v1.GetSentryStatusRequest\x1a(.containarium.v1.GetSentryStatusResponse\"\xc7\x01\x92A\xa1\x01\n" +
+	"\bSecurity\x12\"Get threat-detection sentry status\x1aqReturns the background detection engine's on/off state (disabled, unavailable, degraded, ok) and per-rule health.\x82\xd3\xe4\x93\x02\x1c\x12\x1a/v1/security/sentry/statusBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
 
 var (
 	file_containarium_v1_threatdetection_proto_rawDescOnce sync.Once
@@ -617,32 +873,42 @@ func file_containarium_v1_threatdetection_proto_rawDescGZIP() []byte {
 	return file_containarium_v1_threatdetection_proto_rawDescData
 }
 
-var file_containarium_v1_threatdetection_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_containarium_v1_threatdetection_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_containarium_v1_threatdetection_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
+var file_containarium_v1_threatdetection_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_containarium_v1_threatdetection_proto_goTypes = []any{
-	(ThreatSeverity)(0),           // 0: containarium.v1.ThreatSeverity
-	(ThreatRuleId)(0),             // 1: containarium.v1.ThreatRuleId
-	(FindingState)(0),             // 2: containarium.v1.FindingState
-	(*FlowEvidence)(nil),          // 3: containarium.v1.FlowEvidence
-	(*DenyEvidence)(nil),          // 4: containarium.v1.DenyEvidence
-	(*Evidence)(nil),              // 5: containarium.v1.Evidence
-	(*Finding)(nil),               // 6: containarium.v1.Finding
-	(*timestamppb.Timestamp)(nil), // 7: google.protobuf.Timestamp
+	(ThreatSeverity)(0),             // 0: containarium.v1.ThreatSeverity
+	(ThreatRuleId)(0),               // 1: containarium.v1.ThreatRuleId
+	(FindingState)(0),               // 2: containarium.v1.FindingState
+	(SentryState)(0),                // 3: containarium.v1.SentryState
+	(*FlowEvidence)(nil),            // 4: containarium.v1.FlowEvidence
+	(*DenyEvidence)(nil),            // 5: containarium.v1.DenyEvidence
+	(*Evidence)(nil),                // 6: containarium.v1.Evidence
+	(*Finding)(nil),                 // 7: containarium.v1.Finding
+	(*RuleStatus)(nil),              // 8: containarium.v1.RuleStatus
+	(*GetSentryStatusRequest)(nil),  // 9: containarium.v1.GetSentryStatusRequest
+	(*GetSentryStatusResponse)(nil), // 10: containarium.v1.GetSentryStatusResponse
+	(*timestamppb.Timestamp)(nil),   // 11: google.protobuf.Timestamp
 }
 var file_containarium_v1_threatdetection_proto_depIdxs = []int32{
-	3, // 0: containarium.v1.Evidence.flows:type_name -> containarium.v1.FlowEvidence
-	4, // 1: containarium.v1.Evidence.denies:type_name -> containarium.v1.DenyEvidence
-	1, // 2: containarium.v1.Finding.rule:type_name -> containarium.v1.ThreatRuleId
-	0, // 3: containarium.v1.Finding.severity:type_name -> containarium.v1.ThreatSeverity
-	2, // 4: containarium.v1.Finding.state:type_name -> containarium.v1.FindingState
-	5, // 5: containarium.v1.Finding.evidence:type_name -> containarium.v1.Evidence
-	7, // 6: containarium.v1.Finding.first_seen:type_name -> google.protobuf.Timestamp
-	7, // 7: containarium.v1.Finding.last_seen:type_name -> google.protobuf.Timestamp
-	8, // [8:8] is the sub-list for method output_type
-	8, // [8:8] is the sub-list for method input_type
-	8, // [8:8] is the sub-list for extension type_name
-	8, // [8:8] is the sub-list for extension extendee
-	0, // [0:8] is the sub-list for field type_name
+	4,  // 0: containarium.v1.Evidence.flows:type_name -> containarium.v1.FlowEvidence
+	5,  // 1: containarium.v1.Evidence.denies:type_name -> containarium.v1.DenyEvidence
+	1,  // 2: containarium.v1.Finding.rule:type_name -> containarium.v1.ThreatRuleId
+	0,  // 3: containarium.v1.Finding.severity:type_name -> containarium.v1.ThreatSeverity
+	2,  // 4: containarium.v1.Finding.state:type_name -> containarium.v1.FindingState
+	6,  // 5: containarium.v1.Finding.evidence:type_name -> containarium.v1.Evidence
+	11, // 6: containarium.v1.Finding.first_seen:type_name -> google.protobuf.Timestamp
+	11, // 7: containarium.v1.Finding.last_seen:type_name -> google.protobuf.Timestamp
+	1,  // 8: containarium.v1.RuleStatus.rule:type_name -> containarium.v1.ThreatRuleId
+	11, // 9: containarium.v1.RuleStatus.last_error_at:type_name -> google.protobuf.Timestamp
+	3,  // 10: containarium.v1.GetSentryStatusResponse.state:type_name -> containarium.v1.SentryState
+	8,  // 11: containarium.v1.GetSentryStatusResponse.rules:type_name -> containarium.v1.RuleStatus
+	9,  // 12: containarium.v1.ThreatDetectionService.GetSentryStatus:input_type -> containarium.v1.GetSentryStatusRequest
+	10, // 13: containarium.v1.ThreatDetectionService.GetSentryStatus:output_type -> containarium.v1.GetSentryStatusResponse
+	13, // [13:14] is the sub-list for method output_type
+	12, // [12:13] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_threatdetection_proto_init() }
@@ -655,10 +921,10 @@ func file_containarium_v1_threatdetection_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_threatdetection_proto_rawDesc), len(file_containarium_v1_threatdetection_proto_rawDesc)),
-			NumEnums:      3,
-			NumMessages:   4,
+			NumEnums:      4,
+			NumMessages:   7,
 			NumExtensions: 0,
-			NumServices:   0,
+			NumServices:   1,
 		},
 		GoTypes:           file_containarium_v1_threatdetection_proto_goTypes,
 		DependencyIndexes: file_containarium_v1_threatdetection_proto_depIdxs,

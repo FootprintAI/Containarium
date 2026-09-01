@@ -634,6 +634,20 @@ type MigrateToEnvelopeResponse struct {
 }
 
 // GetKMSStatus reports the active KMS backend + envelope state.
+// GetSentryStatus reports the threat-detection sentry's on/off state and
+// per-rule health (#1640).
+func (c *Client) GetSentryStatus() (*SentryStatusResponse, error) {
+	respBody, err := c.doRequest("GET", "/v1/security/sentry/status", nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp SentryStatusResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
 func (c *Client) GetKMSStatus() (*KMSStatusResponse, error) {
 	respBody, err := c.doRequest("GET", "/v1/kms/status", nil)
 	if err != nil {

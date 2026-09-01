@@ -58,6 +58,24 @@ type InstallZapResponse struct {
 	Message string `json:"message"`
 }
 
+// SentryRuleStatus is one registered detection rule's health.
+type SentryRuleStatus struct {
+	Rule        string `json:"rule"`
+	Healthy     bool   `json:"healthy"`
+	LastError   string `json:"lastError,omitempty"`
+	LastErrorAt string `json:"lastErrorAt,omitempty"`
+}
+
+// SentryStatusResponse mirrors the daemon's GetSentryStatusResponse
+// (#1640): the background threat-detection engine's on/off state — one of
+// DISABLED, UNAVAILABLE, DEGRADED, OK (SentryState enum names, unprefixed)
+// — and every registered rule's health.
+type SentryStatusResponse struct {
+	State  string             `json:"state"`
+	Reason string             `json:"reason,omitempty"`
+	Rules  []SentryRuleStatus `json:"rules,omitempty"`
+}
+
 // --- MCP handlers ----------------------------------------------------------
 
 // handleSecurityScan triggers one or more scanners against a container.
@@ -116,6 +134,25 @@ func handleSecurityFindings(client API, args map[string]interface{}) (string, er
 		"findings":   findings,
 	}
 	out, _ := json.MarshalIndent(envelope, "", "  ")
+	return string(out), nil
+}
+
+// handleSecuritySentryStatus reports the background threat-detection
+// engine's on/off state and per-rule health. Takes no arguments — like
+// GetClamavSummary/GetScanStatus, this is a fleet-position read, not
+// scoped to a container.
+func handleSecuritySentryStatus(client API, args map[string]interface{}) (string, error) {
+	resp, err := client.GetSentryStatus()
+	if err != nil {
+		return "", fmt.Errorf("get sentry status: %w", err)
+	}
+	// Strip the enum's repeated prefix so the agent sees "OK"/"DISABLED"/...
+	// rather than "SENTRY_STATE_OK" — same normalization the CLI applies.
+	resp.State = strings.TrimPrefix(resp.State, "SENTRY_STATE_")
+	for i := range resp.Rules {
+		resp.Rules[i].Rule = strings.TrimPrefix(resp.Rules[i].Rule, "THREAT_RULE_ID_")
+	}
+	out, _ := json.MarshalIndent(resp, "", "  ")
 	return string(out), nil
 }
 

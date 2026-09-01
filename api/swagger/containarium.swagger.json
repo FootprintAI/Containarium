@@ -57,6 +57,10 @@
       "description": "TrafficService provides container traffic monitoring capabilities"
     },
     {
+      "name": "ThreatDetectionService",
+      "description": "ThreatDetectionService serves the background security-sentry's status and\nfindings. GetSentryStatus ships with #1640 (background detection loop);\nthe findings/rule-config RPCs are added by later stories in the same\numbrella (#1641-#1643) — see docs/architecture/continuous-threat-detection.md."
+    },
+    {
       "name": "EventService",
       "description": "EventService provides real-time event streaming"
     },
@@ -5389,6 +5393,30 @@
         ]
       }
     },
+    "/v1/security/sentry/status": {
+      "get": {
+        "summary": "Get threat-detection sentry status",
+        "description": "Returns the background detection engine's on/off state (disabled, unavailable, degraded, ok) and per-rule health.",
+        "operationId": "ThreatDetectionService_GetSentryStatus",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetSentryStatusResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "tags": [
+          "Security"
+        ]
+      }
+    },
     "/v1/stacks": {
       "get": {
         "summary": "List available software stacks",
@@ -10243,6 +10271,25 @@
       },
       "description": "GetSelfMeasurementResponse returns the freshly computed signed measurement."
     },
+    "GetSentryStatusResponse": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "$ref": "#/definitions/SentryState"
+        },
+        "reason": {
+          "type": "string",
+          "description": "Human-readable explanation, always set for DISABLED/UNAVAILABLE."
+        },
+        "rules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/RuleStatus"
+          }
+        }
+      }
+    },
     "GetSystemInfoResponse": {
       "type": "object",
       "properties": {
@@ -12510,6 +12557,26 @@
       "description": "- ROUTE_PROTOCOL_UNSPECIFIED: Unspecified protocol (defaults to HTTP)\n - ROUTE_PROTOCOL_HTTP: HTTP/1.1 and HTTP/2 (standard web traffic) - for proxy routes\n - ROUTE_PROTOCOL_GRPC: gRPC (requires HTTP/2 transport) - for proxy routes\n - ROUTE_PROTOCOL_TCP: TCP passthrough - for passthrough routes\n - ROUTE_PROTOCOL_UDP: UDP passthrough - for passthrough routes\n - ROUTE_PROTOCOL_TLS_PASSTHROUGH: TLS passthrough - SNI-based routing without TLS termination (for mTLS gRPC)",
       "title": "RouteProtocol represents the protocol type for a route"
     },
+    "RuleStatus": {
+      "type": "object",
+      "properties": {
+        "rule": {
+          "$ref": "#/definitions/ThreatRuleId"
+        },
+        "healthy": {
+          "type": "boolean"
+        },
+        "lastError": {
+          "type": "string",
+          "description": "Empty when healthy. Set to the last recovered panic/error otherwise."
+        },
+        "lastErrorAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "description": "RuleStatus is one registered rule's health, so a single panicking rule is\nvisible without taking down the sentry status as a whole."
+    },
     "RunAgentSkillBody": {
       "type": "object",
       "properties": {
@@ -12834,6 +12901,18 @@
         }
       },
       "description": "SendAgentTaskResponse returns the peer's artifact."
+    },
+    "SentryState": {
+      "type": "string",
+      "enum": [
+        "SENTRY_STATE_UNSPECIFIED",
+        "SENTRY_STATE_DISABLED",
+        "SENTRY_STATE_UNAVAILABLE",
+        "SENTRY_STATE_DEGRADED",
+        "SENTRY_STATE_OK"
+      ],
+      "default": "SENTRY_STATE_UNSPECIFIED",
+      "description": "SentryState is the overall on/off state of the background threat-detection\nengine, as reported by GetSentryStatus.\n\n - SENTRY_STATE_DISABLED: CONTAINARIUM_THREAT_SENTRY is not set — the engine was never constructed.\n - SENTRY_STATE_UNAVAILABLE: Sentry is enabled but the eBPF object isn't loaded (no flow/deny\nsignals to evaluate), or the FindingStore has no Postgres connection.\nNever silently report \"no findings\" — always UNAVAILABLE with a reason.\n - SENTRY_STATE_DEGRADED: Running, but FindingStore has no Postgres connection: findings/events/\naudit entries still flow, backed by a bounded in-memory ring instead of\npersisted rows — they do not survive a daemon restart.\n - SENTRY_STATE_OK: Running normally with Postgres-backed persistence."
     },
     "ServedFrom": {
       "type": "string",

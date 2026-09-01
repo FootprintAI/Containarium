@@ -78,6 +78,9 @@ type API interface {
 	ListSecurityFindings(kind, containerName string) ([]SecurityFinding, error)
 	RemediateSecurityFinding(findingID int64) (*SecurityRemediateResponse, error)
 
+	// Threat-detection sentry (#1640).
+	GetSentryStatus() (*SentryStatusResponse, error)
+
 	// Tokens.
 	RevokeToken(jti, reason, expiresAt string) (string, error)
 

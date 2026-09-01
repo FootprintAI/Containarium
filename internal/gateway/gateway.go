@@ -496,6 +496,11 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to register tokens service gateway: %w", err)
 	}
 
+	// Register ThreatDetectionService gateway handler (#1640)
+	if err := pb.RegisterThreatDetectionServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
+		return fmt.Errorf("failed to register threat-detection service gateway: %w", err)
+	}
+
 	// Create HTTP handler with authentication middleware, then audit middleware.
 	// Audit wraps the inner handler so auth runs first (sets username in context),
 	// then audit captures the response on the way out.

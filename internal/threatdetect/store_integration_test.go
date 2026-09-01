@@ -13,6 +13,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -316,5 +317,107 @@ func TestFindingStore_AuditFailureLeavesNoOrphanFinding(t *testing.T) {
 		t.Fatalf("event bus published a finding despite the audit write failing: %+v", ev)
 	case <-time.After(200 * time.Millisecond):
 		// Expected: no event.
+	}
+}
+
+// The #1640 acceptance test: a rule firing repeatedly for the same
+// tenant+rule dedupes into one open finding with an updated count, not an
+// alert storm — this is the detection engine's entry point into the store's
+// open-finding unique index.
+func TestFindingStore_UpsertDedupesOpenFinding(t *testing.T) {
+	ctx := context.Background()
+	pool := threatdetectPool(t)
+	fs, _, bus := newStores(t, pool)
+
+	sub := bus.Subscribe(&pb.SubscribeEventsRequest{
+		ResourceTypes: []pb.ResourceType{pb.ResourceType_RESOURCE_TYPE_SECURITY_FINDING},
+	})
+	defer bus.Unsubscribe(sub.ID)
+
+	first := sampleFinding()
+	inserted, err := fs.Upsert(ctx, first)
+	if err != nil {
+		t.Fatalf("Upsert #1: %v", err)
+	}
+	if inserted.Count != 1 {
+		t.Fatalf("first upsert count = %d, want 1", inserted.Count)
+	}
+	drainEvent(t, sub)
+
+	repeat := sampleFinding() // same rule/tenant/subject as sampleFinding()
+	repeat.Evidence.Flows[0].Bytes = 9999
+	updated, err := fs.Upsert(ctx, repeat)
+	if err != nil {
+		t.Fatalf("Upsert #2 (repeat): %v", err)
+	}
+	if updated.ID != inserted.ID {
+		t.Fatalf("repeat upsert created a new row: id=%d, want %d (dedupe by rule/tenant/subject)", updated.ID, inserted.ID)
+	}
+	if updated.Count != 2 {
+		t.Fatalf("repeat upsert count = %d, want 2", updated.Count)
+	}
+	if len(updated.Evidence.Flows) != 2 {
+		t.Fatalf("repeat upsert evidence flows = %d, want 2 (merged, not replaced)", len(updated.Evidence.Flows))
+	}
+	drainEvent(t, sub) // the repeat still emits — see FindingStore.Upsert's doc comment
+
+	var rowCount int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM security_findings WHERE rule = $1 AND tenant_id = $2 AND subject = $3`,
+		first.Rule.String(), first.TenantID, first.Subject).Scan(&rowCount); err != nil {
+		t.Fatalf("count rows: %v", err)
+	}
+	if rowCount != 1 {
+		t.Fatalf("rows for (rule, tenant, subject) = %d, want 1 (no duplicate, no alert storm)", rowCount)
+	}
+}
+
+func drainEvent(t *testing.T, sub *events.Subscriber) {
+	t.Helper()
+	select {
+	case <-sub.Events:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for EVENT_TYPE_SECURITY_FINDING on the bus")
+	}
+}
+
+// Two concurrent Upserts racing to create the FIRST open finding for the
+// same key must still converge to exactly one row — the FOR UPDATE lock in
+// tryUpsert only serializes callers once a row exists, so the INSERT branch
+// itself needs the retry-on-unique-violation path this proves.
+func TestFindingStore_UpsertConcurrentRaceConvergesToOneRow(t *testing.T) {
+	ctx := context.Background()
+	pool := threatdetectPool(t)
+	fs, _, _ := newStores(t, pool)
+
+	const n = 8
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, err := fs.Upsert(ctx, sampleFinding())
+			errs[i] = err
+		}(i)
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("Upsert goroutine %d: %v", i, err)
+		}
+	}
+
+	f := sampleFinding()
+	var rowCount int
+	var count int64
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*), COALESCE(SUM(count), 0) FROM security_findings WHERE rule = $1 AND tenant_id = $2 AND subject = $3`,
+		f.Rule.String(), f.TenantID, f.Subject).Scan(&rowCount, &count); err != nil {
+		t.Fatalf("count rows: %v", err)
+	}
+	if rowCount != 1 {
+		t.Fatalf("rows after %d concurrent upserts = %d, want 1", n, rowCount)
+	}
+	if count != n {
+		t.Fatalf("summed count after %d concurrent upserts = %d, want %d", n, count, n)
 	}
 }
