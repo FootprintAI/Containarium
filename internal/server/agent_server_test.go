@@ -65,6 +65,54 @@ func TestSendAgentTaskRejectsDisallowedPeer(t *testing.T) {
 	}
 }
 
+// TestMintedAgentTokenScopes_CallerRestrictedToAgentsRunGetsNoResourceScopes
+// is the #1676 regression: a caller holding only agents:run must not receive
+// a token carrying a manifest scope it never held itself.
+func TestMintedAgentTokenScopes_CallerRestrictedToAgentsRunGetsNoResourceScopes(t *testing.T) {
+	skill := &pb.AgentSkill{Id: "hello-agent", AllowedScopes: []string{auth.ScopeContainersRead}}
+	ctx := auth.ContextWithTestSubjectScopes(
+		context.Background(), "some-caller", nil, []string{auth.ScopeAgentsRun})
+
+	got := mintedAgentTokenScopes(ctx, skill)
+	if len(got) != 0 {
+		t.Fatalf("mintedAgentTokenScopes = %v, want no resource scopes for a caller holding only agents:run", got)
+	}
+}
+
+// TestMintedAgentTokenScopes_ManifestScopeCallerLacksNeverGranted is the
+// regression named explicitly in #1676's acceptance criteria: a manifest
+// declaring a scope the caller doesn't hold must never produce a token
+// carrying it.
+func TestMintedAgentTokenScopes_ManifestScopeCallerLacksNeverGranted(t *testing.T) {
+	skill := &pb.AgentSkill{
+		Id:            "escalating-skill",
+		AllowedScopes: []string{auth.ScopeContainersRead, auth.ScopeSecretsWrite},
+	}
+	ctx := auth.ContextWithTestSubjectScopes(
+		context.Background(), "some-caller", nil, []string{auth.ScopeAgentsRun, auth.ScopeContainersRead})
+
+	got := mintedAgentTokenScopes(ctx, skill)
+	if slices.Contains(got, auth.ScopeSecretsWrite) {
+		t.Fatalf("mintedAgentTokenScopes = %v; caller never held %q", got, auth.ScopeSecretsWrite)
+	}
+	if len(got) != 1 || got[0] != auth.ScopeContainersRead {
+		t.Fatalf("mintedAgentTokenScopes = %v, want [%q]", got, auth.ScopeContainersRead)
+	}
+}
+
+// TestMintedAgentTokenScopes_UnrestrictedCallerKeepsManifestUnchanged covers
+// the Phase 1.7 backwards-compat path: a pre-scopes-claim caller (nil scopes)
+// is unrestricted, so the manifest passes through as it did before #1676.
+func TestMintedAgentTokenScopes_UnrestrictedCallerKeepsManifestUnchanged(t *testing.T) {
+	skill := &pb.AgentSkill{Id: "hello-agent", AllowedScopes: []string{auth.ScopeContainersRead}}
+	ctx := auth.ContextWithTestSubjectScopes(context.Background(), "some-caller", nil, nil)
+
+	got := mintedAgentTokenScopes(ctx, skill)
+	if len(got) != 1 || got[0] != auth.ScopeContainersRead {
+		t.Fatalf("mintedAgentTokenScopes = %v, want manifest unchanged [%q]", got, auth.ScopeContainersRead)
+	}
+}
+
 // TestSendAgentTaskRequiresCallScope confirms the agents:call gate.
 func TestSendAgentTaskRequiresCallScope(t *testing.T) {
 	s := &AgentSkillServer{catalog: skills.GetDefault()}
