@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -74,6 +75,68 @@ func TestSendAgentTaskRequiresCallScope(t *testing.T) {
 	_, err := s.SendAgentTask(ctx, &pb.SendAgentTaskRequest{ToPeerId: "x"})
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("expected PermissionDenied without agents:call, got %v", err)
+	}
+}
+
+// TestMintedAgentAct_DerivedFromAuthenticatedCaller is the #1677 AC
+// "RunAgentSkill populates it at mint": a single-hop caller (a human/CLI
+// token with no act of its own) produces a depth-1 chain naming them.
+func TestMintedAgentAct_DerivedFromAuthenticatedCaller(t *testing.T) {
+	ctx := auth.ContextWithTestSubject(context.Background(), "alice", "user")
+	got := mintedAgentAct(ctx)
+	if got == nil {
+		t.Fatal("mintedAgentAct = nil, want a chain naming the authenticated caller")
+	}
+	if got.Subject != "alice" {
+		t.Errorf("got.Subject = %q, want alice", got.Subject)
+	}
+	if got.Act != nil {
+		t.Errorf("got.Act = %+v, want nil (caller had no delegation of its own)", got.Act)
+	}
+}
+
+// TestMintedAgentAct_NestsCallersOwnAct is the #1677 AC "a second hop nests
+// rather than overwrites": a caller that is itself a derived agent token
+// (its own act names a human) produces a depth-2 chain wrapping both,
+// never one that drops the human by overwriting with just the immediate
+// caller.
+func TestMintedAgentAct_NestsCallersOwnAct(t *testing.T) {
+	callerAct := &auth.Actor{Subject: "alice"}
+	ctx := auth.ContextWithTestSubjectAct(context.Background(), "agent-relay-agent", nil, callerAct)
+
+	got := mintedAgentAct(ctx)
+	if got == nil {
+		t.Fatal("mintedAgentAct = nil, want a chain")
+	}
+	if got.Subject != "agent-relay-agent" {
+		t.Errorf("got.Subject = %q, want agent-relay-agent", got.Subject)
+	}
+	if got.Act == nil || got.Act.Subject != "alice" {
+		t.Fatalf("got.Act = %+v, want {Subject: alice} — the human must not be dropped", got.Act)
+	}
+}
+
+// TestMintedAgentAct_UnauthenticatedContextReturnsNil covers the defensive
+// case (unreachable in production once RequireScope has already run, but a
+// public contract of this standalone function): no authenticated subject in
+// ctx means nothing meaningful to record, not a garbage/zero-value Actor.
+func TestMintedAgentAct_UnauthenticatedContextReturnsNil(t *testing.T) {
+	if got := mintedAgentAct(context.Background()); got != nil {
+		t.Errorf("mintedAgentAct(unauthenticated ctx) = %+v, want nil", got)
+	}
+}
+
+// TestMintedAgentAct_IgnoresRequestFields is the #1677 anti-forgery AC,
+// made explicit: mintedAgentAct's signature takes only ctx — there is no
+// request parameter for a caller to inject an act through. This test pins
+// that contract so a future refactor can't silently add one; it is the
+// structural counterpart to the behavioral round-trip tests in
+// internal/auth/delegation_test.go.
+func TestMintedAgentAct_IgnoresRequestFields(t *testing.T) {
+	fn := reflect.TypeOf(mintedAgentAct)
+	if fn.NumIn() != 1 || fn.In(0).String() != "context.Context" {
+		t.Fatalf("mintedAgentAct signature = %v, want func(context.Context) *auth.Actor — "+
+			"any additional parameter (e.g. a request) would be a place for a caller to forge act", fn)
 	}
 }
 

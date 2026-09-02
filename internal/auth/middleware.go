@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
@@ -131,6 +132,16 @@ func (am *AuthMiddleware) HTTPMiddleware(next http.Handler) http.Handler {
 		}
 		if len(claims.Scopes) > 0 {
 			mdPairs = append(mdPairs, MDKeyScopes, strings.Join(claims.Scopes, ","))
+		}
+		// #1677 — propagate the optional `act` delegation claim the same
+		// way: this is the exact hop ActFromGRPCContext exists for (see
+		// its doc comment) — without this, a delegated token's act would
+		// silently vanish for every REST/grpc-gateway caller, the primary
+		// API surface, even though ContextWithClaims sets it locally.
+		if claims.Act != nil {
+			if encoded, err := json.Marshal(claims.Act); err == nil {
+				mdPairs = append(mdPairs, MDKeyAct, string(encoded))
+			}
 		}
 		md := metadata.Pairs(mdPairs...)
 		ctx = metadata.NewOutgoingContext(ctx, md)
