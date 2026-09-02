@@ -44,8 +44,8 @@ Caddy uses an automation policy to manage certificates. When a domain is added, 
 {
   "subjects": ["myapp.example.com", "other.example.com"],
   "issuers": [
-    {"module": "acme"},
-    {"module": "acme", "ca": "https://acme.zerossl.com/v2/DV90"}
+    {"module": "acme", "email": "ops@example.com"},
+    {"module": "acme", "ca": "https://acme.zerossl.com/v2/DV90", "email": "ops@example.com"}
   ]
 }
 ```
@@ -53,6 +53,25 @@ Caddy uses an automation policy to manage certificates. When a domain is added, 
 This configures:
 - **Let's Encrypt** as the primary certificate authority
 - **ZeroSSL** as a fallback CA
+
+### ACME contact address
+
+Set `CONTAINARIUM_ACME_EMAIL` to an address the operators read. It is applied
+to every issuer, and it is **required to get a fallback CA at all**:
+
+- **ZeroSSL refuses ACME account registration without a contact address**
+  (`your email address is required to use ZeroSSL's ACME endpoint`). With no
+  email configured, the daemon emits the Let's Encrypt issuer *only* — a
+  ZeroSSL issuer that cannot register is worse than none, because the policy
+  looks like it has redundancy while every issuance pays a guaranteed-failed
+  round trip.
+- Both CAs mail certificate-expiry warnings to this address. Without it a
+  stalled renewal is silent until the certificate actually expires.
+
+The daemon logs a startup warning when it is unset. Existing hosts are
+repaired in place: the TLS reconciler writes the address onto issuers of
+policies that predate the setting, so it takes effect without recreating
+policies. An address set by hand through Caddy's admin API is never blanked.
 
 ## Certificate Issuance Process
 
@@ -138,9 +157,10 @@ that serves each node at a per-region hostname (`region-a.example.com`,
    repeatable `--public-base-domain` flag (in addition to `--base-domain`);
    each gets a route to the daemon's REST endpoint (#213).
 2. **Enable DNS-01.** Set `CONTAINARIUM_ACME_DNS_PROVIDER=cloudflare` (plus the
-   provider token, e.g. `CF_API_TOKEN`). The daemon builds `core-caddy` with the
-   matching `caddy-dns` module and configures the ACME/ZeroSSL issuers to solve
-   DNS-01 (#378).
+   provider token, e.g. `CF_API_TOKEN`), and `CONTAINARIUM_ACME_EMAIL` so the
+   ZeroSSL fallback issuer can register at all. The daemon builds `core-caddy`
+   with the matching `caddy-dns` module and configures the ACME/ZeroSSL issuers
+   to solve DNS-01 (#378).
 3. **Wildcard is auto-provisioned.** With DNS-01 configured, the daemon adds a
    single `*.<base-domain>` wildcard subject to TLS automation at edge startup
    (and re-adds it after a Caddy reload). One DNS-01 issuance then covers every

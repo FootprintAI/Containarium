@@ -3,7 +3,7 @@ module github.com/footprintai/containarium
 go 1.26.6
 
 require (
-	cloud.google.com/go/compute v1.66.0
+	cloud.google.com/go/compute v1.67.0
 	cloud.google.com/go/monitoring v1.30.0
 	github.com/BurntSushi/toml v1.6.0
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric v0.60.0

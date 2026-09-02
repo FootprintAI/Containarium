@@ -43,6 +43,7 @@ func NewManager(store AppStore, incusClient incus.Backend, config ManagerConfig)
 	detector := buildpack.NewDetector()
 	builder := NewBuilder(incusClient, detector)
 	proxy := NewProxyManager(config.CaddyAdminURL, config.BaseDomain).WithDNSChallenge(DNSChallengeFromEnv())
+	warnIfACMEEmailUnset()
 
 	return &Manager{
 		store:       store,
@@ -51,6 +52,24 @@ func NewManager(store AppStore, incusClient incus.Backend, config ManagerConfig)
 		incusClient: incusClient,
 		baseDomain:  config.BaseDomain,
 	}
+}
+
+// warnIfACMEEmailUnset logs at startup when no ACME contact address is
+// configured.
+//
+// The effect of leaving it unset is otherwise silent: the emitted policy just
+// has one issuer instead of two, and no CA has an address to send expiry
+// warnings to. Both only become visible at the moment they matter — when the
+// primary issuer is rate-limited, or when a renewal has been stalled long
+// enough to expire (#1616).
+func warnIfACMEEmailUnset() {
+	if ACMEEmailFromEnv() != "" {
+		return
+	}
+	log.Printf("WARNING: CONTAINARIUM_ACME_EMAIL is unset — TLS policies will carry a single " +
+		"Let's Encrypt issuer with no fallback (ZeroSSL refuses ACME registration without a " +
+		"contact address), and neither CA can send certificate-expiry warnings. Set it to an " +
+		"address the operators read.")
 }
 
 // DeployApp deploys a new application or updates an existing one

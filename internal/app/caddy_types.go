@@ -315,6 +315,12 @@ func NewGRPCReverseProxyRoute(id string, hosts []string, upstreamDial string) Ca
 	}
 }
 
+// zeroSSLDirectory is ZeroSSL's ACME v2 directory URL — the `ca` that
+// identifies the fallback issuer in an emitted policy, and the value
+// ensureIssuerEmail matches on when deciding whether an existing policy still
+// carries an issuer that can never register (#1616).
+const zeroSSLDirectory = "https://acme.zerossl.com/v2/DV90"
+
 // NewACMEIssuer creates a Let's Encrypt ACME issuer
 func NewACMEIssuer() CaddyTLSIssuer {
 	return CaddyTLSIssuer{
@@ -326,20 +332,53 @@ func NewACMEIssuer() CaddyTLSIssuer {
 func NewZeroSSLIssuer() CaddyTLSIssuer {
 	return CaddyTLSIssuer{
 		Module: "acme",
-		CA:     "https://acme.zerossl.com/v2/DV90",
+		CA:     zeroSSLDirectory,
 	}
 }
 
-// issuersFor returns the standard ACME + ZeroSSL issuers, attaching the
-// DNS-01 challenge config to each when dns is non-nil (both CAs support
-// DNS-01). When dns is nil the issuers carry no `challenges` field, so the
-// emitted JSON is identical to the pre-DNS-01 default (HTTP-01 + TLS-ALPN-01).
+// ACMEEmailFromEnv returns the ACME account contact address from
+// CONTAINARIUM_ACME_EMAIL, or "" when unset.
+//
+// Read at emit time rather than threaded through the ProxyManager because
+// every construction path for a policy's issuers funnels through issuersFor,
+// and the address is a property of the CA account, not of any one policy.
+func ACMEEmailFromEnv() string {
+	return strings.TrimSpace(os.Getenv("CONTAINARIUM_ACME_EMAIL"))
+}
+
+// issuersFor returns the ACME issuers for a policy, attaching the DNS-01
+// challenge config to each when dns is non-nil (both CAs support DNS-01).
+// When dns is nil the issuers carry no `challenges` field, so the emitted
+// JSON keeps the pre-DNS-01 default (HTTP-01 + TLS-ALPN-01).
+//
+// Whether ZeroSSL is emitted at all depends on CONTAINARIUM_ACME_EMAIL,
+// because ZeroSSL refuses ACME account registration without a contact address
+// ("your email address is required to use ZeroSSL's ACME endpoint"). Emitting
+// it unconfigured produced a policy that *looked* like it had a fallback
+// issuer and could never obtain a certificate from it — the failure only
+// visible as a per-issuance error line, so hosts ran on a single working
+// issuer without any signal that redundancy was gone (#1616). With no email
+// we emit the one issuer that can actually work instead, and skip a
+// guaranteed-failed round trip on every issuance.
+//
+// The address also goes on the Let's Encrypt issuer: it is where a CA sends
+// expiry warnings, one of the few external signals for a stalled renewal.
 func issuersFor(dns *CaddyACMEChallenges) []CaddyTLSIssuer {
+	email := ACMEEmailFromEnv()
+
 	acme := NewACMEIssuer()
-	zerossl := NewZeroSSLIssuer()
+	acme.Email = email
 	acme.Challenges = dns
+	issuers := []CaddyTLSIssuer{acme}
+
+	if email == "" {
+		return issuers
+	}
+
+	zerossl := NewZeroSSLIssuer()
+	zerossl.Email = email
 	zerossl.Challenges = dns
-	return []CaddyTLSIssuer{acme, zerossl}
+	return append(issuers, zerossl)
 }
 
 // NewTLSPolicy creates a TLS automation policy with default issuers
