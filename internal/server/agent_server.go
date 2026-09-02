@@ -201,6 +201,19 @@ func mintedAgentAct(ctx context.Context) *auth.Actor {
 	return &auth.Actor{Subject: username, Act: callerAct}
 }
 
+// mintedAgentTokenScopes computes the scopes for a skill's in-box token: the
+// intersection of the caller's own granted scopes and the skill manifest's
+// allowed_scopes (#1676). auth.ScopesFromGRPCContext — not the plain
+// ScopesFromContext — is required here: the primary API surface is REST via
+// grpc-gateway, and the HTTP middleware propagates the caller's scopes claim
+// through outgoing gRPC metadata (internal/auth/middleware.go), not a context
+// value that would survive the HTTP→gateway→gRPC hop. RequireScope and
+// AuthorizeTenant already read the caller this same way.
+func mintedAgentTokenScopes(ctx context.Context, skill *pb.AgentSkill) []string {
+	callerScopes, _ := auth.ScopesFromGRPCContext(ctx)
+	return auth.IntersectScopes(callerScopes, skill.AllowedScopes)
+}
+
 func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.AgentSkill, backendID, pool, inputJSON string) (string, *pb.Container, error) {
 	// Phase 0 supports only the recipe_id box form (catalog skills). Inline
 	// recipes are an API-only construct deferred to a later phase.
@@ -256,11 +269,13 @@ func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.Agen
 		container = dep.Container
 	}
 
-	// Mint a JWT scoped to EXACTLY the skill's allowed_scopes (catalog
-	// guarantees >= 1, so this is bounded, not the nil-claim "no restriction"),
-	// carrying the dispatching caller as its `act` delegation claim (#1677) so
-	// an auditor asking "who authorized this?" doesn't get the name of a robot.
-	token, err := s.tokens.GenerateDelegatedToken(name, []string{}, agentTokenTTL, mintedAgentAct(ctx), skill.AllowedScopes...)
+	// Mint a JWT scoped to the intersection of the CALLER's own granted scopes
+	// and the skill's allowed_scopes (#1676: the manifest is a ceiling, never
+	// a floor — a caller with no scopes claim/wildcard gets the manifest
+	// unchanged, anyone else only receives scopes they already hold), carrying
+	// the dispatching caller as its `act` delegation claim (#1677) so an
+	// auditor asking "who authorized this?" doesn't get the name of a robot.
+	token, err := s.tokens.GenerateDelegatedToken(name, []string{}, agentTokenTTL, mintedAgentAct(ctx), mintedAgentTokenScopes(ctx, skill)...)
 	if err != nil {
 		return "", nil, status.Errorf(codes.Internal, "failed to mint scoped agent token: %v", err)
 	}
