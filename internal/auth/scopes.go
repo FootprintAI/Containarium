@@ -211,6 +211,48 @@ func HasScope(granted []string, required string) bool {
 	return false
 }
 
+// IntersectScopes bounds a manifest's scopes by the caller's own granted
+// scopes, so a scope catalog (e.g. a skill's allowed_scopes) is a ceiling and
+// never a floor (#1676). Semantics mirror HasScope:
+//
+//   - caller == nil → unrestricted caller (no scopes claim, the Phase 1.7
+//     backwards-compat path); the manifest passes through unchanged.
+//   - caller containing the wildcard → same as unrestricted.
+//   - manifest containing the wildcard → the caller's own scopes pass through
+//     unchanged (the manifest imposes no additional ceiling).
+//   - otherwise → the set intersection: only scopes present in both.
+//
+// A non-nil but empty caller (explicit zero-scope token) intersects to empty
+// regardless of the manifest — fail closed, matching HasScope's explicit-deny
+// semantics for an empty granted list.
+//
+// Always returns a non-nil slice, so a caller can safely range over or mint a
+// token from the result without a nil check.
+func IntersectScopes(caller, manifest []string) []string {
+	if caller == nil || HasExplicitScope(caller, ScopeWildcard) {
+		out := make([]string, len(manifest))
+		copy(out, manifest)
+		return out
+	}
+	if HasExplicitScope(manifest, ScopeWildcard) {
+		out := make([]string, len(caller))
+		copy(out, caller)
+		return out
+	}
+	callerSet := make(map[string]struct{}, len(caller))
+	for _, s := range caller {
+		callerSet[strings.TrimSpace(s)] = struct{}{}
+	}
+	out := make([]string, 0, len(manifest))
+	for _, s := range manifest {
+		s = strings.TrimSpace(s)
+		if _, ok := callerSet[s]; ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // ParseScopes normalizes a comma-separated scope string
 // into a []string suitable for the JWT claim. Whitespace
 // and empty elements are dropped; the order of remaining
