@@ -164,26 +164,31 @@ func (c *connectAPI) AuthorizeKey(ctx context.Context, box, pub string) error {
 // ---- command handler ---------------------------------------------------
 
 // obtainConnectKey returns the public key to authorize and the private
-// key path to authenticate with. With --key it uses the supplied public
-// key; otherwise it reuses (or generates once) the managed key the
-// `ssh setup` flow already uses, so the user never hand-manages a key.
-// The private path defaults to the public path minus ".pub" unless
-// --identity overrides it.
-func obtainConnectKey() (pub, privPath string, err error) {
+// key path to authenticate with. With a non-empty keyPath it uses that
+// supplied public key; otherwise it reuses (or generates once) the managed
+// key the `ssh setup` flow already uses, so the user never hand-manages a
+// key. The private path defaults to the public path minus ".pub" unless
+// identity overrides it.
+//
+// Parameterized (not reading connect's own connectKeyPath/connectIdentity
+// package vars) so other commands needing the same "authorize a managed
+// key, connect over SSH" flow — e.g. `code install` (#1673) — can call it
+// with their own flag values instead of colliding with connect's.
+func obtainConnectKey(keyPath, identity string) (pub, privPath string, err error) {
 	var pubPath string
-	if connectKeyPath != "" {
-		pub, err = sshkey.ReadPublicKey(connectKeyPath)
+	if keyPath != "" {
+		pub, err = sshkey.ReadPublicKey(keyPath)
 		if err != nil {
 			return "", "", err
 		}
-		pubPath = connectKeyPath
+		pubPath = keyPath
 	} else {
 		pubPath, pub, _, err = sshkey.LocateOrGenerate(sshkey.LocateOpts{})
 		if err != nil {
 			return "", "", fmt.Errorf("locate or generate managed key: %w", err)
 		}
 	}
-	privPath = connectIdentity
+	privPath = identity
 	if privPath == "" {
 		privPath = strings.TrimSuffix(pubPath, ".pub")
 	}
@@ -222,7 +227,7 @@ func runConnect(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	pub, privPath, err := obtainConnectKey()
+	pub, privPath, err := obtainConnectKey(connectKeyPath, connectIdentity)
 	if err != nil {
 		return err
 	}
