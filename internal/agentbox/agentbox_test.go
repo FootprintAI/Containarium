@@ -630,6 +630,11 @@ func killAllAndReset(t *testing.T) {
 	for _, pid := range pids {
 		_ = killProcessGroup(pid, 9) // SIGKILL
 	}
+	// Wait for every reap goroutine's final record write to land BEFORE
+	// resetting the registry / returning to the caller — callers that also
+	// tear down a TempDir-backed processLogDir (via t.Cleanup ordering) must
+	// not race a still-in-flight writeRunRecordAt against that removal.
+	waitForReapersForTest()
 	resetProcessRegistryForTest()
 }
 
@@ -642,6 +647,7 @@ func killProcessGroup(pid int, sig int) error {
 }
 
 func TestProcessStart_AutoGeneratesName(t *testing.T) {
+	t.Cleanup(setProcessLogDirForTest(t.TempDir()))
 	t.Cleanup(func() { killAllAndReset(t) })
 	out, _ := callTool(t, handleProcessStart, map[string]interface{}{
 		"command": "sleep 5",
@@ -655,6 +661,7 @@ func TestProcessStart_AutoGeneratesName(t *testing.T) {
 }
 
 func TestProcessStart_RespectsExplicitName(t *testing.T) {
+	t.Cleanup(setProcessLogDirForTest(t.TempDir()))
 	t.Cleanup(func() { killAllAndReset(t) })
 	out, _ := callTool(t, handleProcessStart, map[string]interface{}{
 		"command": "sleep 5",
@@ -666,6 +673,7 @@ func TestProcessStart_RespectsExplicitName(t *testing.T) {
 }
 
 func TestProcessStart_RejectsDuplicateName(t *testing.T) {
+	t.Cleanup(setProcessLogDirForTest(t.TempDir()))
 	t.Cleanup(func() { killAllAndReset(t) })
 	_, _ = callTool(t, handleProcessStart, map[string]interface{}{
 		"command": "sleep 5",
@@ -688,6 +696,7 @@ func TestProcessStart_RejectsMissingCommand(t *testing.T) {
 }
 
 func TestProcessList_ShowsRegisteredProcesses(t *testing.T) {
+	t.Cleanup(setProcessLogDirForTest(t.TempDir()))
 	t.Cleanup(func() { killAllAndReset(t) })
 	_, _ = callTool(t, handleProcessStart, map[string]interface{}{
 		"command": "sleep 5",
@@ -707,6 +716,7 @@ func TestProcessList_ShowsRegisteredProcesses(t *testing.T) {
 }
 
 func TestProcessList_EmptyWhenNothingRegistered(t *testing.T) {
+	t.Cleanup(setProcessLogDirForTest(t.TempDir()))
 	resetProcessRegistryForTest()
 	out, _ := callTool(t, handleProcessList, map[string]interface{}{})
 	if !strings.Contains(out, "No background processes registered") {
@@ -714,7 +724,13 @@ func TestProcessList_EmptyWhenNothingRegistered(t *testing.T) {
 	}
 }
 
-func TestProcessKill_RemovesFromRegistry(t *testing.T) {
+// TestProcessKill_ReportsNoLongerRunning covers process_kill's updated
+// contract under #1672: killing a process still removes it from the
+// in-memory registry, but no longer erases its durable run record — the
+// whole point of #1672 is that a run's outcome survives, and an explicit
+// kill is no exception. It must stop appearing as running/alive, though.
+func TestProcessKill_ReportsNoLongerRunning(t *testing.T) {
+	t.Cleanup(setProcessLogDirForTest(t.TempDir()))
 	t.Cleanup(func() { killAllAndReset(t) })
 	_, _ = callTool(t, handleProcessStart, map[string]interface{}{
 		"command": "sleep 30",
@@ -726,14 +742,14 @@ func TestProcessKill_RemovesFromRegistry(t *testing.T) {
 	if !strings.Contains(out, "signal: SIGTERM") {
 		t.Errorf("expected SIGTERM in output:\n%s", out)
 	}
-	// Verify removal
 	listOut, _ := callTool(t, handleProcessList, map[string]interface{}{})
-	if strings.Contains(listOut, "kill-me") {
-		t.Errorf("process should be gone from list after kill:\n%s", listOut)
+	if strings.Contains(listOut, "🟢 kill-me") {
+		t.Errorf("killed process should no longer be reported as running:\n%s", listOut)
 	}
 }
 
 func TestProcessKill_ForceUsesSIGKILL(t *testing.T) {
+	t.Cleanup(setProcessLogDirForTest(t.TempDir()))
 	t.Cleanup(func() { killAllAndReset(t) })
 	_, _ = callTool(t, handleProcessStart, map[string]interface{}{
 		"command": "sleep 30",
@@ -749,6 +765,7 @@ func TestProcessKill_ForceUsesSIGKILL(t *testing.T) {
 }
 
 func TestProcessKill_RejectsUnknownName(t *testing.T) {
+	t.Cleanup(setProcessLogDirForTest(t.TempDir()))
 	resetProcessRegistryForTest()
 	_, res := callTool(t, handleProcessKill, map[string]interface{}{
 		"name": "no-such-thing",
@@ -759,6 +776,7 @@ func TestProcessKill_RejectsUnknownName(t *testing.T) {
 }
 
 func TestProcessStart_CapturesStdoutToLog(t *testing.T) {
+	t.Cleanup(setProcessLogDirForTest(t.TempDir()))
 	t.Cleanup(func() { killAllAndReset(t) })
 	out, _ := callTool(t, handleProcessStart, map[string]interface{}{
 		"command": "echo 'hello from process'; sleep 5",
