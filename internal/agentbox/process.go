@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/footprintai/containarium/internal/logframe"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -99,6 +101,14 @@ func processStartTool() mcp.Tool {
 		mcp.WithString("cwd",
 			mcp.Description("Working directory for the spawned process. Default: agent-box's cwd."),
 		),
+		mcp.WithString("capture_mode",
+			mcp.Description("How to capture stdout+stderr: 'combined' (default) writes plain text, "+
+				"readable with a plain tail/cat. 'framed' interleaves stdout and stderr as "+
+				"line-framed, base64-encoded records a client can demultiplex — opt in only if "+
+				"you're driving this process through a demuxing client (#1674); a human tailing "+
+				"the log wants 'combined'."),
+			mcp.Enum("combined", "framed"),
+		),
 	)
 }
 
@@ -110,8 +120,13 @@ func handleProcessStart(_ context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 	}
 	name, _ := args["name"].(string)
 	cwd, _ := args["cwd"].(string)
+	captureModeArg, _ := args["capture_mode"].(string)
+	captureMode, err := parseCaptureMode(captureModeArg)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("process_start: %v", err)), nil
+	}
 
-	mp, err := spawnBackgroundProcess(name, command, cwd)
+	mp, err := spawnBackgroundProcess(name, command, cwd, captureMode)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("process_start: %v", err)), nil
 	}
@@ -123,17 +138,39 @@ func handleProcessStart(_ context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 	return mcp.NewToolResultText(body), nil
 }
 
+// frameWriter writes to log with each Write call framed as one
+// internal/logframe record for stream (#1674, CaptureFramed). exec.Cmd
+// drives a process's Stdout and Stderr from two separate goroutines
+// concurrently; mu — shared between the stdout and stderr frameWriters for
+// one process — serializes their writes into logFile so frames from the
+// two streams never interleave mid-write, which is what keeps the single
+// on-disk byte stream's ordering meaningful for a demuxing reader.
+type frameWriter struct {
+	log    io.Writer
+	mu     *sync.Mutex
+	stream logframe.Stream
+}
+
+func (w *frameWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if _, err := w.log.Write(logframe.EncodeFrame(w.stream, p)); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
 // spawnBackgroundProcess starts command under /bin/sh -c, detached via
-// Setsid, capturing combined stdout+stderr to a log file under
-// processLogDir, and registers it in processRegistry under name (auto-
-// generated if empty). Reaped asynchronously — a goroutine calls
+// Setsid, capturing stdout+stderr to a log file under processLogDir per
+// captureMode (#1674), and registers it in processRegistry under name
+// (auto-generated if empty). Reaped asynchronously — a goroutine calls
 // cmd.Wait() — so it never zombies.
 //
 // Shared core between the process_start MCP tool (handleProcessStart) and
 // SpawnService.Spawn (gRPC, #1488 Phase 2): one implementation, two
 // transports, so a caller reaching agent-box over the fast local socket
 // gets identical spawn/reap semantics to one reaching it over MCP/SSH.
-func spawnBackgroundProcess(name, command, cwd string) (*managedProcess, error) {
+func spawnBackgroundProcess(name, command, cwd string, captureMode CaptureMode) (*managedProcess, error) {
 	if command == "" {
 		return nil, fmt.Errorf("'command' is required")
 	}
@@ -195,8 +232,17 @@ func spawnBackgroundProcess(name, command, cwd string) (*managedProcess, error) 
 	if cwd != "" {
 		cmd.Dir = cwd
 	}
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
+	if captureMode == CaptureFramed {
+		// Separate stdout/stderr writers exec.Cmd drives from two goroutines
+		// concurrently, sharing one mutex so their frames never interleave
+		// mid-write in logFile — see frameWriter's own doc comment.
+		var mu sync.Mutex
+		cmd.Stdout = &frameWriter{log: logFile, mu: &mu, stream: logframe.Stdout}
+		cmd.Stderr = &frameWriter{log: logFile, mu: &mu, stream: logframe.Stderr}
+	} else {
+		cmd.Stdout = logFile
+		cmd.Stderr = logFile
+	}
 	// Detach from agent-box's process group so a child of the spawned
 	// process survives an agent-box restart and can be reaped later.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
@@ -214,7 +260,7 @@ func spawnBackgroundProcess(name, command, cwd string) (*managedProcess, error) 
 		BootID:      bootID,
 		Command:     command,
 		Cwd:         cwd,
-		CaptureMode: CaptureCombined,
+		CaptureMode: captureMode,
 		LogPath:     logPath,
 		StartedAt:   startedAt,
 	}

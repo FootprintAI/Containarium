@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // Durable run records (#1672). agent-box is a stdio MCP server spawned per
@@ -42,16 +44,47 @@ const (
 	RunOutcomeUnknown RunOutcome = "unknown"
 )
 
-// CaptureMode names how a run's output stream is framed on disk. Only
-// CaptureCombined is implemented; CaptureFramed is reserved for #1674's
-// resumable-reader work and is not produced or interpreted by this package
-// yet — every record written today carries CaptureCombined.
+// CaptureMode names how a run's output stream is written to its log file.
+// CaptureCombined is plain text (the only mode before #1674, still the
+// default): stdout and stderr interleaved as-is, readable with a plain
+// `cat`/`tail`. CaptureFramed multiplexes them using internal/logframe, so
+// a demuxing client (containarium code) can split them back apart from the
+// single offset stream tail_log still serves unchanged.
 type CaptureMode string
 
 const (
 	CaptureCombined CaptureMode = "combined"
 	CaptureFramed   CaptureMode = "framed"
 )
+
+// parseCaptureMode maps process_start's optional capture_mode argument to
+// the typed enum. Empty input defaults to CaptureCombined — process_start's
+// contract for callers who never pass capture_mode at all (every caller
+// before #1674) is that nothing about their invocation changes. Anything
+// else that isn't a recognized value is a caller error (most likely a
+// typo), not a silent fallback.
+func parseCaptureMode(s string) (CaptureMode, error) {
+	switch s {
+	case "", string(CaptureCombined):
+		return CaptureCombined, nil
+	case string(CaptureFramed):
+		return CaptureFramed, nil
+	default:
+		return "", fmt.Errorf("capture_mode: unknown value %q (want %q or %q)", s, CaptureCombined, CaptureFramed)
+	}
+}
+
+// captureModeFromProto maps SpawnRequest.CaptureMode (the gRPC transport's
+// typed enum) to this package's CaptureMode. CAPTURE_MODE_UNSPECIFIED maps
+// to CaptureCombined — additive/backward-compatible, per the proto field's
+// own doc comment: every SpawnRequest sent before #1674 omits the field
+// and gets today's behavior unchanged.
+func captureModeFromProto(m pb.CaptureMode) CaptureMode {
+	if m == pb.CaptureMode_CAPTURE_MODE_FRAMED {
+		return CaptureFramed
+	}
+	return CaptureCombined
+}
 
 // RunRecord is the durable, on-disk counterpart to managedProcess: written
 // by the agent-box process that started a run, read by whichever agent-box
