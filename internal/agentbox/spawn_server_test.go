@@ -24,6 +24,7 @@ import (
 // scoping note).
 
 func TestSpawnServer_Spawn_ReturnsPidAndReaps(t *testing.T) {
+	t.Cleanup(setProcessLogDirForTest(t.TempDir()))
 	t.Cleanup(func() { killAllAndReset(t) })
 	s := NewSpawnServer()
 
@@ -63,6 +64,7 @@ func TestSpawnServer_Spawn_RejectsEmptyCommand(t *testing.T) {
 }
 
 func TestSpawnServer_Spawn_DuplicateNameIsAlreadyExists(t *testing.T) {
+	t.Cleanup(setProcessLogDirForTest(t.TempDir()))
 	t.Cleanup(func() { killAllAndReset(t) })
 	s := NewSpawnServer()
 
@@ -78,6 +80,7 @@ func TestSpawnServer_Spawn_DuplicateNameIsAlreadyExists(t *testing.T) {
 // TestSpawnServer_Spawn_ConcurrentSpawnsAreIndependent pins the design
 // note's own test requirement: "concurrent spawns are independent."
 func TestSpawnServer_Spawn_ConcurrentSpawnsAreIndependent(t *testing.T) {
+	t.Cleanup(setProcessLogDirForTest(t.TempDir()))
 	t.Cleanup(func() { killAllAndReset(t) })
 	s := NewSpawnServer()
 
@@ -162,6 +165,7 @@ func TestSpawnServer_Exec_RespectsTimeout(t *testing.T) {
 // exercised through the generated stubs, over a real unix socket in a
 // real temp dir — no mock. Proto drift here fails a test, not production.
 func TestStartSpawnListener_RealClientOverRealSocket(t *testing.T) {
+	t.Cleanup(setProcessLogDirForTest(t.TempDir()))
 	t.Cleanup(func() { killAllAndReset(t) })
 	socketPath := filepath.Join(t.TempDir(), "spawn.sock")
 
