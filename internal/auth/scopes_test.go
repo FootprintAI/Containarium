@@ -64,6 +64,97 @@ func TestHasScope_TrimsWhitespace(t *testing.T) {
 	}
 }
 
+func TestIntersectScopes(t *testing.T) {
+	cases := []struct {
+		name     string
+		caller   []string
+		manifest []string
+		want     []string
+	}{
+		{
+			name:     "nil caller is unrestricted, manifest stays the ceiling",
+			caller:   nil,
+			manifest: []string{ScopeContainersRead, ScopeSecretsRead},
+			want:     []string{ScopeContainersRead, ScopeSecretsRead},
+		},
+		{
+			name:     "wildcard caller intersects down to the manifest",
+			caller:   []string{ScopeWildcard},
+			manifest: []string{ScopeContainersRead, ScopeSecretsRead},
+			want:     []string{ScopeContainersRead, ScopeSecretsRead},
+		},
+		{
+			name:     "wildcard manifest intersects down to the caller",
+			caller:   []string{ScopeContainersRead},
+			manifest: []string{ScopeWildcard},
+			want:     []string{ScopeContainersRead},
+		},
+		{
+			name:     "empty caller grants nothing regardless of manifest",
+			caller:   []string{},
+			manifest: []string{ScopeContainersRead, ScopeSecretsRead},
+			want:     []string{},
+		},
+		{
+			name:     "empty manifest grants nothing regardless of caller",
+			caller:   []string{ScopeWildcard},
+			manifest: []string{},
+			want:     []string{},
+		},
+		{
+			name:     "disjoint sets intersect to nothing",
+			caller:   []string{ScopeContainersRead},
+			manifest: []string{ScopeSecretsRead},
+			want:     []string{},
+		},
+		{
+			name:     "caller with only agents:run gets no resource scopes",
+			caller:   []string{ScopeAgentsRun},
+			manifest: []string{ScopeContainersRead},
+			want:     []string{},
+		},
+		{
+			name:     "strict subset keeps only the shared scopes",
+			caller:   []string{ScopeContainersRead, ScopeSecretsRead, ScopeRoutesWrite},
+			manifest: []string{ScopeContainersRead, ScopeSecretsRead},
+			want:     []string{ScopeContainersRead, ScopeSecretsRead},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := IntersectScopes(tc.caller, tc.manifest)
+			if len(got) != len(tc.want) {
+				t.Fatalf("IntersectScopes(%v, %v) = %v, want %v", tc.caller, tc.manifest, got, tc.want)
+			}
+			gotSet := map[string]bool{}
+			for _, s := range got {
+				gotSet[s] = true
+			}
+			for _, s := range tc.want {
+				if !gotSet[s] {
+					t.Fatalf("IntersectScopes(%v, %v) = %v, want %v (missing %q)", tc.caller, tc.manifest, got, tc.want, s)
+				}
+			}
+		})
+	}
+}
+
+func TestIntersectScopes_ManifestScopeCallerLacksIsNeverGranted(t *testing.T) {
+	// Regression for #1676: a manifest declaring a scope the caller doesn't
+	// hold must never leak that scope into the minted token.
+	caller := []string{ScopeContainersRead}
+	manifest := []string{ScopeContainersRead, ScopeSecretsWrite}
+	got := IntersectScopes(caller, manifest)
+	for _, s := range got {
+		if s == ScopeSecretsWrite {
+			t.Fatalf("IntersectScopes(%v, %v) = %v; caller never held %q", caller, manifest, got, ScopeSecretsWrite)
+		}
+	}
+	if len(got) != 1 || got[0] != ScopeContainersRead {
+		t.Fatalf("IntersectScopes(%v, %v) = %v, want [%q]", caller, manifest, got, ScopeContainersRead)
+	}
+}
+
 func TestParseScopes(t *testing.T) {
 	cases := map[string][]string{
 		"":                                   nil,

@@ -176,6 +176,19 @@ func agentRuntimeReleaseTag() string {
 // into the per-box egress policy. It does NOT run the loop — RunAgentSkill runs
 // it one-shot, RunCrew starts it in serve mode. Returns the container name +
 // the provisioned Container.
+// mintedAgentTokenScopes computes the scopes for a skill's in-box token: the
+// intersection of the caller's own granted scopes and the skill manifest's
+// allowed_scopes (#1676). auth.ScopesFromGRPCContext — not the plain
+// ScopesFromContext — is required here: the primary API surface is REST via
+// grpc-gateway, and the HTTP middleware propagates the caller's scopes claim
+// through outgoing gRPC metadata (internal/auth/middleware.go), not a context
+// value that would survive the HTTP→gateway→gRPC hop. RequireScope and
+// AuthorizeTenant already read the caller this same way.
+func mintedAgentTokenScopes(ctx context.Context, skill *pb.AgentSkill) []string {
+	callerScopes, _ := auth.ScopesFromGRPCContext(ctx)
+	return auth.IntersectScopes(callerScopes, skill.AllowedScopes)
+}
+
 func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.AgentSkill, backendID, pool, inputJSON string) (string, *pb.Container, error) {
 	// Phase 0 supports only the recipe_id box form (catalog skills). Inline
 	// recipes are an API-only construct deferred to a later phase.
@@ -231,9 +244,12 @@ func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.Agen
 		container = dep.Container
 	}
 
-	// Mint a JWT scoped to EXACTLY the skill's allowed_scopes (catalog
-	// guarantees >= 1, so this is bounded, not the nil-claim "no restriction").
-	token, err := s.tokens.GenerateToken(name, []string{}, agentTokenTTL, skill.AllowedScopes...)
+	// Mint a JWT scoped to the intersection of the CALLER's own granted scopes
+	// and the skill's allowed_scopes (#1676): the manifest is a ceiling, never
+	// a floor. A caller with no scopes claim (nil, the Phase 1.7 backwards-compat
+	// "unrestricted" path) or the wildcard gets the manifest unchanged; anyone
+	// else only receives the scopes they already hold.
+	token, err := s.tokens.GenerateToken(name, []string{}, agentTokenTTL, mintedAgentTokenScopes(ctx, skill)...)
 	if err != nil {
 		return "", nil, status.Errorf(codes.Internal, "failed to mint scoped agent token: %v", err)
 	}
