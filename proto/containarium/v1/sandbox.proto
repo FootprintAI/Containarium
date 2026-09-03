@@ -297,6 +297,20 @@ message SpawnRequest {
   // How to capture this process's output (#1674). UNSPECIFIED/omitted ->
   // COMBINED, so every existing caller is unaffected.
   CaptureMode capture_mode = 4;
+
+  // Provenance for the run record (#1699): who the caller says authorized
+  // this run, and the JSON-serialized delegation chain behind it (the
+  // auth.Actor shape from #1677).
+  //
+  // CALLER-ASSERTED, not verified here. agent-box has no authenticated
+  // context on either of its transports — it is reached over SSH, or over a
+  // unix socket whose access control is filesystem permissions. These fields
+  // therefore carry the same trust as `command` beside them, and are
+  // deliberately WEAKER evidence than the audit store's server-resolved
+  // `actor` column (#1678). Both optional; empty means the run is recorded
+  // as unattributed rather than falsely attributed.
+  string actor = 5;
+  string delegation_chain = 6;
 }
 
 message SpawnResponse {
