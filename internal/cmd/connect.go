@@ -163,8 +163,8 @@ func (c *connectAPI) AuthorizeKey(ctx context.Context, box, pub string) error {
 
 // ---- command handler ---------------------------------------------------
 
-// obtainConnectKey returns the public key to authorize and the private key
-// path to authenticate with. With a non-empty keyPath it uses that
+// obtainConnectKey returns the public key to authorize and the private
+// key path to authenticate with. With a non-empty keyPath it uses that
 // supplied public key; otherwise it reuses (or generates once) the managed
 // key the `ssh setup` flow already uses, so the user never hand-manages a
 // key. The private path defaults to the public path minus ".pub" unless
@@ -172,9 +172,9 @@ func (c *connectAPI) AuthorizeKey(ctx context.Context, box, pub string) error {
 //
 // Parameterized (not reading connect's own connectKeyPath/connectIdentity
 // package vars) so other commands needing the same "authorize a managed
-// key, connect over SSH" flow — e.g. `code run`/`attach`/`status`/`stop`
-// (#1674) — can call it with their own flag values instead of colliding
-// with connect's.
+// key, connect over SSH" flow — `code install` (#1673) and `code
+// run`/`attach`/`status`/`stop` (#1674) — can call it with their own flag
+// values instead of colliding with connect's.
 func obtainConnectKey(keyPath, identity string) (pub, privPath string, err error) {
 	var pubPath string
 	if keyPath != "" {
