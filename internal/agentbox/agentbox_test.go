@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/footprintai/containarium/internal/logframe"
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -630,6 +631,11 @@ func killAllAndReset(t *testing.T) {
 	for _, pid := range pids {
 		_ = killProcessGroup(pid, 9) // SIGKILL
 	}
+	// Wait for every reap goroutine's final record write to land BEFORE
+	// resetting the registry / returning to the caller — callers that also
+	// tear down a TempDir-backed processLogDir (via t.Cleanup ordering) must
+	// not race a still-in-flight writeRunRecordAt against that removal.
+	waitForReapersForTest()
 	resetProcessRegistryForTest()
 }
 
@@ -642,6 +648,7 @@ func killProcessGroup(pid int, sig int) error {
 }
 
 func TestProcessStart_AutoGeneratesName(t *testing.T) {
+	t.Cleanup(setProcessLogDirForTest(t.TempDir()))
 	t.Cleanup(func() { killAllAndReset(t) })
 	out, _ := callTool(t, handleProcessStart, map[string]interface{}{
 		"command": "sleep 5",
@@ -655,6 +662,7 @@ func TestProcessStart_AutoGeneratesName(t *testing.T) {
 }
 
 func TestProcessStart_RespectsExplicitName(t *testing.T) {
+	t.Cleanup(setProcessLogDirForTest(t.TempDir()))
 	t.Cleanup(func() { killAllAndReset(t) })
 	out, _ := callTool(t, handleProcessStart, map[string]interface{}{
 		"command": "sleep 5",
@@ -666,6 +674,7 @@ func TestProcessStart_RespectsExplicitName(t *testing.T) {
 }
 
 func TestProcessStart_RejectsDuplicateName(t *testing.T) {
+	t.Cleanup(setProcessLogDirForTest(t.TempDir()))
 	t.Cleanup(func() { killAllAndReset(t) })
 	_, _ = callTool(t, handleProcessStart, map[string]interface{}{
 		"command": "sleep 5",
@@ -688,6 +697,7 @@ func TestProcessStart_RejectsMissingCommand(t *testing.T) {
 }
 
 func TestProcessList_ShowsRegisteredProcesses(t *testing.T) {
+	t.Cleanup(setProcessLogDirForTest(t.TempDir()))
 	t.Cleanup(func() { killAllAndReset(t) })
 	_, _ = callTool(t, handleProcessStart, map[string]interface{}{
 		"command": "sleep 5",
@@ -707,6 +717,7 @@ func TestProcessList_ShowsRegisteredProcesses(t *testing.T) {
 }
 
 func TestProcessList_EmptyWhenNothingRegistered(t *testing.T) {
+	t.Cleanup(setProcessLogDirForTest(t.TempDir()))
 	resetProcessRegistryForTest()
 	out, _ := callTool(t, handleProcessList, map[string]interface{}{})
 	if !strings.Contains(out, "No background processes registered") {
@@ -714,7 +725,13 @@ func TestProcessList_EmptyWhenNothingRegistered(t *testing.T) {
 	}
 }
 
-func TestProcessKill_RemovesFromRegistry(t *testing.T) {
+// TestProcessKill_ReportsNoLongerRunning covers process_kill's updated
+// contract under #1672: killing a process still removes it from the
+// in-memory registry, but no longer erases its durable run record — the
+// whole point of #1672 is that a run's outcome survives, and an explicit
+// kill is no exception. It must stop appearing as running/alive, though.
+func TestProcessKill_ReportsNoLongerRunning(t *testing.T) {
+	t.Cleanup(setProcessLogDirForTest(t.TempDir()))
 	t.Cleanup(func() { killAllAndReset(t) })
 	_, _ = callTool(t, handleProcessStart, map[string]interface{}{
 		"command": "sleep 30",
@@ -726,14 +743,14 @@ func TestProcessKill_RemovesFromRegistry(t *testing.T) {
 	if !strings.Contains(out, "signal: SIGTERM") {
 		t.Errorf("expected SIGTERM in output:\n%s", out)
 	}
-	// Verify removal
 	listOut, _ := callTool(t, handleProcessList, map[string]interface{}{})
-	if strings.Contains(listOut, "kill-me") {
-		t.Errorf("process should be gone from list after kill:\n%s", listOut)
+	if strings.Contains(listOut, "🟢 kill-me") {
+		t.Errorf("killed process should no longer be reported as running:\n%s", listOut)
 	}
 }
 
 func TestProcessKill_ForceUsesSIGKILL(t *testing.T) {
+	t.Cleanup(setProcessLogDirForTest(t.TempDir()))
 	t.Cleanup(func() { killAllAndReset(t) })
 	_, _ = callTool(t, handleProcessStart, map[string]interface{}{
 		"command": "sleep 30",
@@ -749,6 +766,7 @@ func TestProcessKill_ForceUsesSIGKILL(t *testing.T) {
 }
 
 func TestProcessKill_RejectsUnknownName(t *testing.T) {
+	t.Cleanup(setProcessLogDirForTest(t.TempDir()))
 	resetProcessRegistryForTest()
 	_, res := callTool(t, handleProcessKill, map[string]interface{}{
 		"name": "no-such-thing",
@@ -759,6 +777,7 @@ func TestProcessKill_RejectsUnknownName(t *testing.T) {
 }
 
 func TestProcessStart_CapturesStdoutToLog(t *testing.T) {
+	t.Cleanup(setProcessLogDirForTest(t.TempDir()))
 	t.Cleanup(func() { killAllAndReset(t) })
 	out, _ := callTool(t, handleProcessStart, map[string]interface{}{
 		"command": "echo 'hello from process'; sleep 5",
@@ -785,4 +804,74 @@ func TestProcessStart_CapturesStdoutToLog(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Errorf("log file %s never contained 'hello from process'", logPath)
+}
+
+// TestProcessStart_FramedCaptureMode_DemuxesCleanly is the #1674 AC: in
+// framed mode the client reconstructs stdout and stderr separately from the
+// single on-disk byte stream. Spawns a process that writes to both streams,
+// then feeds the raw log bytes through logframe.Demuxer and checks each
+// stream's content landed on the right side.
+func TestProcessStart_FramedCaptureMode_DemuxesCleanly(t *testing.T) {
+	t.Cleanup(setProcessLogDirForTest(t.TempDir()))
+	t.Cleanup(func() { killAllAndReset(t) })
+
+	out, res := callTool(t, handleProcessStart, map[string]interface{}{
+		"command":      "echo out-line 1>&1; echo err-line 1>&2",
+		"name":         "framed-proc",
+		"capture_mode": "framed",
+	})
+	if res.IsError {
+		t.Fatalf("process_start returned an error:\n%s", out)
+	}
+	var logPath string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "log_path: ") {
+			logPath = strings.TrimPrefix(line, "log_path: ")
+			break
+		}
+	}
+	if logPath == "" {
+		t.Fatalf("no log_path in output:\n%s", out)
+	}
+
+	var stdout, stderr []byte
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(logPath)
+		if err != nil {
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		var d logframe.Demuxer
+		frames, derr := d.Write(data)
+		if derr != nil {
+			t.Fatalf("Demuxer.Write: %v\nraw log:\n%s", derr, data)
+		}
+		stdout, stderr = nil, nil
+		for _, f := range frames {
+			switch f.Stream {
+			case logframe.Stdout:
+				stdout = append(stdout, f.Payload...)
+			case logframe.Stderr:
+				stderr = append(stderr, f.Payload...)
+			}
+		}
+		if strings.Contains(string(stdout), "out-line") && strings.Contains(string(stderr), "err-line") {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Errorf("demuxed stdout=%q stderr=%q, want out-line on stdout and err-line on stderr", stdout, stderr)
+}
+
+func TestProcessStart_UnknownCaptureModeIsRejected(t *testing.T) {
+	t.Cleanup(setProcessLogDirForTest(t.TempDir()))
+	t.Cleanup(func() { killAllAndReset(t) })
+	_, res := callTool(t, handleProcessStart, map[string]interface{}{
+		"command":      "true",
+		"capture_mode": "bogus",
+	})
+	if !res.IsError {
+		t.Error("expected an error for an unrecognized capture_mode")
+	}
 }

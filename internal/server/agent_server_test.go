@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -65,6 +66,54 @@ func TestSendAgentTaskRejectsDisallowedPeer(t *testing.T) {
 	}
 }
 
+// TestMintedAgentTokenScopes_CallerRestrictedToAgentsRunGetsNoResourceScopes
+// is the #1676 regression: a caller holding only agents:run must not receive
+// a token carrying a manifest scope it never held itself.
+func TestMintedAgentTokenScopes_CallerRestrictedToAgentsRunGetsNoResourceScopes(t *testing.T) {
+	skill := &pb.AgentSkill{Id: "hello-agent", AllowedScopes: []string{auth.ScopeContainersRead}}
+	ctx := auth.ContextWithTestSubjectScopes(
+		context.Background(), "some-caller", nil, []string{auth.ScopeAgentsRun})
+
+	got := mintedAgentTokenScopes(ctx, skill)
+	if len(got) != 0 {
+		t.Fatalf("mintedAgentTokenScopes = %v, want no resource scopes for a caller holding only agents:run", got)
+	}
+}
+
+// TestMintedAgentTokenScopes_ManifestScopeCallerLacksNeverGranted is the
+// regression named explicitly in #1676's acceptance criteria: a manifest
+// declaring a scope the caller doesn't hold must never produce a token
+// carrying it.
+func TestMintedAgentTokenScopes_ManifestScopeCallerLacksNeverGranted(t *testing.T) {
+	skill := &pb.AgentSkill{
+		Id:            "escalating-skill",
+		AllowedScopes: []string{auth.ScopeContainersRead, auth.ScopeSecretsWrite},
+	}
+	ctx := auth.ContextWithTestSubjectScopes(
+		context.Background(), "some-caller", nil, []string{auth.ScopeAgentsRun, auth.ScopeContainersRead})
+
+	got := mintedAgentTokenScopes(ctx, skill)
+	if slices.Contains(got, auth.ScopeSecretsWrite) {
+		t.Fatalf("mintedAgentTokenScopes = %v; caller never held %q", got, auth.ScopeSecretsWrite)
+	}
+	if len(got) != 1 || got[0] != auth.ScopeContainersRead {
+		t.Fatalf("mintedAgentTokenScopes = %v, want [%q]", got, auth.ScopeContainersRead)
+	}
+}
+
+// TestMintedAgentTokenScopes_UnrestrictedCallerKeepsManifestUnchanged covers
+// the Phase 1.7 backwards-compat path: a pre-scopes-claim caller (nil scopes)
+// is unrestricted, so the manifest passes through as it did before #1676.
+func TestMintedAgentTokenScopes_UnrestrictedCallerKeepsManifestUnchanged(t *testing.T) {
+	skill := &pb.AgentSkill{Id: "hello-agent", AllowedScopes: []string{auth.ScopeContainersRead}}
+	ctx := auth.ContextWithTestSubjectScopes(context.Background(), "some-caller", nil, nil)
+
+	got := mintedAgentTokenScopes(ctx, skill)
+	if len(got) != 1 || got[0] != auth.ScopeContainersRead {
+		t.Fatalf("mintedAgentTokenScopes = %v, want manifest unchanged [%q]", got, auth.ScopeContainersRead)
+	}
+}
+
 // TestSendAgentTaskRequiresCallScope confirms the agents:call gate.
 func TestSendAgentTaskRequiresCallScope(t *testing.T) {
 	s := &AgentSkillServer{catalog: skills.GetDefault()}
@@ -74,6 +123,68 @@ func TestSendAgentTaskRequiresCallScope(t *testing.T) {
 	_, err := s.SendAgentTask(ctx, &pb.SendAgentTaskRequest{ToPeerId: "x"})
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("expected PermissionDenied without agents:call, got %v", err)
+	}
+}
+
+// TestMintedAgentAct_DerivedFromAuthenticatedCaller is the #1677 AC
+// "RunAgentSkill populates it at mint": a single-hop caller (a human/CLI
+// token with no act of its own) produces a depth-1 chain naming them.
+func TestMintedAgentAct_DerivedFromAuthenticatedCaller(t *testing.T) {
+	ctx := auth.ContextWithTestSubject(context.Background(), "alice", "user")
+	got := mintedAgentAct(ctx)
+	if got == nil {
+		t.Fatal("mintedAgentAct = nil, want a chain naming the authenticated caller")
+	}
+	if got.Subject != "alice" {
+		t.Errorf("got.Subject = %q, want alice", got.Subject)
+	}
+	if got.Act != nil {
+		t.Errorf("got.Act = %+v, want nil (caller had no delegation of its own)", got.Act)
+	}
+}
+
+// TestMintedAgentAct_NestsCallersOwnAct is the #1677 AC "a second hop nests
+// rather than overwrites": a caller that is itself a derived agent token
+// (its own act names a human) produces a depth-2 chain wrapping both,
+// never one that drops the human by overwriting with just the immediate
+// caller.
+func TestMintedAgentAct_NestsCallersOwnAct(t *testing.T) {
+	callerAct := &auth.Actor{Subject: "alice"}
+	ctx := auth.ContextWithTestSubjectAct(context.Background(), "agent-relay-agent", nil, callerAct)
+
+	got := mintedAgentAct(ctx)
+	if got == nil {
+		t.Fatal("mintedAgentAct = nil, want a chain")
+	}
+	if got.Subject != "agent-relay-agent" {
+		t.Errorf("got.Subject = %q, want agent-relay-agent", got.Subject)
+	}
+	if got.Act == nil || got.Act.Subject != "alice" {
+		t.Fatalf("got.Act = %+v, want {Subject: alice} — the human must not be dropped", got.Act)
+	}
+}
+
+// TestMintedAgentAct_UnauthenticatedContextReturnsNil covers the defensive
+// case (unreachable in production once RequireScope has already run, but a
+// public contract of this standalone function): no authenticated subject in
+// ctx means nothing meaningful to record, not a garbage/zero-value Actor.
+func TestMintedAgentAct_UnauthenticatedContextReturnsNil(t *testing.T) {
+	if got := mintedAgentAct(context.Background()); got != nil {
+		t.Errorf("mintedAgentAct(unauthenticated ctx) = %+v, want nil", got)
+	}
+}
+
+// TestMintedAgentAct_IgnoresRequestFields is the #1677 anti-forgery AC,
+// made explicit: mintedAgentAct's signature takes only ctx — there is no
+// request parameter for a caller to inject an act through. This test pins
+// that contract so a future refactor can't silently add one; it is the
+// structural counterpart to the behavioral round-trip tests in
+// internal/auth/delegation_test.go.
+func TestMintedAgentAct_IgnoresRequestFields(t *testing.T) {
+	fn := reflect.TypeOf(mintedAgentAct)
+	if fn.NumIn() != 1 || fn.In(0).String() != "context.Context" {
+		t.Fatalf("mintedAgentAct signature = %v, want func(context.Context) *auth.Actor — "+
+			"any additional parameter (e.g. a request) would be a place for a caller to forge act", fn)
 	}
 }
 

@@ -24,6 +24,7 @@ import (
 // scoping note).
 
 func TestSpawnServer_Spawn_ReturnsPidAndReaps(t *testing.T) {
+	t.Cleanup(setProcessLogDirForTest(t.TempDir()))
 	t.Cleanup(func() { killAllAndReset(t) })
 	s := NewSpawnServer()
 
@@ -54,6 +55,33 @@ func TestSpawnServer_Spawn_ReturnsPidAndReaps(t *testing.T) {
 	}
 }
 
+// TestSpawnServer_Spawn_FramedCaptureMode is the #1674 contract-change AC:
+// capture_mode must land on SpawnRequest so the gRPC transport isn't
+// asymmetric with the MCP tool over the same shared core.
+func TestSpawnServer_Spawn_FramedCaptureMode(t *testing.T) {
+	dir := t.TempDir()
+	t.Cleanup(setProcessLogDirForTest(dir))
+	t.Cleanup(func() { killAllAndReset(t) })
+	s := NewSpawnServer()
+
+	resp, err := s.Spawn(context.Background(), &pb.SpawnRequest{
+		Command:     "echo hi",
+		Name:        "framed-grpc",
+		CaptureMode: pb.CaptureMode_CAPTURE_MODE_FRAMED,
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	record, found, err := readRunRecord(resp.Name)
+	if err != nil || !found {
+		t.Fatalf("readRunRecord: found=%v err=%v", found, err)
+	}
+	if record.CaptureMode != CaptureFramed {
+		t.Errorf("record.CaptureMode = %q, want %q", record.CaptureMode, CaptureFramed)
+	}
+}
+
 func TestSpawnServer_Spawn_RejectsEmptyCommand(t *testing.T) {
 	s := NewSpawnServer()
 	_, err := s.Spawn(context.Background(), &pb.SpawnRequest{Name: "no-command"})
@@ -63,6 +91,7 @@ func TestSpawnServer_Spawn_RejectsEmptyCommand(t *testing.T) {
 }
 
 func TestSpawnServer_Spawn_DuplicateNameIsAlreadyExists(t *testing.T) {
+	t.Cleanup(setProcessLogDirForTest(t.TempDir()))
 	t.Cleanup(func() { killAllAndReset(t) })
 	s := NewSpawnServer()
 
@@ -78,6 +107,7 @@ func TestSpawnServer_Spawn_DuplicateNameIsAlreadyExists(t *testing.T) {
 // TestSpawnServer_Spawn_ConcurrentSpawnsAreIndependent pins the design
 // note's own test requirement: "concurrent spawns are independent."
 func TestSpawnServer_Spawn_ConcurrentSpawnsAreIndependent(t *testing.T) {
+	t.Cleanup(setProcessLogDirForTest(t.TempDir()))
 	t.Cleanup(func() { killAllAndReset(t) })
 	s := NewSpawnServer()
 
@@ -162,6 +192,7 @@ func TestSpawnServer_Exec_RespectsTimeout(t *testing.T) {
 // exercised through the generated stubs, over a real unix socket in a
 // real temp dir — no mock. Proto drift here fails a test, not production.
 func TestStartSpawnListener_RealClientOverRealSocket(t *testing.T) {
+	t.Cleanup(setProcessLogDirForTest(t.TempDir()))
 	t.Cleanup(func() { killAllAndReset(t) })
 	socketPath := filepath.Join(t.TempDir(), "spawn.sock")
 

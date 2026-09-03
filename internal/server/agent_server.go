@@ -176,6 +176,44 @@ func agentRuntimeReleaseTag() string {
 // into the per-box egress policy. It does NOT run the loop — RunAgentSkill runs
 // it one-shot, RunCrew starts it in serve mode. Returns the container name +
 // the provisioned Container.
+// mintedAgentAct computes the RFC 8693 `act` delegation claim (#1677) for a
+// token minted on behalf of the caller authenticated in ctx — used by both
+// RunAgentSkill (single skill) and RunCrew (per-member boxes, both funnel
+// through provisionSkillBox) via GenerateDelegatedToken.
+//
+// Derived ONLY from ctx — never from the request proto — which is the
+// anti-forgery invariant this claim exists to hold: RunAgentSkillRequest
+// and RunCrewRequest have no actor-ish field a caller could set, and this
+// function doesn't accept the request as a parameter at all, so there is
+// nothing for a caller to forge through.
+//
+// Nests rather than overwrites: if the caller's OWN token already carried
+// an act (it is itself a derived/agent token — e.g. an agent box that
+// itself holds agents:run calling RunAgentSkill again), the new token's act
+// wraps {caller's subject, caller's own act}, so the chain always resolves
+// back to the root human principal at whatever depth it's read.
+func mintedAgentAct(ctx context.Context) *auth.Actor {
+	username, _, ok := auth.SubjectFromGRPCContext(ctx)
+	if !ok || username == "" {
+		return nil // unauthenticated/system context — nothing meaningful to record
+	}
+	callerAct, _ := auth.ActFromGRPCContext(ctx)
+	return &auth.Actor{Subject: username, Act: callerAct}
+}
+
+// mintedAgentTokenScopes computes the scopes for a skill's in-box token: the
+// intersection of the caller's own granted scopes and the skill manifest's
+// allowed_scopes (#1676). auth.ScopesFromGRPCContext — not the plain
+// ScopesFromContext — is required here: the primary API surface is REST via
+// grpc-gateway, and the HTTP middleware propagates the caller's scopes claim
+// through outgoing gRPC metadata (internal/auth/middleware.go), not a context
+// value that would survive the HTTP→gateway→gRPC hop. RequireScope and
+// AuthorizeTenant already read the caller this same way.
+func mintedAgentTokenScopes(ctx context.Context, skill *pb.AgentSkill) []string {
+	callerScopes, _ := auth.ScopesFromGRPCContext(ctx)
+	return auth.IntersectScopes(callerScopes, skill.AllowedScopes)
+}
+
 func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.AgentSkill, backendID, pool, inputJSON string) (string, *pb.Container, error) {
 	// Phase 0 supports only the recipe_id box form (catalog skills). Inline
 	// recipes are an API-only construct deferred to a later phase.
@@ -231,9 +269,13 @@ func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.Agen
 		container = dep.Container
 	}
 
-	// Mint a JWT scoped to EXACTLY the skill's allowed_scopes (catalog
-	// guarantees >= 1, so this is bounded, not the nil-claim "no restriction").
-	token, err := s.tokens.GenerateToken(name, []string{}, agentTokenTTL, skill.AllowedScopes...)
+	// Mint a JWT scoped to the intersection of the CALLER's own granted scopes
+	// and the skill's allowed_scopes (#1676: the manifest is a ceiling, never
+	// a floor — a caller with no scopes claim/wildcard gets the manifest
+	// unchanged, anyone else only receives scopes they already hold), carrying
+	// the dispatching caller as its `act` delegation claim (#1677) so an
+	// auditor asking "who authorized this?" doesn't get the name of a robot.
+	token, err := s.tokens.GenerateDelegatedToken(name, []string{}, agentTokenTTL, mintedAgentAct(ctx), mintedAgentTokenScopes(ctx, skill)...)
 	if err != nil {
 		return "", nil, status.Errorf(codes.Internal, "failed to mint scoped agent token: %v", err)
 	}
