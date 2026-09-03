@@ -172,8 +172,9 @@ func (c *connectAPI) AuthorizeKey(ctx context.Context, box, pub string) error {
 //
 // Parameterized (not reading connect's own connectKeyPath/connectIdentity
 // package vars) so other commands needing the same "authorize a managed
-// key, connect over SSH" flow — e.g. `code install` (#1673) — can call it
-// with their own flag values instead of colliding with connect's.
+// key, connect over SSH" flow — `code install` (#1673) and `code
+// run`/`attach`/`status`/`stop` (#1674) — can call it with their own flag
+// values instead of colliding with connect's.
 func obtainConnectKey(keyPath, identity string) (pub, privPath string, err error) {
 	var pubPath string
 	if keyPath != "" {

@@ -193,6 +193,61 @@ func (SandboxTemplate) EnumDescriptor() ([]byte, []int) {
 	return file_containarium_v1_sandbox_proto_rawDescGZIP(), []int{2}
 }
 
+// CaptureMode selects how a spawned process's combined stdout+stderr is
+// written to its log file (#1674). COMBINED is today's plain-text behavior;
+// FRAMED is opt-in, text-safe per-line framing ("<stream> <base64(payload)>")
+// so a client can demux stdout/stderr from the single offset stream without
+// corrupting invalid UTF-8 or runes split across a write — see
+// docs/architecture/remote-coding-agent.md, Part A "Framing".
+type CaptureMode int32
+
+const (
+	CaptureMode_CAPTURE_MODE_UNSPECIFIED CaptureMode = 0 // treated as COMBINED
+	CaptureMode_CAPTURE_MODE_COMBINED    CaptureMode = 1
+	CaptureMode_CAPTURE_MODE_FRAMED      CaptureMode = 2
+)
+
+// Enum value maps for CaptureMode.
+var (
+	CaptureMode_name = map[int32]string{
+		0: "CAPTURE_MODE_UNSPECIFIED",
+		1: "CAPTURE_MODE_COMBINED",
+		2: "CAPTURE_MODE_FRAMED",
+	}
+	CaptureMode_value = map[string]int32{
+		"CAPTURE_MODE_UNSPECIFIED": 0,
+		"CAPTURE_MODE_COMBINED":    1,
+		"CAPTURE_MODE_FRAMED":      2,
+	}
+)
+
+func (x CaptureMode) Enum() *CaptureMode {
+	p := new(CaptureMode)
+	*p = x
+	return p
+}
+
+func (x CaptureMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (CaptureMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_sandbox_proto_enumTypes[3].Descriptor()
+}
+
+func (CaptureMode) Type() protoreflect.EnumType {
+	return &file_containarium_v1_sandbox_proto_enumTypes[3]
+}
+
+func (x CaptureMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use CaptureMode.Descriptor instead.
+func (CaptureMode) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_sandbox_proto_rawDescGZIP(), []int{3}
+}
+
 // Sandbox describes one sandbox's identity and lifecycle state.
 type Sandbox struct {
 	state      protoimpl.MessageState `protogen:"open.v1"`
@@ -974,7 +1029,10 @@ type SpawnRequest struct {
 	// be unique among this box's currently-registered processes.
 	Name string `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
 	// Working directory. Empty = agent-box's own cwd.
-	Cwd           string `protobuf:"bytes,3,opt,name=cwd,proto3" json:"cwd,omitempty"`
+	Cwd string `protobuf:"bytes,3,opt,name=cwd,proto3" json:"cwd,omitempty"`
+	// How to capture this process's output (#1674). UNSPECIFIED/omitted ->
+	// COMBINED, so every existing caller is unaffected.
+	CaptureMode   CaptureMode `protobuf:"varint,4,opt,name=capture_mode,json=captureMode,proto3,enum=containarium.v1.CaptureMode" json:"capture_mode,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1028,6 +1086,13 @@ func (x *SpawnRequest) GetCwd() string {
 		return x.Cwd
 	}
 	return ""
+}
+
+func (x *SpawnRequest) GetCaptureMode() CaptureMode {
+	if x != nil {
+		return x.CaptureMode
+	}
+	return CaptureMode_CAPTURE_MODE_UNSPECIFIED
 }
 
 type SpawnResponse struct {
@@ -1273,11 +1338,12 @@ const file_containarium_v1_sandbox_proto_rawDesc = "" +
 	"\btemplate\x18\x01 \x01(\x0e2 .containarium.v1.SandboxTemplateR\btemplate\x12\x14\n" +
 	"\x05ready\x18\x02 \x01(\x05R\x05ready\x12\x18\n" +
 	"\awarming\x18\x03 \x01(\x05R\awarming\x12\x19\n" +
-	"\bmin_warm\x18\x04 \x01(\x05R\aminWarm\"N\n" +
+	"\bmin_warm\x18\x04 \x01(\x05R\aminWarm\"\x8f\x01\n" +
 	"\fSpawnRequest\x12\x18\n" +
 	"\acommand\x18\x01 \x01(\tR\acommand\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x10\n" +
-	"\x03cwd\x18\x03 \x01(\tR\x03cwd\"P\n" +
+	"\x03cwd\x18\x03 \x01(\tR\x03cwd\x12?\n" +
+	"\fcapture_mode\x18\x04 \x01(\x0e2\x1c.containarium.v1.CaptureModeR\vcaptureMode\"P\n" +
 	"\rSpawnResponse\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x10\n" +
 	"\x03pid\x18\x02 \x01(\x03R\x03pid\x12\x19\n" +
@@ -1303,7 +1369,11 @@ const file_containarium_v1_sandbox_proto_rawDesc = "" +
 	"\x10SERVED_FROM_POOL\x10\x02*N\n" +
 	"\x0fSandboxTemplate\x12 \n" +
 	"\x1cSANDBOX_TEMPLATE_UNSPECIFIED\x10\x00\x12\x19\n" +
-	"\x15SANDBOX_TEMPLATE_BASE\x10\x012\xe1\v\n" +
+	"\x15SANDBOX_TEMPLATE_BASE\x10\x01*_\n" +
+	"\vCaptureMode\x12\x1c\n" +
+	"\x18CAPTURE_MODE_UNSPECIFIED\x10\x00\x12\x19\n" +
+	"\x15CAPTURE_MODE_COMBINED\x10\x01\x12\x17\n" +
+	"\x13CAPTURE_MODE_FRAMED\x10\x022\xe1\v\n" +
 	"\x0eSandboxService\x12\xf2\x02\n" +
 	"\fSpawnSandbox\x12$.containarium.v1.SpawnSandboxRequest\x1a%.containarium.v1.SpawnSandboxResponse\"\x94\x02\x92A\xf8\x01\n" +
 	"\tSandboxes\x12\x0fSpawn a sandbox\x1a\xd9\x01Creates an ephemeral, unauthenticated-shell-free sandbox. Phase 1: always the cold path (served_from = COLD); Phase 3+: a pool claim when a warm member is ready, else RESOURCE_EXHAUSTED unless allow_cold_start is set.\x82\xd3\xe4\x93\x02\x12:\x01*\"\r/v1/sandboxes\x12\xb8\x01\n" +
@@ -1333,63 +1403,65 @@ func file_containarium_v1_sandbox_proto_rawDescGZIP() []byte {
 	return file_containarium_v1_sandbox_proto_rawDescData
 }
 
-var file_containarium_v1_sandbox_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
+var file_containarium_v1_sandbox_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
 var file_containarium_v1_sandbox_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
 var file_containarium_v1_sandbox_proto_goTypes = []any{
 	(SandboxState)(0),                  // 0: containarium.v1.SandboxState
 	(ServedFrom)(0),                    // 1: containarium.v1.ServedFrom
 	(SandboxTemplate)(0),               // 2: containarium.v1.SandboxTemplate
-	(*Sandbox)(nil),                    // 3: containarium.v1.Sandbox
-	(*SpawnSandboxRequest)(nil),        // 4: containarium.v1.SpawnSandboxRequest
-	(*SpawnSandboxResponse)(nil),       // 5: containarium.v1.SpawnSandboxResponse
-	(*ExecInSandboxRequest)(nil),       // 6: containarium.v1.ExecInSandboxRequest
-	(*ExecInSandboxResponse)(nil),      // 7: containarium.v1.ExecInSandboxResponse
-	(*WriteFileInSandboxRequest)(nil),  // 8: containarium.v1.WriteFileInSandboxRequest
-	(*WriteFileInSandboxResponse)(nil), // 9: containarium.v1.WriteFileInSandboxResponse
-	(*ReadFileInSandboxRequest)(nil),   // 10: containarium.v1.ReadFileInSandboxRequest
-	(*ReadFileInSandboxResponse)(nil),  // 11: containarium.v1.ReadFileInSandboxResponse
-	(*DeleteSandboxRequest)(nil),       // 12: containarium.v1.DeleteSandboxRequest
-	(*DeleteSandboxResponse)(nil),      // 13: containarium.v1.DeleteSandboxResponse
-	(*GetPoolStatusRequest)(nil),       // 14: containarium.v1.GetPoolStatusRequest
-	(*GetPoolStatusResponse)(nil),      // 15: containarium.v1.GetPoolStatusResponse
-	(*PoolTemplateStatus)(nil),         // 16: containarium.v1.PoolTemplateStatus
-	(*SpawnRequest)(nil),               // 17: containarium.v1.SpawnRequest
-	(*SpawnResponse)(nil),              // 18: containarium.v1.SpawnResponse
-	(*AgentExecRequest)(nil),           // 19: containarium.v1.AgentExecRequest
-	(*AgentExecResponse)(nil),          // 20: containarium.v1.AgentExecResponse
-	(*timestamppb.Timestamp)(nil),      // 21: google.protobuf.Timestamp
+	(CaptureMode)(0),                   // 3: containarium.v1.CaptureMode
+	(*Sandbox)(nil),                    // 4: containarium.v1.Sandbox
+	(*SpawnSandboxRequest)(nil),        // 5: containarium.v1.SpawnSandboxRequest
+	(*SpawnSandboxResponse)(nil),       // 6: containarium.v1.SpawnSandboxResponse
+	(*ExecInSandboxRequest)(nil),       // 7: containarium.v1.ExecInSandboxRequest
+	(*ExecInSandboxResponse)(nil),      // 8: containarium.v1.ExecInSandboxResponse
+	(*WriteFileInSandboxRequest)(nil),  // 9: containarium.v1.WriteFileInSandboxRequest
+	(*WriteFileInSandboxResponse)(nil), // 10: containarium.v1.WriteFileInSandboxResponse
+	(*ReadFileInSandboxRequest)(nil),   // 11: containarium.v1.ReadFileInSandboxRequest
+	(*ReadFileInSandboxResponse)(nil),  // 12: containarium.v1.ReadFileInSandboxResponse
+	(*DeleteSandboxRequest)(nil),       // 13: containarium.v1.DeleteSandboxRequest
+	(*DeleteSandboxResponse)(nil),      // 14: containarium.v1.DeleteSandboxResponse
+	(*GetPoolStatusRequest)(nil),       // 15: containarium.v1.GetPoolStatusRequest
+	(*GetPoolStatusResponse)(nil),      // 16: containarium.v1.GetPoolStatusResponse
+	(*PoolTemplateStatus)(nil),         // 17: containarium.v1.PoolTemplateStatus
+	(*SpawnRequest)(nil),               // 18: containarium.v1.SpawnRequest
+	(*SpawnResponse)(nil),              // 19: containarium.v1.SpawnResponse
+	(*AgentExecRequest)(nil),           // 20: containarium.v1.AgentExecRequest
+	(*AgentExecResponse)(nil),          // 21: containarium.v1.AgentExecResponse
+	(*timestamppb.Timestamp)(nil),      // 22: google.protobuf.Timestamp
 }
 var file_containarium_v1_sandbox_proto_depIdxs = []int32{
 	0,  // 0: containarium.v1.Sandbox.state:type_name -> containarium.v1.SandboxState
 	2,  // 1: containarium.v1.Sandbox.template:type_name -> containarium.v1.SandboxTemplate
 	1,  // 2: containarium.v1.Sandbox.served_from:type_name -> containarium.v1.ServedFrom
-	21, // 3: containarium.v1.Sandbox.created_at:type_name -> google.protobuf.Timestamp
-	21, // 4: containarium.v1.Sandbox.expires_at:type_name -> google.protobuf.Timestamp
+	22, // 3: containarium.v1.Sandbox.created_at:type_name -> google.protobuf.Timestamp
+	22, // 4: containarium.v1.Sandbox.expires_at:type_name -> google.protobuf.Timestamp
 	2,  // 5: containarium.v1.SpawnSandboxRequest.template:type_name -> containarium.v1.SandboxTemplate
-	3,  // 6: containarium.v1.SpawnSandboxResponse.sandbox:type_name -> containarium.v1.Sandbox
-	16, // 7: containarium.v1.GetPoolStatusResponse.templates:type_name -> containarium.v1.PoolTemplateStatus
+	4,  // 6: containarium.v1.SpawnSandboxResponse.sandbox:type_name -> containarium.v1.Sandbox
+	17, // 7: containarium.v1.GetPoolStatusResponse.templates:type_name -> containarium.v1.PoolTemplateStatus
 	2,  // 8: containarium.v1.PoolTemplateStatus.template:type_name -> containarium.v1.SandboxTemplate
-	4,  // 9: containarium.v1.SandboxService.SpawnSandbox:input_type -> containarium.v1.SpawnSandboxRequest
-	6,  // 10: containarium.v1.SandboxService.ExecInSandbox:input_type -> containarium.v1.ExecInSandboxRequest
-	8,  // 11: containarium.v1.SandboxService.WriteFileInSandbox:input_type -> containarium.v1.WriteFileInSandboxRequest
-	10, // 12: containarium.v1.SandboxService.ReadFileInSandbox:input_type -> containarium.v1.ReadFileInSandboxRequest
-	12, // 13: containarium.v1.SandboxService.DeleteSandbox:input_type -> containarium.v1.DeleteSandboxRequest
-	14, // 14: containarium.v1.SandboxService.GetPoolStatus:input_type -> containarium.v1.GetPoolStatusRequest
-	17, // 15: containarium.v1.SpawnService.Spawn:input_type -> containarium.v1.SpawnRequest
-	19, // 16: containarium.v1.SpawnService.Exec:input_type -> containarium.v1.AgentExecRequest
-	5,  // 17: containarium.v1.SandboxService.SpawnSandbox:output_type -> containarium.v1.SpawnSandboxResponse
-	7,  // 18: containarium.v1.SandboxService.ExecInSandbox:output_type -> containarium.v1.ExecInSandboxResponse
-	9,  // 19: containarium.v1.SandboxService.WriteFileInSandbox:output_type -> containarium.v1.WriteFileInSandboxResponse
-	11, // 20: containarium.v1.SandboxService.ReadFileInSandbox:output_type -> containarium.v1.ReadFileInSandboxResponse
-	13, // 21: containarium.v1.SandboxService.DeleteSandbox:output_type -> containarium.v1.DeleteSandboxResponse
-	15, // 22: containarium.v1.SandboxService.GetPoolStatus:output_type -> containarium.v1.GetPoolStatusResponse
-	18, // 23: containarium.v1.SpawnService.Spawn:output_type -> containarium.v1.SpawnResponse
-	20, // 24: containarium.v1.SpawnService.Exec:output_type -> containarium.v1.AgentExecResponse
-	17, // [17:25] is the sub-list for method output_type
-	9,  // [9:17] is the sub-list for method input_type
-	9,  // [9:9] is the sub-list for extension type_name
-	9,  // [9:9] is the sub-list for extension extendee
-	0,  // [0:9] is the sub-list for field type_name
+	3,  // 9: containarium.v1.SpawnRequest.capture_mode:type_name -> containarium.v1.CaptureMode
+	5,  // 10: containarium.v1.SandboxService.SpawnSandbox:input_type -> containarium.v1.SpawnSandboxRequest
+	7,  // 11: containarium.v1.SandboxService.ExecInSandbox:input_type -> containarium.v1.ExecInSandboxRequest
+	9,  // 12: containarium.v1.SandboxService.WriteFileInSandbox:input_type -> containarium.v1.WriteFileInSandboxRequest
+	11, // 13: containarium.v1.SandboxService.ReadFileInSandbox:input_type -> containarium.v1.ReadFileInSandboxRequest
+	13, // 14: containarium.v1.SandboxService.DeleteSandbox:input_type -> containarium.v1.DeleteSandboxRequest
+	15, // 15: containarium.v1.SandboxService.GetPoolStatus:input_type -> containarium.v1.GetPoolStatusRequest
+	18, // 16: containarium.v1.SpawnService.Spawn:input_type -> containarium.v1.SpawnRequest
+	20, // 17: containarium.v1.SpawnService.Exec:input_type -> containarium.v1.AgentExecRequest
+	6,  // 18: containarium.v1.SandboxService.SpawnSandbox:output_type -> containarium.v1.SpawnSandboxResponse
+	8,  // 19: containarium.v1.SandboxService.ExecInSandbox:output_type -> containarium.v1.ExecInSandboxResponse
+	10, // 20: containarium.v1.SandboxService.WriteFileInSandbox:output_type -> containarium.v1.WriteFileInSandboxResponse
+	12, // 21: containarium.v1.SandboxService.ReadFileInSandbox:output_type -> containarium.v1.ReadFileInSandboxResponse
+	14, // 22: containarium.v1.SandboxService.DeleteSandbox:output_type -> containarium.v1.DeleteSandboxResponse
+	16, // 23: containarium.v1.SandboxService.GetPoolStatus:output_type -> containarium.v1.GetPoolStatusResponse
+	19, // 24: containarium.v1.SpawnService.Spawn:output_type -> containarium.v1.SpawnResponse
+	21, // 25: containarium.v1.SpawnService.Exec:output_type -> containarium.v1.AgentExecResponse
+	18, // [18:26] is the sub-list for method output_type
+	10, // [10:18] is the sub-list for method input_type
+	10, // [10:10] is the sub-list for extension type_name
+	10, // [10:10] is the sub-list for extension extendee
+	0,  // [0:10] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_sandbox_proto_init() }
@@ -1402,7 +1474,7 @@ func file_containarium_v1_sandbox_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_sandbox_proto_rawDesc), len(file_containarium_v1_sandbox_proto_rawDesc)),
-			NumEnums:      3,
+			NumEnums:      4,
 			NumMessages:   18,
 			NumExtensions: 0,
 			NumServices:   2,

@@ -55,6 +55,33 @@ func TestSpawnServer_Spawn_ReturnsPidAndReaps(t *testing.T) {
 	}
 }
 
+// TestSpawnServer_Spawn_FramedCaptureMode is the #1674 contract-change AC:
+// capture_mode must land on SpawnRequest so the gRPC transport isn't
+// asymmetric with the MCP tool over the same shared core.
+func TestSpawnServer_Spawn_FramedCaptureMode(t *testing.T) {
+	dir := t.TempDir()
+	t.Cleanup(setProcessLogDirForTest(dir))
+	t.Cleanup(func() { killAllAndReset(t) })
+	s := NewSpawnServer()
+
+	resp, err := s.Spawn(context.Background(), &pb.SpawnRequest{
+		Command:     "echo hi",
+		Name:        "framed-grpc",
+		CaptureMode: pb.CaptureMode_CAPTURE_MODE_FRAMED,
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	record, found, err := readRunRecord(resp.Name)
+	if err != nil || !found {
+		t.Fatalf("readRunRecord: found=%v err=%v", found, err)
+	}
+	if record.CaptureMode != CaptureFramed {
+		t.Errorf("record.CaptureMode = %q, want %q", record.CaptureMode, CaptureFramed)
+	}
+}
+
 func TestSpawnServer_Spawn_RejectsEmptyCommand(t *testing.T) {
 	s := NewSpawnServer()
 	_, err := s.Spawn(context.Background(), &pb.SpawnRequest{Name: "no-command"})

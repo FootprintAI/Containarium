@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // setProcessLogDirForTest points processLogDir at an isolated temp dir (A1
@@ -288,5 +290,55 @@ func TestRotateFinishedRun_MovesRecordAndLogAside(t *testing.T) {
 	rotatedLogPath := filepath.Join(dir, "old-run.1780000000.log")
 	if !fileExistsForTest(rotatedLogPath) {
 		t.Errorf("expected rotated log at %s", rotatedLogPath)
+	}
+}
+
+// ----- parseCaptureMode / captureModeFromProto -----
+
+func TestParseCaptureMode(t *testing.T) {
+	cases := []struct {
+		in      string
+		want    CaptureMode
+		wantErr bool
+	}{
+		{"", CaptureCombined, false},
+		{"combined", CaptureCombined, false},
+		{"framed", CaptureFramed, false},
+		{"bogus", "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			got, err := parseCaptureMode(tc.in)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("parseCaptureMode(%q): expected an error", tc.in)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseCaptureMode(%q): %v", tc.in, err)
+			}
+			if got != tc.want {
+				t.Errorf("parseCaptureMode(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCaptureModeFromProto(t *testing.T) {
+	cases := []struct {
+		in   pb.CaptureMode
+		want CaptureMode
+	}{
+		{pb.CaptureMode_CAPTURE_MODE_UNSPECIFIED, CaptureCombined},
+		{pb.CaptureMode_CAPTURE_MODE_COMBINED, CaptureCombined},
+		{pb.CaptureMode_CAPTURE_MODE_FRAMED, CaptureFramed},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in.String(), func(t *testing.T) {
+			if got := captureModeFromProto(tc.in); got != tc.want {
+				t.Errorf("captureModeFromProto(%v) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
 	}
 }

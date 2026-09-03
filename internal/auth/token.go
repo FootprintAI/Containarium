@@ -53,6 +53,13 @@ type Claims struct {
 	Roles     []string `json:"roles"`
 	Scopes    []string `json:"scopes,omitempty"`
 	TokenType string   `json:"tt,omitempty"`
+	// Act (#1677) is the RFC 8693 delegation claim: who this token was
+	// minted on behalf of. `omitempty` keeps every token minted for its own
+	// subject — which is every pre-1677 token, and every token minted
+	// today for a human/CLI/system caller — identical on the wire. Absence
+	// is valid and reported as unattributed, never rejected; see
+	// GenerateDelegatedToken and ActFromGRPCContext.
+	Act *Actor `json:"act,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -152,7 +159,7 @@ func (tm *TokenManager) GenerateToken(username string, roles []string, expiresIn
 	// Existing callers (CLI, daemon system tokens) keep
 	// minting access tokens with their current call sites
 	// because tt defaults to "" → access semantics.
-	return tm.generate(username, roles, scopes, "", expiresIn)
+	return tm.generate(username, roles, scopes, "", expiresIn, nil)
 }
 
 // GenerateAccessToken mints a short-lived access token.
@@ -163,7 +170,7 @@ func (tm *TokenManager) GenerateAccessToken(username string, roles []string, exp
 	if expiresIn <= 0 {
 		expiresIn = DefaultAccessTokenExpiry
 	}
-	return tm.generate(username, roles, scopes, TokenTypeAccess, expiresIn)
+	return tm.generate(username, roles, scopes, TokenTypeAccess, expiresIn, nil)
 }
 
 // GenerateRefreshToken mints a long-lived refresh token.
@@ -176,14 +183,31 @@ func (tm *TokenManager) GenerateRefreshToken(username string, roles []string, ex
 	if expiresIn <= 0 {
 		expiresIn = DefaultRefreshTokenExpiry
 	}
-	return tm.generate(username, roles, scopes, TokenTypeRefresh, expiresIn)
+	return tm.generate(username, roles, scopes, TokenTypeRefresh, expiresIn, nil)
+}
+
+// GenerateDelegatedToken mints a token carrying the RFC 8693 `act`
+// delegation claim (#1677) — a token minted for username but presented on
+// behalf of act's chain. act must be built by the caller from its OWN
+// authenticated context (see agent_server.go's mintedAgentAct), never from
+// client/request input — that is the anti-forgery invariant this claim
+// exists to hold. Pass nil for a token with no delegation, identical to
+// GenerateToken. Rejects (does not mint) a chain exceeding MaxActDepth.
+func (tm *TokenManager) GenerateDelegatedToken(username string, roles []string, expiresIn time.Duration, act *Actor, scopes ...string) (string, error) {
+	if err := validateActDepth(act); err != nil {
+		return "", fmt.Errorf("mint delegated token: %w", err)
+	}
+	return tm.generate(username, roles, scopes, "", expiresIn, act)
 }
 
 // generate is the shared implementation. tt may be the
 // empty string for the legacy GenerateToken path; it
 // stays omitempty on the wire so pre-1.6 token shapes are
-// byte-identical for existing test fixtures.
-func (tm *TokenManager) generate(username string, roles, scopes []string, tt string, expiresIn time.Duration) (string, error) {
+// byte-identical for existing test fixtures. act is nil for
+// every call site except GenerateDelegatedToken (#1677); nil
+// stays omitempty on the wire too, so every other mint path's
+// token shape is unaffected.
+func (tm *TokenManager) generate(username string, roles, scopes []string, tt string, expiresIn time.Duration, act *Actor) (string, error) {
 	// SECURITY FIX: Enforce maximum expiry - no more non-expiring tokens
 	if expiresIn <= 0 || expiresIn > tm.maxTokenExpiry {
 		expiresIn = tm.maxTokenExpiry
@@ -204,6 +228,7 @@ func (tm *TokenManager) generate(username string, roles, scopes []string, tt str
 		Roles:     roles,
 		Scopes:    scopesClaim,
 		TokenType: tt,
+		Act:       act,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ID:        jti,
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(expiresIn)),
@@ -272,6 +297,14 @@ func (tm *TokenManager) ValidateToken(tokenString string) (*Claims, error) {
 
 	claims, ok := token.Claims.(*Claims)
 	if !ok || !token.Valid {
+		return nil, errInvalidToken
+	}
+
+	// #1677 — defense in depth: GenerateDelegatedToken already refuses to
+	// mint a chain past MaxActDepth, but reject one here too rather than
+	// trust every future mint path to remember that. A missing Act (nil)
+	// always passes — absence is the valid, backward-compatible case.
+	if err := validateActDepth(claims.Act); err != nil {
 		return nil, errInvalidToken
 	}
 
@@ -363,6 +396,7 @@ const (
 	ContextKeyUsername contextKey = "username"
 	ContextKeyRoles    contextKey = "roles"
 	ContextKeyScopes   contextKey = "scopes" // Phase 1.7b
+	ContextKeyAct      contextKey = "act"    // #1677
 )
 
 // ContextWithClaims adds authentication claims to context
@@ -371,6 +405,9 @@ func ContextWithClaims(ctx context.Context, claims *Claims) context.Context {
 	ctx = context.WithValue(ctx, ContextKeyRoles, claims.Roles)
 	if claims.Scopes != nil {
 		ctx = context.WithValue(ctx, ContextKeyScopes, claims.Scopes)
+	}
+	if claims.Act != nil {
+		ctx = context.WithValue(ctx, ContextKeyAct, claims.Act)
 	}
 	return ctx
 }
@@ -394,4 +431,13 @@ func RolesFromContext(ctx context.Context) ([]string, bool) {
 func ScopesFromContext(ctx context.Context) ([]string, bool) {
 	scopes, ok := ctx.Value(ContextKeyScopes).([]string)
 	return scopes, ok
+}
+
+// ActFromContext retrieves the JWT `act` delegation claim from context.
+// Returns (nil, false) when no delegation was carried — the
+// backward-compatible "unattributed" case, valid for every non-derived
+// token. #1677.
+func ActFromContext(ctx context.Context) (*Actor, bool) {
+	act, ok := ctx.Value(ContextKeyAct).(*Actor)
+	return act, ok
 }

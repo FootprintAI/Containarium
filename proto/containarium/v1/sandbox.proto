@@ -273,6 +273,18 @@ service SpawnService {
   rpc Exec(AgentExecRequest) returns (AgentExecResponse);
 }
 
+// CaptureMode selects how a spawned process's combined stdout+stderr is
+// written to its log file (#1674). COMBINED is today's plain-text behavior;
+// FRAMED is opt-in, text-safe per-line framing ("<stream> <base64(payload)>")
+// so a client can demux stdout/stderr from the single offset stream without
+// corrupting invalid UTF-8 or runes split across a write — see
+// docs/architecture/remote-coding-agent.md, Part A "Framing".
+enum CaptureMode {
+  CAPTURE_MODE_UNSPECIFIED = 0; // treated as COMBINED
+  CAPTURE_MODE_COMBINED = 1;
+  CAPTURE_MODE_FRAMED = 2;
+}
+
 message SpawnRequest {
   // Shell command to run, e.g. "npm run dev". Runs under /bin/sh -c,
   // matching process_start's existing MCP contract.
@@ -282,6 +294,9 @@ message SpawnRequest {
   string name = 2;
   // Working directory. Empty = agent-box's own cwd.
   string cwd = 3;
+  // How to capture this process's output (#1674). UNSPECIFIED/omitted ->
+  // COMBINED, so every existing caller is unaffected.
+  CaptureMode capture_mode = 4;
 }
 
 message SpawnResponse {

@@ -33,7 +33,7 @@ func (s *SpawnServer) Spawn(_ context.Context, req *pb.SpawnRequest) (*pb.SpawnR
 		return nil, status.Error(codes.InvalidArgument, "command is required")
 	}
 
-	mp, err := spawnBackgroundProcess(req.Name, req.Command, req.Cwd)
+	mp, err := spawnBackgroundProcess(req.Name, req.Command, req.Cwd, captureModeFromProto(req.CaptureMode))
 	if err != nil {
 		if errors.Is(err, ErrProcessNameInUse) {
 			return nil, status.Error(codes.AlreadyExists, err.Error())

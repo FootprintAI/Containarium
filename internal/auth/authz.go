@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 
 	"google.golang.org/grpc/codes"
@@ -17,10 +18,15 @@ import (
 // Phase 1.7b — `scopes` joined the trio. Stored as a comma-
 // separated string in metadata (gRPC metadata is single-line
 // per key, and []string is fragile across the wire).
+//
+// #1677 — `act` joined too. Unlike scopes it's a nested struct, not a
+// flat list, so it's carried as a single JSON-encoded string rather than
+// a delimited join.
 const (
 	MDKeyUsername = "username"
 	MDKeyRoles    = "roles"
 	MDKeyScopes   = "scopes"
+	MDKeyAct      = "act"
 )
 
 // RoleAdmin is the role granted to operator / system tokens. Holders
@@ -62,6 +68,21 @@ func ContextWithTestSubjectScopes(ctx context.Context, username string, roles []
 	pairs := []string{MDKeyUsername, username, MDKeyRoles, strings.Join(roles, ",")}
 	if scopes != nil {
 		pairs = append(pairs, MDKeyScopes, strings.Join(scopes, ","))
+	}
+	md := metadata.Pairs(pairs...)
+	return metadata.NewIncomingContext(ctx, md)
+}
+
+// ContextWithTestSubjectAct is a test-only helper that also stamps a
+// delegation (`act`) claim, the same way the gateway annotator does in
+// production (#1677). Pass act=nil for an undelegated caller.
+func ContextWithTestSubjectAct(ctx context.Context, username string, roles []string, act *Actor) context.Context {
+	pairs := []string{MDKeyUsername, username, MDKeyRoles, strings.Join(roles, ",")}
+	if act != nil {
+		encoded, err := json.Marshal(act)
+		if err == nil {
+			pairs = append(pairs, MDKeyAct, string(encoded))
+		}
 	}
 	md := metadata.Pairs(pairs...)
 	return metadata.NewIncomingContext(ctx, md)
@@ -113,6 +134,30 @@ func ScopesFromGRPCContext(ctx context.Context) (scopes []string, present bool) 
 	}
 	if s, found := ScopesFromContext(ctx); found {
 		return s, s != nil
+	}
+	return nil, false
+}
+
+// ActFromGRPCContext returns the JWT's `act` delegation claim (#1677)
+// propagated through metadata or context — the same
+// metadata-then-context-value fallback ScopesFromGRPCContext and
+// SubjectFromGRPCContext use, and for the same reason: the primary API
+// surface is REST via grpc-gateway, and the caller's claims only survive
+// that hop as gRPC metadata, not a context value. Returns (nil, false) when
+// no delegation was carried — the valid, backward-compatible "unattributed"
+// case, never an error.
+func ActFromGRPCContext(ctx context.Context) (act *Actor, present bool) {
+	if md, mdOk := metadata.FromIncomingContext(ctx); mdOk {
+		if vals := md.Get(MDKeyAct); len(vals) > 0 && vals[0] != "" {
+			var a Actor
+			if err := json.Unmarshal([]byte(vals[0]), &a); err == nil {
+				return &a, true
+			}
+			return nil, false
+		}
+	}
+	if a, found := ActFromContext(ctx); found {
+		return a, a != nil
 	}
 	return nil, false
 }
