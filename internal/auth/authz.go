@@ -22,11 +22,16 @@ import (
 // #1677 — `act` joined too. Unlike scopes it's a nested struct, not a
 // flat list, so it's carried as a single JSON-encoded string rather than
 // a delimited join.
+// #1678 — `jti` joined too, so audit rows can name the acting credential
+// ("given a token_id, what did it do"). It wasn't propagated before because
+// nothing needed it off the HTTP layer; the audit package is the first
+// gRPC-side consumer.
 const (
 	MDKeyUsername = "username"
 	MDKeyRoles    = "roles"
 	MDKeyScopes   = "scopes"
 	MDKeyAct      = "act"
+	MDKeyJTI      = "jti"
 )
 
 // RoleAdmin is the role granted to operator / system tokens. Holders
@@ -85,6 +90,19 @@ func ContextWithTestSubjectAct(ctx context.Context, username string, roles []str
 		}
 	}
 	md := metadata.Pairs(pairs...)
+	return metadata.NewIncomingContext(ctx, md)
+}
+
+// ContextWithTestJTI is a test-only helper that stamps a jti onto an
+// existing gRPC-incoming test context (e.g. one built by
+// ContextWithTestSubject or ContextWithTestSubjectAct), the same way a
+// chain of HTTP middleware would layer metadata onto a single request.
+// Merges into whatever metadata is already present rather than replacing
+// it, so it composes with the other ContextWithTestSubject* helpers. #1678.
+func ContextWithTestJTI(ctx context.Context, jti string) context.Context {
+	md, _ := metadata.FromIncomingContext(ctx)
+	md = md.Copy()
+	md.Set(MDKeyJTI, jti)
 	return metadata.NewIncomingContext(ctx, md)
 }
 
@@ -160,6 +178,24 @@ func ActFromGRPCContext(ctx context.Context) (act *Actor, present bool) {
 		return a, a != nil
 	}
 	return nil, false
+}
+
+// JTIFromGRPCContext returns the authenticated token's own `jti` claim
+// (#1678), propagated through metadata or context the same way
+// ActFromGRPCContext's claim is. Audit attribution is the first gRPC-side
+// consumer — nothing needed jti off the HTTP layer before. Returns ("",
+// false) when no jti was carried (pre-1.2 tokens minted without one, or a
+// caller that bypassed the standard mint path).
+func JTIFromGRPCContext(ctx context.Context) (jti string, present bool) {
+	if md, mdOk := metadata.FromIncomingContext(ctx); mdOk {
+		if vals := md.Get(MDKeyJTI); len(vals) > 0 && vals[0] != "" {
+			return vals[0], true
+		}
+	}
+	if j, found := JTIFromContext(ctx); found && j != "" {
+		return j, true
+	}
+	return "", false
 }
 
 // HasRole reports whether `roles` contains `wanted`.

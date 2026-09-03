@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/golang-jwt/jwt/v5"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -98,6 +99,36 @@ func TestActFromGRPCContext_None(t *testing.T) {
 	act, ok := ActFromGRPCContext(context.Background())
 	if ok || act != nil {
 		t.Fatalf("got act=%+v ok=%v, want nil/false for a context with no delegation claim", act, ok)
+	}
+}
+
+// #1678 — JTIFromGRPCContext is how audit attribution recovers the acting
+// token's own jti, propagated the same way MDKeyAct is.
+
+func TestJTIFromGRPCContext_Metadata(t *testing.T) {
+	md := metadata.Pairs(MDKeyJTI, "abc123")
+	ctx := metadata.NewIncomingContext(context.Background(), md)
+
+	got, ok := JTIFromGRPCContext(ctx)
+	if !ok || got != "abc123" {
+		t.Fatalf("got %q ok=%v, want abc123/true", got, ok)
+	}
+}
+
+func TestJTIFromGRPCContext_ContextFallback(t *testing.T) {
+	claims := &Claims{Username: "alice", RegisteredClaims: jwt.RegisteredClaims{ID: "xyz789"}}
+	ctx := ContextWithClaims(context.Background(), claims)
+
+	got, ok := JTIFromGRPCContext(ctx)
+	if !ok || got != "xyz789" {
+		t.Fatalf("got %q ok=%v, want xyz789/true", got, ok)
+	}
+}
+
+func TestJTIFromGRPCContext_None(t *testing.T) {
+	got, ok := JTIFromGRPCContext(context.Background())
+	if ok || got != "" {
+		t.Fatalf("got %q ok=%v, want empty/false for a context with no jti", got, ok)
 	}
 }
 

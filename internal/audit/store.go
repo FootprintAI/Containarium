@@ -21,6 +21,31 @@ type AuditEntry struct {
 	Detail       string
 	SourceIP     string
 	StatusCode   int
+
+	// #1678 — attribution columns. All default to "" (pre-migration rows
+	// backfilled by ADD COLUMN, and rows written by a call site that
+	// hasn't been updated to populate them).
+
+	// Actor is the root human/service principal at the base of the
+	// caller's delegation chain (auth.RootActor), distinct from Username
+	// (the token's own subject — an agent's synthetic identity when the
+	// call was delegated). Empty for a direct, non-delegated call, where
+	// the acting entity IS Username; callers don't need to duplicate it.
+	Actor string
+	// DelegationChain is the JSON-serialized auth.Actor chain (empty when
+	// there was no delegation), kept for full depth reconstruction beyond
+	// what the flat Actor column can show.
+	DelegationChain string
+	// TokenID is the acting token's jti, so "what did this credential do"
+	// is one query (QueryParams.TokenID).
+	TokenID string
+	// OrgID is tenant attribution. Empty on an OSS single-tenant daemon;
+	// the cloud control plane's own audit path is out of scope here (see
+	// FootprintAI/Containarium-cloud#1428).
+	OrgID string
+	// RunID groups a session's actions. Empty when the caller didn't
+	// supply one.
+	RunID string
 }
 
 // QueryParams holds parameters for querying audit logs
@@ -28,10 +53,15 @@ type QueryParams struct {
 	Username     string
 	Action       string
 	ResourceType string
-	From         time.Time
-	To           time.Time
-	Limit        int
-	Offset       int
+	// #1678 — attribution filters. Each is an exact-match equality filter,
+	// same convention as Username/Action/ResourceType above.
+	Actor   string
+	TokenID string
+	OrgID   string
+	From    time.Time
+	To      time.Time
+	Limit   int
+	Offset  int
 }
 
 // Store handles persistent storage of audit log entries
@@ -74,6 +104,19 @@ func (s *Store) initSchema(ctx context.Context) error {
 		ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS row_hash TEXT NOT NULL DEFAULT '';
 		ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS prev_hash TEXT NOT NULL DEFAULT '';
 
+		-- #1678: attribution columns. hash_version defaults every
+		-- pre-existing row to HashVersion1 (Postgres applies a column
+		-- DEFAULT to existing rows in place on ADD COLUMN) — Log() always
+		-- writes CurrentHashVersion (HashVersion2) going forward, so
+		-- VerifyChain can tell old rows from new ones without a separate
+		-- migration script.
+		ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS actor TEXT NOT NULL DEFAULT '';
+		ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS delegation_chain TEXT NOT NULL DEFAULT '';
+		ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS token_id TEXT NOT NULL DEFAULT '';
+		ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS org_id TEXT NOT NULL DEFAULT '';
+		ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS run_id TEXT NOT NULL DEFAULT '';
+		ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS hash_version SMALLINT NOT NULL DEFAULT 1;
+
 		CREATE INDEX IF NOT EXISTS idx_audit_logs_timestamp
 			ON audit_logs(timestamp DESC);
 		CREATE INDEX IF NOT EXISTS idx_audit_logs_username
@@ -82,6 +125,12 @@ func (s *Store) initSchema(ctx context.Context) error {
 			ON audit_logs(action);
 		CREATE INDEX IF NOT EXISTS idx_audit_logs_resource_type
 			ON audit_logs(resource_type);
+		CREATE INDEX IF NOT EXISTS idx_audit_logs_actor
+			ON audit_logs(actor);
+		CREATE INDEX IF NOT EXISTS idx_audit_logs_token_id
+			ON audit_logs(token_id);
+		CREATE INDEX IF NOT EXISTS idx_audit_logs_org_id
+			ON audit_logs(org_id);
 	`
 
 	_, err := s.pool.Exec(ctx, schema)
@@ -160,13 +209,21 @@ func (s *Store) Log(ctx context.Context, entry *AuditEntry) error {
 		}
 	}
 
-	rowHash := computeRowHash(entry, prevHash)
+	// #1678 — every newly-written row uses CurrentHashVersion; a row's
+	// hash_version is what VerifyChain later replays it under, so old
+	// rows (backfilled to HashVersion1 by initSchema's column default)
+	// stay verifiable without this write path ever touching them.
+	rowHash, err := computeRowHash(entry, prevHash, CurrentHashVersion)
+	if err != nil {
+		return fmt.Errorf("audit: compute hash: %w", err)
+	}
 
 	_, err = tx.Exec(ctx, `
 		INSERT INTO audit_logs (
 			timestamp, username, action, resource_type, resource_id,
-			detail, source_ip, status_code, row_hash, prev_hash
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			detail, source_ip, status_code, actor, delegation_chain,
+			token_id, org_id, run_id, row_hash, prev_hash, hash_version
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 	`,
 		ts,
 		entry.Username,
@@ -176,8 +233,14 @@ func (s *Store) Log(ctx context.Context, entry *AuditEntry) error {
 		entry.Detail,
 		entry.SourceIP,
 		entry.StatusCode,
+		entry.Actor,
+		entry.DelegationChain,
+		entry.TokenID,
+		entry.OrgID,
+		entry.RunID,
 		rowHash,
 		prevHash,
+		CurrentHashVersion,
 	)
 	if err != nil {
 		return fmt.Errorf("audit: insert: %w", err)
@@ -222,7 +285,8 @@ func (s *Store) VerifyChainSinceID(ctx context.Context, fromID int64, limit int)
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, timestamp, username, action, resource_type,
 		       resource_id, detail, source_ip, status_code,
-		       row_hash, prev_hash
+		       actor, delegation_chain, token_id, org_id, run_id,
+		       row_hash, prev_hash, hash_version
 		FROM audit_logs
 		WHERE id > $1 AND row_hash <> ''
 		ORDER BY id ASC
@@ -238,7 +302,8 @@ func (s *Store) VerifyChainSinceID(ctx context.Context, fromID int64, limit int)
 		var c ChainEntry
 		if err := rows.Scan(&c.ID, &c.Timestamp, &c.Username, &c.Action,
 			&c.ResourceType, &c.ResourceID, &c.Detail, &c.SourceIP, &c.StatusCode,
-			&c.RowHash, &c.PrevHash); err != nil {
+			&c.Actor, &c.DelegationChain, &c.TokenID, &c.OrgID, &c.RunID,
+			&c.RowHash, &c.PrevHash, &c.HashVersion); err != nil {
 			return -1, fmt.Errorf("audit: scan chain row: %w", err)
 		}
 		entries = append(entries, c)
@@ -266,7 +331,8 @@ func (s *Store) VerifyChainSinceID(ctx context.Context, fromID int64, limit int)
 // Query retrieves audit log entries with optional filters and pagination
 func (s *Store) Query(ctx context.Context, params QueryParams) ([]AuditEntry, int32, error) {
 	baseQuery := `SELECT id, timestamp, username, action, resource_type, resource_id,
-		detail, source_ip, status_code FROM audit_logs WHERE 1=1`
+		detail, source_ip, status_code, actor, delegation_chain, token_id, org_id, run_id
+		FROM audit_logs WHERE 1=1`
 	countQuery := `SELECT COUNT(*) FROM audit_logs WHERE 1=1`
 
 	var args []interface{}
@@ -290,6 +356,28 @@ func (s *Store) Query(ctx context.Context, params QueryParams) ([]AuditEntry, in
 		baseQuery += fmt.Sprintf(" AND resource_type = $%d", argIdx)
 		countQuery += fmt.Sprintf(" AND resource_type = $%d", argIdx)
 		args = append(args, params.ResourceType)
+		argIdx++
+	}
+
+	// #1678 — attribution filters, same exact-match convention as above.
+	if params.Actor != "" {
+		baseQuery += fmt.Sprintf(" AND actor = $%d", argIdx)
+		countQuery += fmt.Sprintf(" AND actor = $%d", argIdx)
+		args = append(args, params.Actor)
+		argIdx++
+	}
+
+	if params.TokenID != "" {
+		baseQuery += fmt.Sprintf(" AND token_id = $%d", argIdx)
+		countQuery += fmt.Sprintf(" AND token_id = $%d", argIdx)
+		args = append(args, params.TokenID)
+		argIdx++
+	}
+
+	if params.OrgID != "" {
+		baseQuery += fmt.Sprintf(" AND org_id = $%d", argIdx)
+		countQuery += fmt.Sprintf(" AND org_id = $%d", argIdx)
+		args = append(args, params.OrgID)
 		argIdx++
 	}
 
@@ -336,7 +424,8 @@ func (s *Store) Query(ctx context.Context, params QueryParams) ([]AuditEntry, in
 	for rows.Next() {
 		var e AuditEntry
 		if err := rows.Scan(&e.ID, &e.Timestamp, &e.Username, &e.Action,
-			&e.ResourceType, &e.ResourceID, &e.Detail, &e.SourceIP, &e.StatusCode); err != nil {
+			&e.ResourceType, &e.ResourceID, &e.Detail, &e.SourceIP, &e.StatusCode,
+			&e.Actor, &e.DelegationChain, &e.TokenID, &e.OrgID, &e.RunID); err != nil {
 			return nil, 0, fmt.Errorf("failed to scan audit row: %w", err)
 		}
 		entries = append(entries, e)

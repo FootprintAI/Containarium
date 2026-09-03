@@ -34,19 +34,48 @@ const (
 	HashEmpty = ""
 )
 
-// computeRowHash returns the SHA-256 hex of the canonical
-// serialization of an AuditEntry's user-visible fields followed
-// by the previous row's hash. The serialization is length-
-// prefixed so a field containing the separator can't collide
-// with a different field shape.
+// Hash-chain schema versions (#1678). A row's stored hash_version says
+// which field set computeRowHash used to build its digest — VerifyChain
+// looks this up PER ROW rather than always using CurrentHashVersion, so a
+// chain spanning the #1678 migration (some rows written before it, some
+// after) still verifies as a whole. Recomputing an old row's hash under a
+// newer field set would never match what was actually stored — that would
+// corrupt the tamper-evidence the chain exists for, exactly the
+// "schedule risk" #1678 called out before any of this was written.
+const (
+	// HashVersion1 is the original Phase 4.5 eight-field digest. Every row
+	// written before #1678 is backfilled to this version by initSchema's
+	// `ADD COLUMN hash_version SMALLINT NOT NULL DEFAULT 1` — Postgres
+	// applies a column default to existing rows in place, so no backfill
+	// migration script is needed.
+	HashVersion1 int16 = 1
+
+	// HashVersion2 adds actor, delegation_chain, token_id, org_id and
+	// run_id to the digest (#1678: audit attribution).
+	HashVersion2 int16 = 2
+
+	// CurrentHashVersion is the version every newly-written row uses.
+	CurrentHashVersion = HashVersion2
+)
+
+// computeRowHash returns the SHA-256 hex of the canonical serialization of
+// an AuditEntry's user-visible fields followed by the previous row's hash.
+// The serialization is length-prefixed so a field containing the separator
+// can't collide with a different field shape.
 //
-// The ID is NOT included (it's assigned by BIGSERIAL at insert
-// time and an attacker could replay an old row at a different ID
-// — including it would create false-positives on legitimate
-// renumbering during db restore). The timestamp IS included with
-// nanosecond precision; clock-skew within a single daemon is
-// bounded.
-func computeRowHash(e *AuditEntry, prevHash string) string {
+// The ID is NOT included (it's assigned by BIGSERIAL at insert time and an
+// attacker could replay an old row at a different ID — including it would
+// create false-positives on legitimate renumbering during db restore). The
+// timestamp IS included with nanosecond precision; clock-skew within a
+// single daemon is bounded.
+//
+// version selects which field set is hashed (see the HashVersion*
+// constants) — a stored row's own hash_version, not always
+// CurrentHashVersion, so VerifyChain can replay a mixed-version chain
+// correctly. Returns an error for an unrecognized version rather than
+// silently hashing under the wrong field set, which would make every row
+// after a corruption look intact.
+func computeRowHash(e *AuditEntry, prevHash string, version int16) (string, error) {
 	h := sha256.New()
 	// Length-prefixed field serialization. lenN is decimal,
 	// terminated by ':', then the raw bytes. Trivial to parse,
@@ -59,8 +88,20 @@ func computeRowHash(e *AuditEntry, prevHash string) string {
 	writeField(h, e.Detail)
 	writeField(h, e.SourceIP)
 	writeField(h, strconv.Itoa(e.StatusCode))
+	switch version {
+	case HashVersion1:
+		// Original eight-field digest; nothing further.
+	case HashVersion2:
+		writeField(h, e.Actor)
+		writeField(h, e.DelegationChain)
+		writeField(h, e.TokenID)
+		writeField(h, e.OrgID)
+		writeField(h, e.RunID)
+	default:
+		return "", fmt.Errorf("audit: unrecognized hash_version %d", version)
+	}
 	writeField(h, prevHash)
-	return hex.EncodeToString(h.Sum(nil))
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func writeField(h interface{ Write([]byte) (int, error) }, s string) {
@@ -86,7 +127,10 @@ func VerifyChain(entries []ChainEntry, expectedRoot string) (firstBad int64, err
 			return e.ID, fmt.Errorf("row %d prev_hash mismatch: stored=%q expected=%q (chain broken at or before this row)",
 				e.ID, e.PrevHash, prev)
 		}
-		want := computeRowHash(&e.AuditEntry, e.PrevHash)
+		want, herr := computeRowHash(&e.AuditEntry, e.PrevHash, e.HashVersion)
+		if herr != nil {
+			return e.ID, fmt.Errorf("row %d: %w", e.ID, herr)
+		}
 		if e.RowHash != want {
 			return e.ID, fmt.Errorf("row %d row_hash mismatch: stored=%q computed=%q (this row was modified after insert)",
 				e.ID, abbrev(e.RowHash), abbrev(want))
@@ -96,13 +140,14 @@ func VerifyChain(entries []ChainEntry, expectedRoot string) (firstBad int64, err
 	return 0, nil
 }
 
-// ChainEntry augments AuditEntry with the two hash-chain columns,
-// for verification consumers. The base Log/Query path returns
-// plain AuditEntry — most callers don't care about chain state.
+// ChainEntry augments AuditEntry with the hash-chain columns, for
+// verification consumers. The base Log/Query path returns plain
+// AuditEntry — most callers don't care about chain state.
 type ChainEntry struct {
 	AuditEntry
-	RowHash  string
-	PrevHash string
+	RowHash     string
+	PrevHash    string
+	HashVersion int16
 }
 
 func abbrev(h string) string {
