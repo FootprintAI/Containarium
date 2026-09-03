@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"github.com/footprintai/containarium/internal/coderun"
 	"os/exec"
 	"strings"
 	"testing"
@@ -18,7 +19,7 @@ func TestShellQuoteSingle_RoundTripsThroughARealShell(t *testing.T) {
 	}
 	for _, in := range cases {
 		t.Run(in, func(t *testing.T) {
-			quoted := shellQuoteSingle(in)
+			quoted := coderun.ShellQuoteSingle(in)
 			// #nosec G204 -- fixed "sh -c" with a single literal-quoted
 			// argument built by the function under test; this is the
 			// injection check itself, not a caller-reachable path.
@@ -38,7 +39,7 @@ func TestShellQuoteSingle_NeverEscapesOutOfTheQuotedString(t *testing.T) {
 	// embedded quotes lets this argument terminate early and run a second
 	// command.
 	malicious := "'; touch /tmp/pwned; echo '"
-	quoted := shellQuoteSingle(malicious)
+	quoted := coderun.ShellQuoteSingle(malicious)
 	// #nosec G204 -- see above.
 	out, err := exec.Command("/bin/sh", "-c", "echo "+quoted).Output()
 	if err != nil {
@@ -51,8 +52,8 @@ func TestShellQuoteSingle_NeverEscapesOutOfTheQuotedString(t *testing.T) {
 }
 
 func TestBuildClaudeRunCommand(t *testing.T) {
-	cmd := buildClaudeRunCommand("fix the bug", false)
-	for _, want := range []string{"secrets.env", "~/.local/bin/claude", "-p", shellQuoteSingle("fix the bug")} {
+	cmd := coderun.BuildClaudeRunCommand("fix the bug", false)
+	for _, want := range []string{"secrets.env", "~/.local/bin/claude", "-p", coderun.ShellQuoteSingle("fix the bug")} {
 		if !strings.Contains(cmd, want) {
 			t.Errorf("command missing %q:\n%s", want, cmd)
 		}
@@ -63,7 +64,7 @@ func TestBuildClaudeRunCommand(t *testing.T) {
 }
 
 func TestBuildClaudeRunCommand_StreamJSON(t *testing.T) {
-	cmd := buildClaudeRunCommand("fix the bug", true)
+	cmd := coderun.BuildClaudeRunCommand("fix the bug", true)
 	if !strings.Contains(cmd, "--output-format stream-json") {
 		t.Errorf("expected --output-format stream-json in:\n%s", cmd)
 	}
@@ -80,7 +81,7 @@ func TestRunOutcomeLine(t *testing.T) {
 		"   Exit code:  0\n" +
 		"   Log path:   /tmp/agent-box/old-task.log\n\n"
 
-	line, running := runOutcomeLine(listing, "code")
+	line, running := coderun.RunOutcomeLine(listing, "code")
 	if !running {
 		t.Errorf("code should be reported running, line=%q", line)
 	}
@@ -88,7 +89,7 @@ func TestRunOutcomeLine(t *testing.T) {
 		t.Errorf("line = %q", line)
 	}
 
-	line, running = runOutcomeLine(listing, "old-task")
+	line, running = coderun.RunOutcomeLine(listing, "old-task")
 	if running {
 		t.Errorf("old-task should not be reported running, line=%q", line)
 	}
@@ -96,7 +97,7 @@ func TestRunOutcomeLine(t *testing.T) {
 		t.Errorf("line = %q", line)
 	}
 
-	line, running = runOutcomeLine(listing, "does-not-exist")
+	line, running = coderun.RunOutcomeLine(listing, "does-not-exist")
 	if running || line != "" {
 		t.Errorf("unknown name should report not-running/empty line, got running=%v line=%q", running, line)
 	}
@@ -109,7 +110,7 @@ func TestLogPathFromListing(t *testing.T) {
 		"   Started at: 2026-09-02T12:00:00Z\n" +
 		"   Log path:   /tmp/agent-box/code.log\n\n"
 
-	got, err := logPathFromListing(listing, "code")
+	got, err := coderun.LogPathFromListing(listing, "code")
 	if err != nil {
 		t.Fatalf("logPathFromListing: %v", err)
 	}
@@ -117,7 +118,7 @@ func TestLogPathFromListing(t *testing.T) {
 		t.Errorf("got %q, want /tmp/agent-box/code.log", got)
 	}
 
-	if _, err := logPathFromListing(listing, "nope"); err == nil {
+	if _, err := coderun.LogPathFromListing(listing, "nope"); err == nil {
 		t.Error("expected an error for a name not in the listing")
 	}
 }

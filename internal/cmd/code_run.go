@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"github.com/footprintai/containarium/internal/coderun"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -88,7 +89,7 @@ func runCodeRun(cmd *cobra.Command, args []string) error {
 	if codeRunStreamJSON {
 		captureMode = "framed"
 	}
-	command := buildClaudeRunCommand(codeRunPrompt, codeRunStreamJSON)
+	command := coderun.BuildClaudeRunCommand(codeRunPrompt, codeRunStreamJSON)
 
 	started, err := sess.ProcessStart(ctx, name, command, "", captureMode)
 	if err != nil {
@@ -118,11 +119,11 @@ func runCodeAttach(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("process_list on %q: %w", box, err)
 	}
-	line, _ := runOutcomeLine(listing, name)
+	line, _ := coderun.RunOutcomeLine(listing, name)
 	if line == "" {
 		return fmt.Errorf("no run named %q on %q — start one with `containarium code run %s --prompt ...`", name, box, box)
 	}
-	logPath, err := logPathFromListing(listing, name)
+	logPath, err := coderun.LogPathFromListing(listing, name)
 	if err != nil {
 		return err
 	}
@@ -150,7 +151,7 @@ func runCodeStatus(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("process_list on %q: %w", box, err)
 	}
-	line, _ := runOutcomeLine(listing, name)
+	line, _ := coderun.RunOutcomeLine(listing, name)
 	if line == "" {
 		return fmt.Errorf("no run named %q on %q", name, box)
 	}
@@ -186,19 +187,3 @@ func runCodeStop(cmd *cobra.Command, args []string) error {
 // text. process_list doesn't expose per-name lookup, so `code attach`
 // greps its own name's block the same way runOutcomeLine does, then reads
 // the "Log path:" line immediately under it.
-func logPathFromListing(listing, name string) (string, error) {
-	lines := strings.Split(listing, "\n")
-	for i, l := range lines {
-		fields := strings.Fields(strings.TrimSpace(l))
-		if len(fields) < 2 || fields[1] != name {
-			continue
-		}
-		for _, follow := range lines[i:] {
-			if strings.HasPrefix(strings.TrimSpace(follow), "Log path:") {
-				return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(follow), "Log path:")), nil
-			}
-		}
-		return "", fmt.Errorf("process_list entry for %q has no Log path line", name)
-	}
-	return "", fmt.Errorf("no run named %q in process_list", name)
-}
