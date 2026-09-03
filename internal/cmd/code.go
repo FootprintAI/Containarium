@@ -47,7 +47,7 @@ const claudeInstallScript = "curl -fsSL https://claude.ai/install.sh | bash"
 // defaultCodeRunName is the process name used when --name is omitted, so
 // the common case ("one coding task per box at a time") never requires the
 // user to track an arbitrary generated name across run/attach/status/stop.
-const defaultCodeRunName = "code"
+const defaultCodeRunName = coderun.DefaultRunName
 
 // codeStreamFollow bounds how long each tail_log call blocks server-side
 // polling for new content — most of the "streaming" feel comes from this,
@@ -208,48 +208,11 @@ func resolveCodeSession(ctx context.Context, box string, diag io.Writer) (*coder
 	return sess, nil
 }
 
-// shellQuoteSingle single-quotes s for a POSIX shell, escaping any embedded
-// single quote by closing the quoted string, emitting a backslash-escaped
-// single quote, then reopening it. process_start runs its command under
-// /bin/sh -c on the box, so an unescaped user-supplied --prompt would be
-// shell-interpreted there — this is what stands between "the agent's
-// prompt" and arbitrary command injection into that shell.
-func shellQuoteSingle(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-}
-
 // buildClaudeRunCommand renders the command process_start actually spawns:
 // source whatever secrets delivery `containarium code install` set up, then
 // invoke claude non-interactively. Sourcing here — not relying on a
 // login-shell profile — is self-contained per invocation, matching the same
 // reasoning claudeVerifyScript uses.
-func buildClaudeRunCommand(prompt string, streamJSON bool) string {
-	cmd := "set -a; [ -f /run/containarium/secrets.env ] && . /run/containarium/secrets.env; set +a; " +
-		"~/.local/bin/claude -p " + shellQuoteSingle(prompt)
-	if streamJSON {
-		cmd += " --output-format stream-json"
-	}
-	return cmd
-}
-
-// runOutcomeLine finds name's own line in process_list's raw text
-// (handleProcessList's "<icon> <name>  (pid <pid>, <outcome>)" format,
-// internal/agentbox/process.go) and reports whether it's still running.
-// A name that doesn't appear at all (never started under this name, or its
-// record was rotated away by a later same-name run) counts as not-running
-// — there is nothing left to wait for either way.
-func runOutcomeLine(listing, name string) (line string, running bool) {
-	for _, l := range strings.Split(listing, "\n") {
-		trimmed := strings.TrimSpace(l)
-		fields := strings.Fields(trimmed)
-		if len(fields) < 2 || fields[1] != name {
-			continue
-		}
-		return trimmed, strings.Contains(trimmed, ", running)")
-	}
-	return "", false
-}
-
 // streamAndWait streams path's output to stdout (demultiplexed to
 // stdout+stderr when streamJSON) until ctx is cancelled or name's run has
 // exited, polling process_list independently of the tail_log loop to
@@ -286,7 +249,7 @@ func streamAndWait(ctx context.Context, sess *coderun.Session, name, logPath str
 			if err != nil {
 				continue // transient; the streaming loop's own retry handles reconnection
 			}
-			if _, running := runOutcomeLine(listing, name); !running {
+			if _, running := coderun.RunOutcomeLine(listing, name); !running {
 				select {
 				case <-time.After(codeStreamFollow + time.Second):
 				case <-ctx.Done():

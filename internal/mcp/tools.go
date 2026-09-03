@@ -1079,6 +1079,75 @@ func (s *Server) registerTools() {
 			Handler: handleSyncSSHConfig,
 		},
 		{
+			Name: "code_run",
+			Description: "Start a coding agent on a box and return the first window of its output. " +
+				"The run is DETACHED: it survives this call returning, the MCP connection dropping, and " +
+				"the client going away — that is the point. The response carries `next_offset`; pass it " +
+				"to code_attach to continue reading exactly where this left off, with nothing skipped " +
+				"and nothing repeated. Requires the box to already have the toolchain installed " +
+				"(code_install).",
+			InputSchema: map[string]interface{}{
+				"type":     "object",
+				"required": []string{"box", "prompt"},
+				"properties": map[string]interface{}{
+					"box":    map[string]interface{}{"type": "string", "description": "Box (container username) to run on."},
+					"prompt": map[string]interface{}{"type": "string", "description": "The task to give the agent."},
+					"name": map[string]interface{}{"type": "string",
+						"description": "Run name, default \"code\". Override to run more than one task concurrently on the same box; the same name is how code_attach/code_status/code_stop find it later."},
+					"stream_json": map[string]interface{}{"type": "boolean",
+						"description": "Capture stdout and stderr separately (framed) so a JSON stream on stdout is not corrupted by diagnostics. Default false."},
+				},
+			},
+			Handler: handleCodeRun,
+		},
+		{
+			Name: "code_attach",
+			Description: "Resume a run's output from a byte offset. Pass the `next_offset` from your " +
+				"previous code_run/code_attach call — carrying the offset forward is what makes " +
+				"reconnection lossless. Omit it (or 0) to replay the run from the beginning. Reports " +
+				"whether the run is still going, so you know when to stop polling.",
+			InputSchema: map[string]interface{}{
+				"type":     "object",
+				"required": []string{"box"},
+				"properties": map[string]interface{}{
+					"box":  map[string]interface{}{"type": "string", "description": "Box the run is on."},
+					"name": map[string]interface{}{"type": "string", "description": "Run name, default \"code\"."},
+					"offset": map[string]interface{}{"type": "integer",
+						"description": "Byte offset to resume from — the `next_offset` of your last call. 0 replays from the start."},
+					"stream_json": map[string]interface{}{"type": "boolean",
+						"description": "Set if the run was started with stream_json, so framed output is demultiplexed."},
+				},
+			},
+			Handler: handleCodeAttach,
+		},
+		{
+			Name:        "code_status",
+			Description: "Report a run's liveness and, once it has finished, its exit code — including for a run that finished while nothing was attached.",
+			InputSchema: map[string]interface{}{
+				"type":     "object",
+				"required": []string{"box"},
+				"properties": map[string]interface{}{
+					"box":  map[string]interface{}{"type": "string", "description": "Box the run is on."},
+					"name": map[string]interface{}{"type": "string", "description": "Run name, default \"code\"."},
+				},
+			},
+			Handler: handleCodeStatus,
+		},
+		{
+			Name:        "code_stop",
+			Description: "Stop a run. Its log is left readable, so output can still be collected afterwards with code_attach.",
+			InputSchema: map[string]interface{}{
+				"type":     "object",
+				"required": []string{"box"},
+				"properties": map[string]interface{}{
+					"box":   map[string]interface{}{"type": "string", "description": "Box the run is on."},
+					"name":  map[string]interface{}{"type": "string", "description": "Run name, default \"code\"."},
+					"force": map[string]interface{}{"type": "boolean", "description": "SIGKILL instead of SIGTERM. Default false."},
+				},
+			},
+			Handler: handleCodeStop,
+		},
+		{
 			Name: "connect",
 			Description: "Get SSH access to one of your boxes using the token you're already " +
 				"authenticated with — connect authorizes a managed key for you, so there's " +
@@ -1512,6 +1581,17 @@ func (s *Server) registerTools() {
 // completeness against the registered tool list.
 func toolScopeAssignments() map[string]string {
 	return map[string]string{
+		// coding runs on a box (#1698). code:write is the scope the CLI's
+		// own `code` surface is gated by — starting or stopping an agent
+		// run executes arbitrary code on the box, so it is deliberately NOT
+		// covered by containers:read. code_status/code_attach are reads of
+		// a run's output, but they read a run only this scope could have
+		// started, so they share it rather than widening the read surface.
+		"code_run":    auth.ScopeCodeWrite,
+		"code_attach": auth.ScopeCodeWrite,
+		"code_status": auth.ScopeCodeWrite,
+		"code_stop":   auth.ScopeCodeWrite,
+
 		// container lifecycle
 		"create_container":   auth.ScopeContainersWrite,
 		"delete_container":   auth.ScopeContainersWrite,
