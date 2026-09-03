@@ -469,6 +469,118 @@ func (x *ListRevokedTokensResponse) GetRevocations() []*Revocation {
 	return nil
 }
 
+// GetUnscopedTokenReportRequest takes no parameters — the report always
+// covers the daemon's whole in-process measurement window (see the response
+// fields), not an operator-chosen range.
+type GetUnscopedTokenReportRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetUnscopedTokenReportRequest) Reset() {
+	*x = GetUnscopedTokenReportRequest{}
+	mi := &file_containarium_v1_tokens_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetUnscopedTokenReportRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetUnscopedTokenReportRequest) ProtoMessage() {}
+
+func (x *GetUnscopedTokenReportRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_tokens_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetUnscopedTokenReportRequest.ProtoReflect.Descriptor instead.
+func (*GetUnscopedTokenReportRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_tokens_proto_rawDescGZIP(), []int{7}
+}
+
+// GetUnscopedTokenReportResponse answers "how many recent calls used an
+// unscoped token" — the measurement #1679's strict-mode rollout depends on:
+// an operator should be able to see the blast radius BEFORE arming
+// CONTAINARIUM_STRICT_SCOPES, not discover it from a wave of denials after.
+type GetUnscopedTokenReportResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Number of RequireScope calls, since since_ (or 0 if none observed yet),
+	// whose token carried no `scopes` claim at all — the population strict
+	// mode would start rejecting.
+	UnscopedCallCount int64 `protobuf:"varint,1,opt,name=unscoped_call_count,json=unscopedCallCount,proto3" json:"unscoped_call_count,omitempty"`
+	// RFC3339 timestamp of the first such call observed. Empty if
+	// unscoped_call_count is 0. This is an in-process measurement with no
+	// persistence layer — it resets on daemon restart, so it always answers
+	// "since this daemon process started" (or since the first unscoped call
+	// within that lifetime), never a longer historical window.
+	Since string `protobuf:"bytes,2,opt,name=since,proto3" json:"since,omitempty"`
+	// Whether CONTAINARIUM_STRICT_SCOPES is currently armed on this daemon.
+	StrictModeEnabled bool `protobuf:"varint,3,opt,name=strict_mode_enabled,json=strictModeEnabled,proto3" json:"strict_mode_enabled,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *GetUnscopedTokenReportResponse) Reset() {
+	*x = GetUnscopedTokenReportResponse{}
+	mi := &file_containarium_v1_tokens_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetUnscopedTokenReportResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetUnscopedTokenReportResponse) ProtoMessage() {}
+
+func (x *GetUnscopedTokenReportResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_tokens_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetUnscopedTokenReportResponse.ProtoReflect.Descriptor instead.
+func (*GetUnscopedTokenReportResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_tokens_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *GetUnscopedTokenReportResponse) GetUnscopedCallCount() int64 {
+	if x != nil {
+		return x.UnscopedCallCount
+	}
+	return 0
+}
+
+func (x *GetUnscopedTokenReportResponse) GetSince() string {
+	if x != nil {
+		return x.Since
+	}
+	return ""
+}
+
+func (x *GetUnscopedTokenReportResponse) GetStrictModeEnabled() bool {
+	if x != nil {
+		return x.StrictModeEnabled
+	}
+	return false
+}
+
 var File_containarium_v1_tokens_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_tokens_proto_rawDesc = "" +
@@ -503,14 +615,21 @@ const file_containarium_v1_tokens_proto_rawDesc = "" +
 	"\n" +
 	"jti_prefix\x18\x03 \x01(\tR\tjtiPrefix\"Z\n" +
 	"\x19ListRevokedTokensResponse\x12=\n" +
-	"\vrevocations\x18\x01 \x03(\v2\x1b.containarium.v1.RevocationR\vrevocations2\xff\t\n" +
+	"\vrevocations\x18\x01 \x03(\v2\x1b.containarium.v1.RevocationR\vrevocations\"\x1f\n" +
+	"\x1dGetUnscopedTokenReportRequest\"\x96\x01\n" +
+	"\x1eGetUnscopedTokenReportResponse\x12.\n" +
+	"\x13unscoped_call_count\x18\x01 \x01(\x03R\x11unscopedCallCount\x12\x14\n" +
+	"\x05since\x18\x02 \x01(\tR\x05since\x12.\n" +
+	"\x13strict_mode_enabled\x18\x03 \x01(\bR\x11strictModeEnabled2\xb7\x0e\n" +
 	"\rTokensService\x12\x85\x03\n" +
 	"\vRevokeToken\x12#.containarium.v1.RevokeTokenRequest\x1a$.containarium.v1.RevokeTokenResponse\"\xaa\x02\x92A\x8a\x02\n" +
 	"\x06Tokens\x12\x17Revoke a JWT by its jti\x1a\xe6\x01Adds the token's jti to the revocation list. The token will be rejected on the next request that tries to use it. Admin-only. Idempotent — revoking an already-revoked jti is a no-op (the original revocation reason is preserved).\x82\xd3\xe4\x93\x02\x16:\x01*\"\x11/v1/tokens/revoke\x12\xf0\x03\n" +
 	"\fRefreshToken\x12$.containarium.v1.RefreshTokenRequest\x1a%.containarium.v1.RefreshTokenResponse\"\x92\x03\x92A\xf1\x02\n" +
 	"\x06Tokens\x129Exchange a refresh token for a new (access, refresh) pair\x1a\xab\x02Validates the refresh token (signature + exp + tt='refresh' + not revoked), mints a new short-lived access token, mints a new long-lived refresh token, and revokes the input refresh token's jti. Refresh tokens are single-use; the new refresh token must be stored by the client for the next exchange.\x82\xd3\xe4\x93\x02\x17:\x01*\"\x12/v1/tokens/refresh\x12\xf2\x02\n" +
 	"\x11ListRevokedTokens\x12).containarium.v1.ListRevokedTokensRequest\x1a*.containarium.v1.ListRevokedTokensResponse\"\x85\x02\x92A\xe7\x01\n" +
-	"\x06Tokens\x12\x1dList active token revocations\x1a\xbd\x01Returns revocation rows ordered most-recent-first. Default scope is non-expired revocations only; pass include_expired=true for forensic enumeration. Admin-only with the tokens:write scope.\x82\xd3\xe4\x93\x02\x14\x12\x12/v1/tokens/revokedBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
+	"\x06Tokens\x12\x1dList active token revocations\x1a\xbd\x01Returns revocation rows ordered most-recent-first. Default scope is non-expired revocations only; pass include_expired=true for forensic enumeration. Admin-only with the tokens:write scope.\x82\xd3\xe4\x93\x02\x14\x12\x12/v1/tokens/revoked\x12\xb5\x04\n" +
+	"\x16GetUnscopedTokenReport\x12..containarium.v1.GetUnscopedTokenReportRequest\x1a/.containarium.v1.GetUnscopedTokenReportResponse\"\xb9\x03\x92A\x93\x03\n" +
+	"\x06Tokens\x123Report how many recent calls used an unscoped token\x1a\xd3\x02Returns the in-process count of RequireScope calls whose token carried no scopes claim, since the first such call was observed (resets on daemon restart), plus whether CONTAINARIUM_STRICT_SCOPES is currently armed. Meant to be checked before arming strict mode, so the rollout is a measured decision. Admin-only with the tokens:read scope.\x82\xd3\xe4\x93\x02\x1c\x12\x1a/v1/tokens/unscoped-reportBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
 
 var (
 	file_containarium_v1_tokens_proto_rawDescOnce sync.Once
@@ -524,26 +643,30 @@ func file_containarium_v1_tokens_proto_rawDescGZIP() []byte {
 	return file_containarium_v1_tokens_proto_rawDescData
 }
 
-var file_containarium_v1_tokens_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_containarium_v1_tokens_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
 var file_containarium_v1_tokens_proto_goTypes = []any{
-	(*RevokeTokenRequest)(nil),        // 0: containarium.v1.RevokeTokenRequest
-	(*RevokeTokenResponse)(nil),       // 1: containarium.v1.RevokeTokenResponse
-	(*RefreshTokenRequest)(nil),       // 2: containarium.v1.RefreshTokenRequest
-	(*RefreshTokenResponse)(nil),      // 3: containarium.v1.RefreshTokenResponse
-	(*Revocation)(nil),                // 4: containarium.v1.Revocation
-	(*ListRevokedTokensRequest)(nil),  // 5: containarium.v1.ListRevokedTokensRequest
-	(*ListRevokedTokensResponse)(nil), // 6: containarium.v1.ListRevokedTokensResponse
+	(*RevokeTokenRequest)(nil),             // 0: containarium.v1.RevokeTokenRequest
+	(*RevokeTokenResponse)(nil),            // 1: containarium.v1.RevokeTokenResponse
+	(*RefreshTokenRequest)(nil),            // 2: containarium.v1.RefreshTokenRequest
+	(*RefreshTokenResponse)(nil),           // 3: containarium.v1.RefreshTokenResponse
+	(*Revocation)(nil),                     // 4: containarium.v1.Revocation
+	(*ListRevokedTokensRequest)(nil),       // 5: containarium.v1.ListRevokedTokensRequest
+	(*ListRevokedTokensResponse)(nil),      // 6: containarium.v1.ListRevokedTokensResponse
+	(*GetUnscopedTokenReportRequest)(nil),  // 7: containarium.v1.GetUnscopedTokenReportRequest
+	(*GetUnscopedTokenReportResponse)(nil), // 8: containarium.v1.GetUnscopedTokenReportResponse
 }
 var file_containarium_v1_tokens_proto_depIdxs = []int32{
 	4, // 0: containarium.v1.ListRevokedTokensResponse.revocations:type_name -> containarium.v1.Revocation
 	0, // 1: containarium.v1.TokensService.RevokeToken:input_type -> containarium.v1.RevokeTokenRequest
 	2, // 2: containarium.v1.TokensService.RefreshToken:input_type -> containarium.v1.RefreshTokenRequest
 	5, // 3: containarium.v1.TokensService.ListRevokedTokens:input_type -> containarium.v1.ListRevokedTokensRequest
-	1, // 4: containarium.v1.TokensService.RevokeToken:output_type -> containarium.v1.RevokeTokenResponse
-	3, // 5: containarium.v1.TokensService.RefreshToken:output_type -> containarium.v1.RefreshTokenResponse
-	6, // 6: containarium.v1.TokensService.ListRevokedTokens:output_type -> containarium.v1.ListRevokedTokensResponse
-	4, // [4:7] is the sub-list for method output_type
-	1, // [1:4] is the sub-list for method input_type
+	7, // 4: containarium.v1.TokensService.GetUnscopedTokenReport:input_type -> containarium.v1.GetUnscopedTokenReportRequest
+	1, // 5: containarium.v1.TokensService.RevokeToken:output_type -> containarium.v1.RevokeTokenResponse
+	3, // 6: containarium.v1.TokensService.RefreshToken:output_type -> containarium.v1.RefreshTokenResponse
+	6, // 7: containarium.v1.TokensService.ListRevokedTokens:output_type -> containarium.v1.ListRevokedTokensResponse
+	8, // 8: containarium.v1.TokensService.GetUnscopedTokenReport:output_type -> containarium.v1.GetUnscopedTokenReportResponse
+	5, // [5:9] is the sub-list for method output_type
+	1, // [1:5] is the sub-list for method input_type
 	1, // [1:1] is the sub-list for extension type_name
 	1, // [1:1] is the sub-list for extension extendee
 	0, // [0:1] is the sub-list for field type_name
@@ -560,7 +683,7 @@ func file_containarium_v1_tokens_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_tokens_proto_rawDesc), len(file_containarium_v1_tokens_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   7,
+			NumMessages:   9,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -78,3 +78,84 @@ func TestRequireScope_NotIntertwinedWithRole(t *testing.T) {
 		t.Fatalf("admin without scope: got %v want PermissionDenied", err)
 	}
 }
+
+// #1679 — strict mode rejects unscoped tokens instead of fail-open.
+
+func TestRequireScope_StrictMode_RejectsUnscopedToken(t *testing.T) {
+	SetStrictScopes(true)
+	defer SetStrictScopes(false)
+
+	ctx := ContextWithTestSubject(context.Background(), "alice", "user")
+	err := RequireScope(ctx, ScopeSecretsWrite)
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("strict mode, unscoped token: got %v want PermissionDenied", err)
+	}
+	if !IsStrictScopesDenial(err) {
+		t.Fatalf("strict mode, unscoped token: err %v not recognized as a strict-scopes denial", err)
+	}
+}
+
+func TestRequireScope_StrictMode_StillAllowsScopedToken(t *testing.T) {
+	SetStrictScopes(true)
+	defer SetStrictScopes(false)
+
+	ctx := ContextWithTestSubjectScopes(context.Background(),
+		"alice", []string{"user"}, []string{ScopeSecretsWrite},
+	)
+	if err := RequireScope(ctx, ScopeSecretsWrite); err != nil {
+		t.Fatalf("strict mode, scoped token with the required scope: got %v want nil", err)
+	}
+}
+
+func TestRequireScope_StrictMode_InsufficientScopeIsDistinguishableFromUnscoped(t *testing.T) {
+	SetStrictScopes(true)
+	defer SetStrictScopes(false)
+
+	ctx := ContextWithTestSubjectScopes(context.Background(),
+		"alice", []string{"user"}, []string{ScopeContainersRead},
+	)
+	err := RequireScope(ctx, ScopeSecretsWrite)
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("strict mode, insufficient scope: got %v want PermissionDenied", err)
+	}
+	if IsStrictScopesDenial(err) {
+		t.Fatalf("strict mode, insufficient (but present) scope: err %v must NOT be classified as a strict-scopes denial — an operator needs to tell these apart", err)
+	}
+}
+
+func TestRequireScope_PermissiveMode_UnaffectedByStrictModeOff(t *testing.T) {
+	// Default posture (AC: "default remains permissive") — this is
+	// TestRequireScope_AllowsWhenScopesAbsent's exact scenario, repeated
+	// here with SetStrictScopes(false) made explicit so the strict-mode
+	// tests above can't leave global state that silently breaks it.
+	SetStrictScopes(false)
+
+	ctx := ContextWithTestSubject(context.Background(), "alice", "user")
+	if err := RequireScope(ctx, ScopeSecretsWrite); err != nil {
+		t.Fatalf("permissive mode, unscoped token: got %v want nil", err)
+	}
+}
+
+func TestRequireScope_RecordsUnscopedCallRegardlessOfMode(t *testing.T) {
+	// The measurement AC ("report how many recent calls used unscoped
+	// tokens before flipping the switch") only works if the counter
+	// increments in permissive mode too — that's the whole point.
+	SetStrictScopes(false)
+	ResetUnscopedTokenCallsForTest()
+
+	ctx := ContextWithTestSubject(context.Background(), "alice", "user")
+	_ = RequireScope(ctx, ScopeSecretsWrite)
+
+	if got := UnscopedTokenCalls().Count; got != 1 {
+		t.Fatalf("UnscopedTokenCalls().Count = %d, want 1 after one unscoped call in permissive mode", got)
+	}
+
+	// A scoped call must NOT count as unscoped.
+	scopedCtx := ContextWithTestSubjectScopes(context.Background(),
+		"bob", []string{"user"}, []string{ScopeSecretsWrite},
+	)
+	_ = RequireScope(scopedCtx, ScopeSecretsWrite)
+	if got := UnscopedTokenCalls().Count; got != 1 {
+		t.Fatalf("UnscopedTokenCalls().Count = %d after a scoped call, want unchanged 1", got)
+	}
+}

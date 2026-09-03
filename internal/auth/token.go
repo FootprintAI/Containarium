@@ -397,6 +397,7 @@ const (
 	ContextKeyRoles    contextKey = "roles"
 	ContextKeyScopes   contextKey = "scopes" // Phase 1.7b
 	ContextKeyAct      contextKey = "act"    // #1677
+	ContextKeyJTI      contextKey = "jti"    // #1678
 )
 
 // ContextWithClaims adds authentication claims to context
@@ -408,6 +409,9 @@ func ContextWithClaims(ctx context.Context, claims *Claims) context.Context {
 	}
 	if claims.Act != nil {
 		ctx = context.WithValue(ctx, ContextKeyAct, claims.Act)
+	}
+	if claims.ID != "" {
+		ctx = context.WithValue(ctx, ContextKeyJTI, claims.ID)
 	}
 	return ctx
 }
@@ -440,4 +444,11 @@ func ScopesFromContext(ctx context.Context) ([]string, bool) {
 func ActFromContext(ctx context.Context) (*Actor, bool) {
 	act, ok := ctx.Value(ContextKeyAct).(*Actor)
 	return act, ok
+}
+
+// JTIFromContext retrieves the JWT `jti` claim from context. Returns ("",
+// false) when no jti was carried. #1678.
+func JTIFromContext(ctx context.Context) (string, bool) {
+	jti, ok := ctx.Value(ContextKeyJTI).(string)
+	return jti, ok
 }

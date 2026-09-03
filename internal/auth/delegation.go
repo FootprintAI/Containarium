@@ -48,3 +48,18 @@ func validateActDepth(a *Actor) error {
 	}
 	return nil
 }
+
+// RootActor walks a's chain to its base and returns that Subject — the
+// human/service principal furthest from the leaf, which is the one an
+// auditor most needs (#1678: this is how the audit package's `actor` column
+// is resolved from a request's delegation claim). Returns "" for a nil
+// chain, matching Actor's own "absence is valid, not an error" contract.
+func RootActor(a *Actor) string {
+	if a == nil {
+		return ""
+	}
+	for a.Act != nil {
+		a = a.Act
+	}
+	return a.Subject
+}

@@ -19,9 +19,10 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	TokensService_RevokeToken_FullMethodName       = "/containarium.v1.TokensService/RevokeToken"
-	TokensService_RefreshToken_FullMethodName      = "/containarium.v1.TokensService/RefreshToken"
-	TokensService_ListRevokedTokens_FullMethodName = "/containarium.v1.TokensService/ListRevokedTokens"
+	TokensService_RevokeToken_FullMethodName            = "/containarium.v1.TokensService/RevokeToken"
+	TokensService_RefreshToken_FullMethodName           = "/containarium.v1.TokensService/RefreshToken"
+	TokensService_ListRevokedTokens_FullMethodName      = "/containarium.v1.TokensService/ListRevokedTokens"
+	TokensService_GetUnscopedTokenReport_FullMethodName = "/containarium.v1.TokensService/GetUnscopedTokenReport"
 )
 
 // TokensServiceClient is the client API for TokensService service.
@@ -55,6 +56,10 @@ type TokensServiceClient interface {
 	// Admin-only + tokens:write scope (same surface as
 	// RevokeToken — anyone who can revoke can enumerate).
 	ListRevokedTokens(ctx context.Context, in *ListRevokedTokensRequest, opts ...grpc.CallOption) (*ListRevokedTokensResponse, error)
+	// GetUnscopedTokenReport reports how many recent calls used a token with
+	// no scopes claim — the measured-rollout deliverable for #1679's strict
+	// mode. Same gate as ListRevokedTokens: admin-only + tokens:read scope.
+	GetUnscopedTokenReport(ctx context.Context, in *GetUnscopedTokenReportRequest, opts ...grpc.CallOption) (*GetUnscopedTokenReportResponse, error)
 }
 
 type tokensServiceClient struct {
@@ -95,6 +100,16 @@ func (c *tokensServiceClient) ListRevokedTokens(ctx context.Context, in *ListRev
 	return out, nil
 }
 
+func (c *tokensServiceClient) GetUnscopedTokenReport(ctx context.Context, in *GetUnscopedTokenReportRequest, opts ...grpc.CallOption) (*GetUnscopedTokenReportResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetUnscopedTokenReportResponse)
+	err := c.cc.Invoke(ctx, TokensService_GetUnscopedTokenReport_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // TokensServiceServer is the server API for TokensService service.
 // All implementations must embed UnimplementedTokensServiceServer
 // for forward compatibility.
@@ -126,6 +141,10 @@ type TokensServiceServer interface {
 	// Admin-only + tokens:write scope (same surface as
 	// RevokeToken — anyone who can revoke can enumerate).
 	ListRevokedTokens(context.Context, *ListRevokedTokensRequest) (*ListRevokedTokensResponse, error)
+	// GetUnscopedTokenReport reports how many recent calls used a token with
+	// no scopes claim — the measured-rollout deliverable for #1679's strict
+	// mode. Same gate as ListRevokedTokens: admin-only + tokens:read scope.
+	GetUnscopedTokenReport(context.Context, *GetUnscopedTokenReportRequest) (*GetUnscopedTokenReportResponse, error)
 	mustEmbedUnimplementedTokensServiceServer()
 }
 
@@ -144,6 +163,9 @@ func (UnimplementedTokensServiceServer) RefreshToken(context.Context, *RefreshTo
 }
 func (UnimplementedTokensServiceServer) ListRevokedTokens(context.Context, *ListRevokedTokensRequest) (*ListRevokedTokensResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListRevokedTokens not implemented")
+}
+func (UnimplementedTokensServiceServer) GetUnscopedTokenReport(context.Context, *GetUnscopedTokenReportRequest) (*GetUnscopedTokenReportResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetUnscopedTokenReport not implemented")
 }
 func (UnimplementedTokensServiceServer) mustEmbedUnimplementedTokensServiceServer() {}
 func (UnimplementedTokensServiceServer) testEmbeddedByValue()                       {}
@@ -220,6 +242,24 @@ func _TokensService_ListRevokedTokens_Handler(srv interface{}, ctx context.Conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _TokensService_GetUnscopedTokenReport_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetUnscopedTokenReportRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TokensServiceServer).GetUnscopedTokenReport(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TokensService_GetUnscopedTokenReport_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TokensServiceServer).GetUnscopedTokenReport(ctx, req.(*GetUnscopedTokenReportRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // TokensService_ServiceDesc is the grpc.ServiceDesc for TokensService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -238,6 +278,10 @@ var TokensService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListRevokedTokens",
 			Handler:    _TokensService_ListRevokedTokens_Handler,
+		},
+		{
+			MethodName: "GetUnscopedTokenReport",
+			Handler:    _TokensService_GetUnscopedTokenReport_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

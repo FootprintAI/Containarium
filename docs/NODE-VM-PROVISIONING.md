@@ -217,6 +217,17 @@ safe (no regressions across repeated reboots) and effective (the exact
 recovery command that fixes a wedged instance live) against the incident in
 #1317.
 
+As a second layer, `deploy/mount-watchdog/` catches the failure if it
+happens anyway (e.g. through a code path other than the specific LUKS
+instance the drop-in above targets) and recovers without an operator
+noticing first — the same role `deploy/incus-watchdog/` plays for a
+different silent-failure class in `incusd`. It replays the exact manual
+recovery from the #1317 incident (re-announce the wedged device to udev,
+clear the resulting failed states, restart) and logs an `ALERT` line if
+recovery itself fails, so the failure reaches the host's normal
+journal-based alerting instead of staying silent. See
+`deploy/mount-watchdog/README.md` for install steps.
+
 ## Related
 - `docs/MULTI-POOL.md`, `docs/MULTI-BACKEND-PEERS.md` — pool routing the nodes plug into.
 - `docs/CONTAINARIUM-HOST-TO-VM-MIGRATION.md` — the VFIO/host→VM concerns this shares (#318).

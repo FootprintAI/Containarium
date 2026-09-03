@@ -399,3 +399,65 @@ func TestRefreshToken_RotationRevokesPriorJTI(t *testing.T) {
 		t.Fatalf("replay should be rejected; got %v", err)
 	}
 }
+
+// --- GetUnscopedTokenReport (#1679) ---
+
+func TestGetUnscopedTokenReport_RejectsNoSubject(t *testing.T) {
+	srv := newTestTokensServer(t, newFakeRevocationStore())
+	_, err := srv.GetUnscopedTokenReport(context.Background(), &pb.GetUnscopedTokenReportRequest{})
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("missing subject: got %v want Unauthenticated", err)
+	}
+}
+
+func TestGetUnscopedTokenReport_RejectsNonAdmin(t *testing.T) {
+	srv := newTestTokensServer(t, newFakeRevocationStore())
+	ctx := auth.ContextWithTestSubjectScopes(context.Background(),
+		"alice", []string{"user"}, []string{auth.ScopeTokensWrite},
+	)
+	_, err := srv.GetUnscopedTokenReport(ctx, &pb.GetUnscopedTokenReportRequest{})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("non-admin, no tokens:read: got %v want PermissionDenied", err)
+	}
+}
+
+// Same admin-OR-tokens:read read-path gate as ListRevokedTokens (#621).
+func TestGetUnscopedTokenReport_TokensReadScopeSucceeds(t *testing.T) {
+	srv := newTestTokensServer(t, newFakeRevocationStore())
+	ctx := auth.ContextWithTestSubjectScopes(context.Background(),
+		"auditor", []string{"user"}, []string{auth.ScopeTokensRead},
+	)
+	if _, err := srv.GetUnscopedTokenReport(ctx, &pb.GetUnscopedTokenReportRequest{}); err != nil {
+		t.Fatalf("tokens:read scope should pass; got %v", err)
+	}
+}
+
+func TestGetUnscopedTokenReport_ReportsCurrentCountAndStrictMode(t *testing.T) {
+	defer auth.SetStrictScopes(false)
+	auth.ResetUnscopedTokenCallsForTest()
+
+	// Generate two unscoped-token calls through the real gate, the same
+	// way any handler's auth.RequireScope call would.
+	unscopedCtx := auth.ContextWithTestSubject(context.Background(), "bob", "user")
+	_ = auth.RequireScope(unscopedCtx, auth.ScopeContainersRead)
+	_ = auth.RequireScope(unscopedCtx, auth.ScopeContainersWrite)
+	auth.SetStrictScopes(true)
+
+	srv := newTestTokensServer(t, newFakeRevocationStore())
+	ctx := auth.ContextWithTestSubjectScopes(context.Background(),
+		"ops", []string{auth.RoleAdmin}, nil,
+	)
+	resp, err := srv.GetUnscopedTokenReport(ctx, &pb.GetUnscopedTokenReportRequest{})
+	if err != nil {
+		t.Fatalf("GetUnscopedTokenReport: %v", err)
+	}
+	if resp.UnscopedCallCount != 2 {
+		t.Fatalf("UnscopedCallCount = %d, want 2", resp.UnscopedCallCount)
+	}
+	if resp.Since == "" {
+		t.Fatal("Since is empty, want the RFC3339 time of the first unscoped call")
+	}
+	if !resp.StrictModeEnabled {
+		t.Fatal("StrictModeEnabled = false, want true (SetStrictScopes(true) was called)")
+	}
+}
