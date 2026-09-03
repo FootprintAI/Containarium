@@ -835,6 +835,37 @@ func (c *HTTPClient) ListRevokedTokens(limit int32, includeExpired bool, jtiPref
 	return result.Revocations, nil
 }
 
+// UnscopedTokenReport is the CLI-facing shape of
+// GetUnscopedTokenReport's response (#1679).
+type UnscopedTokenReport struct {
+	UnscopedCallCount int64  `json:"unscopedCallCount"`
+	Since             string `json:"since"`
+	StrictModeEnabled bool   `json:"strictModeEnabled"`
+}
+
+// GetUnscopedTokenReport reports how many recent calls used a
+// token with no scopes claim — the measurement to check before
+// arming CONTAINARIUM_STRICT_SCOPES. Admin-only on the server
+// side; the daemon checks role or tokens:read scope.
+func (c *HTTPClient) GetUnscopedTokenReport() (UnscopedTokenReport, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.doRequest(ctx, http.MethodGet, "/v1/tokens/unscoped-report", nil)
+	if err != nil {
+		return UnscopedTokenReport{}, fmt.Errorf("get unscoped token report: %w", err)
+	}
+	defer drainClose(resp)
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return UnscopedTokenReport{}, parseErr(b, resp.StatusCode, "get unscoped token report")
+	}
+	var result UnscopedTokenReport
+	if err := json.Unmarshal(b, &result); err != nil {
+		return UnscopedTokenReport{}, fmt.Errorf("decode unscoped token report: %w", err)
+	}
+	return result, nil
+}
+
 // RevokeToken adds a JWT's jti to the daemon's revocation
 // list. Phase 1.2 follow-up — admin-only on the server side.
 // `reason` is free-form and recorded for forensics; pass ""

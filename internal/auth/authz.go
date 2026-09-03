@@ -168,10 +168,10 @@ func RequireRoleOrScope(ctx context.Context, role, scope string) error {
 
 // RequireScope returns nil if the authenticated subject's JWT
 // carries the required scope (or no scopes claim at all, which
-// is the Phase 1.7 backwards-compat "unrestricted" path).
-// Returns Unauthenticated when no subject is in context and
-// PermissionDenied when scopes are explicitly granted but the
-// required one is missing.
+// is the Phase 1.7 backwards-compat "unrestricted" path — unless
+// strict mode is armed, see below). Returns Unauthenticated when
+// no subject is in context and PermissionDenied when scopes are
+// explicitly granted but the required one is missing.
 //
 // Use at the top of handlers AFTER the existing role check, not
 // instead of it. Roles and scopes are orthogonal: roles answer
@@ -181,11 +181,25 @@ func RequireRoleOrScope(ctx context.Context, role, scope string) error {
 // Phase 1.7b — pairs with the MCP-side filter landed in PR #250.
 // The MCP filter catches agent abuse before the network call;
 // this catches REST/gRPC callers who bypass MCP entirely.
+//
+// #1679 — every call whose token carries no scopes claim is
+// recorded (see UnscopedTokenCalls), regardless of mode, so an
+// operator can measure the unscoped population before opting in.
+// When StrictScopesEnabled(), such a call is rejected outright
+// instead of falling through to the backwards-compat unrestricted
+// path; IsStrictScopesDenial distinguishes that rejection from an
+// ordinary insufficient-scope denial.
 func RequireScope(ctx context.Context, required string) error {
 	if _, _, ok := SubjectFromGRPCContext(ctx); !ok {
 		return status.Error(codes.Unauthenticated, "no authenticated subject in request context")
 	}
-	scopes, _ := ScopesFromGRPCContext(ctx)
+	scopes, present := ScopesFromGRPCContext(ctx)
+	if !present {
+		recordUnscopedCall()
+		if StrictScopesEnabled() {
+			return status.Errorf(codes.PermissionDenied, "%s (scope required: %s) — mint a token with --scopes", strictScopesDenialPrefix, required)
+		}
+	}
 	if HasScope(scopes, required) {
 		return nil
 	}

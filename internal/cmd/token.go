@@ -178,12 +178,29 @@ Admin role + tokens:write scope required.`,
 	RunE: runTokenListRevoked,
 }
 
+// tokenUnscopedReportCmd implements `containarium token
+// unscoped-report` (#1679) — the measurement to check before
+// arming CONTAINARIUM_STRICT_SCOPES.
+var tokenUnscopedReportCmd = &cobra.Command{
+	Use:   "unscoped-report",
+	Short: "Report how many recent calls used a token with no scopes claim (admin-only)",
+	Long: `Reports the in-process count of calls whose token carried no scopes
+claim at all — the population CONTAINARIUM_STRICT_SCOPES would start
+rejecting. Check this before arming strict mode so the rollout is a
+measured decision, not a gamble. Resets on daemon restart.
+
+Admin role or the tokens:read scope required.`,
+	Example: `  containarium token unscoped-report --server $S --token $T`,
+	RunE:    runTokenUnscopedReport,
+}
+
 func init() {
 	rootCmd.AddCommand(tokenCmd)
 	tokenCmd.AddCommand(tokenGenerateCmd)
 	tokenCmd.AddCommand(tokenRevokeCmd)
 	tokenCmd.AddCommand(tokenRefreshCmd)
 	tokenCmd.AddCommand(tokenListRevokedCmd)
+	tokenCmd.AddCommand(tokenUnscopedReportCmd)
 
 	tokenRefreshCmd.Flags().StringVar(&refreshTokenIn, "refresh-token", "", "Refresh token to exchange (mutually exclusive with --refresh-token-file)")
 	tokenRefreshCmd.Flags().StringVar(&refreshTokenFile, "refresh-token-file", "", "Path to file containing the refresh token (mode 0600 recommended)")
@@ -436,5 +453,41 @@ func runTokenListRevoked(cmd *cobra.Command, args []string) error {
 	for _, r := range revs {
 		fmt.Printf("%-24s  %-25s  %-25s  %s\n", r.JTI, r.RevokedAt, r.ExpiresAt, r.Reason)
 	}
+	return nil
+}
+
+// runTokenUnscopedReport GETs /v1/tokens/unscoped-report and
+// prints the measurement (#1679). Admin-only on the server
+// side; the CLI does the same flag-validation gate as
+// runTokenListRevoked.
+func runTokenUnscopedReport(cmd *cobra.Command, args []string) error {
+	if serverAddr == "" {
+		return fmt.Errorf("--server is required")
+	}
+	if authToken == "" {
+		return fmt.Errorf("--token is required (must name an admin JWT)")
+	}
+
+	httpClient, err := client.NewHTTPClient(serverAddr, authToken)
+	if err != nil {
+		return fmt.Errorf("create http client: %w", err)
+	}
+	defer func() { _ = httpClient.Close() }()
+
+	report, err := httpClient.GetUnscopedTokenReport()
+	if err != nil {
+		return err
+	}
+
+	mode := "off (permissive — unscoped tokens are treated as unrestricted)"
+	if report.StrictModeEnabled {
+		mode = "ON (unscoped tokens are rejected)"
+	}
+	fmt.Printf("Strict scopes mode: %s\n", mode)
+	if report.UnscopedCallCount == 0 {
+		fmt.Println("Unscoped-token calls observed: 0")
+		return nil
+	}
+	fmt.Printf("Unscoped-token calls observed: %d (since %s)\n", report.UnscopedCallCount, report.Since)
 	return nil
 }
