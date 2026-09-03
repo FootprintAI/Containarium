@@ -59,6 +59,58 @@ jobs:
             echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
           fi
 
+      - name: Verify the release is described
+        # Two release conventions this repo documents but has never enforced,
+        # each of which has now silently failed three times:
+        #
+        #   * CHANGELOG.md missing the release it ships. #1431 recorded the
+        #     trap ("release notes that do not describe the release"), #1482
+        #     and #1486 each nearly hit it, and v0.71.0 was about to ship with
+        #     an entire feature surface undocumented.
+        #   * pkg/version/version.go left stale. 0.68, 0.69 and 0.70 all
+        #     shipped with the constant still reading 0.67.0, so anyone
+        #     building from source between releases saw a version four behind.
+        #     RELEASE-PROCESS.md says outright that nothing checks this.
+        #
+        # Both are one grep. Failing here costs a re-tag; failing to check
+        # costs a published release that misrepresents itself, which cannot
+        # be taken back.
+        #
+        # Skipped on the rehearsal path: workflow_dispatch builds a synthetic
+        # version deliberately unrelated to any changelog entry.
+        if: github.event_name != 'workflow_dispatch'
+        env:
+          VERSION: ${{ steps.get_version.outputs.VERSION }}
+        run: |
+          set -euo pipefail
+          failed=0
+
+          if ! grep -qE "^## \\[${VERSION}\\]" CHANGELOG.md; then
+            echo "::error file=CHANGELOG.md::No '## [${VERSION}]' section — this tag would publish notes that do not describe it. Add the section (see docs/RELEASE-PROCESS.md) and re-tag."
+            failed=1
+          else
+            # A heading with nothing under it is the same failure wearing a
+            # hat: the section exists, so a reader assumes it was written.
+            body=$(awk -v v="## [${VERSION}]" '
+              index($0, v) == 1 {found=1; next}
+              found && /^## \[/ {exit}
+              found {print}
+            ' CHANGELOG.md | grep -vE '^\s*$' | grep -vE '^###' || true)
+            if [ -z "${body}" ]; then
+              echo "::error file=CHANGELOG.md::'## [${VERSION}]' exists but has no entries under it."
+              failed=1
+            fi
+          fi
+
+          constant=$(grep -oE 'Version = "[^"]+"' pkg/version/version.go | head -1 | cut -d'"' -f2)
+          if [ "${constant}" != "${VERSION}" ]; then
+            echo "::error file=pkg/version/version.go::Version constant is \"${constant}\" but the tag is v${VERSION}. Bump it and re-tag."
+            failed=1
+          fi
+
+          [ "${failed}" = "0" ] || exit 1
+          echo "✓ CHANGELOG has a [${VERSION}] section with entries; version constant matches."
+
       - name: Compile eBPF network-policy object (#627)
         # Builds internal/netbpf/netpolicy.bpf.o so the next `make` invocation
         # auto-enables -tags embed_bpf and bakes the object into the
