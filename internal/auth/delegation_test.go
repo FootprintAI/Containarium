@@ -46,6 +46,29 @@ func chainOfDepth(n int) *Actor {
 	return a
 }
 
+// #1678 — RootActor is how the audit package resolves the `actor` column:
+// the root human/service principal at the base of a delegation chain.
+
+func TestRootActor_NilReturnsEmpty(t *testing.T) {
+	if got := RootActor(nil); got != "" {
+		t.Errorf("RootActor(nil) = %q, want empty", got)
+	}
+}
+
+func TestRootActor_NoDelegationReturnsOwnSubject(t *testing.T) {
+	a := &Actor{Subject: "alice"}
+	if got := RootActor(a); got != "alice" {
+		t.Errorf("RootActor(%+v) = %q, want %q", a, got, "alice")
+	}
+}
+
+func TestRootActor_WalksToBase(t *testing.T) {
+	a := &Actor{Subject: "agent-c", Act: &Actor{Subject: "agent-b", Act: &Actor{Subject: "human-alice"}}}
+	if got := RootActor(a); got != "human-alice" {
+		t.Errorf("RootActor(%+v) = %q, want the deepest Subject %q", a, got, "human-alice")
+	}
+}
+
 func TestValidateActDepth(t *testing.T) {
 	if err := validateActDepth(nil); err != nil {
 		t.Errorf("nil act should always pass, got %v", err)

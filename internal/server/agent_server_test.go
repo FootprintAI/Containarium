@@ -316,6 +316,41 @@ func TestAuditHopNilStoreNoPanic(t *testing.T) {
 	s.auditHop(context.Background(), "trace", "from", "to", "delivered", "")
 }
 
+// #1678 — auditAttributionFromContext is what makes auditHop's "record both
+// the agent and the dispatching human" AC true; it's unit-tested directly
+// since auditHop itself only runs against a real *audit.Store.
+
+func TestAuditAttributionFromContext_NoDelegation(t *testing.T) {
+	ctx := auth.ContextWithTestSubject(context.Background(), "agent-hello-agent", "user")
+	actor, chain, tokenID := auditAttributionFromContext(ctx)
+	if actor != "" || chain != "" || tokenID != "" {
+		t.Fatalf("got actor=%q chain=%q tokenID=%q, want all empty for a non-delegated context", actor, chain, tokenID)
+	}
+}
+
+func TestAuditAttributionFromContext_ResolvesRootActor(t *testing.T) {
+	act := &auth.Actor{Subject: "agent-relay-agent", Act: &auth.Actor{Subject: "human-alice"}}
+	ctx := auth.ContextWithTestSubjectAct(context.Background(), "agent-hello-agent", []string{"user"}, act)
+
+	actor, chain, _ := auditAttributionFromContext(ctx)
+	if actor != "human-alice" {
+		t.Fatalf("actor = %q, want the root human human-alice", actor)
+	}
+	if !strings.Contains(chain, "human-alice") || !strings.Contains(chain, "agent-relay-agent") {
+		t.Fatalf("delegationChain = %q, want the full chain serialized", chain)
+	}
+}
+
+func TestAuditAttributionFromContext_ResolvesTokenID(t *testing.T) {
+	ctx := auth.ContextWithTestSubject(context.Background(), "agent-hello-agent", "user")
+	ctx = auth.ContextWithTestJTI(ctx, "jti-abc123")
+
+	_, _, tokenID := auditAttributionFromContext(ctx)
+	if tokenID != "jti-abc123" {
+		t.Fatalf("tokenID = %q, want jti-abc123", tokenID)
+	}
+}
+
 func TestBuildAgentSeedScriptEscapesSingleQuotes(t *testing.T) {
 	// A system prompt containing a single quote must be escaped so it can't
 	// break out of the shell-quoted printf argument.

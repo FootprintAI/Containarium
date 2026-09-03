@@ -668,6 +668,12 @@ func genTraceID() string {
 
 // auditHop records one A2A delegation under the shared trace id. Best-effort:
 // audit must never fail the call. No-op until the audit store is wired.
+//
+// #1678 — an A2A call is agent-performed: username (from) is the agent's own
+// synthetic subject, so this also resolves and records the dispatching
+// human (auth.RootActor, walked from the caller's delegation chain) and the
+// acting token's jti, per the AC that every agent-performed action records
+// both.
 func (s *AgentSkillServer) auditHop(ctx context.Context, trace, from, to, outcome, detail string) {
 	if s.audit == nil {
 		return
@@ -683,15 +689,44 @@ func (s *AgentSkillServer) auditHop(ctx context.Context, trace, from, to, outcom
 		"outcome":  outcome,
 		"detail":   detail,
 	})
+
+	actor, delegationChain, tokenID := auditAttributionFromContext(ctx)
+
 	if err := s.audit.Log(ctx, &audit.AuditEntry{
-		Username:     username,
-		Action:       "agent.a2a_call",
-		ResourceType: "agent_skill",
-		ResourceID:   to,
-		Detail:       string(payload),
+		Username:        username,
+		Action:          "agent.a2a_call",
+		ResourceType:    "agent_skill",
+		ResourceID:      to,
+		Detail:          string(payload),
+		Actor:           actor,
+		DelegationChain: delegationChain,
+		TokenID:         tokenID,
 	}); err != nil {
 		log.Printf("[agent-skill] audit A2A hop %s->%s: %v", from, to, err)
 	}
+}
+
+// auditAttributionFromContext resolves the #1678 audit attribution fields
+// from an authenticated request context: actor is the root human/service
+// principal at the base of the caller's delegation chain (auth.RootActor),
+// delegationChain is that chain's own JSON serialization (kept for full
+// depth reconstruction beyond what the flat actor column shows), and
+// tokenID is the acting token's jti. All three are "" when the context
+// carries no delegation claim / no jti — the valid, backward-compatible
+// case for a direct (non-delegated) or pre-#1677/#1678 caller.
+//
+// Extracted as a pure function (no audit.Store dependency) specifically so
+// it's unit-testable without a live Postgres — auditHop's own Log() call
+// only runs against a real *audit.Store, which the test suite can't fake.
+func auditAttributionFromContext(ctx context.Context) (actor, delegationChain, tokenID string) {
+	if act, ok := auth.ActFromGRPCContext(ctx); ok {
+		actor = auth.RootActor(act)
+		if encoded, err := json.Marshal(act); err == nil {
+			delegationChain = string(encoded)
+		}
+	}
+	tokenID, _ = auth.JTIFromGRPCContext(ctx)
+	return actor, delegationChain, tokenID
 }
 
 // resolvePeerA2A finds a running peer's in-box A2A base URL and its agent card.

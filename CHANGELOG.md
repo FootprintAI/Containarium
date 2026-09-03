@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **mount-watchdog: recover a `containarium.service` left permanently dead by
+  a mount-dependency failure** (#1317). A host that gates
+  `containarium.service` on external/encrypted storage via
+  `RequiresMountsFor=/var/lib/incus` inherits that directive's lack of retry
+  semantics: a transient failure anywhere in the mount's own dependency chain
+  (observed cause: a LUKS `.device` unit missing a udev "add" event) leaves
+  the daemon `inactive (dead)` with zero journal entries for that boot and no
+  alert. `deploy/mount-watchdog/` detects the signature (service enabled but
+  inactive, mount not present), replays the incident's proven manual
+  recovery (re-announce the device to udev, clear the affected units' failed
+  state, restart), and logs an `ALERT` line if recovery itself fails — the
+  same role `deploy/incus-watchdog/` plays for a different silent-failure
+  class in `incusd`.
+
 ### Changed
 
 - **Cross-tenant secret access now requires an explicitly granted scope.**

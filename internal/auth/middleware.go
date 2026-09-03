@@ -143,6 +143,12 @@ func (am *AuthMiddleware) HTTPMiddleware(next http.Handler) http.Handler {
 				mdPairs = append(mdPairs, MDKeyAct, string(encoded))
 			}
 		}
+		// #1678 — propagate the token's own jti the same way, so audit
+		// attribution (the first gRPC-side consumer) can name the acting
+		// credential without a new plumbing hop of its own.
+		if claims.ID != "" {
+			mdPairs = append(mdPairs, MDKeyJTI, claims.ID)
+		}
 		md := metadata.Pairs(mdPairs...)
 		ctx = metadata.NewOutgoingContext(ctx, md)
 

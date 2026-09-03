@@ -1032,9 +1032,22 @@ type SpawnRequest struct {
 	Cwd string `protobuf:"bytes,3,opt,name=cwd,proto3" json:"cwd,omitempty"`
 	// How to capture this process's output (#1674). UNSPECIFIED/omitted ->
 	// COMBINED, so every existing caller is unaffected.
-	CaptureMode   CaptureMode `protobuf:"varint,4,opt,name=capture_mode,json=captureMode,proto3,enum=containarium.v1.CaptureMode" json:"capture_mode,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	CaptureMode CaptureMode `protobuf:"varint,4,opt,name=capture_mode,json=captureMode,proto3,enum=containarium.v1.CaptureMode" json:"capture_mode,omitempty"`
+	// Provenance for the run record (#1699): who the caller says authorized
+	// this run, and the JSON-serialized delegation chain behind it (the
+	// auth.Actor shape from #1677).
+	//
+	// CALLER-ASSERTED, not verified here. agent-box has no authenticated
+	// context on either of its transports — it is reached over SSH, or over a
+	// unix socket whose access control is filesystem permissions. These fields
+	// therefore carry the same trust as `command` beside them, and are
+	// deliberately WEAKER evidence than the audit store's server-resolved
+	// `actor` column (#1678). Both optional; empty means the run is recorded
+	// as unattributed rather than falsely attributed.
+	Actor           string `protobuf:"bytes,5,opt,name=actor,proto3" json:"actor,omitempty"`
+	DelegationChain string `protobuf:"bytes,6,opt,name=delegation_chain,json=delegationChain,proto3" json:"delegation_chain,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *SpawnRequest) Reset() {
@@ -1093,6 +1106,20 @@ func (x *SpawnRequest) GetCaptureMode() CaptureMode {
 		return x.CaptureMode
 	}
 	return CaptureMode_CAPTURE_MODE_UNSPECIFIED
+}
+
+func (x *SpawnRequest) GetActor() string {
+	if x != nil {
+		return x.Actor
+	}
+	return ""
+}
+
+func (x *SpawnRequest) GetDelegationChain() string {
+	if x != nil {
+		return x.DelegationChain
+	}
+	return ""
 }
 
 type SpawnResponse struct {
@@ -1338,12 +1365,14 @@ const file_containarium_v1_sandbox_proto_rawDesc = "" +
 	"\btemplate\x18\x01 \x01(\x0e2 .containarium.v1.SandboxTemplateR\btemplate\x12\x14\n" +
 	"\x05ready\x18\x02 \x01(\x05R\x05ready\x12\x18\n" +
 	"\awarming\x18\x03 \x01(\x05R\awarming\x12\x19\n" +
-	"\bmin_warm\x18\x04 \x01(\x05R\aminWarm\"\x8f\x01\n" +
+	"\bmin_warm\x18\x04 \x01(\x05R\aminWarm\"\xd0\x01\n" +
 	"\fSpawnRequest\x12\x18\n" +
 	"\acommand\x18\x01 \x01(\tR\acommand\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x10\n" +
 	"\x03cwd\x18\x03 \x01(\tR\x03cwd\x12?\n" +
-	"\fcapture_mode\x18\x04 \x01(\x0e2\x1c.containarium.v1.CaptureModeR\vcaptureMode\"P\n" +
+	"\fcapture_mode\x18\x04 \x01(\x0e2\x1c.containarium.v1.CaptureModeR\vcaptureMode\x12\x14\n" +
+	"\x05actor\x18\x05 \x01(\tR\x05actor\x12)\n" +
+	"\x10delegation_chain\x18\x06 \x01(\tR\x0fdelegationChain\"P\n" +
 	"\rSpawnResponse\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x10\n" +
 	"\x03pid\x18\x02 \x01(\x03R\x03pid\x12\x19\n" +

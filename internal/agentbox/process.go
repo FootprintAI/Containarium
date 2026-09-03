@@ -101,6 +101,12 @@ func processStartTool() mcp.Tool {
 		mcp.WithString("cwd",
 			mcp.Description("Working directory for the spawned process. Default: agent-box's cwd."),
 		),
+		mcp.WithString("actor",
+			mcp.Description("Optional provenance: the principal that authorized this run, recorded on the run record so a later reconnect can say who started it. CALLER-ASSERTED — agent-box cannot verify it (no authenticated context on this transport), so it is weaker evidence than a platform audit row. Omit rather than guess: empty records the run as unattributed, which is better than attributing it wrongly."),
+		),
+		mcp.WithString("delegation_chain",
+			mcp.Description("Optional JSON-serialized delegation chain behind `actor` (the act claim shape). Same caller-asserted caveat."),
+		),
 		mcp.WithString("capture_mode",
 			mcp.Description("How to capture stdout+stderr: 'combined' (default) writes plain text, "+
 				"readable with a plain tail/cat. 'framed' interleaves stdout and stderr as "+
@@ -126,7 +132,10 @@ func handleProcessStart(_ context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 		return mcp.NewToolResultError(fmt.Sprintf("process_start: %v", err)), nil
 	}
 
-	mp, err := spawnBackgroundProcess(name, command, cwd, captureMode)
+	actor, _ := args["actor"].(string)
+	delegationChain, _ := args["delegation_chain"].(string)
+
+	mp, err := spawnBackgroundProcess(name, command, cwd, captureMode, actor, delegationChain)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("process_start: %v", err)), nil
 	}
@@ -170,7 +179,7 @@ func (w *frameWriter) Write(p []byte) (int, error) {
 // SpawnService.Spawn (gRPC, #1488 Phase 2): one implementation, two
 // transports, so a caller reaching agent-box over the fast local socket
 // gets identical spawn/reap semantics to one reaching it over MCP/SSH.
-func spawnBackgroundProcess(name, command, cwd string, captureMode CaptureMode) (*managedProcess, error) {
+func spawnBackgroundProcess(name, command, cwd string, captureMode CaptureMode, actor, delegationChain string) (*managedProcess, error) {
 	if command == "" {
 		return nil, fmt.Errorf("'command' is required")
 	}
@@ -228,7 +237,12 @@ func spawnBackgroundProcess(name, command, cwd string, captureMode CaptureMode) 
 
 	// #nosec G204 -- spawning agent-supplied commands is the entire
 	// feature, on both transports this function serves.
-	cmd := exec.Command("/bin/sh", "-c", command)
+	// Wrap so the CHILD records its own exit status (#1693). The reap
+	// goroutine below only runs while this agent-box is alive, and
+	// agent-box dies with its SSH connection — so for a detached run (the
+	// whole point of #1672) nothing in-process survives to write the
+	// outcome. The setsid'd child does, so it writes the sidecar itself.
+	cmd := exec.Command("/bin/sh", "-c", wrapCommandWithExitSidecar(command, exitSidecarPath(logDir, name)))
 	if cwd != "" {
 		cmd.Dir = cwd
 	}
@@ -263,6 +277,11 @@ func spawnBackgroundProcess(name, command, cwd string, captureMode CaptureMode) 
 		CaptureMode: captureMode,
 		LogPath:     logPath,
 		StartedAt:   startedAt,
+		// Caller-asserted provenance (#1699) — see RunRecord.Actor for why
+		// this is not, and cannot be on this transport, an authenticated
+		// attribution.
+		Actor:           actor,
+		DelegationChain: delegationChain,
 	}
 	// Written before returning, so the run is discoverable even if the
 	// caller (or agent-box itself) dies immediately after this call. A run
@@ -356,6 +375,11 @@ func handleProcessList(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolR
 		fmt.Fprintf(&b, "%s %s  (pid %d, %s)\n", icon, r.Name, r.PID, outcome)
 		fmt.Fprintf(&b, "   Command:    %s\n", r.Command)
 		fmt.Fprintf(&b, "   Started at: %s\n", r.StartedAt.UTC().Format(time.RFC3339))
+		if r.Actor != "" {
+			// "asserted" is load-bearing: this is what the client claimed, not
+			// what the platform verified (#1699).
+			fmt.Fprintf(&b, "   Actor:      %s (asserted)\n", r.Actor)
+		}
 		if r.ExitCode != nil {
 			fmt.Fprintf(&b, "   Exit code:  %d\n", *r.ExitCode)
 		}

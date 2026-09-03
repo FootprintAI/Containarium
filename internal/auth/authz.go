@@ -22,11 +22,16 @@ import (
 // #1677 — `act` joined too. Unlike scopes it's a nested struct, not a
 // flat list, so it's carried as a single JSON-encoded string rather than
 // a delimited join.
+// #1678 — `jti` joined too, so audit rows can name the acting credential
+// ("given a token_id, what did it do"). It wasn't propagated before because
+// nothing needed it off the HTTP layer; the audit package is the first
+// gRPC-side consumer.
 const (
 	MDKeyUsername = "username"
 	MDKeyRoles    = "roles"
 	MDKeyScopes   = "scopes"
 	MDKeyAct      = "act"
+	MDKeyJTI      = "jti"
 )
 
 // RoleAdmin is the role granted to operator / system tokens. Holders
@@ -85,6 +90,19 @@ func ContextWithTestSubjectAct(ctx context.Context, username string, roles []str
 		}
 	}
 	md := metadata.Pairs(pairs...)
+	return metadata.NewIncomingContext(ctx, md)
+}
+
+// ContextWithTestJTI is a test-only helper that stamps a jti onto an
+// existing gRPC-incoming test context (e.g. one built by
+// ContextWithTestSubject or ContextWithTestSubjectAct), the same way a
+// chain of HTTP middleware would layer metadata onto a single request.
+// Merges into whatever metadata is already present rather than replacing
+// it, so it composes with the other ContextWithTestSubject* helpers. #1678.
+func ContextWithTestJTI(ctx context.Context, jti string) context.Context {
+	md, _ := metadata.FromIncomingContext(ctx)
+	md = md.Copy()
+	md.Set(MDKeyJTI, jti)
 	return metadata.NewIncomingContext(ctx, md)
 }
 
@@ -162,6 +180,24 @@ func ActFromGRPCContext(ctx context.Context) (act *Actor, present bool) {
 	return nil, false
 }
 
+// JTIFromGRPCContext returns the authenticated token's own `jti` claim
+// (#1678), propagated through metadata or context the same way
+// ActFromGRPCContext's claim is. Audit attribution is the first gRPC-side
+// consumer — nothing needed jti off the HTTP layer before. Returns ("",
+// false) when no jti was carried (pre-1.2 tokens minted without one, or a
+// caller that bypassed the standard mint path).
+func JTIFromGRPCContext(ctx context.Context) (jti string, present bool) {
+	if md, mdOk := metadata.FromIncomingContext(ctx); mdOk {
+		if vals := md.Get(MDKeyJTI); len(vals) > 0 && vals[0] != "" {
+			return vals[0], true
+		}
+	}
+	if j, found := JTIFromContext(ctx); found && j != "" {
+		return j, true
+	}
+	return "", false
+}
+
 // HasRole reports whether `roles` contains `wanted`.
 func HasRole(roles []string, wanted string) bool {
 	for _, r := range roles {
@@ -213,10 +249,10 @@ func RequireRoleOrScope(ctx context.Context, role, scope string) error {
 
 // RequireScope returns nil if the authenticated subject's JWT
 // carries the required scope (or no scopes claim at all, which
-// is the Phase 1.7 backwards-compat "unrestricted" path).
-// Returns Unauthenticated when no subject is in context and
-// PermissionDenied when scopes are explicitly granted but the
-// required one is missing.
+// is the Phase 1.7 backwards-compat "unrestricted" path — unless
+// strict mode is armed, see below). Returns Unauthenticated when
+// no subject is in context and PermissionDenied when scopes are
+// explicitly granted but the required one is missing.
 //
 // Use at the top of handlers AFTER the existing role check, not
 // instead of it. Roles and scopes are orthogonal: roles answer
@@ -226,11 +262,25 @@ func RequireRoleOrScope(ctx context.Context, role, scope string) error {
 // Phase 1.7b — pairs with the MCP-side filter landed in PR #250.
 // The MCP filter catches agent abuse before the network call;
 // this catches REST/gRPC callers who bypass MCP entirely.
+//
+// #1679 — every call whose token carries no scopes claim is
+// recorded (see UnscopedTokenCalls), regardless of mode, so an
+// operator can measure the unscoped population before opting in.
+// When StrictScopesEnabled(), such a call is rejected outright
+// instead of falling through to the backwards-compat unrestricted
+// path; IsStrictScopesDenial distinguishes that rejection from an
+// ordinary insufficient-scope denial.
 func RequireScope(ctx context.Context, required string) error {
 	if _, _, ok := SubjectFromGRPCContext(ctx); !ok {
 		return status.Error(codes.Unauthenticated, "no authenticated subject in request context")
 	}
-	scopes, _ := ScopesFromGRPCContext(ctx)
+	scopes, present := ScopesFromGRPCContext(ctx)
+	if !present {
+		recordUnscopedCall()
+		if StrictScopesEnabled() {
+			return status.Errorf(codes.PermissionDenied, "%s (scope required: %s) — mint a token with --scopes", strictScopesDenialPrefix, required)
+		}
+	}
 	if HasScope(scopes, required) {
 		return nil
 	}
