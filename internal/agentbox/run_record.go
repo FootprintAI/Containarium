@@ -256,7 +256,10 @@ func readRunRecord(name string) (record RunRecord, found bool, err error) {
 		return RunRecord{}, false, fmt.Errorf("run record %q: unsupported version %d (this agent-box supports %d)",
 			name, record.Version, RunRecordVersion)
 	}
-	return record, true, nil
+	// Fold in the child-written exit sidecar (#1693) when the record itself
+	// carries no outcome — the case for every run whose connection dropped
+	// before it finished, since the in-process reaper died with it.
+	return applyExitSidecar(processLogDir, record), true, nil
 }
 
 // rotatedRecordSuffix matches the ".<started-at-unix-seconds>.json" suffix
@@ -298,7 +301,10 @@ func listRunRecords() ([]RunRecord, error) {
 		if err := json.Unmarshal(data, &record); err != nil || record.Version != RunRecordVersion {
 			continue // malformed or an incompatible version; skip rather than fail the whole list
 		}
-		records = append(records, record)
+		// Same sidecar fold as readRunRecord (#1693): process_list is the
+		// surface a reconnecting client actually calls, so a run that
+		// finished while disconnected must report its exit code here too.
+		records = append(records, applyExitSidecar(processLogDir, record))
 	}
 	return records, nil
 }
@@ -321,6 +327,16 @@ func rotateFinishedRun(record RunRecord) error {
 	newLogPath := strings.TrimSuffix(oldLogPath, ".log") + suffix + ".log"
 	if err := os.Rename(oldLogPath, newLogPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("rotate log %q: %w", record.Name, err)
+	}
+
+	// The exit sidecar (#1693) rotates with its record. Leaving it in place
+	// would let the NEXT run under this name inherit the previous run's exit
+	// code the moment applyExitSidecar looks — reporting a still-running run
+	// as long since finished.
+	oldExitPath := exitSidecarPath(processLogDir, record.Name)
+	newExitPath := strings.TrimSuffix(oldExitPath, ".exit") + suffix + ".exit"
+	if err := os.Rename(oldExitPath, newExitPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("rotate exit sidecar %q: %w", record.Name, err)
 	}
 	return nil
 }

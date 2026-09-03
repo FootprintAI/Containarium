@@ -228,7 +228,12 @@ func spawnBackgroundProcess(name, command, cwd string, captureMode CaptureMode) 
 
 	// #nosec G204 -- spawning agent-supplied commands is the entire
 	// feature, on both transports this function serves.
-	cmd := exec.Command("/bin/sh", "-c", command)
+	// Wrap so the CHILD records its own exit status (#1693). The reap
+	// goroutine below only runs while this agent-box is alive, and
+	// agent-box dies with its SSH connection — so for a detached run (the
+	// whole point of #1672) nothing in-process survives to write the
+	// outcome. The setsid'd child does, so it writes the sidecar itself.
+	cmd := exec.Command("/bin/sh", "-c", wrapCommandWithExitSidecar(command, exitSidecarPath(logDir, name)))
 	if cwd != "" {
 		cmd.Dir = cwd
 	}
