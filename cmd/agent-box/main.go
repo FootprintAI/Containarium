@@ -66,6 +66,14 @@ func main() {
 		os.Exit(agentbox.RunComposeCLI(os.Args[2:], os.Stdout, os.Stderr))
 	}
 
+	// `agent-box frame <stream> <log>` — the child-side framer for framed
+	// capture (#1701). Not a user-facing verb: spawnBackgroundProcess starts
+	// it inside the run's own setsid'd shell so framing survives agent-box
+	// exiting, which is precisely what the in-process frameWriter did not.
+	if len(os.Args) >= 2 && os.Args[1] == "frame" {
+		os.Exit(agentbox.RunFrameCLI(os.Args[2:], os.Stdin, os.Stderr))
+	}
+
 	mcpServer := server.NewMCPServer(
 		"containarium-agent-box",
 		version.Version,

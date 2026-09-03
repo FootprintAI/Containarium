@@ -19,7 +19,7 @@ func TestExitSidecar_ChildRecordsItsOwnExit_NoReaperInvolved(t *testing.T) {
 
 	// Run the wrapped command to completion with NO Go-side reaper at all —
 	// this is what a detached run looks like after agent-box has exited.
-	wrapped := wrapCommandWithExitSidecar("echo hi; exit 7", sidecar)
+	wrapped := buildRunScript("echo hi; exit 7", sidecar, nil)
 	cmd := exec.Command("/bin/sh", "-c", wrapped)
 	cmd.Stdout, cmd.Stderr = nil, nil
 	err := cmd.Run()
@@ -136,7 +136,7 @@ func TestExitSidecar_KilledRunStaysUnknown(t *testing.T) {
 	name := "killed"
 	sidecar := exitSidecarPath(dir, name)
 
-	cmd := exec.Command("/bin/sh", "-c", wrapCommandWithExitSidecar("sleep 30", sidecar))
+	cmd := exec.Command("/bin/sh", "-c", buildRunScript("sleep 30", sidecar, nil))
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +156,7 @@ func TestExitSidecar_KilledRunStaysUnknown(t *testing.T) {
 	}
 }
 
-func TestWrapCommandWithExitSidecar_QuotesThePath(t *testing.T) {
+func TestBuildRunScript_QuotesThePath(t *testing.T) {
 	dir := t.TempDir()
 	// A directory with a single quote in it would break naive concatenation.
 	odd := filepath.Join(dir, "it's a dir")
@@ -164,7 +164,7 @@ func TestWrapCommandWithExitSidecar_QuotesThePath(t *testing.T) {
 		t.Fatal(err)
 	}
 	sidecar := exitSidecarPath(odd, "q")
-	cmd := exec.Command("/bin/sh", "-c", wrapCommandWithExitSidecar("exit 4", sidecar))
+	cmd := exec.Command("/bin/sh", "-c", buildRunScript("exit 4", sidecar, nil))
 	_ = cmd.Run()
 
 	code, _, found := readExitSidecar(odd, "q")
@@ -173,9 +173,9 @@ func TestWrapCommandWithExitSidecar_QuotesThePath(t *testing.T) {
 	}
 }
 
-func TestWrapCommandWithExitSidecar_LeavesNoTempBehind(t *testing.T) {
+func TestBuildRunScript_LeavesNoTempBehind(t *testing.T) {
 	dir := t.TempDir()
-	cmd := exec.Command("/bin/sh", "-c", wrapCommandWithExitSidecar("exit 0", exitSidecarPath(dir, "t")))
+	cmd := exec.Command("/bin/sh", "-c", buildRunScript("exit 0", exitSidecarPath(dir, "t"), nil))
 	_ = cmd.Run()
 
 	entries, err := os.ReadDir(dir)
