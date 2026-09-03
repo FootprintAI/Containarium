@@ -105,57 +105,10 @@ silently win over it.`,
 	RunE: runCodeInstall,
 }
 
-var codeRunCmd = &cobra.Command{
-	Use:   "run <box>",
-	Short: "Start a coding agent on a box and stream its output as it's produced",
-	Long: `Starts claude on <box> with --prompt, detached (it survives this command's
-own connection dying — see Killing the local client does not kill the run,
-below), and streams its output to your terminal as it's produced: not
-buffered to completion, and with no timeout on the run itself.
-
-A mid-run network drop is recovered automatically by resuming at the last
-byte offset seen — nothing is re-issued, nothing is lost or duplicated.
-Killing this command (Ctrl-C, closing the laptop) does NOT kill the run;
-reconnect with 'containarium code attach <box>'.
-
-Requires the box to already have Claude Code installed and credentialed —
-see 'containarium code install <box>'.`,
-	Args: cobra.ExactArgs(1),
-	RunE: runCodeRun,
-}
-
-var codeAttachCmd = &cobra.Command{
-	Use:   "attach <box>",
-	Short: "Reconnect to a running (or just-finished) run and replay its output",
-	Long: `Reconnects to the run 'containarium code run' started (or one dispatched
-another way with the same --name) and replays everything it has produced
-since it started, byte-exact, then keeps streaming until it exits or you
-disconnect again.`,
-	Args: cobra.ExactArgs(1),
-	RunE: runCodeAttach,
-}
-
-var codeStatusCmd = &cobra.Command{
-	Use:   "status <box>",
-	Short: "Report a run's liveness and, once finished, its exit code",
-	Long: `Reports whether the run is still alive and, once it has finished
-(including a run that finished while you were disconnected), its exit
-code — 'unknown' rather than a false "finished" if the box died before
-recording one.`,
-	Args: cobra.ExactArgs(1),
-	RunE: runCodeStatus,
-}
-
-var codeStopCmd = &cobra.Command{
-	Use:   "stop <box>",
-	Short: "Stop a run and leave its log readable",
-	Long: `Sends SIGTERM (or SIGKILL with --force) to the run and reaps it. The log
-stays on the box, readable via 'containarium code status' or another
-'code attach'.`,
-	Args: cobra.ExactArgs(1),
-	RunE: runCodeStop,
-}
-
+// codeRunCmd, codeAttachCmd, codeStatusCmd, codeStopCmd and their RunE
+// handlers are defined in code_run.go (the resumable-reader core, #1674) —
+// declared there rather than here since they're wired into codeCmd below
+// alongside codeInstallCmd (#1673).
 func init() {
 	rootCmd.AddCommand(codeCmd)
 	codeCmd.PersistentFlags().StringVar(&codeSSHServer, "ssh-server", "", "server to talk to for box resolution / SSH-key authorization (default: --server / CONTAINARIUM_SERVER, else your logged-in server) — deliberately NOT named --server: that flag already means \"the daemon secrets are read from\", and this can legitimately differ (e.g. a cloud-fronted login server vs. a direct daemon address)")
