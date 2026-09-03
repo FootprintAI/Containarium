@@ -58,6 +58,8 @@ func WriteConfig(path string, g Generated, force bool) (backedUp bool, err error
 		if readErr == nil {
 			// Best-effort: a failed backup must not block the write, but a
 			// successful one is reported so the caller can say where it went.
+			// #nosec G703 -- the sink for the same caller-supplied path: writing
+			// "<their config>.bak" beside it is precisely this function's contract.
 			if os.WriteFile(path+".bak", prev, 0o600) == nil {
 				backedUp = true
 			}
