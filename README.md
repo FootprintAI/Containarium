@@ -123,6 +123,30 @@ Agent has no MCP client? Run it *inside* the box instead — see
 [docs/integrations/pi.md](docs/integrations/pi.md) for the
 [pi](https://pi.dev) walkthrough (installs, keys, code sync, sessions).
 
+Or let the box run the agent itself:
+
+```bash
+containarium code install alice          # Claude Code onto a box you already use
+containarium code run alice --prompt "add a health endpoint and run the tests"
+```
+
+`code run` streams output to your terminal as it is produced — but it is not a
+pipe. The run is detached on the box, its output captured to a log, and your
+terminal is a *resumable reader* over that log. Close your laptop, lose wifi,
+Ctrl-C: the run keeps going, and `containarium code attach alice` picks the
+stream back up **byte-exact** — nothing missing, nothing repeated.
+
+```bash
+containarium code attach alice   # reconnect; replays what you missed
+containarium code status alice   # liveness, and the exit code once it finishes
+containarium code stop alice     # reap it; the log stays readable
+```
+
+The difference from the MCP wiring above is where the agent runs. There, the
+agent is on your laptop and reaches into the box; here, the agent *is* on the
+box — so the work survives your machine sleeping, and the tests run next to the
+code instead of over a network hop.
+
 ### 5. Make it reachable on a public hostname
 
 ```bash
@@ -183,6 +207,7 @@ verbs:
 
 ```
 containarium create             Create a new container
+containarium code               Run a coding agent ON a box (install / run / attach / status / stop)
 containarium list               List all containers
 containarium delete             Delete a container
 containarium expose-port        Expose container:port on a public hostname
