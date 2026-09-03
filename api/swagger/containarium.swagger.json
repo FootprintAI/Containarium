@@ -6181,6 +6181,30 @@
         ]
       }
     },
+    "/v1/tokens/unscoped-report": {
+      "get": {
+        "summary": "Report how many recent calls used an unscoped token",
+        "description": "Returns the in-process count of RequireScope calls whose token carried no scopes claim, since the first such call was observed (resets on daemon restart), plus whether CONTAINARIUM_STRICT_SCOPES is currently armed. Meant to be checked before arming strict mode, so the rollout is a measured decision. Admin-only with the tokens:read scope.",
+        "operationId": "TokensService_GetUnscopedTokenReport",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetUnscopedTokenReportResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "tags": [
+          "Tokens"
+        ]
+      }
+    },
     "/v1/traffic/subscribe": {
       "get": {
         "summary": "Subscribe to traffic events",
@@ -10554,6 +10578,25 @@
           "title": "Aggregated traffic data"
         }
       }
+    },
+    "GetUnscopedTokenReportResponse": {
+      "type": "object",
+      "properties": {
+        "unscopedCallCount": {
+          "type": "string",
+          "format": "int64",
+          "description": "Number of RequireScope calls, since since_ (or 0 if none observed yet),\nwhose token carried no `scopes` claim at all — the population strict\nmode would start rejecting."
+        },
+        "since": {
+          "type": "string",
+          "description": "RFC3339 timestamp of the first such call observed. Empty if\nunscoped_call_count is 0. This is an in-process measurement with no\npersistence layer — it resets on daemon restart, so it always answers\n\"since this daemon process started\" (or since the first unscoped call\nwithin that lifetime), never a longer historical window."
+        },
+        "strictModeEnabled": {
+          "type": "boolean",
+          "description": "Whether CONTAINARIUM_STRICT_SCOPES is currently armed on this daemon."
+        }
+      },
+      "description": "GetUnscopedTokenReportResponse answers \"how many recent calls used an\nunscoped token\" — the measurement #1679's strict-mode rollout depends on:\nan operator should be able to see the blast radius BEFORE arming\nCONTAINARIUM_STRICT_SCOPES, not discover it from a wave of denials after."
     },
     "GetUpgradeStatusResponse": {
       "type": "object",

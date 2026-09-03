@@ -384,6 +384,13 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 		return nil, fmt.Errorf("token manager: %w", err)
 	}
 
+	// #1679 — opt-in strict scopes: armed, RequireScope rejects a token
+	// with no scopes claim instead of treating it as unrestricted. Off by
+	// default (auth.SetStrictScopes(false) is also the zero value, but set
+	// explicitly so re-running New on an already-armed process — tests —
+	// doesn't leave a stale true from a previous daemon instance).
+	auth.SetStrictScopes(appconfig.LoadAuth().StrictScopes)
+
 	// Create auth middleware
 	authMiddleware := auth.NewAuthMiddleware(tokenManager)
 
@@ -2413,7 +2420,11 @@ func (ds *DualServer) Start(ctx context.Context) error {
 	// Lazy: no token is minted until a consumer first calls Token().
 	svcTokens := newServiceTokenSource(
 		func() (string, error) {
-			return ds.tokenManager.GenerateToken("_system", []string{"admin"}, serviceTokenTTL)
+			// #1679 — explicit wildcard scope: this token drives peers'
+			// admin-only endpoints, so it needs full surface access, and
+			// strict mode (once armed) would otherwise reject it outright
+			// as unscoped.
+			return ds.tokenManager.GenerateToken("_system", []string{"admin"}, serviceTokenTTL, auth.ScopeWildcard)
 		},
 		serviceTokenTTL, serviceTokenRenewBefore,
 	)

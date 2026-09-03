@@ -113,6 +113,32 @@ message ListRevokedTokensResponse {
   repeated Revocation revocations = 1;
 }
 
+// GetUnscopedTokenReportRequest takes no parameters — the report always
+// covers the daemon's whole in-process measurement window (see the response
+// fields), not an operator-chosen range.
+message GetUnscopedTokenReportRequest {}
+
+// GetUnscopedTokenReportResponse answers "how many recent calls used an
+// unscoped token" — the measurement #1679's strict-mode rollout depends on:
+// an operator should be able to see the blast radius BEFORE arming
+// CONTAINARIUM_STRICT_SCOPES, not discover it from a wave of denials after.
+message GetUnscopedTokenReportResponse {
+  // Number of RequireScope calls, since since_ (or 0 if none observed yet),
+  // whose token carried no `scopes` claim at all — the population strict
+  // mode would start rejecting.
+  int64 unscoped_call_count = 1;
+
+  // RFC3339 timestamp of the first such call observed. Empty if
+  // unscoped_call_count is 0. This is an in-process measurement with no
+  // persistence layer — it resets on daemon restart, so it always answers
+  // "since this daemon process started" (or since the first unscoped call
+  // within that lifetime), never a longer historical window.
+  string since = 2;
+
+  // Whether CONTAINARIUM_STRICT_SCOPES is currently armed on this daemon.
+  bool strict_mode_enabled = 3;
+}
+
 // TokensService is the admin surface for JWT lifecycle.
 //
 // RevokeToken requires an admin role + tokens:write scope;
@@ -168,6 +194,20 @@ service TokensService {
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "List active token revocations";
       description: "Returns revocation rows ordered most-recent-first. Default scope is non-expired revocations only; pass include_expired=true for forensic enumeration. Admin-only with the tokens:write scope.";
+      tags: "Tokens";
+    };
+  }
+
+  // GetUnscopedTokenReport reports how many recent calls used a token with
+  // no scopes claim — the measured-rollout deliverable for #1679's strict
+  // mode. Same gate as ListRevokedTokens: admin-only + tokens:read scope.
+  rpc GetUnscopedTokenReport(GetUnscopedTokenReportRequest) returns (GetUnscopedTokenReportResponse) {
+    option (google.api.http) = {
+      get: "/v1/tokens/unscoped-report"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Report how many recent calls used an unscoped token";
+      description: "Returns the in-process count of RequireScope calls whose token carried no scopes claim, since the first such call was observed (resets on daemon restart), plus whether CONTAINARIUM_STRICT_SCOPES is currently armed. Meant to be checked before arming strict mode, so the rollout is a measured decision. Admin-only with the tokens:read scope.";
       tags: "Tokens";
     };
   }

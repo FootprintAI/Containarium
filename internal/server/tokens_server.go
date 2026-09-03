@@ -246,3 +246,23 @@ func (s *TokensServer) ListRevokedTokens(ctx context.Context, req *pb.ListRevoke
 	}
 	return out, nil
 }
+
+// GetUnscopedTokenReport reports how many recent calls used a token with no
+// scopes claim — the measured-rollout deliverable for #1679's strict mode.
+// Same read-path gate as ListRevokedTokens (#621): admin by role, or a
+// least-privilege token with tokens:read.
+func (s *TokensServer) GetUnscopedTokenReport(ctx context.Context, _ *pb.GetUnscopedTokenReportRequest) (*pb.GetUnscopedTokenReportResponse, error) {
+	if err := auth.RequireRoleOrScope(ctx, auth.RoleAdmin, auth.ScopeTokensRead); err != nil {
+		return nil, err
+	}
+
+	report := auth.UnscopedTokenCalls()
+	resp := &pb.GetUnscopedTokenReportResponse{
+		UnscopedCallCount: report.Count,
+		StrictModeEnabled: auth.StrictScopesEnabled(),
+	}
+	if !report.Since.IsZero() {
+		resp.Since = report.Since.UTC().Format(time.RFC3339)
+	}
+	return resp, nil
+}

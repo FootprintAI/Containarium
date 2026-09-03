@@ -27,7 +27,17 @@ jobs:
       - name: Run gosec
         uses: securego/gosec@master
         with:
-          args: '-no-fail -fmt sarif -out gosec-results.sarif ./...'
+          # -exclude-generated: generated protobuf/grpc-gateway stubs
+          # (pkg/pb/**) are never hand-edited (CLAUDE.md) and carry ~130
+          # pre-existing gosec findings (G103 unsafe.Slice in reflection
+          # code, G101 false-positive "hardcoded credential" hits on any
+          # *Token*_FullMethodName constant) that are permanently
+          # unactionable there. Without this flag, a PR that merely adds a
+          # new RPC can shift const-block gofmt alignment enough for
+          # GitHub's code-scanning diff view to treat pre-existing lines as
+          # "new to this PR" and fail the gosec required check on
+          # unrelated, unfixable findings — as happened on PR #1691.
+          args: '-no-fail -exclude-generated -fmt sarif -out gosec-results.sarif ./...'
 
       - name: Upload SARIF results
         uses: github/codeql-action/upload-sarif@v3
