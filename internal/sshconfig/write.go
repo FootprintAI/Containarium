@@ -54,7 +54,7 @@ func WriteConfig(path string, g Generated, force bool) (backedUp bool, err error
 	// Only worth backing up a file that has something in it — a .bak of an
 	// empty file is noise the operator has to reason about later.
 	if info, statErr := os.Stat(path); statErr == nil && info.Size() > 0 {
-		prev, readErr := os.ReadFile(path) // #nosec G304 -- path is the caller's own config path
+		prev, readErr := os.ReadFile(path) // #nosec G304 G703 -- path is the caller's own --out/default config path, already stat'd above; reading it back to make a .bak is this function's job
 		if readErr == nil {
 			// Best-effort: a failed backup must not block the write, but a
 			// successful one is reported so the caller can say where it went.
