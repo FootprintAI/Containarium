@@ -40,10 +40,12 @@ var ErrProcessNameInUse = errors.New("process name already in use")
 // /tmp/agent-box/<name>.log so even after the process exits the agent
 // can still read what it produced (until /tmp gets cleared).
 
-const (
-	processLogDir       = "/tmp/agent-box"
-	processKillWaitTime = 2 * time.Second
-)
+// processLogDir is a var, not a const, so tests can point it at t.TempDir()
+// (#1672 design doc, finding A1) — run-record tests assert on-disk state
+// and must stay isolated from the real /tmp/agent-box to be parallel-safe.
+var processLogDir = "/tmp/agent-box"
+
+const processKillWaitTime = 2 * time.Second
 
 type managedProcess struct {
 	Name      string
@@ -59,6 +61,14 @@ var (
 	processRegistry   = make(map[string]*managedProcess)
 	processRegistryMu sync.Mutex
 )
+
+// reapWG tracks in-flight reap goroutines (cmd.Wait() + the final
+// writeRunRecordAt). Production has no reason to wait on it — the whole
+// point of async reaping is not blocking the caller — but tests that kill a
+// process and then tear down its (TempDir-backed) processLogDir need to
+// know the reaper's write has actually landed first; see
+// waitForReapersForTest.
+var reapWG sync.WaitGroup
 
 func registerProcessTools(s *server.MCPServer) {
 	s.AddTool(processStartTool(), handleProcessStart)
@@ -138,13 +148,42 @@ func spawnBackgroundProcess(name, command, cwd string) (*managedProcess, error) 
 		return nil, fmt.Errorf("%w: a process named %q is already running; kill it first or pick a different name", ErrProcessNameInUse, name)
 	}
 
-	if err := os.MkdirAll(processLogDir, 0o750); err != nil {
-		return nil, fmt.Errorf("mkdir %s: %w", processLogDir, err)
+	// Collision check against durable records, not just the in-memory
+	// registry: after a reconnect the registry is empty, so without this a
+	// reused name would pass the check above and O_TRUNC the previous run's
+	// log below — destroying exactly the output #1672 exists to preserve.
+	if existing, found, err := readRunRecord(name); err != nil {
+		return nil, fmt.Errorf("check existing run record for %q: %w", name, err)
+	} else if found {
+		switch ResolveOutcome(existing, bootID, isAlive) {
+		case RunOutcomeRunning, RunOutcomeUnknown:
+			// unknown is refused too: it is the only evidence of an
+			// unresolved run (A2), and destroying it here would make that
+			// run's outcome unrecoverable forever.
+			return nil, fmt.Errorf("%w: a process named %q is already running; kill it first or pick a different name", ErrProcessNameInUse, name)
+		case RunOutcomeExited:
+			if err := rotateFinishedRun(existing); err != nil {
+				return nil, fmt.Errorf("rotate finished run %q: %w", name, err)
+			}
+		}
 	}
-	logPath := filepath.Join(processLogDir, sanitizeName(name)+".log")
+
+	// Captured once, here, and used for the rest of this run's lifecycle
+	// (including the async reap goroutine below) instead of re-reading the
+	// processLogDir package var later: that var may legitimately be a
+	// different value by the time the reaper runs (tests repoint it per
+	// test; nothing stops a future caller from doing the same), and an
+	// unsynchronized cross-goroutine read of it would be a data race
+	// regardless.
+	logDir := processLogDir
+	if err := os.MkdirAll(logDir, 0o750); err != nil {
+		return nil, fmt.Errorf("mkdir %s: %w", logDir, err)
+	}
+	logPath := filepath.Join(logDir, sanitizeName(name)+".log")
 	// #nosec G304 -- sanitizeName strips every char outside [A-Za-z0-9_.-],
-	// so logPath is always /tmp/agent-box/<safe>.log. Path traversal is
-	// not reachable from this construction.
+	// so logPath is always logDir/<safe>.log (logDir is /tmp/agent-box in
+	// production, a test's own TempDir in tests). Path traversal is not
+	// reachable from this construction.
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open log %s: %w", logPath, err)
@@ -167,11 +206,33 @@ func spawnBackgroundProcess(name, command, cwd string) (*managedProcess, error) 
 		return nil, fmt.Errorf("spawn: %w", err)
 	}
 
+	startedAt := time.Now()
+	record := RunRecord{
+		Version:     RunRecordVersion,
+		Name:        name,
+		PID:         cmd.Process.Pid,
+		BootID:      bootID,
+		Command:     command,
+		Cwd:         cwd,
+		CaptureMode: CaptureCombined,
+		LogPath:     logPath,
+		StartedAt:   startedAt,
+	}
+	// Written before returning, so the run is discoverable even if the
+	// caller (or agent-box itself) dies immediately after this call. A run
+	// that can't be durably recorded is exactly the pre-#1672 bug, so this
+	// fails the spawn rather than silently degrading back to it.
+	if err := writeRunRecordAt(logDir, record); err != nil {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		_ = logFile.Close()
+		return nil, fmt.Errorf("write run record: %w", err)
+	}
+
 	mp := &managedProcess{
 		Name:      name,
 		PID:       cmd.Process.Pid,
 		Command:   command,
-		StartedAt: time.Now(),
+		StartedAt: startedAt,
 		LogPath:   logPath,
 		cmd:       cmd,
 	}
@@ -180,9 +241,29 @@ func spawnBackgroundProcess(name, command, cwd string) (*managedProcess, error) 
 	// Reap exit asynchronously so we don't accumulate zombies. We don't
 	// remove the entry from the registry on exit — a list call can still
 	// surface it as not-alive, and the log file remains readable.
+	reapWG.Add(1)
 	go func() {
+		defer reapWG.Done()
 		_ = cmd.Wait()
 		_ = logFile.Close()
+
+		// Record the outcome instead of discarding it (the second finding
+		// #1672 fixes). ProcessState is set by Wait() whenever it actually
+		// waited on the process — including a signaled exit, where
+		// ExitCode() reports -1 rather than a WIFSIGNALED detail; either
+		// way ExitCode becomes non-nil, so ResolveOutcome reports "exited"
+		// rather than leaving the run's fate undetermined.
+		finishedAt := time.Now()
+		exitCode := cmd.ProcessState.ExitCode()
+		finished := record
+		finished.FinishedAt = &finishedAt
+		finished.ExitCode = &exitCode
+		// Best-effort: the process has already exited either way, and a
+		// write failure here (disk full, box dying) leaves the run
+		// correctly classified as "unknown" (A2) rather than silently
+		// "exited" — never a false clean exit. writeRunRecordAt(logDir, ...)
+		// — not writeRunRecord — deliberately: see the logDir comment above.
+		_ = writeRunRecordAt(logDir, finished)
 	}()
 
 	return mp, nil
@@ -203,31 +284,39 @@ func processListTool() mcp.Tool {
 }
 
 func handleProcessList(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	processRegistryMu.Lock()
-	procs := make([]*managedProcess, 0, len(processRegistry))
-	for _, mp := range processRegistry {
-		procs = append(procs, mp)
+	// Sourced from durable records, not processRegistry: the registry is
+	// per-agent-box-instance and empty after a reconnect, but a run started
+	// by a PRIOR instance must still be reported here (#1672) — including
+	// one that finished while no client was connected at all.
+	records, err := listRunRecords()
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("process_list: %v", err)), nil
 	}
-	processRegistryMu.Unlock()
 
-	if len(procs) == 0 {
+	if len(records) == 0 {
 		return mcp.NewToolResultText("No background processes registered.\n"), nil
 	}
 
-	sort.Slice(procs, func(i, j int) bool { return procs[i].StartedAt.Before(procs[j].StartedAt) })
+	sort.Slice(records, func(i, j int) bool { return records[i].StartedAt.Before(records[j].StartedAt) })
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "Found %d process(es):\n\n", len(procs))
-	for _, mp := range procs {
-		alive := isAlive(mp.PID)
-		state := "alive"
-		if !alive {
-			state = "exited"
+	fmt.Fprintf(&b, "Found %d process(es):\n\n", len(records))
+	for _, r := range records {
+		outcome := ResolveOutcome(r, bootID, isAlive)
+		icon := "🟢"
+		if outcome != RunOutcomeRunning {
+			icon = "⚪"
 		}
-		fmt.Fprintf(&b, "🟢 %s  (pid %d, %s)\n", mp.Name, mp.PID, state)
-		fmt.Fprintf(&b, "   Command:    %s\n", mp.Command)
-		fmt.Fprintf(&b, "   Started at: %s\n", mp.StartedAt.UTC().Format(time.RFC3339))
-		fmt.Fprintf(&b, "   Log path:   %s\n", mp.LogPath)
+		fmt.Fprintf(&b, "%s %s  (pid %d, %s)\n", icon, r.Name, r.PID, outcome)
+		fmt.Fprintf(&b, "   Command:    %s\n", r.Command)
+		fmt.Fprintf(&b, "   Started at: %s\n", r.StartedAt.UTC().Format(time.RFC3339))
+		if r.ExitCode != nil {
+			fmt.Fprintf(&b, "   Exit code:  %d\n", *r.ExitCode)
+		}
+		if r.FinishedAt != nil {
+			fmt.Fprintf(&b, "   Finished at: %s\n", r.FinishedAt.UTC().Format(time.RFC3339))
+		}
+		fmt.Fprintf(&b, "   Log path:   %s\n", r.LogPath)
 		b.WriteString("\n")
 	}
 	return mcp.NewToolResultText(b.String()), nil
@@ -264,13 +353,45 @@ func handleProcessKill(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 	force, _ := args["force"].(bool)
 
 	processRegistryMu.Lock()
-	mp, ok := processRegistry[name]
-	if !ok {
-		processRegistryMu.Unlock()
-		return mcp.NewToolResultError(fmt.Sprintf("process_kill: no process named %q", name)), nil
+	mp, inRegistry := processRegistry[name]
+	if inRegistry {
+		delete(processRegistry, name)
 	}
-	delete(processRegistry, name)
 	processRegistryMu.Unlock()
+
+	var pid int
+	var logPath string
+	if inRegistry {
+		pid = mp.PID
+		logPath = mp.LogPath
+	} else {
+		// Not tracked by THIS agent-box instance — fall back to the durable
+		// record so a run started before a reconnect can still be found and
+		// stopped (#1672).
+		record, found, err := readRunRecord(name)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("process_kill: %v", err)), nil
+		}
+		if !found {
+			return mcp.NewToolResultError(fmt.Sprintf("process_kill: no process named %q", name)), nil
+		}
+		switch ResolveOutcome(record, bootID, isAlive) {
+		case RunOutcomeUnknown:
+			// Boot id mismatch (or the process died before the reaper could
+			// record its exit), so this PID may have been reassigned by the
+			// kernel — signaling it could kill an unrelated process. Refuse
+			// rather than guess (design doc, Part A).
+			return mcp.NewToolResultError(fmt.Sprintf(
+				"process_kill: %q's outcome is unknown (predates this boot, or exited before it could be recorded) — refusing to signal pid %d, which may have been reassigned by the kernel",
+				name, record.PID)), nil
+		case RunOutcomeExited:
+			return mcp.NewToolResultText(fmt.Sprintf(
+				"name: %s\npid: %d\nsignal: none\nexited: true\nlog_path: %s\n",
+				name, record.PID, record.LogPath)), nil
+		}
+		pid = record.PID
+		logPath = record.LogPath
+	}
 
 	sig := syscall.SIGTERM
 	signalName := "SIGTERM"
@@ -281,7 +402,7 @@ func handleProcessKill(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 	// Signal the entire process group so children also receive it.
 	// Setsid above made each process its own session/group leader, so
 	// PGID == PID and -PID targets the group.
-	if err := syscall.Kill(-mp.PID, sig); err != nil {
+	if err := syscall.Kill(-pid, sig); err != nil {
 		// If the process is already dead this returns ESRCH; that's
 		// not a failure — the agent's intent ("kill it") is satisfied.
 		if err != syscall.ESRCH {
@@ -290,10 +411,15 @@ func handleProcessKill(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 	}
 
 	// Best-effort wait for the process to actually exit so the agent's
-	// next process_list reflects reality.
+	// next process_list reflects reality. For a process this instance
+	// spawned, the reap goroutine records the exit code concurrently; for
+	// one recovered from a durable record only, we can't waitpid a
+	// non-child, so its record keeps ExitCode absent and later resolves to
+	// "unknown" — an honest report of "signaled, outcome not confirmed,"
+	// never a false clean exit.
 	deadline := time.Now().Add(processKillWaitTime)
 	for time.Now().Before(deadline) {
-		if !isAlive(mp.PID) {
+		if !isAlive(pid) {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -301,7 +427,7 @@ func handleProcessKill(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 
 	body := fmt.Sprintf(
 		"name: %s\npid: %d\nsignal: %s\nexited: %v\nlog_path: %s\n",
-		mp.Name, mp.PID, signalName, !isAlive(mp.PID), mp.LogPath,
+		name, pid, signalName, !isAlive(pid), logPath,
 	)
 	return mcp.NewToolResultText(body), nil
 }
@@ -344,4 +470,13 @@ func resetProcessRegistryForTest() {
 	processRegistryMu.Lock()
 	processRegistry = make(map[string]*managedProcess)
 	processRegistryMu.Unlock()
+}
+
+// waitForReapersForTest blocks until every currently in-flight reap
+// goroutine has finished its final writeRunRecordAt. A test that repoints
+// processLogDir at its own t.TempDir() must call this (killAllAndReset
+// does) before that directory gets torn down — otherwise a reaper can still
+// be writing into it after Go's t.TempDir() cleanup has already removed it.
+func waitForReapersForTest() {
+	reapWG.Wait()
 }
