@@ -9,6 +9,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`containarium code` — run a coding agent ON a box, not on your laptop**
+  (#1672, #1673, #1674). `code install` lands the Claude Code toolchain on a
+  box you already use, credential delivered via the secrets store so no
+  interactive login happens in a headless box. `code run` then starts the agent
+  **detached** and streams its output back.
+
+  It streams like a pipe but deliberately is not one: the run lives on the box
+  with its output captured to a log, and the terminal is a *resumable reader*
+  over that log. Close the laptop, lose wifi, Ctrl-C — the run continues, and
+  `code attach` resumes **byte-exact**, nothing missing and nothing repeated.
+  Verified live at 132,000 bytes across 25 forced mid-run disconnects.
+
+- **`code_run` / `code_attach` / `code_status` / `code_stop` MCP tools**
+  (#1698). The CLI verb shipped without an MCP counterpart, so an agent could
+  create a box but not start a coding run on one. MCP is request/response, so
+  these return a bounded output window plus `next_offset` — carrying that
+  offset forward is what makes an agent's reconnect lossless, the same property
+  the CLI gets from streaming. Scoped `code:write`: starting a run executes
+  arbitrary code on the box.
+
+- **Durable run records in `agent-box`** (#1672). A run's identity and outcome
+  now persist beside its log, so a *different* agent-box instance — after a
+  reconnect — can still answer "is it alive?" and "how did it end?". Records
+  carry a boot id, so a PID the kernel may have reassigned across a reboot is
+  never mistaken for a live run.
+
+- **Runs record who authorized them** (#1699). A detached agent run holding a
+  credential previously recorded who it ran *as*, never who *started* it.
+  Deliberately caller-asserted and labelled as such everywhere it appears —
+  agent-box has no authenticated context on either transport, so this is
+  weaker evidence than an audit row and must not be read as equivalent.
+
+### Fixed
+
+- **A detached run's exit status is no longer lost when the connection drops**
+  (#1693). The status was written by a goroutine inside agent-box, which dies
+  with its SSH connection — so *every* detached run reported `unknown` forever,
+  precisely the case durable records exist for. The child outlives the
+  connection, so the child now records its own outcome. A run killed outright
+  still reports `unknown`: an OOM must stay distinguishable from a clean exit.
+
+- **Framed capture no longer kills the run it is streaming** (#1701).
+  `--output-format stream-json` set `cmd.Stdout` to an `io.Writer` rather than
+  an `*os.File`, so `os/exec` inserted a pipe and a copier goroutine inside
+  agent-box; when the connection dropped, the child died of SIGPIPE on its next
+  write. Framing moved to the child's side of the fork, so a framed run now
+  survives a disconnect exactly as a combined one does.
+
+- **`ssh-config sync` will not wipe a working config with a zero-host run**
+  (#1695). Both the CLI and the MCP tool overwrote `~/.containarium/ssh_config`
+  with an empty file — and reported success — when the control plane returned
+  no containers. A zero-host result is far more often an expired credential or
+  an enumeration failure than an empty fleet, so it is now refused without
+  `--force`, the previous file is kept as `.bak`, and the write is atomic.
+
+- **Agent-skill tokens are bounded by the dispatcher's own grant** (#1676).
+  `RunAgentSkill` minted the skill manifest's `allowed_scopes` without
+  intersecting them against the caller's, making `agents:run` a universal
+  upgrade to any scope any installed skill declares.
+
 - **mount-watchdog: recover a `containarium.service` left permanently dead by
   a mount-dependency failure** (#1317). A host that gates
   `containarium.service` on external/encrypted storage via
