@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.71.0] - 2026-09-04
+
 ### Added
 
 - **`containarium code` — run a coding agent ON a box, not on your laptop**
