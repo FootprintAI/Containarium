@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/footprintai/containarium/internal/logframe"
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -803,4 +804,74 @@ func TestProcessStart_CapturesStdoutToLog(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Errorf("log file %s never contained 'hello from process'", logPath)
+}
+
+// TestProcessStart_FramedCaptureMode_DemuxesCleanly is the #1674 AC: in
+// framed mode the client reconstructs stdout and stderr separately from the
+// single on-disk byte stream. Spawns a process that writes to both streams,
+// then feeds the raw log bytes through logframe.Demuxer and checks each
+// stream's content landed on the right side.
+func TestProcessStart_FramedCaptureMode_DemuxesCleanly(t *testing.T) {
+	t.Cleanup(setProcessLogDirForTest(t.TempDir()))
+	t.Cleanup(func() { killAllAndReset(t) })
+
+	out, res := callTool(t, handleProcessStart, map[string]interface{}{
+		"command":      "echo out-line 1>&1; echo err-line 1>&2",
+		"name":         "framed-proc",
+		"capture_mode": "framed",
+	})
+	if res.IsError {
+		t.Fatalf("process_start returned an error:\n%s", out)
+	}
+	var logPath string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "log_path: ") {
+			logPath = strings.TrimPrefix(line, "log_path: ")
+			break
+		}
+	}
+	if logPath == "" {
+		t.Fatalf("no log_path in output:\n%s", out)
+	}
+
+	var stdout, stderr []byte
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(logPath)
+		if err != nil {
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		var d logframe.Demuxer
+		frames, derr := d.Write(data)
+		if derr != nil {
+			t.Fatalf("Demuxer.Write: %v\nraw log:\n%s", derr, data)
+		}
+		stdout, stderr = nil, nil
+		for _, f := range frames {
+			switch f.Stream {
+			case logframe.Stdout:
+				stdout = append(stdout, f.Payload...)
+			case logframe.Stderr:
+				stderr = append(stderr, f.Payload...)
+			}
+		}
+		if strings.Contains(string(stdout), "out-line") && strings.Contains(string(stderr), "err-line") {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Errorf("demuxed stdout=%q stderr=%q, want out-line on stdout and err-line on stderr", stdout, stderr)
+}
+
+func TestProcessStart_UnknownCaptureModeIsRejected(t *testing.T) {
+	t.Cleanup(setProcessLogDirForTest(t.TempDir()))
+	t.Cleanup(func() { killAllAndReset(t) })
+	_, res := callTool(t, handleProcessStart, map[string]interface{}{
+		"command":      "true",
+		"capture_mode": "bogus",
+	})
+	if !res.IsError {
+		t.Error("expected an error for an unrecognized capture_mode")
+	}
 }
