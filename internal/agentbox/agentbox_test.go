@@ -812,6 +812,9 @@ func TestProcessStart_CapturesStdoutToLog(t *testing.T) {
 // then feeds the raw log bytes through logframe.Demuxer and checks each
 // stream's content landed on the right side.
 func TestProcessStart_FramedCaptureMode_DemuxesCleanly(t *testing.T) {
+	// Framing is done by agent-box subprocesses (#1701), and under `go test`
+	// os.Executable() is the test binary — point the framers at a real one.
+	t.Setenv("AGENTBOX_SELF", buildAgentBoxForTest(t))
 	t.Cleanup(setProcessLogDirForTest(t.TempDir()))
 	t.Cleanup(func() { killAllAndReset(t) })
 

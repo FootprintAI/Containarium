@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,7 +13,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/footprintai/containarium/internal/logframe"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -45,7 +43,31 @@ var ErrProcessNameInUse = errors.New("process name already in use")
 // processLogDir is a var, not a const, so tests can point it at t.TempDir()
 // (#1672 design doc, finding A1) — run-record tests assert on-disk state
 // and must stay isolated from the real /tmp/agent-box to be parallel-safe.
-var processLogDir = "/tmp/agent-box"
+var processLogDir = defaultProcessLogDir()
+
+// defaultProcessLogDir resolves where run logs, records, and exit sidecars
+// live. AGENTBOX_LOG_DIR overrides it — needed by tests that run a REAL
+// agent-box subprocess (the only way to reproduce the parent-exit case behind
+// #1701, since an in-process spawn keeps the parent alive), and useful to an
+// operator who does not want run state on /tmp.
+// agentBoxSelfPath resolves the agent-box binary the framer children exec
+// (#1701). os.Executable() is right in production — agent-box spawns the run —
+// but it is whatever binary embeds this package, which is not agent-box under
+// `go test`, nor in any host process that imports agentbox as a library.
+// AGENTBOX_SELF names it explicitly for those cases.
+func agentBoxSelfPath() (string, error) {
+	if p := os.Getenv("AGENTBOX_SELF"); p != "" {
+		return p, nil
+	}
+	return os.Executable()
+}
+
+func defaultProcessLogDir() string {
+	if dir := os.Getenv("AGENTBOX_LOG_DIR"); dir != "" {
+		return dir
+	}
+	return "/tmp/agent-box"
+}
 
 const processKillWaitTime = 2 * time.Second
 
@@ -147,28 +169,6 @@ func handleProcessStart(_ context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 	return mcp.NewToolResultText(body), nil
 }
 
-// frameWriter writes to log with each Write call framed as one
-// internal/logframe record for stream (#1674, CaptureFramed). exec.Cmd
-// drives a process's Stdout and Stderr from two separate goroutines
-// concurrently; mu — shared between the stdout and stderr frameWriters for
-// one process — serializes their writes into logFile so frames from the
-// two streams never interleave mid-write, which is what keeps the single
-// on-disk byte stream's ordering meaningful for a demuxing reader.
-type frameWriter struct {
-	log    io.Writer
-	mu     *sync.Mutex
-	stream logframe.Stream
-}
-
-func (w *frameWriter) Write(p []byte) (int, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if _, err := w.log.Write(logframe.EncodeFrame(w.stream, p)); err != nil {
-		return 0, err
-	}
-	return len(p), nil
-}
-
 // spawnBackgroundProcess starts command under /bin/sh -c, detached via
 // Setsid, capturing stdout+stderr to a log file under processLogDir per
 // captureMode (#1674), and registers it in processRegistry under name
@@ -242,21 +242,37 @@ func spawnBackgroundProcess(name, command, cwd string, captureMode CaptureMode, 
 	// agent-box dies with its SSH connection — so for a detached run (the
 	// whole point of #1672) nothing in-process survives to write the
 	// outcome. The setsid'd child does, so it writes the sidecar itself.
-	cmd := exec.Command("/bin/sh", "-c", wrapCommandWithExitSidecar(command, exitSidecarPath(logDir, name)))
+	// Framed capture frames on the CHILD's side of the fork (#1701). Handing
+	// exec.Cmd an io.Writer instead of an *os.File makes it insert a pipe and
+	// a copier goroutine inside agent-box; when the SSH connection drops and
+	// agent-box exits, the child dies of SIGPIPE on its next write. So both
+	// modes now give the child a real descriptor: combined writes the log
+	// directly, framed writes FIFOs that setsid'd framer children drain.
+	var framing *framingSpec
+	if captureMode == CaptureFramed {
+		self, err := agentBoxSelfPath()
+		if err != nil {
+			_ = logFile.Close()
+			return nil, fmt.Errorf("locate agent-box for framed capture: %w", err)
+		}
+		framing = &framingSpec{
+			agentBox: self,
+			logPath:  logPath,
+			outFIFO:  filepath.Join(logDir, sanitizeName(name)+".out.fifo"),
+			errFIFO:  filepath.Join(logDir, sanitizeName(name)+".err.fifo"),
+		}
+	}
+
+	// #nosec G204 -- spawning agent-supplied commands is the entire feature.
+	cmd := exec.Command("/bin/sh", "-c", buildRunScript(command, exitSidecarPath(logDir, name), framing))
 	if cwd != "" {
 		cmd.Dir = cwd
 	}
-	if captureMode == CaptureFramed {
-		// Separate stdout/stderr writers exec.Cmd drives from two goroutines
-		// concurrently, sharing one mutex so their frames never interleave
-		// mid-write in logFile — see frameWriter's own doc comment.
-		var mu sync.Mutex
-		cmd.Stdout = &frameWriter{log: logFile, mu: &mu, stream: logframe.Stdout}
-		cmd.Stderr = &frameWriter{log: logFile, mu: &mu, stream: logframe.Stderr}
-	} else {
-		cmd.Stdout = logFile
-		cmd.Stderr = logFile
-	}
+	// Both modes hand the child a real *os.File. In framed mode the child's
+	// own stdout/stderr are redirected to the FIFOs by the script, so these
+	// only carry anything the script itself emits (e.g. an mkfifo failure).
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
 	// Detach from agent-box's process group so a child of the spawned
 	// process survives an agent-box restart and can be reaped later.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
