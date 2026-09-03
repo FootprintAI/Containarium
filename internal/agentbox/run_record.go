@@ -25,7 +25,15 @@ import (
 // RunRecordVersion is bumped when the on-disk shape changes incompatibly.
 // readRunRecord rejects a mismatched version rather than guessing at a
 // partially-compatible parse.
-const RunRecordVersion = 1
+const RunRecordVersion = 2
+
+// runRecordMinReadableVersion is the oldest on-disk shape this binary can
+// still read. v1 records predate the Actor/DelegationChain fields (#1699);
+// they load with those fields empty and report as unattributed, which is
+// correct — nothing recorded who started them. Rejecting them instead would
+// discard the only evidence of runs that died unresolved, which is exactly
+// the evidence #1672 exists to preserve.
+const runRecordMinReadableVersion = 1
 
 // RunOutcome classifies a run record against the current boot id and PID
 // liveness. See ResolveOutcome.
@@ -100,6 +108,23 @@ type RunRecord struct {
 	CaptureMode CaptureMode `json:"capture_mode"`
 	LogPath     string      `json:"log_path"`
 	StartedAt   time.Time   `json:"started_at"`
+
+	// Actor is the principal the caller says authorized this run, and
+	// DelegationChain the JSON-serialized auth.Actor chain behind it
+	// (#1699). Both are OPTIONAL and, on this transport, CALLER-ASSERTED:
+	// agent-box has no authenticated context to derive them from — it is
+	// reached over SSH (authenticated by the SSH session) or a unix socket
+	// (by filesystem permissions), never with a JWT. So these carry the same
+	// trust as the command string beside them: as much as you trust whoever
+	// reached this box.
+	//
+	// That is deliberately weaker than the audit store's `actor` column
+	// (#1678), which is resolved server-side from a verified delegation
+	// claim. Do not treat the two as equivalent evidence: this one answers
+	// "who does the client say started this?", not "who did the platform
+	// verify started this?".
+	Actor           string `json:"actor,omitempty"`
+	DelegationChain string `json:"delegation_chain,omitempty"`
 
 	// Written only by the reaper goroutine, at exit. Pointers on purpose:
 	// absent != zero, so a run that hasn't been reaped (or died before the
@@ -252,9 +277,12 @@ func readRunRecord(name string) (record RunRecord, found bool, err error) {
 	if err := json.Unmarshal(data, &record); err != nil {
 		return RunRecord{}, false, fmt.Errorf("parse run record %q: %w", name, err)
 	}
-	if record.Version != RunRecordVersion {
-		return RunRecord{}, false, fmt.Errorf("run record %q: unsupported version %d (this agent-box supports %d)",
-			name, record.Version, RunRecordVersion)
+	// Accept a RANGE, not an exact match. A newer binary must still read
+	// records an older one wrote, or a version bump silently orphans every
+	// in-flight run at upgrade time.
+	if record.Version < runRecordMinReadableVersion || record.Version > RunRecordVersion {
+		return RunRecord{}, false, fmt.Errorf("run record %q: unsupported version %d (this agent-box reads %d-%d)",
+			name, record.Version, runRecordMinReadableVersion, RunRecordVersion)
 	}
 	// Fold in the child-written exit sidecar (#1693) when the record itself
 	// carries no outcome — the case for every run whose connection dropped
@@ -298,7 +326,8 @@ func listRunRecords() ([]RunRecord, error) {
 			continue // best-effort: a file removed mid-scan isn't fatal to the listing
 		}
 		var record RunRecord
-		if err := json.Unmarshal(data, &record); err != nil || record.Version != RunRecordVersion {
+		if err := json.Unmarshal(data, &record); err != nil ||
+			record.Version < runRecordMinReadableVersion || record.Version > RunRecordVersion {
 			continue // malformed or an incompatible version; skip rather than fail the whole list
 		}
 		// Same sidecar fold as readRunRecord (#1693): process_list is the
