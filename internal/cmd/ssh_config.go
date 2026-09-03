@@ -17,6 +17,7 @@ var (
 	sshConfigUser           string
 	sshConfigIncludeStopped bool
 	sshConfigOutPath        string
+	sshConfigForce          bool
 )
 
 var sshConfigCmd = &cobra.Command{
@@ -82,6 +83,8 @@ func init() {
 			"Include stopped containers (default: only running)")
 	}
 
+	sshConfigSyncCmd.Flags().BoolVar(&sshConfigForce, "force", false,
+		"overwrite the config even when this run generated 0 hosts (a zero-host run is usually an expired credential, not an empty fleet)")
 	sshConfigSyncCmd.Flags().StringVar(&sshConfigOutPath, "out", "",
 		"Output path (default: ~/.containarium/ssh_config)")
 }
@@ -115,17 +118,20 @@ func runSSHConfigSync(cmd *cobra.Command, args []string) error {
 		out = filepath.Join(home, ".containarium", "ssh_config")
 	}
 
-	if err := os.MkdirAll(filepath.Dir(out), 0o700); err != nil {
-		return fmt.Errorf("mkdir %s: %w", filepath.Dir(out), err)
-	}
-	// 0600 — the file lists every host the user can SSH to. Treat it as
-	// sensitive so it doesn't leak in a backup or shared shell.
-	if err := os.WriteFile(out, []byte(g.Content), 0o600); err != nil {
-		return fmt.Errorf("write %s: %w", out, err)
+	// Atomic, backed up, and refuses to replace a real config with a
+	// zero-host generation — see sshconfig.WriteConfig. A run that
+	// enumerates nothing is usually a credential or control-plane
+	// problem, not an empty fleet.
+	backedUp, err := sshconfig.WriteConfig(out, g, sshConfigForce)
+	if err != nil {
+		return err
 	}
 
 	fmt.Printf("wrote %s (%d host(s), %d skipped stopped, %d skipped no-address)\n",
 		out, g.Count, g.SkippedStopped, g.SkippedNoAddr)
+	if backedUp {
+		fmt.Printf("previous config saved to %s.bak\n", out)
+	}
 	fmt.Println()
 	fmt.Println("If you haven't already, add this one line to ~/.ssh/config:")
 	fmt.Println()

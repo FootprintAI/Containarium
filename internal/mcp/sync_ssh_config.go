@@ -39,19 +39,29 @@ func handleSyncSSHConfig(client API, args map[string]interface{}) (string, error
 	}
 	gen := sshconfig.Generate(containers, opts)
 
-	if err := os.MkdirAll(filepath.Dir(out), 0o700); err != nil {
-		return "", fmt.Errorf("mkdir %s: %w", filepath.Dir(out), err)
-	}
-	// 0600 — the file lists every host the user can SSH to. Sensitive
-	// in the same sense their ssh_config is.
-	if err := os.WriteFile(out, []byte(gen.Content), 0o600); err != nil {
-		return "", fmt.Errorf("write %s: %w", out, err)
+	// Atomic, backed up, and refuses to replace a real config with a
+	// zero-host generation — see sshconfig.WriteConfig. This surface is
+	// where that guard matters most: an agent calling this tool has no
+	// eye on the file, so a wipe caused by an expired credential would
+	// pass unnoticed until someone's ssh aliases stopped resolving.
+	backedUp, err := sshconfig.WriteConfig(out, gen, getBoolArg(args, "force", false))
+	if err != nil {
+		return "", err
 	}
 
+	// A zero-host run is reported as a warning, not a success tick — it
+	// almost always means the caller could not see its boxes.
+	mark := "✅ Wrote"
+	if gen.Count == 0 {
+		mark = "⚠️  Wrote (0 hosts — check your credential)"
+	}
 	result := fmt.Sprintf(
-		"✅ Wrote %s\n   %d host(s) generated, %d skipped (stopped), %d skipped (no address)\n",
-		out, gen.Count, gen.SkippedStopped, gen.SkippedNoAddr,
+		"%s %s\n   %d host(s) generated, %d skipped (stopped), %d skipped (no address)\n",
+		mark, out, gen.Count, gen.SkippedStopped, gen.SkippedNoAddr,
 	)
+	if backedUp {
+		result += fmt.Sprintf("   previous config saved to %s.bak\n", out)
+	}
 	result += "\nIf this is the first run, add one line to your ~/.ssh/config:\n"
 	result += fmt.Sprintf("    Include %s\n", out)
 	result += "\nThen `ssh <container-name>` reaches the container."

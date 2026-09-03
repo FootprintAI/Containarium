@@ -1067,6 +1067,13 @@ func (s *Server) registerTools() {
 						"type":        "string",
 						"description": "Output path override. Default: ~/.containarium/ssh_config.",
 					},
+					"force": map[string]interface{}{
+						"type": "boolean",
+						"description": "Write even when this run generated 0 hosts. Off by default: a zero-host " +
+							"result usually means an expired credential or a control plane that cannot see " +
+							"your boxes, and overwriting a working config with it loses aliases you cannot " +
+							"regenerate. The previous file is kept as <out>.bak either way.",
+					},
 				},
 			},
 			Handler: handleSyncSSHConfig,
