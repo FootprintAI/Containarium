@@ -350,6 +350,28 @@ func (s *TokensServer) ExchangeDelegatedToken(ctx context.Context, req *pb.Excha
 		granted = callerScopes
 	}
 
+	// An empty intersection must NOT mint. This is the trap in the claim
+	// shape: HasScope treats an ABSENT scopes claim as unrestricted, and
+	// generate() omits the claim when it is handed zero scopes. So a token
+	// minted from an empty grant is not powerless — it is unlimited, which is
+	// the precise inversion of what the caller asked for and what the response
+	// would report.
+	//
+	// Concretely, before this check: a caller holding only tokens:delegate
+	// requests secrets:read, the intersection correctly yields nothing, the
+	// response honestly says granted_scopes=[], and the token it hands back
+	// passes RequireScope for every scope in the system.
+	//
+	// There is no way to express "no authority" in this claim, so refusing is
+	// the only correct answer. It also loses nothing: a token that genuinely
+	// carried zero scopes could not be used for anything.
+	if len(granted) == 0 {
+		return nil, status.Error(codes.PermissionDenied,
+			"the requested scopes intersect none of the caller's own, so this exchange "+
+				"would grant nothing; a token carrying no scopes claim reads as UNRESTRICTED "+
+				"rather than powerless, so it is refused instead of minted")
+	}
+
 	// A caller asking for longer than the daemon permits gets a shorter
 	// token, not a failure: generate() caps it internally, and failing here
 	// would make a working exchange depend on the client knowing the
