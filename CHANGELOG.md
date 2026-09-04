@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.72.0] - 2026-09-04
+
+### Added
+
+- **Mint a token that acts FOR another subject** — `POST /v1/tokens/delegate`,
+  `containarium token delegate` (containarium-cloud#1427). A service that
+  fronts this API for end users presents its own credential on every call, so
+  #1676's rule that an agent token is bounded by the caller's scopes binds
+  nothing when that caller is a shared service account, and #1678's audit
+  `actor` records the service rather than the person who asked.
+
+  `act` is a JWT claim and never a header (#1677), so the fronting service
+  cannot fix this itself: it holds no signing key, and handing it one would let
+  it mint any identity at all. It asks the daemon to mint instead.
+
+  Three invariants make that safe. Granted scopes are the **intersection** of
+  the caller's with those requested, so an exchange can only narrow authority.
+  `act` is built server-side from the authenticated caller and **wraps** the
+  caller's existing chain, so a multi-hop delegation nests rather than
+  flattening and `RootActor` still resolves to the human furthest from the
+  leaf. And it is gated on a new `tokens:delegate` scope, deliberately not
+  `tokens:write` — managing your own tokens and acting as another person are
+  different capabilities.
+
+  Unlike every other RPC, this one fails **closed** on a token carrying no
+  scopes claim, whatever `CONTAINARIUM_STRICT_SCOPES` is set to. Elsewhere that
+  claim is optional for backward compatibility (#1679) and safely so, because
+  the token's own authority still bounds a read or a mutation. Here the
+  caller's scopes *are* the ceiling being applied, and an absent claim would
+  mean no ceiling.
+
+### Fixed
+
+- **Sentinel logged a bind failure on every tunnel connect and reconnect**
+  (#1710, #1711). Any non-primary backend advertising the sentinel's HTTPS port
+  tried to open a per-spot loopback listener there, which the ConnMux's
+  wildcard listener on that port makes impossible. The exemption existed but
+  only covered tunnel-promoted primaries. HTTPS for every backend already
+  routes through `DialTunnel()` via the SNI router, so the listener was
+  dead-on-arrival in all cases; the exemption now covers every backend, and the
+  sentinel's configured `--https-port` is threaded through instead of relying
+  on a promoted primary's `PublicPort` matching it by coincidence.
+
+### Internal
+
+- **A release tag whose changelog and version constant disagree with it now
+  fails** (#1705). Two documented conventions that nothing enforced, each of
+  which had already failed silently three times: a `CHANGELOG.md` missing the
+  release it ships, and `pkg/version/version.go` left stale — 0.68, 0.69 and
+  0.70 all shipped with the constant reading 0.67.0. Both are one grep. A
+  failure here costs a re-tag; not checking costs a published release that
+  misrepresents itself, which cannot be taken back.
+
 ## [0.71.0] - 2026-09-04
 
 ### Added
