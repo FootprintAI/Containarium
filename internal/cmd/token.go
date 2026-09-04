@@ -33,6 +33,7 @@ var (
 	// `token delegate` flags (containarium-cloud#1427)
 	delegateSubject   string
 	delegateScopes    []string
+	delegateRoles     []string
 	delegateExpiry    string
 	delegateRawOutput bool
 
@@ -253,6 +254,7 @@ func init() {
 	tokenDelegateCmd.Flags().StringVar(&delegateSubject, "subject", "", "Subject to act on behalf of (required)")
 	_ = tokenDelegateCmd.MarkFlagRequired("subject")
 	tokenDelegateCmd.Flags().StringSliceVar(&delegateScopes, "scopes", nil, "Scopes to request (comma-separated). Omit to inherit your own; the server intersects either way, so this can only narrow.")
+	tokenDelegateCmd.Flags().StringSliceVar(&delegateRoles, "roles", nil, "Roles to request (comma-separated, e.g. admin). Intersected with your own. UNLIKE --scopes, omitting this grants NO roles rather than inheriting yours: a role-less token can act for its subject but cannot reach admin-gated RPCs or other tenants.")
 	tokenDelegateCmd.Flags().StringVar(&delegateExpiry, "expiry", "", "Lifetime of the delegated token (e.g. 5m, 1h). Empty = the daemon's access-token default.")
 	tokenDelegateCmd.Flags().BoolVar(&delegateRawOutput, "raw", false, "Output only the raw token (for scripting)")
 
@@ -481,7 +483,7 @@ func runTokenDelegate(cmd *cobra.Command, args []string) error {
 	}
 	defer func() { _ = httpClient.Close() }()
 
-	token, expiresAt, granted, err := httpClient.ExchangeDelegatedToken(subject, delegateScopes, expiresIn)
+	token, expiresAt, granted, grantedRoles, err := httpClient.ExchangeDelegatedToken(subject, delegateScopes, delegateRoles, expiresIn)
 	if err != nil {
 		return err
 	}
@@ -501,10 +503,17 @@ func runTokenDelegate(cmd *cobra.Command, args []string) error {
 	// Print what was GRANTED, not what was asked for. The two differ whenever
 	// the request exceeded the caller's own authority, and a silent narrowing
 	// is exactly the kind of surprise that shows up later as a confusing 403.
-	if len(granted) == 0 {
-		fmt.Printf("Scopes:      (none recorded — inherits the daemon's unscoped default)\n")
+	fmt.Printf("Scopes:      %s\n", strings.Join(granted, ", "))
+	// Printed even when empty, because empty is the normal result and its
+	// meaning is not obvious: the token can act for its own subject but
+	// cannot reach admin-gated RPCs or another tenant's resources.
+	if len(grantedRoles) == 0 {
+		fmt.Printf("Roles:       (none — acts for its own subject only)\n")
 	} else {
-		fmt.Printf("Scopes:      %s\n", strings.Join(granted, ", "))
+		fmt.Printf("Roles:       %s\n", strings.Join(grantedRoles, ", "))
+	}
+	if len(delegateRoles) > 0 && len(grantedRoles) < len(delegateRoles) {
+		fmt.Printf("\nNote: fewer roles granted than requested — you do not hold the rest.\n")
 	}
 	if len(delegateScopes) > 0 && len(granted) < len(delegateScopes) {
 		fmt.Printf("\nNote: fewer scopes granted than requested — your own token does not\n")

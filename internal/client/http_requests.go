@@ -198,6 +198,10 @@ type exchangeDelegatedTokenRequest struct {
 	// daemon intersects with the caller's scopes, so this can only narrow.
 	Scopes           []string `json:"scopes,omitempty"`
 	ExpiresInSeconds int64    `json:"expires_in_seconds,omitempty"`
+	// Roles requested. Intersected with the caller's, and — unlike scopes —
+	// empty means none rather than "inherit mine". A token with no roles can
+	// still act for its own subject but cannot reach admin-gated RPCs.
+	Roles []string `json:"roles,omitempty"`
 }
 
 // startEgressProxyRequest is POST /v1/network/egress-proxy (#808).

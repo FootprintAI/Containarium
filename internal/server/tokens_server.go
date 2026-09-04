@@ -332,7 +332,7 @@ func (s *TokensServer) ExchangeDelegatedToken(ctx context.Context, req *pb.Excha
 		return nil, status.Error(codes.InvalidArgument, "subject is required")
 	}
 
-	caller, _, ok := auth.SubjectFromGRPCContext(ctx)
+	caller, callerRoles, ok := auth.SubjectFromGRPCContext(ctx)
 	if !ok || caller == "" {
 		return nil, status.Error(codes.Unauthenticated, "no authenticated subject in request context")
 	}
@@ -386,7 +386,21 @@ func (s *TokensServer) ExchangeDelegatedToken(ctx context.Context, req *pb.Excha
 		ttl = time.Duration(secs) * time.Second
 	}
 
-	token, err := s.tokenManager.GenerateDelegatedToken(subject, nil, ttl, act, granted...)
+	// Roles, on the same rule as scopes: intersected with the caller's own,
+	// never unioned. IntersectRoles rather than IntersectScopes deliberately —
+	// the latter treats a nil caller as "no ceiling", which is right for
+	// scopes and would let a role-less caller mint an admin token here.
+	//
+	// An empty request yields no roles, and that is the intended default
+	// rather than an oversight. The two claims' absent-state semantics are
+	// opposite: an absent scopes claim reads as unrestricted (hence the
+	// refusal above), while an absent roles claim reads as no roles at all.
+	// Since empty is already the safe state for roles, the only way to get
+	// this wrong would be to inherit admin silently, so a caller that needs a
+	// role has to name it.
+	grantedRoles := auth.IntersectRoles(callerRoles, req.GetRoles())
+
+	token, err := s.tokenManager.GenerateDelegatedToken(subject, grantedRoles, ttl, act, granted...)
 	if err != nil {
 		// Depth violations are a client-correctable conflict (the chain is
 		// too long), not a server fault — surface them as such.
@@ -410,5 +424,6 @@ func (s *TokensServer) ExchangeDelegatedToken(ctx context.Context, req *pb.Excha
 		Token:         token,
 		ExpiresAt:     timestamppb.New(claims.ExpiresAt.Time),
 		GrantedScopes: granted,
+		GrantedRoles:  grantedRoles,
 	}, nil
 }

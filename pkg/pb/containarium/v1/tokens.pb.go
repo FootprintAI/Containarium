@@ -599,8 +599,24 @@ type ExchangeDelegatedTokenRequest struct {
 	// than rejected, so a caller asking for too long gets a shorter
 	// token instead of a failure.
 	ExpiresInSeconds int64 `protobuf:"varint,3,opt,name=expires_in_seconds,json=expiresInSeconds,proto3" json:"expires_in_seconds,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// Roles requested for the minted token. INTERSECTED with the
+	// caller's own roles, never unioned — the same rule scopes follow.
+	//
+	// Unlike scopes, empty means NO ROLES, not "inherit the caller's".
+	// The two differ because their absent-claim semantics are opposite:
+	// an absent scopes claim reads as unrestricted, so an empty scope
+	// grant is dangerous and the daemon refuses it; an absent roles
+	// claim reads as no roles at all (HasRole simply finds nothing), so
+	// empty is already the safe state. Given that, silently inheriting
+	// admin would be the only way to get this wrong, so a caller that
+	// needs a role has to say so.
+	//
+	// A token with no roles can still act for its own subject —
+	// AuthorizeTenant's self-access path does not consult roles — but
+	// cannot reach admin-gated RPCs or another tenant's resources.
+	Roles         []string `protobuf:"bytes,4,rep,name=roles,proto3" json:"roles,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ExchangeDelegatedTokenRequest) Reset() {
@@ -654,6 +670,13 @@ func (x *ExchangeDelegatedTokenRequest) GetExpiresInSeconds() int64 {
 	return 0
 }
 
+func (x *ExchangeDelegatedTokenRequest) GetRoles() []string {
+	if x != nil {
+		return x.Roles
+	}
+	return nil
+}
+
 type ExchangeDelegatedTokenResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The minted access token.
@@ -667,6 +690,10 @@ type ExchangeDelegatedTokenResponse struct {
 	// caller that assumes otherwise would fail later with a
 	// confusing permission error instead of here.
 	GrantedScopes []string `protobuf:"bytes,3,rep,name=granted_scopes,json=grantedScopes,proto3" json:"granted_scopes,omitempty"`
+	// The roles actually granted, after intersection. Empty is a normal
+	// and safe result: such a token still acts for its own subject, it
+	// just cannot reach admin-gated RPCs or other tenants.
+	GrantedRoles  []string `protobuf:"bytes,4,rep,name=granted_roles,json=grantedRoles,proto3" json:"granted_roles,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -722,6 +749,13 @@ func (x *ExchangeDelegatedTokenResponse) GetGrantedScopes() []string {
 	return nil
 }
 
+func (x *ExchangeDelegatedTokenResponse) GetGrantedRoles() []string {
+	if x != nil {
+		return x.GrantedRoles
+	}
+	return nil
+}
+
 var File_containarium_v1_tokens_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_tokens_proto_rawDesc = "" +
@@ -761,16 +795,18 @@ const file_containarium_v1_tokens_proto_rawDesc = "" +
 	"\x1eGetUnscopedTokenReportResponse\x12.\n" +
 	"\x13unscoped_call_count\x18\x01 \x01(\x03R\x11unscopedCallCount\x12\x14\n" +
 	"\x05since\x18\x02 \x01(\tR\x05since\x12.\n" +
-	"\x13strict_mode_enabled\x18\x03 \x01(\bR\x11strictModeEnabled\"\x7f\n" +
+	"\x13strict_mode_enabled\x18\x03 \x01(\bR\x11strictModeEnabled\"\x95\x01\n" +
 	"\x1dExchangeDelegatedTokenRequest\x12\x18\n" +
 	"\asubject\x18\x01 \x01(\tR\asubject\x12\x16\n" +
 	"\x06scopes\x18\x02 \x03(\tR\x06scopes\x12,\n" +
-	"\x12expires_in_seconds\x18\x03 \x01(\x03R\x10expiresInSeconds\"\x98\x01\n" +
+	"\x12expires_in_seconds\x18\x03 \x01(\x03R\x10expiresInSeconds\x12\x14\n" +
+	"\x05roles\x18\x04 \x03(\tR\x05roles\"\xbd\x01\n" +
 	"\x1eExchangeDelegatedTokenResponse\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x129\n" +
 	"\n" +
 	"expires_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\x12%\n" +
-	"\x0egranted_scopes\x18\x03 \x03(\tR\rgrantedScopes2\xe1\x13\n" +
+	"\x0egranted_scopes\x18\x03 \x03(\tR\rgrantedScopes\x12#\n" +
+	"\rgranted_roles\x18\x04 \x03(\tR\fgrantedRoles2\xe1\x13\n" +
 	"\rTokensService\x12\x85\x03\n" +
 	"\vRevokeToken\x12#.containarium.v1.RevokeTokenRequest\x1a$.containarium.v1.RevokeTokenResponse\"\xaa\x02\x92A\x8a\x02\n" +
 	"\x06Tokens\x12\x17Revoke a JWT by its jti\x1a\xe6\x01Adds the token's jti to the revocation list. The token will be rejected on the next request that tries to use it. Admin-only. Idempotent — revoking an already-revoked jti is a no-op (the original revocation reason is preserved).\x82\xd3\xe4\x93\x02\x16:\x01*\"\x11/v1/tokens/revoke\x12\xa7\x05\n" +

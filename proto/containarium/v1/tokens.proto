@@ -282,6 +282,23 @@ message ExchangeDelegatedTokenRequest {
   // than rejected, so a caller asking for too long gets a shorter
   // token instead of a failure.
   int64 expires_in_seconds = 3;
+
+  // Roles requested for the minted token. INTERSECTED with the
+  // caller's own roles, never unioned — the same rule scopes follow.
+  //
+  // Unlike scopes, empty means NO ROLES, not "inherit the caller's".
+  // The two differ because their absent-claim semantics are opposite:
+  // an absent scopes claim reads as unrestricted, so an empty scope
+  // grant is dangerous and the daemon refuses it; an absent roles
+  // claim reads as no roles at all (HasRole simply finds nothing), so
+  // empty is already the safe state. Given that, silently inheriting
+  // admin would be the only way to get this wrong, so a caller that
+  // needs a role has to say so.
+  //
+  // A token with no roles can still act for its own subject —
+  // AuthorizeTenant's self-access path does not consult roles — but
+  // cannot reach admin-gated RPCs or another tenant's resources.
+  repeated string roles = 4;
 }
 
 message ExchangeDelegatedTokenResponse {
@@ -298,4 +315,9 @@ message ExchangeDelegatedTokenResponse {
   // caller that assumes otherwise would fail later with a
   // confusing permission error instead of here.
   repeated string granted_scopes = 3;
+
+  // The roles actually granted, after intersection. Empty is a normal
+  // and safe result: such a token still acts for its own subject, it
+  // just cannot reach admin-gated RPCs or other tenants.
+  repeated string granted_roles = 4;
 }

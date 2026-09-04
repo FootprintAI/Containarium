@@ -905,34 +905,36 @@ func (c *HTTPClient) RevokeToken(jti, reason, expiresAt string) (string, error) 
 // Returns the token, its real expiry (read from the token's own exp claim
 // by the daemon, so it is safe to cache against), and the scopes actually
 // granted — which may be narrower than those requested.
-func (c *HTTPClient) ExchangeDelegatedToken(subject string, scopes []string, expiresIn time.Duration) (string, time.Time, []string, error) {
+func (c *HTTPClient) ExchangeDelegatedToken(subject string, scopes, roles []string, expiresIn time.Duration) (string, time.Time, []string, []string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	body, err := json.Marshal(exchangeDelegatedTokenRequest{
 		Subject:          subject,
 		Scopes:           scopes,
+		Roles:            roles,
 		ExpiresInSeconds: int64(expiresIn / time.Second),
 	})
 	if err != nil {
-		return "", time.Time{}, nil, fmt.Errorf("marshal request: %w", err)
+		return "", time.Time{}, nil, nil, fmt.Errorf("marshal request: %w", err)
 	}
 	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/tokens/delegate", body)
 	if err != nil {
-		return "", time.Time{}, nil, fmt.Errorf("exchange delegated token: %w", err)
+		return "", time.Time{}, nil, nil, fmt.Errorf("exchange delegated token: %w", err)
 	}
 	defer drainClose(resp)
 	b, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
-		return "", time.Time{}, nil, parseErr(b, resp.StatusCode, "exchange delegated token")
+		return "", time.Time{}, nil, nil, parseErr(b, resp.StatusCode, "exchange delegated token")
 	}
 	// protojson renders google.protobuf.Timestamp as an RFC3339 string.
 	var result struct {
 		Token         string   `json:"token"`
 		ExpiresAt     string   `json:"expiresAt"`
 		GrantedScopes []string `json:"grantedScopes"`
+		GrantedRoles  []string `json:"grantedRoles"`
 	}
 	if err := json.Unmarshal(b, &result); err != nil {
-		return "", time.Time{}, nil, fmt.Errorf("decode delegate response: %w", err)
+		return "", time.Time{}, nil, nil, fmt.Errorf("decode delegate response: %w", err)
 	}
 	var expiresAt time.Time
 	if result.ExpiresAt != "" {
@@ -940,7 +942,7 @@ func (c *HTTPClient) ExchangeDelegatedToken(subject string, scopes []string, exp
 		// carries its own exp. The caller loses only the ability to cache.
 		expiresAt, _ = time.Parse(time.RFC3339, result.ExpiresAt)
 	}
-	return result.Token, expiresAt, result.GrantedScopes, nil
+	return result.Token, expiresAt, result.GrantedScopes, result.GrantedRoles, nil
 }
 
 // SetSecret creates or updates a tenant secret via HTTP.

@@ -9847,6 +9847,13 @@
           "type": "string",
           "format": "int64",
           "description": "Lifetime in seconds. 0 uses the daemon's default access-token\nexpiry; values above the daemon's maximum are capped rather\nthan rejected, so a caller asking for too long gets a shorter\ntoken instead of a failure."
+        },
+        "roles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Roles requested for the minted token. INTERSECTED with the\ncaller's own roles, never unioned — the same rule scopes follow.\n\nUnlike scopes, empty means NO ROLES, not \"inherit the caller's\".\nThe two differ because their absent-claim semantics are opposite:\nan absent scopes claim reads as unrestricted, so an empty scope\ngrant is dangerous and the daemon refuses it; an absent roles\nclaim reads as no roles at all (HasRole simply finds nothing), so\nempty is already the safe state. Given that, silently inheriting\nadmin would be the only way to get this wrong, so a caller that\nneeds a role has to say so.\n\nA token with no roles can still act for its own subject —\nAuthorizeTenant's self-access path does not consult roles — but\ncannot reach admin-gated RPCs or another tenant's resources."
         }
       },
       "description": "ExchangeDelegatedTokenRequest asks for a token acting for `subject`."
@@ -9869,6 +9876,13 @@
             "type": "string"
           },
           "description": "The scopes actually granted, after intersection. Returned\nexplicitly because they may be NARROWER than requested, and a\ncaller that assumes otherwise would fail later with a\nconfusing permission error instead of here."
+        },
+        "grantedRoles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The roles actually granted, after intersection. Empty is a normal\nand safe result: such a token still acts for its own subject, it\njust cannot reach admin-gated RPCs or other tenants."
         }
       }
     },

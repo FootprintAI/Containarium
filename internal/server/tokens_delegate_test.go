@@ -276,3 +276,152 @@ func TestExchangeDelegatedToken_NeverMintsAnUnrestrictedToken(t *testing.T) {
 		})
 	}
 }
+
+// Roles follow the same rule as scopes — intersected with the caller's, never
+// unioned — but with the opposite empty-state default, because the two claims
+// mean opposite things when absent.
+
+func TestExchangeDelegatedToken_RolesAreIntersectedNotUnioned(t *testing.T) {
+	tm, err := auth.NewTokenManager(delegateTestSecret, "containarium-test")
+	if err != nil {
+		t.Fatalf("NewTokenManager: %v", err)
+	}
+	s := NewTokensServer(tm, nil, 0)
+
+	// The caller is a plain user. It asks for admin anyway.
+	ctx := auth.ContextWithTestSubjectAct(context.Background(), "cloud-daemon",
+		[]string{"user"}, nil)
+	md, _ := metadata.FromIncomingContext(ctx)
+	md = md.Copy()
+	md.Set(auth.MDKeyScopes, auth.ScopeTokensDelegate+","+auth.ScopeContainersRead)
+	ctx = metadata.NewIncomingContext(context.Background(), md)
+
+	resp, err := s.ExchangeDelegatedToken(ctx, &pb.ExchangeDelegatedTokenRequest{
+		Subject: "alice@example.com",
+		Scopes:  []string{auth.ScopeContainersRead},
+		Roles:   []string{auth.RoleAdmin},
+	})
+	if err != nil {
+		t.Fatalf("exchange: %v", err)
+	}
+	for _, r := range resp.GetGrantedRoles() {
+		if r == auth.RoleAdmin {
+			t.Fatal("granted admin to a caller that holds only the user role — roles were unioned, not intersected")
+		}
+	}
+	claims, err := tm.ValidateToken(resp.GetToken())
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if auth.HasRole(claims.Roles, auth.RoleAdmin) {
+		t.Fatalf("minted token carries admin; roles=%v", claims.Roles)
+	}
+}
+
+// The whole point of the roles field: an admin caller can pass admin through,
+// so the cloud driver's calls reach admin-gated RPCs and cross-tenant paths.
+// Without this the delegated token is useless for its actual purpose.
+func TestExchangeDelegatedToken_AdminCallerCanDelegateAdmin(t *testing.T) {
+	tm, err := auth.NewTokenManager(delegateTestSecret, "containarium-test")
+	if err != nil {
+		t.Fatalf("NewTokenManager: %v", err)
+	}
+	s := NewTokensServer(tm, nil, 0)
+	ctx := callerCtx("cloud-region-driver", []string{auth.ScopeWildcard}, nil)
+
+	resp, err := s.ExchangeDelegatedToken(ctx, &pb.ExchangeDelegatedTokenRequest{
+		Subject: "tenant-alice",
+		Scopes:  []string{auth.ScopeContainersRead, auth.ScopeContainersWrite},
+		Roles:   []string{auth.RoleAdmin},
+	})
+	if err != nil {
+		t.Fatalf("exchange: %v", err)
+	}
+	claims, err := tm.ValidateToken(resp.GetToken())
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if !auth.HasRole(claims.Roles, auth.RoleAdmin) {
+		t.Fatalf("admin was not delegated; roles=%v — cross-tenant and admin-gated RPCs stay unreachable", claims.Roles)
+	}
+	// And it must still be bounded by scopes, which is what makes carrying
+	// admin acceptable at all.
+	pctx := auth.ContextWithTestSubjectScopes(context.Background(),
+		claims.Username, claims.Roles, claims.Scopes)
+	if err := auth.RequireScope(pctx, auth.ScopeSecretsRead); err == nil {
+		t.Error("an admin-carrying delegated token reached a scope it was not granted")
+	}
+}
+
+// Absent roles must mean NO roles. If this ever inherits the caller's, every
+// delegated token silently becomes admin — the roles-shaped version of the
+// empty-scope bug above.
+func TestExchangeDelegatedToken_NoRolesRequestedMeansNoRoles(t *testing.T) {
+	tm, _ := auth.NewTokenManager(delegateTestSecret, "containarium-test")
+	s := NewTokensServer(tm, nil, 0)
+	ctx := callerCtx("cloud-region-driver", []string{auth.ScopeWildcard}, nil)
+
+	resp, err := s.ExchangeDelegatedToken(ctx, &pb.ExchangeDelegatedTokenRequest{
+		Subject: "tenant-alice",
+		Scopes:  []string{auth.ScopeContainersRead},
+	})
+	if err != nil {
+		t.Fatalf("exchange: %v", err)
+	}
+	claims, _ := tm.ValidateToken(resp.GetToken())
+	if len(claims.Roles) != 0 {
+		t.Fatalf("roles = %v, want none — a caller that did not ask for a role must not get one", claims.Roles)
+	}
+	// Such a token is still useful: it can act for its own subject.
+	pctx := auth.ContextWithTestSubjectScopes(context.Background(),
+		claims.Username, claims.Roles, claims.Scopes)
+	if err := auth.AuthorizeTenant(pctx, "tenant-alice"); err != nil {
+		t.Errorf("role-less token cannot act for its own subject: %v", err)
+	}
+	if err := auth.AuthorizeTenant(pctx, "tenant-bob"); err == nil {
+		t.Error("role-less token reached another tenant")
+	}
+}
+
+// The reuse trap, pinned. IntersectScopes treats a nil caller as "no ceiling"
+// and returns the requested set unchanged — correct for scopes, where an
+// absent claim means unrestricted. Applied to roles it means a caller holding
+// NO roles can mint an admin token, which is the whole escalation this
+// endpoint is supposed to prevent.
+//
+// The two functions agree on every case where the caller holds something, so a
+// test with a role-holding caller passes either way. This one does not.
+func TestExchangeDelegatedToken_RolelessCallerCannotMintARole(t *testing.T) {
+	tm, err := auth.NewTokenManager(delegateTestSecret, "containarium-test")
+	if err != nil {
+		t.Fatalf("NewTokenManager: %v", err)
+	}
+	s := NewTokensServer(tm, nil, 0)
+
+	// Authenticated and scoped, but holding no roles whatsoever.
+	md := metadata.Pairs(
+		auth.MDKeyUsername, "roleless-service",
+		auth.MDKeyRoles, "",
+		auth.MDKeyScopes, auth.ScopeTokensDelegate+","+auth.ScopeContainersRead,
+	)
+	ctx := metadata.NewIncomingContext(context.Background(), md)
+
+	resp, err := s.ExchangeDelegatedToken(ctx, &pb.ExchangeDelegatedTokenRequest{
+		Subject: "tenant-alice",
+		Scopes:  []string{auth.ScopeContainersRead},
+		Roles:   []string{auth.RoleAdmin},
+	})
+	if err != nil {
+		return // refusing outright is also correct
+	}
+	if len(resp.GetGrantedRoles()) != 0 {
+		t.Fatalf("granted %v to a caller holding no roles at all", resp.GetGrantedRoles())
+	}
+	claims, verr := tm.ValidateToken(resp.GetToken())
+	if verr != nil {
+		t.Fatalf("validate: %v", verr)
+	}
+	if auth.HasRole(claims.Roles, auth.RoleAdmin) {
+		t.Fatalf("a caller with no roles minted an admin token; roles=%v", claims.Roles)
+	}
+}

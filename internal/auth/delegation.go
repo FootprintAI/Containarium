@@ -1,6 +1,9 @@
 package auth
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Actor is the RFC 8693 "act" (actor) claim: the principal that actually
 // dispatched a token's mint, distinct from the token's own subject, when the
@@ -62,4 +65,45 @@ func RootActor(a *Actor) string {
 		a = a.Act
 	}
 	return a.Subject
+}
+
+// IntersectRoles returns the roles common to caller and requested.
+//
+// Deliberately NOT IntersectScopes with a different argument name. That
+// function treats a nil caller as "no ceiling" and passes the requested set
+// through unchanged, which is right for scopes — an absent scopes claim means
+// unrestricted — and catastrophically wrong for roles, where it would let a
+// caller holding no roles at all mint an admin token.
+//
+// Roles fail closed at every step here: no wildcard, and an empty result is a
+// normal outcome rather than something to widen. HasRole finds nothing in an
+// empty list, so a token minted with no roles simply cannot reach anything
+// gated on one.
+//
+// Returns a non-nil empty slice rather than nil so callers can range over it
+// without a check.
+func IntersectRoles(caller, requested []string) []string {
+	out := make([]string, 0, len(requested))
+	if len(caller) == 0 || len(requested) == 0 {
+		return out
+	}
+	held := make(map[string]struct{}, len(caller))
+	for _, r := range caller {
+		held[strings.TrimSpace(r)] = struct{}{}
+	}
+	seen := make(map[string]struct{}, len(requested))
+	for _, r := range requested {
+		r = strings.TrimSpace(r)
+		if r == "" {
+			continue
+		}
+		if _, dup := seen[r]; dup {
+			continue
+		}
+		if _, ok := held[r]; ok {
+			seen[r] = struct{}{}
+			out = append(out, r)
+		}
+	}
+	return out
 }
