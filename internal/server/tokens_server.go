@@ -3,12 +3,14 @@ package server
 import (
 	"context"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/footprintai/containarium/internal/auth"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Phase 1.2 follow-up — TokensService implementation. Pairs
@@ -265,4 +267,126 @@ func (s *TokensServer) GetUnscopedTokenReport(ctx context.Context, _ *pb.GetUnsc
 		resp.Since = report.Since.UTC().Format(time.RFC3339)
 	}
 	return resp, nil
+}
+
+// ExchangeDelegatedToken mints a token acting FOR another subject, on the
+// authority of the caller's own credential (containarium-cloud#1427).
+//
+// A service that fronts this API for end users — the cloud control plane is
+// the case that motivated it — presents its own service credential on every
+// call. #1676 bounds an agent token by the caller's scopes, but when the
+// caller is a shared service account that bound means nothing, and #1678's
+// audit `actor` records the service rather than the person. `act` is a JWT
+// claim and never a header (#1677), so the fronting service cannot assert it:
+// it holds no signing key, and giving it one would let it mint any identity.
+// It asks this daemon to mint instead.
+//
+// Two invariants make that safe, and they are the same two RunAgentSkill's
+// own delegated mint relies on:
+//
+//   - Granted scopes are the INTERSECTION of the caller's with those
+//     requested. An exchange can never widen authority — without this the
+//     endpoint is exactly the escalation primitive #1676 closed, reopened
+//     under a new name.
+//   - `act` is built server-side from the authenticated caller, wrapping the
+//     caller's own chain, so the delegation path is recorded rather than
+//     claimed.
+func (s *TokensServer) ExchangeDelegatedToken(ctx context.Context, req *pb.ExchangeDelegatedTokenRequest) (*pb.ExchangeDelegatedTokenResponse, error) {
+	// tokens:delegate, not tokens:write — acting as another subject is a
+	// distinct capability from managing your own tokens.
+	if err := auth.RequireScope(ctx, auth.ScopeTokensDelegate); err != nil {
+		return nil, err
+	}
+
+	// This endpoint FAILS CLOSED on an unscoped token, regardless of
+	// CONTAINARIUM_STRICT_SCOPES. Everywhere else a missing scopes claim is
+	// tolerated (#1679) so that tokens minted before scopes existed keep
+	// working; that tolerance is safe for a handler that merely reads or
+	// mutates, because the token's own authority still bounds the blast
+	// radius.
+	//
+	// It is NOT safe here. The ceiling below is the caller's scope set, and
+	// IntersectScopes treats a nil caller as unbounded — so an unscoped
+	// caller could ask for, and be granted, any scope in the system. That
+	// makes this endpoint the escalation primitive #1676 closed, reopened
+	// under a new name, with the fail-open as its trigger.
+	//
+	// The usual reason to fail open does not apply: this RPC is new, so
+	// there is no population of legacy callers to preserve. A fronting
+	// service must present a scoped credential — which is what
+	// containarium-cloud#1428 is separately doing to the cloud's own
+	// service token.
+	callerScopes, scopesPresent := auth.ScopesFromGRPCContext(ctx)
+	if !scopesPresent {
+		return nil, status.Error(codes.PermissionDenied,
+			"delegation requires a token carrying an explicit scopes claim: "+
+				"the granted set is bounded by the caller's own scopes, and an "+
+				"unscoped token has no bound to apply")
+	}
+
+	subject := strings.TrimSpace(req.GetSubject())
+	if subject == "" {
+		// An empty subject would mint an unattributed token — the exact
+		// state this endpoint exists to eliminate, so it is an error
+		// rather than a silent fallback to the caller's own identity.
+		return nil, status.Error(codes.InvalidArgument, "subject is required")
+	}
+
+	caller, _, ok := auth.SubjectFromGRPCContext(ctx)
+	if !ok || caller == "" {
+		return nil, status.Error(codes.Unauthenticated, "no authenticated subject in request context")
+	}
+
+	// The caller becomes the actor, wrapping whatever chain it already
+	// carries, so a multi-hop delegation nests instead of flattening. Never
+	// taken from the request — that is #1677's rule.
+	callerAct, _ := auth.ActFromGRPCContext(ctx)
+	act := &auth.Actor{Subject: caller, Act: callerAct}
+
+	granted := auth.IntersectScopes(callerScopes, req.GetScopes())
+	if len(req.GetScopes()) == 0 {
+		// No explicit request means "whatever I have" — still the caller's
+		// own set, never wider.
+		granted = callerScopes
+	}
+
+	// A caller asking for longer than the daemon permits gets a shorter
+	// token, not a failure: generate() caps it internally, and failing here
+	// would make a working exchange depend on the client knowing the
+	// daemon's configured maximum.
+	//
+	// An unspecified TTL is an access-token lifetime, NOT the daemon
+	// maximum. Passing 0 straight through would mint the longest-lived
+	// token the daemon allows for the least specific request — the wrong
+	// default for a credential handed to a fronting service.
+	ttl := auth.DefaultAccessTokenExpiry
+	if secs := req.GetExpiresInSeconds(); secs > 0 {
+		ttl = time.Duration(secs) * time.Second
+	}
+
+	token, err := s.tokenManager.GenerateDelegatedToken(subject, nil, ttl, act, granted...)
+	if err != nil {
+		// Depth violations are a client-correctable conflict (the chain is
+		// too long), not a server fault — surface them as such.
+		if strings.Contains(err.Error(), "delegation chain depth") {
+			return nil, status.Errorf(codes.FailedPrecondition, "mint delegated token: %v", err)
+		}
+		return nil, status.Errorf(codes.Internal, "mint delegated token: %v", err)
+	}
+
+	// Report the token's OWN exp rather than recomputing the deadline here.
+	// The manager caps a too-long TTL silently, so a locally derived
+	// timestamp can claim a validity the token does not have — and the
+	// caller caches against this value, so it would keep presenting a token
+	// the daemon already rejects.
+	claims, err := s.tokenManager.ValidateToken(token)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "minted token failed self-validation: %v", err)
+	}
+
+	return &pb.ExchangeDelegatedTokenResponse{
+		Token:         token,
+		ExpiresAt:     timestamppb.New(claims.ExpiresAt.Time),
+		GrantedScopes: granted,
+	}, nil
 }

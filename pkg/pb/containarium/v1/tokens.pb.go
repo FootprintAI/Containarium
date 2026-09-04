@@ -11,6 +11,7 @@ import (
 	_ "google.golang.org/genproto/googleapis/api/annotations"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -581,11 +582,151 @@ func (x *GetUnscopedTokenReportResponse) GetStrictModeEnabled() bool {
 	return false
 }
 
+// ExchangeDelegatedTokenRequest asks for a token acting for `subject`.
+type ExchangeDelegatedTokenRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The subject the minted token represents — the end user the
+	// caller is acting for. Required: an empty subject would mint
+	// an unattributed token, which is the state this endpoint
+	// exists to eliminate.
+	Subject string `protobuf:"bytes,1,opt,name=subject,proto3" json:"subject,omitempty"`
+	// Scopes requested for the minted token. INTERSECTED with the
+	// caller's own scopes, never unioned. Empty requests the
+	// caller's own scope set (still bounded by it).
+	Scopes []string `protobuf:"bytes,2,rep,name=scopes,proto3" json:"scopes,omitempty"`
+	// Lifetime in seconds. 0 uses the daemon's default access-token
+	// expiry; values above the daemon's maximum are capped rather
+	// than rejected, so a caller asking for too long gets a shorter
+	// token instead of a failure.
+	ExpiresInSeconds int64 `protobuf:"varint,3,opt,name=expires_in_seconds,json=expiresInSeconds,proto3" json:"expires_in_seconds,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *ExchangeDelegatedTokenRequest) Reset() {
+	*x = ExchangeDelegatedTokenRequest{}
+	mi := &file_containarium_v1_tokens_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExchangeDelegatedTokenRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExchangeDelegatedTokenRequest) ProtoMessage() {}
+
+func (x *ExchangeDelegatedTokenRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_tokens_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExchangeDelegatedTokenRequest.ProtoReflect.Descriptor instead.
+func (*ExchangeDelegatedTokenRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_tokens_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *ExchangeDelegatedTokenRequest) GetSubject() string {
+	if x != nil {
+		return x.Subject
+	}
+	return ""
+}
+
+func (x *ExchangeDelegatedTokenRequest) GetScopes() []string {
+	if x != nil {
+		return x.Scopes
+	}
+	return nil
+}
+
+func (x *ExchangeDelegatedTokenRequest) GetExpiresInSeconds() int64 {
+	if x != nil {
+		return x.ExpiresInSeconds
+	}
+	return 0
+}
+
+type ExchangeDelegatedTokenResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The minted access token.
+	Token string `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
+	// When it expires, so a caller can cache it rather than
+	// exchanging on every request — the round trip this endpoint
+	// adds is meant to be amortized per (subject, TTL).
+	ExpiresAt *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
+	// The scopes actually granted, after intersection. Returned
+	// explicitly because they may be NARROWER than requested, and a
+	// caller that assumes otherwise would fail later with a
+	// confusing permission error instead of here.
+	GrantedScopes []string `protobuf:"bytes,3,rep,name=granted_scopes,json=grantedScopes,proto3" json:"granted_scopes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExchangeDelegatedTokenResponse) Reset() {
+	*x = ExchangeDelegatedTokenResponse{}
+	mi := &file_containarium_v1_tokens_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExchangeDelegatedTokenResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExchangeDelegatedTokenResponse) ProtoMessage() {}
+
+func (x *ExchangeDelegatedTokenResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_tokens_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExchangeDelegatedTokenResponse.ProtoReflect.Descriptor instead.
+func (*ExchangeDelegatedTokenResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_tokens_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *ExchangeDelegatedTokenResponse) GetToken() string {
+	if x != nil {
+		return x.Token
+	}
+	return ""
+}
+
+func (x *ExchangeDelegatedTokenResponse) GetExpiresAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ExpiresAt
+	}
+	return nil
+}
+
+func (x *ExchangeDelegatedTokenResponse) GetGrantedScopes() []string {
+	if x != nil {
+		return x.GrantedScopes
+	}
+	return nil
+}
+
 var File_containarium_v1_tokens_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_tokens_proto_rawDesc = "" +
 	"\n" +
-	"\x1ccontainarium/v1/tokens.proto\x12\x0fcontainarium.v1\x1a\x1cgoogle/api/annotations.proto\x1a.protoc-gen-openapiv2/options/annotations.proto\"]\n" +
+	"\x1ccontainarium/v1/tokens.proto\x12\x0fcontainarium.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a.protoc-gen-openapiv2/options/annotations.proto\"]\n" +
 	"\x12RevokeTokenRequest\x12\x10\n" +
 	"\x03jti\x18\x01 \x01(\tR\x03jti\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\x12\x1d\n" +
@@ -620,10 +761,21 @@ const file_containarium_v1_tokens_proto_rawDesc = "" +
 	"\x1eGetUnscopedTokenReportResponse\x12.\n" +
 	"\x13unscoped_call_count\x18\x01 \x01(\x03R\x11unscopedCallCount\x12\x14\n" +
 	"\x05since\x18\x02 \x01(\tR\x05since\x12.\n" +
-	"\x13strict_mode_enabled\x18\x03 \x01(\bR\x11strictModeEnabled2\xb7\x0e\n" +
+	"\x13strict_mode_enabled\x18\x03 \x01(\bR\x11strictModeEnabled\"\x7f\n" +
+	"\x1dExchangeDelegatedTokenRequest\x12\x18\n" +
+	"\asubject\x18\x01 \x01(\tR\asubject\x12\x16\n" +
+	"\x06scopes\x18\x02 \x03(\tR\x06scopes\x12,\n" +
+	"\x12expires_in_seconds\x18\x03 \x01(\x03R\x10expiresInSeconds\"\x98\x01\n" +
+	"\x1eExchangeDelegatedTokenResponse\x12\x14\n" +
+	"\x05token\x18\x01 \x01(\tR\x05token\x129\n" +
+	"\n" +
+	"expires_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\x12%\n" +
+	"\x0egranted_scopes\x18\x03 \x03(\tR\rgrantedScopes2\xe1\x13\n" +
 	"\rTokensService\x12\x85\x03\n" +
 	"\vRevokeToken\x12#.containarium.v1.RevokeTokenRequest\x1a$.containarium.v1.RevokeTokenResponse\"\xaa\x02\x92A\x8a\x02\n" +
-	"\x06Tokens\x12\x17Revoke a JWT by its jti\x1a\xe6\x01Adds the token's jti to the revocation list. The token will be rejected on the next request that tries to use it. Admin-only. Idempotent — revoking an already-revoked jti is a no-op (the original revocation reason is preserved).\x82\xd3\xe4\x93\x02\x16:\x01*\"\x11/v1/tokens/revoke\x12\xf0\x03\n" +
+	"\x06Tokens\x12\x17Revoke a JWT by its jti\x1a\xe6\x01Adds the token's jti to the revocation list. The token will be rejected on the next request that tries to use it. Admin-only. Idempotent — revoking an already-revoked jti is a no-op (the original revocation reason is preserved).\x82\xd3\xe4\x93\x02\x16:\x01*\"\x11/v1/tokens/revoke\x12\xa7\x05\n" +
+	"\x16ExchangeDelegatedToken\x12..containarium.v1.ExchangeDelegatedTokenRequest\x1a/.containarium.v1.ExchangeDelegatedTokenResponse\"\xab\x04\x92A\x89\x04\n" +
+	"\x06Tokens\x12'Mint a token acting for another subject\x1a\xd5\x03Exchanges the caller's credential for a token whose subject is `subject` and whose `act` chain records the caller. Granted scopes are the intersection of the caller's own scopes with those requested — an exchange can never widen authority. Requires the `tokens:delegate` scope, on a token that carries an explicit scopes claim — an unscoped token is rejected here even when strict-scope enforcement is off, because the caller's scopes are the ceiling being applied.\x82\xd3\xe4\x93\x02\x18:\x01*\"\x13/v1/tokens/delegate\x12\xf0\x03\n" +
 	"\fRefreshToken\x12$.containarium.v1.RefreshTokenRequest\x1a%.containarium.v1.RefreshTokenResponse\"\x92\x03\x92A\xf1\x02\n" +
 	"\x06Tokens\x129Exchange a refresh token for a new (access, refresh) pair\x1a\xab\x02Validates the refresh token (signature + exp + tt='refresh' + not revoked), mints a new short-lived access token, mints a new long-lived refresh token, and revokes the input refresh token's jti. Refresh tokens are single-use; the new refresh token must be stored by the client for the next exchange.\x82\xd3\xe4\x93\x02\x17:\x01*\"\x12/v1/tokens/refresh\x12\xf2\x02\n" +
 	"\x11ListRevokedTokens\x12).containarium.v1.ListRevokedTokensRequest\x1a*.containarium.v1.ListRevokedTokensResponse\"\x85\x02\x92A\xe7\x01\n" +
@@ -643,7 +795,7 @@ func file_containarium_v1_tokens_proto_rawDescGZIP() []byte {
 	return file_containarium_v1_tokens_proto_rawDescData
 }
 
-var file_containarium_v1_tokens_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_containarium_v1_tokens_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_containarium_v1_tokens_proto_goTypes = []any{
 	(*RevokeTokenRequest)(nil),             // 0: containarium.v1.RevokeTokenRequest
 	(*RevokeTokenResponse)(nil),            // 1: containarium.v1.RevokeTokenResponse
@@ -654,22 +806,28 @@ var file_containarium_v1_tokens_proto_goTypes = []any{
 	(*ListRevokedTokensResponse)(nil),      // 6: containarium.v1.ListRevokedTokensResponse
 	(*GetUnscopedTokenReportRequest)(nil),  // 7: containarium.v1.GetUnscopedTokenReportRequest
 	(*GetUnscopedTokenReportResponse)(nil), // 8: containarium.v1.GetUnscopedTokenReportResponse
+	(*ExchangeDelegatedTokenRequest)(nil),  // 9: containarium.v1.ExchangeDelegatedTokenRequest
+	(*ExchangeDelegatedTokenResponse)(nil), // 10: containarium.v1.ExchangeDelegatedTokenResponse
+	(*timestamppb.Timestamp)(nil),          // 11: google.protobuf.Timestamp
 }
 var file_containarium_v1_tokens_proto_depIdxs = []int32{
-	4, // 0: containarium.v1.ListRevokedTokensResponse.revocations:type_name -> containarium.v1.Revocation
-	0, // 1: containarium.v1.TokensService.RevokeToken:input_type -> containarium.v1.RevokeTokenRequest
-	2, // 2: containarium.v1.TokensService.RefreshToken:input_type -> containarium.v1.RefreshTokenRequest
-	5, // 3: containarium.v1.TokensService.ListRevokedTokens:input_type -> containarium.v1.ListRevokedTokensRequest
-	7, // 4: containarium.v1.TokensService.GetUnscopedTokenReport:input_type -> containarium.v1.GetUnscopedTokenReportRequest
-	1, // 5: containarium.v1.TokensService.RevokeToken:output_type -> containarium.v1.RevokeTokenResponse
-	3, // 6: containarium.v1.TokensService.RefreshToken:output_type -> containarium.v1.RefreshTokenResponse
-	6, // 7: containarium.v1.TokensService.ListRevokedTokens:output_type -> containarium.v1.ListRevokedTokensResponse
-	8, // 8: containarium.v1.TokensService.GetUnscopedTokenReport:output_type -> containarium.v1.GetUnscopedTokenReportResponse
-	5, // [5:9] is the sub-list for method output_type
-	1, // [1:5] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	4,  // 0: containarium.v1.ListRevokedTokensResponse.revocations:type_name -> containarium.v1.Revocation
+	11, // 1: containarium.v1.ExchangeDelegatedTokenResponse.expires_at:type_name -> google.protobuf.Timestamp
+	0,  // 2: containarium.v1.TokensService.RevokeToken:input_type -> containarium.v1.RevokeTokenRequest
+	9,  // 3: containarium.v1.TokensService.ExchangeDelegatedToken:input_type -> containarium.v1.ExchangeDelegatedTokenRequest
+	2,  // 4: containarium.v1.TokensService.RefreshToken:input_type -> containarium.v1.RefreshTokenRequest
+	5,  // 5: containarium.v1.TokensService.ListRevokedTokens:input_type -> containarium.v1.ListRevokedTokensRequest
+	7,  // 6: containarium.v1.TokensService.GetUnscopedTokenReport:input_type -> containarium.v1.GetUnscopedTokenReportRequest
+	1,  // 7: containarium.v1.TokensService.RevokeToken:output_type -> containarium.v1.RevokeTokenResponse
+	10, // 8: containarium.v1.TokensService.ExchangeDelegatedToken:output_type -> containarium.v1.ExchangeDelegatedTokenResponse
+	3,  // 9: containarium.v1.TokensService.RefreshToken:output_type -> containarium.v1.RefreshTokenResponse
+	6,  // 10: containarium.v1.TokensService.ListRevokedTokens:output_type -> containarium.v1.ListRevokedTokensResponse
+	8,  // 11: containarium.v1.TokensService.GetUnscopedTokenReport:output_type -> containarium.v1.GetUnscopedTokenReportResponse
+	7,  // [7:12] is the sub-list for method output_type
+	2,  // [2:7] is the sub-list for method input_type
+	2,  // [2:2] is the sub-list for extension type_name
+	2,  // [2:2] is the sub-list for extension extendee
+	0,  // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_tokens_proto_init() }
@@ -683,7 +841,7 @@ func file_containarium_v1_tokens_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_tokens_proto_rawDesc), len(file_containarium_v1_tokens_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   9,
+			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

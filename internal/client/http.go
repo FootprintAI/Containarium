@@ -897,6 +897,52 @@ func (c *HTTPClient) RevokeToken(jti, reason, expiresAt string) (string, error) 
 	return result.Message, nil
 }
 
+// ExchangeDelegatedToken trades this client's own credential for a token
+// that acts FOR `subject` (containarium-cloud#1427). The caller must hold
+// the tokens:delegate scope, and the returned token can never carry more
+// scopes than the caller already had.
+//
+// Returns the token, its real expiry (read from the token's own exp claim
+// by the daemon, so it is safe to cache against), and the scopes actually
+// granted — which may be narrower than those requested.
+func (c *HTTPClient) ExchangeDelegatedToken(subject string, scopes []string, expiresIn time.Duration) (string, time.Time, []string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	body, err := json.Marshal(exchangeDelegatedTokenRequest{
+		Subject:          subject,
+		Scopes:           scopes,
+		ExpiresInSeconds: int64(expiresIn / time.Second),
+	})
+	if err != nil {
+		return "", time.Time{}, nil, fmt.Errorf("marshal request: %w", err)
+	}
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/tokens/delegate", body)
+	if err != nil {
+		return "", time.Time{}, nil, fmt.Errorf("exchange delegated token: %w", err)
+	}
+	defer drainClose(resp)
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return "", time.Time{}, nil, parseErr(b, resp.StatusCode, "exchange delegated token")
+	}
+	// protojson renders google.protobuf.Timestamp as an RFC3339 string.
+	var result struct {
+		Token         string   `json:"token"`
+		ExpiresAt     string   `json:"expiresAt"`
+		GrantedScopes []string `json:"grantedScopes"`
+	}
+	if err := json.Unmarshal(b, &result); err != nil {
+		return "", time.Time{}, nil, fmt.Errorf("decode delegate response: %w", err)
+	}
+	var expiresAt time.Time
+	if result.ExpiresAt != "" {
+		// A malformed timestamp is not fatal: the token itself is usable and
+		// carries its own exp. The caller loses only the ability to cache.
+		expiresAt, _ = time.Parse(time.RFC3339, result.ExpiresAt)
+	}
+	return result.Token, expiresAt, result.GrantedScopes, nil
+}
+
 // SetSecret creates or updates a tenant secret via HTTP.
 // `delivery` is one of "" (server normalizes to env), "env",
 // or "file" (Phase 4.3 — Phase A lands the field; Phase B

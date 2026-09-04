@@ -84,6 +84,15 @@ const (
 	// without `tokens:write` can't revoke either.
 	ScopeTokensWrite = "tokens:write"
 
+	// tokens:delegate — mint a token that acts FOR another subject
+	// (ExchangeDelegatedToken, containarium-cloud#1427). Deliberately
+	// SEPARATE from tokens:write: managing your own tokens and acting as
+	// someone else are different capabilities, and the second is the one
+	// that puts a name in an audit row. A service that fronts this API for
+	// end users needs exactly this and nothing else from the tokens
+	// surface, so it should be grantable on its own.
+	ScopeTokensDelegate = "tokens:delegate"
+
 	// agent skills (AgentSkillService). `agents:read` lists/inspects the
 	// skill catalog; `agents:run` provisions a skill's box and runs a task.
 	// A skill's OWN token is minted with only the scopes the skill declares
@@ -146,7 +155,7 @@ var AllScopes = []string{
 	ScopeAlertsRead, ScopeAlertsWrite,
 	ScopeTrafficRead,
 	ScopeCodeWrite, ScopeSSHWrite,
-	ScopeTokensWrite,
+	ScopeTokensWrite, ScopeTokensDelegate,
 	ScopeAgentsRead, ScopeAgentsRun, ScopeAgentsCall,
 	ScopeCrewsRead, ScopeCrewsRun,
 	ScopeClustersRead, ScopeClustersWrite, ScopeClustersScale,

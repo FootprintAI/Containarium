@@ -30,6 +30,12 @@ var (
 	refreshTokenIn   string
 	refreshTokenFile string
 
+	// `token delegate` flags (containarium-cloud#1427)
+	delegateSubject   string
+	delegateScopes    []string
+	delegateExpiry    string
+	delegateRawOutput bool
+
 	// `token list-revoked` flags
 	listRevokedLimit          int32
 	listRevokedIncludeExpired bool
@@ -178,6 +184,47 @@ Admin role + tokens:write scope required.`,
 	RunE: runTokenListRevoked,
 }
 
+// tokenDelegateCmd implements `containarium token delegate`
+// (containarium-cloud#1427) — trade your own credential for one that acts
+// FOR someone else.
+var tokenDelegateCmd = &cobra.Command{
+	Use:   "delegate",
+	Short: "Exchange your token for one acting on behalf of another subject",
+	Long: `Trade the credential you already hold for a short-lived token minted
+for another subject, with your identity recorded as the actor.
+
+This exists for a service that fronts the API for end users. Such a
+service presents its own service account on every call, so audit rows
+name the service rather than the person, and a scope check against the
+service account bounds nothing. Rather than hand that service a signing
+key — which would let it mint any identity at all — it asks the daemon
+to mint, and the daemon records the delegation itself.
+
+Two limits are enforced server-side and cannot be argued with:
+
+  - The granted scopes are the intersection of yours with those you
+    request. This exchange can only narrow authority, never widen it.
+  - The actor is taken from your authenticated token, never from the
+    request. You cannot name someone else as the delegator.
+
+Requires the tokens:delegate scope — deliberately distinct from
+tokens:write, because managing your own tokens and acting as another
+person are different capabilities.`,
+	Example: `  # Act for a user, inheriting every scope you hold
+  containarium token delegate --subject alice@example.com \
+    --server $S --token $T
+
+  # Narrow it further than your own token, and shorten the life
+  containarium token delegate --subject alice@example.com \
+    --scopes containers:read --expiry 5m \
+    --server $S --token $T
+
+  # For scripting: emit only the token
+  DELEGATED=$(containarium token delegate --subject alice@example.com \
+    --raw --server $S --token $T)`,
+	RunE: runTokenDelegate,
+}
+
 // tokenUnscopedReportCmd implements `containarium token
 // unscoped-report` (#1679) — the measurement to check before
 // arming CONTAINARIUM_STRICT_SCOPES.
@@ -201,6 +248,13 @@ func init() {
 	tokenCmd.AddCommand(tokenRefreshCmd)
 	tokenCmd.AddCommand(tokenListRevokedCmd)
 	tokenCmd.AddCommand(tokenUnscopedReportCmd)
+	tokenCmd.AddCommand(tokenDelegateCmd)
+
+	tokenDelegateCmd.Flags().StringVar(&delegateSubject, "subject", "", "Subject to act on behalf of (required)")
+	_ = tokenDelegateCmd.MarkFlagRequired("subject")
+	tokenDelegateCmd.Flags().StringSliceVar(&delegateScopes, "scopes", nil, "Scopes to request (comma-separated). Omit to inherit your own; the server intersects either way, so this can only narrow.")
+	tokenDelegateCmd.Flags().StringVar(&delegateExpiry, "expiry", "", "Lifetime of the delegated token (e.g. 5m, 1h). Empty = the daemon's access-token default.")
+	tokenDelegateCmd.Flags().BoolVar(&delegateRawOutput, "raw", false, "Output only the raw token (for scripting)")
 
 	tokenRefreshCmd.Flags().StringVar(&refreshTokenIn, "refresh-token", "", "Refresh token to exchange (mutually exclusive with --refresh-token-file)")
 	tokenRefreshCmd.Flags().StringVar(&refreshTokenFile, "refresh-token-file", "", "Path to file containing the refresh token (mode 0600 recommended)")
@@ -390,6 +444,73 @@ func runTokenRefresh(cmd *cobra.Command, args []string) error {
 	if refreshExp > 0 {
 		fmt.Printf("  Refresh expires: %s\n", time.Unix(refreshExp, 0).Format(time.RFC3339))
 	}
+	fmt.Printf("\n═══════════════════════════════════════════════════════════════\n\n")
+	return nil
+}
+
+// runTokenDelegate POSTs to /v1/tokens/delegate. Every safety decision —
+// scope intersection, actor construction, TTL capping — belongs to the
+// daemon; this handler only carries the request and reports what came back.
+func runTokenDelegate(cmd *cobra.Command, args []string) error {
+	if serverAddr == "" {
+		return fmt.Errorf("--server is required (the daemon holds the signing key, not the CLI)")
+	}
+	if authToken == "" {
+		return fmt.Errorf("--token is required (the delegated token is minted on ITS authority)")
+	}
+	subject := strings.TrimSpace(delegateSubject)
+	if subject == "" {
+		return fmt.Errorf("--subject is required")
+	}
+
+	var expiresIn time.Duration
+	if delegateExpiry != "" {
+		d, err := time.ParseDuration(delegateExpiry)
+		if err != nil {
+			return fmt.Errorf("invalid --expiry %q: %w", delegateExpiry, err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("--expiry must be positive (a delegated token is deliberately short-lived)")
+		}
+		expiresIn = d
+	}
+
+	httpClient, err := client.NewHTTPClient(serverAddr, authToken)
+	if err != nil {
+		return fmt.Errorf("create http client: %w", err)
+	}
+	defer func() { _ = httpClient.Close() }()
+
+	token, expiresAt, granted, err := httpClient.ExchangeDelegatedToken(subject, delegateScopes, expiresIn)
+	if err != nil {
+		return err
+	}
+
+	if delegateRawOutput {
+		fmt.Println(token)
+		return nil
+	}
+
+	fmt.Printf("\n═══════════════════════════════════════════════════════════════\n")
+	fmt.Printf("  Delegated token minted\n")
+	fmt.Printf("═══════════════════════════════════════════════════════════════\n\n")
+	fmt.Printf("Acting for:  %s\n", subject)
+	if !expiresAt.IsZero() {
+		fmt.Printf("Expires:     %s\n", expiresAt.Format(time.RFC3339))
+	}
+	// Print what was GRANTED, not what was asked for. The two differ whenever
+	// the request exceeded the caller's own authority, and a silent narrowing
+	// is exactly the kind of surprise that shows up later as a confusing 403.
+	if len(granted) == 0 {
+		fmt.Printf("Scopes:      (none recorded — inherits the daemon's unscoped default)\n")
+	} else {
+		fmt.Printf("Scopes:      %s\n", strings.Join(granted, ", "))
+	}
+	if len(delegateScopes) > 0 && len(granted) < len(delegateScopes) {
+		fmt.Printf("\nNote: fewer scopes granted than requested — your own token does not\n")
+		fmt.Printf("carry the rest. The exchange narrows; it never widens.\n")
+	}
+	fmt.Printf("\nToken (use as Authorization: Bearer):\n%s\n", token)
 	fmt.Printf("\n═══════════════════════════════════════════════════════════════\n\n")
 	return nil
 }

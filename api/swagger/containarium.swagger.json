@@ -6063,6 +6063,41 @@
         ]
       }
     },
+    "/v1/tokens/delegate": {
+      "post": {
+        "summary": "Mint a token acting for another subject",
+        "description": "Exchanges the caller's credential for a token whose subject is `subject` and whose `act` chain records the caller. Granted scopes are the intersection of the caller's own scopes with those requested — an exchange can never widen authority. Requires the `tokens:delegate` scope, on a token that carries an explicit scopes claim — an unscoped token is rejected here even when strict-scope enforcement is off, because the caller's scopes are the ceiling being applied.",
+        "operationId": "TokensService_ExchangeDelegatedToken",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ExchangeDelegatedTokenResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "ExchangeDelegatedTokenRequest asks for a token acting for `subject`.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/ExchangeDelegatedTokenRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Tokens"
+        ]
+      }
+    },
     "/v1/tokens/refresh": {
       "post": {
         "summary": "Exchange a refresh token for a new (access, refresh) pair",
@@ -9793,6 +9828,49 @@
         }
       },
       "description": "Evidence bundles the flow and deny records that triggered a finding.\nCapped by the store to the most recent entries — see FindingStore."
+    },
+    "ExchangeDelegatedTokenRequest": {
+      "type": "object",
+      "properties": {
+        "subject": {
+          "type": "string",
+          "description": "The subject the minted token represents — the end user the\ncaller is acting for. Required: an empty subject would mint\nan unattributed token, which is the state this endpoint\nexists to eliminate."
+        },
+        "scopes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Scopes requested for the minted token. INTERSECTED with the\ncaller's own scopes, never unioned. Empty requests the\ncaller's own scope set (still bounded by it)."
+        },
+        "expiresInSeconds": {
+          "type": "string",
+          "format": "int64",
+          "description": "Lifetime in seconds. 0 uses the daemon's default access-token\nexpiry; values above the daemon's maximum are capped rather\nthan rejected, so a caller asking for too long gets a shorter\ntoken instead of a failure."
+        }
+      },
+      "description": "ExchangeDelegatedTokenRequest asks for a token acting for `subject`."
+    },
+    "ExchangeDelegatedTokenResponse": {
+      "type": "object",
+      "properties": {
+        "token": {
+          "type": "string",
+          "description": "The minted access token."
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When it expires, so a caller can cache it rather than\nexchanging on every request — the round trip this endpoint\nadds is meant to be amortized per (subject, TTL)."
+        },
+        "grantedScopes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The scopes actually granted, after intersection. Returned\nexplicitly because they may be NARROWER than requested, and a\ncaller that assumes otherwise would fail later with a\nconfusing permission error instead of here."
+        }
+      }
     },
     "ExecInSandboxBody": {
       "type": "object",

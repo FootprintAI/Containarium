@@ -185,6 +185,21 @@ type revokeTokenRequest struct {
 	ExpiresAt string `json:"expires_at,omitempty"`
 }
 
+// exchangeDelegatedTokenRequest is POST /v1/tokens/delegate
+// (containarium-cloud#1427).
+//
+// Note what is NOT here: an `act` field. The delegation chain is built by
+// the daemon from the caller's own authenticated token, never asserted by
+// the client — a request that could name its own actor would let any
+// holder of this scope forge the audit trail (#1677).
+type exchangeDelegatedTokenRequest struct {
+	Subject string `json:"subject"`
+	// Empty means "everything the caller itself holds". Either way the
+	// daemon intersects with the caller's scopes, so this can only narrow.
+	Scopes           []string `json:"scopes,omitempty"`
+	ExpiresInSeconds int64    `json:"expires_in_seconds,omitempty"`
+}
+
 // startEgressProxyRequest is POST /v1/network/egress-proxy (#808).
 type startEgressProxyRequest struct {
 	ContainerName string `json:"containerName"`

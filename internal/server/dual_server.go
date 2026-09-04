@@ -1566,7 +1566,7 @@ skipAppHosting:
 				// for operator revocation via CLI / MCP.
 				tokensServer := NewTokensServer(tokenManager, revStore, 0)
 				pb.RegisterTokensServiceServer(grpcServer, tokensServer)
-				log.Printf("TokensService registered (POST /v1/tokens/revoke)")
+				log.Printf("TokensService registered (POST /v1/tokens/revoke, /v1/tokens/delegate)")
 			}
 		}
 	}

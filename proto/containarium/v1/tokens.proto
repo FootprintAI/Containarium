@@ -3,6 +3,7 @@ syntax = "proto3";
 package containarium.v1;
 
 import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
 import "protoc-gen-openapiv2/options/annotations.proto";
 
 option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
@@ -161,6 +162,56 @@ service TokensService {
     };
   }
 
+  // ExchangeDelegatedToken mints a token that acts FOR another
+  // subject, on the authority of the caller's own credential
+  // (containarium-cloud#1427).
+  //
+  // The problem it solves: a service that fronts this API on
+  // behalf of end users — the cloud control plane is the case
+  // that motivated it — presents its own service credential on
+  // every call. #1676 bounds an agent token by the CALLER's
+  // scopes, but when the caller is a shared service account
+  // that bound is meaningless, and #1678's audit `actor` column
+  // records the service, not the person. `act` is deliberately
+  // a JWT claim and never a header (#1677: set only by the
+  // minting server from an authenticated context), so the
+  // fronting service cannot assert it — it has no signing key,
+  // and giving it one would let it mint any identity.
+  //
+  // So it asks this daemon to mint instead. Two invariants make
+  // that safe, mirroring RunAgentSkill's own delegated mint:
+  //
+  //   * The minted token's scopes are the INTERSECTION of the
+  //     caller's scopes with those requested, so an exchange can
+  //     never produce more authority than the caller already
+  //     holds. Without this the endpoint would be precisely the
+  //     escalation primitive #1676 closed.
+  //   * `act` is built server-side from the authenticated
+  //     caller, wrapping the caller's own chain, so the delegation
+  //     path is recorded rather than claimed.
+  //
+  // Gated on `tokens:delegate` — a distinct scope, not
+  // `tokens:write`: acting as another subject is a different and
+  // more dangerous capability than managing your own tokens.
+  //
+  // Unlike every other RPC, this one FAILS CLOSED on a token that
+  // carries no scopes claim at all, whatever
+  // CONTAINARIUM_STRICT_SCOPES is set to. Elsewhere that claim is
+  // optional for backward compatibility (#1679); here the
+  // caller's scopes ARE the ceiling, so an absent claim would
+  // mean no ceiling. A caller must present a scoped credential.
+  rpc ExchangeDelegatedToken(ExchangeDelegatedTokenRequest) returns (ExchangeDelegatedTokenResponse) {
+    option (google.api.http) = {
+      post: "/v1/tokens/delegate"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Mint a token acting for another subject";
+      description: "Exchanges the caller's credential for a token whose subject is `subject` and whose `act` chain records the caller. Granted scopes are the intersection of the caller's own scopes with those requested — an exchange can never widen authority. Requires the `tokens:delegate` scope, on a token that carries an explicit scopes claim — an unscoped token is rejected here even when strict-scope enforcement is off, because the caller's scopes are the ceiling being applied.";
+      tags: "Tokens";
+    };
+  }
+
   // RefreshToken exchanges a valid refresh token for a new
   // (access, refresh) pair. The prior refresh token's jti is
   // revoked on success — refresh tokens are SINGLE-USE.
@@ -211,4 +262,40 @@ service TokensService {
       tags: "Tokens";
     };
   }
+}
+
+// ExchangeDelegatedTokenRequest asks for a token acting for `subject`.
+message ExchangeDelegatedTokenRequest {
+  // The subject the minted token represents — the end user the
+  // caller is acting for. Required: an empty subject would mint
+  // an unattributed token, which is the state this endpoint
+  // exists to eliminate.
+  string subject = 1;
+
+  // Scopes requested for the minted token. INTERSECTED with the
+  // caller's own scopes, never unioned. Empty requests the
+  // caller's own scope set (still bounded by it).
+  repeated string scopes = 2;
+
+  // Lifetime in seconds. 0 uses the daemon's default access-token
+  // expiry; values above the daemon's maximum are capped rather
+  // than rejected, so a caller asking for too long gets a shorter
+  // token instead of a failure.
+  int64 expires_in_seconds = 3;
+}
+
+message ExchangeDelegatedTokenResponse {
+  // The minted access token.
+  string token = 1;
+
+  // When it expires, so a caller can cache it rather than
+  // exchanging on every request — the round trip this endpoint
+  // adds is meant to be amortized per (subject, TTL).
+  google.protobuf.Timestamp expires_at = 2;
+
+  // The scopes actually granted, after intersection. Returned
+  // explicitly because they may be NARROWER than requested, and a
+  // caller that assumes otherwise would fail later with a
+  // confusing permission error instead of here.
+  repeated string granted_scopes = 3;
 }

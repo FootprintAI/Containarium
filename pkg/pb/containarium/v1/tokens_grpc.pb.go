@@ -20,6 +20,7 @@ const _ = grpc.SupportPackageIsVersion9
 
 const (
 	TokensService_RevokeToken_FullMethodName            = "/containarium.v1.TokensService/RevokeToken"
+	TokensService_ExchangeDelegatedToken_FullMethodName = "/containarium.v1.TokensService/ExchangeDelegatedToken"
 	TokensService_RefreshToken_FullMethodName           = "/containarium.v1.TokensService/RefreshToken"
 	TokensService_ListRevokedTokens_FullMethodName      = "/containarium.v1.TokensService/ListRevokedTokens"
 	TokensService_GetUnscopedTokenReport_FullMethodName = "/containarium.v1.TokensService/GetUnscopedTokenReport"
@@ -40,6 +41,45 @@ type TokensServiceClient interface {
 	// taking effect on the next authenticated request that
 	// names it. Idempotent — repeated revokes are safe.
 	RevokeToken(ctx context.Context, in *RevokeTokenRequest, opts ...grpc.CallOption) (*RevokeTokenResponse, error)
+	// ExchangeDelegatedToken mints a token that acts FOR another
+	// subject, on the authority of the caller's own credential
+	// (containarium-cloud#1427).
+	//
+	// The problem it solves: a service that fronts this API on
+	// behalf of end users — the cloud control plane is the case
+	// that motivated it — presents its own service credential on
+	// every call. #1676 bounds an agent token by the CALLER's
+	// scopes, but when the caller is a shared service account
+	// that bound is meaningless, and #1678's audit `actor` column
+	// records the service, not the person. `act` is deliberately
+	// a JWT claim and never a header (#1677: set only by the
+	// minting server from an authenticated context), so the
+	// fronting service cannot assert it — it has no signing key,
+	// and giving it one would let it mint any identity.
+	//
+	// So it asks this daemon to mint instead. Two invariants make
+	// that safe, mirroring RunAgentSkill's own delegated mint:
+	//
+	//   - The minted token's scopes are the INTERSECTION of the
+	//     caller's scopes with those requested, so an exchange can
+	//     never produce more authority than the caller already
+	//     holds. Without this the endpoint would be precisely the
+	//     escalation primitive #1676 closed.
+	//   - `act` is built server-side from the authenticated
+	//     caller, wrapping the caller's own chain, so the delegation
+	//     path is recorded rather than claimed.
+	//
+	// Gated on `tokens:delegate` — a distinct scope, not
+	// `tokens:write`: acting as another subject is a different and
+	// more dangerous capability than managing your own tokens.
+	//
+	// Unlike every other RPC, this one FAILS CLOSED on a token that
+	// carries no scopes claim at all, whatever
+	// CONTAINARIUM_STRICT_SCOPES is set to. Elsewhere that claim is
+	// optional for backward compatibility (#1679); here the
+	// caller's scopes ARE the ceiling, so an absent claim would
+	// mean no ceiling. A caller must present a scoped credential.
+	ExchangeDelegatedToken(ctx context.Context, in *ExchangeDelegatedTokenRequest, opts ...grpc.CallOption) (*ExchangeDelegatedTokenResponse, error)
 	// RefreshToken exchanges a valid refresh token for a new
 	// (access, refresh) pair. The prior refresh token's jti is
 	// revoked on success — refresh tokens are SINGLE-USE.
@@ -74,6 +114,16 @@ func (c *tokensServiceClient) RevokeToken(ctx context.Context, in *RevokeTokenRe
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RevokeTokenResponse)
 	err := c.cc.Invoke(ctx, TokensService_RevokeToken_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tokensServiceClient) ExchangeDelegatedToken(ctx context.Context, in *ExchangeDelegatedTokenRequest, opts ...grpc.CallOption) (*ExchangeDelegatedTokenResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ExchangeDelegatedTokenResponse)
+	err := c.cc.Invoke(ctx, TokensService_ExchangeDelegatedToken_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -125,6 +175,45 @@ type TokensServiceServer interface {
 	// taking effect on the next authenticated request that
 	// names it. Idempotent — repeated revokes are safe.
 	RevokeToken(context.Context, *RevokeTokenRequest) (*RevokeTokenResponse, error)
+	// ExchangeDelegatedToken mints a token that acts FOR another
+	// subject, on the authority of the caller's own credential
+	// (containarium-cloud#1427).
+	//
+	// The problem it solves: a service that fronts this API on
+	// behalf of end users — the cloud control plane is the case
+	// that motivated it — presents its own service credential on
+	// every call. #1676 bounds an agent token by the CALLER's
+	// scopes, but when the caller is a shared service account
+	// that bound is meaningless, and #1678's audit `actor` column
+	// records the service, not the person. `act` is deliberately
+	// a JWT claim and never a header (#1677: set only by the
+	// minting server from an authenticated context), so the
+	// fronting service cannot assert it — it has no signing key,
+	// and giving it one would let it mint any identity.
+	//
+	// So it asks this daemon to mint instead. Two invariants make
+	// that safe, mirroring RunAgentSkill's own delegated mint:
+	//
+	//   - The minted token's scopes are the INTERSECTION of the
+	//     caller's scopes with those requested, so an exchange can
+	//     never produce more authority than the caller already
+	//     holds. Without this the endpoint would be precisely the
+	//     escalation primitive #1676 closed.
+	//   - `act` is built server-side from the authenticated
+	//     caller, wrapping the caller's own chain, so the delegation
+	//     path is recorded rather than claimed.
+	//
+	// Gated on `tokens:delegate` — a distinct scope, not
+	// `tokens:write`: acting as another subject is a different and
+	// more dangerous capability than managing your own tokens.
+	//
+	// Unlike every other RPC, this one FAILS CLOSED on a token that
+	// carries no scopes claim at all, whatever
+	// CONTAINARIUM_STRICT_SCOPES is set to. Elsewhere that claim is
+	// optional for backward compatibility (#1679); here the
+	// caller's scopes ARE the ceiling, so an absent claim would
+	// mean no ceiling. A caller must present a scoped credential.
+	ExchangeDelegatedToken(context.Context, *ExchangeDelegatedTokenRequest) (*ExchangeDelegatedTokenResponse, error)
 	// RefreshToken exchanges a valid refresh token for a new
 	// (access, refresh) pair. The prior refresh token's jti is
 	// revoked on success — refresh tokens are SINGLE-USE.
@@ -157,6 +246,9 @@ type UnimplementedTokensServiceServer struct{}
 
 func (UnimplementedTokensServiceServer) RevokeToken(context.Context, *RevokeTokenRequest) (*RevokeTokenResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RevokeToken not implemented")
+}
+func (UnimplementedTokensServiceServer) ExchangeDelegatedToken(context.Context, *ExchangeDelegatedTokenRequest) (*ExchangeDelegatedTokenResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ExchangeDelegatedToken not implemented")
 }
 func (UnimplementedTokensServiceServer) RefreshToken(context.Context, *RefreshTokenRequest) (*RefreshTokenResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RefreshToken not implemented")
@@ -202,6 +294,24 @@ func _TokensService_RevokeToken_Handler(srv interface{}, ctx context.Context, de
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(TokensServiceServer).RevokeToken(ctx, req.(*RevokeTokenRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TokensService_ExchangeDelegatedToken_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ExchangeDelegatedTokenRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TokensServiceServer).ExchangeDelegatedToken(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TokensService_ExchangeDelegatedToken_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TokensServiceServer).ExchangeDelegatedToken(ctx, req.(*ExchangeDelegatedTokenRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -270,6 +380,10 @@ var TokensService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RevokeToken",
 			Handler:    _TokensService_RevokeToken_Handler,
+		},
+		{
+			MethodName: "ExchangeDelegatedToken",
+			Handler:    _TokensService_ExchangeDelegatedToken_Handler,
 		},
 		{
 			MethodName: "RefreshToken",
