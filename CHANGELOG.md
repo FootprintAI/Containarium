@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.73.0] - 2026-09-04
+
+### Security
+
+- **An exchange granting nothing minted an UNRESTRICTED token** (#1713).
+  `ExchangeDelegatedToken` computed the scope intersection correctly, reported
+  it honestly, and then handed back a token that ignored it.
+
+  The trap is the claim shape. `HasScope` treats an **absent** scopes claim as
+  "no restriction", and the generator omits the claim entirely when handed zero
+  scopes. So an empty grant does not mint a powerless token — it mints an
+  unlimited one. A caller holding only `tokens:delegate` could request
+  `secrets:read`, be correctly granted nothing, and receive a token that passes
+  `RequireScope` for every scope in the system.
+
+  That is the escalation #1676 closed, reopened by the endpoint added in
+  v0.72.0 to close it on the cloud path. An exchange that would grant nothing
+  is now refused rather than minted: there is no way to express "no authority"
+  in this claim, and a token genuinely carrying zero scopes could not be used
+  for anything anyway.
+
+  Reaching it required holding `tokens:delegate`, which is granted deliberately
+  and in practice only to the cloud control plane — which does not call the
+  endpoint yet. The window was one release.
+
+  The test that should have caught it asserted on the response's
+  `granted_scopes` field, which was correct and said `[]`. The assertion was on
+  the report rather than the credential. It is replaced by tests that inspect
+  the minted token.
+
+### Added
+
+- **Delegated tokens carry roles, intersected with the caller's** (#1714).
+  A delegated token was minted with no roles at all, so it failed every one of
+  the 111 handlers gated on `RequireRole(admin)` and every cross-tenant
+  `AuthorizeTenant` path. The scope half worked; without roles the token could
+  not do the job the endpoint exists for.
+
+  Roles now follow the same rule as scopes — intersected with the caller's,
+  never unioned — with one deliberate difference. An absent **scopes** claim
+  reads as unrestricted, which is why an empty scope grant is refused. An
+  absent **roles** claim reads as no roles at all, so empty is already the safe
+  state; the only way to get roles wrong would be to inherit admin silently.
+  An empty roles request therefore grants none, and a caller that needs a role
+  names it.
+
+  `IntersectRoles` is deliberately not `IntersectScopes` with different
+  arguments: that function treats a nil caller as "no ceiling", which is right
+  for scopes and would let a caller holding **no roles** mint an admin token.
+  The two agree on every case where the caller holds something, so only a
+  role-less caller distinguishes them — and there is a test for exactly that.
+
+  `containarium token delegate` gains `--roles`.
+
 ## [0.72.0] - 2026-09-04
 
 ### Added
