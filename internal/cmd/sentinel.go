@@ -276,7 +276,7 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 				return polErr
 			}
 			loadPersistedTunnelTokens(tunnelPolicy)
-			tunnelServer := sentinel.NewTunnelServer("", tunnelPolicy, registry)
+			tunnelServer := sentinel.NewTunnelServer("", tunnelPolicy, registry, sentinelHTTPSPort)
 			tunnelServer.OnConnect = manager.OnTunnelConnect
 			tunnelServer.OnDisconnect = manager.OnTunnelDisconnect
 			manager.SetTunnelRegistry(registry)
@@ -365,7 +365,7 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 			return polErr
 		}
 		loadPersistedTunnelTokens(tunnelPolicy)
-		tunnelServer := sentinel.NewTunnelServer("", tunnelPolicy, registry)
+		tunnelServer := sentinel.NewTunnelServer("", tunnelPolicy, registry, sentinelHTTPSPort)
 		tunnelServer.OnConnect = manager.OnTunnelConnect
 		tunnelServer.OnDisconnect = manager.OnTunnelDisconnect
 		manager.SetTunnelRegistry(registry)

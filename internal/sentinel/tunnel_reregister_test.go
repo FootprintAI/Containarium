@@ -177,7 +177,7 @@ func TestMonitorSessionIgnoresSupersededGeneration(t *testing.T) {
 	stubLoopbackAliases(t)
 
 	registry := NewTunnelRegistry()
-	ts := NewTunnelServer("127.0.0.1:0", NewTokenPolicy(), registry)
+	ts := NewTunnelServer("127.0.0.1:0", NewTokenPolicy(), registry, 0)
 	closeProxiesOnCleanup(t, ts)
 
 	var mu sync.Mutex
@@ -258,7 +258,7 @@ func TestMonitorSessionCleansUpCurrentGeneration(t *testing.T) {
 	stubLoopbackAliases(t)
 
 	registry := NewTunnelRegistry()
-	ts := NewTunnelServer("127.0.0.1:0", NewTokenPolicy(), registry)
+	ts := NewTunnelServer("127.0.0.1:0", NewTokenPolicy(), registry, 0)
 	closeProxiesOnCleanup(t, ts)
 
 	disconnected := make(chan string, 1)
@@ -309,7 +309,7 @@ func TestStartProxiesRefusesToClobberANewerGeneration(t *testing.T) {
 	stubLoopbackAliases(t)
 
 	registry := NewTunnelRegistry()
-	ts := NewTunnelServer("127.0.0.1:0", NewTokenPolicy(), registry)
+	ts := NewTunnelServer("127.0.0.1:0", NewTokenPolicy(), registry, 0)
 	closeProxiesOnCleanup(t, ts)
 
 	ctx, cancel := context.WithCancel(context.Background())

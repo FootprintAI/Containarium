@@ -122,7 +122,7 @@ func TestTunnelEndToEnd(t *testing.T) {
 
 	// 2. Start tunnel server
 	registry := NewTunnelRegistry()
-	server := NewTunnelServer(fmt.Sprintf("127.0.0.1:%d", tunnelPort), policyAny(token), registry)
+	server := NewTunnelServer(fmt.Sprintf("127.0.0.1:%d", tunnelPort), policyAny(token), registry, 0)
 
 	connectCh := make(chan *TunnelSpot, 1)
 	server.OnConnect = func(spot *TunnelSpot) {
@@ -191,7 +191,7 @@ func TestTunnelWrongToken(t *testing.T) {
 
 	tunnelPort := freePort(t)
 	registry := NewTunnelRegistry()
-	server := NewTunnelServer(fmt.Sprintf("127.0.0.1:%d", tunnelPort), policyAny("correct-token"), registry)
+	server := NewTunnelServer(fmt.Sprintf("127.0.0.1:%d", tunnelPort), policyAny("correct-token"), registry, 0)
 
 	go func() { _ = server.Run(ctx) }()
 	time.Sleep(100 * time.Millisecond)
@@ -324,7 +324,7 @@ func TestConnMuxWithTunnelClient(t *testing.T) {
 
 	// Start tunnel server on the mux's tunnel listener
 	registry := NewTunnelRegistry()
-	tunnelServer := NewTunnelServer("", policyAny(token), registry)
+	tunnelServer := NewTunnelServer("", policyAny(token), registry, 0)
 	connectCh := make(chan *TunnelSpot, 1)
 	tunnelServer.OnConnect = func(spot *TunnelSpot) {
 		connectCh <- spot

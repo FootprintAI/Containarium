@@ -91,7 +91,7 @@ func TestTunnelIntegration(t *testing.T) {
 	defer func() { _ = connMux.Close() }()
 
 	registry := NewTunnelRegistry()
-	tunnelServer := NewTunnelServer("", policyAny(token), registry)
+	tunnelServer := NewTunnelServer("", policyAny(token), registry, 0)
 
 	// These callbacks run on the tunnel server's own goroutines, which
 	// OUTLIVE this function: a session closing after the test returns still

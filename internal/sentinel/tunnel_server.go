@@ -21,6 +21,12 @@ type TunnelServer struct {
 	policy     *TokenPolicy
 	registry   *TunnelRegistry
 
+	// httpsPort is the sentinel's own ConnMux HTTPS port (the maintenance/SNI
+	// listener's wildcard bind). No spot ever gets a loopback listener for
+	// it — see loopbackPortsFor. Zero disables the exclusion (e.g. in tests
+	// that don't run a ConnMux).
+	httpsPort int
+
 	// Callbacks for Manager integration
 	OnConnect    func(spot *TunnelSpot)
 	OnDisconnect func(spot *TunnelSpot)
@@ -46,12 +52,16 @@ type proxySet struct {
 //
 //	policy := NewTokenPolicy()
 //	policy.Allow(token, "*")
-//	srv := NewTunnelServer(addr, policy, registry)
-func NewTunnelServer(listenAddr string, policy *TokenPolicy, registry *TunnelRegistry) *TunnelServer {
+//	srv := NewTunnelServer(addr, policy, registry, httpsPort)
+//
+// httpsPort is the sentinel's own ConnMux HTTPS port; pass 0 if this
+// TunnelServer never runs alongside a ConnMux (e.g. in a test).
+func NewTunnelServer(listenAddr string, policy *TokenPolicy, registry *TunnelRegistry, httpsPort int) *TunnelServer {
 	return &TunnelServer{
 		listenAddr: listenAddr,
 		policy:     policy,
 		registry:   registry,
+		httpsPort:  httpsPort,
 		proxies:    make(map[string]proxySet),
 	}
 }
@@ -160,25 +170,18 @@ func (ts *TunnelServer) handleConnection(ctx context.Context, conn net.Conn) {
 
 	log.Printf("[tunnel-server] spot %q authenticated, assigned %s, ports %v", hs.SpotID, localIP, hs.Ports)
 
-	// Start local TCP proxy listeners for each port. Skip the public
-	// port for tunnel-promoted primaries — the sentinel's own ConnMux
-	// owns it, and the SNI router uses TunnelRegistry.DialTunnel() to
-	// stream bytes via yamux instead.
+	// Start local TCP proxy listeners for each port. Skip the sentinel's own
+	// HTTPS ConnMux port for every backend, not just tunnel-promoted
+	// primaries — the ConnMux always holds a wildcard bind on it, so a
+	// per-spot loopback listener there can never succeed, and the SNI router
+	// already reaches every backend's HTTPS traffic via
+	// TunnelRegistry.DialTunnel() instead (#1710). Also skip a promoted
+	// primary's PublicPort in case it differs from the ConnMux's port.
 	externalPort := 0
 	if spot := ts.registry.Get(hs.SpotID); spot != nil {
 		externalPort = spot.ExternalPort
 	}
-	loopbackPorts := hs.Ports
-	if hs.PublicHostname != "" && hs.PublicPort != 0 {
-		filtered := make([]int, 0, len(hs.Ports))
-		for _, p := range hs.Ports {
-			if p == hs.PublicPort {
-				continue
-			}
-			filtered = append(filtered, p)
-		}
-		loopbackPorts = filtered
-	}
+	loopbackPorts := loopbackPortsFor(hs.Ports, ts.httpsPort, hs.PublicPort)
 	ts.startProxies(ctx, hs.SpotID, gen, localIP, externalPort, loopbackPorts, session)
 
 	// Notify manager
@@ -191,6 +194,25 @@ func (ts *TunnelServer) handleConnection(ctx context.Context, conn net.Conn) {
 	// keeps this cleanup from firing against a LATER registration of the same
 	// spot (#769).
 	go ts.monitorSession(hs.SpotID, gen, session)
+}
+
+// loopbackPortsFor returns the subset of ports that should get a per-spot
+// loopback proxy listener, excluding the sentinel's own ConnMux HTTPS port
+// (httpsPort) and, if set, a promoted primary's PublicPort. Neither ever
+// needs a per-spot listener: the ConnMux holds a wildcard bind on its port,
+// so a per-spot listener there can never succeed, and HTTPS traffic to every
+// backend (promoted primary or not) already reaches it via
+// TunnelRegistry.DialTunnel() through the SNI router instead (#1710).
+// httpsPort/publicPort of 0 disable the corresponding exclusion.
+func loopbackPortsFor(ports []int, httpsPort, publicPort int) []int {
+	filtered := make([]int, 0, len(ports))
+	for _, p := range ports {
+		if p == httpsPort || (publicPort != 0 && p == publicPort) {
+			continue
+		}
+		filtered = append(filtered, p)
+	}
+	return filtered
 }
 
 // startProxies opens a local TCP listener on localIP:port for each port.
