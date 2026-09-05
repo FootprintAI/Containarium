@@ -14,14 +14,29 @@ PKG_DIR=pkg/pb
 # Go build flags
 # Note: Version is statically defined in pkg/version/version.go (manually updated)
 # You can override at build time with: make build VERSION=1.2.3
-LDFLAGS=-ldflags "-X github.com/footprintai/containarium/pkg/version.GitCommit=$(GIT_COMMIT) \
-	-X github.com/footprintai/containarium/pkg/version.BuildTime=$(BUILD_TIME)"
+#
+# #1732: a value that arrives via `make ... VAR=value` (or an inherited env
+# var) is a recursively-expanded macro to Make, not inert data — a recipe
+# that dereferences it with $(VAR) lets Make itself evaluate a $(shell ...)
+# hidden inside it, and Make auto-exports every such variable into every
+# recipe's shell environment even when that recipe never references it. The
+# freeze below (guarded by $(origin ...) so the Makefile's own trusted
+# defaults above are unaffected) captures the raw text once via $(value ...)
+# so it can never be re-expanded, then every recipe reads it back through
+# the shell's own ${VAR} (real environment, escaped past Make with $$) rather
+# than Make's $(VAR) — parameter expansion never re-interprets its result as
+# a further command, closing the shell-injection half of the class too.
+$(foreach v,VERSION GIT_COMMIT BUILD_TIME,$(if $(filter command\ line environment environment\ override,$(origin $v)),$(eval override $v := $$(value $v))))
+export VERSION GIT_COMMIT BUILD_TIME
+
+LDFLAGS=-ldflags "-X github.com/footprintai/containarium/pkg/version.GitCommit=$${GIT_COMMIT} \
+	-X github.com/footprintai/containarium/pkg/version.BuildTime=$${BUILD_TIME}"
 
 # Allow optional version override
 ifdef VERSION
-	LDFLAGS=-ldflags "-X github.com/footprintai/containarium/pkg/version.Version=$(VERSION) \
-		-X github.com/footprintai/containarium/pkg/version.GitCommit=$(GIT_COMMIT) \
-		-X github.com/footprintai/containarium/pkg/version.BuildTime=$(BUILD_TIME)"
+	LDFLAGS=-ldflags "-X github.com/footprintai/containarium/pkg/version.Version=$${VERSION} \
+		-X github.com/footprintai/containarium/pkg/version.GitCommit=$${GIT_COMMIT} \
+		-X github.com/footprintai/containarium/pkg/version.BuildTime=$${BUILD_TIME}"
 endif
 
 GOFLAGS=-v
@@ -241,15 +256,19 @@ BUNDLE_OS?=linux
 BUNDLE_ARCH?=amd64
 BUNDLE_VERSION?=$(shell grep '^[[:space:]]*Version = ' pkg/version/version.go | head -1 | sed -E 's/.*"([^"]+)".*/v\1/')
 
+# #1732: same freeze as VERSION/GIT_COMMIT/BUILD_TIME above.
+$(foreach v,BUNDLE_OS BUNDLE_ARCH BUNDLE_VERSION,$(if $(filter command\ line environment environment\ override,$(origin $v)),$(eval override $v := $$(value $v))))
+export BUNDLE_OS BUNDLE_ARCH BUNDLE_VERSION
+
 bundle-download-deps: ## Pull toolchains + apt packages into dist/bundle-cache/ (run once per OS/ARCH)
-	@echo "==> Downloading bundle dependencies for $(BUNDLE_OS)/$(BUNDLE_ARCH)..."
+	@echo "==> Downloading bundle dependencies for $${BUNDLE_OS}/$${BUNDLE_ARCH}..."
 	@chmod +x scripts/bundle/download-deps.sh
-	@OS=$(BUNDLE_OS) ARCH=$(BUNDLE_ARCH) ./scripts/bundle/download-deps.sh
+	@OS=$${BUNDLE_OS} ARCH=$${BUNDLE_ARCH} ./scripts/bundle/download-deps.sh
 
 build-bundle: build-release ## Assemble the air-gapped install bundle tarball
-	@echo "==> Building air-gapped bundle $(BUNDLE_VERSION) for $(BUNDLE_OS)/$(BUNDLE_ARCH)..."
+	@echo "==> Building air-gapped bundle $${BUNDLE_VERSION} for $${BUNDLE_OS}/$${BUNDLE_ARCH}..."
 	@chmod +x scripts/bundle/build-bundle.sh
-	@VERSION=$(BUNDLE_VERSION) OS=$(BUNDLE_OS) ARCH=$(BUNDLE_ARCH) \
+	@VERSION=$${BUNDLE_VERSION} OS=$${BUNDLE_OS} ARCH=$${BUNDLE_ARCH} \
 		./scripts/bundle/build-bundle.sh
 
 build-bundle-all: ## Build bundles for linux/amd64 and linux/arm64
@@ -391,7 +410,7 @@ setup-dev: deps proto ## Set up development environment
 	@echo "==> Development environment ready!"
 
 version: ## Show version information
-	@echo "Containarium version: $(VERSION)"
+	@echo "Containarium version: $${VERSION}"
 	@echo "Go version: $(shell go version)"
 	@echo "Build platform: $(shell go env GOOS)/$(shell go env GOARCH)"
 

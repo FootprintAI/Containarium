@@ -7,6 +7,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.74.0] - 2026-09-05
+
+Six of the seven changes here are security fixes. The three ungated-RPC
+findings were reachable on every release up to and including v0.73.0.
+
+### Security
+
+- **ComposeAutostartService let any caller act on ANY tenant's box** (#1716).
+  All four handlers took `_ context.Context` — the tell that they could not
+  have checked anything — then passed the caller-supplied `username` straight
+  to a command exec'd inside that tenant's box. Any caller reaching the gRPC
+  surface could name any tenant and enable or disable compose autostart in
+  their box, or read what stacks they run.
+
+  Reads now take `containers:read`, mutations take `containers:write`, and all
+  four check `AuthorizeTenant` against the username. `Disable` is the direction
+  worth naming: removing autostart from someone else's stack is silent until
+  their services fail to come back after a reboot.
+
+- **The fleet-wide threat blocklist could be mutated by anyone** (#1717).
+  `AddBadDestination`/`RemoveBadDestination` had no guard at all. They now
+  require `security:write` **and** the admin role — this is platform config,
+  not tenant data. Adding a bad CIDR is a nuisance somebody notices; removing
+  one quietly disables a detection rule and nothing looks wrong afterwards.
+
+- **Nine read-only RPCs returned platform config with no guard** (#1718).
+  Each now takes the read scope its own file already uses. Most are close to
+  public already, but the ones that matter disclosed which security tooling is
+  enabled and configured: whether pentesting and ZAP run and with which
+  scanners, whether the eBPF sentry is up and if not why, whether an alerting
+  webhook secret exists, and what the blocklist watches for.
+
+- **An empty scopes claim read as UNRESTRICTED** (#1722). A carried-but-empty
+  metadata value returned `(nil, false)`, and nil means "no restriction" — so
+  "this credential holds nothing" and "this credential is unrestricted" gave
+  the same answer, the permissive one. The context-value path never had the
+  bug, so the two transports disagreed about identical input.
+
+  Not reachable in production: every writer guards on `len(scopes) > 0` and
+  the mint omits the claim entirely for zero scopes. The real harm was in
+  tests — an assertion written as "a caller with no scopes is denied" passed
+  whether or not the guard under test existed.
+
+- **Two script-injection surfaces in the release workflow** (#1602). `Create
+  release notes` and `Assemble bundle tarball` interpolated
+  `${{ github.ref_name }}` directly into `run:` blocks. Git permits shell
+  metacharacters in tag names, and Actions splices the value in textually
+  before the shell parses it. Both now route it through `env:`.
+
+### Added
+
+- **Every registered RPC is asserted to carry an auth guard** (#1685). An AST
+  scan over the registered services fails the build when a handler has no
+  `auth.Require*`/`AuthorizeTenant` call and no documented exemption. This is
+  the systematic half of the three findings above: without it, a forgotten
+  guard is *ungated*, not denied, and nothing says so.
+
+- **The audit hash chain's root is anchored outside the database** (#1706).
+  Until now a privileged rewrite of the audit log was undetectable, because
+  the only copy of the chain's root lived in the same database as the rows it
+  attests to.
+
+### Docs
+
+- Vulnerability reports route to `security@containarium.dev`, and the policy
+  now states explicitly that it binds maintainers and internal audits too —
+  this repository is public, so an issue describing an unguarded code path is
+  a disclosure regardless of who opened it.
+
 ## [0.73.0] - 2026-09-04
 
 ### Security
