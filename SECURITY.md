@@ -10,8 +10,21 @@ or pull request that describes the vulnerability.**
 
 - **Preferred:** GitHub's private vulnerability reporting at
   <https://github.com/FootprintAI/Containarium/security/advisories/new>.
-- **Email:** `devops@footprint-ai.com` (use the subject prefix
-  `[security]` and include `Containarium` so it's routed correctly).
+- **Email:** `security@containarium.dev` — a dedicated address, so a
+  report is never missed in a general-purpose inbox and never depends on
+  one person being available. No subject prefix needed; everything sent
+  there is triaged as a security report.
+
+### This applies to us too
+
+The rule above is not only for external reporters. A vulnerability found by
+a maintainer, an internal audit, or an automated sweep goes through the same
+private channel — **this repository is public, so an issue describing an
+unguarded code path is a disclosure regardless of who opened it**, and it is
+a disclosure that lands before a fix is released rather than after.
+
+File the tracking issue once a fix has shipped, describing what changed
+rather than what was reachable.
 
 In your report, please include:
 
