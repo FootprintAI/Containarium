@@ -449,17 +449,25 @@ jobs:
         run: make sidecar-build-otel || true
 
       - name: Assemble bundle tarball
+        # Untrusted: a tag name may contain shell metacharacters (#1602).
+        # Deliberately NOT `make build-bundle BUNDLE_VERSION="$RELEASE_REF"`:
+        # that target's recipe (Makefile) does `echo "... $(BUNDLE_VERSION)
+        # ..."`, and GNU Make expands $(...) in a command-line-overridden
+        # variable wherever a recipe dereferences it — a tag like
+        # `v$(shell ...)` would have Make itself execute the shell function,
+        # a second injection layer underneath the one env/quoting above
+        # already closes at the GitHub Actions shell level. Calling the
+        # script directly (what the Makefile target does internally anyway)
+        # gives it the value as a real env var, read with bash parameter
+        # expansion only — never passed through Make's own macro expansion.
         env:
-          # Untrusted: a tag name may contain shell metacharacters (#1602).
-          # Routing it through env and a quoted reference makes the shell
-          # treat it as one opaque argv word to `make`, never re-parsed as
-          # command syntax — matches "Apply release notes" above.
           RELEASE_REF: ${{ github.ref_name }}
         run: |
-          make build-bundle \
-            BUNDLE_VERSION="$RELEASE_REF" \
-            BUNDLE_OS=${{ matrix.target.os }} \
-            BUNDLE_ARCH=${{ matrix.target.arch }}
+          chmod +x scripts/bundle/build-bundle.sh
+          VERSION="$RELEASE_REF" \
+            OS="${{ matrix.target.os }}" \
+            ARCH="${{ matrix.target.arch }}" \
+            ./scripts/bundle/build-bundle.sh
 
       - name: List bundle outputs
         run: ls -lh dist/
