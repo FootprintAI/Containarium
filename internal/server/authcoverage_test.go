@@ -5,6 +5,7 @@ import (
 	"go/parser"
 	"go/token"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -166,24 +167,27 @@ func serviceShortName(full string) string {
 // CreateContainerSnapshot's guard lives in the shared snapshotDatasetFor,
 // not in CreateContainerSnapshot's own body).
 type funcInfo struct {
-	recv          string // "" for a free function
-	name          string
-	directGuard   bool // calls auth.<one of authGuardFuncs> in ITS OWN body
-	subjectLookup bool // calls auth.SubjectFromGRPCContext in ITS OWN body
-	deniesByCode  bool // its own body references codes.PermissionDenied or codes.Unauthenticated
-	calls         []string
+	recv        string // "" for a free function
+	name        string
+	directGuard bool // calls auth.<one of authGuardFuncs> in ITS OWN body
+	// manualGuardLinked is the GetMetrics/ListContainers-shaped pattern: an
+	// `if !ok { ...codes.Unauthenticated/PermissionDenied... }` whose
+	// condition negates the ok returned by auth.SubjectFromGRPCContext. Both
+	// halves must be linked by that ONE if-statement — a function that
+	// merely calls SubjectFromGRPCContext (for logging, say) and separately,
+	// coincidentally, returns an unrelated PermissionDenied elsewhere does
+	// NOT set this (tightened per CodeRabbit review on PR #1719: the
+	// original "both signals anywhere in the same body" version couldn't
+	// tell the two apart).
+	manualGuardLinked bool
+	calls             []string
 }
 
 // selfGuarded is true when a function's OWN body — not any callee's — is
 // enough to call it guarded: either a direct canonical guard call, or the
-// manual pattern GetMetrics/GetContainer-shaped handlers use (read the
-// subject off the context, then produce a denial status themselves instead
-// of calling AuthorizeTenant). Both signals must appear in the SAME
-// function; a function that merely calls a helper doing one and separately,
-// coincidentally, returns an unrelated PermissionDenied is not this case —
-// that combination is instead picked up by the transitive walk below.
+// manual, control-flow-linked pattern described on manualGuardLinked.
 func (f funcInfo) selfGuarded() bool {
-	return f.directGuard || (f.subjectLookup && f.deniesByCode)
+	return f.directGuard || f.manualGuardLinked
 }
 
 // guardedMethods AST-scans every non-test .go file in this directory,
@@ -290,21 +294,58 @@ func receiverTypeName(expr ast.Expr) string {
 	return ""
 }
 
-// analyzeFunc walks body once, collecting this function's own auth signals
-// and the bare names of every local function/method it calls.
+// inspectSkippingFuncLit is ast.Inspect that refuses to descend into a
+// nested *ast.FuncLit. A guard call declared inside a callback/closure does
+// not gate the ENCLOSING handler unless something guarantees that closure
+// runs before the handler's real work — which this static scan cannot
+// verify (it might run in a goroutine, a deferred cleanup, or never run at
+// all if the callback is merely passed as an unused argument). Tightened
+// per CodeRabbit review on PR #1719.
+func inspectSkippingFuncLit(n ast.Node, visit func(ast.Node) bool) {
+	ast.Inspect(n, func(node ast.Node) bool {
+		if _, isFuncLit := node.(*ast.FuncLit); isFuncLit {
+			return false
+		}
+		return visit(node)
+	})
+}
+
+// analyzeFunc walks body, collecting this function's own auth signals and
+// the bare names of every local function/method it calls. Two passes:
+// the first collects direct guard calls, callee names, and the LHS
+// identifiers of any auth.SubjectFromGRPCContext assignment; the second
+// looks for an if-statement that negates one of those identifiers and
+// itself constructs a PermissionDenied/Unauthenticated status, which is
+// what actually links "read the subject" to "deny if absent" (see
+// manualGuardLinked's doc comment).
 func analyzeFunc(body *ast.BlockStmt) *funcInfo {
 	info := &funcInfo{}
-	ast.Inspect(body, func(n ast.Node) bool {
+	var subjectOkVars []string
+	inspectSkippingFuncLit(body, func(n ast.Node) bool {
 		switch node := n.(type) {
+		case *ast.AssignStmt:
+			if len(node.Rhs) == 1 {
+				if call, ok := node.Rhs[0].(*ast.CallExpr); ok {
+					if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+						if pkgIdent, ok := sel.X.(*ast.Ident); ok && pkgIdent.Name == "auth" &&
+							sel.Sel.Name == "SubjectFromGRPCContext" {
+							// (username, roles, ok) — the LHS names, in
+							// whatever order the source actually wrote them.
+							for _, lhs := range node.Lhs {
+								if id, ok := lhs.(*ast.Ident); ok && id.Name != "_" {
+									subjectOkVars = append(subjectOkVars, id.Name)
+								}
+							}
+						}
+					}
+				}
+			}
 		case *ast.CallExpr:
 			switch fn := node.Fun.(type) {
 			case *ast.SelectorExpr:
 				if pkgIdent, ok := fn.X.(*ast.Ident); ok && pkgIdent.Name == "auth" {
-					switch {
-					case authGuardFuncs[fn.Sel.Name]:
+					if authGuardFuncs[fn.Sel.Name] {
 						info.directGuard = true
-					case fn.Sel.Name == "SubjectFromGRPCContext":
-						info.subjectLookup = true
 					}
 					return true
 				}
@@ -315,42 +356,119 @@ func analyzeFunc(body *ast.BlockStmt) *funcInfo {
 			case *ast.Ident:
 				info.calls = append(info.calls, fn.Name)
 			}
-		case *ast.SelectorExpr:
-			// Catches codes.PermissionDenied / codes.Unauthenticated used as
-			// a VALUE (status.Error(codes.PermissionDenied, ...)), which is
-			// not itself a CallExpr.
-			if pkgIdent, ok := node.X.(*ast.Ident); ok && pkgIdent.Name == "codes" &&
-				(node.Sel.Name == "PermissionDenied" || node.Sel.Name == "Unauthenticated") {
-				info.deniesByCode = true
-			}
+		}
+		return true
+	})
+
+	if info.directGuard || len(subjectOkVars) == 0 {
+		return info
+	}
+	okSet := make(map[string]bool, len(subjectOkVars))
+	for _, v := range subjectOkVars {
+		okSet[v] = true
+	}
+	inspectSkippingFuncLit(body, func(n ast.Node) bool {
+		ifStmt, ok := n.(*ast.IfStmt)
+		if !ok || !negatesOneOf(ifStmt.Cond, okSet) {
+			return true
+		}
+		if ifStmt.Body != nil && containsDenialCode(ifStmt.Body) {
+			info.manualGuardLinked = true
 		}
 		return true
 	})
 	return info
 }
 
+// negatesOneOf reports whether cond is `!x` or `x == false` for some x in
+// okVars — the two ways this codebase's handlers write "the subject lookup
+// failed".
+func negatesOneOf(cond ast.Expr, okVars map[string]bool) bool {
+	switch c := cond.(type) {
+	case *ast.UnaryExpr:
+		id, ok := c.X.(*ast.Ident)
+		return c.Op == token.NOT && ok && okVars[id.Name]
+	case *ast.BinaryExpr:
+		if c.Op != token.EQL {
+			return false
+		}
+		// NOTE: `a, b := x.(T), y` is NOT the comma-ok form — that requires
+		// the type assertion to be the assignment's ONLY right-hand
+		// expression. Written the compact way, c.X.(*ast.Ident) panics
+		// instead of failing gracefully whenever c.X isn't an *ast.Ident
+		// (e.g. `s.field == false`). Each assertion gets its own
+		// comma-ok statement instead.
+		if id, ok := c.X.(*ast.Ident); ok && okVars[id.Name] && isFalseLit(c.Y) {
+			return true
+		}
+		if id, ok := c.Y.(*ast.Ident); ok && okVars[id.Name] && isFalseLit(c.X) {
+			return true
+		}
+		return false
+	}
+	return false
+}
+
+func isFalseLit(e ast.Expr) bool {
+	id, ok := e.(*ast.Ident)
+	return ok && id.Name == "false"
+}
+
+// containsDenialCode reports whether n references codes.PermissionDenied or
+// codes.Unauthenticated as a value (status.Error(codes.X, ...)) anywhere
+// within it.
+func containsDenialCode(n ast.Node) bool {
+	found := false
+	inspectSkippingFuncLit(n, func(node ast.Node) bool {
+		sel, ok := node.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		if pkgIdent, ok := sel.X.(*ast.Ident); ok && pkgIdent.Name == "codes" &&
+			(sel.Sel.Name == "PermissionDenied" || sel.Sel.Name == "Unauthenticated") {
+			found = true
+		}
+		return true
+	})
+	return found
+}
+
 // TestEveryRPCHasAuthGuard is #1685's lock-in: a newly-added RPC with
 // neither a guard call nor a recorded exemption fails CI, closing the gap
 // the per-handler auth model otherwise leaves silent.
+//
+// It also rejects a STALE exemption — one naming an RPC that is now
+// guarded — rather than silently accepting it. Checking guarded status
+// first and returning early (the original shape) let an exemption entry
+// survive its own fix forever: nothing failed, so nothing forced its
+// removal, and if a later change accidentally removed the real guard again
+// the stale entry would mask the regression by making the RPC "exempt"
+// again instead of failing (CodeRabbit review on PR #1719).
 func TestEveryRPCHasAuthGuard(t *testing.T) {
 	guarded := guardedMethods(t)
+	seenKeys := map[string]bool{}
 	checked := 0
 	check := func(service, receiver, method string) {
 		checked++
 		key := rpcKey(service, method)
-		if guarded[receiver+"."+method] {
-			return
-		}
-		if reason, ok := authExemptions[key]; ok {
+		seenKeys[key] = true
+		reason, exempted := authExemptions[key]
+		switch {
+		case guarded[receiver+"."+method] && exempted:
+			t.Errorf("%s: has a guard AND a stale authExemptions entry (%q) — "+
+				"remove the exemption now that it's guarded", key, reason)
+		case guarded[receiver+"."+method]:
+			// guarded, no exemption on record: the normal, expected case.
+		case exempted:
 			if strings.TrimSpace(reason) == "" {
 				t.Errorf("%s: exemption recorded with no reason — state WHY, not just THAT", key)
 			}
-			return
+		default:
+			t.Errorf("%s (%s.%s): no auth.RequireScope/RequireRole/RequireRoleOrScope/"+
+				"AuthorizeTenant/AuthorizeSecretTenant call found, and no authExemptions entry — "+
+				"add a guard, or add authExemptions[%q] with a reason before merging",
+				key, receiver, method, key)
 		}
-		t.Errorf("%s (%s.%s): no auth.RequireScope/RequireRole/RequireRoleOrScope/"+
-			"AuthorizeTenant/AuthorizeSecretTenant call found, and no authExemptions entry — "+
-			"add a guard, or add authExemptions[%q] with a reason before merging",
-			key, receiver, method, key)
 	}
 	for _, svc := range registeredServices {
 		service := serviceShortName(svc.desc.ServiceName)
@@ -364,5 +482,69 @@ func TestEveryRPCHasAuthGuard(t *testing.T) {
 	if checked == 0 {
 		t.Fatal("no RPCs checked — registeredServices or its ServiceDescs are empty; test harness broken")
 	}
+	// An exemption naming an RPC that doesn't exist on the audited surface
+	// (typo'd service/method, or the RPC was renamed/removed) is dead data
+	// that nobody will ever be forced to clean up otherwise.
+	for key := range authExemptions {
+		if !seenKeys[key] {
+			t.Errorf("authExemptions[%q] does not name any RPC in registeredServices — "+
+				"typo, or the RPC was renamed/removed; remove or fix this entry", key)
+		}
+	}
 	t.Logf("checked %d RPCs across %d services", checked, len(registeredServices))
+}
+
+// registerCallPattern matches a dual_server.go call like
+// pb.RegisterContainerServiceServer(...), capturing "Container" so it maps
+// back to registeredServices' "ContainerService" naming.
+var registerCallPattern = regexp.MustCompile(`^Register(.+)ServiceServer$`)
+
+// TestRegisteredServicesMatchesDualServer is #1685's other lock-in
+// (CodeRabbit review on PR #1719): registeredServices above is a manually
+// maintained list. Without this test, a new pb.RegisterXServiceServer call
+// landing in dual_server.go with no matching registeredServices entry would
+// leave that service's entire RPC surface unaudited, and
+// TestEveryRPCHasAuthGuard would have no way to notice — it only ever looks
+// at what registeredServices tells it to.
+func TestRegisteredServicesMatchesDualServer(t *testing.T) {
+	fset := token.NewFileSet()
+	node, err := parser.ParseFile(fset, "dual_server.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse dual_server.go: %v", err)
+	}
+	tracked := make(map[string]bool, len(registeredServices))
+	for _, svc := range registeredServices {
+		tracked[serviceShortName(svc.desc.ServiceName)] = true
+	}
+	found := 0
+	ast.Inspect(node, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		pkgIdent, ok := sel.X.(*ast.Ident)
+		if !ok || pkgIdent.Name != "pb" {
+			return true
+		}
+		m := registerCallPattern.FindStringSubmatch(sel.Sel.Name)
+		if m == nil {
+			return true
+		}
+		found++
+		service := m[1] + "Service"
+		if !tracked[service] {
+			t.Errorf("dual_server.go registers %s (%s) but registeredServices has no entry for it — "+
+				"add {pb.%s_ServiceDesc, \"<ReceiverType>\"} so TestEveryRPCHasAuthGuard audits its RPCs",
+				sel.Sel.Name, service, service)
+		}
+		return true
+	})
+	if found == 0 {
+		t.Fatal("found no pb.RegisterXServiceServer( call in dual_server.go — test harness broken")
+	}
+	t.Logf("dual_server.go registers %d services, all present in registeredServices", found)
 }
