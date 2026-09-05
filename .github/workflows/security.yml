@@ -105,6 +105,16 @@ jobs:
       - name: Run test-makefile-var-safety.sh
         run: ./scripts/test-makefile-var-safety.sh
 
+  sentinel-hostkey-persistence:
+    name: Sentinel admin sshd host key persistence (#1596)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Run test-sentinel-hostkey-persistence.sh
+        run: ./scripts/test-sentinel-hostkey-persistence.sh
+
   trivy:
     name: Dependency Scan (Trivy)
     runs-on: ubuntu-latest

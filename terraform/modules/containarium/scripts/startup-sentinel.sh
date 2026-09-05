@@ -91,13 +91,35 @@ systemctl disable --now apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || t
 apt-get update -qq
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl fail2ban > /dev/null
 
+# Persist the admin sshd (port 2222) host key across restarts/redeploys
+# (#1596). It was observed to regenerate on every containarium-sentinel
+# (re)start on this image, which degrades StrictHostKeyChecking from a
+# real MITM signal into routine "host key has changed" noise that trains
+# operators to blindly ssh-keygen -R and move on — exactly the response a
+# real attack needs. Generate our own key once, the same idempotent
+# pattern already used below for sshpiper's own host_key (which has never
+# shown this problem — same disk, so the persistence itself is fine; the
+# bug is specifically in leaving this to the OS's own /etc/ssh/ssh_host_*
+# lifecycle), and make sshd use ONLY this key.
+mkdir -p /etc/containarium
+if [ ! -f /etc/containarium/ssh_host_ed25519_key ]; then
+    ssh-keygen -t ed25519 -f /etc/containarium/ssh_host_ed25519_key -N ""
+    echo "admin sshd host key generated"
+fi
+chmod 600 /etc/containarium/ssh_host_ed25519_key
+
 # Harden SSH — sshd listens on port 2222 ONLY (management/IAP access)
 # Port 22 is now owned by sshpiper (SSH reverse proxy with fail-to-ban)
 cat > /etc/ssh/sshd_config.d/containarium.conf <<EOF
 PasswordAuthentication no
 PubkeyAuthentication yes
 PermitRootLogin no
+HostKey /etc/containarium/ssh_host_ed25519_key
 EOF
+# Drop the distro's default HostKey lines (same removal pattern as Port
+# below) so sshd offers ONLY our persisted key, not whatever it or cloud-init
+# regenerated under /etc/ssh/ this boot.
+sed -i '/^HostKey /d' /etc/ssh/sshd_config
 # Set sshd to port 2222 only — port 22 is reserved for sshpiper
 sed -i '/^Port /d' /etc/ssh/sshd_config
 echo "Port 2222" >> /etc/ssh/sshd_config
