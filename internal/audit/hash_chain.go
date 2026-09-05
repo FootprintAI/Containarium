@@ -22,9 +22,12 @@ import (
 // The chain doesn't prove the log is COMPLETE (an attacker could
 // delete the suffix of rows and leave the head intact), but it
 // proves nothing has been MODIFIED or INSERTED — which is the
-// threat audit C-MED-5+ flags. Append-only forensics (push the
-// chain root to an external sink periodically) detects deletions
-// on top of this; that's tracked separately.
+// threat audit C-MED-5+ flags. It also can't, by itself, catch a
+// privileged attacker who rewrites a row AND correctly recomputes
+// every hash after it — that produces a chain that IS internally
+// consistent. anchor.go closes that gap (#1706): the chain's tip is
+// periodically published to an external sink Postgres can't rewrite,
+// and VerifyChainAgainstAnchor checks against it.
 
 const (
 	// HashEmpty is the value used as the previous hash for the

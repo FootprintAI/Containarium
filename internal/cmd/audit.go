@@ -4,6 +4,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -39,7 +40,16 @@ var (
 	// `audit verify` flags
 	auditVerifyFromID int64
 	auditVerifyBatch  int
+
+	// `audit verify-anchor` flags
+	auditAnchorPath string
 )
+
+// defaultAuditAnchorPath mirrors internal/server's constant of the same
+// name (#1706) — duplicated rather than imported so this CLI keeps its
+// stated direct-Postgres-only dependency shape rather than pulling in the
+// daemon package for one path string.
+const defaultAuditAnchorPath = "/var/lib/containarium/audit-anchors.jsonl"
 
 var auditCmd = &cobra.Command{
 	Use:   "audit",
@@ -86,10 +96,12 @@ the row was edited after insert OR a row was inserted
 between two existing rows.
 
 The chain doesn't prove the log is COMPLETE (an attacker
-could delete the suffix); it proves nothing has been
-MODIFIED or INSERTED. Append-only forensics (external
-sink for the chain root) catches deletion, tracked
-separately.
+with database access could rewrite a row and recompute every
+hash after it, or delete the tail outright — either preserves
+internal consistency). It proves nothing has been MODIFIED or
+INSERTED as long as nobody can also rewrite the rows after the
+edit. See 'audit verify-anchor' for the check that catches a
+privileged rewrite-and-recompute, which this command cannot.
 
 A clean verify reports "intact" and the highest ID seen.`,
 	Example: `  # Verify from the chain start
@@ -103,10 +115,50 @@ A clean verify reports "intact" and the highest ID seen.`,
 	RunE: runAuditVerify,
 }
 
+var auditVerifyAnchorCmd = &cobra.Command{
+	Use:   "verify-anchor",
+	Short: "Verify the audit chain against its last externally-anchored root",
+	Long: `'audit verify' proves internal consistency: every row's hash matches
+what its own fields (and the previous row's hash) compute to.
+It CANNOT catch an operator with Postgres write access who
+edits a row and then correctly recomputes every hash after it
+— that produces a chain that is internally consistent by
+construction, because the attacker used the same hashing rule
+the daemon does.
+
+This command closes that gap (#1706). The daemon periodically
+publishes the chain's current tip to an external file the
+database cannot rewrite (see CONTAINARIUM_AUDIT_ANCHOR_PATH /
+CONTAINARIUM_AUDIT_ANCHOR_INTERVAL on the daemon). This command
+re-reads the row at that anchored checkpoint from the database
+right now and compares: if it doesn't match what was anchored,
+that row (or an earlier one) was rewritten after anchoring — no
+matter how correctly the chain was recomputed forward. It also
+re-runs the ordinary internal-consistency check for everything
+AFTER the checkpoint, since a break there is a different failure
+(tampering since the last anchor) that comparing one hash value
+can't see.
+
+A privileged rewrite of a row anchored less than one anchoring
+interval ago is undetectable until the daemon's next anchor
+publishes a checkpoint past it — that window is inherent to
+periodic anchoring, not a bug in this check.`,
+	Example: `  # Default anchor path (same as the daemon's default)
+  containarium audit verify-anchor
+
+  # Non-default anchor location
+  containarium audit verify-anchor --anchor-path /mnt/forensics/audit-anchors.jsonl`,
+	RunE: runAuditVerifyAnchor,
+}
+
 func init() {
 	rootCmd.AddCommand(auditCmd)
 	auditCmd.AddCommand(auditQueryCmd)
 	auditCmd.AddCommand(auditVerifyCmd)
+	auditCmd.AddCommand(auditVerifyAnchorCmd)
+
+	auditVerifyAnchorCmd.Flags().StringVar(&auditAnchorPath, "anchor-path", "",
+		"Path to the anchor file (default: $CONTAINARIUM_AUDIT_ANCHOR_PATH, or the daemon's own default)")
 
 	auditQueryCmd.Flags().StringVar(&auditQueryUsername, "username", "", "Filter by username (exact match)")
 	auditQueryCmd.Flags().StringVar(&auditQueryAction, "action", "", "Filter by action (exact match, e.g. create_container)")
@@ -257,6 +309,59 @@ func runAuditVerify(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("\n  ✓ Audit-log chain intact (verified through id=%d)\n\n", maxID)
 	return nil
+}
+
+func runAuditVerifyAnchor(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+	store, cleanup, err := openAuditStore(ctx)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	path := auditAnchorPath
+	if path == "" {
+		path = os.Getenv("CONTAINARIUM_AUDIT_ANCHOR_PATH")
+	}
+	if path == "" {
+		path = defaultAuditAnchorPath
+	}
+	sink, err := audit.NewFileSink(path)
+	if err != nil {
+		return fmt.Errorf("open anchor sink %q: %w", path, err)
+	}
+
+	result, err := store.VerifyChainAgainstAnchor(ctx, sink)
+	if err != nil {
+		if errors.Is(err, audit.ErrNoAnchor) {
+			fmt.Printf("\n  ⚠ No anchor has been published yet at %s\n", path)
+			fmt.Println("    Either the daemon has not run long enough to anchor once, or")
+			fmt.Println("    CONTAINARIUM_AUDIT_ANCHOR_PATH doesn't match this daemon's setting.")
+			fmt.Println()
+			return nil
+		}
+		return fmt.Errorf("verify against anchor: %w", err)
+	}
+
+	if result.OK() {
+		fmt.Printf("\n  ✓ Chain matches its anchor at checkpoint id=%d\n\n", result.Checkpoint)
+		return nil
+	}
+
+	fmt.Fprintf(os.Stderr, "\n  ✗ Chain does NOT match its anchor at checkpoint id=%d\n\n", result.Checkpoint)
+	if result.AnchorRoot != result.CurrentRoot {
+		if result.CurrentRoot == "" {
+			fmt.Fprintf(os.Stderr, "  Row id=%d, which was anchored, no longer exists — it was deleted.\n", result.Checkpoint)
+		} else {
+			fmt.Fprintf(os.Stderr, "  Row id=%d's hash has changed since it was anchored — that row, or an earlier\n", result.Checkpoint)
+			fmt.Fprintf(os.Stderr, "  one, was rewritten after anchoring, even though 'audit verify' alone would not show it:\n")
+			fmt.Fprintf(os.Stderr, "  a rewrite followed by a correctly recomputed chain looks internally consistent.\n\n")
+		}
+	}
+	if result.FirstBadAfterCheckpoint != 0 {
+		fmt.Fprintf(os.Stderr, "  Additionally, internal consistency breaks at row id=%d (after the checkpoint).\n\n", result.FirstBadAfterCheckpoint)
+	}
+	return fmt.Errorf("chain does not match its anchor at checkpoint id=%d", result.Checkpoint)
 }
 
 // sanitizeDetailForCLI strips newlines from the detail

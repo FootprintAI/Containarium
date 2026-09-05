@@ -1164,6 +1164,39 @@ If the chain is broken:
 3. Restore the table from the most recent verified backup (the
    chain root from the backup is the authoritative "good" state).
 
+### The gap `audit verify` alone cannot close
+
+`audit verify` only proves internal consistency. Someone with
+Postgres write access can edit a row and then correctly recompute
+every `row_hash` after it — the chain that produces is internally
+consistent by construction, so `audit verify` reports "intact" even
+though a row was rewritten.
+
+The daemon closes this by periodically publishing the chain's
+current tip to a local file Postgres has no access to
+(`CONTAINARIUM_AUDIT_ANCHOR_PATH`, default
+`/var/lib/containarium/audit-anchors.jsonl`; cadence
+`CONTAINARIUM_AUDIT_ANCHOR_INTERVAL`, default 15m). Run:
+
+```bash
+containarium audit verify-anchor
+```
+
+This re-reads the row at the last anchored checkpoint from the
+database and compares it against the anchored value — catching
+exactly the rewrite-and-recompute case `audit verify` cannot — and
+also re-runs internal consistency for everything logged since that
+checkpoint. A rewrite of a row anchored less than one anchoring
+interval ago is undetectable until the next anchor publishes a
+checkpoint past it; that window is inherent to periodic anchoring,
+not a bug.
+
+The anchor file itself is only as trustworthy as the host's
+filesystem permissions — it defends against a Postgres-privileged
+attacker, not a host-root one who could edit both. Back it up
+off-host (it's a plain append-only JSON-lines file) for anything
+stronger.
+
 ---
 
 ## References
