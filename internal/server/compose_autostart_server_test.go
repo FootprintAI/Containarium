@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"github.com/footprintai/containarium/internal/auth"
 	"strings"
 	"testing"
 
@@ -32,9 +33,29 @@ func (f *fakeExecer) ExecWithOutput(containerName string, command []string) (str
 	return f.stdout, f.stderr, f.err
 }
 
+// These handlers gained tenant + scope guards in #1716, so every call needs an
+// authenticated context. composeCallerCtx is alice acting on her OWN box with
+// both scopes — the authorized case, so these tests keep exercising the
+// command-building behaviour they were written for rather than the new gate.
+// The gate itself is tested separately in authguard_writepath_test.go.
+func composeCallerCtx() context.Context {
+	return auth.ContextWithTestSubjectScopes(context.Background(), "alice",
+		[]string{"user"}, []string{auth.ScopeContainersRead, auth.ScopeContainersWrite})
+}
+
+// composeAdminCtx reaches argument validation for requests that deliberately
+// carry no username. Auth runs BEFORE validation on purpose (the convention
+// SetTenantKMSKey states: an under-privileged caller must not get to probe
+// argument handling), so a blank username would otherwise be refused by the
+// tenant check before the validation under test ever runs.
+func composeAdminCtx() context.Context {
+	return auth.ContextWithTestSubjectScopes(context.Background(), "ops",
+		[]string{auth.RoleAdmin}, []string{auth.ScopeContainersRead, auth.ScopeContainersWrite})
+}
+
 func TestExecAgentBox_BlankUsername_InvalidArg(t *testing.T) {
 	s := NewComposeAutostartServer(&fakeExecer{})
-	_, err := s.Discover(context.Background(), &pb.DiscoverRequest{})
+	_, err := s.Discover(composeAdminCtx(), &pb.DiscoverRequest{})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Errorf("code = %v, want InvalidArgument; err = %v", status.Code(err), err)
 	}
@@ -43,7 +64,7 @@ func TestExecAgentBox_BlankUsername_InvalidArg(t *testing.T) {
 func TestExecAgentBox_TransportError_Internal(t *testing.T) {
 	f := &fakeExecer{err: errors.New("ssh connection refused"), stderr: "no route to host"}
 	s := NewComposeAutostartServer(f)
-	_, err := s.Status(context.Background(), &pb.StatusRequest{Username: "alice", Dir: "/srv"})
+	_, err := s.Status(composeCallerCtx(), &pb.StatusRequest{Username: "alice", Dir: "/srv"})
 	if status.Code(err) != codes.Internal {
 		t.Errorf("code = %v, want Internal", status.Code(err))
 	}
@@ -55,7 +76,7 @@ func TestExecAgentBox_TransportError_Internal(t *testing.T) {
 func TestExecAgentBox_MalformedEnvelope_Internal(t *testing.T) {
 	f := &fakeExecer{stdout: "not json {{"}
 	s := NewComposeAutostartServer(f)
-	_, err := s.Status(context.Background(), &pb.StatusRequest{Username: "alice", Dir: "/srv"})
+	_, err := s.Status(composeCallerCtx(), &pb.StatusRequest{Username: "alice", Dir: "/srv"})
 	if status.Code(err) != codes.Internal {
 		t.Errorf("code = %v, want Internal (malformed envelope)", status.Code(err))
 	}
@@ -64,7 +85,7 @@ func TestExecAgentBox_MalformedEnvelope_Internal(t *testing.T) {
 func TestExecAgentBox_EnvelopeFalse_FailedPrecondition(t *testing.T) {
 	f := &fakeExecer{stdout: `{"ok":false,"error":"no compose runtime found on PATH"}`}
 	s := NewComposeAutostartServer(f)
-	_, err := s.Status(context.Background(), &pb.StatusRequest{Username: "alice", Dir: "/srv"})
+	_, err := s.Status(composeCallerCtx(), &pb.StatusRequest{Username: "alice", Dir: "/srv"})
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Errorf("code = %v, want FailedPrecondition", status.Code(err))
 	}
@@ -76,7 +97,7 @@ func TestExecAgentBox_EnvelopeFalse_FailedPrecondition(t *testing.T) {
 func TestDiscover_BuildsCommandFromRequest(t *testing.T) {
 	f := &fakeExecer{stdout: `{"ok":true,"result":{"stacks":[]}}`}
 	s := NewComposeAutostartServer(f)
-	_, err := s.Discover(context.Background(), &pb.DiscoverRequest{
+	_, err := s.Discover(composeCallerCtx(), &pb.DiscoverRequest{
 		Username: "alice",
 		Root:     "/home/alice",
 		MaxDepth: 4,
@@ -104,7 +125,7 @@ func TestDiscover_BuildsCommandFromRequest(t *testing.T) {
 func TestDiscover_OmitsZeroValuedFlags(t *testing.T) {
 	f := &fakeExecer{stdout: `{"ok":true,"result":{"stacks":[]}}`}
 	s := NewComposeAutostartServer(f)
-	_, err := s.Discover(context.Background(), &pb.DiscoverRequest{
+	_, err := s.Discover(composeCallerCtx(), &pb.DiscoverRequest{
 		Username: "alice",
 	})
 	if err != nil {
@@ -118,7 +139,7 @@ func TestDiscover_OmitsZeroValuedFlags(t *testing.T) {
 
 func TestEnable_RequiresDir(t *testing.T) {
 	s := NewComposeAutostartServer(&fakeExecer{})
-	_, err := s.Enable(context.Background(), &pb.EnableRequest{Username: "alice"})
+	_, err := s.Enable(composeCallerCtx(), &pb.EnableRequest{Username: "alice"})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Errorf("code = %v, want InvalidArgument", status.Code(err))
 	}
@@ -127,7 +148,7 @@ func TestEnable_RequiresDir(t *testing.T) {
 func TestEnable_ForceFlagPropagates(t *testing.T) {
 	f := &fakeExecer{stdout: `{"ok":true,"result":{"unit":"u","dir":"/d","compose_bin":"podman compose","already":false}}`}
 	s := NewComposeAutostartServer(f)
-	_, err := s.Enable(context.Background(), &pb.EnableRequest{
+	_, err := s.Enable(composeCallerCtx(), &pb.EnableRequest{
 		Username: "alice",
 		Dir:      "/srv/app",
 		Force:    true,
@@ -153,7 +174,7 @@ func TestEnable_MapsResultIntoProto(t *testing.T) {
 		}
 	}`}
 	s := NewComposeAutostartServer(f)
-	resp, err := s.Enable(context.Background(), &pb.EnableRequest{Username: "alice", Dir: "/srv/app"})
+	resp, err := s.Enable(composeCallerCtx(), &pb.EnableRequest{Username: "alice", Dir: "/srv/app"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +207,7 @@ func TestStatus_MapsComposeStackFields(t *testing.T) {
 		}
 	}`}
 	s := NewComposeAutostartServer(f)
-	resp, err := s.Status(context.Background(), &pb.StatusRequest{Username: "alice", Dir: "/srv/app"})
+	resp, err := s.Status(composeCallerCtx(), &pb.StatusRequest{Username: "alice", Dir: "/srv/app"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +236,7 @@ func TestDiscover_MapsStacksInOrder(t *testing.T) {
 		}
 	}`}
 	s := NewComposeAutostartServer(f)
-	resp, err := s.Discover(context.Background(), &pb.DiscoverRequest{Username: "alice"})
+	resp, err := s.Discover(composeCallerCtx(), &pb.DiscoverRequest{Username: "alice"})
 	if err != nil {
 		t.Fatal(err)
 	}

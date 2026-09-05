@@ -83,6 +83,15 @@ func TestListBadDestinations_NoRule_ReturnsUnavailable(t *testing.T) {
 	}
 }
 
+// The bad-destination blocklist is fleet-wide, so mutating it now requires the
+// admin role AND security:write (#1717). These tests exercise the round-trip
+// behaviour, not the gate — the gate has its own tests in
+// authguard_writepath_test.go.
+func badDestAdminCtx() context.Context {
+	return auth.ContextWithTestSubjectScopes(context.Background(), "ops",
+		[]string{auth.RoleAdmin}, []string{auth.ScopeSecurityWrite})
+}
+
 func TestAddThenListBadDestination(t *testing.T) {
 	s := NewThreatDetectionServer(nil, false, false, "")
 	rule, err := threatdetect.NewBadDestinationRule(context.Background(), nil)
@@ -91,7 +100,7 @@ func TestAddThenListBadDestination(t *testing.T) {
 	}
 	s.SetBadDestinationRule(rule)
 
-	addResp, err := s.AddBadDestination(context.Background(), &pb.AddBadDestinationRequest{Cidr: "192.0.2.55/32", Label: "test entry"})
+	addResp, err := s.AddBadDestination(badDestAdminCtx(), &pb.AddBadDestinationRequest{Cidr: "192.0.2.55/32", Label: "test entry"})
 	if err != nil {
 		t.Fatalf("AddBadDestination: %v", err)
 	}
@@ -122,7 +131,7 @@ func TestAddBadDestination_MissingCidr(t *testing.T) {
 	}
 	s.SetBadDestinationRule(rule)
 
-	if _, err := s.AddBadDestination(context.Background(), &pb.AddBadDestinationRequest{Label: "no cidr"}); err == nil {
+	if _, err := s.AddBadDestination(badDestAdminCtx(), &pb.AddBadDestinationRequest{Label: "no cidr"}); err == nil {
 		t.Fatal("AddBadDestination with no cidr should error, got nil")
 	}
 }
@@ -135,7 +144,7 @@ func TestRemoveBadDestination_NotFound(t *testing.T) {
 	}
 	s.SetBadDestinationRule(rule)
 
-	if _, err := s.RemoveBadDestination(context.Background(), &pb.RemoveBadDestinationRequest{Cidr: "192.0.2.99/32"}); err == nil {
+	if _, err := s.RemoveBadDestination(badDestAdminCtx(), &pb.RemoveBadDestinationRequest{Cidr: "192.0.2.99/32"}); err == nil {
 		t.Fatal("RemoveBadDestination on a never-added entry should error, got nil")
 	}
 }
@@ -148,10 +157,10 @@ func TestRemoveBadDestination_RoundTrip(t *testing.T) {
 	}
 	s.SetBadDestinationRule(rule)
 
-	if _, err := s.AddBadDestination(context.Background(), &pb.AddBadDestinationRequest{Cidr: "192.0.2.55/32", Label: "temp"}); err != nil {
+	if _, err := s.AddBadDestination(badDestAdminCtx(), &pb.AddBadDestinationRequest{Cidr: "192.0.2.55/32", Label: "temp"}); err != nil {
 		t.Fatalf("AddBadDestination: %v", err)
 	}
-	if _, err := s.RemoveBadDestination(context.Background(), &pb.RemoveBadDestinationRequest{Cidr: "192.0.2.55/32"}); err != nil {
+	if _, err := s.RemoveBadDestination(badDestAdminCtx(), &pb.RemoveBadDestinationRequest{Cidr: "192.0.2.55/32"}); err != nil {
 		t.Fatalf("RemoveBadDestination: %v", err)
 	}
 	listResp, err := s.ListBadDestinations(context.Background(), &pb.ListBadDestinationsRequest{})

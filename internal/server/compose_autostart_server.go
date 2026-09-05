@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"github.com/footprintai/containarium/internal/auth"
 	"math"
 	"strconv"
 
@@ -99,7 +100,18 @@ func (s *ComposeAutostartServer) execAgentBoxCompose(username, verb string, args
 
 // ---- Discover ------------------------------------------------------
 
-func (s *ComposeAutostartServer) Discover(_ context.Context, req *pb.DiscoverRequest) (*pb.DiscoverResponse, error) {
+// Discover reads another box's filesystem, so it is tenant-scoped despite
+// being read-only: the compose stacks on a tenant's box are that tenant's
+// business (#1716).
+func (s *ComposeAutostartServer) Discover(ctx context.Context, req *pb.DiscoverRequest) (*pb.DiscoverResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersRead); err != nil {
+		return nil, err
+	}
+	// The username is REQUEST input and names whose box is touched, so it
+	// must be checked against the authenticated caller — not trusted.
+	if err := auth.AuthorizeTenant(ctx, req.GetUsername()); err != nil {
+		return nil, err
+	}
 	args := []string{}
 	if req.GetRoot() != "" {
 		args = append(args, "--root", req.GetRoot())
@@ -135,7 +147,18 @@ func (s *ComposeAutostartServer) Discover(_ context.Context, req *pb.DiscoverReq
 
 // ---- Enable --------------------------------------------------------
 
-func (s *ComposeAutostartServer) Enable(_ context.Context, req *pb.EnableRequest) (*pb.EnableResponse, error) {
+// Enable mutates state INSIDE a tenant's box (#1716). Before this guard any
+// caller reaching the gRPC surface could pass an arbitrary username and turn
+// compose autostart on in someone else's box.
+func (s *ComposeAutostartServer) Enable(ctx context.Context, req *pb.EnableRequest) (*pb.EnableResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
+		return nil, err
+	}
+	// The username is REQUEST input and names whose box is touched, so it
+	// must be checked against the authenticated caller — not trusted.
+	if err := auth.AuthorizeTenant(ctx, req.GetUsername()); err != nil {
+		return nil, err
+	}
 	if req.GetDir() == "" {
 		return nil, status.Error(codes.InvalidArgument, "dir is required")
 	}
@@ -170,7 +193,18 @@ func (s *ComposeAutostartServer) Enable(_ context.Context, req *pb.EnableRequest
 
 // ---- Disable -------------------------------------------------------
 
-func (s *ComposeAutostartServer) Disable(_ context.Context, req *pb.DisableRequest) (*pb.DisableResponse, error) {
+// Disable mutates state inside a tenant's box (#1716). Removing autostart
+// from another tenant's stack is the more damaging direction: it is silent
+// until their services fail to come back after a reboot.
+func (s *ComposeAutostartServer) Disable(ctx context.Context, req *pb.DisableRequest) (*pb.DisableResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
+		return nil, err
+	}
+	// The username is REQUEST input and names whose box is touched, so it
+	// must be checked against the authenticated caller — not trusted.
+	if err := auth.AuthorizeTenant(ctx, req.GetUsername()); err != nil {
+		return nil, err
+	}
 	if req.GetDir() == "" {
 		return nil, status.Error(codes.InvalidArgument, "dir is required")
 	}
@@ -200,7 +234,17 @@ func (s *ComposeAutostartServer) Disable(_ context.Context, req *pb.DisableReque
 
 // ---- Status --------------------------------------------------------
 
-func (s *ComposeAutostartServer) Status(_ context.Context, req *pb.StatusRequest) (*pb.StatusResponse, error) {
+// Status reports another box's compose state, so it is tenant-scoped for the
+// same reason as Discover (#1716).
+func (s *ComposeAutostartServer) Status(ctx context.Context, req *pb.StatusRequest) (*pb.StatusResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersRead); err != nil {
+		return nil, err
+	}
+	// The username is REQUEST input and names whose box is touched, so it
+	// must be checked against the authenticated caller — not trusted.
+	if err := auth.AuthorizeTenant(ctx, req.GetUsername()); err != nil {
+		return nil, err
+	}
 	if req.GetDir() == "" {
 		return nil, status.Error(codes.InvalidArgument, "dir is required")
 	}
