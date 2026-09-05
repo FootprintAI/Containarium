@@ -168,6 +168,21 @@ func (s *ThreatDetectionServer) ListBadDestinations(ctx context.Context, _ *pb.L
 // and (when a DaemonConfigStore is configured) persisted across restarts —
 // no daemon rebuild required.
 func (s *ThreatDetectionServer) AddBadDestination(ctx context.Context, req *pb.AddBadDestinationRequest) (*pb.AddBadDestinationResponse, error) {
+	// Platform-wide security control, so BOTH gates (#1717). security:write
+	// matches this file's own neighbours (ListFindings/ResolveFinding); the
+	// admin role is the additional one, because unlike a finding this is not
+	// tenant data — the blocklist protects the whole fleet, and a scoped
+	// non-admin token has no business editing it.
+	//
+	// Removing an entry is the dangerous direction: adding a bad CIDR is a
+	// nuisance a tenant would notice immediately, while deleting one silently
+	// disables a detection rule and nothing looks wrong afterwards.
+	if err := auth.RequireScope(ctx, auth.ScopeSecurityWrite); err != nil {
+		return nil, err
+	}
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
 	if s.badDestRule == nil {
 		return nil, status.Errorf(codes.Unavailable, "bad-destination rule not available")
 	}
@@ -186,6 +201,21 @@ func (s *ThreatDetectionServer) AddBadDestination(ctx context.Context, req *pb.A
 // RemoveBadDestination removes a previously operator-added entry. Baseline
 // entries cannot be removed — see BadDestinationRule.RemoveDestination.
 func (s *ThreatDetectionServer) RemoveBadDestination(ctx context.Context, req *pb.RemoveBadDestinationRequest) (*pb.RemoveBadDestinationResponse, error) {
+	// Platform-wide security control, so BOTH gates (#1717). security:write
+	// matches this file's own neighbours (ListFindings/ResolveFinding); the
+	// admin role is the additional one, because unlike a finding this is not
+	// tenant data — the blocklist protects the whole fleet, and a scoped
+	// non-admin token has no business editing it.
+	//
+	// Removing an entry is the dangerous direction: adding a bad CIDR is a
+	// nuisance a tenant would notice immediately, while deleting one silently
+	// disables a detection rule and nothing looks wrong afterwards.
+	if err := auth.RequireScope(ctx, auth.ScopeSecurityWrite); err != nil {
+		return nil, err
+	}
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
 	if s.badDestRule == nil {
 		return nil, status.Errorf(codes.Unavailable, "bad-destination rule not available")
 	}
