@@ -177,6 +177,10 @@ func (s *ZapServer) SuppressZapAlert(ctx context.Context, req *pb.SuppressZapAle
 // Any authenticated user can call it to discover whether
 // scanning is enabled.
 func (s *ZapServer) GetZapConfig(ctx context.Context, req *pb.GetZapConfigRequest) (*pb.GetZapConfigResponse, error) {
+	// Reveals whether ZAP scanning is enabled and available (#1718).
+	if err := auth.RequireScope(ctx, auth.ScopeSecurityRead); err != nil {
+		return nil, err
+	}
 	config := &pb.ZapConfig{
 		Enabled: s.manager != nil,
 	}

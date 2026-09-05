@@ -101,6 +101,11 @@ func (s *ThreatDetectionServer) SetUnavailable(reason string) {
 // backend that can't detect anything — DISABLED and UNAVAILABLE are
 // distinct, explicit states from OK/DEGRADED (design doc).
 func (s *ThreatDetectionServer) GetSentryStatus(ctx context.Context, _ *pb.GetSentryStatusRequest) (*pb.GetSentryStatusResponse, error) {
+	// Reveals whether the eBPF threat sentry is enabled and, if not, why —
+	// telling an attacker which detection is off (#1718).
+	if err := auth.RequireScope(ctx, auth.ScopeSecurityRead); err != nil {
+		return nil, err
+	}
 	s.mu.Lock()
 	ebpfAvailable, unavailableReason := s.ebpfAvailable, s.unavailableReason
 	s.mu.Unlock()
@@ -153,6 +158,11 @@ func (s *ThreatDetectionServer) GetSentryStatus(ctx context.Context, _ *pb.GetSe
 // known-bad-destination list the bad-destination rule (#1641) matches
 // against.
 func (s *ThreatDetectionServer) ListBadDestinations(ctx context.Context, _ *pb.ListBadDestinationsRequest) (*pb.ListBadDestinationsResponse, error) {
+	// The blocklist's current entries. Reading is far less damaging than the
+	// mutations gated in #1717, but it still shows what is being watched for.
+	if err := auth.RequireScope(ctx, auth.ScopeSecurityRead); err != nil {
+		return nil, err
+	}
 	if s.badDestRule == nil {
 		return nil, status.Errorf(codes.Unavailable, "bad-destination rule not available")
 	}

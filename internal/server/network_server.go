@@ -1010,6 +1010,11 @@ func (s *NetworkServer) GetNetworkTopology(ctx context.Context, req *pb.GetNetwo
 
 // ListACLPresets lists available firewall presets
 func (s *NetworkServer) ListACLPresets(ctx context.Context, req *pb.ListACLPresetsRequest) (*pb.ListACLPresetsResponse, error) {
+	// Static ACL preset list. routes:read is what every other read in this file
+	// uses (#1718).
+	if err := auth.RequireScope(ctx, auth.ScopeRoutesRead); err != nil {
+		return nil, err
+	}
 	presets := []*pb.ACLPresetInfo{
 		{
 			Preset:      pb.ACLPreset_ACL_PRESET_FULL_ISOLATION,
