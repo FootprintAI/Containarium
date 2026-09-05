@@ -268,6 +268,11 @@ func (s *ContainerServer) DeleteAlertRule(ctx context.Context, req *pb.DeleteAle
 
 // GetAlertingInfo returns alerting system status
 func (s *ContainerServer) GetAlertingInfo(ctx context.Context, req *pb.GetAlertingInfoRequest) (*pb.GetAlertingInfoResponse, error) {
+	// Reports alerting health, the masked webhook URL and whether a webhook
+	// secret is configured. alerts:read matches this file's own convention (#1718).
+	if err := auth.RequireScope(ctx, auth.ScopeAlertsRead); err != nil {
+		return nil, err
+	}
 	resp := &pb.GetAlertingInfoResponse{
 		Enabled: s.alertStore != nil,
 	}
@@ -349,6 +354,11 @@ func maskURL(rawURL string) string {
 
 // ListDefaultAlertRules returns the built-in default alert rules
 func (s *ContainerServer) ListDefaultAlertRules(ctx context.Context, req *pb.ListDefaultAlertRulesRequest) (*pb.ListDefaultAlertRulesResponse, error) {
+	// Static rule catalog, gated on the same read scope as the rest of this
+	// file rather than left open (#1718).
+	if err := auth.RequireScope(ctx, auth.ScopeAlertsRead); err != nil {
+		return nil, err
+	}
 	rules, err := parseDefaultAlertRules()
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to parse default rules: %v", err)

@@ -1928,6 +1928,12 @@ func (s *ContainerServer) InstallStack(ctx context.Context, req *pb.InstallStack
 // parameter schemas. The web UI uses this to render the Create Container
 // dialog's stack dropdown and any dynamically-shown parameter inputs.
 func (s *ContainerServer) ListStacks(ctx context.Context, req *pb.ListStacksRequest) (*pb.ListStacksResponse, error) {
+	// Static built-in stack catalog, but still behind a read scope (#1718):
+	// before this, any caller reaching the surface got it with no token authority
+	// at all.
+	if err := auth.RequireScope(ctx, auth.ScopeContainersRead); err != nil {
+		return nil, err
+	}
 	mgr := stacks.GetDefault()
 	all := mgr.GetAllStacks()
 
@@ -4221,6 +4227,11 @@ func (s *ContainerServer) SetMonitoringURLs(victoriaMetricsURL, grafanaURL strin
 
 // GetMonitoringInfo returns monitoring configuration (Grafana/VictoriaMetrics URLs)
 func (s *ContainerServer) GetMonitoringInfo(ctx context.Context, req *pb.GetMonitoringInfoRequest) (*pb.GetMonitoringInfoResponse, error) {
+	// Discloses the Grafana/VictoriaMetrics endpoints and whether monitoring is
+	// on — reconnaissance value, so it needs some read authority (#1718).
+	if err := auth.RequireScope(ctx, auth.ScopeContainersRead); err != nil {
+		return nil, err
+	}
 	return &pb.GetMonitoringInfoResponse{
 		Enabled:            s.victoriaMetricsURL != "",
 		GrafanaUrl:         s.grafanaURL,

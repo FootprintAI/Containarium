@@ -16,7 +16,7 @@ import (
 
 func TestGetSentryStatus_Disabled(t *testing.T) {
 	s := NewThreatDetectionServer(nil, false, false, "")
-	resp, err := s.GetSentryStatus(context.Background(), &pb.GetSentryStatusRequest{})
+	resp, err := s.GetSentryStatus(secReadCtx(), &pb.GetSentryStatusRequest{})
 	if err != nil {
 		t.Fatalf("GetSentryStatus: %v", err)
 	}
@@ -32,7 +32,7 @@ func TestGetSentryStatus_Disabled(t *testing.T) {
 // never silently "no findings" — the #1640 acceptance criterion.
 func TestGetSentryStatus_UnavailableWithoutEBPF(t *testing.T) {
 	s := NewThreatDetectionServer(nil, true, false, "eBPF object not loaded (set CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT)")
-	resp, err := s.GetSentryStatus(context.Background(), &pb.GetSentryStatusRequest{})
+	resp, err := s.GetSentryStatus(secReadCtx(), &pb.GetSentryStatusRequest{})
 	if err != nil {
 		t.Fatalf("GetSentryStatus: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestGetSentryStatus_UnavailableWithoutEBPF(t *testing.T) {
 func TestGetSentryStatus_Degraded(t *testing.T) {
 	engine := threatdetect.NewEngine(&fakeFindingSink{}, "backend-1", true /* degraded */, nil, nil)
 	s := NewThreatDetectionServer(engine, true, true, "")
-	resp, err := s.GetSentryStatus(context.Background(), &pb.GetSentryStatusRequest{})
+	resp, err := s.GetSentryStatus(secReadCtx(), &pb.GetSentryStatusRequest{})
 	if err != nil {
 		t.Fatalf("GetSentryStatus: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestGetSentryStatus_OKWithRuleHealth(t *testing.T) {
 	engine.Register(&fakeRule{id: pb.ThreatRuleId_THREAT_RULE_ID_BAD_DESTINATION})
 	s := NewThreatDetectionServer(engine, true, true, "")
 
-	resp, err := s.GetSentryStatus(context.Background(), &pb.GetSentryStatusRequest{})
+	resp, err := s.GetSentryStatus(secReadCtx(), &pb.GetSentryStatusRequest{})
 	if err != nil {
 		t.Fatalf("GetSentryStatus: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestGetSentryStatus_OKWithRuleHealth(t *testing.T) {
 
 func TestListBadDestinations_NoRule_ReturnsUnavailable(t *testing.T) {
 	s := NewThreatDetectionServer(nil, false, false, "")
-	if _, err := s.ListBadDestinations(context.Background(), &pb.ListBadDestinationsRequest{}); err == nil {
+	if _, err := s.ListBadDestinations(secReadCtx(), &pb.ListBadDestinationsRequest{}); err == nil {
 		t.Fatal("ListBadDestinations with no rule wired should error, got nil")
 	}
 }
@@ -87,6 +87,12 @@ func TestListBadDestinations_NoRule_ReturnsUnavailable(t *testing.T) {
 // admin role AND security:write (#1717). These tests exercise the round-trip
 // behaviour, not the gate — the gate has its own tests in
 // authguard_writepath_test.go.
+// GetSentryStatus and ListBadDestinations gained security:read in #1718.
+func secReadCtx() context.Context {
+	return auth.ContextWithTestSubjectScopes(context.Background(), "ops",
+		[]string{"user"}, []string{auth.ScopeSecurityRead})
+}
+
 func badDestAdminCtx() context.Context {
 	return auth.ContextWithTestSubjectScopes(context.Background(), "ops",
 		[]string{auth.RoleAdmin}, []string{auth.ScopeSecurityWrite})
@@ -108,7 +114,7 @@ func TestAddThenListBadDestination(t *testing.T) {
 		t.Errorf("AddBadDestination entry = %+v, want cidr=192.0.2.55/32 source=operator", addResp.GetEntry())
 	}
 
-	listResp, err := s.ListBadDestinations(context.Background(), &pb.ListBadDestinationsRequest{})
+	listResp, err := s.ListBadDestinations(secReadCtx(), &pb.ListBadDestinationsRequest{})
 	if err != nil {
 		t.Fatalf("ListBadDestinations: %v", err)
 	}
@@ -163,7 +169,7 @@ func TestRemoveBadDestination_RoundTrip(t *testing.T) {
 	if _, err := s.RemoveBadDestination(badDestAdminCtx(), &pb.RemoveBadDestinationRequest{Cidr: "192.0.2.55/32"}); err != nil {
 		t.Fatalf("RemoveBadDestination: %v", err)
 	}
-	listResp, err := s.ListBadDestinations(context.Background(), &pb.ListBadDestinationsRequest{})
+	listResp, err := s.ListBadDestinations(secReadCtx(), &pb.ListBadDestinationsRequest{})
 	if err != nil {
 		t.Fatalf("ListBadDestinations: %v", err)
 	}
