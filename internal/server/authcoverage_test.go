@@ -110,19 +110,15 @@ var registeredServices = []rpcSurface{
 // unauthenticated caller can reach; it must be a deliberate, reviewed
 // choice, never a way to silence a red test.
 //
-// Every entry below except RefreshToken is a REAL finding from this audit,
-// not a deliberate design choice — each is filed as its own issue and
-// tracked here only until that issue's fix lands, at which point the
-// exemption is removed (the test will then start requiring the guard it
-// currently lacks). Grouped by the issue that tracks the fix, not by RPC,
-// since #1718 covers several RPCs sharing one root cause.
-//
-// #1716 (ComposeAutostartService) and #1717 (ThreatDetectionService's bad-
-// destination mutation) already landed — merged to main as PR #1720 while
-// this PR was in flight — so their entries are gone; TestEveryRPCHasAuthGuard
-// itself caught them as stale (guarded-and-still-exempted) once this branch
-// merged with the new main, which is exactly the mechanism CodeRabbit asked
-// for on this PR.
+// Every real finding this audit produced (#1716 ComposeAutostartService,
+// #1717 ThreatDetectionService's bad-destination mutation, #1718's 9
+// read-only RPCs) has now landed — merged to main as PR #1720 and PR #1721,
+// both while this PR was in flight. TestEveryRPCHasAuthGuard itself caught
+// each batch as stale (guarded-and-still-exempted) as soon as this branch
+// merged with the new main each time, which is exactly the mechanism
+// CodeRabbit asked for on this PR. RefreshToken is the only entry left, and
+// it always was a design choice rather than a finding — see its own
+// comment below.
 var authExemptions = map[string]string{
 	// #1685 itself: refresh is self-authenticating via the refresh_token
 	// payload's own signature (validated by tokenManager.ValidateRefreshToken)
@@ -131,18 +127,6 @@ var authExemptions = map[string]string{
 	// gap; the design this coverage test's own model doesn't have a category
 	// for ("guarded by a credential that isn't a scoped bearer token").
 	"TokensService/RefreshToken": "self-authenticating via the refresh_token payload's own signature, not a bearer scope — see #1685",
-
-	// #1718: read-only, static/platform (not per-tenant) data, but still
-	// reachable with zero guard.
-	"ContainerService/ListStacks":                "KNOWN GAP, tracked in #1718 — static catalog, no guard, not fixed here",
-	"ContainerService/GetMonitoringInfo":         "KNOWN GAP, tracked in #1718 — platform config disclosure, no guard, not fixed here",
-	"ContainerService/GetAlertingInfo":           "KNOWN GAP, tracked in #1718 — platform config disclosure, no guard, not fixed here",
-	"ContainerService/ListDefaultAlertRules":     "KNOWN GAP, tracked in #1718 — static catalog, no guard, not fixed here",
-	"NetworkService/ListACLPresets":              "KNOWN GAP, tracked in #1718 — static catalog, no guard, not fixed here",
-	"PentestService/GetPentestConfig":            "KNOWN GAP, tracked in #1718 — platform config disclosure, no guard, not fixed here",
-	"ZapService/GetZapConfig":                    "KNOWN GAP, tracked in #1718 — platform config disclosure, no guard, not fixed here",
-	"ThreatDetectionService/GetSentryStatus":     "KNOWN GAP, tracked in #1718 — platform config disclosure, no guard, not fixed here",
-	"ThreatDetectionService/ListBadDestinations": "KNOWN GAP, tracked in #1718 — platform config disclosure, no guard, not fixed here",
 }
 
 func rpcKey(service, method string) string { return service + "/" + method }
