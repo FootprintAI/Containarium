@@ -95,6 +95,16 @@ jobs:
           fi
           echo "govulncheck passed (the scan ran; any remaining vulns have no upstream fix)"
 
+  makefile-var-safety:
+    name: Makefile variable injection (#1732)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Run test-makefile-var-safety.sh
+        run: ./scripts/test-makefile-var-safety.sh
+
   trivy:
     name: Dependency Scan (Trivy)
     runs-on: ubuntu-latest
