@@ -222,6 +222,7 @@ type DualServer struct {
 	securityServer           *SecurityServer
 	auditStore               *audit.Store
 	auditEventSubscriber     *audit.EventSubscriber
+	auditAnchorManager       *audit.AnchorManager // periodic hash-chain-root anchoring (#1706)
 	sshCollector             *audit.SSHCollector
 	revocationStore          *auth.PgRevocationStore // Phase 1.2 — kill-switch for issued JWTs
 	alertStore               *alert.Store
@@ -2267,6 +2268,13 @@ func (ds *DualServer) startIntegrityHeartbeat(ctx context.Context) {
 // traffic (design doc: 30s).
 const threatDetectSweepInterval = 30 * time.Second
 
+// defaultAuditAnchorPath is where the audit hash chain's periodic root
+// anchor lives (#1706). Overridable via CONTAINARIUM_AUDIT_ANCHOR_PATH.
+// Deliberately NOT under the same Postgres-managed state this anchors
+// against — see audit.RootSink's doc comment for why that separation is
+// the whole point.
+const defaultAuditAnchorPath = "/var/lib/containarium/audit-anchors.jsonl"
+
 // startThreatDetectSweep drives the threat-detection engine's time-window
 // rules on a fixed tick, separate from ctx so it can be stopped independent
 // of the daemon's own shutdown (Stop() cancels it via threatDetectSweepStop
@@ -2585,6 +2593,32 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		log.Printf("[ttlsweeper] incus unavailable (%v); sweeping via the k8s box backend", err)
 	} else {
 		log.Printf("[ttlsweeper] incus client unavailable: %v (sweeper disabled)", err)
+	}
+
+	// Periodic audit hash-chain anchoring (#1706). Best-effort: an anchoring
+	// failure degrades tamper-evidence against a privileged rewrite, but must
+	// never block the daemon from starting or serving. Only runs when audit
+	// logging itself is enabled — there is no chain to anchor otherwise.
+	if ds.auditStore != nil {
+		anchorPath := os.Getenv("CONTAINARIUM_AUDIT_ANCHOR_PATH")
+		if anchorPath == "" {
+			anchorPath = defaultAuditAnchorPath
+		}
+		anchorSink, err := audit.NewFileSink(anchorPath)
+		if err != nil {
+			log.Printf("[audit-anchor] disabled: %v", err)
+		} else {
+			opts := audit.AnchorOptions{}
+			if raw := os.Getenv("CONTAINARIUM_AUDIT_ANCHOR_INTERVAL"); raw != "" {
+				if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+					opts.Interval = d
+				} else {
+					log.Printf("[audit-anchor] CONTAINARIUM_AUDIT_ANCHOR_INTERVAL=%q invalid, using default %s", raw, audit.DefaultAnchorInterval)
+				}
+			}
+			ds.auditAnchorManager = audit.NewAnchorManager(ds.auditStore, anchorSink, opts)
+			ds.auditAnchorManager.Start(ctx)
+		}
 	}
 
 	// Sandbox TTL sweeper (#1488 Phase 4: "no sandbox leaks past
@@ -2953,6 +2987,9 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		}
 		if ds.ttlSweeperManager != nil {
 			ds.ttlSweeperManager.Stop()
+		}
+		if ds.auditAnchorManager != nil {
+			ds.auditAnchorManager.Stop()
 		}
 		if ds.sandboxTTLSweeperManager != nil {
 			ds.sandboxTTLSweeperManager.Stop()

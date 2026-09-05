@@ -150,6 +150,11 @@ func (s *Store) initSchema(ctx context.Context) error {
 // locks.
 const auditChainLockKey int64 = 0x0A0D17C4A1
 
+// defaultVerifyBatch mirrors VerifyChainSinceID's own internal default
+// (limit<=0 -> 1000) — used by VerifyChainAgainstAnchor to advance fromID
+// across multiple calls the same way the CLI's runAuditVerify loops.
+const defaultVerifyBatch = 1000
+
 func (s *Store) Log(ctx context.Context, entry *AuditEntry) error {
 	ts := entry.Timestamp
 	if ts.IsZero() {
@@ -441,4 +446,100 @@ func (s *Store) Query(ctx context.Context, params QueryParams) ([]AuditEntry, in
 // Close closes the underlying connection pool
 func (s *Store) Close() {
 	s.pool.Close()
+}
+
+// RowHashAt returns the row_hash stored at audit-log row id, and whether
+// that row exists. found=false (rather than an error) is the expected,
+// meaningful outcome when the row has been deleted — a fact
+// VerifyChainAgainstAnchor treats as evidence of tampering, not a failure
+// to report as "unknown."
+func (s *Store) RowHashAt(ctx context.Context, id int64) (hash string, found bool, err error) {
+	err = s.pool.QueryRow(ctx, `SELECT row_hash FROM audit_logs WHERE id = $1`, id).Scan(&hash)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("audit: row hash at id=%d: %w", id, err)
+	}
+	return hash, true, nil
+}
+
+// AnchorVerifyResult is VerifyChainAgainstAnchor's outcome. Two independent
+// checks, because they catch two different attacks (#1706):
+//
+//   - AnchorRoot vs CurrentRoot: was the row AT the anchored checkpoint (or
+//     anything before it) rewritten since it was anchored? Internal chain
+//     consistency alone cannot see this — a rewrite followed by a correct
+//     recompute forward preserves internal consistency by construction.
+//     Only a hash held outside the database can catch it.
+//   - FirstBadAfterCheckpoint: is everything AFTER the checkpoint still
+//     internally consistent? A break here means tampering since the last
+//     anchor that was NOT (or not yet) followed by a correct recompute —
+//     the ordinary hash_chain.go case, just scoped to the post-anchor tail.
+type AnchorVerifyResult struct {
+	// Checkpoint is the anchored row id this result was checked against.
+	Checkpoint int64
+	// AnchorRoot is the externally-anchored hash at Checkpoint.
+	AnchorRoot string
+	// CurrentRoot is what's in the database at Checkpoint right now.
+	// Empty means the row no longer exists (deleted) — also a mismatch.
+	CurrentRoot string
+	// FirstBadAfterCheckpoint is VerifyChainSinceID's result for rows after
+	// Checkpoint: 0 if intact, otherwise the first bad row's id.
+	FirstBadAfterCheckpoint int64
+}
+
+// OK reports whether both halves of the result are clean.
+func (r AnchorVerifyResult) OK() bool {
+	return r.AnchorRoot == r.CurrentRoot && r.FirstBadAfterCheckpoint == 0
+}
+
+// ErrNoAnchor is returned by VerifyChainAgainstAnchor when sink has never
+// had a root published to it. Not a chain-integrity failure — there is
+// simply nothing yet to check against.
+var ErrNoAnchor = errors.New("audit: no anchor has been published yet")
+
+// VerifyChainAgainstAnchor checks the chain against the last root sink
+// published, catching a privileged rewrite-and-recompute that internal
+// consistency (VerifyChain / VerifyChainSinceID) cannot: see
+// AnchorVerifyResult's doc comment for why both checks are needed.
+func (s *Store) VerifyChainAgainstAnchor(ctx context.Context, sink RootSink) (AnchorVerifyResult, error) {
+	checkpoint, anchorRoot, ok, err := sink.LastPublished(ctx)
+	if err != nil {
+		return AnchorVerifyResult{}, fmt.Errorf("audit: read last anchor: %w", err)
+	}
+	if !ok {
+		return AnchorVerifyResult{}, ErrNoAnchor
+	}
+	currentRoot, _, err := s.RowHashAt(ctx, checkpoint)
+	if err != nil {
+		return AnchorVerifyResult{}, fmt.Errorf("audit: row hash at anchored checkpoint %d: %w", checkpoint, err)
+	}
+
+	// VerifyChainSinceID caps a single call at `limit` rows (default 1000)
+	// to keep memory bounded — the same reason runAuditVerify (CLI) loops
+	// rather than trusting one call to cover an arbitrary range. Mirrored
+	// here so a chain with many rows logged since the last anchor is still
+	// checked in full, not just its first 1000 post-checkpoint rows.
+	maxID, err := s.MaxRowID(ctx)
+	if err != nil {
+		return AnchorVerifyResult{}, fmt.Errorf("audit: max row id: %w", err)
+	}
+	var firstBad int64
+	for from := checkpoint; from < maxID; {
+		firstBad, err = s.VerifyChainSinceID(ctx, from, 0)
+		if err != nil {
+			return AnchorVerifyResult{}, fmt.Errorf("audit: verify chain since checkpoint %d: %w", checkpoint, err)
+		}
+		if firstBad != 0 {
+			break
+		}
+		from += defaultVerifyBatch
+	}
+	return AnchorVerifyResult{
+		Checkpoint:              checkpoint,
+		AnchorRoot:              anchorRoot,
+		CurrentRoot:             currentRoot,
+		FirstBadAfterCheckpoint: firstBad,
+	}, nil
 }
