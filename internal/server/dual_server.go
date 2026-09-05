@@ -404,6 +404,17 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// auth.RequireMTLSUnaryInterceptor inspects peer.AuthInfo and
 	// returns Unauthenticated if no verified client cert is
 	// present.
+	// #1605 — the audit interceptor is created here, before the audit store
+	// exists (Postgres connects later in this same function), because
+	// grpc.NewServer()'s interceptor chain is fixed at construction. It's
+	// armed in place via SetAuditGRPCInterceptor.SetStore below once the
+	// store is ready; every call before that point is a no-op, same as the
+	// gap this closes. Listed innermost (last) in both chains, directly
+	// around the handler, so it captures the real RPC's status and
+	// duration — the same position audit.HTTPAuditMiddleware occupies
+	// relative to the HTTP auth middleware.
+	auditGRPCInterceptor := audit.NewGRPCInterceptor()
+
 	var grpcServer *grpc.Server
 	if config.EnableMTLS {
 		certPaths := mtls.CertPathsFromDir(config.CertsDir)
@@ -426,19 +437,27 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 			grpc.ChainUnaryInterceptor(
 				auth.RequireMTLSUnaryInterceptor(),
 				platformstats.UnaryInterceptor(containerServer.platformStats),
+				auditGRPCInterceptor.Unary(),
 			),
-			grpc.StreamInterceptor(auth.RequireMTLSStreamInterceptor()),
+			grpc.ChainStreamInterceptor(
+				auth.RequireMTLSStreamInterceptor(),
+				auditGRPCInterceptor.Stream(),
+			),
 		)
 		log.Printf("gRPC server: mTLS enabled (interceptor verifies peer cert on every call)")
 	} else {
 		grpcServer = grpc.NewServer(
 			// Same ordering rationale as the mTLS branch above: auth
-			// outer, platform-stats inner.
+			// outer, platform-stats then audit inner.
 			grpc.ChainUnaryInterceptor(
 				authMiddleware.GRPCUnaryInterceptor(),
 				platformstats.UnaryInterceptor(containerServer.platformStats),
+				auditGRPCInterceptor.Unary(),
 			),
-			grpc.StreamInterceptor(authMiddleware.GRPCStreamInterceptor()),
+			grpc.ChainStreamInterceptor(
+				authMiddleware.GRPCStreamInterceptor(),
+				auditGRPCInterceptor.Stream(),
+			),
 		)
 		log.Printf("WARNING: gRPC server running in INSECURE mode")
 	}
@@ -1547,6 +1566,10 @@ skipAppHosting:
 				auditPool.Close()
 			} else {
 				auditEventSubscriber = audit.NewEventSubscriber(events.GetBus(), auditStore)
+				// #1605 — arms the native gRPC server's audit interceptor,
+				// which was registered on grpcServer above (before this
+				// store existed) and has been a no-op until now.
+				auditGRPCInterceptor.SetStore(auditStore)
 				log.Printf("Audit logging service enabled")
 			}
 

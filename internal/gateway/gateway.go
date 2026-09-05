@@ -855,6 +855,12 @@ func annotateContext(ctx context.Context, req *http.Request) metadata.MD {
 	md := metadata.Pairs(
 		"x-forwarded-method", req.Method,
 		"x-forwarded-path", req.URL.Path,
+		// #1605 — every request through this annotator is grpc-gateway
+		// forwarding a REST call in-process to the native gRPC server.
+		// HTTPAuditMiddleware already logs it at this (HTTP) layer, so the
+		// gRPC server's own audit interceptor checks for this marker and
+		// skips writing a second row for the same request.
+		audit.GatewayForwardMDKey, "1",
 	)
 	if username, ok := auth.UsernameFromContext(ctx); ok && username != "" {
 		md.Set(auth.MDKeyUsername, username)

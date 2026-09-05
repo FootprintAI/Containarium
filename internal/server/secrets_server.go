@@ -64,9 +64,13 @@ func (s *ContainerServer) SetSecret(ctx context.Context, req *pb.SetSecretReques
 }
 
 // GetSecret returns the decrypted plaintext value. Always
-// audit-logged. The agent / operator sees what they wrote (decision
-// #6); v2 layers a per-secret read_via_api flag for write-only
-// rotation.
+// audit-logged — every gRPC call on this server produces an
+// audit_logs row via audit.GRPCInterceptor (dual_server.go), regardless
+// of transport (native gRPC or REST through grpc-gateway); the
+// log.Printf below is a separate, non-persistent operational log line,
+// not the audit mechanism itself (#1605). The agent / operator sees
+// what they wrote (decision #6); v2 layers a per-secret read_via_api
+// flag for write-only rotation.
 func (s *ContainerServer) GetSecret(ctx context.Context, req *pb.GetSecretRequest) (*pb.GetSecretResponse, error) {
 	if err := auth.RequireScope(ctx, auth.ScopeSecretsRead); err != nil {
 		return nil, err
