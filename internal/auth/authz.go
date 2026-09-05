@@ -138,16 +138,35 @@ func SubjectFromGRPCContext(ctx context.Context) (username string, roles []strin
 // ScopesFromGRPCContext returns the JWT's `scopes` claim
 // propagated through metadata or context. Returns (nil, false)
 // when the claim wasn't carried — distinct from (empty, true)
-// which would mean an explicit empty grant. HasScope treats nil
+// which means an explicit empty grant. HasScope treats nil
 // as "no restriction" (Phase 1.7 backwards-compat), so callers
 // can pass the returned slice through to HasScope directly.
+//
+// That distinction is load-bearing and used to be documented here without
+// being implemented (#1722): a carried-but-empty metadata value returned
+// (nil, false), so "this credential holds nothing" and "this credential is
+// unrestricted" produced the same answer — the permissive one. The
+// context-value path below never had the bug, so the two transports
+// disagreed about identical input.
+//
+// No production writer emits an empty value — the gateway annotator and the
+// HTTP middleware both guard on len(scopes) > 0, and generate() omits the
+// claim entirely for zero scopes — so correcting this changes no real
+// caller's authority. What it fixes is tests: an assertion written as "a
+// caller with no scopes is denied" silently passed whether or not the guard
+// under test existed, because such a caller was read as unrestricted and the
+// handler answered normally.
 func ScopesFromGRPCContext(ctx context.Context) (scopes []string, present bool) {
 	if md, mdOk := metadata.FromIncomingContext(ctx); mdOk {
 		if vals := md.Get(MDKeyScopes); len(vals) > 0 {
-			if vals[0] == "" {
-				return nil, false
+			// Carried, so present — even when empty. ParseScopes returns nil
+			// for an empty string, which HasScope would read as unrestricted,
+			// so hand back a non-nil empty slice instead.
+			parsed := ParseScopes(vals[0])
+			if parsed == nil {
+				parsed = []string{}
 			}
-			return ParseScopes(vals[0]), true
+			return parsed, true
 		}
 	}
 	if s, found := ScopesFromContext(ctx); found {
