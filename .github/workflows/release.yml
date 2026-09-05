@@ -192,9 +192,19 @@ jobs:
 
       - name: Create release notes
         id: release_notes
+        env:
+          # Untrusted: a tag name may contain shell metacharacters (#1602).
+          # The heredoc below stays quoted (<< 'EOF') deliberately — the
+          # body has literal backticks (markdown code spans) that an
+          # UNQUOTED heredoc would hand to the shell as command
+          # substitutions. So github.ref_name can't be expanded into the
+          # heredoc at all, quoted or not; it's substituted via bash
+          # parameter expansion AFTER the file is written instead, which
+          # never re-parses the value as syntax.
+          RELEASE_REF: ${{ github.ref_name }}
         run: |
           cat > release_notes.md << 'EOF'
-          ## Containarium ${{ github.ref_name }}
+          ## Containarium __RELEASE_REF__
 
           The open-source, self-hostable, agent-native sandbox.
 
@@ -219,23 +229,23 @@ jobs:
           ```bash
           # containarium CLI / daemon (Linux x86_64 example)
           curl -L -o /usr/local/bin/containarium \
-            https://github.com/footprintai/containarium/releases/download/${{ github.ref_name }}/containarium-linux-amd64
+            https://github.com/footprintai/containarium/releases/download/__RELEASE_REF__/containarium-linux-amd64
           chmod +x /usr/local/bin/containarium
 
           # Windows: client-only CLI (create/list/ssh/… against a remote daemon;
           # the daemon/sentinel/tunnel subcommands are Linux/macOS only)
           # PowerShell:
           #   curl.exe -L -o containarium.exe `
-          #     https://github.com/footprintai/containarium/releases/download/${{ github.ref_name }}/containarium-windows-amd64.exe
+          #     https://github.com/footprintai/containarium/releases/download/__RELEASE_REF__/containarium-windows-amd64.exe
 
           # platform MCP (your laptop, e.g. macOS arm64)
           curl -L -o /usr/local/bin/mcp-server \
-            https://github.com/footprintai/containarium/releases/download/${{ github.ref_name }}/mcp-server-darwin-arm64
+            https://github.com/footprintai/containarium/releases/download/__RELEASE_REF__/mcp-server-darwin-arm64
           chmod +x /usr/local/bin/mcp-server
 
           # agent-box (drop into your container image, Linux x86_64)
           curl -L -o /usr/local/bin/agent-box \
-            https://github.com/footprintai/containarium/releases/download/${{ github.ref_name }}/agent-box-linux-amd64
+            https://github.com/footprintai/containarium/releases/download/__RELEASE_REF__/agent-box-linux-amd64
           chmod +x /usr/local/bin/agent-box
           ```
 
@@ -274,6 +284,15 @@ jobs:
 
           See [README.md](https://github.com/footprintai/containarium#quick-start) for the full agent-native walkthrough.
           EOF
+
+          # Fill in the tag now that the file is written. Bash parameter
+          # expansion, not sed: sed would re-parse RELEASE_REF's content
+          # against its own delimiter/escape rules, reopening exactly the
+          # injection the quoted heredoc above was written to avoid. This
+          # substitutes the value as a literal string, full stop.
+          notes="$(cat release_notes.md)"
+          notes="${notes//__RELEASE_REF__/$RELEASE_REF}"
+          printf '%s\n' "$notes" > release_notes.md
 
           # Changelog first, boilerplate under it — a reader wants to know
           # what changed before they read install instructions (#1600).
@@ -430,9 +449,15 @@ jobs:
         run: make sidecar-build-otel || true
 
       - name: Assemble bundle tarball
+        env:
+          # Untrusted: a tag name may contain shell metacharacters (#1602).
+          # Routing it through env and a quoted reference makes the shell
+          # treat it as one opaque argv word to `make`, never re-parsed as
+          # command syntax — matches "Apply release notes" above.
+          RELEASE_REF: ${{ github.ref_name }}
         run: |
           make build-bundle \
-            BUNDLE_VERSION=${{ github.ref_name }} \
+            BUNDLE_VERSION="$RELEASE_REF" \
             BUNDLE_OS=${{ matrix.target.os }} \
             BUNDLE_ARCH=${{ matrix.target.arch }}
 
