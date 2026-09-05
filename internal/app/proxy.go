@@ -344,8 +344,8 @@ func (p *ProxyManager) RemoveTLSSubject(domain string) error {
 	return nil
 }
 
-// ensureDNSIssuers gives a policy's issuers the configured DNS-01 challenge
-// config, reporting whether it changed anything.
+// ensureDNSIssuers gives a policy's ACME issuers the configured DNS-01
+// challenge config, reporting whether it changed anything.
 //
 // Wildcard subjects (`*.example.com`) can ONLY be issued via DNS-01 —
 // HTTP-01 and TLS-ALPN-01 categorically cannot solve them. A policy created
@@ -353,17 +353,46 @@ func (p *ProxyManager) RemoveTLSSubject(domain string) error {
 // wildcard to it produces a subject Caddy never attempts: no certificate, no
 // error, nothing in the log to notice (#1066).
 //
-// A no-op when DNS-01 isn't configured (nothing to add) or when every issuer
-// already carries it, so this is safe to call on every provision.
+// Repairs issuers in place — attaching `challenges.dns` to each ACME issuer
+// that lacks it — rather than replacing the array. The previous wholesale
+// `policy.Issuers = issuersFor(...)` silently discarded any per-issuer field
+// issuersFor doesn't itself reproduce: external_account (EAB), Module was
+// always overwritten to "acme", CA became Let's Encrypt for anything but
+// (#1671). Only reachable via a hand-edited policy today (ProxyManager is
+// the only in-tree writer), but the loss was permanent — persisted back to
+// Caddy on the very next reconcile tick.
+//
+// A non-ACME issuer (Module != "acme", e.g. "internal") is left completely
+// alone: it categorically cannot solve DNS-01, and attaching the challenge
+// config anyway is meaningless for an internal CA and would misrepresent an
+// issuer that was deliberately kept off public ACME.
+//
+// A no-op when DNS-01 isn't configured (nothing to add), when the policy has
+// no issuers at all to repair, or when every ACME issuer already carries it
+// — so this is safe to call on every provision.
 func (p *ProxyManager) ensureDNSIssuers(policy *CaddyTLSAutomationPolicy) bool {
 	if p.dnsChallenge == nil {
 		return false
 	}
-	if len(policy.Issuers) > 0 && policyHasDNSChallenge(*policy) {
+	if len(policy.Issuers) == 0 {
+		policy.Issuers = issuersFor(p.dnsChallenge)
+		return true
+	}
+	if policyHasDNSChallenge(*policy) {
 		return false
 	}
-	policy.Issuers = issuersFor(p.dnsChallenge)
-	return true
+	changed := false
+	for i := range policy.Issuers {
+		issuer := &policy.Issuers[i]
+		if issuer.Module != "acme" {
+			continue
+		}
+		if issuer.Challenges == nil || issuer.Challenges.DNS == nil {
+			issuer.Challenges = p.dnsChallenge
+			changed = true
+		}
+	}
+	return changed
 }
 
 // ensureIssuerEmail gives a policy's issuers the configured ACME contact
@@ -435,12 +464,18 @@ func (p *ProxyManager) dropUnregisterableZeroSSL(policy *CaddyTLSAutomationPolic
 	return true
 }
 
-// policyHasDNSChallenge reports whether EVERY issuer can solve DNS-01.
+// policyHasDNSChallenge reports whether EVERY ACME issuer can solve DNS-01.
 //
 // Every, not any: Caddy tries issuers in order, and one that cannot solve the
 // challenge is a failed attempt for the wildcard rather than a skipped one.
+// A non-ACME issuer (Module != "acme") is exempt — it can never solve DNS-01
+// and ensureDNSIssuers deliberately leaves it untouched (#1671), so its
+// absence of `challenges` isn't a gap this function should report.
 func policyHasDNSChallenge(policy CaddyTLSAutomationPolicy) bool {
 	for _, issuer := range policy.Issuers {
+		if issuer.Module != "acme" {
+			continue
+		}
 		if issuer.Challenges == nil || issuer.Challenges.DNS == nil {
 			return false
 		}

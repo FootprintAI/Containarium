@@ -184,3 +184,110 @@ func TestPolicyHasDNSChallengeRequiresEveryIssuer(t *testing.T) {
 		t.Error("a policy where every issuer solves DNS-01 was reported as not covered")
 	}
 }
+
+// #1671 — ensureDNSIssuers used to replace policy.Issuers wholesale, which
+// silently discarded any field issuersFor doesn't itself reproduce:
+// external_account (EAB), trusted_roots_pem_files, a non-default CA, and the
+// issuer count itself. These tests exercise ensureDNSIssuers directly so the
+// assertions are about specific fields, not just "the policy still works".
+
+// newTestProxyManagerWithDNS returns a ProxyManager configured with a DNS-01
+// challenge and nothing else — ensureDNSIssuers never touches the network,
+// so the fake-Caddy-server machinery the rest of this file uses isn't needed.
+func newTestProxyManagerWithDNS() *ProxyManager {
+	return NewProxyManager("http://unused.invalid", "example.com").WithDNSChallenge(testDNSChallenge())
+}
+
+func TestEnsureDNSIssuers_PreservesExternalAccountKey(t *testing.T) {
+	p := newTestProxyManagerWithDNS()
+	issuer := NewACMEIssuer()
+	issuer.CA = "https://acme.zerossl.com/v2/DV90"
+	issuer.ExternalAccountKey = "kid:hmac-base64"
+	policy := &CaddyTLSAutomationPolicy{Issuers: []CaddyTLSIssuer{issuer}}
+
+	if !p.ensureDNSIssuers(policy) {
+		t.Fatal("ensureDNSIssuers reported no change, but the issuer had no DNS-01 challenge")
+	}
+	if policy.Issuers[0].ExternalAccountKey != "kid:hmac-base64" {
+		t.Errorf("ExternalAccountKey = %q, want it preserved — EAB ties issuance to a paid/authorised "+
+			"ACME account and losing it silently breaks the next issuance against that CA",
+			policy.Issuers[0].ExternalAccountKey)
+	}
+	if policy.Issuers[0].CA != "https://acme.zerossl.com/v2/DV90" {
+		t.Errorf("CA = %q, want the hand-set CA preserved", policy.Issuers[0].CA)
+	}
+	assertAllIssuersSolveDNS(t, *policy)
+}
+
+func TestEnsureDNSIssuers_PreservesTrustedRootsPEMFiles(t *testing.T) {
+	p := newTestProxyManagerWithDNS()
+	issuer := NewACMEIssuer()
+	issuer.CA = "https://private-ca.example.internal/acme/directory"
+	issuer.TrustedRootsPEMFiles = []string{"/etc/containarium/private-ca-root.pem"}
+	policy := &CaddyTLSAutomationPolicy{Issuers: []CaddyTLSIssuer{issuer}}
+
+	p.ensureDNSIssuers(policy)
+
+	got := policy.Issuers[0].TrustedRootsPEMFiles
+	if len(got) != 1 || got[0] != "/etc/containarium/private-ca-root.pem" {
+		t.Errorf("TrustedRootsPEMFiles = %v, want [/etc/containarium/private-ca-root.pem] preserved — "+
+			"a private CA's issuer is unusable without its trust root", got)
+	}
+}
+
+func TestEnsureDNSIssuers_PreservesIssuerCount(t *testing.T) {
+	p := newTestProxyManagerWithDNS()
+	custom := NewACMEIssuer()
+	custom.CA = "https://private-ca.example.internal/acme/directory"
+	policy := &CaddyTLSAutomationPolicy{
+		Issuers: []CaddyTLSIssuer{NewACMEIssuer(), NewZeroSSLIssuer(), custom},
+	}
+
+	p.ensureDNSIssuers(policy)
+
+	if len(policy.Issuers) != 3 {
+		t.Fatalf("got %d issuers, want 3 preserved (a three-issuer policy silently becoming one or two "+
+			"is the #1671 bug)", len(policy.Issuers))
+	}
+	assertAllIssuersSolveDNS(t, *policy)
+}
+
+// A non-ACME issuer (e.g. Caddy's own "internal" CA, kept deliberately off
+// public ACME) must be left completely alone — attaching challenges.dns to
+// it is meaningless, and replacing it would attempt public issuance for a
+// subject someone explicitly kept internal-only.
+func TestEnsureDNSIssuers_LeavesNonACMEIssuerAlone(t *testing.T) {
+	p := newTestProxyManagerWithDNS()
+	internal := CaddyTLSIssuer{Module: "internal"}
+	policy := &CaddyTLSAutomationPolicy{
+		Issuers: []CaddyTLSIssuer{internal, NewACMEIssuer()},
+	}
+
+	if !p.ensureDNSIssuers(policy) {
+		t.Fatal("ensureDNSIssuers reported no change, but the acme issuer had no DNS-01 challenge")
+	}
+
+	if policy.Issuers[0].Module != "internal" || policy.Issuers[0].Challenges != nil {
+		t.Errorf("the internal issuer was modified: %+v, want it untouched", policy.Issuers[0])
+	}
+	if policy.Issuers[1].Challenges == nil || policy.Issuers[1].Challenges.DNS == nil {
+		t.Error("the acme issuer did not get a DNS-01 challenge attached")
+	}
+
+	// Idempotent: a second call must not report a change — the internal
+	// issuer permanently lacks challenges by design, so the outer guard
+	// must not mistake that for "still needs repair" forever.
+	if p.ensureDNSIssuers(policy) {
+		t.Error("ensureDNSIssuers reported a change on a policy already fully repaired")
+	}
+}
+
+func TestEnsureDNSIssuers_NoOpWhenAllACMEIssuersAlreadySolveDNS(t *testing.T) {
+	p := newTestProxyManagerWithDNS()
+	policy := &CaddyTLSAutomationPolicy{
+		Issuers: []CaddyTLSIssuer{{Module: "internal"}, issuersFor(testDNSChallenge())[0]},
+	}
+	if p.ensureDNSIssuers(policy) {
+		t.Error("ensureDNSIssuers reported a change though the only ACME issuer already solves DNS-01")
+	}
+}
