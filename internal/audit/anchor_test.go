@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -197,7 +198,15 @@ func (f *fakeChainStore) RowHashAt(_ context.Context, id int64) (string, bool, e
 	return h, ok, nil
 }
 
+// fakeSink is deliberately mutex-protected, not just a plain slice: unlike
+// every other test in this file, TestAnchorManager_StartStop reads it from
+// a SEPARATE goroutine than the one Start spawns to write it, and CI's race
+// detector caught exactly that the first time this went unprotected — a
+// real bug in the test, not a false alarm, since a live AnchorManager's
+// tick goroutine and anything polling its sink genuinely do race without
+// synchronization of their own.
 type fakeSink struct {
+	mu        sync.Mutex
 	published []struct {
 		checkpoint int64
 		root       string
@@ -206,6 +215,8 @@ type fakeSink struct {
 }
 
 func (f *fakeSink) PublishRoot(_ context.Context, checkpoint int64, root string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.publishErr != nil {
 		return f.publishErr
 	}
@@ -217,11 +228,23 @@ func (f *fakeSink) PublishRoot(_ context.Context, checkpoint int64, root string)
 }
 
 func (f *fakeSink) LastPublished(context.Context) (int64, string, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if len(f.published) == 0 {
 		return 0, "", false, nil
 	}
 	last := f.published[len(f.published)-1]
 	return last.checkpoint, last.root, true, nil
+}
+
+// Count and At are the synchronized accessors tests use — direct field
+// access on .published from more than one goroutine is exactly the bug
+// above; single-goroutine tests may still index .published directly since
+// nothing else touches it concurrently there.
+func (f *fakeSink) Count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.published)
 }
 
 func TestAnchorManager_PublishesNewCheckpoint(t *testing.T) {
@@ -310,7 +333,7 @@ func TestAnchorManager_StartStop(t *testing.T) {
 	m.Start(ctx)
 	go func() {
 		for i := 0; i < 50; i++ {
-			if len(sink.published) > 0 {
+			if sink.Count() > 0 {
 				fired <- struct{}{}
 				return
 			}
