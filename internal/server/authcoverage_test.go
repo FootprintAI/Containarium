@@ -115,7 +115,14 @@ var registeredServices = []rpcSurface{
 // tracked here only until that issue's fix lands, at which point the
 // exemption is removed (the test will then start requiring the guard it
 // currently lacks). Grouped by the issue that tracks the fix, not by RPC,
-// since #1716 and #1718 each cover several RPCs sharing one root cause.
+// since #1718 covers several RPCs sharing one root cause.
+//
+// #1716 (ComposeAutostartService) and #1717 (ThreatDetectionService's bad-
+// destination mutation) already landed — merged to main as PR #1720 while
+// this PR was in flight — so their entries are gone; TestEveryRPCHasAuthGuard
+// itself caught them as stale (guarded-and-still-exempted) once this branch
+// merged with the new main, which is exactly the mechanism CodeRabbit asked
+// for on this PR.
 var authExemptions = map[string]string{
 	// #1685 itself: refresh is self-authenticating via the refresh_token
 	// payload's own signature (validated by tokenManager.ValidateRefreshToken)
@@ -124,18 +131,6 @@ var authExemptions = map[string]string{
 	// gap; the design this coverage test's own model doesn't have a category
 	// for ("guarded by a credential that isn't a scoped bearer token").
 	"TokensService/RefreshToken": "self-authenticating via the refresh_token payload's own signature, not a bearer scope — see #1685",
-
-	// #1716: ComposeAutostartService accepts an arbitrary username with no
-	// scope or tenant check on any of its 4 RPCs — cross-tenant read/write.
-	"ComposeAutostartService/Discover": "KNOWN GAP, tracked in #1716 — no scope/tenant check, not fixed here",
-	"ComposeAutostartService/Enable":   "KNOWN GAP, tracked in #1716 — no scope/tenant check, not fixed here",
-	"ComposeAutostartService/Disable":  "KNOWN GAP, tracked in #1716 — no scope/tenant check, not fixed here",
-	"ComposeAutostartService/Status":   "KNOWN GAP, tracked in #1716 — no scope/tenant check, not fixed here",
-
-	// #1717: mutates the platform-wide threat-detection blocklist with no
-	// role check — more severe than the read-only findings below.
-	"ThreatDetectionService/AddBadDestination":    "KNOWN GAP, tracked in #1717 — mutates the platform blocklist with no role check, not fixed here",
-	"ThreatDetectionService/RemoveBadDestination": "KNOWN GAP, tracked in #1717 — mutates the platform blocklist with no role check, not fixed here",
 
 	// #1718: read-only, static/platform (not per-tenant) data, but still
 	// reachable with zero guard.
@@ -240,11 +235,14 @@ func guardedMethods(t *testing.T) map[string]bool {
 			if !ok || fn.Body == nil {
 				continue
 			}
-			recv := ""
+			recv, recvVar := "", ""
 			if fn.Recv != nil && len(fn.Recv.List) > 0 {
 				recv = receiverTypeName(fn.Recv.List[0].Type)
+				if names := fn.Recv.List[0].Names; len(names) > 0 {
+					recvVar = names[0].Name
+				}
 			}
-			info := analyzeFunc(fn.Body)
+			info := analyzeFunc(fn.Body, recvVar)
 			info.recv, info.name = recv, fn.Name.Name
 			byName[fn.Name.Name] = append(byName[fn.Name.Name], info)
 			if recv != "" {
@@ -318,7 +316,21 @@ func inspectSkippingFuncLit(n ast.Node, visit func(ast.Node) bool) {
 // itself constructs a PermissionDenied/Unauthenticated status, which is
 // what actually links "read the subject" to "deny if absent" (see
 // manualGuardLinked's doc comment).
-func analyzeFunc(body *ast.BlockStmt) *funcInfo {
+//
+// recvVar is this function's own receiver variable name (e.g. "s" in
+// `func (s *ContainerServer) Foo(...)`), or "" for a free function. Only a
+// call shaped exactly `<recvVar>.Method(...)` is recorded as a local-helper
+// candidate for the transitive walk — a real bug caught running this test
+// in CI motivated the restriction: ThreatDetectionServer.GetSentryStatus
+// calls `s.engine.Status()` (a field's own method, unrelated to this
+// package), and bare-name resolution alone let that resolve to the
+// PACKAGE's only OTHER function named "Status"
+// (ComposeAutostartServer.Status) purely by coincidence, once #1716's fix
+// made that one guarded. Restricting to the receiver's own identifier
+// excludes both `s.engine.Status()` (selector's X is `s.engine`, not `s`)
+// and any call through a different local variable — the only shape that
+// plausibly means "a method on this same type."
+func analyzeFunc(body *ast.BlockStmt, recvVar string) *funcInfo {
 	info := &funcInfo{}
 	var subjectOkVars []string
 	inspectSkippingFuncLit(body, func(n ast.Node) bool {
@@ -349,10 +361,14 @@ func analyzeFunc(body *ast.BlockStmt) *funcInfo {
 					}
 					return true
 				}
-				// A local method call (s.foo(...), recv unresolved — see
-				// guardedMethods' doc comment on why bare-name matching is
-				// good enough here).
-				info.calls = append(info.calls, fn.Sel.Name)
+				// A call on this function's OWN receiver, e.g. s.foo(...)
+				// where recvVar == "s" — see the doc comment above for why
+				// this is restricted rather than matching any selector.
+				if recvVar != "" {
+					if pkgIdent, ok := fn.X.(*ast.Ident); ok && pkgIdent.Name == recvVar {
+						info.calls = append(info.calls, fn.Sel.Name)
+					}
+				}
 			case *ast.Ident:
 				info.calls = append(info.calls, fn.Name)
 			}
