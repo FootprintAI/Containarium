@@ -3,7 +3,11 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -80,7 +84,7 @@ func TestAdmitCPUCapacity_Disabled(t *testing.T) {
 		tenant("a", "8"), tenant("b", "8"), tenant("c", "8"),
 	})
 	// factor stays 0
-	if err := s.admitCPUCapacity("newbie", "8"); err != nil {
+	if _, err := s.admitCPUCapacity("newbie", "8"); err != nil {
 		t.Fatalf("disabled gate must never reject, got %v", err)
 	}
 }
@@ -95,11 +99,11 @@ func TestAdmitCPUCapacity_Enforce(t *testing.T) {
 	s.SetCPUOvercommitPolicy(2, true)
 
 	// 12 + 4 = 16 == ceiling → fits.
-	if err := s.admitCPUCapacity("fits", "4"); err != nil {
+	if _, err := s.admitCPUCapacity("fits", "4"); err != nil {
 		t.Fatalf("at-ceiling create should fit, got %v", err)
 	}
 	// 12 + 8 = 20 > 16 → reject.
-	err := s.admitCPUCapacity("toobig", "8")
+	_, err := s.admitCPUCapacity("toobig", "8")
 	if err == nil {
 		t.Fatal("over-ceiling create should be rejected")
 	}
@@ -113,7 +117,7 @@ func TestAdmitCPUCapacity_Enforce(t *testing.T) {
 func TestAdmitCPUCapacity_Advisory(t *testing.T) {
 	s := seedServer(t, 8, []incus.ContainerInfo{tenant("a", "8"), tenant("b", "8")})
 	s.SetCPUOvercommitPolicy(2, false) // enabled, advisory
-	if err := s.admitCPUCapacity("toobig", "8"); err != nil {
+	if _, err := s.admitCPUCapacity("toobig", "8"); err != nil {
 		t.Fatalf("advisory gate must not reject, got %v", err)
 	}
 }
@@ -130,7 +134,7 @@ func TestAdmitCPUCapacity_ExcludesCoreAndSelf(t *testing.T) {
 	// Committed should count ONLY `other` (4), excluding the 8-core core box
 	// and my own existing 8-core box. So recreating "me" at 4 cores → 4+4=8 == ceiling → fits.
 	// If core/self weren't excluded, committed would be 8+4(+8 self) and this would reject.
-	if err := s.admitCPUCapacity("me", "4"); err != nil {
+	if _, err := s.admitCPUCapacity("me", "4"); err != nil {
 		t.Fatalf("core+self exclusion should let this fit, got %v", err)
 	}
 }
@@ -141,7 +145,7 @@ func TestAdmitCPUCapacity_FailOpenOnUnknownCores(t *testing.T) {
 	s := seedServer(t, 0, []incus.ContainerInfo{tenant("a", "8"), tenant("b", "8")})
 	s.hostCoresFn = func() (float64, error) { return 0, errors.New("incus unreachable") }
 	s.SetCPUOvercommitPolicy(1, true)
-	if err := s.admitCPUCapacity("newbie", "8"); err != nil {
+	if _, err := s.admitCPUCapacity("newbie", "8"); err != nil {
 		t.Fatalf("must fail open when host cores unknown, got %v", err)
 	}
 }
@@ -234,10 +238,10 @@ func TestAdmitCPUResize_DecreaseNeverBlocked(t *testing.T) {
 	s := seedServer(t, 8, []incus.ContainerInfo{tenant("other", "10")})
 	s.SetCPUOvercommitPolicy(1, true)
 
-	if err := s.admitCPUResize("me", "4", "2"); err != nil {
+	if _, err := s.admitCPUResize("me", "4", "2"); err != nil {
 		t.Fatalf("a decrease must never be blocked, got %v", err)
 	}
-	if err := s.admitCPUResize("me", "4", "4"); err != nil {
+	if _, err := s.admitCPUResize("me", "4", "4"); err != nil {
 		t.Fatalf("an unchanged value must never be blocked, got %v", err)
 	}
 }
@@ -255,7 +259,7 @@ func TestAdmitCPUResize_IncreaseUsesFullNewValueNotDelta(t *testing.T) {
 	s := seedServer(t, 8, []incus.ContainerInfo{tenant("other", "4"), tenant("me", "4")})
 	s.SetCPUOvercommitPolicy(1, true)
 
-	err := s.admitCPUResize("me", "4", "8")
+	_, err := s.admitCPUResize("me", "4", "8")
 	if err == nil {
 		t.Fatal("resize to 8 must be rejected (4 other + 8 new = 12 > 8-core ceiling); the delta formula would wrongly admit this")
 	}
@@ -272,7 +276,7 @@ func TestAdmitCPUResize_IncreaseWithinCeilingAdmitted(t *testing.T) {
 	s.SetCPUOvercommitPolicy(1, true)
 
 	// committed_excl("me") = 4 (other only, "me" itself is excluded); 4 + 4 == 8-core ceiling.
-	if err := s.admitCPUResize("me", "2", "4"); err != nil {
+	if _, err := s.admitCPUResize("me", "2", "4"); err != nil {
 		t.Fatalf("resize to 4 should fit (4 other + 4 new = 8 == ceiling), got %v", err)
 	}
 }
@@ -282,7 +286,7 @@ func TestAdmitCPUResize_IncreaseWithinCeilingAdmitted(t *testing.T) {
 func TestAdmitCPUResize_DisabledGateNeverBlocks(t *testing.T) {
 	s := seedServer(t, 8, []incus.ContainerInfo{tenant("other", "8")})
 	// factor stays 0 (disabled)
-	if err := s.admitCPUResize("me", "2", "16"); err != nil {
+	if _, err := s.admitCPUResize("me", "2", "16"); err != nil {
 		t.Fatalf("disabled gate must never reject a resize, got %v", err)
 	}
 }
@@ -325,5 +329,141 @@ func TestResizeContainer_AdmissionSkippedForDecrease(t *testing.T) {
 
 	if _, err := s.ResizeContainer(resizeCtx("me"), &pb.ResizeContainerRequest{Username: "me", Cpu: "2"}); err != nil {
 		t.Fatalf("a decrease must never be blocked, got %v", err)
+	}
+}
+
+// #1588 — the check-then-act race. These exercise admitCPUCapacity's
+// reservation mechanism directly, reproducing the issue's own worked
+// example: an 8-core host at factor 1 (ceiling 8), two tenants each already
+// committed at 2 cores, both concurrently resizing to 6. Each admission
+// check alone sees 2+6=8<=8 and would admit — the true post-resize total,
+// 6+6=12, exceeds the ceiling. Before this fix, both calls would return nil
+// because neither held anything across the other's (unmodeled, in this
+// direct-call test) mutation; the fix's reservation makes the SECOND call
+// see the FIRST one's outstanding cores even though nothing was actually
+// mutated yet.
+func TestAdmitCPUCapacity_ConcurrentAdmitsRaceIsClosed(t *testing.T) {
+	s := seedServer(t, 8, []incus.ContainerInfo{tenant("a", "2"), tenant("b", "2")})
+	s.SetCPUOvercommitPolicy(1, true) // 8-core ceiling, strict
+
+	releaseA, err := s.admitCPUCapacity("a", "6")
+	if err != nil {
+		t.Fatalf("first admit (a: 2->6) should fit alone (2 other + 6 = 8 == ceiling), got %v", err)
+	}
+	defer releaseA()
+
+	// Without the fix, this would also admit: committedCoresExcluding("b")
+	// still reads the REAL (unchanged) container list, seeing "a" at its
+	// OLD 2 cores, not the 6 it was just admitted for — 2(b's real
+	// other-tenant total, "a" unchanged)+6(requested)=8<=8 would wrongly
+	// fit. With the fix, b's check adds a's outstanding 6-core reservation
+	// on top: 2(real)+6(a's reservation)+6(requested)=14>8 — rejected.
+	_, err = s.admitCPUCapacity("b", "6")
+	if err == nil {
+		t.Fatal("second concurrent admit (b: 2->6) should be REJECTED once a's reservation is counted — this is the #1588 race")
+	}
+	if status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("want ResourceExhausted, got %v (%v)", status.Code(err), err)
+	}
+}
+
+// Releasing a reservation makes room for a subsequent admit that would
+// otherwise be rejected — proving release() actually does something, not
+// just that the reservation exists.
+func TestAdmitCPUCapacity_ReleaseFreesTheReservation(t *testing.T) {
+	s := seedServer(t, 8, []incus.ContainerInfo{tenant("a", "2"), tenant("b", "2")})
+	s.SetCPUOvercommitPolicy(1, true)
+
+	releaseA, err := s.admitCPUCapacity("a", "6")
+	if err != nil {
+		t.Fatalf("first admit should fit, got %v", err)
+	}
+	if _, err := s.admitCPUCapacity("b", "6"); err == nil {
+		t.Fatal("second admit should be rejected while a's reservation is outstanding")
+	}
+
+	releaseA()
+
+	if _, err := s.admitCPUCapacity("b", "6"); err != nil {
+		t.Fatalf("after releasing a's reservation, b's admit should fit (2 other + 6 = 8 == ceiling), got %v", err)
+	}
+}
+
+// A reservation nobody ever releases still stops counting once it expires —
+// the safety net for a caller whose completion this package can't observe
+// (the k8s Box-CR reconciliation path). Uses nowFn rather than a real
+// 10-minute wait.
+func TestAdmitCPUCapacity_ReservationExpiresAfterTTL(t *testing.T) {
+	s := seedServer(t, 8, []incus.ContainerInfo{tenant("a", "2"), tenant("b", "2")})
+	s.SetCPUOvercommitPolicy(1, true)
+
+	current := time.Now()
+	s.nowFn = func() time.Time { return current }
+
+	if _, err := s.admitCPUCapacity("a", "6"); err != nil {
+		t.Fatalf("first admit should fit, got %v", err)
+	}
+	if _, err := s.admitCPUCapacity("b", "6"); err == nil {
+		t.Fatal("second admit should be rejected while a's reservation is live")
+	}
+
+	// Never released — advance the clock past the TTL instead.
+	current = current.Add(cpuReservationTTL + time.Second)
+
+	if _, err := s.admitCPUCapacity("b", "6"); err != nil {
+		t.Fatalf("after a's reservation expires, b's admit should fit, got %v", err)
+	}
+}
+
+// A tenant's own outstanding reservation must not count against its own
+// next admit — the same "don't double-count the tenant being (re)sized"
+// rule committedCoresExcluding already applies to the real committed total,
+// extended to the reservation table.
+func TestAdmitCPUCapacity_OwnReservationExcludedFromOwnNextAdmit(t *testing.T) {
+	s := seedServer(t, 8, []incus.ContainerInfo{tenant("other", "2")})
+	s.SetCPUOvercommitPolicy(1, true)
+
+	if _, err := s.admitCPUCapacity("me", "6"); err != nil {
+		t.Fatalf("first admit for me should fit (2 other + 6 = 8 == ceiling), got %v", err)
+	}
+	// A second admit for the SAME tenant (e.g. a retried request) must be
+	// judged against the real committed total plus OTHER tenants'
+	// reservations, not doubled up with its own prior reservation.
+	if _, err := s.admitCPUCapacity("me", "6"); err != nil {
+		t.Fatalf("second admit for the same tenant should still fit (its own prior reservation must not stack against itself), got %v", err)
+	}
+}
+
+// TestAdmitCPUCapacity_ConcurrentGoroutinesNeverExceedCeiling drives the fix
+// with real concurrent goroutines (run with -race) rather than sequential
+// calls simulating concurrency — the shape of bug the issue actually
+// describes. 8-core host, 1x ceiling: ten different tenants each request 2
+// cores at once. 8 cores / 2 per admit divides evenly, so regardless of
+// goroutine scheduling order exactly 4 must be admitted and 6 rejected —
+// any other count means the ceiling was violated or admission was
+// needlessly conservative.
+func TestAdmitCPUCapacity_ConcurrentGoroutinesNeverExceedCeiling(t *testing.T) {
+	s := seedServer(t, 8, nil)
+	s.SetCPUOvercommitPolicy(1, true)
+
+	const tenants = 10
+	var wg sync.WaitGroup
+	var admitted int64
+	for i := 0; i < tenants; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, err := s.admitCPUCapacity(fmt.Sprintf("tenant-%d", i), "2")
+			if err == nil {
+				atomic.AddInt64(&admitted, 1)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if admitted != 4 {
+		t.Fatalf("admitted %d of %d concurrent 2-core requests on an 8-core/1x host, want exactly 4 (8/2) — "+
+			"a higher count means the ceiling was violated (the #1588 race), a lower count means admission "+
+			"was wrongly conservative", admitted, tenants)
 	}
 }

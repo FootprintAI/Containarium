@@ -158,6 +158,21 @@ containarium daemon --placement-cpu-aware
 
 - **Local participation in ranking.** Today an in-pool healthy local backend
   still wins unconditionally; a future option could rank local alongside peers.
-- **Check-then-act race under concurrent operations.** Two concurrent
-  creates/resizes can each admit against a stale committed-cores snapshot and
-  jointly exceed the ceiling — see #1588.
+
+## Concurrent admission (#1588)
+
+Two concurrent creates/resizes admitting against the same host's committed
+cores could each read a stale (pre-mutation) snapshot and jointly exceed the
+ceiling — the check and the mutation weren't atomic with respect to each
+other. Closed by an in-memory reservation: an admitted request reserves its
+cores (`ContainerServer.cpuReservations`) for the duration of its caller's
+mutation, and every subsequent admission check on that host counts other
+tenants' outstanding reservations on top of the real committed total, not
+just the real total alone. The caller releases the reservation once its
+mutation concludes (success or failure) — `CreateContainer`, `ResizeContainer`,
+and the cluster reconciler's VM provisioning all do this.
+
+A reservation also expires on its own after `cpuReservationTTL` (10 minutes)
+as a safety net for a caller whose completion this package can't directly
+observe — the k8s Box-CR path hands off to the operator's own
+reconciliation and never calls release explicitly.

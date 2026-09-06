@@ -3,12 +3,33 @@ package server
 import (
 	"fmt"
 	"log"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	"github.com/footprintai/containarium/pkg/core/incus"
 )
+
+// cpuReservationTTL bounds how long an admitted request's reservation
+// (#1588) can outlive its caller before expiring on its own. Generous
+// enough to cover a slow create (image pull, disk allocation) well past
+// what's actually observed in practice, but bounded so a caller whose
+// completion this package can't observe — the k8s Box-CR path, which
+// hands off to the operator's own reconciliation — can't wedge a host's
+// admission gate forever.
+const cpuReservationTTL = 10 * time.Minute
+
+// cpuReservation is one tenant's outstanding admitted-but-not-yet-committed
+// CPU request. token disambiguates a release call from a stale/superseded
+// reservation for the same username (e.g. two overlapping admission checks
+// for one tenant) — release only clears the entry if it still holds the
+// token the release closure was handed.
+type cpuReservation struct {
+	cores     float64
+	expiresAt time.Time
+	token     uint64
+}
 
 // CPU capacity admission (#1029 direction 2).
 //
@@ -54,54 +75,135 @@ func admitCPURequest(physicalCores, committedCores, requestCores, factor float64
 	return ratio, projected <= physicalCores*factor
 }
 
+// noopRelease is returned from every admitCPUCapacity path that never
+// reserved anything (gate disabled, fail-open, or a rejected request) — safe
+// for every caller to defer unconditionally regardless of which path ran.
+func noopRelease() {}
+
+// cpuNow is time.Now unless a test overrides it via nowFn (seam for
+// exercising cpuReservationTTL expiry without an actual 10-minute wait).
+func (s *ContainerServer) cpuNow() time.Time {
+	if s.nowFn != nil {
+		return s.nowFn()
+	}
+	return time.Now()
+}
+
 // admitCPUCapacity applies the overcommit policy to one incoming create. It
 // returns a ResourceExhausted error only when the gate is enabled, enforcing,
 // and the request would exceed the ceiling; otherwise nil (including every
 // fail-open path). username is the tenant being (re)created — its own existing
 // container, if any, is excluded so a resize-by-recreate doesn't double-count.
 //
-// Known gap (#1588): this is a check-then-act read with no lock or
-// reservation held across the caller's subsequent mutation. Two concurrent
-// callers (create, resize, or the cluster reconciler — every caller of this
-// function) can each admit against a stale snapshot and jointly exceed the
-// ceiling. Pre-existing since #1029 for create; #1579 extends the same
-// window to resize without introducing a new kind of gap. Not fixed here —
-// closing it needs serialization (or a reservation step) shared across
-// every local operation that commits CPU, which is bigger than any one
-// caller's scope.
-func (s *ContainerServer) admitCPUCapacity(username, cpuRequest string) error {
+// #1588: admitting a request (fits, or advisory-mode logged-but-allowed)
+// reserves its cores against future admission checks for cpuReservationTTL
+// or until the returned release func runs, whichever is first. Every caller
+// MUST call (or defer) release once its subsequent mutation concludes,
+// success or failure — otherwise the reservation lingers until it expires,
+// and a concurrent admit in that window sees phantom committed capacity.
+// This is what turns admitCPURequest's committed-cores READ from a stale
+// snapshot into something safe under concurrent callers: two admits against
+// the same host now see each other's outstanding reservation, not just
+// whatever the last completed mutation already wrote back to Incus.
+//
+// The returned release is never nil — every return path hands back either a
+// real release or noopRelease, so `defer release()` is always safe.
+func (s *ContainerServer) admitCPUCapacity(username, cpuRequest string) (release func(), err error) {
 	if s.cpuOvercommitFactor <= 0 {
-		return nil // gate disabled (the default)
+		return noopRelease, nil // gate disabled (the default)
 	}
 
 	physical, err := s.hostPhysicalCores()
 	if err != nil || physical <= 0 {
 		log.Printf("[cpu-admission] capacity check skipped (host cores unavailable: %v) — allowing create for %s", err, username)
-		return nil
+		return noopRelease, nil
 	}
 	committed, err := s.committedCoresExcluding(username)
 	if err != nil {
 		log.Printf("[cpu-admission] capacity check skipped (container list failed: %v) — allowing create for %s", err, username)
-		return nil
+		return noopRelease, nil
 	}
 	request := incus.CommittedCores(cpuRequest)
 
+	// Everything from here — reading outstanding reservations, deciding
+	// fit against them, and recording this request's own reservation — has
+	// to happen under one lock. Deciding fit and THEN recording the
+	// reservation as two separate critical sections would just move the
+	// #1588 race into the reservation bookkeeping itself: two concurrent
+	// admits could each see the fit check pass before either recorded
+	// anything.
+	s.cpuReservationsMu.Lock()
+	if s.cpuReservations == nil {
+		// Lazily initialized rather than in a constructor: ContainerServer
+		// is built as a bare struct literal in several places (tests, and
+		// some production wiring), so a constructor-only init would leave
+		// this nil and panic on first write.
+		s.cpuReservations = make(map[string]cpuReservation)
+	}
+	committed += s.reservedCoresExcludingLocked(username)
 	ratio, fits := admitCPURequest(physical, committed, request, s.cpuOvercommitFactor)
-	if fits {
-		return nil
+
+	if !fits && s.cpuOvercommitEnforce {
+		s.cpuReservationsMu.Unlock()
+		detail := fmt.Sprintf(
+			"host has %.0f logical CPUs; %.2f already committed + %.2f requested = %.2f would exceed the %.2f× overcommit ceiling (%.2f cores) — projected %.2f×",
+			physical, committed, request, committed+request, s.cpuOvercommitFactor, physical*s.cpuOvercommitFactor, ratio)
+		log.Printf("[cpu-admission] REJECT %s — %s", username, detail)
+		return noopRelease, status.Errorf(codes.ResourceExhausted,
+			"CPU capacity exceeded on this backend: %s. Retry on a less-loaded backend/pool or a larger host, or ask an operator to raise the overcommit factor.", detail)
 	}
 
-	detail := fmt.Sprintf(
-		"host has %.0f logical CPUs; %.2f already committed + %.2f requested = %.2f would exceed the %.2f× overcommit ceiling (%.2f cores) — projected %.2f×",
-		physical, committed, request, committed+request, s.cpuOvercommitFactor, physical*s.cpuOvercommitFactor, ratio)
+	// Admitted — either it genuinely fits, or the gate is advisory-only and
+	// would have rejected this. Either way the caller's mutation proceeds,
+	// so its cores are reserved the same way: an advisory-mode host that
+	// keeps admitting over its ceiling needs its own log noise to reflect
+	// what's actually about to be committed, and flipping enforce=true
+	// later must not suddenly see a phantom-empty reservation table.
+	s.cpuReservationSeq++
+	token := s.cpuReservationSeq
+	s.cpuReservations[username] = cpuReservation{cores: request, expiresAt: s.cpuNow().Add(cpuReservationTTL), token: token}
+	s.cpuReservationsMu.Unlock()
 
-	if !s.cpuOvercommitEnforce {
+	release = func() {
+		s.cpuReservationsMu.Lock()
+		if r, ok := s.cpuReservations[username]; ok && r.token == token {
+			delete(s.cpuReservations, username)
+		}
+		s.cpuReservationsMu.Unlock()
+	}
+
+	if !fits {
+		detail := fmt.Sprintf(
+			"host has %.0f logical CPUs; %.2f already committed + %.2f requested = %.2f would exceed the %.2f× overcommit ceiling (%.2f cores) — projected %.2f×",
+			physical, committed, request, committed+request, s.cpuOvercommitFactor, physical*s.cpuOvercommitFactor, ratio)
 		log.Printf("[cpu-admission] ADVISORY (not enforced): would reject %s — %s", username, detail)
-		return nil
 	}
-	log.Printf("[cpu-admission] REJECT %s — %s", username, detail)
-	return status.Errorf(codes.ResourceExhausted,
-		"CPU capacity exceeded on this backend: %s. Retry on a less-loaded backend/pool or a larger host, or ask an operator to raise the overcommit factor.", detail)
+	return release, nil
+}
+
+// reservedCoresExcludingLocked sums every OTHER tenant's live (non-expired)
+// reservation. Must be called with cpuReservationsMu held. Excludes
+// `username` itself — this request's own prior reservation, if any, is
+// about to be superseded by whatever admitCPUCapacity decides here, the
+// same "don't double-count the tenant being (re)sized" rule
+// committedCoresExcluding already applies to the real committed total.
+//
+// Lazily drops expired entries it encounters — no separate GC goroutine is
+// needed for a map that's read on every admission call anyway.
+func (s *ContainerServer) reservedCoresExcludingLocked(username string) float64 {
+	now := s.cpuNow()
+	var sum float64
+	for user, r := range s.cpuReservations {
+		if now.After(r.expiresAt) {
+			delete(s.cpuReservations, user)
+			continue
+		}
+		if user == username {
+			continue
+		}
+		sum += r.cores
+	}
+	return sum
 }
 
 // admitCPUResize applies the capacity gate to a CPU-increasing resize
@@ -109,11 +211,12 @@ func (s *ContainerServer) admitCPUCapacity(username, cpuRequest string) error {
 // capacity with no check at all, even though create already goes through
 // admitCPUCapacity).
 //
-// It reuses admitCPUCapacity UNCHANGED rather than adding a delta-aware
-// variant of it — do not change admitCPUCapacity's own signature, since
-// dual_server.go wires that exact function into the cluster reconciler's
-// SetAdmission for VM creation, and a signature change breaks that call site
-// silently.
+// It reuses admitCPUCapacity's decision logic UNCHANGED rather than adding a
+// delta-aware variant of it — dual_server.go wires admitCPUCapacity itself
+// (not this function) into the cluster reconciler's SetAdmission for VM
+// creation, so admitCPUCapacity's signature has to keep matching that seam,
+// but admitCPUResize is free to mirror it (#1588 needs the same
+// admit-then-release shape here as every other caller).
 //
 // committedCoresExcluding already excludes the tenant's own current
 // container from the committed sum, so passing the resize's full new CPU
@@ -133,9 +236,9 @@ func (s *ContainerServer) admitCPUCapacity(username, cpuRequest string) error {
 // is skipped outright rather than relying on the arithmetic to always admit
 // a decrease — a host that is already over its ceiling (a legacy, pre-gate
 // fleet) would otherwise have a decrease wrongly rejected too.
-func (s *ContainerServer) admitCPUResize(username, currentCPU, newCPU string) error {
+func (s *ContainerServer) admitCPUResize(username, currentCPU, newCPU string) (release func(), err error) {
 	if incus.CommittedCores(newCPU) <= incus.CommittedCores(currentCPU) {
-		return nil
+		return noopRelease, nil
 	}
 	return s.admitCPUCapacity(username, newCPU)
 }

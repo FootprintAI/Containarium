@@ -378,7 +378,7 @@ func TestReconciler_AsyncDeleteDrainsEverything(t *testing.T) {
 func TestReconciler_AdmissionRefusalIsLoud(t *testing.T) {
 	srv, rec, host := testReconcilerRig(t)
 	ctx := context.Background()
-	rec.SetAdmission(func(owner, cpu string) error { return errors.New("host at capacity") })
+	rec.SetAdmission(func(owner, cpu string) (func(), error) { return nil, errors.New("host at capacity") })
 	mustCreate(t, srv, tenantCtx("alice"), "demo")
 
 	rec.ReconcileOnce(ctx)

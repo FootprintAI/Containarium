@@ -161,6 +161,26 @@ type ContainerServer struct {
 	cpuOvercommitFactor  float64
 	cpuOvercommitEnforce bool
 	hostCoresFn          func() (float64, error)
+	// cpuReservations closes the #1588 check-then-act race: admitCPUCapacity
+	// reads a snapshot of committed cores with no lock held across the
+	// caller's subsequent mutation, so two concurrent admits against the
+	// same host can each pass against a stale snapshot and jointly exceed
+	// the ceiling. Every admitted (or advisory-logged) request reserves its
+	// cores here for the duration of the caller's mutation; a later admit
+	// checks committed cores plus every other tenant's live reservation, not
+	// just the real (possibly stale) committed total. The caller releases
+	// its reservation once the mutation concludes, success or failure — see
+	// admitCPUCapacity's returned release func. cpuReservationTTL is a
+	// safety net, not the primary mechanism: a caller whose completion this
+	// package can't observe (the k8s Box-CR reconciliation path) never
+	// calls release, and would otherwise hold a reservation forever.
+	cpuReservationsMu sync.Mutex
+	cpuReservations   map[string]cpuReservation
+	// nowFn overrides cpuNow's real time.Now() (mirrors hostCoresFn /
+	// localHealthCheckFn above) so a test can exercise reservation TTL
+	// expiry without an actual 10-minute wait. nil in production.
+	nowFn             func() time.Time
+	cpuReservationSeq uint64
 	// capacityStore holds this backend's spare-capacity advertise/withdraw
 	// state + local policy (#680). Lazily initialized so an unwired server
 	// (tests) still answers GetCapacityHeadroom with "not advertised".
@@ -575,8 +595,16 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 	// all three paths are gated uniformly. No-op unless an operator enabled the
 	// gate; peer-routed creates already returned above and are gated by the
 	// target peer's own daemon. See cpu_admission.go.
-	if err := s.admitCPUCapacity(req.Username, spec.Resources.CPU); err != nil {
-		return nil, err
+	//
+	// #1588: an admitted request reserves its cores until cpuRelease runs, so
+	// a concurrent admit against this host sees them as committed even
+	// before this container actually exists. Released below — inline for
+	// the Box-CR/sync paths (the top-level defer), inside the goroutine for
+	// async, matching exactly how asyncHandledInline already splits
+	// platformStats reporting between those two completion shapes.
+	cpuRelease, admitErr := s.admitCPUCapacity(req.Username, spec.Resources.CPU)
+	if admitErr != nil {
+		return nil, admitErr
 	}
 
 	// #1083: everything past this point is a genuine attempt to provision
@@ -600,6 +628,7 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 		if asyncHandledInline {
 			return
 		}
+		cpuRelease()
 		s.platformStats.RecordProvisionAttempt(platformstats.OperationCreate, err == nil, time.Since(provisionStart))
 	}()
 
@@ -670,6 +699,12 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 		// double-counted.
 		asyncHandledInline = true
 		go func() {
+			// #1588: the top-level defer stood down for async (above), so
+			// this goroutine owns releasing the CPU reservation too — on
+			// every exit path, including the early "cancelled by delete"
+			// return below, which is exactly why this is its own defer
+			// rather than a call at the bottom of the function.
+			defer cpuRelease()
 			info, err := s.boxes().Create(context.Background(), spec)
 			// Same contract as the sync path: an encrypted box whose
 			// placement cannot be recorded is removed rather than left
@@ -1769,11 +1804,22 @@ func (s *ContainerServer) ResizeContainer(ctx context.Context, req *pb.ResizeCon
 	// against the wrong host's capacity. The peer's own ResizeContainer
 	// handler runs this same check against its own host once the request is
 	// forwarded, so no forwarding-side admission logic is needed here.
+	//
+	// #1588: an admitted resize reserves its cores until cpuRelease runs.
+	// ResizeContainer is fully synchronous with several return points below
+	// (local success, peer-forwarded success, various errors) — deferring a
+	// closure over cpuRelease, rather than calling it inline, releases the
+	// reservation on every one of them uniformly instead of needing a call
+	// at each site.
+	cpuRelease := noopRelease
+	defer func() { cpuRelease() }()
 	if s.cpuOvercommitFactor > 0 && req.Cpu != "" {
 		if current, gerr := s.manager.GetInfo(containerName); gerr == nil && current != nil {
-			if aerr := s.admitCPUResize(req.Username, current.CPU, req.Cpu); aerr != nil {
+			rel, aerr := s.admitCPUResize(req.Username, current.CPU, req.Cpu)
+			if aerr != nil {
 				return nil, aerr
 			}
+			cpuRelease = rel
 		}
 	}
 

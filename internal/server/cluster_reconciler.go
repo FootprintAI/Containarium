@@ -31,8 +31,10 @@ type ClusterReconciler struct {
 	mgr   *clustercore.Manager
 
 	// admit is the CPU-admission seam (nil = no gate, unit tests).
-	// Refusals are recorded as events, never silent.
-	admit func(owner, cpu string) error
+	// Refusals are recorded as events, never silent. The returned release
+	// func (#1588) must be called once this reconciler's own provisioning
+	// attempt concludes — see admitSize.
+	admit func(owner, cpu string) (release func(), err error)
 
 	// publish allocates/records the external API endpoint for a
 	// cluster whose control plane is up; unpublish reverses it.
@@ -67,7 +69,9 @@ func NewClusterReconciler(store clusterstore.Store, mgr *clustercore.Manager) *C
 }
 
 // SetAdmission wires the CPU-admission gate.
-func (r *ClusterReconciler) SetAdmission(f func(owner, cpu string) error) { r.admit = f }
+func (r *ClusterReconciler) SetAdmission(f func(owner, cpu string) (release func(), err error)) {
+	r.admit = f
+}
 
 // SetVPADisabled turns off VPA deployment into new clusters.
 func (r *ClusterReconciler) SetVPADisabled(v bool) { r.vpaDisabled = v }
@@ -208,10 +212,12 @@ func (r *ClusterReconciler) reconcileCluster(ctx context.Context, c *clusterstor
 	for _, act := range actions {
 		switch act.Kind {
 		case clustercore.ActionCreateCP:
-			if err := r.admitSize(c, cpSize, "control-plane"); err != nil {
+			release, err := r.admitSize(c, cpSize, "control-plane")
+			if err != nil {
 				return nil // refusal recorded; retry next pass
 			}
 			cpIP, err := r.mgr.ProvisionCP(c.Owner, c.Name, iso, cpSize, r.controlPlaneSANs())
+			release() // #1588: release once the attempt concludes, success or failure
 			if err != nil {
 				return fmt.Errorf("provision control plane: %w", err)
 			}
@@ -224,14 +230,18 @@ func (r *ClusterReconciler) reconcileCluster(ctx context.Context, c *clusterstor
 
 		case clustercore.ActionCreateWorker:
 			g := groupByName[act.Group]
-			if err := r.admitSize(c, g, act.Group); err != nil {
+			release, err := r.admitSize(c, g, act.Group)
+			if err != nil {
 				return nil // refusal recorded; retry next pass
 			}
 			cpIP, err := r.mgr.CPIP(c.Owner, c.Name)
 			if err != nil {
+				release() // #1588: nothing to provision after all
 				return fmt.Errorf("control-plane IP: %w", err)
 			}
-			if err := r.mgr.ProvisionWorker(c.Owner, c.Name, iso, g, act.Name, cpIP); err != nil {
+			err = r.mgr.ProvisionWorker(c.Owner, c.Name, iso, g, act.Name, cpIP)
+			release() // #1588: release once the attempt concludes, success or failure
+			if err != nil {
 				return fmt.Errorf("provision worker %s: %w", act.Name, err)
 			}
 			_ = r.store.UpsertNode(ctx, &clusterstore.Node{
@@ -284,18 +294,28 @@ func (r *ClusterReconciler) reconcileCluster(ctx context.Context, c *clusterstor
 
 // admitSize runs the CPU-admission gate for one VM-sized request; a
 // refusal is recorded as a REFUSED scale event (loud, never clamped).
-func (r *ClusterReconciler) admitSize(c *clusterstore.Cluster, g clustercore.DesiredGroup, what string) error {
+//
+// #1588: the returned release must be called by admitSize's own caller once
+// its ProvisionCP/ProvisionWorker attempt concludes, success or failure —
+// same admit-then-release contract every other admission call site follows.
+// The nil-admit and refused paths hand back a no-op so callers can defer it
+// unconditionally without a nil check.
+func (r *ClusterReconciler) admitSize(c *clusterstore.Cluster, g clustercore.DesiredGroup, what string) (release func(), err error) {
 	if r.admit == nil {
-		return nil
+		return func() {}, nil
 	}
-	if err := r.admit(c.Owner, g.CPU); err != nil {
+	release, err = r.admit(c.Owner, g.CPU)
+	if err != nil {
 		_ = r.store.AppendEvent(context.Background(), c.Owner, c.Name, clusterstore.Event{
 			At: time.Now().UTC(), Kind: clusterstore.EventRefused,
 			Group: what, Reason: fmt.Sprintf("admission refused %s cpu=%s: %v", what, g.CPU, err),
 		})
-		return err
+		return func() {}, err
 	}
-	return nil
+	if release == nil {
+		release = func() {}
+	}
+	return release, nil
 }
 
 // settleState publishes the endpoint once the CP is up and flips the
