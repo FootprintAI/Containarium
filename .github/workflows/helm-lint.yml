@@ -45,3 +45,25 @@ jobs:
           helm template containarium charts/containarium-k8s \
             --set gateway.upstreamKeySecret=smoke-test-placeholder \
             > /dev/null
+
+      - name: Template render — gateway disabled (#1526)
+        # values.yaml documents clearing gateway.namespace as how to disable
+        # gateway routing entirely, but namespace.yaml had no
+        # gateway.enabled guard (unlike every other gateway-only resource in
+        # this chart), so it rendered a Namespace with an empty name —
+        # `resource name may not be empty` on install, only failing at
+        # install/dry-run time since `helm template` alone doesn't validate
+        # object names. --show-only asserts the template renders nothing at
+        # all for this file (matching every sibling gateway resource) rather
+        # than just checking the overall command doesn't error, which
+        # wouldn't have caught the empty-name manifest.
+        run: |
+          if helm template containarium charts/containarium-k8s \
+            --set gateway.enabled=false --set gateway.namespace="" \
+            --show-only templates/namespace.yaml > /dev/null 2>&1; then
+            echo "::error::namespace.yaml still rendered something with gateway.enabled=false — expected it to render nothing, the same as every other gateway-only resource"
+            exit 1
+          fi
+          helm template containarium charts/containarium-k8s \
+            --set gateway.enabled=false --set gateway.namespace="" \
+            > /dev/null
