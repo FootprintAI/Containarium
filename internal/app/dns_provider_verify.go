@@ -23,7 +23,7 @@ import (
 // cloudflareTokenVerifyURL is Cloudflare's token-introspection endpoint — the
 // credential's own issuer confirms whether it's even accepted. A var, not a
 // const, so tests can point it at a fake server instead of the real API.
-var cloudflareTokenVerifyURL = "https://api.cloudflare.com/client/v4/user/tokens/verify"
+var cloudflareTokenVerifyURL = "https://api.cloudflare.com/client/v4/user/tokens/verify" // #nosec G101 -- a public API endpoint URL, not a credential value
 
 // resolvedProviderField returns the DNS-01 provider config's `field` value
 // with a `{env.VAR}` placeholder substituted from envVars (empty if that
