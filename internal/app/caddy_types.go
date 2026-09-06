@@ -3,6 +3,8 @@ package app
 import (
 	"encoding/json"
 	"os"
+	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -433,6 +435,47 @@ func DNSChallengeFromEnv() *CaddyACMEChallenges {
 		}
 	}
 	return &CaddyACMEChallenges{DNS: &CaddyDNSChallenge{Provider: prov}}
+}
+
+// envPlaceholderPattern matches a Caddy `{env.VARNAME}` placeholder — the
+// whole value must be exactly one placeholder (Caddy's own config
+// substitution syntax), not a placeholder embedded in a larger string.
+var envPlaceholderPattern = regexp.MustCompile(`^\{env\.([A-Za-z_][A-Za-z0-9_]*)\}$`)
+
+// EnvPlaceholdersInDNSProvider returns the names of every `{env.VAR}`
+// placeholder Caddy will expand when it loads this DNS-01 provider config,
+// deduplicated and sorted.
+//
+// Caddy runs as its own process (in its own container, for the daemon's core
+// Caddy) and expands these placeholders from ITS OWN environment, not the
+// daemon's — a variable this function names has to actually reach Caddy's
+// process environment somehow, or the ACME DNS-01 challenge fails with an
+// error that looks like a scoping problem rather than a missing credential
+// (#1597). Callers use this list to check (and provision) that path; nothing
+// here touches any environment itself.
+//
+// Returns nil for a nil challenge config or one with no provider (HTTP-01 /
+// TLS-ALPN-01, no DNS-01 configured).
+func EnvPlaceholdersInDNSProvider(dns *CaddyACMEChallenges) []string {
+	if dns == nil || dns.DNS == nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var vars []string
+	for _, v := range dns.DNS.Provider {
+		s, ok := v.(string)
+		if !ok {
+			continue
+		}
+		m := envPlaceholderPattern.FindStringSubmatch(s)
+		if m == nil || seen[m[1]] {
+			continue
+		}
+		seen[m[1]] = true
+		vars = append(vars, m[1])
+	}
+	sort.Strings(vars)
+	return vars
 }
 
 // dnsProviderModules maps a caddy-dns provider name to its Go module path,

@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -402,6 +404,7 @@ func (cs *CoreServices) EnsureCaddy(ctx context.Context, baseDomain string) (str
 		if info.State == "Running" {
 			cs.caddyIP = info.IPAddress
 			log.Printf("Caddy container already running at %s", cs.caddyIP)
+			cs.reconcileCaddyDNSEnv()
 			return cs.getCaddyAdminURL(), nil
 		}
 		// Container exists but not running, start it
@@ -414,6 +417,7 @@ func (cs *CoreServices) EnsureCaddy(ctx context.Context, baseDomain string) (str
 			return "", fmt.Errorf("failed to get caddy IP: %w", err)
 		}
 		cs.caddyIP = ip
+		cs.reconcileCaddyDNSEnv()
 		return cs.getCaddyAdminURL(), nil
 	}
 
@@ -549,25 +553,12 @@ func (cs *CoreServices) setupCaddy(ctx context.Context, baseDomain string) error
 		return fmt.Errorf("failed to write Caddyfile: %w", err)
 	}
 
-	// Create systemd service for Caddy
-	systemdUnit := `[Unit]
-Description=Caddy
-After=network.target network-online.target
-Requires=network-online.target
-
-[Service]
-Type=notify
-User=caddy
-Group=caddy
-ExecStart=/usr/bin/caddy run --environ --config /etc/caddy/Caddyfile
-ExecReload=/usr/bin/caddy reload --config /etc/caddy/Caddyfile --force
-TimeoutStopSec=5s
-LimitNOFILE=1048576
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-
-[Install]
-WantedBy=multi-user.target
-`
+	// Create systemd service for Caddy. Injects one Environment= line per
+	// DNS-01 provider credential Caddy needs to expand from ITS OWN process
+	// environment — see caddyServiceUnit (#1597).
+	present, missing := caddyDNSProviderEnv()
+	logMissingDNSProviderCredentials(missing)
+	systemdUnit := caddyServiceUnit(present)
 	if err := cs.incusClient.WriteFile(CoreCaddyContainer, "/etc/systemd/system/caddy.service", []byte(systemdUnit), "0644"); err != nil {
 		return fmt.Errorf("failed to write caddy service: %w", err)
 	}
@@ -588,6 +579,118 @@ WantedBy=multi-user.target
 
 	log.Printf("Caddy setup complete (with caddy-l4 plugin)")
 	return nil
+}
+
+// caddyDNSProviderEnv resolves the {env.VAR} placeholders the daemon's
+// configured DNS-01 provider config references (app.EnvPlaceholdersInDNSProvider)
+// against the DAEMON's own environment — the source of truth an operator
+// actually sets CONTAINARIUM_ACME_DNS_PROVIDER alongside. Returns the ones
+// that resolve to a non-empty value (to inject into Caddy's own systemd
+// environment, since Caddy runs in a separate container and does not share
+// the daemon's process environment) and the ones that don't (#1597: Caddy
+// silently expands an unset {env.X} to the empty string, and DNS-01 then
+// fails per-issuance with a message that reads like a token-scope problem
+// rather than "nothing was ever set").
+func caddyDNSProviderEnv() (present map[string]string, missing []string) {
+	names := app.EnvPlaceholdersInDNSProvider(app.DNSChallengeFromEnv())
+	present = make(map[string]string, len(names))
+	for _, name := range names {
+		if v := os.Getenv(name); v != "" {
+			present[name] = v
+		} else {
+			missing = append(missing, name)
+		}
+	}
+	return present, missing
+}
+
+// logMissingDNSProviderCredentials prints one clear, greppable ERROR per
+// DNS-01 provider credential the daemon's config references but can't find
+// set in its own environment. Deliberately non-fatal — a misconfiguration
+// here shouldn't boot-loop the daemon over a transient/self-inflicted
+// credential gap — but it must be visible without archaeology through
+// Caddy's own ACME logs, which is the whole failure mode #1597 reports:
+// five weeks of "configured but not issued, no error is logged".
+func logMissingDNSProviderCredentials(missing []string) {
+	for _, name := range missing {
+		log.Printf("ERROR: CONTAINARIUM_ACME_DNS_PROVIDER's config references {env.%s}, but %s is unset "+
+			"(or empty) in the daemon's own environment. Caddy will expand the placeholder to an empty "+
+			"string and every DNS-01 challenge will fail — reading, misleadingly, like a token-scope "+
+			"problem rather than a missing credential — until %s is set (#1597).", name, name, name)
+	}
+}
+
+// caddyServiceUnit renders the containarium-core-caddy systemd unit, adding
+// one Environment= line per resolved DNS-01 provider credential so Caddy's
+// own process can actually expand the {env.VAR} placeholders the daemon's
+// emitted TLS config references. Values land only in this container's unit
+// file (root-readable only, like any other systemd secret) — never in the
+// daemon's own logs. envVars empty (no DNS-01 configured, or nothing
+// resolved) renders byte-identical to the unit this function replaced, so
+// existing non-DNS-01 hosts see no change.
+func caddyServiceUnit(envVars map[string]string) string {
+	names := make([]string, 0, len(envVars))
+	for name := range envVars {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var envLines strings.Builder
+	for _, name := range names {
+		fmt.Fprintf(&envLines, "Environment=%s=%s\n", name, envVars[name])
+	}
+
+	return fmt.Sprintf(`[Unit]
+Description=Caddy
+After=network.target network-online.target
+Requires=network-online.target
+
+[Service]
+Type=notify
+User=caddy
+Group=caddy
+%sExecStart=/usr/bin/caddy run --environ --config /etc/caddy/Caddyfile
+ExecReload=/usr/bin/caddy reload --config /etc/caddy/Caddyfile --force
+TimeoutStopSec=5s
+LimitNOFILE=1048576
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target
+`, envLines.String())
+}
+
+// reconcileCaddyDNSEnv keeps an ALREADY-provisioned core-caddy container's
+// systemd Environment= lines in sync with the daemon's current DNS-01
+// provider config. setupCaddy only runs once, at container creation — an
+// operator who sets (or rotates) CONTAINARIUM_ACME_DNS_PROVIDER on a host
+// whose Caddy container already exists would otherwise never see it reach
+// Caddy at all. This is the exact incident #1597 traced: a credential
+// "believed set" for five weeks, silently never wired through.
+//
+// Only writes and restarts when the rendered unit actually changed — the
+// common case, every daemon startup, is a ReadFile and a string compare.
+// Called from both of EnsureCaddy's "container already exists" paths.
+func (cs *CoreServices) reconcileCaddyDNSEnv() {
+	present, missing := caddyDNSProviderEnv()
+	logMissingDNSProviderCredentials(missing)
+
+	desired := caddyServiceUnit(present)
+	if current, err := cs.incusClient.ReadFile(CoreCaddyContainer, "/etc/systemd/system/caddy.service"); err == nil && string(current) == desired {
+		return
+	}
+
+	if err := cs.incusClient.WriteFile(CoreCaddyContainer, "/etc/systemd/system/caddy.service", []byte(desired), "0644"); err != nil {
+		log.Printf("Warning: failed to update caddy.service with current DNS-01 provider credentials: %v", err)
+		return
+	}
+	if err := cs.incusClient.Exec(CoreCaddyContainer, []string{"systemctl", "daemon-reload"}); err != nil {
+		log.Printf("Warning: systemctl daemon-reload failed: %v", err)
+	}
+	if err := cs.incusClient.Exec(CoreCaddyContainer, []string{"systemctl", "restart", "caddy"}); err != nil {
+		log.Printf("Warning: failed to restart caddy after updating DNS-01 provider credentials: %v", err)
+		return
+	}
+	log.Printf("caddy.service DNS-01 provider credentials changed; reloaded and restarted")
 }
 
 // getCaddyAdminURL returns the Caddy admin API URL

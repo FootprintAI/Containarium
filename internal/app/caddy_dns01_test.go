@@ -120,6 +120,74 @@ func TestDNSChallengeFromEnv(t *testing.T) {
 	})
 }
 
+// #1597 — Caddy expands {env.VAR} in its OWN process environment, not the
+// daemon's. EnvPlaceholdersInDNSProvider is how a caller (core_services.go)
+// discovers which variable names it needs to get to Caddy at all.
+func TestEnvPlaceholdersInDNSProvider(t *testing.T) {
+	t.Run("nil challenge → nil", func(t *testing.T) {
+		if got := EnvPlaceholdersInDNSProvider(nil); got != nil {
+			t.Errorf("got %v, want nil", got)
+		}
+	})
+
+	t.Run("cloudflare default → CF_API_TOKEN", func(t *testing.T) {
+		t.Setenv("CONTAINARIUM_ACME_DNS_PROVIDER", "cloudflare")
+		t.Setenv("CONTAINARIUM_ACME_DNS_PROVIDER_CONFIG", "")
+		got := EnvPlaceholdersInDNSProvider(DNSChallengeFromEnv())
+		if len(got) != 1 || got[0] != "CF_API_TOKEN" {
+			t.Errorf("got %v, want [CF_API_TOKEN]", got)
+		}
+	})
+
+	t.Run("explicit override → that variable, not the default", func(t *testing.T) {
+		t.Setenv("CONTAINARIUM_ACME_DNS_PROVIDER", "cloudflare")
+		t.Setenv("CONTAINARIUM_ACME_DNS_PROVIDER_CONFIG", `{"api_token":"{env.MY_TOKEN}"}`)
+		got := EnvPlaceholdersInDNSProvider(DNSChallengeFromEnv())
+		if len(got) != 1 || got[0] != "MY_TOKEN" {
+			t.Errorf("got %v, want [MY_TOKEN]", got)
+		}
+	})
+
+	t.Run("a literal (non-placeholder) value names nothing", func(t *testing.T) {
+		// route53 reads the AWS env directly; nothing in its provider block
+		// is a Caddy placeholder, so there's nothing for the daemon to
+		// propagate — AWS_* creds are Caddy's own environment concern.
+		t.Setenv("CONTAINARIUM_ACME_DNS_PROVIDER", "route53")
+		t.Setenv("CONTAINARIUM_ACME_DNS_PROVIDER_CONFIG", "")
+		got := EnvPlaceholdersInDNSProvider(DNSChallengeFromEnv())
+		if got != nil {
+			t.Errorf("got %v, want nil", got)
+		}
+	})
+
+	t.Run("multiple placeholders across fields, deduplicated and sorted", func(t *testing.T) {
+		dns := &CaddyACMEChallenges{DNS: &CaddyDNSChallenge{Provider: map[string]interface{}{
+			"name":         "cloudflare",
+			"api_token":    "{env.CF_API_TOKEN}",
+			"zone_id":      "{env.CF_ZONE_ID}",
+			"account_id":   "{env.CF_ZONE_ID}", // duplicate reference, must collapse
+			"literal_flag": "not-a-placeholder",
+		}}}
+		got := EnvPlaceholdersInDNSProvider(dns)
+		want := []string{"CF_API_TOKEN", "CF_ZONE_ID"}
+		if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+			t.Errorf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("a placeholder embedded in a larger string doesn't match", func(t *testing.T) {
+		// Caddy's own {env.X} substitution only fires on the whole value;
+		// this function mirrors that so it never reports a variable Caddy
+		// itself wouldn't actually expand.
+		dns := &CaddyACMEChallenges{DNS: &CaddyDNSChallenge{Provider: map[string]interface{}{
+			"note": "token is {env.CF_API_TOKEN} ish",
+		}}}
+		if got := EnvPlaceholdersInDNSProvider(dns); got != nil {
+			t.Errorf("got %v, want nil", got)
+		}
+	})
+}
+
 // TestNewTLSPolicyWithDNS_Wildcard checks a wildcard subject pairs with the
 // DNS-01 issuers (the combination HTTP-01 can't do).
 func TestNewTLSPolicyWithDNS_Wildcard(t *testing.T) {
