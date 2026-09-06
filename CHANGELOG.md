@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.75.0] - 2026-09-06
+
+### Added
+
+- **gRPC audit interceptor** (#1605). `audit_logs` was fed by exactly one
+  writer — the HTTP/grpc-gateway middleware — so an RPC served on the native
+  gRPC port produced no audit row while the identical RPC served over REST
+  produced one. A new interceptor covers the native gRPC server too, deduped
+  against grpc-gateway's in-process forwarding so a REST call still produces
+  exactly one row.
+- **DNS-01 provider credential verification** (#1739). Beyond checking a
+  credential is present and propagated, the daemon now authenticates it
+  against the provider's own API (Cloudflare's `/user/tokens/verify` today) —
+  a credential can be present, non-empty, and still revoked or wrong.
+
+### Fixed
+
+- **Sentinel admin sshd host key regenerated on every restart** (#1596),
+  degrading `StrictHostKeyChecking` from a real MITM signal into routine
+  noise and breaking non-interactive tooling. The key is now generated once
+  and persisted, the same pattern already used for sshpiper's own host key.
+- **`ensureDNSIssuers` replaced a policy's whole issuer array** instead of
+  repairing it in place (#1671), silently discarding `external_account`
+  (EAB), `trusted_roots_pem_files`, and any hand-set issuer config the
+  moment DNS-01 needed adding. Now repairs each ACME issuer in place; a
+  non-ACME issuer (e.g. `internal`) is left untouched entirely.
+- **DNS-01 provider credentials never reached Caddy's own process
+  environment** (#1597). Caddy runs in its own container; the daemon built
+  it with the right module and emitted the right `{env.CF_API_TOKEN}`
+  placeholder, but nothing ever set that variable where Caddy could see
+  it — regardless of whether it was correctly configured on the daemon's
+  side. The credential is now propagated into Caddy's systemd environment,
+  with a clear error when it resolves empty.
+- **Secrets defaulted to `env` delivery** (#1604) — readable by any
+  same-container process via `/proc/<pid>/environ`, and printed in
+  cleartext by `incus config show` regardless of at-rest encryption. New
+  secrets now default to `file` delivery (tmpfs, absent from the Incus
+  config entirely); `env` remains fully supported via `--delivery env`, and
+  existing secrets keep whatever mode they were written with.
+- **CPU admission check-then-act race** (#1588). Two concurrent
+  creates/resizes against the same host could each admit against a stale
+  committed-cores snapshot and jointly exceed the overcommit ceiling. An
+  admitted request now reserves its cores for the duration of the caller's
+  mutation, closing the race across create, resize, and cluster-node
+  provisioning.
+- **Caddy's HTTP server could reclaim `:443` from an active L4
+  SNI-passthrough server** (#1743), producing two servers bound to the same
+  port and ~50% intermittent TLS handshake failures on passthrough
+  hostnames — silent at the application level and easy to mistake for
+  client/network flakiness. The HTTP server's listen list now checks L4's
+  live state and excludes `:443` while L4 owns it.
+
+### Internal
+
+- CI now runs a regression test for the Makefile variable-injection class
+  of bug the v0.74.0 release fixed (#1732).
+
+**Full diff**: https://github.com/FootprintAI/Containarium/compare/v0.74.0...v0.75.0
+
 ## [0.74.0] - 2026-09-05
 
 Six of the seven changes here are security fixes. The three ungated-RPC
