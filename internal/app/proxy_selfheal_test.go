@@ -358,3 +358,132 @@ func TestBYOCIngress_DisabledRebuildIsUnchanged(t *testing.T) {
 		t.Errorf("rebuilt srv0.listen = %v, want exactly [:80 :443] when BYOC ingress is off", got)
 	}
 }
+
+// --- HTTP server must not reclaim :443 while L4 owns it (#1743) ---
+//
+// L4ProxyManager.ActivateL4 moves the HTTP server off :443 onto :8443 (see
+// l4_proxy.go's moveHTTPServerOff443) so its layer4 app can own :443
+// exclusively — it has to see every connection to inspect SNI before
+// routing. Before this fix, listenAddrs() named :443 unconditionally, so
+// the very next EnsureServerConfig (a plain daemon restart is enough) saw
+// it "missing" from the HTTP server and added it back. With both servers
+// bound to :443, the kernel load-balances new connections between them:
+// roughly half of them land on the HTTP server, which has no route or
+// certificate for an SNI-passthrough-only hostname, and the client sees a
+// bare TLS handshake failure — intermittent and silent at the application
+// level.
+
+// activeL4Config returns a Caddy config with an active layer4 app (as
+// ActivateL4 would leave it) and an HTTP server whose listen set is
+// caller-supplied, so a test can set up the "already correctly off :443"
+// starting point without going through the full activation flow.
+func activeL4Config(httpListen []string) map[string]interface{} {
+	return map[string]interface{}{
+		"apps": map[string]interface{}{
+			"http": map[string]interface{}{
+				"servers": map[string]interface{}{
+					DefaultCaddyServerName: map[string]interface{}{
+						"listen": toAnySlice(httpListen),
+						"routes": []interface{}{},
+					},
+				},
+			},
+			"layer4": map[string]interface{}{
+				"servers": map[string]interface{}{
+					L4ServerName: map[string]interface{}{
+						"listen": []interface{}{":443"},
+					},
+				},
+			},
+			"tls": map[string]interface{}{"automation": map[string]interface{}{"policies": []interface{}{}}},
+		},
+	}
+}
+
+// listenSetFromConfig reads back a named server's listen array directly from
+// the fake's current config tree, with no rebuild — unlike
+// listenSetFromRebuild, the point here is to observe whether
+// EnsureServerConfig changed anything at all.
+func listenSetFromConfig(t *testing.T, fc *rwFakeCaddy, serverName string) []string {
+	t.Helper()
+	srvNode := getMapField(getMapField(getMapField(getMapField(fc.config, "apps"), "http"), "servers"), serverName)
+	if srvNode == nil {
+		t.Fatalf("expected server %q present in config", serverName)
+	}
+	raw, ok := srvNode["listen"].([]interface{})
+	if !ok {
+		t.Fatalf("%s.listen is not a list: %T", serverName, srvNode["listen"])
+	}
+	out := make([]string, 0, len(raw))
+	for _, v := range raw {
+		out = append(out, v.(string))
+	}
+	return out
+}
+
+func TestListenAddrs_ExcludesL443WhenL4Active(t *testing.T) {
+	srv, _ := newRWFakeCaddy(activeL4Config([]string{":80", ":8443"}))
+	defer srv.Close()
+	pm := NewProxyManager(srv.URL, "containarium.dev")
+
+	got := pm.listenAddrs()
+	if len(got) != 1 || got[0] != ":80" {
+		t.Fatalf("listenAddrs() = %v, want [:80] — L4 owns :443, the HTTP server must not claim it too", got)
+	}
+}
+
+func TestEnsureServerConfig_DoesNotReclaim443WhenL4Active(t *testing.T) {
+	srv, fc := newRWFakeCaddy(activeL4Config([]string{":80", ":8443"}))
+	defer srv.Close()
+	pm := NewProxyManager(srv.URL, "containarium.dev")
+
+	if err := pm.EnsureServerConfig(); err != nil {
+		t.Fatalf("EnsureServerConfig: %v", err)
+	}
+
+	got := listenSetFromConfig(t, fc, DefaultCaddyServerName)
+	if len(got) != 2 || got[0] != ":80" || got[1] != ":8443" {
+		t.Fatalf("srv0.listen after EnsureServerConfig = %v, want unchanged [:80 :8443] — :443 must not be reclaimed while L4 owns it", got)
+	}
+	if fc.puts != 0 || fc.loads != 0 {
+		t.Errorf("EnsureServerConfig wrote to Caddy (%d puts, %d loads) though nothing needed to change", fc.puts, fc.loads)
+	}
+}
+
+// Contrast case: the same "srv0 missing :443" starting shape as above, but
+// no layer4 app at all — this really is an ordinary drift that
+// EnsureServerConfig should still repair, proving the fix didn't
+// overcorrect into never restoring :443 at all.
+func TestEnsureServerConfig_StillReclaims443WhenL4NotActive(t *testing.T) {
+	cfg := map[string]interface{}{
+		"apps": map[string]interface{}{
+			"http": map[string]interface{}{
+				"servers": map[string]interface{}{
+					DefaultCaddyServerName: map[string]interface{}{
+						"listen": []interface{}{":80"},
+						"routes": []interface{}{},
+					},
+				},
+			},
+			"tls": map[string]interface{}{"automation": map[string]interface{}{"policies": []interface{}{}}},
+		},
+	}
+	srv, fc := newRWFakeCaddy(cfg)
+	defer srv.Close()
+	pm := NewProxyManager(srv.URL, "containarium.dev")
+
+	if err := pm.EnsureServerConfig(); err != nil {
+		t.Fatalf("EnsureServerConfig: %v", err)
+	}
+
+	got := listenSetFromConfig(t, fc, DefaultCaddyServerName)
+	found443 := false
+	for _, a := range got {
+		if a == ":443" {
+			found443 = true
+		}
+	}
+	if !found443 {
+		t.Errorf("srv0.listen after EnsureServerConfig = %v, want :443 restored — L4 isn't active, so nothing else owns it", got)
+	}
+}

@@ -677,6 +677,11 @@ func TestProxyManager_EnsureHTTPApp_AcceptsExistingConfigWithHandlers(t *testing
 			_, _ = w.Write([]byte(`{"automation":{"policies":[]}}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/config/apps/http/servers/srv0":
 			_, _ = w.Write([]byte(`{"listen":[":80",":443"]}`))
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/config/apps/layer4/servers/"):
+			// #1743: listenAddrs() checks live L4 state on every call. No
+			// layer4 app configured in this test's Caddy — 404, matching
+			// what a real Caddy returns for a path that doesn't exist.
+			w.WriteHeader(http.StatusNotFound)
 		default:
 			t.Logf("unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusOK)

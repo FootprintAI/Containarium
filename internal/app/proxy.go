@@ -155,11 +155,46 @@ func (p *ProxyManager) BYOCIngressAddr() string { return p.byocIngressAddr }
 // createServerConfig, both reached by the #400 self-heal rebuild — agrees, so a
 // Caddy revert-and-rebuild doesn't silently drop the ingress listener.
 func (p *ProxyManager) listenAddrs() []string {
-	addrs := []string{":80", ":443"}
+	addrs := []string{":80"}
+	// #1743: when L4ProxyManager has activated SNI passthrough on this
+	// host, it has already moved the HTTP server off :443 onto :8443 (see
+	// l4_proxy.go's moveHTTPServerOff443) so the layer4 app can own :443
+	// exclusively — it has to see every connection to inspect SNI before
+	// routing. Including :443 here anyway doesn't just leave it unused: on
+	// the next EnsureServerConfig/addMissingListenAddrs reconcile (a plain
+	// daemon restart is enough), it gets ADDED BACK to the HTTP server's
+	// listen list, so both servers end up bound to :443 and the kernel
+	// load-balances new connections between them — roughly half land on
+	// the HTTP server, which has no route for an SNI-passthrough-only
+	// hostname, and the client sees a bare TLS handshake failure. Checking
+	// live L4 state here, rather than caching a flag that could drift
+	// from what L4ProxyManager (a separate, independently-reconciled
+	// manager) actually has live, is what keeps this correct across a
+	// restart.
+	if !p.l4Active() {
+		addrs = append(addrs, ":443")
+	}
 	if p.byocIngressAddr != "" {
 		addrs = append(addrs, p.byocIngressAddr)
 	}
 	return addrs
+}
+
+// l4Active reports whether this host's Caddy currently has an active
+// layer4 SNI-passthrough server (#1743) by asking L4ProxyManager — the one
+// piece of code that actually knows the shape of that app — rather than
+// re-deriving the check here. ProxyManager and L4ProxyManager are separate,
+// independently-activated managers over the same Caddy admin API with no
+// shared state, so this queries the live config each time instead of
+// caching a flag that could go stale the moment L4 is activated or
+// deactivated out from under this ProxyManager.
+//
+// Fails as "not active" (the pre-existing behavior: :443 stays in the HTTP
+// server's own listen list) on any admin-API error — the same posture
+// EnsureServerConfig's own reachability checks already take elsewhere in
+// this file.
+func (p *ProxyManager) l4Active() bool {
+	return NewL4ProxyManager(p.caddyAdminURL).IsL4Active()
 }
 
 // SetServerName sets the Caddy server name (useful when Caddy uses a custom server name)
