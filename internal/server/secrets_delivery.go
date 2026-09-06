@@ -17,9 +17,11 @@ import (
 // both representations.
 
 // deliveryToProto maps a storage delivery string onto the enum. An empty
-// string means "unset" at the storage layer, which the store normalizes to
-// env — so it maps to ENV rather than UNSPECIFIED, keeping the enum a
-// faithful view of what will actually happen.
+// string only occurs on a legacy row predating the delivery column
+// (#1604's new default, file, is always written explicitly for anything
+// set since) — those rows were actually stamped as env, so "" maps to ENV
+// rather than UNSPECIFIED, keeping the enum a faithful view of what
+// already happened rather than what a fresh Set would do today.
 func deliveryToProto(s string) pb.SecretDelivery {
 	switch s {
 	case secrets.DeliveryFile:

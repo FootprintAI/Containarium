@@ -26,8 +26,8 @@ type SecretMetadata struct {
 	CreatedAt time.Time
 	UpdatedAt time.Time
 
-	// Phase 4.3 — delivery mode. "env" (default) or "file".
-	// Phase A lands the field; Phase B switches the stamping
+	// Phase 4.3 — delivery mode: "env", "file" (default since #1604), or
+	// "compose". Phase A lands the field; Phase B switches the stamping
 	// path to honor it. See docs/security/SECRETS-ENV-VAR-RISK.md.
 	Delivery string
 }
@@ -46,9 +46,9 @@ const (
 	DeliveryCompose = "compose"
 )
 
-// ValidateDelivery returns nil for "" (defaults to env at the storage
-// layer), "env", "file", or "compose". Anything else is caller-error
-// and rejected at the API boundary.
+// ValidateDelivery returns nil for "" (defaults to file at the storage
+// layer — #1604), "env", "file", or "compose". Anything else is
+// caller-error and rejected at the API boundary.
 func ValidateDelivery(mode string) error {
 	switch mode {
 	case "", DeliveryEnv, DeliveryFile, DeliveryCompose:
@@ -282,8 +282,8 @@ func (s *Store) initSchema(ctx context.Context) error {
 // populated. Otherwise it writes a legacy row exactly as before
 // Phase 4.1 — wrapped_dek and kek_id stay NULL.
 //
-// `delivery` (Phase 4.3) is one of "" (defaults to env on storage),
-// "env", "file". Validated at the API boundary; invalid values
+// `delivery` (Phase 4.3) is one of "" (defaults to file on storage — #1604),
+// "env", "file", "compose". Validated at the API boundary; invalid values
 // reject before any DB work.
 func (s *Store) Set(ctx context.Context, username, name, value, delivery string) (*SecretMetadata, error) {
 	if username == "" {
@@ -303,11 +303,30 @@ func (s *Store) Set(ctx context.Context, username, name, value, delivery string)
 	if err := ValidateValueForDelivery(delivery, value); err != nil {
 		return nil, err
 	}
-	// Storage layer normalizes "" → "env" so the column is
-	// always populated. Lets future migration code rely on
-	// the field being non-empty.
-	if delivery == "" {
-		delivery = DeliveryEnv
+	// explicit is the caller's ORIGINAL argument, empty or not — kept
+	// separate from the resolved value below so a value rotation that
+	// doesn't repeat its delivery choice can be told apart, in SQL, from
+	// one that does. Losing that distinction would mean any rotation of
+	// an existing env secret that omits --delivery silently reclassifies
+	// it as file the moment this default flips — the app reading
+	// os.Getenv would stop seeing the new value with no error anywhere,
+	// exactly the kind of silent, persisted config loss #1671 already
+	// burned this codebase on for a different field.
+	explicit := delivery
+	// Storage layer normalizes "" → "file" for a genuinely NEW row so the
+	// column is always populated. #1604: env was the unspecified default
+	// for a secret any same-container process can read via
+	// /proc/<pid>/environ, AND the one Incus itself prints in cleartext
+	// (`incus config show`) — a deployment fully migrated to envelope
+	// encryption at rest could still leak every secret through this
+	// path, because the two never interacted. file (0440 root:<tenant>
+	// on tmpfs, absent from the Incus config entirely) closes both, and
+	// is the default an operator gets without having to know to ask for
+	// it. env remains fully supported and selectable via --delivery for
+	// apps that only read os.Getenv.
+	resolved := delivery
+	if resolved == "" {
+		resolved = DeliveryFile
 	}
 
 	nonce, ct, wrappedDEK, kekID, err := s.encryptForStorage(ctx, username, name, []byte(value))
@@ -319,6 +338,12 @@ func (s *Store) Set(ctx context.Context, username, name, value, delivery string)
 	// rotate in a single round-trip. The version bumps on every
 	// rotation; the row's created_at stays as the original
 	// (set-once-ever timestamp), updated_at moves to NOW().
+	//
+	// delivery's CASE: an unspecified ($8 = '') rotation preserves
+	// whatever the row already had — only an EXPLICIT delivery argument
+	// changes an existing row's mode. A brand-new row (the INSERT branch,
+	// no conflict) always gets `resolved`, which is `explicit` when given
+	// or file otherwise.
 	const q = `
 		INSERT INTO secrets (username, name, nonce, ciphertext, wrapped_dek, kek_id, delivery, version)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, 1)
@@ -328,14 +353,16 @@ func (s *Store) Set(ctx context.Context, username, name, value, delivery string)
 			ciphertext  = EXCLUDED.ciphertext,
 			wrapped_dek = EXCLUDED.wrapped_dek,
 			kek_id      = EXCLUDED.kek_id,
-			delivery    = EXCLUDED.delivery,
+			delivery    = CASE WHEN $8 = '' THEN secrets.delivery ELSE EXCLUDED.delivery END,
 			version     = secrets.version + 1,
 			updated_at  = NOW()
-		RETURNING version, created_at, updated_at;
+		RETURNING version, created_at, updated_at, delivery;
 	`
 	var version int32
 	var createdAt, updatedAt time.Time
-	if err := s.pool.QueryRow(ctx, q, username, name, nonce, ct, wrappedDEK, kekID, delivery).Scan(&version, &createdAt, &updatedAt); err != nil {
+	var finalDelivery string
+	if err := s.pool.QueryRow(ctx, q, username, name, nonce, ct, wrappedDEK, kekID, resolved, explicit).
+		Scan(&version, &createdAt, &updatedAt, &finalDelivery); err != nil {
 		return nil, fmt.Errorf("upsert secret: %w", err)
 	}
 	return &SecretMetadata{
@@ -344,7 +371,7 @@ func (s *Store) Set(ctx context.Context, username, name, value, delivery string)
 		Version:   version,
 		CreatedAt: createdAt,
 		UpdatedAt: updatedAt,
-		Delivery:  delivery,
+		Delivery:  finalDelivery,
 	}, nil
 }
 

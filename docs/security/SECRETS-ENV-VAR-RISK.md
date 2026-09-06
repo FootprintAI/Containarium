@@ -1,20 +1,34 @@
 # Container Env-Var Introspection Risk (Audit C-MED-4)
 
-This is a design note about how Containarium currently delivers tenant
-secrets into containers, the risk that comes with it, and the
-tmpfs-mount alternative we plan to offer as opt-in.
+This is a design note about how Containarium delivers tenant secrets
+into containers, the risk that comes with the env-var path, and the
+tmpfs-mount (`file` delivery) alternative that closes it.
 
-## Today: env-var stamping
+## Today: file delivery is the default; env-var stamping remains available (#1604)
 
-`internal/server/secrets_server.go:stampSecretsOnLXC` calls
-`incus config set environment.<NAME>=<value>` for every secret a tenant
-owns. The values land in the LXC's Incus config; on the next container
-start (or `RefreshSecrets` call) they become environment variables of
-the container's init process (`PID 1`) and inherit into every child
+A `SetSecret` with no delivery specified now gets `file` — the
+tmpfs-mount path described below — rather than env-var stamping.
+Existing rows keep whatever mode they were written with; nothing is
+migrated retroactively, and a value rotation that doesn't repeat an
+explicit `--delivery` preserves the row's current mode rather than
+silently reclassifying it.
+
+`env` remains fully supported and selectable via
+`containarium secrets set <user> <NAME> <value> --delivery env` — some
+apps only read `os.Getenv` and nothing else, and this document's risk
+analysis of that path is unchanged; it's just no longer what a caller
+gets without asking for it.
+
+When `env` delivery is in effect, `internal/server/secrets_server.go:stampSecretsOnLXC`
+calls `incus config set environment.<NAME>=<value>` for that secret.
+The value lands in the LXC's Incus config; on the next container start
+(or `RefreshSecrets` call) it becomes an environment variable of the
+container's init process (`PID 1`) and inherits into every child
 process via `execve(2)`.
 
-The app code reads them as `os.Getenv("OPENAI_API_KEY")` or whatever's
-idiomatic in its language — convenient, language-agnostic, no SDK.
+The app code reads it as `os.Getenv("OPENAI_API_KEY")` or whatever's
+idiomatic in its language — convenient, language-agnostic, no SDK, and
+the reason `env` remains available rather than being removed.
 
 ## What "in env" means in practice
 
@@ -94,7 +108,7 @@ the tmpfs alternative:
    `containarium secret set` (which versions in place) means an
    exposed secret has a bounded blast radius.
 
-## Future: tmpfs-mount alternative (planned, not yet implemented)
+## The tmpfs-mount alternative (`file` delivery — shipped, now the default)
 
 The cleanest mitigation is to stop putting secrets in env entirely:
 
@@ -119,18 +133,18 @@ Costs:
   support `<SECRET>_FILE` env-var conventions (Postgres password,
   Vault sidecars, Docker Compose secrets) work with no code change —
   set `PGPASSWORD_FILE=/run/secrets/PGPASSWORD` instead of
-  `PGPASSWORD=…`.
-- Operator UX: a second toggle on `containarium secret set`
-  (`--delivery=env|file`, opt-in to file mode).
+  `PGPASSWORD=…`. Apps that only read `os.Getenv` need
+  `--delivery env` instead — see the "Today" section above.
 - One more code path on the daemon (mount management, file rotation
   on `RefreshSecrets`).
 
-The plan is to offer this as **opt-in alongside** the env-var path,
-not as a replacement. Operators choose per-tenant or per-secret. The
-default stays env-stamping for backwards compatibility; new
-deployments are encouraged to use file mode for high-risk values.
+This ships **alongside** the env-var path, not as a replacement —
+`env` stays fully supported and selectable per-tenant or per-secret via
+`--delivery env`. It's the default (#1604) rather than opt-in, because
+the risk this section describes applies whether or not an operator
+knew to ask for the alternative.
 
-### Status: shipped through Phase B-2
+### Status: shipped through Phase B-2, default flipped in #1604
 
 - **Phase A** (PR #274): the `delivery` field is plumbed
   through proto / Store / CLI. Operators can set it via

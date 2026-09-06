@@ -120,6 +120,79 @@ func TestSecretsStore_Roundtrip(t *testing.T) {
 	}
 }
 
+// #1604 — env was the unspecified default: any process in the same
+// container that can read /proc/<pid>/environ sees every secret, and Incus
+// itself prints it in cleartext (`incus config show`). file closes both and
+// is now what a caller gets without asking for it by name; env stays fully
+// supported and selectable via an explicit delivery argument.
+func TestSecretsStore_DeliveryDefaultsToFile(t *testing.T) {
+	dsn := os.Getenv("CONTAINARIUM_TEST_DSN")
+	if dsn == "" {
+		t.Skip("set CONTAINARIUM_TEST_DSN to run this against Postgres (the store-integration lane does)")
+	}
+
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect Postgres: %v", err)
+	}
+	defer pool.Close()
+
+	key := make([]byte, corecrypto.MasterKeySize)
+	for i := range key {
+		key[i] = byte(i)
+	}
+	cipher, err := corecrypto.NewCipher(key)
+	if err != nil {
+		t.Fatalf("NewCipher: %v", err)
+	}
+	store, err := NewStore(ctx, pool, cipher)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	const user = "store-delivery-default-test-user"
+	_, _ = pool.Exec(ctx, "DELETE FROM secrets WHERE username = $1", user)
+
+	t.Run("unspecified delivery becomes file", func(t *testing.T) {
+		meta, err := store.Set(ctx, user, "UNSPECIFIED_DELIVERY", "v1", "")
+		if err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+		if meta.Delivery != DeliveryFile {
+			t.Errorf("Delivery = %q, want %q (#1604's new default)", meta.Delivery, DeliveryFile)
+		}
+	})
+
+	t.Run("explicit env is still honored, not upgraded to file", func(t *testing.T) {
+		meta, err := store.Set(ctx, user, "EXPLICIT_ENV", "v1", DeliveryEnv)
+		if err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+		if meta.Delivery != DeliveryEnv {
+			t.Errorf("Delivery = %q, want %q — an explicit choice must not be overridden", meta.Delivery, DeliveryEnv)
+		}
+	})
+
+	t.Run("a rotation with unspecified delivery keeps the row's existing mode, not the new default", func(t *testing.T) {
+		// Set (env) then rotate the value without repeating the delivery
+		// argument — the same shape a caller upgrading nothing but the
+		// value would use. Silently flipping delivery on an unrelated
+		// value rotation would be exactly the kind of surprise #1671
+		// (issuer replacement) already burned this codebase on once.
+		if _, err := store.Set(ctx, user, "ROTATED_ENV", "v1", DeliveryEnv); err != nil {
+			t.Fatalf("initial Set: %v", err)
+		}
+		meta, err := store.Set(ctx, user, "ROTATED_ENV", "v2", "")
+		if err != nil {
+			t.Fatalf("rotation Set: %v", err)
+		}
+		if meta.Delivery != DeliveryEnv {
+			t.Errorf("Delivery after rotation = %q, want %q preserved from the original Set", meta.Delivery, DeliveryEnv)
+		}
+	})
+}
+
 func TestSecretsStore_NilArgsRejected(t *testing.T) {
 	ctx := context.Background()
 	key := make([]byte, corecrypto.MasterKeySize)

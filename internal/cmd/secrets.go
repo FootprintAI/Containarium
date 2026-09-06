@@ -266,9 +266,14 @@ func runSecretsList(cmd *cobra.Command, args []string) error {
 		fmt.Printf("(no secrets for %s)\n", username)
 		return nil
 	}
-	fmt.Printf("%-32s %-8s %s\n", "NAME", "VERSION", "UPDATED")
+	// #1604 — delivery mode was already on SecretMetadata but never
+	// surfaced here, so an operator had no way to see which of their
+	// secrets are still in the env (Incus-config-visible) mode short of
+	// reading the daemon's own database.
+	fmt.Printf("%-32s %-8s %-9s %s\n", "NAME", "VERSION", "DELIVERY", "UPDATED")
 	for _, row := range list {
-		fmt.Printf("%-32s %-8d %s\n", row.GetName(), row.GetVersion(), strings.TrimSuffix(row.GetUpdatedAt(), "Z"))
+		fmt.Printf("%-32s %-8d %-9s %s\n", row.GetName(), row.GetVersion(),
+			secretDeliveryLabel(row.GetDeliveryMode()), strings.TrimSuffix(row.GetUpdatedAt(), "Z"))
 	}
 	return nil
 }

@@ -121,9 +121,12 @@ refresh` pushes the current store to a running box without a restart.
 `/run/containarium/secrets.env` (tmpfs); `--delivery file` writes one file per
 secret at `/run/secrets/<NAME>` if you'd rather read them individually.
 
-### Why not the default `env` delivery
+### Why not `env` delivery
 
-The default (`--delivery env`) stamps `environment.<NAME>=<value>` on the LXC.
+`--delivery env` stamps `environment.<NAME>=<value>` on the LXC (no longer
+the default since #1604, but still fully supported and worth naming
+explicitly here since it's the one delivery mode that looks like it should
+work for an SSH session and doesn't).
 That reaches container-start processes and nested docker/compose apps — but
 **not an SSH shell session**, which is where pi runs. The login path rebuilds
 the environment from scratch (`sshd` → the box's login wrapper → `su -` →
