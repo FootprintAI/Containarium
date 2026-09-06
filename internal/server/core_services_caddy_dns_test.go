@@ -135,7 +135,20 @@ func (b *fakeCaddyDNSBackend) Exec(_ string, command []string) error {
 	return b.execErr
 }
 
+// stubDNSProviderVerification disables the (real, network-calling)
+// credential verifier for the duration of a test. These reconcile tests
+// exercise propagation/reconcile logic — whether a fake test token happens
+// to be accepted by a live third-party API is #1739's own concern, covered
+// by internal/app's tests against a fake server, not this package's.
+func stubDNSProviderVerification(t *testing.T) {
+	t.Helper()
+	original := verifyDNSProviderCredentialFn
+	verifyDNSProviderCredentialFn = func(map[string]string) {}
+	t.Cleanup(func() { verifyDNSProviderCredentialFn = original })
+}
+
 func TestReconcileCaddyDNSEnv_NoOpWhenAlreadyInSync(t *testing.T) {
+	stubDNSProviderVerification(t)
 	t.Setenv("CONTAINARIUM_ACME_DNS_PROVIDER", "cloudflare")
 	t.Setenv("CONTAINARIUM_ACME_DNS_PROVIDER_CONFIG", "")
 	t.Setenv("CF_API_TOKEN", "real-token-value")
@@ -156,6 +169,7 @@ func TestReconcileCaddyDNSEnv_NoOpWhenAlreadyInSync(t *testing.T) {
 }
 
 func TestReconcileCaddyDNSEnv_WritesAndRestartsWhenCredentialAppears(t *testing.T) {
+	stubDNSProviderVerification(t)
 	// The exact #1597 scenario: an operator sets CONTAINARIUM_ACME_DNS_PROVIDER
 	// (and the credential) on an ALREADY-provisioned host — setupCaddy already
 	// ran once, long ago, with no DNS-01 configured at all.
@@ -193,6 +207,7 @@ func TestReconcileCaddyDNSEnv_WritesAndRestartsWhenCredentialAppears(t *testing.
 // partial/corrupt state), and this is the visibility #1597 asks for even
 // when there is nothing to write yet.
 func TestReconcileCaddyDNSEnv_LogsAndDoesNotWriteWhenCredentialUnset(t *testing.T) {
+	stubDNSProviderVerification(t)
 	t.Setenv("CONTAINARIUM_ACME_DNS_PROVIDER", "cloudflare")
 	t.Setenv("CONTAINARIUM_ACME_DNS_PROVIDER_CONFIG", "")
 	t.Setenv("CF_API_TOKEN", "")
@@ -212,5 +227,50 @@ func TestReconcileCaddyDNSEnv_LogsAndDoesNotWriteWhenCredentialUnset(t *testing.
 	}
 	if len(backend.execCalls) != 0 {
 		t.Errorf("Exec was called though nothing changed: %v", backend.execCalls)
+	}
+}
+
+// #1739 — resolveDNSProviderCredential (used by both setupCaddy and
+// reconcileCaddyDNSEnv) must hand the resolved credential map to the
+// verifier, and only when something actually resolved.
+func TestResolveDNSProviderCredential_CallsVerifierWithResolvedCredential(t *testing.T) {
+	t.Setenv("CONTAINARIUM_ACME_DNS_PROVIDER", "cloudflare")
+	t.Setenv("CONTAINARIUM_ACME_DNS_PROVIDER_CONFIG", "")
+	t.Setenv("CF_API_TOKEN", "a-real-looking-token")
+
+	var gotCalls []map[string]string
+	original := verifyDNSProviderCredentialFn
+	verifyDNSProviderCredentialFn = func(present map[string]string) { gotCalls = append(gotCalls, present) }
+	t.Cleanup(func() { verifyDNSProviderCredentialFn = original })
+
+	got := resolveDNSProviderCredential()
+
+	if len(gotCalls) != 1 {
+		t.Fatalf("verifier called %d times, want 1", len(gotCalls))
+	}
+	if gotCalls[0]["CF_API_TOKEN"] != "a-real-looking-token" {
+		t.Errorf("verifier called with %v, want CF_API_TOKEN=a-real-looking-token", gotCalls[0])
+	}
+	if got["CF_API_TOKEN"] != "a-real-looking-token" {
+		t.Errorf("resolveDNSProviderCredential returned %v", got)
+	}
+}
+
+// resolveDNSProviderCredential always calls through to the verifier — it's
+// verifyDNSProviderCredential's own job to no-op on an empty/unconfigured
+// case (covered directly by internal/app's tests) rather than duplicating
+// that decision here.
+func TestResolveDNSProviderCredential_CallsVerifierEvenWithNothingResolved(t *testing.T) {
+	t.Setenv("CONTAINARIUM_ACME_DNS_PROVIDER", "")
+
+	var gotCalls []map[string]string
+	original := verifyDNSProviderCredentialFn
+	verifyDNSProviderCredentialFn = func(present map[string]string) { gotCalls = append(gotCalls, present) }
+	t.Cleanup(func() { verifyDNSProviderCredentialFn = original })
+
+	resolveDNSProviderCredential()
+
+	if len(gotCalls) != 1 || len(gotCalls[0]) != 0 {
+		t.Errorf("verifier calls = %v, want exactly one call with an empty map", gotCalls)
 	}
 }

@@ -556,8 +556,7 @@ func (cs *CoreServices) setupCaddy(ctx context.Context, baseDomain string) error
 	// Create systemd service for Caddy. Injects one Environment= line per
 	// DNS-01 provider credential Caddy needs to expand from ITS OWN process
 	// environment — see caddyServiceUnit (#1597).
-	present, missing := caddyDNSProviderEnv()
-	logMissingDNSProviderCredentials(missing)
+	present := resolveDNSProviderCredential()
 	systemdUnit := caddyServiceUnit(present)
 	if err := cs.incusClient.WriteFile(CoreCaddyContainer, "/etc/systemd/system/caddy.service", []byte(systemdUnit), "0644"); err != nil {
 		return fmt.Errorf("failed to write caddy service: %w", err)
@@ -620,6 +619,54 @@ func logMissingDNSProviderCredentials(missing []string) {
 	}
 }
 
+// verifyDNSProviderCredentialFn is a var, not a plain call, so tests that
+// exercise reconcileCaddyDNSEnv's propagation/reconcile logic (unrelated to
+// verification) can stub it out — without this seam every such test would
+// make a real network call to whatever provider API a test token happens to
+// name, which is slow, flaky, and points at a live third party.
+var verifyDNSProviderCredentialFn = verifyDNSProviderCredential
+
+// verifyDNSProviderCredential authenticates the resolved DNS-01 credential
+// against its own provider's API (#1739) — a credential can be present,
+// non-empty, and correctly propagated (#1738) and still be revoked,
+// expired, or simply wrong. Non-fatal, same as the presence check: an
+// ERROR log on rejection, an INFO note when no built-in verifier exists for
+// this provider, and — per #1739's own acceptance criterion — nothing at
+// all when the credential is confirmed valid.
+func verifyDNSProviderCredential(present map[string]string) {
+	provider := app.DNSProviderFromEnv()
+	if provider == "" || len(present) == 0 {
+		return // no DNS-01 configured, or nothing resolved to check (#1738 already reported that)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	attempted, err := app.VerifyDNSProviderCredential(ctx, provider, present)
+	if !attempted {
+		log.Printf("INFO: no built-in credential verification for DNS-01 provider %q — presence and "+
+			"propagation to Caddy were confirmed (#1738), but validity against the provider's own API "+
+			"is unchecked (#1739)", provider)
+		return
+	}
+	if err != nil {
+		log.Printf("ERROR: DNS-01 provider %q rejected its configured credential: %v — wildcard/DNS-01 "+
+			"certificate issuance will fail until this is fixed (#1739)", provider, err)
+	}
+}
+
+// resolveDNSProviderCredential resolves the DNS-01 provider's {env.VAR}
+// placeholders against the daemon's own environment, reports any that are
+// missing (#1738), and — for a provider with a built-in verifier — checks
+// the resolved credential is actually accepted (#1739). Returns the
+// resolved map for the caller to inject into Caddy's systemd environment.
+// Shared by setupCaddy (first provisioning) and reconcileCaddyDNSEnv (every
+// subsequent daemon start) so both paths get the same checks.
+func resolveDNSProviderCredential() map[string]string {
+	present, missing := caddyDNSProviderEnv()
+	logMissingDNSProviderCredentials(missing)
+	verifyDNSProviderCredentialFn(present)
+	return present
+}
+
 // caddyServiceUnit renders the containarium-core-caddy systemd unit, adding
 // one Environment= line per resolved DNS-01 provider credential so Caddy's
 // own process can actually expand the {env.VAR} placeholders the daemon's
@@ -671,9 +718,7 @@ WantedBy=multi-user.target
 // common case, every daemon startup, is a ReadFile and a string compare.
 // Called from both of EnsureCaddy's "container already exists" paths.
 func (cs *CoreServices) reconcileCaddyDNSEnv() {
-	present, missing := caddyDNSProviderEnv()
-	logMissingDNSProviderCredentials(missing)
-
+	present := resolveDNSProviderCredential()
 	desired := caddyServiceUnit(present)
 	if current, err := cs.incusClient.ReadFile(CoreCaddyContainer, "/etc/systemd/system/caddy.service"); err == nil && string(current) == desired {
 		return
