@@ -24,9 +24,13 @@ RUN go mod download
 COPY . .
 # CGO_ENABLED=0 → a fully static binary (matches make build-release). The k8s
 # backend has no build tag on non-test sources, so a plain build includes it.
+# #1773: cmd/containarium is the client-only build now (//go:build
+# containarium_client); the full daemon this image ships is cmd/containariumd,
+# untagged, unchanged from what this Dockerfile always built. Output name
+# stays `containarium` — no observable change to the image's own binary path.
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
     -ldflags="-s -w -X github.com/footprintai/containarium/pkg/version.Version=${VERSION}" \
-    -o /out/containarium ./cmd/containarium
+    -o /out/containarium ./cmd/containariumd
 
 # --- runtime ---------------------------------------------------------------
 FROM debian:bookworm-slim
