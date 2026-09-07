@@ -1,0 +1,108 @@
+name: CLI client/server split gates
+
+# Pins the guarantee docs/architecture/cli-client-server-split.md (#1769)
+# exists for: the containarium CLIENT (cmd/containarium, -tags
+# containarium_client) cannot fall into local mode because the code isn't
+# there to fall into. Four checks, all from the design's Test strategy
+# section:
+#   1. dependency-graph gate — the client's link is free of daemon-only
+#      packages (scripts/test-cli-split-deps.sh)
+#   2. command-tree allow-list gate — the client's registered command set
+#      matches a checked-in golden list exactly
+#   3. untagged-build parity — containariumd's tree is a strict superset of
+#      that golden list (the split never *loses* a command server-side)
+#   4. both tag sets build and go test clean
+#
+# Regression guard on MCP: build-mcp/build-agent-box already exist as
+# their own CI concerns elsewhere (release.yml's build-release covers
+# them) and are UNAFFECTED by this split — internal/mcp defines its own
+# API interface backed by internal/client, never imports internal/cmd, so
+# neither cmd/mcp-server nor cmd/agent-box needed a line changed here.
+# Nothing to add to this workflow for them; recorded so the next person
+# doesn't assume a gap.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-graph:
+    name: Dependency-graph gate (containarium_client)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.6'
+
+      - name: Run test-cli-split-deps.sh
+        run: ./scripts/test-cli-split-deps.sh
+
+  build-both-binaries:
+    name: Build both binaries (containarium client + containariumd)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.6'
+
+      - name: Build containarium (client)
+        run: CGO_ENABLED=0 go build -tags containarium_client -o /dev/null ./cmd/containarium
+
+      - name: Build containariumd (server, today's binary)
+        run: go build -o /dev/null ./cmd/containariumd
+
+      - name: Untagged cmd/containarium must fail to build
+        # Pins #1773's other half: a bare `go build ./cmd/containarium`
+        # (no tag) must fail with "build constraints exclude all Go
+        # files", not silently produce a full-surface binary under the
+        # client's name.
+        run: |
+          if go build -o /dev/null ./cmd/containarium 2>/tmp/err; then
+            echo "::error::untagged 'go build ./cmd/containarium' succeeded; it must fail"
+            exit 1
+          fi
+          grep -q "build constraints exclude all Go files" /tmp/err || {
+            echo "::error::unexpected failure reason:"; cat /tmp/err; exit 1;
+          }
+
+      - name: Windows cross-compile (client)
+        run: GOOS=windows GOARCH=amd64 go build -tags containarium_client -o /dev/null ./cmd/containarium
+
+  test-both-tag-sets:
+    name: go test ./internal/cmd/... (both tag sets)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.6'
+
+      - name: Test containariumd (default tags)
+        # Includes TestContainariumdCommandTree_SupersetOfClientGolden —
+        # the untagged-build parity gate.
+        run: go test -race -v ./internal/cmd/...
+
+      - name: Test containarium client (containarium_client tag)
+        # Includes TestClientCommandTree_MatchesGoldenAllowList — the
+        # command-tree allow-list gate — and TestHybridCommands_
+        # NoServer_NeverReachRealLocalMode / TestMovedServerCommands_
+        # ExitTwoNamingContainariumd from #1775/#1777.
+        run: go test -race -tags containarium_client -v ./internal/cmd/...

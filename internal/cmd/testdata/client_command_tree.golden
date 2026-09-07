@@ -1,0 +1,189 @@
+agent call
+agent enqueue
+agent get
+agent list
+agent run
+agent worker
+app delete
+app deploy
+app get
+app list
+app logs
+app restart
+app start
+app stop
+backends get
+backends list
+backends profile
+backends self-measurement
+backends upgrade
+backends validate-gpu
+backends versions
+backup create
+backup delete
+backup get
+backup list
+backup restore
+backup verify
+capacity advertise
+capacity get
+capacity withdraw
+cert generate
+cert generate-with-ca
+cluster create
+cluster delete
+cluster get
+cluster kubeconfig
+cluster list
+cluster node-pool
+cluster status
+code attach
+code install
+code run
+code status
+code stop
+compose disable
+compose discover
+compose enable
+compose status
+config get-token
+connect
+console
+create
+crew get
+crew list
+crew run
+crew status
+debug
+delete
+egress-via-client
+expose-port
+get
+info
+install-stack
+kms envelope-coverage
+kms migrate-to-envelope
+kms status
+label list
+label remove
+label set
+list
+login
+logout
+monitoring disable
+monitoring enable
+monitoring export disable
+monitoring export enable
+monitoring export status
+move
+moved:audit
+moved:cloud
+moved:collaborator
+moved:daemon
+moved:doctor
+moved:egress-relay
+moved:export
+moved:hosting
+moved:hypervisor-agent
+moved:image-bake
+moved:node
+moved:passthrough
+moved:portforward
+moved:recover
+moved:sentinel
+moved:service
+moved:sync-accounts
+moved:tunnel
+moved:upgrade-watchdog
+network-policy delete
+network-policy get
+network-policy list
+network-policy patch add
+network-policy patch list
+network-policy patch rm
+network-policy set
+network-policy signature add
+network-policy signature list
+network-policy signature rm
+passthrough-route add
+passthrough-route list
+passthrough-route remove
+pki generate-ca
+pool list
+protect
+prune
+push
+quickstart
+recipe deploy
+recipe get
+recipe list
+recipe workspace-access
+resize
+route add
+route delete
+route list
+runner list
+runner provision
+runner reconcile
+runner remove
+sandbox delete
+sandbox exec
+sandbox pool-status
+sandbox read-file
+sandbox spawn
+sandbox write-file
+scale-down disable
+scale-down enable
+scale-down status
+secrets clear-kms-key
+secrets delete
+secrets get
+secrets list
+secrets refresh
+secrets set
+secrets set-kms-key
+security bad-destinations add
+security bad-destinations list
+security bad-destinations remove
+security findings
+security findings list
+security findings resolve
+security sentry status
+security-findings
+security-remediate
+security-scan
+sleep
+snapshot create
+snapshot delete
+snapshot list
+snapshot rollback
+ssh list
+ssh propagate
+ssh remove
+ssh setup
+ssh-config show
+ssh-config sync
+sync
+token delegate
+token generate
+token inspect
+token list-revoked
+token refresh
+token revoke
+token unscoped-report
+traffic connections
+traffic history
+traffic summary
+ttl get
+ttl set
+ttl unset
+unprotect
+version
+volume attach
+volume create
+volume delete
+volume detach
+volume list
+wake
+whoami
+zap-install

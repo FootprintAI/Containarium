@@ -53,6 +53,7 @@ func init() {
 		rootCmd.AddCommand(&cobra.Command{
 			Use:                name,
 			Short:              name + " (moved to containariumd)",
+			Annotations:        map[string]string{movedStubAnnotation: "true"},
 			DisableFlagParsing: true, // accept any flags/subcommand args without cobra erroring first
 			Run: func(cmd *cobra.Command, args []string) {
 				fmt.Fprintln(os.Stderr, movedCommandMessage(name))
