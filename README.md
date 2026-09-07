@@ -100,6 +100,14 @@ containarium ssh-config sync
 ssh alice  # connects through the sentinel
 ```
 
+Running this from your own laptop against a remote server, rather than on
+the box itself? The bare form above only reaches a local Incus socket —
+add `--http --server <host:port>`:
+
+```bash
+containarium ssh-config sync --http --server <host:port>
+```
+
 ### 4. Point your agent at the box
 
 In `~/.cursor/mcp.json` or `~/.claude.json`:
@@ -586,6 +594,10 @@ containarium ssh-config show
 containarium ssh-config sync
 containarium ssh-config sync --sentinel sentinel.example.com  # via sentinel
 containarium ssh-config sync --identity ~/.ssh/containarium_ed25519
+
+# From a client machine, against a remote server (the bare form above
+# only reaches a local Incus socket)
+containarium ssh-config sync --http --server <host:port>
 ```
 
 ### Authentication

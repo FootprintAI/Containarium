@@ -48,6 +48,8 @@ var (
 	sentinelMetricsExport          bool
 	sentinelMetricsExportProject   string
 	sentinelMetricsExportInterval  int32
+	sentinelConsoleRouterAddr      string
+	sentinelConsoleRouterToken     string
 )
 
 var sentinelCmd = &cobra.Command{
@@ -78,6 +80,8 @@ func init() {
 	sentinelCmd.Flags().StringVar(&sentinelProvider, "provider", "gcp", "Cloud provider: \"gcp\", \"none\" (local testing), or \"tunnel\" (reverse tunnel)")
 	sentinelCmd.Flags().StringVar(&sentinelTunnelToken, "tunnel-token", "", "Pre-shared token for tunnel authentication, allowed for any pool (legacy; use --tunnel-token-policy for pool-restricted tokens, or CONTAINARIUM_TUNNEL_TOKEN env)")
 	sentinelCmd.Flags().StringSliceVar(&sentinelTunnelTokenPolicies, "tunnel-token-policy", nil, "Pool-restricted token in the form 'token=pool1,pool2'. Repeatable. Use '*' to mean any pool. Combined with --tunnel-token if both are provided.")
+	sentinelCmd.Flags().StringVar(&sentinelConsoleRouterAddr, "console-router-addr", "", "If set (host:port), run the console router — makes any connected tunnel spot's advertised port publicly reachable, gated by --console-router-token. Opt-in: unset means no console router runs. See FootprintAI/Containarium#1756.")
+	sentinelCmd.Flags().StringVar(&sentinelConsoleRouterToken, "console-router-token", "", "Pre-shared token authorizing console-router requests (or CONTAINARIUM_CONSOLE_ROUTER_TOKEN env). A separate, coarser credential from --tunnel-token — the real per-guest check happens downstream at the hypervisor-agent.")
 	sentinelCmd.Flags().StringVar(&sentinelSpotVM, "spot-vm", "", "Name of the backend VM instance (required for gcp provider)")
 	sentinelCmd.Flags().StringVar(&sentinelZone, "zone", "", "Cloud zone (required for gcp provider)")
 	sentinelCmd.Flags().StringVar(&sentinelProject, "project", "", "Cloud project ID (required for gcp provider)")
@@ -283,6 +287,9 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 			manager.InitBYOCRoutes(sentinel.DefaultBYOCRouteStorePath)
 			manager.SetTunnelPolicy(tunnelPolicy)
 			manager.SetHTTPSListener(connMux.HTTPSChanListener())
+			if err := maybeStartConsoleRouter(ctx, registry); err != nil {
+				return err
+			}
 
 			sigChan := make(chan os.Signal, 1)
 			signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -372,6 +379,9 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 		manager.InitBYOCRoutes(sentinel.DefaultBYOCRouteStorePath)
 		manager.SetTunnelPolicy(tunnelPolicy)
 		manager.SetHTTPSListener(connMux.HTTPSChanListener())
+		if err := maybeStartConsoleRouter(ctx, registry); err != nil {
+			return err
+		}
 
 		// Graceful shutdown on signals
 		sigChan := make(chan os.Signal, 1)
@@ -431,6 +441,33 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 
 	defer startSentinelMetricsExport(ctx, manager)()
 	return manager.Run(ctx)
+}
+
+// maybeStartConsoleRouter starts the console router (#1756) in the
+// background if --console-router-addr is set, using registry — the same
+// TunnelRegistry the tunnel server just populated. Opt-in: with no
+// --console-router-addr this is a silent no-op, so an existing sentinel
+// deployment doesn't need to configure anything new to keep working.
+func maybeStartConsoleRouter(ctx context.Context, registry *sentinel.TunnelRegistry) error {
+	if sentinelConsoleRouterAddr == "" {
+		return nil
+	}
+
+	token := sentinelConsoleRouterToken
+	if token == "" {
+		token = os.Getenv("CONTAINARIUM_CONSOLE_ROUTER_TOKEN")
+	}
+	if token == "" {
+		return fmt.Errorf("--console-router-token or CONTAINARIUM_CONSOLE_ROUTER_TOKEN is required when --console-router-addr is set")
+	}
+
+	router := sentinel.NewConsoleRouter(sentinelConsoleRouterAddr, sentinel.NewConsoleRouterPolicy(token), registry)
+	go func() {
+		if err := router.Run(ctx); err != nil {
+			log.Printf("[sentinel] console router error: %v", err)
+		}
+	}()
+	return nil
 }
 
 func parseForwardedPorts(s string) ([]int, error) {

@@ -71,29 +71,12 @@ func parseConsoleUsername(path string) string {
 	return parts[2]
 }
 
-// authorizeConsoleAccess reports whether claims may attach to
-// requestedUsername's console: the subject must own the tenant or hold the
-// admin role. Mirrors auth.AuthorizeTenant's decision exactly, adapted for
-// an already-validated *auth.Claims (the gRPC-context form AuthorizeTenant
-// reads doesn't exist on this HTTP/WebSocket upgrade path).
-func authorizeConsoleAccess(claims *auth.Claims, requestedUsername string) error {
-	if claims == nil {
-		return fmt.Errorf("no authenticated subject")
-	}
-	if auth.HasRole(claims.Roles, auth.RoleAdmin) {
-		return nil
-	}
-	if claims.Username != requestedUsername {
-		return fmt.Errorf("not authorized for this tenant")
-	}
-	return nil
-}
-
 // HandleConsole upgrades the request to a WebSocket and relays raw bytes
 // between the caller and the instance's serial console. Callers must
 // already be authenticated and tenant-authorized (see
-// authorizeConsoleAccess) — matching TerminalHandler's contract, that
-// check happens in the route registration closure, not here.
+// authorizeTenantWSAccess in gateway.go) — matching TerminalHandler's
+// contract, that check happens in the route registration closure, not
+// here.
 func (ch *ConsoleHandler) HandleConsole(w http.ResponseWriter, r *http.Request) {
 	username := parseConsoleUsername(r.URL.Path)
 	if username == "" {
