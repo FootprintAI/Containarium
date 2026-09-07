@@ -158,19 +158,7 @@ func TestCORSOriginNotWildcard(t *testing.T) {
 	}
 }
 
-// TestAuthRequiredForTerminal verifies that the terminal endpoint requires authentication
-func TestAuthRequiredForTerminal(t *testing.T) {
-	// This test verifies the authentication requirement by checking the code path
-	// In the gateway.go, the terminal handler now requires a token:
-	//
-	// if token == "" {
-	//     http.Error(w, `{"error": "unauthorized: token required for terminal access", "code": 401}`, http.StatusUnauthorized)
-	//     return
-	// }
-	//
-	// This is a documentation test - the actual integration test would require
-	// setting up the full gateway server.
-
-	t.Log("Terminal authentication is enforced in gateway.go lines 152-156")
-	t.Log("Code path: token == \"\" -> returns 401 Unauthorized")
-}
+// Terminal WebSocket auth (token required, tenant-scoped) is exercised by
+// TestAuthorizeTenantWSAccess in gateway_test.go — a real assertion on the
+// decision logic the /terminal and /console-attach route closures both
+// call, not a documentation placeholder. See #1754.

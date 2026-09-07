@@ -162,6 +162,11 @@ type Backend interface {
 	ResolveGPUInputToPCI(input string) (string, error)
 	CleanupDisk(containerName string) (string, int64, error)
 
+	// GetConsoleLog returns the instance's boot-time console ring-buffer
+	// log — a static read, not a live attach. Empty for an LXC container
+	// (no serial console) or a VM that has produced no console output yet.
+	GetConsoleLog(name string) (string, error)
+
 	// Labels
 	AddLabel(containerName, key, value string) error
 	RemoveLabel(containerName, key string) error
@@ -1582,6 +1587,26 @@ func (c *Client) GetRawInstance(name string) (map[string]string, string, error) 
 		return nil, "", fmt.Errorf("failed to get instance %s: %w", name, err)
 	}
 	return inst.Config, etag, nil
+}
+
+// GetConsoleLog returns the instance's boot-time console ring-buffer log.
+// The error is passed through as-is (wrapped with context) rather than
+// swallowed here — an LXC container without a console device and a genuine
+// backend failure both surface as an Incus API error, and only the caller
+// has enough context (does it already know this is a container vs a VM?)
+// to decide which one it's looking at.
+func (c *Client) GetConsoleLog(name string) (string, error) {
+	r, err := c.server.GetInstanceConsoleLog(name, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to get console log for %s: %w", name, err)
+	}
+	defer func() { _ = r.Close() }()
+
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return "", fmt.Errorf("failed to read console log for %s: %w", name, err)
+	}
+	return string(data), nil
 }
 
 // GetServerInfo gets information about the Incus server

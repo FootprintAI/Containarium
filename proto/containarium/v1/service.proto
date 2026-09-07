@@ -102,6 +102,21 @@ service ContainerService {
     };
   }
 
+  // GetConsoleLog fetches a VM instance's boot-time console ring-buffer
+  // log — a static read, not a live attach. Diagnoses boot hangs (BIOS/UEFI
+  // POST, bootloader, kernel panic pre-network) that leave the instance
+  // unreachable via SSH or its own tunnel agent.
+  rpc GetConsoleLog(GetConsoleLogRequest) returns (GetConsoleLogResponse) {
+    option (google.api.http) = {
+      get: "/v1/containers/{username}/console-log"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get a VM instance's console log";
+      description: "Returns the instance's boot-time console ring-buffer log. For LXC containers (no serial console) this returns an empty log rather than an error.";
+      tags: "Containers";
+    };
+  }
+
   // DeleteContainer deletes a container
   rpc DeleteContainer(DeleteContainerRequest) returns (DeleteContainerResponse) {
     option (google.api.http) = {

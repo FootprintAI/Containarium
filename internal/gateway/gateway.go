@@ -47,6 +47,7 @@ type GatewayServer struct {
 	securityStore          *security.Store // Optional: for CSV export endpoint
 	auditStore             *audit.Store    // Optional: for HTTP audit middleware
 	terminalHandler        *TerminalHandler
+	consoleHandler         *ConsoleHandler
 	labelHandler           *LabelHandler
 	eventHandler           *EventHandler
 	coreServicesHandler    *CoreServicesHandler
@@ -111,12 +112,38 @@ type GatewayServer struct {
 	recordDeliveryFn func(ctx context.Context, alertName, source, webhookURL string, success bool, httpStatus int, errMsg string, payloadSize, durationMs int)
 }
 
+// authorizeTenantWSAccess reports whether claims may access requestedUsername's
+// resource over a WebSocket upgrade: the subject must own the tenant or hold
+// the admin role. Mirrors auth.AuthorizeTenant's decision exactly, adapted
+// for an already-validated *auth.Claims (the gRPC-context form
+// AuthorizeTenant reads doesn't exist on this HTTP/WebSocket upgrade path).
+// Shared by both the /terminal and /console-attach WebSocket routes below —
+// the two per-tenant WebSocket surfaces this gateway serves.
+func authorizeTenantWSAccess(claims *auth.Claims, requestedUsername string) error {
+	if claims == nil {
+		return fmt.Errorf("no authenticated subject")
+	}
+	if auth.HasRole(claims.Roles, auth.RoleAdmin) {
+		return nil
+	}
+	if claims.Username != requestedUsername {
+		return fmt.Errorf("not authorized for this tenant")
+	}
+	return nil
+}
+
 // NewGatewayServer creates a new gateway server
 func NewGatewayServer(grpcAddress string, httpPort int, authMiddleware *auth.AuthMiddleware, swaggerDir string, certsDir string, caddyCertDir string) *GatewayServer {
 	// Try to create terminal handler (may fail if Incus not available)
 	terminalHandler, err := NewTerminalHandler()
 	if err != nil {
 		log.Printf("Warning: Terminal handler not available: %v", err)
+	}
+
+	// Try to create console handler (may fail if Incus not available)
+	consoleHandler, err := NewConsoleHandler()
+	if err != nil {
+		log.Printf("Warning: Console handler not available: %v", err)
 	}
 
 	// Try to create label handler (may fail if Incus not available)
@@ -142,6 +169,7 @@ func NewGatewayServer(grpcAddress string, httpPort int, authMiddleware *auth.Aut
 		certsDir:            certsDir,
 		caddyCertDir:        caddyCertDir,
 		terminalHandler:     terminalHandler,
+		consoleHandler:      consoleHandler,
 		labelHandler:        labelHandler,
 		eventHandler:        eventHandler,
 		coreServicesHandler: coreServicesHandler,
@@ -558,17 +586,27 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 				return
 			}
 
+			// Extract container name from URL path (e.g. /v1/containers/{name}/terminal)
+			parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+			containerName := ""
+			for i, p := range parts {
+				if p == "containers" && i+1 < len(parts) {
+					containerName = parts[i+1]
+					break
+				}
+			}
+
+			// #1754: a validly-authenticated caller was previously routed
+			// straight through regardless of whose container it named — any
+			// tenant could open a shell into any other tenant's box. Same
+			// tenant check the /console-attach route below already has.
+			if authErr := authorizeTenantWSAccess(claims, containerName); authErr != nil {
+				http.Error(w, fmt.Sprintf(`{"error": "forbidden: %s", "code": 403}`, authErr.Error()), http.StatusForbidden)
+				return
+			}
+
 			// Log terminal access to audit store
 			if gs.auditStore != nil {
-				// Extract container name from URL path (e.g. /v1/containers/{name}/terminal)
-				parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-				containerName := ""
-				for i, p := range parts {
-					if p == "containers" && i+1 < len(parts) {
-						containerName = parts[i+1]
-						break
-					}
-				}
 				auditUsername := ""
 				if claims != nil {
 					auditUsername = claims.Username
@@ -591,11 +629,71 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 			gs.terminalHandler.HandleTerminal(w, r)
 		}))
 
+		// Console-attach WebSocket route (live VM serial console, #1751).
+		// Same auth shape as terminal above, plus a tenant check terminal
+		// itself does not have: the caller must own the requested username
+		// or hold the admin role (auth.RoleAdmin), matching
+		// auth.AuthorizeTenant's decision used by every other per-tenant
+		// RPC in this codebase (DebugContainer, GetConsoleLog, ...).
+		var consoleWithCORS http.Handler
+		if gs.consoleHandler != nil {
+			consoleWithCORS = cors.New(cors.Options{
+				AllowedOrigins:   getAllowedOrigins(),
+				AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
+				AllowedHeaders:   []string{"Authorization", "Content-Type", "Upgrade", "Connection", "Sec-WebSocket-Protocol"},
+				AllowCredentials: true,
+			}).Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				token, src := auth.ExtractBearerForUpgrade(r)
+				if src == auth.TokenSourceQueryParam {
+					log.Printf("WARNING: console client used deprecated ?token= (remote=%s, host=%q) — switch to Sec-WebSocket-Protocol", r.RemoteAddr, r.Host)
+				}
+				if token == "" {
+					http.Error(w, `{"error": "unauthorized: token required for console access", "code": 401}`, http.StatusUnauthorized)
+					return
+				}
+
+				claims, err := gs.authMiddleware.ValidateToken(token)
+				if err != nil {
+					http.Error(w, `{"error": "unauthorized: invalid token", "code": 401}`, http.StatusUnauthorized)
+					return
+				}
+
+				username := parseConsoleUsername(r.URL.Path)
+				if authErr := authorizeTenantWSAccess(claims, username); authErr != nil {
+					http.Error(w, fmt.Sprintf(`{"error": "forbidden: %s", "code": 403}`, authErr.Error()), http.StatusForbidden)
+					return
+				}
+
+				if gs.auditStore != nil {
+					sourceIP := r.Header.Get("X-Forwarded-For")
+					if sourceIP == "" {
+						sourceIP = r.RemoteAddr
+					}
+					if err := gs.auditStore.Log(r.Context(), &audit.AuditEntry{
+						Username:     claims.Username,
+						Action:       "console_access",
+						ResourceType: "container",
+						ResourceID:   username,
+						SourceIP:     sourceIP,
+					}); err != nil {
+						log.Printf("Failed to write audit log for console_access: %v", err)
+					}
+				}
+
+				gs.consoleHandler.HandleConsole(w, r)
+			}))
+		}
+
 		// Handler for container routes
 		containerHandler := func(w http.ResponseWriter, r *http.Request) {
 			// Check if this is a terminal request
 			if strings.HasSuffix(r.URL.Path, "/terminal") {
 				terminalWithCORS.ServeHTTP(w, r)
+				return
+			}
+			// Check if this is a console-attach request
+			if strings.HasSuffix(r.URL.Path, "/console-attach") && consoleWithCORS != nil {
+				consoleWithCORS.ServeHTTP(w, r)
 				return
 			}
 			// Check if this is a labels request
