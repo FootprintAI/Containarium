@@ -22,11 +22,14 @@ or has panicked before bringing up networking.
 Empty output means either the instance is an LXC container (no serial
 console device) or a VM that hasn't produced any console output yet.
 
-Currently supports --log (a static read). Live interactive attach is not
-yet implemented (see FootprintAI/Containarium#1751).
+Live interactive attach (no --log) requires --http with an http(s)://
+--server address — it dials a WebSocket, which a plain gRPC endpoint has
+no upgrade path for. To detach without killing the instance, press
+<ctrl>+a then q (matching Incus's own console command's convention).
 
 Examples:
-  containarium console alice --log`,
+  containarium console alice --log
+  containarium console alice --http --server https://daemon.example.com`,
 	Args: cobra.ExactArgs(1),
 	RunE: runConsole,
 }
@@ -42,7 +45,7 @@ func runConsole(cmd *cobra.Command, args []string) error {
 		return errUnsupportedOnCloud("console", "use `containarium connect "+username+"` to inspect the box")
 	}
 	if !consoleLog {
-		return fmt.Errorf("live interactive console attach is not yet implemented — pass --log to read the console ring-buffer log")
+		return attachConsole(username)
 	}
 
 	resp, err := fetchConsoleLog(username)
