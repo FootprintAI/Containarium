@@ -270,8 +270,19 @@ func TestAgent_HandleConn_NoOverreadPastHandshake(t *testing.T) {
 	server, client := net.Pipe()
 	defer func() { _ = client.Close() }()
 
+	// relay() returns as soon as EITHER direction finishes (by design —
+	// matches the tunnel client's own bidirectional-copy shape). A
+	// strings.NewReader("") for the console's output side hits instant EOF,
+	// racing that direction's shutdown against the operator-input direction
+	// this test actually cares about — on an unlucky scheduling the whole
+	// session tears down before "boot-time keypress" is transferred. Use a
+	// pipe that stays open (no synthetic EOF) until this test explicitly
+	// closes it, once the assertion below has already run.
+	consoleOutR, consoleOutW := io.Pipe()
+	defer func() { _ = consoleOutW.Close() }()
+
 	consoleInputR, consoleInputW := io.Pipe()
-	console := &fakeConsole{Reader: strings.NewReader(""), Writer: consoleInputW}
+	console := &fakeConsole{Reader: consoleOutR, Writer: consoleInputW}
 	provider := &fakeProvider{console: console}
 
 	agent := &Agent{Token: "secret", Provider: provider}
@@ -312,6 +323,11 @@ func TestAgent_HandleConn_NoOverreadPastHandshake(t *testing.T) {
 	if string(got) != "boot-time keypress" {
 		t.Fatalf("got %q, want %q", got, "boot-time keypress")
 	}
+
+	// Only now let the console's own output side end — before this
+	// assertion, closing it would race relay()'s "return on first
+	// direction to finish" shutdown against the transfer above.
+	_ = consoleOutW.Close()
 
 	<-writeDone
 	_ = client.Close()
