@@ -65,6 +65,7 @@ func (*UnavailableBackend) ResolveGPUInputToPCI(string) (string, error) { return
 func (*UnavailableBackend) CleanupDisk(string) (string, int64, error) {
 	return "", 0, ErrUnavailable
 }
+func (*UnavailableBackend) GetConsoleLog(string) (string, error)  { return "", ErrUnavailable }
 func (*UnavailableBackend) AddLabel(string, string, string) error { return ErrUnavailable }
 func (*UnavailableBackend) RemoveLabel(string, string) error      { return ErrUnavailable }
 func (*UnavailableBackend) GetLabels(string) (map[string]string, error) {

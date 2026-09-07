@@ -23,6 +23,7 @@ const (
 	ContainerService_ListContainers_FullMethodName            = "/containarium.v1.ContainerService/ListContainers"
 	ContainerService_GetContainer_FullMethodName              = "/containarium.v1.ContainerService/GetContainer"
 	ContainerService_DebugContainer_FullMethodName            = "/containarium.v1.ContainerService/DebugContainer"
+	ContainerService_GetConsoleLog_FullMethodName             = "/containarium.v1.ContainerService/GetConsoleLog"
 	ContainerService_DeleteContainer_FullMethodName           = "/containarium.v1.ContainerService/DeleteContainer"
 	ContainerService_StartContainer_FullMethodName            = "/containarium.v1.ContainerService/StartContainer"
 	ContainerService_StopContainer_FullMethodName             = "/containarium.v1.ContainerService/StopContainer"
@@ -98,6 +99,11 @@ type ContainerServiceClient interface {
 	// DebugContainer reports diagnostic information about a container's
 	// SSH path: state, host user, shell, recent sshd rejections.
 	DebugContainer(ctx context.Context, in *DebugContainerRequest, opts ...grpc.CallOption) (*DebugContainerResponse, error)
+	// GetConsoleLog fetches a VM instance's boot-time console ring-buffer
+	// log — a static read, not a live attach. Diagnoses boot hangs (BIOS/UEFI
+	// POST, bootloader, kernel panic pre-network) that leave the instance
+	// unreachable via SSH or its own tunnel agent.
+	GetConsoleLog(ctx context.Context, in *GetConsoleLogRequest, opts ...grpc.CallOption) (*GetConsoleLogResponse, error)
 	// DeleteContainer deletes a container
 	DeleteContainer(ctx context.Context, in *DeleteContainerRequest, opts ...grpc.CallOption) (*DeleteContainerResponse, error)
 	// StartContainer starts a stopped container
@@ -429,6 +435,16 @@ func (c *containerServiceClient) DebugContainer(ctx context.Context, in *DebugCo
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(DebugContainerResponse)
 	err := c.cc.Invoke(ctx, ContainerService_DebugContainer_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) GetConsoleLog(ctx context.Context, in *GetConsoleLogRequest, opts ...grpc.CallOption) (*GetConsoleLogResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetConsoleLogResponse)
+	err := c.cc.Invoke(ctx, ContainerService_GetConsoleLog_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1030,6 +1046,11 @@ type ContainerServiceServer interface {
 	// DebugContainer reports diagnostic information about a container's
 	// SSH path: state, host user, shell, recent sshd rejections.
 	DebugContainer(context.Context, *DebugContainerRequest) (*DebugContainerResponse, error)
+	// GetConsoleLog fetches a VM instance's boot-time console ring-buffer
+	// log — a static read, not a live attach. Diagnoses boot hangs (BIOS/UEFI
+	// POST, bootloader, kernel panic pre-network) that leave the instance
+	// unreachable via SSH or its own tunnel agent.
+	GetConsoleLog(context.Context, *GetConsoleLogRequest) (*GetConsoleLogResponse, error)
 	// DeleteContainer deletes a container
 	DeleteContainer(context.Context, *DeleteContainerRequest) (*DeleteContainerResponse, error)
 	// StartContainer starts a stopped container
@@ -1339,6 +1360,9 @@ func (UnimplementedContainerServiceServer) GetContainer(context.Context, *GetCon
 func (UnimplementedContainerServiceServer) DebugContainer(context.Context, *DebugContainerRequest) (*DebugContainerResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DebugContainer not implemented")
 }
+func (UnimplementedContainerServiceServer) GetConsoleLog(context.Context, *GetConsoleLogRequest) (*GetConsoleLogResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetConsoleLog not implemented")
+}
 func (UnimplementedContainerServiceServer) DeleteContainer(context.Context, *DeleteContainerRequest) (*DeleteContainerResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteContainer not implemented")
 }
@@ -1602,6 +1626,24 @@ func _ContainerService_DebugContainer_Handler(srv interface{}, ctx context.Conte
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ContainerServiceServer).DebugContainer(ctx, req.(*DebugContainerRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_GetConsoleLog_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetConsoleLogRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).GetConsoleLog(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_GetConsoleLog_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).GetConsoleLog(ctx, req.(*GetConsoleLogRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2672,6 +2714,10 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DebugContainer",
 			Handler:    _ContainerService_DebugContainer_Handler,
+		},
+		{
+			MethodName: "GetConsoleLog",
+			Handler:    _ContainerService_GetConsoleLog_Handler,
 		},
 		{
 			MethodName: "DeleteContainer",

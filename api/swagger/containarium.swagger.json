@@ -2637,6 +2637,39 @@
         ]
       }
     },
+    "/v1/containers/{username}/console-log": {
+      "get": {
+        "summary": "Get a VM instance's console log",
+        "description": "Returns the instance's boot-time console ring-buffer log. For LXC containers (no serial console) this returns an empty log rather than an error.",
+        "operationId": "ContainerService_GetConsoleLog",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetConsoleLogResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "Username of the container to fetch the console log for",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Containers"
+        ]
+      }
+    },
     "/v1/containers/{username}/debug": {
       "get": {
         "summary": "Debug a container's SSH path",
@@ -10317,6 +10350,16 @@
           "title": "Total count (may be more than returned if limit applied)"
         }
       }
+    },
+    "GetConsoleLogResponse": {
+      "type": "object",
+      "properties": {
+        "log": {
+          "type": "string",
+          "description": "Raw console log content. Empty if the instance is not a VM (LXC\ncontainers have no serial console) or has produced no output yet."
+        }
+      },
+      "description": "GetConsoleLogResponse carries the instance's console ring-buffer log —\na static read, not a live attach. Useful for diagnosing a boot hang\n(BIOS/UEFI POST, bootloader, kernel panic pre-network) where the\ninstance never came up far enough for SSH or the tunnel agent to work."
     },
     "GetContainerACLResponse": {
       "type": "object",

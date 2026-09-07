@@ -620,6 +620,23 @@ message DebugContainerResponse {
   string ssh_ingress_host = 10;
 }
 
+// GetConsoleLogRequest is the request to fetch a VM instance's boot-time
+// console ring-buffer log.
+message GetConsoleLogRequest {
+  // Username of the container to fetch the console log for
+  string username = 1;
+}
+
+// GetConsoleLogResponse carries the instance's console ring-buffer log —
+// a static read, not a live attach. Useful for diagnosing a boot hang
+// (BIOS/UEFI POST, bootloader, kernel panic pre-network) where the
+// instance never came up far enough for SSH or the tunnel agent to work.
+message GetConsoleLogResponse {
+  // Raw console log content. Empty if the instance is not a VM (LXC
+  // containers have no serial console) or has produced no output yet.
+  string log = 1;
+}
+
 // DeleteContainerRequest is the request to delete a container
 message DeleteContainerRequest {
   // Username of the container to delete

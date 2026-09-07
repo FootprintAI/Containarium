@@ -1073,6 +1073,13 @@ func (m *Manager) Get(username string) (*incus.ContainerInfo, error) {
 	return m.incus.GetContainer(containerName)
 }
 
+// GetConsoleLog returns the container's boot-time console ring-buffer log.
+// See incus.Backend.GetConsoleLog.
+func (m *Manager) GetConsoleLog(username string) (string, error) {
+	containerName := username + "-container"
+	return m.incus.GetConsoleLog(containerName)
+}
+
 // Stop stops a running container
 func (m *Manager) Stop(username string, force bool) error {
 	containerName := username + "-container"
