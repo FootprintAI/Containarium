@@ -258,6 +258,66 @@ func TestAgent_HandleConn_NoProviderConfigured(t *testing.T) {
 	<-done
 }
 
+// TestAgent_HandleConn_NoOverreadPastHandshake is a regression test: a
+// bufio.Reader-based implementation of readHandshake would silently
+// swallow bytes the caller sends immediately after the handshake line
+// (without waiting for the "ok" response) into its own internal buffer,
+// which relay() never sees since it reads directly off the raw conn. This
+// sends the handshake and a follow-up console-input chunk in a SINGLE
+// Write call — reproducing them arriving in one underlying read — and
+// asserts the follow-up bytes still reach the console.
+func TestAgent_HandleConn_NoOverreadPastHandshake(t *testing.T) {
+	server, client := net.Pipe()
+	defer func() { _ = client.Close() }()
+
+	consoleInputR, consoleInputW := io.Pipe()
+	console := &fakeConsole{Reader: strings.NewReader(""), Writer: consoleInputW}
+	provider := &fakeProvider{console: console}
+
+	agent := &Agent{Token: "secret", Provider: provider}
+	done := make(chan struct{})
+	go func() {
+		agent.HandleConn(context.Background(), server)
+		close(done)
+	}()
+
+	hs, err := json.Marshal(handshakeRequest{Token: "secret", Target: "containarium-byoc-1"})
+	if err != nil {
+		t.Fatalf("failed to marshal handshake: %v", err)
+	}
+	// One Write, handshake + follow-up console input together — the
+	// scenario a real socket read can coalesce.
+	payload := append(append(hs, '\n'), []byte("boot-time keypress")...)
+	writeDone := make(chan struct{})
+	go func() {
+		if _, err := client.Write(payload); err != nil {
+			t.Errorf("write failed: %v", err)
+		}
+		close(writeDone)
+	}()
+
+	reader := bufio.NewReader(client)
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatalf("failed to read response: %v", err)
+	}
+	if strings.TrimSpace(line) != "ok" {
+		t.Fatalf("got %q, want \"ok\"", line)
+	}
+
+	got := make([]byte, len("boot-time keypress"))
+	if _, err := io.ReadFull(consoleInputR, got); err != nil {
+		t.Fatalf("follow-up bytes never reached the console (over-read bug): %v", err)
+	}
+	if string(got) != "boot-time keypress" {
+		t.Fatalf("got %q, want %q", got, "boot-time keypress")
+	}
+
+	<-writeDone
+	_ = client.Close()
+	<-done
+}
+
 func TestTokenAuthorized(t *testing.T) {
 	cases := []struct {
 		name      string
