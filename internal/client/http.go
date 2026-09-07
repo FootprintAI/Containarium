@@ -1297,6 +1297,33 @@ func (c *HTTPClient) DebugContainer(username string) (*pb.DebugContainerResponse
 	return out, nil
 }
 
+// GetConsoleLog returns a VM instance's boot-time console ring-buffer log.
+func (c *HTTPClient) GetConsoleLog(username string) (*pb.GetConsoleLogResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	path := fmt.Sprintf("/v1/containers/%s/console-log", url.PathEscape(username))
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get console log: %w", err)
+	}
+	defer drainClose(resp)
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("console log request failed (%d): %s", resp.StatusCode, string(body))
+	}
+
+	out := &pb.GetConsoleLogResponse{}
+	if err := protojson.Unmarshal(body, out); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+	return out, nil
+}
+
 // GetSystemInfo gets system information via HTTP
 func (c *HTTPClient) GetSystemInfo() (*incus.ServerInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

@@ -49,6 +49,7 @@ type MockBackend struct {
 	CleanupDiskFunc           func(containerName string) (string, int64, error)
 	UpdateContainerConfigFunc func(name, key, value string) error
 	GetRawInstanceFunc        func(name string) (map[string]string, string, error)
+	GetConsoleLogFunc         func(name string) (string, error)
 	AddLabelFunc              func(containerName, key, value string) error
 	RemoveLabelFunc           func(containerName, key string) error
 	GetLabelsFunc             func(containerName string) (map[string]string, error)
@@ -312,6 +313,13 @@ func (m *MockBackend) GetRawInstance(name string) (map[string]string, string, er
 		return m.GetRawInstanceFunc(name)
 	}
 	return nil, "", nil
+}
+
+func (m *MockBackend) GetConsoleLog(name string) (string, error) {
+	if m.GetConsoleLogFunc != nil {
+		return m.GetConsoleLogFunc(name)
+	}
+	return "", nil
 }
 
 // StoragePool reports the configured pool, defaulting to incus's own default

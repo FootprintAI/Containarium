@@ -565,6 +565,18 @@ func (c *GRPCClient) DebugContainer(username string) (*pb.DebugContainerResponse
 	return resp, nil
 }
 
+// GetConsoleLog returns a VM instance's boot-time console ring-buffer log.
+func (c *GRPCClient) GetConsoleLog(username string) (*pb.GetConsoleLogResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := c.client.GetConsoleLog(ctx, &pb.GetConsoleLogRequest{Username: username})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get console log: %w", err)
+	}
+	return resp, nil
+}
+
 // InstallStack installs a stack or base script on a running container via gRPC
 func (c *GRPCClient) InstallStack(username, stackID string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
