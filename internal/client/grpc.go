@@ -32,6 +32,10 @@ type GRPCClient struct {
 
 // NewGRPCClient creates a new gRPC client
 func NewGRPCClient(serverAddr string, certsDir string, insecureConn bool) (*GRPCClient, error) {
+	if serverAddr == "" {
+		return nil, ErrNoServerConfigured
+	}
+
 	var opts []grpc.DialOption
 
 	if insecureConn {

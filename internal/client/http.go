@@ -30,6 +30,10 @@ type HTTPClient struct {
 
 // NewHTTPClient creates a new HTTP client
 func NewHTTPClient(baseURL string, token string) (*HTTPClient, error) {
+	if baseURL == "" {
+		return nil, ErrNoServerConfigured
+	}
+
 	// Ensure baseURL has proper format
 	if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
 		baseURL = "http://" + baseURL

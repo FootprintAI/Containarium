@@ -49,9 +49,20 @@ Examples:
 
   # Show system information
   containarium info`,
-	// PersistentPreRunE fills in the auth token from the
-	// credentials file when neither --token nor
-	// CONTAINARIUM_TOKEN are set. Precedence:
+	// PersistentPreRunE resolves the effective server address and fills in
+	// the auth token from the credentials file when neither --token nor
+	// CONTAINARIUM_TOKEN are set.
+	//
+	// Server precedence (see resolveServerAddr):
+	//   1. --server flag (explicit)
+	//   2. CONTAINARIUM_SERVER env var (becomes the flag default in init()
+	//      below — so by the time this runs, both collapse into serverAddr)
+	//   3. ~/.containarium/credentials.json default_server — client build
+	//      only (#1776); containariumd never picks this up, so an
+	//      operator's host can't be silently repointed from local Incus to
+	//      a stale remote fleet.
+	//
+	// Token precedence:
 	//   1. --token flag (explicit)
 	//   2. CONTAINARIUM_TOKEN env var (becomes the flag default
 	//      in init() below — so by the time this runs, both
@@ -64,11 +75,12 @@ Examples:
 		// commands that produce/consume the credentials file
 		// directly. Skip the auto-fill for them — login is
 		// unauthenticated by definition, and we don't want a
-		// stale token to leak into a logout call.
+		// stale token (or server) to leak into a logout call.
 		switch cmd {
 		case loginCmd, logoutCmd, whoamiCmd, configGetTokenCmd:
 			return nil
 		}
+		serverAddr = resolveServerAddr(serverAddr)
 		if authToken == "" {
 			authToken = resolveAuthToken(serverAddr)
 		}
