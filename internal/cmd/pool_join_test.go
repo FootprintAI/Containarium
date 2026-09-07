@@ -1,29 +1,18 @@
-//go:build !windows
+//go:build !windows && !containarium_client
 
 package cmd
 
 import (
-	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
-	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/encoding/protojson"
 
 	cloudv1 "github.com/footprintai/containarium/pkg/pb/containarium/cloud/v1"
 )
-
-// testCmd returns a *cobra.Command with a real context — a bare
-// &cobra.Command{} has a nil Context() (unlike OutOrStdout/ErrOrStderr,
-// which do fall back), which panics deep inside net/context on first use.
-func testCmd() *cobra.Command {
-	c := &cobra.Command{}
-	c.SetContext(context.Background())
-	return c
-}
 
 func TestRenderTunnelUnit_RequiredFlags(t *testing.T) {
 	u := renderTunnelUnit(tunnelUnitParams{
