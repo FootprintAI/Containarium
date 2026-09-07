@@ -84,41 +84,96 @@ no console/serial/VNC access mechanism exists anywhere in `internal/cmd`,
 The design has to cover both without operators needing to know which one
 they're talking to.
 
-### Topology
+### Topology (revised — see "Correction" below)
 
 ```mermaid
 flowchart LR
   op["operator\ncontainarium console <target>"]
   subgraph sentinel["Sentinel (public, always-on)"]
-    piper["sshpiper + SSH-CA\n(existing)"]
-    creg["console-stream router\n(new)"]
+    creg["console router\n(new — a small bearer-token-\nauthenticated TCP listener,\nsibling to sshpiper/SNI router)"]
+    reg["TunnelRegistry.DialTunnel\n(existing)"]
   end
-  subgraph host["BYOC host"]
-    tun["containarium-tunnel.service\n(existing outbound dial)"]
-    cp["ConsoleProvider\n(new, in tunnel-agent)"]
-    subgraph incusvm["Incus VM instance"]
-      iconsole["incus console\n(existing, native)"]
-    end
-    vboxsock["VBox serial→UNIX socket\n(host-level, per guest)"]
+  subgraph vboxhost["Physical VirtualBox host\n(a lab machine — NOT any guest)"]
+    hvtun["containarium tunnel\n(existing client, unmodified,\nnew spot: this host itself)"]
+    hva["hypervisor-agent listener\n(new): [token, target] handshake\nthen raw relay"]
+    cp["ConsoleProvider\n(new): VirtualBox adapter"]
+    vboxsock["VBox serial→UNIX socket\n(per guest, set at VM creation)"]
   end
-  op -- "SSH cert, principal=console" --> piper
-  piper --> creg
-  creg -- "existing yamux session" --> tun
-  tun --> cp
-  cp -- "exec: incus console --type=console <id>" --> iconsole
-  cp -- "attach: read/write UNIX socket" --> vboxsock
+  subgraph guest["containarium-byoc-2\n(the HUNG guest — nothing here can help)"]
+    dead["containarium-tunnel.service\ndaemon / gateway\n(all downstream of boot — DEAD)"]
+  end
+  op -- "bearer token + target" --> creg
+  creg -- "DialTunnel(hypervisor-spot, hva-port)" --> reg
+  reg -. "existing yamux session,\nordinary forwarded port" .-> hvtun
+  hvtun --> hva
+  hva -- "VBoxManage-configured\nUNIX socket for <target>" --> cp
+  cp --> vboxsock
 ```
 
-The only new wire-level thing is a second stream type multiplexed over
-the tunnel's existing `yamux` session (`internal/sentinel/tunnel_registry.go`
-already assigns each backend a session; console is a new logical channel
-on it, not a new dial, new port, or new credential store). Everything
-else — the outbound dial, the SSH-CA cert issuance, the sentinel's role
-as the only public-facing surface — is unchanged.
+The console-serving listener runs on the **physical hypervisor host**,
+not inside any guest — that's the load-bearing fix from the original
+version of this doc (below). Reaching it costs zero tunnel-protocol
+changes: the hypervisor host just advertises one more port via the
+*existing*, unmodified `containarium tunnel` client
+(`internal/sentinel/tunnel_client.go`), and the sentinel already has
+`TunnelRegistry.DialTunnel(spotID, port)` for opening a stream to any
+advertised port on any connected spot. What's genuinely new is a small
+listener on that port (the "hypervisor-agent") and a bearer-token-checked
+router on the sentinel side to reach it from the public internet — the
+sentinel today only routes two specific ports publicly (`:22` via
+sshpiper-by-username, `:443` via SNI), not arbitrary advertised ports.
 
-### `ConsoleProvider` (host-side)
+### Correction — what the original version of this doc got wrong
 
-A small interface in the tunnel-agent, one implementation per hypervisor:
+Two assumptions here turned out to be wrong once I read the actual
+tunnel code (`internal/sentinel/tunnel_client.go`,
+`tunnel_registry.go`) instead of describing it from memory:
+
+1. **"A new stream type multiplexed over the tunnel's existing yamux
+   session"** implied the yamux session was a general-purpose message
+   bus a handler could add a new logical channel to. It isn't — it's a
+   plain reverse port-forwarder: the box advertises `--ports
+   22,80,443,...`, and every yamux stream carries a 2-byte port header
+   telling the box which local port to dial. Adding console support
+   needs no yamux/protocol change at all — it's just one more advertised
+   port with a new thing listening on it locally.
+2. **"Reuses the sentinel's existing SSH-CA... a cert's principal
+   determines whether it's routed to a normal shell or to the console
+   router"** assumed the sentinel and the JWT-authenticated daemon
+   gateway (where #1750/#1751's `ConsoleHandler` landed) were the same
+   trust domain reachable from one process. They are not: the sentinel
+   (`internal/sentinel/`) and the daemon (`internal/gateway/`,
+   `internal/server/`) are **separate processes** with separate auth
+   models (SSH-CA / pre-shared tunnel tokens on the sentinel; JWT on the
+   daemon). More importantly, the daemon — and the guest's own
+   `containarium-tunnel.service` — run **inside the guest**. For a guest
+   hung at BIOS POST, *neither has started*, so no design that only adds
+   code to the guest's own tunnel-agent or daemon can reach it. This is
+   why #1750/#1751 (both daemon-gateway features) correctly only solve
+   the "workload VM instance hung on an otherwise-healthy host" case —
+   they were never going to reach a genuinely dead host, and this doc
+   originally implied they were the same problem.
+
+The thing that is *not* inside the hung guest is whatever manages the
+guest from outside it. For an Incus-managed VM *instance*, that's the
+host's own Incus daemon (already covered: #1750/#1751). For a BYOC host
+that is itself a VirtualBox guest, that's the **physical machine running
+VirtualBox** — a distinct, normally-booting Linux/macOS box. Confirmed
+by hand against the real lab boxes (2026-09-07): the physical machine
+hosting them runs VirtualBox 7.2.14 with both `containarium-byoc-1` and
+`containarium-byoc-2` registered, and is reachable independent of either
+guest's boot state. `containarium-byoc-2`'s current config has
+`uart1="off"` — no serial redirect configured yet, and VirtualBox only
+accepts UART changes while the VM is powered off. Provisioning the
+serial socket on a live, already-hung incident box is a deliberate,
+separate action requiring explicit sign-off — not something this design
+(or its implementation) does as a side effect.
+
+### `ConsoleProvider` (hypervisor-agent side)
+
+Unchanged in shape from the original version, but it now lives in a new
+**hypervisor-agent** process (see below), not "in the tunnel-agent" —
+there is no single tunnel-agent that spans both the guest and its host.
 
 ```go
 type ConsoleProvider interface {
@@ -129,63 +184,91 @@ type ConsoleProvider interface {
 }
 ```
 
-- **Incus VM instances**: shells out to `incus console --type=console
-  <instance>` and wires its stdio to the returned stream. Incus already
-  does the hard part; this is a thin adapter.
-- **VirtualBox-hosted hosts**: requires the guest's serial port to be
-  redirected to a UNIX domain socket
-  (`VBoxManage modifyvm <vm> --uart1 0x3F8 4 --uartmode1 server /path/to.sock`),
-  configured once at VM creation (or backfilled — `pool join` could set
-  this up as part of enrollment, see below). `OpenConsole` just connects
-  to that socket.
-- Adding a third hypervisor later (KVM/libvirt, a cloud provider's serial
-  console API) means adding one adapter, not touching the tunnel or
-  sentinel.
+- **VirtualBox adapter**: dials the guest's serial-port UNIX socket
+  (`VBoxManage modifyvm <vm> --uart1 0x3F8 4 --uartmode1 server
+  /path/to.sock`, configured once per guest, VM powered off). Pure
+  `net.Dial("unix", ...)` — no VBoxManage subprocess needed at
+  attach-time, only at provisioning time.
+- **Incus adapter**: not built here. #1750/#1751 already solved the
+  Incus-instance-on-a-healthy-host case via the daemon's own gateway,
+  which is the more direct path when it applies (no extra network hop
+  through a hypervisor-agent) — a second Incus adapter here would be
+  redundant, not complementary. Worth revisiting only if a bare-metal
+  Incus host itself needs the "host is unreachable" treatment, which is
+  a different problem this doc doesn't cover.
 
-### Auth
+### The hypervisor-agent (new component)
 
-Reuses the sentinel's existing SSH-CA (`internal/sentinel/keysync.go`,
-`trusted_user_ca_keys`) rather than inventing a parallel credential
-system. A cert's principal determines whether it's routed to a normal
-shell or to the console router — same trust root, narrower scope.
-Console-only certs should be issuable independent of full shell access,
-since "let someone watch a boot log" and "let someone run arbitrary
-commands" are different privilege levels.
+A new `containarium hypervisor-agent` cobra subcommand — same binary,
+new mode, matching this repo's "everything is the `containarium` binary
+in a different hat" pattern (`sentinel`, `tunnel`, `agent-box` are all
+precedent). It:
+
+1. Runs the *existing, unmodified* `sentinel.TunnelClient` as a library
+   call, enrolling as its own spot (its own `--spot-id`, distinct from
+   any guest it manages consoles for) and advertising exactly one port.
+2. Listens locally on that port for a tiny framed handshake — length-
+   prefixed `{token, target}` — checked against a pre-shared token
+   (`--token`/`CONTAINARIUM_TUNNEL_TOKEN`'s own existing pattern, not a
+   new credential system), then dispatches to `ConsoleProvider.OpenConsole(target)`
+   and relays bytes.
+
+This piece is self-contained, requires no sentinel or tunnel-protocol
+change, and is fully unit-testable (fake `ConsoleProvider`, a real
+`net.Pipe()` for the framing/auth logic) without any real VirtualBox or
+tunnel infrastructure.
+
+### The sentinel-side console router (new component, separate follow-up)
+
+Reaching the hypervisor-agent from the public internet needs one more
+piece: today the sentinel only publicly routes two specific ports
+(`:22` via sshpiper-by-username, `:443` via SNI) — there's no generic
+"expose spot X's port Y publicly" path for anything else. A console
+router is a small new listener on the sentinel, sibling to sshpiper and
+the SNI router, that authenticates a bearer token, resolves it to
+`(hypervisor spotID, hypervisor's advertised console port)`, calls the
+already-existing `TunnelRegistry.DialTunnel(spotID, port)`, and relays.
+
+This is scoped as a **separate follow-up issue** rather than bundled
+into the hypervisor-agent PR: it touches the sentinel, a shared
+production process fronting real customer traffic, which is a
+meaningfully higher blast radius than a new opt-in agent binary nobody
+has to run. The hypervisor-agent is independently buildable and
+testable without it.
 
 ### CLI
 
-`containarium console <target>` — one new cobra subcommand
-(`internal/cmd/console.go`), CLI-first per this repo's convention: it
-calls a shared client function, and any future MCP tool wraps that same
-function rather than talking to a bespoke endpoint.
+`containarium console <target>` (already shipped for #1750/#1751) is
+the eventual single entry point; reaching a hypervisor-managed console
+through the sentinel's console router is additive to it, not a new
+verb — once the router exists, `console`'s dial logic gains a second
+path alongside the existing daemon-gateway one.
 
 ### Enrollment
 
-`containarium pool join` (`internal/cmd/pool_join.go`) is the existing
-one-command enrollment path for a new BYOC host. For VM-backed hosts,
-join should also provision whatever the local `ConsoleProvider` needs
-(e.g. the VirtualBox serial-socket flag) so console access isn't a
-separate manual setup step from joining the pool at all.
+`containarium pool join` (`internal/cmd/pool_join.go`) remains the
+enrollment path for a BYOC host's own daemon/tunnel identity. The
+hypervisor-agent is a *distinct* enrollment (a different spot, run once
+per physical hypervisor machine, not per guest) — it does not extend
+`pool join`, since a hypervisor host managing multiple guests isn't
+itself a BYOC host in the existing sense.
 
 ## Open questions
 
-- **Where does the yamux console channel get registered** — a new stream
-  type negotiated at tunnel-dial time, or a side-channel the tunnel-agent
-  opens on demand when a console request arrives? The latter avoids
-  holding an idle stream per host but adds a round trip on first attach.
 - **Reconnect semantics**: a console stream should survive the operator's
   client disconnecting (so a boot log isn't lost between attach attempts)
-  but should the host buffer scrollback, and how much?
-- **Should `incus console`'s existing local auth model (root on the
-  host) be trusted as-is, or does the `ConsoleProvider` need its own
-  check before shelling out**, given it's now reachable from a remote
-  operator instead of only someone with host shell access?
+  but should the hypervisor-agent buffer scrollback, and how much?
+- **Should the VirtualBox adapter re-verify the socket path against the
+  live VM config on each `OpenConsole` call**, or trust a path cached at
+  agent startup — a guest could be reconfigured or recreated between the
+  two.
 - Does this want a dedicated proto RPC for the *control* plane (open/list
   active console sessions, audit trail) even though the *data* plane is a
   raw stream over the tunnel? Given `CLAUDE.md`'s protobuf-first
   convention, probably yes for session bookkeeping — that part should
   route through `.proto` like everything else that mutates state; only
-  the byte-stream itself is out of band.
+  the byte-stream itself is out of band. This applies to the sentinel
+  console-router follow-up, not the hypervisor-agent itself.
 
 ## Why this, not Tailscale-as-a-fix
 
