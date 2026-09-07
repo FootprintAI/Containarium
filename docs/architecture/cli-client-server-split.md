@@ -16,10 +16,11 @@ with no structural line between them:
 2. **Server/operator processes** — run *on* the box itself and mutate it
    directly: `daemon`, `sentinel`, `hypervisor-agent`, `node`, `pool
    join/leave`, `doctor`, `recover`, `sync-accounts`, `image-bake`, …
-3. **Hybrid commands** — `create`, `get`, `list`, `info`, `ssh-config
-   sync`, `prune` branch on `serverAddr == ""` to *silently* fall back
-   from "call the remote daemon" to "mutate Incus on whatever host this
-   binary happens to be running on."
+3. **Hybrid commands** — twelve of them (`create`, `delete`, `get`,
+   `list`, `info`, `label list/set/remove`, `install-stack`, `resize`,
+   `ssh-config sync`, `prune`) branch on `serverAddr == ""` to
+   *silently* fall back from "call the remote daemon" to "mutate Incus
+   on whatever host this binary happens to be running on."
 
 That third bucket is the concrete footgun. `--server` defaults to the
 `CONTAINARIUM_SERVER` env var, and `resolveAuthToken` (root.go)
@@ -41,7 +42,7 @@ Notably, three commands already do the right thing: `ttl`, `scale-down`
 and `runner` refuse outright with `--server is required` when no server
 is set (they import `pkg/core/incus` only for the `ContainerInfo` type,
 never for a local fallback). That is the precedent this design
-generalizes — the six hybrids are the stragglers, not the norm.
+generalizes — the twelve hybrids are the stragglers, not the norm.
 
 **Goal:** a client-only binary that structurally *cannot* fall into local
 mode — no flag to forget, no silent branch — while leaving the existing
@@ -67,42 +68,51 @@ without touching the 100+ files that are unambiguously client-only.
   — get `//go:build !cnct_client` added to their existing build
   constraints (most have none today; `daemon.go` already has one for
   `!windows` and simply gains a second).
-- `cmd/cnct/main.go` imports `internal/cmd` and is built with
-  `-tags cnct_client`. The Go toolchain excludes every `!cnct_client`
-  file from that build — they never compile, so their `init()`s never
-  run, so `rootCmd` under that build genuinely only contains the client
-  surface. There is no local-Incus code *in the binary* to fall back to,
-  not just a flag that happens not to be set.
+- `cmd/cnct/main.go` imports `internal/cmd`, is itself constrained with
+  `//go:build cnct_client`, and is built with `-tags cnct_client`. The
+  Go toolchain excludes every `!cnct_client` file from that build — they
+  never compile, so their `init()`s never run, so `rootCmd` under that
+  build genuinely only contains the client surface. The constraint on
+  `main.go` is what makes a bare `go build ./cmd/cnct` (no tag) fail
+  with "build constraints exclude all Go files" instead of silently
+  producing a full-surface binary named `cnct`.
 - `cmd/containarium/main.go` keeps building exactly as today (no tag) —
   full superset, byte-for-byte the same behavior. This is what makes the
   migration section below trivial: nothing existing has to change.
-- For each of the six hybrid commands, the file keeps its cobra
+- For each of the twelve hybrid commands, the file keeps its cobra
   `Use`/`RunE` and its `*Remote`/`*RemoteHTTP` implementation
   (client-shaped, no tag needed). Everything local-mode-only moves into a
-  sibling file tagged `!cnct_client` (`create_local.go`, `get_local.go`,
-  `list_local.go`, `info_local.go`; `ssh-config` and `prune` only call
-  `listLocal()` so they need no file of their own). "Everything" includes
-  the post-create `container.CreateJumpServerAccount` step in
-  `create.go`, which today sits *outside* `createLocal` behind its own
-  `serverAddr == ""` check — it folds into `createLocal` so `create.go`
-  stops importing `pkg/core/container` altogether.
+  sibling file tagged `!cnct_client`: `create_local.go`,
+  `delete_local.go`, `get_local.go`, `list_local.go`, `info_local.go`,
+  `label_local.go` (all three label verbs), `install_stack_local.go`,
+  `resize_local.go`. `ssh-config sync` and `prune` only call
+  `listLocal()`/`deleteLocal()` so they need no file of their own.
+  "Everything" includes the host-account steps that today sit *outside*
+  the `*Local` functions behind their own `serverAddr == ""` checks —
+  `container.CreateJumpServerAccount` after `createLocal`,
+  `container.DeleteJumpServerAccount` after `deleteLocal` — which fold
+  into the local functions so `create.go`/`delete.go` stop importing
+  `pkg/core/container` altogether.
 - **One stub file is required**, `local_stubs_cnct.go` tagged
-  `cnct_client`: the dispatch code in `create.go`/`get.go`/… still
-  references `createLocal`, `getLocal`, `listLocal`, and the two
-  `info` helpers by name, so the client build must define them or fail
-  to compile. Each stub is one line returning a shared
-  `errNoLocalMode` ("cnct has no local mode — pass --server or run
-  `cnct login`"). The stubs are defence in depth: with the
-  `default_server` resolution below in `PersistentPreRunE`, dispatch
-  never reaches them (an empty `serverAddr` already errored), but they
-  are what makes a forgotten check a *clear error* rather than a build
-  break or a silent Incus call.
+  `cnct_client`: the dispatch code still references `createLocal`,
+  `deleteLocal`, `getLocal`, `listLocal`, `getLabelsLocal`,
+  `setLabelsLocal`, `removeLabelsLocal`, `installStackLocal`,
+  `runResizeLocal` and the two `info` helpers by name, so the client
+  build must define them or fail to compile. Each stub is one line
+  returning a shared `errNoLocalMode` ("cnct has no local mode — pass
+  --server or run `cnct login`"). The stubs are defence in depth: with
+  the server resolution below, a remote call with no server already
+  fails at the client constructor before dispatch reaches a stub — but
+  the stub is what turns a future forgotten check into a *clear error*
+  rather than a build break or a silent Incus call.
 
 This keeps the package layout as one `internal/cmd` (no `internal/cmdops`
 / `internal/cmdclient` split, no duplicated logic, no import-graph
 surgery) and makes "which binary is this command in" a property checkable
-at the file level (`grep -L cnct_client *.go` for server-only, or the
-absence of the tag for client-only).
+at the file level: `grep -l '^//go:build.*!cnct_client' *.go` lists the
+server-only files; everything else builds into both binaries. (There
+is no `cnct_client`-positive tag on client files — the client surface
+is the *untagged* set — so audit the untagged files, not a tag.)
 
 **What "structurally cannot" does and doesn't mean.** Under
 `cnct_client` there is no call path to `container.New()`,
@@ -122,24 +132,44 @@ decisions, not a prerequisite.
 
 `ssh.go` and `login.go` already resolve a server from
 `credentials.json`'s `default_server` when `--server` is blank (used by
-`ssh setup/list/remove`, `logout`, `whoami`). `cnct` adopts the same
-resolution once, globally, in `rootCmd.PersistentPreRunE` (next to the
-existing `resolveAuthToken` call), so the chain for every command is:
+`ssh setup/list/remove`, `logout`, `whoami`). `cnct` adopts that
+resolution for `serverAddr` too, so the chain is:
 
 1. `--server` flag
 2. `CONTAINARIUM_SERVER` env (already the flag's default today)
-3. `credentials.json` `default_server`
-4. otherwise fail: "no server configured — run `cnct login` or pass
-   `--server`"
+3. `credentials.json` `default_server` — **`cnct` only**
+4. if a command then tries to *dial* with an empty address: "no server
+   configured — run `cnct login` or pass `--server`"
 
-The same pre-run exemption list that skips token resolution for
-`login`/`logout`/`whoami`/`config get-token` applies here. This is
-strictly better than today's `containarium` behavior for logged-in
-users, and it's what makes dropping local mode from `cnct` a net
-usability improvement, not just a restriction. (Whether `containarium`
-itself should also gain step 3 is Open decision 2 — it would change
-behavior for anyone relying on local mode with a stale credentials
-file, so it is not bundled in here.)
+Two design constraints shape where these live:
+
+- **Step 3 must not change `containarium`.** `rootCmd` and its
+  `PersistentPreRunE` are shared by both binaries, so a global fallback
+  would silently repoint `containarium list` on an operator's host from
+  local Incus to whatever `default_server` a stale credentials file
+  names — exactly the surprise this design is meant to remove, in the
+  other direction. So the fallback is a tag-split helper:
+  `server_resolve_cnct.go` (`cnct_client`) implements
+  `resolveServerAddr(flagOrEnv string) string` with the credentials-file
+  lookup; `server_resolve_default.go` (`!cnct_client`) implements it as
+  the identity function. `PersistentPreRunE` calls it unconditionally;
+  under `containarium` it is a no-op.
+- **Step 4 must not apply to offline commands.** `cert generate`,
+  `pki`, `token generate`/`inspect`, `version`, and every group parent
+  legitimately run with no server at all, so "fail in pre-run if no
+  server" would break them — and an exemption list would have to be
+  maintained by hand. Instead the error lives at the one seam every
+  remote command already passes through: `client.NewGRPCClient` and
+  `client.NewHTTPClient` return the "no server configured" error when
+  handed an empty address. Offline commands never construct a client,
+  so they are exempt by construction. Under `containarium` this only
+  changes the message for a pure-client command invoked with no server
+  (today: an opaque gRPC dial failure at the first RPC); hybrids branch
+  to local before constructing a client and are untouched.
+
+The token-resolution exemption list in `PersistentPreRunE`
+(`login`/`logout`/`whoami`/`config get-token`) is unchanged and applies
+to step 3 as well.
 
 ### Component diagram
 
@@ -193,89 +223,117 @@ exposes.
 
 ## Per-hybrid-command disposition
 
-The six commands that actually fall back to local Incus when
-`serverAddr == ""` (verified by reading each dispatch, not by grepping
-for the string — `ttl`, `scale-down` and `runner` also contain that
-check but use it to *refuse*, and `route_client.go` dials the gRPC
-client unconditionally with no local branch at all):
+The twelve commands that actually fall back to local Incus when
+`serverAddr == ""`. Verified by reading each dispatch, not by grepping
+for the string: `ttl`, `scale-down` and `runner` also contain that
+check but use it to *refuse*; `route_client.go` dials the gRPC client
+unconditionally with no local branch; `quickstart` has the check only
+to print a hint and otherwise composes `create`/`expose-port`, so it
+inherits their behavior.
 
 | Command | `cnct` (client build) | `containarium` (unchanged) |
 |---|---|---|
-| `create` | remote only (`createRemote`/`createRemoteHTTP`); `PersistentPreRunE` errors first, `createLocal` stub errors second | remote + `createLocal` + `CreateJumpServerAccount` (direct Incus + host `useradd`), as today |
+| `create` | remote only; empty server fails at the client constructor, `createLocal` stub is the backstop | remote + `createLocal` + `CreateJumpServerAccount` (direct Incus + host `useradd`), as today |
+| `delete` | remote only | remote + `deleteLocal` + `DeleteJumpServerAccount`, as today. `deleteLocal` is also the rollback path in `create.go` and `prune.go`'s delete — both hit the stub under `cnct`. |
 | `get` | remote only | remote + `getLocal`, as today |
 | `list` | remote only | remote + `listLocal`, as today |
 | `info` | remote only | remote + two `container.New()` branches (server info, container info), as today |
+| `label list` / `label set` / `label remove` | remote only | remote + `getLabelsLocal`/`setLabelsLocal`/`removeLabelsLocal`, as today |
+| `install-stack` | remote only | remote + `installStackLocal`, as today |
+| `resize` | remote only | remote + `runResizeLocal`, as today |
 | `ssh-config sync` | remote only (`loadContainersForSSHConfig`'s `listLocal()` fallback hits the stub) | unchanged |
-| `prune` | remote only (`pruneList`'s `listLocal()` fallback hits the stub) | unchanged |
+| `prune` | remote only (`pruneList`'s `listLocal()` and its `deleteLocal()` hit the stub) | unchanged |
 
-Four more files are **local-only today** — no `serverAddr` branch at
-all, they call `incus.New()` or shell out to `iptables` unconditionally
-— and are operator commands that were miscategorized as CLI-general only
-by sitting in the same flat package: `sidecar.go`, and the whole
-`portforward` group (`portforward.go`, `portforward_setup.go`,
-`portforward_remove.go`, `portforward_show.go` — "Manage iptables port
-forwarding rules for Caddy"). These move to `containarium`-only
-(`!cnct_client`) outright, no dispatch change needed.
+### Local-only commands that were sitting with the client set
+
+These have **no remote path at all** — they call `container.New()`,
+`iptables`, or Postgres directly, unconditionally — and are operator
+commands that were only ever "CLI-general" by virtue of the flat
+package. They move to `containarium`-only (`!cnct_client`) outright, no
+dispatch change:
+
+| Group / files | Why local-only |
+|---|---|
+| `sidecar.go` | `incus.New()` unconditionally |
+| `portforward` — `portforward.go` + `setup`/`remove`/`show` (4 files) | iptables NAT rules for Caddy on this host |
+| `passthrough` — `passthrough.go` + `add`/`list`/`remove` (4 files) | `network.CheckIPTablesAvailable()` + `NewPassthroughManager` — host iptables. (`passthrough route *` is a *separate* group with its own parent in `passthrough_route.go`; it goes through the daemon and stays client.) |
+| `collaborator` — `collaborator.go` + `add`/`remove`/`list` (4 files) | `container.New()` + `NewCollaboratorManager`, no `--server` branch. The proto already has collaborator RPCs; the CLI handlers simply never grew a remote path. Adding one is Open decision 6 — until then `cnct` has no `collaborator` verb. |
+| `export.go` | Refuses with `--server` set: "only available in local mode" |
+| `audit.go` (`query`/`verify`/`verify-anchor`) | Opens Postgres directly via `getPostgresConnString()` |
+| `cloud.go` (`cloud login`/`enroll`) | "Enroll **this host** with a cloud control plane" — writes host-side `cloud.yaml`. `cloud_target.go` (`isCloudTarget`, used by `debug`/`console`/`info`) is a pure helper and stays in both builds. |
+
+### Classification method
+
+The disposition above was regenerated with a rule an implementer can
+re-run, because the first pass (keyed on the `pkg/core/incus` import)
+missed six of the twelve hybrids and all of `collaborator`,
+`passthrough`, `audit`, `export` and `cloud`:
+
+> A file is **host-touching** if it calls a host primitive:
+> `container.New(`, `incus.New(`, `network.New*`/`network.Check*`,
+> `exec.Command("incus"|"iptables"|"systemctl"|"zfs"|"useradd"…)`,
+> `os.Geteuid`, `pgxpool.New`, or imports `internal/server`,
+> `internal/sentinel`, `internal/hosting`, `internal/hypervisor`.
+> A file is **remote** if it constructs `client.NewGRPCClient`/
+> `NewHTTPClient` or an HTTP client to a `--server`/`default_server`.
+> Host-touching **and** remote → hybrid (split into `*_local.go` +
+> stub). Host-touching only → `!cnct_client`. Remote only, or neither
+> (offline tools, group parents, helpers) → both binaries.
+
+Three false positives from the grep, resolved by reading: `daemon.go`
+and `hosting_status.go` match "remote" only because they open an HTTP
+client to `localhost` (server-only); `sentinel_register_token.go` and
+`sentinel_fetch_release.go`/`sentinel_pprof.go` are remote-shaped but
+register on `sentinelCmd`, which lives in the excluded `sentinel.go`,
+so the whole `sentinel` group is tagged together.
+
+**Group-parent rule:** a tagged-out file must not define a symbol an
+untagged file references, or the client build fails to compile. Every
+group parent whose children split across binaries — `pool`, `secrets`,
+`token`, `runner`, `label` — stays untagged; every group tagged out as a
+whole (`sentinel`, `hosting`, `portforward`, `passthrough`,
+`collaborator`, `audit`) takes its parent with it. The compiler enforces
+this for free; it is stated here so the split is done group-by-group
+rather than file-by-file.
 
 ## Full binary layout
 
-Of the 148 command files, **~34 become `containarium`-only** and the
-remaining **~114 build into both binaries** unchanged. The split adds 4
+Of the 148 command files, **~45 become `containarium`-only** and the
+remaining **~103 build into both binaries** unchanged. The split adds 8
 `*_local.go` files (server side) and 1 `local_stubs_cnct.go` (client
 side).
 
-**`cnct` (client-only, ~114 files, unchanged logic):** every command
-group that already imports `internal/client` or resolves
-`serverAddr`/`default_server` with no direct Incus/Postgres/host access —
-`agent*`, `app*`, `audit`, `backends*`, `backup*`, `capacity`, `cert`
-(offline CA/server/client cert generation via `internal/mtls` — writes
-only to `--output`, touches no host state; it is what `internal/client`'s
-own "certificates not found" error points users at), `cluster`, `code*`,
-`collaborator*`, `compose`, `console*`, `connect`, `crew*`, `debug`,
-`delete`, `egress-via-client`, `export`, `expose-port`, `install-stack`,
-`kms` (status/coverage/migrate — over the wire, unlike `secrets
-migrate-to-envelope` below), `label*`, `login`/`logout`/`whoami`/`config
-get-token`, `monitoring*`, `move`, `network-policy`, `passthrough*`,
-`pool` + `pool list` (reads `/v1/backends` over HTTP — the *only* client
-verb in the `pool` group), `protect`, `push`, `quickstart`, `recipe*`,
-`resize`, `route*`, `runner` + `runner reconcile`, `sandbox`, `scale-down`,
-`secrets`, `security*`, `snapshot*`, `ssh*`, `token*` + `token inspect`,
-`traffic`, `ttl`, `volume`, plus the remote half of the six hybrids.
+**Both binaries (~103 files, unchanged logic):** every command that is
+remote-only, offline, a group parent, or a helper — `agent*`, `app*`,
+`backends*`, `backup*`, `capacity`, `cert` (offline CA/server/client
+cert generation via `internal/mtls` — writes only to `--output`,
+touches no host state; it is what `internal/client`'s own "certificates
+not found" error points users at), `cloud_target.go`, `cluster`,
+`code*`, `compose`, `console*`, `connect`, `crew*`, `debug`,
+`egress-via-client`, `expose-port`, `kms` (status/coverage/migrate —
+over the wire, unlike `secrets migrate-to-envelope`), `label.go`
+(parent), `login`/`logout`/`whoami`/`config get-token`, `monitoring*`,
+`move`, `network-policy`, `passthrough route *` (own parent), `pki`,
+`pool` + `pool list` (reads `/v1/backends` over HTTP — the *only*
+client verb in the `pool` group), `protect`, `push`/`sync` (SSH via the
+sentinel), `quickstart`, `recipe*`, `route*`, `runner` + `runner
+reconcile`, `sandbox`, `scale-down`, `secrets`, `security*`,
+`snapshot*`, `ssh*`, `token*` + `token inspect`, `traffic`, `ttl`,
+`volume`, plus the remote half of the twelve hybrids.
 
-**`containarium`-only (`!cnct_client`, ~34 files):** `daemon`,
+**`containarium`-only (`!cnct_client`, ~45 files):** `daemon`,
 `sentinel*` (7 files), `hypervisor-agent`, `egress-relay`, `node`,
 `pool join`/`pool leave`/`pool regions` + `pool_sentinel.go`/
 `pool_join_handshake.go` (5 files — run on the host being joined),
 `postgres`, `upgrade-watchdog`, `sync-accounts`, `image-bake`, `recover`,
 `storage-probe`, `doctor`, `hosting*` (5 files incl. the group parent),
-`sidecar`, `portforward*` (4 files), `secrets_migrate.go`, `service.go`,
-`tunnel.go`, plus the 4 new `*_local.go` files.
+`sidecar`, `portforward*` (4), `passthrough` + `add`/`list`/`remove`
+(4), `collaborator*` (4), `export`, `audit`, `cloud.go`,
+`secrets_migrate.go`, `service.go`, `tunnel.go`, plus the 8 new
+`*_local.go` files.
 
-Group parents whose children split across binaries (`pool`, `secrets`,
-`runner`, `token`) stay client-side; under `cnct` the server-only
-children simply don't appear. Cobra handles a group with fewer children
-without any change.
-
-### Audit: the nine previously-unresolved files
-
-Resolved by reading each file rather than guessing from import/flag
-signal — a wrong guess here would reproduce exactly the bug this design
-exists to prevent:
-
-| File | Verdict | Evidence |
-|---|---|---|
-| `hosting_status.go` | server-only | Checks `/usr/local/bin/caddy`, `systemctl is-active caddy`, `/etc/caddy/Caddyfile` on the local filesystem — inherently host-local, no `--server`/daemon path at all. |
-| `hosting_config.go` | server-only | Reads/writes `/etc/containarium/hosting.json` directly via `internal/hosting`. |
-| `hosting_providers.go` | server-only | Static reference text for `hosting setup`'s flags — no host access itself, but it's `hosting setup` documentation; kept with its group rather than split across binaries. |
-| `hosting_setup.go` | server-only | Requires `os.Geteuid() != 0` root check, installs Caddy via systemd, writes `/etc/containarium/hosting.json`. |
-| `secrets_migrate.go` | server-only | Doc comment is explicit: "Run this with the same Postgres credentials and master key the daemon uses" — direct Postgres + master-key-file access, by design, not through the daemon API. |
-| `service.go` | server-only | Installs/removes `/etc/systemd/system/containarium.service`, calls `systemctl`, requires root. |
-| `tunnel.go` | server-only | Long-running reverse-tunnel process meant to run *on* a spot VM alongside `containarium daemon`/`sshd` — same category as `daemon`/`sentinel`, not an operator-laptop command. |
-| `runner_reconcile.go` | client | Doc comment is explicit: "authenticates as an ordinary client (the same `--server`/token path as every other CLI verb) ... no GitHub PAT or privileged auth context has to live inside the daemon." No Incus access. |
-| `token_inspect.go` | client | Doc comment is explicit: "The token never leaves the local machine. No daemon contact." Pure offline JWT decode, no root/host access — safe and useful on an operator's laptop. |
-
-No remaining unresolved files — every file in `internal/cmd` now has a
-tagging disposition.
+Cobra handles a group with fewer children (`pool`, `secrets`, `token`,
+`runner`, `label` under `cnct`) without any change.
 
 ## Test strategy
 
@@ -289,33 +347,50 @@ tagging disposition.
   A forgotten `!cnct_client` tag on a new server command that imports
   any of those fails here, not in review. (`pkg/core/incus` is
   deliberately *not* on this list until the types follow-up lands.)
-- **Command-tree gate (new, in-package):** a Go test in `internal/cmd`
-  tagged `cnct_client` that walks `rootCmd.Commands()` recursively and
-  asserts `daemon`, `sentinel`, `node`, `hosting`, `portforward`,
-  `tunnel`, `service`, `pool join` are absent — catches server commands
-  that don't happen to import a gated package.
+- **Command-tree gate (new, in-package, allow-list):** a Go test in
+  `internal/cmd` tagged `cnct_client` walks `rootCmd.Commands()`
+  recursively, renders every registered path (`pool list`, `label set`,
+  …), and compares the full set against a checked-in golden list of
+  approved client paths — failing on *any* path not in the list, and on
+  any approved path that went missing. A deny-list of known server
+  names would miss a new server command that uses only the standard
+  library (a `systemctl` shell-out registers fine and imports nothing
+  gated); an allow-list catches it because a new command of either
+  kind has to be added deliberately. The dependency-graph gate above
+  stays as the supplementary check that the *code*, not just the
+  registration, is out of the link.
 - **Hybrid-command dispatch (table-driven, per command):** for each of
-  the six hybrids, a test under `cnct_client` asserting that with no
+  the twelve hybrids, a test under `cnct_client` asserting that with no
   `--server`, no `CONTAINARIUM_SERVER`, and an empty credentials file,
-  `PersistentPreRunE` returns the "no server configured" error before
-  `RunE` executes; and one test that calling a `*Local` stub directly
-  returns `errNoLocalMode`. Under the default build, the existing
-  pure-function tests in those files (`TestListJSONShape`,
-  `TestFilterForPrune`, `TestParseLabelFilter`, …) run unchanged — note
-  none of them exercise local mode today; local-mode coverage remains the
-  integration suite's job, as now.
-- **`default_server` fallback (new, shared helper):** table test for
-  flag → env → `default_server` → error: explicit flag wins over env;
-  env wins over file; empty flag + populated file resolves; all three
-  empty errors.
+  the command returns the "no server configured" error from the client
+  constructor without reaching a `*Local` call; and one test that
+  calling each stub directly returns `errNoLocalMode`. Under the
+  default build, the existing pure-function tests in those files
+  (`TestListJSONShape`, `TestFilterForPrune`, `TestParseLabelFilter`, …)
+  run unchanged — note none of them exercise local mode today;
+  local-mode coverage remains the integration suite's job, as now.
+- **Offline commands stay offline (new):** under `cnct_client`, with no
+  server configured anywhere, `cert generate --output <tmp>`, `token
+  inspect <jwt>`, `token generate --secret x`, and `version` succeed.
+  This is the test that pins "the server requirement lives at the dial
+  seam, not in pre-run".
+- **`resolveServerAddr` (new, tag-split helper):** under `cnct_client`,
+  flag wins over env, env wins over `default_server`, empty flag +
+  populated file resolves, all three empty yields empty (and the
+  constructor errors). Under the default build the same inputs return
+  the flag/env value unchanged — the test that pins "`containarium`
+  behavior is untouched".
+- **`client.NewGRPCClient("")` / `NewHTTPClient("")`** return the
+  "no server configured" error (both builds).
 - **Existing test files that reference server-only symbols must gain
   the same `!cnct_client` tag** or `go test -tags cnct_client
-  ./internal/cmd` fails to compile: `doctor_test.go`,
-  `daemon_base_domains_test.go`, `debug_actions_parse_test.go` (imports
-  `internal/server`), `pool_join_test.go`, `sentinel_pprof_test.go`,
-  `service_test.go`, `service_backoff_test.go`,
-  `tunnel_forward_test.go`. CI runs `go test` for `internal/cmd` under
-  both tag sets.
+  ./internal/cmd` fails to compile — at minimum `audit_test.go`,
+  `cloud_test.go`, `doctor_test.go`, `daemon_base_domains_test.go`,
+  `debug_actions_parse_test.go` (imports `internal/server`),
+  `pool_join_test.go`, `sentinel_pprof_test.go`, `service_test.go`,
+  `service_backoff_test.go`, `tunnel_forward_test.go`; the compiler
+  names any others. CI runs `go test` for `internal/cmd` under both tag
+  sets.
 - **Regression guard on MCP:** `go build ./cmd/mcp-server ./cmd/agent-box`
   in CI already exists; no test changes needed there, but the CI job list
   gets an explicit comment noting *why* it's unaffected (so the next
@@ -378,7 +453,7 @@ service.
    invoked with a client verb and no `--server`, before falling into
    local mode? This directly targets the footgun in the Problem section
    without breaking anything. Recommendation: yes, but as a `stderr` hint
-   only, gated to the six hybrid commands, never a hard behavior change
+   only, gated to the twelve hybrid commands, never a hard behavior change
    — needs a decision on wording/opt-out (`CONTAINARIUM_NO_HINT=1`?).
 3. **Does `cnct` ship a `default_server` **write** path (`cnct login`,
    `cnct config set-server`), or does it require the file to already
@@ -396,14 +471,23 @@ service.
    `internal/client` signature and the MCP `API` interface, so it is its
    own PR, after the split lands, and is what lets `pkg/core/incus` join
    the dependency-gate list.
-5. **Drop the cargo-cult `!windows` tags** on `audit.go` and
-   `collaborator_*.go` (see Build & release) so a windows `cnct` is
-   complete. Independent of this design; noted so it isn't lost.
+5. **Drop the cargo-cult `!windows` tag** on `egress_via_client.go`'s
+   siblings if any remain client-side (see Build & release). `audit.go`
+   and `collaborator_*.go` turned out to be server-only, so their
+   `!windows` tags are moot for `cnct`. Independent of this design.
+6. **Give `collaborator add/remove/list` a remote path.** The proto
+   already carries collaborator RPCs (the cloud shim uses them), but the
+   OSS CLI handlers only ever call `container.New()` directly, so
+   `cnct` ships with no `collaborator` verb at all. Adding the
+   `--server` branch (same shape as `label`) turns it into the thirteenth
+   hybrid and puts it back in the client. Per CLAUDE.md's CLI-first
+   rule this is a gap worth closing regardless of the split; it's
+   listed here so `cnct`'s first release doesn't silently drop a verb.
 
 ## Rejected alternatives
 
 - **Full package split (`internal/cmd` → `internal/cmd` +
-  `internal/cmdclient`, physically moving ~114 files).** Same end state,
+  `internal/cmdclient`, physically moving ~103 files).** Same end state,
   much higher diff/review cost and merge-conflict surface for zero
   behavioral difference from the build-tag approach — every file's
   package clause, relative imports of shared package-level vars
