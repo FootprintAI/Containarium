@@ -275,23 +275,21 @@ func TestTrafficStore_GetConnectionByConntrackID(t *testing.T) {
 	}
 }
 
-// CHARACTERIZATION (#1395): Cleanup does not touch traffic_aggregates.
+// Cleanup must remove traffic_aggregates rows past their retention window,
+// and leave recent ones alone (#1395: it used to touch traffic_connections
+// only, so aggregates accumulated for the lifetime of the deployment).
 //
-// `Cleanup(retentionDays)` deletes from traffic_connections only. The
-// collector calls it on a timer as the retention mechanism, and
-// traffic_aggregates has no cleanup anywhere — so aggregates accumulate for
-// the lifetime of the deployment, on a table with a row per container per
-// destination per interval.
-//
-// Pinned the same way as the dedup defect above: passes on main, fails when
-// fixed.
-func TestTrafficStore_CleanupLeavesAggregatesBehind(t *testing.T) {
+// The aggregates window is a deliberate multiple of retentionDays
+// (aggregateRetentionMultiplier), not the same value — so Cleanup(30) here
+// is only exercised against an aggregate old enough to be well past ANY
+// sane multiple of 30 days, and a recent one that survives regardless of
+// which multiple is configured.
+func TestTrafficStore_CleanupRemovesAggregatesPastRetention(t *testing.T) {
 	ctx := context.Background()
 	store, container := trafficTestStore(t)
 
-	// An aggregate well outside any sane retention window.
 	old := time.Now().UTC().AddDate(0, 0, -400).Truncate(time.Second)
-	agg := &pb.TrafficAggregate{
+	oldAgg := &pb.TrafficAggregate{
 		DestIp:          "93.184.216.34",
 		DestPort:        443,
 		BytesSent:       10,
@@ -299,30 +297,54 @@ func TestTrafficStore_CleanupLeavesAggregatesBehind(t *testing.T) {
 		ConnectionCount: 1,
 		Timestamp:       timestamppb.New(old),
 	}
-	if err := store.SaveAggregate(ctx, agg, container, old.Add(time.Hour)); err != nil {
-		t.Fatalf("SaveAggregate: %v", err)
+	if err := store.SaveAggregate(ctx, oldAgg, container, old.Add(time.Hour)); err != nil {
+		t.Fatalf("SaveAggregate(old): %v", err)
+	}
+
+	recent := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	recentAgg := &pb.TrafficAggregate{
+		DestIp:          "93.184.216.34",
+		DestPort:        443,
+		BytesSent:       30,
+		BytesReceived:   40,
+		ConnectionCount: 1,
+		Timestamp:       timestamppb.New(recent),
+	}
+	if err := store.SaveAggregate(ctx, recentAgg, container, recent.Add(time.Hour)); err != nil {
+		t.Fatalf("SaveAggregate(recent): %v", err)
 	}
 
 	if err := store.Cleanup(ctx, 30); err != nil {
 		t.Fatalf("Cleanup: %v", err)
 	}
 
-	var remaining int
-	if err := store.Pool().QueryRow(ctx,
-		"SELECT COUNT(*) FROM traffic_aggregates WHERE container_name = $1", container,
-	).Scan(&remaining); err != nil {
-		t.Fatalf("count aggregates: %v", err)
+	var remainingStarts []time.Time
+	rows, err := store.Pool().Query(ctx,
+		"SELECT interval_start FROM traffic_aggregates WHERE container_name = $1", container)
+	if err != nil {
+		t.Fatalf("query aggregates: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var ts time.Time
+		if err := rows.Scan(&ts); err != nil {
+			t.Fatalf("scan interval_start: %v", err)
+		}
+		remainingStarts = append(remainingStarts, ts)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate aggregates: %v", err)
 	}
 
-	if remaining == 0 {
-		t.Fatalf("#1395 no longer reproduces: Cleanup removed a 400-day-old aggregate.\n\n" +
-			"If you extended Cleanup to cover traffic_aggregates, this test has done its job — " +
-			"replace it with the positive assertion that aggregates past the retention window " +
-			"are removed and recent ones are not.")
+	if len(remainingStarts) != 1 {
+		t.Fatalf("got %d aggregate row(s) after Cleanup, want exactly 1 (the recent one): %v",
+			len(remainingStarts), remainingStarts)
 	}
-	t.Logf("REPRODUCED #1395: a 400-day-old aggregate survived Cleanup(30 days). Cleanup deletes "+
-		"from traffic_connections only, and nothing anywhere removes rows from "+
-		"traffic_aggregates — %d row(s) remain", remaining)
+	got := remainingStarts[0]
+	if got.Before(recent.Add(-time.Minute)) || got.After(recent.Add(time.Minute)) {
+		t.Fatalf("surviving aggregate has interval_start %v, want the recent one (~%v) — the 400-day-old one (%v) should be the one removed",
+			got, recent, old)
+	}
 }
 
 // Retention must actually delete what it claims to, on the table it does cover.

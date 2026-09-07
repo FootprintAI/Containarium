@@ -3,6 +3,7 @@ package traffic
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -411,20 +412,42 @@ func (s *Store) GetAggregates(ctx context.Context, params AggregateParams) ([]*p
 	return aggregates, nil
 }
 
-// Cleanup removes old traffic data beyond the retention period
+// aggregateRetentionMultiplier makes the traffic_aggregates retention
+// window a deliberate multiple of the connections window, not an
+// accidental reuse of retentionDays (#1395). Aggregates are the cheaper
+// long-term record — one row per (container, dest, interval) rather than
+// one per connection — so keeping them longer than the raw connection
+// history they're derived from is a reasonable, cheap default. 4x is
+// arbitrary but stated; change it here (one place) if that default is
+// wrong for a deployment, rather than plumbing a second config field for
+// a decision nobody has needed to tune yet.
+const aggregateRetentionMultiplier = 4
+
+// Cleanup removes old traffic data beyond the retention period, from both
+// traffic_connections (filtered on created_at, when the row was written)
+// and traffic_aggregates (filtered on interval_start, what the row
+// describes — aggregates have no created_at column). Retention windows
+// differ deliberately; see aggregateRetentionMultiplier.
 func (s *Store) Cleanup(ctx context.Context, retentionDays int) error {
 	cutoff := time.Now().AddDate(0, 0, -retentionDays)
 
-	query := "DELETE FROM traffic_connections WHERE created_at < $1"
-	result, err := s.pool.Exec(ctx, query, cutoff)
+	result, err := s.pool.Exec(ctx,
+		"DELETE FROM traffic_connections WHERE created_at < $1", cutoff)
 	if err != nil {
 		return fmt.Errorf("failed to cleanup old connections: %w", err)
 	}
+	if n := result.RowsAffected(); n > 0 {
+		log.Printf("[traffic] cleaned up %d old connection record(s)", n)
+	}
 
-	rowsAffected := result.RowsAffected()
-	if rowsAffected > 0 {
-		// Log cleanup
-		fmt.Printf("Cleaned up %d old traffic records\n", rowsAffected)
+	aggCutoff := time.Now().AddDate(0, 0, -retentionDays*aggregateRetentionMultiplier)
+	aggResult, err := s.pool.Exec(ctx,
+		"DELETE FROM traffic_aggregates WHERE interval_start < $1", aggCutoff)
+	if err != nil {
+		return fmt.Errorf("failed to cleanup old aggregates: %w", err)
+	}
+	if n := aggResult.RowsAffected(); n > 0 {
+		log.Printf("[traffic] cleaned up %d old aggregate record(s)", n)
 	}
 
 	return nil
