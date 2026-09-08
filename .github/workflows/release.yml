@@ -228,9 +228,13 @@ jobs:
 
           ```bash
           # containarium CLI / daemon (Linux x86_64 example)
-          curl -L -o /usr/local/bin/containarium \
+          # #1781: the release artifact is still published as
+          # "containarium-linux-amd64" (renaming that is #1782); only the
+          # on-host install path + compat symlink change in Phase 1.
+          curl -L -o /usr/local/bin/containariumd \
             https://github.com/footprintai/containarium/releases/download/__RELEASE_REF__/containarium-linux-amd64
-          chmod +x /usr/local/bin/containarium
+          chmod +x /usr/local/bin/containariumd
+          ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium
 
           # Windows: client-only CLI (create/list/ssh/… against a remote daemon;
           # the daemon/sentinel/tunnel subcommands are Linux/macOS only)

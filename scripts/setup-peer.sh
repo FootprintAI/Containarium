@@ -8,7 +8,7 @@
 #
 # Prerequisites:
 #   - Incus installed and initialized
-#   - /tmp/containarium binary uploaded
+#   - /tmp/containariumd binary uploaded
 #   - Run as root: sudo bash setup-peer.sh --spot-id <ID>
 #
 # Usage:
@@ -38,8 +38,8 @@ POOL=""
 PUBLIC_HOSTNAME=""
 PUBLIC_ALIASES=""
 PUBLIC_PORT=""
-BINARY_SRC="/tmp/containarium"
-BINARY_DST="/usr/local/bin/containarium"
+BINARY_SRC="/tmp/containariumd"
+BINARY_DST="/usr/local/bin/containariumd"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -91,14 +91,17 @@ fi
 echo "==> Setting up Containarium peer node: $SPOT_ID"
 
 # 1. Install binary
-echo "==> Installing containarium binary..."
+echo "==> Installing containariumd binary..."
 if [[ ! -f "$BINARY_SRC" ]]; then
     echo "Error: $BINARY_SRC not found. Upload it first:"
-    echo "  scp bin/containarium-linux-amd64 <host>:/tmp/containarium"
+    echo "  scp bin/containarium-linux-amd64 <host>:/tmp/containariumd"
     exit 1
 fi
 cp "$BINARY_SRC" "$BINARY_DST"
 chmod +x "$BINARY_DST"
+# #1781 rollout compat symlink: keeps the pre-#1780 name working for any
+# runbook/cron this inventory missed.
+ln -sf "$BINARY_DST" /usr/local/bin/containarium
 echo "  Binary installed: $BINARY_DST"
 
 # 2. Install daemon service
@@ -117,7 +120,7 @@ fi
 cat > /etc/systemd/system/containarium.service.d/override.conf <<CONF
 [Service]
 ExecStart=
-ExecStart=/usr/local/bin/containarium daemon \\
+ExecStart=/usr/local/bin/containariumd daemon \\
   --app-hosting \\
   --rest \\
   --jwt-secret-file /etc/containarium/jwt.secret \\
@@ -153,7 +156,7 @@ Wants=network-online.target containarium.service
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/containarium tunnel \\
+ExecStart=/usr/local/bin/containariumd tunnel \\
   --sentinel-addr ${SENTINEL_ADDR} \\
   --token ${TUNNEL_TOKEN} \\
   --spot-id ${SPOT_ID} \\

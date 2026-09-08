@@ -3,7 +3,7 @@ name: CLI client/server split gates
 # Pins the guarantee docs/architecture/cli-client-server-split.md (#1769)
 # exists for: the containarium CLIENT (cmd/containarium, -tags
 # containarium_client) cannot fall into local mode because the code isn't
-# there to fall into. Four checks, all from the design's Test strategy
+# there to fall into. Five checks, all from the design's Test strategy
 # section:
 #   1. dependency-graph gate — the client's link is free of daemon-only
 #      packages (scripts/test-cli-split-deps.sh)
@@ -12,6 +12,9 @@ name: CLI client/server split gates
 #   3. untagged-build parity — containariumd's tree is a strict superset of
 #      that golden list (the split never *loses* a command server-side)
 #   4. both tag sets build and go test clean
+#   5. stale install-path gate (#1781) — no host-side script/unit/terraform
+#      file installs or downloads the daemon binary under the pre-rollout
+#      /usr/local/bin/containarium path (scripts/test-old-binary-path-gate.sh)
 #
 # Regression guard on MCP: build-mcp/build-agent-box already exist as
 # their own CI concerns elsewhere (release.yml's build-release covers
@@ -47,6 +50,16 @@ jobs:
 
       - name: Run test-cli-split-deps.sh
         run: ./scripts/test-cli-split-deps.sh
+
+  old-binary-path-gate:
+    name: Stale install-path gate (#1781)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Run test-old-binary-path-gate.sh
+        run: ./scripts/test-old-binary-path-gate.sh
 
   build-both-binaries:
     name: Build both binaries (containarium client + containariumd)

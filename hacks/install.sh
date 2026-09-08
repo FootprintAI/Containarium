@@ -252,18 +252,21 @@ install_containarium_binary() {
 
     log_info "Downloading from: $DOWNLOAD_URL"
 
-    if ! curl -fsSL "$DOWNLOAD_URL" -o /tmp/containarium; then
+    if ! curl -fsSL "$DOWNLOAD_URL" -o /tmp/containariumd; then
         log_error "Failed to download Containarium binary"
         log_info "Please check if the release exists: https://github.com/footprintai/containarium/releases"
         exit 1
     fi
 
-    # Install binary
-    install -m 755 /tmp/containarium "$INSTALL_DIR/containarium"
-    rm /tmp/containarium
+    # Install binary. #1781 (design doc, Rollout Phase 1): installs as
+    # containariumd; the pre-#1780 name keeps working as a compat symlink for
+    # any runbook/cron this inventory missed.
+    install -m 755 /tmp/containariumd "$INSTALL_DIR/containariumd"
+    ln -sf "$INSTALL_DIR/containariumd" "$INSTALL_DIR/containarium"
+    rm /tmp/containariumd
 
     # Verify installation
-    INSTALLED_VERSION=$("$INSTALL_DIR/containarium" version)
+    INSTALLED_VERSION=$("$INSTALL_DIR/containariumd" version)
     log_success "Containarium installed: $INSTALLED_VERSION"
 }
 
@@ -277,7 +280,7 @@ generate_tls_certificates() {
     fi
 
     # Generate certificates
-    "$INSTALL_DIR/containarium" cert generate --output "$CONFIG_DIR/certs"
+    "$INSTALL_DIR/containariumd" cert generate --output "$CONFIG_DIR/certs"
 
     log_success "TLS certificates generated: $CONFIG_DIR/certs"
 }
@@ -300,11 +303,11 @@ setup_jwt_secret() {
 }
 
 create_systemd_service() {
-    log_info "Creating systemd service via 'containarium service install'..."
+    log_info "Creating systemd service via 'containariumd service install'..."
 
     # The binary manages its own service file, JWT secret generation,
     # systemd reload, enable, and start — all in one command.
-    /usr/local/bin/containarium service install
+    /usr/local/bin/containariumd service install
 
     log_success "Systemd service created"
 }
@@ -338,7 +341,7 @@ generate_initial_token() {
     log_info "Generating initial admin token..."
 
     if [ -f "$CONFIG_DIR/jwt.secret" ]; then
-        TOKEN=$("$INSTALL_DIR/containarium" token generate \
+        TOKEN=$("$INSTALL_DIR/containariumd" token generate \
             --username admin \
             --roles admin \
             --expiry 720h \
@@ -489,7 +492,7 @@ run_quickstart_bootstrap() {
     # `if !` so a non-zero exit (e.g. box already exists) doesn't trip set -e.
     if [ -n "$keyfile" ]; then
         log_info "Quickstart: creating first box '$QUICKSTART_NAME' (stack: $QUICKSTART_STACK)..."
-        if ! "$INSTALL_DIR/containarium" create "$QUICKSTART_NAME" \
+        if ! "$INSTALL_DIR/containariumd" create "$QUICKSTART_NAME" \
                 --ssh-key "$keyfile" --stack "$QUICKSTART_STACK"; then
             log_warn "create did not succeed — the box may already exist; continuing"
         else
@@ -498,7 +501,7 @@ run_quickstart_bootstrap() {
     else
         keyless=1
         log_info "Quickstart: creating first box '$QUICKSTART_NAME' with no SSH key (platform-managed; stack: $QUICKSTART_STACK)..."
-        if ! "$INSTALL_DIR/containarium" create "$QUICKSTART_NAME" \
+        if ! "$INSTALL_DIR/containariumd" create "$QUICKSTART_NAME" \
                 --no-ssh-key --stack "$QUICKSTART_STACK"; then
             log_warn "create did not succeed — the box may already exist; continuing"
         else
