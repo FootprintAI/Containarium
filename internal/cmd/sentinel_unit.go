@@ -242,7 +242,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/containarium sentinel \
+ExecStart=/usr/local/bin/containariumd sentinel \
   --spot-vm %s \
   --zone %s \
   --project %s

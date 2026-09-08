@@ -82,7 +82,7 @@ func TestRenderPoolDropIn(t *testing.T) {
 	// ExecStart must be cleared then re-set (systemd override semantics).
 	argv := resolvePoolDaemonArgv(nil, false, "prod", "", nil)
 	d := renderPoolDropIn(argv, "")
-	if !strings.Contains(d, "ExecStart=\nExecStart=/usr/local/bin/containarium daemon") {
+	if !strings.Contains(d, "ExecStart=\nExecStart=/usr/local/bin/containariumd daemon") {
 		t.Errorf("drop-in must clear+reset ExecStart:\n%s", d)
 	}
 	if !strings.Contains(d, "--pool prod") {
@@ -117,7 +117,7 @@ func TestRenderPoolDropIn_SentinelAuthSecret(t *testing.T) {
 func TestResolvePoolDaemonArgv_FreshHostUsesMinimal(t *testing.T) {
 	argv := resolvePoolDaemonArgv(nil, false, "prod", "", nil)
 	got := strings.Join(argv, " ")
-	want := "/usr/local/bin/containarium daemon --rest --jwt-secret-file /etc/containarium/jwt.secret --pool prod"
+	want := "/usr/local/bin/containariumd daemon --rest --jwt-secret-file /etc/containarium/jwt.secret --pool prod"
 	if got != want {
 		t.Errorf("fresh host argv = %q, want %q", got, want)
 	}
@@ -205,6 +205,24 @@ func TestParseExecStartArgv(t *testing.T) {
 		if _, ok := parseExecStartArgv(bad); ok {
 			t.Errorf("parseExecStartArgv(%q) should be false", bad)
 		}
+	}
+}
+
+// TestParseExecStartArgv_RecognizesContainariumd is #1780's fix: a host
+// mid-rollout may already be running the post-flip unit
+// (/usr/local/bin/containariumd) when `pool join` re-runs, and #702's
+// flag-preservation must still recognize it as the daemon command rather
+// than falling back to the minimal baseline and silently dropping flags.
+func TestParseExecStartArgv_RecognizesContainariumd(t *testing.T) {
+	out := "{ path=/usr/local/bin/containariumd ; argv[]=/usr/local/bin/containariumd daemon --rest --jwt-secret-file /etc/containarium/jwt.secret --app-hosting ; ignore_errors=no }"
+	argv, ok := parseExecStartArgv(out)
+	if !ok {
+		t.Fatalf("expected to parse argv from %q", out)
+	}
+	got := strings.Join(argv, " ")
+	want := "/usr/local/bin/containariumd daemon --rest --jwt-secret-file /etc/containarium/jwt.secret --app-hosting"
+	if got != want {
+		t.Errorf("parsed argv = %q, want %q", got, want)
 	}
 }
 

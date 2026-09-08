@@ -129,6 +129,9 @@ func runSentinelServiceInstall(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to write service file: %w", err)
 	}
 	log.Printf("Service file written: %s", sentinelSystemdServicePath)
+	if err := ensureCompatSymlink("/"); err != nil {
+		return err
+	}
 
 	if err := exec.Command("systemctl", "daemon-reload").Run(); err != nil {
 		return fmt.Errorf("failed to reload systemd: %w", err)
@@ -166,6 +169,7 @@ func runSentinelServiceUninstall(cmd *cobra.Command, args []string) error {
 	if err := os.Remove(sentinelSystemdServicePath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to remove service file: %w", err)
 	}
+	removeCompatSymlink("/")
 
 	_ = exec.Command("systemctl", "daemon-reload").Run()
 

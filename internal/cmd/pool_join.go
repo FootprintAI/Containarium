@@ -21,8 +21,9 @@ import (
 // no hand-authored, capability-trap-prone unit), drops in the --pool config,
 // and writes + starts the tunnel unit that dials the sentinel.
 //
-// MVP scope: it assumes the binary is already at /usr/local/bin/containarium
-// and that the operator passes a join token. Deferred to follow-ups (per the
+// MVP scope: it assumes the binary is already at /usr/local/bin/containariumd
+// (#1780; ensureDaemonUnitAndSecret's compat symlink covers the old name) and
+// that the operator passes a join token. Deferred to follow-ups (per the
 // PRD): the `doctor` capability self-check, scoped short-lived token minting,
 // binary fetch/--binary-src, and a --role=tunnel-only variant.
 
@@ -30,7 +31,7 @@ const (
 	tunnelUnitPath  = "/etc/systemd/system/containarium-tunnel.service"
 	daemonDropInDir = "/etc/systemd/system/containarium.service.d"
 	daemonDropIn    = daemonDropInDir + "/pool.conf"
-	daemonBinPath   = "/usr/local/bin/containarium"
+	daemonBinPath   = "/usr/local/bin/containariumd"
 
 	// sentinelAuthSecretFile holds CONTAINARIUM_SENTINEL_AUTH_SECRET for the
 	// EnvironmentFile= directive in the pool drop-in (see renderPoolDropIn).
@@ -153,7 +154,7 @@ func renderTunnelUnit(p tunnelUnitParams) string {
 	b.WriteString("After=network-online.target\nWants=network-online.target\n\n")
 	b.WriteString("[Service]\nType=simple\n")
 	fmt.Fprintf(&b, "EnvironmentFile=%s\n", tunnelTokenSecretFile)
-	b.WriteString("ExecStart=/usr/local/bin/containarium tunnel \\\n")
+	b.WriteString("ExecStart=/usr/local/bin/containariumd tunnel \\\n")
 	fmt.Fprintf(&b, "  --sentinel-addr %s \\\n", p.SentinelAddr)
 	fmt.Fprintf(&b, "  --spot-id %s \\\n", p.SpotID)
 	fmt.Fprintf(&b, "  --ports %s", p.Ports)
@@ -197,12 +198,17 @@ func renderPoolDropIn(argv []string, authSecretFile string) string {
 // parseExecStartArgv extracts the daemon argv from `systemctl show -p ExecStart
 // --value containarium` output, whose value looks like:
 //
-//	{ path=/usr/local/bin/containarium ; argv[]=/usr/local/bin/containarium daemon --rest … ; ignore_errors=no ; … }
+//	{ path=/usr/local/bin/containariumd ; argv[]=/usr/local/bin/containariumd daemon --rest … ; ignore_errors=no ; … }
 //
 // Returns (argv, true) only when the value clearly is the containarium daemon
 // command; (nil, false) otherwise (no unit, empty, or unrecognized). Pure.
 // Note: values containing spaces aren't recovered (systemd doesn't re-quote
 // them here) — daemon flag values (CIDRs, file paths, domains) don't have spaces.
+//
+// Accepts either the pre-#1780 "containarium" path or the post-#1780
+// "containariumd" one: a host mid-rollout may still be running the unit
+// this replaced when pool join re-runs, and #702's flag-preservation must
+// keep working across that transition, not just after it.
 func parseExecStartArgv(showOutput string) ([]string, bool) {
 	i := strings.Index(showOutput, "argv[]=")
 	if i < 0 {
@@ -213,7 +219,11 @@ func parseExecStartArgv(showOutput string) ([]string, bool) {
 		rest = rest[:j]
 	}
 	fields := strings.Fields(rest)
-	if len(fields) < 2 || !strings.HasSuffix(fields[0], "containarium") || fields[1] != "daemon" {
+	if len(fields) < 2 || fields[1] != "daemon" {
+		return nil, false
+	}
+	isDaemonBinary := strings.HasSuffix(fields[0], "containarium") || strings.HasSuffix(fields[0], "containariumd")
+	if !isDaemonBinary {
 		return nil, false
 	}
 	return fields, true

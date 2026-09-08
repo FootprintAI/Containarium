@@ -14,6 +14,59 @@ import (
 
 const systemdServicePath = "/etc/systemd/system/containarium.service"
 
+// compatSymlinkOldPath / compatSymlinkNewPath name the Phase 1 rollout
+// compat symlink (design doc, Rollout Phase 1, #1780): for the duration of
+// the containariumd rollout, /usr/local/bin/containarium keeps working as a
+// symlink to /usr/local/bin/containariumd, so any runbook, cron, or script
+// this inventory missed still works — and shows up in the audit log as the
+// old name rather than failing outright.
+const (
+	compatSymlinkOldPath = "/usr/local/bin/containarium"
+	compatSymlinkNewPath = "/usr/local/bin/containariumd"
+)
+
+// ensureCompatSymlink makes compatSymlinkOldPath a symlink to
+// compatSymlinkNewPath, idempotently. root is prepended to both paths so
+// tests can exercise this without touching the real filesystem; callers
+// pass "/".
+//
+// Deliberately a no-op when compatSymlinkNewPath doesn't exist yet:
+// `service install` / `pool join` can run before this host's normal deploy
+// path (terraform startup script reconcile, self-update) has actually
+// placed containariumd, and replacing a still-in-use containarium binary
+// with a symlink to nothing would brick the host instead of converging it.
+// Both callers are documented idempotent, so the next re-run picks up the
+// symlink once the binary exists.
+func ensureCompatSymlink(root string) error {
+	newPath := filepath.Join(root, compatSymlinkNewPath)
+	if _, err := os.Stat(newPath); err != nil {
+		return nil
+	}
+	oldPath := filepath.Join(root, compatSymlinkOldPath)
+	if target, err := os.Readlink(oldPath); err == nil && target == newPath {
+		return nil // already correct
+	}
+	if err := os.Remove(oldPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to remove %s before symlinking to %s: %w", oldPath, newPath, err)
+	}
+	if err := os.Symlink(newPath, oldPath); err != nil {
+		return fmt.Errorf("failed to symlink %s -> %s: %w", oldPath, newPath, err)
+	}
+	log.Printf("Compat symlink: %s -> %s", oldPath, newPath)
+	return nil
+}
+
+// removeCompatSymlink removes compatSymlinkOldPath only if it is currently
+// our symlink to compatSymlinkNewPath — never a real file. Uninstall must
+// not delete a binary some other mechanism placed there.
+func removeCompatSymlink(root string) {
+	oldPath := filepath.Join(root, compatSymlinkOldPath)
+	newPath := filepath.Join(root, compatSymlinkNewPath)
+	if target, err := os.Readlink(oldPath); err == nil && target == newPath {
+		_ = os.Remove(oldPath)
+	}
+}
+
 // systemdServiceTemplate is the canonical systemd service file.
 // The daemon self-bootstraps from PostgreSQL so only --rest and --jwt-secret-file are needed.
 const systemdServiceTemplate = `[Unit]
@@ -31,7 +84,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/containarium daemon \
+ExecStart=/usr/local/bin/containariumd daemon \
   --rest \
   --jwt-secret-file /etc/containarium/jwt.secret
 Restart=on-failure
@@ -236,6 +289,9 @@ func ensureDaemonUnitAndSecret() error {
 		return fmt.Errorf("failed to write service file: %w", err)
 	}
 	log.Printf("Service file written: %s", systemdServicePath)
+	if err := ensureCompatSymlink("/"); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -250,6 +306,7 @@ func runServiceUninstall(cmd *cobra.Command, args []string) error {
 	if err := os.Remove(systemdServicePath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to remove service file: %w", err)
 	}
+	removeCompatSymlink("/")
 
 	_ = exec.Command("systemctl", "daemon-reload").Run()
 
