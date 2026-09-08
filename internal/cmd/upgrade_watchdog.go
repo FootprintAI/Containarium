@@ -37,8 +37,10 @@ Not meant to be called directly by operators.`,
 
 func init() {
 	rootCmd.AddCommand(upgradeWatchdogCmd)
+	// #1779: matches autoupdate.go's caller in dual_server.go — the watchdog
+	// restores .old at the same path the daemon just swapped.
 	upgradeWatchdogCmd.Flags().StringVar(&watchdogBinaryPath, "binary-path",
-		"/usr/local/bin/containarium", "Path to the binary being watched")
+		"/usr/local/bin/containariumd", "Path to the binary being watched")
 	upgradeWatchdogCmd.Flags().StringVar(&watchdogHealthURL, "health-url",
 		"http://localhost:8080/health", "URL to poll for daemon health")
 }
