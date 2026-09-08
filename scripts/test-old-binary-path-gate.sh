@@ -52,8 +52,14 @@ is_allowlisted() {
   return 1
 }
 
+SELF="scripts/$(basename "$0")"
+
 fail=0
 while IFS= read -r -d '' file; do
+  # Skip this gate script itself — its own comments and PATTERN literal
+  # necessarily contain the string being searched for.
+  [ "$file" = "$SELF" ] && continue
+
   hits="$(grep -nP "$PATTERN" "$file" 2>/dev/null || true)"
   [ -z "$hits" ] && continue
 
