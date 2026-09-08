@@ -76,7 +76,7 @@ customer's cluster; this feature is the inverse — Containarium
 > never SSHes a node, and never files a resize request.
 
 Nodes are **Containarium VMs** (Incus `virtual-machine` instances, the
-substrate the `containarium node` scaffold already targets), not LXC
+substrate the `containariumd node` scaffold already targets), not LXC
 containers: a kubelet wants its own kernel, and the VM boundary keeps a
 tenant's cluster kernel-isolated from the host and from other tenants.
 The distribution is assumed to be **k3s** (single binary, conformant,
@@ -180,7 +180,7 @@ the automation is doing, and hard caps on what it may consume.
   auto-sleep machinery, waking on API/traffic. This is where the two
   "serverless" stories meet; needs the wake path to understand the K8s
   API port.
-- **P1 — GPU node pools:** the `containarium node` GPU/VFIO path is
+- **P1 — GPU node pools:** the `containariumd node` GPU/VFIO path is
   partial today; GPU nodes ride on finishing it, plus device-plugin
   install. High-value (it is the substrate's differentiator) but not
   needed to prove the managed-cluster loop.
@@ -228,7 +228,7 @@ the automation is doing, and hard caps on what it may consume.
   enough on the chosen K8s version for Story 4; if not, Story 4's
   fallback is VPA recreate-mode (pods restart on resize) — degraded but
   still "no hand-tuning".
-- **Open:** node VM provisioning path — extend the `containarium node`
+- **Open:** node VM provisioning path — extend the `containariumd node`
   scaffold (whose CPU path exists, deliberately CLI-only/no-proto) or a
   new internal provisioner behind `ClusterService`? The node scaffold's
   no-proto stance conflicts with cluster nodes being API-managed

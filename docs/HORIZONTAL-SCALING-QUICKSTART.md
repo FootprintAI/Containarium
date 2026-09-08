@@ -160,17 +160,18 @@ scp bin/containarium-linux-amd64 admin@35.x.x.x:/tmp/
 
 # SSH and install
 ssh admin@35.x.x.x
-sudo mv /tmp/containarium-linux-amd64 /usr/local/bin/containarium
-sudo chmod +x /usr/local/bin/containarium
+sudo mv /tmp/containarium-linux-amd64 /usr/local/bin/containariumd
+sudo chmod +x /usr/local/bin/containariumd
+sudo ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium
 
 # Verify
-containarium version
+containariumd version
 ```
 
 **Repeat for each jump server** (if not using load balancer):
 ```bash
 scp bin/containarium-linux-amd64 admin@35.1.1.1:/tmp/
-ssh admin@35.1.1.1 "sudo mv /tmp/containarium-linux-amd64 /usr/local/bin/containarium && sudo chmod +x /usr/local/bin/containarium"
+ssh admin@35.1.1.1 "sudo mv /tmp/containarium-linux-amd64 /usr/local/bin/containariumd && sudo chmod +x /usr/local/bin/containariumd && sudo ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium"
 
 # Repeat for jump-2, jump-3...
 ```

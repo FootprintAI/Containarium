@@ -185,7 +185,7 @@ gcloud compute ssh sentinel-vm
 # 2. Move the old key aside (don't delete — emergency rollback).
 sudo mv /etc/containarium/ca.key /etc/containarium/ca.key.prev
 # 3. Generate a fresh one.
-sudo /usr/local/bin/containarium pki generate-ca | sudo tee /etc/containarium/ca.key >/dev/null
+sudo /usr/local/bin/containariumd pki generate-ca | sudo tee /etc/containarium/ca.key >/dev/null
 sudo chmod 0400 /etc/containarium/ca.key
 sudo chown root:root /etc/containarium/ca.key
 
