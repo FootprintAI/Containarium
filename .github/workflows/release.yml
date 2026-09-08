@@ -327,6 +327,9 @@ jobs:
             bin/containarium-darwin-amd64
             bin/containarium-darwin-arm64
             bin/containarium-windows-amd64.exe
+            bin/containariumd-linux-amd64
+            bin/containariumd-darwin-amd64
+            bin/containariumd-darwin-arm64
             bin/mcp-server-linux-amd64
             bin/mcp-server-darwin-amd64
             bin/mcp-server-darwin-arm64
