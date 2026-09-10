@@ -1000,11 +1000,6 @@ func (s *ContainerServer) ListContainers(ctx context.Context, req *pb.ListContai
 		req.Username = subject
 	}
 
-	containers, err := s.manager.List()
-	if err != nil {
-		return nil, fmt.Errorf("failed to list containers: %w", err)
-	}
-
 	// Snapshot in-flight async creations so list state is provisioning-aware
 	// (#1036). GetContainer has reported CREATING/PROVISIONING from this map
 	// since #837; list bypassed it, so a box ~30s into a multi-minute
@@ -1027,62 +1022,97 @@ func (s *ContainerServer) ListContainers(ctx context.Context, req *pb.ListContai
 	}
 	s.pendingMu.RUnlock()
 
-	// Filter containers. The state filter is NOT applied here: it must match
-	// the provisioning-aware state the response reports (overlaid below),
-	// not the raw incus state — otherwise state=RUNNING would wrongly
-	// include a mid-provisioning box. applyProvisioningOverlay re-applies it
-	// post-overlay for these local entries (peer entries never went through
-	// the state filter — unchanged).
-	var filtered []incus.ContainerInfo
-	for _, c := range containers {
-		// Exclude core containers (postgres, caddy) from user-facing listings
-		if c.Role.IsCoreRole() {
-			continue
-		}
-
-		// Filter by username if specified
-		if req.Username != "" {
-			// Extract username from container name (format: username-container)
-			username := c.Name
-			if len(c.Name) > 10 && c.Name[len(c.Name)-10:] == "-container" {
-				username = c.Name[:len(c.Name)-10]
-			}
-			if username != req.Username {
-				continue
-			}
-		}
-
-		// Filter by labels if specified
-		if len(req.LabelFilter) > 0 {
-			if !incus.MatchLabels(c.Labels, req.LabelFilter) {
-				continue
-			}
-		}
-
-		filtered = append(filtered, c)
-	}
-
-	// Tag local containers with this daemon's backend ID
-	if s.peerPool != nil && s.peerPool.LocalBackendID() != "" {
-		for i := range filtered {
-			filtered[i].BackendID = s.peerPool.LocalBackendID()
-		}
-	}
-
-	// Convert to protobuf. ListContainers still filters on incus-specific
-	// fields (Role) so it stays on the Manager + the exported converter; the
-	// proto layer below sees only the runtime-neutral box.BoxStatus.
+	// #1525: a K8s-backed daemon's manager wraps incus.UnavailableBackend,
+	// which fails every call with "incus backend not available on this
+	// host" — list has to dispatch through the runtime-neutral
+	// box.BoxBackend seam the same way create/delete/get already do,
+	// rather than assume Incus. box.BoxStatus already carries the
+	// runtime-neutral IsCore flag in place of Role.IsCoreRole(), so
+	// filtering mirrors the Incus path's logic exactly, just off the
+	// neutral type.
 	var protoContainers []*pb.Container
-	for i := range filtered {
-		st := boxlxc.StatusFromInfo(&filtered[i])
-		pc := toProtoContainer(&st)
-		pc.Pool = s.resolvePool(pc.BackendId)
-		pc.SshHost = s.sshHost
-		// Local boxes only. A peer's containers are described by the peer —
-		// asking THIS daemon's hooks about them would answer from the wrong
-		// key custody and report every remote container as unencrypted.
-		s.withEncryptionState(ctx, pc)
-		protoContainers = append(protoContainers, pc)
+	if bb, isK8s := s.k8sBoxes(); isK8s {
+		statuses, err := bb.List(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list containers: %w", err)
+		}
+		for i := range statuses {
+			st := &statuses[i]
+			if st.IsCore {
+				continue
+			}
+			if req.Username != "" && st.Ref.Tenant != req.Username {
+				continue
+			}
+			if len(req.LabelFilter) > 0 && !incus.MatchLabels(st.Labels, req.LabelFilter) {
+				continue
+			}
+			pc := toProtoContainer(st)
+			pc.Pool = s.resolvePool(pc.BackendId)
+			pc.SshHost = s.sshHost
+			s.withEncryptionState(ctx, pc)
+			protoContainers = append(protoContainers, pc)
+		}
+	} else {
+		containers, err := s.manager.List()
+		if err != nil {
+			return nil, fmt.Errorf("failed to list containers: %w", err)
+		}
+
+		// Filter containers. The state filter is NOT applied here: it must
+		// match the provisioning-aware state the response reports (overlaid
+		// below), not the raw incus state — otherwise state=RUNNING would
+		// wrongly include a mid-provisioning box. applyProvisioningOverlay
+		// re-applies it post-overlay for these local entries (peer entries
+		// never went through the state filter — unchanged).
+		var filtered []incus.ContainerInfo
+		for _, c := range containers {
+			// Exclude core containers (postgres, caddy) from user-facing listings
+			if c.Role.IsCoreRole() {
+				continue
+			}
+
+			// Filter by username if specified
+			if req.Username != "" {
+				// Extract username from container name (format: username-container)
+				username := c.Name
+				if len(c.Name) > 10 && c.Name[len(c.Name)-10:] == "-container" {
+					username = c.Name[:len(c.Name)-10]
+				}
+				if username != req.Username {
+					continue
+				}
+			}
+
+			// Filter by labels if specified
+			if len(req.LabelFilter) > 0 {
+				if !incus.MatchLabels(c.Labels, req.LabelFilter) {
+					continue
+				}
+			}
+
+			filtered = append(filtered, c)
+		}
+
+		// Tag local containers with this daemon's backend ID
+		if s.peerPool != nil && s.peerPool.LocalBackendID() != "" {
+			for i := range filtered {
+				filtered[i].BackendID = s.peerPool.LocalBackendID()
+			}
+		}
+
+		// Convert to protobuf.
+		for i := range filtered {
+			st := boxlxc.StatusFromInfo(&filtered[i])
+			pc := toProtoContainer(&st)
+			pc.Pool = s.resolvePool(pc.BackendId)
+			pc.SshHost = s.sshHost
+			// Local boxes only. A peer's containers are described by the peer —
+			// asking THIS daemon's hooks about them would answer from the wrong
+			// key custody and report every remote container as unencrypted.
+			s.withEncryptionState(ctx, pc)
+			protoContainers = append(protoContainers, pc)
+		}
 	}
 
 	protoContainers = applyProvisioningOverlay(protoContainers, pendingStates,
