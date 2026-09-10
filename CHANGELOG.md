@@ -7,6 +7,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.76.1] - 2026-09-10
+
+### Added
+
+- **VM serial console access for BYOC hosts** (#1753, #1755, #1757, #1764).
+  Incus's console ring-buffer log is now exposed via `GetConsoleLog`, plus a
+  live interactive attach to a VM instance's serial console. A
+  console-multiplex agent on VirtualBox-hosted BYOC hosts and a sentinel
+  console router make the console reachable from outside the host's own
+  network, matching the reachability box owners already have for LXC
+  containers.
+- **DNS-01 provider credential verification** (#1740). Beyond checking a
+  credential is present and propagated, the daemon now authenticates it
+  against the provider's own API before relying on it for issuance.
+- **CLI split into `containarium` (client) and `containariumd` (server)**
+  (#1788-#1795, #1797, #1798, #1800). Server-only code is now build-tag
+  isolated from the client binary, enforced by new CI gates (dependency
+  graph, command-tree allow-list, parity between the two tag sets). The
+  release workflow now publishes `containariumd-*` and continues to mirror
+  `containarium-*` for compatibility; startup/deploy/install scripts and
+  collaborator commands were flipped to the split binaries.
+
+### Fixed
+
+- **`su`-based shell diagnostics reported a bare permission error instead of
+  naming the missing account** (#1487, #1768, #1771). The debug path now
+  distinguishes a missing host account from a missing in-container account
+  and names which one is absent.
+- **DNS-01 provider credentials never reached Caddy's own process
+  environment on some ordering** (#1738), addressed alongside the
+  verification work above.
+- **New secrets could still land as `env` delivery in one path** (#1741);
+  default is now `file` delivery.
+- **CPU admission check-then-act race** (#1742) closed in the server's
+  admission path.
+- **Caddy's HTTP server could reclaim `:443` from an active L4
+  SNI-passthrough server** (#1744) under a second ordering not covered by
+  the v0.75.0 fix.
+- **`namespace.yaml`** in the Helm chart is now guarded on
+  `gateway.enabled` (#1746), avoiding a namespace resource when the
+  gateway is disabled.
+- **`ListContainers` bypassed the `box.BoxBackend` seam** (#1747), now
+  dispatched through it like the rest of the container RPCs.
+- **Hypervisor agent's handshake reader could silently swallow console
+  input** (#1758) on the new VM console path.
+- **`/terminal` WebSocket route on the gateway had no tenant check**
+  (#1765), allowing a request to reach a terminal session it shouldn't.
+- **`traffic_aggregates` rows were never cleaned up** (#1770); cleanup now
+  removes stale rows alongside the raw flow data it already pruned.
+
+### Documentation
+
+- Console access design for BYOC VM hosts (#1748).
+- README shows the `--http --server` form of ssh-config sync (#1767).
+- Architecture design for splitting the CLI into `containarium` (client)
+  and `containariumd` (server) (#1769).
+- Operator docs and runbooks updated to reference `containariumd` for
+  on-host commands (#1799).
+
+### Internal
+
+- Dependency bumps: `sigs.k8s.io/controller-runtime` 0.24.1→0.25.0,
+  `github.com/mark3labs/mcp-go` 0.58.0→1.0.0, `google.golang.org/api`
+  0.294.0→0.297.0, `sigs.k8s.io/agent-sandbox` 1.0.0→1.0.1 (#1759, #1760,
+  #1762, #1763).
+
+**Note:** `v0.76.0` was tagged without the required version-bump commit and
+its release-notes build failed before publishing a GitHub Release. Its
+build/image/PyPI workflows had already fired and published under that
+version number by the time the mistake was caught (PyPI does not allow
+re-uploading a burned version — see `docs/RELEASE-PROCESS.md`). The tag is
+left in git history as dead, matching the `v0.48.0` precedent; this
+release supersedes it and is otherwise identical in scope.
+
+**Full diff**: https://github.com/FootprintAI/Containarium/compare/v0.75.0...v0.76.1
+
 ## [0.75.0] - 2026-09-06
 
 ### Added
