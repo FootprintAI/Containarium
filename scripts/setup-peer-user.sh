@@ -72,6 +72,21 @@ if [ -z "$COMMAND" ] && [ "$1" = "-c" ]; then
     COMMAND="$2"
 fi
 
+# Verify the in-container account exists before handing off to su. A box
+# whose in-container provisioning never completed (#1487) otherwise dies
+# several layers down with a bare "su: user X does not exist", which says
+# nothing about which half of provisioning is missing or what to run next.
+if ! sudo incus exec "$CONTAINER" --mode non-interactive -- id "$USERNAME" >/dev/null 2>&1; then
+    cat >&2 <<MSG
+Error: account '$USERNAME' does not exist inside $CONTAINER.
+  Host-side login succeeded, but the in-container half of provisioning
+  never completed, so there is no account to log in to.
+  Diagnose:  containarium debug $USERNAME
+  Details:   https://github.com/FootprintAI/Containarium/issues/1487
+MSG
+    exit 1
+fi
+
 if [ -n "$COMMAND" ]; then
     exec sudo incus exec "$CONTAINER" --mode non-interactive -- su - "$USERNAME" -c "$COMMAND"
 fi
