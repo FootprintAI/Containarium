@@ -618,6 +618,18 @@ message DebugContainerResponse {
   // don't apply — there is no sentinel to check. Lets an agent stop hunting
   // for a jump host that doesn't exist. See #1011.
   string ssh_ingress_host = 10;
+
+  // True when the host-level Linux user exists but the SAME username does
+  // NOT exist inside the running container (#1487). containarium-shell's
+  // login path `su`s into this username INSIDE the container, so this
+  // combination — host account provisioned, in-container account never
+  // created — makes the box permanently unreachable over SSH even though
+  // every other signal (Incus RUNNING, host user present, sshd healthy)
+  // looks fine. Only meaningful (and only checked) when host_user_exists
+  // is true and container_state is "running"; false otherwise, including
+  // "not checked" — callers must read it alongside those two fields, the
+  // same convention host_user_shell_exists already follows.
+  bool in_container_user_missing = 11;
 }
 
 // GetConsoleLogRequest is the request to fetch a VM instance's boot-time

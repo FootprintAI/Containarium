@@ -127,7 +127,7 @@ fi
 check "Daemon is running on backend at expected version"
 ACTUAL_VERSION="$(gcloud compute ssh "$SPOT_VM" \
   --project="$PROJECT_ID" --zone="$ZONE" --tunnel-through-iap \
-  --command='sudo /usr/local/bin/containarium version' --quiet 2>/dev/null \
+  --command='sudo /usr/local/bin/containariumd version' --quiet 2>/dev/null \
   | head -1 | tr -d '[:space:]')" || fail "couldn't reach the daemon binary over IAP"
 echo "  daemon reports: $ACTUAL_VERSION"
 if [[ -n "$EXPECTED_VERSION" ]] && [[ "$ACTUAL_VERSION" != *"$EXPECTED_VERSION"* ]]; then
@@ -156,7 +156,7 @@ trap 'rm -f "$TOKEN_FILE"' EXIT
 
 gcloud compute ssh "$SPOT_VM" \
   --project="$PROJECT_ID" --zone="$ZONE" --tunnel-through-iap \
-  --command='sudo /usr/local/bin/containarium token generate \
+  --command='sudo /usr/local/bin/containariumd token generate \
               --username smoke --roles admin --expiry 1h \
               --secret-file /etc/containarium/jwt.secret 2>/dev/null \
               | grep -E "^eyJ"' --quiet 2>/dev/null \

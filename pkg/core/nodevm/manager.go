@@ -10,7 +10,9 @@ import (
 )
 
 // guestBinaryPath is where the containarium binary lands inside the node VM.
-const guestBinaryPath = "/usr/local/bin/containarium"
+// #1781: a node VM runs the full daemon build (it becomes a pool backend),
+// so it gets the containariumd name like any other host-side install.
+const guestBinaryPath = "/usr/local/bin/containariumd"
 
 // guestTokenPath is the perm-tight file the in-guest tunnel reads its
 // token from (never passed on argv / kernel cmdline).

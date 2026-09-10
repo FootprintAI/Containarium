@@ -423,7 +423,7 @@ sudo systemctl enable caddy
 sudo systemctl start caddy
 
 # Start Containarium daemon
-containarium daemon \
+containariumd daemon \
   --app-hosting \
   --postgres "postgres://user:pass@localhost:5432/containarium" \
   --base-domain "containarium.dev" \

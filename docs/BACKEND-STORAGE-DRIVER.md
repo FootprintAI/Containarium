@@ -68,7 +68,7 @@ it has not established for it.
 For a backend that runs mutually untrusting tenants:
 
 ```bash
-containarium daemon --require-isolated-storage ...
+containariumd daemon --require-isolated-storage ...
 ```
 
 The daemon then refuses to initialize infrastructure on a pool whose driver
@@ -126,7 +126,7 @@ incus storage create isolated zfs source=<dataset>
 #    during the migration land on the new pool rather than the old one.
 #    (--storage-pool is the incus STORAGE pool; --pool is a
 #    sentinel-fronted cluster and is unrelated. See MULTI-POOL.md.)
-containarium daemon --storage-pool isolated ...     # then restart the daemon
+containariumd daemon --storage-pool isolated ...     # then restart the daemon
 
 # 3. Move tenants across one at a time. Rollback is per tenant:
 #    `incus move <container> --storage default`.

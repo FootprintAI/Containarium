@@ -96,18 +96,19 @@ fi
 echo "resolved tag: \$TAG"
 
 BASE_URL="https://github.com/FootprintAI/Containarium/releases/download/\${TAG}"
-curl -fsSL -o /tmp/containarium "\${BASE_URL}/containarium-linux-amd64"
+curl -fsSL -o /tmp/containariumd "\${BASE_URL}/containarium-linux-amd64"
 curl -fsSL -o /tmp/SHA256SUMS.txt "\${BASE_URL}/SHA256SUMS.txt"
 
 EXPECTED=\$(grep 'containarium-linux-amd64\$' /tmp/SHA256SUMS.txt | awk '{print \$1}')
-ACTUAL=\$(sha256sum /tmp/containarium | awk '{print \$1}')
+ACTUAL=\$(sha256sum /tmp/containariumd | awk '{print \$1}')
 [[ "\$EXPECTED" == "\$ACTUAL" ]] || {
 	echo "SHA256 mismatch: expected \$EXPECTED, got \$ACTUAL" >&2
 	exit 1
 }
 
-install -m 0755 /tmp/containarium /usr/local/bin/containarium
-containarium version
+install -m 0755 /tmp/containariumd /usr/local/bin/containariumd
+ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium
+containariumd version
 REMOTE
 
 log "starting the daemon (default mode: core services on, LXC backend)"
@@ -136,7 +137,7 @@ After=network-online.target incus.service
 Wants=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/containarium daemon --address 0.0.0.0 --rest --http-port 8080 --jwt-secret-file /etc/containarium/jwt.secret --disable-security-scanner --disable-pentest-scanner --disable-zap-scanner
+ExecStart=/usr/local/bin/containariumd daemon --address 0.0.0.0 --rest --http-port 8080 --jwt-secret-file /etc/containarium/jwt.secret --disable-security-scanner --disable-pentest-scanner --disable-zap-scanner
 Restart=on-failure
 RestartSec=5s
 

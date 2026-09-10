@@ -294,17 +294,20 @@ CONTAINARIUM_BINARY_URL="${containarium_binary_url}"
 if [ -n "$CONTAINARIUM_BINARY_URL" ]; then
     # Download from specified URL (e.g., GitHub releases)
     echo "Downloading from: $CONTAINARIUM_BINARY_URL"
-    curl -fsSL "$CONTAINARIUM_BINARY_URL" -o /usr/local/bin/containarium
-    chmod +x /usr/local/bin/containarium
+    curl -fsSL "$CONTAINARIUM_BINARY_URL" -o /usr/local/bin/containariumd
+    chmod +x /usr/local/bin/containariumd
+    # Rollout Phase 1 (#1781): keep the old name working as a symlink so any
+    # runbook/cron this inventory missed keeps working.
+    ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium
     echo "✓ Containarium daemon downloaded"
 else
     echo "⚠ No Containarium binary URL provided, daemon not installed"
-    echo "  You can manually install it later by copying the binary to /usr/local/bin/containarium"
+    echo "  You can manually install it later by copying the binary to /usr/local/bin/containariumd"
 fi
 
 # Verify installation
-if [ -f /usr/local/bin/containarium ]; then
-    /usr/local/bin/containarium version || echo "Containarium binary installed (version command not available)"
+if [ -f /usr/local/bin/containariumd ]; then
+    /usr/local/bin/containariumd version || echo "Containarium binary installed (version command not available)"
     echo "✓ Containarium daemon ready"
 fi
 
@@ -365,8 +368,8 @@ fi
 
 # Install systemd service via the binary's built-in command.
 echo "==> Installing Containarium systemd service..."
-if [ -f /usr/local/bin/containarium ]; then
-    /usr/local/bin/containarium service install
+if [ -f /usr/local/bin/containariumd ]; then
+    /usr/local/bin/containariumd service install
     echo "✓ Containarium daemon service installed and started"
 
     # Phase 0.4/0.5 secrets drop-in (mirrors startup-spot.sh).

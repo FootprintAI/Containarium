@@ -67,6 +67,17 @@ func (s *ContainerServer) DebugContainer(ctx context.Context, req *pb.DebugConta
 		resp.HostUserShellExists = isExecutableFile(shell)
 	}
 
+	// #1487: the host account can exist, look healthy, and still be
+	// unreachable because containarium-shell `su`s into the SAME username
+	// INSIDE the container — and in-container user creation is a separate
+	// provisioning step that can silently fail to run. Only worth checking
+	// once the box is actually running and the host half is confirmed
+	// present; a stopped/missing container or missing host user is already
+	// diagnosed by the checks above.
+	if exists && resp.ContainerState == "running" {
+		resp.InContainerUserMissing = s.inContainerUserMissing(req.Username)
+	}
+
 	resp.RecentSshdRejections = recentSshdLines(req.Username, 8)
 
 	// Advertised SSH entrypoint (sentinel host), or empty for direct/in-network
@@ -97,6 +108,23 @@ func (s *ContainerServer) debugContainerState(username string) string {
 		return "unknown"
 	}
 	return state
+}
+
+// inContainerUserMissing reports whether the in-container Linux user does
+// NOT exist inside username's container (#1487). It runs `id <username>`
+// via incus exec and reads the exit code, not err: err means the exec
+// itself couldn't run (transport/backend problem, or a mock backend in
+// tests) — that's "we don't know", not "missing", so it deliberately
+// returns false rather than risk a false positive that sends an operator
+// down the wrong remediation path. A non-zero exit with no error means the
+// command ran and `id` genuinely found no such user.
+func (s *ContainerServer) inContainerUserMissing(username string) bool {
+	containerName := username + "-container"
+	_, _, exitCode, err := s.manager.ExecWithExitCode(containerName, []string{"id", username})
+	if err != nil {
+		return false
+	}
+	return exitCode != 0
 }
 
 // lookupHostUserShell returns (exists, shell, homedir) for the host user with
@@ -252,6 +280,22 @@ func Diagnose(username string, r *pb.DebugContainerResponse) (string, []string) 
 			[]string{
 				"install the containarium-shell wrapper on the backend (see scripts/setup-ssh-container-proxy.sh)",
 				"this is a deploy-time gap, not a per-container issue — fix the backend image/startup",
+			}
+	}
+
+	if r.InContainerUserMissing {
+		// #1487: every host-side signal is healthy — user, shell, sshd — but
+		// containarium-shell's `su - username` dies INSIDE the container
+		// because create never ran (or failed) its in-container user step.
+		// `containarium connect`/SSH cannot repair this themselves: both
+		// route through the same broken containarium-shell su. The fix has
+		// to run on the BACKEND HOST as an operator (or via a future daemon
+		// RPC — no such repair endpoint exists yet), directly against Incus.
+		return fmt.Sprintf("host user exists, but %q was never created INSIDE the container — containarium-shell's su fails there, not at the host; SSH cannot repair this, only an operator on the backend host can", username),
+			[]string{
+				fmt.Sprintf("on the backend host: sudo incus exec %s-container -- useradd -m -s /bin/bash -G sudo,users %s", username, username),
+				fmt.Sprintf("then: sudo incus exec %s-container -- sh -c 'printf \"%%s ALL=(ALL) NOPASSWD:ALL\\n\" %s > /etc/sudoers.d/%s && chmod 440 /etc/sudoers.d/%s'", username, username, username, username),
+				"this is a create-time provisioning gap (OSS #1487) — if it recurs across boxes, the create path itself needs fixing, not each box repaired one at a time",
 			}
 	}
 

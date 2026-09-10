@@ -26,7 +26,7 @@ flowchart LR
     cli["containarium cluster …"]
   end
   subgraph host["Backend host"]
-    daemon["containarium daemon\nClusterService + CA-provider gRPC"]
+    daemon["containariumd daemon\nClusterService + CA-provider gRPC"]
     pt["passthrough (iptables DNAT)\n:extPort → cp:6443"]
     subgraph cp["control-plane VM (platform territory)"]
       k3ss["k3s server\n(tainted, sqlite)"]
@@ -337,7 +337,7 @@ not per-PR).
   choreography (exactly the ops burden the product removes); k0s is
   viable but k3s has in-tree precedent (kubeflow recipe), the manifest
   auto-apply dir we use for VPA, and the smallest single-binary story.
-- **Reusing the `containarium node` scaffold for workers** — its
+- **Reusing the `containariumd node` scaffold for workers** — its
   documented rationale (day-0 host carve, pre-daemon, deliberately
   CLI-only/no-proto) does not fit daemon-served tenant resources, and
   it has a known bootstrap gap (nodes come up sentinel-unhealthy). We

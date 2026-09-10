@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/footprintai/containarium/internal/client"
-	"github.com/footprintai/containarium/pkg/core/container"
 	"github.com/spf13/cobra"
 )
 
@@ -66,23 +65,6 @@ func runLabelList(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
-}
-
-func getLabelsLocal(username string) (map[string]string, error) {
-	mgr, err := container.New()
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to Incus: %w (is Incus running?)", err)
-	}
-
-	containerName := username + "-container"
-
-	// Check if container exists
-	if !mgr.ContainerExists(containerName) {
-		return nil, fmt.Errorf("container %q does not exist", containerName)
-	}
-
-	// Note: Manager methods expect username (without -container suffix)
-	return mgr.GetLabels(username)
 }
 
 func getLabelsRemoteHTTP(username string) (map[string]string, error) {

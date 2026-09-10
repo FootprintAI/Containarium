@@ -27,7 +27,7 @@ First, start the Containarium daemon with REST API:
 
 ```bash
 # On your Containarium server
-containarium daemon --rest --jwt-secret "your-secret-key"
+containariumd daemon --rest --jwt-secret "your-secret-key"
 
 # Generate a token for MCP
 containarium token generate \
@@ -445,7 +445,7 @@ date +%s
 **Solutions:**
 1. **Daemon not running**: Start the daemon
    ```bash
-   containarium daemon --rest --jwt-secret "your-secret"
+   containariumd daemon --rest --jwt-secret "your-secret"
    ```
 2. **Wrong port**: Check URL in MCP config matches daemon port
 3. **Firewall blocking**: Check firewall rules allow connections
@@ -575,7 +575,7 @@ func handleNewTool(client *Client, args map[string]interface{}) (string, error) 
 ```bash
 # Start daemon with persistent JWT secret
 export CONTAINARIUM_JWT_SECRET="$(openssl rand -base64 32)"
-containarium daemon --rest --address 0.0.0.0 --port 8080
+containariumd daemon --rest --address 0.0.0.0 --port 8080
 
 # Generate long-lived token
 containarium token generate \

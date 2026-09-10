@@ -1,7 +1,14 @@
-.PHONY: help proto build build-bpf clean clean-ui clean-all install test lint fmt run-local web-ui swagger-ui build-mcp build-mcp-linux install-mcp build-agent-box build-agent-box-linux build-agent-box-all install-agent-box build-agent-runtime bundle-agent-runtime build-release sidecar-build-otel bundle-download-deps build-bundle build-bundle-all build-model-gateway build-model-gateway-linux
+.PHONY: help proto build build-bpf clean clean-ui clean-all install install-client test lint fmt run-local web-ui swagger-ui build-mcp build-mcp-linux install-mcp build-agent-box build-agent-box-linux build-agent-box-all install-agent-box build-agent-runtime bundle-agent-runtime build-release sidecar-build-otel bundle-download-deps build-bundle build-bundle-all build-model-gateway build-model-gateway-linux
 
 # Variables
+# BINARY_NAME is the containarium CLIENT (cmd/containarium, always built with
+# -tags containarium_client — see build/build-fast). DAEMON_BINARY_NAME is
+# the full superset build (cmd/containariumd, today's binary unchanged) that
+# every other target (build-linux/build-all/build-release/install) still
+# builds and ships under the historical $(BINARY_NAME) artifact name — see
+# docs/architecture/cli-client-server-split.md, #1773.
 BINARY_NAME=containarium
+DAEMON_BINARY_NAME=containariumd
 MCP_BINARY_NAME=mcp-server
 AGENTBOX_BINARY_NAME=agent-box
 GATEWAY_BINARY_NAME=model-gateway
@@ -101,34 +108,49 @@ build-bpf: ## Compile the eBPF network-policy object for embedding (Linux; needs
 		-c $(BPF_SRC) -o $(BPF_OBJ)
 	@echo "==> eBPF object built: $(BPF_OBJ) ($$(wc -c < $(BPF_OBJ)) bytes). Re-run make to pick up -tags embed_bpf."
 
-build: proto web-ui swagger-ui ## Build the containarium binary (includes Swagger UI)
-	@echo "==> Building containarium..."
+build: proto web-ui swagger-ui ## Build both containariumd (server, today's binary) and containarium (client) (includes Swagger UI)
+	@echo "==> Building containariumd..."
 	@mkdir -p $(BUILD_DIR)
-	@go build $(GOFLAGS) $(GO_TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) cmd/containarium/main.go
+	@go build $(GOFLAGS) $(GO_TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(DAEMON_BINARY_NAME) cmd/containariumd/main.go
+	@echo "==> Binary built: $(BUILD_DIR)/$(DAEMON_BINARY_NAME)"
+	@echo "==> Building containarium (client)..."
+	@CGO_ENABLED=0 go build $(GOFLAGS) -tags containarium_client $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) cmd/containarium/main.go
 	@echo "==> Binary built: $(BUILD_DIR)/$(BINARY_NAME)"
 
-build-fast: proto ## Build the containarium binary (skip Swagger UI download, uses CDN)
-	@echo "==> Building containarium (fast mode - CDN fallback)..."
+build-fast: proto ## Build both containariumd and containarium (skip Swagger UI download, uses CDN)
+	@echo "==> Building containariumd (fast mode - CDN fallback)..."
 	@mkdir -p $(BUILD_DIR)
-	@go build $(GOFLAGS) $(GO_TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) cmd/containarium/main.go
+	@go build $(GOFLAGS) $(GO_TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(DAEMON_BINARY_NAME) cmd/containariumd/main.go
+	@echo "==> Binary built: $(BUILD_DIR)/$(DAEMON_BINARY_NAME)"
+	@echo "==> Building containarium (client, fast mode)..."
+	@CGO_ENABLED=0 go build $(GOFLAGS) -tags containarium_client $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) cmd/containarium/main.go
 	@echo "==> Binary built: $(BUILD_DIR)/$(BINARY_NAME)"
 
 build-linux: proto web-ui swagger-ui ## Build for Linux (for deployment to GCE, includes Swagger UI)
 	@echo "==> Building containarium for Linux..."
 	@mkdir -p $(BUILD_DIR)
-	@GOOS=linux GOARCH=amd64 go build $(GOFLAGS) $(GO_TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-linux-amd64 cmd/containarium/main.go
+	@GOOS=linux GOARCH=amd64 go build $(GOFLAGS) $(GO_TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-linux-amd64 cmd/containariumd/main.go
 	@echo "==> Binary built: $(BUILD_DIR)/$(BINARY_NAME)-linux-amd64"
 
 build-all: proto web-ui swagger-ui ## Build for all platforms (includes Swagger UI)
 	@echo "==> Building for all platforms..."
 	@mkdir -p $(BUILD_DIR)
-	@GOOS=linux GOARCH=amd64 go build $(GO_TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-linux-amd64 cmd/containarium/main.go
-	@GOOS=darwin GOARCH=amd64 go build $(GO_TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-amd64 cmd/containarium/main.go
-	@GOOS=darwin GOARCH=arm64 go build $(GO_TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-arm64 cmd/containarium/main.go
+	@GOOS=linux GOARCH=amd64 go build $(GO_TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-linux-amd64 cmd/containariumd/main.go
+	@GOOS=darwin GOARCH=amd64 go build $(GO_TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-amd64 cmd/containariumd/main.go
+	@GOOS=darwin GOARCH=arm64 go build $(GO_TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-arm64 cmd/containariumd/main.go
 	# Windows is CLIENT-ONLY: the daemon/sentinel/tunnel + direct-DB admin
 	# subcommands are //go:build !windows, so this binary exposes only the
 	# remote-client commands (create/list/ssh/…). The daemon stays linux/mac.
-	@GOOS=windows GOARCH=amd64 go build $(GO_TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-windows-amd64.exe cmd/containarium/main.go
+	@GOOS=windows GOARCH=amd64 go build $(GO_TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-windows-amd64.exe cmd/containariumd/main.go
+	# #1782 (design doc, Rollout Phase 1): mirror the server build under
+	# containariumd-* too. The fleet's self-update chain now fetches
+	# containariumd-* by name (#1779's releaseBinaryName); containarium-*
+	# stays published alongside it so a host still fetching the old name
+	# keeps working. Byte-identical copies, not a second compile — no
+	# windows mirror, the daemon never ships there.
+	@cp $(BUILD_DIR)/$(BINARY_NAME)-linux-amd64  $(BUILD_DIR)/$(DAEMON_BINARY_NAME)-linux-amd64
+	@cp $(BUILD_DIR)/$(BINARY_NAME)-darwin-amd64 $(BUILD_DIR)/$(DAEMON_BINARY_NAME)-darwin-amd64
+	@cp $(BUILD_DIR)/$(BINARY_NAME)-darwin-arm64 $(BUILD_DIR)/$(DAEMON_BINARY_NAME)-darwin-arm64
 	@echo "==> Binaries built in $(BUILD_DIR)/"
 
 # NOTE: mcp-server is a pure-Go REST/gRPC client and is dropped into arbitrary
@@ -225,10 +247,11 @@ sidecar-build-otel: ## Build the otel-sidecar Docker image locally (tag = pkg/ve
 	@echo "==> Built. The compose snippet from \`containarium sidecar otel compose <user>\` references this tag."
 
 # build-release produces every release artifact for every supported
-# platform: containarium + mcp-server + agent-box, each for
-# linux/amd64, darwin/amd64, darwin/arm64. Used by the release.yml
-# workflow on v* tag pushes; safe to run locally to dry-run a release.
-build-release: build-all build-mcp-all build-agent-box-all ## Build all 10 release artifacts (CLI ×4 platforms incl. windows; mcp/agent-box ×3) + checksums
+# platform: containarium + containariumd (#1782 mirror) + mcp-server +
+# agent-box, each for linux/amd64, darwin/amd64, darwin/arm64. Used by
+# the release.yml workflow on v* tag pushes; safe to run locally to
+# dry-run a release.
+build-release: build-all build-mcp-all build-agent-box-all ## Build all 13 release artifacts (CLI ×4 platforms incl. windows, +3 containariumd mirrors; mcp/agent-box ×3) + checksums
 	@echo "==> Generating SHA256SUMS..."
 	@cd $(BUILD_DIR) && \
 	  shasum -a 256 \
@@ -236,6 +259,9 @@ build-release: build-all build-mcp-all build-agent-box-all ## Build all 10 relea
 	    $(BINARY_NAME)-darwin-amd64 \
 	    $(BINARY_NAME)-darwin-arm64 \
 	    $(BINARY_NAME)-windows-amd64.exe \
+	    $(DAEMON_BINARY_NAME)-linux-amd64 \
+	    $(DAEMON_BINARY_NAME)-darwin-amd64 \
+	    $(DAEMON_BINARY_NAME)-darwin-arm64 \
 	    $(MCP_BINARY_NAME)-linux-amd64 \
 	    $(MCP_BINARY_NAME)-darwin-amd64 \
 	    $(MCP_BINARY_NAME)-darwin-arm64 \
@@ -243,6 +269,16 @@ build-release: build-all build-mcp-all build-agent-box-all ## Build all 10 relea
 	    $(AGENTBOX_BINARY_NAME)-darwin-amd64 \
 	    $(AGENTBOX_BINARY_NAME)-darwin-arm64 \
 	    > SHA256SUMS.txt
+	@echo "==> Verifying containariumd-* mirrors containarium-* byte-for-byte (#1782)..."
+	@cd $(BUILD_DIR) && for plat in linux-amd64 darwin-amd64 darwin-arm64; do \
+	  a=$$(shasum -a 256 $(BINARY_NAME)-$$plat | awk '{print $$1}'); \
+	  b=$$(shasum -a 256 $(DAEMON_BINARY_NAME)-$$plat | awk '{print $$1}'); \
+	  if [ "$$a" != "$$b" ]; then \
+	    echo "FAIL  $(BINARY_NAME)-$$plat ($$a) != $(DAEMON_BINARY_NAME)-$$plat ($$b)"; \
+	    exit 1; \
+	  fi; \
+	  echo "PASS  $(BINARY_NAME)-$$plat == $(DAEMON_BINARY_NAME)-$$plat ($$a)"; \
+	done
 	@echo "==> Release artifacts ready in $(BUILD_DIR)/:"
 	@ls -1 $(BUILD_DIR)/
 
@@ -275,7 +311,16 @@ build-bundle-all: ## Build bundles for linux/amd64 and linux/arm64
 	@$(MAKE) build-bundle BUNDLE_OS=linux BUNDLE_ARCH=amd64
 	@$(MAKE) build-bundle BUNDLE_OS=linux BUNDLE_ARCH=arm64
 
-install: build ## Install the binary to /usr/local/bin (requires sudo)
+install: build ## Install both containarium and containariumd to /usr/local/bin (requires sudo)
+	@echo "==> Installing $(BINARY_NAME) and $(DAEMON_BINARY_NAME) to /usr/local/bin..."
+	@sudo cp $(BUILD_DIR)/$(BINARY_NAME) /usr/local/bin/
+	@sudo cp $(BUILD_DIR)/$(DAEMON_BINARY_NAME) /usr/local/bin/
+	@echo "==> Installed successfully. Run '$(BINARY_NAME) --help' or '$(DAEMON_BINARY_NAME) --help' to get started"
+
+install-client: proto ## Install only the containarium client binary to /usr/local/bin (requires sudo; what a laptop wants)
+	@echo "==> Building containarium (client)..."
+	@mkdir -p $(BUILD_DIR)
+	@CGO_ENABLED=0 go build $(GOFLAGS) -tags containarium_client $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) cmd/containarium/main.go
 	@echo "==> Installing $(BINARY_NAME) to /usr/local/bin..."
 	@sudo cp $(BUILD_DIR)/$(BINARY_NAME) /usr/local/bin/
 	@echo "==> Installed successfully. Run '$(BINARY_NAME) --help' to get started"

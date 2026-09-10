@@ -234,7 +234,7 @@ fall back to the raw TCP peer (loopback) for the XFF value.
 
 ### TLS handshake fails silently for a tunnel-promoted pool primary
 
-**Symptom.** A new pool primary (`containarium daemon --pool X --app-hosting --base-domain X.example.com` paired with a `containarium tunnel ... --pool X --public-hostname X.example.com --public-port 443` on the same box) registers cleanly — `/v1/backends` lists it healthy, `/sentinel/primaries` has the right hostname — but `curl https://X.example.com/` fails the TLS handshake:
+**Symptom.** A new pool primary (`containariumd daemon --pool X --app-hosting --base-domain X.example.com` paired with a `containarium tunnel ... --pool X --public-hostname X.example.com --public-port 443` on the same box) registers cleanly — `/v1/backends` lists it healthy, `/sentinel/primaries` has the right hostname — but `curl https://X.example.com/` fails the TLS handshake:
 
 ```
 curl: (35) LibreSSL SSL_connect: SSL_ERROR_SYSCALL in connection to X.example.com:443
@@ -260,7 +260,7 @@ So the cert and Caddy are fine — the failure is between sentinel and primary's
 # /etc/systemd/system/containarium.service.d/override.conf
 [Service]
 ExecStart=
-ExecStart=/usr/local/bin/containarium daemon --pool X --rest --jwt-secret-file /etc/containarium/jwt.secret \
+ExecStart=/usr/local/bin/containariumd daemon --pool X --rest --jwt-secret-file /etc/containarium/jwt.secret \
   --app-hosting --base-domain X.example.com \
   --proxy-protocol --proxy-protocol-trusted=127.0.0.0/8
 ```

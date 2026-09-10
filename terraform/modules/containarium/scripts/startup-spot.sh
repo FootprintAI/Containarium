@@ -37,7 +37,7 @@ CONTAINARIUM_VERSION="${containarium_version}"
 CONTAINARIUM_BINARY_URL="${containarium_binary_url}"
 SENTINEL_BINARY_URL="${sentinel_binary_url}"
 
-# reconcile_containarium_binary ensures /usr/local/bin/containarium is at the
+# reconcile_containarium_binary ensures /usr/local/bin/containariumd is at the
 # desired version (CONTAINARIUM_VERSION), re-downloading and restarting the
 # daemon when it isn't. This replaces the old existence-aware install, which
 # made the binary write-once: a tfvar version bump never upgraded an existing
@@ -58,24 +58,24 @@ SENTINEL_BINARY_URL="${sentinel_binary_url}"
 reconcile_containarium_binary() {
     desired="$CONTAINARIUM_VERSION"
     current=""
-    if [ -x /usr/local/bin/containarium ]; then
-        current="$(/usr/local/bin/containarium version 2>/dev/null || true)"
+    if [ -x /usr/local/bin/containariumd ]; then
+        current="$(/usr/local/bin/containariumd version 2>/dev/null || true)"
     fi
 
     if [ -n "$desired" ]; then
         if printf '%s' "$current" | grep -qF "$desired"; then
-            echo "==> containarium already at desired version ($desired) — skipping download"
+            echo "==> containariumd already at desired version ($desired) — skipping download"
             return 0
         fi
         if [ -n "$current" ]; then
-            echo "==> containarium version mismatch (have: $current, want: $desired) — upgrading"
+            echo "==> containariumd version mismatch (have: $current, want: $desired) — upgrading"
         fi
-    elif [ -x /usr/local/bin/containarium ]; then
-        echo "==> containarium present, version not pinned — leaving as-is"
+    elif [ -x /usr/local/bin/containariumd ]; then
+        echo "==> containariumd present, version not pinned — leaving as-is"
         return 0
     fi
 
-    tmp=/usr/local/bin/.containarium.new
+    tmp=/usr/local/bin/.containariumd.new
     rm -f "$tmp"
     got=false
 
@@ -113,7 +113,7 @@ reconcile_containarium_binary() {
 
     if [ "$got" = "false" ]; then
         rm -f "$tmp"
-        if [ -x /usr/local/bin/containarium ]; then
+        if [ -x /usr/local/bin/containariumd ]; then
             echo "⚠ could not fetch desired binary; keeping existing ($current)"
         else
             echo "⚠ No Containarium binary source available, daemon not installed"
@@ -123,9 +123,12 @@ reconcile_containarium_binary() {
 
     # Atomic swap, then restart only if the service is already installed (it
     # isn't on first boot — the full-install path enables+starts it later).
-    mv -f "$tmp" /usr/local/bin/containarium
-    chmod +x /usr/local/bin/containarium
-    echo "✓ containarium installed: $(/usr/local/bin/containarium version 2>/dev/null || echo '(version unavailable)')"
+    mv -f "$tmp" /usr/local/bin/containariumd
+    chmod +x /usr/local/bin/containariumd
+    # Rollout Phase 1 (#1781): keep the old name working as a symlink so any
+    # runbook/cron this inventory missed keeps working.
+    ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium
+    echo "✓ containariumd installed: $(/usr/local/bin/containariumd version 2>/dev/null || echo '(version unavailable)')"
     if systemctl list-unit-files containarium.service >/dev/null 2>&1; then
         systemctl restart containarium 2>/dev/null || true
     fi
@@ -164,9 +167,9 @@ if [ -f /opt/containarium/.setup_complete ]; then
     done
 
     # Sync jump server accounts (containers may have been running before preemption)
-    if [ -f /usr/local/bin/containarium ] && incus list --format=csv --columns=n 2>/dev/null | grep -q .; then
+    if [ -f /usr/local/bin/containariumd ] && incus list --format=csv --columns=n 2>/dev/null | grep -q .; then
         systemctl stop google-guest-agent 2>/dev/null || true
-        /usr/local/bin/containarium sync-accounts --verbose 2>/dev/null || true
+        /usr/local/bin/containariumd sync-accounts --verbose 2>/dev/null || true
         systemctl start google-guest-agent 2>/dev/null || true
     fi
 
@@ -675,8 +678,8 @@ echo "==> Installing Containarium daemon..."
 reconcile_containarium_binary || true
 
 # Verify installation
-if [ -f /usr/local/bin/containarium ]; then
-    /usr/local/bin/containarium version || echo "Containarium binary installed (version command not available)"
+if [ -f /usr/local/bin/containariumd ]; then
+    /usr/local/bin/containariumd version || echo "Containarium binary installed (version command not available)"
     echo "✓ Containarium daemon ready"
 fi
 
@@ -710,10 +713,10 @@ echo "==> Generating mTLS certificates..."
 CERTS_DIR="/etc/containarium/certs"
 mkdir -p "$CERTS_DIR"
 
-if [ -f /usr/local/bin/containarium ]; then
+if [ -f /usr/local/bin/containariumd ]; then
     # Generate certificates if they don't exist
     if [ ! -f "$CERTS_DIR/ca.crt" ]; then
-        /usr/local/bin/containarium cert generate \
+        /usr/local/bin/containariumd cert generate \
             --org "Containarium" \
             --dns "containarium-daemon,localhost" \
             --output "$CERTS_DIR" \
@@ -853,8 +856,8 @@ echo "✓ containarium-shell wrapper installed"
 # Install systemd service via the binary's built-in command if available,
 # otherwise create the service file directly.
 echo "==> Installing Containarium systemd service..."
-if [ -f /usr/local/bin/containarium ]; then
-    if /usr/local/bin/containarium service install 2>/dev/null; then
+if [ -f /usr/local/bin/containariumd ]; then
+    if /usr/local/bin/containariumd service install 2>/dev/null; then
         echo "✓ Containarium daemon service installed via built-in command"
     else
         echo "⚠ 'service install' not available, creating service file directly..."
@@ -871,7 +874,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/containarium daemon --address 0.0.0.0 --rest --http-port 8080 --jwt-secret-file /etc/containarium/jwt.secret
+ExecStart=/usr/local/bin/containariumd daemon --address 0.0.0.0 --rest --http-port 8080 --jwt-secret-file /etc/containarium/jwt.secret
 Restart=on-failure
 RestartSec=5s
 User=root
@@ -930,7 +933,7 @@ SVCEOF
     cat > /etc/systemd/system/containarium.service.d/override.conf <<EOF
 [Service]
 ExecStart=
-ExecStart=/usr/local/bin/containarium daemon --address 0.0.0.0 --rest --http-port 8080 --jwt-secret-file /etc/containarium/jwt.secret%{ if enable_app_hosting } --app-hosting%{ if base_domain != "" } --base-domain ${base_domain}%{ endif }%{ endif }%{ if enable_proxy_protocol } --proxy-protocol --proxy-protocol-trusted=${join(",", proxy_protocol_trusted_cidrs)}%{ endif }
+ExecStart=/usr/local/bin/containariumd daemon --address 0.0.0.0 --rest --http-port 8080 --jwt-secret-file /etc/containarium/jwt.secret%{ if enable_app_hosting } --app-hosting%{ if base_domain != "" } --base-domain ${base_domain}%{ endif }%{ endif }%{ if enable_proxy_protocol } --proxy-protocol --proxy-protocol-trusted=${join(",", proxy_protocol_trusted_cidrs)}%{ endif }
 EOF
     echo "✓ wrote override.conf for app-hosting / proxy-protocol"
     systemctl daemon-reload
@@ -1047,7 +1050,7 @@ done
 # =============================================================================
 # CRITICAL: Restore jump server accounts from persisted containers
 # =============================================================================
-if [ "$USE_PERSISTENT_DISK" = "true" ] && [ -f /usr/local/bin/containarium ]; then
+if [ "$USE_PERSISTENT_DISK" = "true" ] && [ -f /usr/local/bin/containariumd ]; then
     echo "==> Checking for persisted containers to restore jump server accounts..."
 
     # Wait for Incus to be fully ready
@@ -1068,11 +1071,11 @@ if [ "$USE_PERSISTENT_DISK" = "true" ] && [ -f /usr/local/bin/containarium ]; th
         sleep 2
 
         # Run the sync-accounts command
-        if /usr/local/bin/containarium sync-accounts --verbose; then
+        if /usr/local/bin/containariumd sync-accounts --verbose; then
             echo "✓ Jump server accounts restored successfully"
         else
             echo "⚠ Some accounts may have failed to restore"
-            echo "  You can manually run: containarium sync-accounts"
+            echo "  You can manually run: containariumd sync-accounts"
         fi
 
         # Restart google-guest-agent

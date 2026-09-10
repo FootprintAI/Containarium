@@ -1039,6 +1039,17 @@ func (m *Manager) ExecWithOutput(containerName string, command []string) (string
 	return "", "", fmt.Errorf("ExecWithOutput not supported on this incus backend (mock?)")
 }
 
+// ExecWithExitCode runs a command inside the container and reports a
+// non-zero exit as data (exitCode) rather than folding it into err — the
+// caller needs to distinguish "ran and failed" (e.g. `id` reporting no
+// such user, #1487) from "couldn't run it at all" (transport/backend
+// error). Unlike ExecWithOutput, ExecWithExitCode is already part of the
+// incus.Backend interface, so this is a direct call, not a type-assertion
+// to the concrete client — it works against the mock backend in tests.
+func (m *Manager) ExecWithExitCode(containerName string, command []string) (stdout, stderr string, exitCode int, err error) {
+	return m.incus.ExecWithExitCode(containerName, command)
+}
+
 // ReadFile pulls a file from inside the container into host memory.
 // Used by the backup server to retrieve a pg_dump artifact written to
 // the container's /tmp before shipping it off-host. Suitable for
