@@ -49,7 +49,7 @@ output "next_steps" {
 
        gcloud compute ssh ${module.containarium.spot_vm_name} \
            --project=${var.project_id} --zone=${var.zone} --tunnel-through-iap \
-           --command='sudo /usr/local/bin/containarium token generate \
+           --command='sudo /usr/local/bin/containariumd token generate \
                        --username demo --roles admin --expiry 24h \
                        --secret-file /etc/containarium/jwt.secret \
                        2>/dev/null | grep "^eyJ"' \

@@ -36,11 +36,11 @@ Run from your laptop. Each step is verifiable independently.
 1. **Confirm both binaries support the new flags.**
    ```sh
    # On the prod sentinel host
-   ssh <prod-gcp-project>-sentinel sudo /usr/local/bin/containarium version
+   ssh <prod-gcp-project>-sentinel sudo /usr/local/bin/containariumd version
    # On the prod daemon host
-   ssh -p 2222 <prod-gcp-project>-sentinel "ssh <prod-backend> sudo /usr/local/bin/containarium version"
+   ssh -p 2222 <prod-gcp-project>-sentinel "ssh <prod-backend> sudo /usr/local/bin/containariumd version"
    # On the demo daemon host
-   ssh <demo-base-domain> sudo /usr/local/bin/containarium version
+   ssh <demo-base-domain> sudo /usr/local/bin/containariumd version
    ```
    All three must print `vX.Y.Z` or later (a release that includes #204 + #205). If any is older, **upgrade it first** — the cutover assumes the prod sentinel knows about `base_domain` and the daemons know about `--public-base-domain`.
 
@@ -102,7 +102,7 @@ Wants=network-online.target
 
 [Service]
 Environment=CONTAINARIUM_TUNNEL_TOKEN=${TUNNEL_TOKEN}
-ExecStart=/usr/local/bin/containarium tunnel \\
+ExecStart=/usr/local/bin/containariumd tunnel \\
   --sentinel-addr ${PROD_SENTINEL} \\
   --spot-id <demo-backend>-spot \\
   --pool demo \\

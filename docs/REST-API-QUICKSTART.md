@@ -14,7 +14,7 @@ Containarium now supports both gRPC and REST APIs running simultaneously:
 
 #### Development (Auto-Generated Secret)
 ```bash
-containarium daemon --rest
+containariumd daemon --rest
 
 # Output will show:
 # ═══════════════════════════════════════════════════════════════
@@ -30,7 +30,7 @@ containarium daemon --rest
 export CONTAINARIUM_JWT_SECRET="your-secure-secret-key"
 
 # Start daemon
-containarium daemon --rest
+containariumd daemon --rest
 
 # Secret is used but not printed - production ready!
 ```
@@ -42,7 +42,7 @@ openssl rand -base64 32 > /etc/containarium/jwt.secret
 chmod 600 /etc/containarium/jwt.secret
 
 # Start daemon
-containarium daemon --rest --jwt-secret-file /etc/containarium/jwt.secret
+containariumd daemon --rest --jwt-secret-file /etc/containarium/jwt.secret
 ```
 
 ---

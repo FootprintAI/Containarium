@@ -149,11 +149,11 @@ func RenderBootstrap(s Spec, tokenPath string) string {
 	// unhealthy backend. Completing this (porting setup-peer.sh's daemon
 	// stanza) is the next step before a node-VM is a fully-healthy backend.
 	b.WriteString("# daemon + tunnel (see scripts/setup-peer.sh for the full daemon config this still needs)\n")
-	b.WriteString("/usr/local/bin/containarium service install\n")
+	fmt.Fprintf(&b, "%s service install\n", guestBinaryPath)
 	fmt.Fprintf(&b, "export CONTAINARIUM_TUNNEL_TOKEN=\"$(cat %s)\"\n", tokenPath)
 	fmt.Fprintf(&b,
-		"/usr/local/bin/containarium tunnel --sentinel-addr %s --pool %s --spot-id %s &\n",
-		shellQuote(s.Sentinel), shellQuote(s.Pool), shellQuote(s.SpotID()))
+		"%s tunnel --sentinel-addr %s --pool %s --spot-id %s &\n",
+		guestBinaryPath, shellQuote(s.Sentinel), shellQuote(s.Pool), shellQuote(s.SpotID()))
 	return b.String()
 }
 

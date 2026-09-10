@@ -45,9 +45,9 @@ if [ -f /opt/containarium/.setup_complete ]; then
     done
 
     # Sync jump server accounts (containers may have been running before preemption)
-    if [ -f /usr/local/bin/containarium ] && incus list --format=csv --columns=n 2>/dev/null | grep -q .; then
+    if [ -f /usr/local/bin/containariumd ] && incus list --format=csv --columns=n 2>/dev/null | grep -q .; then
         systemctl stop google-guest-agent 2>/dev/null || true
-        /usr/local/bin/containarium sync-accounts --verbose 2>/dev/null || true
+        /usr/local/bin/containariumd sync-accounts --verbose 2>/dev/null || true
         systemctl start google-guest-agent 2>/dev/null || true
     fi
 
@@ -503,8 +503,8 @@ if [ -n "$SENTINEL_BINARY_URL" ] && [ "$BINARY_INSTALLED" = "false" ]; then
     echo "Downloading from sentinel: $SENTINEL_BINARY_URL"
     # Retry up to 10 times (sentinel may still be booting)
     for i in {1..10}; do
-        if curl -fsSL --connect-timeout 5 "$SENTINEL_BINARY_URL" -o /usr/local/bin/containarium; then
-            chmod +x /usr/local/bin/containarium
+        if curl -fsSL --connect-timeout 5 "$SENTINEL_BINARY_URL" -o /usr/local/bin/containariumd; then
+            chmod +x /usr/local/bin/containariumd
             echo "✓ Containarium downloaded from sentinel"
             BINARY_INSTALLED=true
             break
@@ -517,20 +517,24 @@ fi
 # Fallback to explicit URL (e.g., GitHub releases, GCS)
 if [ -n "$CONTAINARIUM_BINARY_URL" ] && [ "$BINARY_INSTALLED" = "false" ]; then
     echo "Downloading from: $CONTAINARIUM_BINARY_URL"
-    curl -fsSL "$CONTAINARIUM_BINARY_URL" -o /usr/local/bin/containarium
-    chmod +x /usr/local/bin/containarium
+    curl -fsSL "$CONTAINARIUM_BINARY_URL" -o /usr/local/bin/containariumd
+    chmod +x /usr/local/bin/containariumd
     echo "✓ Containarium daemon downloaded"
     BINARY_INSTALLED=true
 fi
 
 if [ "$BINARY_INSTALLED" = "false" ]; then
     echo "⚠ No Containarium binary source available, daemon not installed"
-    echo "  You can manually install it later by copying the binary to /usr/local/bin/containarium"
+    echo "  You can manually install it later by copying the binary to /usr/local/bin/containariumd"
+else
+    # Rollout Phase 1 (#1781): keep the old name working as a symlink so any
+    # runbook/cron this inventory missed keeps working.
+    ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium
 fi
 
 # Verify installation
-if [ -f /usr/local/bin/containarium ]; then
-    /usr/local/bin/containarium version || echo "Containarium binary installed (version command not available)"
+if [ -f /usr/local/bin/containariumd ]; then
+    /usr/local/bin/containariumd version || echo "Containarium binary installed (version command not available)"
     echo "✓ Containarium daemon ready"
 fi
 
@@ -564,10 +568,10 @@ echo "==> Generating mTLS certificates..."
 CERTS_DIR="/etc/containarium/certs"
 mkdir -p "$CERTS_DIR"
 
-if [ -f /usr/local/bin/containarium ]; then
+if [ -f /usr/local/bin/containariumd ]; then
     # Generate certificates if they don't exist
     if [ ! -f "$CERTS_DIR/ca.crt" ]; then
-        /usr/local/bin/containarium cert generate \
+        /usr/local/bin/containariumd cert generate \
             --org "Containarium" \
             --dns "containarium-daemon,localhost" \
             --output "$CERTS_DIR" \
@@ -600,8 +604,8 @@ fi
 # Install systemd service via the binary's built-in command if available,
 # otherwise create the service file directly.
 echo "==> Installing Containarium systemd service..."
-if [ -f /usr/local/bin/containarium ]; then
-    if /usr/local/bin/containarium service install 2>/dev/null; then
+if [ -f /usr/local/bin/containariumd ]; then
+    if /usr/local/bin/containariumd service install 2>/dev/null; then
         echo "✓ Containarium daemon service installed via built-in command"
     else
         echo "⚠ 'service install' not available, creating service file directly..."
@@ -618,7 +622,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/containarium daemon --address 0.0.0.0 --rest --http-port 8080 --jwt-secret-file /etc/containarium/jwt.secret
+ExecStart=/usr/local/bin/containariumd daemon --address 0.0.0.0 --rest --http-port 8080 --jwt-secret-file /etc/containarium/jwt.secret
 Restart=on-failure
 RestartSec=5s
 User=root
@@ -755,7 +759,7 @@ done
 # disk is lost but containers persist on the ZFS pool. This section restores
 # SSH access by syncing jump server accounts from the persisted containers.
 # =============================================================================
-if [ "$USE_PERSISTENT_DISK" = "true" ] && [ -f /usr/local/bin/containarium ]; then
+if [ "$USE_PERSISTENT_DISK" = "true" ] && [ -f /usr/local/bin/containariumd ]; then
     echo "==> Checking for persisted containers to restore jump server accounts..."
 
     # Wait for Incus to be fully ready
@@ -776,11 +780,11 @@ if [ "$USE_PERSISTENT_DISK" = "true" ] && [ -f /usr/local/bin/containarium ]; th
         sleep 2
 
         # Run the sync-accounts command
-        if /usr/local/bin/containarium sync-accounts --verbose; then
+        if /usr/local/bin/containariumd sync-accounts --verbose; then
             echo "✓ Jump server accounts restored successfully"
         else
             echo "⚠ Some accounts may have failed to restore"
-            echo "  You can manually run: containarium sync-accounts"
+            echo "  You can manually run: containariumd sync-accounts"
         fi
 
         # Restart google-guest-agent

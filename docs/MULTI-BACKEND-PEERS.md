@@ -256,7 +256,7 @@ A toggle button group lets users switch between backends to view per-host CPU, m
 ## Adding a New Backend
 
 1. **Install Containarium** on the new host
-2. **Run in standalone mode**: `containarium daemon --standalone --rest --jwt-secret-file /etc/containarium/jwt.secret`
+2. **Run in standalone mode**: `containariumd daemon --standalone --rest --jwt-secret-file /etc/containarium/jwt.secret`
 3. **Run tunnel client**: `containarium tunnel --sentinel-addr sentinel:443 --token <token> --spot-id <id> --ports 22,8080`
 4. **Install containarium-shell**: `sudo bash scripts/setup-ssh-container-proxy.sh`
 5. The sentinel auto-discovers the new backend within 30 seconds

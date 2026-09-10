@@ -79,7 +79,7 @@ omitting them will not error `plan`. Two need a closer read:
 ## Upgrading the daemon (`containarium_version`)
 
 The startup script reconciles the installed binary to `containarium_version`
-on **every boot**: it compares `containarium version` against the requested
+on **every boot**: it compares `containariumd version` against the requested
 value (substring match) and only re-downloads + `systemctl restart
 containarium` when they differ. So bumping the version *does* upgrade the
 daemon — with two caveats that bit a prod sentinel-HA deployment ([#385]):
@@ -111,8 +111,8 @@ daemon — with two caveats that bit a prod sentinel-HA deployment ([#385]):
 
 **Out-of-band swap** (when you can't reboot, e.g. a live upgrade): on the
 **sentinel first**, then the workhorse — `curl` the release binary to
-`/usr/local/bin/containarium.new`, `chmod +x`, verify `.new version`, atomic
-`mv` over `/usr/local/bin/containarium`, then `systemctl restart containarium`
+`/usr/local/bin/containariumd.new`, `chmod +x`, verify `.new version`, atomic
+`mv` over `/usr/local/bin/containariumd`, then `systemctl restart containarium`
 (workhorse) / `containarium-sentinel` (sentinel). The sentinel's admin sshd is
 on **port 2222** (22 is sshpiper), and restarting the sentinel briefly serves a
 self-signed cert on the public `:443`.

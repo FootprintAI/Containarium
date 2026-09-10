@@ -1,3 +1,5 @@
+//go:build !containarium_client
+
 package cluster
 
 import (

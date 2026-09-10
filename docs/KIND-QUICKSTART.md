@@ -210,7 +210,7 @@ CONTAINARIUM_K8S_BOX_IMAGE="registry.k8s.io/pause:3.9" \
 CONTAINARIUM_K8S_GATEWAY_HOST="localhost" \
 CONTAINARIUM_K8S_GATEWAY_UPSTREAM_KEY_SECRET="sshpiper-upstream-key" \
 CONTAINARIUM_K8S_GATEWAY_UPSTREAM_PUBLIC_KEY="$(cat ./sshpiper_upstream.pub)" \
-./containarium daemon \
+./containariumd daemon \
   --skip-infra-init \
   --standalone \
   --jwt-secret "$JWT_SECRET" \
@@ -220,7 +220,7 @@ CONTAINARIUM_K8S_GATEWAY_UPSTREAM_PUBLIC_KEY="$(cat ./sshpiper_upstream.pub)" \
 ```
 
 > `daemon` has no `start` subcommand — the daemon runs directly under
-> `containarium daemon` (foreground; Ctrl+C to stop).
+> `containariumd daemon` (foreground; Ctrl+C to stop).
 >
 > The two `GATEWAY_UPSTREAM_*` vars are only required when gateway routing
 > is enabled (the default — step 4); using the "skip gateway routing"
@@ -282,7 +282,7 @@ CONTAINARIUM_K8S_GATEWAY_HOST="localhost" \
 CONTAINARIUM_K8S_GATEWAY_UPSTREAM_KEY_SECRET="sshpiper-upstream-key" \
 CONTAINARIUM_K8S_GATEWAY_UPSTREAM_PUBLIC_KEY="$(cat ./sshpiper_upstream.pub)" \
 CONTAINARIUM_K8S_STORAGE_CLASS="standard" \
-./containarium daemon \
+./containariumd daemon \
   --skip-infra-init --standalone \
   --jwt-secret "$JWT_SECRET" \
   --port 50051 --http-port 8080 --rest

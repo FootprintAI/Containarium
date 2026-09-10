@@ -16,13 +16,15 @@ SPOT_VM_NAME="${spot_vm_name}"
 ZONE="${zone}"
 PROJECT_ID="${project_id}"
 
-# reconcile_containarium_binary installs/updates /usr/local/bin/containarium to
-# the desired version (CONTAINARIUM_VERSION), then leaves the service
-# install+restart below to pick it up. The sentinel serves this binary to
-# recovered workhorses on :8888, so it must honor the requested version — and
-# the previous unconditional `curl -o <live binary>` was both non-version-aware
-# and unsafe (a failed download under `set -e` aborted the whole boot, and it
-# overwrote the running binary in place). See #385.
+# reconcile_containarium_binary installs/updates /usr/local/bin/containariumd
+# to the desired version (CONTAINARIUM_VERSION), then leaves the service
+# install+restart below to pick it up. The sentinel serves THIS SAME binary to
+# recovered workhorses on :8888 (internal/sentinel/binaryserver.go's
+# defaultBinaryPath, #1779) and runs its own sentinel process from it, so it
+# must honor the requested version — and the previous unconditional
+# `curl -o <live binary>` was both non-version-aware and unsafe (a failed
+# download under `set -e` aborted the whole boot, and it overwrote the running
+# binary in place). See #385.
 #
 # A real pinned version that already matches is a no-op (faster boots, and the
 # sentinel won't re-pull a same-version binary). "dev"/unset keep the prior
@@ -31,19 +33,19 @@ PROJECT_ID="${project_id}"
 reconcile_containarium_binary() {
     desired="$CONTAINARIUM_VERSION"
     current=""
-    if [ -x /usr/local/bin/containarium ]; then
-        current="$(/usr/local/bin/containarium version 2>/dev/null || true)"
+    if [ -x /usr/local/bin/containariumd ]; then
+        current="$(/usr/local/bin/containariumd version 2>/dev/null || true)"
     fi
 
     # Skip only for a real pinned version that already matches. "dev" and unset
     # always re-pull (preserving the sentinel's prior every-boot behavior).
     if [ -n "$desired" ] && [ "$desired" != "dev" ] && printf '%s' "$current" | grep -qF "$desired"; then
-        echo "containarium already at desired version ($desired) — skipping download"
+        echo "containariumd already at desired version ($desired) — skipping download"
         return 0
     fi
 
     if [ -z "$CONTAINARIUM_BINARY_URL" ]; then
-        if [ -x /usr/local/bin/containarium ]; then
+        if [ -x /usr/local/bin/containariumd ]; then
             echo "no containarium_binary_url; keeping existing binary ($current)"
         else
             echo "WARNING: no containarium binary source available"
@@ -51,16 +53,19 @@ reconcile_containarium_binary() {
         return 0
     fi
 
-    echo "Downloading containarium from $CONTAINARIUM_BINARY_URL"
-    tmp=/usr/local/bin/.containarium.new
+    echo "Downloading containariumd from $CONTAINARIUM_BINARY_URL"
+    tmp=/usr/local/bin/.containariumd.new
     rm -f "$tmp"
     if curl -fsSL "$CONTAINARIUM_BINARY_URL" -o "$tmp"; then
         chmod +x "$tmp"
-        mv -f "$tmp" /usr/local/bin/containarium
-        echo "Containarium version: $(/usr/local/bin/containarium version 2>/dev/null || echo unknown)"
+        mv -f "$tmp" /usr/local/bin/containariumd
+        # Rollout Phase 1 (#1781): keep the old name working as a symlink so
+        # any runbook/cron this inventory missed keeps working.
+        ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium
+        echo "Containariumd version: $(/usr/local/bin/containariumd version 2>/dev/null || echo unknown)"
     else
         rm -f "$tmp"
-        if [ -x /usr/local/bin/containarium ]; then
+        if [ -x /usr/local/bin/containariumd ]; then
             echo "WARNING: download failed; keeping existing binary ($current)"
         else
             echo "WARNING: download failed and no existing binary; sentinel will not start"
@@ -343,10 +348,10 @@ fi
 # off-host (the audit-known operational gap is the only durable
 # secret being on a single VM).
 %{ if enable_peer_mtls ~}
-if [ ! -f /etc/containarium/ca.key ] && [ -x /usr/local/bin/containarium ]; then
+if [ ! -f /etc/containarium/ca.key ] && [ -x /usr/local/bin/containariumd ]; then
     echo "==> Generating peer-CA private key (one-time)..."
     umask 077
-    if /usr/local/bin/containarium pki generate-ca > /etc/containarium/ca.key 2>/dev/null; then
+    if /usr/local/bin/containariumd pki generate-ca > /etc/containarium/ca.key 2>/dev/null; then
         chmod 0400 /etc/containarium/ca.key
         echo "✓ /etc/containarium/ca.key generated (RSA-4096). BACK THIS UP OFF-HOST."
     else
@@ -360,8 +365,8 @@ echo "[sentinel] enable_peer_mtls=false — skipping CA bootstrap (Phase 0.5 off
 %{ endif ~}
 
 # Install and start sentinel service
-if [ -f /usr/local/bin/containarium ]; then
-    /usr/local/bin/containarium sentinel service install \
+if [ -f /usr/local/bin/containariumd ]; then
+    /usr/local/bin/containariumd sentinel service install \
         --spot-vm "$SPOT_VM_NAME" \
         --zone "$ZONE" \
         --project "$PROJECT_ID"
@@ -409,7 +414,7 @@ EOF
     cat > /etc/systemd/system/containarium-sentinel.service.d/proxyproto.conf <<EOF
 [Service]
 ExecStart=
-ExecStart=/usr/local/bin/containarium sentinel --spot-vm $SPOT_VM_NAME --zone $ZONE --project $PROJECT_ID --proxy-protocol
+ExecStart=/usr/local/bin/containariumd sentinel --spot-vm $SPOT_VM_NAME --zone $ZONE --project $PROJECT_ID --proxy-protocol
 EOF
     echo "wrote proxyproto.conf for sentinel"
     systemctl daemon-reload
