@@ -290,7 +290,7 @@ When Caddy runs inside a container (e.g., Incus/LXD), you need to forward ports 
 When running the Containarium daemon with `--app-hosting`, port forwarding is **automatically configured** on startup:
 
 ```bash
-containarium daemon --app-hosting --base-domain example.com
+containariumd daemon --app-hosting --base-domain example.com
 ```
 
 The daemon will:
@@ -447,7 +447,7 @@ sudo tcpdump -i any port 80 -n
 When starting the Containarium daemon with app hosting:
 
 ```bash
-containarium daemon \
+containariumd daemon \
   --app-hosting \
   --postgres "postgres://user:pass@localhost:5432/containarium" \
   --base-domain "example.com" \

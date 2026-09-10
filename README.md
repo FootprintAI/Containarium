@@ -460,12 +460,12 @@ credentials.
 
 ```bash
 # LXC/Incus (default)
-containarium daemon
+containariumd daemon
 
 # Kubernetes — uses in-cluster config or KUBECONFIG
-CONTAINARIUM_RUNTIME=k8s containarium daemon
+CONTAINARIUM_RUNTIME=k8s containariumd daemon
 # or
-containarium daemon --runtime=k8s
+containariumd daemon --runtime=k8s
 ```
 
 Both backends share the same CLI, MCP tools, JWT auth, and REST/gRPC API.
@@ -640,6 +640,20 @@ least-privilege scope catalog.
 
 ## Deployment
 
+### Two binaries: `containarium` vs `containariumd`
+
+Same convention as `docker`/`dockerd` or `incus`/`incusd`: `containarium`
+is the CLI you run from your laptop (`create`, `list`, `ssh-config`,
+`expose-port`, …); `containariumd` is what runs *on the host* — the
+daemon, the sentinel, and every on-host admin verb (`daemon`,
+`sentinel`, `service install`, `sync-accounts`, `pool join`, `node`,
+`hosting`, `recover`, `doctor`). Install `containarium` wherever you
+want to drive the platform from (your laptop, a jump box); install
+`containariumd` on every host that runs the daemon or sentinel itself.
+A compat symlink (`/usr/local/bin/containarium -> containariumd`) keeps
+existing hosts and scripts that still invoke `containarium <daemon verb>`
+working during the rollout.
+
 ### Manual install (recommended for getting started)
 
 ```bash
@@ -757,7 +771,7 @@ K8s orchestrates application containers across nodes — that's the
 infrastructure layer. Containarium is the agent runtime that runs *on
 top of* Kubernetes (or LXC), giving each agent a persistent, SSH-native
 box without handing it cluster credentials. If you're already on K8s,
-run `containarium daemon --runtime=k8s` and use your existing cluster as
+run `containariumd daemon --runtime=k8s` and use your existing cluster as
 the backend. See the [Kubernetes backend](#kubernetes-backend-experimental)
 section and [docs/KIND-QUICKSTART.md](docs/KIND-QUICKSTART.md).
 

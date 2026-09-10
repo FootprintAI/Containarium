@@ -268,7 +268,9 @@ jobs:
           # Matching the prior step's privilege level (sudo -E, same
           # preserved $PATH/$HOME) makes both go invocations share the
           # cache under the SAME effective owner.
-          sudo -E env "PATH=$PATH" go build -o /tmp/containarium ./cmd/containarium
+          # #1773: cmd/containarium is client-only now; the full daemon is
+          # cmd/containariumd, untagged, unchanged.
+          sudo -E env "PATH=$PATH" go build -o /tmp/containarium ./cmd/containariumd
           sudo mkdir -p /etc/containarium/keys
 
           # --standalone skips the core LXCs (Postgres, Caddy). With no

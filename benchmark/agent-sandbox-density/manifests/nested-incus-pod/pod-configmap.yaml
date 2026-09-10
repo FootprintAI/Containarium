@@ -1,12 +1,12 @@
 # Startup script for the nested-Incus-in-a-k8s-pod benchmark scenario
-# (issue #1565). Runs `incusd` and `containarium daemon --runtime=lxc`
+# (issue #1565). Runs `incusd` and `containariumd daemon --runtime=lxc`
 # INSIDE this one pod — every `containarium create` becomes a real LXC
 # container, cgroup-ceilinged by this nested Incus, invisible to
 # Kubernetes' own admission accounting (which only ever sees this one
 # pod's declared request/limit). See README.md in this directory.
 #
 # No systemd in a bare ubuntu:24.04 container image — incusd and the
-# containarium daemon are started directly (nohup'd background
+# containariumd daemon are started directly (nohup'd background
 # processes), not via systemctl. The zabbly Incus package's postinst
 # scripts still try to touch systemd unit files (harmless — no init is
 # actually running them); the real daemon binary lives at
@@ -68,9 +68,9 @@ data:
       # checksum-verified against a SHA256SUMS file served alongside it,
       # same as the release-download path below.
       echo "[start.sh] using override binary URL: ${CONTAINARIUM_BINARY_URL}"
-      curl -fsSL -o /tmp/containarium "${CONTAINARIUM_BINARY_URL}"
-      curl -fsSL -o /tmp/containarium.sha256 "${CONTAINARIUM_BINARY_URL}.sha256"
-      EXPECTED=$(awk '{print $1}' /tmp/containarium.sha256)
+      curl -fsSL -o /tmp/containariumd "${CONTAINARIUM_BINARY_URL}"
+      curl -fsSL -o /tmp/containariumd.sha256 "${CONTAINARIUM_BINARY_URL}.sha256"
+      EXPECTED=$(awk '{print $1}' /tmp/containariumd.sha256)
     else
       TAG="${CONTAINARIUM_VERSION}"
       if [ "$TAG" = "latest" ]; then
@@ -78,14 +78,15 @@ data:
       fi
       echo "[start.sh] resolved tag: ${TAG}"
       BASE_URL="https://github.com/FootprintAI/Containarium/releases/download/${TAG}"
-      curl -fsSL -o /tmp/containarium "${BASE_URL}/containarium-linux-amd64"
+      curl -fsSL -o /tmp/containariumd "${BASE_URL}/containarium-linux-amd64"
       curl -fsSL -o /tmp/SHA256SUMS.txt "${BASE_URL}/SHA256SUMS.txt"
       EXPECTED=$(grep 'containarium-linux-amd64$' /tmp/SHA256SUMS.txt | awk '{print $1}')
     fi
-    ACTUAL=$(sha256sum /tmp/containarium | awk '{print $1}')
+    ACTUAL=$(sha256sum /tmp/containariumd | awk '{print $1}')
     [ "$EXPECTED" = "$ACTUAL" ] || { echo "[start.sh] SHA256 mismatch: expected $EXPECTED, got $ACTUAL"; exit 1; }
-    install -m 0755 /tmp/containarium /usr/local/bin/containarium
-    containarium version
+    install -m 0755 /tmp/containariumd /usr/local/bin/containariumd
+    ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium
+    containariumd version
 
     echo "[start.sh] starting the containarium daemon (LXC backend, pointed at the nested incusd)"
     # Default (non-standalone) mode, same as scenario 3's 05-provision-
@@ -97,7 +98,7 @@ data:
     mkdir -p /etc/containarium
     openssl rand -hex 32 >/etc/containarium/jwt.secret
     chmod 0400 /etc/containarium/jwt.secret
-    nohup containarium daemon --runtime=lxc --address 0.0.0.0 --rest --http-port 8080 \
+    nohup containariumd daemon --runtime=lxc --address 0.0.0.0 --rest --http-port 8080 \
       --jwt-secret-file /etc/containarium/jwt.secret \
       --disable-security-scanner --disable-pentest-scanner --disable-zap-scanner \
       >/var/log/containarium-daemon.log 2>&1 &
@@ -115,7 +116,7 @@ data:
     echo "[start.sh] containarium daemon healthy after ${i} checks"
 
     echo "[start.sh] baking the base image (#1037) so creates clone instead of re-installing packages every time"
-    containarium image-bake --image images:ubuntu/24.04 --podman=false </dev/null
+    containariumd image-bake --image images:ubuntu/24.04 --podman=false </dev/null
 
     echo "[start.sh] ready"
     touch /tmp/ready

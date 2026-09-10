@@ -122,7 +122,7 @@ The Phase 0 / 0.5 harnesses (`experimental/ebpf-phase0/validate.sh`,
                             │
                             v
                   ┌──────────────────────────────┐
-                  │  containarium daemon         │
+                  │  containariumd daemon        │
                   │   policy compiler            │
                   │   (rules → BPF maps)         │
                   └──────────────────────────────┘

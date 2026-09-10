@@ -68,7 +68,7 @@ jobs:
       - name: Build and push daemon image
         uses: docker/build-push-action@v7
         with:
-          # Repo root context: the Dockerfile builds ./cmd/containarium.
+          # Repo root context: the Dockerfile builds ./cmd/containariumd (#1773).
           context: .
           file: ./images/daemon/Dockerfile
           build-args: |

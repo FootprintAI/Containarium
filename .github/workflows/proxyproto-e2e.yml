@@ -33,7 +33,13 @@ jobs:
         # Linux-only eBPF loader (internal/netbpf). This catches a new cmd file
         # importing internal/server without a //go:build !windows guard at PR
         # time instead of at release time (see #884 / v0.47.0).
-        run: GOOS=windows GOARCH=amd64 go build -o /dev/null ./cmd/containarium/
+        #
+        # #1773: cmd/containarium/main.go now carries
+        # //go:build containarium_client (the tagged client entrypoint;
+        # cmd/containariumd/main.go is today's untagged superset binary), so
+        # the client build requires the tag or the compiler correctly refuses
+        # with "build constraints exclude all Go files".
+        run: GOOS=windows GOARCH=amd64 go build -tags containarium_client -o /dev/null ./cmd/containarium/
 
       - name: Set up Node
         uses: actions/setup-node@v7

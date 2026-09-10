@@ -29,7 +29,7 @@ counters cost nothing when export is disabled.
 
 ```mermaid
 flowchart LR
-    subgraph daemon["containarium daemon (existing binary)"]
+    subgraph daemon["containariumd daemon (existing binary)"]
         INT["gRPC unary interceptor (NEW)\ncounts requests/errors"]
         RPC["CreateContainer/DeleteContainer\nhandlers (instrumented)"]
         PS["internal/metrics/platformstats (NEW)\natomic counters, zero deps"]

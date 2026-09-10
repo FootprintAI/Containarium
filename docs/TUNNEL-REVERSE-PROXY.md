@@ -151,7 +151,7 @@ Add `--tunnel-token` to your existing GCP sentinel command:
 TOKEN=$(openssl rand -hex 32)
 
 # Sentinel (add --tunnel-token to existing command)
-containarium sentinel \
+containariumd sentinel \
   --spot-vm my-spot-vm --zone us-west1-a --project my-project \
   --tunnel-token "$TOKEN" \
   --forwarded-ports 80,443
@@ -184,7 +184,7 @@ The tunnel client:
 ### Pure Tunnel Mode (no GCP)
 
 ```bash
-containarium sentinel \
+containariumd sentinel \
   --provider=tunnel \
   --tunnel-token SECRET \
   --forwarded-ports 80,443
@@ -274,7 +274,7 @@ Bare metal
 
 - **Outbound TCP to port 443** on the sentinel's public IP (most firewalls allow this)
 - No inbound ports needed
-- Running containarium daemon and services locally (sshd, Caddy, etc.)
+- Running containariumd daemon and services locally (sshd, Caddy, etc.)
 - The `containarium` binary installed
 - Go toolchain (to build from source) or pre-built binary
 

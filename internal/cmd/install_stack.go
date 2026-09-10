@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"github.com/footprintai/containarium/internal/client"
-	"github.com/footprintai/containarium/pkg/core/container"
 	"github.com/spf13/cobra"
 )
 
@@ -49,20 +48,6 @@ func runInstallStack(cmd *cobra.Command, args []string) error {
 		return installStackRemoteGRPC(username, stackID)
 	}
 	return installStackLocal(username, stackID)
-}
-
-func installStackLocal(username, stackID string) error {
-	mgr, err := container.New()
-	if err != nil {
-		return fmt.Errorf("failed to connect to Incus: %w", err)
-	}
-
-	if err := mgr.InstallStack(username, stackID); err != nil {
-		return fmt.Errorf("failed to install stack: %w", err)
-	}
-
-	fmt.Printf("\n✓ Stack %q installed successfully on %s-container\n", stackID, username)
-	return nil
 }
 
 func installStackRemoteGRPC(username, stackID string) error {
