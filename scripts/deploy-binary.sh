@@ -55,7 +55,7 @@ verify_remote() {
     # The runner is invoked with the remote shell command as its last argument.
     local label="$1"; shift
     local got
-    got="$("$@" "sha256sum /tmp/containarium 2>/dev/null | cut -d' ' -f1" 2>/dev/null || true)"
+    got="$("$@" "sha256sum /tmp/containariumd 2>/dev/null | cut -d' ' -f1" 2>/dev/null || true)"
     got="$(printf '%s' "$got" | tr -d '[:space:]')"
     if [ -z "$got" ]; then
         echo "  ERROR: could not read the uploaded binary's checksum on $label" >&2
@@ -67,7 +67,7 @@ verify_remote() {
         echo "         got      $got" >&2
         echo "         The transfer was corrupted or truncated. Nothing was stopped;" >&2
         echo "         re-run to retry. If scp keeps truncating on this link, try:" >&2
-        echo "           cat '$BINARY' | ssh <host> 'cat > /tmp/containarium'" >&2
+        echo "           cat '$BINARY' | ssh <host> 'cat > /tmp/containariumd'" >&2
         return 1
     fi
     echo "  checksum OK on $label"
@@ -171,29 +171,30 @@ echo "==> Shipping $BINARY (sha256 $EXPECTED_SHA)"
 
 # 2. Upload to sentinel
 echo "==> Uploading to sentinel..."
-gcloud compute scp "$BINARY" "$SENTINEL_VM:/tmp/containarium" \
+gcloud compute scp "$BINARY" "$SENTINEL_VM:/tmp/containariumd" \
     --zone="$ZONE" --project="$PROJECT" --tunnel-through-iap --scp-flag="-P 2222"
-# Sentinel daemon holds /usr/local/bin/containarium open, so a plain `cp`
+# Sentinel daemon holds /usr/local/bin/containariumd open, so a plain `cp`
 # fails with "Text file busy". Stop the service before copying, mirroring
-# the primary-VM pattern below.
+# the primary-VM pattern below. The final `ln -sf` keeps the pre-#1780 name
+# working as a compat symlink for the duration of the rollout.
 verify_remote "sentinel ($SENTINEL_VM)" \
     gcloud compute ssh "$SENTINEL_VM" --zone="$ZONE" --project="$PROJECT" \
     --tunnel-through-iap --ssh-flag="-p 2222" --command
 gcloud compute ssh "$SENTINEL_VM" --zone="$ZONE" --project="$PROJECT" \
     --tunnel-through-iap --ssh-flag="-p 2222" \
-    --command="sudo systemctl stop $SENTINEL_SERVICE && sleep 1 && sudo cp /tmp/containarium /usr/local/bin/containarium && sudo chmod +x /usr/local/bin/containarium && sudo systemctl start $SENTINEL_SERVICE"
+    --command="sudo systemctl stop $SENTINEL_SERVICE && sleep 1 && sudo cp /tmp/containariumd /usr/local/bin/containariumd && sudo chmod +x /usr/local/bin/containariumd && sudo ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium && sudo systemctl start $SENTINEL_SERVICE"
 echo "  Sentinel updated and restarted ($SENTINEL_SERVICE)"
 
 # 3. Deploy on primary
 echo "==> Deploying on primary ($PRIMARY_VM)..."
-gcloud compute scp "$BINARY" "$PRIMARY_VM:/tmp/containarium" \
+gcloud compute scp "$BINARY" "$PRIMARY_VM:/tmp/containariumd" \
     --zone="$ZONE" --project="$PROJECT" --tunnel-through-iap
 verify_remote "primary ($PRIMARY_VM)" \
     gcloud compute ssh "$PRIMARY_VM" --zone="$ZONE" --project="$PROJECT" \
     --tunnel-through-iap --command
 gcloud compute ssh "$PRIMARY_VM" --zone="$ZONE" --project="$PROJECT" \
     --tunnel-through-iap \
-    --command="sudo systemctl stop $PRIMARY_SERVICE && sleep 1 && sudo cp /tmp/containarium /usr/local/bin/containarium && sudo chmod +x /usr/local/bin/containarium && sudo systemctl start $PRIMARY_SERVICE"
+    --command="sudo systemctl stop $PRIMARY_SERVICE && sleep 1 && sudo cp /tmp/containariumd /usr/local/bin/containariumd && sudo chmod +x /usr/local/bin/containariumd && sudo ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium && sudo systemctl start $PRIMARY_SERVICE"
 echo "  Primary updated and restarted ($PRIMARY_SERVICE)"
 
 # 4. Deploy on peers.
@@ -203,7 +204,7 @@ echo "  Primary updated and restarted ($PRIMARY_SERVICE)"
 if (( ${#PEERS[@]} > 0 )); then
   for peer in "${PEERS[@]}"; do
     echo "==> Deploying on peer ($peer)..."
-    scp "$BINARY" "$peer:/tmp/containarium" 2>/dev/null || {
+    scp "$BINARY" "$peer:/tmp/containariumd" 2>/dev/null || {
         echo "  Warning: failed to upload to $peer (skipping)"
         continue
     }
@@ -214,9 +215,9 @@ if (( ${#PEERS[@]} > 0 )); then
         continue
     fi
     # Peers need interactive sudo — print the command for the user
-    echo "  Binary uploaded to $peer:/tmp/containarium"
+    echo "  Binary uploaded to $peer:/tmp/containariumd"
     echo "  Run on $peer:"
-    echo "    sudo systemctl stop containarium-tunnel && sudo systemctl stop $PRIMARY_SERVICE && sleep 1 && sudo cp /tmp/containarium /usr/local/bin/containarium && sudo chmod +x /usr/local/bin/containarium && sudo systemctl start $PRIMARY_SERVICE && sudo systemctl start containarium-tunnel"
+    echo "    sudo systemctl stop containarium-tunnel && sudo systemctl stop $PRIMARY_SERVICE && sleep 1 && sudo cp /tmp/containariumd /usr/local/bin/containariumd && sudo chmod +x /usr/local/bin/containariumd && sudo ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium && sudo systemctl start $PRIMARY_SERVICE && sudo systemctl start containarium-tunnel"
   done
 fi
 

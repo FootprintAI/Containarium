@@ -18,7 +18,10 @@ import (
 	"github.com/footprintai/containarium/pkg/version"
 )
 
-const defaultBinaryPath = "/usr/local/bin/containarium"
+// defaultBinaryPath is what this sentinel serves to backends over
+// /sentinel/fetch-release. #1779: flipped to containariumd for release N —
+// see selfupdate.go's releaseBinaryName for the matching fetch-side rename.
+const defaultBinaryPath = "/usr/local/bin/containariumd"
 
 // StatusJSON is the JSON response for the /status endpoint.
 type StatusJSON struct {

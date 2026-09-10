@@ -79,7 +79,7 @@ channel id.
 {
   "displayName": "Containarium backend dead-man (heartbeat absent)",
   "documentation": {
-    "content": "The containarium.export.heartbeat series stopped arriving from a backend. The daemon or host is dead, wedged, or network-partitioned from Cloud Monitoring. Check the backend host and the containarium daemon; this alert fires precisely because the backend went silent, so host-local dashboards may be unreachable.",
+    "content": "The containarium.export.heartbeat series stopped arriving from a backend. The daemon or host is dead, wedged, or network-partitioned from Cloud Monitoring. Check the backend host and the containariumd daemon; this alert fires precisely because the backend went silent, so host-local dashboards may be unreachable.",
     "mimeType": "text/markdown"
   },
   "combiner": "OR",

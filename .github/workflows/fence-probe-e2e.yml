@@ -201,7 +201,9 @@ jobs:
       - name: Build the daemon (with the eBPF object available)
         run: |
           set -euo pipefail
-          sudo -E env "PATH=$PATH" go build -o /tmp/containarium ./cmd/containarium
+          # #1773: cmd/containarium is client-only now; the full daemon is
+          # cmd/containariumd, untagged, unchanged.
+          sudo -E env "PATH=$PATH" go build -o /tmp/containarium ./cmd/containariumd
 
       # Two tenants ("orgs" at this daemon's own tenant boundary — see the
       # design doc / issue #1664: containarium create <username> is what

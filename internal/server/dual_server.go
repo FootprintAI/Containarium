@@ -2958,7 +2958,9 @@ func (ds *DualServer) Start(ctx context.Context) error {
 
 	// Start auto-updater if sentinel URL is configured
 	if ds.config.SentinelURL != "" {
-		updater := NewAutoUpdater(ds.config.SentinelURL, "/usr/local/bin/containarium", 5*time.Minute)
+		// #1779: matches sentinel/binaryserver.go's defaultBinaryPath — the
+		// backend swaps its own binary at the same path the sentinel serves.
+		updater := NewAutoUpdater(ds.config.SentinelURL, "/usr/local/bin/containariumd", 5*time.Minute)
 		if ds.containerServer != nil {
 			ds.containerServer.SetAutoUpdater(updater) // enables on-demand TriggerUpgrade (#354)
 		}

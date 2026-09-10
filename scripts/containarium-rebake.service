@@ -14,7 +14,7 @@ Type=oneshot
 # Absent file or empty var = bake the defaults, which match what stackless
 # creates request. To bake several variants, add drop-in ExecStart lines.
 EnvironmentFile=-/etc/containarium/rebake.env
-ExecStart=/bin/sh -c '/usr/local/bin/containarium image-bake ${REBAKE_FLAGS}'
+ExecStart=/bin/sh -c '/usr/local/bin/containariumd image-bake ${REBAKE_FLAGS}'
 
 # Root, same as the daemon — image-bake drives Incus (create/exec/publish).
 User=root

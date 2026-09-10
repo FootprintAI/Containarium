@@ -57,7 +57,7 @@ The MIG's auto-healing **deletes** the stopped instance and creates a new one fr
 4. Sentinel immediately switches to maintenance mode (serves 503 page)
 5. Sentinel calls `StartInstance()` on the stopped VM
 6. VM boots with existing boot disk — all software already installed
-7. systemd auto-starts Incus and containarium daemon
+7. systemd auto-starts Incus and containariumd daemon
 8. Sentinel TCP health check detects backend healthy, switches to proxy mode
 9. Traffic flows again — users see the service resume
 
@@ -103,7 +103,7 @@ With `instance_termination_action: STOP`, GCE stops the VM but preserves it:
 - Persistent disk still attached
 - Network config preserved
 
-The sentinel calls `StartInstance()` which boots the existing VM. systemd starts Incus and the containarium daemon automatically. No startup script reinstallation needed.
+The sentinel calls `StartInstance()` which boots the existing VM. systemd starts Incus and the containariumd daemon automatically. No startup script reinstallation needed.
 
 Spot VMs (provisioning_model: SPOT) have **no 24-hour time limit** — unlike old preemptible VMs. They run indefinitely until GCE needs capacity. Restarting a stopped spot VM does not affect preemption scheduling.
 
@@ -231,10 +231,10 @@ The sentinel runs the same `containarium` binary:
 
 ```bash
 # Production (on sentinel VM, installed via systemd)
-containarium sentinel --spot-vm containarium-jump --zone us-west1-a --project my-project
+containariumd sentinel --spot-vm containarium-jump --zone us-west1-a --project my-project
 
 # Local testing (no GCP, no iptables)
-containarium sentinel --provider=none --backend-addr=127.0.0.1 --health-port 8080 --http-port 9090
+containariumd sentinel --provider=none --backend-addr=127.0.0.1 --health-port 8080 --http-port 9090
 ```
 
 Key flags:

@@ -1856,8 +1856,19 @@ type DebugContainerResponse struct {
 	// don't apply — there is no sentinel to check. Lets an agent stop hunting
 	// for a jump host that doesn't exist. See #1011.
 	SshIngressHost string `protobuf:"bytes,10,opt,name=ssh_ingress_host,json=sshIngressHost,proto3" json:"ssh_ingress_host,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// True when the host-level Linux user exists but the SAME username does
+	// NOT exist inside the running container (#1487). containarium-shell's
+	// login path `su`s into this username INSIDE the container, so this
+	// combination — host account provisioned, in-container account never
+	// created — makes the box permanently unreachable over SSH even though
+	// every other signal (Incus RUNNING, host user present, sshd healthy)
+	// looks fine. Only meaningful (and only checked) when host_user_exists
+	// is true and container_state is "running"; false otherwise, including
+	// "not checked" — callers must read it alongside those two fields, the
+	// same convention host_user_shell_exists already follows.
+	InContainerUserMissing bool `protobuf:"varint,11,opt,name=in_container_user_missing,json=inContainerUserMissing,proto3" json:"in_container_user_missing,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
 }
 
 func (x *DebugContainerResponse) Reset() {
@@ -1958,6 +1969,13 @@ func (x *DebugContainerResponse) GetSshIngressHost() string {
 		return x.SshIngressHost
 	}
 	return ""
+}
+
+func (x *DebugContainerResponse) GetInContainerUserMissing() bool {
+	if x != nil {
+		return x.InContainerUserMissing
+	}
+	return false
 }
 
 // GetConsoleLogRequest is the request to fetch a VM instance's boot-time
@@ -6236,7 +6254,7 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\tcontainer\x18\x01 \x01(\v2\x1a.containarium.v1.ContainerR\tcontainer\x12;\n" +
 	"\ametrics\x18\x02 \x01(\v2!.containarium.v1.ContainerMetricsR\ametrics\"3\n" +
 	"\x15DebugContainerRequest\x12\x1a\n" +
-	"\busername\x18\x01 \x01(\tR\busername\"\xb6\x03\n" +
+	"\busername\x18\x01 \x01(\tR\busername\"\xf1\x03\n" +
 	"\x16DebugContainerResponse\x12'\n" +
 	"\x0fcontainer_state\x18\x01 \x01(\tR\x0econtainerState\x12(\n" +
 	"\x10host_user_exists\x18\x02 \x01(\bR\x0ehostUserExists\x12&\n" +
@@ -6249,7 +6267,8 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"sourceRepo\x12%\n" +
 	"\x0edaemon_version\x18\t \x01(\tR\rdaemonVersion\x12(\n" +
 	"\x10ssh_ingress_host\x18\n" +
-	" \x01(\tR\x0esshIngressHost\"2\n" +
+	" \x01(\tR\x0esshIngressHost\x129\n" +
+	"\x19in_container_user_missing\x18\v \x01(\bR\x16inContainerUserMissing\"2\n" +
 	"\x14GetConsoleLogRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\")\n" +
 	"\x15GetConsoleLogResponse\x12\x10\n" +

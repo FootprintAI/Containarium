@@ -15,7 +15,7 @@
 #
 # What it does NOT touch:
 #   - The existing containarium-tunnel.service (Phase A — leave running)
-#   - The /usr/local/bin/containarium binary (Phase A installed it)
+#   - The /usr/local/bin/containariumd binary (Phase A installed it, #1781)
 
 set -euo pipefail
 
@@ -74,7 +74,7 @@ fi
 echo
 echo "==> Step 4/8: Install daemon systemd unit (containarium.service)"
 if ! systemctl cat containarium.service >/dev/null 2>&1; then
-    /usr/local/bin/containarium service install
+    /usr/local/bin/containariumd service install
 fi
 # The unit's ReadWritePaths= includes /opt/containarium. systemd refuses
 # to start a service with a missing ReadWritePaths entry ("Failed to set
@@ -106,7 +106,7 @@ install -d -m 0755 /etc/systemd/system/containarium.service.d
 cat > /etc/systemd/system/containarium.service.d/lab-pool.conf <<CONF
 [Service]
 ExecStart=
-ExecStart=/usr/local/bin/containarium daemon \\
+ExecStart=/usr/local/bin/containariumd daemon \\
   --pool ${POOL} \\
   --network-subnet ${NETWORK_SUBNET} \\
   --rest \\
