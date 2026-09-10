@@ -83,7 +83,7 @@ Two daemon flags (each with an environment-variable fallback):
 Example — allow up to 4× overcommit, enforced:
 
 ```
-containarium daemon --cpu-overcommit-factor 4 --cpu-overcommit-enforce
+containariumd daemon --cpu-overcommit-factor 4 --cpu-overcommit-enforce
 ```
 
 ## Recommended rollout (advisory → enforce)
@@ -135,7 +135,7 @@ routed to the **least CPU-committed** healthy peer — lowest committed-cores /
 logical-CPU ratio — instead of the arbitrary first-healthy peer picked today.
 
 ```
-containarium daemon --placement-cpu-aware
+containariumd daemon --placement-cpu-aware
 ```
 
 - **No per-create cost.** Each peer's committed and logical-CPU counts are cached on

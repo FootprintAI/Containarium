@@ -12,7 +12,7 @@ Get Claude Desktop controlling your Containarium containers in 5 minutes!
 
 ```bash
 # Start the daemon with REST API
-containarium daemon --rest --jwt-secret "my-test-secret"
+containariumd daemon --rest --jwt-secret "my-test-secret"
 
 # You should see:
 # ═══════════════════════════════════════════════════════════════

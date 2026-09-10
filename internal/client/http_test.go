@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -90,6 +91,17 @@ func TestNewHTTPClient_PinsHTTP1(t *testing.T) {
 	// (not a zero-value transport with no timeouts).
 	if tr.DialContext == nil {
 		t.Error("expected DialContext preserved from http.DefaultTransport clone")
+	}
+}
+
+// TestNewHTTPClient_EmptyServerRejected pins #1776: an empty server address
+// must fail fast with ErrNoServerConfigured, not silently become
+// "http://" (baseURL's own prefix-normalization would otherwise turn ""
+// into a dialable-looking URL) and attempt to dial it.
+func TestNewHTTPClient_EmptyServerRejected(t *testing.T) {
+	_, err := NewHTTPClient("", "tok")
+	if !errors.Is(err, ErrNoServerConfigured) {
+		t.Errorf("NewHTTPClient(\"\", ...) error = %v, want ErrNoServerConfigured", err)
 	}
 }
 

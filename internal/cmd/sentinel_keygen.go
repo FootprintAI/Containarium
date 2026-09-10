@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build !windows && !containarium_client
 
 // The sentinel command tree (sentinelCmd, defined in sentinel.go) is
 // !windows-only — the Windows build ships only the remote-client commands. This

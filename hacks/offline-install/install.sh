@@ -128,7 +128,7 @@ check_bundle() {
     log_info "Verifying bundle layout at $BUNDLE_DIR"
 
     local errors=0
-    for required in "$BIN_DIR/containarium" "$BIN_DIR/mcp-server" "$BIN_DIR/agent-box" "$VERSION_FILE"; do
+    for required in "$BIN_DIR/containariumd" "$BIN_DIR/mcp-server" "$BIN_DIR/agent-box" "$VERSION_FILE"; do
         if [ ! -f "$required" ]; then
             log_error "Missing bundle file: $required"
             errors=$((errors + 1))
@@ -250,12 +250,15 @@ configure_kernel_modules() {
 install_binaries() {
     log_info "Installing Containarium binaries from $BIN_DIR (no network)"
 
-    install -m 0755 "$BIN_DIR/containarium" "$INSTALL_DIR/containarium"
-    install -m 0755 "$BIN_DIR/mcp-server"   "$INSTALL_DIR/mcp-server"
-    install -m 0755 "$BIN_DIR/agent-box"    "$INSTALL_DIR/agent-box"
+    install -m 0755 "$BIN_DIR/containariumd" "$INSTALL_DIR/containariumd"
+    install -m 0755 "$BIN_DIR/mcp-server"    "$INSTALL_DIR/mcp-server"
+    install -m 0755 "$BIN_DIR/agent-box"     "$INSTALL_DIR/agent-box"
+    # #1781 rollout compat symlink: keeps the pre-#1780 name working for any
+    # runbook/cron this inventory missed.
+    ln -sf "$INSTALL_DIR/containariumd" "$INSTALL_DIR/containarium"
 
     local v
-    v="$("$INSTALL_DIR/containarium" version 2>/dev/null || echo "unknown")"
+    v="$("$INSTALL_DIR/containariumd" version 2>/dev/null || echo "unknown")"
     log_success "Containarium installed: $v"
     log_success "mcp-server installed:   $INSTALL_DIR/mcp-server"
     log_success "agent-box installed:    $INSTALL_DIR/agent-box"
@@ -269,7 +272,7 @@ generate_tls_certificates() {
         return 0
     fi
 
-    "$INSTALL_DIR/containarium" cert generate --output "$CONFIG_DIR/certs"
+    "$INSTALL_DIR/containariumd" cert generate --output "$CONFIG_DIR/certs"
 
     log_success "TLS certificates generated: $CONFIG_DIR/certs"
 }
@@ -296,9 +299,9 @@ setup_jwt_secret() {
 }
 
 create_systemd_service() {
-    log_info "Creating systemd service via 'containarium service install'..."
+    log_info "Creating systemd service via 'containariumd service install'..."
 
-    /usr/local/bin/containarium service install
+    /usr/local/bin/containariumd service install
 
     log_success "Systemd service created"
 }
@@ -330,7 +333,7 @@ generate_initial_token() {
     log_info "Generating initial admin token..."
 
     if [ -f "$CONFIG_DIR/jwt.secret" ]; then
-        TOKEN=$("$INSTALL_DIR/containarium" token generate \
+        TOKEN=$("$INSTALL_DIR/containariumd" token generate \
             --username admin \
             --roles admin \
             --expiry 720h \
