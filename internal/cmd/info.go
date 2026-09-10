@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/footprintai/containarium/internal/client"
-	"github.com/footprintai/containarium/pkg/core/container"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/spf13/cobra"
 )
@@ -104,20 +103,9 @@ func showSystemInfo() error {
 		}
 	} else {
 		// Local mode via Incus
-		var mgr *container.Manager
-		mgr, err = container.New()
+		serverInfo, containers, err = getSystemInfoLocal()
 		if err != nil {
-			return fmt.Errorf("failed to connect to Incus: %w (is Incus running?)", err)
-		}
-
-		serverInfo, err = mgr.GetServerInfo()
-		if err != nil {
-			return fmt.Errorf("failed to get server info: %w", err)
-		}
-
-		containers, err = mgr.List()
-		if err != nil {
-			return fmt.Errorf("failed to list containers: %w", err)
+			return err
 		}
 	}
 
@@ -199,15 +187,9 @@ func showContainerInfo(username string) error {
 		}
 	} else {
 		// Local mode via Incus
-		var mgr *container.Manager
-		mgr, err = container.New()
+		info, err = getContainerInfoLocal(username)
 		if err != nil {
-			return fmt.Errorf("failed to connect to Incus: %w (is Incus running?)", err)
-		}
-
-		info, err = mgr.Get(username)
-		if err != nil {
-			return fmt.Errorf("container not found: %w", err)
+			return err
 		}
 	}
 

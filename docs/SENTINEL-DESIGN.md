@@ -97,7 +97,7 @@ The sentinel clears all iptables DNAT rules and starts its own HTTP/HTTPS server
 4. Sentinel switches to MAINTENANCE mode (serves 503 maintenance page)
 5. Sentinel calls `StartInstance()` on the stopped VM
 6. VM boots with existing boot disk — all software already in place
-7. systemd auto-starts Incus and containarium daemon
+7. systemd auto-starts Incus and containariumd daemon
 8. Sentinel TCP health check detects backend healthy (2 consecutive passes)
 9. Sentinel switches back to PROXY mode — traffic flows again
 
@@ -201,11 +201,13 @@ The startup script configures sshd to listen on both port 22 and port 2222. A de
 
 ## Binary Server (Port 8888)
 
-The sentinel serves the `containarium` binary on port 8888 so newly created spot VMs (without external IPs) can download it over the internal VPC network:
+The sentinel serves the `containariumd` binary on port 8888 so newly created spot VMs (without external IPs) can download it over the internal VPC network:
 
 ```bash
 # Spot VM startup script downloads binary from sentinel
-curl -fsSL http://<sentinel-internal-ip>:8888/binary -o /usr/local/bin/containarium
+curl -fsSL http://<sentinel-internal-ip>:8888/binary -o /usr/local/bin/containariumd
+chmod +x /usr/local/bin/containariumd
+ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium
 ```
 
 This avoids requiring Cloud NAT or external IP on the spot VM just to download the binary.
@@ -213,7 +215,7 @@ This avoids requiring Cloud NAT or external IP on the spot VM just to download t
 ## CLI Reference
 
 ```bash
-containarium sentinel [flags]
+containariumd sentinel [flags]
 ```
 
 ### Flags
@@ -241,7 +243,7 @@ containarium sentinel [flags]
 
 ```bash
 # Install as systemd service
-sudo containarium sentinel service install \
+sudo containariumd sentinel service install \
   --spot-vm <vm-name> \
   --zone <zone> \
   --project <project-id>
@@ -257,7 +259,7 @@ sudo systemctl restart containarium-sentinel
 
 ```bash
 # Sentinel accepts reverse tunnel connections on port 443
-containarium sentinel --provider=tunnel --tunnel-token SECRET
+containariumd sentinel --provider=tunnel --tunnel-token SECRET
 
 # Firewalled spot connects outbound to sentinel
 containarium tunnel \
@@ -273,7 +275,7 @@ See [TUNNEL-REVERSE-PROXY.md](TUNNEL-REVERSE-PROXY.md) for full details.
 
 ```bash
 # No GCP, no iptables — just health check and maintenance page
-containarium sentinel \
+containariumd sentinel \
   --provider=none \
   --backend-addr=127.0.0.1 \
   --health-port 8080 \

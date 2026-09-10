@@ -34,7 +34,7 @@ in-process in the daemon**, not in the core-otelcollector LXC. Reasons:
 
 ```mermaid
 flowchart LR
-    subgraph daemon["containarium daemon (existing binary)"]
+    subgraph daemon["containariumd daemon (existing binary)"]
         SRC["metrics sources (existing)\nGetSystemResources / GetAllMetrics"]
         COL["internal/metrics Collector (existing)\nOTLP push"]
         CE["internal/metrics/cloudexport (NEW)\nCloudExportCollector + Sink"]

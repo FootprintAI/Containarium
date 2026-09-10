@@ -69,7 +69,7 @@ func TestRenderBootstrap(t *testing.T) {
 	for _, want := range []string{
 		"apt-get install -y -qq incus",
 		"incus admin init --auto",
-		"containarium service install",
+		"containariumd service install",
 		"--pool 'gpu'",
 		"--spot-id 'gpu-node-gpu'",
 		"--sentinel-addr 'sentinel:443'",

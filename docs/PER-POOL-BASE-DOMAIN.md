@@ -63,7 +63,7 @@ The fallback stays as a safety net for unpooled single-backend deployments (no `
 `TunnelHandshake` gains `PublicBaseDomains []string`. Repeatable flag on both daemon and tunnel commands:
 
 ```
-containarium daemon ... --public-base-domain lab.example.com --public-base-domain demo.example.org
+containariumd daemon ... --public-base-domain lab.example.com --public-base-domain demo.example.org
 containarium tunnel ... --public-base-domain lab.example.com --public-base-domain demo.example.org
 ```
 

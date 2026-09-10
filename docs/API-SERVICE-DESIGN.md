@@ -45,7 +45,7 @@ You → SSH to jump server → Run: sudo containarium create alice
 
 ```
 GCE VM (Host OS - Ubuntu 24.04)
-├─ systemd service: containarium daemon (port 50051)  ← Runs HERE
+├─ systemd service: containariumd daemon (port 50051)  ← Runs HERE
 │  └─ Connects to: /var/lib/incus/unix.socket
 │
 └─ LXC Containers (managed by daemon):
@@ -292,7 +292,7 @@ Wants=incus.service
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/containarium daemon --config /etc/containarium/config.yaml
+ExecStart=/usr/local/bin/containariumd daemon --config /etc/containarium/config.yaml
 Restart=on-failure
 RestartSec=5s
 User=root
@@ -467,8 +467,9 @@ scp bin/containarium-linux-amd64 admin@jump-1:/tmp/
 ssh admin@jump-1
 
 # 3. Install binary
-sudo mv /tmp/containarium-linux-amd64 /usr/local/bin/containarium
-sudo chmod +x /usr/local/bin/containarium
+sudo mv /tmp/containarium-linux-amd64 /usr/local/bin/containariumd
+sudo chmod +x /usr/local/bin/containariumd
+sudo ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium
 
 # 4. Install systemd service (if not exists)
 sudo cp scripts/containarium.service /etc/systemd/system/

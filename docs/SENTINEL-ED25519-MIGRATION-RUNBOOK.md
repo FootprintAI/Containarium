@@ -65,7 +65,7 @@ exactly why the signing key goes on the sentinel **last** (see ordering).
 On any host with the v0.45.0 binary:
 
 ```bash
-containarium sentinel keygen
+containariumd sentinel keygen
 ```
 
 Output (two env lines):

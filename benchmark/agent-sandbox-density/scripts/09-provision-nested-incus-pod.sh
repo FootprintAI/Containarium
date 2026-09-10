@@ -18,8 +18,8 @@
 # CONTAINARIUM_VERSION release predates a flag this scenario's daemon
 # invocation needs (--disable-{security,pentest,zap}-scanner — the same
 # snag the #1558 and sentinel-statefulset entries in RESULTS.md hit),
-# build a `containarium` binary from `main` (CGO_ENABLED=0 GOOS=linux
-# GOARCH=amd64 go build -buildvcs=false ./cmd/containarium), serve it and
+# build a `containariumd` binary from `main` (CGO_ENABLED=0 GOOS=linux
+# GOARCH=amd64 go build -buildvcs=false ./cmd/containariumd), serve it and
 # a `<url>.sha256` file over plain HTTP from somewhere this VM's pod can
 # reach (its own host IP works — pods can reach the node they're
 # scheduled on), and set this to that URL. Leave unset to use the

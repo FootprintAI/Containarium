@@ -179,8 +179,11 @@ else
 fi
 
 # --- build the system under test ----------------------------------------
-log "building containarium"
-go build -o "$BIN" ./cmd/containarium
+log "building containariumd"
+# #1773: cmd/containarium is now the client-only build (//go:build
+# containarium_client); the full daemon this lane drives lives at
+# cmd/containariumd, untagged, unchanged from what this script always ran.
+go build -o "$BIN" ./cmd/containariumd
 
 # --- daemon environment --------------------------------------------------
 JWT_SECRET="${CONTAINARIUM_JWT_SECRET:-$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')}"

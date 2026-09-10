@@ -10,7 +10,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/containarium daemon \
+ExecStart=/usr/local/bin/containariumd daemon \
   --rest \
   --jwt-secret-file /etc/containarium/jwt.secret
 Restart=on-failure

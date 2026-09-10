@@ -5,7 +5,7 @@ partial). Validated by hand on an RTX 3090 workstation (see "Validation").
 
 ## What this is
 
-A first-class `containarium node` command group that turns one physical
+A first-class `containariumd node` command group that turns one physical
 host into **several Containarium backends** by provisioning Incus VMs,
 each running its own daemon + tunnel and registering with the sentinel as
 a distinct pool-tagged node:
@@ -61,24 +61,24 @@ hardware.
 
 ```
 # One-time, reboot-class host prep for a GPU node (VFIO). Explicit + gated.
-containarium node prepare-gpu --gpu pci=0000:01:00.0
+containariumd node prepare-gpu --gpu pci=0000:01:00.0
     → adds intel_iommu=on iommu=pt to GRUB, binds the GPU's PCI IDs to
       vfio-pci, prints the reboot instruction. DOES NOT reboot for you.
       WARNS: the host (and its current GPU containers) lose the GPU.
 
 # Provision a node-VM (idempotent; re-run reconciles).
-containarium node provision \
+containariumd node provision \
     --name cpu-node --kind cpu --pool cpu \
     --cpu 16 --memory 64GiB --disk 200GiB \
     --sentinel <sentinel-host:port> --tunnel-token <token>
 
-containarium node provision \
+containariumd node provision \
     --name gpu-node --kind gpu --pool gpu \
     --cpu 8 --memory 32GiB --gpu pci=0000:01:00.0 \
     --sentinel <sentinel-host:port> --tunnel-token <token>
 
-containarium node list                    # node-VMs on this host + state
-containarium node destroy --name cpu-node # tear a node-VM down
+containariumd node list                    # node-VMs on this host + state
+containariumd node destroy --name cpu-node # tear a node-VM down
 ```
 
 `--tunnel-token` / `--sentinel` may also come from
@@ -97,12 +97,12 @@ history.
    the GPU on `vfio-pci`).
 3. **Bootstrap inside the VM via cloud-init** — the same sequence
    `scripts/setup-peer.sh` runs today, just executed in the guest:
-   - drop the `containarium` binary in (`/usr/local/bin/containarium`),
+   - drop the `containariumd` binary in (`/usr/local/bin/containariumd`),
    - install nested Incus + `incus admin init --auto` (+ the NVIDIA driver
      for a GPU node),
-   - `containarium service install` (daemon systemd unit + override),
+   - `containariumd service install` (daemon systemd unit + override),
    - a `containarium-tunnel.service` running
-     `containarium tunnel --sentinel-addr <addr> --pool <pool> --spot-id <name>-<pool>`,
+     `containariumd tunnel --sentinel-addr <addr> --pool <pool> --spot-id <name>-<pool>`,
    - the tunnel token delivered as a cloud-init secret, written
      `0600 root` (never on the kernel cmdline / process args).
 4. The node tunnels up and **registers as a backend**; verify with
@@ -154,7 +154,7 @@ alone in its IOMMU group), by hand:
 - Bare-metal → LXC GPU passthrough works (`nvidia.runtime` + GPU device →
   `nvidia-smi` sees the card), so the GPU-node nested path is sound.
 
-`containarium node provision --kind cpu` was then run **live** on that host
+`containariumd node provision --kind cpu` was then run **live** on that host
 (against a real sentinel, token delivered via a 0600 file): it created the
 VM, installed nested Incus, pushed the binary, and launched the tunnel —
 which dialed the sentinel under the right pool/spot-id, **with the token

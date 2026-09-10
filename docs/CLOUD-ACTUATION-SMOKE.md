@@ -20,7 +20,7 @@ exercised together against a live control plane + a real backend.
 
 - A running **cloud control plane** (the `cloud-daemon`) reachable over gRPC, and
   cloud **sysadmin** access to it (to mint a host token).
-- A **backend host** running the OSS `containarium daemon` (the actuation client
+- A **backend host** running the OSS `containariumd daemon` (the actuation client
   ships in the default build — no special build flag). Incus present.
 - For the *enforcement* half: the eBPF object built on the backend and the daemon
   armed, per [`security/OPERATOR-SECURITY-RUNBOOK.md` → Pinning per-tenant network

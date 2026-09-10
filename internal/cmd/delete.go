@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"github.com/footprintai/containarium/internal/client"
-	"github.com/footprintai/containarium/pkg/core/container"
 	"github.com/spf13/cobra"
 )
 
@@ -70,31 +69,10 @@ func runDelete(cmd *cobra.Command, args []string) error {
 	// Delete jump server account (only in local mode)
 	// This removes the proxy-only user account from the jump server
 	if serverAddr == "" {
-		if verbose {
-			fmt.Println("Removing jump server account...")
-		}
-
-		if err := container.DeleteJumpServerAccount(username, verbose); err != nil {
-			// Don't fail the entire operation if jump server account deletion fails
-			// Container is already deleted at this point
-			fmt.Printf("Warning: Failed to delete jump server account for %s: %v\n", username, err)
-			fmt.Println("You may need to manually remove the account with: sudo userdel -r " + username)
-		} else {
-			fmt.Printf("✓ Jump server account %s deleted\n", username)
-		}
+		deleteJumpServerAccountLocal(username, verbose)
 	}
 
 	return nil
-}
-
-// deleteLocal deletes a container using local Incus daemon
-func deleteLocal(username string, force bool) error {
-	mgr, err := container.New()
-	if err != nil {
-		return fmt.Errorf("failed to connect to Incus: %w (is Incus running?)", err)
-	}
-
-	return mgr.Delete(username, force)
 }
 
 // deleteRemote deletes a container using remote gRPC server
