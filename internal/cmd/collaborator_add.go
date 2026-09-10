@@ -1,15 +1,12 @@
-//go:build !windows && !containarium_client
-
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"strings"
 
-	"github.com/footprintai/containarium/internal/collaborator"
-	"github.com/footprintai/containarium/pkg/core/container"
+	"github.com/footprintai/containarium/internal/client"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/spf13/cobra"
 )
 
@@ -50,7 +47,10 @@ Examples:
   containarium collaborator add alice carol --ssh-key /path/to/carol.pub
 
   # Authorize several of bob's keys (one per machine)
-  containarium collaborator add alice bob --ssh-key ~/.ssh/bob-laptop.pub --ssh-key ~/.ssh/bob-desktop.pub`,
+  containarium collaborator add alice bob --ssh-key ~/.ssh/bob-laptop.pub --ssh-key ~/.ssh/bob-desktop.pub
+
+  # Against a remote daemon
+  containarium collaborator add alice bob --ssh-key ~/.ssh/bob.pub --server daemon.example.com:50051`,
 	Args: cobra.ExactArgs(2),
 	RunE: runCollaboratorAdd,
 }
@@ -92,51 +92,60 @@ func runCollaboratorAdd(cmd *cobra.Command, args []string) error {
 		sshPublicKeys = append(sshPublicKeys, sshPublicKey)
 	}
 
-	// Local mode only for now (requires PostgreSQL)
-	return addCollaboratorLocal(ownerUsername, collaboratorUsername, sshPublicKeys)
+	switch {
+	case httpMode && serverAddr != "":
+		return addCollaboratorRemoteHTTP(ownerUsername, collaboratorUsername, sshPublicKeys)
+	case serverAddr != "":
+		return addCollaboratorRemote(ownerUsername, collaboratorUsername, sshPublicKeys)
+	default:
+		return addCollaboratorLocal(ownerUsername, collaboratorUsername, sshPublicKeys)
+	}
 }
 
-func addCollaboratorLocal(ownerUsername, collaboratorUsername string, sshPublicKeys []string) error {
-	// Create container manager
-	containerMgr, err := container.New()
+func addCollaboratorRemote(ownerUsername, collaboratorUsername string, sshPublicKeys []string) error {
+	grpcClient, err := client.NewGRPCClient(serverAddr, certsDir, insecure)
 	if err != nil {
-		return fmt.Errorf("failed to connect to Incus: %w (is Incus running?)", err)
+		return fmt.Errorf("failed to connect to remote server: %w", err)
 	}
+	defer func() { _ = grpcClient.Close() }()
 
-	// Check if container exists
-	containerName := ownerUsername + "-container"
-	if !containerMgr.ContainerExists(containerName) {
-		return fmt.Errorf("container %q does not exist", containerName)
-	}
-
-	// Create collaborator store
-	collaboratorStore, err := collaborator.NewStore(context.Background(), getPostgresConnString())
-	if err != nil {
-		return fmt.Errorf("failed to connect to collaborator database: %w\n(Is PostgreSQL running? Set CONTAINARIUM_POSTGRES_URL if using non-default location)", err)
-	}
-	defer collaboratorStore.Close()
-
-	// Create collaborator manager
-	collaboratorMgr := container.NewCollaboratorManager(containerMgr, collaboratorStore)
-
-	// Add collaborator
-	collab, err := collaboratorMgr.AddCollaborator(ownerUsername, collaboratorUsername, sshPublicKeys, collaboratorGrantSudo, collaboratorGrantRuntime)
+	resp, err := grpcClient.AddCollaborator(ownerUsername, collaboratorUsername, sshPublicKeys, collaboratorGrantSudo, collaboratorGrantRuntime)
 	if err != nil {
 		return fmt.Errorf("failed to add collaborator: %w", err)
 	}
+	printAddCollaboratorResponse(resp)
+	return nil
+}
 
-	fmt.Printf("Collaborator %s added to %s-container\n\n", collaboratorUsername, ownerUsername)
-	fmt.Printf("Account name: %s\n", collab.AccountName)
-	fmt.Printf("SSH command:  %s\n\n", collaboratorMgr.GenerateSSHCommand(ownerUsername, collaboratorUsername, "<jump-server-ip>"))
-	if collab.HasSudo {
+func addCollaboratorRemoteHTTP(ownerUsername, collaboratorUsername string, sshPublicKeys []string) error {
+	httpClient, err := client.NewHTTPClient(serverAddr, authToken)
+	if err != nil {
+		return fmt.Errorf("failed to create HTTP client: %w", err)
+	}
+	defer func() { _ = httpClient.Close() }()
+
+	resp, err := httpClient.AddCollaborator(ownerUsername, collaboratorUsername, sshPublicKeys, collaboratorGrantSudo, collaboratorGrantRuntime)
+	if err != nil {
+		return fmt.Errorf("failed to add collaborator: %w", err)
+	}
+	printAddCollaboratorResponse(resp)
+	return nil
+}
+
+func printAddCollaboratorResponse(resp *pb.AddCollaboratorResponse) {
+	collab := resp.GetCollaborator()
+	fmt.Printf("Collaborator %s added to %s\n\n", collab.GetCollaboratorUsername(), collab.GetContainerName())
+	fmt.Printf("Account name: %s\n", collab.GetAccountName())
+	if resp.GetSshCommand() != "" {
+		fmt.Printf("SSH command:  %s\n\n", resp.GetSshCommand())
+	}
+	if collab.GetHasSudo() {
 		fmt.Printf("Sudo access:  full (ALL commands)\n")
 	} else {
-		fmt.Printf("After connecting, use: sudo su - %s\n", ownerUsername)
+		fmt.Printf("After connecting, use: sudo su - %s\n", collab.GetOwnerUsername())
 	}
-	if collab.HasContainerRuntime {
+	if collab.GetHasContainerRuntime() {
 		fmt.Printf("Container runtime: docker/podman group membership granted\n")
 	}
-	fmt.Printf("Sessions are logged to: /var/log/sudo-io/%s/\n", collab.AccountName)
-
-	return nil
+	fmt.Printf("Sessions are logged to: /var/log/sudo-io/%s/\n", collab.GetAccountName())
 }

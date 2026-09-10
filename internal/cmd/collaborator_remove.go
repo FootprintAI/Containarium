@@ -1,13 +1,9 @@
-//go:build !windows && !containarium_client
-
 package cmd
 
 import (
-	"context"
 	"fmt"
 
-	"github.com/footprintai/containarium/internal/collaborator"
-	"github.com/footprintai/containarium/pkg/core/container"
+	"github.com/footprintai/containarium/internal/client"
 	"github.com/spf13/cobra"
 )
 
@@ -23,7 +19,10 @@ This will:
 
 Examples:
   # Remove bob as a collaborator from alice's container
-  containarium collaborator remove alice bob`,
+  containarium collaborator remove alice bob
+
+  # Against a remote daemon
+  containarium collaborator remove alice bob --server daemon.example.com:50051`,
 	Args: cobra.ExactArgs(2),
 	RunE: runCollaboratorRemove,
 }
@@ -36,32 +35,42 @@ func runCollaboratorRemove(cmd *cobra.Command, args []string) error {
 	ownerUsername := args[0]
 	collaboratorUsername := args[1]
 
-	// Local mode only for now (requires PostgreSQL)
-	return removeCollaboratorLocal(ownerUsername, collaboratorUsername)
+	switch {
+	case httpMode && serverAddr != "":
+		return removeCollaboratorRemoteHTTP(ownerUsername, collaboratorUsername)
+	case serverAddr != "":
+		return removeCollaboratorRemote(ownerUsername, collaboratorUsername)
+	default:
+		return removeCollaboratorLocal(ownerUsername, collaboratorUsername)
+	}
 }
 
-func removeCollaboratorLocal(ownerUsername, collaboratorUsername string) error {
-	// Create container manager
-	containerMgr, err := container.New()
+func removeCollaboratorRemote(ownerUsername, collaboratorUsername string) error {
+	grpcClient, err := client.NewGRPCClient(serverAddr, certsDir, insecure)
 	if err != nil {
-		return fmt.Errorf("failed to connect to Incus: %w (is Incus running?)", err)
+		return fmt.Errorf("failed to connect to remote server: %w", err)
 	}
+	defer func() { _ = grpcClient.Close() }()
 
-	// Create collaborator store
-	collaboratorStore, err := collaborator.NewStore(context.Background(), getPostgresConnString())
+	resp, err := grpcClient.RemoveCollaborator(ownerUsername, collaboratorUsername)
 	if err != nil {
-		return fmt.Errorf("failed to connect to collaborator database: %w\n(Is PostgreSQL running? Set CONTAINARIUM_POSTGRES_URL if using non-default location)", err)
-	}
-	defer collaboratorStore.Close()
-
-	// Create collaborator manager
-	collaboratorMgr := container.NewCollaboratorManager(containerMgr, collaboratorStore)
-
-	// Remove collaborator
-	if err := collaboratorMgr.RemoveCollaborator(ownerUsername, collaboratorUsername); err != nil {
 		return fmt.Errorf("failed to remove collaborator: %w", err)
 	}
+	fmt.Println(resp.GetMessage())
+	return nil
+}
 
-	fmt.Printf("Collaborator %s removed from %s-container\n", collaboratorUsername, ownerUsername)
+func removeCollaboratorRemoteHTTP(ownerUsername, collaboratorUsername string) error {
+	httpClient, err := client.NewHTTPClient(serverAddr, authToken)
+	if err != nil {
+		return fmt.Errorf("failed to create HTTP client: %w", err)
+	}
+	defer func() { _ = httpClient.Close() }()
+
+	resp, err := httpClient.RemoveCollaborator(ownerUsername, collaboratorUsername)
+	if err != nil {
+		return fmt.Errorf("failed to remove collaborator: %w", err)
+	}
+	fmt.Println(resp.GetMessage())
 	return nil
 }

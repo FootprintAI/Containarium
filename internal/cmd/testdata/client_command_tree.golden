@@ -42,6 +42,9 @@ code install
 code run
 code status
 code stop
+collaborator add
+collaborator list
+collaborator remove
 compose disable
 compose discover
 compose enable

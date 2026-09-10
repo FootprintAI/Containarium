@@ -16,7 +16,8 @@ import (
 // user sees if they somehow reach one of these stubs (in practice,
 // resolveServerAddr's server-resolution chain and the "no server
 // configured" error at the client constructors already fail earlier for
-// every one of the twelve hybrid commands; these stubs are defence in
+// every one of the thirteen hybrid commands (#1785 added collaborator as
+// the thirteenth); these stubs are defence in
 // depth, turning a future forgotten check into a clear error instead of a
 // build break or a silent local Incus call).
 var errNoLocalMode = errors.New("this is the containarium client; it has no local mode — pass --server, run `containarium login`, or use containariumd on the host")
@@ -57,3 +58,10 @@ func installStackLocal(_, _ string) error { return errNoLocalMode }
 
 // resize.go
 func runResizeLocal(_, _ string) error { return errNoLocalMode }
+
+// collaborator_add.go / collaborator_remove.go / collaborator_list.go
+func addCollaboratorLocal(_, _ string, _ []string) error { return errNoLocalMode }
+func removeCollaboratorLocal(_, _ string) error          { return errNoLocalMode }
+func listCollaboratorsLocal(_ string) ([]collaboratorRow, error) {
+	return nil, errNoLocalMode
+}

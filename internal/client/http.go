@@ -1274,6 +1274,87 @@ func (c *HTTPClient) GetContainer(username string) (*incus.ContainerInfo, error)
 	return &info, nil
 }
 
+// AddCollaborator adds a collaborator to a container via HTTP.
+func (c *HTTPClient) AddCollaborator(ownerUsername, collaboratorUsername string, sshPublicKeys []string, grantSudo, grantContainerRuntime bool) (*pb.AddCollaboratorResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	req := &pb.AddCollaboratorRequest{
+		OwnerUsername:         ownerUsername,
+		CollaboratorUsername:  collaboratorUsername,
+		SshPublicKeys:         sshPublicKeys,
+		GrantSudo:             grantSudo,
+		GrantContainerRuntime: grantContainerRuntime,
+	}
+	body, err := protojson.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("encode request: %w", err)
+	}
+
+	path := fmt.Sprintf("/v1/containers/%s/collaborators", url.PathEscape(ownerUsername))
+	resp, err := c.doRequest(ctx, http.MethodPost, path, json.RawMessage(body))
+	if err != nil {
+		return nil, fmt.Errorf("failed to add collaborator: %w", err)
+	}
+	defer drainClose(resp)
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, httpError(bodyBytes, resp.StatusCode, "add collaborator")
+	}
+	out := &pb.AddCollaboratorResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
+// RemoveCollaborator removes a collaborator from a container via HTTP.
+func (c *HTTPClient) RemoveCollaborator(ownerUsername, collaboratorUsername string) (*pb.RemoveCollaboratorResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	path := fmt.Sprintf("/v1/containers/%s/collaborators/%s", url.PathEscape(ownerUsername), url.PathEscape(collaboratorUsername))
+	resp, err := c.doRequest(ctx, http.MethodDelete, path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to remove collaborator: %w", err)
+	}
+	defer drainClose(resp)
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, httpError(bodyBytes, resp.StatusCode, "remove collaborator")
+	}
+	out := &pb.RemoveCollaboratorResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
+// ListCollaborators lists collaborators for a container via HTTP.
+func (c *HTTPClient) ListCollaborators(ownerUsername string) (*pb.ListCollaboratorsResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	path := fmt.Sprintf("/v1/containers/%s/collaborators", url.PathEscape(ownerUsername))
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list collaborators: %w", err)
+	}
+	defer drainClose(resp)
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, httpError(bodyBytes, resp.StatusCode, "list collaborators")
+	}
+	out := &pb.ListCollaboratorsResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
 // DebugContainer returns a diagnostic report for a container's SSH path.
 func (c *HTTPClient) DebugContainer(username string) (*pb.DebugContainerResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

@@ -4,14 +4,16 @@ package cmd
 
 import (
 	"errors"
+	"os"
 	"testing"
 )
 
 // TestHybridCommands_NoServer_NeverReachRealLocalMode is #1775's Done-when
 // table-driven test: with no --server (and no CONTAINARIUM_SERVER/
-// credentials.json fallback in play), every one of the twelve hybrid
-// commands must error via a *Local stub — never via a working local-Incus
-// call, because under containarium_client every *Local symbol IS one of
+// credentials.json fallback in play), every one of the thirteen hybrid
+// commands (#1785 added collaborator) must error via a *Local stub — never
+// via a working local-Incus call, because under containarium_client every
+// *Local symbol IS one of
 // those stubs (local_stubs_client.go). errors.Is against errNoLocalMode is
 // exactly the assertion that proves this: it can only be true if the
 // call reached a stub, since errNoLocalMode is not constructible any other
@@ -97,6 +99,29 @@ func TestHybridCommands_NoServer_NeverReachRealLocalMode(t *testing.T) {
 			name:  "ssh-config sync",
 			setup: func() { sshConfigOutPath = t.TempDir() + "/ssh_config"; sshConfigForce = true },
 			run:   func() error { return runSSHConfigSync(testCmd(), nil) },
+		},
+		{
+			name: "collaborator add",
+			setup: func() {
+				keyFile := t.TempDir() + "/bob.pub"
+				if err := os.WriteFile(keyFile, []byte("ssh-ed25519 AAAAtest bob@example.com"), 0o600); err != nil {
+					t.Fatalf("write test ssh key: %v", err)
+				}
+				collaboratorSSHKeyFiles = []string{keyFile}
+				collaboratorGrantSudo = false
+				collaboratorGrantRuntime = false
+			},
+			run: func() error { return runCollaboratorAdd(testCmd(), []string{"owner", "bob"}) },
+		},
+		{
+			name:  "collaborator remove",
+			setup: func() {},
+			run:   func() error { return runCollaboratorRemove(testCmd(), []string{"owner", "bob"}) },
+		},
+		{
+			name:  "collaborator list",
+			setup: func() {},
+			run:   func() error { return runCollaboratorList(testCmd(), []string{"owner"}) },
 		},
 		{
 			name:  "prune",
