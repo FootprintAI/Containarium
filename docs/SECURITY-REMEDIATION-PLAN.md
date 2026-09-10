@@ -381,19 +381,20 @@ BINARY_URL="https://github.com/footprintai/containarium/releases/latest/download
 CHECKSUM_URL="https://github.com/footprintai/containarium/releases/latest/download/containarium-linux-amd64.sha256"
 
 # Download binary and checksum
-curl -fsSL -o /tmp/containarium "$BINARY_URL"
-curl -fsSL -o /tmp/containarium.sha256 "$CHECKSUM_URL"
+curl -fsSL -o /tmp/containariumd "$BINARY_URL"
+curl -fsSL -o /tmp/containariumd.sha256 "$CHECKSUM_URL"
 
 # Verify checksum
 cd /tmp
-if ! sha256sum -c containarium.sha256; then
+if ! sha256sum -c containariumd.sha256; then
     echo "ERROR: Checksum verification failed!"
     exit 1
 fi
 
 # Install
-sudo mv /tmp/containarium /usr/local/bin/
-sudo chmod +x /usr/local/bin/containarium
+sudo mv /tmp/containariumd /usr/local/bin/
+sudo chmod +x /usr/local/bin/containariumd
+sudo ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium
 ```
 
 **Files to modify:**

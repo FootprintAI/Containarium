@@ -86,13 +86,14 @@ echo "resolved tag: \$TAG"
 echo "\$TAG" >/tmp/containarium-resolved-tag
 
 BASE_URL="https://github.com/FootprintAI/Containarium/releases/download/\${TAG}"
-curl -fsSL -o /tmp/containarium "\${BASE_URL}/containarium-linux-amd64"
+curl -fsSL -o /tmp/containariumd "\${BASE_URL}/containarium-linux-amd64"
 curl -fsSL -o /tmp/SHA256SUMS.txt "\${BASE_URL}/SHA256SUMS.txt"
 EXPECTED=\$(grep 'containarium-linux-amd64\$' /tmp/SHA256SUMS.txt | awk '{print \$1}')
-ACTUAL=\$(sha256sum /tmp/containarium | awk '{print \$1}')
+ACTUAL=\$(sha256sum /tmp/containariumd | awk '{print \$1}')
 [[ "\$EXPECTED" == "\$ACTUAL" ]] || { echo "SHA256 mismatch: expected \$EXPECTED, got \$ACTUAL" >&2; exit 1; }
-install -m 0755 /tmp/containarium /usr/local/bin/containarium
-containarium version
+install -m 0755 /tmp/containariumd /usr/local/bin/containariumd
+ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium
+containariumd version
 
 rm -rf /opt/containarium-src
 git clone --depth 1 --branch "\$TAG" https://github.com/FootprintAI/Containarium.git /opt/containarium-src

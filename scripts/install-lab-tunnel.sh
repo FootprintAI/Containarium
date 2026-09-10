@@ -22,8 +22,8 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-BINARY_SRC="${BINARY_SRC:-/tmp/containarium}"
-BINARY_DST="/usr/local/bin/containarium"
+BINARY_SRC="${BINARY_SRC:-/tmp/containariumd}"
+BINARY_DST="/usr/local/bin/containariumd"
 
 # Lab tunnel token — env-only (no default literal in this OSS-tracked
 # file; see CLAUDE.md OSS-disclosure rule). A prior committed literal
@@ -52,13 +52,16 @@ fi
 
 if [[ ! -f "$BINARY_SRC" ]]; then
     echo "Error: $BINARY_SRC not found. SCP the binary there first:"
-    echo "  scp bin/containarium-linux-amd64 ubuntu@<host>:/tmp/containarium"
+    echo "  scp bin/containarium-linux-amd64 ubuntu@<host>:/tmp/containariumd"
     exit 1
 fi
 
 echo "==> Installing binary -> $BINARY_DST"
 install -m 0755 "$BINARY_SRC" "$BINARY_DST"
 echo "    md5: $(md5sum "$BINARY_DST" | cut -d' ' -f1)"
+# #1781 rollout compat symlink: keeps the pre-#1780 name working for any
+# runbook/cron this inventory missed.
+ln -sf "$BINARY_DST" /usr/local/bin/containarium
 
 echo "==> Writing systemd unit"
 cat > /etc/systemd/system/containarium-tunnel.service <<TUNNEL

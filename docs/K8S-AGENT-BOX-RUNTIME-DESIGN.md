@@ -445,11 +445,11 @@ The K8s backend is **always compiled into the daemon binary** (no build tag).
 for a simpler build surface. The active backend is selected at daemon start:
 
 ```sh
-CONTAINARIUM_RUNTIME=k8s containarium daemon start   # Kubernetes backend
-CONTAINARIUM_RUNTIME=lxc containarium daemon start   # LXC/incus backend (default)
+CONTAINARIUM_RUNTIME=k8s containariumd daemon start   # Kubernetes backend
+CONTAINARIUM_RUNTIME=lxc containariumd daemon start   # LXC/incus backend (default)
 ```
 
-or via the flag: `containarium daemon start --runtime=k8s`.
+or via the flag: `containariumd daemon start --runtime=k8s`.
 
 See [`internal/server/boxbackend_factory.go`](../internal/server/boxbackend_factory.go)
 for the factory. The interface lives in `pkg/core/box` (public, not `internal/`)
@@ -650,10 +650,10 @@ The daemon binary ships one factory that supports both backends:
 
 ```sh
 # Default: LXC/incus (unchanged behaviour)
-containarium daemon start
+containariumd daemon start
 
 # Kubernetes backend
-CONTAINARIUM_RUNTIME=k8s containarium daemon start --runtime=k8s \
+CONTAINARIUM_RUNTIME=k8s containariumd daemon start --runtime=k8s \
   --skip-infra-init \
   --standalone
 ```

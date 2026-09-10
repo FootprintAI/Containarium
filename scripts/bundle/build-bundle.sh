@@ -100,11 +100,14 @@ mkdir -p \
   "$STAGING/docs"
 
 # ---- 3. Core binaries ----
-log_info "Copying core binaries (containarium, mcp-server, agent-box)"
+log_info "Copying core binaries (containariumd, mcp-server, agent-box)"
 # Strip the -${OS}-${ARCH} suffix inside the bundle — once extracted on
-# the target host the user expects `bin/containarium`, not
-# `bin/containarium-linux-amd64`.
-install -m 0755 "$REPO_ROOT/bin/containarium-${OS}-${ARCH}" "$STAGING/bin/containarium"
+# the target host the user expects `bin/containariumd`, not
+# `bin/containarium-linux-amd64`. #1781/#1782 (design doc, Rollout Phase 1):
+# bin/containarium-${OS}-${ARCH} is still the server build during Phase 1
+# (containarium-* ships the daemon in parallel with containariumd-* — see
+# #1782), so the source path here is unchanged; only the staged name flips.
+install -m 0755 "$REPO_ROOT/bin/containarium-${OS}-${ARCH}" "$STAGING/bin/containariumd"
 install -m 0755 "$REPO_ROOT/bin/mcp-server-${OS}-${ARCH}"   "$STAGING/bin/mcp-server"
 install -m 0755 "$REPO_ROOT/bin/agent-box-${OS}-${ARCH}"    "$STAGING/bin/agent-box"
 

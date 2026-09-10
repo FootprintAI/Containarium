@@ -247,8 +247,8 @@ sudo journalctl -u containarium -n 50
 sudo systemctl restart containarium
 
 # Check if binary exists
-ls -lh /usr/local/bin/containarium
-/usr/local/bin/containarium version
+ls -lh /usr/local/bin/containariumd
+/usr/local/bin/containariumd version
 ```
 
 ### Connection refused
@@ -273,8 +273,9 @@ terraform state show 'null_resource.copy_containarium_binary[0]'
 # Manually copy if needed
 scp bin/containarium-linux-amd64 admin@<jump-server-ip>:/tmp/
 ssh admin@<jump-server-ip>
-sudo mv /tmp/containarium-linux-amd64 /usr/local/bin/containarium
-sudo chmod +x /usr/local/bin/containarium
+sudo mv /tmp/containarium-linux-amd64 /usr/local/bin/containariumd
+sudo chmod +x /usr/local/bin/containariumd
+sudo ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium
 sudo systemctl restart containarium
 ```
 
@@ -329,7 +330,7 @@ After successful testing:
 If you encounter issues:
 1. Check logs: `sudo journalctl -u containarium -f`
 2. Verify Incus: `sudo incus list`
-3. Test manually: `sudo /usr/local/bin/containarium daemon`
+3. Test manually: `sudo /usr/local/bin/containariumd daemon`
 4. Review startup script execution: `sudo journalctl -t containarium-startup`
 
 ---

@@ -18,7 +18,14 @@ import (
 
 const (
 	githubReleaseBaseURL = "https://github.com/FootprintAI/Containarium/releases/download"
-	releaseBinaryName    = "containarium-linux-amd64"
+	// releaseBinaryName names the daemon artifact fetched from a GitHub
+	// release. #1779 (design doc, Rollout Phase 1): containarium-* becomes
+	// the client build in Phase 2, so from release N on, the self-update
+	// chain must ask for containariumd-* instead. containarium-* keeps
+	// shipping the same server build in parallel (#1782) so a host still
+	// asking for the old name during the rollout window gets a working
+	// daemon too — but the sentinel's own fetch always asks for the new one.
+	releaseBinaryName = "containariumd-linux-amd64"
 )
 
 type fetchReleaseRequest struct {
