@@ -112,8 +112,20 @@ remove_systemd_service() {
 remove_containarium_binary() {
     log_info "Removing Containarium binary..."
 
-    if [ -f /usr/local/bin/containarium ]; then
+    removed=false
+    if [ -f /usr/local/bin/containariumd ]; then
+        rm -f /usr/local/bin/containariumd
+        removed=true
+    fi
+    # #1781 rollout compat symlink: only remove /usr/local/bin/containarium
+    # here if it's a symlink (our own, or anyone else's) — never a real file,
+    # which some other mechanism placed there and this uninstaller doesn't own.
+    if [ -L /usr/local/bin/containarium ]; then
         rm -f /usr/local/bin/containarium
+        removed=true
+    fi
+
+    if [ "$removed" = "true" ]; then
         log_success "Containarium binary removed"
     else
         log_info "Containarium binary not found"

@@ -92,7 +92,7 @@ version than you expected.
 SENTINEL=$(terraform output -raw sentinel_vm_name)
 ZONE=$(terraform output -json | jq -r '.[].value' | grep -E "^[a-z0-9-]+-[a-z0-9]$" | head -1)
 gcloud compute ssh "$SENTINEL" --zone "$ZONE" \
-  --command='sudo /usr/local/bin/containarium token generate \
+  --command='sudo /usr/local/bin/containariumd token generate \
               --username demo --roles admin --expiry 24h \
               --secret-file /etc/containarium/jwt.secret 2>/dev/null \
               | grep "^eyJ"' \

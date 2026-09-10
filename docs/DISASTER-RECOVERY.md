@@ -4,12 +4,12 @@ This guide covers how to recover Containarium and all containers after the jump 
 
 ## Overview
 
-When using persistent storage (ZFS on external disk), your containers survive instance recreation. The `containarium recover` command automates the full recovery process.
+When using persistent storage (ZFS on external disk), your containers survive instance recreation. The `containariumd recover` command automates the full recovery process.
 
 ## Prerequisites
 
 - External disk with ZFS storage pool attached and mounted
-- Containarium binary installed at `/usr/local/bin/containarium`
+- Containarium binary installed at `/usr/local/bin/containariumd`
 - Incus installed and running
 
 ## Recovery Process
@@ -20,10 +20,10 @@ If a recovery config exists on the persistent storage:
 
 ```bash
 # Auto-detect config from persistent storage
-sudo containarium recover
+sudo containariumd recover
 
 # Or explicitly specify config file
-sudo containarium recover --config /mnt/incus-data/containarium-recovery.yaml
+sudo containariumd recover --config /mnt/incus-data/containarium-recovery.yaml
 ```
 
 ### Manual Recovery
@@ -31,7 +31,7 @@ sudo containarium recover --config /mnt/incus-data/containarium-recovery.yaml
 If no config file exists, specify parameters explicitly:
 
 ```bash
-sudo containarium recover \
+sudo containariumd recover \
   --network-name incusbr0 \
   --network-cidr 10.0.3.1/24 \
   --storage-pool default \
@@ -44,12 +44,12 @@ sudo containarium recover \
 Preview what would be done without making changes:
 
 ```bash
-sudo containarium recover --config /mnt/incus-data/containarium-recovery.yaml --dry-run
+sudo containariumd recover --config /mnt/incus-data/containarium-recovery.yaml --dry-run
 ```
 
 ## What the Recovery Command Does
 
-The `containarium recover` command performs these steps automatically:
+The `containariumd recover` command performs these steps automatically:
 
 ### Step 1: Network Creation
 Creates the `incusbr0` network bridge with the configured CIDR:
@@ -79,7 +79,7 @@ incus start --all
 ### Step 5: Sync SSH Accounts
 Restores jump server SSH accounts from container public keys:
 ```bash
-containarium sync-accounts
+containariumd sync-accounts
 ```
 
 ## Recovery Config File
@@ -108,7 +108,7 @@ daemon:
 
 ## Post-Recovery Steps
 
-After running `containarium recover`, complete the setup:
+After running `containariumd recover`, complete the setup:
 
 ### 1. Regenerate JWT Secret (if needed)
 
@@ -129,7 +129,7 @@ After=network.target incus.service
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/containarium daemon --address 0.0.0.0 --rest --http-port 8080 --jwt-secret-file /etc/containarium/jwt.secret --app-hosting --base-domain <your-base-domain> --caddy-admin-url http://localhost:2019 --skip-infra-init
+ExecStart=/usr/local/bin/containariumd daemon --address 0.0.0.0 --rest --http-port 8080 --jwt-secret-file /etc/containarium/jwt.secret --app-hosting --base-domain <your-base-domain> --caddy-admin-url http://localhost:2019 --skip-infra-init
 Restart=on-failure
 RestartSec=5
 
@@ -192,7 +192,7 @@ incus restart --all
 
 Run the sync-accounts command:
 ```bash
-sudo containarium sync-accounts -v
+sudo containariumd sync-accounts -v
 ```
 
 ## Best Practices

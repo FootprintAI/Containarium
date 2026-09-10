@@ -1,8 +1,11 @@
 package server
 
 import (
+	"errors"
 	"testing"
 
+	"github.com/footprintai/containarium/pkg/core/container"
+	"github.com/footprintai/containarium/pkg/core/incus/incustest"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/stretchr/testify/assert"
 )
@@ -105,6 +108,26 @@ func TestDiagnose(t *testing.T) {
 			wantCause:    "daemon failed",
 			wantActionCt: 1,
 		},
+		{
+			// #1487: host user + shell both healthy, but the SAME username
+			// was never created inside the container — containarium-shell's
+			// `su` dies there, several layers past every check above this
+			// one. Must fire BEFORE the sshd-journal/sentinel fallback
+			// branches, not after — those would misdiagnose this as "no
+			// obvious host-side problem".
+			name: "running, host user healthy, in-container user missing",
+			report: &pb.DebugContainerResponse{
+				ContainerState:         "running",
+				HostUserExists:         true,
+				HostUserShell:          "/usr/local/bin/containarium-shell",
+				HostUserShellExists:    true,
+				InContainerUserMissing: true,
+				SshIngressHost:         "asia-east1.containarium.dev",
+			},
+			wantCause:    "never created INSIDE the container",
+			wantActionCt: 3,
+			wantFirstHas: "incus exec",
+		},
 	}
 
 	for _, c := range cases {
@@ -115,6 +138,46 @@ func TestDiagnose(t *testing.T) {
 			assert.Len(t, actions, c.wantActionCt)
 			if c.wantFirstHas != "" && len(actions) > 0 {
 				assert.Contains(t, actions[0], c.wantFirstHas)
+			}
+		})
+	}
+}
+
+// TestInContainerUserMissing exercises the exec-based check in isolation
+// from the sshd/passwd inspection above — it should distinguish a genuine
+// "id ran and found no such user" (exitCode != 0, err == nil) from "the
+// exec itself couldn't run" (err != nil: transport/backend problem), the
+// latter deliberately reported as false rather than a false-positive
+// "missing".
+func TestInContainerUserMissing(t *testing.T) {
+	cases := []struct {
+		name     string
+		exitCode int
+		execErr  error
+		want     bool
+	}{
+		{name: "user exists — id exits 0", exitCode: 0, want: false},
+		{name: "user missing — id exits non-zero, no error", exitCode: 1, want: true},
+		{name: "exec transport error — unknown, not missing", execErr: errors.New("incus: connection refused"), want: false},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			mock := incustest.NewMockBackend()
+			mock.ExecWithExitCodeFunc = func(name string, cmd []string) (string, string, int, error) {
+				if name != "alice-container" {
+					t.Fatalf("unexpected container name: %s", name)
+				}
+				if len(cmd) != 2 || cmd[0] != "id" || cmd[1] != "alice" {
+					t.Fatalf("unexpected command: %v", cmd)
+				}
+				return "", "", c.exitCode, c.execErr
+			}
+			cs := &ContainerServer{manager: container.NewWithBackend(mock)}
+
+			got := cs.inContainerUserMissing("alice")
+			if got != c.want {
+				t.Fatalf("inContainerUserMissing() = %v, want %v", got, c.want)
 			}
 		})
 	}

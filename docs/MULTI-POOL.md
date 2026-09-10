@@ -221,7 +221,7 @@ On tunnel disconnect, the primary entry is removed automatically (`UnregisterByB
 2. **Provision a primary VM.** Same Terraform module as your existing primary (`terraform/modules/containarium/`). The new VM runs its own postgres/Grafana/Caddy core stack.
 3. **Configure the primary daemon** with the registration flags:
    ```
-   containarium daemon \
+   containariumd daemon \
      --sentinel-url http://<sentinel-internal-ip>:8888 \
      --pool lab \
      --public-hostname <lab-pool>.example.com \

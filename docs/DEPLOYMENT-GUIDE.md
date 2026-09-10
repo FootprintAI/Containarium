@@ -7,7 +7,7 @@ Complete step-by-step guide from zero to running containers.
 **What happens during deployment**:
 
 1. **Terraform** deploys GCE VM with Incus installed (automatic)
-2. **You** build and copy the `containarium` CLI to the VM (manual, one-time)
+2. **You** build and copy the `containariumd` daemon to the VM (manual, one-time)
 3. **You** create containers using `containarium create` (per user)
 4. **Users** SSH to their containers (ongoing use)
 
@@ -127,12 +127,14 @@ scp bin/containarium-linux-amd64 admin@35.203.123.45:/tmp/
 # SSH and install
 ssh admin@35.203.123.45
 
-# On the jump server:
-sudo mv /tmp/containarium-linux-amd64 /usr/local/bin/containarium
-sudo chmod +x /usr/local/bin/containarium
+# On the jump server (#1781: install as containariumd, symlink the old
+# name for compat with anything still invoking `containarium <verb>`):
+sudo mv /tmp/containarium-linux-amd64 /usr/local/bin/containariumd
+sudo chmod +x /usr/local/bin/containariumd
+sudo ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium
 
 # Verify installation
-containarium version
+containariumd version
 # Output: Containarium dev
 
 # Exit back to your local machine
@@ -152,7 +154,7 @@ SERVERS=("35.203.123.45" "35.203.124.46" "35.203.125.47")
 for server in "${SERVERS[@]}"; do
   echo "Deploying to $server..."
   scp bin/containarium-linux-amd64 admin@$server:/tmp/
-  ssh admin@$server "sudo mv /tmp/containarium-linux-amd64 /usr/local/bin/containarium && sudo chmod +x /usr/local/bin/containarium"
+  ssh admin@$server "sudo mv /tmp/containarium-linux-amd64 /usr/local/bin/containariumd && sudo chmod +x /usr/local/bin/containariumd && sudo ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium"
   echo "✓ Deployed to $server"
 done
 EOF
@@ -586,7 +588,7 @@ make build-linux
 
 # Copy to jump server
 scp bin/containarium-linux-amd64 admin@35.203.123.45:/tmp/
-ssh admin@35.203.123.45 "sudo mv /tmp/containarium-linux-amd64 /usr/local/bin/containarium && sudo chmod +x /usr/local/bin/containarium"
+ssh admin@35.203.123.45 "sudo mv /tmp/containarium-linux-amd64 /usr/local/bin/containariumd && sudo chmod +x /usr/local/bin/containariumd && sudo ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium"
 ```
 
 Existing containers are NOT affected.
@@ -605,7 +607,7 @@ resource "null_resource" "deploy_containarium" {
     command = <<-EOT
       sleep 30  # Wait for instance to be ready
       scp -o StrictHostKeyChecking=no bin/containarium-linux-amd64 admin@${google_compute_address.jump_server_ip.address}:/tmp/
-      ssh -o StrictHostKeyChecking=no admin@${google_compute_address.jump_server_ip.address} "sudo mv /tmp/containarium-linux-amd64 /usr/local/bin/containarium && sudo chmod +x /usr/local/bin/containarium"
+      ssh -o StrictHostKeyChecking=no admin@${google_compute_address.jump_server_ip.address} "sudo mv /tmp/containarium-linux-amd64 /usr/local/bin/containariumd && sudo chmod +x /usr/local/bin/containariumd && sudo ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium"
     EOT
   }
 }
@@ -629,8 +631,8 @@ Infrastructure:
 CLI Installation:
 □ Ran make build-linux on local machine
 □ Copied binary to jump server(s) with scp
-□ Moved to /usr/local/bin/containarium on jump server
-□ Verified: containarium version works
+□ Moved to /usr/local/bin/containariumd on jump server (symlinked as containarium for compat)
+□ Verified: containariumd version works
 □ Verified: sudo incus list shows no containers
 
 Container Creation:
@@ -671,8 +673,9 @@ scp bin/containarium-linux-amd64 admin@<ip>:/tmp/
 **On jump server:**
 ```bash
 # Install CLI (one-time)
-sudo mv /tmp/containarium-linux-amd64 /usr/local/bin/containarium
-sudo chmod +x /usr/local/bin/containarium
+sudo mv /tmp/containarium-linux-amd64 /usr/local/bin/containariumd
+sudo chmod +x /usr/local/bin/containariumd
+sudo ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium
 
 # Create containers
 sudo containarium create alice --ssh-key ~/.ssh/alice.pub

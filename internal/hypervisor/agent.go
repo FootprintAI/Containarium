@@ -1,7 +1,6 @@
 package hypervisor
 
 import (
-	"bufio"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -113,20 +112,42 @@ func (a *Agent) maxHandshakeLine() int {
 }
 
 // readHandshake reads one newline-terminated JSON line from r and decodes
-// it as a handshakeRequest. maxLine is a hard cap: bufio.Reader.ReadString
-// alone does NOT enforce its buffer size as a line-length limit — it just
-// refills as many times as needed to find the delimiter — so this wraps r
-// in an io.LimitReader first to actually bound how much a caller that never
-// sends '\n' can make this read.
+// it as a handshakeRequest.
+//
+// Deliberately reads one byte at a time rather than through a bufio.Reader:
+// a buffered reader's first Read pulls a full internal buffer's worth from
+// the underlying connection, and on a real socket that read can coalesce
+// the handshake line together with whatever the caller sends immediately
+// after it (the first chunk of console input, sent without waiting for the
+// "ok" response). Those extra bytes would be captured in the bufio.Reader's
+// internal buffer — which is discarded once the handshake is parsed — and
+// never reach relay(), which reads directly off conn. A byte-at-a-time read
+// never consumes past the delimiter, so nothing is lost. This mirrors
+// internal/sentinel/tunnel_auth.go's readHandshakeLine, which hit the same
+// class of bug for the same reason (its own comment calls out the identical
+// "SYN frame" scenario for the tunnel handshake).
 func readHandshake(r io.Reader, maxLine int) (handshakeRequest, error) {
-	reader := bufio.NewReader(io.LimitReader(r, int64(maxLine)))
-	line, err := reader.ReadString('\n')
-	if err != nil && line == "" {
-		return handshakeRequest{}, fmt.Errorf("hypervisor-agent: read handshake: %w", err)
+	buf := make([]byte, 0, 256)
+	one := make([]byte, 1)
+	for {
+		n, err := r.Read(one)
+		if err != nil {
+			return handshakeRequest{}, fmt.Errorf("hypervisor-agent: read handshake: %w", err)
+		}
+		if n == 0 {
+			continue
+		}
+		if one[0] == '\n' {
+			break
+		}
+		buf = append(buf, one[0])
+		if len(buf) > maxLine {
+			return handshakeRequest{}, fmt.Errorf("hypervisor-agent: handshake exceeded %d bytes", maxLine)
+		}
 	}
 
 	var req handshakeRequest
-	if err := json.Unmarshal([]byte(line), &req); err != nil {
+	if err := json.Unmarshal(buf, &req); err != nil {
 		return handshakeRequest{}, fmt.Errorf("hypervisor-agent: invalid handshake: %w", err)
 	}
 	return req, nil

@@ -246,7 +246,7 @@ path alongside the existing daemon-gateway one.
 
 ### Enrollment
 
-`containarium pool join` (`internal/cmd/pool_join.go`) remains the
+`containariumd pool join` (`internal/cmd/pool_join.go`) remains the
 enrollment path for a BYOC host's own daemon/tunnel identity. The
 hypervisor-agent is a *distinct* enrollment (a different spot, run once
 per physical hypervisor machine, not per guest) — it does not extend

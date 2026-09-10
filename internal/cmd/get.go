@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"github.com/footprintai/containarium/internal/client"
-	"github.com/footprintai/containarium/pkg/core/container"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/spf13/cobra"
 )
@@ -82,14 +81,6 @@ func boolToCount(b bool) int {
 		return 1
 	}
 	return 0
-}
-
-func getLocal(username string) (*incus.ContainerInfo, error) {
-	mgr, err := container.New()
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to Incus: %w (is Incus running?)", err)
-	}
-	return mgr.Get(username)
 }
 
 func getRemote(username string) (*incus.ContainerInfo, error) {

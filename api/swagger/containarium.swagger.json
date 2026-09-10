@@ -9268,6 +9268,10 @@
         "sshIngressHost": {
           "type": "string",
           "description": "Public SSH entrypoint (the sentinel host) clients dial to reach\ncontainers on this backend — the daemon's advertised --ssh-host.\n**Empty means this backend advertises NO external SSH entrypoint**\n(direct / in-network mode: reach the container by IP, or deploy through\nan in-network pipeline). When empty, the sentinel-side remediation hints\ndon't apply — there is no sentinel to check. Lets an agent stop hunting\nfor a jump host that doesn't exist. See #1011."
+        },
+        "inContainerUserMissing": {
+          "type": "boolean",
+          "description": "True when the host-level Linux user exists but the SAME username does\nNOT exist inside the running container (#1487). containarium-shell's\nlogin path `su`s into this username INSIDE the container, so this\ncombination — host account provisioned, in-container account never\ncreated — makes the box permanently unreachable over SSH even though\nevery other signal (Incus RUNNING, host user present, sshd healthy)\nlooks fine. Only meaningful (and only checked) when host_user_exists\nis true and container_state is \"running\"; false otherwise, including\n\"not checked\" — callers must read it alongside those two fields, the\nsame convention host_user_shell_exists already follows."
         }
       },
       "title": "DebugContainerResponse is the structured diagnostic report"

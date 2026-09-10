@@ -32,6 +32,10 @@ type GRPCClient struct {
 
 // NewGRPCClient creates a new gRPC client
 func NewGRPCClient(serverAddr string, certsDir string, insecureConn bool) (*GRPCClient, error) {
+	if serverAddr == "" {
+		return nil, ErrNoServerConfigured
+	}
+
 	var opts []grpc.DialOption
 
 	if insecureConn {
@@ -551,6 +555,53 @@ func (c *GRPCClient) GetContainer(username string) (*incus.ContainerInfo, error)
 	}
 
 	return info, nil
+}
+
+// AddCollaborator adds a collaborator to a container via gRPC.
+func (c *GRPCClient) AddCollaborator(ownerUsername, collaboratorUsername string, sshPublicKeys []string, grantSudo, grantContainerRuntime bool) (*pb.AddCollaboratorResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := c.client.AddCollaborator(ctx, &pb.AddCollaboratorRequest{
+		OwnerUsername:         ownerUsername,
+		CollaboratorUsername:  collaboratorUsername,
+		SshPublicKeys:         sshPublicKeys,
+		GrantSudo:             grantSudo,
+		GrantContainerRuntime: grantContainerRuntime,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to add collaborator: %w", err)
+	}
+	return resp, nil
+}
+
+// RemoveCollaborator removes a collaborator from a container via gRPC.
+func (c *GRPCClient) RemoveCollaborator(ownerUsername, collaboratorUsername string) (*pb.RemoveCollaboratorResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := c.client.RemoveCollaborator(ctx, &pb.RemoveCollaboratorRequest{
+		OwnerUsername:        ownerUsername,
+		CollaboratorUsername: collaboratorUsername,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to remove collaborator: %w", err)
+	}
+	return resp, nil
+}
+
+// ListCollaborators lists collaborators for a container via gRPC.
+func (c *GRPCClient) ListCollaborators(ownerUsername string) (*pb.ListCollaboratorsResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := c.client.ListCollaborators(ctx, &pb.ListCollaboratorsRequest{
+		OwnerUsername: ownerUsername,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list collaborators: %w", err)
+	}
+	return resp, nil
 }
 
 // DebugContainer returns a diagnostic report for a container's SSH path.

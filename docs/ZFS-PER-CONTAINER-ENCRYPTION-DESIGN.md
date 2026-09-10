@@ -49,7 +49,7 @@ This doc designs that path. It is OSS-scope only where the OSS daemon's hooks ne
 │                ▼   32-byte key + key_ref (e.g. "kms://…/cryptoKeys/org-alice")  │
 │                                                                                 │
 │   ┌─────────────────────────────────────────────────────────────────────────┐  │
-│   │ containarium daemon                                                     │  │
+│   │ containariumd daemon                                                    │  │
 │   │                                                                         │  │
 │   │   ┌──────────────────┐   ③ pre-create hook:                             │  │
 │   │   │ KeyProvider      │      zfs create -o encryption=on \               │  │

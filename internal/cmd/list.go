@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/footprintai/containarium/internal/client"
-	"github.com/footprintai/containarium/pkg/core/container"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/spf13/cobra"
 )
@@ -424,16 +423,6 @@ func printGroupedYAMLFormat(containers []incus.ContainerInfo, labelKey string) {
 	}
 	fmt.Printf("group_count: %d\n", len(groups))
 	fmt.Printf("total_count: %d\n", len(containers))
-}
-
-// listLocal lists containers from local Incus daemon
-func listLocal() ([]incus.ContainerInfo, error) {
-	mgr, err := container.New()
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to Incus: %w (is Incus running?)", err)
-	}
-
-	return mgr.List()
 }
 
 // listRemote lists containers from remote gRPC server
