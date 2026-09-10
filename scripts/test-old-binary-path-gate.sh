@@ -11,14 +11,21 @@
 # script still downloads or installs the OLD path as if it were the real
 # binary — exactly the class of bug #1781 exists to catch.
 #
-# Pattern uses a negative lookahead (grep -P) so it does NOT false-positive
-# on unrelated binaries that happen to share the "containarium" prefix
-# (containarium-shell, containarium-info, containarium-runtime,
-# containarium-runner-loop, containarium-zfs-backup, containariumd itself).
+# Portability note: this deliberately avoids grep -P (a negative-lookahead
+# version of this gate silently misbehaved on stock macOS, whose BSD grep
+# has no -P at all — flagged on #1797). Instead of "containarium not
+# followed by a word/hyphen char", we capture the FULL identifier run
+# after the path (grep -oE '...containarium[a-zA-Z0-9_-]*') and check in
+# the shell whether that run is exactly "containarium" — everything else
+# (containariumd, containarium-shell, containarium-info,
+# containarium-runner-loop, containarium-zfs-backup, ...) is a different,
+# unrelated binary and never matches. -n/-o/-E are POSIX and behave
+# identically under GNU and BSD grep.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-PATTERN='/usr/local/bin/containarium(?![a-zA-Z0-9_-])'
+PATTERN='/usr/local/bin/containarium[a-zA-Z0-9_-]*'
+OLD_PATH='/usr/local/bin/containarium'
 
 # Client-side / compat-shim files where the OLD path is the correct,
 # intentional value — not a stale reference.
@@ -52,15 +59,25 @@ is_allowlisted() {
   return 1
 }
 
+# stale_hits_in_file prints "LINENO: MATCH" for every occurrence in $1
+# whose full identifier run is exactly the bare old path — i.e. filters
+# out containariumd and every unrelated containarium-* binary.
+stale_hits_in_file() {
+  local file="$1"
+  grep -noE "$PATTERN" "$file" 2>/dev/null | while IFS=: read -r lineno match; do
+    [ "$match" = "$OLD_PATH" ] && printf '%s: %s\n' "$lineno" "$match"
+  done
+}
+
 SELF="scripts/$(basename "$0")"
 
 fail=0
 while IFS= read -r -d '' file; do
-  # Skip this gate script itself — its own comments and PATTERN literal
-  # necessarily contain the string being searched for.
+  # Skip this gate script itself — its own comments and PATTERN/OLD_PATH
+  # literals necessarily contain the string being searched for.
   [ "$file" = "$SELF" ] && continue
 
-  hits="$(grep -nP "$PATTERN" "$file" 2>/dev/null || true)"
+  hits="$(stale_hits_in_file "$file")"
   [ -z "$hits" ] && continue
 
   if is_allowlisted "$file"; then
@@ -82,7 +99,7 @@ for a in "${ALLOWLIST[@]}"; do
     fail=1
     continue
   fi
-  if ! grep -qP "$PATTERN" "$a"; then
+  if [ -z "$(stale_hits_in_file "$a")" ]; then
     echo "FAIL  allow-list entry '$a' no longer references the old path — remove it from scripts/test-old-binary-path-gate.sh"
     fail=1
   fi
