@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.76.2] - 2026-09-11
+
+### Fixed
+
+- **`POST /v1/backends/upgrade` (`TriggerUpgrade`) 404'd over HTTP/REST on
+  every version that has shipped it** (#1805) — `containarium backends
+  upgrade --http` and the MCP `upgrade_backend` tool were both broken, with
+  no working fallback (the CLI's upgrade subcommand hardcodes an HTTP URL
+  regardless of `--server` scheme, so there was no gRPC escape hatch
+  either). `http.ServeMux`'s longest-prefix-wins rule routed the request
+  into the legacy `/v1/backends/` subtree handler (kept around for the
+  per-backend `/system-info` forward), which 404s anything it doesn't
+  recognize, instead of the exact-path grpc-gateway route the RPC needed —
+  a gap left over from when `/v1/backends` was promoted to proto-first
+  (#354) without accounting for later sub-routes. Registered as its own
+  exact path now, same pattern as the existing `ListBackends` entry.
+
+**Full diff**: https://github.com/FootprintAI/Containarium/compare/v0.76.1...v0.76.2
+
 ## [0.76.1] - 2026-09-10
 
 ### Added
