@@ -85,13 +85,16 @@ func (f *fakeRevoker) callCount() int {
 	return len(f.calls)
 }
 
-// fakeWiper is a Wiper that records every call and can be told to return an
-// injected error.
+// fakeWiper is a Wiper that records every call, can be told to return an
+// injected error, and can be told to block for a fixed delay before
+// returning (simulating a slow rm) — Exec has no context to honor, so the
+// delay is a plain time.Sleep.
 type fakeWiper struct {
-	rec *callRecorder
-	mu  sync.Mutex
-	got []wipeCall
-	err error
+	rec   *callRecorder
+	mu    sync.Mutex
+	got   []wipeCall
+	err   error
+	delay time.Duration
 }
 
 type wipeCall struct {
@@ -113,7 +116,15 @@ func (f *fakeWiper) Exec(container string, cmd []string) error {
 	copy(cp, cmd)
 	f.got = append(f.got, wipeCall{container: container, cmd: cp})
 	err := f.err
+	delay := f.delay
 	f.mu.Unlock()
+
+	// Record the attempt before blocking, so a caller racing this Exec
+	// against a timeout still observes that the wipe was attempted even
+	// if it never observes this call return.
+	if delay > 0 {
+		time.Sleep(delay)
+	}
 
 	if f.rec != nil {
 		f.rec.record("wipe")
@@ -166,17 +177,22 @@ func TestEnd_RevokesEveryCredentialThenWipes(t *testing.T) {
 func TestEnd_Table(t *testing.T) {
 	tests := []struct {
 		name            string
+		seedDir         string
 		creds           []Credential
 		nilRevoker      bool
 		errFor          map[string]error
 		delayFor        map[string]time.Duration
 		wipeErr         error
+		wipeDelay       time.Duration
 		wantRevoked     []string
 		wantUnrevoked   []string
 		wantWiped       bool
 		wantErrs        int
+		wantErrSubstr   string // when non-empty, at least one Errs entry must contain it
 		wantRevokeCalls int
 		wantWipeCalls   int
+		wantElapsedMin  time.Duration // zero skips the check
+		wantElapsedMax  time.Duration // zero skips the check
 	}{
 		{
 			name:            "all ok",
@@ -200,6 +216,9 @@ func TestEnd_Table(t *testing.T) {
 			wantWipeCalls:   1,
 		},
 		{
+			// Pins the timeout value itself, not just "some deadline
+			// shorter than the injected 5s delay exists": revokeTimeout
+			// is 2s, so this must land in [2s, 3s).
 			name:            "second times out",
 			creds:           []Credential{cred(KindPlatformJWT, "jti-1"), cred(KindGatewayToken, "jti-2")},
 			delayFor:        map[string]time.Duration{"jti-2": 5 * time.Second},
@@ -209,6 +228,8 @@ func TestEnd_Table(t *testing.T) {
 			wantErrs:        1,
 			wantRevokeCalls: 2,
 			wantWipeCalls:   1,
+			wantElapsedMin:  2 * time.Second,
+			wantElapsedMax:  3 * time.Second,
 		},
 		{
 			name:            "nil revoker",
@@ -233,6 +254,23 @@ func TestEnd_Table(t *testing.T) {
 			wantWipeCalls:   1,
 		},
 		{
+			// Proves wipeTimeout (3s) is real, not decorative: the fake
+			// blocks for 6s, so End must not wait for it. The revokes
+			// still land, and End returns well under the blocked
+			// duration.
+			name:            "wipe times out",
+			creds:           []Credential{cred(KindPlatformJWT, "jti-1"), cred(KindGatewayToken, "jti-2")},
+			wipeDelay:       6 * time.Second,
+			wantRevoked:     []string{"jti-1", "jti-2"},
+			wantUnrevoked:   nil,
+			wantWiped:       false,
+			wantErrs:        1,
+			wantErrSubstr:   "timed out",
+			wantRevokeCalls: 2,
+			wantWipeCalls:   1,
+			wantElapsedMax:  3500 * time.Millisecond,
+		},
+		{
 			name:            "zero credentials",
 			creds:           nil,
 			wantRevoked:     nil,
@@ -241,6 +279,20 @@ func TestEnd_Table(t *testing.T) {
 			wantErrs:        0,
 			wantRevokeCalls: 0,
 			wantWipeCalls:   1,
+		},
+		{
+			// An empty SeedDir must never turn into "rm -f /token
+			// /gateway.env" against the box root.
+			name:            "empty seed dir",
+			seedDir:         "",
+			creds:           []Credential{cred(KindPlatformJWT, "jti-1")},
+			wantRevoked:     []string{"jti-1"},
+			wantUnrevoked:   nil,
+			wantWiped:       false,
+			wantErrs:        1,
+			wantErrSubstr:   "empty seed dir",
+			wantRevokeCalls: 1,
+			wantWipeCalls:   0,
 		},
 	}
 
@@ -251,15 +303,22 @@ func TestEnd_Table(t *testing.T) {
 			rev.delayFor = tc.delayFor
 			w := newFakeWiper()
 			w.err = tc.wipeErr
+			w.delay = tc.wipeDelay
 
-			lease := testLease("box-1", "/etc/containarium/agent", tc.creds...)
+			seedDir := tc.seedDir
+			if seedDir == "" && tc.name != "empty seed dir" {
+				seedDir = "/etc/containarium/agent"
+			}
+			lease := testLease("box-1", seedDir, tc.creds...)
 
 			var revoker Revoker = rev
 			if tc.nilRevoker {
 				revoker = nil
 			}
 
+			start := time.Now()
 			out := End(context.Background(), lease, revoker, w, "run_exit")
+			elapsed := time.Since(start)
 
 			if !reflect.DeepEqual(out.Revoked, tc.wantRevoked) {
 				t.Errorf("Revoked = %v, want %v", out.Revoked, tc.wantRevoked)
@@ -273,11 +332,32 @@ func TestEnd_Table(t *testing.T) {
 			if len(out.Errs) != tc.wantErrs {
 				t.Errorf("len(Errs) = %d, want %d (errs: %v)", len(out.Errs), tc.wantErrs, out.Errs)
 			}
+			if tc.wantErrSubstr != "" {
+				found := false
+				for _, e := range out.Errs {
+					if strings.Contains(e.Error(), tc.wantErrSubstr) {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("Errs = %v, want an entry containing %q", out.Errs, tc.wantErrSubstr)
+				}
+			}
 			if !tc.nilRevoker && rev.callCount() != tc.wantRevokeCalls {
 				t.Errorf("revoke calls = %d, want %d (every credential must be attempted)", rev.callCount(), tc.wantRevokeCalls)
 			}
+			// The wipe call is recorded before fakeWiper.Exec blocks on
+			// its injected delay, so it's safe to read immediately even
+			// when End timed the wipe out and returned before Exec did.
 			if len(w.calls()) != tc.wantWipeCalls {
 				t.Errorf("wipe calls = %d, want %d (wipe must always be attempted)", len(w.calls()), tc.wantWipeCalls)
+			}
+			if tc.wantElapsedMin > 0 && elapsed < tc.wantElapsedMin {
+				t.Errorf("End returned in %s, want >= %s", elapsed, tc.wantElapsedMin)
+			}
+			if tc.wantElapsedMax > 0 && elapsed >= tc.wantElapsedMax {
+				t.Errorf("End returned in %s, want < %s", elapsed, tc.wantElapsedMax)
 			}
 		})
 	}

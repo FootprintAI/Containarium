@@ -126,6 +126,12 @@ func wipeSeed(w Wiper, box, seedDir string) (bool, error) {
 	if w == nil {
 		return false, nil
 	}
+	if seedDir == "" {
+		// An empty SeedDir would otherwise build "rm -f /token
+		// /gateway.env" — a box-root-relative command nobody asked
+		// for. Refuse instead of running it.
+		return false, fmt.Errorf("runlease: wipe seed: empty seed dir")
+	}
 
 	cmd := []string{"rm", "-f", seedDir + "/token", seedDir + "/gateway.env"}
 
