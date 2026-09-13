@@ -2,7 +2,9 @@ package modelgateway
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"sync"
 	"time"
 )
 
@@ -65,4 +67,75 @@ func (g *Gateway) isRevoked(ctx context.Context, jti string) bool {
 		return false
 	}
 	return revoked
+}
+
+// MemRevocations is a mutex-guarded in-memory RevocationChecker for a
+// standalone gateway with no Postgres store behind it (see cmd/model-gateway
+// serve, #1820). It also implements the same Revoke(ctx, jti, expiresAt,
+// reason) shape as auth.RevocationStore / runlease.Revoker — declared
+// locally as the unexported `revoker` interface in admin.go, so this package
+// still keeps no dependency on internal/auth or internal/runlease — which is
+// what lets POST /__gateway/revoke (admin.go) drive it directly.
+//
+// The daemon keeps using PgRevocationStore; this exists only for the
+// standalone binary and for tests. Every entry carries the expiry the caller
+// recorded, and a lazy sweep drops it once that expiry passes: a token past
+// its own exp is already refused by VerifyToken's exp check regardless of
+// this store, so keeping the entry around after that point buys nothing and
+// only grows the map for a long-lived process.
+type MemRevocations struct {
+	mu  sync.Mutex
+	m   map[string]memRevocation
+	now func() time.Time // overridable in tests; defaults to time.Now
+}
+
+type memRevocation struct {
+	expiresAt time.Time
+	reason    string
+}
+
+// NewMemRevocations builds an empty MemRevocations.
+func NewMemRevocations() *MemRevocations {
+	return &MemRevocations{m: map[string]memRevocation{}, now: time.Now}
+}
+
+// IsRevoked implements RevocationChecker. An empty jti is never revoked and
+// costs no map access, matching Gateway.isRevoked's own short-circuit.
+func (r *MemRevocations) IsRevoked(_ context.Context, jti string) (bool, error) {
+	if jti == "" {
+		return false, nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.sweepLocked()
+	_, revoked := r.m[jti]
+	return revoked, nil
+}
+
+// Revoke records jti as revoked until expiresAt. Matches
+// auth.RevocationStore.Revoke / runlease.Revoker's signature so the same
+// call sites (runlease.End, the admin HTTP handler) work against either
+// implementation.
+func (r *MemRevocations) Revoke(_ context.Context, jti string, expiresAt time.Time, reason string) error {
+	if jti == "" {
+		return fmt.Errorf("modelgateway: revoke: empty jti")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.sweepLocked()
+	r.m[jti] = memRevocation{expiresAt: expiresAt, reason: reason}
+	return nil
+}
+
+// sweepLocked drops every entry whose recorded expiry has passed. Caller
+// must hold r.mu. A zero expiresAt (a caller that never set one) is treated
+// as "never expires" rather than "always expired" — deleting it here would
+// silently undo the revocation on the very next lookup.
+func (r *MemRevocations) sweepLocked() {
+	now := r.now()
+	for jti, rec := range r.m {
+		if !rec.expiresAt.IsZero() && now.After(rec.expiresAt) {
+			delete(r.m, jti)
+		}
+	}
 }

@@ -226,6 +226,91 @@ func TestGateway_EmptyJTISkipsTheLookup(t *testing.T) {
 	}
 }
 
+// TestMemRevocations_Table exercises MemRevocations directly (no HTTP, no
+// Gateway): revoke, look up before/after the recorded expiry, and the empty-
+// jti short circuit. The expiry sweep is driven by an injected clock so the
+// test needs no real sleeps.
+func TestMemRevocations_Table(t *testing.T) {
+	fixed := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	cases := []struct {
+		name        string
+		jti         string // "" means: don't revoke anything for this case
+		expiresIn   time.Duration
+		checkAfter  time.Duration // clock advance between Revoke and IsRevoked
+		wantRevoked bool
+	}{
+		{
+			name:        "unknown jti is not revoked",
+			jti:         "",
+			wantRevoked: false,
+		},
+		{
+			name:        "revoked jti reports revoked before its recorded expiry",
+			jti:         "live",
+			expiresIn:   time.Hour,
+			checkAfter:  time.Minute,
+			wantRevoked: true,
+		},
+		{
+			name:        "revoked entry is swept once its recorded expiry passes",
+			jti:         "stale",
+			expiresIn:   time.Minute,
+			checkAfter:  time.Hour,
+			wantRevoked: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clock := fixed
+			m := NewMemRevocations()
+			m.now = func() time.Time { return clock }
+
+			if tc.jti != "" {
+				if err := m.Revoke(context.Background(), tc.jti, fixed.Add(tc.expiresIn), "test"); err != nil {
+					t.Fatalf("Revoke(%q): %v", tc.jti, err)
+				}
+			}
+
+			clock = fixed.Add(tc.checkAfter)
+			lookupJTI := tc.jti
+			if lookupJTI == "" {
+				lookupJTI = "never-revoked"
+			}
+			got, err := m.IsRevoked(context.Background(), lookupJTI)
+			if err != nil {
+				t.Fatalf("IsRevoked(%q): %v", lookupJTI, err)
+			}
+			if got != tc.wantRevoked {
+				t.Errorf("IsRevoked(%q) = %v, want %v", lookupJTI, got, tc.wantRevoked)
+			}
+		})
+	}
+
+	t.Run("empty jti is never revoked and costs no entry", func(t *testing.T) {
+		m := NewMemRevocations()
+		got, err := m.IsRevoked(context.Background(), "")
+		if err != nil {
+			t.Fatalf("IsRevoked(\"\"): %v", err)
+		}
+		if got {
+			t.Error("IsRevoked(\"\") = true, want false")
+		}
+	})
+
+	t.Run("Revoke rejects an empty jti", func(t *testing.T) {
+		m := NewMemRevocations()
+		if err := m.Revoke(context.Background(), "", fixed.Add(time.Hour), "x"); err == nil {
+			t.Error("Revoke(\"\") = nil error, want one")
+		}
+	})
+
+	t.Run("MemRevocations satisfies RevocationChecker", func(t *testing.T) {
+		var _ RevocationChecker = NewMemRevocations()
+	})
+}
+
 // The check must not be reachable only through the happy path: a token for the
 // wrong provider is already refused earlier, and that must stay true.
 func TestGateway_RevocationDoesNotDisturbExistingChecks(t *testing.T) {
