@@ -75,6 +75,7 @@ var (
 	poolJoinCloudControlPlane  string
 	poolJoinCloudInsecure      bool
 	poolJoinSentinelAuthSecret string
+	poolJoinNoBlockMetadata    bool
 )
 
 var poolJoinCmd = &cobra.Command{
@@ -126,6 +127,7 @@ func init() {
 	poolJoinCmd.Flags().StringVar(&poolJoinCloudControlPlane, "cloud-control-plane", "", "Also self-register this host with a cloud control plane (e.g. https://cloud.containarium.dev) using the same --token, right after the tunnel comes up. Optional — omit for a plain OSS pool join with no cloud involvement. A failure here is a warning, not a join failure: the tunnel is joined either way.")
 	poolJoinCmd.Flags().BoolVar(&poolJoinCloudInsecure, "cloud-insecure", false, "Dial --cloud-control-plane without TLS (local dev only; ignored unless --cloud-control-plane is set)")
 	poolJoinCmd.Flags().StringVar(&poolJoinSentinelAuthSecret, "sentinel-auth-secret", os.Getenv("CONTAINARIUM_SENTINEL_AUTH_SECRET"), "Fleet-wide HMAC secret (32+ bytes) matching the sentinel's CONTAINARIUM_SENTINEL_AUTH_SECRET. Without it, the sentinel's keysync/certsync requests to this host's /authorized-keys get rejected with 401 — this host stays joined to the tunnel but never gets an SSH pipe (#687). Defaults to $CONTAINARIUM_SENTINEL_AUTH_SECRET; written to a root-only env file, never into the world-readable drop-in")
+	poolJoinCmd.Flags().BoolVar(&poolJoinNoBlockMetadata, "no-block-metadata", false, "skip installing the FORWARD-chain iptables rule + reboot unit that blocks tenant containers from reaching the cloud metadata endpoint (#1103)")
 }
 
 // tunnelUnitParams are the inputs to the tunnel systemd unit. The token
@@ -452,6 +454,7 @@ func runPoolJoin(cmd *cobra.Command, args []string) error {
 	// or the cloud webui. Advisory only, same as `doctor`: it does not block
 	// the join.
 	printPosture(hostcheck.RunPosture())
+	applyMetadataBlock(cmd, "incusbr0", poolJoinNoBlockMetadata)
 
 	// 5b. Verify the tunnel handshake was actually ACCEPTED before claiming
 	// the host joined (#1051). Everything above is host-side: units enabled,
