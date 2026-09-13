@@ -70,9 +70,9 @@ var auditQueryCmd = &cobra.Command{
 first. Filters compose with AND — leave flags unset to match
 everything in that dimension.
 
-The timestamp / action / username / resource columns are
-indexed, so even an unfiltered query against a multi-million-
-row table returns within a few seconds.`,
+The timestamp / action / username / resource / run id columns
+are indexed, so even an unfiltered query against a
+multi-million-row table returns within a few seconds.`,
 	Example: `  # Everything an admin did in the last hour
   containarium audit query --username ops \
       --from "$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)" \

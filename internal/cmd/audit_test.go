@@ -112,3 +112,40 @@ func TestBuildAuditQueryParams_RejectsBadTo(t *testing.T) {
 		t.Error("expected an error for a non-RFC3339 --to value")
 	}
 }
+
+// TestAuditQueryFlags_RunIDIsRegisteredAndWired pins the user-facing
+// --run-id flag itself (registered, empty default) and proves it actually
+// reaches buildAuditQueryParams' RunID field the way runAuditQuery threads
+// it — the tests above only ever exercised buildAuditQueryParams' own
+// signature, never the flag name a real invocation types. Follows the
+// flag-lookup precedent in pool_join_test.go's
+// TestPoolJoinFlags_CloudControlPlaneIsOptOut and
+// upgrade_watchdog_test.go's TestUpgradeWatchdogDefaultBinaryPath.
+func TestAuditQueryFlags_RunIDIsRegisteredAndWired(t *testing.T) {
+	f := auditQueryCmd.Flags().Lookup("run-id")
+	if f == nil {
+		t.Fatal("--run-id flag not registered on audit query")
+	}
+	if f.DefValue != "" {
+		t.Errorf("--run-id default = %q, want empty (unset means no filter)", f.DefValue)
+	}
+
+	// Flags().Set mutates the package-level var directly and does not
+	// restore itself; put it back so this test doesn't leak state into
+	// whatever else in this package runs against the same *cobra.Command.
+	t.Cleanup(func() {
+		_ = auditQueryCmd.Flags().Set("run-id", "")
+	})
+
+	if err := auditQueryCmd.Flags().Set("run-id", "r-1"); err != nil {
+		t.Fatalf("Set(run-id): %v", err)
+	}
+	params, err := buildAuditQueryParams(auditQueryUsername, auditQueryAction, auditQueryResource,
+		auditQueryRunID, auditQueryFrom, auditQueryTo, auditQueryLimit)
+	if err != nil {
+		t.Fatalf("buildAuditQueryParams: %v", err)
+	}
+	if params.RunID != "r-1" {
+		t.Errorf("params.RunID = %q, want %q after setting --run-id", params.RunID, "r-1")
+	}
+}
