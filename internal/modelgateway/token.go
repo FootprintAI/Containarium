@@ -67,20 +67,23 @@ func MintTokenWithID(secret []byte, c GatewayClaims, ttl time.Duration) (string,
 		return "", tokenid.MintedID{}, err
 	}
 	now := time.Now()
-	expiresAt := now.Add(ttl)
 	id := hex.EncodeToString(jti)
 	c.RegisteredClaims = jwt.RegisteredClaims{
 		Issuer:    gatewayIssuer,
 		Subject:   c.Tenant,
 		ID:        id,
 		IssuedAt:  jwt.NewNumericDate(now),
-		ExpiresAt: jwt.NewNumericDate(expiresAt),
+		ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
 	}
 	signed, err := jwt.NewWithClaims(jwt.SigningMethodHS256, c).SignedString(secret)
 	if err != nil {
 		return "", tokenid.MintedID{}, err
 	}
-	return signed, tokenid.MintedID{JTI: id, ExpiresAt: expiresAt}, nil
+	// MintedID.ExpiresAt must equal the signed exp exactly: read it back from
+	// the claims' NumericDate (which jwt.NewNumericDate already truncated to
+	// jwt.TimePrecision), not from the pre-truncation now.Add(ttl) — those
+	// differ by up to a second.
+	return signed, tokenid.MintedID{JTI: id, ExpiresAt: c.ExpiresAt.Time}, nil
 }
 
 // VerifyToken validates signature, issuer, and expiry, returning the claims.

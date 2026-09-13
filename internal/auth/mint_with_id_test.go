@@ -71,9 +71,9 @@ func TestGenerateDelegatedTokenWithID_ReturnsJTIMatchingClaims(t *testing.T) {
 	if claims.ExpiresAt == nil {
 		t.Fatal("claims.ExpiresAt is nil")
 	}
-	// JWT numeric dates are whole seconds (RFC 7519 §2), so compare at second
-	// precision rather than requiring exact nanosecond equality.
-	if claims.ExpiresAt.Unix() != id.ExpiresAt.Unix() {
+	// MintedID.ExpiresAt must be exactly the signed exp, not a pre-truncation
+	// approximation of it.
+	if !id.ExpiresAt.Equal(claims.ExpiresAt.Time) {
 		t.Errorf("claims.ExpiresAt = %v, want MintedID.ExpiresAt %v", claims.ExpiresAt.Time, id.ExpiresAt)
 	}
 }

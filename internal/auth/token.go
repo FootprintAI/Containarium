@@ -257,7 +257,6 @@ func (tm *TokenManager) generate(username string, roles, scopes []string, tt str
 	}
 
 	now := time.Now()
-	expiresAt := now.Add(expiresIn)
 
 	claims := Claims{
 		Username:  username,
@@ -268,7 +267,7 @@ func (tm *TokenManager) generate(username string, roles, scopes []string, tt str
 		RunID:     runID,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ID:        jti,
-			ExpiresAt: jwt.NewNumericDate(expiresAt),
+			ExpiresAt: jwt.NewNumericDate(now.Add(expiresIn)),
 			IssuedAt:  jwt.NewNumericDate(now),
 			NotBefore: jwt.NewNumericDate(now),
 			Issuer:    tm.issuer,
@@ -281,7 +280,11 @@ func (tm *TokenManager) generate(username string, roles, scopes []string, tt str
 	if err != nil {
 		return "", MintedID{}, err
 	}
-	return signed, MintedID{JTI: jti, ExpiresAt: expiresAt}, nil
+	// MintedID.ExpiresAt must equal the signed exp exactly: read it back from
+	// the claims' NumericDate (which jwt.NewNumericDate already truncated to
+	// jwt.TimePrecision), not from the pre-truncation time.Now().Add(ttl) —
+	// those differ by up to a second.
+	return signed, MintedID{JTI: jti, ExpiresAt: claims.ExpiresAt.Time}, nil
 }
 
 // newJTI returns a base64url-encoded 128-bit cryptographic

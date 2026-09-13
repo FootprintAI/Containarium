@@ -31,9 +31,9 @@ func TestMintTokenWithID_RoundTrips(t *testing.T) {
 	if claims.ExpiresAt == nil {
 		t.Fatal("claims.ExpiresAt is nil")
 	}
-	// JWT numeric dates are whole seconds (RFC 7519 §2), so compare at second
-	// precision rather than requiring exact nanosecond equality.
-	if claims.ExpiresAt.Unix() != id.ExpiresAt.Unix() {
+	// MintedID.ExpiresAt must be exactly the signed exp, not a pre-truncation
+	// approximation of it.
+	if !id.ExpiresAt.Equal(claims.ExpiresAt.Time) {
 		t.Errorf("claims.ExpiresAt = %v, want MintedID.ExpiresAt %v", claims.ExpiresAt.Time, id.ExpiresAt)
 	}
 	if claims.RunID != "run-1" {
@@ -70,7 +70,6 @@ func TestMintToken_StillWraps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MintTokenWithID: %v", err)
 	}
-	_ = tokID // separately minted token; jtis differ by design (fresh random each mint)
 
 	claims, err := VerifyToken(secret, tok)
 	if err != nil {
@@ -90,5 +89,18 @@ func TestMintToken_StillWraps(t *testing.T) {
 	if _, _, err := MintTokenWithID(secret, GatewayClaims{Provider: "anthropic"}, time.Hour); err == nil {
 		t.Error("expected error for missing tenant (MintTokenWithID)")
 	}
-	_ = id
+
+	// Two independent mints for the same claims get distinct jtis: each mint
+	// draws fresh randomness, so MintToken's wrapped call and this direct
+	// MintTokenWithID call must not collide.
+	claimsFromWithID, err := VerifyToken(secret, tokID)
+	if err != nil {
+		t.Fatalf("VerifyToken(MintTokenWithID result): %v", err)
+	}
+	if claimsFromWithID.ID != id.JTI {
+		t.Errorf("claimsFromWithID.ID = %q, want MintedID.JTI %q", claimsFromWithID.ID, id.JTI)
+	}
+	if claims.ID == id.JTI {
+		t.Errorf("MintToken and MintTokenWithID minted the same jti %q for two separate calls", claims.ID)
+	}
 }
