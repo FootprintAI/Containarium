@@ -642,7 +642,12 @@ type RunAgentSkillRequest struct {
 	BackendId string `protobuf:"bytes,2,opt,name=backend_id,json=backendId,proto3" json:"backend_id,omitempty"`
 	Pool      string `protobuf:"bytes,3,opt,name=pool,proto3" json:"pool,omitempty"`
 	// JSON task input matching the skill's agent_card input schema.
-	InputJson     string `protobuf:"bytes,4,opt,name=input_json,json=inputJson,proto3" json:"input_json,omitempty"`
+	InputJson string `protobuf:"bytes,4,opt,name=input_json,json=inputJson,proto3" json:"input_json,omitempty"`
+	// Optional caller-supplied run id (1-128 chars of [A-Za-z0-9._-]). Empty
+	// means the daemon generates a UUID. Bound into every credential minted for
+	// this run (the `run_id` claim) and returned in the response, so the run's
+	// credentials can be revoked and audited as one unit.
+	RunId         string `protobuf:"bytes,5,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -705,12 +710,21 @@ func (x *RunAgentSkillRequest) GetInputJson() string {
 	return ""
 }
 
+func (x *RunAgentSkillRequest) GetRunId() string {
+	if x != nil {
+		return x.RunId
+	}
+	return ""
+}
+
 type RunAgentSkillResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The box the agent ran in.
 	Container *Container `protobuf:"bytes,1,opt,name=container,proto3" json:"container,omitempty"`
 	// JSON artifact matching the skill's output schema.
-	ArtifactJson  string `protobuf:"bytes,2,opt,name=artifact_json,json=artifactJson,proto3" json:"artifact_json,omitempty"`
+	ArtifactJson string `protobuf:"bytes,2,opt,name=artifact_json,json=artifactJson,proto3" json:"artifact_json,omitempty"`
+	// The effective run id (the one the caller supplied, or the generated one).
+	RunId         string `protobuf:"bytes,3,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -755,6 +769,13 @@ func (x *RunAgentSkillResponse) GetContainer() *Container {
 func (x *RunAgentSkillResponse) GetArtifactJson() string {
 	if x != nil {
 		return x.ArtifactJson
+	}
+	return ""
+}
+
+func (x *RunAgentSkillResponse) GetRunId() string {
+	if x != nil {
+		return x.RunId
 	}
 	return ""
 }
@@ -1462,7 +1483,11 @@ type StartAgentWorkerResponse struct {
 	// The worker box.
 	Container *Container `protobuf:"bytes,1,opt,name=container,proto3" json:"container,omitempty"`
 	// The worker id the daemon used.
-	WorkerId      string `protobuf:"bytes,2,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	WorkerId string `protobuf:"bytes,2,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	// The run id the worker's credentials are bound to. A worker is long-lived,
+	// so the daemon holds its lease open rather than ending it when this RPC
+	// returns; this id is how an operator finds and revokes those credentials.
+	RunId         string `protobuf:"bytes,3,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1507,6 +1532,13 @@ func (x *StartAgentWorkerResponse) GetContainer() *Container {
 func (x *StartAgentWorkerResponse) GetWorkerId() string {
 	if x != nil {
 		return x.WorkerId
+	}
+	return ""
+}
+
+func (x *StartAgentWorkerResponse) GetRunId() string {
+	if x != nil {
+		return x.RunId
 	}
 	return ""
 }
@@ -1598,9 +1630,12 @@ func (x *Crew) GetSkillIds() []string {
 // agent in the run is audit-logged under this run's trace_id, so a run is
 // itself an evidence artifact.
 type CrewRun struct {
-	state  protoimpl.MessageState `protogen:"open.v1"`
-	Id     string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	CrewId string                 `protobuf:"bytes,2,opt,name=crew_id,json=crewId,proto3" json:"crew_id,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The run id. Also the id bound into every member box's credentials (their
+	// `run_id` claim) and the one the run's lease audit rows carry, so
+	// RunCrewResponse needs no separate run_id field.
+	Id     string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	CrewId string `protobuf:"bytes,2,opt,name=crew_id,json=crewId,proto3" json:"crew_id,omitempty"`
 	// Shared trace id threaded through every agent's audit entries for this run.
 	TraceId string       `protobuf:"bytes,3,opt,name=trace_id,json=traceId,proto3" json:"trace_id,omitempty"`
 	State   CrewRunState `protobuf:"varint,4,opt,name=state,proto3,enum=containarium.v1.CrewRunState" json:"state,omitempty"`
@@ -2113,17 +2148,19 @@ const file_containarium_v1_agent_proto_rawDesc = "" +
 	"\x14GetAgentSkillRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"J\n" +
 	"\x15GetAgentSkillResponse\x121\n" +
-	"\x05skill\x18\x01 \x01(\v2\x1b.containarium.v1.AgentSkillR\x05skill\"\x83\x01\n" +
+	"\x05skill\x18\x01 \x01(\v2\x1b.containarium.v1.AgentSkillR\x05skill\"\x9a\x01\n" +
 	"\x14RunAgentSkillRequest\x12\x19\n" +
 	"\bskill_id\x18\x01 \x01(\tR\askillId\x12\x1d\n" +
 	"\n" +
 	"backend_id\x18\x02 \x01(\tR\tbackendId\x12\x12\n" +
 	"\x04pool\x18\x03 \x01(\tR\x04pool\x12\x1d\n" +
 	"\n" +
-	"input_json\x18\x04 \x01(\tR\tinputJson\"v\n" +
+	"input_json\x18\x04 \x01(\tR\tinputJson\x12\x15\n" +
+	"\x06run_id\x18\x05 \x01(\tR\x05runId\"\x8d\x01\n" +
 	"\x15RunAgentSkillResponse\x128\n" +
 	"\tcontainer\x18\x01 \x01(\v2\x1a.containarium.v1.ContainerR\tcontainer\x12#\n" +
-	"\rartifact_json\x18\x02 \x01(\tR\fartifactJson\":\n" +
+	"\rartifact_json\x18\x02 \x01(\tR\fartifactJson\x12\x15\n" +
+	"\x06run_id\x18\x03 \x01(\tR\x05runId\":\n" +
 	"\tAgentTask\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
 	"\n" +
@@ -2175,10 +2212,11 @@ const file_containarium_v1_agent_proto_rawDesc = "" +
 	"\n" +
 	"backend_id\x18\x02 \x01(\tR\tbackendId\x12\x12\n" +
 	"\x04pool\x18\x03 \x01(\tR\x04pool\x12\x1b\n" +
-	"\tworker_id\x18\x04 \x01(\tR\bworkerId\"q\n" +
+	"\tworker_id\x18\x04 \x01(\tR\bworkerId\"\x88\x01\n" +
 	"\x18StartAgentWorkerResponse\x128\n" +
 	"\tcontainer\x18\x01 \x01(\v2\x1a.containarium.v1.ContainerR\tcontainer\x12\x1b\n" +
-	"\tworker_id\x18\x02 \x01(\tR\bworkerId\"\xa4\x01\n" +
+	"\tworker_id\x18\x02 \x01(\tR\bworkerId\x12\x15\n" +
+	"\x06run_id\x18\x03 \x01(\tR\x05runId\"\xa4\x01\n" +
 	"\x04Crew\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12 \n" +

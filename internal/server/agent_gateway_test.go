@@ -91,7 +91,7 @@ func TestGatewayProviderKeysFromEnv(t *testing.T) {
 func TestMintGatewayToken_RoundTrips(t *testing.T) {
 	secret := []byte("test-shared-secret")
 	g := &gatewayProvisioning{provider: "anthropic", httpPort: 8080, secret: secret}
-	tok, err := g.mintGatewayToken("agent-hello", "hello-agent")
+	tok, minted, err := g.mintGatewayToken("agent-hello", "hello-agent", "run-42")
 	if err != nil {
 		t.Fatalf("mint: %v", err)
 	}
@@ -101,6 +101,17 @@ func TestMintGatewayToken_RoundTrips(t *testing.T) {
 	}
 	if claims.Tenant != "agent-hello" || claims.SkillID != "hello-agent" || claims.Provider != "anthropic" {
 		t.Errorf("claims mismatch: %+v", claims)
+	}
+	// #1817: the token must say which run it belongs to, and the mint must hand
+	// back the jti + expiry the daemon needs to revoke it at run exit.
+	if claims.RunID != "run-42" {
+		t.Errorf("run_id claim = %q, want run-42", claims.RunID)
+	}
+	if minted.JTI == "" || minted.JTI != claims.ID {
+		t.Errorf("minted jti = %q, want the token's own jti %q", minted.JTI, claims.ID)
+	}
+	if minted.ExpiresAt.IsZero() {
+		t.Error("minted expiry is zero — nothing to pass to Revoke(jti, expiresAt, reason)")
 	}
 }
 

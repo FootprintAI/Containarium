@@ -9142,7 +9142,8 @@
       "type": "object",
       "properties": {
         "id": {
-          "type": "string"
+          "type": "string",
+          "description": "The run id. Also the id bound into every member box's credentials (their\n`run_id` claim) and the one the run's lease audit rows carry, so\nRunCrewResponse needs no separate run_id field."
         },
         "crewId": {
           "type": "string"
@@ -13041,6 +13042,10 @@
         "inputJson": {
           "type": "string",
           "description": "JSON task input matching the skill's agent_card input schema."
+        },
+        "runId": {
+          "type": "string",
+          "description": "Optional caller-supplied run id (1-128 chars of [A-Za-z0-9._-]). Empty\nmeans the daemon generates a UUID. Bound into every credential minted for\nthis run (the `run_id` claim) and returned in the response, so the run's\ncredentials can be revoked and audited as one unit."
         }
       },
       "description": "RunAgentSkillRequest launches a single skill in its box and sends it one\ntask (no peers). Useful for testing a skill in isolation."
@@ -13055,6 +13060,10 @@
         "artifactJson": {
           "type": "string",
           "description": "JSON artifact matching the skill's output schema."
+        },
+        "runId": {
+          "type": "string",
+          "description": "The effective run id (the one the caller supplied, or the generated one)."
         }
       }
     },
@@ -13696,6 +13705,10 @@
         "workerId": {
           "type": "string",
           "description": "The worker id the daemon used."
+        },
+        "runId": {
+          "type": "string",
+          "description": "The run id the worker's credentials are bound to. A worker is long-lived,\nso the daemon holds its lease open rather than ending it when this RPC\nreturns; this id is how an operator finds and revokes those credentials."
         }
       }
     },

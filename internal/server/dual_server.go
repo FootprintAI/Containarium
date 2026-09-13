@@ -1595,6 +1595,27 @@ skipAppHosting:
 		}
 	}
 
+	// Run-lease revocation for skill runs (#1817): a run's credentials die when
+	// the run does. Same store the model-gateway's per-call jti check and
+	// `containarium token revoke` already use — revocation is issuer-agnostic,
+	// so one store covers the platform JWT and the gateway token alike.
+	//
+	// Assigned through a nil check rather than directly: a nil
+	// *auth.PgRevocationStore placed in an interface field yields a NON-nil
+	// interface holding a nil pointer, so runlease's `rev == nil` guard would not
+	// fire and every run exit would dereference nil. A daemon without Postgres
+	// reaches here with a nil store, so this is the common path, not a corner
+	// case. (Same hazard, same shape, as the gateway's wiring below.)
+	//
+	// Wired HERE, not inside the model-gateway block below: the platform JWT is
+	// minted for every skill run, gateway or not, so a daemon with no provider
+	// key — and a daemon with REST disabled — must still be able to revoke it.
+	if revocationStoreLocal != nil {
+		agentSkillServer.SetRevocationStore(revocationStoreLocal)
+	} else {
+		log.Printf("Warning: agent skill runs have no revocation store (no Postgres) — a run's credentials cannot be killed before their %s expiry; seed files are still wiped at run exit", agentTokenTTL)
+	}
+
 	// Setup SSH login collector. Which source it reads depends on the box
 	// backend: an LXC box keeps sessions in /var/log/auth.log and is read by
 	// exec, a K8s box logs them to stderr and is read from the pod log
