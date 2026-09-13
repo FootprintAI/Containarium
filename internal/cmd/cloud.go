@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/footprintai/containarium/internal/cloud"
+	"github.com/footprintai/containarium/internal/hostcheck"
 )
 
 // defaultDaemonJWTSecretFile aliases the cloud package's shared default so
@@ -230,6 +231,15 @@ func runCloudEnroll(cmd *cobra.Command, _ []string) error {
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "✓ enrolled host %s with %s\n  config: %s (restart the daemon to start actuating + reporting)\n",
 		hostID, controlPlane, path)
+
+	// Host security posture (#1103). For enterprise BYOC this machine is the
+	// customer's, in their own account, running an image we did not build —
+	// printed loudly HERE, at the moment of enrollment, rather than only
+	// discoverable later via a separate `containarium doctor` run or the
+	// cloud webui's per-host posture badges. Advisory only: it does not
+	// block enrollment (see #1103 for the open product decision on whether
+	// it eventually should).
+	printPosture(hostcheck.RunPosture())
 	return nil
 }
 
