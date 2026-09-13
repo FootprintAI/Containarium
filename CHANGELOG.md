@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.77.0] - 2026-09-13
+
+### Added
+
+- **BYOC host security posture, now loud at enrollment time** (#1103,
+  #1808). `cloud enroll` and `pool join` print the same advisory "Host
+  security posture" section `containarium doctor` already renders (disk
+  encryption, Secure Boot, sshd hardening, auditd, unattended upgrades,
+  metadata reachability, tunnel-token exposure), at the moment a host
+  actually joins — previously only discoverable later via a separate
+  `doctor` run or the cloud webui's per-host badges. Published
+  `docs/security/BYOC-HOST-HARDENING-BASELINE.md` as the customer-facing
+  form of the check table; advisory only, does not block enrollment.
+- **Metadata-endpoint block, unconditional, for every enrolled/joined
+  host** (#1103, #1810, #1811). `cloud enroll` and `pool join` now
+  insert an idempotent `iptables` FORWARD rule blocking the container
+  bridge's traffic to the cloud metadata endpoint (`169.254.169.254`) —
+  closing the pivot from a compromised tenant workload to instance
+  credentials — and install a systemd unit so the rule survives a
+  reboot. Deliberately narrower than the full eBPF network-policy engine
+  (no capacity/incident risk on small hosts); scoped to forwarded
+  container-bridge traffic only, so host-level cloud tooling (guest
+  agent, `gcloud`, disk-resize scripts) is unaffected. **No opt-out** —
+  this is the control that stops a tenant pod from reaching the host's
+  cloud identity, so neither command lets it be consciously disabled. A
+  genuine environment failure (missing `iptables`, bridge not yet
+  created, nftables-only host) is still only a printed warning, never a
+  blocked enroll/join. A hidden `containarium hostharden block-metadata
+  <bridge>` subcommand exists for manual re-application.
+
+### Fixed
+
+- **Release build's `buf` install broke on any upstream `buf` release
+  requiring a newer Go than this repo pins** — `go install
+  .../buf@latest` failed with `buf@v1.73.0 requires go >= 1.26.7
+  (running go 1.26.6)`, caught rehearsing this very release. Replaced
+  with a pinned, checksum-verified `buf` release binary download in
+  `release.yml`, which has no dependency on the runner's Go toolchain.
+
+**Full diff**: https://github.com/FootprintAI/Containarium/compare/v0.76.2...v0.77.0
+
 ## [0.76.2] - 2026-09-11
 
 ### Fixed
