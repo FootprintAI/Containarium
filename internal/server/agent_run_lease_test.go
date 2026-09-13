@@ -14,8 +14,10 @@ import (
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
+	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/runlease"
 	"github.com/footprintai/containarium/pkg/core/container"
@@ -59,6 +61,62 @@ func (r ctxAwareRevoker) Revoke(ctx context.Context, jti string, expiresAt time.
 		return err
 	}
 	return r.fakeRevocationStore.Revoke(ctx, jti, expiresAt, reason)
+}
+
+// listRevocations reads the fake store's contents through its own locking.
+func listRevocations(t *testing.T, store *fakeRevocationStore) []auth.Revocation {
+	t.Helper()
+	out, err := store.List(context.Background(), auth.ListRevocationsParams{})
+	if err != nil {
+		t.Fatalf("List revocations: %v", err)
+	}
+	return out
+}
+
+// fakeAuditLogger records the audit entries this server writes. *audit.Store
+// needs a live Postgres pool, so the auditLogger interface is the only way to
+// assert on what actually lands in audit_logs — the action, the resource type,
+// and the run_id column this feature is the first writer of.
+//
+// Log refuses an already-done context, the way a real pool does. That is what
+// makes the detached-write assertions real: without it a cancelled caller's row
+// is still recorded and the test passes even with context.WithoutCancel
+// removed — the same trap ctxAwareRevoker exists for.
+//
+// blockUntilDone makes Log wait for its context instead of returning, which is
+// how the bounded-write test stands in for a wedged Postgres holding the
+// audit chain's global advisory lock.
+type fakeAuditLogger struct {
+	mu             sync.Mutex
+	entries        []audit.AuditEntry
+	err            error
+	blockUntilDone bool
+}
+
+func (f *fakeAuditLogger) Log(ctx context.Context, e *audit.AuditEntry) error {
+	if f.blockUntilDone {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.entries = append(f.entries, *e)
+	return f.err
+}
+
+func (f *fakeAuditLogger) byAction(action string) []audit.AuditEntry {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []audit.AuditEntry
+	for _, e := range f.entries {
+		if e.Action == action {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // testLease is a two-credential lease shaped like the one provisionSkillBox
@@ -145,8 +203,13 @@ func TestEndRunLease_UsesDetachedContext(t *testing.T) {
 		if !revoked {
 			t.Errorf("%s was not revoked — the lease did not end under a detached context", jti)
 		}
-		if got := store.revoked[jti]; got != runExitReason {
-			t.Errorf("%s revoked with reason %q, want %q", jti, got, runExitReason)
+	}
+	// Reasons come back through List rather than store.revoked[jti]: the map is
+	// mutex-guarded and reading it bare would be a race the moment anything in
+	// this package revokes concurrently.
+	for _, r := range listRevocations(t, store) {
+		if r.Reason != runExitReason {
+			t.Errorf("%s revoked with reason %q, want %q", r.JTI, r.Reason, runExitReason)
 		}
 	}
 	if w.calls() != 1 {
@@ -177,11 +240,12 @@ func TestEndRunLease_LogsWhenUnrevoked(t *testing.T) {
 	if !strings.Contains(out, "run-nostore") {
 		t.Errorf("log must name the run, got %q", out)
 	}
-	if !strings.Contains(out, "could not be revoked") {
-		t.Errorf("log must say the credentials were not revoked, got %q", out)
-	}
-	if n := strings.Count(strings.TrimSpace(out), "\n") + 1; n != 1 {
-		t.Errorf("want exactly one log line per run, got %d:\n%s", n, out)
+	// Counted by substring, not "one line in the buffer": log output is
+	// process-global, so a stray line from another test's background goroutine
+	// would otherwise turn this into an unreadable CI flake instead of a
+	// failure. One line per run is still exactly what is asserted.
+	if n := strings.Count(out, "could not be revoked"); n != 1 {
+		t.Errorf("want exactly one unrevoked-credentials line per run, got %d:\n%s", n, out)
 	}
 	if w.calls() != 1 {
 		t.Errorf("files must still be wiped without a store; wipe calls = %d", w.calls())
@@ -254,6 +318,120 @@ func TestRunLeaseAuditPayloads(t *testing.T) {
 			t.Errorf("clean end payload %s must contain %s", clean, want)
 		}
 	}
+}
+
+// runLeaseCallerCtx is an authorized context that also carries a caller jti, so audit
+// attribution has something real to pick up. Username/roles come from the
+// claims (SubjectFromGRPCContext falls through to them when the metadata
+// carries no username), the jti from metadata — the path the HTTP→gateway→gRPC
+// hop actually uses.
+func runLeaseCallerCtx() context.Context {
+	return metadata.NewIncomingContext(ctxAs("operator", true), metadata.Pairs(auth.MDKeyJTI, "caller-jti"))
+}
+
+// TestRunLeaseAuditRows pins the ENVELOPE of the two run-lease rows — the half
+// of design §5 that runLeaseIssuePayload/runLeaseEndPayload do not cover.
+// `ResourceType: "agent_run"`, or RunID left empty, would ship green without
+// this: audit_logs.run_id has no other writer yet, and #1825's query is its
+// only reader.
+func TestRunLeaseAuditRows(t *testing.T) {
+	assertEnvelope := func(t *testing.T, e audit.AuditEntry, action, runID string) {
+		t.Helper()
+		if e.Action != action {
+			t.Errorf("action = %q, want %q", e.Action, action)
+		}
+		if e.ResourceType != "agent_skill_run" {
+			t.Errorf("resource_type = %q, want agent_skill_run", e.ResourceType)
+		}
+		if e.ResourceID != runID {
+			t.Errorf("resource_id = %q, want the run id %q", e.ResourceID, runID)
+		}
+		if e.RunID != runID {
+			t.Errorf("run_id column = %q, want %q — this row is its first writer", e.RunID, runID)
+		}
+		// The caller's jti, never a minted one: "what did this credential do"
+		// has to keep meaning the credential that made the call.
+		if e.TokenID != "caller-jti" {
+			t.Errorf("token_id = %q, want the caller's jti", e.TokenID)
+		}
+		if strings.Contains(e.TokenID, "jti-platform") || strings.Contains(e.TokenID, "jti-gateway") {
+			t.Errorf("token_id = %q must not be a minted jti", e.TokenID)
+		}
+	}
+
+	t.Run("end row through RunAgentSkill", func(t *testing.T) {
+		audits := &fakeAuditLogger{}
+		s, skill := newSkillBoxHarness(t, newFakeRevocationStore())
+		s.audit = audits
+
+		if _, err := s.RunAgentSkill(runLeaseCallerCtx(), &pb.RunAgentSkillRequest{SkillId: skill.Id, RunId: "run-rows"}); err == nil {
+			t.Fatal("expected the seed exec to fail on the fake backend")
+		}
+
+		end := audits.byAction("agent.run_lease_end")
+		if len(end) != 1 {
+			t.Fatalf("agent.run_lease_end rows = %d, want 1", len(end))
+		}
+		assertEnvelope(t, end[0], "agent.run_lease_end", "run-rows")
+
+		var detail runLeaseEndDetail
+		if err := json.Unmarshal([]byte(end[0].Detail), &detail); err != nil {
+			t.Fatalf("end detail is not the typed struct: %v", err)
+		}
+		if detail.Reason != provisionFailedReason {
+			t.Errorf("reason = %q, want %q", detail.Reason, provisionFailedReason)
+		}
+		// The orphan end row documented at the seed-failure branch: the issue
+		// row is written only after a successful seed, so this path has none.
+		if n := len(audits.byAction("agent.run_lease_issue")); n != 0 {
+			t.Errorf("issue rows on a failed provision = %d, want 0", n)
+		}
+	})
+
+	t.Run("issue row survives a cancelled caller", func(t *testing.T) {
+		audits := &fakeAuditLogger{}
+		s := &AgentSkillServer{audit: audits}
+		ctx, cancel := context.WithCancel(runLeaseCallerCtx())
+		cancel() // the caller is gone before the row is written
+
+		// Exactly the call provisionSkillBox makes after a successful seed.
+		lease := testLease("run-issue")
+		s.auditRunLease(ctx, "agent.run_lease_issue", lease.RunID, runLeaseIssuePayload(lease))
+
+		issue := audits.byAction("agent.run_lease_issue")
+		if len(issue) != 1 {
+			t.Fatalf("agent.run_lease_issue rows = %d, want 1 — a cancelled caller must not lose the row", len(issue))
+		}
+		assertEnvelope(t, issue[0], "agent.run_lease_issue", "run-issue")
+		if !strings.Contains(issue[0].Detail, "jti-platform") || !strings.Contains(issue[0].Detail, "jti-gateway") {
+			t.Errorf("issue detail must list both minted jtis, got %s", issue[0].Detail)
+		}
+	})
+
+	t.Run("a wedged store cannot hang the run", func(t *testing.T) {
+		// audit.Store.Log takes a global pg_advisory_xact_lock with no timeout
+		// of its own. Without auditWriteBudget this write inherits no deadline
+		// at all (context.WithoutCancel carries none), and RunAgentSkill blocks
+		// in its own defer for as long as Postgres takes.
+		s := &AgentSkillServer{audit: &fakeAuditLogger{blockUntilDone: true}}
+		done := make(chan time.Duration, 1)
+		go func() {
+			start := time.Now()
+			s.auditRunLease(context.Background(), "agent.run_lease_end", "run-wedged", "{}")
+			done <- time.Since(start)
+		}()
+		select {
+		case elapsed := <-done:
+			if elapsed < auditWriteBudget/2 {
+				t.Errorf("returned after %s — the write was not actually attempted", elapsed)
+			}
+			if elapsed > auditWriteBudget*2 {
+				t.Errorf("returned after %s, want bounded by auditWriteBudget (%s)", elapsed, auditWriteBudget)
+			}
+		case <-time.After(auditWriteBudget * 3):
+			t.Fatalf("audit write did not return within %s — it is unbounded", auditWriteBudget*3)
+		}
+	})
 }
 
 // newSkillBoxHarness wires an AgentSkillServer over a map-backed incus fake.

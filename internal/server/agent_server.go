@@ -50,14 +50,35 @@ const (
 	provisionFailedReason = "provision_failed"
 )
 
-// endRunLeaseCeiling bounds the detached work that ends a run's lease, so a
-// slow Postgres or a wedged box cannot hold an RPC open indefinitely.
+// endRunLeaseCeiling is the design's 6s cap on the REVOCATION half of ending a
+// lease: runlease.End derives each credential's 2s revoke context from the one
+// endRunLease passes in, so this bounds them together.
 //
-// runlease.End's own worst case is 2s + 2s + 3s = 7s (per-credential revoke
-// plus the wipe), but every one of those per-step contexts derives from the
-// context endRunLease passes in, so this 6s parent is the real bound — the
-// design's number, kept deliberately below the sum.
+// It is NOT a bound on runlease.End as a whole, and the arithmetic is worth
+// stating exactly because it is easy to assume otherwise. runlease.wipeSeed
+// takes no context at all — it enforces its own 3s with a bare timer — so the
+// true worst case is 2s + 2s + 3s = 7s, and with two credentials the 4s of
+// revokes never reach this 6s cap in the first place.
+//
+// That the wipe does not derive from this deadline is the property that keeps
+// it safe: slow revokes can never truncate the wipe, so the seed files still
+// leave the box. Anyone making wipeSeed context-aware must raise this ceiling
+// (or give the wipe its own budget) in the same change — otherwise two slow
+// revokes would silently cut the wipe short and leave a readable `token` /
+// `gateway.env` behind in a box that is reused across runs.
 const endRunLeaseCeiling = 6 * time.Second
+
+// auditWriteBudget bounds one run-lease audit write.
+//
+// It has to exist separately from endRunLeaseCeiling: audit.Store.Log opens a
+// transaction and takes a GLOBAL pg_advisory_xact_lock with no timeout of its
+// own, deliberately serialising every audit appender against every other. The
+// run-lease rows are written on a context detached from the caller's, so
+// without a deadline here a reachable-but-wedged Postgres — or plain contention
+// from another long audit transaction — would block RunAgentSkill inside its
+// own deferred cleanup for as long as the database took. A dropped audit row is
+// recoverable; a hung RPC is not.
+const auditWriteBudget = 3 * time.Second
 
 // runIDPattern is the accepted shape of a caller-supplied run id. Deliberately
 // narrow: a run id is caller data that lands in JWT claims and audit rows, so
@@ -91,7 +112,7 @@ type AgentSkillServer struct {
 	recipes   *RecipeServer        // box provisioning (reuses CreateContainer/exec/expose)
 	tokens    *auth.TokenManager   // mints the skill's scoped in-box token
 	netpolicy *NetworkPolicyServer // compiles allowed_peers into a per-box egress policy (Phase 2)
-	audit     *audit.Store         // records A2A hops under a trace id (Phase 2); set once the pool is ready
+	audit     auditLogger          // records A2A hops and run leases; set once the pool is ready
 	gateway   *gatewayProvisioning // model-gateway provisioning (#674); nil ⇒ boxes run in direct mode
 	queue     AgentTaskQueue       // pull-based run queue (#674) — Enqueue/Lease/Complete
 	// revocations kills a run's credentials when the run ends (#1817). nil on a
@@ -101,9 +122,30 @@ type AgentSkillServer struct {
 	revocations runlease.Revoker
 }
 
+// auditLogger is the one method of *audit.Store this server uses. Narrowed to
+// an interface so what actually lands in audit_logs — the action, the resource
+// type, the run id column — is assertable in a unit test; *audit.Store itself
+// needs a live Postgres pool, which is why the A2A hop path was only ever
+// smoke-tested.
+type auditLogger interface {
+	Log(ctx context.Context, entry *audit.AuditEntry) error
+}
+
 // SetAuditStore wires the audit store once the Postgres pool exists (it isn't
-// available at construction). A2A hop logging no-ops until then.
-func (s *AgentSkillServer) SetAuditStore(store *audit.Store) { s.audit = store }
+// available at construction). A2A hop and run-lease logging no-op until then.
+//
+// The nil check is load-bearing now that the field is an interface: a nil
+// *audit.Store assigned straight into it would arrive as a non-nil interface
+// holding a nil pointer, and the `s.audit == nil` guards below would stop
+// firing. Same hazard as SetRevocationStore, but caught here because this
+// setter takes the concrete type.
+func (s *AgentSkillServer) SetAuditStore(store *audit.Store) {
+	if store == nil {
+		s.audit = nil
+		return
+	}
+	s.audit = store
+}
 
 // SetRevocationStore wires the jti revocation store so a run's credentials can
 // be killed when the run ends (#1817), mirroring SetAuditStore: it isn't
@@ -215,6 +257,19 @@ func (s *AgentSkillServer) RunAgentSkill(ctx context.Context, req *pb.RunAgentSk
 	// itself before returning its error. From here on every exit path — the
 	// artifact below, an agent error, a cancelled caller — revokes both jtis and
 	// wipes the seed files.
+	//
+	// KNOWN GAP — the revoke is run-scoped, the WIPE is box-scoped. Boxes are
+	// named by skill id ("agent-"+skill.Id, see provisionSkillBox) and hold one
+	// shared <seedDir>/{token,gateway.env}, and runlease's argv is fixed on that
+	// directory. So a one-off run of a skill that ALSO has a crew member or a
+	// queue worker live in the same box deletes the files that member/worker
+	// reads at launch: an already-running process keeps the env it sourced, but
+	// any relaunch in that box drops to direct mode with no platform token —
+	// while its own credential, which this PR deliberately never revokes, stays
+	// live. Matches design §2's fixed argv and §3's SeedDir, and rides on the
+	// same-skill box collision already noted in provisionSkillBox; the fix is
+	// per-run boxes or per-run seed paths, which is a follow-up, not a change to
+	// make here.
 	defer s.endRunLease(ctx, lease, s.boxWiper(), runExitReason)
 
 	// Run the in-box agent loop (Phase 4a) and read its artifact back.
@@ -246,9 +301,10 @@ func (s *AgentSkillServer) boxWiper() runlease.Wiper {
 //
 // The context is detached from the caller's (context.WithoutCancel) so a
 // cancelled or timed-out RPC still gets its credentials killed — the whole
-// point of the lease — and capped at endRunLeaseCeiling so a wedged store or
-// box cannot hold the RPC open. The wiper is passed in rather than read off
-// s so the behavior is testable without a live container backend.
+// point of the lease. Every step that can block is bounded: the revokes by
+// endRunLeaseCeiling, the wipe by runlease's own timer, and the audit write by
+// auditWriteBudget inside auditRunLease. The wiper is passed in rather than
+// read off s so the behavior is testable without a live container backend.
 func (s *AgentSkillServer) endRunLease(ctx context.Context, lease runlease.Lease, w runlease.Wiper, reason string) {
 	if len(lease.Credentials) == 0 && lease.RunID == "" {
 		return // nothing was ever issued
@@ -444,6 +500,12 @@ func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.Agen
 		// Credentials exist but the box never received them (or received only
 		// part of the seed). RunAgentSkill's defer isn't armed yet — it arms on
 		// a successful provision — so this partial lease is ours to end.
+		//
+		// This path writes an agent.run_lease_end row with NO preceding
+		// agent.run_lease_issue row, because the issue row is written below,
+		// after the seed lands. That orphan end row is by construction, not a
+		// lost write, and it lists the jtis it revoked — so an operator meeting
+		// one can still answer "what was this run given".
 		s.endRunLease(ctx, lease, s.boxWiper(), provisionFailedReason)
 		return "", nil, noLease, status.Errorf(codes.Internal, "failed to seed agent box %s: %v", containerName, err)
 	}
@@ -921,6 +983,20 @@ func runLeaseEndPayload(lease runlease.Lease, reason string, out runlease.Outcom
 // TokenID stays the CALLER's jti (auditAttributionFromContext): "what did this
 // credential do" must keep meaning the credential that made the call. The jtis
 // this run was issued live in Detail.
+//
+// Both rows are written on a context detached from the caller's and bounded by
+// auditWriteBudget — the detach and the deadline live HERE, in the one place
+// both call sites go through, so neither can get one without the other:
+//
+//   - Detached, because a run lease exists precisely for the caller-cancel
+//     path. On the RPC context the issue row would be the single write that
+//     fails exactly when the cancellation happens, leaving a run with an end
+//     row and no issue row.
+//   - Bounded, because the write takes a global advisory lock with no timeout
+//     of its own (see auditWriteBudget).
+//
+// Attribution still comes off the ORIGINAL ctx: WithoutCancel keeps the
+// values (gRPC metadata, claims) and drops only the cancellation.
 func (s *AgentSkillServer) auditRunLease(ctx context.Context, action, runID, detail string) {
 	if s.audit == nil {
 		return
@@ -930,7 +1006,11 @@ func (s *AgentSkillServer) auditRunLease(ctx context.Context, action, runID, det
 		username = "_unknown"
 	}
 	actor, delegationChain, tokenID := auditAttributionFromContext(ctx)
-	if err := s.audit.Log(ctx, &audit.AuditEntry{
+
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), auditWriteBudget)
+	defer cancel()
+
+	if err := s.audit.Log(wctx, &audit.AuditEntry{
 		Username:        username,
 		Action:          action,
 		ResourceType:    "agent_skill_run",
