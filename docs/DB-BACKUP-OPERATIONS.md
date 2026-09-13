@@ -148,6 +148,27 @@ The two compose: `--hook … --age-recipient …` captures an opaque hook
 stream and encrypts it. Plaintext `pg_dump` backups are byte-for-byte
 unchanged when neither flag is given.
 
+### Self-registering a recipient for scheduled backups (#1836)
+
+A scheduled backup has no operator present to type `--age-recipient` on
+every run, so a tenant can register its recipient once via the existing
+tenant-scoped Secrets API instead of a bespoke config mechanism:
+
+```
+containarium secrets set alice CONTAINARIUM_BACKUP_AGE_RECIPIENT age1...
+containarium backup create alice --database app --dest gcs --gcs-bucket gs://… --server <host>
+```
+
+The daemon resolves the recipient in this order: the request's own
+`--age-recipient` (a one-off call always overrides), then the tenant's
+`CONTAINARIUM_BACKUP_AGE_RECIPIENT` secret if registered, then plaintext —
+unchanged from before this existed. The value is stored exactly like any
+other tenant secret: versioned, audited, and eligible for the tenant's own
+KMS-backed KEK via `SetTenantKMSKey` — which is what "preserved into KMS"
+buys here, even though a recipient is a *public* key and needs no
+confidentiality of its own. The matching **private** identity is never
+registered this way and must never touch the platform.
+
 ## Scheduling (systemd timer — recommended)
 
 v1 has no in-daemon scheduler — and for an audit that is a feature, not a

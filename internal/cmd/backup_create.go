@@ -49,6 +49,14 @@ key before it is staged or uploaded, so the daemon's disk, the object
 store and the operator only ever hold ciphertext. Restore then needs the
 matching identity (see 'backup restore --age-identity-file').
 
+For a SCHEDULED backup, a tenant can register its recipient once instead
+of passing --age-recipient on every run:
+  containarium secrets set alice CONTAINARIUM_BACKUP_AGE_RECIPIENT age1...
+A create with no --age-recipient flag then encrypts to that registered
+key automatically; an explicit --age-recipient still overrides it for a
+one-off call. Neither a tenant with no key registered nor a standalone
+daemon (no secrets store) is an error — both mean plaintext, as today.
+
 Examples:
   containarium backup create alice --dest local --server <host>
   containarium backup create alice --database app --dest gcs \

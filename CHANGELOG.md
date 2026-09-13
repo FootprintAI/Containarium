@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Tenant self-registered backup recipient** (#1836). A tenant can
+  `secrets set <user> CONTAINARIUM_BACKUP_AGE_RECIPIENT age1...` once and
+  every later `backup create` with no `--age-recipient` flag encrypts to
+  it automatically — the missing piece for a *scheduled* backup, which
+  has no operator present to pass the flag on each run. An explicit
+  `--age-recipient` on a call still overrides the registered one; neither
+  a tenant with nothing registered nor a standalone daemon (no secrets
+  store) is an error — both mean plaintext, unchanged from before. The
+  value rides the existing tenant-scoped Secrets API (versioned, audited,
+  eligible for the tenant's own KMS-backed KEK) rather than a new config
+  mechanism; the matching private identity is never registered this way
+  and never touches the platform.
+
 ## [0.79.0] - 2026-09-13
 
 Credential-less, tenant-encrypted database backups for multi-tenant fleets.

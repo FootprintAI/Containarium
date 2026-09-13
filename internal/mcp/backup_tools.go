@@ -69,7 +69,7 @@ func backupTools() []Tool {
 					},
 					"age_recipient": map[string]interface{}{
 						"type":        "string",
-						"description": "age public key (age1...) to encrypt the dump to before it is stored. Restore then requires the matching identity file, which the platform never holds.",
+						"description": "age public key (age1...) to encrypt the dump to before it is stored, overriding any recipient the tenant has already self-registered as the CONTAINARIUM_BACKUP_AGE_RECIPIENT secret (set_secret). Omit this to use the registered one automatically, or omit both for a plaintext dump. Restore then requires the matching identity file, which the platform never holds.",
 					},
 				},
 				"required": []string{"username"},

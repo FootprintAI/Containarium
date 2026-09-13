@@ -77,6 +77,17 @@ func (s *BackupServer) CreateBackup(ctx context.Context, req *pb.CreateBackupReq
 		return nil, status.Errorf(codes.NotFound, "container for user %s not found: %v", req.Username, err)
 	}
 
+	// #1836: an explicit request recipient always wins; otherwise fall
+	// back to the tenant's own self-registered CONTAINARIUM_BACKUP_AGE_RECIPIENT
+	// secret, so a scheduled backup with no operator present still
+	// encrypts. Neither a standalone daemon (no secrets store) nor a
+	// tenant who never registered one is an error — both mean plaintext,
+	// today's unchanged default.
+	ageRecipient, err := resolveAgeRecipient(ctx, backupSecretsReader(s.containers), req.Username, req.AgeRecipient)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "%v", err)
+	}
+
 	opts := backup.CreateOptions{
 		Username:      req.Username,
 		ContainerName: info.Name,
@@ -85,7 +96,7 @@ func (s *BackupServer) CreateBackup(ctx context.Context, req *pb.CreateBackupReq
 		GCSBucket:     req.GcsBucket,
 		Hook:          req.Hook,
 		Label:         req.Label,
-		AgeRecipient:  req.AgeRecipient,
+		AgeRecipient:  ageRecipient,
 	}
 
 	// Empty database → back up every non-template database found (#954),
