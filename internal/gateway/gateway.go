@@ -850,20 +850,24 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	registerVersionEndpoints(httpMux, releases.NewClient(), gs.authMiddleware)
 	log.Printf("Version endpoint enabled at /v1/releases/latest")
 
-	// Backends endpoint. The LIST (GET /v1/backends) is now the proto-first
-	// ContainerService.ListBackends RPC — it flows through the grpc-gateway
-	// (corsHandler) like every other /v1/ route, so the wire shape is
-	// generated from BackendInfo and can't drift from the CLI / MCP / cloud
-	// consumers (#354, proto-first convention). We register the exact path
-	// explicitly so http.ServeMux does NOT 301-redirect it into the
-	// trailing-slash subtree below.
+	// Backends endpoint. The LIST (GET /v1/backends) and TriggerUpgrade
+	// (POST /v1/backends/upgrade) are proto-first ContainerService RPCs —
+	// they flow through the grpc-gateway (corsHandler) like every other
+	// /v1/ route, so the wire shape is generated and can't drift from the
+	// CLI / MCP / cloud consumers (#354, proto-first convention). Both are
+	// registered as exact paths explicitly: http.ServeMux's "longest
+	// prefix wins" rule would otherwise route them into the trailing-slash
+	// subtree below, which is a hand-coded handler that 404s anything it
+	// doesn't recognize (#1805) — any future proto-first RPC mounted under
+	// /v1/backends/ needs the same exact-path registration here.
 	//
 	// The per-backend forward (GET /v1/backends/{id}/system-info) is still
 	// the hand-coded handler — it proxies to a specific peer rather than
 	// returning a generated message — mounted on the subtree only. Auth on
-	// the RPC path is the gRPC ListBackends admin check + JWT interceptor
-	// (RequireRole admin); the subtree keeps its own JWT middleware.
+	// the RPC paths is the gRPC admin check + JWT interceptor (RequireRole
+	// admin); the subtree keeps its own JWT middleware.
 	httpMux.Handle("/v1/backends", corsHandler)
+	httpMux.Handle("/v1/backends/upgrade", corsHandler)
 	if gs.backendsHandler != nil {
 		authed := gs.authMiddleware.HTTPMiddleware(http.HandlerFunc(gs.backendsHandler))
 		httpMux.Handle("/v1/backends/", authed)

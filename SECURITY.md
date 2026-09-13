@@ -130,6 +130,14 @@ tenants, and what's it good for" — including how it compares to
 hypervisor-based platforms — see the
 [security FAQ](docs/security/SECURITY-FAQ.md).
 
+## BYOC host hardening baseline
+
+Bring-your-own-compute means the machine is yours, in your own account,
+running an image we didn't build. What to check on it — disk
+encryption, Secure Boot, sshd hardening, audit logging, and more —
+before treating it as a security boundary is in the
+[BYOC host hardening baseline](docs/security/BYOC-HOST-HARDENING-BASELINE.md).
+
 ## Thank you
 
 Security reports help keep Containarium operators safe. We're
