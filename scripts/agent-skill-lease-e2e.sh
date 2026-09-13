@@ -389,6 +389,18 @@ ok "read the run's gateway token from $SEED_DIR/gateway.env during the run (${#G
 model_call "$GW_TOKEN" "$WORKDIR/during"
 during_code="$(cat "$WORKDIR/during.code")"
 during_body="$(cat "$WORKDIR/during.body")"
+# The gateway must have ANSWERED. curl reports 000 when it never got an HTTP
+# response at all (connection refused, --max-time reached), and the body is then
+# empty — which matches none of the rejection patterns below, so without this
+# check the assertion would pass on a call that never reached the gateway.
+#
+# The same hole cannot exist in assertion 2: there a missing response simply
+# never says "gateway token revoked", so the budget runs out and the lane goes
+# red. Vacuous passes only ever hide in the assertion that accepts by default.
+if ! printf '%s' "$during_code" | grep -qE '^[1-5][0-9][0-9]$'; then
+  echo "---- curl stderr ----"; cat "$WORKDIR/during.err" 2>/dev/null
+  fail "assertion 1: /v1/model/$PROVIDER returned no HTTP response (curl wrote status '$during_code') — the gateway never answered, so nothing was proved about the credential"
+fi
 case "$during_body" in
   *"gateway token revoked"*)
     fail "assertion 1: the gateway rejected the run's own token DURING the run as revoked — the lease was ended too early" ;;
