@@ -49,6 +49,14 @@ type Config struct {
 	// stays in StateObserve and nothing is ever denied, which is the behavior
 	// every existing deployment already has.
 	Policy *PolicyConfig
+
+	// AdminToken gates POST /__gateway/revoke (see admin.go). Empty (the
+	// default) means the route is not registered at all — a request to it
+	// 404s exactly like any other unregistered path, so an existing operator
+	// who never sets this sees no change in the gateway's surface. Non-empty
+	// requires "Authorization: Bearer <AdminToken>", compared in constant
+	// time (#1820).
+	AdminToken string
 }
 
 // Gateway brokers every agent box's model calls: it authenticates the box's
@@ -112,6 +120,13 @@ func (g *Gateway) Handler() http.Handler {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+	// Admin kill-switch (#1820). Registered ONLY when an operator opts in by
+	// setting AdminToken — an unregistered path 404s on ServeMux's own
+	// default, which is how a standalone gateway with no admin token stays
+	// byte-for-byte unchanged from before this route existed. See admin.go.
+	if g.cfg.AdminToken != "" {
+		mux.HandleFunc("/__gateway/revoke", g.handleAdminRevoke)
+	}
 	// Live request-lifecycle gauge: how many model calls are in flight right
 	// now, and how many have completed/failed over the gateway's lifetime.
 	// `inflight` stuck above zero with no new completions is the "hung request"

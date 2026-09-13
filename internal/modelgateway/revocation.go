@@ -2,7 +2,9 @@ package modelgateway
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"sync"
 	"time"
 )
 
@@ -65,4 +67,100 @@ func (g *Gateway) isRevoked(ctx context.Context, jti string) bool {
 		return false
 	}
 	return revoked
+}
+
+// MemRevocations is a mutex-guarded in-memory RevocationChecker for a
+// standalone gateway with no Postgres store behind it (see cmd/model-gateway
+// serve, #1820). It also implements the same Revoke(ctx, jti, expiresAt,
+// reason) shape as auth.RevocationStore / runlease.Revoker — declared
+// locally as the unexported `revoker` interface in admin.go, so this package
+// still keeps no dependency on internal/auth or internal/runlease — which is
+// what lets POST /__gateway/revoke (admin.go) drive it directly.
+//
+// The daemon keeps using PgRevocationStore; this exists only for the
+// standalone binary and for tests. Every entry carries the expiry the caller
+// recorded, and a lazy sweep drops it once that expiry passes: a token past
+// its own exp is already refused by VerifyToken's exp check regardless of
+// this store, so keeping the entry around after that point buys nothing and
+// only grows the map for a long-lived process.
+type MemRevocations struct {
+	mu        sync.Mutex
+	m         map[string]memRevocation
+	now       func() time.Time // overridable in tests; defaults to time.Now
+	lastSweep time.Time        // guarded by mu; zero means "never swept yet"
+}
+
+type memRevocation struct {
+	expiresAt time.Time
+	reason    string
+}
+
+// memRevocationsSweepInterval throttles the full-map sweep (see
+// maybeSweepLocked) to at most once per this long, rather than once per
+// call. IsRevoked sits on the hot path of every proxied model call
+// (gateway.go's handleModel), so an O(len(r.m)) scan under the single mutex
+// on every single call would scale per-call latency with the number of
+// outstanding revocations on a busy gateway. A minute of staleness on
+// reclaiming expired entries costs nothing in correctness — see
+// maybeSweepLocked.
+const memRevocationsSweepInterval = time.Minute
+
+// NewMemRevocations builds an empty MemRevocations.
+func NewMemRevocations() *MemRevocations {
+	return &MemRevocations{m: map[string]memRevocation{}, now: time.Now}
+}
+
+// IsRevoked implements RevocationChecker. An empty jti is never revoked and
+// costs no map access, matching Gateway.isRevoked's own short-circuit.
+func (r *MemRevocations) IsRevoked(_ context.Context, jti string) (bool, error) {
+	if jti == "" {
+		return false, nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.maybeSweepLocked()
+	_, revoked := r.m[jti]
+	return revoked, nil
+}
+
+// Revoke records jti as revoked until expiresAt. Matches
+// auth.RevocationStore.Revoke / runlease.Revoker's signature so the same
+// call sites (runlease.End, the admin HTTP handler) work against either
+// implementation.
+func (r *MemRevocations) Revoke(_ context.Context, jti string, expiresAt time.Time, reason string) error {
+	if jti == "" {
+		return fmt.Errorf("modelgateway: revoke: empty jti")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.maybeSweepLocked()
+	r.m[jti] = memRevocation{expiresAt: expiresAt, reason: reason}
+	return nil
+}
+
+// maybeSweepLocked drops every entry whose recorded expiry has passed, but
+// at most once per memRevocationsSweepInterval. Caller must hold r.mu.
+//
+// Correctness doesn't depend on sweeping promptly: a token past its own exp
+// is already refused by VerifyToken's exp check regardless of this store, so
+// an expired-but-not-yet-swept entry can only ever make IsRevoked answer
+// "revoked" for a token nothing would accept anyway. Throttling the sweep
+// only delays reclaiming map space for entries nobody can exploit, which is
+// the trade that keeps the hot path O(1) instead of O(len(r.m)) on every
+// call.
+//
+// A zero expiresAt (a caller that never set one) is treated as "never
+// expires" rather than "always expired" — deleting it here would silently
+// undo the revocation on the very next sweep.
+func (r *MemRevocations) maybeSweepLocked() {
+	now := r.now()
+	if !r.lastSweep.IsZero() && now.Sub(r.lastSweep) < memRevocationsSweepInterval {
+		return
+	}
+	r.lastSweep = now
+	for jti, rec := range r.m {
+		if !rec.expiresAt.IsZero() && now.After(rec.expiresAt) {
+			delete(r.m, jti)
+		}
+	}
 }

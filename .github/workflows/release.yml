@@ -523,3 +523,67 @@ jobs:
             dist/containarium-bundle-${{ github.ref_name }}-${{ matrix.target.os }}-${{ matrix.target.arch }}.tar.gz.sha256
           draft: false
           prerelease: false
+
+  # model-gateway credential-proxy image (#1820). The daemon
+  # (images/daemon/Dockerfile) and the sidecar images each publish from their
+  # own workflow (containarium-daemon.yml, sidecars.yml) on this identical tag
+  # trigger; this job lives here instead because the image is small, this
+  # repo's release surface already reads this file for "what does a tag
+  # publish", and a `push:`-tag-triggered job needs no `needs:` on
+  # build-and-release to run — it fires independently, so a slow or failing
+  # image build never blocks the binary release above (same reasoning
+  # sidecars.yml gives for keeping its own jobs independent of each other).
+  model-gateway-image:
+    runs-on: ubuntu-latest
+    # Job-scoped, not widened at the workflow level: this is the only job in
+    # this file that pushes to GHCR, and a job-level `permissions:` block
+    # REPLACES the workflow-level grant for that job rather than adding to
+    # it, so build-and-release / build-bundle above keep exactly
+    # `contents: write` — no packages:write leaks into jobs that never touch
+    # a registry (#1820 review).
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive image tags
+        id: tags
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            version="${{ inputs.version }}"
+          else
+            version="${GITHUB_REF#refs/tags/v}"
+          fi
+          # Minor-series moving tag: 0.53.0 -> v0.53
+          minor="v$(echo "$version" | cut -d. -f1-2)"
+          base="ghcr.io/footprintai/containarium-model-gateway"
+          {
+            echo "tags=${base}:v${version},${base}:${minor},${base}:latest"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push model-gateway image
+        uses: docker/build-push-action@v7
+        with:
+          # Repo root context: the Dockerfile builds ./cmd/model-gateway.
+          context: .
+          file: ./images/model-gateway/Dockerfile
+          platforms: linux/amd64
+          # Push on tag only; a rehearsal builds the image and discards it.
+          push: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          tags: ${{ steps.tags.outputs.tags }}
+          # Build provenance + SBOM, explicit so it's reviewable, matching
+          # the daemon and sidecar image jobs.
+          provenance: true
+          sbom: true
