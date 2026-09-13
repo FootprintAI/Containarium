@@ -157,29 +157,29 @@ func mint(args []string) {
 
 // revoke calls a running gateway's POST /__gateway/revoke, standing in for
 // the daemon's own revoke path (runlease.End against the same store the
-// gateway consults). Requires --jti; --expires-at defaults to a generous
-// window since the caller usually doesn't have the original token's exact
-// expiry at hand — the value only controls how long MemRevocations keeps the
-// entry before its own sweep drops it, not how long the revocation is
-// honored (a jti stays revoked from the moment this call succeeds).
+// gateway consults). Requires --jti. --expires-at is deliberately left empty
+// by default rather than guessing a window (e.g. "now+24h"): an empty
+// expires_at means "never expires" to both MemRevocations and the daemon's
+// store, so the jti stays revoked regardless of how long the real token's
+// TTL actually runs. Guessing a shorter window here was a real bug (#1820
+// review) — it let MemRevocations' own expiry sweep silently un-revoke a
+// token whose real exp was further out, which is exactly the year-long
+// recipe-box case this feature exists to guard. Pass --expires-at only when
+// the caller actually knows the token's real expiry and wants the entry
+// cleaned up automatically once that passes.
 func revoke(args []string) {
 	fs := flag.NewFlagSet("revoke", flag.ExitOnError)
 	adminURL := fs.String("admin-url", "http://127.0.0.1:8866", "base URL of the running gateway")
 	adminTokenFile := fs.String("admin-token-file", "/etc/containarium/gateway-admin.token", "path to the admin bearer token")
 	jti := fs.String("jti", "", "jti to revoke (required)")
-	expiresAt := fs.String("expires-at", "", "RFC3339 expiry to record for the revocation (default: now+24h)")
+	expiresAt := fs.String("expires-at", "", "RFC3339 expiry for the revocation entry; empty (the default) means never-expires, the safe choice when the caller doesn't know the token's real exp")
 	reason := fs.String("reason", "operator revoke", "reason recorded with the revocation")
 	_ = fs.Parse(args)
 	if *jti == "" {
 		log.Fatal("revoke: --jti is required")
 	}
 
-	exp := *expiresAt
-	if exp == "" {
-		exp = time.Now().Add(24 * time.Hour).Format(time.RFC3339)
-	}
-
-	body, err := json.Marshal(modelgateway.RevokeRequest{JTI: *jti, ExpiresAt: exp, Reason: *reason})
+	body, err := json.Marshal(modelgateway.RevokeRequest{JTI: *jti, ExpiresAt: *expiresAt, Reason: *reason})
 	if err != nil {
 		log.Fatalf("revoke: %v", err)
 	}

@@ -18,8 +18,16 @@ import (
 // could drift from what the server decodes (see TestRevokeRequest_JSONShape,
 // the golden shared by both).
 type RevokeRequest struct {
-	JTI       string `json:"jti"`
-	ExpiresAt string `json:"expires_at"` // RFC3339
+	JTI string `json:"jti"`
+	// ExpiresAt is RFC3339, and optional: empty (or omitted) means the
+	// revocation never expires, mirroring MemRevocations' own treatment of a
+	// zero time.Time (revocation.go). This is the safe default for a caller
+	// that doesn't know the token's real expiry — e.g. cmd/model-gateway's
+	// `revoke --jti` without --expires-at — since a wrong-but-plausible guess
+	// (like "now+24h") would let MemRevocations' sweep silently un-revoke a
+	// token whose real TTL runs longer, exactly the recipe-box case this
+	// feature exists for (#1820 review).
+	ExpiresAt string `json:"expires_at,omitempty"`
 	Reason    string `json:"reason,omitempty"`
 }
 
@@ -66,10 +74,17 @@ func (g *Gateway) handleAdminRevoke(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request: jti is required", http.StatusBadRequest)
 		return
 	}
-	expiresAt, err := time.Parse(time.RFC3339, req.ExpiresAt)
-	if err != nil {
-		http.Error(w, "bad request: expires_at: "+err.Error(), http.StatusBadRequest)
-		return
+	// An empty expires_at means "never expires" (see RevokeRequest's doc
+	// comment) — the zero time.Time, not an error. Only a non-empty value
+	// that fails to parse is a bad request.
+	var expiresAt time.Time
+	if req.ExpiresAt != "" {
+		var err error
+		expiresAt, err = time.Parse(time.RFC3339, req.ExpiresAt)
+		if err != nil {
+			http.Error(w, "bad request: expires_at: "+err.Error(), http.StatusBadRequest)
+			return
+		}
 	}
 
 	// A revocable store is a runtime concern, not a route-registration one:

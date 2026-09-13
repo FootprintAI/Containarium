@@ -24,7 +24,6 @@ on:
 
 permissions:
   contents: write
-  packages: write   # for GHCR push (model-gateway-image job, #1820)
 
 jobs:
   build-and-release:
@@ -536,6 +535,15 @@ jobs:
   # sidecars.yml gives for keeping its own jobs independent of each other).
   model-gateway-image:
     runs-on: ubuntu-latest
+    # Job-scoped, not widened at the workflow level: this is the only job in
+    # this file that pushes to GHCR, and a job-level `permissions:` block
+    # REPLACES the workflow-level grant for that job rather than adding to
+    # it, so build-and-release / build-bundle above keep exactly
+    # `contents: write` — no packages:write leaks into jobs that never touch
+    # a registry (#1820 review).
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v7

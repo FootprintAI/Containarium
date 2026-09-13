@@ -71,12 +71,20 @@ Content-Type: application/json
 {"jti": "<id>", "expires_at": "2026-01-01T00:00:00Z", "reason": "leaked"}
 ```
 
+`expires_at` is optional: omit it (the CLI's default) and the revocation
+never expires. Passing it only makes sense when the caller actually knows
+the token's real expiry — it just lets the in-memory store reclaim the entry
+once that passes; it does not shorten how long the revocation itself is
+honored, and guessing a shorter value than the token's real TTL would
+silently let the token start working again once your guess elapses.
+
 `204` on success, `401` for a wrong or missing bearer (compared in constant
-time), `400` for a malformed body or an unparsable `expires_at`. Standalone
-runs keep revocations in memory (`MemRevocations`, swept once each entry's
-`expires_at` passes); the daemon wires the same Postgres-backed store it
-already uses for platform JWTs, so this is the identical revocation list a
-platform-JWT `revoke` hits — no second store, no drift between the two.
+time), `400` for a malformed body or a non-empty `expires_at` that fails to
+parse. Standalone runs keep revocations in memory (`MemRevocations`, swept
+once each entry's non-empty `expires_at` passes); the daemon wires the same
+Postgres-backed store it already uses for platform JWTs, so this is the
+identical revocation list a platform-JWT `revoke` hits — no second store, no
+drift between the two.
 
 ## Auth
 

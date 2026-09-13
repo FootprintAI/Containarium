@@ -234,11 +234,12 @@ func TestMemRevocations_Table(t *testing.T) {
 	fixed := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	cases := []struct {
-		name        string
-		jti         string // "" means: don't revoke anything for this case
-		expiresIn   time.Duration
-		checkAfter  time.Duration // clock advance between Revoke and IsRevoked
-		wantRevoked bool
+		name         string
+		jti          string // "" means: don't revoke anything for this case
+		neverExpires bool   // Revoke with the zero time.Time instead of fixed.Add(expiresIn)
+		expiresIn    time.Duration
+		checkAfter   time.Duration // clock advance between Revoke and IsRevoked
+		wantRevoked  bool
 	}{
 		{
 			name:        "unknown jti is not revoked",
@@ -259,6 +260,21 @@ func TestMemRevocations_Table(t *testing.T) {
 			checkAfter:  time.Hour,
 			wantRevoked: false,
 		},
+		{
+			// Regression for the CLI's `revoke --jti` bug (#1820 review): a
+			// caller that revokes with no known expiry (RevokeRequest's
+			// empty expires_at, which the admin handler turns into a zero
+			// time.Time) must stay revoked indefinitely — NOT get swept on
+			// some guessed default window. 30 days is arbitrary; the point is
+			// "far past any short default someone might have guessed",
+			// proven with the same injected-clock mechanism as the other
+			// cases rather than a real sleep.
+			name:         "revoked entry with no recorded expiry stays revoked far past any short window",
+			jti:          "never-expires",
+			neverExpires: true,
+			checkAfter:   30 * 24 * time.Hour,
+			wantRevoked:  true,
+		},
 	}
 
 	for _, tc := range cases {
@@ -268,7 +284,11 @@ func TestMemRevocations_Table(t *testing.T) {
 			m.now = func() time.Time { return clock }
 
 			if tc.jti != "" {
-				if err := m.Revoke(context.Background(), tc.jti, fixed.Add(tc.expiresIn), "test"); err != nil {
+				exp := fixed.Add(tc.expiresIn)
+				if tc.neverExpires {
+					exp = time.Time{}
+				}
+				if err := m.Revoke(context.Background(), tc.jti, exp, "test"); err != nil {
 					t.Fatalf("Revoke(%q): %v", tc.jti, err)
 				}
 			}

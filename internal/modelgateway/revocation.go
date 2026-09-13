@@ -84,15 +84,26 @@ func (g *Gateway) isRevoked(ctx context.Context, jti string) bool {
 // this store, so keeping the entry around after that point buys nothing and
 // only grows the map for a long-lived process.
 type MemRevocations struct {
-	mu  sync.Mutex
-	m   map[string]memRevocation
-	now func() time.Time // overridable in tests; defaults to time.Now
+	mu        sync.Mutex
+	m         map[string]memRevocation
+	now       func() time.Time // overridable in tests; defaults to time.Now
+	lastSweep time.Time        // guarded by mu; zero means "never swept yet"
 }
 
 type memRevocation struct {
 	expiresAt time.Time
 	reason    string
 }
+
+// memRevocationsSweepInterval throttles the full-map sweep (see
+// maybeSweepLocked) to at most once per this long, rather than once per
+// call. IsRevoked sits on the hot path of every proxied model call
+// (gateway.go's handleModel), so an O(len(r.m)) scan under the single mutex
+// on every single call would scale per-call latency with the number of
+// outstanding revocations on a busy gateway. A minute of staleness on
+// reclaiming expired entries costs nothing in correctness — see
+// maybeSweepLocked.
+const memRevocationsSweepInterval = time.Minute
 
 // NewMemRevocations builds an empty MemRevocations.
 func NewMemRevocations() *MemRevocations {
@@ -107,7 +118,7 @@ func (r *MemRevocations) IsRevoked(_ context.Context, jti string) (bool, error) 
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.sweepLocked()
+	r.maybeSweepLocked()
 	_, revoked := r.m[jti]
 	return revoked, nil
 }
@@ -122,17 +133,31 @@ func (r *MemRevocations) Revoke(_ context.Context, jti string, expiresAt time.Ti
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.sweepLocked()
+	r.maybeSweepLocked()
 	r.m[jti] = memRevocation{expiresAt: expiresAt, reason: reason}
 	return nil
 }
 
-// sweepLocked drops every entry whose recorded expiry has passed. Caller
-// must hold r.mu. A zero expiresAt (a caller that never set one) is treated
-// as "never expires" rather than "always expired" — deleting it here would
-// silently undo the revocation on the very next lookup.
-func (r *MemRevocations) sweepLocked() {
+// maybeSweepLocked drops every entry whose recorded expiry has passed, but
+// at most once per memRevocationsSweepInterval. Caller must hold r.mu.
+//
+// Correctness doesn't depend on sweeping promptly: a token past its own exp
+// is already refused by VerifyToken's exp check regardless of this store, so
+// an expired-but-not-yet-swept entry can only ever make IsRevoked answer
+// "revoked" for a token nothing would accept anyway. Throttling the sweep
+// only delays reclaiming map space for entries nobody can exploit, which is
+// the trade that keeps the hot path O(1) instead of O(len(r.m)) on every
+// call.
+//
+// A zero expiresAt (a caller that never set one) is treated as "never
+// expires" rather than "always expired" — deleting it here would silently
+// undo the revocation on the very next sweep.
+func (r *MemRevocations) maybeSweepLocked() {
 	now := r.now()
+	if !r.lastSweep.IsZero() && now.Sub(r.lastSweep) < memRevocationsSweepInterval {
+		return
+	}
+	r.lastSweep = now
 	for jti, rec := range r.m {
 		if !rec.expiresAt.IsZero() && now.After(rec.expiresAt) {
 			delete(r.m, jti)

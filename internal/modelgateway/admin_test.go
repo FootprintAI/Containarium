@@ -1,6 +1,7 @@
 package modelgateway
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -159,6 +160,20 @@ func TestAdminRevoke_Table(t *testing.T) {
 			body:       validBody,
 			wantStatus: http.StatusNoContent,
 		},
+		{
+			// expires_at is optional (#1820 review): omitting it must succeed
+			// — it means "never expires", not "bad request". Regression for
+			// the earlier admin.go bug that rejected an empty expires_at
+			// with 400 even though MemRevocations already treats a zero
+			// time.Time as never-expires.
+			name:       "success with expires_at omitted entirely",
+			adminToken: adminToken,
+			withStore:  true,
+			authHeader: "Bearer " + adminToken,
+			method:     http.MethodPost,
+			body:       `{"jti":"jti-2"}`,
+			wantStatus: http.StatusNoContent,
+		},
 	}
 
 	for _, tc := range cases {
@@ -224,6 +239,56 @@ func TestAdminRevoke_Table(t *testing.T) {
 		}
 		if !revoked {
 			t.Error("jti-1 was not revoked after a 204 response")
+		}
+	})
+
+	// Regression for the CLI bug (#1820 review): `revoke --jti` without
+	// --expires-at used to default the wire request to "now+24h", which
+	// MemRevocations' sweep then used to silently un-revoke the entry once
+	// 24h passed — long before a real (e.g. 365-day recipe-box) token's
+	// actual exp. Reproduced end to end through the HTTP handler with an
+	// injected clock: revoke with expires_at omitted, jump the clock well
+	// past what any such guessed window would have covered, and confirm the
+	// jti is still revoked.
+	t.Run("a revoke with expires_at omitted stays revoked far past any guessed default", func(t *testing.T) {
+		clock := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+		store := NewMemRevocations()
+		store.now = func() time.Time { return clock }
+
+		gw := New(Config{
+			Secret:       []byte("s"),
+			Providers:    DefaultProviders(),
+			ProviderKeys: map[string]string{"anthropic": "k"},
+			AdminToken:   adminToken,
+			Revocations:  store,
+		})
+		srv := httptest.NewServer(gw.Handler())
+		defer srv.Close()
+
+		body, err := json.Marshal(RevokeRequest{JTI: "jti-never-expires"})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/__gateway/revoke", strings.NewReader(string(body)))
+		req.Header.Set("Authorization", "Bearer "+adminToken)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("Do: %v", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("status = %d, want 204", resp.StatusCode)
+		}
+
+		// Well past any plausible guessed default (24h, a week, ...).
+		clock = clock.Add(365 * 24 * time.Hour)
+
+		revoked, err := store.IsRevoked(context.Background(), "jti-never-expires")
+		if err != nil {
+			t.Fatalf("IsRevoked: %v", err)
+		}
+		if !revoked {
+			t.Error("jti-never-expires was un-revoked after 365 days — expires_at omitted must mean never-expires, not a guessed default window")
 		}
 	})
 }
