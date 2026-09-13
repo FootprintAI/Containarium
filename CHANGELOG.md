@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.78.1] - 2026-09-13
+
+Execution-scoped authorization: a skill run's credentials now die with the
+run. Supersedes burned v0.78.0 — that tag's `release.yml` build failed its
+own version/changelog check (this entry and the version-constant bump are
+the fix); its other three publish workflows had already gone out under
+`v0.78.0` by the time the check caught it, so that tag stays and this one
+carries the release. Design: `docs/architecture/execution-scoped-authorization.md`
+and PRD: `docs/product/execution-scoped-authorization.md`, both in
+FootprintAI/Containarium-cloud.
+
+### Added
+
+- **`RunAgentSkill` holds a credential lease for every run and ends it on
+  exit.** Both the delegated platform JWT and the model-gateway token
+  minted for a skill run are revoked and wiped from the box the moment the
+  run returns — on success, on an agent error, and on a cancelled caller
+  alike — instead of living out their full 30-minute TTL after the run has
+  already finished. (#1826)
+- `RunAgentSkillRequest`/`Response` and `StartAgentWorkerResponse` carry a
+  `run_id` — caller-supplied or generated — bound into both credential
+  types' claims, so a leaked or misused token can be traced back to the
+  run that minted it. (#1824, #1826)
+- `internal/runlease`: the reusable primitive behind the lease — revoke
+  every credential, then wipe the seed files, with per-step timeouts and a
+  measured worst case. (#1823)
+- `containarium audit query --run-id <id>` finds a run's
+  `agent.run_lease_issue` / `agent.run_lease_end` audit rows. (#1825)
+- `model-gateway`: an in-memory revocation store and an opt-in
+  `POST /__gateway/revoke` admin endpoint, so the gateway can run and
+  revoke tokens standalone, without the daemon's Postgres-backed store.
+  Published as its own image, `ghcr.io/footprintai/containarium-model-gateway`.
+  (#1827)
+- `scripts/agent-skill-lease-e2e.sh`, wired into `cluster-e2e.yml`: proves
+  in CI that a run's gateway token is refused within milliseconds of the
+  run returning (measured 9–18ms against a 5000ms budget), and fails red
+  if a run's credentials are ever left unrevoked or revoked too late.
+  (#1828)
+
 ## [0.77.0] - 2026-09-13
 
 ### Added
