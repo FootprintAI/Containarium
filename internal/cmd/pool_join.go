@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/footprintai/containarium/internal/cloud"
+	"github.com/footprintai/containarium/internal/hostcheck"
 )
 
 // pool join — the turnkey, one-command path that turns a fresh Linux host
@@ -445,6 +446,12 @@ func runPoolJoin(cmd *cobra.Command, args []string) error {
 	if failed := printDoctor(hostDoctorChecks()); failed > 0 {
 		return fmt.Errorf("pool join: %d required capability check(s) FAILED — units were installed but this host is NOT a healthy pool member yet; fix the above and re-run", failed)
 	}
+
+	// Host security posture (#1103) — printed loudly at the moment this host
+	// joins the pool, not just discoverable later via a separate `doctor` run
+	// or the cloud webui. Advisory only, same as `doctor`: it does not block
+	// the join.
+	printPosture(hostcheck.RunPosture())
 
 	// 5b. Verify the tunnel handshake was actually ACCEPTED before claiming
 	// the host joined (#1051). Everything above is host-side: units enabled,
