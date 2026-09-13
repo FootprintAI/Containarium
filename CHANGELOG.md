@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.79.0] - 2026-09-13
+
+Credential-less, tenant-encrypted database backups for multi-tenant fleets.
+
 ### Added
 
 - **Credential-less backup hook + user-held dump encryption** (#1831).
