@@ -94,7 +94,7 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 	// mistake and should fail fast, without a round trip.
 	var ageIdentity string
 	if backupRestoreAgeIdentityFile != "" {
-		content, err := os.ReadFile(backupRestoreAgeIdentityFile)
+		content, err := os.ReadFile(backupRestoreAgeIdentityFile) // #nosec G304 -- operator-named identity file, read on the operator's own machine
 		if err != nil {
 			return fmt.Errorf("read age identity file: %w", err)
 		}
