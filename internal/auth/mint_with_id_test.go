@@ -40,11 +40,13 @@ func decodeJWTPayload(t *testing.T, tok string) map[string]any {
 // `type MintedID = tokenid.MintedID`, not a distinct defined type — a
 // distinct type would require an explicit conversion here.
 func TestMintedID_IsTypeAliasForTokenid(t *testing.T) {
-	var fromTokenid tokenid.MintedID = tokenid.MintedID{JTI: "x", ExpiresAt: time.Unix(0, 0)}
-	var viaAlias MintedID = fromTokenid
-	var backToTokenid tokenid.MintedID = viaAlias
-	if backToTokenid.JTI != "x" {
-		t.Fatalf("round trip through the alias lost data: %+v", backToTokenid)
+	// A function typed in terms of the alias, fed a tokenid.MintedID value
+	// and returning one, with no conversion anywhere in between — only
+	// compiles if MintedID and tokenid.MintedID are the identical type.
+	roundTrip := func(m MintedID) tokenid.MintedID { return m }
+	got := roundTrip(tokenid.MintedID{JTI: "x", ExpiresAt: time.Unix(0, 0)})
+	if got.JTI != "x" {
+		t.Fatalf("round trip through the alias lost data: %+v", got)
 	}
 }
 
@@ -71,7 +73,7 @@ func TestGenerateDelegatedTokenWithID_ReturnsJTIMatchingClaims(t *testing.T) {
 	}
 	// JWT numeric dates are whole seconds (RFC 7519 §2), so compare at second
 	// precision rather than requiring exact nanosecond equality.
-	if claims.ExpiresAt.Time.Unix() != id.ExpiresAt.Unix() {
+	if claims.ExpiresAt.Unix() != id.ExpiresAt.Unix() {
 		t.Errorf("claims.ExpiresAt = %v, want MintedID.ExpiresAt %v", claims.ExpiresAt.Time, id.ExpiresAt)
 	}
 }

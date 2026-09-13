@@ -33,7 +33,7 @@ func TestMintTokenWithID_RoundTrips(t *testing.T) {
 	}
 	// JWT numeric dates are whole seconds (RFC 7519 §2), so compare at second
 	// precision rather than requiring exact nanosecond equality.
-	if claims.ExpiresAt.Time.Unix() != id.ExpiresAt.Unix() {
+	if claims.ExpiresAt.Unix() != id.ExpiresAt.Unix() {
 		t.Errorf("claims.ExpiresAt = %v, want MintedID.ExpiresAt %v", claims.ExpiresAt.Time, id.ExpiresAt)
 	}
 	if claims.RunID != "run-1" {
