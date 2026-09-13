@@ -17,7 +17,7 @@ import (
 // backup needs no operator present to pass --age-recipient on every run.
 // The matching PRIVATE identity must never be registered here, and never
 // touches the platform — see docs/DB-BACKUP-OPERATIONS.md.
-const backupAgeRecipientSecretName = "CONTAINARIUM_BACKUP_AGE_RECIPIENT"
+const backupAgeRecipientSecretName = "CONTAINARIUM_BACKUP_AGE_RECIPIENT" // #nosec G101 -- secret NAME, not a credential value
 
 // secretsReader is the subset of *secrets.Store CreateBackup needs to
 // resolve a tenant's registered recipient. A narrow interface — not the
