@@ -46,7 +46,25 @@ jobs:
         # needs the buf CLI. Ubuntu runners don't have it preinstalled.
         # The .pb.go files are already committed, but the dep chain
         # still triggers buf generate; installing it satisfies that.
-        run: go install github.com/bufbuild/buf/cmd/buf@latest
+        #
+        # Pinned release BINARY, not `go install .../buf@latest`: buf's
+        # own go.mod tracks current Go releases closely (e.g. v1.73.0
+        # requires go >= 1.26.7), so `@latest` silently breaks this step
+        # the day upstream bumps past whatever Go version this repo's
+        # workflows pin — with no code change on our side to explain it
+        # (caught rehearsing the v0.77.0 release build, 2026-09-13).
+        # A pinned binary download has no such dependency on the runner's
+        # Go toolchain at all. Bump BUF_VERSION deliberately, not via a
+        # moving target.
+        run: |
+          set -euo pipefail
+          BUF_VERSION=1.72.0
+          BUF_SHA256=8720830e26a733da55bb89bcd3cb44849c0965fc0c44fb5d691cccdc64dca5af
+          curl -sSL -o /usr/local/bin/buf \
+            "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-x86_64"
+          echo "${BUF_SHA256}  /usr/local/bin/buf" | sha256sum -c -
+          chmod +x /usr/local/bin/buf
+          buf --version
 
       - name: Get version
         id: get_version
@@ -422,7 +440,17 @@ jobs:
           go-version: '1.26.6'
 
       - name: Install buf
-        run: go install github.com/bufbuild/buf/cmd/buf@latest
+        # Pinned release binary — see the build-and-release job's "Install
+        # buf" step for why this isn't `go install .../buf@latest`.
+        run: |
+          set -euo pipefail
+          BUF_VERSION=1.72.0
+          BUF_SHA256=8720830e26a733da55bb89bcd3cb44849c0965fc0c44fb5d691cccdc64dca5af
+          curl -sSL -o /usr/local/bin/buf \
+            "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-x86_64"
+          echo "${BUF_SHA256}  /usr/local/bin/buf" | sha256sum -c -
+          chmod +x /usr/local/bin/buf
+          buf --version
 
       - name: Install apt-rdepends
         # Needed by scripts/bundle/download-deps.sh to resolve transitive
