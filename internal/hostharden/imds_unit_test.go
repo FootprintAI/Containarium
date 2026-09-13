@@ -16,7 +16,7 @@ func TestInstallPersistentUnit(t *testing.T) {
 		"systemctl enable --now containarium-imds-block.service": {},
 	})
 
-	if err := installPersistentUnit(run, unitPath, "/usr/local/bin/containarium", "incusbr0"); err != nil {
+	if err := installPersistentUnit(run, unitPath, "/usr/local/bin/containariumd", "incusbr0"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -26,7 +26,7 @@ func TestInstallPersistentUnit(t *testing.T) {
 	}
 	unit := string(data)
 	for _, want := range []string{
-		"ExecStart=/usr/local/bin/containarium hostharden block-metadata incusbr0",
+		"ExecStart=/usr/local/bin/containariumd hostharden block-metadata incusbr0",
 		"[Install]",
 		"WantedBy=multi-user.target",
 	} {
@@ -48,7 +48,7 @@ func TestInstallPersistentUnit_DaemonReloadFails(t *testing.T) {
 		"systemctl daemon-reload": {out: "permission denied", err: os.ErrPermission},
 	})
 
-	if err := installPersistentUnit(run, unitPath, "/usr/local/bin/containarium", "incusbr0"); err == nil {
+	if err := installPersistentUnit(run, unitPath, "/usr/local/bin/containariumd", "incusbr0"); err == nil {
 		t.Fatal("expected an error")
 	}
 }
