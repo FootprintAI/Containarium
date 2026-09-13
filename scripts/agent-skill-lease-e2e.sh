@@ -40,6 +40,28 @@
 # rather than a race it hopes to win. The design's phrase "read from gateway.env
 # during the run" is exactly this.
 #
+# WHAT THE 5 s BUDGET IS AND IS NOT MEASURING — read this before tuning it.
+# `endRunLease` is a `defer` INSIDE RunAgentSkill (internal/server/agent_server.go),
+# so both revokes and the agent.run_lease_end audit write have already completed
+# by the time the HTTP response is written. EXIT_MS is therefore taken when the
+# revocation is ALREADY durable in Postgres, and the ~10-20 ms this lane observes
+# is one local HTTP round-trip — it is NOT the design's 2 s + 2 s + 3 s worst
+# case, which is absorbed inside the run's own duration and never appears in this
+# window at all.
+#
+# So assertion 2 is, structurally, a did-it-happen-at-all check wearing a
+# duration's clothes, and that is fine: the PRD states a bound, this measures the
+# bound, and the sabotage below proves the assertion discriminates. Two
+# consequences follow, and both are deliberate:
+#   - enforcing the bound STRICTLY is safe, because the expected value is three
+#     orders of magnitude under it. A measurement anywhere near 5 s means
+#     something structural changed (revocation moved off the synchronous path,
+#     Postgres is wedged, the gateway grew a cache) and is worth a red lane.
+#   - the ONLY way a healthy run can produce a near-budget number is a poll
+#     request that straddles the deadline, which is why POLL_MAX_TIME is small
+#     and why the budget is checked against the MEASUREMENT rather than only
+#     used as the poll loop's continuation condition.
+#
 # WHY A WARM-UP RUN FIRST. The stub can only be installed into a box that
 # exists, and the box is created by the first run of the skill. So the script
 # runs the skill once (its own run id, its own lease, fully revoked and wiped on
@@ -62,14 +84,26 @@
 #   sudo -v && bash scripts/agent-skill-lease-e2e.sh
 #
 # Prove-it-can-fail (the #1819 acceptance criterion, and the #1418 guardrail
-# this repo applies to every e2e lane):
+# this repo applies to every e2e lane). TWO sabotages, because assertion 2 makes
+# two separate claims and a lane should be able to fail each of them on demand:
+#
 #   CONTAINARIUM_E2E_SABOTAGE=no-revoke bash scripts/agent-skill-lease-e2e.sh
-# Expected to exit NON-ZERO on assertion 2. The sabotage deletes the run_exit
-# rows the daemon just wrote to jwt_revocations, which leaves the system in
-# exactly the state a missing revoke call produces — the gateway's lookup finds
-# no row and answers the way it did before #1817. Assertions 1, 3 and 4 stay
-# green, so the red is attributable to the revoke and nothing else. The
-# workflow's prove-lease-lane-can-fail job asserts the non-zero exit.
+# "the credential is dead". Deletes the run_exit rows the daemon just wrote to
+# jwt_revocations, which leaves the system in exactly the state a missing revoke
+# call produces — the gateway's lookup finds no row and answers the way it did
+# before #1817. Assertions 1, 3 and 4 stay green, so the red is attributable to
+# the revoke and nothing else.
+#
+#   CONTAINARIUM_E2E_SABOTAGE=slow-revoke bash scripts/agent-skill-lease-e2e.sh
+# "and it is dead WITHIN THE BUDGET". Delays the first poll past the budget, so
+# the token really is revoked and the observation really is late. This exists
+# because the budget was once only the poll loop's continuation condition and
+# never a gate on the measurement, which let a straddling request report
+# "token DEAD 6009ms … (budget 5000ms)" and exit 0. Now it exits non-zero, and
+# this sabotage is how that stays true.
+#
+# Both are expected to exit NON-ZERO on assertion 2; the workflow's
+# prove-lease-lane-can-fail job asserts it.
 #
 # Host requirements:
 #   - Incus with a usable storage pool at /var/lib/incus/unix.socket. No KVM:
@@ -105,9 +139,32 @@ SKILL_ID="${CONTAINARIUM_E2E_LEASE_SKILL:-hello-agent}"
 # revocation look faster than it is.
 RUN_SECONDS="${CONTAINARIUM_E2E_LEASE_RUN_SECONDS:-20}"
 
-# The PRD's headline metric, in milliseconds. Assertion 2 fails if the token is
-# still accepted after this long past the RPC returning.
+# The PRD's headline metric, in milliseconds. Assertion 2 fails if the token was
+# not OBSERVED revoked within this long past the RPC returning — see the header's
+# "WHAT THE 5 s BUDGET IS AND IS NOT MEASURING".
 REVOKE_BUDGET_MS="${CONTAINARIUM_E2E_LEASE_REVOKE_BUDGET_MS:-5000}"
+
+# Assertion 2 keeps polling for this much longer than the budget before giving
+# up. The extra time never buys a PASS — the gate is the budget — it buys a
+# better FAILURE: "dead, but only after 6009ms" names what went wrong, where
+# "never seen dead within 5000ms" leaves the reader unable to tell a late
+# revocation from an absent one.
+POLL_GRACE_MS="${CONTAINARIUM_E2E_LEASE_POLL_GRACE_MS:-10000}"
+
+# Per-request ceilings, in seconds.
+#
+# MODEL_CALL_MAX_TIME is for assertion 1, the ONE call in this script that
+# actually reaches the provider (every post-revocation poll short-circuits inside
+# the gateway), so it has to tolerate a runner that cannot reach the provider at
+# all and must wait out a connect timeout.
+#
+# POLL_MAX_TIME is deliberately much smaller, and that is a correctness
+# property, not a tuning preference: assertion 2's measurement is only as tight
+# as the request that produced it, so a poll started just inside the budget with
+# a 15 s ceiling could only ever return an over-budget observation. Small enough
+# that a straddle is bounded; the gate after the loop catches one anyway.
+MODEL_CALL_MAX_TIME="${CONTAINARIUM_E2E_LEASE_MODEL_MAX_TIME:-15}"
+POLL_MAX_TIME="${CONTAINARIUM_E2E_LEASE_POLL_MAX_TIME:-3}"
 
 SABOTAGE="${CONTAINARIUM_E2E_SABOTAGE:-}"
 
@@ -142,8 +199,8 @@ command -v curl >/dev/null || fail "no curl"
 command -v jq >/dev/null || fail "no jq (the RPC response is JSON and this script asserts on its fields)"
 sudo -n true 2>/dev/null || fail "needs passwordless sudo (daemon and Incus operations run as root)"
 case "$SABOTAGE" in
-  ''|no-revoke) ;;
-  *) fail "unknown CONTAINARIUM_E2E_SABOTAGE=$SABOTAGE (want empty or 'no-revoke')" ;;
+  ''|no-revoke|slow-revoke) ;;
+  *) fail "unknown CONTAINARIUM_E2E_SABOTAGE=$SABOTAGE (want empty, 'no-revoke' or 'slow-revoke')" ;;
 esac
 
 cleanup() {
@@ -262,7 +319,13 @@ sudo env \
   >"$DAEMON_LOG" 2>&1 &
 DAEMON_PID=$!
 
-DAEMON_WAIT_TRIES="${CONTAINARIUM_E2E_LEASE_DAEMON_WAIT_TRIES:-180}"
+# 300 tries x 2s = 10 minutes. Most of that is the daemon's own "Waiting for
+# core containers to be ready…", measured at ~2 minutes on a host with the image
+# ALREADY cached; a freshly provisioned CI runner also pulls the image and
+# creates those containers first. The old 6-minute bound was within a factor of
+# two of that, and when it trips the lane reports "daemon HTTP gateway not
+# answering", which reads like a daemon bug rather than a cold host.
+DAEMON_WAIT_TRIES="${CONTAINARIUM_E2E_LEASE_DAEMON_WAIT_TRIES:-300}"
 log "waiting for the daemon's HTTP gateway (up to $((DAEMON_WAIT_TRIES * 2))s)"
 for i in $(seq 1 "$DAEMON_WAIT_TRIES"); do
   if ! sudo kill -0 "$DAEMON_PID" 2>/dev/null; then
@@ -301,11 +364,33 @@ TOKEN="$("$BIN" token generate --username lease-e2e --roles admin --scopes '*' \
   --expiry 1h --secret "$JWT_SECRET" --raw)"
 [ -n "$TOKEN" ] || fail "could not mint a caller token"
 
+# read_out reads one of the curl output files above WITHOUT being able to kill
+# the script before the assertion that was going to interpret it.
+#
+# This is not defensive noise, it is the fix for a real hole: curl does NOT
+# create its `-o` file when the connection never happens ("Failed to connect"),
+# so a plain `body="$(cat "$out.body")"` dies under `set -euo pipefail` at the
+# READ, before the guard written to diagnose exactly that case can run. The
+# operator then sees `cat: …/during.body: No such file or directory` instead of
+# a named assertion failure. Missing file ⇒ empty, and the caller decides what
+# that means.
+read_out() { cat "$1" 2>/dev/null || true; }
+
+# read_code is read_out for a `-w '%{http_code}'` file, normalising "no file"
+# and "no response" to the same 000 curl itself would have written.
+read_code() {
+  local c
+  c="$(read_out "$1")"
+  [ -n "$c" ] || c="000"
+  printf '%s' "$c"
+}
+
 # run_skill POSTs RunAgentSkill with an explicit run id and writes the HTTP
 # status to <out>.code and the body to <out>.body. Synchronous by nature — the
 # caller decides whether to background it.
 run_skill() {
   local run_id="$1" out="$2"
+  : >"$out.body"
   curl -sS -o "$out.body" -w '%{http_code}' \
     -X POST "http://127.0.0.1:$HTTP_PORT/v1/agent-skills/$SKILL_ID/run" \
     -H "Authorization: Bearer $TOKEN" \
@@ -317,9 +402,14 @@ run_skill() {
 # model_call presents a gateway token to /v1/model/<provider> and writes the
 # status to <out>.code, the body to <out>.body. The request is a real
 # provider-shaped call so nothing short-circuits before the revocation check.
+#
+# The ceiling is a PARAMETER because the two call sites need different ones, and
+# the difference is load-bearing for assertion 2's measurement — see
+# POLL_MAX_TIME below.
 model_call() {
-  local token="$1" out="$2"
-  curl -sS -o "$out.body" -w '%{http_code}' --max-time 15 \
+  local token="$1" out="$2" max_time="${3:-$MODEL_CALL_MAX_TIME}"
+  : >"$out.body"
+  curl -sS -o "$out.body" -w '%{http_code}' --max-time "$max_time" \
     -X POST "http://127.0.0.1:$HTTP_PORT/v1/model/$PROVIDER/v1/messages" \
     -H "Authorization: Bearer $token" \
     -H 'Content-Type: application/json' \
@@ -335,9 +425,9 @@ model_call() {
 log "warm-up run (provisions the box; the agent-runtime recipe installs Node, this is the slow part)"
 WARM_RUN_ID="lease-e2e-warmup-$$"
 run_skill "$WARM_RUN_ID" "$WORKDIR/warm"
-warm_code="$(cat "$WORKDIR/warm.code")"
+warm_code="$(read_code "$WORKDIR/warm.code")"
 if [ "$warm_code" != "200" ]; then
-  echo "---- warm-up response ----"; cat "$WORKDIR/warm.body"; echo
+  echo "---- warm-up response ----"; read_out "$WORKDIR/warm.body"; echo
   fail "warm-up RunAgentSkill returned $warm_code (want 200); the box never came up, so there is nothing to measure"
 fi
 sudo incus info "$BOX" >/dev/null 2>&1 || fail "skill box $BOX does not exist after a successful run"
@@ -346,12 +436,25 @@ ok "skill box $BOX provisioned (warm-up run $WARM_RUN_ID)"
 # The stub. /usr/local/bin comes first on the box's PATH, so this is the
 # agent-runtime the daemon's `bash -lc ... agent-runtime` resolves — whether or
 # not the recipe's best-effort assembly installed a real one.
+#
+# The marker line is not decoration. scripts/install-agent-runtime.sh writes this
+# same path, and on a host where the recipe's post_start succeeds it really does
+# install a working agent-runtime that this overwrites. The warm-up RPC blocks
+# until post_start finishes, so there is no clobber race today — but that is an
+# implementation detail of `deploy`, not a contract. If it ever changes, the
+# recipe wins, the measured run ends in milliseconds, and the gateway.env poll
+# below reports "the run finished before gateway.env could be read; raise
+# RUN_SECONDS" — a confident wrong diagnosis. Grepping for the marker right
+# before the measured run turns that into the truth instead.
+STUB_MARKER="containarium-lease-e2e-stub"
 log "installing the stub agent-runtime (sleep ${RUN_SECONDS}s) into $BOX"
 sudo incus exec "$BOX" -- bash -c \
-  "printf '#!/bin/sh\nexec sleep %s\n' '$RUN_SECONDS' > /usr/local/bin/agent-runtime && chmod 0755 /usr/local/bin/agent-runtime"
+  "printf '#!/bin/sh\n# %s\nexec sleep %s\n' '$STUB_MARKER' '$RUN_SECONDS' > /usr/local/bin/agent-runtime && chmod 0755 /usr/local/bin/agent-runtime"
 sudo incus exec "$BOX" -- test -x /usr/local/bin/agent-runtime \
   || fail "stub agent-runtime was not installed into $BOX"
-ok "stub agent-runtime installed (the measured run will last ~${RUN_SECONDS}s)"
+sudo incus exec "$BOX" -- grep -q "$STUB_MARKER" /usr/local/bin/agent-runtime \
+  || fail "/usr/local/bin/agent-runtime in $BOX is not this script's stub — something else (the agent-runtime recipe's install-agent-runtime.sh writes the same path) owns it, so the measured run would not last long enough to observe"
+ok "stub agent-runtime installed and verified by marker (the measured run will last ~${RUN_SECONDS}s)"
 
 # The warm-up's own lease must already be gone; if the seed files are still
 # there, the measured run's "these files appeared" poll below would latch onto
@@ -387,23 +490,33 @@ ok "read the run's gateway token from $SEED_DIR/gateway.env during the run (${#G
 
 # --- assertion 1: accepted during the run --------------------------------
 model_call "$GW_TOKEN" "$WORKDIR/during"
-during_code="$(cat "$WORKDIR/during.code")"
-during_body="$(cat "$WORKDIR/during.body")"
+during_code="$(read_code "$WORKDIR/during.code")"
+during_body="$(read_out "$WORKDIR/during.body")"
 # The gateway must have ANSWERED. curl reports 000 when it never got an HTTP
 # response at all (connection refused, --max-time reached), and the body is then
-# empty — which matches none of the rejection patterns below, so without this
-# check the assertion would pass on a call that never reached the gateway.
+# empty — or, on a refused connection, not written at all, which is why both
+# reads above go through the read_out helpers. Without this check the assertion
+# would pass on a call that never reached the gateway.
 #
 # The same hole cannot exist in assertion 2: there a missing response simply
 # never says "gateway token revoked", so the budget runs out and the lane goes
 # red. Vacuous passes only ever hide in the assertion that accepts by default.
 if ! printf '%s' "$during_code" | grep -qE '^[1-5][0-9][0-9]$'; then
-  echo "---- curl stderr ----"; cat "$WORKDIR/during.err" 2>/dev/null
+  echo "---- curl stderr ----"; read_out "$WORKDIR/during.err"
   fail "assertion 1: /v1/model/$PROVIDER returned no HTTP response (curl wrote status '$during_code') — the gateway never answered, so nothing was proved about the credential"
 fi
 case "$during_body" in
   *"gateway token revoked"*)
-    fail "assertion 1: the gateway rejected the run's own token DURING the run as revoked — the lease was ended too early" ;;
+    # Two very different causes, and naming the wrong one sends the next reader
+    # hunting a daemon bug that does not exist. This is the only call in the
+    # script that reaches the provider, so on a runner with no egress it can burn
+    # MODEL_CALL_MAX_TIME seconds of a RUN_SECONDS window; if the run is already
+    # over, the token is legitimately revoked and the observation is simply too
+    # late. Ask the run whether it is still alive before blaming the daemon.
+    if ! kill -0 "$RUN_PID" 2>/dev/null; then
+      fail "assertion 1: the observation window closed before the model call returned — the run had already ended (and correctly revoked) by the time the gateway answered, so this says nothing about the lease. Raise CONTAINARIUM_E2E_LEASE_RUN_SECONDS (currently ${RUN_SECONDS}s) or lower CONTAINARIUM_E2E_LEASE_MODEL_MAX_TIME (currently ${MODEL_CALL_MAX_TIME}s)"
+    fi
+    fail "assertion 1: the gateway rejected the run's own token DURING the run as revoked, while the run is STILL RUNNING — the lease was ended too early" ;;
   *"invalid gateway token"*|*"missing gateway token"*|*"token not valid for provider"*|*"unknown provider"*|*"missing provider in path"*)
     fail "assertion 1: the gateway refused the credential for a reason unrelated to revocation ($during_code: $during_body) — the later 401 would prove nothing" ;;
 esac
@@ -413,9 +526,9 @@ echo "     (upstream said: $(printf '%s' "$during_body" | head -c 160 | tr '\n' 
 # --- wait for the run to return ------------------------------------------
 wait "$RUN_PID" || true
 EXIT_MS="$(now_ms)"
-run_code="$(cat "$WORKDIR/run.code")"
+run_code="$(read_code "$WORKDIR/run.code")"
 if [ "$run_code" != "200" ]; then
-  echo "---- run response ----"; cat "$WORKDIR/run.body"; echo
+  echo "---- run response ----"; read_out "$WORKDIR/run.body"; echo
   fail "measured RunAgentSkill returned $run_code (want 200)"
 fi
 echoed_run_id="$(jq -r '.runId // empty' <"$WORKDIR/run.body")"
@@ -423,40 +536,72 @@ echoed_run_id="$(jq -r '.runId // empty' <"$WORKDIR/run.body")"
   || fail "RunAgentSkillResponse.run_id was '$echoed_run_id', want '$RUN_ID' — the run this script measures is not the run the daemon leased"
 ok "run $RUN_ID returned 200 and echoed its run id"
 
-if [ "$SABOTAGE" = no-revoke ]; then
-  # Put the system in the state a missing revoke call produces: the rows the
-  # run just wrote are removed, so the gateway's lookup finds nothing. Exactly
-  # what #1817 added, undone at the only place it is observable.
-  deleted="$(psql_in_pg "DELETE FROM jwt_revocations WHERE reason = 'run_exit' RETURNING jti;" | wc -l)"
-  echo "SABOTAGE: deleted $deleted run_exit revocation row(s) — assertion 2 must now go RED"
-fi
+case "$SABOTAGE" in
+  no-revoke)
+    # Put the system in the state a missing revoke call produces: the rows the
+    # run just wrote are removed, so the gateway's lookup finds nothing. Exactly
+    # what #1817 added, undone at the only place it is observable.
+    deleted="$(psql_in_pg "DELETE FROM jwt_revocations WHERE reason = 'run_exit' RETURNING jti;" | wc -l)"
+    # Self-checking: a DELETE that matched nothing would leave the lane GREEN and
+    # make prove-lease-lane-can-fail report "the lane cannot fail", when the truth
+    # is that the sabotage misfired. Those two must never look alike.
+    [ "$deleted" -gt 0 ] \
+      || fail "SABOTAGE no-revoke deleted 0 rows from jwt_revocations — the sabotage misfired, so a green lane below would prove nothing either way"
+    echo "SABOTAGE: deleted $deleted run_exit revocation row(s) — assertion 2 must now go RED"
+    ;;
+  slow-revoke)
+    # The revocation really happened; the OBSERVATION is made late on purpose.
+    # This is the scenario that used to pass: the budget was only the poll loop's
+    # continuation condition, so a late-but-successful observation printed
+    # "token DEAD <over-budget>ms … (budget 5000ms)" and exited 0.
+    slow_ms=$(( REVOKE_BUDGET_MS + 1000 ))
+    echo "SABOTAGE: sleeping ${slow_ms}ms before the first poll so the revoked answer lands PAST the ${REVOKE_BUDGET_MS}ms budget — assertion 2 must now go RED on the budget, not on the revocation"
+    sleep "$(awk "BEGIN{printf \"%.3f\", $slow_ms/1000}")"
+    ;;
+esac
 
 # --- assertion 2: dead within the budget ---------------------------------
-log "polling /v1/model/$PROVIDER with the run's token until it is refused as revoked (budget ${REVOKE_BUDGET_MS}ms from run exit)"
+# Two claims, both enforced: the token IS refused as revoked, and it is refused
+# WITHIN the budget. The loop finds the first; the gate after it enforces the
+# second. Keeping those separate is the whole point — the budget used to be only
+# this loop's continuation condition, checked after the body match, so a single
+# poll that started inside the budget and returned outside it would set
+# revoked_at_ms, break, and be reported as a PASS at any duration.
+log "polling /v1/model/$PROVIDER with the run's token until it is refused as revoked (budget ${REVOKE_BUDGET_MS}ms from run exit, polling up to $(( REVOKE_BUDGET_MS + POLL_GRACE_MS ))ms so a late answer can be reported as late)"
 revoked_at_ms=""
 last_code=""
 last_body=""
 while :; do
-  model_call "$GW_TOKEN" "$WORKDIR/after"
-  last_code="$(cat "$WORKDIR/after.code")"
-  last_body="$(cat "$WORKDIR/after.body")"
+  model_call "$GW_TOKEN" "$WORKDIR/after" "$POLL_MAX_TIME"
+  last_code="$(read_code "$WORKDIR/after.code")"
+  last_body="$(read_out "$WORKDIR/after.body")"
   case "$last_body" in
     *"gateway token revoked"*)
       revoked_at_ms="$(now_ms)"
       break ;;
   esac
-  if [ "$(( $(now_ms) - EXIT_MS ))" -ge "$REVOKE_BUDGET_MS" ]; then
+  # Stop polling at budget+grace. Crossing the BUDGET is not a reason to stop:
+  # the extra window exists so a late revocation is reported as late rather than
+  # as absent. It can never turn into a pass — the gate below is the budget.
+  if [ "$(( $(now_ms) - EXIT_MS ))" -ge "$(( REVOKE_BUDGET_MS + POLL_GRACE_MS ))" ]; then
     break
   fi
   sleep 0.2
 done
 
 if [ -z "$revoked_at_ms" ]; then
-  fail "assertion 2: ${REVOKE_BUDGET_MS}ms after the run returned, the run's gateway token is STILL accepted (last answer $last_code: $(printf '%s' "$last_body" | head -c 160 | tr '\n' ' ')) — the credential outlived its run"
+  fail "assertion 2: $(( REVOKE_BUDGET_MS + POLL_GRACE_MS ))ms after the run returned, the run's gateway token is STILL accepted (last answer $last_code: $(printf '%s' "$last_body" | head -c 160 | tr '\n' ' ')) — the credential outlived its run"
 fi
+revoked_after_ms=$(( revoked_at_ms - EXIT_MS ))
+# THE GATE. #1819's criterion is the bound, so the bound is compared against the
+# MEASUREMENT, not merely used to decide how long to keep asking. Expected value
+# is ~10-20ms (the header explains why), so anything near the budget means
+# something structural changed and is worth a red lane.
+[ "$revoked_after_ms" -le "$REVOKE_BUDGET_MS" ] \
+  || fail "assertion 2: the run's gateway token WAS revoked, but it was only refused ${revoked_after_ms}ms after the run returned — past the ${REVOKE_BUDGET_MS}ms budget this lane exists to pin. The credential died, just not in time."
 [ "$last_code" = "401" ] \
   || fail "assertion 2: the body says 'gateway token revoked' but the status was $last_code, want 401"
-ok "assertion 2: token DEAD $(( revoked_at_ms - EXIT_MS ))ms after the run returned — 401 'gateway token revoked' (budget ${REVOKE_BUDGET_MS}ms)"
+ok "assertion 2: token DEAD ${revoked_after_ms}ms after the run returned — 401 'gateway token revoked' (budget ${REVOKE_BUDGET_MS}ms)"
 
 # --- assertion 3: the seed files are gone --------------------------------
 seed_ls="$(sudo incus exec "$BOX" -- ls -A "$SEED_DIR" 2>/dev/null || true)"
@@ -489,5 +634,5 @@ printf '%s\n' "$audit_out" | sed 's/^/     /'
 echo
 echo "PASS: a skill run's credentials died with the run."
 echo "      gateway token accepted during run $RUN_ID, 401 'gateway token revoked'"
-echo "      $(( revoked_at_ms - EXIT_MS ))ms after it returned (budget ${REVOKE_BUDGET_MS}ms), seed files wiped,"
+echo "      ${revoked_after_ms}ms after it returned (budget ${REVOKE_BUDGET_MS}ms), seed files wiped,"
 echo "      both lease rows queryable by run id."
