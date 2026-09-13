@@ -1,7 +1,10 @@
 package mcp
 
 import (
+	"bufio"
+	"bytes"
 	"fmt"
+	"os"
 	"strings"
 )
 
@@ -22,7 +25,12 @@ func backupTools() []Tool {
 				"backup directory (dest 'local') or a GCS bucket (dest 'gcs'). The " +
 				"point is off-host durability — a dump never shares a failure " +
 				"domain with the database it protects. Returns the backup ID, " +
-				"size, and SHA-256. Mirrors `containarium backup create`.",
+				"size, and SHA-256. Two opt-in options: 'hook' runs the tenant's " +
+				"own in-container program and stores its stdout instead of running " +
+				"pg_dump (no DB credential needed; the dump is opaque and not " +
+				"auto-restorable); 'age_recipient' encrypts the dump to a user-held " +
+				"age public key before storage, so the platform only holds " +
+				"ciphertext. Mirrors `containarium backup create`.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -51,8 +59,20 @@ func backupTools() []Tool {
 						"type":        "string",
 						"description": "Postgres password. Omit for peer/trust auth. Passed via PGPASSWORD inside the container, never on argv.",
 					},
+					"hook": map[string]interface{}{
+						"type":        "string",
+						"description": "Absolute path of an executable inside the container whose stdout is the dump. Bypasses pg_dump and the db_* fields; no credential crosses to the platform. Bare path, no arguments.",
+					},
+					"label": map[string]interface{}{
+						"type":        "string",
+						"description": "Label for a hook backup, used in the backup id (default: the hook's basename).",
+					},
+					"age_recipient": map[string]interface{}{
+						"type":        "string",
+						"description": "age public key (age1...) to encrypt the dump to before it is stored. Restore then requires the matching identity file, which the platform never holds.",
+					},
 				},
-				"required": []string{"username", "database"},
+				"required": []string{"username"},
 			},
 			Handler: handleCreateBackup,
 		},
@@ -93,6 +113,10 @@ func backupTools() []Tool {
 					"db_password": map[string]interface{}{
 						"type":        "string",
 						"description": "Postgres password. Omit for peer/trust auth.",
+					},
+					"age_identity_file": map[string]interface{}{
+						"type":        "string",
+						"description": "Path (on the MCP host) to the age identity file (AGE-SECRET-KEY-1...) for a backup created with age_recipient. Read from the file so the private key never appears in tool arguments; used for this one call, never stored.",
 					},
 				},
 				"required": []string{"id"},
@@ -146,12 +170,20 @@ func handleCreateBackup(client API, args map[string]interface{}) (string, error)
 		return "", fmt.Errorf("invalid dest %q (expected 'local' or 'gcs')", dest)
 	}
 
+	database := getStringArg(args, "database", "")
+	hook := getStringArg(args, "hook", "")
+	if database == "" && hook == "" {
+		return "", fmt.Errorf("either database or hook is required")
+	}
 	resp, err := client.CreateBackup(CreateBackupRequest{
-		Username:    getStringArg(args, "username", ""),
-		Destination: destEnum,
-		GCSBucket:   getStringArg(args, "gcs_bucket", ""),
+		Username:     getStringArg(args, "username", ""),
+		Destination:  destEnum,
+		GCSBucket:    getStringArg(args, "gcs_bucket", ""),
+		Hook:         hook,
+		Label:        getStringArg(args, "label", ""),
+		AgeRecipient: getStringArg(args, "age_recipient", ""),
 		Connection: &PgConnectionBody{
-			Database: getStringArg(args, "database", ""),
+			Database: database,
 			User:     getStringArg(args, "db_user", ""),
 			Password: getStringArg(args, "db_password", ""),
 		},
@@ -165,6 +197,12 @@ func handleCreateBackup(client API, args map[string]interface{}) (string, error)
 		out += fmt.Sprintf("Size:     %s bytes\n", r.SizeBytes)
 		out += fmt.Sprintf("SHA-256:  %s\n", r.SHA256)
 		out += fmt.Sprintf("Location: %s\n", r.Location)
+		if r.Hook != "" {
+			out += fmt.Sprintf("Hook:     %s (opaque dump; not auto-restorable)\n", r.Hook)
+		}
+		if r.Encrypted {
+			out += fmt.Sprintf("Encrypted: yes, to %s (restore needs the matching identity file)\n", r.AgeRecipient)
+		}
 	}
 	return out, nil
 }
@@ -187,9 +225,21 @@ func handleListBackups(client API, args map[string]interface{}) (string, error) 
 }
 
 func handleRestoreBackup(client API, args map[string]interface{}) (string, error) {
+	var ageIdentity string
+	if path := getStringArg(args, "age_identity_file", ""); path != "" {
+		content, err := os.ReadFile(path) // #nosec G304 -- operator-named identity file, read on the MCP host
+		if err != nil {
+			return "", fmt.Errorf("read age identity file: %w", err)
+		}
+		ageIdentity, err = parseAgeIdentityFile(content)
+		if err != nil {
+			return "", fmt.Errorf("%s: %w", path, err)
+		}
+	}
 	resp, err := client.RestoreBackup(RestoreBackupRequest{
-		ID:    getStringArg(args, "id", ""),
-		Clean: getBoolArg(args, "clean", false),
+		ID:          getStringArg(args, "id", ""),
+		Clean:       getBoolArg(args, "clean", false),
+		AgeIdentity: ageIdentity,
 		Connection: &PgConnectionBody{
 			Password: getStringArg(args, "db_password", ""),
 		},
@@ -248,5 +298,28 @@ func backupDestLabel(enumName string) string {
 		return "gcs"
 	default:
 		return enumName
+	}
+}
+
+// parseAgeIdentityFile extracts the single AGE-SECRET-KEY-1… line from an
+// `age-keygen` identity file (comment lines start with #). Same rule as the
+// CLI's --age-identity-file: exactly one identity, or it is a guess.
+func parseAgeIdentityFile(content []byte) (string, error) {
+	var keys []string
+	sc := bufio.NewScanner(bytes.NewReader(content))
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		keys = append(keys, line)
+	}
+	switch len(keys) {
+	case 0:
+		return "", fmt.Errorf("age identity file contains no identity (expected one AGE-SECRET-KEY-1... line)")
+	case 1:
+		return keys[0], nil
+	default:
+		return "", fmt.Errorf("age identity file contains %d identities; expected exactly one", len(keys))
 	}
 }

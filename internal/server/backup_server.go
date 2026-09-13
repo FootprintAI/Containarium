@@ -83,12 +83,16 @@ func (s *BackupServer) CreateBackup(ctx context.Context, req *pb.CreateBackupReq
 		Conn:          connFromProto(req.Connection),
 		Destination:   dest,
 		GCSBucket:     req.GcsBucket,
+		Hook:          req.Hook,
+		Label:         req.Label,
+		AgeRecipient:  req.AgeRecipient,
 	}
 
 	// Empty database → back up every non-template database found (#954),
 	// the default, no-guessing path. An explicit database keeps today's
-	// single-database behavior and response shape exactly as before.
-	if opts.Conn.Database == "" {
+	// single-database behavior and response shape exactly as before. A
+	// hook backup (#1831) names no database and runs exactly once.
+	if backupAllRequested(req) {
 		records, errs := s.mgr.CreateAll(opts)
 		if len(records) == 0 {
 			msg := "no databases were backed up"
@@ -199,6 +203,7 @@ func (s *BackupServer) RestoreBackup(ctx context.Context, req *pb.RestoreBackupR
 		ContainerName: info.Name,
 		Conn:          connFromProto(req.Connection),
 		Clean:         req.Clean,
+		AgeIdentity:   req.AgeIdentity, // per-call; never logged or stored (#1831)
 	}); err != nil {
 		return nil, status.Errorf(codes.Internal, "restore failed: %v", err)
 	}
@@ -304,6 +309,17 @@ func (s *BackupServer) DeleteBackup(ctx context.Context, req *pb.DeleteBackupReq
 	return &pb.DeleteBackupResponse{Message: "backup deleted: " + rec.ID}, nil
 }
 
+// backupAllRequested reports whether a create should fan out over every
+// database in the container (#954). That is the pg_dump path's default when
+// no database is named; a hook backup (#1831) has no database concept and
+// always runs exactly once.
+func backupAllRequested(req *pb.CreateBackupRequest) bool {
+	if req.Hook != "" {
+		return false
+	}
+	return req.Connection == nil || req.Connection.Database == ""
+}
+
 // --- proto <-> core mapping ---
 
 func destFromProto(d pb.BackupDestination) (backup.Destination, error) {
@@ -339,6 +355,8 @@ func engineToProto(engine string) pb.BackupEngine {
 	switch engine {
 	case backup.EnginePostgres:
 		return pb.BackupEngine_BACKUP_ENGINE_POSTGRES
+	case backup.EngineHook:
+		return pb.BackupEngine_BACKUP_ENGINE_HOOK
 	default:
 		return pb.BackupEngine_BACKUP_ENGINE_UNSPECIFIED
 	}
@@ -405,5 +423,9 @@ func recordToProto(r *backup.Record) *pb.BackupRecord {
 
 		LastVerification: verificationToProto(r.LastVerification),
 		RelationCount:    r.RelationCount,
+
+		Encrypted:    r.Encrypted,
+		AgeRecipient: r.AgeRecipient,
+		Hook:         r.Hook,
 	}
 }

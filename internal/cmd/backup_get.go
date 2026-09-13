@@ -37,5 +37,11 @@ func runBackupGet(cmd *cobra.Command, args []string) error {
 	fmt.Printf("SHA-256:     %s\n", r.Sha256)
 	fmt.Printf("Destination: %s\n", destLabel(r.Destination))
 	fmt.Printf("Location:    %s\n", r.Location)
+	if r.Hook != "" {
+		fmt.Printf("Hook:        %s\n", r.Hook)
+	}
+	if r.Encrypted {
+		fmt.Printf("Encrypted:   yes (age recipient %s; restore needs --age-identity-file)\n", r.AgeRecipient)
+	}
 	return nil
 }

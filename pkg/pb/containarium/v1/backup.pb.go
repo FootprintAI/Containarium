@@ -98,6 +98,12 @@ const (
 	// restore silently targets the wrong one.
 	BackupEngine_BACKUP_ENGINE_UNSPECIFIED BackupEngine = 0
 	BackupEngine_BACKUP_ENGINE_POSTGRES    BackupEngine = 1
+	// A dump produced by a tenant-supplied backup hook (#1831): an opaque
+	// byte stream the daemon captured from the hook's stdout. The daemon
+	// does not know its format, so a HOOK record can be listed, fetched,
+	// integrity-checked and deleted, but is never restored or restore-tested
+	// by the platform — apply it with the tenant's own tooling.
+	BackupEngine_BACKUP_ENGINE_HOOK BackupEngine = 2
 )
 
 // Enum value maps for BackupEngine.
@@ -105,10 +111,12 @@ var (
 	BackupEngine_name = map[int32]string{
 		0: "BACKUP_ENGINE_UNSPECIFIED",
 		1: "BACKUP_ENGINE_POSTGRES",
+		2: "BACKUP_ENGINE_HOOK",
 	}
 	BackupEngine_value = map[string]int32{
 		"BACKUP_ENGINE_UNSPECIFIED": 0,
 		"BACKUP_ENGINE_POSTGRES":    1,
+		"BACKUP_ENGINE_HOOK":        2,
 	}
 )
 
@@ -239,6 +247,19 @@ type BackupRecord struct {
 	// a valid dump. Unset means "no manifest": verification records what
 	// it found but has nothing to compare it to.
 	RelationCount *int64 `protobuf:"varint,11,opt,name=relation_count,json=relationCount,proto3,oneof" json:"relation_count,omitempty"`
+	// True when the stored bytes are an age ciphertext encrypted to a
+	// user-held key (#1831). size_bytes and sha256 then describe the
+	// ciphertext — what is actually stored — so integrity is verified
+	// before decryption. Restoring requires the matching identity, which
+	// the platform never holds.
+	Encrypted bool `protobuf:"varint,12,opt,name=encrypted,proto3" json:"encrypted,omitempty"`
+	// The age X25519 recipient ("age1…") the dump was encrypted to. A
+	// public key: safe to record, and tells the operator which identity
+	// can restore this backup. Empty when encrypted is false.
+	AgeRecipient string `protobuf:"bytes,13,opt,name=age_recipient,json=ageRecipient,proto3" json:"age_recipient,omitempty"`
+	// For BACKUP_ENGINE_HOOK: the absolute in-container path of the hook
+	// that produced the dump. Empty for pg_dump records.
+	Hook          string `protobuf:"bytes,14,opt,name=hook,proto3" json:"hook,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -348,6 +369,27 @@ func (x *BackupRecord) GetRelationCount() int64 {
 		return *x.RelationCount
 	}
 	return 0
+}
+
+func (x *BackupRecord) GetEncrypted() bool {
+	if x != nil {
+		return x.Encrypted
+	}
+	return false
+}
+
+func (x *BackupRecord) GetAgeRecipient() string {
+	if x != nil {
+		return x.AgeRecipient
+	}
+	return ""
+}
+
+func (x *BackupRecord) GetHook() string {
+	if x != nil {
+		return x.Hook
+	}
+	return ""
 }
 
 // VerificationCheck is one engine-appropriate assertion made during a
@@ -642,8 +684,27 @@ type CreateBackupRequest struct {
 	// Where to store the dump.
 	Destination BackupDestination `protobuf:"varint,3,opt,name=destination,proto3,enum=containarium.v1.BackupDestination" json:"destination,omitempty"`
 	// For GCS: the destination bucket/prefix, e.g. "gs://my-backups/pg".
-	// Ignored for LOCAL. The object key is appended as "<id>.dump".
-	GcsBucket     string `protobuf:"bytes,4,opt,name=gcs_bucket,json=gcsBucket,proto3" json:"gcs_bucket,omitempty"`
+	// Ignored for LOCAL. The object key is appended as "<id>.dump"
+	// ("<id>.dump.age" when age_recipient is set).
+	GcsBucket string `protobuf:"bytes,4,opt,name=gcs_bucket,json=gcsBucket,proto3" json:"gcs_bucket,omitempty"`
+	// Credential-less backup (#1831): the absolute path of an executable
+	// INSIDE the tenant's container whose stdout is the dump. When set, the
+	// pg_dump path and `connection` are bypassed entirely — the hook reaches
+	// its database under the container's own auth, so no credential crosses
+	// to the platform. Must be a bare absolute path with no arguments. The
+	// resulting record has engine BACKUP_ENGINE_HOOK and is opaque to the
+	// platform (stored, listed, fetched, never auto-restored).
+	Hook string `protobuf:"bytes,5,opt,name=hook,proto3" json:"hook,omitempty"`
+	// Optional label for a hook backup, filling the record's `database`
+	// slot and the backup id (default: the hook's basename). Ignored
+	// without `hook`.
+	Label string `protobuf:"bytes,6,opt,name=label,proto3" json:"label,omitempty"`
+	// User-held encryption (#1831): an age X25519 recipient ("age1…"). When
+	// set, the dump is encrypted to it in the daemon process before it is
+	// staged or uploaded, so the daemon's disk, the object store and the
+	// operator only ever hold ciphertext. Restore needs the matching
+	// identity, which the platform never stores.
+	AgeRecipient  string `protobuf:"bytes,7,opt,name=age_recipient,json=ageRecipient,proto3" json:"age_recipient,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -702,6 +763,27 @@ func (x *CreateBackupRequest) GetDestination() BackupDestination {
 func (x *CreateBackupRequest) GetGcsBucket() string {
 	if x != nil {
 		return x.GcsBucket
+	}
+	return ""
+}
+
+func (x *CreateBackupRequest) GetHook() string {
+	if x != nil {
+		return x.Hook
+	}
+	return ""
+}
+
+func (x *CreateBackupRequest) GetLabel() string {
+	if x != nil {
+		return x.Label
+	}
+	return ""
+}
+
+func (x *CreateBackupRequest) GetAgeRecipient() string {
+	if x != nil {
+		return x.AgeRecipient
 	}
 	return ""
 }
@@ -981,7 +1063,13 @@ type RestoreBackupRequest struct {
 	// Pass --clean --if-exists to pg_restore (drop objects before
 	// recreating). Off by default so a restore into a fresh database
 	// does not error on missing objects.
-	Clean         bool `protobuf:"varint,3,opt,name=clean,proto3" json:"clean,omitempty"`
+	Clean bool `protobuf:"varint,3,opt,name=clean,proto3" json:"clean,omitempty"`
+	// For a record with encrypted=true: the age X25519 identity
+	// ("AGE-SECRET-KEY-1…") that matches the record's age_recipient (#1831).
+	// Used to decrypt for this one call and never stored or logged. Required
+	// for an encrypted record; the daemon refuses the restore without it
+	// because it holds no decryption key of its own.
+	AgeIdentity   string `protobuf:"bytes,4,opt,name=age_identity,json=ageIdentity,proto3" json:"age_identity,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1035,6 +1123,13 @@ func (x *RestoreBackupRequest) GetClean() bool {
 		return x.Clean
 	}
 	return false
+}
+
+func (x *RestoreBackupRequest) GetAgeIdentity() string {
+	if x != nil {
+		return x.AgeIdentity
+	}
+	return ""
 }
 
 type RestoreBackupResponse struct {
@@ -1312,7 +1407,7 @@ var File_containarium_v1_backup_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_backup_proto_rawDesc = "" +
 	"\n" +
-	"\x1ccontainarium/v1/backup.proto\x12\x0fcontainarium.v1\x1a\x1cgoogle/api/annotations.proto\x1a.protoc-gen-openapiv2/options/annotations.proto\"\xd6\x03\n" +
+	"\x1ccontainarium/v1/backup.proto\x12\x0fcontainarium.v1\x1a\x1cgoogle/api/annotations.proto\x1a.protoc-gen-openapiv2/options/annotations.proto\"\xad\x04\n" +
 	"\fBackupRecord\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n" +
 	"\busername\x18\x02 \x01(\tR\busername\x12\x1a\n" +
@@ -1327,7 +1422,10 @@ const file_containarium_v1_backup_proto_rawDesc = "" +
 	"\x06engine\x18\t \x01(\x0e2\x1d.containarium.v1.BackupEngineR\x06engine\x12P\n" +
 	"\x11last_verification\x18\n" +
 	" \x01(\v2#.containarium.v1.BackupVerificationR\x10lastVerification\x12*\n" +
-	"\x0erelation_count\x18\v \x01(\x03H\x00R\rrelationCount\x88\x01\x01B\x11\n" +
+	"\x0erelation_count\x18\v \x01(\x03H\x00R\rrelationCount\x88\x01\x01\x12\x1c\n" +
+	"\tencrypted\x18\f \x01(\bR\tencrypted\x12#\n" +
+	"\rage_recipient\x18\r \x01(\tR\fageRecipient\x12\x12\n" +
+	"\x04hook\x18\x0e \x01(\tR\x04hookB\x11\n" +
 	"\x0f_relation_count\"W\n" +
 	"\x11VerificationCheck\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x16\n" +
@@ -1350,7 +1448,7 @@ const file_containarium_v1_backup_proto_rawDesc = "" +
 	"\x04user\x18\x02 \x01(\tR\x04user\x12\x1a\n" +
 	"\bpassword\x18\x03 \x01(\tR\bpassword\x12\x12\n" +
 	"\x04host\x18\x04 \x01(\tR\x04host\x12\x12\n" +
-	"\x04port\x18\x05 \x01(\x05R\x04port\"\xd5\x01\n" +
+	"\x04port\x18\x05 \x01(\x05R\x04port\"\xa4\x02\n" +
 	"\x13CreateBackupRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12=\n" +
 	"\n" +
@@ -1358,7 +1456,10 @@ const file_containarium_v1_backup_proto_rawDesc = "" +
 	"connection\x12D\n" +
 	"\vdestination\x18\x03 \x01(\x0e2\".containarium.v1.BackupDestinationR\vdestination\x12\x1d\n" +
 	"\n" +
-	"gcs_bucket\x18\x04 \x01(\tR\tgcsBucket\"\xbc\x01\n" +
+	"gcs_bucket\x18\x04 \x01(\tR\tgcsBucket\x12\x12\n" +
+	"\x04hook\x18\x05 \x01(\tR\x04hook\x12\x14\n" +
+	"\x05label\x18\x06 \x01(\tR\x05label\x12#\n" +
+	"\rage_recipient\x18\a \x01(\tR\fageRecipient\"\xbc\x01\n" +
 	"\x14CreateBackupResponse\x12\x18\n" +
 	"\amessage\x18\x01 \x01(\tR\amessage\x125\n" +
 	"\x06record\x18\x02 \x01(\v2\x1d.containarium.v1.BackupRecordR\x06record\x127\n" +
@@ -1371,13 +1472,14 @@ const file_containarium_v1_backup_proto_rawDesc = "" +
 	"\x10GetBackupRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"J\n" +
 	"\x11GetBackupResponse\x125\n" +
-	"\x06record\x18\x01 \x01(\v2\x1d.containarium.v1.BackupRecordR\x06record\"{\n" +
+	"\x06record\x18\x01 \x01(\v2\x1d.containarium.v1.BackupRecordR\x06record\"\x9e\x01\n" +
 	"\x14RestoreBackupRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12=\n" +
 	"\n" +
 	"connection\x18\x02 \x01(\v2\x1d.containarium.v1.PgConnectionR\n" +
 	"connection\x12\x14\n" +
-	"\x05clean\x18\x03 \x01(\bR\x05clean\"1\n" +
+	"\x05clean\x18\x03 \x01(\bR\x05clean\x12!\n" +
+	"\fage_identity\x18\x04 \x01(\tR\vageIdentity\"1\n" +
 	"\x15RestoreBackupResponse\x12\x18\n" +
 	"\amessage\x18\x01 \x01(\tR\amessage\"\x8d\x01\n" +
 	"\x13VerifyBackupRequest\x12\x0e\n" +
@@ -1397,10 +1499,11 @@ const file_containarium_v1_backup_proto_rawDesc = "" +
 	"\x11BackupDestination\x12\"\n" +
 	"\x1eBACKUP_DESTINATION_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18BACKUP_DESTINATION_LOCAL\x10\x01\x12\x1a\n" +
-	"\x16BACKUP_DESTINATION_GCS\x10\x02*I\n" +
+	"\x16BACKUP_DESTINATION_GCS\x10\x02*a\n" +
 	"\fBackupEngine\x12\x1d\n" +
 	"\x19BACKUP_ENGINE_UNSPECIFIED\x10\x00\x12\x1a\n" +
-	"\x16BACKUP_ENGINE_POSTGRES\x10\x01*y\n" +
+	"\x16BACKUP_ENGINE_POSTGRES\x10\x01\x12\x16\n" +
+	"\x12BACKUP_ENGINE_HOOK\x10\x02*y\n" +
 	"\x12VerificationResult\x12#\n" +
 	"\x1fVERIFICATION_RESULT_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aVERIFICATION_RESULT_PASSED\x10\x01\x12\x1e\n" +

@@ -7758,10 +7758,11 @@
       "type": "string",
       "enum": [
         "BACKUP_ENGINE_UNSPECIFIED",
-        "BACKUP_ENGINE_POSTGRES"
+        "BACKUP_ENGINE_POSTGRES",
+        "BACKUP_ENGINE_HOOK"
       ],
       "default": "BACKUP_ENGINE_UNSPECIFIED",
-      "description": "BackupEngine identifies the database engine a backup was taken from.\n\nPostgres is the only engine implemented today; the enum exists so that a\nsecond one has somewhere to be named, and so that the engine a record was\ntaken with is a typed value rather than a string the reader has to trust.\n\n - BACKUP_ENGINE_UNSPECIFIED: Unset, or a record written by a daemon that predates this enum.\nRejected wherever an engine has to be chosen — never treated as\nPostgres by default, because guessing the engine of a dump is how a\nrestore silently targets the wrong one."
+      "description": "BackupEngine identifies the database engine a backup was taken from.\n\nPostgres is the only engine implemented today; the enum exists so that a\nsecond one has somewhere to be named, and so that the engine a record was\ntaken with is a typed value rather than a string the reader has to trust.\n\n - BACKUP_ENGINE_UNSPECIFIED: Unset, or a record written by a daemon that predates this enum.\nRejected wherever an engine has to be chosen — never treated as\nPostgres by default, because guessing the engine of a dump is how a\nrestore silently targets the wrong one.\n - BACKUP_ENGINE_HOOK: A dump produced by a tenant-supplied backup hook (#1831): an opaque\nbyte stream the daemon captured from the hook's stdout. The daemon\ndoes not know its format, so a HOOK record can be listed, fetched,\nintegrity-checked and deleted, but is never restored or restore-tested\nby the platform — apply it with the tenant's own tooling."
     },
     "BackupRecord": {
       "type": "object",
@@ -7811,6 +7812,18 @@
           "type": "string",
           "format": "int64",
           "description": "Number of user relations (tables and partitioned tables, excluding\nsystem catalogs) in the source database at dump time — the manifest\na restore test compares the restored schema against.\n\nOptional because it is absent on backups taken before verification\nexisted, and because a source that cannot be queried still produces\na valid dump. Unset means \"no manifest\": verification records what\nit found but has nothing to compare it to."
+        },
+        "encrypted": {
+          "type": "boolean",
+          "description": "True when the stored bytes are an age ciphertext encrypted to a\nuser-held key (#1831). size_bytes and sha256 then describe the\nciphertext — what is actually stored — so integrity is verified\nbefore decryption. Restoring requires the matching identity, which\nthe platform never holds."
+        },
+        "ageRecipient": {
+          "type": "string",
+          "description": "The age X25519 recipient (\"age1…\") the dump was encrypted to. A\npublic key: safe to record, and tells the operator which identity\ncan restore this backup. Empty when encrypted is false."
+        },
+        "hook": {
+          "type": "string",
+          "description": "For BACKUP_ENGINE_HOOK: the absolute in-container path of the hook\nthat produced the dump. Empty for pg_dump records."
         }
       },
       "description": "BackupRecord is the metadata index entry for one stored dump. The dump\nitself lives at `location`; this record is persisted as a small JSON\nsidecar in the daemon's backup directory so `ListBackups` works without\na database dependency (the thing we are backing up may itself be down)."
@@ -8846,7 +8859,19 @@
         },
         "gcsBucket": {
           "type": "string",
-          "description": "For GCS: the destination bucket/prefix, e.g. \"gs://my-backups/pg\".\nIgnored for LOCAL. The object key is appended as \"\u003cid\u003e.dump\"."
+          "description": "For GCS: the destination bucket/prefix, e.g. \"gs://my-backups/pg\".\nIgnored for LOCAL. The object key is appended as \"\u003cid\u003e.dump\"\n(\"\u003cid\u003e.dump.age\" when age_recipient is set)."
+        },
+        "hook": {
+          "type": "string",
+          "description": "Credential-less backup (#1831): the absolute path of an executable\nINSIDE the tenant's container whose stdout is the dump. When set, the\npg_dump path and `connection` are bypassed entirely — the hook reaches\nits database under the container's own auth, so no credential crosses\nto the platform. Must be a bare absolute path with no arguments. The\nresulting record has engine BACKUP_ENGINE_HOOK and is opaque to the\nplatform (stored, listed, fetched, never auto-restored)."
+        },
+        "label": {
+          "type": "string",
+          "description": "Optional label for a hook backup, filling the record's `database`\nslot and the backup id (default: the hook's basename). Ignored\nwithout `hook`."
+        },
+        "ageRecipient": {
+          "type": "string",
+          "description": "User-held encryption (#1831): an age X25519 recipient (\"age1…\"). When\nset, the dump is encrypted to it in the daemon process before it is\nstaged or uploaded, so the daemon's disk, the object store and the\noperator only ever hold ciphertext. Restore needs the matching\nidentity, which the platform never stores."
         }
       },
       "description": "CreateBackupRequest dumps a container's database and stores it at the\nchosen destination."
@@ -12856,6 +12881,10 @@
         "clean": {
           "type": "boolean",
           "description": "Pass --clean --if-exists to pg_restore (drop objects before\nrecreating). Off by default so a restore into a fresh database\ndoes not error on missing objects."
+        },
+        "ageIdentity": {
+          "type": "string",
+          "description": "For a record with encrypted=true: the age X25519 identity\n(\"AGE-SECRET-KEY-1…\") that matches the record's age_recipient (#1831).\nUsed to decrypt for this one call and never stored or logged. Required\nfor an encrypted record; the daemon refuses the restore without it\nbecause it holds no decryption key of its own."
         }
       },
       "description": "RestoreBackupRequest streams a stored dump back into a container's\ndatabase via pg_restore. Destructive: with `clean` set it drops and\nrecreates objects before loading."

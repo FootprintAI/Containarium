@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Credential-less backup hook + user-held dump encryption** (#1831).
+  `containarium backup create` gains two composable, opt-in options for
+  multi-tenant deployments. `--hook <abs-path>` runs the tenant's own
+  program inside the container and captures its stdout as the dump, so no
+  DB credential ever crosses to the platform (and databases nested inside
+  an in-container Docker stack become backup-able). `--age-recipient age1…`
+  encrypts the dump in-process to a user-held age key before it is staged
+  or uploaded, so the daemon's disk, the object store and the operator only
+  ever hold ciphertext; the SHA-256 integrity gate covers the stored
+  ciphertext and is checked before decryption. `backup restore` on an
+  encrypted record requires `--age-identity-file` (per-call, never stored).
+  Hook dumps are opaque and are stored/listed/fetched but not auto-restored.
+  Plaintext `pg_dump` backups are byte-for-byte unchanged. New dependency:
+  `filippo.io/age` (pure Go). See `docs/DB-BACKUP-OPERATIONS.md`.
+
 ## [0.78.1] - 2026-09-13
 
 Execution-scoped authorization: a skill run's credentials now die with the

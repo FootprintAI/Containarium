@@ -40,6 +40,13 @@ enum BackupEngine {
   BACKUP_ENGINE_UNSPECIFIED = 0;
 
   BACKUP_ENGINE_POSTGRES = 1;
+
+  // A dump produced by a tenant-supplied backup hook (#1831): an opaque
+  // byte stream the daemon captured from the hook's stdout. The daemon
+  // does not know its format, so a HOOK record can be listed, fetched,
+  // integrity-checked and deleted, but is never restored or restore-tested
+  // by the platform — apply it with the tenant's own tooling.
+  BACKUP_ENGINE_HOOK = 2;
 }
 
 // BackupRecord is the metadata index entry for one stored dump. The dump
@@ -94,6 +101,22 @@ message BackupRecord {
   // a valid dump. Unset means "no manifest": verification records what
   // it found but has nothing to compare it to.
   optional int64 relation_count = 11;
+
+  // True when the stored bytes are an age ciphertext encrypted to a
+  // user-held key (#1831). size_bytes and sha256 then describe the
+  // ciphertext — what is actually stored — so integrity is verified
+  // before decryption. Restoring requires the matching identity, which
+  // the platform never holds.
+  bool encrypted = 12;
+
+  // The age X25519 recipient ("age1…") the dump was encrypted to. A
+  // public key: safe to record, and tells the operator which identity
+  // can restore this backup. Empty when encrypted is false.
+  string age_recipient = 13;
+
+  // For BACKUP_ENGINE_HOOK: the absolute in-container path of the hook
+  // that produced the dump. Empty for pg_dump records.
+  string hook = 14;
 }
 
 // VerificationResult is the outcome of a restore test. A backup whose
@@ -208,8 +231,30 @@ message CreateBackupRequest {
   BackupDestination destination = 3;
 
   // For GCS: the destination bucket/prefix, e.g. "gs://my-backups/pg".
-  // Ignored for LOCAL. The object key is appended as "<id>.dump".
+  // Ignored for LOCAL. The object key is appended as "<id>.dump"
+  // ("<id>.dump.age" when age_recipient is set).
   string gcs_bucket = 4;
+
+  // Credential-less backup (#1831): the absolute path of an executable
+  // INSIDE the tenant's container whose stdout is the dump. When set, the
+  // pg_dump path and `connection` are bypassed entirely — the hook reaches
+  // its database under the container's own auth, so no credential crosses
+  // to the platform. Must be a bare absolute path with no arguments. The
+  // resulting record has engine BACKUP_ENGINE_HOOK and is opaque to the
+  // platform (stored, listed, fetched, never auto-restored).
+  string hook = 5;
+
+  // Optional label for a hook backup, filling the record's `database`
+  // slot and the backup id (default: the hook's basename). Ignored
+  // without `hook`.
+  string label = 6;
+
+  // User-held encryption (#1831): an age X25519 recipient ("age1…"). When
+  // set, the dump is encrypted to it in the daemon process before it is
+  // staged or uploaded, so the daemon's disk, the object store and the
+  // operator only ever hold ciphertext. Restore needs the matching
+  // identity, which the platform never stores.
+  string age_recipient = 7;
 }
 
 message CreateBackupResponse {
@@ -271,6 +316,13 @@ message RestoreBackupRequest {
   // recreating). Off by default so a restore into a fresh database
   // does not error on missing objects.
   bool clean = 3;
+
+  // For a record with encrypted=true: the age X25519 identity
+  // ("AGE-SECRET-KEY-1…") that matches the record's age_recipient (#1831).
+  // Used to decrypt for this one call and never stored or logged. Required
+  // for an encrypted record; the daemon refuses the restore without it
+  // because it holds no decryption key of its own.
+  string age_identity = 4;
 }
 
 message RestoreBackupResponse {

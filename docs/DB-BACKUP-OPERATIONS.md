@@ -76,6 +76,78 @@ The same operations are available as MCP tools (`create_backup`,
 all call the one `BackupService`, so an agent, a human shell, and CI have
 an identical surface.
 
+## Credential-less hook backups and user-held encryption (#1831)
+
+Two independent, composable options on `backup create`, for multi-tenant
+deployments where a central file of every tenant's DB password is
+unacceptable and the operator/storage must not be able to read a backup.
+
+### A. In-tenant backup hook (no credential crosses to the platform)
+
+```
+containarium backup create alice --hook /opt/backup/db-dump.sh --dest gcs --gcs-bucket gs://… --server <host>
+```
+
+Instead of running `pg_dump` with credentials the platform has to know,
+the daemon runs **the tenant's own program inside the container** and
+captures its **stdout** as the dump. The hook reaches its database over
+localhost under the container's own auth (peer/trust, or the app's own
+`.env`), so the secret never leaves the tenant. This also covers databases
+the platform tool can't reach directly — e.g. a Postgres nested inside an
+in-container Docker/compose stack, where the hook is simply
+`docker exec <db> pg_dump …`.
+
+- `--hook` must be a bare **absolute path** inside the container, no
+  arguments (it is run verbatim, single-quoted, never as a shell fragment).
+  A non-zero exit or empty output fails the backup.
+- The record's engine is `hook` and its "database" slot is the hook's
+  basename (override with `--label`). `--database`/`--db-*` are ignored.
+- A hook dump is an **opaque stream**: the platform stores, lists,
+  checksums, fetches and deletes it, but `backup restore` refuses it —
+  fetch the object and apply it with the tenant's own tooling.
+
+### B. Encrypt the dump to a user-held key
+
+```
+age-keygen -o backup.key              # once; keep the identity OFF the platform
+containarium backup create alice --database app --age-recipient age1… --dest gcs …
+containarium backup restore alice-app-… --age-identity-file backup.key --clean …
+```
+
+`--age-recipient` encrypts the dump with [age](https://age-encryption.org)
+to that X25519 public key **before it is staged or uploaded**. From that
+point the checksummed, sized, stored bytes are ciphertext: the daemon's
+disk, the object store, and the operator only ever hold ciphertext. The
+stored object is named `<id>.dump.age` and the record carries
+`encrypted: true` plus the (public) recipient.
+
+- **Restore needs the identity.** The platform holds no decryption key, so
+  `backup restore` on an encrypted record requires `--age-identity-file`
+  (the `AGE-SECRET-KEY-1…` file; read from a file, never argv). The
+  identity is used for that one call and never stored or logged. Without
+  it, restore refuses with a clear error; with the wrong one, decryption
+  fails before anything touches the target database.
+- Integrity is verified on the **ciphertext** (the SHA-256 covers what is
+  stored) *before* decryption, so a tampered object is caught first.
+- `backup verify` (restore-test) refuses an encrypted record up front — it
+  would need the identity too, and the platform does not hold it. It
+  likewise refuses a hook record (opaque stream). Both are refused before
+  any scratch database is created, and nothing is recorded as a
+  verification outcome. Restore-testing an encrypted backup is a follow-up.
+
+**Where the encryption happens, honestly:** in this release the dump is
+encrypted **in the daemon process, in memory**, after it is pulled from
+the container and before it is written anywhere. That guarantees ciphertext-
+only at rest and off-host, and that the operator cannot read a stored
+backup. It does not guard against a compromised daemon at dump time — but
+that daemon already has root exec into every tenant, so no additional
+boundary is lost. Encrypting *inside* the tenant (which needs an `age`
+binary in the tenant image) is a follow-up.
+
+The two compose: `--hook … --age-recipient …` captures an opaque hook
+stream and encrypts it. Plaintext `pg_dump` backups are byte-for-byte
+unchanged when neither flag is given.
+
 ## Scheduling (systemd timer — recommended)
 
 v1 has no in-daemon scheduler — and for an audit that is a feature, not a
