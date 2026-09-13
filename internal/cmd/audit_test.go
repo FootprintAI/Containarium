@@ -76,3 +76,39 @@ func TestTruncateAudit_TinyLimitBypass(t *testing.T) {
 		t.Errorf("truncateAudit n=3 = %q; want %q", got, "hel")
 	}
 }
+
+// #1818 — `audit query --run-id` flag wiring. buildAuditQueryParams is the
+// pure part of runAuditQuery's flag-to-filter translation, pulled out so
+// this doesn't need a live Postgres connection to check.
+func TestBuildAuditQueryParams_ThreadsRunID(t *testing.T) {
+	params, err := buildAuditQueryParams("", "", "", "run-123", "", "", 50)
+	if err != nil {
+		t.Fatalf("buildAuditQueryParams: %v", err)
+	}
+	if params.RunID != "run-123" {
+		t.Errorf("params.RunID = %q, want %q", params.RunID, "run-123")
+	}
+}
+
+func TestBuildAuditQueryParams_ThreadsAllFilters(t *testing.T) {
+	params, err := buildAuditQueryParams("alice", "container_create", "container", "run-123", "", "", 50)
+	if err != nil {
+		t.Fatalf("buildAuditQueryParams: %v", err)
+	}
+	if params.Username != "alice" || params.Action != "container_create" ||
+		params.ResourceType != "container" || params.RunID != "run-123" || params.Limit != 50 {
+		t.Errorf("params = %+v, want all five fields threaded through unchanged", params)
+	}
+}
+
+func TestBuildAuditQueryParams_RejectsBadFrom(t *testing.T) {
+	if _, err := buildAuditQueryParams("", "", "", "", "not-a-time", "", 50); err == nil {
+		t.Error("expected an error for a non-RFC3339 --from value")
+	}
+}
+
+func TestBuildAuditQueryParams_RejectsBadTo(t *testing.T) {
+	if _, err := buildAuditQueryParams("", "", "", "", "", "not-a-time", 50); err == nil {
+		t.Error("expected an error for a non-RFC3339 --to value")
+	}
+}

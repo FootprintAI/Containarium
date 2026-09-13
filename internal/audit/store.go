@@ -58,10 +58,14 @@ type QueryParams struct {
 	Actor   string
 	TokenID string
 	OrgID   string
-	From    time.Time
-	To      time.Time
-	Limit   int
-	Offset  int
+	// RunID filters to one skill run's audit rows (#1818) — the
+	// agent.run_lease_issue / agent.run_lease_end rows a run writes,
+	// same exact-match convention as TokenID above.
+	RunID  string
+	From   time.Time
+	To     time.Time
+	Limit  int
+	Offset int
 }
 
 // Store handles persistent storage of audit log entries
@@ -131,6 +135,8 @@ func (s *Store) initSchema(ctx context.Context) error {
 			ON audit_logs(token_id);
 		CREATE INDEX IF NOT EXISTS idx_audit_logs_org_id
 			ON audit_logs(org_id);
+		CREATE INDEX IF NOT EXISTS idx_audit_logs_run_id
+			ON audit_logs(run_id);
 	`
 
 	_, err := s.pool.Exec(ctx, schema)
@@ -383,6 +389,13 @@ func (s *Store) Query(ctx context.Context, params QueryParams) ([]AuditEntry, in
 		baseQuery += fmt.Sprintf(" AND org_id = $%d", argIdx)
 		countQuery += fmt.Sprintf(" AND org_id = $%d", argIdx)
 		args = append(args, params.OrgID)
+		argIdx++
+	}
+
+	if params.RunID != "" {
+		baseQuery += fmt.Sprintf(" AND run_id = $%d", argIdx)
+		countQuery += fmt.Sprintf(" AND run_id = $%d", argIdx)
+		args = append(args, params.RunID)
 		argIdx++
 	}
 
