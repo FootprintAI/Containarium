@@ -11,8 +11,16 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/config"
+	"github.com/footprintai/containarium/internal/tokenid"
 	"github.com/golang-jwt/jwt/v5"
 )
+
+// MintedID is what an issuer must keep to revoke a token it issued: the jti
+// a mint stamped and the expiry it signed. A type alias (not a wrapper
+// struct) onto internal/tokenid.MintedID so internal/modelgateway — which
+// imports no other internal/ package — can share the exact same type
+// without importing internal/auth. See internal/tokenid's package doc.
+type MintedID = tokenid.MintedID
 
 // DefaultMaxTokenExpiry is the default maximum token expiry (30 days)
 const DefaultMaxTokenExpiry = 30 * 24 * time.Hour
@@ -60,6 +68,12 @@ type Claims struct {
 	// is valid and reported as unattributed, never rejected; see
 	// GenerateDelegatedToken and ActFromGRPCContext.
 	Act *Actor `json:"act,omitempty"`
+	// RunID (#1815) binds a token to one skill run, so the issuer can
+	// revoke exactly the credentials it minted for that run without
+	// affecting any other token issued for the same subject. `omitempty`
+	// keeps every mint path that doesn't pass a run id (which is every
+	// pre-#1815 call site) identical on the wire.
+	RunID string `json:"run_id,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -159,7 +173,8 @@ func (tm *TokenManager) GenerateToken(username string, roles []string, expiresIn
 	// Existing callers (CLI, daemon system tokens) keep
 	// minting access tokens with their current call sites
 	// because tt defaults to "" → access semantics.
-	return tm.generate(username, roles, scopes, "", expiresIn, nil)
+	tok, _, err := tm.generate(username, roles, scopes, "", expiresIn, nil, "")
+	return tok, err
 }
 
 // GenerateAccessToken mints a short-lived access token.
@@ -170,7 +185,8 @@ func (tm *TokenManager) GenerateAccessToken(username string, roles []string, exp
 	if expiresIn <= 0 {
 		expiresIn = DefaultAccessTokenExpiry
 	}
-	return tm.generate(username, roles, scopes, TokenTypeAccess, expiresIn, nil)
+	tok, _, err := tm.generate(username, roles, scopes, TokenTypeAccess, expiresIn, nil, "")
+	return tok, err
 }
 
 // GenerateRefreshToken mints a long-lived refresh token.
@@ -183,7 +199,8 @@ func (tm *TokenManager) GenerateRefreshToken(username string, roles []string, ex
 	if expiresIn <= 0 {
 		expiresIn = DefaultRefreshTokenExpiry
 	}
-	return tm.generate(username, roles, scopes, TokenTypeRefresh, expiresIn, nil)
+	tok, _, err := tm.generate(username, roles, scopes, TokenTypeRefresh, expiresIn, nil, "")
+	return tok, err
 }
 
 // GenerateDelegatedToken mints a token carrying the RFC 8693 `act`
@@ -194,10 +211,21 @@ func (tm *TokenManager) GenerateRefreshToken(username string, roles []string, ex
 // exists to hold. Pass nil for a token with no delegation, identical to
 // GenerateToken. Rejects (does not mint) a chain exceeding MaxActDepth.
 func (tm *TokenManager) GenerateDelegatedToken(username string, roles []string, expiresIn time.Duration, act *Actor, scopes ...string) (string, error) {
+	tok, _, err := tm.GenerateDelegatedTokenWithID(username, roles, expiresIn, act, "", scopes...)
+	return tok, err
+}
+
+// GenerateDelegatedTokenWithID is GenerateDelegatedToken that also returns
+// the minted jti and expiry (#1815), so the issuer of a skill-run credential
+// can later revoke exactly what it issued without re-parsing the token.
+// runID, when non-empty, lands in the `run_id` claim; empty leaves it off
+// the wire (Claims.RunID's omitempty), identical to every call site that
+// doesn't bind a run.
+func (tm *TokenManager) GenerateDelegatedTokenWithID(username string, roles []string, expiresIn time.Duration, act *Actor, runID string, scopes ...string) (string, MintedID, error) {
 	if err := validateActDepth(act); err != nil {
-		return "", fmt.Errorf("mint delegated token: %w", err)
+		return "", MintedID{}, fmt.Errorf("mint delegated token: %w", err)
 	}
-	return tm.generate(username, roles, scopes, "", expiresIn, act)
+	return tm.generate(username, roles, scopes, "", expiresIn, act, runID)
 }
 
 // generate is the shared implementation. tt may be the
@@ -206,8 +234,13 @@ func (tm *TokenManager) GenerateDelegatedToken(username string, roles []string, 
 // byte-identical for existing test fixtures. act is nil for
 // every call site except GenerateDelegatedToken (#1677); nil
 // stays omitempty on the wire too, so every other mint path's
-// token shape is unaffected.
-func (tm *TokenManager) generate(username string, roles, scopes []string, tt string, expiresIn time.Duration, act *Actor) (string, error) {
+// token shape is unaffected. runID is empty for every call site
+// except GenerateDelegatedTokenWithID (#1815); empty stays
+// omitempty on the wire for the same reason.
+//
+// Returns the MintedID (jti + expiry) alongside the signed token so callers
+// that need to revoke what they minted don't have to re-parse it.
+func (tm *TokenManager) generate(username string, roles, scopes []string, tt string, expiresIn time.Duration, act *Actor, runID string) (string, MintedID, error) {
 	// SECURITY FIX: Enforce maximum expiry - no more non-expiring tokens
 	if expiresIn <= 0 || expiresIn > tm.maxTokenExpiry {
 		expiresIn = tm.maxTokenExpiry
@@ -215,7 +248,7 @@ func (tm *TokenManager) generate(username string, roles, scopes []string, tt str
 
 	jti, err := newJTI()
 	if err != nil {
-		return "", fmt.Errorf("generate jti: %w", err)
+		return "", MintedID{}, fmt.Errorf("generate jti: %w", err)
 	}
 
 	var scopesClaim []string
@@ -223,24 +256,35 @@ func (tm *TokenManager) generate(username string, roles, scopes []string, tt str
 		scopesClaim = scopes
 	}
 
+	now := time.Now()
+
 	claims := Claims{
 		Username:  username,
 		Roles:     roles,
 		Scopes:    scopesClaim,
 		TokenType: tt,
 		Act:       act,
+		RunID:     runID,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ID:        jti,
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(expiresIn)),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			NotBefore: jwt.NewNumericDate(time.Now()),
+			ExpiresAt: jwt.NewNumericDate(now.Add(expiresIn)),
+			IssuedAt:  jwt.NewNumericDate(now),
+			NotBefore: jwt.NewNumericDate(now),
 			Issuer:    tm.issuer,
 			Audience:  jwt.ClaimStrings{tm.audience},
 		},
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString(tm.secretKey)
+	signed, err := token.SignedString(tm.secretKey)
+	if err != nil {
+		return "", MintedID{}, err
+	}
+	// MintedID.ExpiresAt must equal the signed exp exactly: read it back from
+	// the claims' NumericDate (which jwt.NewNumericDate already truncated to
+	// jwt.TimePrecision), not from the pre-truncation time.Now().Add(ttl) —
+	// those differ by up to a second.
+	return signed, MintedID{JTI: jti, ExpiresAt: claims.ExpiresAt.Time}, nil
 }
 
 // newJTI returns a base64url-encoded 128-bit cryptographic
