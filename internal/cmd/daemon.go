@@ -74,6 +74,8 @@ var (
 
 	proxyProtocol        bool
 	proxyProtocolTrusted []string
+	clientIPHeaders      []string
+	trustedProxyCIDRs    []string
 
 	otelDropLabels []string
 
@@ -171,6 +173,8 @@ func init() {
 	daemonCmd.Flags().StringSliceVar(&publicBaseDomains, "public-base-domain", nil, "Suffix-match anchor advertised to the sentinel — inbound SNI of the form <anything>.<public-base-domain> routes here without each subdomain being a registered alias. Repeatable: list multiple to host workloads under different parent domains on the same backend (e.g. --public-base-domain lab.example.com --public-base-domain demo.example.org). Defaults to [--base-domain] when unset. See docs/PER-POOL-BASE-DOMAIN.md.")
 	daemonCmd.Flags().BoolVar(&proxyProtocol, "proxy-protocol", false, "Configure Caddy to accept PROXY v2 headers from --proxy-protocol-trusted CIDRs so containers receive the real client IP. Pair with --proxy-protocol on the sentinel.")
 	daemonCmd.Flags().StringSliceVar(&proxyProtocolTrusted, "proxy-protocol-trusted", []string{"127.0.0.0/8"}, "CIDRs allowed to send PROXY headers (typically the sentinel VPC IP/32). Wildcard 0.0.0.0/0 is rejected.")
+	daemonCmd.Flags().StringSliceVar(&clientIPHeaders, "client-ip-header", nil, "Header(s) Caddy derives the original client IP from when this host sits behind a CDN/reverse proxy that terminates the client connection (e.g. Cf-Connecting-Ip for Cloudflare). Honored only from --trusted-proxy-cidrs and --proxy-protocol-trusted peers. Repeatable. Empty = off.")
+	daemonCmd.Flags().StringSliceVar(&trustedProxyCIDRs, "trusted-proxy-cidrs", nil, "Extra CIDRs unioned into Caddy's trusted_proxies — typically the CDN's published ranges — so --client-ip-header is trusted only from them. Does NOT widen the PROXY-protocol allow list. Wildcard 0.0.0.0/0 is rejected.")
 	daemonCmd.Flags().IntVar(&publicPort, "public-port", 443, "Public TLS port the sentinel forwards to (default 443)")
 
 	// OTel collector settings
@@ -587,6 +591,8 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		PublicPort:             publicPort,
 		ProxyProtocol:          proxyProtocol,
 		ProxyProtocolTrusted:   proxyProtocolTrusted,
+		ClientIPHeaders:        clientIPHeaders,
+		TrustedProxyCIDRs:      trustedProxyCIDRs,
 		OTelDropLabels:         otelDropLabels,
 		Runtime:                runtime,
 		ZFSTenantRoot:          zfsTenantRoot,

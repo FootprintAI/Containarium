@@ -163,6 +163,14 @@ type DualServerConfig struct {
 	ProxyProtocol        bool
 	ProxyProtocolTrusted []string
 
+	// CDN-fronted real client IP (#1829). ClientIPHeaders names the header(s)
+	// Caddy derives the original client IP from (e.g. Cf-Connecting-Ip);
+	// TrustedProxyCIDRs are the extra ranges (the CDN's published networks)
+	// unioned into Caddy's trusted_proxies so that header is honored only from
+	// them. Both empty = feature off. Independent of ProxyProtocol.
+	ClientIPHeaders   []string
+	TrustedProxyCIDRs []string
+
 	// Runtime selects the box-lifecycle backend: "lxc" (default) or "k8s".
 	// Set via CONTAINARIUM_RUNTIME env or --runtime flag on daemon start.
 	Runtime string
@@ -293,6 +301,13 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 		if err := validateProxyProtocolTrusted(config.ProxyProtocolTrusted); err != nil {
 			return nil, fmt.Errorf("proxy-protocol-trusted misconfigured: %w", err)
 		}
+	}
+	// #1829: fail visibly at boot on a bad CDN client-IP trust config too.
+	if err := validateClientIPHeaders(config.ClientIPHeaders); err != nil {
+		return nil, fmt.Errorf("client-ip-header misconfigured: %w", err)
+	}
+	if err := validateTrustedProxyCIDRs(config.TrustedProxyCIDRs); err != nil {
+		return nil, fmt.Errorf("trusted-proxy-cidrs misconfigured: %w", err)
 	}
 
 	// Create container server
@@ -956,6 +971,13 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 								log.Printf("Caddy listener_wrappers: PROXY v2 enabled, trusted=%v", config.ProxyProtocolTrusted)
 							}
 						}
+						if len(config.ClientIPHeaders) > 0 || len(config.TrustedProxyCIDRs) > 0 {
+							if err := proxyManager.ConfigureClientIP(config.ClientIPHeaders, config.TrustedProxyCIDRs); err != nil {
+								log.Printf("Warning: Failed to configure client-IP trust on Caddy: %v", err)
+							} else {
+								log.Printf("Caddy client-IP trust: headers=%v extra_trusted=%v", config.ClientIPHeaders, config.TrustedProxyCIDRs)
+							}
+						}
 
 						// With DNS-01 configured, provision a single `*.<base-domain>`
 						// wildcard so every per-region / subdomain endpoint
@@ -1142,6 +1164,13 @@ skipAppHosting:
 						log.Printf("Warning: Failed to enable PROXY protocol on Caddy: %v", err)
 					} else {
 						log.Printf("Caddy listener_wrappers: PROXY v2 enabled, trusted=%v", config.ProxyProtocolTrusted)
+					}
+				}
+				if len(config.ClientIPHeaders) > 0 || len(config.TrustedProxyCIDRs) > 0 {
+					if err := proxyManager.ConfigureClientIP(config.ClientIPHeaders, config.TrustedProxyCIDRs); err != nil {
+						log.Printf("Warning: Failed to configure client-IP trust on Caddy: %v", err)
+					} else {
+						log.Printf("Caddy client-IP trust: headers=%v extra_trusted=%v", config.ClientIPHeaders, config.TrustedProxyCIDRs)
 					}
 				}
 

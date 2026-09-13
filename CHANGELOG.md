@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Real client IP behind a CDN: `--client-ip-header` + `--trusted-proxy-cidrs`**
+  (#1829). When an app-hosting daemon sits behind a CDN that terminates the
+  client connection (e.g. a Cloudflare-proxied hostname), the visitor's IP
+  arrives in a header such as `CF-Connecting-IP`, not in the PROXY-protocol
+  source — so every container saw the CDN edge IP. The daemon now emits Caddy's
+  `client_ip_headers` and unions the CDN's published ranges into
+  `trusted_proxies`, so the header is honored only from the CDN's own networks.
+  The PROXY-protocol allow list is deliberately **not** widened (a CDN never
+  sends PROXY headers; widening would let an edge forge a source). The
+  configuration is remembered and re-applied by the stub-revert self-heal
+  (same path as #400), closing the durability gap where a daemon or Caddy
+  restart silently dropped a hand-patched config. Independent of
+  `--proxy-protocol`; wildcards and malformed CIDRs are refused at startup.
+  See `docs/PROXY-PROTOCOL.md` → "CDN-fronted hosts".
+
 ## [0.78.1] - 2026-09-13
 
 Execution-scoped authorization: a skill run's credentials now die with the

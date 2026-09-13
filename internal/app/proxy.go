@@ -31,6 +31,14 @@ type ProxyManager struct {
 	// can re-install the PROXY listener wrappers after the bundled Caddy
 	// reverts to its stub Caddyfile. Empty = PROXY protocol not enabled. #400.
 	proxyProtocolTrusted []string
+	// clientIPHeaders / trustedProxyCIDRs record the CDN-fronted real-client-IP
+	// configuration (#1829): the headers Caddy reads the original client IP
+	// from (e.g. Cf-Connecting-Ip) and the extra CIDRs (the CDN's published
+	// ranges) unioned into trusted_proxies so those headers are honored only
+	// from the CDN's own networks. Remembered so EnsureBaseConfig re-applies
+	// them after a stub revert, exactly like proxyProtocolTrusted.
+	clientIPHeaders   []string
+	trustedProxyCIDRs []string
 	// wafEnabled prepends the coraza-caddy WAF handler to every HTTP route's
 	// handler chain (Tier 3 PR-3, #662). Off by default — when false, routes are
 	// byte-identical to before. Requires the Caddy binary built with the coraza
@@ -1402,10 +1410,10 @@ func (p *ProxyManager) EnableProxyProtocol(trustedCIDRs []string) error {
 		},
 		map[string]interface{}{"wrapper": "tls"},
 	}
-	srv["trusted_proxies"] = map[string]interface{}{
-		"source": "static",
-		"ranges": toAnySlice(trustedCIDRs),
-	}
+	// trusted_proxies is the union of the PROXY-sender set and any CDN ranges
+	// from ConfigureClientIP, and client_ip_headers rides along, so the two
+	// calls are order-independent and a self-heal re-emits both (#1829).
+	applyClientIPTrust(srv, p.clientIPHeaders, p.trustedProxyCIDRs, trustedCIDRs)
 
 	if err := p.loadConfig(config); err != nil {
 		return fmt.Errorf("load config with proxy_protocol: %w", err)
@@ -1448,6 +1456,13 @@ func (p *ProxyManager) EnsureBaseConfig() (bool, error) {
 			return true, fmt.Errorf("re-apply PROXY protocol after rebuild: %w", err)
 		}
 	}
+	// Re-apply CDN client-IP trust too (#1829). Idempotent when PROXY protocol
+	// already re-emitted it above; required when PROXY is not configured.
+	if len(p.clientIPHeaders) > 0 || len(p.trustedProxyCIDRs) > 0 {
+		if err := p.ConfigureClientIP(p.clientIPHeaders, p.trustedProxyCIDRs); err != nil {
+			return true, fmt.Errorf("re-apply client-IP trust after rebuild: %w", err)
+		}
+	}
 	return true, nil
 }
 
@@ -1483,6 +1498,17 @@ func (p *ProxyManager) baseConfigIntact() (bool, error) {
 			return false, nil
 		}
 		if _, ok := srv["listener_wrappers"]; !ok {
+			return false, nil
+		}
+	}
+	// Likewise, configured client-IP headers must still be present; a server
+	// that lost them is a partial revert (#1829).
+	if len(p.clientIPHeaders) > 0 {
+		var srv map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(trimmed), &srv); err != nil {
+			return false, nil
+		}
+		if _, ok := srv["client_ip_headers"]; !ok {
 			return false, nil
 		}
 	}

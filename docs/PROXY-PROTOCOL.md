@@ -109,6 +109,38 @@ wildcard (`0.0.0.0/0`, `::/0`) CIDR lists at construction time. An
 unrestricted allow list lets any direct VPC peer spoof its source IP via a
 forged PROXY header.
 
+## CDN-fronted hosts: real client IP behind Cloudflare (#1829)
+
+PROXY protocol solves the sentinel hop. It does **not** cover a hostname that
+is proxied by a CDN (an orange-cloud Cloudflare record): the CDN terminates
+the client connection, so the TCP peer the sentinel sees — and therefore the
+address it stamps into the PROXY header — is the CDN edge, not the visitor.
+The real client IP arrives instead in an HTTP header the CDN sets
+(`CF-Connecting-IP` for Cloudflare).
+
+Two daemon flags teach Caddy to use that header, and only from the CDN's own
+networks:
+
+```
+--client-ip-header Cf-Connecting-Ip \
+--trusted-proxy-cidrs 173.245.48.0/20,103.21.244.0/22,...   # the CDN's published ranges
+```
+
+- `--client-ip-header` sets the Caddy server's `client_ip_headers`.
+- `--trusted-proxy-cidrs` is **unioned** into `trusted_proxies` alongside
+  `--proxy-protocol-trusted`. Caddy only honors a client-IP header from a peer
+  inside `trusted_proxies`, so the CDN ranges are what make it trustworthy.
+- The PROXY-protocol **allow list is deliberately not widened**: a CDN never
+  sends PROXY headers, and letting CDN ranges send them would allow any edge
+  to assert an arbitrary source via a forged PROXY header.
+
+The two features are independent — a CDN-only host can use these flags
+without `--proxy-protocol`. Like the PROXY wrappers, this configuration is
+remembered by the daemon and **re-applied automatically** when the bundled
+Caddy reverts to its stub Caddyfile (the same self-heal as #400), so a
+daemon or Caddy restart no longer silently drops it. `0.0.0.0/0` and
+malformed CIDRs are refused at daemon startup.
+
 ## Recommended rollout
 
 1. **Deploy daemon** (backend VM) with `--proxy-protocol` flags. The daemon
