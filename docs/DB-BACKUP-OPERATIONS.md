@@ -295,6 +295,28 @@ Create a dedicated bucket with **object versioning** and a **lifecycle**
 that enforces your retention window. The dumps are small, so a generous
 window is cheap.
 
+> **If the daemon's systemd unit sets `NoNewPrivileges=yes`** (a common
+> hardening default) **and `gcloud` came from the Ubuntu/Debian snap**
+> (`sudo snap install google-cloud-cli --classic` — the suggestion you'll
+> find first), every `--dest gcs` upload fails with `gcloud storage cp:
+> exit status 1: cannot change profile for the next exec call: Operation
+> not permitted`, even though the daemon starts cleanly and reports GCS
+> as available (#1852). A snap-confined binary needs an AppArmor profile
+> transition on exec, which `NoNewPrivileges=yes` on the parent blocks at
+> the kernel level — a plain-shell `gcloud storage cp` on the same host,
+> same credentials, still works, which is what makes this confusing to
+> diagnose. Fix: install the **apt-based** `google-cloud-cli` instead
+> (or alongside — no need to remove the snap):
+> ```bash
+> curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
+> echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee /etc/apt/sources.list.d/google-cloud-sdk.list
+> sudo apt-get update && sudo apt-get install -y google-cloud-cli
+> ```
+> This lands at `/usr/bin/gcloud`, which sorts before `/snap/bin/gcloud`
+> in systemd's default PATH, so the daemon picks it up automatically —
+> **restart the daemon** afterward (it resolves `gcloud` once, at
+> startup) and no other change is needed; `NoNewPrivileges=yes` stays on.
+
 ```bash
 # One-time: create a regional bucket with versioning on.
 gcloud storage buckets create gs://<your-backup-bucket> \
