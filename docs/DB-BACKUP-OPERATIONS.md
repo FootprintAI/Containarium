@@ -62,8 +62,11 @@ containarium backup restore <tenant>-app-<timestamp> --clean --server <host>
 containarium backup verify <tenant>-app-<timestamp> \
   --target <scratch-tenant> --server <host>
 
-# Delete a stored dump + its index entry (retention; see below).
+# Delete a stored dump + its index entry, by id.
 containarium backup delete <tenant>-app-<timestamp> --server <host>
+
+# Prune: keep only the newest N backups per database (#1839; see below).
+containarium backup prune <tenant> --database app --keep 7 --server <host>
 ```
 
 Connection defaults target a per-container local Postgres: user
@@ -74,7 +77,9 @@ The same operations are available as MCP tools (`create_backup`,
 `list_backups`, `restore_backup`, `verify_backup`) and over REST
 (`/v1/backups`) — they
 all call the one `BackupService`, so an agent, a human shell, and CI have
-an identical surface.
+an identical surface. `delete` and `prune` are deliberately CLI/REST-only,
+not exposed as MCP tools — a bulk or single-record delete stays a human
+or scripted-operator action, not something an agent can trigger.
 
 ## Credential-less hook backups and user-held encryption (#1831)
 
@@ -270,15 +275,24 @@ gcloud storage buckets update gs://<your-backup-bucket> \
   --lifecycle-file=/tmp/lifecycle.json
 ```
 
-Pair lifecycle pruning of the *objects* with `containarium backup delete`
-for the *index entries* so `list` doesn't show dumps the lifecycle has
-already removed. A simple retention cron:
+Pair the GCS lifecycle above (which only ever ages an *object's storage
+class*, then eventually deletes it) with `containarium backup prune`
+(#1839) for the *index entries*, so `backup list` doesn't keep showing
+records for objects the lifecycle has already removed underneath them:
 
 ```bash
-# Prune index entries older than the lifecycle horizon (example: 400 days).
-containarium backup list --server <host> --http \
-  | awk 'NR>1 {print $1, $4}'   # ID, CREATED — feed IDs past your window to: backup delete
+# Keep-N pruning, independent of the GCS lifecycle's own age-based delete.
+# Run on whatever cadence you like — the same as backup create, or slower.
+containarium backup prune <tenant> --database app --keep 30 --server <host>
+
+# No --database: prunes every database this tenant has backups for,
+# each independently down to --keep.
+containarium backup prune <tenant> --keep 30 --server <host>
 ```
+
+`backup delete <id>` still exists for removing one specific record by
+id — `prune` is for the "keep the newest N, drop the rest" case a
+schedule actually needs.
 
 ## Restore test — the control an auditor actually checks
 
@@ -375,10 +389,11 @@ rather than loading corrupt data.
 
 ## Quick reference
 
-- **CLI**: `containarium backup create|list|get|restore|verify|delete`
+- **CLI**: `containarium backup create|list|get|restore|verify|delete|prune`
 - **REST**: `/v1/backups` (`BackupService`, generated via grpc-gateway)
-- **MCP tools**: `create_backup`, `list_backups`, `restore_backup`, `verify_backup`
-- **Auth scopes**: `backups:read` (list/get), `backups:write` (create/restore/verify/delete)
+- **MCP tools**: `create_backup`, `list_backups`, `restore_backup`, `verify_backup` (delete and prune are deliberately CLI/REST-only)
+- **Auth scopes**: `backups:read` (list/get), `backups:write` (create/restore/verify/delete/prune)
+- **Retention**: `backup prune <tenant> [--database db] --keep N` keeps the newest N per (tenant, database) — or per (tenant, hook label) for a `--hook` backup (#1839)
 - **Dump format**: `pg_dump -Fc` (custom, compressed, selectively restorable)
 - **Integrity**: SHA-256 recorded at create, verified at restore *and* at verify
 - **Restorability**: `backup verify` — a restore test against a throwaway

@@ -298,6 +298,50 @@ func (s *BackupServer) VerifyBackup(ctx context.Context, req *pb.VerifyBackupReq
 	}, nil
 }
 
+// PruneBackups deletes older backups for a tenant, keeping only the newest
+// N per database (#1839). A partial failure — one record's delete fails —
+// is reported in the response, never as a gRPC error: the sweep still ran
+// and still deleted what it could, mirroring CreateBackup's per-database
+// partial-failure posture (#954).
+func (s *BackupServer) PruneBackups(ctx context.Context, req *pb.PruneBackupsRequest) (*pb.PruneBackupsResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeBackupsWrite); err != nil {
+		return nil, err
+	}
+	if req.Username == "" {
+		return nil, status.Error(codes.InvalidArgument, "username is required")
+	}
+	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+		return nil, err
+	}
+	if req.Keep < 1 {
+		return nil, status.Errorf(codes.InvalidArgument, "keep must be at least 1 (got %d); use DeleteBackup to remove a specific backup by id", req.Keep)
+	}
+
+	res, err := s.mgr.Prune(backup.PruneOptions{
+		Username: req.Username,
+		Database: req.Database,
+		Keep:     int(req.Keep),
+	})
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "prune failed: %v", err)
+	}
+	for _, id := range res.Deleted {
+		log.Printf("[backup] pruned id=%s user=%s", id, req.Username)
+	}
+	for _, f := range res.Failures {
+		log.Printf("[backup] prune failure user=%s: %s", req.Username, f)
+	}
+	msg := fmt.Sprintf("pruned %d backup(s)", len(res.Deleted))
+	if len(res.Failures) > 0 {
+		msg += fmt.Sprintf(", %d failed", len(res.Failures))
+	}
+	return &pb.PruneBackupsResponse{
+		Message:    msg,
+		DeletedIds: res.Deleted,
+		Failures:   res.Failures,
+	}, nil
+}
+
 // DeleteBackup removes a stored dump and its index entry.
 func (s *BackupServer) DeleteBackup(ctx context.Context, req *pb.DeleteBackupRequest) (*pb.DeleteBackupResponse, error) {
 	if err := auth.RequireScope(ctx, auth.ScopeBackupsWrite); err != nil {

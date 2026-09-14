@@ -372,6 +372,41 @@ message DeleteBackupResponse {
   string message = 1;
 }
 
+// PruneBackupsRequest deletes older backups for a tenant, keeping only the
+// newest `keep` per (username, database) group — or per (username, label)
+// for a `--hook` backup, since a hook backup's label fills the same
+// database field (#1839). Retention POLICY (when, how often, how many) is
+// still the caller's decision; this RPC is the mechanism that makes
+// "how many" actually enforceable instead of a cron job hand-rolling
+// `rm` against the daemon's backup directory.
+message PruneBackupsRequest {
+  // Tenant whose backups to prune.
+  string username = 1;
+
+  // Optional database (or hook label) filter. Empty prunes every
+  // database this tenant has backups for, each independently down to
+  // `keep` — one database's history never counts against another's.
+  string database = 2;
+
+  // Number of newest records to keep per group. Must be >= 1: pruning a
+  // specific backup down to zero is `DeleteBackup` making an explicit
+  // per-record choice, not this RPC guessing zero was intended.
+  int32 keep = 3;
+}
+
+message PruneBackupsResponse {
+  // Operator-facing summary.
+  string message = 1;
+
+  // IDs of the records actually deleted.
+  repeated string deleted_ids = 2;
+
+  // Per-record delete failures, as "<id>: <error>" strings. One bad
+  // record (e.g. a transient object-store error) never aborts pruning
+  // the rest — mirrors CreateBackupResponse.failures (#954).
+  repeated string failures = 3;
+}
+
 // BackupService provides logical (pg_dump) database backups for the
 // databases running inside Containarium containers, stored off-host.
 // See docs/DB-BACKUP-OPERATIONS.md for the operational runbook and the
@@ -447,7 +482,21 @@ service BackupService {
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Delete a backup";
-      description: "Deletes a stored dump and its metadata. Retention enforcement is the caller's responsibility.";
+      description: "Deletes a stored dump and its metadata by id. See PruneBackups for keep-newest-N retention instead of naming ids one at a time.";
+      tags: "Backups";
+    };
+  }
+
+  // PruneBackups deletes older backups for a tenant, keeping only the
+  // newest N per database (#1839).
+  rpc PruneBackups(PruneBackupsRequest) returns (PruneBackupsResponse) {
+    option (google.api.http) = {
+      post: "/v1/backups/prune"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Prune old backups, keeping the newest N per database";
+      description: "Deletes older backup records for a tenant, keeping the newest `keep` per (username, database) — or per (username, label) for a hook backup. One failing delete never aborts pruning the rest. #1839.";
       tags: "Backups";
     };
   }

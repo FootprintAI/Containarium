@@ -1224,6 +1224,41 @@
         ]
       }
     },
+    "/v1/backups/prune": {
+      "post": {
+        "summary": "Prune old backups, keeping the newest N per database",
+        "description": "Deletes older backup records for a tenant, keeping the newest `keep` per (username, database) — or per (username, label) for a hook backup. One failing delete never aborts pruning the rest. #1839.",
+        "operationId": "BackupService_PruneBackups",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/PruneBackupsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "PruneBackupsRequest deletes older backups for a tenant, keeping only the\nnewest `keep` per (username, database) group — or per (username, label)\nfor a `--hook` backup, since a hook backup's label fills the same\ndatabase field (#1839). Retention POLICY (when, how often, how many) is\nstill the caller's decision; this RPC is the mechanism that makes\n\"how many\" actually enforceable instead of a cron job hand-rolling\n`rm` against the daemon's backup directory.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/PruneBackupsRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Backups"
+        ]
+      }
+    },
     "/v1/backups/{id}": {
       "get": {
         "summary": "Get a backup",
@@ -1257,7 +1292,7 @@
       },
       "delete": {
         "summary": "Delete a backup",
-        "description": "Deletes a stored dump and its metadata. Retention enforcement is the caller's responsibility.",
+        "description": "Deletes a stored dump and its metadata by id. See PruneBackups for keep-newest-N retention instead of naming ids one at a time.",
         "operationId": "BackupService_DeleteBackup",
         "responses": {
           "200": {
@@ -12377,6 +12412,48 @@
         }
       },
       "title": "ProxyRoute represents a DNS/domain to container mapping"
+    },
+    "PruneBackupsRequest": {
+      "type": "object",
+      "properties": {
+        "username": {
+          "type": "string",
+          "description": "Tenant whose backups to prune."
+        },
+        "database": {
+          "type": "string",
+          "description": "Optional database (or hook label) filter. Empty prunes every\ndatabase this tenant has backups for, each independently down to\n`keep` — one database's history never counts against another's."
+        },
+        "keep": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Number of newest records to keep per group. Must be \u003e= 1: pruning a\nspecific backup down to zero is `DeleteBackup` making an explicit\nper-record choice, not this RPC guessing zero was intended."
+        }
+      },
+      "description": "PruneBackupsRequest deletes older backups for a tenant, keeping only the\nnewest `keep` per (username, database) group — or per (username, label)\nfor a `--hook` backup, since a hook backup's label fills the same\ndatabase field (#1839). Retention POLICY (when, how often, how many) is\nstill the caller's decision; this RPC is the mechanism that makes\n\"how many\" actually enforceable instead of a cron job hand-rolling\n`rm` against the daemon's backup directory."
+    },
+    "PruneBackupsResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string",
+          "description": "Operator-facing summary."
+        },
+        "deletedIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "IDs of the records actually deleted."
+        },
+        "failures": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Per-record delete failures, as \"\u003cid\u003e: \u003cerror\u003e\" strings. One bad\nrecord (e.g. a transient object-store error) never aborts pruning\nthe rest — mirrors CreateBackupResponse.failures (#954)."
+        }
+      }
     },
     "QueryTrafficHistoryResponse": {
       "type": "object",

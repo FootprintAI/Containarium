@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Backup retention/pruning** (#1839). `containarium backup prune <user>
+  [--database db] --keep N` deletes older backup records, keeping only
+  the newest N per (username, database) — or per (username, label) for a
+  `--hook` backup, since a hook backup's label fills the same slot. Omit
+  `--database` to prune every database the tenant has backups for, each
+  independently. One record's delete failure (e.g. a transient
+  object-store error) never aborts pruning the rest. This was the
+  missing half of a scheduled backup (#1831, #1836): a schedule that
+  only ever creates and never prunes fills its backup directory or GCS
+  bucket without bound. Lands as `PruneBackups` on `BackupService`
+  (proto-first, REST via grpc-gateway); deliberately not exposed as an
+  MCP tool, same as `backup delete`.
+
 ## [0.79.1] - 2026-09-14
 
 ### Added

@@ -16,6 +16,8 @@ type recordingBackupAPI struct {
 	fakeBackupAPI
 	gotCreate  *pb.CreateBackupRequest
 	gotRestore *pb.RestoreBackupRequest
+	gotPrune   *pb.PruneBackupsRequest
+	pruneResp  *pb.PruneBackupsResponse
 }
 
 func (f *recordingBackupAPI) CreateBackup(req *pb.CreateBackupRequest) (*pb.CreateBackupResponse, error) {
@@ -26,6 +28,14 @@ func (f *recordingBackupAPI) CreateBackup(req *pb.CreateBackupRequest) (*pb.Crea
 func (f *recordingBackupAPI) RestoreBackup(req *pb.RestoreBackupRequest) (*pb.RestoreBackupResponse, error) {
 	f.gotRestore = req
 	return &pb.RestoreBackupResponse{Message: "ok"}, nil
+}
+
+func (f *recordingBackupAPI) PruneBackups(req *pb.PruneBackupsRequest) (*pb.PruneBackupsResponse, error) {
+	f.gotPrune = req
+	if f.pruneResp != nil {
+		return f.pruneResp, nil
+	}
+	return &pb.PruneBackupsResponse{Message: "ok"}, nil
 }
 
 func withRecordingBackupClient(t *testing.T) *recordingBackupAPI {

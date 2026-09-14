@@ -1403,6 +1403,145 @@ func (x *DeleteBackupResponse) GetMessage() string {
 	return ""
 }
 
+// PruneBackupsRequest deletes older backups for a tenant, keeping only the
+// newest `keep` per (username, database) group — or per (username, label)
+// for a `--hook` backup, since a hook backup's label fills the same
+// database field (#1839). Retention POLICY (when, how often, how many) is
+// still the caller's decision; this RPC is the mechanism that makes
+// "how many" actually enforceable instead of a cron job hand-rolling
+// `rm` against the daemon's backup directory.
+type PruneBackupsRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Tenant whose backups to prune.
+	Username string `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"`
+	// Optional database (or hook label) filter. Empty prunes every
+	// database this tenant has backups for, each independently down to
+	// `keep` — one database's history never counts against another's.
+	Database string `protobuf:"bytes,2,opt,name=database,proto3" json:"database,omitempty"`
+	// Number of newest records to keep per group. Must be >= 1: pruning a
+	// specific backup down to zero is `DeleteBackup` making an explicit
+	// per-record choice, not this RPC guessing zero was intended.
+	Keep          int32 `protobuf:"varint,3,opt,name=keep,proto3" json:"keep,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PruneBackupsRequest) Reset() {
+	*x = PruneBackupsRequest{}
+	mi := &file_containarium_v1_backup_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PruneBackupsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PruneBackupsRequest) ProtoMessage() {}
+
+func (x *PruneBackupsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_backup_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PruneBackupsRequest.ProtoReflect.Descriptor instead.
+func (*PruneBackupsRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_backup_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *PruneBackupsRequest) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+func (x *PruneBackupsRequest) GetDatabase() string {
+	if x != nil {
+		return x.Database
+	}
+	return ""
+}
+
+func (x *PruneBackupsRequest) GetKeep() int32 {
+	if x != nil {
+		return x.Keep
+	}
+	return 0
+}
+
+type PruneBackupsResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Operator-facing summary.
+	Message string `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
+	// IDs of the records actually deleted.
+	DeletedIds []string `protobuf:"bytes,2,rep,name=deleted_ids,json=deletedIds,proto3" json:"deleted_ids,omitempty"`
+	// Per-record delete failures, as "<id>: <error>" strings. One bad
+	// record (e.g. a transient object-store error) never aborts pruning
+	// the rest — mirrors CreateBackupResponse.failures (#954).
+	Failures      []string `protobuf:"bytes,3,rep,name=failures,proto3" json:"failures,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PruneBackupsResponse) Reset() {
+	*x = PruneBackupsResponse{}
+	mi := &file_containarium_v1_backup_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PruneBackupsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PruneBackupsResponse) ProtoMessage() {}
+
+func (x *PruneBackupsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_backup_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PruneBackupsResponse.ProtoReflect.Descriptor instead.
+func (*PruneBackupsResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_backup_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *PruneBackupsResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *PruneBackupsResponse) GetDeletedIds() []string {
+	if x != nil {
+		return x.DeletedIds
+	}
+	return nil
+}
+
+func (x *PruneBackupsResponse) GetFailures() []string {
+	if x != nil {
+		return x.Failures
+	}
+	return nil
+}
+
 var File_containarium_v1_backup_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_backup_proto_rawDesc = "" +
@@ -1495,7 +1634,16 @@ const file_containarium_v1_backup_proto_rawDesc = "" +
 	"\x13DeleteBackupRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"0\n" +
 	"\x14DeleteBackupResponse\x12\x18\n" +
-	"\amessage\x18\x01 \x01(\tR\amessage*q\n" +
+	"\amessage\x18\x01 \x01(\tR\amessage\"a\n" +
+	"\x13PruneBackupsRequest\x12\x1a\n" +
+	"\busername\x18\x01 \x01(\tR\busername\x12\x1a\n" +
+	"\bdatabase\x18\x02 \x01(\tR\bdatabase\x12\x12\n" +
+	"\x04keep\x18\x03 \x01(\x05R\x04keep\"m\n" +
+	"\x14PruneBackupsResponse\x12\x18\n" +
+	"\amessage\x18\x01 \x01(\tR\amessage\x12\x1f\n" +
+	"\vdeleted_ids\x18\x02 \x03(\tR\n" +
+	"deletedIds\x12\x1a\n" +
+	"\bfailures\x18\x03 \x03(\tR\bfailures*q\n" +
 	"\x11BackupDestination\x12\"\n" +
 	"\x1eBACKUP_DESTINATION_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18BACKUP_DESTINATION_LOCAL\x10\x01\x12\x1a\n" +
@@ -1507,7 +1655,7 @@ const file_containarium_v1_backup_proto_rawDesc = "" +
 	"\x12VerificationResult\x12#\n" +
 	"\x1fVERIFICATION_RESULT_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aVERIFICATION_RESULT_PASSED\x10\x01\x12\x1e\n" +
-	"\x1aVERIFICATION_RESULT_FAILED\x10\x022\xc0\r\n" +
+	"\x1aVERIFICATION_RESULT_FAILED\x10\x022\xec\x10\n" +
 	"\rBackupService\x12\xfb\x02\n" +
 	"\fCreateBackup\x12$.containarium.v1.CreateBackupRequest\x1a%.containarium.v1.CreateBackupResponse\"\x9d\x02\x92A\x83\x02\n" +
 	"\aBackups\x12\x0fCreate a backup\x1a\xe6\x01Runs pg_dump inside the tenant's container and stores the dump at the chosen off-host destination (local backup dir or GCS). Leave connection.database empty to back up every non-template database found; set it to back up just one.\x82\xd3\xe4\x93\x02\x10:\x01*\"\v/v1/backups\x12\xd3\x01\n" +
@@ -1518,9 +1666,11 @@ const file_containarium_v1_backup_proto_rawDesc = "" +
 	"\rRestoreBackup\x12%.containarium.v1.RestoreBackupRequest\x1a&.containarium.v1.RestoreBackupResponse\"\xa7\x01\x92A\x80\x01\n" +
 	"\aBackups\x12\x10Restore a backup\x1acStreams a stored dump back into a container's database via pg_restore. Destructive when clean=true.\x82\xd3\xe4\x93\x02\x1d:\x01*\"\x18/v1/backups/{id}/restore\x12\x9f\x03\n" +
 	"\fVerifyBackup\x12$.containarium.v1.VerifyBackupRequest\x1a%.containarium.v1.VerifyBackupResponse\"\xc1\x02\x92A\x9b\x02\n" +
-	"\aBackups\x12\x0fVerify a backup\x1a\xfe\x01Restore-tests a stored dump by loading it into a throwaway database inside a target container and running sanity checks, then dropping the scratch database. Never touches the source container. Records the outcome on the backup as durable A.8.13 evidence.\x82\xd3\xe4\x93\x02\x1c:\x01*\"\x17/v1/backups/{id}/verify\x12\xf2\x01\n" +
-	"\fDeleteBackup\x12$.containarium.v1.DeleteBackupRequest\x1a%.containarium.v1.DeleteBackupResponse\"\x94\x01\x92Ay\n" +
-	"\aBackups\x12\x0fDelete a backup\x1a]Deletes a stored dump and its metadata. Retention enforcement is the caller's responsibility.\x82\xd3\xe4\x93\x02\x12*\x10/v1/backups/{id}BKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
+	"\aBackups\x12\x0fVerify a backup\x1a\xfe\x01Restore-tests a stored dump by loading it into a throwaway database inside a target container and running sanity checks, then dropping the scratch database. Never touches the source container. Records the outcome on the backup as durable A.8.13 evidence.\x82\xd3\xe4\x93\x02\x1c:\x01*\"\x17/v1/backups/{id}/verify\x12\x95\x02\n" +
+	"\fDeleteBackup\x12$.containarium.v1.DeleteBackupRequest\x1a%.containarium.v1.DeleteBackupResponse\"\xb7\x01\x92A\x9b\x01\n" +
+	"\aBackups\x12\x0fDelete a backup\x1a\x7fDeletes a stored dump and its metadata by id. See PruneBackups for keep-newest-N retention instead of naming ids one at a time.\x82\xd3\xe4\x93\x02\x12*\x10/v1/backups/{id}\x12\x86\x03\n" +
+	"\fPruneBackups\x12$.containarium.v1.PruneBackupsRequest\x1a%.containarium.v1.PruneBackupsResponse\"\xa8\x02\x92A\x88\x02\n" +
+	"\aBackups\x124Prune old backups, keeping the newest N per database\x1a\xc6\x01Deletes older backup records for a tenant, keeping the newest `keep` per (username, database) — or per (username, label) for a hook backup. One failing delete never aborts pruning the rest. #1839.\x82\xd3\xe4\x93\x02\x16:\x01*\"\x11/v1/backups/pruneBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
 
 var (
 	file_containarium_v1_backup_proto_rawDescOnce sync.Once
@@ -1535,7 +1685,7 @@ func file_containarium_v1_backup_proto_rawDescGZIP() []byte {
 }
 
 var file_containarium_v1_backup_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_containarium_v1_backup_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
+var file_containarium_v1_backup_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
 var file_containarium_v1_backup_proto_goTypes = []any{
 	(BackupDestination)(0),        // 0: containarium.v1.BackupDestination
 	(BackupEngine)(0),             // 1: containarium.v1.BackupEngine
@@ -1556,6 +1706,8 @@ var file_containarium_v1_backup_proto_goTypes = []any{
 	(*VerifyBackupResponse)(nil),  // 16: containarium.v1.VerifyBackupResponse
 	(*DeleteBackupRequest)(nil),   // 17: containarium.v1.DeleteBackupRequest
 	(*DeleteBackupResponse)(nil),  // 18: containarium.v1.DeleteBackupResponse
+	(*PruneBackupsRequest)(nil),   // 19: containarium.v1.PruneBackupsRequest
+	(*PruneBackupsResponse)(nil),  // 20: containarium.v1.PruneBackupsResponse
 }
 var file_containarium_v1_backup_proto_depIdxs = []int32{
 	0,  // 0: containarium.v1.BackupRecord.destination:type_name -> containarium.v1.BackupDestination
@@ -1579,14 +1731,16 @@ var file_containarium_v1_backup_proto_depIdxs = []int32{
 	13, // 18: containarium.v1.BackupService.RestoreBackup:input_type -> containarium.v1.RestoreBackupRequest
 	15, // 19: containarium.v1.BackupService.VerifyBackup:input_type -> containarium.v1.VerifyBackupRequest
 	17, // 20: containarium.v1.BackupService.DeleteBackup:input_type -> containarium.v1.DeleteBackupRequest
-	8,  // 21: containarium.v1.BackupService.CreateBackup:output_type -> containarium.v1.CreateBackupResponse
-	10, // 22: containarium.v1.BackupService.ListBackups:output_type -> containarium.v1.ListBackupsResponse
-	12, // 23: containarium.v1.BackupService.GetBackup:output_type -> containarium.v1.GetBackupResponse
-	14, // 24: containarium.v1.BackupService.RestoreBackup:output_type -> containarium.v1.RestoreBackupResponse
-	16, // 25: containarium.v1.BackupService.VerifyBackup:output_type -> containarium.v1.VerifyBackupResponse
-	18, // 26: containarium.v1.BackupService.DeleteBackup:output_type -> containarium.v1.DeleteBackupResponse
-	21, // [21:27] is the sub-list for method output_type
-	15, // [15:21] is the sub-list for method input_type
+	19, // 21: containarium.v1.BackupService.PruneBackups:input_type -> containarium.v1.PruneBackupsRequest
+	8,  // 22: containarium.v1.BackupService.CreateBackup:output_type -> containarium.v1.CreateBackupResponse
+	10, // 23: containarium.v1.BackupService.ListBackups:output_type -> containarium.v1.ListBackupsResponse
+	12, // 24: containarium.v1.BackupService.GetBackup:output_type -> containarium.v1.GetBackupResponse
+	14, // 25: containarium.v1.BackupService.RestoreBackup:output_type -> containarium.v1.RestoreBackupResponse
+	16, // 26: containarium.v1.BackupService.VerifyBackup:output_type -> containarium.v1.VerifyBackupResponse
+	18, // 27: containarium.v1.BackupService.DeleteBackup:output_type -> containarium.v1.DeleteBackupResponse
+	20, // 28: containarium.v1.BackupService.PruneBackups:output_type -> containarium.v1.PruneBackupsResponse
+	22, // [22:29] is the sub-list for method output_type
+	15, // [15:22] is the sub-list for method input_type
 	15, // [15:15] is the sub-list for extension type_name
 	15, // [15:15] is the sub-list for extension extendee
 	0,  // [0:15] is the sub-list for field type_name
@@ -1604,7 +1758,7 @@ func file_containarium_v1_backup_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_backup_proto_rawDesc), len(file_containarium_v1_backup_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   16,
+			NumMessages:   18,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
