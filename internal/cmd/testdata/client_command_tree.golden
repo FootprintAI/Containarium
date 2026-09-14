@@ -23,6 +23,7 @@ backup create
 backup delete
 backup get
 backup list
+backup prune
 backup restore
 backup verify
 capacity advertise
