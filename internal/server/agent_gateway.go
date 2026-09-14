@@ -10,6 +10,7 @@ import (
 
 	appconfig "github.com/footprintai/containarium/internal/config"
 	"github.com/footprintai/containarium/internal/modelgateway"
+	"github.com/footprintai/containarium/internal/tokenid"
 )
 
 // Model-gateway provisioning for skill boxes (#674 design, productionization of
@@ -53,12 +54,17 @@ var gatewayProviderEnvs = map[string]gatewayProviderEnv{
 
 // mintGatewayToken mints a per-skill gateway token bound to this box's tenant +
 // skill + the configured provider, expiring with the in-box token (agentTokenTTL).
-func (g *gatewayProvisioning) mintGatewayToken(tenant, skillID string) (string, error) {
-	return modelgateway.MintToken(g.secret, modelgateway.GatewayClaims{
+//
+// runID binds the token to one skill run (#1817) and the returned MintedID is
+// what lets the run's exit revoke it: without the jti the issuer would have to
+// re-parse its own token to kill it.
+func (g *gatewayProvisioning) mintGatewayToken(tenant, skillID, runID string) (string, tokenid.MintedID, error) {
+	return modelgateway.MintTokenWithID(g.secret, modelgateway.GatewayClaims{
 		Tenant:        tenant,
 		SkillID:       skillID,
 		Provider:      g.provider,
 		AllowedModels: g.allowedModels,
+		RunID:         runID,
 	}, agentTokenTTL)
 }
 

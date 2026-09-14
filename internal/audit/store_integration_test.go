@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -401,6 +402,79 @@ func TestVerifyChainAgainstAnchor_DetectsDeletedCheckpoint(t *testing.T) {
 	}
 	if result.CurrentRoot != "" {
 		t.Errorf("CurrentRoot = %q, want empty (row no longer exists)", result.CurrentRoot)
+	}
+}
+
+// --- #1818: query by run id -----------------------------------------------
+
+// TestQuery_ByRunID_ReturnsBothLeaseRows proves QueryParams.RunID actually
+// filters at the database, not just in a mock: two run ids each get an
+// issue + end row (the shape agent.run_lease_issue / agent.run_lease_end
+// write per the execution-scoped-authorization design), and querying one
+// run id must return exactly its two rows — the other run id's rows must
+// not leak in.
+func TestQuery_ByRunID_ReturnsBothLeaseRows(t *testing.T) {
+	ctx := context.Background()
+	s := auditTestStore(t)
+
+	logLeaseRow := func(runID, action string, ts time.Time) {
+		t.Helper()
+		if err := s.Log(ctx, &AuditEntry{
+			Timestamp:    ts,
+			Username:     "agent",
+			Action:       action,
+			ResourceType: "agent_skill_run",
+			ResourceID:   runID,
+			RunID:        runID,
+		}); err != nil {
+			t.Fatalf("log %s for run %s: %v", action, runID, err)
+		}
+	}
+
+	base := time.Now().Add(-time.Hour).Truncate(time.Microsecond)
+	logLeaseRow("run-a", "agent.run_lease_issue", base)
+	logLeaseRow("run-a", "agent.run_lease_end", base.Add(time.Second))
+	logLeaseRow("run-b", "agent.run_lease_issue", base.Add(2*time.Second))
+	logLeaseRow("run-b", "agent.run_lease_end", base.Add(3*time.Second))
+
+	entries, total, err := s.Query(ctx, QueryParams{RunID: "run-a"})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if total != 2 {
+		t.Fatalf("total = %d, want 2", total)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("len(entries) = %d, want 2: %+v", len(entries), entries)
+	}
+	// Query orders by timestamp DESC, so the later "end" row comes first.
+	if entries[0].Action != "agent.run_lease_end" || entries[1].Action != "agent.run_lease_issue" {
+		t.Errorf("got actions [%s, %s], want [agent.run_lease_end, agent.run_lease_issue]",
+			entries[0].Action, entries[1].Action)
+	}
+	for _, e := range entries {
+		if e.RunID != "run-a" {
+			t.Errorf("entry (action=%s) RunID = %q, want run-a — a row from another run id leaked in", e.Action, e.RunID)
+		}
+	}
+}
+
+// TestBootstrap_CreatesRunIDIndex proves the bootstrap migration actually
+// creates idx_audit_logs_run_id — a filter without an index degrades
+// silently to a sequential scan, which no unit test against a fake can see.
+func TestBootstrap_CreatesRunIDIndex(t *testing.T) {
+	ctx := context.Background()
+	s := auditTestStore(t)
+
+	var indexName string
+	err := s.pool.QueryRow(ctx,
+		`SELECT indexname FROM pg_indexes WHERE tablename = 'audit_logs' AND indexname = 'idx_audit_logs_run_id'`,
+	).Scan(&indexName)
+	if err != nil {
+		t.Fatalf("idx_audit_logs_run_id not found in pg_indexes: %v", err)
+	}
+	if indexName != "idx_audit_logs_run_id" {
+		t.Errorf("indexName = %q, want idx_audit_logs_run_id", indexName)
 	}
 }
 

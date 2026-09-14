@@ -109,10 +109,23 @@ func (s *AgentSkillServer) StartAgentWorker(ctx context.Context, req *pb.StartAg
 		return nil, status.Error(codes.NotFound, err.Error())
 	}
 
+	// This RPC has no caller-supplied run id yet, so the daemon generates one;
+	// resolveRunID("") cannot fail, hence the discarded error.
+	runID, _ := resolveRunID("")
+
 	// Provision/reuse the box (seeds the skill's persona + its own scoped token,
 	// applies egress policy) — same path the push run uses, with no task input
 	// since the worker pulls its inputs from the queue.
-	containerName, container, err := s.provisionSkillBox(ctx, skill, req.BackendId, req.Pool, "")
+	//
+	// The lease is deliberately dropped (#1817). A worker is long-lived — it
+	// outlives this RPC by design — so there is no "run exit" here to end it on.
+	// The issue audit row (written inside provisionSkillBox) plus
+	// `containarium token revoke --jti` are how an operator ends one by hand in
+	// the meantime. Ending a worker's lease when the worker stops is a
+	// later-phase item in the design
+	// (docs/architecture/execution-scoped-authorization.md §3, "Crew members and
+	// queue workers").
+	containerName, container, _, err := s.provisionSkillBox(ctx, skill, req.BackendId, req.Pool, "", runID)
 	if err != nil {
 		return nil, err
 	}
@@ -131,7 +144,7 @@ func (s *AgentSkillServer) StartAgentWorker(ctx context.Context, req *pb.StartAg
 
 	s.startPollMode(containerName, queueToken, workerID, skill.Id)
 
-	return &pb.StartAgentWorkerResponse{Container: container, WorkerId: workerID}, nil
+	return &pb.StartAgentWorkerResponse{Container: container, WorkerId: workerID, RunId: runID}, nil
 }
 
 // startPollMode launches agent-runtime in poll mode as a background worker in

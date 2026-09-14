@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/footprintai/containarium/internal/tokenid"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -43,27 +44,46 @@ type GatewayClaims struct {
 }
 
 // MintToken signs a gateway token bound to one tenant/provider, expiring after
-// ttl.
+// ttl. A thin wrapper over MintTokenWithID that drops the MintedID for
+// callers that don't need to revoke what they minted.
 func MintToken(secret []byte, c GatewayClaims, ttl time.Duration) (string, error) {
+	tok, _, err := MintTokenWithID(secret, c, ttl)
+	return tok, err
+}
+
+// MintTokenWithID is MintToken that also returns the minted jti and expiry
+// (#1815), mirroring auth.GenerateDelegatedTokenWithID, so the daemon can
+// later revoke exactly the gateway token it issued for a run without
+// re-parsing it.
+func MintTokenWithID(secret []byte, c GatewayClaims, ttl time.Duration) (string, tokenid.MintedID, error) {
 	if c.Tenant == "" {
-		return "", fmt.Errorf("tenant required")
+		return "", tokenid.MintedID{}, fmt.Errorf("tenant required")
 	}
 	if c.Provider == "" {
-		return "", fmt.Errorf("provider required")
+		return "", tokenid.MintedID{}, fmt.Errorf("provider required")
 	}
 	jti := make([]byte, 16)
 	if _, err := rand.Read(jti); err != nil {
-		return "", err
+		return "", tokenid.MintedID{}, err
 	}
 	now := time.Now()
+	id := hex.EncodeToString(jti)
 	c.RegisteredClaims = jwt.RegisteredClaims{
 		Issuer:    gatewayIssuer,
 		Subject:   c.Tenant,
-		ID:        hex.EncodeToString(jti),
+		ID:        id,
 		IssuedAt:  jwt.NewNumericDate(now),
 		ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
 	}
-	return jwt.NewWithClaims(jwt.SigningMethodHS256, c).SignedString(secret)
+	signed, err := jwt.NewWithClaims(jwt.SigningMethodHS256, c).SignedString(secret)
+	if err != nil {
+		return "", tokenid.MintedID{}, err
+	}
+	// MintedID.ExpiresAt must equal the signed exp exactly: read it back from
+	// the claims' NumericDate (which jwt.NewNumericDate already truncated to
+	// jwt.TimePrecision), not from the pre-truncation now.Add(ttl) — those
+	// differ by up to a second.
+	return signed, tokenid.MintedID{JTI: id, ExpiresAt: c.ExpiresAt.Time}, nil
 }
 
 // VerifyToken validates signature, issuer, and expiry, returning the claims.

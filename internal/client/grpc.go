@@ -960,6 +960,19 @@ func (c *GRPCClient) DeleteBackup(id string) (*pb.DeleteBackupResponse, error) {
 	return resp, nil
 }
 
+// PruneBackups deletes older backups for a tenant, keeping the newest N
+// per database (#1839).
+func (c *GRPCClient) PruneBackups(req *pb.PruneBackupsRequest) (*pb.PruneBackupsResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	resp, err := c.backupClient.PruneBackups(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to prune backups: %w", err)
+	}
+	return resp, nil
+}
+
 // CreateVolume creates a shared CephFS volume via gRPC.
 func (c *GRPCClient) CreateVolume(req *pb.CreateVolumeRequest) (*pb.CreateVolumeResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)

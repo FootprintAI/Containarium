@@ -38,6 +38,9 @@ func (f *fakeBackupAPI) RestoreBackup(*pb.RestoreBackupRequest) (*pb.RestoreBack
 func (f *fakeBackupAPI) DeleteBackup(string) (*pb.DeleteBackupResponse, error) {
 	return nil, errors.New("not used")
 }
+func (f *fakeBackupAPI) PruneBackups(*pb.PruneBackupsRequest) (*pb.PruneBackupsResponse, error) {
+	return nil, errors.New("not used")
+}
 func (f *fakeBackupAPI) Close() error { f.closed = true; return nil }
 
 func withFakeBackupClient(t *testing.T, f *fakeBackupAPI) {

@@ -5,6 +5,30 @@ name: Managed clusters KVM e2e
 # section, run with real everything — Incus VMs, k3s, cluster-autoscaler,
 # VPA — by scripts/cluster-e2e.sh + test/e2e/cluster/.
 #
+# It is also the home of the repo's OTHER real-daemon smoke lane: the
+# agent-skill run-lease e2e (#1819, scripts/agent-skill-lease-e2e.sh),
+# which measures the execution-scoped-authorization PRD's headline metric
+# — a run's gateway token is 401 within 5 s of the run returning — against
+# a real daemon, real Postgres, and a real Incus skill box. It lives here
+# because this is where "real daemon + real Postgres, on the nightly and
+# release-blocking cadence" already is; it needs no KVM and no
+# Kubernetes, so it runs on a GitHub-hosted runner it provisions itself
+# and never touches the self-hosted host's Incus.
+#
+# WHAT GATES THE LEASE PATH PER-PR, precisely — because "wired into CI"
+# reads as more than it is. This lane is NOT a per-PR check: like the
+# cluster journey beside it, it runs nightly and on release tags. The
+# per-PR gate on the run-lease code itself is the unit suites that
+# shipped with it (#1817, #1823-#1826: internal/runlease,
+# internal/server/agent_server_test.go, internal/modelgateway,
+# internal/audit) under `Unit + default e2e`, which IS a required check
+# on main. This lane is the backstop for what those cannot reach: the
+# real wall-clock bound, against a real gateway and a real Postgres. The
+# `pull_request` paths below also list the lease path's Go directories,
+# so a change there runs the cheap `build-unit` job and gets the
+# script's syntax and lint checked — `build-unit` is not itself a
+# required check, so treat that as advisory rather than a gate.
+#
 # Cadence per the design's CI-gates section: NIGHTLY + RELEASE-BLOCKING
 # (tag push), not per-PR — a full run provisions VMs for over an hour.
 # Pull requests touching the lane get only the cheap job: compile the
@@ -33,21 +57,44 @@ on:
   workflow_dispatch:
     inputs:
       sabotage:
-        description: 'Deliberate breakage; join-token proves the lane can fail'
+        description: 'Deliberate breakage; each option proves one lane can fail'
         type: choice
-        options: ['none', 'join-token']
+        # join-token:  no cluster node can register, so the journey never
+        #   reaches READY — proves the cluster lane can fail (#1418).
+        # no-revoke:   the run_exit revocation rows are deleted right after the
+        #   run returns, which is the state a missing revoke call produces —
+        #   proves the run-lease lane can fail on the REVOCATION (#1819).
+        # slow-revoke: the revocation happens, but the first poll is delayed
+        #   past the budget — proves the run-lease lane can fail on the
+        #   5s BOUND, which it once could not (the budget was only the poll
+        #   loop's continuation condition, never a gate on the measurement).
+        options: ['none', 'join-token', 'no-revoke', 'slow-revoke']
         default: 'none'
   pull_request:
     paths:
       - 'test/e2e/cluster/**'
       - 'scripts/cluster-e2e.sh'
+      - 'scripts/agent-skill-lease-e2e.sh'
       - '.github/workflows/cluster-e2e.yml'
+      # The lease path's own code. This does not make the 45-minute lane run
+      # on a PR — see the header — it runs `build-unit`, so a change to the
+      # credential lifecycle at least gets this lane's script checked.
+      - 'internal/runlease/**'
+      - 'internal/modelgateway/**'
+      - 'internal/server/agent_server.go'
+      - 'internal/server/agent_gateway.go'
 
 permissions:
   contents: read
 
 # One run at a time regardless of ref: every run owns the runner's Incus
 # (VM capacity, the fixed CA-provider port, the sweep of e2etenant VMs).
+#
+# The run-lease jobs below are the exception the group costs nothing for:
+# they run on ephemeral GitHub-hosted runners with their own Incus, so
+# they own nothing here — and because they share the cluster lane's
+# triggers exactly (nightly, release tags, dispatch), serializing them
+# alongside it never queues a pull request behind an hour-long nightly.
 concurrency:
   group: cluster-e2e-kvm
   cancel-in-progress: false
@@ -69,7 +116,23 @@ jobs:
         # tests — no repo-wide `go test ./...` lane exists to catch it.
         run: go test -race -count=1 -v ./test/e2e/cluster/
       - name: Lane script syntax
-        run: bash -n scripts/cluster-e2e.sh
+        # Both lanes' scripts. The expensive jobs below run nightly, so a
+        # syntax error introduced in a PR would otherwise sit undetected
+        # until the next nightly — by which point it is someone else's
+        # 2:30am red run.
+        run: |
+          bash -n scripts/cluster-e2e.sh
+          bash -n scripts/agent-skill-lease-e2e.sh
+
+      - name: Lane script lint
+        # shellcheck is preinstalled on ubuntu-latest — no apt-get, which
+        # kept ~30s off every PR that touches the lane.
+        #
+        # Only the lease script: scripts/cluster-e2e.sh predates this step
+        # and carries findings of its own (the same deliberate SC2024 the
+        # lease script disables inline, among others). Cleaning those is a
+        # separate change; gating the NEW script is what stops new ones.
+        run: shellcheck scripts/agent-skill-lease-e2e.sh
 
   kvm-e2e:
     name: six-step journey (real VMs)
@@ -107,3 +170,81 @@ jobs:
             exit 1
           fi
           echo "lane went red under sabotage: it can fail, and its green is evidence."
+
+  agent-skill-lease:
+    name: agent-skill run lease (token 401 within 5s of run exit)
+    # Same cadence as the cluster lane above — nightly and release-blocking —
+    # so the PRD's headline metric is re-measured on the schedule a release
+    # is gated on, not just once in the PR that added the script (#1819).
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && inputs.sabotage == 'none')
+    # A skill box is an Incus SYSTEM CONTAINER, so this lane needs no KVM and
+    # provisions its own host — the cluster-container-e2e.yml precedent. It
+    # therefore does not compete with kvm-e2e above for the self-hosted host,
+    # which is why the two run in parallel rather than in sequence.
+    runs-on: ubuntu-latest
+    # Budget: ~8m Incus provisioning, ~3m build, ~1m postgres pull, then the
+    # warm-up run's first box provision (the agent-runtime recipe installs
+    # Node inside the box) dominates at ~5-10m. The measured run itself is
+    # ~30s. 45 leaves room for a cold runner without letting a wedged daemon
+    # hold the queue.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Provision Incus (the incus-create.yml precedent, minus KVM)
+        run: bash scripts/ci-incus-container-host.sh
+
+      - name: Run the run-lease lane
+        # No pipe: the script's exit status is the job's. Each assertion
+        # prints what it observed, so a green run is evidence rather than
+        # an absence of output.
+        run: bash scripts/agent-skill-lease-e2e.sh
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          sudo incus list || true
+          sudo incus info || true
+          free -m || true
+          df -h /mnt / || true
+
+  prove-lease-lane-can-fail:
+    name: sabotage run (run-lease lane must go red)
+    # Both lease sabotages land here, because assertion 2 makes two separate
+    # claims — the credential is dead, AND it is dead within the bound — and a
+    # lane should be able to fail each on demand. no-revoke breaks the first,
+    # slow-revoke the second.
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      (inputs.sabotage == 'no-revoke' || inputs.sabotage == 'slow-revoke')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Provision Incus (the incus-create.yml precedent, minus KVM)
+        run: bash scripts/ci-incus-container-host.sh
+
+      - name: Break the lease property and expect the lane to fail
+        # Inversion is explicit and lives only in this dispatch-only job:
+        # green here means the lane DETECTED the broken property. A lane
+        # that has never failed proves nothing.
+        env:
+          CONTAINARIUM_E2E_SABOTAGE: ${{ inputs.sabotage }}
+        run: |
+          if bash scripts/agent-skill-lease-e2e.sh; then
+            echo "::error::lane stayed GREEN under sabotage=${CONTAINARIUM_E2E_SABOTAGE} — it cannot fail that way, so its green proves nothing"
+            exit 1
+          fi
+          echo "lane went red under sabotage=${CONTAINARIUM_E2E_SABOTAGE}: it can fail, and its green is evidence."

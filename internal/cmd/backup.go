@@ -22,7 +22,8 @@ the ISO 27001 A.8.13 control mapping.
   containarium backup list alice --server <host>
   containarium backup restore alice-app-20260605T130405Z --clean --server <host>
   containarium backup verify alice-app-20260605T130405Z --target scratch --server <host>
-  containarium backup delete alice-app-20260605T130405Z --server <host>`,
+  containarium backup delete alice-app-20260605T130405Z --server <host>
+  containarium backup prune alice --database app --keep 7 --server <host>`,
 }
 
 func init() {
@@ -39,6 +40,7 @@ type backupAPI interface {
 	RestoreBackup(req *pb.RestoreBackupRequest) (*pb.RestoreBackupResponse, error)
 	VerifyBackup(req *pb.VerifyBackupRequest) (*pb.VerifyBackupResponse, error)
 	DeleteBackup(id string) (*pb.DeleteBackupResponse, error)
+	PruneBackups(req *pb.PruneBackupsRequest) (*pb.PruneBackupsResponse, error)
 	Close() error
 }
 
@@ -77,6 +79,8 @@ func engineLabel(e pb.BackupEngine) string {
 	switch e {
 	case pb.BackupEngine_BACKUP_ENGINE_POSTGRES:
 		return "postgres"
+	case pb.BackupEngine_BACKUP_ENGINE_HOOK:
+		return "hook"
 	default:
 		// Covers a record written before the enum existed, and one whose
 		// engine this build does not know. Both are genuinely unknown to

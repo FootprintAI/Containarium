@@ -94,6 +94,17 @@ type Record struct {
 	// backup taken before verification existed, or a source that could
 	// not be queried).
 	RelationCount *int64 `json:"relation_count,omitempty"`
+
+	// Encrypted is true when the stored bytes are an age ciphertext (#1831).
+	// SizeBytes and SHA256 describe the ciphertext — what is actually stored
+	// — so the integrity gate in fetchDump is unchanged. AgeRecipient is the
+	// public recipient the dump was encrypted to; it is a public key, safe to
+	// record, and tells an operator which identity can restore it.
+	Encrypted    bool   `json:"encrypted,omitempty"`
+	AgeRecipient string `json:"age_recipient,omitempty"`
+	// Hook is the in-tenant command that produced a hook backup (#1831);
+	// empty for pg_dump backups.
+	Hook string `json:"hook,omitempty"`
 }
 
 // PgConn carries the connection parameters pg_dump / pg_restore use
@@ -143,6 +154,19 @@ type CreateOptions struct {
 	Conn          PgConn
 	Destination   Destination
 	GCSBucket     string // e.g. "gs://my-backups/pg" — required for DestGCS
+
+	// Hook, when set, is an absolute path to an executable INSIDE the
+	// container whose stdout is the dump (#1831). The pg_dump path and Conn
+	// are bypassed entirely: the hook reaches its database over localhost
+	// under the container's own auth, so no credential crosses to the
+	// platform. Label fills the record's "database" slot (defaults to the
+	// hook's basename).
+	Hook  string
+	Label string
+	// AgeRecipient, when set, encrypts the dump to this age recipient
+	// ("age1…") in-process before it is staged or uploaded (#1831). The
+	// platform and the storage backend then hold ciphertext only.
+	AgeRecipient string
 }
 
 // RestoreOptions parameterizes a restore.
@@ -151,6 +175,10 @@ type RestoreOptions struct {
 	ContainerName string
 	Conn          PgConn // Database empty → restore into the record's database
 	Clean         bool   // pass --clean --if-exists to pg_restore
+	// AgeIdentity ("AGE-SECRET-KEY-1…") decrypts an Encrypted record for
+	// this one call. The platform holds no decryption key; the caller
+	// supplies it and it is never stored or logged (#1831).
+	AgeIdentity string
 }
 
 func (m *Manager) now() time.Time {
@@ -163,12 +191,32 @@ func (m *Manager) now() time.Time {
 // Create dumps the container's database and stores it at the chosen
 // destination, returning the committed record.
 func (m *Manager) Create(opts CreateOptions) (*Record, error) {
-	conn := opts.Conn.withDefaults()
-	if conn.Database == "" {
-		return nil, fmt.Errorf("database is required")
-	}
 	if opts.ContainerName == "" {
 		return nil, fmt.Errorf("container name is required")
+	}
+	// Hook mode (#1831): the tenant's own program produces the dump, so no
+	// database name or credential is required — or used.
+	hookMode := strings.TrimSpace(opts.Hook) != ""
+	conn := opts.Conn.withDefaults()
+	var dbLabel string
+	if hookMode {
+		if err := validateHook(opts.Hook); err != nil {
+			return nil, err
+		}
+		dbLabel = strings.TrimSpace(opts.Label)
+		if dbLabel == "" {
+			dbLabel = hookLabel(opts.Hook)
+		}
+	} else {
+		if conn.Database == "" {
+			return nil, fmt.Errorf("database is required")
+		}
+		dbLabel = conn.Database
+	}
+	if opts.AgeRecipient != "" {
+		if _, err := parseRecipient(opts.AgeRecipient); err != nil {
+			return nil, err
+		}
 	}
 	switch opts.Destination {
 	case DestLocal:
@@ -184,7 +232,7 @@ func (m *Manager) Create(opts CreateOptions) (*Record, error) {
 		return nil, fmt.Errorf("unknown or unspecified destination %q", opts.Destination)
 	}
 
-	id := fmt.Sprintf("%s-%s-%s", opts.Username, conn.Database, m.now().UTC().Format("20060102T150405Z"))
+	id := fmt.Sprintf("%s-%s-%s", opts.Username, dbLabel, m.now().UTC().Format("20060102T150405Z"))
 	// The id becomes a path component (sidecar, temp files). A
 	// username or database carrying a separator would let it
 	// escape m.dir — reject rather than silently mangle.
@@ -193,15 +241,28 @@ func (m *Manager) Create(opts CreateOptions) (*Record, error) {
 	}
 	inContainerPath := "/tmp/containarium-backup-" + id + ".dump"
 
-	// 1. Dump inside the container (custom format = compressed + selective
-	//    restore). Password travels via PGPASSWORD, not argv.
-	dumpScript := fmt.Sprintf(
-		"pg_dump -h %s -p %d -U %s -d %s -Fc -f %s",
-		shellQuote(conn.Host), conn.Port, shellQuote(conn.User),
-		shellQuote(conn.Database), shellQuote(inContainerPath),
-	)
-	if _, stderr, err := m.ops.ExecWithOutput(opts.ContainerName, wrapPg(conn.Password, dumpScript)); err != nil {
-		return nil, fmt.Errorf("pg_dump failed: %w: %s", err, strings.TrimSpace(stderr))
+	// 1. Produce the dump inside the container, writing to the same staging
+	//    path either way so step 2 (pull + clean up) is shared.
+	if hookMode {
+		// The hook's stdout is the dump. `set -euo pipefail` (from wrapPg)
+		// means a failing hook fails the backup instead of staging an empty
+		// or truncated file. The path is single-quoted; it is a program to
+		// run, never a shell fragment.
+		hookScript := shellQuote(strings.TrimSpace(opts.Hook)) + " > " + shellQuote(inContainerPath)
+		if _, stderr, err := m.ops.ExecWithOutput(opts.ContainerName, wrapPg("", hookScript)); err != nil {
+			return nil, fmt.Errorf("backup hook %s failed: %w: %s", opts.Hook, err, strings.TrimSpace(stderr))
+		}
+	} else {
+		// pg_dump (custom format = compressed + selective restore). Password
+		// travels via PGPASSWORD, not argv.
+		dumpScript := fmt.Sprintf(
+			"pg_dump -h %s -p %d -U %s -d %s -Fc -f %s",
+			shellQuote(conn.Host), conn.Port, shellQuote(conn.User),
+			shellQuote(conn.Database), shellQuote(inContainerPath),
+		)
+		if _, stderr, err := m.ops.ExecWithOutput(opts.ContainerName, wrapPg(conn.Password, dumpScript)); err != nil {
+			return nil, fmt.Errorf("pg_dump failed: %w: %s", err, strings.TrimSpace(stderr))
+		}
 	}
 
 	// 2. Pull the archive to the host, then clean up the in-container copy.
@@ -211,6 +272,9 @@ func (m *Manager) Create(opts CreateOptions) (*Record, error) {
 	}
 	_ = m.ops.Exec(opts.ContainerName, []string{"rm", "-f", inContainerPath})
 	if len(data) == 0 {
+		if hookMode {
+			return nil, fmt.Errorf("backup hook %s produced no output", opts.Hook)
+		}
 		return nil, fmt.Errorf("pg_dump produced an empty archive (check database name and credentials)")
 	}
 
@@ -219,30 +283,60 @@ func (m *Manager) Create(opts CreateOptions) (*Record, error) {
 	// cannot be queried still produced a valid dump, so a failure here
 	// leaves the manifest unset rather than failing the backup.
 	var relationCount *int64
-	if n, err := m.countUserRelations(opts.ContainerName, conn, conn.Database); err != nil {
+	engine := EnginePostgres
+	if hookMode {
+		// An opaque hook stream has no Postgres catalog to read a manifest from.
+		engine = EngineHook
+	} else if n, err := m.countUserRelations(opts.ContainerName, conn, conn.Database); err != nil {
 		log.Printf("[backup] could not record relation manifest for %s/%s: %v (verification will have nothing to compare against)",
 			opts.Username, conn.Database, err)
 	} else {
 		relationCount = &n
 	}
 
+	// 2b. Encrypt in-process BEFORE anything is staged or shipped (#1831).
+	//     From here on `data` is the ciphertext: it is what gets checksummed,
+	//     sized, staged and stored, so plaintext never touches the daemon's
+	//     disk or the object store, and fetchDump's integrity gate applies
+	//     to the stored bytes unchanged.
+	encrypted := false
+	if opts.AgeRecipient != "" {
+		ct, err := encryptWithRecipient(data, opts.AgeRecipient)
+		if err != nil {
+			return nil, fmt.Errorf("encrypt dump: %w", err)
+		}
+		data = ct
+		encrypted = true
+	}
+	ext := ".dump"
+	if encrypted {
+		ext = ".dump.age"
+	}
+
 	sum := sha256.Sum256(data)
 	record := &Record{
 		ID:            id,
 		Username:      opts.Username,
-		Database:      conn.Database,
+		Database:      dbLabel,
 		CreatedAt:     m.now().UTC(),
 		SizeBytes:     int64(len(data)),
 		SHA256:        hex.EncodeToString(sum[:]),
 		Destination:   opts.Destination,
-		Engine:        EnginePostgres,
+		Engine:        engine,
 		RelationCount: relationCount,
+		Encrypted:     encrypted,
+	}
+	if encrypted {
+		record.AgeRecipient = strings.TrimSpace(opts.AgeRecipient)
+	}
+	if hookMode {
+		record.Hook = strings.TrimSpace(opts.Hook)
 	}
 
 	if err := os.MkdirAll(m.dir, 0o700); err != nil {
 		return nil, fmt.Errorf("failed to create backup directory: %w", err)
 	}
-	localDump := filepath.Join(m.dir, id+".dump")
+	localDump := filepath.Join(m.dir, id+ext)
 	if err := os.WriteFile(localDump, data, 0o600); err != nil {
 		return nil, fmt.Errorf("failed to stage dump: %w", err)
 	}
@@ -253,7 +347,7 @@ func (m *Manager) Create(opts CreateOptions) (*Record, error) {
 	case DestLocal:
 		record.Location = localDump
 	case DestGCS:
-		destURI := strings.TrimRight(opts.GCSBucket, "/") + "/" + id + ".dump"
+		destURI := strings.TrimRight(opts.GCSBucket, "/") + "/" + id + ext
 		if err := m.uploader.Upload(localDump, destURI); err != nil {
 			_ = os.Remove(localDump)
 			return nil, fmt.Errorf("failed to upload dump to %s: %w", destURI, err)
@@ -423,11 +517,29 @@ func (m *Manager) Restore(opts RestoreOptions) error {
 		return err
 	}
 
+	// A hook backup is an opaque stream the platform never understood; it
+	// cannot be pg_restore'd. Refuse before touching the target (#1831).
+	if r.Engine == EngineHook {
+		return fmt.Errorf("backup %s was produced by tenant hook %s and is an opaque stream: fetch it and apply it with the tenant's own tooling (automatic restore is only supported for %s dumps)",
+			r.ID, r.Hook, EnginePostgres)
+	}
+
 	// Fetch the dump bytes to the host and integrity-check them before
-	// we overwrite a live database.
+	// we overwrite a live database. For an encrypted record the checksum
+	// covers the ciphertext, so integrity is verified BEFORE decryption.
 	data, err := m.fetchDump(r)
 	if err != nil {
 		return err
+	}
+	if r.Encrypted {
+		if strings.TrimSpace(opts.AgeIdentity) == "" {
+			return fmt.Errorf("backup %s is encrypted to %s: supply the matching age identity to restore (the platform holds no decryption key)", r.ID, r.AgeRecipient)
+		}
+		pt, err := decryptWithIdentity(data, opts.AgeIdentity)
+		if err != nil {
+			return fmt.Errorf("decrypt backup %s: %w", r.ID, err)
+		}
+		data = pt
 	}
 
 	conn := opts.Conn.withDefaults()

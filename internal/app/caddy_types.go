@@ -18,6 +18,11 @@ type CaddyServerConfig struct {
 	ListenerWrappers []CaddyListenerWrapper `json:"listener_wrappers,omitempty"`
 	Routes           []CaddyRouteTyped      `json:"routes"` // No omitempty - Caddy needs empty array to exist
 	TrustedProxies   *CaddyTrustedProxies   `json:"trusted_proxies,omitempty"`
+	// ClientIPHeaders names the request headers Caddy derives the real client
+	// IP from when the peer is inside TrustedProxies — e.g. Cf-Connecting-Ip
+	// for a Cloudflare-fronted host. Empty keeps Caddy's default (peer IP,
+	// or the PROXY-decoded source). See #1829.
+	ClientIPHeaders []string `json:"client_ip_headers,omitempty"`
 }
 
 // CaddyListenerWrapper represents one entry in a server's listener_wrappers

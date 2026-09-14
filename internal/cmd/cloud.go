@@ -59,15 +59,14 @@ history. Writes the enrollment to ~/.containarium/cloud.yaml at mode 0600.`,
 }
 
 var (
-	cloudEnrollControlPlane    string
-	cloudEnrollTokenFile       string
-	cloudEnrollInsecure        bool
-	cloudEnrollJWTSecretFile   string
-	cloudEnrollBackendID       string
-	cloudEnrollNoDriverToken   bool
-	cloudEnrollDriverTTL       time.Duration
-	cloudEnrollAdoptForeign    bool
-	cloudEnrollNoBlockMetadata bool
+	cloudEnrollControlPlane  string
+	cloudEnrollTokenFile     string
+	cloudEnrollInsecure      bool
+	cloudEnrollJWTSecretFile string
+	cloudEnrollBackendID     string
+	cloudEnrollNoDriverToken bool
+	cloudEnrollDriverTTL     time.Duration
+	cloudEnrollAdoptForeign  bool
 )
 
 var cloudEnrollCmd = &cobra.Command{
@@ -119,7 +118,6 @@ func init() {
 	cloudEnrollCmd.Flags().BoolVar(&cloudEnrollNoDriverToken, "no-driver-token", false, "enroll without minting a driver token (host registers + heartbeats but the cloud cannot place workloads on it)")
 	cloudEnrollCmd.Flags().DurationVar(&cloudEnrollDriverTTL, "driver-token-ttl", 30*24*time.Hour, "driver token lifetime (capped at the daemon max, 30d); re-run `cloud enroll` before it expires to rotate")
 	cloudEnrollCmd.Flags().BoolVar(&cloudEnrollAdoptForeign, "adopt-foreign", false, "enroll even if this host already runs cloud-managed containers belonging to OTHER organizations (the cloud refuses by default); only use when the co-residency is understood and intended")
-	cloudEnrollCmd.Flags().BoolVar(&cloudEnrollNoBlockMetadata, "no-block-metadata", false, "skip installing the FORWARD-chain iptables rule + reboot unit that blocks tenant containers from reaching the cloud metadata endpoint (#1103); on by default for BYOC")
 	_ = cloudEnrollCmd.MarkFlagRequired("control-plane")
 	_ = cloudEnrollCmd.MarkFlagRequired("token-file")
 }
@@ -242,7 +240,7 @@ func runCloudEnroll(cmd *cobra.Command, _ []string) error {
 	// block enrollment (see #1103 for the open product decision on whether
 	// it eventually should).
 	printPosture(hostcheck.RunPosture())
-	applyMetadataBlock(cmd, "incusbr0", cloudEnrollNoBlockMetadata)
+	applyMetadataBlock(cmd, "incusbr0")
 	return nil
 }
 

@@ -109,6 +109,38 @@ wildcard (`0.0.0.0/0`, `::/0`) CIDR lists at construction time. An
 unrestricted allow list lets any direct VPC peer spoof its source IP via a
 forged PROXY header.
 
+## CDN-fronted hosts: real client IP behind Cloudflare (#1829)
+
+PROXY protocol solves the sentinel hop. It does **not** cover a hostname that
+is proxied by a CDN (an orange-cloud Cloudflare record): the CDN terminates
+the client connection, so the TCP peer the sentinel sees — and therefore the
+address it stamps into the PROXY header — is the CDN edge, not the visitor.
+The real client IP arrives instead in an HTTP header the CDN sets
+(`CF-Connecting-IP` for Cloudflare).
+
+Two daemon flags teach Caddy to use that header, and only from the CDN's own
+networks:
+
+```
+--client-ip-header Cf-Connecting-Ip \
+--trusted-proxy-cidrs 173.245.48.0/20,103.21.244.0/22,...   # the CDN's published ranges
+```
+
+- `--client-ip-header` sets the Caddy server's `client_ip_headers`.
+- `--trusted-proxy-cidrs` is **unioned** into `trusted_proxies` alongside
+  `--proxy-protocol-trusted`. Caddy only honors a client-IP header from a peer
+  inside `trusted_proxies`, so the CDN ranges are what make it trustworthy.
+- The PROXY-protocol **allow list is deliberately not widened**: a CDN never
+  sends PROXY headers, and letting CDN ranges send them would allow any edge
+  to assert an arbitrary source via a forged PROXY header.
+
+The two features are independent — a CDN-only host can use these flags
+without `--proxy-protocol`. Like the PROXY wrappers, this configuration is
+remembered by the daemon and **re-applied automatically** when the bundled
+Caddy reverts to its stub Caddyfile (the same self-heal as #400), so a
+daemon or Caddy restart no longer silently drops it. `0.0.0.0/0` and
+malformed CIDRs are refused at daemon startup.
+
 ## Recommended rollout
 
 1. **Deploy daemon** (backend VM) with `--proxy-protocol` flags. The daemon
@@ -281,6 +313,50 @@ After restart, `curl https://X.example.com/` should return HTTP 404 (daemon's "n
 
 **Why this trap exists.** The sentinel-side PROXY flag is per-deployment policy; the primary-side flag is per-primary configuration. There is no handshake between them that detects mismatch, so the first request silently fails. Until that's fixed in code, every tunnel-promoted primary stood up against a PROXY-enabled sentinel needs the matching flag.
 
+### A `--client-ip-header`/`--trusted-proxy-cidrs` (or any) flag change silently has no effect
+
+**Symptom.** You add a flag to a systemd drop-in, `daemon-reload` and
+restart, but the daemon behaves as if the flag was never set — no startup
+log line for it, no change in Caddy's live config. There's no error
+anywhere; the daemon starts and runs fine, just without your change.
+
+**Cause.** `ExecStart=` is not additive across drop-in files. Each
+`ExecStart=\nExecStart=<full command line>` pair **replaces** the unit's
+entire command line, it does not append to it. If more than one drop-in
+under `<unit>.service.d/` sets `ExecStart`, systemd applies them in
+filename order and only the **last one wins** — silently. A flag added to
+an earlier-sorting file (alphabetically) is simply discarded the moment a
+later-sorting file's `ExecStart` takes over, with nothing in the logs to
+say so.
+
+This is easy to hit by accident: a host accumulates drop-ins over time
+(one from initial provisioning, one from a later `pool join` or similar
+tooling that appends its own `--daemon-flag`s), and it's rarely obvious
+which one is actually in force just from looking at the directory listing.
+
+**Fix.** Before assuming an edit took effect, check what actually wins:
+
+```bash
+sudo systemctl cat <unit> | grep -B2 '^ExecStart='
+```
+
+This prints every `ExecStart=` declaration in file order, prefixed by
+which drop-in set it — the *last* block in the output is the one that's
+actually running. If your flag isn't in that last block, either edit the
+file that wins, or add a new drop-in with a filename that sorts after
+every existing one (a `zz-` prefix is a simple, explicit way to guarantee
+that regardless of what else gets added later) and put the *complete*
+command line in it, not just the new flag.
+
+**Why this trap exists.** Unlike most systemd directives (`Environment=`,
+`ReadWritePaths=`, etc.), which are list-type and accumulate across
+drop-ins, `ExecStart=` is single-valued and the `ExecStart=` (blank) +
+`ExecStart=<cmd>` idiom exists specifically to let a drop-in *replace* the
+main unit's command line. That's the right primitive for what it's for,
+but it means two drop-ins that both use it are competing, not
+cooperating, and systemd has no diagnostic for "another file already set
+this."
+
 ### `Failed to ensure Caddy server config: ... 409 key already exists: http` on every daemon startup
 
 **Symptom.** `journalctl -u containarium.service` shows this warning every time the daemon starts; subsequent daemon-driven Caddy updates appear to do nothing.
@@ -296,3 +372,4 @@ After restart, `curl https://X.example.com/` should return HTTP 404 (daemon's "n
 | [#105](https://github.com/FootprintAI/Containarium/pull/105) | Sentinel side: `WriteProxyV2` encoder, `--proxy-protocol` flag, header injected in `buildSNIRoutingHandler`. Includes the Go-level e2e and the real-Caddy e2e gated by build tag. |
 | [#106](https://github.com/FootprintAI/Containarium/pull/106) | Daemon side, srv0 only: `--proxy-protocol` and `--proxy-protocol-trusted` flags; `ProxyManager.EnableProxyProtocol` rewritten to use the atomic `getFullConfig`+`loadConfig` pattern (the previous PATCH-on-server form would clobber `listen`/`routes`). |
 | [#107](https://github.com/FootprintAI/Containarium/pull/107) | Daemon side, L4: pattern B wrapping; `L4ProxyManager` becomes wrapping-aware so `RouteSyncJob`'s CRUD operations on the inner route list don't undo the wrapper. Closes the gRPC-outage gap from #106. |
+| [#1832](https://github.com/FootprintAI/Containarium/pull/1832) | `--client-ip-header` / `--trusted-proxy-cidrs` for CDN-fronted hosts (#1829, see above), with self-heal durability across daemon/Caddy restarts. |

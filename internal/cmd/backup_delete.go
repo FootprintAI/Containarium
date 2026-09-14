@@ -9,9 +9,9 @@ import (
 var backupDeleteCmd = &cobra.Command{
 	Use:   "delete <id>",
 	Short: "Delete a stored dump and its index entry",
-	Long: `Delete a stored dump (and its metadata sidecar). Retention policy is
-the caller's responsibility — wire this into a cron job that prunes
-backups older than your retention window. See docs/DB-BACKUP-OPERATIONS.md.`,
+	Long: `Delete a stored dump (and its metadata sidecar) by id. To keep only
+the newest N backups per database instead of naming ids one at a time,
+see 'containarium backup prune'. See docs/DB-BACKUP-OPERATIONS.md.`,
 	Args: cobra.ExactArgs(1),
 	RunE: runBackupDelete,
 }

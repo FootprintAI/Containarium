@@ -7,6 +7,156 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.79.2] - 2026-09-14
+
+### Added
+
+- **Real client IP behind a CDN: `--client-ip-header` + `--trusted-proxy-cidrs`**
+  (#1829). When an app-hosting daemon sits behind a CDN that terminates the
+  client connection (e.g. a Cloudflare-proxied hostname), the visitor's IP
+  arrives in a header such as `CF-Connecting-IP`, not in the PROXY-protocol
+  source — so every container saw the CDN edge IP. The daemon now emits Caddy's
+  `client_ip_headers` and unions the CDN's published ranges into
+  `trusted_proxies`, so the header is honored only from the CDN's own networks.
+  The PROXY-protocol allow list is deliberately **not** widened (a CDN never
+  sends PROXY headers; widening would let an edge forge a source). The
+  configuration is remembered and re-applied by the stub-revert self-heal
+  (same path as #400), closing the durability gap where a daemon or Caddy
+  restart silently dropped a hand-patched config. Independent of
+  `--proxy-protocol`; wildcards and malformed CIDRs are refused at startup.
+  See `docs/PROXY-PROTOCOL.md` → "CDN-fronted hosts".
+
+- **Backup retention/pruning** (#1839). `containarium backup prune <user>
+  [--database db] --keep N` deletes older backup records, keeping only
+  the newest N per (username, database) — or per (username, label) for a
+  `--hook` backup, since a hook backup's label fills the same slot. Omit
+  `--database` to prune every database the tenant has backups for, each
+  independently. One record's delete failure (e.g. a transient
+  object-store error) never aborts pruning the rest. This was the
+  missing half of a scheduled backup (#1831, #1836): a schedule that
+  only ever creates and never prunes fills its backup directory or GCS
+  bucket without bound. Lands as `PruneBackups` on `BackupService`
+  (proto-first, REST via grpc-gateway); deliberately not exposed as an
+  MCP tool, same as `backup delete`.
+
+## [0.79.1] - 2026-09-14
+
+### Added
+
+- **Tenant self-registered backup recipient** (#1836). A tenant can
+  `secrets set <user> CONTAINARIUM_BACKUP_AGE_RECIPIENT age1...` once and
+  every later `backup create` with no `--age-recipient` flag encrypts to
+  it automatically — the missing piece for a *scheduled* backup, which
+  has no operator present to pass the flag on each run. An explicit
+  `--age-recipient` on a call still overrides the registered one; neither
+  a tenant with nothing registered nor a standalone daemon (no secrets
+  store) is an error — both mean plaintext, unchanged from before. The
+  value rides the existing tenant-scoped Secrets API (versioned, audited,
+  eligible for the tenant's own KMS-backed KEK) rather than a new config
+  mechanism; the matching private identity is never registered this way
+  and never touches the platform.
+
+## [0.79.0] - 2026-09-13
+
+Credential-less, tenant-encrypted database backups for multi-tenant fleets.
+
+### Added
+
+- **Credential-less backup hook + user-held dump encryption** (#1831).
+  `containarium backup create` gains two composable, opt-in options for
+  multi-tenant deployments. `--hook <abs-path>` runs the tenant's own
+  program inside the container and captures its stdout as the dump, so no
+  DB credential ever crosses to the platform (and databases nested inside
+  an in-container Docker stack become backup-able). `--age-recipient age1…`
+  encrypts the dump in-process to a user-held age key before it is staged
+  or uploaded, so the daemon's disk, the object store and the operator only
+  ever hold ciphertext; the SHA-256 integrity gate covers the stored
+  ciphertext and is checked before decryption. `backup restore` on an
+  encrypted record requires `--age-identity-file` (per-call, never stored).
+  Hook dumps are opaque and are stored/listed/fetched but not auto-restored.
+  Plaintext `pg_dump` backups are byte-for-byte unchanged. New dependency:
+  `filippo.io/age` (pure Go). See `docs/DB-BACKUP-OPERATIONS.md`.
+
+## [0.78.1] - 2026-09-13
+
+Execution-scoped authorization: a skill run's credentials now die with the
+run. Supersedes burned v0.78.0 — that tag's `release.yml` build failed its
+own version/changelog check (this entry and the version-constant bump are
+the fix); its other three publish workflows had already gone out under
+`v0.78.0` by the time the check caught it, so that tag stays and this one
+carries the release. Design: `docs/architecture/execution-scoped-authorization.md`
+and PRD: `docs/product/execution-scoped-authorization.md`, both in
+FootprintAI/Containarium-cloud.
+
+### Added
+
+- **`RunAgentSkill` holds a credential lease for every run and ends it on
+  exit.** Both the delegated platform JWT and the model-gateway token
+  minted for a skill run are revoked and wiped from the box the moment the
+  run returns — on success, on an agent error, and on a cancelled caller
+  alike — instead of living out their full 30-minute TTL after the run has
+  already finished. (#1826)
+- `RunAgentSkillRequest`/`Response` and `StartAgentWorkerResponse` carry a
+  `run_id` — caller-supplied or generated — bound into both credential
+  types' claims, so a leaked or misused token can be traced back to the
+  run that minted it. (#1824, #1826)
+- `internal/runlease`: the reusable primitive behind the lease — revoke
+  every credential, then wipe the seed files, with per-step timeouts and a
+  measured worst case. (#1823)
+- `containarium audit query --run-id <id>` finds a run's
+  `agent.run_lease_issue` / `agent.run_lease_end` audit rows. (#1825)
+- `model-gateway`: an in-memory revocation store and an opt-in
+  `POST /__gateway/revoke` admin endpoint, so the gateway can run and
+  revoke tokens standalone, without the daemon's Postgres-backed store.
+  Published as its own image, `ghcr.io/footprintai/containarium-model-gateway`.
+  (#1827)
+- `scripts/agent-skill-lease-e2e.sh`, wired into `cluster-e2e.yml`: proves
+  in CI that a run's gateway token is refused within milliseconds of the
+  run returning (measured 9–18ms against a 5000ms budget), and fails red
+  if a run's credentials are ever left unrevoked or revoked too late.
+  (#1828)
+
+## [0.77.0] - 2026-09-13
+
+### Added
+
+- **BYOC host security posture, now loud at enrollment time** (#1103,
+  #1808). `cloud enroll` and `pool join` print the same advisory "Host
+  security posture" section `containarium doctor` already renders (disk
+  encryption, Secure Boot, sshd hardening, auditd, unattended upgrades,
+  metadata reachability, tunnel-token exposure), at the moment a host
+  actually joins — previously only discoverable later via a separate
+  `doctor` run or the cloud webui's per-host badges. Published
+  `docs/security/BYOC-HOST-HARDENING-BASELINE.md` as the customer-facing
+  form of the check table; advisory only, does not block enrollment.
+- **Metadata-endpoint block, unconditional, for every enrolled/joined
+  host** (#1103, #1810, #1811). `cloud enroll` and `pool join` now
+  insert an idempotent `iptables` FORWARD rule blocking the container
+  bridge's traffic to the cloud metadata endpoint (`169.254.169.254`) —
+  closing the pivot from a compromised tenant workload to instance
+  credentials — and install a systemd unit so the rule survives a
+  reboot. Deliberately narrower than the full eBPF network-policy engine
+  (no capacity/incident risk on small hosts); scoped to forwarded
+  container-bridge traffic only, so host-level cloud tooling (guest
+  agent, `gcloud`, disk-resize scripts) is unaffected. **No opt-out** —
+  this is the control that stops a tenant pod from reaching the host's
+  cloud identity, so neither command lets it be consciously disabled. A
+  genuine environment failure (missing `iptables`, bridge not yet
+  created, nftables-only host) is still only a printed warning, never a
+  blocked enroll/join. A hidden `containarium hostharden block-metadata
+  <bridge>` subcommand exists for manual re-application.
+
+### Fixed
+
+- **Release build's `buf` install broke on any upstream `buf` release
+  requiring a newer Go than this repo pins** — `go install
+  .../buf@latest` failed with `buf@v1.73.0 requires go >= 1.26.7
+  (running go 1.26.6)`, caught rehearsing this very release. Replaced
+  with a pinned, checksum-verified `buf` release binary download in
+  `release.yml`, which has no dependency on the runner's Go toolchain.
+
+**Full diff**: https://github.com/FootprintAI/Containarium/compare/v0.76.2...v0.77.0
+
 ## [0.76.2] - 2026-09-11
 
 ### Fixed

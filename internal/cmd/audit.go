@@ -32,6 +32,7 @@ var (
 	auditQueryUsername string
 	auditQueryAction   string
 	auditQueryResource string
+	auditQueryRunID    string
 	auditQueryFrom     string
 	auditQueryTo       string
 	auditQueryLimit    int
@@ -69,9 +70,9 @@ var auditQueryCmd = &cobra.Command{
 first. Filters compose with AND — leave flags unset to match
 everything in that dimension.
 
-The timestamp / action / username / resource columns are
-indexed, so even an unfiltered query against a multi-million-
-row table returns within a few seconds.`,
+The timestamp / action / username / resource / run id columns
+are indexed, so even an unfiltered query against a
+multi-million-row table returns within a few seconds.`,
 	Example: `  # Everything an admin did in the last hour
   containarium audit query --username ops \
       --from "$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)" \
@@ -163,6 +164,7 @@ func init() {
 	auditQueryCmd.Flags().StringVar(&auditQueryUsername, "username", "", "Filter by username (exact match)")
 	auditQueryCmd.Flags().StringVar(&auditQueryAction, "action", "", "Filter by action (exact match, e.g. create_container)")
 	auditQueryCmd.Flags().StringVar(&auditQueryResource, "resource-type", "", "Filter by resource type (e.g. container, secret, api)")
+	auditQueryCmd.Flags().StringVar(&auditQueryRunID, "run-id", "", "Filter by run id (exact match, e.g. an agent skill run)")
 	auditQueryCmd.Flags().StringVar(&auditQueryFrom, "from", "", "Start of time range (RFC3339)")
 	auditQueryCmd.Flags().StringVar(&auditQueryTo, "to", "", "End of time range (RFC3339)")
 	auditQueryCmd.Flags().IntVar(&auditQueryLimit, "limit", 50, "Max rows to return (server caps at 1000)")
@@ -193,6 +195,34 @@ func openAuditStore(ctx context.Context) (*audit.Store, func(), error) {
 	return store, func() { pool.Close() }, nil
 }
 
+// buildAuditQueryParams turns the `audit query` flag values into
+// audit.QueryParams. Pulled out of runAuditQuery so the flag-to-filter
+// wiring is unit-testable without a live Postgres connection (#1818).
+func buildAuditQueryParams(username, action, resourceType, runID, from, to string, limit int) (audit.QueryParams, error) {
+	params := audit.QueryParams{
+		Username:     username,
+		Action:       action,
+		ResourceType: resourceType,
+		RunID:        runID,
+		Limit:        limit,
+	}
+	if from != "" {
+		t, err := time.Parse(time.RFC3339, from)
+		if err != nil {
+			return audit.QueryParams{}, fmt.Errorf("--from must be RFC3339: %w", err)
+		}
+		params.From = t
+	}
+	if to != "" {
+		t, err := time.Parse(time.RFC3339, to)
+		if err != nil {
+			return audit.QueryParams{}, fmt.Errorf("--to must be RFC3339: %w", err)
+		}
+		params.To = t
+	}
+	return params, nil
+}
+
 func runAuditQuery(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 	store, cleanup, err := openAuditStore(ctx)
@@ -201,25 +231,10 @@ func runAuditQuery(cmd *cobra.Command, args []string) error {
 	}
 	defer cleanup()
 
-	params := audit.QueryParams{
-		Username:     auditQueryUsername,
-		Action:       auditQueryAction,
-		ResourceType: auditQueryResource,
-		Limit:        auditQueryLimit,
-	}
-	if auditQueryFrom != "" {
-		t, err := time.Parse(time.RFC3339, auditQueryFrom)
-		if err != nil {
-			return fmt.Errorf("--from must be RFC3339: %w", err)
-		}
-		params.From = t
-	}
-	if auditQueryTo != "" {
-		t, err := time.Parse(time.RFC3339, auditQueryTo)
-		if err != nil {
-			return fmt.Errorf("--to must be RFC3339: %w", err)
-		}
-		params.To = t
+	params, err := buildAuditQueryParams(auditQueryUsername, auditQueryAction, auditQueryResource,
+		auditQueryRunID, auditQueryFrom, auditQueryTo, auditQueryLimit)
+	if err != nil {
+		return err
 	}
 
 	rows, total, err := store.Query(ctx, params)

@@ -76,3 +76,76 @@ func TestTruncateAudit_TinyLimitBypass(t *testing.T) {
 		t.Errorf("truncateAudit n=3 = %q; want %q", got, "hel")
 	}
 }
+
+// #1818 — `audit query --run-id` flag wiring. buildAuditQueryParams is the
+// pure part of runAuditQuery's flag-to-filter translation, pulled out so
+// this doesn't need a live Postgres connection to check.
+func TestBuildAuditQueryParams_ThreadsRunID(t *testing.T) {
+	params, err := buildAuditQueryParams("", "", "", "run-123", "", "", 50)
+	if err != nil {
+		t.Fatalf("buildAuditQueryParams: %v", err)
+	}
+	if params.RunID != "run-123" {
+		t.Errorf("params.RunID = %q, want %q", params.RunID, "run-123")
+	}
+}
+
+func TestBuildAuditQueryParams_ThreadsAllFilters(t *testing.T) {
+	params, err := buildAuditQueryParams("alice", "container_create", "container", "run-123", "", "", 50)
+	if err != nil {
+		t.Fatalf("buildAuditQueryParams: %v", err)
+	}
+	if params.Username != "alice" || params.Action != "container_create" ||
+		params.ResourceType != "container" || params.RunID != "run-123" || params.Limit != 50 {
+		t.Errorf("params = %+v, want all five fields threaded through unchanged", params)
+	}
+}
+
+func TestBuildAuditQueryParams_RejectsBadFrom(t *testing.T) {
+	if _, err := buildAuditQueryParams("", "", "", "", "not-a-time", "", 50); err == nil {
+		t.Error("expected an error for a non-RFC3339 --from value")
+	}
+}
+
+func TestBuildAuditQueryParams_RejectsBadTo(t *testing.T) {
+	if _, err := buildAuditQueryParams("", "", "", "", "", "not-a-time", 50); err == nil {
+		t.Error("expected an error for a non-RFC3339 --to value")
+	}
+}
+
+// TestAuditQueryFlags_RunIDIsRegisteredAndWired pins the user-facing
+// --run-id flag itself (registered, empty default) and proves it actually
+// reaches buildAuditQueryParams' RunID field the way runAuditQuery threads
+// it — the tests above only ever exercised buildAuditQueryParams' own
+// signature, never the flag name a real invocation types. Follows the
+// flag-lookup precedent in pool_join_test.go's
+// TestPoolJoinFlags_CloudControlPlaneIsOptOut and
+// upgrade_watchdog_test.go's TestUpgradeWatchdogDefaultBinaryPath.
+func TestAuditQueryFlags_RunIDIsRegisteredAndWired(t *testing.T) {
+	f := auditQueryCmd.Flags().Lookup("run-id")
+	if f == nil {
+		t.Fatal("--run-id flag not registered on audit query")
+	}
+	if f.DefValue != "" {
+		t.Errorf("--run-id default = %q, want empty (unset means no filter)", f.DefValue)
+	}
+
+	// Flags().Set mutates the package-level var directly and does not
+	// restore itself; put it back so this test doesn't leak state into
+	// whatever else in this package runs against the same *cobra.Command.
+	t.Cleanup(func() {
+		_ = auditQueryCmd.Flags().Set("run-id", "")
+	})
+
+	if err := auditQueryCmd.Flags().Set("run-id", "r-1"); err != nil {
+		t.Fatalf("Set(run-id): %v", err)
+	}
+	params, err := buildAuditQueryParams(auditQueryUsername, auditQueryAction, auditQueryResource,
+		auditQueryRunID, auditQueryFrom, auditQueryTo, auditQueryLimit)
+	if err != nil {
+		t.Fatalf("buildAuditQueryParams: %v", err)
+	}
+	if params.RunID != "r-1" {
+		t.Errorf("params.RunID = %q, want %q after setting --run-id", params.RunID, "r-1")
+	}
+}

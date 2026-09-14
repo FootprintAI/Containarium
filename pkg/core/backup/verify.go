@@ -86,6 +86,17 @@ func (m *Manager) Verify(opts VerifyOptions) (*Verification, error) {
 	if opts.TargetContainer == "" {
 		return nil, fmt.Errorf("target container is required: a restore test needs a throwaway container to load into")
 	}
+	// A restore test only means something for a dump the platform can
+	// load. A hook dump is opaque (#1831) and an encrypted dump is
+	// ciphertext the platform cannot open; refuse both here, before a
+	// scratch database exists, rather than recording a FAILED verification
+	// that reads like a corrupt backup.
+	if r.Engine == EngineHook {
+		return nil, fmt.Errorf("backup %s was produced by tenant hook %s and is an opaque stream: the platform cannot restore-test it", r.ID, r.Hook)
+	}
+	if r.Encrypted {
+		return nil, fmt.Errorf("backup %s is encrypted to %s: restore-testing an encrypted backup is not supported (the platform holds no decryption key)", r.ID, r.AgeRecipient)
+	}
 	// The whole control depends on this: a restore test that can reach
 	// the source container is a destructive operation wearing a
 	// read-only name. Fail closed, before anything runs.

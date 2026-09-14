@@ -127,7 +127,19 @@ func (s *CrewServer) RunCrew(ctx context.Context, req *pb.RunCrewRequest) (*pb.R
 	// are seeded with no task input — the crew delivers per-hop input over A2A.
 	for _, sid := range crew.SkillIds {
 		skill, _ := s.skillByID(sid) // existence already checked by validateCrewTopology
-		containerName, _, err := s.agents.provisionSkillBox(ctx, skill, req.BackendId, req.Pool, "")
+		// The crew run's own id IS the run id (#1817): every member box's
+		// credentials carry it in their `run_id` claim, and the lease's issue
+		// audit row resolves back to this one handle.
+		//
+		// The lease is deliberately dropped. A crew member runs in serve mode —
+		// long-lived, outliving this RPC — so there is no "run exit" here to end
+		// it on. The issue audit row (written inside provisionSkillBox) plus
+		// `containarium token revoke --jti` are how an operator ends one by hand
+		// in the meantime. Ending crew leases when the crew run completes is
+		// CrewServer's to own and is a later-phase item in the design
+		// (docs/architecture/execution-scoped-authorization.md §3, "Crew members
+		// and queue workers").
+		containerName, _, _, err := s.agents.provisionSkillBox(ctx, skill, req.BackendId, req.Pool, "", run.Id)
 		if err != nil {
 			run.State = pb.CrewRunState_CREW_RUN_STATE_FAILED
 			run.Error = fmt.Sprintf("provision skill %q: %v", sid, err)

@@ -121,12 +121,19 @@ message RunAgentSkillRequest {
   string pool = 3;
   // JSON task input matching the skill's agent_card input schema.
   string input_json = 4;
+  // Optional caller-supplied run id (1-128 chars of [A-Za-z0-9._-]). Empty
+  // means the daemon generates a UUID. Bound into every credential minted for
+  // this run (the `run_id` claim) and returned in the response, so the run's
+  // credentials can be revoked and audited as one unit.
+  string run_id = 5;
 }
 message RunAgentSkillResponse {
   // The box the agent ran in.
   Container container = 1;
   // JSON artifact matching the skill's output schema.
   string artifact_json = 2;
+  // The effective run id (the one the caller supplied, or the generated one).
+  string run_id = 3;
 }
 
 // ---- A2A (agent-to-agent) task contract (Phase 1) ---------------------------
@@ -394,6 +401,10 @@ message StartAgentWorkerResponse {
   Container container = 1;
   // The worker id the daemon used.
   string worker_id = 2;
+  // The run id the worker's credentials are bound to. A worker is long-lived,
+  // so the daemon holds its lease open rather than ending it when this RPC
+  // returns; this id is how an operator finds and revokes those credentials.
+  string run_id = 3;
 }
 
 // =============================================================================
@@ -445,6 +456,9 @@ enum CrewRunState {
 // agent in the run is audit-logged under this run's trace_id, so a run is
 // itself an evidence artifact.
 message CrewRun {
+  // The run id. Also the id bound into every member box's credentials (their
+  // `run_id` claim) and the one the run's lease audit rows carry, so
+  // RunCrewResponse needs no separate run_id field.
   string id = 1;
   string crew_id = 2;
   // Shared trace id threaded through every agent's audit entries for this run.
