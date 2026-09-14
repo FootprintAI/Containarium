@@ -5,6 +5,7 @@ go 1.26.6
 require (
 	cloud.google.com/go/compute v1.67.0
 	cloud.google.com/go/monitoring v1.30.0
+	filippo.io/age v1.3.2
 	github.com/BurntSushi/toml v1.6.0
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric v0.60.0
 	github.com/blang/semver/v4 v4.0.0
@@ -55,6 +56,7 @@ require (
 	cloud.google.com/go/auth v0.23.2 // indirect
 	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
+	filippo.io/hpke v0.4.0 // indirect
 	github.com/AdaLogics/go-fuzz-headers v0.0.0-20240806141605-e8a1dd7889d6 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp v1.36.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapping v0.60.0 // indirect

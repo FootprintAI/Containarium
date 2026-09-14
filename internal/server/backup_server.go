@@ -77,18 +77,33 @@ func (s *BackupServer) CreateBackup(ctx context.Context, req *pb.CreateBackupReq
 		return nil, status.Errorf(codes.NotFound, "container for user %s not found: %v", req.Username, err)
 	}
 
+	// #1836: an explicit request recipient always wins; otherwise fall
+	// back to the tenant's own self-registered CONTAINARIUM_BACKUP_AGE_RECIPIENT
+	// secret, so a scheduled backup with no operator present still
+	// encrypts. Neither a standalone daemon (no secrets store) nor a
+	// tenant who never registered one is an error — both mean plaintext,
+	// today's unchanged default.
+	ageRecipient, err := resolveAgeRecipient(ctx, backupSecretsReader(s.containers), req.Username, req.AgeRecipient)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "%v", err)
+	}
+
 	opts := backup.CreateOptions{
 		Username:      req.Username,
 		ContainerName: info.Name,
 		Conn:          connFromProto(req.Connection),
 		Destination:   dest,
 		GCSBucket:     req.GcsBucket,
+		Hook:          req.Hook,
+		Label:         req.Label,
+		AgeRecipient:  ageRecipient,
 	}
 
 	// Empty database → back up every non-template database found (#954),
 	// the default, no-guessing path. An explicit database keeps today's
-	// single-database behavior and response shape exactly as before.
-	if opts.Conn.Database == "" {
+	// single-database behavior and response shape exactly as before. A
+	// hook backup (#1831) names no database and runs exactly once.
+	if backupAllRequested(req) {
 		records, errs := s.mgr.CreateAll(opts)
 		if len(records) == 0 {
 			msg := "no databases were backed up"
@@ -199,6 +214,7 @@ func (s *BackupServer) RestoreBackup(ctx context.Context, req *pb.RestoreBackupR
 		ContainerName: info.Name,
 		Conn:          connFromProto(req.Connection),
 		Clean:         req.Clean,
+		AgeIdentity:   req.AgeIdentity, // per-call; never logged or stored (#1831)
 	}); err != nil {
 		return nil, status.Errorf(codes.Internal, "restore failed: %v", err)
 	}
@@ -282,6 +298,50 @@ func (s *BackupServer) VerifyBackup(ctx context.Context, req *pb.VerifyBackupReq
 	}, nil
 }
 
+// PruneBackups deletes older backups for a tenant, keeping only the newest
+// N per database (#1839). A partial failure — one record's delete fails —
+// is reported in the response, never as a gRPC error: the sweep still ran
+// and still deleted what it could, mirroring CreateBackup's per-database
+// partial-failure posture (#954).
+func (s *BackupServer) PruneBackups(ctx context.Context, req *pb.PruneBackupsRequest) (*pb.PruneBackupsResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeBackupsWrite); err != nil {
+		return nil, err
+	}
+	if req.Username == "" {
+		return nil, status.Error(codes.InvalidArgument, "username is required")
+	}
+	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+		return nil, err
+	}
+	if req.Keep < 1 {
+		return nil, status.Errorf(codes.InvalidArgument, "keep must be at least 1 (got %d); use DeleteBackup to remove a specific backup by id", req.Keep)
+	}
+
+	res, err := s.mgr.Prune(backup.PruneOptions{
+		Username: req.Username,
+		Database: req.Database,
+		Keep:     int(req.Keep),
+	})
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "prune failed: %v", err)
+	}
+	for _, id := range res.Deleted {
+		log.Printf("[backup] pruned id=%s user=%s", id, req.Username)
+	}
+	for _, f := range res.Failures {
+		log.Printf("[backup] prune failure user=%s: %s", req.Username, f)
+	}
+	msg := fmt.Sprintf("pruned %d backup(s)", len(res.Deleted))
+	if len(res.Failures) > 0 {
+		msg += fmt.Sprintf(", %d failed", len(res.Failures))
+	}
+	return &pb.PruneBackupsResponse{
+		Message:    msg,
+		DeletedIds: res.Deleted,
+		Failures:   res.Failures,
+	}, nil
+}
+
 // DeleteBackup removes a stored dump and its index entry.
 func (s *BackupServer) DeleteBackup(ctx context.Context, req *pb.DeleteBackupRequest) (*pb.DeleteBackupResponse, error) {
 	if err := auth.RequireScope(ctx, auth.ScopeBackupsWrite); err != nil {
@@ -302,6 +362,17 @@ func (s *BackupServer) DeleteBackup(ctx context.Context, req *pb.DeleteBackupReq
 	}
 	log.Printf("[backup] deleted id=%s user=%s", rec.ID, rec.Username)
 	return &pb.DeleteBackupResponse{Message: "backup deleted: " + rec.ID}, nil
+}
+
+// backupAllRequested reports whether a create should fan out over every
+// database in the container (#954). That is the pg_dump path's default when
+// no database is named; a hook backup (#1831) has no database concept and
+// always runs exactly once.
+func backupAllRequested(req *pb.CreateBackupRequest) bool {
+	if req.Hook != "" {
+		return false
+	}
+	return req.Connection == nil || req.Connection.Database == ""
 }
 
 // --- proto <-> core mapping ---
@@ -339,6 +410,8 @@ func engineToProto(engine string) pb.BackupEngine {
 	switch engine {
 	case backup.EnginePostgres:
 		return pb.BackupEngine_BACKUP_ENGINE_POSTGRES
+	case backup.EngineHook:
+		return pb.BackupEngine_BACKUP_ENGINE_HOOK
 	default:
 		return pb.BackupEngine_BACKUP_ENGINE_UNSPECIFIED
 	}
@@ -405,5 +478,9 @@ func recordToProto(r *backup.Record) *pb.BackupRecord {
 
 		LastVerification: verificationToProto(r.LastVerification),
 		RelationCount:    r.RelationCount,
+
+		Encrypted:    r.Encrypted,
+		AgeRecipient: r.AgeRecipient,
+		Hook:         r.Hook,
 	}
 }

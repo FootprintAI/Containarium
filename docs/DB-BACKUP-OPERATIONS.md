@@ -62,8 +62,11 @@ containarium backup restore <tenant>-app-<timestamp> --clean --server <host>
 containarium backup verify <tenant>-app-<timestamp> \
   --target <scratch-tenant> --server <host>
 
-# Delete a stored dump + its index entry (retention; see below).
+# Delete a stored dump + its index entry, by id.
 containarium backup delete <tenant>-app-<timestamp> --server <host>
+
+# Prune: keep only the newest N backups per database (#1839; see below).
+containarium backup prune <tenant> --database app --keep 7 --server <host>
 ```
 
 Connection defaults target a per-container local Postgres: user
@@ -74,7 +77,102 @@ The same operations are available as MCP tools (`create_backup`,
 `list_backups`, `restore_backup`, `verify_backup`) and over REST
 (`/v1/backups`) — they
 all call the one `BackupService`, so an agent, a human shell, and CI have
-an identical surface.
+an identical surface. `delete` and `prune` are deliberately CLI/REST-only,
+not exposed as MCP tools — a bulk or single-record delete stays a human
+or scripted-operator action, not something an agent can trigger.
+
+## Credential-less hook backups and user-held encryption (#1831)
+
+Two independent, composable options on `backup create`, for multi-tenant
+deployments where a central file of every tenant's DB password is
+unacceptable and the operator/storage must not be able to read a backup.
+
+### A. In-tenant backup hook (no credential crosses to the platform)
+
+```
+containarium backup create alice --hook /opt/backup/db-dump.sh --dest gcs --gcs-bucket gs://… --server <host>
+```
+
+Instead of running `pg_dump` with credentials the platform has to know,
+the daemon runs **the tenant's own program inside the container** and
+captures its **stdout** as the dump. The hook reaches its database over
+localhost under the container's own auth (peer/trust, or the app's own
+`.env`), so the secret never leaves the tenant. This also covers databases
+the platform tool can't reach directly — e.g. a Postgres nested inside an
+in-container Docker/compose stack, where the hook is simply
+`docker exec <db> pg_dump …`.
+
+- `--hook` must be a bare **absolute path** inside the container, no
+  arguments (it is run verbatim, single-quoted, never as a shell fragment).
+  A non-zero exit or empty output fails the backup.
+- The record's engine is `hook` and its "database" slot is the hook's
+  basename (override with `--label`). `--database`/`--db-*` are ignored.
+- A hook dump is an **opaque stream**: the platform stores, lists,
+  checksums, fetches and deletes it, but `backup restore` refuses it —
+  fetch the object and apply it with the tenant's own tooling.
+
+### B. Encrypt the dump to a user-held key
+
+```
+age-keygen -o backup.key              # once; keep the identity OFF the platform
+containarium backup create alice --database app --age-recipient age1… --dest gcs …
+containarium backup restore alice-app-… --age-identity-file backup.key --clean …
+```
+
+`--age-recipient` encrypts the dump with [age](https://age-encryption.org)
+to that X25519 public key **before it is staged or uploaded**. From that
+point the checksummed, sized, stored bytes are ciphertext: the daemon's
+disk, the object store, and the operator only ever hold ciphertext. The
+stored object is named `<id>.dump.age` and the record carries
+`encrypted: true` plus the (public) recipient.
+
+- **Restore needs the identity.** The platform holds no decryption key, so
+  `backup restore` on an encrypted record requires `--age-identity-file`
+  (the `AGE-SECRET-KEY-1…` file; read from a file, never argv). The
+  identity is used for that one call and never stored or logged. Without
+  it, restore refuses with a clear error; with the wrong one, decryption
+  fails before anything touches the target database.
+- Integrity is verified on the **ciphertext** (the SHA-256 covers what is
+  stored) *before* decryption, so a tampered object is caught first.
+- `backup verify` (restore-test) refuses an encrypted record up front — it
+  would need the identity too, and the platform does not hold it. It
+  likewise refuses a hook record (opaque stream). Both are refused before
+  any scratch database is created, and nothing is recorded as a
+  verification outcome. Restore-testing an encrypted backup is a follow-up.
+
+**Where the encryption happens, honestly:** in this release the dump is
+encrypted **in the daemon process, in memory**, after it is pulled from
+the container and before it is written anywhere. That guarantees ciphertext-
+only at rest and off-host, and that the operator cannot read a stored
+backup. It does not guard against a compromised daemon at dump time — but
+that daemon already has root exec into every tenant, so no additional
+boundary is lost. Encrypting *inside* the tenant (which needs an `age`
+binary in the tenant image) is a follow-up.
+
+The two compose: `--hook … --age-recipient …` captures an opaque hook
+stream and encrypts it. Plaintext `pg_dump` backups are byte-for-byte
+unchanged when neither flag is given.
+
+### Self-registering a recipient for scheduled backups (#1836)
+
+A scheduled backup has no operator present to type `--age-recipient` on
+every run, so a tenant can register its recipient once via the existing
+tenant-scoped Secrets API instead of a bespoke config mechanism:
+
+```
+containarium secrets set alice CONTAINARIUM_BACKUP_AGE_RECIPIENT age1...
+containarium backup create alice --database app --dest gcs --gcs-bucket gs://… --server <host>
+```
+
+The daemon resolves the recipient in this order: the request's own
+`--age-recipient` (a one-off call always overrides), then the tenant's
+`CONTAINARIUM_BACKUP_AGE_RECIPIENT` secret if registered, then plaintext —
+unchanged from before this existed. The value is stored exactly like any
+other tenant secret: versioned, audited, and eligible for the tenant's own
+KMS-backed KEK via `SetTenantKMSKey` — which is what "preserved into KMS"
+buys here, even though a recipient is a *public* key and needs no
+confidentiality of its own. The matching **private** identity is never
+registered this way and must never touch the platform.
 
 ## Scheduling (systemd timer — recommended)
 
@@ -177,15 +275,24 @@ gcloud storage buckets update gs://<your-backup-bucket> \
   --lifecycle-file=/tmp/lifecycle.json
 ```
 
-Pair lifecycle pruning of the *objects* with `containarium backup delete`
-for the *index entries* so `list` doesn't show dumps the lifecycle has
-already removed. A simple retention cron:
+Pair the GCS lifecycle above (which only ever ages an *object's storage
+class*, then eventually deletes it) with `containarium backup prune`
+(#1839) for the *index entries*, so `backup list` doesn't keep showing
+records for objects the lifecycle has already removed underneath them:
 
 ```bash
-# Prune index entries older than the lifecycle horizon (example: 400 days).
-containarium backup list --server <host> --http \
-  | awk 'NR>1 {print $1, $4}'   # ID, CREATED — feed IDs past your window to: backup delete
+# Keep-N pruning, independent of the GCS lifecycle's own age-based delete.
+# Run on whatever cadence you like — the same as backup create, or slower.
+containarium backup prune <tenant> --database app --keep 30 --server <host>
+
+# No --database: prunes every database this tenant has backups for,
+# each independently down to --keep.
+containarium backup prune <tenant> --keep 30 --server <host>
 ```
+
+`backup delete <id>` still exists for removing one specific record by
+id — `prune` is for the "keep the newest N, drop the rest" case a
+schedule actually needs.
 
 ## Restore test — the control an auditor actually checks
 
@@ -282,10 +389,11 @@ rather than loading corrupt data.
 
 ## Quick reference
 
-- **CLI**: `containarium backup create|list|get|restore|verify|delete`
+- **CLI**: `containarium backup create|list|get|restore|verify|delete|prune`
 - **REST**: `/v1/backups` (`BackupService`, generated via grpc-gateway)
-- **MCP tools**: `create_backup`, `list_backups`, `restore_backup`, `verify_backup`
-- **Auth scopes**: `backups:read` (list/get), `backups:write` (create/restore/verify/delete)
+- **MCP tools**: `create_backup`, `list_backups`, `restore_backup`, `verify_backup` (delete and prune are deliberately CLI/REST-only)
+- **Auth scopes**: `backups:read` (list/get), `backups:write` (create/restore/verify/delete/prune)
+- **Retention**: `backup prune <tenant> [--database db] --keep N` keeps the newest N per (tenant, database) — or per (tenant, hook label) for a `--hook` backup (#1839)
 - **Dump format**: `pg_dump -Fc` (custom, compressed, selectively restorable)
 - **Integrity**: SHA-256 recorded at create, verified at restore *and* at verify
 - **Restorability**: `backup verify` — a restore test against a throwaway

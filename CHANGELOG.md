@@ -24,6 +24,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--proxy-protocol`; wildcards and malformed CIDRs are refused at startup.
   See `docs/PROXY-PROTOCOL.md` → "CDN-fronted hosts".
 
+- **Backup retention/pruning** (#1839). `containarium backup prune <user>
+  [--database db] --keep N` deletes older backup records, keeping only
+  the newest N per (username, database) — or per (username, label) for a
+  `--hook` backup, since a hook backup's label fills the same slot. Omit
+  `--database` to prune every database the tenant has backups for, each
+  independently. One record's delete failure (e.g. a transient
+  object-store error) never aborts pruning the rest. This was the
+  missing half of a scheduled backup (#1831, #1836): a schedule that
+  only ever creates and never prunes fills its backup directory or GCS
+  bucket without bound. Lands as `PruneBackups` on `BackupService`
+  (proto-first, REST via grpc-gateway); deliberately not exposed as an
+  MCP tool, same as `backup delete`.
+
+## [0.79.1] - 2026-09-14
+
+### Added
+
+- **Tenant self-registered backup recipient** (#1836). A tenant can
+  `secrets set <user> CONTAINARIUM_BACKUP_AGE_RECIPIENT age1...` once and
+  every later `backup create` with no `--age-recipient` flag encrypts to
+  it automatically — the missing piece for a *scheduled* backup, which
+  has no operator present to pass the flag on each run. An explicit
+  `--age-recipient` on a call still overrides the registered one; neither
+  a tenant with nothing registered nor a standalone daemon (no secrets
+  store) is an error — both mean plaintext, unchanged from before. The
+  value rides the existing tenant-scoped Secrets API (versioned, audited,
+  eligible for the tenant's own KMS-backed KEK) rather than a new config
+  mechanism; the matching private identity is never registered this way
+  and never touches the platform.
+
+## [0.79.0] - 2026-09-13
+
+Credential-less, tenant-encrypted database backups for multi-tenant fleets.
+
+### Added
+
+- **Credential-less backup hook + user-held dump encryption** (#1831).
+  `containarium backup create` gains two composable, opt-in options for
+  multi-tenant deployments. `--hook <abs-path>` runs the tenant's own
+  program inside the container and captures its stdout as the dump, so no
+  DB credential ever crosses to the platform (and databases nested inside
+  an in-container Docker stack become backup-able). `--age-recipient age1…`
+  encrypts the dump in-process to a user-held age key before it is staged
+  or uploaded, so the daemon's disk, the object store and the operator only
+  ever hold ciphertext; the SHA-256 integrity gate covers the stored
+  ciphertext and is checked before decryption. `backup restore` on an
+  encrypted record requires `--age-identity-file` (per-call, never stored).
+  Hook dumps are opaque and are stored/listed/fetched but not auto-restored.
+  Plaintext `pg_dump` backups are byte-for-byte unchanged. New dependency:
+  `filippo.io/age` (pure Go). See `docs/DB-BACKUP-OPERATIONS.md`.
+
 ## [0.78.1] - 2026-09-13
 
 Execution-scoped authorization: a skill run's credentials now die with the

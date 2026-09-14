@@ -25,6 +25,7 @@ const (
 	BackupService_RestoreBackup_FullMethodName = "/containarium.v1.BackupService/RestoreBackup"
 	BackupService_VerifyBackup_FullMethodName  = "/containarium.v1.BackupService/VerifyBackup"
 	BackupService_DeleteBackup_FullMethodName  = "/containarium.v1.BackupService/DeleteBackup"
+	BackupService_PruneBackups_FullMethodName  = "/containarium.v1.BackupService/PruneBackups"
 )
 
 // BackupServiceClient is the client API for BackupService service.
@@ -48,6 +49,9 @@ type BackupServiceClient interface {
 	VerifyBackup(ctx context.Context, in *VerifyBackupRequest, opts ...grpc.CallOption) (*VerifyBackupResponse, error)
 	// DeleteBackup removes a stored dump and its index entry.
 	DeleteBackup(ctx context.Context, in *DeleteBackupRequest, opts ...grpc.CallOption) (*DeleteBackupResponse, error)
+	// PruneBackups deletes older backups for a tenant, keeping only the
+	// newest N per database (#1839).
+	PruneBackups(ctx context.Context, in *PruneBackupsRequest, opts ...grpc.CallOption) (*PruneBackupsResponse, error)
 }
 
 type backupServiceClient struct {
@@ -118,6 +122,16 @@ func (c *backupServiceClient) DeleteBackup(ctx context.Context, in *DeleteBackup
 	return out, nil
 }
 
+func (c *backupServiceClient) PruneBackups(ctx context.Context, in *PruneBackupsRequest, opts ...grpc.CallOption) (*PruneBackupsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PruneBackupsResponse)
+	err := c.cc.Invoke(ctx, BackupService_PruneBackups_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // BackupServiceServer is the server API for BackupService service.
 // All implementations must embed UnimplementedBackupServiceServer
 // for forward compatibility.
@@ -139,6 +153,9 @@ type BackupServiceServer interface {
 	VerifyBackup(context.Context, *VerifyBackupRequest) (*VerifyBackupResponse, error)
 	// DeleteBackup removes a stored dump and its index entry.
 	DeleteBackup(context.Context, *DeleteBackupRequest) (*DeleteBackupResponse, error)
+	// PruneBackups deletes older backups for a tenant, keeping only the
+	// newest N per database (#1839).
+	PruneBackups(context.Context, *PruneBackupsRequest) (*PruneBackupsResponse, error)
 	mustEmbedUnimplementedBackupServiceServer()
 }
 
@@ -166,6 +183,9 @@ func (UnimplementedBackupServiceServer) VerifyBackup(context.Context, *VerifyBac
 }
 func (UnimplementedBackupServiceServer) DeleteBackup(context.Context, *DeleteBackupRequest) (*DeleteBackupResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteBackup not implemented")
+}
+func (UnimplementedBackupServiceServer) PruneBackups(context.Context, *PruneBackupsRequest) (*PruneBackupsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PruneBackups not implemented")
 }
 func (UnimplementedBackupServiceServer) mustEmbedUnimplementedBackupServiceServer() {}
 func (UnimplementedBackupServiceServer) testEmbeddedByValue()                       {}
@@ -296,6 +316,24 @@ func _BackupService_DeleteBackup_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _BackupService_PruneBackups_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PruneBackupsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BackupServiceServer).PruneBackups(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BackupService_PruneBackups_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BackupServiceServer).PruneBackups(ctx, req.(*PruneBackupsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // BackupService_ServiceDesc is the grpc.ServiceDesc for BackupService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -326,6 +364,10 @@ var BackupService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteBackup",
 			Handler:    _BackupService_DeleteBackup_Handler,
+		},
+		{
+			MethodName: "PruneBackups",
+			Handler:    _BackupService_PruneBackups_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

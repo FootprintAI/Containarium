@@ -460,6 +460,11 @@ type CreateBackupRequest struct {
 	Connection  *PgConnectionBody `json:"connection,omitempty"`
 	Destination string            `json:"destination"`
 	GCSBucket   string            `json:"gcs_bucket,omitempty"`
+
+	// #1831: credential-less in-tenant hook and user-held encryption.
+	Hook         string `json:"hook,omitempty"`
+	Label        string `json:"label,omitempty"`
+	AgeRecipient string `json:"age_recipient,omitempty"`
 }
 
 // BackupRecord mirrors the proto BackupRecord on the response side
@@ -476,6 +481,11 @@ type BackupRecord struct {
 	Engine      string `json:"engine"`
 
 	LastVerification *BackupVerification `json:"lastVerification,omitempty"`
+
+	// #1831
+	Encrypted    bool   `json:"encrypted,omitempty"`
+	AgeRecipient string `json:"ageRecipient,omitempty"`
+	Hook         string `json:"hook,omitempty"`
 }
 
 // VerificationCheck is one assertion made during a restore test.
@@ -514,6 +524,8 @@ type RestoreBackupRequest struct {
 	ID         string            `json:"id"`
 	Connection *PgConnectionBody `json:"connection,omitempty"`
 	Clean      bool              `json:"clean,omitempty"`
+	// AgeIdentity decrypts an encrypted record for this one call (#1831).
+	AgeIdentity string `json:"age_identity,omitempty"`
 }
 
 // RestoreBackupResponse is the result of a restore.
