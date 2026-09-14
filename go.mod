@@ -3,7 +3,7 @@ module github.com/footprintai/containarium
 go 1.26.6
 
 require (
-	cloud.google.com/go/compute v1.67.0
+	cloud.google.com/go/compute v1.68.0
 	cloud.google.com/go/monitoring v1.30.0
 	filippo.io/age v1.3.2
 	github.com/BurntSushi/toml v1.6.0
