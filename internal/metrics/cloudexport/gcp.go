@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	mexporter "github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric"
+	mexporter "github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric" //nolint:staticcheck // #1855
 	gcpdetector "go.opentelemetry.io/contrib/detectors/gcp"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -39,24 +39,28 @@ func NewGCPSink() Sink { return &gcpSink{} }
 // Credentials that Probe validated at enable time; no key file is ever
 // read here. This is the sole place in the daemon that imports the GCP
 // exporter SDK — everything else sees the Sink interface.
+// mexporter (opentelemetry-operations-go/exporter/metric) is deprecated
+// upstream as of v0.61.0 and archived after 2027-01-01; tracked for
+// migration to the OTLP exporter in #1855. The nolint directives below
+// are scoped to that migration, not a blanket suppression.
 func (g *gcpSink) NewExporter(ctx context.Context, cfg SinkConfig) (sdkmetric.Exporter, error) {
-	opts := []mexporter.Option{
+	opts := []mexporter.Option{ //nolint:staticcheck // #1855
 		// Do not create/patch metric descriptors on every push — the
 		// series names are fixed and self-describing, and skipping
 		// descriptor writes keeps the write path to CreateTimeSeries
 		// only (fewer API calls, fewer IAM surfaces).
-		mexporter.WithDisableCreateMetricDescriptors(),
+		mexporter.WithDisableCreateMetricDescriptors(), //nolint:staticcheck // #1855
 	}
 	// Empty ProjectID lets the exporter/resource detector infer the
 	// project from the GCE metadata server (the common on-VM case).
 	if cfg.ProjectID != "" {
-		opts = append(opts, mexporter.WithProjectID(cfg.ProjectID))
+		opts = append(opts, mexporter.WithProjectID(cfg.ProjectID)) //nolint:staticcheck // #1855
 	}
 	if len(cfg.MonitoringClientOptions) > 0 {
-		opts = append(opts, mexporter.WithMonitoringClientOptions(cfg.MonitoringClientOptions...))
+		opts = append(opts, mexporter.WithMonitoringClientOptions(cfg.MonitoringClientOptions...)) //nolint:staticcheck // #1855
 	}
 
-	exporter, err := mexporter.New(opts...)
+	exporter, err := mexporter.New(opts...) //nolint:staticcheck // #1855
 	if err != nil {
 		return nil, fmt.Errorf("cloudexport: build GCP Cloud Monitoring exporter: %w", err)
 	}
