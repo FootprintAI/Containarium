@@ -1,18 +1,33 @@
 #!/usr/bin/env bash
-# Iterate the tenant config and create a GCS backup for each entry.
-# Designed to be driven by containarium-backup.{service,timer}.
+# Iterate the tenant config and create a GCS backup for each entry, then
+# prune each one to the newest N (#1839/#1840). Designed to be driven by
+# containarium-backup.{service,timer}.
 #
-# One-copy policy: before creating a new backup the script deletes any
-# existing backups for the same tenant, so there is always at most one dump
-# per tenant in the index.  restore-tenant.sh relies on this invariant.
+# Retention: after a successful create, the script prunes that (tenant,
+# database) group to CONTAINARIUM_BACKUP_KEEP — deliberately AFTER, not
+# before: a failed create never leaves zero backups for a tenant, because
+# nothing old is removed until a new good one is already confirmed stored.
 #
-# Config file format (/etc/containarium/backup-tenants.conf):
-#   # comment
+# Config file format (/etc/containarium/backup-tenants.conf), one of two
+# line shapes per tenant:
+#
+#   # plain pg_dump mode — the common case (peer/trust auth on loopback)
 #   <tenant>  <database>  [PASSWORD_ENV_VAR]
 #
-# The optional third field names an env variable whose value is passed as
-# --db-password.  Omit it when the in-container Postgres uses peer/trust auth
-# (the common default — pg_dump runs as root inside the container on loopback).
+#   # hook mode (#1831) — for a database the platform can't reach directly,
+#   # e.g. Postgres nested inside an in-container Docker/compose stack
+#   <tenant>  --hook <in-container-hook-path>  [--label <label>]
+#
+# The optional third field of plain mode names an env variable whose value
+# is passed as --db-password. Omit it when the in-container Postgres uses
+# peer/trust auth (the common default — pg_dump runs as root inside the
+# container on loopback). Hook mode never takes a password: the hook reaches
+# its database under the container's own auth, so no credential crosses to
+# the platform — see docs/DB-BACKUP-OPERATIONS.md#1831.
+#
+# Encryption (#1836) is NOT configured here: a tenant that has registered a
+# CONTAINARIUM_BACKUP_AGE_RECIPIENT secret gets it automatically, with no
+# flag needed from this script.
 #
 # Required environment variables (set in /etc/containarium/backup.env):
 #   CONTAINARIUM_SERVER         daemon address, e.g. localhost:8080
@@ -23,6 +38,8 @@
 #   CONTAINARIUM_BIN          path to containarium binary (default below)
 #   CONTAINARIUM_AUTH_TOKEN   JWT for --token (omit when running on daemon host
 #                             with a root service token or peer auth)
+#   CONTAINARIUM_BACKUP_KEEP  newest backups to keep per (tenant, database)
+#                             after each successful create (default: 7)
 
 set -uo pipefail
 
@@ -31,6 +48,7 @@ SERVER="${CONTAINARIUM_SERVER:?CONTAINARIUM_SERVER must be set}"
 BUCKET="${CONTAINARIUM_BACKUP_BUCKET:?CONTAINARIUM_BACKUP_BUCKET must be set}"
 CTN="${CONTAINARIUM_BIN:-/usr/local/bin/containarium}"
 TOKEN="${CONTAINARIUM_AUTH_TOKEN:-}"
+KEEP="${CONTAINARIUM_BACKUP_KEEP:-7}"
 
 if [[ ! -f "$CONF" ]]; then
   echo "[backup] config not found: $CONF" >&2
@@ -45,47 +63,81 @@ fi
 failed=0
 total=0
 
-while IFS=$' \t' read -r tenant database pw_env _rest; do
+while IFS= read -r line; do
+  # shellcheck disable=SC2206 # deliberate word-splitting: config is whitespace-delimited by design
+  words=($line)
+  tenant="${words[0]:-}"
   [[ -z "$tenant" || "$tenant" == \#* ]] && continue
 
   total=$((total + 1))
 
-  pw_flags=()
-  if [[ -n "${pw_env:-}" ]]; then
-    pw_value="${!pw_env:-}"
-    if [[ -z "$pw_value" ]]; then
-      echo "[backup] WARNING: $pw_env is not set; attempting without password (tenant=$tenant db=$database)" >&2
-    else
-      pw_flags=(--db-password "$pw_value")
+  create_flags=()
+  prune_database=""
+
+  if [[ "${words[1]:-}" == "--hook" ]]; then
+    # Hook mode: <tenant> --hook <path> [--label <label>]
+    hook_path="${words[2]:-}"
+    label=""
+    if [[ "${words[3]:-}" == "--label" ]]; then
+      label="${words[4]:-}"
     fi
+    if [[ -z "$hook_path" ]]; then
+      echo "[backup] WARNING: tenant=$tenant has --hook with no path; skipping" >&2
+      failed=$((failed + 1))
+      continue
+    fi
+    create_flags=(--hook "$hook_path")
+    if [[ -n "$label" ]]; then
+      create_flags+=(--label "$label")
+      prune_database="$label"
+    fi
+    echo "[backup] start  tenant=$tenant hook=$hook_path"
+  else
+    # Plain mode: <tenant> <database> [PASSWORD_ENV_VAR]
+    database="${words[1]:-}"
+    pw_env="${words[2]:-}"
+    if [[ -z "$database" ]]; then
+      echo "[backup] WARNING: tenant=$tenant has no database (and is not --hook); skipping" >&2
+      failed=$((failed + 1))
+      continue
+    fi
+    create_flags=(--database "$database")
+    prune_database="$database"
+    if [[ -n "${pw_env:-}" ]]; then
+      pw_value="${!pw_env:-}"
+      if [[ -z "$pw_value" ]]; then
+        echo "[backup] WARNING: $pw_env is not set; attempting without password (tenant=$tenant db=$database)" >&2
+      else
+        create_flags+=(--db-password "$pw_value")
+      fi
+    fi
+    echo "[backup] start  tenant=$tenant db=$database"
   fi
 
-  # One-copy policy: delete any existing backup(s) for this tenant before
-  # creating a fresh one.  This keeps the index lean and makes restore trivial
-  # (the single record is always the current good dump).
-  while IFS= read -r old_id; do
-    [[ -z "$old_id" ]] && continue
-    echo "[backup] prune  tenant=$tenant id=$old_id"
-    "$CTN" backup delete "$old_id" \
-        --server "$SERVER" \
-        "${auth_flags[@]}" || true   # non-fatal: stale index entry, carry on
-  done < <("$CTN" backup list "$tenant" \
-      --server "$SERVER" \
-      "${auth_flags[@]}" 2>/dev/null \
-    | awk 'NR>1 {print $1}')
-
-  echo "[backup] start  tenant=$tenant db=$database"
   if "$CTN" backup create "$tenant" \
-      --database "$database" \
+      "${create_flags[@]}" \
       --dest gcs \
       --gcs-bucket "$BUCKET" \
       --server "$SERVER" \
-      "${auth_flags[@]}" \
-      "${pw_flags[@]}"; then
-    echo "[backup] ok     tenant=$tenant db=$database"
+      ${auth_flags[@]+"${auth_flags[@]}"}; then
+    echo "[backup] ok     tenant=$tenant"
   else
-    echo "[backup] FAIL   tenant=$tenant db=$database" >&2
+    echo "[backup] FAIL   tenant=$tenant" >&2
     failed=$((failed + 1))
+    continue
+  fi
+
+  # Prune only after a successful create, and only when we know which
+  # database/label group to scope it to — an empty prune_database means
+  # "every database this tenant has", which is correct for a hook backup
+  # with no --label (defaults to the hook's own basename) too.
+  prune_args=(backup prune "$tenant" --keep "$KEEP" --server "$SERVER")
+  if [[ -n "$prune_database" ]]; then
+    prune_args=(backup prune "$tenant" --database "$prune_database" --keep "$KEEP" --server "$SERVER")
+  fi
+  prune_args+=(${auth_flags[@]+"${auth_flags[@]}"})
+  if ! "$CTN" "${prune_args[@]}"; then
+    echo "[backup] WARNING: prune failed for tenant=$tenant (backup itself succeeded; retention will catch up next run)" >&2
   fi
 done < "$CONF"
 
