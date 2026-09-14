@@ -201,18 +201,27 @@ systemctl daemon-reload
 
 # 3. Create the environment file (mode 0600 — contains credentials).
 cat > /etc/containarium/backup.env <<'ENV'
-CONTAINARIUM_SERVER=localhost:8080
+CONTAINARIUM_HTTP=true     # the CLI defaults to gRPC/mTLS otherwise, which
+                            # needs certs staged at /root/.config/containarium/certs —
+                            # HTTP against the local daemon needs none of that
+CONTAINARIUM_SERVER=http://localhost:8080
 CONTAINARIUM_BACKUP_BUCKET=gs://<your-backup-bucket>/pg
-# CONTAINARIUM_AUTH_TOKEN=<jwt>  # omit when running on the daemon host as root
+CONTAINARIUM_BACKUP_KEEP=7  # newest backups kept per (tenant, database); #1839
+# CONTAINARIUM_AUTH_TOKEN=<jwt>  # a non-expiring service token — see below
 ENV
 chmod 0600 /etc/containarium/backup.env
 
-# 4. Create the tenant config (one line per database to back up).
-#    Format: <tenant>  <database>  [OPTIONAL_PASSWORD_ENV_VAR]
+# 4. Create the tenant config (one line per tenant).
+#    Plain mode:  <tenant>  <database>  [OPTIONAL_PASSWORD_ENV_VAR]
+#    Hook mode (#1831 — for a database the platform can't reach directly,
+#    e.g. Postgres nested inside an in-container Docker/compose stack):
+#                 <tenant>  --hook <in-container-hook-path>  [--label <label>]
 cat > /etc/containarium/backup-tenants.conf <<'CONF'
 # tenant          database
 <tenant-a>        app
 <tenant-b>        app
+# tenant          --hook <path>                                    --label <label>
+<tenant-c>        --hook /opt/containarium-backup/dump.sh           --label app
 CONF
 
 # 5. Enable and start the timer.
@@ -221,6 +230,41 @@ systemctl enable --now containarium-backup.timer
 # 6. Verify the timer is queued.
 systemctl list-timers containarium-backup.timer
 ```
+
+### Auth for an unattended run
+
+A cron/timer job has no operator present to type a token, so it needs one
+that outlives any single run — `--expiry 0` mints a genuinely
+non-expiring token, the documented pattern for exactly this case
+(`containarium token --help` calls it out as a "non-expiring service
+token"). Give it its own identity (not `admin`) so scheduled runs are
+distinguishable from interactive ones in the audit log, `admin` role so
+it can act across tenants, and only the scopes it actually needs:
+
+```bash
+sudo containarium token generate \
+  --username backup-scheduler --roles admin \
+  --scopes backups:write,backups:read \
+  --expiry 0 \
+  --secret-file /etc/containarium/jwt.secret --raw \
+  > /etc/containarium/backup-scheduler.token
+chmod 0600 /etc/containarium/backup-scheduler.token
+chown root:root /etc/containarium/backup-scheduler.token
+```
+
+`EnvironmentFile=` (what `containarium-backup.service` uses to load
+`backup.env`) is parsed literally — no command substitution — so put the
+token's actual value in `backup.env` directly:
+
+```bash
+printf 'CONTAINARIUM_AUTH_TOKEN=%s\n' "$(cat /etc/containarium/backup-scheduler.token)" \
+  >> /etc/containarium/backup.env
+```
+
+`backup.env` is already mode 0600, root-owned, and documented as
+containing credentials, so this doesn't change its threat model. If this
+token ever needs to be revoked, `containarium token revoke` takes it from
+here same as any other.
 
 ### Watching and alerting
 
