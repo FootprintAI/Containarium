@@ -313,6 +313,50 @@ After restart, `curl https://X.example.com/` should return HTTP 404 (daemon's "n
 
 **Why this trap exists.** The sentinel-side PROXY flag is per-deployment policy; the primary-side flag is per-primary configuration. There is no handshake between them that detects mismatch, so the first request silently fails. Until that's fixed in code, every tunnel-promoted primary stood up against a PROXY-enabled sentinel needs the matching flag.
 
+### A `--client-ip-header`/`--trusted-proxy-cidrs` (or any) flag change silently has no effect
+
+**Symptom.** You add a flag to a systemd drop-in, `daemon-reload` and
+restart, but the daemon behaves as if the flag was never set — no startup
+log line for it, no change in Caddy's live config. There's no error
+anywhere; the daemon starts and runs fine, just without your change.
+
+**Cause.** `ExecStart=` is not additive across drop-in files. Each
+`ExecStart=\nExecStart=<full command line>` pair **replaces** the unit's
+entire command line, it does not append to it. If more than one drop-in
+under `<unit>.service.d/` sets `ExecStart`, systemd applies them in
+filename order and only the **last one wins** — silently. A flag added to
+an earlier-sorting file (alphabetically) is simply discarded the moment a
+later-sorting file's `ExecStart` takes over, with nothing in the logs to
+say so.
+
+This is easy to hit by accident: a host accumulates drop-ins over time
+(one from initial provisioning, one from a later `pool join` or similar
+tooling that appends its own `--daemon-flag`s), and it's rarely obvious
+which one is actually in force just from looking at the directory listing.
+
+**Fix.** Before assuming an edit took effect, check what actually wins:
+
+```bash
+sudo systemctl cat <unit> | grep -B2 '^ExecStart='
+```
+
+This prints every `ExecStart=` declaration in file order, prefixed by
+which drop-in set it — the *last* block in the output is the one that's
+actually running. If your flag isn't in that last block, either edit the
+file that wins, or add a new drop-in with a filename that sorts after
+every existing one (a `zz-` prefix is a simple, explicit way to guarantee
+that regardless of what else gets added later) and put the *complete*
+command line in it, not just the new flag.
+
+**Why this trap exists.** Unlike most systemd directives (`Environment=`,
+`ReadWritePaths=`, etc.), which are list-type and accumulate across
+drop-ins, `ExecStart=` is single-valued and the `ExecStart=` (blank) +
+`ExecStart=<cmd>` idiom exists specifically to let a drop-in *replace* the
+main unit's command line. That's the right primitive for what it's for,
+but it means two drop-ins that both use it are competing, not
+cooperating, and systemd has no diagnostic for "another file already set
+this."
+
 ### `Failed to ensure Caddy server config: ... 409 key already exists: http` on every daemon startup
 
 **Symptom.** `journalctl -u containarium.service` shows this warning every time the daemon starts; subsequent daemon-driven Caddy updates appear to do nothing.
@@ -328,3 +372,4 @@ After restart, `curl https://X.example.com/` should return HTTP 404 (daemon's "n
 | [#105](https://github.com/FootprintAI/Containarium/pull/105) | Sentinel side: `WriteProxyV2` encoder, `--proxy-protocol` flag, header injected in `buildSNIRoutingHandler`. Includes the Go-level e2e and the real-Caddy e2e gated by build tag. |
 | [#106](https://github.com/FootprintAI/Containarium/pull/106) | Daemon side, srv0 only: `--proxy-protocol` and `--proxy-protocol-trusted` flags; `ProxyManager.EnableProxyProtocol` rewritten to use the atomic `getFullConfig`+`loadConfig` pattern (the previous PATCH-on-server form would clobber `listen`/`routes`). |
 | [#107](https://github.com/FootprintAI/Containarium/pull/107) | Daemon side, L4: pattern B wrapping; `L4ProxyManager` becomes wrapping-aware so `RouteSyncJob`'s CRUD operations on the inner route list don't undo the wrapper. Closes the gRPC-outage gap from #106. |
+| [#1832](https://github.com/FootprintAI/Containarium/pull/1832) | `--client-ip-header` / `--trusted-proxy-cidrs` for CDN-fronted hosts (#1829, see above), with self-heal durability across daemon/Caddy restarts. |
