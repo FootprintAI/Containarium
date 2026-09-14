@@ -16,7 +16,7 @@ require (
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.30.0
 	github.com/hashicorp/yamux v0.1.2
-	github.com/jackc/pgx/v5 v5.10.0
+	github.com/jackc/pgx/v5 v5.11.0
 	github.com/lxc/incus/v6 v6.23.0
 	github.com/mark3labs/mcp-go v1.0.0
 	github.com/pires/go-proxyproto v0.15.0
