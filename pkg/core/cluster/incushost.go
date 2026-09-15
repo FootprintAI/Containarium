@@ -119,8 +119,28 @@ func (h *IncusHost) Stop(name string) error { return h.client.StopContainer(name
 
 func (h *IncusHost) Delete(name string) error { return h.client.DeleteContainer(name) }
 
+// WaitReady blocks until the VM has both a network address and a live
+// guest-agent channel, returning the VM's primary IP — matching the
+// VMHost interface's documented contract. The two come up
+// independently, so waiting only for the network (as this used to do)
+// let callers race Exec/Push against a guest agent that was not yet
+// reachable, observed as Incus's own "VM agent isn't currently
+// running" (#1862). The two waits share the caller's single timeout
+// budget rather than doubling it.
 func (h *IncusHost) WaitReady(name string, timeout time.Duration) (string, error) {
-	return h.client.WaitForNetwork(name, timeout)
+	deadline := time.Now().Add(timeout)
+	ip, err := h.client.WaitForNetwork(name, timeout)
+	if err != nil {
+		return "", err
+	}
+	remaining := time.Until(deadline)
+	if remaining < 0 {
+		remaining = 0
+	}
+	if err := h.client.WaitForAgent(name, remaining); err != nil {
+		return "", err
+	}
+	return ip, nil
 }
 
 func (h *IncusHost) Push(name, path string, content []byte, mode string) error {
