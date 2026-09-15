@@ -232,12 +232,18 @@ type deployRecipeRequest struct {
 	Parameters map[string]string `json:"parameters"`
 }
 
-// runAgentSkillRequest is POST /v1/agent-skills/run.
+// runAgentSkillRequest is POST /v1/agent-skills/run. GitSource/GitRef/
+// GitCredential (#1859) fetch a repo into the run's workspace before the
+// agent starts; empty GitSource means no fetch, matching every request
+// before this field existed.
 type runAgentSkillRequest struct {
-	SkillID   string `json:"skill_id"`
-	BackendID string `json:"backend_id"`
-	Pool      string `json:"pool"`
-	InputJSON string `json:"input_json"`
+	SkillID       string `json:"skill_id"`
+	BackendID     string `json:"backend_id"`
+	Pool          string `json:"pool"`
+	InputJSON     string `json:"input_json"`
+	GitSource     string `json:"git_source"`
+	GitRef        string `json:"git_ref"`
+	GitCredential string `json:"git_credential"`
 }
 
 // enqueueAgentTaskRequest is POST /v1/agent-tasks.

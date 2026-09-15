@@ -1445,6 +1445,14 @@ func (s *Server) registerTools() {
 						"type":        "string",
 						"description": "Task input as a JSON string (defaults to {}).",
 					},
+					"git_source": map[string]interface{}{
+						"type":        "string",
+						"description": "Git clone URL fetched into the run's workspace before the agent starts (e.g. https://github.com/org/repo). Empty = no fetch.",
+					},
+					"git_ref": map[string]interface{}{
+						"type":        "string",
+						"description": "Exact ref to check out for git_source: full SHA (preferred), branch, tag, or refs/pull/N/merge. Empty = the remote's default branch.",
+					},
 				},
 				"required": []string{"skill_id"},
 			},
@@ -2733,6 +2741,8 @@ func handleRunAgentSkill(client API, args map[string]interface{}) (string, error
 	resp, err := client.RunAgentSkill(RunAgentSkillRequest{
 		SkillID:   getStringArg(args, "skill_id", ""),
 		InputJSON: getStringArg(args, "input_json", ""),
+		GitSource: getStringArg(args, "git_source", ""),
+		GitRef:    getStringArg(args, "git_ref", ""),
 	})
 	if err != nil {
 		return "", err
@@ -2740,6 +2750,10 @@ func handleRunAgentSkill(client API, args map[string]interface{}) (string, error
 	var out string
 	if resp.Container != nil {
 		out = fmt.Sprintf("✅ box ready: %s (%s)\n", resp.Container.Name, resp.Container.State)
+	}
+	if resp.GitCommit != "" {
+		out += fmt.Sprintf("Git:       %s\n", resp.GitCommit)
+		out += fmt.Sprintf("Workspace: %s\n", resp.WorkspacePath)
 	}
 	if resp.ArtifactJSON != "" {
 		out += fmt.Sprintf("Artifact:  %s\n", resp.ArtifactJSON)
