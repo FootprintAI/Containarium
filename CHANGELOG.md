@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`AddRoute`/`UpdateRoute` could silently repoint a hostname another
+  creator already owned.** `RouteStore.Save` was an unconditional upsert
+  by `full_domain` with no comparison against the existing route's
+  `created_by` — an admin (or an automated reconciliation path) naming a
+  hostname that already routed to another tenant's container would
+  silently steal that traffic. `Save` now refuses with
+  `ErrRouteOwnershipConflict` (surfaced as gRPC `AlreadyExists`) when
+  `full_domain` belongs to a different creator, inside the same
+  transaction as the upsert so two concurrent Saves can't race past the
+  check. Routes written before this existed (`created_by` empty) are
+  exempt from the refusal so the upgrade can't lock anyone out, but the
+  first post-upgrade touch backfills the owner so the hostname is
+  protected from then on. `AddRoute`/`UpdateRoute` now also record the
+  authenticated admin as `created_by`, which they previously left blank.
+
 ## [0.79.2] - 2026-09-14
 
 ### Added
