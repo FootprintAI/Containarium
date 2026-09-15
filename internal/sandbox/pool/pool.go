@@ -283,9 +283,20 @@ func (p *Pool) planLocked() (toWarm []pb.SandboxTemplate, toTrim []*Member) {
 // untouched — the shortfall this warm was meant to cover is picked back
 // up by the next Reconcile call.
 func (p *Pool) warmOne(ctx context.Context, template pb.SandboxTemplate) {
+	// member is set only on the success path (just before the function
+	// returns normally). The deferred block below commits it to the ready
+	// ring in the SAME critical section as the warming-- decrement — do
+	// not split these into two lock acquisitions again: a caller reading
+	// Status/ReadyCount between them would transiently see the finishing
+	// member counted in neither, or (worse) still in warming after it's
+	// already in ready, over-reporting ready+warming above MinWarm.
+	var member *Member
 	defer func() {
 		p.mu.Lock()
 		p.warming[template]--
+		if member != nil {
+			p.ready[template] = append(p.ready[template], member)
+		}
 		p.mu.Unlock()
 	}()
 
@@ -329,10 +340,7 @@ func (p *Pool) warmOne(ctx context.Context, template pb.SandboxTemplate) {
 		return
 	}
 
-	m := &Member{ID: id, Template: template, IP: ip.String(), WarmedAt: time.Now()}
-	p.mu.Lock()
-	p.ready[template] = append(p.ready[template], m)
-	p.mu.Unlock()
+	member = &Member{ID: id, Template: template, IP: ip.String(), WarmedAt: time.Now()}
 }
 
 // destroy stops (force, errors ignored) then deletes m, releasing its

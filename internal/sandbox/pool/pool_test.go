@@ -193,7 +193,14 @@ func TestClaimDuringReconcile_NoTornState(t *testing.T) {
 
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
-	claimedIDs := make(chan string, 10000)
+	// A mutex-guarded slice, not a fixed-capacity channel: at fake-backend
+	// speed (no real I/O) the 8 claim loops below can clear a bounded
+	// channel's buffer well within the 200ms stress window, and a full
+	// channel here would deadlock the whole test — nothing drains it until
+	// after wg.Wait(), which then never returns because the claim
+	// goroutines it's waiting on are themselves blocked sending into it.
+	var mu sync.Mutex
+	var claimedIDs []string
 
 	// Reconcile loop.
 	wg.Add(1)
@@ -220,7 +227,9 @@ func TestClaimDuringReconcile_NoTornState(t *testing.T) {
 					return
 				default:
 					if m, err := p.Claim(pb.SandboxTemplate_SANDBOX_TEMPLATE_BASE); err == nil {
-						claimedIDs <- m.ID
+						mu.Lock()
+						claimedIDs = append(claimedIDs, m.ID)
+						mu.Unlock()
 					}
 				}
 			}
@@ -230,10 +239,9 @@ func TestClaimDuringReconcile_NoTornState(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	close(stop)
 	wg.Wait()
-	close(claimedIDs)
 
-	seen := make(map[string]bool)
-	for id := range claimedIDs {
+	seen := make(map[string]bool, len(claimedIDs))
+	for _, id := range claimedIDs {
 		if seen[id] {
 			t.Fatalf("member %s claimed more than once — torn state under concurrent Claim/Reconcile", id)
 		}
