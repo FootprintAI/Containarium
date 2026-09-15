@@ -183,9 +183,13 @@ GW_TOKEN_VAR="ANTHROPIC_AUTH_TOKEN"
 # that citation is never empty.
 FIXTURE_GIT_SOURCE="${CONTAINARIUM_E2E_LEASE_FIXTURE_REPO:-https://github.com/octocat/Spoon-Knife}"
 FIXTURE_GIT_SHA="${CONTAINARIUM_E2E_LEASE_FIXTURE_SHA:-d0dd1f61b33d64e29d8bc1372a94ef6a2fee76a9}"
-# Obviously fake, and never a real secret: the fixture is public, so GitHub
-# simply ignores this header on the fetch (design doc's "Deviations" note).
-# Its only job is to be a string assertion 8 can grep for and never find.
+# Obviously fake, and never a real secret. NOT ignored by GitHub, despite
+# the design doc's "Deviations" note assuming a public repo makes a bad
+# Authorization header harmless — verified otherwise (see assertion 8): any
+# credential presented is validated and an invalid one is rejected outright.
+# So this is used on a run EXPECTED to fail its own fetch — its only job is
+# to be a string that never appears in that failure's response or the
+# daemon log.
 FIXTURE_GIT_CREDENTIAL="e2e-fake-credential-1861-$$-not-a-real-secret"
 GIT_STUB_MARKER="containarium-lease-e2e-git-stub"
 
@@ -778,7 +782,11 @@ RUN_ID2="lease-e2e-git-$(head -c4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 RUN_SEED_DIR2="$AGENT_SEED_ROOT/$RUN_ID2"
 RUN_WORKSPACE_DIR2="$AGENT_WORKSPACE_ROOT/$RUN_ID2"
 log "measured git-source run $RUN_ID2 (repo $FIXTURE_GIT_SOURCE @ $FIXTURE_GIT_SHA)"
-run_skill_with_git "$RUN_ID2" "$WORKDIR/run2" "$FIXTURE_GIT_SOURCE" "$FIXTURE_GIT_SHA" "$FIXTURE_GIT_CREDENTIAL" &
+# No credential: GitHub validates ANY Authorization header it is given and
+# rejects an invalid one outright, even for a public repo (see assertion 8
+# below) — there is no "fake but harmless" bearer token that leaves this
+# fetch, the one assertions 5-7 depend on, still succeeding.
+run_skill_with_git "$RUN_ID2" "$WORKDIR/run2" "$FIXTURE_GIT_SOURCE" "$FIXTURE_GIT_SHA" "" &
 RUN2_PID=$!
 
 # Wait for BOTH signals the run is underway: its gateway token (same
@@ -848,21 +856,6 @@ expected_line_no="$(sudo incus exec "$BOX" -- sh -c "grep -n . '$RUN_WORKSPACE_D
 [ -n "$expected_line_no" ] || fail "assertion 5: could not compute an expected README.md citation line — is the checkout empty?"
 ok "assertion 5: workspace at $RUN_WORKSPACE_DIR2 is checked out at the pinned commit $FIXTURE_GIT_SHA (workspace.json agrees)"
 
-# --- assertion 8: the fake git credential never touches the box ----------
-# Checked NOW, while the workspace and seed dir still exist (same timing
-# constraint as assertion 5) — the daemon-log half doesn't need the box
-# alive and is checked after the run returns, below.
-if sudo incus exec "$BOX" -- sh -c "grep -F '$FIXTURE_GIT_CREDENTIAL' '$RUN_WORKSPACE_DIR2/.git/config'" >/dev/null 2>&1; then
-  fail "assertion 8: the fake git_credential is written into $RUN_WORKSPACE_DIR2/.git/config — a credential injected only as a fetch-time header must not persist on disk"
-fi
-if sudo incus exec "$BOX" -- sh -c "grep -rF '$FIXTURE_GIT_CREDENTIAL' '$RUN_SEED_DIR2'" >/dev/null 2>&1; then
-  fail "assertion 8: the fake git_credential appears somewhere under $RUN_SEED_DIR2"
-fi
-if sudo incus exec "$BOX" -- sh -c "grep -F '$FIXTURE_GIT_CREDENTIAL' /proc/*/environ 2>/dev/null" >/dev/null 2>&1; then
-  fail "assertion 8: the fake git_credential is present in a box process's environment (/proc/*/environ)"
-fi
-ok "assertion 8: the fake git_credential is absent from .git/config, the seed dir, and /proc/*/environ in the box"
-
 # --- wait for the git-source run to return --------------------------------
 wait "$RUN2_PID" || true
 EXIT_MS2="$(now_ms)"
@@ -916,14 +909,49 @@ if sudo incus exec "$BOX" -- test -e "$RUN_WORKSPACE_DIR2"; then
 fi
 ok "assertion 7: both $RUN_SEED_DIR2 and $RUN_WORKSPACE_DIR2 are gone entirely"
 
-# --- assertion 8 (daemon log half) ----------------------------------------
+# --- assertion 8: a fake git_credential never leaks, even when the fetch
+# it authorizes FAILS -------------------------------------------------------
+# The original assumption here — "the fixture is public, so GitHub simply
+# ignores the header" — does not hold: GitHub's smart-HTTP backend validates
+# any Authorization header it is given and rejects an invalid one outright,
+# even for a public repo. Reproduced directly against this exact fixture
+# with this exact header shape: `git fetch` returns "remote: invalid
+# credentials" / exit 128, not a successful anonymous fallback. So there is
+# no way to make THIS run's fetch succeed with a fake credential attached —
+# the only reachable state is failure, and that is the more realistic case
+# to prove residency against anyway: a bad credential for a PRIVATE repo
+# (git_credential's actual use case) fails exactly the same way.
+RUN_ID3="lease-e2e-git-cred-$(head -c4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+log "measured run $RUN_ID3 with a fake git_credential (expected to fail the fetch, not to succeed)"
+run_skill_with_git "$RUN_ID3" "$WORKDIR/run3" "$FIXTURE_GIT_SOURCE" "$FIXTURE_GIT_SHA" "$FIXTURE_GIT_CREDENTIAL"
+run3_code="$(read_code "$WORKDIR/run3.code")"
+run3_body="$(read_out "$WORKDIR/run3.body")"
+if [ "$run3_code" = "200" ]; then
+  fail "assertion 8: a run with a bogus git_credential against a public repo returned 200 — GitHub was expected to reject the bad Authorization header (verified locally against this exact fixture); if this now succeeds, this assertion needs to move to the success path instead"
+fi
+case "$run3_body" in
+  *"$FIXTURE_GIT_CREDENTIAL"*)
+    fail "assertion 8: the fake git_credential appears verbatim in the RPC error response ($run3_code: $run3_body) — a credential must never be echoed back to the caller" ;;
+esac
+ok "assertion 8 (response): a fake git_credential is absent from the error response when its fetch fails ($run3_code)"
+
+# The seed dir is unconditionally rm -rf'd on every exit path, including a
+# failed provision (internal/runlease's removeDirs always targets SeedDir;
+# only the workspace half is conditional on a successful fetch) — so this is
+# guaranteed, not merely hoped for.
+if sudo incus exec "$BOX" -- test -e "$AGENT_SEED_ROOT/$RUN_ID3"; then
+  fail "assertion 8: $AGENT_SEED_ROOT/$RUN_ID3 still exists after a failed provision — cleanup must run on the failure path too"
+fi
+ok "assertion 8 (cleanup): $AGENT_SEED_ROOT/$RUN_ID3 is gone after the failed provision"
+
 if grep -qF "$FIXTURE_GIT_CREDENTIAL" "$DAEMON_LOG"; then
   fail "assertion 8: the fake git_credential appears in the daemon log"
 fi
-ok "assertion 8: the fake git_credential does not appear in the daemon log"
+ok "assertion 8 (daemon log): the fake git_credential does not appear in the daemon log"
 
 echo
 echo "PASS (#1861): a skill run that fetched a repo left nothing behind."
 echo "      workspace checked out at $FIXTURE_GIT_SHA, artifact cited README.md:$expected_line_no,"
 echo "      gateway token accepted during the run and dead after it returned,"
-echo "      seed dir and workspace both gone, fake git credential absent everywhere checked."
+echo "      seed dir and workspace both gone, and a fake git credential leaked nowhere"
+echo "      when its own fetch failed."
