@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A failed audit-log write was logged and otherwise untracked.** All
+  three async audit writers (HTTP middleware, gRPC interceptor, event
+  subscriber) persist off the request path so a slow or unavailable
+  audit store never adds latency to — or fails — the action being
+  audited; but that meant a write failure (the store returning an
+  error, or a full buffered channel dropping an entry before the store
+  was even called) was previously visible only as a `log.Printf` line
+  in the daemon's stdout. A row that was never written is otherwise
+  undetectable — nothing else notices its absence. Both failure modes
+  now increment a shared counter, reported via the new admin-gated `GET
+  /v1/audit/health` (same auth gate as the existing `/v1/audit/logs`:
+  admin role or `audit:read` scope).
+
+### Added
+
+- **`GET /v1/audit/health`** reports `persistFailureCount` and
+  `persistFailureSince` — see above.
+
 ## [0.79.2] - 2026-09-14
 
 ### Added

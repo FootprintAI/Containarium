@@ -63,6 +63,7 @@ func NewGRPCInterceptor() *GRPCInterceptor {
 			}
 			if err := st.Log(context.Background(), entry); err != nil {
 				log.Printf("audit: failed to write grpc log: %v", err)
+				recordPersistFailure()
 			}
 		}
 	}()
@@ -146,6 +147,7 @@ func (g *GRPCInterceptor) record(ctx context.Context, fullMethod, action, reqID 
 	default:
 		// Channel full — drop rather than block the RPC. Same trade-off
 		// HTTPAuditMiddleware makes.
+		recordPersistFailure()
 	}
 }
 

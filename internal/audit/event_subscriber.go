@@ -82,6 +82,7 @@ func (es *EventSubscriber) writeEvent(event *pb.Event) {
 
 	if err := es.store.Log(ctx, entry); err != nil {
 		log.Printf("audit: failed to persist event %s: %v", event.Type, err)
+		recordPersistFailure()
 	}
 }
 

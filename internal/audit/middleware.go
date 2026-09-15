@@ -42,6 +42,7 @@ var skipGETPaths = []string{
 	"/v1/security/clamav-reports",
 	"/v1/security/scan-status",
 	"/v1/audit/logs",
+	"/v1/audit/health",
 }
 
 // responseWriter wraps http.ResponseWriter to capture the status code
@@ -59,8 +60,12 @@ func (rw *responseWriter) WriteHeader(code int) {
 	rw.ResponseWriter.WriteHeader(code)
 }
 
-// HTTPAuditMiddleware wraps an HTTP handler to record audit log entries for API requests
-func HTTPAuditMiddleware(next http.Handler, store *Store) http.Handler {
+// HTTPAuditMiddleware wraps an HTTP handler to record audit log entries for
+// API requests. store takes the auditLogger interface (narrowed to
+// Log(ctx, *AuditEntry) error, same as GRPCInterceptor) rather than the
+// concrete *Store, so tests can substitute a fake without a real Postgres
+// connection — production callers pass *Store unchanged.
+func HTTPAuditMiddleware(next http.Handler, store auditLogger) http.Handler {
 	// Buffered channel for async writes
 	entryCh := make(chan *AuditEntry, 256)
 
@@ -69,6 +74,7 @@ func HTTPAuditMiddleware(next http.Handler, store *Store) http.Handler {
 		for entry := range entryCh {
 			if err := store.Log(context.Background(), entry); err != nil {
 				log.Printf("audit: failed to write log: %v", err)
+				recordPersistFailure()
 			}
 		}
 	}()
@@ -143,6 +149,7 @@ func HTTPAuditMiddleware(next http.Handler, store *Store) http.Handler {
 		case entryCh <- entry:
 		default:
 			// Channel full, drop entry to avoid blocking the request
+			recordPersistFailure()
 		}
 	})
 }
