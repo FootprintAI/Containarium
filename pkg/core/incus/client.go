@@ -1510,22 +1510,38 @@ func (c *Client) WaitForAgent(containerName string, timeout time.Duration) error
 // the same shape as waitForIP, but inverted: here the error itself IS
 // the "not ready yet" signal (the agent isn't reachable), so every
 // error is retried instead of returned immediately.
+//
+// The deadline is checked before every attempt, not only after a
+// failed one: attempt (an Incus exec) has no bound of its own, so a
+// zero-or-negative budget — which IncusHost.WaitReady can hand in when
+// the network wait alone consumed the caller's whole timeout — must
+// never start one. It is checked again right after a successful
+// attempt too, since an exec that was already in flight when the
+// deadline passed would otherwise report success having silently
+// overrun the caller's budget.
 func waitForAgent(timeout time.Duration, attempt func() error) error {
 	deadline := time.Now().Add(timeout)
 	poll := waitNetPollMin
 	var lastErr error
 
 	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			if lastErr != nil {
+				return fmt.Errorf("timeout waiting for VM guest agent: %w", lastErr)
+			}
+			return errors.New("timeout waiting for VM guest agent")
+		}
+
 		lastErr = attempt()
 		if lastErr == nil {
+			if time.Until(deadline) <= 0 {
+				return errors.New("timeout waiting for VM guest agent: agent became reachable after the deadline")
+			}
 			return nil
 		}
 
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			return fmt.Errorf("timeout waiting for VM guest agent: %w", lastErr)
-		}
-		time.Sleep(min(poll, remaining))
+		time.Sleep(min(poll, time.Until(deadline)))
 		poll = min(poll*2, waitNetPollMax)
 	}
 }
