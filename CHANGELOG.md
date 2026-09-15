@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **agent-box's `AGENTBOX_ROOT` sandbox boundary was a lexical prefix
+  check with no symlink resolution.** `validatePathCtx` compared
+  `filepath.Abs` + `filepath.Clean` of the requested path against the
+  sandbox root — neither touches the filesystem, so a symlink placed
+  anywhere inside the root and pointing outside it passed the check even
+  though the actual read/write/exec on that path follows the symlink at
+  the OS level and escapes the sandbox. The boundary comparison now
+  resolves symlinks on both sides (a new `resolveSymlinks` helper that
+  tolerates a not-yet-existing leaf, so `write_file` creating a new file
+  still works) before comparing. Applies to both the `AGENTBOX_ROOT`
+  floor and the MCP client-advertised-roots fallback.
+
 ## [0.79.2] - 2026-09-14
 
 ### Added

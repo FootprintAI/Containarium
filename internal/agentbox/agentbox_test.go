@@ -426,6 +426,116 @@ func TestSandboxRoot_RejectsLookalikePrefix(t *testing.T) {
 	}
 }
 
+// Trenyx audit finding #3 (2026-09-16): validatePathCtx compared the
+// AGENTBOX_ROOT boundary against a purely lexical (Abs+Clean) path, with
+// no filepath.EvalSymlinks anywhere — so a symlink planted INSIDE the
+// sandbox root, pointing at a target OUTSIDE it, passed the string-prefix
+// check even though the actual file read follows the symlink at the OS
+// level and escapes the sandbox. This test plants exactly that symlink
+// and proves read_file now refuses it.
+func TestSandboxRoot_RejectsSymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv(sandboxRootEnv, root)
+	resetSandboxOnceForTest()
+	t.Cleanup(resetSandboxOnceForTest)
+
+	secretDir := t.TempDir() // a different temp tree, outside root
+	secret := filepath.Join(secretDir, "secret.txt")
+	if err := os.WriteFile(secret, []byte("outside the box"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// A symlink living INSIDE the sandbox root, pointing OUTSIDE it.
+	link := filepath.Join(root, "escape")
+	if err := os.Symlink(secret, link); err != nil {
+		t.Fatal(err)
+	}
+
+	_, res := callTool(t, handleReadFile, map[string]interface{}{"path": link})
+	if !res.IsError {
+		t.Fatalf("sandbox accepted a symlink escaping AGENTBOX_ROOT — read a file outside the box")
+	}
+}
+
+// A symlink whose target is still INSIDE AGENTBOX_ROOT must keep working
+// — the fix resolves symlinks for the boundary comparison, it must not
+// reject every symlink outright.
+func TestSandboxRoot_AllowsSymlinkStayingInside(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv(sandboxRootEnv, root)
+	resetSandboxOnceForTest()
+	t.Cleanup(resetSandboxOnceForTest)
+
+	real := filepath.Join(root, "real.txt")
+	if err := os.WriteFile(real, []byte("inside the box"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "alias")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+
+	_, res := callTool(t, handleReadFile, map[string]interface{}{"path": link})
+	if res.IsError {
+		t.Fatalf("sandbox rejected an in-bounds symlink: %v", res)
+	}
+}
+
+// A symlinked DIRECTORY component (not just the leaf) inside the sandbox
+// root, pointing outside it, must also be caught — resolveSymlinks walks
+// up from a non-existent leaf, so this exercises that walk-up path with
+// an existing-but-symlinked ancestor rather than the leaf itself.
+func TestSandboxRoot_RejectsSymlinkedDirectoryEscape(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv(sandboxRootEnv, root)
+	resetSandboxOnceForTest()
+	t.Cleanup(resetSandboxOnceForTest)
+
+	secretDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(secretDir, "secret.txt"), []byte("outside"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	linkDir := filepath.Join(root, "linked-dir")
+	if err := os.Symlink(secretDir, linkDir); err != nil {
+		t.Fatal(err)
+	}
+
+	_, res := callTool(t, handleReadFile, map[string]interface{}{
+		"path": filepath.Join(linkDir, "secret.txt"),
+	})
+	if !res.IsError {
+		t.Fatalf("sandbox accepted a path through a symlinked directory escaping AGENTBOX_ROOT")
+	}
+}
+
+// write_file targets a leaf that doesn't exist yet — resolveSymlinks must
+// tolerate that (walking up to the nearest existing ancestor) rather than
+// failing every write inside a symlinked-but-real directory.
+func TestSandboxRoot_WriteFileThroughInBoundsSymlinkedDir(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv(sandboxRootEnv, root)
+	resetSandboxOnceForTest()
+	t.Cleanup(resetSandboxOnceForTest)
+
+	realDir := filepath.Join(root, "real-dir")
+	if err := os.Mkdir(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkDir := filepath.Join(root, "linked-dir")
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Fatal(err)
+	}
+
+	newFile := filepath.Join(linkDir, "new.txt")
+	_, res := callTool(t, handleWriteFile, map[string]interface{}{
+		"path": newFile, "content": "hello",
+	})
+	if res.IsError {
+		t.Fatalf("write through an in-bounds symlinked directory to a not-yet-existing file was rejected: %v", res)
+	}
+}
+
 // ----- tail_log --------------------------------------------------------
 
 func TestTailLog_DefaultStartIsEOF(t *testing.T) {

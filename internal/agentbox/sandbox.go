@@ -14,6 +14,52 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
+// resolveSymlinks resolves symlinks in abs, tolerating a leaf (and any
+// number of trailing path components) that doesn't exist yet — e.g. a
+// file a write tool is about to create. It walks up from abs until it
+// finds a prefix that exists, resolves THAT prefix's symlinks via
+// filepath.EvalSymlinks, then rejoins the non-existent suffix (which,
+// not existing, cannot itself be or contain a symlink).
+//
+// This exists because validatePathCtx / validatePathAgainstRoots used to
+// compare the sandbox root against the raw, lexically-Cleaned path only.
+// filepath.Abs + filepath.Clean never touch the filesystem, so a symlink
+// placed anywhere inside AGENTBOX_ROOT pointing outside it passed the
+// string-prefix check even though the actual read/write/exec on that
+// path follows the symlink at the OS level and lands outside the
+// sandbox. Resolving both sides through this function before the
+// comparison closes that gap. abs is expected to already be
+// Abs+Clean'd by the caller.
+func resolveSymlinks(abs string) (string, error) {
+	suffix := ""
+	cur := abs
+	for {
+		resolved, err := filepath.EvalSymlinks(cur)
+		if err == nil {
+			if suffix == "" {
+				return resolved, nil
+			}
+			return filepath.Join(resolved, suffix), nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			// Reached the filesystem root without finding anything that
+			// exists on disk. Nothing left to resolve; the path (or
+			// everything under it) simply doesn't exist yet.
+			return abs, nil
+		}
+		if suffix == "" {
+			suffix = filepath.Base(cur)
+		} else {
+			suffix = filepath.Join(filepath.Base(cur), suffix)
+		}
+		cur = parent
+	}
+}
+
 // AGENTBOX_ROOT, when set, restricts every file-ops tool to paths that
 // resolve under it. It's the strict floor — even if the MCP client
 // advertises broader roots via roots/list, AGENTBOX_ROOT still wins.
@@ -78,8 +124,16 @@ func validatePathCtx(ctx context.Context, p string) (string, error) {
 	// Client roots that fall outside it are intentionally ignored —
 	// the operator's intent overrides the client's hint.
 	if root := resolvedSandboxRoot(); root != "" {
-		if abs == root || strings.HasPrefix(abs, root+string(os.PathSeparator)) {
-			return abs, nil
+		resolvedAbs, err := resolveSymlinks(abs)
+		if err != nil {
+			return "", fmt.Errorf("resolve %q: %w", p, err)
+		}
+		resolvedRoot, err := resolveSymlinks(root)
+		if err != nil {
+			return "", fmt.Errorf("resolve AGENTBOX_ROOT %q: %w", root, err)
+		}
+		if resolvedAbs == resolvedRoot || strings.HasPrefix(resolvedAbs, resolvedRoot+string(os.PathSeparator)) {
+			return resolvedAbs, nil
 		}
 		return "", fmt.Errorf("path %q is outside AGENTBOX_ROOT (%s)", p, root)
 	}
@@ -93,8 +147,20 @@ func validatePathCtx(ctx context.Context, p string) (string, error) {
 		// roots).
 		return abs, nil
 	}
-	if pathUnderAny(abs, roots) {
-		return abs, nil
+	resolvedAbs, err := resolveSymlinks(abs)
+	if err != nil {
+		return "", fmt.Errorf("resolve %q: %w", p, err)
+	}
+	resolvedRoots := make([]string, 0, len(roots))
+	for _, r := range roots {
+		rr, err := resolveSymlinks(r)
+		if err != nil {
+			continue // an unreadable/unresolvable client root just drops out of the set
+		}
+		resolvedRoots = append(resolvedRoots, rr)
+	}
+	if pathUnderAny(resolvedAbs, resolvedRoots) {
+		return resolvedAbs, nil
 	}
 	return "", fmt.Errorf("path %q is not under any client-advertised root: %s",
 		p, strings.Join(roots, ", "))
@@ -180,8 +246,16 @@ func validatePathAgainstRoots(p, root string) (string, error) {
 	if root == "" {
 		return abs, nil
 	}
-	if abs == root || strings.HasPrefix(abs, root+string(os.PathSeparator)) {
-		return abs, nil
+	resolvedAbs, err := resolveSymlinks(abs)
+	if err != nil {
+		return "", fmt.Errorf("resolve %q: %w", p, err)
+	}
+	resolvedRoot, err := resolveSymlinks(root)
+	if err != nil {
+		return "", fmt.Errorf("resolve AGENTBOX_ROOT %q: %w", root, err)
+	}
+	if resolvedAbs == resolvedRoot || strings.HasPrefix(resolvedAbs, resolvedRoot+string(os.PathSeparator)) {
+		return resolvedAbs, nil
 	}
 	return "", fmt.Errorf("path %q is outside AGENTBOX_ROOT (%s)", p, root)
 }
