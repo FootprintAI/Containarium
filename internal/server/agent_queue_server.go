@@ -125,7 +125,7 @@ func (s *AgentSkillServer) StartAgentWorker(ctx context.Context, req *pb.StartAg
 	// later-phase item in the design
 	// (docs/architecture/execution-scoped-authorization.md §3, "Crew members and
 	// queue workers").
-	containerName, container, _, _, _, err := s.provisionSkillBox(ctx, skill, req.BackendId, req.Pool, "", runID, "", "", "")
+	containerName, container, lease, _, _, err := s.provisionSkillBox(ctx, skill, req.BackendId, req.Pool, "", runID, "", "", "")
 	if err != nil {
 		return nil, err
 	}
@@ -142,7 +142,7 @@ func (s *AgentSkillServer) StartAgentWorker(ctx context.Context, req *pb.StartAg
 		return nil, status.Errorf(codes.Internal, "failed to mint worker queue credential: %v", err)
 	}
 
-	s.startPollMode(containerName, queueToken, workerID, skill.Id)
+	s.startPollMode(containerName, queueToken, workerID, skill.Id, lease.SeedDir)
 
 	return &pb.StartAgentWorkerResponse{Container: container, WorkerId: workerID, RunId: runID}, nil
 }
@@ -150,11 +150,11 @@ func (s *AgentSkillServer) StartAgentWorker(ctx context.Context, req *pb.StartAg
 // startPollMode launches agent-runtime in poll mode as a background worker in
 // the box. Best-effort (mirrors startServeMode): a failure (no runtime in the
 // image) logs and the box is still provisioned + credentialed.
-func (s *AgentSkillServer) startPollMode(containerName, queueToken, workerID, skillID string) {
+func (s *AgentSkillServer) startPollMode(containerName, queueToken, workerID, skillID, seedDir string) {
 	if s.recipes == nil || s.recipes.containers == nil || s.recipes.containers.manager == nil {
 		return
 	}
-	cmd := buildWorkerPollCommand(queueToken, workerID, skillID)
+	cmd := buildWorkerPollCommand(queueToken, workerID, skillID, seedDir)
 	if _, stderr, err := s.recipes.containers.manager.ExecWithOutput(containerName,
 		[]string{"bash", "-lc", cmd}); err != nil {
 		log.Printf("[agent-worker] could not start poll mode on %s (image may not ship runtime): %v; stderr=%s",
@@ -168,7 +168,7 @@ func (s *AgentSkillServer) startPollMode(containerName, queueToken, workerID, sk
 // has to know the bridge address; the agents:run token authorizes the lease/
 // complete calls. Token, worker id, and skill filter are single-quoted; the URL
 // is intentionally unquoted so $GW expands.
-func buildWorkerPollCommand(queueToken, workerID, skillID string) string {
+func buildWorkerPollCommand(queueToken, workerID, skillID, seedDir string) string {
 	return fmt.Sprintf(
 		`GW=$(ip route 2>/dev/null | awk '/default/{print $3; exit}'); `+
 			`CONTAINARIUM_AGENT_MODE=poll `+
@@ -182,6 +182,6 @@ func buildWorkerPollCommand(queueToken, workerID, skillID string) string {
 		shellSingleQuote(queueToken),
 		shellSingleQuote(workerID),
 		shellSingleQuote(skillID),
-		agentSeedDir,
+		seedDir,
 	)
 }

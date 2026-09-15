@@ -40,10 +40,26 @@ const agentBoxPrefix = "agent-"
 // agent loop. Short by design: a skill run is a bounded task, not a session.
 const agentTokenTTL = 30 * time.Minute
 
-// agentSeedDir is where RunAgentSkill writes the skill's system prompt, scoped
-// token, and task input inside the box. The in-box agent loop (the
-// agent-runtime image's job — Phase 0 integration seam) reads from here.
-const agentSeedDir = "/etc/containarium/agent"
+// agentSeedRoot and agentWorkspaceRoot are the fixed parents of every run's
+// own seed directory and (when it fetches a repo, #1859) workspace inside the
+// box. Per-run (#1860): before this, every run of a skill shared one seed
+// directory at the box level, so two concurrent runs of the same skill — or a
+// crew member / queue worker sharing the box with a one-off run — collided on
+// each other's prompt, token, and (once #1859 landed) checkout. seedDirFor and
+// workspaceDirFor turn a run id, already validated by resolveRunID as a
+// single safe path segment, into that run's own directory under these roots.
+// The in-box agent loop (the agent-runtime image's job) reads its seed from
+// AGENT_SEED_DIR, set to seedDirFor's result at launch.
+const (
+	agentSeedRoot      = "/etc/containarium/agent/runs"
+	agentWorkspaceRoot = "/workspace/runs"
+)
+
+// seedDirFor returns the per-run seed directory for runID.
+func seedDirFor(runID string) string { return agentSeedRoot + "/" + runID }
+
+// workspaceDirFor returns the per-run workspace directory for runID.
+func workspaceDirFor(runID string) string { return agentWorkspaceRoot + "/" + runID }
 
 // Run-lease reasons, recorded on every revocation and in the end audit row so
 // an operator reading jwt_revocations can tell a normal run exit from a run
@@ -59,16 +75,19 @@ const (
 //
 // It is NOT a bound on runlease.End as a whole, and the arithmetic is worth
 // stating exactly because it is easy to assume otherwise. runlease.wipeSeed
-// takes no context at all — it enforces its own 3s with a bare timer — so the
-// true worst case is 2s + 2s + 3s = 7s, and with two credentials the 4s of
-// revokes never reach this 6s cap in the first place.
+// and (#1860) runlease's directory removal each take no context at all —
+// they enforce their own 3s with a bare timer apiece — so the true worst case
+// is 2s + 2s + 3s + 3s = 10s, and with two credentials the 4s of revokes
+// never reach this 6s cap in the first place.
 //
-// That the wipe does not derive from this deadline is the property that keeps
-// it safe: slow revokes can never truncate the wipe, so the seed files still
-// leave the box. Anyone making wipeSeed context-aware must raise this ceiling
-// (or give the wipe its own budget) in the same change — otherwise two slow
-// revokes would silently cut the wipe short and leave a readable `token` /
-// `gateway.env` behind in a box that is reused across runs.
+// That the wipe/removal steps do not derive from this deadline is the
+// property that keeps it safe: slow revokes can never truncate them, so the
+// seed files (and, once fetched, the workspace) still leave the box. Anyone
+// making wipeSeed or the directory removal context-aware must raise this
+// ceiling (or give that step its own budget) in the same change — otherwise
+// slow revokes would silently cut a later step short and leave a readable
+// `token` / `gateway.env` — or a fetched repo — behind in a box that is
+// reused across runs.
 const endRunLeaseCeiling = 6 * time.Second
 
 // auditWriteBudget bounds one run-lease audit write.
@@ -90,10 +109,17 @@ const auditWriteBudget = 3 * time.Second
 var runIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 
 // resolveRunID validates a caller-supplied run id or generates one. Empty
-// means "the daemon picks"; anything else must match runIDPattern.
+// means "the daemon picks"; anything else must match runIDPattern. "." and
+// ".." both match that character class but are rejected explicitly (#1860):
+// a run id becomes the single trailing path segment of the run's seed dir
+// and workspace (seedDirFor/workspaceDirFor), and either value would resolve
+// to the root itself rather than a per-run directory under it.
 func resolveRunID(raw string) (string, error) {
 	if raw == "" {
 		return uuid.NewString(), nil
+	}
+	if raw == "." || raw == ".." {
+		return "", status.Errorf(codes.InvalidArgument, "run_id must not be %q", raw)
 	}
 	if !runIDPattern.MatchString(raw) {
 		return "", status.Errorf(codes.InvalidArgument,
@@ -262,18 +288,17 @@ func (s *AgentSkillServer) RunAgentSkill(ctx context.Context, req *pb.RunAgentSk
 	// artifact below, an agent error, a cancelled caller — revokes both jtis and
 	// wipes the seed files.
 	//
-	// KNOWN GAP — the revoke is run-scoped, the WIPE is box-scoped. Boxes are
-	// named by skill id ("agent-"+skill.Id, see provisionSkillBox) and hold one
-	// shared <seedDir>/{token,gateway.env}, and runlease's argv is fixed on that
-	// directory. So a one-off run of a skill that ALSO has a crew member or a
-	// queue worker live in the same box deletes the files that member/worker
-	// reads at launch: an already-running process keeps the env it sourced, but
-	// any relaunch in that box drops to direct mode with no platform token —
-	// while its own credential, which this PR deliberately never revokes, stays
-	// live. Matches design §2's fixed argv and §3's SeedDir, and rides on the
-	// same-skill box collision already noted in provisionSkillBox; the fix is
-	// per-run boxes or per-run seed paths, which is a follow-up, not a change to
-	// make here.
+	// RESOLVED (#1860) — the box is still shared by skill id ("agent-"+skill.Id,
+	// see provisionSkillBox), but the seed directory no longer is: every run,
+	// crew member, and queue worker gets its own seedDirFor(runID), so this
+	// run's exit removes only ITS OWN directory and never touches a co-resident
+	// crew member's or worker's files. What remains open, by design and matching
+	// #1860's own "Not in scope": a leftover in-box PROCESS (not a file) from an
+	// earlier run can still read a later run's live token out of /proc while
+	// both happen to share the box's UID — closing that needs a per-run box or a
+	// Clean()-style process reset, not a seed-path change. Crew/queue leases are
+	// also still never explicitly ended here (they outlive this RPC by design);
+	// see docs/architecture/execution-scoped-authorization.md §3.
 	defer s.endRunLease(ctx, lease, s.boxWiper(), runExitReason)
 
 	// Run the in-box agent loop (Phase 4a) and read its artifact back.
@@ -285,7 +310,13 @@ func (s *AgentSkillServer) RunAgentSkill(ctx context.Context, req *pb.RunAgentSk
 	// ExecWithOutput), so cancelling the RPC does NOT interrupt the in-box
 	// process — the lease ends when the exec returns, under a detached context.
 	// Making the exec cancellable is a separate change and doesn't alter this.
-	artifact := s.runInBoxAgent(containerName)
+	//
+	// #1860: this read happens before the function returns, and `defer`s run
+	// after a function's return values are computed but before it returns to
+	// its caller — so artifact.json is always read into this Go string BEFORE
+	// endRunLease's directory removal ever runs. A run whose artifact was
+	// returned never loses it to the wipe.
+	artifact := s.runInBoxAgent(containerName, lease.SeedDir)
 	return &pb.RunAgentSkillResponse{
 		Container:     box,
 		ArtifactJson:  artifact,
@@ -473,8 +504,11 @@ func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.Agen
 
 	containerName = name + "-container"
 	// The run's lease: every credential minted below is recorded here so the
-	// run's exit can revoke exactly what the run was given (#1817).
-	lease = runlease.Lease{RunID: runID, Box: containerName, SeedDir: agentSeedDir}
+	// run's exit can revoke exactly what the run was given (#1817). SeedDir is
+	// per-run (#1860) so concurrent runs of the same skill — which share this
+	// box — no longer collide on one shared seed directory.
+	seedDir := seedDirFor(runID)
+	lease = runlease.Lease{RunID: runID, Box: containerName, SeedDir: seedDir}
 
 	// Mint a JWT scoped to the intersection of the CALLER's own granted scopes
 	// and the skill's allowed_scopes (#1676: the manifest is a ceiling, never
@@ -500,7 +534,7 @@ func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.Agen
 			cardJSON = string(b)
 		}
 	}
-	seedScript := buildAgentSeedScript(skill.SystemPrompt, token, inputJSON, cardJSON)
+	seedScript := buildAgentSeedScript(seedDir, skill.SystemPrompt, token, inputJSON, cardJSON)
 	// Model-gateway provisioning (#674): when the daemon serves a gateway, mint a
 	// per-skill gateway token and append the env-seeding to the same exec, so the
 	// box's engine routes model calls through the gateway (real key never enters
@@ -509,7 +543,7 @@ func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.Agen
 	if s.gateway != nil {
 		if gwTok, gwMinted, gerr := s.gateway.mintGatewayToken(name, skill.Id, runID); gerr != nil {
 			log.Printf("[agent-skill] gateway token mint failed for %s (box runs direct mode): %v", name, gerr)
-		} else if envScript, eerr := gatewayEnvScript(s.gateway.provider, s.gateway.httpPort, gwTok, agentSeedDir); eerr != nil {
+		} else if envScript, eerr := gatewayEnvScript(s.gateway.provider, s.gateway.httpPort, gwTok, seedDir); eerr != nil {
 			log.Printf("[agent-skill] gateway env script failed for %s (box runs direct mode): %v", name, eerr)
 		} else {
 			seedScript += "\n" + envScript
@@ -533,22 +567,26 @@ func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.Agen
 		return "", nil, noLease, "", "", status.Errorf(codes.Internal, "failed to seed agent box %s: %v", containerName, err)
 	}
 
-	// #1859: fetch the run's repo, if any, now that the box has credentials
-	// and is ready to read them. A fetch failure is treated exactly like a
-	// seed failure — the partial lease (already-minted credentials) is ended
-	// here, before RunAgentSkill's defer would have taken over.
+	// #1859/#1860: fetch the run's repo, if any, now that the box has
+	// credentials and is ready to read them. The workspace is per-run
+	// (workspaceDirFor), so two concurrent runs of this skill never share a
+	// checkout. A fetch failure is treated exactly like a seed failure — the
+	// partial lease (already-minted credentials) is ended here, before
+	// RunAgentSkill's defer would have taken over.
 	if gitSource != "" {
+		workspacePath = workspaceDirFor(runID)
 		commit, ferr := s.recipes.containers.manager.FetchGitSource(containerName, containerpkg.GitSourceSpec{
-			Source:     gitSource,
-			Ref:        gitRef,
-			Credential: gitCredential,
+			Source:        gitSource,
+			Ref:           gitRef,
+			Credential:    gitCredential,
+			WorkspacePath: workspacePath,
 		})
 		if ferr != nil {
 			s.endRunLease(ctx, lease, s.boxWiper(), provisionFailedReason)
 			return "", nil, noLease, "", "", status.Errorf(codes.FailedPrecondition, "git fetch into agent box %s failed: %v", containerName, ferr)
 		}
 		gitCommit = commit
-		workspacePath = containerpkg.DefaultWorkspacePath
+		lease.Workspace = workspacePath
 	}
 
 	// Compile allowed_peers into the per-box egress policy (Phase 2).
@@ -596,11 +634,11 @@ func (s *AgentSkillServer) engineEnvPrefix() string {
 // server on :8674) as a background process, so peers/crews can delegate tasks
 // to this box. Best-effort: until the box image ships agent-runtime this is a
 // no-op failure (logged), like runInBoxAgent. Used by RunCrew for members.
-func (s *AgentSkillServer) startServeMode(containerName string) {
+func (s *AgentSkillServer) startServeMode(containerName, seedDir string) {
 	if s.recipes == nil || s.recipes.containers == nil || s.recipes.containers.manager == nil {
 		return
 	}
-	cmd := sourceGatewayEnvPrefix(agentSeedDir) + s.engineEnvPrefix() + "CONTAINARIUM_AGENT_MODE=serve AGENT_SEED_DIR=" + agentSeedDir +
+	cmd := sourceGatewayEnvPrefix(seedDir) + s.engineEnvPrefix() + "CONTAINARIUM_AGENT_MODE=serve AGENT_SEED_DIR=" + seedDir +
 		" setsid agent-runtime >/var/log/agent-runtime.log 2>&1 &"
 	if _, stderr, err := s.recipes.containers.manager.ExecWithOutput(containerName,
 		[]string{"bash", "-lc", cmd}); err != nil {
@@ -615,20 +653,20 @@ func (s *AgentSkillServer) startServeMode(containerName string) {
 // key come from the box env (secrets-injected). Best-effort: any failure
 // (runtime absent, exec error, bad artifact) logs and returns "" rather than
 // failing RunAgentSkill — the box is still provisioned + gated + traced.
-func (s *AgentSkillServer) runInBoxAgent(containerName string) string {
+func (s *AgentSkillServer) runInBoxAgent(containerName, seedDir string) string {
 	if s.recipes == nil || s.recipes.containers == nil || s.recipes.containers.manager == nil {
 		return ""
 	}
 	mgr := s.recipes.containers.manager
 
 	if _, stderr, err := mgr.ExecWithOutput(containerName,
-		[]string{"bash", "-lc", sourceGatewayEnvPrefix(agentSeedDir) + s.engineEnvPrefix() + "AGENT_SEED_DIR=" + agentSeedDir + " agent-runtime"}); err != nil {
+		[]string{"bash", "-lc", sourceGatewayEnvPrefix(seedDir) + s.engineEnvPrefix() + "AGENT_SEED_DIR=" + seedDir + " agent-runtime"}); err != nil {
 		log.Printf("[agent-skill] in-box runtime did not run on %s (image may not ship it yet): %v; stderr=%s",
 			containerName, err, strings.TrimSpace(stderr))
 		return ""
 	}
 
-	raw, err := mgr.ReadFile(containerName, agentSeedDir+"/artifact.json")
+	raw, err := mgr.ReadFile(containerName, seedDir+"/artifact.json")
 	if err != nil {
 		log.Printf("[agent-skill] could not read artifact from %s: %v", containerName, err)
 		return ""
@@ -978,12 +1016,13 @@ type runLeaseIssueDetail struct {
 // runLeaseEndDetail is the Detail of agent.run_lease_end: what actually
 // happened when the run's authority was taken back.
 type runLeaseEndDetail struct {
-	RunID     string   `json:"run_id"`
-	Reason    string   `json:"reason"`
-	Revoked   []string `json:"revoked"`
-	Unrevoked []string `json:"unrevoked"`
-	Wiped     bool     `json:"wiped"`
-	Errors    []string `json:"errors"`
+	RunID       string   `json:"run_id"`
+	Reason      string   `json:"reason"`
+	Revoked     []string `json:"revoked"`
+	Unrevoked   []string `json:"unrevoked"`
+	Wiped       bool     `json:"wiped"`
+	DirsRemoved bool     `json:"dirs_removed"` // #1860: the seed dir + workspace are gone
+	Errors      []string `json:"errors"`
 }
 
 func runLeaseIssuePayload(lease runlease.Lease) string {
@@ -1006,10 +1045,11 @@ func runLeaseEndPayload(lease runlease.Lease, reason string, out runlease.Outcom
 		RunID:  lease.RunID,
 		Reason: reason,
 		// Non-nil so the row reads "nothing here" rather than JSON null.
-		Revoked:   append([]string{}, out.Revoked...),
-		Unrevoked: append([]string{}, out.Unrevoked...),
-		Wiped:     out.Wiped,
-		Errors:    make([]string, 0, len(out.Errs)),
+		Revoked:     append([]string{}, out.Revoked...),
+		Unrevoked:   append([]string{}, out.Unrevoked...),
+		Wiped:       out.Wiped,
+		DirsRemoved: out.DirsRemoved,
+		Errors:      make([]string, 0, len(out.Errs)),
 	}
 	for _, err := range out.Errs {
 		d.Errors = append(d.Errors, err.Error())
@@ -1114,7 +1154,7 @@ func (s *AgentSkillServer) resolvePeerA2A(peerID string) (string, *pb.AgentCard,
 // agent card lets the box's A2A server (Phase 1) serve it for peer discovery.
 // Values are single-quote escaped (shellSingleQuote, from recipe_server.go) to
 // prevent shell injection.
-func buildAgentSeedScript(systemPrompt, token, inputJSON, cardJSON string) string {
+func buildAgentSeedScript(seedDir, systemPrompt, token, inputJSON, cardJSON string) string {
 	if inputJSON == "" {
 		inputJSON = "{}"
 	}
@@ -1124,11 +1164,11 @@ func buildAgentSeedScript(systemPrompt, token, inputJSON, cardJSON string) strin
 	var b strings.Builder
 	b.WriteString("set -euo pipefail\n")
 	b.WriteString("umask 077\n")
-	fmt.Fprintf(&b, "mkdir -p %s\n", agentSeedDir)
-	fmt.Fprintf(&b, "printf '%%s' %s > %s/system_prompt.txt\n", shellSingleQuote(systemPrompt), agentSeedDir)
-	fmt.Fprintf(&b, "printf '%%s' %s > %s/token\n", shellSingleQuote(token), agentSeedDir)
-	fmt.Fprintf(&b, "printf '%%s' %s > %s/input.json\n", shellSingleQuote(inputJSON), agentSeedDir)
-	fmt.Fprintf(&b, "printf '%%s' %s > %s/agent-card.json\n", shellSingleQuote(cardJSON), agentSeedDir)
-	fmt.Fprintf(&b, "chmod 600 %s/token\n", agentSeedDir)
+	fmt.Fprintf(&b, "mkdir -p %s\n", seedDir)
+	fmt.Fprintf(&b, "printf '%%s' %s > %s/system_prompt.txt\n", shellSingleQuote(systemPrompt), seedDir)
+	fmt.Fprintf(&b, "printf '%%s' %s > %s/token\n", shellSingleQuote(token), seedDir)
+	fmt.Fprintf(&b, "printf '%%s' %s > %s/input.json\n", shellSingleQuote(inputJSON), seedDir)
+	fmt.Fprintf(&b, "printf '%%s' %s > %s/agent-card.json\n", shellSingleQuote(cardJSON), seedDir)
+	fmt.Fprintf(&b, "chmod 600 %s/token\n", seedDir)
 	return b.String()
 }

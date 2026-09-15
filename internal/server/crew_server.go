@@ -139,7 +139,7 @@ func (s *CrewServer) RunCrew(ctx context.Context, req *pb.RunCrewRequest) (*pb.R
 		// CrewServer's to own and is a later-phase item in the design
 		// (docs/architecture/execution-scoped-authorization.md §3, "Crew members
 		// and queue workers").
-		containerName, _, _, _, _, err := s.agents.provisionSkillBox(ctx, skill, req.BackendId, req.Pool, "", run.Id, "", "", "")
+		containerName, _, lease, _, _, err := s.agents.provisionSkillBox(ctx, skill, req.BackendId, req.Pool, "", run.Id, "", "", "")
 		if err != nil {
 			run.State = pb.CrewRunState_CREW_RUN_STATE_FAILED
 			run.Error = fmt.Sprintf("provision skill %q: %v", sid, err)
@@ -148,7 +148,7 @@ func (s *CrewServer) RunCrew(ctx context.Context, req *pb.RunCrewRequest) (*pb.R
 			}
 			return nil, status.Errorf(codes.Internal, "crew %q: %s", crew.Id, run.Error)
 		}
-		s.agents.startServeMode(containerName)
+		s.agents.startServeMode(containerName, lease.SeedDir)
 	}
 
 	// Drive the topology hops over A2A under the shared trace_id, and record the

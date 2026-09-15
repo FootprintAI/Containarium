@@ -17,17 +17,18 @@ import (
 )
 
 func TestBuildAgentSeedScript(t *testing.T) {
-	script := buildAgentSeedScript("be helpful", "tok-123", `{"q":"hi"}`, `{"id":"x"}`)
+	seedDir := seedDirFor("run-1")
+	script := buildAgentSeedScript(seedDir, "be helpful", "tok-123", `{"q":"hi"}`, `{"id":"x"}`)
 
 	for _, want := range []string{
 		"set -euo pipefail",
 		"umask 077",
-		"mkdir -p " + agentSeedDir,
-		agentSeedDir + "/system_prompt.txt",
-		agentSeedDir + "/token",
-		agentSeedDir + "/input.json",
-		agentSeedDir + "/agent-card.json",
-		"chmod 600 " + agentSeedDir + "/token",
+		"mkdir -p " + seedDir,
+		seedDir + "/system_prompt.txt",
+		seedDir + "/token",
+		seedDir + "/input.json",
+		seedDir + "/agent-card.json",
+		"chmod 600 " + seedDir + "/token",
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("seed script missing %q\n---\n%s", want, script)
@@ -36,7 +37,7 @@ func TestBuildAgentSeedScript(t *testing.T) {
 }
 
 func TestBuildAgentSeedScriptDefaultsInput(t *testing.T) {
-	script := buildAgentSeedScript("p", "t", "", "")
+	script := buildAgentSeedScript(seedDirFor("run-1"), "p", "t", "", "")
 	if !strings.Contains(script, "'{}'") {
 		t.Errorf("empty input should default to {}, got:\n%s", script)
 	}
@@ -354,7 +355,7 @@ func TestAuditAttributionFromContext_ResolvesTokenID(t *testing.T) {
 func TestBuildAgentSeedScriptEscapesSingleQuotes(t *testing.T) {
 	// A system prompt containing a single quote must be escaped so it can't
 	// break out of the shell-quoted printf argument.
-	script := buildAgentSeedScript("don't panic", "t", "{}", "{}")
+	script := buildAgentSeedScript(seedDirFor("run-1"), "don't panic", "t", "{}", "{}")
 	if strings.Contains(script, "don't") && !strings.Contains(script, `don'\''t`) {
 		t.Errorf("single quote not escaped in seed script:\n%s", script)
 	}
