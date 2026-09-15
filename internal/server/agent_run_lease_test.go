@@ -126,7 +126,7 @@ func testLease(runID string) runlease.Lease {
 	return runlease.Lease{
 		RunID:   runID,
 		Box:     "agent-hello-agent-container",
-		SeedDir: agentSeedDir,
+		SeedDir: seedDirFor(runID),
 		Credentials: []runlease.Credential{
 			{Kind: runlease.KindPlatformJWT, JTI: "jti-platform", ExpiresAt: exp},
 			{Kind: runlease.KindGatewayToken, JTI: "jti-gateway", ExpiresAt: exp},
@@ -151,6 +151,13 @@ func TestResolveRunID_Table(t *testing.T) {
 		{name: "shell metachars rejected", in: "run;rm -rf /", wantCode: codes.InvalidArgument},
 		{name: "space rejected", in: "run 1", wantCode: codes.InvalidArgument},
 		{name: "newline rejected", in: "run\n1", wantCode: codes.InvalidArgument},
+		// #1860: a run id becomes a single path segment under
+		// /etc/containarium/agent/runs and /workspace/runs — "." and ".."
+		// both match runIDPattern's character class but must never resolve
+		// to the roots themselves.
+		{name: "dot rejected", in: ".", wantCode: codes.InvalidArgument},
+		{name: "dot-dot rejected", in: "..", wantCode: codes.InvalidArgument},
+		{name: "dot as a real id segment still echoes", in: "run.1", wantEcho: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -212,12 +219,19 @@ func TestEndRunLease_UsesDetachedContext(t *testing.T) {
 			t.Errorf("%s revoked with reason %q, want %q", r.JTI, r.Reason, runExitReason)
 		}
 	}
-	if w.calls() != 1 {
-		t.Fatalf("wipe exec calls = %d, want 1", w.calls())
+	// #1860: endRunLease now runs a second Exec (rm -rf the seed dir) after
+	// the file wipe; wipe stays cmds[0], the dirs removal is cmds[1].
+	if w.calls() != 2 {
+		t.Fatalf("exec calls = %d, want 2 (wipe files, then remove dirs)", w.calls())
 	}
-	wantCmd := []string{"rm", "-f", agentSeedDir + "/token", agentSeedDir + "/gateway.env"}
+	seedDir := seedDirFor("run-detached")
+	wantCmd := []string{"rm", "-f", seedDir + "/token", seedDir + "/gateway.env"}
 	if strings.Join(w.cmds[0], " ") != strings.Join(wantCmd, " ") {
 		t.Errorf("wipe cmd = %v, want %v", w.cmds[0], wantCmd)
+	}
+	wantRemoveCmd := []string{"rm", "-rf", seedDir}
+	if strings.Join(w.cmds[1], " ") != strings.Join(wantRemoveCmd, " ") {
+		t.Errorf("remove dirs cmd = %v, want %v", w.cmds[1], wantRemoveCmd)
 	}
 	if w.boxes[0] != "agent-hello-agent-container" {
 		t.Errorf("wipe box = %q, want the lease's box", w.boxes[0])
@@ -247,8 +261,9 @@ func TestEndRunLease_LogsWhenUnrevoked(t *testing.T) {
 	if n := strings.Count(out, "could not be revoked"); n != 1 {
 		t.Errorf("want exactly one unrevoked-credentials line per run, got %d:\n%s", n, out)
 	}
-	if w.calls() != 1 {
-		t.Errorf("files must still be wiped without a store; wipe calls = %d", w.calls())
+	// #1860: wipe files, then remove dirs — both still run without a store.
+	if w.calls() != 2 {
+		t.Errorf("files must still be wiped and dirs removed without a store; exec calls = %d", w.calls())
 	}
 }
 
@@ -285,10 +300,11 @@ func TestRunLeaseAuditPayloads(t *testing.T) {
 	}
 
 	out := runlease.Outcome{
-		Revoked:   []string{"jti-platform"},
-		Unrevoked: []string{"jti-gateway"},
-		Wiped:     true,
-		Errs:      []error{errors.New("runlease: revoke jti-gateway: boom")},
+		Revoked:     []string{"jti-platform"},
+		Unrevoked:   []string{"jti-gateway"},
+		Wiped:       true,
+		DirsRemoved: true,
+		Errs:        []error{errors.New("runlease: revoke jti-gateway: boom")},
 	}
 	raw := runLeaseEndPayload(lease, runExitReason, out)
 	var end runLeaseEndDetail
@@ -307,13 +323,18 @@ func TestRunLeaseAuditPayloads(t *testing.T) {
 	if !end.Wiped {
 		t.Error("end wiped = false, want true")
 	}
+	// #1860
+	if !end.DirsRemoved {
+		t.Error("end dirs_removed = false, want true")
+	}
 	if len(end.Errors) != 1 || !strings.Contains(end.Errors[0], "jti-gateway") {
 		t.Errorf("end errors = %v, want the revoke failure recorded", end.Errors)
 	}
 	// Empty slices must serialize as [], not null: an operator reading the row
-	// should see "nothing failed", not a missing field.
+	// should see "nothing failed", not a missing field. DirsRemoved false is
+	// its own correct zero value here, not something to paper over.
 	clean := runLeaseEndPayload(lease, runExitReason, runlease.Outcome{Wiped: true})
-	for _, want := range []string{`"unrevoked":[]`, `"errors":[]`, `"revoked":[]`} {
+	for _, want := range []string{`"unrevoked":[]`, `"errors":[]`, `"revoked":[]`, `"dirs_removed":false`} {
 		if !strings.Contains(clean, want) {
 			t.Errorf("clean end payload %s must contain %s", clean, want)
 		}

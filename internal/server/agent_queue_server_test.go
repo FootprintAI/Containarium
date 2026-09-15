@@ -127,7 +127,7 @@ func TestQueueRPC_RequireRunScope(t *testing.T) {
 }
 
 func TestBuildWorkerPollCommand(t *testing.T) {
-	cmd := buildWorkerPollCommand("tok.tok.tok", "worker-7", "hello-agent")
+	cmd := buildWorkerPollCommand("tok.tok.tok", "worker-7", "hello-agent", "/etc/containarium/agent/runs/run-1")
 
 	for _, want := range []string{
 		"CONTAINARIUM_AGENT_MODE=poll",
@@ -136,7 +136,7 @@ func TestBuildWorkerPollCommand(t *testing.T) {
 		"CONTAINARIUM_QUEUE_TOKEN='tok.tok.tok'",
 		"CONTAINARIUM_WORKER_ID='worker-7'",
 		"CONTAINARIUM_QUEUE_SKILL='hello-agent'",
-		"AGENT_SEED_DIR=" + agentSeedDir,
+		"AGENT_SEED_DIR=/etc/containarium/agent/runs/run-1",
 		"setsid agent-runtime",
 		"&", // detached
 	} {
