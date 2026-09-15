@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Refresh-token rotation could be exchanged more than once under a race,
+  contradicting the documented single-use contract.** `RefreshToken`
+  minted the new `(access, refresh)` pair before revoking the presented
+  jti; two concurrent exchanges of the same refresh token could both pass
+  validation and both walk away with a valid new pair. Revocation is now
+  an atomic claim performed *before* minting — `RevokeClaim` reports
+  whether a given call was the one that actually recorded the jti as
+  spent, so only the caller that wins it may mint. Reuse of an
+  already-rotated refresh token — whether from a losing concurrent racer
+  or a genuine stolen-token replay, the two are indistinguishable from
+  the server's side — now revokes the entire rotation family, so every
+  token descended from that login stops working rather than leaving a
+  narrower race window open.
+
 ## [0.79.2] - 2026-09-14
 
 ### Added

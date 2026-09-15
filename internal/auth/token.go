@@ -74,6 +74,15 @@ type Claims struct {
 	// keeps every mint path that doesn't pass a run id (which is every
 	// pre-#1815 call site) identical on the wire.
 	RunID string `json:"run_id,omitempty"`
+	// FamilyID identifies a refresh token's rotation chain: every token
+	// minted by successive RefreshToken exchanges starting from one
+	// original login shares the same value. It exists so reuse of an
+	// already-rotated refresh token — the signal a stolen-and-replayed
+	// token produces — can revoke every token descended from it, not
+	// just the one jti that was replayed. `omitempty` keeps access
+	// tokens and every pre-family-tracking refresh token (where it
+	// falls back to the token's own jti) unaffected on the wire.
+	FamilyID string `json:"fam,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -173,7 +182,7 @@ func (tm *TokenManager) GenerateToken(username string, roles []string, expiresIn
 	// Existing callers (CLI, daemon system tokens) keep
 	// minting access tokens with their current call sites
 	// because tt defaults to "" → access semantics.
-	tok, _, err := tm.generate(username, roles, scopes, "", expiresIn, nil, "")
+	tok, _, err := tm.generate(username, roles, scopes, "", expiresIn, nil, "", "")
 	return tok, err
 }
 
@@ -185,21 +194,32 @@ func (tm *TokenManager) GenerateAccessToken(username string, roles []string, exp
 	if expiresIn <= 0 {
 		expiresIn = DefaultAccessTokenExpiry
 	}
-	tok, _, err := tm.generate(username, roles, scopes, TokenTypeAccess, expiresIn, nil, "")
+	tok, _, err := tm.generate(username, roles, scopes, TokenTypeAccess, expiresIn, nil, "", "")
 	return tok, err
 }
 
-// GenerateRefreshToken mints a long-lived refresh token.
-// Pass 0 for the daemon default (DefaultRefreshTokenExpiry).
-// Carries `tt: "refresh"`; ValidateAccessToken on the API
-// surface REJECTS this token, so a stolen refresh token
-// can't make API calls. Use ValidateRefreshToken when
-// implementing the exchange RPC (Phase 1.6 part B).
+// GenerateRefreshToken mints a long-lived refresh token that starts a new
+// rotation family (its own jti doubles as the family id — see FamilyID).
+// Pass 0 for the daemon default (DefaultRefreshTokenExpiry). Carries
+// `tt: "refresh"`; ValidateAccessToken on the API surface REJECTS this
+// token, so a stolen refresh token can't make API calls. Use
+// ValidateRefreshToken when implementing the exchange RPC (Phase 1.6 part
+// B).
 func (tm *TokenManager) GenerateRefreshToken(username string, roles []string, expiresIn time.Duration, scopes ...string) (string, error) {
+	return tm.GenerateRefreshTokenInFamily(username, roles, expiresIn, "", scopes...)
+}
+
+// GenerateRefreshTokenInFamily mints a refresh token continuing an existing
+// rotation family. The RefreshToken RPC's rotation path uses this so every
+// token minted across successive exchanges of one original login carries
+// the same FamilyID — that's what lets reuse of any one of them revoke the
+// whole chain (see RevocationStore.RevokeFamily). A blank familyID starts a
+// new family, identical to GenerateRefreshToken.
+func (tm *TokenManager) GenerateRefreshTokenInFamily(username string, roles []string, expiresIn time.Duration, familyID string, scopes ...string) (string, error) {
 	if expiresIn <= 0 {
 		expiresIn = DefaultRefreshTokenExpiry
 	}
-	tok, _, err := tm.generate(username, roles, scopes, TokenTypeRefresh, expiresIn, nil, "")
+	tok, _, err := tm.generate(username, roles, scopes, TokenTypeRefresh, expiresIn, nil, "", familyID)
 	return tok, err
 }
 
@@ -225,7 +245,7 @@ func (tm *TokenManager) GenerateDelegatedTokenWithID(username string, roles []st
 	if err := validateActDepth(act); err != nil {
 		return "", MintedID{}, fmt.Errorf("mint delegated token: %w", err)
 	}
-	return tm.generate(username, roles, scopes, "", expiresIn, act, runID)
+	return tm.generate(username, roles, scopes, "", expiresIn, act, runID, "")
 }
 
 // generate is the shared implementation. tt may be the
@@ -236,11 +256,14 @@ func (tm *TokenManager) GenerateDelegatedTokenWithID(username string, roles []st
 // stays omitempty on the wire too, so every other mint path's
 // token shape is unaffected. runID is empty for every call site
 // except GenerateDelegatedTokenWithID (#1815); empty stays
-// omitempty on the wire for the same reason.
+// omitempty on the wire for the same reason. familyID is only ever
+// non-empty for GenerateRefreshTokenInFamily's rotation call sites;
+// for every other tt (including a fresh, family-starting refresh
+// token) it's derived from the freshly minted jti below.
 //
 // Returns the MintedID (jti + expiry) alongside the signed token so callers
 // that need to revoke what they minted don't have to re-parse it.
-func (tm *TokenManager) generate(username string, roles, scopes []string, tt string, expiresIn time.Duration, act *Actor, runID string) (string, MintedID, error) {
+func (tm *TokenManager) generate(username string, roles, scopes []string, tt string, expiresIn time.Duration, act *Actor, runID string, familyID string) (string, MintedID, error) {
 	// SECURITY FIX: Enforce maximum expiry - no more non-expiring tokens
 	if expiresIn <= 0 || expiresIn > tm.maxTokenExpiry {
 		expiresIn = tm.maxTokenExpiry
@@ -256,6 +279,14 @@ func (tm *TokenManager) generate(username string, roles, scopes []string, tt str
 		scopesClaim = scopes
 	}
 
+	// A refresh token with no explicit family (every fresh mint that
+	// isn't a rotation continuation) starts its own family, keyed on
+	// its own jti. Access/legacy tokens don't carry a family at all —
+	// reuse detection only applies to the refresh-rotation chain.
+	if tt == TokenTypeRefresh && familyID == "" {
+		familyID = jti
+	}
+
 	now := time.Now()
 
 	claims := Claims{
@@ -265,6 +296,7 @@ func (tm *TokenManager) generate(username string, roles, scopes []string, tt str
 		TokenType: tt,
 		Act:       act,
 		RunID:     runID,
+		FamilyID:  familyID,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ID:        jti,
 			ExpiresAt: jwt.NewNumericDate(now.Add(expiresIn)),
@@ -320,6 +352,45 @@ var errInvalidToken = fmt.Errorf("invalid token")
 //     library-level parse error. Full detail is still logged via
 //     %w-wrapping at the caller's discretion.
 func (tm *TokenManager) ValidateToken(tokenString string) (*Claims, error) {
+	claims, err := tm.parseAndVerify(tokenString)
+	if err != nil {
+		return nil, err
+	}
+
+	// Phase 1.2 — revocation list check. We use a short
+	// background timeout so a slow DB doesn't stall the
+	// auth path. A DB outage fails *open* by design
+	// (revocation is a kill-switch, not the primary auth
+	// gate); a noisy log makes the failure visible without
+	// taking the daemon down. Tokens issued before this
+	// release lack a jti — IsRevoked short-circuits on
+	// empty input.
+	if tm.revocationStore != nil && claims.ID != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer cancel()
+		revoked, rerr := tm.revocationStore.IsRevoked(ctx, claims.ID)
+		if rerr != nil {
+			log.Printf("WARNING: revocation lookup failed for jti=%s: %v (allowing token; revocation list is the kill-switch, not the primary gate)", claims.ID, rerr)
+		} else if revoked {
+			return nil, errInvalidToken
+		}
+	}
+
+	return claims, nil
+}
+
+// parseAndVerify checks signature (pinned to HS256), exp/nbf, iss/aud, and
+// the #1677 act-depth guard — everything ValidateToken checks EXCEPT the
+// revocation list. It does not consult the revocation list at all, so it
+// returns the claims of an already-revoked-but-otherwise-valid token
+// instead of the same generic error every other failure produces.
+//
+// General callers must keep using ValidateToken / ValidateAccessToken /
+// ValidateRefreshToken, all of which enforce revocation. This exists only
+// for ValidateRefreshTokenClaims, whose caller (the refresh-rotation path)
+// needs to distinguish "this exact credential was already spent" from
+// "never valid" — see that function's doc comment.
+func (tm *TokenManager) parseAndVerify(tokenString string) (*Claims, error) {
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
 		// Pin to HS256 exactly. SigningMethodHS256.Alg() == "HS256".
 		if token.Method.Alg() != jwt.SigningMethodHS256.Alg() {
@@ -350,25 +421,6 @@ func (tm *TokenManager) ValidateToken(tokenString string) (*Claims, error) {
 	// always passes — absence is the valid, backward-compatible case.
 	if err := validateActDepth(claims.Act); err != nil {
 		return nil, errInvalidToken
-	}
-
-	// Phase 1.2 — revocation list check. We use a short
-	// background timeout so a slow DB doesn't stall the
-	// auth path. A DB outage fails *open* by design
-	// (revocation is a kill-switch, not the primary auth
-	// gate); a noisy log makes the failure visible without
-	// taking the daemon down. Tokens issued before this
-	// release lack a jti — IsRevoked short-circuits on
-	// empty input.
-	if tm.revocationStore != nil && claims.ID != "" {
-		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-		defer cancel()
-		revoked, rerr := tm.revocationStore.IsRevoked(ctx, claims.ID)
-		if rerr != nil {
-			log.Printf("WARNING: revocation lookup failed for jti=%s: %v (allowing token; revocation list is the kill-switch, not the primary gate)", claims.ID, rerr)
-		} else if revoked {
-			return nil, errInvalidToken
-		}
 	}
 
 	return claims, nil
@@ -402,6 +454,36 @@ func (tm *TokenManager) ValidateAccessToken(tokenString string) (*Claims, error)
 // exchanged.
 func (tm *TokenManager) ValidateRefreshToken(tokenString string) (*Claims, error) {
 	claims, err := tm.ValidateToken(tokenString)
+	if err != nil {
+		return nil, err
+	}
+	if claims.TokenType != TokenTypeRefresh {
+		return nil, errInvalidToken
+	}
+	return claims, nil
+}
+
+// ValidateRefreshTokenClaims validates a refresh token's signature, exp,
+// iss/aud and tt claim like ValidateRefreshToken — but, via
+// parseAndVerify, WITHOUT checking the revocation list.
+//
+// This exists for the RefreshToken RPC's reuse detection. Rotation makes
+// every successfully-exchanged refresh token revoked by definition, so if
+// ValidateRefreshToken (which enforces revocation) were used there, a
+// replay of an already-rotated token would be rejected at this parse step
+// with the same generic error as a malformed or expired one — before the
+// rotation handler ever got a chance to see that the credential was
+// specifically *reused*, which is the signal that should revoke the whole
+// rotation family (see RevocationStore.RevokeFamily). The handler performs
+// its own revocation check afterward, via RevokeClaim, and that check IS
+// the reuse signal.
+//
+// Do not use this for anything that authenticates a request — an
+// already-revoked token must never be treated as valid for API access.
+// It exists solely so the rotation handler can read an already-spent
+// token's claims (username, family id) to correlate and kill the chain.
+func (tm *TokenManager) ValidateRefreshTokenClaims(tokenString string) (*Claims, error) {
+	claims, err := tm.parseAndVerify(tokenString)
 	if err != nil {
 		return nil, err
 	}
