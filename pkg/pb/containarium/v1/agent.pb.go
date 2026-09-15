@@ -647,7 +647,21 @@ type RunAgentSkillRequest struct {
 	// means the daemon generates a UUID. Bound into every credential minted for
 	// this run (the `run_id` claim) and returned in the response, so the run's
 	// credentials can be revoked and audited as one unit.
-	RunId         string `protobuf:"bytes,5,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	RunId string `protobuf:"bytes,5,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	// Optional git source fetched into the run's workspace before the agent
+	// starts, so a skill whose prompt reads "the code in the box" has code to
+	// read. Same semantics as CreateContainerRequest fields 16-18: a shallow
+	// fetch of the exact ref, run inside the box (no caller->box SSH). Empty
+	// git_source means no fetch — today's behavior, unchanged.
+	GitSource string `protobuf:"bytes,6,opt,name=git_source,json=gitSource,proto3" json:"git_source,omitempty"`
+	// Exact ref to check out: full SHA (preferred, reproducible), branch, tag,
+	// or a server ref like "refs/pull/<n>/merge". Empty = the remote's default
+	// branch. Ignored when git_source is empty.
+	GitRef string `protobuf:"bytes,7,opt,name=git_ref,json=gitRef,proto3" json:"git_ref,omitempty"`
+	// Bearer token for a private git_source. Used daemon-side for the single
+	// fetch only (an ephemeral http.extraHeader) — never written to the box's
+	// .git/config, never logged. Empty = public repo.
+	GitCredential string `protobuf:"bytes,8,opt,name=git_credential,json=gitCredential,proto3" json:"git_credential,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -717,6 +731,27 @@ func (x *RunAgentSkillRequest) GetRunId() string {
 	return ""
 }
 
+func (x *RunAgentSkillRequest) GetGitSource() string {
+	if x != nil {
+		return x.GitSource
+	}
+	return ""
+}
+
+func (x *RunAgentSkillRequest) GetGitRef() string {
+	if x != nil {
+		return x.GitRef
+	}
+	return ""
+}
+
+func (x *RunAgentSkillRequest) GetGitCredential() string {
+	if x != nil {
+		return x.GitCredential
+	}
+	return ""
+}
+
 type RunAgentSkillResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The box the agent ran in.
@@ -724,7 +759,14 @@ type RunAgentSkillResponse struct {
 	// JSON artifact matching the skill's output schema.
 	ArtifactJson string `protobuf:"bytes,2,opt,name=artifact_json,json=artifactJson,proto3" json:"artifact_json,omitempty"`
 	// The effective run id (the one the caller supplied, or the generated one).
-	RunId         string `protobuf:"bytes,3,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	RunId string `protobuf:"bytes,3,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	// The resolved commit SHA of the fetched git_source, so an artifact can
+	// cite exactly what was reviewed. Empty when the request carried no
+	// git_source.
+	GitCommit string `protobuf:"bytes,4,opt,name=git_commit,json=gitCommit,proto3" json:"git_commit,omitempty"`
+	// Absolute path of the fetched workspace inside the box. Empty when the
+	// request carried no git_source.
+	WorkspacePath string `protobuf:"bytes,5,opt,name=workspace_path,json=workspacePath,proto3" json:"workspace_path,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -776,6 +818,20 @@ func (x *RunAgentSkillResponse) GetArtifactJson() string {
 func (x *RunAgentSkillResponse) GetRunId() string {
 	if x != nil {
 		return x.RunId
+	}
+	return ""
+}
+
+func (x *RunAgentSkillResponse) GetGitCommit() string {
+	if x != nil {
+		return x.GitCommit
+	}
+	return ""
+}
+
+func (x *RunAgentSkillResponse) GetWorkspacePath() string {
+	if x != nil {
+		return x.WorkspacePath
 	}
 	return ""
 }
@@ -2148,7 +2204,7 @@ const file_containarium_v1_agent_proto_rawDesc = "" +
 	"\x14GetAgentSkillRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"J\n" +
 	"\x15GetAgentSkillResponse\x121\n" +
-	"\x05skill\x18\x01 \x01(\v2\x1b.containarium.v1.AgentSkillR\x05skill\"\x9a\x01\n" +
+	"\x05skill\x18\x01 \x01(\v2\x1b.containarium.v1.AgentSkillR\x05skill\"\xf9\x01\n" +
 	"\x14RunAgentSkillRequest\x12\x19\n" +
 	"\bskill_id\x18\x01 \x01(\tR\askillId\x12\x1d\n" +
 	"\n" +
@@ -2156,11 +2212,18 @@ const file_containarium_v1_agent_proto_rawDesc = "" +
 	"\x04pool\x18\x03 \x01(\tR\x04pool\x12\x1d\n" +
 	"\n" +
 	"input_json\x18\x04 \x01(\tR\tinputJson\x12\x15\n" +
-	"\x06run_id\x18\x05 \x01(\tR\x05runId\"\x8d\x01\n" +
+	"\x06run_id\x18\x05 \x01(\tR\x05runId\x12\x1d\n" +
+	"\n" +
+	"git_source\x18\x06 \x01(\tR\tgitSource\x12\x17\n" +
+	"\agit_ref\x18\a \x01(\tR\x06gitRef\x12%\n" +
+	"\x0egit_credential\x18\b \x01(\tR\rgitCredential\"\xd3\x01\n" +
 	"\x15RunAgentSkillResponse\x128\n" +
 	"\tcontainer\x18\x01 \x01(\v2\x1a.containarium.v1.ContainerR\tcontainer\x12#\n" +
 	"\rartifact_json\x18\x02 \x01(\tR\fartifactJson\x12\x15\n" +
-	"\x06run_id\x18\x03 \x01(\tR\x05runId\":\n" +
+	"\x06run_id\x18\x03 \x01(\tR\x05runId\x12\x1d\n" +
+	"\n" +
+	"git_commit\x18\x04 \x01(\tR\tgitCommit\x12%\n" +
+	"\x0eworkspace_path\x18\x05 \x01(\tR\rworkspacePath\":\n" +
 	"\tAgentTask\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
 	"\n" +

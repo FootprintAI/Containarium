@@ -22,6 +22,9 @@ import (
 	"github.com/footprintai/containarium/internal/netpolicy"
 	"github.com/footprintai/containarium/internal/runlease"
 	boxlxc "github.com/footprintai/containarium/pkg/core/box/lxc"
+	// Aliased: this file's RunAgentSkill/provisionSkillBox already use
+	// "container" as a local variable name (the *pb.Container being built).
+	containerpkg "github.com/footprintai/containarium/pkg/core/container"
 	"github.com/footprintai/containarium/pkg/core/skills"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/footprintai/containarium/pkg/version"
@@ -246,7 +249,8 @@ func (s *AgentSkillServer) RunAgentSkill(ctx context.Context, req *pb.RunAgentSk
 		return nil, status.Error(codes.NotFound, err.Error())
 	}
 
-	containerName, container, lease, err := s.provisionSkillBox(ctx, skill, req.BackendId, req.Pool, req.InputJson, runID)
+	containerName, box, lease, gitCommit, workspacePath, err := s.provisionSkillBox(ctx, skill, req.BackendId, req.Pool, req.InputJson, runID,
+		req.GetGitSource(), req.GetGitRef(), req.GetGitCredential())
 	if err != nil {
 		return nil, err
 	}
@@ -282,7 +286,13 @@ func (s *AgentSkillServer) RunAgentSkill(ctx context.Context, req *pb.RunAgentSk
 	// process — the lease ends when the exec returns, under a detached context.
 	// Making the exec cancellable is a separate change and doesn't alter this.
 	artifact := s.runInBoxAgent(containerName)
-	return &pb.RunAgentSkillResponse{Container: container, ArtifactJson: artifact, RunId: runID}, nil
+	return &pb.RunAgentSkillResponse{
+		Container:     box,
+		ArtifactJson:  artifact,
+		RunId:         runID,
+		GitCommit:     gitCommit,
+		WorkspacePath: workspacePath,
+	}, nil
 }
 
 // boxWiper is the seam runlease.End wipes a run's seed files through.
@@ -391,14 +401,28 @@ func mintedAgentTokenScopes(ctx context.Context, skill *pb.AgentSkill) []string 
 	return auth.IntersectScopes(callerScopes, skill.AllowedScopes)
 }
 
-func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.AgentSkill, backendID, pool, inputJSON, runID string) (string, *pb.Container, runlease.Lease, error) {
+// provisionSkillBox provisions (or reuses) the skill's box, mints its
+// credentials, seeds the task, and — when gitSource is set (#1859) —
+// shallow-fetches that repo into the box's workspace before the agent starts.
+// The fetch runs AFTER the seed exec succeeds and BEFORE the allowed_peers
+// policy is applied: seeding first means a failed fetch still leaves a
+// consistent, end-able lease behind (same reasoning as the seed-failure path
+// below); applying policy last means a fetch that needs the platform egress
+// allowlist (git-installer package fetches) isn't fighting the skill's own
+// restrictive policy while it runs.
+//
+// The workspace is box-level (not yet per-run — see #1860), so concurrent
+// runs of the same skill overwrite each other's checkout exactly as they
+// already overwrite each other's seed files; #1860 gives both their own
+// per-run directory.
+func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.AgentSkill, backendID, pool, inputJSON, runID, gitSource, gitRef, gitCredential string) (containerName string, box *pb.Container, lease runlease.Lease, gitCommit, workspacePath string, err error) {
 	var noLease runlease.Lease
 
 	// Phase 0 supports only the recipe_id box form (catalog skills). Inline
 	// recipes are an API-only construct deferred to a later phase.
 	recipeID := skill.GetRecipeId()
 	if recipeID == "" {
-		return "", nil, noLease, status.Error(codes.Unimplemented,
+		return "", nil, noLease, "", "", status.Error(codes.Unimplemented,
 			"inline-recipe skills are not supported yet; use a skill that references a recipe_id")
 	}
 
@@ -406,7 +430,7 @@ func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.Agen
 	// per-run-box / warm-pool concern, see docs/EPHEMERAL-SANDBOX-DESIGN.md).
 	name := "agent-" + skill.Id
 	if err := auth.AuthorizeTenant(ctx, name); err != nil {
-		return "", nil, noLease, err
+		return "", nil, noLease, "", "", err
 	}
 
 	// Provision the box, idempotently. The normal skill flow is run → (set a
@@ -417,18 +441,17 @@ func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.Agen
 	// (and its one-time post_start assembly) and just re-mint the token,
 	// re-seed, and re-apply policy below. A stopped box (idle-sleep, host
 	// reboot) is started so the subsequent seed-exec / loop-exec lands.
-	var container *pb.Container
 	if info, gerr := s.recipes.containers.manager.Get(name); gerr == nil && info != nil {
 		if info.State != "Running" {
 			if err := s.recipes.containers.manager.Start(name); err != nil {
-				return "", nil, noLease, status.Errorf(codes.Internal, "failed to start existing agent box %s: %v", name, err)
+				return "", nil, noLease, "", "", status.Errorf(codes.Internal, "failed to start existing agent box %s: %v", name, err)
 			}
 			if reread, rerr := s.recipes.containers.manager.Get(name); rerr == nil && reread != nil {
 				info = reread
 			}
 		}
 		st := boxlxc.StatusFromInfo(info)
-		container = toProtoContainer(&st)
+		box = toProtoContainer(&st)
 	} else {
 		// First provision. Pass the daemon's version as the agent-runtime
 		// recipe's `release` param so the box's post_start pulls matching
@@ -443,15 +466,15 @@ func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.Agen
 			Parameters: map[string]string{"release": agentRuntimeReleaseTag()},
 		})
 		if err != nil {
-			return "", nil, noLease, err // already a gRPC status from deploy/CreateContainer
+			return "", nil, noLease, "", "", err // already a gRPC status from deploy/CreateContainer
 		}
-		container = dep.Container
+		box = dep.Container
 	}
 
-	containerName := name + "-container"
+	containerName = name + "-container"
 	// The run's lease: every credential minted below is recorded here so the
 	// run's exit can revoke exactly what the run was given (#1817).
-	lease := runlease.Lease{RunID: runID, Box: containerName, SeedDir: agentSeedDir}
+	lease = runlease.Lease{RunID: runID, Box: containerName, SeedDir: agentSeedDir}
 
 	// Mint a JWT scoped to the intersection of the CALLER's own granted scopes
 	// and the skill's allowed_scopes (#1676: the manifest is a ceiling, never
@@ -462,9 +485,9 @@ func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.Agen
 	// Minted through the WithID variant so the daemon keeps the jti + expiry of
 	// what it issued, and with runID so the token itself says which run it
 	// belongs to (the `run_id` claim).
-	token, minted, err := s.tokens.GenerateDelegatedTokenWithID(name, []string{}, agentTokenTTL, mintedAgentAct(ctx), runID, mintedAgentTokenScopes(ctx, skill)...)
-	if err != nil {
-		return "", nil, noLease, status.Errorf(codes.Internal, "failed to mint scoped agent token: %v", err)
+	token, minted, mintErr := s.tokens.GenerateDelegatedTokenWithID(name, []string{}, agentTokenTTL, mintedAgentAct(ctx), runID, mintedAgentTokenScopes(ctx, skill)...)
+	if mintErr != nil {
+		return "", nil, noLease, "", "", status.Errorf(codes.Internal, "failed to mint scoped agent token: %v", mintErr)
 	}
 	lease.Credentials = append(lease.Credentials, runlease.Credential{
 		Kind: runlease.KindPlatformJWT, JTI: minted.JTI, ExpiresAt: minted.ExpiresAt,
@@ -507,7 +530,25 @@ func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.Agen
 		// lost write, and it lists the jtis it revoked — so an operator meeting
 		// one can still answer "what was this run given".
 		s.endRunLease(ctx, lease, s.boxWiper(), provisionFailedReason)
-		return "", nil, noLease, status.Errorf(codes.Internal, "failed to seed agent box %s: %v", containerName, err)
+		return "", nil, noLease, "", "", status.Errorf(codes.Internal, "failed to seed agent box %s: %v", containerName, err)
+	}
+
+	// #1859: fetch the run's repo, if any, now that the box has credentials
+	// and is ready to read them. A fetch failure is treated exactly like a
+	// seed failure — the partial lease (already-minted credentials) is ended
+	// here, before RunAgentSkill's defer would have taken over.
+	if gitSource != "" {
+		commit, ferr := s.recipes.containers.manager.FetchGitSource(containerName, containerpkg.GitSourceSpec{
+			Source:     gitSource,
+			Ref:        gitRef,
+			Credential: gitCredential,
+		})
+		if ferr != nil {
+			s.endRunLease(ctx, lease, s.boxWiper(), provisionFailedReason)
+			return "", nil, noLease, "", "", status.Errorf(codes.FailedPrecondition, "git fetch into agent box %s failed: %v", containerName, ferr)
+		}
+		gitCommit = commit
+		workspacePath = containerpkg.DefaultWorkspacePath
 	}
 
 	// Compile allowed_peers into the per-box egress policy (Phase 2).
@@ -515,7 +556,7 @@ func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.Agen
 
 	s.auditRunLease(ctx, "agent.run_lease_issue", runID, runLeaseIssuePayload(lease))
 
-	return containerName, container, lease, nil
+	return containerName, box, lease, gitCommit, workspacePath, nil
 }
 
 // engineForProvider maps a gateway provider to the agent-runtime engine that

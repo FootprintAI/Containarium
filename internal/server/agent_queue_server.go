@@ -125,7 +125,7 @@ func (s *AgentSkillServer) StartAgentWorker(ctx context.Context, req *pb.StartAg
 	// later-phase item in the design
 	// (docs/architecture/execution-scoped-authorization.md §3, "Crew members and
 	// queue workers").
-	containerName, container, _, err := s.provisionSkillBox(ctx, skill, req.BackendId, req.Pool, "", runID)
+	containerName, container, _, _, _, err := s.provisionSkillBox(ctx, skill, req.BackendId, req.Pool, "", runID, "", "", "")
 	if err != nil {
 		return nil, err
 	}
