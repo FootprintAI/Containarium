@@ -61,6 +61,38 @@ func seedDirFor(runID string) string { return agentSeedRoot + "/" + runID }
 // workspaceDirFor returns the per-run workspace directory for runID.
 func workspaceDirFor(runID string) string { return agentWorkspaceRoot + "/" + runID }
 
+// workspaceSeed is the Go side of the daemon<->runtime workspace contract
+// (design doc §5, coding-skill-on-a-repo, cloud repo). Written as
+// <seed>/workspace.json whenever a run fetched a git source, so the in-box
+// runtime can bind its file tools to the checkout (AGENTBOX_ROOT) and cite
+// the commit it is working from, without re-deriving either from the run id.
+type workspaceSeed struct {
+	Path      string `json:"path"`
+	GitSource string `json:"git_source"`
+	GitRef    string `json:"git_ref"`
+	GitCommit string `json:"git_commit"`
+}
+
+// buildWorkspaceSeedScript writes seed as JSON into seedDir/workspace.json.
+// Mirrors buildAgentSeedScript's shape (mkdir -p, single-quoted printf) since
+// every field here — a caller-supplied repo URL and ref included — needs the
+// same shell-injection guard that function already carries.
+func buildWorkspaceSeedScript(seedDir string, seed workspaceSeed) string {
+	raw, err := json.Marshal(seed)
+	if err != nil {
+		// workspaceSeed has no field that can fail to marshal (four plain
+		// strings) — reachable only if that ever changes, and a marshal
+		// failure here must not crash the run: a workspace.json write is a
+		// nicety for a future runtime, not a correctness requirement for the
+		// fetch that already succeeded.
+		raw = []byte(`{}`)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "mkdir -p %s\n", seedDir)
+	fmt.Fprintf(&b, "printf '%%s' %s > %s/workspace.json\n", shellSingleQuote(string(raw)), seedDir)
+	return b.String()
+}
+
 // Run-lease reasons, recorded on every revocation and in the end audit row so
 // an operator reading jwt_revocations can tell a normal run exit from a run
 // that never got off the ground.
@@ -587,6 +619,21 @@ func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.Agen
 		}
 		gitCommit = commit
 		lease.Workspace = workspacePath
+
+		// #1861: tell the in-box runtime what it's looking at. Best-effort —
+		// a write failure here means a future runtime can't auto-bind
+		// AGENTBOX_ROOT or cite the commit in its own words, not that the
+		// fetch it describes was wrong (already durable in gitCommit/
+		// workspacePath above, and reported in the RPC response either way).
+		wsScript := buildWorkspaceSeedScript(seedDir, workspaceSeed{
+			Path:      workspacePath,
+			GitSource: gitSource,
+			GitRef:    gitRef,
+			GitCommit: gitCommit,
+		})
+		if werr := s.recipes.containers.manager.Exec(containerName, []string{"bash", "-c", wsScript}); werr != nil {
+			log.Printf("[agent-skill] workspace.json seed failed for %s (runtime won't see the workspace path via the contract file): %v", containerName, werr)
+		}
 	}
 
 	// Compile allowed_peers into the per-box egress policy (Phase 2).
