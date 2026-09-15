@@ -802,7 +802,10 @@ for _ in $(seq 1 300); do
     break
   fi
   if ! kill -0 "$RUN2_PID" 2>/dev/null; then
-    fail "the git-source run finished before both gateway.env and the workspace could be observed (token seen: $([ -n "$GW_TOKEN2" ] && echo yes || echo no), workspace seen: $([ -n "$WORKSPACE_READY" ] && echo yes || echo no)); raise CONTAINARIUM_E2E_LEASE_RUN_SECONDS (currently ${RUN_SECONDS}s)"
+    wait "$RUN2_PID" || true
+    echo "---- git-source run response (code $(read_code "$WORKDIR/run2.code")) ----"
+    read_out "$WORKDIR/run2.body"; echo
+    fail "the git-source run finished before both gateway.env and the workspace could be observed (token seen: $([ -n "$GW_TOKEN2" ] && echo yes || echo no), workspace seen: $([ -n "$WORKSPACE_READY" ] && echo yes || echo no)); raise CONTAINARIUM_E2E_LEASE_RUN_SECONDS (currently ${RUN_SECONDS}s) if this returned 200, or read the response above if it did not"
   fi
   sleep 0.2
 done
