@@ -7,7 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.80.1] - 2026-09-16
+
 ### Fixed
+
+- **A tunnel-promoted primary could register successfully in the sentinel's
+  `PrimaryRegistry` and still 502 for a declared alias.** `--public-aliases`
+  only tells the sentinel which SNI hostnames route to a primary's tunnel —
+  it's still the primary's own Caddy that has to be configured to serve
+  each one, and nothing verified that second half of the contract. A new
+  end-to-end reachability probe (`checkTunnelPrimaries`) dials each
+  tunnel-backed primary's Hostname/Aliases through the same path the SNI
+  router uses, completes a real TLS+HTTP round trip, and treats a 502 as
+  unreachable, recording per-hostname results (`AliasHealth`) visible via
+  `GET /sentinel/primaries`. (#1872, #1873)
+
+- **The "Managed clusters KVM e2e" lane failed 100% of the time since
+  2026-09-13**, looping on Incus's `VM agent isn't currently running`
+  during cluster provisioning. `IncusHost.WaitReady`'s documented contract
+  says it waits for the guest agent as well as the network, but only ever
+  waited for network — the QEMU guest agent connects over a separate vsock
+  channel that can lag well behind it on a loaded host, and a failed
+  provisioning attempt deleted and recreated the VM every reconcile tick,
+  so the race never had a chance to resolve on its own. `WaitReady` now
+  waits for both, sharing the caller's single timeout budget. (#1862,
+  #1863)
+
+- **`TestStatus_ReportsReadyWarmingAndMinWarm` was flaky (~50% failure
+  rate)** because `warmOne` committed a warmed member's ready-ring append
+  and its `warming--` decrement in two separate mutex sections, so a
+  concurrent `Status()`/`ReadyCount()` read could transiently double-count
+  a still-settling member. Both updates now commit under one lock
+  acquisition. (#1856, #1857)
 
 - **A failed audit-log write was logged and otherwise untracked.** All
   three async audit writers (HTTP middleware, gRPC interceptor, event
@@ -65,6 +96,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`RunAgentSkill` accepts a git source/ref**, fetched into the run's
+  workspace after seeding succeeds (so a fetch failure still has a
+  fully-formed, end-able lease to clean up); reported back as
+  `git_commit`/`workspace_path`. (#1859, #1864)
+- **Per-run seed directory and workspace**, removed when the run's lease
+  ends — replaces the single box-level seed path so a crew member or
+  queue worker sharing a box with a one-off run no longer has its files
+  deleted when that unrelated run's lease ends. (#1860, #1865)
+- **Hook-mode + keep-N retention in the scheduled backup runner**
+  (`scripts/backup-all-tenants.sh`): accepts `--hook <path>` tenant config
+  lines alongside plain `pg_dump`, and switches retention from
+  delete-then-create to `backup prune --keep N` run only after a
+  successful create, so a failed backup can no longer leave a tenant with
+  zero backups. `restore-tenant.sh` gains `--id` to target a specific
+  backup once more than one exists. (#1839, #1853)
 - **`GET /v1/audit/health`** reports `persistFailureCount` and
   `persistFailureSince` — see above.
 
