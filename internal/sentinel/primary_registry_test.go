@@ -156,6 +156,37 @@ func TestPrimaryRegistry_TunnelBackedNoEviction(t *testing.T) {
 	})
 }
 
+// TestPrimaryRegistry_SetAliasHealth is the regression test for #1872's
+// visibility gap: GET /sentinel/primaries must be able to show "registered
+// but not actually reachable" rather than only structural registration.
+func TestPrimaryRegistry_SetAliasHealth(t *testing.T) {
+	r := NewPrimaryRegistry()
+	r.Register(Primary{
+		Pool:      "prod-kafeido",
+		Hostname:  "facelabor.kafeido.app",
+		Aliases:   []string{"grpc.kafeido.app"},
+		IP:        "127.0.0.2",
+		Port:      443,
+		BackendID: "tunnel-ase1-spot-prod",
+	})
+
+	checkedAt := time.Now()
+	r.SetAliasHealth("prod-kafeido", []AliasHealth{
+		{Hostname: "facelabor.kafeido.app", Reachable: true, CheckedAt: checkedAt},
+		{Hostname: "grpc.kafeido.app", Reachable: false, Error: "upstream returned 502", CheckedAt: checkedAt},
+	})
+
+	p := r.LookupByPool("prod-kafeido")
+	if assert.NotNil(t, p) {
+		assert.Len(t, p.AliasHealth, 2)
+	}
+
+	// A probe racing an unregister must not resurrect a stale entry.
+	r.Unregister("prod-kafeido")
+	r.SetAliasHealth("prod-kafeido", []AliasHealth{{Hostname: "grpc.kafeido.app", Reachable: true}})
+	assert.Nil(t, r.LookupByPool("prod-kafeido"), "SetAliasHealth on an unregistered pool must be a no-op")
+}
+
 func TestPrimaryRegistry_StaleEviction(t *testing.T) {
 	r := NewPrimaryRegistry()
 

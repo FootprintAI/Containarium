@@ -30,6 +30,23 @@ type Primary struct {
 	BackendID     string    `json:"backend_id,omitempty"`
 	RegisteredAt  time.Time `json:"registered_at"`
 	LastHeartbeat time.Time `json:"last_heartbeat"`
+	// AliasHealth is the result of the most recent end-to-end reachability
+	// probe (see checkTunnelPrimaries) of Hostname and each entry in
+	// Aliases. Only populated for tunnel-backed primaries (BackendID set) —
+	// registration alone proves the sentinel can route SNI here, not that
+	// the primary's own Caddy actually serves each declared hostname
+	// (#1872: a primary can be fully registered here and still 502 for an
+	// alias its Caddy was never configured with).
+	AliasHealth []AliasHealth `json:"alias_health,omitempty"`
+}
+
+// AliasHealth records one hostname's most recent reachability probe
+// result for a tunnel-promoted primary. See Manager.checkTunnelPrimaries.
+type AliasHealth struct {
+	Hostname  string    `json:"hostname"`
+	Reachable bool      `json:"reachable"`
+	Error     string    `json:"error,omitempty"`
+	CheckedAt time.Time `json:"checked_at"`
 }
 
 // PrimaryRegistry tracks pool → primary mappings populated by daemon
@@ -73,6 +90,20 @@ func (r *PrimaryRegistry) Register(p Primary) *Primary {
 	stored.LastHeartbeat = now
 	r.primaries[p.Pool] = &stored
 	return &stored
+}
+
+// SetAliasHealth records the latest reachability probe results for pool's
+// Hostname/Aliases (see Manager.checkTunnelPrimaries). No-op if pool isn't
+// currently registered, so a probe result racing an Unregister/disconnect
+// can't resurrect a stale entry.
+func (r *PrimaryRegistry) SetAliasHealth(pool Pool, health []AliasHealth) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p, ok := r.primaries[pool]
+	if !ok {
+		return
+	}
+	p.AliasHealth = health
 }
 
 // Heartbeat refreshes the LastHeartbeat timestamp for a pool. Returns the

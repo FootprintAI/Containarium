@@ -62,9 +62,15 @@ type Config struct {
 	RecoveryBackoffMax     time.Duration
 	CertSyncInterval       time.Duration // interval for syncing TLS certs from backend (0 = default 6h)
 	KeySyncInterval        time.Duration // interval for syncing SSH keys from backend (0 = default 2m)
-	TunnelMode             bool          // if true, the Manager waits for tunnel connections instead of resolving IP at startup
-	HybridMode             bool          // if true, GCP + tunnel backends coexist
-	ProxyProtocol          bool          // if true, prepend a PROXY v2 header to forwarded HTTPS streams so the downstream Caddy sees the real client IP
+	// PrimaryReachabilityInterval is how often checkTunnelPrimaries probes
+	// every tunnel-promoted primary's Hostname/Aliases end-to-end (0 =
+	// default 30s). See #1872: registration in PrimaryRegistry proves the
+	// sentinel can route SNI to a primary, not that the primary's own
+	// Caddy actually serves every declared hostname.
+	PrimaryReachabilityInterval time.Duration
+	TunnelMode                  bool // if true, the Manager waits for tunnel connections instead of resolving IP at startup
+	HybridMode                  bool // if true, GCP + tunnel backends coexist
+	ProxyProtocol               bool // if true, prepend a PROXY v2 header to forwarded HTTPS streams so the downstream Caddy sees the real client IP
 	// AlertWebhookURL, when set, receives a JSON POST when the spot is
 	// preempted ("preempted") and when it comes back ("recovered"). The
 	// on-spot vmalert/VictoriaMetrics stack dies WITH the spot, so the
@@ -123,6 +129,12 @@ type Manager struct {
 	// byocDial opens a plaintext stream to a box over the tunnel for BYOC
 	// ingress. Defaults to tunnelRegistry.DialTunnel; tests inject a fake.
 	byocDial func(spotID string, port int) (net.Conn, error)
+
+	// reachabilityDial opens a stream to a tunnel-promoted primary's local
+	// port for checkTunnelPrimaries' end-to-end probes. Defaults to
+	// tunnelRegistry.DialTunnel; tests inject a fake. Same seam pattern as
+	// byocDial above.
+	reachabilityDial func(spotID string, port int) (net.Conn, error)
 
 	stopMaintenance func() // stops the HTTP/HTTPS maintenance servers
 	certStore       *CertStore
@@ -743,6 +755,12 @@ func (m *Manager) Run(ctx context.Context) error {
 	// below so a wedged pipeline (the exact thing it's checking for)
 	// can't also stall event processing.
 	go m.runSelfCheckLoop(ctx)
+
+	// End-to-end reachability probe for tunnel-promoted primaries (#1872):
+	// registering in PrimaryRegistry only proves the sentinel can route
+	// SNI to a primary, not that the primary's own Caddy actually serves
+	// every declared hostname/alias. No-op outside tunnel/hybrid mode.
+	go m.runPrimaryReachabilityLoop(ctx)
 
 	ticker := time.NewTicker(m.config.CheckInterval)
 	defer ticker.Stop()
