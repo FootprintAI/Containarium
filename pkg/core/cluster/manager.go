@@ -57,6 +57,11 @@ type Manager struct {
 	k3sBinary func() ([]byte, error)
 	// waitReadyTimeout is how long a fresh VM gets to boot + network.
 	waitReadyTimeout time.Duration
+	// deleteRetryDelay is the pause between DeleteVM's retried Delete
+	// attempts (#1882). A test field, like waitReadyTimeout: production
+	// uses deleteRetryDelayDefault, tests shrink it so the retry loop
+	// doesn't slow the suite down.
+	deleteRetryDelay time.Duration
 }
 
 // NewManager builds a Manager on a host. artifactBase is the host
@@ -72,6 +77,7 @@ func NewManager(host VMHost, artifactBase string) *Manager {
 			return os.ReadFile(path)
 		},
 		waitReadyTimeout: 3 * time.Minute,
+		deleteRetryDelay: deleteRetryDelayDefault,
 	}
 }
 
@@ -79,7 +85,7 @@ func NewManager(host VMHost, artifactBase string) *Manager {
 // loader — the seam tests (and callers with pre-staged artifacts) use
 // instead of the EnsureK3s download path.
 func NewManagerWithLoader(host VMHost, loader func() ([]byte, error)) *Manager {
-	return &Manager{host: host, k3sBinary: loader, waitReadyTimeout: 3 * time.Minute}
+	return &Manager{host: host, k3sBinary: loader, waitReadyTimeout: 3 * time.Minute, deleteRetryDelay: deleteRetryDelayDefault}
 }
 
 // VMCapable surfaces the host's VM capability probe.
@@ -96,6 +102,15 @@ func (m *Manager) Observe(tenant, clusterName string) (Observed, error) {
 // StartVM restarts a stopped cluster VM.
 func (m *Manager) StartVM(name string) error { return m.host.Start(name) }
 
+// deleteRetries bounds DeleteVM's retried Delete attempts (#1882): a
+// genuinely broken instance must still surface as a real, reportable
+// failure, not retry forever inside one RPC.
+const deleteRetries = 3
+
+// deleteRetryDelayDefault is production's pause between retried Delete
+// attempts.
+const deleteRetryDelayDefault = 2 * time.Second
+
 // DeleteVM removes a cluster node, stopping it first.
 //
 // Incus refuses to delete a running instance ("Instance is running"),
@@ -107,12 +122,37 @@ func (m *Manager) StartVM(name string) error { return m.host.Start(name) }
 //
 // A stop error is deliberately ignored: the common case is a node that
 // is already stopped, which Incus reports as an error, and any stop
-// failure that actually matters resurfaces as a delete failure. The
-// delete's error is the one the caller sees — the autoscaler retries on
-// it, so swallowing it would make a failed scale-down look successful.
+// failure that actually matters resurfaces as a delete failure.
+//
+// The delete itself is retried a bounded few times (#1882): Stop's own
+// operation completing does not guarantee the instance's queryable
+// state has settled to Stopped by the time the very next API call
+// runs, and Incus can answer that brief window with the same "Instance
+// is running" error a genuinely-still-running instance would — one
+// autoscaler run hung an entire 30-minute scale-down budget on exactly
+// this for one node in a batch, while a sibling node in the same batch
+// deleted cleanly on its first attempt. The delete's error is still
+// what the caller ultimately sees after retries are exhausted — the
+// autoscaler retries on it too, so swallowing it would make a failed
+// scale-down look successful.
 func (m *Manager) DeleteVM(name string) error {
 	_ = m.host.Stop(name)
-	return m.host.Delete(name)
+	var err error
+	for attempt := 0; attempt < deleteRetries; attempt++ {
+		if err = m.host.Delete(name); err == nil {
+			return nil
+		}
+		if attempt < deleteRetries-1 {
+			time.Sleep(m.deleteRetryDelay)
+		}
+	}
+	// #1882: this path previously had no logging at all, which is
+	// exactly what made a 30-minute scale-down hang undiagnosable after
+	// the fact — the daemon log had zero trace of the delete ever being
+	// attempted. Logged only here, once retries are truly exhausted, so
+	// a transient race that resolved on retry stays silent.
+	log.Printf("[cluster] delete %s: still failing after %d attempt(s): %v", name, deleteRetries, err)
+	return err
 }
 
 // abandon removes an instance whose provisioning failed after it was
