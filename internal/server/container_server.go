@@ -1533,6 +1533,18 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 					})
 					_, _, fwdErr := peer.ForwardRequest("POST", fmt.Sprintf("/v1/containers/%s/start", req.Username), authToken, body)
 					if fwdErr == nil {
+						// #1411: a peer-forwarded start reached the local
+						// stamp below only when Start succeeded on THIS
+						// daemon — never on this branch, so a container
+						// woken on a peer got none of the anti-thrash
+						// grace a locally-woken one does, and the very
+						// next autosleep tick could put it straight back
+						// to sleep. Best-effort, same as the local-success
+						// stamp: a failure here just means one extra
+						// wake→sleep flap, not a broken start.
+						if err := s.manager.SetConfig(req.Username+"-container", incus.LastStartedAtKey, time.Now().UTC().Format(time.RFC3339)); err != nil {
+							log.Printf("[autosleep] failed to stamp %s on %s after peer-forward: %v (continuing)", incus.LastStartedAtKey, req.Username, err)
+						}
 						return &pb.StartContainerResponse{
 							Message: fmt.Sprintf("Container for user %s started on backend %s", req.Username, peer.ID),
 						}, nil
