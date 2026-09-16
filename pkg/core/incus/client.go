@@ -1095,55 +1095,9 @@ func (c *Client) fetchContainerInfo(name string) (ContainerInfo, bool) {
 		}
 
 		// Get IP address - need to get state separately
-		// Priority: eth0 (Incus bridge) > other non-container interfaces > container bridge (docker0/podman0)
 		state, _, err := c.getInstanceStateWithRetry("list "+inst.Name, inst.Name)
 		if err == nil && state.Network != nil {
-			var fallbackIP string
-
-			// First pass: look for eth0 interface
-			for netName, network := range state.Network {
-				if netName == "eth0" {
-					for _, addr := range network.Addresses {
-						if addr.Family == "inet" && addr.Scope == "global" {
-							info.IPAddress = addr.Address
-							break
-						}
-					}
-				}
-			}
-
-			// Second pass: if no eth0, use any non-container-bridge interface
-			if info.IPAddress == "" {
-				for netName, network := range state.Network {
-					if netName != "docker0" && netName != "podman0" && netName != "lo" {
-						for _, addr := range network.Addresses {
-							if addr.Family == "inet" && addr.Scope == "global" {
-								fallbackIP = addr.Address
-								break
-							}
-						}
-						if fallbackIP != "" {
-							info.IPAddress = fallbackIP
-							break
-						}
-					}
-				}
-			}
-
-			// Last resort: use container bridge (docker0/podman0) if nothing else found
-			if info.IPAddress == "" && fallbackIP == "" {
-				for _, network := range state.Network {
-					for _, addr := range network.Addresses {
-						if addr.Family == "inet" && addr.Scope == "global" {
-							info.IPAddress = addr.Address
-							break
-						}
-					}
-					if info.IPAddress != "" {
-						break
-					}
-				}
-			}
+			info.IPAddress = primaryNetworkInterface(state.Network)
 		}
 
 		return info, true
@@ -1220,55 +1174,9 @@ func (c *Client) GetContainer(name string) (*ContainerInfo, error) {
 	}
 
 	// Get IP address - need to get state separately
-	// Priority: eth0 (Incus bridge) > other non-container interfaces > container bridge (docker0/podman0)
 	state, _, err := c.getInstanceStateWithRetry("get "+name, name)
 	if err == nil && state.Network != nil {
-		var fallbackIP string
-
-		// First pass: look for eth0 interface
-		for netName, network := range state.Network {
-			if netName == "eth0" {
-				for _, addr := range network.Addresses {
-					if addr.Family == "inet" && addr.Scope == "global" {
-						info.IPAddress = addr.Address
-						break
-					}
-				}
-			}
-		}
-
-		// Second pass: if no eth0, use any non-container-bridge interface
-		if info.IPAddress == "" {
-			for netName, network := range state.Network {
-				if netName != "docker0" && netName != "podman0" && netName != "lo" {
-					for _, addr := range network.Addresses {
-						if addr.Family == "inet" && addr.Scope == "global" {
-							fallbackIP = addr.Address
-							break
-						}
-					}
-					if fallbackIP != "" {
-						info.IPAddress = fallbackIP
-						break
-					}
-				}
-			}
-		}
-
-		// Last resort: use container bridge (docker0/podman0) if nothing else found
-		if info.IPAddress == "" && fallbackIP == "" {
-			for _, network := range state.Network {
-				for _, addr := range network.Addresses {
-					if addr.Family == "inet" && addr.Scope == "global" {
-						info.IPAddress = addr.Address
-						break
-					}
-				}
-				if info.IPAddress != "" {
-					break
-				}
-			}
-		}
+		info.IPAddress = primaryNetworkInterface(state.Network)
 	}
 
 	return info, nil
