@@ -242,12 +242,37 @@ func (j *RouteSyncJob) sync(ctx context.Context) error {
 // Caddy must not chase a certificate for them. Excludes inactive routes for
 // the same reason RemoveTLSSubject exists — no point spending ACME budget on a
 // hostname nothing serves.
+//
+// The domain list is the union of dbRoutes and whatever Caddy's http app is
+// CURRENTLY, actually serving (ListRoutes()) — not dbRoutes alone. A
+// hostname can reach Caddy's http app through a route that predates or lives
+// entirely outside Containarium's own route management — e.g. a
+// tunnel-declared --public-aliases hostname (#1872), which is never added
+// via AddRoute and so has no row here at all. Such a hostname relied
+// entirely on Caddy's own built-in automatic-HTTPS subject discovery, which
+// stops covering it once ActivateL4 moves the http app's server off :443 —
+// silently breaking its certificate renewal with no dbRoutes-only reconciler
+// able to notice or repair it (#1880). ListRoutes() reads only the http
+// app's own routes, so it can never include a TLS-passthrough hostname
+// (those live in the layer4 app) — no extra protocol filtering needed for
+// this source. A failure reading it is logged and otherwise ignored, so a
+// transient admin-API error never blocks reconciling the domains already
+// known from dbRoutes.
 func (j *RouteSyncJob) syncTLSSubjects(dbRoutes []*RouteRecord) error {
 	if j.proxyManager == nil {
 		return nil
 	}
 
+	seen := make(map[string]bool, len(dbRoutes))
 	domains := make([]string, 0, len(dbRoutes))
+	add := func(domain string) {
+		if domain == "" || seen[domain] {
+			return
+		}
+		seen[domain] = true
+		domains = append(domains, domain)
+	}
+
 	for _, r := range dbRoutes {
 		if r == nil || !r.Active || r.FullDomain == "" {
 			continue
@@ -255,7 +280,16 @@ func (j *RouteSyncJob) syncTLSSubjects(dbRoutes []*RouteRecord) error {
 		if r.Protocol == string(RouteProtocolTLSPassthrough) {
 			continue
 		}
-		domains = append(domains, r.FullDomain)
+		add(r.FullDomain)
+	}
+
+	if liveRoutes, err := j.proxyManager.ListRoutes(); err != nil {
+		log.Printf("[RouteSyncJob] TLS subject reconcile: list live Caddy routes: %v "+
+			"(continuing with dbRoutes-known domains only)", err)
+	} else {
+		for _, r := range liveRoutes {
+			add(r.FullDomain)
+		}
 	}
 
 	return j.proxyManager.EnsureTLSSubjects(domains)
