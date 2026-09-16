@@ -21,6 +21,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still works) before comparing. Applies to both the `AGENTBOX_ROOT`
   floor and the MCP client-advertised-roots fallback.
 
+- **`AddRoute`/`UpdateRoute` could silently repoint a hostname another
+  creator already owned.** `RouteStore.Save` was an unconditional upsert
+  by `full_domain` with no comparison against the existing route's
+  `created_by` — an admin (or an automated reconciliation path) naming a
+  hostname that already routed to another tenant's container would
+  silently steal that traffic. `Save` now refuses with
+  `ErrRouteOwnershipConflict` (surfaced as gRPC `AlreadyExists`) when
+  `full_domain` belongs to a different creator, inside the same
+  transaction as the upsert so two concurrent Saves can't race past the
+  check. Routes written before this existed (`created_by` empty) are
+  exempt from the refusal so the upgrade can't lock anyone out, but the
+  first post-upgrade touch backfills the owner so the hostname is
+  protected from then on. `AddRoute`/`UpdateRoute` now also record the
+  authenticated admin as `created_by`, which they previously left blank.
+
 - **Refresh-token rotation could be exchanged more than once under a race,
   contradicting the documented single-use contract.** `RefreshToken`
   minted the new `(access, refresh)` pair before revoking the presented

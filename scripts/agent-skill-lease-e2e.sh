@@ -174,7 +174,13 @@ SABOTAGE="${CONTAINARIUM_E2E_SABOTAGE:-}"
 PROVIDER="anthropic"
 GW_TOKEN_VAR="ANTHROPIC_AUTH_TOKEN"
 
-SEED_DIR="/etc/containarium/agent"
+# #1860: every run gets its own seed directory (and, when it fetches a repo
+# per #1859, its own workspace) under these fixed roots — matching the
+# daemon's agentSeedRoot/agentWorkspaceRoot (internal/server/agent_server.go).
+# There is no longer a single box-level SEED_DIR; a run's actual directory is
+# "$AGENT_SEED_ROOT/$RUN_ID", computed below once RUN_ID is known.
+AGENT_SEED_ROOT="/etc/containarium/agent/runs"
+AGENT_WORKSPACE_ROOT="/workspace/runs"
 BOX="agent-${SKILL_ID}-container"
 
 WORKDIR="$(mktemp -d)"
@@ -456,13 +462,23 @@ sudo incus exec "$BOX" -- grep -q "$STUB_MARKER" /usr/local/bin/agent-runtime \
   || fail "/usr/local/bin/agent-runtime in $BOX is not this script's stub — something else (the agent-runtime recipe's install-agent-runtime.sh writes the same path) owns it, so the measured run would not last long enough to observe"
 ok "stub agent-runtime installed and verified by marker (the measured run will last ~${RUN_SECONDS}s)"
 
-# The warm-up's own lease must already be gone; if the seed files are still
+# The warm-up's own lease must already be gone; if its seed dir is still
 # there, the measured run's "these files appeared" poll below would latch onto
-# a stale credential and assertion 1 would be about the wrong token.
-sudo incus exec "$BOX" -- rm -f "$SEED_DIR/token" "$SEED_DIR/gateway.env"
+# a stale credential and assertion 1 would be about the wrong token. #1860:
+# the daemon's own lease end already removes the whole per-run directory, not
+# just the two files — this is defensive belt-and-suspenders, so it does the
+# same (rm -rf, not rm -f two names) rather than assume the exact old shape.
+sudo incus exec "$BOX" -- rm -rf "$AGENT_SEED_ROOT/$WARM_RUN_ID"
 
 # --- the measured run -----------------------------------------------------
 RUN_ID="lease-e2e-$(head -c4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+# #1860: this run's own directories, now that RUN_ID is known. No git_source
+# is passed to run_skill in this script, so RUN_WORKSPACE_DIR is never
+# created — assertion 3 below checks that plainly, rather than claiming to
+# prove removal of a workspace that was never asked for. The "fetch a repo,
+# then prove the workspace is gone too" case is #1861's e2e, on top of this.
+RUN_SEED_DIR="$AGENT_SEED_ROOT/$RUN_ID"
+RUN_WORKSPACE_DIR="$AGENT_WORKSPACE_ROOT/$RUN_ID"
 log "measured run $RUN_ID (RPC in the background so the run can be observed while it lasts)"
 run_skill "$RUN_ID" "$WORKDIR/run" &
 RUN_PID=$!
@@ -471,11 +487,11 @@ RUN_PID=$!
 # file is written by provisionSkillBox before the agent exec starts and removed
 # by endRunLease after it returns, so its PRESENCE is the run's own liveness
 # signal — no sleep-and-hope.
-log "reading $SEED_DIR/gateway.env from the box during the run"
+log "reading $RUN_SEED_DIR/gateway.env from the box during the run"
 GW_TOKEN=""
 gw_env=""
 for _ in $(seq 1 300); do
-  gw_env="$(sudo incus exec "$BOX" -- cat "$SEED_DIR/gateway.env" 2>/dev/null || true)"
+  gw_env="$(sudo incus exec "$BOX" -- cat "$RUN_SEED_DIR/gateway.env" 2>/dev/null || true)"
   if [ -n "$gw_env" ]; then
     GW_TOKEN="$(printf '%s\n' "$gw_env" | sed -n "s/^export $GW_TOKEN_VAR=//p" | head -1)"
     [ -n "$GW_TOKEN" ] && break
@@ -485,8 +501,8 @@ for _ in $(seq 1 300); do
   fi
   sleep 0.2
 done
-[ -n "$GW_TOKEN" ] || fail "never saw $GW_TOKEN_VAR in $SEED_DIR/gateway.env during the run"
-ok "read the run's gateway token from $SEED_DIR/gateway.env during the run (${#GW_TOKEN} bytes)"
+[ -n "$GW_TOKEN" ] || fail "never saw $GW_TOKEN_VAR in $RUN_SEED_DIR/gateway.env during the run"
+ok "read the run's gateway token from $RUN_SEED_DIR/gateway.env during the run (${#GW_TOKEN} bytes)"
 
 # --- assertion 1: accepted during the run --------------------------------
 model_call "$GW_TOKEN" "$WORKDIR/during"
@@ -604,14 +620,35 @@ revoked_after_ms=$(( revoked_at_ms - EXIT_MS ))
 ok "assertion 2: token DEAD ${revoked_after_ms}ms after the run returned — 401 'gateway token revoked' (budget ${REVOKE_BUDGET_MS}ms)"
 
 # --- assertion 3: the seed files are gone --------------------------------
-seed_ls="$(sudo incus exec "$BOX" -- ls -A "$SEED_DIR" 2>/dev/null || true)"
+# #1860 note: runlease.End now removes the whole per-run directory, so this
+# ls is expected to fail outright (empty seed_ls) rather than succeed on an
+# empty directory — the loop below still holds either way, and stays as the
+# first, narrowest check: it is what would have caught the credential-leak
+# bug this whole script exists to prevent, independent of the directory
+# question assertion 3b checks next.
+seed_ls="$(sudo incus exec "$BOX" -- ls -A "$RUN_SEED_DIR" 2>/dev/null || true)"
 for leftover in token gateway.env; do
   if printf '%s\n' "$seed_ls" | grep -qx "$leftover"; then
-    fail "assertion 3: $SEED_DIR/$leftover survived the run — the box is reused, so a readable credential file is a live credential
-$SEED_DIR now holds: $(printf '%s' "$seed_ls" | tr '\n' ' ')"
+    fail "assertion 3: $RUN_SEED_DIR/$leftover survived the run — the box is reused, so a readable credential file is a live credential
+$RUN_SEED_DIR now holds: $(printf '%s' "$seed_ls" | tr '\n' ' ')"
   fi
 done
-ok "assertion 3: neither token nor gateway.env is left in $SEED_DIR (it holds: $(printf '%s' "$seed_ls" | tr '\n' ' '))"
+ok "assertion 3: neither token nor gateway.env is left in $RUN_SEED_DIR (it holds: $(printf '%s' "$seed_ls" | tr '\n' ' '))"
+
+# --- assertion 3b: the run's own directories are gone entirely (#1860) ----
+# The whole per-run seed directory must be gone, not merely emptied — a bare
+# directory would still leave input.json/system_prompt.txt/agent-card.json
+# readable in a box that is reused across runs. This run passed no
+# git_source, so RUN_WORKSPACE_DIR was never created; checked here as "never
+# came into being", not "was removed" — #1861's e2e covers the fetch-then-
+# remove case once a repo is actually in play.
+if sudo incus exec "$BOX" -- test -e "$RUN_SEED_DIR"; then
+  fail "assertion 3b: $RUN_SEED_DIR still exists after the run — the directory itself must be gone, not just the credential files inside it"
+fi
+if sudo incus exec "$BOX" -- test -e "$RUN_WORKSPACE_DIR"; then
+  fail "assertion 3b: $RUN_WORKSPACE_DIR exists but this run passed no --git-source — nothing should have created it"
+fi
+ok "assertion 3b: $RUN_SEED_DIR is gone entirely, and $RUN_WORKSPACE_DIR (no git_source this run) was never created"
 
 # --- assertion 4: both lease rows are queryable by run id ----------------
 # Through the operator's own CLI, not SQL: `audit query --run-id` is the

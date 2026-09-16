@@ -13152,6 +13152,18 @@
         "runId": {
           "type": "string",
           "description": "Optional caller-supplied run id (1-128 chars of [A-Za-z0-9._-]). Empty\nmeans the daemon generates a UUID. Bound into every credential minted for\nthis run (the `run_id` claim) and returned in the response, so the run's\ncredentials can be revoked and audited as one unit."
+        },
+        "gitSource": {
+          "type": "string",
+          "description": "Optional git source fetched into the run's workspace before the agent\nstarts, so a skill whose prompt reads \"the code in the box\" has code to\nread. Same semantics as CreateContainerRequest fields 16-18: a shallow\nfetch of the exact ref, run inside the box (no caller-\u003ebox SSH). Empty\ngit_source means no fetch — today's behavior, unchanged."
+        },
+        "gitRef": {
+          "type": "string",
+          "description": "Exact ref to check out: full SHA (preferred, reproducible), branch, tag,\nor a server ref like \"refs/pull/\u003cn\u003e/merge\". Empty = the remote's default\nbranch. Ignored when git_source is empty."
+        },
+        "gitCredential": {
+          "type": "string",
+          "description": "Bearer token for a private git_source. Used daemon-side for the single\nfetch only (an ephemeral http.extraHeader) — never written to the box's\n.git/config, never logged. Empty = public repo."
         }
       },
       "description": "RunAgentSkillRequest launches a single skill in its box and sends it one\ntask (no peers). Useful for testing a skill in isolation."
@@ -13170,6 +13182,14 @@
         "runId": {
           "type": "string",
           "description": "The effective run id (the one the caller supplied, or the generated one)."
+        },
+        "gitCommit": {
+          "type": "string",
+          "description": "The resolved commit SHA of the fetched git_source, so an artifact can\ncite exactly what was reviewed. Empty when the request carried no\ngit_source."
+        },
+        "workspacePath": {
+          "type": "string",
+          "description": "Absolute path of the fetched workspace inside the box. Empty when the\nrequest carried no git_source."
         }
       }
     },

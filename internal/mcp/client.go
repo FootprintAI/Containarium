@@ -318,17 +318,24 @@ func (c *Client) ListAgentSkills() (*ListAgentSkillsResponse, error) {
 
 // RunAgentSkillRequest is the body for an agent-skill run. Snake_case tags
 // match the proto field names, which grpc-gateway accepts on input.
+// GitSource/GitRef (#1859) fetch a repo into the run's workspace before the
+// agent starts; no credential field over MCP in this phase (see the OSS
+// issue's scope note).
 type RunAgentSkillRequest struct {
 	SkillID   string `json:"skill_id"`
 	BackendID string `json:"backend_id,omitempty"`
 	Pool      string `json:"pool,omitempty"`
 	InputJSON string `json:"input_json,omitempty"`
+	GitSource string `json:"git_source,omitempty"`
+	GitRef    string `json:"git_ref,omitempty"`
 }
 
 // RunAgentSkillResponse is the result of an agent-skill run.
 type RunAgentSkillResponse struct {
-	ArtifactJSON string `json:"artifactJson"`
-	Container    *struct {
+	ArtifactJSON  string `json:"artifactJson"`
+	GitCommit     string `json:"gitCommit,omitempty"`
+	WorkspacePath string `json:"workspacePath,omitempty"`
+	Container     *struct {
 		Name  string `json:"name"`
 		State string `json:"state"`
 	} `json:"container"`

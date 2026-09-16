@@ -126,6 +126,20 @@ message RunAgentSkillRequest {
   // this run (the `run_id` claim) and returned in the response, so the run's
   // credentials can be revoked and audited as one unit.
   string run_id = 5;
+  // Optional git source fetched into the run's workspace before the agent
+  // starts, so a skill whose prompt reads "the code in the box" has code to
+  // read. Same semantics as CreateContainerRequest fields 16-18: a shallow
+  // fetch of the exact ref, run inside the box (no caller->box SSH). Empty
+  // git_source means no fetch — today's behavior, unchanged.
+  string git_source = 6;
+  // Exact ref to check out: full SHA (preferred, reproducible), branch, tag,
+  // or a server ref like "refs/pull/<n>/merge". Empty = the remote's default
+  // branch. Ignored when git_source is empty.
+  string git_ref = 7;
+  // Bearer token for a private git_source. Used daemon-side for the single
+  // fetch only (an ephemeral http.extraHeader) — never written to the box's
+  // .git/config, never logged. Empty = public repo.
+  string git_credential = 8;
 }
 message RunAgentSkillResponse {
   // The box the agent ran in.
@@ -134,6 +148,13 @@ message RunAgentSkillResponse {
   string artifact_json = 2;
   // The effective run id (the one the caller supplied, or the generated one).
   string run_id = 3;
+  // The resolved commit SHA of the fetched git_source, so an artifact can
+  // cite exactly what was reviewed. Empty when the request carried no
+  // git_source.
+  string git_commit = 4;
+  // Absolute path of the fetched workspace inside the box. Empty when the
+  // request carried no git_source.
+  string workspace_path = 5;
 }
 
 // ---- A2A (agent-to-agent) task contract (Phase 1) ---------------------------
