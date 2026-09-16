@@ -115,18 +115,29 @@ func (s *TokensServer) RevokeToken(ctx context.Context, req *pb.RevokeTokenReque
 // RefreshToken exchanges a valid refresh token for a new
 // (access, refresh) pair. Phase 1.6 part B.
 //
-// Single-use rotation: on success, the input refresh
-// token's jti is added to the revocation list. A replayed
-// refresh token (someone stole it AND the legitimate
-// holder already exchanged it) hits the revocation check
-// inside ValidateRefreshToken's path and is rejected.
-// This is a strong tamper signal — an audit hook should
-// page on it; today we just log + return Unauthenticated.
+// Single-use rotation with reuse detection (closes the race in #1864):
+// the input refresh token's jti is claimed — atomically revoked — BEFORE
+// anything is minted, not after. Minting first (the prior order) let two
+// concurrent exchanges of the same refresh token both pass
+// ValidateRefreshToken (neither had been revoked yet) and both walk away
+// with a valid new pair, contradicting the single-use contract documented
+// in README.md. Revoking is now the claim: RevokeClaim's INSERT ... ON
+// CONFLICT is the atomic check, so only one concurrent caller can ever
+// win it.
 //
-// Unauthenticated endpoint by design: the refresh token IS
-// the credential. Skip the access-token middleware on the
-// /v1/tokens/refresh path; the daemon's HTTP middleware
-// will need a route allowlist for this in a follow-up.
+// The loser — whose claim fails because the jti is already revoked —
+// has just witnessed the credential presented twice. That's the same
+// signal a stolen-and-replayed refresh token produces, and the two
+// cases are indistinguishable from here, so the response is the same
+// either way: revoke the entire rotation family (every token, past or
+// future, that descends from the same original login), forcing a full
+// re-authentication rather than guessing which presenter was
+// legitimate. See RevocationStore.RevokeFamily.
+//
+// Unauthenticated endpoint by design: the refresh token IS the
+// credential. Skip the access-token middleware on the
+// /v1/tokens/refresh path; the daemon's HTTP middleware will need a
+// route allowlist for this in a follow-up.
 func (s *TokensServer) RefreshToken(ctx context.Context, req *pb.RefreshTokenRequest) (*pb.RefreshTokenResponse, error) {
 	if req.RefreshToken == "" {
 		return nil, status.Error(codes.InvalidArgument, "refresh_token is required")
@@ -135,39 +146,67 @@ func (s *TokensServer) RefreshToken(ctx context.Context, req *pb.RefreshTokenReq
 		return nil, status.Error(codes.Unavailable, "token manager not configured")
 	}
 
-	claims, err := s.tokenManager.ValidateRefreshToken(req.RefreshToken)
+	// ValidateRefreshTokenClaims deliberately skips the revocation-list
+	// check that ValidateRefreshToken enforces. Rotation makes the
+	// presented jti revoked on success, so using the revocation-checked
+	// validator here would reject a replay of an already-rotated token
+	// at this step — before the reuse-detection logic below ever saw
+	// it. The RevokeClaim call further down IS this handler's own
+	// revocation check, and its failure IS the reuse signal.
+	claims, err := s.tokenManager.ValidateRefreshTokenClaims(req.RefreshToken)
 	if err != nil {
 		log.Printf("[tokens] refresh denied: invalid token")
 		return nil, status.Error(codes.Unauthenticated, "invalid refresh token")
 	}
 
-	// Mint the new pair BEFORE revoking the prior. If
-	// minting fails the operator's session stays intact.
+	// familyID falls back to the token's own jti for a pre-family token
+	// (minted before this fix) — it's the sole member of its own family,
+	// so reuse detection still applies to it going forward.
+	familyID := claims.FamilyID
+	if familyID == "" {
+		familyID = claims.ID
+	}
+
+	if s.store != nil && claims.ID != "" {
+		if revoked, rerr := s.store.IsFamilyRevoked(ctx, familyID); rerr != nil {
+			log.Printf("[tokens] refresh family lookup failed for family=%s: %v (continuing; the per-jti claim below is the primary gate)", familyID, rerr)
+		} else if revoked {
+			log.Printf("[tokens] refresh denied: family=%s already revoked", familyID)
+			return nil, status.Error(codes.Unauthenticated, "invalid refresh token")
+		}
+
+		exp := time.Time{}
+		if claims.ExpiresAt != nil {
+			exp = claims.ExpiresAt.Time
+		}
+		claimed, cerr := s.store.RevokeClaim(ctx, claims.ID, exp, "refresh_rotation")
+		if cerr != nil {
+			log.Printf("[tokens] refresh rotation claim failed for jti=%s: %v", claims.ID, cerr)
+			return nil, status.Errorf(codes.Internal, "rotate failed: %v", cerr)
+		}
+		if !claimed {
+			if ferr := s.store.RevokeFamily(ctx, familyID, "refresh_reuse_detected"); ferr != nil {
+				log.Printf("[tokens] refresh reuse: failed to revoke family=%s: %v", familyID, ferr)
+			}
+			log.Printf("[tokens] refresh DENIED — reuse of already-rotated jti=%s; family=%s revoked", claims.ID, familyID)
+			return nil, status.Error(codes.Unauthenticated, "invalid refresh token")
+		}
+	}
+
+	// The claim above is what makes this exchange exclusive; minting
+	// after it is safe because we already own the only valid rotation
+	// of this jti.
 	newAccess, err := s.tokenManager.GenerateAccessToken(
 		claims.Username, claims.Roles, 0, claims.Scopes...,
 	)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "mint access: %v", err)
 	}
-	newRefresh, err := s.tokenManager.GenerateRefreshToken(
-		claims.Username, claims.Roles, 0, claims.Scopes...,
+	newRefresh, err := s.tokenManager.GenerateRefreshTokenInFamily(
+		claims.Username, claims.Roles, 0, familyID, claims.Scopes...,
 	)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "mint refresh: %v", err)
-	}
-
-	// Revoke the input refresh-token jti. If the store is
-	// unavailable, fail closed — without rotation a stolen
-	// refresh token gives the attacker permanent renewal.
-	if s.store != nil && claims.ID != "" {
-		exp := time.Time{}
-		if claims.ExpiresAt != nil {
-			exp = claims.ExpiresAt.Time
-		}
-		if err := s.store.Revoke(ctx, claims.ID, exp, "refresh_rotation"); err != nil {
-			log.Printf("[tokens] refresh rotation revoke failed for jti=%s: %v", claims.ID, err)
-			return nil, status.Errorf(codes.Internal, "rotate failed: %v", err)
-		}
 	}
 
 	// Parse the new exp timestamps from the just-minted
