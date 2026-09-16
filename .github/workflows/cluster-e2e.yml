@@ -13,7 +13,10 @@ name: Managed clusters KVM e2e
 # because this is where "real daemon + real Postgres, on the nightly and
 # release-blocking cadence" already is; it needs no KVM and no
 # Kubernetes, so it runs on a GitHub-hosted runner it provisions itself
-# and never touches the self-hosted host's Incus.
+# and never touches the self-hosted host's Incus. The same script (same
+# job, same cadence) now also proves the coding-skill-on-a-repo shape
+# (#1861): a run that fetched a repo leaves the checkout gone with the run
+# and never wrote the fetch credential to disk.
 #
 # WHAT GATES THE LEASE PATH PER-PR, precisely — because "wired into CI"
 # reads as more than it is. This lane is NOT a per-PR check: like the
@@ -68,7 +71,11 @@ on:
         #   past the budget — proves the run-lease lane can fail on the
         #   5s BOUND, which it once could not (the budget was only the poll
         #   loop's continuation condition, never a gate on the measurement).
-        options: ['none', 'join-token', 'no-revoke', 'slow-revoke']
+        # skip-workspace-removal: after the #1861 git-source run returns and
+        #   is cleaned up normally, the harness recreates the workspace
+        #   directory to simulate a skipped removal — proves the lane can
+        #   fail on "the fetched checkout must not outlive its run".
+        options: ['none', 'join-token', 'no-revoke', 'slow-revoke', 'skip-workspace-removal']
         default: 'none'
   pull_request:
     paths:
@@ -176,6 +183,13 @@ jobs:
     # Same cadence as the cluster lane above — nightly and release-blocking —
     # so the PRD's headline metric is re-measured on the schedule a release
     # is gated on, not just once in the PR that added the script (#1819).
+    #
+    # #1861's git-source proof extends the SAME script and runs on this SAME
+    # cadence, not per-PR: it is a real Incus box + real fetch from a real
+    # public repo, same cost shape as the run-lease proof beside it. A PR
+    # touching the lease/git-source path gets `build-unit`'s syntax+lint
+    # check (see that job and the `pull_request.paths` list above); the full
+    # proof — this job — runs nightly and release-blocking, same as #1819's.
     if: >-
       github.event_name == 'schedule' ||
       github.event_name == 'push' ||
@@ -187,9 +201,10 @@ jobs:
     runs-on: ubuntu-latest
     # Budget: ~8m Incus provisioning, ~3m build, ~1m postgres pull, then the
     # warm-up run's first box provision (the agent-runtime recipe installs
-    # Node inside the box) dominates at ~5-10m. The measured run itself is
-    # ~30s. 45 leaves room for a cold runner without letting a wedged daemon
-    # hold the queue.
+    # Node inside the box) dominates at ~5-10m. The two measured runs are
+    # ~30s each; #1861's git-source run adds one shallow clone of a small,
+    # ancient public repo, seconds not minutes. 45 leaves room for a cold
+    # runner without letting a wedged daemon hold the queue.
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
@@ -217,13 +232,13 @@ jobs:
 
   prove-lease-lane-can-fail:
     name: sabotage run (run-lease lane must go red)
-    # Both lease sabotages land here, because assertion 2 makes two separate
-    # claims — the credential is dead, AND it is dead within the bound — and a
-    # lane should be able to fail each on demand. no-revoke breaks the first,
-    # slow-revoke the second.
+    # All three lease sabotages land here. no-revoke and slow-revoke prove
+    # assertion 2's two separate claims (dead, and dead within the bound) can
+    # each fail on demand; skip-workspace-removal proves #1861's assertion 7
+    # (a fetched checkout must not outlive its run) can too.
     if: >-
       github.event_name == 'workflow_dispatch' &&
-      (inputs.sabotage == 'no-revoke' || inputs.sabotage == 'slow-revoke')
+      (inputs.sabotage == 'no-revoke' || inputs.sabotage == 'slow-revoke' || inputs.sabotage == 'skip-workspace-removal')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:

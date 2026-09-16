@@ -174,6 +174,25 @@ SABOTAGE="${CONTAINARIUM_E2E_SABOTAGE:-}"
 PROVIDER="anthropic"
 GW_TOKEN_VAR="ANTHROPIC_AUTH_TOKEN"
 
+# #1861: the coding-skill-on-a-repo proof. octocat/Spoon-Knife is GitHub's own
+# decade-old fork-tutorial fixture — small, public, and untouched since 2014,
+# so pinning its tip commit is as close to "will never change" as a third
+# party's repo gets. Its README.md's first line is non-blank ("### Well hello
+# there!"), which is what makes assertion 6 possible without a model: the
+# stub cites whatever grep -n actually finds, this fixture just guarantees
+# that citation is never empty.
+FIXTURE_GIT_SOURCE="${CONTAINARIUM_E2E_LEASE_FIXTURE_REPO:-https://github.com/octocat/Spoon-Knife}"
+FIXTURE_GIT_SHA="${CONTAINARIUM_E2E_LEASE_FIXTURE_SHA:-d0dd1f61b33d64e29d8bc1372a94ef6a2fee76a9}"
+# Obviously fake, and never a real secret. NOT ignored by GitHub, despite
+# the design doc's "Deviations" note assuming a public repo makes a bad
+# Authorization header harmless — verified otherwise (see assertion 8): any
+# credential presented is validated and an invalid one is rejected outright.
+# So this is used on a run EXPECTED to fail its own fetch — its only job is
+# to be a string that never appears in that failure's response or the
+# daemon log.
+FIXTURE_GIT_CREDENTIAL="e2e-fake-credential-1861-$$-not-a-real-secret"
+GIT_STUB_MARKER="containarium-lease-e2e-git-stub"
+
 # #1860: every run gets its own seed directory (and, when it fetches a repo
 # per #1859, its own workspace) under these fixed roots — matching the
 # daemon's agentSeedRoot/agentWorkspaceRoot (internal/server/agent_server.go).
@@ -205,8 +224,8 @@ command -v curl >/dev/null || fail "no curl"
 command -v jq >/dev/null || fail "no jq (the RPC response is JSON and this script asserts on its fields)"
 sudo -n true 2>/dev/null || fail "needs passwordless sudo (daemon and Incus operations run as root)"
 case "$SABOTAGE" in
-  ''|no-revoke|slow-revoke) ;;
-  *) fail "unknown CONTAINARIUM_E2E_SABOTAGE=$SABOTAGE (want empty, 'no-revoke' or 'slow-revoke')" ;;
+  ''|no-revoke|slow-revoke|skip-workspace-removal) ;;
+  *) fail "unknown CONTAINARIUM_E2E_SABOTAGE=$SABOTAGE (want empty, 'no-revoke', 'slow-revoke' or 'skip-workspace-removal')" ;;
 esac
 
 cleanup() {
@@ -421,6 +440,55 @@ model_call() {
     -H 'Content-Type: application/json' \
     -d '{"model":"claude-3-5-haiku-latest","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}' \
     >"$out.code" 2>"$out.err" || true
+}
+
+# run_skill_with_git is run_skill plus the #1861 repo fields. A separate
+# function rather than extra optional params on run_skill: every existing
+# call site (warm-up, the measured run above) passes none of these, and this
+# keeps their request body exactly as it always was.
+run_skill_with_git() {
+  local run_id="$1" out="$2" git_source="$3" git_ref="$4" git_credential="$5"
+  : >"$out.body"
+  local body
+  body="$(jq -nc --arg run_id "$run_id" --arg src "$git_source" --arg ref "$git_ref" --arg cred "$git_credential" \
+    '{run_id: $run_id, input_json: "{}", git_source: $src, git_ref: $ref, git_credential: $cred}')"
+  curl -sS -o "$out.body" -w '%{http_code}' \
+    -X POST "http://127.0.0.1:$HTTP_PORT/v1/agent-skills/$SKILL_ID/run" \
+    -H "Authorization: Bearer $TOKEN" \
+    -H 'Content-Type: application/json' \
+    -d "$body" \
+    >"$out.code" 2>"$out.err" || true
+}
+
+# assert_revoked_within_budget is assertion 2's poll-until-revoked-or-budget
+# logic, reusable: #1861 holds the git-source run's own token to the exact
+# same bound rather than assuming it because the plain run proved it. The
+# original assertion 2 below is left untouched — this is a second, independent
+# instance of the same check, not a refactor of the first.
+assert_revoked_within_budget() {
+  local token="$1" exit_ms="$2" label="$3"
+  local revoked_at_ms="" last_code="" last_body=""
+  while :; do
+    model_call "$token" "$WORKDIR/after-$label" "$POLL_MAX_TIME"
+    last_code="$(read_code "$WORKDIR/after-$label.code")"
+    last_body="$(read_out "$WORKDIR/after-$label.body")"
+    case "$last_body" in
+      *"gateway token revoked"*) revoked_at_ms="$(now_ms)"; break ;;
+    esac
+    if [ "$(( $(now_ms) - exit_ms ))" -ge "$(( REVOKE_BUDGET_MS + POLL_GRACE_MS ))" ]; then
+      break
+    fi
+    sleep 0.2
+  done
+  if [ -z "$revoked_at_ms" ]; then
+    fail "assertion ($label): $(( REVOKE_BUDGET_MS + POLL_GRACE_MS ))ms after the run returned, the token is STILL accepted (last answer $last_code: $(printf '%s' "$last_body" | head -c 160 | tr '\n' ' ')) — the credential outlived its run"
+  fi
+  local revoked_after_ms=$(( revoked_at_ms - exit_ms ))
+  [ "$revoked_after_ms" -le "$REVOKE_BUDGET_MS" ] \
+    || fail "assertion ($label): the token WAS revoked, but only refused ${revoked_after_ms}ms after the run returned — past the ${REVOKE_BUDGET_MS}ms budget"
+  [ "$last_code" = "401" ] \
+    || fail "assertion ($label): body says revoked but status was $last_code, want 401"
+  ok "assertion ($label): token DEAD ${revoked_after_ms}ms after the run returned (budget ${REVOKE_BUDGET_MS}ms)"
 }
 
 # --- warm-up run: create the box, then install the stub agent-runtime -----
@@ -673,3 +741,217 @@ echo "PASS: a skill run's credentials died with the run."
 echo "      gateway token accepted during run $RUN_ID, 401 'gateway token revoked'"
 echo "      ${revoked_after_ms}ms after it returned (budget ${REVOKE_BUDGET_MS}ms), seed files wiped,"
 echo "      both lease rows queryable by run id."
+
+# --- #1861: coding skill on a repo (git source fetched into the workspace) -
+# Extends the proof above from "a skill run's credentials die with the run"
+# to "a skill run that fetched a repo leaves NOTHING behind": the checkout
+# is gone with the run, same as the credentials, and a credential passed for
+# the fetch never touches disk. Same box (already provisioned above), a
+# second stub, a second measured run — the credential-lifecycle machinery
+# under test is identical; only this run's request carries
+# git_source/git_ref/git_credential.
+#
+# Model-free by the same construction as assertions 1/2: PROVIDER carries a
+# placeholder key throughout this script (GATEWAY_KEY above), so no run here
+# ever reaches a real model — the "file:line" citation below comes from this
+# stub's own `grep -n` on the real checkout, not a model, and is exactly as
+# real as that grep is.
+echo
+log "installing the git-source stub agent-runtime (reads workspace.json, cites README.md, then sleeps ${RUN_SECONDS}s) into $BOX"
+GIT_STUB_SRC="$WORKDIR/git-stub.sh"
+cat >"$GIT_STUB_SRC" <<STUBEOF
+#!/bin/sh
+# $GIT_STUB_MARKER
+set -e
+ws_file="\$AGENT_SEED_DIR/workspace.json"
+ws_path="\$(sed -n 's/.*"path":"\([^"]*\)".*/\1/p' "\$ws_file")"
+readme="\$ws_path/README.md"
+line_no="\$(grep -n . "\$readme" | head -1 | cut -d: -f1)"
+[ -n "\$line_no" ] || line_no=0
+printf '{"outputJson":"code review complete; see README.md:%s"}' "\$line_no" > "\$AGENT_SEED_DIR/artifact.json"
+sleep $RUN_SECONDS
+STUBEOF
+sudo incus file push --mode 0755 "$GIT_STUB_SRC" "$BOX/usr/local/bin/agent-runtime"
+sudo incus exec "$BOX" -- test -x /usr/local/bin/agent-runtime \
+  || fail "git-source stub agent-runtime was not installed into $BOX"
+sudo incus exec "$BOX" -- grep -q "$GIT_STUB_MARKER" /usr/local/bin/agent-runtime \
+  || fail "/usr/local/bin/agent-runtime in $BOX is not this script's git-source stub"
+ok "git-source stub agent-runtime installed and verified by marker"
+
+RUN_ID2="lease-e2e-git-$(head -c4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+RUN_SEED_DIR2="$AGENT_SEED_ROOT/$RUN_ID2"
+RUN_WORKSPACE_DIR2="$AGENT_WORKSPACE_ROOT/$RUN_ID2"
+log "measured git-source run $RUN_ID2 (repo $FIXTURE_GIT_SOURCE @ $FIXTURE_GIT_SHA)"
+# No credential: GitHub validates ANY Authorization header it is given and
+# rejects an invalid one outright, even for a public repo (see assertion 8
+# below) — there is no "fake but harmless" bearer token that leaves this
+# fetch, the one assertions 5-7 depend on, still succeeding.
+run_skill_with_git "$RUN_ID2" "$WORKDIR/run2" "$FIXTURE_GIT_SOURCE" "$FIXTURE_GIT_SHA" "" &
+RUN2_PID=$!
+
+# Wait for BOTH signals the run is underway: its gateway token (same
+# mechanism as the plain run above) and its workspace (written by
+# provisionSkillBox's fetch step, which runs AFTER the seed exec that writes
+# gateway.env — so gateway.env alone is not proof the fetch has landed yet).
+log "reading $RUN_SEED_DIR2/gateway.env and $RUN_WORKSPACE_DIR2/README.md from the box during the run"
+GW_TOKEN2=""
+WORKSPACE_READY=""
+for _ in $(seq 1 300); do
+  if [ -z "$GW_TOKEN2" ]; then
+    gw_env2="$(sudo incus exec "$BOX" -- cat "$RUN_SEED_DIR2/gateway.env" 2>/dev/null || true)"
+    if [ -n "$gw_env2" ]; then
+      GW_TOKEN2="$(printf '%s\n' "$gw_env2" | sed -n "s/^export $GW_TOKEN_VAR=//p" | head -1)"
+    fi
+  fi
+  if [ -z "$WORKSPACE_READY" ] && sudo incus exec "$BOX" -- test -f "$RUN_WORKSPACE_DIR2/README.md"; then
+    WORKSPACE_READY=1
+  fi
+  if [ -n "$GW_TOKEN2" ] && [ -n "$WORKSPACE_READY" ]; then
+    break
+  fi
+  if ! kill -0 "$RUN2_PID" 2>/dev/null; then
+    wait "$RUN2_PID" || true
+    echo "---- git-source run response (code $(read_code "$WORKDIR/run2.code")) ----"
+    read_out "$WORKDIR/run2.body"; echo
+    fail "the git-source run finished before both gateway.env and the workspace could be observed (token seen: $([ -n "$GW_TOKEN2" ] && echo yes || echo no), workspace seen: $([ -n "$WORKSPACE_READY" ] && echo yes || echo no)); raise CONTAINARIUM_E2E_LEASE_RUN_SECONDS (currently ${RUN_SECONDS}s) if this returned 200, or read the response above if it did not"
+  fi
+  sleep 0.2
+done
+[ -n "$GW_TOKEN2" ] || fail "never saw $GW_TOKEN_VAR in $RUN_SEED_DIR2/gateway.env during the git-source run"
+[ -n "$WORKSPACE_READY" ] || fail "never saw $RUN_WORKSPACE_DIR2/README.md during the git-source run"
+ok "git-source run underway: gateway token read (${#GW_TOKEN2} bytes) and workspace populated"
+
+# --- assertion (token accepted during the git-source run) ----------------
+model_call "$GW_TOKEN2" "$WORKDIR/during2"
+during2_code="$(read_code "$WORKDIR/during2.code")"
+during2_body="$(read_out "$WORKDIR/during2.body")"
+if ! printf '%s' "$during2_code" | grep -qE '^[1-5][0-9][0-9]$'; then
+  fail "git-source run: /v1/model/$PROVIDER returned no HTTP response (curl wrote status '$during2_code')"
+fi
+case "$during2_body" in
+  *"gateway token revoked"*)
+    fail "git-source run: the gateway rejected the run's own token DURING the run as revoked" ;;
+  *"invalid gateway token"*|*"missing gateway token"*|*"token not valid for provider"*|*"unknown provider"*|*"missing provider in path"*)
+    fail "git-source run: the gateway refused the credential for a reason unrelated to revocation ($during2_code: $during2_body)" ;;
+esac
+ok "assertion (git-source token accepted): token ACCEPTED during the git-source run"
+
+# --- assertion 5: the workspace is the pinned commit, DURING the run -----
+# Must happen before the run returns: endRunLease's defer removes the whole
+# per-run directory as part of RunAgentSkill returning, so by the time curl
+# sees the HTTP response the workspace is already gone.
+actual_commit="$(sudo incus exec "$BOX" -- git -C "$RUN_WORKSPACE_DIR2" rev-parse HEAD 2>/dev/null || true)"
+[ "$actual_commit" = "$FIXTURE_GIT_SHA" ] \
+  || fail "assertion 5: git -C $RUN_WORKSPACE_DIR2 rev-parse HEAD = '$actual_commit', want the pinned $FIXTURE_GIT_SHA"
+ws_json="$(sudo incus exec "$BOX" -- cat "$RUN_SEED_DIR2/workspace.json" 2>/dev/null || true)"
+[ -n "$ws_json" ] || fail "assertion 5: $RUN_SEED_DIR2/workspace.json does not exist — the daemon did not write the workspace contract file"
+ws_json_commit="$(printf '%s' "$ws_json" | sed -n 's/.*"git_commit":"\([^"]*\)".*/\1/p')"
+[ "$ws_json_commit" = "$FIXTURE_GIT_SHA" ] \
+  || fail "assertion 5: workspace.json git_commit = '$ws_json_commit', want the pinned $FIXTURE_GIT_SHA (workspace.json: $ws_json)"
+# The literal citable line, computed independently of the stub's own copy of
+# this same grep — assertion 6 below checks the artifact against THIS value,
+# not against a hardcoded "1", so a fixture content change fails loudly on
+# the right assertion instead of passing by coincidence.
+expected_line_no="$(sudo incus exec "$BOX" -- sh -c "grep -n . '$RUN_WORKSPACE_DIR2/README.md' | head -1 | cut -d: -f1" 2>/dev/null || true)"
+[ -n "$expected_line_no" ] || fail "assertion 5: could not compute an expected README.md citation line — is the checkout empty?"
+ok "assertion 5: workspace at $RUN_WORKSPACE_DIR2 is checked out at the pinned commit $FIXTURE_GIT_SHA (workspace.json agrees)"
+
+# --- wait for the git-source run to return --------------------------------
+wait "$RUN2_PID" || true
+EXIT_MS2="$(now_ms)"
+run2_code="$(read_code "$WORKDIR/run2.code")"
+if [ "$run2_code" != "200" ]; then
+  echo "---- git-source run response ----"; read_out "$WORKDIR/run2.body"; echo
+  fail "measured git-source RunAgentSkill returned $run2_code (want 200)"
+fi
+echoed_run_id2="$(jq -r '.runId // empty' <"$WORKDIR/run2.body")"
+[ "$echoed_run_id2" = "$RUN_ID2" ] \
+  || fail "git-source RunAgentSkillResponse.run_id was '$echoed_run_id2', want '$RUN_ID2'"
+response_commit="$(jq -r '.gitCommit // empty' <"$WORKDIR/run2.body")"
+response_workspace="$(jq -r '.workspacePath // empty' <"$WORKDIR/run2.body")"
+[ "$response_commit" = "$FIXTURE_GIT_SHA" ] \
+  || fail "assertion 5: RunAgentSkillResponse.git_commit = '$response_commit', want the pinned $FIXTURE_GIT_SHA"
+[ "$response_workspace" = "$RUN_WORKSPACE_DIR2" ] \
+  || fail "assertion 5: RunAgentSkillResponse.workspace_path = '$response_workspace', want '$RUN_WORKSPACE_DIR2'"
+ok "git-source run $RUN_ID2 returned 200, echoed its run id, and reported git_commit/workspace_path matching the pinned fetch"
+
+# --- token dead within budget, for the git-source run's own token --------
+# Measured HERE, immediately after the cheap in-memory checks above and
+# BEFORE the incus-exec-heavy assertions below: revocation is already
+# durable by the time the HTTP response is written (endRunLease is a defer
+# inside RunAgentSkill), so every `sudo incus exec` this script runs before
+# starting to poll is elapsed time added to the reported number by THIS
+# SCRIPT, not by the daemon. Assertion 2 above avoids the same trap by
+# polling immediately after `wait`; this does the same for run 2's token.
+assert_revoked_within_budget "$GW_TOKEN2" "$EXIT_MS2" "git-source"
+
+case "$SABOTAGE" in
+  skip-workspace-removal)
+    echo "SABOTAGE: recreating $RUN_WORKSPACE_DIR2 after the run to simulate a skipped workspace removal — assertion 7 must now go RED"
+    sudo incus exec "$BOX" -- mkdir -p "$RUN_WORKSPACE_DIR2"
+    ;;
+esac
+
+# --- assertion 6: the artifact cites the real checkout --------------------
+artifact2="$(jq -r '.artifactJson // empty' <"$WORKDIR/run2.body")"
+case "$artifact2" in
+  *"README.md:$expected_line_no"*) ;;
+  *) fail "assertion 6: artifact does not contain 'README.md:$expected_line_no' (artifact: $artifact2)" ;;
+esac
+ok "assertion 6: artifact cites README.md:$expected_line_no, taken from a real grep -n on the checkout"
+
+# --- assertion 7: seed dir AND workspace are both gone entirely -----------
+if sudo incus exec "$BOX" -- test -e "$RUN_SEED_DIR2"; then
+  fail "assertion 7: $RUN_SEED_DIR2 still exists after the git-source run returned"
+fi
+if sudo incus exec "$BOX" -- test -e "$RUN_WORKSPACE_DIR2"; then
+  fail "assertion 7: $RUN_WORKSPACE_DIR2 still exists after the git-source run returned — a fetched checkout must not outlive its run"
+fi
+ok "assertion 7: both $RUN_SEED_DIR2 and $RUN_WORKSPACE_DIR2 are gone entirely"
+
+# --- assertion 8: a fake git_credential never leaks, even when the fetch
+# it authorizes FAILS -------------------------------------------------------
+# The original assumption here — "the fixture is public, so GitHub simply
+# ignores the header" — does not hold: GitHub's smart-HTTP backend validates
+# any Authorization header it is given and rejects an invalid one outright,
+# even for a public repo. Reproduced directly against this exact fixture
+# with this exact header shape: `git fetch` returns "remote: invalid
+# credentials" / exit 128, not a successful anonymous fallback. So there is
+# no way to make THIS run's fetch succeed with a fake credential attached —
+# the only reachable state is failure, and that is the more realistic case
+# to prove residency against anyway: a bad credential for a PRIVATE repo
+# (git_credential's actual use case) fails exactly the same way.
+RUN_ID3="lease-e2e-git-cred-$(head -c4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+log "measured run $RUN_ID3 with a fake git_credential (expected to fail the fetch, not to succeed)"
+run_skill_with_git "$RUN_ID3" "$WORKDIR/run3" "$FIXTURE_GIT_SOURCE" "$FIXTURE_GIT_SHA" "$FIXTURE_GIT_CREDENTIAL"
+run3_code="$(read_code "$WORKDIR/run3.code")"
+run3_body="$(read_out "$WORKDIR/run3.body")"
+if [ "$run3_code" = "200" ]; then
+  fail "assertion 8: a run with a bogus git_credential against a public repo returned 200 — GitHub was expected to reject the bad Authorization header (verified locally against this exact fixture); if this now succeeds, this assertion needs to move to the success path instead"
+fi
+case "$run3_body" in
+  *"$FIXTURE_GIT_CREDENTIAL"*)
+    fail "assertion 8: the fake git_credential appears verbatim in the RPC error response ($run3_code: $run3_body) — a credential must never be echoed back to the caller" ;;
+esac
+ok "assertion 8 (response): a fake git_credential is absent from the error response when its fetch fails ($run3_code)"
+
+# The seed dir is unconditionally rm -rf'd on every exit path, including a
+# failed provision (internal/runlease's removeDirs always targets SeedDir;
+# only the workspace half is conditional on a successful fetch) — so this is
+# guaranteed, not merely hoped for.
+if sudo incus exec "$BOX" -- test -e "$AGENT_SEED_ROOT/$RUN_ID3"; then
+  fail "assertion 8: $AGENT_SEED_ROOT/$RUN_ID3 still exists after a failed provision — cleanup must run on the failure path too"
+fi
+ok "assertion 8 (cleanup): $AGENT_SEED_ROOT/$RUN_ID3 is gone after the failed provision"
+
+if grep -qF "$FIXTURE_GIT_CREDENTIAL" "$DAEMON_LOG"; then
+  fail "assertion 8: the fake git_credential appears in the daemon log"
+fi
+ok "assertion 8 (daemon log): the fake git_credential does not appear in the daemon log"
+
+echo
+echo "PASS (#1861): a skill run that fetched a repo left nothing behind."
+echo "      workspace checked out at $FIXTURE_GIT_SHA, artifact cited README.md:$expected_line_no,"
+echo "      gateway token accepted during the run and dead after it returned,"
+echo "      seed dir and workspace both gone, and a fake git credential leaked nowhere"
+echo "      when its own fetch failed."
