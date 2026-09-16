@@ -70,6 +70,27 @@ log() { echo "==> $*"; }
 
 fail() { echo "FATAL: $*" >&2; exit 1; }
 
+# sweep_leftover_instances deletes every Incus instance (container or VM
+# — `incus list` reports both classes, #1430) whose name starts with
+# INSTANCE_PREFIX. Called both pre-flight and on exit (#1814): this
+# script's own daemon+Postgres are fresh every run (a throwaway Postgres
+# container, started below), but the Incus host underneath them is
+# shared and persistent across runs on the self-hosted runner. Node
+# names/labels are deterministic (same tenant+cluster every run), so the
+# daemon's reconciler observes Incus directly (ClusterVMs) rather than
+# its own store — a leftover instance from a run whose exit trap never
+# got to run (job timeout, hard kill) is silently ADOPTED by the next
+# run's reconciler as already-provisioned, inheriting whatever broken
+# state it was left in instead of being recreated fresh. The exit trap
+# alone cannot guarantee this away, since it is exactly what a hard kill
+# skips; pre-flight is what makes a clean slate unconditional.
+sweep_leftover_instances() {
+  for inst in $(sudo incus list --format csv --columns n 2>/dev/null | grep "^${INSTANCE_PREFIX}" || true); do
+    log "sweeping leftover instance $inst"
+    sudo incus delete --force "$inst" 2>/dev/null
+  done
+}
+
 # --- pre-flight: fail loudly, never skip silently -----------------------
 case "$ISOLATION" in
   vm)
@@ -91,6 +112,11 @@ esac
 command -v go >/dev/null || fail "no Go toolchain"
 sudo -n true 2>/dev/null || fail "needs passwordless sudo (daemon and Incus operations run as root)"
 
+# #1814: guarantee a clean slate before this run creates anything of its
+# own, not just hope the previous run's exit trap already did — see
+# sweep_leftover_instances' comment above.
+sweep_leftover_instances
+
 cleanup() {
   status=$?
   set +e
@@ -100,13 +126,10 @@ cleanup() {
     sleep 2
     sudo kill -9 "$DAEMON_PID" 2>/dev/null
   fi
-  # Sweep any instances a red run left behind, so the next run starts
-  # clean. `incus list` reports containers and VMs alike, so this sweeps
-  # both isolation classes.
-  for inst in $(sudo incus list --format csv --columns n 2>/dev/null | grep "^${INSTANCE_PREFIX}" || true); do
-    log "sweeping leftover instance $inst"
-    sudo incus delete --force "$inst" 2>/dev/null
-  done
+  # Best-effort: sweep whatever this run itself leaves behind. Not the
+  # only guarantee of a clean slate any more — see the pre-flight call
+  # above and sweep_leftover_instances' comment for why.
+  sweep_leftover_instances
   if [ -n "$PG_CONTAINER" ]; then
     log "stopping throwaway postgres"
     "$CONTAINER_RUNTIME" rm -f "$PG_CONTAINER" >/dev/null 2>&1
