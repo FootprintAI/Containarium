@@ -38,6 +38,14 @@ type Primary struct {
 	// (#1872: a primary can be fully registered here and still 502 for an
 	// alias its Caddy was never configured with).
 	AliasHealth []AliasHealth `json:"alias_health,omitempty"`
+	// rev is bumped on every Register() call for this pool (see
+	// PrimaryRegistry.nextRev) and threaded through to SetAliasHealth by
+	// checkTunnelPrimaries. It exists so a reachability sweep that started
+	// against an old declaration (before a Register() replaced
+	// Hostname/Aliases/BackendID mid-sweep) can't have its stale results
+	// attributed to the new declaration — SetAliasHealth discards a rev
+	// that no longer matches. Not exposed via JSON; internal bookkeeping.
+	rev uint64
 }
 
 // AliasHealth records one hostname's most recent reachability probe
@@ -56,6 +64,10 @@ type PrimaryRegistry struct {
 	mu        sync.RWMutex
 	primaries map[Pool]*Primary
 	now       func() time.Time
+	// nextRev hands out Primary.rev values. Monotonic across all pools;
+	// only comparisons within one pool's successive registrations are
+	// meaningful. Same idiom as TunnelSpot.Generation.
+	nextRev uint64
 }
 
 // NewPrimaryRegistry creates an empty registry.
@@ -73,6 +85,8 @@ func (r *PrimaryRegistry) Register(p Primary) *Primary {
 	defer r.mu.Unlock()
 
 	now := r.now()
+	r.nextRev++
+	rev := r.nextRev
 	if existing, ok := r.primaries[p.Pool]; ok {
 		// Update fields that can change, keep original RegisteredAt
 		existing.Hostname = p.Hostname
@@ -82,25 +96,40 @@ func (r *PrimaryRegistry) Register(p Primary) *Primary {
 		existing.Port = p.Port
 		existing.BackendID = p.BackendID
 		existing.LastHeartbeat = now
+		// The declaration just changed identity (new hostname/aliases/
+		// backend) — any AliasHealth on file was probed against the OLD
+		// declaration and would otherwise linger under the new one,
+		// misattributed. Clearing it here plus bumping rev means an
+		// in-flight sweep from before this Register() call gets its
+		// SetAliasHealth rejected below rather than clobbering (or being
+		// clobbered by) the fresh declaration.
+		existing.AliasHealth = nil
+		existing.rev = rev
 		return existing
 	}
 
 	stored := p
 	stored.RegisteredAt = now
 	stored.LastHeartbeat = now
+	stored.rev = rev
 	r.primaries[p.Pool] = &stored
 	return &stored
 }
 
 // SetAliasHealth records the latest reachability probe results for pool's
-// Hostname/Aliases (see Manager.checkTunnelPrimaries). No-op if pool isn't
-// currently registered, so a probe result racing an Unregister/disconnect
-// can't resurrect a stale entry.
-func (r *PrimaryRegistry) SetAliasHealth(pool Pool, health []AliasHealth) {
+// Hostname/Aliases (see Manager.checkTunnelPrimaries), scoped to the
+// declaration revision (rev) the probe actually ran against — the Primary
+// snapshot's rev field, from PrimaryRegistry.All() at the time the sweep
+// started. No-op if pool isn't currently registered (a probe result racing
+// an Unregister/disconnect can't resurrect a stale entry) or if rev no
+// longer matches the current declaration (Register() replaced it —
+// possibly with different Hostname/Aliases — while the sweep was still
+// running against the old one).
+func (r *PrimaryRegistry) SetAliasHealth(pool Pool, rev uint64, health []AliasHealth) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	p, ok := r.primaries[pool]
-	if !ok {
+	if !ok || p.rev != rev {
 		return
 	}
 	p.AliasHealth = health

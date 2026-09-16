@@ -22,6 +22,42 @@ const defaultReachabilityInterval = 30 * time.Second
 // handshake + one HTTP round trip) so a wedged spot can't stall the sweep.
 const defaultReachabilityTimeout = 10 * time.Second
 
+// dialWithTimeout bounds dial's own runtime to timeout. This matters
+// because DialTunnel's stream open (yamux Session.Open()) takes no context
+// or deadline of its own — on a session that has hit yamux's in-flight-SYN
+// limit, Open() can block until the session closes, well past the
+// deadline probeHostname sets on the returned conn (which only starts
+// after dial returns). Without this wrapper a single wedged tunnel could
+// stall the whole reachability sweep indefinitely despite the advertised
+// per-hostname timeout.
+//
+// If dial is still running when timeout fires, it's left to finish in the
+// background; if it eventually succeeds, the resulting conn is closed
+// immediately rather than left dangling.
+func dialWithTimeout(dial func(spotID string, port int) (net.Conn, error), spotID string, port int, timeout time.Duration) (net.Conn, error) {
+	type result struct {
+		conn net.Conn
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		conn, err := dial(spotID, port)
+		ch <- result{conn, err}
+	}()
+
+	select {
+	case res := <-ch:
+		return res.conn, res.err
+	case <-time.After(timeout):
+		go func() {
+			if res := <-ch; res.conn != nil {
+				_ = res.conn.Close()
+			}
+		}()
+		return nil, fmt.Errorf("timed out after %s opening a stream to spot %q", timeout, spotID)
+	}
+}
+
 // probeHostname dials spotID's port over the tunnel via dial, completes a
 // TLS handshake presenting hostname as SNI, then sends a bare HTTP/1.1 GET
 // and inspects the status line.
@@ -41,7 +77,7 @@ const defaultReachabilityTimeout = 10 * time.Second
 func probeHostname(dial func(spotID string, port int) (net.Conn, error), spotID string, port int, hostname string, timeout time.Duration) AliasHealth {
 	health := AliasHealth{Hostname: hostname, CheckedAt: time.Now()}
 
-	conn, err := dial(spotID, port)
+	conn, err := dialWithTimeout(dial, spotID, port, timeout)
 	if err != nil {
 		health.Error = fmt.Sprintf("dial: %v", err)
 		return health
@@ -136,7 +172,7 @@ func (m *Manager) checkTunnelPrimaries(ctx context.Context) {
 			}
 			results = append(results, result)
 		}
-		m.primaries.SetAliasHealth(p.Pool, results)
+		m.primaries.SetAliasHealth(p.Pool, p.rev, results)
 	}
 }
 

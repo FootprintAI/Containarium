@@ -101,6 +101,70 @@ func TestProbeHostname_HandshakeFailureIsUnreachable(t *testing.T) {
 	assert.Contains(t, health.Error, "handshake")
 }
 
+// TestDialWithTimeout_BoundsABlockedDial is the regression test for the
+// CodeRabbit finding on PR #1873: DialTunnel's underlying yamux
+// Session.Open() has no context/deadline of its own, so a dial that never
+// returns (the SYN-limit-blocked case in production) must still be
+// bounded by the probe's timeout rather than hanging the whole sweep.
+func TestDialWithTimeout_BoundsABlockedDial(t *testing.T) {
+	block := make(chan struct{})
+	dial := func(string, int) (net.Conn, error) {
+		<-block // never returns within the test
+		return nil, nil
+	}
+	defer close(block)
+
+	start := time.Now()
+	_, err := dialWithTimeout(dial, "spot-1", 443, 100*time.Millisecond)
+	elapsed := time.Since(start)
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "timed out")
+	assert.Less(t, elapsed, time.Second, "dialWithTimeout must return promptly, not wait for dial")
+}
+
+// TestDialWithTimeout_LateArrivingConnIsClosed proves a dial that finally
+// resolves after the timeout doesn't leak its connection.
+func TestDialWithTimeout_LateArrivingConnIsClosed(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err == nil {
+			accepted <- conn
+		}
+	}()
+
+	release := make(chan struct{})
+	dial := func(string, int) (net.Conn, error) {
+		<-release // resolves only after dialWithTimeout has already given up
+		return net.Dial("tcp", ln.Addr().String())
+	}
+
+	_, err = dialWithTimeout(dial, "spot-1", 443, 50*time.Millisecond)
+	assert.Error(t, err, "must time out while dial is still blocked")
+	close(release)
+
+	select {
+	case serverSide := <-accepted:
+		// The late-arriving client conn should get closed by
+		// dialWithTimeout's cleanup goroutine, which the server side
+		// observes as EOF/closed rather than staying open forever.
+		buf := make([]byte, 1)
+		_ = serverSide.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_, readErr := serverSide.Read(buf)
+		assert.Error(t, readErr, "server side should see the late client conn close, not hang open")
+		_ = serverSide.Close()
+	case <-time.After(2 * time.Second):
+		t.Fatal("dial never reached the local listener")
+	}
+}
+
 type assertErr string
 
 func (e assertErr) Error() string { return string(e) }
