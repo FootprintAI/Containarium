@@ -22,6 +22,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   /v1/audit/health` (same auth gate as the existing `/v1/audit/logs`:
   admin role or `audit:read` scope).
 
+- **`AddRoute`/`UpdateRoute` could silently repoint a hostname another
+  creator already owned.** `RouteStore.Save` was an unconditional upsert
+  by `full_domain` with no comparison against the existing route's
+  `created_by` — an admin (or an automated reconciliation path) naming a
+  hostname that already routed to another tenant's container would
+  silently steal that traffic. `Save` now refuses with
+  `ErrRouteOwnershipConflict` (surfaced as gRPC `AlreadyExists`) when
+  `full_domain` belongs to a different creator, inside the same
+  transaction as the upsert so two concurrent Saves can't race past the
+  check. Routes written before this existed (`created_by` empty) are
+  exempt from the refusal so the upgrade can't lock anyone out, but the
+  first post-upgrade touch backfills the owner so the hostname is
+  protected from then on. `AddRoute`/`UpdateRoute` now also record the
+  authenticated admin as `created_by`, which they previously left blank.
+
+- **Refresh-token rotation could be exchanged more than once under a race,
+  contradicting the documented single-use contract.** `RefreshToken`
+  minted the new `(access, refresh)` pair before revoking the presented
+  jti; two concurrent exchanges of the same refresh token could both pass
+  validation and both walk away with a valid new pair. Revocation is now
+  an atomic claim performed *before* minting — `RevokeClaim` reports
+  whether a given call was the one that actually recorded the jti as
+  spent, so only the caller that wins it may mint. Reuse of an
+  already-rotated refresh token — whether from a losing concurrent racer
+  or a genuine stolen-token replay, the two are indistinguishable from
+  the server's side — now revokes the entire rotation family, so every
+  token descended from that login stops working rather than leaving a
+  narrower race window open.
+
 ### Added
 
 - **`GET /v1/audit/health`** reports `persistFailureCount` and

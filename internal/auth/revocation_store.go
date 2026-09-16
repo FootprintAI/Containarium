@@ -42,6 +42,17 @@ func (s *PgRevocationStore) initSchema(ctx context.Context) error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_jwt_revocations_expires_at
 			ON jwt_revocations(expires_at);
+
+		-- Refresh-token rotation families (reuse-detection). No expiry
+		-- column: a family is only ever revoked in response to a
+		-- detected replay, and that verdict must stick for the life of
+		-- the family, not get pruned on a timer the way an individual
+		-- jti's revocation row does.
+		CREATE TABLE IF NOT EXISTS jwt_revoked_families (
+			family_id   TEXT PRIMARY KEY,
+			revoked_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			reason      TEXT NOT NULL DEFAULT ''
+		);
 	`
 	_, err := s.pool.Exec(ctx, schema)
 	return err
@@ -75,18 +86,63 @@ func (s *PgRevocationStore) IsRevoked(ctx context.Context, jti string) (bool, er
 // stay frozen at the first call. We don't want a later
 // revoke to overwrite the audit history.
 func (s *PgRevocationStore) Revoke(ctx context.Context, jti string, expiresAt time.Time, reason string) error {
+	_, err := s.RevokeClaim(ctx, jti, expiresAt, reason)
+	return err
+}
+
+// RevokeClaim is Revoke plus the rows-affected signal — see
+// RevocationStore.RevokeClaim. The insert IS the atomic check: Postgres
+// serializes concurrent INSERTs against the same primary key, so exactly
+// one concurrent caller ever observes claimed=true for a given jti.
+func (s *PgRevocationStore) RevokeClaim(ctx context.Context, jti string, expiresAt time.Time, reason string) (bool, error) {
 	if jti == "" {
-		return fmt.Errorf("revoke: empty jti")
+		return false, fmt.Errorf("revoke: empty jti")
 	}
-	_, err := s.pool.Exec(ctx, `
+	tag, err := s.pool.Exec(ctx, `
 		INSERT INTO jwt_revocations (jti, expires_at, reason)
 		VALUES ($1, $2, $3)
 		ON CONFLICT (jti) DO NOTHING
 	`, jti, expiresAt, reason)
 	if err != nil {
-		return fmt.Errorf("revoke insert: %w", err)
+		return false, fmt.Errorf("revoke insert: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// RevokeFamily marks a refresh-token rotation family compromised. See
+// RevocationStore.RevokeFamily.
+func (s *PgRevocationStore) RevokeFamily(ctx context.Context, familyID string, reason string) error {
+	if familyID == "" {
+		return fmt.Errorf("revoke family: empty family id")
+	}
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO jwt_revoked_families (family_id, reason)
+		VALUES ($1, $2)
+		ON CONFLICT (family_id) DO NOTHING
+	`, familyID, reason)
+	if err != nil {
+		return fmt.Errorf("revoke family insert: %w", err)
 	}
 	return nil
+}
+
+// IsFamilyRevoked returns true when the family_id row exists. See
+// RevocationStore.IsFamilyRevoked.
+func (s *PgRevocationStore) IsFamilyRevoked(ctx context.Context, familyID string) (bool, error) {
+	if familyID == "" {
+		return false, nil
+	}
+	var found int
+	err := s.pool.QueryRow(ctx,
+		`SELECT 1 FROM jwt_revoked_families WHERE family_id = $1`, familyID,
+	).Scan(&found)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("family revocation lookup: %w", err)
+	}
+	return true, nil
 }
 
 // CleanupExpired deletes rows whose token expiry is in the

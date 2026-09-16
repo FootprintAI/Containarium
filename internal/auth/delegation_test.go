@@ -141,7 +141,7 @@ func TestGenerateDelegatedToken_RejectsOverDeepChain(t *testing.T) {
 // (bypassing GenerateDelegatedToken's own guard) to simulate that case.
 func TestValidateToken_RejectsOverDeepChain(t *testing.T) {
 	tm := newTestTokenManager(t)
-	tok, _, err := tm.generate("agent-x", nil, nil, "", time.Hour, chainOfDepth(MaxActDepth+1), "")
+	tok, _, err := tm.generate("agent-x", nil, nil, "", time.Hour, chainOfDepth(MaxActDepth+1), "", "")
 	if err != nil {
 		t.Fatalf("setup: generate: %v", err)
 	}

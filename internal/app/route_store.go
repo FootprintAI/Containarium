@@ -13,6 +13,10 @@ import (
 var (
 	// ErrRouteNotFound is returned when a route is not found
 	ErrRouteNotFound = errors.New("route not found")
+
+	// ErrRouteOwnershipConflict is returned by Save when full_domain
+	// already belongs to a different creator. See Save's doc comment.
+	ErrRouteOwnershipConflict = errors.New("route ownership conflict")
 )
 
 // RouteCreator identifies who created a route.
@@ -110,8 +114,61 @@ func (s *RouteStore) initSchema(ctx context.Context) error {
 	return err
 }
 
-// Save saves or updates a route (upsert by full_domain)
+// Save saves or updates a route (upsert by full_domain).
+//
+// A hostname already owned by a DIFFERENT creator is refused with
+// ErrRouteOwnershipConflict rather than silently rebound. AddRoute is
+// admin-only, but nothing previously stopped an admin — or an automated
+// reconciliation path, or a future caller — from naming a hostname that
+// routes to another tenant's container and silently repointing it there.
+// The check is inside SELECT ... FOR UPDATE + the upsert's own
+// transaction, so two concurrent Saves of the same full_domain can't
+// both observe "no conflict" and race each other into it.
+//
+// Rows with no recorded creator (created_by empty — every row written
+// before this check existed) are exempt from the *refusal*, so an
+// upgrade never locks operators out of routes they already have; the
+// upsert does backfill created_by for such a row on its first touch
+// after upgrade (COALESCE(NULLIF(...))) below), so enforcement still
+// converges forward instead of leaving every pre-existing route
+// permanently unprotected.
+//
+// To intentionally reassign a hostname to a different creator, delete
+// the existing route first (DeleteRoute) and create the new one —
+// there's no override flag; an admin already has both operations.
 func (s *RouteStore) Save(ctx context.Context, route *RouteRecord) error {
+	now := time.Now()
+	if route.CreatedAt.IsZero() {
+		route.CreatedAt = now
+	}
+	route.UpdatedAt = now
+
+	if route.Protocol == "" {
+		route.Protocol = "http"
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to save route: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // no-op once Commit succeeds
+
+	var existingCreatedBy string
+	err = tx.QueryRow(ctx,
+		`SELECT COALESCE(created_by, '') FROM routes WHERE full_domain = $1 FOR UPDATE`,
+		route.FullDomain,
+	).Scan(&existingCreatedBy)
+	switch {
+	case err == nil:
+		if existingCreatedBy != "" && existingCreatedBy != route.CreatedBy {
+			return fmt.Errorf("%w: %s is owned by a different creator", ErrRouteOwnershipConflict, route.FullDomain)
+		}
+	case errors.Is(err, pgx.ErrNoRows):
+		// New hostname — nothing to conflict with.
+	default:
+		return fmt.Errorf("failed to save route: check existing owner: %w", err)
+	}
+
 	query := `
 		INSERT INTO routes (subdomain, full_domain, target_ip, target_port, protocol,
 			container_name, app_id, description, active, created_by, created_at, updated_at)
@@ -125,21 +182,12 @@ func (s *RouteStore) Save(ctx context.Context, route *RouteRecord) error {
 			app_id = EXCLUDED.app_id,
 			description = EXCLUDED.description,
 			active = EXCLUDED.active,
+			created_by = COALESCE(NULLIF(routes.created_by, ''), EXCLUDED.created_by),
 			updated_at = EXCLUDED.updated_at
 		RETURNING id
 	`
 
-	now := time.Now()
-	if route.CreatedAt.IsZero() {
-		route.CreatedAt = now
-	}
-	route.UpdatedAt = now
-
-	if route.Protocol == "" {
-		route.Protocol = "http"
-	}
-
-	err := s.pool.QueryRow(ctx, query,
+	err = tx.QueryRow(ctx, query,
 		route.Subdomain,
 		route.FullDomain,
 		route.TargetIP,
@@ -153,9 +201,12 @@ func (s *RouteStore) Save(ctx context.Context, route *RouteRecord) error {
 		route.CreatedAt,
 		route.UpdatedAt,
 	).Scan(&route.ID)
-
 	if err != nil {
 		return fmt.Errorf("failed to save route: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("failed to save route: commit: %w", err)
 	}
 
 	return nil
