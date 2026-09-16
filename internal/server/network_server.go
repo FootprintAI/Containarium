@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -262,6 +263,7 @@ func (s *NetworkServer) AddRoute(ctx context.Context, req *pb.AddRouteRequest) (
 
 	// If RouteStore is available, save to PostgreSQL (source of truth)
 	if s.routeStore != nil {
+		creator, _, _ := auth.SubjectFromGRPCContext(ctx)
 		routeRecord := &app.RouteRecord{
 			Subdomain:     subdomain,
 			FullDomain:    fullDomain,
@@ -270,9 +272,13 @@ func (s *NetworkServer) AddRoute(ctx context.Context, req *pb.AddRouteRequest) (
 			Protocol:      protocol,
 			ContainerName: containerName,
 			Active:        true,
+			CreatedBy:     creator,
 		}
 
 		if err := s.routeStore.Save(ctx, routeRecord); err != nil {
+			if errors.Is(err, app.ErrRouteOwnershipConflict) {
+				return nil, status.Errorf(codes.AlreadyExists, "%v", err)
+			}
 			return nil, fmt.Errorf("failed to save route: %w", err)
 		}
 	} else if s.proxyManager != nil {
@@ -386,6 +392,7 @@ func (s *NetworkServer) UpdateRoute(ctx context.Context, req *pb.UpdateRouteRequ
 
 	// If RouteStore is available, update in PostgreSQL (source of truth)
 	if s.routeStore != nil {
+		creator, _, _ := auth.SubjectFromGRPCContext(ctx)
 		routeRecord := &app.RouteRecord{
 			Subdomain:     subdomain,
 			FullDomain:    fullDomain,
@@ -394,9 +401,13 @@ func (s *NetworkServer) UpdateRoute(ctx context.Context, req *pb.UpdateRouteRequ
 			Protocol:      protocol,
 			ContainerName: req.ContainerName,
 			Active:        true,
+			CreatedBy:     creator,
 		}
 
 		if err := s.routeStore.Save(ctx, routeRecord); err != nil {
+			if errors.Is(err, app.ErrRouteOwnershipConflict) {
+				return nil, status.Errorf(codes.AlreadyExists, "%v", err)
+			}
 			return nil, fmt.Errorf("failed to update route: %w", err)
 		}
 	} else if s.proxyManager != nil {
