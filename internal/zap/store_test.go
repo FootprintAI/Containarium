@@ -207,17 +207,10 @@ func zapStatusOf(t *testing.T, store *Store, fingerprint string) string {
 	return status
 }
 
-// CHARACTERIZATION (#1398): MarkResolved ignores its scanRunID.
-//
-// The parameter is accepted and never used. The UPDATE matches every open
-// alert whose fingerprint is not in the seen list — across every scan run,
-// every container and every target.
-//
-// Scan runs ARE per-container (`CreateScanRun(ctx, trigger, containerName)`,
-// and `zap_scan_runs.container_name`), so a scan of one container marks every
-// other container's open findings resolved. The operator is told those
-// vulnerabilities are fixed; nothing scanned them.
-func TestZapStore_MarkResolvedClosesOtherContainersFindings(t *testing.T) {
+// #1398: a finishing scan resolves only findings within its own scope —
+// never another container's, and it still resolves what it stopped seeing
+// within its own.
+func TestZapStore_MarkResolvedOnlyClosesItsOwnContainersFindings(t *testing.T) {
 	ctx := context.Background()
 	store, tag := zapTestStore(t)
 
@@ -231,45 +224,51 @@ func TestZapStore_MarkResolvedClosesOtherContainersFindings(t *testing.T) {
 		t.Fatalf("SaveAlerts(alice): %v", err)
 	}
 
-	// A completely separate scan of BOB's container finds its own thing.
+	// A completely separate scan of BOB's container reports one finding it
+	// keeps seeing, and one it no longer does.
 	bobRun, err := store.CreateScanRun(ctx, "manual", "bob-container")
 	if err != nil {
 		t.Fatalf("CreateScanRun(bob): %v", err)
 	}
-	bobFP := tag + "-bob"
-	if err := store.SaveAlerts(ctx, bobRun, []Alert{anAlert(bobFP, "High", "https://bob.example.com/")}); err != nil {
+	bobStill, bobGone := tag+"-bob-still", tag+"-bob-gone"
+	if err := store.SaveAlerts(ctx, bobRun, []Alert{
+		anAlert(bobStill, "High", "https://bob.example.com/"),
+		anAlert(bobGone, "Medium", "https://bob.example.com/old"),
+	}); err != nil {
 		t.Fatalf("SaveAlerts(bob): %v", err)
 	}
+	bobRun2, err := store.CreateScanRun(ctx, "scheduled", "bob-container")
+	if err != nil {
+		t.Fatalf("CreateScanRun(bob2): %v", err)
+	}
+	if err := store.SaveAlerts(ctx, bobRun2, []Alert{anAlert(bobStill, "High", "https://bob.example.com/")}); err != nil {
+		t.Fatalf("SaveAlerts(bob2): %v", err)
+	}
 
-	// Bob's scan finishes, reporting only what it saw — Bob's finding.
-	if err := store.MarkResolved(ctx, bobRun, []string{bobFP}); err != nil {
+	// Bob's second scan finishes, reporting only what it saw — bobStill.
+	if err := store.MarkResolved(ctx, bobRun2, []string{bobStill}); err != nil {
 		t.Fatalf("MarkResolved(bob): %v", err)
 	}
 
-	got := zapStatusOf(t, store, aliceFP)
-	if got == "open" {
-		t.Fatalf("#1398 no longer reproduces: alice's finding is still open after bob's scan.\n\n" +
-			"If you scoped MarkResolved to its scan run, this test has done its job — replace it " +
-			"with the positive assertion that a scan resolves only findings within its own scope.")
+	if got := zapStatusOf(t, store, aliceFP); got != "open" {
+		t.Errorf("alice's finding is %q after bob's scan finished, want open — a scan must never "+
+			"resolve another container's findings", got)
 	}
-	if got != "resolved" {
-		t.Fatalf("alice's finding is %q, expected the defect to leave it resolved", got)
+	if got := zapStatusOf(t, store, bobStill); got != "open" {
+		t.Errorf("bob's still-reported finding is %q, want open", got)
 	}
-	t.Logf("REPRODUCED #1398: bob's scan marked alice's untouched High-risk finding %q. "+
-		"MarkResolved accepts a scanRunID and never uses it, so any finishing scan closes every "+
-		"open alert it did not itself report.", got)
+	if got := zapStatusOf(t, store, bobGone); got != "resolved" {
+		t.Errorf("bob's no-longer-reported finding is %q, want resolved — scoping must not also "+
+			"break resolving findings the scan actually stopped seeing", got)
+	}
 }
 
-// CHARACTERIZATION (#1398, the severe half): an empty seen-list resolves
-// EVERYTHING.
-//
-// MarkResolved special-cases the empty slice into an unfiltered
-// `UPDATE ... WHERE status = 'open'`. Two ordinary paths reach it: a scan that
-// legitimately finds nothing, and — worse — `GetFingerprintsForScanRun`
-// failing, which manager.go logs and then continues past, passing the nil
-// slice straight in. So a transient database error while collecting
-// fingerprints closes the entire open-alert backlog.
-func TestZapStore_MarkResolvedWithNoFingerprintsClosesEverything(t *testing.T) {
+// #1398: an empty (or failed) fingerprint collection must never be read as
+// "everything is fixed" — it resolves nothing, even within the scan's own
+// container. manager.go now returns before ever calling MarkResolved on a
+// GetFingerprintsForScanRun error, but the store has no way to trust every
+// caller does, so it has to be safe on its own.
+func TestZapStore_MarkResolvedWithNoFingerprintsResolvesNothing(t *testing.T) {
 	ctx := context.Background()
 	store, tag := zapTestStore(t)
 
@@ -282,8 +281,9 @@ func TestZapStore_MarkResolvedWithNoFingerprintsClosesEverything(t *testing.T) {
 		t.Fatalf("SaveAlerts: %v", err)
 	}
 
-	// What manager.go passes when GetFingerprintsForScanRun errors: nil.
-	emptyRun, err := store.CreateScanRun(ctx, "scheduled", "bob-container")
+	// A later scan of the SAME container reports nothing — legitimately, or
+	// because fingerprint collection failed; MarkResolved cannot tell which.
+	emptyRun, err := store.CreateScanRun(ctx, "scheduled", "alice-container")
 	if err != nil {
 		t.Fatalf("CreateScanRun(empty): %v", err)
 	}
@@ -291,17 +291,10 @@ func TestZapStore_MarkResolvedWithNoFingerprintsClosesEverything(t *testing.T) {
 		t.Fatalf("MarkResolved(nil): %v", err)
 	}
 
-	got := zapStatusOf(t, store, fp)
-	if got == "open" {
-		t.Fatalf("#1398's empty case no longer reproduces: the finding survived an empty " +
-			"seen-list.\n\nIf you fixed this, replace this test with the positive assertion — " +
-			"an empty result must not be treated as 'everything is fixed', because the most " +
-			"likely cause is that the scan or the fingerprint query failed.")
+	if got := zapStatusOf(t, store, fp); got != "open" {
+		t.Errorf("a finding after MarkResolved(nil) is %q, want open — an empty seen-list must "+
+			"never be read as 'everything is fixed'", got)
 	}
-	t.Logf("REPRODUCED #1398 (empty case): a High-risk finding from an unrelated container is "+
-		"%q after MarkResolved(nil). manager.go reaches this when GetFingerprintsForScanRun "+
-		"errors — it logs and continues — so a transient database error silently closes the "+
-		"entire open-alert backlog.", got)
 }
 
 // The summary is what a dashboard renders, so suppressed and resolved findings
