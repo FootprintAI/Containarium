@@ -113,6 +113,29 @@ func (m *MemStore) UpdateNodeGroups(ctx context.Context, owner, name string, gro
 	return nil
 }
 
+// SetNodeGroupTarget mutates the stored group in place under the same
+// lock as every other store call — see the Store interface doc (#1882)
+// for why this, not a Get-then-UpdateNodeGroups round trip, is what
+// makes a concurrent call for a different group safe: there is no
+// externally-held snapshot of the other groups for this call to carry
+// forward and clobber them with.
+func (m *MemStore) SetNodeGroupTarget(ctx context.Context, owner, name, group string, target int32) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.clusters[key(owner, name)]
+	if !ok {
+		return ErrNotFound
+	}
+	for i := range c.NodeGroups {
+		if c.NodeGroups[i].Name == group {
+			c.NodeGroups[i].TargetNodes = target
+			break
+		}
+	}
+	c.UpdatedAt = time.Now().UTC()
+	return nil
+}
+
 func (m *MemStore) Delete(ctx context.Context, owner, name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -132,12 +132,37 @@ func TestClusterStore_ContractHoldsForBothImpls(t *testing.T) {
 			// UpdateNodeGroups replaces the set.
 			if err := s.UpdateNodeGroups(ctx, "alice", "demo", []NodeGroup{
 				{Name: "small", Size: Size{CPU: "2", Memory: "4GB", Disk: "40GB"}, MinNodes: 2, MaxNodes: 5},
+				{Name: "medium", Size: Size{CPU: "4", Memory: "8GB", Disk: "80GB"}, MinNodes: 0, MaxNodes: 2, TargetNodes: 1},
 			}); err != nil {
 				t.Fatalf("UpdateNodeGroups: %v", err)
 			}
 			got, _ = s.Get(ctx, "alice", "demo")
-			if len(got.NodeGroups) != 1 || got.NodeGroups[0].MaxNodes != 5 {
+			if len(got.NodeGroups) != 2 || got.NodeGroups[0].MaxNodes != 5 {
 				t.Fatalf("groups after update: %+v", got.NodeGroups)
+			}
+
+			// SetNodeGroupTarget (#1882) touches only the named group —
+			// the property that makes a concurrent caller updating a
+			// SIBLING group on the same cluster safe: neither call
+			// carries a snapshot of the other group it could clobber.
+			if err := s.SetNodeGroupTarget(ctx, "alice", "demo", "medium", 0); err != nil {
+				t.Fatalf("SetNodeGroupTarget: %v", err)
+			}
+			got, _ = s.Get(ctx, "alice", "demo")
+			for _, g := range got.NodeGroups {
+				switch g.Name {
+				case "medium":
+					if g.TargetNodes != 0 {
+						t.Fatalf("medium.TargetNodes = %d, want 0", g.TargetNodes)
+					}
+				case "small":
+					if g.TargetNodes != 0 {
+						t.Fatalf("small.TargetNodes = %d, want 0 (untouched, never explicitly set)", g.TargetNodes)
+					}
+				}
+			}
+			if err := s.SetNodeGroupTarget(ctx, "alice", "demo", "does-not-exist", 9); err != nil {
+				t.Fatalf("SetNodeGroupTarget for an unknown group must be a no-op, not an error: %v", err)
 			}
 
 			// Nodes: upsert requires the cluster; a re-upsert replaces the
