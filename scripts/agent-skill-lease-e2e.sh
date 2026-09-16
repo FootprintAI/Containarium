@@ -864,11 +864,6 @@ if [ "$run2_code" != "200" ]; then
   echo "---- git-source run response ----"; read_out "$WORKDIR/run2.body"; echo
   fail "measured git-source RunAgentSkill returned $run2_code (want 200)"
 fi
-# Debug: print the raw response once on the success path too, so a reader
-# can see exactly what the RPC returned rather than only the derived
-# assertions below. Temporary — drop before merge.
-echo "---- git-source run response (debug, code $run2_code) ----"
-read_out "$WORKDIR/run2.body"; echo
 echoed_run_id2="$(jq -r '.runId // empty' <"$WORKDIR/run2.body")"
 [ "$echoed_run_id2" = "$RUN_ID2" ] \
   || fail "git-source RunAgentSkillResponse.run_id was '$echoed_run_id2', want '$RUN_ID2'"
