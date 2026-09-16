@@ -212,6 +212,132 @@ func TestRouteStore_UnknownDomainReturnsTheNotFoundSentinel(t *testing.T) {
 	}
 }
 
+// Trenyx audit finding #2 (2026-09-16): Save was an unconditional upsert by
+// full_domain with no ownership comparison, so a caller (an admin via
+// AddRoute, or a future automated path) naming a hostname that already
+// belongs to a different creator would silently repoint it — potentially
+// stealing traffic addressed to another tenant's container. This test
+// proves the refusal.
+func TestRouteStore_SaveRefusesToRebindADifferentCreatorsHostname(t *testing.T) {
+	ctx := context.Background()
+	store, suffix := newRouteStoreForTest(t)
+	domain := "owned-" + suffix + ".example.com"
+	t.Cleanup(func() { _ = store.Delete(context.Background(), domain) })
+
+	if err := store.Save(ctx, &RouteRecord{
+		Subdomain: "owned-" + suffix, FullDomain: domain,
+		TargetIP: "10.0.0.10", TargetPort: 8080, Protocol: "http",
+		Active: true, CreatedBy: "alice",
+	}); err != nil {
+		t.Fatalf("initial Save: %v", err)
+	}
+
+	// A different creator naming the same hostname must be refused, not
+	// silently rebound to their own target.
+	err := store.Save(ctx, &RouteRecord{
+		Subdomain: "owned-" + suffix, FullDomain: domain,
+		TargetIP: "10.6.6.6", TargetPort: 9999, Protocol: "http",
+		Active: true, CreatedBy: "mallory",
+	})
+	if !errors.Is(err, ErrRouteOwnershipConflict) {
+		t.Fatalf("err = %v, want ErrRouteOwnershipConflict", err)
+	}
+
+	// And the route must be untouched by the refused attempt.
+	got, gerr := store.GetByDomain(ctx, domain)
+	if gerr != nil {
+		t.Fatalf("GetByDomain: %v", gerr)
+	}
+	if got.TargetIP != "10.0.0.10" || got.TargetPort != 8080 {
+		t.Errorf("route now points at %s:%d — the refused Save must not have partially applied",
+			got.TargetIP, got.TargetPort)
+	}
+	if got.CreatedBy != "alice" {
+		t.Errorf("created_by = %q, want the original creator %q to be preserved", got.CreatedBy, "alice")
+	}
+}
+
+// The same creator re-saving (the normal case: AddRoute rewriting its own
+// route, MoveContainer rewriting target_ip after a migration, cloud
+// reconciliation refreshing its own routes) must keep working exactly like
+// before this check existed.
+func TestRouteStore_SaveAllowsTheSameCreatorToUpdate(t *testing.T) {
+	ctx := context.Background()
+	store, suffix := newRouteStoreForTest(t)
+	domain := "sameowner-" + suffix + ".example.com"
+	t.Cleanup(func() { _ = store.Delete(context.Background(), domain) })
+
+	first := &RouteRecord{
+		Subdomain: "sameowner-" + suffix, FullDomain: domain,
+		TargetIP: "10.0.0.10", TargetPort: 8080, Protocol: "http",
+		Active: true, CreatedBy: "alice",
+	}
+	if err := store.Save(ctx, first); err != nil {
+		t.Fatalf("initial Save: %v", err)
+	}
+
+	second := *first
+	second.TargetIP = "10.0.0.99"
+	if err := store.Save(ctx, &second); err != nil {
+		t.Fatalf("re-Save by the same creator: %v", err)
+	}
+
+	got, err := store.GetByDomain(ctx, domain)
+	if err != nil {
+		t.Fatalf("GetByDomain: %v", err)
+	}
+	if got.TargetIP != "10.0.0.99" {
+		t.Errorf("target_ip = %q, want the update to have applied", got.TargetIP)
+	}
+}
+
+// A route saved before this check existed (created_by empty — the state of
+// every route already in production) must not lock operators out on
+// upgrade. It also must not stay unprotected forever: the first touch after
+// upgrade backfills created_by, so the row is protected from then on.
+func TestRouteStore_SaveBackfillsOwnerOnLegacyRouteThenProtectsIt(t *testing.T) {
+	ctx := context.Background()
+	store, suffix := newRouteStoreForTest(t)
+	domain := "legacy-" + suffix + ".example.com"
+	t.Cleanup(func() { _ = store.Delete(context.Background(), domain) })
+
+	// Simulates a pre-upgrade row: no CreatedBy.
+	if err := store.Save(ctx, &RouteRecord{
+		Subdomain: "legacy-" + suffix, FullDomain: domain,
+		TargetIP: "10.0.0.10", TargetPort: 8080, Protocol: "http", Active: true,
+	}); err != nil {
+		t.Fatalf("initial (legacy, ownerless) Save: %v", err)
+	}
+
+	// First post-upgrade touch: not refused (empty creator is exempt), and
+	// it claims the row for whoever touched it first.
+	if err := store.Save(ctx, &RouteRecord{
+		Subdomain: "legacy-" + suffix, FullDomain: domain,
+		TargetIP: "10.0.0.20", TargetPort: 8080, Protocol: "http",
+		Active: true, CreatedBy: "alice",
+	}); err != nil {
+		t.Fatalf("first post-upgrade Save: %v", err)
+	}
+
+	got, err := store.GetByDomain(ctx, domain)
+	if err != nil {
+		t.Fatalf("GetByDomain: %v", err)
+	}
+	if got.CreatedBy != "alice" {
+		t.Fatalf("created_by = %q after first touch, want backfilled to %q", got.CreatedBy, "alice")
+	}
+
+	// Now that it's owned, a different creator must be refused.
+	err = store.Save(ctx, &RouteRecord{
+		Subdomain: "legacy-" + suffix, FullDomain: domain,
+		TargetIP: "10.6.6.6", TargetPort: 9999, Protocol: "http",
+		Active: true, CreatedBy: "mallory",
+	})
+	if !errors.Is(err, ErrRouteOwnershipConflict) {
+		t.Fatalf("err = %v, want ErrRouteOwnershipConflict now that the route has an owner", err)
+	}
+}
+
 func TestRouteStore_DeleteRemovesTheRoute(t *testing.T) {
 	ctx := context.Background()
 	store, suffix := newRouteStoreForTest(t)

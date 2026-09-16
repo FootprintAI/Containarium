@@ -17,14 +17,15 @@ import (
 // memRevocationStore is a simple in-memory store that
 // satisfies RevocationStore for tests.
 type memRevocationStore struct {
-	mu       sync.Mutex
-	rows     map[string]time.Time // jti → expiresAt
-	failNext bool                 // simulate a DB error
-	revoked  []string             // for assertions
+	mu            sync.Mutex
+	rows          map[string]time.Time // jti → expiresAt
+	failNext      bool                 // simulate a DB error
+	revoked       []string             // for assertions
+	revokedFamily map[string]struct{}
 }
 
 func newMemRevStore() *memRevocationStore {
-	return &memRevocationStore{rows: map[string]time.Time{}}
+	return &memRevocationStore{rows: map[string]time.Time{}, revokedFamily: map[string]struct{}{}}
 }
 
 func (m *memRevocationStore) IsRevoked(_ context.Context, jti string) (bool, error) {
@@ -49,6 +50,31 @@ func (m *memRevocationStore) Revoke(_ context.Context, jti string, exp time.Time
 		m.revoked = append(m.revoked, jti)
 	}
 	return nil
+}
+
+func (m *memRevocationStore) RevokeClaim(_ context.Context, jti string, exp time.Time, _ string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.rows[jti]; exists {
+		return false, nil
+	}
+	m.rows[jti] = exp
+	m.revoked = append(m.revoked, jti)
+	return true, nil
+}
+
+func (m *memRevocationStore) RevokeFamily(_ context.Context, familyID string, _ string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.revokedFamily[familyID] = struct{}{}
+	return nil
+}
+
+func (m *memRevocationStore) IsFamilyRevoked(_ context.Context, familyID string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.revokedFamily[familyID]
+	return ok, nil
 }
 
 func (m *memRevocationStore) CleanupExpired(_ context.Context, now time.Time) (int64, error) {

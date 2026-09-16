@@ -245,12 +245,13 @@ func TestAbuse_LegacyTokenStillWorks(t *testing.T) {
 // --- in-memory revocation store for these tests ---
 
 type abuseStore struct {
-	mu      sync.Mutex
-	revoked map[string]struct{}
+	mu            sync.Mutex
+	revoked       map[string]struct{}
+	revokedFamily map[string]struct{}
 }
 
 func newAbuseStore() *abuseStore {
-	return &abuseStore{revoked: map[string]struct{}{}}
+	return &abuseStore{revoked: map[string]struct{}{}, revokedFamily: map[string]struct{}{}}
 }
 
 func (a *abuseStore) IsRevoked(_ context.Context, jti string) (bool, error) {
@@ -264,6 +265,27 @@ func (a *abuseStore) Revoke(_ context.Context, jti string, _ time.Time, _ string
 	defer a.mu.Unlock()
 	a.revoked[jti] = struct{}{}
 	return nil
+}
+func (a *abuseStore) RevokeClaim(_ context.Context, jti string, _ time.Time, _ string) (bool, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if _, exists := a.revoked[jti]; exists {
+		return false, nil
+	}
+	a.revoked[jti] = struct{}{}
+	return true, nil
+}
+func (a *abuseStore) RevokeFamily(_ context.Context, familyID string, _ string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.revokedFamily[familyID] = struct{}{}
+	return nil
+}
+func (a *abuseStore) IsFamilyRevoked(_ context.Context, familyID string) (bool, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	_, ok := a.revokedFamily[familyID]
+	return ok, nil
 }
 func (a *abuseStore) CleanupExpired(_ context.Context, _ time.Time) (int64, error) {
 	return 0, nil
