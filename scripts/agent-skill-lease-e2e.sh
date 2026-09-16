@@ -922,6 +922,7 @@ ok "assertion 7: both $RUN_SEED_DIR2 and $RUN_WORKSPACE_DIR2 are gone entirely"
 # to prove residency against anyway: a bad credential for a PRIVATE repo
 # (git_credential's actual use case) fails exactly the same way.
 RUN_ID3="lease-e2e-git-cred-$(head -c4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+RUN_WORKSPACE_DIR3="$AGENT_WORKSPACE_ROOT/$RUN_ID3"
 log "measured run $RUN_ID3 with a fake git_credential (expected to fail the fetch, not to succeed)"
 run_skill_with_git "$RUN_ID3" "$WORKDIR/run3" "$FIXTURE_GIT_SOURCE" "$FIXTURE_GIT_SHA" "$FIXTURE_GIT_CREDENTIAL"
 run3_code="$(read_code "$WORKDIR/run3.code")"
@@ -936,13 +937,22 @@ esac
 ok "assertion 8 (response): a fake git_credential is absent from the error response when its fetch fails ($run3_code)"
 
 # The seed dir is unconditionally rm -rf'd on every exit path, including a
-# failed provision (internal/runlease's removeDirs always targets SeedDir;
-# only the workspace half is conditional on a successful fetch) — so this is
-# guaranteed, not merely hoped for.
+# failed provision (internal/runlease's removeDirs always targets SeedDir) —
+# so this is guaranteed, not merely hoped for.
 if sudo incus exec "$BOX" -- test -e "$AGENT_SEED_ROOT/$RUN_ID3"; then
   fail "assertion 8: $AGENT_SEED_ROOT/$RUN_ID3 still exists after a failed provision — cleanup must run on the failure path too"
 fi
 ok "assertion 8 (cleanup): $AGENT_SEED_ROOT/$RUN_ID3 is gone after the failed provision"
+
+# #1871: a failed fetch still leaves buildGitFetchScript's `mkdir -p`/
+# `git init` on disk (the failure happens at the `git fetch` step, after
+# those run) unless provisionSkillBox records the workspace on the lease
+# BEFORE attempting the fetch, not after it succeeds. Without that fix this
+# directory survives the failed provision indefinitely.
+if sudo incus exec "$BOX" -- test -e "$RUN_WORKSPACE_DIR3"; then
+  fail "assertion 8: $RUN_WORKSPACE_DIR3 still exists after a failed fetch — a partial workspace must not outlive its run either"
+fi
+ok "assertion 8 (cleanup): $RUN_WORKSPACE_DIR3 is gone after the failed fetch"
 
 if grep -qF "$FIXTURE_GIT_CREDENTIAL" "$DAEMON_LOG"; then
   fail "assertion 8: the fake git_credential appears in the daemon log"

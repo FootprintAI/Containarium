@@ -607,6 +607,12 @@ func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.Agen
 	// RunAgentSkill's defer would have taken over.
 	if gitSource != "" {
 		workspacePath = workspaceDirFor(runID)
+		// #1871: recorded on the lease BEFORE the fetch attempt, not after it
+		// succeeds. buildGitFetchScript's `mkdir -p`/`git init` land on disk
+		// before the `git fetch` that can fail, so a failed fetch still
+		// leaves a (credential-free, empty) workspace dir behind. Ending the
+		// lease below must target it for removal even on this failure path.
+		lease.Workspace = workspacePath
 		commit, ferr := s.recipes.containers.manager.FetchGitSource(containerName, containerpkg.GitSourceSpec{
 			Source:        gitSource,
 			Ref:           gitRef,
@@ -618,7 +624,6 @@ func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.Agen
 			return "", nil, noLease, "", "", status.Errorf(codes.FailedPrecondition, "git fetch into agent box %s failed: %v", containerName, ferr)
 		}
 		gitCommit = commit
-		lease.Workspace = workspacePath
 
 		// #1861: tell the in-box runtime what it's looking at. Best-effort —
 		// a write failure here means a future runtime can't auto-bind
