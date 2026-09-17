@@ -307,7 +307,8 @@ func (s *SecurityServer) TriggerClamavScan(ctx context.Context, req *pb.TriggerC
 		// Check if this container is on a peer
 		if s.peerPool != nil {
 			username := strings.TrimSuffix(req.ContainerName, "-container")
-			if peer := s.peerPool.FindContainerPeer(username, authToken); peer != nil {
+			peer, unreachablePeers := s.peerPool.FindContainerPeer(username, authToken)
+			if peer != nil {
 				// Forward scan to the peer that owns this container
 				_, err := peer.ForwardTriggerScan(authToken, req.ContainerName)
 				if err != nil {
@@ -317,6 +318,14 @@ func (s *SecurityServer) TriggerClamavScan(ctx context.Context, req *pb.TriggerC
 					Message:      fmt.Sprintf("Scan queued for container %s on peer %s", req.ContainerName, peer.ID),
 					ScannedCount: 1,
 				}, nil
+			}
+			if len(unreachablePeers) > 0 {
+				// #1905: falling through to the local scanner below would
+				// enqueue a scan against a container that isn't on this
+				// host, silently producing a no-op or a confusing local
+				// "not found" instead of surfacing the real cause.
+				return nil, fmt.Errorf("cannot trigger scan for %s: %d backend(s) unreachable (%s)",
+					req.ContainerName, len(unreachablePeers), unreachablePeers[0].Reason)
 			}
 		}
 
