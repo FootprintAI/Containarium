@@ -136,6 +136,13 @@ type Manager struct {
 	// byocDial above.
 	reachabilityDial func(spotID string, port int) (net.Conn, error)
 
+	// proxyIdleTimeout overrides sniProxyIdleTimeout for
+	// buildSNIRoutingHandler's copy loop. Zero (the production default,
+	// via a bare &Manager{} or NewManager) means "use
+	// sniProxyIdleTimeout"; tests set a short value so a simulated
+	// vanished peer (#1349) surfaces without a real 120s wait.
+	proxyIdleTimeout time.Duration
+
 	stopMaintenance func() // stops the HTTP/HTTPS maintenance servers
 	certStore       *CertStore
 	keyStore        *KeyStore
@@ -1285,9 +1292,25 @@ func (m *Manager) buildSNIRoutingHandler(fallbackTarget string) func(net.Conn) {
 			}
 		}
 
+		// #1349: a peer that vanishes without FIN/RST (a preempted or
+		// powered-off backend, or a client that just drops off the
+		// network) leaves the corresponding io.Copy's Read blocked
+		// forever — no bytes, no EOF, no error — so neither goroutine
+		// below ever reaches its done<- signal and the deferred Close
+		// calls above never run. Wrapping both sides so every Read
+		// refreshes an idle deadline turns that into a timeout, which
+		// unblocks this copy and, via the resulting Close, the other
+		// direction's blocked Read too.
+		idleTimeout := m.proxyIdleTimeout
+		if idleTimeout <= 0 {
+			idleTimeout = sniProxyIdleTimeout
+		}
+		src := &idleTimeoutConn{Conn: peekedConn, idleTimeout: idleTimeout}
+		backend := &idleTimeoutConn{Conn: dst, idleTimeout: idleTimeout}
+
 		done := make(chan struct{}, 2)
-		go func() { _, _ = io.Copy(dst, peekedConn); done <- struct{}{} }()
-		go func() { _, _ = io.Copy(peekedConn, dst); done <- struct{}{} }()
+		go func() { _, _ = io.Copy(backend, src); done <- struct{}{} }()
+		go func() { _, _ = io.Copy(src, backend); done <- struct{}{} }()
 		<-done
 	}
 }

@@ -510,28 +510,43 @@ func (s *Store) SuppressAlert(ctx context.Context, alertID int64, reason string)
 	return nil
 }
 
-// MarkResolved marks alerts as resolved if they were not seen in the given scan run
+// MarkResolved marks alerts as resolved if they were not seen in the given
+// scan run — scoped to that run's own target (#1398).
+//
+// An empty seenFingerprints resolves nothing: it is ambiguous between "this
+// scan legitimately found zero issues" and "fingerprint collection failed
+// and the caller is passing a nil slice through" (manager.go now returns
+// before calling this on the latter, but this store has no way to trust
+// that every caller does). Treating it as "nothing to resolve" is the safe
+// default; a scan that truly found nothing simply leaves prior findings
+// open until a scan that succeeds with a non-empty result says otherwise.
+//
+// A non-empty seenFingerprints scopes the resolution to alerts whose own
+// last-seen scan shares this run's container — a scan of one container must
+// never resolve another container's open findings. A run whose own
+// container_name is empty (a cluster-wide sweep) is unscoped, matching that
+// mode's existing meaning: it covers every container by definition.
 func (s *Store) MarkResolved(ctx context.Context, scanRunID string, seenFingerprints []string) error {
 	if len(seenFingerprints) == 0 {
-		_, err := s.pool.Exec(ctx, `
-			UPDATE zap_alerts
-			SET status = 'resolved', resolved_at = NOW()
-			WHERE status = 'open'
-		`)
-		return err
+		return nil
 	}
 
 	query := `
-		UPDATE zap_alerts
+		UPDATE zap_alerts AS a
 		SET status = 'resolved', resolved_at = NOW()
-		WHERE status = 'open' AND fingerprint NOT IN (`
-	args := make([]interface{}, len(seenFingerprints))
+		FROM zap_scan_runs AS cur, zap_scan_runs AS last
+		WHERE cur.id = $1
+			AND a.status = 'open'
+			AND a.last_scan_run_id = last.id
+			AND (cur.container_name = '' OR last.container_name = cur.container_name)
+			AND a.fingerprint NOT IN (`
+	args := []interface{}{scanRunID}
 	for i, fp := range seenFingerprints {
 		if i > 0 {
 			query += ", "
 		}
-		query += fmt.Sprintf("$%d", i+1)
-		args[i] = fp
+		query += fmt.Sprintf("$%d", i+2)
+		args = append(args, fp)
 	}
 	query += ")"
 

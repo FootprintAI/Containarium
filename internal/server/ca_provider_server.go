@@ -82,25 +82,25 @@ func (s *CAProviderServer) caIdentity(ctx context.Context) (owner, name string, 
 // against the caller's identity on every use.
 func groupID(owner, name, group string) string { return owner + "/" + name + "/" + group }
 
-func (s *CAProviderServer) groupFromID(ctx context.Context, id string) (owner, name string, g clusterstore.NodeGroup, c *clusterstore.Cluster, err error) {
+func (s *CAProviderServer) groupFromID(ctx context.Context, id string) (owner, name string, g clusterstore.NodeGroup, err error) {
 	owner, name, err = s.caIdentity(ctx)
 	if err != nil {
-		return "", "", g, nil, err
+		return "", "", g, err
 	}
 	parts := strings.Split(id, "/")
 	if len(parts) != 3 || parts[0] != owner || parts[1] != name {
-		return "", "", g, nil, status.Errorf(codes.PermissionDenied, "node group %q does not belong to the authenticated cluster", id)
+		return "", "", g, status.Errorf(codes.PermissionDenied, "node group %q does not belong to the authenticated cluster", id)
 	}
-	c, err = s.store.Get(ctx, owner, name)
+	c, err := s.store.Get(ctx, owner, name)
 	if err != nil {
-		return "", "", g, nil, storeErr(err)
+		return "", "", g, storeErr(err)
 	}
 	for _, cand := range c.NodeGroups {
 		if cand.Name == parts[2] {
-			return owner, name, cand, c, nil
+			return owner, name, cand, nil
 		}
 	}
-	return "", "", g, nil, status.Errorf(codes.NotFound, "node group %q not found", id)
+	return "", "", g, status.Errorf(codes.NotFound, "node group %q not found", id)
 }
 
 const providerIDPrefix = "containarium://"
@@ -150,7 +150,7 @@ func (s *CAProviderServer) NodeGroupForNode(ctx context.Context, req *capb.NodeG
 // --- size state --------------------------------------------------------
 
 func (s *CAProviderServer) NodeGroupTargetSize(ctx context.Context, req *capb.NodeGroupTargetSizeRequest) (*capb.NodeGroupTargetSizeResponse, error) {
-	_, _, g, _, err := s.groupFromID(ctx, req.Id)
+	_, _, g, err := s.groupFromID(ctx, req.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -158,7 +158,7 @@ func (s *CAProviderServer) NodeGroupTargetSize(ctx context.Context, req *capb.No
 }
 
 func (s *CAProviderServer) NodeGroupIncreaseSize(ctx context.Context, req *capb.NodeGroupIncreaseSizeRequest) (*capb.NodeGroupIncreaseSizeResponse, error) {
-	owner, name, g, c, err := s.groupFromID(ctx, req.Id)
+	owner, name, g, err := s.groupFromID(ctx, req.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -174,7 +174,7 @@ func (s *CAProviderServer) NodeGroupIncreaseSize(ctx context.Context, req *capb.
 		})
 		return nil, status.Errorf(codes.ResourceExhausted, "target %d exceeds max_nodes %d for group %q", target, g.MaxNodes, g.Name)
 	}
-	if err := s.setTarget(ctx, c, g.Name, target); err != nil {
+	if err := s.setTarget(ctx, owner, name, g.Name, target); err != nil {
 		return nil, err
 	}
 	_ = s.store.AppendEvent(ctx, owner, name, clusterstore.Event{
@@ -185,7 +185,7 @@ func (s *CAProviderServer) NodeGroupIncreaseSize(ctx context.Context, req *capb.
 }
 
 func (s *CAProviderServer) NodeGroupDeleteNodes(ctx context.Context, req *capb.NodeGroupDeleteNodesRequest) (*capb.NodeGroupDeleteNodesResponse, error) {
-	owner, name, g, c, err := s.groupFromID(ctx, req.Id)
+	owner, name, g, err := s.groupFromID(ctx, req.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -287,7 +287,7 @@ func (s *CAProviderServer) NodeGroupDeleteNodes(ctx context.Context, req *capb.N
 	if target < g.MinNodes {
 		target = g.MinNodes
 	}
-	if err := s.setTarget(ctx, c, g.Name, target); err != nil {
+	if err := s.setTarget(ctx, owner, name, g.Name, target); err != nil {
 		return nil, err
 	}
 	var staleSecrets []string
@@ -327,7 +327,7 @@ func (s *CAProviderServer) NodeGroupDeleteNodes(ctx context.Context, req *capb.N
 }
 
 func (s *CAProviderServer) NodeGroupDecreaseTargetSize(ctx context.Context, req *capb.NodeGroupDecreaseTargetSizeRequest) (*capb.NodeGroupDecreaseTargetSizeResponse, error) {
-	owner, name, g, c, err := s.groupFromID(ctx, req.Id)
+	owner, name, g, err := s.groupFromID(ctx, req.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -353,20 +353,19 @@ func (s *CAProviderServer) NodeGroupDecreaseTargetSize(ctx context.Context, req 
 	if target < g.MinNodes {
 		target = g.MinNodes
 	}
-	if err := s.setTarget(ctx, c, g.Name, target); err != nil {
+	if err := s.setTarget(ctx, owner, name, g.Name, target); err != nil {
 		return nil, err
 	}
 	return &capb.NodeGroupDecreaseTargetSizeResponse{}, nil
 }
 
-func (s *CAProviderServer) setTarget(ctx context.Context, c *clusterstore.Cluster, group string, target int32) error {
-	groups := append([]clusterstore.NodeGroup(nil), c.NodeGroups...)
-	for i := range groups {
-		if groups[i].Name == group {
-			groups[i].TargetNodes = target
-		}
-	}
-	if err := s.store.UpdateNodeGroups(ctx, c.Owner, c.Name, groups); err != nil {
+// setTarget updates one group's TargetNodes via the store's atomic,
+// per-group method (#1882) — never by reading the whole NodeGroups
+// array and writing it back, which is exactly what let a concurrent
+// caller updating a DIFFERENT group on the same cluster clobber this
+// call's change with its own stale copy.
+func (s *CAProviderServer) setTarget(ctx context.Context, owner, name, group string, target int32) error {
+	if err := s.store.SetNodeGroupTarget(ctx, owner, name, group, target); err != nil {
 		return storeErr(err)
 	}
 	return nil
@@ -375,7 +374,7 @@ func (s *CAProviderServer) setTarget(ctx context.Context, c *clusterstore.Cluste
 // --- node listing / templates -----------------------------------------
 
 func (s *CAProviderServer) NodeGroupNodes(ctx context.Context, req *capb.NodeGroupNodesRequest) (*capb.NodeGroupNodesResponse, error) {
-	owner, name, g, _, err := s.groupFromID(ctx, req.Id)
+	owner, name, g, err := s.groupFromID(ctx, req.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -408,7 +407,7 @@ func (s *CAProviderServer) NodeGroupNodes(ctx context.Context, req *capb.NodeGro
 // truthfulness is the contract the whole size-class design leans on —
 // the template MUST equal the size the reconciler will provision.
 func (s *CAProviderServer) NodeGroupTemplateNodeInfo(ctx context.Context, req *capb.NodeGroupTemplateNodeInfoRequest) (*capb.NodeGroupTemplateNodeInfoResponse, error) {
-	owner, name, g, _, err := s.groupFromID(ctx, req.Id)
+	owner, name, g, err := s.groupFromID(ctx, req.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -489,7 +488,7 @@ func (s *CAProviderServer) PricingPodPrice(ctx context.Context, _ *capb.PricingP
 }
 
 func (s *CAProviderServer) NodeGroupGetOptions(ctx context.Context, req *capb.NodeGroupAutoscalingOptionsRequest) (*capb.NodeGroupAutoscalingOptionsResponse, error) {
-	if _, _, _, _, err := s.groupFromID(ctx, req.Id); err != nil {
+	if _, _, _, err := s.groupFromID(ctx, req.Id); err != nil {
 		return nil, err
 	}
 	// Defaults are fine for v1; per-group tuning is a later phase.

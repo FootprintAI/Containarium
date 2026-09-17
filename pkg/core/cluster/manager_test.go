@@ -26,6 +26,12 @@ type fakeHost struct {
 	stopErr    error
 	deleteErr  error
 	execErr    error
+	// deleteFailTimes, when > 0, makes Delete return deleteErr for that
+	// many calls before succeeding — simulates Incus's transient
+	// "Instance is running" race (#1882): Stop's own operation
+	// completing does not guarantee the instance's queryable state has
+	// settled to Stopped by the time the very next API call runs.
+	deleteFailTimes int
 	// deleted records every instance Delete removed, so a test can
 	// assert the removal happened without reading it back out of the
 	// call log.
@@ -54,6 +60,17 @@ func (f *fakeHost) Start(name string) error { f.record("start %s", name); return
 func (f *fakeHost) Stop(name string) error  { f.record("stop %s", name); return f.stopErr }
 func (f *fakeHost) Delete(name string) error {
 	f.record("delete %s", name)
+	if f.deleteFailTimes > 0 {
+		f.deleteFailTimes--
+		err := f.deleteErr
+		if f.deleteFailTimes == 0 {
+			// The transient window is over — later calls (including
+			// this fake's own persistent-failure mode, which never sets
+			// deleteFailTimes) fall through to the plain check below.
+			f.deleteErr = nil
+		}
+		return err
+	}
 	if f.deleteErr == nil {
 		f.deleted[name] = true
 	}
@@ -578,9 +595,69 @@ func TestDeleteNodeReturnsTheDeleteError(t *testing.T) {
 	f := newFakeHost()
 	f.deleteErr = errors.New("boom")
 	m := NewManager(f, DefaultArtifactBase)
+	m.deleteRetryDelay = time.Millisecond
 
 	if err := m.DeleteVM("alice-k8s-demo-small-1"); err == nil {
 		t.Fatal("a failed delete must be reported, not swallowed")
+	}
+}
+
+// #1882: Incus can report a delete as failing with "Instance is
+// running" for a brief window after Stop's own operation has already
+// completed — the instance's queryable state has not necessarily
+// settled to Stopped by the time the very next API call runs. A node
+// hitting exactly that race must not come back as a permanent failure
+// the caller (the autoscaler, or `cluster delete`) has to retry from
+// scratch — this run reproduced it hanging a scale-down for the
+// autoscaler's entire 30-minute test budget on one node while a
+// sibling node in the same batch deleted cleanly.
+func TestDeleteVM_RetriesThroughATransientRunningError(t *testing.T) {
+	f := newFakeHost()
+	f.deleteErr = errors.New("incus: instance is running")
+	f.deleteFailTimes = 2 // fails twice, succeeds on the third attempt
+	m := NewManager(f, DefaultArtifactBase)
+	m.deleteRetryDelay = time.Millisecond
+
+	if err := m.DeleteVM("alice-k8s-demo-small-1"); err != nil {
+		t.Fatalf("DeleteVM = %v, want the transient race retried away", err)
+	}
+	if !f.deleted["alice-k8s-demo-small-1"] {
+		t.Fatal("instance was never recorded as deleted")
+	}
+	got := 0
+	for _, c := range f.calls {
+		if c == "delete alice-k8s-demo-small-1" {
+			got++
+		}
+	}
+	if got != 3 {
+		t.Errorf("delete attempts = %d, want 3 (fail, fail, succeed)", got)
+	}
+}
+
+// The retry must be bounded: a genuinely, persistently broken instance
+// (not a brief settle race) has to surface as a real failure — an
+// unbounded retry loop would hang the RPC (and the autoscaler behind
+// it) forever instead of letting the caller's own retry-with-backoff
+// take over.
+func TestDeleteVM_GivesUpAfterBoundedRetries(t *testing.T) {
+	f := newFakeHost()
+	f.deleteErr = errors.New("incus: instance is running")
+	f.deleteFailTimes = 1000 // never succeeds within any reasonable bound
+	m := NewManager(f, DefaultArtifactBase)
+	m.deleteRetryDelay = time.Millisecond
+
+	if err := m.DeleteVM("alice-k8s-demo-small-1"); err == nil {
+		t.Fatal("a persistently failing delete must still be reported, not retried forever")
+	}
+	got := 0
+	for _, c := range f.calls {
+		if c == "delete alice-k8s-demo-small-1" {
+			got++
+		}
+	}
+	if got != deleteRetries {
+		t.Errorf("delete attempts = %d, want exactly deleteRetries (%d)", got, deleteRetries)
 	}
 }
 

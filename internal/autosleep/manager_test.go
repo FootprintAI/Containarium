@@ -474,72 +474,52 @@ func TestManager_ContextCancellationStopsTicker(t *testing.T) {
 	_ = m // keep ref alive until end of test to discourage GC paths
 }
 
-// TestManager_AntiThrashFalseNegativeWhenLastStartedAtUnset pins the
-// peer-forward gap (#1411): a container whose LastStartedAt was never stamped
-// bypasses the anti-thrash window and can be slept immediately after being
-// woken.
+// TestManager_PeerWokenContainerIsProtectedByAntiThrash (#1411): a container
+// woken via a peer-forwarded StartContainer must get the same anti-thrash
+// grace as one woken locally — internal/server's StartContainer now stamps
+// LastStartedAt on that path too (previously it only stamped on the
+// local-success branch, so a peer-forwarded wake left the stamp unset and
+// the very next tick could sleep the container seconds after waking it).
 //
-// This was `t.Skip`ped with "track in a follow-up" and no issue number, so it
-// never ran and the follow-up was never filed. Two things were wrong with
-// that:
+// This was previously a CHARACTERIZATION test (t.Skip'd with "track in a
+// follow-up" and no issue number, so it never ran and the follow-up was
+// never filed) asserting the defect: LastStartedAt unset + traffic older
+// than the threshold got the container stopped. Now that the stamp is
+// written, that scenario no longer arises from a peer-forwarded wake, so
+// this asserts the fix directly: a container whose start was just stamped
+// — regardless of which daemon actually stamped it — is protected.
 //
-//  1. A skipped test is invisible. It states a known gap where nobody reads
-//     it and cannot notice when the gap closes — or widens.
-//  2. Its scenario did not reproduce the gap. It set LastNetworkActivity to
-//     two minutes before now against a fifteen-minute threshold, so rule 6
-//     answered "not idle" and rule 4's anti-thrash window was never reached.
-//     Removing the skip would have made it PASS and read as evidence the gap
-//     was fixed.
-//
-// The scenario below is the one that bites: traffic older than the threshold
-// (the user has woken the box but not generated traffic yet, or the collector
-// has not recorded any) with no LastStartedAt stamp. Verified against the
-// stamped case, which is protected — so the assertion turns on the stamp
-// rather than on anything incidental.
-//
-// CHARACTERIZATION: asserts the defect as it behaves today, so it runs, and
-// fails when the peer-forward path starts stamping the key.
-func TestManager_AntiThrashFalseNegativeWhenLastStartedAtUnset(t *testing.T) {
+// Deliberately NOT re-asserted here: an unstamped container (LastStartedAt
+// zero) still falls through rule 4 and can be judged on traffic alone.
+// That is decide.go's own long-standing, deliberately tested behavior for
+// a container that has never been started through this daemon's awareness
+// at all — pinned in decide_test.go — not something #1411 changes or this
+// test's concern.
+func TestManager_PeerWokenContainerIsProtectedByAntiThrash(t *testing.T) {
 	now := time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC)
-	newManager := func(lastStartedAt time.Time) *fakeStopper {
-		inc := &fakeIncus{containers: []incus.ContainerInfo{{
-			Name: "alice-container", State: "Running",
-			AutoSleepEnabled: true, IdleThresholdMinutes: 15,
-			LastStartedAt: lastStartedAt,
-		}}}
-		// Older than the threshold: the box was just woken, but nothing has
-		// talked to it yet.
-		traffic := &fakeTraffic{per: map[string]time.Time{
-			"alice-container": now.Add(-60 * time.Minute),
-		}}
-		stopper := &fakeStopper{}
-		m := NewManager(inc, traffic, stopper, nil, Options{
-			Interval: time.Hour,
-			Clock:    func() time.Time { return now },
-		})
-		m.tick(context.Background())
-		return stopper
-	}
+	inc := &fakeIncus{containers: []incus.ContainerInfo{{
+		Name: "alice-container", State: "Running",
+		AutoSleepEnabled: true, IdleThresholdMinutes: 15,
+		// What StartContainer's peer-forward branch now writes.
+		LastStartedAt: now.Add(-2 * time.Minute),
+	}}}
+	// Older than the threshold: the box was just woken, but nothing has
+	// talked to it yet — this is exactly the shape that used to slip
+	// through the gap and get the container stopped.
+	traffic := &fakeTraffic{per: map[string]time.Time{
+		"alice-container": now.Add(-60 * time.Minute),
+	}}
+	stopper := &fakeStopper{}
+	m := NewManager(inc, traffic, stopper, nil, Options{
+		Interval: time.Hour,
+		Clock:    func() time.Time { return now },
+	})
+	m.tick(context.Background())
 
-	// The control. With the stamp present, anti-thrash protects the container
-	// — which is what makes the assertion below about the STAMP rather than
-	// about the container merely looking busy.
-	if calls := newManager(now.Add(-2 * time.Minute)).recorded(); len(calls) != 0 {
-		t.Fatalf("a container stamped as started 2m ago was stopped: %+v — the anti-thrash "+
-			"window is broken for everyone, not just the peer-forward path", calls)
+	if calls := stopper.recorded(); len(calls) != 0 {
+		t.Fatalf("a container stamped as started 2m ago (by either wake path) was stopped: %+v — "+
+			"a freshly woken container must be protected regardless of which daemon woke it", calls)
 	}
-
-	// The gap.
-	calls := newManager(time.Time{}).recorded()
-	if len(calls) == 0 {
-		t.Fatalf("#1411 no longer reproduces: a container with no LastStartedAt stamp survived " +
-			"the sweep.\n\nIf the peer-forward StartContainer path now stamps the key, this " +
-			"test has done its job — replace it with the positive assertion that a freshly woken " +
-			"container is protected regardless of which daemon woke it.")
-	}
-	t.Logf("REPRODUCED #1411: a container with LastStartedAt unset was stopped (%+v) while the "+
-		"same container with a 2m-old stamp is protected. A peer-forwarded wake does not stamp "+
-		"the key, so the box can be slept immediately after someone wakes it.", calls)
 }
 
 // TestManager_StartIsNonBlocking — Start spawns the loop and returns

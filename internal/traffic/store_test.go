@@ -186,27 +186,15 @@ func TestTrafficStore_QueryIsScopedToOneContainer(t *testing.T) {
 	}
 }
 
-// CHARACTERIZATION (#1394): SaveConnection does NOT deduplicate by flow ID.
+// #1394: SaveConnection deduplicates by flow ID.
 //
-// `internal/traffic/collector.go` states the opposite twice, in comments that
-// justify writing the same flow from two paths:
-//
-//	"SaveConnection is ON CONFLICT DO NOTHING keyed by the (stable) flow ID,
-//	 so a re-evicted flow that briefly reappeared won't duplicate."
-//	"SaveConnection is ON CONFLICT DO NOTHING by flow ID, so a flow also
-//	 caught by closedFlows on a later poll isn't double-counted."
-//
-// The INSERT does carry `ON CONFLICT DO NOTHING`, but the table's only unique
-// constraint is its BIGSERIAL primary key, which is auto-assigned and can
-// never conflict. `conntrack_id` has a plain index, not a unique one — so the
-// clause never fires and the same flow is stored as many times as it is
-// written. Traffic history and its aggregates over-count by however many
-// times a flow was re-observed.
-//
-// Asserted as it behaves today rather than as it should, so this passes on
-// main and FAILS the moment the constraint is added — telling whoever fixes it
-// to convert this into the dedup assertion.
-func TestTrafficStore_SaveConnectionDoesNotDeduplicateByFlowID(t *testing.T) {
+// `internal/traffic/collector.go` writes the same flow from two paths (an
+// LRU-evicted flow briefly reappearing, and a flow also caught by
+// closedFlows on a later poll) on the strength of this being true — a
+// unique index on conntrack_id, which `ON CONFLICT DO NOTHING` targets, so
+// the second write of the same flow is silently dropped rather than
+// double-counted.
+func TestTrafficStore_SaveConnectionDeduplicatesByFlowID(t *testing.T) {
 	ctx := context.Background()
 	store, container := trafficTestStore(t)
 	now := time.Now().UTC().Truncate(time.Second)
@@ -227,22 +215,102 @@ func TestTrafficStore_SaveConnectionDoesNotDeduplicateByFlowID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("QueryConnections: %v", err)
 	}
+	if total != 1 {
+		t.Fatalf("the same flow ID stored %d time(s), want 1 — a flow re-observed by either of "+
+			"the collector's two write paths must not be double-counted", total)
+	}
+}
 
-	if total == 1 {
-		t.Fatalf("#1394 no longer reproduces: the same flow ID stored once.\n\n" +
-			"If you added the unique constraint on conntrack_id, this test has done its job — " +
-			"replace it with the positive assertion that a re-written flow is stored once, and " +
-			"check the migration deduplicated pre-existing rows. Do not delete it: the " +
-			"collector's correctness depends on this property.")
+// #1394: the migration that added conntrack_id's unique index also had to
+// deduplicate whatever the defect had already written, since a unique
+// index cannot be created while duplicates exist. Simulates the
+// pre-migration state directly (drop the unique index, insert duplicates
+// the way the un-constrained INSERT used to allow) and re-runs initSchema,
+// which is exactly what happens when an existing deployment upgrades onto
+// this fix.
+func TestTrafficStore_MigrationDeduplicatesPreExistingRows(t *testing.T) {
+	ctx := context.Background()
+	store, container := trafficTestStore(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	flowID := container + "-dup"
+
+	if _, err := store.Pool().Exec(ctx,
+		"DROP INDEX IF EXISTS idx_traffic_conntrack_id_unique"); err != nil {
+		t.Fatalf("drop unique index (simulating pre-migration): %v", err)
 	}
-	if total != 2 {
-		t.Fatalf("the same flow ID stored %d times, expected 2 — the defect exists but its "+
-			"shape has changed", total)
+	// Restore the index even if this test fails partway through (e.g. an
+	// insert below), so a shared test database is never left without
+	// the constraint for whatever runs after this test.
+	t.Cleanup(func() { _ = store.initSchema(context.Background()) })
+
+	insert := func(bytesSent int64) {
+		if _, err := store.Pool().Exec(ctx, `
+			INSERT INTO traffic_connections (
+				container_name, protocol, source_ip, dest_ip, dest_port,
+				direction, bytes_sent, bytes_received, started_at, conntrack_id
+			) VALUES ($1, 6, '10.0.0.10', '93.184.216.34', 443, 1, $2, 0, $3, $4)
+		`, container, bytesSent, now, flowID); err != nil {
+			t.Fatalf("insert pre-migration duplicate: %v", err)
+		}
 	}
-	t.Logf("REPRODUCED #1394: the same flow ID is stored %d times. `ON CONFLICT DO NOTHING` "+
-		"cannot fire because conntrack_id carries a plain index, not a unique one, and the only "+
-		"unique constraint is the auto-assigned BIGSERIAL primary key. Traffic history and its "+
-		"aggregates over-count every re-observed flow.", total)
+	// Three duplicates of the same flow, as the un-constrained collector
+	// would have written them across retries: partial, then two closer
+	// to the real (cumulative, larger) total — the largest must survive.
+	insert(100)
+	insert(900)
+	insert(500)
+
+	// A row with no flow ID at all must never be treated as a duplicate
+	// of another NULL row — Postgres itself already guarantees this
+	// under a unique index (two NULLs never compare equal), so this
+	// pins that the dedup step doesn't do something more aggressive.
+	if _, err := store.Pool().Exec(ctx, `
+		INSERT INTO traffic_connections (
+			container_name, protocol, source_ip, dest_ip, dest_port,
+			direction, bytes_sent, bytes_received, started_at, conntrack_id
+		) VALUES ($1, 6, '10.0.0.10', '93.184.216.34', 443, 1, 42, 0, $2, NULL)
+	`, container, now); err != nil {
+		t.Fatalf("insert null-conntrack-id row: %v", err)
+	}
+
+	if err := store.initSchema(ctx); err != nil {
+		t.Fatalf("re-run initSchema (the migration): %v", err)
+	}
+
+	rows, err := store.Pool().Query(ctx,
+		"SELECT bytes_sent FROM traffic_connections WHERE container_name = $1 AND conntrack_id = $2",
+		container, flowID)
+	if err != nil {
+		t.Fatalf("query surviving rows: %v", err)
+	}
+	defer rows.Close()
+	var survivors []int64
+	for rows.Next() {
+		var b int64
+		if err := rows.Scan(&b); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		survivors = append(survivors, b)
+	}
+	if len(survivors) != 1 {
+		t.Fatalf("survivors = %v, want exactly 1 row per conntrack_id after the migration", survivors)
+	}
+	if survivors[0] != 900 {
+		t.Errorf("surviving row has bytes_sent=%d, want 900 (the largest — the collector's "+
+			"counters are cumulative, so the row that observed the flow longest is the most "+
+			"complete one to keep)", survivors[0])
+	}
+
+	var nullCount int
+	if err := store.Pool().QueryRow(ctx,
+		"SELECT count(*) FROM traffic_connections WHERE container_name = $1 AND conntrack_id IS NULL",
+		container).Scan(&nullCount); err != nil {
+		t.Fatalf("count null-conntrack-id rows: %v", err)
+	}
+	if nullCount != 1 {
+		t.Errorf("null-conntrack_id rows = %d, want 1 (untouched) — a row with no flow ID must "+
+			"never be swept up as if it duplicated another", nullCount)
+	}
 }
 
 // GetConnectionByConntrackID is what a caller reaches for instead of relying

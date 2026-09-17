@@ -94,8 +94,6 @@ func (s *Store) initSchema(ctx context.Context) error {
 			ON traffic_connections(dest_port);
 		CREATE INDEX IF NOT EXISTS idx_traffic_started_at
 			ON traffic_connections(started_at DESC);
-		CREATE INDEX IF NOT EXISTS idx_traffic_conntrack_id
-			ON traffic_connections(conntrack_id);
 
 		-- Aggregated traffic stats table (for faster time-series queries)
 		CREATE TABLE IF NOT EXISTS traffic_aggregates (
@@ -115,8 +113,55 @@ func (s *Store) initSchema(ctx context.Context) error {
 			ON traffic_aggregates(container_name, interval_start DESC);
 	`
 
-	_, err := s.pool.Exec(ctx, schema)
-	return err
+	if _, err := s.pool.Exec(ctx, schema); err != nil {
+		return err
+	}
+
+	// Migration (#1394): SaveConnection's `ON CONFLICT DO NOTHING` had
+	// no conflict target to fire on — traffic_connections carried only
+	// its auto-assigned BIGSERIAL primary key as a unique constraint,
+	// and conntrack_id had a plain (non-unique) index. Every re-observed
+	// flow (an LRU-evicted flow briefly reappearing, or the same flow
+	// caught by both the eviction and closedFlows paths) landed as an
+	// extra row, so history and its aggregates over-counted by however
+	// many times a flow was re-observed.
+	//
+	// A unique index cannot be created while duplicates exist, so
+	// dedup runs first: for each conntrack_id with more than one row,
+	// keep the one with the largest byte total (the collector reports
+	// cumulative counters, so the row that observed the flow longest
+	// carries the most complete picture) and, on a tie, the earliest
+	// (smallest id). Scoped to conntrack_id IS NOT NULL — Postgres
+	// never considers two NULLs equal under a unique index, so rows
+	// without a flow ID were never "duplicates" of one another and are
+	// deliberately left untouched.
+	if _, err := s.pool.Exec(ctx, `
+		DELETE FROM traffic_connections a
+		USING traffic_connections b
+		WHERE a.conntrack_id IS NOT NULL
+			AND a.conntrack_id = b.conntrack_id
+			AND (
+				(a.bytes_sent + a.bytes_received) < (b.bytes_sent + b.bytes_received)
+				OR (
+					(a.bytes_sent + a.bytes_received) = (b.bytes_sent + b.bytes_received)
+					AND a.id > b.id
+				)
+			)
+	`); err != nil {
+		return fmt.Errorf("dedup traffic_connections.conntrack_id before adding its unique index: %w", err)
+	}
+
+	// CREATE INDEX CONCURRENTLY cannot run inside a transaction block,
+	// so it is issued on its own rather than folded into the schema
+	// string above (pgx's simple query protocol runs a multi-statement
+	// Exec as one implicit transaction).
+	if _, err := s.pool.Exec(ctx,
+		`CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_traffic_conntrack_id_unique
+			ON traffic_connections(conntrack_id)`); err != nil {
+		return fmt.Errorf("create unique index on traffic_connections.conntrack_id: %w", err)
+	}
+
+	return nil
 }
 
 // SaveConnection saves a completed connection to the database

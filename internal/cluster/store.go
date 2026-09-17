@@ -28,6 +28,20 @@ type Store interface {
 	SetState(ctx context.Context, owner, name string, st State, reason string) error
 	SetEndpoint(ctx context.Context, owner, name, endpoint string) error
 	UpdateNodeGroups(ctx context.Context, owner, name string, groups []NodeGroup) error
+	// SetNodeGroupTarget updates exactly one group's TargetNodes,
+	// atomically with respect to a concurrent call for a DIFFERENT
+	// group on the same cluster (#1882). UpdateNodeGroups' full-array
+	// replace is the wrong tool for this: the CA-provider handler for
+	// one group and the handler for a sibling group can each read a
+	// stale copy of the whole NodeGroups array before either writes,
+	// and whichever writes last overwrites the other's already-
+	// committed target with its own stale copy of it — observed live
+	// as the reconciler recreating a node the autoscaler had, only
+	// seconds earlier, correctly scaled to zero and deleted. Returns
+	// ErrNotFound if the cluster doesn't exist; a group name absent
+	// from the cluster's groups is a silent no-op (nothing to update),
+	// matching UpdateNodeGroups' own leniency.
+	SetNodeGroupTarget(ctx context.Context, owner, name, group string, target int32) error
 	// Delete removes the cluster and (transitively) its nodes and
 	// events — the "re-created cluster starts empty" guarantee.
 	Delete(ctx context.Context, owner, name string) error
@@ -213,6 +227,33 @@ func (s *PGStore) UpdateNodeGroups(ctx context.Context, owner, name string, grou
 	return s.exec1(ctx,
 		`UPDATE k8s_clusters SET node_groups = $3, updated_at = $4 WHERE owner = $1 AND name = $2`,
 		owner, name, data, time.Now().UTC())
+}
+
+// SetNodeGroupTarget rewrites node_groups server-side: every element
+// keeps its position and every field except the named group's
+// target_nodes, computed by Postgres FROM THE ROW AS IT STANDS AT
+// UPDATE TIME. Two concurrent calls for different groups therefore
+// serialize on Postgres' normal per-row locking and each transforms
+// whatever the other already committed — neither can carry a stale
+// copy of the other's group forward, which is exactly what
+// UpdateNodeGroups' read-modify-write-the-whole-array pattern could
+// not guarantee.
+func (s *PGStore) SetNodeGroupTarget(ctx context.Context, owner, name, group string, target int32) error {
+	return s.exec1(ctx, `
+		UPDATE k8s_clusters SET
+			node_groups = (
+				SELECT jsonb_agg(
+					CASE WHEN elem->>'name' = $3
+						THEN jsonb_set(elem, '{target_nodes}', to_jsonb($4::int))
+						ELSE elem
+					END
+					ORDER BY ord
+				)
+				FROM jsonb_array_elements(node_groups) WITH ORDINALITY AS t(elem, ord)
+			),
+			updated_at = $5
+		WHERE owner = $1 AND name = $2`,
+		owner, name, group, target, time.Now().UTC())
 }
 
 func (s *PGStore) Delete(ctx context.Context, owner, name string) error {
