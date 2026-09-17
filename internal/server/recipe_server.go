@@ -14,6 +14,7 @@ import (
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/modelgateway"
 	boxlxc "github.com/footprintai/containarium/pkg/core/box/lxc"
+	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/footprintai/containarium/pkg/core/recipes"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -290,7 +291,7 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 					return
 				}
 			}
-			if _, warnings := s.exposePorts(bg, recipe, req.Name); len(warnings) > 0 {
+			if _, _, warnings := s.exposePorts(bg, recipe, req.Name); len(warnings) > 0 {
 				log.Printf("[recipe] async expose warnings on %s: %s", containerName, strings.Join(warnings, "; "))
 			}
 		}()
@@ -317,9 +318,12 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 
 	// 3. Expose configured ports (best-effort: a routing failure leaves the
 	//    workload running and reachable on the LAN; surface it as a warning).
-	url, warnings := s.exposePorts(ctx, recipe, req.Name)
+	url, endpoints, warnings := s.exposePorts(ctx, recipe, req.Name)
 
 	msg := fmt.Sprintf("Recipe %q deployed as %s", recipe.Id, containerName)
+	if len(endpoints) > 0 {
+		msg += "; passthrough: " + strings.Join(endpoints, ", ")
+	}
 	if len(warnings) > 0 {
 		msg += "; warnings: " + strings.Join(warnings, "; ")
 	}
@@ -386,38 +390,100 @@ func shellSingleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// exposePorts registers a route per recipe port and returns the first public
-// URL plus any warnings. Routing is best-effort.
-func (s *RecipeServer) exposePorts(ctx context.Context, recipe *pb.Recipe, name string) (string, []string) {
-	var warnings []string
+// exposePorts registers a route (HTTP/gRPC) or a direct passthrough route
+// (TCP/UDP) per recipe port and returns the first public HTTPS URL, any
+// passthrough endpoints, and any warnings. Routing is best-effort: a failure
+// warns rather than failing the whole deploy — the workload is already
+// running and reachable on the LAN either way (#1462).
+func (s *RecipeServer) exposePorts(ctx context.Context, recipe *pb.Recipe, name string) (url string, endpoints []string, warnings []string) {
 	if len(recipe.Ports) == 0 {
-		return "", nil
+		return "", nil, nil
 	}
 	if s.network == nil {
-		return "", []string{"routing is not enabled on this daemon; expose ports manually with 'containarium route add'"}
+		return "", nil, []string{"routing is not enabled on this daemon; expose ports manually with 'containarium route add'"}
 	}
 	info, err := s.containers.manager.Get(name)
 	if err != nil || info == nil || info.IPAddress == "" {
-		return "", []string{fmt.Sprintf("could not resolve container IP to expose ports: %v", err)}
+		return "", nil, []string{fmt.Sprintf("could not resolve container IP to expose ports: %v", err)}
 	}
 
-	var url string
 	for _, p := range recipe.Ports {
-		subdomain := name + "-" + p.Subdomain
-		_, err := s.network.AddRoute(ctx, &pb.AddRouteRequest{
-			Domain:        subdomain,
-			TargetIp:      info.IPAddress,
-			TargetPort:    p.ContainerPort,
-			ContainerName: info.Name,
-			Description:   "recipe:" + recipe.Id,
-		})
-		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("failed to expose port %d: %v", p.ContainerPort, err))
-			continue
-		}
-		if url == "" {
-			url = "https://" + resolveFullDomain(subdomain, s.network.baseDomain)
+		switch p.Protocol {
+		case pb.RouteProtocol_ROUTE_PROTOCOL_TCP, pb.RouteProtocol_ROUTE_PROTOCOL_UDP:
+			endpoint, err := s.exposePassthroughPort(ctx, recipe, info, p)
+			if err != nil {
+				warnings = append(warnings, err.Error())
+				continue
+			}
+			endpoints = append(endpoints, endpoint)
+		default:
+			subdomain := name + "-" + p.Subdomain
+			_, err := s.network.AddRoute(ctx, &pb.AddRouteRequest{
+				Domain:        subdomain,
+				TargetIp:      info.IPAddress,
+				TargetPort:    p.ContainerPort,
+				ContainerName: info.Name,
+				Description:   "recipe:" + recipe.Id,
+			})
+			if err != nil {
+				warnings = append(warnings, fmt.Sprintf("failed to expose port %d: %v", p.ContainerPort, err))
+				continue
+			}
+			if url == "" {
+				url = "https://" + resolveFullDomain(subdomain, s.network.baseDomain)
+			}
 		}
 	}
-	return url, warnings
+	return url, endpoints, warnings
+}
+
+// exposePassthroughPort registers a direct TCP/UDP passthrough route for one
+// recipe port (#1462), returning the public "host:port/protocol" endpoint.
+//
+// Passthrough binds a host-wide port — unlike an HTTP route, which is scoped
+// by hostname, two boxes cannot share one external_port. AddPassthroughRoute
+// itself upserts by (external_port, protocol) with no ownership check, so
+// without the lookup below a second recipe deploy landing on a busy port
+// would silently redirect the first box's traffic to the new one. This fails
+// loudly instead — the smallest correct handling of the collision, per the
+// issue's own "External port allocation" discussion — while still letting a
+// re-deploy of the SAME container onto its own existing port through.
+func (s *RecipeServer) exposePassthroughPort(ctx context.Context, recipe *pb.Recipe, info *incus.ContainerInfo, p *pb.RecipePort) (string, error) {
+	externalPort := p.ExternalPort
+	if externalPort == 0 {
+		externalPort = p.ContainerPort
+	}
+	protocolLabel := "tcp"
+	if p.Protocol == pb.RouteProtocol_ROUTE_PROTOCOL_UDP {
+		protocolLabel = "udp"
+	}
+
+	existing, err := s.network.ListPassthroughRoutes(ctx, &pb.ListPassthroughRoutesRequest{})
+	if err != nil {
+		return "", fmt.Errorf("could not check for a conflicting passthrough route on port %d/%s: %w",
+			externalPort, protocolLabel, err)
+	}
+	for _, r := range existing.Routes {
+		if r.ExternalPort == externalPort && r.Protocol == p.Protocol && r.ContainerName != "" && r.ContainerName != info.Name {
+			return "", fmt.Errorf("port %d/%s is already claimed by %s; set a different external_port for container_port %d",
+				externalPort, protocolLabel, r.ContainerName, p.ContainerPort)
+		}
+	}
+
+	if _, err := s.network.AddPassthroughRoute(ctx, &pb.AddPassthroughRouteRequest{
+		ExternalPort:  externalPort,
+		TargetIp:      info.IPAddress,
+		TargetPort:    p.ContainerPort,
+		Protocol:      p.Protocol,
+		ContainerName: info.Name,
+		Description:   "recipe:" + recipe.Id,
+	}); err != nil {
+		return "", fmt.Errorf("failed to expose passthrough port %d: %w", p.ContainerPort, err)
+	}
+
+	host := s.network.baseDomain
+	if host == "" {
+		host = "<this host>"
+	}
+	return fmt.Sprintf("%s:%d/%s", host, externalPort, protocolLabel), nil
 }

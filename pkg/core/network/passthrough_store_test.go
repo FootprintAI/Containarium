@@ -359,6 +359,41 @@ func TestPassthroughStore_ListIsOrderedByPort(t *testing.T) {
 	}
 }
 
+// #1462: recipe deploy teardown needs to find and remove every passthrough
+// route a deleted box owned, the same way the HTTP route store already
+// supports ListByContainer for the Caddy-route cascade.
+func TestPassthroughStore_ListByContainer(t *testing.T) {
+	ctx := context.Background()
+	store, base := newPassthroughStoreForTest(t)
+
+	mine := aRoute(base, "tcp", "10.0.0.10")
+	mine.ContainerName = "recipe-box-container"
+	if err := store.Save(ctx, mine); err != nil {
+		t.Fatalf("Save(mine): %v", err)
+	}
+	other := aRoute(base+1, "tcp", "10.0.0.11")
+	other.ContainerName = "someone-else-container"
+	if err := store.Save(ctx, other); err != nil {
+		t.Fatalf("Save(other): %v", err)
+	}
+
+	got, err := store.ListByContainer(ctx, "recipe-box-container")
+	if err != nil {
+		t.Fatalf("ListByContainer: %v", err)
+	}
+	if len(got) != 1 || got[0].ExternalPort != base {
+		t.Fatalf("ListByContainer(recipe-box-container) = %+v, want exactly the one route it owns", got)
+	}
+
+	none, err := store.ListByContainer(ctx, "nobody-container")
+	if err != nil {
+		t.Fatalf("ListByContainer(nobody): %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("ListByContainer(nobody-container) = %+v, want none", none)
+	}
+}
+
 func TestPassthroughStore_SchemaInitIsRepeatable(t *testing.T) {
 	ctx := context.Background()
 	store, base := newPassthroughStoreForTest(t)

@@ -43,6 +43,10 @@ type PassthroughStore interface {
 	Save(ctx context.Context, route *PassthroughRecord) error
 	GetByPortProtocol(ctx context.Context, externalPort int, protocol string) (*PassthroughRecord, error)
 	List(ctx context.Context, activeOnly bool) ([]*PassthroughRecord, error)
+	// ListByContainer returns every route owned by containerName — the
+	// passthrough analog of RouteStore.ListByContainer, used to cascade-clean
+	// a deleted container's routes (#1462).
+	ListByContainer(ctx context.Context, containerName string) ([]*PassthroughRecord, error)
 	Delete(ctx context.Context, externalPort int, protocol string) error
 	SetActive(ctx context.Context, externalPort int, protocol string, active bool) error
 	Count(ctx context.Context, activeOnly bool) (int32, error)
@@ -208,6 +212,52 @@ func (s *postgresPassthroughStore) List(ctx context.Context, activeOnly bool) ([
 	rows, err := s.pool.Query(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list passthrough routes: %w", err)
+	}
+	defer rows.Close()
+
+	var routes []*PassthroughRecord
+	for rows.Next() {
+		route := &PassthroughRecord{}
+		if err := rows.Scan(
+			&route.ID,
+			&route.ExternalPort,
+			&route.TargetIP,
+			&route.TargetPort,
+			&route.Protocol,
+			&route.ContainerName,
+			&route.Description,
+			&route.Active,
+			&route.CreatedBy,
+			&route.CreatedAt,
+			&route.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan passthrough route: %w", err)
+		}
+		routes = append(routes, route)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating passthrough routes: %w", err)
+	}
+
+	return routes, nil
+}
+
+// ListByContainer retrieves every passthrough route owned by containerName,
+// ordered by external port for deterministic cleanup order.
+func (s *postgresPassthroughStore) ListByContainer(ctx context.Context, containerName string) ([]*PassthroughRecord, error) {
+	query := `
+		SELECT id, external_port, target_ip, target_port, protocol,
+			COALESCE(container_name, ''), COALESCE(description, ''), active,
+			COALESCE(created_by, ''), created_at, updated_at
+		FROM passthrough_routes
+		WHERE container_name = $1
+		ORDER BY external_port ASC
+	`
+
+	rows, err := s.pool.Query(ctx, query, containerName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list passthrough routes for container %s: %w", containerName, err)
 	}
 	defer rows.Close()
 
