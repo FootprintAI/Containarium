@@ -1626,9 +1626,16 @@ type ListContainersResponse struct {
 	// List of containers matching the filter criteria
 	Containers []*Container `protobuf:"bytes,1,rep,name=containers,proto3" json:"containers,omitempty"`
 	// Total count of containers
-	TotalCount    int32 `protobuf:"varint,2,opt,name=total_count,json=totalCount,proto3" json:"total_count,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	TotalCount int32 `protobuf:"varint,2,opt,name=total_count,json=totalCount,proto3" json:"total_count,omitempty"`
+	// Backends that could not be reached while assembling this list (e.g.
+	// sentinel marked the peer unhealthy, or the forwarded request
+	// failed/timed out). A backend listed here contributed zero containers
+	// to `containers` — callers should render that distinctly from "this
+	// backend genuinely has no containers" rather than as a bare absence
+	// (#1902, sibling of GetMetricsResponse.unreachable_backends / #1901).
+	UnreachableBackends []*UnreachableBackend `protobuf:"bytes,3,rep,name=unreachable_backends,json=unreachableBackends,proto3" json:"unreachable_backends,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *ListContainersResponse) Reset() {
@@ -1673,6 +1680,13 @@ func (x *ListContainersResponse) GetTotalCount() int32 {
 		return x.TotalCount
 	}
 	return 0
+}
+
+func (x *ListContainersResponse) GetUnreachableBackends() []*UnreachableBackend {
+	if x != nil {
+		return x.UnreachableBackends
+	}
+	return nil
 }
 
 // GetContainerRequest is the request to get a specific container
@@ -6312,13 +6326,14 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\flabel_filter\x18\x03 \x03(\v27.containarium.v1.ListContainersRequest.LabelFilterEntryR\vlabelFilter\x1a>\n" +
 	"\x10LabelFilterEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"u\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xcd\x01\n" +
 	"\x16ListContainersResponse\x12:\n" +
 	"\n" +
 	"containers\x18\x01 \x03(\v2\x1a.containarium.v1.ContainerR\n" +
 	"containers\x12\x1f\n" +
 	"\vtotal_count\x18\x02 \x01(\x05R\n" +
-	"totalCount\"1\n" +
+	"totalCount\x12V\n" +
+	"\x14unreachable_backends\x18\x03 \x03(\v2#.containarium.v1.UnreachableBackendR\x13unreachableBackends\"1\n" +
 	"\x13GetContainerRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\"\x8d\x01\n" +
 	"\x14GetContainerResponse\x128\n" +
@@ -6769,39 +6784,40 @@ var file_containarium_v1_container_proto_depIdxs = []int32{
 	2,  // 15: containarium.v1.ListContainersRequest.state:type_name -> containarium.v1.ContainerState
 	89, // 16: containarium.v1.ListContainersRequest.label_filter:type_name -> containarium.v1.ListContainersRequest.LabelFilterEntry
 	9,  // 17: containarium.v1.ListContainersResponse.containers:type_name -> containarium.v1.Container
-	9,  // 18: containarium.v1.GetContainerResponse.container:type_name -> containarium.v1.Container
-	10, // 19: containarium.v1.GetContainerResponse.metrics:type_name -> containarium.v1.ContainerMetrics
-	9,  // 20: containarium.v1.StartContainerResponse.container:type_name -> containarium.v1.Container
-	9,  // 21: containarium.v1.StopContainerResponse.container:type_name -> containarium.v1.Container
-	92, // 22: containarium.v1.SetContainerTTLResponse.ttl_expires_at:type_name -> google.protobuf.Timestamp
-	3,  // 23: containarium.v1.SetContainerDeletePolicyRequest.delete_policy:type_name -> containarium.v1.DeletePolicy
-	3,  // 24: containarium.v1.SetContainerDeletePolicyResponse.delete_policy:type_name -> containarium.v1.DeletePolicy
-	90, // 25: containarium.v1.SetContainerAttributionRequest.labels:type_name -> containarium.v1.SetContainerAttributionRequest.LabelsEntry
-	91, // 26: containarium.v1.SetContainerAttributionResponse.labels:type_name -> containarium.v1.SetContainerAttributionResponse.LabelsEntry
-	10, // 27: containarium.v1.GetMetricsResponse.metrics:type_name -> containarium.v1.ContainerMetrics
-	43, // 28: containarium.v1.GetMetricsResponse.unreachable_backends:type_name -> containarium.v1.UnreachableBackend
-	9,  // 29: containarium.v1.ResizeContainerResponse.container:type_name -> containarium.v1.Container
-	46, // 30: containarium.v1.AddCollaboratorResponse.collaborator:type_name -> containarium.v1.Collaborator
-	46, // 31: containarium.v1.ListCollaboratorsResponse.collaborators:type_name -> containarium.v1.Collaborator
-	9,  // 32: containarium.v1.CleanupDiskResponse.container:type_name -> containarium.v1.Container
-	9,  // 33: containarium.v1.InstallStackResponse.container:type_name -> containarium.v1.Container
-	57, // 34: containarium.v1.StackInfo.parameters:type_name -> containarium.v1.StackParameter
-	58, // 35: containarium.v1.ListStacksResponse.stacks:type_name -> containarium.v1.StackInfo
-	5,  // 36: containarium.v1.SetMetricsExportRequest.provider:type_name -> containarium.v1.CloudMetricsProvider
-	6,  // 37: containarium.v1.SetMetricsExportRequest.groups:type_name -> containarium.v1.CloudMetricsGroup
-	5,  // 38: containarium.v1.SetMetricsExportResponse.provider:type_name -> containarium.v1.CloudMetricsProvider
-	6,  // 39: containarium.v1.SetMetricsExportResponse.groups:type_name -> containarium.v1.CloudMetricsGroup
-	5,  // 40: containarium.v1.GetMetricsExportResponse.provider:type_name -> containarium.v1.CloudMetricsProvider
-	92, // 41: containarium.v1.GetMetricsExportResponse.last_success_at:type_name -> google.protobuf.Timestamp
-	6,  // 42: containarium.v1.GetMetricsExportResponse.groups:type_name -> containarium.v1.CloudMetricsGroup
-	70, // 43: containarium.v1.CreateContainerSnapshotResponse.snapshot:type_name -> containarium.v1.ContainerSnapshot
-	70, // 44: containarium.v1.ListContainerSnapshotsResponse.snapshots:type_name -> containarium.v1.ContainerSnapshot
-	93, // 45: containarium.v1.state_name:extendee -> google.protobuf.EnumValueOptions
-	46, // [46:46] is the sub-list for method output_type
-	46, // [46:46] is the sub-list for method input_type
-	46, // [46:46] is the sub-list for extension type_name
-	45, // [45:46] is the sub-list for extension extendee
-	0,  // [0:45] is the sub-list for field type_name
+	43, // 18: containarium.v1.ListContainersResponse.unreachable_backends:type_name -> containarium.v1.UnreachableBackend
+	9,  // 19: containarium.v1.GetContainerResponse.container:type_name -> containarium.v1.Container
+	10, // 20: containarium.v1.GetContainerResponse.metrics:type_name -> containarium.v1.ContainerMetrics
+	9,  // 21: containarium.v1.StartContainerResponse.container:type_name -> containarium.v1.Container
+	9,  // 22: containarium.v1.StopContainerResponse.container:type_name -> containarium.v1.Container
+	92, // 23: containarium.v1.SetContainerTTLResponse.ttl_expires_at:type_name -> google.protobuf.Timestamp
+	3,  // 24: containarium.v1.SetContainerDeletePolicyRequest.delete_policy:type_name -> containarium.v1.DeletePolicy
+	3,  // 25: containarium.v1.SetContainerDeletePolicyResponse.delete_policy:type_name -> containarium.v1.DeletePolicy
+	90, // 26: containarium.v1.SetContainerAttributionRequest.labels:type_name -> containarium.v1.SetContainerAttributionRequest.LabelsEntry
+	91, // 27: containarium.v1.SetContainerAttributionResponse.labels:type_name -> containarium.v1.SetContainerAttributionResponse.LabelsEntry
+	10, // 28: containarium.v1.GetMetricsResponse.metrics:type_name -> containarium.v1.ContainerMetrics
+	43, // 29: containarium.v1.GetMetricsResponse.unreachable_backends:type_name -> containarium.v1.UnreachableBackend
+	9,  // 30: containarium.v1.ResizeContainerResponse.container:type_name -> containarium.v1.Container
+	46, // 31: containarium.v1.AddCollaboratorResponse.collaborator:type_name -> containarium.v1.Collaborator
+	46, // 32: containarium.v1.ListCollaboratorsResponse.collaborators:type_name -> containarium.v1.Collaborator
+	9,  // 33: containarium.v1.CleanupDiskResponse.container:type_name -> containarium.v1.Container
+	9,  // 34: containarium.v1.InstallStackResponse.container:type_name -> containarium.v1.Container
+	57, // 35: containarium.v1.StackInfo.parameters:type_name -> containarium.v1.StackParameter
+	58, // 36: containarium.v1.ListStacksResponse.stacks:type_name -> containarium.v1.StackInfo
+	5,  // 37: containarium.v1.SetMetricsExportRequest.provider:type_name -> containarium.v1.CloudMetricsProvider
+	6,  // 38: containarium.v1.SetMetricsExportRequest.groups:type_name -> containarium.v1.CloudMetricsGroup
+	5,  // 39: containarium.v1.SetMetricsExportResponse.provider:type_name -> containarium.v1.CloudMetricsProvider
+	6,  // 40: containarium.v1.SetMetricsExportResponse.groups:type_name -> containarium.v1.CloudMetricsGroup
+	5,  // 41: containarium.v1.GetMetricsExportResponse.provider:type_name -> containarium.v1.CloudMetricsProvider
+	92, // 42: containarium.v1.GetMetricsExportResponse.last_success_at:type_name -> google.protobuf.Timestamp
+	6,  // 43: containarium.v1.GetMetricsExportResponse.groups:type_name -> containarium.v1.CloudMetricsGroup
+	70, // 44: containarium.v1.CreateContainerSnapshotResponse.snapshot:type_name -> containarium.v1.ContainerSnapshot
+	70, // 45: containarium.v1.ListContainerSnapshotsResponse.snapshots:type_name -> containarium.v1.ContainerSnapshot
+	93, // 46: containarium.v1.state_name:extendee -> google.protobuf.EnumValueOptions
+	47, // [47:47] is the sub-list for method output_type
+	47, // [47:47] is the sub-list for method input_type
+	47, // [47:47] is the sub-list for extension type_name
+	46, // [46:47] is the sub-list for extension extendee
+	0,  // [0:46] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_container_proto_init() }

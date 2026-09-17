@@ -553,6 +553,14 @@ message ListContainersResponse {
 
   // Total count of containers
   int32 total_count = 2;
+
+  // Backends that could not be reached while assembling this list (e.g.
+  // sentinel marked the peer unhealthy, or the forwarded request
+  // failed/timed out). A backend listed here contributed zero containers
+  // to `containers` — callers should render that distinctly from "this
+  // backend genuinely has no containers" rather than as a bare absence
+  // (#1902, sibling of GetMetricsResponse.unreachable_backends / #1901).
+  repeated UnreachableBackend unreachable_backends = 3;
 }
 
 // GetContainerRequest is the request to get a specific container

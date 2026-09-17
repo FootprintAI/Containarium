@@ -11293,6 +11293,14 @@
           "type": "integer",
           "format": "int32",
           "title": "Total count of containers"
+        },
+        "unreachableBackends": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/UnreachableBackend"
+          },
+          "description": "Backends that could not be reached while assembling this list (e.g.\nsentinel marked the peer unhealthy, or the forwarded request\nfailed/timed out). A backend listed here contributed zero containers\nto `containers` — callers should render that distinctly from \"this\nbackend genuinely has no containers\" rather than as a bare absence\n(#1902, sibling of GetMetricsResponse.unreachable_backends / #1901)."
         }
       },
       "title": "ListContainersResponse is the response from listing containers"

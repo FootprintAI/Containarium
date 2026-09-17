@@ -235,7 +235,7 @@ func TestIntegration_MultiBackendListContainers(t *testing.T) {
 	}
 	pool.mu.Unlock()
 
-	containers := pool.ListContainers("")
+	containers, _ := pool.ListContainers("")
 
 	if len(containers) != 3 {
 		t.Fatalf("expected 3 containers across 2 backends, got %d", len(containers))
@@ -588,10 +588,16 @@ func TestIntegration_UnhealthyPeerSkipped(t *testing.T) {
 	}
 	pool.mu.Unlock()
 
-	// List should return 0 (unhealthy peer skipped)
-	containers := pool.ListContainers("")
+	// List should return 0 (unhealthy peer skipped), but must name the
+	// skipped peer in the unreachable list rather than looking
+	// indistinguishable from "tunnel-gpu genuinely has no containers"
+	// (#1902).
+	containers, unreachable := pool.ListContainers("")
 	if len(containers) != 0 {
 		t.Errorf("expected 0 containers (peer unhealthy), got %d", len(containers))
+	}
+	if len(unreachable) != 1 || unreachable[0].BackendID != "tunnel-gpu" {
+		t.Errorf("expected tunnel-gpu reported as unreachable, got %+v", unreachable)
 	}
 
 	// Find should return nil

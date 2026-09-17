@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -195,7 +196,7 @@ func TestPeerPool_ListContainers(t *testing.T) {
 	}
 	pool.mu.Unlock()
 
-	containers := pool.ListContainers("")
+	containers, unreachable := pool.ListContainers("")
 	if len(containers) != 1 {
 		t.Fatalf("expected 1 container, got %d", len(containers))
 	}
@@ -205,8 +206,16 @@ func TestPeerPool_ListContainers(t *testing.T) {
 	if containers[0].BackendID != "test-peer" {
 		t.Errorf("expected backend ID 'test-peer', got %q", containers[0].BackendID)
 	}
+	if len(unreachable) != 0 {
+		t.Errorf("expected no unreachable peers for a healthy fetch, got %+v", unreachable)
+	}
 }
 
+// TestPeerPool_ListContainers_SkipsUnhealthy pins #1902: a peer the
+// sentinel marks unhealthy must not just silently contribute zero
+// containers — it must be named in the returned unreachable list so a
+// caller can tell "this backend is unreachable" from "this backend
+// genuinely has no containers" instead of the two looking identical.
 func TestPeerPool_ListContainers_SkipsUnhealthy(t *testing.T) {
 	pool := NewPeerPool("local", "", nil, "")
 	pool.mu.Lock()
@@ -217,9 +226,15 @@ func TestPeerPool_ListContainers_SkipsUnhealthy(t *testing.T) {
 	}
 	pool.mu.Unlock()
 
-	containers := pool.ListContainers("")
+	containers, unreachable := pool.ListContainers("")
 	if len(containers) != 0 {
 		t.Errorf("expected 0 containers from unhealthy peer, got %d", len(containers))
+	}
+	if len(unreachable) != 1 || unreachable[0].BackendID != "unhealthy" {
+		t.Fatalf("expected the unhealthy peer reported as unreachable, got %+v", unreachable)
+	}
+	if !strings.Contains(unreachable[0].Reason, "unhealthy") {
+		t.Errorf("Reason = %q, want it to say why (marked unhealthy by sentinel)", unreachable[0].Reason)
 	}
 }
 

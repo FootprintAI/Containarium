@@ -652,24 +652,44 @@ func (p *PeerPool) Get(id string) *PeerClient {
 	return p.peers[id]
 }
 
-// ListContainers fans out to all healthy peers and returns merged container list.
+// UnreachablePeer names one peer backend a fan-out call couldn't reach, and
+// why — the same shape GetMetricsResponse.unreachable_backends reports
+// (#1901), applied here to ListContainers (#1902): a peer skipped for being
+// unhealthy, or whose fetch failed, must be distinguishable from a peer
+// that genuinely has zero containers, not silently absent from the result.
+type UnreachablePeer struct {
+	BackendID string
+	Reason    string
+}
+
+// ListContainers fans out to all healthy peers and returns the merged
+// container list, plus any peer that couldn't be reached this call
+// (unhealthy per the sentinel, or a failed/errored fetch) so a caller can
+// tell "this backend is unreachable right now" from "this backend has no
+// containers" instead of the two looking identical (#1902).
 // Each container gets a backend_id field set to the peer's ID.
-func (p *PeerPool) ListContainers(authToken string) []incus.ContainerInfo {
+func (p *PeerPool) ListContainers(authToken string) ([]incus.ContainerInfo, []UnreachablePeer) {
 	peers := p.Peers()
 	if len(peers) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	type result struct {
 		peerID     string
 		containers []incus.ContainerInfo
+		err        error
 	}
 
 	var wg sync.WaitGroup
 	results := make(chan result, len(peers))
 
+	var unreachable []UnreachablePeer
 	for _, peer := range peers {
 		if !peer.Healthy {
+			unreachable = append(unreachable, UnreachablePeer{
+				BackendID: peer.ID,
+				Reason:    "peer marked unhealthy by sentinel",
+			})
 			continue
 		}
 		wg.Add(1)
@@ -678,6 +698,7 @@ func (p *PeerPool) ListContainers(authToken string) []incus.ContainerInfo {
 			containers, err := pc.fetchContainers(authToken)
 			if err != nil {
 				log.Printf("[peers] failed to list containers from %s: %v", pc.ID, err)
+				results <- result{peerID: pc.ID, err: err}
 				return
 			}
 			results <- result{peerID: pc.ID, containers: containers}
@@ -689,9 +710,16 @@ func (p *PeerPool) ListContainers(authToken string) []incus.ContainerInfo {
 
 	var all []incus.ContainerInfo
 	for res := range results {
+		if res.err != nil {
+			unreachable = append(unreachable, UnreachablePeer{
+				BackendID: res.peerID,
+				Reason:    fmt.Sprintf("peer fetch failed: %v", res.err),
+			})
+			continue
+		}
 		all = append(all, res.containers...)
 	}
-	return all
+	return all, unreachable
 }
 
 // fetchContainers fetches containers from a single peer.

@@ -1125,10 +1125,15 @@ func (s *ContainerServer) ListContainers(ctx context.Context, req *pb.ListContai
 	protoContainers = applyProvisioningOverlay(protoContainers, pendingStates,
 		req.Username, req.State, len(req.LabelFilter) > 0, s.sshHost)
 
-	// Add containers from peer backends
+	// Add containers from peer backends. A peer that couldn't be reached
+	// contributes zero entries here — reported separately in
+	// unreachable_backends so callers can tell "unreachable" from "this
+	// backend genuinely has no containers" instead of both looking like a
+	// bare absence (#1902, sibling of #1901's GetMetrics fix).
+	var unreachableBackends []*pb.UnreachableBackend
 	if s.peerPool != nil {
 		authToken := extractAuthToken(ctx)
-		peerContainers := s.peerPool.ListContainers(authToken)
+		peerContainers, unreachable := s.peerPool.ListContainers(authToken)
 		for i := range peerContainers {
 			st := boxlxc.StatusFromInfo(&peerContainers[i])
 			pc := toProtoContainer(&st)
@@ -1136,11 +1141,18 @@ func (s *ContainerServer) ListContainers(ctx context.Context, req *pb.ListContai
 			pc.SshHost = s.sshHost
 			protoContainers = append(protoContainers, pc)
 		}
+		for _, u := range unreachable {
+			unreachableBackends = append(unreachableBackends, &pb.UnreachableBackend{
+				BackendId: u.BackendID,
+				Reason:    u.Reason,
+			})
+		}
 	}
 
 	return &pb.ListContainersResponse{
-		Containers: protoContainers,
-		TotalCount: safecast.I32(len(protoContainers)),
+		Containers:          protoContainers,
+		TotalCount:          safecast.I32(len(protoContainers)),
+		UnreachableBackends: unreachableBackends,
 	}, nil
 }
 
@@ -1250,7 +1262,7 @@ func (s *ContainerServer) GetContainer(ctx context.Context, req *pb.GetContainer
 		// Not found locally — try peers
 		if s.peerPool != nil {
 			authToken := extractAuthToken(ctx)
-			peerContainers := s.peerPool.ListContainers(authToken)
+			peerContainers, _ := s.peerPool.ListContainers(authToken)
 			containerName := req.Username + "-container"
 			for _, pc := range peerContainers {
 				if pc.Name == containerName {
