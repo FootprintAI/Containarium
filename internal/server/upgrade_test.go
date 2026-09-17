@@ -1,7 +1,11 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"log"
+	"os"
+	"strings"
 	"testing"
 
 	"google.golang.org/grpc/codes"
@@ -32,6 +36,34 @@ func TestTriggerUpgrade_LocalNoUpdater(t *testing.T) {
 	_, err := s.TriggerUpgrade(adminUpgradeCtx(), &pb.TriggerUpgradeRequest{})
 	if status.Code(err) != codes.Unavailable {
 		t.Fatalf("want Unavailable (no auto-updater), got %v", err)
+	}
+	// cloud#1547: the message alone (no log access needed) must name the
+	// missing flag, so a caller staring at a bare "no capacity in pool"
+	// three hops away has something actionable to check.
+	if !strings.Contains(err.Error(), "--sentinel-url") {
+		t.Errorf("error = %q, want it to name the missing --sentinel-url flag", err.Error())
+	}
+}
+
+// TestTriggerUpgrade_LocalNoUpdater_Logs is cloud#1547's root cause fix: this
+// early return used to bail with NO log line at all, which is exactly what
+// made a BYOC host's silently-missing --sentinel-url invisible — an operator
+// SSHed into the target host during a failed upgrade saw nothing arrive,
+// before or after, because the daemon never logged reaching this far. Now it
+// does, before ever returning the error.
+func TestTriggerUpgrade_LocalNoUpdater_Logs(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	s := &ContainerServer{}
+	_, err := s.TriggerUpgrade(adminUpgradeCtx(), &pb.TriggerUpgradeRequest{})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("want Unavailable, got %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "upgrade") || !strings.Contains(out, "sentinel-url") {
+		t.Errorf("log output = %q, want a line naming the upgrade attempt and the missing sentinel-url config", out)
 	}
 }
 
