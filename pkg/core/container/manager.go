@@ -27,7 +27,16 @@ type Manager struct {
 	// observeStage, when non-nil, receives per-stage create latency.
 	// See create_stages.go.
 	observeStage StageObserver
+	// cloudInitWait bounds installPackages' post-boot wait for cloud-init to
+	// settle, when the image actually has cloud-init (#1530). Zero (the
+	// default, production) uses defaultCloudInitWait; a test seam so a test
+	// exercising the wait itself doesn't cost the real 5s.
+	cloudInitWait time.Duration
 }
+
+// defaultCloudInitWait is installPackages' production wait when cloud-init
+// is present (Manager.cloudInitWait unset).
+const defaultCloudInitWait = 5 * time.Second
 
 // CreateOptions holds options for creating a container
 type CreateOptions struct {
@@ -619,12 +628,34 @@ func stackEnvPrefix(params map[string]string) string {
 	return b.String()
 }
 
+// cloudInitPresent reports whether containerName's image has cloud-init on
+// its PATH (#1530). A probe failure (transport error) or a non-zero exit
+// (genuinely absent, or a shell that doesn't support `command -v` — neither
+// worth distinguishing here) both count as "not present": the wait this
+// guards is a courtesy, not a correctness requirement, so failing safe here
+// only costs a skipped wait, never a false "it's fine to proceed" on a boot
+// that's actually still settling.
+func (m *Manager) cloudInitPresent(containerName string) bool {
+	_, _, exitCode, err := m.incus.ExecWithExitCode(containerName, []string{"sh", "-c", "command -v cloud-init"})
+	return err == nil && exitCode == 0
+}
+
 func (m *Manager) installPackages(containerName string, enablePodman bool, stackID string, stackParams map[string]string, username string, family ostype.OSFamily) error {
 	pkgMgr := ospkg.ForFamily(family)
 	familyStr := string(family)
 
-	// Wait a bit for cloud-init to finish (if present)
-	time.Sleep(5 * time.Second)
+	// Wait a bit for cloud-init to finish, but only when the image actually
+	// ships it (#1530): a benchmark investigation found images:ubuntu/24.04
+	// — this daemon's default create base — has no cloud-init at all, so
+	// this wait was pure dead time on every stackless create against it
+	// (~5s of the ~90s a create took at 200m CPU).
+	if m.cloudInitPresent(containerName) {
+		wait := m.cloudInitWait
+		if wait == 0 {
+			wait = defaultCloudInitWait
+		}
+		time.Sleep(wait)
+	}
 
 	// Update package lists
 	if err := m.incus.Exec(containerName, pkgMgr.UpdateCmd()); err != nil {
