@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -280,14 +281,33 @@ func (b *Backend) namespaceFor(tenant string) string {
 	return b.cfg.TenantNamespacePrefix + tenant
 }
 
+// validateTenantName rejects a tenant whose derived namespace would not be
+// a valid Kubernetes name (#1490). Without this, a tenant name containing
+// '/' or other illegal characters reaches the apiserver, which rejects the
+// Namespace create with a multi-field, low-level validation error
+// ("metadata.name: ... RFC 1123 label ...", "metadata.labels: ...") that
+// gives no hint the tenant name itself was the problem — it reads as an
+// internal error, not a bad request.
+func (b *Backend) validateTenantName(tenant string) error {
+	ns := b.namespaceFor(tenant)
+	if errs := validation.IsDNS1123Label(ns); len(errs) > 0 {
+		return fmt.Errorf("k8s: invalid tenant name %q: derived namespace %q is not usable on this backend (%s); "+
+			"use a name with only lowercase letters, digits, and '-'", tenant, ns, strings.Join(errs, "; "))
+	}
+	return nil
+}
+
 // Create reconciles the per-tenant namespace + Secrets + default-deny
 // NetworkPolicy + the Sandbox CR, then returns the box's status. The
 // agent-sandbox controller creates the pod and the headless Service from the
 // Sandbox. Each step is idempotent (AlreadyExists is success) so re-create
 // reuses the box rather than erroring (#669).
 func (b *Backend) Create(ctx context.Context, spec box.BoxSpec) (*box.BoxStatus, error) {
-	ns := b.namespaceFor(spec.Ref.Tenant)
 	tenant := spec.Ref.Tenant
+	if err := b.validateTenantName(tenant); err != nil {
+		return nil, err
+	}
+	ns := b.namespaceFor(tenant)
 	// A reference kubelet cannot parse - in practice the create path's
 	// Incus-style default (#1524) - is treated like an absent one and replaced
 	// by the configured agent-box image; see isOCIImageReference. Either way,

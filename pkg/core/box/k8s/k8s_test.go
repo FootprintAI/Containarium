@@ -139,6 +139,32 @@ func TestCreateIdempotent(t *testing.T) {
 	}
 }
 
+// TestCreateRejectsTenantNameThatWouldMakeAnInvalidNamespace (#1490): a
+// tenant name containing '/' (or any other character illegal in a
+// Kubernetes namespace/label) must fail fast with a clear, actionable
+// error — not the raw multi-field apiserver validation error that
+// namespace creation itself would produce.
+func TestCreateRejectsTenantNameThatWouldMakeAnInvalidNamespace(t *testing.T) {
+	b, cs, _ := testBackend()
+	ctx := context.Background()
+	_, err := b.Create(ctx, box.BoxSpec{
+		Ref:   box.BoxRef{Tenant: "myorg/mybox"},
+		Image: "registry.k8s.io/pause:3.9",
+	})
+	if err == nil {
+		t.Fatal("Create with an invalid tenant name should fail, got nil error")
+	}
+	if !strings.Contains(err.Error(), "invalid tenant name") {
+		t.Fatalf("error should clearly name the problem, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "metadata.name") || strings.Contains(err.Error(), "metadata.labels") {
+		t.Fatalf("error should not leak the raw multi-field apiserver validation message, got: %v", err)
+	}
+	if _, getErr := cs.CoreV1().Namespaces().Get(ctx, "tenant-myorg/mybox", metav1.GetOptions{}); getErr == nil {
+		t.Fatal("namespace should never have been created for an invalid tenant name")
+	}
+}
+
 func TestGetMissing(t *testing.T) {
 	b, _, _ := testBackend()
 	st, err := b.Get(context.Background(), box.BoxRef{Tenant: "ghost"})
