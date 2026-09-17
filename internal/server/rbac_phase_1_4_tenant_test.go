@@ -171,3 +171,78 @@ func TestTriggerClamavScan_OwnerPasses(t *testing.T) {
 		return e
 	})
 }
+
+// --- NetworkServer egress-via-client (#808) — CWE-639 IDOR fix ---
+//
+// StartEgressProxy/StopEgressProxy previously called only
+// auth.RequireScope(routes:write), an ordinary non-admin scope every
+// tenant token carries — with no auth.AuthorizeContainerAccess check, any
+// tenant could start/stop another tenant's egress relay by naming their
+// container_name. tenantCtx below carries routes:write via ContextWithTestSubjectScopes so
+// these tests fail closed on the SAME gate a real caller would hit, not
+// merely on a missing scope.
+
+func tenantCtxWithRoutesWrite(name string) context.Context {
+	return auth.ContextWithTestSubjectScopes(context.Background(), name, []string{"user"}, []string{auth.ScopeRoutesWrite})
+}
+
+func TestStartEgressProxy_RejectsOtherTenant(t *testing.T) {
+	srv := &NetworkServer{}
+	_, err := srv.StartEgressProxy(tenantCtxWithRoutesWrite("alice"), &pb.StartEgressProxyRequest{
+		ContainerName: "bob-container",
+		UpstreamPort:  18080,
+	})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("got %v want PermissionDenied", err)
+	}
+}
+
+func TestStopEgressProxy_RejectsOtherTenant(t *testing.T) {
+	srv := &NetworkServer{}
+	_, err := srv.StopEgressProxy(tenantCtxWithRoutesWrite("alice"), &pb.StopEgressProxyRequest{
+		ContainerName: "bob-container",
+	})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("got %v want PermissionDenied", err)
+	}
+}
+
+func TestStartEgressProxy_RejectsOtherTenantBareUsername(t *testing.T) {
+	// container_name may be passed without the "-container" suffix
+	// (StartEgressProxy tolerates both forms) — the gate must normalize
+	// before authorizing, not just when the suffix is already present.
+	srv := &NetworkServer{}
+	_, err := srv.StartEgressProxy(tenantCtxWithRoutesWrite("alice"), &pb.StartEgressProxyRequest{
+		ContainerName: "bob",
+		UpstreamPort:  18080,
+	})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("got %v want PermissionDenied", err)
+	}
+}
+
+func TestEgressProxy_OwnerPasses(t *testing.T) {
+	srv := &NetworkServer{}
+	ctx := tenantCtxWithRoutesWrite("alice")
+	mustPass(t, "owner StartEgressProxy", func() error {
+		_, e := srv.StartEgressProxy(ctx, &pb.StartEgressProxyRequest{ContainerName: "alice-container", UpstreamPort: 18080})
+		return e
+	})
+	mustPass(t, "owner StopEgressProxy", func() error {
+		_, e := srv.StopEgressProxy(ctx, &pb.StopEgressProxyRequest{ContainerName: "alice-container"})
+		return e
+	})
+}
+
+func TestEgressProxy_AdminPassesCrossTenant(t *testing.T) {
+	srv := &NetworkServer{}
+	ctx := auth.ContextWithTestSubjectScopes(context.Background(), "ops", []string{auth.RoleAdmin}, []string{auth.ScopeRoutesWrite})
+	mustPass(t, "admin StartEgressProxy cross-tenant", func() error {
+		_, e := srv.StartEgressProxy(ctx, &pb.StartEgressProxyRequest{ContainerName: "alice-container", UpstreamPort: 18080})
+		return e
+	})
+	mustPass(t, "admin StopEgressProxy cross-tenant", func() error {
+		_, e := srv.StopEgressProxy(ctx, &pb.StopEgressProxyRequest{ContainerName: "alice-container"})
+		return e
+	})
+}

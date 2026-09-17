@@ -1201,6 +1201,20 @@ func (s *NetworkServer) StartEgressProxy(ctx context.Context, req *pb.StartEgres
 	if name == "" {
 		return nil, status.Error(codes.InvalidArgument, "container_name is required")
 	}
+	// The caller passes the box's username (e.g. "cld-abcd1234"); the Incus
+	// instance is "<username>-container" (the convention container_server.go
+	// uses everywhere). Map it before the lookup, tolerating a fully-qualified
+	// name in case a caller already passed the instance name.
+	instanceName := name
+	if !strings.HasSuffix(instanceName, "-container") {
+		instanceName += "-container"
+	}
+	// Tenant-ownership check (CWE-639 IDOR) — without this, any token holding
+	// routes:write could start/stop another tenant's egress relay by naming
+	// their container_name. Mirrors GetContainerACL/UpdateContainerACL.
+	if err := auth.AuthorizeContainerAccess(ctx, instanceName); err != nil {
+		return nil, err
+	}
 	if req.GetUpstreamPort() <= 0 || req.GetUpstreamPort() > 65535 {
 		return nil, status.Error(codes.InvalidArgument, "upstream_port must be 1-65535 (the host-loopback port from your `ssh -R`)")
 	}
@@ -1217,14 +1231,6 @@ func (s *NetworkServer) StartEgressProxy(ctx context.Context, req *pb.StartEgres
 	}
 	if s.incusClient == nil {
 		return nil, status.Error(codes.Unavailable, "container backend unavailable")
-	}
-	// The caller passes the box's username (e.g. "cld-abcd1234"); the Incus
-	// instance is "<username>-container" (the convention container_server.go
-	// uses everywhere). Map it before the lookup, tolerating a fully-qualified
-	// name in case a caller already passed the instance name.
-	instanceName := name
-	if !strings.HasSuffix(instanceName, "-container") {
-		instanceName += "-container"
 	}
 	info, err := s.incusClient.GetContainer(instanceName)
 	if err != nil || info == nil {
@@ -1260,6 +1266,16 @@ func (s *NetworkServer) StopEgressProxy(ctx context.Context, req *pb.StopEgressP
 	name := strings.TrimSpace(req.GetContainerName())
 	if name == "" {
 		return nil, status.Error(codes.InvalidArgument, "container_name is required")
+	}
+	instanceName := name
+	if !strings.HasSuffix(instanceName, "-container") {
+		instanceName += "-container"
+	}
+	// Tenant-ownership check (CWE-639 IDOR) — without this, any token holding
+	// routes:write could tear down another tenant's egress relay by naming
+	// their container_name. Mirrors GetContainerACL/UpdateContainerACL.
+	if err := auth.AuthorizeContainerAccess(ctx, instanceName); err != nil {
+		return nil, err
 	}
 	stopped := false
 	if s.egressMgr != nil {
