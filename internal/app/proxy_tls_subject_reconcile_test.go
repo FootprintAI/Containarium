@@ -1,8 +1,11 @@
 package app
 
 import (
+	"bytes"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -339,5 +342,74 @@ func TestEnsureTLSSubjects_NoWriteWhenCoveringWildcardIssuersAlreadySolveDNS(t *
 	}
 	if fc.puts != before {
 		t.Fatalf("issuers already solve DNS-01; want no write, got %d", fc.puts-before)
+	}
+}
+
+// captureLog redirects the shared log.Default() output to a buffer for the
+// duration of the test and restores it after — this package's tests never
+// run in parallel, so a global redirect is safe here.
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	original := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(original) })
+	return &buf
+}
+
+// TestEnsureTLSSubjects_WarnsWhenNewSubjectsZoneIsUncovered (#1739's
+// remaining "zones sufficient" half): adding a brand-new subject whose zone
+// the DNS-01 credential can't see must warn distinctly from either "no
+// credential" (#1738) or "credential rejected" (#1740) — this is the case
+// where the token IS valid, just scoped to the wrong zones.
+func TestEnsureTLSSubjects_WarnsWhenNewSubjectsZoneIsUncovered(t *testing.T) {
+	srv, _ := newRWFakeCaddy(tlsConfigWithPolicy(
+		[]string{"other.example.com"},
+		[]CaddyTLSIssuer{NewACMEIssuer()},
+	))
+	defer srv.Close()
+
+	zonesSrv := fakeCloudflareZones(t, "scoped-token", []string{"covered-elsewhere.com"}, 50)
+	withFakeCloudflareZonesURL(t, zonesSrv.URL)
+	t.Setenv("CONTAINARIUM_ACME_DNS_PROVIDER", "cloudflare")
+	t.Setenv("CF_API_TOKEN", "scoped-token")
+
+	buf := captureLog(t)
+
+	p := NewProxyManager(srv.URL, "example.com").WithDNSChallenge(testDNSChallenge())
+	if err := p.EnsureTLSSubjects([]string{"app.example.com"}); err != nil {
+		t.Fatalf("EnsureTLSSubjects: %v", err)
+	}
+
+	got := buf.String()
+	if !strings.Contains(got, "app.example.com") || !strings.Contains(got, "no zone covering") {
+		t.Fatalf("expected a zone-coverage warning naming app.example.com, got log output: %q", got)
+	}
+}
+
+// A fully-covering credential must stay silent — the reconciler runs on
+// every tick that adds a subject, and noise there would bury the cases that
+// actually need attention.
+func TestEnsureTLSSubjects_NoZoneWarningWhenCovered(t *testing.T) {
+	srv, _ := newRWFakeCaddy(tlsConfigWithPolicy(
+		[]string{"other.example.com"},
+		[]CaddyTLSIssuer{NewACMEIssuer()},
+	))
+	defer srv.Close()
+
+	zonesSrv := fakeCloudflareZones(t, "good-token", []string{"example.com"}, 50)
+	withFakeCloudflareZonesURL(t, zonesSrv.URL)
+	t.Setenv("CONTAINARIUM_ACME_DNS_PROVIDER", "cloudflare")
+	t.Setenv("CF_API_TOKEN", "good-token")
+
+	buf := captureLog(t)
+
+	p := NewProxyManager(srv.URL, "example.com").WithDNSChallenge(testDNSChallenge())
+	if err := p.EnsureTLSSubjects([]string{"app.example.com"}); err != nil {
+		t.Fatalf("EnsureTLSSubjects: %v", err)
+	}
+
+	if strings.Contains(buf.String(), "no zone covering") {
+		t.Fatalf("credential's zone covers the new subject; want no zone-coverage warning, got: %q", buf.String())
 	}
 }
