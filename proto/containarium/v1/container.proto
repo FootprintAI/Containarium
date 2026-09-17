@@ -887,6 +887,25 @@ message GetMetricsRequest {
 message GetMetricsResponse {
   // Metrics for requested container(s)
   repeated ContainerMetrics metrics = 1;
+
+  // Backends that could not be reached for this fleet-wide metrics call
+  // (e.g. sentinel marked the peer unhealthy, or the forwarded request
+  // failed/timed out). Populated only on the no-username "all containers"
+  // path. A backend listed here contributed zero entries to `metrics` —
+  // callers should render that distinctly from "container has no usage
+  // yet" rather than as a bare absence (#1901).
+  repeated UnreachableBackend unreachable_backends = 2;
+}
+
+// UnreachableBackend names one peer backend that a fleet-wide metrics
+// fetch could not complete against, and why.
+message UnreachableBackend {
+  // Backend/peer ID, as returned by ListBackends.
+  string backend_id = 1;
+
+  // Human-readable reason (e.g. "peer marked unhealthy by sentinel",
+  // "peer fetch failed: <error>"). Not machine-parsed; for display/logs.
+  string reason = 2;
 }
 
 // ResizeContainerRequest is the request to resize container resources

@@ -2499,6 +2499,7 @@ func (s *ContainerServer) GetMetrics(ctx context.Context, req *pb.GetMetricsRequ
 	}
 
 	var protoMetrics []*pb.ContainerMetrics
+	var unreachableBackends []*pb.UnreachableBackend
 
 	if req.Username != "" {
 		// Get metrics for a specific container — try local first, then peers
@@ -2532,21 +2533,36 @@ func (s *ContainerServer) GetMetrics(ctx context.Context, req *pb.GetMetricsRequ
 			protoMetrics = append(protoMetrics, toProtoMetrics(m))
 		}
 
-		// Merge metrics from all healthy peers
+		// Merge metrics from all healthy peers. A peer that can't be reached
+		// contributes zero entries to `metrics` — that's reported separately
+		// in `unreachable_backends` so callers can tell "unreachable" from
+		// "genuinely idle/no usage" instead of rendering both as blank (#1901).
 		if s.peerPool != nil {
 			authToken := extractAuthToken(ctx)
 			for _, peer := range s.peerPool.Peers() {
 				if !peer.Healthy {
+					unreachableBackends = append(unreachableBackends, &pb.UnreachableBackend{
+						BackendId: peer.ID,
+						Reason:    "peer marked unhealthy by sentinel",
+					})
 					continue
 				}
 				body, err := peer.ForwardGetMetrics(authToken, "")
 				if err != nil {
 					log.Printf("[metrics] peer %s: %v", peer.ID, err)
+					unreachableBackends = append(unreachableBackends, &pb.UnreachableBackend{
+						BackendId: peer.ID,
+						Reason:    fmt.Sprintf("peer fetch failed: %v", err),
+					})
 					continue
 				}
 				var peerMetricsResp pb.GetMetricsResponse
 				if err := protojson.Unmarshal(body, &peerMetricsResp); err != nil {
 					log.Printf("[metrics] peer %s parse error: %v", peer.ID, err)
+					unreachableBackends = append(unreachableBackends, &pb.UnreachableBackend{
+						BackendId: peer.ID,
+						Reason:    fmt.Sprintf("peer response unparseable: %v", err),
+					})
 					continue
 				}
 				protoMetrics = append(protoMetrics, peerMetricsResp.Metrics...)
@@ -2555,7 +2571,8 @@ func (s *ContainerServer) GetMetrics(ctx context.Context, req *pb.GetMetricsRequ
 	}
 
 	return &pb.GetMetricsResponse{
-		Metrics: protoMetrics,
+		Metrics:             protoMetrics,
+		UnreachableBackends: unreachableBackends,
 	}, nil
 }
 
