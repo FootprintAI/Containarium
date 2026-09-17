@@ -76,6 +76,11 @@ type createContainerRequest struct {
 	TTLSeconds                int64 `json:"ttlSeconds,omitempty"`
 	IdleStopMinutes           int32 `json:"idleStopMinutes,omitempty"`
 	DeleteAfterStoppedSeconds int64 `json:"deleteAfterStoppedSeconds,omitempty"`
+
+	// Region places the container on a multi-region hosted control plane
+	// (#1606) — a standalone/single-region daemon ignores it. Absent unless
+	// set, so a plain create's body is unchanged.
+	Region string `json:"region,omitempty"`
 }
 
 // toggleAutoSleepRequest is POST /v1/containers/{name}/autosleep.
