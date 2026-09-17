@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 )
 
@@ -103,4 +106,167 @@ func verifyCloudflareToken(ctx context.Context, token string) error {
 		return fmt.Errorf("token rejected: %s (code %d)", result.Errors[0].Message, result.Errors[0].Code)
 	}
 	return fmt.Errorf("token rejected (HTTP %d)", resp.StatusCode)
+}
+
+// cloudflareZonesListURL is Cloudflare's zone-listing endpoint — a var (not a
+// const) so tests can point it at a fake server instead of the real API.
+var cloudflareZonesListURL = "https://api.cloudflare.com/client/v4/zones"
+
+// VerifyDNSProviderZoneCoverage checks that every domain in `subjects` falls
+// under a zone the resolved credential can actually see, for providers with a
+// built-in zone-listing call (#1739's remaining "zones sufficient" half — the
+// check that distinguishes "token has the wrong scope for this zone" from
+// "there is no token at all", which a bare presence/validity check cannot
+// tell apart: a credential can be present, non-empty, and even confirmed
+// active by VerifyDNSProviderCredential, and still be scoped to zones that
+// don't include the one a subject actually needs).
+//
+// attempted follows VerifyDNSProviderCredential's convention: false when
+// there's no built-in zone check for this provider, or nothing resolved to
+// check against. uncovered lists exactly the subjects (verbatim, including
+// any leading "*.") that no returned zone covers.
+func VerifyDNSProviderZoneCoverage(ctx context.Context, provider string, envVars map[string]string, subjects []string) (attempted bool, uncovered []string, err error) {
+	switch provider {
+	case "cloudflare":
+		token := resolvedProviderField(DNSChallengeFromEnv(), "api_token", envVars)
+		if token == "" || len(subjects) == 0 {
+			return false, nil, nil
+		}
+		zones, err := listCloudflareZones(ctx, token)
+		if err != nil {
+			return true, nil, err
+		}
+		return true, uncoveredSubjects(subjects, zones), nil
+	default:
+		return false, nil, nil
+	}
+}
+
+// uncoveredSubjects returns the subjects that no zone name covers. A zone
+// covers a subject when the subject equals the zone or is one or more labels
+// under it — the same suffix relation as a Cloudflare zone's actual DNS
+// authority, so "app.example.com" and the wildcard "*.example.com" are both
+// covered by the zone "example.com".
+func uncoveredSubjects(subjects, zones []string) []string {
+	var uncovered []string
+	for _, s := range subjects {
+		covered := false
+		for _, z := range zones {
+			if s == z || strings.HasSuffix(s, "."+z) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			uncovered = append(uncovered, s)
+		}
+	}
+	return uncovered
+}
+
+// listCloudflareZones returns every zone name visible to token, paginating
+// through Cloudflare's /zones endpoint (default page size caps at 20; an
+// account with more zones than that would otherwise silently see coverage
+// checked against only the first page).
+func listCloudflareZones(ctx context.Context, token string) ([]string, error) {
+	client := &http.Client{Timeout: 10 * time.Second}
+	var zones []string
+	for page := 1; ; page++ {
+		url := fmt.Sprintf("%s?page=%d&per_page=50", cloudflareZonesListURL, page)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return nil, fmt.Errorf("building zones-list request: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("zones-list request failed: %w", err)
+		}
+		var result struct {
+			Success bool `json:"success"`
+			Result  []struct {
+				Name string `json:"name"`
+			} `json:"result"`
+			ResultInfo struct {
+				Page       int `json:"page"`
+				TotalPages int `json:"total_pages"`
+			} `json:"result_info"`
+			Errors []struct {
+				Code    int    `json:"code"`
+				Message string `json:"message"`
+			} `json:"errors"`
+		}
+		decErr := json.NewDecoder(resp.Body).Decode(&result)
+		statusCode := resp.StatusCode
+		_ = resp.Body.Close()
+		if decErr != nil {
+			return nil, fmt.Errorf("decoding zones-list response (status %d): %w", statusCode, decErr)
+		}
+		if !result.Success {
+			if len(result.Errors) > 0 {
+				return nil, fmt.Errorf("zones list rejected: %s (code %d)", result.Errors[0].Message, result.Errors[0].Code)
+			}
+			return nil, fmt.Errorf("zones list rejected (HTTP %d)", statusCode)
+		}
+		for _, z := range result.Result {
+			zones = append(zones, z.Name)
+		}
+		if len(result.Result) == 0 || result.ResultInfo.TotalPages <= page {
+			break
+		}
+	}
+	return zones, nil
+}
+
+// warnUncoveredDNSZones checks `subjects` against the configured DNS-01
+// provider's own zone list and logs one WARNING per subject no zone covers
+// (#1739's zone-coverage half — the check that distinguishes "token has the
+// wrong scope for this zone" from "there is no token at all").
+//
+// Reads the provider config fresh from the daemon's own environment via
+// DNSChallengeFromEnv/DNSProviderFromEnv, the same convention
+// verifyDNSProviderCredential (internal/server/core_services.go) already
+// uses for the sibling credential-validity check — rather than trust a
+// *CaddyACMEChallenges the caller happens to be holding, which could be a
+// stale snapshot from before the daemon's environment or config changed.
+//
+// Called only from EnsureTLSSubjects's already-reconciling-something branch
+// (subjects newly missing from Caddy's TLS policies), not on every
+// steady-state tick — a live provider API call is too costly to run on
+// EnsureTLSSubjects's 5-second-default no-op path, and the whole point of
+// this check is to catch a scope problem before Caddy ever attempts the new
+// subject, not to continuously re-poll ones that already resolved fine.
+func warnUncoveredDNSZones(subjects []string) {
+	if len(subjects) == 0 {
+		return
+	}
+	dns := DNSChallengeFromEnv()
+	provider := DNSProviderFromEnv()
+	if dns == nil || provider == "" {
+		return
+	}
+	envVars := make(map[string]string)
+	for _, name := range EnvPlaceholdersInDNSProvider(dns) {
+		if v := os.Getenv(name); v != "" {
+			envVars[name] = v
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	attempted, uncovered, err := VerifyDNSProviderZoneCoverage(ctx, provider, envVars, subjects)
+	if !attempted {
+		return // no built-in zone check for this provider, or nothing resolved to check with
+	}
+	if err != nil {
+		log.Printf("WARNING: could not check DNS-01 provider %q's zone coverage for %v: %v (#1739)",
+			provider, subjects, err)
+		return
+	}
+	for _, s := range uncovered {
+		log.Printf("WARNING: DNS-01 provider %q's credential has no zone covering %q — DNS-01 issuance "+
+			"for this subject will fail, reading like a token-scope problem, until the token's zone "+
+			"permissions include it (#1739)", provider, s)
+	}
 }

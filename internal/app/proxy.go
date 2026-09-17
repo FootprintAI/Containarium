@@ -845,6 +845,7 @@ func (p *ProxyManager) EnsureTLSSubjects(domains []string) error {
 	log.Printf("[ProxyManager] reconciling %d TLS subject(s) missing from Caddy's automation "+
 		"policies: %v — these hosts would otherwise serve on :80 with no certificate (#1584)",
 		len(missing), missing)
+	warnUncoveredDNSZones(missing)
 
 	if len(policies) > 0 {
 		policies[0].Subjects = append(policies[0].Subjects, missing...)
