@@ -66,12 +66,26 @@ func (m *Manager) TunnelTokenRegisterHandler() http.HandlerFunc {
 		// TokenPolicy itself is pure in-memory and would otherwise silently
 		// forget every dynamically-registered token the moment this process
 		// exits, permanently locking out any host whose tunnel session
-		// needs to re-handshake after that restart. Best-effort: a
-		// persistence failure must not fail a legitimate BYOC join, since
+		// needs to re-handshake after that restart.
+		//
+		// The in-memory Allow above stays applied even on a persist failure
+		// below — same "safe direction" as the deregister handler's Deny:
 		// the token is already valid for this process's lifetime either
-		// way — it only affects survival across a *future* restart.
+		// way, and undoing it would drop a legitimate, just-joined host's
+		// live tunnel session for no reason.
+		//
+		// But reporting SUCCESS when the durable record wasn't actually
+		// written was the bug (#1772): the caller had no way to know its
+		// token wouldn't survive a restart, and the gap surfaced days
+		// later, indirectly, as an unexplained permanent disconnect after
+		// an unrelated reboot — no error at the time it mattered, no
+		// signal at restart time either. Report the failure as retryable
+		// instead: a caller that retries lands on the same idempotent
+		// Allow and gets a fresh chance to persist.
 		if err := m.persistTunnelToken(req.Token, pools); err != nil {
-			log.Printf("[sentinel] WARNING: failed to persist tunnel token registration (won't survive a restart): %v", err)
+			log.Printf("[sentinel] ERROR: failed to persist tunnel token registration (token allowed in-memory now, but WILL be lost on the next restart): %v", err)
+			http.Error(w, `{"error":"token allowed but persistence failed; retry"}`, http.StatusInternalServerError)
+			return
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}

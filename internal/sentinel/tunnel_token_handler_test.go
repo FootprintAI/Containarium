@@ -123,6 +123,47 @@ func TestTunnelTokenRegisterHandler_RestrictsToSpecifiedPools(t *testing.T) {
 	}
 }
 
+// TestTunnelTokenRegisterHandler_PersistFailureIsAServerErrorNot204 (#1772):
+// reporting 204 when the durable record wasn't actually written told the
+// caller its token was safely registered when it wasn't — the gap only
+// surfaced days later, indirectly, as an unexplained permanent disconnect
+// after an unrelated sentinel restart, with no error at the time it
+// mattered and no signal at restart time either. Same shape as the
+// deregister side's existing guard
+// (TestTunnelTokenDeregisterHandler_PersistFailureIsAServerErrorNot204):
+// the in-memory Allow must still take effect immediately (the safe
+// direction — a disk hiccup must not drop a legitimate, just-joined host's
+// live tunnel session) even though the response reports failure, so a
+// retry lands on the same idempotent Allow and gets a fresh chance to
+// persist.
+func TestTunnelTokenRegisterHandler_PersistFailureIsAServerErrorNot204(t *testing.T) {
+	m := newManagerForTunnelTokenTest(t, true)
+
+	// Force SaveTunnelTokenStore to fail: point the store path at
+	// "<blocker-file>/tunnel-tokens.json", so its os.MkdirAll(dir) fails
+	// because "blocker" already exists as a regular file, not a directory.
+	blocker := t.TempDir() + "/blocker"
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatalf("create blocker file: %v", err)
+	}
+	m.SetTunnelTokenStorePath(blocker + "/tunnel-tokens.json")
+
+	body, _ := json.Marshal(TunnelTokenRegisterRequest{Token: "fresh-token"})
+	req := httptest.NewRequest(http.MethodPost, "/sentinel/tunnel-tokens", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	auth.SignSentinelRequest(req, []byte(tunnelTokenAdminSecret))
+	rec := httptest.NewRecorder()
+	handler := auth.SentinelHMACMiddleware([]byte(tunnelTokenAdminSecret), m.TunnelTokenRegisterHandler())
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("want 500 when persistence fails, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if err := m.tunnelPolicy.Validate("fresh-token", ""); err != nil {
+		t.Fatalf("token must still be allowed in-memory even though the response reported a persist failure: %v", err)
+	}
+}
+
 func TestTunnelTokenRegisterHandler_501WhenTunnelModeDisabled(t *testing.T) {
 	m := newManagerForTunnelTokenTest(t, false) // no SetTunnelPolicy call
 
