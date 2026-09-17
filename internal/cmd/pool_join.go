@@ -51,6 +51,15 @@ const (
 	// standing tunnel access to whoever presents it), so it gets the same
 	// root-only-file treatment sentinelAuthSecretFile already established.
 	tunnelTokenSecretFile = "/etc/containarium/tunnel-token.env" // #nosec G101 -- a file PATH, not a credential
+
+	// sentinelAuthSecretDocPath is docs/SENTINEL-AUTH-SECRET.md's own
+	// canonical path for a manually-provisioned secret (its "Manual setup"
+	// section), distinct from sentinelAuthSecretFile above (what THIS CLI
+	// writes when --sentinel-auth-secret is passed). Checked alongside it
+	// in sentinelAuthSecretCandidatePaths (#959) so a host provisioned via
+	// the documented manual path isn't treated as unprovisioned just
+	// because pool join itself never wrote sentinelAuthSecretFile there.
+	sentinelAuthSecretDocPath = "/etc/containarium/env.secrets" // #nosec G101 -- a file PATH, not a credential
 )
 
 // minimalDaemonArgv is the baseline daemon command used when no existing
@@ -194,6 +203,44 @@ func renderPoolDropIn(argv []string, authSecretFile string) string {
 	b.WriteString("ExecStart=\n")
 	b.WriteString("ExecStart=" + strings.Join(argv, " ") + "\n")
 	return b.String()
+}
+
+// sentinelAuthSecretCandidatePaths are checked, in order, for an
+// already-provisioned CONTAINARIUM_SENTINEL_AUTH_SECRET when
+// --sentinel-auth-secret isn't passed to THIS pool join invocation (#959):
+// this CLI's own canonical path, then the doc's manual-setup path.
+func sentinelAuthSecretCandidatePaths() []string {
+	return []string{sentinelAuthSecretFile, sentinelAuthSecretDocPath}
+}
+
+// findExistingSentinelAuthSecretFile returns the first candidate path that
+// already has a usable (non-empty) CONTAINARIUM_SENTINEL_AUTH_SECRET=, or ""
+// if none does.
+func findExistingSentinelAuthSecretFile(candidates []string) string {
+	for _, path := range candidates {
+		if sentinelAuthSecretFileHasValue(path) {
+			return path
+		}
+	}
+	return ""
+}
+
+// sentinelAuthSecretFileHasValue reports whether path exists and contains a
+// CONTAINARIUM_SENTINEL_AUTH_SECRET= line whose value is non-empty once
+// trimmed. A missing file, an unreadable one, or a present-but-empty value
+// (the "provisioned the file but never actually set a secret" case) all
+// report false — the caller must not treat any of those as durably wired.
+func sentinelAuthSecretFileHasValue(path string) bool {
+	data, err := os.ReadFile(path) // #nosec G304 -- path is one of this program's own hardcoded candidate paths, not attacker input
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "CONTAINARIUM_SENTINEL_AUTH_SECRET="); ok {
+			return strings.TrimSpace(v) != ""
+		}
+	}
+	return false
 }
 
 // parseExecStartArgv extracts the daemon argv from `systemctl show -p ExecStart
@@ -340,6 +387,15 @@ func runPoolJoin(cmd *cobra.Command, args []string) error {
 	authSecretFile := ""
 	if poolJoinSentinelAuthSecret != "" {
 		authSecretFile = sentinelAuthSecretFile
+	} else if existing := findExistingSentinelAuthSecretFile(sentinelAuthSecretCandidatePaths()); existing != "" {
+		// Already durably provisioned per docs/SENTINEL-AUTH-SECRET.md — you
+		// set this once, not on every join. Keep the drop-in referencing the
+		// existing file (below) instead of silently dropping its
+		// EnvironmentFile= line on a re-join, and skip the false-positive
+		// warning (#959). poolJoinSentinelAuthSecret stays "" — the write
+		// step below must not overwrite this file with an empty secret.
+		authSecretFile = existing
+		fmt.Printf("# Sentinel auth secret already provisioned at %s (#959); keeping it as-is.\n", existing)
 	}
 	dropIn := renderPoolDropIn(daemonArgv, authSecretFile)
 	if !found {
@@ -368,8 +424,10 @@ func runPoolJoin(cmd *cobra.Command, args []string) error {
 
 	if poolJoinDryRun {
 		fmt.Printf("# would ensure the canonical daemon unit (%s) + JWT secret\n\n", systemdServicePath)
-		if authSecretFile != "" {
+		if poolJoinSentinelAuthSecret != "" {
 			fmt.Printf("# %s (mode 0600, contents redacted)\nCONTAINARIUM_SENTINEL_AUTH_SECRET=<redacted, %d bytes>\n\n", authSecretFile, len(poolJoinSentinelAuthSecret))
+		} else if authSecretFile != "" {
+			fmt.Printf("# %s already provisioned (#959) — would keep the existing secret, not rewrite it\n\n", authSecretFile)
 		}
 		fmt.Printf("# %s (mode 0600, contents redacted)\nCONTAINARIUM_TUNNEL_TOKEN=<redacted, %d bytes>\n\n", tunnelTokenSecretFile, len(poolJoinToken))
 		fmt.Printf("# %s\n%s\n", daemonDropIn, dropIn)
@@ -387,8 +445,11 @@ func runPoolJoin(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	// 1b. Sentinel HMAC auth secret (#687) — root-only, referenced by the
-	// drop-in's EnvironmentFile= rather than embedded in it.
-	if authSecretFile != "" {
+	// drop-in's EnvironmentFile= rather than embedded in it. Only written
+	// when THIS invocation was actually given a value: an already-provisioned
+	// file found above (authSecretFile set, poolJoinSentinelAuthSecret still
+	// "") must be left untouched, not overwritten with an empty secret (#959).
+	if poolJoinSentinelAuthSecret != "" {
 		if err := os.MkdirAll("/etc/containarium", 0700); err != nil {
 			return fmt.Errorf("create config directory: %w", err)
 		}

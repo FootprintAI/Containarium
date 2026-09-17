@@ -17,6 +17,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   release from v0.71.0 onward is gated and complete.
 -->
 
+## [0.81.1] - 2026-09-17
+
+> Supersedes the broken `v0.81.0` tag, which was cut without this
+> CHANGELOG section or the `pkg/version/version.go` bump the release CI
+> requires — its release build failed the `verify-release` gate before
+> publishing anything. No artifacts were ever published from `v0.81.0`;
+> this is the real 0.81 release.
+
+### Added
+
+- **App-hosting warns when a DNS-01 subject's zone isn't in the credential's
+  scope**, instead of only discovering the mismatch when the ACME challenge
+  itself fails. (#1891)
+
+### Fixed
+
+- **`egress-via-client` start/stop now requires tenant ownership** — the
+  RPC accepted any caller's tenant ID without checking it against the
+  caller's own tenant, letting one tenant start or stop another tenant's
+  egress proxy. (#1890)
+- **An invalid Kubernetes tenant name is now rejected early, with a clear
+  error**, instead of failing opaquely deeper in the k8s backend. (#1889)
+- **A tunnel token persist failure is now a hard error, not a warning** —
+  silently continuing left the sentinel and the primary disagreeing about
+  the token that had actually been persisted. (#1888)
+- **Idle read deadlines now close vanished-peer sentinel connections**,
+  instead of leaving them open indefinitely once the peer is gone. (#1887)
+- **`SaveConnection` actually deduplicates by flow ID** — traffic-flow
+  records were being double-recorded. (#1886)
+- **A peer-forwarded `StartContainer` now stamps `LastStartedAt` too**,
+  matching the locally-started path. (#1885)
+- **ZAP/pentest `MarkResolved` now scopes to its own scan run**, instead of
+  marking findings resolved fleet-wide. (#1884)
+- **`DeleteVM` now retries through Incus's transient running-state race**
+  instead of failing on a VM that is mid-transition. (#1883)
+- **App TLS-subject reconciliation now checks live Caddy routes, not just
+  `dbRoutes`**, closing a gap where a route removed outside the DB record
+  kept its TLS subject around. (#1881)
+- **VM primary-IP selection now excludes k3s's own `cni0`/flannel
+  bridges**, which could otherwise be picked over the VM's real primary
+  interface. (#1879)
+- **The agent run lease now records the workspace before the git fetch
+  attempt, not after** — a fetch failure previously left the lease with no
+  workspace recorded at all. (#1875)
+
+### Internal
+
+- e2e: sweep leftover cluster instances pre-flight, not just on exit. (#1877)
+
+**Full diff**: https://github.com/FootprintAI/Containarium/compare/v0.80.1...v0.81.1
+
 ## [0.80.1] - 2026-09-16
 
 ### Fixed
