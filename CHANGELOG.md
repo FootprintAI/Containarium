@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+<!--
+  #1363: this file has no sections for v0.62.0-v0.65.0 or v0.68.0-v0.70.0 —
+  both ranges shipped before the release workflow's "Verify the release is
+  described" gate (#1705) existed to catch it. Reconstructing them is
+  judged not worth the archaeology (per #1363's own text); this note exists
+  so a future reader doesn't mistake the gap for [Unreleased] content that
+  was lost, and so nobody re-discovers the same trap from scratch. Every
+  release from v0.71.0 onward is gated and complete.
+-->
+
 ## [0.80.1] - 2026-09-16
 
 ### Fixed
