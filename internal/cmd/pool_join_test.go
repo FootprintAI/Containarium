@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -112,6 +114,78 @@ func TestRenderPoolDropIn_SentinelAuthSecret(t *testing.T) {
 	if strings.Contains(d, "CONTAINARIUM_SENTINEL_AUTH_SECRET") {
 		t.Errorf("drop-in must never embed the secret value inline:\n%s", d)
 	}
+}
+
+// #959: pool join always warned --sentinel-auth-secret wasn't set for THIS
+// invocation, even when the host already has it durably provisioned via an
+// existing EnvironmentFile= drop-in (the documented, expected way — you
+// provision it once, not on every join). These tests cover the detection
+// helper directly.
+
+func writeSecretFile(t *testing.T, dir, name, content string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+	return path
+}
+
+func TestSentinelAuthSecretFileHasValue(t *testing.T) {
+	dir := t.TempDir()
+
+	tests := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{"real secret", "CONTAINARIUM_SENTINEL_AUTH_SECRET=abcdefghijklmnopqrstuvwxyz012345\n", true},
+		{"empty value", "CONTAINARIUM_SENTINEL_AUTH_SECRET=\n", false},
+		{"whitespace-only value", "CONTAINARIUM_SENTINEL_AUTH_SECRET=   \n", false},
+		{"key absent entirely", "SOME_OTHER_VAR=x\n", false},
+		{"value on a later line, with a comment above", "# managed by pool join\nCONTAINARIUM_SENTINEL_AUTH_SECRET=abcdefghijklmnopqrstuvwxyz012345\n", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeSecretFile(t, dir, tt.name+".env", tt.content)
+			if got := sentinelAuthSecretFileHasValue(path); got != tt.want {
+				t.Errorf("sentinelAuthSecretFileHasValue(%q) = %v, want %v", tt.content, got, tt.want)
+			}
+		})
+	}
+
+	t.Run("file does not exist", func(t *testing.T) {
+		if sentinelAuthSecretFileHasValue(filepath.Join(dir, "does-not-exist.env")) {
+			t.Error("want false for a missing file")
+		}
+	})
+}
+
+func TestFindExistingSentinelAuthSecretFile(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "missing.env")
+	empty := writeSecretFile(t, dir, "empty.env", "CONTAINARIUM_SENTINEL_AUTH_SECRET=\n")
+	real := writeSecretFile(t, dir, "real.env", "CONTAINARIUM_SENTINEL_AUTH_SECRET=abcdefghijklmnopqrstuvwxyz012345\n")
+
+	t.Run("finds the first usable candidate", func(t *testing.T) {
+		got := findExistingSentinelAuthSecretFile([]string{missing, empty, real})
+		if got != real {
+			t.Errorf("got %q, want %q", got, real)
+		}
+	})
+
+	t.Run("none usable returns empty", func(t *testing.T) {
+		got := findExistingSentinelAuthSecretFile([]string{missing, empty})
+		if got != "" {
+			t.Errorf("got %q, want empty", got)
+		}
+	})
+
+	t.Run("no candidates returns empty", func(t *testing.T) {
+		if got := findExistingSentinelAuthSecretFile(nil); got != "" {
+			t.Errorf("got %q, want empty", got)
+		}
+	})
 }
 
 func TestResolvePoolDaemonArgv_FreshHostUsesMinimal(t *testing.T) {
