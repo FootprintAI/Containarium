@@ -477,9 +477,11 @@ enum CrewRunState {
 // agent in the run is audit-logged under this run's trace_id, so a run is
 // itself an evidence artifact.
 message CrewRun {
-  // The run id. Also the id bound into every member box's credentials (their
-  // `run_id` claim) and the one the run's lease audit rows carry, so
-  // RunCrewResponse needs no separate run_id field.
+  // The run id: RunCrewRequest.run_id when the caller supplied one (resolved
+  // the same way RunAgentSkillRequest.run_id is — #1899), otherwise a
+  // daemon-generated UUID. Also the id bound into every member box's
+  // credentials (their `run_id` claim) and the one the run's lease audit rows
+  // carry, so RunCrewResponse needs no separate run_id field.
   string id = 1;
   string crew_id = 2;
   // Shared trace id threaded through every agent's audit entries for this run.
@@ -523,6 +525,13 @@ message RunCrewRequest {
   string pool = 3;
   // JSON input for the crew's entry skill(s).
   string input_json = 4;
+  // Optional caller-supplied run id (1-128 chars of [A-Za-z0-9._-]). Empty
+  // means the daemon generates a UUID. Resolved and validated the same way as
+  // RunAgentSkillRequest.run_id (#1826), before any crew/topology lookup, and
+  // becomes CrewRun.id — bound into every member box's credentials (their
+  // `run_id` claim), so a caller's own run-tracking id is the one OSS's audit
+  // trail and every member's lease use (#1899).
+  string run_id = 5;
 }
 message RunCrewResponse {
   CrewRun run = 1;

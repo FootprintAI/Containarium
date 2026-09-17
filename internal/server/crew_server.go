@@ -83,6 +83,15 @@ func (s *CrewServer) RunCrew(ctx context.Context, req *pb.RunCrewRequest) (*pb.R
 	if req.CrewId == "" {
 		return nil, status.Error(codes.InvalidArgument, "crew_id is required")
 	}
+	// Resolve the run id before any catalog/topology work, same as
+	// RunAgentSkill (#1899): a malformed caller-supplied id must fail the RPC,
+	// not the run, and a caller with its own run-tracking id (e.g. Containarium
+	// Cloud's CrewRunID) needs it to become this run's id so OSS's audit trail
+	// and every member's lease resolve back to the same identifier.
+	runID, err := resolveRunID(req.GetRunId())
+	if err != nil {
+		return nil, err
+	}
 	crew, err := s.catalog.Get(req.CrewId)
 	if err != nil {
 		return nil, status.Error(codes.NotFound, err.Error())
@@ -96,7 +105,7 @@ func (s *CrewServer) RunCrew(ctx context.Context, req *pb.RunCrewRequest) (*pb.R
 
 	trace := genTraceID()
 	run := &pb.CrewRun{
-		Id:        "crewrun-" + trace,
+		Id:        runID,
 		CrewId:    crew.Id,
 		TraceId:   trace,
 		State:     pb.CrewRunState_CREW_RUN_STATE_RUNNING,

@@ -9203,7 +9203,7 @@
       "properties": {
         "id": {
           "type": "string",
-          "description": "The run id. Also the id bound into every member box's credentials (their\n`run_id` claim) and the one the run's lease audit rows carry, so\nRunCrewResponse needs no separate run_id field."
+          "description": "The run id: RunCrewRequest.run_id when the caller supplied one (resolved\nthe same way RunAgentSkillRequest.run_id is — #1899), otherwise a\ndaemon-generated UUID. Also the id bound into every member box's\ncredentials (their `run_id` claim) and the one the run's lease audit rows\ncarry, so RunCrewResponse needs no separate run_id field."
         },
         "crewId": {
           "type": "string"
@@ -13214,6 +13214,10 @@
         "inputJson": {
           "type": "string",
           "description": "JSON input for the crew's entry skill(s)."
+        },
+        "runId": {
+          "type": "string",
+          "description": "Optional caller-supplied run id (1-128 chars of [A-Za-z0-9._-]). Empty\nmeans the daemon generates a UUID. Resolved and validated the same way as\nRunAgentSkillRequest.run_id (#1826), before any crew/topology lookup, and\nbecomes CrewRun.id — bound into every member box's credentials (their\n`run_id` claim), so a caller's own run-tracking id is the one OSS's audit\ntrail and every member's lease use (#1899)."
         }
       }
     },
