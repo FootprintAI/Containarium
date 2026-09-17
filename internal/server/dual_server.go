@@ -1280,6 +1280,11 @@ skipAppHosting:
 				}
 				passthroughSyncJob = network.NewPassthroughSyncJob(passthroughStore, networkServer.passthroughManager, syncInterval)
 				networkServer.passthroughStore = passthroughStore
+				// ContainerServer also needs the passthrough store so
+				// DeleteContainer can cascade-clean a recipe-deployed box's
+				// TCP/UDP passthrough routes (#1462), mirroring
+				// SetRouteCleanupDeps above for HTTP routes.
+				containerServer.SetPassthroughCleanupDep(passthroughStore)
 				log.Printf("Passthrough route persistence enabled with %v sync interval", syncInterval)
 			}
 		}

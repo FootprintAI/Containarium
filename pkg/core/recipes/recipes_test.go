@@ -255,6 +255,61 @@ func TestLoadRejectsBadPort(t *testing.T) {
 	}
 }
 
+// #1462: a RecipePort can declare a raw TCP/UDP passthrough instead of an
+// HTTP subdomain, for a wire protocol no HTTP client speaks.
+func TestLoadPassthroughPort(t *testing.T) {
+	m := New()
+	yaml := "recipes:\n  - id: x\n    image: a\n    ports:\n" +
+		"      - container_port: 4566\n        protocol: tcp\n" +
+		"      - container_port: 5432\n        protocol: tcp\n        external_port: 15432\n" +
+		"      - container_port: 8080\n        subdomain: web\n"
+	if err := m.LoadFromBytes([]byte(yaml)); err != nil {
+		t.Fatalf("LoadFromBytes: %v", err)
+	}
+	r, err := m.Get("x")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(r.Ports) != 3 {
+		t.Fatalf("want 3 ports, got %d", len(r.Ports))
+	}
+
+	p0 := r.Ports[0]
+	if p0.Protocol != pb.RouteProtocol_ROUTE_PROTOCOL_TCP {
+		t.Errorf("port 0 protocol = %v, want TCP", p0.Protocol)
+	}
+	if p0.ExternalPort != 0 {
+		t.Errorf("port 0 external_port = %d, want 0 (defaults to container_port at expose time)", p0.ExternalPort)
+	}
+
+	p1 := r.Ports[1]
+	if p1.Protocol != pb.RouteProtocol_ROUTE_PROTOCOL_TCP || p1.ExternalPort != 15432 {
+		t.Errorf("port 1 = %+v, want TCP with external_port 15432", p1)
+	}
+
+	p2 := r.Ports[2]
+	if p2.Protocol != pb.RouteProtocol_ROUTE_PROTOCOL_UNSPECIFIED || p2.Subdomain != "web" {
+		t.Errorf("port 2 = %+v, want unspecified protocol (HTTP default) with subdomain 'web'", p2)
+	}
+}
+
+func TestLoadPassthroughPortRejectsUnknownProtocol(t *testing.T) {
+	m := New()
+	yaml := "recipes:\n  - id: x\n    image: a\n    ports:\n      - container_port: 1234\n        protocol: sctp\n"
+	if err := m.LoadFromBytes([]byte(yaml)); err == nil {
+		t.Fatal("expected error for unknown port protocol")
+	}
+}
+
+func TestLoadRejectsBadExternalPort(t *testing.T) {
+	m := New()
+	yaml := "recipes:\n  - id: x\n    image: a\n    ports:\n" +
+		"      - container_port: 1234\n        protocol: tcp\n        external_port: 70000\n"
+	if err := m.LoadFromBytes([]byte(yaml)); err == nil {
+		t.Fatal("expected error for out-of-range external_port")
+	}
+}
+
 func TestResolveParametersDefaultsAndRequired(t *testing.T) {
 	r := &pb.Recipe{
 		Id: "r",

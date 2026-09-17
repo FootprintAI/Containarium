@@ -5,6 +5,7 @@ package containarium.v1;
 import "google/api/annotations.proto";
 import "protoc-gen-openapiv2/options/annotations.proto";
 import "containarium/v1/container.proto";
+import "containarium/v1/network.proto";
 
 option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
 
@@ -20,14 +21,29 @@ message RecipeResources {
   string disk = 3;
 }
 
-// RecipePort maps a container port to a public subdomain.
+// RecipePort maps a container port to a public subdomain, or to a raw
+// TCP/UDP passthrough port for a wire protocol no HTTP client speaks
+// (e.g. Postgres wire, Redis, Kafka). See #1462.
 message RecipePort {
   // Port the app listens on inside the container (e.g. 11434)
   int32 container_port = 1;
 
   // Subdomain to expose it under (e.g. "ollama"); combined with the
   // deployment name and the daemon's base domain to form the public host.
+  // Ignored when protocol is TCP or UDP.
   string subdomain = 2;
+
+  // How to expose this port. ROUTE_PROTOCOL_UNSPECIFIED and
+  // ROUTE_PROTOCOL_HTTP/GRPC route through Caddy under `subdomain` (the
+  // original, and still default, behavior). ROUTE_PROTOCOL_TCP/UDP register
+  // a direct passthrough route instead.
+  RouteProtocol protocol = 3;
+
+  // Host-side port for a TCP/UDP passthrough. Defaults to container_port
+  // when zero. Ignored for HTTP/GRPC. Passthrough binds a host-wide port,
+  // so a deploy whose external_port is already claimed by a different
+  // container fails loudly rather than silently stealing it.
+  int32 external_port = 4;
 }
 
 // RecipeVolume is a named persistent volume mounted into the app container.

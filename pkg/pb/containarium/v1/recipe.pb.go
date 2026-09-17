@@ -87,14 +87,27 @@ func (x *RecipeResources) GetDisk() string {
 	return ""
 }
 
-// RecipePort maps a container port to a public subdomain.
+// RecipePort maps a container port to a public subdomain, or to a raw
+// TCP/UDP passthrough port for a wire protocol no HTTP client speaks
+// (e.g. Postgres wire, Redis, Kafka). See #1462.
 type RecipePort struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Port the app listens on inside the container (e.g. 11434)
 	ContainerPort int32 `protobuf:"varint,1,opt,name=container_port,json=containerPort,proto3" json:"container_port,omitempty"`
 	// Subdomain to expose it under (e.g. "ollama"); combined with the
 	// deployment name and the daemon's base domain to form the public host.
-	Subdomain     string `protobuf:"bytes,2,opt,name=subdomain,proto3" json:"subdomain,omitempty"`
+	// Ignored when protocol is TCP or UDP.
+	Subdomain string `protobuf:"bytes,2,opt,name=subdomain,proto3" json:"subdomain,omitempty"`
+	// How to expose this port. ROUTE_PROTOCOL_UNSPECIFIED and
+	// ROUTE_PROTOCOL_HTTP/GRPC route through Caddy under `subdomain` (the
+	// original, and still default, behavior). ROUTE_PROTOCOL_TCP/UDP register
+	// a direct passthrough route instead.
+	Protocol RouteProtocol `protobuf:"varint,3,opt,name=protocol,proto3,enum=containarium.v1.RouteProtocol" json:"protocol,omitempty"`
+	// Host-side port for a TCP/UDP passthrough. Defaults to container_port
+	// when zero. Ignored for HTTP/GRPC. Passthrough binds a host-wide port,
+	// so a deploy whose external_port is already claimed by a different
+	// container fails loudly rather than silently stealing it.
+	ExternalPort  int32 `protobuf:"varint,4,opt,name=external_port,json=externalPort,proto3" json:"external_port,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -141,6 +154,20 @@ func (x *RecipePort) GetSubdomain() string {
 		return x.Subdomain
 	}
 	return ""
+}
+
+func (x *RecipePort) GetProtocol() RouteProtocol {
+	if x != nil {
+		return x.Protocol
+	}
+	return RouteProtocol_ROUTE_PROTOCOL_UNSPECIFIED
+}
+
+func (x *RecipePort) GetExternalPort() int32 {
+	if x != nil {
+		return x.ExternalPort
+	}
+	return 0
 }
 
 // RecipeVolume is a named persistent volume mounted into the app container.
@@ -929,15 +956,17 @@ var File_containarium_v1_recipe_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_recipe_proto_rawDesc = "" +
 	"\n" +
-	"\x1ccontainarium/v1/recipe.proto\x12\x0fcontainarium.v1\x1a\x1cgoogle/api/annotations.proto\x1a.protoc-gen-openapiv2/options/annotations.proto\x1a\x1fcontainarium/v1/container.proto\"O\n" +
+	"\x1ccontainarium/v1/recipe.proto\x12\x0fcontainarium.v1\x1a\x1cgoogle/api/annotations.proto\x1a.protoc-gen-openapiv2/options/annotations.proto\x1a\x1fcontainarium/v1/container.proto\x1a\x1dcontainarium/v1/network.proto\"O\n" +
 	"\x0fRecipeResources\x12\x10\n" +
 	"\x03cpu\x18\x01 \x01(\tR\x03cpu\x12\x16\n" +
 	"\x06memory\x18\x02 \x01(\tR\x06memory\x12\x12\n" +
-	"\x04disk\x18\x03 \x01(\tR\x04disk\"Q\n" +
+	"\x04disk\x18\x03 \x01(\tR\x04disk\"\xb2\x01\n" +
 	"\n" +
 	"RecipePort\x12%\n" +
 	"\x0econtainer_port\x18\x01 \x01(\x05R\rcontainerPort\x12\x1c\n" +
-	"\tsubdomain\x18\x02 \x01(\tR\tsubdomain\"6\n" +
+	"\tsubdomain\x18\x02 \x01(\tR\tsubdomain\x12:\n" +
+	"\bprotocol\x18\x03 \x01(\x0e2\x1e.containarium.v1.RouteProtocolR\bprotocol\x12#\n" +
+	"\rexternal_port\x18\x04 \x01(\x05R\fexternalPort\"6\n" +
 	"\fRecipeVolume\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04path\x18\x02 \x01(\tR\x04path\"\xa3\x01\n" +
@@ -1044,33 +1073,35 @@ var file_containarium_v1_recipe_proto_goTypes = []any{
 	nil,                                // 13: containarium.v1.Recipe.EnvEntry
 	nil,                                // 14: containarium.v1.DeployRecipeRequest.ParametersEntry
 	nil,                                // 15: containarium.v1.DeployRecipeRequest.LabelsEntry
-	(*Container)(nil),                  // 16: containarium.v1.Container
+	(RouteProtocol)(0),                 // 16: containarium.v1.RouteProtocol
+	(*Container)(nil),                  // 17: containarium.v1.Container
 }
 var file_containarium_v1_recipe_proto_depIdxs = []int32{
-	0,  // 0: containarium.v1.Recipe.resources:type_name -> containarium.v1.RecipeResources
-	1,  // 1: containarium.v1.Recipe.ports:type_name -> containarium.v1.RecipePort
-	2,  // 2: containarium.v1.Recipe.volumes:type_name -> containarium.v1.RecipeVolume
-	13, // 3: containarium.v1.Recipe.env:type_name -> containarium.v1.Recipe.EnvEntry
-	3,  // 4: containarium.v1.Recipe.parameters:type_name -> containarium.v1.RecipeParam
-	4,  // 5: containarium.v1.ListRecipesResponse.recipes:type_name -> containarium.v1.Recipe
-	4,  // 6: containarium.v1.GetRecipeResponse.recipe:type_name -> containarium.v1.Recipe
-	14, // 7: containarium.v1.DeployRecipeRequest.parameters:type_name -> containarium.v1.DeployRecipeRequest.ParametersEntry
-	0,  // 8: containarium.v1.DeployRecipeRequest.resource_overrides:type_name -> containarium.v1.RecipeResources
-	15, // 9: containarium.v1.DeployRecipeRequest.labels:type_name -> containarium.v1.DeployRecipeRequest.LabelsEntry
-	16, // 10: containarium.v1.DeployRecipeResponse.container:type_name -> containarium.v1.Container
-	11, // 11: containarium.v1.RecipeService.GetWorkspaceAccess:input_type -> containarium.v1.GetWorkspaceAccessRequest
-	5,  // 12: containarium.v1.RecipeService.ListRecipes:input_type -> containarium.v1.ListRecipesRequest
-	7,  // 13: containarium.v1.RecipeService.GetRecipe:input_type -> containarium.v1.GetRecipeRequest
-	9,  // 14: containarium.v1.RecipeService.DeployRecipe:input_type -> containarium.v1.DeployRecipeRequest
-	12, // 15: containarium.v1.RecipeService.GetWorkspaceAccess:output_type -> containarium.v1.GetWorkspaceAccessResponse
-	6,  // 16: containarium.v1.RecipeService.ListRecipes:output_type -> containarium.v1.ListRecipesResponse
-	8,  // 17: containarium.v1.RecipeService.GetRecipe:output_type -> containarium.v1.GetRecipeResponse
-	10, // 18: containarium.v1.RecipeService.DeployRecipe:output_type -> containarium.v1.DeployRecipeResponse
-	15, // [15:19] is the sub-list for method output_type
-	11, // [11:15] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	16, // 0: containarium.v1.RecipePort.protocol:type_name -> containarium.v1.RouteProtocol
+	0,  // 1: containarium.v1.Recipe.resources:type_name -> containarium.v1.RecipeResources
+	1,  // 2: containarium.v1.Recipe.ports:type_name -> containarium.v1.RecipePort
+	2,  // 3: containarium.v1.Recipe.volumes:type_name -> containarium.v1.RecipeVolume
+	13, // 4: containarium.v1.Recipe.env:type_name -> containarium.v1.Recipe.EnvEntry
+	3,  // 5: containarium.v1.Recipe.parameters:type_name -> containarium.v1.RecipeParam
+	4,  // 6: containarium.v1.ListRecipesResponse.recipes:type_name -> containarium.v1.Recipe
+	4,  // 7: containarium.v1.GetRecipeResponse.recipe:type_name -> containarium.v1.Recipe
+	14, // 8: containarium.v1.DeployRecipeRequest.parameters:type_name -> containarium.v1.DeployRecipeRequest.ParametersEntry
+	0,  // 9: containarium.v1.DeployRecipeRequest.resource_overrides:type_name -> containarium.v1.RecipeResources
+	15, // 10: containarium.v1.DeployRecipeRequest.labels:type_name -> containarium.v1.DeployRecipeRequest.LabelsEntry
+	17, // 11: containarium.v1.DeployRecipeResponse.container:type_name -> containarium.v1.Container
+	11, // 12: containarium.v1.RecipeService.GetWorkspaceAccess:input_type -> containarium.v1.GetWorkspaceAccessRequest
+	5,  // 13: containarium.v1.RecipeService.ListRecipes:input_type -> containarium.v1.ListRecipesRequest
+	7,  // 14: containarium.v1.RecipeService.GetRecipe:input_type -> containarium.v1.GetRecipeRequest
+	9,  // 15: containarium.v1.RecipeService.DeployRecipe:input_type -> containarium.v1.DeployRecipeRequest
+	12, // 16: containarium.v1.RecipeService.GetWorkspaceAccess:output_type -> containarium.v1.GetWorkspaceAccessResponse
+	6,  // 17: containarium.v1.RecipeService.ListRecipes:output_type -> containarium.v1.ListRecipesResponse
+	8,  // 18: containarium.v1.RecipeService.GetRecipe:output_type -> containarium.v1.GetRecipeResponse
+	10, // 19: containarium.v1.RecipeService.DeployRecipe:output_type -> containarium.v1.DeployRecipeResponse
+	16, // [16:20] is the sub-list for method output_type
+	12, // [12:16] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_recipe_proto_init() }
@@ -1079,6 +1110,7 @@ func file_containarium_v1_recipe_proto_init() {
 		return
 	}
 	file_containarium_v1_container_proto_init()
+	file_containarium_v1_network_proto_init()
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

@@ -32,6 +32,7 @@ import (
 	boxlxc "github.com/footprintai/containarium/pkg/core/box/lxc"
 	"github.com/footprintai/containarium/pkg/core/container"
 	"github.com/footprintai/containarium/pkg/core/incus"
+	"github.com/footprintai/containarium/pkg/core/network"
 	"github.com/footprintai/containarium/pkg/core/ostype"
 	"github.com/footprintai/containarium/pkg/core/stacks"
 	"github.com/footprintai/containarium/pkg/core/zfskey"
@@ -226,6 +227,12 @@ type ContainerServer struct {
 	// owned, so deleting an LXC actually deletes the public hostname too.
 	routeStore   routeLister
 	proxyManager *app.ProxyManager
+	// passthroughStore, when set, lets DeleteContainer also cascade-remove
+	// any TCP/UDP passthrough routes the container owned (#1462) — the
+	// passthrough analog of routeStore above. nil on a daemon with no
+	// Postgres-backed passthrough store configured, in which case this
+	// cascade step is skipped (matching routeStore's own nil handling).
+	passthroughStore network.PassthroughStore
 
 	// moveRunner shells out to `incus snapshot/copy/stop/start` for the
 	// MoveContainer migration flow. Nil on daemons that don't support
@@ -1484,6 +1491,26 @@ func (s *ContainerServer) cascadeContainerCleanup(ctx context.Context, container
 					log.Printf("[delete-cascade] removed TLS automation subject %s", r.FullDomain)
 				}
 			}
+		}
+	}
+
+	// 2b. Passthrough store: same cascade, for TCP/UDP passthrough routes
+	//     (#1462). Without this a deleted box's external_port stays claimed
+	//     forever — a later recipe deploy wanting that same port fails with
+	//     a stale "already claimed" conflict against a container that no
+	//     longer exists.
+	if s.passthroughStore != nil {
+		routes, err := s.passthroughStore.ListByContainer(ctx, containerName)
+		if err != nil {
+			log.Printf("[delete-cascade] list passthrough routes for %s failed: %v", containerName, err)
+		}
+		for _, r := range routes {
+			if err := s.passthroughStore.Delete(ctx, r.ExternalPort, r.Protocol); err != nil {
+				log.Printf("[delete-cascade] delete passthrough route %d/%s failed: %v", r.ExternalPort, r.Protocol, err)
+				continue
+			}
+			log.Printf("[delete-cascade] removed passthrough route %d/%s (sync job will reap the iptables rule)",
+				r.ExternalPort, r.Protocol)
 		}
 	}
 
@@ -4102,6 +4129,14 @@ func (s *ContainerServer) localBackendHealthy() bool {
 func (s *ContainerServer) SetRouteCleanupDeps(routeStore *app.RouteStore, proxyManager *app.ProxyManager) {
 	s.routeStore = routeStore
 	s.proxyManager = proxyManager
+}
+
+// SetPassthroughCleanupDep wires the passthrough store so DeleteContainer can
+// cascade-clean a container's TCP/UDP passthrough routes (#1462), mirroring
+// SetRouteCleanupDeps above. store may be nil if the daemon has no
+// Postgres-backed passthrough store configured; the cascade skips gracefully.
+func (s *ContainerServer) SetPassthroughCleanupDep(store network.PassthroughStore) {
+	s.passthroughStore = store
 }
 
 // SetCollaboratorManager sets the collaborator manager for handling collaborator operations

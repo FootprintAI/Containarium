@@ -29,6 +29,13 @@ type resourcesDef struct {
 type portDef struct {
 	ContainerPort int32  `yaml:"container_port"`
 	Subdomain     string `yaml:"subdomain"`
+	// Protocol selects how this port is exposed: "" or "http" (the
+	// default) routes through Caddy under Subdomain; "tcp" or "udp"
+	// registers a direct passthrough route instead (#1462).
+	Protocol string `yaml:"protocol,omitempty"`
+	// ExternalPort is the host-side port for a tcp/udp passthrough.
+	// Ignored for http. Zero defaults to ContainerPort at expose time.
+	ExternalPort int32 `yaml:"external_port,omitempty"`
 }
 
 // volumeDef mirrors pb.RecipeVolume for YAML decoding.
@@ -90,6 +97,8 @@ func (r *recipeDef) ToProto() *pb.Recipe {
 		out.Ports = append(out.Ports, &pb.RecipePort{
 			ContainerPort: p.ContainerPort,
 			Subdomain:     p.Subdomain,
+			Protocol:      portProtocolFromYAML(p.Protocol),
+			ExternalPort:  p.ExternalPort,
 		})
 	}
 	for _, v := range r.Volumes {
@@ -109,6 +118,21 @@ func (r *recipeDef) ToProto() *pb.Recipe {
 		})
 	}
 	return out
+}
+
+// portProtocolFromYAML maps a portDef.Protocol string to its pb.RouteProtocol
+// value. validate rejects anything not in this set before ToProto ever sees
+// it, so the "" / "http" default (ROUTE_PROTOCOL_UNSPECIFIED) is the only
+// unrecognized-string case reachable here.
+func portProtocolFromYAML(s string) pb.RouteProtocol {
+	switch s {
+	case "tcp":
+		return pb.RouteProtocol_ROUTE_PROTOCOL_TCP
+	case "udp":
+		return pb.RouteProtocol_ROUTE_PROTOCOL_UDP
+	default:
+		return pb.RouteProtocol_ROUTE_PROTOCOL_UNSPECIFIED
+	}
 }
 
 type config struct {
@@ -188,6 +212,15 @@ func validate(r *recipeDef) error {
 	for _, p := range r.Ports {
 		if p.ContainerPort <= 0 || p.ContainerPort > 65535 {
 			return fmt.Errorf("recipe %q has invalid container_port: %d", r.ID, p.ContainerPort)
+		}
+		switch p.Protocol {
+		case "", "http", "tcp", "udp":
+		default:
+			return fmt.Errorf("recipe %q port %d has unsupported protocol %q (must be http, tcp, or udp)",
+				r.ID, p.ContainerPort, p.Protocol)
+		}
+		if p.ExternalPort != 0 && (p.ExternalPort < 0 || p.ExternalPort > 65535) {
+			return fmt.Errorf("recipe %q port %d has invalid external_port: %d", r.ID, p.ContainerPort, p.ExternalPort)
 		}
 	}
 	return nil

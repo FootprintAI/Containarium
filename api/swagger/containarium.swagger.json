@@ -22,6 +22,10 @@
       "name": "ActuationService"
     },
     {
+      "name": "NetworkService",
+      "description": "NetworkService provides network and firewall management"
+    },
+    {
       "name": "RecipeService",
       "description": "RecipeService provides one-command deployment of declarative GPU/app\nrecipes onto Containarium backends."
     },
@@ -32,10 +36,6 @@
     {
       "name": "CrewService",
       "description": "CrewService runs collaborating sets of skills bound to a task purpose."
-    },
-    {
-      "name": "NetworkService",
-      "description": "NetworkService provides network and firewall management"
     },
     {
       "name": "AppService",
@@ -12594,10 +12594,19 @@
         },
         "subdomain": {
           "type": "string",
-          "description": "Subdomain to expose it under (e.g. \"ollama\"); combined with the\ndeployment name and the daemon's base domain to form the public host."
+          "description": "Subdomain to expose it under (e.g. \"ollama\"); combined with the\ndeployment name and the daemon's base domain to form the public host.\nIgnored when protocol is TCP or UDP."
+        },
+        "protocol": {
+          "$ref": "#/definitions/RouteProtocol",
+          "description": "How to expose this port. ROUTE_PROTOCOL_UNSPECIFIED and\nROUTE_PROTOCOL_HTTP/GRPC route through Caddy under `subdomain` (the\noriginal, and still default, behavior). ROUTE_PROTOCOL_TCP/UDP register\na direct passthrough route instead."
+        },
+        "externalPort": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Host-side port for a TCP/UDP passthrough. Defaults to container_port\nwhen zero. Ignored for HTTP/GRPC. Passthrough binds a host-wide port,\nso a deploy whose external_port is already claimed by a different\ncontainer fails loudly rather than silently stealing it."
         }
       },
-      "description": "RecipePort maps a container port to a public subdomain."
+      "description": "RecipePort maps a container port to a public subdomain, or to a raw\nTCP/UDP passthrough port for a wire protocol no HTTP client speaks\n(e.g. Postgres wire, Redis, Kafka). See #1462."
     },
     "RecipeResources": {
       "type": "object",
