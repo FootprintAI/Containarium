@@ -1,0 +1,18 @@
+{
+  "collaborators": [
+    {
+      "id": "c1",
+      "containerName": "alice-container",
+      "ownerUsername": "alice",
+      "collaboratorUsername": "bob",
+      "accountName": "alice-container-bob",
+      "sshPublicKey": "ssh-ed25519 AAAAlaptop",
+      "addedAt": "1771122760",
+      "createdBy": "alice",
+      "hasSudo": false,
+      "hasContainerRuntime": true,
+      "sshPublicKeys": ["ssh-ed25519 AAAAlaptop"]
+    }
+  ],
+  "totalCount": 1
+}

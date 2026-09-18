@@ -1253,6 +1253,83 @@ func (s *Server) registerTools() {
 			Handler: handleDeleteRoute,
 		},
 		{
+			Name: "add_collaborator",
+			Description: "Grant a teammate SSH access to a container — the same capability a " +
+				"human has via `containarium collaborator add`, the REST API, or the dashboard " +
+				"(#1145). The collaborator gets their own account on the container plus a jump-" +
+				"server account for ProxyJump access, and can `sudo su - <owner>` (or full sudo " +
+				"with grant_sudo) once connected. Sessions are logged for auditing.\n\n" +
+				"All keys in ssh_public_keys are authorized, so a collaborator with several " +
+				"machines can connect from any of them.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"owner_username": map[string]interface{}{
+						"type":        "string",
+						"description": "Username of the container's owner (same value used by create_container).",
+					},
+					"collaborator_username": map[string]interface{}{
+						"type":        "string",
+						"description": "Username to grant access to.",
+					},
+					"ssh_public_keys": map[string]interface{}{
+						"type":        "array",
+						"items":       map[string]interface{}{"type": "string"},
+						"description": "The collaborator's SSH public key(s), full authorized_keys line(s) (e.g. 'ssh-ed25519 AAAA...'). At least one is required.",
+					},
+					"grant_sudo": map[string]interface{}{
+						"type":        "boolean",
+						"description": "Grant full sudo (all commands), not just `sudo su - <owner>`. Default false.",
+					},
+					"grant_container_runtime": map[string]interface{}{
+						"type":        "boolean",
+						"description": "Add the collaborator to the docker/podman groups for container-runtime access. Default false.",
+					},
+				},
+				"required": []string{"owner_username", "collaborator_username", "ssh_public_keys"},
+			},
+			Handler: handleAddCollaborator,
+		},
+		{
+			Name: "list_collaborators",
+			Description: "List everyone with SSH access to a container — the owner plus every " +
+				"collaborator added via `add_collaborator` / `containarium collaborator add`. " +
+				"Returns each collaborator's account name, authorized keys, sudo/container-" +
+				"runtime grants, and when they were added. Read-only.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"owner_username": map[string]interface{}{
+						"type":        "string",
+						"description": "Username of the container's owner (same value used by create_container).",
+					},
+				},
+				"required": []string{"owner_username"},
+			},
+			Handler: handleListCollaborators,
+		},
+		{
+			Name: "remove_collaborator",
+			Description: "Revoke a collaborator's SSH access to a container — the inverse of " +
+				"`add_collaborator`. Removes their account on the container and their jump-" +
+				"server account; their sessions end and they can no longer connect.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"owner_username": map[string]interface{}{
+						"type":        "string",
+						"description": "Username of the container's owner (same value used by create_container).",
+					},
+					"collaborator_username": map[string]interface{}{
+						"type":        "string",
+						"description": "Username whose access to revoke (same value passed to add_collaborator).",
+					},
+				},
+				"required": []string{"owner_username", "collaborator_username"},
+			},
+			Handler: handleRemoveCollaborator,
+		},
+		{
 			Name: "expose_port",
 			Description: "Expose a container's port on a public hostname. Resolves the " +
 				"container's IP, then registers a domain → container:port route in the " +
@@ -1638,6 +1715,12 @@ func toolScopeAssignments() map[string]string {
 		"list_routes":  auth.ScopeRoutesRead,
 		"expose_port":  auth.ScopeRoutesWrite,
 		"delete_route": auth.ScopeRoutesWrite,
+		// collaborators (#1145) — container access control, scoped like any
+		// other container write/read (the RPCs themselves gate on
+		// AuthorizeTenant, same as create/delete container).
+		"add_collaborator":    auth.ScopeContainersWrite,
+		"list_collaborators":  auth.ScopeContainersRead,
+		"remove_collaborator": auth.ScopeContainersWrite,
 		// passthrough routes (raw L4, #1550) — scoped the same as their
 		// HTTPS proxy-route siblings above rather than introducing a new
 		// scope for one feature (see set_metrics_export for the same call).
@@ -2524,6 +2607,72 @@ func handleDeleteRoute(client API, args map[string]interface{}) (string, error) 
 		return "", fmt.Errorf("failed to delete route %s: %w", domain, err)
 	}
 	return fmt.Sprintf("✅ Deleted route %s — it no longer reaches any container.", domain), nil
+}
+
+func handleAddCollaborator(client API, args map[string]interface{}) (string, error) {
+	ownerUsername := getStringArg(args, "owner_username", "")
+	if ownerUsername == "" {
+		return "", fmt.Errorf("owner_username is required")
+	}
+	collaboratorUsername := getStringArg(args, "collaborator_username", "")
+	if collaboratorUsername == "" {
+		return "", fmt.Errorf("collaborator_username is required")
+	}
+	sshPublicKeys := getStringSliceArg(args, "ssh_public_keys")
+	if len(sshPublicKeys) == 0 {
+		return "", fmt.Errorf("ssh_public_keys is required (at least one key)")
+	}
+
+	resp, err := client.AddCollaborator(AddCollaboratorRequest{
+		OwnerUsername:         ownerUsername,
+		CollaboratorUsername:  collaboratorUsername,
+		SSHPublicKeys:         sshPublicKeys,
+		GrantSudo:             getBoolArg(args, "grant_sudo", false),
+		GrantContainerRuntime: getBoolArg(args, "grant_container_runtime", false),
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to add collaborator: %w", err)
+	}
+
+	out, err := json.MarshalIndent(resp, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal response: %w", err)
+	}
+	return string(out), nil
+}
+
+func handleListCollaborators(client API, args map[string]interface{}) (string, error) {
+	ownerUsername := getStringArg(args, "owner_username", "")
+	if ownerUsername == "" {
+		return "", fmt.Errorf("owner_username is required")
+	}
+
+	resp, err := client.ListCollaborators(ownerUsername)
+	if err != nil {
+		return "", fmt.Errorf("failed to list collaborators: %w", err)
+	}
+
+	out, err := json.MarshalIndent(resp, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal response: %w", err)
+	}
+	return string(out), nil
+}
+
+func handleRemoveCollaborator(client API, args map[string]interface{}) (string, error) {
+	ownerUsername := getStringArg(args, "owner_username", "")
+	if ownerUsername == "" {
+		return "", fmt.Errorf("owner_username is required")
+	}
+	collaboratorUsername := getStringArg(args, "collaborator_username", "")
+	if collaboratorUsername == "" {
+		return "", fmt.Errorf("collaborator_username is required")
+	}
+
+	if _, err := client.RemoveCollaborator(ownerUsername, collaboratorUsername); err != nil {
+		return "", fmt.Errorf("failed to remove collaborator: %w", err)
+	}
+	return fmt.Sprintf("✅ Removed %s's access to %s's container.", collaboratorUsername, ownerUsername), nil
 }
 
 func handleExposePort(client API, args map[string]interface{}) (string, error) {
