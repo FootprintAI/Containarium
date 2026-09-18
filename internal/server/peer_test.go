@@ -260,7 +260,7 @@ func TestPeerPool_FindContainerPeer(t *testing.T) {
 	pool.mu.Unlock()
 
 	// Should find bob on gpu-node
-	peer := pool.FindContainerPeer("bob", "")
+	peer, _ := pool.FindContainerPeer("bob", "")
 	if peer == nil {
 		t.Fatal("expected to find peer for bob")
 	}
@@ -268,10 +268,13 @@ func TestPeerPool_FindContainerPeer(t *testing.T) {
 		t.Errorf("expected peer ID 'gpu-node', got %q", peer.ID)
 	}
 
-	// Should not find alice
-	peer = pool.FindContainerPeer("alice", "")
+	// Should not find alice, and no peer was unreachable while looking
+	peer, unreachable := pool.FindContainerPeer("alice", "")
 	if peer != nil {
 		t.Error("expected nil for alice (not on any peer)")
+	}
+	if len(unreachable) != 0 {
+		t.Errorf("expected no unreachable peers (gpu-node answered fine), got %+v", unreachable)
 	}
 }
 

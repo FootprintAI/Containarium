@@ -273,7 +273,7 @@ func TestIntegration_PeerForwardResize(t *testing.T) {
 	pool.mu.Unlock()
 
 	// Find charlie's peer
-	peer := pool.FindContainerPeer("charlie", "")
+	peer, _ := pool.FindContainerPeer("charlie", "")
 	if peer == nil {
 		t.Fatal("expected to find charlie on tunnel-gpu")
 	}
@@ -435,7 +435,7 @@ func TestIntegration_PeerForwardDelete(t *testing.T) {
 	}
 	pool.mu.Unlock()
 
-	peer := pool.FindContainerPeer("charlie", "")
+	peer, _ := pool.FindContainerPeer("charlie", "")
 	if peer == nil {
 		t.Fatal("expected to find charlie")
 	}
@@ -473,7 +473,7 @@ func TestIntegration_PeerForwardCollaborators(t *testing.T) {
 	}
 	pool.mu.Unlock()
 
-	peer := pool.FindContainerPeer("charlie", "")
+	peer, _ := pool.FindContainerPeer("charlie", "")
 	if peer == nil {
 		t.Fatal("expected to find charlie")
 	}
@@ -600,10 +600,14 @@ func TestIntegration_UnhealthyPeerSkipped(t *testing.T) {
 		t.Errorf("expected tunnel-gpu reported as unreachable, got %+v", unreachable)
 	}
 
-	// Find should return nil
-	peer := pool.FindContainerPeer("charlie", "")
+	// Find should return nil, and must report tunnel-gpu as unreachable
+	// rather than looking indistinguishable from "charlie is nowhere" (#1905).
+	peer, unreachablePeer := pool.FindContainerPeer("charlie", "")
 	if peer != nil {
 		t.Error("expected nil (peer unhealthy)")
+	}
+	if len(unreachablePeer) != 1 || unreachablePeer[0].BackendID != "tunnel-gpu" {
+		t.Errorf("expected tunnel-gpu reported as unreachable, got %+v", unreachablePeer)
 	}
 
 	// Verify no requests were made to the peer

@@ -1061,26 +1061,43 @@ func (pc *PeerClient) ForwardContainerTraffic(authToken string, path string) ([]
 }
 
 // FindContainerPeer searches all peers for a container by username.
-// Returns the peer that has it, or nil if not found on any peer.
-func (pp *PeerPool) FindContainerPeer(username, authToken string) *PeerClient {
+// Returns the peer that has it, or nil if not found on any *reachable*
+// peer — paired with the peers that were skipped during the search
+// (unhealthy per the sentinel, or a failed fetch). A nil peer with a
+// non-empty unreachable list means "might be on one of these, we
+// couldn't check" — a caller must not treat that the same as a
+// definitive "not found on any peer" (#1905, same anti-pattern as
+// #1901/#1902 but with a worse symptom: callers that skip this
+// distinction report a container as gone when its backend is merely
+// unreachable right now).
+func (pp *PeerPool) FindContainerPeer(username, authToken string) (*PeerClient, []UnreachablePeer) {
 	containerName := username + "-container"
+	var unreachable []UnreachablePeer
 	for _, peer := range pp.Peers() {
 		if !peer.Healthy {
 			log.Printf("[FindContainerPeer] skipping unhealthy peer %s", peer.ID)
+			unreachable = append(unreachable, UnreachablePeer{
+				BackendID: peer.ID,
+				Reason:    "peer marked unhealthy by sentinel",
+			})
 			continue
 		}
 		containers, err := peer.fetchContainers(authToken)
 		if err != nil {
 			log.Printf("[FindContainerPeer] peer %s fetchContainers failed: %v", peer.ID, err)
+			unreachable = append(unreachable, UnreachablePeer{
+				BackendID: peer.ID,
+				Reason:    fmt.Sprintf("peer fetch failed: %v", err),
+			})
 			continue
 		}
 		for _, c := range containers {
 			if c.Name == containerName {
-				return peer
+				return peer, unreachable
 			}
 		}
 	}
-	return nil
+	return nil, unreachable
 }
 
 // extractHost extracts the hostname/IP from a URL like "http://10.128.0.5:8081"
@@ -1132,8 +1149,12 @@ func isDiscoveredPeer(id string) bool {
 // It checks if a container lives on a peer and returns the WebSocket URL for its terminal.
 // Returns ("", nil) if the container is not on any peer (i.e., it's local).
 func (pp *PeerPool) PeerTerminalURL(username, authToken string) (string, error) {
-	peer := pp.FindContainerPeer(username, authToken)
+	peer, unreachable := pp.FindContainerPeer(username, authToken)
 	if peer == nil {
+		if len(unreachable) > 0 {
+			return "", fmt.Errorf("cannot open terminal for %q: %d backend(s) unreachable (%s)",
+				username, len(unreachable), unreachable[0].Reason)
+		}
 		return "", nil
 	}
 	// Build ws:// URL pointing at the peer's terminal endpoint via sentinel proxy
