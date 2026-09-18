@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/footprintai/containarium/pkg/core/crews"
+	"github.com/footprintai/containarium/pkg/core/skills"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -89,6 +91,52 @@ func TestDriveCrew(t *testing.T) {
 			t.Errorf("expected one delivery to coord, got %d calls (%+v)", len(calls), calls)
 		}
 	})
+}
+
+// TestEmbeddedFreeformCrewValidatesAndDrives proves the embedded freeform-crew
+// (#1552) is actually exercisable end-to-end: it clears RunCrew's topology
+// gate against the real skill catalog (not a fake), and driveCrew delivers to
+// its entry skill and returns that skill's artifact, same as a real RunCrew
+// would. Without this crew, #1548's scenario has no freeform topology to run.
+func TestEmbeddedFreeformCrewValidatesAndDrives(t *testing.T) {
+	crew, err := crews.GetDefault().Get("freeform-crew")
+	if err != nil {
+		t.Fatalf("freeform-crew missing from embedded catalog: %v", err)
+	}
+	if crew.Topology != pb.CrewTopology_CREW_TOPOLOGY_FREEFORM {
+		t.Fatalf("freeform-crew topology = %v, want FREEFORM", crew.Topology)
+	}
+	if len(crew.SkillIds) < 2 {
+		t.Fatalf("freeform-crew should reference >=2 skills, got %v", crew.SkillIds)
+	}
+
+	sk := skills.GetDefault()
+	getSkill := func(id string) (*pb.AgentSkill, bool) {
+		s, err := sk.Get(id)
+		if err != nil {
+			return nil, false
+		}
+		return s, true
+	}
+	if err := validateCrewTopology(crew, getSkill); err != nil {
+		t.Errorf("RunCrew's topology gate rejects the embedded freeform crew: %v", err)
+	}
+
+	var calls []*pb.SendAgentTaskRequest
+	send := func(_ context.Context, req *pb.SendAgentTaskRequest) (*pb.SendAgentTaskResponse, error) {
+		calls = append(calls, req)
+		return completed("done"), nil
+	}
+	out, err := driveCrew(context.Background(), crew, "trace-1", "seed", send)
+	if err != nil {
+		t.Fatalf("driveCrew: %v", err)
+	}
+	if out != "done" {
+		t.Errorf("output = %q, want done", out)
+	}
+	if len(calls) != 1 || calls[0].ToPeerId != crew.SkillIds[0] {
+		t.Errorf("expected a single delivery to the entry skill %q, got %+v", crew.SkillIds[0], calls)
+	}
 }
 
 // skillSet builds a lookup over a fixed set of skills for topology tests.
