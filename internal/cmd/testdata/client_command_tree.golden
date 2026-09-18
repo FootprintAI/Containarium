@@ -109,6 +109,8 @@ network-policy set
 network-policy signature add
 network-policy signature list
 network-policy signature rm
+org get-default-region
+org set-default-region
 passthrough-route add
 passthrough-route list
 passthrough-route remove
@@ -122,6 +124,7 @@ recipe deploy
 recipe get
 recipe list
 recipe workspace-access
+regions
 resize
 route add
 route delete
