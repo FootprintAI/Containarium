@@ -43,3 +43,30 @@ func TestErrUnsupportedOnCloud(t *testing.T) {
 		t.Errorf("err = %q, want the alternative suggestion appended", err)
 	}
 }
+
+// TestErrRequiresCloud is #1607's mirror-image refusal: a control-plane-only
+// command against a standalone daemon.
+func TestErrRequiresCloud(t *testing.T) {
+	err := errRequiresCloud("org set-default-region")
+	if err == nil || !strings.Contains(err.Error(), "org set-default-region") {
+		t.Fatalf("err = %v, want the op named", err)
+	}
+	if !strings.Contains(err.Error(), "requires a hosted control plane") {
+		t.Errorf("err = %q, want the control-plane-only marker", err)
+	}
+}
+
+func TestResolveOrgID(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	_ = seedCreds(t, home, "", map[string]credentials.ServerCreds{
+		"https://cloud.example": {Token: "eyJcloud", OrgID: "org-abc"},
+	})
+
+	if got := resolveOrgID("https://cloud.example"); got != "org-abc" {
+		t.Errorf("resolveOrgID = %q, want org-abc", got)
+	}
+	if got := resolveOrgID("https://unknown.example"); got != "" {
+		t.Errorf("resolveOrgID for an unrecognized server = %q, want empty", got)
+	}
+}
