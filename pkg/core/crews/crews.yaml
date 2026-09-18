@@ -20,3 +20,19 @@ crews:
     skill_ids:
       - relay-agent   # relay-agent.allowed_peers includes hello-agent, so the
       - hello-agent   # pipeline edge relay -> hello is permitted.
+
+  # freeform-crew is the reference crew for the freeform topology (#1552).
+  # FREEFORM implies no required edges (crewRequiredEdges in crew_server.go) —
+  # members coordinate within whatever their own allowed_peers permit, rather
+  # than the crew dictating a fixed pipeline/orchestrator order — so it reuses
+  # the same two neutral skills as hello-crew: relay-agent (entry) delegates to
+  # hello-agent within its existing allowed_peers. Exists so a freeform crew is
+  # actually runnable rather than only documented (list_crews already
+  # advertises freeform as an option); no eventual task content required.
+  - id: freeform-crew
+    name: Freeform Crew
+    description: Neutral reference crew using freeform topology. relay-agent is the entry point and may delegate to hello-agent within its allowed_peers; proves the freeform code path end-to-end.
+    topology: freeform
+    skill_ids:
+      - relay-agent
+      - hello-agent
