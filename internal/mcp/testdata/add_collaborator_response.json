@@ -1,0 +1,17 @@
+{
+  "message": "Collaborator bob added to alice-container",
+  "collaborator": {
+    "id": "c1",
+    "containerName": "alice-container",
+    "ownerUsername": "alice",
+    "collaboratorUsername": "bob",
+    "accountName": "alice-container-bob",
+    "sshPublicKey": "ssh-ed25519 AAAAlaptop",
+    "addedAt": "1771122760",
+    "createdBy": "alice",
+    "hasSudo": true,
+    "hasContainerRuntime": false,
+    "sshPublicKeys": ["ssh-ed25519 AAAAlaptop", "ssh-ed25519 AAAAdesktop"]
+  },
+  "sshCommand": "ssh alice-container-bob@sentinel.example.com"
+}

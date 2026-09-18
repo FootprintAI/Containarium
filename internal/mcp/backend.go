@@ -73,6 +73,12 @@ type API interface {
 	GetBackend(id string) (*Backend, error)
 	ValidateGPU(backendID, pci string) (*ValidateGPUResult, error)
 
+	// Collaborators (#1145) — the agent surface for box access a human
+	// already has via the CLI/REST/dashboard.
+	AddCollaborator(req AddCollaboratorRequest) (*AddCollaboratorResponse, error)
+	ListCollaborators(ownerUsername string) (*ListCollaboratorsResponse, error)
+	RemoveCollaborator(ownerUsername, collaboratorUsername string) (*RemoveCollaboratorResponse, error)
+
 	// Security.
 	TriggerSecurityScan(kind, containerName, username string) (*SecurityScanResponse, error)
 	ListSecurityFindings(kind, containerName string) ([]SecurityFinding, error)
