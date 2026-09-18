@@ -4307,20 +4307,9 @@ func (s *ContainerServer) AddCollaborator(ctx context.Context, req *pb.AddCollab
 	}
 
 	return &pb.AddCollaboratorResponse{
-		Message: fmt.Sprintf("Collaborator %s added to %s-container", req.CollaboratorUsername, req.OwnerUsername),
-		Collaborator: &pb.Collaborator{
-			Id:                   collab.ID,
-			ContainerName:        collab.ContainerName,
-			OwnerUsername:        collab.OwnerUsername,
-			CollaboratorUsername: collab.CollaboratorUsername,
-			AccountName:          collab.AccountName,
-			SshPublicKey:         collab.SSHPublicKey,
-			AddedAt:              collab.CreatedAt.Unix(),
-			CreatedBy:            collab.CreatedBy,
-			HasSudo:              collab.HasSudo,
-			HasContainerRuntime:  collab.HasContainerRuntime,
-		},
-		SshCommand: s.collaboratorManager.GenerateSSHCommand(req.OwnerUsername, req.CollaboratorUsername, "jumpserver"),
+		Message:      fmt.Sprintf("Collaborator %s added to %s-container", req.CollaboratorUsername, req.OwnerUsername),
+		Collaborator: collaboratorToProto(collab),
+		SshCommand:   s.collaboratorManager.GenerateSSHCommand(req.OwnerUsername, req.CollaboratorUsername, "jumpserver"),
 	}, nil
 }
 
@@ -4417,18 +4406,7 @@ func (s *ContainerServer) ListCollaborators(ctx context.Context, req *pb.ListCol
 
 	var protoCollaborators []*pb.Collaborator
 	for _, c := range collaborators {
-		protoCollaborators = append(protoCollaborators, &pb.Collaborator{
-			Id:                   c.ID,
-			ContainerName:        c.ContainerName,
-			OwnerUsername:        c.OwnerUsername,
-			CollaboratorUsername: c.CollaboratorUsername,
-			AccountName:          c.AccountName,
-			SshPublicKey:         c.SSHPublicKey,
-			AddedAt:              c.CreatedAt.Unix(),
-			CreatedBy:            c.CreatedBy,
-			HasSudo:              c.HasSudo,
-			HasContainerRuntime:  c.HasContainerRuntime,
-		})
+		protoCollaborators = append(protoCollaborators, collaboratorToProto(c))
 	}
 
 	return &pb.ListCollaboratorsResponse{

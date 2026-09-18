@@ -1273,7 +1273,17 @@ type CreateContainerRequest struct {
 	// cloud daemon accepts any non-empty value. The field is defined here
 	// so the wire shape stays stable across the OSS → cloud transition
 	// rather than changing when tenancy lands.
-	TenantId      string `protobuf:"bytes,25,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	TenantId string `protobuf:"bytes,25,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	// Region to place this container in (#1606) — a client-side placement
+	// hint in the same family as `pool` and `backend_id`. A standalone,
+	// single-backend daemon has exactly one region and ignores this field
+	// entirely: empty stays today's default behavior, and any non-empty
+	// value is likewise a no-op here. It exists so a hosted, multi-region
+	// control plane fronting several regional daemons has somewhere on this
+	// wire shape to receive the caller's choice — without it, a create
+	// against such a control plane with no configured default region has no
+	// way to express one at all. Empty = daemon/control-plane default.
+	Region        string `protobuf:"bytes,26,opt,name=region,proto3" json:"region,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1479,6 +1489,13 @@ func (x *CreateContainerRequest) GetEncrypted() bool {
 func (x *CreateContainerRequest) GetTenantId() string {
 	if x != nil {
 		return x.TenantId
+	}
+	return ""
+}
+
+func (x *CreateContainerRequest) GetRegion() string {
+	if x != nil {
+		return x.Region
 	}
 	return ""
 }
@@ -3578,7 +3595,12 @@ type Collaborator struct {
 	CollaboratorUsername string `protobuf:"bytes,4,opt,name=collaborator_username,json=collaboratorUsername,proto3" json:"collaborator_username,omitempty"`
 	// Full account name on jump server and container (e.g., "alice-container-bob")
 	AccountName string `protobuf:"bytes,5,opt,name=account_name,json=accountName,proto3" json:"account_name,omitempty"`
-	// SSH public key for this collaborator
+	// SSH public key for this collaborator.
+	// Deprecated: prefer ssh_public_keys. Kept for back-compat — carries just
+	// the FIRST authorized key, not every key (#1144): before this field
+	// existed, a multi-key collaborator's several `authorized_keys` lines were
+	// newline-joined into this single scalar, silently violating its own "a
+	// key" contract for any consumer reading it as documented.
 	SshPublicKey string `protobuf:"bytes,6,opt,name=ssh_public_key,json=sshPublicKey,proto3" json:"ssh_public_key,omitempty"`
 	// Unix timestamp when collaborator was added
 	AddedAt int64 `protobuf:"varint,7,opt,name=added_at,json=addedAt,proto3" json:"added_at,omitempty"`
@@ -3588,8 +3610,14 @@ type Collaborator struct {
 	HasSudo bool `protobuf:"varint,9,opt,name=has_sudo,json=hasSudo,proto3" json:"has_sudo,omitempty"`
 	// Has docker/podman group membership for container runtime access
 	HasContainerRuntime bool `protobuf:"varint,10,opt,name=has_container_runtime,json=hasContainerRuntime,proto3" json:"has_container_runtime,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// Every SSH public key authorized for this collaborator (#369 authorizes
+	// more than one; #1144 is this field completing the response side —
+	// AddCollaboratorRequest already had the repeated equivalent). Mirrors
+	// ssh_public_key[0] at minimum; empty only if the stored value was itself
+	// empty.
+	SshPublicKeys []string `protobuf:"bytes,11,rep,name=ssh_public_keys,json=sshPublicKeys,proto3" json:"ssh_public_keys,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Collaborator) Reset() {
@@ -3690,6 +3718,13 @@ func (x *Collaborator) GetHasContainerRuntime() bool {
 		return x.HasContainerRuntime
 	}
 	return false
+}
+
+func (x *Collaborator) GetSshPublicKeys() []string {
+	if x != nil {
+		return x.SshPublicKeys
+	}
+	return nil
 }
 
 // AddCollaboratorRequest is the request to add a collaborator to a container
@@ -6274,7 +6309,7 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\x0ecpu_nr_periods\x18\t \x01(\x03R\fcpuNrPeriods\x12(\n" +
 	"\x10cpu_nr_throttled\x18\n" +
 	" \x01(\x03R\x0ecpuNrThrottled\x12,\n" +
-	"\x12cpu_throttled_usec\x18\v \x01(\x03R\x10cpuThrottledUsec\"\xc1\b\n" +
+	"\x12cpu_throttled_usec\x18\v \x01(\x03R\x10cpuThrottledUsec\"\xd9\b\n" +
 	"\x16CreateContainerRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12=\n" +
 	"\tresources\x18\x02 \x01(\v2\x1f.containarium.v1.ResourceLimitsR\tresources\x12\x19\n" +
@@ -6306,7 +6341,8 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\x1cdelete_after_stopped_seconds\x18\x16 \x01(\x03R\x19deleteAfterStoppedSeconds\x12\x12\n" +
 	"\x04gpus\x18\x17 \x03(\tR\x04gpus\x12\x1c\n" +
 	"\tencrypted\x18\x18 \x01(\bR\tencrypted\x12\x1b\n" +
-	"\ttenant_id\x18\x19 \x01(\tR\btenantId\x1a9\n" +
+	"\ttenant_id\x18\x19 \x01(\tR\btenantId\x12\x16\n" +
+	"\x06region\x18\x1a \x01(\tR\x06region\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aB\n" +
@@ -6448,7 +6484,7 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"cpuRequest\"m\n" +
 	"\x17ResizeContainerResponse\x12\x18\n" +
 	"\amessage\x18\x01 \x01(\tR\amessage\x128\n" +
-	"\tcontainer\x18\x02 \x01(\v2\x1a.containarium.v1.ContainerR\tcontainer\"\xf3\x02\n" +
+	"\tcontainer\x18\x02 \x01(\v2\x1a.containarium.v1.ContainerR\tcontainer\"\x9b\x03\n" +
 	"\fCollaborator\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12%\n" +
 	"\x0econtainer_name\x18\x02 \x01(\tR\rcontainerName\x12%\n" +
@@ -6461,7 +6497,8 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"created_by\x18\b \x01(\tR\tcreatedBy\x12\x19\n" +
 	"\bhas_sudo\x18\t \x01(\bR\ahasSudo\x122\n" +
 	"\x15has_container_runtime\x18\n" +
-	" \x01(\bR\x13hasContainerRuntime\"\x99\x02\n" +
+	" \x01(\bR\x13hasContainerRuntime\x12&\n" +
+	"\x0fssh_public_keys\x18\v \x03(\tR\rsshPublicKeys\"\x99\x02\n" +
 	"\x16AddCollaboratorRequest\x12%\n" +
 	"\x0eowner_username\x18\x01 \x01(\tR\rownerUsername\x123\n" +
 	"\x15collaborator_username\x18\x02 \x01(\tR\x14collaboratorUsername\x12$\n" +
