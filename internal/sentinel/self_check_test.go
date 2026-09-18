@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"sync"
 	"testing"
 	"time"
 )
@@ -14,6 +15,13 @@ import (
 type wedgedListener struct {
 	ln   net.Listener
 	port int
+
+	// conns retains every accepted connection until Close. Without a live
+	// reference an accepted net.Conn is garbage: its runtime finalizer closes
+	// the fd, the probe sees EOF — which selfCheckProxyPath rightly reads as
+	// proof of life — and the "never responds" listener has responded.
+	mu    sync.Mutex
+	conns []net.Conn
 }
 
 func newWedgedListener(t *testing.T) *wedgedListener {
@@ -30,14 +38,25 @@ func newWedgedListener(t *testing.T) *wedgedListener {
 				return
 			}
 			// Deliberately never read or write — hold the connection open
-			// forever, same as a wedged dispatch pipeline.
-			_ = conn
+			// until Close, same as a wedged dispatch pipeline.
+			w.mu.Lock()
+			w.conns = append(w.conns, conn)
+			w.mu.Unlock()
 		}
 	}()
 	return w
 }
 
-func (w *wedgedListener) Close() error { return w.ln.Close() }
+func (w *wedgedListener) Close() error {
+	err := w.ln.Close()
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, c := range w.conns {
+		_ = c.Close()
+	}
+	w.conns = nil
+	return err
+}
 
 // echoCloseListener accepts a connection, reads one byte (the probe), and
 // closes — simulating a pipeline that reacted (even if only to fail fast),
