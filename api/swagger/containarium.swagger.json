@@ -9093,6 +9093,10 @@
         "tenantId": {
           "type": "string",
           "description": "Tenant that owns this container, scoping the encryption key: all of\na tenant's containers share one ZFS encryptionroot, and different\ntenants always have distinct ones.\n\nThe OSS daemon is single-tenant and accepts only \"\" or \"default\",\nrejecting anything else with INVALID_ARGUMENT; the multi-tenant\ncloud daemon accepts any non-empty value. The field is defined here\nso the wire shape stays stable across the OSS → cloud transition\nrather than changing when tenancy lands."
+        },
+        "region": {
+          "type": "string",
+          "description": "Region to place this container in (#1606) — a client-side placement\nhint in the same family as `pool` and `backend_id`. A standalone,\nsingle-backend daemon has exactly one region and ignores this field\nentirely: empty stays today's default behavior, and any non-empty\nvalue is likewise a no-op here. It exists so a hosted, multi-region\ncontrol plane fronting several regional daemons has somewhere on this\nwire shape to receive the caller's choice — without it, a create\nagainst such a control plane with no configured default region has no\nway to express one at all. Empty = daemon/control-plane default."
         }
       },
       "title": "CreateContainerRequest is the request to create a new container"

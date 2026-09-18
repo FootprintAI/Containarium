@@ -35,6 +35,7 @@ var (
 	createTenantID           string
 	createPool               string
 	createBackendID          string
+	createRegion             string
 	createAutoRestartCompose string
 	createGitSource          string
 	createGitRef             string
@@ -162,6 +163,7 @@ func init() {
 	createCmd.Flags().StringVar(&createTenantID, "tenant", "", "Tenant that owns the container, scoping its encryption key. A single-tenant daemon accepts only an empty value or \"default\".")
 	createCmd.Flags().StringVar(&createPool, "pool", "", "Place the container on any healthy backend tagged with this pool (e.g., 'demo', 'lab'). Empty means the local/primary backend. Mutually exclusive with --backend-id unless the chosen backend is in the named pool.")
 	createCmd.Flags().StringVar(&createBackendID, "backend-id", "", "Place the container on a specific backend by ID (e.g., 'tunnel-node-a-gpu'). Use 'containarium backends' to list available backend IDs.")
+	createCmd.Flags().StringVar(&createRegion, "region", "", "Place the container in this region on a multi-region hosted control plane (e.g., 'us-east'). Ignored by a standalone/single-region daemon — nothing changes for it either way. Required on a control plane that serves more than one region and has no configured default.")
 	createCmd.Flags().StringVar(&createAutoRestartCompose, "auto-restart-compose", "",
 		"Path to a compose directory inside the new container; after create, "+
 			"enable the systemd-user autostart unit for that stack so it "+
@@ -444,13 +446,13 @@ func runCreate(cmd *cobra.Command, args []string) error {
 
 	if httpMode && serverAddr != "" {
 		// Remote mode via HTTP
-		info, err = createRemoteHTTP(username, containerImage, cpuLimit, memoryLimit, diskLimit, sshKeys, enablePodman, stackID, gpuDevices, osType, monitoring, createPool, createBackendID, gitOpts, ttlSeconds, idleStopMinutes, deleteAfterStoppedSeconds, createStorageClass, client.EncryptionOpts{Encrypted: createEncrypted, TenantID: createTenantID}, createMemoryRequest, createCPURequest)
+		info, err = createRemoteHTTP(username, containerImage, cpuLimit, memoryLimit, diskLimit, sshKeys, enablePodman, stackID, gpuDevices, osType, monitoring, createPool, createBackendID, gitOpts, ttlSeconds, idleStopMinutes, deleteAfterStoppedSeconds, createStorageClass, client.EncryptionOpts{Encrypted: createEncrypted, TenantID: createTenantID}, createMemoryRequest, createCPURequest, createRegion)
 		if err != nil {
 			return fmt.Errorf("failed to create container via HTTP API: %w", err)
 		}
 	} else if serverAddr != "" {
 		// Remote mode via gRPC
-		info, err = createRemote(username, containerImage, cpuLimit, memoryLimit, diskLimit, sshKeys, enablePodman, stackID, gpuDevices, osType, monitoring, createPool, createBackendID, gitOpts, ttlSeconds, idleStopMinutes, deleteAfterStoppedSeconds, createStorageClass, client.EncryptionOpts{Encrypted: createEncrypted, TenantID: createTenantID}, createMemoryRequest, createCPURequest)
+		info, err = createRemote(username, containerImage, cpuLimit, memoryLimit, diskLimit, sshKeys, enablePodman, stackID, gpuDevices, osType, monitoring, createPool, createBackendID, gitOpts, ttlSeconds, idleStopMinutes, deleteAfterStoppedSeconds, createStorageClass, client.EncryptionOpts{Encrypted: createEncrypted, TenantID: createTenantID}, createMemoryRequest, createCPURequest, createRegion)
 		if err != nil {
 			return fmt.Errorf("failed to create container via remote server: %w", err)
 		}
@@ -705,23 +707,23 @@ func parseLabels(labelSlice []string) map[string]string {
 }
 
 // createRemote creates a container using remote gRPC server
-func createRemote(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, monitoring bool, pool, backendID string, git client.GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64, storageClass string, enc client.EncryptionOpts, memoryRequest, cpuRequest string) (*incus.ContainerInfo, error) {
+func createRemote(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, monitoring bool, pool, backendID string, git client.GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64, storageClass string, enc client.EncryptionOpts, memoryRequest, cpuRequest, region string) (*incus.ContainerInfo, error) {
 	grpcClient, err := client.NewGRPCClient(serverAddr, certsDir, insecure)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = grpcClient.Close() }()
 
-	return grpcClient.CreateContainer(username, image, cpu, memory, disk, sshKeys, enablePodman, stack, gpus, osType, monitoring, pool, backendID, git, ttlSeconds, idleStopMinutes, deleteAfterStoppedSeconds, storageClass, enc, memoryRequest, cpuRequest)
+	return grpcClient.CreateContainer(username, image, cpu, memory, disk, sshKeys, enablePodman, stack, gpus, osType, monitoring, pool, backendID, git, ttlSeconds, idleStopMinutes, deleteAfterStoppedSeconds, storageClass, enc, memoryRequest, cpuRequest, region)
 }
 
 // createRemoteHTTP creates a container using remote HTTP API
-func createRemoteHTTP(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, monitoring bool, pool, backendID string, git client.GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64, storageClass string, enc client.EncryptionOpts, memoryRequest, cpuRequest string) (*incus.ContainerInfo, error) {
+func createRemoteHTTP(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, monitoring bool, pool, backendID string, git client.GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64, storageClass string, enc client.EncryptionOpts, memoryRequest, cpuRequest, region string) (*incus.ContainerInfo, error) {
 	httpClient, err := client.NewHTTPClient(serverAddr, authToken)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = httpClient.Close() }()
 
-	return httpClient.CreateContainer(username, image, cpu, memory, disk, sshKeys, enablePodman, stack, gpus, osType, monitoring, pool, backendID, git, ttlSeconds, idleStopMinutes, deleteAfterStoppedSeconds, storageClass, enc, memoryRequest, cpuRequest)
+	return httpClient.CreateContainer(username, image, cpu, memory, disk, sshKeys, enablePodman, stack, gpus, osType, monitoring, pool, backendID, git, ttlSeconds, idleStopMinutes, deleteAfterStoppedSeconds, storageClass, enc, memoryRequest, cpuRequest, region)
 }
