@@ -130,8 +130,8 @@ the breadth warning from the upstream rather than asking the operator.
   agent box                          daemon (backend host)              tracker
  ┌──────────────────┐   platform   ┌───────────────────────────┐      ┌─────────┐
  │ in-box runtime   │   JWT with   │ TrackerService (gRPC/REST)│      │ GitHub  │
- │  containarium    │──run_id + ──▶│  1. authn: platform JWT   │      │   or    │
- │  tracker …       │  tracker:*   │  2. authz: scope + verb   │─────▶│ GitLab  │
+ │  platform MCP    │──run_id + ──▶│  1. authn: platform JWT   │      │   or    │
+ │  (tracker tools) │  tracker:*   │  2. authz: scope + verb   │─────▶│ GitLab  │
  │                  │   scopes     │  3. resolve connection    │ real │ (SaaS or│
  │ no tracker token │              │  4. stamp identity        │ cred │  self-  │
  │ no tracker egress│◀─────────────│  5. provider adapter      │      │ managed)│
@@ -159,7 +159,8 @@ run's `run_id` claim and exactly the skill manifest's `allowed_scopes`, and
 
 A skill that must not touch the tracker simply does not list them. This
 differs from the model gateway, which needs its own token because the
-provider SDK — not our client — presents it; here the caller is our own CLI.
+provider SDK — not our client — presents it; here the caller is our own
+client code (the platform MCP in-box, the CLI outside it).
 
 ### Tracker connection
 
@@ -302,11 +303,15 @@ wraps:
   --project <group/project> --credential-secret <name>`, `tracker list`,
   `tracker status` (reachability, token validity, expiry), `tracker
   disconnect`.
-- Agent / human: `containarium tracker issue view|list|comment|claim|label`,
+- Human / CI: `containarium tracker issue view|list|comment|claim|label`,
   `containarium tracker change view|submit`.
 - The platform MCP server (`cmd/mcp-server/`) wraps the same client
-  functions. Nothing tracker-related goes in `cmd/agent-box/` — the in-box
-  MCP has no business holding upstream reach.
+  functions. **This is also how an in-box agent reaches the verbs:** skill
+  boxes carry no `containarium` CLI, so the engine mounts the platform MCP
+  in-box — pointed at the run's seeded token file and restricted to the
+  tracker tools — beside `agent-box`. Nothing tracker-related goes in
+  `cmd/agent-box/` itself; the in-box MCP has no business holding upstream
+  reach. See `docs/architecture/agent-tracker-broker.md` (D4).
 - A hosted control plane's web UI is one more client of `tracker connect`;
   it adds a form, not a mechanism.
 
