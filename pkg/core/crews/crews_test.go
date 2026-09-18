@@ -52,6 +52,20 @@ func TestEmbeddedCatalogLoads(t *testing.T) {
 	}
 }
 
+func TestEmbeddedCatalogHasFreeformCrew(t *testing.T) {
+	m := GetDefault()
+	fc, err := m.Get("freeform-crew")
+	if err != nil {
+		t.Fatalf("freeform-crew reference crew missing: %v", err)
+	}
+	if fc.Topology != pb.CrewTopology_CREW_TOPOLOGY_FREEFORM {
+		t.Errorf("freeform-crew topology = %v, want FREEFORM", fc.Topology)
+	}
+	if len(fc.SkillIds) < 2 {
+		t.Errorf("freeform-crew should reference >=2 skills, got %v", fc.SkillIds)
+	}
+}
+
 func TestValidateRejectsBadCrews(t *testing.T) {
 	cases := map[string]string{
 		"missing id": `
