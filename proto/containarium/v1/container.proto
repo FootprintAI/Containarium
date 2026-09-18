@@ -981,7 +981,12 @@ message Collaborator {
   // Full account name on jump server and container (e.g., "alice-container-bob")
   string account_name = 5;
 
-  // SSH public key for this collaborator
+  // SSH public key for this collaborator.
+  // Deprecated: prefer ssh_public_keys. Kept for back-compat — carries just
+  // the FIRST authorized key, not every key (#1144): before this field
+  // existed, a multi-key collaborator's several `authorized_keys` lines were
+  // newline-joined into this single scalar, silently violating its own "a
+  // key" contract for any consumer reading it as documented.
   string ssh_public_key = 6;
 
   // Unix timestamp when collaborator was added
@@ -995,6 +1000,13 @@ message Collaborator {
 
   // Has docker/podman group membership for container runtime access
   bool has_container_runtime = 10;
+
+  // Every SSH public key authorized for this collaborator (#369 authorizes
+  // more than one; #1144 is this field completing the response side —
+  // AddCollaboratorRequest already had the repeated equivalent). Mirrors
+  // ssh_public_key[0] at minimum; empty only if the stored value was itself
+  // empty.
+  repeated string ssh_public_keys = 11;
 }
 
 // AddCollaboratorRequest is the request to add a collaborator to a container

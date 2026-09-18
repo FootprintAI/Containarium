@@ -3595,7 +3595,12 @@ type Collaborator struct {
 	CollaboratorUsername string `protobuf:"bytes,4,opt,name=collaborator_username,json=collaboratorUsername,proto3" json:"collaborator_username,omitempty"`
 	// Full account name on jump server and container (e.g., "alice-container-bob")
 	AccountName string `protobuf:"bytes,5,opt,name=account_name,json=accountName,proto3" json:"account_name,omitempty"`
-	// SSH public key for this collaborator
+	// SSH public key for this collaborator.
+	// Deprecated: prefer ssh_public_keys. Kept for back-compat — carries just
+	// the FIRST authorized key, not every key (#1144): before this field
+	// existed, a multi-key collaborator's several `authorized_keys` lines were
+	// newline-joined into this single scalar, silently violating its own "a
+	// key" contract for any consumer reading it as documented.
 	SshPublicKey string `protobuf:"bytes,6,opt,name=ssh_public_key,json=sshPublicKey,proto3" json:"ssh_public_key,omitempty"`
 	// Unix timestamp when collaborator was added
 	AddedAt int64 `protobuf:"varint,7,opt,name=added_at,json=addedAt,proto3" json:"added_at,omitempty"`
@@ -3605,8 +3610,14 @@ type Collaborator struct {
 	HasSudo bool `protobuf:"varint,9,opt,name=has_sudo,json=hasSudo,proto3" json:"has_sudo,omitempty"`
 	// Has docker/podman group membership for container runtime access
 	HasContainerRuntime bool `protobuf:"varint,10,opt,name=has_container_runtime,json=hasContainerRuntime,proto3" json:"has_container_runtime,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// Every SSH public key authorized for this collaborator (#369 authorizes
+	// more than one; #1144 is this field completing the response side —
+	// AddCollaboratorRequest already had the repeated equivalent). Mirrors
+	// ssh_public_key[0] at minimum; empty only if the stored value was itself
+	// empty.
+	SshPublicKeys []string `protobuf:"bytes,11,rep,name=ssh_public_keys,json=sshPublicKeys,proto3" json:"ssh_public_keys,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Collaborator) Reset() {
@@ -3707,6 +3718,13 @@ func (x *Collaborator) GetHasContainerRuntime() bool {
 		return x.HasContainerRuntime
 	}
 	return false
+}
+
+func (x *Collaborator) GetSshPublicKeys() []string {
+	if x != nil {
+		return x.SshPublicKeys
+	}
+	return nil
 }
 
 // AddCollaboratorRequest is the request to add a collaborator to a container
@@ -6466,7 +6484,7 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"cpuRequest\"m\n" +
 	"\x17ResizeContainerResponse\x12\x18\n" +
 	"\amessage\x18\x01 \x01(\tR\amessage\x128\n" +
-	"\tcontainer\x18\x02 \x01(\v2\x1a.containarium.v1.ContainerR\tcontainer\"\xf3\x02\n" +
+	"\tcontainer\x18\x02 \x01(\v2\x1a.containarium.v1.ContainerR\tcontainer\"\x9b\x03\n" +
 	"\fCollaborator\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12%\n" +
 	"\x0econtainer_name\x18\x02 \x01(\tR\rcontainerName\x12%\n" +
@@ -6479,7 +6497,8 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"created_by\x18\b \x01(\tR\tcreatedBy\x12\x19\n" +
 	"\bhas_sudo\x18\t \x01(\bR\ahasSudo\x122\n" +
 	"\x15has_container_runtime\x18\n" +
-	" \x01(\bR\x13hasContainerRuntime\"\x99\x02\n" +
+	" \x01(\bR\x13hasContainerRuntime\x12&\n" +
+	"\x0fssh_public_keys\x18\v \x03(\tR\rsshPublicKeys\"\x99\x02\n" +
 	"\x16AddCollaboratorRequest\x12%\n" +
 	"\x0eowner_username\x18\x01 \x01(\tR\rownerUsername\x123\n" +
 	"\x15collaborator_username\x18\x02 \x01(\tR\x14collaboratorUsername\x12$\n" +
