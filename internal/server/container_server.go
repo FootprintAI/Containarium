@@ -2866,9 +2866,14 @@ func (s *ContainerServer) GetUpgradeStatus(ctx context.Context, req *pb.GetUpgra
 	if req.UpgradeId == "" {
 		return nil, status.Error(codes.InvalidArgument, "upgrade_id is required")
 	}
+	// Read the job's fields under the same lock TriggerUpgrade's completion
+	// goroutine writes them under — job is a plain struct, not synchronized
+	// itself, so unlocking before reading its fields (as this used to do)
+	// races with that goroutine. Surfaced by -race once a test polled status
+	// immediately after triggering an upgrade (#1028).
 	s.upgradeMu.Lock()
+	defer s.upgradeMu.Unlock()
 	job := s.upgradeJobs[req.UpgradeId]
-	s.upgradeMu.Unlock()
 	if job == nil {
 		return &pb.GetUpgradeStatusResponse{
 			Status:         "unknown",
