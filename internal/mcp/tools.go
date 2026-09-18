@@ -213,6 +213,10 @@ func (s *Server) registerTools() {
 						"type":        "string",
 						"description": "Place the container on a specific backend by ID (e.g., 'tunnel-node-a-gpu'). Look up valid IDs via list_backends. Use pool instead when any backend in a pool will do.",
 					},
+					"region": map[string]interface{}{
+						"type":        "string",
+						"description": "Place the container in this region on a multi-region hosted control plane (e.g., 'us-east'). Ignored by a standalone/single-region daemon.",
+					},
 				},
 				"required": []string{"username"},
 			},
@@ -1816,6 +1820,7 @@ func handleCreateContainer(client API, args map[string]interface{}) (string, err
 		TenantID:     getStringArg(args, "tenant_id", ""),
 		Pool:         getStringArg(args, "pool", ""),
 		BackendID:    getStringArg(args, "backend_id", ""),
+		Region:       getStringArg(args, "region", ""),
 	}
 
 	// Handle SSH keys. If the caller passes ssh_keys explicitly we use
