@@ -299,6 +299,16 @@ type ContainerServer struct {
 	upgradeMu   sync.Mutex
 	upgradeJobs map[string]*upgradeJob
 	upgradeBusy map[string]bool
+
+	// binaryPath is this daemon's own executable path, used by the
+	// GitHub-direct TriggerUpgrade path (req.GithubTag, #1028) to swap its
+	// binary in place. Wired unconditionally by DualServer — independent of
+	// autoUpdater, which stays nil until a sentinel URL is configured — so a
+	// GitHub-direct upgrade works even on a daemon with no sentinel. Empty
+	// (e.g. in unit tests that never call SetBinaryPath) makes the
+	// github_tag path return Unavailable, same as an unconfigured autoUpdater
+	// does for the sentinel path.
+	binaryPath string
 }
 
 // upgradeJob is the in-memory record of a daemon upgrade triggered via
@@ -2760,8 +2770,16 @@ func (s *ContainerServer) TriggerUpgrade(ctx context.Context, req *pb.TriggerUpg
 		return &resp, nil
 	}
 
-	// Local backend.
-	if s.autoUpdater == nil {
+	// Local backend. Two upgrade sources: the default sentinel-served binary,
+	// or (opt-in, #1028) a specific GitHub release tag. github_tag chooses
+	// the path; the sentinel path's own gating (autoUpdater == nil) is
+	// unchanged.
+	usingGitHub := req.GithubTag != ""
+	if usingGitHub {
+		if s.binaryPath == "" {
+			return nil, status.Error(codes.Unavailable, "GitHub-direct upgrade is not configured on this daemon (no binary path wired)")
+		}
+	} else if s.autoUpdater == nil {
 		return nil, status.Error(codes.Unavailable, "auto-update is not configured on this daemon (no sentinel binary source)")
 	}
 
@@ -2784,17 +2802,27 @@ func (s *ContainerServer) TriggerUpgrade(ctx context.Context, req *pb.TriggerUpg
 	s.upgradeMu.Unlock()
 
 	subject, _, _ := auth.SubjectFromGRPCContext(ctx)
-	log.Printf("[upgrade] triggered by %q on backend %q (from %s, force=%v, job=%s)", subject, backendKey, current, req.Force, id)
+	if usingGitHub {
+		log.Printf("[upgrade] triggered by %q on backend %q (from %s, github_tag=%s, force=%v, job=%s)", subject, backendKey, current, req.GithubTag, req.Force, id)
+	} else {
+		log.Printf("[upgrade] triggered by %q on backend %q (from %s, force=%v, job=%s)", subject, backendKey, current, req.Force, id)
+	}
 	s.logUpgradeAudit(ctx, subject, backendKey, id, "triggered", "")
 
-	// Run async: TriggerNow restarts the daemon on a successful swap, so neither
-	// this goroutine nor the in-memory job survives a local upgrade. We still
+	// Run async: a successful swap restarts the daemon, so neither this
+	// goroutine nor the in-memory job survives a local upgrade. We still
 	// record terminal state for the noop/failure paths, which return WITHOUT a
 	// restart. Detach from the request's cancellation (the handler returns
 	// immediately) while keeping its values — the upgrade must outlive the RPC.
 	upgradeCtx := context.WithoutCancel(ctx)
 	go func() {
-		changed, err := s.autoUpdater.TriggerNow(upgradeCtx, req.Force)
+		var changed bool
+		var err error
+		if usingGitHub {
+			changed, err = runGitHubUpgrade(upgradeCtx, s.binaryPath, req.GithubTag, req.Force)
+		} else {
+			changed, err = s.autoUpdater.TriggerNow(upgradeCtx, req.Force)
+		}
 		s.upgradeMu.Lock()
 		defer s.upgradeMu.Unlock()
 		s.upgradeBusy[backendKey] = false
@@ -3950,6 +3978,15 @@ func sshCommandFor(username, sshHost, ip string) string {
 // returning Unavailable. #354.
 func (s *ContainerServer) SetAutoUpdater(u *AutoUpdater) {
 	s.autoUpdater = u
+}
+
+// SetBinaryPath wires this daemon's own executable path so TriggerUpgrade's
+// GitHub-direct path (req.GithubTag, #1028) can swap it in place. DualServer
+// calls this unconditionally at startup, unlike SetAutoUpdater which is only
+// wired when a sentinel URL is configured — the GitHub-direct path has no
+// sentinel dependency. Empty leaves that path returning Unavailable.
+func (s *ContainerServer) SetBinaryPath(path string) {
+	s.binaryPath = path
 }
 
 // SetAuditStore wires the audit store so admin-initiated operations like

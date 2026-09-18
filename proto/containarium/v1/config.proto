@@ -446,6 +446,15 @@ message TriggerUpgradeRequest {
 
   // Upgrade even if the sentinel-served binary already matches the running one.
   bool force = 2;
+
+  // Optional (#1028): pull this exact release directly from GitHub Releases
+  // instead of the sentinel-served binary — "vX.Y.Z" or "latest". Opt-in;
+  // empty (the default) is unchanged sentinel-served behavior. Lets an
+  // internet-connected host (e.g. an operator-owned lab BYOC box) jump
+  // straight to a tag without upgrading the sentinel first. Not for
+  // air-gapped hosts, which have no GitHub egress and must keep the
+  // sentinel path regardless — this field existing changes nothing for them.
+  string github_tag = 3;
 }
 
 // TriggerUpgradeResponse acknowledges that an upgrade was started. The upgrade
