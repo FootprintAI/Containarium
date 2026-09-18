@@ -192,3 +192,40 @@ func TestWireFormat_AddRoute(t *testing.T) {
 	assert.Equal(t, int32(8080), resp.Route.Port)
 	assert.Equal(t, "route added", resp.Message)
 }
+
+// TestWireFormat_AddCollaborator is #1145's regression guard: Collaborator.added_at
+// is an int64 proto field, which protojson serializes as a JSON STRING
+// ("addedAt": "1771122760"), not a bare number — the exact class of bug this
+// file's own history (PR #116) exists to catch. Also pins that
+// ssh_public_keys (#1144's repeated field) decodes correctly alongside the
+// deprecated ssh_public_key scalar.
+func TestWireFormat_AddCollaborator(t *testing.T) {
+	var resp AddCollaboratorResponse
+	require.NoError(t, json.Unmarshal(loadFixture(t, "add_collaborator_response.json"), &resp))
+
+	assert.Equal(t, "Collaborator bob added to alice-container", resp.Message)
+	assert.Equal(t, "alice-container-bob", resp.Collaborator.AccountName)
+	assert.Equal(t, "bob", resp.Collaborator.CollaboratorUsername)
+	assert.Equal(t, "ssh-ed25519 AAAAlaptop", resp.Collaborator.SSHPublicKey)
+	assert.Equal(t, []string{"ssh-ed25519 AAAAlaptop", "ssh-ed25519 AAAAdesktop"}, resp.Collaborator.SSHPublicKeys)
+	assert.Equal(t, int64(1771122760), resp.Collaborator.AddedAt)
+	assert.True(t, resp.Collaborator.HasSudo)
+	assert.False(t, resp.Collaborator.HasContainerRuntime)
+	assert.NotEmpty(t, resp.SSHCommand)
+}
+
+// TestWireFormat_ListCollaborators mirrors TestWireFormat_AddCollaborator for
+// the list response's repeated Collaborator + int32 total_count (a plain
+// number, unlike the int64 fields above — protojson only stringifies 64-bit
+// integers).
+func TestWireFormat_ListCollaborators(t *testing.T) {
+	var resp ListCollaboratorsResponse
+	require.NoError(t, json.Unmarshal(loadFixture(t, "list_collaborators_response.json"), &resp))
+
+	require.Len(t, resp.Collaborators, 1)
+	c := resp.Collaborators[0]
+	assert.Equal(t, "bob", c.CollaboratorUsername)
+	assert.Equal(t, int64(1771122760), c.AddedAt)
+	assert.Equal(t, []string{"ssh-ed25519 AAAAlaptop"}, c.SSHPublicKeys)
+	assert.Equal(t, int32(1), resp.TotalCount)
+}

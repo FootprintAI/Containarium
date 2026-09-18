@@ -1351,6 +1351,106 @@ func (c *Client) ListRoutes(username string, activeOnly bool) (*ListRoutesRespon
 	return &resp, nil
 }
 
+// AddCollaboratorRequest grants a teammate access to req.OwnerUsername's box
+// (#1145 — the agent surface for what a human already has via the CLI/REST/
+// dashboard). OwnerUsername is only used to build the URL path, mirroring
+// CreateContainerRequest's own convention of not round-tripping path-bound
+// fields through the body.
+type AddCollaboratorRequest struct {
+	OwnerUsername         string   `json:"-"`
+	CollaboratorUsername  string   `json:"collaboratorUsername"`
+	SSHPublicKeys         []string `json:"sshPublicKeys,omitempty"`
+	GrantSudo             bool     `json:"grantSudo,omitempty"`
+	GrantContainerRuntime bool     `json:"grantContainerRuntime,omitempty"`
+}
+
+// CollaboratorInfo mirrors the wire shape of proto Collaborator
+// (proto/containarium/v1/container.proto). AddedAt is `,string` because
+// grpc-gateway serializes int64 scalars as JSON strings (see this package's
+// wire_format_test.go — a missing `,string` tag here breaks
+// json.Unmarshal on every real response, silently on a symmetric httptest
+// mock).
+type CollaboratorInfo struct {
+	ID                   string `json:"id"`
+	ContainerName        string `json:"containerName"`
+	OwnerUsername        string `json:"ownerUsername"`
+	CollaboratorUsername string `json:"collaboratorUsername"`
+	AccountName          string `json:"accountName"`
+	// SSHPublicKey is deprecated server-side (#1144): it now carries just the
+	// FIRST authorized key, not every key. Prefer SSHPublicKeys.
+	SSHPublicKey        string   `json:"sshPublicKey,omitempty"`
+	SSHPublicKeys       []string `json:"sshPublicKeys,omitempty"`
+	AddedAt             int64    `json:"addedAt,string"`
+	CreatedBy           string   `json:"createdBy,omitempty"`
+	HasSudo             bool     `json:"hasSudo,omitempty"`
+	HasContainerRuntime bool     `json:"hasContainerRuntime,omitempty"`
+}
+
+type AddCollaboratorResponse struct {
+	Message      string           `json:"message"`
+	Collaborator CollaboratorInfo `json:"collaborator"`
+	SSHCommand   string           `json:"sshCommand,omitempty"`
+}
+
+// AddCollaborator grants a collaborator access to req.OwnerUsername's box.
+// Mirrors POST /v1/containers/{owner}/collaborators — the same endpoint the
+// CLI's remote path (internal/client.{GRPCClient,HTTPClient}.AddCollaborator)
+// and the web UI already call.
+func (c *Client) AddCollaborator(req AddCollaboratorRequest) (*AddCollaboratorResponse, error) {
+	path := fmt.Sprintf("/v1/containers/%s/collaborators", url.PathEscape(req.OwnerUsername))
+	respBody, err := c.doRequest("POST", path, req)
+	if err != nil {
+		return nil, err
+	}
+	var resp AddCollaboratorResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
+// ListCollaboratorsResponse mirrors proto ListCollaboratorsResponse.
+// TotalCount is a plain int32 (not `,string`) — protojson only stringifies
+// 64-bit integers.
+type ListCollaboratorsResponse struct {
+	Collaborators []CollaboratorInfo `json:"collaborators"`
+	TotalCount    int32              `json:"totalCount"`
+}
+
+// ListCollaborators lists everyone with access to ownerUsername's box.
+// Mirrors GET /v1/containers/{owner}/collaborators.
+func (c *Client) ListCollaborators(ownerUsername string) (*ListCollaboratorsResponse, error) {
+	path := fmt.Sprintf("/v1/containers/%s/collaborators", url.PathEscape(ownerUsername))
+	respBody, err := c.doRequest("GET", path, nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp ListCollaboratorsResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
+type RemoveCollaboratorResponse struct {
+	Message string `json:"message,omitempty"`
+}
+
+// RemoveCollaborator revokes a collaborator's access. Mirrors
+// DELETE /v1/containers/{owner}/collaborators/{collaborator}.
+func (c *Client) RemoveCollaborator(ownerUsername, collaboratorUsername string) (*RemoveCollaboratorResponse, error) {
+	path := fmt.Sprintf("/v1/containers/%s/collaborators/%s", url.PathEscape(ownerUsername), url.PathEscape(collaboratorUsername))
+	respBody, err := c.doRequest("DELETE", path, nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp RemoveCollaboratorResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
 // AddPassthroughRoute creates a raw TCP/UDP port-forwarding rule (no TLS
 // termination) on the daemon. Used by the add_passthrough_route tool — the
 // passthrough counterpart of AddRoute, for callers who need L4 passthrough
