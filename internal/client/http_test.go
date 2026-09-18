@@ -172,6 +172,56 @@ func TestHTTPSetContainerTTL_Success(t *testing.T) {
 	}
 }
 
+// TestHTTPCreateContainer_SendsRegion is #1606: --region must reach the wire
+// so a create against a multi-region hosted control plane can name one. A
+// standalone daemon ignores the field, so its absence (empty string) must
+// keep the body unchanged from before this field existed — that's what the
+// omitempty on createContainerRequest.Region gives us.
+func TestHTTPCreateContainer_SendsRegion(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"container":{"name":"c","username":"alice"}}`))
+	}))
+	defer srv.Close()
+
+	c, err := NewHTTPClient(srv.URL, "tok")
+	if err != nil {
+		t.Fatalf("NewHTTPClient: %v", err)
+	}
+	if _, err := c.CreateContainer("alice", "img", "1", "1GB", "10GB", nil, false, "", nil, 0, false, "", "", GitSourceOpts{}, 0, 0, 0, "", EncryptionOpts{}, "", "", "us-east"); err != nil {
+		t.Fatalf("CreateContainer: %v", err)
+	}
+	if gotBody["region"] != "us-east" {
+		t.Errorf("region = %v, want us-east", gotBody["region"])
+	}
+}
+
+// TestHTTPCreateContainer_EmptyRegionOmitted proves an unset --region keeps
+// the request body identical to before this field existed — no behavior
+// change for a standalone/single-region daemon (#1606 acceptance 3).
+func TestHTTPCreateContainer_EmptyRegionOmitted(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"container":{"name":"c","username":"alice"}}`))
+	}))
+	defer srv.Close()
+
+	c, err := NewHTTPClient(srv.URL, "tok")
+	if err != nil {
+		t.Fatalf("NewHTTPClient: %v", err)
+	}
+	if _, err := c.CreateContainer("alice", "img", "1", "1GB", "10GB", nil, false, "", nil, 0, false, "", "", GitSourceOpts{}, 0, 0, 0, "", EncryptionOpts{}, "", "", ""); err != nil {
+		t.Fatalf("CreateContainer: %v", err)
+	}
+	if _, present := gotBody["region"]; present {
+		t.Errorf("region present in body = %v, want absent when unset", gotBody["region"])
+	}
+}
+
 // TestHTTPSetContainerTTL_404IsUnimplemented: a daemon too old to expose the
 // endpoint returns 404, which the client maps to codes.Unimplemented so the
 // CLI's soft-degrade path fires (Action doesn't hard-fail).

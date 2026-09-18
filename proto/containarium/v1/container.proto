@@ -517,6 +517,17 @@ message CreateContainerRequest {
   // so the wire shape stays stable across the OSS → cloud transition
   // rather than changing when tenancy lands.
   string tenant_id = 25;
+
+  // Region to place this container in (#1606) — a client-side placement
+  // hint in the same family as `pool` and `backend_id`. A standalone,
+  // single-backend daemon has exactly one region and ignores this field
+  // entirely: empty stays today's default behavior, and any non-empty
+  // value is likewise a no-op here. It exists so a hosted, multi-region
+  // control plane fronting several regional daemons has somewhere on this
+  // wire shape to receive the caller's choice — without it, a create
+  // against such a control plane with no configured default region has no
+  // way to express one at all. Empty = daemon/control-plane default.
+  string region = 26;
 }
 
 // CreateContainerResponse is the response from creating a container
