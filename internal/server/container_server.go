@@ -1125,10 +1125,15 @@ func (s *ContainerServer) ListContainers(ctx context.Context, req *pb.ListContai
 	protoContainers = applyProvisioningOverlay(protoContainers, pendingStates,
 		req.Username, req.State, len(req.LabelFilter) > 0, s.sshHost)
 
-	// Add containers from peer backends
+	// Add containers from peer backends. A peer that couldn't be reached
+	// contributes zero entries here — reported separately in
+	// unreachable_backends so callers can tell "unreachable" from "this
+	// backend genuinely has no containers" instead of both looking like a
+	// bare absence (#1902, sibling of #1901's GetMetrics fix).
+	var unreachableBackends []*pb.UnreachableBackend
 	if s.peerPool != nil {
 		authToken := extractAuthToken(ctx)
-		peerContainers := s.peerPool.ListContainers(authToken)
+		peerContainers, unreachable := s.peerPool.ListContainers(authToken)
 		for i := range peerContainers {
 			st := boxlxc.StatusFromInfo(&peerContainers[i])
 			pc := toProtoContainer(&st)
@@ -1136,11 +1141,18 @@ func (s *ContainerServer) ListContainers(ctx context.Context, req *pb.ListContai
 			pc.SshHost = s.sshHost
 			protoContainers = append(protoContainers, pc)
 		}
+		for _, u := range unreachable {
+			unreachableBackends = append(unreachableBackends, &pb.UnreachableBackend{
+				BackendId: u.BackendID,
+				Reason:    u.Reason,
+			})
+		}
 	}
 
 	return &pb.ListContainersResponse{
-		Containers: protoContainers,
-		TotalCount: safecast.I32(len(protoContainers)),
+		Containers:          protoContainers,
+		TotalCount:          safecast.I32(len(protoContainers)),
+		UnreachableBackends: unreachableBackends,
 	}, nil
 }
 
@@ -1250,7 +1262,7 @@ func (s *ContainerServer) GetContainer(ctx context.Context, req *pb.GetContainer
 		// Not found locally — try peers
 		if s.peerPool != nil {
 			authToken := extractAuthToken(ctx)
-			peerContainers := s.peerPool.ListContainers(authToken)
+			peerContainers, _ := s.peerPool.ListContainers(authToken)
 			containerName := req.Username + "-container"
 			for _, pc := range peerContainers {
 				if pc.Name == containerName {
@@ -1361,7 +1373,7 @@ func (s *ContainerServer) DeleteContainer(ctx context.Context, req *pb.DeleteCon
 		// Not found locally — try peers
 		if s.peerPool != nil {
 			authToken := extractAuthToken(ctx)
-			peer := s.peerPool.FindContainerPeer(req.Username, authToken)
+			peer, unreachablePeers := s.peerPool.FindContainerPeer(req.Username, authToken)
 			if peer != nil {
 				forceParam := ""
 				if req.Force {
@@ -1380,6 +1392,15 @@ func (s *ContainerServer) DeleteContainer(ctx context.Context, req *pb.DeleteCon
 					Message:       fmt.Sprintf("Container for user %s deleted on backend %s", req.Username, peer.ID),
 					ContainerName: containerName,
 				}, nil
+			}
+			// #1905: the container may genuinely be nowhere, or it may be
+			// sitting on one of these unreachable backends — reporting
+			// "deleted"/"not found" here would be a false positive/negative
+			// on a real container.
+			if len(unreachablePeers) > 0 {
+				s.uncancelPendingCreation(req.Username, cancelledCreate)
+				return nil, fmt.Errorf("cannot confirm delete for %s: %d backend(s) unreachable (%s)",
+					req.Username, len(unreachablePeers), unreachablePeers[0].Reason)
 			}
 		}
 		s.uncancelPendingCreation(req.Username, cancelledCreate)
@@ -1552,7 +1573,14 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 			// Try peer
 			if s.peerPool != nil {
 				authToken := extractAuthToken(ctx)
-				peer := s.peerPool.FindContainerPeer(req.Username, authToken)
+				peer, unreachablePeers := s.peerPool.FindContainerPeer(req.Username, authToken)
+				if peer == nil && len(unreachablePeers) > 0 {
+					// #1905: don't report "failed to start" (which reads as
+					// "no such container") when the container may actually
+					// be sitting on a backend we just couldn't reach.
+					return nil, fmt.Errorf("cannot start %s: %d backend(s) unreachable (%s)",
+						req.Username, len(unreachablePeers), unreachablePeers[0].Reason)
+				}
 				if peer != nil {
 					body, _ := json.Marshal(map[string]interface{}{
 						"wait_for_ready":        req.WaitForReady,
@@ -1719,7 +1747,13 @@ func (s *ContainerServer) StopContainer(ctx context.Context, req *pb.StopContain
 		// Try peer
 		if s.peerPool != nil {
 			authToken := extractAuthToken(ctx)
-			peer := s.peerPool.FindContainerPeer(req.Username, authToken)
+			peer, unreachablePeers := s.peerPool.FindContainerPeer(req.Username, authToken)
+			if peer == nil && len(unreachablePeers) > 0 {
+				// #1905: don't report "failed to stop" as if the container
+				// didn't exist when its backend was merely unreachable.
+				return nil, fmt.Errorf("cannot stop %s: %d backend(s) unreachable (%s)",
+					req.Username, len(unreachablePeers), unreachablePeers[0].Reason)
+			}
 			if peer != nil {
 				body, _ := json.Marshal(map[string]bool{"force": req.Force})
 				_, _, fwdErr := peer.ForwardRequest("POST", fmt.Sprintf("/v1/containers/%s/stop", req.Username), authToken, body)
@@ -1898,7 +1932,14 @@ func (s *ContainerServer) ResizeContainer(ctx context.Context, req *pb.ResizeCon
 		if s.peerPool != nil {
 			authToken := extractAuthToken(ctx)
 			log.Printf("[resize] container %s not local, searching peers (token len=%d)", containerName, len(authToken))
-			peer := s.peerPool.FindContainerPeer(req.Username, authToken)
+			peer, unreachablePeers := s.peerPool.FindContainerPeer(req.Username, authToken)
+			if peer == nil && len(unreachablePeers) > 0 {
+				// #1905: don't report "failed to resize" as if the
+				// container didn't exist when its backend was merely
+				// unreachable.
+				return nil, fmt.Errorf("cannot resize %s: %d backend(s) unreachable (%s)",
+					req.Username, len(unreachablePeers), unreachablePeers[0].Reason)
+			}
 			if peer != nil {
 				log.Printf("[resize] found %s on peer %s, forwarding", containerName, peer.ID)
 				body, _ := json.Marshal(map[string]string{
@@ -1955,7 +1996,14 @@ func (s *ContainerServer) CleanupDisk(ctx context.Context, req *pb.CleanupDiskRe
 		// Try peer
 		if s.peerPool != nil {
 			authToken := extractAuthToken(ctx)
-			peer := s.peerPool.FindContainerPeer(req.Username, authToken)
+			peer, unreachablePeers := s.peerPool.FindContainerPeer(req.Username, authToken)
+			if peer == nil && len(unreachablePeers) > 0 {
+				// #1905: don't report "failed to cleanup" as if the
+				// container didn't exist when its backend was merely
+				// unreachable.
+				return nil, fmt.Errorf("cannot cleanup disk for %s: %d backend(s) unreachable (%s)",
+					req.Username, len(unreachablePeers), unreachablePeers[0].Reason)
+			}
 			if peer != nil {
 				respBody, statusCode, fwdErr := peer.ForwardRequest("POST", fmt.Sprintf("/v1/containers/%s/cleanup-disk", req.Username), authToken, nil)
 				if fwdErr != nil {
@@ -2499,6 +2547,7 @@ func (s *ContainerServer) GetMetrics(ctx context.Context, req *pb.GetMetricsRequ
 	}
 
 	var protoMetrics []*pb.ContainerMetrics
+	var unreachableBackends []*pb.UnreachableBackend
 
 	if req.Username != "" {
 		// Get metrics for a specific container — try local first, then peers
@@ -2507,7 +2556,7 @@ func (s *ContainerServer) GetMetrics(ctx context.Context, req *pb.GetMetricsRequ
 			// Not found locally — try peers
 			if s.peerPool != nil {
 				authToken := extractAuthToken(ctx)
-				peer := s.peerPool.FindContainerPeer(req.Username, authToken)
+				peer, unreachablePeers := s.peerPool.FindContainerPeer(req.Username, authToken)
 				if peer != nil {
 					body, peerErr := peer.ForwardGetMetrics(authToken, req.Username)
 					if peerErr == nil {
@@ -2517,6 +2566,18 @@ func (s *ContainerServer) GetMetrics(ctx context.Context, req *pb.GetMetricsRequ
 							return &peerResp, nil
 						}
 					}
+				}
+				if peer == nil && len(unreachablePeers) > 0 {
+					// #1905: report the unreachable backend structurally
+					// (same contract #1901 introduced) instead of an error
+					// that reads as "no such container."
+					for _, u := range unreachablePeers {
+						unreachableBackends = append(unreachableBackends, &pb.UnreachableBackend{
+							BackendId: u.BackendID,
+							Reason:    u.Reason,
+						})
+					}
+					return &pb.GetMetricsResponse{UnreachableBackends: unreachableBackends}, nil
 				}
 			}
 			return nil, fmt.Errorf("failed to get metrics: %w", err)
@@ -2532,21 +2593,36 @@ func (s *ContainerServer) GetMetrics(ctx context.Context, req *pb.GetMetricsRequ
 			protoMetrics = append(protoMetrics, toProtoMetrics(m))
 		}
 
-		// Merge metrics from all healthy peers
+		// Merge metrics from all healthy peers. A peer that can't be reached
+		// contributes zero entries to `metrics` — that's reported separately
+		// in `unreachable_backends` so callers can tell "unreachable" from
+		// "genuinely idle/no usage" instead of rendering both as blank (#1901).
 		if s.peerPool != nil {
 			authToken := extractAuthToken(ctx)
 			for _, peer := range s.peerPool.Peers() {
 				if !peer.Healthy {
+					unreachableBackends = append(unreachableBackends, &pb.UnreachableBackend{
+						BackendId: peer.ID,
+						Reason:    "peer marked unhealthy by sentinel",
+					})
 					continue
 				}
 				body, err := peer.ForwardGetMetrics(authToken, "")
 				if err != nil {
 					log.Printf("[metrics] peer %s: %v", peer.ID, err)
+					unreachableBackends = append(unreachableBackends, &pb.UnreachableBackend{
+						BackendId: peer.ID,
+						Reason:    fmt.Sprintf("peer fetch failed: %v", err),
+					})
 					continue
 				}
 				var peerMetricsResp pb.GetMetricsResponse
 				if err := protojson.Unmarshal(body, &peerMetricsResp); err != nil {
 					log.Printf("[metrics] peer %s parse error: %v", peer.ID, err)
+					unreachableBackends = append(unreachableBackends, &pb.UnreachableBackend{
+						BackendId: peer.ID,
+						Reason:    fmt.Sprintf("peer response unparseable: %v", err),
+					})
 					continue
 				}
 				protoMetrics = append(protoMetrics, peerMetricsResp.Metrics...)
@@ -2555,7 +2631,8 @@ func (s *ContainerServer) GetMetrics(ctx context.Context, req *pb.GetMetricsRequ
 	}
 
 	return &pb.GetMetricsResponse{
-		Metrics: protoMetrics,
+		Metrics:             protoMetrics,
+		UnreachableBackends: unreachableBackends,
 	}, nil
 }
 
@@ -4180,7 +4257,13 @@ func (s *ContainerServer) AddCollaborator(ctx context.Context, req *pb.AddCollab
 		// No local collaborator manager — try peer
 		if s.peerPool != nil {
 			authToken := extractAuthToken(ctx)
-			peer := s.peerPool.FindContainerPeer(req.OwnerUsername, authToken)
+			peer, unreachablePeers := s.peerPool.FindContainerPeer(req.OwnerUsername, authToken)
+			if peer == nil && len(unreachablePeers) > 0 {
+				// #1905: "collaborator management not enabled" would be a
+				// false diagnosis when the real cause is an unreachable backend.
+				return nil, fmt.Errorf("cannot add collaborator for %s: %d backend(s) unreachable (%s)",
+					req.OwnerUsername, len(unreachablePeers), unreachablePeers[0].Reason)
+			}
 			if peer != nil {
 				body, _ := json.Marshal(map[string]interface{}{
 					"collaborator_username": req.CollaboratorUsername,
@@ -4257,7 +4340,13 @@ func (s *ContainerServer) RemoveCollaborator(ctx context.Context, req *pb.Remove
 		// No local collaborator manager — try peer
 		if s.peerPool != nil {
 			authToken := extractAuthToken(ctx)
-			peer := s.peerPool.FindContainerPeer(req.OwnerUsername, authToken)
+			peer, unreachablePeers := s.peerPool.FindContainerPeer(req.OwnerUsername, authToken)
+			if peer == nil && len(unreachablePeers) > 0 {
+				// #1905: "collaborator management not enabled" would be a
+				// false diagnosis when the real cause is an unreachable backend.
+				return nil, fmt.Errorf("cannot remove collaborator for %s: %d backend(s) unreachable (%s)",
+					req.OwnerUsername, len(unreachablePeers), unreachablePeers[0].Reason)
+			}
 			if peer != nil {
 				_, statusCode, fwdErr := peer.ForwardRequest("DELETE", fmt.Sprintf("/v1/containers/%s/collaborators/%s", req.OwnerUsername, req.CollaboratorUsername), authToken, nil)
 				if fwdErr != nil {
@@ -4296,7 +4385,13 @@ func (s *ContainerServer) ListCollaborators(ctx context.Context, req *pb.ListCol
 		// No local collaborator manager — try peer
 		if s.peerPool != nil {
 			authToken := extractAuthToken(ctx)
-			peer := s.peerPool.FindContainerPeer(req.OwnerUsername, authToken)
+			peer, unreachablePeers := s.peerPool.FindContainerPeer(req.OwnerUsername, authToken)
+			if peer == nil && len(unreachablePeers) > 0 {
+				// #1905: "collaborator management not enabled" would be a
+				// false diagnosis when the real cause is an unreachable backend.
+				return nil, fmt.Errorf("cannot list collaborators for %s: %d backend(s) unreachable (%s)",
+					req.OwnerUsername, len(unreachablePeers), unreachablePeers[0].Reason)
+			}
 			if peer != nil {
 				respBody, statusCode, fwdErr := peer.ForwardRequest("GET", fmt.Sprintf("/v1/containers/%s/collaborators", req.OwnerUsername), authToken, nil)
 				if fwdErr != nil {
