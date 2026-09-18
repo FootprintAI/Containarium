@@ -2780,7 +2780,19 @@ func (s *ContainerServer) TriggerUpgrade(ctx context.Context, req *pb.TriggerUpg
 			return nil, status.Error(codes.Unavailable, "GitHub-direct upgrade is not configured on this daemon (no binary path wired)")
 		}
 	} else if s.autoUpdater == nil {
-		return nil, status.Error(codes.Unavailable, "auto-update is not configured on this daemon (no sentinel binary source)")
+		// cloud#1547: this used to return with NO log line at all — on a BYOC
+		// host whose containariumd was started without --sentinel-url (a
+		// daemon startup flag, separate from `pool join`'s own tunnel
+		// registration; a host can join and heartbeat fine while missing
+		// this), every upgrade attempt died here silently. An operator
+		// SSHed into the target host during a live incident saw nothing
+		// arrive, before or after, which is what made the cloud-side "no
+		// capacity in pool" error look like a fleet/capacity problem
+		// instead of a one-line daemon misconfiguration. Log it, and name
+		// the flag in the error too so the message alone (three hops away,
+		// no log access) is actionable.
+		log.Printf("[upgrade] rejected: TriggerUpgrade called on backend %q with no auto-updater configured (missing --sentinel-url at daemon startup)", s.localBackendID())
+		return nil, status.Error(codes.Unavailable, "auto-update is not configured on this daemon — start containariumd with --sentinel-url (or CONTAINARIUM_SENTINEL_URL) to enable it")
 	}
 
 	current := version.GetVersion()
