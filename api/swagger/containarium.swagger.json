@@ -8358,7 +8358,7 @@
         },
         "sshPublicKey": {
           "type": "string",
-          "title": "SSH public key for this collaborator"
+          "description": "SSH public key for this collaborator.\nDeprecated: prefer ssh_public_keys. Kept for back-compat — carries just\nthe FIRST authorized key, not every key (#1144): before this field\nexisted, a multi-key collaborator's several `authorized_keys` lines were\nnewline-joined into this single scalar, silently violating its own \"a\nkey\" contract for any consumer reading it as documented."
         },
         "addedAt": {
           "type": "string",
@@ -8376,6 +8376,13 @@
         "hasContainerRuntime": {
           "type": "boolean",
           "title": "Has docker/podman group membership for container runtime access"
+        },
+        "sshPublicKeys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Every SSH public key authorized for this collaborator (#369 authorizes\nmore than one; #1144 is this field completing the response side —\nAddCollaboratorRequest already had the repeated equivalent). Mirrors\nssh_public_key[0] at minimum; empty only if the stored value was itself\nempty."
         }
       },
       "title": "Collaborator represents a user with access to a container"
