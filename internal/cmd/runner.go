@@ -397,6 +397,7 @@ func buildDaemonAPI() (runner.DaemonAPI, runner.DaemonCreator, error) {
 				client.EncryptionOpts{}, // encryption: runner boxes carry no tenant data (#1198)
 				"",                      // memory-request: runner boxes use request==limit (#1557)
 				"",                      // cpu-request: ditto
+				"",                      // region: runner boxes don't steer by region (#1606)
 			)
 			if err != nil {
 				return "", "", err
@@ -438,6 +439,7 @@ func buildDaemonAPI() (runner.DaemonAPI, runner.DaemonCreator, error) {
 			client.EncryptionOpts{}, // encryption: runner boxes carry no tenant data (#1198)
 			"",                      // memory-request: runner boxes use request==limit (#1557)
 			"",                      // cpu-request: ditto
+			"",                      // region: runner boxes don't steer by region (#1606)
 		)
 		if err != nil {
 			return "", "", err

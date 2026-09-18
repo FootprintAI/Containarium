@@ -1273,7 +1273,17 @@ type CreateContainerRequest struct {
 	// cloud daemon accepts any non-empty value. The field is defined here
 	// so the wire shape stays stable across the OSS → cloud transition
 	// rather than changing when tenancy lands.
-	TenantId      string `protobuf:"bytes,25,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	TenantId string `protobuf:"bytes,25,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	// Region to place this container in (#1606) — a client-side placement
+	// hint in the same family as `pool` and `backend_id`. A standalone,
+	// single-backend daemon has exactly one region and ignores this field
+	// entirely: empty stays today's default behavior, and any non-empty
+	// value is likewise a no-op here. It exists so a hosted, multi-region
+	// control plane fronting several regional daemons has somewhere on this
+	// wire shape to receive the caller's choice — without it, a create
+	// against such a control plane with no configured default region has no
+	// way to express one at all. Empty = daemon/control-plane default.
+	Region        string `protobuf:"bytes,26,opt,name=region,proto3" json:"region,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1479,6 +1489,13 @@ func (x *CreateContainerRequest) GetEncrypted() bool {
 func (x *CreateContainerRequest) GetTenantId() string {
 	if x != nil {
 		return x.TenantId
+	}
+	return ""
+}
+
+func (x *CreateContainerRequest) GetRegion() string {
+	if x != nil {
+		return x.Region
 	}
 	return ""
 }
@@ -6274,7 +6291,7 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\x0ecpu_nr_periods\x18\t \x01(\x03R\fcpuNrPeriods\x12(\n" +
 	"\x10cpu_nr_throttled\x18\n" +
 	" \x01(\x03R\x0ecpuNrThrottled\x12,\n" +
-	"\x12cpu_throttled_usec\x18\v \x01(\x03R\x10cpuThrottledUsec\"\xc1\b\n" +
+	"\x12cpu_throttled_usec\x18\v \x01(\x03R\x10cpuThrottledUsec\"\xd9\b\n" +
 	"\x16CreateContainerRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12=\n" +
 	"\tresources\x18\x02 \x01(\v2\x1f.containarium.v1.ResourceLimitsR\tresources\x12\x19\n" +
@@ -6306,7 +6323,8 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\x1cdelete_after_stopped_seconds\x18\x16 \x01(\x03R\x19deleteAfterStoppedSeconds\x12\x12\n" +
 	"\x04gpus\x18\x17 \x03(\tR\x04gpus\x12\x1c\n" +
 	"\tencrypted\x18\x18 \x01(\bR\tencrypted\x12\x1b\n" +
-	"\ttenant_id\x18\x19 \x01(\tR\btenantId\x1a9\n" +
+	"\ttenant_id\x18\x19 \x01(\tR\btenantId\x12\x16\n" +
+	"\x06region\x18\x1a \x01(\tR\x06region\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aB\n" +
