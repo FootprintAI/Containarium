@@ -553,6 +553,14 @@ message ListContainersResponse {
 
   // Total count of containers
   int32 total_count = 2;
+
+  // Backends that could not be reached while assembling this list (e.g.
+  // sentinel marked the peer unhealthy, or the forwarded request
+  // failed/timed out). A backend listed here contributed zero containers
+  // to `containers` — callers should render that distinctly from "this
+  // backend genuinely has no containers" rather than as a bare absence
+  // (#1902, sibling of GetMetricsResponse.unreachable_backends / #1901).
+  repeated UnreachableBackend unreachable_backends = 3;
 }
 
 // GetContainerRequest is the request to get a specific container
@@ -887,6 +895,25 @@ message GetMetricsRequest {
 message GetMetricsResponse {
   // Metrics for requested container(s)
   repeated ContainerMetrics metrics = 1;
+
+  // Backends that could not be reached for this fleet-wide metrics call
+  // (e.g. sentinel marked the peer unhealthy, or the forwarded request
+  // failed/timed out). Populated only on the no-username "all containers"
+  // path. A backend listed here contributed zero entries to `metrics` —
+  // callers should render that distinctly from "container has no usage
+  // yet" rather than as a bare absence (#1901).
+  repeated UnreachableBackend unreachable_backends = 2;
+}
+
+// UnreachableBackend names one peer backend that a fleet-wide metrics
+// fetch could not complete against, and why.
+message UnreachableBackend {
+  // Backend/peer ID, as returned by ListBackends.
+  string backend_id = 1;
+
+  // Human-readable reason (e.g. "peer marked unhealthy by sentinel",
+  // "peer fetch failed: <error>"). Not machine-parsed; for display/logs.
+  string reason = 2;
 }
 
 // ResizeContainerRequest is the request to resize container resources

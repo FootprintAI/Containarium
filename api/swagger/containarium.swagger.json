@@ -10571,6 +10571,14 @@
             "$ref": "#/definitions/ContainerMetrics"
           },
           "title": "Metrics for requested container(s)"
+        },
+        "unreachableBackends": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/UnreachableBackend"
+          },
+          "description": "Backends that could not be reached for this fleet-wide metrics call\n(e.g. sentinel marked the peer unhealthy, or the forwarded request\nfailed/timed out). Populated only on the no-username \"all containers\"\npath. A backend listed here contributed zero entries to `metrics` —\ncallers should render that distinctly from \"container has no usage\nyet\" rather than as a bare absence (#1901)."
         }
       },
       "title": "GetMetricsResponse is the response from getting metrics"
@@ -11285,6 +11293,14 @@
           "type": "integer",
           "format": "int32",
           "title": "Total count of containers"
+        },
+        "unreachableBackends": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/UnreachableBackend"
+          },
+          "description": "Backends that could not be reached while assembling this list (e.g.\nsentinel marked the peer unhealthy, or the forwarded request\nfailed/timed out). A backend listed here contributed zero containers\nto `containers` — callers should render that distinctly from \"this\nbackend genuinely has no containers\" rather than as a bare absence\n(#1902, sibling of GetMetricsResponse.unreachable_backends / #1901)."
         }
       },
       "title": "ListContainersResponse is the response from listing containers"
@@ -14464,6 +14480,20 @@
           "title": "Human-readable message"
         }
       }
+    },
+    "UnreachableBackend": {
+      "type": "object",
+      "properties": {
+        "backendId": {
+          "type": "string",
+          "description": "Backend/peer ID, as returned by ListBackends."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Human-readable reason (e.g. \"peer marked unhealthy by sentinel\",\n\"peer fetch failed: \u003cerror\u003e\"). Not machine-parsed; for display/logs."
+        }
+      },
+      "description": "UnreachableBackend names one peer backend that a fleet-wide metrics\nfetch could not complete against, and why."
     },
     "UpdateAlertRuleBody": {
       "type": "object",

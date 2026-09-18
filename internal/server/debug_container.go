@@ -50,13 +50,28 @@ func (s *ContainerServer) DebugContainer(ctx context.Context, req *pb.DebugConta
 	// "missing" against this host's (irrelevant) host-user/sshd state.
 	if resp.ContainerState == "missing" && s.peerPool != nil {
 		authToken := extractAuthToken(ctx)
-		if peer := s.peerPool.FindContainerPeer(req.Username, authToken); peer != nil {
+		peer, unreachablePeers := s.peerPool.FindContainerPeer(req.Username, authToken)
+		if peer != nil {
 			if body, err := peer.ForwardDebugContainer(authToken, req.Username); err == nil {
 				var peerResp pb.DebugContainerResponse
 				if jsonErr := protojson.Unmarshal(body, &peerResp); jsonErr == nil {
 					return &peerResp, nil
 				}
 			}
+		}
+		if peer == nil && len(unreachablePeers) > 0 {
+			// #1905: this daemon's own diagnosis (local host-user/sshd
+			// state) is guaranteed irrelevant for a container that isn't
+			// local — reporting "missing" here would be actively wrong,
+			// not just uninformative.
+			names := make([]string, len(unreachablePeers))
+			for i, u := range unreachablePeers {
+				names[i] = u.BackendID
+			}
+			resp.ContainerState = "unknown (backend unreachable)"
+			resp.LikelyCause = fmt.Sprintf("container may be on an unreachable backend: %s", strings.Join(names, ", "))
+			resp.NextActions = []string{"retry once the backend's health recovers", "check the backend's own daemon/tunnel status directly"}
+			return resp, nil
 		}
 	}
 
