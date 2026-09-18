@@ -17,6 +17,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   release from v0.71.0 onward is gated and complete.
 -->
 
+## [0.81.2] - 2026-09-18
+
+### Fixed
+
+- **Fleet-wide `GetMetrics` and `ListContainers` no longer silently drop
+  a backend's data when the sentinel marks its peer unhealthy for even
+  one poll tick** — a transient health blip (a peer mid-restart, a
+  tunnel reconnect) made every container on that backend render as
+  blank stats or vanish from the fleet list entirely, indistinguishable
+  from "this backend genuinely has none." Both responses now carry an
+  `unreachable_backends` field (backend ID + reason) so callers can tell
+  the two apart. (#1901, #1903, #1902, #1904)
+- **Lifecycle operations on a container hosted on a currently-unreachable
+  backend no longer report it as "not found."** `DeleteContainer`,
+  `StartContainer`, `StopContainer`, `ResizeContainer`, `CleanupDisk`,
+  single-container `GetMetrics`, the collaborator RPCs, `DebugContainer`,
+  and `TriggerClamavScan` all shared the same underlying gap
+  (`FindContainerPeer` returning a bare `nil` for "unhealthy peer" and
+  "not on any peer" alike) — a real, existing container could be
+  misreported as gone during a transient backend blip. (#1905, #1906)
+- **`pool join` no longer warns about a missing sentinel auth secret
+  when one is already durably provisioned** via an existing
+  `EnvironmentFile=` drop-in, and no longer silently drops the
+  reference to that file on a re-join without the flag/env var passed.
+  (#1895)
+- **Container create only waits for cloud-init when the base image
+  actually ships it** — the default `images:ubuntu/24.04` base doesn't
+  include cloud-init, so every create paid a fixed 5s dead wait for
+  nothing. (#1896)
+
 ## [0.81.1] - 2026-09-17
 
 > Supersedes the broken `v0.81.0` tag, which was cut without this
