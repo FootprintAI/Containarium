@@ -14440,6 +14440,10 @@
         "force": {
           "type": "boolean",
           "description": "Upgrade even if the sentinel-served binary already matches the running one."
+        },
+        "githubTag": {
+          "type": "string",
+          "description": "Optional (#1028): pull this exact release directly from GitHub Releases\ninstead of the sentinel-served binary — \"vX.Y.Z\" or \"latest\". Opt-in;\nempty (the default) is unchanged sentinel-served behavior. Lets an\ninternet-connected host (e.g. an operator-owned lab BYOC box) jump\nstraight to a tag without upgrading the sentinel first. Not for\nair-gapped hosts, which have no GitHub egress and must keep the\nsentinel path regardless — this field existing changes nothing for them."
         }
       },
       "description": "TriggerUpgradeRequest asks a backend to upgrade its daemon binary now instead\nof waiting for the periodic auto-update tick. The daemon pulls the binary the\nsentinel currently serves (SHA-verified), smoke-tests it, swaps atomically\n(keeping the previous binary as .old), and restarts. See #354 Phase B."

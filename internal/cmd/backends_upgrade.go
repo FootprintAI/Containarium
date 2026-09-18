@@ -13,17 +13,23 @@ import (
 )
 
 var upgradeForce bool
+var upgradeGithubTag string
 
 var backendsUpgradeCmd = &cobra.Command{
 	Use:   "upgrade [backend-id]",
 	Short: "Upgrade a backend's daemon to the sentinel-served binary now",
 	Long: `Trigger a daemon upgrade on a backend immediately, instead of waiting for the
-periodic auto-update tick. The daemon pulls the binary the sentinel currently
-serves, SHA-verifies it, smoke-tests it (runs 'version'), swaps it in atomically
-(keeping the previous binary as .old), and restarts.
+periodic auto-update tick. By default the daemon pulls the binary the sentinel
+currently serves, SHA-verifies it, smoke-tests it (runs 'version'), swaps it in
+atomically (keeping the previous binary as .old), and restarts.
 
 With no backend-id it upgrades the local/primary daemon; with a peer id it
 forwards to that peer (which upgrades its own daemon). Admin-only.
+
+--github-tag pulls a specific GitHub release tag (e.g. "v0.82.0") directly
+from GitHub Releases instead — same verify/smoke-test/swap sequence, but no
+sentinel involved. Opt-in; omit it for the default sentinel-served upgrade.
+See #1028.
 
 The upgrade is asynchronous: on a successful swap the daemon restarts, so this
 command returns an upgrade id immediately. Confirm the result with
@@ -38,6 +44,8 @@ func init() {
 	backendsCmd.AddCommand(backendsUpgradeCmd)
 	backendsUpgradeCmd.Flags().BoolVar(&upgradeForce, "force", false,
 		"Upgrade even if the sentinel-served binary already matches the running one.")
+	backendsUpgradeCmd.Flags().StringVar(&upgradeGithubTag, "github-tag", "",
+		"Pull this GitHub release tag directly from GitHub Releases instead of the sentinel-served binary (e.g. v0.82.0).")
 }
 
 // triggerUpgradeReq is the typed /v1/backends/upgrade request body. snake_case
@@ -45,6 +53,7 @@ func init() {
 type triggerUpgradeReq struct {
 	BackendID string `json:"backend_id,omitempty"`
 	Force     bool   `json:"force,omitempty"`
+	GithubTag string `json:"github_tag,omitempty"`
 }
 
 // triggerUpgradeResp mirrors the TriggerUpgrade response (camelCase via the
@@ -71,7 +80,7 @@ func runBackendsUpgrade(cmd *cobra.Command, args []string) error {
 		backendID = args[0]
 	}
 
-	reqBody, _ := json.Marshal(triggerUpgradeReq{BackendID: backendID, Force: upgradeForce})
+	reqBody, _ := json.Marshal(triggerUpgradeReq{BackendID: backendID, Force: upgradeForce, GithubTag: upgradeGithubTag})
 	url := strings.TrimSuffix(serverAddr, "/") + "/v1/backends/upgrade"
 
 	req, err := http.NewRequest("POST", url, bytes.NewReader(reqBody))
