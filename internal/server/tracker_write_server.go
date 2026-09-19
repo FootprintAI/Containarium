@@ -206,6 +206,42 @@ func (s *ContainerServer) ClaimTrackerIssue(ctx context.Context, req *pb.ClaimTr
 	}, nil
 }
 
+// SetTrackerIssueLabels adds and/or removes labels on an issue. No
+// allow-list enforcement yet — see the proto message's doc comment.
+func (s *ContainerServer) SetTrackerIssueLabels(ctx context.Context, req *pb.SetTrackerIssueLabelsRequest) (*pb.SetTrackerIssueLabelsResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeTrackerWrite); err != nil {
+		return nil, err
+	}
+	if s.trackerStore == nil {
+		return nil, status.Error(codes.Unavailable, "tracker store not configured on this daemon")
+	}
+	if req.Username == "" {
+		return nil, status.Error(codes.InvalidArgument, "username is required")
+	}
+	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+		return nil, err
+	}
+	if len(req.AddLabels) == 0 && len(req.RemoveLabels) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "add_labels or remove_labels is required")
+	}
+
+	provider, conn, err := s.resolveWriterConn(ctx, req.Username, req.Connection)
+	if err != nil {
+		return nil, err
+	}
+	if err := provider.SetLabels(ctx, conn, req.Number, req.AddLabels, req.RemoveLabels); err != nil {
+		return nil, mapProviderError(err)
+	}
+
+	s.auditTrackerWrite(ctx, "tracker.set_labels", req.Username, req.Connection, req.Number, trackerLabelsAuditDetail{
+		Connection:   req.Connection,
+		Number:       req.Number,
+		AddLabels:    req.AddLabels,
+		RemoveLabels: req.RemoveLabels,
+	})
+	return &pb.SetTrackerIssueLabelsResponse{Message: "labels updated"}, nil
+}
+
 // ---- tracker write audit rows (#1922) --------------------------------
 //
 // One row per write, ResourceType "tracker_issue", Detail marshalled from
@@ -227,6 +263,13 @@ type trackerClaimAuditDetail struct {
 	Claimed               bool   `json:"claimed"`
 	AlreadyClaimedByRunID string `json:"already_claimed_by_run_id,omitempty"`
 	Assigned              bool   `json:"assigned"`
+}
+
+type trackerLabelsAuditDetail struct {
+	Connection   string   `json:"connection"`
+	Number       int64    `json:"number"`
+	AddLabels    []string `json:"add_labels,omitempty"`
+	RemoveLabels []string `json:"remove_labels,omitempty"`
 }
 
 // auditTrackerWrite records a tracker write verb's outcome. Best-effort

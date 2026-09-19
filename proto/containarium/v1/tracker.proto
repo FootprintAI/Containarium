@@ -338,6 +338,24 @@ message ClaimTrackerIssueResponse {
   bool assigned = 3;
 }
 
+// SetTrackerIssueLabelsRequest adds and/or removes labels on an issue.
+// The design note calls for checking both lists against a
+// connection-level label allow-list before any upstream call is made;
+// that allow-list does not exist on TrackerConnection yet (tracked
+// separately) — this RPC has no allow-list enforcement of its own
+// until it does.
+message SetTrackerIssueLabelsRequest {
+  string username = 1;
+  string connection = 2;
+  int64 number = 3;
+  repeated string add_labels = 4;
+  repeated string remove_labels = 5;
+}
+
+message SetTrackerIssueLabelsResponse {
+  string message = 1;
+}
+
 // TrackerService manages tracker connections — the daemon-custody seam
 // the tracker broker's issue/change-request verbs (#1922, #1923) build
 // on. Connection CRUD is gated by tracker:admin, deliberately separate
@@ -468,6 +486,19 @@ service TrackerService {
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Claim a tracker issue";
       description: "Posts a stamped claim comment and assigns the calling run if the issue is unassigned, unless a live or recent claim from a different run already holds it. Idempotent for the same run. Requires tracker:write.";
+      tags: "Tracker";
+    };
+  }
+
+  // SetTrackerIssueLabels adds and/or removes labels on an issue.
+  rpc SetTrackerIssueLabels(SetTrackerIssueLabelsRequest) returns (SetTrackerIssueLabelsResponse) {
+    option (google.api.http) = {
+      post: "/v1/tracker/{username}/{connection}/issues/{number}/labels"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Set labels on a tracker issue";
+      description: "Adds and/or removes labels on an issue. Requires tracker:write.";
       tags: "Tracker";
     };
   }

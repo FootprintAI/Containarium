@@ -6758,6 +6758,59 @@
         ]
       }
     },
+    "/v1/tracker/{username}/{connection}/issues/{number}/labels": {
+      "post": {
+        "summary": "Set labels on a tracker issue",
+        "description": "Adds and/or removes labels on an issue. Requires tracker:write.",
+        "operationId": "TrackerService_SetTrackerIssueLabels",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SetTrackerIssueLabelsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "connection",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "number",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "format": "int64"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/SetTrackerIssueLabelsBody"
+            }
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      }
+    },
     "/v1/traffic/subscribe": {
       "get": {
         "summary": "Subscribe to traffic events",
@@ -14385,6 +14438,32 @@
         },
         "connection": {
           "$ref": "#/definitions/TrackerConnection"
+        }
+      }
+    },
+    "SetTrackerIssueLabelsBody": {
+      "type": "object",
+      "properties": {
+        "addLabels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "removeLabels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "description": "SetTrackerIssueLabelsRequest adds and/or removes labels on an issue.\nThe design note calls for checking both lists against a\nconnection-level label allow-list before any upstream call is made;\nthat allow-list does not exist on TrackerConnection yet (tracked\nseparately) — this RPC has no allow-list enforcement of its own\nuntil it does."
+    },
+    "SetTrackerIssueLabelsResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string"
         }
       }
     },
