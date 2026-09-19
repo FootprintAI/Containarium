@@ -1652,6 +1652,11 @@ func (s *Server) registerTools() {
 	// KmsService gateway that `containarium kms` also calls.
 	s.tools = append(s.tools, kmsTools()...)
 
+	// Tracker broker agent-facing verbs (#1922 step 7, tracker_tools.go)
+	// — thin wrappers over the TrackerService gateway that
+	// `containarium tracker issue/change ...` also calls.
+	s.tools = append(s.tools, trackerTools()...)
+
 	// Phase 1.7 — assign required scope per tool. Done as a
 	// post-pass so the slice literals above stay short and
 	// the security policy lives in one auditable spot. New
@@ -1678,8 +1683,19 @@ func toolScopeAssignments() map[string]string {
 		// started, so they share it rather than widening the read surface.
 		"code_run":    auth.ScopeCodeWrite,
 		"code_attach": auth.ScopeCodeWrite,
-		"code_status": auth.ScopeCodeWrite,
-		"code_stop":   auth.ScopeCodeWrite,
+
+		// tracker broker (#1922) — read verbs need tracker:read, write
+		// verbs need tracker:write. Connection CRUD / status are
+		// tracker:admin and deliberately not exposed as MCP tools at
+		// all (see trackerTools's own doc comment).
+		"tracker_get_issue":   auth.ScopeTrackerRead,
+		"tracker_list_issues": auth.ScopeTrackerRead,
+		"tracker_get_change":  auth.ScopeTrackerRead,
+		"tracker_comment":     auth.ScopeTrackerWrite,
+		"tracker_claim":       auth.ScopeTrackerWrite,
+		"tracker_set_labels":  auth.ScopeTrackerWrite,
+		"code_status":         auth.ScopeCodeWrite,
+		"code_stop":           auth.ScopeCodeWrite,
 
 		// container lifecycle
 		"create_container":   auth.ScopeContainersWrite,
