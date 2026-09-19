@@ -53,6 +53,9 @@ type fakeWriterProvider struct {
 	assignCalled bool
 	assignOut    bool
 	assignErr    error
+
+	labelsAdd, labelsRemove []string
+	labelsErr               error
 }
 
 func (f *fakeWriterProvider) Comment(_ context.Context, _ tracker.Conn, _ int64, body string) (tracker.Comment, error) {
@@ -70,8 +73,9 @@ func (f *fakeWriterProvider) AssignIfUnassigned(context.Context, tracker.Conn, i
 	return f.assignOut, f.assignErr
 }
 
-func (f *fakeWriterProvider) SetLabels(context.Context, tracker.Conn, int64, []string, []string) error {
-	return nil
+func (f *fakeWriterProvider) SetLabels(_ context.Context, _ tracker.Conn, _ int64, add, remove []string) error {
+	f.labelsAdd, f.labelsRemove = add, remove
+	return f.labelsErr
 }
 
 // WhoAmI returns the zero value, matching this fake's own Comment
@@ -298,5 +302,60 @@ func TestClaimTrackerIssue_AlreadyClaimedByForeignRun(t *testing.T) {
 	}
 	if provider.assignCalled {
 		t.Error("AssignIfUnassigned must not be called when a foreign claim already holds the issue")
+	}
+}
+
+// ---- SetTrackerIssueLabels ------------------------------------------------
+
+func TestSetTrackerIssueLabels_RejectsEmptyRequest(t *testing.T) {
+	s := &ContainerServer{trackerStore: mustTestTrackerStore(t)}
+	ctx := kmsKeyTestCtx("alice", "member", "tracker:write")
+	_, err := s.SetTrackerIssueLabels(ctx, &pb.SetTrackerIssueLabelsRequest{
+		Username: "alice", Connection: "default", Number: 1,
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("code = %v, want InvalidArgument (no labels to add or remove)", status.Code(err))
+	}
+}
+
+func TestSetTrackerIssueLabels_TrackerReadScopeInsufficient(t *testing.T) {
+	s := &ContainerServer{}
+	ctx := kmsKeyTestCtx("alice", "member", "tracker:read")
+	_, err := s.SetTrackerIssueLabels(ctx, &pb.SetTrackerIssueLabelsRequest{
+		Username: "alice", Connection: "default", Number: 1, AddLabels: []string{"bug"},
+	})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("code = %v, want PermissionDenied (tracker:read must not grant a write verb)", status.Code(err))
+	}
+}
+
+func TestSetTrackerIssueLabels_HappyPath(t *testing.T) {
+	const user = "tracker-rpc-labels-happy"
+	provider := &fakeWriterProvider{}
+	s, ctx := setUpWriterConnection(t, user, provider)
+	s.auditStore = mustTestAuditStore(t)
+
+	if _, err := s.SetTrackerIssueLabels(ctx, &pb.SetTrackerIssueLabelsRequest{
+		Username: user, Connection: "default", Number: 3,
+		AddLabels: []string{"triaged"}, RemoveLabels: []string{"needs-triage"},
+	}); err != nil {
+		t.Fatalf("SetTrackerIssueLabels: %v", err)
+	}
+	if len(provider.labelsAdd) != 1 || provider.labelsAdd[0] != "triaged" {
+		t.Errorf("labelsAdd = %v, want [triaged]", provider.labelsAdd)
+	}
+	if len(provider.labelsRemove) != 1 || provider.labelsRemove[0] != "needs-triage" {
+		t.Errorf("labelsRemove = %v, want [needs-triage]", provider.labelsRemove)
+	}
+
+	rows, _, err := s.auditStore.Query(context.Background(), audit.QueryParams{Username: user, Action: "tracker.set_labels", Limit: 10})
+	if err != nil {
+		t.Fatalf("audit Query: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("audit rows for tracker.set_labels = %d, want 1", len(rows))
+	}
+	if !strings.Contains(rows[0].Detail, "triaged") {
+		t.Errorf("audit detail = %q, want it to carry the added label", rows[0].Detail)
 	}
 }

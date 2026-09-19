@@ -29,6 +29,7 @@ const (
 	TrackerService_GetTrackerChange_FullMethodName        = "/containarium.v1.TrackerService/GetTrackerChange"
 	TrackerService_CommentOnTrackerIssue_FullMethodName   = "/containarium.v1.TrackerService/CommentOnTrackerIssue"
 	TrackerService_ClaimTrackerIssue_FullMethodName       = "/containarium.v1.TrackerService/ClaimTrackerIssue"
+	TrackerService_SetTrackerIssueLabels_FullMethodName   = "/containarium.v1.TrackerService/SetTrackerIssueLabels"
 )
 
 // TrackerServiceClient is the client API for TrackerService service.
@@ -66,6 +67,8 @@ type TrackerServiceClient interface {
 	CommentOnTrackerIssue(ctx context.Context, in *CommentOnTrackerIssueRequest, opts ...grpc.CallOption) (*CommentOnTrackerIssueResponse, error)
 	// ClaimTrackerIssue attempts to claim an issue for the calling run.
 	ClaimTrackerIssue(ctx context.Context, in *ClaimTrackerIssueRequest, opts ...grpc.CallOption) (*ClaimTrackerIssueResponse, error)
+	// SetTrackerIssueLabels adds and/or removes labels on an issue.
+	SetTrackerIssueLabels(ctx context.Context, in *SetTrackerIssueLabelsRequest, opts ...grpc.CallOption) (*SetTrackerIssueLabelsResponse, error)
 }
 
 type trackerServiceClient struct {
@@ -176,6 +179,16 @@ func (c *trackerServiceClient) ClaimTrackerIssue(ctx context.Context, in *ClaimT
 	return out, nil
 }
 
+func (c *trackerServiceClient) SetTrackerIssueLabels(ctx context.Context, in *SetTrackerIssueLabelsRequest, opts ...grpc.CallOption) (*SetTrackerIssueLabelsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetTrackerIssueLabelsResponse)
+	err := c.cc.Invoke(ctx, TrackerService_SetTrackerIssueLabels_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // TrackerServiceServer is the server API for TrackerService service.
 // All implementations must embed UnimplementedTrackerServiceServer
 // for forward compatibility.
@@ -211,6 +224,8 @@ type TrackerServiceServer interface {
 	CommentOnTrackerIssue(context.Context, *CommentOnTrackerIssueRequest) (*CommentOnTrackerIssueResponse, error)
 	// ClaimTrackerIssue attempts to claim an issue for the calling run.
 	ClaimTrackerIssue(context.Context, *ClaimTrackerIssueRequest) (*ClaimTrackerIssueResponse, error)
+	// SetTrackerIssueLabels adds and/or removes labels on an issue.
+	SetTrackerIssueLabels(context.Context, *SetTrackerIssueLabelsRequest) (*SetTrackerIssueLabelsResponse, error)
 	mustEmbedUnimplementedTrackerServiceServer()
 }
 
@@ -250,6 +265,9 @@ func (UnimplementedTrackerServiceServer) CommentOnTrackerIssue(context.Context, 
 }
 func (UnimplementedTrackerServiceServer) ClaimTrackerIssue(context.Context, *ClaimTrackerIssueRequest) (*ClaimTrackerIssueResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ClaimTrackerIssue not implemented")
+}
+func (UnimplementedTrackerServiceServer) SetTrackerIssueLabels(context.Context, *SetTrackerIssueLabelsRequest) (*SetTrackerIssueLabelsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetTrackerIssueLabels not implemented")
 }
 func (UnimplementedTrackerServiceServer) mustEmbedUnimplementedTrackerServiceServer() {}
 func (UnimplementedTrackerServiceServer) testEmbeddedByValue()                        {}
@@ -452,6 +470,24 @@ func _TrackerService_ClaimTrackerIssue_Handler(srv interface{}, ctx context.Cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _TrackerService_SetTrackerIssueLabels_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetTrackerIssueLabelsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TrackerServiceServer).SetTrackerIssueLabels(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TrackerService_SetTrackerIssueLabels_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TrackerServiceServer).SetTrackerIssueLabels(ctx, req.(*SetTrackerIssueLabelsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // TrackerService_ServiceDesc is the grpc.ServiceDesc for TrackerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -498,6 +534,10 @@ var TrackerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ClaimTrackerIssue",
 			Handler:    _TrackerService_ClaimTrackerIssue_Handler,
+		},
+		{
+			MethodName: "SetTrackerIssueLabels",
+			Handler:    _TrackerService_SetTrackerIssueLabels_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

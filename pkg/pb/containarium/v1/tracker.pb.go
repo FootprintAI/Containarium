@@ -1802,6 +1802,132 @@ func (x *ClaimTrackerIssueResponse) GetAssigned() bool {
 	return false
 }
 
+// SetTrackerIssueLabelsRequest adds and/or removes labels on an issue.
+// The design note calls for checking both lists against a
+// connection-level label allow-list before any upstream call is made;
+// that allow-list does not exist on TrackerConnection yet (tracked
+// separately) — this RPC has no allow-list enforcement of its own
+// until it does.
+type SetTrackerIssueLabelsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Username      string                 `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"`
+	Connection    string                 `protobuf:"bytes,2,opt,name=connection,proto3" json:"connection,omitempty"`
+	Number        int64                  `protobuf:"varint,3,opt,name=number,proto3" json:"number,omitempty"`
+	AddLabels     []string               `protobuf:"bytes,4,rep,name=add_labels,json=addLabels,proto3" json:"add_labels,omitempty"`
+	RemoveLabels  []string               `protobuf:"bytes,5,rep,name=remove_labels,json=removeLabels,proto3" json:"remove_labels,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetTrackerIssueLabelsRequest) Reset() {
+	*x = SetTrackerIssueLabelsRequest{}
+	mi := &file_containarium_v1_tracker_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetTrackerIssueLabelsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetTrackerIssueLabelsRequest) ProtoMessage() {}
+
+func (x *SetTrackerIssueLabelsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_tracker_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetTrackerIssueLabelsRequest.ProtoReflect.Descriptor instead.
+func (*SetTrackerIssueLabelsRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *SetTrackerIssueLabelsRequest) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+func (x *SetTrackerIssueLabelsRequest) GetConnection() string {
+	if x != nil {
+		return x.Connection
+	}
+	return ""
+}
+
+func (x *SetTrackerIssueLabelsRequest) GetNumber() int64 {
+	if x != nil {
+		return x.Number
+	}
+	return 0
+}
+
+func (x *SetTrackerIssueLabelsRequest) GetAddLabels() []string {
+	if x != nil {
+		return x.AddLabels
+	}
+	return nil
+}
+
+func (x *SetTrackerIssueLabelsRequest) GetRemoveLabels() []string {
+	if x != nil {
+		return x.RemoveLabels
+	}
+	return nil
+}
+
+type SetTrackerIssueLabelsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Message       string                 `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetTrackerIssueLabelsResponse) Reset() {
+	*x = SetTrackerIssueLabelsResponse{}
+	mi := &file_containarium_v1_tracker_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetTrackerIssueLabelsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetTrackerIssueLabelsResponse) ProtoMessage() {}
+
+func (x *SetTrackerIssueLabelsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_tracker_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetTrackerIssueLabelsResponse.ProtoReflect.Descriptor instead.
+func (*SetTrackerIssueLabelsResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *SetTrackerIssueLabelsResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
 var File_containarium_v1_tracker_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_tracker_proto_rawDesc = "" +
@@ -1920,7 +2046,18 @@ const file_containarium_v1_tracker_proto_rawDesc = "" +
 	"\x19ClaimTrackerIssueResponse\x12\x18\n" +
 	"\aclaimed\x18\x01 \x01(\bR\aclaimed\x128\n" +
 	"\x19already_claimed_by_run_id\x18\x02 \x01(\tR\x15alreadyClaimedByRunId\x12\x1a\n" +
-	"\bassigned\x18\x03 \x01(\bR\bassigned*m\n" +
+	"\bassigned\x18\x03 \x01(\bR\bassigned\"\xb6\x01\n" +
+	"\x1cSetTrackerIssueLabelsRequest\x12\x1a\n" +
+	"\busername\x18\x01 \x01(\tR\busername\x12\x1e\n" +
+	"\n" +
+	"connection\x18\x02 \x01(\tR\n" +
+	"connection\x12\x16\n" +
+	"\x06number\x18\x03 \x01(\x03R\x06number\x12\x1d\n" +
+	"\n" +
+	"add_labels\x18\x04 \x03(\tR\taddLabels\x12#\n" +
+	"\rremove_labels\x18\x05 \x03(\tR\fremoveLabels\"9\n" +
+	"\x1dSetTrackerIssueLabelsResponse\x12\x18\n" +
+	"\amessage\x18\x01 \x01(\tR\amessage*m\n" +
 	"\x0fTrackerProvider\x12 \n" +
 	"\x1cTRACKER_PROVIDER_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17TRACKER_PROVIDER_GITHUB\x10\x01\x12\x1b\n" +
@@ -1939,7 +2076,7 @@ const file_containarium_v1_tracker_proto_rawDesc = "" +
 	"\x18TrackerCredentialBreadth\x12*\n" +
 	"&TRACKER_CREDENTIAL_BREADTH_UNSPECIFIED\x10\x00\x12(\n" +
 	"$TRACKER_CREDENTIAL_BREADTH_PREFERRED\x10\x01\x12$\n" +
-	" TRACKER_CREDENTIAL_BREADTH_BROAD\x10\x022\xa6\x1c\n" +
+	" TRACKER_CREDENTIAL_BREADTH_BROAD\x10\x022\xd3\x1e\n" +
 	"\x0eTrackerService\x12\xb8\x03\n" +
 	"\x14SetTrackerConnection\x12,.containarium.v1.SetTrackerConnectionRequest\x1a-.containarium.v1.SetTrackerConnectionResponse\"\xc2\x02\x92A\x9c\x02\n" +
 	"\aTracker\x12%Create or update a tracker connection\x1a\xe9\x01Registers where a tenant's issue tracker is (provider, base URL, project) and which broker-only secret holds its credential. The credential itself is never accepted or returned here — only the secret's name. Requires tracker:admin.\x82\xd3\xe4\x93\x02\x1c:\x01*\"\x17/v1/tracker/connections\x12\xa8\x02\n" +
@@ -1960,7 +2097,9 @@ const file_containarium_v1_tracker_proto_rawDesc = "" +
 	"\x15CommentOnTrackerIssue\x12-.containarium.v1.CommentOnTrackerIssueRequest\x1a..containarium.v1.CommentOnTrackerIssueResponse\"\x94\x02\x92A\xc9\x01\n" +
 	"\aTracker\x12$Comment on a tracker issue or change\x1a\x97\x01Posts a comment, stamped with the acting run's platform identity and sanitized against forged markers and GitLab quick-actions. Requires tracker:write.\x82\xd3\xe4\x93\x02A:\x01*\"</v1/tracker/{username}/{connection}/issues/{number}/comments\x12\xa7\x03\n" +
 	"\x11ClaimTrackerIssue\x12).containarium.v1.ClaimTrackerIssueRequest\x1a*.containarium.v1.ClaimTrackerIssueResponse\"\xba\x02\x92A\xf2\x01\n" +
-	"\aTracker\x12\x15Claim a tracker issue\x1a\xcf\x01Posts a stamped claim comment and assigns the calling run if the issue is unassigned, unless a live or recent claim from a different run already holds it. Idempotent for the same run. Requires tracker:write.\x82\xd3\xe4\x93\x02>:\x01*\"9/v1/tracker/{username}/{connection}/issues/{number}/claimBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
+	"\aTracker\x12\x15Claim a tracker issue\x1a\xcf\x01Posts a stamped claim comment and assigns the calling run if the issue is unassigned, unless a live or recent claim from a different run already holds it. Idempotent for the same run. Requires tracker:write.\x82\xd3\xe4\x93\x02>:\x01*\"9/v1/tracker/{username}/{connection}/issues/{number}/claim\x12\xaa\x02\n" +
+	"\x15SetTrackerIssueLabels\x12-.containarium.v1.SetTrackerIssueLabelsRequest\x1a..containarium.v1.SetTrackerIssueLabelsResponse\"\xb1\x01\x92Ai\n" +
+	"\aTracker\x12\x1dSet labels on a tracker issue\x1a?Adds and/or removes labels on an issue. Requires tracker:write.\x82\xd3\xe4\x93\x02?:\x01*\":/v1/tracker/{username}/{connection}/issues/{number}/labelsBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
 
 var (
 	file_containarium_v1_tracker_proto_rawDescOnce sync.Once
@@ -1975,7 +2114,7 @@ func file_containarium_v1_tracker_proto_rawDescGZIP() []byte {
 }
 
 var file_containarium_v1_tracker_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_containarium_v1_tracker_proto_msgTypes = make([]protoimpl.MessageInfo, 24)
+var file_containarium_v1_tracker_proto_msgTypes = make([]protoimpl.MessageInfo, 26)
 var file_containarium_v1_tracker_proto_goTypes = []any{
 	(TrackerProvider)(0),                    // 0: containarium.v1.TrackerProvider
 	(TrackerIssueState)(0),                  // 1: containarium.v1.TrackerIssueState
@@ -2005,19 +2144,21 @@ var file_containarium_v1_tracker_proto_goTypes = []any{
 	(*CommentOnTrackerIssueResponse)(nil),   // 25: containarium.v1.CommentOnTrackerIssueResponse
 	(*ClaimTrackerIssueRequest)(nil),        // 26: containarium.v1.ClaimTrackerIssueRequest
 	(*ClaimTrackerIssueResponse)(nil),       // 27: containarium.v1.ClaimTrackerIssueResponse
-	(*timestamppb.Timestamp)(nil),           // 28: google.protobuf.Timestamp
+	(*SetTrackerIssueLabelsRequest)(nil),    // 28: containarium.v1.SetTrackerIssueLabelsRequest
+	(*SetTrackerIssueLabelsResponse)(nil),   // 29: containarium.v1.SetTrackerIssueLabelsResponse
+	(*timestamppb.Timestamp)(nil),           // 30: google.protobuf.Timestamp
 }
 var file_containarium_v1_tracker_proto_depIdxs = []int32{
 	0,  // 0: containarium.v1.TrackerConnection.provider:type_name -> containarium.v1.TrackerProvider
-	28, // 1: containarium.v1.TrackerConnection.credential_expires_at:type_name -> google.protobuf.Timestamp
+	30, // 1: containarium.v1.TrackerConnection.credential_expires_at:type_name -> google.protobuf.Timestamp
 	0,  // 2: containarium.v1.SetTrackerConnectionRequest.provider:type_name -> containarium.v1.TrackerProvider
 	4,  // 3: containarium.v1.SetTrackerConnectionResponse.connection:type_name -> containarium.v1.TrackerConnection
 	4,  // 4: containarium.v1.GetTrackerConnectionResponse.connection:type_name -> containarium.v1.TrackerConnection
 	4,  // 5: containarium.v1.ListTrackerConnectionsResponse.connections:type_name -> containarium.v1.TrackerConnection
 	4,  // 6: containarium.v1.GetTrackerStatusResponse.connection:type_name -> containarium.v1.TrackerConnection
 	3,  // 7: containarium.v1.GetTrackerStatusResponse.credential_breadth:type_name -> containarium.v1.TrackerCredentialBreadth
-	28, // 8: containarium.v1.GetTrackerStatusResponse.credential_expires_at:type_name -> google.protobuf.Timestamp
-	28, // 9: containarium.v1.TrackerComment.created_at:type_name -> google.protobuf.Timestamp
+	30, // 8: containarium.v1.GetTrackerStatusResponse.credential_expires_at:type_name -> google.protobuf.Timestamp
+	30, // 9: containarium.v1.TrackerComment.created_at:type_name -> google.protobuf.Timestamp
 	1,  // 10: containarium.v1.TrackerIssue.state:type_name -> containarium.v1.TrackerIssueState
 	15, // 11: containarium.v1.TrackerIssue.comments:type_name -> containarium.v1.TrackerComment
 	1,  // 12: containarium.v1.TrackerChange.state:type_name -> containarium.v1.TrackerIssueState
@@ -2037,18 +2178,20 @@ var file_containarium_v1_tracker_proto_depIdxs = []int32{
 	22, // 26: containarium.v1.TrackerService.GetTrackerChange:input_type -> containarium.v1.GetTrackerChangeRequest
 	24, // 27: containarium.v1.TrackerService.CommentOnTrackerIssue:input_type -> containarium.v1.CommentOnTrackerIssueRequest
 	26, // 28: containarium.v1.TrackerService.ClaimTrackerIssue:input_type -> containarium.v1.ClaimTrackerIssueRequest
-	6,  // 29: containarium.v1.TrackerService.SetTrackerConnection:output_type -> containarium.v1.SetTrackerConnectionResponse
-	8,  // 30: containarium.v1.TrackerService.GetTrackerConnection:output_type -> containarium.v1.GetTrackerConnectionResponse
-	10, // 31: containarium.v1.TrackerService.ListTrackerConnections:output_type -> containarium.v1.ListTrackerConnectionsResponse
-	12, // 32: containarium.v1.TrackerService.DeleteTrackerConnection:output_type -> containarium.v1.DeleteTrackerConnectionResponse
-	14, // 33: containarium.v1.TrackerService.GetTrackerStatus:output_type -> containarium.v1.GetTrackerStatusResponse
-	19, // 34: containarium.v1.TrackerService.GetTrackerIssue:output_type -> containarium.v1.GetTrackerIssueResponse
-	21, // 35: containarium.v1.TrackerService.ListTrackerIssues:output_type -> containarium.v1.ListTrackerIssuesResponse
-	23, // 36: containarium.v1.TrackerService.GetTrackerChange:output_type -> containarium.v1.GetTrackerChangeResponse
-	25, // 37: containarium.v1.TrackerService.CommentOnTrackerIssue:output_type -> containarium.v1.CommentOnTrackerIssueResponse
-	27, // 38: containarium.v1.TrackerService.ClaimTrackerIssue:output_type -> containarium.v1.ClaimTrackerIssueResponse
-	29, // [29:39] is the sub-list for method output_type
-	19, // [19:29] is the sub-list for method input_type
+	28, // 29: containarium.v1.TrackerService.SetTrackerIssueLabels:input_type -> containarium.v1.SetTrackerIssueLabelsRequest
+	6,  // 30: containarium.v1.TrackerService.SetTrackerConnection:output_type -> containarium.v1.SetTrackerConnectionResponse
+	8,  // 31: containarium.v1.TrackerService.GetTrackerConnection:output_type -> containarium.v1.GetTrackerConnectionResponse
+	10, // 32: containarium.v1.TrackerService.ListTrackerConnections:output_type -> containarium.v1.ListTrackerConnectionsResponse
+	12, // 33: containarium.v1.TrackerService.DeleteTrackerConnection:output_type -> containarium.v1.DeleteTrackerConnectionResponse
+	14, // 34: containarium.v1.TrackerService.GetTrackerStatus:output_type -> containarium.v1.GetTrackerStatusResponse
+	19, // 35: containarium.v1.TrackerService.GetTrackerIssue:output_type -> containarium.v1.GetTrackerIssueResponse
+	21, // 36: containarium.v1.TrackerService.ListTrackerIssues:output_type -> containarium.v1.ListTrackerIssuesResponse
+	23, // 37: containarium.v1.TrackerService.GetTrackerChange:output_type -> containarium.v1.GetTrackerChangeResponse
+	25, // 38: containarium.v1.TrackerService.CommentOnTrackerIssue:output_type -> containarium.v1.CommentOnTrackerIssueResponse
+	27, // 39: containarium.v1.TrackerService.ClaimTrackerIssue:output_type -> containarium.v1.ClaimTrackerIssueResponse
+	29, // 40: containarium.v1.TrackerService.SetTrackerIssueLabels:output_type -> containarium.v1.SetTrackerIssueLabelsResponse
+	30, // [30:41] is the sub-list for method output_type
+	19, // [19:30] is the sub-list for method input_type
 	19, // [19:19] is the sub-list for extension type_name
 	19, // [19:19] is the sub-list for extension extendee
 	0,  // [0:19] is the sub-list for field type_name
@@ -2065,7 +2208,7 @@ func file_containarium_v1_tracker_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_tracker_proto_rawDesc), len(file_containarium_v1_tracker_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   24,
+			NumMessages:   26,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
