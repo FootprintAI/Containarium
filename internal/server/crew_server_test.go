@@ -6,6 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/footprintai/containarium/pkg/core/crews"
 	"github.com/footprintai/containarium/pkg/core/skills"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -15,6 +18,56 @@ func completed(out string) *pb.SendAgentTaskResponse {
 	return &pb.SendAgentTaskResponse{Artifact: &pb.AgentArtifact{
 		OutputJson: out, State: pb.AgentTaskState_AGENT_TASK_STATE_COMPLETED,
 	}}
+}
+
+// TestRunCrew_RunIDValidatedBeforeCrewLookup is #1899: a malformed
+// caller-supplied run_id must fail the RPC before any catalog/topology work,
+// same posture as RunAgentSkill's resolveRunID check. Uses NewCrewServer(nil)
+// (no agents server) — reachable because run_id resolution happens before
+// s.agents is ever touched.
+func TestRunCrew_RunIDValidatedBeforeCrewLookup(t *testing.T) {
+	s := NewCrewServer(nil)
+	ctx := ctxAs("admin", true)
+
+	// A bad run_id is rejected even for an unknown crew — proves resolveRunID
+	// runs before the catalog lookup, not after.
+	_, err := s.RunCrew(ctx, &pb.RunCrewRequest{CrewId: "no-such-crew", RunId: "bad id with spaces"})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Errorf("bad run_id: code = %v, want InvalidArgument", status.Code(err))
+	}
+
+	// A well-formed run_id is not rejected at this boundary — the request
+	// proceeds to the (failing) crew lookup instead.
+	_, err = s.RunCrew(ctx, &pb.RunCrewRequest{CrewId: "no-such-crew", RunId: "run-ok"})
+	if status.Code(err) == codes.InvalidArgument {
+		t.Errorf("valid run_id must not be rejected: %v", err)
+	}
+	if status.Code(err) != codes.NotFound {
+		t.Errorf("unknown crew: code = %v, want NotFound", status.Code(err))
+	}
+}
+
+// TestRunCrew_ResponseCarriesRunID pins the run_id half of #1899's contract
+// against the GENERATED pb types (RunCrewRequest.run_id, CrewRun.id), so a
+// stale regeneration fails to compile rather than passing quietly — same
+// rationale as TestRunAgentSkill_ResponseCarriesRunID. The full RPC can't be
+// driven to COMPLETED from a unit test (box provisioning needs a real
+// backend); what's pinned here is that a resolved run id round-trips into the
+// CrewRun the same way RunCrew's own code constructs it (Id: runID).
+func TestRunCrew_ResponseCarriesRunID(t *testing.T) {
+	for _, in := range []string{"", "run-echoed"} {
+		runID, err := resolveRunID(in)
+		if err != nil {
+			t.Fatalf("resolveRunID(%q): %v", in, err)
+		}
+		run := &pb.CrewRun{Id: runID}
+		if run.GetId() != runID {
+			t.Errorf("run id = %q, want %q", run.GetId(), runID)
+		}
+		if in != "" && run.GetId() != in {
+			t.Errorf("run id = %q, want the caller's %q echoed", run.GetId(), in)
+		}
+	}
 }
 
 func TestDriveCrew(t *testing.T) {
