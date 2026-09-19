@@ -142,3 +142,25 @@ func TestSetLabels_NoOpWhenNothingToChange(t *testing.T) {
 		t.Error("SetLabels made an HTTP call with nothing to add or remove")
 	}
 }
+
+func TestWhoAmI_ResolvesUsername(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.EscapedPath()
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id": 42, "username": "agent-bot", "bot": true}`))
+	}))
+	defer srv.Close()
+
+	a := New(nil)
+	login, err := a.WhoAmI(context.Background(), tracker.Conn{BaseURL: srv.URL, Credential: "glpat-x"})
+	if err != nil {
+		t.Fatalf("WhoAmI: %v", err)
+	}
+	if gotPath != "/api/v4/user" {
+		t.Errorf("path = %q, want /api/v4/user", gotPath)
+	}
+	if login != "agent-bot" {
+		t.Errorf("login = %q, want agent-bot", login)
+	}
+}
