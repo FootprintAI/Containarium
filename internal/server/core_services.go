@@ -406,6 +406,9 @@ func (cs *CoreServices) EnsureCaddy(ctx context.Context, baseDomain string) (str
 		if info.State == "Running" {
 			cs.caddyIP = info.IPAddress
 			log.Printf("Caddy container already running at %s", cs.caddyIP)
+			if err := cs.ensureCaddyModules(ctx, baseDomain); err != nil {
+				return "", err
+			}
 			cs.reconcileCaddyDNSEnv()
 			return cs.getCaddyAdminURL(), nil
 		}
@@ -419,6 +422,9 @@ func (cs *CoreServices) EnsureCaddy(ctx context.Context, baseDomain string) (str
 			return "", fmt.Errorf("failed to get caddy IP: %w", err)
 		}
 		cs.caddyIP = ip
+		if err := cs.ensureCaddyModules(ctx, baseDomain); err != nil {
+			return "", err
+		}
 		cs.reconcileCaddyDNSEnv()
 		return cs.getCaddyAdminURL(), nil
 	}
@@ -799,13 +805,40 @@ WantedBy=multi-user.target
 `, envLines.String())
 }
 
+// ensureCaddyModules re-installs Caddy on an ALREADY-provisioned
+// container when the currently-running binary is missing the module
+// the daemon's own DNS-01 provider needs — caught in review of #1916:
+// EnsureCaddy's two "container already exists" paths called
+// reconcileCaddyDNSEnv (below) to keep credentials in sync, but never
+// re-ran setupCaddy/verifyCaddyModules, so an operator switching DNS-01
+// providers on a host whose Caddy binary came from the xcaddy
+// source-build fallback (buildCaddyFromSource only bakes in the
+// provider configured AT BUILD TIME) would get a binary silently
+// missing the new provider's module — reconcileCaddyDNSEnv would still
+// happily restart Caddy with the new provider's env var set, pointed at
+// a binary that can't use it.
+//
+// Only ever reinstalls something for that source-build case: the
+// prebuilt release binary (#1617's default path) bakes in every known
+// provider, so verifyCaddyModules always passes for it and this is a
+// cheap `caddy list-modules` no-op on every normal EnsureCaddy call —
+// it does not turn every daemon restart into a Caddy reinstall+restart.
+func (cs *CoreServices) ensureCaddyModules(ctx context.Context, baseDomain string) error {
+	if err := cs.verifyCaddyModules(); err == nil {
+		return nil
+	}
+	log.Printf("Installed Caddy binary is missing the configured DNS-01 provider's module; reinstalling...")
+	return cs.setupCaddy(ctx, baseDomain)
+}
+
 // reconcileCaddyDNSEnv keeps an ALREADY-provisioned core-caddy container's
 // systemd Environment= lines in sync with the daemon's current DNS-01
-// provider config. setupCaddy only runs once, at container creation — an
-// operator who sets (or rotates) CONTAINARIUM_ACME_DNS_PROVIDER on a host
-// whose Caddy container already exists would otherwise never see it reach
-// Caddy at all. This is the exact incident #1597 traced: a credential
-// "believed set" for five weeks, silently never wired through.
+// provider config. setupCaddy only runs once, at container creation (or
+// when ensureCaddyModules above reinstalls it) — an operator who sets (or
+// rotates) CONTAINARIUM_ACME_DNS_PROVIDER on a host whose Caddy container
+// already exists would otherwise never see it reach Caddy at all. This is
+// the exact incident #1597 traced: a credential "believed set" for five
+// weeks, silently never wired through.
 //
 // Only writes and restarts when the rendered unit actually changed — the
 // common case, every daemon startup, is a ReadFile and a string compare.
