@@ -177,6 +177,9 @@ token list-revoked
 token refresh
 token revoke
 token unscoped-report
+tracker connect
+tracker disconnect
+tracker list
 traffic connections
 traffic history
 traffic summary

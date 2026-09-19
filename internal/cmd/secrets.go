@@ -151,7 +151,12 @@ func init() {
 			`secret tmpfs file at /run/secrets/<NAME>; "compose" writes a `+
 			`shared dotenv file at /run/containarium/secrets.env that nested `+
 			`docker/docker-compose apps consume via env_file: (single-line `+
-			`values only). See docs/security/SECRETS-ENV-VAR-RISK.md.`)
+			`values only); "broker" never delivers the value to any box — `+
+			`write-only, readable only by the daemon's own brokered calls `+
+			`(e.g. "containarium tracker connect --credential-secret"). `+
+			`Changing a secret's mode away from "broker" is rejected; `+
+			`delete and re-set instead. See docs/security/SECRETS-ENV-VAR-RISK.md `+
+			`and docs/architecture/agent-tracker-broker.md.`)
 	secretsCmd.AddCommand(secretsGetCmd)
 	secretsCmd.AddCommand(secretsListCmd)
 	secretsCmd.AddCommand(secretsDeleteCmd)
@@ -359,6 +364,8 @@ func secretDeliveryLabel(d pb.SecretDelivery) string {
 		return "file"
 	case pb.SecretDelivery_SECRET_DELIVERY_COMPOSE:
 		return "compose"
+	case pb.SecretDelivery_SECRET_DELIVERY_BROKER_ONLY:
+		return "broker"
 	default:
 		return ""
 	}

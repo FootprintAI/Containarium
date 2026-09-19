@@ -2599,3 +2599,62 @@ func (c *HTTPClient) UpdateClusterNodePool(req *pb.UpdateClusterNodePoolRequest)
 	}
 	return out, nil
 }
+
+// trackerDo is doRequest + typed protojson decode, same shape as
+// clusterDo — building the request body with protojson.Marshal on the
+// generated type (rather than a hand-written struct with JSON tags kept
+// in sync by hand) is what closes the class of bug #1219 was: a field
+// name that drifts from the proto silently drops the value instead of
+// failing to compile.
+func (c *HTTPClient) trackerDo(method, path, label string, reqBody []byte, out proto.Message) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.doRequest(ctx, method, path, reqBody)
+	if err != nil {
+		return fmt.Errorf("%s: %w", label, err)
+	}
+	defer drainClose(resp)
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return httpError(bodyBytes, resp.StatusCode, label)
+	}
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(bodyBytes, out); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+	return nil
+}
+
+// SetTrackerConnection creates or updates a tenant's tracker connection
+// via REST. Requires tracker:admin.
+func (c *HTTPClient) SetTrackerConnection(req *pb.SetTrackerConnectionRequest) (*pb.TrackerConnection, string, error) {
+	body, err := protojson.Marshal(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("encode request: %w", err)
+	}
+	out := &pb.SetTrackerConnectionResponse{}
+	if err := c.trackerDo(http.MethodPost, "/v1/tracker/connections", "set tracker connection", body, out); err != nil {
+		return nil, "", err
+	}
+	return out.Connection, out.Message, nil
+}
+
+// ListTrackerConnections returns every tracker connection a tenant owns, via REST.
+func (c *HTTPClient) ListTrackerConnections(username string) ([]*pb.TrackerConnection, error) {
+	out := &pb.ListTrackerConnectionsResponse{}
+	path := "/v1/tracker/connections/" + url.PathEscape(username)
+	if err := c.trackerDo(http.MethodGet, path, "list tracker connections", nil, out); err != nil {
+		return nil, err
+	}
+	return out.Connections, nil
+}
+
+// DeleteTrackerConnection removes a named tracker connection via REST.
+// Does not delete the credential secret it referenced.
+func (c *HTTPClient) DeleteTrackerConnection(username, name string) (string, error) {
+	out := &pb.DeleteTrackerConnectionResponse{}
+	path := "/v1/tracker/connections/" + url.PathEscape(username) + "/" + url.PathEscape(name)
+	if err := c.trackerDo(http.MethodDelete, path, "delete tracker connection", nil, out); err != nil {
+		return "", err
+	}
+	return out.Message, nil
+}
