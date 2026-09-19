@@ -1557,3 +1557,39 @@ func (c *GRPCClient) GetTrackerStatus(username, name string) (*pb.GetTrackerStat
 	}
 	return resp, nil
 }
+
+// GetTrackerIssue reads a single issue, including its comments. Longer
+// timeout than the connection-CRUD calls since it reaches the tracker
+// itself (potentially two upstream requests — issue plus comments).
+func (c *GRPCClient) GetTrackerIssue(req *pb.GetTrackerIssueRequest) (*pb.TrackerIssue, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.trackerClient.GetTrackerIssue(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("get tracker issue: %w", err)
+	}
+	return resp.Issue, nil
+}
+
+// ListTrackerIssues enumerates issues, optionally filtered.
+func (c *GRPCClient) ListTrackerIssues(req *pb.ListTrackerIssuesRequest) ([]*pb.TrackerIssue, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.trackerClient.ListTrackerIssues(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("list tracker issues: %w", err)
+	}
+	return resp.Issues, nil
+}
+
+// GetTrackerChange reads a single change request's state and CI
+// verdict.
+func (c *GRPCClient) GetTrackerChange(req *pb.GetTrackerChangeRequest) (*pb.TrackerChange, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.trackerClient.GetTrackerChange(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("get tracker change: %w", err)
+	}
+	return resp.Change, nil
+}

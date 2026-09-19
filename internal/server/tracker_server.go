@@ -26,22 +26,28 @@ func (s *ContainerServer) SetTrackerStore(store *tracker.Store) {
 	s.trackerStore = store
 }
 
-// SetTrackerDescribers overrides the provider -> CredentialDescriber
-// registry. Production wiring never calls this — trackerDescriberFor
+// SetTrackerDescribers overrides the provider -> ReaderProvider
+// registry. Production wiring never calls this — trackerProviderFor
 // constructs the real GitHub/GitLab adapters per call when the field is
 // nil, the same "cheap to construct, no shared mutable state" idiom as
 // boxes() falling back to boxlxc.New(s.manager). Tests use this to
 // substitute fakes.
-func (s *ContainerServer) SetTrackerDescribers(m map[pb.TrackerProvider]tracker.CredentialDescriber) {
+//
+// Named for #1921 (DescribeCredential only); the parameter type widened
+// to tracker.ReaderProvider in #1922 when GetIssue/ListIssues/GetChange
+// needed the same per-provider resolution — every existing caller only
+// used DescribeCredential and keeps compiling unchanged, since
+// ReaderProvider embeds CredentialDescriber.
+func (s *ContainerServer) SetTrackerDescribers(m map[pb.TrackerProvider]tracker.ReaderProvider) {
 	s.trackerDescribers = m
 }
 
-// trackerDescriberFor resolves the CredentialDescriber for provider.
-func (s *ContainerServer) trackerDescriberFor(provider pb.TrackerProvider) (tracker.CredentialDescriber, error) {
+// trackerProviderFor resolves the ReaderProvider for provider.
+func (s *ContainerServer) trackerProviderFor(provider pb.TrackerProvider) (tracker.ReaderProvider, error) {
 	if s.trackerDescribers != nil {
 		d, ok := s.trackerDescribers[provider]
 		if !ok {
-			return nil, fmt.Errorf("no credential describer registered for provider %v", provider)
+			return nil, fmt.Errorf("no reader provider registered for provider %v", provider)
 		}
 		return d, nil
 	}
@@ -51,7 +57,7 @@ func (s *ContainerServer) trackerDescriberFor(provider pb.TrackerProvider) (trac
 	case pb.TrackerProvider_TRACKER_PROVIDER_GITLAB:
 		return trackergitlab.New(nil), nil
 	default:
-		return nil, fmt.Errorf("no credential describer for provider %v", provider)
+		return nil, fmt.Errorf("no reader provider for provider %v", provider)
 	}
 }
 
@@ -207,7 +213,7 @@ func (s *ContainerServer) GetTrackerStatus(ctx context.Context, req *pb.GetTrack
 	}
 	resp := &pb.GetTrackerStatusResponse{Connection: toProtoTrackerConnection(conn)}
 
-	describer, derr := s.trackerDescriberFor(conn.Provider)
+	describer, derr := s.trackerProviderFor(conn.Provider)
 	if derr != nil {
 		resp.Detail = derr.Error()
 		return resp, nil
@@ -265,7 +271,7 @@ func (s *ContainerServer) GetTrackerStatus(ctx context.Context, req *pb.GetTrack
 // is the verb an operator uses to find out WHY a describe isn't working;
 // this one just doesn't let that block registering the connection.
 func (s *ContainerServer) describeCredentialBestEffort(ctx context.Context, conn *tracker.Connection) {
-	describer, err := s.trackerDescriberFor(conn.Provider)
+	describer, err := s.trackerProviderFor(conn.Provider)
 	if err != nil {
 		log.Printf("[tracker] %s/%s: %v", conn.Username, conn.Name, err)
 		return

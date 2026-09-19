@@ -2669,3 +2669,48 @@ func (c *HTTPClient) GetTrackerStatus(username, name string) (*pb.GetTrackerStat
 	}
 	return out, nil
 }
+
+// GetTrackerIssue reads a single issue, including its comments, via
+// REST.
+func (c *HTTPClient) GetTrackerIssue(req *pb.GetTrackerIssueRequest) (*pb.TrackerIssue, error) {
+	out := &pb.GetTrackerIssueResponse{}
+	path := fmt.Sprintf("/v1/tracker/%s/%s/issues/%d", url.PathEscape(req.Username), url.PathEscape(req.Connection), req.Number)
+	if err := c.trackerDo(http.MethodGet, path, "get tracker issue", nil, out); err != nil {
+		return nil, err
+	}
+	return out.Issue, nil
+}
+
+// ListTrackerIssues enumerates issues, optionally filtered, via REST.
+func (c *HTTPClient) ListTrackerIssues(req *pb.ListTrackerIssuesRequest) ([]*pb.TrackerIssue, error) {
+	out := &pb.ListTrackerIssuesResponse{}
+	q := url.Values{}
+	if req.State != pb.TrackerIssueState_TRACKER_ISSUE_STATE_UNSPECIFIED {
+		q.Set("state", req.State.String())
+	}
+	for _, l := range req.Labels {
+		q.Add("labels", l)
+	}
+	if req.Search != "" {
+		q.Set("search", req.Search)
+	}
+	path := fmt.Sprintf("/v1/tracker/%s/%s/issues", url.PathEscape(req.Username), url.PathEscape(req.Connection))
+	if len(q) > 0 {
+		path += "?" + q.Encode()
+	}
+	if err := c.trackerDo(http.MethodGet, path, "list tracker issues", nil, out); err != nil {
+		return nil, err
+	}
+	return out.Issues, nil
+}
+
+// GetTrackerChange reads a single change request's state and CI
+// verdict, via REST.
+func (c *HTTPClient) GetTrackerChange(req *pb.GetTrackerChangeRequest) (*pb.TrackerChange, error) {
+	out := &pb.GetTrackerChangeResponse{}
+	path := fmt.Sprintf("/v1/tracker/%s/%s/changes/%d", url.PathEscape(req.Username), url.PathEscape(req.Connection), req.Number)
+	if err := c.trackerDo(http.MethodGet, path, "get tracker change", nil, out); err != nil {
+		return nil, err
+	}
+	return out.Change, nil
+}

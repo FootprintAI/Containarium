@@ -189,3 +189,124 @@ func TestGetTrackerStatus_PathAndDecoding(t *testing.T) {
 		t.Error("CredentialExpiresAt is nil, want the decoded timestamp")
 	}
 }
+
+func TestGetTrackerIssue_PathAndDecoding(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"issue": {
+				"number": 42, "title": "bug", "state": "TRACKER_ISSUE_STATE_OPEN",
+				"labels": ["bug"], "assignee": "alice",
+				"comments": [{"author": "bob", "body": "looking", "createdAt": "2027-01-01T00:00:00Z"}]
+			}
+		}`))
+	}))
+	defer srv.Close()
+
+	c, err := NewHTTPClient(srv.URL, "tok")
+	if err != nil {
+		t.Fatalf("NewHTTPClient: %v", err)
+	}
+
+	issue, err := c.GetTrackerIssue(&pb.GetTrackerIssueRequest{Username: "alice", Connection: "default", Number: 42})
+	if err != nil {
+		t.Fatalf("GetTrackerIssue: %v", err)
+	}
+	if gotPath != "/v1/tracker/alice/default/issues/42" {
+		t.Errorf("path = %q, want /v1/tracker/alice/default/issues/42", gotPath)
+	}
+	if issue.GetNumber() != 42 || issue.GetAssignee() != "alice" {
+		t.Errorf("issue = %+v, want number=42 assignee=alice", issue)
+	}
+	if len(issue.GetComments()) != 1 || issue.GetComments()[0].GetAuthor() != "bob" {
+		t.Errorf("Comments = %+v, want one comment from bob", issue.GetComments())
+	}
+}
+
+func TestListTrackerIssues_QueryParams(t *testing.T) {
+	var gotPath, gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"issues": [{"number": 1, "title": "a"}]}`))
+	}))
+	defer srv.Close()
+
+	c, err := NewHTTPClient(srv.URL, "tok")
+	if err != nil {
+		t.Fatalf("NewHTTPClient: %v", err)
+	}
+
+	issues, err := c.ListTrackerIssues(&pb.ListTrackerIssuesRequest{
+		Username: "alice", Connection: "default",
+		State: pb.TrackerIssueState_TRACKER_ISSUE_STATE_OPEN, Labels: []string{"bug", "p1"}, Search: "crash",
+	})
+	if err != nil {
+		t.Fatalf("ListTrackerIssues: %v", err)
+	}
+	if gotPath != "/v1/tracker/alice/default/issues" {
+		t.Errorf("path = %q, want /v1/tracker/alice/default/issues", gotPath)
+	}
+	if !strings.Contains(gotQuery, "state=TRACKER_ISSUE_STATE_OPEN") {
+		t.Errorf("query = %q, want the state enum name", gotQuery)
+	}
+	if !strings.Contains(gotQuery, "labels=bug") || !strings.Contains(gotQuery, "labels=p1") {
+		t.Errorf("query = %q, want both labels present as repeated params", gotQuery)
+	}
+	if !strings.Contains(gotQuery, "search=crash") {
+		t.Errorf("query = %q, want search=crash", gotQuery)
+	}
+	if len(issues) != 1 {
+		t.Errorf("issues = %+v, want 1", issues)
+	}
+}
+
+func TestListTrackerIssues_UnfilteredOmitsQueryString(t *testing.T) {
+	var gotRawQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotRawQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"issues": []}`))
+	}))
+	defer srv.Close()
+
+	c, err := NewHTTPClient(srv.URL, "tok")
+	if err != nil {
+		t.Fatalf("NewHTTPClient: %v", err)
+	}
+	if _, err := c.ListTrackerIssues(&pb.ListTrackerIssuesRequest{Username: "alice", Connection: "default"}); err != nil {
+		t.Fatalf("ListTrackerIssues: %v", err)
+	}
+	if gotRawQuery != "" {
+		t.Errorf("query = %q, want empty for an unfiltered list", gotRawQuery)
+	}
+}
+
+func TestGetTrackerChange_PathAndDecoding(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"change": {"number": 10, "state": "TRACKER_ISSUE_STATE_MERGED", "ciVerdict": "TRACKER_CI_VERDICT_SUCCESS", "url": "https://example.com/10"}}`))
+	}))
+	defer srv.Close()
+
+	c, err := NewHTTPClient(srv.URL, "tok")
+	if err != nil {
+		t.Fatalf("NewHTTPClient: %v", err)
+	}
+
+	change, err := c.GetTrackerChange(&pb.GetTrackerChangeRequest{Username: "alice", Connection: "default", Number: 10})
+	if err != nil {
+		t.Fatalf("GetTrackerChange: %v", err)
+	}
+	if gotPath != "/v1/tracker/alice/default/changes/10" {
+		t.Errorf("path = %q, want /v1/tracker/alice/default/changes/10", gotPath)
+	}
+	if change.GetState() != pb.TrackerIssueState_TRACKER_ISSUE_STATE_MERGED || change.GetCiVerdict() != pb.TrackerCiVerdict_TRACKER_CI_VERDICT_SUCCESS {
+		t.Errorf("change = %+v, want state=MERGED ci_verdict=SUCCESS", change)
+	}
+}
