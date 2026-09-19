@@ -23,6 +23,37 @@ enum TrackerProvider {
   TRACKER_PROVIDER_GITLAB = 2;
 }
 
+// TrackerIssueState is the provider-neutral state of an issue or change
+// request (GitHub pull request / GitLab merge request) — one enum
+// rather than GitHub's "open"/"closed" and GitLab's "opened"/"closed"/
+// "merged" strings.
+enum TrackerIssueState {
+  TRACKER_ISSUE_STATE_UNSPECIFIED = 0;
+  TRACKER_ISSUE_STATE_OPEN = 1;
+  TRACKER_ISSUE_STATE_CLOSED = 2;
+
+  // Changes (pull/merge requests) only — never set on a plain issue,
+  // which has no merge concept. Kept on this shared enum rather than a
+  // separate one because the two states can never be ambiguous: only a
+  // TrackerChange ever carries MERGED.
+  TRACKER_ISSUE_STATE_MERGED = 3;
+}
+
+// TrackerCiVerdict is the provider-neutral CI/pipeline outcome for a
+// change request, normalized from GitHub's combined-status states and
+// GitLab's pipeline statuses. manual / skipped / canceled (GitLab) map
+// to NONE, never SUCCESS — an agent deciding whether to act on "CI
+// passed" must not be misled by a pipeline that never actually ran.
+enum TrackerCiVerdict {
+  TRACKER_CI_VERDICT_UNSPECIFIED = 0;
+  // No CI configured, or no verdict recorded yet (including GitLab's
+  // manual / skipped / canceled statuses — see the enum-level comment).
+  TRACKER_CI_VERDICT_NONE = 1;
+  TRACKER_CI_VERDICT_PENDING = 2;
+  TRACKER_CI_VERDICT_SUCCESS = 3;
+  TRACKER_CI_VERDICT_FAILED = 4;
+}
+
 // TrackerCredentialBreadth classifies a tracker credential against the
 // provider's narrowest ("preferred") type — see the design note's
 // "Preferred credential types" table. It bounds what a DAEMON compromise
