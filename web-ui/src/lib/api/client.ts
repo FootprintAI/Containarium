@@ -101,14 +101,24 @@ function transformContainer(apiContainer: Record<string, unknown>): Container {
  */
 function transformCollaborator(c: Record<string, unknown>): Collaborator {
   const rawKeys = (c.sshPublicKeys ?? c.ssh_public_keys) as unknown;
+  const scalarKey = String(c.sshPublicKey || c.ssh_public_key || '');
+  const arrayKeys = Array.isArray(rawKeys) ? rawKeys.map(String) : [];
+  // Backfill in both directions (caught in review of #1914): a response
+  // shape carrying only one of the two fields — an older server, or a
+  // caller that never populated both — must not silently drop the key
+  // from whichever field downstream code reads. sshPublicKeys is the
+  // source of truth going forward (#1144); sshPublicKey is kept only
+  // for back-compat display of the first key.
+  const sshPublicKeys = arrayKeys.length > 0 ? arrayKeys : scalarKey ? [scalarKey] : [];
+  const sshPublicKey = scalarKey || sshPublicKeys[0] || '';
   return {
     id: String(c.id || ''),
     containerName: String(c.containerName || c.container_name || ''),
     ownerUsername: String(c.ownerUsername || c.owner_username || ''),
     collaboratorUsername: String(c.collaboratorUsername || c.collaborator_username || ''),
     accountName: String(c.accountName || c.account_name || ''),
-    sshPublicKey: String(c.sshPublicKey || c.ssh_public_key || ''),
-    sshPublicKeys: Array.isArray(rawKeys) ? rawKeys.map(String) : [],
+    sshPublicKey,
+    sshPublicKeys,
     addedAt: Number(c.addedAt || c.added_at) || 0,
     createdBy: String(c.createdBy || c.created_by || ''),
     hasSudo: Boolean(c.hasSudo || c.has_sudo || false),
