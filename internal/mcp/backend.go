@@ -99,6 +99,18 @@ type API interface {
 	// Tokens.
 	RevokeToken(jti, reason, expiresAt string) (string, error)
 
+	// Tracker broker (#1922) — issue/change-request read and write verbs
+	// an agent's run-scoped JWT can hold (tracker:read / tracker:write).
+	// Connection CRUD and GetTrackerStatus are tracker:admin — deliberately
+	// NOT exposed here, same reasoning as why an agent's token never gets
+	// admin scopes for containers or secrets either.
+	GetTrackerIssue(req GetTrackerIssueRequest) (*TrackerIssue, error)
+	ListTrackerIssues(req ListTrackerIssuesRequest) ([]TrackerIssue, error)
+	GetTrackerChange(req GetTrackerChangeRequest) (*TrackerChange, error)
+	CommentOnTrackerIssue(req CommentOnTrackerIssueRequest) (*TrackerComment, error)
+	ClaimTrackerIssue(req ClaimTrackerIssueRequest) (*ClaimTrackerIssueResult, error)
+	SetTrackerIssueLabels(req SetTrackerIssueLabelsRequest) error
+
 	// Host-LEVEL operations — overridden as unsupported on the cloud backend.
 	GetSystemInfo() (*GetSystemInfoResponse, error)
 	GetLatestRelease() (*LatestReleaseResponse, error)
