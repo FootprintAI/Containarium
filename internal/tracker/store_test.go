@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"testing"
+	"time"
 
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -154,5 +155,69 @@ func TestSet_UnspecifiedProvider_Rejected(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("Set with UNSPECIFIED provider succeeded, want an error")
+	}
+}
+
+func TestSetCredentialExpiry(t *testing.T) {
+	store, ctx := newTrackerTestStore(t)
+	const user = "tracker-store-cred-expiry"
+	_, _ = store.pool.Exec(ctx, "DELETE FROM tracker_connections WHERE username = $1", user)
+
+	created, err := store.Set(ctx, Connection{
+		Username: user, Name: "default",
+		Provider: pb.TrackerProvider_TRACKER_PROVIDER_GITHUB,
+		Project:  "acme/widgets", CredentialSecret: "GH_TOKEN",
+	})
+	if err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if !created.CredentialExpiresAt.IsZero() {
+		t.Errorf("CredentialExpiresAt on create = %v, want zero (unknown until described)", created.CredentialExpiresAt)
+	}
+
+	expiry := time.Date(2027, 3, 1, 0, 0, 0, 0, time.UTC)
+	if err := store.SetCredentialExpiry(ctx, user, "default", expiry); err != nil {
+		t.Fatalf("SetCredentialExpiry: %v", err)
+	}
+	got, err := store.Get(ctx, user, "default")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !got.CredentialExpiresAt.Equal(expiry) {
+		t.Errorf("CredentialExpiresAt = %v, want %v", got.CredentialExpiresAt, expiry)
+	}
+
+	// A subsequent Set (e.g. rotating the project) must not clobber the
+	// expiry SetCredentialExpiry just wrote — it isn't a client-supplied
+	// field.
+	if _, err := store.Set(ctx, Connection{
+		Username: user, Name: "default",
+		Provider: pb.TrackerProvider_TRACKER_PROVIDER_GITHUB,
+		Project:  "acme/widgets-v2", CredentialSecret: "GH_TOKEN",
+	}); err != nil {
+		t.Fatalf("Set (update): %v", err)
+	}
+	afterUpdate, err := store.Get(ctx, user, "default")
+	if err != nil {
+		t.Fatalf("Get after update: %v", err)
+	}
+	if !afterUpdate.CredentialExpiresAt.Equal(expiry) {
+		t.Errorf("CredentialExpiresAt after unrelated Set = %v, want unchanged %v", afterUpdate.CredentialExpiresAt, expiry)
+	}
+
+	// Clearing back to zero (unknown) stores NULL, not the zero time.
+	if err := store.SetCredentialExpiry(ctx, user, "default", time.Time{}); err != nil {
+		t.Fatalf("SetCredentialExpiry (clear): %v", err)
+	}
+	cleared, err := store.Get(ctx, user, "default")
+	if err != nil {
+		t.Fatalf("Get after clear: %v", err)
+	}
+	if !cleared.CredentialExpiresAt.IsZero() {
+		t.Errorf("CredentialExpiresAt after clear = %v, want zero", cleared.CredentialExpiresAt)
+	}
+
+	if err := store.SetCredentialExpiry(ctx, user, "does-not-exist", expiry); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SetCredentialExpiry on missing connection err = %v, want ErrNotFound", err)
 	}
 }

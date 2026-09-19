@@ -6453,6 +6453,44 @@
         ]
       }
     },
+    "/v1/tracker/connections/{username}/{name}/status": {
+      "get": {
+        "summary": "Check a tracker connection's live status",
+        "description": "Asks the tracker to describe the connection's own credential: reachability, whether the credential is still valid, its granted scopes and expiry, and whether it's broader than the provider's preferred credential type. Requires tracker:admin.",
+        "operationId": "TrackerService_GetTrackerStatus",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetTrackerStatusResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      }
+    },
     "/v1/traffic/subscribe": {
       "get": {
         "summary": "Subscribe to traffic events",
@@ -10946,6 +10984,42 @@
         }
       }
     },
+    "GetTrackerStatusResponse": {
+      "type": "object",
+      "properties": {
+        "connection": {
+          "$ref": "#/definitions/TrackerConnection"
+        },
+        "reachable": {
+          "type": "boolean",
+          "description": "False if the tracker itself could not be reached at all (DNS,\nconnect, TLS, timeout) — no credential was ever presented, so\nnothing below this field is meaningful."
+        },
+        "credentialValid": {
+          "type": "boolean",
+          "description": "False if the tracker was reached but rejected the credential\n(401/403). Meaningless (left false) when reachable is false."
+        },
+        "credentialBreadth": {
+          "$ref": "#/definitions/TrackerCredentialBreadth",
+          "description": "UNSPECIFIED when reachable \u0026\u0026 credential_valid are not both true —\nclassification needs a successful probe."
+        },
+        "credentialScopes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Provider-native scope/permission strings, from the provider's own\nintrospection. May be empty even for a valid credential — not every\nprovider exposes scopes for every credential type."
+        },
+        "credentialExpiresAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "From the provider's own introspection. Unset means \"no expiry, or\nthe provider doesn't report one for this credential type\" — treat\nunset as unknown, not as \"never expires\"."
+        },
+        "detail": {
+          "type": "string",
+          "description": "Human-readable detail when reachable or credential_valid is false.\nEmpty when both are true."
+        }
+      }
+    },
     "GetTrafficAggregatesResponse": {
       "type": "object",
       "properties": {
@@ -14548,6 +14622,16 @@
         }
       },
       "description": "TrackerConnection is a tenant-scoped record naming where a tracker is\nand which broker-only secret holds the credential the daemon uses to\nreach it. The credential itself never appears here or anywhere on this\nmessage's wire representation — only its name."
+    },
+    "TrackerCredentialBreadth": {
+      "type": "string",
+      "enum": [
+        "TRACKER_CREDENTIAL_BREADTH_UNSPECIFIED",
+        "TRACKER_CREDENTIAL_BREADTH_PREFERRED",
+        "TRACKER_CREDENTIAL_BREADTH_BROAD"
+      ],
+      "default": "TRACKER_CREDENTIAL_BREADTH_UNSPECIFIED",
+      "description": "TrackerCredentialBreadth classifies a tracker credential against the\nprovider's narrowest (\"preferred\") type — see the design note's\n\"Preferred credential types\" table. It bounds what a DAEMON compromise\ncan do, as distinct from the broker's verb set (tracker:read /\ntracker:write), which bounds what a BOX can do.\n\n - TRACKER_CREDENTIAL_BREADTH_UNSPECIFIED: Breadth could not be determined — the probe that would classify it\nfailed (e.g. the tracker was unreachable) before classification was\npossible.\n - TRACKER_CREDENTIAL_BREADTH_PREFERRED: The narrowest type for the provider: a GitLab project access token,\nor a GitHub App installation token / single-repository fine-grained\nPAT.\n - TRACKER_CREDENTIAL_BREADTH_BROAD: Wider than preferred: a GitLab group or personal access token, or a\nGitHub classic PAT. Still accepted — this is a warning, not a\nrejection."
     },
     "TrackerProvider": {
       "type": "string",

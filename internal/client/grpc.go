@@ -1541,3 +1541,19 @@ func (c *GRPCClient) DeleteTrackerConnection(username, name string) (string, err
 	}
 	return resp.Message, nil
 }
+
+// GetTrackerStatus probes a tracker connection's credential live —
+// reachability, validity, scopes, expiry, and breadth. Longer timeout
+// than the other tracker calls since it makes a real upstream HTTP
+// request to the tracker itself.
+func (c *GRPCClient) GetTrackerStatus(username, name string) (*pb.GetTrackerStatusResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.trackerClient.GetTrackerStatus(ctx, &pb.GetTrackerStatusRequest{
+		Username: username, Name: name,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("get tracker status: %w", err)
+	}
+	return resp, nil
+}

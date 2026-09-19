@@ -23,6 +23,28 @@ enum TrackerProvider {
   TRACKER_PROVIDER_GITLAB = 2;
 }
 
+// TrackerCredentialBreadth classifies a tracker credential against the
+// provider's narrowest ("preferred") type — see the design note's
+// "Preferred credential types" table. It bounds what a DAEMON compromise
+// can do, as distinct from the broker's verb set (tracker:read /
+// tracker:write), which bounds what a BOX can do.
+enum TrackerCredentialBreadth {
+  // Breadth could not be determined — the probe that would classify it
+  // failed (e.g. the tracker was unreachable) before classification was
+  // possible.
+  TRACKER_CREDENTIAL_BREADTH_UNSPECIFIED = 0;
+
+  // The narrowest type for the provider: a GitLab project access token,
+  // or a GitHub App installation token / single-repository fine-grained
+  // PAT.
+  TRACKER_CREDENTIAL_BREADTH_PREFERRED = 1;
+
+  // Wider than preferred: a GitLab group or personal access token, or a
+  // GitHub classic PAT. Still accepted — this is a warning, not a
+  // rejection.
+  TRACKER_CREDENTIAL_BREADTH_BROAD = 2;
+}
+
 // TrackerConnection is a tenant-scoped record naming where a tracker is
 // and which broker-only secret holds the credential the daemon uses to
 // reach it. The credential itself never appears here or anywhere on this
@@ -110,6 +132,44 @@ message DeleteTrackerConnectionResponse {
   string message = 1;
 }
 
+// GetTrackerStatusRequest probes a named connection's credential live,
+// against the tracker itself.
+message GetTrackerStatusRequest {
+  string username = 1;
+  string name = 2;
+}
+
+message GetTrackerStatusResponse {
+  TrackerConnection connection = 1;
+
+  // False if the tracker itself could not be reached at all (DNS,
+  // connect, TLS, timeout) — no credential was ever presented, so
+  // nothing below this field is meaningful.
+  bool reachable = 2;
+
+  // False if the tracker was reached but rejected the credential
+  // (401/403). Meaningless (left false) when reachable is false.
+  bool credential_valid = 3;
+
+  // UNSPECIFIED when reachable && credential_valid are not both true —
+  // classification needs a successful probe.
+  TrackerCredentialBreadth credential_breadth = 4;
+
+  // Provider-native scope/permission strings, from the provider's own
+  // introspection. May be empty even for a valid credential — not every
+  // provider exposes scopes for every credential type.
+  repeated string credential_scopes = 5;
+
+  // From the provider's own introspection. Unset means "no expiry, or
+  // the provider doesn't report one for this credential type" — treat
+  // unset as unknown, not as "never expires".
+  google.protobuf.Timestamp credential_expires_at = 6;
+
+  // Human-readable detail when reachable or credential_valid is false.
+  // Empty when both are true.
+  string detail = 7;
+}
+
 // TrackerService manages tracker connections — the daemon-custody seam
 // the tracker broker's issue/change-request verbs (#1922, #1923) build
 // on. Connection CRUD is gated by tracker:admin, deliberately separate
@@ -163,6 +223,19 @@ service TrackerService {
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Delete a tracker connection";
       description: "Removes a named tracker connection. Does not delete the underlying credential secret.";
+      tags: "Tracker";
+    };
+  }
+
+  // GetTrackerStatus probes a connection's credential live, against the
+  // tracker itself.
+  rpc GetTrackerStatus(GetTrackerStatusRequest) returns (GetTrackerStatusResponse) {
+    option (google.api.http) = {
+      get: "/v1/tracker/connections/{username}/{name}/status"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Check a tracker connection's live status";
+      description: "Asks the tracker to describe the connection's own credential: reachability, whether the credential is still valid, its granted scopes and expiry, and whether it's broader than the provider's preferred credential type. Requires tracker:admin.";
       tags: "Tracker";
     };
   }

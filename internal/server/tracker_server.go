@@ -9,9 +9,12 @@ import (
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/secrets"
 	"github.com/footprintai/containarium/internal/tracker"
+	trackergithub "github.com/footprintai/containarium/internal/tracker/github"
+	trackergitlab "github.com/footprintai/containarium/internal/tracker/gitlab"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // SetTrackerStore wires the tracker-connections backend onto the server.
@@ -21,6 +24,35 @@ import (
 // SetSecretsStore.
 func (s *ContainerServer) SetTrackerStore(store *tracker.Store) {
 	s.trackerStore = store
+}
+
+// SetTrackerDescribers overrides the provider -> CredentialDescriber
+// registry. Production wiring never calls this — trackerDescriberFor
+// constructs the real GitHub/GitLab adapters per call when the field is
+// nil, the same "cheap to construct, no shared mutable state" idiom as
+// boxes() falling back to boxlxc.New(s.manager). Tests use this to
+// substitute fakes.
+func (s *ContainerServer) SetTrackerDescribers(m map[pb.TrackerProvider]tracker.CredentialDescriber) {
+	s.trackerDescribers = m
+}
+
+// trackerDescriberFor resolves the CredentialDescriber for provider.
+func (s *ContainerServer) trackerDescriberFor(provider pb.TrackerProvider) (tracker.CredentialDescriber, error) {
+	if s.trackerDescribers != nil {
+		d, ok := s.trackerDescribers[provider]
+		if !ok {
+			return nil, fmt.Errorf("no credential describer registered for provider %v", provider)
+		}
+		return d, nil
+	}
+	switch provider {
+	case pb.TrackerProvider_TRACKER_PROVIDER_GITHUB:
+		return trackergithub.New(nil), nil
+	case pb.TrackerProvider_TRACKER_PROVIDER_GITLAB:
+		return trackergitlab.New(nil), nil
+	default:
+		return nil, fmt.Errorf("no credential describer for provider %v", provider)
+	}
 }
 
 // SetTrackerConnection creates or updates a tracker connection.
@@ -57,6 +89,13 @@ func (s *ContainerServer) SetTrackerConnection(ctx context.Context, req *pb.SetT
 	if err != nil {
 		return nil, mapTrackerError(err)
 	}
+
+	// Best-effort: an operator may be registering a connection before
+	// the tracker is reachable from the daemon's network, or before the
+	// token is fully propagated upstream. A describe failure here must
+	// never fail the connection write itself — see
+	// describeCredentialBestEffort's own doc comment.
+	s.describeCredentialBestEffort(ctx, conn)
 
 	log.Printf("[tracker] connection set %s/%s provider=%s project=%s", req.Username, req.Name, req.Provider, req.Project)
 
@@ -145,6 +184,124 @@ func (s *ContainerServer) DeleteTrackerConnection(ctx context.Context, req *pb.D
 	}, nil
 }
 
+// GetTrackerStatus probes a connection's credential live, against the
+// tracker itself — reachability, validity, scopes, expiry, and breadth
+// versus the provider's preferred credential type.
+func (s *ContainerServer) GetTrackerStatus(ctx context.Context, req *pb.GetTrackerStatusRequest) (*pb.GetTrackerStatusResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeTrackerAdmin); err != nil {
+		return nil, err
+	}
+	if s.trackerStore == nil {
+		return nil, status.Error(codes.Unavailable, "tracker store not configured on this daemon")
+	}
+	if req.Username == "" {
+		return nil, status.Error(codes.InvalidArgument, "username is required")
+	}
+	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+		return nil, err
+	}
+
+	conn, err := s.trackerStore.Get(ctx, req.Username, req.Name)
+	if err != nil {
+		return nil, mapTrackerError(err)
+	}
+	resp := &pb.GetTrackerStatusResponse{Connection: toProtoTrackerConnection(conn)}
+
+	describer, derr := s.trackerDescriberFor(conn.Provider)
+	if derr != nil {
+		resp.Detail = derr.Error()
+		return resp, nil
+	}
+	if s.secretsStore == nil {
+		resp.Detail = "secrets store not configured on this daemon"
+		return resp, nil
+	}
+	cred, cerr := s.secretsStore.BrokerCredential(ctx, conn.Username, conn.CredentialSecret)
+	if cerr != nil {
+		resp.Detail = fmt.Sprintf("resolve broker credential: %v", cerr)
+		return resp, nil
+	}
+
+	info, err := describer.DescribeCredential(ctx, tracker.Conn{
+		BaseURL: conn.BaseURL, Project: conn.Project, Credential: cred,
+	})
+	switch {
+	case err == nil:
+		resp.Reachable = true
+		resp.CredentialValid = true
+		resp.CredentialBreadth = breadthToProto(info.Breadth)
+		resp.CredentialScopes = info.Scopes
+		if !info.ExpiresAt.IsZero() {
+			resp.CredentialExpiresAt = timestamppb.New(info.ExpiresAt)
+		}
+		// Keep the stored expiry in sync with what was just observed —
+		// the same best-effort persistence SetTrackerConnection does.
+		if serr := s.trackerStore.SetCredentialExpiry(ctx, conn.Username, conn.Name, info.ExpiresAt); serr != nil {
+			log.Printf("[tracker] %s/%s: persist credential expiry: %v", conn.Username, conn.Name, serr)
+		} else if resp.Connection != nil {
+			resp.Connection.CredentialExpiresAt = resp.CredentialExpiresAt
+		}
+	case errors.Is(err, tracker.ErrCredentialInvalid):
+		resp.Reachable = true
+		resp.CredentialValid = false
+		resp.Detail = err.Error()
+	case errors.Is(err, tracker.ErrUnreachable):
+		resp.Detail = err.Error()
+	default:
+		resp.Detail = err.Error()
+	}
+	return resp, nil
+}
+
+// describeCredentialBestEffort probes conn's own credential and, on
+// success, persists its expiry onto conn (in-memory) and the store.
+//
+// Best-effort by design: SetTrackerConnection's whole point is
+// registering a connection's METADATA (provider, project, which secret
+// to use), and a describe failure here — the tracker briefly
+// unreachable, a token not yet propagated upstream, a self-managed
+// instance reachable only from a network the daemon doesn't have a
+// route to yet — must never turn that write into an error. GetTrackerStatus
+// is the verb an operator uses to find out WHY a describe isn't working;
+// this one just doesn't let that block registering the connection.
+func (s *ContainerServer) describeCredentialBestEffort(ctx context.Context, conn *tracker.Connection) {
+	describer, err := s.trackerDescriberFor(conn.Provider)
+	if err != nil {
+		log.Printf("[tracker] %s/%s: %v", conn.Username, conn.Name, err)
+		return
+	}
+	cred, err := s.secretsStore.BrokerCredential(ctx, conn.Username, conn.CredentialSecret)
+	if err != nil {
+		log.Printf("[tracker] %s/%s: resolve broker credential: %v", conn.Username, conn.Name, err)
+		return
+	}
+	info, err := describer.DescribeCredential(ctx, tracker.Conn{
+		BaseURL: conn.BaseURL, Project: conn.Project, Credential: cred,
+	})
+	if err != nil {
+		log.Printf("[tracker] %s/%s: describe credential: %v", conn.Username, conn.Name, err)
+		return
+	}
+	if err := s.trackerStore.SetCredentialExpiry(ctx, conn.Username, conn.Name, info.ExpiresAt); err != nil {
+		log.Printf("[tracker] %s/%s: persist credential expiry: %v", conn.Username, conn.Name, err)
+		return
+	}
+	conn.CredentialExpiresAt = info.ExpiresAt
+}
+
+// breadthToProto converts the Go-level breadth classification to its
+// proto enum.
+func breadthToProto(b tracker.CredentialBreadth) pb.TrackerCredentialBreadth {
+	switch b {
+	case tracker.BreadthPreferred:
+		return pb.TrackerCredentialBreadth_TRACKER_CREDENTIAL_BREADTH_PREFERRED
+	case tracker.BreadthBroad:
+		return pb.TrackerCredentialBreadth_TRACKER_CREDENTIAL_BREADTH_BROAD
+	default:
+		return pb.TrackerCredentialBreadth_TRACKER_CREDENTIAL_BREADTH_UNSPECIFIED
+	}
+}
+
 // requireBrokerOnlySecret validates that secretName is a secret owned by
 // username, in SECRET_DELIVERY_BROKER_ONLY mode. Reuses
 // secrets.Store.Get's existing three-way outcome rather than adding a
@@ -207,13 +364,14 @@ func isTrackerValidationError(msg string) bool {
 }
 
 // toProtoTrackerConnection converts the storage-layer struct to the
-// proto-facing one. credential_expires_at is left unset — populated
-// starting in #1921 step 3 (DescribeCredential).
+// proto-facing one. credential_expires_at is populated best-effort by
+// SetTrackerConnection / GetTrackerStatus (DescribeCredential); it stays
+// unset on a connection that's never been successfully described.
 func toProtoTrackerConnection(c *tracker.Connection) *pb.TrackerConnection {
 	if c == nil {
 		return nil
 	}
-	return &pb.TrackerConnection{
+	out := &pb.TrackerConnection{
 		Username:         c.Username,
 		Name:             c.Name,
 		Provider:         c.Provider,
@@ -221,4 +379,8 @@ func toProtoTrackerConnection(c *tracker.Connection) *pb.TrackerConnection {
 		Project:          c.Project,
 		CredentialSecret: c.CredentialSecret,
 	}
+	if !c.CredentialExpiresAt.IsZero() {
+		out.CredentialExpiresAt = timestamppb.New(c.CredentialExpiresAt)
+	}
+	return out
 }

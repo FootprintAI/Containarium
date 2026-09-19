@@ -23,8 +23,14 @@ type Connection struct {
 	BaseURL          string
 	Project          string
 	CredentialSecret string
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	// CredentialExpiresAt is surfaced, not enforced — populated
+	// best-effort from the provider's own introspection of the
+	// credential (DescribeCredential) at connect time and refreshed by
+	// GetTrackerStatus. Zero means "unknown or no expiry", not "never
+	// expires".
+	CredentialExpiresAt time.Time
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
 }
 
 // ErrNotFound is returned by Get / Delete when the (username, name) tuple
@@ -67,6 +73,10 @@ func (s *Store) initSchema(ctx context.Context) error {
 			updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			PRIMARY KEY (username, name)
 		);
+
+		-- #1921 step 3: added after initial release — idempotent
+		-- ALTER, same idiom as internal/secrets.Store.initSchema.
+		ALTER TABLE tracker_connections ADD COLUMN IF NOT EXISTS credential_expires_at TIMESTAMPTZ;
 	`
 	_, err := s.pool.Exec(ctx, schema)
 	return err
@@ -143,6 +153,32 @@ func (s *Store) Set(ctx context.Context, c Connection) (*Connection, error) {
 	return &out, nil
 }
 
+// SetCredentialExpiry updates only credential_expires_at, leaving every
+// other field untouched. Separate from Set because expiry is never
+// client-supplied — the server calls this after a successful
+// DescribeCredential, best-effort, so a describe failure (or the
+// tracker being briefly unreachable) never blocks SetTrackerConnection
+// itself. A zero expiresAt clears the column (NULL) rather than storing
+// the zero time, matching "unknown" rather than a specific past instant.
+func (s *Store) SetCredentialExpiry(ctx context.Context, username, name string, expiresAt time.Time) error {
+	if username == "" {
+		return errors.New("tracker: username is required")
+	}
+	var arg *time.Time
+	if !expiresAt.IsZero() {
+		arg = &expiresAt
+	}
+	const q = `UPDATE tracker_connections SET credential_expires_at = $1 WHERE username = $2 AND name = $3`
+	tag, err := s.pool.Exec(ctx, q, arg, username, name)
+	if err != nil {
+		return fmt.Errorf("update credential expiry: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // Get returns a single named connection. ErrNotFound if it doesn't exist
 // for this tenant — a connection named by another tenant never matches,
 // since the lookup is always scoped by username.
@@ -151,20 +187,21 @@ func (s *Store) Get(ctx context.Context, username, name string) (*Connection, er
 		return nil, errors.New("tracker: username is required")
 	}
 	const q = `
-		SELECT provider, base_url, project, credential_secret, created_at, updated_at
+		SELECT provider, base_url, project, credential_secret, credential_expires_at, created_at, updated_at
 		FROM tracker_connections
 		WHERE username = $1 AND name = $2
 	`
 	var providerStr, baseURL, project, credSecret string
+	var credentialExpiresAt *time.Time
 	var createdAt, updatedAt time.Time
 	if err := s.pool.QueryRow(ctx, q, username, name).
-		Scan(&providerStr, &baseURL, &project, &credSecret, &createdAt, &updatedAt); err != nil {
+		Scan(&providerStr, &baseURL, &project, &credSecret, &credentialExpiresAt, &createdAt, &updatedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, fmt.Errorf("select tracker connection: %w", err)
 	}
-	return &Connection{
+	c := &Connection{
 		Username:         username,
 		Name:             name,
 		Provider:         providerFromString(providerStr),
@@ -173,7 +210,11 @@ func (s *Store) Get(ctx context.Context, username, name string) (*Connection, er
 		CredentialSecret: credSecret,
 		CreatedAt:        createdAt,
 		UpdatedAt:        updatedAt,
-	}, nil
+	}
+	if credentialExpiresAt != nil {
+		c.CredentialExpiresAt = *credentialExpiresAt
+	}
+	return c, nil
 }
 
 // List returns every connection owned by the tenant, ordered by name.
@@ -182,7 +223,7 @@ func (s *Store) List(ctx context.Context, username string) ([]Connection, error)
 		return nil, errors.New("tracker: username is required")
 	}
 	const q = `
-		SELECT name, provider, base_url, project, credential_secret, created_at, updated_at
+		SELECT name, provider, base_url, project, credential_secret, credential_expires_at, created_at, updated_at
 		FROM tracker_connections
 		WHERE username = $1
 		ORDER BY name
@@ -197,11 +238,15 @@ func (s *Store) List(ctx context.Context, username string) ([]Connection, error)
 	for rows.Next() {
 		var c Connection
 		var providerStr string
+		var credentialExpiresAt *time.Time
 		c.Username = username
-		if err := rows.Scan(&c.Name, &providerStr, &c.BaseURL, &c.Project, &c.CredentialSecret, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		if err := rows.Scan(&c.Name, &providerStr, &c.BaseURL, &c.Project, &c.CredentialSecret, &credentialExpiresAt, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan tracker connection row: %w", err)
 		}
 		c.Provider = providerFromString(providerStr)
+		if credentialExpiresAt != nil {
+			c.CredentialExpiresAt = *credentialExpiresAt
+		}
 		out = append(out, c)
 	}
 	if err := rows.Err(); err != nil {

@@ -2658,3 +2658,14 @@ func (c *HTTPClient) DeleteTrackerConnection(username, name string) (string, err
 	}
 	return out.Message, nil
 }
+
+// GetTrackerStatus probes a tracker connection's credential live via
+// REST — reachability, validity, scopes, expiry, and breadth.
+func (c *HTTPClient) GetTrackerStatus(username, name string) (*pb.GetTrackerStatusResponse, error) {
+	out := &pb.GetTrackerStatusResponse{}
+	path := "/v1/tracker/connections/" + url.PathEscape(username) + "/" + url.PathEscape(name) + "/status"
+	if err := c.trackerDo(http.MethodGet, path, "get tracker status", nil, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
