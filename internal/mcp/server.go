@@ -31,6 +31,18 @@ func NewServer(config *Config) (*Server, error) {
 	// Register all tools
 	server.registerTools()
 
+	// #1922 step 7 — operator-curated tool allow-list, e.g. "tracker_*"
+	// for an in-box agent mounting this server with a narrowly-scoped
+	// JWT. Empty (the default) leaves every registered tool available,
+	// unchanged from before this existed.
+	if config.MCPTools != "" {
+		filtered, err := filterToolsByAllowlist(server.tools, config.MCPTools)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", EnvMCPTools, err)
+		}
+		server.tools = filtered
+	}
+
 	return server, nil
 }
 
