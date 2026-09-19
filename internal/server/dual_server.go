@@ -37,6 +37,7 @@ import (
 	secretsstore "github.com/footprintai/containarium/internal/secrets"
 	"github.com/footprintai/containarium/internal/security"
 	"github.com/footprintai/containarium/internal/threatdetect"
+	trackerstore "github.com/footprintai/containarium/internal/tracker"
 	"github.com/footprintai/containarium/internal/traffic"
 	"github.com/footprintai/containarium/internal/ttlsweeper"
 	"github.com/footprintai/containarium/internal/waf"
@@ -939,6 +940,23 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 						}
 					}
 				}
+			}
+
+			// Set up the tracker-connections store (#1921 step 2) — where
+			// a tenant's issue tracker is, and which broker-only secret
+			// holds its credential. Mirrors the secrets-store path
+			// directly above: shares Postgres but holds its own pgxpool.
+			// Failure here only disables the TrackerService API; the rest
+			// of the daemon keeps running.
+			if trackerPool, trackerErr := connectToPostgres(postgresConnString, 5, 3*time.Second); trackerErr != nil {
+				log.Printf("Warning: Failed to connect to Postgres for tracker store: %v", trackerErr)
+			} else if trkStore, terr := trackerstore.NewStore(context.Background(), trackerPool); terr != nil {
+				log.Printf("Warning: Failed to init tracker store: %v. Tracker connections disabled.", terr)
+				trackerPool.Close()
+			} else {
+				containerServer.SetTrackerStore(trkStore)
+				pb.RegisterTrackerServiceServer(grpcServer, containerServer)
+				log.Printf("Tracker connection store ready")
 			}
 
 			// Connect to app store

@@ -99,6 +99,7 @@ var registeredServices = []rpcSurface{
 	{pb.ZapService_ServiceDesc, "ZapServer"},
 	{pb.TokensService_ServiceDesc, "TokensServer"},
 	{pb.ThreatDetectionService_ServiceDesc, "ThreatDetectionServer"},
+	{pb.TrackerService_ServiceDesc, "ContainerServer"},
 }
 
 // authExemptions lists every registered RPC whose handler carries no auth

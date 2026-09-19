@@ -93,6 +93,10 @@
       "description": "TokensService is the admin surface for JWT lifecycle.\n\nRevokeToken requires an admin role + tokens:write scope;\ntenants can't revoke other tenants' tokens. RefreshToken\nis open to any holder of a valid refresh token — that's\nthe whole point of the exchange flow."
     },
     {
+      "name": "TrackerService",
+      "description": "TrackerService manages tracker connections — the daemon-custody seam\nthe tracker broker's issue/change-request verbs (#1922, #1923) build\non. Connection CRUD is gated by tracker:admin, deliberately separate\nfrom the tracker:read / tracker:write scopes an agent's run-scoped JWT\ncarries for the verbs themselves: naming where the tracker is and\nwhich credential to trust is an operator decision, not something a\nskill run should be able to change."
+    },
+    {
       "name": "VolumeService",
       "description": "VolumeService manages shared, multi-writer data volumes (#384).\n\nThe only storage mechanism that lets N containers mount the SAME volume\nread-write without corruption is a CephFS custom (filesystem) volume:\nCephFS's MDS + capability/lease protocol coordinates concurrent POSIX\nwriters, which a block device on a non-cluster filesystem (ext4/xfs/zfs)\ncannot. So this service is capability-gated: it only works on hosts\nbacked by a `cephfs` Incus storage pool, and rejects create/attach on\nsingle-node ZFS hosts (today's default) with a clear error. Callers\ncheck support via ListVolumes.shared_volumes_supported.\n\nNOTE: this is a single-writer-safe DATA volume, not an instance rootfs\n(Incus restricts the cephfs driver to custom volumes)."
     },
@@ -6308,6 +6312,147 @@
         ]
       }
     },
+    "/v1/tracker/connections": {
+      "post": {
+        "summary": "Create or update a tracker connection",
+        "description": "Registers where a tenant's issue tracker is (provider, base URL, project) and which broker-only secret holds its credential. The credential itself is never accepted or returned here — only the secret's name. Requires tracker:admin.",
+        "operationId": "TrackerService_SetTrackerConnection",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SetTrackerConnectionResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "SetTrackerConnectionRequest creates or updates a tenant's named tracker\nconnection. Idempotent, like SetSecret: repeated calls with the same\n(username, name) replace the connection's fields.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/SetTrackerConnectionRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      }
+    },
+    "/v1/tracker/connections/{username}": {
+      "get": {
+        "summary": "List tracker connections",
+        "description": "Lists every tracker connection owned by a tenant.",
+        "operationId": "TrackerService_ListTrackerConnections",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListTrackerConnectionsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      }
+    },
+    "/v1/tracker/connections/{username}/{name}": {
+      "get": {
+        "summary": "Get a tracker connection",
+        "description": "Returns a single named tracker connection's metadata. Never returns the credential value.",
+        "operationId": "TrackerService_GetTrackerConnection",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetTrackerConnectionResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      },
+      "delete": {
+        "summary": "Delete a tracker connection",
+        "description": "Removes a named tracker connection. Does not delete the underlying credential secret.",
+        "operationId": "TrackerService_DeleteTrackerConnection",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/DeleteTrackerConnectionResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      }
+    },
     "/v1/traffic/subscribe": {
       "get": {
         "summary": "Subscribe to traffic events",
@@ -9471,6 +9616,14 @@
       },
       "description": "DeleteTenantStorageResponse records what was destroyed, so an operator has\na statement of what this removed rather than only that it succeeded."
     },
+    "DeleteTrackerConnectionResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string"
+        }
+      }
+    },
     "DeleteVolumeResponse": {
       "type": "object",
       "properties": {
@@ -10785,6 +10938,14 @@
       },
       "title": "GetSystemInfoResponse is the response from getting system information"
     },
+    "GetTrackerConnectionResponse": {
+      "type": "object",
+      "properties": {
+        "connection": {
+          "$ref": "#/definitions/TrackerConnection"
+        }
+      }
+    },
     "GetTrafficAggregatesResponse": {
       "type": "object",
       "properties": {
@@ -11499,6 +11660,18 @@
         }
       },
       "description": "ListStacksResponse returns all configured software stacks."
+    },
+    "ListTrackerConnectionsResponse": {
+      "type": "object",
+      "properties": {
+        "connections": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/TrackerConnection"
+          }
+        }
+      }
     },
     "ListVolumesResponse": {
       "type": "object",
@@ -13764,6 +13937,43 @@
         }
       }
     },
+    "SetTrackerConnectionRequest": {
+      "type": "object",
+      "properties": {
+        "username": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "provider": {
+          "$ref": "#/definitions/TrackerProvider"
+        },
+        "baseUrl": {
+          "type": "string"
+        },
+        "project": {
+          "type": "string"
+        },
+        "credentialSecret": {
+          "type": "string",
+          "description": "Must name a secret already stored in SECRET_DELIVERY_BROKER_ONLY mode\n(SetSecret with delivery_mode = SECRET_DELIVERY_BROKER_ONLY) owned by\nthe same username. The daemon validates this at write time rather\nthan trusting the caller."
+        }
+      },
+      "description": "SetTrackerConnectionRequest creates or updates a tenant's named tracker\nconnection. Idempotent, like SetSecret: repeated calls with the same\n(username, name) replace the connection's fields."
+    },
+    "SetTrackerConnectionResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string",
+          "description": "Operator-facing summary (\"connection created\" / \"connection updated\")."
+        },
+        "connection": {
+          "$ref": "#/definitions/TrackerConnection"
+        }
+      }
+    },
     "SpawnSandboxRequest": {
       "type": "object",
       "properties": {
@@ -14304,6 +14514,50 @@
         }
       },
       "description": "ToggleMonitoringResponse reports the new monitoring state."
+    },
+    "TrackerConnection": {
+      "type": "object",
+      "properties": {
+        "username": {
+          "type": "string",
+          "description": "Username (tenant) that owns the connection."
+        },
+        "name": {
+          "type": "string",
+          "description": "Connection name, unique per tenant (e.g. \"default\"). Runs bind to a\nconnection by this name via a JWT claim (#1922)."
+        },
+        "provider": {
+          "$ref": "#/definitions/TrackerProvider"
+        },
+        "baseUrl": {
+          "type": "string",
+          "description": "Empty selects the provider's SaaS endpoint (github.com / gitlab.com).\nSet for GitHub Enterprise Server or self-managed GitLab."
+        },
+        "project": {
+          "type": "string",
+          "description": "\"owner/repo\" (GitHub) or \"group/subgroup/project\" (GitLab)."
+        },
+        "credentialSecret": {
+          "type": "string",
+          "description": "Name of a secret owned by the same tenant, in\nSECRET_DELIVERY_BROKER_ONLY mode. SetTrackerConnection rejects a\nsecret in any delivering mode."
+        },
+        "credentialExpiresAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Surfaced, not enforced — populated from the upstream's own\nintrospection of the credential (DescribeCredential, #1921 step 3)\nso an approaching expiry is visible before agents start failing.\nUnset until that lands."
+        }
+      },
+      "description": "TrackerConnection is a tenant-scoped record naming where a tracker is\nand which broker-only secret holds the credential the daemon uses to\nreach it. The credential itself never appears here or anywhere on this\nmessage's wire representation — only its name."
+    },
+    "TrackerProvider": {
+      "type": "string",
+      "enum": [
+        "TRACKER_PROVIDER_UNSPECIFIED",
+        "TRACKER_PROVIDER_GITHUB",
+        "TRACKER_PROVIDER_GITLAB"
+      ],
+      "default": "TRACKER_PROVIDER_UNSPECIFIED",
+      "description": "TrackerProvider identifies the issue tracker / forge a TrackerConnection\npoints at. Always explicit, never inferred from base_url's hostname — a\nself-managed host named \"git.\u003ccompany\u003e\" can be either product. See\ndocs/architecture/agent-tracker-broker.md.\n\n - TRACKER_PROVIDER_GITHUB: github.com (base_url empty) or GitHub Enterprise Server (base_url set).\n - TRACKER_PROVIDER_GITLAB: gitlab.com (base_url empty) or self-managed GitLab, including the\nFree tier's single-assignee-per-issue constraint."
     },
     "TrafficAggregate": {
       "type": "object",

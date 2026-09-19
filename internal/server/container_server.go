@@ -28,6 +28,7 @@ import (
 	"github.com/footprintai/containarium/internal/releasecheck"
 	"github.com/footprintai/containarium/internal/safecast"
 	"github.com/footprintai/containarium/internal/secrets"
+	"github.com/footprintai/containarium/internal/tracker"
 	"github.com/footprintai/containarium/pkg/core/box"
 	boxlxc "github.com/footprintai/containarium/pkg/core/box/lxc"
 	"github.com/footprintai/containarium/pkg/core/container"
@@ -71,6 +72,12 @@ func (p *PendingCreation) active() bool { return p != nil && !p.Done && !p.Cance
 // ContainerServer implements the gRPC ContainerService
 type ContainerServer struct {
 	pb.UnimplementedContainerServiceServer
+	// TrackerService is its own proto service (tracker.proto), not part
+	// of ContainerService — embedding its Unimplemented server here lets
+	// ContainerServer satisfy pb.TrackerServiceServer without a
+	// second struct, since TrackerService's handlers already need
+	// secretsStore for the broker-only credential cross-check.
+	pb.UnimplementedTrackerServiceServer
 	manager *container.Manager
 	// boxBackend is the runtime-neutral seam over the box substrate. Today it
 	// wraps the same *container.Manager (LXC/incus); a K8s backend slots in
@@ -245,6 +252,11 @@ type ContainerServer struct {
 	// CreateContainer / StartContainer call LoadAllForUser to
 	// stamp environment.<NAME>=<value> at LXC start time.
 	secretsStore *secrets.Store
+
+	// trackerStore holds tracker connections (#1921). Nil on daemons that
+	// don't have Postgres wired up; the TrackerService RPCs return
+	// Unavailable in that case, same convention as secretsStore.
+	trackerStore *tracker.Store
 
 	// KMS status snapshot for the KmsService GetKMSStatus RPC.
 	// Set once at startup in dual_server.go alongside the secrets
