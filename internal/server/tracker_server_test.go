@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/footprintai/containarium/internal/tracker"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -11,6 +12,27 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+// fakeCredentialDescriber is a tracker.CredentialDescriber double for
+// testing GetTrackerStatus and SetTrackerConnection's best-effort expiry
+// population without a real GitHub/GitLab call — those are covered by
+// internal/tracker/github and internal/tracker/gitlab's own httptest-based
+// suites.
+type fakeCredentialDescriber struct {
+	info tracker.CredentialInfo
+	err  error
+}
+
+func (f *fakeCredentialDescriber) DescribeCredential(context.Context, tracker.Conn) (tracker.CredentialInfo, error) {
+	return f.info, f.err
+}
+
+func fakeDescriberSet(d tracker.CredentialDescriber) map[pb.TrackerProvider]tracker.CredentialDescriber {
+	return map[pb.TrackerProvider]tracker.CredentialDescriber{
+		pb.TrackerProvider_TRACKER_PROVIDER_GITHUB: d,
+		pb.TrackerProvider_TRACKER_PROVIDER_GITLAB: d,
+	}
+}
 
 // mustTestTrackerStore returns a real tracker.Store against
 // CONTAINARIUM_TEST_DSN, skipping the test if it isn't set — same
@@ -175,5 +197,187 @@ func TestTrackerConnection_CRUDRoundTrip(t *testing.T) {
 	}
 	if _, err := s.GetTrackerConnection(adminCtx, &pb.GetTrackerConnectionRequest{Username: user, Name: "default"}); status.Code(err) != codes.NotFound {
 		t.Fatalf("GetTrackerConnection after delete code = %v, want NotFound", status.Code(err))
+	}
+}
+
+// setUpBrokerConnection is shared scaffolding for the describe/status
+// tests below: a broker-only secret, then a connection referencing it,
+// with the fake describer wired in from the start (so
+// SetTrackerConnection's own best-effort describe call uses it too).
+func setUpBrokerConnection(t *testing.T, user string, describer tracker.CredentialDescriber) (*ContainerServer, context.Context) {
+	t.Helper()
+	s := &ContainerServer{
+		secretsStore:      mustTestSecretsStore(t),
+		trackerStore:      mustTestTrackerStore(t),
+		trackerDescribers: fakeDescriberSet(describer),
+	}
+	secretCtx := kmsKeyTestCtx(user, "member", "secrets:write")
+	if _, err := s.SetSecret(secretCtx, &pb.SetSecretRequest{
+		Username: user, Name: "GH_TOKEN", Value: "ghp_x",
+		DeliveryMode: pb.SecretDelivery_SECRET_DELIVERY_BROKER_ONLY,
+	}); err != nil {
+		t.Fatalf("SetSecret (broker-only): %v", err)
+	}
+	adminCtx := kmsKeyTestCtx(user, "member", "tracker:admin")
+	if _, err := s.SetTrackerConnection(adminCtx, &pb.SetTrackerConnectionRequest{
+		Username: user, Name: "default",
+		Provider: pb.TrackerProvider_TRACKER_PROVIDER_GITHUB,
+		Project:  "acme/widgets", CredentialSecret: "GH_TOKEN",
+	}); err != nil {
+		t.Fatalf("SetTrackerConnection: %v", err)
+	}
+	return s, adminCtx
+}
+
+func TestSetTrackerConnection_DescribeCredentialBestEffort_PopulatesExpiry(t *testing.T) {
+	expiry := time.Date(2027, 4, 1, 0, 0, 0, 0, time.UTC)
+	describer := &fakeCredentialDescriber{info: tracker.CredentialInfo{
+		Scopes: []string{"repo"}, ExpiresAt: expiry, Breadth: tracker.BreadthBroad,
+	}}
+	const user = "tracker-rpc-describe-success"
+	s := &ContainerServer{
+		secretsStore:      mustTestSecretsStore(t),
+		trackerStore:      mustTestTrackerStore(t),
+		trackerDescribers: fakeDescriberSet(describer),
+	}
+	secretCtx := kmsKeyTestCtx(user, "member", "secrets:write")
+	if _, err := s.SetSecret(secretCtx, &pb.SetSecretRequest{
+		Username: user, Name: "GH_TOKEN", Value: "ghp_x",
+		DeliveryMode: pb.SecretDelivery_SECRET_DELIVERY_BROKER_ONLY,
+	}); err != nil {
+		t.Fatalf("SetSecret (broker-only): %v", err)
+	}
+
+	adminCtx := kmsKeyTestCtx(user, "member", "tracker:admin")
+	resp, err := s.SetTrackerConnection(adminCtx, &pb.SetTrackerConnectionRequest{
+		Username: user, Name: "default",
+		Provider: pb.TrackerProvider_TRACKER_PROVIDER_GITHUB,
+		Project:  "acme/widgets", CredentialSecret: "GH_TOKEN",
+	})
+	if err != nil {
+		t.Fatalf("SetTrackerConnection: %v", err)
+	}
+	if resp.Connection.CredentialExpiresAt == nil || !resp.Connection.CredentialExpiresAt.AsTime().Equal(expiry) {
+		t.Errorf("Connection.CredentialExpiresAt = %v, want %v", resp.Connection.CredentialExpiresAt, expiry)
+	}
+
+	// Persisted, not just reflected on this one response.
+	getResp, err := s.GetTrackerConnection(adminCtx, &pb.GetTrackerConnectionRequest{Username: user, Name: "default"})
+	if err != nil {
+		t.Fatalf("GetTrackerConnection: %v", err)
+	}
+	if getResp.Connection.CredentialExpiresAt == nil || !getResp.Connection.CredentialExpiresAt.AsTime().Equal(expiry) {
+		t.Errorf("persisted CredentialExpiresAt = %v, want %v", getResp.Connection.CredentialExpiresAt, expiry)
+	}
+}
+
+// TestSetTrackerConnection_DescribeCredentialFailure_StillSucceeds pins
+// the best-effort contract: a describe failure (tracker unreachable,
+// credential not yet valid, whatever) must never fail the connection
+// write itself.
+func TestSetTrackerConnection_DescribeCredentialFailure_StillSucceeds(t *testing.T) {
+	describer := &fakeCredentialDescriber{err: tracker.ErrUnreachable}
+	const user = "tracker-rpc-describe-failure"
+	s := &ContainerServer{
+		secretsStore:      mustTestSecretsStore(t),
+		trackerStore:      mustTestTrackerStore(t),
+		trackerDescribers: fakeDescriberSet(describer),
+	}
+	secretCtx := kmsKeyTestCtx(user, "member", "secrets:write")
+	if _, err := s.SetSecret(secretCtx, &pb.SetSecretRequest{
+		Username: user, Name: "GH_TOKEN", Value: "ghp_x",
+		DeliveryMode: pb.SecretDelivery_SECRET_DELIVERY_BROKER_ONLY,
+	}); err != nil {
+		t.Fatalf("SetSecret (broker-only): %v", err)
+	}
+
+	adminCtx := kmsKeyTestCtx(user, "member", "tracker:admin")
+	resp, err := s.SetTrackerConnection(adminCtx, &pb.SetTrackerConnectionRequest{
+		Username: user, Name: "default",
+		Provider: pb.TrackerProvider_TRACKER_PROVIDER_GITHUB,
+		Project:  "acme/widgets", CredentialSecret: "GH_TOKEN",
+	})
+	if err != nil {
+		t.Fatalf("SetTrackerConnection should succeed even when describe fails: %v", err)
+	}
+	if resp.Connection.CredentialExpiresAt != nil {
+		t.Errorf("CredentialExpiresAt = %v, want unset (describe failed)", resp.Connection.CredentialExpiresAt)
+	}
+}
+
+func TestGetTrackerStatus_NoAuthContext(t *testing.T) {
+	s := &ContainerServer{}
+	_, err := s.GetTrackerStatus(context.Background(), &pb.GetTrackerStatusRequest{Username: "alice", Name: "default"})
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("code = %v, want Unauthenticated", status.Code(err))
+	}
+}
+
+func TestGetTrackerStatus_Success(t *testing.T) {
+	expiry := time.Date(2027, 5, 1, 0, 0, 0, 0, time.UTC)
+	describer := &fakeCredentialDescriber{info: tracker.CredentialInfo{
+		Scopes: []string{"api"}, ExpiresAt: expiry, Breadth: tracker.BreadthPreferred,
+	}}
+	const user = "tracker-rpc-status-success"
+	s, adminCtx := setUpBrokerConnection(t, user, describer)
+
+	resp, err := s.GetTrackerStatus(adminCtx, &pb.GetTrackerStatusRequest{Username: user, Name: "default"})
+	if err != nil {
+		t.Fatalf("GetTrackerStatus: %v", err)
+	}
+	if !resp.Reachable || !resp.CredentialValid {
+		t.Errorf("Reachable=%v CredentialValid=%v, want both true", resp.Reachable, resp.CredentialValid)
+	}
+	if resp.CredentialBreadth != pb.TrackerCredentialBreadth_TRACKER_CREDENTIAL_BREADTH_PREFERRED {
+		t.Errorf("CredentialBreadth = %v, want PREFERRED", resp.CredentialBreadth)
+	}
+	if len(resp.CredentialScopes) != 1 || resp.CredentialScopes[0] != "api" {
+		t.Errorf("CredentialScopes = %v, want [api]", resp.CredentialScopes)
+	}
+	if resp.CredentialExpiresAt == nil || !resp.CredentialExpiresAt.AsTime().Equal(expiry) {
+		t.Errorf("CredentialExpiresAt = %v, want %v", resp.CredentialExpiresAt, expiry)
+	}
+	if resp.Detail != "" {
+		t.Errorf("Detail = %q, want empty on success", resp.Detail)
+	}
+}
+
+func TestGetTrackerStatus_CredentialInvalid(t *testing.T) {
+	describer := &fakeCredentialDescriber{err: tracker.ErrCredentialInvalid}
+	const user = "tracker-rpc-status-invalid"
+	s, adminCtx := setUpBrokerConnection(t, user, describer)
+
+	resp, err := s.GetTrackerStatus(adminCtx, &pb.GetTrackerStatusRequest{Username: user, Name: "default"})
+	if err != nil {
+		t.Fatalf("GetTrackerStatus: %v", err)
+	}
+	if !resp.Reachable {
+		t.Error("Reachable = false, want true (the tracker responded — it just rejected the credential)")
+	}
+	if resp.CredentialValid {
+		t.Error("CredentialValid = true, want false")
+	}
+	if resp.Detail == "" {
+		t.Error("Detail is empty, want an explanation")
+	}
+}
+
+func TestGetTrackerStatus_Unreachable(t *testing.T) {
+	describer := &fakeCredentialDescriber{err: tracker.ErrUnreachable}
+	const user = "tracker-rpc-status-unreachable"
+	s, adminCtx := setUpBrokerConnection(t, user, describer)
+
+	resp, err := s.GetTrackerStatus(adminCtx, &pb.GetTrackerStatusRequest{Username: user, Name: "default"})
+	if err != nil {
+		t.Fatalf("GetTrackerStatus: %v", err)
+	}
+	if resp.Reachable {
+		t.Error("Reachable = true, want false")
+	}
+	if resp.CredentialValid {
+		t.Error("CredentialValid = true, want false — meaningless when unreachable")
+	}
+	if resp.Detail == "" {
+		t.Error("Detail is empty, want an explanation")
 	}
 }

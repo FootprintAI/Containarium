@@ -80,6 +80,69 @@ func (TrackerProvider) EnumDescriptor() ([]byte, []int) {
 	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{0}
 }
 
+// TrackerCredentialBreadth classifies a tracker credential against the
+// provider's narrowest ("preferred") type — see the design note's
+// "Preferred credential types" table. It bounds what a DAEMON compromise
+// can do, as distinct from the broker's verb set (tracker:read /
+// tracker:write), which bounds what a BOX can do.
+type TrackerCredentialBreadth int32
+
+const (
+	// Breadth could not be determined — the probe that would classify it
+	// failed (e.g. the tracker was unreachable) before classification was
+	// possible.
+	TrackerCredentialBreadth_TRACKER_CREDENTIAL_BREADTH_UNSPECIFIED TrackerCredentialBreadth = 0
+	// The narrowest type for the provider: a GitLab project access token,
+	// or a GitHub App installation token / single-repository fine-grained
+	// PAT.
+	TrackerCredentialBreadth_TRACKER_CREDENTIAL_BREADTH_PREFERRED TrackerCredentialBreadth = 1
+	// Wider than preferred: a GitLab group or personal access token, or a
+	// GitHub classic PAT. Still accepted — this is a warning, not a
+	// rejection.
+	TrackerCredentialBreadth_TRACKER_CREDENTIAL_BREADTH_BROAD TrackerCredentialBreadth = 2
+)
+
+// Enum value maps for TrackerCredentialBreadth.
+var (
+	TrackerCredentialBreadth_name = map[int32]string{
+		0: "TRACKER_CREDENTIAL_BREADTH_UNSPECIFIED",
+		1: "TRACKER_CREDENTIAL_BREADTH_PREFERRED",
+		2: "TRACKER_CREDENTIAL_BREADTH_BROAD",
+	}
+	TrackerCredentialBreadth_value = map[string]int32{
+		"TRACKER_CREDENTIAL_BREADTH_UNSPECIFIED": 0,
+		"TRACKER_CREDENTIAL_BREADTH_PREFERRED":   1,
+		"TRACKER_CREDENTIAL_BREADTH_BROAD":       2,
+	}
+)
+
+func (x TrackerCredentialBreadth) Enum() *TrackerCredentialBreadth {
+	p := new(TrackerCredentialBreadth)
+	*p = x
+	return p
+}
+
+func (x TrackerCredentialBreadth) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (TrackerCredentialBreadth) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_tracker_proto_enumTypes[1].Descriptor()
+}
+
+func (TrackerCredentialBreadth) Type() protoreflect.EnumType {
+	return &file_containarium_v1_tracker_proto_enumTypes[1]
+}
+
+func (x TrackerCredentialBreadth) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use TrackerCredentialBreadth.Descriptor instead.
+func (TrackerCredentialBreadth) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{1}
+}
+
 // TrackerConnection is a tenant-scoped record naming where a tracker is
 // and which broker-only secret holds the credential the daemon uses to
 // reach it. The credential itself never appears here or anywhere on this
@@ -618,6 +681,167 @@ func (x *DeleteTrackerConnectionResponse) GetMessage() string {
 	return ""
 }
 
+// GetTrackerStatusRequest probes a named connection's credential live,
+// against the tracker itself.
+type GetTrackerStatusRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Username      string                 `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"`
+	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetTrackerStatusRequest) Reset() {
+	*x = GetTrackerStatusRequest{}
+	mi := &file_containarium_v1_tracker_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetTrackerStatusRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetTrackerStatusRequest) ProtoMessage() {}
+
+func (x *GetTrackerStatusRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_tracker_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetTrackerStatusRequest.ProtoReflect.Descriptor instead.
+func (*GetTrackerStatusRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *GetTrackerStatusRequest) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+func (x *GetTrackerStatusRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+type GetTrackerStatusResponse struct {
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Connection *TrackerConnection     `protobuf:"bytes,1,opt,name=connection,proto3" json:"connection,omitempty"`
+	// False if the tracker itself could not be reached at all (DNS,
+	// connect, TLS, timeout) — no credential was ever presented, so
+	// nothing below this field is meaningful.
+	Reachable bool `protobuf:"varint,2,opt,name=reachable,proto3" json:"reachable,omitempty"`
+	// False if the tracker was reached but rejected the credential
+	// (401/403). Meaningless (left false) when reachable is false.
+	CredentialValid bool `protobuf:"varint,3,opt,name=credential_valid,json=credentialValid,proto3" json:"credential_valid,omitempty"`
+	// UNSPECIFIED when reachable && credential_valid are not both true —
+	// classification needs a successful probe.
+	CredentialBreadth TrackerCredentialBreadth `protobuf:"varint,4,opt,name=credential_breadth,json=credentialBreadth,proto3,enum=containarium.v1.TrackerCredentialBreadth" json:"credential_breadth,omitempty"`
+	// Provider-native scope/permission strings, from the provider's own
+	// introspection. May be empty even for a valid credential — not every
+	// provider exposes scopes for every credential type.
+	CredentialScopes []string `protobuf:"bytes,5,rep,name=credential_scopes,json=credentialScopes,proto3" json:"credential_scopes,omitempty"`
+	// From the provider's own introspection. Unset means "no expiry, or
+	// the provider doesn't report one for this credential type" — treat
+	// unset as unknown, not as "never expires".
+	CredentialExpiresAt *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=credential_expires_at,json=credentialExpiresAt,proto3" json:"credential_expires_at,omitempty"`
+	// Human-readable detail when reachable or credential_valid is false.
+	// Empty when both are true.
+	Detail        string `protobuf:"bytes,7,opt,name=detail,proto3" json:"detail,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetTrackerStatusResponse) Reset() {
+	*x = GetTrackerStatusResponse{}
+	mi := &file_containarium_v1_tracker_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetTrackerStatusResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetTrackerStatusResponse) ProtoMessage() {}
+
+func (x *GetTrackerStatusResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_tracker_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetTrackerStatusResponse.ProtoReflect.Descriptor instead.
+func (*GetTrackerStatusResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *GetTrackerStatusResponse) GetConnection() *TrackerConnection {
+	if x != nil {
+		return x.Connection
+	}
+	return nil
+}
+
+func (x *GetTrackerStatusResponse) GetReachable() bool {
+	if x != nil {
+		return x.Reachable
+	}
+	return false
+}
+
+func (x *GetTrackerStatusResponse) GetCredentialValid() bool {
+	if x != nil {
+		return x.CredentialValid
+	}
+	return false
+}
+
+func (x *GetTrackerStatusResponse) GetCredentialBreadth() TrackerCredentialBreadth {
+	if x != nil {
+		return x.CredentialBreadth
+	}
+	return TrackerCredentialBreadth_TRACKER_CREDENTIAL_BREADTH_UNSPECIFIED
+}
+
+func (x *GetTrackerStatusResponse) GetCredentialScopes() []string {
+	if x != nil {
+		return x.CredentialScopes
+	}
+	return nil
+}
+
+func (x *GetTrackerStatusResponse) GetCredentialExpiresAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.CredentialExpiresAt
+	}
+	return nil
+}
+
+func (x *GetTrackerStatusResponse) GetDetail() string {
+	if x != nil {
+		return x.Detail
+	}
+	return ""
+}
+
 var File_containarium_v1_tracker_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_tracker_proto_rawDesc = "" +
@@ -658,12 +882,28 @@ const file_containarium_v1_tracker_proto_rawDesc = "" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\";\n" +
 	"\x1fDeleteTrackerConnectionResponse\x12\x18\n" +
-	"\amessage\x18\x01 \x01(\tR\amessage*m\n" +
+	"\amessage\x18\x01 \x01(\tR\amessage\"I\n" +
+	"\x17GetTrackerStatusRequest\x12\x1a\n" +
+	"\busername\x18\x01 \x01(\tR\busername\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\"\x96\x03\n" +
+	"\x18GetTrackerStatusResponse\x12B\n" +
+	"\n" +
+	"connection\x18\x01 \x01(\v2\".containarium.v1.TrackerConnectionR\n" +
+	"connection\x12\x1c\n" +
+	"\treachable\x18\x02 \x01(\bR\treachable\x12)\n" +
+	"\x10credential_valid\x18\x03 \x01(\bR\x0fcredentialValid\x12X\n" +
+	"\x12credential_breadth\x18\x04 \x01(\x0e2).containarium.v1.TrackerCredentialBreadthR\x11credentialBreadth\x12+\n" +
+	"\x11credential_scopes\x18\x05 \x03(\tR\x10credentialScopes\x12N\n" +
+	"\x15credential_expires_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\x13credentialExpiresAt\x12\x16\n" +
+	"\x06detail\x18\a \x01(\tR\x06detail*m\n" +
 	"\x0fTrackerProvider\x12 \n" +
 	"\x1cTRACKER_PROVIDER_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17TRACKER_PROVIDER_GITHUB\x10\x01\x12\x1b\n" +
-	"\x17TRACKER_PROVIDER_GITLAB\x10\x022\xab\n" +
-	"\n" +
+	"\x17TRACKER_PROVIDER_GITLAB\x10\x02*\x96\x01\n" +
+	"\x18TrackerCredentialBreadth\x12*\n" +
+	"&TRACKER_CREDENTIAL_BREADTH_UNSPECIFIED\x10\x00\x12(\n" +
+	"$TRACKER_CREDENTIAL_BREADTH_PREFERRED\x10\x01\x12$\n" +
+	" TRACKER_CREDENTIAL_BREADTH_BROAD\x10\x022\xfb\r\n" +
 	"\x0eTrackerService\x12\xb8\x03\n" +
 	"\x14SetTrackerConnection\x12,.containarium.v1.SetTrackerConnectionRequest\x1a-.containarium.v1.SetTrackerConnectionResponse\"\xc2\x02\x92A\x9c\x02\n" +
 	"\aTracker\x12%Create or update a tracker connection\x1a\xe9\x01Registers where a tenant's issue tracker is (provider, base URL, project) and which broker-only secret holds its credential. The credential itself is never accepted or returned here — only the secret's name. Requires tracker:admin.\x82\xd3\xe4\x93\x02\x1c:\x01*\"\x17/v1/tracker/connections\x12\xa8\x02\n" +
@@ -672,7 +912,9 @@ const file_containarium_v1_tracker_proto_rawDesc = "" +
 	"\x16ListTrackerConnections\x12..containarium.v1.ListTrackerConnectionsRequest\x1a/.containarium.v1.ListTrackerConnectionsResponse\"\x83\x01\x92AV\n" +
 	"\aTracker\x12\x18List tracker connections\x1a1Lists every tracker connection owned by a tenant.\x82\xd3\xe4\x93\x02$\x12\"/v1/tracker/connections/{username}\x12\xb0\x02\n" +
 	"\x17DeleteTrackerConnection\x12/.containarium.v1.DeleteTrackerConnectionRequest\x1a0.containarium.v1.DeleteTrackerConnectionResponse\"\xb1\x01\x92A}\n" +
-	"\aTracker\x12\x1bDelete a tracker connection\x1aURemoves a named tracker connection. Does not delete the underlying credential secret.\x82\xd3\xe4\x93\x02+*)/v1/tracker/connections/{username}/{name}BKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
+	"\aTracker\x12\x1bDelete a tracker connection\x1aURemoves a named tracker connection. Does not delete the underlying credential secret.\x82\xd3\xe4\x93\x02+*)/v1/tracker/connections/{username}/{name}\x12\xcd\x03\n" +
+	"\x10GetTrackerStatus\x12(.containarium.v1.GetTrackerStatusRequest\x1a).containarium.v1.GetTrackerStatusResponse\"\xe3\x02\x92A\xa7\x02\n" +
+	"\aTracker\x12(Check a tracker connection's live status\x1a\xf1\x01Asks the tracker to describe the connection's own credential: reachability, whether the credential is still valid, its granted scopes and expiry, and whether it's broader than the provider's preferred credential type. Requires tracker:admin.\x82\xd3\xe4\x93\x022\x120/v1/tracker/connections/{username}/{name}/statusBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
 
 var (
 	file_containarium_v1_tracker_proto_rawDescOnce sync.Once
@@ -686,41 +928,49 @@ func file_containarium_v1_tracker_proto_rawDescGZIP() []byte {
 	return file_containarium_v1_tracker_proto_rawDescData
 }
 
-var file_containarium_v1_tracker_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_containarium_v1_tracker_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_containarium_v1_tracker_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_containarium_v1_tracker_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_containarium_v1_tracker_proto_goTypes = []any{
 	(TrackerProvider)(0),                    // 0: containarium.v1.TrackerProvider
-	(*TrackerConnection)(nil),               // 1: containarium.v1.TrackerConnection
-	(*SetTrackerConnectionRequest)(nil),     // 2: containarium.v1.SetTrackerConnectionRequest
-	(*SetTrackerConnectionResponse)(nil),    // 3: containarium.v1.SetTrackerConnectionResponse
-	(*GetTrackerConnectionRequest)(nil),     // 4: containarium.v1.GetTrackerConnectionRequest
-	(*GetTrackerConnectionResponse)(nil),    // 5: containarium.v1.GetTrackerConnectionResponse
-	(*ListTrackerConnectionsRequest)(nil),   // 6: containarium.v1.ListTrackerConnectionsRequest
-	(*ListTrackerConnectionsResponse)(nil),  // 7: containarium.v1.ListTrackerConnectionsResponse
-	(*DeleteTrackerConnectionRequest)(nil),  // 8: containarium.v1.DeleteTrackerConnectionRequest
-	(*DeleteTrackerConnectionResponse)(nil), // 9: containarium.v1.DeleteTrackerConnectionResponse
-	(*timestamppb.Timestamp)(nil),           // 10: google.protobuf.Timestamp
+	(TrackerCredentialBreadth)(0),           // 1: containarium.v1.TrackerCredentialBreadth
+	(*TrackerConnection)(nil),               // 2: containarium.v1.TrackerConnection
+	(*SetTrackerConnectionRequest)(nil),     // 3: containarium.v1.SetTrackerConnectionRequest
+	(*SetTrackerConnectionResponse)(nil),    // 4: containarium.v1.SetTrackerConnectionResponse
+	(*GetTrackerConnectionRequest)(nil),     // 5: containarium.v1.GetTrackerConnectionRequest
+	(*GetTrackerConnectionResponse)(nil),    // 6: containarium.v1.GetTrackerConnectionResponse
+	(*ListTrackerConnectionsRequest)(nil),   // 7: containarium.v1.ListTrackerConnectionsRequest
+	(*ListTrackerConnectionsResponse)(nil),  // 8: containarium.v1.ListTrackerConnectionsResponse
+	(*DeleteTrackerConnectionRequest)(nil),  // 9: containarium.v1.DeleteTrackerConnectionRequest
+	(*DeleteTrackerConnectionResponse)(nil), // 10: containarium.v1.DeleteTrackerConnectionResponse
+	(*GetTrackerStatusRequest)(nil),         // 11: containarium.v1.GetTrackerStatusRequest
+	(*GetTrackerStatusResponse)(nil),        // 12: containarium.v1.GetTrackerStatusResponse
+	(*timestamppb.Timestamp)(nil),           // 13: google.protobuf.Timestamp
 }
 var file_containarium_v1_tracker_proto_depIdxs = []int32{
 	0,  // 0: containarium.v1.TrackerConnection.provider:type_name -> containarium.v1.TrackerProvider
-	10, // 1: containarium.v1.TrackerConnection.credential_expires_at:type_name -> google.protobuf.Timestamp
+	13, // 1: containarium.v1.TrackerConnection.credential_expires_at:type_name -> google.protobuf.Timestamp
 	0,  // 2: containarium.v1.SetTrackerConnectionRequest.provider:type_name -> containarium.v1.TrackerProvider
-	1,  // 3: containarium.v1.SetTrackerConnectionResponse.connection:type_name -> containarium.v1.TrackerConnection
-	1,  // 4: containarium.v1.GetTrackerConnectionResponse.connection:type_name -> containarium.v1.TrackerConnection
-	1,  // 5: containarium.v1.ListTrackerConnectionsResponse.connections:type_name -> containarium.v1.TrackerConnection
-	2,  // 6: containarium.v1.TrackerService.SetTrackerConnection:input_type -> containarium.v1.SetTrackerConnectionRequest
-	4,  // 7: containarium.v1.TrackerService.GetTrackerConnection:input_type -> containarium.v1.GetTrackerConnectionRequest
-	6,  // 8: containarium.v1.TrackerService.ListTrackerConnections:input_type -> containarium.v1.ListTrackerConnectionsRequest
-	8,  // 9: containarium.v1.TrackerService.DeleteTrackerConnection:input_type -> containarium.v1.DeleteTrackerConnectionRequest
-	3,  // 10: containarium.v1.TrackerService.SetTrackerConnection:output_type -> containarium.v1.SetTrackerConnectionResponse
-	5,  // 11: containarium.v1.TrackerService.GetTrackerConnection:output_type -> containarium.v1.GetTrackerConnectionResponse
-	7,  // 12: containarium.v1.TrackerService.ListTrackerConnections:output_type -> containarium.v1.ListTrackerConnectionsResponse
-	9,  // 13: containarium.v1.TrackerService.DeleteTrackerConnection:output_type -> containarium.v1.DeleteTrackerConnectionResponse
-	10, // [10:14] is the sub-list for method output_type
-	6,  // [6:10] is the sub-list for method input_type
-	6,  // [6:6] is the sub-list for extension type_name
-	6,  // [6:6] is the sub-list for extension extendee
-	0,  // [0:6] is the sub-list for field type_name
+	2,  // 3: containarium.v1.SetTrackerConnectionResponse.connection:type_name -> containarium.v1.TrackerConnection
+	2,  // 4: containarium.v1.GetTrackerConnectionResponse.connection:type_name -> containarium.v1.TrackerConnection
+	2,  // 5: containarium.v1.ListTrackerConnectionsResponse.connections:type_name -> containarium.v1.TrackerConnection
+	2,  // 6: containarium.v1.GetTrackerStatusResponse.connection:type_name -> containarium.v1.TrackerConnection
+	1,  // 7: containarium.v1.GetTrackerStatusResponse.credential_breadth:type_name -> containarium.v1.TrackerCredentialBreadth
+	13, // 8: containarium.v1.GetTrackerStatusResponse.credential_expires_at:type_name -> google.protobuf.Timestamp
+	3,  // 9: containarium.v1.TrackerService.SetTrackerConnection:input_type -> containarium.v1.SetTrackerConnectionRequest
+	5,  // 10: containarium.v1.TrackerService.GetTrackerConnection:input_type -> containarium.v1.GetTrackerConnectionRequest
+	7,  // 11: containarium.v1.TrackerService.ListTrackerConnections:input_type -> containarium.v1.ListTrackerConnectionsRequest
+	9,  // 12: containarium.v1.TrackerService.DeleteTrackerConnection:input_type -> containarium.v1.DeleteTrackerConnectionRequest
+	11, // 13: containarium.v1.TrackerService.GetTrackerStatus:input_type -> containarium.v1.GetTrackerStatusRequest
+	4,  // 14: containarium.v1.TrackerService.SetTrackerConnection:output_type -> containarium.v1.SetTrackerConnectionResponse
+	6,  // 15: containarium.v1.TrackerService.GetTrackerConnection:output_type -> containarium.v1.GetTrackerConnectionResponse
+	8,  // 16: containarium.v1.TrackerService.ListTrackerConnections:output_type -> containarium.v1.ListTrackerConnectionsResponse
+	10, // 17: containarium.v1.TrackerService.DeleteTrackerConnection:output_type -> containarium.v1.DeleteTrackerConnectionResponse
+	12, // 18: containarium.v1.TrackerService.GetTrackerStatus:output_type -> containarium.v1.GetTrackerStatusResponse
+	14, // [14:19] is the sub-list for method output_type
+	9,  // [9:14] is the sub-list for method input_type
+	9,  // [9:9] is the sub-list for extension type_name
+	9,  // [9:9] is the sub-list for extension extendee
+	0,  // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_tracker_proto_init() }
@@ -733,8 +983,8 @@ func file_containarium_v1_tracker_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_tracker_proto_rawDesc), len(file_containarium_v1_tracker_proto_rawDesc)),
-			NumEnums:      1,
-			NumMessages:   9,
+			NumEnums:      2,
+			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

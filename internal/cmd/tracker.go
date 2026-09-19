@@ -65,6 +65,22 @@ var trackerDisconnectCmd = &cobra.Command{
 	RunE:    runTrackerDisconnect,
 }
 
+var trackerStatusCmd = &cobra.Command{
+	Use:   "status <username> <name>",
+	Short: "Check a tracker connection's live status",
+	Long: `Asks the tracker to describe the connection's own credential:
+reachability, whether the credential is still valid, its granted
+scopes and expiry, and whether it's broader than the provider's
+preferred credential type (a GitLab project access token; a GitHub
+App installation token or single-repository fine-grained PAT).
+
+A "broad" warning is not an error — the connection still works. It
+means a daemon compromise could do more with this credential than the
+narrowest type would have allowed.`,
+	Args: cobra.ExactArgs(2),
+	RunE: runTrackerStatus,
+}
+
 var (
 	trackerProvider         string
 	trackerBaseURL          string
@@ -88,6 +104,7 @@ func init() {
 
 	trackerCmd.AddCommand(trackerListCmd)
 	trackerCmd.AddCommand(trackerDisconnectCmd)
+	trackerCmd.AddCommand(trackerStatusCmd)
 }
 
 // parseTrackerProvider maps the CLI's --provider flag to the proto enum.
@@ -226,6 +243,63 @@ func runTrackerDisconnect(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func runTrackerStatus(cmd *cobra.Command, args []string) error {
+	username, name := args[0], args[1]
+	if serverAddr == "" {
+		return fmt.Errorf("--server is required for tracker commands")
+	}
+
+	var resp *pb.GetTrackerStatusResponse
+	if httpMode {
+		h, err := client.NewHTTPClient(serverAddr, authToken)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = h.Close() }()
+		if resp, err = h.GetTrackerStatus(username, name); err != nil {
+			return err
+		}
+	} else {
+		g, err := client.NewGRPCClient(serverAddr, certsDir, insecure)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = g.Close() }()
+		if resp, err = g.GetTrackerStatus(username, name); err != nil {
+			return err
+		}
+	}
+
+	printTrackerStatus(resp)
+	return nil
+}
+
+// printTrackerStatus renders a GetTrackerStatusResponse. Factored out
+// from runTrackerStatus so it's testable without a client.
+func printTrackerStatus(resp *pb.GetTrackerStatusResponse) {
+	fmt.Printf("reachable:        %v\n", resp.GetReachable())
+	fmt.Printf("credential valid: %v\n", resp.GetCredentialValid())
+	if !resp.GetReachable() || !resp.GetCredentialValid() {
+		if resp.GetDetail() != "" {
+			fmt.Printf("detail:           %s\n", resp.GetDetail())
+		}
+		return
+	}
+	fmt.Printf("breadth:          %s\n", trackerBreadthLabel(resp.GetCredentialBreadth()))
+	if len(resp.GetCredentialScopes()) > 0 {
+		fmt.Printf("scopes:           %s\n", strings.Join(resp.GetCredentialScopes(), ", "))
+	}
+	if resp.GetCredentialExpiresAt() != nil {
+		fmt.Printf("expires:          %s\n", resp.GetCredentialExpiresAt().AsTime().Format("2006-01-02"))
+	} else {
+		fmt.Printf("expires:          unknown\n")
+	}
+	if resp.GetCredentialBreadth() == pb.TrackerCredentialBreadth_TRACKER_CREDENTIAL_BREADTH_BROAD {
+		provider := trackerProviderLabel(resp.GetConnection().GetProvider())
+		fmt.Printf("\n⚠ this credential is broader than %s's preferred type — consider rotating to a narrower one.\n", provider)
+	}
+}
+
 // trackerProviderLabel renders the enum for the list table without the
 // TRACKER_PROVIDER_ prefix.
 func trackerProviderLabel(p pb.TrackerProvider) string {
@@ -236,5 +310,17 @@ func trackerProviderLabel(p pb.TrackerProvider) string {
 		return "gitlab"
 	default:
 		return "unspecified"
+	}
+}
+
+// trackerBreadthLabel renders the breadth enum for tracker status output.
+func trackerBreadthLabel(b pb.TrackerCredentialBreadth) string {
+	switch b {
+	case pb.TrackerCredentialBreadth_TRACKER_CREDENTIAL_BREADTH_PREFERRED:
+		return "preferred"
+	case pb.TrackerCredentialBreadth_TRACKER_CREDENTIAL_BREADTH_BROAD:
+		return "broad"
+	default:
+		return "unknown"
 	}
 }

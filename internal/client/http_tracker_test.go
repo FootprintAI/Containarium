@@ -141,3 +141,51 @@ func TestDeleteTrackerConnection_PathAndMethod(t *testing.T) {
 		t.Errorf("message = %q, want %q", msg, "connection default deleted")
 	}
 }
+
+func TestGetTrackerStatus_PathAndDecoding(t *testing.T) {
+	const gatewayJSON = `{
+	  "connection": {"username": "alice", "name": "default", "provider": "TRACKER_PROVIDER_GITHUB"},
+	  "reachable": true,
+	  "credentialValid": true,
+	  "credentialBreadth": "TRACKER_CREDENTIAL_BREADTH_BROAD",
+	  "credentialScopes": ["repo", "read:org"],
+	  "credentialExpiresAt": "2027-05-01T00:00:00Z"
+	}`
+
+	var gotPath, gotMethod string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotMethod = r.Method
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(gatewayJSON))
+	}))
+	defer srv.Close()
+
+	c, err := NewHTTPClient(srv.URL, "tok")
+	if err != nil {
+		t.Fatalf("NewHTTPClient: %v", err)
+	}
+
+	resp, err := c.GetTrackerStatus("alice", "default")
+	if err != nil {
+		t.Fatalf("GetTrackerStatus: %v", err)
+	}
+	if gotMethod != http.MethodGet {
+		t.Errorf("method = %q, want GET", gotMethod)
+	}
+	if gotPath != "/v1/tracker/connections/alice/default/status" {
+		t.Errorf("path = %q, want /v1/tracker/connections/alice/default/status", gotPath)
+	}
+	if !resp.GetReachable() || !resp.GetCredentialValid() {
+		t.Errorf("Reachable=%v CredentialValid=%v, want both true", resp.GetReachable(), resp.GetCredentialValid())
+	}
+	if resp.GetCredentialBreadth() != pb.TrackerCredentialBreadth_TRACKER_CREDENTIAL_BREADTH_BROAD {
+		t.Errorf("CredentialBreadth = %v, want BROAD", resp.GetCredentialBreadth())
+	}
+	if len(resp.GetCredentialScopes()) != 2 {
+		t.Errorf("CredentialScopes = %v, want 2 entries", resp.GetCredentialScopes())
+	}
+	if resp.GetCredentialExpiresAt() == nil {
+		t.Error("CredentialExpiresAt is nil, want the decoded timestamp")
+	}
+}

@@ -180,6 +180,7 @@ token unscoped-report
 tracker connect
 tracker disconnect
 tracker list
+tracker status
 traffic connections
 traffic history
 traffic summary

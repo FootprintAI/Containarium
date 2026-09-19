@@ -23,6 +23,7 @@ const (
 	TrackerService_GetTrackerConnection_FullMethodName    = "/containarium.v1.TrackerService/GetTrackerConnection"
 	TrackerService_ListTrackerConnections_FullMethodName  = "/containarium.v1.TrackerService/ListTrackerConnections"
 	TrackerService_DeleteTrackerConnection_FullMethodName = "/containarium.v1.TrackerService/DeleteTrackerConnection"
+	TrackerService_GetTrackerStatus_FullMethodName        = "/containarium.v1.TrackerService/GetTrackerStatus"
 )
 
 // TrackerServiceClient is the client API for TrackerService service.
@@ -45,6 +46,9 @@ type TrackerServiceClient interface {
 	ListTrackerConnections(ctx context.Context, in *ListTrackerConnectionsRequest, opts ...grpc.CallOption) (*ListTrackerConnectionsResponse, error)
 	// DeleteTrackerConnection removes a named connection.
 	DeleteTrackerConnection(ctx context.Context, in *DeleteTrackerConnectionRequest, opts ...grpc.CallOption) (*DeleteTrackerConnectionResponse, error)
+	// GetTrackerStatus probes a connection's credential live, against the
+	// tracker itself.
+	GetTrackerStatus(ctx context.Context, in *GetTrackerStatusRequest, opts ...grpc.CallOption) (*GetTrackerStatusResponse, error)
 }
 
 type trackerServiceClient struct {
@@ -95,6 +99,16 @@ func (c *trackerServiceClient) DeleteTrackerConnection(ctx context.Context, in *
 	return out, nil
 }
 
+func (c *trackerServiceClient) GetTrackerStatus(ctx context.Context, in *GetTrackerStatusRequest, opts ...grpc.CallOption) (*GetTrackerStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetTrackerStatusResponse)
+	err := c.cc.Invoke(ctx, TrackerService_GetTrackerStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // TrackerServiceServer is the server API for TrackerService service.
 // All implementations must embed UnimplementedTrackerServiceServer
 // for forward compatibility.
@@ -115,6 +129,9 @@ type TrackerServiceServer interface {
 	ListTrackerConnections(context.Context, *ListTrackerConnectionsRequest) (*ListTrackerConnectionsResponse, error)
 	// DeleteTrackerConnection removes a named connection.
 	DeleteTrackerConnection(context.Context, *DeleteTrackerConnectionRequest) (*DeleteTrackerConnectionResponse, error)
+	// GetTrackerStatus probes a connection's credential live, against the
+	// tracker itself.
+	GetTrackerStatus(context.Context, *GetTrackerStatusRequest) (*GetTrackerStatusResponse, error)
 	mustEmbedUnimplementedTrackerServiceServer()
 }
 
@@ -136,6 +153,9 @@ func (UnimplementedTrackerServiceServer) ListTrackerConnections(context.Context,
 }
 func (UnimplementedTrackerServiceServer) DeleteTrackerConnection(context.Context, *DeleteTrackerConnectionRequest) (*DeleteTrackerConnectionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteTrackerConnection not implemented")
+}
+func (UnimplementedTrackerServiceServer) GetTrackerStatus(context.Context, *GetTrackerStatusRequest) (*GetTrackerStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetTrackerStatus not implemented")
 }
 func (UnimplementedTrackerServiceServer) mustEmbedUnimplementedTrackerServiceServer() {}
 func (UnimplementedTrackerServiceServer) testEmbeddedByValue()                        {}
@@ -230,6 +250,24 @@ func _TrackerService_DeleteTrackerConnection_Handler(srv interface{}, ctx contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _TrackerService_GetTrackerStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetTrackerStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TrackerServiceServer).GetTrackerStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TrackerService_GetTrackerStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TrackerServiceServer).GetTrackerStatus(ctx, req.(*GetTrackerStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // TrackerService_ServiceDesc is the grpc.ServiceDesc for TrackerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -252,6 +290,10 @@ var TrackerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteTrackerConnection",
 			Handler:    _TrackerService_DeleteTrackerConnection_Handler,
+		},
+		{
+			MethodName: "GetTrackerStatus",
+			Handler:    _TrackerService_GetTrackerStatus_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
