@@ -266,6 +266,59 @@ func TestClaim_YieldsWhenEarlierClaimAppearsOnReread(t *testing.T) {
 	}
 }
 
+// TestClaim_SupersededClaimIsNotSelectedByLaterCalls reproduces a real
+// bug found in code review of the design note PR (#1924): a losing
+// run's own kind=claim marker is chronologically NEWER than the
+// winner's (the loser read before the winner's claim was visible, so
+// its own post landed later) and is never retracted or edited — it
+// just sits there. A naive "find the newest kind=claim marker" scan
+// (latestClaim's original implementation) would hand that stale,
+// superseded marker back as the current holder on every call after the
+// race resolved — including to the WINNER's own idempotent re-claim
+// check, which would then be wrongly told a different run holds its
+// own claim.
+func TestClaim_SupersededClaimIsNotSelectedByLaterCalls(t *testing.T) {
+	clock := newFakeClock()
+	provider := &fakeClaimProvider{clock: clock}
+	provider.onComment = func() {
+		// Pretend "winner"'s claim landed a minute before "loser"'s own
+		// read, so it's chronologically earliest even though "loser"
+		// posts (and is told about it) after.
+		clock.Advance(-1 * time.Minute)
+		provider.appendRaw(Comment{CreatedAt: clock.Now(), Body: Stamp(Identity{RunID: "winner", SkillID: "s"}, KindClaim)})
+		clock.Advance(2 * time.Minute)
+	}
+
+	loserResult, err := ClaimTrackerIssue(context.Background(), provider, Conn{}, 1, Identity{RunID: "loser", SkillID: "s"},
+		fakeResolver{"winner": true}, clock, time.Hour)
+	if err != nil {
+		t.Fatalf("ClaimTrackerIssue (loser): %v", err)
+	}
+	if loserResult.Claimed || loserResult.AlreadyClaimedByRunID != "winner" {
+		t.Fatalf("loser result = %+v, want Claimed=false AlreadyClaimedByRunID=winner", loserResult)
+	}
+	// Comments are now, oldest first: [winner-claim, loser-claim, loser-yield].
+	// loser-claim is chronologically NEWER than winner-claim.
+
+	winnerRecheck, err := ClaimTrackerIssue(context.Background(), provider, Conn{}, 1, Identity{RunID: "winner", SkillID: "s"},
+		fakeResolver{"winner": true}, clock, time.Hour)
+	if err != nil {
+		t.Fatalf("ClaimTrackerIssue (winner re-check): %v", err)
+	}
+	if !winnerRecheck.Claimed {
+		t.Errorf("winner's idempotent re-claim = %+v, want Claimed=true — its own (earlier, still-valid) claim must win over the loser's later, superseded one", winnerRecheck)
+	}
+
+	thirdResult, err := ClaimTrackerIssue(context.Background(), provider, Conn{}, 1, Identity{RunID: "third", SkillID: "s"},
+		fakeResolver{"winner": true, "loser": true}, clock, time.Hour)
+	if err != nil {
+		t.Fatalf("ClaimTrackerIssue (third): %v", err)
+	}
+	if thirdResult.Claimed || thirdResult.AlreadyClaimedByRunID != "winner" {
+		t.Errorf("third run's result = %+v, want Claimed=false AlreadyClaimedByRunID=winner — must never resolve to the superseded loser", thirdResult)
+	}
+}
+
 // TestClaim_ConcurrentSameIssue_ExactlyOneWins proves the caller-held
 // per-(connection, issue) lock actually serializes same-daemon claim
 // attempts: of many goroutines racing to claim the same issue with
