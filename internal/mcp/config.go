@@ -31,6 +31,16 @@ type Config struct {
 
 	// Debug enables debug logging
 	Debug bool
+
+	// MCPTools is the operator-facing tool allow-list (#1922 step 7):
+	// a comma-separated list of exact tool names and/or "prefix_*"
+	// globs. Empty (the default) means every registered tool is
+	// available — today's behavior, unchanged. Set to curate what an
+	// in-box agent sees when this MCP server is mounted with a
+	// narrowly-scoped JWT (e.g. "tracker_*" for the tracker broker's
+	// tools only) — on top of, not instead of, the existing per-tool
+	// RequiredScope check. See filterToolsByAllowlist.
+	MCPTools string
 }
 
 // LoadConfig loads configuration from environment variables, with a
@@ -61,6 +71,7 @@ func LoadConfig() *Config {
 		JWTToken:     jwt.Token,
 		JWTTokenFile: jwt.TokenFile,
 		Debug:        debug,
+		MCPTools:     os.Getenv(EnvMCPTools),
 	}
 
 	if cfg.JWTToken == "" && cfg.JWTTokenFile == "" {
