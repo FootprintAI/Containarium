@@ -155,6 +155,17 @@ func TestIntersectScopes_ManifestScopeCallerLacksIsNeverGranted(t *testing.T) {
 	}
 }
 
+// TestIsKnownScope_TrackerScopes guards against the class of bug filed as
+// #1926 (ScopeSandboxesRead/Write defined but missing from AllScopes,
+// silently rejected by IsKnownScope) recurring for the new tracker scopes.
+func TestIsKnownScope_TrackerScopes(t *testing.T) {
+	for _, s := range []string{ScopeTrackerRead, ScopeTrackerWrite, ScopeTrackerAdmin} {
+		if !IsKnownScope(s) {
+			t.Errorf("IsKnownScope(%q) = false, want true (missing from AllScopes?)", s)
+		}
+	}
+}
+
 func TestParseScopes(t *testing.T) {
 	cases := map[string][]string{
 		"":                                   nil,

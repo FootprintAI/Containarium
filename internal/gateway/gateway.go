@@ -529,6 +529,12 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to register threat-detection service gateway: %w", err)
 	}
 
+	// Register TrackerService gateway handler — tracker connection CRUD
+	// (#1921 step 2). Verbs against the tracker itself land in #1922.
+	if err := pb.RegisterTrackerServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
+		return fmt.Errorf("failed to register tracker service gateway: %w", err)
+	}
+
 	// Create HTTP handler with authentication middleware, then audit middleware.
 	// Audit wraps the inner handler so auth runs first (sets username in context),
 	// then audit captures the response on the way out.

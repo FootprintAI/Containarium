@@ -138,6 +138,18 @@ const (
 	// rather than folded into it.
 	ScopeSandboxesRead  = "sandboxes:read"
 	ScopeSandboxesWrite = "sandboxes:write"
+
+	// tracker broker (TrackerService, #1920/#1921). tracker:read /
+	// tracker:write are for the verbs an agent's run-scoped JWT carries
+	// (get/list issues, comment, claim, label, submit — #1922/#1923).
+	// tracker:admin is separate and gates connection CRUD only: naming
+	// where a tracker is and which credential to trust is an operator
+	// decision, so an agent run granted tracker:write to comment on
+	// issues must not also be able to repoint the connection at a
+	// different project or credential.
+	ScopeTrackerRead  = "tracker:read"
+	ScopeTrackerWrite = "tracker:write"
+	ScopeTrackerAdmin = "tracker:admin"
 )
 
 // AllScopes is the catalog of every known scope. It backs IsKnownScope so
@@ -160,6 +172,7 @@ var AllScopes = []string{
 	ScopeCrewsRead, ScopeCrewsRun,
 	ScopeClustersRead, ScopeClustersWrite, ScopeClustersScale,
 	ScopeAuditRead, ScopeNetworkPolicyRead, ScopeTokensRead,
+	ScopeTrackerRead, ScopeTrackerWrite, ScopeTrackerAdmin,
 }
 
 // HasExplicitScope reports whether want is explicitly in granted (or the
