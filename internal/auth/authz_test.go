@@ -132,6 +132,36 @@ func TestJTIFromGRPCContext_None(t *testing.T) {
 	}
 }
 
+// #1922 — RunIDFromGRPCContext is how the tracker broker's write verbs
+// recover the acting run's identity, propagated the same way MDKeyJTI is.
+
+func TestRunIDFromGRPCContext_Metadata(t *testing.T) {
+	md := metadata.Pairs(MDKeyRunID, "run-abc123")
+	ctx := metadata.NewIncomingContext(context.Background(), md)
+
+	got, ok := RunIDFromGRPCContext(ctx)
+	if !ok || got != "run-abc123" {
+		t.Fatalf("got %q ok=%v, want run-abc123/true", got, ok)
+	}
+}
+
+func TestRunIDFromGRPCContext_ContextFallback(t *testing.T) {
+	claims := &Claims{Username: "alice", RunID: "run-xyz789"}
+	ctx := ContextWithClaims(context.Background(), claims)
+
+	got, ok := RunIDFromGRPCContext(ctx)
+	if !ok || got != "run-xyz789" {
+		t.Fatalf("got %q ok=%v, want run-xyz789/true", got, ok)
+	}
+}
+
+func TestRunIDFromGRPCContext_None(t *testing.T) {
+	got, ok := RunIDFromGRPCContext(context.Background())
+	if ok || got != "" {
+		t.Fatalf("got %q ok=%v, want empty/false for a context with no run_id", got, ok)
+	}
+}
+
 func TestAuthorizeTenant_SameSubject(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(),
 		metadata.Pairs(MDKeyUsername, "alice", MDKeyRoles, "user"))

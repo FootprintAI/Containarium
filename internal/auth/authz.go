@@ -26,12 +26,19 @@ import (
 // ("given a token_id, what did it do"). It wasn't propagated before because
 // nothing needed it off the HTTP layer; the audit package is the first
 // gRPC-side consumer.
+//
+// #1922 — `run_id` joined too. The tracker broker's write verbs stamp
+// every comment/claim with the acting run's identity (skill, model,
+// run id) read from the verified token, never a request field — this
+// is the hop that carries Claims.RunID from the HTTP/JWT layer to the
+// gRPC handler the same way jti does.
 const (
 	MDKeyUsername = "username"
 	MDKeyRoles    = "roles"
 	MDKeyScopes   = "scopes"
 	MDKeyAct      = "act"
 	MDKeyJTI      = "jti"
+	MDKeyRunID    = "run_id"
 )
 
 // RoleAdmin is the role granted to operator / system tokens. Holders
@@ -103,6 +110,16 @@ func ContextWithTestJTI(ctx context.Context, jti string) context.Context {
 	md, _ := metadata.FromIncomingContext(ctx)
 	md = md.Copy()
 	md.Set(MDKeyJTI, jti)
+	return metadata.NewIncomingContext(ctx, md)
+}
+
+// ContextWithTestRunID is a test-only helper that stamps a run_id onto an
+// existing gRPC-incoming test context, the same way ContextWithTestJTI
+// layers a jti on. #1922.
+func ContextWithTestRunID(ctx context.Context, runID string) context.Context {
+	md, _ := metadata.FromIncomingContext(ctx)
+	md = md.Copy()
+	md.Set(MDKeyRunID, runID)
 	return metadata.NewIncomingContext(ctx, md)
 }
 
@@ -213,6 +230,23 @@ func JTIFromGRPCContext(ctx context.Context) (jti string, present bool) {
 	}
 	if j, found := JTIFromContext(ctx); found && j != "" {
 		return j, true
+	}
+	return "", false
+}
+
+// RunIDFromGRPCContext returns the authenticated token's `run_id` claim
+// (#1815), propagated through metadata or context the same way
+// JTIFromGRPCContext's claim is. Returns ("", false) when no run id was
+// carried — the valid, backward-compatible case for every operator/human
+// token and every token minted before run binding existed.
+func RunIDFromGRPCContext(ctx context.Context) (runID string, present bool) {
+	if md, mdOk := metadata.FromIncomingContext(ctx); mdOk {
+		if vals := md.Get(MDKeyRunID); len(vals) > 0 && vals[0] != "" {
+			return vals[0], true
+		}
+	}
+	if r, found := RunIDFromContext(ctx); found && r != "" {
+		return r, true
 	}
 	return "", false
 }
