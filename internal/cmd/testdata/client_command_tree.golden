@@ -82,7 +82,6 @@ monitoring export status
 move
 moved:audit
 moved:cloud
-moved:collaborator
 moved:daemon
 moved:doctor
 moved:egress-relay
