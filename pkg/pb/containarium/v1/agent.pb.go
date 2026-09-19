@@ -662,8 +662,17 @@ type RunAgentSkillRequest struct {
 	// fetch only (an ephemeral http.extraHeader) — never written to the box's
 	// .git/config, never logged. Empty = public repo.
 	GitCredential string `protobuf:"bytes,8,opt,name=git_credential,json=gitCredential,proto3" json:"git_credential,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// Name of a tracker connection (see TrackerConnection) owned by the
+	// calling tenant that this run is bound to (#1922 design note, decision
+	// D3: "a run is bound to exactly one connection at launch"). Validated
+	// against the caller's own connections at launch time and minted into
+	// the run's JWT as the `tracker_conn` claim — the tracker verb RPCs
+	// reject a request naming a different connection than this claim.
+	// Empty means the run is not bound to any connection (every pre-#1922
+	// run, and any run that doesn't use the tracker broker).
+	TrackerConnection string `protobuf:"bytes,9,opt,name=tracker_connection,json=trackerConnection,proto3" json:"tracker_connection,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *RunAgentSkillRequest) Reset() {
@@ -748,6 +757,13 @@ func (x *RunAgentSkillRequest) GetGitRef() string {
 func (x *RunAgentSkillRequest) GetGitCredential() string {
 	if x != nil {
 		return x.GitCredential
+	}
+	return ""
+}
+
+func (x *RunAgentSkillRequest) GetTrackerConnection() string {
+	if x != nil {
+		return x.TrackerConnection
 	}
 	return ""
 }
@@ -2220,7 +2236,7 @@ const file_containarium_v1_agent_proto_rawDesc = "" +
 	"\x14GetAgentSkillRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"J\n" +
 	"\x15GetAgentSkillResponse\x121\n" +
-	"\x05skill\x18\x01 \x01(\v2\x1b.containarium.v1.AgentSkillR\x05skill\"\xf9\x01\n" +
+	"\x05skill\x18\x01 \x01(\v2\x1b.containarium.v1.AgentSkillR\x05skill\"\xa8\x02\n" +
 	"\x14RunAgentSkillRequest\x12\x19\n" +
 	"\bskill_id\x18\x01 \x01(\tR\askillId\x12\x1d\n" +
 	"\n" +
@@ -2232,7 +2248,8 @@ const file_containarium_v1_agent_proto_rawDesc = "" +
 	"\n" +
 	"git_source\x18\x06 \x01(\tR\tgitSource\x12\x17\n" +
 	"\agit_ref\x18\a \x01(\tR\x06gitRef\x12%\n" +
-	"\x0egit_credential\x18\b \x01(\tR\rgitCredential\"\xd3\x01\n" +
+	"\x0egit_credential\x18\b \x01(\tR\rgitCredential\x12-\n" +
+	"\x12tracker_connection\x18\t \x01(\tR\x11trackerConnection\"\xd3\x01\n" +
 	"\x15RunAgentSkillResponse\x128\n" +
 	"\tcontainer\x18\x01 \x01(\v2\x1a.containarium.v1.ContainerR\tcontainer\x12#\n" +
 	"\rartifact_json\x18\x02 \x01(\tR\fartifactJson\x12\x15\n" +

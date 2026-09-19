@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -21,6 +22,7 @@ import (
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/netpolicy"
 	"github.com/footprintai/containarium/internal/runlease"
+	"github.com/footprintai/containarium/internal/tracker"
 	boxlxc "github.com/footprintai/containarium/pkg/core/box/lxc"
 	// Aliased: this file's RunAgentSkill/provisionSkillBox already use
 	// "container" as a local variable name (the *pb.Container being built).
@@ -187,6 +189,23 @@ type AgentSkillServer struct {
 	// nil-guarded at each call site rather than inside Registry itself,
 	// matching this file's existing convention for audit/revocations.
 	runs *runlease.Registry
+	// trackerConnections validates a caller-supplied
+	// RunAgentSkillRequest.tracker_connection against the caller's own
+	// tenant before it's minted into the run's JWT (#1922 step 6, design
+	// note decision D3). Nil on a daemon without the tracker store wired
+	// (--standalone, or Postgres unavailable): a request naming a
+	// tracker_connection then fails closed rather than minting an
+	// unvalidated claim — see RunAgentSkill.
+	trackerConnections trackerConnectionChecker
+}
+
+// trackerConnectionChecker is the one method of *tracker.Store
+// RunAgentSkill needs, narrowed the same way auditLogger narrows
+// *audit.Store — so the tenant-ownership check is testable without a
+// real Postgres-backed tracker.Store. *tracker.Store satisfies this
+// directly.
+type trackerConnectionChecker interface {
+	Get(ctx context.Context, username, name string) (*tracker.Connection, error)
 }
 
 // SetRunRegistry wires the shared in-memory run registry (#1922) — the
@@ -195,6 +214,15 @@ type AgentSkillServer struct {
 // run still live" for a run this server created.
 func (s *AgentSkillServer) SetRunRegistry(r *runlease.Registry) {
 	s.runs = r
+}
+
+// SetTrackerConnections wires the tracker-connections store (#1922 step
+// 6) so RunAgentSkill can validate a tracker_connection request field
+// against the caller's own tenant before minting it into the run's JWT.
+// Nil (the default) makes any request naming a tracker_connection fail
+// closed with FailedPrecondition.
+func (s *AgentSkillServer) SetTrackerConnections(c trackerConnectionChecker) {
+	s.trackerConnections = c
 }
 
 // auditLogger is the one method of *audit.Store this server uses. Narrowed to
@@ -316,13 +344,22 @@ func (s *AgentSkillServer) RunAgentSkill(ctx context.Context, req *pb.RunAgentSk
 		return nil, err
 	}
 
+	// Validate tracker_connection against the CALLER's own tenant before any
+	// box work, same reasoning as the run id above: a request naming a
+	// connection it doesn't own must fail the RPC, not mint a claim that
+	// looks legitimate. Empty means the run isn't bound to a connection —
+	// unchanged, pre-#1922 behavior (#1922 step 6, design note decision D3).
+	if err := s.validateTrackerConnection(ctx, req.GetTrackerConnection()); err != nil {
+		return nil, err
+	}
+
 	skill, err := s.catalog.Get(req.SkillId)
 	if err != nil {
 		return nil, status.Error(codes.NotFound, err.Error())
 	}
 
 	containerName, box, lease, gitCommit, workspacePath, err := s.provisionSkillBox(ctx, skill, req.BackendId, req.Pool, req.InputJson, runID,
-		req.GetGitSource(), req.GetGitRef(), req.GetGitCredential())
+		req.GetGitSource(), req.GetGitRef(), req.GetGitCredential(), req.GetTrackerConnection())
 	if err != nil {
 		return nil, err
 	}
@@ -469,6 +506,31 @@ func agentRuntimeReleaseTag() string {
 // itself holds agents:run calling RunAgentSkill again), the new token's act
 // wraps {caller's subject, caller's own act}, so the chain always resolves
 // back to the root human principal at whatever depth it's read.
+// validateTrackerConnection checks that connName, when non-empty, names a
+// tracker connection owned by the CALLER's own tenant (never a request
+// field's claimed identity) — the anti-forgery check that makes minting it
+// into the run's `tracker_conn` claim trustworthy. Empty connName is valid
+// (no binding requested) and always passes without touching the store.
+func (s *AgentSkillServer) validateTrackerConnection(ctx context.Context, connName string) error {
+	if connName == "" {
+		return nil
+	}
+	if s.trackerConnections == nil {
+		return status.Error(codes.FailedPrecondition, "tracker connections not configured on this daemon")
+	}
+	username, _, ok := auth.SubjectFromGRPCContext(ctx)
+	if !ok || username == "" {
+		return status.Error(codes.Unauthenticated, "no authenticated subject")
+	}
+	if _, err := s.trackerConnections.Get(ctx, username, connName); err != nil {
+		if errors.Is(err, tracker.ErrNotFound) {
+			return status.Errorf(codes.InvalidArgument, "tracker_connection %q not found for tenant %q", connName, username)
+		}
+		return status.Errorf(codes.Internal, "check tracker_connection: %v", err)
+	}
+	return nil
+}
+
 func mintedAgentAct(ctx context.Context) *auth.Actor {
 	username, _, ok := auth.SubjectFromGRPCContext(ctx)
 	if !ok || username == "" {
@@ -524,7 +586,7 @@ var runForbiddenScopes = []string{auth.ScopeTrackerAdmin}
 // runs of the same skill overwrite each other's checkout exactly as they
 // already overwrite each other's seed files; #1860 gives both their own
 // per-run directory.
-func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.AgentSkill, backendID, pool, inputJSON, runID, gitSource, gitRef, gitCredential string) (containerName string, box *pb.Container, lease runlease.Lease, gitCommit, workspacePath string, err error) {
+func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.AgentSkill, backendID, pool, inputJSON, runID, gitSource, gitRef, gitCredential, trackerConnection string) (containerName string, box *pb.Container, lease runlease.Lease, gitCommit, workspacePath string, err error) {
 	var noLease runlease.Lease
 
 	// Phase 0 supports only the recipe_id box form (catalog skills). Inline
@@ -594,10 +656,14 @@ func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.Agen
 	// unchanged, anyone else only receives scopes they already hold), carrying
 	// the dispatching caller as its `act` delegation claim (#1677) so an
 	// auditor asking "who authorized this?" doesn't get the name of a robot.
-	// Minted through the WithID variant so the daemon keeps the jti + expiry of
-	// what it issued, and with runID so the token itself says which run it
-	// belongs to (the `run_id` claim).
-	token, minted, mintErr := s.tokens.GenerateDelegatedTokenWithID(name, []string{}, agentTokenTTL, mintedAgentAct(ctx), runID, mintedAgentTokenScopes(ctx, skill)...)
+	// Minted through the WithRun variant so the daemon keeps the jti + expiry
+	// of what it issued, with runID so the token itself says which run it
+	// belongs to (the `run_id` claim), and with trackerConnection — already
+	// validated against the caller's own tenant by validateTrackerConnection
+	// before this function was called — so the token also says which tracker
+	// connection the run is bound to (the `tracker_conn` claim, #1922 step 6).
+	// Empty trackerConnection mints no claim, unchanged pre-#1922 behavior.
+	token, minted, mintErr := s.tokens.GenerateDelegatedTokenWithRun(name, []string{}, agentTokenTTL, mintedAgentAct(ctx), runID, trackerConnection, mintedAgentTokenScopes(ctx, skill)...)
 	if mintErr != nil {
 		return "", nil, noLease, "", "", status.Errorf(codes.Internal, "failed to mint scoped agent token: %v", mintErr)
 	}

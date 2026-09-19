@@ -970,6 +970,7 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 				trackerPool.Close()
 			} else {
 				containerServer.SetTrackerStore(trkStore)
+				agentSkillServer.SetTrackerConnections(trkStore)
 				pb.RegisterTrackerServiceServer(grpcServer, containerServer)
 				log.Printf("Tracker connection store ready")
 			}
