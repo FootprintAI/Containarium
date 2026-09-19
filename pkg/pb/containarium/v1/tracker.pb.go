@@ -80,6 +80,128 @@ func (TrackerProvider) EnumDescriptor() ([]byte, []int) {
 	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{0}
 }
 
+// TrackerIssueState is the provider-neutral state of an issue or change
+// request (GitHub pull request / GitLab merge request) — one enum
+// rather than GitHub's "open"/"closed" and GitLab's "opened"/"closed"/
+// "merged" strings.
+type TrackerIssueState int32
+
+const (
+	TrackerIssueState_TRACKER_ISSUE_STATE_UNSPECIFIED TrackerIssueState = 0
+	TrackerIssueState_TRACKER_ISSUE_STATE_OPEN        TrackerIssueState = 1
+	TrackerIssueState_TRACKER_ISSUE_STATE_CLOSED      TrackerIssueState = 2
+	// Changes (pull/merge requests) only — never set on a plain issue,
+	// which has no merge concept. Kept on this shared enum rather than a
+	// separate one because the two states can never be ambiguous: only a
+	// TrackerChange ever carries MERGED.
+	TrackerIssueState_TRACKER_ISSUE_STATE_MERGED TrackerIssueState = 3
+)
+
+// Enum value maps for TrackerIssueState.
+var (
+	TrackerIssueState_name = map[int32]string{
+		0: "TRACKER_ISSUE_STATE_UNSPECIFIED",
+		1: "TRACKER_ISSUE_STATE_OPEN",
+		2: "TRACKER_ISSUE_STATE_CLOSED",
+		3: "TRACKER_ISSUE_STATE_MERGED",
+	}
+	TrackerIssueState_value = map[string]int32{
+		"TRACKER_ISSUE_STATE_UNSPECIFIED": 0,
+		"TRACKER_ISSUE_STATE_OPEN":        1,
+		"TRACKER_ISSUE_STATE_CLOSED":      2,
+		"TRACKER_ISSUE_STATE_MERGED":      3,
+	}
+)
+
+func (x TrackerIssueState) Enum() *TrackerIssueState {
+	p := new(TrackerIssueState)
+	*p = x
+	return p
+}
+
+func (x TrackerIssueState) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (TrackerIssueState) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_tracker_proto_enumTypes[1].Descriptor()
+}
+
+func (TrackerIssueState) Type() protoreflect.EnumType {
+	return &file_containarium_v1_tracker_proto_enumTypes[1]
+}
+
+func (x TrackerIssueState) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use TrackerIssueState.Descriptor instead.
+func (TrackerIssueState) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{1}
+}
+
+// TrackerCiVerdict is the provider-neutral CI/pipeline outcome for a
+// change request, normalized from GitHub's combined-status states and
+// GitLab's pipeline statuses. manual / skipped / canceled (GitLab) map
+// to NONE, never SUCCESS — an agent deciding whether to act on "CI
+// passed" must not be misled by a pipeline that never actually ran.
+type TrackerCiVerdict int32
+
+const (
+	TrackerCiVerdict_TRACKER_CI_VERDICT_UNSPECIFIED TrackerCiVerdict = 0
+	// No CI configured, or no verdict recorded yet (including GitLab's
+	// manual / skipped / canceled statuses — see the enum-level comment).
+	TrackerCiVerdict_TRACKER_CI_VERDICT_NONE    TrackerCiVerdict = 1
+	TrackerCiVerdict_TRACKER_CI_VERDICT_PENDING TrackerCiVerdict = 2
+	TrackerCiVerdict_TRACKER_CI_VERDICT_SUCCESS TrackerCiVerdict = 3
+	TrackerCiVerdict_TRACKER_CI_VERDICT_FAILED  TrackerCiVerdict = 4
+)
+
+// Enum value maps for TrackerCiVerdict.
+var (
+	TrackerCiVerdict_name = map[int32]string{
+		0: "TRACKER_CI_VERDICT_UNSPECIFIED",
+		1: "TRACKER_CI_VERDICT_NONE",
+		2: "TRACKER_CI_VERDICT_PENDING",
+		3: "TRACKER_CI_VERDICT_SUCCESS",
+		4: "TRACKER_CI_VERDICT_FAILED",
+	}
+	TrackerCiVerdict_value = map[string]int32{
+		"TRACKER_CI_VERDICT_UNSPECIFIED": 0,
+		"TRACKER_CI_VERDICT_NONE":        1,
+		"TRACKER_CI_VERDICT_PENDING":     2,
+		"TRACKER_CI_VERDICT_SUCCESS":     3,
+		"TRACKER_CI_VERDICT_FAILED":      4,
+	}
+)
+
+func (x TrackerCiVerdict) Enum() *TrackerCiVerdict {
+	p := new(TrackerCiVerdict)
+	*p = x
+	return p
+}
+
+func (x TrackerCiVerdict) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (TrackerCiVerdict) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_tracker_proto_enumTypes[2].Descriptor()
+}
+
+func (TrackerCiVerdict) Type() protoreflect.EnumType {
+	return &file_containarium_v1_tracker_proto_enumTypes[2]
+}
+
+func (x TrackerCiVerdict) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use TrackerCiVerdict.Descriptor instead.
+func (TrackerCiVerdict) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{2}
+}
+
 // TrackerCredentialBreadth classifies a tracker credential against the
 // provider's narrowest ("preferred") type — see the design note's
 // "Preferred credential types" table. It bounds what a DAEMON compromise
@@ -127,11 +249,11 @@ func (x TrackerCredentialBreadth) String() string {
 }
 
 func (TrackerCredentialBreadth) Descriptor() protoreflect.EnumDescriptor {
-	return file_containarium_v1_tracker_proto_enumTypes[1].Descriptor()
+	return file_containarium_v1_tracker_proto_enumTypes[3].Descriptor()
 }
 
 func (TrackerCredentialBreadth) Type() protoreflect.EnumType {
-	return &file_containarium_v1_tracker_proto_enumTypes[1]
+	return &file_containarium_v1_tracker_proto_enumTypes[3]
 }
 
 func (x TrackerCredentialBreadth) Number() protoreflect.EnumNumber {
@@ -140,7 +262,7 @@ func (x TrackerCredentialBreadth) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use TrackerCredentialBreadth.Descriptor instead.
 func (TrackerCredentialBreadth) EnumDescriptor() ([]byte, []int) {
-	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{1}
+	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{3}
 }
 
 // TrackerConnection is a tenant-scoped record naming where a tracker is
@@ -900,6 +1022,17 @@ const file_containarium_v1_tracker_proto_rawDesc = "" +
 	"\x1cTRACKER_PROVIDER_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17TRACKER_PROVIDER_GITHUB\x10\x01\x12\x1b\n" +
 	"\x17TRACKER_PROVIDER_GITLAB\x10\x02*\x96\x01\n" +
+	"\x11TrackerIssueState\x12#\n" +
+	"\x1fTRACKER_ISSUE_STATE_UNSPECIFIED\x10\x00\x12\x1c\n" +
+	"\x18TRACKER_ISSUE_STATE_OPEN\x10\x01\x12\x1e\n" +
+	"\x1aTRACKER_ISSUE_STATE_CLOSED\x10\x02\x12\x1e\n" +
+	"\x1aTRACKER_ISSUE_STATE_MERGED\x10\x03*\xb2\x01\n" +
+	"\x10TrackerCiVerdict\x12\"\n" +
+	"\x1eTRACKER_CI_VERDICT_UNSPECIFIED\x10\x00\x12\x1b\n" +
+	"\x17TRACKER_CI_VERDICT_NONE\x10\x01\x12\x1e\n" +
+	"\x1aTRACKER_CI_VERDICT_PENDING\x10\x02\x12\x1e\n" +
+	"\x1aTRACKER_CI_VERDICT_SUCCESS\x10\x03\x12\x1d\n" +
+	"\x19TRACKER_CI_VERDICT_FAILED\x10\x04*\x96\x01\n" +
 	"\x18TrackerCredentialBreadth\x12*\n" +
 	"&TRACKER_CREDENTIAL_BREADTH_UNSPECIFIED\x10\x00\x12(\n" +
 	"$TRACKER_CREDENTIAL_BREADTH_PREFERRED\x10\x01\x12$\n" +
@@ -928,44 +1061,46 @@ func file_containarium_v1_tracker_proto_rawDescGZIP() []byte {
 	return file_containarium_v1_tracker_proto_rawDescData
 }
 
-var file_containarium_v1_tracker_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_containarium_v1_tracker_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
 var file_containarium_v1_tracker_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_containarium_v1_tracker_proto_goTypes = []any{
 	(TrackerProvider)(0),                    // 0: containarium.v1.TrackerProvider
-	(TrackerCredentialBreadth)(0),           // 1: containarium.v1.TrackerCredentialBreadth
-	(*TrackerConnection)(nil),               // 2: containarium.v1.TrackerConnection
-	(*SetTrackerConnectionRequest)(nil),     // 3: containarium.v1.SetTrackerConnectionRequest
-	(*SetTrackerConnectionResponse)(nil),    // 4: containarium.v1.SetTrackerConnectionResponse
-	(*GetTrackerConnectionRequest)(nil),     // 5: containarium.v1.GetTrackerConnectionRequest
-	(*GetTrackerConnectionResponse)(nil),    // 6: containarium.v1.GetTrackerConnectionResponse
-	(*ListTrackerConnectionsRequest)(nil),   // 7: containarium.v1.ListTrackerConnectionsRequest
-	(*ListTrackerConnectionsResponse)(nil),  // 8: containarium.v1.ListTrackerConnectionsResponse
-	(*DeleteTrackerConnectionRequest)(nil),  // 9: containarium.v1.DeleteTrackerConnectionRequest
-	(*DeleteTrackerConnectionResponse)(nil), // 10: containarium.v1.DeleteTrackerConnectionResponse
-	(*GetTrackerStatusRequest)(nil),         // 11: containarium.v1.GetTrackerStatusRequest
-	(*GetTrackerStatusResponse)(nil),        // 12: containarium.v1.GetTrackerStatusResponse
-	(*timestamppb.Timestamp)(nil),           // 13: google.protobuf.Timestamp
+	(TrackerIssueState)(0),                  // 1: containarium.v1.TrackerIssueState
+	(TrackerCiVerdict)(0),                   // 2: containarium.v1.TrackerCiVerdict
+	(TrackerCredentialBreadth)(0),           // 3: containarium.v1.TrackerCredentialBreadth
+	(*TrackerConnection)(nil),               // 4: containarium.v1.TrackerConnection
+	(*SetTrackerConnectionRequest)(nil),     // 5: containarium.v1.SetTrackerConnectionRequest
+	(*SetTrackerConnectionResponse)(nil),    // 6: containarium.v1.SetTrackerConnectionResponse
+	(*GetTrackerConnectionRequest)(nil),     // 7: containarium.v1.GetTrackerConnectionRequest
+	(*GetTrackerConnectionResponse)(nil),    // 8: containarium.v1.GetTrackerConnectionResponse
+	(*ListTrackerConnectionsRequest)(nil),   // 9: containarium.v1.ListTrackerConnectionsRequest
+	(*ListTrackerConnectionsResponse)(nil),  // 10: containarium.v1.ListTrackerConnectionsResponse
+	(*DeleteTrackerConnectionRequest)(nil),  // 11: containarium.v1.DeleteTrackerConnectionRequest
+	(*DeleteTrackerConnectionResponse)(nil), // 12: containarium.v1.DeleteTrackerConnectionResponse
+	(*GetTrackerStatusRequest)(nil),         // 13: containarium.v1.GetTrackerStatusRequest
+	(*GetTrackerStatusResponse)(nil),        // 14: containarium.v1.GetTrackerStatusResponse
+	(*timestamppb.Timestamp)(nil),           // 15: google.protobuf.Timestamp
 }
 var file_containarium_v1_tracker_proto_depIdxs = []int32{
 	0,  // 0: containarium.v1.TrackerConnection.provider:type_name -> containarium.v1.TrackerProvider
-	13, // 1: containarium.v1.TrackerConnection.credential_expires_at:type_name -> google.protobuf.Timestamp
+	15, // 1: containarium.v1.TrackerConnection.credential_expires_at:type_name -> google.protobuf.Timestamp
 	0,  // 2: containarium.v1.SetTrackerConnectionRequest.provider:type_name -> containarium.v1.TrackerProvider
-	2,  // 3: containarium.v1.SetTrackerConnectionResponse.connection:type_name -> containarium.v1.TrackerConnection
-	2,  // 4: containarium.v1.GetTrackerConnectionResponse.connection:type_name -> containarium.v1.TrackerConnection
-	2,  // 5: containarium.v1.ListTrackerConnectionsResponse.connections:type_name -> containarium.v1.TrackerConnection
-	2,  // 6: containarium.v1.GetTrackerStatusResponse.connection:type_name -> containarium.v1.TrackerConnection
-	1,  // 7: containarium.v1.GetTrackerStatusResponse.credential_breadth:type_name -> containarium.v1.TrackerCredentialBreadth
-	13, // 8: containarium.v1.GetTrackerStatusResponse.credential_expires_at:type_name -> google.protobuf.Timestamp
-	3,  // 9: containarium.v1.TrackerService.SetTrackerConnection:input_type -> containarium.v1.SetTrackerConnectionRequest
-	5,  // 10: containarium.v1.TrackerService.GetTrackerConnection:input_type -> containarium.v1.GetTrackerConnectionRequest
-	7,  // 11: containarium.v1.TrackerService.ListTrackerConnections:input_type -> containarium.v1.ListTrackerConnectionsRequest
-	9,  // 12: containarium.v1.TrackerService.DeleteTrackerConnection:input_type -> containarium.v1.DeleteTrackerConnectionRequest
-	11, // 13: containarium.v1.TrackerService.GetTrackerStatus:input_type -> containarium.v1.GetTrackerStatusRequest
-	4,  // 14: containarium.v1.TrackerService.SetTrackerConnection:output_type -> containarium.v1.SetTrackerConnectionResponse
-	6,  // 15: containarium.v1.TrackerService.GetTrackerConnection:output_type -> containarium.v1.GetTrackerConnectionResponse
-	8,  // 16: containarium.v1.TrackerService.ListTrackerConnections:output_type -> containarium.v1.ListTrackerConnectionsResponse
-	10, // 17: containarium.v1.TrackerService.DeleteTrackerConnection:output_type -> containarium.v1.DeleteTrackerConnectionResponse
-	12, // 18: containarium.v1.TrackerService.GetTrackerStatus:output_type -> containarium.v1.GetTrackerStatusResponse
+	4,  // 3: containarium.v1.SetTrackerConnectionResponse.connection:type_name -> containarium.v1.TrackerConnection
+	4,  // 4: containarium.v1.GetTrackerConnectionResponse.connection:type_name -> containarium.v1.TrackerConnection
+	4,  // 5: containarium.v1.ListTrackerConnectionsResponse.connections:type_name -> containarium.v1.TrackerConnection
+	4,  // 6: containarium.v1.GetTrackerStatusResponse.connection:type_name -> containarium.v1.TrackerConnection
+	3,  // 7: containarium.v1.GetTrackerStatusResponse.credential_breadth:type_name -> containarium.v1.TrackerCredentialBreadth
+	15, // 8: containarium.v1.GetTrackerStatusResponse.credential_expires_at:type_name -> google.protobuf.Timestamp
+	5,  // 9: containarium.v1.TrackerService.SetTrackerConnection:input_type -> containarium.v1.SetTrackerConnectionRequest
+	7,  // 10: containarium.v1.TrackerService.GetTrackerConnection:input_type -> containarium.v1.GetTrackerConnectionRequest
+	9,  // 11: containarium.v1.TrackerService.ListTrackerConnections:input_type -> containarium.v1.ListTrackerConnectionsRequest
+	11, // 12: containarium.v1.TrackerService.DeleteTrackerConnection:input_type -> containarium.v1.DeleteTrackerConnectionRequest
+	13, // 13: containarium.v1.TrackerService.GetTrackerStatus:input_type -> containarium.v1.GetTrackerStatusRequest
+	6,  // 14: containarium.v1.TrackerService.SetTrackerConnection:output_type -> containarium.v1.SetTrackerConnectionResponse
+	8,  // 15: containarium.v1.TrackerService.GetTrackerConnection:output_type -> containarium.v1.GetTrackerConnectionResponse
+	10, // 16: containarium.v1.TrackerService.ListTrackerConnections:output_type -> containarium.v1.ListTrackerConnectionsResponse
+	12, // 17: containarium.v1.TrackerService.DeleteTrackerConnection:output_type -> containarium.v1.DeleteTrackerConnectionResponse
+	14, // 18: containarium.v1.TrackerService.GetTrackerStatus:output_type -> containarium.v1.GetTrackerStatusResponse
 	14, // [14:19] is the sub-list for method output_type
 	9,  // [9:14] is the sub-list for method input_type
 	9,  // [9:9] is the sub-list for extension type_name
@@ -983,7 +1118,7 @@ func file_containarium_v1_tracker_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_tracker_proto_rawDesc), len(file_containarium_v1_tracker_proto_rawDesc)),
-			NumEnums:      2,
+			NumEnums:      4,
 			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   1,
