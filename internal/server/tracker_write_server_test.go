@@ -78,6 +78,15 @@ func (f *fakeWriterProvider) SetLabels(_ context.Context, _ tracker.Conn, _ int6
 	return f.labelsErr
 }
 
+// WhoAmI returns the zero value, matching this fake's own Comment
+// output (commentOut.Author defaults to "") and every fixture comment
+// in this file (none set Author) — so ClaimTrackerIssue's marker
+// authentication (#1922, caught in review of #1924) treats them all as
+// trusted without needing every existing fixture updated.
+func (f *fakeWriterProvider) WhoAmI(context.Context, tracker.Conn) (string, error) {
+	return "", nil
+}
+
 // setUpWriterConnection is setUpBrokerConnection's write-verb
 // counterpart: a broker-only secret and a connection referencing it,
 // with a wired ClaimLocks and a run-scoped write context ready to use.
