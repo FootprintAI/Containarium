@@ -20,6 +20,19 @@ function formatDate(ts: number): string {
   return new Date(ts * 1000).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
+const SSH_KEY_PREFIXES = ['ssh-', 'ecdsa-', 'sk-ssh-', 'sk-ecdsa-'];
+function isValidSSHPublicKey(key: string): boolean {
+  return SSH_KEY_PREFIXES.some((p) => key.startsWith(p));
+}
+
+/** One key per non-blank line, matching `containarium collaborator add --ssh-key`'s repeatable flag. */
+function parseSSHPublicKeys(text: string): string[] {
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+}
+
 export default function CollaboratorsDialog({ open, onClose, ownerUsername, collaborators, isLoading, onAdd, onRemove }: CollaboratorsDialogProps) {
   const [newUsername, setNewUsername] = useState('');
   const [newSSHKey, setNewSSHKey] = useState('');
@@ -32,16 +45,16 @@ export default function CollaboratorsDialog({ open, onClose, ownerUsername, coll
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
 
   const handleAdd = async () => {
-    const u = newUsername.trim(), k = newSSHKey.trim();
+    const u = newUsername.trim();
+    const keys = parseSSHPublicKeys(newSSHKey);
     if (!u) { setError('Username is required'); return; }
-    if (!k) { setError('SSH public key is required'); return; }
-    if (!k.startsWith('ssh-') && !k.startsWith('ecdsa-') && !k.startsWith('sk-ssh-') && !k.startsWith('sk-ecdsa-')) {
-      setError('Invalid SSH public key format'); return;
-    }
+    if (keys.length === 0) { setError('At least one SSH public key is required'); return; }
+    const invalid = keys.find((k) => !isValidSSHPublicKey(k));
+    if (invalid) { setError(`Invalid SSH public key format: ${invalid.slice(0, 40)}${invalid.length > 40 ? '…' : ''}`); return; }
     setAdding(true); setError(null); setSuccess(null);
     try {
-      const result = await onAdd({ collaboratorUsername: u, sshPublicKey: k, grantSudo, grantContainerRuntime });
-      setSuccess(`Added ${u}. SSH: ${result.sshCommand}`);
+      const result = await onAdd({ collaboratorUsername: u, sshPublicKeys: keys, grantSudo, grantContainerRuntime });
+      setSuccess(`Added ${u} with ${keys.length} key${keys.length === 1 ? '' : 's'}. SSH: ${result.sshCommand}`);
       setNewUsername(''); setNewSSHKey(''); setGrantSudo(false); setGrantContainerRuntime(false);
     } catch (err) {
       setError(`Failed to add collaborator: ${err instanceof Error ? err.message : err}`);
@@ -165,8 +178,8 @@ export default function CollaboratorsDialog({ open, onClose, ownerUsername, coll
             <FormField label="Username">
               <Input value={newUsername} onChange={e => setNewUsername(e.target.value)} placeholder="bob" disabled={adding} />
             </FormField>
-            <FormField label="SSH Public Key">
-              <Textarea value={newSSHKey} onChange={e => setNewSSHKey(e.target.value)} placeholder="ssh-ed25519 AAAA..." rows={2} disabled={adding} />
+            <FormField label="SSH Public Key(s) — one per line">
+              <Textarea value={newSSHKey} onChange={e => setNewSSHKey(e.target.value)} placeholder={'ssh-ed25519 AAAA... machine-a\nssh-ed25519 AAAA... machine-b'} rows={3} disabled={adding} />
             </FormField>
             <div className="flex gap-4">
               <label className="flex items-center gap-2 text-xs text-[var(--text-secondary)] cursor-pointer">
