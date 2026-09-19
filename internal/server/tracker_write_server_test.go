@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/auth"
@@ -268,7 +269,10 @@ func TestClaimTrackerIssue_AlreadyClaimedByForeignRun(t *testing.T) {
 			issue: tracker.Issue{
 				Number: 9,
 				Comments: []tracker.Comment{
-					{Body: tracker.Stamp(tracker.Identity{RunID: "run-other", SkillID: "s"}, tracker.KindClaim)},
+					{
+						CreatedAt: time.Now(),
+						Body:      tracker.Stamp(tracker.Identity{RunID: "run-other", SkillID: "s"}, tracker.KindClaim),
+					},
 				},
 			},
 		},
