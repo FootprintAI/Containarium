@@ -162,6 +162,36 @@ func TestRunIDFromGRPCContext_None(t *testing.T) {
 	}
 }
 
+// #1922 — TrackerConnFromGRPCContext is how the tracker verb RPCs recover
+// the run's connection binding, propagated the same way MDKeyRunID is.
+
+func TestTrackerConnFromGRPCContext_Metadata(t *testing.T) {
+	md := metadata.Pairs(MDKeyTrackerConn, "default")
+	ctx := metadata.NewIncomingContext(context.Background(), md)
+
+	got, ok := TrackerConnFromGRPCContext(ctx)
+	if !ok || got != "default" {
+		t.Fatalf("got %q ok=%v, want default/true", got, ok)
+	}
+}
+
+func TestTrackerConnFromGRPCContext_ContextFallback(t *testing.T) {
+	claims := &Claims{Username: "alice", TrackerConn: "staging"}
+	ctx := ContextWithClaims(context.Background(), claims)
+
+	got, ok := TrackerConnFromGRPCContext(ctx)
+	if !ok || got != "staging" {
+		t.Fatalf("got %q ok=%v, want staging/true", got, ok)
+	}
+}
+
+func TestTrackerConnFromGRPCContext_None(t *testing.T) {
+	got, ok := TrackerConnFromGRPCContext(context.Background())
+	if ok || got != "" {
+		t.Fatalf("got %q ok=%v, want empty/false for a context with no tracker_conn", got, ok)
+	}
+}
+
 func TestAuthorizeTenant_SameSubject(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(),
 		metadata.Pairs(MDKeyUsername, "alice", MDKeyRoles, "user"))

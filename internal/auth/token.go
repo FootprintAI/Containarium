@@ -74,6 +74,18 @@ type Claims struct {
 	// keeps every mint path that doesn't pass a run id (which is every
 	// pre-#1815 call site) identical on the wire.
 	RunID string `json:"run_id,omitempty"`
+	// TrackerConn (#1922) binds a run-scoped token to exactly one named
+	// tracker connection, minted at RunAgentSkill time from
+	// RunAgentSkillRequest.tracker_connection after validating it against
+	// the caller's tenant. The tracker verb RPCs reject a request naming
+	// a different connection than this claim — the same anti-forgery
+	// shape as Act: derived from the verified token, never trusted from
+	// a request field. `omitempty` keeps every token minted without a
+	// tracker connection (every pre-#1922 call site, and every run not
+	// bound to one) identical on the wire. Empty means "no binding" —
+	// an operator token (no run_id either) may name any connection in
+	// its tenant.
+	TrackerConn string `json:"tracker_conn,omitempty"`
 	// FamilyID identifies a refresh token's rotation chain: every token
 	// minted by successive RefreshToken exchanges starting from one
 	// original login shares the same value. It exists so reuse of an
@@ -182,7 +194,7 @@ func (tm *TokenManager) GenerateToken(username string, roles []string, expiresIn
 	// Existing callers (CLI, daemon system tokens) keep
 	// minting access tokens with their current call sites
 	// because tt defaults to "" → access semantics.
-	tok, _, err := tm.generate(username, roles, scopes, "", expiresIn, nil, "", "")
+	tok, _, err := tm.generate(username, roles, scopes, "", expiresIn, nil, "", "", "")
 	return tok, err
 }
 
@@ -194,7 +206,7 @@ func (tm *TokenManager) GenerateAccessToken(username string, roles []string, exp
 	if expiresIn <= 0 {
 		expiresIn = DefaultAccessTokenExpiry
 	}
-	tok, _, err := tm.generate(username, roles, scopes, TokenTypeAccess, expiresIn, nil, "", "")
+	tok, _, err := tm.generate(username, roles, scopes, TokenTypeAccess, expiresIn, nil, "", "", "")
 	return tok, err
 }
 
@@ -219,7 +231,7 @@ func (tm *TokenManager) GenerateRefreshTokenInFamily(username string, roles []st
 	if expiresIn <= 0 {
 		expiresIn = DefaultRefreshTokenExpiry
 	}
-	tok, _, err := tm.generate(username, roles, scopes, TokenTypeRefresh, expiresIn, nil, "", familyID)
+	tok, _, err := tm.generate(username, roles, scopes, TokenTypeRefresh, expiresIn, nil, "", "", familyID)
 	return tok, err
 }
 
@@ -240,12 +252,24 @@ func (tm *TokenManager) GenerateDelegatedToken(username string, roles []string, 
 // can later revoke exactly what it issued without re-parsing the token.
 // runID, when non-empty, lands in the `run_id` claim; empty leaves it off
 // the wire (Claims.RunID's omitempty), identical to every call site that
-// doesn't bind a run.
+// doesn't bind a run. See GenerateDelegatedTokenWithRun for also binding a
+// tracker connection.
 func (tm *TokenManager) GenerateDelegatedTokenWithID(username string, roles []string, expiresIn time.Duration, act *Actor, runID string, scopes ...string) (string, MintedID, error) {
+	return tm.GenerateDelegatedTokenWithRun(username, roles, expiresIn, act, runID, "", scopes...)
+}
+
+// GenerateDelegatedTokenWithRun is GenerateDelegatedTokenWithID that also
+// binds a tracker connection (#1922): trackerConn, when non-empty, lands in
+// the `tracker_conn` claim after the caller (RunAgentSkill) has already
+// validated it against the tenant's own connections — this function trusts
+// its caller on that, the same way it trusts runID. Empty leaves it off the
+// wire (Claims.TrackerConn's omitempty), identical to every call site that
+// doesn't bind a run to a connection.
+func (tm *TokenManager) GenerateDelegatedTokenWithRun(username string, roles []string, expiresIn time.Duration, act *Actor, runID, trackerConn string, scopes ...string) (string, MintedID, error) {
 	if err := validateActDepth(act); err != nil {
 		return "", MintedID{}, fmt.Errorf("mint delegated token: %w", err)
 	}
-	return tm.generate(username, roles, scopes, "", expiresIn, act, runID, "")
+	return tm.generate(username, roles, scopes, "", expiresIn, act, runID, trackerConn, "")
 }
 
 // generate is the shared implementation. tt may be the
@@ -255,15 +279,17 @@ func (tm *TokenManager) GenerateDelegatedTokenWithID(username string, roles []st
 // every call site except GenerateDelegatedToken (#1677); nil
 // stays omitempty on the wire too, so every other mint path's
 // token shape is unaffected. runID is empty for every call site
-// except GenerateDelegatedTokenWithID (#1815); empty stays
-// omitempty on the wire for the same reason. familyID is only ever
-// non-empty for GenerateRefreshTokenInFamily's rotation call sites;
-// for every other tt (including a fresh, family-starting refresh
-// token) it's derived from the freshly minted jti below.
+// except GenerateDelegatedTokenWithID/WithRun (#1815); empty stays
+// omitempty on the wire for the same reason. trackerConn is empty for
+// every call site except GenerateDelegatedTokenWithRun (#1922); same
+// omitempty reasoning. familyID is only ever non-empty for
+// GenerateRefreshTokenInFamily's rotation call sites; for every other
+// tt (including a fresh, family-starting refresh token) it's derived
+// from the freshly minted jti below.
 //
 // Returns the MintedID (jti + expiry) alongside the signed token so callers
 // that need to revoke what they minted don't have to re-parse it.
-func (tm *TokenManager) generate(username string, roles, scopes []string, tt string, expiresIn time.Duration, act *Actor, runID string, familyID string) (string, MintedID, error) {
+func (tm *TokenManager) generate(username string, roles, scopes []string, tt string, expiresIn time.Duration, act *Actor, runID, trackerConn string, familyID string) (string, MintedID, error) {
 	// SECURITY FIX: Enforce maximum expiry - no more non-expiring tokens
 	if expiresIn <= 0 || expiresIn > tm.maxTokenExpiry {
 		expiresIn = tm.maxTokenExpiry
@@ -290,13 +316,14 @@ func (tm *TokenManager) generate(username string, roles, scopes []string, tt str
 	now := time.Now()
 
 	claims := Claims{
-		Username:  username,
-		Roles:     roles,
-		Scopes:    scopesClaim,
-		TokenType: tt,
-		Act:       act,
-		RunID:     runID,
-		FamilyID:  familyID,
+		Username:    username,
+		Roles:       roles,
+		Scopes:      scopesClaim,
+		TokenType:   tt,
+		Act:         act,
+		RunID:       runID,
+		TrackerConn: trackerConn,
+		FamilyID:    familyID,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ID:        jti,
 			ExpiresAt: jwt.NewNumericDate(now.Add(expiresIn)),
@@ -519,12 +546,13 @@ func (tm *TokenManager) RevokeToken(ctx context.Context, claims *Claims, reason 
 type contextKey string
 
 const (
-	ContextKeyUsername contextKey = "username"
-	ContextKeyRoles    contextKey = "roles"
-	ContextKeyScopes   contextKey = "scopes" // Phase 1.7b
-	ContextKeyAct      contextKey = "act"    // #1677
-	ContextKeyJTI      contextKey = "jti"    // #1678
-	ContextKeyRunID    contextKey = "run_id" // #1922
+	ContextKeyUsername    contextKey = "username"
+	ContextKeyRoles       contextKey = "roles"
+	ContextKeyScopes      contextKey = "scopes"       // Phase 1.7b
+	ContextKeyAct         contextKey = "act"          // #1677
+	ContextKeyJTI         contextKey = "jti"          // #1678
+	ContextKeyRunID       contextKey = "run_id"       // #1922
+	ContextKeyTrackerConn contextKey = "tracker_conn" // #1922
 )
 
 // ContextWithClaims adds authentication claims to context
@@ -542,6 +570,9 @@ func ContextWithClaims(ctx context.Context, claims *Claims) context.Context {
 	}
 	if claims.RunID != "" {
 		ctx = context.WithValue(ctx, ContextKeyRunID, claims.RunID)
+	}
+	if claims.TrackerConn != "" {
+		ctx = context.WithValue(ctx, ContextKeyTrackerConn, claims.TrackerConn)
 	}
 	return ctx
 }
@@ -589,4 +620,13 @@ func JTIFromContext(ctx context.Context) (string, bool) {
 func RunIDFromContext(ctx context.Context) (string, bool) {
 	runID, ok := ctx.Value(ContextKeyRunID).(string)
 	return runID, ok
+}
+
+// TrackerConnFromContext retrieves the JWT `tracker_conn` claim from
+// context. Returns ("", false) when no tracker connection binding was
+// carried — every operator/human token, and every run not bound to one.
+// #1922.
+func TrackerConnFromContext(ctx context.Context) (string, bool) {
+	conn, ok := ctx.Value(ContextKeyTrackerConn).(string)
+	return conn, ok
 }
