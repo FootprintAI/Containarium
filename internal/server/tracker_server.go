@@ -352,6 +352,29 @@ func (s *ContainerServer) requireBrokerOnlySecret(ctx context.Context, username,
 	}
 }
 
+// enforceConnectionBinding is #1922 step 6's anti-forgery check: a
+// run-scoped token carrying a tracker_conn claim (minted at RunAgentSkill,
+// after validating tracker_connection against the run's own tenant — see
+// AgentSkillServer.validateTrackerConnection) may only use the tracker
+// verb RPCs against the ONE connection it's bound to. Naming a different
+// connection is rejected — read or write, the run token can't even
+// discover whether a connection it's not bound to exists.
+//
+// An operator/human token carries no tracker_conn claim (TrackerConnFromGRPCContext
+// returns present=false) and may name any connection in its own tenant,
+// per the design note's D3 decision — connection CRUD and ad-hoc CLI/CI
+// use were never meant to be constrained by a run binding they don't have.
+func enforceConnectionBinding(ctx context.Context, connectionName string) error {
+	bound, present := auth.TrackerConnFromGRPCContext(ctx)
+	if !present {
+		return nil
+	}
+	if bound != connectionName {
+		return status.Errorf(codes.PermissionDenied, "this run is bound to tracker connection %q, not %q", bound, connectionName)
+	}
+	return nil
+}
+
 // mapTrackerError maps tracker store errors to gRPC status codes.
 func mapTrackerError(err error) error {
 	if errors.Is(err, tracker.ErrNotFound) {
