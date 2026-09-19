@@ -155,6 +155,12 @@ func (am *AuthMiddleware) HTTPMiddleware(next http.Handler) http.Handler {
 		if claims.RunID != "" {
 			mdPairs = append(mdPairs, MDKeyRunID, claims.RunID)
 		}
+		// #1922 — propagate the optional `tracker_conn` claim the same way,
+		// so the tracker verb RPCs can reject a request naming a different
+		// connection than the one this run is bound to.
+		if claims.TrackerConn != "" {
+			mdPairs = append(mdPairs, MDKeyTrackerConn, claims.TrackerConn)
+		}
 		md := metadata.Pairs(mdPairs...)
 		ctx = metadata.NewOutgoingContext(ctx, md)
 

@@ -33,12 +33,13 @@ import (
 // is the hop that carries Claims.RunID from the HTTP/JWT layer to the
 // gRPC handler the same way jti does.
 const (
-	MDKeyUsername = "username"
-	MDKeyRoles    = "roles"
-	MDKeyScopes   = "scopes"
-	MDKeyAct      = "act"
-	MDKeyJTI      = "jti"
-	MDKeyRunID    = "run_id"
+	MDKeyUsername    = "username"
+	MDKeyRoles       = "roles"
+	MDKeyScopes      = "scopes"
+	MDKeyAct         = "act"
+	MDKeyJTI         = "jti"
+	MDKeyRunID       = "run_id"
+	MDKeyTrackerConn = "tracker_conn"
 )
 
 // RoleAdmin is the role granted to operator / system tokens. Holders
@@ -120,6 +121,16 @@ func ContextWithTestRunID(ctx context.Context, runID string) context.Context {
 	md, _ := metadata.FromIncomingContext(ctx)
 	md = md.Copy()
 	md.Set(MDKeyRunID, runID)
+	return metadata.NewIncomingContext(ctx, md)
+}
+
+// ContextWithTestTrackerConn is a test-only helper that stamps a
+// tracker_conn onto an existing gRPC-incoming test context, the same way
+// ContextWithTestRunID layers a run_id on. #1922.
+func ContextWithTestTrackerConn(ctx context.Context, conn string) context.Context {
+	md, _ := metadata.FromIncomingContext(ctx)
+	md = md.Copy()
+	md.Set(MDKeyTrackerConn, conn)
 	return metadata.NewIncomingContext(ctx, md)
 }
 
@@ -247,6 +258,23 @@ func RunIDFromGRPCContext(ctx context.Context) (runID string, present bool) {
 	}
 	if r, found := RunIDFromContext(ctx); found && r != "" {
 		return r, true
+	}
+	return "", false
+}
+
+// TrackerConnFromGRPCContext returns the authenticated token's
+// `tracker_conn` claim (#1922), propagated through metadata or context the
+// same way RunIDFromGRPCContext's claim is. Returns ("", false) when no
+// tracker connection binding was carried — the valid, common case for
+// every operator/human token and every run not bound to a connection.
+func TrackerConnFromGRPCContext(ctx context.Context) (conn string, present bool) {
+	if md, mdOk := metadata.FromIncomingContext(ctx); mdOk {
+		if vals := md.Get(MDKeyTrackerConn); len(vals) > 0 && vals[0] != "" {
+			return vals[0], true
+		}
+	}
+	if c, found := TrackerConnFromContext(ctx); found && c != "" {
+		return c, true
 	}
 	return "", false
 }
