@@ -28,6 +28,8 @@ func deliveryToProto(s string) pb.SecretDelivery {
 		return pb.SecretDelivery_SECRET_DELIVERY_FILE
 	case secrets.DeliveryCompose:
 		return pb.SecretDelivery_SECRET_DELIVERY_COMPOSE
+	case secrets.DeliveryBroker:
+		return pb.SecretDelivery_SECRET_DELIVERY_BROKER_ONLY
 	case secrets.DeliveryEnv, "":
 		return pb.SecretDelivery_SECRET_DELIVERY_ENV
 	default:
@@ -48,6 +50,8 @@ func deliveryFromProto(d pb.SecretDelivery) string {
 		return secrets.DeliveryFile
 	case pb.SecretDelivery_SECRET_DELIVERY_COMPOSE:
 		return secrets.DeliveryCompose
+	case pb.SecretDelivery_SECRET_DELIVERY_BROKER_ONLY:
+		return secrets.DeliveryBroker
 	default:
 		return ""
 	}
