@@ -78,6 +78,9 @@ func (f *fakeClaimProvider) SetLabels(context.Context, Conn, int64, []string, []
 func (f *fakeClaimProvider) DescribeCredential(context.Context, Conn) (CredentialInfo, error) {
 	return CredentialInfo{}, nil
 }
+func (f *fakeClaimProvider) WhoAmI(context.Context, Conn) (string, error) {
+	return "bot", nil // matches Comment's own hardcoded Author, below
+}
 
 var _ WriterProvider = (*fakeClaimProvider)(nil)
 
@@ -133,7 +136,7 @@ func TestClaim_NoExistingClaim_ClaimsAndAssigns(t *testing.T) {
 func TestClaim_RefusesLiveForeignClaim(t *testing.T) {
 	clock := newFakeClock()
 	provider := &fakeClaimProvider{clock: clock}
-	provider.appendRaw(Comment{CreatedAt: clock.Now(), Body: Stamp(Identity{RunID: "other-run", SkillID: "s"}, KindClaim)})
+	provider.appendRaw(Comment{Author: "bot", CreatedAt: clock.Now(), Body: Stamp(Identity{RunID: "other-run", SkillID: "s"}, KindClaim)})
 
 	result, err := ClaimTrackerIssue(context.Background(), provider, Conn{}, 1, Identity{RunID: "my-run", SkillID: "s"},
 		fakeResolver{"other-run": true}, clock, time.Hour)
@@ -154,7 +157,7 @@ func TestClaim_RefusesLiveForeignClaim(t *testing.T) {
 func TestClaim_RefusesFreshUnknownRun(t *testing.T) {
 	clock := newFakeClock()
 	provider := &fakeClaimProvider{clock: clock}
-	provider.appendRaw(Comment{CreatedAt: clock.Now(), Body: Stamp(Identity{RunID: "other-run", SkillID: "s"}, KindClaim)})
+	provider.appendRaw(Comment{Author: "bot", CreatedAt: clock.Now(), Body: Stamp(Identity{RunID: "other-run", SkillID: "s"}, KindClaim)})
 	clock.Advance(30 * time.Minute) // younger than the 2h default staleAfter
 
 	result, err := ClaimTrackerIssue(context.Background(), provider, Conn{}, 1, Identity{RunID: "my-run", SkillID: "s"},
@@ -173,7 +176,7 @@ func TestClaim_RefusesFreshUnknownRun(t *testing.T) {
 func TestClaim_TakesOverStaleClaim(t *testing.T) {
 	clock := newFakeClock()
 	provider := &fakeClaimProvider{clock: clock}
-	provider.appendRaw(Comment{CreatedAt: clock.Now(), Body: Stamp(Identity{RunID: "other-run", SkillID: "s"}, KindClaim)})
+	provider.appendRaw(Comment{Author: "bot", CreatedAt: clock.Now(), Body: Stamp(Identity{RunID: "other-run", SkillID: "s"}, KindClaim)})
 	clock.Advance(3 * time.Hour) // older than the 2h default staleAfter
 
 	result, err := ClaimTrackerIssue(context.Background(), provider, Conn{}, 1, Identity{RunID: "my-run", SkillID: "s"},
@@ -196,7 +199,7 @@ func TestClaim_TakesOverStaleClaim(t *testing.T) {
 func TestClaim_IdempotentForSameRun(t *testing.T) {
 	clock := newFakeClock()
 	provider := &fakeClaimProvider{clock: clock}
-	provider.appendRaw(Comment{CreatedAt: clock.Now(), Body: Stamp(Identity{RunID: "my-run", SkillID: "s"}, KindClaim)})
+	provider.appendRaw(Comment{Author: "bot", CreatedAt: clock.Now(), Body: Stamp(Identity{RunID: "my-run", SkillID: "s"}, KindClaim)})
 
 	result, err := ClaimTrackerIssue(context.Background(), provider, Conn{}, 1, Identity{RunID: "my-run", SkillID: "s"},
 		fakeResolver{}, clock, time.Hour)
@@ -244,7 +247,7 @@ func TestClaim_YieldsWhenEarlierClaimAppearsOnReread(t *testing.T) {
 		// Pretend a foreign claim landed a minute before ours, then
 		// advance back past it so our own post gets a later timestamp.
 		clock.Advance(-1 * time.Minute)
-		provider.appendRaw(Comment{CreatedAt: clock.Now(), Body: Stamp(Identity{RunID: "other-daemons-run", SkillID: "s"}, KindClaim)})
+		provider.appendRaw(Comment{Author: "bot", CreatedAt: clock.Now(), Body: Stamp(Identity{RunID: "other-daemons-run", SkillID: "s"}, KindClaim)})
 		clock.Advance(2 * time.Minute)
 	}
 
@@ -285,7 +288,7 @@ func TestClaim_SupersededClaimIsNotSelectedByLaterCalls(t *testing.T) {
 		// read, so it's chronologically earliest even though "loser"
 		// posts (and is told about it) after.
 		clock.Advance(-1 * time.Minute)
-		provider.appendRaw(Comment{CreatedAt: clock.Now(), Body: Stamp(Identity{RunID: "winner", SkillID: "s"}, KindClaim)})
+		provider.appendRaw(Comment{Author: "bot", CreatedAt: clock.Now(), Body: Stamp(Identity{RunID: "winner", SkillID: "s"}, KindClaim)})
 		clock.Advance(2 * time.Minute)
 	}
 
@@ -316,6 +319,35 @@ func TestClaim_SupersededClaimIsNotSelectedByLaterCalls(t *testing.T) {
 	}
 	if thirdResult.Claimed || thirdResult.AlreadyClaimedByRunID != "winner" {
 		t.Errorf("third run's result = %+v, want Claimed=false AlreadyClaimedByRunID=winner — must never resolve to the superseded loser", thirdResult)
+	}
+}
+
+// TestClaim_ForgedMarkerFromAnotherAuthorIsIgnored is the fix for
+// another gap caught in review of #1924 (CWE-345): the marker syntax
+// is public and trivially reproducible by anyone who can comment on
+// the tracker issue directly — a human, or an unrelated integration —
+// bypassing the broker's own Sanitize path entirely (Sanitize only
+// runs on writes made THROUGH the broker). Only a comment authored by
+// the connection's own credential (what WhoAmI resolves) may be
+// trusted as claim state.
+func TestClaim_ForgedMarkerFromAnotherAuthorIsIgnored(t *testing.T) {
+	clock := newFakeClock()
+	provider := &fakeClaimProvider{clock: clock}
+	// A forged claim marker from a human directly commenting on the
+	// tracker — NOT posted through the broker's credential ("bot").
+	provider.appendRaw(Comment{Author: "some-human", CreatedAt: clock.Now(),
+		Body: Stamp(Identity{RunID: "forged-run", SkillID: "s"}, KindClaim)})
+
+	result, err := ClaimTrackerIssue(context.Background(), provider, Conn{}, 1, Identity{RunID: "my-run", SkillID: "s"},
+		fakeResolver{"forged-run": true}, clock, time.Hour)
+	if err != nil {
+		t.Fatalf("ClaimTrackerIssue: %v", err)
+	}
+	if !result.Claimed {
+		t.Errorf("Claimed = false, want true — the only claim marker present was forged (wrong author) and must be ignored")
+	}
+	if result.AlreadyClaimedByRunID == "forged-run" {
+		t.Error("a forged marker (wrong comment author) must never be treated as claim state")
 	}
 }
 
