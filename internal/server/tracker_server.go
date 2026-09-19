@@ -7,6 +7,7 @@ import (
 	"log"
 
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/runlease"
 	"github.com/footprintai/containarium/internal/secrets"
 	"github.com/footprintai/containarium/internal/tracker"
 	trackergithub "github.com/footprintai/containarium/internal/tracker/github"
@@ -24,6 +25,14 @@ import (
 // SetSecretsStore.
 func (s *ContainerServer) SetTrackerStore(store *tracker.Store) {
 	s.trackerStore = store
+}
+
+// SetRunRegistry wires the shared in-memory run registry (#1922) — the
+// SAME instance dual_server.go gives to AgentSkillServer, so a run's
+// skill/model (for the identity stamp) and liveness (for
+// ClaimTrackerIssue) can be resolved without a database round trip.
+func (s *ContainerServer) SetRunRegistry(r *runlease.Registry) {
+	s.runRegistry = r
 }
 
 // SetTrackerDescribers overrides the provider -> ReaderProvider

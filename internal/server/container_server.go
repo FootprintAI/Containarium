@@ -26,6 +26,7 @@ import (
 	"github.com/footprintai/containarium/internal/metrics/cloudexport"
 	"github.com/footprintai/containarium/internal/metrics/platformstats"
 	"github.com/footprintai/containarium/internal/releasecheck"
+	"github.com/footprintai/containarium/internal/runlease"
 	"github.com/footprintai/containarium/internal/safecast"
 	"github.com/footprintai/containarium/internal/secrets"
 	"github.com/footprintai/containarium/internal/tracker"
@@ -266,6 +267,14 @@ type ContainerServer struct {
 	// caller already only needs DescribeCredential and the field itself
 	// is package-private.
 	trackerDescribers map[pb.TrackerProvider]tracker.ReaderProvider
+
+	// runRegistry resolves a run id to the skill/model it belongs to,
+	// and answers "is this run still live" — the RunResolver seam
+	// #1922's tracker write verbs need (identity stamp, ClaimTrackerIssue).
+	// Wired from dual_server.go with the SAME *runlease.Registry
+	// instance AgentSkillServer populates; nil on daemons where that
+	// wiring hasn't happened (tests construct ContainerServer directly).
+	runRegistry *runlease.Registry
 
 	// KMS status snapshot for the KmsService GetKMSStatus RPC.
 	// Set once at startup in dual_server.go alongside the secrets
