@@ -24,6 +24,9 @@ const (
 	TrackerService_ListTrackerConnections_FullMethodName  = "/containarium.v1.TrackerService/ListTrackerConnections"
 	TrackerService_DeleteTrackerConnection_FullMethodName = "/containarium.v1.TrackerService/DeleteTrackerConnection"
 	TrackerService_GetTrackerStatus_FullMethodName        = "/containarium.v1.TrackerService/GetTrackerStatus"
+	TrackerService_GetTrackerIssue_FullMethodName         = "/containarium.v1.TrackerService/GetTrackerIssue"
+	TrackerService_ListTrackerIssues_FullMethodName       = "/containarium.v1.TrackerService/ListTrackerIssues"
+	TrackerService_GetTrackerChange_FullMethodName        = "/containarium.v1.TrackerService/GetTrackerChange"
 )
 
 // TrackerServiceClient is the client API for TrackerService service.
@@ -49,6 +52,13 @@ type TrackerServiceClient interface {
 	// GetTrackerStatus probes a connection's credential live, against the
 	// tracker itself.
 	GetTrackerStatus(ctx context.Context, in *GetTrackerStatusRequest, opts ...grpc.CallOption) (*GetTrackerStatusResponse, error)
+	// GetTrackerIssue reads a single issue, including its comments.
+	GetTrackerIssue(ctx context.Context, in *GetTrackerIssueRequest, opts ...grpc.CallOption) (*GetTrackerIssueResponse, error)
+	// ListTrackerIssues enumerates issues, optionally filtered.
+	ListTrackerIssues(ctx context.Context, in *ListTrackerIssuesRequest, opts ...grpc.CallOption) (*ListTrackerIssuesResponse, error)
+	// GetTrackerChange reads a single change request's state and CI
+	// verdict.
+	GetTrackerChange(ctx context.Context, in *GetTrackerChangeRequest, opts ...grpc.CallOption) (*GetTrackerChangeResponse, error)
 }
 
 type trackerServiceClient struct {
@@ -109,6 +119,36 @@ func (c *trackerServiceClient) GetTrackerStatus(ctx context.Context, in *GetTrac
 	return out, nil
 }
 
+func (c *trackerServiceClient) GetTrackerIssue(ctx context.Context, in *GetTrackerIssueRequest, opts ...grpc.CallOption) (*GetTrackerIssueResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetTrackerIssueResponse)
+	err := c.cc.Invoke(ctx, TrackerService_GetTrackerIssue_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *trackerServiceClient) ListTrackerIssues(ctx context.Context, in *ListTrackerIssuesRequest, opts ...grpc.CallOption) (*ListTrackerIssuesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListTrackerIssuesResponse)
+	err := c.cc.Invoke(ctx, TrackerService_ListTrackerIssues_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *trackerServiceClient) GetTrackerChange(ctx context.Context, in *GetTrackerChangeRequest, opts ...grpc.CallOption) (*GetTrackerChangeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetTrackerChangeResponse)
+	err := c.cc.Invoke(ctx, TrackerService_GetTrackerChange_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // TrackerServiceServer is the server API for TrackerService service.
 // All implementations must embed UnimplementedTrackerServiceServer
 // for forward compatibility.
@@ -132,6 +172,13 @@ type TrackerServiceServer interface {
 	// GetTrackerStatus probes a connection's credential live, against the
 	// tracker itself.
 	GetTrackerStatus(context.Context, *GetTrackerStatusRequest) (*GetTrackerStatusResponse, error)
+	// GetTrackerIssue reads a single issue, including its comments.
+	GetTrackerIssue(context.Context, *GetTrackerIssueRequest) (*GetTrackerIssueResponse, error)
+	// ListTrackerIssues enumerates issues, optionally filtered.
+	ListTrackerIssues(context.Context, *ListTrackerIssuesRequest) (*ListTrackerIssuesResponse, error)
+	// GetTrackerChange reads a single change request's state and CI
+	// verdict.
+	GetTrackerChange(context.Context, *GetTrackerChangeRequest) (*GetTrackerChangeResponse, error)
 	mustEmbedUnimplementedTrackerServiceServer()
 }
 
@@ -156,6 +203,15 @@ func (UnimplementedTrackerServiceServer) DeleteTrackerConnection(context.Context
 }
 func (UnimplementedTrackerServiceServer) GetTrackerStatus(context.Context, *GetTrackerStatusRequest) (*GetTrackerStatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetTrackerStatus not implemented")
+}
+func (UnimplementedTrackerServiceServer) GetTrackerIssue(context.Context, *GetTrackerIssueRequest) (*GetTrackerIssueResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetTrackerIssue not implemented")
+}
+func (UnimplementedTrackerServiceServer) ListTrackerIssues(context.Context, *ListTrackerIssuesRequest) (*ListTrackerIssuesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListTrackerIssues not implemented")
+}
+func (UnimplementedTrackerServiceServer) GetTrackerChange(context.Context, *GetTrackerChangeRequest) (*GetTrackerChangeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetTrackerChange not implemented")
 }
 func (UnimplementedTrackerServiceServer) mustEmbedUnimplementedTrackerServiceServer() {}
 func (UnimplementedTrackerServiceServer) testEmbeddedByValue()                        {}
@@ -268,6 +324,60 @@ func _TrackerService_GetTrackerStatus_Handler(srv interface{}, ctx context.Conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _TrackerService_GetTrackerIssue_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetTrackerIssueRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TrackerServiceServer).GetTrackerIssue(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TrackerService_GetTrackerIssue_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TrackerServiceServer).GetTrackerIssue(ctx, req.(*GetTrackerIssueRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TrackerService_ListTrackerIssues_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListTrackerIssuesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TrackerServiceServer).ListTrackerIssues(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TrackerService_ListTrackerIssues_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TrackerServiceServer).ListTrackerIssues(ctx, req.(*ListTrackerIssuesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TrackerService_GetTrackerChange_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetTrackerChangeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TrackerServiceServer).GetTrackerChange(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TrackerService_GetTrackerChange_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TrackerServiceServer).GetTrackerChange(ctx, req.(*GetTrackerChangeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // TrackerService_ServiceDesc is the grpc.ServiceDesc for TrackerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -294,6 +404,18 @@ var TrackerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetTrackerStatus",
 			Handler:    _TrackerService_GetTrackerStatus_Handler,
+		},
+		{
+			MethodName: "GetTrackerIssue",
+			Handler:    _TrackerService_GetTrackerIssue_Handler,
+		},
+		{
+			MethodName: "ListTrackerIssues",
+			Handler:    _TrackerService_ListTrackerIssues_Handler,
+		},
+		{
+			MethodName: "GetTrackerChange",
+			Handler:    _TrackerService_GetTrackerChange_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

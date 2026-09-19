@@ -13,22 +13,44 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// fakeCredentialDescriber is a tracker.CredentialDescriber double for
-// testing GetTrackerStatus and SetTrackerConnection's best-effort expiry
-// population without a real GitHub/GitLab call — those are covered by
+// fakeReaderProvider is a tracker.ReaderProvider double for testing
+// GetTrackerStatus, SetTrackerConnection's best-effort expiry
+// population, and the GetTrackerIssue/ListTrackerIssues/GetTrackerChange
+// handlers, without a real GitHub/GitLab call — those are covered by
 // internal/tracker/github and internal/tracker/gitlab's own httptest-based
 // suites.
-type fakeCredentialDescriber struct {
-	info tracker.CredentialInfo
-	err  error
+type fakeReaderProvider struct {
+	credInfo tracker.CredentialInfo
+	credErr  error
+
+	issue    tracker.Issue
+	issueErr error
+
+	issues    []tracker.Issue
+	issuesErr error
+
+	change    tracker.Change
+	changeErr error
 }
 
-func (f *fakeCredentialDescriber) DescribeCredential(context.Context, tracker.Conn) (tracker.CredentialInfo, error) {
-	return f.info, f.err
+func (f *fakeReaderProvider) DescribeCredential(context.Context, tracker.Conn) (tracker.CredentialInfo, error) {
+	return f.credInfo, f.credErr
 }
 
-func fakeDescriberSet(d tracker.CredentialDescriber) map[pb.TrackerProvider]tracker.CredentialDescriber {
-	return map[pb.TrackerProvider]tracker.CredentialDescriber{
+func (f *fakeReaderProvider) GetIssue(context.Context, tracker.Conn, int64) (tracker.Issue, error) {
+	return f.issue, f.issueErr
+}
+
+func (f *fakeReaderProvider) ListIssues(context.Context, tracker.Conn, tracker.IssueFilter) ([]tracker.Issue, error) {
+	return f.issues, f.issuesErr
+}
+
+func (f *fakeReaderProvider) GetChange(context.Context, tracker.Conn, int64) (tracker.Change, error) {
+	return f.change, f.changeErr
+}
+
+func fakeDescriberSet(d tracker.ReaderProvider) map[pb.TrackerProvider]tracker.ReaderProvider {
+	return map[pb.TrackerProvider]tracker.ReaderProvider{
 		pb.TrackerProvider_TRACKER_PROVIDER_GITHUB: d,
 		pb.TrackerProvider_TRACKER_PROVIDER_GITLAB: d,
 	}
@@ -204,7 +226,7 @@ func TestTrackerConnection_CRUDRoundTrip(t *testing.T) {
 // tests below: a broker-only secret, then a connection referencing it,
 // with the fake describer wired in from the start (so
 // SetTrackerConnection's own best-effort describe call uses it too).
-func setUpBrokerConnection(t *testing.T, user string, describer tracker.CredentialDescriber) (*ContainerServer, context.Context) {
+func setUpBrokerConnection(t *testing.T, user string, describer tracker.ReaderProvider) (*ContainerServer, context.Context) {
 	t.Helper()
 	s := &ContainerServer{
 		secretsStore:      mustTestSecretsStore(t),
@@ -231,7 +253,7 @@ func setUpBrokerConnection(t *testing.T, user string, describer tracker.Credenti
 
 func TestSetTrackerConnection_DescribeCredentialBestEffort_PopulatesExpiry(t *testing.T) {
 	expiry := time.Date(2027, 4, 1, 0, 0, 0, 0, time.UTC)
-	describer := &fakeCredentialDescriber{info: tracker.CredentialInfo{
+	describer := &fakeReaderProvider{credInfo: tracker.CredentialInfo{
 		Scopes: []string{"repo"}, ExpiresAt: expiry, Breadth: tracker.BreadthBroad,
 	}}
 	const user = "tracker-rpc-describe-success"
@@ -276,7 +298,7 @@ func TestSetTrackerConnection_DescribeCredentialBestEffort_PopulatesExpiry(t *te
 // credential not yet valid, whatever) must never fail the connection
 // write itself.
 func TestSetTrackerConnection_DescribeCredentialFailure_StillSucceeds(t *testing.T) {
-	describer := &fakeCredentialDescriber{err: tracker.ErrUnreachable}
+	describer := &fakeReaderProvider{credErr: tracker.ErrUnreachable}
 	const user = "tracker-rpc-describe-failure"
 	s := &ContainerServer{
 		secretsStore:      mustTestSecretsStore(t),
@@ -315,7 +337,7 @@ func TestGetTrackerStatus_NoAuthContext(t *testing.T) {
 
 func TestGetTrackerStatus_Success(t *testing.T) {
 	expiry := time.Date(2027, 5, 1, 0, 0, 0, 0, time.UTC)
-	describer := &fakeCredentialDescriber{info: tracker.CredentialInfo{
+	describer := &fakeReaderProvider{credInfo: tracker.CredentialInfo{
 		Scopes: []string{"api"}, ExpiresAt: expiry, Breadth: tracker.BreadthPreferred,
 	}}
 	const user = "tracker-rpc-status-success"
@@ -343,7 +365,7 @@ func TestGetTrackerStatus_Success(t *testing.T) {
 }
 
 func TestGetTrackerStatus_CredentialInvalid(t *testing.T) {
-	describer := &fakeCredentialDescriber{err: tracker.ErrCredentialInvalid}
+	describer := &fakeReaderProvider{credErr: tracker.ErrCredentialInvalid}
 	const user = "tracker-rpc-status-invalid"
 	s, adminCtx := setUpBrokerConnection(t, user, describer)
 
@@ -363,7 +385,7 @@ func TestGetTrackerStatus_CredentialInvalid(t *testing.T) {
 }
 
 func TestGetTrackerStatus_Unreachable(t *testing.T) {
-	describer := &fakeCredentialDescriber{err: tracker.ErrUnreachable}
+	describer := &fakeReaderProvider{credErr: tracker.ErrUnreachable}
 	const user = "tracker-rpc-status-unreachable"
 	s, adminCtx := setUpBrokerConnection(t, user, describer)
 

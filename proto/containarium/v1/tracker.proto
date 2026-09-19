@@ -201,6 +201,94 @@ message GetTrackerStatusResponse {
   string detail = 7;
 }
 
+// TrackerComment is one normalized issue or change-request comment.
+message TrackerComment {
+  string author = 1;
+  google.protobuf.Timestamp created_at = 2;
+  string body = 3;
+}
+
+// TrackerIssue is the provider-neutral shape of a tracker issue — one
+// `number` rather than GitHub's number vs GitLab's iid, normalized
+// state/labels/assignee. No provider-specific field name or string
+// reaches the caller.
+message TrackerIssue {
+  int64 number = 1;
+  string title = 2;
+  string body = 3;
+  TrackerIssueState state = 4;
+  repeated string labels = 5;
+
+  // Provider username; empty when unassigned. Single value even on
+  // GitHub (which allows several) — the broker only needs "is this
+  // claimed," and GitLab Free's single-assignee model is what claiming
+  // is designed around.
+  string assignee = 6;
+
+  // Populated only by GetTrackerIssue — ListTrackerIssues never
+  // includes comments (an N+1 call pattern neither provider's rate
+  // limits are generous with).
+  repeated TrackerComment comments = 7;
+}
+
+// TrackerChange is the provider-neutral shape of a GitHub pull request
+// or GitLab merge request.
+message TrackerChange {
+  int64 number = 1;
+  TrackerIssueState state = 2;
+  TrackerCiVerdict ci_verdict = 3;
+  string url = 4;
+}
+
+// GetTrackerIssueRequest reads a single issue, including its comments.
+message GetTrackerIssueRequest {
+  string username = 1;
+  // Connection name. A run-scoped JWT's tracker_conn claim must match
+  // this field once run binding lands (#1922 step 6); an operator
+  // token may name any connection in its tenant.
+  string connection = 2;
+  int64 number = 3;
+}
+
+message GetTrackerIssueResponse {
+  TrackerIssue issue = 1;
+}
+
+// ListTrackerIssuesRequest enumerates issues, optionally filtered.
+message ListTrackerIssuesRequest {
+  string username = 1;
+  string connection = 2;
+
+  // UNSPECIFIED matches any state.
+  TrackerIssueState state = 3;
+
+  // Non-empty requires ALL of these labels present (both providers'
+  // native list APIs support this as an AND filter).
+  repeated string labels = 4;
+
+  // Free-text query against title/body, passed through to the
+  // provider's own search — best-effort, not authoritative, since no
+  // normalization is possible across two different search
+  // implementations.
+  string search = 5;
+}
+
+message ListTrackerIssuesResponse {
+  repeated TrackerIssue issues = 1;
+}
+
+// GetTrackerChangeRequest reads a single change request's state and CI
+// verdict.
+message GetTrackerChangeRequest {
+  string username = 1;
+  string connection = 2;
+  int64 number = 3;
+}
+
+message GetTrackerChangeResponse {
+  TrackerChange change = 1;
+}
+
 // TrackerService manages tracker connections — the daemon-custody seam
 // the tracker broker's issue/change-request verbs (#1922, #1923) build
 // on. Connection CRUD is gated by tracker:admin, deliberately separate
@@ -267,6 +355,43 @@ service TrackerService {
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Check a tracker connection's live status";
       description: "Asks the tracker to describe the connection's own credential: reachability, whether the credential is still valid, its granted scopes and expiry, and whether it's broader than the provider's preferred credential type. Requires tracker:admin.";
+      tags: "Tracker";
+    };
+  }
+
+  // GetTrackerIssue reads a single issue, including its comments.
+  rpc GetTrackerIssue(GetTrackerIssueRequest) returns (GetTrackerIssueResponse) {
+    option (google.api.http) = {
+      get: "/v1/tracker/{username}/{connection}/issues/{number}"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get a tracker issue";
+      description: "Returns a single issue's body, state, labels, assignee, and comments, normalized across GitHub and GitLab. Requires tracker:read.";
+      tags: "Tracker";
+    };
+  }
+
+  // ListTrackerIssues enumerates issues, optionally filtered.
+  rpc ListTrackerIssues(ListTrackerIssuesRequest) returns (ListTrackerIssuesResponse) {
+    option (google.api.http) = {
+      get: "/v1/tracker/{username}/{connection}/issues"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List tracker issues";
+      description: "Lists issues, optionally filtered by state, labels (AND), or free-text search. Never includes comments — use GetTrackerIssue for a single issue's comments. Requires tracker:read.";
+      tags: "Tracker";
+    };
+  }
+
+  // GetTrackerChange reads a single change request's state and CI
+  // verdict.
+  rpc GetTrackerChange(GetTrackerChangeRequest) returns (GetTrackerChangeResponse) {
+    option (google.api.http) = {
+      get: "/v1/tracker/{username}/{connection}/changes/{number}"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get a tracker change request";
+      description: "Returns a pull/merge request's state and normalized CI verdict. Requires tracker:read.";
       tags: "Tracker";
     };
   }

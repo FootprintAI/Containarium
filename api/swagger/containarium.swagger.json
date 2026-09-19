@@ -6491,6 +6491,167 @@
         ]
       }
     },
+    "/v1/tracker/{username}/{connection}/changes/{number}": {
+      "get": {
+        "summary": "Get a tracker change request",
+        "description": "Returns a pull/merge request's state and normalized CI verdict. Requires tracker:read.",
+        "operationId": "TrackerService_GetTrackerChange",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetTrackerChangeResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "connection",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "number",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "format": "int64"
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      }
+    },
+    "/v1/tracker/{username}/{connection}/issues": {
+      "get": {
+        "summary": "List tracker issues",
+        "description": "Lists issues, optionally filtered by state, labels (AND), or free-text search. Never includes comments — use GetTrackerIssue for a single issue's comments. Requires tracker:read.",
+        "operationId": "TrackerService_ListTrackerIssues",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListTrackerIssuesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "connection",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "state",
+            "description": "UNSPECIFIED matches any state.\n\n - TRACKER_ISSUE_STATE_MERGED: Changes (pull/merge requests) only — never set on a plain issue,\nwhich has no merge concept. Kept on this shared enum rather than a\nseparate one because the two states can never be ambiguous: only a\nTrackerChange ever carries MERGED.",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "enum": [
+              "TRACKER_ISSUE_STATE_UNSPECIFIED",
+              "TRACKER_ISSUE_STATE_OPEN",
+              "TRACKER_ISSUE_STATE_CLOSED",
+              "TRACKER_ISSUE_STATE_MERGED"
+            ],
+            "default": "TRACKER_ISSUE_STATE_UNSPECIFIED"
+          },
+          {
+            "name": "labels",
+            "description": "Non-empty requires ALL of these labels present (both providers'\nnative list APIs support this as an AND filter).",
+            "in": "query",
+            "required": false,
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "collectionFormat": "multi"
+          },
+          {
+            "name": "search",
+            "description": "Free-text query against title/body, passed through to the\nprovider's own search — best-effort, not authoritative, since no\nnormalization is possible across two different search\nimplementations.",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      }
+    },
+    "/v1/tracker/{username}/{connection}/issues/{number}": {
+      "get": {
+        "summary": "Get a tracker issue",
+        "description": "Returns a single issue's body, state, labels, assignee, and comments, normalized across GitHub and GitLab. Requires tracker:read.",
+        "operationId": "TrackerService_GetTrackerIssue",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetTrackerIssueResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "connection",
+            "description": "Connection name. A run-scoped JWT's tracker_conn claim must match\nthis field once run binding lands (#1922 step 6); an operator\ntoken may name any connection in its tenant.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "number",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "format": "int64"
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      }
+    },
     "/v1/traffic/subscribe": {
       "get": {
         "summary": "Subscribe to traffic events",
@@ -10976,11 +11137,27 @@
       },
       "title": "GetSystemInfoResponse is the response from getting system information"
     },
+    "GetTrackerChangeResponse": {
+      "type": "object",
+      "properties": {
+        "change": {
+          "$ref": "#/definitions/TrackerChange"
+        }
+      }
+    },
     "GetTrackerConnectionResponse": {
       "type": "object",
       "properties": {
         "connection": {
           "$ref": "#/definitions/TrackerConnection"
+        }
+      }
+    },
+    "GetTrackerIssueResponse": {
+      "type": "object",
+      "properties": {
+        "issue": {
+          "$ref": "#/definitions/TrackerIssue"
         }
       }
     },
@@ -11743,6 +11920,18 @@
           "items": {
             "type": "object",
             "$ref": "#/definitions/TrackerConnection"
+          }
+        }
+      }
+    },
+    "ListTrackerIssuesResponse": {
+      "type": "object",
+      "properties": {
+        "issues": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/TrackerIssue"
           }
         }
       }
@@ -14589,6 +14778,53 @@
       },
       "description": "ToggleMonitoringResponse reports the new monitoring state."
     },
+    "TrackerChange": {
+      "type": "object",
+      "properties": {
+        "number": {
+          "type": "string",
+          "format": "int64"
+        },
+        "state": {
+          "$ref": "#/definitions/TrackerIssueState"
+        },
+        "ciVerdict": {
+          "$ref": "#/definitions/TrackerCiVerdict"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "description": "TrackerChange is the provider-neutral shape of a GitHub pull request\nor GitLab merge request."
+    },
+    "TrackerCiVerdict": {
+      "type": "string",
+      "enum": [
+        "TRACKER_CI_VERDICT_UNSPECIFIED",
+        "TRACKER_CI_VERDICT_NONE",
+        "TRACKER_CI_VERDICT_PENDING",
+        "TRACKER_CI_VERDICT_SUCCESS",
+        "TRACKER_CI_VERDICT_FAILED"
+      ],
+      "default": "TRACKER_CI_VERDICT_UNSPECIFIED",
+      "description": "TrackerCiVerdict is the provider-neutral CI/pipeline outcome for a\nchange request, normalized from GitHub's combined-status states and\nGitLab's pipeline statuses. manual / skipped / canceled (GitLab) map\nto NONE, never SUCCESS — an agent deciding whether to act on \"CI\npassed\" must not be misled by a pipeline that never actually ran.\n\n - TRACKER_CI_VERDICT_NONE: No CI configured, or no verdict recorded yet (including GitLab's\nmanual / skipped / canceled statuses — see the enum-level comment)."
+    },
+    "TrackerComment": {
+      "type": "object",
+      "properties": {
+        "author": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "body": {
+          "type": "string"
+        }
+      },
+      "description": "TrackerComment is one normalized issue or change-request comment."
+    },
     "TrackerConnection": {
       "type": "object",
       "properties": {
@@ -14632,6 +14868,54 @@
       ],
       "default": "TRACKER_CREDENTIAL_BREADTH_UNSPECIFIED",
       "description": "TrackerCredentialBreadth classifies a tracker credential against the\nprovider's narrowest (\"preferred\") type — see the design note's\n\"Preferred credential types\" table. It bounds what a DAEMON compromise\ncan do, as distinct from the broker's verb set (tracker:read /\ntracker:write), which bounds what a BOX can do.\n\n - TRACKER_CREDENTIAL_BREADTH_UNSPECIFIED: Breadth could not be determined — the probe that would classify it\nfailed (e.g. the tracker was unreachable) before classification was\npossible.\n - TRACKER_CREDENTIAL_BREADTH_PREFERRED: The narrowest type for the provider: a GitLab project access token,\nor a GitHub App installation token / single-repository fine-grained\nPAT.\n - TRACKER_CREDENTIAL_BREADTH_BROAD: Wider than preferred: a GitLab group or personal access token, or a\nGitHub classic PAT. Still accepted — this is a warning, not a\nrejection."
+    },
+    "TrackerIssue": {
+      "type": "object",
+      "properties": {
+        "number": {
+          "type": "string",
+          "format": "int64"
+        },
+        "title": {
+          "type": "string"
+        },
+        "body": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/definitions/TrackerIssueState"
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "assignee": {
+          "type": "string",
+          "description": "Provider username; empty when unassigned. Single value even on\nGitHub (which allows several) — the broker only needs \"is this\nclaimed,\" and GitLab Free's single-assignee model is what claiming\nis designed around."
+        },
+        "comments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/TrackerComment"
+          },
+          "description": "Populated only by GetTrackerIssue — ListTrackerIssues never\nincludes comments (an N+1 call pattern neither provider's rate\nlimits are generous with)."
+        }
+      },
+      "description": "TrackerIssue is the provider-neutral shape of a tracker issue — one\n`number` rather than GitHub's number vs GitLab's iid, normalized\nstate/labels/assignee. No provider-specific field name or string\nreaches the caller."
+    },
+    "TrackerIssueState": {
+      "type": "string",
+      "enum": [
+        "TRACKER_ISSUE_STATE_UNSPECIFIED",
+        "TRACKER_ISSUE_STATE_OPEN",
+        "TRACKER_ISSUE_STATE_CLOSED",
+        "TRACKER_ISSUE_STATE_MERGED"
+      ],
+      "default": "TRACKER_ISSUE_STATE_UNSPECIFIED",
+      "description": "TrackerIssueState is the provider-neutral state of an issue or change\nrequest (GitHub pull request / GitLab merge request) — one enum\nrather than GitHub's \"open\"/\"closed\" and GitLab's \"opened\"/\"closed\"/\n\"merged\" strings.\n\n - TRACKER_ISSUE_STATE_MERGED: Changes (pull/merge requests) only — never set on a plain issue,\nwhich has no merge concept. Kept on this shared enum rather than a\nseparate one because the two states can never be ambiguous: only a\nTrackerChange ever carries MERGED."
     },
     "TrackerProvider": {
       "type": "string",

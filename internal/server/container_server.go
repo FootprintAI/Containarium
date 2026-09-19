@@ -258,10 +258,14 @@ type ContainerServer struct {
 	// Unavailable in that case, same convention as secretsStore.
 	trackerStore *tracker.Store
 
-	// trackerDescribers overrides provider -> CredentialDescriber
-	// resolution (tests only — see SetTrackerDescribers). Nil in
-	// production; trackerDescriberFor constructs the real adapters.
-	trackerDescribers map[pb.TrackerProvider]tracker.CredentialDescriber
+	// trackerDescribers overrides provider -> ReaderProvider resolution
+	// (tests only — see SetTrackerDescribers). Nil in production;
+	// trackerProviderFor constructs the real adapters. Named for its
+	// #1921 origin (DescribeCredential only); widened to the full
+	// ReaderProvider in #1922 rather than renamed, since every existing
+	// caller already only needs DescribeCredential and the field itself
+	// is package-private.
+	trackerDescribers map[pb.TrackerProvider]tracker.ReaderProvider
 
 	// KMS status snapshot for the KmsService GetKMSStatus RPC.
 	// Set once at startup in dual_server.go alongside the secrets
