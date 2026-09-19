@@ -115,6 +115,40 @@ func TestMintedAgentTokenScopes_UnrestrictedCallerKeepsManifestUnchanged(t *test
 	}
 }
 
+// TestMintedAgentTokenScopes_TrackerAdminNeverGranted is the fix for a
+// gap caught in code review of #1924 (CWE-862): tracker:admin gates
+// tracker connection CRUD, an operator decision that must never reach a
+// bounded skill run — no matter how permissive the dispatching caller or
+// the skill manifest's own allowed_scopes are. Covers both the
+// unrestricted-caller path (IntersectScopes would otherwise pass the
+// manifest through unchanged) and the explicit-caller-holds-it path.
+func TestMintedAgentTokenScopes_TrackerAdminNeverGranted(t *testing.T) {
+	skill := &pb.AgentSkill{
+		Id:            "misconfigured-skill",
+		AllowedScopes: []string{auth.ScopeContainersRead, auth.ScopeTrackerAdmin},
+	}
+
+	t.Run("unrestricted caller", func(t *testing.T) {
+		ctx := auth.ContextWithTestSubjectScopes(context.Background(), "some-caller", nil, nil)
+		got := mintedAgentTokenScopes(ctx, skill)
+		if slices.Contains(got, auth.ScopeTrackerAdmin) {
+			t.Fatalf("mintedAgentTokenScopes = %v, must never carry tracker:admin", got)
+		}
+		if !slices.Contains(got, auth.ScopeContainersRead) {
+			t.Fatalf("mintedAgentTokenScopes = %v, want containers:read still granted (only tracker:admin is stripped)", got)
+		}
+	})
+
+	t.Run("caller explicitly holds tracker:admin", func(t *testing.T) {
+		ctx := auth.ContextWithTestSubjectScopes(context.Background(), "some-caller", nil,
+			[]string{auth.ScopeContainersRead, auth.ScopeTrackerAdmin})
+		got := mintedAgentTokenScopes(ctx, skill)
+		if slices.Contains(got, auth.ScopeTrackerAdmin) {
+			t.Fatalf("mintedAgentTokenScopes = %v, must never carry tracker:admin even when the caller holds it", got)
+		}
+	})
+}
+
 // TestSendAgentTaskRequiresCallScope confirms the agents:call gate.
 func TestSendAgentTaskRequiresCallScope(t *testing.T) {
 	s := &AgentSkillServer{catalog: skills.GetDefault()}

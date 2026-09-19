@@ -74,6 +74,11 @@ func (a *Adapter) currentUserLogin(ctx context.Context, base, token string) (str
 	return u.Login, nil
 }
 
+// WhoAmI resolves conn's credential to its own GitHub login.
+func (a *Adapter) WhoAmI(ctx context.Context, conn tracker.Conn) (string, error) {
+	return a.currentUserLogin(ctx, apiBase(conn.BaseURL), conn.Credential)
+}
+
 // SetLabels adds and removes labels. GitHub has no single call for
 // both: adding is one POST with the whole batch, removing is one
 // DELETE per label (there is no batch-remove endpoint).
