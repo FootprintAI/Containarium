@@ -192,8 +192,11 @@ func TestCommentOnTrackerIssue_OperatorIdentity_NoRunID(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("CommentOnTrackerIssue: %v", err)
 	}
-	if !strings.Contains(provider.commentBody, "operator/"+user) {
-		t.Errorf("comment body = %q, want an operator/%s stamp", provider.commentBody, user)
+	// The visible signature line truncates the run-id-short segment to
+	// 12 chars, so check the hidden marker instead — it always carries
+	// the full, untruncated value.
+	if !strings.Contains(provider.commentBody, "skill=operator") || !strings.Contains(provider.commentBody, "run="+user) {
+		t.Errorf("comment body = %q, want a marker with skill=operator run=%s", provider.commentBody, user)
 	}
 }
 
