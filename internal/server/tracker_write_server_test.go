@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/auth"
@@ -48,6 +49,10 @@ type fakeWriterProvider struct {
 	commentBody string
 	commentOut  tracker.Comment
 	commentErr  error
+
+	assignCalled bool
+	assignOut    bool
+	assignErr    error
 }
 
 func (f *fakeWriterProvider) Comment(_ context.Context, _ tracker.Conn, _ int64, body string) (tracker.Comment, error) {
@@ -61,7 +66,8 @@ func (f *fakeWriterProvider) Comment(_ context.Context, _ tracker.Conn, _ int64,
 }
 
 func (f *fakeWriterProvider) AssignIfUnassigned(context.Context, tracker.Conn, int64) (bool, error) {
-	return false, nil
+	f.assignCalled = true
+	return f.assignOut, f.assignErr
 }
 
 func (f *fakeWriterProvider) SetLabels(context.Context, tracker.Conn, int64, []string, []string) error {
@@ -79,13 +85,14 @@ func (f *fakeWriterProvider) WhoAmI(context.Context, tracker.Conn) (string, erro
 
 // setUpWriterConnection is setUpBrokerConnection's write-verb
 // counterpart: a broker-only secret and a connection referencing it,
-// with a run-scoped write context ready to use.
+// with a wired ClaimLocks and a run-scoped write context ready to use.
 func setUpWriterConnection(t *testing.T, user string, provider *fakeWriterProvider) (*ContainerServer, context.Context) {
 	t.Helper()
 	s := &ContainerServer{
 		secretsStore:      mustTestSecretsStore(t),
 		trackerStore:      mustTestTrackerStore(t),
 		trackerDescribers: fakeDescriberSet(provider),
+		claimLocks:        tracker.NewClaimLocks(),
 	}
 	secretCtx := kmsKeyTestCtx(user, "member", "secrets:write")
 	if _, err := s.SetSecret(secretCtx, &pb.SetSecretRequest{
@@ -196,5 +203,100 @@ func TestCommentOnTrackerIssue_OperatorIdentity_NoRunID(t *testing.T) {
 	// the full, untruncated value.
 	if !strings.Contains(provider.commentBody, "skill=operator") || !strings.Contains(provider.commentBody, "run="+user) {
 		t.Errorf("comment body = %q, want a marker with skill=operator run=%s", provider.commentBody, user)
+	}
+}
+
+// ---- ClaimTrackerIssue ---------------------------------------------------
+
+func TestClaimTrackerIssue_NoClaimLocksConfigured(t *testing.T) {
+	s := &ContainerServer{trackerStore: mustTestTrackerStore(t)}
+	ctx := kmsKeyTestCtx("alice", "member", "tracker:write")
+	_, err := s.ClaimTrackerIssue(ctx, &pb.ClaimTrackerIssueRequest{
+		Username: "alice", Connection: "default", Number: 1,
+	})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("code = %v, want Unavailable (no ClaimLocks configured)", status.Code(err))
+	}
+}
+
+// TestClaimTrackerIssue_HappyPath exercises the RPC wiring around
+// tracker.ClaimTrackerIssue (the algorithm itself is covered exhaustively
+// by internal/tracker/claim_test.go): scope/tenant checks, resolving the
+// writer connection, acquiring the per-issue lock, and mapping the result
+// onto the response and an audit row.
+func TestClaimTrackerIssue_HappyPath(t *testing.T) {
+	const user = "tracker-rpc-claim-happy"
+	provider := &fakeWriterProvider{
+		fakeReaderProvider: fakeReaderProvider{
+			issue: tracker.Issue{Number: 9, State: pb.TrackerIssueState_TRACKER_ISSUE_STATE_OPEN},
+		},
+	}
+	s, ctx := setUpWriterConnection(t, user, provider)
+	s.auditStore = mustTestAuditStore(t)
+
+	resp, err := s.ClaimTrackerIssue(ctx, &pb.ClaimTrackerIssueRequest{
+		Username: user, Connection: "default", Number: 9,
+	})
+	if err != nil {
+		t.Fatalf("ClaimTrackerIssue: %v", err)
+	}
+	if !resp.Claimed {
+		t.Errorf("Claimed = false, want true (no existing claim)")
+	}
+	if !provider.assignCalled {
+		t.Error("AssignIfUnassigned was never called")
+	}
+	if !strings.Contains(provider.commentBody, "run-abc123") {
+		t.Errorf("claim comment = %q, want it to carry the run's stamp", provider.commentBody)
+	}
+
+	rows, _, err := s.auditStore.Query(context.Background(), audit.QueryParams{Username: user, Action: "tracker.claim", Limit: 10})
+	if err != nil {
+		t.Fatalf("audit Query: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("audit rows for tracker.claim = %d, want 1", len(rows))
+	}
+	if !strings.Contains(rows[0].Detail, `"claimed":true`) {
+		t.Errorf("audit detail = %q, want claimed:true", rows[0].Detail)
+	}
+}
+
+// TestClaimTrackerIssue_AlreadyClaimedByForeignRun pins that the RPC
+// surfaces tracker.ClaimTrackerIssue's refusal outcome faithfully: no
+// run registry is wired on this ContainerServer, so runResolver() falls
+// back to noRunsLiveResolver — "run-other"'s claim reads as not-live but
+// is still fresh (posted "now"), so it's still refused.
+func TestClaimTrackerIssue_AlreadyClaimedByForeignRun(t *testing.T) {
+	const user = "tracker-rpc-claim-foreign"
+	provider := &fakeWriterProvider{
+		fakeReaderProvider: fakeReaderProvider{
+			issue: tracker.Issue{
+				Number: 9,
+				Comments: []tracker.Comment{
+					{
+						CreatedAt: time.Now(),
+						Body:      tracker.Stamp(tracker.Identity{RunID: "run-other", SkillID: "s"}, tracker.KindClaim),
+					},
+				},
+			},
+		},
+	}
+	s, ctx := setUpWriterConnection(t, user, provider)
+
+	resp, err := s.ClaimTrackerIssue(ctx, &pb.ClaimTrackerIssueRequest{
+		Username: user, Connection: "default", Number: 9,
+	})
+	if err != nil {
+		t.Fatalf("ClaimTrackerIssue: %v", err)
+	}
+	if resp.Claimed {
+		t.Error("Claimed = true, want false (a fresh foreign claim exists)")
+	}
+	if resp.AlreadyClaimedByRunId != "run-other" {
+		t.Errorf("AlreadyClaimedByRunId = %q, want run-other", resp.AlreadyClaimedByRunId)
+	}
+	if provider.assignCalled {
+		t.Error("AssignIfUnassigned must not be called when a foreign claim already holds the issue")
 	}
 }

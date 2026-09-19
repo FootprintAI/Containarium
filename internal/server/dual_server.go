@@ -556,6 +556,11 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	agentSkillServer.SetRunRegistry(runRegistry)
 	containerServer.SetRunRegistry(runRegistry)
 
+	// #1922 — one shared ClaimLocks so concurrent ClaimTrackerIssue calls
+	// for the same (username, connection, issue) serialize within this
+	// daemon process.
+	containerServer.SetClaimLocks(trackerstore.NewClaimLocks())
+
 	// Register CrewService — Phase 3. Collaborating sets of skills bound to a
 	// task purpose; reuses the agent-skill server to provision each member box.
 	crewServer := NewCrewServer(agentSkillServer)

@@ -35,6 +35,12 @@ func (s *ContainerServer) SetRunRegistry(r *runlease.Registry) {
 	s.runRegistry = r
 }
 
+// SetClaimLocks wires the shared ClaimLocks used to serialize
+// ClaimTrackerIssue calls within this daemon process.
+func (s *ContainerServer) SetClaimLocks(l *tracker.ClaimLocks) {
+	s.claimLocks = l
+}
+
 // SetTrackerDescribers overrides the provider -> ReaderProvider
 // registry. Production wiring never calls this — trackerProviderFor
 // constructs the real GitHub/GitLab adapters per call when the field is

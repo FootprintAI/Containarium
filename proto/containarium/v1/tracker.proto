@@ -307,6 +307,37 @@ message CommentOnTrackerIssueResponse {
   TrackerComment comment = 1;
 }
 
+// ClaimTrackerIssueRequest attempts to claim an issue for the calling
+// run: posts a stamped claim comment and assigns the run's identity if
+// the issue is unassigned, unless a live or recent claim from a
+// different run already holds it.
+message ClaimTrackerIssueRequest {
+  string username = 1;
+  string connection = 2;
+  int64 number = 3;
+
+  // How long a claim from a run this daemon can't confirm is still
+  // running (e.g. made through a different daemon instance) is still
+  // honored before being considered abandoned. 0 uses the daemon's
+  // default (2 hours, per the design note).
+  int64 stale_after_seconds = 4;
+}
+
+message ClaimTrackerIssueResponse {
+  // True when the calling run holds the claim once this call returns
+  // — either it just claimed the issue, took over a stale claim, or
+  // already held it (idempotent re-claim).
+  bool claimed = 1;
+
+  // Set when claimed is false: the run id that holds a live-or-fresh
+  // claim instead.
+  string already_claimed_by_run_id = 2;
+
+  // True if this call assigned the issue (never replaces an existing
+  // assignee).
+  bool assigned = 3;
+}
+
 // TrackerService manages tracker connections — the daemon-custody seam
 // the tracker broker's issue/change-request verbs (#1922, #1923) build
 // on. Connection CRUD is gated by tracker:admin, deliberately separate
@@ -428,4 +459,16 @@ service TrackerService {
     };
   }
 
+  // ClaimTrackerIssue attempts to claim an issue for the calling run.
+  rpc ClaimTrackerIssue(ClaimTrackerIssueRequest) returns (ClaimTrackerIssueResponse) {
+    option (google.api.http) = {
+      post: "/v1/tracker/{username}/{connection}/issues/{number}/claim"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Claim a tracker issue";
+      description: "Posts a stamped claim comment and assigns the calling run if the issue is unassigned, unless a live or recent claim from a different run already holds it. Idempotent for the same run. Requires tracker:write.";
+      tags: "Tracker";
+    };
+  }
 }
