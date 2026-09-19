@@ -103,6 +103,15 @@ type WriterProvider interface {
 	// SetLabels adds and removes labels in one call. Allow-list
 	// enforcement is the broker core's job, not the adapter's.
 	SetLabels(ctx context.Context, c Conn, number int64, add, remove []string) error
+	// WhoAmI resolves the connection's own credential to the account
+	// name it authenticates as — the same identity every Comment/
+	// AssignIfUnassigned call under this credential is attributed to.
+	// ClaimTrackerIssue uses it to authenticate claim/yield markers
+	// before trusting them (caught in review of #1924, CWE-345): a
+	// marker's syntax is trivially reproducible by any tracker
+	// commenter, so a marker whose comment Author isn't this identity
+	// must never be treated as claim state.
+	WhoAmI(ctx context.Context, c Conn) (login string, err error)
 }
 
 // Provider is the full per-tracker verb set, adding OpenChange (#1923's
