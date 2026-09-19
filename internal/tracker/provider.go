@@ -85,11 +85,12 @@ type ReaderProvider interface {
 	GetChange(ctx context.Context, c Conn, number int64) (Change, error)
 }
 
-// Provider is the full per-tracker verb set — every verb the broker
-// core (#1922 step 5) and submit path (#1923) need, behind one
-// interface per adapter. Not yet satisfied by either adapter; lands
-// once the write verbs are implemented in the next stacked PR.
-type Provider interface {
+// WriterProvider is the write half of Provider needed by #1922's write
+// verbs (CommentOnTrackerIssue, ClaimTrackerIssue, SetTrackerIssueLabels).
+// OpenChange — the remaining Provider method — is #1923's submit path
+// and isn't implemented by either adapter yet, so it stays out of this
+// interface rather than forcing a stub.
+type WriterProvider interface {
 	ReaderProvider
 	// Comment posts a comment and returns its normalized form.
 	Comment(ctx context.Context, c Conn, number int64, body string) (Comment, error)
@@ -102,6 +103,13 @@ type Provider interface {
 	// SetLabels adds and removes labels in one call. Allow-list
 	// enforcement is the broker core's job, not the adapter's.
 	SetLabels(ctx context.Context, c Conn, number int64, add, remove []string) error
+}
+
+// Provider is the full per-tracker verb set, adding OpenChange (#1923's
+// submit path) to WriterProvider. Not yet satisfied by either adapter —
+// lands once #1923 implements OpenChange.
+type Provider interface {
+	WriterProvider
 	// OpenChange pushes a change request. #1923.
 	OpenChange(ctx context.Context, c Conn, req OpenChangeRequest) (Change, error)
 }
