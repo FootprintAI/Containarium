@@ -1859,6 +1859,10 @@ type CreateContainerRequest struct {
 	// when any backend in a group will do; use BackendID for an
 	// exact placement.
 	BackendID string `json:"backendId,omitempty"`
+
+	// Region places the container on a multi-region hosted control plane
+	// (#1606). A standalone/single-region daemon ignores it.
+	Region string `json:"region,omitempty"`
 }
 
 type ResourceLimits struct {

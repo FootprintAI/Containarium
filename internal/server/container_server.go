@@ -299,6 +299,16 @@ type ContainerServer struct {
 	upgradeMu   sync.Mutex
 	upgradeJobs map[string]*upgradeJob
 	upgradeBusy map[string]bool
+
+	// binaryPath is this daemon's own executable path, used by the
+	// GitHub-direct TriggerUpgrade path (req.GithubTag, #1028) to swap its
+	// binary in place. Wired unconditionally by DualServer — independent of
+	// autoUpdater, which stays nil until a sentinel URL is configured — so a
+	// GitHub-direct upgrade works even on a daemon with no sentinel. Empty
+	// (e.g. in unit tests that never call SetBinaryPath) makes the
+	// github_tag path return Unavailable, same as an unconfigured autoUpdater
+	// does for the sentinel path.
+	binaryPath string
 }
 
 // upgradeJob is the in-memory record of a daemon upgrade triggered via
@@ -2760,9 +2770,29 @@ func (s *ContainerServer) TriggerUpgrade(ctx context.Context, req *pb.TriggerUpg
 		return &resp, nil
 	}
 
-	// Local backend.
-	if s.autoUpdater == nil {
-		return nil, status.Error(codes.Unavailable, "auto-update is not configured on this daemon (no sentinel binary source)")
+	// Local backend. Two upgrade sources: the default sentinel-served binary,
+	// or (opt-in, #1028) a specific GitHub release tag. github_tag chooses
+	// the path; the sentinel path's own gating (autoUpdater == nil) is
+	// unchanged.
+	usingGitHub := req.GithubTag != ""
+	if usingGitHub {
+		if s.binaryPath == "" {
+			return nil, status.Error(codes.Unavailable, "GitHub-direct upgrade is not configured on this daemon (no binary path wired)")
+		}
+	} else if s.autoUpdater == nil {
+		// cloud#1547: this used to return with NO log line at all — on a BYOC
+		// host whose containariumd was started without --sentinel-url (a
+		// daemon startup flag, separate from `pool join`'s own tunnel
+		// registration; a host can join and heartbeat fine while missing
+		// this), every upgrade attempt died here silently. An operator
+		// SSHed into the target host during a live incident saw nothing
+		// arrive, before or after, which is what made the cloud-side "no
+		// capacity in pool" error look like a fleet/capacity problem
+		// instead of a one-line daemon misconfiguration. Log it, and name
+		// the flag in the error too so the message alone (three hops away,
+		// no log access) is actionable.
+		log.Printf("[upgrade] rejected: TriggerUpgrade called on backend %q with no auto-updater configured (missing --sentinel-url at daemon startup)", s.localBackendID())
+		return nil, status.Error(codes.Unavailable, "auto-update is not configured on this daemon — start containariumd with --sentinel-url (or CONTAINARIUM_SENTINEL_URL) to enable it")
 	}
 
 	current := version.GetVersion()
@@ -2784,17 +2814,27 @@ func (s *ContainerServer) TriggerUpgrade(ctx context.Context, req *pb.TriggerUpg
 	s.upgradeMu.Unlock()
 
 	subject, _, _ := auth.SubjectFromGRPCContext(ctx)
-	log.Printf("[upgrade] triggered by %q on backend %q (from %s, force=%v, job=%s)", subject, backendKey, current, req.Force, id)
+	if usingGitHub {
+		log.Printf("[upgrade] triggered by %q on backend %q (from %s, github_tag=%s, force=%v, job=%s)", subject, backendKey, current, req.GithubTag, req.Force, id)
+	} else {
+		log.Printf("[upgrade] triggered by %q on backend %q (from %s, force=%v, job=%s)", subject, backendKey, current, req.Force, id)
+	}
 	s.logUpgradeAudit(ctx, subject, backendKey, id, "triggered", "")
 
-	// Run async: TriggerNow restarts the daemon on a successful swap, so neither
-	// this goroutine nor the in-memory job survives a local upgrade. We still
+	// Run async: a successful swap restarts the daemon, so neither this
+	// goroutine nor the in-memory job survives a local upgrade. We still
 	// record terminal state for the noop/failure paths, which return WITHOUT a
 	// restart. Detach from the request's cancellation (the handler returns
 	// immediately) while keeping its values — the upgrade must outlive the RPC.
 	upgradeCtx := context.WithoutCancel(ctx)
 	go func() {
-		changed, err := s.autoUpdater.TriggerNow(upgradeCtx, req.Force)
+		var changed bool
+		var err error
+		if usingGitHub {
+			changed, err = runGitHubUpgrade(upgradeCtx, s.binaryPath, req.GithubTag, req.Force)
+		} else {
+			changed, err = s.autoUpdater.TriggerNow(upgradeCtx, req.Force)
+		}
 		s.upgradeMu.Lock()
 		defer s.upgradeMu.Unlock()
 		s.upgradeBusy[backendKey] = false
@@ -2838,9 +2878,14 @@ func (s *ContainerServer) GetUpgradeStatus(ctx context.Context, req *pb.GetUpgra
 	if req.UpgradeId == "" {
 		return nil, status.Error(codes.InvalidArgument, "upgrade_id is required")
 	}
+	// Read the job's fields under the same lock TriggerUpgrade's completion
+	// goroutine writes them under — job is a plain struct, not synchronized
+	// itself, so unlocking before reading its fields (as this used to do)
+	// races with that goroutine. Surfaced by -race once a test polled status
+	// immediately after triggering an upgrade (#1028).
 	s.upgradeMu.Lock()
+	defer s.upgradeMu.Unlock()
 	job := s.upgradeJobs[req.UpgradeId]
-	s.upgradeMu.Unlock()
 	if job == nil {
 		return &pb.GetUpgradeStatusResponse{
 			Status:         "unknown",
@@ -3952,6 +3997,15 @@ func (s *ContainerServer) SetAutoUpdater(u *AutoUpdater) {
 	s.autoUpdater = u
 }
 
+// SetBinaryPath wires this daemon's own executable path so TriggerUpgrade's
+// GitHub-direct path (req.GithubTag, #1028) can swap it in place. DualServer
+// calls this unconditionally at startup, unlike SetAutoUpdater which is only
+// wired when a sentinel URL is configured — the GitHub-direct path has no
+// sentinel dependency. Empty leaves that path returning Unavailable.
+func (s *ContainerServer) SetBinaryPath(path string) {
+	s.binaryPath = path
+}
+
 // SetAuditStore wires the audit store so admin-initiated operations like
 // TriggerUpgrade are persisted. Nil is safe — ops are still log.Printf'd.
 func (s *ContainerServer) SetAuditStore(store *audit.Store) {
@@ -4307,20 +4361,9 @@ func (s *ContainerServer) AddCollaborator(ctx context.Context, req *pb.AddCollab
 	}
 
 	return &pb.AddCollaboratorResponse{
-		Message: fmt.Sprintf("Collaborator %s added to %s-container", req.CollaboratorUsername, req.OwnerUsername),
-		Collaborator: &pb.Collaborator{
-			Id:                   collab.ID,
-			ContainerName:        collab.ContainerName,
-			OwnerUsername:        collab.OwnerUsername,
-			CollaboratorUsername: collab.CollaboratorUsername,
-			AccountName:          collab.AccountName,
-			SshPublicKey:         collab.SSHPublicKey,
-			AddedAt:              collab.CreatedAt.Unix(),
-			CreatedBy:            collab.CreatedBy,
-			HasSudo:              collab.HasSudo,
-			HasContainerRuntime:  collab.HasContainerRuntime,
-		},
-		SshCommand: s.collaboratorManager.GenerateSSHCommand(req.OwnerUsername, req.CollaboratorUsername, "jumpserver"),
+		Message:      fmt.Sprintf("Collaborator %s added to %s-container", req.CollaboratorUsername, req.OwnerUsername),
+		Collaborator: collaboratorToProto(collab),
+		SshCommand:   s.collaboratorManager.GenerateSSHCommand(req.OwnerUsername, req.CollaboratorUsername, "jumpserver"),
 	}, nil
 }
 
@@ -4417,18 +4460,7 @@ func (s *ContainerServer) ListCollaborators(ctx context.Context, req *pb.ListCol
 
 	var protoCollaborators []*pb.Collaborator
 	for _, c := range collaborators {
-		protoCollaborators = append(protoCollaborators, &pb.Collaborator{
-			Id:                   c.ID,
-			ContainerName:        c.ContainerName,
-			OwnerUsername:        c.OwnerUsername,
-			CollaboratorUsername: c.CollaboratorUsername,
-			AccountName:          c.AccountName,
-			SshPublicKey:         c.SSHPublicKey,
-			AddedAt:              c.CreatedAt.Unix(),
-			CreatedBy:            c.CreatedBy,
-			HasSudo:              c.HasSudo,
-			HasContainerRuntime:  c.HasContainerRuntime,
-		})
+		protoCollaborators = append(protoCollaborators, collaboratorToProto(c))
 	}
 
 	return &pb.ListCollaboratorsResponse{

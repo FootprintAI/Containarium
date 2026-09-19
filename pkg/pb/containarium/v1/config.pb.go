@@ -1923,7 +1923,15 @@ type TriggerUpgradeRequest struct {
 	// Backend to upgrade. Empty = the local/primary daemon's own host.
 	BackendId string `protobuf:"bytes,1,opt,name=backend_id,json=backendId,proto3" json:"backend_id,omitempty"`
 	// Upgrade even if the sentinel-served binary already matches the running one.
-	Force         bool `protobuf:"varint,2,opt,name=force,proto3" json:"force,omitempty"`
+	Force bool `protobuf:"varint,2,opt,name=force,proto3" json:"force,omitempty"`
+	// Optional (#1028): pull this exact release directly from GitHub Releases
+	// instead of the sentinel-served binary — "vX.Y.Z" or "latest". Opt-in;
+	// empty (the default) is unchanged sentinel-served behavior. Lets an
+	// internet-connected host (e.g. an operator-owned lab BYOC box) jump
+	// straight to a tag without upgrading the sentinel first. Not for
+	// air-gapped hosts, which have no GitHub egress and must keep the
+	// sentinel path regardless — this field existing changes nothing for them.
+	GithubTag     string `protobuf:"bytes,3,opt,name=github_tag,json=githubTag,proto3" json:"github_tag,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1970,6 +1978,13 @@ func (x *TriggerUpgradeRequest) GetForce() bool {
 		return x.Force
 	}
 	return false
+}
+
+func (x *TriggerUpgradeRequest) GetGithubTag() string {
+	if x != nil {
+		return x.GithubTag
+	}
+	return ""
 }
 
 // TriggerUpgradeResponse acknowledges that an upgrade was started. The upgrade
@@ -5026,11 +5041,13 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"\x16GPU_STATUS_UNSPECIFIED\x10\x00\x12\x11\n" +
 	"\rGPU_STATUS_OK\x10\x01\x12\x1a\n" +
 	"\x16GPU_STATUS_UNAVAILABLE\x10\x02\x12\x17\n" +
-	"\x13GPU_STATUS_DEGRADED\x10\x03\"L\n" +
+	"\x13GPU_STATUS_DEGRADED\x10\x03\"k\n" +
 	"\x15TriggerUpgradeRequest\x12\x1d\n" +
 	"\n" +
 	"backend_id\x18\x01 \x01(\tR\tbackendId\x12\x14\n" +
-	"\x05force\x18\x02 \x01(\bR\x05force\"\xb1\x01\n" +
+	"\x05force\x18\x02 \x01(\bR\x05force\x12\x1d\n" +
+	"\n" +
+	"github_tag\x18\x03 \x01(\tR\tgithubTag\"\xb1\x01\n" +
 	"\x16TriggerUpgradeResponse\x12\x1d\n" +
 	"\n" +
 	"upgrade_id\x18\x01 \x01(\tR\tupgradeId\x12\x16\n" +
