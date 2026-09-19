@@ -1,6 +1,7 @@
 package gitlab
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -214,11 +215,29 @@ func apiBaseURL(baseURL string) string {
 
 // get is the shared GET-and-decode path for the read verbs.
 func (a *Adapter) get(ctx context.Context, rawURL, token string, out interface{}) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	return a.do(ctx, http.MethodGet, rawURL, token, nil, out)
+}
+
+// do is the shared request-and-decode path for every verb. reqBody is
+// JSON-encoded when non-nil; out is JSON-decoded when the call
+// succeeds and out is non-nil.
+func (a *Adapter) do(ctx context.Context, method, rawURL, token string, reqBody, out interface{}) error {
+	var body io.Reader
+	if reqBody != nil {
+		b, err := json.Marshal(reqBody)
+		if err != nil {
+			return fmt.Errorf("encode request: %w", err)
+		}
+		body = bytes.NewReader(b)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, rawURL, body)
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("PRIVATE-TOKEN", token)
+	if reqBody != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 
 	resp, err := a.http.Do(req)
 	if err != nil {
@@ -227,7 +246,7 @@ func (a *Adapter) get(ctx context.Context, rawURL, token string, out interface{}
 	defer resp.Body.Close()
 
 	switch resp.StatusCode {
-	case http.StatusOK:
+	case http.StatusOK, http.StatusCreated, http.StatusNoContent:
 		if out == nil {
 			return nil
 		}
@@ -236,13 +255,13 @@ func (a *Adapter) get(ctx context.Context, rawURL, token string, out interface{}
 		}
 		return nil
 	case http.StatusUnauthorized, http.StatusForbidden:
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("%w: HTTP %d: %s", tracker.ErrCredentialInvalid, resp.StatusCode, string(body))
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("%w: HTTP %d: %s", tracker.ErrCredentialInvalid, resp.StatusCode, string(respBody))
 	case http.StatusNotFound:
 		return fmt.Errorf("%w: %s", tracker.ErrNotFound, rawURL)
 	default:
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("gitlab: HTTP %d: %s", resp.StatusCode, string(body))
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("gitlab: HTTP %d: %s", resp.StatusCode, string(respBody))
 	}
 }
 

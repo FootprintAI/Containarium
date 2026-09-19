@@ -126,6 +126,7 @@ func (a *Adapter) describeSelf(ctx context.Context, apiBase, token string) (trac
 
 // userResponse mirrors the fields of GET /user this adapter needs.
 type userResponse struct {
+	ID       int64  `json:"id"`
 	Username string `json:"username"`
 	Bot      bool   `json:"bot"`
 }
