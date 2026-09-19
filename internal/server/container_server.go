@@ -276,6 +276,14 @@ type ContainerServer struct {
 	// wiring hasn't happened (tests construct ContainerServer directly).
 	runRegistry *runlease.Registry
 
+	// claimLocks serializes ClaimTrackerIssue calls per (username,
+	// connection, issue) within this daemon process — see
+	// tracker.ClaimLocks' own doc comment for what the lock does and
+	// doesn't cover. Constructed once in dual_server.go; tests that
+	// don't exercise ClaimTrackerIssue can leave it nil, in which case
+	// the RPC returns Unavailable rather than racing unlocked.
+	claimLocks *tracker.ClaimLocks
+
 	// KMS status snapshot for the KmsService GetKMSStatus RPC.
 	// Set once at startup in dual_server.go alongside the secrets
 	// store. Read-only after wiring; reflects CONTAINARIUM_KMS_BACKEND

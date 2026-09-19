@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/auth"
@@ -131,6 +132,80 @@ func (s *ContainerServer) CommentOnTrackerIssue(ctx context.Context, req *pb.Com
 	return &pb.CommentOnTrackerIssueResponse{Comment: toProtoComment(comment)}, nil
 }
 
+// runResolver returns the tracker.RunResolver ClaimTrackerIssue uses to
+// decide whether a foreign claim's run is still going. A daemon with no
+// run registry wired (tests constructing ContainerServer directly)
+// falls back to a resolver that reports every run as not-live, which
+// degrades ClaimTrackerIssue to freshness-only — safe, just less
+// precise than with the registry.
+func (s *ContainerServer) runResolver() tracker.RunResolver {
+	if s.runRegistry != nil {
+		return s.runRegistry
+	}
+	return noRunsLiveResolver{}
+}
+
+type noRunsLiveResolver struct{}
+
+func (noRunsLiveResolver) Live(string) bool { return false }
+
+// ClaimTrackerIssue attempts to claim an issue for the calling run.
+func (s *ContainerServer) ClaimTrackerIssue(ctx context.Context, req *pb.ClaimTrackerIssueRequest) (*pb.ClaimTrackerIssueResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeTrackerWrite); err != nil {
+		return nil, err
+	}
+	if s.trackerStore == nil {
+		return nil, status.Error(codes.Unavailable, "tracker store not configured on this daemon")
+	}
+	if s.claimLocks == nil {
+		return nil, status.Error(codes.Unavailable, "claim locks not configured on this daemon")
+	}
+	if req.Username == "" {
+		return nil, status.Error(codes.InvalidArgument, "username is required")
+	}
+	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+		return nil, err
+	}
+
+	provider, conn, err := s.resolveWriterConn(ctx, req.Username, req.Connection)
+	if err != nil {
+		return nil, err
+	}
+
+	staleAfter := tracker.DefaultStaleAfter
+	if req.StaleAfterSeconds > 0 {
+		staleAfter = time.Duration(req.StaleAfterSeconds) * time.Second
+	}
+
+	// Serialize claims on this (username, connection, number) within
+	// this daemon process — the cross-daemon race is handled by
+	// tracker.ClaimTrackerIssue's own re-read-and-yield step.
+	lock := s.claimLocks.Lock(req.Username, req.Connection, req.Number)
+	lock.Lock()
+	defer lock.Unlock()
+
+	id := s.identityFromContext(ctx)
+	result, err := tracker.ClaimTrackerIssue(ctx, provider, conn, req.Number, id, s.runResolver(), tracker.SystemClock, staleAfter)
+	if err != nil {
+		return nil, mapProviderError(err)
+	}
+
+	s.auditTrackerWrite(ctx, "tracker.claim", req.Username, req.Connection, req.Number, trackerClaimAuditDetail{
+		Connection:            req.Connection,
+		Number:                req.Number,
+		RunID:                 id.RunID,
+		SkillID:               id.SkillID,
+		Claimed:               result.Claimed,
+		AlreadyClaimedByRunID: result.AlreadyClaimedByRunID,
+		Assigned:              result.Assigned,
+	})
+	return &pb.ClaimTrackerIssueResponse{
+		Claimed:               result.Claimed,
+		AlreadyClaimedByRunId: result.AlreadyClaimedByRunID,
+		Assigned:              result.Assigned,
+	}, nil
+}
+
 // ---- tracker write audit rows (#1922) --------------------------------
 //
 // One row per write, ResourceType "tracker_issue", Detail marshalled from
@@ -142,6 +217,16 @@ type trackerCommentAuditDetail struct {
 	Number     int64  `json:"number"`
 	RunID      string `json:"run_id"`
 	SkillID    string `json:"skill_id,omitempty"`
+}
+
+type trackerClaimAuditDetail struct {
+	Connection            string `json:"connection"`
+	Number                int64  `json:"number"`
+	RunID                 string `json:"run_id"`
+	SkillID               string `json:"skill_id,omitempty"`
+	Claimed               bool   `json:"claimed"`
+	AlreadyClaimedByRunID string `json:"already_claimed_by_run_id,omitempty"`
+	Assigned              bool   `json:"assigned"`
 }
 
 // auditTrackerWrite records a tracker write verb's outcome. Best-effort

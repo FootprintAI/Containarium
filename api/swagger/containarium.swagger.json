@@ -6652,6 +6652,59 @@
         ]
       }
     },
+    "/v1/tracker/{username}/{connection}/issues/{number}/claim": {
+      "post": {
+        "summary": "Claim a tracker issue",
+        "description": "Posts a stamped claim comment and assigns the calling run if the issue is unassigned, unless a live or recent claim from a different run already holds it. Idempotent for the same run. Requires tracker:write.",
+        "operationId": "TrackerService_ClaimTrackerIssue",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ClaimTrackerIssueResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "connection",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "number",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "format": "int64"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/ClaimTrackerIssueBody"
+            }
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      }
+    },
     "/v1/tracker/{username}/{connection}/issues/{number}/comments": {
       "post": {
         "summary": "Comment on a tracker issue or change",
@@ -8493,6 +8546,34 @@
         }
       },
       "description": "CapacityPolicy bounds what a backend is willing to advertise. The\nadvertisement only computes spare capacity when the current time falls\ninside the allowed window and respects the excluded workload classes.\nOperator-set per backend. See #680."
+    },
+    "ClaimTrackerIssueBody": {
+      "type": "object",
+      "properties": {
+        "staleAfterSeconds": {
+          "type": "string",
+          "format": "int64",
+          "description": "How long a claim from a run this daemon can't confirm is still\nrunning (e.g. made through a different daemon instance) is still\nhonored before being considered abandoned. 0 uses the daemon's\ndefault (2 hours, per the design note)."
+        }
+      },
+      "description": "ClaimTrackerIssueRequest attempts to claim an issue for the calling\nrun: posts a stamped claim comment and assigns the run's identity if\nthe issue is unassigned, unless a live or recent claim from a\ndifferent run already holds it."
+    },
+    "ClaimTrackerIssueResponse": {
+      "type": "object",
+      "properties": {
+        "claimed": {
+          "type": "boolean",
+          "description": "True when the calling run holds the claim once this call returns\n— either it just claimed the issue, took over a stale claim, or\nalready held it (idempotent re-claim)."
+        },
+        "alreadyClaimedByRunId": {
+          "type": "string",
+          "description": "Set when claimed is false: the run id that holds a live-or-fresh\nclaim instead."
+        },
+        "assigned": {
+          "type": "boolean",
+          "description": "True if this call assigned the issue (never replaces an existing\nassignee)."
+        }
+      }
     },
     "ClamavContainerSummary": {
       "type": "object",
