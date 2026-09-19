@@ -36,10 +36,13 @@ func (s *ContainerServer) trackerWriterFor(provider pb.TrackerProvider) (tracker
 // resolveWriterConn is resolveReaderConn's write-verb counterpart:
 // resolves a named connection to its WriterProvider adapter and a
 // ready-to-use tracker.Conn. Tenant scoping and the tracker:write scope
-// are the caller's responsibility; the run <-> connection JWT-claim
-// cross-check (#1922 step 6) is not enforced here yet, same as the read
-// verbs.
+// are the caller's responsibility. Also enforces the run <-> connection
+// JWT-claim binding (#1922 step 6) — see enforceConnectionBinding's own
+// doc comment — same as the read verbs.
 func (s *ContainerServer) resolveWriterConn(ctx context.Context, username, connectionName string) (tracker.WriterProvider, tracker.Conn, error) {
+	if err := enforceConnectionBinding(ctx, connectionName); err != nil {
+		return nil, tracker.Conn{}, err
+	}
 	trackerConn, err := s.trackerStore.Get(ctx, username, connectionName)
 	if err != nil {
 		return nil, tracker.Conn{}, mapTrackerError(err)

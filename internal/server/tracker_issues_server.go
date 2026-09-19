@@ -19,11 +19,15 @@ import (
 // an adapter.
 //
 // Tenant scoping and the tracker:read scope are the caller's
-// responsibility (checked before this is called); this only resolves
-// the connection record itself. The run <-> connection JWT-claim
-// cross-check (#1922 step 6 — a run token must not query a connection
-// other than the one it's bound to) is not enforced here yet.
+// responsibility (checked before this is called). This also enforces the
+// run <-> connection JWT-claim binding (#1922 step 6): a run token bound
+// to a different connection is rejected before the store is even
+// consulted, so it can't distinguish "wrong connection" from "no such
+// connection" for one it's not bound to.
 func (s *ContainerServer) resolveReaderConn(ctx context.Context, username, connectionName string) (tracker.ReaderProvider, tracker.Conn, error) {
+	if err := enforceConnectionBinding(ctx, connectionName); err != nil {
+		return nil, tracker.Conn{}, err
+	}
 	trackerConn, err := s.trackerStore.Get(ctx, username, connectionName)
 	if err != nil {
 		return nil, tracker.Conn{}, mapTrackerError(err)
