@@ -40,6 +40,15 @@ const (
 	// for nested docker / docker-compose apps that consume `env_file:` and
 	// do not inherit the LXC environment. Single-line values only.
 	SecretDelivery_SECRET_DELIVERY_COMPOSE SecretDelivery = 3
+	// Held by the daemon for brokered upstream calls (e.g. the tracker
+	// broker's forge credential) — never delivered to any box by any
+	// delivery path, and write-only: GetSecret returns metadata with an
+	// empty value regardless of caller scopes. The value is reachable
+	// only through the daemon-internal broker credential path. Changing
+	// an existing secret's mode FROM this one is rejected; delete and
+	// re-set instead, so the write-only guarantee cannot be undone by an
+	// update. See docs/architecture/agent-tracker-broker.md.
+	SecretDelivery_SECRET_DELIVERY_BROKER_ONLY SecretDelivery = 4
 )
 
 // Enum value maps for SecretDelivery.
@@ -49,12 +58,14 @@ var (
 		1: "SECRET_DELIVERY_ENV",
 		2: "SECRET_DELIVERY_FILE",
 		3: "SECRET_DELIVERY_COMPOSE",
+		4: "SECRET_DELIVERY_BROKER_ONLY",
 	}
 	SecretDelivery_value = map[string]int32{
 		"SECRET_DELIVERY_UNSPECIFIED": 0,
 		"SECRET_DELIVERY_ENV":         1,
 		"SECRET_DELIVERY_FILE":        2,
 		"SECRET_DELIVERY_COMPOSE":     3,
+		"SECRET_DELIVERY_BROKER_ONLY": 4,
 	}
 )
 
@@ -944,12 +955,13 @@ const file_containarium_v1_secrets_proto_rawDesc = "" +
 	"\x11kek_resource_name\x18\x02 \x01(\tR\x0fkekResourceName\"Y\n" +
 	"\x17SetTenantKMSKeyResponse\x12\x18\n" +
 	"\amessage\x18\x01 \x01(\tR\amessage\x12$\n" +
-	"\x0ehas_tenant_key\x18\x02 \x01(\bR\fhasTenantKey*\x81\x01\n" +
+	"\x0ehas_tenant_key\x18\x02 \x01(\bR\fhasTenantKey*\xa2\x01\n" +
 	"\x0eSecretDelivery\x12\x1f\n" +
 	"\x1bSECRET_DELIVERY_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13SECRET_DELIVERY_ENV\x10\x01\x12\x18\n" +
 	"\x14SECRET_DELIVERY_FILE\x10\x02\x12\x1b\n" +
-	"\x17SECRET_DELIVERY_COMPOSE\x10\x03BKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
+	"\x17SECRET_DELIVERY_COMPOSE\x10\x03\x12\x1f\n" +
+	"\x1bSECRET_DELIVERY_BROKER_ONLY\x10\x04BKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
 
 var (
 	file_containarium_v1_secrets_proto_rawDescOnce sync.Once

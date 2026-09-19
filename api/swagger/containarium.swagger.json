@@ -13391,10 +13391,11 @@
         "SECRET_DELIVERY_UNSPECIFIED",
         "SECRET_DELIVERY_ENV",
         "SECRET_DELIVERY_FILE",
-        "SECRET_DELIVERY_COMPOSE"
+        "SECRET_DELIVERY_COMPOSE",
+        "SECRET_DELIVERY_BROKER_ONLY"
       ],
       "default": "SECRET_DELIVERY_UNSPECIFIED",
-      "description": "SecretDelivery is how a secret is materialized inside the container.\nReplaces the free-string `delivery` field, per the repo's\n\"protobuf enums over magic strings\" convention (CLAUDE.md).\n\n - SECRET_DELIVERY_UNSPECIFIED: Unset. Callers that omit delivery_mode fall back to the legacy\n`delivery` string, then to ENV.\n - SECRET_DELIVERY_ENV: environment.\u003cNAME\u003e=\u003cvalue\u003e on the LXC — visible to every process in\nthe container via /proc/\u003cpid\u003e/environ. The pre-4.3 default.\n - SECRET_DELIVERY_FILE: Per-secret file at /run/secrets/\u003cNAME\u003e, mode 0440 root:\u003ctenant\u003e, on\ntmpfs. Same tenant isolation, narrower in-container access surface.\n - SECRET_DELIVERY_COMPOSE: Shared dotenv at /run/containarium/secrets.env (mode 0400, tmpfs)\nfor nested docker / docker-compose apps that consume `env_file:` and\ndo not inherit the LXC environment. Single-line values only."
+      "description": "SecretDelivery is how a secret is materialized inside the container.\nReplaces the free-string `delivery` field, per the repo's\n\"protobuf enums over magic strings\" convention (CLAUDE.md).\n\n - SECRET_DELIVERY_UNSPECIFIED: Unset. Callers that omit delivery_mode fall back to the legacy\n`delivery` string, then to ENV.\n - SECRET_DELIVERY_ENV: environment.\u003cNAME\u003e=\u003cvalue\u003e on the LXC — visible to every process in\nthe container via /proc/\u003cpid\u003e/environ. The pre-4.3 default.\n - SECRET_DELIVERY_FILE: Per-secret file at /run/secrets/\u003cNAME\u003e, mode 0440 root:\u003ctenant\u003e, on\ntmpfs. Same tenant isolation, narrower in-container access surface.\n - SECRET_DELIVERY_COMPOSE: Shared dotenv at /run/containarium/secrets.env (mode 0400, tmpfs)\nfor nested docker / docker-compose apps that consume `env_file:` and\ndo not inherit the LXC environment. Single-line values only.\n - SECRET_DELIVERY_BROKER_ONLY: Held by the daemon for brokered upstream calls (e.g. the tracker\nbroker's forge credential) — never delivered to any box by any\ndelivery path, and write-only: GetSecret returns metadata with an\nempty value regardless of caller scopes. The value is reachable\nonly through the daemon-internal broker credential path. Changing\nan existing secret's mode FROM this one is rejected; delete and\nre-set instead, so the write-only guarantee cannot be undone by an\nupdate. See docs/architecture/agent-tracker-broker.md."
     },
     "SecretMetadata": {
       "type": "object",

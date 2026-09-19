@@ -87,6 +87,13 @@ func (s *ContainerServer) GetSecret(ctx context.Context, req *pb.GetSecretReques
 
 	meta, value, err := s.secretsStore.Get(ctx, req.Username, req.Name)
 	if err != nil {
+		if errors.Is(err, secrets.ErrBrokerOnly) {
+			// Write-only by design: the metadata is real, the value
+			// isn't returned regardless of the caller's scopes.
+			log.Printf("[secrets] get %s/%s version=%d delivery=broker (write-only, no value returned)",
+				req.Username, req.Name, meta.Version)
+			return &pb.GetSecretResponse{Secret: toProtoSecretMetadata(meta)}, nil
+		}
 		return nil, mapSecretError(err)
 	}
 
@@ -390,6 +397,9 @@ func mapSecretError(err error) error {
 		return status.Error(codes.NotFound, "secret not found")
 	}
 	if errors.Is(err, secrets.ErrTenantKMSNotSupported) {
+		return status.Error(codes.FailedPrecondition, err.Error())
+	}
+	if errors.Is(err, secrets.ErrBrokerModeImmutable) {
 		return status.Error(codes.FailedPrecondition, err.Error())
 	}
 	// pkg/core/secrets validation errors carry the right message for

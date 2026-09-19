@@ -15,6 +15,7 @@ func TestDeliveryToProto(t *testing.T) {
 		{secrets.DeliveryEnv, pb.SecretDelivery_SECRET_DELIVERY_ENV},
 		{secrets.DeliveryFile, pb.SecretDelivery_SECRET_DELIVERY_FILE},
 		{secrets.DeliveryCompose, pb.SecretDelivery_SECRET_DELIVERY_COMPOSE},
+		{secrets.DeliveryBroker, pb.SecretDelivery_SECRET_DELIVERY_BROKER_ONLY},
 		// "" is "unset" in storage, which the store normalizes to env — so
 		// the enum must report ENV, not UNSPECIFIED, or the typed view would
 		// disagree with what actually happens to the secret.
@@ -36,6 +37,7 @@ func TestDeliveryFromProto(t *testing.T) {
 		{pb.SecretDelivery_SECRET_DELIVERY_ENV, secrets.DeliveryEnv},
 		{pb.SecretDelivery_SECRET_DELIVERY_FILE, secrets.DeliveryFile},
 		{pb.SecretDelivery_SECRET_DELIVERY_COMPOSE, secrets.DeliveryCompose},
+		{pb.SecretDelivery_SECRET_DELIVERY_BROKER_ONLY, secrets.DeliveryBroker},
 		{pb.SecretDelivery_SECRET_DELIVERY_UNSPECIFIED, ""},
 	}
 	for _, tc := range tests {
@@ -47,7 +49,7 @@ func TestDeliveryFromProto(t *testing.T) {
 
 // Every mode must survive a round trip, or the enum and the DB column drift.
 func TestDeliveryRoundTrip(t *testing.T) {
-	for _, mode := range []string{secrets.DeliveryEnv, secrets.DeliveryFile, secrets.DeliveryCompose} {
+	for _, mode := range []string{secrets.DeliveryEnv, secrets.DeliveryFile, secrets.DeliveryCompose, secrets.DeliveryBroker} {
 		if got := deliveryFromProto(deliveryToProto(mode)); got != mode {
 			t.Errorf("round trip %q → %v → %q", mode, deliveryToProto(mode), got)
 		}

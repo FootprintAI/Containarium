@@ -44,18 +44,23 @@ const (
 	// inherit the LXC's Incus-config environment (the same gap OTel
 	// solved, #370/#492). Values must be single-line; see Set.
 	DeliveryCompose = "compose"
+	// DeliveryBroker marks a secret held for the daemon's own brokered
+	// upstream calls (e.g. the tracker broker's forge credential, #1921)
+	// — never delivered to any box, and readable back only through
+	// BrokerCredential. See docs/architecture/agent-tracker-broker.md.
+	DeliveryBroker = "broker"
 )
 
 // ValidateDelivery returns nil for "" (defaults to file at the storage
-// layer — #1604), "env", "file", or "compose". Anything else is
-// caller-error and rejected at the API boundary.
+// layer — #1604), "env", "file", "compose", or "broker". Anything else
+// is caller-error and rejected at the API boundary.
 func ValidateDelivery(mode string) error {
 	switch mode {
-	case "", DeliveryEnv, DeliveryFile, DeliveryCompose:
+	case "", DeliveryEnv, DeliveryFile, DeliveryCompose, DeliveryBroker:
 		return nil
 	}
-	return fmt.Errorf("secrets: delivery must be %q, %q, or %q; got %q",
-		DeliveryEnv, DeliveryFile, DeliveryCompose, mode)
+	return fmt.Errorf("secrets: delivery must be %q, %q, %q, or %q; got %q",
+		DeliveryEnv, DeliveryFile, DeliveryCompose, DeliveryBroker, mode)
 }
 
 // ValidateValueForDelivery rejects a value that the chosen delivery mode
@@ -142,6 +147,23 @@ var ErrNotFound = errors.New("secrets: not found")
 // CONTAINARIUM_KMS_BACKEND isn't "gcp". Callers map this to a
 // caller-facing precondition failure, not an internal-error catch-all.
 var ErrTenantKMSNotSupported = errors.New("secrets: per-tenant KMS keys require CONTAINARIUM_KMS_BACKEND=gcp")
+
+// ErrBrokerOnly is returned by Get for a broker-mode row: the write-only
+// guarantee means Get never returns the plaintext, regardless of the
+// caller's scopes. The value is reachable only through BrokerCredential.
+var ErrBrokerOnly = errors.New("secrets: broker-only secret; value is not readable via Get")
+
+// ErrNotBrokerOnly is returned by BrokerCredential for a row that is NOT
+// in broker mode — it refuses to hand back a value from any delivering
+// mode, which would defeat the point of a separate, narrowly-wired read
+// path for brokered credentials.
+var ErrNotBrokerOnly = errors.New("secrets: BrokerCredential refuses a secret that is not broker-only")
+
+// ErrBrokerModeImmutable is returned by Set when a request would change
+// an existing broker-only secret's delivery mode to a delivering one.
+// One-way by design: delete and re-set is the only path, so the
+// write-only guarantee can't be undone by an ordinary SetSecret call.
+var ErrBrokerModeImmutable = errors.New("secrets: cannot change a broker-only secret to a delivering mode; delete and re-set instead")
 
 // Option configures a Store at construction time. Phase 4.1 uses
 // this to bolt on the KMS client without breaking the existing
@@ -327,6 +349,29 @@ func (s *Store) Set(ctx context.Context, username, name, value, delivery string)
 	resolved := delivery
 	if resolved == "" {
 		resolved = DeliveryFile
+	}
+
+	// Broker-only is one-way. Without this check, the same SetSecret RPC
+	// any secrets:write caller can issue would silently turn off the
+	// "never delivered" guarantee a tracker connection (or any other
+	// broker consumer) depends on. This is an operator-facing guard, not
+	// a concurrency control — a race against a concurrent Set on the same
+	// row falls back to ordinary last-write-wins, same as every other
+	// field this method updates.
+	if explicit != "" && explicit != DeliveryBroker {
+		var existing string
+		switch err := s.pool.QueryRow(ctx,
+			`SELECT delivery FROM secrets WHERE username = $1 AND name = $2`,
+			username, name).Scan(&existing); {
+		case err == nil:
+			if existing == DeliveryBroker {
+				return nil, ErrBrokerModeImmutable
+			}
+		case errors.Is(err, pgx.ErrNoRows):
+			// New row — nothing to protect.
+		default:
+			return nil, fmt.Errorf("check existing delivery mode: %w", err)
+		}
 	}
 
 	nonce, ct, wrappedDEK, kekID, err := s.encryptForStorage(ctx, username, name, []byte(value))
@@ -668,7 +713,11 @@ var rewrapOneTestHook func(username, name string, attempt int)
 // a value change, so it shouldn't look like one (no version bump).
 func (s *Store) rewrapOne(ctx context.Context, username, name string) error {
 	for attempt := 0; attempt < rewrapMaxAttempts; attempt++ {
-		meta, value, err := s.Get(ctx, username, name)
+		// getRaw, not Get: a KEK rewrap must re-encrypt a broker-only
+		// row's value too (key management, not delivery) — Get's
+		// broker gate would turn every broker-only secret into a
+		// rewrap failure.
+		meta, value, err := s.getRaw(ctx, username, name)
 		if err != nil {
 			if errors.Is(err, ErrNotFound) {
 				return nil // deleted concurrently — nothing left to rewrap
@@ -727,10 +776,49 @@ func (s *Store) tryRewrapAtVersion(ctx context.Context, username, name string, n
 // looked up something that exists but I can't decrypt it" from
 // "nothing here."
 //
-// Phase B: envelope rows take the KMS-unwrap path; legacy rows
-// (wrapped_dek IS NULL) take the master-key path. Both produce
-// the same plaintext shape.
+// For a broker-only row, returns the metadata but ErrBrokerOnly instead
+// of a value — the write-only guarantee applies regardless of the
+// caller's scopes. rewrapTenant and BrokerCredential use the unexported
+// getRaw below, which carries no such gate, because a KEK rewrap is key
+// management (every row must stay decryptable under the current key)
+// and BrokerCredential IS the narrow path broker-only values are meant
+// to flow through.
 func (s *Store) Get(ctx context.Context, username, name string) (meta *SecretMetadata, value string, err error) {
+	meta, value, err = s.getRaw(ctx, username, name)
+	if err != nil {
+		return nil, "", err
+	}
+	if meta.Delivery == DeliveryBroker {
+		return meta, "", ErrBrokerOnly
+	}
+	return meta, value, nil
+}
+
+// BrokerCredential returns the plaintext value of a broker-only secret.
+// Refuses (ErrNotBrokerOnly) any row in a delivering mode — the value a
+// box already receives must never also be the value handed to a forge
+// credential path. Satisfies internal/tracker.CredentialSource; wiring
+// this into anything outside internal/tracker (and the server plumbing
+// that constructs a tracker.Broker) defeats the point of having it as a
+// separate method from Get. See TestBrokerCredentialCallers_Allowlist.
+func (s *Store) BrokerCredential(ctx context.Context, username, name string) (string, error) {
+	meta, value, err := s.getRaw(ctx, username, name)
+	if err != nil {
+		return "", err
+	}
+	if meta.Delivery != DeliveryBroker {
+		return "", ErrNotBrokerOnly
+	}
+	return value, nil
+}
+
+// getRaw is the shared Postgres round-trip: fetch and decrypt
+// regardless of delivery mode. Get and BrokerCredential each apply an
+// opposite-direction delivery gate on top of it.
+//
+// Envelope rows take the KMS-unwrap path; legacy rows (wrapped_dek IS
+// NULL) take the master-key path. Both produce the same plaintext shape.
+func (s *Store) getRaw(ctx context.Context, username, name string) (meta *SecretMetadata, value string, err error) {
 	if username == "" {
 		return nil, "", fmt.Errorf("username is required")
 	}
@@ -906,6 +994,13 @@ func (s *Store) LoadAllForUser(ctx context.Context, username string) (map[string
 // Rows with an empty / NULL delivery column (e.g. pre-4.3
 // migrations missed by the DEFAULT 'env' clause) are
 // treated as env.
+//
+// Broker-mode rows are excluded IN THIS QUERY, not by a check each
+// caller remembers to make. Every delivery path (LXC env/file/compose
+// stamping, the K8s Secret materializer, and LoadAllForUser which
+// delegates here) funnels through this one method, so a delivery path
+// written next year inherits the exclusion instead of needing to
+// reimplement it. See docs/architecture/agent-tracker-broker.md.
 func (s *Store) LoadAllForUserWithDelivery(ctx context.Context, username string) (map[string]SecretValue, error) {
 	if username == "" {
 		return nil, fmt.Errorf("username is required")
@@ -913,7 +1008,7 @@ func (s *Store) LoadAllForUserWithDelivery(ctx context.Context, username string)
 	const q = `
 		SELECT name, nonce, ciphertext, wrapped_dek, kek_id, delivery
 		FROM secrets
-		WHERE username = $1
+		WHERE username = $1 AND delivery <> 'broker'
 	`
 	rows, err := s.pool.Query(ctx, q, username)
 	if err != nil {
