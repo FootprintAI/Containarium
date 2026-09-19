@@ -17,6 +17,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   release from v0.71.0 onward is gated and complete.
 -->
 
+## [0.82.0] - 2026-09-18
+
+### Added
+
+- **A freeform-topology reference crew, `freeform-crew`, ships in the
+  embedded crew catalog.** `RunCrew` and the `list_crews` MCP tool have
+  always advertised `pipeline | orchestrator | freeform`, but no crew
+  definition anywhere used `freeform`, so that code path had never been
+  driven by a real crew. It reuses the same two neutral reference skills
+  as `hello-crew` (`relay-agent` as the entry point, delegating to
+  `hello-agent` within its existing `allowed_peers`). (#1898)
+- **`RunCrewRequest` accepts a caller-supplied `run_id`**, resolved with
+  the same validation `RunAgentSkill` already uses and before any
+  catalog or topology lookup — a malformed id fails the RPC rather than
+  a half-started run. It becomes `CrewRun.id`, so a caller that keeps its
+  own run archive shares one identifier with the daemon's crew run and
+  its audit trail. Empty keeps today's behaviour (a generated id).
+  (#1899, #1900)
+- **`containarium create --region`** — a placement hint for a control
+  plane that fronts more than one region, in the same family as `--pool`
+  and `--backend-id`, also exposed on the `create_container` MCP tool. A
+  standalone or single-region daemon ignores it, and an unset region
+  leaves the request body byte-identical to before. (#1907)
+- **`containarium org get-default-region` / `org set-default-region` and
+  a `containarium regions` command** — the CLI had no `org` command
+  group at all, so an org with no default region had no CLI-reachable way
+  to set one. `org` is scaffolded as a group so later org-level verbs are
+  additive. (#1607, #1908)
+- **`Collaborator.ssh_public_keys`** (repeated) on the collaborator
+  response. The response side previously packed every authorized key
+  into the single `ssh_public_key` scalar, newline-joined; that
+  deprecated scalar now carries just the first key — a real single key,
+  matching how the request side's deprecated scalar already behaves.
+  (#1144, #1911)
+- **`add_collaborator`, `list_collaborators` and `remove_collaborator`
+  MCP tools** — thin wrappers over the same collaborator endpoints the
+  CLI and web UI already call, scoped `containers:write` / `containers:read`
+  like any other container operation. (#1912)
+- **Optional GitHub-direct daemon self-upgrade by tag.**
+  `TriggerUpgradeRequest.github_tag` (CLI: `containarium backends upgrade
+  --github-tag <tag>`) makes the daemon download its release binary
+  straight from GitHub Releases, verify it against `SHA256SUMS.txt`,
+  smoke-test it and atomically swap it in behind the same watchdog the
+  sentinel-served path uses. It has no sentinel dependency, so a daemon
+  with no sentinel configured can still self-update. Opt-in: an empty
+  `github_tag` leaves the existing upgrade path unchanged. (#1028, #1913)
+
+### Fixed
+
+- **`TriggerUpgrade` no longer rejects silently when the daemon has no
+  auto-updater configured.** The request did reach the target daemon,
+  which refused it without logging anything, so the failure looked like
+  a routing problem upstream. The rejection is now logged and the error
+  names the missing flag. (#1909)
+
 ## [0.81.2] - 2026-09-18
 
 ### Fixed
