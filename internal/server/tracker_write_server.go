@@ -82,7 +82,7 @@ func (s *ContainerServer) identityFromContext(ctx context.Context) tracker.Ident
 	runID, hasRun := auth.RunIDFromGRPCContext(ctx)
 	if !hasRun || runID == "" {
 		username, _, _ := auth.SubjectFromGRPCContext(ctx)
-		return tracker.Identity{RunID: "operator", SkillID: username}
+		return tracker.Identity{RunID: username, SkillID: "operator"}
 	}
 	var info runlease.Info
 	if s.runRegistry != nil {
