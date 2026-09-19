@@ -275,6 +275,34 @@ func IntersectScopes(caller, manifest []string) []string {
 	return out
 }
 
+// ExcludeScopes returns scopes with every entry in exclude removed,
+// preserving order. Used to hold a floor under IntersectScopes: some
+// scopes (e.g. tracker:admin) must never reach a minted run token no
+// matter how permissive the caller or the skill manifest are — a
+// wildcard caller/manifest, or an operator manifest that lists an
+// admin scope in allowed_scopes by mistake, would otherwise still let
+// IntersectScopes hand it out. nil in, nil out (a nil scope set stays
+// nil, which HasScope reads as unrestricted — excluding from "no
+// restriction" would be a contradiction, and the caller is expected to
+// have already decided that's not the case before minting a run token).
+func ExcludeScopes(scopes []string, exclude ...string) []string {
+	if scopes == nil {
+		return nil
+	}
+	excludeSet := make(map[string]struct{}, len(exclude))
+	for _, s := range exclude {
+		excludeSet[s] = struct{}{}
+	}
+	out := make([]string, 0, len(scopes))
+	for _, s := range scopes {
+		if _, ok := excludeSet[strings.TrimSpace(s)]; ok {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
 // ParseScopes normalizes a comma-separated scope string
 // into a []string suitable for the JWT claim. Whitespace
 // and empty elements are dropped; the order of remaining
