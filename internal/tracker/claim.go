@@ -103,8 +103,10 @@ type ClaimResult struct {
 //  4. Re-read. If a foreign claim with a timestamp EARLIER than the
 //     one just posted is now visible (a different daemon instance won
 //     a race in the gap between this call's read and its post) and
-//     that run is live-or-fresh, post a yield comment and report
-//     AlreadyClaimedByRunID instead of Claimed.
+//     that run is live-or-fresh, post a kind=yield comment (marking
+//     THIS run's own just-posted claim as superseded — see
+//     latestClaim) and report AlreadyClaimedByRunID instead of
+//     Claimed.
 func ClaimTrackerIssue(ctx context.Context, provider WriterProvider, conn Conn, number int64, id Identity, resolver RunResolver, clock Clock, staleAfter time.Duration) (ClaimResult, error) {
 	if staleAfter <= 0 {
 		staleAfter = DefaultStaleAfter
@@ -141,7 +143,12 @@ func ClaimTrackerIssue(ctx context.Context, provider WriterProvider, conn Conn, 
 	}
 	if holder, when, found := earliestForeignClaimBefore(reread.Comments, id.RunID, myClaim.CreatedAt); found {
 		if resolver.Live(holder) || clock.Now().Sub(when) < staleAfter {
-			yield := fmt.Sprintf("Yielding to an earlier claim by %s.\n\n%s", holder, Stamp(id, KindComment))
+			// KindYield, not KindComment: this marks id.RunID's own
+			// just-posted claim (above) as superseded, so a LATER call's
+			// latestClaim scan — which otherwise finds the newest
+			// kind=claim marker regardless of who actually won — never
+			// mistakes this run's losing claim for the current holder.
+			yield := fmt.Sprintf("Yielding to an earlier claim by %s.\n\n%s", holder, Stamp(id, KindYield))
 			_, _ = provider.Comment(ctx, conn, number, yield) // best-effort
 			return ClaimResult{AlreadyClaimedByRunID: holder}, nil
 		}
@@ -151,11 +158,33 @@ func ClaimTrackerIssue(ctx context.Context, provider WriterProvider, conn Conn, 
 }
 
 // latestClaim scans comments (oldest-first, as both providers return
-// them) for the newest kind=claim marker.
+// them) for the newest kind=claim marker NOT superseded by that same
+// run's own later kind=yield marker.
+//
+// A losing run's claim comment is never retracted or edited — it stays
+// in the comment history exactly as posted, chronologically AFTER the
+// winning claim it lost to. Scanning purely for "newest kind=claim"
+// would therefore hand a losing run's stale claim back as the current
+// holder on every call after the race resolved (caught in review on
+// #1924 — see docs/architecture/agent-tracker-broker.md's discussion).
+// Scanning backward and tracking which run IDs have since posted a
+// kind=yield skips exactly those superseded claims, so a run that lost
+// a race is never mistaken for the holder again — including by itself,
+// which is what makes its own idempotent re-claim check safe.
 func latestClaim(comments []Comment) (holder string, when time.Time, found bool) {
+	voided := make(map[string]bool)
 	for i := len(comments) - 1; i >= 0; i-- {
 		runID, _, kind, ok := ParseMarker(comments[i].Body)
-		if ok && kind == KindClaim {
+		if !ok {
+			continue
+		}
+		switch kind {
+		case KindYield:
+			voided[runID] = true
+		case KindClaim:
+			if voided[runID] {
+				continue
+			}
 			return runID, comments[i].CreatedAt, true
 		}
 	}
