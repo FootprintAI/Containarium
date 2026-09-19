@@ -64,6 +64,12 @@ variable "boot_disk_type" {
   }
 }
 
+variable "boot_disk_auto_delete" {
+  description = "Whether the spot jump-server's boot disk is deleted when the instance is deleted. Set false to protect a disk that predates or is managed outside this module's lifecycle."
+  type        = bool
+  default     = true
+}
+
 variable "admin_ssh_keys" {
   description = "Map of admin users to their SSH public keys"
   type        = map(string)

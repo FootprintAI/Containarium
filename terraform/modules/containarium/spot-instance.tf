@@ -121,7 +121,7 @@ resource "google_compute_instance" "jump_server_spot" {
   }
 
   boot_disk {
-    auto_delete       = true
+    auto_delete       = var.boot_disk_auto_delete
     kms_key_self_link = var.kms_key_self_link == "" ? null : var.kms_key_self_link
     initialize_params {
       image = var.os_image
