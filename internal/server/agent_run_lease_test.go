@@ -528,7 +528,7 @@ func TestProvisionSkillBox_EndsPartialLeaseOnSeedFailure(t *testing.T) {
 	store := newFakeRevocationStore()
 	s, skill := newSkillBoxHarness(t, store)
 
-	_, _, lease, _, _, err := s.provisionSkillBox(ctxAs("admin", true), skill, "", "", "{}", "run-partial", "", "", "")
+	_, _, lease, _, _, err := s.provisionSkillBox(ctxAs("admin", true), skill, "", "", "{}", "run-partial", "", "", "", "")
 	if err == nil {
 		t.Fatal("provisionSkillBox must fail when the seed exec fails")
 	}

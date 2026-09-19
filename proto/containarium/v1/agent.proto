@@ -140,6 +140,15 @@ message RunAgentSkillRequest {
   // fetch only (an ephemeral http.extraHeader) — never written to the box's
   // .git/config, never logged. Empty = public repo.
   string git_credential = 8;
+  // Name of a tracker connection (see TrackerConnection) owned by the
+  // calling tenant that this run is bound to (#1922 design note, decision
+  // D3: "a run is bound to exactly one connection at launch"). Validated
+  // against the caller's own connections at launch time and minted into
+  // the run's JWT as the `tracker_conn` claim — the tracker verb RPCs
+  // reject a request naming a different connection than this claim.
+  // Empty means the run is not bound to any connection (every pre-#1922
+  // run, and any run that doesn't use the tracker broker).
+  string tracker_connection = 9;
 }
 message RunAgentSkillResponse {
   // The box the agent ran in.

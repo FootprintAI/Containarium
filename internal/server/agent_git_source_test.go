@@ -76,7 +76,7 @@ func TestProvisionSkillBox_GitSourceSet_SeedFailsBeforeFetch(t *testing.T) {
 	s, skill := newSkillBoxHarness(t, store)
 
 	_, _, lease, _, _, err := s.provisionSkillBox(ctxAs("admin", true), skill, "", "", "{}", "run-git",
-		"https://github.com/org/repo", "main", "")
+		"https://github.com/org/repo", "main", "", "")
 	if err == nil {
 		t.Fatal("provisionSkillBox must fail when the seed exec fails, git_source or not")
 	}
@@ -98,7 +98,7 @@ func TestProvisionSkillBox_NoGitSource_Unchanged(t *testing.T) {
 	store := newFakeRevocationStore()
 	s, skill := newSkillBoxHarness(t, store)
 
-	_, _, _, _, _, err := s.provisionSkillBox(ctxAs("admin", true), skill, "", "", "{}", "run-no-git", "", "", "")
+	_, _, _, _, _, err := s.provisionSkillBox(ctxAs("admin", true), skill, "", "", "{}", "run-no-git", "", "", "", "")
 	if status.Code(err) != codes.Internal {
 		t.Errorf("seed failure code = %v, want Internal", status.Code(err))
 	}

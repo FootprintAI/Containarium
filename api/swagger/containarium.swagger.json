@@ -13840,6 +13840,10 @@
         "gitCredential": {
           "type": "string",
           "description": "Bearer token for a private git_source. Used daemon-side for the single\nfetch only (an ephemeral http.extraHeader) — never written to the box's\n.git/config, never logged. Empty = public repo."
+        },
+        "trackerConnection": {
+          "type": "string",
+          "description": "Name of a tracker connection (see TrackerConnection) owned by the\ncalling tenant that this run is bound to (#1922 design note, decision\nD3: \"a run is bound to exactly one connection at launch\"). Validated\nagainst the caller's own connections at launch time and minted into\nthe run's JWT as the `tracker_conn` claim — the tracker verb RPCs\nreject a request naming a different connection than this claim.\nEmpty means the run is not bound to any connection (every pre-#1922\nrun, and any run that doesn't use the tracker broker)."
         }
       },
       "description": "RunAgentSkillRequest launches a single skill in its box and sends it one\ntask (no peers). Useful for testing a skill in isolation."
