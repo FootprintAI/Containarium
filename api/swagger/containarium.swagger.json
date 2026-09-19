@@ -6652,6 +6652,59 @@
         ]
       }
     },
+    "/v1/tracker/{username}/{connection}/issues/{number}/comments": {
+      "post": {
+        "summary": "Comment on a tracker issue or change",
+        "description": "Posts a comment, stamped with the acting run's platform identity and sanitized against forged markers and GitLab quick-actions. Requires tracker:write.",
+        "operationId": "TrackerService_CommentOnTrackerIssue",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/CommentOnTrackerIssueResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "connection",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "number",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "format": "int64"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/CommentOnTrackerIssueBody"
+            }
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      }
+    },
     "/v1/traffic/subscribe": {
       "get": {
         "summary": "Subscribe to traffic events",
@@ -8730,6 +8783,23 @@
         }
       },
       "title": "Collaborator represents a user with access to a container"
+    },
+    "CommentOnTrackerIssueBody": {
+      "type": "object",
+      "properties": {
+        "body": {
+          "type": "string"
+        }
+      },
+      "description": "CommentOnTrackerIssueRequest posts a comment on an issue or change\nrequest, stamped with the acting run's platform identity (visible\nsignature + hidden marker — see docs/architecture/agent-tracker-broker.md).\nbody is agent-supplied text: sanitized server-side before it reaches\nthe tracker (GitLab quick-action neutralization, forged-marker\nstripping) — never trusted or interpreted as anything but a comment\nbody."
+    },
+    "CommentOnTrackerIssueResponse": {
+      "type": "object",
+      "properties": {
+        "comment": {
+          "$ref": "#/definitions/TrackerComment"
+        }
+      }
     },
     "CompleteAgentTaskBody": {
       "type": "object",

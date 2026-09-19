@@ -289,6 +289,24 @@ message GetTrackerChangeResponse {
   TrackerChange change = 1;
 }
 
+// CommentOnTrackerIssueRequest posts a comment on an issue or change
+// request, stamped with the acting run's platform identity (visible
+// signature + hidden marker — see docs/architecture/agent-tracker-broker.md).
+// body is agent-supplied text: sanitized server-side before it reaches
+// the tracker (GitLab quick-action neutralization, forged-marker
+// stripping) — never trusted or interpreted as anything but a comment
+// body.
+message CommentOnTrackerIssueRequest {
+  string username = 1;
+  string connection = 2;
+  int64 number = 3;
+  string body = 4;
+}
+
+message CommentOnTrackerIssueResponse {
+  TrackerComment comment = 1;
+}
+
 // TrackerService manages tracker connections — the daemon-custody seam
 // the tracker broker's issue/change-request verbs (#1922, #1923) build
 // on. Connection CRUD is gated by tracker:admin, deliberately separate
@@ -395,4 +413,19 @@ service TrackerService {
       tags: "Tracker";
     };
   }
+
+  // CommentOnTrackerIssue posts a stamped, sanitized comment on an
+  // issue or change request.
+  rpc CommentOnTrackerIssue(CommentOnTrackerIssueRequest) returns (CommentOnTrackerIssueResponse) {
+    option (google.api.http) = {
+      post: "/v1/tracker/{username}/{connection}/issues/{number}/comments"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Comment on a tracker issue or change";
+      description: "Posts a comment, stamped with the acting run's platform identity and sanitized against forged markers and GitLab quick-actions. Requires tracker:write.";
+      tags: "Tracker";
+    };
+  }
+
 }

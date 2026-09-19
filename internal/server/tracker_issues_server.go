@@ -151,14 +151,18 @@ func mapProviderError(err error) error {
 	}
 }
 
+func toProtoComment(c tracker.Comment) *pb.TrackerComment {
+	return &pb.TrackerComment{
+		Author:    c.Author,
+		CreatedAt: timestamppb.New(c.CreatedAt),
+		Body:      c.Body,
+	}
+}
+
 func toProtoIssue(i tracker.Issue) *pb.TrackerIssue {
 	comments := make([]*pb.TrackerComment, 0, len(i.Comments))
 	for _, c := range i.Comments {
-		comments = append(comments, &pb.TrackerComment{
-			Author:    c.Author,
-			CreatedAt: timestamppb.New(c.CreatedAt),
-			Body:      c.Body,
-		})
+		comments = append(comments, toProtoComment(c))
 	}
 	return &pb.TrackerIssue{
 		Number:   i.Number,
