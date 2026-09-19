@@ -486,10 +486,29 @@ func mintedAgentAct(ctx context.Context) *auth.Actor {
 // through outgoing gRPC metadata (internal/auth/middleware.go), not a context
 // value that would survive the HTTP→gateway→gRPC hop. RequireScope and
 // AuthorizeTenant already read the caller this same way.
+//
+// runForbiddenScopes are then stripped unconditionally — caught in review
+// of #1924 (CWE-862): tracker:admin gates tracker connection CRUD
+// (repointing the broker at a different project or credential), an
+// operator decision that must never reach a bounded skill run no matter
+// how permissive the dispatching caller or the skill manifest's own
+// allowed_scopes are. Without this, a caller with the admin role calling
+// RunAgentSkill on a manifest that (mistakenly or not) lists tracker:admin
+// in allowed_scopes would mint a run token that could redirect the
+// broker's held credential — the exact thing a run-scoped token binding
+// to one connection (#1922 step 6) exists to prevent.
 func mintedAgentTokenScopes(ctx context.Context, skill *pb.AgentSkill) []string {
 	callerScopes, _ := auth.ScopesFromGRPCContext(ctx)
-	return auth.IntersectScopes(callerScopes, skill.AllowedScopes)
+	granted := auth.IntersectScopes(callerScopes, skill.AllowedScopes)
+	return auth.ExcludeScopes(granted, runForbiddenScopes...)
 }
+
+// runForbiddenScopes never reach a minted run token, regardless of what
+// the dispatching caller or the skill manifest's allowed_scopes grant.
+// tracker:admin is the only entry today — see mintedAgentTokenScopes's
+// doc comment. A future admin-tier scope gets added here on the same
+// reasoning, not by auditing every skill manifest for it.
+var runForbiddenScopes = []string{auth.ScopeTrackerAdmin}
 
 // provisionSkillBox provisions (or reuses) the skill's box, mints its
 // credentials, seeds the task, and — when gitSource is set (#1859) —

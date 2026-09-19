@@ -155,6 +155,42 @@ func TestIntersectScopes_ManifestScopeCallerLacksIsNeverGranted(t *testing.T) {
 	}
 }
 
+// TestExcludeScopes covers ExcludeScopes' own contract, independent of
+// its mintedAgentTokenScopes call site (agent_server_test.go covers the
+// integration).
+func TestExcludeScopes(t *testing.T) {
+	got := ExcludeScopes([]string{ScopeContainersRead, ScopeTrackerAdmin, ScopeSecretsWrite}, ScopeTrackerAdmin)
+	want := []string{ScopeContainersRead, ScopeSecretsWrite}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("ExcludeScopes = %v, want %v", got, want)
+	}
+}
+
+func TestExcludeScopes_NilStaysNil(t *testing.T) {
+	// A nil scope set means "unrestricted" (HasScope's policy); excluding
+	// from "no restriction" would silently narrow an unrestricted legacy
+	// token instead of leaving the "no restriction" decision to whatever
+	// upstream check already made it.
+	if got := ExcludeScopes(nil, ScopeTrackerAdmin); got != nil {
+		t.Fatalf("ExcludeScopes(nil, ...) = %v, want nil", got)
+	}
+}
+
+func TestExcludeScopes_ExcludingEverythingLeavesEmptyNotNil(t *testing.T) {
+	// An empty (non-nil) result means "zero grants" — HasScope must NOT
+	// read this the same as the nil "unrestricted" case.
+	got := ExcludeScopes([]string{ScopeTrackerAdmin}, ScopeTrackerAdmin)
+	if got == nil {
+		t.Fatal("ExcludeScopes result is nil, want a non-nil empty slice (zero grants, not unrestricted)")
+	}
+	if len(got) != 0 {
+		t.Fatalf("ExcludeScopes = %v, want empty", got)
+	}
+	if HasScope(got, ScopeContainersRead) {
+		t.Error("HasScope(empty, ...) = true, want false — empty must mean zero grants, not unrestricted")
+	}
+}
+
 // TestIsKnownScope_TrackerScopes guards against the class of bug filed as
 // #1926 (ScopeSandboxesRead/Write defined but missing from AllScopes,
 // silently rejected by IsKnownScope) recurring for the new tracker scopes.
