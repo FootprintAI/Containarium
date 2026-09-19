@@ -28,6 +28,7 @@ type GRPCClient struct {
 	crewClient    pb.CrewServiceClient
 	clusterClient pb.ClusterServiceClient
 	sandboxClient pb.SandboxServiceClient
+	trackerClient pb.TrackerServiceClient
 }
 
 // NewGRPCClient creates a new gRPC client
@@ -91,6 +92,7 @@ func NewGRPCClient(serverAddr string, certsDir string, insecureConn bool) (*GRPC
 	crewClient := pb.NewCrewServiceClient(conn)
 	clusterClient := pb.NewClusterServiceClient(conn)
 	sandboxClient := pb.NewSandboxServiceClient(conn)
+	trackerClient := pb.NewTrackerServiceClient(conn)
 
 	return &GRPCClient{
 		conn:          conn,
@@ -105,6 +107,7 @@ func NewGRPCClient(serverAddr string, certsDir string, insecureConn bool) (*GRPC
 		crewClient:    crewClient,
 		clusterClient: clusterClient,
 		sandboxClient: sandboxClient,
+		trackerClient: trackerClient,
 	}, nil
 }
 
@@ -1500,4 +1503,41 @@ func (c *GRPCClient) UpdateClusterNodePool(req *pb.UpdateClusterNodePoolRequest)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	return c.clusterClient.UpdateClusterNodePool(ctx, req)
+}
+
+// SetTrackerConnection creates or updates a tenant's tracker connection.
+// Requires tracker:admin.
+func (c *GRPCClient) SetTrackerConnection(req *pb.SetTrackerConnectionRequest) (*pb.TrackerConnection, string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.trackerClient.SetTrackerConnection(ctx, req)
+	if err != nil {
+		return nil, "", fmt.Errorf("set tracker connection: %w", err)
+	}
+	return resp.Connection, resp.Message, nil
+}
+
+// ListTrackerConnections returns every tracker connection a tenant owns.
+func (c *GRPCClient) ListTrackerConnections(username string) ([]*pb.TrackerConnection, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.trackerClient.ListTrackerConnections(ctx, &pb.ListTrackerConnectionsRequest{Username: username})
+	if err != nil {
+		return nil, fmt.Errorf("list tracker connections: %w", err)
+	}
+	return resp.Connections, nil
+}
+
+// DeleteTrackerConnection removes a named tracker connection. Does not
+// delete the credential secret it referenced.
+func (c *GRPCClient) DeleteTrackerConnection(username, name string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.trackerClient.DeleteTrackerConnection(ctx, &pb.DeleteTrackerConnectionRequest{
+		Username: username, Name: name,
+	})
+	if err != nil {
+		return "", fmt.Errorf("delete tracker connection: %w", err)
+	}
+	return resp.Message, nil
 }
