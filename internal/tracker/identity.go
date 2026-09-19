@@ -28,6 +28,12 @@ const (
 	KindClaim   StampKind = "claim"
 	KindComment StampKind = "comment"
 	KindChange  StampKind = "change"
+	// KindYield marks a comment as its own run voiding a claim it just
+	// posted (ClaimTrackerIssue's post-claim re-read step) — the run's
+	// own PRIOR kind=claim marker higher up the comment history must
+	// then be treated as superseded, never selected as the current
+	// holder. See latestClaim.
+	KindYield StampKind = "yield"
 )
 
 // runIDShortLen bounds the run id shown in the visible signature line —
