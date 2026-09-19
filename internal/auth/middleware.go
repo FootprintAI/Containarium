@@ -149,6 +149,12 @@ func (am *AuthMiddleware) HTTPMiddleware(next http.Handler) http.Handler {
 		if claims.ID != "" {
 			mdPairs = append(mdPairs, MDKeyJTI, claims.ID)
 		}
+		// #1922 — propagate the optional `run_id` claim the same way, so
+		// the tracker broker's write verbs can read the acting run's
+		// identity off the verified token rather than a request field.
+		if claims.RunID != "" {
+			mdPairs = append(mdPairs, MDKeyRunID, claims.RunID)
+		}
 		md := metadata.Pairs(mdPairs...)
 		ctx = metadata.NewOutgoingContext(ctx, md)
 

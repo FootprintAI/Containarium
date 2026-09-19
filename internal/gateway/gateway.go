@@ -982,6 +982,13 @@ func annotateContext(ctx context.Context, req *http.Request) metadata.MD {
 	if scopes, ok := auth.ScopesFromContext(ctx); ok && len(scopes) > 0 {
 		md.Set(auth.MDKeyScopes, strings.Join(scopes, ","))
 	}
+	// #1922 — forward the optional `run_id` claim the same way, so the
+	// tracker broker's write verbs (reached through this REST/gateway
+	// path, like every other tracker RPC) can read the acting run's
+	// identity off the verified token.
+	if runID, ok := auth.RunIDFromContext(ctx); ok && runID != "" {
+		md.Set(auth.MDKeyRunID, runID)
+	}
 	return md
 }
 

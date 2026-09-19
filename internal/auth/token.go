@@ -524,6 +524,7 @@ const (
 	ContextKeyScopes   contextKey = "scopes" // Phase 1.7b
 	ContextKeyAct      contextKey = "act"    // #1677
 	ContextKeyJTI      contextKey = "jti"    // #1678
+	ContextKeyRunID    contextKey = "run_id" // #1922
 )
 
 // ContextWithClaims adds authentication claims to context
@@ -538,6 +539,9 @@ func ContextWithClaims(ctx context.Context, claims *Claims) context.Context {
 	}
 	if claims.ID != "" {
 		ctx = context.WithValue(ctx, ContextKeyJTI, claims.ID)
+	}
+	if claims.RunID != "" {
+		ctx = context.WithValue(ctx, ContextKeyRunID, claims.RunID)
 	}
 	return ctx
 }
@@ -577,4 +581,12 @@ func ActFromContext(ctx context.Context) (*Actor, bool) {
 func JTIFromContext(ctx context.Context) (string, bool) {
 	jti, ok := ctx.Value(ContextKeyJTI).(string)
 	return jti, ok
+}
+
+// RunIDFromContext retrieves the JWT `run_id` claim from context. Returns
+// ("", false) when no run id was carried — every operator/human token, and
+// every token minted before run binding (#1815) existed. #1922.
+func RunIDFromContext(ctx context.Context) (string, bool) {
+	runID, ok := ctx.Value(ContextKeyRunID).(string)
+	return runID, ok
 }
