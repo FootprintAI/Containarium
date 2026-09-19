@@ -264,7 +264,10 @@ export interface Collaborator {
   ownerUsername: string;
   collaboratorUsername: string;
   accountName: string;
+  /** @deprecated First authorized key only — prefer sshPublicKeys. Kept for back-compat display. */
   sshPublicKey: string;
+  /** All keys this collaborator is authorized with (#1144). */
+  sshPublicKeys: string[];
   addedAt: number;
   createdBy: string;
   hasSudo: boolean;
@@ -276,7 +279,7 @@ export interface Collaborator {
  */
 export interface AddCollaboratorRequest {
   collaboratorUsername: string;
-  sshPublicKey: string;
+  sshPublicKeys: string[];
   grantSudo?: boolean;
   grantContainerRuntime?: boolean;
 }
