@@ -181,6 +181,20 @@ type AgentSkillServer struct {
 	// wiped, but the credentials live to their expiry and each run says so in
 	// the log.
 	revocations runlease.Revoker
+	// runs is the in-memory registry of currently-live runs (#1922) —
+	// nil until dual_server.go wires the same instance into both this
+	// server and ContainerServer via SetRunRegistry. Registration is
+	// nil-guarded at each call site rather than inside Registry itself,
+	// matching this file's existing convention for audit/revocations.
+	runs *runlease.Registry
+}
+
+// SetRunRegistry wires the shared in-memory run registry (#1922) — the
+// SAME instance dual_server.go also gives to ContainerServer, so a
+// tracker write RPC can resolve run_id -> skill/model and ask "is this
+// run still live" for a run this server created.
+func (s *AgentSkillServer) SetRunRegistry(r *runlease.Registry) {
+	s.runs = r
 }
 
 // auditLogger is the one method of *audit.Store this server uses. Narrowed to
@@ -331,6 +345,15 @@ func (s *AgentSkillServer) RunAgentSkill(ctx context.Context, req *pb.RunAgentSk
 	// Clean()-style process reset, not a seed-path change. Crew/queue leases are
 	// also still never explicitly ended here (they outlive this RPC by design);
 	// see docs/architecture/execution-scoped-authorization.md §3.
+	// Record this run in the in-memory registry (#1922) so other daemon
+	// components — the tracker broker's ClaimTrackerIssue liveness check
+	// and identity stamp — can resolve run_id -> skill/model without a
+	// database round trip. Symmetric with endRunLease's Unregister
+	// below: a run is "live" for exactly the window between successful
+	// provisioning (here) and its lease ending.
+	if s.runs != nil {
+		s.runs.Register(runID, runlease.Info{SkillID: skill.Id, Model: skill.Model})
+	}
 	defer s.endRunLease(ctx, lease, s.boxWiper(), runExitReason)
 
 	// Run the in-box agent loop (Phase 4a) and read its artifact back.
@@ -381,6 +404,10 @@ func (s *AgentSkillServer) boxWiper() runlease.Wiper {
 func (s *AgentSkillServer) endRunLease(ctx context.Context, lease runlease.Lease, w runlease.Wiper, reason string) {
 	if len(lease.Credentials) == 0 && lease.RunID == "" {
 		return // nothing was ever issued
+	}
+
+	if s.runs != nil {
+		s.runs.Unregister(lease.RunID)
 	}
 
 	detached := context.WithoutCancel(ctx)

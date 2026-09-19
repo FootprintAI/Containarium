@@ -238,6 +238,38 @@ func TestEndRunLease_UsesDetachedContext(t *testing.T) {
 	}
 }
 
+// TestEndRunLease_UnregistersFromRunRegistry pins the #1922 wiring: a
+// run's entry in the shared run registry is removed exactly when its
+// lease ends, so a tracker write RPC can no longer resolve or claim
+// liveness for a run that has finished.
+func TestEndRunLease_UnregistersFromRunRegistry(t *testing.T) {
+	registry := runlease.NewRegistry()
+	registry.Register("run-registry-cleanup", runlease.Info{SkillID: "hello-agent", Model: "sonnet"})
+
+	s := &AgentSkillServer{}
+	s.SetRunRegistry(registry)
+	w := &fakeSeedWiper{}
+
+	if !registry.Live("run-registry-cleanup") {
+		t.Fatal("setup: run should be live before endRunLease")
+	}
+	s.endRunLease(context.Background(), testLease("run-registry-cleanup"), w, runExitReason)
+
+	if registry.Live("run-registry-cleanup") {
+		t.Error("run still shows as live in the registry after endRunLease")
+	}
+}
+
+// TestEndRunLease_NilRunRegistry_DoesNotPanic covers a daemon where
+// dual_server.go's SetRunRegistry wiring hasn't run (e.g. tests
+// constructing AgentSkillServer directly) — the nil-guard at the call
+// site must make this a no-op, not a crash.
+func TestEndRunLease_NilRunRegistry_DoesNotPanic(t *testing.T) {
+	s := &AgentSkillServer{} // runs field left nil
+	w := &fakeSeedWiper{}
+	s.endRunLease(context.Background(), testLease("run-no-registry"), w, runExitReason)
+}
+
 // TestEndRunLease_LogsWhenUnrevoked covers the no-Postgres daemon: the run
 // still completes and the files are still wiped, but the operator gets exactly
 // one line naming the run whose credentials will now live to their expiry.

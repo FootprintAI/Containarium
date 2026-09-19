@@ -33,6 +33,7 @@ import (
 	"github.com/footprintai/containarium/internal/modelgateway"
 	"github.com/footprintai/containarium/internal/mtls"
 	"github.com/footprintai/containarium/internal/pentest"
+	"github.com/footprintai/containarium/internal/runlease"
 	"github.com/footprintai/containarium/internal/sandbox/ratelimit"
 	secretsstore "github.com/footprintai/containarium/internal/secrets"
 	"github.com/footprintai/containarium/internal/security"
@@ -545,6 +546,15 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	agentSkillServer := NewAgentSkillServer(recipeServer, tokenManager, npServer)
 	pb.RegisterAgentSkillServiceServer(grpcServer, agentSkillServer)
 	log.Printf("Agent-skill service enabled")
+
+	// #1922 — one shared in-memory registry of currently-live runs, so
+	// the tracker broker's ClaimTrackerIssue liveness check and identity
+	// stamp can resolve run_id -> skill/model without a database round
+	// trip. AgentSkillServer populates it (RunAgentSkill / endRunLease);
+	// ContainerServer's tracker write RPCs read it.
+	runRegistry := runlease.NewRegistry()
+	agentSkillServer.SetRunRegistry(runRegistry)
+	containerServer.SetRunRegistry(runRegistry)
 
 	// Register CrewService — Phase 3. Collaborating sets of skills bound to a
 	// task purpose; reuses the agent-skill server to provision each member box.
