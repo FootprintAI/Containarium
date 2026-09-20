@@ -19,12 +19,13 @@ func TestRegistry_RegisterThenGet(t *testing.T) {
 }
 
 // TestRegistry_InfoCarriesBoxGitCommitWorkspace is #1923's addition:
-// SubmitTrackerChange needs to resolve a run's box, base commit, and
-// workspace path from the same registry ClaimTrackerIssue already
-// reads for liveness — a round trip through Register/Get must carry
-// all three through unchanged, including the case where a run had no
-// git_source at all (empty GitCommit/Workspace, not a zero-value that
-// looks like a mistake).
+// SubmitTrackerChange needs to resolve a run's box, base commit,
+// workspace path, and original ref from the same registry
+// ClaimTrackerIssue already reads for liveness — a round trip through
+// Register/Get must carry all four through unchanged, including the
+// case where a run had no git_source at all (empty
+// GitCommit/Workspace/GitRef, not a zero-value that looks like a
+// mistake).
 func TestRegistry_InfoCarriesBoxGitCommitWorkspace(t *testing.T) {
 	r := NewRegistry()
 	r.Register("run-1", Info{
@@ -33,6 +34,7 @@ func TestRegistry_InfoCarriesBoxGitCommitWorkspace(t *testing.T) {
 		Box:       "agent-code-review",
 		GitCommit: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
 		Workspace: "/workspace/runs/run-1",
+		GitRef:    "main",
 	})
 
 	got, ok := r.Get("run-1")
@@ -45,6 +47,7 @@ func TestRegistry_InfoCarriesBoxGitCommitWorkspace(t *testing.T) {
 		Box:       "agent-code-review",
 		GitCommit: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
 		Workspace: "/workspace/runs/run-1",
+		GitRef:    "main",
 	}
 	if got != want {
 		t.Errorf("Get(run-1) = %+v, want %+v", got, want)
@@ -59,8 +62,8 @@ func TestRegistry_InfoWithNoGitSourceLeavesCommitAndWorkspaceEmpty(t *testing.T)
 	if !ok {
 		t.Fatal("Get(run-2) = not found, want found")
 	}
-	if got.GitCommit != "" || got.Workspace != "" {
-		t.Errorf("Get(run-2) = %+v, want empty GitCommit/Workspace for a run with no git_source", got)
+	if got.GitCommit != "" || got.Workspace != "" || got.GitRef != "" {
+		t.Errorf("Get(run-2) = %+v, want empty GitCommit/Workspace/GitRef for a run with no git_source", got)
 	}
 	if got.Box != "agent-no-git-skill" {
 		t.Errorf("Get(run-2).Box = %q, want agent-no-git-skill", got.Box)
