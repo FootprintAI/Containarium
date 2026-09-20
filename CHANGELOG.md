@@ -50,8 +50,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Tracker tools in the platform MCP server (`tracker_*`), with client
     methods, gated by a new `CONTAINARIUM_MCP_TOOLS` allow-list so an
     operator chooses which tools an agent sees (#1946, #1947, #1948).
-  - Not yet built: submitting a change request without a push credential
-    in the box (Phase 2, #1923).
+  - Phase 2 (#1923): **submit a change request without a push credential
+    in the box.** `SubmitTrackerChange` bundles the run's committed
+    workspace out of the box, pushes it from a fresh temporary bare
+    repository on the host (no hooks, no inherited git config) to a
+    branch the daemon chooses, opens the change request through the
+    provider adapter, and writes an audit event. The request carries no
+    remote and no target ref, so an agent cannot aim at a default or
+    protected branch. Malformed or oversized bundles are rejected before
+    any upstream call. Surfaces: `containarium tracker change submit
+    <username> <connection> <issue>` (needs a run-scoped token whose run
+    has a recorded `git_source`) and the `tracker_submit_change` platform
+    MCP tool; host git is a preflight, and `tracker status` reports it
+    (#1951, #1952, #1953, #1954, #1955, #1956, #1957, #1958).
 - **Release builds ship a pre-built Caddy** instead of compiling it on
   every host during app-hosting setup (#1916).
 
