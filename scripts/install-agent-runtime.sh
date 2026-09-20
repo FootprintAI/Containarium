@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 # install-agent-runtime.sh — assemble the agent-runtime box (Phase 4a/4b/4c).
 #
-# Runs INSIDE an agent-runtime LXC. Installs the two pieces the in-box loop
-# needs so the daemon's `agent-runtime` exec (run mode) and serve mode work:
+# Runs INSIDE an agent-runtime LXC. Installs the pieces the in-box loop needs
+# so the daemon's `agent-runtime` exec (run mode) and serve mode work:
 #   1. agent-box  (Go binary, the in-box MCP tool surface)
-#   2. agent-runtime (the Node loop component) + a PATH launcher
+#   2. mcp-server (Go binary, the platform MCP — spawned by agent-runtime for a
+#      run bound to a tracker connection; #1922 D4). Best-effort, see below.
+#   3. agent-runtime (the Node loop component) + a PATH launcher
 # Node itself is installed by the recipe's post_start (Node 20).
 #
 # Artifacts are pulled from a GitHub release:
 #   <base>/agent-box-linux-amd64
+#   <base>/mcp-server-linux-amd64
 #   <base>/agent-runtime-bundle.tar.gz
 # where <base> = https://github.com/<REPO>/releases/download/<RELEASE>.
 # Built by `make build-agent-box-all` + `make bundle-agent-runtime`.
@@ -36,6 +39,23 @@ echo "==> installing agent-box from ${ARTIFACT_BASE_URL}"
 curl -fsSL "${ARTIFACT_BASE_URL}/agent-box-linux-amd64" -o "${PREFIX}/agent-box" </dev/null
 chmod +x "${PREFIX}/agent-box"
 
+# mcp-server is what agent-runtime spawns to give a tracker-bound run its
+# tracker_* tools (the daemon seeds that mount whether or not this binary
+# exists). Best-effort on purpose: a release without the asset must not take
+# down every agent box, since boxes not bound to a tracker never needed it —
+# but the gap is loud, because the alternative is an agent that silently has no
+# tracker tools. Downloaded to a temp file and moved into place so a failed
+# fetch never leaves a truncated binary on PATH.
+echo "==> installing mcp-server from ${ARTIFACT_BASE_URL}"
+MCP_TMP="$(mktemp)"
+if curl -fsSL "${ARTIFACT_BASE_URL}/mcp-server-linux-amd64" -o "${MCP_TMP}" </dev/null; then
+  chmod +x "${MCP_TMP}"
+  mv "${MCP_TMP}" "${PREFIX}/mcp-server"
+else
+  rm -f "${MCP_TMP}"
+  echo "WARNING: could not fetch mcp-server-linux-amd64 from ${ARTIFACT_BASE_URL}; tracker tools will NOT work in this box (runs bound to a tracker connection get no tracker_* tools)" >&2
+fi
+
 echo "==> installing agent-runtime component into ${APP_DIR}"
 mkdir -p "${APP_DIR}"
 curl -fsSL "${ARTIFACT_BASE_URL}/agent-runtime-bundle.tar.gz" -o /tmp/agent-runtime-bundle.tar.gz </dev/null
@@ -51,4 +71,4 @@ exec node ${APP_DIR}/dist/index.js "\$@"
 LAUNCH
 chmod +x "${PREFIX}/agent-runtime"
 
-echo "==> agent-runtime box assembled: $(command -v agent-box), $(command -v agent-runtime)"
+echo "==> agent-runtime box assembled: $(command -v agent-box), $(command -v mcp-server || echo 'mcp-server MISSING'), $(command -v agent-runtime)"
