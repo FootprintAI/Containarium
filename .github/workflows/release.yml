@@ -149,6 +149,14 @@ jobs:
         # object built above makes this invocation embed it (-tags embed_bpf).
         run: make build-release VERSION="${GITHUB_REF_NAME#v}"
 
+      - name: Build pre-built Caddy binary (#1617)
+        # One Caddy binary with caddy-l4 + every DNS-01 provider baked in, so
+        # setupCaddy (internal/server/core_services.go) can download+verify
+        # it instead of running xcaddy on every host at provisioning time.
+        # Appends to the SHA256SUMS.txt build-release just wrote (>> in the
+        # Makefile target, not >) rather than a separate checksum file.
+        run: make build-caddy
+
       - name: Set up Node
         # agent-runtime is a Node/TS sibling package (the in-box agent loop);
         # `make bundle-agent-runtime` runs npm ci + tsc and tars it.
@@ -355,6 +363,7 @@ jobs:
             bin/agent-box-darwin-amd64
             bin/agent-box-darwin-arm64
             bin/agent-runtime-bundle.tar.gz
+            bin/caddy-linux-amd64
             bin/SHA256SUMS.txt
           draft: false
           prerelease: false
