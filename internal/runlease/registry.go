@@ -25,6 +25,14 @@ type Info struct {
 	// guess a workspace or fetch nothing and call it success.
 	GitCommit string
 	Workspace string
+	// GitRef is the run's ORIGINAL requested ref (branch/tag/SHA/
+	// "refs/pull/N/merge"), not the resolved GitCommit — carried
+	// separately because SubmitTrackerChange needs a branch NAME to
+	// open a change request against (OpenChangeRequest.BaseBranch),
+	// which a resolved commit alone cannot supply. Empty means the run
+	// fetched the remote's default branch (FetchGitSource's own "empty
+	// ref" convention) rather than naming one explicitly.
+	GitRef string
 }
 
 // Registry is an in-memory, in-process record of currently-live runs.
