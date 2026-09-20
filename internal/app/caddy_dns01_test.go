@@ -226,3 +226,32 @@ func TestDNSProviderModule(t *testing.T) {
 		}
 	}
 }
+
+// TestAllDNSProviderModules pins the count and sortedness of the pre-built
+// Caddy release binary's module list (#1617) — a provider added to
+// dnsProviderModules without also updating the Makefile's build-caddy
+// target would silently ship a binary missing it, so this at least proves
+// the source-of-truth side stays complete and deterministic.
+func TestAllDNSProviderModules(t *testing.T) {
+	got := AllDNSProviderModules()
+	if len(got) != len(dnsProviderModules) {
+		t.Fatalf("AllDNSProviderModules() returned %d modules, want %d (one per dnsProviderModules entry)", len(got), len(dnsProviderModules))
+	}
+	for i := 1; i < len(got); i++ {
+		if got[i-1] >= got[i] {
+			t.Fatalf("AllDNSProviderModules() not sorted: %q before %q", got[i-1], got[i])
+		}
+	}
+	for _, want := range dnsProviderModules {
+		found := false
+		for _, m := range got {
+			if m == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("AllDNSProviderModules() missing %q", want)
+		}
+	}
+}
