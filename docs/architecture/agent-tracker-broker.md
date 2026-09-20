@@ -1,7 +1,7 @@
 # Design: agent tracker broker
 
 **Date:** 2026-09-18
-**Status:** proposed — decision D1 needs owner sign-off on #1920 before #1921 merges
+**Status:** accepted — decision D1 signed off by the repo owner on 2026-09-20 (recorded on #1920)
 **Stack:** Go 1.26.6 (daemon, CLI, platform MCP); TypeScript 5.6 / Node ≥ 20
 (`agent-runtime`, one engine-mount change); protobuf/gRPC + grpc-gateway. No
 new languages, no new services, no new deployables.

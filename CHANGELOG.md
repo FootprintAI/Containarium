@@ -17,6 +17,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   release from v0.71.0 onward is gated and complete.
 -->
 
+## [0.83.0] - 2026-09-20
+
+### Added
+
+- **Agent tracker broker (epic #1920, Phase 0 and Phase 1): update a GitHub
+  or GitLab issue from a box without the forge credential ever entering
+  the box.** The credential is held in daemon custody (decision D1 in
+  `docs/architecture/agent-tracker-broker.md`), opt-in per tenant, and
+  the box only ever asks the platform to act. Design: (#1924).
+  - `TrackerConnection` contract, store and gRPC service, with a
+    `containarium tracker connect | list | status | disconnect` CLI
+    (#1950, #1930, #1932). `connect` validates the credential through a
+    new `DescribeCredential` on both the GitHub and GitLab adapters
+    (#1931).
+  - Read verbs: `GetTrackerIssue`, `ListTrackerIssues`,
+    `GetTrackerChange` RPCs and CLI, on a provider-neutral `Provider`
+    interface with a shared conformance suite run against both adapters
+    (#1933, #1934).
+  - Write verbs: `CommentOnTrackerIssue`, `ClaimTrackerIssue` and
+    `SetTrackerIssueLabels` RPCs, each stamped with a platform-derived
+    identity and with agent-supplied text sanitized before it reaches the
+    forge (#1935, #1937, #1938, #1940, #1941, #1942).
+  - A run is bound to its connection: `RunAgentSkill` mints a
+    `tracker_conn` JWT claim, the `run_id` claim is propagated to gRPC
+    handlers, and the broker enforces the run-to-connection binding, so a
+    box can act only through the connection its run was started with
+    (#1936, #1939, #1943, #1944, #1945).
+  - `SECRET_DELIVERY_BROKER_ONLY`: a write-only secret delivery mode for
+    credentials that must never be readable from inside a box (#1925,
+    #1921).
+  - Tracker tools in the platform MCP server (`tracker_*`), with client
+    methods, gated by a new `CONTAINARIUM_MCP_TOOLS` allow-list so an
+    operator chooses which tools an agent sees (#1946, #1947, #1948).
+  - Not yet built: submitting a change request without a push credential
+    in the box (Phase 2, #1923).
+- **Release builds ship a pre-built Caddy** instead of compiling it on
+  every host during app-hosting setup (#1916).
+
+### Fixed
+
+- **`containarium collaborator` was registered twice** under the
+  client/server split; the stale entry is removed from
+  `movedServerCommands` (#1928).
+- **The web UI collaborator dialog sent the deprecated scalar SSH key
+  field**; it now sends `ssh_public_keys` (#1914).
+- **Terraform: `boot_disk_auto_delete` can now be overridden** for the
+  spot jump-server (#1915).
+
 ## [0.82.0] - 2026-09-18
 
 ### Added
