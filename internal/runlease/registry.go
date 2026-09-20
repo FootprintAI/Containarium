@@ -5,10 +5,34 @@ import "sync"
 // Info is what other daemon components need to know about a
 // currently-running skill run, keyed by run id — enough to resolve a
 // verified JWT's run_id claim to the skill/model it belongs to, e.g.
-// for the tracker broker's platform-stamped identity (#1922).
+// for the tracker broker's platform-stamped identity (#1922), and
+// (#1923) enough to resolve it to the box/workspace/base-commit
+// SubmitTrackerChange needs to build a bundle without a second lookup
+// path or its own copy of what provisionSkillBox already knows.
 type Info struct {
 	SkillID string
 	Model   string
+	// Box is the container name the run's box lives in — the same
+	// value provisionSkillBox already returns and Lease.Box already
+	// carries, duplicated here because SubmitTrackerChange resolves a
+	// run by id alone (from the JWT's run_id claim) and has no other
+	// path to the box name.
+	Box string
+	// GitCommit and Workspace mirror provisionSkillBox's own return
+	// values for a run with a git_source. Both are empty for a run
+	// with none — SubmitTrackerChange must treat that as
+	// FAILED_PRECONDITION ("no base commit to bundle against"), never
+	// guess a workspace or fetch nothing and call it success.
+	GitCommit string
+	Workspace string
+	// GitRef is the run's ORIGINAL requested ref (branch/tag/SHA/
+	// "refs/pull/N/merge"), not the resolved GitCommit — carried
+	// separately because SubmitTrackerChange needs a branch NAME to
+	// open a change request against (OpenChangeRequest.BaseBranch),
+	// which a resolved commit alone cannot supply. Empty means the run
+	// fetched the remote's default branch (FetchGitSource's own "empty
+	// ref" convention) rather than naming one explicitly.
+	GitRef string
 }
 
 // Registry is an in-memory, in-process record of currently-live runs.

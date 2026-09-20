@@ -385,11 +385,23 @@ func (s *AgentSkillServer) RunAgentSkill(ctx context.Context, req *pb.RunAgentSk
 	// Record this run in the in-memory registry (#1922) so other daemon
 	// components — the tracker broker's ClaimTrackerIssue liveness check
 	// and identity stamp — can resolve run_id -> skill/model without a
-	// database round trip. Symmetric with endRunLease's Unregister
+	// database round trip. Box/GitCommit/Workspace/GitRef (#1923) let
+	// SubmitTrackerChange resolve the same run to what it needs to
+	// bundle and to open a change request against without a second
+	// lookup path; GitCommit/Workspace are empty exactly when this run
+	// had no git_source, which SubmitTrackerChange must treat as
+	// FAILED_PRECONDITION. Symmetric with endRunLease's Unregister
 	// below: a run is "live" for exactly the window between successful
 	// provisioning (here) and its lease ending.
 	if s.runs != nil {
-		s.runs.Register(runID, runlease.Info{SkillID: skill.Id, Model: skill.Model})
+		s.runs.Register(runID, runlease.Info{
+			SkillID:   skill.Id,
+			Model:     skill.Model,
+			Box:       containerName,
+			GitCommit: gitCommit,
+			Workspace: workspacePath,
+			GitRef:    req.GetGitRef(),
+		})
 	}
 	defer s.endRunLease(ctx, lease, s.boxWiper(), runExitReason)
 

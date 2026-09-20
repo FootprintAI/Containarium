@@ -56,6 +56,10 @@ type fakeWriterProvider struct {
 
 	labelsAdd, labelsRemove []string
 	labelsErr               error
+
+	openChangeReq tracker.OpenChangeRequest
+	openChangeOut tracker.Change
+	openChangeErr error
 }
 
 func (f *fakeWriterProvider) Comment(_ context.Context, _ tracker.Conn, _ int64, body string) (tracker.Comment, error) {
@@ -85,6 +89,17 @@ func (f *fakeWriterProvider) SetLabels(_ context.Context, _ tracker.Conn, _ int6
 // trusted without needing every existing fixture updated.
 func (f *fakeWriterProvider) WhoAmI(context.Context, tracker.Conn) (string, error) {
 	return "", nil
+}
+
+// OpenChange records the request and returns a canned result — added
+// (#1923) so this fake satisfies the full tracker.Provider interface,
+// which SubmitTrackerChange's connection resolution requires; every
+// existing caller that never sets openChangeOut/openChangeErr gets the
+// zero Change and no error, same "safe default" shape as the other
+// fields here.
+func (f *fakeWriterProvider) OpenChange(_ context.Context, _ tracker.Conn, req tracker.OpenChangeRequest) (tracker.Change, error) {
+	f.openChangeReq = req
+	return f.openChangeOut, f.openChangeErr
 }
 
 // setUpWriterConnection is setUpBrokerConnection's write-verb

@@ -6491,6 +6491,52 @@
         ]
       }
     },
+    "/v1/tracker/{username}/{connection}/changes": {
+      "post": {
+        "summary": "Submit a tracker change request",
+        "description": "Bundles the run's committed workspace out of the box and pushes it from a fresh temporary bare repository on the host to a daemon-chosen branch, then opens a change request referencing issue — no push credential ever enters the box. Requires tracker:write and a run with a recorded git_source. Opened as a draft when draft is true.",
+        "operationId": "TrackerService_SubmitTrackerChange",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SubmitTrackerChangeResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "connection",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/SubmitTrackerChangeBody"
+            }
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      }
+    },
     "/v1/tracker/{username}/{connection}/changes/{number}": {
       "get": {
         "summary": "Get a tracker change request",
@@ -14755,6 +14801,35 @@
       "default": "STORAGE_ISOLATION_UNSPECIFIED",
       "description": "StorageIsolation says whether a storage pool hands each container its own\nfilesystem, or puts every container on one shared filesystem.\n\nThis is the property behind #1206. On a shared filesystem every tenant\nrootfs lives on one ext4 filesystem and therefore shares one jbd2 journal;\next4's default data=ordered mode writes back a transaction's dirty data\nwhile holding the journal lock, so one tenant's buffered writes block\nanother tenant's fsync() — measured at 17 ms -\u003e 11,885 ms with the host and\nthe physical device both idle. A tenant degrades its neighbours by writing\nnormally, which makes this an isolation property, not a performance one.\n\n - STORAGE_ISOLATION_UNSPECIFIED: Not known — the pool could not be read. Deliberately distinct from\nSHARED_FILESYSTEM: an unread pool must not be reported as either safe or\nunsafe.\n - STORAGE_ISOLATION_PER_CONTAINER: Each container gets its own dataset / subvolume / logical volume, so\ntenants share no filesystem journal.\n - STORAGE_ISOLATION_SHARED_FILESYSTEM: Every container's rootfs is on one filesystem — one journal, and\ncross-tenant fsync stalls.\n - STORAGE_ISOLATION_UNKNOWN_DRIVER: The driver was read but is not one we classify, so we cannot vouch for it\neither way. Distinct from UNSPECIFIED (pool unreadable) and from\nSHARED_FILESYSTEM (positively known to share)."
     },
+    "SubmitTrackerChangeBody": {
+      "type": "object",
+      "properties": {
+        "issue": {
+          "type": "string",
+          "format": "int64",
+          "description": "issue this change closes/references. SubmitTrackerChange is always\nin service of a claimed issue, never a standalone change."
+        },
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "draft": {
+          "type": "boolean",
+          "description": "draft opens the change request as a draft/WIP — GitHub's native\ndraft flag, or GitLab's \"Draft: \" title-prefix convention."
+        }
+      },
+      "description": "SubmitTrackerChangeRequest publishes the calling run's committed\nworkspace and opens a change request referencing issue — see\ndocs/architecture/agent-tracker-broker.md's \"Submit path\". Carries\nno remote, no target ref, and no credential: the daemon resolves the\nrun's box, base commit, and connection itself from the verified JWT,\nand chooses the branch (never a request field — see\ninternal/tracker/submit.BranchName)."
+    },
+    "SubmitTrackerChangeResponse": {
+      "type": "object",
+      "properties": {
+        "change": {
+          "$ref": "#/definitions/TrackerChange"
+        }
+      }
+    },
     "SuppressPentestFindingBody": {
       "type": "object",
       "properties": {
@@ -15027,6 +15102,10 @@
         },
         "url": {
           "type": "string"
+        },
+        "branch": {
+          "type": "string",
+          "description": "branch is the daemon-chosen branch the change request's head points\nat (#1923). Populated by SubmitTrackerChange's response; empty on\nGetTrackerChange, which has no reason to resolve it for an\nalready-open change."
         }
       },
       "description": "TrackerChange is the provider-neutral shape of a GitHub pull request\nor GitLab merge request."
