@@ -185,5 +185,6 @@ func toProtoChange(c tracker.Change) *pb.TrackerChange {
 		State:     c.State,
 		CiVerdict: c.CIVerdict,
 		Url:       c.URL,
+		Branch:    c.Branch,
 	}
 }

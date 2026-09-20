@@ -45,6 +45,12 @@ type Change struct {
 	State     pb.TrackerIssueState
 	CIVerdict pb.TrackerCiVerdict
 	URL       string
+	// Branch is the daemon-chosen branch the change's head points at
+	// (#1923). Populated by OpenChange (echoing the HeadBranch the
+	// caller told it to use — the provider's response never needs to
+	// be consulted for this); empty from GetChange, which has no
+	// reason to resolve it for an already-open change.
+	Branch string
 }
 
 // IssueFilter narrows ListIssues. The zero value matches every issue.

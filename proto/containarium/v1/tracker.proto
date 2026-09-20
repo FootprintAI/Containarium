@@ -238,6 +238,11 @@ message TrackerChange {
   TrackerIssueState state = 2;
   TrackerCiVerdict ci_verdict = 3;
   string url = 4;
+  // branch is the daemon-chosen branch the change request's head points
+  // at (#1923). Populated by SubmitTrackerChange's response; empty on
+  // GetTrackerChange, which has no reason to resolve it for an
+  // already-open change.
+  string branch = 5;
 }
 
 // GetTrackerIssueRequest reads a single issue, including its comments.
@@ -354,6 +359,33 @@ message SetTrackerIssueLabelsRequest {
 
 message SetTrackerIssueLabelsResponse {
   string message = 1;
+}
+
+// SubmitTrackerChangeRequest publishes the calling run's committed
+// workspace and opens a change request referencing issue — see
+// docs/architecture/agent-tracker-broker.md's "Submit path". Carries
+// no remote, no target ref, and no credential: the daemon resolves the
+// run's box, base commit, and connection itself from the verified JWT,
+// and chooses the branch (never a request field — see
+// internal/tracker/submit.BranchName).
+message SubmitTrackerChangeRequest {
+  string username = 1;
+  string connection = 2;
+
+  // issue this change closes/references. SubmitTrackerChange is always
+  // in service of a claimed issue, never a standalone change.
+  int64 issue = 3;
+
+  string title = 4;
+  string description = 5;
+
+  // draft opens the change request as a draft/WIP — GitHub's native
+  // draft flag, or GitLab's "Draft: " title-prefix convention.
+  bool draft = 6;
+}
+
+message SubmitTrackerChangeResponse {
+  TrackerChange change = 1;
 }
 
 // TrackerService manages tracker connections — the daemon-custody seam
@@ -499,6 +531,21 @@ service TrackerService {
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Set labels on a tracker issue";
       description: "Adds and/or removes labels on an issue. Requires tracker:write.";
+      tags: "Tracker";
+    };
+  }
+
+  // SubmitTrackerChange publishes the calling run's committed workspace
+  // and opens a change request, without a push credential ever
+  // entering the box.
+  rpc SubmitTrackerChange(SubmitTrackerChangeRequest) returns (SubmitTrackerChangeResponse) {
+    option (google.api.http) = {
+      post: "/v1/tracker/{username}/{connection}/changes"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Submit a tracker change request";
+      description: "Bundles the run's committed workspace out of the box and pushes it from a fresh temporary bare repository on the host to a daemon-chosen branch, then opens a change request referencing issue — no push credential ever enters the box. Requires tracker:write and a run with a recorded git_source. Opened as a draft when draft is true.";
       tags: "Tracker";
     };
   }

@@ -28,7 +28,7 @@ func TestProviderConformance(t *testing.T) {
 
 	for _, tc := range []struct {
 		name     string
-		provider tracker.WriterProvider
+		provider tracker.Provider
 		conn     tracker.Conn
 	}{
 		{"github", trackergithub.New(nil), tracker.Conn{BaseURL: newGitHubFixture(t, fixedTime), Project: "acme/widgets"}},
@@ -117,6 +117,32 @@ func TestProviderConformance(t *testing.T) {
 				t.Errorf("%s SetLabels: %v", tc.name, err)
 			}
 		})
+
+		t.Run(tc.name+"/OpenChange", func(t *testing.T) {
+			change, err := tc.provider.OpenChange(context.Background(), tc.conn, tracker.OpenChangeRequest{
+				HeadBranch:  "agent/run-1/6-conformance-change",
+				BaseBranch:  "main",
+				Title:       "Conformance change",
+				Description: "Closes #6\n\n— conformance-suite via Containarium",
+			})
+			if err != nil {
+				t.Fatalf("OpenChange: %v", err)
+			}
+			// URL is legitimately provider-specific — not compared, same
+			// convention as GetChange above.
+			if change.Number != 6 {
+				t.Errorf("%s OpenChange.Number = %d, want 6", tc.name, change.Number)
+			}
+			if change.State != pb.TrackerIssueState_TRACKER_ISSUE_STATE_OPEN {
+				t.Errorf("%s OpenChange.State = %v, want OPEN", tc.name, change.State)
+			}
+			if change.CIVerdict != pb.TrackerCiVerdict_TRACKER_CI_VERDICT_NONE {
+				t.Errorf("%s OpenChange.CIVerdict = %v, want NONE (no CI has run yet)", tc.name, change.CIVerdict)
+			}
+			if change.Branch != "agent/run-1/6-conformance-change" {
+				t.Errorf("%s OpenChange.Branch = %q, want the head branch echoed back, not resolved from the provider's response", tc.name, change.Branch)
+			}
+		})
 	}
 }
 
@@ -156,6 +182,9 @@ func newGitHubFixture(t *testing.T, fixedTime time.Time) string {
 			w.WriteHeader(http.StatusOK)
 		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/repos/acme/widgets/issues/5/labels/"):
 			w.WriteHeader(http.StatusOK)
+		case r.URL.Path == "/repos/acme/widgets/pulls" && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"number": 6, "state": "open", "merged": false, "html_url": "https://github.com/acme/widgets/pull/6"}`))
 		default:
 			t.Errorf("github fixture: unexpected request %s %q", r.Method, r.URL.Path)
 		}
@@ -202,6 +231,9 @@ func newGitLabFixture(t *testing.T, fixedTime time.Time) string {
 			writeJSON(w, `{}`)
 		case r.URL.EscapedPath() == "/api/v4/projects/acme%2Fwidgets/issues/5" && r.Method == http.MethodPut:
 			writeJSON(w, `{}`)
+		case r.URL.EscapedPath() == "/api/v4/projects/acme%2Fwidgets/merge_requests" && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"iid": 6, "state": "opened", "web_url": "https://gitlab.com/acme/widgets/-/merge_requests/6", "head_pipeline": null}`))
 		default:
 			t.Errorf("gitlab fixture: unexpected request %s %q", r.Method, r.URL.EscapedPath())
 		}
