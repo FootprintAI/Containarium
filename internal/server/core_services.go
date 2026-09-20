@@ -13,8 +13,10 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/app"
+	"github.com/footprintai/containarium/internal/releases"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/footprintai/containarium/pkg/core/stacks"
+	"github.com/footprintai/containarium/pkg/version"
 )
 
 const (
@@ -404,6 +406,9 @@ func (cs *CoreServices) EnsureCaddy(ctx context.Context, baseDomain string) (str
 		if info.State == "Running" {
 			cs.caddyIP = info.IPAddress
 			log.Printf("Caddy container already running at %s", cs.caddyIP)
+			if err := cs.ensureCaddyModules(ctx, baseDomain); err != nil {
+				return "", err
+			}
 			cs.reconcileCaddyDNSEnv()
 			return cs.getCaddyAdminURL(), nil
 		}
@@ -417,6 +422,9 @@ func (cs *CoreServices) EnsureCaddy(ctx context.Context, baseDomain string) (str
 			return "", fmt.Errorf("failed to get caddy IP: %w", err)
 		}
 		cs.caddyIP = ip
+		if err := cs.ensureCaddyModules(ctx, baseDomain); err != nil {
+			return "", err
+		}
 		cs.reconcileCaddyDNSEnv()
 		return cs.getCaddyAdminURL(), nil
 	}
@@ -480,52 +488,41 @@ func (cs *CoreServices) EnsureCaddy(ctx context.Context, baseDomain string) (str
 	return cs.getCaddyAdminURL(), nil
 }
 
-// setupCaddy installs and configures Caddy in the container.
-// It builds Caddy from source with xcaddy to include the caddy-l4 plugin
-// for SNI-based TLS passthrough routing.
+// caddyReleaseBinaryName is the release asset setupCaddy tries first — one
+// Caddy binary with caddy-l4 + every supported DNS-01 provider baked in,
+// published by `make build-caddy` alongside the daemon's own release
+// artifacts (#1617).
+const caddyReleaseBinaryName = "caddy-linux-amd64"
+
+// setupCaddy installs and configures Caddy in the container. It first tries
+// downloading + checksum-verifying the release-published binary matching
+// this daemon's own version (#1617) — no compiler, no proxy.golang.org
+// egress, no per-host drift, and every DNS-01 provider is already baked in
+// so switching providers later is a config change, not a rebuild. Falls
+// back to building from source with xcaddy (the pre-#1617 behavior) when no
+// matching release asset exists yet — an older daemon build, or a release
+// that predates this asset — or the download/verify fails for any reason.
 func (cs *CoreServices) setupCaddy(ctx context.Context, baseDomain string) error {
-	log.Printf("Installing Caddy with L4 plugin...")
+	log.Printf("Installing Caddy...")
 
 	// Wait for apt to be available
 	time.Sleep(5 * time.Second)
 
-	// Install Go and build dependencies (needed for xcaddy)
-	commands := [][]string{
-		{"apt-get", "update"},
-		{"apt-get", "install", "-y", "curl", "golang-go"},
-	}
-
-	for _, cmd := range commands {
-		if err := cs.incusClient.Exec(CoreCaddyContainer, cmd); err != nil {
-			return fmt.Errorf("failed to run %v: %w", cmd, err)
+	if err := cs.installPrebuiltCaddy(ctx); err != nil {
+		log.Printf("Prebuilt Caddy install unavailable (%v) — falling back to an xcaddy source build", err)
+		if err := cs.buildCaddyFromSource(); err != nil {
+			return err
 		}
 	}
 
-	// Install xcaddy
-	log.Printf("Installing xcaddy...")
-	if err := cs.incusClient.Exec(CoreCaddyContainer, []string{
-		"bash", "-c", "GOBIN=/usr/local/bin go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest",
-	}); err != nil {
-		return fmt.Errorf("failed to install xcaddy: %w", err)
-	}
-
-	// Build Caddy with caddy-l4 (SNI passthrough) and, when an ACME DNS-01
-	// provider is configured, the matching caddy-dns module — without it Caddy
-	// rejects the DNS-01 config the daemon emits (#378).
-	buildCmd := "xcaddy build --with github.com/mholt/caddy-l4"
-	if provider := app.DNSProviderFromEnv(); provider != "" {
-		if mod := app.DNSProviderModule(provider); mod != "" {
-			buildCmd += " --with " + mod
-			log.Printf("Building Caddy with caddy-l4 + DNS-01 provider %q (%s) (this may take a few minutes)...", provider, mod)
-		} else {
-			log.Printf("WARNING: CONTAINARIUM_ACME_DNS_PROVIDER=%q has no known caddy-dns module; building Caddy without it — DNS-01 wildcard issuance will fail until a module is added", provider)
-		}
-	} else {
-		log.Printf("Building Caddy with caddy-l4 plugin (this may take a few minutes)...")
-	}
-	buildCmd += " --output /usr/bin/caddy"
-	if err := cs.incusClient.Exec(CoreCaddyContainer, []string{"bash", "-c", buildCmd}); err != nil {
-		return fmt.Errorf("failed to build caddy with xcaddy: %w", err)
+	// Assert the binary actually has the module the daemon's own DNS-01
+	// config depends on. Cheap, and catches a wrong-build (this daemon's own
+	// stale binary, a fallback source build with the module map lookup
+	// somehow missing an entry) at provisioning time instead of as a
+	// reconcile-loop 500 days later — exactly Containarium-cloud#1351's
+	// shape, which this check would have caught immediately (#1617).
+	if err := cs.verifyCaddyModules(); err != nil {
+		return err
 	}
 
 	// Create caddy user and directories (idempotent; log on failure)
@@ -577,6 +574,108 @@ func (cs *CoreServices) setupCaddy(ctx context.Context, baseDomain string) error
 	time.Sleep(3 * time.Second)
 
 	log.Printf("Caddy setup complete (with caddy-l4 plugin)")
+	return nil
+}
+
+// installPrebuiltCaddy downloads and checksum-verifies the release-published
+// Caddy binary matching this daemon's own version, entirely inside the caddy
+// container (#1617). Returns an error — never fatal to the caller, which
+// falls back to buildCaddyFromSource — when this daemon's release has no
+// matching asset yet, or the download/verify fails for any reason.
+func (cs *CoreServices) installPrebuiltCaddy(ctx context.Context) error {
+	tag := "v" + version.GetVersion()
+	sum, err := releases.FetchSHA256(ctx, tag, caddyReleaseBinaryName)
+	if err != nil {
+		return fmt.Errorf("fetch SHA256SUMS for %s: %w", tag, err)
+	}
+	url := releases.BinaryDownloadURL(tag, caddyReleaseBinaryName)
+	// #nosec G204 -- url/sum are computed above from a fixed GitHub host and
+	// a hex checksum, not from caller-controlled input.
+	script := fmt.Sprintf(`set -e
+curl -fsSL %q -o /tmp/caddy.new
+echo "%s  /tmp/caddy.new" | sha256sum -c -
+chmod +x /tmp/caddy.new
+mv /tmp/caddy.new /usr/bin/caddy
+`, url, sum)
+	if err := cs.incusClient.Exec(CoreCaddyContainer, []string{"bash", "-c", script}); err != nil {
+		return fmt.Errorf("download+verify prebuilt caddy from %s: %w", url, err)
+	}
+	log.Printf("Installed prebuilt Caddy %s (checksum verified, every DNS-01 provider included)", tag)
+	return nil
+}
+
+// buildCaddyFromSource is setupCaddy's pre-#1617 behavior: install Go +
+// xcaddy in the container and compile Caddy with caddy-l4 plus, when an ACME
+// DNS-01 provider is configured, the matching caddy-dns module — without it
+// Caddy rejects the DNS-01 config the daemon emits (#378). Only the
+// configured provider's module is included here (unlike the prebuilt asset,
+// which bakes in every provider), matching this path's original behavior;
+// switching providers on a host that fell back to a source build still needs
+// a rebuild.
+func (cs *CoreServices) buildCaddyFromSource() error {
+	// Install Go and build dependencies (needed for xcaddy)
+	commands := [][]string{
+		{"apt-get", "update"},
+		{"apt-get", "install", "-y", "curl", "golang-go"},
+	}
+	for _, cmd := range commands {
+		if err := cs.incusClient.Exec(CoreCaddyContainer, cmd); err != nil {
+			return fmt.Errorf("failed to run %v: %w", cmd, err)
+		}
+	}
+
+	// Install xcaddy
+	log.Printf("Installing xcaddy...")
+	if err := cs.incusClient.Exec(CoreCaddyContainer, []string{
+		"bash", "-c", "GOBIN=/usr/local/bin go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest",
+	}); err != nil {
+		return fmt.Errorf("failed to install xcaddy: %w", err)
+	}
+
+	// Pin the same Caddy version the prebuilt asset targets (app.CaddyVersion)
+	// so a source-build fallback doesn't reintroduce the per-host version
+	// drift #1617 removed from the download path.
+	buildCmd := "xcaddy build " + app.CaddyVersion + " --with github.com/mholt/caddy-l4"
+	if provider := app.DNSProviderFromEnv(); provider != "" {
+		if mod := app.DNSProviderModule(provider); mod != "" {
+			buildCmd += " --with " + mod
+			log.Printf("Building Caddy %s with caddy-l4 + DNS-01 provider %q (%s) (this may take a few minutes)...", app.CaddyVersion, provider, mod)
+		} else {
+			log.Printf("WARNING: CONTAINARIUM_ACME_DNS_PROVIDER=%q has no known caddy-dns module; building Caddy without it — DNS-01 wildcard issuance will fail until a module is added", provider)
+		}
+	} else {
+		log.Printf("Building Caddy %s with caddy-l4 plugin (this may take a few minutes)...", app.CaddyVersion)
+	}
+	buildCmd += " --output /usr/bin/caddy"
+	if err := cs.incusClient.Exec(CoreCaddyContainer, []string{"bash", "-c", buildCmd}); err != nil {
+		return fmt.Errorf("failed to build caddy with xcaddy: %w", err)
+	}
+	return nil
+}
+
+// verifyCaddyModules asserts the installed Caddy binary has the module the
+// daemon's own DNS-01 config depends on (#1617). No-op when DNS-01 isn't
+// configured, or the configured provider has no known module (already
+// warned about during a source build).
+func (cs *CoreServices) verifyCaddyModules() error {
+	provider := app.DNSProviderFromEnv()
+	if provider == "" {
+		return nil
+	}
+	mod := app.DNSProviderModule(provider)
+	if mod == "" {
+		return nil
+	}
+	stdout, _, err := cs.incusClient.ExecWithOutput(CoreCaddyContainer, []string{"/usr/bin/caddy", "list-modules"})
+	if err != nil {
+		return fmt.Errorf("caddy list-modules failed: %w", err)
+	}
+	wantModuleID := "dns.providers." + provider
+	if !strings.Contains(stdout, wantModuleID) {
+		return fmt.Errorf("installed Caddy binary is missing module %q (built without %s) — "+
+			"DNS-01 wildcard issuance will fail with \"unknown module\" until Caddy is reinstalled with "+
+			"this provider included (#1617)", wantModuleID, mod)
+	}
 	return nil
 }
 
@@ -706,13 +805,40 @@ WantedBy=multi-user.target
 `, envLines.String())
 }
 
+// ensureCaddyModules re-installs Caddy on an ALREADY-provisioned
+// container when the currently-running binary is missing the module
+// the daemon's own DNS-01 provider needs — caught in review of #1916:
+// EnsureCaddy's two "container already exists" paths called
+// reconcileCaddyDNSEnv (below) to keep credentials in sync, but never
+// re-ran setupCaddy/verifyCaddyModules, so an operator switching DNS-01
+// providers on a host whose Caddy binary came from the xcaddy
+// source-build fallback (buildCaddyFromSource only bakes in the
+// provider configured AT BUILD TIME) would get a binary silently
+// missing the new provider's module — reconcileCaddyDNSEnv would still
+// happily restart Caddy with the new provider's env var set, pointed at
+// a binary that can't use it.
+//
+// Only ever reinstalls something for that source-build case: the
+// prebuilt release binary (#1617's default path) bakes in every known
+// provider, so verifyCaddyModules always passes for it and this is a
+// cheap `caddy list-modules` no-op on every normal EnsureCaddy call —
+// it does not turn every daemon restart into a Caddy reinstall+restart.
+func (cs *CoreServices) ensureCaddyModules(ctx context.Context, baseDomain string) error {
+	if err := cs.verifyCaddyModules(); err == nil {
+		return nil
+	}
+	log.Printf("Installed Caddy binary is missing the configured DNS-01 provider's module; reinstalling...")
+	return cs.setupCaddy(ctx, baseDomain)
+}
+
 // reconcileCaddyDNSEnv keeps an ALREADY-provisioned core-caddy container's
 // systemd Environment= lines in sync with the daemon's current DNS-01
-// provider config. setupCaddy only runs once, at container creation — an
-// operator who sets (or rotates) CONTAINARIUM_ACME_DNS_PROVIDER on a host
-// whose Caddy container already exists would otherwise never see it reach
-// Caddy at all. This is the exact incident #1597 traced: a credential
-// "believed set" for five weeks, silently never wired through.
+// provider config. setupCaddy only runs once, at container creation (or
+// when ensureCaddyModules above reinstalls it) — an operator who sets (or
+// rotates) CONTAINARIUM_ACME_DNS_PROVIDER on a host whose Caddy container
+// already exists would otherwise never see it reach Caddy at all. This is
+// the exact incident #1597 traced: a credential "believed set" for five
+// weeks, silently never wired through.
 //
 // Only writes and restarts when the rendered unit actually changed — the
 // common case, every daemon startup, is a ReadFile and a string compare.

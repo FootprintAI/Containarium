@@ -20,6 +20,23 @@ var osExit = os.Exit
 // (design doc, Rollout Phase 2): a host whose systemd unit or startup
 // script still runs e.g. `containarium daemon` after the client build has
 // taken over the `containarium` name. The stub's message names the fix.
+//
+// NOT "collaborator": #1785 made it the thirteenth hybrid command instead
+// of a fully-moved one — collaboratorCmd (collaborator.go/_add/_list/
+// _remove.go, no build tag) still registers under this exact name in the
+// client build, with only its LOCAL-Incus code path stubbed out
+// (local_stubs_client.go's addCollaboratorLocal/etc., all returning
+// errNoLocalMode) rather than the whole command tree. "collaborator" had
+// briefly been listed here too, registering a second, conflicting
+// "collaborator" node alongside the real one; cobra has no defined
+// tie-break for two same-named top-level commands, so which one
+// rootCmd.Find("collaborator") returned was accidental and could flip
+// with unrelated changes elsewhere in this package (found via
+// TestMovedServerCommands_ExitTwoNamingContainariumd going from a
+// coincidental pass to a deterministic fail while adding an unrelated new
+// top-level command in #1921). Removed rather than kept in some disabled
+// form — the hybrid implementation is the one with real dispatch logic
+// and test coverage, so it's the one that should exist.
 var movedServerCommands = []string{
 	"daemon",
 	"sentinel",
@@ -36,7 +53,6 @@ var movedServerCommands = []string{
 	"hosting",
 	"portforward",
 	"passthrough",
-	"collaborator",
 	"audit",
 	"export",
 	"cloud",
