@@ -181,6 +181,9 @@ tracker change submit
 tracker change view
 tracker connect
 tracker disconnect
+tracker issue claim
+tracker issue comment
+tracker issue label
 tracker issue list
 tracker issue view
 tracker list

@@ -2729,3 +2729,46 @@ func (c *HTTPClient) SubmitTrackerChange(req *pb.SubmitTrackerChangeRequest) (*p
 	}
 	return out.Change, nil
 }
+
+// CommentOnTrackerIssue posts a stamped, sanitized comment on an issue
+// or change request, via REST.
+func (c *HTTPClient) CommentOnTrackerIssue(req *pb.CommentOnTrackerIssueRequest) (*pb.TrackerComment, error) {
+	body, err := protojson.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("encode request: %w", err)
+	}
+	out := &pb.CommentOnTrackerIssueResponse{}
+	path := fmt.Sprintf("/v1/tracker/%s/%s/issues/%d/comments", url.PathEscape(req.Username), url.PathEscape(req.Connection), req.Number)
+	if err := c.trackerDo(http.MethodPost, path, "comment on tracker issue", body, out); err != nil {
+		return nil, err
+	}
+	return out.Comment, nil
+}
+
+// ClaimTrackerIssue attempts to claim an issue for the calling run, via REST.
+func (c *HTTPClient) ClaimTrackerIssue(req *pb.ClaimTrackerIssueRequest) (*pb.ClaimTrackerIssueResponse, error) {
+	body, err := protojson.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("encode request: %w", err)
+	}
+	out := &pb.ClaimTrackerIssueResponse{}
+	path := fmt.Sprintf("/v1/tracker/%s/%s/issues/%d/claim", url.PathEscape(req.Username), url.PathEscape(req.Connection), req.Number)
+	if err := c.trackerDo(http.MethodPost, path, "claim tracker issue", body, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// SetTrackerIssueLabels adds and/or removes labels on an issue, via REST.
+func (c *HTTPClient) SetTrackerIssueLabels(req *pb.SetTrackerIssueLabelsRequest) (string, error) {
+	body, err := protojson.Marshal(req)
+	if err != nil {
+		return "", fmt.Errorf("encode request: %w", err)
+	}
+	out := &pb.SetTrackerIssueLabelsResponse{}
+	path := fmt.Sprintf("/v1/tracker/%s/%s/issues/%d/labels", url.PathEscape(req.Username), url.PathEscape(req.Connection), req.Number)
+	if err := c.trackerDo(http.MethodPost, path, "set tracker issue labels", body, out); err != nil {
+		return "", err
+	}
+	return out.Message, nil
+}
