@@ -1608,3 +1608,37 @@ func (c *GRPCClient) SubmitTrackerChange(req *pb.SubmitTrackerChangeRequest) (*p
 	}
 	return resp.Change, nil
 }
+
+// CommentOnTrackerIssue posts a stamped, sanitized comment on an issue
+// or change request.
+func (c *GRPCClient) CommentOnTrackerIssue(req *pb.CommentOnTrackerIssueRequest) (*pb.TrackerComment, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.trackerClient.CommentOnTrackerIssue(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("comment on tracker issue: %w", err)
+	}
+	return resp.Comment, nil
+}
+
+// ClaimTrackerIssue attempts to claim an issue for the calling run.
+func (c *GRPCClient) ClaimTrackerIssue(req *pb.ClaimTrackerIssueRequest) (*pb.ClaimTrackerIssueResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.trackerClient.ClaimTrackerIssue(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("claim tracker issue: %w", err)
+	}
+	return resp, nil
+}
+
+// SetTrackerIssueLabels adds and/or removes labels on an issue.
+func (c *GRPCClient) SetTrackerIssueLabels(req *pb.SetTrackerIssueLabelsRequest) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.trackerClient.SetTrackerIssueLabels(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf("set tracker issue labels: %w", err)
+	}
+	return resp.Message, nil
+}

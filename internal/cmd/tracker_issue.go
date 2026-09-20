@@ -10,11 +10,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Tracker issue/change verbs (#1922) — provider-neutral reads through
-// the connection registered via `tracker connect`. Gated by tracker:read
-// on the token (agent runs get this scope, not tracker:admin — see
-// tracker.go's doc comment). Write verbs (comment/claim/label) land in
-// a follow-up story.
+// Tracker issue/change read verbs (#1922) — provider-neutral reads
+// through the connection registered via `tracker connect`. Gated by
+// tracker:read on the token (agent runs get this scope, not
+// tracker:admin — see tracker.go's doc comment). Write verbs
+// (comment/claim/label) are in tracker_issue_write.go; submitting a
+// change request is in tracker_change_submit.go.
 
 var trackerIssueCmd = &cobra.Command{
 	Use:   "issue",

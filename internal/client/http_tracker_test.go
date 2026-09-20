@@ -347,3 +347,115 @@ func TestSubmitTrackerChange_PathMethodAndBody(t *testing.T) {
 		t.Errorf("change = %+v, want number=6 branch=agent/run-1/1-x", change)
 	}
 }
+
+func TestCommentOnTrackerIssue_PathMethodAndBody(t *testing.T) {
+	var gotPath, gotMethod string
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotMethod = r.Method
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"comment": {"author": "agent-bot", "body": "hello"}}`))
+	}))
+	defer srv.Close()
+
+	c, err := NewHTTPClient(srv.URL, "tok")
+	if err != nil {
+		t.Fatalf("NewHTTPClient: %v", err)
+	}
+
+	comment, err := c.CommentOnTrackerIssue(&pb.CommentOnTrackerIssueRequest{
+		Username: "alice", Connection: "default", Number: 7, Body: "hello",
+	})
+	if err != nil {
+		t.Fatalf("CommentOnTrackerIssue: %v", err)
+	}
+	if gotMethod != http.MethodPost {
+		t.Errorf("method = %q, want POST", gotMethod)
+	}
+	if gotPath != "/v1/tracker/alice/default/issues/7/comments" {
+		t.Errorf("path = %q, want /v1/tracker/alice/default/issues/7/comments", gotPath)
+	}
+	if !strings.Contains(string(gotBody), `"body":"hello"`) {
+		t.Errorf("request body = %s, want it to carry the comment body", gotBody)
+	}
+	if comment.GetAuthor() != "agent-bot" {
+		t.Errorf("comment = %+v, want author=agent-bot", comment)
+	}
+}
+
+func TestClaimTrackerIssue_PathMethodAndDecoding(t *testing.T) {
+	var gotPath, gotMethod string
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotMethod = r.Method
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"claimed": true, "assigned": true}`))
+	}))
+	defer srv.Close()
+
+	c, err := NewHTTPClient(srv.URL, "tok")
+	if err != nil {
+		t.Fatalf("NewHTTPClient: %v", err)
+	}
+
+	result, err := c.ClaimTrackerIssue(&pb.ClaimTrackerIssueRequest{
+		Username: "alice", Connection: "default", Number: 9, StaleAfterSeconds: 3600,
+	})
+	if err != nil {
+		t.Fatalf("ClaimTrackerIssue: %v", err)
+	}
+	if gotMethod != http.MethodPost {
+		t.Errorf("method = %q, want POST", gotMethod)
+	}
+	if gotPath != "/v1/tracker/alice/default/issues/9/claim" {
+		t.Errorf("path = %q, want /v1/tracker/alice/default/issues/9/claim", gotPath)
+	}
+	if !strings.Contains(string(gotBody), `"staleAfterSeconds":"3600"`) {
+		t.Errorf("request body = %s, want the stale-after value (int64 fields marshal as strings in protojson)", gotBody)
+	}
+	if !result.GetClaimed() || !result.GetAssigned() {
+		t.Errorf("result = %+v, want claimed=true assigned=true", result)
+	}
+}
+
+func TestSetTrackerIssueLabels_PathMethodAndBody(t *testing.T) {
+	var gotPath, gotMethod string
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotMethod = r.Method
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"message": "labels updated"}`))
+	}))
+	defer srv.Close()
+
+	c, err := NewHTTPClient(srv.URL, "tok")
+	if err != nil {
+		t.Fatalf("NewHTTPClient: %v", err)
+	}
+
+	msg, err := c.SetTrackerIssueLabels(&pb.SetTrackerIssueLabelsRequest{
+		Username: "alice", Connection: "default", Number: 3,
+		AddLabels: []string{"triaged"}, RemoveLabels: []string{"needs-triage"},
+	})
+	if err != nil {
+		t.Fatalf("SetTrackerIssueLabels: %v", err)
+	}
+	if gotMethod != http.MethodPost {
+		t.Errorf("method = %q, want POST", gotMethod)
+	}
+	if gotPath != "/v1/tracker/alice/default/issues/3/labels" {
+		t.Errorf("path = %q, want /v1/tracker/alice/default/issues/3/labels", gotPath)
+	}
+	if !strings.Contains(string(gotBody), `"addLabels":["triaged"]`) || !strings.Contains(string(gotBody), `"removeLabels":["needs-triage"]`) {
+		t.Errorf("request body = %s, want both label lists", gotBody)
+	}
+	if msg != "labels updated" {
+		t.Errorf("message = %q, want %q", msg, "labels updated")
+	}
+}
