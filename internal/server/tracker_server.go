@@ -12,6 +12,7 @@ import (
 	"github.com/footprintai/containarium/internal/tracker"
 	trackergithub "github.com/footprintai/containarium/internal/tracker/github"
 	trackergitlab "github.com/footprintai/containarium/internal/tracker/gitlab"
+	"github.com/footprintai/containarium/internal/tracker/submit"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -227,6 +228,16 @@ func (s *ContainerServer) GetTrackerStatus(ctx context.Context, req *pb.GetTrack
 		return nil, mapTrackerError(err)
 	}
 	resp := &pb.GetTrackerStatusResponse{Connection: toProtoTrackerConnection(conn)}
+
+	// Host git preflight (#1923, decision D2) — daemon-wide, not
+	// connection-specific, so it's set unconditionally here rather than
+	// gated behind the credential checks below: an operator should see
+	// "SubmitTrackerChange will fail for every connection on this
+	// daemon" even when the connection being checked has an unrelated
+	// problem (or none at all).
+	gitVersion, gitErr := submit.CheckHostGit()
+	resp.HostGitVersion = gitVersion
+	resp.HostGitSufficient = gitErr == nil
 
 	describer, derr := s.trackerProviderFor(conn.Provider)
 	if derr != nil {

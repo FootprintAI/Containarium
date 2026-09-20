@@ -199,6 +199,17 @@ message GetTrackerStatusResponse {
   // Human-readable detail when reachable or credential_valid is false.
   // Empty when both are true.
   string detail = 7;
+
+  // host_git_version and host_git_sufficient (#1923, decision D2) let
+  // an operator see SubmitTrackerChange's preflight before an agent
+  // hits it: the daemon host's `git version` output, and whether it
+  // meets the >= 2.31 minimum the submit path needs
+  // (GIT_CONFIG_COUNT/KEY_N/VALUE_N env-based config). Daemon-wide, not
+  // connection-specific — every connection on this daemon shares the
+  // same host git. An empty host_git_version means git was not found
+  // on the daemon host's PATH at all.
+  string host_git_version = 8;
+  bool host_git_sufficient = 9;
 }
 
 // TrackerComment is one normalized issue or change-request comment.
@@ -453,7 +464,7 @@ service TrackerService {
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Check a tracker connection's live status";
-      description: "Asks the tracker to describe the connection's own credential: reachability, whether the credential is still valid, its granted scopes and expiry, and whether it's broader than the provider's preferred credential type. Requires tracker:admin.";
+      description: "Asks the tracker to describe the connection's own credential: reachability, whether the credential is still valid, its granted scopes and expiry, and whether it's broader than the provider's preferred credential type. Also reports the daemon host's git version and whether it meets SubmitTrackerChange's minimum. Requires tracker:admin.";
       tags: "Tracker";
     };
   }

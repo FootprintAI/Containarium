@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/tracker"
+	"github.com/footprintai/containarium/internal/tracker/submit"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/grpc/codes"
@@ -361,6 +362,30 @@ func TestGetTrackerStatus_Success(t *testing.T) {
 	}
 	if resp.Detail != "" {
 		t.Errorf("Detail = %q, want empty on success", resp.Detail)
+	}
+	if resp.HostGitVersion == "" {
+		t.Error("HostGitVersion is empty, want the host's real git version (git must be installed to run this test suite at all)")
+	}
+	if !resp.HostGitSufficient {
+		t.Errorf("HostGitSufficient = false for %q, want true (>= %d.%d)", resp.HostGitVersion, submit.MinGitMajor, submit.MinGitMinor)
+	}
+}
+
+// TestGetTrackerStatus_ReportsHostGitEvenWhenConnectionUnhealthy proves
+// the host-git preflight is reported unconditionally — a daemon-wide
+// property, not gated behind the connection's own reachability/
+// credential checks, which this test deliberately fails.
+func TestGetTrackerStatus_ReportsHostGitEvenWhenConnectionUnhealthy(t *testing.T) {
+	describer := &fakeReaderProvider{credErr: tracker.ErrUnreachable}
+	const user = "tracker-rpc-status-host-git-unconditional"
+	s, adminCtx := setUpBrokerConnection(t, user, describer)
+
+	resp, err := s.GetTrackerStatus(adminCtx, &pb.GetTrackerStatusRequest{Username: user, Name: "default"})
+	if err != nil {
+		t.Fatalf("GetTrackerStatus: %v", err)
+	}
+	if resp.HostGitVersion == "" || !resp.HostGitSufficient {
+		t.Errorf("HostGitVersion=%q HostGitSufficient=%v, want both populated regardless of the connection's own (deliberately failing) reachability", resp.HostGitVersion, resp.HostGitSufficient)
 	}
 }
 
