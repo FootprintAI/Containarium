@@ -173,3 +173,27 @@ func TestMCPClient_SetTrackerIssueLabels(t *testing.T) {
 	assert.Equal(t, []any{"triaged"}, sawBody["addLabels"])
 	assert.Equal(t, []any{"needs-triage"}, sawBody["removeLabels"])
 }
+
+func TestMCPClient_SubmitTrackerChange(t *testing.T) {
+	var sawPath, sawMethod string
+	var sawBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawPath, sawMethod = r.URL.Path, r.Method
+		_ = json.NewDecoder(r.Body).Decode(&sawBody)
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"change":{"number":"6","state":"TRACKER_ISSUE_STATE_OPEN","url":"https://example.com/pr/6","branch":"agent/run-1/1-x"}}`)
+	}))
+	defer server.Close()
+
+	c := NewClient(server.URL, "tok")
+	change, err := c.SubmitTrackerChange(SubmitTrackerChangeRequest{
+		Username: "alice", Connection: "default", Issue: 1, Title: "My change", Description: "does the thing",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, http.MethodPost, sawMethod)
+	assert.Equal(t, "/v1/tracker/alice/default/changes", sawPath)
+	assert.Equal(t, "My change", sawBody["title"])
+	assert.NotContains(t, sawBody, "username", "path-bound fields must not also ride in the body")
+	assert.Equal(t, int64(6), change.Number)
+	assert.Equal(t, "agent/run-1/1-x", change.Branch)
+}

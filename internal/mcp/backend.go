@@ -110,6 +110,7 @@ type API interface {
 	CommentOnTrackerIssue(req CommentOnTrackerIssueRequest) (*TrackerComment, error)
 	ClaimTrackerIssue(req ClaimTrackerIssueRequest) (*ClaimTrackerIssueResult, error)
 	SetTrackerIssueLabels(req SetTrackerIssueLabelsRequest) error
+	SubmitTrackerChange(req SubmitTrackerChangeRequest) (*TrackerChange, error)
 
 	// Host-LEVEL operations — overridden as unsupported on the cloud backend.
 	GetSystemInfo() (*GetSystemInfoResponse, error)

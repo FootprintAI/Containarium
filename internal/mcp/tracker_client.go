@@ -37,6 +37,7 @@ type TrackerChange struct {
 	State     string `json:"state"`
 	CiVerdict string `json:"ciVerdict"`
 	Url       string `json:"url,omitempty"`
+	Branch    string `json:"branch,omitempty"`
 }
 
 // GetTrackerIssueRequest's Username/Connection/Number are path-bound
@@ -217,4 +218,42 @@ func (c *Client) SetTrackerIssueLabels(req SetTrackerIssueLabelsRequest) error {
 		RemoveLabels []string `json:"removeLabels,omitempty"`
 	}{AddLabels: req.AddLabels, RemoveLabels: req.RemoveLabels})
 	return err
+}
+
+// SubmitTrackerChangeRequest (#1923). Username/Connection are path-bound;
+// Issue/Title/Description/Draft ride the JSON body. No remote, no
+// target ref, and no credential — the daemon resolves all three from
+// the run's own JWT and the connection record. See
+// docs/architecture/agent-tracker-broker.md's "Submit path".
+type SubmitTrackerChangeRequest struct {
+	Username    string `json:"-"`
+	Connection  string `json:"-"`
+	Issue       int64  `json:"issue"`
+	Title       string `json:"title"`
+	Description string `json:"description,omitempty"`
+	Draft       bool   `json:"draft,omitempty"`
+}
+
+type submitTrackerChangeResponse struct {
+	Change TrackerChange `json:"change"`
+}
+
+// SubmitTrackerChange bundles the calling run's committed workspace out
+// of its box, pushes it, and opens a change request.
+func (c *Client) SubmitTrackerChange(req SubmitTrackerChangeRequest) (*TrackerChange, error) {
+	path := fmt.Sprintf("/v1/tracker/%s/%s/changes", url.PathEscape(req.Username), url.PathEscape(req.Connection))
+	respBody, err := c.doRequest("POST", path, struct {
+		Issue       int64  `json:"issue"`
+		Title       string `json:"title"`
+		Description string `json:"description,omitempty"`
+		Draft       bool   `json:"draft,omitempty"`
+	}{Issue: req.Issue, Title: req.Title, Description: req.Description, Draft: req.Draft})
+	if err != nil {
+		return nil, err
+	}
+	var resp submitTrackerChangeResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp.Change, nil
 }

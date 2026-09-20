@@ -177,6 +177,7 @@ token list-revoked
 token refresh
 token revoke
 token unscoped-report
+tracker change submit
 tracker change view
 tracker connect
 tracker disconnect

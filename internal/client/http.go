@@ -2714,3 +2714,18 @@ func (c *HTTPClient) GetTrackerChange(req *pb.GetTrackerChangeRequest) (*pb.Trac
 	}
 	return out.Change, nil
 }
+
+// SubmitTrackerChange bundles the calling run's committed workspace out
+// of its box, pushes it, and opens a change request (#1923), via REST.
+func (c *HTTPClient) SubmitTrackerChange(req *pb.SubmitTrackerChangeRequest) (*pb.TrackerChange, error) {
+	body, err := protojson.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("encode request: %w", err)
+	}
+	out := &pb.SubmitTrackerChangeResponse{}
+	path := fmt.Sprintf("/v1/tracker/%s/%s/changes", url.PathEscape(req.Username), url.PathEscape(req.Connection))
+	if err := c.trackerDo(http.MethodPost, path, "submit tracker change", body, out); err != nil {
+		return nil, err
+	}
+	return out.Change, nil
+}

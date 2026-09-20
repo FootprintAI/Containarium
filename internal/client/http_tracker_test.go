@@ -310,3 +310,40 @@ func TestGetTrackerChange_PathAndDecoding(t *testing.T) {
 		t.Errorf("change = %+v, want state=MERGED ci_verdict=SUCCESS", change)
 	}
 }
+
+func TestSubmitTrackerChange_PathMethodAndBody(t *testing.T) {
+	var gotPath, gotMethod string
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotMethod = r.Method
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"change": {"number": 6, "state": "TRACKER_ISSUE_STATE_OPEN", "url": "https://example.com/6", "branch": "agent/run-1/1-x"}}`))
+	}))
+	defer srv.Close()
+
+	c, err := NewHTTPClient(srv.URL, "tok")
+	if err != nil {
+		t.Fatalf("NewHTTPClient: %v", err)
+	}
+
+	change, err := c.SubmitTrackerChange(&pb.SubmitTrackerChangeRequest{
+		Username: "alice", Connection: "default", Issue: 1, Title: "My change", Description: "does the thing",
+	})
+	if err != nil {
+		t.Fatalf("SubmitTrackerChange: %v", err)
+	}
+	if gotMethod != http.MethodPost {
+		t.Errorf("method = %q, want POST", gotMethod)
+	}
+	if gotPath != "/v1/tracker/alice/default/changes" {
+		t.Errorf("path = %q, want /v1/tracker/alice/default/changes", gotPath)
+	}
+	if !strings.Contains(string(gotBody), `"title":"My change"`) {
+		t.Errorf("request body = %s, want it to carry the title", gotBody)
+	}
+	if change.GetNumber() != 6 || change.GetBranch() != "agent/run-1/1-x" {
+		t.Errorf("change = %+v, want number=6 branch=agent/run-1/1-x", change)
+	}
+}
