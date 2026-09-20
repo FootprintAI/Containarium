@@ -26,9 +26,10 @@ module "containarium" {
   machine_type  = var.machine_type
 
   # Instance config
-  os_image       = var.os_image
-  boot_disk_size = var.boot_disk_size
-  boot_disk_type = var.boot_disk_type
+  os_image              = var.os_image
+  boot_disk_size        = var.boot_disk_size
+  boot_disk_type        = var.boot_disk_type
+  boot_disk_auto_delete = var.boot_disk_auto_delete
 
   # Dev defaults: default network, ephemeral IPs
   # network_self_link and subnetwork_self_link default to ""

@@ -282,6 +282,48 @@ build-release: build-all build-mcp-all build-agent-box-all ## Build all 13 relea
 	@echo "==> Release artifacts ready in $(BUILD_DIR)/:"
 	@ls -1 $(BUILD_DIR)/
 
+# ---- Pre-built Caddy release asset (#1617) ---------------------------------
+# One Caddy binary with caddy-l4 (SNI passthrough) + EVERY supported DNS-01
+# provider baked in, published alongside the binaries above so setupCaddy
+# (internal/server/core_services.go) can download+verify it instead of
+# running xcaddy from source on every host at provisioning time — no
+# compiler, no proxy.golang.org egress, no drift between differently-timed
+# provisions, and enabling DNS-01 later becomes a config change instead of a
+# rebuild.
+#
+# Baking in every provider (not just the one xcaddy's PRE-#1617 build cared
+# about) means a host can switch providers without a Caddy rebuild; the cost
+# is a few MB per unused module, not a new host round-trip.
+#
+# CADDY_VERSION is a deliberate pin, not `xcaddy build` with no version arg
+# (which tracks Caddy's latest tag at BUILD time — the same per-provision
+# drift this asset exists to remove, just moved to CI cadence). Bump it
+# deliberately, in its own reviewable commit.
+#
+# The --with list below MUST list every entry in dnsProviderModules
+# (internal/app/caddy_types.go) — TestCaddyModulesInSyncWithMakefile
+# (internal/app/caddy_types_makefile_test.go) fails CI if this drifts from
+# that map, in either direction.
+CADDY_VERSION=v2.11.4
+build-caddy: ## Build the pre-configured Caddy release binary (caddy-l4 + every DNS-01 provider)
+	@echo "==> Installing xcaddy..."
+	@GOBIN=$$(go env GOPATH)/bin go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
+	@echo "==> Building Caddy $(CADDY_VERSION) with caddy-l4 + every DNS-01 provider (this takes a few minutes)..."
+	@$$(go env GOPATH)/bin/xcaddy build $(CADDY_VERSION) \
+	    --with github.com/mholt/caddy-l4 \
+	    --with github.com/caddy-dns/azure \
+	    --with github.com/caddy-dns/cloudflare \
+	    --with github.com/caddy-dns/digitalocean \
+	    --with github.com/caddy-dns/duckdns \
+	    --with github.com/caddy-dns/godaddy \
+	    --with github.com/caddy-dns/googleclouddns \
+	    --with github.com/caddy-dns/namecheap \
+	    --with github.com/caddy-dns/route53 \
+	    --with github.com/caddy-dns/vultr \
+	    --output $(BUILD_DIR)/caddy-linux-amd64
+	@cd $(BUILD_DIR) && shasum -a 256 caddy-linux-amd64 >> SHA256SUMS.txt
+	@echo "==> caddy-linux-amd64 built: $$(du -h $(BUILD_DIR)/caddy-linux-amd64 | cut -f1)"
+
 # ---- Air-gapped install bundle (E3a/E3b) ----
 # Per prd/cloud/air-gapped-install-bundle.md, ship a `.tar.gz` bundle
 # that bakes in every binary, toolchain, .deb, and sidecar image needed
