@@ -3,6 +3,8 @@
 // interface so the agent-runtime is harness-agnostic: a skill picks its engine,
 // the rest of the runtime (seed loading, artifact writing, the A2A server in 4b)
 // stays identical.
+import type { PlatformMcpConfig } from "./seed.js";
+
 export interface EngineConfig {
   // Model id. Engine-specific: Claude → claude-opus-4-8; Codex → an OpenAI
   // model. Empty means "use the engine's own default".
@@ -15,6 +17,9 @@ export interface EngineConfig {
   agentBoxArgs: string[];
   // Hard cap on agentic turns (tool-use round trips).
   maxTurns: number;
+  // The platform MCP to mount beside agent-box, from the seed (D4). Absent or
+  // null means agent-box alone — the behavior before the tracker broker.
+  platformMcp?: PlatformMcpConfig | null;
 }
 
 export interface EngineResult {

@@ -2,6 +2,7 @@ import { GoogleGenAI, mcpToTool } from "@google/genai";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { Engine, EngineConfig, EngineResult } from "../engine.js";
+import { mcpServerSpecs } from "../mcp.js";
 
 // GeminiEngine drives the in-box loop with the Google Gen AI SDK (@google/genai).
 // Like the Claude and Codex engines it mounts the in-box agent-box binary as its
@@ -32,16 +33,18 @@ export class GeminiEngine implements Engine {
       throw new Error("GEMINI_API_KEY (or GOOGLE_API_KEY) is not set — for hosted use, set CONTAINARIUM_MODEL_GATEWAY_URL + CONTAINARIUM_GATEWAY_TOKEN");
     }
 
-    // Spawn agent-box as an MCP stdio server — the same tool surface the other
-    // engines mount, exposed to Gemini through the MCP client.
-    const transport = new StdioClientTransport({
-      command: cfg.agentBoxCommand,
-      args: cfg.agentBoxArgs,
-    });
-    const mcpClient = new Client({ name: "agent-runtime", version: "0.1.0" });
-    await mcpClient.connect(transport);
-
+    // Spawn each MCP server as a stdio child — agent-box always, plus the
+    // platform MCP when the seed carries one (#1922 D4) — the same tool
+    // surface the other engines mount, exposed to Gemini through MCP clients.
+    const mcpClients: Client[] = [];
     try {
+      for (const spec of mcpServerSpecs(cfg)) {
+        const client = new Client({ name: "agent-runtime", version: "0.1.0" });
+        mcpClients.push(client);
+        await client.connect(
+          new StdioClientTransport({ command: spec.command, args: spec.args, ...(spec.env ? { env: spec.env } : {}) }),
+        );
+      }
       // When routing through the gateway the SDK sends x-goog-api-key (the
       // gateway token) to `<gatewayUrl>/v1/model/gemini/<upstream-path>`.
       // The gateway verifies the token, injects the real Gemini key, and
@@ -56,7 +59,9 @@ export class GeminiEngine implements Engine {
         contents: task,
         config: {
           ...(cfg.systemPrompt ? { systemInstruction: cfg.systemPrompt } : {}),
-          tools: [mcpToTool(mcpClient)],
+          // mcpToTool is variadic over clients but typed as a tuple TS cannot infer
+          // from an array; agent-box is always present, so it is never empty.
+          tools: [mcpToTool(...(mcpClients as unknown as Parameters<typeof mcpToTool>))],
           // Cap the agentic tool-use loop the same way the other engines bound
           // maxTurns; automatic function calling executes agent-box tool calls.
           automaticFunctionCalling: { maximumRemoteCalls: cfg.maxTurns },
@@ -64,7 +69,7 @@ export class GeminiEngine implements Engine {
       });
       return { outputJson: (response.text ?? "").trim(), usage: response.usageMetadata };
     } finally {
-      await mcpClient.close();
+      await Promise.allSettled(mcpClients.map((c) => c.close()));
     }
   }
 }

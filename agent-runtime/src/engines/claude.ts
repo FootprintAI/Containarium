@@ -1,5 +1,6 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { Engine, EngineConfig, EngineResult } from "../engine.js";
+import { claudeAllowedTools, claudeMcpServers, mcpServerSpecs } from "../mcp.js";
 
 // ClaudeEngine drives the in-box loop with the Claude Agent SDK (the harness
 // that powers Claude Code). It mounts the in-box agent-box binary as an MCP
@@ -8,7 +9,9 @@ import type { Engine, EngineConfig, EngineResult } from "../engine.js";
 //
 // permissionMode "dontAsk" runs fully non-interactive (deny anything not
 // allow-listed, never prompt); allowedTools scopes the agent to agent-box's
-// MCP tools (prefix `mcp__<server>__`).
+// MCP tools (prefix `mcp__<server>__`) and, when the seed carries a
+// platform_mcp.json (#1922 D4), exactly the platform tools the daemon
+// allow-listed — never the whole platform catalog.
 export class ClaudeEngine implements Engine {
   readonly name = "claude";
 
@@ -16,18 +19,14 @@ export class ClaudeEngine implements Engine {
     let text = "";
     let usage: unknown;
 
+    const specs = mcpServerSpecs(cfg);
     const options = {
       model: cfg.model || "claude-opus-4-8",
       systemPrompt: cfg.systemPrompt,
       maxTurns: cfg.maxTurns,
       permissionMode: "dontAsk",
-      allowedTools: ["mcp__agent-box__*"],
-      mcpServers: {
-        "agent-box": {
-          command: cfg.agentBoxCommand,
-          args: cfg.agentBoxArgs,
-        },
-      },
+      allowedTools: claudeAllowedTools(specs),
+      mcpServers: claudeMcpServers(specs),
     } as Parameters<typeof query>[0]["options"];
 
     for await (const message of query({ prompt: task, options })) {

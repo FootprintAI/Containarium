@@ -7,6 +7,7 @@ import type { Engine, EngineConfig } from "./engine.js";
 import { ClaudeEngine } from "./engines/claude.js";
 import { CodexEngine } from "./engines/codex.js";
 import { GeminiEngine } from "./engines/gemini.js";
+import { codexConfigToml } from "./mcp.js";
 import { pollConfigFromEnv, runPollLoop } from "./poll.js";
 import { DEFAULT_SEED_DIR, loadSeed } from "./seed.js";
 
@@ -47,17 +48,14 @@ function pickEngine(name: string): Engine {
   }
 }
 
-// writeCodexConfig registers agent-box as an MCP server (and the model, if set)
-// in ~/.codex/config.toml, which the Codex CLI the SDK drives reads. The Claude
-// engine takes its MCP config inline, so this is Codex-only.
+// writeCodexConfig registers the MCP servers (agent-box, plus the platform MCP
+// when the seed carries one) and the model, if set, in ~/.codex/config.toml,
+// which the Codex CLI the SDK drives reads. The Claude engine takes its MCP
+// config inline, so this is Codex-only.
 function writeCodexConfig(cfg: EngineConfig): void {
   const dir = join(homedir(), ".codex");
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  const argsToml = cfg.agentBoxArgs.map((a) => `"${a}"`).join(", ");
-  let toml = "";
-  if (cfg.model) toml += `model = "${cfg.model}"\n`;
-  toml += `[mcp_servers.agent-box]\ncommand = "${cfg.agentBoxCommand}"\nargs = [${argsToml}]\n`;
-  writeFileSync(join(dir, "config.toml"), toml);
+  writeFileSync(join(dir, "config.toml"), codexConfigToml(cfg));
 }
 
 // mode: "run" (one-shot — read input.json, run once, write artifact.json; the
@@ -76,6 +74,7 @@ async function main(): Promise<void> {
     agentBoxCommand,
     agentBoxArgs: [],
     maxTurns,
+    platformMcp: seed.platformMcp,
   };
 
   if (engine.name === "codex") writeCodexConfig(cfg);
