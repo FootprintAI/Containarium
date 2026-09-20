@@ -95,6 +95,38 @@ function transformContainer(apiContainer: Record<string, unknown>): Container {
 }
 
 /**
+ * Transform an API collaborator response into the frontend Collaborator
+ * type. sshPublicKeys carries every authorized key (#1144); sshPublicKey is
+ * kept only for back-compat display of the first key.
+ */
+function transformCollaborator(c: Record<string, unknown>): Collaborator {
+  const rawKeys = (c.sshPublicKeys ?? c.ssh_public_keys) as unknown;
+  const scalarKey = String(c.sshPublicKey || c.ssh_public_key || '');
+  const arrayKeys = Array.isArray(rawKeys) ? rawKeys.map(String) : [];
+  // Backfill in both directions (caught in review of #1914): a response
+  // shape carrying only one of the two fields — an older server, or a
+  // caller that never populated both — must not silently drop the key
+  // from whichever field downstream code reads. sshPublicKeys is the
+  // source of truth going forward (#1144); sshPublicKey is kept only
+  // for back-compat display of the first key.
+  const sshPublicKeys = arrayKeys.length > 0 ? arrayKeys : scalarKey ? [scalarKey] : [];
+  const sshPublicKey = scalarKey || sshPublicKeys[0] || '';
+  return {
+    id: String(c.id || ''),
+    containerName: String(c.containerName || c.container_name || ''),
+    ownerUsername: String(c.ownerUsername || c.owner_username || ''),
+    collaboratorUsername: String(c.collaboratorUsername || c.collaborator_username || ''),
+    accountName: String(c.accountName || c.account_name || ''),
+    sshPublicKey,
+    sshPublicKeys,
+    addedAt: Number(c.addedAt || c.added_at) || 0,
+    createdBy: String(c.createdBy || c.created_by || ''),
+    hasSudo: Boolean(c.hasSudo || c.has_sudo || false),
+    hasContainerRuntime: Boolean(c.hasContainerRuntime || c.has_container_runtime || false),
+  };
+}
+
+/**
  * Create an API client for a specific server
  */
 export function createAPIClient(server: Server): AxiosInstance {
@@ -761,18 +793,7 @@ export class ContaineriumClient {
     const response = await this.client.get<{ collaborators?: any[]; totalCount?: number }>(
       `/containers/${ownerUsername}/collaborators`
     );
-    return (response.data.collaborators || []).map((c) => ({
-      id: String(c.id || ''),
-      containerName: String(c.containerName || c.container_name || ''),
-      ownerUsername: String(c.ownerUsername || c.owner_username || ''),
-      collaboratorUsername: String(c.collaboratorUsername || c.collaborator_username || ''),
-      accountName: String(c.accountName || c.account_name || ''),
-      sshPublicKey: String(c.sshPublicKey || c.ssh_public_key || ''),
-      addedAt: Number(c.addedAt || c.added_at) || 0,
-      createdBy: String(c.createdBy || c.created_by || ''),
-      hasSudo: Boolean(c.hasSudo || c.has_sudo || false),
-      hasContainerRuntime: Boolean(c.hasContainerRuntime || c.has_container_runtime || false),
-    }));
+    return (response.data.collaborators || []).map(transformCollaborator);
   }
 
   /**
@@ -781,24 +802,12 @@ export class ContaineriumClient {
   async addCollaborator(ownerUsername: string, req: AddCollaboratorRequest): Promise<{ collaborator: Collaborator; sshCommand: string }> {
     const response = await this.client.post(`/containers/${ownerUsername}/collaborators`, {
       collaborator_username: req.collaboratorUsername,
-      ssh_public_key: req.sshPublicKey,
+      ssh_public_keys: req.sshPublicKeys,
       grant_sudo: req.grantSudo || false,
       grant_container_runtime: req.grantContainerRuntime || false,
     });
-    const c = response.data.collaborator || {};
     return {
-      collaborator: {
-        id: String(c.id || ''),
-        containerName: String(c.containerName || c.container_name || ''),
-        ownerUsername: String(c.ownerUsername || c.owner_username || ''),
-        collaboratorUsername: String(c.collaboratorUsername || c.collaborator_username || ''),
-        accountName: String(c.accountName || c.account_name || ''),
-        sshPublicKey: String(c.sshPublicKey || c.ssh_public_key || ''),
-        addedAt: Number(c.addedAt || c.added_at) || 0,
-        createdBy: String(c.createdBy || c.created_by || ''),
-        hasSudo: Boolean(c.hasSudo || c.has_sudo || false),
-        hasContainerRuntime: Boolean(c.hasContainerRuntime || c.has_container_runtime || false),
-      },
+      collaborator: transformCollaborator(response.data.collaborator || {}),
       sshCommand: String(response.data.sshCommand || response.data.ssh_command || ''),
     };
   }
