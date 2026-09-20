@@ -1,0 +1,147 @@
+name: GitLab CE e2e (tracker broker)
+
+# The design note's opt-in lane (docs/AGENT-TRACKER-BROKER-DESIGN.md, Test
+# strategy): "a real GitLab CE container proving quick-action sanitization
+# and single-assignee behavior end to end". Both properties are exactly what
+# a recorded httptest fixture cannot prove — whether GitLab's OWN parser
+# executes a quick action, and how GitLab's OWN single-assignee model reacts
+# to a second assignment attempt — so this runs internal/tracker/gitlab's
+# `gitlab_e2e`-tagged suite against a real `gitlab/gitlab-ce` container, not
+# a mock.
+#
+# Heavy (a multi-GB image, ~1-2 minutes to become ready), so — same cadence
+# as this repo's other real-daemon lane (fence-probe-e2e.yml /
+# cluster-e2e.yml's agent-skill-lease-e2e.sh) — this is NIGHTLY +
+# RELEASE-BLOCKING + manual, not a per-PR gate. A PR that touches the
+# adapter gets only the cheap job below: build + vet + the untagged unit
+# suite (conformance fixtures, draft-prefix tests, etc.), so the e2e file
+# itself can't rot unnoticed between nightlies. Record in the PR when this
+# lane was last green on adapter changes, per the design note.
+#
+# Prove-the-lane-can-fail guardrail (mirrors cluster-e2e.yml's sabotage
+# input): dispatch with sabotage=disable-sanitize or sabotage=disable-guard
+# to confirm the suite actually goes red when the property it's testing
+# breaks — verified locally before this workflow was written by reverting
+# tracker.Sanitize's neutralizeQuickActions call (TestGitLabE2E_
+# QuickActionSanitization failed) and the "never replace an assignee" guard
+# in internal/tracker/gitlab/write.go (TestGitLabE2E_SingleAssigneeBehavior
+# failed), each restored afterward.
+
+on:
+  schedule:
+    - cron: '0 3 * * *' # nightly, off-peak
+  push:
+    tags:
+      - 'v*' # release-blocking, same convention as cluster-e2e.yml
+  pull_request:
+    paths:
+      - 'internal/tracker/gitlab/**'
+      - '.github/workflows/gitlab-e2e.yml'
+  workflow_dispatch:
+    inputs:
+      sabotage:
+        description: 'Prove the lane can fail: none | disable-sanitize | disable-guard'
+        required: false
+        default: 'none'
+        type: choice
+        options: ['none', 'disable-sanitize', 'disable-guard']
+
+permissions:
+  contents: read
+
+jobs:
+  # Runs on every PR touching the adapter: cheap, fast, keeps the e2e file
+  # itself compiling and lint-clean between the heavy job's nightly runs.
+  build-unit:
+    name: build + vet + untagged unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.6'
+      - name: Vet the gitlab_e2e-tagged build (compiles the e2e file without running it)
+        run: go vet -tags gitlab_e2e ./internal/tracker/gitlab/...
+      - name: Untagged unit tests (fixtures, no network)
+        run: go test -race -count=1 ./internal/tracker/gitlab/...
+
+  e2e:
+    name: real GitLab CE
+    # Nightly/release/dispatch only — never on a plain pull_request event,
+    # so a PR only ever gets the cheap job above.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GITLAB_E2E_URL: http://localhost:8929
+      GITLAB_E2E_TOKEN: ${{ github.run_id }}-e2e-token
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.6'
+
+      - name: Start GitLab CE
+        # Trimmed down (no Prometheus, single Puma worker, low Sidekiq
+        # concurrency) to fit a GitHub-hosted runner's memory; still the
+        # real application, not a stub.
+        run: |
+          docker run -d --name gitlab-ce --hostname gitlab.local \
+            -e GITLAB_OMNIBUS_CONFIG='external_url "http://gitlab.local"; puma["worker_processes"] = 0; sidekiq["max_concurrency"] = 5; prometheus_monitoring["enable"] = false; gitlab_rails["usage_ping_enabled"] = false;' \
+            -p 8929:80 --shm-size 256m \
+            gitlab/gitlab-ce:latest
+
+      - name: Wait for readiness
+        run: |
+          for i in $(seq 1 40); do
+            code="$(docker exec gitlab-ce curl -s -o /dev/null -w '%{http_code}' http://localhost/-/readiness || true)"
+            echo "attempt $i: HTTP $code"
+            [ "$code" = "200" ] && exit 0
+            sleep 15
+          done
+          echo "::error::GitLab CE never became ready"
+          docker logs --tail 200 gitlab-ce
+          exit 1
+
+      - name: Mint an e2e access token
+        # gitlab-rails runner, not the UI/API — GitLab's own bootstrap has no
+        # existing PAT to authenticate a token-creation API call with yet.
+        run: |
+          docker exec gitlab-ce gitlab-rails runner "
+            token = User.find_by_username('root').personal_access_tokens.create(
+              scopes: ['api'], name: 'e2e', expires_at: 1.day.from_now)
+            token.set_token('${GITLAB_E2E_TOKEN}')
+            token.save!
+          "
+          code="$(curl -s -o /dev/null -w '%{http_code}' -H "PRIVATE-TOKEN: ${GITLAB_E2E_TOKEN}" "${GITLAB_E2E_URL}/api/v4/user")"
+          if [ "$code" != "200" ]; then
+            echo "::error::minted token did not authenticate (HTTP $code)"
+            exit 1
+          fi
+
+      - name: Prove-the-lane-can-fail sabotage (dispatch only)
+        if: github.event.inputs.sabotage == 'disable-sanitize'
+        run: |
+          sed -i 's/return neutralizeQuickActions(body)/return body \/\/ SABOTAGE: neutralizeQuickActions disabled/' internal/tracker/identity.go
+
+      - name: Prove-the-lane-can-fail sabotage (dispatch only)
+        if: github.event.inputs.sabotage == 'disable-guard'
+        run: |
+          sed -i 's/if issue.Assignee != nil {/if false \&\& issue.Assignee != nil { \/\/ SABOTAGE/' internal/tracker/gitlab/write.go
+
+      - name: Run the e2e suite
+        # A sabotage dispatch is only meaningful if THIS step goes red — see
+        # the workflow header. There is no separate "assert it failed" step:
+        # GH Actions already marks the job failed when this exits non-zero,
+        # and a step that claimed to verify that without actually checking
+        # anything would be exactly the "check that cannot fail" this repo's
+        # own conventions warn against.
+        run: go test -tags gitlab_e2e -v -count=1 -timeout 5m ./internal/tracker/gitlab/... -run TestGitLabE2E
+
+      - name: Dump GitLab logs on failure
+        if: failure()
+        run: docker logs --tail 500 gitlab-ce
+
+      - name: Tear down
+        if: always()
+        run: docker rm -f gitlab-ce
