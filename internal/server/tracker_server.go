@@ -2,10 +2,12 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 
+	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/runlease"
 	"github.com/footprintai/containarium/internal/secrets"
@@ -18,6 +20,43 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+// trackerConnectionAuditDetail is the payload for a connection-level
+// audit event (create / update / rotate / delete). CredentialSecret is
+// the SECRET'S NAME in the secrets store, never its value — the same
+// reference the connection record itself carries.
+type trackerConnectionAuditDetail struct {
+	Provider         string `json:"provider,omitempty"`
+	BaseURL          string `json:"base_url,omitempty"`
+	Project          string `json:"project,omitempty"`
+	CredentialSecret string `json:"credential_secret,omitempty"`
+}
+
+// auditTrackerConnectionWrite records a connection CRUD outcome —
+// connect, disconnect, and credential rotation (an update that changes
+// CredentialSecret) are all audit events per #1921's acceptance
+// criteria. Best-effort, same convention as auditTrackerWrite: audit
+// must never fail the call, and this is a no-op until the audit store
+// is wired.
+func (s *ContainerServer) auditTrackerConnectionWrite(ctx context.Context, action, username, connection string, detail trackerConnectionAuditDetail) {
+	if s.auditStore == nil {
+		return
+	}
+	payload, err := json.Marshal(detail)
+	if err != nil {
+		log.Printf("[tracker] marshal audit detail for %s: %v", action, err)
+		return
+	}
+	if err := s.auditStore.Log(ctx, &audit.AuditEntry{
+		Username:     username,
+		Action:       action,
+		ResourceType: "tracker_connection",
+		ResourceID:   fmt.Sprintf("%s/%s", username, connection),
+		Detail:       string(payload),
+	}); err != nil {
+		log.Printf("[tracker] audit %s %s/%s: %v", action, username, connection, err)
+	}
+}
 
 // SetTrackerStore wires the tracker-connections backend onto the server.
 // Called from dual_server.go after the Postgres connection has been
@@ -122,9 +161,17 @@ func (s *ContainerServer) SetTrackerConnection(ctx context.Context, req *pb.SetT
 	log.Printf("[tracker] connection set %s/%s provider=%s project=%s", req.Username, req.Name, req.Provider, req.Project)
 
 	msg := "connection created"
+	action := "tracker.connection_created"
 	if !conn.CreatedAt.Equal(conn.UpdatedAt) {
 		msg = "connection updated"
+		action = "tracker.connection_updated"
 	}
+	s.auditTrackerConnectionWrite(ctx, action, req.Username, req.Name, trackerConnectionAuditDetail{
+		Provider:         req.Provider.String(),
+		BaseURL:          req.BaseUrl,
+		Project:          req.Project,
+		CredentialSecret: req.CredentialSecret,
+	})
 	return &pb.SetTrackerConnectionResponse{
 		Message:    msg,
 		Connection: toProtoTrackerConnection(conn),
@@ -197,10 +244,23 @@ func (s *ContainerServer) DeleteTrackerConnection(ctx context.Context, req *pb.D
 		return nil, err
 	}
 
+	// Best-effort lookup purely to enrich the audit detail with which
+	// provider/project this connection pointed at — a failure here must
+	// never block the delete itself, so the error is discarded.
+	existing, _ := s.trackerStore.Get(ctx, req.Username, req.Name)
+
 	if err := s.trackerStore.Delete(ctx, req.Username, req.Name); err != nil {
 		return nil, mapTrackerError(err)
 	}
 	log.Printf("[tracker] connection deleted %s/%s", req.Username, req.Name)
+	detail := trackerConnectionAuditDetail{}
+	if existing != nil {
+		detail.Provider = existing.Provider.String()
+		detail.BaseURL = existing.BaseURL
+		detail.Project = existing.Project
+		detail.CredentialSecret = existing.CredentialSecret
+	}
+	s.auditTrackerConnectionWrite(ctx, "tracker.connection_deleted", req.Username, req.Name, detail)
 	return &pb.DeleteTrackerConnectionResponse{
 		Message: fmt.Sprintf("connection %s deleted", req.Name),
 	}, nil

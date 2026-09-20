@@ -3,9 +3,11 @@ package server
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/tracker"
 	"github.com/footprintai/containarium/internal/tracker/submit"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -220,6 +222,88 @@ func TestTrackerConnection_CRUDRoundTrip(t *testing.T) {
 	}
 	if _, err := s.GetTrackerConnection(adminCtx, &pb.GetTrackerConnectionRequest{Username: user, Name: "default"}); status.Code(err) != codes.NotFound {
 		t.Fatalf("GetTrackerConnection after delete code = %v, want NotFound", status.Code(err))
+	}
+}
+
+// TestSetTrackerConnection_AuditsCreateUpdateAndDelete pins #1921's
+// acceptance criterion that connect / disconnect / credential rotation
+// are all audit events: create and a credential-rotating update both
+// audit distinct actions, and delete audits the connection that was
+// removed (looked up before the delete, since it's gone afterward).
+func TestSetTrackerConnection_AuditsCreateUpdateAndDelete(t *testing.T) {
+	secretsStore := mustTestSecretsStore(t)
+	trackerStore := mustTestTrackerStore(t)
+	s := &ContainerServer{secretsStore: secretsStore, trackerStore: trackerStore, auditStore: mustTestAuditStore(t)}
+	const user = "tracker-rpc-connection-audit"
+
+	secretCtx := kmsKeyTestCtx(user, "member", "secrets:write")
+	for _, name := range []string{"GH_TOKEN", "GH_TOKEN_2"} {
+		if _, err := s.SetSecret(secretCtx, &pb.SetSecretRequest{
+			Username: user, Name: name, Value: "ghp_x",
+			DeliveryMode: pb.SecretDelivery_SECRET_DELIVERY_BROKER_ONLY,
+		}); err != nil {
+			t.Fatalf("SetSecret(%s): %v", name, err)
+		}
+	}
+
+	adminCtx := kmsKeyTestCtx(user, "member", "tracker:admin")
+	if _, err := s.SetTrackerConnection(adminCtx, &pb.SetTrackerConnectionRequest{
+		Username: user, Name: "default",
+		Provider: pb.TrackerProvider_TRACKER_PROVIDER_GITHUB,
+		Project:  "acme/widgets", CredentialSecret: "GH_TOKEN",
+	}); err != nil {
+		t.Fatalf("SetTrackerConnection (create): %v", err)
+	}
+	// Rotate the credential the connection points at.
+	if _, err := s.SetTrackerConnection(adminCtx, &pb.SetTrackerConnectionRequest{
+		Username: user, Name: "default",
+		Provider: pb.TrackerProvider_TRACKER_PROVIDER_GITHUB,
+		Project:  "acme/widgets", CredentialSecret: "GH_TOKEN_2",
+	}); err != nil {
+		t.Fatalf("SetTrackerConnection (rotate): %v", err)
+	}
+	if _, err := s.DeleteTrackerConnection(adminCtx, &pb.DeleteTrackerConnectionRequest{Username: user, Name: "default"}); err != nil {
+		t.Fatalf("DeleteTrackerConnection: %v", err)
+	}
+
+	ctx := context.Background()
+	createdRows, _, err := s.auditStore.Query(ctx, audit.QueryParams{Username: user, Action: "tracker.connection_created", Limit: 10})
+	if err != nil {
+		t.Fatalf("audit Query(created): %v", err)
+	}
+	if len(createdRows) != 1 {
+		t.Fatalf("audit rows for tracker.connection_created = %d, want 1", len(createdRows))
+	}
+	if !strings.Contains(createdRows[0].Detail, "GH_TOKEN\"") {
+		t.Errorf("connection_created detail = %q, want it to name the initial credential secret", createdRows[0].Detail)
+	}
+
+	updatedRows, _, err := s.auditStore.Query(ctx, audit.QueryParams{Username: user, Action: "tracker.connection_updated", Limit: 10})
+	if err != nil {
+		t.Fatalf("audit Query(updated): %v", err)
+	}
+	if len(updatedRows) != 1 {
+		t.Fatalf("audit rows for tracker.connection_updated = %d, want 1", len(updatedRows))
+	}
+	if !strings.Contains(updatedRows[0].Detail, "GH_TOKEN_2") {
+		t.Errorf("connection_updated (rotation) detail = %q, want it to name the rotated-to credential secret", updatedRows[0].Detail)
+	}
+
+	deletedRows, _, err := s.auditStore.Query(ctx, audit.QueryParams{Username: user, Action: "tracker.connection_deleted", Limit: 10})
+	if err != nil {
+		t.Fatalf("audit Query(deleted): %v", err)
+	}
+	if len(deletedRows) != 1 {
+		t.Fatalf("audit rows for tracker.connection_deleted = %d, want 1", len(deletedRows))
+	}
+	if !strings.Contains(deletedRows[0].Detail, "acme/widgets") {
+		t.Errorf("connection_deleted detail = %q, want it to name the deleted connection's project", deletedRows[0].Detail)
+	}
+
+	for _, rows := range [][]audit.AuditEntry{createdRows, updatedRows, deletedRows} {
+		if strings.Contains(rows[0].Detail, "ghp_x") {
+			t.Errorf("audit detail = %q, MUST NOT contain the credential value", rows[0].Detail)
+		}
 	}
 }
 
