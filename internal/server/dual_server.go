@@ -561,6 +561,11 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// daemon process.
 	containerServer.SetClaimLocks(trackerstore.NewClaimLocks())
 
+	// #1923 — no explicit wiring needed: SubmitTrackerChange's
+	// boxRunnerForSubmit falls back to containerServer's own *manager
+	// field, already set above, which satisfies submit.BoxRunner
+	// (asserted at compile time in tracker_submit_server.go).
+
 	// Register CrewService — Phase 3. Collaborating sets of skills bound to a
 	// task purpose; reuses the agent-skill server to provision each member box.
 	crewServer := NewCrewServer(agentSkillServer)

@@ -30,6 +30,7 @@ import (
 	"github.com/footprintai/containarium/internal/safecast"
 	"github.com/footprintai/containarium/internal/secrets"
 	"github.com/footprintai/containarium/internal/tracker"
+	"github.com/footprintai/containarium/internal/tracker/submit"
 	"github.com/footprintai/containarium/pkg/core/box"
 	boxlxc "github.com/footprintai/containarium/pkg/core/box/lxc"
 	"github.com/footprintai/containarium/pkg/core/container"
@@ -283,6 +284,20 @@ type ContainerServer struct {
 	// don't exercise ClaimTrackerIssue can leave it nil, in which case
 	// the RPC returns Unavailable rather than racing unlocked.
 	claimLocks *tracker.ClaimLocks
+
+	// submitBoxRunner overrides the box-exec/file-read backend
+	// SubmitTrackerChange uses to extract a bundle (#1923). Nil in
+	// production, where the real handler falls back to s.manager —
+	// *container.Manager already satisfies submit.BoxRunner (same
+	// ExecWithOutput/ReadFile shape FetchGitSource uses). Tests
+	// substitute a fake here so a unit test never needs a real box.
+	submitBoxRunner submit.BoxRunner
+
+	// submitPusher overrides the git-push backend SubmitTrackerChange
+	// uses (#1923). Nil in production, where the real handler falls
+	// back to submit.NewGitPusher(). Tests substitute a fake so a unit
+	// test never shells out to real git or touches the network.
+	submitPusher submit.GitPusher
 
 	// KMS status snapshot for the KmsService GetKMSStatus RPC.
 	// Set once at startup in dual_server.go alongside the secrets
