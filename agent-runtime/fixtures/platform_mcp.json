@@ -1,0 +1,7 @@
+{
+  "command": "mcp-server",
+  "args": [],
+  "server_url": "http://10.9.8.1:8080",
+  "token_file": "/etc/containarium/agent/runs/run-1/token",
+  "tools": "tracker_*"
+}

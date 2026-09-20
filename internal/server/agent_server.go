@@ -189,6 +189,11 @@ type AgentSkillServer struct {
 	// nil-guarded at each call site rather than inside Registry itself,
 	// matching this file's existing convention for audit/revocations.
 	runs *runlease.Registry
+	// platformMCPPort is the daemon HTTP port an in-box platform MCP dials
+	// (#1922 D4). Zero (the default, and every daemon that hasn't wired it)
+	// means no run is given tracker tools: platformMCPSeedScript refuses to
+	// write a URL it cannot make usable.
+	platformMCPPort int
 	// trackerConnections validates a caller-supplied
 	// RunAgentSkillRequest.tracker_connection against the caller's own
 	// tenant before it's minted into the run's JWT (#1922 step 6, design
@@ -214,6 +219,13 @@ type trackerConnectionChecker interface {
 // run still live" for a run this server created.
 func (s *AgentSkillServer) SetRunRegistry(r *runlease.Registry) {
 	s.runs = r
+}
+
+// SetPlatformMCPPort wires the daemon HTTP port an in-box platform MCP dials
+// (#1922 D4). Called from dual_server.go with the same port the model gateway
+// uses; the host half is resolved in-box from the default route.
+func (s *AgentSkillServer) SetPlatformMCPPort(port int) {
+	s.platformMCPPort = port
 }
 
 // SetTrackerConnections wires the tracker-connections store (#1922 step
@@ -707,6 +719,13 @@ func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.Agen
 				Kind: runlease.KindGatewayToken, JTI: gwMinted.JTI, ExpiresAt: gwMinted.ExpiresAt,
 			})
 		}
+	}
+	// #1922 D4: a run bound to a tracker connection also gets the platform MCP
+	// mounted in-box, restricted to the tracker tools. Appended to the SAME exec
+	// as the rest of the seed so the box never has a token but no way to use it.
+	// Fail-open by construction — see platformMCPSeedScript.
+	if mcpScript, ok := platformMCPSeedScript(seedDir, s.platformMCPPort, trackerConnection); ok {
+		seedScript += "\n" + mcpScript
 	}
 	if err := s.recipes.containers.manager.Exec(containerName,
 		[]string{"bash", "-c", seedScript}); err != nil {

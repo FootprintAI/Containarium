@@ -554,6 +554,7 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// ContainerServer's tracker write RPCs read it.
 	runRegistry := runlease.NewRegistry()
 	agentSkillServer.SetRunRegistry(runRegistry)
+	agentSkillServer.SetPlatformMCPPort(config.HTTPPort)
 	containerServer.SetRunRegistry(runRegistry)
 
 	// #1922 — one shared ClaimLocks so concurrent ClaimTrackerIssue calls
