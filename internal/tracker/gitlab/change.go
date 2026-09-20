@@ -60,3 +60,22 @@ func (a *Adapter) OpenChange(ctx context.Context, conn tracker.Conn, req tracker
 		Branch:    req.HeadBranch,
 	}, nil
 }
+
+// glProject mirrors the subset of GET /projects/{id} DefaultBranch needs.
+type glProject struct {
+	DefaultBranch string `json:"default_branch"`
+}
+
+// DefaultBranch resolves the project's actual default branch from
+// GitLab itself, never guessed.
+func (a *Adapter) DefaultBranch(ctx context.Context, conn tracker.Conn) (string, error) {
+	apiBase := apiBaseURL(conn.BaseURL)
+	var proj glProject
+	if err := a.get(ctx, fmt.Sprintf("%s/projects/%s", apiBase, url.PathEscape(conn.Project)), conn.Credential, &proj); err != nil {
+		return "", err
+	}
+	if proj.DefaultBranch == "" {
+		return "", fmt.Errorf("gitlab: %s reports no default branch", conn.Project)
+	}
+	return proj.DefaultBranch, nil
+}

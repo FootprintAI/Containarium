@@ -60,6 +60,9 @@ type fakeWriterProvider struct {
 	openChangeReq tracker.OpenChangeRequest
 	openChangeOut tracker.Change
 	openChangeErr error
+
+	defaultBranchOut string
+	defaultBranchErr error
 }
 
 func (f *fakeWriterProvider) Comment(_ context.Context, _ tracker.Conn, _ int64, body string) (tracker.Comment, error) {
@@ -100,6 +103,19 @@ func (f *fakeWriterProvider) WhoAmI(context.Context, tracker.Conn) (string, erro
 func (f *fakeWriterProvider) OpenChange(_ context.Context, _ tracker.Conn, req tracker.OpenChangeRequest) (tracker.Change, error) {
 	f.openChangeReq = req
 	return f.openChangeOut, f.openChangeErr
+}
+
+// DefaultBranch returns a canned value (default "main"), matching this
+// fake's own "safe default, override when a test needs to prove
+// something about it" convention.
+func (f *fakeWriterProvider) DefaultBranch(context.Context, tracker.Conn) (string, error) {
+	if f.defaultBranchErr != nil {
+		return "", f.defaultBranchErr
+	}
+	if f.defaultBranchOut == "" {
+		return "main", nil
+	}
+	return f.defaultBranchOut, nil
 }
 
 // setUpWriterConnection is setUpBrokerConnection's write-verb

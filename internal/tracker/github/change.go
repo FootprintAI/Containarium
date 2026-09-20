@@ -54,3 +54,22 @@ func (a *Adapter) OpenChange(ctx context.Context, conn tracker.Conn, req tracker
 		Branch:    req.HeadBranch,
 	}, nil
 }
+
+// ghRepo mirrors the subset of GET /repos/{owner}/{repo} DefaultBranch needs.
+type ghRepo struct {
+	DefaultBranch string `json:"default_branch"`
+}
+
+// DefaultBranch resolves the repository's actual default branch from
+// GitHub itself, never guessed.
+func (a *Adapter) DefaultBranch(ctx context.Context, conn tracker.Conn) (string, error) {
+	base := apiBase(conn.BaseURL)
+	var repo ghRepo
+	if err := a.get(ctx, fmt.Sprintf("%s/repos/%s", base, conn.Project), conn.Credential, &repo); err != nil {
+		return "", err
+	}
+	if repo.DefaultBranch == "" {
+		return "", fmt.Errorf("github: %s reports no default branch", conn.Project)
+	}
+	return repo.DefaultBranch, nil
+}

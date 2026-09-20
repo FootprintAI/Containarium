@@ -49,3 +49,40 @@ func TestOpenChange_DraftFlagSentAsIs(t *testing.T) {
 		}
 	}
 }
+
+func TestDefaultBranch(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"default_branch": "trunk"}`))
+	}))
+	defer srv.Close()
+
+	adapter := trackergithub.New(nil)
+	conn := tracker.Conn{BaseURL: srv.URL, Project: "acme/widgets", Credential: "tok"}
+	branch, err := adapter.DefaultBranch(context.Background(), conn)
+	if err != nil {
+		t.Fatalf("DefaultBranch: %v", err)
+	}
+	if branch != "trunk" {
+		t.Errorf("branch = %q, want trunk (never a hardcoded guess)", branch)
+	}
+	if gotPath != "/repos/acme/widgets" {
+		t.Errorf("path = %q, want /repos/acme/widgets", gotPath)
+	}
+}
+
+func TestDefaultBranch_EmptyIsAnError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	adapter := trackergithub.New(nil)
+	conn := tracker.Conn{BaseURL: srv.URL, Project: "acme/widgets", Credential: "tok"}
+	if _, err := adapter.DefaultBranch(context.Background(), conn); err == nil {
+		t.Error("want an error when GitHub reports no default branch, not a silent empty string")
+	}
+}

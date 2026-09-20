@@ -430,3 +430,51 @@ func TestSubmitTrackerChange_HappyPath(t *testing.T) {
 		t.Errorf("OpenChangeRequest.Description = %q, want the platform stamp", provider.openChangeReq.Description)
 	}
 }
+
+// TestSubmitTrackerChange_EmptyGitRefResolvesProviderDefaultBranch proves
+// the #1922 follow-up: a run with no recorded ref (git_source fetched the
+// remote's default branch) must target the PROVIDER's actual default
+// branch, not a hardcoded "main".
+func TestSubmitTrackerChange_EmptyGitRefResolvesProviderDefaultBranch(t *testing.T) {
+	const user = "tracker-rpc-submit-default-branch"
+	bundleBytes, headSHA := realBundleBytes(t)
+	provider := &fakeWriterProvider{
+		defaultBranchOut: "trunk", // deliberately not "main", to prove it isn't hardcoded
+		openChangeOut:    tracker.Change{Number: 1},
+	}
+	info := validRunInfo()
+	info.GitRef = "" // the run fetched the remote's default branch
+	box := &fakeSubmitBox{bundleBytes: bundleBytes, headSHA: headSHA}
+	pusher := &fakeSubmitPusher{result: submit.PushResult{Branch: "agent/run-abc123de/1-x", SHA: headSHA}}
+	s, ctx := setUpSubmitConnection(t, user, provider, box, pusher, &info)
+
+	if _, err := s.SubmitTrackerChange(ctx, &pb.SubmitTrackerChangeRequest{
+		Username: user, Connection: "default", Issue: 1, Title: "t",
+	}); err != nil {
+		t.Fatalf("SubmitTrackerChange: %v", err)
+	}
+	if provider.openChangeReq.BaseBranch != "trunk" {
+		t.Errorf("OpenChangeRequest.BaseBranch = %q, want the provider's own default branch (\"trunk\"), not a hardcoded guess", provider.openChangeReq.BaseBranch)
+	}
+}
+
+// TestSubmitTrackerChange_DefaultBranchResolutionFails proves a failure
+// resolving the default branch is surfaced, not silently defaulted to
+// "main" (which would target the wrong branch on a renamed default).
+func TestSubmitTrackerChange_DefaultBranchResolutionFails(t *testing.T) {
+	const user = "tracker-rpc-submit-default-branch-fails"
+	bundleBytes, headSHA := realBundleBytes(t)
+	provider := &fakeWriterProvider{defaultBranchErr: tracker.ErrUnreachable}
+	info := validRunInfo()
+	info.GitRef = ""
+	box := &fakeSubmitBox{bundleBytes: bundleBytes, headSHA: headSHA}
+	pusher := &fakeSubmitPusher{result: submit.PushResult{Branch: "agent/run-abc123de/1-x", SHA: headSHA}}
+	s, ctx := setUpSubmitConnection(t, user, provider, box, pusher, &info)
+
+	_, err := s.SubmitTrackerChange(ctx, &pb.SubmitTrackerChangeRequest{
+		Username: user, Connection: "default", Issue: 1, Title: "t",
+	})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("code = %v, want Unavailable (tracker unreachable while resolving default branch)", status.Code(err))
+	}
+}

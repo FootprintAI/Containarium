@@ -127,4 +127,11 @@ type Provider interface {
 	WriterProvider
 	// OpenChange pushes a change request. #1923.
 	OpenChange(ctx context.Context, c Conn, req OpenChangeRequest) (Change, error)
+	// DefaultBranch resolves the project's actual default branch (e.g.
+	// "main", "master", or an operator-renamed default) from the
+	// provider itself — never guessed. SubmitTrackerChange (#1923) needs
+	// this for a run whose recorded git_source had no explicit ref: the
+	// change must target whatever branch the project actually treats as
+	// default, not a hardcoded assumption.
+	DefaultBranch(ctx context.Context, c Conn) (string, error)
 }

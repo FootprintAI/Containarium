@@ -120,22 +120,18 @@ func (s *ContainerServer) gitPusherForSubmit() submit.GitPusher {
 // baseBranchFor resolves the branch a submitted change should target.
 // The run's original requested ref (runlease.Info.GitRef) is used
 // as-is when set — in the overwhelming common case an agent's box is
-// seeded from the branch changes should land on. Empty GitRef means
-// the run fetched the remote's default branch (FetchGitSource's own
-// convention for an empty ref) without recording its name; this falls
-// back to "main".
-//
-// Known limitation, flagged rather than silently wrong: a repository
-// whose default branch is named something other than "main" (e.g.
-// "master", or a renamed default) gets an incorrect target when GitRef
-// was empty. Resolving the provider's actual default branch would need
-// a new Provider method neither adapter has today; tracked as a
-// follow-up rather than blocking this PR on it.
-func baseBranchFor(gitRef string) string {
+// seeded from the branch changes should land on. Empty GitRef means the
+// run fetched the remote's default branch (FetchGitSource's own
+// convention for an empty ref) without recording its name; that case
+// resolves the project's ACTUAL default branch from the provider
+// itself (Provider.DefaultBranch) rather than assuming "main" — a repo
+// whose default branch is "master", or any operator-renamed default,
+// previously got the wrong target.
+func baseBranchFor(ctx context.Context, provider tracker.Provider, conn tracker.Conn, gitRef string) (string, error) {
 	if gitRef != "" {
-		return gitRef
+		return gitRef, nil
 	}
-	return "main"
+	return provider.DefaultBranch(ctx, conn)
 }
 
 // submitChangeAuditDetail is SubmitTrackerChange's audit payload —
@@ -242,9 +238,14 @@ func (s *ContainerServer) SubmitTrackerChange(ctx context.Context, req *pb.Submi
 		return nil, status.Errorf(codes.Internal, "push bundle: %v", err)
 	}
 
+	baseBranch, err := baseBranchFor(ctx, provider, conn, info.GitRef)
+	if err != nil {
+		return nil, mapProviderError(err)
+	}
+
 	change, err := provider.OpenChange(ctx, conn, tracker.OpenChangeRequest{
 		HeadBranch:  pushResult.Branch,
-		BaseBranch:  baseBranchFor(info.GitRef),
+		BaseBranch:  baseBranch,
 		Title:       req.Title,
 		Description: fullDescription,
 		Draft:       req.Draft,
