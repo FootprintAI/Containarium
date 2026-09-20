@@ -483,6 +483,15 @@ func EnvPlaceholdersInDNSProvider(dns *CaddyACMEChallenges) []string {
 	return vars
 }
 
+// CaddyVersion is the pinned Caddy release the Makefile's build-caddy target
+// (the pre-built release asset, #1617) and setupCaddy's xcaddy
+// source-build fallback both target. A deliberate pin, not `xcaddy build`
+// with no version arg — that tracks Caddy's latest tag at BUILD time, which
+// is the same per-host-provisioning-time drift this asset exists to remove,
+// just moved to CI cadence instead of removed. Bump it deliberately, in its
+// own reviewable commit, keeping the Makefile's CADDY_VERSION in sync.
+const CaddyVersion = "v2.11.4"
+
 // dnsProviderModules maps a caddy-dns provider name to its Go module path,
 // for the xcaddy build of Caddy. This is the single source of truth shared by
 // the core Caddy build (internal/server.setupCaddy) and the hosting Caddy
@@ -506,6 +515,22 @@ var dnsProviderModules = map[string]string{
 // the DNS-01 provider the daemon is configured to emit (#378).
 func DNSProviderModule(provider string) string {
 	return dnsProviderModules[strings.TrimSpace(provider)]
+}
+
+// AllDNSProviderModules returns every caddy-dns module path this build
+// knows about, sorted for a deterministic build argument order. The
+// release pipeline's pre-built Caddy binary (#1617, cmd/print-caddy-modules)
+// bakes in every provider here rather than just the one an operator has
+// configured, so setupCaddy's downloaded binary works for ANY provider a
+// host is later configured with, without needing a rebuild per provider —
+// and so this map stays the one place a new provider needs adding.
+func AllDNSProviderModules() []string {
+	mods := make([]string, 0, len(dnsProviderModules))
+	for _, m := range dnsProviderModules {
+		mods = append(mods, m)
+	}
+	sort.Strings(mods)
+	return mods
 }
 
 // DNSProviderFromEnv returns the configured caddy-dns provider name (from
