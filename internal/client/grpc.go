@@ -1593,3 +1593,18 @@ func (c *GRPCClient) GetTrackerChange(req *pb.GetTrackerChangeRequest) (*pb.Trac
 	}
 	return resp.Change, nil
 }
+
+// SubmitTrackerChange bundles the calling run's committed workspace out
+// of its box, pushes it, and opens a change request (#1923). A longer
+// timeout than the read verbs: it execs in the box, transfers a bundle,
+// and makes an upstream call to open the change — closer to the
+// heavier end of this client's RPCs than a plain read.
+func (c *GRPCClient) SubmitTrackerChange(req *pb.SubmitTrackerChangeRequest) (*pb.TrackerChange, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	resp, err := c.trackerClient.SubmitTrackerChange(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("submit tracker change: %w", err)
+	}
+	return resp.Change, nil
+}

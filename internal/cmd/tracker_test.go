@@ -145,3 +145,39 @@ func TestPrintTrackerStatus_CredentialInvalid_ShowsDetail(t *testing.T) {
 		t.Errorf("output = %q, want the detail message", out)
 	}
 }
+
+func TestPrintTrackerStatus_HostGitSufficient(t *testing.T) {
+	out := captureStdout(t, func() {
+		printTrackerStatus(&pb.GetTrackerStatusResponse{
+			Reachable: false, Detail: "unreachable",
+			HostGitVersion: "git version 2.43.0", HostGitSufficient: true,
+		})
+	})
+	if !strings.Contains(out, "host git:         git version 2.43.0") {
+		t.Errorf("output = %q, want the host git version with no warning", out)
+	}
+	if strings.Contains(out, "too old") {
+		t.Errorf("output = %q, want no 'too old' note for a sufficient version", out)
+	}
+}
+
+func TestPrintTrackerStatus_HostGitTooOld(t *testing.T) {
+	out := captureStdout(t, func() {
+		printTrackerStatus(&pb.GetTrackerStatusResponse{
+			Reachable: false, Detail: "unreachable",
+			HostGitVersion: "git version 2.20.0", HostGitSufficient: false,
+		})
+	})
+	if !strings.Contains(out, "git version 2.20.0") || !strings.Contains(out, "too old") {
+		t.Errorf("output = %q, want the version and a 'too old' note", out)
+	}
+}
+
+func TestPrintTrackerStatus_HostGitMissing(t *testing.T) {
+	out := captureStdout(t, func() {
+		printTrackerStatus(&pb.GetTrackerStatusResponse{Reachable: false, Detail: "unreachable"})
+	})
+	if !strings.Contains(out, "host git:         not found") {
+		t.Errorf("output = %q, want a 'not found' line for empty HostGitVersion", out)
+	}
+}

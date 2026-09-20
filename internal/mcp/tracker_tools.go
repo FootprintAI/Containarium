@@ -6,10 +6,11 @@ import (
 )
 
 // trackerTools is the MCP-side catalog for the tracker broker's
-// agent-facing verbs (#1922 step 7). Pulled into tools.go's registration
-// list via trackerTools(), mirroring kmsTools()/backupTools().
+// agent-facing verbs (#1922 step 7, #1923's SubmitTrackerChange added
+// here rather than a separate catalog). Pulled into tools.go's
+// registration list via trackerTools(), mirroring kmsTools()/backupTools().
 //
-// Deliberately six tools, not the design note's illustrative "seven":
+// Seven tools, matching the design note's own verb count exactly:
 // connection CRUD and GetTrackerStatus are all tracker:admin — an
 // operator concern, surfaced via `containarium tracker connect/status`
 // — never something an agent's run-scoped JWT (tracker:read/write) can
@@ -134,6 +135,27 @@ func trackerTools() []Tool {
 			},
 			Handler: handleTrackerSetLabels,
 		},
+		{
+			Name: "tracker_submit_change",
+			Description: "Bundle this run's committed workspace out of its box, push it from a " +
+				"fresh temporary bare repository on the host to a daemon-chosen branch, and open " +
+				"a change request referencing the given issue — no push credential ever enters " +
+				"the box. Requires this run to have a recorded git_source. Mirrors " +
+				"`containarium tracker change submit`.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"username":    map[string]interface{}{"type": "string", "description": "Tenant username."},
+					"connection":  map[string]interface{}{"type": "string", "description": "Tracker connection name."},
+					"issue":       map[string]interface{}{"type": "integer", "description": "Issue this change closes/references."},
+					"title":       map[string]interface{}{"type": "string", "description": "Change request title."},
+					"description": map[string]interface{}{"type": "string", "description": "Change request description."},
+					"draft":       map[string]interface{}{"type": "boolean", "description": "Open as a draft/WIP."},
+				},
+				"required": []string{"username", "connection", "issue", "title"},
+			},
+			Handler: handleTrackerSubmitChange,
+		},
 	}
 }
 
@@ -248,4 +270,24 @@ func handleTrackerSetLabels(client API, args map[string]interface{}) (string, er
 		return "", err
 	}
 	return "Labels updated.", nil
+}
+
+func handleTrackerSubmitChange(client API, args map[string]interface{}) (string, error) {
+	issue, _ := getInt64Arg(args, "issue")
+	change, err := client.SubmitTrackerChange(SubmitTrackerChangeRequest{
+		Username:    getStringArg(args, "username", ""),
+		Connection:  getStringArg(args, "connection", ""),
+		Issue:       issue,
+		Title:       getStringArg(args, "title", ""),
+		Description: getStringArg(args, "description", ""),
+		Draft:       getBoolArg(args, "draft", false),
+	})
+	if err != nil {
+		return "", err
+	}
+	msg := fmt.Sprintf("#%d opened on branch %s.", change.Number, change.Branch)
+	if change.Url != "" {
+		msg += fmt.Sprintf(" %s", change.Url)
+	}
+	return msg, nil
 }

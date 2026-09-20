@@ -277,6 +277,15 @@ func runTrackerStatus(cmd *cobra.Command, args []string) error {
 // printTrackerStatus renders a GetTrackerStatusResponse. Factored out
 // from runTrackerStatus so it's testable without a client.
 func printTrackerStatus(resp *pb.GetTrackerStatusResponse) {
+	if resp.GetHostGitVersion() != "" {
+		gitNote := ""
+		if !resp.GetHostGitSufficient() {
+			gitNote = " (too old — `tracker change submit` will fail; need >= 2.31)"
+		}
+		fmt.Printf("host git:         %s%s\n", resp.GetHostGitVersion(), gitNote)
+	} else {
+		fmt.Printf("host git:         not found — `tracker change submit` will fail\n")
+	}
 	fmt.Printf("reachable:        %v\n", resp.GetReachable())
 	fmt.Printf("credential valid: %v\n", resp.GetCredentialValid())
 	if !resp.GetReachable() || !resp.GetCredentialValid() {

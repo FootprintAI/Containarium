@@ -6456,7 +6456,7 @@
     "/v1/tracker/connections/{username}/{name}/status": {
       "get": {
         "summary": "Check a tracker connection's live status",
-        "description": "Asks the tracker to describe the connection's own credential: reachability, whether the credential is still valid, its granted scopes and expiry, and whether it's broader than the provider's preferred credential type. Requires tracker:admin.",
+        "description": "Asks the tracker to describe the connection's own credential: reachability, whether the credential is still valid, its granted scopes and expiry, and whether it's broader than the provider's preferred credential type. Also reports the daemon host's git version and whether it meets SubmitTrackerChange's minimum. Requires tracker:admin.",
         "operationId": "TrackerService_GetTrackerStatus",
         "responses": {
           "200": {
@@ -11444,6 +11444,13 @@
         "detail": {
           "type": "string",
           "description": "Human-readable detail when reachable or credential_valid is false.\nEmpty when both are true."
+        },
+        "hostGitVersion": {
+          "type": "string",
+          "description": "host_git_version and host_git_sufficient (#1923, decision D2) let\nan operator see SubmitTrackerChange's preflight before an agent\nhits it: the daemon host's `git version` output, and whether it\nmeets the \u003e= 2.31 minimum the submit path needs\n(GIT_CONFIG_COUNT/KEY_N/VALUE_N env-based config). Daemon-wide, not\nconnection-specific — every connection on this daemon shares the\nsame host git. An empty host_git_version means git was not found\non the daemon host's PATH at all."
+        },
+        "hostGitSufficient": {
+          "type": "boolean"
         }
       }
     },

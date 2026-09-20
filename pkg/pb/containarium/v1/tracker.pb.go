@@ -880,9 +880,19 @@ type GetTrackerStatusResponse struct {
 	CredentialExpiresAt *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=credential_expires_at,json=credentialExpiresAt,proto3" json:"credential_expires_at,omitempty"`
 	// Human-readable detail when reachable or credential_valid is false.
 	// Empty when both are true.
-	Detail        string `protobuf:"bytes,7,opt,name=detail,proto3" json:"detail,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Detail string `protobuf:"bytes,7,opt,name=detail,proto3" json:"detail,omitempty"`
+	// host_git_version and host_git_sufficient (#1923, decision D2) let
+	// an operator see SubmitTrackerChange's preflight before an agent
+	// hits it: the daemon host's `git version` output, and whether it
+	// meets the >= 2.31 minimum the submit path needs
+	// (GIT_CONFIG_COUNT/KEY_N/VALUE_N env-based config). Daemon-wide, not
+	// connection-specific — every connection on this daemon shares the
+	// same host git. An empty host_git_version means git was not found
+	// on the daemon host's PATH at all.
+	HostGitVersion    string `protobuf:"bytes,8,opt,name=host_git_version,json=hostGitVersion,proto3" json:"host_git_version,omitempty"`
+	HostGitSufficient bool   `protobuf:"varint,9,opt,name=host_git_sufficient,json=hostGitSufficient,proto3" json:"host_git_sufficient,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *GetTrackerStatusResponse) Reset() {
@@ -962,6 +972,20 @@ func (x *GetTrackerStatusResponse) GetDetail() string {
 		return x.Detail
 	}
 	return ""
+}
+
+func (x *GetTrackerStatusResponse) GetHostGitVersion() string {
+	if x != nil {
+		return x.HostGitVersion
+	}
+	return ""
+}
+
+func (x *GetTrackerStatusResponse) GetHostGitSufficient() bool {
+	if x != nil {
+		return x.HostGitSufficient
+	}
+	return false
 }
 
 // TrackerComment is one normalized issue or change-request comment.
@@ -2122,7 +2146,7 @@ const file_containarium_v1_tracker_proto_rawDesc = "" +
 	"\amessage\x18\x01 \x01(\tR\amessage\"I\n" +
 	"\x17GetTrackerStatusRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x12\n" +
-	"\x04name\x18\x02 \x01(\tR\x04name\"\x96\x03\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\"\xf0\x03\n" +
 	"\x18GetTrackerStatusResponse\x12B\n" +
 	"\n" +
 	"connection\x18\x01 \x01(\v2\".containarium.v1.TrackerConnectionR\n" +
@@ -2132,7 +2156,9 @@ const file_containarium_v1_tracker_proto_rawDesc = "" +
 	"\x12credential_breadth\x18\x04 \x01(\x0e2).containarium.v1.TrackerCredentialBreadthR\x11credentialBreadth\x12+\n" +
 	"\x11credential_scopes\x18\x05 \x03(\tR\x10credentialScopes\x12N\n" +
 	"\x15credential_expires_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\x13credentialExpiresAt\x12\x16\n" +
-	"\x06detail\x18\a \x01(\tR\x06detail\"w\n" +
+	"\x06detail\x18\a \x01(\tR\x06detail\x12(\n" +
+	"\x10host_git_version\x18\b \x01(\tR\x0ehostGitVersion\x12.\n" +
+	"\x13host_git_sufficient\x18\t \x01(\bR\x11hostGitSufficient\"w\n" +
 	"\x0eTrackerComment\x12\x16\n" +
 	"\x06author\x18\x01 \x01(\tR\x06author\x129\n" +
 	"\n" +
@@ -2239,7 +2265,7 @@ const file_containarium_v1_tracker_proto_rawDesc = "" +
 	"\x18TrackerCredentialBreadth\x12*\n" +
 	"&TRACKER_CREDENTIAL_BREADTH_UNSPECIFIED\x10\x00\x12(\n" +
 	"$TRACKER_CREDENTIAL_BREADTH_PREFERRED\x10\x01\x12$\n" +
-	" TRACKER_CREDENTIAL_BREADTH_BROAD\x10\x022\xfd\"\n" +
+	" TRACKER_CREDENTIAL_BREADTH_BROAD\x10\x022\xdc#\n" +
 	"\x0eTrackerService\x12\xb8\x03\n" +
 	"\x14SetTrackerConnection\x12,.containarium.v1.SetTrackerConnectionRequest\x1a-.containarium.v1.SetTrackerConnectionResponse\"\xc2\x02\x92A\x9c\x02\n" +
 	"\aTracker\x12%Create or update a tracker connection\x1a\xe9\x01Registers where a tenant's issue tracker is (provider, base URL, project) and which broker-only secret holds its credential. The credential itself is never accepted or returned here — only the secret's name. Requires tracker:admin.\x82\xd3\xe4\x93\x02\x1c:\x01*\"\x17/v1/tracker/connections\x12\xa8\x02\n" +
@@ -2248,9 +2274,9 @@ const file_containarium_v1_tracker_proto_rawDesc = "" +
 	"\x16ListTrackerConnections\x12..containarium.v1.ListTrackerConnectionsRequest\x1a/.containarium.v1.ListTrackerConnectionsResponse\"\x83\x01\x92AV\n" +
 	"\aTracker\x12\x18List tracker connections\x1a1Lists every tracker connection owned by a tenant.\x82\xd3\xe4\x93\x02$\x12\"/v1/tracker/connections/{username}\x12\xb0\x02\n" +
 	"\x17DeleteTrackerConnection\x12/.containarium.v1.DeleteTrackerConnectionRequest\x1a0.containarium.v1.DeleteTrackerConnectionResponse\"\xb1\x01\x92A}\n" +
-	"\aTracker\x12\x1bDelete a tracker connection\x1aURemoves a named tracker connection. Does not delete the underlying credential secret.\x82\xd3\xe4\x93\x02+*)/v1/tracker/connections/{username}/{name}\x12\xcd\x03\n" +
-	"\x10GetTrackerStatus\x12(.containarium.v1.GetTrackerStatusRequest\x1a).containarium.v1.GetTrackerStatusResponse\"\xe3\x02\x92A\xa7\x02\n" +
-	"\aTracker\x12(Check a tracker connection's live status\x1a\xf1\x01Asks the tracker to describe the connection's own credential: reachability, whether the credential is still valid, its granted scopes and expiry, and whether it's broader than the provider's preferred credential type. Requires tracker:admin.\x82\xd3\xe4\x93\x022\x120/v1/tracker/connections/{username}/{name}/status\x12\xc8\x02\n" +
+	"\aTracker\x12\x1bDelete a tracker connection\x1aURemoves a named tracker connection. Does not delete the underlying credential secret.\x82\xd3\xe4\x93\x02+*)/v1/tracker/connections/{username}/{name}\x12\xac\x04\n" +
+	"\x10GetTrackerStatus\x12(.containarium.v1.GetTrackerStatusRequest\x1a).containarium.v1.GetTrackerStatusResponse\"\xc2\x03\x92A\x86\x03\n" +
+	"\aTracker\x12(Check a tracker connection's live status\x1a\xd0\x02Asks the tracker to describe the connection's own credential: reachability, whether the credential is still valid, its granted scopes and expiry, and whether it's broader than the provider's preferred credential type. Also reports the daemon host's git version and whether it meets SubmitTrackerChange's minimum. Requires tracker:admin.\x82\xd3\xe4\x93\x022\x120/v1/tracker/connections/{username}/{name}/status\x12\xc8\x02\n" +
 	"\x0fGetTrackerIssue\x12'.containarium.v1.GetTrackerIssueRequest\x1a(.containarium.v1.GetTrackerIssueResponse\"\xe1\x01\x92A\xa2\x01\n" +
 	"\aTracker\x12\x13Get a tracker issue\x1a\x81\x01Returns a single issue's body, state, labels, assignee, and comments, normalized across GitHub and GitLab. Requires tracker:read.\x82\xd3\xe4\x93\x025\x123/v1/tracker/{username}/{connection}/issues/{number}\x12\xf8\x02\n" +
 	"\x11ListTrackerIssues\x12).containarium.v1.ListTrackerIssuesRequest\x1a*.containarium.v1.ListTrackerIssuesResponse\"\x8b\x02\x92A\xd5\x01\n" +
