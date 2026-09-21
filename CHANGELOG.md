@@ -17,6 +17,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   release from v0.71.0 onward is gated and complete.
 -->
 
+## [0.84.1] - 2026-09-21
+
+v0.84.0 was tagged at f1015636 but its release build failed the "Verify the
+release is described" gate (no CHANGELOG section), so it published no
+artifacts. v0.84.1 carries the same code and supersedes it; use v0.84.1.
+
+### Added
+
+- **`RunCrew` accepts `git_source` / `git_ref` / `git_credential`, fetched
+  into every member's own per-run workspace.** The shared codebase between
+  crew members is git at a pinned SHA, not a shared filesystem: each member
+  box fetches the same repo and ref into its own workspace, so two members
+  never write the same file and there is no locking or merge step.
+  `CrewRun` records `git_source`, `git_ref` and the resolved `git_commit`.
+  `containarium crew run` gains `--git-source`, `--git-ref` and
+  `--git-credential-file`, and `crew status` shows the source and commit.
+  The new proto fields are additive. (#1981, cloud#1554)
+
+### Fixed
+
+- Dependency bumps: `google.golang.org/api` (#1978),
+  `cloud.google.com/go/compute` (#1975), `mark3labs/mcp-go` (#1973),
+  `controller-runtime` (#1972), `agent-sandbox` (#1974) and the
+  `opentelemetry-operations-go` metric exporter (#1976).
+
 ## [0.83.0] - 2026-09-20
 
 ### Added
