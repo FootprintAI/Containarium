@@ -70,6 +70,15 @@ linters:
       - test/fixtures
       # Vendored Go shipped inside JS tooling (flatted) — not our code.
       - web-ui/node_modules
+    rules:
+      # opentelemetry-operations-go/exporter/metric v0.62.0 deprecates the
+      # whole package in favour of the OTLP exporters (archived 2027-01-01).
+      # gcp.go is the daemon's one import of it. Scoped to that file and to
+      # SA1019 only, until the OTLP migration lands (#1979) — then delete this.
+      - path: internal/metrics/cloudexport/gcp\.go
+        linters:
+          - staticcheck
+        text: "SA1019"
 
 # Formatters run during `golangci-lint run` (v2): an unformatted file fails
 # the lint job. gofmt runs with simplify on by default (== gofmt -s), matching
