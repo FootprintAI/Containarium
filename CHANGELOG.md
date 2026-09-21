@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   release from v0.71.0 onward is gated and complete.
 -->
 
+## [0.85.0] - 2026-09-22
+
 ### Added
 
 - **`incus_version` on `BackendInfo`** (`GET /v1/backends`, MCP `list_backends`
