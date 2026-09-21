@@ -14,7 +14,7 @@ import (
 // GetInstanceState (isTransientStateErr, citing OSS #931) — blocks its
 // caller forever instead of surfacing an error. The Incus SDK's
 // Operation.WaitContext performs a genuine `select` on ctx.Done() (verified
-// against github.com/lxc/incus/v6/client), so a deadline-bound context
+// against github.com/lxc/incus/v7/client), so a deadline-bound context
 // actually interrupts a wedged wait; wait below simulates exactly that
 // select by blocking on ctx.Done() itself, mirroring what the real SDK does
 // when the underlying operation never completes.

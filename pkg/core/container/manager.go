@@ -14,7 +14,7 @@ import (
 	"github.com/footprintai/containarium/pkg/core/ostype"
 	"github.com/footprintai/containarium/pkg/core/stacks"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
-	incusapi "github.com/lxc/incus/v6/shared/api"
+	incusapi "github.com/lxc/incus/v7/shared/api"
 )
 
 // Manager handles container lifecycle operations

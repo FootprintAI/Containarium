@@ -21,7 +21,7 @@
 # into the image.
 
 # --- build the gateway ------------------------------------------------------
-FROM golang:1.26.6-bookworm AS build
+FROM golang:1.26.7-bookworm AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

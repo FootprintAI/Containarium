@@ -165,7 +165,7 @@ excluded files, and the CI dependency check below proves
 `internal/hosting` and `pgx` are absent from the link. But
 `pkg/core/incus` itself **stays linked**, because `incus.ContainerInfo`
 / `incus.ServerInfo` are the return types of every `internal/client`
-call, and that package imports `github.com/lxc/incus/v6/client`. The
+call, and that package imports `github.com/lxc/incus/v7/client`. The
 guarantee is "no code path", not "no bytes". Making it "no bytes" means
 moving those two structs into a types-only package (e.g.
 `pkg/core/incus/types`) — a mechanical follow-up, listed under Open
@@ -583,7 +583,7 @@ binary rename, not a new service.
    the file. `containariumd` reads it only for the token (today's
    behavior). Recorded as decided unless someone objects.
 3. **Types follow-up: move `incus.ContainerInfo` / `incus.ServerInfo`
-   out of `pkg/core/incus`.** Until then `github.com/lxc/incus/v6/client`
+   out of `pkg/core/incus`.** Until then `github.com/lxc/incus/v7/client`
    is linked into the client for a struct definition. Mechanical but it
    touches every `internal/client` signature and the MCP `API`
    interface, so it is its own PR after the split lands, and is what

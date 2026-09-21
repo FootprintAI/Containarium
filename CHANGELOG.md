@@ -26,6 +26,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   call instead of per-host shell access. Empty means the backend could not
   report it. Deliberately not added to the unauthenticated `/health`.
 
+### Changed
+
+- **Incus Go client `v6.23.0` -> `v7.4.0`** (module path
+  `github.com/lxc/incus/v7`). The v6 module has no fixed release for 24
+  published advisories (fixes landed only on the v7 line), so `govulncheck`
+  reported them against any code importing it. No source changes beyond the
+  import path; `govulncheck ./...` now reports 0 affected vulnerabilities.
+  This does not patch Incus daemons — those are upgraded separately.
+- **Go 1.26.6 -> 1.26.7** (pulled in by the v7 client's `go` directive);
+  CI workflow and Dockerfile pins updated to match.
+
 ## [0.84.1] - 2026-09-21
 
 v0.84.0 was tagged at f1015636 but its release build failed the "Verify the

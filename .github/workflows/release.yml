@@ -39,7 +39,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: '1.26.6'
+          go-version: '1.26.7'
 
       - name: Install buf
         # `make build-release` transitively runs `make proto`, which
@@ -446,7 +446,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: '1.26.6'
+          go-version: '1.26.7'
 
       - name: Install buf
         # Pinned release binary — see the build-and-release job's "Install

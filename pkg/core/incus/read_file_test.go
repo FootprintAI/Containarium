@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	incusclient "github.com/lxc/incus/v6/client"
+	incusclient "github.com/lxc/incus/v7/client"
 )
 
 // These pin ReadFile's contract: the bytes it returns are the bytes of

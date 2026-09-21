@@ -3,7 +3,7 @@ package incus
 import (
 	"fmt"
 
-	"github.com/lxc/incus/v6/shared/api"
+	"github.com/lxc/incus/v7/shared/api"
 )
 
 // ACLRule represents a single firewall rule

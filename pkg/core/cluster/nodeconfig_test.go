@@ -3,7 +3,7 @@ package cluster
 import (
 	"testing"
 
-	"github.com/lxc/incus/v6/shared/api"
+	"github.com/lxc/incus/v7/shared/api"
 )
 
 // The Incus config a cluster node is created from. Pure, so the parts

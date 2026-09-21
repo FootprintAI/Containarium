@@ -4,7 +4,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/lxc/incus/v6/shared/api"
+	"github.com/lxc/incus/v7/shared/api"
 )
 
 // ErrUnavailable is returned by every UnavailableBackend method. It marks a

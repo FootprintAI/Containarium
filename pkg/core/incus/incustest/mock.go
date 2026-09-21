@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/pkg/core/incus"
-	"github.com/lxc/incus/v6/shared/api"
+	"github.com/lxc/incus/v7/shared/api"
 )
 
 // MockBackend is a test double for incus.Backend. Lifecycle methods

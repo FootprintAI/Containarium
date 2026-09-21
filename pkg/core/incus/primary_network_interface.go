@@ -3,7 +3,7 @@ package incus
 import (
 	"strings"
 
-	"github.com/lxc/incus/v6/shared/api"
+	"github.com/lxc/incus/v7/shared/api"
 )
 
 // knownBridgeInterfaces are interfaces that are never an instance's real,

@@ -13,8 +13,8 @@ import (
 
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/gorilla/websocket"
-	incus "github.com/lxc/incus/v6/client"
-	"github.com/lxc/incus/v6/shared/api"
+	incus "github.com/lxc/incus/v7/client"
+	"github.com/lxc/incus/v7/shared/api"
 )
 
 // PeerTerminalProxy resolves the WebSocket URL for a container on a peer backend.
