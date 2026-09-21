@@ -3,7 +3,7 @@ module github.com/footprintai/containarium
 go 1.26.6
 
 require (
-	cloud.google.com/go/compute v1.68.0
+	cloud.google.com/go/compute v1.69.0
 	cloud.google.com/go/monitoring v1.30.0
 	filippo.io/age v1.3.2
 	github.com/BurntSushi/toml v1.6.0
@@ -18,7 +18,7 @@ require (
 	github.com/hashicorp/yamux v0.1.2
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/lxc/incus/v6 v6.23.0
-	github.com/mark3labs/mcp-go v1.0.0
+	github.com/mark3labs/mcp-go v1.1.0
 	github.com/pires/go-proxyproto v0.15.0
 	github.com/rs/cors v1.11.1
 	github.com/spf13/cobra v1.10.2
@@ -40,7 +40,7 @@ require (
 	golang.org/x/sys v0.48.0
 	golang.org/x/term v0.46.0
 	golang.org/x/time v0.16.0
-	google.golang.org/api v0.297.0
+	google.golang.org/api v0.298.0
 	google.golang.org/genproto/googleapis/api v0.0.0-20260819154853-08b0e4226688
 	google.golang.org/grpc v1.83.2
 	google.golang.org/protobuf v1.36.12
@@ -49,7 +49,7 @@ require (
 	k8s.io/apimachinery v0.37.0
 	k8s.io/client-go v0.37.0
 	sigs.k8s.io/agent-sandbox v1.0.2
-	sigs.k8s.io/controller-runtime v0.25.0
+	sigs.k8s.io/controller-runtime v0.25.1
 )
 
 require (
