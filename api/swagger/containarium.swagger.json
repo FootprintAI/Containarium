@@ -8302,6 +8302,10 @@
         "storage": {
           "$ref": "#/definitions/BackendStorage",
           "description": "The storage pool backing this backend's containers, and whether it\nisolates tenant volumes. Null when the pool could not be read — an\nunread pool must not be reported as isolated. See #1209 / #1206."
+        },
+        "incusVersion": {
+          "type": "string",
+          "description": "Incus server version running on this backend (e.g. \"6.23\"), as reported\nby the Incus daemon itself. Empty when it could not be read (peer\nunreachable, or the peer's daemon predates this field). Lets an operator\naudit fleet Incus patch levels from one admin-only call instead of\nper-host shell access; deliberately NOT exposed on the unauthenticated\n/health endpoint."
         }
       },
       "description": "BackendInfo describes one backend in the fleet — the local daemon\nplus any tunnel-connected peers. Emitted by ListBackends (GET\n/v1/backends). The field shape is the wire contract the CLI and MCP\nclients consume; it supersedes the hand-coded /v1/backends handler\nthis RPC replaced (see #354)."

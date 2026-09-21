@@ -735,6 +735,14 @@ message BackendInfo {
   // isolates tenant volumes. Null when the pool could not be read — an
   // unread pool must not be reported as isolated. See #1209 / #1206.
   BackendStorage storage = 14;
+
+  // Incus server version running on this backend (e.g. "6.23"), as reported
+  // by the Incus daemon itself. Empty when it could not be read (peer
+  // unreachable, or the peer's daemon predates this field). Lets an operator
+  // audit fleet Incus patch levels from one admin-only call instead of
+  // per-host shell access; deliberately NOT exposed on the unauthenticated
+  // /health endpoint.
+  string incus_version = 15;
 }
 
 // HostLoad is a point-in-time sample of a backend host's real resource

@@ -201,3 +201,20 @@ func TestSharedFilesystemBackends(t *testing.T) {
 		t.Errorf("sharedFilesystemBackends() = %d, want 2", got)
 	}
 }
+
+// The Incus server version is what a fleet patch-level audit reads. Absent
+// (a peer that could not report it) must decode to "" and print as "-",
+// never as a guessed value.
+func TestBackendInfo_DecodesIncusVersion(t *testing.T) {
+	var got backendsListResponse
+	wire := `{"backends":[{"id":"a","type":"tunnel","healthy":true,"incusVersion":"6.23"},{"id":"b","type":"tunnel","healthy":true}]}`
+	if err := json.Unmarshal([]byte(wire), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Backends[0].IncusVersion != "6.23" {
+		t.Errorf("IncusVersion = %q, want 6.23", got.Backends[0].IncusVersion)
+	}
+	if got.Backends[1].IncusVersion != "" {
+		t.Errorf("IncusVersion = %q, want empty when the backend reported none", got.Backends[1].IncusVersion)
+	}
+}

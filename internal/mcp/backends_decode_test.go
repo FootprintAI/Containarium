@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -130,5 +131,32 @@ func TestFlexInt64_EmptyAndNull(t *testing.T) {
 		if v.N != 0 {
 			t.Errorf("decode %q: N = %d, want 0", in, v.N)
 		}
+	}
+}
+
+// The Incus server version rides the same response and must render, so an
+// agent can audit fleet daemon patch levels. Absent stays absent: no line is
+// printed for a backend that could not report one.
+func TestListBackends_IncusVersionDecodesAndRenders(t *testing.T) {
+	wire := `{"backends":[
+	  {"id":"a","type":"tunnel","healthy":true,"incusVersion":"6.23"},
+	  {"id":"b","type":"tunnel","healthy":true}
+	]}`
+	var resp ListBackendsResponse
+	if err := json.Unmarshal([]byte(wire), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got := resp.Backends[0].IncusVersion; got != "6.23" {
+		t.Fatalf("IncusVersion = %q, want 6.23", got)
+	}
+
+	var withVer, withoutVer strings.Builder
+	writeBackendDetail(&withVer, &resp.Backends[0])
+	writeBackendDetail(&withoutVer, &resp.Backends[1])
+	if !strings.Contains(withVer.String(), "Incus:      6.23") {
+		t.Errorf("rendered backend lacks the Incus line:\n%s", withVer.String())
+	}
+	if strings.Contains(withoutVer.String(), "Incus:") {
+		t.Errorf("backend with no Incus version must not render an Incus line:\n%s", withoutVer.String())
 	}
 }

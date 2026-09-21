@@ -3145,6 +3145,7 @@ func (s *ContainerServer) ListBackends(ctx context.Context, _ *pb.ListBackendsRe
 		if sysResp, err := s.GetSystemInfo(ctx, &pb.GetSystemInfoRequest{}); err == nil && sysResp.Info != nil {
 			local.Hostname = sysResp.Info.Hostname
 			local.Os = sysResp.Info.Os
+			local.IncusVersion = sysResp.Info.IncusVersion
 			local.ContainerCount = sysResp.Info.ContainersRunning
 			local.Gpus = backendGPUsFromSystemInfo(sysResp.Info)
 			// The same SystemInfo already carries the host's measured load
@@ -3193,6 +3194,7 @@ func (s *ContainerServer) ListBackends(ctx context.Context, _ *pb.ListBackendsRe
 					pi.Hostname = peerResp.Info.Hostname
 					pi.Os = peerResp.Info.Os
 					pi.Version = peerResp.Info.DaemonVersion
+					pi.IncusVersion = peerResp.Info.IncusVersion
 					pi.ContainerCount = peerResp.Info.ContainersRunning
 					pi.Gpus = backendGPUsFromSystemInfo(peerResp.Info)
 					// Live load for peers — including BYOC tunnel hosts,

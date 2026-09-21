@@ -17,6 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   release from v0.71.0 onward is gated and complete.
 -->
 
+### Added
+
+- **`incus_version` on `BackendInfo`** (`GET /v1/backends`, MCP `list_backends`
+  / `get_backend`, and a new `INCUS` column in `containarium backends list`).
+  Reports each backend's Incus server version next to the Containarium
+  version, so fleet Incus patch levels can be audited from one admin-only
+  call instead of per-host shell access. Empty means the backend could not
+  report it. Deliberately not added to the unauthenticated `/health`.
+
 ## [0.84.1] - 2026-09-21
 
 v0.84.0 was tagged at f1015636 but its release build failed the "Verify the

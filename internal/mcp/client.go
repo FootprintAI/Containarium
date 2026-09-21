@@ -1997,10 +1997,13 @@ type ListBackendsResponse struct {
 }
 
 type Backend struct {
-	ID             string       `json:"id"`
-	Type           string       `json:"type"` // "local" or "tunnel"
-	Healthy        bool         `json:"healthy"`
-	Version        string       `json:"version,omitempty"`
+	ID      string `json:"id"`
+	Type    string `json:"type"` // "local" or "tunnel"
+	Healthy bool   `json:"healthy"`
+	Version string `json:"version,omitempty"`
+	// IncusVersion is the Incus server version on the backend; absent when
+	// the backend could not report it.
+	IncusVersion   string       `json:"incusVersion,omitempty"`
 	Hostname       string       `json:"hostname,omitempty"`
 	UptimeSeconds  flexInt64    `json:"uptimeSeconds,omitempty"`
 	LastSeenAt     string       `json:"lastSeenAt,omitempty"`

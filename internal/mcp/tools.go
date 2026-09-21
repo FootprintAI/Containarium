@@ -2553,6 +2553,9 @@ func writeBackendDetail(b *strings.Builder, bk *Backend) {
 	if bk.Version != "" {
 		fmt.Fprintf(b, "   Version:    %s\n", bk.Version)
 	}
+	if bk.IncusVersion != "" {
+		fmt.Fprintf(b, "   Incus:      %s\n", bk.IncusVersion)
+	}
 	fmt.Fprintf(b, "   Containers: %d running\n", bk.ContainerCount)
 	if bk.UptimeSeconds > 0 {
 		fmt.Fprintf(b, "   Uptime:     %s\n", formatUptime(int64(bk.UptimeSeconds)))

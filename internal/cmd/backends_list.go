@@ -19,7 +19,7 @@ var backendsListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List backend hosts (local daemon + tunnel peers)",
 	Long: `List all backend hosts registered with the platform daemon. Returns
-id, type (local/tunnel), health, hostname, OS, container count, live
+id, type (local/tunnel), health, hostname, Incus server version, container count, live
 host load (1-minute CPU load average against core count, plus memory
 and disk in use), and GPU inventory per backend.
 
@@ -43,10 +43,13 @@ func init() {
 // the CLI so a server-side schema change shows up here as a decode
 // failure rather than a silent field-drop.
 type backendInfo struct {
-	ID             string       `json:"id"`
-	Type           string       `json:"type"`
-	Healthy        bool         `json:"healthy"`
-	Version        string       `json:"version,omitempty"`
+	ID      string `json:"id"`
+	Type    string `json:"type"`
+	Healthy bool   `json:"healthy"`
+	Version string `json:"version,omitempty"`
+	// IncusVersion is the Incus server version on the backend; empty when
+	// the backend could not report it.
+	IncusVersion   string       `json:"incusVersion,omitempty"`
 	Hostname       string       `json:"hostname,omitempty"`
 	UptimeSeconds  int64        `json:"uptimeSeconds,omitempty"`
 	LastSeenAt     string       `json:"lastSeenAt,omitempty"`
@@ -160,9 +163,9 @@ func printBackendsTable(backends []backendInfo) {
 		fmt.Println("No backends registered (running standalone, no peers).")
 		return
 	}
-	fmt.Printf("%-40s %-8s %-10s %-25s %-10s %-10s %-6s %-6s %-12s %s\n",
-		"BACKEND ID", "TYPE", "HEALTH", "HOSTNAME", "CONTAINERS", "CPU LOAD", "MEM", "DISK", "STORAGE", "GPUS")
-	fmt.Println(strings.Repeat("-", 155))
+	fmt.Printf("%-40s %-8s %-10s %-25s %-8s %-10s %-10s %-6s %-6s %-12s %s\n",
+		"BACKEND ID", "TYPE", "HEALTH", "HOSTNAME", "INCUS", "CONTAINERS", "CPU LOAD", "MEM", "DISK", "STORAGE", "GPUS")
+	fmt.Println(strings.Repeat("-", 164))
 	for _, b := range backends {
 		health := "✓"
 		if !b.Healthy {
@@ -180,8 +183,12 @@ func printBackendsTable(backends []backendInfo) {
 		if hostname == "" {
 			hostname = "-"
 		}
-		fmt.Printf("%-40s %-8s %-10s %-25s %-10d %-10s %-6s %-6s %-12s %s\n",
-			b.ID, b.Type, health, hostname, b.ContainerCount,
+		incusVer := b.IncusVersion
+		if incusVer == "" {
+			incusVer = "-"
+		}
+		fmt.Printf("%-40s %-8s %-10s %-25s %-8s %-10d %-10s %-6s %-6s %-12s %s\n",
+			b.ID, b.Type, health, hostname, incusVer, b.ContainerCount,
 			formatCPULoad(b.HostLoad),
 			formatUsedPercent(b.HostLoad, memoryUsage),
 			formatUsedPercent(b.HostLoad, diskUsage),

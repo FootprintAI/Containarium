@@ -3205,7 +3205,14 @@ type BackendInfo struct {
 	// The storage pool backing this backend's containers, and whether it
 	// isolates tenant volumes. Null when the pool could not be read — an
 	// unread pool must not be reported as isolated. See #1209 / #1206.
-	Storage       *BackendStorage `protobuf:"bytes,14,opt,name=storage,proto3" json:"storage,omitempty"`
+	Storage *BackendStorage `protobuf:"bytes,14,opt,name=storage,proto3" json:"storage,omitempty"`
+	// Incus server version running on this backend (e.g. "6.23"), as reported
+	// by the Incus daemon itself. Empty when it could not be read (peer
+	// unreachable, or the peer's daemon predates this field). Lets an operator
+	// audit fleet Incus patch levels from one admin-only call instead of
+	// per-host shell access; deliberately NOT exposed on the unauthenticated
+	// /health endpoint.
+	IncusVersion  string `protobuf:"bytes,15,opt,name=incus_version,json=incusVersion,proto3" json:"incus_version,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3336,6 +3343,13 @@ func (x *BackendInfo) GetStorage() *BackendStorage {
 		return x.Storage
 	}
 	return nil
+}
+
+func (x *BackendInfo) GetIncusVersion() string {
+	if x != nil {
+		return x.IncusVersion
+	}
+	return ""
 }
 
 // HostLoad is a point-in-time sample of a backend host's real resource
@@ -5116,7 +5130,7 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"signatures\"9\n" +
 	"#DeleteNetworkPolicySignatureRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\"&\n" +
-	"$DeleteNetworkPolicySignatureResponse\"\xb9\x04\n" +
+	"$DeleteNetworkPolicySignatureResponse\"\xde\x04\n" +
 	"\vBackendInfo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x18\n" +
@@ -5133,7 +5147,8 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"\bheadroom\x18\v \x01(\v2!.containarium.v1.CapacityHeadroomR\bheadroom\x12Q\n" +
 	"\x12capability_profile\x18\f \x01(\v2\".containarium.v1.CapabilityProfileR\x11capabilityProfile\x126\n" +
 	"\thost_load\x18\r \x01(\v2\x19.containarium.v1.HostLoadR\bhostLoad\x129\n" +
-	"\astorage\x18\x0e \x01(\v2\x1f.containarium.v1.BackendStorageR\astorage\"\xd4\x02\n" +
+	"\astorage\x18\x0e \x01(\v2\x1f.containarium.v1.BackendStorageR\astorage\x12#\n" +
+	"\rincus_version\x18\x0f \x01(\tR\fincusVersion\"\xd4\x02\n" +
 	"\bHostLoad\x12\x1e\n" +
 	"\vcpu_load_1m\x18\x01 \x01(\x01R\tcpuLoad1m\x12\x1e\n" +
 	"\vcpu_load_5m\x18\x02 \x01(\x01R\tcpuLoad5m\x12 \n" +
