@@ -29,7 +29,7 @@ func init() {
 type crewAPI interface {
 	ListCrews() ([]*pb.Crew, error)
 	GetCrew(id string) (*pb.Crew, error)
-	RunCrew(crewID, backendID, pool, inputJSON string) (*pb.CrewRun, error)
+	RunCrew(crewID, backendID, pool, inputJSON, gitSource, gitRef, gitCredential string) (*pb.CrewRun, error)
 	GetCrewRun(id string) (*pb.CrewRun, error)
 	Close() error
 }

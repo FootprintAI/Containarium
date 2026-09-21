@@ -274,10 +274,13 @@ type sendAgentTaskRequest struct {
 
 // runCrewRequest is POST /v1/crews/run.
 type runCrewRequest struct {
-	CrewID    string `json:"crew_id"`
-	BackendID string `json:"backend_id"`
-	Pool      string `json:"pool"`
-	InputJSON string `json:"input_json"`
+	CrewID        string `json:"crew_id"`
+	BackendID     string `json:"backend_id"`
+	Pool          string `json:"pool"`
+	InputJSON     string `json:"input_json"`
+	GitSource     string `json:"git_source"`
+	GitRef        string `json:"git_ref"`
+	GitCredential string `json:"git_credential"`
 }
 
 // addRouteRequest is POST /v1/network/routes.

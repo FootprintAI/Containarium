@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/footprintai/containarium/pkg/core/crews"
@@ -10,9 +11,12 @@ import (
 )
 
 var (
-	crewRunBackendID string
-	crewRunPool      string
-	crewRunInput     string
+	crewRunBackendID         string
+	crewRunPool              string
+	crewRunInput             string
+	crewRunGitSource         string
+	crewRunGitRef            string
+	crewRunGitCredentialFile string
 )
 
 var crewListCmd = &cobra.Command{
@@ -33,8 +37,18 @@ var crewGetCmd = &cobra.Command{
 var crewRunCmd = &cobra.Command{
 	Use:   "run <crew-id>",
 	Short: "Run a crew",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runCrewRun,
+	Long: `Provision every member's box (scoped token + per-box allowed_peers policy),
+start them in serve mode, and drive the crew's topology over A2A.
+
+--git-source/--git-ref (#1554) fetch the SAME repo+ref into EVERY member's
+own per-run workspace before the crew is driven — the shared codebase
+between crew members is git at a pinned SHA, not a shared filesystem.
+
+Examples:
+  containarium crew run hello-crew --input '{"q":"hi"}' --server <host>
+  containarium crew run freeform-crew --git-source https://github.com/org/repo     --git-ref main --server <host>`,
+	Args: cobra.ExactArgs(1),
+	RunE: runCrewRun,
 }
 
 var crewStatusCmd = &cobra.Command{
@@ -49,6 +63,28 @@ func init() {
 	crewRunCmd.Flags().StringVar(&crewRunBackendID, "backend-id", "", "Target backend ID")
 	crewRunCmd.Flags().StringVar(&crewRunPool, "pool", "", "Target pool")
 	crewRunCmd.Flags().StringVar(&crewRunInput, "input", "", "Crew input as a JSON string (defaults to {})")
+	crewRunCmd.Flags().StringVar(&crewRunGitSource, "git-source", "",
+		"Git clone URL fetched into EVERY member's own per-run workspace before the crew is driven (e.g. https://github.com/org/repo). Empty = no fetch.")
+	crewRunCmd.Flags().StringVar(&crewRunGitRef, "git-ref", "",
+		"Exact ref to check out for --git-source: full SHA (preferred), branch, tag, or refs/pull/N/merge. Empty = the remote's default branch.")
+	crewRunCmd.Flags().StringVar(&crewRunGitCredentialFile, "git-credential-file", "",
+		"Path to a file holding a bearer token for a private --git-source. Used daemon-side for each member's fetch; never written to any box's .git/config.")
+}
+
+// resolveCrewRunGitCredential reads --git-credential-file if one was
+// supplied, mirroring resolveAgentRunGitCredential's handling of the same
+// flag on `containarium agent run`.
+func resolveCrewRunGitCredential() (string, error) {
+	if crewRunGitCredentialFile == "" {
+		return "", nil
+	}
+	// #nosec G304 -- operator-supplied path; reading it is the documented
+	// purpose of --git-credential-file (same trust as reading an SSH key file).
+	data, err := os.ReadFile(crewRunGitCredentialFile)
+	if err != nil {
+		return "", fmt.Errorf("failed to read --git-credential-file: %w", err)
+	}
+	return strings.TrimSpace(string(data)), nil
 }
 
 func runCrewList(cmd *cobra.Command, args []string) error {
@@ -102,6 +138,11 @@ func runCrewGet(cmd *cobra.Command, args []string) error {
 }
 
 func runCrewRun(cmd *cobra.Command, args []string) error {
+	gitCredential, err := resolveCrewRunGitCredential()
+	if err != nil {
+		return err
+	}
+
 	c, err := newCrewClient()
 	if err != nil {
 		return err
@@ -109,7 +150,8 @@ func runCrewRun(cmd *cobra.Command, args []string) error {
 	defer func() { _ = c.Close() }()
 
 	fmt.Printf("Running crew %q...\n", args[0])
-	run, err := c.RunCrew(args[0], crewRunBackendID, crewRunPool, crewRunInput)
+	run, err := c.RunCrew(args[0], crewRunBackendID, crewRunPool, crewRunInput,
+		crewRunGitSource, crewRunGitRef, gitCredential)
 	if err != nil {
 		return err
 	}
@@ -136,6 +178,16 @@ func printCrewRun(run *pb.CrewRun) {
 	fmt.Printf("Crew:     %s\n", run.CrewId)
 	fmt.Printf("State:    %s\n", run.State)
 	fmt.Printf("Trace:    %s\n", run.TraceId)
+	if run.GetGitSource() != "" {
+		// GitCommit is empty until the first member's fetch resolves one
+		// (#1554) — a run still RUNNING, or one that failed before any
+		// member's fetch completed, shows the source without a commit yet.
+		if run.GetGitCommit() != "" {
+			fmt.Printf("Git:      %s @ %s\n", run.GetGitSource(), run.GetGitCommit())
+		} else {
+			fmt.Printf("Git:      %s (commit not yet resolved)\n", run.GetGitSource())
+		}
+	}
 	if run.Error != "" {
 		fmt.Printf("Error:    %s\n", run.Error)
 	}

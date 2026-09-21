@@ -514,6 +514,15 @@ message CrewRun {
   // Empty on runs written before ownership existed; those are deliberately
   // left alone rather than guessed at.
   string owner = 8;
+
+  // git_source / git_ref echo RunCrewRequest's own fields (empty when the
+  // run had none). git_commit is the SHA every member's fetch resolved to —
+  // populated once RunCrew has provisioned at least one member with a
+  // git_source; empty on a run with no git_source, or if every member's
+  // fetch failed before any commit resolved.
+  string git_source = 9;
+  string git_ref = 10;
+  string git_commit = 11;
 }
 
 message ListCrewsRequest {}
@@ -541,6 +550,25 @@ message RunCrewRequest {
   // `run_id` claim), so a caller's own run-tracking id is the one OSS's audit
   // trail and every member's lease use (#1899).
   string run_id = 5;
+  // Optional git source fetched into EVERY member box's own per-run
+  // workspace before the crew is driven (cloud#1554). Same semantics as
+  // RunAgentSkillRequest.git_source (#1859): a shallow fetch of the exact
+  // ref, run inside each box, no caller->box SSH. Every member gets its own
+  // workspace at the same commit — the shared codebase between crew members
+  // is "git at a pinned SHA", not a shared filesystem (design decision,
+  // Containarium-cloud docs/product/coding-skill-on-a-repo.md §Decided,
+  // 2026-09-15: a role hand-off between members is a commit on a branch, so
+  // two members never write the same file at once). Empty means no fetch —
+  // today's behavior, unchanged.
+  string git_source = 6;
+  // Exact ref to check out: full SHA (preferred, reproducible), branch, tag,
+  // or a server ref like "refs/pull/<n>/merge". Empty = the remote's default
+  // branch. Ignored when git_source is empty.
+  string git_ref = 7;
+  // Bearer token for a private git_source. Used daemon-side for each
+  // member's fetch only (an ephemeral http.extraHeader) — never written to
+  // any box's .git/config, never logged. Empty = public repo.
+  string git_credential = 8;
 }
 message RunCrewResponse {
   CrewRun run = 1;

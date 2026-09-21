@@ -60,7 +60,9 @@ func TestRequestPayloadWireFormat(t *testing.T) {
 		{"enqueueAgentTaskRequest", enqueueAgentTaskRequest{}, []string{"input_json", "skill_id"}},
 		{"startAgentWorkerRequest", startAgentWorkerRequest{}, []string{"backend_id", "pool", "skill_id", "worker_id"}},
 		{"sendAgentTaskRequest", sendAgentTaskRequest{}, []string{"from_skill_id", "input_json", "to_peer_id"}},
-		{"runCrewRequest", runCrewRequest{}, []string{"backend_id", "crew_id", "input_json", "pool"}},
+		{"runCrewRequest", runCrewRequest{}, []string{
+			"backend_id", "crew_id", "git_credential", "git_ref", "git_source", "input_json", "pool",
+		}},
 		{"addRouteRequest", addRouteRequest{}, []string{
 			"container_name", "description", "domain", "target_ip", "target_port",
 		}},

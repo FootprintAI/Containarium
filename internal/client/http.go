@@ -1786,16 +1786,20 @@ func (c *HTTPClient) GetCrew(id string) (*pb.Crew, error) {
 	return out.Crew, nil
 }
 
-// RunCrew launches a crew via HTTP.
-func (c *HTTPClient) RunCrew(crewID, backendID, pool, inputJSON string) (*pb.CrewRun, error) {
+// RunCrew launches a crew via HTTP. gitSource/gitRef/gitCredential (#1554)
+// are fetched into EVERY member's own per-run workspace.
+func (c *HTTPClient) RunCrew(crewID, backendID, pool, inputJSON, gitSource, gitRef, gitCredential string) (*pb.CrewRun, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // provisions every member box
 	defer cancel()
 	path := fmt.Sprintf("/v1/crews/%s/run", url.PathEscape(crewID))
 	body, err := json.Marshal(runCrewRequest{
-		CrewID:    crewID,
-		BackendID: backendID,
-		Pool:      pool,
-		InputJSON: inputJSON,
+		CrewID:        crewID,
+		BackendID:     backendID,
+		Pool:          pool,
+		InputJSON:     inputJSON,
+		GitSource:     gitSource,
+		GitRef:        gitRef,
+		GitCredential: gitCredential,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)

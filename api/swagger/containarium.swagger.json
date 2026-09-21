@@ -9835,6 +9835,16 @@
         "owner": {
           "type": "string",
           "description": "The daemon driving this run — its backend id (#1322).\n\nStartup reconciliation marks in-flight runs FAILED because they have no\nresumption point. On a deployment where several daemons share one\ndatabase, a restart must only reconcile ITS OWN runs: a peer's run is\nthat peer's to fail, on its own restart. Without this, one daemon\nrestarting fails every other daemon's live runs.\n\nEmpty on runs written before ownership existed; those are deliberately\nleft alone rather than guessed at."
+        },
+        "gitSource": {
+          "type": "string",
+          "description": "git_source / git_ref echo RunCrewRequest's own fields (empty when the\nrun had none). git_commit is the SHA every member's fetch resolved to —\npopulated once RunCrew has provisioned at least one member with a\ngit_source; empty on a run with no git_source, or if every member's\nfetch failed before any commit resolved."
+        },
+        "gitRef": {
+          "type": "string"
+        },
+        "gitCommit": {
+          "type": "string"
         }
       },
       "description": "CrewRun is one execution of a crew. Every A2A hop and MCP call made by any\nagent in the run is audit-logged under this run's trace_id, so a run is\nitself an evidence artifact."
@@ -13942,6 +13952,18 @@
         "runId": {
           "type": "string",
           "description": "Optional caller-supplied run id (1-128 chars of [A-Za-z0-9._-]). Empty\nmeans the daemon generates a UUID. Resolved and validated the same way as\nRunAgentSkillRequest.run_id (#1826), before any crew/topology lookup, and\nbecomes CrewRun.id — bound into every member box's credentials (their\n`run_id` claim), so a caller's own run-tracking id is the one OSS's audit\ntrail and every member's lease use (#1899)."
+        },
+        "gitSource": {
+          "type": "string",
+          "description": "Optional git source fetched into EVERY member box's own per-run\nworkspace before the crew is driven (cloud#1554). Same semantics as\nRunAgentSkillRequest.git_source (#1859): a shallow fetch of the exact\nref, run inside each box, no caller-\u003ebox SSH. Every member gets its own\nworkspace at the same commit — the shared codebase between crew members\nis \"git at a pinned SHA\", not a shared filesystem (design decision,\nContainarium-cloud docs/product/coding-skill-on-a-repo.md §Decided,\n2026-09-15: a role hand-off between members is a commit on a branch, so\ntwo members never write the same file at once). Empty means no fetch —\ntoday's behavior, unchanged."
+        },
+        "gitRef": {
+          "type": "string",
+          "description": "Exact ref to check out: full SHA (preferred, reproducible), branch, tag,\nor a server ref like \"refs/pull/\u003cn\u003e/merge\". Empty = the remote's default\nbranch. Ignored when git_source is empty."
+        },
+        "gitCredential": {
+          "type": "string",
+          "description": "Bearer token for a private git_source. Used daemon-side for each\nmember's fetch only (an ephemeral http.extraHeader) — never written to\nany box's .git/config, never logged. Empty = public repo."
         }
       }
     },

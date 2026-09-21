@@ -870,15 +870,20 @@ func (c *GRPCClient) GetCrew(id string) (*pb.Crew, error) {
 	return resp.Crew, nil
 }
 
-// RunCrew launches a crew via gRPC.
-func (c *GRPCClient) RunCrew(crewID, backendID, pool, inputJSON string) (*pb.CrewRun, error) {
+// RunCrew launches a crew via gRPC. gitSource/gitRef/gitCredential (#1554)
+// are fetched into EVERY member's own per-run workspace — see
+// RunCrewRequest.git_source in proto/containarium/v1/agent.proto.
+func (c *GRPCClient) RunCrew(crewID, backendID, pool, inputJSON, gitSource, gitRef, gitCredential string) (*pb.CrewRun, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // provisions every member box
 	defer cancel()
 	resp, err := c.crewClient.RunCrew(ctx, &pb.RunCrewRequest{
-		CrewId:    crewID,
-		BackendId: backendID,
-		Pool:      pool,
-		InputJson: inputJSON,
+		CrewId:        crewID,
+		BackendId:     backendID,
+		Pool:          pool,
+		InputJson:     inputJSON,
+		GitSource:     gitSource,
+		GitRef:        gitRef,
+		GitCredential: gitCredential,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to run crew: %w", err)

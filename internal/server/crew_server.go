@@ -115,6 +115,11 @@ func (s *CrewServer) RunCrew(ctx context.Context, req *pb.RunCrewRequest) (*pb.R
 		// this every run is unowned and a restart fails all of them, on every
 		// daemon sharing the database.
 		Owner: s.owner,
+		// Echo the request's git fields (cloud#1554) — empty on a run with
+		// no git_source, unchanged from today. git_commit is filled in below,
+		// once the first member's fetch resolves one.
+		GitSource: req.GetGitSource(),
+		GitRef:    req.GetGitRef(),
 	}
 
 	// Record the run before driving it, so an in-flight run is observable.
@@ -148,7 +153,15 @@ func (s *CrewServer) RunCrew(ctx context.Context, req *pb.RunCrewRequest) (*pb.R
 		// CrewServer's to own and is a later-phase item in the design
 		// (docs/architecture/execution-scoped-authorization.md §3, "Crew members
 		// and queue workers").
-		containerName, _, lease, _, _, err := s.agents.provisionSkillBox(ctx, skill, req.BackendId, req.Pool, "", run.Id, "", "", "", "")
+		// git_source/git_ref/git_credential (cloud#1554): every member fetches
+		// the SAME repo+ref into its own per-run workspace — its own box, so
+		// trivially isolated from every other member's checkout. This is the
+		// "git at a pinned SHA, not a shared filesystem" design decision
+		// (Containarium-cloud docs/product/coding-skill-on-a-repo.md
+		// §Decided, 2026-09-15): a role hand-off between members is a commit
+		// on a branch, so two members never write the same file at once.
+		containerName, _, lease, gitCommit, _, err := s.agents.provisionSkillBox(ctx, skill, req.BackendId, req.Pool, "", run.Id,
+			req.GetGitSource(), req.GetGitRef(), req.GetGitCredential(), "")
 		if err != nil {
 			run.State = pb.CrewRunState_CREW_RUN_STATE_FAILED
 			run.Error = fmt.Sprintf("provision skill %q: %v", sid, err)
@@ -156,6 +169,14 @@ func (s *CrewServer) RunCrew(ctx context.Context, req *pb.RunCrewRequest) (*pb.R
 				log.Printf("[crew] record run %s: %v", run.GetId(), putErr)
 			}
 			return nil, status.Errorf(codes.Internal, "crew %q: %s", crew.Id, run.Error)
+		}
+		// Record the commit the FIRST member's fetch resolved to — every
+		// member fetches the same git_source/git_ref, so they resolve to the
+		// same commit barring a concurrent push mid-run (accepted, same as a
+		// single-agent run's own git_source race). Empty gitCommit means this
+		// run had no git_source; nothing to record.
+		if run.GitCommit == "" && gitCommit != "" {
+			run.GitCommit = gitCommit
 		}
 		s.agents.startServeMode(containerName, lease.SeedDir)
 	}

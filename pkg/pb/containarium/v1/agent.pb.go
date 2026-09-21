@@ -1729,7 +1729,15 @@ type CrewRun struct {
 	//
 	// Empty on runs written before ownership existed; those are deliberately
 	// left alone rather than guessed at.
-	Owner         string `protobuf:"bytes,8,opt,name=owner,proto3" json:"owner,omitempty"`
+	Owner string `protobuf:"bytes,8,opt,name=owner,proto3" json:"owner,omitempty"`
+	// git_source / git_ref echo RunCrewRequest's own fields (empty when the
+	// run had none). git_commit is the SHA every member's fetch resolved to —
+	// populated once RunCrew has provisioned at least one member with a
+	// git_source; empty on a run with no git_source, or if every member's
+	// fetch failed before any commit resolved.
+	GitSource     string `protobuf:"bytes,9,opt,name=git_source,json=gitSource,proto3" json:"git_source,omitempty"`
+	GitRef        string `protobuf:"bytes,10,opt,name=git_ref,json=gitRef,proto3" json:"git_ref,omitempty"`
+	GitCommit     string `protobuf:"bytes,11,opt,name=git_commit,json=gitCommit,proto3" json:"git_commit,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1816,6 +1824,27 @@ func (x *CrewRun) GetError() string {
 func (x *CrewRun) GetOwner() string {
 	if x != nil {
 		return x.Owner
+	}
+	return ""
+}
+
+func (x *CrewRun) GetGitSource() string {
+	if x != nil {
+		return x.GitSource
+	}
+	return ""
+}
+
+func (x *CrewRun) GetGitRef() string {
+	if x != nil {
+		return x.GitRef
+	}
+	return ""
+}
+
+func (x *CrewRun) GetGitCommit() string {
+	if x != nil {
+		return x.GitCommit
 	}
 	return ""
 }
@@ -2001,7 +2030,26 @@ type RunCrewRequest struct {
 	// becomes CrewRun.id — bound into every member box's credentials (their
 	// `run_id` claim), so a caller's own run-tracking id is the one OSS's audit
 	// trail and every member's lease use (#1899).
-	RunId         string `protobuf:"bytes,5,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	RunId string `protobuf:"bytes,5,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	// Optional git source fetched into EVERY member box's own per-run
+	// workspace before the crew is driven (cloud#1554). Same semantics as
+	// RunAgentSkillRequest.git_source (#1859): a shallow fetch of the exact
+	// ref, run inside each box, no caller->box SSH. Every member gets its own
+	// workspace at the same commit — the shared codebase between crew members
+	// is "git at a pinned SHA", not a shared filesystem (design decision,
+	// Containarium-cloud docs/product/coding-skill-on-a-repo.md §Decided,
+	// 2026-09-15: a role hand-off between members is a commit on a branch, so
+	// two members never write the same file at once). Empty means no fetch —
+	// today's behavior, unchanged.
+	GitSource string `protobuf:"bytes,6,opt,name=git_source,json=gitSource,proto3" json:"git_source,omitempty"`
+	// Exact ref to check out: full SHA (preferred, reproducible), branch, tag,
+	// or a server ref like "refs/pull/<n>/merge". Empty = the remote's default
+	// branch. Ignored when git_source is empty.
+	GitRef string `protobuf:"bytes,7,opt,name=git_ref,json=gitRef,proto3" json:"git_ref,omitempty"`
+	// Bearer token for a private git_source. Used daemon-side for each
+	// member's fetch only (an ephemeral http.extraHeader) — never written to
+	// any box's .git/config, never logged. Empty = public repo.
+	GitCredential string `protobuf:"bytes,8,opt,name=git_credential,json=gitCredential,proto3" json:"git_credential,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2067,6 +2115,27 @@ func (x *RunCrewRequest) GetInputJson() string {
 func (x *RunCrewRequest) GetRunId() string {
 	if x != nil {
 		return x.RunId
+	}
+	return ""
+}
+
+func (x *RunCrewRequest) GetGitSource() string {
+	if x != nil {
+		return x.GitSource
+	}
+	return ""
+}
+
+func (x *RunCrewRequest) GetGitRef() string {
+	if x != nil {
+		return x.GitRef
+	}
+	return ""
+}
+
+func (x *RunCrewRequest) GetGitCredential() string {
+	if x != nil {
+		return x.GitCredential
 	}
 	return ""
 }
@@ -2318,7 +2387,7 @@ const file_containarium_v1_agent_proto_rawDesc = "" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12 \n" +
 	"\vdescription\x18\x03 \x01(\tR\vdescription\x129\n" +
 	"\btopology\x18\x04 \x01(\x0e2\x1d.containarium.v1.CrewTopologyR\btopology\x12\x1b\n" +
-	"\tskill_ids\x18\x05 \x03(\tR\bskillIds\"\xf2\x01\n" +
+	"\tskill_ids\x18\x05 \x03(\tR\bskillIds\"\xc9\x02\n" +
 	"\aCrewRun\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\acrew_id\x18\x02 \x01(\tR\x06crewId\x12\x19\n" +
@@ -2328,14 +2397,20 @@ const file_containarium_v1_agent_proto_rawDesc = "" +
 	"input_json\x18\x05 \x01(\tR\tinputJson\x12#\n" +
 	"\rartifact_json\x18\x06 \x01(\tR\fartifactJson\x12\x14\n" +
 	"\x05error\x18\a \x01(\tR\x05error\x12\x14\n" +
-	"\x05owner\x18\b \x01(\tR\x05owner\"\x12\n" +
+	"\x05owner\x18\b \x01(\tR\x05owner\x12\x1d\n" +
+	"\n" +
+	"git_source\x18\t \x01(\tR\tgitSource\x12\x17\n" +
+	"\agit_ref\x18\n" +
+	" \x01(\tR\x06gitRef\x12\x1d\n" +
+	"\n" +
+	"git_commit\x18\v \x01(\tR\tgitCommit\"\x12\n" +
 	"\x10ListCrewsRequest\"@\n" +
 	"\x11ListCrewsResponse\x12+\n" +
 	"\x05crews\x18\x01 \x03(\v2\x15.containarium.v1.CrewR\x05crews\" \n" +
 	"\x0eGetCrewRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"<\n" +
 	"\x0fGetCrewResponse\x12)\n" +
-	"\x04crew\x18\x01 \x01(\v2\x15.containarium.v1.CrewR\x04crew\"\x92\x01\n" +
+	"\x04crew\x18\x01 \x01(\v2\x15.containarium.v1.CrewR\x04crew\"\xf1\x01\n" +
 	"\x0eRunCrewRequest\x12\x17\n" +
 	"\acrew_id\x18\x01 \x01(\tR\x06crewId\x12\x1d\n" +
 	"\n" +
@@ -2343,7 +2418,11 @@ const file_containarium_v1_agent_proto_rawDesc = "" +
 	"\x04pool\x18\x03 \x01(\tR\x04pool\x12\x1d\n" +
 	"\n" +
 	"input_json\x18\x04 \x01(\tR\tinputJson\x12\x15\n" +
-	"\x06run_id\x18\x05 \x01(\tR\x05runId\"=\n" +
+	"\x06run_id\x18\x05 \x01(\tR\x05runId\x12\x1d\n" +
+	"\n" +
+	"git_source\x18\x06 \x01(\tR\tgitSource\x12\x17\n" +
+	"\agit_ref\x18\a \x01(\tR\x06gitRef\x12%\n" +
+	"\x0egit_credential\x18\b \x01(\tR\rgitCredential\"=\n" +
 	"\x0fRunCrewResponse\x12*\n" +
 	"\x03run\x18\x01 \x01(\v2\x18.containarium.v1.CrewRunR\x03run\"#\n" +
 	"\x11GetCrewRunRequest\x12\x0e\n" +
