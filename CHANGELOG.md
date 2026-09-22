@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.85.1] - 2026-09-22
+
+### Fixed
+
+- **`startServeMode` kills a prior `agent-runtime` before launching a fresh one (cloud#1733).** A crew member box is reused across runs, and `RunCrew` re-mints a fresh gateway token and reseeds it to disk on every call — but nothing stopped an earlier `agent-runtime` instance first. The A2A server binds a fixed port, so every relaunch after a box's first-ever boot crashed on `EADDRINUSE`, silently, into a log file nothing read. The one surviving process kept serving whatever gateway token it read at boot, past its 30-minute TTL, so a crew run against any box more than 30 minutes old failed `invalid gateway token: token is expired` regardless of the request. (#1987)
+
+
 <!--
   #1363: this file has no sections for v0.62.0-v0.65.0 or v0.68.0-v0.70.0 —
   both ranges shipped before the release workflow's "Verify the release is
