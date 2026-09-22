@@ -79,6 +79,52 @@ func TestTokenPolicy_DenyUnknownTokenIsANoOp(t *testing.T) {
 	assert.NoError(t, p.Validate("other", "prod"))
 }
 
+// TestTokenPolicy_DenyPrefix_RemovesAllMatchingTokens is the core of #1963:
+// a control plane that never retains the plaintext token can only identify
+// the host it wants to decommission, not any specific token — so it must be
+// able to remove every rule sharing that host-id prefix (the original join
+// token AND any reissued reconnect token) in one call.
+func TestTokenPolicy_DenyPrefix_RemovesAllMatchingTokens(t *testing.T) {
+	p := NewTokenPolicy()
+	p.Allow("host-a.secret1", PoolAny)
+	p.Allow("host-a.secret2", PoolAny) // reissued reconnect token, same host
+	p.Allow("host-b.secret1", PoolAny) // different host, must survive
+
+	p.DenyPrefix("host-a.")
+
+	assert.Error(t, p.Validate("host-a.secret1", ""))
+	assert.Error(t, p.Validate("host-a.secret2", ""))
+	assert.NoError(t, p.Validate("host-b.secret1", ""))
+}
+
+// TestTokenPolicy_DenyPrefix_IsALiteralPrefixMatch documents that DenyPrefix
+// itself is a plain strings.HasPrefix match with no opinion about a
+// trailing "." — "abc" DOES match "abcd.xyz" at this layer. The #1963
+// footgun ("abc" must not wrongly match "abcd.xyz") is guarded one layer up,
+// by TunnelTokenDeregisterHandler rejecting any token_prefix that doesn't
+// end with "." before it ever reaches DenyPrefix (see
+// TestTunnelTokenDeregisterHandler_400OnPrefixWithoutTrailingDot) — the same
+// division of responsibility as Deny, which does no token-shape validation
+// either and leaves that to its caller.
+func TestTokenPolicy_DenyPrefix_IsALiteralPrefixMatch(t *testing.T) {
+	p := NewTokenPolicy()
+	p.Allow("abcd.xyz", PoolAny)
+
+	p.DenyPrefix("abc")
+
+	assert.Error(t, p.Validate("abcd.xyz", ""))
+}
+
+// TestTokenPolicy_DenyPrefix_UnknownPrefixIsANoOp mirrors
+// TestTokenPolicy_DenyUnknownTokenIsANoOp for the prefix form.
+func TestTokenPolicy_DenyPrefix_UnknownPrefixIsANoOp(t *testing.T) {
+	p := NewTokenPolicy()
+	p.Allow("host-a.secret1", PoolAny)
+
+	assert.NotPanics(t, func() { p.DenyPrefix("host-z.") })
+	assert.NoError(t, p.Validate("host-a.secret1", ""))
+}
+
 func TestPolicyFromCLI(t *testing.T) {
 	t.Run("legacy token only", func(t *testing.T) {
 		p, err := PolicyFromCLI("legacy", nil)

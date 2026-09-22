@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // DefaultTunnelTokenStorePath is where dynamically-registered tunnel
@@ -117,6 +118,25 @@ func removeTunnelTokenEntry(entries []TunnelTokenEntry, token string) []TunnelTo
 	kept := entries[:0]
 	for _, e := range entries {
 		if e.Token != token {
+			kept = append(kept, e)
+		}
+	}
+	return kept
+}
+
+// removeTunnelTokenEntriesByPrefix drops every entry whose token starts
+// with prefix — the host-id-prefix sibling of removeTunnelTokenEntry
+// (#1963), used by the deregister handler's {"token_prefix": "<host-id>."}
+// path so the removal survives a restart exactly as the exact-token form
+// already does. prefix is matched literally via strings.HasPrefix; callers
+// are expected to pass the full "<host-id>." literal (dot included) so
+// "abc" cannot accidentally match "abcd.xyz". Pure — used by the deregister
+// handler to build the next full entry set before calling
+// SaveTunnelTokenStore. A prefix matching nothing is a no-op.
+func removeTunnelTokenEntriesByPrefix(entries []TunnelTokenEntry, prefix string) []TunnelTokenEntry {
+	kept := entries[:0]
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Token, prefix) {
 			kept = append(kept, e)
 		}
 	}

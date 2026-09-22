@@ -365,3 +365,94 @@ func TestPoolJoinFlags_CloudControlPlaneIsOptOut(t *testing.T) {
 		t.Errorf("--cloud-control-plane default = %q, want empty (opt-in)", poolJoinCloudControlPlane)
 	}
 }
+
+// TestPoolJoinFlags_TokenFileExists confirms the --token-file flag is
+// registered (#1961) alongside the pre-existing --token, so a provisioner
+// has a way to supply the join token that never lands on argv.
+func TestPoolJoinFlags_TokenFileExists(t *testing.T) {
+	if poolJoinCmd.Flags().Lookup("token-file") == nil {
+		t.Fatal("expected a --token-file flag on pool join")
+	}
+	if poolJoinCmd.Flags().Lookup("token") == nil {
+		t.Fatal("expected the --token flag to still exist on pool join (backward compatibility)")
+	}
+}
+
+// TestResolvePoolJoinToken covers #1961's intake precedence for the join
+// token: --token-file (read + trimmed, mirroring `cloud enroll`'s own
+// semantics) beats $CONTAINARIUM_TUNNEL_TOKEN, which beats the legacy
+// --token flag on argv. An empty/missing --token-file is always an error,
+// even when a lower-precedence source would otherwise supply a token —
+// a provisioner that got the path wrong should see that immediately, not
+// silently fall through to a stale env var or flag.
+func TestResolvePoolJoinToken(t *testing.T) {
+	dir := t.TempDir()
+	tokenFile := writeSecretFile(t, dir, "token.env", "file-token\n")
+	whitespaceOnlyFile := writeSecretFile(t, dir, "empty.env", "   \n")
+	missingFile := filepath.Join(dir, "does-not-exist.env")
+
+	tests := []struct {
+		name      string
+		tokenFlag string
+		tokenFile string
+		env       string
+		want      string
+		wantErr   bool
+	}{
+		{
+			name:      "token-file wins over both the env var and --token",
+			tokenFlag: "flag-token",
+			tokenFile: tokenFile,
+			env:       "env-token",
+			want:      "file-token",
+		},
+		{
+			name:      "token-file trims surrounding whitespace/newline",
+			tokenFile: tokenFile,
+			want:      "file-token",
+		},
+		{
+			name:      "empty (whitespace-only) token-file errors",
+			tokenFile: whitespaceOnlyFile,
+			wantErr:   true,
+		},
+		{
+			name:      "missing token-file errors",
+			tokenFile: missingFile,
+			wantErr:   true,
+		},
+		{
+			name:      "env var used when --token-file is absent",
+			tokenFlag: "flag-token",
+			env:       "env-token",
+			want:      "env-token",
+		},
+		{
+			name:      "--token used as the last resort",
+			tokenFlag: "flag-token",
+			want:      "flag-token",
+		},
+		{
+			name:    "nothing provided errors",
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("CONTAINARIUM_TUNNEL_TOKEN", tt.env)
+			got, err := resolvePoolJoinToken(tt.tokenFlag, tt.tokenFile)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("resolvePoolJoinToken(%q, %q) = %q, nil; want an error", tt.tokenFlag, tt.tokenFile, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolvePoolJoinToken(%q, %q): unexpected error: %v", tt.tokenFlag, tt.tokenFile, err)
+			}
+			if got != tt.want {
+				t.Errorf("resolvePoolJoinToken(%q, %q) = %q, want %q", tt.tokenFlag, tt.tokenFile, got, tt.want)
+			}
+		})
+	}
+}

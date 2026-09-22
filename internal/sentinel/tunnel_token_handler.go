@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 )
 
 // TunnelTokenRegisterRequest is the JSON body POSTed to
@@ -92,11 +93,29 @@ func (m *Manager) TunnelTokenRegisterHandler() http.HandlerFunc {
 }
 
 // TunnelTokenDeregisterRequest is the JSON body sent to
-// TunnelTokenDeregisterHandler to revoke a previously-registered token.
+// TunnelTokenDeregisterHandler to revoke a previously-registered token (or
+// every token registered under a host id).
 type TunnelTokenDeregisterRequest struct {
 	// Token is the tunnel-handshake token to revoke — the inverse of
-	// TunnelTokenRegisterRequest.Token.
-	Token string `json:"token"`
+	// TunnelTokenRegisterRequest.Token. Mutually exclusive with
+	// TokenPrefix; exactly one must be set.
+	Token string `json:"token,omitempty"`
+
+	// TokenPrefix, when set instead of Token, revokes EVERY currently
+	// registered token that starts with it — the original join token and
+	// any reissued reconnect token sharing the same host-id prefix alike
+	// (#1963). Registered tokens are shaped "<host-id>.<secret>", so the
+	// intended value is "<host-id>.": a well-behaved registrar (e.g. the
+	// cloud control plane) hands the plaintext token to the operator
+	// exactly once and keeps only a hash, so by the time a host is
+	// decommissioned it has no token to put in the Token field above —
+	// only the host id it minted the token for.
+	//
+	// Must be non-empty and end with "." — matching is on the literal
+	// "<host-id>." prefix (dot included), not a bare string prefix, so
+	// "abc" does not accidentally match "abcd.xyz". Mutually exclusive
+	// with Token; exactly one must be set.
+	TokenPrefix string `json:"token_prefix,omitempty"`
 }
 
 // TunnelTokenDeregisterHandler is TunnelTokenRegisterHandler's inverse
@@ -115,7 +134,15 @@ type TunnelTokenDeregisterRequest struct {
 // Deregistering a token that was never registered (or already was) is
 // success, not an error: a decommission caller cannot know in advance
 // whether registration ever landed, and the end state — this token does
-// not validate — is identical either way.
+// not validate — is identical either way. Same for a token_prefix that
+// matches nothing.
+//
+// The body may key on either Token (exact) or TokenPrefix (#1963) — see
+// TunnelTokenDeregisterRequest. The prefix form exists because a
+// well-behaved registrar does not retain the plaintext token after minting
+// it, so by decommission time it has no token to put in the exact-token
+// form; it does still know the host id, which is the prefix of every token
+// it ever minted for that host.
 func (m *Manager) TunnelTokenDeregisterHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {
@@ -131,10 +158,36 @@ func (m *Manager) TunnelTokenDeregisterHandler() http.HandlerFunc {
 			http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
 			return
 		}
-		if req.Token == "" {
-			http.Error(w, `{"error":"token is required"}`, http.StatusBadRequest)
+		switch {
+		case req.Token != "" && req.TokenPrefix != "":
+			http.Error(w, `{"error":"specify exactly one of token or token_prefix"}`, http.StatusBadRequest)
+			return
+		case req.Token == "" && req.TokenPrefix == "":
+			http.Error(w, `{"error":"token or token_prefix is required"}`, http.StatusBadRequest)
+			return
+		case req.TokenPrefix != "" && !strings.HasSuffix(req.TokenPrefix, "."):
+			// Matching must be on the literal "<host-id>." prefix (dot
+			// included), not a bare string prefix — otherwise
+			// token_prefix="abc" would wrongly match a registered token
+			// "abcd.xyz". Reject outright rather than silently matching
+			// more than the caller intended.
+			http.Error(w, `{"error":"token_prefix must end with \".\" (the full \"<host-id>.\" prefix)"}`, http.StatusBadRequest)
 			return
 		}
+
+		if req.TokenPrefix != "" {
+			m.tunnelPolicy.DenyPrefix(req.TokenPrefix)
+			// Same "safe direction, report failure as retryable" reasoning
+			// as the exact-token path below.
+			if err := m.unpersistTunnelTokensByPrefix(req.TokenPrefix); err != nil {
+				log.Printf("[sentinel] ERROR: failed to persist tunnel token prefix deregistration (prefix denied in-memory now, but the on-disk store still lists matching entries and they WILL reappear on the next restart): %v", err)
+				http.Error(w, `{"error":"token prefix denied but persistence failed; retry"}`, http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
 		m.tunnelPolicy.Deny(req.Token)
 		// The in-memory Deny above stays applied even on a persist failure
 		// below — that's the safe direction, and undoing it would put a
