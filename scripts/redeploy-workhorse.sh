@@ -42,15 +42,17 @@ set -euo pipefail
 # detection, the release asset to download, what gets backed up/installed)
 # is based on the binary that is ACTUALLY invoked, not a hardcoded guess.
 # `install` (containarium.service's ExecStart, the Makefile's `make install`)
-# lays down both `containarium` and `containariumd` as byte-identical files
-# (#1782) OR one as a symlink to the other, and which name a given host
-# actually execs varies (containariumd was the default and #1779's mirror
-# name for the fleet's self-update chain). Defaulting BIN to the literal
-# "/usr/local/bin/containarium" and matching processes by the literal string
-# "containarium" silently broke `daemon_pid`/`status` on any host that execs
-# containariumd instead — a broken detection that read as "no process found"
-# rather than an error, and directly contributed to the 2026-09-22 outage.
-BIN="${CTN_BIN:-/usr/local/bin/containarium}"
+# lays down both the CLI-named compat symlink and containariumd as
+# byte-identical/linked files (#1782), and per the containarium ->
+# containariumd rename (#1781) the real install target is ALWAYS
+# containariumd — the shorter name is legitimate only as that compat
+# symlink. Defaulting BIN to the compat symlink's name and matching
+# processes by that same literal name silently broke `daemon_pid`/`status`
+# on a host whose unit execs containariumd directly (the fleet's actual,
+# post-rename convention — see scripts/containarium.service's ExecStart) —
+# a broken detection that read as "no process found" rather than an error,
+# and directly contributed to the 2026-09-22 outage.
+BIN="${CTN_BIN:-/usr/local/bin/containariumd}"
 BIN="$(readlink -f "$BIN" 2>/dev/null || echo "$BIN")"
 # Was the unit pinned by the operator? Recorded BEFORE defaulting, because an
 # explicit CTN_UNIT is a deliberate assertion we must not silently override —
