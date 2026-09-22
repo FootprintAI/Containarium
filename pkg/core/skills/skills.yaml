@@ -94,6 +94,70 @@ skills:
         - bug-detection
         - security-review
 
+  # diff-drafter / diff-reviewer are the reference pair for the shared-
+  # workspace scenario (cloud#1549 Layer 2): two agents jointly editing the
+  # SAME repo, git at a pinned SHA rather than a shared filesystem
+  # (cloud#1554's decided design). Wired into a pipeline crew (diff-crew,
+  # crews.yaml) so driveCrew's own hand-off IS the collaboration — the
+  # drafter's artifact becomes the reviewer's task input, no platform-level
+  # turn-taking needed. Each member fetches the same git_source/git_ref into
+  # its OWN per-run workspace (cloud#1554); a role hand-off is a diff, not a
+  # shared directory, so the two never write the same file at once.
+  - id: diff-drafter
+    name: Diff Drafter
+    description: Reads the checked-out repo and a task, makes a small well-scoped change, and emits a unified diff for a reviewer to build on.
+    recipe_id: agent-runtime
+    system_prompt: >-
+      You are a careful software engineer working from a git checkout already
+      present in your workspace. Read the task input and make the SMALLEST
+      change that accomplishes it — prefer one focused file over several.
+      Do not commit; leave the change unstaged in the working tree, then
+      capture it. Return ONLY a JSON artifact of the form: {"diff": "<unified
+      diff, output of `git diff`, that `git apply` can apply cleanly from the
+      repo root>", "summary": "<one sentence: what changed and why>"}. If the
+      task cannot be done as a small diff, say so in "summary" and return an
+      empty "diff".
+    allowed_scopes:
+      - containers:read
+    allowed_peers:
+      - diff-reviewer
+    agent_card:
+      id: diff-drafter
+      name: Diff Drafter
+      description: Drafts a small, focused diff for a task, for a reviewer peer to build on.
+      capabilities:
+        - code-editing
+        - diff-authoring
+
+  - id: diff-reviewer
+    name: Diff Reviewer
+    description: Applies an incoming diff to its own checkout of the same commit, reviews and edits it, and emits the final diff.
+    recipe_id: agent-runtime
+    system_prompt: >-
+      You receive a JSON task input of the form {"diff": "<unified diff>",
+      "summary": "<what the drafter intended>"} from a peer who already made
+      a first pass. Your own workspace holds a checkout of the SAME repo at
+      the SAME commit the drafter used. Apply the incoming diff with `git
+      apply` from the repo root. Review it: fix anything wrong, incomplete,
+      or unclear, and make any further edits the task needs. Do not commit.
+      Return ONLY a JSON artifact of the form: {"diff": "<the FINAL unified
+      diff after your edits, output of `git diff` against the original
+      checkout, that `git apply` can apply cleanly from the repo root>",
+      "review_notes": "<what you changed from the draft and why, one or two
+      sentences>"}. If the incoming diff does not apply, say so in
+      "review_notes", make the equivalent change yourself from the intent in
+      "summary", and still return a complete "diff".
+    allowed_scopes:
+      - containers:read
+    allowed_peers: []
+    agent_card:
+      id: diff-reviewer
+      name: Diff Reviewer
+      description: Applies, reviews, and finalizes a peer's diff against its own checkout of the same commit.
+      capabilities:
+        - code-review
+        - diff-authoring
+
   # deploy-branch is a generic provisioning skill: stand up a live, reachable
   # instance of a git ref. It has no knowledge of what's calling it or why —
   # verification, demos, and preview environments are all just "deploy this

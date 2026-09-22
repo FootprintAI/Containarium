@@ -196,6 +196,83 @@ func TestEmbeddedFreeformCrewValidatesAndDrives(t *testing.T) {
 	}
 }
 
+// TestEmbeddedDiffCrewValidatesAndDrives proves diff-crew (cloud#1549 Layer
+// 2) is actually exercisable end-to-end against the real skill catalog: it
+// clears RunCrew's topology gate, and PIPELINE hand-off delivers
+// diff-drafter's artifact as diff-reviewer's task input — the collaboration
+// mechanism itself, no new turn-taking machinery. Without this crew, #1549's
+// scenario has no drafter/reviewer pair to run.
+func TestEmbeddedDiffCrewValidatesAndDrives(t *testing.T) {
+	crew, err := crews.GetDefault().Get("diff-crew")
+	if err != nil {
+		t.Fatalf("diff-crew missing from embedded catalog: %v", err)
+	}
+	if crew.Topology != pb.CrewTopology_CREW_TOPOLOGY_PIPELINE {
+		t.Fatalf("diff-crew topology = %v, want PIPELINE", crew.Topology)
+	}
+	if got := crew.SkillIds; len(got) != 2 || got[0] != "diff-drafter" || got[1] != "diff-reviewer" {
+		t.Fatalf("diff-crew skill_ids = %v, want [diff-drafter diff-reviewer] in order", got)
+	}
+
+	sk := skills.GetDefault()
+	getSkill := func(id string) (*pb.AgentSkill, bool) {
+		s, err := sk.Get(id)
+		if err != nil {
+			return nil, false
+		}
+		return s, true
+	}
+	if err := validateCrewTopology(crew, getSkill); err != nil {
+		t.Errorf("RunCrew's topology gate rejects the embedded diff-crew: %v", err)
+	}
+
+	draftArtifact := `{"diff":"--- a/x.go
++++ b/x.go
+@@ -1 +1 @@
+-old
++new
+","summary":"fix x"}`
+	finalArtifact := `{"diff":"--- a/x.go
++++ b/x.go
+@@ -1 +1 @@
+-old
++reviewed
+","review_notes":"tightened the fix"}`
+	var calls []*pb.SendAgentTaskRequest
+	send := func(_ context.Context, req *pb.SendAgentTaskRequest) (*pb.SendAgentTaskResponse, error) {
+		calls = append(calls, req)
+		if req.ToPeerId == "diff-reviewer" {
+			return completed(finalArtifact), nil
+		}
+		return completed(draftArtifact), nil
+	}
+	out, err := driveCrew(context.Background(), crew, "trace-1", `{"repo":"https://github.com/org/repo","ref":"main","task":"fix x"}`, send)
+	if err != nil {
+		t.Fatalf("driveCrew: %v", err)
+	}
+	if out != finalArtifact {
+		t.Errorf("crew artifact = %q, want the reviewer's final diff %q", out, finalArtifact)
+	}
+
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 hops (drafter, then reviewer), got %d: %+v", len(calls), calls)
+	}
+	if calls[0].ToPeerId != "diff-drafter" || calls[0].FromSkillId != "" {
+		t.Errorf("hop 1 = from %q to %q, want the crew input delivered to diff-drafter", calls[0].FromSkillId, calls[0].ToPeerId)
+	}
+	if calls[1].ToPeerId != "diff-reviewer" || calls[1].FromSkillId != "diff-drafter" {
+		t.Errorf("hop 2 = from %q to %q, want diff-drafter -> diff-reviewer", calls[1].FromSkillId, calls[1].ToPeerId)
+	}
+	// The core of the joint-editing mechanism: the drafter's OWN artifact,
+	// unmodified, IS the reviewer's task input. No platform-level merge or
+	// turn-taking step exists between them — driveCrew's pipeline chaining
+	// is the entire hand-off.
+	if calls[1].InputJson != draftArtifact {
+		t.Errorf("reviewer's input = %q, want the drafter's artifact %q verbatim", calls[1].InputJson, draftArtifact)
+	}
+}
+
+// skillSet builds a lookup over a fixed set of skills for topology tests.
 // skillSet builds a lookup over a fixed set of skills for topology tests.
 func skillSet(skills ...*pb.AgentSkill) func(string) (*pb.AgentSkill, bool) {
 	m := map[string]*pb.AgentSkill{}
