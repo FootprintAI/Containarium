@@ -261,6 +261,13 @@ type Manager struct {
 	sentinelCertPEM []byte
 	sentinelKeyPEM  []byte
 	pkiMu           sync.RWMutex
+
+	// fail2banRunner is the Fail2BanRunner Fail2BanBansHandler and
+	// Fail2BanUnbanHandler shell out through (#1962). nil means the
+	// production default (execFail2BanRunner, the real fail2ban-client
+	// binary on $PATH); tests inject a fake via SetFail2BanRunner so they
+	// don't need a real fail2ban install.
+	fail2banRunner Fail2BanRunner
 }
 
 // SetHMACSecret wires the sentinel↔daemon shared HMAC secret. Used
@@ -554,6 +561,25 @@ func (m *Manager) unpersistTunnelToken(token string) error {
 // environment.
 func (m *Manager) SetAdminSecret(secret []byte) {
 	m.adminSecret = secret
+}
+
+// SetFail2BanRunner overrides the Fail2BanRunner used by
+// Fail2BanBansHandler / Fail2BanUnbanHandler (#1962). Tests use this to
+// inject a fake that returns canned fail2ban-client output/exit codes
+// without a real fail2ban install; production leaves this unset and
+// fail2ban() falls back to the real execFail2BanRunner.
+func (m *Manager) SetFail2BanRunner(r Fail2BanRunner) {
+	m.fail2banRunner = r
+}
+
+// fail2ban returns the Fail2BanRunner to use — the injected one if a
+// test set one via SetFail2BanRunner, otherwise the production
+// execFail2BanRunner that shells out to the real fail2ban-client binary.
+func (m *Manager) fail2ban() Fail2BanRunner {
+	if m.fail2banRunner != nil {
+		return m.fail2banRunner
+	}
+	return execFail2BanRunner{}
 }
 
 // SetHTTPSListener sets a ConnMux HTTPS chanListener for tunnel/hybrid mode.

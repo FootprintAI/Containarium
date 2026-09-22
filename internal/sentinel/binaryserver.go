@@ -129,6 +129,16 @@ func buildBinaryServerMux(binaryPath string, manager *Manager) *http.ServeMux {
 	// cluster-wide daemon secret. See #733.
 	mux.Handle("/sentinel/byoc-routes", auth.SentinelHMACMiddleware(manager.adminSecret, manager.BYOCRouteRegisterHandler()))
 
+	// fail2ban admin endpoints (#1962) — inspect and clear SSH
+	// brute-force bans remotely; previously only reachable via shell
+	// access to the sentinel's admin sshd on :2222. Gated by the admin
+	// secret, same tier as /sentinel/tunnel-tokens and
+	// /sentinel/byoc-routes above: this reveals and mutates the
+	// sentinel's ban state, not something every cluster daemon's shared
+	// HMAC secret should unlock.
+	mux.Handle("/sentinel/fail2ban/bans", auth.SentinelHMACMiddleware(manager.adminSecret, manager.Fail2BanBansHandler()))
+	mux.Handle("/sentinel/fail2ban/unban", auth.SentinelHMACMiddleware(manager.adminSecret, manager.Fail2BanUnbanHandler()))
+
 	// Peer proxy — forwards /peer/<backend-id>/* to the tunnel backend's loopback
 	// so the control plane can reach tunnel backends through the sentinel without
 	// extra firewall rules for external ports.
