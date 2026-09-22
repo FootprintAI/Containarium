@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.87.0] - 2026-09-23
+
+### Changed
+
+- **`diff-drafter` / `diff-reviewer` emit whole-file content, not a unified diff.** The platform's only PR-opening mechanism (Containarium-cloud's `internal/githubpr`) applies full file bodies via GitHub's Contents API and has never applied a real diff — matching that shape means the cloud actuator can turn a completed `diff-crew` run into a real PR by composing existing machinery. `diff-reviewer` now also echoes the drafter's summary back (`drafter_summary`) alongside its own `review_notes`, so a PR opened from the artifact can credit both agents. Both skills shipped a day earlier (v0.86.0) and nothing depended on the diff shape yet. (#1997, cloud#1738)
+
+
 ## [0.86.0] - 2026-09-22
 
 ### Added
