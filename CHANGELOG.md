@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.86.0] - 2026-09-22
+
+### Added
+
+- **`diff-drafter` / `diff-reviewer` skills + `diff-crew`**, the reference
+  pair for a crew that jointly edits a repo. `diff-drafter` reads a
+  checked-out repo plus a task and emits a small, well-scoped unified diff;
+  `diff-reviewer` receives that diff as its own task input (the existing
+  pipeline hand-off), applies it to its own checkout of the same commit,
+  reviews and edits it, and emits the final diff as the crew's own
+  artifact. Both reuse the existing generic `agent-runtime` recipe — no new
+  platform machinery, image, or recipe changes. Filing a real GitHub PR
+  from the crew's output is deliberately out of scope for this change.
+  (cloud#1549, #1989)
+
 ## [0.85.1] - 2026-09-22
 
 ### Fixed
