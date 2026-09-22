@@ -833,6 +833,28 @@ func (s *AgentSkillServer) startServeMode(containerName, seedDir string) {
 	if s.recipes == nil || s.recipes.containers == nil || s.recipes.containers.manager == nil {
 		return
 	}
+	// Stop any previous serve-mode instance before starting a new one
+	// (cloud#1733). The box is reused across runs — provisionSkillBox
+	// re-mints a fresh gateway token and reseeds it to disk on every call —
+	// but this used to background a new agent-runtime unconditionally, with
+	// nothing to stop an earlier instance first. The OSS image's A2A server
+	// binds a fixed port, so every relaunch after the very first one crashed
+	// on EADDRINUSE (confirmed live via the box's own agent-runtime.log),
+	// silently, into a log file nothing here reads. The one surviving
+	// process — the box's first-ever launch — kept serving whatever gateway
+	// token IT read at boot, until that token's TTL passed, after which
+	// every run against a box more than agentTokenTTL old failed "invalid
+	// gateway token: expired" no matter how fresh the just-seeded token on
+	// disk was.
+	//
+	// pkill exits 1 when nothing matched (the box's first-ever
+	// startServeMode call) — a benign race, same convention
+	// pkg/core/container/jump_server.go's collaborator teardown uses; the
+	// error is intentionally not checked. ExecWithExitCode, not
+	// ExecWithOutput, so this step exercises against the fake/mock backend
+	// in tests — see TestStartServeMode_StopsPriorInstanceBeforeLaunching.
+	_, _, _, _ = s.recipes.containers.manager.ExecWithExitCode(containerName,
+		[]string{"bash", "-lc", "pkill -9 -f agent-runtime"})
 	cmd := sourceGatewayEnvPrefix(seedDir) + s.engineEnvPrefix() + "CONTAINARIUM_AGENT_MODE=serve AGENT_SEED_DIR=" + seedDir +
 		" setsid agent-runtime >/var/log/agent-runtime.log 2>&1 &"
 	if _, stderr, err := s.recipes.containers.manager.ExecWithOutput(containerName,

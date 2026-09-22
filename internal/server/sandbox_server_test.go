@@ -29,11 +29,16 @@ type fakeSandboxBackend struct {
 	mu        sync.Mutex
 	instances map[string]incus.ContainerInfo
 
-	waitNetworkErr     error
-	execStdout         string
-	execStderr         string
-	execExitCode       int
-	execErr            error
+	waitNetworkErr error
+	execStdout     string
+	execStderr     string
+	execExitCode   int
+	execErr        error
+	// execCalls records every command this fake was asked to run, in order —
+	// (containerName, command) — so tests can assert not just the outcome of
+	// an Exec but the SEQUENCE of commands issued (cloud#1733's fix needs a
+	// kill-then-launch order, which a fixed stdout/exit-code alone can't pin).
+	execCalls          []fakeExecCall
 	writeFileErr       error
 	readFileContent    []byte
 	readFileErr        error
@@ -136,7 +141,16 @@ func (b *fakeSandboxBackend) GetContainer(name string) (*incus.ContainerInfo, er
 	return &info, nil
 }
 
-func (b *fakeSandboxBackend) ExecWithExitCode(string, []string) (string, string, int, error) {
+// fakeExecCall is one recorded ExecWithExitCode invocation.
+type fakeExecCall struct {
+	ContainerName string
+	Command       []string
+}
+
+func (b *fakeSandboxBackend) ExecWithExitCode(containerName string, command []string) (string, string, int, error) {
+	b.mu.Lock()
+	b.execCalls = append(b.execCalls, fakeExecCall{ContainerName: containerName, Command: command})
+	b.mu.Unlock()
 	return b.execStdout, b.execStderr, b.execExitCode, b.execErr
 }
 

@@ -496,6 +496,15 @@ func TestRunLeaseAuditRows(t *testing.T) {
 // exactly the failure this harness exists to exercise.
 func newSkillBoxHarness(t *testing.T, store auth.RevocationStore) (*AgentSkillServer, *pb.AgentSkill) {
 	t.Helper()
+	s, skill, _ := newSkillBoxHarnessInspectable(t, store)
+	return s, skill
+}
+
+// newSkillBoxHarnessInspectable is newSkillBoxHarness plus the fake backend
+// itself, for tests that need to assert on the SEQUENCE of commands issued
+// (cloud#1733's kill-then-launch fix) rather than just an outcome.
+func newSkillBoxHarnessInspectable(t *testing.T, store auth.RevocationStore) (*AgentSkillServer, *pb.AgentSkill, *fakeSandboxBackend) {
+	t.Helper()
 	tm, err := auth.NewTokenManager("test-secret-must-be-at-least-32-bytes-long-ok", "test")
 	if err != nil {
 		t.Fatalf("NewTokenManager: %v", err)
@@ -517,7 +526,7 @@ func newSkillBoxHarness(t *testing.T, store auth.RevocationStore) (*AgentSkillSe
 		gateway: &gatewayProvisioning{provider: "anthropic", httpPort: 8080, secret: []byte("test-shared-secret")},
 	}
 	s.SetRevocationStore(store)
-	return s, skill
+	return s, skill, backend
 }
 
 // TestProvisionSkillBox_EndsPartialLeaseOnSeedFailure: a run whose seed exec
@@ -590,5 +599,56 @@ func TestRunAgentSkill_ResponseCarriesRunID(t *testing.T) {
 		if in != "" && resp.GetRunId() != in {
 			t.Errorf("response run_id = %q, want the caller's %q echoed", resp.GetRunId(), in)
 		}
+	}
+}
+
+// TestStartServeMode_StopsPriorInstanceBeforeLaunching is cloud#1733's fix: a
+// crew member box is reused across runs, and RunCrew re-mints a fresh gateway
+// token + reseeds it to disk on every call — but startServeMode used to
+// background a new agent-runtime unconditionally, with nothing to stop an
+// earlier instance first. Since the OSS image's A2A server binds a fixed
+// port, every relaunch after the first crashed on EADDRINUSE (confirmed
+// live: OSS agent-runtime.log on the asia workhorse), so the box kept
+// serving whatever token its FIRST-EVER launch read, until that token's
+// 30-minute TTL passed — after which every run against a box more than
+// agentTokenTTL old failed "invalid gateway token: expired" regardless of
+// what was actually reseeded.
+//
+// What this test CAN observe against the fake backend: the kill step runs
+// (it uses ExecWithExitCode, part of the incus.Backend interface, unlike
+// ExecWithOutput which type-asserts to the concrete client and always fails
+// on a mock — see Manager.ExecWithOutput's own doc comment). What it CANNOT
+// observe: the subsequent launch call, because startServeMode's launch step
+// deliberately keeps using ExecWithOutput (unchanged production behavior),
+// which fails against every fake backend by construction — the same
+// limitation TestProvisionSkillBox_GitSourceSet_SeedFailsBeforeFetch
+// documents for the seed step. That a kill actually frees the port and lets
+// a fresh process bind it was verified live on the asia workhorse (restart
+// both stale boxes, confirm a single fresh agent-runtime process replaces
+// the ~25h-old one) rather than in this unit test.
+func TestStartServeMode_StopsPriorInstanceBeforeLaunching(t *testing.T) {
+	store := newFakeRevocationStore()
+	s, _, backend := newSkillBoxHarnessInspectable(t, store)
+
+	s.startServeMode("agent-hello-agent", "/etc/containarium/agent/runs/run-1")
+
+	if len(backend.execCalls) != 1 {
+		t.Fatalf("execCalls = %d, want 1 (the kill step — the launch step uses ExecWithOutput, unreachable on this fake); got %+v",
+			len(backend.execCalls), backend.execCalls)
+	}
+	kill := backend.execCalls[0]
+	if kill.ContainerName != "agent-hello-agent" {
+		t.Errorf("kill container = %q, want agent-hello-agent", kill.ContainerName)
+	}
+	killScript := strings.Join(kill.Command, " ")
+	if !strings.Contains(killScript, "agent-runtime") || !strings.Contains(killScript, "pkill") {
+		t.Errorf("kill command = %v, want it to pkill a prior agent-runtime instance", kill.Command)
+	}
+
+	// A second call (a later run against the same reused box) must kill
+	// again — the fix is not a one-shot guard, it runs on every call.
+	s.startServeMode("agent-hello-agent", "/etc/containarium/agent/runs/run-2")
+	if len(backend.execCalls) != 2 {
+		t.Fatalf("after a second call, execCalls = %d, want 2", len(backend.execCalls))
 	}
 }
