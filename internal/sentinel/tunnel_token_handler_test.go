@@ -518,6 +518,205 @@ func TestConcurrentRegisterAndDeregister_NoLostUpdates(t *testing.T) {
 	}
 }
 
+// TestTunnelTokenDeregisterHandler_RemovesEveryTokenSharingPrefix is the
+// whole point of #1963: a control plane that mints a join token but never
+// retains the plaintext (the correct posture — it hands the token to the
+// operator once and keeps only a hash) has nothing to put in {"token":...}
+// when it wants to decommission a host. It knows the host id, so it must be
+// able to deregister by {"token_prefix": "<host-id>."} instead, and that one
+// call must remove BOTH the original join token and a reissued reconnect
+// token sharing the same host-id prefix — without the caller ever supplying
+// either plaintext token.
+func TestTunnelTokenDeregisterHandler_RemovesEveryTokenSharingPrefix(t *testing.T) {
+	m := newManagerForTunnelTokenTest(t, true)
+	m.tunnelPolicy.Allow("host-a.secret1", PoolAny) // original join token
+	m.tunnelPolicy.Allow("host-a.secret2", PoolAny) // reissued reconnect token
+	m.tunnelPolicy.Allow("host-b.secret1", PoolAny) // different host, must survive
+
+	body, _ := json.Marshal(TunnelTokenDeregisterRequest{TokenPrefix: "host-a."})
+	req := httptest.NewRequest(http.MethodDelete, "/sentinel/tunnel-tokens", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	auth.SignSentinelRequest(req, []byte(tunnelTokenAdminSecret))
+	rec := httptest.NewRecorder()
+	handler := auth.SentinelHMACMiddleware([]byte(tunnelTokenAdminSecret), m.TunnelTokenDeregisterHandler())
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if err := m.tunnelPolicy.Validate("host-a.secret1", ""); err == nil {
+		t.Fatal("original join token still valid after prefix deregistration")
+	}
+	if err := m.tunnelPolicy.Validate("host-a.secret2", ""); err == nil {
+		t.Fatal("reissued reconnect token still valid after prefix deregistration")
+	}
+	if err := m.tunnelPolicy.Validate("host-b.secret1", ""); err != nil {
+		t.Fatalf("a different host's token must survive: %v", err)
+	}
+}
+
+// TestTunnelTokenDeregisterHandler_PrefixPersistsAcrossRestart is the
+// prefix-form sibling of TestTunnelTokenDeregisterHandler_PersistsAcrossRestart
+// — the removal must go through the same persist path so it survives a
+// sentinel restart, not just apply to the current process's in-memory
+// policy.
+func TestTunnelTokenDeregisterHandler_PrefixPersistsAcrossRestart(t *testing.T) {
+	m := newManagerForTunnelTokenTest(t, true)
+
+	for _, tok := range []string{"host-a.secret1", "host-a.secret2"} {
+		registerBody, _ := json.Marshal(TunnelTokenRegisterRequest{Token: tok, Pools: []Pool{"asia-east1"}})
+		registerReq := httptest.NewRequest(http.MethodPost, "/sentinel/tunnel-tokens", bytes.NewReader(registerBody))
+		registerReq.Header.Set("Content-Type", "application/json")
+		auth.SignSentinelRequest(registerReq, []byte(tunnelTokenAdminSecret))
+		rec := httptest.NewRecorder()
+		auth.SentinelHMACMiddleware([]byte(tunnelTokenAdminSecret), m.TunnelTokenRegisterHandler()).ServeHTTP(rec, registerReq)
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("register %s status = %d, body = %s", tok, rec.Code, rec.Body.String())
+		}
+	}
+
+	deregisterBody, _ := json.Marshal(TunnelTokenDeregisterRequest{TokenPrefix: "host-a."})
+	deregisterReq := httptest.NewRequest(http.MethodDelete, "/sentinel/tunnel-tokens", bytes.NewReader(deregisterBody))
+	deregisterReq.Header.Set("Content-Type", "application/json")
+	auth.SignSentinelRequest(deregisterReq, []byte(tunnelTokenAdminSecret))
+	rec := httptest.NewRecorder()
+	auth.SentinelHMACMiddleware([]byte(tunnelTokenAdminSecret), m.TunnelTokenDeregisterHandler()).ServeHTTP(rec, deregisterReq)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("deregister status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	// "Restart": a brand-new policy loaded from the persisted store.
+	freshPolicy := NewTokenPolicy()
+	entries, err := LoadTunnelTokenStore(m.tunnelTokenStorePath)
+	if err != nil {
+		t.Fatalf("LoadTunnelTokenStore: %v", err)
+	}
+	ApplyTunnelTokenStore(entries, freshPolicy)
+
+	if err := freshPolicy.Validate("host-a.secret1", "asia-east1"); err == nil {
+		t.Fatal("prefix-deregistered token came back after a simulated restart — the removal did not persist")
+	}
+	if err := freshPolicy.Validate("host-a.secret2", "asia-east1"); err == nil {
+		t.Fatal("prefix-deregistered reissued token came back after a simulated restart — the removal did not persist")
+	}
+}
+
+// TestTunnelTokenDeregisterHandler_PrefixMatchingNothingIsNoContent mirrors
+// TestTunnelTokenDeregisterHandler_UnknownTokenIsNoContentNotError for the
+// prefix form: the caller cannot know in advance whether any token under
+// that host id was ever registered, and the end state is identical either
+// way.
+func TestTunnelTokenDeregisterHandler_PrefixMatchingNothingIsNoContent(t *testing.T) {
+	m := newManagerForTunnelTokenTest(t, true)
+
+	body, _ := json.Marshal(TunnelTokenDeregisterRequest{TokenPrefix: "never-registered."})
+	req := httptest.NewRequest(http.MethodDelete, "/sentinel/tunnel-tokens", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	auth.SignSentinelRequest(req, []byte(tunnelTokenAdminSecret))
+	rec := httptest.NewRecorder()
+	handler := auth.SentinelHMACMiddleware([]byte(tunnelTokenAdminSecret), m.TunnelTokenDeregisterHandler())
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("want 204 for a prefix matching nothing, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestTunnelTokenDeregisterHandler_400OnPrefixWithoutTrailingDot pins the
+// exact footgun called out in #1963: "abc" must not match "abcd.xyz", so a
+// token_prefix missing its trailing "." is rejected outright rather than
+// silently matching more than the caller intended.
+func TestTunnelTokenDeregisterHandler_400OnPrefixWithoutTrailingDot(t *testing.T) {
+	m := newManagerForTunnelTokenTest(t, true)
+	m.tunnelPolicy.Allow("abcd.xyz", PoolAny)
+
+	body, _ := json.Marshal(TunnelTokenDeregisterRequest{TokenPrefix: "abc"})
+	req := httptest.NewRequest(http.MethodDelete, "/sentinel/tunnel-tokens", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	auth.SignSentinelRequest(req, []byte(tunnelTokenAdminSecret))
+	rec := httptest.NewRecorder()
+	handler := auth.SentinelHMACMiddleware([]byte(tunnelTokenAdminSecret), m.TunnelTokenDeregisterHandler())
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("want 400 for a prefix without a trailing dot, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if err := m.tunnelPolicy.Validate("abcd.xyz", ""); err != nil {
+		t.Fatalf("rejected prefix must not have touched the policy: %v", err)
+	}
+}
+
+// TestTunnelTokenDeregisterHandler_400OnEmptyPrefix: an explicit empty
+// string for token_prefix is the same "nothing to key on" case as an
+// entirely missing token/token_prefix.
+func TestTunnelTokenDeregisterHandler_400OnEmptyPrefix(t *testing.T) {
+	m := newManagerForTunnelTokenTest(t, true)
+
+	body, _ := json.Marshal(TunnelTokenDeregisterRequest{TokenPrefix: ""})
+	req := httptest.NewRequest(http.MethodDelete, "/sentinel/tunnel-tokens", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	auth.SignSentinelRequest(req, []byte(tunnelTokenAdminSecret))
+	rec := httptest.NewRecorder()
+	handler := auth.SentinelHMACMiddleware([]byte(tunnelTokenAdminSecret), m.TunnelTokenDeregisterHandler())
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("want 400 for an empty token_prefix (and empty token), got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestTunnelTokenDeregisterHandler_400OnBothTokenAndPrefix: the request must
+// key on exactly one identifier — supplying both is ambiguous about which
+// removal semantics the caller wants and is rejected rather than guessed at.
+func TestTunnelTokenDeregisterHandler_400OnBothTokenAndPrefix(t *testing.T) {
+	m := newManagerForTunnelTokenTest(t, true)
+	m.tunnelPolicy.Allow("host-a.secret1", PoolAny)
+
+	body, _ := json.Marshal(TunnelTokenDeregisterRequest{Token: "host-a.secret1", TokenPrefix: "host-a."})
+	req := httptest.NewRequest(http.MethodDelete, "/sentinel/tunnel-tokens", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	auth.SignSentinelRequest(req, []byte(tunnelTokenAdminSecret))
+	rec := httptest.NewRecorder()
+	handler := auth.SentinelHMACMiddleware([]byte(tunnelTokenAdminSecret), m.TunnelTokenDeregisterHandler())
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("want 400 when both token and token_prefix are set, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestTunnelTokenDeregisterHandler_PrefixPersistFailureIsAServerErrorNot204
+// is the prefix-form sibling of
+// TestTunnelTokenDeregisterHandler_PersistFailureIsAServerErrorNot204: the
+// in-memory DenyPrefix must still take effect immediately even though the
+// response reports a persistence failure (the safe direction), and the
+// caller must be told to retry rather than believing 204.
+func TestTunnelTokenDeregisterHandler_PrefixPersistFailureIsAServerErrorNot204(t *testing.T) {
+	m := newManagerForTunnelTokenTest(t, true)
+	m.tunnelPolicy.Allow("host-a.secret1", PoolAny)
+
+	blocker := t.TempDir() + "/blocker"
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatalf("create blocker file: %v", err)
+	}
+	m.SetTunnelTokenStorePath(blocker + "/tunnel-tokens.json")
+
+	body, _ := json.Marshal(TunnelTokenDeregisterRequest{TokenPrefix: "host-a."})
+	req := httptest.NewRequest(http.MethodDelete, "/sentinel/tunnel-tokens", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	auth.SignSentinelRequest(req, []byte(tunnelTokenAdminSecret))
+	rec := httptest.NewRecorder()
+	handler := auth.SentinelHMACMiddleware([]byte(tunnelTokenAdminSecret), m.TunnelTokenDeregisterHandler())
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("want 500 when persistence fails, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if err := m.tunnelPolicy.Validate("host-a.secret1", ""); err == nil {
+		t.Fatal("token must still be denied in-memory even though the response reported a persist failure")
+	}
+}
+
 // TestTunnelTokenRegisterHandler_AdminSecretIndependentOfHMACSecret guards
 // the core security property of #799's fix: possessing the cluster-wide
 // daemon HMAC secret (CONTAINARIUM_SENTINEL_AUTH_SECRET) must NOT be

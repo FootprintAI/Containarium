@@ -548,6 +548,29 @@ func (m *Manager) unpersistTunnelToken(token string) error {
 	return SaveTunnelTokenStore(path, entries)
 }
 
+// unpersistTunnelTokensByPrefix removes every token starting with prefix
+// from the on-disk dynamic tunnel-token store (#1963) — the host-id-prefix
+// sibling of unpersistTunnelToken, for the {"token_prefix": "<host-id>."}
+// deregistration path used by a registrar that never retained the
+// plaintext token and can only identify the host it wants to decommission.
+// Best-effort at the call site, same reasoning as unpersistTunnelToken: the
+// in-memory policy is already updated either way, and a disk hiccup here
+// must not fail a legitimate deregistration.
+func (m *Manager) unpersistTunnelTokensByPrefix(prefix string) error {
+	m.tunnelTokenStoreMu.Lock()
+	defer m.tunnelTokenStoreMu.Unlock()
+	path := m.tunnelTokenStorePath
+	if path == "" {
+		path = DefaultTunnelTokenStorePath
+	}
+	entries, err := LoadTunnelTokenStore(path)
+	if err != nil {
+		return err
+	}
+	entries = removeTunnelTokenEntriesByPrefix(entries, prefix)
+	return SaveTunnelTokenStore(path, entries)
+}
+
 // SetAdminSecret wires the secret that gates POST
 // /sentinel/tunnel-tokens. Tests can use this to inject a secret
 // without setting CONTAINARIUM_SENTINEL_ADMIN_SECRET in the
