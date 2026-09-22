@@ -226,18 +226,10 @@ func TestEmbeddedDiffCrewValidatesAndDrives(t *testing.T) {
 		t.Errorf("RunCrew's topology gate rejects the embedded diff-crew: %v", err)
 	}
 
-	draftArtifact := `{"diff":"--- a/x.go
-+++ b/x.go
-@@ -1 +1 @@
--old
-+new
-","summary":"fix x"}`
-	finalArtifact := `{"diff":"--- a/x.go
-+++ b/x.go
-@@ -1 +1 @@
--old
-+reviewed
-","review_notes":"tightened the fix"}`
+	// Whole-file artifact shape (cloud#1738), not a unified diff — matches
+	// what the actual skill prompts in skills.yaml ask for.
+	draftArtifact := `{"files":[{"path":"x.go","content":"package x\n\nfunc New() {}\n"}],"summary":"fix x"}`
+	finalArtifact := `{"files":[{"path":"x.go","content":"package x\n\nfunc New() { /* reviewed */ }\n"}],"drafter_summary":"fix x","review_notes":"tightened the fix"}`
 	var calls []*pb.SendAgentTaskRequest
 	send := func(_ context.Context, req *pb.SendAgentTaskRequest) (*pb.SendAgentTaskResponse, error) {
 		calls = append(calls, req)
@@ -251,7 +243,7 @@ func TestEmbeddedDiffCrewValidatesAndDrives(t *testing.T) {
 		t.Fatalf("driveCrew: %v", err)
 	}
 	if out != finalArtifact {
-		t.Errorf("crew artifact = %q, want the reviewer's final diff %q", out, finalArtifact)
+		t.Errorf("crew artifact = %q, want the reviewer's final files %q", out, finalArtifact)
 	}
 
 	if len(calls) != 2 {
