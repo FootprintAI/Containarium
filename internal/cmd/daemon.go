@@ -299,7 +299,30 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	if standaloneMode || incusClient == nil {
 		log.Printf("Standalone mode: skipping core container wait (Caddy)")
 	} else {
-		if err := waitForCoreContainers(incusClient, 2*time.Minute); err != nil {
+		// Use a second, short-timeout incus client for this wait only
+		// (#1483). incusClient (built via incus.New(), no per-call HTTP
+		// timeout) is what every other daemon code path uses and must
+		// keep working unbounded for legitimately long operations —
+		// image pulls, container creation, migrations. But
+		// waitForCoreContainers's own 2-minute context.WithTimeout only
+		// bounds time *between* loop iterations; it cannot interrupt a
+		// single FindContainerByRole call already in flight. Fed the
+		// unbounded incusClient, one such call against a still-
+		// initializing incusd (e.g. mounting a LUKS2/TPM2 pool right
+		// after boot) can block for as long as the incus SDK's own
+		// transport-level ResponseHeaderTimeout (3600s) — 30x past the
+		// outer bound — which is exactly how the daemon gets stuck at
+		// "Waiting for core containers to be ready..." forever while
+		// still reporting `active`. A client scoped to this call site
+		// with a short per-call timeout lets the loop actually notice a
+		// stuck call and retry instead.
+		bootWaitClient, err := incus.NewWithSocketAndTimeout(incus.DefaultSocketPath, 15*time.Second)
+		if err != nil {
+			log.Printf("Warning: failed to create bounded-timeout Incus client for core-container wait: %v", err)
+			log.Printf("  Falling back to the shared client — a stuck Incus call could block this wait past its own timeout")
+			bootWaitClient = incusClient
+		}
+		if err := waitForCoreContainers(bootWaitClient, 2*time.Minute); err != nil {
 			log.Printf("Warning: %v", err)
 			log.Printf("  Proceeding anyway — some features may be unavailable")
 		}
