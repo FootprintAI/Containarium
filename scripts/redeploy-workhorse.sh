@@ -46,14 +46,22 @@ set -euo pipefail
 # byte-identical/linked files (#1782), and per the containarium ->
 # containariumd rename (#1781) the real install target is ALWAYS
 # containariumd — the shorter name is legitimate only as that compat
-# symlink. Defaulting BIN to the compat symlink's name and matching
-# processes by that same literal name silently broke `daemon_pid`/`status`
-# on a host whose unit execs containariumd directly (the fleet's actual,
-# post-rename convention — see scripts/containarium.service's ExecStart) —
-# a broken detection that read as "no process found" rather than an error,
-# and directly contributed to the 2026-09-22 outage.
-BIN="${CTN_BIN:-/usr/local/bin/containariumd}"
-BIN="$(readlink -f "$BIN" 2>/dev/null || echo "$BIN")"
+# symlink. BIN_RAW is what got configured/exec'd (before resolving); BIN is
+# the real file, resolved through any symlink, and is what every FILE
+# operation (backup, install, current_version) acts on — content is shared
+# either way, so operating on the real file is always correct there.
+#
+# PROCESS matching is a different story: Linux's `comm` (and argv[0] as
+# read from /proc/<pid>/cmdline) reflects the LITERAL path a process was
+# exec'd with, not its resolved realpath. A unit whose ExecStart names the
+# compat symlink shows up in `ps` as "containarium" even though it's byte-
+# identical to containariumd — readlink-ing BIN before matching processes
+# fixes hosts that exec containariumd directly (2026-09-22's asia outage)
+# but silently BREAKS hosts that exec the symlink instead, which is exactly
+# as broken as the single hardcoded default this replaced. daemon_pid()
+# therefore matches EITHER name rather than picking one.
+BIN_RAW="${CTN_BIN:-/usr/local/bin/containariumd}"
+BIN="$(readlink -f "$BIN_RAW" 2>/dev/null || echo "$BIN_RAW")"
 # Was the unit pinned by the operator? Recorded BEFORE defaulting, because an
 # explicit CTN_UNIT is a deliberate assertion we must not silently override —
 # whereas the default is only a guess, and a wrong guess is what made this
@@ -116,14 +124,22 @@ acquire_lock() {
 # ever matches the real daemon — NOT a bash wrapper, the containarium-runner-
 # loop, this script, or the ssh session that's running it (all of which start
 # with /bin/bash, not the binary path).
+#
+# Matches EITHER "containarium" or "containariumd" as the process name (see
+# the BIN/BIN_RAW comment above for why): `pgrep -x` treats its argument as
+# an extended regex requiring a full-string match, so 'containariumd?'
+# matches exactly those two names and nothing else (never e.g.
+# containarium-shell or containarium-runner-loop).
 daemon_pid() {
   local p argv1
-  for p in $(pgrep -x "$(basename "$BIN")" 2>/dev/null); do
+  for p in $(pgrep -x 'containariumd?' 2>/dev/null); do
     argv1="$(tr '\0' '\n' < "/proc/$p/cmdline" 2>/dev/null | sed -n '2p')"
     if [ "$argv1" = "$SUBCMD" ]; then echo "$p"; return 0; fi
   done
-  # Fallback: anchored full-cmdline match.
-  pgrep -f "^${BIN} ${SUBCMD}( |\$)" 2>/dev/null | head -1 || true
+  # Fallback: anchored full-cmdline match against either the resolved real
+  # path or the as-configured (possibly-symlink) path — whichever one this
+  # host's unit actually execs.
+  pgrep -f "^(${BIN}|${BIN_RAW}) ${SUBCMD}( |\$)" 2>/dev/null | head -1 || true
 }
 
 current_version() {
@@ -401,7 +417,7 @@ cmd_status() {
     echo "         Do NOT run capture/cutover here — this host is already systemd-managed."
   fi
   if [ -z "$spid" ]; then
-    echo "WARNING: no matching process found for $(basename "$BIN") ${SUBCMD} — either the daemon is"
+    echo "WARNING: no matching 'containarium(d)? ${SUBCMD}' process found — either the daemon is"
     echo "         genuinely down, or detection is wrong for this host (check CTN_BIN/CTN_SUBCMD)."
     echo "         Do not assume 'no output' means 'all clear' — investigate before deploying."
   fi
