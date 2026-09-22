@@ -73,6 +73,7 @@ var (
 	poolJoinSentinels          []string
 	poolJoinRegion             string
 	poolJoinToken              string
+	poolJoinTokenFile          string
 	poolJoinPool               string
 	poolJoinSpotID             string
 	poolJoinPorts              string
@@ -97,24 +98,29 @@ starts both. Idempotent: re-running re-applies the config.
 Run ON the host you're adding, as root. Use --dry-run to print the unit
 files without writing anything.
 
+The join token is resolved in this order — first one present wins:
+  1. --token-file <path>          (read, trimmed; never lands on argv or in shell history)
+  2. $CONTAINARIUM_TUNNEL_TOKEN    (same env var 'containarium tunnel' itself reads)
+  3. --token <value>               (kept for interactive use and backward compatibility)
+
 Example:
   sudo containarium pool join \
     --sentinel sentinel.example.com:443 \
     --pool prod \
-    --token <scoped-join-token> \
+    --token-file /etc/containarium/join-token \
     --public-hostname node1.example.com --public-port 443
 
 Multi-region (probe + pick the closest sentinel from the host):
   sudo containarium pool join --region auto \
     --sentinel us=us.sentinel.example.com:443 \
     --sentinel eu=eu.sentinel.example.com:443 \
-    --pool prod --token <scoped-join-token>
+    --pool prod --token-file /etc/containarium/join-token
 
 BYO-compute (also register with a cloud control plane, using the same
 token — the webui's "Add compute" one-liner sets this automatically):
   sudo containarium pool join \
     --sentinel asia-east1.containarium.dev:443 \
-    --token <scoped-join-token> \
+    --token-file /etc/containarium/join-token \
     --cloud-control-plane https://cloud.containarium.dev`,
 	RunE: runPoolJoin,
 }
@@ -123,7 +129,8 @@ func init() {
 	poolCmd.AddCommand(poolJoinCmd)
 	poolJoinCmd.Flags().StringArrayVar(&poolJoinSentinels, "sentinel", nil, "Sentinel this host dials, as host:port or region=host:port (repeatable). Pass several with --region auto to probe-and-select the closest (required)")
 	poolJoinCmd.Flags().StringVar(&poolJoinRegion, "region", "", "With multiple --sentinel candidates: 'auto' probes RTT and picks the closest, or a region name picks that one. Single --sentinel ignores this")
-	poolJoinCmd.Flags().StringVar(&poolJoinToken, "token", "", "Scoped join token for the tunnel handshake (required)")
+	poolJoinCmd.Flags().StringVar(&poolJoinToken, "token", "", "Scoped join token for the tunnel handshake. Lowest-precedence of the three token sources (see --token-file); lands on argv and in shell history, so prefer --token-file or $CONTAINARIUM_TUNNEL_TOKEN. Required if neither of those is set")
+	poolJoinCmd.Flags().StringVar(&poolJoinTokenFile, "token-file", "", "File containing the scoped join token (read, trailing whitespace trimmed; error if empty). Takes precedence over $CONTAINARIUM_TUNNEL_TOKEN and --token — the recommended way to pass the token so it never lands on argv or in shell history")
 	poolJoinCmd.Flags().StringVar(&poolJoinPool, "pool", "", "Pool to join (scopes daemon discovery + tunnel registration)")
 	poolJoinCmd.Flags().StringVar(&poolJoinSpotID, "spot-id", "", "Unique id for this host in the pool (default: hostname)")
 	poolJoinCmd.Flags().StringVar(&poolJoinPorts, "ports", "22,8080,443", "Comma-separated local ports to expose through the tunnel")
@@ -327,6 +334,49 @@ func resolvePoolDaemonArgv(current []string, found bool, pool, baseDomain string
 	return argv
 }
 
+// resolvePoolJoinToken resolves the scoped join token from the three
+// sources pool join accepts (#1961), in precedence order:
+//
+//  1. --token-file — read and trimmed, mirroring `cloud enroll`'s own
+//     --token-file semantics (internal/cmd/cloud.go) so there is one
+//     behaviour across the CLI to learn. An empty (or missing) file is
+//     always an error here, even if a lower-precedence source could
+//     otherwise supply a token — a provisioner that got the path wrong
+//     should see that immediately, not silently fall through.
+//  2. $CONTAINARIUM_TUNNEL_TOKEN — the SAME env var `containarium tunnel`
+//     itself reads (internal/cmd/tunnel.go) and the same one this command
+//     writes into tunnelTokenSecretFile's EnvironmentFile= for the tunnel
+//     unit to consume. It's semantically the same tunnel-handshake token,
+//     just supplied ahead of time instead of via that generated file, so
+//     reusing the name (rather than minting a pool-join-specific one) is
+//     the least surprising choice. /proc/<pid>/environ is owner-only
+//     (0400), unlike the world-readable (0444) /proc/<pid>/cmdline an
+//     argv-supplied --token ends up in.
+//  3. --token — kept for interactive use and backward compatibility.
+//
+// Pure aside from the token-file read, so it's unit-tested without any
+// systemd/root machinery.
+func resolvePoolJoinToken(tokenFlag, tokenFile string) (string, error) {
+	if tokenFile != "" {
+		tokenBytes, err := os.ReadFile(tokenFile) // #nosec G304 -- operator-provided token path
+		if err != nil {
+			return "", fmt.Errorf("read --token-file: %w", err)
+		}
+		token := strings.TrimSpace(string(tokenBytes))
+		if token == "" {
+			return "", fmt.Errorf("--token-file %q is empty", tokenFile)
+		}
+		return token, nil
+	}
+	if envToken := strings.TrimSpace(os.Getenv("CONTAINARIUM_TUNNEL_TOKEN")); envToken != "" {
+		return envToken, nil
+	}
+	if tokenFlag != "" {
+		return tokenFlag, nil
+	}
+	return "", fmt.Errorf("--token, --token-file, or $CONTAINARIUM_TUNNEL_TOKEN is required (the scoped join token)")
+}
+
 // currentDaemonArgv reads the effective daemon ExecStart via systemctl. Returns
 // (nil, false) when the unit doesn't exist / isn't readable / isn't recognized
 // — the caller then falls back to the minimal baseline (and warns).
@@ -342,9 +392,11 @@ func runPoolJoin(cmd *cobra.Command, args []string) error {
 	if len(poolJoinSentinels) == 0 {
 		return fmt.Errorf("--sentinel is required (the sentinel host:port this host dials; repeatable with --region auto)")
 	}
-	if poolJoinToken == "" {
-		return fmt.Errorf("--token is required (the scoped join token)")
+	token, err := resolvePoolJoinToken(poolJoinToken, poolJoinTokenFile)
+	if err != nil {
+		return err
 	}
+	poolJoinToken = token
 	if poolJoinPublicHostname != "" && poolJoinPublicPort == 0 {
 		return fmt.Errorf("--public-port is required when --public-hostname is set")
 	}

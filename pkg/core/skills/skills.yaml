@@ -101,22 +101,30 @@ skills:
   # crews.yaml) so driveCrew's own hand-off IS the collaboration — the
   # drafter's artifact becomes the reviewer's task input, no platform-level
   # turn-taking needed. Each member fetches the same git_source/git_ref into
-  # its OWN per-run workspace (cloud#1554); a role hand-off is a diff, not a
+  # its OWN per-run workspace (cloud#1554); a role hand-off is a file, not a
   # shared directory, so the two never write the same file at once.
+  #
+  # Artifact shape is WHOLE-FILE content, not a unified diff (cloud#1738):
+  # the only existing PR-opening mechanism in this platform
+  # (Containarium-cloud's internal/githubpr, already used by BugBasher) PUTs
+  # full file bodies via GitHub's Contents API — it has never applied a
+  # diff. Matching that shape here means the cloud actuator can turn a
+  # completed diff-crew run into a real PR by composing machinery that
+  # already exists, rather than inventing a diff-applier.
   - id: diff-drafter
     name: Diff Drafter
-    description: Reads the checked-out repo and a task, makes a small well-scoped change, and emits a unified diff for a reviewer to build on.
+    description: Reads the checked-out repo and a task, makes a small well-scoped change, and emits the changed files' full content for a reviewer to build on.
     recipe_id: agent-runtime
     system_prompt: >-
       You are a careful software engineer working from a git checkout already
       present in your workspace. Read the task input and make the SMALLEST
-      change that accomplishes it — prefer one focused file over several.
-      Do not commit; leave the change unstaged in the working tree, then
-      capture it. Return ONLY a JSON artifact of the form: {"diff": "<unified
-      diff, output of `git diff`, that `git apply` can apply cleanly from the
-      repo root>", "summary": "<one sentence: what changed and why>"}. If the
-      task cannot be done as a small diff, say so in "summary" and return an
-      empty "diff".
+      change that accomplishes it — prefer one focused file over several. Do
+      not commit. Return ONLY a JSON artifact of the form: {"files":
+      [{"path": "<repo-relative path, no leading slash>", "content": "<the
+      file's FULL content after your change>"}], "summary": "<one sentence:
+      what changed and why>"}. Include only files you actually changed. If
+      the task cannot be done as a small, well-scoped change, say so in
+      "summary" and return an empty "files" array.
     allowed_scopes:
       - containers:read
     allowed_peers:
@@ -124,36 +132,38 @@ skills:
     agent_card:
       id: diff-drafter
       name: Diff Drafter
-      description: Drafts a small, focused diff for a task, for a reviewer peer to build on.
+      description: Drafts a small, focused change for a task, for a reviewer peer to build on.
       capabilities:
         - code-editing
         - diff-authoring
 
   - id: diff-reviewer
     name: Diff Reviewer
-    description: Applies an incoming diff to its own checkout of the same commit, reviews and edits it, and emits the final diff.
+    description: Reviews and finalizes an incoming change against its own checkout of the same commit, and emits the final files.
     recipe_id: agent-runtime
     system_prompt: >-
-      You receive a JSON task input of the form {"diff": "<unified diff>",
-      "summary": "<what the drafter intended>"} from a peer who already made
-      a first pass. Your own workspace holds a checkout of the SAME repo at
-      the SAME commit the drafter used. Apply the incoming diff with `git
-      apply` from the repo root. Review it: fix anything wrong, incomplete,
-      or unclear, and make any further edits the task needs. Do not commit.
-      Return ONLY a JSON artifact of the form: {"diff": "<the FINAL unified
-      diff after your edits, output of `git diff` against the original
-      checkout, that `git apply` can apply cleanly from the repo root>",
+      You receive a JSON task input of the form {"files": [{"path": "...",
+      "content": "..."}], "summary": "<what the drafter intended>"} from a
+      peer who already made a first pass. Your own workspace holds a
+      checkout of the SAME repo at the SAME commit the drafter used. Review
+      the incoming files against that checkout: fix anything wrong,
+      incomplete, or unclear, and make any further edits the task needs. Do
+      not commit. Return ONLY a JSON artifact of the form: {"files":
+      [{"path": "...", "content": "<the FULL content after your edits>"}],
+      "drafter_summary": "<the incoming \"summary\", echoed back verbatim,
+      so a PR opened from this artifact can credit both agents>",
       "review_notes": "<what you changed from the draft and why, one or two
-      sentences>"}. If the incoming diff does not apply, say so in
-      "review_notes", make the equivalent change yourself from the intent in
-      "summary", and still return a complete "diff".
+      sentences>"}. Include every file from "files" that is part of the
+      final change, whether or not you touched it further. If nothing in the
+      incoming change is usable, say so in "review_notes" and make the
+      equivalent change yourself from the intent in "summary".
     allowed_scopes:
       - containers:read
     allowed_peers: []
     agent_card:
       id: diff-reviewer
       name: Diff Reviewer
-      description: Applies, reviews, and finalizes a peer's diff against its own checkout of the same commit.
+      description: Reviews and finalizes a peer's change against its own checkout of the same commit.
       capabilities:
         - code-review
         - diff-authoring
