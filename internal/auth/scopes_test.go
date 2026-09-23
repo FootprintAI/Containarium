@@ -191,6 +191,19 @@ func TestExcludeScopes_ExcludingEverythingLeavesEmptyNotNil(t *testing.T) {
 	}
 }
 
+// TestIsKnownScope_SandboxScopes is the regression test for #1926:
+// ScopeSandboxesRead/ScopeSandboxesWrite were defined in the const block
+// (added for #1488) but never added to AllScopes, so IsKnownScope silently
+// rejected a skill manifest or token-mint request declaring
+// sandboxes:read/sandboxes:write.
+func TestIsKnownScope_SandboxScopes(t *testing.T) {
+	for _, s := range []string{ScopeSandboxesRead, ScopeSandboxesWrite} {
+		if !IsKnownScope(s) {
+			t.Errorf("IsKnownScope(%q) = false, want true (missing from AllScopes?)", s)
+		}
+	}
+}
+
 // TestIsKnownScope_TrackerScopes guards against the class of bug filed as
 // #1926 (ScopeSandboxesRead/Write defined but missing from AllScopes,
 // silently rejected by IsKnownScope) recurring for the new tracker scopes.

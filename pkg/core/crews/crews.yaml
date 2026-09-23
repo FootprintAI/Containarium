@@ -39,15 +39,16 @@ crews:
 
   # diff-crew is the reference crew for the shared-workspace joint-editing
   # scenario (cloud#1549 Layer 2). Pipeline topology: diff-drafter's artifact
-  # (a unified diff) becomes diff-reviewer's task input via driveCrew's own
-  # PIPELINE hand-off — no new turn-taking mechanism needed, the existing
-  # A2A chain IS the collaboration. Run with git_source/git_ref set
-  # (cloud#1554) so both members check out the SAME commit into their own
-  # per-run workspace; the crew's own artifact (the reviewer's final diff) is
-  # the joint result of both agents.
+  # (whole-file content, cloud#1738) becomes diff-reviewer's task input via
+  # driveCrew's own PIPELINE hand-off — no new turn-taking mechanism needed,
+  # the existing A2A chain IS the collaboration. Run with git_source/git_ref
+  # set (cloud#1554) so both members check out the SAME commit into their
+  # own per-run workspace; the crew's own artifact (the reviewer's final
+  # files) is the joint result of both agents, and — on the cloud side —
+  # what an "opens-pr"-capable catalog entry turns into a real PR (cloud#1738).
   - id: diff-crew
     name: Diff Crew
-    description: Two agents jointly edit a repo — diff-drafter proposes a small diff, diff-reviewer applies it to its own checkout of the same commit, reviews, and finalizes it.
+    description: Two agents jointly edit a repo — diff-drafter proposes a small change, diff-reviewer finalizes it against its own checkout of the same commit.
     topology: pipeline
     skill_ids:
       - diff-drafter   # diff-drafter.allowed_peers includes diff-reviewer,

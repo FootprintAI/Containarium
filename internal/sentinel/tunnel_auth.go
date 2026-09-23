@@ -49,6 +49,27 @@ func (tp *TokenPolicy) Deny(token string) {
 	delete(tp.rules, token)
 }
 
+// DenyPrefix removes every rule whose token starts with prefix — the
+// host-id-prefix sibling of Deny (#1963). Registered tokens are shaped
+// "<host-id>.<secret>"; a registrar that mints a join token and (correctly)
+// discards the plaintext afterwards has no token to pass to Deny when the
+// host is decommissioned, but it does know the host id, so it can revoke
+// every rule under that host — the original join token and any reissued
+// reconnect token alike — in one call. prefix is matched literally via
+// strings.HasPrefix; callers are expected to pass the full "<host-id>."
+// literal (dot included) so "abc" cannot accidentally match "abcd.xyz". A
+// prefix matching nothing is a no-op, not an error, for the same reason
+// Deny's no-match case is a no-op.
+func (tp *TokenPolicy) DenyPrefix(prefix string) {
+	tp.mu.Lock()
+	defer tp.mu.Unlock()
+	for token := range tp.rules {
+		if strings.HasPrefix(token, prefix) {
+			delete(tp.rules, token)
+		}
+	}
+}
+
 // PolicyFromCLI builds a TokenPolicy from a single back-compat token (any
 // pool allowed) plus a list of "token=pool1,pool2,…" specs. Either may be
 // empty. Returns an error if any spec is malformed. The returned policy is
