@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.87.1] - 2026-09-23
+
+### Fixed
+
+- **`diff-drafter` / `diff-reviewer` prompts hardened against non-compliant output.** A live run showed the model could emit a hallucinated tool-call snippet instead of the `{"files": [...], ...}` JSON artifact the skill's contract requires. Both prompts now explicitly require using real file-editing tools (not narrating the edit), reading each changed file back from disk before reporting it, and — as the final, repeated instruction — that the response must be ONLY the JSON object. Root cause: `agent-card.json`'s `output_schema_json` structured-output contract is parsed by `agent-runtime` but never enforced by any engine — tracked separately (cloud#1752) as a real feature, not fixed here. (#2000, cloud#1752)
+
+
 ## [0.87.0] - 2026-09-23
 
 ### Changed
