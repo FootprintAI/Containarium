@@ -122,6 +122,47 @@ func TestRemoveTunnelTokenEntry_UnknownTokenIsANoOp(t *testing.T) {
 	}
 }
 
+// TestRemoveTunnelTokenEntriesByPrefix_DropsEveryMatch is the store-layer
+// counterpart of TokenPolicy.DenyPrefix (#1963): a host's join token AND any
+// reissued reconnect token, both "<host-id>.<secret>", must both be dropped
+// from the persisted store by one prefix removal — otherwise the removal
+// wouldn't survive a restart even though DenyPrefix already updated the
+// in-memory policy.
+func TestRemoveTunnelTokenEntriesByPrefix_DropsEveryMatch(t *testing.T) {
+	entries := []TunnelTokenEntry{
+		{Token: "host-a.secret1", Pools: []Pool{PoolAny}},
+		{Token: "host-a.secret2", Pools: []Pool{PoolAny}},
+		{Token: "host-b.secret1", Pools: []Pool{PoolAny}},
+	}
+	got := removeTunnelTokenEntriesByPrefix(entries, "host-a.")
+	if len(got) != 1 || got[0].Token != "host-b.secret1" {
+		t.Fatalf("expected only host-b.secret1 to survive, got %+v", got)
+	}
+}
+
+// TestRemoveTunnelTokenEntriesByPrefix_IsALiteralPrefixMatch documents that
+// this helper is a plain strings.HasPrefix match with no opinion about a
+// trailing "." — "abc" DOES match "abcd.xyz" at this layer. The #1963
+// footgun ("abc" must not wrongly match "abcd.xyz") is guarded one layer
+// up, by TunnelTokenDeregisterHandler rejecting any token_prefix that
+// doesn't end with "." before it ever reaches this function (see
+// TestTunnelTokenDeregisterHandler_400OnPrefixWithoutTrailingDot).
+func TestRemoveTunnelTokenEntriesByPrefix_IsALiteralPrefixMatch(t *testing.T) {
+	entries := []TunnelTokenEntry{{Token: "abcd.xyz", Pools: []Pool{PoolAny}}}
+	got := removeTunnelTokenEntriesByPrefix(entries, "abc")
+	if len(got) != 0 {
+		t.Errorf("expected the entry to be removed by a plain prefix match, got %+v", got)
+	}
+}
+
+func TestRemoveTunnelTokenEntriesByPrefix_UnknownPrefixIsANoOp(t *testing.T) {
+	entries := []TunnelTokenEntry{{Token: "host-a.secret1", Pools: []Pool{PoolAny}}}
+	got := removeTunnelTokenEntriesByPrefix(entries, "host-z.")
+	if len(got) != 1 || got[0].Token != "host-a.secret1" {
+		t.Errorf("removing an unmatched prefix changed the set: %+v", got)
+	}
+}
+
 func TestSaveTunnelTokenStore_FileMode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tunnel-tokens.json")
 	if err := SaveTunnelTokenStore(path, []TunnelTokenEntry{{Token: "tok-a", Pools: []Pool{PoolAny}}}); err != nil {

@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	gopath "path"
@@ -685,15 +686,57 @@ type ServerInfo struct {
 	KernelVersion string
 }
 
+// DefaultSocketPath is the Incus unix socket path used by New() and by any
+// caller that wants the same default New() uses while still picking its
+// own constructor variant (e.g. NewWithSocketAndTimeout).
+const DefaultSocketPath = "/var/lib/incus/unix.socket"
+
 // New creates a new Incus client
 // Connects to the local Incus daemon via Unix socket
 func New() (*Client, error) {
-	return NewWithSocket("/var/lib/incus/unix.socket")
+	return NewWithSocket(DefaultSocketPath)
 }
 
-// NewWithSocket creates a new Incus client with a specific socket path
+// NewWithSocket creates a new Incus client with a specific socket path.
+//
+// This client has no per-call HTTP timeout (nil ConnectionArgs leaves
+// http.Client.Timeout at its zero value, i.e. unbounded) — every other
+// daemon code path uses this deliberately, since legitimate long-running
+// operations (image pulls, container creation, migrations, ...) go through
+// it. Do not add a timeout here; use NewWithSocketAndTimeout for a call
+// site that specifically needs one (#1483).
 func NewWithSocket(socketPath string) (*Client, error) {
 	server, err := incus.ConnectIncusUnix(socketPath, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to Incus: %w", err)
+	}
+
+	return &Client{server: server}, nil
+}
+
+// NewWithSocketAndTimeout creates a new Incus client whose every HTTP call
+// over the unix socket is bounded by timeout (via http.Client.Timeout).
+//
+// Why this exists (#1483): the incus SDK's InstanceServer interface has no
+// per-call context.Context parameter, so a per-call deadline can only be
+// set once, at construction, via ConnectionArgs.HTTPClient. On a byoc node
+// where incusd is still busy initializing storage right after boot, a
+// single GetInstance/GetInstanceNames round-trip made through the
+// unbounded client NewWithSocket returns can block for as long as the
+// SDK's own transport-level ResponseHeaderTimeout (3600s) — far past any
+// reasonable "is it ready yet" polling loop's outer bound, and long enough
+// that the loop never gets to retry because the goroutine is parked
+// inside that one call rather than spinning through the loop.
+//
+// This is intentionally scoped to callers that can tolerate a bounded call
+// failing and simply retrying (e.g. the daemon's core-container boot-readiness
+// wait) — not a replacement for the shared, long-lived client used
+// elsewhere, which legitimately needs to support slow, long-running
+// operations without an artificial deadline cutting them off.
+func NewWithSocketAndTimeout(socketPath string, timeout time.Duration) (*Client, error) {
+	server, err := incus.ConnectIncusUnix(socketPath, &incus.ConnectionArgs{
+		HTTPClient: &http.Client{Timeout: timeout},
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to Incus: %w", err)
 	}
