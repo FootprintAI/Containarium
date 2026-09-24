@@ -4,18 +4,18 @@ import (
 	"context"
 	"errors"
 	"net"
+	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	monitoringpb "cloud.google.com/go/monitoring/apiv3/v2/monitoringpb"
+	colmetricpb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
-	apioption "google.golang.org/api/option"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // fakeTokenSource lets tests simulate a credential that resolves but
@@ -106,66 +106,91 @@ func TestProbe_ADC(t *testing.T) {
 	}
 }
 
-// fakeMetricServer is an in-process Cloud Monitoring gRPC server: it
-// records the CreateTimeSeries requests the real exporter code path
-// sends, so the exporter can be exercised end-to-end without touching
-// GCP.
-type fakeMetricServer struct {
-	monitoringpb.UnimplementedMetricServiceServer
+// fakeOTLPMetricsServer is an in-process OTLP metrics collector: it
+// records the ExportMetricsServiceRequest batches the real
+// otlpmetricgrpc exporter code path sends, so the exporter can be
+// exercised end-to-end without touching Google Cloud's OTLP ingestion
+// endpoint (#1979 migration off the deprecated GAPIC-based exporter).
+type fakeOTLPMetricsServer struct {
+	colmetricpb.UnimplementedMetricsServiceServer
 	mu       sync.Mutex
-	requests []*monitoringpb.CreateTimeSeriesRequest
+	requests []*colmetricpb.ExportMetricsServiceRequest
 }
 
-func (f *fakeMetricServer) CreateTimeSeries(ctx context.Context, req *monitoringpb.CreateTimeSeriesRequest) (*emptypb.Empty, error) {
+func (f *fakeOTLPMetricsServer) Export(ctx context.Context, req *colmetricpb.ExportMetricsServiceRequest) (*colmetricpb.ExportMetricsServiceResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.requests = append(f.requests, req)
-	return &emptypb.Empty{}, nil
+	return &colmetricpb.ExportMetricsServiceResponse{}, nil
 }
 
-func (f *fakeMetricServer) received() []*monitoringpb.CreateTimeSeriesRequest {
+func (f *fakeOTLPMetricsServer) received() []*colmetricpb.ExportMetricsServiceRequest {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]*monitoringpb.CreateTimeSeriesRequest(nil), f.requests...)
+	return append([]*colmetricpb.ExportMetricsServiceRequest(nil), f.requests...)
 }
 
-// startFakeMonitoring spins up the fake Cloud Monitoring server on a
-// loopback listener and returns it plus an insecure client option
-// pointed at it.
-func startFakeMonitoring(t *testing.T) (*fakeMetricServer, apioption.ClientOption) {
+// metricNames flattens every Metric.Name across every ResourceMetrics/
+// ScopeMetrics in every received batch, deduplicated and sorted — the
+// exact set of OTLP metric names the exporter sent, independent of how
+// many ticks/batches they arrived in.
+func (f *fakeOTLPMetricsServer) metricNames() []string {
+	seen := map[string]bool{}
+	var names []string
+	for _, req := range f.received() {
+		for _, rm := range req.GetResourceMetrics() {
+			for _, sm := range rm.GetScopeMetrics() {
+				for _, m := range sm.GetMetrics() {
+					if name := m.GetName(); !seen[name] {
+						seen[name] = true
+						names = append(names, name)
+					}
+				}
+			}
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// startFakeOTLPCollector spins up the fake OTLP metrics collector on a
+// loopback listener and returns it plus an insecure gRPC connection
+// pointed at it, suitable for SinkConfig.GRPCConn.
+func startFakeOTLPCollector(t *testing.T) (*fakeOTLPMetricsServer, *grpc.ClientConn) {
 	t.Helper()
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	fake := &fakeMetricServer{}
+	fake := &fakeOTLPMetricsServer{}
 	srv := grpc.NewServer()
-	monitoringpb.RegisterMetricServiceServer(srv, fake)
+	colmetricpb.RegisterMetricsServiceServer(srv, fake)
 	go func() { _ = srv.Serve(lis) }()
 	t.Cleanup(srv.Stop)
 
 	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		t.Fatalf("dial fake monitoring: %v", err)
+		t.Fatalf("dial fake OTLP collector: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	return fake, apioption.WithGRPCConn(conn)
+	return fake, conn
 }
 
-// TestGCPSink_NewExporter_PushesToFakeMonitoring is the #1070
-// replacement for the #1069 not-yet-implemented placeholder: NewExporter
-// must now return a real, usable sdkmetric.Exporter, and driving the
-// CloudExportCollector against it must land a CreateTimeSeries batch
-// carrying the allowlisted host series at the fake Cloud Monitoring
-// endpoint — the real exporter code path, only the Google endpoint faked.
-func TestGCPSink_NewExporter_PushesToFakeMonitoring(t *testing.T) {
+// TestGCPSink_NewExporter_PushesToFakeOTLPCollector is the #1979 OTLP
+// migration's replacement for the pre-migration GAPIC-based
+// TestGCPSink_NewExporter_PushesToFakeMonitoring: NewExporter must still
+// return a real, usable sdkmetric.Exporter, and driving the
+// CloudExportCollector against it must land an OTLP export batch
+// carrying the allowlisted host series at a fake OTLP collector — the
+// real exporter code path, only Google's OTLP endpoint faked.
+func TestGCPSink_NewExporter_PushesToFakeOTLPCollector(t *testing.T) {
 	ctx := context.Background()
-	fake, clientOpt := startFakeMonitoring(t)
+	fake, conn := startFakeOTLPCollector(t)
 
 	sink := NewGCPSink()
 	exp, err := sink.NewExporter(ctx, SinkConfig{
-		ProjectID:               "test-project",
-		MonitoringClientOptions: []apioption.ClientOption{clientOpt},
+		ProjectID: "test-project",
+		GRPCConn:  conn,
 	})
 	if err != nil {
 		t.Fatalf("NewExporter: %v", err)
@@ -190,18 +215,80 @@ func TestGCPSink_NewExporter_PushesToFakeMonitoring(t *testing.T) {
 
 	reqs := fake.received()
 	if len(reqs) == 0 {
-		t.Fatal("fake Cloud Monitoring received no CreateTimeSeries request")
+		t.Fatal("fake OTLP collector received no ExportMetricsServiceRequest")
 	}
 	var haveHostSeries bool
-	for _, r := range reqs {
-		for _, ts := range r.GetTimeSeries() {
-			if strings.Contains(ts.GetMetric().GetType(), "containarium.host.") {
-				haveHostSeries = true
-			}
+	for _, name := range fake.metricNames() {
+		if strings.Contains(name, "containarium.host.") {
+			haveHostSeries = true
 		}
 	}
 	if !haveHostSeries {
-		t.Errorf("no containarium.host.* series in the CreateTimeSeries batches: %v", reqs)
+		t.Errorf("no containarium.host.* series in the OTLP export batches: %v", fake.metricNames())
+	}
+}
+
+// TestGCPSink_NewExporter_SeriesNamesPinned is the #1979 migration's
+// characterization test: it pins the EXACT set of OTLP metric names the
+// GCP sink sends for the default (host-only) collector configuration, as
+// they leave gcp.go's exporter, unprefixed.
+//
+// Google Cloud's OTLP ingestion endpoint (telemetry.googleapis.com)
+// applies the same "workload.googleapis.com/<name>" default metric-type
+// prefix the deprecated opentelemetry-operations-go exporter applied
+// client-side (see
+// https://docs.cloud.google.com/stackdriver/docs/otlp-metrics/overview:
+// "the OTLP metric name is prefixed with the string
+// workload.googleapis.com/, unless the OTLP metric name already contains
+// this string or another valid metric domain") — so an unchanged name
+// here is an unchanged Cloud Monitoring series name end-to-end, which is
+// the #1979 acceptance criterion this test exists to prove. Any diff in
+// this list is exactly the "series names changed" regression that
+// criterion forbids: touching it requires a deliberate review of the
+// billed cost surface, same as collector.go's instrument allowlist.
+func TestGCPSink_NewExporter_SeriesNamesPinned(t *testing.T) {
+	ctx := context.Background()
+	fake, conn := startFakeOTLPCollector(t)
+
+	sink := NewGCPSink()
+	exp, err := sink.NewExporter(ctx, SinkConfig{GRPCConn: conn})
+	if err != nil {
+		t.Fatalf("NewExporter: %v", err)
+	}
+
+	c := NewCollector(CollectorOptions{
+		Sources:  &fakeSources{sr: sampleResources()},
+		Exporter: exp,
+		Labels:   sampleLabels(),
+	})
+	if err := c.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = c.Stop(ctx) }()
+
+	if err := c.ForceFlush(ctx); err != nil {
+		t.Fatalf("ForceFlush: %v", err)
+	}
+
+	// The default CollectorOptions.Groups (nil) normalizes to [HOST], so
+	// this is the host allowlist (collector.go's registerHostInstruments)
+	// plus the unconditional heartbeat — nothing more, nothing renamed.
+	want := []string{
+		MetricCPULoad1m,
+		MetricCPULoad5m,
+		MetricCPULoad15m,
+		MetricMemoryUsed,
+		MetricMemoryTotal,
+		MetricDiskUsed,
+		MetricDiskTotal,
+		MetricContainerCount,
+		MetricHeartbeat,
+	}
+	sort.Strings(want)
+
+	got := fake.metricNames()
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("exported OTLP metric names changed (this is the series-name regression #1979 forbids):\n got:  %v\nwant: %v", got, want)
 	}
 }
 

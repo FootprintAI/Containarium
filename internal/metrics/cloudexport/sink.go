@@ -15,23 +15,26 @@ import (
 
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
-	apioption "google.golang.org/api/option"
+	"google.golang.org/grpc"
 )
 
 // SinkConfig carries the parameters a Sink needs to build its OTel metric
 // exporter. Provider-specific fields (GCP project ID, AWS region, ...)
 // land here as #1070/#1071 wire the collector.
 type SinkConfig struct {
-	// ProjectID is the GCP project the exported series should land in.
-	// Empty lets the resource detector infer it from the metadata server.
+	// ProjectID is the GCP project the exported series should land in,
+	// sent as the x-goog-user-project header on every OTLP export call.
+	// Empty omits the header, leaving project attribution to whatever
+	// quota project ADC itself resolves (e.g. the GCE metadata server's
+	// project on-VM).
 	ProjectID string
 
-	// MonitoringClientOptions are extra client options threaded into the
-	// provider's monitoring API client. Empty in production (ADC over
-	// the real endpoint); tests set an insecure gRPC dial + a fake
-	// endpoint so the real exporter code path runs against an
-	// in-process Cloud Monitoring server without calling GCP.
-	MonitoringClientOptions []apioption.ClientOption
+	// GRPCConn, when set, is used as the OTLP exporter's gRPC transport
+	// instead of dialing the real Google Cloud OTLP endpoint with TLS +
+	// ADC credentials. Empty in production; tests dial an insecure
+	// in-process fake OTLP collector so the real exporter code path runs
+	// end-to-end without calling GCP.
+	GRPCConn *grpc.ClientConn
 }
 
 // Sink abstracts one cloud provider's metrics backend. GCP is the only
