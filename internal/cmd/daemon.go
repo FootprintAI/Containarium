@@ -159,7 +159,7 @@ func init() {
 	daemonCmd.Flags().StringVar(&alertWebhookURL, "alert-webhook-url", "", "Webhook URL for alert notifications (optional)")
 
 	// Multi-backend peer settings
-	daemonCmd.Flags().StringVar(&sentinelURL, "sentinel-url", "", "Sentinel URL for auto-discovering tunnel peers (e.g., http://10.128.0.5:8081)")
+	daemonCmd.Flags().StringVar(&sentinelURL, "sentinel-url", "", "Sentinel URL for auto-discovering tunnel peers, event-driven SSH key resync and self-upgrade (e.g., http://10.128.0.5:8081). Falls back to CONTAINARIUM_SENTINEL_URL when unset.")
 	daemonCmd.Flags().StringVar(&sshHost, "ssh-host", "", "Public SSH host clients dial to reach containers (the sentinel's SSH endpoint, e.g. region-a.example.com). Surfaced on each Container.ssh_host so clients build the target username@ssh_host. Empty = direct mode: ssh_host is left empty and clients use the container IP.")
 	daemonCmd.Flags().StringSliceVar(&peerAddrs, "peers", nil, "Static peer daemon addresses (e.g., 10.128.0.5:18001)")
 	daemonCmd.Flags().StringVar(&localBackendID, "backend-id", "", "This daemon's backend ID (defaults to hostname)")
@@ -206,6 +206,18 @@ func envBool(name string, def bool) bool {
 		}
 	}
 	return def
+}
+
+// resolveSentinelURL picks the daemon's sentinel URL: --sentinel-url if given,
+// else CONTAINARIUM_SENTINEL_URL. Until this existed the env var was read only
+// by the sentinel's own config, yet the peer-PKI comments and the
+// TriggerUpgrade error told operators to set it on a daemon, where it was
+// silently ignored.
+func resolveSentinelURL(flagValue, envValue string) string {
+	if flagValue != "" {
+		return flagValue
+	}
+	return strings.TrimSpace(envValue)
 }
 
 func runDaemon(cmd *cobra.Command, args []string) error {
@@ -573,6 +585,11 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 			finalJWTSecret = generateRandomSecret()
 			isRandomSecret = true
 		}
+	}
+
+	sentinelURL = resolveSentinelURL(sentinelURL, os.Getenv(config.EnvSentinelURL))
+	if w := server.SentinelConfigWarning(sentinelURL); w != "" {
+		log.Print(w)
 	}
 
 	// Create dual server config

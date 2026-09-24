@@ -14,6 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   back to the request's source IP instead of returning `unknown backend`, so
   the event-driven push (cloud #971) actually shortens the ~2 min SSH-key
   propagation window on those backends. (#2017, #2013)
+- **Daemon now warns at startup when it holds the sentinel HMAC secret but no
+  `--sentinel-url`.** That combination silently disabled event-driven SSH key
+  resync (new boxes waited for the sentinel's ~2 min poll) and self-upgrade
+  without a single log line. Standalone daemons stay quiet. (#2015, #2013)
+- **The daemon now honors `CONTAINARIUM_SENTINEL_URL`** as a fallback for
+  `--sentinel-url` (flag wins). It was previously read only by the sentinel's own
+  config, although the peer-PKI docs and the self-upgrade error told operators to
+  set it on a daemon, where it was silently ignored. (#2015)
 
 ## [0.88.0] - 2026-09-24
 
