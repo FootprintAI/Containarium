@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Sentinel key resync no longer 404s for a direct backend whose daemon ID
+  differs from the sentinel's name for it.** An unknown `backend_id` now falls
+  back to the request's source IP instead of returning `unknown backend`, so
+  the event-driven push (cloud #971) actually shortens the ~2 min SSH-key
+  propagation window on those backends. (#2017, #2013)
+
 ## [0.88.0] - 2026-09-24
 
 ### Added

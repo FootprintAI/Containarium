@@ -116,11 +116,19 @@ func (m *Manager) KeyResyncHandler() http.HandlerFunc {
 }
 
 // resolveResyncBackend finds the backend to re-pull: by ID when the caller
-// supplied one, otherwise by matching the request's source IP against the
-// registered backends. Returns nil when neither resolves.
+// supplied one that the sentinel knows, otherwise by matching the request's
+// source IP against the registered backends. Returns nil when neither
+// resolves.
 func (m *Manager) resolveResyncBackend(backendID, remoteAddr string) *Backend {
 	if backendID != "" {
-		return m.backends.Get(backendID)
+		if b := m.backends.Get(backendID); b != nil {
+			return b
+		}
+		// The ID is the daemon's own (hostname-derived by default), which for
+		// a direct backend is not the name the sentinel registered it under.
+		// Fall through to the source IP rather than 404: the request is
+		// HMAC-authenticated and the pull is one the sentinel already does
+		// on a timer, so resolving by IP grants nothing new.
 	}
 	host, _, err := net.SplitHostPort(remoteAddr)
 	if err != nil {
