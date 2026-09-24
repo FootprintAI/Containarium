@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.88.0] - 2026-09-24
+
+### Added
+
+- **Sentinel SSH session lifecycle records.** A chained sshpiperd plugin,
+  `containarium sentinel ssh-session-plugin`, appends one JSONL record per SSH
+  session open and close, correlated by `session_id`, naming the credential
+  (certificate key id / serial / CA fingerprint, or raw key fingerprint), the
+  downstream client IP, the login, and the routed target. (#1980, #2005)
+
 ### Changed
 
 - **gRPC transport-level authentication hardened.** The REST gateway now
@@ -15,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is taken from the verified client certificate. Without `--mtls` the daemon no
   longer opens an external gRPC listener, so `containarium` gRPC clients using
   `--insecure` must switch to mTLS. REST behaviour is unchanged. Operators
-  should upgrade promptly.
+  should upgrade promptly. (#2006)
 
 ## [0.87.1] - 2026-09-23
 
