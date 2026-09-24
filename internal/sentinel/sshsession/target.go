@@ -71,6 +71,26 @@ func (r *TargetResolver) Resolve(login string) string {
 						}
 					}
 				}
+
+				if len(byLogin) == 0 && len(r.byLogin) > 0 {
+					// keysync.go's Apply() writes config.yaml via a
+					// non-atomic os.WriteFile (truncate, then write) --
+					// see keysync.go and containarium#1980 PR review
+					// finding 3. A Resolve() landing in that window can
+					// read a valid, empty file and — since we already
+					// have a real (non-empty) routing table cached — that
+					// is a far more likely explanation than "every route
+					// was just removed" (Apply() never even writes a
+					// zero-route config; it refuses with an error
+					// instead). Keep serving the last known-good table
+					// and deliberately do NOT update r.modTime: the next
+					// Resolve() call will see the stat mtime still
+					// differs from our (unchanged) cached mtime and
+					// re-read, picking up the real content once the write
+					// completes.
+					return r.byLogin[login]
+				}
+
 				r.byLogin = byLogin
 				r.modTime = fi.ModTime()
 			}

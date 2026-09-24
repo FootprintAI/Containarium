@@ -6,7 +6,6 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -17,6 +16,7 @@ import (
 
 	"github.com/footprintai/containarium/internal/client"
 	"github.com/footprintai/containarium/internal/egressproxy"
+	"github.com/footprintai/containarium/internal/hostport"
 	"github.com/spf13/cobra"
 )
 
@@ -78,7 +78,7 @@ func runEgressViaClient(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	_, socksPort, _ := splitHostPort(socksAddr)
+	_, socksPort := hostport.Split(socksAddr, 0)
 	cmd.Printf("local SOCKS5 on %s (egresses via this machine)\n", socksAddr)
 
 	// 2. ssh -R 127.0.0.1:0:127.0.0.1:<socksPort> — dynamic host port; parse the
@@ -182,17 +182,4 @@ func readAllocatedPort(r interface{ Read([]byte) (int, error) }, timeout time.Du
 	case <-time.After(timeout):
 		return 0, fmt.Errorf("timed out waiting for ssh to allocate the reverse-forward port")
 	}
-}
-
-// splitHostPort returns host, port (int), ok.
-func splitHostPort(addr string) (string, int, bool) {
-	h, p, err := net.SplitHostPort(addr)
-	if err != nil {
-		return "", 0, false
-	}
-	pi, err := strconv.Atoi(p)
-	if err != nil {
-		return "", 0, false
-	}
-	return h, pi, true
 }

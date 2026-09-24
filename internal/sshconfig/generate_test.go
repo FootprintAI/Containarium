@@ -126,22 +126,7 @@ func TestGenerate_IdentityFileEmitsIdentitiesOnly(t *testing.T) {
 	}
 }
 
-func TestSplitHostPort(t *testing.T) {
-	cases := []struct {
-		in       string
-		wantHost string
-		wantPort int
-	}{
-		{"sentinel.example.com", "sentinel.example.com", 22},
-		{"sentinel.example.com:2222", "sentinel.example.com", 2222},
-		{"[2001:db8::1]:2222", "2001:db8::1", 2222},
-		{"[2001:db8::1]", "2001:db8::1", 22},
-	}
-	for _, tc := range cases {
-		h, p := splitHostPort(tc.in, 22)
-		if h != tc.wantHost || p != tc.wantPort {
-			t.Errorf("splitHostPort(%q) = (%q,%d), want (%q,%d)",
-				tc.in, h, p, tc.wantHost, tc.wantPort)
-		}
-	}
-}
+// splitHostPort's own coverage now lives in internal/hostport's tests --
+// see containarium#1980 PR review finding 5 (this package, plugin.go, and
+// egress_via_client.go each had their own copy; all three now share
+// internal/hostport.Split).

@@ -1,12 +1,14 @@
 package sshsession
 
 import (
+	"errors"
 	"net"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/footprintai/containarium/internal/hostport"
 	"github.com/tg123/sshpiper/libplugin"
 )
 
@@ -60,8 +62,9 @@ type Plugin struct {
 	Target   *TargetResolver
 	Now      clock // nil uses time.Now().UTC()
 
-	mu   sync.Mutex
-	open map[string]Record // sessionID -> last emitted open record, for Shutdown
+	mu       sync.Mutex
+	open     map[string]Record // sessionID -> last emitted open record, for Shutdown
+	shutdown bool              // true once Shutdown has run — see pipeStartCallback
 }
 
 func (p *Plugin) now() time.Time {
@@ -86,8 +89,16 @@ func (p *Plugin) Config() libplugin.SshPiperPluginConfig {
 func (p *Plugin) publicKeyCallback(conn libplugin.ConnMetadata, key []byte) (*libplugin.Upstream, error) {
 	meta := map[string]string{}
 
-	if authMethod, cred, err := ExtractCredential(key); err == nil {
-		meta[metaAuthMethod] = string(authMethod)
+	authMethod, cred, err := ExtractCredential(key)
+	// Always record an auth_method, even on a parse failure: ExtractCredential
+	// returns AuthMethodUnknown in that case, and "unknown" is itself the
+	// useful signal (a malformed/unsupported credential probe) — leaving
+	// meta[metaAuthMethod] unset here used to make buildRecord's AuthMethod
+	// read back as "" (omitted from JSON via omitempty) for exactly the
+	// sessions where this mattered most (containarium#1980 PR review
+	// finding 2). Auth still proceeds unchanged either way (see below).
+	meta[metaAuthMethod] = string(authMethod)
+	if err == nil {
 		if cred.KeyID != "" {
 			meta[metaKeyID] = cred.KeyID
 		}
@@ -101,9 +112,6 @@ func (p *Plugin) publicKeyCallback(conn libplugin.ConnMetadata, key []byte) (*li
 			meta[metaKeyFingerprint] = cred.KeyFingerprint
 		}
 	}
-	// A parse failure leaves meta empty — auth still proceeds unchanged
-	// (see below), and buildRecord's AuthMethod defaults to "" rather
-	// than blocking anything.
 
 	return &libplugin.Upstream{
 		Auth: &libplugin.Upstream_NextPlugin{
@@ -116,18 +124,37 @@ func (p *Plugin) pipeStartCallback(conn libplugin.ConnMetadata) {
 	rec := p.buildRecord(conn, SessionPhaseOpen)
 
 	p.mu.Lock()
-	if p.open == nil {
-		p.open = make(map[string]Record)
+	shuttingDown := p.shutdown
+	if !shuttingDown {
+		if p.open == nil {
+			p.open = make(map[string]Record)
+		}
+		p.open[rec.SessionID] = rec
 	}
-	p.open[rec.SessionID] = rec
 	p.mu.Unlock()
 
 	p.record(rec)
+
+	if shuttingDown {
+		// This session's open callback lost the race with Shutdown (it
+		// observed p.shutdown already set) — Shutdown's own iteration
+		// over p.open, taken atomically under the same lock before it
+		// was nil'd, could never have seen this session, since it wasn't
+		// registered yet. Emit its close record right here instead of
+		// leaving a dangling open record with no matching close (see
+		// containarium#1980 PR review finding 1 and Shutdown's doc
+		// comment on why that ambiguity must never happen).
+		closeRec := rec
+		closeRec.Phase = SessionPhaseClose
+		closeRec.OccurredAt = p.now()
+		closeRec.CloseReason = CloseReasonProxyShutdown
+		p.record(closeRec)
+	}
 }
 
 func (p *Plugin) pipeErrorCallback(conn libplugin.ConnMetadata, pipeErr error) {
 	rec := p.buildRecord(conn, SessionPhaseClose)
-	rec.CloseReason = classifyCloseReason(pipeErr)
+	rec.CloseReason = classifyCloseReason(pipeErr, conn.RemoteAddr())
 
 	p.mu.Lock()
 	delete(p.open, rec.SessionID)
@@ -143,8 +170,22 @@ func (p *Plugin) pipeErrorCallback(conn libplugin.ConnMetadata, pipeErr error) {
 // restart would leave only an "open" record in the sink, which on its
 // own is indistinguishable from a session still legitimately running —
 // see containarium#1980 acceptance criterion 5.
+//
+// Shutdown is the authoritative terminal state: once it has run, it sets
+// p.shutdown under the same lock it uses to snapshot p.open, so a session
+// whose pipeStartCallback is concurrently in flight either (a) is already
+// in the snapshot Shutdown iterates below, or (b) observes p.shutdown
+// already set and closes itself out immediately in pipeStartCallback —
+// never (c) a third case where it's registered into a map Shutdown has
+// already stopped looking at (containarium#1980 PR review finding 1).
+// Safe to call more than once: later calls are no-ops.
 func (p *Plugin) Shutdown() {
 	p.mu.Lock()
+	if p.shutdown {
+		p.mu.Unlock()
+		return
+	}
+	p.shutdown = true
 	remaining := p.open
 	p.open = nil
 	p.mu.Unlock()
@@ -169,7 +210,7 @@ func (p *Plugin) record(rec Record) {
 
 func (p *Plugin) buildRecord(conn libplugin.ConnMetadata, phase SessionPhase) Record {
 	login := conn.User()
-	ip, port := splitHostPort(conn.RemoteAddr())
+	ip, port := hostport.Split(conn.RemoteAddr(), 0)
 
 	rec := Record{
 		SessionID:  conn.UniqueID(),
@@ -199,41 +240,70 @@ func (p *Plugin) buildRecord(conn libplugin.ConnMetadata, phase SessionPhase) Re
 	return rec
 }
 
-// splitHostPort separates a "host:port" remote address into its parts.
-// Falls back to treating the whole string as the host if it isn't in
-// host:port form, rather than dropping the address entirely.
-func splitHostPort(addr string) (string, int) {
-	host, portStr, err := net.SplitHostPort(addr)
-	if err != nil {
-		return addr, 0
-	}
-	port, _ := strconv.Atoi(portStr)
-	return host, port
-}
-
 // classifyCloseReason turns the error WaitWithHook returned (surfaced to
 // the plugin as PipeErrorCallback's err, unconditionally — see sshpiperd's
-// own daemon.go) into one of our typed CloseReasons. This is inherently
-// best-effort string matching over an upstream error message that is not
-// a stable contract, but unlike the auth-failure line containarium#1980
-// explicitly declines to parse, a close_reason misclassifying "unknown"
-// as CloseReasonError rather than CloseReasonNormal is a minor precision
-// loss, not a missing fact: the record itself is never lost.
-func classifyCloseReason(err error) CloseReason {
+// own daemon.go) into one of our typed CloseReasons.
+//
+// WaitWithHook pipes both directions (upstream->downstream and
+// downstream->upstream) into the SAME error channel and returns whichever
+// side's read/write fails first, with no label saying which side that
+// was (see the vendored tg123/sshpiper/libplugin's PipeErrorCallback
+// signature: just a bare `error`). A plain io.EOF or a bare "connection
+// reset"/"broken pipe" string is exactly what an ordinary client closing
+// its own socket after running a command looks like from here — treating
+// that as CloseReasonUpstreamGone would flood any "close_reason ==
+// upstream_gone" alert with routine session ends (containarium#1980 PR
+// review finding 4).
+//
+// The one piece of side information that DOES survive is a *net.OpError's
+// Addr: Go's net package stamps the remote address of the specific TCP
+// socket whose read/write failed, and that's either the session's own
+// downstream client address (known — it's downstreamAddr, straight off
+// conn.RemoteAddr()) or, by elimination, the upstream/backend's. Only that
+// positively-attributed, non-downstream case is classified as
+// CloseReasonUpstreamGone; every other close reason string is still
+// matched, but never defaults to "upstream" on ambiguous evidence alone.
+func classifyCloseReason(err error, downstreamAddr string) CloseReason {
 	if err == nil {
 		return CloseReasonNormal
 	}
 
 	msg := err.Error()
-	switch {
-	case strings.Contains(msg, "disconnected by user"):
+	if strings.Contains(msg, "disconnected by user") {
 		return CloseReasonNormal
+	}
+
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Addr != nil {
+		if sameHost(opErr.Addr.String(), downstreamAddr) {
+			return CloseReasonNormal
+		}
+		return CloseReasonUpstreamGone
+	}
+
+	switch {
 	case strings.Contains(msg, "EOF"),
 		strings.Contains(msg, "connection reset"),
 		strings.Contains(msg, "broken pipe"),
 		strings.Contains(msg, "connection lost"):
-		return CloseReasonUpstreamGone
+		// Ambiguous: no address to attribute this to either side, and a
+		// normal client-side disconnect commonly presents exactly this
+		// way. Do not misattribute it to the backend.
+		return CloseReasonNormal
 	default:
 		return CloseReasonError
 	}
+}
+
+// sameHost reports whether two "host:port" (or bare host) strings name the
+// same host, ignoring the port — used to compare a *net.OpError's Addr
+// against the session's known downstream client address without being
+// tripped up by incidental formatting differences.
+func sameHost(a, b string) bool {
+	if a == b {
+		return true
+	}
+	ha, _ := hostport.Split(a, 0)
+	hb, _ := hostport.Split(b, 0)
+	return ha != "" && ha == hb
 }

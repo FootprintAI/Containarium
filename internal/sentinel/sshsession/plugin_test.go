@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"errors"
+	"net"
 	"testing"
 	"time"
 
@@ -268,7 +269,112 @@ func TestPlugin_Shutdown_ClosesOutOpenSessionsOnly(t *testing.T) {
 	}
 }
 
+func TestPlugin_UnparsableKey_RecordsAuthMethodUnknown(t *testing.T) {
+	// Finding 2 (containarium#1980 PR review, PR #2005): ExtractCredential
+	// returns AuthMethodUnknown on a parse failure, but publicKeyCallback
+	// only wrote meta[metaAuthMethod] inside its `err == nil` branch --
+	// so a malformed/unsupported credential probe (exactly the case
+	// where this signal matters most) produced a record with an EMPTY
+	// auth_method, not "unknown".
+	rec := &fakeRecorder{}
+	p := &Plugin{Recorder: rec}
+	conn := &libplugin.ConnMeta{
+		UserName: "boxuser",
+		FromAddr: "203.0.113.3:3",
+		UniqId:   "session-bad-key",
+		Metadata: map[string]string{},
+	}
+
+	upstream, err := p.Config().PublicKeyCallback(conn, []byte("not a key"))
+	if err != nil {
+		t.Fatalf("PublicKeyCallback: %v", err)
+	}
+	for k, v := range deferredMeta(t, upstream) {
+		conn.Metadata[k] = v
+	}
+
+	p.Config().PipeStartCallback(conn)
+
+	if len(rec.recs) != 1 {
+		t.Fatalf("got %d records, want 1", len(rec.recs))
+	}
+	if got := rec.recs[0].AuthMethod; got != AuthMethodUnknown {
+		t.Errorf("auth method = %q, want %q (a parse failure must still be tagged unknown, not empty)", got, AuthMethodUnknown)
+	}
+}
+
+func TestPlugin_Shutdown_LateArrivalStillGetsCloseRecord(t *testing.T) {
+	// Finding 1 (containarium#1980 PR review, PR #2005): a session whose
+	// pipeStartCallback runs AFTER Shutdown() has already begun tearing
+	// down p.open must still get a matching close record. Before the
+	// fix, Shutdown() nil'd p.open under lock and iterated a local copy
+	// outside the lock; a pipeStartCallback landing in that window (or,
+	// as here, any time after Shutdown returns) allocated a *fresh* map
+	// Shutdown's already-finished iteration could never see, leaving an
+	// open record with no close -- the exact dangling-session ambiguity
+	// Shutdown's own doc comment says must never happen. This test
+	// controls the ordering directly (Shutdown, THEN a late open) rather
+	// than relying on real goroutine timing to hit the race.
+	rec := &fakeRecorder{}
+	fixedNow := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	p := &Plugin{Recorder: rec, Now: func() time.Time { return fixedNow }}
+
+	// Nothing is open yet -- Shutdown runs (and finishes) first, exactly
+	// the ordering that used to leave a later arrival unprotected.
+	p.Shutdown()
+
+	rec.recs = nil
+	late := &libplugin.ConnMeta{UserName: "boxuser", FromAddr: "203.0.113.9:9", UniqId: "late-session"}
+	p.Config().PipeStartCallback(late)
+
+	var opens, closes int
+	for _, r := range rec.recs {
+		if r.SessionID != "late-session" {
+			t.Errorf("unexpected session id %q in records: %+v", r.SessionID, rec.recs)
+			continue
+		}
+		switch r.Phase {
+		case SessionPhaseOpen:
+			opens++
+		case SessionPhaseClose:
+			closes++
+			if r.CloseReason != CloseReasonProxyShutdown {
+				t.Errorf("close reason = %q, want proxy_shutdown", r.CloseReason)
+			}
+		}
+	}
+	if opens != 1 || closes != 1 {
+		t.Fatalf("late-arriving session got %d opens and %d closes, want exactly 1 of each: %+v", opens, closes, rec.recs)
+	}
+}
+
 func TestClassifyCloseReason(t *testing.T) {
+	// Finding 4 (containarium#1980 PR review, PR #2005): a plain,
+	// unattributed EOF/reset/broken-pipe string is exactly what an
+	// ordinary client closing its own socket after running a command
+	// looks like -- it must NOT default to CloseReasonUpstreamGone
+	// (that used to flood any "close_reason == upstream_gone" alert with
+	// routine session ends). CloseReasonUpstreamGone is now reserved for
+	// a *net.OpError whose Addr is demonstrably NOT the session's own
+	// downstream client address -- the one piece of side information
+	// sshpiper's WaitWithHook leaks through Go's net package even though
+	// its own error return carries no upstream/downstream label (see
+	// classifyCloseReason's doc comment and pluginErrorCallback's own
+	// PipeErrorCallback signature, which hands back a bare `error`).
+	const downstreamAddr = "203.0.113.42:4242"
+	backendOpErr := &net.OpError{
+		Op:   "read",
+		Net:  "tcp",
+		Addr: &net.TCPAddr{IP: net.ParseIP("198.51.100.20"), Port: 22},
+		Err:  errors.New("connection reset by peer"),
+	}
+	clientOpErr := &net.OpError{
+		Op:   "write",
+		Net:  "tcp",
+		Addr: &net.TCPAddr{IP: net.ParseIP("203.0.113.42"), Port: 4242},
+		Err:  errors.New("broken pipe"),
+	}
+
 	cases := []struct {
 		name string
 		err  error
@@ -276,14 +382,17 @@ func TestClassifyCloseReason(t *testing.T) {
 	}{
 		{"nil", nil, CloseReasonNormal},
 		{"disconnected by user", errors.New("ssh: disconnect, reason 11: disconnected by user"), CloseReasonNormal},
-		{"EOF", errors.New("EOF"), CloseReasonUpstreamGone},
-		{"connection reset", errors.New("read tcp: connection reset by peer"), CloseReasonUpstreamGone},
+		{"plain EOF is ambiguous, not upstream", errors.New("EOF"), CloseReasonNormal},
+		{"plain connection reset is ambiguous, not upstream", errors.New("read tcp: connection reset by peer"), CloseReasonNormal},
+		{"plain broken pipe is ambiguous, not upstream", errors.New("write tcp: broken pipe"), CloseReasonNormal},
+		{"OpError attributed to the backend is genuinely upstream", backendOpErr, CloseReasonUpstreamGone},
+		{"OpError attributed to the client itself is not upstream", clientOpErr, CloseReasonNormal},
 		{"unrecognized", errors.New("something unexpected"), CloseReasonError},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := classifyCloseReason(c.err); got != c.want {
-				t.Errorf("classifyCloseReason(%v) = %q, want %q", c.err, got, c.want)
+			if got := classifyCloseReason(c.err, downstreamAddr); got != c.want {
+				t.Errorf("classifyCloseReason(%v, %q) = %q, want %q", c.err, downstreamAddr, got, c.want)
 			}
 		})
 	}

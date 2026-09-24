@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/footprintai/containarium/internal/hostport"
 	"github.com/footprintai/containarium/pkg/core/incus"
 )
 
@@ -109,7 +110,7 @@ func writeHost(b *strings.Builder, c incus.ContainerInfo, opts Options) {
 	fmt.Fprintf(b, "Host %s\n", c.Name)
 
 	if opts.Sentinel != "" {
-		host, port := splitHostPort(opts.Sentinel, opts.SentinelPort)
+		host, port := hostport.Split(opts.Sentinel, opts.SentinelPort)
 		fmt.Fprintf(b, "    HostName %s\n", host)
 		fmt.Fprintf(b, "    Port %d\n", port)
 		user := opts.User
@@ -139,27 +140,4 @@ func writeHost(b *strings.Builder, c incus.ContainerInfo, opts Options) {
 		fmt.Fprintf(b, "    # backend: %s\n", c.BackendID)
 	}
 	fmt.Fprintln(b)
-}
-
-// splitHostPort accepts "host", "host:port", or "[ipv6]:port" and returns
-// the host and a port (falling back to the default if not specified).
-func splitHostPort(s string, defaultPort int) (string, int) {
-	if strings.HasPrefix(s, "[") {
-		if idx := strings.LastIndex(s, "]:"); idx > 0 {
-			var port int
-			_, _ = fmt.Sscanf(s[idx+2:], "%d", &port)
-			if port > 0 {
-				return s[1:idx], port
-			}
-		}
-		return strings.TrimSuffix(strings.TrimPrefix(s, "["), "]"), defaultPort
-	}
-	if idx := strings.LastIndex(s, ":"); idx > 0 && !strings.Contains(s, "::") {
-		var port int
-		_, _ = fmt.Sscanf(s[idx+1:], "%d", &port)
-		if port > 0 {
-			return s[:idx], port
-		}
-	}
-	return s, defaultPort
 }
