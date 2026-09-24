@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -40,12 +41,13 @@ type GatewayServer struct {
 	httpPort               int
 	authMiddleware         *auth.AuthMiddleware
 	swaggerDir             string
-	certsDir               string          // Optional: for mTLS connection to gRPC server
-	caddyCertDir           string          // Optional: Caddy certificate directory for /certs endpoint
-	grafanaBackendURL      string          // Optional: internal Grafana URL for reverse proxy (e.g., "http://10.0.3.229:3000")
-	alertmanagerBackendURL string          // Optional: internal Alertmanager URL for reverse proxy (e.g., "http://10.0.3.229:9093")
-	securityStore          *security.Store // Optional: for CSV export endpoint
-	auditStore             *audit.Store    // Optional: for HTTP audit middleware
+	certsDir               string                                          // Optional: for mTLS connection to gRPC server
+	internalDialer         func(context.Context, string) (net.Conn, error) // in-process transport to the gRPC server (preferred)
+	caddyCertDir           string                                          // Optional: Caddy certificate directory for /certs endpoint
+	grafanaBackendURL      string                                          // Optional: internal Grafana URL for reverse proxy (e.g., "http://10.0.3.229:3000")
+	alertmanagerBackendURL string                                          // Optional: internal Alertmanager URL for reverse proxy (e.g., "http://10.0.3.229:9093")
+	securityStore          *security.Store                                 // Optional: for CSV export endpoint
+	auditStore             *audit.Store                                    // Optional: for HTTP audit middleware
 	terminalHandler        *TerminalHandler
 	consoleHandler         *ConsoleHandler
 	labelHandler           *LabelHandler
@@ -174,6 +176,14 @@ func NewGatewayServer(grpcAddress string, httpPort int, authMiddleware *auth.Aut
 		eventHandler:        eventHandler,
 		coreServicesHandler: coreServicesHandler,
 	}
+}
+
+// SetInternalDialer makes the gateway reach the gRPC server through dial (the
+// daemon's in-process listener) instead of a network address. That transport is
+// what tells the gRPC server this caller is the gateway and may forward
+// JWT-verified identity metadata.
+func (gs *GatewayServer) SetInternalDialer(dial func(context.Context, string) (net.Conn, error)) {
+	gs.internalDialer = dial
 }
 
 // SetGrafanaBackendURL sets the internal Grafana URL for the reverse proxy
@@ -405,6 +415,7 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	mux := runtime.NewServeMux(
 		runtime.WithErrorHandler(customErrorHandler),
 		runtime.WithMetadata(annotateContext),
+		runtime.WithIncomingHeaderMatcher(incomingHeaderMatcher),
 		// Marshal options for better JSON formatting
 		runtime.WithMarshalerOption(runtime.MIMEWildcard, &runtime.JSONPb{
 			MarshalOptions: protojson.MarshalOptions{
@@ -420,7 +431,15 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 
 	// Setup connection to gRPC server
 	var opts []grpc.DialOption
-	if gs.certsDir != "" {
+	grpcTarget := gs.grpcAddress
+	if gs.internalDialer != nil {
+		opts = []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(gs.internalDialer),
+		}
+		grpcTarget = "passthrough:///containarium-internal"
+		log.Printf("Gateway connecting to gRPC server over the in-process listener")
+	} else if gs.certsDir != "" {
 		// Use mTLS to connect to gRPC server
 		certPaths := mtls.CertPathsFromDir(gs.certsDir)
 		dialOpts, err := mtls.LoadClientDialOptions(certPaths, gs.grpcAddress)
@@ -438,100 +457,100 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	}
 
 	// Register gateway handlers
-	if err := pb.RegisterContainerServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
+	if err := pb.RegisterContainerServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
 		return fmt.Errorf("failed to register container service gateway: %w", err)
 	}
 
 	// Register AppService gateway handler
-	if err := pb.RegisterAppServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
+	if err := pb.RegisterAppServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
 		return fmt.Errorf("failed to register app service gateway: %w", err)
 	}
 
 	// Register NetworkService gateway handler
-	if err := pb.RegisterNetworkServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
+	if err := pb.RegisterNetworkServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
 		return fmt.Errorf("failed to register network service gateway: %w", err)
 	}
 
 	// Register RecipeService gateway handler
-	if err := pb.RegisterRecipeServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
+	if err := pb.RegisterRecipeServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
 		return fmt.Errorf("failed to register recipe service gateway: %w", err)
 	}
 
 	// Register AgentSkillService gateway handler
-	if err := pb.RegisterAgentSkillServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
+	if err := pb.RegisterAgentSkillServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
 		return fmt.Errorf("failed to register agent-skill service gateway: %w", err)
 	}
 
 	// Register CrewService gateway handler
-	if err := pb.RegisterCrewServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
+	if err := pb.RegisterCrewServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
 		return fmt.Errorf("failed to register crew service gateway: %w", err)
 	}
 
 	// Register BackupService gateway handler
-	if err := pb.RegisterBackupServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
+	if err := pb.RegisterBackupServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
 		return fmt.Errorf("failed to register backup service gateway: %w", err)
 	}
 
 	// Register VolumeService gateway handler (#384)
-	if err := pb.RegisterVolumeServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
+	if err := pb.RegisterVolumeServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
 		return fmt.Errorf("failed to register volume service gateway: %w", err)
 	}
 
 	// Register SandboxService gateway handler — ephemeral, no-SSH sandboxes
 	// (#1488 Phase 1).
-	if err := pb.RegisterSandboxServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
+	if err := pb.RegisterSandboxServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
 		return fmt.Errorf("failed to register sandbox service gateway: %w", err)
 	}
 
 	// Register ClusterService gateway handler — managed K8s clusters (#1413)
-	if err := pb.RegisterClusterServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
+	if err := pb.RegisterClusterServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
 		return fmt.Errorf("failed to register cluster service gateway: %w", err)
 	}
 
 	// Register KmsService gateway handler (KMS status / envelope
 	// coverage / migration).
-	if err := pb.RegisterKmsServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
+	if err := pb.RegisterKmsServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
 		return fmt.Errorf("failed to register kms service gateway: %w", err)
 	}
 
 	// Register NetworkPolicyService gateway handler (#315)
-	if err := pb.RegisterNetworkPolicyServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
+	if err := pb.RegisterNetworkPolicyServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
 		return fmt.Errorf("failed to register network policy service gateway: %w", err)
 	}
 
 	// Register TrafficService gateway handler
-	if err := pb.RegisterTrafficServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
+	if err := pb.RegisterTrafficServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
 		return fmt.Errorf("failed to register traffic service gateway: %w", err)
 	}
 
 	// Register SecurityService gateway handler
-	if err := pb.RegisterSecurityServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
+	if err := pb.RegisterSecurityServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
 		return fmt.Errorf("failed to register security service gateway: %w", err)
 	}
 
 	// Register PentestService gateway handler
-	if err := pb.RegisterPentestServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
+	if err := pb.RegisterPentestServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
 		return fmt.Errorf("failed to register pentest service gateway: %w", err)
 	}
 
 	// Register ZapService gateway handler
-	if err := pb.RegisterZapServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
+	if err := pb.RegisterZapServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
 		return fmt.Errorf("failed to register zap service gateway: %w", err)
 	}
 
 	// Register TokensService gateway handler (Phase 1.2 follow-up)
-	if err := pb.RegisterTokensServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
+	if err := pb.RegisterTokensServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
 		return fmt.Errorf("failed to register tokens service gateway: %w", err)
 	}
 
 	// Register ThreatDetectionService gateway handler (#1640)
-	if err := pb.RegisterThreatDetectionServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
+	if err := pb.RegisterThreatDetectionServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
 		return fmt.Errorf("failed to register threat-detection service gateway: %w", err)
 	}
 
 	// Register TrackerService gateway handler — tracker connection CRUD
 	// (#1921 step 2). Verbs against the tracker itself land in #1922.
-	if err := pb.RegisterTrackerServiceHandlerFromEndpoint(ctx, mux, gs.grpcAddress, opts); err != nil {
+	if err := pb.RegisterTrackerServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
 		return fmt.Errorf("failed to register tracker service gateway: %w", err)
 	}
 
@@ -957,6 +976,19 @@ func requireAdminFromContext(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// incomingHeaderMatcher is grpc-gateway's default matcher minus reserved
+// identity keys. By default a client `Grpc-Metadata-Roles: admin` header would
+// become gRPC metadata `roles`; identity metadata is only ever written by
+// annotateContext from a verified token.
+func incomingHeaderMatcher(key string) (string, bool) {
+	const prefix = "grpc-metadata-"
+	if lower := strings.ToLower(key); strings.HasPrefix(lower, prefix) &&
+		auth.IsReservedIdentityMetadataKey(strings.TrimPrefix(lower, prefix)) {
+		return "", false
+	}
+	return runtime.DefaultHeaderMatcher(key)
 }
 
 func annotateContext(ctx context.Context, req *http.Request) metadata.MD {

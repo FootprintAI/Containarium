@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **gRPC transport-level authentication hardened.** The REST gateway now
+  reaches the gRPC server over an in-process listener. External gRPC
+  connections are accepted only over mTLS (`--mtls`), and the caller's subject
+  is taken from the verified client certificate. Without `--mtls` the daemon no
+  longer opens an external gRPC listener, so `containarium` gRPC clients using
+  `--insecure` must switch to mTLS. REST behaviour is unchanged. Operators
+  should upgrade promptly.
+
 ## [0.87.1] - 2026-09-23
 
 ### Fixed
