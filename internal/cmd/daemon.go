@@ -125,7 +125,7 @@ func init() {
 	// gRPC settings
 	daemonCmd.Flags().StringVar(&daemonAddress, "address", "0.0.0.0", "Address to listen on")
 	daemonCmd.Flags().IntVar(&daemonPort, "port", 50051, "gRPC port to listen on")
-	daemonCmd.Flags().BoolVar(&enableMTLS, "mtls", false, "Enable mutual TLS authentication for gRPC (recommended)")
+	daemonCmd.Flags().BoolVar(&enableMTLS, "mtls", false, "Serve the external gRPC listener, requiring mutual TLS (identity comes from the client certificate). Without it there is no external gRPC listener; the REST gateway uses an in-process one")
 	daemonCmd.Flags().StringVar(&daemonCertsDir, "certs-dir", mtls.DefaultCertsDir, "Directory containing TLS certificates")
 
 	// HTTP/REST settings

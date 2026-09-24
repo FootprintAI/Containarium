@@ -57,6 +57,7 @@ import (
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/reflection"
 )
 
@@ -212,6 +213,7 @@ func managementRouteDomains(cfg *DualServerConfig) []string {
 type DualServer struct {
 	config                   *DualServerConfig
 	grpcServer               *grpc.Server
+	internalLis              *auth.InternalListener // in-process transport for the REST gateway
 	containerServer          *ContainerServer
 	appServer                *AppServer
 	networkServer            *NetworkServer
@@ -412,15 +414,6 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// Create auth middleware
 	authMiddleware := auth.NewAuthMiddleware(tokenManager)
 
-	// Create gRPC server with optional mTLS.
-	//
-	// Audit C-HIGH-2: when EnableMTLS=true the gRPC server must
-	// REJECT calls whose peer wasn't actually authenticated via
-	// mTLS — the JWT-passthrough interceptor that lived here
-	// before would happily forward an insecure-dialed client.
-	// auth.RequireMTLSUnaryInterceptor inspects peer.AuthInfo and
-	// returns Unauthenticated if no verified client cert is
-	// present.
 	// #1605 — the audit interceptor is created here, before the audit store
 	// exists (Postgres connects later in this same function), because
 	// grpc.NewServer()'s interceptor chain is fixed at construction. It's
@@ -432,7 +425,12 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// relative to the HTTP auth middleware.
 	auditGRPCInterceptor := audit.NewGRPCInterceptor()
 
-	var grpcServer *grpc.Server
+	// Identity is bound to the transport, never to client-sent metadata:
+	// the REST gateway reaches this server over an in-process listener (which
+	// is trusted to forward JWT-verified claims), and external clients are
+	// accepted only over mTLS, where identity comes from the verified client
+	// certificate. Without --mtls there is no external gRPC listener at all.
+	var tlsCreds credentials.TransportCredentials
 	if config.EnableMTLS {
 		certPaths := mtls.CertPathsFromDir(config.CertsDir)
 		if !mtls.CertsExist(certPaths) {
@@ -443,41 +441,29 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to load TLS credentials: %w", err)
 		}
-
-		grpcServer = grpc.NewServer(
-			grpc.Creds(creds),
-			// Auth interceptor runs OUTER (first): a call mTLS rejects
-			// never reaches the platform-stats interceptor, so
-			// unauthenticated noise never pollutes the platform.api.*
-			// series (#1082) — those series are meant to reflect
-			// application-level API health, not authentication traffic.
-			grpc.ChainUnaryInterceptor(
-				auth.RequireMTLSUnaryInterceptor(),
-				platformstats.UnaryInterceptor(containerServer.platformStats),
-				auditGRPCInterceptor.Unary(),
-			),
-			grpc.ChainStreamInterceptor(
-				auth.RequireMTLSStreamInterceptor(),
-				auditGRPCInterceptor.Stream(),
-			),
-		)
-		log.Printf("gRPC server: mTLS enabled (interceptor verifies peer cert on every call)")
+		tlsCreds = creds
+		log.Printf("gRPC server: external listener requires mTLS; identity comes from the client certificate")
 	} else {
-		grpcServer = grpc.NewServer(
-			// Same ordering rationale as the mTLS branch above: auth
-			// outer, platform-stats then audit inner.
-			grpc.ChainUnaryInterceptor(
-				authMiddleware.GRPCUnaryInterceptor(),
-				platformstats.UnaryInterceptor(containerServer.platformStats),
-				auditGRPCInterceptor.Unary(),
-			),
-			grpc.ChainStreamInterceptor(
-				authMiddleware.GRPCStreamInterceptor(),
-				auditGRPCInterceptor.Stream(),
-			),
-		)
-		log.Printf("WARNING: gRPC server running in INSECURE mode")
+		log.Printf("gRPC server: external listener DISABLED (enable with --mtls); REST gateway uses an in-process listener")
 	}
+	internalLis := auth.NewInternalListener()
+
+	grpcServer := grpc.NewServer(
+		grpc.Creds(auth.NewServerTransportCredentials(tlsCreds)),
+		// Transport-identity interceptor runs OUTER (first): a call it
+		// rejects never reaches the platform-stats interceptor, so
+		// unauthenticated noise never pollutes the platform.api.* series
+		// (#1082) — those series reflect application-level API health.
+		grpc.ChainUnaryInterceptor(
+			auth.TransportIdentityUnaryInterceptor(),
+			platformstats.UnaryInterceptor(containerServer.platformStats),
+			auditGRPCInterceptor.Unary(),
+		),
+		grpc.ChainStreamInterceptor(
+			auth.TransportIdentityStreamInterceptor(),
+			auditGRPCInterceptor.Stream(),
+		),
+	)
 
 	// Register container service
 	pb.RegisterContainerServiceServer(grpcServer, containerServer)
@@ -1919,20 +1905,17 @@ skipAppHosting:
 		}
 		grpcAddr := fmt.Sprintf("%s:%d", grpcConnectAddr, config.GRPCPort)
 
-		// Pass certsDir if mTLS is enabled so gateway can connect securely
-		certsDir := ""
-		if config.EnableMTLS {
-			certsDir = config.CertsDir
-		}
-
 		gatewayServer = gateway.NewGatewayServer(
 			grpcAddr,
 			config.HTTPPort,
 			authMiddleware,
 			config.SwaggerDir,
-			certsDir,
+			"",
 			config.CaddyCertDir,
 		)
+		// The gateway forwards JWT-verified claims, so it reaches the gRPC
+		// server over the in-process listener, the only trusted transport.
+		gatewayServer.SetInternalDialer(internalLis.DialContext)
 
 		// Model-gateway (#674 productionization of #737): when the daemon holds a
 		// provider API key, serve the gateway on the HTTP port and provision skill
@@ -2221,6 +2204,7 @@ skipAppHosting:
 	ds := &DualServer{
 		config:                 config,
 		grpcServer:             grpcServer,
+		internalLis:            internalLis,
 		containerServer:        containerServer,
 		appServer:              appServer,
 		networkServer:          networkServer,
@@ -3071,21 +3055,27 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		go updater.Run(ctx)
 	}
 
-	// Start gRPC server
-	grpcAddr := fmt.Sprintf("%s:%d", ds.config.GRPCAddress, ds.config.GRPCPort)
-	lis, err := net.Listen("tcp", grpcAddr)
-	if err != nil {
-		return fmt.Errorf("failed to listen on %s: %w", grpcAddr, err)
-	}
-
-	// Start gRPC in goroutine
-	grpcErrChan := make(chan error, 1)
+	// Start gRPC server. The in-process listener always serves (REST gateway);
+	// the external TCP listener exists only when mTLS is enabled.
+	grpcErrChan := make(chan error, 2)
 	go func() {
-		log.Printf("gRPC server starting on %s", grpcAddr)
-		if err := ds.grpcServer.Serve(lis); err != nil {
-			grpcErrChan <- fmt.Errorf("gRPC server error: %w", err)
+		if err := ds.grpcServer.Serve(ds.internalLis); err != nil {
+			grpcErrChan <- fmt.Errorf("gRPC server (internal listener) error: %w", err)
 		}
 	}()
+	if ds.config.EnableMTLS {
+		grpcAddr := fmt.Sprintf("%s:%d", ds.config.GRPCAddress, ds.config.GRPCPort)
+		lis, err := net.Listen("tcp", grpcAddr)
+		if err != nil {
+			return fmt.Errorf("failed to listen on %s: %w", grpcAddr, err)
+		}
+		go func() {
+			log.Printf("gRPC server starting on %s (mTLS)", grpcAddr)
+			if err := ds.grpcServer.Serve(lis); err != nil {
+				grpcErrChan <- fmt.Errorf("gRPC server error: %w", err)
+			}
+		}()
+	}
 
 	// Start HTTP gateway if enabled
 	httpErrChan := make(chan error, 1)
