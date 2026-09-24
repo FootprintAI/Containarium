@@ -95,7 +95,7 @@ func sentinelConfigWarning(sentinelURL string, secret []byte) string {
 	}
 	return "[sentinel] CONTAINARIUM_SENTINEL_AUTH_SECRET is set but no sentinel URL is configured: " +
 		"event-driven SSH key resync and self-upgrade are disabled (new boxes may wait up to ~2 min for SSH). " +
-		"Start the daemon with --sentinel-url"
+		"Start the daemon with --sentinel-url (or set CONTAINARIUM_SENTINEL_URL)"
 }
 
 // SentinelConfigWarning is sentinelConfigWarning over the process's own
