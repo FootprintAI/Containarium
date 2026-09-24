@@ -256,3 +256,12 @@ func TestGRPCInterceptor_Unary_SkipsGatewayForwarded(t *testing.T) {
 		t.Fatalf("count = %d, want 0 (gateway-forwarded call must not double-log)", got)
 	}
 }
+
+// auth strips reserved identity keys from external callers and cannot import
+// audit, so it carries its own copy of the gateway-forward marker; this pins
+// the two so a rename here can't silently make the marker spoofable.
+func TestGatewayForwardMDKeyIsReservedByAuth(t *testing.T) {
+	if !auth.IsReservedIdentityMetadataKey(GatewayForwardMDKey) {
+		t.Fatalf("%q must be in auth.ReservedIdentityMetadataKeys", GatewayForwardMDKey)
+	}
+}

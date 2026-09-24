@@ -1,13 +1,11 @@
 package auth
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
 
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 )
 
@@ -167,26 +165,6 @@ func (am *AuthMiddleware) HTTPMiddleware(next http.Handler) http.Handler {
 		// Continue with modified request
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
-}
-
-// GRPCUnaryInterceptor for gRPC unary calls (preserves mTLS)
-// For gRPC, we rely on mTLS authentication, so this is a passthrough
-func (am *AuthMiddleware) GRPCUnaryInterceptor() grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
-		// For gRPC, rely on mTLS - no token validation
-		// Just pass through to the handler
-		return handler(ctx, req)
-	}
-}
-
-// GRPCStreamInterceptor for gRPC streaming calls (preserves mTLS)
-// For gRPC, we rely on mTLS authentication, so this is a passthrough
-func (am *AuthMiddleware) GRPCStreamInterceptor() grpc.StreamServerInterceptor {
-	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-		// For gRPC, rely on mTLS - no token validation
-		// Just pass through to the handler
-		return handler(srv, ss)
-	}
 }
 
 // ValidateToken validates a JWT and returns claims for use
