@@ -36,6 +36,11 @@ func NewJSONLFileRecorder(path string) (*JSONLRecorder, error) {
 		}
 	}
 
+	// #nosec G304 -- path is the operator's own --records-file flag on the
+	// sentinel's ssh-session-plugin subcommand (see
+	// internal/cmd/sentinel_ssh_session_plugin.go), not attacker-controlled
+	// input. Choosing where the sink lands is the flag's entire purpose,
+	// the same shape as internal/cmd/sentinel_pprof.go's --output path.
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open session record sink %q: %w", path, err)
