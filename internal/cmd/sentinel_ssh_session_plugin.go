@@ -54,7 +54,7 @@ still legitimately running.`,
 func init() {
 	sentinelCmd.AddCommand(sentinelSSHSessionPluginCmd)
 
-	sentinelSSHSessionPluginCmd.Flags().StringVar(&sentinelSSHSessionPluginRecordsFile, "records-file", "/var/log/containarium/ssh-sessions.jsonl",
+	sentinelSSHSessionPluginCmd.Flags().StringVar(&sentinelSSHSessionPluginRecordsFile, "records-file", sshsession.DefaultRecordsFile,
 		"Path to append session lifecycle records to, one JSON object per line")
 	// Must match internal/sentinel/keysync.go's sshpiperConfigFile — the
 	// file the sentinel's keysync daemon generates and sshpiperd's own
