@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the event-driven push (cloud #971) actually shortens the ~2 min SSH-key
   propagation window on those backends. (#2017, #2013)
 
+- **Daemon now warns at startup when it holds the sentinel HMAC secret but no
+  `--sentinel-url`.** That combination silently disabled event-driven SSH key
+  resync (new boxes waited for the sentinel's ~2 min poll) and self-upgrade
+  without a single log line. Standalone daemons stay quiet. (#2015, #2013)
+
 ## [0.88.0] - 2026-09-24
 
 ### Added

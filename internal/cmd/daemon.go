@@ -575,6 +575,10 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	if w := server.SentinelConfigWarning(sentinelURL); w != "" {
+		log.Print(w)
+	}
+
 	// Create dual server config
 	config := &server.DualServerConfig{
 		GRPCAddress:            daemonAddress,
