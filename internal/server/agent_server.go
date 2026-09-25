@@ -394,6 +394,24 @@ type startedSkillRun struct {
 // dispatched run goes through exactly the same path. On error nothing is
 // left to end: provisionSkillBox ends a partially minted lease itself.
 func (s *AgentSkillServer) beginSkillRun(ctx context.Context, req *pb.RunAgentSkillRequest) (*startedSkillRun, error) {
+	return s.beginSkillRunWith(ctx, req, provisionOptions{})
+}
+
+// provisionOptions are the internal knobs a caller of beginSkillRunWith
+// can set that the public RunAgentSkill contract does not expose.
+type provisionOptions struct {
+	// gitSourceBestEffort keeps a run going without a workspace when
+	// its git_source cannot be fetched. A tracker-dispatched run (#2023)
+	// sets it: its git_source is the connection's repository fetched
+	// with NO credential (none may enter the box), which fails for a
+	// private repository — that run must still read the issue and post
+	// its result comment; only the doc change (SubmitTrackerChange,
+	// which needs a recorded git_commit) is unavailable to it.
+	gitSourceBestEffort bool
+}
+
+// beginSkillRunWith is beginSkillRun with internal provisioning options.
+func (s *AgentSkillServer) beginSkillRunWith(ctx context.Context, req *pb.RunAgentSkillRequest, opts provisionOptions) (*startedSkillRun, error) {
 	if err := auth.RequireScope(ctx, auth.ScopeAgentsRun); err != nil {
 		return nil, err
 	}
@@ -422,8 +440,8 @@ func (s *AgentSkillServer) beginSkillRun(ctx context.Context, req *pb.RunAgentSk
 		return nil, status.Error(codes.NotFound, err.Error())
 	}
 
-	containerName, box, lease, gitCommit, workspacePath, err := s.provisionSkillBox(ctx, skill, req.BackendId, req.Pool, req.InputJson, runID,
-		req.GetGitSource(), req.GetGitRef(), req.GetGitCredential(), req.GetTrackerConnection())
+	containerName, box, lease, gitCommit, workspacePath, err := s.provisionSkillBoxWith(ctx, skill, req.BackendId, req.Pool, req.InputJson, runID,
+		req.GetGitSource(), req.GetGitRef(), req.GetGitCredential(), req.GetTrackerConnection(), opts)
 	if err != nil {
 		return nil, err
 	}
@@ -644,6 +662,11 @@ var runForbiddenScopes = []string{auth.ScopeTrackerAdmin}
 // already overwrite each other's seed files; #1860 gives both their own
 // per-run directory.
 func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.AgentSkill, backendID, pool, inputJSON, runID, gitSource, gitRef, gitCredential, trackerConnection string) (containerName string, box *pb.Container, lease runlease.Lease, gitCommit, workspacePath string, err error) {
+	return s.provisionSkillBoxWith(ctx, skill, backendID, pool, inputJSON, runID, gitSource, gitRef, gitCredential, trackerConnection, provisionOptions{})
+}
+
+// provisionSkillBoxWith is provisionSkillBox with internal options.
+func (s *AgentSkillServer) provisionSkillBoxWith(ctx context.Context, skill *pb.AgentSkill, backendID, pool, inputJSON, runID, gitSource, gitRef, gitCredential, trackerConnection string, opts provisionOptions) (containerName string, box *pb.Container, lease runlease.Lease, gitCommit, workspacePath string, err error) {
 	var noLease runlease.Lease
 
 	// Phase 0 supports only the recipe_id box form (catalog skills). Inline
@@ -795,7 +818,13 @@ func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.Agen
 			Credential:    gitCredential,
 			WorkspacePath: workspacePath,
 		})
-		if ferr != nil {
+		if ferr != nil && opts.gitSourceBestEffort {
+			// The (empty) workspace dir stays on the lease for the wipe;
+			// the run is registered with no git_commit, so
+			// SubmitTrackerChange answers FAILED_PRECONDITION for it.
+			log.Printf("[agent-skill] run %s: git fetch into %s failed; continuing without a workspace: %v", runID, containerName, ferr)
+			workspacePath = ""
+		} else if ferr != nil {
 			s.endRunLease(ctx, lease, s.boxWiper(), provisionFailedReason)
 			return "", nil, noLease, "", "", status.Errorf(codes.FailedPrecondition, "git fetch into agent box %s failed: %v", containerName, ferr)
 		}
@@ -806,14 +835,16 @@ func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.Agen
 		// AGENTBOX_ROOT or cite the commit in its own words, not that the
 		// fetch it describes was wrong (already durable in gitCommit/
 		// workspacePath above, and reported in the RPC response either way).
-		wsScript := buildWorkspaceSeedScript(seedDir, workspaceSeed{
-			Path:      workspacePath,
-			GitSource: gitSource,
-			GitRef:    gitRef,
-			GitCommit: gitCommit,
-		})
-		if werr := s.recipes.containers.manager.Exec(containerName, []string{"bash", "-c", wsScript}); werr != nil {
-			log.Printf("[agent-skill] workspace.json seed failed for %s (runtime won't see the workspace path via the contract file): %v", containerName, werr)
+		if ferr == nil {
+			wsScript := buildWorkspaceSeedScript(seedDir, workspaceSeed{
+				Path:      workspacePath,
+				GitSource: gitSource,
+				GitRef:    gitRef,
+				GitCommit: gitCommit,
+			})
+			if werr := s.recipes.containers.manager.Exec(containerName, []string{"bash", "-c", wsScript}); werr != nil {
+				log.Printf("[agent-skill] workspace.json seed failed for %s (runtime won't see the workspace path via the contract file): %v", containerName, werr)
+			}
 		}
 	}
 
@@ -904,8 +935,21 @@ func (s *AgentSkillServer) startServeMode(containerName, seedDir string) {
 // (runtime absent, exec error, bad artifact) logs and returns "" rather than
 // failing RunAgentSkill — the box is still provisioned + gated + traced.
 func (s *AgentSkillServer) runInBoxAgent(containerName, seedDir string) string {
-	if s.recipes == nil || s.recipes.containers == nil || s.recipes.containers.manager == nil {
+	out, err := s.runInBoxAgentResult(containerName, seedDir)
+	if err != nil {
+		log.Printf("[agent-skill] %v", err)
 		return ""
+	}
+	return out
+}
+
+// runInBoxAgentResult is runInBoxAgent with the reason a run produced
+// nothing kept as an error — a dispatched run (#2023) records it as the
+// dispatch row's failure_reason. The error text never includes the
+// box's stderr beyond what runInBoxAgent already logged.
+func (s *AgentSkillServer) runInBoxAgentResult(containerName, seedDir string) (string, error) {
+	if s.recipes == nil || s.recipes.containers == nil || s.recipes.containers.manager == nil {
+		return "", fmt.Errorf("no container manager to run the in-box agent on %s", containerName)
 	}
 	mgr := s.recipes.containers.manager
 
@@ -913,20 +957,18 @@ func (s *AgentSkillServer) runInBoxAgent(containerName, seedDir string) string {
 		[]string{"bash", "-lc", sourceGatewayEnvPrefix(seedDir) + s.engineEnvPrefix() + "AGENT_SEED_DIR=" + seedDir + " agent-runtime"}); err != nil {
 		log.Printf("[agent-skill] in-box runtime did not run on %s (image may not ship it yet): %v; stderr=%s",
 			containerName, err, strings.TrimSpace(stderr))
-		return ""
+		return "", fmt.Errorf("in-box runtime did not run on %s: %w", containerName, err)
 	}
 
 	raw, err := mgr.ReadFile(containerName, seedDir+"/artifact.json")
 	if err != nil {
-		log.Printf("[agent-skill] could not read artifact from %s: %v", containerName, err)
-		return ""
+		return "", fmt.Errorf("could not read artifact from %s: %w", containerName, err)
 	}
 	out, err := parseArtifactOutput(raw)
 	if err != nil {
-		log.Printf("[agent-skill] in-box agent on %s reported an error: %v", containerName, err)
-		return ""
+		return "", fmt.Errorf("in-box agent on %s reported an error: %w", containerName, err)
 	}
-	return out
+	return out, nil
 }
 
 // parseArtifactOutput extracts the agent's output JSON from artifact.json

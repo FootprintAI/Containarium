@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"strings"
 
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/tracker"
@@ -51,7 +52,16 @@ func (s *ContainerServer) DispatchTrackerIssues(ctx context.Context, req *pb.Dis
 	if s.trackerRunStarter == nil {
 		return nil, status.Error(codes.Unavailable, "tracker dispatch is not configured on this daemon (no run starter)")
 	}
-	provider, conn, err := s.resolveWriterConn(ctx, req.Username, req.Connection)
+	// resolveWriterConn's two halves, split so the connection record
+	// also yields the run's repository URL.
+	if err := enforceConnectionBinding(ctx, req.Connection); err != nil {
+		return nil, err
+	}
+	record, err := s.trackerStore.Get(ctx, req.Username, req.Connection)
+	if err != nil {
+		return nil, mapTrackerError(err)
+	}
+	provider, conn, err := s.writerConnFor(ctx, record)
 	if err != nil {
 		return nil, err
 	}
@@ -62,6 +72,10 @@ func (s *ContainerServer) DispatchTrackerIssues(ctx context.Context, req *pb.Dis
 		Conn:     conn,
 		Runs:     s.trackerRunStarter,
 		Clock:    tracker.SystemClock,
+		// The run's workspace is the connection's own repository, built
+		// from the connection record like SubmitTrackerChange's push
+		// target — never from the issue or the box (#2023).
+		RepoURL: remoteURLFor(record.Provider, record.BaseURL, record.Project),
 	}
 	res, err := d.Tick(ctx, req.Username, req.Connection)
 	if err != nil {
@@ -160,14 +174,17 @@ func NewTrackerRunStarter(agents *AgentSkillServer) tracker.RunStarter {
 }
 
 // dispatchRunRequest maps a dispatch onto the RunAgentSkill request.
-// input_json is exactly the dispatcher's TrackerDispatchInput; no git
-// source or credential is invented.
+// input_json is exactly the dispatcher's TrackerDispatchInput. The git
+// source is the connection's repository (#2023) so the run can submit a
+// doc change; no credential is ever passed — the fetch is anonymous, and
+// the push happens daemon-side in SubmitTrackerChange.
 func dispatchRunRequest(req tracker.StartRunRequest) *pb.RunAgentSkillRequest {
 	return &pb.RunAgentSkillRequest{
 		SkillId:           req.SkillID,
 		RunId:             req.RunID,
 		InputJson:         req.InputJSON,
 		TrackerConnection: req.Connection,
+		GitSource:         req.RepoURL,
 	}
 }
 
@@ -193,25 +210,47 @@ func (r trackerRunStarter) StartRun(ctx context.Context, req tracker.StartRunReq
 	if err := requireDispatchCaller(ctx, req.Username); err != nil {
 		return err
 	}
-	run, err := r.agents.beginSkillRun(ctx, dispatchRunRequest(req))
+	// Best-effort workspace: an anonymous fetch of a private repository
+	// fails, and that run must still read the issue and comment.
+	run, err := r.agents.beginSkillRunWith(ctx, dispatchRunRequest(req), provisionOptions{gitSourceBestEffort: true})
 	if err != nil {
 		return err
 	}
-	go r.agents.finishDispatchedRun(ctx, run, r.agents.runInBoxAgent)
+	r.agents.launchDispatchedRun(ctx, run, req.Lifecycle, r.agents.runInBoxAgentResult)
 	return nil
 }
 
+// launchDispatchedRun reports the run's start to the dispatch row
+// (QUEUED -> RUNNING, agent:running) and only then launches the in-box
+// agent in the background, so the RUNNING projection can never land
+// after the terminal one. lc is nil for a run with no dispatch row.
+func (s *AgentSkillServer) launchDispatchedRun(ctx context.Context, run *startedSkillRun, lc tracker.RunLifecycle, agent func(containerName, seedDir string) (string, error)) {
+	if lc != nil {
+		lc.RunStarted(ctx)
+	}
+	go s.finishDispatchedRun(ctx, run, agent, lc)
+}
+
 // finishDispatchedRun is the background half of a dispatched run: run
-// the in-box agent, then end the lease (revoke the run's JWTs, wipe the
-// seed, unregister). It is the counterpart of RunAgentSkill's
+// the in-box agent, end the lease (revoke the run's JWTs, wipe the
+// seed, unregister), then report the outcome to the dispatch row — the
+// completion hook (#2023). It is the counterpart of RunAgentSkill's
 // `defer endRunLease`, kept out of the RPC because the run outlives the
 // tick that started it — so it detaches from the tick's cancellation
-// while keeping its auth values, exactly as endRunLease does. agent is a
-// seam for tests, which cannot drive a real box; production passes
-// runInBoxAgent. The artifact is dropped until the completion hook
-// (#2023) consumes it to move the dispatch row to done/failed.
-func (s *AgentSkillServer) finishDispatchedRun(ctx context.Context, run *startedSkillRun, agent func(containerName, seedDir string) string) {
+// while keeping its auth values, exactly as endRunLease does. The lease
+// ends BEFORE the row is marked done, so nothing the run holds can
+// still write once the issue says agent:done. agent is a seam for
+// tests, which cannot drive a real box; production passes
+// runInBoxAgentResult. An agent error or an empty artifact is a failed
+// run.
+func (s *AgentSkillServer) finishDispatchedRun(ctx context.Context, run *startedSkillRun, agent func(containerName, seedDir string) (string, error), lc tracker.RunLifecycle) {
 	bg := context.WithoutCancel(ctx)
-	defer s.endRunLease(bg, run.lease, s.boxWiper(), runExitReason)
-	_ = agent(run.containerName, run.lease.SeedDir)
+	artifact, err := agent(run.containerName, run.lease.SeedDir)
+	if err == nil && strings.TrimSpace(artifact) == "" {
+		err = errors.New("the agent produced no artifact")
+	}
+	s.endRunLease(bg, run.lease, s.boxWiper(), runExitReason)
+	if lc != nil {
+		lc.RunEnded(bg, tracker.RunOutcome{Err: err})
+	}
 }

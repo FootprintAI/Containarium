@@ -270,13 +270,13 @@ func TestFinishDispatchedRun_EndsLeaseAndRevokes(t *testing.T) {
 
 	agentCalls := 0
 	s.finishDispatchedRun(ctx, &startedSkillRun{runID: "run-dispatched", containerName: "agent-hello-agent-container", lease: testLease("run-dispatched")},
-		func(containerName, seedDir string) string {
+		func(containerName, seedDir string) (string, error) {
 			agentCalls++
 			if containerName != "agent-hello-agent-container" || seedDir != seedDirFor("run-dispatched") {
 				t.Errorf("agent ran against %s/%s", containerName, seedDir)
 			}
-			return "{}"
-		})
+			return "{}", nil
+		}, nil)
 	if agentCalls != 1 {
 		t.Fatalf("agent calls = %d, want 1", agentCalls)
 	}
