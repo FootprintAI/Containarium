@@ -108,3 +108,25 @@ func (a *Adapter) SetLabels(ctx context.Context, conn tracker.Conn, number int64
 	}
 	return nil
 }
+
+// CreateIssue opens an issue (#2024). Labels ride as a JSON array —
+// GitHub's shape; the daemon has already checked them against the
+// connection's allow-list, and n.Body arrives fully composed (sanitized,
+// parent link and identity stamp appended), the same division of labor
+// Comment and OpenChange have. The 201 response is normalized through
+// toIssue, so a created issue reads exactly like one from GetIssue.
+func (a *Adapter) CreateIssue(ctx context.Context, conn tracker.Conn, n tracker.NewIssue) (tracker.Issue, error) {
+	base := apiBase(conn.BaseURL)
+	reqBody := struct {
+		Title  string   `json:"title"`
+		Body   string   `json:"body"`
+		Labels []string `json:"labels,omitempty"`
+	}{Title: n.Title, Body: n.Body, Labels: n.Labels}
+
+	var raw ghIssue
+	if err := a.do(ctx, http.MethodPost, fmt.Sprintf("%s/repos/%s/issues", base, conn.Project),
+		conn.Credential, reqBody, &raw); err != nil {
+		return tracker.Issue{}, err
+	}
+	return toIssue(raw, nil), nil
+}

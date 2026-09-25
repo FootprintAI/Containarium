@@ -33,6 +33,7 @@ const (
 	TrackerService_CommentOnTrackerIssue_FullMethodName   = "/containarium.v1.TrackerService/CommentOnTrackerIssue"
 	TrackerService_ClaimTrackerIssue_FullMethodName       = "/containarium.v1.TrackerService/ClaimTrackerIssue"
 	TrackerService_SetTrackerIssueLabels_FullMethodName   = "/containarium.v1.TrackerService/SetTrackerIssueLabels"
+	TrackerService_CreateTrackerIssue_FullMethodName      = "/containarium.v1.TrackerService/CreateTrackerIssue"
 	TrackerService_SubmitTrackerChange_FullMethodName     = "/containarium.v1.TrackerService/SubmitTrackerChange"
 )
 
@@ -79,6 +80,8 @@ type TrackerServiceClient interface {
 	ClaimTrackerIssue(ctx context.Context, in *ClaimTrackerIssueRequest, opts ...grpc.CallOption) (*ClaimTrackerIssueResponse, error)
 	// SetTrackerIssueLabels adds and/or removes labels on an issue.
 	SetTrackerIssueLabels(ctx context.Context, in *SetTrackerIssueLabelsRequest, opts ...grpc.CallOption) (*SetTrackerIssueLabelsResponse, error)
+	// CreateTrackerIssue files a follow-up issue (#2024).
+	CreateTrackerIssue(ctx context.Context, in *CreateTrackerIssueRequest, opts ...grpc.CallOption) (*CreateTrackerIssueResponse, error)
 	// SubmitTrackerChange publishes the calling run's committed workspace
 	// and opens a change request, without a push credential ever
 	// entering the box.
@@ -233,6 +236,16 @@ func (c *trackerServiceClient) SetTrackerIssueLabels(ctx context.Context, in *Se
 	return out, nil
 }
 
+func (c *trackerServiceClient) CreateTrackerIssue(ctx context.Context, in *CreateTrackerIssueRequest, opts ...grpc.CallOption) (*CreateTrackerIssueResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateTrackerIssueResponse)
+	err := c.cc.Invoke(ctx, TrackerService_CreateTrackerIssue_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *trackerServiceClient) SubmitTrackerChange(ctx context.Context, in *SubmitTrackerChangeRequest, opts ...grpc.CallOption) (*SubmitTrackerChangeResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SubmitTrackerChangeResponse)
@@ -286,6 +299,8 @@ type TrackerServiceServer interface {
 	ClaimTrackerIssue(context.Context, *ClaimTrackerIssueRequest) (*ClaimTrackerIssueResponse, error)
 	// SetTrackerIssueLabels adds and/or removes labels on an issue.
 	SetTrackerIssueLabels(context.Context, *SetTrackerIssueLabelsRequest) (*SetTrackerIssueLabelsResponse, error)
+	// CreateTrackerIssue files a follow-up issue (#2024).
+	CreateTrackerIssue(context.Context, *CreateTrackerIssueRequest) (*CreateTrackerIssueResponse, error)
 	// SubmitTrackerChange publishes the calling run's committed workspace
 	// and opens a change request, without a push credential ever
 	// entering the box.
@@ -341,6 +356,9 @@ func (UnimplementedTrackerServiceServer) ClaimTrackerIssue(context.Context, *Cla
 }
 func (UnimplementedTrackerServiceServer) SetTrackerIssueLabels(context.Context, *SetTrackerIssueLabelsRequest) (*SetTrackerIssueLabelsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetTrackerIssueLabels not implemented")
+}
+func (UnimplementedTrackerServiceServer) CreateTrackerIssue(context.Context, *CreateTrackerIssueRequest) (*CreateTrackerIssueResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateTrackerIssue not implemented")
 }
 func (UnimplementedTrackerServiceServer) SubmitTrackerChange(context.Context, *SubmitTrackerChangeRequest) (*SubmitTrackerChangeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SubmitTrackerChange not implemented")
@@ -618,6 +636,24 @@ func _TrackerService_SetTrackerIssueLabels_Handler(srv interface{}, ctx context.
 	return interceptor(ctx, in, info, handler)
 }
 
+func _TrackerService_CreateTrackerIssue_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateTrackerIssueRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TrackerServiceServer).CreateTrackerIssue(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TrackerService_CreateTrackerIssue_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TrackerServiceServer).CreateTrackerIssue(ctx, req.(*CreateTrackerIssueRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _TrackerService_SubmitTrackerChange_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SubmitTrackerChangeRequest)
 	if err := dec(in); err != nil {
@@ -698,6 +734,10 @@ var TrackerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetTrackerIssueLabels",
 			Handler:    _TrackerService_SetTrackerIssueLabels_Handler,
+		},
+		{
+			MethodName: "CreateTrackerIssue",
+			Handler:    _TrackerService_CreateTrackerIssue_Handler,
 		},
 		{
 			MethodName: "SubmitTrackerChange",

@@ -115,6 +115,7 @@ type API interface {
 	// here: an operator agent can see which skill a scope label starts.
 	// Route writes stay CLI-only (`containarium tracker route set|delete`).
 	ListTrackerRoutes(req ListTrackerRoutesRequest) ([]TrackerRoute, error)
+	CreateTrackerIssue(req CreateTrackerIssueRequest) (*TrackerIssue, error)
 
 	// Host-LEVEL operations — overridden as unsupported on the cloud backend.
 	GetSystemInfo() (*GetSystemInfoResponse, error)

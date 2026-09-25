@@ -164,3 +164,44 @@ func TestWhoAmI_ResolvesUsername(t *testing.T) {
 		t.Errorf("login = %q, want agent-bot", login)
 	}
 }
+
+// TestCreateIssue_PostsAndNormalizes pins GitLab's create-issue request
+// shape (#2024): the body field is `description`, labels are one
+// comma-joined string (GitLab's create endpoint takes them that way,
+// unlike GitHub's array), and the 201 response is normalized through
+// the same toIssue as GetIssue (iid, not id).
+func TestCreateIssue_PostsAndNormalizes(t *testing.T) {
+	var gotMethod, gotPath string
+	var gotBody struct {
+		Title       string `json:"title"`
+		Description string `json:"description"`
+		Labels      string `json:"labels"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.EscapedPath()
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id": 9999, "iid": 12, "title": "follow-up", "description": "child body", "state": "opened", "labels": ["scope:architecture", "agent:needs-approval"], "assignee": null}`))
+	}))
+	defer srv.Close()
+
+	a := New(nil)
+	issue, err := a.CreateIssue(context.Background(), tracker.Conn{BaseURL: srv.URL, Project: "acme/widgets", Credential: "glpat-x"}, tracker.NewIssue{
+		Title: "follow-up", Body: "child body", Labels: []string{"scope:architecture", "agent:needs-approval"},
+	})
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if gotMethod != http.MethodPost || gotPath != "/api/v4/projects/acme%2Fwidgets/issues" {
+		t.Errorf("method=%s path=%s, want POST /api/v4/projects/acme%%2Fwidgets/issues", gotMethod, gotPath)
+	}
+	if gotBody.Title != "follow-up" || gotBody.Description != "child body" {
+		t.Errorf("request body = %+v, want title/description carried through", gotBody)
+	}
+	if gotBody.Labels != "scope:architecture,agent:needs-approval" {
+		t.Errorf("request labels = %q, want the comma-joined GitLab shape", gotBody.Labels)
+	}
+	if issue.Number != 12 || issue.Title != "follow-up" || len(issue.Labels) != 2 {
+		t.Errorf("issue = %+v, want number=12 (iid, never id) title=follow-up two labels", issue)
+	}
+}

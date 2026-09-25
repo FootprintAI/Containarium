@@ -2816,3 +2816,18 @@ func (c *HTTPClient) SetTrackerIssueLabels(req *pb.SetTrackerIssueLabelsRequest)
 	}
 	return out.Message, nil
 }
+
+// CreateTrackerIssue files a follow-up issue on the connection's
+// tracker, via REST (#2024).
+func (c *HTTPClient) CreateTrackerIssue(req *pb.CreateTrackerIssueRequest) (*pb.TrackerIssue, error) {
+	body, err := protojson.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("encode request: %w", err)
+	}
+	out := &pb.CreateTrackerIssueResponse{}
+	path := fmt.Sprintf("/v1/tracker/%s/%s/issues", url.PathEscape(req.Username), url.PathEscape(req.Connection))
+	if err := c.trackerDo(http.MethodPost, path, "create tracker issue", body, out); err != nil {
+		return nil, err
+	}
+	return out.Issue, nil
+}

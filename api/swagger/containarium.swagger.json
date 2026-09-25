@@ -6650,6 +6650,50 @@
         "tags": [
           "Tracker"
         ]
+      },
+      "post": {
+        "summary": "Create a tracker issue",
+        "description": "Files an issue on the connection's tracker — the follow-up verb for issue-triggered role agents. Labels must pass the connection's label allow-list (checked before any upstream call). A run-scoped token must name a parent issue: the child is recorded in the issue lineage (depth and per-run fan-out are capped by the connection policy), gets agent:needs-approval unless the policy enables auto_chain, and its body ends with the parent link and the run's identity stamp; the parent gets one back-link comment. Requires tracker:write.",
+        "operationId": "TrackerService_CreateTrackerIssue",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/CreateTrackerIssueResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "connection",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/CreateTrackerIssueBody"
+            }
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
       }
     },
     "/v1/tracker/{username}/{connection}/issues/{number}": {
@@ -9878,6 +9922,38 @@
         },
         "message": {
           "type": "string"
+        }
+      }
+    },
+    "CreateTrackerIssueBody": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string"
+        },
+        "body": {
+          "type": "string"
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Must every pass the connection's label allow-list. A run-scoped\ntoken's follow-up additionally gets agent:needs-approval unless\nthe policy enables auto_chain."
+        },
+        "parentNumber": {
+          "type": "string",
+          "format": "int64",
+          "description": "Parent issue number. 0 = none — allowed for an operator token\nonly; a run-scoped token MUST set it (lineage, depth, fan-out)."
+        }
+      },
+      "description": "CreateTrackerIssueRequest files a follow-up issue. title/body/labels\nare agent-supplied text: sanitized server-side, labels allow-listed\nbefore any upstream call, and the body gets the parent link and the\nrun's identity stamp appended from the verified token — never from a\nrequest field."
+    },
+    "CreateTrackerIssueResponse": {
+      "type": "object",
+      "properties": {
+        "issue": {
+          "$ref": "#/definitions/TrackerIssue"
         }
       }
     },
@@ -14660,6 +14736,10 @@
         "credentialSecret": {
           "type": "string",
           "description": "Must name a secret already stored in SECRET_DELIVERY_BROKER_ONLY mode\n(SetSecret with delivery_mode = SECRET_DELIVERY_BROKER_ONLY) owned by\nthe same username. The daemon validates this at write time rather\nthan trusting the caller."
+        },
+        "policy": {
+          "$ref": "#/definitions/TrackerPolicy",
+          "description": "Optional guardrails (#2024). Set replaces every field, so an\nomitted policy clears any previously stored one back to defaults."
         }
       },
       "description": "SetTrackerConnectionRequest creates or updates a tenant's named tracker\nconnection. Idempotent, like SetSecret: repeated calls with the same\n(username, name) replace the connection's fields."
@@ -14692,7 +14772,7 @@
           }
         }
       },
-      "description": "SetTrackerIssueLabelsRequest adds and/or removes labels on an issue.\nThe design note calls for checking both lists against a\nconnection-level label allow-list before any upstream call is made;\nthat allow-list does not exist on TrackerConnection yet (tracked\nseparately) — this RPC has no allow-list enforcement of its own\nuntil it does."
+      "description": "SetTrackerIssueLabelsRequest adds and/or removes labels on an issue.\nBoth lists are checked against the connection's label allow-list\n(TrackerPolicy.label_allow_list, #2024) BEFORE any upstream call; a\nrun-scoped token can additionally never write the dispatcher's\nagent:queued / agent:running / agent:done / agent:failed state\nlabels, whatever the allow-list says."
     },
     "SetTrackerIssueLabelsResponse": {
       "type": "object",
@@ -15374,6 +15454,10 @@
           "type": "string",
           "format": "date-time",
           "description": "Surfaced, not enforced — populated from the upstream's own\nintrospection of the credential (DescribeCredential, #1921 step 3)\nso an approaching expiry is visible before agents start failing.\nUnset until that lands."
+        },
+        "policy": {
+          "$ref": "#/definitions/TrackerPolicy",
+          "description": "Connection-level guardrails for agent-filed follow-ups (#2024).\nUnset (or any zero-valued field) means the documented defaults —\nsee TrackerPolicy."
         }
       },
       "description": "TrackerConnection is a tenant-scoped record naming where a tracker is\nand which broker-only secret holds the credential the daemon uses to\nreach it. The credential itself never appears here or anywhere on this\nmessage's wire representation — only its name."
@@ -15435,6 +15519,38 @@
       ],
       "default": "TRACKER_ISSUE_STATE_UNSPECIFIED",
       "description": "TrackerIssueState is the provider-neutral state of an issue or change\nrequest (GitHub pull request / GitLab merge request) — one enum\nrather than GitHub's \"open\"/\"closed\" and GitLab's \"opened\"/\"closed\"/\n\"merged\" strings.\n\n - TRACKER_ISSUE_STATE_MERGED: Changes (pull/merge requests) only — never set on a plain issue,\nwhich has no merge concept. Kept on this shared enum rather than a\nseparate one because the two states can never be ambiguous: only a\nTrackerChange ever carries MERGED."
+    },
+    "TrackerPolicy": {
+      "type": "object",
+      "properties": {
+        "labelAllowList": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Glob patterns ('*' matches any run of characters, case-sensitive)\na label must match to be written through CreateTrackerIssue or\nSetTrackerIssueLabels. Default: scope:*, model:*,\nagent:needs-approval. The dispatcher's agent:queued / running /\ndone / failed state labels are reserved: a run-scoped token can\nnever write them even if a pattern here would match."
+        },
+        "autoChain": {
+          "type": "boolean",
+          "description": "When true, follow-ups filed by a run are NOT gated with\nagent:needs-approval. Default false: a human releases every hop."
+        },
+        "maxDepth": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Maximum lineage depth of an agent-filed follow-up (a human-created\nissue is depth 0). Default 3."
+        },
+        "maxChildrenPerRun": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Maximum follow-ups one run may file. Default 5."
+        },
+        "runTimeoutSeconds": {
+          "type": "string",
+          "format": "int64",
+          "description": "Run timeout the dispatcher (#2026) applies. Default 3600."
+        }
+      },
+      "description": "TrackerPolicy is a connection's guardrails for agent-filed follow-ups.\nZero values mean the documented defaults, so an unset policy and an\nempty one behave identically."
     },
     "TrackerProvider": {
       "type": "string",

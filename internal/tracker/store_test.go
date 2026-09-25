@@ -9,6 +9,7 @@ import (
 
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"google.golang.org/protobuf/proto"
 )
 
 // Integration-style tests against a real Postgres, same convention as
@@ -219,5 +220,139 @@ func TestSetCredentialExpiry(t *testing.T) {
 
 	if err := store.SetCredentialExpiry(ctx, user, "does-not-exist", expiry); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SetCredentialExpiry on missing connection err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestTrackerStore_PolicyRoundTrip (#2024): TrackerPolicy is stored as
+// protojson in a JSONB column and read back through the generated
+// decoder — a Set with a policy round-trips it field for field, a Set
+// without one stores NULL and reads back nil (the server applies the
+// documented defaults to nil).
+func TestTrackerStore_PolicyRoundTrip(t *testing.T) {
+	store, ctx := newTrackerTestStore(t)
+	const user = "tracker-store-policy"
+	_, _ = store.pool.Exec(ctx, "DELETE FROM tracker_connections WHERE username = $1", user)
+
+	pol := &pb.TrackerPolicy{
+		LabelAllowList: []string{"scope:*", "triaged"}, AutoChain: true,
+		MaxDepth: 2, MaxChildrenPerRun: 4, RunTimeoutSeconds: 120,
+	}
+	if _, err := store.Set(ctx, Connection{
+		Username: user, Name: "default",
+		Provider: pb.TrackerProvider_TRACKER_PROVIDER_GITHUB,
+		Project:  "acme/widgets", CredentialSecret: "GH_TOKEN",
+		Policy: pol,
+	}); err != nil {
+		t.Fatalf("Set (with policy): %v", err)
+	}
+	got, err := store.Get(ctx, user, "default")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !proto.Equal(got.Policy, pol) {
+		t.Errorf("Get policy = %v, want %v", got.Policy, pol)
+	}
+	list, err := store.List(ctx, user)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(list) != 1 || !proto.Equal(list[0].Policy, pol) {
+		t.Errorf("List = %+v, want one connection carrying the policy", list)
+	}
+
+	// Set without a policy clears it (Set replaces every field).
+	if _, err := store.Set(ctx, Connection{
+		Username: user, Name: "default",
+		Provider: pb.TrackerProvider_TRACKER_PROVIDER_GITHUB,
+		Project:  "acme/widgets", CredentialSecret: "GH_TOKEN",
+	}); err != nil {
+		t.Fatalf("Set (no policy): %v", err)
+	}
+	cleared, err := store.Get(ctx, user, "default")
+	if err != nil {
+		t.Fatalf("Get after clear: %v", err)
+	}
+	if cleared.Policy != nil {
+		t.Errorf("policy after Set without one = %v, want nil", cleared.Policy)
+	}
+}
+
+// TestLineage_DepthAndChildrenCount (#2024): depth derives from the
+// parent's own lineage row (a human-created issue has no row → depth 0),
+// per-run child counting, and RecordChild's guards — both checked
+// inside the same transaction as the insert and BEFORE the create
+// callback (the upstream call) runs.
+func TestLineage_DepthAndChildrenCount(t *testing.T) {
+	store, ctx := newTrackerTestStore(t)
+	const user = "tracker-store-lineage"
+	_, _ = store.pool.Exec(ctx, "DELETE FROM tracker_issue_lineage WHERE username = $1", user)
+
+	if d, err := store.IssueDepth(ctx, user, "default", 100); err != nil || d != 0 {
+		t.Fatalf("IssueDepth(human-created #100) = %d, %v; want 0, nil", d, err)
+	}
+
+	child, err := store.RecordChild(ctx, Lineage{Username: user, Connection: "default", ParentNumber: 100, CreatedByRun: "run-1"}, 3, 5,
+		func(context.Context) (int64, error) { return 101, nil })
+	if err != nil {
+		t.Fatalf("RecordChild(#101 under #100): %v", err)
+	}
+	if child.ChildNumber != 101 || child.Depth != 1 {
+		t.Errorf("recorded = %+v, want child=101 depth=1", child)
+	}
+	grandchild, err := store.RecordChild(ctx, Lineage{Username: user, Connection: "default", ParentNumber: 101, CreatedByRun: "run-2"}, 3, 5,
+		func(context.Context) (int64, error) { return 102, nil })
+	if err != nil {
+		t.Fatalf("RecordChild(#102 under #101): %v", err)
+	}
+	if grandchild.Depth != 2 {
+		t.Errorf("grandchild depth = %d, want 2", grandchild.Depth)
+	}
+	if d, _ := store.IssueDepth(ctx, user, "default", 101); d != 1 {
+		t.Errorf("IssueDepth(#101) = %d, want 1", d)
+	}
+	if d, _ := store.IssueDepth(ctx, user, "default", 102); d != 2 {
+		t.Errorf("IssueDepth(#102) = %d, want 2", d)
+	}
+	if n, err := store.ChildrenCount(ctx, user, "default", "run-1"); err != nil || n != 1 {
+		t.Errorf("ChildrenCount(run-1) = %d, %v; want 1", n, err)
+	}
+
+	// Fan-out: run-1 already has 1 child; max 1 → rejected before the
+	// callback (which would be the upstream call) is ever invoked.
+	called := false
+	_, err = store.RecordChild(ctx, Lineage{Username: user, Connection: "default", ParentNumber: 100, CreatedByRun: "run-1"}, 3, 1,
+		func(context.Context) (int64, error) { called = true; return 103, nil })
+	if !errors.Is(err, ErrFanoutExceeded) {
+		t.Errorf("RecordChild over fan-out err = %v, want ErrFanoutExceeded", err)
+	}
+	if called {
+		t.Error("create callback ran despite the fan-out cap — the cap must be checked before any upstream call")
+	}
+
+	// Depth: a child of #102 would be depth 3; max 2 → rejected, not called.
+	called = false
+	_, err = store.RecordChild(ctx, Lineage{Username: user, Connection: "default", ParentNumber: 102, CreatedByRun: "run-3"}, 2, 5,
+		func(context.Context) (int64, error) { called = true; return 104, nil })
+	if !errors.Is(err, ErrDepthExceeded) {
+		t.Errorf("RecordChild over depth err = %v, want ErrDepthExceeded", err)
+	}
+	if called {
+		t.Error("create callback ran despite the depth cap")
+	}
+
+	// A failing create leaves no row behind.
+	boom := errors.New("upstream down")
+	if _, err := store.RecordChild(ctx, Lineage{Username: user, Connection: "default", ParentNumber: 100, CreatedByRun: "run-4"}, 3, 5,
+		func(context.Context) (int64, error) { return 0, boom }); !errors.Is(err, boom) {
+		t.Errorf("RecordChild with failing create err = %v, want the create error", err)
+	}
+	if n, _ := store.ChildrenCount(ctx, user, "default", "run-4"); n != 0 {
+		t.Errorf("ChildrenCount(run-4) after failed create = %d, want 0 (rolled back)", n)
+	}
+
+	// Zero caps mean unlimited.
+	if _, err := store.RecordChild(ctx, Lineage{Username: user, Connection: "default", ParentNumber: 102, CreatedByRun: "run-1"}, 0, 0,
+		func(context.Context) (int64, error) { return 105, nil }); err != nil {
+		t.Errorf("RecordChild with zero caps: %v, want allowed", err)
 	}
 }

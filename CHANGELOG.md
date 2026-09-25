@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`containarium tracker issue create` — agent-filed follow-up issues on
+  GitHub and GitLab.** New `CreateTrackerIssue` RPC (`tracker:write`) with a
+  `Provider.CreateIssue` on both adapters, proven equivalent by the
+  conformance suite. Labels must pass a per-connection allow-list
+  (`TrackerPolicy`, default `scope:*`, `model:*`, `agent:needs-approval`),
+  checked before any upstream call — the same allow-list now guards
+  `tracker issue label`. A run-scoped token must name `--parent`: the child
+  is recorded in a `tracker_issue_lineage` table, bounded by `--max-depth` /
+  `--max-children`, gated with `agent:needs-approval` unless the connection
+  sets `--auto-chain`, and its body ends with the parent link and the run's
+  identity stamp; the parent gets one back-link comment. `tracker connect`
+  gains the policy flags; the platform MCP gains `tracker_create_issue`.
+  (#2024)
+
 ## [0.89.0] - 2026-09-24
 
 ### Added

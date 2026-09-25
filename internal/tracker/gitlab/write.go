@@ -103,3 +103,25 @@ func (a *Adapter) SetLabels(ctx context.Context, conn tracker.Conn, number int64
 	return a.do(ctx, http.MethodPut, fmt.Sprintf("%s/projects/%s/issues/%d", apiBase, projectPath, number),
 		conn.Credential, reqBody, nil)
 }
+
+// CreateIssue opens an issue (#2024). GitLab's create endpoint takes the
+// body as `description` and labels as ONE comma-joined string (unlike
+// GitHub's array) — the same shape SetLabels already uses. The daemon
+// has already allow-listed the labels and composed the body. The 201
+// response is normalized through toIssue (iid, never id).
+func (a *Adapter) CreateIssue(ctx context.Context, conn tracker.Conn, n tracker.NewIssue) (tracker.Issue, error) {
+	apiBase := apiBaseURL(conn.BaseURL)
+	projectPath := url.PathEscape(conn.Project)
+	reqBody := struct {
+		Title       string `json:"title"`
+		Description string `json:"description"`
+		Labels      string `json:"labels,omitempty"`
+	}{Title: n.Title, Description: n.Body, Labels: strings.Join(n.Labels, ",")}
+
+	var raw glIssue
+	if err := a.do(ctx, http.MethodPost, fmt.Sprintf("%s/projects/%s/issues", apiBase, projectPath),
+		conn.Credential, reqBody, &raw); err != nil {
+		return tracker.Issue{}, err
+	}
+	return toIssue(raw, nil), nil
+}

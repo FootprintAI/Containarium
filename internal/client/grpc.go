@@ -1681,3 +1681,15 @@ func (c *GRPCClient) SetTrackerIssueLabels(req *pb.SetTrackerIssueLabelsRequest)
 	}
 	return resp.Message, nil
 }
+
+// CreateTrackerIssue files a follow-up issue on the connection's
+// tracker (#2024).
+func (c *GRPCClient) CreateTrackerIssue(req *pb.CreateTrackerIssueRequest) (*pb.TrackerIssue, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.trackerClient.CreateTrackerIssue(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("create tracker issue: %w", err)
+	}
+	return resp.Issue, nil
+}

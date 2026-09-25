@@ -107,6 +107,11 @@ message TrackerConnection {
   // so an approaching expiry is visible before agents start failing.
   // Unset until that lands.
   google.protobuf.Timestamp credential_expires_at = 7;
+
+  // Connection-level guardrails for agent-filed follow-ups (#2024).
+  // Unset (or any zero-valued field) means the documented defaults —
+  // see TrackerPolicy.
+  TrackerPolicy policy = 8;
 }
 
 // SetTrackerConnectionRequest creates or updates a tenant's named tracker
@@ -124,6 +129,10 @@ message SetTrackerConnectionRequest {
   // the same username. The daemon validates this at write time rather
   // than trusting the caller.
   string credential_secret = 6;
+
+  // Optional guardrails (#2024). Set replaces every field, so an
+  // omitted policy clears any previously stored one back to defaults.
+  TrackerPolicy policy = 7;
 }
 
 message SetTrackerConnectionResponse {
@@ -422,11 +431,11 @@ message ClaimTrackerIssueResponse {
 }
 
 // SetTrackerIssueLabelsRequest adds and/or removes labels on an issue.
-// The design note calls for checking both lists against a
-// connection-level label allow-list before any upstream call is made;
-// that allow-list does not exist on TrackerConnection yet (tracked
-// separately) — this RPC has no allow-list enforcement of its own
-// until it does.
+// Both lists are checked against the connection's label allow-list
+// (TrackerPolicy.label_allow_list, #2024) BEFORE any upstream call; a
+// run-scoped token can additionally never write the dispatcher's
+// agent:queued / agent:running / agent:done / agent:failed state
+// labels, whatever the allow-list says.
 message SetTrackerIssueLabelsRequest {
   string username = 1;
   string connection = 2;
@@ -437,6 +446,63 @@ message SetTrackerIssueLabelsRequest {
 
 message SetTrackerIssueLabelsResponse {
   string message = 1;
+}
+
+// ---- Issue-triggered role agents: follow-up issues + policy (#2024) ----
+// See docs/architecture/issue-triggered-agents.md ("Chain guards",
+// "CreateTrackerIssue verb"). Routes / dispatch (#2021, #2022) are
+// separate blocks.
+
+// TrackerPolicy is a connection's guardrails for agent-filed follow-ups.
+// Zero values mean the documented defaults, so an unset policy and an
+// empty one behave identically.
+message TrackerPolicy {
+  // Glob patterns ('*' matches any run of characters, case-sensitive)
+  // a label must match to be written through CreateTrackerIssue or
+  // SetTrackerIssueLabels. Default: scope:*, model:*,
+  // agent:needs-approval. The dispatcher's agent:queued / running /
+  // done / failed state labels are reserved: a run-scoped token can
+  // never write them even if a pattern here would match.
+  repeated string label_allow_list = 1;
+
+  // When true, follow-ups filed by a run are NOT gated with
+  // agent:needs-approval. Default false: a human releases every hop.
+  bool auto_chain = 2;
+
+  // Maximum lineage depth of an agent-filed follow-up (a human-created
+  // issue is depth 0). Default 3.
+  int32 max_depth = 3;
+
+  // Maximum follow-ups one run may file. Default 5.
+  int32 max_children_per_run = 4;
+
+  // Run timeout the dispatcher (#2026) applies. Default 3600.
+  int64 run_timeout_seconds = 5;
+}
+
+// CreateTrackerIssueRequest files a follow-up issue. title/body/labels
+// are agent-supplied text: sanitized server-side, labels allow-listed
+// before any upstream call, and the body gets the parent link and the
+// run's identity stamp appended from the verified token — never from a
+// request field.
+message CreateTrackerIssueRequest {
+  string username = 1;
+  string connection = 2;
+  string title = 3;
+  string body = 4;
+
+  // Must every pass the connection's label allow-list. A run-scoped
+  // token's follow-up additionally gets agent:needs-approval unless
+  // the policy enables auto_chain.
+  repeated string labels = 5;
+
+  // Parent issue number. 0 = none — allowed for an operator token
+  // only; a run-scoped token MUST set it (lineage, depth, fan-out).
+  int64 parent_number = 6;
+}
+
+message CreateTrackerIssueResponse {
+  TrackerIssue issue = 1;
 }
 
 // SubmitTrackerChangeRequest publishes the calling run's committed
@@ -650,6 +716,19 @@ service TrackerService {
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Set labels on a tracker issue";
       description: "Adds and/or removes labels on an issue. Requires tracker:write.";
+      tags: "Tracker";
+    };
+  }
+
+  // CreateTrackerIssue files a follow-up issue (#2024).
+  rpc CreateTrackerIssue(CreateTrackerIssueRequest) returns (CreateTrackerIssueResponse) {
+    option (google.api.http) = {
+      post: "/v1/tracker/{username}/{connection}/issues"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Create a tracker issue";
+      description: "Files an issue on the connection's tracker — the follow-up verb for issue-triggered role agents. Labels must pass the connection's label allow-list (checked before any upstream call). A run-scoped token must name a parent issue: the child is recorded in the issue lineage (depth and per-run fan-out are capped by the connection policy), gets agent:needs-approval unless the policy enables auto_chain, and its body ends with the parent link and the run's identity stamp; the parent gets one back-link comment. Requires tracker:write.";
       tags: "Tracker";
     };
   }
