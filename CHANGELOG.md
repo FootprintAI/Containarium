@@ -113,7 +113,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or leaves the run's credentials live.** The panic is recovered and logged
   with the run id (never the panic value); the run's lease still ends first
   (both JWTs revoked, run unregistered) and the dispatch row is marked
-  `failed`. (#2050)
+  `failed`. A run ended by `runtime.Goexit` is likewise reported `failed`,
+  never `done`. (#2050)
 
 ## [0.89.0] - 2026-09-24
 
