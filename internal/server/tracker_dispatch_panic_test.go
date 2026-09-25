@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -91,6 +92,68 @@ type lifecycleCapture func(req tracker.StartRunRequest)
 func (f lifecycleCapture) StartRun(_ context.Context, req tracker.StartRunRequest) error {
 	f(req)
 	return nil
+}
+
+// goexitRevoker ends the calling goroutine with runtime.Goexit inside
+// the lease end's first revocation.
+type goexitRevoker struct{ *fakeRevocationStore }
+
+func (goexitRevoker) Revoke(context.Context, string, time.Time, string) error {
+	runtime.Goexit()
+	return nil
+}
+
+// TestLaunchDispatchedRun_GoexitIsNotSuccess: runtime.Goexit is not a
+// panic (recover returns nil) but the run never completed. Whether it
+// happens in the agent seam or inside the lease end, the run's end must
+// be reported FAILED with a generic reason, never done, and a Goexit in
+// the agent still ends the lease first.
+func TestLaunchDispatchedRun_GoexitIsNotSuccess(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		agent        func(string, string) (string, error)
+		goexitRevoke bool
+	}{
+		{name: "in the agent", agent: func(string, string) (string, error) { runtime.Goexit(); return `{"summary":"ok"}`, nil }},
+		{name: "in the lease end", agent: func(string, string) (string, error) { return `{"summary":"ok"}`, nil }, goexitRevoke: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const runID = "run-hook-goexit"
+			s, registry, store := newFinishHarness(t, runID)
+			if tc.goexitRevoke {
+				s.SetRevocationStore(goexitRevoker{store})
+			}
+			lc := newRecordingLifecycle()
+			lc.registry, lc.runID = registry, runID
+			s.launchDispatchedRun(ctxAs("alice", true), &startedSkillRun{runID: runID, lease: testLease(runID)}, lc, tc.agent)
+			select {
+			case <-lc.ended:
+			case <-time.After(10 * time.Second):
+				t.Fatal("the run's end was never reported after runtime.Goexit")
+			}
+			events, outcome, _ := lc.snapshot()
+			if strings.Join(events, ",") != "started,ended" {
+				t.Fatalf("events = %v, want started then ended", events)
+			}
+			if outcome.Err == nil {
+				t.Fatal("outcome = success for a run that never completed")
+			}
+			if outcome.Err.Error() != errDispatchedRunDidNotComplete.Error() {
+				t.Errorf("outcome = %q, want the generic %q", outcome.Err, errDispatchedRunDidNotComplete)
+			}
+			if lc.liveAtEnd || registry.Live(runID) {
+				t.Error("run still registered; the lease end must run before the end is reported")
+			}
+			if tc.goexitRevoke {
+				return // the revocation itself was cut short
+			}
+			for _, jti := range []string{"jti-platform", "jti-gateway"} {
+				if revoked, err := store.IsRevoked(context.Background(), jti); err != nil || !revoked {
+					t.Errorf("%s revoked = %v (err %v), want true", jti, revoked, err)
+				}
+			}
+		})
+	}
 }
 
 // TestFinishDispatchedRun_AgentPanicMarksDispatchFailed: with the real

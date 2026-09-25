@@ -255,7 +255,7 @@ func (s *AgentSkillServer) finishDispatchedRun(ctx context.Context, run *started
 	var err error
 	defer func() {
 		if logDispatchedRunPanic(run.runID, "in-box agent", recover()) {
-			err = errDispatchedRunPanicked
+			err = errDispatchedRunDidNotComplete
 		}
 		leaseEnded := func() (ok bool) {
 			defer func() {
@@ -268,7 +268,7 @@ func (s *AgentSkillServer) finishDispatchedRun(ctx context.Context, run *started
 		}()
 		if !leaseEnded {
 			// Its credentials may still be live: never report it done.
-			err = errDispatchedRunPanicked
+			err = errDispatchedRunDidNotComplete
 		}
 		if lc != nil {
 			defer func() { logDispatchedRunPanic(run.runID, "completion report", recover()) }()
@@ -282,10 +282,10 @@ func (s *AgentSkillServer) finishDispatchedRun(ctx context.Context, run *started
 	err = aerr
 }
 
-// errDispatchedRunPanicked is the outcome of a dispatched run whose
+// errDispatchedRunDidNotComplete is the outcome of a dispatched run whose
 // background half panicked. Generic on purpose: the panic value may
 // carry anything the run held, so it is neither logged nor stored.
-var errDispatchedRunPanicked = errors.New("the dispatched run panicked")
+var errDispatchedRunDidNotComplete = errors.New("the dispatched run panicked")
 
 // logDispatchedRunPanic takes what a deferred function's recover()
 // returned and, for a panic in a dispatched run's background half, logs
