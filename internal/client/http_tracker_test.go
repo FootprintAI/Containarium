@@ -459,3 +459,43 @@ func TestSetTrackerIssueLabels_PathMethodAndBody(t *testing.T) {
 		t.Errorf("message = %q, want %q", msg, "labels updated")
 	}
 }
+
+func TestCreateTrackerIssue_PathMethodAndBody(t *testing.T) {
+	var gotPath, gotMethod string
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotMethod = r.Method
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"issue": {"number": "7", "title": "follow-up", "state": "TRACKER_ISSUE_STATE_OPEN", "labels": ["scope:architecture", "agent:needs-approval"]}}`))
+	}))
+	defer srv.Close()
+
+	c, err := NewHTTPClient(srv.URL, "tok")
+	if err != nil {
+		t.Fatalf("NewHTTPClient: %v", err)
+	}
+
+	issue, err := c.CreateTrackerIssue(&pb.CreateTrackerIssueRequest{
+		Username: "alice", Connection: "default",
+		Title: "follow-up", Body: "child body", Labels: []string{"scope:architecture"}, ParentNumber: 42,
+	})
+	if err != nil {
+		t.Fatalf("CreateTrackerIssue: %v", err)
+	}
+	if gotMethod != http.MethodPost {
+		t.Errorf("method = %q, want POST", gotMethod)
+	}
+	if gotPath != "/v1/tracker/alice/default/issues" {
+		t.Errorf("path = %q, want /v1/tracker/alice/default/issues", gotPath)
+	}
+	for _, want := range []string{`"title":"follow-up"`, `"body":"child body"`, `"labels":["scope:architecture"]`, `"parentNumber":"42"`} {
+		if !strings.Contains(string(gotBody), want) {
+			t.Errorf("request body = %s, want it to contain %s", gotBody, want)
+		}
+	}
+	if issue.GetNumber() != 7 || len(issue.GetLabels()) != 2 {
+		t.Errorf("issue = %+v, want number=7 with two labels", issue)
+	}
+}

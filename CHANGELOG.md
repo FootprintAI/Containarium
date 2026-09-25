@@ -9,6 +9,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`containarium tracker issue create` — agent-filed follow-up issues on
+  GitHub and GitLab.** New `CreateTrackerIssue` RPC (`tracker:write`) with a
+  `Provider.CreateIssue` on both adapters, proven equivalent by the
+  conformance suite. Labels must pass a per-connection allow-list
+  (`TrackerPolicy`, default `scope:*`, `model:*`, `agent:needs-approval`),
+  checked before any upstream call — the same allow-list now guards
+  `tracker issue label`. A run-scoped token must name `--parent`: the child
+  is recorded in a `tracker_issue_lineage` table, bounded by `--max-depth` /
+  `--max-children`, gated with `agent:needs-approval` unless the connection
+  sets `--auto-chain`, and its body ends with the parent link and the run's
+  identity stamp; the parent gets one back-link comment. `tracker connect`
+  gains the policy flags; the platform MCP gains `tracker_create_issue`.
+  (#2024)
+
+- **`containarium tracker dispatch` — a labeled issue starts its role's run,
+  exactly once.** Each tick (new `DispatchTrackerIssues` RPC, `tracker:admin`
+  plus `agents:run`) finds open issues with a routed `scope:<role>` label and
+  no `agent:*` state label, skips anything gated with `agent:needs-approval`,
+  records a durable dispatch row, starts the routed skill through the
+  `RunAgentSkill` path (run token bound to the connection; the run's input is
+  the issue reference, never its body), and labels the issue `agent:queued`.
+  A partial unique index on active rows guarantees one run per issue across
+  restarts and concurrent dispatchers. A start failure marks the dispatch
+  failed, labels `agent:failed` and comments the reason; an unrouted
+  `scope:*` label gets one warning comment, not one per tick. Re-run a
+  finished issue by removing `agent:done`/`agent:failed`. `--once` runs one
+  tick; `--interval` loops. `containarium tracker dispatches` lists dispatch
+  rows (new `ListTrackerDispatches` RPC). Rows created before the
+  run-completion hook (#2023) stay `queued` — a sweep or operator verb for
+  stale `queued` rows is tracked on #2026. (#2022)
+
+- **A dispatched run reports its result back on the issue.** The completion
+  hook moves each dispatch row `queued → running` when the run registers
+  (issue labeled `agent:running`) and `running → done | failed` when it ends:
+  `agent:done` with the trigger `scope:<role>` label removed, or
+  `agent:failed` plus one stamped comment naming the run (the raw error stays
+  in the row, readable with `tracker dispatches --state failed`). Every
+  transition is compare-and-set and runs on a detached, bounded context, so
+  a cancelled tick never strands a row. The tick now labels `agent:queued`
+  before starting the run and re-reads the issue after winning the insert, so
+  a stale issue list can no longer double-run an issue a peer just finished.
+  New catalog skill `product-define` (manifest scopes `tracker:read` and
+  `tracker:write` only) reads the issue through the broker, posts exactly one
+  result comment, and opens the full PRD as a draft doc change via
+  `tracker_submit_change`; a dispatched run's workspace is the connection's
+  repository, fetched without any credential (a private repository gets no
+  workspace, and the PRD goes in the comment instead). `TrackerDispatchInput`
+  gains `username`. (#2023)
+
 - **`coding-agent` recipe.** A box with `agent-box`, `mcp-server` and an
   unmodified Claude Code (Anthropic's installer, run as the box user), an
   optional bootstrap bundle, and no credential of any kind. Also adds

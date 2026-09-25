@@ -118,6 +118,31 @@ func TestProviderConformance(t *testing.T) {
 			}
 		})
 
+		t.Run(tc.name+"/CreateIssue", func(t *testing.T) {
+			// #2024's GitHub+GitLab parity proof: the same NewIssue is
+			// normalized into the same Issue by both adapters, over
+			// fixtures for each provider's own create-response shape
+			// (GitHub number + label objects; GitLab iid + label strings).
+			issue, err := tc.provider.CreateIssue(context.Background(), tc.conn, tracker.NewIssue{
+				Title:  "follow-up",
+				Body:   "child body\n\nParent: #1",
+				Labels: []string{"scope:architecture", "agent:needs-approval"},
+			})
+			if err != nil {
+				t.Fatalf("CreateIssue: %v", err)
+			}
+			want := tracker.Issue{
+				Number: 7,
+				Title:  "follow-up",
+				Body:   "child body\n\nParent: #1",
+				State:  pb.TrackerIssueState_TRACKER_ISSUE_STATE_OPEN,
+				Labels: []string{"scope:architecture", "agent:needs-approval"},
+			}
+			if !reflect.DeepEqual(issue, want) {
+				t.Errorf("%s CreateIssue = %+v, want %+v", tc.name, issue, want)
+			}
+		})
+
 		t.Run(tc.name+"/OpenChange", func(t *testing.T) {
 			change, err := tc.provider.OpenChange(context.Background(), tc.conn, tracker.OpenChangeRequest{
 				HeadBranch:  "agent/run-1/6-conformance-change",
@@ -182,6 +207,9 @@ func newGitHubFixture(t *testing.T, fixedTime time.Time) string {
 			w.WriteHeader(http.StatusOK)
 		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/repos/acme/widgets/issues/5/labels/"):
 			w.WriteHeader(http.StatusOK)
+		case r.URL.Path == "/repos/acme/widgets/issues" && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"number": 7, "title": "follow-up", "body": "child body\n\nParent: #1", "state": "open", "labels": [{"name": "scope:architecture"}, {"name": "agent:needs-approval"}], "assignee": null}`))
 		case r.URL.Path == "/repos/acme/widgets/pulls" && r.Method == http.MethodPost:
 			w.WriteHeader(http.StatusCreated)
 			_, _ = w.Write([]byte(`{"number": 6, "state": "open", "merged": false, "html_url": "https://github.com/acme/widgets/pull/6"}`))
@@ -231,6 +259,9 @@ func newGitLabFixture(t *testing.T, fixedTime time.Time) string {
 			writeJSON(w, `{}`)
 		case r.URL.EscapedPath() == "/api/v4/projects/acme%2Fwidgets/issues/5" && r.Method == http.MethodPut:
 			writeJSON(w, `{}`)
+		case r.URL.EscapedPath() == "/api/v4/projects/acme%2Fwidgets/issues" && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id": 9999, "iid": 7, "title": "follow-up", "description": "child body\n\nParent: #1", "state": "opened", "labels": ["scope:architecture", "agent:needs-approval"], "assignee": null}`))
 		case r.URL.EscapedPath() == "/api/v4/projects/acme%2Fwidgets/merge_requests" && r.Method == http.MethodPost:
 			w.WriteHeader(http.StatusCreated)
 			_, _ = w.Write([]byte(`{"iid": 6, "state": "opened", "web_url": "https://gitlab.com/acme/widgets/-/merge_requests/6", "head_pipeline": null}`))

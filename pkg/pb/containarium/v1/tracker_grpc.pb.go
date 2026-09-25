@@ -26,6 +26,8 @@ const (
 	TrackerService_SetTrackerRoute_FullMethodName         = "/containarium.v1.TrackerService/SetTrackerRoute"
 	TrackerService_ListTrackerRoutes_FullMethodName       = "/containarium.v1.TrackerService/ListTrackerRoutes"
 	TrackerService_DeleteTrackerRoute_FullMethodName      = "/containarium.v1.TrackerService/DeleteTrackerRoute"
+	TrackerService_DispatchTrackerIssues_FullMethodName   = "/containarium.v1.TrackerService/DispatchTrackerIssues"
+	TrackerService_ListTrackerDispatches_FullMethodName   = "/containarium.v1.TrackerService/ListTrackerDispatches"
 	TrackerService_GetTrackerStatus_FullMethodName        = "/containarium.v1.TrackerService/GetTrackerStatus"
 	TrackerService_GetTrackerIssue_FullMethodName         = "/containarium.v1.TrackerService/GetTrackerIssue"
 	TrackerService_ListTrackerIssues_FullMethodName       = "/containarium.v1.TrackerService/ListTrackerIssues"
@@ -33,6 +35,7 @@ const (
 	TrackerService_CommentOnTrackerIssue_FullMethodName   = "/containarium.v1.TrackerService/CommentOnTrackerIssue"
 	TrackerService_ClaimTrackerIssue_FullMethodName       = "/containarium.v1.TrackerService/ClaimTrackerIssue"
 	TrackerService_SetTrackerIssueLabels_FullMethodName   = "/containarium.v1.TrackerService/SetTrackerIssueLabels"
+	TrackerService_CreateTrackerIssue_FullMethodName      = "/containarium.v1.TrackerService/CreateTrackerIssue"
 	TrackerService_SubmitTrackerChange_FullMethodName     = "/containarium.v1.TrackerService/SubmitTrackerChange"
 )
 
@@ -62,6 +65,10 @@ type TrackerServiceClient interface {
 	ListTrackerRoutes(ctx context.Context, in *ListTrackerRoutesRequest, opts ...grpc.CallOption) (*ListTrackerRoutesResponse, error)
 	// DeleteTrackerRoute removes one scope route.
 	DeleteTrackerRoute(ctx context.Context, in *DeleteTrackerRouteRequest, opts ...grpc.CallOption) (*DeleteTrackerRouteResponse, error)
+	// DispatchTrackerIssues runs one dispatcher tick for a connection.
+	DispatchTrackerIssues(ctx context.Context, in *DispatchTrackerIssuesRequest, opts ...grpc.CallOption) (*DispatchTrackerIssuesResponse, error)
+	// ListTrackerDispatches returns a connection's dispatch rows.
+	ListTrackerDispatches(ctx context.Context, in *ListTrackerDispatchesRequest, opts ...grpc.CallOption) (*ListTrackerDispatchesResponse, error)
 	// GetTrackerStatus probes a connection's credential live, against the
 	// tracker itself.
 	GetTrackerStatus(ctx context.Context, in *GetTrackerStatusRequest, opts ...grpc.CallOption) (*GetTrackerStatusResponse, error)
@@ -79,6 +86,8 @@ type TrackerServiceClient interface {
 	ClaimTrackerIssue(ctx context.Context, in *ClaimTrackerIssueRequest, opts ...grpc.CallOption) (*ClaimTrackerIssueResponse, error)
 	// SetTrackerIssueLabels adds and/or removes labels on an issue.
 	SetTrackerIssueLabels(ctx context.Context, in *SetTrackerIssueLabelsRequest, opts ...grpc.CallOption) (*SetTrackerIssueLabelsResponse, error)
+	// CreateTrackerIssue files a follow-up issue (#2024).
+	CreateTrackerIssue(ctx context.Context, in *CreateTrackerIssueRequest, opts ...grpc.CallOption) (*CreateTrackerIssueResponse, error)
 	// SubmitTrackerChange publishes the calling run's committed workspace
 	// and opens a change request, without a push credential ever
 	// entering the box.
@@ -163,6 +172,26 @@ func (c *trackerServiceClient) DeleteTrackerRoute(ctx context.Context, in *Delet
 	return out, nil
 }
 
+func (c *trackerServiceClient) DispatchTrackerIssues(ctx context.Context, in *DispatchTrackerIssuesRequest, opts ...grpc.CallOption) (*DispatchTrackerIssuesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DispatchTrackerIssuesResponse)
+	err := c.cc.Invoke(ctx, TrackerService_DispatchTrackerIssues_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *trackerServiceClient) ListTrackerDispatches(ctx context.Context, in *ListTrackerDispatchesRequest, opts ...grpc.CallOption) (*ListTrackerDispatchesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListTrackerDispatchesResponse)
+	err := c.cc.Invoke(ctx, TrackerService_ListTrackerDispatches_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *trackerServiceClient) GetTrackerStatus(ctx context.Context, in *GetTrackerStatusRequest, opts ...grpc.CallOption) (*GetTrackerStatusResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetTrackerStatusResponse)
@@ -233,6 +262,16 @@ func (c *trackerServiceClient) SetTrackerIssueLabels(ctx context.Context, in *Se
 	return out, nil
 }
 
+func (c *trackerServiceClient) CreateTrackerIssue(ctx context.Context, in *CreateTrackerIssueRequest, opts ...grpc.CallOption) (*CreateTrackerIssueResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateTrackerIssueResponse)
+	err := c.cc.Invoke(ctx, TrackerService_CreateTrackerIssue_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *trackerServiceClient) SubmitTrackerChange(ctx context.Context, in *SubmitTrackerChangeRequest, opts ...grpc.CallOption) (*SubmitTrackerChangeResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SubmitTrackerChangeResponse)
@@ -269,6 +308,10 @@ type TrackerServiceServer interface {
 	ListTrackerRoutes(context.Context, *ListTrackerRoutesRequest) (*ListTrackerRoutesResponse, error)
 	// DeleteTrackerRoute removes one scope route.
 	DeleteTrackerRoute(context.Context, *DeleteTrackerRouteRequest) (*DeleteTrackerRouteResponse, error)
+	// DispatchTrackerIssues runs one dispatcher tick for a connection.
+	DispatchTrackerIssues(context.Context, *DispatchTrackerIssuesRequest) (*DispatchTrackerIssuesResponse, error)
+	// ListTrackerDispatches returns a connection's dispatch rows.
+	ListTrackerDispatches(context.Context, *ListTrackerDispatchesRequest) (*ListTrackerDispatchesResponse, error)
 	// GetTrackerStatus probes a connection's credential live, against the
 	// tracker itself.
 	GetTrackerStatus(context.Context, *GetTrackerStatusRequest) (*GetTrackerStatusResponse, error)
@@ -286,6 +329,8 @@ type TrackerServiceServer interface {
 	ClaimTrackerIssue(context.Context, *ClaimTrackerIssueRequest) (*ClaimTrackerIssueResponse, error)
 	// SetTrackerIssueLabels adds and/or removes labels on an issue.
 	SetTrackerIssueLabels(context.Context, *SetTrackerIssueLabelsRequest) (*SetTrackerIssueLabelsResponse, error)
+	// CreateTrackerIssue files a follow-up issue (#2024).
+	CreateTrackerIssue(context.Context, *CreateTrackerIssueRequest) (*CreateTrackerIssueResponse, error)
 	// SubmitTrackerChange publishes the calling run's committed workspace
 	// and opens a change request, without a push credential ever
 	// entering the box.
@@ -321,6 +366,12 @@ func (UnimplementedTrackerServiceServer) ListTrackerRoutes(context.Context, *Lis
 func (UnimplementedTrackerServiceServer) DeleteTrackerRoute(context.Context, *DeleteTrackerRouteRequest) (*DeleteTrackerRouteResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteTrackerRoute not implemented")
 }
+func (UnimplementedTrackerServiceServer) DispatchTrackerIssues(context.Context, *DispatchTrackerIssuesRequest) (*DispatchTrackerIssuesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DispatchTrackerIssues not implemented")
+}
+func (UnimplementedTrackerServiceServer) ListTrackerDispatches(context.Context, *ListTrackerDispatchesRequest) (*ListTrackerDispatchesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListTrackerDispatches not implemented")
+}
 func (UnimplementedTrackerServiceServer) GetTrackerStatus(context.Context, *GetTrackerStatusRequest) (*GetTrackerStatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetTrackerStatus not implemented")
 }
@@ -341,6 +392,9 @@ func (UnimplementedTrackerServiceServer) ClaimTrackerIssue(context.Context, *Cla
 }
 func (UnimplementedTrackerServiceServer) SetTrackerIssueLabels(context.Context, *SetTrackerIssueLabelsRequest) (*SetTrackerIssueLabelsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetTrackerIssueLabels not implemented")
+}
+func (UnimplementedTrackerServiceServer) CreateTrackerIssue(context.Context, *CreateTrackerIssueRequest) (*CreateTrackerIssueResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateTrackerIssue not implemented")
 }
 func (UnimplementedTrackerServiceServer) SubmitTrackerChange(context.Context, *SubmitTrackerChangeRequest) (*SubmitTrackerChangeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SubmitTrackerChange not implemented")
@@ -492,6 +546,42 @@ func _TrackerService_DeleteTrackerRoute_Handler(srv interface{}, ctx context.Con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _TrackerService_DispatchTrackerIssues_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DispatchTrackerIssuesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TrackerServiceServer).DispatchTrackerIssues(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TrackerService_DispatchTrackerIssues_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TrackerServiceServer).DispatchTrackerIssues(ctx, req.(*DispatchTrackerIssuesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TrackerService_ListTrackerDispatches_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListTrackerDispatchesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TrackerServiceServer).ListTrackerDispatches(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TrackerService_ListTrackerDispatches_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TrackerServiceServer).ListTrackerDispatches(ctx, req.(*ListTrackerDispatchesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _TrackerService_GetTrackerStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetTrackerStatusRequest)
 	if err := dec(in); err != nil {
@@ -618,6 +708,24 @@ func _TrackerService_SetTrackerIssueLabels_Handler(srv interface{}, ctx context.
 	return interceptor(ctx, in, info, handler)
 }
 
+func _TrackerService_CreateTrackerIssue_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateTrackerIssueRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TrackerServiceServer).CreateTrackerIssue(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TrackerService_CreateTrackerIssue_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TrackerServiceServer).CreateTrackerIssue(ctx, req.(*CreateTrackerIssueRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _TrackerService_SubmitTrackerChange_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SubmitTrackerChangeRequest)
 	if err := dec(in); err != nil {
@@ -672,6 +780,14 @@ var TrackerService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _TrackerService_DeleteTrackerRoute_Handler,
 		},
 		{
+			MethodName: "DispatchTrackerIssues",
+			Handler:    _TrackerService_DispatchTrackerIssues_Handler,
+		},
+		{
+			MethodName: "ListTrackerDispatches",
+			Handler:    _TrackerService_ListTrackerDispatches_Handler,
+		},
+		{
 			MethodName: "GetTrackerStatus",
 			Handler:    _TrackerService_GetTrackerStatus_Handler,
 		},
@@ -698,6 +814,10 @@ var TrackerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetTrackerIssueLabels",
 			Handler:    _TrackerService_SetTrackerIssueLabels_Handler,
+		},
+		{
+			MethodName: "CreateTrackerIssue",
+			Handler:    _TrackerService_CreateTrackerIssue_Handler,
 		},
 		{
 			MethodName: "SubmitTrackerChange",

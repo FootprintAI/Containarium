@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/footprintai/containarium/internal/client"
@@ -46,14 +47,47 @@ var trackerIssueLabelCmd = &cobra.Command{
 	RunE: runTrackerIssueLabel,
 }
 
+var trackerIssueCreateCmd = &cobra.Command{
+	Use:   "create <username> <connection> --title <text> [--body <text>] [--label <label>]... [--parent <number>]",
+	Short: "File a follow-up issue on the tracker",
+	Long: `Files an issue on the tracker the named connection points at (#2024).
+
+Labels must pass the connection's label allow-list (set with
+"tracker connect --label-allow"; default scope:*, model:*,
+agent:needs-approval) — anything else is rejected before the tracker is
+touched. A run-scoped token must name --parent: the follow-up is linked
+to it, recorded in the issue lineage (bounded by the connection's
+--max-depth / --max-children), filed with agent:needs-approval unless
+the connection auto-chains, and stamped with the run's identity; the
+parent gets one back-link comment.
+
+Example:
+  containarium tracker issue create alice default \
+    --title "Design: widget API" --body "From the product run." \
+    --label scope:architecture --parent 42`,
+	Args: cobra.ExactArgs(2),
+	RunE: runTrackerIssueCreate,
+}
+
 var (
-	trackerIssueCommentBody string
-	trackerIssueClaimStale  time.Duration
-	trackerIssueLabelAdd    []string
-	trackerIssueLabelRemove []string
+	trackerIssueCommentBody  string
+	trackerIssueClaimStale   time.Duration
+	trackerIssueLabelAdd     []string
+	trackerIssueLabelRemove  []string
+	trackerIssueCreateTitle  string
+	trackerIssueCreateBody   string
+	trackerIssueCreateLabels []string
+	trackerIssueCreateParent int64
 )
 
 func init() {
+	trackerIssueCmd.AddCommand(trackerIssueCreateCmd)
+	trackerIssueCreateCmd.Flags().StringVar(&trackerIssueCreateTitle, "title", "", "Issue title (required)")
+	trackerIssueCreateCmd.Flags().StringVar(&trackerIssueCreateBody, "body", "", "Issue body")
+	trackerIssueCreateCmd.Flags().StringArrayVar(&trackerIssueCreateLabels, "label", nil, "Label to apply (repeat for multiple); must pass the connection's allow-list")
+	trackerIssueCreateCmd.Flags().Int64Var(&trackerIssueCreateParent, "parent", 0, "Parent issue number (required for a run-scoped token)")
+	_ = trackerIssueCreateCmd.MarkFlagRequired("title")
+
 	trackerIssueCmd.AddCommand(trackerIssueCommentCmd)
 	trackerIssueCommentCmd.Flags().StringVar(&trackerIssueCommentBody, "body", "", "Comment text (required)")
 	_ = trackerIssueCommentCmd.MarkFlagRequired("body")
@@ -65,6 +99,69 @@ func init() {
 	trackerIssueCmd.AddCommand(trackerIssueLabelCmd)
 	trackerIssueLabelCmd.Flags().StringArrayVar(&trackerIssueLabelAdd, "add", nil, "Label to add (repeat for multiple)")
 	trackerIssueLabelCmd.Flags().StringArrayVar(&trackerIssueLabelRemove, "remove", nil, "Label to remove (repeat for multiple)")
+}
+
+// buildCreateTrackerIssueRequest validates the `issue create` flags into
+// the request. Whether a parent is required is the daemon's call (it
+// depends on the token), so 0 is accepted here; only a negative parent,
+// an empty title, or a blank label is rejected client-side.
+func buildCreateTrackerIssueRequest(username, connection, title, body string, labels []string, parent int64) (*pb.CreateTrackerIssueRequest, error) {
+	if strings.TrimSpace(title) == "" {
+		return nil, fmt.Errorf("--title is required")
+	}
+	if parent < 0 {
+		return nil, fmt.Errorf("--parent must not be negative")
+	}
+	req := &pb.CreateTrackerIssueRequest{
+		Username: username, Connection: connection,
+		Title: title, Body: body, ParentNumber: parent,
+	}
+	for _, l := range labels {
+		l = strings.TrimSpace(l)
+		if l == "" {
+			return nil, fmt.Errorf("--label entries must not be empty")
+		}
+		req.Labels = append(req.Labels, l)
+	}
+	return req, nil
+}
+
+func runTrackerIssueCreate(cmd *cobra.Command, args []string) error {
+	username, connection := args[0], args[1]
+	if serverAddr == "" {
+		return fmt.Errorf("--server is required for tracker commands")
+	}
+	req, err := buildCreateTrackerIssueRequest(username, connection, trackerIssueCreateTitle, trackerIssueCreateBody, trackerIssueCreateLabels, trackerIssueCreateParent)
+	if err != nil {
+		return err
+	}
+
+	var issue *pb.TrackerIssue
+	if httpMode {
+		h, err := client.NewHTTPClient(serverAddr, authToken)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = h.Close() }()
+		if issue, err = h.CreateTrackerIssue(req); err != nil {
+			return err
+		}
+	} else {
+		g, err := client.NewGRPCClient(serverAddr, certsDir, insecure)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = g.Close() }()
+		if issue, err = g.CreateTrackerIssue(req); err != nil {
+			return err
+		}
+	}
+
+	fmt.Printf("created #%d %s\n", issue.GetNumber(), issue.GetTitle())
+	if len(issue.GetLabels()) > 0 {
+		fmt.Printf("labels:  %s\n", strings.Join(issue.GetLabels(), ", "))
+	}
+	return nil
 }
 
 func runTrackerIssueComment(cmd *cobra.Command, args []string) error {

@@ -34,6 +34,9 @@ const (
 	// then be treated as superseded, never selected as the current
 	// holder. See latestClaim.
 	KindYield StampKind = "yield"
+	// KindIssue marks the body of an issue a run filed through
+	// CreateTrackerIssue (#2024).
+	KindIssue StampKind = "issue"
 )
 
 // runIDShortLen bounds the run id shown in the visible signature line —

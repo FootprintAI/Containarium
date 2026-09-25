@@ -342,6 +342,76 @@ func (s *AgentSkillServer) GetAgentSkill(ctx context.Context, req *pb.GetAgentSk
 //     are a later concern (see docs/EPHEMERAL-SANDBOX-DESIGN.md).
 //   - allowed_peers is inert until Phase 2 (eBPF enforcement).
 func (s *AgentSkillServer) RunAgentSkill(ctx context.Context, req *pb.RunAgentSkillRequest) (*pb.RunAgentSkillResponse, error) {
+	run, err := s.beginSkillRun(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	runID, containerName, box, lease, gitCommit, workspacePath := run.runID, run.containerName, run.box, run.lease, run.gitCommit, run.workspacePath
+	// The defer sits AFTER beginSkillRun on purpose: a run that failed to
+	// provision has nothing left to end (see beginSkillRun).
+	defer s.endRunLease(ctx, lease, s.boxWiper(), runExitReason)
+
+	// Run the in-box agent loop (Phase 4a) and read its artifact back.
+	// Best-effort: until the box image ships agent-runtime + agent-box this
+	// degrades to an empty artifact (prior behavior), so a base-image box never
+	// fails the run.
+	//
+	// Note on "caller-cancel": runInBoxAgent takes no context (it goes through
+	// ExecWithOutput), so cancelling the RPC does NOT interrupt the in-box
+	// process — the lease ends when the exec returns, under a detached context.
+	// Making the exec cancellable is a separate change and doesn't alter this.
+	//
+	// #1860: this read happens before the function returns, and `defer`s run
+	// after a function's return values are computed but before it returns to
+	// its caller — so artifact.json is always read into this Go string BEFORE
+	// endRunLease's directory removal ever runs. A run whose artifact was
+	// returned never loses it to the wipe.
+	artifact := s.runInBoxAgent(containerName, lease.SeedDir)
+	return &pb.RunAgentSkillResponse{
+		Container:     box,
+		ArtifactJson:  artifact,
+		RunId:         runID,
+		GitCommit:     gitCommit,
+		WorkspacePath: workspacePath,
+	}, nil
+}
+
+// startedSkillRun is what beginSkillRun hands back: a provisioned,
+// registered run whose lease the caller must end (endRunLease) once the
+// in-box agent returns.
+type startedSkillRun struct {
+	runID, containerName     string
+	box                      *pb.Container
+	lease                    runlease.Lease
+	gitCommit, workspacePath string
+}
+
+// beginSkillRun is RunAgentSkill up to (and including) registering the
+// run: scope check, run id, tracker_connection validation against the
+// caller's tenant, catalog lookup, box provisioning with the run JWT
+// minted (bound to tracker_connection), and run registration. Shared by
+// RunAgentSkill and the tracker dispatcher's RunStarter (#2022) so a
+// dispatched run goes through exactly the same path. On error nothing is
+// left to end: provisionSkillBox ends a partially minted lease itself.
+func (s *AgentSkillServer) beginSkillRun(ctx context.Context, req *pb.RunAgentSkillRequest) (*startedSkillRun, error) {
+	return s.beginSkillRunWith(ctx, req, provisionOptions{})
+}
+
+// provisionOptions are the internal knobs a caller of beginSkillRunWith
+// can set that the public RunAgentSkill contract does not expose.
+type provisionOptions struct {
+	// gitSourceBestEffort keeps a run going without a workspace when
+	// its git_source cannot be fetched. A tracker-dispatched run (#2023)
+	// sets it: its git_source is the connection's repository fetched
+	// with NO credential (none may enter the box), which fails for a
+	// private repository — that run must still read the issue and post
+	// its result comment; only the doc change (SubmitTrackerChange,
+	// which needs a recorded git_commit) is unavailable to it.
+	gitSourceBestEffort bool
+}
+
+// beginSkillRunWith is beginSkillRun with internal provisioning options.
+func (s *AgentSkillServer) beginSkillRunWith(ctx context.Context, req *pb.RunAgentSkillRequest, opts provisionOptions) (*startedSkillRun, error) {
 	if err := auth.RequireScope(ctx, auth.ScopeAgentsRun); err != nil {
 		return nil, err
 	}
@@ -370,18 +440,20 @@ func (s *AgentSkillServer) RunAgentSkill(ctx context.Context, req *pb.RunAgentSk
 		return nil, status.Error(codes.NotFound, err.Error())
 	}
 
-	containerName, box, lease, gitCommit, workspacePath, err := s.provisionSkillBox(ctx, skill, req.BackendId, req.Pool, req.InputJson, runID,
-		req.GetGitSource(), req.GetGitRef(), req.GetGitCredential(), req.GetTrackerConnection())
+	containerName, box, lease, gitCommit, workspacePath, err := s.provisionSkillBoxWith(ctx, skill, req.BackendId, req.Pool, req.InputJson, runID,
+		req.GetGitSource(), req.GetGitRef(), req.GetGitCredential(), req.GetTrackerConnection(), opts)
 	if err != nil {
 		return nil, err
 	}
 
-	// The run holds its credentials for exactly as long as the run (#1817). The
-	// defer sits AFTER provisioning on purpose: a provisioning failure has
-	// nothing to end but a partially minted lease, which provisionSkillBox ends
-	// itself before returning its error. From here on every exit path — the
-	// artifact below, an agent error, a cancelled caller — revokes both jtis and
-	// wipes the seed files.
+	// The run holds its credentials for exactly as long as the run (#1817). A
+	// provisioning failure has nothing to end but a partially minted lease,
+	// which provisionSkillBox ends itself before returning its error — which
+	// is why the callers' `defer endRunLease` (RunAgentSkill, and
+	// finishDispatchedRun for a dispatched run) only exists once this
+	// function has returned a run. From there every exit path — the artifact,
+	// an agent error, a cancelled caller — revokes both jtis and wipes the
+	// seed files.
 	//
 	// RESOLVED (#1860) — the box is still shared by skill id ("agent-"+skill.Id,
 	// see provisionSkillBox), but the seed directory no longer is: every run,
@@ -415,30 +487,9 @@ func (s *AgentSkillServer) RunAgentSkill(ctx context.Context, req *pb.RunAgentSk
 			GitRef:    req.GetGitRef(),
 		})
 	}
-	defer s.endRunLease(ctx, lease, s.boxWiper(), runExitReason)
-
-	// Run the in-box agent loop (Phase 4a) and read its artifact back.
-	// Best-effort: until the box image ships agent-runtime + agent-box this
-	// degrades to an empty artifact (prior behavior), so a base-image box never
-	// fails the run.
-	//
-	// Note on "caller-cancel": runInBoxAgent takes no context (it goes through
-	// ExecWithOutput), so cancelling the RPC does NOT interrupt the in-box
-	// process — the lease ends when the exec returns, under a detached context.
-	// Making the exec cancellable is a separate change and doesn't alter this.
-	//
-	// #1860: this read happens before the function returns, and `defer`s run
-	// after a function's return values are computed but before it returns to
-	// its caller — so artifact.json is always read into this Go string BEFORE
-	// endRunLease's directory removal ever runs. A run whose artifact was
-	// returned never loses it to the wipe.
-	artifact := s.runInBoxAgent(containerName, lease.SeedDir)
-	return &pb.RunAgentSkillResponse{
-		Container:     box,
-		ArtifactJson:  artifact,
-		RunId:         runID,
-		GitCommit:     gitCommit,
-		WorkspacePath: workspacePath,
+	return &startedSkillRun{
+		runID: runID, containerName: containerName, box: box, lease: lease,
+		gitCommit: gitCommit, workspacePath: workspacePath,
 	}, nil
 }
 
@@ -611,6 +662,11 @@ var runForbiddenScopes = []string{auth.ScopeTrackerAdmin}
 // already overwrite each other's seed files; #1860 gives both their own
 // per-run directory.
 func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.AgentSkill, backendID, pool, inputJSON, runID, gitSource, gitRef, gitCredential, trackerConnection string) (containerName string, box *pb.Container, lease runlease.Lease, gitCommit, workspacePath string, err error) {
+	return s.provisionSkillBoxWith(ctx, skill, backendID, pool, inputJSON, runID, gitSource, gitRef, gitCredential, trackerConnection, provisionOptions{})
+}
+
+// provisionSkillBoxWith is provisionSkillBox with internal options.
+func (s *AgentSkillServer) provisionSkillBoxWith(ctx context.Context, skill *pb.AgentSkill, backendID, pool, inputJSON, runID, gitSource, gitRef, gitCredential, trackerConnection string, opts provisionOptions) (containerName string, box *pb.Container, lease runlease.Lease, gitCommit, workspacePath string, err error) {
 	var noLease runlease.Lease
 
 	// Phase 0 supports only the recipe_id box form (catalog skills). Inline
@@ -762,7 +818,13 @@ func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.Agen
 			Credential:    gitCredential,
 			WorkspacePath: workspacePath,
 		})
-		if ferr != nil {
+		if ferr != nil && opts.gitSourceBestEffort {
+			// The (empty) workspace dir stays on the lease for the wipe;
+			// the run is registered with no git_commit, so
+			// SubmitTrackerChange answers FAILED_PRECONDITION for it.
+			log.Printf("[agent-skill] run %s: git fetch into %s failed; continuing without a workspace: %v", runID, containerName, ferr)
+			workspacePath = ""
+		} else if ferr != nil {
 			s.endRunLease(ctx, lease, s.boxWiper(), provisionFailedReason)
 			return "", nil, noLease, "", "", status.Errorf(codes.FailedPrecondition, "git fetch into agent box %s failed: %v", containerName, ferr)
 		}
@@ -773,14 +835,16 @@ func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.Agen
 		// AGENTBOX_ROOT or cite the commit in its own words, not that the
 		// fetch it describes was wrong (already durable in gitCommit/
 		// workspacePath above, and reported in the RPC response either way).
-		wsScript := buildWorkspaceSeedScript(seedDir, workspaceSeed{
-			Path:      workspacePath,
-			GitSource: gitSource,
-			GitRef:    gitRef,
-			GitCommit: gitCommit,
-		})
-		if werr := s.recipes.containers.manager.Exec(containerName, []string{"bash", "-c", wsScript}); werr != nil {
-			log.Printf("[agent-skill] workspace.json seed failed for %s (runtime won't see the workspace path via the contract file): %v", containerName, werr)
+		if ferr == nil {
+			wsScript := buildWorkspaceSeedScript(seedDir, workspaceSeed{
+				Path:      workspacePath,
+				GitSource: gitSource,
+				GitRef:    gitRef,
+				GitCommit: gitCommit,
+			})
+			if werr := s.recipes.containers.manager.Exec(containerName, []string{"bash", "-c", wsScript}); werr != nil {
+				log.Printf("[agent-skill] workspace.json seed failed for %s (runtime won't see the workspace path via the contract file): %v", containerName, werr)
+			}
 		}
 	}
 
@@ -871,8 +935,21 @@ func (s *AgentSkillServer) startServeMode(containerName, seedDir string) {
 // (runtime absent, exec error, bad artifact) logs and returns "" rather than
 // failing RunAgentSkill — the box is still provisioned + gated + traced.
 func (s *AgentSkillServer) runInBoxAgent(containerName, seedDir string) string {
-	if s.recipes == nil || s.recipes.containers == nil || s.recipes.containers.manager == nil {
+	out, err := s.runInBoxAgentResult(containerName, seedDir)
+	if err != nil {
+		log.Printf("[agent-skill] %v", err)
 		return ""
+	}
+	return out
+}
+
+// runInBoxAgentResult is runInBoxAgent with the reason a run produced
+// nothing kept as an error — a dispatched run (#2023) records it as the
+// dispatch row's failure_reason. The error text never includes the
+// box's stderr beyond what runInBoxAgent already logged.
+func (s *AgentSkillServer) runInBoxAgentResult(containerName, seedDir string) (string, error) {
+	if s.recipes == nil || s.recipes.containers == nil || s.recipes.containers.manager == nil {
+		return "", fmt.Errorf("no container manager to run the in-box agent on %s", containerName)
 	}
 	mgr := s.recipes.containers.manager
 
@@ -880,20 +957,18 @@ func (s *AgentSkillServer) runInBoxAgent(containerName, seedDir string) string {
 		[]string{"bash", "-lc", sourceGatewayEnvPrefix(seedDir) + s.engineEnvPrefix() + "AGENT_SEED_DIR=" + seedDir + " agent-runtime"}); err != nil {
 		log.Printf("[agent-skill] in-box runtime did not run on %s (image may not ship it yet): %v; stderr=%s",
 			containerName, err, strings.TrimSpace(stderr))
-		return ""
+		return "", fmt.Errorf("in-box runtime did not run on %s: %w", containerName, err)
 	}
 
 	raw, err := mgr.ReadFile(containerName, seedDir+"/artifact.json")
 	if err != nil {
-		log.Printf("[agent-skill] could not read artifact from %s: %v", containerName, err)
-		return ""
+		return "", fmt.Errorf("could not read artifact from %s: %w", containerName, err)
 	}
 	out, err := parseArtifactOutput(raw)
 	if err != nil {
-		log.Printf("[agent-skill] in-box agent on %s reported an error: %v", containerName, err)
-		return ""
+		return "", fmt.Errorf("in-box agent on %s reported an error: %w", containerName, err)
 	}
-	return out
+	return out, nil
 }
 
 // parseArtifactOutput extracts the agent's output JSON from artifact.json

@@ -118,6 +118,20 @@ type WriterProvider interface {
 	// commenter, so a marker whose comment Author isn't this identity
 	// must never be treated as claim state.
 	WhoAmI(ctx context.Context, c Conn) (login string, err error)
+	// CreateIssue files an issue and returns it normalized exactly as
+	// GetIssue would (#2024). Body arrives fully composed — sanitized,
+	// parent link and identity stamp already appended by the daemon —
+	// and Labels already allow-listed; the adapter only translates to
+	// the provider's wire shape (GitHub: labels array; GitLab:
+	// description + comma-joined labels).
+	CreateIssue(ctx context.Context, c Conn, n NewIssue) (Issue, error)
+}
+
+// NewIssue is CreateIssue's input.
+type NewIssue struct {
+	Title  string
+	Body   string
+	Labels []string
 }
 
 // Provider is the full per-tracker verb set, adding OpenChange (#1923's

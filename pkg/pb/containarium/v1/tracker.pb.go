@@ -265,6 +265,66 @@ func (TrackerCredentialBreadth) EnumDescriptor() ([]byte, []int) {
 	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{3}
 }
 
+// TrackerDispatchState is the durable state of one dispatch row.
+// queued/running are "active" — at most one active row exists per
+// (username, connection, issue) by a partial unique index, which is
+// the whole exactly-once guarantee. done/failed are terminal; a re-run
+// is a new row.
+type TrackerDispatchState int32
+
+const (
+	TrackerDispatchState_TRACKER_DISPATCH_STATE_UNSPECIFIED TrackerDispatchState = 0
+	TrackerDispatchState_TRACKER_DISPATCH_STATE_QUEUED      TrackerDispatchState = 1
+	TrackerDispatchState_TRACKER_DISPATCH_STATE_RUNNING     TrackerDispatchState = 2
+	TrackerDispatchState_TRACKER_DISPATCH_STATE_DONE        TrackerDispatchState = 3
+	TrackerDispatchState_TRACKER_DISPATCH_STATE_FAILED      TrackerDispatchState = 4
+)
+
+// Enum value maps for TrackerDispatchState.
+var (
+	TrackerDispatchState_name = map[int32]string{
+		0: "TRACKER_DISPATCH_STATE_UNSPECIFIED",
+		1: "TRACKER_DISPATCH_STATE_QUEUED",
+		2: "TRACKER_DISPATCH_STATE_RUNNING",
+		3: "TRACKER_DISPATCH_STATE_DONE",
+		4: "TRACKER_DISPATCH_STATE_FAILED",
+	}
+	TrackerDispatchState_value = map[string]int32{
+		"TRACKER_DISPATCH_STATE_UNSPECIFIED": 0,
+		"TRACKER_DISPATCH_STATE_QUEUED":      1,
+		"TRACKER_DISPATCH_STATE_RUNNING":     2,
+		"TRACKER_DISPATCH_STATE_DONE":        3,
+		"TRACKER_DISPATCH_STATE_FAILED":      4,
+	}
+)
+
+func (x TrackerDispatchState) Enum() *TrackerDispatchState {
+	p := new(TrackerDispatchState)
+	*p = x
+	return p
+}
+
+func (x TrackerDispatchState) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (TrackerDispatchState) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_tracker_proto_enumTypes[4].Descriptor()
+}
+
+func (TrackerDispatchState) Type() protoreflect.EnumType {
+	return &file_containarium_v1_tracker_proto_enumTypes[4]
+}
+
+func (x TrackerDispatchState) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use TrackerDispatchState.Descriptor instead.
+func (TrackerDispatchState) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{4}
+}
+
 // TrackerConnection is a tenant-scoped record naming where a tracker is
 // and which broker-only secret holds the credential the daemon uses to
 // reach it. The credential itself never appears here or anywhere on this
@@ -291,8 +351,12 @@ type TrackerConnection struct {
 	// so an approaching expiry is visible before agents start failing.
 	// Unset until that lands.
 	CredentialExpiresAt *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=credential_expires_at,json=credentialExpiresAt,proto3" json:"credential_expires_at,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// Connection-level guardrails for agent-filed follow-ups (#2024).
+	// Unset (or any zero-valued field) means the documented defaults —
+	// see TrackerPolicy.
+	Policy        *TrackerPolicy `protobuf:"bytes,8,opt,name=policy,proto3" json:"policy,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *TrackerConnection) Reset() {
@@ -374,6 +438,13 @@ func (x *TrackerConnection) GetCredentialExpiresAt() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *TrackerConnection) GetPolicy() *TrackerPolicy {
+	if x != nil {
+		return x.Policy
+	}
+	return nil
+}
+
 // SetTrackerConnectionRequest creates or updates a tenant's named tracker
 // connection. Idempotent, like SetSecret: repeated calls with the same
 // (username, name) replace the connection's fields.
@@ -389,8 +460,11 @@ type SetTrackerConnectionRequest struct {
 	// the same username. The daemon validates this at write time rather
 	// than trusting the caller.
 	CredentialSecret string `protobuf:"bytes,6,opt,name=credential_secret,json=credentialSecret,proto3" json:"credential_secret,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// Optional guardrails (#2024). Set replaces every field, so an
+	// omitted policy clears any previously stored one back to defaults.
+	Policy        *TrackerPolicy `protobuf:"bytes,7,opt,name=policy,proto3" json:"policy,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SetTrackerConnectionRequest) Reset() {
@@ -463,6 +537,13 @@ func (x *SetTrackerConnectionRequest) GetCredentialSecret() string {
 		return x.CredentialSecret
 	}
 	return ""
+}
+
+func (x *SetTrackerConnectionRequest) GetPolicy() *TrackerPolicy {
+	if x != nil {
+		return x.Policy
+	}
+	return nil
 }
 
 type SetTrackerConnectionResponse struct {
@@ -1207,6 +1288,508 @@ func (x *DeleteTrackerRouteResponse) GetMessage() string {
 	return ""
 }
 
+// TrackerDispatch is one durable dispatch: which issue, which scope
+// label matched, which skill was started as which run, and where the
+// run is in its state machine.
+type TrackerDispatch struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Id          string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Username    string                 `protobuf:"bytes,2,opt,name=username,proto3" json:"username,omitempty"`
+	Connection  string                 `protobuf:"bytes,3,opt,name=connection,proto3" json:"connection,omitempty"`
+	IssueNumber int64                  `protobuf:"varint,4,opt,name=issue_number,json=issueNumber,proto3" json:"issue_number,omitempty"`
+	// The matched label's suffix ("product" for "scope:product").
+	Scope   string `protobuf:"bytes,5,opt,name=scope,proto3" json:"scope,omitempty"`
+	SkillId string `protobuf:"bytes,6,opt,name=skill_id,json=skillId,proto3" json:"skill_id,omitempty"`
+	// The run id the dispatcher chose before starting the run, so the
+	// run JWT's run_id claim and this row always agree.
+	RunId string `protobuf:"bytes,7,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	// Lineage depth of the issue (a human-created issue is 0).
+	Depth int32                `protobuf:"varint,8,opt,name=depth,proto3" json:"depth,omitempty"`
+	State TrackerDispatchState `protobuf:"varint,9,opt,name=state,proto3,enum=containarium.v1.TrackerDispatchState" json:"state,omitempty"`
+	// Set when state is FAILED: why (start-run error, timeout, ...).
+	FailureReason string                 `protobuf:"bytes,10,opt,name=failure_reason,json=failureReason,proto3" json:"failure_reason,omitempty"`
+	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	StartedAt     *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
+	EndedAt       *timestamppb.Timestamp `protobuf:"bytes,13,opt,name=ended_at,json=endedAt,proto3" json:"ended_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TrackerDispatch) Reset() {
+	*x = TrackerDispatch{}
+	mi := &file_containarium_v1_tracker_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TrackerDispatch) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TrackerDispatch) ProtoMessage() {}
+
+func (x *TrackerDispatch) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_tracker_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TrackerDispatch.ProtoReflect.Descriptor instead.
+func (*TrackerDispatch) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *TrackerDispatch) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *TrackerDispatch) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+func (x *TrackerDispatch) GetConnection() string {
+	if x != nil {
+		return x.Connection
+	}
+	return ""
+}
+
+func (x *TrackerDispatch) GetIssueNumber() int64 {
+	if x != nil {
+		return x.IssueNumber
+	}
+	return 0
+}
+
+func (x *TrackerDispatch) GetScope() string {
+	if x != nil {
+		return x.Scope
+	}
+	return ""
+}
+
+func (x *TrackerDispatch) GetSkillId() string {
+	if x != nil {
+		return x.SkillId
+	}
+	return ""
+}
+
+func (x *TrackerDispatch) GetRunId() string {
+	if x != nil {
+		return x.RunId
+	}
+	return ""
+}
+
+func (x *TrackerDispatch) GetDepth() int32 {
+	if x != nil {
+		return x.Depth
+	}
+	return 0
+}
+
+func (x *TrackerDispatch) GetState() TrackerDispatchState {
+	if x != nil {
+		return x.State
+	}
+	return TrackerDispatchState_TRACKER_DISPATCH_STATE_UNSPECIFIED
+}
+
+func (x *TrackerDispatch) GetFailureReason() string {
+	if x != nil {
+		return x.FailureReason
+	}
+	return ""
+}
+
+func (x *TrackerDispatch) GetCreatedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return nil
+}
+
+func (x *TrackerDispatch) GetStartedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.StartedAt
+	}
+	return nil
+}
+
+func (x *TrackerDispatch) GetEndedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.EndedAt
+	}
+	return nil
+}
+
+// TrackerDispatchInput is EXACTLY the run's input_json (protojson
+// encoded) for a dispatched run: the issue REFERENCE and the dispatch
+// id, never the issue body. The run fetches the body itself through
+// GetTrackerIssue under its own tracker:read, so it arrives as
+// brokered, untrusted data like every other read — never smuggled
+// through the launch payload.
+type TrackerDispatchInput struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Connection  string                 `protobuf:"bytes,1,opt,name=connection,proto3" json:"connection,omitempty"`
+	IssueNumber int64                  `protobuf:"varint,2,opt,name=issue_number,json=issueNumber,proto3" json:"issue_number,omitempty"`
+	Scope       string                 `protobuf:"bytes,3,opt,name=scope,proto3" json:"scope,omitempty"`
+	DispatchId  string                 `protobuf:"bytes,4,opt,name=dispatch_id,json=dispatchId,proto3" json:"dispatch_id,omitempty"`
+	Depth       int32                  `protobuf:"varint,5,opt,name=depth,proto3" json:"depth,omitempty"`
+	// The tenant the run is dispatched for (#2023). Every broker verb the
+	// run calls (GetTrackerIssue, CommentOnTrackerIssue,
+	// SubmitTrackerChange) names it; it is the run token's own subject,
+	// so it widens nothing.
+	Username      string `protobuf:"bytes,6,opt,name=username,proto3" json:"username,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TrackerDispatchInput) Reset() {
+	*x = TrackerDispatchInput{}
+	mi := &file_containarium_v1_tracker_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TrackerDispatchInput) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TrackerDispatchInput) ProtoMessage() {}
+
+func (x *TrackerDispatchInput) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_tracker_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TrackerDispatchInput.ProtoReflect.Descriptor instead.
+func (*TrackerDispatchInput) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *TrackerDispatchInput) GetConnection() string {
+	if x != nil {
+		return x.Connection
+	}
+	return ""
+}
+
+func (x *TrackerDispatchInput) GetIssueNumber() int64 {
+	if x != nil {
+		return x.IssueNumber
+	}
+	return 0
+}
+
+func (x *TrackerDispatchInput) GetScope() string {
+	if x != nil {
+		return x.Scope
+	}
+	return ""
+}
+
+func (x *TrackerDispatchInput) GetDispatchId() string {
+	if x != nil {
+		return x.DispatchId
+	}
+	return ""
+}
+
+func (x *TrackerDispatchInput) GetDepth() int32 {
+	if x != nil {
+		return x.Depth
+	}
+	return 0
+}
+
+func (x *TrackerDispatchInput) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+// DispatchTrackerIssuesRequest runs ONE dispatcher tick for a
+// connection: list open issues, filter, insert a dispatch row, start
+// the routed skill, label agent:queued. `containarium tracker
+// dispatch --interval` calls this in a loop.
+type DispatchTrackerIssuesRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Username      string                 `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"`
+	Connection    string                 `protobuf:"bytes,2,opt,name=connection,proto3" json:"connection,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DispatchTrackerIssuesRequest) Reset() {
+	*x = DispatchTrackerIssuesRequest{}
+	mi := &file_containarium_v1_tracker_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DispatchTrackerIssuesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DispatchTrackerIssuesRequest) ProtoMessage() {}
+
+func (x *DispatchTrackerIssuesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_tracker_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DispatchTrackerIssuesRequest.ProtoReflect.Descriptor instead.
+func (*DispatchTrackerIssuesRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *DispatchTrackerIssuesRequest) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+func (x *DispatchTrackerIssuesRequest) GetConnection() string {
+	if x != nil {
+		return x.Connection
+	}
+	return ""
+}
+
+type DispatchTrackerIssuesResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Dispatches this tick inserted and started: RUNNING once the run
+	// registered (#2023), QUEUED if the starter did not report a start.
+	Started []*TrackerDispatch `protobuf:"bytes,1,rep,name=started,proto3" json:"started,omitempty"`
+	// Reserved for the run-timeout sweep (#2026): RUNNING rows this tick
+	// failed for exceeding the connection policy's run timeout.
+	TimedOut []*TrackerDispatch `protobuf:"bytes,2,rep,name=timed_out,json=timedOut,proto3" json:"timed_out,omitempty"`
+	// Issues carrying agent:needs-approval — a human has not released
+	// them yet.
+	SkippedNeedsApproval int32 `protobuf:"varint,3,opt,name=skipped_needs_approval,json=skippedNeedsApproval,proto3" json:"skipped_needs_approval,omitempty"`
+	// Issues already carrying another agent:* state label, or with an
+	// active dispatch row (the exactly-once index said no).
+	SkippedActive int32 `protobuf:"varint,4,opt,name=skipped_active,json=skippedActive,proto3" json:"skipped_active,omitempty"`
+	// Issues whose scope:* label(s) have no route on this connection.
+	// Each gets exactly one stamped warning comment, ever, not one per
+	// tick.
+	SkippedUnrouted int32 `protobuf:"varint,5,opt,name=skipped_unrouted,json=skippedUnrouted,proto3" json:"skipped_unrouted,omitempty"`
+	// Dispatches this tick inserted but could not start (state FAILED,
+	// failure_reason set, issue labeled agent:failed).
+	Failed        []*TrackerDispatch `protobuf:"bytes,6,rep,name=failed,proto3" json:"failed,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DispatchTrackerIssuesResponse) Reset() {
+	*x = DispatchTrackerIssuesResponse{}
+	mi := &file_containarium_v1_tracker_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DispatchTrackerIssuesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DispatchTrackerIssuesResponse) ProtoMessage() {}
+
+func (x *DispatchTrackerIssuesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_tracker_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DispatchTrackerIssuesResponse.ProtoReflect.Descriptor instead.
+func (*DispatchTrackerIssuesResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *DispatchTrackerIssuesResponse) GetStarted() []*TrackerDispatch {
+	if x != nil {
+		return x.Started
+	}
+	return nil
+}
+
+func (x *DispatchTrackerIssuesResponse) GetTimedOut() []*TrackerDispatch {
+	if x != nil {
+		return x.TimedOut
+	}
+	return nil
+}
+
+func (x *DispatchTrackerIssuesResponse) GetSkippedNeedsApproval() int32 {
+	if x != nil {
+		return x.SkippedNeedsApproval
+	}
+	return 0
+}
+
+func (x *DispatchTrackerIssuesResponse) GetSkippedActive() int32 {
+	if x != nil {
+		return x.SkippedActive
+	}
+	return 0
+}
+
+func (x *DispatchTrackerIssuesResponse) GetSkippedUnrouted() int32 {
+	if x != nil {
+		return x.SkippedUnrouted
+	}
+	return 0
+}
+
+func (x *DispatchTrackerIssuesResponse) GetFailed() []*TrackerDispatch {
+	if x != nil {
+		return x.Failed
+	}
+	return nil
+}
+
+// ListTrackerDispatchesRequest enumerates a connection's dispatch
+// rows, newest first.
+type ListTrackerDispatchesRequest struct {
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Username   string                 `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"`
+	Connection string                 `protobuf:"bytes,2,opt,name=connection,proto3" json:"connection,omitempty"`
+	// UNSPECIFIED matches any state.
+	State         TrackerDispatchState `protobuf:"varint,3,opt,name=state,proto3,enum=containarium.v1.TrackerDispatchState" json:"state,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListTrackerDispatchesRequest) Reset() {
+	*x = ListTrackerDispatchesRequest{}
+	mi := &file_containarium_v1_tracker_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListTrackerDispatchesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListTrackerDispatchesRequest) ProtoMessage() {}
+
+func (x *ListTrackerDispatchesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_tracker_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListTrackerDispatchesRequest.ProtoReflect.Descriptor instead.
+func (*ListTrackerDispatchesRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *ListTrackerDispatchesRequest) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+func (x *ListTrackerDispatchesRequest) GetConnection() string {
+	if x != nil {
+		return x.Connection
+	}
+	return ""
+}
+
+func (x *ListTrackerDispatchesRequest) GetState() TrackerDispatchState {
+	if x != nil {
+		return x.State
+	}
+	return TrackerDispatchState_TRACKER_DISPATCH_STATE_UNSPECIFIED
+}
+
+type ListTrackerDispatchesResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Dispatches    []*TrackerDispatch     `protobuf:"bytes,1,rep,name=dispatches,proto3" json:"dispatches,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListTrackerDispatchesResponse) Reset() {
+	*x = ListTrackerDispatchesResponse{}
+	mi := &file_containarium_v1_tracker_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListTrackerDispatchesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListTrackerDispatchesResponse) ProtoMessage() {}
+
+func (x *ListTrackerDispatchesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_tracker_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListTrackerDispatchesResponse.ProtoReflect.Descriptor instead.
+func (*ListTrackerDispatchesResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *ListTrackerDispatchesResponse) GetDispatches() []*TrackerDispatch {
+	if x != nil {
+		return x.Dispatches
+	}
+	return nil
+}
+
 // GetTrackerStatusRequest probes a named connection's credential live,
 // against the tracker itself.
 type GetTrackerStatusRequest struct {
@@ -1219,7 +1802,7 @@ type GetTrackerStatusRequest struct {
 
 func (x *GetTrackerStatusRequest) Reset() {
 	*x = GetTrackerStatusRequest{}
-	mi := &file_containarium_v1_tracker_proto_msgTypes[16]
+	mi := &file_containarium_v1_tracker_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1231,7 +1814,7 @@ func (x *GetTrackerStatusRequest) String() string {
 func (*GetTrackerStatusRequest) ProtoMessage() {}
 
 func (x *GetTrackerStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_tracker_proto_msgTypes[16]
+	mi := &file_containarium_v1_tracker_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1244,7 +1827,7 @@ func (x *GetTrackerStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetTrackerStatusRequest.ProtoReflect.Descriptor instead.
 func (*GetTrackerStatusRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{16}
+	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *GetTrackerStatusRequest) GetUsername() string {
@@ -1301,7 +1884,7 @@ type GetTrackerStatusResponse struct {
 
 func (x *GetTrackerStatusResponse) Reset() {
 	*x = GetTrackerStatusResponse{}
-	mi := &file_containarium_v1_tracker_proto_msgTypes[17]
+	mi := &file_containarium_v1_tracker_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1313,7 +1896,7 @@ func (x *GetTrackerStatusResponse) String() string {
 func (*GetTrackerStatusResponse) ProtoMessage() {}
 
 func (x *GetTrackerStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_tracker_proto_msgTypes[17]
+	mi := &file_containarium_v1_tracker_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1326,7 +1909,7 @@ func (x *GetTrackerStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetTrackerStatusResponse.ProtoReflect.Descriptor instead.
 func (*GetTrackerStatusResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{17}
+	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *GetTrackerStatusResponse) GetConnection() *TrackerConnection {
@@ -1404,7 +1987,7 @@ type TrackerComment struct {
 
 func (x *TrackerComment) Reset() {
 	*x = TrackerComment{}
-	mi := &file_containarium_v1_tracker_proto_msgTypes[18]
+	mi := &file_containarium_v1_tracker_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1416,7 +1999,7 @@ func (x *TrackerComment) String() string {
 func (*TrackerComment) ProtoMessage() {}
 
 func (x *TrackerComment) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_tracker_proto_msgTypes[18]
+	mi := &file_containarium_v1_tracker_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1429,7 +2012,7 @@ func (x *TrackerComment) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TrackerComment.ProtoReflect.Descriptor instead.
 func (*TrackerComment) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{18}
+	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *TrackerComment) GetAuthor() string {
@@ -1479,7 +2062,7 @@ type TrackerIssue struct {
 
 func (x *TrackerIssue) Reset() {
 	*x = TrackerIssue{}
-	mi := &file_containarium_v1_tracker_proto_msgTypes[19]
+	mi := &file_containarium_v1_tracker_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1491,7 +2074,7 @@ func (x *TrackerIssue) String() string {
 func (*TrackerIssue) ProtoMessage() {}
 
 func (x *TrackerIssue) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_tracker_proto_msgTypes[19]
+	mi := &file_containarium_v1_tracker_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1504,7 +2087,7 @@ func (x *TrackerIssue) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TrackerIssue.ProtoReflect.Descriptor instead.
 func (*TrackerIssue) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{19}
+	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *TrackerIssue) GetNumber() int64 {
@@ -1575,7 +2158,7 @@ type TrackerChange struct {
 
 func (x *TrackerChange) Reset() {
 	*x = TrackerChange{}
-	mi := &file_containarium_v1_tracker_proto_msgTypes[20]
+	mi := &file_containarium_v1_tracker_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1587,7 +2170,7 @@ func (x *TrackerChange) String() string {
 func (*TrackerChange) ProtoMessage() {}
 
 func (x *TrackerChange) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_tracker_proto_msgTypes[20]
+	mi := &file_containarium_v1_tracker_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1600,7 +2183,7 @@ func (x *TrackerChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TrackerChange.ProtoReflect.Descriptor instead.
 func (*TrackerChange) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{20}
+	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *TrackerChange) GetNumber() int64 {
@@ -1653,7 +2236,7 @@ type GetTrackerIssueRequest struct {
 
 func (x *GetTrackerIssueRequest) Reset() {
 	*x = GetTrackerIssueRequest{}
-	mi := &file_containarium_v1_tracker_proto_msgTypes[21]
+	mi := &file_containarium_v1_tracker_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1665,7 +2248,7 @@ func (x *GetTrackerIssueRequest) String() string {
 func (*GetTrackerIssueRequest) ProtoMessage() {}
 
 func (x *GetTrackerIssueRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_tracker_proto_msgTypes[21]
+	mi := &file_containarium_v1_tracker_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1678,7 +2261,7 @@ func (x *GetTrackerIssueRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetTrackerIssueRequest.ProtoReflect.Descriptor instead.
 func (*GetTrackerIssueRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{21}
+	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *GetTrackerIssueRequest) GetUsername() string {
@@ -1711,7 +2294,7 @@ type GetTrackerIssueResponse struct {
 
 func (x *GetTrackerIssueResponse) Reset() {
 	*x = GetTrackerIssueResponse{}
-	mi := &file_containarium_v1_tracker_proto_msgTypes[22]
+	mi := &file_containarium_v1_tracker_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1723,7 +2306,7 @@ func (x *GetTrackerIssueResponse) String() string {
 func (*GetTrackerIssueResponse) ProtoMessage() {}
 
 func (x *GetTrackerIssueResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_tracker_proto_msgTypes[22]
+	mi := &file_containarium_v1_tracker_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1736,7 +2319,7 @@ func (x *GetTrackerIssueResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetTrackerIssueResponse.ProtoReflect.Descriptor instead.
 func (*GetTrackerIssueResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{22}
+	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *GetTrackerIssueResponse) GetIssue() *TrackerIssue {
@@ -1767,7 +2350,7 @@ type ListTrackerIssuesRequest struct {
 
 func (x *ListTrackerIssuesRequest) Reset() {
 	*x = ListTrackerIssuesRequest{}
-	mi := &file_containarium_v1_tracker_proto_msgTypes[23]
+	mi := &file_containarium_v1_tracker_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1779,7 +2362,7 @@ func (x *ListTrackerIssuesRequest) String() string {
 func (*ListTrackerIssuesRequest) ProtoMessage() {}
 
 func (x *ListTrackerIssuesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_tracker_proto_msgTypes[23]
+	mi := &file_containarium_v1_tracker_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1792,7 +2375,7 @@ func (x *ListTrackerIssuesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTrackerIssuesRequest.ProtoReflect.Descriptor instead.
 func (*ListTrackerIssuesRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{23}
+	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *ListTrackerIssuesRequest) GetUsername() string {
@@ -1839,7 +2422,7 @@ type ListTrackerIssuesResponse struct {
 
 func (x *ListTrackerIssuesResponse) Reset() {
 	*x = ListTrackerIssuesResponse{}
-	mi := &file_containarium_v1_tracker_proto_msgTypes[24]
+	mi := &file_containarium_v1_tracker_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1851,7 +2434,7 @@ func (x *ListTrackerIssuesResponse) String() string {
 func (*ListTrackerIssuesResponse) ProtoMessage() {}
 
 func (x *ListTrackerIssuesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_tracker_proto_msgTypes[24]
+	mi := &file_containarium_v1_tracker_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1864,7 +2447,7 @@ func (x *ListTrackerIssuesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTrackerIssuesResponse.ProtoReflect.Descriptor instead.
 func (*ListTrackerIssuesResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{24}
+	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *ListTrackerIssuesResponse) GetIssues() []*TrackerIssue {
@@ -1887,7 +2470,7 @@ type GetTrackerChangeRequest struct {
 
 func (x *GetTrackerChangeRequest) Reset() {
 	*x = GetTrackerChangeRequest{}
-	mi := &file_containarium_v1_tracker_proto_msgTypes[25]
+	mi := &file_containarium_v1_tracker_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1899,7 +2482,7 @@ func (x *GetTrackerChangeRequest) String() string {
 func (*GetTrackerChangeRequest) ProtoMessage() {}
 
 func (x *GetTrackerChangeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_tracker_proto_msgTypes[25]
+	mi := &file_containarium_v1_tracker_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1912,7 +2495,7 @@ func (x *GetTrackerChangeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetTrackerChangeRequest.ProtoReflect.Descriptor instead.
 func (*GetTrackerChangeRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{25}
+	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *GetTrackerChangeRequest) GetUsername() string {
@@ -1945,7 +2528,7 @@ type GetTrackerChangeResponse struct {
 
 func (x *GetTrackerChangeResponse) Reset() {
 	*x = GetTrackerChangeResponse{}
-	mi := &file_containarium_v1_tracker_proto_msgTypes[26]
+	mi := &file_containarium_v1_tracker_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1957,7 +2540,7 @@ func (x *GetTrackerChangeResponse) String() string {
 func (*GetTrackerChangeResponse) ProtoMessage() {}
 
 func (x *GetTrackerChangeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_tracker_proto_msgTypes[26]
+	mi := &file_containarium_v1_tracker_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1970,7 +2553,7 @@ func (x *GetTrackerChangeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetTrackerChangeResponse.ProtoReflect.Descriptor instead.
 func (*GetTrackerChangeResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{26}
+	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *GetTrackerChangeResponse) GetChange() *TrackerChange {
@@ -1999,7 +2582,7 @@ type CommentOnTrackerIssueRequest struct {
 
 func (x *CommentOnTrackerIssueRequest) Reset() {
 	*x = CommentOnTrackerIssueRequest{}
-	mi := &file_containarium_v1_tracker_proto_msgTypes[27]
+	mi := &file_containarium_v1_tracker_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2011,7 +2594,7 @@ func (x *CommentOnTrackerIssueRequest) String() string {
 func (*CommentOnTrackerIssueRequest) ProtoMessage() {}
 
 func (x *CommentOnTrackerIssueRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_tracker_proto_msgTypes[27]
+	mi := &file_containarium_v1_tracker_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2024,7 +2607,7 @@ func (x *CommentOnTrackerIssueRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommentOnTrackerIssueRequest.ProtoReflect.Descriptor instead.
 func (*CommentOnTrackerIssueRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{27}
+	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *CommentOnTrackerIssueRequest) GetUsername() string {
@@ -2064,7 +2647,7 @@ type CommentOnTrackerIssueResponse struct {
 
 func (x *CommentOnTrackerIssueResponse) Reset() {
 	*x = CommentOnTrackerIssueResponse{}
-	mi := &file_containarium_v1_tracker_proto_msgTypes[28]
+	mi := &file_containarium_v1_tracker_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2076,7 +2659,7 @@ func (x *CommentOnTrackerIssueResponse) String() string {
 func (*CommentOnTrackerIssueResponse) ProtoMessage() {}
 
 func (x *CommentOnTrackerIssueResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_tracker_proto_msgTypes[28]
+	mi := &file_containarium_v1_tracker_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2089,7 +2672,7 @@ func (x *CommentOnTrackerIssueResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommentOnTrackerIssueResponse.ProtoReflect.Descriptor instead.
 func (*CommentOnTrackerIssueResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{28}
+	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *CommentOnTrackerIssueResponse) GetComment() *TrackerComment {
@@ -2119,7 +2702,7 @@ type ClaimTrackerIssueRequest struct {
 
 func (x *ClaimTrackerIssueRequest) Reset() {
 	*x = ClaimTrackerIssueRequest{}
-	mi := &file_containarium_v1_tracker_proto_msgTypes[29]
+	mi := &file_containarium_v1_tracker_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2131,7 +2714,7 @@ func (x *ClaimTrackerIssueRequest) String() string {
 func (*ClaimTrackerIssueRequest) ProtoMessage() {}
 
 func (x *ClaimTrackerIssueRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_tracker_proto_msgTypes[29]
+	mi := &file_containarium_v1_tracker_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2144,7 +2727,7 @@ func (x *ClaimTrackerIssueRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClaimTrackerIssueRequest.ProtoReflect.Descriptor instead.
 func (*ClaimTrackerIssueRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{29}
+	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *ClaimTrackerIssueRequest) GetUsername() string {
@@ -2193,7 +2776,7 @@ type ClaimTrackerIssueResponse struct {
 
 func (x *ClaimTrackerIssueResponse) Reset() {
 	*x = ClaimTrackerIssueResponse{}
-	mi := &file_containarium_v1_tracker_proto_msgTypes[30]
+	mi := &file_containarium_v1_tracker_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2205,7 +2788,7 @@ func (x *ClaimTrackerIssueResponse) String() string {
 func (*ClaimTrackerIssueResponse) ProtoMessage() {}
 
 func (x *ClaimTrackerIssueResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_tracker_proto_msgTypes[30]
+	mi := &file_containarium_v1_tracker_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2218,7 +2801,7 @@ func (x *ClaimTrackerIssueResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClaimTrackerIssueResponse.ProtoReflect.Descriptor instead.
 func (*ClaimTrackerIssueResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{30}
+	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *ClaimTrackerIssueResponse) GetClaimed() bool {
@@ -2243,11 +2826,11 @@ func (x *ClaimTrackerIssueResponse) GetAssigned() bool {
 }
 
 // SetTrackerIssueLabelsRequest adds and/or removes labels on an issue.
-// The design note calls for checking both lists against a
-// connection-level label allow-list before any upstream call is made;
-// that allow-list does not exist on TrackerConnection yet (tracked
-// separately) — this RPC has no allow-list enforcement of its own
-// until it does.
+// Both lists are checked against the connection's label allow-list
+// (TrackerPolicy.label_allow_list, #2024) BEFORE any upstream call; a
+// run-scoped token can additionally never write the dispatcher's
+// agent:queued / agent:running / agent:done / agent:failed state
+// labels, whatever the allow-list says.
 type SetTrackerIssueLabelsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Username      string                 `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"`
@@ -2261,7 +2844,7 @@ type SetTrackerIssueLabelsRequest struct {
 
 func (x *SetTrackerIssueLabelsRequest) Reset() {
 	*x = SetTrackerIssueLabelsRequest{}
-	mi := &file_containarium_v1_tracker_proto_msgTypes[31]
+	mi := &file_containarium_v1_tracker_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2273,7 +2856,7 @@ func (x *SetTrackerIssueLabelsRequest) String() string {
 func (*SetTrackerIssueLabelsRequest) ProtoMessage() {}
 
 func (x *SetTrackerIssueLabelsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_tracker_proto_msgTypes[31]
+	mi := &file_containarium_v1_tracker_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2286,7 +2869,7 @@ func (x *SetTrackerIssueLabelsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetTrackerIssueLabelsRequest.ProtoReflect.Descriptor instead.
 func (*SetTrackerIssueLabelsRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{31}
+	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *SetTrackerIssueLabelsRequest) GetUsername() string {
@@ -2333,7 +2916,7 @@ type SetTrackerIssueLabelsResponse struct {
 
 func (x *SetTrackerIssueLabelsResponse) Reset() {
 	*x = SetTrackerIssueLabelsResponse{}
-	mi := &file_containarium_v1_tracker_proto_msgTypes[32]
+	mi := &file_containarium_v1_tracker_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2345,7 +2928,7 @@ func (x *SetTrackerIssueLabelsResponse) String() string {
 func (*SetTrackerIssueLabelsResponse) ProtoMessage() {}
 
 func (x *SetTrackerIssueLabelsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_tracker_proto_msgTypes[32]
+	mi := &file_containarium_v1_tracker_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2358,7 +2941,7 @@ func (x *SetTrackerIssueLabelsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetTrackerIssueLabelsResponse.ProtoReflect.Descriptor instead.
 func (*SetTrackerIssueLabelsResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{32}
+	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *SetTrackerIssueLabelsResponse) GetMessage() string {
@@ -2366,6 +2949,235 @@ func (x *SetTrackerIssueLabelsResponse) GetMessage() string {
 		return x.Message
 	}
 	return ""
+}
+
+// TrackerPolicy is a connection's guardrails for agent-filed follow-ups.
+// Zero values mean the documented defaults, so an unset policy and an
+// empty one behave identically.
+type TrackerPolicy struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Glob patterns ('*' matches any run of characters, case-sensitive)
+	// a label must match to be written through CreateTrackerIssue or
+	// SetTrackerIssueLabels. Default: scope:*, model:*,
+	// agent:needs-approval. The dispatcher's agent:queued / running /
+	// done / failed state labels are reserved: a run-scoped token can
+	// never write them even if a pattern here would match.
+	LabelAllowList []string `protobuf:"bytes,1,rep,name=label_allow_list,json=labelAllowList,proto3" json:"label_allow_list,omitempty"`
+	// When true, follow-ups filed by a run are NOT gated with
+	// agent:needs-approval. Default false: a human releases every hop.
+	AutoChain bool `protobuf:"varint,2,opt,name=auto_chain,json=autoChain,proto3" json:"auto_chain,omitempty"`
+	// Maximum lineage depth of an agent-filed follow-up (a human-created
+	// issue is depth 0). Default 3.
+	MaxDepth int32 `protobuf:"varint,3,opt,name=max_depth,json=maxDepth,proto3" json:"max_depth,omitempty"`
+	// Maximum follow-ups one run may file. Default 5.
+	MaxChildrenPerRun int32 `protobuf:"varint,4,opt,name=max_children_per_run,json=maxChildrenPerRun,proto3" json:"max_children_per_run,omitempty"`
+	// Run timeout the dispatcher (#2026) applies. Default 3600.
+	RunTimeoutSeconds int64 `protobuf:"varint,5,opt,name=run_timeout_seconds,json=runTimeoutSeconds,proto3" json:"run_timeout_seconds,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *TrackerPolicy) Reset() {
+	*x = TrackerPolicy{}
+	mi := &file_containarium_v1_tracker_proto_msgTypes[39]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TrackerPolicy) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TrackerPolicy) ProtoMessage() {}
+
+func (x *TrackerPolicy) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_tracker_proto_msgTypes[39]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TrackerPolicy.ProtoReflect.Descriptor instead.
+func (*TrackerPolicy) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{39}
+}
+
+func (x *TrackerPolicy) GetLabelAllowList() []string {
+	if x != nil {
+		return x.LabelAllowList
+	}
+	return nil
+}
+
+func (x *TrackerPolicy) GetAutoChain() bool {
+	if x != nil {
+		return x.AutoChain
+	}
+	return false
+}
+
+func (x *TrackerPolicy) GetMaxDepth() int32 {
+	if x != nil {
+		return x.MaxDepth
+	}
+	return 0
+}
+
+func (x *TrackerPolicy) GetMaxChildrenPerRun() int32 {
+	if x != nil {
+		return x.MaxChildrenPerRun
+	}
+	return 0
+}
+
+func (x *TrackerPolicy) GetRunTimeoutSeconds() int64 {
+	if x != nil {
+		return x.RunTimeoutSeconds
+	}
+	return 0
+}
+
+// CreateTrackerIssueRequest files a follow-up issue. title/body/labels
+// are agent-supplied text: sanitized server-side, labels allow-listed
+// before any upstream call, and the body gets the parent link and the
+// run's identity stamp appended from the verified token — never from a
+// request field.
+type CreateTrackerIssueRequest struct {
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Username   string                 `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"`
+	Connection string                 `protobuf:"bytes,2,opt,name=connection,proto3" json:"connection,omitempty"`
+	Title      string                 `protobuf:"bytes,3,opt,name=title,proto3" json:"title,omitempty"`
+	Body       string                 `protobuf:"bytes,4,opt,name=body,proto3" json:"body,omitempty"`
+	// Must every pass the connection's label allow-list. A run-scoped
+	// token's follow-up additionally gets agent:needs-approval unless
+	// the policy enables auto_chain.
+	Labels []string `protobuf:"bytes,5,rep,name=labels,proto3" json:"labels,omitempty"`
+	// Parent issue number. 0 = none — allowed for an operator token
+	// only; a run-scoped token MUST set it (lineage, depth, fan-out).
+	ParentNumber  int64 `protobuf:"varint,6,opt,name=parent_number,json=parentNumber,proto3" json:"parent_number,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateTrackerIssueRequest) Reset() {
+	*x = CreateTrackerIssueRequest{}
+	mi := &file_containarium_v1_tracker_proto_msgTypes[40]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateTrackerIssueRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateTrackerIssueRequest) ProtoMessage() {}
+
+func (x *CreateTrackerIssueRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_tracker_proto_msgTypes[40]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateTrackerIssueRequest.ProtoReflect.Descriptor instead.
+func (*CreateTrackerIssueRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{40}
+}
+
+func (x *CreateTrackerIssueRequest) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+func (x *CreateTrackerIssueRequest) GetConnection() string {
+	if x != nil {
+		return x.Connection
+	}
+	return ""
+}
+
+func (x *CreateTrackerIssueRequest) GetTitle() string {
+	if x != nil {
+		return x.Title
+	}
+	return ""
+}
+
+func (x *CreateTrackerIssueRequest) GetBody() string {
+	if x != nil {
+		return x.Body
+	}
+	return ""
+}
+
+func (x *CreateTrackerIssueRequest) GetLabels() []string {
+	if x != nil {
+		return x.Labels
+	}
+	return nil
+}
+
+func (x *CreateTrackerIssueRequest) GetParentNumber() int64 {
+	if x != nil {
+		return x.ParentNumber
+	}
+	return 0
+}
+
+type CreateTrackerIssueResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Issue         *TrackerIssue          `protobuf:"bytes,1,opt,name=issue,proto3" json:"issue,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateTrackerIssueResponse) Reset() {
+	*x = CreateTrackerIssueResponse{}
+	mi := &file_containarium_v1_tracker_proto_msgTypes[41]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateTrackerIssueResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateTrackerIssueResponse) ProtoMessage() {}
+
+func (x *CreateTrackerIssueResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_tracker_proto_msgTypes[41]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateTrackerIssueResponse.ProtoReflect.Descriptor instead.
+func (*CreateTrackerIssueResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{41}
+}
+
+func (x *CreateTrackerIssueResponse) GetIssue() *TrackerIssue {
+	if x != nil {
+		return x.Issue
+	}
+	return nil
 }
 
 // SubmitTrackerChangeRequest publishes the calling run's committed
@@ -2393,7 +3205,7 @@ type SubmitTrackerChangeRequest struct {
 
 func (x *SubmitTrackerChangeRequest) Reset() {
 	*x = SubmitTrackerChangeRequest{}
-	mi := &file_containarium_v1_tracker_proto_msgTypes[33]
+	mi := &file_containarium_v1_tracker_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2405,7 +3217,7 @@ func (x *SubmitTrackerChangeRequest) String() string {
 func (*SubmitTrackerChangeRequest) ProtoMessage() {}
 
 func (x *SubmitTrackerChangeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_tracker_proto_msgTypes[33]
+	mi := &file_containarium_v1_tracker_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2418,7 +3230,7 @@ func (x *SubmitTrackerChangeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubmitTrackerChangeRequest.ProtoReflect.Descriptor instead.
 func (*SubmitTrackerChangeRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{33}
+	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *SubmitTrackerChangeRequest) GetUsername() string {
@@ -2472,7 +3284,7 @@ type SubmitTrackerChangeResponse struct {
 
 func (x *SubmitTrackerChangeResponse) Reset() {
 	*x = SubmitTrackerChangeResponse{}
-	mi := &file_containarium_v1_tracker_proto_msgTypes[34]
+	mi := &file_containarium_v1_tracker_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2484,7 +3296,7 @@ func (x *SubmitTrackerChangeResponse) String() string {
 func (*SubmitTrackerChangeResponse) ProtoMessage() {}
 
 func (x *SubmitTrackerChangeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_tracker_proto_msgTypes[34]
+	mi := &file_containarium_v1_tracker_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2497,7 +3309,7 @@ func (x *SubmitTrackerChangeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubmitTrackerChangeResponse.ProtoReflect.Descriptor instead.
 func (*SubmitTrackerChangeResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{34}
+	return file_containarium_v1_tracker_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *SubmitTrackerChangeResponse) GetChange() *TrackerChange {
@@ -2511,7 +3323,7 @@ var File_containarium_v1_tracker_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_tracker_proto_rawDesc = "" +
 	"\n" +
-	"\x1dcontainarium/v1/tracker.proto\x12\x0fcontainarium.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a.protoc-gen-openapiv2/options/annotations.proto\"\xb3\x02\n" +
+	"\x1dcontainarium/v1/tracker.proto\x12\x0fcontainarium.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a.protoc-gen-openapiv2/options/annotations.proto\"\xeb\x02\n" +
 	"\x11TrackerConnection\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12<\n" +
@@ -2519,14 +3331,16 @@ const file_containarium_v1_tracker_proto_rawDesc = "" +
 	"\bbase_url\x18\x04 \x01(\tR\abaseUrl\x12\x18\n" +
 	"\aproject\x18\x05 \x01(\tR\aproject\x12+\n" +
 	"\x11credential_secret\x18\x06 \x01(\tR\x10credentialSecret\x12N\n" +
-	"\x15credential_expires_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\x13credentialExpiresAt\"\xed\x01\n" +
+	"\x15credential_expires_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\x13credentialExpiresAt\x126\n" +
+	"\x06policy\x18\b \x01(\v2\x1e.containarium.v1.TrackerPolicyR\x06policy\"\xa5\x02\n" +
 	"\x1bSetTrackerConnectionRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12<\n" +
 	"\bprovider\x18\x03 \x01(\x0e2 .containarium.v1.TrackerProviderR\bprovider\x12\x19\n" +
 	"\bbase_url\x18\x04 \x01(\tR\abaseUrl\x12\x18\n" +
 	"\aproject\x18\x05 \x01(\tR\aproject\x12+\n" +
-	"\x11credential_secret\x18\x06 \x01(\tR\x10credentialSecret\"|\n" +
+	"\x11credential_secret\x18\x06 \x01(\tR\x10credentialSecret\x126\n" +
+	"\x06policy\x18\a \x01(\v2\x1e.containarium.v1.TrackerPolicyR\x06policy\"|\n" +
 	"\x1cSetTrackerConnectionResponse\x12\x18\n" +
 	"\amessage\x18\x01 \x01(\tR\amessage\x12B\n" +
 	"\n" +
@@ -2579,7 +3393,58 @@ const file_containarium_v1_tracker_proto_rawDesc = "" +
 	"connection\x12\x14\n" +
 	"\x05scope\x18\x03 \x01(\tR\x05scope\"6\n" +
 	"\x1aDeleteTrackerRouteResponse\x12\x18\n" +
-	"\amessage\x18\x01 \x01(\tR\amessage\"I\n" +
+	"\amessage\x18\x01 \x01(\tR\amessage\"\xef\x03\n" +
+	"\x0fTrackerDispatch\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n" +
+	"\busername\x18\x02 \x01(\tR\busername\x12\x1e\n" +
+	"\n" +
+	"connection\x18\x03 \x01(\tR\n" +
+	"connection\x12!\n" +
+	"\fissue_number\x18\x04 \x01(\x03R\vissueNumber\x12\x14\n" +
+	"\x05scope\x18\x05 \x01(\tR\x05scope\x12\x19\n" +
+	"\bskill_id\x18\x06 \x01(\tR\askillId\x12\x15\n" +
+	"\x06run_id\x18\a \x01(\tR\x05runId\x12\x14\n" +
+	"\x05depth\x18\b \x01(\x05R\x05depth\x12;\n" +
+	"\x05state\x18\t \x01(\x0e2%.containarium.v1.TrackerDispatchStateR\x05state\x12%\n" +
+	"\x0efailure_reason\x18\n" +
+	" \x01(\tR\rfailureReason\x129\n" +
+	"\n" +
+	"created_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
+	"\n" +
+	"started_at\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\tstartedAt\x125\n" +
+	"\bended_at\x18\r \x01(\v2\x1a.google.protobuf.TimestampR\aendedAt\"\xc2\x01\n" +
+	"\x14TrackerDispatchInput\x12\x1e\n" +
+	"\n" +
+	"connection\x18\x01 \x01(\tR\n" +
+	"connection\x12!\n" +
+	"\fissue_number\x18\x02 \x01(\x03R\vissueNumber\x12\x14\n" +
+	"\x05scope\x18\x03 \x01(\tR\x05scope\x12\x1f\n" +
+	"\vdispatch_id\x18\x04 \x01(\tR\n" +
+	"dispatchId\x12\x14\n" +
+	"\x05depth\x18\x05 \x01(\x05R\x05depth\x12\x1a\n" +
+	"\busername\x18\x06 \x01(\tR\busername\"Z\n" +
+	"\x1cDispatchTrackerIssuesRequest\x12\x1a\n" +
+	"\busername\x18\x01 \x01(\tR\busername\x12\x1e\n" +
+	"\n" +
+	"connection\x18\x02 \x01(\tR\n" +
+	"connection\"\xdc\x02\n" +
+	"\x1dDispatchTrackerIssuesResponse\x12:\n" +
+	"\astarted\x18\x01 \x03(\v2 .containarium.v1.TrackerDispatchR\astarted\x12=\n" +
+	"\ttimed_out\x18\x02 \x03(\v2 .containarium.v1.TrackerDispatchR\btimedOut\x124\n" +
+	"\x16skipped_needs_approval\x18\x03 \x01(\x05R\x14skippedNeedsApproval\x12%\n" +
+	"\x0eskipped_active\x18\x04 \x01(\x05R\rskippedActive\x12)\n" +
+	"\x10skipped_unrouted\x18\x05 \x01(\x05R\x0fskippedUnrouted\x128\n" +
+	"\x06failed\x18\x06 \x03(\v2 .containarium.v1.TrackerDispatchR\x06failed\"\x97\x01\n" +
+	"\x1cListTrackerDispatchesRequest\x12\x1a\n" +
+	"\busername\x18\x01 \x01(\tR\busername\x12\x1e\n" +
+	"\n" +
+	"connection\x18\x02 \x01(\tR\n" +
+	"connection\x12;\n" +
+	"\x05state\x18\x03 \x01(\x0e2%.containarium.v1.TrackerDispatchStateR\x05state\"a\n" +
+	"\x1dListTrackerDispatchesResponse\x12@\n" +
+	"\n" +
+	"dispatches\x18\x01 \x03(\v2 .containarium.v1.TrackerDispatchR\n" +
+	"dispatches\"I\n" +
 	"\x17GetTrackerStatusRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\"\xf0\x03\n" +
@@ -2671,7 +3536,25 @@ const file_containarium_v1_tracker_proto_rawDesc = "" +
 	"add_labels\x18\x04 \x03(\tR\taddLabels\x12#\n" +
 	"\rremove_labels\x18\x05 \x03(\tR\fremoveLabels\"9\n" +
 	"\x1dSetTrackerIssueLabelsResponse\x12\x18\n" +
-	"\amessage\x18\x01 \x01(\tR\amessage\"\xbc\x01\n" +
+	"\amessage\x18\x01 \x01(\tR\amessage\"\xd6\x01\n" +
+	"\rTrackerPolicy\x12(\n" +
+	"\x10label_allow_list\x18\x01 \x03(\tR\x0elabelAllowList\x12\x1d\n" +
+	"\n" +
+	"auto_chain\x18\x02 \x01(\bR\tautoChain\x12\x1b\n" +
+	"\tmax_depth\x18\x03 \x01(\x05R\bmaxDepth\x12/\n" +
+	"\x14max_children_per_run\x18\x04 \x01(\x05R\x11maxChildrenPerRun\x12.\n" +
+	"\x13run_timeout_seconds\x18\x05 \x01(\x03R\x11runTimeoutSeconds\"\xbe\x01\n" +
+	"\x19CreateTrackerIssueRequest\x12\x1a\n" +
+	"\busername\x18\x01 \x01(\tR\busername\x12\x1e\n" +
+	"\n" +
+	"connection\x18\x02 \x01(\tR\n" +
+	"connection\x12\x14\n" +
+	"\x05title\x18\x03 \x01(\tR\x05title\x12\x12\n" +
+	"\x04body\x18\x04 \x01(\tR\x04body\x12\x16\n" +
+	"\x06labels\x18\x05 \x03(\tR\x06labels\x12#\n" +
+	"\rparent_number\x18\x06 \x01(\x03R\fparentNumber\"Q\n" +
+	"\x1aCreateTrackerIssueResponse\x123\n" +
+	"\x05issue\x18\x01 \x01(\v2\x1d.containarium.v1.TrackerIssueR\x05issue\"\xbc\x01\n" +
 	"\x1aSubmitTrackerChangeRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x1e\n" +
 	"\n" +
@@ -2701,7 +3584,13 @@ const file_containarium_v1_tracker_proto_rawDesc = "" +
 	"\x18TrackerCredentialBreadth\x12*\n" +
 	"&TRACKER_CREDENTIAL_BREADTH_UNSPECIFIED\x10\x00\x12(\n" +
 	"$TRACKER_CREDENTIAL_BREADTH_PREFERRED\x10\x01\x12$\n" +
-	" TRACKER_CREDENTIAL_BREADTH_BROAD\x10\x022\xdb+\n" +
+	" TRACKER_CREDENTIAL_BREADTH_BROAD\x10\x02*\xc9\x01\n" +
+	"\x14TrackerDispatchState\x12&\n" +
+	"\"TRACKER_DISPATCH_STATE_UNSPECIFIED\x10\x00\x12!\n" +
+	"\x1dTRACKER_DISPATCH_STATE_QUEUED\x10\x01\x12\"\n" +
+	"\x1eTRACKER_DISPATCH_STATE_RUNNING\x10\x02\x12\x1f\n" +
+	"\x1bTRACKER_DISPATCH_STATE_DONE\x10\x03\x12!\n" +
+	"\x1dTRACKER_DISPATCH_STATE_FAILED\x10\x042\xe0:\n" +
 	"\x0eTrackerService\x12\xb8\x03\n" +
 	"\x14SetTrackerConnection\x12,.containarium.v1.SetTrackerConnectionRequest\x1a-.containarium.v1.SetTrackerConnectionResponse\"\xc2\x02\x92A\x9c\x02\n" +
 	"\aTracker\x12%Create or update a tracker connection\x1a\xe9\x01Registers where a tenant's issue tracker is (provider, base URL, project) and which broker-only secret holds its credential. The credential itself is never accepted or returned here — only the secret's name. Requires tracker:admin.\x82\xd3\xe4\x93\x02\x1c:\x01*\"\x17/v1/tracker/connections\x12\xa8\x02\n" +
@@ -2716,7 +3605,11 @@ const file_containarium_v1_tracker_proto_rawDesc = "" +
 	"\x11ListTrackerRoutes\x12).containarium.v1.ListTrackerRoutesRequest\x1a*.containarium.v1.ListTrackerRoutesResponse\"\xbf\x01\x92A\x89\x01\n" +
 	"\aTracker\x12\x19List tracker scope routes\x1acLists every scope -> skill route on a tracker connection, ordered by scope. Requires tracker:admin.\x82\xd3\xe4\x93\x02,\x12*/v1/tracker/{username}/{connection}/routes\x12\xd8\x02\n" +
 	"\x12DeleteTrackerRoute\x12*.containarium.v1.DeleteTrackerRouteRequest\x1a+.containarium.v1.DeleteTrackerRouteResponse\"\xe8\x01\x92A\xaa\x01\n" +
-	"\aTracker\x12\x1cDelete a tracker scope route\x1a\x80\x01Removes the route for scope:<scope> on this connection; issues with that label are no longer dispatched. Requires tracker:admin.\x82\xd3\xe4\x93\x024*2/v1/tracker/{username}/{connection}/routes/{scope}\x12\xac\x04\n" +
+	"\aTracker\x12\x1cDelete a tracker scope route\x1a\x80\x01Removes the route for scope:<scope> on this connection; issues with that label are no longer dispatched. Requires tracker:admin.\x82\xd3\xe4\x93\x024*2/v1/tracker/{username}/{connection}/routes/{scope}\x12\x99\x06\n" +
+	"\x15DispatchTrackerIssues\x12-.containarium.v1.DispatchTrackerIssuesRequest\x1a..containarium.v1.DispatchTrackerIssuesResponse\"\xa0\x05\x92A\xe5\x04\n" +
+	"\aTracker\x12\x1dRun one tracker dispatch tick\x1a\xba\x04Lists the connection's open issues and, for each one carrying a routed scope:<role> label and no agent:* state label (and not agent:needs-approval), inserts a durable dispatch row, starts the routed skill through the RunAgentSkill path with the issue reference as input, and labels the issue agent:queued. Exactly once per (issue) across restarts and concurrent dispatchers: a partial unique index on active rows makes the second inserter skip. An unrouted scope label gets exactly one stamped warning comment. Requires tracker:admin (and agents:run, to start the runs).\x82\xd3\xe4\x93\x021:\x01*\",/v1/tracker/{username}/{connection}/dispatch\x12\x80\x03\n" +
+	"\x15ListTrackerDispatches\x12-.containarium.v1.ListTrackerDispatchesRequest\x1a..containarium.v1.ListTrackerDispatchesResponse\"\x87\x02\x92A\xcd\x01\n" +
+	"\aTracker\x12\x17List tracker dispatches\x1a\xa8\x01Lists a connection's dispatch rows (issue, scope, skill, run id, state, failure reason, timestamps), newest first, optionally filtered by state. Requires tracker:admin.\x82\xd3\xe4\x93\x020\x12./v1/tracker/{username}/{connection}/dispatches\x12\xac\x04\n" +
 	"\x10GetTrackerStatus\x12(.containarium.v1.GetTrackerStatusRequest\x1a).containarium.v1.GetTrackerStatusResponse\"\xc2\x03\x92A\x86\x03\n" +
 	"\aTracker\x12(Check a tracker connection's live status\x1a\xd0\x02Asks the tracker to describe the connection's own credential: reachability, whether the credential is still valid, its granted scopes and expiry, and whether it's broader than the provider's preferred credential type. Also reports the daemon host's git version and whether it meets SubmitTrackerChange's minimum. Requires tracker:admin.\x82\xd3\xe4\x93\x022\x120/v1/tracker/connections/{username}/{name}/status\x12\xc8\x02\n" +
 	"\x0fGetTrackerIssue\x12'.containarium.v1.GetTrackerIssueRequest\x1a(.containarium.v1.GetTrackerIssueResponse\"\xe1\x01\x92A\xa2\x01\n" +
@@ -2730,7 +3623,9 @@ const file_containarium_v1_tracker_proto_rawDesc = "" +
 	"\x11ClaimTrackerIssue\x12).containarium.v1.ClaimTrackerIssueRequest\x1a*.containarium.v1.ClaimTrackerIssueResponse\"\xba\x02\x92A\xf2\x01\n" +
 	"\aTracker\x12\x15Claim a tracker issue\x1a\xcf\x01Posts a stamped claim comment and assigns the calling run if the issue is unassigned, unless a live or recent claim from a different run already holds it. Idempotent for the same run. Requires tracker:write.\x82\xd3\xe4\x93\x02>:\x01*\"9/v1/tracker/{username}/{connection}/issues/{number}/claim\x12\xaa\x02\n" +
 	"\x15SetTrackerIssueLabels\x12-.containarium.v1.SetTrackerIssueLabelsRequest\x1a..containarium.v1.SetTrackerIssueLabelsResponse\"\xb1\x01\x92Ai\n" +
-	"\aTracker\x12\x1dSet labels on a tracker issue\x1a?Adds and/or removes labels on an issue. Requires tracker:write.\x82\xd3\xe4\x93\x02?:\x01*\":/v1/tracker/{username}/{connection}/issues/{number}/labels\x12\xa7\x04\n" +
+	"\aTracker\x12\x1dSet labels on a tracker issue\x1a?Adds and/or removes labels on an issue. Requires tracker:write.\x82\xd3\xe4\x93\x02?:\x01*\":/v1/tracker/{username}/{connection}/issues/{number}/labels\x12\xe3\x05\n" +
+	"\x12CreateTrackerIssue\x12*.containarium.v1.CreateTrackerIssueRequest\x1a+.containarium.v1.CreateTrackerIssueResponse\"\xf3\x04\x92A\xba\x04\n" +
+	"\aTracker\x12\x16Create a tracker issue\x1a\x96\x04Files an issue on the connection's tracker — the follow-up verb for issue-triggered role agents. Labels must pass the connection's label allow-list (checked before any upstream call). A run-scoped token must name a parent issue: the child is recorded in the issue lineage (depth and per-run fan-out are capped by the connection policy), gets agent:needs-approval unless the policy enables auto_chain, and its body ends with the parent link and the run's identity stamp; the parent gets one back-link comment. Requires tracker:write.\x82\xd3\xe4\x93\x02/:\x01*\"*/v1/tracker/{username}/{connection}/issues\x12\xa7\x04\n" +
 	"\x13SubmitTrackerChange\x12+.containarium.v1.SubmitTrackerChangeRequest\x1a,.containarium.v1.SubmitTrackerChangeResponse\"\xb4\x03\x92A\xfa\x02\n" +
 	"\aTracker\x12\x1fSubmit a tracker change request\x1a\xcd\x02Bundles the run's committed workspace out of the box and pushes it from a fresh temporary bare repository on the host to a daemon-chosen branch, then opens a change request referencing issue — no push credential ever enters the box. Requires tracker:write and a run with a recorded git_source. Opened as a draft when draft is true.\x82\xd3\xe4\x93\x020:\x01*\"+/v1/tracker/{username}/{connection}/changesBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
 
@@ -2746,108 +3641,136 @@ func file_containarium_v1_tracker_proto_rawDescGZIP() []byte {
 	return file_containarium_v1_tracker_proto_rawDescData
 }
 
-var file_containarium_v1_tracker_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_containarium_v1_tracker_proto_msgTypes = make([]protoimpl.MessageInfo, 35)
+var file_containarium_v1_tracker_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
+var file_containarium_v1_tracker_proto_msgTypes = make([]protoimpl.MessageInfo, 44)
 var file_containarium_v1_tracker_proto_goTypes = []any{
 	(TrackerProvider)(0),                    // 0: containarium.v1.TrackerProvider
 	(TrackerIssueState)(0),                  // 1: containarium.v1.TrackerIssueState
 	(TrackerCiVerdict)(0),                   // 2: containarium.v1.TrackerCiVerdict
 	(TrackerCredentialBreadth)(0),           // 3: containarium.v1.TrackerCredentialBreadth
-	(*TrackerConnection)(nil),               // 4: containarium.v1.TrackerConnection
-	(*SetTrackerConnectionRequest)(nil),     // 5: containarium.v1.SetTrackerConnectionRequest
-	(*SetTrackerConnectionResponse)(nil),    // 6: containarium.v1.SetTrackerConnectionResponse
-	(*GetTrackerConnectionRequest)(nil),     // 7: containarium.v1.GetTrackerConnectionRequest
-	(*GetTrackerConnectionResponse)(nil),    // 8: containarium.v1.GetTrackerConnectionResponse
-	(*ListTrackerConnectionsRequest)(nil),   // 9: containarium.v1.ListTrackerConnectionsRequest
-	(*ListTrackerConnectionsResponse)(nil),  // 10: containarium.v1.ListTrackerConnectionsResponse
-	(*DeleteTrackerConnectionRequest)(nil),  // 11: containarium.v1.DeleteTrackerConnectionRequest
-	(*DeleteTrackerConnectionResponse)(nil), // 12: containarium.v1.DeleteTrackerConnectionResponse
-	(*TrackerRoute)(nil),                    // 13: containarium.v1.TrackerRoute
-	(*SetTrackerRouteRequest)(nil),          // 14: containarium.v1.SetTrackerRouteRequest
-	(*SetTrackerRouteResponse)(nil),         // 15: containarium.v1.SetTrackerRouteResponse
-	(*ListTrackerRoutesRequest)(nil),        // 16: containarium.v1.ListTrackerRoutesRequest
-	(*ListTrackerRoutesResponse)(nil),       // 17: containarium.v1.ListTrackerRoutesResponse
-	(*DeleteTrackerRouteRequest)(nil),       // 18: containarium.v1.DeleteTrackerRouteRequest
-	(*DeleteTrackerRouteResponse)(nil),      // 19: containarium.v1.DeleteTrackerRouteResponse
-	(*GetTrackerStatusRequest)(nil),         // 20: containarium.v1.GetTrackerStatusRequest
-	(*GetTrackerStatusResponse)(nil),        // 21: containarium.v1.GetTrackerStatusResponse
-	(*TrackerComment)(nil),                  // 22: containarium.v1.TrackerComment
-	(*TrackerIssue)(nil),                    // 23: containarium.v1.TrackerIssue
-	(*TrackerChange)(nil),                   // 24: containarium.v1.TrackerChange
-	(*GetTrackerIssueRequest)(nil),          // 25: containarium.v1.GetTrackerIssueRequest
-	(*GetTrackerIssueResponse)(nil),         // 26: containarium.v1.GetTrackerIssueResponse
-	(*ListTrackerIssuesRequest)(nil),        // 27: containarium.v1.ListTrackerIssuesRequest
-	(*ListTrackerIssuesResponse)(nil),       // 28: containarium.v1.ListTrackerIssuesResponse
-	(*GetTrackerChangeRequest)(nil),         // 29: containarium.v1.GetTrackerChangeRequest
-	(*GetTrackerChangeResponse)(nil),        // 30: containarium.v1.GetTrackerChangeResponse
-	(*CommentOnTrackerIssueRequest)(nil),    // 31: containarium.v1.CommentOnTrackerIssueRequest
-	(*CommentOnTrackerIssueResponse)(nil),   // 32: containarium.v1.CommentOnTrackerIssueResponse
-	(*ClaimTrackerIssueRequest)(nil),        // 33: containarium.v1.ClaimTrackerIssueRequest
-	(*ClaimTrackerIssueResponse)(nil),       // 34: containarium.v1.ClaimTrackerIssueResponse
-	(*SetTrackerIssueLabelsRequest)(nil),    // 35: containarium.v1.SetTrackerIssueLabelsRequest
-	(*SetTrackerIssueLabelsResponse)(nil),   // 36: containarium.v1.SetTrackerIssueLabelsResponse
-	(*SubmitTrackerChangeRequest)(nil),      // 37: containarium.v1.SubmitTrackerChangeRequest
-	(*SubmitTrackerChangeResponse)(nil),     // 38: containarium.v1.SubmitTrackerChangeResponse
-	(*timestamppb.Timestamp)(nil),           // 39: google.protobuf.Timestamp
+	(TrackerDispatchState)(0),               // 4: containarium.v1.TrackerDispatchState
+	(*TrackerConnection)(nil),               // 5: containarium.v1.TrackerConnection
+	(*SetTrackerConnectionRequest)(nil),     // 6: containarium.v1.SetTrackerConnectionRequest
+	(*SetTrackerConnectionResponse)(nil),    // 7: containarium.v1.SetTrackerConnectionResponse
+	(*GetTrackerConnectionRequest)(nil),     // 8: containarium.v1.GetTrackerConnectionRequest
+	(*GetTrackerConnectionResponse)(nil),    // 9: containarium.v1.GetTrackerConnectionResponse
+	(*ListTrackerConnectionsRequest)(nil),   // 10: containarium.v1.ListTrackerConnectionsRequest
+	(*ListTrackerConnectionsResponse)(nil),  // 11: containarium.v1.ListTrackerConnectionsResponse
+	(*DeleteTrackerConnectionRequest)(nil),  // 12: containarium.v1.DeleteTrackerConnectionRequest
+	(*DeleteTrackerConnectionResponse)(nil), // 13: containarium.v1.DeleteTrackerConnectionResponse
+	(*TrackerRoute)(nil),                    // 14: containarium.v1.TrackerRoute
+	(*SetTrackerRouteRequest)(nil),          // 15: containarium.v1.SetTrackerRouteRequest
+	(*SetTrackerRouteResponse)(nil),         // 16: containarium.v1.SetTrackerRouteResponse
+	(*ListTrackerRoutesRequest)(nil),        // 17: containarium.v1.ListTrackerRoutesRequest
+	(*ListTrackerRoutesResponse)(nil),       // 18: containarium.v1.ListTrackerRoutesResponse
+	(*DeleteTrackerRouteRequest)(nil),       // 19: containarium.v1.DeleteTrackerRouteRequest
+	(*DeleteTrackerRouteResponse)(nil),      // 20: containarium.v1.DeleteTrackerRouteResponse
+	(*TrackerDispatch)(nil),                 // 21: containarium.v1.TrackerDispatch
+	(*TrackerDispatchInput)(nil),            // 22: containarium.v1.TrackerDispatchInput
+	(*DispatchTrackerIssuesRequest)(nil),    // 23: containarium.v1.DispatchTrackerIssuesRequest
+	(*DispatchTrackerIssuesResponse)(nil),   // 24: containarium.v1.DispatchTrackerIssuesResponse
+	(*ListTrackerDispatchesRequest)(nil),    // 25: containarium.v1.ListTrackerDispatchesRequest
+	(*ListTrackerDispatchesResponse)(nil),   // 26: containarium.v1.ListTrackerDispatchesResponse
+	(*GetTrackerStatusRequest)(nil),         // 27: containarium.v1.GetTrackerStatusRequest
+	(*GetTrackerStatusResponse)(nil),        // 28: containarium.v1.GetTrackerStatusResponse
+	(*TrackerComment)(nil),                  // 29: containarium.v1.TrackerComment
+	(*TrackerIssue)(nil),                    // 30: containarium.v1.TrackerIssue
+	(*TrackerChange)(nil),                   // 31: containarium.v1.TrackerChange
+	(*GetTrackerIssueRequest)(nil),          // 32: containarium.v1.GetTrackerIssueRequest
+	(*GetTrackerIssueResponse)(nil),         // 33: containarium.v1.GetTrackerIssueResponse
+	(*ListTrackerIssuesRequest)(nil),        // 34: containarium.v1.ListTrackerIssuesRequest
+	(*ListTrackerIssuesResponse)(nil),       // 35: containarium.v1.ListTrackerIssuesResponse
+	(*GetTrackerChangeRequest)(nil),         // 36: containarium.v1.GetTrackerChangeRequest
+	(*GetTrackerChangeResponse)(nil),        // 37: containarium.v1.GetTrackerChangeResponse
+	(*CommentOnTrackerIssueRequest)(nil),    // 38: containarium.v1.CommentOnTrackerIssueRequest
+	(*CommentOnTrackerIssueResponse)(nil),   // 39: containarium.v1.CommentOnTrackerIssueResponse
+	(*ClaimTrackerIssueRequest)(nil),        // 40: containarium.v1.ClaimTrackerIssueRequest
+	(*ClaimTrackerIssueResponse)(nil),       // 41: containarium.v1.ClaimTrackerIssueResponse
+	(*SetTrackerIssueLabelsRequest)(nil),    // 42: containarium.v1.SetTrackerIssueLabelsRequest
+	(*SetTrackerIssueLabelsResponse)(nil),   // 43: containarium.v1.SetTrackerIssueLabelsResponse
+	(*TrackerPolicy)(nil),                   // 44: containarium.v1.TrackerPolicy
+	(*CreateTrackerIssueRequest)(nil),       // 45: containarium.v1.CreateTrackerIssueRequest
+	(*CreateTrackerIssueResponse)(nil),      // 46: containarium.v1.CreateTrackerIssueResponse
+	(*SubmitTrackerChangeRequest)(nil),      // 47: containarium.v1.SubmitTrackerChangeRequest
+	(*SubmitTrackerChangeResponse)(nil),     // 48: containarium.v1.SubmitTrackerChangeResponse
+	(*timestamppb.Timestamp)(nil),           // 49: google.protobuf.Timestamp
 }
 var file_containarium_v1_tracker_proto_depIdxs = []int32{
 	0,  // 0: containarium.v1.TrackerConnection.provider:type_name -> containarium.v1.TrackerProvider
-	39, // 1: containarium.v1.TrackerConnection.credential_expires_at:type_name -> google.protobuf.Timestamp
-	0,  // 2: containarium.v1.SetTrackerConnectionRequest.provider:type_name -> containarium.v1.TrackerProvider
-	4,  // 3: containarium.v1.SetTrackerConnectionResponse.connection:type_name -> containarium.v1.TrackerConnection
-	4,  // 4: containarium.v1.GetTrackerConnectionResponse.connection:type_name -> containarium.v1.TrackerConnection
-	4,  // 5: containarium.v1.ListTrackerConnectionsResponse.connections:type_name -> containarium.v1.TrackerConnection
-	13, // 6: containarium.v1.SetTrackerRouteResponse.route:type_name -> containarium.v1.TrackerRoute
-	13, // 7: containarium.v1.ListTrackerRoutesResponse.routes:type_name -> containarium.v1.TrackerRoute
-	4,  // 8: containarium.v1.GetTrackerStatusResponse.connection:type_name -> containarium.v1.TrackerConnection
-	3,  // 9: containarium.v1.GetTrackerStatusResponse.credential_breadth:type_name -> containarium.v1.TrackerCredentialBreadth
-	39, // 10: containarium.v1.GetTrackerStatusResponse.credential_expires_at:type_name -> google.protobuf.Timestamp
-	39, // 11: containarium.v1.TrackerComment.created_at:type_name -> google.protobuf.Timestamp
-	1,  // 12: containarium.v1.TrackerIssue.state:type_name -> containarium.v1.TrackerIssueState
-	22, // 13: containarium.v1.TrackerIssue.comments:type_name -> containarium.v1.TrackerComment
-	1,  // 14: containarium.v1.TrackerChange.state:type_name -> containarium.v1.TrackerIssueState
-	2,  // 15: containarium.v1.TrackerChange.ci_verdict:type_name -> containarium.v1.TrackerCiVerdict
-	23, // 16: containarium.v1.GetTrackerIssueResponse.issue:type_name -> containarium.v1.TrackerIssue
-	1,  // 17: containarium.v1.ListTrackerIssuesRequest.state:type_name -> containarium.v1.TrackerIssueState
-	23, // 18: containarium.v1.ListTrackerIssuesResponse.issues:type_name -> containarium.v1.TrackerIssue
-	24, // 19: containarium.v1.GetTrackerChangeResponse.change:type_name -> containarium.v1.TrackerChange
-	22, // 20: containarium.v1.CommentOnTrackerIssueResponse.comment:type_name -> containarium.v1.TrackerComment
-	24, // 21: containarium.v1.SubmitTrackerChangeResponse.change:type_name -> containarium.v1.TrackerChange
-	5,  // 22: containarium.v1.TrackerService.SetTrackerConnection:input_type -> containarium.v1.SetTrackerConnectionRequest
-	7,  // 23: containarium.v1.TrackerService.GetTrackerConnection:input_type -> containarium.v1.GetTrackerConnectionRequest
-	9,  // 24: containarium.v1.TrackerService.ListTrackerConnections:input_type -> containarium.v1.ListTrackerConnectionsRequest
-	11, // 25: containarium.v1.TrackerService.DeleteTrackerConnection:input_type -> containarium.v1.DeleteTrackerConnectionRequest
-	14, // 26: containarium.v1.TrackerService.SetTrackerRoute:input_type -> containarium.v1.SetTrackerRouteRequest
-	16, // 27: containarium.v1.TrackerService.ListTrackerRoutes:input_type -> containarium.v1.ListTrackerRoutesRequest
-	18, // 28: containarium.v1.TrackerService.DeleteTrackerRoute:input_type -> containarium.v1.DeleteTrackerRouteRequest
-	20, // 29: containarium.v1.TrackerService.GetTrackerStatus:input_type -> containarium.v1.GetTrackerStatusRequest
-	25, // 30: containarium.v1.TrackerService.GetTrackerIssue:input_type -> containarium.v1.GetTrackerIssueRequest
-	27, // 31: containarium.v1.TrackerService.ListTrackerIssues:input_type -> containarium.v1.ListTrackerIssuesRequest
-	29, // 32: containarium.v1.TrackerService.GetTrackerChange:input_type -> containarium.v1.GetTrackerChangeRequest
-	31, // 33: containarium.v1.TrackerService.CommentOnTrackerIssue:input_type -> containarium.v1.CommentOnTrackerIssueRequest
-	33, // 34: containarium.v1.TrackerService.ClaimTrackerIssue:input_type -> containarium.v1.ClaimTrackerIssueRequest
-	35, // 35: containarium.v1.TrackerService.SetTrackerIssueLabels:input_type -> containarium.v1.SetTrackerIssueLabelsRequest
-	37, // 36: containarium.v1.TrackerService.SubmitTrackerChange:input_type -> containarium.v1.SubmitTrackerChangeRequest
-	6,  // 37: containarium.v1.TrackerService.SetTrackerConnection:output_type -> containarium.v1.SetTrackerConnectionResponse
-	8,  // 38: containarium.v1.TrackerService.GetTrackerConnection:output_type -> containarium.v1.GetTrackerConnectionResponse
-	10, // 39: containarium.v1.TrackerService.ListTrackerConnections:output_type -> containarium.v1.ListTrackerConnectionsResponse
-	12, // 40: containarium.v1.TrackerService.DeleteTrackerConnection:output_type -> containarium.v1.DeleteTrackerConnectionResponse
-	15, // 41: containarium.v1.TrackerService.SetTrackerRoute:output_type -> containarium.v1.SetTrackerRouteResponse
-	17, // 42: containarium.v1.TrackerService.ListTrackerRoutes:output_type -> containarium.v1.ListTrackerRoutesResponse
-	19, // 43: containarium.v1.TrackerService.DeleteTrackerRoute:output_type -> containarium.v1.DeleteTrackerRouteResponse
-	21, // 44: containarium.v1.TrackerService.GetTrackerStatus:output_type -> containarium.v1.GetTrackerStatusResponse
-	26, // 45: containarium.v1.TrackerService.GetTrackerIssue:output_type -> containarium.v1.GetTrackerIssueResponse
-	28, // 46: containarium.v1.TrackerService.ListTrackerIssues:output_type -> containarium.v1.ListTrackerIssuesResponse
-	30, // 47: containarium.v1.TrackerService.GetTrackerChange:output_type -> containarium.v1.GetTrackerChangeResponse
-	32, // 48: containarium.v1.TrackerService.CommentOnTrackerIssue:output_type -> containarium.v1.CommentOnTrackerIssueResponse
-	34, // 49: containarium.v1.TrackerService.ClaimTrackerIssue:output_type -> containarium.v1.ClaimTrackerIssueResponse
-	36, // 50: containarium.v1.TrackerService.SetTrackerIssueLabels:output_type -> containarium.v1.SetTrackerIssueLabelsResponse
-	38, // 51: containarium.v1.TrackerService.SubmitTrackerChange:output_type -> containarium.v1.SubmitTrackerChangeResponse
-	37, // [37:52] is the sub-list for method output_type
-	22, // [22:37] is the sub-list for method input_type
-	22, // [22:22] is the sub-list for extension type_name
-	22, // [22:22] is the sub-list for extension extendee
-	0,  // [0:22] is the sub-list for field type_name
+	49, // 1: containarium.v1.TrackerConnection.credential_expires_at:type_name -> google.protobuf.Timestamp
+	44, // 2: containarium.v1.TrackerConnection.policy:type_name -> containarium.v1.TrackerPolicy
+	0,  // 3: containarium.v1.SetTrackerConnectionRequest.provider:type_name -> containarium.v1.TrackerProvider
+	44, // 4: containarium.v1.SetTrackerConnectionRequest.policy:type_name -> containarium.v1.TrackerPolicy
+	5,  // 5: containarium.v1.SetTrackerConnectionResponse.connection:type_name -> containarium.v1.TrackerConnection
+	5,  // 6: containarium.v1.GetTrackerConnectionResponse.connection:type_name -> containarium.v1.TrackerConnection
+	5,  // 7: containarium.v1.ListTrackerConnectionsResponse.connections:type_name -> containarium.v1.TrackerConnection
+	14, // 8: containarium.v1.SetTrackerRouteResponse.route:type_name -> containarium.v1.TrackerRoute
+	14, // 9: containarium.v1.ListTrackerRoutesResponse.routes:type_name -> containarium.v1.TrackerRoute
+	4,  // 10: containarium.v1.TrackerDispatch.state:type_name -> containarium.v1.TrackerDispatchState
+	49, // 11: containarium.v1.TrackerDispatch.created_at:type_name -> google.protobuf.Timestamp
+	49, // 12: containarium.v1.TrackerDispatch.started_at:type_name -> google.protobuf.Timestamp
+	49, // 13: containarium.v1.TrackerDispatch.ended_at:type_name -> google.protobuf.Timestamp
+	21, // 14: containarium.v1.DispatchTrackerIssuesResponse.started:type_name -> containarium.v1.TrackerDispatch
+	21, // 15: containarium.v1.DispatchTrackerIssuesResponse.timed_out:type_name -> containarium.v1.TrackerDispatch
+	21, // 16: containarium.v1.DispatchTrackerIssuesResponse.failed:type_name -> containarium.v1.TrackerDispatch
+	4,  // 17: containarium.v1.ListTrackerDispatchesRequest.state:type_name -> containarium.v1.TrackerDispatchState
+	21, // 18: containarium.v1.ListTrackerDispatchesResponse.dispatches:type_name -> containarium.v1.TrackerDispatch
+	5,  // 19: containarium.v1.GetTrackerStatusResponse.connection:type_name -> containarium.v1.TrackerConnection
+	3,  // 20: containarium.v1.GetTrackerStatusResponse.credential_breadth:type_name -> containarium.v1.TrackerCredentialBreadth
+	49, // 21: containarium.v1.GetTrackerStatusResponse.credential_expires_at:type_name -> google.protobuf.Timestamp
+	49, // 22: containarium.v1.TrackerComment.created_at:type_name -> google.protobuf.Timestamp
+	1,  // 23: containarium.v1.TrackerIssue.state:type_name -> containarium.v1.TrackerIssueState
+	29, // 24: containarium.v1.TrackerIssue.comments:type_name -> containarium.v1.TrackerComment
+	1,  // 25: containarium.v1.TrackerChange.state:type_name -> containarium.v1.TrackerIssueState
+	2,  // 26: containarium.v1.TrackerChange.ci_verdict:type_name -> containarium.v1.TrackerCiVerdict
+	30, // 27: containarium.v1.GetTrackerIssueResponse.issue:type_name -> containarium.v1.TrackerIssue
+	1,  // 28: containarium.v1.ListTrackerIssuesRequest.state:type_name -> containarium.v1.TrackerIssueState
+	30, // 29: containarium.v1.ListTrackerIssuesResponse.issues:type_name -> containarium.v1.TrackerIssue
+	31, // 30: containarium.v1.GetTrackerChangeResponse.change:type_name -> containarium.v1.TrackerChange
+	29, // 31: containarium.v1.CommentOnTrackerIssueResponse.comment:type_name -> containarium.v1.TrackerComment
+	30, // 32: containarium.v1.CreateTrackerIssueResponse.issue:type_name -> containarium.v1.TrackerIssue
+	31, // 33: containarium.v1.SubmitTrackerChangeResponse.change:type_name -> containarium.v1.TrackerChange
+	6,  // 34: containarium.v1.TrackerService.SetTrackerConnection:input_type -> containarium.v1.SetTrackerConnectionRequest
+	8,  // 35: containarium.v1.TrackerService.GetTrackerConnection:input_type -> containarium.v1.GetTrackerConnectionRequest
+	10, // 36: containarium.v1.TrackerService.ListTrackerConnections:input_type -> containarium.v1.ListTrackerConnectionsRequest
+	12, // 37: containarium.v1.TrackerService.DeleteTrackerConnection:input_type -> containarium.v1.DeleteTrackerConnectionRequest
+	15, // 38: containarium.v1.TrackerService.SetTrackerRoute:input_type -> containarium.v1.SetTrackerRouteRequest
+	17, // 39: containarium.v1.TrackerService.ListTrackerRoutes:input_type -> containarium.v1.ListTrackerRoutesRequest
+	19, // 40: containarium.v1.TrackerService.DeleteTrackerRoute:input_type -> containarium.v1.DeleteTrackerRouteRequest
+	23, // 41: containarium.v1.TrackerService.DispatchTrackerIssues:input_type -> containarium.v1.DispatchTrackerIssuesRequest
+	25, // 42: containarium.v1.TrackerService.ListTrackerDispatches:input_type -> containarium.v1.ListTrackerDispatchesRequest
+	27, // 43: containarium.v1.TrackerService.GetTrackerStatus:input_type -> containarium.v1.GetTrackerStatusRequest
+	32, // 44: containarium.v1.TrackerService.GetTrackerIssue:input_type -> containarium.v1.GetTrackerIssueRequest
+	34, // 45: containarium.v1.TrackerService.ListTrackerIssues:input_type -> containarium.v1.ListTrackerIssuesRequest
+	36, // 46: containarium.v1.TrackerService.GetTrackerChange:input_type -> containarium.v1.GetTrackerChangeRequest
+	38, // 47: containarium.v1.TrackerService.CommentOnTrackerIssue:input_type -> containarium.v1.CommentOnTrackerIssueRequest
+	40, // 48: containarium.v1.TrackerService.ClaimTrackerIssue:input_type -> containarium.v1.ClaimTrackerIssueRequest
+	42, // 49: containarium.v1.TrackerService.SetTrackerIssueLabels:input_type -> containarium.v1.SetTrackerIssueLabelsRequest
+	45, // 50: containarium.v1.TrackerService.CreateTrackerIssue:input_type -> containarium.v1.CreateTrackerIssueRequest
+	47, // 51: containarium.v1.TrackerService.SubmitTrackerChange:input_type -> containarium.v1.SubmitTrackerChangeRequest
+	7,  // 52: containarium.v1.TrackerService.SetTrackerConnection:output_type -> containarium.v1.SetTrackerConnectionResponse
+	9,  // 53: containarium.v1.TrackerService.GetTrackerConnection:output_type -> containarium.v1.GetTrackerConnectionResponse
+	11, // 54: containarium.v1.TrackerService.ListTrackerConnections:output_type -> containarium.v1.ListTrackerConnectionsResponse
+	13, // 55: containarium.v1.TrackerService.DeleteTrackerConnection:output_type -> containarium.v1.DeleteTrackerConnectionResponse
+	16, // 56: containarium.v1.TrackerService.SetTrackerRoute:output_type -> containarium.v1.SetTrackerRouteResponse
+	18, // 57: containarium.v1.TrackerService.ListTrackerRoutes:output_type -> containarium.v1.ListTrackerRoutesResponse
+	20, // 58: containarium.v1.TrackerService.DeleteTrackerRoute:output_type -> containarium.v1.DeleteTrackerRouteResponse
+	24, // 59: containarium.v1.TrackerService.DispatchTrackerIssues:output_type -> containarium.v1.DispatchTrackerIssuesResponse
+	26, // 60: containarium.v1.TrackerService.ListTrackerDispatches:output_type -> containarium.v1.ListTrackerDispatchesResponse
+	28, // 61: containarium.v1.TrackerService.GetTrackerStatus:output_type -> containarium.v1.GetTrackerStatusResponse
+	33, // 62: containarium.v1.TrackerService.GetTrackerIssue:output_type -> containarium.v1.GetTrackerIssueResponse
+	35, // 63: containarium.v1.TrackerService.ListTrackerIssues:output_type -> containarium.v1.ListTrackerIssuesResponse
+	37, // 64: containarium.v1.TrackerService.GetTrackerChange:output_type -> containarium.v1.GetTrackerChangeResponse
+	39, // 65: containarium.v1.TrackerService.CommentOnTrackerIssue:output_type -> containarium.v1.CommentOnTrackerIssueResponse
+	41, // 66: containarium.v1.TrackerService.ClaimTrackerIssue:output_type -> containarium.v1.ClaimTrackerIssueResponse
+	43, // 67: containarium.v1.TrackerService.SetTrackerIssueLabels:output_type -> containarium.v1.SetTrackerIssueLabelsResponse
+	46, // 68: containarium.v1.TrackerService.CreateTrackerIssue:output_type -> containarium.v1.CreateTrackerIssueResponse
+	48, // 69: containarium.v1.TrackerService.SubmitTrackerChange:output_type -> containarium.v1.SubmitTrackerChangeResponse
+	52, // [52:70] is the sub-list for method output_type
+	34, // [34:52] is the sub-list for method input_type
+	34, // [34:34] is the sub-list for extension type_name
+	34, // [34:34] is the sub-list for extension extendee
+	0,  // [0:34] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_tracker_proto_init() }
@@ -2860,8 +3783,8 @@ func file_containarium_v1_tracker_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_tracker_proto_rawDesc), len(file_containarium_v1_tracker_proto_rawDesc)),
-			NumEnums:      4,
-			NumMessages:   35,
+			NumEnums:      5,
+			NumMessages:   44,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

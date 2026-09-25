@@ -190,3 +190,43 @@ func TestWhoAmI_ResolvesLogin(t *testing.T) {
 		t.Errorf("login = %q, want agent-bot", login)
 	}
 }
+
+// TestCreateIssue_PostsAndNormalizes pins GitHub's create-issue request
+// shape (#2024): labels ride as a JSON array (GitLab's is a
+// comma-joined string — see the gitlab package's twin test) and the
+// 201 response is normalized through the same toIssue as GetIssue.
+func TestCreateIssue_PostsAndNormalizes(t *testing.T) {
+	var gotMethod, gotPath string
+	var gotBody struct {
+		Title  string   `json:"title"`
+		Body   string   `json:"body"`
+		Labels []string `json:"labels"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"number": 12, "title": "follow-up", "body": "child body", "state": "open", "labels": [{"name": "scope:architecture"}, {"name": "agent:needs-approval"}], "assignee": null}`))
+	}))
+	defer srv.Close()
+
+	a := New(nil)
+	issue, err := a.CreateIssue(context.Background(), tracker.Conn{BaseURL: srv.URL, Project: "acme/widgets", Credential: "ghp_x"}, tracker.NewIssue{
+		Title: "follow-up", Body: "child body", Labels: []string{"scope:architecture", "agent:needs-approval"},
+	})
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if gotMethod != http.MethodPost || gotPath != "/repos/acme/widgets/issues" {
+		t.Errorf("method=%s path=%s, want POST /repos/acme/widgets/issues", gotMethod, gotPath)
+	}
+	if gotBody.Title != "follow-up" || gotBody.Body != "child body" {
+		t.Errorf("request body = %+v, want title/body carried through", gotBody)
+	}
+	if len(gotBody.Labels) != 2 || gotBody.Labels[0] != "scope:architecture" {
+		t.Errorf("request labels = %v, want a JSON array of the two labels", gotBody.Labels)
+	}
+	if issue.Number != 12 || issue.Title != "follow-up" || len(issue.Labels) != 2 {
+		t.Errorf("issue = %+v, want number=12 title=follow-up two labels", issue)
+	}
+}

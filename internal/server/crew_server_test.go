@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -262,6 +263,139 @@ func TestEmbeddedDiffCrewValidatesAndDrives(t *testing.T) {
 	if calls[1].InputJson != draftArtifact {
 		t.Errorf("reviewer's input = %q, want the drafter's artifact %q verbatim", calls[1].InputJson, draftArtifact)
 	}
+}
+
+// engineerCrewArtifact is the test-local shape of engineer-crew's final
+// artifact (Containarium-cloud#2003 AC2) — files[]{path,content} plus
+// pr_title/pr_body/tests_run passed through from issue-implementer, and
+// diff-reviewer's own drafter_summary/review_notes. No production Go type
+// backs this: driveCrew treats every artifact as an opaque string (see
+// TestEmbeddedDiffCrewValidatesAndDrives — diff-crew has no Go-side schema
+// either), so this struct exists only to prove the JSON shape the two
+// skills' prompts promise actually round-trips.
+type engineerCrewArtifact struct {
+	Files []struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+	} `json:"files"`
+	DrafterSummary string `json:"drafter_summary"`
+	ReviewNotes    string `json:"review_notes"`
+	PRTitle        string `json:"pr_title"`
+	PRBody         string `json:"pr_body"`
+	TestsRun       bool   `json:"tests_run"`
+}
+
+// TestEmbeddedEngineerCrewValidatesAndDrives is Containarium-cloud#2003's
+// unit test: engineer-crew (issue-implementer -> diff-reviewer, PIPELINE)
+// clears RunCrew's topology gate, and the crew's final artifact — the
+// existing file-artifact shape plus pr_title/pr_body/tests_run (AC2) —
+// survives the pipeline hand-off through the EXISTING diff-reviewer
+// unmodified in role, just extended to pass those three fields through
+// (see skills.yaml's diff-reviewer prompt comment).
+func TestEmbeddedEngineerCrewValidatesAndDrives(t *testing.T) {
+	crew, err := crews.GetDefault().Get("engineer-crew")
+	if err != nil {
+		t.Fatalf("engineer-crew missing from embedded catalog: %v", err)
+	}
+	if crew.Topology != pb.CrewTopology_CREW_TOPOLOGY_PIPELINE {
+		t.Fatalf("engineer-crew topology = %v, want PIPELINE", crew.Topology)
+	}
+	if got := crew.SkillIds; len(got) != 2 || got[0] != "issue-implementer" || got[1] != "diff-reviewer" {
+		t.Fatalf("engineer-crew skill_ids = %v, want [issue-implementer diff-reviewer] in order", got)
+	}
+
+	sk := skills.GetDefault()
+	getSkill := func(id string) (*pb.AgentSkill, bool) {
+		s, err := sk.Get(id)
+		if err != nil {
+			return nil, false
+		}
+		return s, true
+	}
+	if err := validateCrewTopology(crew, getSkill); err != nil {
+		t.Errorf("RunCrew's topology gate rejects the embedded engineer-crew: %v", err)
+	}
+
+	t.Run("small change implemented and reviewed", func(t *testing.T) {
+		implArtifact := `{"files":[{"path":"internal/widget/widget.go","content":"package widget\n\nfunc New() *Widget { return &Widget{} }\n"}],"summary":"add Widget constructor","pr_title":"Add Widget constructor","pr_body":"Adds a New() constructor for Widget, requested in the linked issue.","tests_run":true}`
+		finalArtifact := `{"files":[{"path":"internal/widget/widget.go","content":"package widget\n\nfunc New() *Widget { return &Widget{ready: true} }\n"}],"drafter_summary":"add Widget constructor","review_notes":"initialized the ready field","pr_title":"Add Widget constructor","pr_body":"Adds a New() constructor for Widget, requested in the linked issue.","tests_run":true}`
+		var calls []*pb.SendAgentTaskRequest
+		send := func(_ context.Context, req *pb.SendAgentTaskRequest) (*pb.SendAgentTaskResponse, error) {
+			calls = append(calls, req)
+			if req.ToPeerId == "diff-reviewer" {
+				return completed(finalArtifact), nil
+			}
+			return completed(implArtifact), nil
+		}
+		taskInput := `{"task":{"title":"Widget has no constructor","body":"Add a New() function.","url":"https://example.com/issues/1","labels":["good-first-issue"]},"constraints":{"max_files":1}}`
+		out, err := driveCrew(context.Background(), crew, "trace-1", taskInput, send)
+		if err != nil {
+			t.Fatalf("driveCrew: %v", err)
+		}
+		if out != finalArtifact {
+			t.Errorf("crew artifact = %q, want the reviewer's final artifact %q", out, finalArtifact)
+		}
+		if len(calls) != 2 || calls[0].ToPeerId != "issue-implementer" || calls[1].ToPeerId != "diff-reviewer" {
+			t.Fatalf("expected hops [issue-implementer, diff-reviewer], got %+v", calls)
+		}
+		if calls[0].InputJson != taskInput {
+			t.Errorf("issue-implementer's input = %q, want the typed task/constraints object verbatim", calls[0].InputJson)
+		}
+		if calls[1].InputJson != implArtifact {
+			t.Errorf("reviewer's input = %q, want issue-implementer's artifact %q verbatim", calls[1].InputJson, implArtifact)
+		}
+
+		var parsed engineerCrewArtifact
+		if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+			t.Fatalf("final artifact does not parse as the engineer-crew schema: %v", err)
+		}
+		if len(parsed.Files) != 1 || parsed.Files[0].Path != "internal/widget/widget.go" {
+			t.Errorf("parsed.Files = %+v, want the one changed file", parsed.Files)
+		}
+		if parsed.PRTitle != "Add Widget constructor" {
+			t.Errorf("parsed.PRTitle = %q, want it passed through from issue-implementer's artifact", parsed.PRTitle)
+		}
+		if parsed.PRBody == "" {
+			t.Error("parsed.PRBody is empty, want it passed through from issue-implementer's artifact")
+		}
+		if !parsed.TestsRun {
+			t.Error("parsed.TestsRun = false, want true (passed through)")
+		}
+		if parsed.ReviewNotes == "" {
+			t.Error("parsed.ReviewNotes is empty, want diff-reviewer's own field still present")
+		}
+	})
+
+	t.Run("task the prompt rejects yields empty files with a reason, not a failure", func(t *testing.T) {
+		// AC2: empty files + a non-empty summary is a COMPLETED run, not a
+		// FAILED one. driveCrew never inspects artifact JSON (see
+		// TestEmbeddedDiffCrewValidatesAndDrives), so this proves the
+		// rejection shape survives the pipeline hand-off unmodified when
+		// the reviewer agrees nothing is usable, exactly as a COMPLETED
+		// AgentTaskState here (not FAILED) implies it must.
+		rejected := `{"files":[],"summary":"the request is a design discussion, not a code change","pr_title":"","pr_body":"","tests_run":false}`
+		reviewedRejection := `{"files":[],"drafter_summary":"the request is a design discussion, not a code change","review_notes":"agreed: no code change applies here","pr_title":"","pr_body":"","tests_run":false}`
+		send := func(_ context.Context, req *pb.SendAgentTaskRequest) (*pb.SendAgentTaskResponse, error) {
+			if req.ToPeerId == "diff-reviewer" {
+				return completed(reviewedRejection), nil
+			}
+			return completed(rejected), nil
+		}
+		out, err := driveCrew(context.Background(), crew, "trace-2", `{"task":{"title":"Should we use YAML or JSON?","body":"","url":"https://example.com/issues/2","labels":[]},"constraints":{"max_files":1}}`, send)
+		if err != nil {
+			t.Fatalf("driveCrew: %v", err)
+		}
+		var parsed engineerCrewArtifact
+		if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+			t.Fatalf("rejected-task artifact does not parse: %v", err)
+		}
+		if len(parsed.Files) != 0 {
+			t.Errorf("parsed.Files = %+v, want empty for a rejected task", parsed.Files)
+		}
+		if parsed.DrafterSummary == "" {
+			t.Error("parsed.DrafterSummary is empty, want the rejection reason")
+		}
+	})
 }
 
 // skillSet builds a lookup over a fixed set of skills for topology tests.

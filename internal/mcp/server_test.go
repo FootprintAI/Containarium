@@ -22,8 +22,8 @@ func TestServerCreation(t *testing.T) {
 	assert.NotNil(t, server)
 	assert.Equal(t, config, server.config)
 	assert.NotNil(t, server.client)
-	// 30 base (+check_for_updates +upgrade_backend +get_upgrade_status, #354) + 3 runner-provision + 4 compose-autostart (#325) + 2 recipes + 3 backups + connect (#453) + 2 agent-skills (#562) + call_agent (#570) + 2 crews (#584) + delete_route + install_zap (#960) + set_metrics_export + get_metrics_export (#1069) + verify_backup (#1159) + list_passthrough_routes + add_passthrough_route + delete_passthrough_route (#1550) + security_sentry_status (#1640) + list_bad_destinations + add_bad_destination + remove_bad_destination (#1641) + list_security_sentry_findings + resolve_security_sentry_finding (#1643) + 4 code run/attach/status/stop (#1698) + add_collaborator + list_collaborators + remove_collaborator (#1145) + 6 tracker_get_issue/list_issues/get_change/comment/claim/set_labels (#1922) + tracker_submit_change (#1923) + tracker_route_list (#2021).
-	assert.Len(t, server.tools, 83, "Should have 83 tools registered")
+	// 30 base (+check_for_updates +upgrade_backend +get_upgrade_status, #354) + 3 runner-provision + 4 compose-autostart (#325) + 2 recipes + 3 backups + connect (#453) + 2 agent-skills (#562) + call_agent (#570) + 2 crews (#584) + delete_route + install_zap (#960) + set_metrics_export + get_metrics_export (#1069) + verify_backup (#1159) + list_passthrough_routes + add_passthrough_route + delete_passthrough_route (#1550) + security_sentry_status (#1640) + list_bad_destinations + add_bad_destination + remove_bad_destination (#1641) + list_security_sentry_findings + resolve_security_sentry_finding (#1643) + 4 code run/attach/status/stop (#1698) + add_collaborator + list_collaborators + remove_collaborator (#1145) + 6 tracker_get_issue/list_issues/get_change/comment/claim/set_labels (#1922) + tracker_submit_change (#1923) + tracker_route_list (#2021) + tracker_create_issue (#2024).
+	assert.Len(t, server.tools, 84, "Should have 84 tools registered")
 }
 
 // TestServerTools tests tool registration
@@ -127,8 +127,8 @@ func TestHandleToolsList(t *testing.T) {
 
 	tools, ok := result["tools"].([]map[string]interface{})
 	require.True(t, ok)
-	// See TestServerCreation's tally comment for the running count — 83.
-	assert.Len(t, tools, 83)
+	// See TestServerCreation's tally comment for the running count — 84.
+	assert.Len(t, tools, 84)
 
 	// Check first tool structure
 	firstTool := tools[0]

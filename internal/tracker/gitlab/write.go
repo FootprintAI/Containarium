@@ -80,12 +80,30 @@ func (a *Adapter) AssignIfUnassigned(ctx context.Context, conn tracker.Conn, num
 	return true, nil
 }
 
+// validateWireLabels refuses any label that GitLab's comma-joined wire
+// format would split into more than one (review of #2034). The daemon's
+// allow-list already rejects these before calling the adapter; this is
+// defense in depth, so no caller can ever put a smuggled label on the wire.
+func validateWireLabels(lists ...[]string) error {
+	for _, list := range lists {
+		for _, l := range list {
+			if err := tracker.ValidateLabel(l); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // SetLabels adds and removes labels in one call — GitLab's issue-edit
 // endpoint accepts add_labels/remove_labels directly, unlike GitHub's
 // separate add/remove endpoints.
 func (a *Adapter) SetLabels(ctx context.Context, conn tracker.Conn, number int64, add, remove []string) error {
 	if len(add) == 0 && len(remove) == 0 {
 		return nil
+	}
+	if err := validateWireLabels(add, remove); err != nil {
+		return err
 	}
 	apiBase := apiBaseURL(conn.BaseURL)
 	projectPath := url.PathEscape(conn.Project)
@@ -102,4 +120,29 @@ func (a *Adapter) SetLabels(ctx context.Context, conn tracker.Conn, number int64
 	}
 	return a.do(ctx, http.MethodPut, fmt.Sprintf("%s/projects/%s/issues/%d", apiBase, projectPath, number),
 		conn.Credential, reqBody, nil)
+}
+
+// CreateIssue opens an issue (#2024). GitLab's create endpoint takes the
+// body as `description` and labels as ONE comma-joined string (unlike
+// GitHub's array) — the same shape SetLabels already uses. The daemon
+// has already allow-listed the labels and composed the body. The 201
+// response is normalized through toIssue (iid, never id).
+func (a *Adapter) CreateIssue(ctx context.Context, conn tracker.Conn, n tracker.NewIssue) (tracker.Issue, error) {
+	if err := validateWireLabels(n.Labels); err != nil {
+		return tracker.Issue{}, err
+	}
+	apiBase := apiBaseURL(conn.BaseURL)
+	projectPath := url.PathEscape(conn.Project)
+	reqBody := struct {
+		Title       string `json:"title"`
+		Description string `json:"description"`
+		Labels      string `json:"labels,omitempty"`
+	}{Title: n.Title, Description: n.Body, Labels: strings.Join(n.Labels, ",")}
+
+	var raw glIssue
+	if err := a.do(ctx, http.MethodPost, fmt.Sprintf("%s/projects/%s/issues", apiBase, projectPath),
+		conn.Credential, reqBody, &raw); err != nil {
+		return tracker.Issue{}, err
+	}
+	return toIssue(raw, nil), nil
 }

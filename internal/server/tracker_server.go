@@ -138,6 +138,9 @@ func (s *ContainerServer) SetTrackerConnection(ctx context.Context, req *pb.SetT
 	if err := s.requireBrokerOnlySecret(ctx, req.Username, req.CredentialSecret); err != nil {
 		return nil, err
 	}
+	if err := validateTrackerPolicy(req.Policy); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
 
 	conn, err := s.trackerStore.Set(ctx, tracker.Connection{
 		Username:         req.Username,
@@ -146,6 +149,7 @@ func (s *ContainerServer) SetTrackerConnection(ctx context.Context, req *pb.SetT
 		BaseURL:          req.BaseUrl,
 		Project:          req.Project,
 		CredentialSecret: req.CredentialSecret,
+		Policy:           req.Policy,
 	})
 	if err != nil {
 		return nil, mapTrackerError(err)
@@ -493,9 +497,29 @@ func toProtoTrackerConnection(c *tracker.Connection) *pb.TrackerConnection {
 		BaseUrl:          c.BaseURL,
 		Project:          c.Project,
 		CredentialSecret: c.CredentialSecret,
+		Policy:           c.Policy,
 	}
 	if !c.CredentialExpiresAt.IsZero() {
 		out.CredentialExpiresAt = timestamppb.New(c.CredentialExpiresAt)
 	}
 	return out
+}
+
+// validateTrackerPolicy rejects a policy that can't mean anything: a
+// negative cap or timeout, or an empty allow-list pattern (which would
+// match nothing and is almost certainly a shell-quoting accident). Zero
+// values are fine — they mean the documented defaults.
+func validateTrackerPolicy(p *pb.TrackerPolicy) error {
+	if p == nil {
+		return nil
+	}
+	if p.GetMaxDepth() < 0 || p.GetMaxChildrenPerRun() < 0 || p.GetRunTimeoutSeconds() < 0 {
+		return errors.New("policy: max_depth, max_children_per_run and run_timeout_seconds must not be negative")
+	}
+	for _, pattern := range p.GetLabelAllowList() {
+		if pattern == "" {
+			return errors.New("policy: label_allow_list entries must not be empty")
+		}
+	}
+	return nil
 }
