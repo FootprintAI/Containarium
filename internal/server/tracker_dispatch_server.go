@@ -248,32 +248,35 @@ func (s *AgentSkillServer) launchDispatchedRun(ctx context.Context, run *started
 // It runs in a bare goroutine, so a panic in it would skip the lease end
 // (the run's JWTs stay valid, the run stays registered), never report
 // the end, and terminate the daemon (#2050). The lease end and the end
-// report therefore run in a defer that recovers, in the normal order,
-// and a panicking run is reported failed.
+// report therefore run in defers that recover, in the normal order, and
+// a run that panicked or was ended by runtime.Goexit is reported failed.
 func (s *AgentSkillServer) finishDispatchedRun(ctx context.Context, run *startedSkillRun, agent func(containerName, seedDir string) (string, error), lc tracker.RunLifecycle) {
 	bg := context.WithoutCancel(ctx)
-	var err error
+	// Not completing is the default: only a normal return from the agent
+	// overwrites it. A runtime.Goexit is not a panic (recover returns
+	// nil), so without this default it would be reported as success.
+	err := errDispatchedRunDidNotComplete
+	leaseEnded := false
+	// Deferred first so it runs last, after the lease end, and still runs
+	// when a Goexit inside the lease end unwinds the goroutine.
 	defer func() {
-		if logDispatchedRunPanic(run.runID, "in-box agent", recover()) {
-			err = errDispatchedRunDidNotComplete
+		if lc == nil {
+			return
 		}
-		leaseEnded := func() (ok bool) {
-			defer func() {
-				if logDispatchedRunPanic(run.runID, "lease end", recover()) {
-					ok = false
-				}
-			}()
-			s.endRunLease(bg, run.lease, s.boxWiper(), runExitReason)
-			return true
-		}()
+		defer func() { logDispatchedRunPanic(run.runID, "completion report", recover()) }()
 		if !leaseEnded {
 			// Its credentials may still be live: never report it done.
 			err = errDispatchedRunDidNotComplete
 		}
-		if lc != nil {
-			defer func() { logDispatchedRunPanic(run.runID, "completion report", recover()) }()
-			lc.RunEnded(bg, tracker.RunOutcome{Err: err})
+		lc.RunEnded(bg, tracker.RunOutcome{Err: err})
+	}()
+	defer func() {
+		if logDispatchedRunPanic(run.runID, "in-box agent", recover()) {
+			err = errDispatchedRunDidNotComplete
 		}
+		defer func() { logDispatchedRunPanic(run.runID, "lease end", recover()) }()
+		s.endRunLease(bg, run.lease, s.boxWiper(), runExitReason)
+		leaseEnded = true
 	}()
 	artifact, aerr := agent(run.containerName, run.lease.SeedDir)
 	if aerr == nil && strings.TrimSpace(artifact) == "" {
@@ -283,9 +286,10 @@ func (s *AgentSkillServer) finishDispatchedRun(ctx context.Context, run *started
 }
 
 // errDispatchedRunDidNotComplete is the outcome of a dispatched run whose
-// background half panicked. Generic on purpose: the panic value may
-// carry anything the run held, so it is neither logged nor stored.
-var errDispatchedRunDidNotComplete = errors.New("the dispatched run panicked")
+// background half did not complete (a panic or runtime.Goexit in the
+// agent or the lease end). Generic on purpose: a panic value may carry
+// anything the run held, so it is neither logged nor stored.
+var errDispatchedRunDidNotComplete = errors.New("the dispatched run did not complete")
 
 // logDispatchedRunPanic takes what a deferred function's recover()
 // returned and, for a panic in a dispatched run's background half, logs
