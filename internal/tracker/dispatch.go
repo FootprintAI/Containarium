@@ -83,9 +83,10 @@ type Dispatcher struct {
 type TickResult struct {
 	Started              []Dispatch
 	Failed               []Dispatch
-	SkippedNeedsApproval int
-	SkippedActive        int
-	SkippedUnrouted      int
+	// Counters are int32 to match DispatchTrackerIssuesResponse.
+	SkippedNeedsApproval int32
+	SkippedActive        int32
+	SkippedUnrouted      int32
 }
 
 // Tick lists the connection's open issues and, for each one with a

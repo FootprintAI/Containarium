@@ -91,8 +91,11 @@ func TestDispatchTrackerIssues_TickThroughRPC(t *testing.T) {
 	provider := &fakeWriterProvider{fakeReaderProvider: fakeReaderProvider{issues: []tracker.Issue{
 		{Number: 42, Title: "idea", Body: "the body", State: pb.TrackerIssueState_TRACKER_ISSUE_STATE_OPEN, Labels: []string{"scope:product"}},
 	}}}
-	s, _ := setUpWriterConnection(t, user, provider)
 	ctx := context.Background()
+	// Start from no dispatch rows: they cascade from the connection, which
+	// setUpWriterConnection only upserts.
+	_ = mustTestTrackerStore(t).Delete(ctx, user, "default")
+	s, _ := setUpWriterConnection(t, user, provider)
 	if _, err := s.trackerStore.SetRoute(ctx, tracker.Route{Username: user, Connection: "default", Scope: "product", SkillID: "product-define"}); err != nil {
 		t.Fatalf("SetRoute: %v", err)
 	}

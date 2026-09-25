@@ -61,9 +61,9 @@ func (s *ContainerServer) DispatchTrackerIssues(ctx context.Context, req *pb.Dis
 	}
 
 	out := &pb.DispatchTrackerIssuesResponse{
-		SkippedNeedsApproval: int32(res.SkippedNeedsApproval),
-		SkippedActive:        int32(res.SkippedActive),
-		SkippedUnrouted:      int32(res.SkippedUnrouted),
+		SkippedNeedsApproval: res.SkippedNeedsApproval,
+		SkippedActive:        res.SkippedActive,
+		SkippedUnrouted:      res.SkippedUnrouted,
 	}
 	for i := range res.Started {
 		out.Started = append(out.Started, toProtoTrackerDispatch(&res.Started[i]))
