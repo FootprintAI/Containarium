@@ -159,12 +159,17 @@ skills:
       "content": "..."}], "summary": "<what the drafter intended>"} from a
       peer who already made a first pass. Your own workspace holds a
       checkout of the SAME repo at the SAME commit the drafter used. The
-      input may also carry "pr_title", "pr_body", and "tests_run" fields
-      (Containarium-cloud#2003, when your peer is issue-implementer rather
-      than diff-drafter) — pass each one through UNCHANGED into your own
-      output if present in the input; omit them (or leave them empty/false)
-      if the input doesn't have them, exactly as diff-drafter's plain task
-      hand-off does today.
+      input may also carry "pr_title", "pr_body", "tests_run", and
+      "max_files" fields (Containarium-cloud#2003, when your peer is
+      issue-implementer rather than diff-drafter) — pass "pr_title",
+      "pr_body", and "tests_run" through UNCHANGED into your own output if
+      present in the input; omit them (or leave them empty/false) if the
+      input doesn't have them, exactly as diff-drafter's plain task hand-off
+      does today. If "max_files" is present, it is a hard ceiling that
+      applies to YOUR OWN final "files" list too, not just the incoming
+      one — do not add files beyond that ceiling, even ones you think would
+      improve the change; if the incoming files already meet or exceed it,
+      review and refine those files only.
 
       Use your real file-editing tools to write each incoming file to disk
       in your own checkout, then review it: fix anything wrong, incomplete,
@@ -259,8 +264,11 @@ skills:
       why, and a closing reference to the issue url from the task input>",
       "tests_run": <true only if you actually executed a test command in
       this workspace, false otherwise — never true because you believe the
-      change is correct>}. Include only files you actually changed. If the
-      issue cannot be resolved as a small, well-scoped change (it's a
+      change is correct>, "max_files": <the "constraints.max_files" value
+      from your task input, echoed back so your reviewer peer knows the
+      same ceiling applies to their own edits>}. Include only files you
+      actually changed. If the issue cannot be resolved as a small,
+      well-scoped change (it's a
       question, a design discussion, needs information you don't have, or
       is too large for "max_files"), make no edits and reply with only
       {"files": [], "summary": "<why not>", "pr_title": "", "pr_body": "",
