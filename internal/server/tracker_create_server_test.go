@@ -135,6 +135,10 @@ func TestCreateTrackerIssue_AllowListRejectsBeforeUpstream(t *testing.T) {
 	}{
 		{"arbitrary label", []string{"scope:architecture", "deploy:prod"}},
 		{"dispatcher state label", []string{"scope:architecture", "agent:done"}},
+		// Review of #2034, blocking: one label must not smuggle a second
+		// through GitLab's comma-joined wire format.
+		{"comma-smuggled state label", []string{"scope:architecture", "scope:x,agent:done"}},
+		{"newline-smuggled label", []string{"scope:architecture", "scope:x\ndeploy:prod"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req := createReq(user, 42, tc.labels...)
@@ -143,7 +147,7 @@ func TestCreateTrackerIssue_AllowListRejectsBeforeUpstream(t *testing.T) {
 			if status.Code(err) != codes.InvalidArgument {
 				t.Fatalf("code = %v (%v), want InvalidArgument", status.Code(err), err)
 			}
-			if !strings.Contains(err.Error(), tc.labels[1]) {
+			if !strings.Contains(err.Error(), strconv.Quote(tc.labels[1])) {
 				t.Errorf("error %q should name the rejected label %q", err, tc.labels[1])
 			}
 			if n := len(provider.createIssueReqs); n != 0 {
@@ -430,6 +434,136 @@ func TestSetTrackerIssueLabels_RejectsOutsideAllowList(t *testing.T) {
 	}
 	if len(provider.labelsAdd) != 1 || provider.labelsAdd[0] != "scope:architecture" {
 		t.Errorf("labelsAdd = %v, want [scope:architecture]", provider.labelsAdd)
+	}
+}
+
+// TestSetTrackerIssueLabels_ReservedLabelsCaseAndSpaceInsensitive (review
+// of #2034, should-fix): even under a permissive allow-list ("*"), a run
+// token cannot write a dispatcher state label by changing its case or
+// padding it, nor smuggle one through a comma; and it never reaches
+// upstream.
+func TestSetTrackerIssueLabels_ReservedLabelsCaseAndSpaceInsensitive(t *testing.T) {
+	const user = "tracker-rpc-labels-reserved-fold"
+	provider := &fakeWriterProvider{}
+	s, runCtx, _ := setUpCreateConnection(t, user, provider, &pb.TrackerPolicy{LabelAllowList: []string{"*"}})
+
+	for _, label := range []string{"Agent:Done", "AGENT:QUEUED", "agent:done ", " agent:failed", "scope:x,agent:done", "scope:x\nagent:running"} {
+		for _, remove := range []bool{false, true} {
+			req := &pb.SetTrackerIssueLabelsRequest{Username: user, Connection: "default", Number: 3}
+			if remove {
+				req.RemoveLabels = []string{label}
+			} else {
+				req.AddLabels = []string{label}
+			}
+			_, err := s.SetTrackerIssueLabels(runCtx, req)
+			if status.Code(err) != codes.InvalidArgument {
+				t.Errorf("label %q (remove=%v): code = %v (%v), want InvalidArgument", label, remove, status.Code(err), err)
+			}
+		}
+	}
+	if provider.labelsAdd != nil || provider.labelsRemove != nil {
+		t.Errorf("upstream SetLabels was called (add=%v remove=%v), want no upstream call", provider.labelsAdd, provider.labelsRemove)
+	}
+}
+
+// TestCreateTrackerIssue_ReservedLabelsCaseInsensitive: the same folding
+// on the create path.
+func TestCreateTrackerIssue_ReservedLabelsCaseInsensitive(t *testing.T) {
+	const user = "tracker-rpc-create-reserved-fold"
+	provider := &fakeWriterProvider{}
+	s, runCtx, _ := setUpCreateConnection(t, user, provider, &pb.TrackerPolicy{LabelAllowList: []string{"*"}})
+
+	for _, label := range []string{"Agent:Done", "AGENT:QUEUED", "agent:done "} {
+		_, err := s.CreateTrackerIssue(runCtx, createReq(user, 42, "scope:architecture", label))
+		if status.Code(err) != codes.InvalidArgument {
+			t.Errorf("label %q: code = %v (%v), want InvalidArgument", label, status.Code(err), err)
+		}
+	}
+	if n := len(provider.createIssueReqs); n != 0 {
+		t.Errorf("upstream CreateIssue called %d times, want 0", n)
+	}
+}
+
+// TestCreateTrackerIssue_CancelledAfterUpstreamCreate (review of #2034,
+// blocking): the caller's context is cancelled right after the forge
+// accepted the create. The child already exists upstream, so the daemon
+// must still record its lineage (it counts toward fan-out and depth),
+// post the back-link, write the audit row, and return the created issue
+// — never an error that invites a duplicate retry.
+func TestCreateTrackerIssue_CancelledAfterUpstreamCreate(t *testing.T) {
+	const user = "tracker-rpc-create-cancel"
+	provider := &fakeWriterProvider{}
+	s, runCtx, _ := setUpCreateConnection(t, user, provider, &pb.TrackerPolicy{MaxChildrenPerRun: 1})
+	s.auditStore = mustTestAuditStore(t)
+
+	ctx, cancel := context.WithCancel(runCtx)
+	defer cancel()
+	provider.afterCreateIssue = cancel
+
+	resp, err := s.CreateTrackerIssue(ctx, createReq(user, 42, "scope:architecture"))
+	if err != nil {
+		t.Fatalf("CreateTrackerIssue after upstream success = %v, want the created issue (a retry would duplicate it)", err)
+	}
+	child := resp.GetIssue().GetNumber()
+	if child == 0 {
+		t.Fatal("response carries no created issue")
+	}
+	if n, _ := s.trackerStore.ChildrenCount(context.Background(), user, "default", createTestRunID); n != 1 {
+		t.Errorf("lineage rows for the run = %d, want 1 — the created child must be counted", n)
+	}
+	if len(provider.commentNumbers) != 1 || provider.commentNumbers[0] != 42 {
+		t.Errorf("back-link comments = %v, want one on #42", provider.commentNumbers)
+	}
+	rows, _, qerr := s.auditStore.Query(context.Background(), audit.QueryParams{Username: user, Action: "tracker.issue_created", Limit: 10})
+	if qerr != nil {
+		t.Fatalf("audit Query: %v", qerr)
+	}
+	if len(rows) != 1 || !strings.Contains(rows[0].Detail, `"number":`+itoa64(child)) || !strings.Contains(rows[0].Detail, `"lineage_recorded":true`) {
+		t.Fatalf("audit rows = %+v, want one tracker.issue_created for #%d with lineage_recorded:true", rows, child)
+	}
+
+	// The cap now holds: the (cancelled) first child was counted.
+	provider.afterCreateIssue = nil
+	if _, err := s.CreateTrackerIssue(runCtx, createReq(user, 42, "scope:architecture")); status.Code(err) != codes.ResourceExhausted {
+		t.Errorf("second create: code = %v (%v), want ResourceExhausted", status.Code(err), err)
+	}
+}
+
+// TestCreateTrackerIssue_LineageRecordFailureStillReturnsIssue: if the
+// lineage row genuinely cannot be written after the upstream create, the
+// RPC still returns the created issue and audits it with
+// lineage_recorded:false, so the caller never retries into a duplicate.
+func TestCreateTrackerIssue_LineageRecordFailureStillReturnsIssue(t *testing.T) {
+	const user = "tracker-rpc-create-recfail"
+	provider := &fakeWriterProvider{}
+	s, runCtx, _ := setUpCreateConnection(t, user, provider, nil)
+	s.auditStore = mustTestAuditStore(t)
+
+	// The fake's first child is #501; occupy its lineage key so the
+	// post-create insert conflicts.
+	pool, err := pgxpool.New(context.Background(), os.Getenv("CONTAINARIUM_TEST_DSN"))
+	if err != nil {
+		t.Fatalf("connect Postgres: %v", err)
+	}
+	defer pool.Close()
+	if _, err := pool.Exec(context.Background(), `INSERT INTO tracker_issue_lineage (username, connection, child_number, parent_number, created_by_run, depth)
+		VALUES ($1, 'default', 501, 1, 'run-other', 1)`, user); err != nil {
+		t.Fatalf("seed conflicting row: %v", err)
+	}
+
+	resp, err := s.CreateTrackerIssue(runCtx, createReq(user, 42, "scope:architecture"))
+	if err != nil {
+		t.Fatalf("CreateTrackerIssue = %v, want the created issue despite the lineage failure", err)
+	}
+	if resp.GetIssue().GetNumber() != 501 {
+		t.Errorf("issue number = %d, want 501", resp.GetIssue().GetNumber())
+	}
+	rows, _, qerr := s.auditStore.Query(context.Background(), audit.QueryParams{Username: user, Action: "tracker.issue_created", Limit: 10})
+	if qerr != nil {
+		t.Fatalf("audit Query: %v", qerr)
+	}
+	if len(rows) != 1 || !strings.Contains(rows[0].Detail, `"lineage_recorded":false`) || !strings.Contains(rows[0].Detail, `"number":501`) {
+		t.Fatalf("audit rows = %+v, want one tracker.issue_created for #501 with lineage_recorded:false", rows)
 	}
 }
 

@@ -251,7 +251,10 @@ func (s *ContainerServer) SetTrackerIssueLabels(ctx context.Context, req *pb.Set
 	runID, isRun := auth.RunIDFromGRPCContext(ctx)
 	isRun = isRun && runID != ""
 	policy := tracker.PolicyFromProto(record.Policy)
-	if err := policy.CheckLabels(append(append([]string(nil), req.AddLabels...), req.RemoveLabels...), isRun); err != nil {
+	// Trim first (same as CreateTrackerIssue), so "agent:done " is judged —
+	// and rejected — as the reserved label it is (review of #2034).
+	add, remove := trimLabels(req.AddLabels), trimLabels(req.RemoveLabels)
+	if err := policy.CheckLabels(append(append([]string(nil), add...), remove...), isRun); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
@@ -259,15 +262,15 @@ func (s *ContainerServer) SetTrackerIssueLabels(ctx context.Context, req *pb.Set
 	if err != nil {
 		return nil, err
 	}
-	if err := provider.SetLabels(ctx, conn, req.Number, req.AddLabels, req.RemoveLabels); err != nil {
+	if err := provider.SetLabels(ctx, conn, req.Number, add, remove); err != nil {
 		return nil, mapProviderError(err)
 	}
 
 	s.auditTrackerWrite(ctx, "tracker.set_labels", req.Username, req.Connection, req.Number, trackerLabelsAuditDetail{
 		Connection:   req.Connection,
 		Number:       req.Number,
-		AddLabels:    req.AddLabels,
-		RemoveLabels: req.RemoveLabels,
+		AddLabels:    add,
+		RemoveLabels: remove,
 	})
 	return &pb.SetTrackerIssueLabelsResponse{Message: "labels updated"}, nil
 }

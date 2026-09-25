@@ -2,6 +2,7 @@ package tracker
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -84,7 +85,30 @@ func TestPolicy_LabelAllowList(t *testing.T) {
 		{"case-sensitive", nil, "Scope:product", true, ErrLabelNotAllowed},
 		{"star spans slashes", []string{"area/*"}, "area/api/v2", true, nil},
 		{"prefix without star is exact", []string{"scope:"}, "scope:product", true, ErrLabelNotAllowed},
-		{"empty label rejected", nil, "", true, ErrLabelNotAllowed},
+		{"empty label rejected", nil, "", true, ErrLabelInvalid},
+
+		// Review of #2034, blocking: GitLab's adapter comma-joins labels and
+		// GitLab splits them back, so one "label" must never smuggle a second.
+		{"comma smuggles a second label", nil, "scope:x,agent:done", true, ErrLabelInvalid},
+		{"comma smuggles deploy:prod", nil, "scope:x,deploy:prod", true, ErrLabelInvalid},
+		{"newline smuggles a second label", nil, "scope:x\nagent:done", true, ErrLabelInvalid},
+		{"control character rejected", nil, "scope:x\tagent", true, ErrLabelInvalid},
+		{"leading whitespace rejected", nil, " scope:x", true, ErrLabelInvalid},
+		{"trailing whitespace rejected", nil, "agent:done ", true, ErrLabelInvalid},
+		{"comma rejected even for an operator with *", []string{"*"}, "a,b", false, ErrLabelInvalid},
+		{"inner space is a legal label", []string{"good first issue"}, "good first issue", true, nil},
+
+		// Should-fix: reserved labels compare case-insensitively (GitHub
+		// label names are), so a permissive allow-list can't be used to
+		// write a differently-cased state label.
+		{"Agent:Done reserved under *", []string{"*"}, "Agent:Done", true, ErrStateLabelReserved},
+		{"AGENT:QUEUED reserved under *", []string{"*"}, "AGENT:QUEUED", true, ErrStateLabelReserved},
+		{"agent:running reserved under *", []string{"*"}, "agent:running", true, ErrStateLabelReserved},
+
+		// Nit: a glob star matches one or more characters, so a bare
+		// prefix is not a scope.
+		{"bare scope: rejected", nil, "scope:", true, ErrLabelNotAllowed},
+		{"bare model: rejected", nil, "model:", true, ErrLabelNotAllowed},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -99,7 +123,7 @@ func TestPolicy_LabelAllowList(t *testing.T) {
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("CheckLabels(%q) = %v, want %v", tt.label, err, tt.wantErr)
 			}
-			if !strings.Contains(err.Error(), tt.label) {
+			if !strings.Contains(err.Error(), fmt.Sprintf("%q", tt.label)) {
 				t.Errorf("error %q should name the offending label %q", err, tt.label)
 			}
 		})
@@ -138,6 +162,59 @@ func TestPolicy_DepthAndFanout(t *testing.T) {
 	for _, tc := range fanoutCases {
 		if got := p.FanoutAllowed(tc.existing); got != tc.want {
 			t.Errorf("FanoutAllowed(existing=%d) = %v, want %v", tc.existing, got, tc.want)
+		}
+	}
+}
+
+// TestMatchLabelGlob pins the glob semantics: '*' matches ONE or more
+// characters (so "scope:*" does not admit a bare "scope:"), every other
+// character matches itself.
+func TestMatchLabelGlob(t *testing.T) {
+	for _, tc := range []struct {
+		pattern, label string
+		want           bool
+	}{
+		{"scope:*", "scope:product", true},
+		{"scope:*", "scope:", false},
+		{"*", "", false},
+		{"*", "x", true},
+		{"a*b", "ab", false},
+		{"a*b", "axb", true},
+		{"a*b*c", "axbyc", true},
+		{"a*b*c", "abc", false},
+		{"exact", "exact", true},
+		{"exact", "exactly", false},
+		{"*:done", "agent:done", true},
+	} {
+		if got := MatchLabelGlob(tc.pattern, tc.label); got != tc.want {
+			t.Errorf("MatchLabelGlob(%q, %q) = %v, want %v", tc.pattern, tc.label, got, tc.want)
+		}
+	}
+}
+
+// TestValidateLabel is the provider-neutral wire-safety check both the
+// daemon (CheckLabels) and the GitLab adapter apply.
+func TestValidateLabel(t *testing.T) {
+	for _, tc := range []struct {
+		label string
+		ok    bool
+	}{
+		{"scope:product", true},
+		{"good first issue", true},
+		{"", false},
+		{"scope:x,agent:done", false},
+		{"scope:x\nagent:done", false},
+		{"scope:x\ragent:done", false},
+		{"a\x00b", false},
+		{" scope:x", false},
+		{"scope:x ", false},
+	} {
+		err := ValidateLabel(tc.label)
+		if tc.ok && err != nil {
+			t.Errorf("ValidateLabel(%q) = %v, want nil", tc.label, err)
+		}
+		if !tc.ok && !errors.Is(err, ErrLabelInvalid) {
+			t.Errorf("ValidateLabel(%q) = %v, want ErrLabelInvalid", tc.label, err)
 		}
 	}
 }

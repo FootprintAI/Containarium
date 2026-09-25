@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"os"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -354,5 +356,104 @@ func TestLineage_DepthAndChildrenCount(t *testing.T) {
 	if _, err := store.RecordChild(ctx, Lineage{Username: user, Connection: "default", ParentNumber: 102, CreatedByRun: "run-1"}, 0, 0,
 		func(context.Context) (int64, error) { return 105, nil }); err != nil {
 		t.Errorf("RecordChild with zero caps: %v, want allowed", err)
+	}
+}
+
+// TestRecordChild_ContextCancelledAfterUpstreamCreate (review of #2034,
+// blocking): once the upstream create has succeeded, the issue exists on
+// the forge — the lineage row must still be recorded even if the caller's
+// context is cancelled in that window, or the child goes uncounted for
+// fan-out, reads as depth 0, and a retry files a duplicate.
+func TestRecordChild_ContextCancelledAfterUpstreamCreate(t *testing.T) {
+	store, _ := newTrackerTestStore(t)
+	const user = "tracker-store-lineage-cancel"
+	bg := context.Background()
+	_, _ = store.pool.Exec(bg, "DELETE FROM tracker_issue_lineage WHERE username = $1", user)
+
+	ctx, cancel := context.WithCancel(bg)
+	defer cancel()
+	rec, err := store.RecordChild(ctx, Lineage{Username: user, Connection: "default", ParentNumber: 10, CreatedByRun: "run-c"}, 3, 5,
+		func(context.Context) (int64, error) {
+			cancel() // the forge accepted the create; the caller then goes away
+			return 11, nil
+		})
+	if err != nil {
+		t.Fatalf("RecordChild after upstream success with a cancelled context: %v, want the row recorded anyway", err)
+	}
+	if rec.ChildNumber != 11 || rec.Depth != 1 {
+		t.Errorf("recorded = %+v, want child=11 depth=1", rec)
+	}
+	if n, _ := store.ChildrenCount(bg, user, "default", "run-c"); n != 1 {
+		t.Errorf("ChildrenCount(run-c) = %d, want 1 — the created child must count toward fan-out", n)
+	}
+	if d, _ := store.IssueDepth(bg, user, "default", 11); d != 1 {
+		t.Errorf("IssueDepth(#11) = %d, want 1", d)
+	}
+}
+
+// TestRecordChild_RecordingFailureNamesTheCreatedIssue: if the lineage
+// insert genuinely fails after the upstream create succeeded, the error
+// is a *LineageRecordError carrying the created issue's number, so the
+// caller can report it instead of retrying blind.
+func TestRecordChild_RecordingFailureNamesTheCreatedIssue(t *testing.T) {
+	store, ctx := newTrackerTestStore(t)
+	const user = "tracker-store-lineage-recfail"
+	_, _ = store.pool.Exec(ctx, "DELETE FROM tracker_issue_lineage WHERE username = $1", user)
+	// Occupy child #777's primary key so the post-create insert conflicts.
+	if _, err := store.pool.Exec(ctx, `INSERT INTO tracker_issue_lineage (username, connection, child_number, parent_number, created_by_run, depth)
+		VALUES ($1, 'default', 777, 1, 'run-other', 1)`, user); err != nil {
+		t.Fatalf("seed conflicting row: %v", err)
+	}
+
+	_, err := store.RecordChild(ctx, Lineage{Username: user, Connection: "default", ParentNumber: 10, CreatedByRun: "run-r"}, 3, 5,
+		func(context.Context) (int64, error) { return 777, nil })
+	var recErr *LineageRecordError
+	if !errors.As(err, &recErr) {
+		t.Fatalf("err = %v, want a *LineageRecordError", err)
+	}
+	if recErr.ChildNumber != 777 {
+		t.Errorf("LineageRecordError.ChildNumber = %d, want 777 (the issue that now exists upstream)", recErr.ChildNumber)
+	}
+}
+
+// TestRecordChild_FanoutCapHoldsUnderConcurrency (review of #2034): 12
+// concurrent creates from one run against max_children_per_run=3 yield
+// exactly 3 upstream calls and 3 rows. Run with -race.
+func TestRecordChild_FanoutCapHoldsUnderConcurrency(t *testing.T) {
+	store, ctx := newTrackerTestStore(t)
+	const user = "tracker-store-lineage-race"
+	_, _ = store.pool.Exec(ctx, "DELETE FROM tracker_issue_lineage WHERE username = $1", user)
+
+	var upstreamCalls atomic.Int64
+	var wg sync.WaitGroup
+	errs := make([]error, 12)
+	for i := 0; i < 12; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = store.RecordChild(ctx, Lineage{Username: user, Connection: "default", ParentNumber: 1, CreatedByRun: "run-race"}, 3, 3,
+				func(context.Context) (int64, error) { return 1000 + upstreamCalls.Add(1), nil })
+		}(i)
+	}
+	wg.Wait()
+
+	if got := upstreamCalls.Load(); got != 3 {
+		t.Errorf("upstream create calls = %d, want exactly 3", got)
+	}
+	if n, _ := store.ChildrenCount(ctx, user, "default", "run-race"); n != 3 {
+		t.Errorf("lineage rows = %d, want exactly 3", n)
+	}
+	var capped int
+	for _, err := range errs {
+		switch {
+		case err == nil:
+		case errors.Is(err, ErrFanoutExceeded):
+			capped++
+		default:
+			t.Errorf("unexpected error: %v", err)
+		}
+	}
+	if capped != 9 {
+		t.Errorf("fan-out rejections = %d, want 9", capped)
 	}
 }

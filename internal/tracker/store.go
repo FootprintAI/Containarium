@@ -450,7 +450,9 @@ func (s *Store) RecordChild(ctx context.Context, l Lineage, maxDepth, maxChildre
 	if err != nil {
 		return Lineage{}, fmt.Errorf("begin lineage transaction: %w", err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }() // no-op after a successful Commit
+	// No-op after a successful Commit. Detached so a cancelled request
+	// context still releases the transaction cleanly.
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 
 	lockKey := l.Username + "/" + l.Connection + "/" + l.CreatedByRun
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, lockKey); err != nil {
@@ -480,15 +482,42 @@ func (s *Store) RecordChild(ctx context.Context, l Lineage, maxDepth, maxChildre
 	}
 	l.ChildNumber = child
 
+	// From here the issue EXISTS upstream. Recording it must not depend on
+	// the caller still being around (review of #2034): a cancelled request
+	// context would otherwise leave an uncounted, depth-0 child and invite
+	// a duplicate on retry. Detach from cancellation, bounded by a short
+	// timeout; if recording still fails, the typed error names the child.
+	recCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), lineageRecordTimeout)
+	defer cancel()
 	const insert = `
 		INSERT INTO tracker_issue_lineage (username, connection, child_number, parent_number, created_by_run, depth)
 		VALUES ($1, $2, $3, $4, $5, $6)
 	`
-	if _, err := tx.Exec(ctx, insert, l.Username, l.Connection, l.ChildNumber, l.ParentNumber, l.CreatedByRun, l.Depth); err != nil {
-		return Lineage{}, fmt.Errorf("insert issue lineage: %w", err)
+	if _, err := tx.Exec(recCtx, insert, l.Username, l.Connection, l.ChildNumber, l.ParentNumber, l.CreatedByRun, l.Depth); err != nil {
+		return l, &LineageRecordError{ChildNumber: l.ChildNumber, Depth: l.Depth, Err: fmt.Errorf("insert issue lineage: %w", err)}
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return Lineage{}, fmt.Errorf("commit issue lineage: %w", err)
+	if err := tx.Commit(recCtx); err != nil {
+		return l, &LineageRecordError{ChildNumber: l.ChildNumber, Depth: l.Depth, Err: fmt.Errorf("commit issue lineage: %w", err)}
 	}
 	return l, nil
 }
+
+// lineageRecordTimeout bounds the detached insert+commit that follows a
+// successful upstream create.
+const lineageRecordTimeout = 10 * time.Second
+
+// LineageRecordError is returned by RecordChild when the upstream create
+// SUCCEEDED but its lineage row could not be recorded. The issue exists on
+// the tracker as ChildNumber: callers must report it as created (and audit
+// it), never treat the call as failed — a retry would file a duplicate.
+type LineageRecordError struct {
+	ChildNumber int64
+	Depth       int32
+	Err         error
+}
+
+func (e *LineageRecordError) Error() string {
+	return fmt.Sprintf("tracker: issue #%d was created upstream but its lineage was not recorded: %v", e.ChildNumber, e.Err)
+}
+
+func (e *LineageRecordError) Unwrap() error { return e.Err }

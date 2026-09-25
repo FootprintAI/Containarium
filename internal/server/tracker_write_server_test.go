@@ -63,8 +63,11 @@ type fakeWriterProvider struct {
 	// use — they need "exactly one comment, on the parent").
 	createIssueReqs []tracker.NewIssue
 	createIssueErr  error
-	commentNumbers  []int64
-	commentBodies   []string
+	// afterCreateIssue runs once the "forge" has accepted a create — the
+	// window the review of #2034 found (caller cancels after upstream success).
+	afterCreateIssue func()
+	commentNumbers   []int64
+	commentBodies    []string
 
 	openChangeReq tracker.OpenChangeRequest
 	openChangeOut tracker.Change
@@ -103,6 +106,9 @@ func (f *fakeWriterProvider) CreateIssue(_ context.Context, _ tracker.Conn, n tr
 		return tracker.Issue{}, f.createIssueErr
 	}
 	f.createIssueReqs = append(f.createIssueReqs, n)
+	if f.afterCreateIssue != nil {
+		f.afterCreateIssue()
+	}
 	return tracker.Issue{
 		Number: int64(500 + len(f.createIssueReqs)),
 		Title:  n.Title,

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/tracker"
@@ -95,6 +96,7 @@ func (s *ContainerServer) CreateTrackerIssue(ctx context.Context, req *pb.Create
 
 	var created tracker.Issue
 	var depth int32
+	lineageRecorded := false
 	if isRun {
 		var upstreamErr error
 		rec, err := s.trackerStore.RecordChild(ctx, tracker.Lineage{
@@ -109,9 +111,18 @@ func (s *ContainerServer) CreateTrackerIssue(ctx context.Context, req *pb.Create
 			created = issue
 			return issue.Number, nil
 		})
+		var recErr *tracker.LineageRecordError
 		switch {
 		case err == nil:
 			depth = rec.Depth
+			lineageRecorded = true
+		case errors.As(err, &recErr):
+			// The issue exists upstream; only its lineage row is missing.
+			// Report it as created (and audit it below with
+			// lineage_recorded=false) — an error here would make the
+			// caller retry and file a duplicate (review of #2034).
+			depth = recErr.Depth
+			log.Printf("[tracker] %s/%s: %v", req.Username, req.Connection, recErr)
 		case errors.Is(err, tracker.ErrDepthExceeded):
 			return nil, status.Errorf(codes.FailedPrecondition, "follow-up would exceed the connection's max_depth (%d): %v", policy.MaxDepth, err)
 		case errors.Is(err, tracker.ErrFanoutExceeded):
@@ -128,6 +139,12 @@ func (s *ContainerServer) CreateTrackerIssue(ctx context.Context, req *pb.Create
 		}
 	}
 
+	// The child exists upstream from here on. The back-link and the audit
+	// row must not depend on the caller still being connected (review of
+	// #2034): detach from cancellation, bounded by a short timeout.
+	postCtx, cancelPost := context.WithTimeout(context.WithoutCancel(ctx), postCreateTimeout)
+	defer cancelPost()
+
 	// One back-link comment on the parent. Best-effort once the child
 	// exists: failing the RPC here would make the caller retry and file
 	// a duplicate child, which is worse than a missing back-link — the
@@ -135,14 +152,15 @@ func (s *ContainerServer) CreateTrackerIssue(ctx context.Context, req *pb.Create
 	parentCommentPosted := false
 	if req.ParentNumber > 0 {
 		backlink := fmt.Sprintf("Filed follow-up #%d: %s", created.Number, title) + "\n\n" + tracker.Stamp(id, tracker.KindComment)
-		if _, cerr := provider.Comment(ctx, conn, req.ParentNumber, backlink); cerr != nil {
+		if _, cerr := provider.Comment(postCtx, conn, req.ParentNumber, backlink); cerr != nil {
 			log.Printf("[tracker] %s/%s: back-link comment on #%d for child #%d: %v", req.Username, req.Connection, req.ParentNumber, created.Number, cerr)
 		} else {
 			parentCommentPosted = true
 		}
 	}
 
-	s.auditTrackerWrite(ctx, "tracker.issue_created", req.Username, req.Connection, created.Number, trackerIssueCreatedAuditDetail{
+	s.auditTrackerWrite(postCtx, "tracker.issue_created", req.Username, req.Connection, created.Number, trackerIssueCreatedAuditDetail{
+		LineageRecorded:     lineageRecorded,
 		Connection:          req.Connection,
 		Project:             record.Project,
 		Number:              created.Number,
@@ -171,7 +189,16 @@ type trackerIssueCreatedAuditDetail struct {
 	Model               string   `json:"model,omitempty"`
 	Labels              []string `json:"labels,omitempty"`
 	ParentCommentPosted bool     `json:"parent_comment_posted"`
+	// LineageRecorded is false when a run's child was created upstream but
+	// its tracker_issue_lineage row could not be written (it is then not
+	// counted for depth/fan-out and needs operator attention). Always
+	// false for an operator token, which records no lineage by design.
+	LineageRecorded bool `json:"lineage_recorded"`
 }
+
+// postCreateTimeout bounds the detached back-link + audit writes that
+// follow a successful upstream create.
+const postCreateTimeout = 15 * time.Second
 
 // composeIssueBody builds the body sent upstream: the sanitized agent
 // text, a parent link, and the identity stamp. The parent link is a
@@ -211,6 +238,19 @@ func dedupeLabels(in []string) []string {
 		}
 		seen[l] = true
 		out = append(out, l)
+	}
+	return out
+}
+
+// trimLabels trims surrounding whitespace from each label, keeping order
+// and empties (CheckLabels rejects those).
+func trimLabels(in []string) []string {
+	if in == nil {
+		return nil
+	}
+	out := make([]string, len(in))
+	for i, l := range in {
+		out[i] = strings.TrimSpace(l)
 	}
 	return out
 }

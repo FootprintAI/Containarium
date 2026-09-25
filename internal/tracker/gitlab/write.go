@@ -80,12 +80,30 @@ func (a *Adapter) AssignIfUnassigned(ctx context.Context, conn tracker.Conn, num
 	return true, nil
 }
 
+// validateWireLabels refuses any label that GitLab's comma-joined wire
+// format would split into more than one (review of #2034). The daemon's
+// allow-list already rejects these before calling the adapter; this is
+// defense in depth, so no caller can ever put a smuggled label on the wire.
+func validateWireLabels(lists ...[]string) error {
+	for _, list := range lists {
+		for _, l := range list {
+			if err := tracker.ValidateLabel(l); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // SetLabels adds and removes labels in one call — GitLab's issue-edit
 // endpoint accepts add_labels/remove_labels directly, unlike GitHub's
 // separate add/remove endpoints.
 func (a *Adapter) SetLabels(ctx context.Context, conn tracker.Conn, number int64, add, remove []string) error {
 	if len(add) == 0 && len(remove) == 0 {
 		return nil
+	}
+	if err := validateWireLabels(add, remove); err != nil {
+		return err
 	}
 	apiBase := apiBaseURL(conn.BaseURL)
 	projectPath := url.PathEscape(conn.Project)
@@ -110,6 +128,9 @@ func (a *Adapter) SetLabels(ctx context.Context, conn tracker.Conn, number int64
 // has already allow-listed the labels and composed the body. The 201
 // response is normalized through toIssue (iid, never id).
 func (a *Adapter) CreateIssue(ctx context.Context, conn tracker.Conn, n tracker.NewIssue) (tracker.Issue, error) {
+	if err := validateWireLabels(n.Labels); err != nil {
+		return tracker.Issue{}, err
+	}
 	apiBase := apiBaseURL(conn.BaseURL)
 	projectPath := url.PathEscape(conn.Project)
 	reqBody := struct {

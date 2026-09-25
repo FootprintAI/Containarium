@@ -3,6 +3,7 @@ package gitlab
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -203,5 +204,38 @@ func TestCreateIssue_PostsAndNormalizes(t *testing.T) {
 	}
 	if issue.Number != 12 || issue.Title != "follow-up" || len(issue.Labels) != 2 {
 		t.Errorf("issue = %+v, want number=12 (iid, never id) title=follow-up two labels", issue)
+	}
+}
+
+// TestCommaLabelNeverReachesTheWire (review of #2034, blocking): GitLab
+// takes labels as ONE comma-joined string and splits it back, so a
+// single label containing ',' (or a line break) would smuggle a second
+// label. The daemon rejects those first; the adapter refuses them too,
+// as defense in depth — no request is ever sent.
+func TestCommaLabelNeverReachesTheWire(t *testing.T) {
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		t.Errorf("unexpected request %s %s — a smuggled label must never reach GitLab", r.Method, r.URL.EscapedPath())
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	conn := tracker.Conn{BaseURL: srv.URL, Project: "acme/widgets", Credential: "glpat-x"}
+	a := New(nil)
+
+	for _, bad := range []string{"scope:x,agent:done", "scope:x\nagent:done"} {
+		if _, err := a.CreateIssue(context.Background(), conn, tracker.NewIssue{Title: "t", Labels: []string{bad}}); !errors.Is(err, tracker.ErrLabelInvalid) {
+			t.Errorf("CreateIssue(%q) err = %v, want ErrLabelInvalid", bad, err)
+		}
+		if err := a.SetLabels(context.Background(), conn, 5, []string{bad}, nil); !errors.Is(err, tracker.ErrLabelInvalid) {
+			t.Errorf("SetLabels(add %q) err = %v, want ErrLabelInvalid", bad, err)
+		}
+		if err := a.SetLabels(context.Background(), conn, 5, nil, []string{bad}); !errors.Is(err, tracker.ErrLabelInvalid) {
+			t.Errorf("SetLabels(remove %q) err = %v, want ErrLabelInvalid", bad, err)
+		}
+	}
+	if hits != 0 {
+		t.Errorf("GitLab received %d requests, want 0", hits)
 	}
 }

@@ -3,8 +3,10 @@ package tracker
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -49,7 +51,36 @@ var (
 	// ErrStateLabelReserved: a run-scoped token tried to write one of
 	// ReservedStateLabels. No allow-list entry can lift this.
 	ErrStateLabelReserved = errors.New("tracker: agent state labels are written only by the dispatcher")
+	// ErrLabelInvalid: a label that is not safe to put on the wire — empty,
+	// padded with whitespace, or containing ',' or a control character.
+	// GitLab takes labels as ONE comma-joined string and splits it back, so
+	// "scope:x,agent:done" would otherwise pass the allow-list as one label
+	// and land as two (review of #2034).
+	ErrLabelInvalid = errors.New("tracker: label is not a valid single label")
 )
+
+// ValidateLabel is the provider-neutral wire-safety check for one label,
+// applied by CheckLabels before any allow-list matching and again by the
+// GitLab adapter as defense in depth. It rejects the empty string,
+// leading/trailing whitespace, ',' (GitLab's list separator), and any
+// control character (line breaks and tabs included). Inner spaces are
+// legal ("good first issue").
+func ValidateLabel(label string) error {
+	switch {
+	case label == "":
+		return fmt.Errorf("%w: %q is empty", ErrLabelInvalid, label)
+	case strings.TrimSpace(label) != label:
+		return fmt.Errorf("%w: %q has leading or trailing whitespace", ErrLabelInvalid, label)
+	case strings.ContainsRune(label, ','):
+		return fmt.Errorf("%w: %q contains ','", ErrLabelInvalid, label)
+	}
+	for _, r := range label {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("%w: %q contains a control character", ErrLabelInvalid, label)
+		}
+	}
+	return nil
+}
 
 // Policy is the effective, defaults-applied form of a connection's
 // TrackerPolicy. Build it with PolicyFromProto; never read the proto's
@@ -91,10 +122,13 @@ func PolicyFromProto(p *pb.TrackerPolicy) Policy {
 	return out
 }
 
-// IsReservedStateLabel reports whether label is one of ReservedStateLabels.
+// IsReservedStateLabel reports whether label is one of ReservedStateLabels,
+// compared after trimming and case-insensitively — GitHub label names are
+// case-insensitive, so "Agent:Done" IS the dispatcher's state label there.
 func IsReservedStateLabel(label string) bool {
+	label = strings.TrimSpace(label)
 	for _, r := range ReservedStateLabels {
-		if label == r {
+		if strings.EqualFold(label, r) {
 			return true
 		}
 	}
@@ -104,7 +138,7 @@ func IsReservedStateLabel(label string) bool {
 // LabelAllowed reports whether label matches any allow-list glob.
 // Exact, case-sensitive; see MatchLabelGlob.
 func (p Policy) LabelAllowed(label string) bool {
-	if label == "" {
+	if ValidateLabel(label) != nil {
 		return false
 	}
 	for _, pattern := range p.LabelAllowList {
@@ -116,11 +150,16 @@ func (p Policy) LabelAllowed(label string) bool {
 }
 
 // CheckLabels validates every label against the policy, returning the
-// first offence wrapped in ErrStateLabelReserved (run token, reserved
-// state label — checked first, since it's the more specific rule) or
-// ErrLabelNotAllowed. Pure: callers run it BEFORE any upstream call.
+// first offence wrapped in ErrLabelInvalid (not a single wire-safe label —
+// checked before anything else, so no glob can admit a smuggled second
+// label), ErrStateLabelReserved (run token, reserved state label, any
+// case) or ErrLabelNotAllowed. Pure: callers run it BEFORE any upstream
+// call, on labels they have already trimmed.
 func (p Policy) CheckLabels(labels []string, runToken bool) error {
 	for _, label := range labels {
+		if err := ValidateLabel(label); err != nil {
+			return err
+		}
 		if runToken && IsReservedStateLabel(label) {
 			return fmt.Errorf("%w: %q", ErrStateLabelReserved, label)
 		}
@@ -144,26 +183,29 @@ func (p Policy) FanoutAllowed(existing int32) bool {
 	return p.MaxChildrenPerRun <= 0 || existing < p.MaxChildrenPerRun
 }
 
-// MatchLabelGlob matches label against pattern where '*' matches any
-// run of characters (including '/' and ':' — tracker labels are not
-// paths, so path.Match's separator rule would be wrong here) and every
-// other character matches itself, case-sensitively. A pattern without
-// '*' is an exact match.
+// MatchLabelGlob matches label against pattern where '*' matches ONE or
+// more characters (including '/' and ':' — tracker labels are not paths,
+// so path.Match's separator rule would be wrong here; one-or-more so
+// "scope:*" does not admit a bare "scope:") and every other character
+// matches itself, case-sensitively. A pattern without '*' is an exact
+// match. Wire safety (',' etc.) is ValidateLabel's job, checked first.
 func MatchLabelGlob(pattern, label string) bool {
-	parts := strings.Split(pattern, "*")
-	if len(parts) == 1 {
+	if !strings.Contains(pattern, "*") {
 		return pattern == label
 	}
-	if !strings.HasPrefix(label, parts[0]) {
-		return false
-	}
-	rest := label[len(parts[0]):]
-	for _, mid := range parts[1 : len(parts)-1] {
-		idx := strings.Index(rest, mid)
-		if idx < 0 {
-			return false
+	parts := strings.Split(pattern, "*")
+	var b strings.Builder
+	b.WriteString(`\A`)
+	for i, part := range parts {
+		if i > 0 {
+			b.WriteString(`.+`)
 		}
-		rest = rest[idx+len(mid):]
+		b.WriteString(regexp.QuoteMeta(part))
 	}
-	return strings.HasSuffix(rest, parts[len(parts)-1])
+	b.WriteString(`\z`)
+	re, err := regexp.Compile(`(?s)` + b.String())
+	if err != nil {
+		return false // unreachable: every literal is QuoteMeta'd
+	}
+	return re.MatchString(label)
 }
