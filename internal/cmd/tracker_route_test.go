@@ -114,8 +114,8 @@ func TestTrackerRouteSet_HTTPModeHitsGatewayPath(t *testing.T) {
 	if gotMethod != http.MethodPut {
 		t.Errorf("method = %q, want PUT", gotMethod)
 	}
-	if gotPath != "/v1/users/alice/tracker/default/routes/product" {
-		t.Errorf("path = %q, want /v1/users/alice/tracker/default/routes/product", gotPath)
+	if gotPath != "/v1/tracker/alice/default/routes/product" {
+		t.Errorf("path = %q, want /v1/tracker/alice/default/routes/product", gotPath)
 	}
 	if !strings.Contains(gotBody, `"skillId":"product-define"`) {
 		t.Errorf("body = %s, want skillId", gotBody)

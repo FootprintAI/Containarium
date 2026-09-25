@@ -528,7 +528,7 @@ service TrackerService {
   // SetTrackerRoute maps a scope label on a connection to a skill.
   rpc SetTrackerRoute(SetTrackerRouteRequest) returns (SetTrackerRouteResponse) {
     option (google.api.http) = {
-      put: "/v1/users/{username}/tracker/{connection}/routes/{scope}"
+      put: "/v1/tracker/{username}/{connection}/routes/{scope}"
       body: "*"
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
@@ -541,7 +541,7 @@ service TrackerService {
   // ListTrackerRoutes returns a connection's scope routes.
   rpc ListTrackerRoutes(ListTrackerRoutesRequest) returns (ListTrackerRoutesResponse) {
     option (google.api.http) = {
-      get: "/v1/users/{username}/tracker/{connection}/routes"
+      get: "/v1/tracker/{username}/{connection}/routes"
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "List tracker scope routes";
@@ -553,7 +553,7 @@ service TrackerService {
   // DeleteTrackerRoute removes one scope route.
   rpc DeleteTrackerRoute(DeleteTrackerRouteRequest) returns (DeleteTrackerRouteResponse) {
     option (google.api.http) = {
-      delete: "/v1/users/{username}/tracker/{connection}/routes/{scope}"
+      delete: "/v1/tracker/{username}/{connection}/routes/{scope}"
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Delete a tracker scope route";

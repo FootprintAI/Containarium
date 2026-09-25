@@ -1064,7 +1064,7 @@ func RegisterTrackerServiceHandlerServer(ctx context.Context, mux *runtime.Serve
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/containarium.v1.TrackerService/SetTrackerRoute", runtime.WithHTTPPathPattern("/v1/users/{username}/tracker/{connection}/routes/{scope}"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/containarium.v1.TrackerService/SetTrackerRoute", runtime.WithHTTPPathPattern("/v1/tracker/{username}/{connection}/routes/{scope}"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1084,7 +1084,7 @@ func RegisterTrackerServiceHandlerServer(ctx context.Context, mux *runtime.Serve
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/containarium.v1.TrackerService/ListTrackerRoutes", runtime.WithHTTPPathPattern("/v1/users/{username}/tracker/{connection}/routes"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/containarium.v1.TrackerService/ListTrackerRoutes", runtime.WithHTTPPathPattern("/v1/tracker/{username}/{connection}/routes"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1104,7 +1104,7 @@ func RegisterTrackerServiceHandlerServer(ctx context.Context, mux *runtime.Serve
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/containarium.v1.TrackerService/DeleteTrackerRoute", runtime.WithHTTPPathPattern("/v1/users/{username}/tracker/{connection}/routes/{scope}"))
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/containarium.v1.TrackerService/DeleteTrackerRoute", runtime.WithHTTPPathPattern("/v1/tracker/{username}/{connection}/routes/{scope}"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1390,7 +1390,7 @@ func RegisterTrackerServiceHandlerClient(ctx context.Context, mux *runtime.Serve
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/containarium.v1.TrackerService/SetTrackerRoute", runtime.WithHTTPPathPattern("/v1/users/{username}/tracker/{connection}/routes/{scope}"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/containarium.v1.TrackerService/SetTrackerRoute", runtime.WithHTTPPathPattern("/v1/tracker/{username}/{connection}/routes/{scope}"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1407,7 +1407,7 @@ func RegisterTrackerServiceHandlerClient(ctx context.Context, mux *runtime.Serve
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/containarium.v1.TrackerService/ListTrackerRoutes", runtime.WithHTTPPathPattern("/v1/users/{username}/tracker/{connection}/routes"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/containarium.v1.TrackerService/ListTrackerRoutes", runtime.WithHTTPPathPattern("/v1/tracker/{username}/{connection}/routes"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1424,7 +1424,7 @@ func RegisterTrackerServiceHandlerClient(ctx context.Context, mux *runtime.Serve
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/containarium.v1.TrackerService/DeleteTrackerRoute", runtime.WithHTTPPathPattern("/v1/users/{username}/tracker/{connection}/routes/{scope}"))
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/containarium.v1.TrackerService/DeleteTrackerRoute", runtime.WithHTTPPathPattern("/v1/tracker/{username}/{connection}/routes/{scope}"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -1581,9 +1581,9 @@ var (
 	pattern_TrackerService_GetTrackerConnection_0    = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 1, 0, 4, 1, 5, 4}, []string{"v1", "tracker", "connections", "username", "name"}, ""))
 	pattern_TrackerService_ListTrackerConnections_0  = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3}, []string{"v1", "tracker", "connections", "username"}, ""))
 	pattern_TrackerService_DeleteTrackerConnection_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 1, 0, 4, 1, 5, 4}, []string{"v1", "tracker", "connections", "username", "name"}, ""))
-	pattern_TrackerService_SetTrackerRoute_0         = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3, 1, 0, 4, 1, 5, 4, 2, 5, 1, 0, 4, 1, 5, 6}, []string{"v1", "users", "username", "tracker", "connection", "routes", "scope"}, ""))
-	pattern_TrackerService_ListTrackerRoutes_0       = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3, 1, 0, 4, 1, 5, 4, 2, 5}, []string{"v1", "users", "username", "tracker", "connection", "routes"}, ""))
-	pattern_TrackerService_DeleteTrackerRoute_0      = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3, 1, 0, 4, 1, 5, 4, 2, 5, 1, 0, 4, 1, 5, 6}, []string{"v1", "users", "username", "tracker", "connection", "routes", "scope"}, ""))
+	pattern_TrackerService_SetTrackerRoute_0         = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 1, 0, 4, 1, 5, 3, 2, 4, 1, 0, 4, 1, 5, 5}, []string{"v1", "tracker", "username", "connection", "routes", "scope"}, ""))
+	pattern_TrackerService_ListTrackerRoutes_0       = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 1, 0, 4, 1, 5, 3, 2, 4}, []string{"v1", "tracker", "username", "connection", "routes"}, ""))
+	pattern_TrackerService_DeleteTrackerRoute_0      = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 1, 0, 4, 1, 5, 3, 2, 4, 1, 0, 4, 1, 5, 5}, []string{"v1", "tracker", "username", "connection", "routes", "scope"}, ""))
 	pattern_TrackerService_GetTrackerStatus_0        = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 1, 0, 4, 1, 5, 3, 1, 0, 4, 1, 5, 4, 2, 5}, []string{"v1", "tracker", "connections", "username", "name", "status"}, ""))
 	pattern_TrackerService_GetTrackerIssue_0         = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 1, 0, 4, 1, 5, 3, 2, 4, 1, 0, 4, 1, 5, 5}, []string{"v1", "tracker", "username", "connection", "issues", "number"}, ""))
 	pattern_TrackerService_ListTrackerIssues_0       = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 1, 0, 4, 1, 5, 3, 2, 4}, []string{"v1", "tracker", "username", "connection", "issues"}, ""))

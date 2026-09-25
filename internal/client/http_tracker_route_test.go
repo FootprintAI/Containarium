@@ -33,8 +33,8 @@ func TestTrackerRoutes_HTTPPathsAndDecoding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetTrackerRoute: %v", err)
 	}
-	if gotMethod != http.MethodPut || gotPath != "/v1/users/alice/tracker/a%2Fb/routes/product" {
-		t.Errorf("SetTrackerRoute %s %s, want PUT /v1/users/alice/tracker/a%%2Fb/routes/product", gotMethod, gotPath)
+	if gotMethod != http.MethodPut || gotPath != "/v1/tracker/alice/a%2Fb/routes/product" {
+		t.Errorf("SetTrackerRoute %s %s, want PUT /v1/tracker/alice/a%%2Fb/routes/product", gotMethod, gotPath)
 	}
 	if msg != "route created" || route.GetSkillId() != "product-define" {
 		t.Errorf("SetTrackerRoute = %+v %q", route, msg)
@@ -45,8 +45,8 @@ func TestTrackerRoutes_HTTPPathsAndDecoding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTrackerRoutes: %v", err)
 	}
-	if gotMethod != http.MethodGet || gotPath != "/v1/users/alice/tracker/default/routes" {
-		t.Errorf("ListTrackerRoutes %s %s, want GET /v1/users/alice/tracker/default/routes", gotMethod, gotPath)
+	if gotMethod != http.MethodGet || gotPath != "/v1/tracker/alice/default/routes" {
+		t.Errorf("ListTrackerRoutes %s %s, want GET /v1/tracker/alice/default/routes", gotMethod, gotPath)
 	}
 	if len(routes) != 2 || routes[1].GetScope() != "qa" || routes[1].GetSkillId() != "qa-e2e-test" {
 		t.Errorf("ListTrackerRoutes = %+v", routes)
@@ -57,8 +57,8 @@ func TestTrackerRoutes_HTTPPathsAndDecoding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DeleteTrackerRoute: %v", err)
 	}
-	if gotMethod != http.MethodDelete || gotPath != "/v1/users/alice/tracker/default/routes/product" {
-		t.Errorf("DeleteTrackerRoute %s %s, want DELETE /v1/users/alice/tracker/default/routes/product", gotMethod, gotPath)
+	if gotMethod != http.MethodDelete || gotPath != "/v1/tracker/alice/default/routes/product" {
+		t.Errorf("DeleteTrackerRoute %s %s, want DELETE /v1/tracker/alice/default/routes/product", gotMethod, gotPath)
 	}
 	if msg != "route product deleted" {
 		t.Errorf("DeleteTrackerRoute msg = %q", msg)

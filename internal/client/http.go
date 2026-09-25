@@ -2666,7 +2666,7 @@ func (c *HTTPClient) DeleteTrackerConnection(username, name string) (string, err
 // trackerRoutesPath is the REST collection for a connection's scope
 // routes (#2021), matching tracker.proto's google.api.http mapping.
 func trackerRoutesPath(username, connection string) string {
-	return "/v1/users/" + url.PathEscape(username) + "/tracker/" + url.PathEscape(connection) + "/routes"
+	return "/v1/tracker/" + url.PathEscape(username) + "/" + url.PathEscape(connection) + "/routes"
 }
 
 // SetTrackerRoute creates or updates a scope -> skill route via REST

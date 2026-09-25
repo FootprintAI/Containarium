@@ -27,7 +27,7 @@ func TestMCPClient_ListTrackerRoutes(t *testing.T) {
 	routes, err := c.ListTrackerRoutes(ListTrackerRoutesRequest{Username: "alice", Connection: "a/b"})
 	require.NoError(t, err)
 	assert.Equal(t, http.MethodGet, sawMethod)
-	assert.Equal(t, "/v1/users/alice/tracker/a%2Fb/routes", sawPath)
+	assert.Equal(t, "/v1/tracker/alice/a%2Fb/routes", sawPath)
 	require.Len(t, routes, 1)
 	assert.Equal(t, TrackerRoute{Username: "alice", Connection: "a/b", Scope: "product", SkillID: "product-define"}, routes[0])
 }

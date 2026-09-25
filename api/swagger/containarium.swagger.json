@@ -6857,6 +6857,138 @@
         ]
       }
     },
+    "/v1/tracker/{username}/{connection}/routes": {
+      "get": {
+        "summary": "List tracker scope routes",
+        "description": "Lists every scope -\u003e skill route on a tracker connection, ordered by scope. Requires tracker:admin.",
+        "operationId": "TrackerService_ListTrackerRoutes",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListTrackerRoutesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "connection",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      }
+    },
+    "/v1/tracker/{username}/{connection}/routes/{scope}": {
+      "delete": {
+        "summary": "Delete a tracker scope route",
+        "description": "Removes the route for scope:\u003cscope\u003e on this connection; issues with that label are no longer dispatched. Requires tracker:admin.",
+        "operationId": "TrackerService_DeleteTrackerRoute",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/DeleteTrackerRouteResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "connection",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "scope",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      },
+      "put": {
+        "summary": "Set a tracker scope route",
+        "description": "Creates or updates the route that sends issues labeled scope:\u003cscope\u003e on this connection to skill_id. Idempotent. The connection must exist. Requires tracker:admin.",
+        "operationId": "TrackerService_SetTrackerRoute",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SetTrackerRouteResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "connection",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "scope",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/SetTrackerRouteBody"
+            }
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      }
+    },
     "/v1/traffic/subscribe": {
       "get": {
         "summary": "Subscribe to traffic events",
@@ -6952,138 +7084,6 @@
         ],
         "tags": [
           "System"
-        ]
-      }
-    },
-    "/v1/users/{username}/tracker/{connection}/routes": {
-      "get": {
-        "summary": "List tracker scope routes",
-        "description": "Lists every scope -\u003e skill route on a tracker connection, ordered by scope. Requires tracker:admin.",
-        "operationId": "TrackerService_ListTrackerRoutes",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/ListTrackerRoutesResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/rpc.Status"
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "username",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "connection",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          }
-        ],
-        "tags": [
-          "Tracker"
-        ]
-      }
-    },
-    "/v1/users/{username}/tracker/{connection}/routes/{scope}": {
-      "delete": {
-        "summary": "Delete a tracker scope route",
-        "description": "Removes the route for scope:\u003cscope\u003e on this connection; issues with that label are no longer dispatched. Requires tracker:admin.",
-        "operationId": "TrackerService_DeleteTrackerRoute",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/DeleteTrackerRouteResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/rpc.Status"
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "username",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "connection",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "scope",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          }
-        ],
-        "tags": [
-          "Tracker"
-        ]
-      },
-      "put": {
-        "summary": "Set a tracker scope route",
-        "description": "Creates or updates the route that sends issues labeled scope:\u003cscope\u003e on this connection to skill_id. Idempotent. The connection must exist. Requires tracker:admin.",
-        "operationId": "TrackerService_SetTrackerRoute",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/SetTrackerRouteResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/rpc.Status"
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "username",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "connection",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "scope",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "body",
-            "in": "body",
-            "required": true,
-            "schema": {
-              "$ref": "#/definitions/SetTrackerRouteBody"
-            }
-          }
-        ],
-        "tags": [
-          "Tracker"
         ]
       }
     },

@@ -279,7 +279,7 @@ type listTrackerRoutesResponse struct {
 // ListTrackerRoutes returns a connection's scope routes — the same
 // ListTrackerRoutes endpoint `containarium tracker route list` calls.
 func (c *Client) ListTrackerRoutes(req ListTrackerRoutesRequest) ([]TrackerRoute, error) {
-	path := fmt.Sprintf("/v1/users/%s/tracker/%s/routes", url.PathEscape(req.Username), url.PathEscape(req.Connection))
+	path := fmt.Sprintf("/v1/tracker/%s/%s/routes", url.PathEscape(req.Username), url.PathEscape(req.Connection))
 	respBody, err := c.doRequest("GET", path, nil)
 	if err != nil {
 		return nil, err
