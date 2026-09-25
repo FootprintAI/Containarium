@@ -10690,7 +10690,7 @@
             "type": "object",
             "$ref": "#/definitions/TrackerDispatch"
           },
-          "description": "Dispatches this tick inserted and started (state QUEUED)."
+          "description": "Dispatches this tick inserted and started: RUNNING once the run\nregistered (#2023), QUEUED if the starter did not report a start."
         },
         "timedOut": {
           "type": "array",

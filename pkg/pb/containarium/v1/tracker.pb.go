@@ -1443,12 +1443,17 @@ func (x *TrackerDispatch) GetEndedAt() *timestamppb.Timestamp {
 // brokered, untrusted data like every other read — never smuggled
 // through the launch payload.
 type TrackerDispatchInput struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Connection    string                 `protobuf:"bytes,1,opt,name=connection,proto3" json:"connection,omitempty"`
-	IssueNumber   int64                  `protobuf:"varint,2,opt,name=issue_number,json=issueNumber,proto3" json:"issue_number,omitempty"`
-	Scope         string                 `protobuf:"bytes,3,opt,name=scope,proto3" json:"scope,omitempty"`
-	DispatchId    string                 `protobuf:"bytes,4,opt,name=dispatch_id,json=dispatchId,proto3" json:"dispatch_id,omitempty"`
-	Depth         int32                  `protobuf:"varint,5,opt,name=depth,proto3" json:"depth,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Connection  string                 `protobuf:"bytes,1,opt,name=connection,proto3" json:"connection,omitempty"`
+	IssueNumber int64                  `protobuf:"varint,2,opt,name=issue_number,json=issueNumber,proto3" json:"issue_number,omitempty"`
+	Scope       string                 `protobuf:"bytes,3,opt,name=scope,proto3" json:"scope,omitempty"`
+	DispatchId  string                 `protobuf:"bytes,4,opt,name=dispatch_id,json=dispatchId,proto3" json:"dispatch_id,omitempty"`
+	Depth       int32                  `protobuf:"varint,5,opt,name=depth,proto3" json:"depth,omitempty"`
+	// The tenant the run is dispatched for (#2023). Every broker verb the
+	// run calls (GetTrackerIssue, CommentOnTrackerIssue,
+	// SubmitTrackerChange) names it; it is the run token's own subject,
+	// so it widens nothing.
+	Username      string `protobuf:"bytes,6,opt,name=username,proto3" json:"username,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1518,6 +1523,13 @@ func (x *TrackerDispatchInput) GetDepth() int32 {
 	return 0
 }
 
+func (x *TrackerDispatchInput) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
 // DispatchTrackerIssuesRequest runs ONE dispatcher tick for a
 // connection: list open issues, filter, insert a dispatch row, start
 // the routed skill, label agent:queued. `containarium tracker
@@ -1576,7 +1588,8 @@ func (x *DispatchTrackerIssuesRequest) GetConnection() string {
 
 type DispatchTrackerIssuesResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Dispatches this tick inserted and started (state QUEUED).
+	// Dispatches this tick inserted and started: RUNNING once the run
+	// registered (#2023), QUEUED if the starter did not report a start.
 	Started []*TrackerDispatch `protobuf:"bytes,1,rep,name=started,proto3" json:"started,omitempty"`
 	// Reserved for the run-timeout sweep (#2026): RUNNING rows this tick
 	// failed for exceeding the connection policy's run timeout.
@@ -3399,7 +3412,7 @@ const file_containarium_v1_tracker_proto_rawDesc = "" +
 	"created_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
 	"started_at\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\tstartedAt\x125\n" +
-	"\bended_at\x18\r \x01(\v2\x1a.google.protobuf.TimestampR\aendedAt\"\xa6\x01\n" +
+	"\bended_at\x18\r \x01(\v2\x1a.google.protobuf.TimestampR\aendedAt\"\xc2\x01\n" +
 	"\x14TrackerDispatchInput\x12\x1e\n" +
 	"\n" +
 	"connection\x18\x01 \x01(\tR\n" +
@@ -3408,7 +3421,8 @@ const file_containarium_v1_tracker_proto_rawDesc = "" +
 	"\x05scope\x18\x03 \x01(\tR\x05scope\x12\x1f\n" +
 	"\vdispatch_id\x18\x04 \x01(\tR\n" +
 	"dispatchId\x12\x14\n" +
-	"\x05depth\x18\x05 \x01(\x05R\x05depth\"Z\n" +
+	"\x05depth\x18\x05 \x01(\x05R\x05depth\x12\x1a\n" +
+	"\busername\x18\x06 \x01(\tR\busername\"Z\n" +
 	"\x1cDispatchTrackerIssuesRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x1e\n" +
 	"\n" +

@@ -296,6 +296,11 @@ message TrackerDispatchInput {
   string scope = 3;
   string dispatch_id = 4;
   int32 depth = 5;
+  // The tenant the run is dispatched for (#2023). Every broker verb the
+  // run calls (GetTrackerIssue, CommentOnTrackerIssue,
+  // SubmitTrackerChange) names it; it is the run token's own subject,
+  // so it widens nothing.
+  string username = 6;
 }
 
 // DispatchTrackerIssuesRequest runs ONE dispatcher tick for a
@@ -308,7 +313,8 @@ message DispatchTrackerIssuesRequest {
 }
 
 message DispatchTrackerIssuesResponse {
-  // Dispatches this tick inserted and started (state QUEUED).
+  // Dispatches this tick inserted and started: RUNNING once the run
+  // registered (#2023), QUEUED if the starter did not report a start.
   repeated TrackerDispatch started = 1;
 
   // Reserved for the run-timeout sweep (#2026): RUNNING rows this tick
