@@ -6582,6 +6582,105 @@
         ]
       }
     },
+    "/v1/tracker/{username}/{connection}/dispatch": {
+      "post": {
+        "summary": "Run one tracker dispatch tick",
+        "description": "Lists the connection's open issues and, for each one carrying a routed scope:\u003crole\u003e label and no agent:* state label (and not agent:needs-approval), inserts a durable dispatch row, starts the routed skill through the RunAgentSkill path with the issue reference as input, and labels the issue agent:queued. Exactly once per (issue) across restarts and concurrent dispatchers: a partial unique index on active rows makes the second inserter skip. An unrouted scope label gets exactly one stamped warning comment. Requires tracker:admin (and agents:run, to start the runs).",
+        "operationId": "TrackerService_DispatchTrackerIssues",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/DispatchTrackerIssuesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "connection",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/DispatchTrackerIssuesBody"
+            }
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      }
+    },
+    "/v1/tracker/{username}/{connection}/dispatches": {
+      "get": {
+        "summary": "List tracker dispatches",
+        "description": "Lists a connection's dispatch rows (issue, scope, skill, run id, state, failure reason, timestamps), newest first, optionally filtered by state. Requires tracker:admin.",
+        "operationId": "TrackerService_ListTrackerDispatches",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListTrackerDispatchesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "connection",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "state",
+            "description": "UNSPECIFIED matches any state.",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "enum": [
+              "TRACKER_DISPATCH_STATE_UNSPECIFIED",
+              "TRACKER_DISPATCH_STATE_QUEUED",
+              "TRACKER_DISPATCH_STATE_RUNNING",
+              "TRACKER_DISPATCH_STATE_DONE",
+              "TRACKER_DISPATCH_STATE_FAILED"
+            ],
+            "default": "TRACKER_DISPATCH_STATE_UNSPECIFIED"
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      }
+    },
     "/v1/tracker/{username}/{connection}/issues": {
       "get": {
         "summary": "List tracker issues",
@@ -10578,6 +10677,54 @@
         }
       }
     },
+    "DispatchTrackerIssuesBody": {
+      "type": "object",
+      "description": "DispatchTrackerIssuesRequest runs ONE dispatcher tick for a\nconnection: list open issues, filter, insert a dispatch row, start\nthe routed skill, label agent:queued. `containarium tracker\ndispatch --interval` calls this in a loop."
+    },
+    "DispatchTrackerIssuesResponse": {
+      "type": "object",
+      "properties": {
+        "started": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/TrackerDispatch"
+          },
+          "description": "Dispatches this tick inserted and started (state QUEUED)."
+        },
+        "timedOut": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/TrackerDispatch"
+          },
+          "description": "Reserved for the run-timeout sweep (#2026): RUNNING rows this tick\nfailed for exceeding the connection policy's run timeout."
+        },
+        "skippedNeedsApproval": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Issues carrying agent:needs-approval — a human has not released\nthem yet."
+        },
+        "skippedActive": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Issues already carrying another agent:* state label, or with an\nactive dispatch row (the exactly-once index said no)."
+        },
+        "skippedUnrouted": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Issues whose scope:* label(s) have no route on this connection.\nEach gets exactly one stamped warning comment, ever, not one per\ntick."
+        },
+        "failed": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/TrackerDispatch"
+          },
+          "description": "Dispatches this tick inserted but could not start (state FAILED,\nfailure_reason set, issue labeled agent:failed)."
+        }
+      }
+    },
     "EnableBody": {
       "type": "object",
       "properties": {
@@ -12407,6 +12554,18 @@
           "items": {
             "type": "object",
             "$ref": "#/definitions/TrackerConnection"
+          }
+        }
+      }
+    },
+    "ListTrackerDispatchesResponse": {
+      "type": "object",
+      "properties": {
+        "dispatches": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/TrackerDispatch"
           }
         }
       }
@@ -15471,6 +15630,72 @@
       ],
       "default": "TRACKER_CREDENTIAL_BREADTH_UNSPECIFIED",
       "description": "TrackerCredentialBreadth classifies a tracker credential against the\nprovider's narrowest (\"preferred\") type — see the design note's\n\"Preferred credential types\" table. It bounds what a DAEMON compromise\ncan do, as distinct from the broker's verb set (tracker:read /\ntracker:write), which bounds what a BOX can do.\n\n - TRACKER_CREDENTIAL_BREADTH_UNSPECIFIED: Breadth could not be determined — the probe that would classify it\nfailed (e.g. the tracker was unreachable) before classification was\npossible.\n - TRACKER_CREDENTIAL_BREADTH_PREFERRED: The narrowest type for the provider: a GitLab project access token,\nor a GitHub App installation token / single-repository fine-grained\nPAT.\n - TRACKER_CREDENTIAL_BREADTH_BROAD: Wider than preferred: a GitLab group or personal access token, or a\nGitHub classic PAT. Still accepted — this is a warning, not a\nrejection."
+    },
+    "TrackerDispatch": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "username": {
+          "type": "string"
+        },
+        "connection": {
+          "type": "string"
+        },
+        "issueNumber": {
+          "type": "string",
+          "format": "int64"
+        },
+        "scope": {
+          "type": "string",
+          "description": "The matched label's suffix (\"product\" for \"scope:product\")."
+        },
+        "skillId": {
+          "type": "string"
+        },
+        "runId": {
+          "type": "string",
+          "description": "The run id the dispatcher chose before starting the run, so the\nrun JWT's run_id claim and this row always agree."
+        },
+        "depth": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Lineage depth of the issue (a human-created issue is 0)."
+        },
+        "state": {
+          "$ref": "#/definitions/TrackerDispatchState"
+        },
+        "failureReason": {
+          "type": "string",
+          "description": "Set when state is FAILED: why (start-run error, timeout, ...)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "startedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "endedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "description": "TrackerDispatch is one durable dispatch: which issue, which scope\nlabel matched, which skill was started as which run, and where the\nrun is in its state machine."
+    },
+    "TrackerDispatchState": {
+      "type": "string",
+      "enum": [
+        "TRACKER_DISPATCH_STATE_UNSPECIFIED",
+        "TRACKER_DISPATCH_STATE_QUEUED",
+        "TRACKER_DISPATCH_STATE_RUNNING",
+        "TRACKER_DISPATCH_STATE_DONE",
+        "TRACKER_DISPATCH_STATE_FAILED"
+      ],
+      "default": "TRACKER_DISPATCH_STATE_UNSPECIFIED",
+      "description": "TrackerDispatchState is the durable state of one dispatch row.\nqueued/running are \"active\" — at most one active row exists per\n(username, connection, issue) by a partial unique index, which is\nthe whole exactly-once guarantee. done/failed are terminal; a re-run\nis a new row."
     },
     "TrackerIssue": {
       "type": "object",
