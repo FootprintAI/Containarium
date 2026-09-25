@@ -25,12 +25,28 @@ func ShellQuoteSingle(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
+// ContainariumMCPConfigPath is where a box keeps the MCP servers a run should
+// see (written by a `code install --bootstrap-url` bundle, or by the user).
+// Absolute-from-$HOME rather than ~-relative because the string is tested by
+// the shell, not expanded by it.
+const ContainariumMCPConfigPath = "$HOME/.claude/containarium-mcp.json"
+
 // BuildClaudeRunCommand renders the shell command a run executes on the box.
-// Sourcing the seeded secrets file is what supplies the model credential
-// without it ever being a CLI argument or appearing in the run record.
+//
+// The box's own environment supplies the credential — a user-placed
+// ANTHROPIC_API_KEY in ~/.claude/settings.json, an interactive sign-in, or a
+// 3P inference provider. Nothing here names, reads, or carries a credential:
+// it is never a CLI argument, so it cannot land in the run record or
+// process_list.
+//
+// --mcp-config is conditional because claude treats a config path that does
+// not exist as a hard startup error, and most boxes have no such file.
 func BuildClaudeRunCommand(prompt string, streamJSON bool) string {
 	cmd := "set -a; [ -f /run/containarium/secrets.env ] && . /run/containarium/secrets.env; set +a; " +
-		"~/.local/bin/claude -p " + ShellQuoteSingle(prompt)
+		"mcpcfg=; [ -f \"" + ContainariumMCPConfigPath + "\" ] && mcpcfg=\"--mcp-config " + ContainariumMCPConfigPath + "\"; " +
+		// $mcpcfg is deliberately unquoted: it has to split into the flag
+		// and its value, and is empty when the file is absent.
+		"~/.local/bin/claude $mcpcfg -p " + ShellQuoteSingle(prompt)
 	if streamJSON {
 		cmd += " --output-format stream-json"
 	}

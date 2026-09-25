@@ -1,8 +1,13 @@
 package coderun
 
 import (
+	"context"
+	"errors"
 	"strconv"
+	"strings"
 	"testing"
+
+	"github.com/mark3labs/mcp-go/mcp"
 )
 
 // These fixtures are agent-box's own output formats (internal/agentbox's
@@ -82,5 +87,110 @@ func TestParseKV_MarkerAbsentReturnsWholeBodyAsHead(t *testing.T) {
 	}
 	if kv["name"] != "x" || kv["pid"] != "1" {
 		t.Errorf("kv = %+v", kv)
+	}
+}
+
+// fakeMCPConn stands in for the ssh-backed MCP client so dial()'s error
+// classification can be exercised without a box. Initialize returns initErr;
+// everything else is unused by these tests.
+type fakeMCPConn struct {
+	initErr error
+	closed  bool
+}
+
+func (f *fakeMCPConn) Initialize(context.Context, mcp.InitializeRequest) (*mcp.InitializeResult, error) {
+	return nil, f.initErr
+}
+
+func (f *fakeMCPConn) CallTool(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return nil, errors.New("not used")
+}
+
+func (f *fakeMCPConn) Close() error { f.closed = true; return nil }
+
+// stubDial swaps the ssh-spawning dialer and the agent-box probe for the
+// duration of a test, recording the argv the dialer was handed.
+func stubDial(t *testing.T, conn mcpConn, dialErr error, probeErr error) *[]string {
+	t.Helper()
+	var got []string
+	origDial, origProbe := dialMCP, probeAgentBox
+	dialMCP = func(args []string) (mcpConn, error) {
+		got = append([]string{}, args...)
+		return conn, dialErr
+	}
+	probeAgentBox = func(context.Context, []string) error { return probeErr }
+	t.Cleanup(func() { dialMCP, probeAgentBox = origDial, origProbe })
+	return &got
+}
+
+// TestSessionDial_PathIncludesLocalBin pins the remote command `code run`
+// spawns: a user-level install (`containarium code install` writes to
+// ~/.local/bin, no root) is only reachable if the remote command puts that
+// directory on PATH itself — a non-interactive `ssh host agent-box` does not
+// get the box's login-shell PATH.
+func TestSessionDial_PathIncludesLocalBin(t *testing.T) {
+	got := stubDial(t, &fakeMCPConn{initErr: errors.New("transport closed")}, nil, nil)
+
+	_, _ = Connect(context.Background(), []string{"-p", "22", "alice@example.test"})
+
+	if len(*got) == 0 {
+		t.Fatal("dialer was never called")
+	}
+	remote := (*got)[len(*got)-1]
+	for _, want := range []string{`$HOME/.local/bin`, "/usr/local/bin", "exec agent-box", "sh -c"} {
+		if !strings.Contains(remote, want) {
+			t.Errorf("remote command %q is missing %q", remote, want)
+		}
+	}
+	// The ssh flags the caller passed must still be handed through untouched.
+	if (*got)[0] != "-p" || (*got)[2] != "alice@example.test" {
+		t.Errorf("ssh args mangled: %v", *got)
+	}
+}
+
+// TestSessionDial_MissingAgentBoxIsNamedError covers the #2030 AC: "`code
+// run` on a box without `agent-box` refuses with a message naming the missing
+// helper and `code install`, instead of the raw transport error."
+func TestSessionDial_MissingAgentBoxIsNamedError(t *testing.T) {
+	conn := &fakeMCPConn{initErr: errors.New("transport error: transport closed")}
+	stubDial(t, conn, nil, errors.New("exit status 1"))
+
+	_, err := Connect(context.Background(), []string{"alice@example.test"})
+	if err == nil {
+		t.Fatal("expected an error when agent-box is absent")
+	}
+	if !errors.Is(err, ErrAgentBoxMissing) {
+		t.Fatalf("error %v does not wrap ErrAgentBoxMissing", err)
+	}
+	if !conn.closed {
+		t.Error("the failed MCP connection was not closed")
+	}
+
+	named := AgentBoxMissingError("alice")
+	if !errors.Is(named, ErrAgentBoxMissing) {
+		t.Error("AgentBoxMissingError must wrap ErrAgentBoxMissing")
+	}
+	for _, want := range []string{"agent-box", "alice", "containarium code install alice"} {
+		if !strings.Contains(named.Error(), want) {
+			t.Errorf("named error %q is missing %q", named, want)
+		}
+	}
+}
+
+// TestSessionDial_ProbeSaysPresentKeepsTransportError is the other half: when
+// agent-box IS installed, an init failure is a real transport fault and must
+// not be mislabelled as a missing helper.
+func TestSessionDial_ProbeSaysPresentKeepsTransportError(t *testing.T) {
+	stubDial(t, &fakeMCPConn{initErr: errors.New("transport error: transport closed")}, nil, nil)
+
+	_, err := Connect(context.Background(), []string{"alice@example.test"})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if errors.Is(err, ErrAgentBoxMissing) {
+		t.Errorf("a transport fault on a box that HAS agent-box was reported as missing: %v", err)
+	}
+	if !strings.Contains(err.Error(), "initialize MCP session") {
+		t.Errorf("error lost the underlying cause: %v", err)
 	}
 }

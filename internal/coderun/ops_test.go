@@ -129,3 +129,22 @@ func contains(haystack, needle string) bool {
 		return false
 	})()
 }
+
+// TestBuildClaudeRunCommand_MCPConfigWhenPresent covers the #2030 AC that a
+// run picks up the box's own MCP config when `containarium code install` (or
+// a bootstrap bundle) left one — and does not pass --mcp-config pointing at a
+// file that is not there, which claude treats as a hard error.
+func TestBuildClaudeRunCommand_MCPConfigWhenPresent(t *testing.T) {
+	got := BuildClaudeRunCommand("hi", false)
+	if !contains(got, ContainariumMCPConfigPath) {
+		t.Errorf("command never references %s:\n%s", ContainariumMCPConfigPath, got)
+	}
+	if !contains(got, "--mcp-config") {
+		t.Errorf("command never passes --mcp-config:\n%s", got)
+	}
+	// Conditional, not unconditional: the flag has to be gated on the file
+	// existing on the box, which only a shell test can decide.
+	if !contains(got, "[ -f ") {
+		t.Errorf("--mcp-config is not gated on the file existing:\n%s", got)
+	}
+}

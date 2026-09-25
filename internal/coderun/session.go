@@ -2,7 +2,9 @@ package coderun
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,6 +18,69 @@ import (
 // key:value header and raw file content (internal/agentbox/tail_log.go).
 const tailLogContentMarker = "--- content ---\n"
 
+// agentBoxPathPrefix puts the two directories agent-box can be installed into
+// on PATH for the remote command. `containarium code install` writes to
+// ~/.local/bin (user-level, no root); the agent-runtime recipe's own
+// installer writes to /usr/local/bin. A non-interactive `ssh host agent-box`
+// runs a non-login shell and therefore does NOT get the box's login-shell
+// PATH, so without this a perfectly well-installed helper is simply not
+// found.
+const agentBoxPathPrefix = `PATH="$HOME/.local/bin:/usr/local/bin:$PATH"`
+
+// agentBoxRemoteCommand is the remote command dial() runs. exec replaces the
+// wrapping shell so agent-box owns the stdio MCP speaks over, and so a signal
+// reaches the helper rather than an intermediate shell.
+const agentBoxRemoteCommand = `sh -c '` + agentBoxPathPrefix + ` exec agent-box'`
+
+// agentBoxProbeCommand answers one question after a failed handshake: is the
+// helper there at all? Distinguishing "not installed" from "installed but the
+// session broke" is the whole difference between an actionable error and the
+// raw `transport closed` users used to get.
+const agentBoxProbeCommand = `sh -c '` + agentBoxPathPrefix + ` command -v agent-box >/dev/null 2>&1'`
+
+// ErrAgentBoxMissing reports that a box has no agent-box helper on PATH.
+// Callers match it with errors.Is and render AgentBoxMissingError, which is
+// the message a user can act on.
+var ErrAgentBoxMissing = errors.New("agent-box is not installed")
+
+// AgentBoxMissingError names the box and the command that fixes it. Every
+// surface that opens a session (the CLI and the platform MCP tools) renders
+// the same sentence, so the fix does not depend on which one you used.
+func AgentBoxMissingError(box string) error {
+	return fmt.Errorf("%w on %q; run `containarium code install %s`", ErrAgentBoxMissing, box, box)
+}
+
+// mcpConn is the slice of *client.Client this package actually uses. Named as
+// an interface so dial()'s failure classification is testable without a box,
+// an ssh binary, or a live handshake.
+type mcpConn interface {
+	Initialize(context.Context, mcp.InitializeRequest) (*mcp.InitializeResult, error)
+	CallTool(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error)
+	Close() error
+}
+
+// dialMCP spawns ssh and speaks MCP over its stdio. A package var purely as a
+// test seam; production never reassigns it.
+var dialMCP = func(args []string) (mcpConn, error) {
+	// #nosec G204 -- args is built by the caller from a daemon-resolved
+	// target plus a fixed remote-command literal, never caller input.
+	return client.NewStdioMCPClient("ssh", nil, args...)
+}
+
+// probeAgentBox runs one `command -v agent-box` over the same ssh path. A
+// non-nil return means the helper could not be found. A probe that cannot run
+// at all (no local ssh) returns nil: claiming "not installed" on the strength
+// of a probe that never executed would be worse than the transport error.
+var probeAgentBox = func(ctx context.Context, sshArgs []string) error {
+	sshBin, err := exec.LookPath("ssh")
+	if err != nil {
+		return nil
+	}
+	args := append(append([]string{}, sshArgs...), agentBoxProbeCommand)
+	// #nosec G204 -- see dialMCP; agentBoxProbeCommand is a fixed literal.
+	return exec.CommandContext(ctx, sshBin, args...).Run()
+}
+
 // Session is a live MCP connection to one box's agent-box, reached the same
 // way any MCP client (Claude Code, Claude Desktop) reaches it: spawn
 // `ssh <sshArgs...> -- agent-box` as a subprocess and speak MCP over its
@@ -28,7 +93,7 @@ type Session struct {
 	sshArgs []string // ssh's own flags/target; "agent-box" is appended as the remote command
 
 	mu  sync.Mutex
-	mcp *client.Client
+	mcp mcpConn
 }
 
 // Connect spawns ssh with sshArgs (host/user/identity/port flags — NOT
@@ -44,13 +109,9 @@ func Connect(ctx context.Context, sshArgs []string) (*Session, error) {
 	return s, nil
 }
 
-func (s *Session) dial(ctx context.Context) (*client.Client, error) {
-	args := append(append([]string{}, s.sshArgs...), "agent-box")
-	// #nosec G204 -- sshArgs is built by the CLI command from a
-	// daemon-resolved target + validated flags, the same construction
-	// connectcore.BuildSSHArgs already uses for `connect`/`code install`;
-	// "agent-box" is a fixed literal, never caller input.
-	c, err := client.NewStdioMCPClient("ssh", nil, args...)
+func (s *Session) dial(ctx context.Context) (mcpConn, error) {
+	args := append(append([]string{}, s.sshArgs...), agentBoxRemoteCommand)
+	c, err := dialMCP(args)
 	if err != nil {
 		return nil, fmt.Errorf("start agent-box over ssh: %w", err)
 	}
@@ -59,6 +120,12 @@ func (s *Session) dial(ctx context.Context) (*client.Client, error) {
 	initReq.Params.ClientInfo = mcp.Implementation{Name: "containarium-code", Version: "1"}
 	if _, err := c.Initialize(ctx, initReq); err != nil {
 		_ = c.Close()
+		// A box with no agent-box and a box whose ssh connection died look
+		// identical here: the far end simply never speaks MCP. One probe
+		// tells them apart, and only the first has an obvious fix.
+		if probeErr := probeAgentBox(ctx, s.sshArgs); probeErr != nil {
+			return nil, fmt.Errorf("%w (initialize MCP session: %v)", ErrAgentBoxMissing, err)
+		}
 		return nil, fmt.Errorf("initialize MCP session: %w", err)
 	}
 	return c, nil
@@ -99,7 +166,7 @@ func (s *Session) callTool(ctx context.Context, name string, args map[string]any
 	return doCallTool(ctx, fresh, name, args)
 }
 
-func doCallTool(ctx context.Context, c *client.Client, name string, args map[string]any) (string, error) {
+func doCallTool(ctx context.Context, c mcpConn, name string, args map[string]any) (string, error) {
 	res, err := c.CallTool(ctx, mcp.CallToolRequest{Params: mcp.CallToolParams{Name: name, Arguments: args}})
 	if err != nil {
 		return "", err

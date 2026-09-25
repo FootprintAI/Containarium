@@ -41,6 +41,12 @@ func mcpCodeSession(client API, box string) (*coderun.Session, func(), error) {
 	sess, err := coderun.Connect(context.Background(), connectcore.BuildSSHArgs(target, privPath, ""))
 	if err != nil {
 		cleanup()
+		// Same sentence the CLI gives (#2030): a box with no agent-box used to
+		// surface as a raw `transport closed`, which named neither the missing
+		// helper nor the command that installs it.
+		if errors.Is(err, coderun.ErrAgentBoxMissing) {
+			return nil, nil, coderun.AgentBoxMissingError(box)
+		}
 		return nil, nil, fmt.Errorf("connect to agent-box on %q: %w", box, err)
 	}
 	return sess, func() { _ = sess.Close(); cleanup() }, nil

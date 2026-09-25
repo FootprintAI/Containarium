@@ -3,17 +3,18 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 
-	"github.com/footprintai/containarium/internal/client"
 	"github.com/footprintai/containarium/internal/coderun"
 	"github.com/footprintai/containarium/internal/connectcore"
 	"github.com/footprintai/containarium/internal/sshkey"
-	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+	"github.com/footprintai/containarium/pkg/version"
 	"github.com/spf13/cobra"
 )
 
@@ -31,18 +32,36 @@ import (
 // caller of that pattern (after `connect`), which is why obtainConnectKey
 // takes explicit params instead of reading connect's own package vars.
 
-// claudeOAuthTokenSecretName is the tenant-secret name `code install` checks
-// for before installing. Minted once on a trusted machine with `claude
-// setup-token`, then delivered via `containarium secrets set`. This package
-// only ever reads its metadata (name, delivery mode, version) via
-// ListSecrets — never its plaintext value — so the token is never a CLI
-// parameter here and never appears in this command's output.
-const claudeOAuthTokenSecretName = "CLAUDE_CODE_OAUTH_TOKEN" // #nosec G101 -- secret NAME, not a credential value
+// `code install` carries NO credential (#2030). Claude Code's terms
+// (https://code.claude.com/docs/en/legal-and-compliance, "Authentication and
+// credential use") forbid a platform collecting, storing, or intermediating a
+// Claude.ai credential or session token: sign-in must complete through
+// Anthropic's own flow. The permitted lane for hosting Claude Code in a
+// sandbox is the unmodified binary with each end user bringing their own
+// credential — so this command installs a toolchain and stops there. It
+// neither reads, lists, nor names a Claude.ai token.
 
-// claudeInstallScript is Claude Code's own native installer. It writes to
-// ~/.local/bin/claude — user-level, no root — which is exactly why `code
-// install` doesn't need a daemon-side privileged exec path.
+// claudeInstallScript is Claude Code's own native installer, run verbatim. It
+// writes to ~/.local/bin/claude — user-level, no root — which is exactly why
+// `code install` doesn't need a daemon-side privileged exec path.
 const claudeInstallScript = "curl -fsSL https://claude.ai/install.sh | bash"
+
+// agentBoxRepo is where the agent-box / mcp-server release assets live. Same
+// assets scripts/install-agent-runtime.sh pulls for the agent-runtime recipe
+// — `code install` lands them on an ordinary box so code run/attach/status/
+// stop work there too, instead of only on a recipe box.
+const agentBoxRepo = "FootprintAI/Containarium"
+
+// agentBoxAssetArch is the only Linux build the release publishes
+// (Makefile's build-agent-box-all). Boxes are Linux; darwin assets exist for
+// laptops, not for this path.
+const agentBoxAssetArch = "linux-amd64"
+
+// codeInstallStateFile carries one bit from the install step to the verify
+// step: whether ~/.claude/.credentials.json already existed. A user who
+// signed in through Anthropic's flow legitimately has one, so the assertion
+// that has to hold is "the install did not create it", not "there is none".
+const codeInstallStateFile = "$HOME/.cache/containarium/code-install-state"
 
 // defaultCodeRunName is the process name used when --name is omitted, so
 // the common case ("one coding task per box at a time") never requires the
@@ -68,6 +87,18 @@ var (
 	codeHost      string
 	codePort      int
 	codeName      string
+
+	// `code install` only (#2030).
+	codeBootstrapURL      string
+	codeRelease           string
+	codeClaudeCodeVersion string
+)
+
+// Test seams. Production never reassigns these; they exist so the install
+// flow can be driven end to end without a box, a daemon, or an ssh binary.
+var (
+	sshExec             = runSSHCaptured
+	resolveCodeTargetFn = resolveCodeTarget
 )
 
 var codeCmd = &cobra.Command{
@@ -81,26 +112,27 @@ var codeInstallCmd = &cobra.Command{
 	Long: `Installs Claude Code onto a box you already use, over the existing SSH
 path — no new box type, no daemon-side privileged exec.
 
-The box must already hold its Claude Code credential as a tenant secret
-named CLAUDE_CODE_OAUTH_TOKEN, delivered as "compose" or "file" — NOT the
-default "env". env-delivered secrets are stamped on the LXC's
-container-start environment, which an SSH shell session (where claude
-actually runs) never inherits; see docs/integrations/pi.md for the same
-finding against a different agent. Mint the token once on a trusted
-machine, then set it before running this command:
+This command installs a toolchain and nothing else. It carries no credential:
+Claude Code's terms require sign-in to complete through Anthropic's own flow
+(https://code.claude.com/docs/en/legal-and-compliance), so you bring your own
+afterwards, one of two ways:
 
-  claude setup-token
-  containarium secrets set <box> CLAUDE_CODE_OAUTH_TOKEN <token> --delivery compose
-  containarium code install <box>
+  interactive — SSH in and run claude, then complete the device-code sign-in
+  (the documented path for SSH sessions and containers):
 
-The token itself is never a parameter to this command and never appears in
-its output — only the secret's presence and delivery mode are checked.
+    containarium connect <box>
+    claude
 
-After installing, this command verifies the install by running a single
-non-interactive prompt (no TTY, no login flow) and asserts
-ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN are unset on the box — both
-outrank CLAUDE_CODE_OAUTH_TOKEN in Claude Code's auth precedence and would
-silently win over it.`,
+  headless — place your own ANTHROPIC_API_KEY (or a Bedrock / Vertex / Foundry
+  credential) in the "env" block of ~/.claude/settings.json on the box. Both
+  interactive claude and agent-box-launched runs read it.
+
+It also lands the agent-box helper on ~/.local/bin, so containarium code
+run/attach/status/stop work on this box.
+
+After installing it prints the binary version, asserts the install created no
+~/.claude/.credentials.json, and reports which credential SOURCE the box has —
+names only, never a value.`,
 	Args: cobra.ExactArgs(1),
 	RunE: runCodeInstall,
 }
@@ -129,6 +161,13 @@ func init() {
 	for _, c := range []*cobra.Command{codeRunCmd, codeAttachCmd, codeStatusCmd, codeStopCmd} {
 		c.Flags().StringVar(&codeName, "name", "", "process name for this run (default: \""+defaultCodeRunName+"\" — override to run more than one task on the same box concurrently)")
 	}
+
+	codeInstallCmd.Flags().StringVar(&codeBootstrapURL, "bootstrap-url", "",
+		"URL of a .tar.gz bundle to apply after the toolchain lands — unpacked into a temp dir on the box and its apply.sh run as the box user (skipped when empty)")
+	codeInstallCmd.Flags().StringVar(&codeRelease, "release", "",
+		"release tag to pull the agent-box / mcp-server assets from, v-prefixed (default: this CLI's own version)")
+	codeInstallCmd.Flags().StringVar(&codeClaudeCodeVersion, "claude-code-version", "",
+		"pin the Claude Code version the installer fetches (default: whatever the installer considers current)")
 
 	codeRunCmd.Flags().StringVar(&codeRunPrompt, "prompt", "", "prompt to give the agent (required)")
 	codeRunCmd.Flags().BoolVar(&codeRunStreamJSON, "output-format-stream-json", false,
@@ -203,6 +242,9 @@ func resolveCodeSession(ctx context.Context, box string, diag io.Writer) (*coder
 	sshArgs := connectcore.BuildSSHArgs(target, privPath, "") // no remote command — Connect appends "agent-box"
 	sess, err := coderun.Connect(ctx, sshArgs)
 	if err != nil {
+		if errors.Is(err, coderun.ErrAgentBoxMissing) {
+			return nil, coderun.AgentBoxMissingError(box)
+		}
 		return nil, fmt.Errorf("connect to agent-box on %q: %w", box, err)
 	}
 	return sess, nil
@@ -262,57 +304,146 @@ func streamAndWait(ctx context.Context, sess *coderun.Session, name, logPath str
 	}
 }
 
-// findSecret returns the metadata for name, if present in secrets.
-func findSecret(secrets []*pb.SecretMetadata, name string) (*pb.SecretMetadata, bool) {
-	for _, s := range secrets {
-		if s.Name == name {
-			return s, true
-		}
+// defaultAgentBoxRelease is the release the agent-box / mcp-server assets are
+// pulled from when --release is omitted: this CLI's own version, v-prefixed.
+// pkg/version carries a bare semver while release TAGS carry the v (see
+// docs/RELEASE-PROCESS.md), so the prefix is added here rather than assumed.
+func defaultAgentBoxRelease() string {
+	v := version.Version
+	if !strings.HasPrefix(v, "v") {
+		v = "v" + v
 	}
-	return nil, false
+	return v
 }
 
-// checkClaudeCredential implements the #1673 AC "installing with no
-// credential set fails naming the `secrets set` command, rather than
-// hanging on a login prompt" — extended to the delivery-mode footgun found
-// in docs/integrations/pi.md: the default "env" delivery would still fail,
-// just later and far more confusingly (a hang on claude's own login
-// prompt, not a named error here), so it's rejected with the same
-// up-front clarity as a missing secret.
-func checkClaudeCredential(secrets []*pb.SecretMetadata, box string) error {
-	secret, found := findSecret(secrets, claudeOAuthTokenSecretName)
-	if !found {
-		return fmt.Errorf(
-			"no %s secret set for %q — mint one with `claude setup-token` on a trusted machine, then run:\n  containarium secrets set %s %s <token> --delivery compose",
-			claudeOAuthTokenSecretName, box, box, claudeOAuthTokenSecretName)
+func codeInstallRelease() (string, error) {
+	r := strings.TrimSpace(codeRelease)
+	if r == "" {
+		return defaultAgentBoxRelease(), nil
 	}
-	switch secret.DeliveryMode {
-	case pb.SecretDelivery_SECRET_DELIVERY_COMPOSE, pb.SecretDelivery_SECRET_DELIVERY_FILE:
-		return nil
-	default:
-		return fmt.Errorf(
-			"%s for %q is delivered as %q — claude runs in an SSH shell session, which does not inherit the LXC's container-start environment (see docs/integrations/pi.md). Re-set it with:\n  containarium secrets set %s %s <token> --delivery compose\n  containarium secrets refresh %s",
-			claudeOAuthTokenSecretName, box, secret.DeliveryMode, box, claudeOAuthTokenSecretName, box)
+	if !releaseTagPattern.MatchString(r) {
+		return "", fmt.Errorf("--release %q is not a release tag (expected something like v0.89.0)", r)
 	}
+	return r, nil
 }
 
-// claudeVerifyScript sources whatever secrets delivery the box actually
-// has (compose's shared dotenv, or a file-delivery secret converted to an
-// env var), asserts ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN are unset,
-// then runs one non-interactive prompt. No -t/-tt anywhere on the ssh side
-// of this path (buildClaudeSSHArgs never adds one), so no TTY is ever
-// allocated for this exec.
+// claudeInstallScriptFor runs Anthropic's own installer, unmodified. The only
+// addition is the one bit the verify step needs: whether a credentials file
+// existed BEFORE the install, so "the install created one" can be told apart
+// from "the user signed in earlier", which is the supported path.
+//
+// claudeCodeVersion, when set, is passed to the installer as its argument —
+// the installer's own documented way to pin a version. The command line
+// itself is unchanged.
+func claudeInstallScriptFor(claudeCodeVersion string) string {
+	installer := claudeInstallScript
+	if v := strings.TrimSpace(claudeCodeVersion); v != "" {
+		installer += " -s " + coderun.ShellQuoteSingle(v)
+	}
+	return `set -e
+mkdir -p "$(dirname "` + codeInstallStateFile + `")"
+if [ -f "$HOME/.claude/.credentials.json" ]; then
+  echo present > "` + codeInstallStateFile + `"
+else
+  echo absent > "` + codeInstallStateFile + `"
+fi
+` + installer
+}
+
+// agentBoxInstallScript lands agent-box (and, best-effort, mcp-server) in
+// ~/.local/bin. User-level, so this stays a plain SSH exec with no privilege
+// escalation — the same reason Claude Code's own installer is usable here.
+//
+// mcp-server is best-effort on purpose, matching
+// scripts/install-agent-runtime.sh: a release missing that asset must not
+// take down code run/attach/status/stop, which only need agent-box. Both are
+// downloaded to a temp file and moved into place, so a failed or truncated
+// fetch never leaves a broken binary on PATH.
+func agentBoxInstallScript(release string) string {
+	base := "https://github.com/" + agentBoxRepo + "/releases/download/" + release
+	return `set -e
+mkdir -p "$HOME/.local/bin"
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+curl -fsSL "` + base + `/agent-box-` + agentBoxAssetArch + `" -o "$tmp/agent-box" </dev/null
+chmod +x "$tmp/agent-box"
+mv "$tmp/agent-box" "$HOME/.local/bin/agent-box"
+if curl -fsSL "` + base + `/mcp-server-` + agentBoxAssetArch + `" -o "$tmp/mcp-server" </dev/null; then
+  chmod +x "$tmp/mcp-server"
+  mv "$tmp/mcp-server" "$HOME/.local/bin/mcp-server"
+else
+  echo "WARNING: no mcp-server-` + agentBoxAssetArch + ` in that release; runs bound to a tracker connection will have no tracker tools" >&2
+fi
+echo "agent-box installed at $HOME/.local/bin/agent-box"`
+}
+
+// releaseTagPattern is what may be interpolated into the asset URL above.
+// The tag is a flag value and lands inside a double-quoted shell string, so
+// it is validated rather than quoted — a charset with no $, backtick, quote,
+// or backslash cannot be anything but a path segment there.
+var releaseTagPattern = regexp.MustCompile(`^v?[0-9A-Za-z][0-9A-Za-z._-]*$`)
+
+// bootstrapScript fetches url, unpacks it into a throwaway directory, and
+// runs its apply.sh as the box user — the seam a team uses to drop in skills,
+// an MCP config, or dotfiles without this command growing a flag per item.
+// No sudo anywhere: a bootstrap bundle is the user's own content and gets the
+// user's own privileges.
+func bootstrapScript(url string) string {
+	return `set -e
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+curl -fsSL ` + coderun.ShellQuoteSingle(url) + ` | tar -xz -C "$tmp"
+if [ ! -f "$tmp/apply.sh" ]; then
+  echo "bootstrap bundle has no apply.sh at its root" >&2
+  exit 4
+fi
+chmod +x "$tmp/apply.sh"
+cd "$tmp" && ./apply.sh`
+}
+
+// claudeVerifyScript replaces #1673's non-interactive prompt, which could not
+// run without a credential this command no longer supplies.
+//
+// It does three things: prints the installed binary's version, asserts the
+// install created no ~/.claude/.credentials.json (a platform must never mint
+// or store a Claude.ai credential), and reports which credential SOURCE the
+// box has. That last part is deliberately NAMES ONLY — every branch tests for
+// presence and echoes a literal, because expanding any of these would put a
+// live credential into the CLI's output and the user's scrollback.
 func claudeVerifyScript() string {
 	return `set -e
-if [ -f /run/containarium/secrets.env ]; then set -a; . /run/containarium/secrets.env; set +a; fi
-if [ -z "$` + claudeOAuthTokenSecretName + `" ] && [ -f /run/secrets/` + claudeOAuthTokenSecretName + ` ]; then
-  export ` + claudeOAuthTokenSecretName + `="$(cat /run/secrets/` + claudeOAuthTokenSecretName + `)"
+"$HOME/.local/bin/claude" --version
+creds="$HOME/.claude/.credentials.json"
+before=absent
+if [ -f "` + codeInstallStateFile + `" ]; then
+  before="$(cat "` + codeInstallStateFile + `")"
+  rm -f "` + codeInstallStateFile + `"
 fi
-if [ -n "$ANTHROPIC_API_KEY" ] || [ -n "$ANTHROPIC_AUTH_TOKEN" ]; then
-  echo "ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN must be unset on this box (they outrank CLAUDE_CODE_OAUTH_TOKEN in Claude Code's auth precedence)" >&2
+if [ "$before" = absent ] && [ -f "$creds" ]; then
+  echo "the install created $creds — containarium never mints or stores a Claude.ai credential" >&2
   exit 3
 fi
-~/.local/bin/claude -p "print the current working directory"`
+echo "credential sources present:"
+found=0
+if [ -f "$creds" ]; then
+  echo "  - $creds (signed in through Anthropic's own flow)"
+  found=1
+fi
+settings="$HOME/.claude/settings.json"
+for key in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN; do
+  if [ -f "$settings" ] && grep -q "\"$key\"" "$settings"; then
+    echo "  - $key in the env block of $settings"
+    found=1
+  fi
+done
+providers="$(env | sed -n 's/^\(CLAUDE_CODE_USE_[A-Z0-9_]*\)=.*/\1/p')"
+if [ -n "$providers" ]; then
+  for p in $providers; do echo "  - $p (3P inference provider)"; done
+  found=1
+fi
+if [ "$found" = 0 ]; then
+  echo "  (none yet — sign in on the box, or place your own key in $settings)"
+fi`
 }
 
 // buildClaudeSSHArgs wraps connectcore.BuildSSHArgs for this command's
@@ -327,88 +458,73 @@ func runCodeInstall(cmd *cobra.Command, args []string) error {
 	if err := validateBoxName(box); err != nil {
 		return err
 	}
+	release, err := codeInstallRelease()
+	if err != nil {
+		return err
+	}
 	diag := cmd.ErrOrStderr()
 	ctx := cmd.Context()
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
-	// Secrets are a direct daemon RPC (serverAddr/authToken, the same
-	// target every other daemon-talking command uses — secrets.go's
-	// ListSecrets/RefreshSecrets follow this exact pattern) — NOT the
-	// cloud-login-aware --ssh-server box resolution below; those are
-	// genuinely different targets in this codebase.
-	if serverAddr == "" {
-		return fmt.Errorf("--server is required (daemon owns the secrets store)")
-	}
-	secrets, err := listSecretsFor(box)
-	if err != nil {
-		return fmt.Errorf("check %s: %w", claudeOAuthTokenSecretName, err)
-	}
-	if err := checkClaudeCredential(secrets, box); err != nil {
-		return err
-	}
-	if _, _, err := refreshSecretsFor(box); err != nil {
-		return fmt.Errorf("refresh secrets on %q: %w", box, err)
-	}
-
-	target, privPath, err := resolveCodeTarget(ctx, box, diag)
+	// No secrets RPC and no --server: this command reaches the box over SSH
+	// and installs binaries. There is no credential for it to fetch (#2030).
+	target, privPath, err := resolveCodeTargetFn(ctx, box, diag)
 	if err != nil {
 		return err
 	}
+	run := func(script string) (string, error) {
+		return sshExec(diag, buildClaudeSSHArgs(target, privPath, script))
+	}
 
-	if _, err := runSSHCaptured(diag, buildClaudeSSHArgs(target, privPath, claudeInstallScript)); err != nil {
+	if _, err := run(claudeInstallScriptFor(codeClaudeCodeVersion)); err != nil {
 		return fmt.Errorf("install claude on %q: %w", box, err)
 	}
 	fmt.Fprintf(diag, "✓ claude installed on %s\n", box)
 
-	out, err := runSSHCaptured(diag, buildClaudeSSHArgs(target, privPath, claudeVerifyScript()))
+	if _, err := run(agentBoxInstallScript(release)); err != nil {
+		return fmt.Errorf("install agent-box (%s) on %q: %w", release, box, err)
+	}
+	fmt.Fprintf(diag, "✓ agent-box installed on %s (from %s)\n", box, release)
+
+	if url := strings.TrimSpace(codeBootstrapURL); url != "" {
+		if _, err := run(bootstrapScript(url)); err != nil {
+			return fmt.Errorf("apply bootstrap bundle on %q: %w", box, err)
+		}
+		fmt.Fprintf(diag, "✓ bootstrap bundle applied on %s\n", box)
+	}
+
+	out, err := run(claudeVerifyScript())
 	if err != nil {
 		return fmt.Errorf("verify claude on %q: %w (output: %s)", box, err, strings.TrimSpace(out))
 	}
 	if strings.TrimSpace(out) == "" {
-		return fmt.Errorf("claude -p returned an empty response on %q", box)
+		return fmt.Errorf("claude --version produced no output on %q", box)
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "✓ claude verified on %s: %s\n", box, strings.TrimSpace(out))
+	stdout := cmd.OutOrStdout()
+	fmt.Fprintf(stdout, "✓ claude verified on %s:\n%s\n", box, strings.TrimSpace(out))
+	fmt.Fprint(stdout, codeSignInHelp(box))
 	return nil
 }
 
-// listSecretsFor and refreshSecretsFor mirror runSecretsList/
-// runSecretsRefresh's dual-transport (httpMode) dispatch exactly, factored
-// out so runCodeInstall reads as the install flow rather than repeating
-// the http-vs-grpc branch inline.
-func listSecretsFor(username string) ([]*pb.SecretMetadata, error) {
-	if httpMode {
-		h, err := client.NewHTTPClient(serverAddr, authToken)
-		if err != nil {
-			return nil, err
-		}
-		defer func() { _ = h.Close() }()
-		return h.ListSecrets(username)
-	}
-	g, err := client.NewGRPCClient(serverAddr, certsDir, insecure)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = g.Close() }()
-	return g.ListSecrets(username)
-}
+// codeSignInHelp is what replaces the credential this command used to require.
+// Both paths complete through Anthropic's own flow or the user's own key; the
+// platform is not in the middle of either.
+func codeSignInHelp(box string) string {
+	return fmt.Sprintf(`
+Claude Code is installed but not signed in. Pick one:
 
-func refreshSecretsFor(username string) (string, int32, error) {
-	if httpMode {
-		h, err := client.NewHTTPClient(serverAddr, authToken)
-		if err != nil {
-			return "", 0, err
-		}
-		defer func() { _ = h.Close() }()
-		return h.RefreshSecrets(username)
-	}
-	g, err := client.NewGRPCClient(serverAddr, certsDir, insecure)
-	if err != nil {
-		return "", 0, err
-	}
-	defer func() { _ = g.Close() }()
-	return g.RefreshSecrets(username)
+  interactive — sign in inside the box (device code, no credential stored here):
+      containarium connect %s
+      claude
+
+  headless — place your own key in the "env" block of ~/.claude/settings.json
+  on the box (ANTHROPIC_API_KEY, or a Bedrock / Vertex / Foundry credential):
+      {"env": {"ANTHROPIC_API_KEY": "<your key>"}}
+
+Then: containarium code run %s --prompt "..."
+`, box, box)
 }
 
 // runSSHCaptured runs args non-interactively via the local ssh client and
