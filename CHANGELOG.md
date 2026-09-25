@@ -47,7 +47,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `agent:failed` plus one stamped comment naming the run (the raw error stays
   in the row, readable with `tracker dispatches --state failed`). Every
   transition is compare-and-set and runs on a detached, bounded context, so
-  a cancelled tick never strands a row. The tick now labels `agent:queued`
+  a run that ends after its tick was cancelled still lands terminal (a tick
+  cancelled before the run started could still strand a `queued` row; fixed
+  below, #2049). The tick now labels `agent:queued`
   before starting the run and re-reads the issue after winning the insert, so
   a stale issue list can no longer double-run an issue a peer just finished.
   New catalog skill `product-define` (manifest scopes `tracker:read` and
@@ -97,6 +99,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A coding run now picks up the box's own MCP config** when
   `~/.claude/containarium-mcp.json` exists (conditionally — `claude` treats a
   missing `--mcp-config` path as a startup error). (#2030)
+- **`tracker dispatch`: a tick cancelled before its run started no longer
+  locks the issue.** A cancel landing while `agent:queued` was being written
+  left the dispatch row `queued` with no run, and every later tick skipped the
+  issue. The insert, the `agent:queued` write and its `labels_pending`
+  fallback now run on a detached, bounded context; a tick cancelled after the
+  insert but before `agent:queued` is written deletes its row (the next tick
+  dispatches the issue), and one cancelled after that write fails the row and
+  labels the issue `agent:failed` without starting the run (remove the label to
+  retry). A run that did start keeps its row, and no second run is started.
+  (#2049)
+- **A panic in a dispatched run's background half no longer kills the daemon
+  or leaves the run's credentials live.** The panic is recovered and logged
+  with the run id (never the panic value); the run's lease still ends first
+  (both JWTs revoked, run unregistered) and the dispatch row is marked
+  `failed`. (#2050)
 
 ## [0.89.0] - 2026-09-24
 
