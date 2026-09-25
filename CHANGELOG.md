@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`coding-agent` recipe.** A box with `agent-box`, `mcp-server` and an
+  unmodified Claude Code (Anthropic's installer, run as the box user), an
+  optional bootstrap bundle, and no credential of any kind. Also adds
+  `--no-agent-runtime` to `scripts/install-agent-runtime.sh`. (#2031)
+
 ## [0.89.0] - 2026-09-24
 
 ### Added

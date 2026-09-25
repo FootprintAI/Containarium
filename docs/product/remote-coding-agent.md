@@ -337,3 +337,5 @@ a shell cannot push somewhere I did not intend.
    quotes, no usage data. *Validate:* the MVP is small enough to be its own
    experiment — ship it, dogfood it for two weeks, and measure whether anyone
    uses it twice.
+
+See also: the `coding-agent` recipe (`docs/integrations/coding-agent.md`) provisions a box with Claude Code preinstalled and no credentials baked in.

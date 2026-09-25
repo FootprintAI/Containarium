@@ -464,3 +464,60 @@ func TestMem0Recipe(t *testing.T) {
 		}
 	}
 }
+
+// coding-agent must ship no credential of any kind: Claude Code comes from
+// Anthropic's unmodified installer, run as the unprivileged box user, and the
+// recipe never sets an auth method, env var, or managed setting.
+func TestCodingAgentRecipe(t *testing.T) {
+	m := New()
+	if err := m.LoadEmbedded(); err != nil {
+		t.Fatalf("LoadEmbedded: %v", err)
+	}
+	r, err := m.Get("coding-agent")
+	if err != nil {
+		t.Fatalf("expected built-in recipe coding-agent: %v", err)
+	}
+	joined := strings.Join(r.PostStart, "\n")
+	for _, want := range []string{
+		"install-agent-runtime.sh",
+		"--no-agent-runtime",
+		"https://claude.ai/install.sh",
+		"runuser -u",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("coding-agent post_start missing %q", want)
+		}
+	}
+	params := map[string]*pb.RecipeParam{}
+	for _, p := range r.Parameters {
+		params[p.Name] = p
+	}
+	for _, name := range []string{"release", "claude_code_version", "bootstrap_url"} {
+		if params[name] == nil {
+			t.Errorf("coding-agent missing parameter %q", name)
+		}
+	}
+	if p := params["release"]; p != nil && !p.Required {
+		t.Error("release must be required")
+	}
+	if p := params["box_user"]; p == nil || p.Default == "" || p.Default == "root" {
+		t.Error("box_user must default to an unprivileged user")
+	}
+	// The installer must never run as root: every claude.ai/install.sh
+	// invocation has to be inside a runuser line.
+	for _, line := range r.PostStart {
+		if strings.Contains(line, "claude.ai/install.sh") && !strings.Contains(line, "runuser -u") {
+			t.Errorf("Claude Code installer not run as the box user: %q", line)
+		}
+	}
+	// Lint: nothing credential- or policy-shaped anywhere in the recipe.
+	text := r.String()
+	for _, banned := range []string{
+		"forceLoginMethod", "forceLoginOrgUUID", "forceLoginGatewayUrl",
+		"ANTHROPIC_", "CLAUDE_CODE_OAUTH_TOKEN", "managed-settings", "/etc/claude-code",
+	} {
+		if strings.Contains(text, banned) {
+			t.Errorf("coding-agent recipe must not contain %q", banned)
+		}
+	}
+}
