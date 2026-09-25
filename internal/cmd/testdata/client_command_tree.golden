@@ -183,6 +183,7 @@ tracker connect
 tracker disconnect
 tracker issue claim
 tracker issue comment
+tracker issue create
 tracker issue label
 tracker issue list
 tracker issue view
