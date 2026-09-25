@@ -53,3 +53,22 @@ crews:
     skill_ids:
       - diff-drafter   # diff-drafter.allowed_peers includes diff-reviewer,
       - diff-reviewer  # so the pipeline edge drafter -> reviewer is permitted.
+
+  # engineer-crew (Containarium-cloud#2003, Phase 3 Story 1 of the
+  # coding-agent issue-to-PR PRD): a GitHub issue in, a reviewed change with
+  # a PR title/body out. Reuses diff-crew's own reviewer stage unchanged in
+  # role — issue-implementer's artifact IS diff-reviewer's task input via
+  # the same PIPELINE hand-off diff-crew uses, no new turn-taking mechanism.
+  # This skill makes no GitHub calls itself: reading the issue and opening
+  # the PR from this artifact are both the cloud control plane's job
+  # (FootprintAI/Containarium-cloud, not this repo) — `containarium crew run
+  # engineer-crew --git-source <url> --git-ref <ref> --input-json <task>`
+  # is fully generic already (crew_ops.go), so no CLI/MCP changes were
+  # needed to make this runnable.
+  - id: engineer-crew
+    name: Engineer Crew
+    description: Turns a GitHub issue into a reviewed file change with a PR title and body. issue-implementer reads the issue-shaped task and makes the change; diff-reviewer finalizes it against its own checkout of the same commit.
+    topology: pipeline
+    skill_ids:
+      - issue-implementer  # issue-implementer.allowed_peers includes
+      - diff-reviewer      # diff-reviewer, so this pipeline edge is permitted.

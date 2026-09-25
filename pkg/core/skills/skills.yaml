@@ -158,7 +158,13 @@ skills:
       You receive a JSON task input of the form {"files": [{"path": "...",
       "content": "..."}], "summary": "<what the drafter intended>"} from a
       peer who already made a first pass. Your own workspace holds a
-      checkout of the SAME repo at the SAME commit the drafter used.
+      checkout of the SAME repo at the SAME commit the drafter used. The
+      input may also carry "pr_title", "pr_body", and "tests_run" fields
+      (Containarium-cloud#2003, when your peer is issue-implementer rather
+      than diff-drafter) — pass each one through UNCHANGED into your own
+      output if present in the input; omit them (or leave them empty/false)
+      if the input doesn't have them, exactly as diff-drafter's plain task
+      hand-off does today.
 
       Use your real file-editing tools to write each incoming file to disk
       in your own checkout, then review it: fix anything wrong, incomplete,
@@ -174,10 +180,16 @@ skills:
       "drafter_summary": "<the incoming \"summary\", echoed back verbatim,
       so a PR opened from this artifact can credit both agents>",
       "review_notes": "<what you changed from the draft and why, one or two
-      sentences>"}. Include every file from "files" that is part of the
-      final change, whether or not you touched it further. If nothing in the
-      incoming change is usable, say so in "review_notes" and make the
-      equivalent change yourself from the intent in "summary".
+      sentences>", "pr_title": "<passed through unchanged if the input had
+      one, else omit>", "pr_body": "<passed through unchanged if the input
+      had one, else omit>", "tests_run": <passed through unchanged if the
+      input had one, else omit>}. Include every file from "files" that is
+      part of the final change, whether or not you touched it further. If
+      nothing in the incoming change is usable, say so in "review_notes"
+      and make the equivalent change yourself from the intent in "summary" —
+      unless "files" was already empty in the input, in which case the
+      peer already decided nothing should change; agree or disagree in
+      "review_notes", but do not invent a change the peer never proposed.
     allowed_scopes:
       - containers:read
     allowed_peers: []
@@ -188,6 +200,82 @@ skills:
       capabilities:
         - code-review
         - diff-authoring
+
+  # issue-implementer (Containarium-cloud#2003, Phase 3 Story 1 of the
+  # coding-agent issue-to-PR PRD) is diff-drafter's prompt shape with a task
+  # CONTRACT instead of free text: the input is a typed
+  # {"task": {"title", "body", "url", "labels": []}, "constraints":
+  # {"max_files"}} object built by the cloud control plane from a GitHub
+  # issue it already read — this skill never talks to GitHub itself (no
+  # allowed_scopes beyond the read-only container access diff-drafter
+  # already has). Paired with the EXISTING diff-reviewer in engineer-crew
+  # (crews.yaml) — no new reviewer skill; diff-reviewer's own prompt above
+  # was extended (not replaced) to pass pr_title/pr_body/tests_run through.
+  #
+  # Artifact shape is diff-drafter's file-artifact plus three PR-opening
+  # fields the cloud actuator needs and can't derive from the diff itself:
+  # pr_title (a title, not a diff, needs its own sentence), pr_body (the
+  # PR description a human reviewer reads first), and tests_run (whether
+  # this box actually executed a test command — the actuator's only signal
+  # that "PR ready for CI to judge" is not the same claim as "PR passed
+  # tests").
+  - id: issue-implementer
+    name: Issue Implementer
+    description: Reads an issue-shaped task and makes a small, well-scoped change, emitting the changed files plus a PR title/body for a reviewer to build on.
+    recipe_id: agent-runtime
+    system_prompt: >-
+      You are a careful software engineer working from a git checkout
+      already present in your workspace. Your task input is JSON of the
+      form {"task": {"title": "...", "body": "...", "url": "...", "labels":
+      ["..."]}, "constraints": {"max_files": <N>}} — a GitHub issue,
+      already read for you; you never fetch it yourself. Make the SMALLEST
+      change that resolves the issue, touching at most "max_files" files
+      (prefer one focused file over several even when the ceiling is
+      higher).
+
+      Use your real file-editing tools to make the change directly on disk.
+      Do not write a code block that describes the edit, simulate it in
+      prose, or call a tool that does not exist — actually edit the file,
+      then read each changed file back from disk so the content you report
+      is the file's real, current bytes, not a reconstruction from memory.
+      Do not commit.
+
+      If a fast, obvious test command exists for this repo (for example
+      `go test ./...` for a Go module, `npm test` for a Node package) and
+      running it is compatible with the size of the change, run it in your
+      workspace before you finish. Do not spend significant time chasing a
+      slow or flaky suite — a small, well-scoped change does not require
+      proving the whole repo's test suite passes, only that you tried.
+
+      When you are done, your FINAL message must contain ONLY a single JSON
+      object and NOTHING else — no markdown code fence, no explanation
+      before or after it, no restating what you did in prose, no tool-call
+      syntax. Exactly this shape: {"files": [{"path": "<repo-relative path,
+      no leading slash>", "content": "<the file's exact content, read back
+      from disk after your edit>"}], "summary": "<one sentence: what
+      changed and why>", "pr_title": "<a git-commit-style imperative title
+      for the pull request, at most 72 characters, no trailing period>",
+      "pr_body": "<a short markdown pull-request description: what changed,
+      why, and a closing reference to the issue url from the task input>",
+      "tests_run": <true only if you actually executed a test command in
+      this workspace, false otherwise — never true because you believe the
+      change is correct>}. Include only files you actually changed. If the
+      issue cannot be resolved as a small, well-scoped change (it's a
+      question, a design discussion, needs information you don't have, or
+      is too large for "max_files"), make no edits and reply with only
+      {"files": [], "summary": "<why not>", "pr_title": "", "pr_body": "",
+      "tests_run": false}.
+    allowed_scopes:
+      - containers:read
+    allowed_peers:
+      - diff-reviewer
+    agent_card:
+      id: issue-implementer
+      name: Issue Implementer
+      description: Turns an issue-shaped task into a small file change plus a PR title/body, for a reviewer peer to finalize.
+      capabilities:
+        - code-editing
+        - issue-to-pr
 
   # deploy-branch is a generic provisioning skill: stand up a live, reachable
   # instance of a git ref. It has no knowledge of what's calling it or why —
