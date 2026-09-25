@@ -167,16 +167,34 @@ func (d *Dispatcher) Tick(ctx context.Context, username, connection string) (Tic
 			continue
 		}
 
-		row, err := d.Store.InsertDispatch(ctx, Dispatch{
+		// From the insert until StartRun has succeeded, no cancellation
+		// point may leave the row QUEUED with no run behind it (#2049):
+		// the active-row index would skip the issue on every later tick,
+		// and nothing sweeps queued rows. So the writes in this window run
+		// on a detached, bounded context, and a tick cancelled inside it
+		// removes the row (nothing is on the forge yet) or fails it
+		// (agent:queued is, or may be, on the issue) — never leaves it.
+		//
+		// The insert itself is detached: a cancel landing while it is in
+		// flight could commit the row yet report an error.
+		ictx, icancel := bookkeepingContext(ctx)
+		row, err := d.Store.InsertDispatch(ictx, Dispatch{
 			Username: username, Connection: connection, IssueNumber: issue.Number,
 			Scope: scope, SkillID: skillID, RunID: d.newRunID(),
 		})
+		icancel()
 		if errors.Is(err, ErrDispatchActive) {
 			res.SkippedActive++ // another dispatcher (or a live run) holds it
 			continue
 		}
 		if err != nil {
 			return res, fmt.Errorf("insert dispatch for #%d: %w", issue.Number, err)
+		}
+		if cerr := ctx.Err(); cerr != nil {
+			if err := d.abandon(ctx, row); err != nil {
+				return res, err
+			}
+			return res, cerr
 		}
 
 		// Re-read before starting anything (#2023): the list above can be
@@ -193,17 +211,25 @@ func (d *Dispatcher) Tick(ctx context.Context, username, connection string) (Tic
 
 		// The row is authoritative; the label is its projection. It goes
 		// on before the start (provisioning can take minutes) and a forge
-		// failure leaves labels_pending for the retry (#2026).
-		if err := d.Provider.SetLabels(ctx, d.Conn, issue.Number, []string{LabelAgentQueued}, nil); err != nil {
-			if perr := d.Store.SetDispatchLabelsPending(ctx, row.ID, true); perr != nil {
-				return res, fmt.Errorf("mark labels pending for #%d: %w", issue.Number, perr)
+		// failure leaves labels_pending for the retry (#2026). Detached, so
+		// a cancel mid-write cannot leave the row with neither the label
+		// nor labels_pending; the tick's cancellation is checked after.
+		if err := d.labelQueued(ctx, row); err != nil {
+			return res, d.failBeforeStart(ctx, row, err)
+		}
+		if cerr := ctx.Err(); cerr != nil {
+			// A cancelled tick starts no new run.
+			failed, err := d.failStart(ctx, row, cerr)
+			if err != nil {
+				return res, err
 			}
-			row.LabelsPending = true
+			res.Failed = append(res.Failed, *failed)
+			return res, cerr
 		}
 
 		input, err := dispatchInputJSON(row)
 		if err != nil {
-			return res, err
+			return res, d.failBeforeStart(ctx, row, err)
 		}
 		lc := &dispatchRun{d: d, row: *row}
 		if startErr := d.Runs.StartRun(ctx, StartRunRequest{
@@ -241,14 +267,47 @@ func (d *Dispatcher) stillDispatchable(ctx context.Context, row *Dispatch, scope
 	if keep {
 		return true, nil
 	}
-	// Detached: a cancelled tick must not leave a QUEUED row behind
-	// that locks the issue.
-	dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), failureBookkeepingBudget)
+	// A cancelled tick (the re-read fails with it) must not leave a
+	// QUEUED row behind that locks the issue: abandon is detached.
+	return false, d.abandon(ctx, row)
+}
+
+// abandon deletes a row whose run was never started and whose issue was
+// never labelled, on a detached context, so the next tick can dispatch
+// the issue again.
+func (d *Dispatcher) abandon(ctx context.Context, row *Dispatch) error {
+	dctx, cancel := bookkeepingContext(ctx)
 	defer cancel()
-	if _, derr := d.Store.DeleteQueuedDispatch(dctx, row.ID); derr != nil {
-		return false, fmt.Errorf("abandon dispatch for #%d: %w", row.IssueNumber, derr)
+	if _, err := d.Store.DeleteQueuedDispatch(dctx, row.ID); err != nil {
+		return fmt.Errorf("abandon dispatch for #%d: %w", row.IssueNumber, err)
 	}
-	return false, nil
+	return nil
+}
+
+// labelQueued projects the new row onto the issue as agent:queued, or
+// records labels_pending when the forge write fails, detached from the
+// tick. The only error returned is the labels_pending write failing.
+func (d *Dispatcher) labelQueued(ctx context.Context, row *Dispatch) error {
+	lctx, cancel := bookkeepingContext(ctx)
+	defer cancel()
+	if err := d.Provider.SetLabels(lctx, d.Conn, row.IssueNumber, []string{LabelAgentQueued}, nil); err == nil {
+		return nil
+	}
+	if err := d.Store.SetDispatchLabelsPending(lctx, row.ID, true); err != nil {
+		return fmt.Errorf("mark labels pending for #%d: %w", row.IssueNumber, err)
+	}
+	row.LabelsPending = true
+	return nil
+}
+
+// failBeforeStart fails a row the tick must give up on before starting
+// its run, so the tick's error return does not leave it QUEUED, and
+// returns cause (joined with the bookkeeping error, if that failed too).
+func (d *Dispatcher) failBeforeStart(ctx context.Context, row *Dispatch, cause error) error {
+	if _, err := d.failStart(ctx, row, cause); err != nil {
+		return errors.Join(cause, err)
+	}
+	return cause
 }
 
 func containsExact(list []string, s string) bool {
@@ -260,9 +319,15 @@ func containsExact(list []string, s string) bool {
 	return false
 }
 
-// failureBookkeepingBudget bounds failStart's store and forge writes
-// once detached from the tick's context.
+// failureBookkeepingBudget bounds the tick's pre-start and failStart
+// store and forge writes once detached from the tick's context.
 const failureBookkeepingBudget = 30 * time.Second
+
+// bookkeepingContext detaches ctx from the tick's cancellation (keeping
+// its values) and bounds it by failureBookkeepingBudget.
+func bookkeepingContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), failureBookkeepingBudget)
+}
 
 // failStart moves a row whose run never started to FAILED, then projects
 // that onto the issue (agent:failed + a comment), best-effort.
@@ -275,7 +340,7 @@ const failureBookkeepingBudget = 30 * time.Second
 // the raw error stays in failure_reason, readable via `tracker
 // dispatches`, never on a possibly public issue.
 func (d *Dispatcher) failStart(tickCtx context.Context, row *Dispatch, startErr error) (*Dispatch, error) {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(tickCtx), failureBookkeepingBudget)
+	ctx, cancel := bookkeepingContext(tickCtx)
 	defer cancel()
 	reason := fmt.Sprintf("run did not start: %v", startErr)
 	now := d.Clock.Now()
