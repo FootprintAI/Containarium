@@ -106,7 +106,12 @@ func (s *Store) initSchema(ctx context.Context) error {
 	}
 	// #2021: scope routes hang off a connection by foreign key, so they
 	// are created after tracker_connections.
-	_, err := s.pool.Exec(ctx, routeSchema)
+	if _, err := s.pool.Exec(ctx, routeSchema); err != nil {
+		return err
+	}
+	// #2022: dispatch rows and unrouted-scope warnings, also keyed off a
+	// connection.
+	_, err := s.pool.Exec(ctx, dispatchSchema)
 	return err
 }
 
