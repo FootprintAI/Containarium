@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"runtime/debug"
 	"strings"
 
 	"github.com/footprintai/containarium/internal/auth"
@@ -243,14 +244,57 @@ func (s *AgentSkillServer) launchDispatchedRun(ctx context.Context, run *started
 // tests, which cannot drive a real box; production passes
 // runInBoxAgentResult. An agent error or an empty artifact is a failed
 // run.
+//
+// It runs in a bare goroutine, so a panic in it would skip the lease end
+// (the run's JWTs stay valid, the run stays registered), never report
+// the end, and terminate the daemon (#2050). The lease end and the end
+// report therefore run in a defer that recovers, in the normal order,
+// and a panicking run is reported failed.
 func (s *AgentSkillServer) finishDispatchedRun(ctx context.Context, run *startedSkillRun, agent func(containerName, seedDir string) (string, error), lc tracker.RunLifecycle) {
 	bg := context.WithoutCancel(ctx)
-	artifact, err := agent(run.containerName, run.lease.SeedDir)
-	if err == nil && strings.TrimSpace(artifact) == "" {
-		err = errors.New("the agent produced no artifact")
+	var err error
+	defer func() {
+		if logDispatchedRunPanic(run.runID, "in-box agent", recover()) {
+			err = errDispatchedRunPanicked
+		}
+		leaseEnded := func() (ok bool) {
+			defer func() {
+				if logDispatchedRunPanic(run.runID, "lease end", recover()) {
+					ok = false
+				}
+			}()
+			s.endRunLease(bg, run.lease, s.boxWiper(), runExitReason)
+			return true
+		}()
+		if !leaseEnded {
+			// Its credentials may still be live: never report it done.
+			err = errDispatchedRunPanicked
+		}
+		if lc != nil {
+			defer func() { logDispatchedRunPanic(run.runID, "completion report", recover()) }()
+			lc.RunEnded(bg, tracker.RunOutcome{Err: err})
+		}
+	}()
+	artifact, aerr := agent(run.containerName, run.lease.SeedDir)
+	if aerr == nil && strings.TrimSpace(artifact) == "" {
+		aerr = errors.New("the agent produced no artifact")
 	}
-	s.endRunLease(bg, run.lease, s.boxWiper(), runExitReason)
-	if lc != nil {
-		lc.RunEnded(bg, tracker.RunOutcome{Err: err})
+	err = aerr
+}
+
+// errDispatchedRunPanicked is the outcome of a dispatched run whose
+// background half panicked. Generic on purpose: the panic value may
+// carry anything the run held, so it is neither logged nor stored.
+var errDispatchedRunPanicked = errors.New("the dispatched run panicked")
+
+// logDispatchedRunPanic takes what a deferred function's recover()
+// returned and, for a panic in a dispatched run's background half, logs
+// the run id, the step and the stack — never the panic value. It reports
+// whether there was a panic.
+func logDispatchedRunPanic(runID, step string, recovered any) bool {
+	if recovered == nil {
+		return false
 	}
+	log.Printf("[agent-skill] run %s: %s panicked (value withheld); recovered\n%s", runID, step, debug.Stack())
+	return true
 }
