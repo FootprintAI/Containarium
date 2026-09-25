@@ -2663,6 +2663,46 @@ func (c *HTTPClient) DeleteTrackerConnection(username, name string) (string, err
 	return out.Message, nil
 }
 
+// trackerRoutesPath is the REST collection for a connection's scope
+// routes (#2021), matching tracker.proto's google.api.http mapping.
+func trackerRoutesPath(username, connection string) string {
+	return "/v1/tracker/" + url.PathEscape(username) + "/" + url.PathEscape(connection) + "/routes"
+}
+
+// SetTrackerRoute creates or updates a scope -> skill route via REST
+// (#2021). Requires tracker:admin.
+func (c *HTTPClient) SetTrackerRoute(req *pb.SetTrackerRouteRequest) (*pb.TrackerRoute, string, error) {
+	body, err := protojson.Marshal(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("encode request: %w", err)
+	}
+	out := &pb.SetTrackerRouteResponse{}
+	path := trackerRoutesPath(req.Username, req.Connection) + "/" + url.PathEscape(req.Scope)
+	if err := c.trackerDo(http.MethodPut, path, "set tracker route", body, out); err != nil {
+		return nil, "", err
+	}
+	return out.Route, out.Message, nil
+}
+
+// ListTrackerRoutes returns a connection's scope routes via REST (#2021).
+func (c *HTTPClient) ListTrackerRoutes(username, connection string) ([]*pb.TrackerRoute, error) {
+	out := &pb.ListTrackerRoutesResponse{}
+	if err := c.trackerDo(http.MethodGet, trackerRoutesPath(username, connection), "list tracker routes", nil, out); err != nil {
+		return nil, err
+	}
+	return out.Routes, nil
+}
+
+// DeleteTrackerRoute removes one scope route via REST (#2021).
+func (c *HTTPClient) DeleteTrackerRoute(req *pb.DeleteTrackerRouteRequest) (string, error) {
+	out := &pb.DeleteTrackerRouteResponse{}
+	path := trackerRoutesPath(req.Username, req.Connection) + "/" + url.PathEscape(req.Scope)
+	if err := c.trackerDo(http.MethodDelete, path, "delete tracker route", nil, out); err != nil {
+		return "", err
+	}
+	return out.Message, nil
+}
+
 // GetTrackerStatus probes a tracker connection's credential live via
 // REST — reachability, validity, scopes, expiry, and breadth.
 func (c *HTTPClient) GetTrackerStatus(username, name string) (*pb.GetTrackerStatusResponse, error) {

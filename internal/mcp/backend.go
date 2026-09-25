@@ -111,6 +111,10 @@ type API interface {
 	ClaimTrackerIssue(req ClaimTrackerIssueRequest) (*ClaimTrackerIssueResult, error)
 	SetTrackerIssueLabels(req SetTrackerIssueLabelsRequest) error
 	SubmitTrackerChange(req SubmitTrackerChangeRequest) (*TrackerChange, error)
+	// ListTrackerRoutes (#2021) is the one tracker:admin read surfaced
+	// here: an operator agent can see which skill a scope label starts.
+	// Route writes stay CLI-only (`containarium tracker route set|delete`).
+	ListTrackerRoutes(req ListTrackerRoutesRequest) ([]TrackerRoute, error)
 
 	// Host-LEVEL operations — overridden as unsupported on the cloud backend.
 	GetSystemInfo() (*GetSystemInfoResponse, error)

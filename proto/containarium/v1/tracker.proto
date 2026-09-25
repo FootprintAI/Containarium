@@ -163,6 +163,73 @@ message DeleteTrackerConnectionResponse {
   string message = 1;
 }
 
+// ---------------------------------------------------------------------
+// Scope routes (#2021) — which skill a `scope:<role>` label starts on a
+// connection. See docs/architecture/issue-triggered-agents.md. Route
+// CRUD is tracker:admin, same as connection CRUD: choosing what a label
+// runs is an operator decision, never a run's.
+// ---------------------------------------------------------------------
+
+// TrackerRoute maps a scope label on one connection to a skill. Unique
+// per (username, connection, scope). A `scope:*` label with no route is
+// never dispatched.
+message TrackerRoute {
+  string username = 1;
+  string connection = 2;
+
+  // The label suffix: "product" matches the label "scope:product". The
+  // "scope:" prefix itself is rejected, as is anything outside
+  // [A-Za-z0-9._-] (max 64 chars, no leading punctuation).
+  string scope = 3;
+
+  // Agent skill id (as listed by ListAgentSkills) the dispatcher starts
+  // for an issue carrying this scope label.
+  string skill_id = 4;
+}
+
+// SetTrackerRouteRequest creates or updates a route. Idempotent:
+// repeated calls with the same (username, connection, scope) replace
+// skill_id. The connection must already exist.
+message SetTrackerRouteRequest {
+  string username = 1;
+  string connection = 2;
+  string scope = 3;
+  string skill_id = 4;
+}
+
+message SetTrackerRouteResponse {
+  // "route created" / "route updated".
+  string message = 1;
+  TrackerRoute route = 2;
+}
+
+// ListTrackerRoutesRequest enumerates one connection's routes, ordered
+// by scope.
+message ListTrackerRoutesRequest {
+  string username = 1;
+  string connection = 2;
+}
+
+message ListTrackerRoutesResponse {
+  repeated TrackerRoute routes = 1;
+}
+
+// DeleteTrackerRouteRequest removes one route. Deleting a connection
+// removes all of its routes.
+message DeleteTrackerRouteRequest {
+  string username = 1;
+  string connection = 2;
+  string scope = 3;
+}
+
+message DeleteTrackerRouteResponse {
+  string message = 1;
+}
+
+// ---------------------------------------------------------------------
+// End scope routes (#2021).
+// ---------------------------------------------------------------------
+
 // GetTrackerStatusRequest probes a named connection's credential live,
 // against the tracker itself.
 message GetTrackerStatusRequest {
@@ -455,6 +522,47 @@ service TrackerService {
       tags: "Tracker";
     };
   }
+
+  // --- Scope routes (#2021) -------------------------------------------
+
+  // SetTrackerRoute maps a scope label on a connection to a skill.
+  rpc SetTrackerRoute(SetTrackerRouteRequest) returns (SetTrackerRouteResponse) {
+    option (google.api.http) = {
+      put: "/v1/tracker/{username}/{connection}/routes/{scope}"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Set a tracker scope route";
+      description: "Creates or updates the route that sends issues labeled scope:<scope> on this connection to skill_id. Idempotent. The connection must exist. Requires tracker:admin.";
+      tags: "Tracker";
+    };
+  }
+
+  // ListTrackerRoutes returns a connection's scope routes.
+  rpc ListTrackerRoutes(ListTrackerRoutesRequest) returns (ListTrackerRoutesResponse) {
+    option (google.api.http) = {
+      get: "/v1/tracker/{username}/{connection}/routes"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List tracker scope routes";
+      description: "Lists every scope -> skill route on a tracker connection, ordered by scope. Requires tracker:admin.";
+      tags: "Tracker";
+    };
+  }
+
+  // DeleteTrackerRoute removes one scope route.
+  rpc DeleteTrackerRoute(DeleteTrackerRouteRequest) returns (DeleteTrackerRouteResponse) {
+    option (google.api.http) = {
+      delete: "/v1/tracker/{username}/{connection}/routes/{scope}"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Delete a tracker scope route";
+      description: "Removes the route for scope:<scope> on this connection; issues with that label are no longer dispatched. Requires tracker:admin.";
+      tags: "Tracker";
+    };
+  }
+
+  // --- End scope routes (#2021) ---------------------------------------
 
   // GetTrackerStatus probes a connection's credential live, against the
   // tracker itself.

@@ -23,6 +23,9 @@ const (
 	TrackerService_GetTrackerConnection_FullMethodName    = "/containarium.v1.TrackerService/GetTrackerConnection"
 	TrackerService_ListTrackerConnections_FullMethodName  = "/containarium.v1.TrackerService/ListTrackerConnections"
 	TrackerService_DeleteTrackerConnection_FullMethodName = "/containarium.v1.TrackerService/DeleteTrackerConnection"
+	TrackerService_SetTrackerRoute_FullMethodName         = "/containarium.v1.TrackerService/SetTrackerRoute"
+	TrackerService_ListTrackerRoutes_FullMethodName       = "/containarium.v1.TrackerService/ListTrackerRoutes"
+	TrackerService_DeleteTrackerRoute_FullMethodName      = "/containarium.v1.TrackerService/DeleteTrackerRoute"
 	TrackerService_GetTrackerStatus_FullMethodName        = "/containarium.v1.TrackerService/GetTrackerStatus"
 	TrackerService_GetTrackerIssue_FullMethodName         = "/containarium.v1.TrackerService/GetTrackerIssue"
 	TrackerService_ListTrackerIssues_FullMethodName       = "/containarium.v1.TrackerService/ListTrackerIssues"
@@ -53,6 +56,12 @@ type TrackerServiceClient interface {
 	ListTrackerConnections(ctx context.Context, in *ListTrackerConnectionsRequest, opts ...grpc.CallOption) (*ListTrackerConnectionsResponse, error)
 	// DeleteTrackerConnection removes a named connection.
 	DeleteTrackerConnection(ctx context.Context, in *DeleteTrackerConnectionRequest, opts ...grpc.CallOption) (*DeleteTrackerConnectionResponse, error)
+	// SetTrackerRoute maps a scope label on a connection to a skill.
+	SetTrackerRoute(ctx context.Context, in *SetTrackerRouteRequest, opts ...grpc.CallOption) (*SetTrackerRouteResponse, error)
+	// ListTrackerRoutes returns a connection's scope routes.
+	ListTrackerRoutes(ctx context.Context, in *ListTrackerRoutesRequest, opts ...grpc.CallOption) (*ListTrackerRoutesResponse, error)
+	// DeleteTrackerRoute removes one scope route.
+	DeleteTrackerRoute(ctx context.Context, in *DeleteTrackerRouteRequest, opts ...grpc.CallOption) (*DeleteTrackerRouteResponse, error)
 	// GetTrackerStatus probes a connection's credential live, against the
 	// tracker itself.
 	GetTrackerStatus(ctx context.Context, in *GetTrackerStatusRequest, opts ...grpc.CallOption) (*GetTrackerStatusResponse, error)
@@ -118,6 +127,36 @@ func (c *trackerServiceClient) DeleteTrackerConnection(ctx context.Context, in *
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(DeleteTrackerConnectionResponse)
 	err := c.cc.Invoke(ctx, TrackerService_DeleteTrackerConnection_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *trackerServiceClient) SetTrackerRoute(ctx context.Context, in *SetTrackerRouteRequest, opts ...grpc.CallOption) (*SetTrackerRouteResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetTrackerRouteResponse)
+	err := c.cc.Invoke(ctx, TrackerService_SetTrackerRoute_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *trackerServiceClient) ListTrackerRoutes(ctx context.Context, in *ListTrackerRoutesRequest, opts ...grpc.CallOption) (*ListTrackerRoutesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListTrackerRoutesResponse)
+	err := c.cc.Invoke(ctx, TrackerService_ListTrackerRoutes_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *trackerServiceClient) DeleteTrackerRoute(ctx context.Context, in *DeleteTrackerRouteRequest, opts ...grpc.CallOption) (*DeleteTrackerRouteResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteTrackerRouteResponse)
+	err := c.cc.Invoke(ctx, TrackerService_DeleteTrackerRoute_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -224,6 +263,12 @@ type TrackerServiceServer interface {
 	ListTrackerConnections(context.Context, *ListTrackerConnectionsRequest) (*ListTrackerConnectionsResponse, error)
 	// DeleteTrackerConnection removes a named connection.
 	DeleteTrackerConnection(context.Context, *DeleteTrackerConnectionRequest) (*DeleteTrackerConnectionResponse, error)
+	// SetTrackerRoute maps a scope label on a connection to a skill.
+	SetTrackerRoute(context.Context, *SetTrackerRouteRequest) (*SetTrackerRouteResponse, error)
+	// ListTrackerRoutes returns a connection's scope routes.
+	ListTrackerRoutes(context.Context, *ListTrackerRoutesRequest) (*ListTrackerRoutesResponse, error)
+	// DeleteTrackerRoute removes one scope route.
+	DeleteTrackerRoute(context.Context, *DeleteTrackerRouteRequest) (*DeleteTrackerRouteResponse, error)
 	// GetTrackerStatus probes a connection's credential live, against the
 	// tracker itself.
 	GetTrackerStatus(context.Context, *GetTrackerStatusRequest) (*GetTrackerStatusResponse, error)
@@ -266,6 +311,15 @@ func (UnimplementedTrackerServiceServer) ListTrackerConnections(context.Context,
 }
 func (UnimplementedTrackerServiceServer) DeleteTrackerConnection(context.Context, *DeleteTrackerConnectionRequest) (*DeleteTrackerConnectionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteTrackerConnection not implemented")
+}
+func (UnimplementedTrackerServiceServer) SetTrackerRoute(context.Context, *SetTrackerRouteRequest) (*SetTrackerRouteResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetTrackerRoute not implemented")
+}
+func (UnimplementedTrackerServiceServer) ListTrackerRoutes(context.Context, *ListTrackerRoutesRequest) (*ListTrackerRoutesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListTrackerRoutes not implemented")
+}
+func (UnimplementedTrackerServiceServer) DeleteTrackerRoute(context.Context, *DeleteTrackerRouteRequest) (*DeleteTrackerRouteResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteTrackerRoute not implemented")
 }
 func (UnimplementedTrackerServiceServer) GetTrackerStatus(context.Context, *GetTrackerStatusRequest) (*GetTrackerStatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetTrackerStatus not implemented")
@@ -380,6 +434,60 @@ func _TrackerService_DeleteTrackerConnection_Handler(srv interface{}, ctx contex
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(TrackerServiceServer).DeleteTrackerConnection(ctx, req.(*DeleteTrackerConnectionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TrackerService_SetTrackerRoute_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetTrackerRouteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TrackerServiceServer).SetTrackerRoute(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TrackerService_SetTrackerRoute_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TrackerServiceServer).SetTrackerRoute(ctx, req.(*SetTrackerRouteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TrackerService_ListTrackerRoutes_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListTrackerRoutesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TrackerServiceServer).ListTrackerRoutes(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TrackerService_ListTrackerRoutes_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TrackerServiceServer).ListTrackerRoutes(ctx, req.(*ListTrackerRoutesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TrackerService_DeleteTrackerRoute_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteTrackerRouteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TrackerServiceServer).DeleteTrackerRoute(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TrackerService_DeleteTrackerRoute_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TrackerServiceServer).DeleteTrackerRoute(ctx, req.(*DeleteTrackerRouteRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -550,6 +658,18 @@ var TrackerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteTrackerConnection",
 			Handler:    _TrackerService_DeleteTrackerConnection_Handler,
+		},
+		{
+			MethodName: "SetTrackerRoute",
+			Handler:    _TrackerService_SetTrackerRoute_Handler,
+		},
+		{
+			MethodName: "ListTrackerRoutes",
+			Handler:    _TrackerService_ListTrackerRoutes_Handler,
+		},
+		{
+			MethodName: "DeleteTrackerRoute",
+			Handler:    _TrackerService_DeleteTrackerRoute_Handler,
 		},
 		{
 			MethodName: "GetTrackerStatus",

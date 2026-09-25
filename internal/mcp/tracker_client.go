@@ -257,3 +257,36 @@ func (c *Client) SubmitTrackerChange(req SubmitTrackerChangeRequest) (*TrackerCh
 	}
 	return &resp.Change, nil
 }
+
+// TrackerRoute mirrors proto TrackerRoute (#2021).
+type TrackerRoute struct {
+	Username   string `json:"username"`
+	Connection string `json:"connection"`
+	Scope      string `json:"scope"`
+	SkillID    string `json:"skillId"`
+}
+
+// ListTrackerRoutesRequest's fields are path-bound.
+type ListTrackerRoutesRequest struct {
+	Username   string `json:"-"`
+	Connection string `json:"-"`
+}
+
+type listTrackerRoutesResponse struct {
+	Routes []TrackerRoute `json:"routes"`
+}
+
+// ListTrackerRoutes returns a connection's scope routes — the same
+// ListTrackerRoutes endpoint `containarium tracker route list` calls.
+func (c *Client) ListTrackerRoutes(req ListTrackerRoutesRequest) ([]TrackerRoute, error) {
+	path := fmt.Sprintf("/v1/tracker/%s/%s/routes", url.PathEscape(req.Username), url.PathEscape(req.Connection))
+	respBody, err := c.doRequest("GET", path, nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp listTrackerRoutesResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return resp.Routes, nil
+}

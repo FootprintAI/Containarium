@@ -6857,6 +6857,138 @@
         ]
       }
     },
+    "/v1/tracker/{username}/{connection}/routes": {
+      "get": {
+        "summary": "List tracker scope routes",
+        "description": "Lists every scope -\u003e skill route on a tracker connection, ordered by scope. Requires tracker:admin.",
+        "operationId": "TrackerService_ListTrackerRoutes",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListTrackerRoutesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "connection",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      }
+    },
+    "/v1/tracker/{username}/{connection}/routes/{scope}": {
+      "delete": {
+        "summary": "Delete a tracker scope route",
+        "description": "Removes the route for scope:\u003cscope\u003e on this connection; issues with that label are no longer dispatched. Requires tracker:admin.",
+        "operationId": "TrackerService_DeleteTrackerRoute",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/DeleteTrackerRouteResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "connection",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "scope",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      },
+      "put": {
+        "summary": "Set a tracker scope route",
+        "description": "Creates or updates the route that sends issues labeled scope:\u003cscope\u003e on this connection to skill_id. Idempotent. The connection must exist. Requires tracker:admin.",
+        "operationId": "TrackerService_SetTrackerRoute",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SetTrackerRouteResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "connection",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "scope",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/SetTrackerRouteBody"
+            }
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      }
+    },
     "/v1/traffic/subscribe": {
       "get": {
         "summary": "Subscribe to traffic events",
@@ -10087,6 +10219,14 @@
         }
       }
     },
+    "DeleteTrackerRouteResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string"
+        }
+      }
+    },
     "DeleteVolumeResponse": {
       "type": "object",
       "properties": {
@@ -12203,6 +12343,18 @@
           "items": {
             "type": "object",
             "$ref": "#/definitions/TrackerIssue"
+          }
+        }
+      }
+    },
+    "ListTrackerRoutesResponse": {
+      "type": "object",
+      "properties": {
+        "routes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/TrackerRoute"
           }
         }
       }
@@ -14550,6 +14702,27 @@
         }
       }
     },
+    "SetTrackerRouteBody": {
+      "type": "object",
+      "properties": {
+        "skillId": {
+          "type": "string"
+        }
+      },
+      "description": "SetTrackerRouteRequest creates or updates a route. Idempotent:\nrepeated calls with the same (username, connection, scope) replace\nskill_id. The connection must already exist."
+    },
+    "SetTrackerRouteResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string",
+          "description": "\"route created\" / \"route updated\"."
+        },
+        "route": {
+          "$ref": "#/definitions/TrackerRoute"
+        }
+      }
+    },
     "SpawnSandboxRequest": {
       "type": "object",
       "properties": {
@@ -15272,6 +15445,26 @@
       ],
       "default": "TRACKER_PROVIDER_UNSPECIFIED",
       "description": "TrackerProvider identifies the issue tracker / forge a TrackerConnection\npoints at. Always explicit, never inferred from base_url's hostname — a\nself-managed host named \"git.\u003ccompany\u003e\" can be either product. See\ndocs/architecture/agent-tracker-broker.md.\n\n - TRACKER_PROVIDER_GITHUB: github.com (base_url empty) or GitHub Enterprise Server (base_url set).\n - TRACKER_PROVIDER_GITLAB: gitlab.com (base_url empty) or self-managed GitLab, including the\nFree tier's single-assignee-per-issue constraint."
+    },
+    "TrackerRoute": {
+      "type": "object",
+      "properties": {
+        "username": {
+          "type": "string"
+        },
+        "connection": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "string",
+          "description": "The label suffix: \"product\" matches the label \"scope:product\". The\n\"scope:\" prefix itself is rejected, as is anything outside\n[A-Za-z0-9._-] (max 64 chars, no leading punctuation)."
+        },
+        "skillId": {
+          "type": "string",
+          "description": "Agent skill id (as listed by ListAgentSkills) the dispatcher starts\nfor an issue carrying this scope label."
+        }
+      },
+      "description": "TrackerRoute maps a scope label on one connection to a skill. Unique\nper (username, connection, scope). A `scope:*` label with no route is\nnever dispatched."
     },
     "TrafficAggregate": {
       "type": "object",
