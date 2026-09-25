@@ -114,6 +114,64 @@ recipes:
       # artifacts (|| echo keeps the line green under `set -e`).
       - 'if [ -n "$CONTAINARIUM_PARAM_RELEASE" ]; then curl -fsSL "https://raw.githubusercontent.com/$CONTAINARIUM_PARAM_REPO/$CONTAINARIUM_PARAM_RELEASE/scripts/install-agent-runtime.sh" | REPO="$CONTAINARIUM_PARAM_REPO" RELEASE="$CONTAINARIUM_PARAM_RELEASE" bash || echo "agent-runtime assembly skipped/failed for release=$CONTAINARIUM_PARAM_RELEASE; box runs without the in-box loop"; fi'
 
+  # coding-agent is a box with the coding-agent toolchain and NO credential of
+  # any kind: agent-box + mcp-server from a Containarium release, plus Claude
+  # Code installed by Anthropic's own installer, unmodified, as the unprivileged
+  # box user. Each end user signs in to Claude Code with their own account;
+  # this recipe writes no Claude credential, environment variable, or settings
+  # key, and creates nothing under /etc for Claude Code. (A lint test in
+  # recipes_test.go enforces that.) Companion to `containarium code install`,
+  # which does the same for an existing box.
+  #
+  # bootstrap_url is an optional one-shot tar.gz bundle (skills, dotfiles,
+  # repo checkout helpers). It is fetched once, extracted under the box user's
+  # home, and its apply.sh run as that user. A failed download fails post_start.
+  - id: coding-agent
+    name: Coding agent (Claude Code preinstalled)
+    description: Ubuntu box with agent-box, mcp-server and an unmodified Claude Code for the box user; no credentials baked in, optional bootstrap bundle.
+    image: images:ubuntu/24.04
+    requires_gpu: false
+    resources:
+      cpu: "2"
+      memory: 4GB
+      disk: 20GB
+    parameters:
+      - name: release
+        label: Release tag
+        description: Containarium release tag to pull agent-box + mcp-server from, v-prefixed (e.g. v0.27.0).
+        type: string
+        required: true
+      - name: claude_code_version
+        label: Claude Code version
+        description: Version passed to the Claude Code installer. Empty installs the latest.
+        type: string
+      - name: bootstrap_url
+        label: Bootstrap bundle URL
+        description: Optional one-shot URL of a tar.gz bundle; extracted under the box user's home and its apply.sh run as that user. Empty skips.
+        type: string
+      - name: box_user
+        label: Box user
+        description: Unprivileged user Claude Code and the bootstrap bundle are installed for. Must already exist in the image.
+        type: string
+        default: ubuntu
+    post_start:
+      - 'curl -fsSL "https://raw.githubusercontent.com/FootprintAI/Containarium/$CONTAINARIUM_PARAM_RELEASE/scripts/install-agent-runtime.sh" | RELEASE="$CONTAINARIUM_PARAM_RELEASE" PREFIX=/usr/local/bin bash -s -- --no-agent-runtime'
+      - 'BOX_HOME="$(getent passwd "$CONTAINARIUM_PARAM_BOX_USER" | cut -d: -f6)"; [ -n "$BOX_HOME" ] || { echo "box user $CONTAINARIUM_PARAM_BOX_USER not found" >&2; exit 1; }'
+      - '# shellcheck disable=SC2016  # the inner script is single-quoted on purpose'
+      - 'runuser -u "$CONTAINARIUM_PARAM_BOX_USER" -- env HOME="$BOX_HOME" bash -c ''set -euo pipefail; curl -fsSL https://claude.ai/install.sh | bash -s -- ${1:+"$1"}'' _ "$CONTAINARIUM_PARAM_CLAUDE_CODE_VERSION"'
+      - |
+        # shellcheck disable=SC2016  # the inner script is single-quoted on purpose
+        if [ -n "$CONTAINARIUM_PARAM_BOOTSTRAP_URL" ]; then
+          runuser -u "$CONTAINARIUM_PARAM_BOX_USER" -- env HOME="$BOX_HOME" bash -c '
+            set -euo pipefail
+            dir="$HOME/.bootstrap"
+            rm -rf "$dir"; mkdir -p "$dir"
+            curl -fsSL "$1" -o "$dir/bundle.tar.gz"
+            tar -xzf "$dir/bundle.tar.gz" -C "$dir"
+            sh "$dir/apply.sh"
+          ' _ "$CONTAINARIUM_PARAM_BOOTSTRAP_URL"
+        fi
+
   # agent-runtime-browser is agent-runtime plus a headless Chromium (via
   # Playwright), for skills that need to drive or inspect a live web UI
   # rather than just call APIs. Kept as its own recipe — same "a skill that

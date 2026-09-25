@@ -16,11 +16,28 @@
 # where <base> = https://github.com/<REPO>/releases/download/<RELEASE>.
 # Built by `make build-agent-box-all` + `make bundle-agent-runtime`.
 #
+# Flags:
+#   --no-agent-runtime  install agent-box + mcp-server only; skip the Node
+#                       bundle, npm ci, and the agent-runtime launcher (for
+#                       boxes that run a coding agent directly, e.g. the
+#                       `coding-agent` recipe, and need no Node loop).
+#
 # Env:
 #   REPO     default FootprintAI/Containarium
 #   RELEASE  required — the release tag to pull (e.g. v0.27.0)
 #   ARTIFACT_BASE_URL  optional — overrides the computed release base URL
 set -euo pipefail
+
+INSTALL_AGENT_RUNTIME=1
+for arg in "$@"; do
+  case "$arg" in
+    --no-agent-runtime) INSTALL_AGENT_RUNTIME=0 ;;
+    *)
+      echo "install-agent-runtime: unknown argument: $arg" >&2
+      exit 2
+      ;;
+  esac
+done
 
 REPO="${REPO:-FootprintAI/Containarium}"
 RELEASE="${RELEASE:-}"
@@ -54,6 +71,11 @@ if curl -fsSL "${ARTIFACT_BASE_URL}/mcp-server-linux-amd64" -o "${MCP_TMP}" </de
 else
   rm -f "${MCP_TMP}"
   echo "WARNING: could not fetch mcp-server-linux-amd64 from ${ARTIFACT_BASE_URL}; tracker tools will NOT work in this box (runs bound to a tracker connection get no tracker_* tools)" >&2
+fi
+
+if [[ "$INSTALL_AGENT_RUNTIME" -eq 0 ]]; then
+  echo "==> agent-box + mcp-server installed (--no-agent-runtime): $(command -v agent-box || echo "${PREFIX}/agent-box"), $(command -v mcp-server || echo 'mcp-server MISSING')"
+  exit 0
 fi
 
 echo "==> installing agent-runtime component into ${APP_DIR}"

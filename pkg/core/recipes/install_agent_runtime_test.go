@@ -95,3 +95,41 @@ func TestInstallAgentRuntime_MissingMCPServerIsNonFatalButLoud(t *testing.T) {
 		t.Error("a partial mcp-server file was left behind after a failed download")
 	}
 }
+
+// --no-agent-runtime installs agent-box + mcp-server only: no Node bundle, no
+// launcher. Existing callers (no flag) are covered by the tests above.
+func TestInstallAgentRuntime_NoAgentRuntimeFlag(t *testing.T) {
+	art := t.TempDir()
+	for _, n := range []string{"agent-box-linux-amd64", "mcp-server-linux-amd64"} {
+		if err := os.WriteFile(filepath.Join(art, n), []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// No bundle in the artifact dir: if the script tried to fetch it, it fails.
+	prefix, appDir := t.TempDir(), filepath.Join(t.TempDir(), "app")
+	cmd := exec.Command("bash", "../../../scripts/install-agent-runtime.sh", "--no-agent-runtime") //nolint:gosec // test-only, fixed path
+	cmd.Env = append(os.Environ(), "ARTIFACT_BASE_URL=file://"+art, "PREFIX="+prefix, "APP_DIR="+appDir)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("--no-agent-runtime failed: %v\n%s", err, out)
+	}
+	for _, bin := range []string{"agent-box", "mcp-server"} {
+		if _, err := os.Stat(filepath.Join(prefix, bin)); err != nil {
+			t.Errorf("%s not installed: %v", bin, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(prefix, "agent-runtime")); err == nil {
+		t.Error("agent-runtime launcher must not be installed with --no-agent-runtime")
+	}
+	if _, err := os.Stat(appDir); err == nil {
+		t.Error("APP_DIR must not be created with --no-agent-runtime")
+	}
+}
+
+func TestInstallAgentRuntime_UnknownFlagRejected(t *testing.T) {
+	cmd := exec.Command("bash", "../../../scripts/install-agent-runtime.sh", "--bogus") //nolint:gosec // test-only, fixed path
+	cmd.Env = append(os.Environ(), "ARTIFACT_BASE_URL=file:///nonexistent")
+	if err := cmd.Run(); err == nil {
+		t.Error("unknown flag must fail")
+	}
+}
