@@ -156,28 +156,49 @@ plus two writes.
 
 **Story 2 — Claude toolchain into an existing box**
 
-**Story:** As a developer, I want to add Claude Code and its credential to a box
-I already use, so that the agent runs where my toolchain, dependencies, and
-tests already live.
+**Story:** As a developer, I want to add Claude Code to a box I already use, so
+that the agent runs where my toolchain, dependencies, and tests already live.
+
+**Amended by #2030** (see Open questions 5, now resolved): this story originally
+had the platform hold the developer's Claude.ai OAuth token as a tenant secret.
+Claude Code's terms forbid that, so the credential left the platform entirely —
+`code install` lands a toolchain and the developer brings their own credential.
+The struck criteria below are the ones #2030 removed.
 
 **Acceptance criteria:**
-- [ ] One command installs `claude` onto an **existing, already-provisioned**
+- [x] One command installs `claude` onto an **existing, already-provisioned**
       box and leaves the rest of that box untouched. (Recipes today deploy new
       boxes; if no apply-to-existing path exists, that is the work.)
-- [ ] The credential is delivered via the secrets mechanism as
-      `CLAUDE_CODE_OAUTH_TOKEN` — minted once on a trusted machine with
-      `claude setup-token`, then
-      `containarium secrets set <user> CLAUDE_CODE_OAUTH_TOKEN <token>` — and
-      never appears as a parameter or in an install log.
-- [ ] `claude -p "print the current working directory"` on the box returns a
-      non-empty response with no interactive prompt and no TTY attached.
-- [ ] The install asserts `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are
-      **unset** on the box — both outrank `CLAUDE_CODE_OAUTH_TOKEN` in Claude
-      Code's auth precedence and would silently win.
-- [ ] `--bare` is not used anywhere on this path; bare mode does not read
-      `CLAUDE_CODE_OAUTH_TOKEN`.
-- [ ] Installing with no credential set fails naming the `secrets set` command,
-      rather than hanging on a login prompt.
+- [x] `code install` carries **no** credential: it neither reads, lists, nor
+      names a Claude.ai token. The developer signs in inside the box through
+      Anthropic's own flow, or places their own `ANTHROPIC_API_KEY` (or a
+      Bedrock / Vertex / Foundry credential) in the `env` block of
+      `~/.claude/settings.json`.
+- [x] Anthropic's own installer runs unmodified, and the binary is not patched
+      or constrained by any managed setting.
+- [x] Post-install verification is `claude --version` plus an assertion that
+      the install created no `~/.claude/.credentials.json`.
+- [x] The install reports which credential **source** the box has — names only,
+      never a value — and a user-placed API key is a supported source, not a
+      failure.
+- [x] `--bare` is not used anywhere on this path.
+- [x] `code install` also lands the `agent-box` helper on `~/.local/bin`, so
+      Story 3's `code run`/`attach`/`status`/`stop` work on the same box rather
+      than only on an `agent-runtime` recipe box.
+- [x] `--bootstrap-url` applies a team's own `.tar.gz` bundle (unpacked to a
+      temp dir, its `apply.sh` run as the box user) so skills, an MCP config,
+      or dotfiles land in the same command.
+- ~~The credential is delivered via the secrets mechanism as
+      `CLAUDE_CODE_OAUTH_TOKEN`.~~ Removed by #2030 — a platform may not
+      collect, store, or intermediate a Claude.ai credential.
+- ~~`claude -p "print the current working directory"` on the box returns a
+      non-empty response.~~ Removed by #2030 — it cannot run before the
+      developer has signed in, which is now after the install, not before.
+- ~~The install asserts `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are
+      unset on the box.~~ Inverted by #2030 — a user-placed API key is one of
+      the two supported paths, so it is reported, not rejected.
+- ~~Installing with no credential set fails naming the `secrets set`
+      command.~~ Removed by #2030 — there is no credential to precheck.
 
 **Priority:** P0
 
@@ -323,11 +344,19 @@ a shell cannot push somewhere I did not intend.
    plan's settings before dogfooding; document the constraint for any customer
    on Enterprise.
 
-5. **Terms of a subscription credential on a hosted box.** The token is the
-   *user's own* credential in *their own* tenant's secrets, which is materially
-   more defensible than pooling credentials — but it remains a terms question,
-   not an engineering one, before this ships as a customer-facing feature rather
-   than internal tooling. *Validate:* read the subscription terms.
+5. **Terms of a subscription credential on a hosted box.** **RESOLVED (#2030,
+   2026-09).** The answer is no: the Claude Code legal page
+   (https://code.claude.com/docs/en/legal-and-compliance, "Authentication and
+   credential use") says developers may not collect, store, or intermediate
+   Claude.ai credentials or session tokens — sign-in to a Claude account must
+   complete through Anthropic's own flow. Holding a subscription OAuth token as
+   a tenant secret is exactly that, so it is gone. The same page names the
+   permitted lane for hosting Claude Code in a sandbox: the unmodified binary,
+   with each end user signing in with their own Anthropic API key, Claude
+   subscription plan credentials, or a 3P inference provider credential. Story
+   2 is amended accordingly, and #2030 also rules out the other direction —
+   shipping a managed setting (`forceLoginMethod` and friends) that restricts
+   the binary's built-in auth methods.
 
 6. **Token expiry on a long-lived box.** `setup-token` is one year, which defers
    rather than removes the problem, and there is no renewal path that avoids a

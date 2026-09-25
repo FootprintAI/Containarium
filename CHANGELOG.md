@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`containarium code install` no longer requires a stored Claude credential.**
+  The `CLAUDE_CODE_OAUTH_TOKEN` tenant-secret precheck is gone: Claude Code's
+  terms ([legal and compliance](https://code.claude.com/docs/en/legal-and-compliance),
+  "Authentication and credential use") forbid a platform collecting, storing, or
+  intermediating a Claude.ai credential — sign-in must complete through
+  Anthropic's own flow. `code install` now lands a toolchain and stops there,
+  needs no `--server`, and prints the two supported sign-in paths (device-code
+  sign-in inside the box, or a user-placed `ANTHROPIC_API_KEY` in the `env`
+  block of `~/.claude/settings.json`). Verification is `claude --version` plus
+  an assertion that the install created no `~/.claude/.credentials.json`, and
+  the install reports which credential *source* the box has — names only, never
+  a value. A user-placed API key is now a supported source rather than a hard
+  failure. (#2030, #1673)
+- **`containarium code install` also lands `agent-box` (and `mcp-server`) in
+  `~/.local/bin`**, so `code run` / `attach` / `status` / `stop` work on an
+  ordinary box instead of only on an `agent-runtime` recipe box. New flags:
+  `--release` (which release tag the assets come from — v-prefixed, defaulting
+  to the CLI's own version), `--claude-code-version` (pin the Claude Code
+  version the installer fetches), and `--bootstrap-url` (fetch a `.tar.gz`, run
+  its `apply.sh` as the box user, for skills / an MCP config / dotfiles).
+  (#2030)
+
+### Fixed
+
+- **`code run` on a box without `agent-box` now names the missing helper** and
+  the command that installs it, instead of surfacing
+  `initialize MCP session: transport error: transport closed`. The same
+  sentence is returned by the `code_run` / `code_attach` / `code_status` /
+  `code_stop` MCP tools. The session's remote command also puts
+  `~/.local/bin` and `/usr/local/bin` on `PATH` itself, since a
+  non-interactive `ssh host agent-box` does not inherit the box's login-shell
+  `PATH`. (#2030)
+- **A coding run now picks up the box's own MCP config** when
+  `~/.claude/containarium-mcp.json` exists (conditionally — `claude` treats a
+  missing `--mcp-config` path as a startup error). (#2030)
+
 ## [0.89.0] - 2026-09-24
 
 ### Added

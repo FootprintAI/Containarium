@@ -134,7 +134,24 @@ Agent has no MCP client? Run it *inside* the box instead — see
 Or let the box run the agent itself:
 
 ```bash
-containarium code install alice          # Claude Code onto a box you already use
+containarium code install alice          # Claude Code + agent-box onto a box you already use
+```
+
+`code install` lands the toolchain and **no credential** — sign-in completes
+through Anthropic's own flow, never through us. Pick either path once:
+
+```bash
+# interactive: sign in inside the box (device code)
+containarium connect alice
+claude
+
+# or headless: your own key in the "env" block of ~/.claude/settings.json
+#   {"env": {"ANTHROPIC_API_KEY": "<your key>"}}
+```
+
+Then:
+
+```bash
 containarium code run alice --prompt "add a health endpoint and run the tests"
 ```
 
