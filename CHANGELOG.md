@@ -36,11 +36,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `scope:*` label gets one warning comment, not one per tick. Re-run a
   finished issue by removing `agent:done`/`agent:failed`. `--once` runs one
   tick; `--interval` loops. `containarium tracker dispatches` lists dispatch
-  rows (new `ListTrackerDispatches` RPC). Until the run-completion hook
-  (#2023) lands, a successfully dispatched row stays `queued` after its run
-  ends, so that issue cannot be re-dispatched; rows created before #2023 are
-  not rescued by it either — a sweep or operator verb for stale `queued` rows
-  is tracked on #2026. (#2022)
+  rows (new `ListTrackerDispatches` RPC). Rows created before the
+  run-completion hook (#2023) stay `queued` — a sweep or operator verb for
+  stale `queued` rows is tracked on #2026. (#2022)
+
+- **A dispatched run reports its result back on the issue.** The completion
+  hook moves each dispatch row `queued → running` when the run registers
+  (issue labeled `agent:running`) and `running → done | failed` when it ends:
+  `agent:done` with the trigger `scope:<role>` label removed, or
+  `agent:failed` plus one stamped comment naming the run (the raw error stays
+  in the row, readable with `tracker dispatches --state failed`). Every
+  transition is compare-and-set and runs on a detached, bounded context, so
+  a cancelled tick never strands a row. The tick now labels `agent:queued`
+  before starting the run and re-reads the issue after winning the insert, so
+  a stale issue list can no longer double-run an issue a peer just finished.
+  New catalog skill `product-define` (manifest scopes `tracker:read` and
+  `tracker:write` only) reads the issue through the broker, posts exactly one
+  result comment, and opens the full PRD as a draft doc change via
+  `tracker_submit_change`; a dispatched run's workspace is the connection's
+  repository, fetched without any credential (a private repository gets no
+  workspace, and the PRD goes in the comment instead). `TrackerDispatchInput`
+  gains `username`. (#2023)
 
 ## [0.89.0] - 2026-09-24
 
