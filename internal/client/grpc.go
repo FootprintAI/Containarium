@@ -1581,6 +1581,30 @@ func (c *GRPCClient) DeleteTrackerRoute(req *pb.DeleteTrackerRouteRequest) (stri
 	return resp.Message, nil
 }
 
+// DispatchTrackerIssues runs one dispatcher tick (#2022). Same long
+// deadline as the HTTP transport: the tick provisions boxes
+// synchronously.
+func (c *GRPCClient) DispatchTrackerIssues(username, connection string) (*pb.DispatchTrackerIssuesResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), TrackerDispatchTimeout)
+	defer cancel()
+	resp, err := c.trackerClient.DispatchTrackerIssues(ctx, &pb.DispatchTrackerIssuesRequest{Username: username, Connection: connection})
+	if err != nil {
+		return nil, fmt.Errorf("dispatch tracker issues: %w", err)
+	}
+	return resp, nil
+}
+
+// ListTrackerDispatches returns a connection's dispatch rows (#2022).
+func (c *GRPCClient) ListTrackerDispatches(username, connection string, state pb.TrackerDispatchState) ([]*pb.TrackerDispatch, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.trackerClient.ListTrackerDispatches(ctx, &pb.ListTrackerDispatchesRequest{Username: username, Connection: connection, State: state})
+	if err != nil {
+		return nil, fmt.Errorf("list tracker dispatches: %w", err)
+	}
+	return resp.Dispatches, nil
+}
+
 // GetTrackerStatus probes a tracker connection's credential live —
 // reachability, validity, scopes, expiry, and breadth. Longer timeout
 // than the other tracker calls since it makes a real upstream HTTP
