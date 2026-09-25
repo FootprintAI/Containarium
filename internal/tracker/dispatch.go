@@ -116,6 +116,11 @@ func (d *Dispatcher) Tick(ctx context.Context, username, connection string) (Tic
 	}
 
 	for _, issue := range issues {
+		// A cancelled tick stops here rather than failing every remaining
+		// issue's start for a reason that has nothing to do with it.
+		if err := ctx.Err(); err != nil {
+			return res, err
+		}
 		scopes := scopeLabels(issue.Labels)
 		if len(scopes) == 0 {
 			continue // not addressed to any role
@@ -186,9 +191,23 @@ func (d *Dispatcher) Tick(ctx context.Context, username, connection string) (Tic
 	return res, nil
 }
 
+// failureBookkeepingBudget bounds failStart's store and forge writes
+// once detached from the tick's context.
+const failureBookkeepingBudget = 30 * time.Second
+
 // failStart moves a row whose run never started to FAILED, then projects
-// that onto the issue (agent:failed + a reason comment), best-effort.
-func (d *Dispatcher) failStart(ctx context.Context, row *Dispatch, startErr error) (*Dispatch, error) {
+// that onto the issue (agent:failed + a comment), best-effort.
+//
+// The bookkeeping runs on a context detached from the tick's: the start
+// most often fails BECAUSE the tick was cancelled or timed out (a client
+// deadline landing mid-provision), and leaving the row QUEUED would lock
+// the issue forever — nothing sweeps queued rows. Same idiom as
+// endRunLease. The forge comment is generic and names the dispatch id;
+// the raw error stays in failure_reason, readable via `tracker
+// dispatches`, never on a possibly public issue.
+func (d *Dispatcher) failStart(tickCtx context.Context, row *Dispatch, startErr error) (*Dispatch, error) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(tickCtx), failureBookkeepingBudget)
+	defer cancel()
 	reason := fmt.Sprintf("run did not start: %v", startErr)
 	now := d.Clock.Now()
 	if _, err := d.Store.TransitionDispatch(ctx, row.ID,
@@ -201,8 +220,11 @@ func (d *Dispatcher) failStart(ctx context.Context, row *Dispatch, startErr erro
 	out.EndedAt = now
 
 	labelErr := d.Provider.SetLabels(ctx, d.Conn, row.IssueNumber, []string{LabelAgentFailed}, nil)
-	body := fmt.Sprintf("Dispatch of `%s%s` to skill `%s` failed: %s\n\n%s",
-		ScopeLabelPrefix, row.Scope, row.SkillID, reason, Stamp(dispatcherIdentity(row.Username, row.RunID), KindComment))
+	body := Sanitize(fmt.Sprintf("The agent run for `%s%s` could not be started (dispatch `%s`). "+
+		"An operator can see the reason with `containarium tracker dispatches <username> <connection> --state failed`. "+
+		"To retry, remove `%s` and re-add the scope label.",
+		ScopeLabelPrefix, row.Scope, row.ID, LabelAgentFailed)) +
+		"\n\n" + Stamp(dispatcherIdentity(row.Username, row.RunID), KindComment)
 	_, commentErr := d.Provider.Comment(ctx, d.Conn, row.IssueNumber, body)
 	if labelErr != nil || commentErr != nil {
 		if err := d.Store.SetDispatchLabelsPending(ctx, row.ID, true); err != nil {
@@ -224,9 +246,18 @@ func (d *Dispatcher) warnUnrouted(ctx context.Context, username, connection stri
 	if !first {
 		return nil
 	}
-	body := fmt.Sprintf("No agent is routed for `%s%s` on this tracker connection, so this label will not start a run. "+
-		"An operator can route it with `containarium tracker route set <user> <connection> --scope %s --skill <skill-id>`.\n\n%s",
-		ScopeLabelPrefix, scope, scope, Stamp(dispatcherIdentity(username, ""), KindComment))
+	// Label names are issue metadata anyone with triage rights controls.
+	// Only a suffix that could be a route scope is echoed; anything else
+	// gets generic text. Sanitize runs BEFORE the stamp is appended so a
+	// forged marker in a label is stripped and the real one kept.
+	text := "No agent is routed for this issue's `scope:` label on this tracker connection, so it will not start a run; " +
+		"the label is not a valid route scope (letters, digits, `.`, `_`, `-`; max 64)."
+	if ValidateRouteScope(scope) == nil {
+		text = fmt.Sprintf("No agent is routed for `%s%s` on this tracker connection, so this label will not start a run. "+
+			"An operator can route it with `containarium tracker route set <username> <connection> --scope %s --skill <skill-id>`.",
+			ScopeLabelPrefix, scope, scope)
+	}
+	body := Sanitize(text) + "\n\n" + Stamp(dispatcherIdentity(username, ""), KindComment)
 	if _, err := d.Provider.Comment(ctx, d.Conn, issue, body); err != nil {
 		if ferr := d.Store.ForgetDispatchWarning(ctx, username, connection, issue, scope); ferr != nil {
 			return fmt.Errorf("forget unrouted warning for #%d: %w", issue, ferr)
@@ -286,10 +317,17 @@ func scopeLabels(labels []string) []string {
 	return out
 }
 
+// hasAnyLabel matches the gate and state labels case-insensitively and
+// ignoring surrounding whitespace: GitHub compares label names
+// case-insensitively but returns the case a label was first created
+// with, so a repo whose label was created as `Agent:Needs-Approval`
+// must still gate. Scope matching (scopeLabels) stays exact — a
+// mismatch there fails closed (no run), a mismatch here would fail open.
 func hasAnyLabel(labels []string, want ...string) bool {
 	for _, l := range labels {
+		l = strings.TrimSpace(l)
 		for _, w := range want {
-			if l == w {
+			if strings.EqualFold(l, w) {
 				return true
 			}
 		}

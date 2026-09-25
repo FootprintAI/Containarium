@@ -347,6 +347,8 @@ func (s *AgentSkillServer) RunAgentSkill(ctx context.Context, req *pb.RunAgentSk
 		return nil, err
 	}
 	runID, containerName, box, lease, gitCommit, workspacePath := run.runID, run.containerName, run.box, run.lease, run.gitCommit, run.workspacePath
+	// The defer sits AFTER beginSkillRun on purpose: a run that failed to
+	// provision has nothing left to end (see beginSkillRun).
 	defer s.endRunLease(ctx, lease, s.boxWiper(), runExitReason)
 
 	// Run the in-box agent loop (Phase 4a) and read its artifact back.
@@ -426,12 +428,14 @@ func (s *AgentSkillServer) beginSkillRun(ctx context.Context, req *pb.RunAgentSk
 		return nil, err
 	}
 
-	// The run holds its credentials for exactly as long as the run (#1817). The
-	// defer sits AFTER provisioning on purpose: a provisioning failure has
-	// nothing to end but a partially minted lease, which provisionSkillBox ends
-	// itself before returning its error. From here on every exit path — the
-	// artifact below, an agent error, a cancelled caller — revokes both jtis and
-	// wipes the seed files.
+	// The run holds its credentials for exactly as long as the run (#1817). A
+	// provisioning failure has nothing to end but a partially minted lease,
+	// which provisionSkillBox ends itself before returning its error — which
+	// is why the callers' `defer endRunLease` (RunAgentSkill, and
+	// finishDispatchedRun for a dispatched run) only exists once this
+	// function has returned a run. From there every exit path — the artifact,
+	// an agent error, a cancelled caller — revokes both jtis and wipes the
+	// seed files.
 	//
 	// RESOLVED (#1860) — the box is still shared by skill id ("agent-"+skill.Id,
 	// see provisionSkillBox), but the seed directory no longer is: every run,

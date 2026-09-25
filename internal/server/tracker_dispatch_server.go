@@ -40,6 +40,14 @@ func (s *ContainerServer) DispatchTrackerIssues(ctx context.Context, req *pb.Dis
 	if err := s.requireTrackerRouteAccess(ctx, req.Username, req.Connection); err != nil {
 		return nil, err
 	}
+	// Rejected here, before any store or forge write: a platform admin
+	// passes the tenant check, but the run starter mints for the CALLER's
+	// tenant and would refuse every issue — turning a wrong username
+	// into N failed rows, N agent:failed labels and N public comments on
+	// the other tenant's forge.
+	if err := requireDispatchCaller(ctx, req.Username); err != nil {
+		return nil, err
+	}
 	if s.trackerRunStarter == nil {
 		return nil, status.Error(codes.Unavailable, "tracker dispatch is not configured on this daemon (no run starter)")
 	}
@@ -163,31 +171,47 @@ func dispatchRunRequest(req tracker.StartRunRequest) *pb.RunAgentSkillRequest {
 	}
 }
 
-func (r trackerRunStarter) StartRun(ctx context.Context, req tracker.StartRunRequest) error {
-	// The run JWT and the tracker_connection check are both keyed off
-	// the CALLER's tenant; a mismatch would validate (and bind) a
-	// same-named connection in the wrong tenant.
+// requireDispatchCaller checks that the authenticated subject IS the
+// tenant being dispatched for. The run JWT and the tracker_connection
+// check are both keyed off the caller's tenant; a mismatch would
+// validate (and bind) a same-named connection in the wrong tenant.
+// Checked by the RPC before any write and again by the starter, so the
+// starter is safe on its own too.
+func requireDispatchCaller(ctx context.Context, username string) error {
 	caller, _, ok := auth.SubjectFromGRPCContext(ctx)
 	if !ok || caller == "" {
 		return status.Error(codes.Unauthenticated, "no authenticated subject")
 	}
-	if caller != req.Username {
+	if caller != username {
 		return status.Errorf(codes.PermissionDenied,
-			"dispatch for tenant %q must be run with that tenant's own token (caller is %q)", req.Username, caller)
+			"dispatch for tenant %q must be run with that tenant's own token (caller is %q)", username, caller)
 	}
+	return nil
+}
 
+func (r trackerRunStarter) StartRun(ctx context.Context, req tracker.StartRunRequest) error {
+	if err := requireDispatchCaller(ctx, req.Username); err != nil {
+		return err
+	}
 	run, err := r.agents.beginSkillRun(ctx, dispatchRunRequest(req))
 	if err != nil {
 		return err
 	}
-	// The run outlives the tick RPC: detach from its cancellation but
-	// keep its auth values (endRunLease detaches the same way).
-	bg := context.WithoutCancel(ctx)
-	go func() {
-		defer r.agents.endRunLease(bg, run.lease, r.agents.boxWiper(), runExitReason)
-		// The artifact is consumed by the completion hook (#2023), which
-		// moves the dispatch row to done/failed; until then it is dropped.
-		_ = r.agents.runInBoxAgent(run.containerName, run.lease.SeedDir)
-	}()
+	go r.agents.finishDispatchedRun(ctx, run, r.agents.runInBoxAgent)
 	return nil
+}
+
+// finishDispatchedRun is the background half of a dispatched run: run
+// the in-box agent, then end the lease (revoke the run's JWTs, wipe the
+// seed, unregister). It is the counterpart of RunAgentSkill's
+// `defer endRunLease`, kept out of the RPC because the run outlives the
+// tick that started it — so it detaches from the tick's cancellation
+// while keeping its auth values, exactly as endRunLease does. agent is a
+// seam for tests, which cannot drive a real box; production passes
+// runInBoxAgent. The artifact is dropped until the completion hook
+// (#2023) consumes it to move the dispatch row to done/failed.
+func (s *AgentSkillServer) finishDispatchedRun(ctx context.Context, run *startedSkillRun, agent func(containerName, seedDir string) string) {
+	bg := context.WithoutCancel(ctx)
+	defer s.endRunLease(bg, run.lease, s.boxWiper(), runExitReason)
+	_ = agent(run.containerName, run.lease.SeedDir)
 }

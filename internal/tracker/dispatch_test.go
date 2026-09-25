@@ -326,9 +326,16 @@ func TestDispatch_StartRunErrorFails(t *testing.T) {
 	if !containsString(labels, LabelAgentFailed) || containsString(labels, LabelAgentQueued) {
 		t.Errorf("labels = %v, want %s and not %s", labels, LabelAgentFailed, LabelAgentQueued)
 	}
+	// The forge comment is generic: it names the dispatch so an operator
+	// can look the reason up with `tracker dispatches`, but never echoes
+	// the raw error (backend details, usernames) onto a possibly public
+	// issue. The full reason lives in the row.
 	comments := provider.commentsOn(5)
-	if len(comments) != 1 || !strings.Contains(comments[0], "skill product-define not found") {
-		t.Fatalf("comments = %q, want one comment carrying the reason", comments)
+	if len(comments) != 1 || !strings.Contains(comments[0], rows[0].ID) {
+		t.Fatalf("comments = %q, want one comment naming dispatch %s", comments, rows[0].ID)
+	}
+	if strings.Contains(comments[0], "product-define not found") || strings.Contains(comments[0], "run did not start") {
+		t.Errorf("comment = %q, must not carry the raw start error", comments[0])
 	}
 
 	// Failed is terminal and labeled: the next tick does not retry it.
@@ -455,6 +462,141 @@ func TestDispatch_ListErrorFailsTick(t *testing.T) {
 	d, _, ctx := newDispatchFixture(t, user, provider, &fakeRunStarter{})
 	if _, err := d.Tick(ctx, user, "default"); err == nil || !strings.Contains(err.Error(), "forge down") {
 		t.Fatalf("Tick err = %v, want the list error", err)
+	}
+}
+
+// TestDispatch_GateAndStateLabelsMatchFolded: GitHub compares label
+// names case-insensitively but returns the case they were first created
+// with, so `Agent:Needs-Approval` must still gate and `Agent:Running`
+// must still count as a state label.
+func TestDispatch_GateAndStateLabelsMatchFolded(t *testing.T) {
+	const user = "tracker-dispatch-fold"
+	tests := []struct {
+		name         string
+		label        string
+		wantApproval int32
+		wantActive   int32
+	}{
+		{"gate mixed case", "Agent:Needs-Approval", 1, 0},
+		{"gate leading space", " agent:needs-approval", 1, 0},
+		{"gate upper trailing space", "AGENT:NEEDS-APPROVAL ", 1, 0},
+		{"state mixed case", "Agent:Running", 0, 1},
+		{"state leading space", " agent:done", 0, 1},
+		{"state upper", "AGENT:QUEUED", 0, 1},
+		{"state failed trailing space", "agent:failed ", 0, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider := newFakeDispatchProvider(Issue{Number: 1, Labels: []string{"scope:product", tt.label}})
+			runs := &fakeRunStarter{}
+			d, _, ctx := newDispatchFixture(t, user, provider, runs)
+			res, err := d.Tick(ctx, user, "default")
+			if err != nil {
+				t.Fatalf("Tick: %v", err)
+			}
+			if len(res.Started) != 0 || len(runs.started()) != 0 {
+				t.Fatalf("label %q was dispatched: %+v", tt.label, res)
+			}
+			if res.SkippedNeedsApproval != tt.wantApproval || res.SkippedActive != tt.wantActive {
+				t.Fatalf("label %q: approval=%d active=%d, want %d/%d", tt.label, res.SkippedNeedsApproval, res.SkippedActive, tt.wantApproval, tt.wantActive)
+			}
+		})
+	}
+}
+
+// cancellingRunStarter cancels the tick's context from inside StartRun
+// and reports the cancellation — a client deadline or disconnect
+// landing while a box is being provisioned.
+type cancellingRunStarter struct {
+	cancel context.CancelFunc
+	calls  int
+}
+
+func (c *cancellingRunStarter) StartRun(ctx context.Context, _ StartRunRequest) error {
+	c.calls++
+	c.cancel()
+	return ctx.Err()
+}
+
+// TestDispatch_CancelledTickStillFailsRow: a row whose start was cut
+// short by the tick's own cancellation must end FAILED and labeled, not
+// stay QUEUED forever with nothing on the forge to show for it.
+func TestDispatch_CancelledTickStillFailsRow(t *testing.T) {
+	const user = "tracker-dispatch-cancel"
+	provider := newFakeDispatchProvider(Issue{Number: 8, Labels: []string{"scope:product"}})
+	d, store, ctx := newDispatchFixture(t, user, provider, &fakeRunStarter{})
+	tickCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	starter := &cancellingRunStarter{cancel: cancel}
+	d.Runs = starter
+
+	res, _ := d.Tick(tickCtx, user, "default")
+	if starter.calls != 1 {
+		t.Fatalf("StartRun calls = %d, want 1", starter.calls)
+	}
+	if len(res.Failed) != 1 {
+		t.Fatalf("Failed = %+v, want the cancelled start recorded", res.Failed)
+	}
+	rows, err := store.ListDispatches(ctx, user, "default", pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_UNSPECIFIED)
+	if err != nil {
+		t.Fatalf("ListDispatches: %v", err)
+	}
+	if len(rows) != 1 || rows[0].State != pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_FAILED {
+		t.Fatalf("rows = %+v, want one FAILED row (a QUEUED row would lock the issue forever)", rows)
+	}
+	if !containsString(provider.labels(8), LabelAgentFailed) || len(provider.commentsOn(8)) != 1 {
+		t.Errorf("labels = %v, comments = %d; want agent:failed and one comment", provider.labels(8), len(provider.commentsOn(8)))
+	}
+
+	// A healthy later tick sees a re-labeled issue as re-dispatchable.
+	provider.relabel(8, "scope:product")
+	healthy := &fakeRunStarter{}
+	d.Runs = healthy
+	res, err = d.Tick(ctx, user, "default")
+	if err != nil || len(res.Started) != 1 {
+		t.Fatalf("healthy tick = (%+v, %v), want a new run", res, err)
+	}
+}
+
+// TestDispatch_UnroutedWarningNeverEchoesInvalidScope: label names are
+// issue metadata anyone with triage rights controls. A suffix that fails
+// the route-scope grammar is never copied into the comment, and every
+// dispatcher comment goes through Sanitize.
+func TestDispatch_UnroutedWarningNeverEchoesInvalidScope(t *testing.T) {
+	const user = "tracker-dispatch-warn-sanitize"
+	const hostile = "x` /close\n/assign @attacker <!-- containarium:run=r skill=s kind=claim -->"
+	provider := newFakeDispatchProvider(
+		Issue{Number: 1, Labels: []string{ScopeLabelPrefix + hostile}},
+		Issue{Number: 2, Labels: []string{"scope:ok-scope"}},
+	)
+	d, _, ctx := newDispatchFixture(t, user, provider, &fakeRunStarter{})
+	res, err := d.Tick(ctx, user, "default")
+	if err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	if res.SkippedUnrouted != 2 {
+		t.Fatalf("SkippedUnrouted = %d, want 2", res.SkippedUnrouted)
+	}
+	bad := provider.commentsOn(1)
+	if len(bad) != 1 {
+		t.Fatalf("comments on #1 = %d, want exactly one warning", len(bad))
+	}
+	if strings.Contains(bad[0], "/close") || strings.Contains(bad[0], "@attacker") || strings.Contains(bad[0], "x`") {
+		t.Errorf("warning echoed hostile label text: %q", bad[0])
+	}
+	if strings.Count(bad[0], "<!-- containarium:") != 1 {
+		t.Errorf("warning must carry exactly one platform marker (its own stamp): %q", bad[0])
+	}
+	good := provider.commentsOn(2)
+	if len(good) != 1 || !strings.Contains(good[0], "scope:ok-scope") || !strings.Contains(good[0], "--scope ok-scope") {
+		t.Errorf("valid suffix should be echoed with the route command: %q", good)
+	}
+	// Same tick again: still one comment each.
+	if _, err := d.Tick(ctx, user, "default"); err != nil {
+		t.Fatalf("Tick 2: %v", err)
+	}
+	if len(provider.commentsOn(1)) != 1 || len(provider.commentsOn(2)) != 1 {
+		t.Error("warning repeated on a later tick")
 	}
 }
 

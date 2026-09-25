@@ -5,6 +5,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/runlease"
 	"github.com/footprintai/containarium/internal/tracker"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -143,6 +144,40 @@ func TestDispatchTrackerIssues_TickThroughRPC(t *testing.T) {
 	}
 }
 
+// TestDispatchTrackerIssues_CrossTenantRejectedBeforeAnyWrite: a platform
+// admin passes the tenant check, but the run starter mints for the
+// CALLER's tenant and would reject every issue — turning a wrong
+// --username into N failed rows, N agent:failed labels and N public
+// comments on the other tenant's forge. So the mismatch is rejected up
+// front, before any forge or store write.
+func TestDispatchTrackerIssues_CrossTenantRejectedBeforeAnyWrite(t *testing.T) {
+	const victim = "tracker-dispatch-rpc-victim"
+	provider := &fakeWriterProvider{fakeReaderProvider: fakeReaderProvider{issues: []tracker.Issue{
+		{Number: 1, State: pb.TrackerIssueState_TRACKER_ISSUE_STATE_OPEN, Labels: []string{"scope:product"}},
+	}}}
+	ctx := context.Background()
+	_ = mustTestTrackerStore(t).Delete(ctx, victim, "default")
+	s, _ := setUpWriterConnection(t, victim, provider)
+	if _, err := s.trackerStore.SetRoute(ctx, tracker.Route{Username: victim, Connection: "default", Scope: "product", SkillID: "product-define"}); err != nil {
+		t.Fatalf("SetRoute: %v", err)
+	}
+	starter := &recordingRunStarter{}
+	s.SetTrackerRunStarter(starter)
+
+	admin := kmsKeyTestCtx("tracker-dispatch-rpc-admin", auth.RoleAdmin, "tracker:admin,agents:run")
+	_, err := s.DispatchTrackerIssues(admin, &pb.DispatchTrackerIssuesRequest{Username: victim, Connection: "default"})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("code = %v (%v), want PermissionDenied", status.Code(err), err)
+	}
+	if len(starter.calls) != 0 || len(provider.labelsAdd) != 0 || provider.commentBody != "" {
+		t.Errorf("side effects: runs=%d labels=%v comment=%q; want none", len(starter.calls), provider.labelsAdd, provider.commentBody)
+	}
+	rows, lerr := s.trackerStore.ListDispatches(ctx, victim, "default", pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_UNSPECIFIED)
+	if lerr != nil || len(rows) != 0 {
+		t.Errorf("rows = %+v (err %v), want none", rows, lerr)
+	}
+}
+
 func TestDispatchTrackerIssues_UnknownConnectionNotFound(t *testing.T) {
 	store := mustTestTrackerStore(t)
 	s := &ContainerServer{trackerStore: store, trackerRunStarter: &recordingRunStarter{}}
@@ -214,6 +249,45 @@ func TestTrackerRunStarter_ProvisionFailureIsSynchronous(t *testing.T) {
 	}
 	if reg.Live("run-prov-fail") {
 		t.Error("run registered as live despite failing to provision")
+	}
+}
+
+// TestFinishDispatchedRun_EndsLeaseAndRevokes covers the background half
+// of a dispatched run, which no harness can reach through a real
+// provision: once the in-box agent returns, the run's lease ends — its
+// JWTs are revoked and it leaves the registry — even though the tick
+// RPC that started it is long gone (cancelled context).
+func TestFinishDispatchedRun_EndsLeaseAndRevokes(t *testing.T) {
+	store := newFakeRevocationStore()
+	s := &AgentSkillServer{}
+	s.SetRevocationStore(ctxAwareRevoker{store})
+	registry := runlease.NewRegistry()
+	s.SetRunRegistry(registry)
+	registry.Register("run-dispatched", runlease.Info{SkillID: "hello-agent"})
+
+	ctx, cancel := context.WithCancel(ctxAs("alice", true))
+	cancel() // the tick RPC is over before the agent finishes
+
+	agentCalls := 0
+	s.finishDispatchedRun(ctx, &startedSkillRun{runID: "run-dispatched", containerName: "agent-hello-agent-container", lease: testLease("run-dispatched")},
+		func(containerName, seedDir string) string {
+			agentCalls++
+			if containerName != "agent-hello-agent-container" || seedDir != seedDirFor("run-dispatched") {
+				t.Errorf("agent ran against %s/%s", containerName, seedDir)
+			}
+			return "{}"
+		})
+	if agentCalls != 1 {
+		t.Fatalf("agent calls = %d, want 1", agentCalls)
+	}
+	for _, jti := range []string{"jti-platform", "jti-gateway"} {
+		revoked, err := store.IsRevoked(context.Background(), jti)
+		if err != nil || !revoked {
+			t.Errorf("%s revoked = %v (err %v), want true after the dispatched run ended", jti, revoked, err)
+		}
+	}
+	if registry.Live("run-dispatched") {
+		t.Error("run still live in the registry after its lease ended")
 	}
 }
 
