@@ -1695,8 +1695,11 @@ func toolScopeAssignments() map[string]string {
 		"tracker_claim":         auth.ScopeTrackerWrite,
 		"tracker_set_labels":    auth.ScopeTrackerWrite,
 		"tracker_submit_change": auth.ScopeTrackerWrite,
-		"code_status":           auth.ScopeCodeWrite,
-		"code_stop":             auth.ScopeCodeWrite,
+		// #2021: route reads are tracker:admin like the RPC itself, so a
+		// run's tracker:read/write token never sees this tool.
+		"tracker_route_list": auth.ScopeTrackerAdmin,
+		"code_status":        auth.ScopeCodeWrite,
+		"code_stop":          auth.ScopeCodeWrite,
 
 		// container lifecycle
 		"create_container":   auth.ScopeContainersWrite,

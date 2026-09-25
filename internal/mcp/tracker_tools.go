@@ -156,7 +156,41 @@ func trackerTools() []Tool {
 			},
 			Handler: handleTrackerSubmitChange,
 		},
+		{
+			Name: "tracker_route_list",
+			Description: "List a tracker connection's scope routes: which agent skill each " +
+				"scope:<role> label starts. Requires tracker:admin. Mirrors " +
+				"`containarium tracker route list`; route writes are CLI-only " +
+				"(`containarium tracker route set|delete`).",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"username":   map[string]interface{}{"type": "string", "description": "Tenant username."},
+					"connection": map[string]interface{}{"type": "string", "description": "Tracker connection name."},
+				},
+				"required": []string{"username", "connection"},
+			},
+			Handler: handleTrackerRouteList,
+		},
 	}
+}
+
+func handleTrackerRouteList(client API, args map[string]interface{}) (string, error) {
+	routes, err := client.ListTrackerRoutes(ListTrackerRoutesRequest{
+		Username:   getStringArg(args, "username", ""),
+		Connection: getStringArg(args, "connection", ""),
+	})
+	if err != nil {
+		return "", err
+	}
+	if len(routes) == 0 {
+		return "No scope routes on this connection; scope:* labels will not start any run.", nil
+	}
+	var b strings.Builder
+	for _, r := range routes {
+		fmt.Fprintf(&b, "scope:%s -> %s\n", r.Scope, r.SkillID)
+	}
+	return b.String(), nil
 }
 
 func handleTrackerGetIssue(client API, args map[string]interface{}) (string, error) {

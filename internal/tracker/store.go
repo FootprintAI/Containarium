@@ -78,7 +78,12 @@ func (s *Store) initSchema(ctx context.Context) error {
 		-- ALTER, same idiom as internal/secrets.Store.initSchema.
 		ALTER TABLE tracker_connections ADD COLUMN IF NOT EXISTS credential_expires_at TIMESTAMPTZ;
 	`
-	_, err := s.pool.Exec(ctx, schema)
+	if _, err := s.pool.Exec(ctx, schema); err != nil {
+		return err
+	}
+	// #2021: scope routes hang off a connection by foreign key, so they
+	// are created after tracker_connections.
+	_, err := s.pool.Exec(ctx, routeSchema)
 	return err
 }
 
