@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -59,12 +60,23 @@ var (
 	ErrLabelInvalid = errors.New("tracker: label is not a valid single label")
 )
 
+// MaxLabelLength caps a label at GitHub's own limit for label names (50
+// characters, counted in runes); GitLab allows longer, so the stricter
+// provider sets the provider-neutral cap. Anything longer would be
+// rejected upstream anyway — rejecting it here keeps the failure before
+// any upstream call.
+const MaxLabelLength = 50
+
 // ValidateLabel is the provider-neutral wire-safety check for one label,
 // applied by CheckLabels before any allow-list matching and again by the
 // GitLab adapter as defense in depth. It rejects the empty string,
-// leading/trailing whitespace, ',' (GitLab's list separator), and any
-// control character (line breaks and tabs included). Inner spaces are
-// legal ("good first issue").
+// leading/trailing whitespace, ',' (GitLab's list separator), any control
+// character (line breaks and tabs included), any invisible Unicode format
+// character (category Cf: zero-width space/joiner/non-joiner, BOM, bidi
+// marks and overrides — they make two different labels look identical),
+// and anything longer than MaxLabelLength runes. Inner spaces and
+// ordinary non-ASCII letters are legal ("good first issue", accented or
+// non-Latin label names).
 func ValidateLabel(label string) error {
 	switch {
 	case label == "":
@@ -73,10 +85,15 @@ func ValidateLabel(label string) error {
 		return fmt.Errorf("%w: %q has leading or trailing whitespace", ErrLabelInvalid, label)
 	case strings.ContainsRune(label, ','):
 		return fmt.Errorf("%w: %q contains ','", ErrLabelInvalid, label)
+	case utf8.RuneCountInString(label) > MaxLabelLength:
+		return fmt.Errorf("%w: %q is longer than %d characters", ErrLabelInvalid, label, MaxLabelLength)
 	}
 	for _, r := range label {
 		if unicode.IsControl(r) {
 			return fmt.Errorf("%w: %q contains a control character", ErrLabelInvalid, label)
+		}
+		if unicode.Is(unicode.Cf, r) {
+			return fmt.Errorf("%w: %q contains an invisible format character", ErrLabelInvalid, label)
 		}
 	}
 	return nil

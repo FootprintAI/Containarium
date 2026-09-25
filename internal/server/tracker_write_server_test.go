@@ -101,13 +101,19 @@ func (f *fakeWriterProvider) SetLabels(_ context.Context, _ tracker.Conn, _ int6
 
 // CreateIssue records the request and echoes it back as a freshly
 // numbered open issue (501, 502, ...) so a test can tell children apart.
-func (f *fakeWriterProvider) CreateIssue(_ context.Context, _ tracker.Conn, n tracker.NewIssue) (tracker.Issue, error) {
+func (f *fakeWriterProvider) CreateIssue(ctx context.Context, _ tracker.Conn, n tracker.NewIssue) (tracker.Issue, error) {
 	if f.createIssueErr != nil {
 		return tracker.Issue{}, f.createIssueErr
 	}
-	f.createIssueReqs = append(f.createIssueReqs, n)
+	f.createIssueReqs = append(f.createIssueReqs, n) // the forge accepted the POST
 	if f.afterCreateIssue != nil {
 		f.afterCreateIssue()
+	}
+	// Like a real HTTP adapter: if the context was cancelled while the
+	// request was in flight, the response is never read and the call
+	// fails with ctx.Err() — even though the issue now exists upstream.
+	if err := ctx.Err(); err != nil {
+		return tracker.Issue{}, err
 	}
 	return tracker.Issue{
 		Number: int64(500 + len(f.createIssueReqs)),

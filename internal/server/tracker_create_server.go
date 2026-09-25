@@ -133,7 +133,12 @@ func (s *ContainerServer) CreateTrackerIssue(ctx context.Context, req *pb.Create
 			return nil, status.Errorf(codes.Internal, "record issue lineage: %v", err)
 		}
 	} else {
-		created, err = provider.CreateIssue(ctx, conn, newIssue)
+		// Same rule as RecordChild's create: once committed-to, the
+		// upstream create must not be abandoned because the caller went
+		// away mid-request (the issue would exist upstream, unaudited).
+		createCtx, cancelCreate := context.WithTimeout(context.WithoutCancel(ctx), tracker.UpstreamCreateTimeout)
+		created, err = provider.CreateIssue(createCtx, conn, newIssue)
+		cancelCreate()
 		if err != nil {
 			return nil, mapProviderError(err)
 		}

@@ -522,10 +522,80 @@ func TestCreateTrackerIssue_CancelledAfterUpstreamCreate(t *testing.T) {
 		t.Fatalf("audit rows = %+v, want one tracker.issue_created for #%d with lineage_recorded:true", rows, child)
 	}
 
+	if n := len(provider.createIssueReqs); n != 1 {
+		t.Errorf("upstream issues created = %d, want 1", n)
+	}
+
 	// The cap now holds: the (cancelled) first child was counted.
 	provider.afterCreateIssue = nil
 	if _, err := s.CreateTrackerIssue(runCtx, createReq(user, 42, "scope:architecture")); status.Code(err) != codes.ResourceExhausted {
 		t.Errorf("second create: code = %v (%v), want ResourceExhausted", status.Code(err), err)
+	}
+	if n := len(provider.createIssueReqs); n != 1 {
+		t.Errorf("upstream issues after the capped call = %d, want still 1", n)
+	}
+}
+
+// TestCreateTrackerIssue_RepeatedCancellationsCannotExceedFanout is the
+// re-review's probe: with max_children_per_run=1, callers that keep
+// disconnecting while the upstream create is in flight must not get past
+// the cap — every created issue is recorded and counted.
+func TestCreateTrackerIssue_RepeatedCancellationsCannotExceedFanout(t *testing.T) {
+	const user = "tracker-rpc-create-cancel-repeat"
+	provider := &fakeWriterProvider{}
+	s, runCtx, _ := setUpCreateConnection(t, user, provider, &pb.TrackerPolicy{MaxChildrenPerRun: 1})
+	s.auditStore = mustTestAuditStore(t)
+
+	for i := 0; i < 3; i++ {
+		ctx, cancel := context.WithCancel(runCtx)
+		provider.afterCreateIssue = cancel
+		_, _ = s.CreateTrackerIssue(ctx, createReq(user, 42, "scope:architecture"))
+		cancel()
+	}
+	provider.afterCreateIssue = nil
+	_, _ = s.CreateTrackerIssue(runCtx, createReq(user, 42, "scope:architecture"))
+
+	if n := len(provider.createIssueReqs); n != 1 {
+		t.Errorf("upstream issues created = %d, want 1 (the cap is 1)", n)
+	}
+	if n, _ := s.trackerStore.ChildrenCount(context.Background(), user, "default", createTestRunID); n != 1 {
+		t.Errorf("lineage rows = %d, want 1", n)
+	}
+	rows, _, err := s.auditStore.Query(context.Background(), audit.QueryParams{Username: user, Action: "tracker.issue_created", Limit: 10})
+	if err != nil {
+		t.Fatalf("audit Query: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Errorf("audit rows = %d, want 1", len(rows))
+	}
+}
+
+// TestCreateTrackerIssue_OperatorCancelledAfterUpstreamCreate: the
+// operator path has no lineage, but the same window applies — the issue
+// exists upstream, so it must be audited and returned.
+func TestCreateTrackerIssue_OperatorCancelledAfterUpstreamCreate(t *testing.T) {
+	const user = "tracker-rpc-create-cancel-operator"
+	provider := &fakeWriterProvider{}
+	s, _, operatorCtx := setUpCreateConnection(t, user, provider, nil)
+	s.auditStore = mustTestAuditStore(t)
+
+	ctx, cancel := context.WithCancel(operatorCtx)
+	defer cancel()
+	provider.afterCreateIssue = cancel
+
+	resp, err := s.CreateTrackerIssue(ctx, createReq(user, 0, "scope:architecture"))
+	if err != nil {
+		t.Fatalf("operator CreateTrackerIssue after upstream success = %v, want the created issue", err)
+	}
+	if resp.GetIssue().GetNumber() != 501 || len(provider.createIssueReqs) != 1 {
+		t.Errorf("issue = %d, upstream creates = %d; want #501 and exactly 1", resp.GetIssue().GetNumber(), len(provider.createIssueReqs))
+	}
+	rows, _, qerr := s.auditStore.Query(context.Background(), audit.QueryParams{Username: user, Action: "tracker.issue_created", Limit: 10})
+	if qerr != nil {
+		t.Fatalf("audit Query: %v", qerr)
+	}
+	if len(rows) != 1 || !strings.Contains(rows[0].Detail, `"number":501`) {
+		t.Fatalf("audit rows = %+v, want one tracker.issue_created for #501", rows)
 	}
 }
 

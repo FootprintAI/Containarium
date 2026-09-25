@@ -208,6 +208,17 @@ func TestValidateLabel(t *testing.T) {
 		{"a\x00b", false},
 		{" scope:x", false},
 		{"scope:x ", false},
+		// Re-review nits: invisible Unicode format characters (Cf) and a
+		// length cap.
+		{"scope:\u200bx", false},  // zero-width space
+		{"scope:x\u200d", false},  // zero-width joiner
+		{"scope:\u200cx", false},  // zero-width non-joiner
+		{"\ufeffscope:x", false},  // BOM
+		{"scope:\u202ex", false},  // right-to-left override
+		{"scope:\u200fx", false},  // right-to-left mark
+		{"scope:\u00e1rea", true}, // ordinary non-ASCII letters are fine
+		{"scope:" + strings.Repeat("a", MaxLabelLength-6), true},
+		{"scope:" + strings.Repeat("a", MaxLabelLength-5), false},
 	} {
 		err := ValidateLabel(tc.label)
 		if tc.ok && err != nil {

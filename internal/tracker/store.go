@@ -476,7 +476,15 @@ func (s *Store) RecordChild(ctx context.Context, l Lineage, maxDepth, maxChildre
 		return Lineage{}, fmt.Errorf("%w: run %s already filed %d, max %d", ErrFanoutExceeded, l.CreatedByRun, existing, maxChildren)
 	}
 
-	child, err := create(ctx)
+	// Every check has passed: the create is now committed-to. Run it
+	// detached from the caller's cancellation (bounded by a timeout) so it
+	// either completes and is recorded below, or fails for a real upstream
+	// reason — never because the caller disconnected after the forge
+	// accepted the POST, which would leave an unrecorded, uncounted issue
+	// and let a run slip past max_children_per_run (re-review of #2034).
+	createCtx, cancelCreate := context.WithTimeout(context.WithoutCancel(ctx), UpstreamCreateTimeout)
+	defer cancelCreate()
+	child, err := create(createCtx)
 	if err != nil {
 		return Lineage{}, err
 	}
@@ -505,6 +513,11 @@ func (s *Store) RecordChild(ctx context.Context, l Lineage, maxDepth, maxChildre
 // lineageRecordTimeout bounds the detached insert+commit that follows a
 // successful upstream create.
 const lineageRecordTimeout = 10 * time.Second
+
+// UpstreamCreateTimeout bounds an upstream issue create that has been
+// detached from the caller's cancellation — RecordChild's create callback
+// and CreateTrackerIssue's operator path both use it.
+const UpstreamCreateTimeout = 30 * time.Second
 
 // LineageRecordError is returned by RecordChild when the upstream create
 // SUCCEEDED but its lineage row could not be recorded. The issue exists on
