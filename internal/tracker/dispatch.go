@@ -81,8 +81,8 @@ type Dispatcher struct {
 
 // TickResult is one tick's outcome.
 type TickResult struct {
-	Started              []Dispatch
-	Failed               []Dispatch
+	Started []Dispatch
+	Failed  []Dispatch
 	// Counters are int32 to match DispatchTrackerIssuesResponse.
 	SkippedNeedsApproval int32
 	SkippedActive        int32
