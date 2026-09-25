@@ -156,7 +156,87 @@ func trackerTools() []Tool {
 			},
 			Handler: handleTrackerSubmitChange,
 		},
+		{
+			Name: "tracker_route_list",
+			Description: "List a tracker connection's scope routes: which agent skill each " +
+				"scope:<role> label starts. Requires tracker:admin. Mirrors " +
+				"`containarium tracker route list`; route writes are CLI-only " +
+				"(`containarium tracker route set|delete`).",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"username":   map[string]interface{}{"type": "string", "description": "Tenant username."},
+					"connection": map[string]interface{}{"type": "string", "description": "Tracker connection name."},
+				},
+				"required": []string{"username", "connection"},
+			},
+			Handler: handleTrackerRouteList,
+		},
+		{
+			Name: "tracker_create_issue",
+			Description: "File a follow-up issue on the tracker connection this run is bound to (#2024). " +
+				"Labels must pass the connection's allow-list (scope:*, model:*, agent:needs-approval by default); " +
+				"anything else is rejected before the tracker is touched. A run must name parent_number: the " +
+				"follow-up is linked to its parent, filed with agent:needs-approval unless the connection " +
+				"auto-chains, stamped with this run's identity, and bounded by the connection's depth and " +
+				"fan-out caps. Mirrors `containarium tracker issue create`.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"username":   map[string]interface{}{"type": "string", "description": "Tenant username."},
+					"connection": map[string]interface{}{"type": "string", "description": "Tracker connection name."},
+					"title":      map[string]interface{}{"type": "string", "description": "Issue title."},
+					"body":       map[string]interface{}{"type": "string", "description": "Issue body. The parent link and identity stamp are appended server-side."},
+					"labels": map[string]interface{}{
+						"type":        "array",
+						"items":       map[string]interface{}{"type": "string"},
+						"description": "Labels to apply; each must pass the connection's allow-list.",
+					},
+					"parent_number": map[string]interface{}{"type": "integer", "description": "Parent issue number. Required for a run-scoped token."},
+				},
+				"required": []string{"username", "connection", "title"},
+			},
+			Handler: handleTrackerCreateIssue,
+		},
 	}
+}
+
+func handleTrackerRouteList(client API, args map[string]interface{}) (string, error) {
+	routes, err := client.ListTrackerRoutes(ListTrackerRoutesRequest{
+		Username:   getStringArg(args, "username", ""),
+		Connection: getStringArg(args, "connection", ""),
+	})
+	if err != nil {
+		return "", err
+	}
+	if len(routes) == 0 {
+		return "No scope routes on this connection; scope:* labels will not start any run.", nil
+	}
+	var b strings.Builder
+	for _, r := range routes {
+		fmt.Fprintf(&b, "scope:%s -> %s\n", r.Scope, r.SkillID)
+	}
+	return b.String(), nil
+}
+
+func handleTrackerCreateIssue(client API, args map[string]interface{}) (string, error) {
+	parent, _ := getInt64Arg(args, "parent_number")
+	issue, err := client.CreateTrackerIssue(CreateTrackerIssueRequest{
+		Username:     getStringArg(args, "username", ""),
+		Connection:   getStringArg(args, "connection", ""),
+		Title:        getStringArg(args, "title", ""),
+		Body:         getStringArg(args, "body", ""),
+		Labels:       getStringSliceArg(args, "labels"),
+		ParentNumber: parent,
+	})
+	if err != nil {
+		return "", err
+	}
+	msg := fmt.Sprintf("Created #%d %s", issue.Number, issue.Title)
+	if len(issue.Labels) > 0 {
+		msg += fmt.Sprintf(" [%s]", strings.Join(issue.Labels, ", "))
+	}
+	return msg + ".", nil
 }
 
 func handleTrackerGetIssue(client API, args map[string]interface{}) (string, error) {

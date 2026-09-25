@@ -2611,7 +2611,13 @@ func (c *HTTPClient) UpdateClusterNodePool(req *pb.UpdateClusterNodePoolRequest)
 // name that drifts from the proto silently drops the value instead of
 // failing to compile.
 func (c *HTTPClient) trackerDo(method, path, label string, reqBody []byte, out proto.Message) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	return c.trackerDoTimeout(30*time.Second, method, path, label, reqBody, out)
+}
+
+// trackerDoTimeout is trackerDo with an explicit deadline, for calls
+// (the dispatch tick) that provision boxes synchronously.
+func (c *HTTPClient) trackerDoTimeout(timeout time.Duration, method, path, label string, reqBody []byte, out proto.Message) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	resp, err := c.doRequest(ctx, method, path, reqBody)
 	if err != nil {
@@ -2661,6 +2667,80 @@ func (c *HTTPClient) DeleteTrackerConnection(username, name string) (string, err
 		return "", err
 	}
 	return out.Message, nil
+}
+
+// trackerRoutesPath is the REST collection for a connection's scope
+// routes (#2021), matching tracker.proto's google.api.http mapping.
+func trackerRoutesPath(username, connection string) string {
+	return "/v1/tracker/" + url.PathEscape(username) + "/" + url.PathEscape(connection) + "/routes"
+}
+
+// SetTrackerRoute creates or updates a scope -> skill route via REST
+// (#2021). Requires tracker:admin.
+func (c *HTTPClient) SetTrackerRoute(req *pb.SetTrackerRouteRequest) (*pb.TrackerRoute, string, error) {
+	body, err := protojson.Marshal(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("encode request: %w", err)
+	}
+	out := &pb.SetTrackerRouteResponse{}
+	path := trackerRoutesPath(req.Username, req.Connection) + "/" + url.PathEscape(req.Scope)
+	if err := c.trackerDo(http.MethodPut, path, "set tracker route", body, out); err != nil {
+		return nil, "", err
+	}
+	return out.Route, out.Message, nil
+}
+
+// ListTrackerRoutes returns a connection's scope routes via REST (#2021).
+func (c *HTTPClient) ListTrackerRoutes(username, connection string) ([]*pb.TrackerRoute, error) {
+	out := &pb.ListTrackerRoutesResponse{}
+	if err := c.trackerDo(http.MethodGet, trackerRoutesPath(username, connection), "list tracker routes", nil, out); err != nil {
+		return nil, err
+	}
+	return out.Routes, nil
+}
+
+// DeleteTrackerRoute removes one scope route via REST (#2021).
+func (c *HTTPClient) DeleteTrackerRoute(req *pb.DeleteTrackerRouteRequest) (string, error) {
+	out := &pb.DeleteTrackerRouteResponse{}
+	path := trackerRoutesPath(req.Username, req.Connection) + "/" + url.PathEscape(req.Scope)
+	if err := c.trackerDo(http.MethodDelete, path, "delete tracker route", nil, out); err != nil {
+		return "", err
+	}
+	return out.Message, nil
+}
+
+// TrackerDispatchTimeout bounds one dispatch tick. A tick provisions a
+// box per started issue synchronously, so it gets far longer than the
+// other tracker calls.
+const TrackerDispatchTimeout = 10 * time.Minute
+
+// DispatchTrackerIssues runs one dispatcher tick via REST (#2022).
+// Requires tracker:admin and agents:run.
+func (c *HTTPClient) DispatchTrackerIssues(username, connection string) (*pb.DispatchTrackerIssuesResponse, error) {
+	body, err := protojson.Marshal(&pb.DispatchTrackerIssuesRequest{Username: username, Connection: connection})
+	if err != nil {
+		return nil, fmt.Errorf("encode request: %w", err)
+	}
+	out := &pb.DispatchTrackerIssuesResponse{}
+	path := "/v1/tracker/" + url.PathEscape(username) + "/" + url.PathEscape(connection) + "/dispatch"
+	if err := c.trackerDoTimeout(TrackerDispatchTimeout, http.MethodPost, path, "dispatch tracker issues", body, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// ListTrackerDispatches returns a connection's dispatch rows via REST
+// (#2022), newest first. UNSPECIFIED state sends no filter.
+func (c *HTTPClient) ListTrackerDispatches(username, connection string, state pb.TrackerDispatchState) ([]*pb.TrackerDispatch, error) {
+	path := "/v1/tracker/" + url.PathEscape(username) + "/" + url.PathEscape(connection) + "/dispatches"
+	if state != pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_UNSPECIFIED {
+		path += "?" + url.Values{"state": {state.String()}}.Encode()
+	}
+	out := &pb.ListTrackerDispatchesResponse{}
+	if err := c.trackerDo(http.MethodGet, path, "list tracker dispatches", nil, out); err != nil {
+		return nil, err
+	}
+	return out.Dispatches, nil
 }
 
 // GetTrackerStatus probes a tracker connection's credential live via
@@ -2775,4 +2855,19 @@ func (c *HTTPClient) SetTrackerIssueLabels(req *pb.SetTrackerIssueLabelsRequest)
 		return "", err
 	}
 	return out.Message, nil
+}
+
+// CreateTrackerIssue files a follow-up issue on the connection's
+// tracker, via REST (#2024).
+func (c *HTTPClient) CreateTrackerIssue(req *pb.CreateTrackerIssueRequest) (*pb.TrackerIssue, error) {
+	body, err := protojson.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("encode request: %w", err)
+	}
+	out := &pb.CreateTrackerIssueResponse{}
+	path := fmt.Sprintf("/v1/tracker/%s/%s/issues", url.PathEscape(req.Username), url.PathEscape(req.Connection))
+	if err := c.trackerDo(http.MethodPost, path, "create tracker issue", body, out); err != nil {
+		return nil, err
+	}
+	return out.Issue, nil
 }

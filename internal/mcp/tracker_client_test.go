@@ -197,3 +197,31 @@ func TestMCPClient_SubmitTrackerChange(t *testing.T) {
 	assert.Equal(t, int64(6), change.Number)
 	assert.Equal(t, "agent/run-1/1-x", change.Branch)
 }
+
+func TestMCPClient_CreateTrackerIssue(t *testing.T) {
+	var sawPath, sawMethod string
+	var sawBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawPath, sawMethod = r.URL.Path, r.Method
+		_ = json.NewDecoder(r.Body).Decode(&sawBody)
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"issue":{"number":"7","title":"follow-up","state":"TRACKER_ISSUE_STATE_OPEN","labels":["scope:architecture","agent:needs-approval"]}}`)
+	}))
+	defer server.Close()
+
+	c := NewClient(server.URL, "tok")
+	issue, err := c.CreateTrackerIssue(CreateTrackerIssueRequest{
+		Username: "alice", Connection: "default",
+		Title: "follow-up", Body: "child body", Labels: []string{"scope:architecture"}, ParentNumber: 42,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, http.MethodPost, sawMethod)
+	assert.Equal(t, "/v1/tracker/alice/default/issues", sawPath)
+	assert.Equal(t, "follow-up", sawBody["title"])
+	assert.Equal(t, "child body", sawBody["body"])
+	assert.Equal(t, []any{"scope:architecture"}, sawBody["labels"])
+	// int64 rides as a JSON string on the wire, per wire_format_test.go.
+	assert.Equal(t, "42", sawBody["parentNumber"])
+	assert.EqualValues(t, 7, issue.Number)
+	assert.Equal(t, []string{"scope:architecture", "agent:needs-approval"}, issue.Labels)
+}

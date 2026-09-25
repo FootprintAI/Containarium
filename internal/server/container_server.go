@@ -285,6 +285,11 @@ type ContainerServer struct {
 	// the RPC returns Unavailable rather than racing unlocked.
 	claimLocks *tracker.ClaimLocks
 
+	// trackerRunStarter is how DispatchTrackerIssues (#2022) starts a
+	// run — the RunAgentSkill path, wired in dual_server.go. Nil keeps
+	// the RPC returning Unavailable.
+	trackerRunStarter tracker.RunStarter
+
 	// submitBoxRunner overrides the box-exec/file-read backend
 	// SubmitTrackerChange uses to extract a bundle (#1923). Nil in
 	// production, where the real handler falls back to s.manager —

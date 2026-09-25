@@ -81,6 +81,9 @@ func (f *fakeClaimProvider) DescribeCredential(context.Context, Conn) (Credentia
 func (f *fakeClaimProvider) WhoAmI(context.Context, Conn) (string, error) {
 	return "bot", nil // matches Comment's own hardcoded Author, below
 }
+func (f *fakeClaimProvider) CreateIssue(context.Context, Conn, NewIssue) (Issue, error) {
+	return Issue{}, nil
+}
 
 var _ WriterProvider = (*fakeClaimProvider)(nil)
 

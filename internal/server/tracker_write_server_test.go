@@ -57,6 +57,18 @@ type fakeWriterProvider struct {
 	labelsAdd, labelsRemove []string
 	labelsErr               error
 
+	// #2024: CreateIssue records every request; commentNumbers/
+	// commentBodies record every Comment call (commentBody above keeps
+	// only the last, which the create tests' back-link assertions can't
+	// use — they need "exactly one comment, on the parent").
+	createIssueReqs []tracker.NewIssue
+	createIssueErr  error
+	// afterCreateIssue runs once the "forge" has accepted a create — the
+	// window the review of #2034 found (caller cancels after upstream success).
+	afterCreateIssue func()
+	commentNumbers   []int64
+	commentBodies    []string
+
 	openChangeReq tracker.OpenChangeRequest
 	openChangeOut tracker.Change
 	openChangeErr error
@@ -65,8 +77,10 @@ type fakeWriterProvider struct {
 	defaultBranchErr error
 }
 
-func (f *fakeWriterProvider) Comment(_ context.Context, _ tracker.Conn, _ int64, body string) (tracker.Comment, error) {
+func (f *fakeWriterProvider) Comment(_ context.Context, _ tracker.Conn, number int64, body string) (tracker.Comment, error) {
 	f.commentBody = body
+	f.commentNumbers = append(f.commentNumbers, number)
+	f.commentBodies = append(f.commentBodies, body)
 	if f.commentErr != nil {
 		return tracker.Comment{}, f.commentErr
 	}
@@ -83,6 +97,31 @@ func (f *fakeWriterProvider) AssignIfUnassigned(context.Context, tracker.Conn, i
 func (f *fakeWriterProvider) SetLabels(_ context.Context, _ tracker.Conn, _ int64, add, remove []string) error {
 	f.labelsAdd, f.labelsRemove = add, remove
 	return f.labelsErr
+}
+
+// CreateIssue records the request and echoes it back as a freshly
+// numbered open issue (501, 502, ...) so a test can tell children apart.
+func (f *fakeWriterProvider) CreateIssue(ctx context.Context, _ tracker.Conn, n tracker.NewIssue) (tracker.Issue, error) {
+	if f.createIssueErr != nil {
+		return tracker.Issue{}, f.createIssueErr
+	}
+	f.createIssueReqs = append(f.createIssueReqs, n) // the forge accepted the POST
+	if f.afterCreateIssue != nil {
+		f.afterCreateIssue()
+	}
+	// Like a real HTTP adapter: if the context was cancelled while the
+	// request was in flight, the response is never read and the call
+	// fails with ctx.Err() — even though the issue now exists upstream.
+	if err := ctx.Err(); err != nil {
+		return tracker.Issue{}, err
+	}
+	return tracker.Issue{
+		Number: int64(500 + len(f.createIssueReqs)),
+		Title:  n.Title,
+		Body:   n.Body,
+		State:  pb.TrackerIssueState_TRACKER_ISSUE_STATE_OPEN,
+		Labels: n.Labels,
+	}, nil
 }
 
 // WhoAmI returns the zero value, matching this fake's own Comment
@@ -365,6 +404,20 @@ func TestSetTrackerIssueLabels_HappyPath(t *testing.T) {
 	provider := &fakeWriterProvider{}
 	s, ctx := setUpWriterConnection(t, user, provider)
 	s.auditStore = mustTestAuditStore(t)
+
+	// The connection's label allow-list (#2024) must admit the labels
+	// this test writes — the default list (scope:*, model:*,
+	// agent:needs-approval) would reject them, which
+	// TestSetTrackerIssueLabels_RejectsOutsideAllowList pins separately.
+	adminCtx := kmsKeyTestCtx(user, "member", "tracker:admin")
+	if _, err := s.SetTrackerConnection(adminCtx, &pb.SetTrackerConnectionRequest{
+		Username: user, Name: "default",
+		Provider: pb.TrackerProvider_TRACKER_PROVIDER_GITHUB,
+		Project:  "acme/widgets", CredentialSecret: "GH_TOKEN",
+		Policy: &pb.TrackerPolicy{LabelAllowList: []string{"triaged", "needs-triage"}},
+	}); err != nil {
+		t.Fatalf("SetTrackerConnection (policy): %v", err)
+	}
 
 	if _, err := s.SetTrackerIssueLabels(ctx, &pb.SetTrackerIssueLabelsRequest{
 		Username: user, Connection: "default", Number: 3,

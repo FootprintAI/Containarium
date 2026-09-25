@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/footprintai/containarium/internal/client"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -86,6 +87,15 @@ var (
 	trackerBaseURL          string
 	trackerProject          string
 	trackerCredentialSecret string
+
+	// Connection policy (#2024). Zero values mean the daemon's
+	// documented defaults; `connect` replaces the whole connection, so
+	// re-running it without these flags resets the policy to defaults.
+	trackerLabelAllow  []string
+	trackerAutoChain   bool
+	trackerMaxDepth    int32
+	trackerMaxChildren int32
+	trackerRunTimeout  time.Duration
 )
 
 func init() {
@@ -101,10 +111,51 @@ func init() {
 		`"owner/repo" (GitHub) or "group/subgroup/project" (GitLab). Required.`)
 	trackerConnectCmd.Flags().StringVar(&trackerCredentialSecret, "credential-secret", "",
 		`Name of a secret owned by username, in broker-only delivery mode. Required.`)
+	trackerConnectCmd.Flags().StringArrayVar(&trackerLabelAllow, "label-allow", nil,
+		`Label glob a run may write via "tracker issue create" / "issue label" (repeat for multiple; '*' matches anything). `+
+			`Default: scope:*, model:*, agent:needs-approval. The dispatcher's agent:queued/running/done/failed are never writable by a run.`)
+	trackerConnectCmd.Flags().BoolVar(&trackerAutoChain, "auto-chain", false,
+		`Let a run's follow-up issues skip the agent:needs-approval gate. Default off: a human releases every hop.`)
+	trackerConnectCmd.Flags().Int32Var(&trackerMaxDepth, "max-depth", 0,
+		`Maximum follow-up chain depth (0 = daemon default, 3).`)
+	trackerConnectCmd.Flags().Int32Var(&trackerMaxChildren, "max-children", 0,
+		`Maximum follow-up issues one run may file (0 = daemon default, 5).`)
+	trackerConnectCmd.Flags().DurationVar(&trackerRunTimeout, "run-timeout", 0,
+		`Run timeout the dispatcher applies (0 = daemon default, 1h).`)
 
 	trackerCmd.AddCommand(trackerListCmd)
 	trackerCmd.AddCommand(trackerDisconnectCmd)
 	trackerCmd.AddCommand(trackerStatusCmd)
+}
+
+// buildTrackerPolicy turns the `connect` policy flags into the proto
+// message. Zero values pass through as zero (the daemon applies the
+// documented defaults); negatives and blank allow-list entries are
+// rejected here rather than round-tripping to the daemon's own check.
+func buildTrackerPolicy(allow []string, autoChain bool, maxDepth, maxChildren int32, runTimeout time.Duration) (*pb.TrackerPolicy, error) {
+	if maxDepth < 0 {
+		return nil, fmt.Errorf("--max-depth must not be negative")
+	}
+	if maxChildren < 0 {
+		return nil, fmt.Errorf("--max-children must not be negative")
+	}
+	if runTimeout < 0 {
+		return nil, fmt.Errorf("--run-timeout must not be negative")
+	}
+	out := &pb.TrackerPolicy{
+		AutoChain:         autoChain,
+		MaxDepth:          maxDepth,
+		MaxChildrenPerRun: maxChildren,
+		RunTimeoutSeconds: int64(runTimeout.Seconds()),
+	}
+	for _, pattern := range allow {
+		pattern = strings.TrimSpace(pattern)
+		if pattern == "" {
+			return nil, fmt.Errorf("--label-allow entries must not be empty")
+		}
+		out.LabelAllowList = append(out.LabelAllowList, pattern)
+	}
+	return out, nil
 }
 
 // parseTrackerProvider maps the CLI's --provider flag to the proto enum.
@@ -137,6 +188,10 @@ func runTrackerConnect(cmd *cobra.Command, args []string) error {
 	if trackerCredentialSecret == "" {
 		return fmt.Errorf("--credential-secret is required")
 	}
+	policy, err := buildTrackerPolicy(trackerLabelAllow, trackerAutoChain, trackerMaxDepth, trackerMaxChildren, trackerRunTimeout)
+	if err != nil {
+		return err
+	}
 
 	req := &pb.SetTrackerConnectionRequest{
 		Username:         username,
@@ -145,6 +200,7 @@ func runTrackerConnect(cmd *cobra.Command, args []string) error {
 		BaseUrl:          trackerBaseURL,
 		Project:          trackerProject,
 		CredentialSecret: trackerCredentialSecret,
+		Policy:           policy,
 	}
 
 	if httpMode {

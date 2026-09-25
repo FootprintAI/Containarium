@@ -181,12 +181,18 @@ tracker change submit
 tracker change view
 tracker connect
 tracker disconnect
+tracker dispatch
+tracker dispatches
 tracker issue claim
 tracker issue comment
+tracker issue create
 tracker issue label
 tracker issue list
 tracker issue view
 tracker list
+tracker route delete
+tracker route list
+tracker route set
 tracker status
 traffic connections
 traffic history

@@ -220,6 +220,38 @@ func (c *Client) SetTrackerIssueLabels(req SetTrackerIssueLabelsRequest) error {
 	return err
 }
 
+// CreateTrackerIssueRequest (#2024). Username/Connection are path-bound;
+// the rest rides the JSON body. ParentNumber carries the `,string` tag
+// for the same reason TrackerIssue.Number does (see the package doc
+// above) — grpc-gateway speaks int64 as a JSON string.
+type CreateTrackerIssueRequest struct {
+	Username     string   `json:"-"`
+	Connection   string   `json:"-"`
+	Title        string   `json:"title"`
+	Body         string   `json:"body,omitempty"`
+	Labels       []string `json:"labels,omitempty"`
+	ParentNumber int64    `json:"parentNumber,string,omitempty"`
+}
+
+type createTrackerIssueResponse struct {
+	Issue TrackerIssue `json:"issue"`
+}
+
+// CreateTrackerIssue files a follow-up issue on the connection's tracker.
+func (c *Client) CreateTrackerIssue(req CreateTrackerIssueRequest) (*TrackerIssue, error) {
+	path := fmt.Sprintf("/v1/tracker/%s/%s/issues",
+		url.PathEscape(req.Username), url.PathEscape(req.Connection))
+	respBody, err := c.doRequest("POST", path, req)
+	if err != nil {
+		return nil, err
+	}
+	var out createTrackerIssueResponse
+	if err := json.Unmarshal(respBody, &out); err != nil {
+		return nil, fmt.Errorf("decode create tracker issue response: %w", err)
+	}
+	return &out.Issue, nil
+}
+
 // SubmitTrackerChangeRequest (#1923). Username/Connection are path-bound;
 // Issue/Title/Description/Draft ride the JSON body. No remote, no
 // target ref, and no credential — the daemon resolves all three from
@@ -256,4 +288,37 @@ func (c *Client) SubmitTrackerChange(req SubmitTrackerChangeRequest) (*TrackerCh
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 	return &resp.Change, nil
+}
+
+// TrackerRoute mirrors proto TrackerRoute (#2021).
+type TrackerRoute struct {
+	Username   string `json:"username"`
+	Connection string `json:"connection"`
+	Scope      string `json:"scope"`
+	SkillID    string `json:"skillId"`
+}
+
+// ListTrackerRoutesRequest's fields are path-bound.
+type ListTrackerRoutesRequest struct {
+	Username   string `json:"-"`
+	Connection string `json:"-"`
+}
+
+type listTrackerRoutesResponse struct {
+	Routes []TrackerRoute `json:"routes"`
+}
+
+// ListTrackerRoutes returns a connection's scope routes — the same
+// ListTrackerRoutes endpoint `containarium tracker route list` calls.
+func (c *Client) ListTrackerRoutes(req ListTrackerRoutesRequest) ([]TrackerRoute, error) {
+	path := fmt.Sprintf("/v1/tracker/%s/%s/routes", url.PathEscape(req.Username), url.PathEscape(req.Connection))
+	respBody, err := c.doRequest("GET", path, nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp listTrackerRoutesResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return resp.Routes, nil
 }

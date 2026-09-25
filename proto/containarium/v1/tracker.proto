@@ -107,6 +107,11 @@ message TrackerConnection {
   // so an approaching expiry is visible before agents start failing.
   // Unset until that lands.
   google.protobuf.Timestamp credential_expires_at = 7;
+
+  // Connection-level guardrails for agent-filed follow-ups (#2024).
+  // Unset (or any zero-valued field) means the documented defaults —
+  // see TrackerPolicy.
+  TrackerPolicy policy = 8;
 }
 
 // SetTrackerConnectionRequest creates or updates a tenant's named tracker
@@ -124,6 +129,10 @@ message SetTrackerConnectionRequest {
   // the same username. The daemon validates this at write time rather
   // than trusting the caller.
   string credential_secret = 6;
+
+  // Optional guardrails (#2024). Set replaces every field, so an
+  // omitted policy clears any previously stored one back to defaults.
+  TrackerPolicy policy = 7;
 }
 
 message SetTrackerConnectionResponse {
@@ -162,6 +171,190 @@ message DeleteTrackerConnectionRequest {
 message DeleteTrackerConnectionResponse {
   string message = 1;
 }
+
+// ---------------------------------------------------------------------
+// Scope routes (#2021) — which skill a `scope:<role>` label starts on a
+// connection. See docs/architecture/issue-triggered-agents.md. Route
+// CRUD is tracker:admin, same as connection CRUD: choosing what a label
+// runs is an operator decision, never a run's.
+// ---------------------------------------------------------------------
+
+// TrackerRoute maps a scope label on one connection to a skill. Unique
+// per (username, connection, scope). A `scope:*` label with no route is
+// never dispatched.
+message TrackerRoute {
+  string username = 1;
+  string connection = 2;
+
+  // The label suffix: "product" matches the label "scope:product". The
+  // "scope:" prefix itself is rejected, as is anything outside
+  // [A-Za-z0-9._-] (max 64 chars, no leading punctuation).
+  string scope = 3;
+
+  // Agent skill id (as listed by ListAgentSkills) the dispatcher starts
+  // for an issue carrying this scope label.
+  string skill_id = 4;
+}
+
+// SetTrackerRouteRequest creates or updates a route. Idempotent:
+// repeated calls with the same (username, connection, scope) replace
+// skill_id. The connection must already exist.
+message SetTrackerRouteRequest {
+  string username = 1;
+  string connection = 2;
+  string scope = 3;
+  string skill_id = 4;
+}
+
+message SetTrackerRouteResponse {
+  // "route created" / "route updated".
+  string message = 1;
+  TrackerRoute route = 2;
+}
+
+// ListTrackerRoutesRequest enumerates one connection's routes, ordered
+// by scope.
+message ListTrackerRoutesRequest {
+  string username = 1;
+  string connection = 2;
+}
+
+message ListTrackerRoutesResponse {
+  repeated TrackerRoute routes = 1;
+}
+
+// DeleteTrackerRouteRequest removes one route. Deleting a connection
+// removes all of its routes.
+message DeleteTrackerRouteRequest {
+  string username = 1;
+  string connection = 2;
+  string scope = 3;
+}
+
+message DeleteTrackerRouteResponse {
+  string message = 1;
+}
+
+// ---------------------------------------------------------------------
+// End scope routes (#2021).
+// ---------------------------------------------------------------------
+
+// ---------------------------------------------------------------------
+// Dispatch (#2022) — a routed `scope:<role>` label on an open issue
+// starts the routed skill exactly once. See
+// docs/architecture/issue-triggered-agents.md ("Dispatch state
+// machine", "Exactly-once"). Dispatch is tracker:admin: starting runs
+// from a tracker is an operator's decision, never a run's.
+// ---------------------------------------------------------------------
+
+// TrackerDispatchState is the durable state of one dispatch row.
+// queued/running are "active" — at most one active row exists per
+// (username, connection, issue) by a partial unique index, which is
+// the whole exactly-once guarantee. done/failed are terminal; a re-run
+// is a new row.
+enum TrackerDispatchState {
+  TRACKER_DISPATCH_STATE_UNSPECIFIED = 0;
+  TRACKER_DISPATCH_STATE_QUEUED = 1;
+  TRACKER_DISPATCH_STATE_RUNNING = 2;
+  TRACKER_DISPATCH_STATE_DONE = 3;
+  TRACKER_DISPATCH_STATE_FAILED = 4;
+}
+
+// TrackerDispatch is one durable dispatch: which issue, which scope
+// label matched, which skill was started as which run, and where the
+// run is in its state machine.
+message TrackerDispatch {
+  string id = 1;
+  string username = 2;
+  string connection = 3;
+  int64 issue_number = 4;
+  // The matched label's suffix ("product" for "scope:product").
+  string scope = 5;
+  string skill_id = 6;
+  // The run id the dispatcher chose before starting the run, so the
+  // run JWT's run_id claim and this row always agree.
+  string run_id = 7;
+  // Lineage depth of the issue (a human-created issue is 0).
+  int32 depth = 8;
+  TrackerDispatchState state = 9;
+  // Set when state is FAILED: why (start-run error, timeout, ...).
+  string failure_reason = 10;
+  google.protobuf.Timestamp created_at = 11;
+  google.protobuf.Timestamp started_at = 12;
+  google.protobuf.Timestamp ended_at = 13;
+}
+
+// TrackerDispatchInput is EXACTLY the run's input_json (protojson
+// encoded) for a dispatched run: the issue REFERENCE and the dispatch
+// id, never the issue body. The run fetches the body itself through
+// GetTrackerIssue under its own tracker:read, so it arrives as
+// brokered, untrusted data like every other read — never smuggled
+// through the launch payload.
+message TrackerDispatchInput {
+  string connection = 1;
+  int64 issue_number = 2;
+  string scope = 3;
+  string dispatch_id = 4;
+  int32 depth = 5;
+  // The tenant the run is dispatched for (#2023). Every broker verb the
+  // run calls (GetTrackerIssue, CommentOnTrackerIssue,
+  // SubmitTrackerChange) names it; it is the run token's own subject,
+  // so it widens nothing.
+  string username = 6;
+}
+
+// DispatchTrackerIssuesRequest runs ONE dispatcher tick for a
+// connection: list open issues, filter, insert a dispatch row, start
+// the routed skill, label agent:queued. `containarium tracker
+// dispatch --interval` calls this in a loop.
+message DispatchTrackerIssuesRequest {
+  string username = 1;
+  string connection = 2;
+}
+
+message DispatchTrackerIssuesResponse {
+  // Dispatches this tick inserted and started: RUNNING once the run
+  // registered (#2023), QUEUED if the starter did not report a start.
+  repeated TrackerDispatch started = 1;
+
+  // Reserved for the run-timeout sweep (#2026): RUNNING rows this tick
+  // failed for exceeding the connection policy's run timeout.
+  repeated TrackerDispatch timed_out = 2;
+
+  // Issues carrying agent:needs-approval — a human has not released
+  // them yet.
+  int32 skipped_needs_approval = 3;
+
+  // Issues already carrying another agent:* state label, or with an
+  // active dispatch row (the exactly-once index said no).
+  int32 skipped_active = 4;
+
+  // Issues whose scope:* label(s) have no route on this connection.
+  // Each gets exactly one stamped warning comment, ever, not one per
+  // tick.
+  int32 skipped_unrouted = 5;
+
+  // Dispatches this tick inserted but could not start (state FAILED,
+  // failure_reason set, issue labeled agent:failed).
+  repeated TrackerDispatch failed = 6;
+}
+
+// ListTrackerDispatchesRequest enumerates a connection's dispatch
+// rows, newest first.
+message ListTrackerDispatchesRequest {
+  string username = 1;
+  string connection = 2;
+  // UNSPECIFIED matches any state.
+  TrackerDispatchState state = 3;
+}
+
+message ListTrackerDispatchesResponse {
+  repeated TrackerDispatch dispatches = 1;
+}
+
+// ---------------------------------------------------------------------
+// End dispatch (#2022).
+// ---------------------------------------------------------------------
 
 // GetTrackerStatusRequest probes a named connection's credential live,
 // against the tracker itself.
@@ -355,11 +548,11 @@ message ClaimTrackerIssueResponse {
 }
 
 // SetTrackerIssueLabelsRequest adds and/or removes labels on an issue.
-// The design note calls for checking both lists against a
-// connection-level label allow-list before any upstream call is made;
-// that allow-list does not exist on TrackerConnection yet (tracked
-// separately) — this RPC has no allow-list enforcement of its own
-// until it does.
+// Both lists are checked against the connection's label allow-list
+// (TrackerPolicy.label_allow_list, #2024) BEFORE any upstream call; a
+// run-scoped token can additionally never write the dispatcher's
+// agent:queued / agent:running / agent:done / agent:failed state
+// labels, whatever the allow-list says.
 message SetTrackerIssueLabelsRequest {
   string username = 1;
   string connection = 2;
@@ -370,6 +563,63 @@ message SetTrackerIssueLabelsRequest {
 
 message SetTrackerIssueLabelsResponse {
   string message = 1;
+}
+
+// ---- Issue-triggered role agents: follow-up issues + policy (#2024) ----
+// See docs/architecture/issue-triggered-agents.md ("Chain guards",
+// "CreateTrackerIssue verb"). Routes / dispatch (#2021, #2022) are
+// separate blocks.
+
+// TrackerPolicy is a connection's guardrails for agent-filed follow-ups.
+// Zero values mean the documented defaults, so an unset policy and an
+// empty one behave identically.
+message TrackerPolicy {
+  // Glob patterns ('*' matches any run of characters, case-sensitive)
+  // a label must match to be written through CreateTrackerIssue or
+  // SetTrackerIssueLabels. Default: scope:*, model:*,
+  // agent:needs-approval. The dispatcher's agent:queued / running /
+  // done / failed state labels are reserved: a run-scoped token can
+  // never write them even if a pattern here would match.
+  repeated string label_allow_list = 1;
+
+  // When true, follow-ups filed by a run are NOT gated with
+  // agent:needs-approval. Default false: a human releases every hop.
+  bool auto_chain = 2;
+
+  // Maximum lineage depth of an agent-filed follow-up (a human-created
+  // issue is depth 0). Default 3.
+  int32 max_depth = 3;
+
+  // Maximum follow-ups one run may file. Default 5.
+  int32 max_children_per_run = 4;
+
+  // Run timeout the dispatcher (#2026) applies. Default 3600.
+  int64 run_timeout_seconds = 5;
+}
+
+// CreateTrackerIssueRequest files a follow-up issue. title/body/labels
+// are agent-supplied text: sanitized server-side, labels allow-listed
+// before any upstream call, and the body gets the parent link and the
+// run's identity stamp appended from the verified token — never from a
+// request field.
+message CreateTrackerIssueRequest {
+  string username = 1;
+  string connection = 2;
+  string title = 3;
+  string body = 4;
+
+  // Must every pass the connection's label allow-list. A run-scoped
+  // token's follow-up additionally gets agent:needs-approval unless
+  // the policy enables auto_chain.
+  repeated string labels = 5;
+
+  // Parent issue number. 0 = none — allowed for an operator token
+  // only; a run-scoped token MUST set it (lineage, depth, fan-out).
+  int64 parent_number = 6;
+}
+
+message CreateTrackerIssueResponse {
+  TrackerIssue issue = 1;
 }
 
 // SubmitTrackerChangeRequest publishes the calling run's committed
@@ -455,6 +705,76 @@ service TrackerService {
       tags: "Tracker";
     };
   }
+
+  // --- Scope routes (#2021) -------------------------------------------
+
+  // SetTrackerRoute maps a scope label on a connection to a skill.
+  rpc SetTrackerRoute(SetTrackerRouteRequest) returns (SetTrackerRouteResponse) {
+    option (google.api.http) = {
+      put: "/v1/tracker/{username}/{connection}/routes/{scope}"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Set a tracker scope route";
+      description: "Creates or updates the route that sends issues labeled scope:<scope> on this connection to skill_id. Idempotent. The connection must exist. Requires tracker:admin.";
+      tags: "Tracker";
+    };
+  }
+
+  // ListTrackerRoutes returns a connection's scope routes.
+  rpc ListTrackerRoutes(ListTrackerRoutesRequest) returns (ListTrackerRoutesResponse) {
+    option (google.api.http) = {
+      get: "/v1/tracker/{username}/{connection}/routes"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List tracker scope routes";
+      description: "Lists every scope -> skill route on a tracker connection, ordered by scope. Requires tracker:admin.";
+      tags: "Tracker";
+    };
+  }
+
+  // DeleteTrackerRoute removes one scope route.
+  rpc DeleteTrackerRoute(DeleteTrackerRouteRequest) returns (DeleteTrackerRouteResponse) {
+    option (google.api.http) = {
+      delete: "/v1/tracker/{username}/{connection}/routes/{scope}"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Delete a tracker scope route";
+      description: "Removes the route for scope:<scope> on this connection; issues with that label are no longer dispatched. Requires tracker:admin.";
+      tags: "Tracker";
+    };
+  }
+
+  // --- End scope routes (#2021) ---------------------------------------
+
+  // --- Dispatch (#2022) -----------------------------------------------
+
+  // DispatchTrackerIssues runs one dispatcher tick for a connection.
+  rpc DispatchTrackerIssues(DispatchTrackerIssuesRequest) returns (DispatchTrackerIssuesResponse) {
+    option (google.api.http) = {
+      post: "/v1/tracker/{username}/{connection}/dispatch"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Run one tracker dispatch tick";
+      description: "Lists the connection's open issues and, for each one carrying a routed scope:<role> label and no agent:* state label (and not agent:needs-approval), inserts a durable dispatch row, starts the routed skill through the RunAgentSkill path with the issue reference as input, and labels the issue agent:queued. Exactly once per (issue) across restarts and concurrent dispatchers: a partial unique index on active rows makes the second inserter skip. An unrouted scope label gets exactly one stamped warning comment. Requires tracker:admin (and agents:run, to start the runs).";
+      tags: "Tracker";
+    };
+  }
+
+  // ListTrackerDispatches returns a connection's dispatch rows.
+  rpc ListTrackerDispatches(ListTrackerDispatchesRequest) returns (ListTrackerDispatchesResponse) {
+    option (google.api.http) = {
+      get: "/v1/tracker/{username}/{connection}/dispatches"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List tracker dispatches";
+      description: "Lists a connection's dispatch rows (issue, scope, skill, run id, state, failure reason, timestamps), newest first, optionally filtered by state. Requires tracker:admin.";
+      tags: "Tracker";
+    };
+  }
+
+  // --- End dispatch (#2022) -------------------------------------------
 
   // GetTrackerStatus probes a connection's credential live, against the
   // tracker itself.
@@ -542,6 +862,19 @@ service TrackerService {
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Set labels on a tracker issue";
       description: "Adds and/or removes labels on an issue. Requires tracker:write.";
+      tags: "Tracker";
+    };
+  }
+
+  // CreateTrackerIssue files a follow-up issue (#2024).
+  rpc CreateTrackerIssue(CreateTrackerIssueRequest) returns (CreateTrackerIssueResponse) {
+    option (google.api.http) = {
+      post: "/v1/tracker/{username}/{connection}/issues"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Create a tracker issue";
+      description: "Files an issue on the connection's tracker — the follow-up verb for issue-triggered role agents. Labels must pass the connection's label allow-list (checked before any upstream call). A run-scoped token must name a parent issue: the child is recorded in the issue lineage (depth and per-run fan-out are capped by the connection policy), gets agent:needs-approval unless the policy enables auto_chain, and its body ends with the parent link and the run's identity stamp; the parent gets one back-link comment. Requires tracker:write.";
       tags: "Tracker";
     };
   }

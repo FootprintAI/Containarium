@@ -1547,6 +1547,64 @@ func (c *GRPCClient) DeleteTrackerConnection(username, name string) (string, err
 	return resp.Message, nil
 }
 
+// SetTrackerRoute creates or updates a scope -> skill route on a tracker
+// connection (#2021). Requires tracker:admin.
+func (c *GRPCClient) SetTrackerRoute(req *pb.SetTrackerRouteRequest) (*pb.TrackerRoute, string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.trackerClient.SetTrackerRoute(ctx, req)
+	if err != nil {
+		return nil, "", fmt.Errorf("set tracker route: %w", err)
+	}
+	return resp.Route, resp.Message, nil
+}
+
+// ListTrackerRoutes returns a tracker connection's scope routes (#2021).
+func (c *GRPCClient) ListTrackerRoutes(username, connection string) ([]*pb.TrackerRoute, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.trackerClient.ListTrackerRoutes(ctx, &pb.ListTrackerRoutesRequest{Username: username, Connection: connection})
+	if err != nil {
+		return nil, fmt.Errorf("list tracker routes: %w", err)
+	}
+	return resp.Routes, nil
+}
+
+// DeleteTrackerRoute removes one scope route (#2021).
+func (c *GRPCClient) DeleteTrackerRoute(req *pb.DeleteTrackerRouteRequest) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.trackerClient.DeleteTrackerRoute(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf("delete tracker route: %w", err)
+	}
+	return resp.Message, nil
+}
+
+// DispatchTrackerIssues runs one dispatcher tick (#2022). Same long
+// deadline as the HTTP transport: the tick provisions boxes
+// synchronously.
+func (c *GRPCClient) DispatchTrackerIssues(username, connection string) (*pb.DispatchTrackerIssuesResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), TrackerDispatchTimeout)
+	defer cancel()
+	resp, err := c.trackerClient.DispatchTrackerIssues(ctx, &pb.DispatchTrackerIssuesRequest{Username: username, Connection: connection})
+	if err != nil {
+		return nil, fmt.Errorf("dispatch tracker issues: %w", err)
+	}
+	return resp, nil
+}
+
+// ListTrackerDispatches returns a connection's dispatch rows (#2022).
+func (c *GRPCClient) ListTrackerDispatches(username, connection string, state pb.TrackerDispatchState) ([]*pb.TrackerDispatch, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.trackerClient.ListTrackerDispatches(ctx, &pb.ListTrackerDispatchesRequest{Username: username, Connection: connection, State: state})
+	if err != nil {
+		return nil, fmt.Errorf("list tracker dispatches: %w", err)
+	}
+	return resp.Dispatches, nil
+}
+
 // GetTrackerStatus probes a tracker connection's credential live —
 // reachability, validity, scopes, expiry, and breadth. Longer timeout
 // than the other tracker calls since it makes a real upstream HTTP
@@ -1646,4 +1704,16 @@ func (c *GRPCClient) SetTrackerIssueLabels(req *pb.SetTrackerIssueLabelsRequest)
 		return "", fmt.Errorf("set tracker issue labels: %w", err)
 	}
 	return resp.Message, nil
+}
+
+// CreateTrackerIssue files a follow-up issue on the connection's
+// tracker (#2024).
+func (c *GRPCClient) CreateTrackerIssue(req *pb.CreateTrackerIssueRequest) (*pb.TrackerIssue, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.trackerClient.CreateTrackerIssue(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("create tracker issue: %w", err)
+	}
+	return resp.Issue, nil
 }

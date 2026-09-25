@@ -47,6 +47,16 @@ func (s *ContainerServer) resolveWriterConn(ctx context.Context, username, conne
 	if err != nil {
 		return nil, tracker.Conn{}, mapTrackerError(err)
 	}
+	return s.writerConnFor(ctx, trackerConn)
+}
+
+// writerConnFor is resolveWriterConn's second half: adapter + credential
+// for an already-loaded connection record. Split out (#2024) so verbs
+// that need the record itself first — CreateTrackerIssue and
+// SetTrackerIssueLabels read its policy to allow-list labels BEFORE
+// resolving a credential or touching the tracker — share the same
+// resolution as the rest.
+func (s *ContainerServer) writerConnFor(ctx context.Context, trackerConn *tracker.Connection) (tracker.WriterProvider, tracker.Conn, error) {
 	provider, err := s.trackerWriterFor(trackerConn.Provider)
 	if err != nil {
 		return nil, tracker.Conn{}, status.Errorf(codes.FailedPrecondition, "%v", err)
@@ -54,7 +64,7 @@ func (s *ContainerServer) resolveWriterConn(ctx context.Context, username, conne
 	if s.secretsStore == nil {
 		return nil, tracker.Conn{}, status.Error(codes.Unavailable, "secrets store not configured on this daemon")
 	}
-	cred, err := s.secretsStore.BrokerCredential(ctx, username, trackerConn.CredentialSecret)
+	cred, err := s.secretsStore.BrokerCredential(ctx, trackerConn.Username, trackerConn.CredentialSecret)
 	if err != nil {
 		return nil, tracker.Conn{}, status.Errorf(codes.FailedPrecondition, "resolve broker credential: %v", err)
 	}
@@ -209,8 +219,8 @@ func (s *ContainerServer) ClaimTrackerIssue(ctx context.Context, req *pb.ClaimTr
 	}, nil
 }
 
-// SetTrackerIssueLabels adds and/or removes labels on an issue. No
-// allow-list enforcement yet — see the proto message's doc comment.
+// SetTrackerIssueLabels adds and/or removes labels on an issue, both
+// lists checked against the connection's label allow-list first (#2024).
 func (s *ContainerServer) SetTrackerIssueLabels(ctx context.Context, req *pb.SetTrackerIssueLabelsRequest) (*pb.SetTrackerIssueLabelsResponse, error) {
 	if err := auth.RequireScope(ctx, auth.ScopeTrackerWrite); err != nil {
 		return nil, err
@@ -228,19 +238,39 @@ func (s *ContainerServer) SetTrackerIssueLabels(ctx context.Context, req *pb.Set
 		return nil, status.Error(codes.InvalidArgument, "add_labels or remove_labels is required")
 	}
 
-	provider, conn, err := s.resolveWriterConn(ctx, req.Username, req.Connection)
+	// Allow-list (#2024): both lists, against the connection's policy,
+	// BEFORE resolving a credential or making any upstream call. A
+	// run-scoped token can never touch the dispatcher's state labels.
+	if err := enforceConnectionBinding(ctx, req.Connection); err != nil {
+		return nil, err
+	}
+	record, err := s.trackerStore.Get(ctx, req.Username, req.Connection)
+	if err != nil {
+		return nil, mapTrackerError(err)
+	}
+	runID, isRun := auth.RunIDFromGRPCContext(ctx)
+	isRun = isRun && runID != ""
+	policy := tracker.PolicyFromProto(record.Policy)
+	// Trim first (same as CreateTrackerIssue), so "agent:done " is judged —
+	// and rejected — as the reserved label it is (review of #2034).
+	add, remove := trimLabels(req.AddLabels), trimLabels(req.RemoveLabels)
+	if err := policy.CheckLabels(append(append([]string(nil), add...), remove...), isRun); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	provider, conn, err := s.writerConnFor(ctx, record)
 	if err != nil {
 		return nil, err
 	}
-	if err := provider.SetLabels(ctx, conn, req.Number, req.AddLabels, req.RemoveLabels); err != nil {
+	if err := provider.SetLabels(ctx, conn, req.Number, add, remove); err != nil {
 		return nil, mapProviderError(err)
 	}
 
 	s.auditTrackerWrite(ctx, "tracker.set_labels", req.Username, req.Connection, req.Number, trackerLabelsAuditDetail{
 		Connection:   req.Connection,
 		Number:       req.Number,
-		AddLabels:    req.AddLabels,
-		RemoveLabels: req.RemoveLabels,
+		AddLabels:    add,
+		RemoveLabels: remove,
 	})
 	return &pb.SetTrackerIssueLabelsResponse{Message: "labels updated"}, nil
 }

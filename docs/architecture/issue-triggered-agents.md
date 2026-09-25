@@ -132,6 +132,28 @@ skips. The label is written only by the winner. This is the whole
 correctness argument for #2022's third criterion, and it is tested against
 a real Postgres (below), not a mock.
 
+The index covers only *active* rows, so it cannot stop a stale list from
+re-running an issue a peer has already finished (row `done`, labels
+`agent:done`, scope label removed — all between this tick's list and its
+insert). So after winning the insert the tick re-reads the issue (#2023)
+and starts the run only if it is still open, still carries the routed
+scope label, and has no state or gate label; otherwise it deletes its
+never-started `queued` row and skips. `agent:running` is projected
+synchronously before the in-box agent is launched, so any row that reaches
+`done` has already put a state label on the forge by the time a peer
+re-reads it.
+
+### Run workspace (#2023)
+
+A dispatched run's `git_source` is the connection's own repository
+(`remoteURLFor`, the same URL `SubmitTrackerChange` pushes to), fetched
+**without a credential** — the broker credential never enters the box.
+The fetch is best-effort for dispatched runs only: a private repository
+yields no workspace, the run still reads the issue and comments, and
+`SubmitTrackerChange` answers `FAILED_PRECONDITION` (no recorded
+`git_commit`), in which case the skill puts the document in its comment.
+A daemon-side fetch for private repositories is a follow-up.
+
 ### Data flow of the run input
 
 The run's `input_json` is not free-form: it is the protojson encoding of
@@ -279,10 +301,10 @@ message DispatchTrackerIssuesResponse {
 
 | RPC | Scope | REST (`google.api.http`) |
 | --- | --- | --- |
-| `SetTrackerRoute` / `ListTrackerRoutes` / `DeleteTrackerRoute` | `tracker:admin` | `PUT/GET/DELETE /v1/users/{username}/tracker/{connection}/routes[/{scope}]` |
-| `DispatchTrackerIssues` | `tracker:admin` | `POST /v1/users/{username}/tracker/{connection}/dispatch` |
-| `ListTrackerDispatches` | `tracker:admin` | `GET /v1/users/{username}/tracker/{connection}/dispatches` |
-| `CreateTrackerIssue` | `tracker:write` (run or operator) | `POST /v1/users/{username}/tracker/{connection}/issues` |
+| `SetTrackerRoute` / `ListTrackerRoutes` / `DeleteTrackerRoute` | `tracker:admin` | `PUT/GET/DELETE /v1/tracker/{username}/{connection}/routes[/{scope}]` |
+| `DispatchTrackerIssues` | `tracker:admin` | `POST /v1/tracker/{username}/{connection}/dispatch` |
+| `ListTrackerDispatches` | `tracker:admin` | `GET /v1/tracker/{username}/{connection}/dispatches` |
+| `CreateTrackerIssue` | `tracker:write` (run or operator) | `POST /v1/tracker/{username}/{connection}/issues` |
 
 `TrackerPolicy` is set through the existing `SetTrackerConnection`
 (`tracker connect … --label-allow … --auto-chain --max-depth …`).
