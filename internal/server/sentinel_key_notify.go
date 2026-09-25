@@ -82,6 +82,28 @@ func (s *ContainerServer) notifySentinelKeyChange(ctx context.Context, reason st
 	log.Printf("[keysync-notify] sentinel resynced after %s: %d users routed (coalesced=%v)", reason, resp.Users, resp.Coalesced)
 }
 
+// sentinelConfigWarning returns a startup warning when this daemon holds the
+// sentinel HMAC secret but was given no sentinel URL, or "" when the
+// configuration is coherent. notifySentinelKeyChange returns silently on an
+// empty URL (correct for a standalone daemon), so without this a
+// sentinel-fronted daemon that lost its --sentinel-url runs with event-driven
+// key resync and self-upgrade off and nothing in the log says so: every new
+// box then waits for the sentinel's periodic poll before SSH works.
+func sentinelConfigWarning(sentinelURL string, secret []byte) string {
+	if sentinelURL != "" || len(secret) == 0 {
+		return ""
+	}
+	return "[sentinel] CONTAINARIUM_SENTINEL_AUTH_SECRET is set but no sentinel URL is configured: " +
+		"event-driven SSH key resync and self-upgrade are disabled (new boxes may wait up to ~2 min for SSH). " +
+		"Start the daemon with --sentinel-url (or set CONTAINARIUM_SENTINEL_URL)"
+}
+
+// SentinelConfigWarning is sentinelConfigWarning over the process's own
+// sentinel secret, for the daemon to log once at startup.
+func SentinelConfigWarning(sentinelURL string) string {
+	return sentinelConfigWarning(sentinelURL, loadSentinelHMACSecret())
+}
+
 // postKeyResync sends one signed resync request and decodes the reply. Split
 // from notifySentinelKeyChange so the wire contract is testable without a
 // wired ContainerServer.

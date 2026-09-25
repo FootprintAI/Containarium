@@ -262,6 +262,37 @@ func TestKeyResyncHandler_MissingBackendIDFallsBackToRemoteAddr(t *testing.T) {
 	}
 }
 
+// A direct (non-tunnel) backend's daemon identifies itself by its own
+// hostname-derived local backend ID, which the sentinel knows under a
+// different name. The push used to 404 "unknown backend" for every such
+// daemon even though the request's source IP identified it exactly, leaving
+// its boxes on the periodic-poll latency. An unknown ID must therefore fall
+// back to the source IP, while a request that matches neither still 404s
+// (TestKeyResyncHandler_UnknownBackend).
+func TestKeyResyncHandler_UnknownBackendIDFallsBackToRemoteAddr(t *testing.T) {
+	backend := newBackendKeyServer(t, gateway.UserKeys{Username: "cld-a", AuthorizedKeys: "ssh-ed25519 AAAA_a a@b"})
+	ip, port := backend.hostPort(t)
+	m := &Manager{
+		config:   Config{HealthPort: port},
+		backends: NewBackendPool(),
+		keyStore: NewKeyStore(),
+	}
+	m.backends.Add(&Backend{ID: "gcp", IP: ip, Healthy: true})
+
+	buf, _ := json.Marshal(KeyResyncRequest{BackendID: "the-daemons-own-hostname", Reason: "add_ssh_key cld-a"})
+	req := httptest.NewRequest(http.MethodPost, "/sentinel/keys/resync", bytes.NewReader(buf))
+	req.RemoteAddr = fmt.Sprintf("%s:54321", ip)
+	rec := httptest.NewRecorder()
+	m.KeyResyncHandler()(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %q; want 200 (unknown ID resolved by source IP)", rec.Code, rec.Body.String())
+	}
+	if got := syncedUsers(m.keyStore, "gcp"); len(got) != 1 {
+		t.Fatalf("synced users = %v, want 1 (the box added after the last tick)", got)
+	}
+}
+
 func TestKeyResyncHandler_RejectsNonPost(t *testing.T) {
 	backend := newBackendKeyServer(t)
 	m := managerWithBackend(t, "backend-a", backend)

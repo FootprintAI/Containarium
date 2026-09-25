@@ -110,3 +110,36 @@ func TestNotifySentinelKeyChange_NoSentinelIsNoOp(t *testing.T) {
 	s = &ContainerServer{peerPool: NewPeerPool("backend-a", "", nil, "pool-a")}
 	s.notifySentinelKeyChange(context.Background(), "create_container test")
 }
+
+// A daemon holding the sentinel HMAC secret is part of a sentinel-fronted
+// deployment, so an empty sentinel URL there silently turns off event-driven
+// key resync (and self-upgrade) — the warning must name both and the fix.
+// A genuinely standalone daemon (no secret) must stay quiet.
+func TestSentinelConfigWarning(t *testing.T) {
+	tests := []struct {
+		name     string
+		url      string
+		secret   []byte
+		wantWarn bool
+	}{
+		{"sentinel-fronted daemon with URL", "http://10.0.0.5:8081", testHMACSecret, false},
+		{"secret set but no URL", "", testHMACSecret, true},
+		{"standalone daemon (neither)", "", nil, false},
+		{"URL without secret is left to the existing #687 warning", "http://10.0.0.5:8081", nil, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sentinelConfigWarning(tt.url, tt.secret)
+			if (got != "") != tt.wantWarn {
+				t.Fatalf("sentinelConfigWarning(%q, secret len %d) = %q, want warning=%v", tt.url, len(tt.secret), got, tt.wantWarn)
+			}
+			if tt.wantWarn {
+				for _, want := range []string{"--sentinel-url", "key resync", "self-upgrade"} {
+					if !strings.Contains(got, want) {
+						t.Errorf("warning %q does not mention %q", got, want)
+					}
+				}
+			}
+		})
+	}
+}

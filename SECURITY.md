@@ -143,3 +143,12 @@ before treating it as a security boundary is in the
 Security reports help keep Containarium operators safe. We're
 grateful to everyone who takes the time to find and report
 vulnerabilities responsibly.
+
+## Acknowledgments
+
+We thank the following people for responsibly reporting vulnerabilities.
+
+| Date | Reporter | Advisory | Severity | Summary |
+| ---- | -------- | -------- | -------- | ------- |
+| 2026-09-24 | awaiiro | [GHSA-95q2-wf27-c7c7](https://github.com/FootprintAI/Containarium/security/advisories/GHSA-95q2-wf27-c7c7) | Critical | gRPC control plane caller identity |
+| 2026-09-16 | Furkan Arslan | [GHSA-vmxr-r78x-mprm](https://github.com/FootprintAI/Containarium/security/advisories/GHSA-vmxr-r78x-mprm) | Medium | Egress proxy tenant-ownership check |
