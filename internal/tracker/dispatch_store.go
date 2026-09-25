@@ -346,3 +346,16 @@ func (s *Store) ForgetDispatchWarning(ctx context.Context, username, connection 
 	}
 	return nil
 }
+
+// DeleteQueuedDispatch removes a QUEUED row whose run was never started
+// — the tick's post-insert re-read (#2023) found the issue no longer
+// dispatchable (a peer finished it after this tick's list, or a human
+// changed its labels). Only a QUEUED row can be removed; a row that
+// moved on returns (false, nil).
+func (s *Store) DeleteQueuedDispatch(ctx context.Context, id string) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM tracker_dispatches WHERE id = $1 AND state = 'queued'`, id)
+	if err != nil {
+		return false, fmt.Errorf("delete queued tracker dispatch: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}

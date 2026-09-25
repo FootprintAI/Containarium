@@ -294,3 +294,34 @@ func TestDispatchStore_WarningRecordedOnce(t *testing.T) {
 func containsFold(s, sub string) bool {
 	return strings.Contains(strings.ToLower(s), strings.ToLower(sub))
 }
+
+// TestDispatchStore_DeleteQueuedOnly: an abandoned (never started) row
+// can be removed while QUEUED; a row that moved on cannot.
+func TestDispatchStore_DeleteQueuedOnly(t *testing.T) {
+	store, ctx := newTrackerTestStore(t)
+	const user = "tracker-dispatch-delete-queued"
+	seedDispatchConnection(t, store, ctx, user)
+
+	row, err := store.InsertDispatch(ctx, newDispatch(user, 1))
+	if err != nil {
+		t.Fatalf("InsertDispatch: %v", err)
+	}
+	if ok, err := store.DeleteQueuedDispatch(ctx, row.ID); err != nil || !ok {
+		t.Fatalf("DeleteQueuedDispatch(queued) = (%v, %v), want (true, nil)", ok, err)
+	}
+	if _, err := store.GetDispatch(ctx, row.ID); !errors.Is(err, ErrDispatchNotFound) {
+		t.Fatalf("GetDispatch after delete = %v, want ErrDispatchNotFound", err)
+	}
+
+	row, err = store.InsertDispatch(ctx, newDispatch(user, 1))
+	if err != nil {
+		t.Fatalf("InsertDispatch (after delete): %v", err)
+	}
+	if ok, err := store.TransitionDispatch(ctx, row.ID, pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_QUEUED,
+		pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_RUNNING, "", time.Now()); err != nil || !ok {
+		t.Fatalf("mark running = (%v, %v)", ok, err)
+	}
+	if ok, err := store.DeleteQueuedDispatch(ctx, row.ID); err != nil || ok {
+		t.Fatalf("DeleteQueuedDispatch(running) = (%v, %v), want (false, nil)", ok, err)
+	}
+}

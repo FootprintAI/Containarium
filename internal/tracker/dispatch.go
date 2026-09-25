@@ -29,6 +29,7 @@ import (
 // Every WriterProvider satisfies it.
 type DispatchProvider interface {
 	ListIssues(ctx context.Context, c Conn, f IssueFilter) ([]Issue, error)
+	GetIssue(ctx context.Context, c Conn, number int64) (Issue, error)
 	SetLabels(ctx context.Context, c Conn, number int64, add, remove []string) error
 	Comment(ctx context.Context, c Conn, number int64, body string) (Comment, error)
 }
@@ -42,6 +43,13 @@ type StartRunRequest struct {
 	SkillID    string
 	RunID      string
 	InputJSON  string
+	// RepoURL is the connection's repository (credential-free HTTPS
+	// clone URL), so the run has a workspace to submit a doc change
+	// from (#2023). Empty when the caller did not resolve one.
+	RepoURL string
+	// Lifecycle reports the run's start and end back to the dispatch
+	// row (#2023). Never nil from Tick.
+	Lifecycle RunLifecycle
 }
 
 // RunStarter starts a skill run bound to the connection. It returns once
@@ -49,6 +57,10 @@ type StartRunRequest struct {
 // finish. The production implementation goes through the same internal
 // path as RunAgentSkill. At 10x this is the seam a durable pull queue
 // slots in behind.
+//
+// A starter that accepts a run must call req.Lifecycle.RunStarted once
+// the run is registered and before its agent is launched, and
+// req.Lifecycle.RunEnded exactly once when the run ends.
 type RunStarter interface {
 	StartRun(ctx context.Context, req StartRunRequest) error
 }
@@ -59,6 +71,7 @@ type DispatchStore interface {
 	InsertDispatch(ctx context.Context, d Dispatch) (*Dispatch, error)
 	TransitionDispatch(ctx context.Context, id string, from, to pb.TrackerDispatchState, reason string, at time.Time) (bool, error)
 	SetDispatchLabelsPending(ctx context.Context, id string, pending bool) error
+	DeleteQueuedDispatch(ctx context.Context, id string) (bool, error)
 	RecordDispatchWarning(ctx context.Context, username, connection string, issue int64, scope string) (bool, error)
 	ForgetDispatchWarning(ctx context.Context, username, connection string, issue int64, scope string) error
 }
@@ -74,6 +87,9 @@ type Dispatcher struct {
 	Conn  Conn
 	Runs  RunStarter
 	Clock Clock
+	// RepoURL is the connection's repository clone URL, handed to every
+	// run this dispatcher starts (StartRunRequest.RepoURL).
+	RepoURL string
 	// NewRunID mints the run id recorded on the row before the run
 	// starts. nil uses a random UUID.
 	NewRunID func() string
@@ -163,12 +179,36 @@ func (d *Dispatcher) Tick(ctx context.Context, username, connection string) (Tic
 			return res, fmt.Errorf("insert dispatch for #%d: %w", issue.Number, err)
 		}
 
+		// Re-read before starting anything (#2023): the list above can be
+		// stale. A peer may have dispatched this issue AND finished it
+		// between our list and our insert — its row is terminal, so the
+		// insert succeeded, but the issue now carries agent:done and no
+		// scope label. Starting here would be a second run.
+		if keep, err := d.stillDispatchable(ctx, row, scope); err != nil {
+			return res, err
+		} else if !keep {
+			res.SkippedActive++
+			continue
+		}
+
+		// The row is authoritative; the label is its projection. It goes
+		// on before the start (provisioning can take minutes) and a forge
+		// failure leaves labels_pending for the retry (#2026).
+		if err := d.Provider.SetLabels(ctx, d.Conn, issue.Number, []string{LabelAgentQueued}, nil); err != nil {
+			if perr := d.Store.SetDispatchLabelsPending(ctx, row.ID, true); perr != nil {
+				return res, fmt.Errorf("mark labels pending for #%d: %w", issue.Number, perr)
+			}
+			row.LabelsPending = true
+		}
+
 		input, err := dispatchInputJSON(row)
 		if err != nil {
 			return res, err
 		}
+		lc := &dispatchRun{d: d, row: *row}
 		if startErr := d.Runs.StartRun(ctx, StartRunRequest{
 			Username: username, Connection: connection, SkillID: skillID, RunID: row.RunID, InputJSON: input,
+			RepoURL: d.RepoURL, Lifecycle: lc,
 		}); startErr != nil {
 			failed, err := d.failStart(ctx, row, startErr)
 			if err != nil {
@@ -177,18 +217,47 @@ func (d *Dispatcher) Tick(ctx context.Context, username, connection string) (Tic
 			res.Failed = append(res.Failed, *failed)
 			continue
 		}
-
-		// The row is authoritative; the label is its projection. A
-		// forge failure here leaves labels_pending for the retry (#2026).
-		if err := d.Provider.SetLabels(ctx, d.Conn, issue.Number, []string{LabelAgentQueued}, nil); err != nil {
-			if perr := d.Store.SetDispatchLabelsPending(ctx, row.ID, true); perr != nil {
-				return res, fmt.Errorf("mark labels pending for #%d: %w", issue.Number, perr)
-			}
-			row.LabelsPending = true
+		if lc.started.Load() {
+			row.State = pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_RUNNING
 		}
 		res.Started = append(res.Started, *row)
 	}
 	return res, nil
+}
+
+// stillDispatchable re-reads the issue after this tick won the insert
+// and reports whether it is still open, still carries the routed scope
+// label, and carries no state or gate label. When it is not — or the
+// re-read fails — the never-started row is removed so the issue is
+// neither double-run nor locked, and the caller skips it this tick.
+// The only error returned is a store error.
+func (d *Dispatcher) stillDispatchable(ctx context.Context, row *Dispatch, scope string) (bool, error) {
+	fresh, err := d.Provider.GetIssue(ctx, d.Conn, row.IssueNumber)
+	keep := err == nil &&
+		fresh.State != pb.TrackerIssueState_TRACKER_ISSUE_STATE_CLOSED &&
+		containsExact(fresh.Labels, ScopeLabelPrefix+scope) &&
+		!hasAnyLabel(fresh.Labels, LabelNeedsApproval) &&
+		!hasAnyLabel(fresh.Labels, ReservedStateLabels...)
+	if keep {
+		return true, nil
+	}
+	// Detached: a cancelled tick must not leave a QUEUED row behind
+	// that locks the issue.
+	dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), failureBookkeepingBudget)
+	defer cancel()
+	if _, derr := d.Store.DeleteQueuedDispatch(dctx, row.ID); derr != nil {
+		return false, fmt.Errorf("abandon dispatch for #%d: %w", row.IssueNumber, derr)
+	}
+	return false, nil
+}
+
+func containsExact(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 // failureBookkeepingBudget bounds failStart's store and forge writes
@@ -219,7 +288,7 @@ func (d *Dispatcher) failStart(tickCtx context.Context, row *Dispatch, startErr 
 	out.FailureReason = reason
 	out.EndedAt = now
 
-	labelErr := d.Provider.SetLabels(ctx, d.Conn, row.IssueNumber, []string{LabelAgentFailed}, nil)
+	labelErr := d.Provider.SetLabels(ctx, d.Conn, row.IssueNumber, []string{LabelAgentFailed}, []string{LabelAgentQueued})
 	body := Sanitize(fmt.Sprintf("The agent run for `%s%s` could not be started (dispatch `%s`). "+
 		"An operator can see the reason with `containarium tracker dispatches <username> <connection> --state failed`. "+
 		"To retry, remove `%s` and re-add the scope label.",
@@ -292,6 +361,7 @@ func dispatchInputJSON(row *Dispatch) (string, error) {
 		Scope:       row.Scope,
 		DispatchId:  row.ID,
 		Depth:       row.Depth,
+		Username:    row.Username,
 	})
 	if err != nil {
 		return "", fmt.Errorf("encode dispatch input: %w", err)

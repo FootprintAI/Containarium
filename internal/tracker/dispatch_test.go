@@ -24,6 +24,7 @@ type fakeDispatchProvider struct {
 	comments map[int64][]string
 	listErr  error
 	labelErr error
+	getErr   error
 }
 
 func newFakeDispatchProvider(issues ...Issue) *fakeDispatchProvider {
@@ -88,6 +89,24 @@ func (f *fakeDispatchProvider) Comment(_ context.Context, _ Conn, number int64, 
 	defer f.mu.Unlock()
 	f.comments[number] = append(f.comments[number], body)
 	return Comment{Body: body}, nil
+}
+
+// GetIssue returns the issue's CURRENT state — the dispatcher's
+// post-insert re-read (#2023) sees what a peer or a human changed after
+// the tick's list.
+func (f *fakeDispatchProvider) GetIssue(_ context.Context, _ Conn, number int64) (Issue, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.getErr != nil {
+		return Issue{}, f.getErr
+	}
+	is, ok := f.issues[number]
+	if !ok {
+		return Issue{}, errors.New("no such issue")
+	}
+	cp := *is
+	cp.Labels = append([]string(nil), is.Labels...)
+	return cp, nil
 }
 
 // relabel replaces an issue's labels, as a human would.

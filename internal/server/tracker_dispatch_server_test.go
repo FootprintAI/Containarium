@@ -89,9 +89,9 @@ func TestListTrackerDispatches_CrossTenantDenied(t *testing.T) {
 // RunStarter. Then ListTrackerDispatches shows the row.
 func TestDispatchTrackerIssues_TickThroughRPC(t *testing.T) {
 	const user = "tracker-dispatch-rpc"
-	provider := &fakeWriterProvider{fakeReaderProvider: fakeReaderProvider{issues: []tracker.Issue{
-		{Number: 42, Title: "idea", Body: "the body", State: pb.TrackerIssueState_TRACKER_ISSUE_STATE_OPEN, Labels: []string{"scope:product"}},
-	}}}
+	issue := tracker.Issue{Number: 42, Title: "idea", Body: "the body", State: pb.TrackerIssueState_TRACKER_ISSUE_STATE_OPEN, Labels: []string{"scope:product"}}
+	// issue is also what the dispatcher's post-insert re-read (#2023) sees.
+	provider := &fakeWriterProvider{fakeReaderProvider: fakeReaderProvider{issues: []tracker.Issue{issue}, issue: issue}}
 	ctx := context.Background()
 	// Start from no dispatch rows: they cascade from the connection, which
 	// setUpWriterConnection only upserts.
