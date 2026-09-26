@@ -101,6 +101,13 @@ func buildWorkspaceSeedScript(seedDir string, seed workspaceSeed) string {
 const (
 	runExitReason         = "run_exit"
 	provisionFailedReason = "provision_failed"
+	// dispatchSweepReason: the tracker dispatcher's sweep ended the run's
+	// lease because it outlived the connection's run timeout (#2026).
+	dispatchSweepReason = "dispatch_sweep"
+	// dispatchEndedBeforeLaunchReason: the run finished provisioning after
+	// its dispatch row had already been failed (the sweep timed it out
+	// mid-provision), so it was torn down before its agent launched.
+	dispatchEndedBeforeLaunchReason = "dispatch_ended_before_launch"
 )
 
 // endRunLeaseCeiling is the design's 6s cap on the REVOCATION half of ending a
@@ -189,6 +196,11 @@ type AgentSkillServer struct {
 	// nil-guarded at each call site rather than inside Registry itself,
 	// matching this file's existing convention for audit/revocations.
 	runs *runlease.Registry
+	// dispatched tracks the tracker-dispatched runs this daemon holds
+	// (#2026), from StartRun until their end has been reported, so the
+	// dispatcher's sweep can tell a live run from a lost one and end a
+	// timed-out run's lease exactly once. Zero value is ready to use.
+	dispatched dispatchedRuns
 	// platformMCPPort is the daemon HTTP port an in-box platform MCP dials
 	// (#1922 D4). Zero (the default, and every daemon that hasn't wired it)
 	// means no run is given tracker tools: platformMCPSeedScript refuses to

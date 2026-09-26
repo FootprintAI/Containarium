@@ -36,12 +36,19 @@ type Dispatch struct {
 	Depth         int32
 	State         pb.TrackerDispatchState
 	FailureReason string
+	// Failure is the typed cause of a FAILED row (#2026); UNSPECIFIED
+	// otherwise.
+	Failure pb.TrackerDispatchFailure
 	// LabelsPending is set when the forge label write that projects
 	// State failed; the retry is #2026's.
 	LabelsPending bool
-	CreatedAt     time.Time
-	StartedAt     time.Time
-	EndedAt       time.Time
+	// CreatedAt is when the row was inserted — immediately before the
+	// issue is labelled agent:queued, so it is the "label applied" end of
+	// the latency metric. InsertDispatch takes it from the caller's clock
+	// when set, so every timestamp on a row comes from one clock.
+	CreatedAt time.Time
+	StartedAt time.Time
+	EndedAt   time.Time
 }
 
 // ErrDispatchActive is returned by InsertDispatch when the issue already
@@ -82,6 +89,9 @@ const dispatchSchema = `
 		ended_at       TIMESTAMPTZ,
 		FOREIGN KEY (username, connection) REFERENCES tracker_connections (username, name) ON DELETE CASCADE
 	);
+
+	-- The typed cause of a failed row (#2026); '' when not failed.
+	ALTER TABLE tracker_dispatches ADD COLUMN IF NOT EXISTS failure TEXT NOT NULL DEFAULT '';
 
 	-- The exactly-once guarantee (#2022).
 	CREATE UNIQUE INDEX IF NOT EXISTS tracker_dispatches_active
@@ -136,6 +146,38 @@ func dispatchStateFromString(s string) pb.TrackerDispatchState {
 	}
 }
 
+// dispatchFailureToString / dispatchFailureFromString convert the typed
+// failure cause at the store boundary.
+func dispatchFailureToString(f pb.TrackerDispatchFailure) (string, error) {
+	switch f {
+	case pb.TrackerDispatchFailure_TRACKER_DISPATCH_FAILURE_START_ERROR:
+		return "start_error", nil
+	case pb.TrackerDispatchFailure_TRACKER_DISPATCH_FAILURE_RUN_ERROR:
+		return "run_error", nil
+	case pb.TrackerDispatchFailure_TRACKER_DISPATCH_FAILURE_TIMEOUT:
+		return "timeout", nil
+	case pb.TrackerDispatchFailure_TRACKER_DISPATCH_FAILURE_LEASE_LOST:
+		return "lease_lost", nil
+	default:
+		return "", fmt.Errorf("tracker: unknown dispatch failure %v", f)
+	}
+}
+
+func dispatchFailureFromString(s string) pb.TrackerDispatchFailure {
+	switch s {
+	case "start_error":
+		return pb.TrackerDispatchFailure_TRACKER_DISPATCH_FAILURE_START_ERROR
+	case "run_error":
+		return pb.TrackerDispatchFailure_TRACKER_DISPATCH_FAILURE_RUN_ERROR
+	case "timeout":
+		return pb.TrackerDispatchFailure_TRACKER_DISPATCH_FAILURE_TIMEOUT
+	case "lease_lost":
+		return pb.TrackerDispatchFailure_TRACKER_DISPATCH_FAILURE_LEASE_LOST
+	default:
+		return pb.TrackerDispatchFailure_TRACKER_DISPATCH_FAILURE_UNSPECIFIED
+	}
+}
+
 // validDispatchTransition is the state machine: out of an active state
 // only, forward only. queued->done is allowed (a run can end before
 // anything marked it running).
@@ -178,14 +220,19 @@ func (s *Store) InsertDispatch(ctx context.Context, d Dispatch) (*Dispatch, erro
 	out.State = pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_QUEUED
 	out.FailureReason = ""
 	out.LabelsPending = false
+	out.Failure = pb.TrackerDispatchFailure_TRACKER_DISPATCH_FAILURE_UNSPECIFIED
 	out.StartedAt, out.EndedAt = time.Time{}, time.Time{}
+	var createdAt *time.Time
+	if !d.CreatedAt.IsZero() {
+		createdAt = &d.CreatedAt
+	}
 
 	const q = `
-		INSERT INTO tracker_dispatches (id, username, connection, issue_number, scope, skill_id, run_id, depth, state)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'queued')
+		INSERT INTO tracker_dispatches (id, username, connection, issue_number, scope, skill_id, run_id, depth, state, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'queued', COALESCE($9::timestamptz, NOW()))
 		RETURNING created_at
 	`
-	if err := s.pool.QueryRow(ctx, q, out.ID, d.Username, d.Connection, d.IssueNumber, d.Scope, d.SkillID, d.RunID, d.Depth).
+	if err := s.pool.QueryRow(ctx, q, out.ID, d.Username, d.Connection, d.IssueNumber, d.Scope, d.SkillID, d.RunID, d.Depth, createdAt).
 		Scan(&out.CreatedAt); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) {
@@ -233,6 +280,35 @@ func (s *Store) TransitionDispatch(ctx context.Context, id string, from, to pb.T
 	return tag.RowsAffected() == 1, nil
 }
 
+// FailDispatch is the compare-and-set into FAILED with a typed cause
+// (#2026): it moves the row from `from` (QUEUED or RUNNING) to FAILED
+// only if it is still in `from`, stamping ended_at, failure_reason and
+// failure. A lost race returns (false, nil), so of any number of
+// concurrent failers (a timeout sweep, the run's own end, a peer
+// dispatcher) exactly one reports the failure.
+func (s *Store) FailDispatch(ctx context.Context, id string, from pb.TrackerDispatchState, failure pb.TrackerDispatchFailure, reason string, at time.Time) (bool, error) {
+	if !validDispatchTransition(from, pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_FAILED) {
+		return false, fmt.Errorf("%w: %v -> FAILED", ErrInvalidDispatchTransition, from)
+	}
+	fromStr, err := dispatchStateToString(from)
+	if err != nil {
+		return false, err
+	}
+	failureStr, err := dispatchFailureToString(failure)
+	if err != nil {
+		return false, err
+	}
+	const q = `
+		UPDATE tracker_dispatches SET state = 'failed', ended_at = $3, failure_reason = $4, failure = $5
+		WHERE id = $1 AND state = $2
+	`
+	tag, err := s.pool.Exec(ctx, q, id, fromStr, at, reason, failureStr)
+	if err != nil {
+		return false, fmt.Errorf("fail tracker dispatch: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
 // SetDispatchLabelsPending records whether the forge still lags the
 // row's state.
 func (s *Store) SetDispatchLabelsPending(ctx context.Context, id string, pending bool) error {
@@ -247,17 +323,18 @@ func (s *Store) SetDispatchLabelsPending(ctx context.Context, id string, pending
 }
 
 const dispatchColumns = `id, username, connection, issue_number, scope, skill_id, run_id, depth, state,
-	failure_reason, labels_pending, created_at, started_at, ended_at`
+	failure_reason, failure, labels_pending, created_at, started_at, ended_at`
 
 func scanDispatch(row pgx.Row) (*Dispatch, error) {
 	var d Dispatch
-	var state string
+	var state, failure string
 	var startedAt, endedAt *time.Time
 	if err := row.Scan(&d.ID, &d.Username, &d.Connection, &d.IssueNumber, &d.Scope, &d.SkillID, &d.RunID, &d.Depth,
-		&state, &d.FailureReason, &d.LabelsPending, &d.CreatedAt, &startedAt, &endedAt); err != nil {
+		&state, &d.FailureReason, &failure, &d.LabelsPending, &d.CreatedAt, &startedAt, &endedAt); err != nil {
 		return nil, err
 	}
 	d.State = dispatchStateFromString(state)
+	d.Failure = dispatchFailureFromString(failure)
 	if startedAt != nil {
 		d.StartedAt = *startedAt
 	}

@@ -204,8 +204,13 @@ func printDispatchTick(resp *pb.DispatchTrackerIssuesResponse) {
 	for _, d := range resp.GetFailed() {
 		fmt.Printf("%s failed  #%d %s%s -> %s: %s\n", ts, d.GetIssueNumber(), scopeLabelPrefix, d.GetScope(), d.GetSkillId(), d.GetFailureReason())
 	}
-	fmt.Printf("%s tick: started=%d failed=%d skipped approval=%d active=%d unrouted=%d\n", ts,
-		len(resp.GetStarted()), len(resp.GetFailed()),
+	for _, d := range resp.GetTimedOut() {
+		cause := strings.ToLower(strings.TrimPrefix(d.GetFailure().String(), "TRACKER_DISPATCH_FAILURE_"))
+		fmt.Printf("%s swept   #%d %s%s -> %s (run %s) %s: %s\n", ts, d.GetIssueNumber(), scopeLabelPrefix, d.GetScope(), d.GetSkillId(),
+			d.GetRunId(), cause, d.GetFailureReason())
+	}
+	fmt.Printf("%s tick: started=%d failed=%d timed_out=%d skipped approval=%d active=%d unrouted=%d\n", ts,
+		len(resp.GetStarted()), len(resp.GetFailed()), len(resp.GetTimedOut()),
 		resp.GetSkippedNeedsApproval(), resp.GetSkippedActive(), resp.GetSkippedUnrouted())
 }
 

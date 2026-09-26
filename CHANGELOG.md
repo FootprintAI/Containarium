@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Tracker dispatch: failed or stuck runs say so on the issue.** Each
+  `tracker dispatch` tick first sweeps the connection's active dispatch
+  rows: a run still active past the connection's `--run-timeout` (default
+  1h) is failed `TIMEOUT` and, if provisioned, has its lease ended (JWTs
+  revoked, seed wiped); a run that times out while still provisioning is
+  torn down as soon as provisioning returns (its lease ended, its agent
+  never launched) instead of running on with live credentials under an
+  issue that already says `agent:failed`. A hung lease end can no longer
+  swallow the failure comment: the lease end and the issue projection run
+  on independent budgets. A row whose run this daemon no longer holds (a daemon restart,
+  or a tick that died before starting its run) is failed `LEASE_LOST` after
+  a 5-minute grace, so a stranded `queued` row no longer locks its issue.
+  Every failure — start error, run error, timeout, lost lease — is a
+  compare-and-set that reports once: `agent:failed` plus one stamped comment
+  naming the run id and the reason (never the raw error). `TrackerDispatch`
+  gains a typed `failure` cause (`TrackerDispatchFailure`), swept rows come
+  back in `DispatchTrackerIssuesResponse.timed_out`, and the daemon emits
+  `containarium.tracker.dispatch.terminal` (count by state, cause, scope) and
+  `containarium.tracker.dispatch.result_latency` (label applied → result).
+  (#2026)
+
 - **`containarium tracker issue create` — agent-filed follow-up issues on
   GitHub and GitLab.** New `CreateTrackerIssue` RPC (`tracker:write`) with a
   `Provider.CreateIssue` on both adapters, proven equivalent by the

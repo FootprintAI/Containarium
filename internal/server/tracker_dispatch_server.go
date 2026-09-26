@@ -77,6 +77,13 @@ func (s *ContainerServer) DispatchTrackerIssues(ctx context.Context, req *pb.Dis
 		// from the connection record like SubmitTrackerChange's push
 		// target — never from the issue or the box (#2023).
 		RepoURL: remoteURLFor(record.Provider, record.BaseURL, record.Project),
+		// The sweep (#2026): the connection's run timeout, this daemon's
+		// view of its live dispatched runs, and the success metrics.
+		Policy:   tracker.PolicyFromProto(record.Policy),
+		Observer: trackerDispatchObserverFromGlobal(),
+	}
+	if leases, ok := s.trackerRunStarter.(tracker.RunLeases); ok {
+		d.Leases = leases
 	}
 	res, err := d.Tick(ctx, req.Username, req.Connection)
 	if err != nil {
@@ -94,8 +101,11 @@ func (s *ContainerServer) DispatchTrackerIssues(ctx context.Context, req *pb.Dis
 	for i := range res.Failed {
 		out.Failed = append(out.Failed, toProtoTrackerDispatch(&res.Failed[i]))
 	}
-	log.Printf("[tracker] dispatch %s/%s: started=%d failed=%d skipped(approval=%d active=%d unrouted=%d)",
-		req.Username, req.Connection, len(res.Started), len(res.Failed),
+	for i := range res.TimedOut {
+		out.TimedOut = append(out.TimedOut, toProtoTrackerDispatch(&res.TimedOut[i]))
+	}
+	log.Printf("[tracker] dispatch %s/%s: started=%d failed=%d timed_out=%d skipped(approval=%d active=%d unrouted=%d)",
+		req.Username, req.Connection, len(res.Started), len(res.Failed), len(res.TimedOut),
 		res.SkippedNeedsApproval, res.SkippedActive, res.SkippedUnrouted)
 	return out, nil
 }
@@ -142,6 +152,7 @@ func toProtoTrackerDispatch(d *tracker.Dispatch) *pb.TrackerDispatch {
 		Depth:         d.Depth,
 		State:         d.State,
 		FailureReason: d.FailureReason,
+		Failure:       d.Failure,
 	}
 	if !d.CreatedAt.IsZero() {
 		out.CreatedAt = timestamppb.New(d.CreatedAt)
@@ -211,13 +222,26 @@ func (r trackerRunStarter) StartRun(ctx context.Context, req tracker.StartRunReq
 	if err := requireDispatchCaller(ctx, req.Username); err != nil {
 		return err
 	}
+	// Held from before provisioning (#2026): the sweep must not take a
+	// run that is still provisioning for a lost one. A start that fails —
+	// or panics — lets go of it again.
+	r.agents.dispatched.track(req.RunID)
+	launched := false
+	defer func() {
+		if !launched {
+			r.agents.dispatched.untrack(req.RunID)
+		}
+	}()
 	// Best-effort workspace: an anonymous fetch of a private repository
 	// fails, and that run must still read the issue and comment.
 	run, err := r.agents.beginSkillRunWith(ctx, dispatchRunRequest(req), provisionOptions{gitSourceBestEffort: true})
 	if err != nil {
 		return err
 	}
-	r.agents.launchDispatchedRun(ctx, run, req.Lifecycle, r.agents.runInBoxAgentResult)
+	if !r.agents.launchDispatchedRun(ctx, run, req.Lifecycle, r.agents.runInBoxAgentResult) {
+		return tracker.ErrDispatchEnded
+	}
+	launched = true
 	return nil
 }
 
@@ -225,11 +249,27 @@ func (r trackerRunStarter) StartRun(ctx context.Context, req tracker.StartRunReq
 // (QUEUED -> RUNNING, agent:running) and only then launches the in-box
 // agent in the background, so the RUNNING projection can never land
 // after the terminal one. lc is nil for a run with no dispatch row.
-func (s *AgentSkillServer) launchDispatchedRun(ctx context.Context, run *startedSkillRun, lc tracker.RunLifecycle, agent func(containerName, seedDir string) (string, error)) {
-	if lc != nil {
-		lc.RunStarted(ctx)
+//
+// If the row already went terminal while the run was provisioning (the
+// sweep timed it out, and the issue already says agent:failed), the
+// start report says so and the run is aborted here: its lease is ended
+// at once — JWTs revoked, seed wiped, run unregistered — its agent is
+// never launched, it stops being live, and false is returned (#2026).
+// Letting it go on would leave a run acting with live credentials on an
+// issue that says it is over.
+func (s *AgentSkillServer) launchDispatchedRun(ctx context.Context, run *startedSkillRun, lc tracker.RunLifecycle, agent func(containerName, seedDir string) (string, error)) bool {
+	// Held (and its lease known to the sweep) before the goroutine
+	// exists; finishDispatchedRun lets go of it.
+	h := s.dispatched.track(run.runID)
+	h.setLease(run.lease)
+	if lc != nil && !lc.RunStarted(ctx) {
+		// Once: the sweep may have ended it already, if it saw the lease.
+		s.endDispatchedLease(context.WithoutCancel(ctx), h, dispatchEndedBeforeLaunchReason)
+		s.dispatched.untrack(run.runID)
+		return false
 	}
 	go s.finishDispatchedRun(ctx, run, agent, lc)
+	return true
 }
 
 // finishDispatchedRun is the background half of a dispatched run: run
@@ -252,6 +292,13 @@ func (s *AgentSkillServer) launchDispatchedRun(ctx context.Context, run *started
 // a run that panicked or was ended by runtime.Goexit is reported failed.
 func (s *AgentSkillServer) finishDispatchedRun(ctx context.Context, run *startedSkillRun, agent func(containerName, seedDir string) (string, error), lc tracker.RunLifecycle) {
 	bg := context.WithoutCancel(ctx)
+	h := s.dispatched.track(run.runID)
+	h.setLease(run.lease)
+	// Deferred before everything else so it runs LAST — after the end
+	// report, and also after a panic or runtime.Goexit anywhere below —
+	// so the run is live to the sweep (#2026) exactly until its end has
+	// been reported, and never leaks.
+	defer s.dispatched.untrack(run.runID)
 	// Not completing is the default: only a normal return from the agent
 	// overwrites it. A runtime.Goexit is not a panic (recover returns
 	// nil), so without this default it would be reported as success.
@@ -275,7 +322,8 @@ func (s *AgentSkillServer) finishDispatchedRun(ctx context.Context, run *started
 			err = errDispatchedRunDidNotComplete
 		}
 		defer func() { logDispatchedRunPanic(run.runID, "lease end", recover()) }()
-		s.endRunLease(bg, run.lease, s.boxWiper(), runExitReason)
+		// Once: a timeout sweep may already have ended it (#2026).
+		s.endDispatchedLease(bg, h, runExitReason)
 		leaseEnded = true
 	}()
 	artifact, aerr := agent(run.containerName, run.lease.SeedDir)

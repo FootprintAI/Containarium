@@ -60,7 +60,9 @@ type StartRunRequest struct {
 //
 // A starter that accepts a run must call req.Lifecycle.RunStarted once
 // the run is registered and before its agent is launched, and
-// req.Lifecycle.RunEnded exactly once when the run ends.
+// req.Lifecycle.RunEnded exactly once when the run ends. When
+// RunStarted returns false the starter must end the run's lease, must
+// not launch the agent, and returns ErrDispatchEnded.
 type RunStarter interface {
 	StartRun(ctx context.Context, req StartRunRequest) error
 }
@@ -70,6 +72,8 @@ type DispatchStore interface {
 	ListRoutes(ctx context.Context, username, connection string) ([]Route, error)
 	InsertDispatch(ctx context.Context, d Dispatch) (*Dispatch, error)
 	TransitionDispatch(ctx context.Context, id string, from, to pb.TrackerDispatchState, reason string, at time.Time) (bool, error)
+	FailDispatch(ctx context.Context, id string, from pb.TrackerDispatchState, failure pb.TrackerDispatchFailure, reason string, at time.Time) (bool, error)
+	ListDispatches(ctx context.Context, username, connection string, state pb.TrackerDispatchState) ([]Dispatch, error)
 	SetDispatchLabelsPending(ctx context.Context, id string, pending bool) error
 	DeleteQueuedDispatch(ctx context.Context, id string) (bool, error)
 	RecordDispatchWarning(ctx context.Context, username, connection string, issue int64, scope string) (bool, error)
@@ -93,12 +97,33 @@ type Dispatcher struct {
 	// NewRunID mints the run id recorded on the row before the run
 	// starts. nil uses a random UUID.
 	NewRunID func() string
+	// Policy is the connection's effective policy; its RunTimeout bounds
+	// how long a row may stay active before the sweep fails it (#2026).
+	// A zero RunTimeout means DefaultRunTimeout.
+	Policy Policy
+	// Leases is the daemon's view of its live dispatched runs: the sweep
+	// ends a timed-out run's lease and fails rows with no live lease.
+	// nil disables the lease-lost sweep and the lease end (the timeout
+	// sweep still fails the row).
+	Leases RunLeases
+	// LeaseGrace is how long an active row may have no live lease before
+	// it is failed LEASE_LOST. Zero means DefaultLeaseLostGrace.
+	LeaseGrace time.Duration
+	// Observer receives every terminal transition (#2026 metrics). nil
+	// records nothing.
+	Observer DispatchObserver
+
+	// leaseEndBudget overrides DefaultLeaseEndBudget (tests).
+	leaseEndBudget time.Duration
 }
 
 // TickResult is one tick's outcome.
 type TickResult struct {
 	Started []Dispatch
 	Failed  []Dispatch
+	// TimedOut are active rows this tick's sweep failed (#2026): past the
+	// run timeout (TIMEOUT) or with no live lease (LEASE_LOST).
+	TimedOut []Dispatch
 	// Counters are int32 to match DispatchTrackerIssuesResponse.
 	SkippedNeedsApproval int32
 	SkippedActive        int32
@@ -124,6 +149,13 @@ func (d *Dispatcher) Tick(ctx context.Context, username, connection string) (Tic
 	skillFor := make(map[string]string, len(routes))
 	for _, r := range routes {
 		skillFor[r.Scope] = r.SkillID
+	}
+
+	// Stuck rows first (#2026): a run past its timeout, or a row whose
+	// run this daemon no longer holds, is failed and projected before
+	// anything new starts.
+	if res.TimedOut, err = d.sweep(ctx, username, connection); err != nil {
+		return res, err
 	}
 
 	issues, err := d.Provider.ListIssues(ctx, d.Conn, IssueFilter{State: pb.TrackerIssueState_TRACKER_ISSUE_STATE_OPEN})
@@ -180,7 +212,7 @@ func (d *Dispatcher) Tick(ctx context.Context, username, connection string) (Tic
 		ictx, icancel := bookkeepingContext(ctx)
 		row, err := d.Store.InsertDispatch(ictx, Dispatch{
 			Username: username, Connection: connection, IssueNumber: issue.Number,
-			Scope: scope, SkillID: skillID, RunID: d.newRunID(),
+			Scope: scope, SkillID: skillID, RunID: d.newRunID(), CreatedAt: d.Clock.Now(),
 		})
 		icancel()
 		if errors.Is(err, ErrDispatchActive) {
@@ -236,6 +268,12 @@ func (d *Dispatcher) Tick(ctx context.Context, username, connection string) (Tic
 			Username: username, Connection: connection, SkillID: skillID, RunID: row.RunID, InputJSON: input,
 			RepoURL: d.RepoURL, Lifecycle: lc,
 		}); startErr != nil {
+			if errors.Is(startErr, ErrDispatchEnded) {
+				// Swept while it was still provisioning: the sweep already
+				// failed and projected the row, and the starter tore the
+				// run down. Nothing to report a second time.
+				continue
+			}
 			failed, err := d.failStart(ctx, row, startErr)
 			if err != nil {
 				return res, err
@@ -329,43 +367,40 @@ func bookkeepingContext(ctx context.Context) (context.Context, context.CancelFun
 	return context.WithTimeout(context.WithoutCancel(ctx), failureBookkeepingBudget)
 }
 
-// failStart moves a row whose run never started to FAILED, then projects
-// that onto the issue (agent:failed + a comment), best-effort.
+// failStart moves a row whose run never started to FAILED
+// (START_ERROR), then projects that onto the issue (agent:failed + a
+// comment naming the run), best-effort.
 //
 // The bookkeeping runs on a context detached from the tick's: the start
 // most often fails BECAUSE the tick was cancelled or timed out (a client
 // deadline landing mid-provision), and leaving the row QUEUED would lock
-// the issue forever — nothing sweeps queued rows. Same idiom as
-// endRunLease. The forge comment is generic and names the dispatch id;
-// the raw error stays in failure_reason, readable via `tracker
-// dispatches`, never on a possibly public issue.
+// the issue until the sweep's grace period ends. Same idiom as
+// endRunLease. The raw error stays in failure_reason, readable via
+// `tracker dispatches`, never on a possibly public issue.
 func (d *Dispatcher) failStart(tickCtx context.Context, row *Dispatch, startErr error) (*Dispatch, error) {
 	ctx, cancel := bookkeepingContext(tickCtx)
 	defer cancel()
 	reason := fmt.Sprintf("run did not start: %v", startErr)
 	now := d.Clock.Now()
-	if _, err := d.Store.TransitionDispatch(ctx, row.ID,
-		pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_QUEUED, pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_FAILED, reason, now); err != nil {
+	moved, err := d.Store.FailDispatch(ctx, row.ID, pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_QUEUED,
+		pb.TrackerDispatchFailure_TRACKER_DISPATCH_FAILURE_START_ERROR, reason, now)
+	if err != nil {
 		return nil, fmt.Errorf("fail dispatch for #%d: %w", row.IssueNumber, err)
 	}
 	out := *row
 	out.State = pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_FAILED
+	out.Failure = pb.TrackerDispatchFailure_TRACKER_DISPATCH_FAILURE_START_ERROR
 	out.FailureReason = reason
 	out.EndedAt = now
-
-	labelErr := d.Provider.SetLabels(ctx, d.Conn, row.IssueNumber, []string{LabelAgentFailed}, []string{LabelAgentQueued})
-	body := Sanitize(fmt.Sprintf("The agent run for `%s%s` could not be started (dispatch `%s`). "+
-		"An operator can see the reason with `containarium tracker dispatches <username> <connection> --state failed`. "+
-		"To retry, remove `%s` and re-add the scope label.",
-		ScopeLabelPrefix, row.Scope, row.ID, LabelAgentFailed)) +
-		"\n\n" + Stamp(dispatcherIdentity(row.Username, row.RunID), KindComment)
-	_, commentErr := d.Provider.Comment(ctx, d.Conn, row.IssueNumber, body)
-	if labelErr != nil || commentErr != nil {
-		if err := d.Store.SetDispatchLabelsPending(ctx, row.ID, true); err != nil {
-			return nil, fmt.Errorf("mark labels pending for #%d: %w", row.IssueNumber, err)
-		}
-		out.LabelsPending = true
+	if !moved {
+		return &out, nil // a peer (the sweep) already failed and projected it
 	}
+	d.observeEnd(out)
+	pending, err := d.projectFailure(ctx, out, 0)
+	if err != nil {
+		return nil, err
+	}
+	out.LabelsPending = pending
 	return &out, nil
 }
 
