@@ -34,6 +34,11 @@ var trackerIssueListCmd = &cobra.Command{
 	Short: "List issues, optionally filtered",
 	Long: `Lists issues on the tracker the named connection points at.
 
+Every page the provider returns is followed (100 issues per page), up to
+50 pages — 5,000 issues. Past that the list is truncated and the server
+logs it; narrow the query with --state / --label. GitHub's search API
+(--search) itself stops at 1,000 results.
+
 Examples:
   containarium tracker issue list alice default
   containarium tracker issue list alice default --state open --label bug --label p1

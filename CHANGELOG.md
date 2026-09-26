@@ -88,6 +88,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`tracker issue list` and `tracker dispatch` now see every matching issue,
+  not just the first 100.** Both the GitHub and GitLab adapters read a single
+  page of 100, so in a busy project an older issue carrying a routed
+  `scope:<role>` label was never dispatched. `ListIssues` (including GitHub
+  search) now follows the `Link: rel="next"` chain up to 50 pages (5,000
+  issues), logs when that bound truncates the result, and refuses a next link
+  that points at a different host than the configured API. (#2040)
+
 - **`code run` on a box without `agent-box` now names the missing helper** and
   the command that installs it, instead of surfacing
   `initialize MCP session: transport error: transport closed`. The same

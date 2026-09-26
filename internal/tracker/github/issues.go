@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -114,11 +115,17 @@ func (a *Adapter) ListIssues(ctx context.Context, conn tracker.Conn, f tracker.I
 	}
 	q.Set("per_page", "100")
 
-	var raw []ghIssue
-	if err := a.get(ctx, fmt.Sprintf("%s/repos/%s/issues?%s", base, conn.Project, q.Encode()), conn.Credential, &raw); err != nil {
+	raw, err := getAllPages(ctx, a, fmt.Sprintf("%s/repos/%s/issues?%s", base, conn.Project, q.Encode()), conn.Credential,
+		func(page []ghIssue) []ghIssue { return page })
+	if err != nil {
 		return nil, err
 	}
 	return toIssues(raw), nil
+}
+
+// ghSearchPage mirrors one page of GET /search/issues.
+type ghSearchPage struct {
+	Items []ghIssue `json:"items"`
 }
 
 // searchIssues uses GitHub's Search API (GET /search/issues), the only
@@ -141,13 +148,14 @@ func (a *Adapter) searchIssues(ctx context.Context, base string, conn tracker.Co
 	q.Set("q", query)
 	q.Set("per_page", "100")
 
-	var result struct {
-		Items []ghIssue `json:"items"`
-	}
-	if err := a.get(ctx, fmt.Sprintf("%s/search/issues?%s", base, q.Encode()), conn.Credential, &result); err != nil {
+	// The Search API paginates the same way (Link rel="next"); GitHub
+	// itself caps a search at 1,000 results, below tracker.MaxListPages.
+	raw, err := getAllPages(ctx, a, fmt.Sprintf("%s/search/issues?%s", base, q.Encode()), conn.Credential,
+		func(page ghSearchPage) []ghIssue { return page.Items })
+	if err != nil {
 		return nil, err
 	}
-	return toIssues(result.Items), nil
+	return toIssues(raw), nil
 }
 
 // GetChange reads a pull request's state and normalized CI verdict (two
@@ -276,17 +284,55 @@ func (a *Adapter) get(ctx context.Context, rawURL, token string, out interface{}
 // succeeds and out is non-nil (a 204 No Content response, or a caller
 // uninterested in the body, both pass out=nil).
 func (a *Adapter) do(ctx context.Context, method, rawURL, token string, reqBody, out interface{}) error {
+	_, err := a.doWithHeader(ctx, method, rawURL, token, reqBody, out)
+	return err
+}
+
+// getAllPages GETs firstURL and every page its Link header chains to
+// (rel="next"), decoding each page as P and collecting items(P) — the
+// fix for #2040, where ListIssues read only the first page of 100. It
+// stops after tracker.MaxListPages pages, logging that the result is
+// truncated, and refuses a next link on a different host (the
+// credential would follow it).
+func getAllPages[P any, T any](ctx context.Context, a *Adapter, firstURL, token string, items func(P) []T) ([]T, error) {
+	var all []T
+	next := firstURL
+	for page := 1; next != ""; page++ {
+		if page > tracker.MaxListPages {
+			log.Printf("github: list truncated after %d pages (%d items); more pages exist upstream", tracker.MaxListPages, len(all))
+			break
+		}
+		var p P
+		h, err := a.doWithHeader(ctx, http.MethodGet, next, token, nil, &p)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, items(p)...)
+		n := tracker.NextPageURL(h.Get("Link"))
+		if n != "" {
+			if err := tracker.CheckSameOrigin(next, n); err != nil {
+				return nil, fmt.Errorf("github: %w", err)
+			}
+		}
+		next = n
+	}
+	return all, nil
+}
+
+// doWithHeader is do, also returning the response headers on success
+// (pagination reads the Link header).
+func (a *Adapter) doWithHeader(ctx context.Context, method, rawURL, token string, reqBody, out interface{}) (http.Header, error) {
 	var body io.Reader
 	if reqBody != nil {
 		b, err := json.Marshal(reqBody)
 		if err != nil {
-			return fmt.Errorf("encode request: %w", err)
+			return nil, fmt.Errorf("encode request: %w", err)
 		}
 		body = bytes.NewReader(b)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, rawURL, body)
 	if err != nil {
-		return fmt.Errorf("build request: %w", err)
+		return nil, fmt.Errorf("build request: %w", err)
 	}
 	setHeaders(req, token)
 	if reqBody != nil {
@@ -295,27 +341,27 @@ func (a *Adapter) do(ctx context.Context, method, rawURL, token string, reqBody,
 
 	resp, err := a.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("%w: %v", tracker.ErrUnreachable, err)
+		return nil, fmt.Errorf("%w: %v", tracker.ErrUnreachable, err)
 	}
 	defer resp.Body.Close()
 
 	switch resp.StatusCode {
 	case http.StatusOK, http.StatusCreated, http.StatusNoContent:
 		if out == nil {
-			return nil
+			return resp.Header, nil
 		}
 		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-			return fmt.Errorf("decode response: %w", err)
+			return nil, fmt.Errorf("decode response: %w", err)
 		}
-		return nil
+		return resp.Header, nil
 	case http.StatusUnauthorized, http.StatusForbidden:
 		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("%w: HTTP %d: %s", tracker.ErrCredentialInvalid, resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("%w: HTTP %d: %s", tracker.ErrCredentialInvalid, resp.StatusCode, string(respBody))
 	case http.StatusNotFound:
-		return fmt.Errorf("%w: %s", tracker.ErrNotFound, rawURL)
+		return nil, fmt.Errorf("%w: %s", tracker.ErrNotFound, rawURL)
 	default:
 		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("github: HTTP %d: %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("github: HTTP %d: %s", resp.StatusCode, string(respBody))
 	}
 }
 
