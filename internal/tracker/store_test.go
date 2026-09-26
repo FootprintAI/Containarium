@@ -10,6 +10,7 @@ import (
 	"time"
 
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/protobuf/proto"
 )
@@ -288,6 +289,7 @@ func TestLineage_DepthAndChildrenCount(t *testing.T) {
 	store, ctx := newTrackerTestStore(t)
 	const user = "tracker-store-lineage"
 	_, _ = store.pool.Exec(ctx, "DELETE FROM tracker_issue_lineage WHERE username = $1", user)
+	_, _ = store.pool.Exec(ctx, "DELETE FROM tracker_lineage_reservations WHERE username = $1", user)
 
 	if d, err := store.IssueDepth(ctx, user, "default", 100); err != nil || d != 0 {
 		t.Fatalf("IssueDepth(human-created #100) = %d, %v; want 0, nil", d, err)
@@ -369,6 +371,7 @@ func TestRecordChild_ContextCancelledAfterUpstreamCreate(t *testing.T) {
 	const user = "tracker-store-lineage-cancel"
 	bg := context.Background()
 	_, _ = store.pool.Exec(bg, "DELETE FROM tracker_issue_lineage WHERE username = $1", user)
+	_, _ = store.pool.Exec(bg, "DELETE FROM tracker_lineage_reservations WHERE username = $1", user)
 
 	ctx, cancel := context.WithCancel(bg)
 	defer cancel()
@@ -399,6 +402,7 @@ func TestRecordChild_RecordingFailureNamesTheCreatedIssue(t *testing.T) {
 	store, ctx := newTrackerTestStore(t)
 	const user = "tracker-store-lineage-recfail"
 	_, _ = store.pool.Exec(ctx, "DELETE FROM tracker_issue_lineage WHERE username = $1", user)
+	_, _ = store.pool.Exec(ctx, "DELETE FROM tracker_lineage_reservations WHERE username = $1", user)
 	// Occupy child #777's primary key so the post-create insert conflicts.
 	if _, err := store.pool.Exec(ctx, `INSERT INTO tracker_issue_lineage (username, connection, child_number, parent_number, created_by_run, depth)
 		VALUES ($1, 'default', 777, 1, 'run-other', 1)`, user); err != nil {
@@ -423,6 +427,7 @@ func TestRecordChild_FanoutCapHoldsUnderConcurrency(t *testing.T) {
 	store, ctx := newTrackerTestStore(t)
 	const user = "tracker-store-lineage-race"
 	_, _ = store.pool.Exec(ctx, "DELETE FROM tracker_issue_lineage WHERE username = $1", user)
+	_, _ = store.pool.Exec(ctx, "DELETE FROM tracker_lineage_reservations WHERE username = $1", user)
 
 	var upstreamCalls atomic.Int64
 	var wg sync.WaitGroup
@@ -455,5 +460,234 @@ func TestRecordChild_FanoutCapHoldsUnderConcurrency(t *testing.T) {
 	}
 	if capped != 9 {
 		t.Errorf("fan-out rejections = %d, want 9", capped)
+	}
+}
+
+// newSmallPoolTrackerStore is newTrackerTestStore with the pool capped at
+// maxConns, so a test can reproduce pool exhaustion deterministically.
+func newSmallPoolTrackerStore(t *testing.T, maxConns int32) (*Store, context.Context) {
+	t.Helper()
+	dsn := os.Getenv("CONTAINARIUM_TEST_DSN")
+	if dsn == "" {
+		t.Skip("set CONTAINARIUM_TEST_DSN to run this against Postgres (the store-integration lane does)")
+	}
+	ctx := context.Background()
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("parse DSN: %v", err)
+	}
+	cfg.MaxConns = maxConns
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("connect Postgres: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	store, err := NewStore(ctx, pool)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	return store, ctx
+}
+
+// TestRecordChild_OneRunCannotStarveThePool (#2044): one run token firing
+// many concurrent creates against a slow upstream must not hold the
+// tracker store's pool connections while it waits — neither across the
+// upstream call nor while queued behind its own per-run lock. Reviewer
+// probe, reproduced: 4-connection pool, 500 ms upstream, 16 concurrent
+// creates from one run capped at 5; an unrelated tracker lookup with a
+// 1 s deadline must still complete. The per-run fan-out cap and
+// exactly-once lineage must hold under the same load.
+func TestRecordChild_OneRunCannotStarveThePool(t *testing.T) {
+	store, ctx := newSmallPoolTrackerStore(t, 4)
+	const user = "tracker-store-lineage-starve"
+	_, _ = store.pool.Exec(ctx, "DELETE FROM tracker_issue_lineage WHERE username = $1", user)
+	_, _ = store.pool.Exec(ctx, "DELETE FROM tracker_lineage_reservations WHERE username = $1", user)
+
+	const (
+		creates     = 16
+		maxChildren = 5
+		upstream    = 500 * time.Millisecond
+	)
+	var upstreamCalls atomic.Int64
+	firstUpstream := make(chan struct{})
+	var once sync.Once
+	var wg sync.WaitGroup
+	errs := make([]error, creates)
+	for i := 0; i < creates; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = store.RecordChild(ctx, Lineage{Username: user, Connection: "default", ParentNumber: 1, CreatedByRun: "run-starve"}, 3, maxChildren,
+				func(context.Context) (int64, error) {
+					n := upstreamCalls.Add(1)
+					once.Do(func() { close(firstUpstream) })
+					time.Sleep(upstream)
+					return 5000 + n, nil
+				})
+		}(i)
+	}
+
+	select {
+	case <-firstUpstream:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no upstream create started within 10s")
+	}
+	// Let the remaining creates pile up behind the run's lock.
+	time.Sleep(50 * time.Millisecond)
+
+	lookupCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	if _, err := store.IssueDepth(lookupCtx, "tracker-store-unrelated-tenant", "default", 1); err != nil {
+		t.Errorf("unrelated lookup under one run's create load: %v, want it to complete within its 1s deadline", err)
+	}
+	wg.Wait()
+
+	if got := upstreamCalls.Load(); got != maxChildren {
+		t.Errorf("upstream create calls = %d, want exactly %d", got, maxChildren)
+	}
+	if n, _ := store.ChildrenCount(ctx, user, "default", "run-starve"); n != maxChildren {
+		t.Errorf("lineage rows = %d, want exactly %d", n, maxChildren)
+	}
+	var capped int
+	for _, err := range errs {
+		switch {
+		case err == nil:
+		case errors.Is(err, ErrFanoutExceeded):
+			capped++
+		default:
+			t.Errorf("unexpected error: %v", err)
+		}
+	}
+	if capped != creates-maxChildren {
+		t.Errorf("fan-out rejections = %d, want %d", capped, creates-maxChildren)
+	}
+}
+
+// TestRecordChild_FailedCreateFreesItsFanoutSlot (#2044): a create that
+// fails upstream must not keep consuming one of the run's fan-out slots.
+func TestRecordChild_FailedCreateFreesItsFanoutSlot(t *testing.T) {
+	store, ctx := newTrackerTestStore(t)
+	const user = "tracker-store-lineage-freeslot"
+	_, _ = store.pool.Exec(ctx, "DELETE FROM tracker_issue_lineage WHERE username = $1", user)
+	_, _ = store.pool.Exec(ctx, "DELETE FROM tracker_lineage_reservations WHERE username = $1", user)
+
+	boom := errors.New("upstream down")
+	l := Lineage{Username: user, Connection: "default", ParentNumber: 1, CreatedByRun: "run-f"}
+	if _, err := store.RecordChild(ctx, l, 3, 1, func(context.Context) (int64, error) { return 0, boom }); !errors.Is(err, boom) {
+		t.Fatalf("failing create err = %v, want the create error", err)
+	}
+	rec, err := store.RecordChild(ctx, l, 3, 1, func(context.Context) (int64, error) { return 42, nil })
+	if err != nil {
+		t.Fatalf("create after a failed one with max_children=1: %v, want allowed (the failed create frees its slot)", err)
+	}
+	if rec.ChildNumber != 42 || rec.Depth != 1 {
+		t.Errorf("recorded = %+v, want child=42 depth=1", rec)
+	}
+}
+
+// TestRecordChild_QueuedSameRunCreatesHoldNoConnection (#2044): creates
+// from one run that are queued behind that run's reservation step wait on
+// the in-process gate, not on the Postgres advisory lock — so they hold
+// no pool connection while they wait.
+func TestRecordChild_QueuedSameRunCreatesHoldNoConnection(t *testing.T) {
+	store, ctx := newSmallPoolTrackerStore(t, 4)
+	const user = "tracker-store-lineage-queued"
+	_, _ = store.pool.Exec(ctx, "DELETE FROM tracker_issue_lineage WHERE username = $1", user)
+	_, _ = store.pool.Exec(ctx, "DELETE FROM tracker_lineage_reservations WHERE username = $1", user)
+
+	// Hold the run's gate AND its advisory lock, as a concurrent
+	// reservation step would. The advisory lock is taken on a connection
+	// outside the store's pool so the pool stat below counts only the
+	// queued creates.
+	const lockKey = user + "/default/run-q"
+	lockConn, err := pgx.Connect(ctx, os.Getenv("CONTAINARIUM_TEST_DSN"))
+	if err != nil {
+		t.Fatalf("connect lock holder: %v", err)
+	}
+	defer func() { _ = lockConn.Close(context.Background()) }()
+	lockTx, err := lockConn.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin lock holder: %v", err)
+	}
+	if _, err := lockTx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, lockKey); err != nil {
+		t.Fatalf("take advisory lock: %v", err)
+	}
+	release, err := store.runGates.acquire(ctx, lockKey)
+	if err != nil {
+		t.Fatalf("acquire run gate: %v", err)
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, _ = store.RecordChild(ctx, Lineage{Username: user, Connection: "default", ParentNumber: 1, CreatedByRun: "run-q"}, 3, 20,
+				func(context.Context) (int64, error) { return int64(7000 + i), nil })
+		}(i)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if got := store.pool.Stat().AcquiredConns(); got != 0 {
+		t.Errorf("pool connections held by queued same-run creates = %d, want 0", got)
+	}
+	if err := lockTx.Rollback(ctx); err != nil {
+		t.Fatalf("release advisory lock: %v", err)
+	}
+	release()
+	wg.Wait()
+	if n, _ := store.ChildrenCount(ctx, user, "default", "run-q"); n != 8 {
+		t.Errorf("lineage rows after the gate opened = %d, want 8", n)
+	}
+}
+
+// TestRunGates: per-key mutual exclusion, context-aware waiting, and no
+// leaked map entries once every holder and waiter is gone.
+func TestRunGates(t *testing.T) {
+	var g runGates
+	ctx := context.Background()
+
+	release, err := g.acquire(ctx, "a")
+	if err != nil {
+		t.Fatalf("acquire a: %v", err)
+	}
+	// A different key is independent.
+	releaseB, err := g.acquire(ctx, "b")
+	if err != nil {
+		t.Fatalf("acquire b while a is held: %v", err)
+	}
+	releaseB()
+
+	// The same key blocks while held, and a waiter gives up on its ctx.
+	waitCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	if _, err := g.acquire(waitCtx, "a"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("acquire held key err = %v, want context.DeadlineExceeded", err)
+	}
+
+	acquired := make(chan func(), 1)
+	go func() {
+		r, err := g.acquire(ctx, "a")
+		if err != nil {
+			t.Errorf("waiter acquire: %v", err)
+			close(acquired)
+			return
+		}
+		acquired <- r
+	}()
+	select {
+	case <-acquired:
+		t.Fatal("waiter acquired a held key")
+	case <-time.After(50 * time.Millisecond):
+	}
+	release()
+	r, ok := <-acquired
+	if !ok {
+		return
+	}
+	r()
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if len(g.gates) != 0 {
+		t.Errorf("gates left in the map = %d, want 0", len(g.gates))
 	}
 }

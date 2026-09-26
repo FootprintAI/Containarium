@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -51,6 +52,10 @@ var ErrNotFound = errors.New("tracker: connection not found")
 // no dependency on internal/secrets).
 type Store struct {
 	pool *pgxpool.Pool
+	// runGates serializes RecordChild's reservation step per run inside
+	// this process, BEFORE a pool connection is taken, so same-run
+	// creates queue without holding connections (#2044).
+	runGates runGates
 }
 
 // NewStore opens the tracker-connections store, creating the table on
@@ -100,6 +105,21 @@ func (s *Store) initSchema(ctx context.Context) error {
 			depth          INT    NOT NULL,
 			PRIMARY KEY (username, connection, child_number)
 		);
+
+		-- #2044: a fan-out slot claimed by an in-flight RecordChild whose
+		-- upstream create has not finished yet. Counted with the lineage
+		-- rows by the fan-out guard, so the upstream call can run with no
+		-- transaction (and no pool connection) held. Deleted when the
+		-- create fails or its lineage row is recorded.
+		CREATE TABLE IF NOT EXISTS tracker_lineage_reservations (
+			id             BIGSERIAL   PRIMARY KEY,
+			username       TEXT        NOT NULL,
+			connection     TEXT        NOT NULL,
+			created_by_run TEXT        NOT NULL,
+			created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+		CREATE INDEX IF NOT EXISTS tracker_lineage_reservations_run
+			ON tracker_lineage_reservations (username, connection, created_by_run);
 	`
 	if _, err := s.pool.Exec(ctx, schema); err != nil {
 		return err
@@ -409,6 +429,25 @@ func issueDepth(ctx context.Context, q lineageQuerier, username, connection stri
 	return depth, nil
 }
 
+// claimedCount counts runID's fan-out slots: its recorded children plus
+// its reservations (in-flight or abandoned creates with no lineage row
+// yet). Both counts MUST come from one statement: under READ COMMITTED
+// each statement takes its own snapshot, and RecordChild's final step
+// inserts the lineage row and deletes the reservation in one commit — two
+// separate COUNTs straddling that commit would see neither and let the
+// cap be raced past.
+func claimedCount(ctx context.Context, q lineageQuerier, username, connection, runID string) (recorded, reserved int32, err error) {
+	const sql = `
+		SELECT
+			(SELECT COUNT(*) FROM tracker_issue_lineage        WHERE username = $1 AND connection = $2 AND created_by_run = $3),
+			(SELECT COUNT(*) FROM tracker_lineage_reservations WHERE username = $1 AND connection = $2 AND created_by_run = $3)
+	`
+	if err := q.QueryRow(ctx, sql, username, connection, runID).Scan(&recorded, &reserved); err != nil {
+		return 0, 0, fmt.Errorf("count run fan-out: %w", err)
+	}
+	return recorded, reserved, nil
+}
+
 func childrenCount(ctx context.Context, q lineageQuerier, username, connection, runID string) (int32, error) {
 	const sql = `SELECT COUNT(*) FROM tracker_issue_lineage WHERE username = $1 AND connection = $2 AND created_by_run = $3`
 	var n int32
@@ -419,24 +458,32 @@ func childrenCount(ctx context.Context, q lineageQuerier, username, connection, 
 }
 
 // RecordChild files one follow-up under l.ParentNumber for l.CreatedByRun,
-// enforcing the chain guards and recording the lineage row atomically:
+// enforcing the chain guards and recording the lineage row exactly once:
 //
-//  1. begin a transaction and take a per-run advisory lock, so two
-//     concurrent creates from the same run serialize here;
-//  2. derive the child's depth from the parent's row (+1) and reject
-//     with ErrDepthExceeded if it would exceed maxDepth;
-//  3. count the run's existing children and reject with
-//     ErrFanoutExceeded if it already has maxChildren;
-//  4. only then call create — the caller's upstream call, which returns
-//     the new issue's number — and insert the row; commit.
+//  1. reserve: take the run's in-process gate (no pool connection held
+//     while queued), then in one short transaction take a per-run
+//     advisory lock (the cross-process guard), derive the child's depth
+//     from the parent's row (+1) and reject with ErrDepthExceeded if it
+//     would exceed maxDepth, count the run's recorded children PLUS its
+//     outstanding reservations and reject with ErrFanoutExceeded if that
+//     already reaches maxChildren, then insert a reservation row and
+//     commit — releasing the connection;
+//  2. call create — the caller's upstream call, which returns the new
+//     issue's number — with NO transaction or pool connection held;
+//  3. record: insert the lineage row and delete the reservation in one
+//     transaction; or, if create failed, delete the reservation.
 //
-// The guards therefore run BEFORE any upstream call, and the fan-out
-// count and the insert are in the same transaction, so a cap cannot be
-// raced past. If create fails, nothing is recorded. A maxDepth or
-// maxChildren of 0 (or less) means unlimited. The transaction — and its
-// pool connection — is held for the duration of the upstream call; at
-// the design's stated scale (a handful of runs per tenant per day)
-// that is a non-issue, and it is what makes the count authoritative.
+// The guards therefore run BEFORE any upstream call, and a reservation
+// is counted exactly like a recorded child, so a cap cannot be raced past
+// even though concurrent creates now overlap upstream. Holding nothing
+// across the upstream call is what keeps one run token from starving the
+// tracker store's small pool (#2044). A maxDepth or maxChildren of 0 (or
+// less) means unlimited.
+//
+// A reservation that is never cleared (the process died mid-create, or
+// the cleanup itself failed) keeps counting against the run's fan-out.
+// That is deliberate: the create may have succeeded upstream, so
+// over-counting is the fail-closed side.
 func (s *Store) RecordChild(ctx context.Context, l Lineage, maxDepth, maxChildren int32, create func(ctx context.Context) (int64, error)) (Lineage, error) {
 	if l.Username == "" || l.Connection == "" {
 		return Lineage{}, errors.New("tracker: username and connection are required")
@@ -451,68 +498,176 @@ func (s *Store) RecordChild(ctx context.Context, l Lineage, maxDepth, maxChildre
 		return Lineage{}, errors.New("tracker: create callback is required")
 	}
 
+	reservationID, err := s.reserveChild(ctx, &l, maxDepth, maxChildren)
+	if err != nil {
+		return Lineage{}, err
+	}
+
+	// Every check has passed and the slot is claimed: the create is now
+	// committed-to. Run it detached from the caller's cancellation
+	// (bounded by a timeout) so it either completes and is recorded below,
+	// or fails for a real upstream reason — never because the caller
+	// disconnected after the forge accepted the POST, which would leave an
+	// unrecorded issue (re-review of #2034).
+	createCtx, cancelCreate := context.WithTimeout(context.WithoutCancel(ctx), UpstreamCreateTimeout)
+	defer cancelCreate()
+	child, err := create(createCtx)
+
+	// From here on the bookkeeping must not depend on the caller still
+	// being around (review of #2034): detach from cancellation, bounded by
+	// a short timeout.
+	recCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), lineageRecordTimeout)
+	defer cancel()
+
+	if err != nil {
+		// Nothing was created: free the slot. If even that fails the stale
+		// reservation over-counts, which is the fail-closed side.
+		if _, relErr := s.pool.Exec(recCtx, `DELETE FROM tracker_lineage_reservations WHERE id = $1`, reservationID); relErr != nil {
+			return Lineage{}, errors.Join(err, fmt.Errorf("release lineage reservation: %w", relErr))
+		}
+		return Lineage{}, err
+	}
+	l.ChildNumber = child
+
+	// The issue EXISTS upstream. If recording fails, the reservation stays
+	// (the child keeps counting toward fan-out) and the typed error names
+	// the child so the caller reports it instead of retrying blind.
+	if err := s.recordReservedChild(recCtx, l, reservationID); err != nil {
+		return l, &LineageRecordError{ChildNumber: l.ChildNumber, Depth: l.Depth, Err: err}
+	}
+	return l, nil
+}
+
+// reserveChild is RecordChild's step 1: it runs the depth and fan-out
+// guards and claims a fan-out slot, setting l.Depth. The run's in-process
+// gate is held only for this short transaction, and is taken before a
+// pool connection, so same-run creates queue without holding one.
+func (s *Store) reserveChild(ctx context.Context, l *Lineage, maxDepth, maxChildren int32) (int64, error) {
+	lockKey := l.Username + "/" + l.Connection + "/" + l.CreatedByRun
+	release, err := s.runGates.acquire(ctx, lockKey)
+	if err != nil {
+		return 0, fmt.Errorf("wait for run lineage gate: %w", err)
+	}
+	defer release()
+
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return Lineage{}, fmt.Errorf("begin lineage transaction: %w", err)
+		return 0, fmt.Errorf("begin lineage transaction: %w", err)
 	}
 	// No-op after a successful Commit. Detached so a cancelled request
 	// context still releases the transaction cleanly.
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 
-	lockKey := l.Username + "/" + l.Connection + "/" + l.CreatedByRun
+	// Cross-process guard (another daemon on the same database); within
+	// this process the gate above already serializes the run.
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, lockKey); err != nil {
-		return Lineage{}, fmt.Errorf("lock run lineage: %w", err)
+		return 0, fmt.Errorf("lock run lineage: %w", err)
 	}
 
 	parentDepth, err := issueDepth(ctx, tx, l.Username, l.Connection, l.ParentNumber)
 	if err != nil {
-		return Lineage{}, err
+		return 0, err
 	}
 	l.Depth = parentDepth + 1
 	if maxDepth > 0 && l.Depth > maxDepth {
-		return Lineage{}, fmt.Errorf("%w: child of #%d would be depth %d, max %d", ErrDepthExceeded, l.ParentNumber, l.Depth, maxDepth)
+		return 0, fmt.Errorf("%w: child of #%d would be depth %d, max %d", ErrDepthExceeded, l.ParentNumber, l.Depth, maxDepth)
 	}
 
-	existing, err := childrenCount(ctx, tx, l.Username, l.Connection, l.CreatedByRun)
+	recorded, reserved, err := claimedCount(ctx, tx, l.Username, l.Connection, l.CreatedByRun)
 	if err != nil {
-		return Lineage{}, err
+		return 0, err
 	}
-	if maxChildren > 0 && existing >= maxChildren {
-		return Lineage{}, fmt.Errorf("%w: run %s already filed %d, max %d", ErrFanoutExceeded, l.CreatedByRun, existing, maxChildren)
+	if maxChildren > 0 && recorded+reserved >= maxChildren {
+		return 0, fmt.Errorf("%w: run %s already filed %d (%d in flight), max %d", ErrFanoutExceeded, l.CreatedByRun, recorded+reserved, reserved, maxChildren)
 	}
 
-	// Every check has passed: the create is now committed-to. Run it
-	// detached from the caller's cancellation (bounded by a timeout) so it
-	// either completes and is recorded below, or fails for a real upstream
-	// reason — never because the caller disconnected after the forge
-	// accepted the POST, which would leave an unrecorded, uncounted issue
-	// and let a run slip past max_children_per_run (re-review of #2034).
-	createCtx, cancelCreate := context.WithTimeout(context.WithoutCancel(ctx), UpstreamCreateTimeout)
-	defer cancelCreate()
-	child, err := create(createCtx)
+	var id int64
+	const reserve = `
+		INSERT INTO tracker_lineage_reservations (username, connection, created_by_run)
+		VALUES ($1, $2, $3)
+		RETURNING id
+	`
+	if err := tx.QueryRow(ctx, reserve, l.Username, l.Connection, l.CreatedByRun).Scan(&id); err != nil {
+		return 0, fmt.Errorf("reserve lineage slot: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit lineage reservation: %w", err)
+	}
+	return id, nil
+}
+
+// recordReservedChild is RecordChild's step 3: it turns the reservation
+// into the lineage row atomically.
+func (s *Store) recordReservedChild(ctx context.Context, l Lineage, reservationID int64) error {
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return Lineage{}, err
+		return fmt.Errorf("begin lineage record: %w", err)
 	}
-	l.ChildNumber = child
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 
-	// From here the issue EXISTS upstream. Recording it must not depend on
-	// the caller still being around (review of #2034): a cancelled request
-	// context would otherwise leave an uncounted, depth-0 child and invite
-	// a duplicate on retry. Detach from cancellation, bounded by a short
-	// timeout; if recording still fails, the typed error names the child.
-	recCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), lineageRecordTimeout)
-	defer cancel()
 	const insert = `
 		INSERT INTO tracker_issue_lineage (username, connection, child_number, parent_number, created_by_run, depth)
 		VALUES ($1, $2, $3, $4, $5, $6)
 	`
-	if _, err := tx.Exec(recCtx, insert, l.Username, l.Connection, l.ChildNumber, l.ParentNumber, l.CreatedByRun, l.Depth); err != nil {
-		return l, &LineageRecordError{ChildNumber: l.ChildNumber, Depth: l.Depth, Err: fmt.Errorf("insert issue lineage: %w", err)}
+	if _, err := tx.Exec(ctx, insert, l.Username, l.Connection, l.ChildNumber, l.ParentNumber, l.CreatedByRun, l.Depth); err != nil {
+		return fmt.Errorf("insert issue lineage: %w", err)
 	}
-	if err := tx.Commit(recCtx); err != nil {
-		return l, &LineageRecordError{ChildNumber: l.ChildNumber, Depth: l.Depth, Err: fmt.Errorf("commit issue lineage: %w", err)}
+	if _, err := tx.Exec(ctx, `DELETE FROM tracker_lineage_reservations WHERE id = $1`, reservationID); err != nil {
+		return fmt.Errorf("clear lineage reservation: %w", err)
 	}
-	return l, nil
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit issue lineage: %w", err)
+	}
+	return nil
+}
+
+// runGates is a set of per-key, context-aware mutexes. A key's entry
+// lives only while someone holds or waits on it, so the map does not
+// grow with the number of runs ever seen. The zero value is ready to use.
+type runGates struct {
+	mu    sync.Mutex
+	gates map[string]*runGate
+}
+
+type runGate struct {
+	token chan struct{} // capacity 1: holding the token = holding the gate
+	refs  int           // holders + waiters; guarded by runGates.mu
+}
+
+// acquire blocks until key's gate is held or ctx is done. The returned
+// release must be called exactly once.
+func (g *runGates) acquire(ctx context.Context, key string) (release func(), err error) {
+	g.mu.Lock()
+	if g.gates == nil {
+		g.gates = make(map[string]*runGate)
+	}
+	gate, ok := g.gates[key]
+	if !ok {
+		gate = &runGate{token: make(chan struct{}, 1)}
+		g.gates[key] = gate
+	}
+	gate.refs++
+	g.mu.Unlock()
+
+	unref := func() {
+		g.mu.Lock()
+		gate.refs--
+		if gate.refs == 0 {
+			delete(g.gates, key)
+		}
+		g.mu.Unlock()
+	}
+
+	select {
+	case gate.token <- struct{}{}:
+		return func() {
+			<-gate.token
+			unref()
+		}, nil
+	case <-ctx.Done():
+		unref()
+		return nil, ctx.Err()
+	}
 }
 
 // lineageRecordTimeout bounds the detached insert+commit that follows a
