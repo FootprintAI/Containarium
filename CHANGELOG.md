@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Security: a run token can no longer add or remove a `scope:*` label on
+  an issue outside its own lineage.** `scope:*` is on the default label
+  allow-list, so a run token could add a routed `scope:<role>` label to any
+  existing, ungated issue on its connection. That issue then dispatched on
+  the next tick at depth 0, past the approval gate and not counted against
+  `max_children_per_run`. `tracker issue label` (`SetTrackerIssueLabels`)
+  now lets a run token add or remove a `scope:` label only on an issue in
+  its own lineage: the issue it was dispatched for, or a follow-up it filed.
+  Any other issue is refused with `PermissionDenied` before any upstream
+  call. The check applies whether or not the issue carries
+  `agent:needs-approval`, and under any label allow-list, including `*`. It
+  runs in addition to the allow-list check. Operator tokens are unaffected.
+  This closes the `scope:*` path only. A run token can still remove
+  `agent:needs-approval` from *any* issue on its connection, not just its
+  own follow-up, so an unrelated issue that is already routed and parked
+  for approval can still be released into a dispatch that way (#2068). An
+  agent-chosen `parent_number` can also still reset depth. Both remain
+  open. (#2060)
+
 ## [0.90.0] - 2026-09-26
 
 ### Added

@@ -427,6 +427,12 @@ func TestSetTrackerIssueLabels_RejectsOutsideAllowList(t *testing.T) {
 		})
 	}
 
+	// Scope labels are also lineage-bound for a run token (#2060): #3 is
+	// a follow-up this run filed, so re-routing it is allowed.
+	if _, err := s.trackerStore.RecordChild(context.Background(), tracker.Lineage{Username: user, Connection: "default", ParentNumber: 2, CreatedByRun: createTestRunID},
+		0, 0, func(context.Context) (int64, error) { return 3, nil }); err != nil {
+		t.Fatalf("seed lineage (#3 filed by the run): %v", err)
+	}
 	if _, err := s.SetTrackerIssueLabels(runCtx, &pb.SetTrackerIssueLabelsRequest{
 		Username: user, Connection: "default", Number: 3, AddLabels: []string{"scope:architecture"}, RemoveLabels: []string{"scope:product"},
 	}); err != nil {

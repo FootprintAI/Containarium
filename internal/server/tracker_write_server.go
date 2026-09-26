@@ -220,7 +220,8 @@ func (s *ContainerServer) ClaimTrackerIssue(ctx context.Context, req *pb.ClaimTr
 }
 
 // SetTrackerIssueLabels adds and/or removes labels on an issue, both
-// lists checked against the connection's label allow-list first (#2024).
+// lists checked against the connection's label allow-list first (#2024);
+// a run token's scope labels are further bound to its own lineage (#2060).
 func (s *ContainerServer) SetTrackerIssueLabels(ctx context.Context, req *pb.SetTrackerIssueLabelsRequest) (*pb.SetTrackerIssueLabelsResponse, error) {
 	if err := auth.RequireScope(ctx, auth.ScopeTrackerWrite); err != nil {
 		return nil, err
@@ -257,6 +258,21 @@ func (s *ContainerServer) SetTrackerIssueLabels(ctx context.Context, req *pb.Set
 	if err := policy.CheckLabels(append(append([]string(nil), add...), remove...), isRun); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
+	// Lineage (#2060), on top of the allow-list and whatever it admits: a
+	// run token may add or remove a scope:<role> label only on an issue in
+	// its own lineage — the issue it was dispatched for, or a follow-up it
+	// filed. Routing any other issue would dispatch it at depth 0, past
+	// the approval gate and uncounted against max_children_per_run.
+	if isRun && anyScopeLabel(add, remove) {
+		in, err := s.trackerStore.IssueInRunLineage(ctx, req.Username, req.Connection, runID, req.Number)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "check run lineage: %v", err)
+		}
+		if !in {
+			return nil, status.Errorf(codes.PermissionDenied,
+				"a run-scoped token may set scope labels only on the issue it was dispatched for or a follow-up it filed; #%d is outside run %s's lineage", req.Number, runID)
+		}
+	}
 
 	provider, conn, err := s.writerConnFor(ctx, record)
 	if err != nil {
@@ -273,6 +289,19 @@ func (s *ContainerServer) SetTrackerIssueLabels(ctx context.Context, req *pb.Set
 		RemoveLabels: remove,
 	})
 	return &pb.SetTrackerIssueLabelsResponse{Message: "labels updated"}, nil
+}
+
+// anyScopeLabel reports whether any label in either list is a
+// scope:<role> label.
+func anyScopeLabel(lists ...[]string) bool {
+	for _, labels := range lists {
+		for _, l := range labels {
+			if tracker.IsScopeLabel(l) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ---- tracker write audit rows (#1922) --------------------------------

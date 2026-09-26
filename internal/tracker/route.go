@@ -21,6 +21,17 @@ import (
 // the route with Scope "product" matches the label "scope:product".
 const ScopeLabelPrefix = "scope:"
 
+// IsScopeLabel reports whether label is a scope:<role> label — the kind
+// the dispatcher routes on — compared after trimming and with the prefix
+// matched case-insensitively (GitHub label names are case-insensitive,
+// so "Scope:product" can land as the existing "scope:product" label).
+// Used to lineage-bind a run token's scope writes (#2060); deliberately
+// broader than "has a route", since a route can be added later.
+func IsScopeLabel(label string) bool {
+	label = strings.TrimSpace(label)
+	return len(label) >= len(ScopeLabelPrefix) && strings.EqualFold(label[:len(ScopeLabelPrefix)], ScopeLabelPrefix)
+}
+
 // Route is the storage-layer view of a TrackerRoute.
 type Route struct {
 	Username   string

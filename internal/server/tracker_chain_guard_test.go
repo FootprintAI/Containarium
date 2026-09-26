@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/runlease"
 	"github.com/footprintai/containarium/internal/tracker"
 	"github.com/footprintai/containarium/pkg/core/skills"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -237,7 +238,7 @@ func TestChainGuards_InjectedIssueCannotWidenScopesOrLabels(t *testing.T) {
 
 // ---- Open maintainer questions (umbrella #2055) ---------------------
 //
-// The three tests below DOCUMENT CURRENT BEHAVIOR; they decide nothing.
+// The two tests below DOCUMENT CURRENT BEHAVIOR; they decide nothing.
 // When the maintainers rule, flip the assertion in the same PR that
 // changes the behavior.
 
@@ -299,46 +300,195 @@ func TestCreateTrackerIssue_AgentChosenParentResetsDepth_CurrentBehavior(t *test
 	}
 }
 
-// Known gap, tracked as #2060: scope:* is on the default label allow-list,
-// so a run token may ADD a routed scope label to any existing issue on its
-// connection. An ungated, human-created issue labeled that way dispatches
-// on the next tick at depth 0 — past the approval gate (the run never
-// created it, so no gate was forced), with no lineage row (depth resets),
-// and uncounted against max_children_per_run (labeling is not a create).
-// This is broader than the gate-removal question above: an add-only rule
-// for agent:needs-approval would not close it. Today it succeeds.
-func TestSetTrackerIssueLabels_RunTokenScopeLabelDispatchesUngatedIssue_CurrentBehavior(t *testing.T) {
+// ---- Run-token lineage (#2060) --------------------------------------
+//
+// A run token may add or remove a scope:<role> label only on an issue in
+// its own lineage: the issue it was dispatched for, or a follow-up it
+// filed itself (a RecordChild row with created_by_run = its run id). On
+// any other issue the call is refused with PermissionDenied before any
+// upstream call — whether or not that issue carries the gate label, and
+// whatever the connection's label allow-list admits. Otherwise a run
+// could route any ungated issue and have it dispatch at depth 0, past
+// the gate and uncounted against max_children_per_run.
+
+// runCtxFor is dispatchedRunCtx for an arbitrary run id — the id the
+// dispatcher chose when it started the run.
+func runCtxFor(t *testing.T, user, runID string) context.Context {
+	t.Helper()
+	skill, err := skills.GetDefault().Get("product-define")
+	if err != nil {
+		t.Fatalf("product-define not in the catalog: %v", err)
+	}
+	return auth.ContextWithTestTrackerConn(auth.ContextWithTestRunID(
+		kmsKeyTestCtx(user, "member", strings.Join(skill.AllowedScopes, ",")), runID), "default")
+}
+
+// TestSetTrackerIssueLabels_RunTokenScopeLabelOnUnrelatedIssueRejected is
+// the #2060 finding, flipped: a run token adding scope:product to an
+// existing, ungated, human-created issue it has no lineage to is refused,
+// nothing reaches the forge, and the next tick has nothing to dispatch.
+func TestSetTrackerIssueLabels_RunTokenScopeLabelOnUnrelatedIssueRejected(t *testing.T) {
 	const user = "tracker-chain-gap-scope-label"
 	provider := &fakeWriterProvider{}
 	s, starter, admin := setUpDispatchableConnection(t, user, provider, nil)
-	ctx := context.Background()
 
 	// #77: an existing, human-created issue with no labels at all.
 	_, err := s.SetTrackerIssueLabels(dispatchedRunCtx(t, user), &pb.SetTrackerIssueLabelsRequest{
 		Username: user, Connection: "default", Number: 77, AddLabels: []string{"scope:product"},
 	})
-	if err != nil {
-		t.Fatalf("CURRENT BEHAVIOR changed: a run token adding scope:product to an unrelated issue now fails (%v) — update this test with the #2060 decision", err)
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("run token adding scope:product to unrelated #77: code = %v (%v), want PermissionDenied", status.Code(err), err)
 	}
-	if len(provider.labelsAdd) != 1 || provider.labelsAdd[0] != "scope:product" {
-		t.Fatalf("labels added = %v, want [scope:product]", provider.labelsAdd)
-	}
-	if n, err := s.trackerStore.ChildrenCount(ctx, user, "default", createTestRunID); err != nil || n != 0 {
-		t.Fatalf("children counted against the run = %d, %v; want 0 (labeling is not a create)", n, err)
+	if provider.labelsAdd != nil || provider.labelsRemove != nil {
+		t.Fatalf("a rejected scope label reached the forge: add=%v remove=%v", provider.labelsAdd, provider.labelsRemove)
 	}
 
-	// The forge now shows #77 routed and ungated; the next tick starts it.
-	labeled := tracker.Issue{Number: 77, Labels: []string{"scope:product"}, State: pb.TrackerIssueState_TRACKER_ISSUE_STATE_OPEN}
-	provider.issues, provider.issue, provider.labelsAdd = []tracker.Issue{labeled}, labeled, nil
+	// The forge still shows #77 unrouted; the next tick starts nothing.
+	unlabeled := tracker.Issue{Number: 77, State: pb.TrackerIssueState_TRACKER_ISSUE_STATE_OPEN}
+	provider.issues, provider.issue = []tracker.Issue{unlabeled}, unlabeled
+	tick, err := s.DispatchTrackerIssues(admin, &pb.DispatchTrackerIssuesRequest{Username: user, Connection: "default"})
+	if err != nil {
+		t.Fatalf("DispatchTrackerIssues: %v", err)
+	}
+	if len(tick.GetStarted()) != 0 || len(starter.calls) != 0 {
+		t.Fatalf("tick = %+v, StartRun calls = %d; want nothing dispatched", tick, len(starter.calls))
+	}
+}
+
+// TestSetTrackerIssueLabels_RunTokenScopeLabelLineageRules walks every
+// side of the rule with a run the dispatcher actually started, so the
+// run id on its token is the one on its dispatch row.
+func TestSetTrackerIssueLabels_RunTokenScopeLabelLineageRules(t *testing.T) {
+	const user = "tracker-chain-scope-lineage"
+	provider := &fakeWriterProvider{}
+	s, starter, admin := setUpDispatchableConnection(t, user, provider, nil)
+	ctx := context.Background()
+
+	// A human routes #42; the tick dispatches it and chooses the run id.
+	routed := tracker.Issue{Number: 42, Labels: []string{"scope:product"}, State: pb.TrackerIssueState_TRACKER_ISSUE_STATE_OPEN}
+	provider.issues, provider.issue = []tracker.Issue{routed}, routed
 	tick, err := s.DispatchTrackerIssues(admin, &pb.DispatchTrackerIssuesRequest{Username: user, Connection: "default"})
 	if err != nil {
 		t.Fatalf("DispatchTrackerIssues: %v", err)
 	}
 	if len(tick.GetStarted()) != 1 || len(starter.calls) != 1 {
-		t.Fatalf("CURRENT BEHAVIOR changed: run-labeled #77 was not dispatched (tick = %+v, StartRun calls = %d) — update this test with the #2060 decision", tick, len(starter.calls))
+		t.Fatalf("tick = %+v, StartRun calls = %d; want #42 dispatched", tick, len(starter.calls))
 	}
-	if d := tick.GetStarted()[0].GetDepth(); d != 0 {
-		t.Errorf("dispatched depth = %d, want 0 (no lineage: the chain resets)", d)
+	runID := starter.calls[0].RunID
+	s.runRegistry.Register(runID, runlease.Info{SkillID: "product-define", Model: "fable"})
+	run := runCtxFor(t, user, runID)
+
+	// The run files a follow-up: recorded as its child, gate forced on.
+	resp, err := s.CreateTrackerIssue(run, &pb.CreateTrackerIssueRequest{
+		Username: user, Connection: "default", Title: "Architecture for the thing",
+		Body: "Follow-up.", Labels: []string{"scope:product"}, ParentNumber: 42,
+	})
+	if err != nil {
+		t.Fatalf("CreateTrackerIssue (run token): %v", err)
+	}
+	child := resp.GetIssue().GetNumber()
+	if n, err := s.trackerStore.ChildrenCount(ctx, user, "default", runID); err != nil || n != 1 {
+		t.Fatalf("children recorded for the run = %d, %v; want 1", n, err)
+	}
+
+	reset := func() { provider.labelsAdd, provider.labelsRemove = nil, nil }
+	allowed := []struct {
+		name   string
+		number int64
+	}{
+		{"re-route its own dispatched issue", 42},
+		{"re-route its own recorded child", child},
+	}
+	for _, tc := range allowed {
+		t.Run(tc.name, func(t *testing.T) {
+			reset()
+			if _, err := s.SetTrackerIssueLabels(run, &pb.SetTrackerIssueLabelsRequest{
+				Username: user, Connection: "default", Number: tc.number,
+				AddLabels: []string{"scope:architecture"}, RemoveLabels: []string{"scope:product"},
+			}); err != nil {
+				t.Fatalf("SetTrackerIssueLabels(#%d): %v, want success", tc.number, err)
+			}
+			if len(provider.labelsAdd) != 1 || provider.labelsAdd[0] != "scope:architecture" {
+				t.Errorf("labelsAdd = %v, want [scope:architecture]", provider.labelsAdd)
+			}
+		})
+	}
+
+	refused := []struct {
+		name   string
+		ctx    context.Context
+		number int64
+		add    []string
+		remove []string
+	}{
+		// #88 has no lineage to this run; whether it carries the gate is
+		// not something the check reads.
+		{"add a scope to an unrelated issue", run, 88, []string{"scope:product"}, nil},
+		{"remove a scope from an unrelated issue", run, 88, nil, []string{"scope:product"}},
+		{"scope mixed with allowed non-scope labels", run, 88, []string{"model:fable", "scope:product"}, nil},
+		// The dispatched issue and the child belong to THIS run, not to
+		// another run's token on the same connection.
+		{"another run's token on this run's dispatched issue", dispatchedRunCtx(t, user), 42, []string{"scope:architecture"}, nil},
+		{"another run's token on this run's child", dispatchedRunCtx(t, user), child, []string{"scope:architecture"}, nil},
+	}
+	for _, tc := range refused {
+		t.Run(tc.name, func(t *testing.T) {
+			reset()
+			_, err := s.SetTrackerIssueLabels(tc.ctx, &pb.SetTrackerIssueLabelsRequest{
+				Username: user, Connection: "default", Number: tc.number, AddLabels: tc.add, RemoveLabels: tc.remove,
+			})
+			if status.Code(err) != codes.PermissionDenied {
+				t.Fatalf("code = %v (%v), want PermissionDenied", status.Code(err), err)
+			}
+			if provider.labelsAdd != nil || provider.labelsRemove != nil {
+				t.Errorf("upstream SetLabels was called (add=%v remove=%v), want no upstream call", provider.labelsAdd, provider.labelsRemove)
+			}
+		})
+	}
+
+	t.Run("operator token is not lineage-bound", func(t *testing.T) {
+		reset()
+		operator := kmsKeyTestCtx(user, "member", "tracker:write")
+		if _, err := s.SetTrackerIssueLabels(operator, &pb.SetTrackerIssueLabelsRequest{
+			Username: user, Connection: "default", Number: 88, AddLabels: []string{"scope:product"},
+		}); err != nil {
+			t.Fatalf("operator labeling #88: %v, want success", err)
+		}
+	})
+}
+
+// TestSetTrackerIssueLabels_RunTokenLineageAppliesUnderPermissiveAllowList:
+// the lineage rule is not an allow-list entry, so a connection that
+// allow-lists "*" (or "scope:*" explicitly) still cannot be used by a run
+// to route an unrelated issue — in any letter case, since GitHub label
+// names are case-insensitive.
+func TestSetTrackerIssueLabels_RunTokenLineageAppliesUnderPermissiveAllowList(t *testing.T) {
+	for _, allow := range [][]string{{"*"}, {"scope:*"}, {"Scope:*", "SCOPE:*"}} {
+		t.Run(strings.Join(allow, ","), func(t *testing.T) {
+			const user = "tracker-chain-scope-lineage-allowlist"
+			provider := &fakeWriterProvider{}
+			s, _, _ := setUpDispatchableConnection(t, user, provider, &pb.TrackerPolicy{LabelAllowList: allow})
+			policy := tracker.PolicyFromProto(&pb.TrackerPolicy{LabelAllowList: allow})
+			checked := 0
+			for _, label := range []string{"scope:product", "Scope:product", "SCOPE:product"} {
+				if !policy.LabelAllowed(label) {
+					continue // the allow-list refuses it first (InvalidArgument)
+				}
+				checked++
+				_, err := s.SetTrackerIssueLabels(dispatchedRunCtx(t, user), &pb.SetTrackerIssueLabelsRequest{
+					Username: user, Connection: "default", Number: 77, AddLabels: []string{label},
+				})
+				if status.Code(err) != codes.PermissionDenied {
+					t.Errorf("label %q under allow-list %v: code = %v (%v), want PermissionDenied", label, allow, status.Code(err), err)
+				}
+			}
+			if checked == 0 {
+				t.Fatalf("allow-list %v admitted no scope label; the case exercises nothing", allow)
+			}
+			if provider.labelsAdd != nil || provider.labelsRemove != nil {
+				t.Errorf("upstream SetLabels was called (add=%v remove=%v), want no upstream call", provider.labelsAdd, provider.labelsRemove)
+			}
+		})
 	}
 }
 

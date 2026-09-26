@@ -169,12 +169,29 @@ never smuggled through the launch payload.
   `agent:needs-approval` unless `policy.auto_chain` is true. The dispatcher
   filter skips any issue carrying it. The human's only action per hop is
   removing that label.
-  **Known gap (#2060, open):** that is not yet the only path. `scope:*` is
-  on the default label allow-list, so a run token can add a routed scope
-  label to an existing, ungated, human-created issue, which then dispatches
-  at depth 0, uncounted against fan-out. A run token can also remove
-  `agent:needs-approval` itself (open question on #2055). Both are pinned
-  as current behavior by the `*_CurrentBehavior` tests in
+  **Run-token lineage (#2060, fixed):** a run token may add or remove a
+  `scope:<role>` label (prefix matched case-insensitively) only on an
+  issue in its own lineage: the issue it was dispatched for (a
+  `tracker_dispatches` row with its `run_id`) or a follow-up it filed (a
+  `tracker_issue_lineage` row with `created_by_run` = its run). Any other
+  issue is refused with `PermissionDenied` before any upstream call,
+  whether or not that issue carries `agent:needs-approval`, and whatever
+  the connection's label allow-list admits (`scope:*`, `*`). This is on
+  top of the allow-list check, not a replacement for it. So a run can no
+  longer add or remove a `scope:*` label on an issue outside its own
+  lineage, which closes the `scope:*` route for turning an ungated,
+  human-created issue into a depth-0 dispatch that bypasses the gate and
+  fan-out. It closes that label path only. Operator tokens are not
+  lineage-bound.
+  **Still open (#2055):** the gate is still not the only path. (1) A run
+  token can remove `agent:needs-approval` from *any* issue on its
+  connection, not only its own gated follow-up. An unrelated issue that is
+  already routed and parked for approval is released into a depth-0
+  dispatch that way, uncounted against fan-out (#2068). (2)
+  `parent_number` is agent-chosen, so naming any depth-0 issue as the
+  parent files the follow-up at depth 1, which resets the chain's depth
+  (fan-out still bounds the run). Both are pinned as current behavior by
+  the `*_CurrentBehavior` tests in
   `internal/server/tracker_chain_guard_test.go`.
 - **Depth.** `tracker_issue_lineage(child → parent, depth)` is written by
   `CreateTrackerIssue` with `depth = parent.depth + 1` (a human-created
