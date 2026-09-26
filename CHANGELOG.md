@@ -101,6 +101,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to the caller. A next link that points at a different host than the
   configured API is refused. (#2040)
 
+- **One run token can no longer starve the tracker store's DB pool.**
+  `tracker issue create` used to hold a transaction (and a pool
+  connection) across the upstream forge create, and same-run creates held
+  a connection while queued on the per-run advisory lock — a single run
+  firing concurrent creates against a slow forge could time out every
+  other tenant's tracker lookups on that daemon. The fan-out guard now
+  claims a slot in a new `tracker_lineage_reservations` table in a short
+  transaction, the upstream create runs with no connection held, and the
+  reservation becomes the lineage row afterwards; same-run creates queue
+  on an in-process gate before taking a connection. The per-run fan-out
+  cap and exactly-once lineage still hold. (#2044)
 - **`code run` on a box without `agent-box` now names the missing helper** and
   the command that installs it, instead of surfacing
   `initialize MCP session: transport error: transport closed`. The same
