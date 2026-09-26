@@ -10722,6 +10722,11 @@
             "$ref": "#/definitions/TrackerDispatch"
           },
           "description": "Dispatches this tick inserted but could not start (state FAILED,\nfailure_reason set, issue labeled agent:failed)."
+        },
+        "skippedOverDepth": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Issues whose recorded lineage depth exceeds the connection policy's\nmax_depth (#2025) — filed under a looser policy, then lowered. The\ndaemon reads depth from its own lineage table, never the issue."
         }
       }
     },

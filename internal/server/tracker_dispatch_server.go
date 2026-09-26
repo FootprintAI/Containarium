@@ -67,6 +67,10 @@ func (s *ContainerServer) DispatchTrackerIssues(ctx context.Context, req *pb.Dis
 		return nil, err
 	}
 
+	// The connection's policy, re-read every tick: a max_depth lowered
+	// after a chain was filed still stops the deeper issues (#2025). The
+	// same value's RunTimeout also bounds the sweep below (#2026).
+	policy := tracker.PolicyFromProto(record.Policy)
 	d := &tracker.Dispatcher{
 		Store:    s.trackerStore,
 		Provider: provider,
@@ -77,9 +81,9 @@ func (s *ContainerServer) DispatchTrackerIssues(ctx context.Context, req *pb.Dis
 		// from the connection record like SubmitTrackerChange's push
 		// target — never from the issue or the box (#2023).
 		RepoURL: remoteURLFor(record.Provider, record.BaseURL, record.Project),
-		// The sweep (#2026): the connection's run timeout, this daemon's
-		// view of its live dispatched runs, and the success metrics.
-		Policy:   tracker.PolicyFromProto(record.Policy),
+		Policy:  &policy,
+		// The sweep (#2026): this daemon's view of its live dispatched
+		// runs, and the success metrics.
 		Observer: trackerDispatchObserverFromGlobal(),
 	}
 	if leases, ok := s.trackerRunStarter.(tracker.RunLeases); ok {
@@ -94,6 +98,7 @@ func (s *ContainerServer) DispatchTrackerIssues(ctx context.Context, req *pb.Dis
 		SkippedNeedsApproval: res.SkippedNeedsApproval,
 		SkippedActive:        res.SkippedActive,
 		SkippedUnrouted:      res.SkippedUnrouted,
+		SkippedOverDepth:     res.SkippedOverDepth,
 	}
 	for i := range res.Started {
 		out.Started = append(out.Started, toProtoTrackerDispatch(&res.Started[i]))
@@ -104,9 +109,9 @@ func (s *ContainerServer) DispatchTrackerIssues(ctx context.Context, req *pb.Dis
 	for i := range res.TimedOut {
 		out.TimedOut = append(out.TimedOut, toProtoTrackerDispatch(&res.TimedOut[i]))
 	}
-	log.Printf("[tracker] dispatch %s/%s: started=%d failed=%d timed_out=%d skipped(approval=%d active=%d unrouted=%d)",
+	log.Printf("[tracker] dispatch %s/%s: started=%d failed=%d timed_out=%d skipped(approval=%d active=%d unrouted=%d over_depth=%d)",
 		req.Username, req.Connection, len(res.Started), len(res.Failed), len(res.TimedOut),
-		res.SkippedNeedsApproval, res.SkippedActive, res.SkippedUnrouted)
+		res.SkippedNeedsApproval, res.SkippedActive, res.SkippedUnrouted, res.SkippedOverDepth)
 	return out, nil
 }
 

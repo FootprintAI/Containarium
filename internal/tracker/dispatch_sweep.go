@@ -64,7 +64,7 @@ type DispatchObserver interface {
 // daemon does not hold. Runs are per-process (runlease), so this assumes
 // one dispatching daemon per store — the design's 10x note.
 func (d *Dispatcher) sweep(ctx context.Context, username, connection string) ([]Dispatch, error) {
-	timeout := d.Policy.RunTimeout
+	timeout := d.effectivePolicy().RunTimeout
 	if timeout <= 0 {
 		timeout = DefaultRunTimeout
 	}

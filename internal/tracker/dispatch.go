@@ -78,6 +78,9 @@ type DispatchStore interface {
 	DeleteQueuedDispatch(ctx context.Context, id string) (bool, error)
 	RecordDispatchWarning(ctx context.Context, username, connection string, issue int64, scope string) (bool, error)
 	ForgetDispatchWarning(ctx context.Context, username, connection string, issue int64, scope string) error
+	// IssueDepth is the issue's recorded lineage depth (0 for a
+	// human-created issue with no lineage row).
+	IssueDepth(ctx context.Context, username, connection string, number int64) (int32, error)
 }
 
 var _ DispatchStore = (*Store)(nil)
@@ -97,10 +100,13 @@ type Dispatcher struct {
 	// NewRunID mints the run id recorded on the row before the run
 	// starts. nil uses a random UUID.
 	NewRunID func() string
-	// Policy is the connection's effective policy; its RunTimeout bounds
-	// how long a row may stay active before the sweep fails it (#2026).
-	// A zero RunTimeout means DefaultRunTimeout.
-	Policy Policy
+	// Policy is the connection's effective policy, read fresh every tick
+	// (via effectivePolicy) so a max_depth lowered after a chain was filed
+	// still holds (#2025), and its RunTimeout bounds how long a row may
+	// stay active before the sweep fails it (#2026). nil means
+	// PolicyFromProto(nil) — the documented defaults, never "unlimited",
+	// so a caller that forgets to wire it fails closed.
+	Policy *Policy
 	// Leases is the daemon's view of its live dispatched runs: the sweep
 	// ends a timed-out run's lease and fails rows with no live lease.
 	// nil disables the lease-lost sweep and the lease end (the timeout
@@ -128,10 +134,14 @@ type TickResult struct {
 	SkippedNeedsApproval int32
 	SkippedActive        int32
 	SkippedUnrouted      int32
+	// SkippedOverDepth counts issues whose recorded lineage depth
+	// exceeds the policy's max_depth (#2025).
+	SkippedOverDepth int32
 }
 
 // Tick lists the connection's open issues and, for each one with a
-// routed scope label, no state label and no approval gate: inserts a
+// routed scope label, no state label, no approval gate and a lineage
+// depth within the policy's max_depth: inserts a
 // dispatch row (the exactly-once index decides the winner), starts the
 // routed skill with the issue reference as input, and labels the issue
 // agent:queued. A start error fails the row, labels agent:failed and
@@ -142,6 +152,7 @@ type TickResult struct {
 // write failures do not (they are recorded and the tick moves on).
 func (d *Dispatcher) Tick(ctx context.Context, username, connection string) (TickResult, error) {
 	var res TickResult
+	policy := d.effectivePolicy()
 	routes, err := d.Store.ListRoutes(ctx, username, connection)
 	if err != nil {
 		return res, fmt.Errorf("list routes: %w", err)
@@ -199,6 +210,18 @@ func (d *Dispatcher) Tick(ctx context.Context, username, connection string) (Tic
 			continue
 		}
 
+		// Chain depth (#2025), enforced by the daemon from the lineage
+		// table — never from anything on the issue. Create already refuses
+		// a child past max_depth; this holds a policy lowered afterwards.
+		depth, err := d.Store.IssueDepth(ctx, username, connection, issue.Number)
+		if err != nil {
+			return res, fmt.Errorf("read depth of #%d: %w", issue.Number, err)
+		}
+		if !policy.DepthAllowed(depth) {
+			res.SkippedOverDepth++
+			continue
+		}
+
 		// From the insert until StartRun has succeeded, no cancellation
 		// point may leave the row QUEUED with no run behind it (#2049):
 		// the active-row index would skip the issue on every later tick,
@@ -212,7 +235,7 @@ func (d *Dispatcher) Tick(ctx context.Context, username, connection string) (Tic
 		ictx, icancel := bookkeepingContext(ctx)
 		row, err := d.Store.InsertDispatch(ictx, Dispatch{
 			Username: username, Connection: connection, IssueNumber: issue.Number,
-			Scope: scope, SkillID: skillID, RunID: d.newRunID(), CreatedAt: d.Clock.Now(),
+			Scope: scope, SkillID: skillID, RunID: d.newRunID(), CreatedAt: d.Clock.Now(), Depth: depth,
 		})
 		icancel()
 		if errors.Is(err, ErrDispatchActive) {
@@ -443,6 +466,14 @@ func dispatcherIdentity(username, runID string) Identity {
 		runID = username
 	}
 	return Identity{RunID: runID, SkillID: "dispatcher"}
+}
+
+// effectivePolicy is d.Policy, or the documented defaults when unset.
+func (d *Dispatcher) effectivePolicy() Policy {
+	if d.Policy != nil {
+		return *d.Policy
+	}
+	return PolicyFromProto(nil)
 }
 
 func (d *Dispatcher) newRunID() string {

@@ -122,7 +122,7 @@ func httpModeStub(t *testing.T, respBody string) (gotMethod, gotPath, gotQuery *
 }
 
 func TestTrackerDispatch_HTTPModeOnceHitsGatewayPath(t *testing.T) {
-	method, path, _ := httpModeStub(t, `{"started":[{"id":"d1","issueNumber":"42","scope":"product","skillId":"product-define","runId":"run-1","state":"TRACKER_DISPATCH_STATE_QUEUED"}],"skippedUnrouted":1}`)
+	method, path, _ := httpModeStub(t, `{"started":[{"id":"d1","issueNumber":"42","scope":"product","skillId":"product-define","runId":"run-1","state":"TRACKER_DISPATCH_STATE_QUEUED"}],"skippedUnrouted":1,"skippedOverDepth":2}`)
 	oldOnce := trackerDispatchOnce
 	t.Cleanup(func() { trackerDispatchOnce = oldOnce })
 	trackerDispatchOnce = true
@@ -138,7 +138,7 @@ func TestTrackerDispatch_HTTPModeOnceHitsGatewayPath(t *testing.T) {
 	if !strings.Contains(out, "#42") || !strings.Contains(out, "scope:product") || !strings.Contains(out, "run-1") {
 		t.Errorf("output = %q, want the started issue, label and run id", out)
 	}
-	if !strings.Contains(out, "unrouted=1") {
+	if !strings.Contains(out, "unrouted=1") || !strings.Contains(out, "over-depth=2") {
 		t.Errorf("output = %q, want the skip counts", out)
 	}
 }

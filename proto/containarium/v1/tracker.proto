@@ -361,6 +361,11 @@ message DispatchTrackerIssuesResponse {
   // Dispatches this tick inserted but could not start (state FAILED,
   // failure_reason set, issue labeled agent:failed).
   repeated TrackerDispatch failed = 6;
+
+  // Issues whose recorded lineage depth exceeds the connection policy's
+  // max_depth (#2025) — filed under a looser policy, then lowered. The
+  // daemon reads depth from its own lineage table, never the issue.
+  int32 skipped_over_depth = 7;
 }
 
 // ListTrackerDispatchesRequest enumerates a connection's dispatch

@@ -102,7 +102,7 @@ func newSweepFixture(t *testing.T, user string) (*Dispatcher, *Store, *fakeDispa
 	t.Helper()
 	d, store, provider, runs, ctx := newLifecycleFixture(t, user, Issue{Number: 7, Labels: []string{"scope:product"}})
 	leases, obs := newFakeLeases(), &fakeObserver{}
-	d.Policy = Policy{RunTimeout: sweepTimeout}
+	d.Policy = &Policy{RunTimeout: sweepTimeout}
 	d.Leases, d.Observer = leases, obs
 	res, err := d.Tick(ctx, user, "default")
 	if err != nil || len(res.Started) != 1 {
@@ -249,7 +249,7 @@ func TestDispatchSweep_StrandedQueuedRowIsFreed(t *testing.T) {
 	runs := &lifecycleRunStarter{}
 	d, store, ctx := newDispatchFixture(t, user, provider, &fakeRunStarter{})
 	d.Runs, d.Leases = runs, newFakeLeases()
-	d.Policy = Policy{RunTimeout: sweepTimeout}
+	d.Policy = &Policy{RunTimeout: sweepTimeout}
 	clock := clockOf(t, d)
 	if _, err := store.InsertDispatch(ctx, Dispatch{
 		Username: user, Connection: "default", IssueNumber: 3, Scope: "product", SkillID: "product-define",
@@ -479,7 +479,7 @@ func (p *provisioningSweptStarter) StartRun(ctx context.Context, req StartRunReq
 func TestDispatchSweep_TimeoutWhileProvisioningStopsTheRun(t *testing.T) {
 	const user = "tracker-sweep-provisioning"
 	d, store, provider, _, ctx := newLifecycleFixture(t, user, Issue{Number: 7, Labels: []string{"scope:product"}})
-	d.Policy = Policy{RunTimeout: sweepTimeout}
+	d.Policy = &Policy{RunTimeout: sweepTimeout}
 	obs := &fakeObserver{}
 	d.Observer = obs
 	starter := &provisioningSweptStarter{t: t, user: user}

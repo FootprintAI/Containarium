@@ -31,8 +31,8 @@ type Dispatch struct {
 	// RunID is chosen by the dispatcher before the run starts, so the
 	// run JWT's run_id claim and this row always agree.
 	RunID string
-	// Depth is the issue's lineage depth. Always 0 until issue lineage
-	// (#2024) and its dispatcher-side enforcement (#2025) land.
+	// Depth is the issue's lineage depth when it was dispatched, read
+	// from tracker_issue_lineage (0 for a human-created issue).
 	Depth         int32
 	State         pb.TrackerDispatchState
 	FailureReason string

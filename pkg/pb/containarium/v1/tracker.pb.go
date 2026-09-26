@@ -1684,9 +1684,13 @@ type DispatchTrackerIssuesResponse struct {
 	SkippedUnrouted int32 `protobuf:"varint,5,opt,name=skipped_unrouted,json=skippedUnrouted,proto3" json:"skipped_unrouted,omitempty"`
 	// Dispatches this tick inserted but could not start (state FAILED,
 	// failure_reason set, issue labeled agent:failed).
-	Failed        []*TrackerDispatch `protobuf:"bytes,6,rep,name=failed,proto3" json:"failed,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Failed []*TrackerDispatch `protobuf:"bytes,6,rep,name=failed,proto3" json:"failed,omitempty"`
+	// Issues whose recorded lineage depth exceeds the connection policy's
+	// max_depth (#2025) — filed under a looser policy, then lowered. The
+	// daemon reads depth from its own lineage table, never the issue.
+	SkippedOverDepth int32 `protobuf:"varint,7,opt,name=skipped_over_depth,json=skippedOverDepth,proto3" json:"skipped_over_depth,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *DispatchTrackerIssuesResponse) Reset() {
@@ -1759,6 +1763,13 @@ func (x *DispatchTrackerIssuesResponse) GetFailed() []*TrackerDispatch {
 		return x.Failed
 	}
 	return nil
+}
+
+func (x *DispatchTrackerIssuesResponse) GetSkippedOverDepth() int32 {
+	if x != nil {
+		return x.SkippedOverDepth
+	}
+	return 0
 }
 
 // ListTrackerDispatchesRequest enumerates a connection's dispatch
@@ -3506,14 +3517,15 @@ const file_containarium_v1_tracker_proto_rawDesc = "" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x1e\n" +
 	"\n" +
 	"connection\x18\x02 \x01(\tR\n" +
-	"connection\"\xdc\x02\n" +
+	"connection\"\x8a\x03\n" +
 	"\x1dDispatchTrackerIssuesResponse\x12:\n" +
 	"\astarted\x18\x01 \x03(\v2 .containarium.v1.TrackerDispatchR\astarted\x12=\n" +
 	"\ttimed_out\x18\x02 \x03(\v2 .containarium.v1.TrackerDispatchR\btimedOut\x124\n" +
 	"\x16skipped_needs_approval\x18\x03 \x01(\x05R\x14skippedNeedsApproval\x12%\n" +
 	"\x0eskipped_active\x18\x04 \x01(\x05R\rskippedActive\x12)\n" +
 	"\x10skipped_unrouted\x18\x05 \x01(\x05R\x0fskippedUnrouted\x128\n" +
-	"\x06failed\x18\x06 \x03(\v2 .containarium.v1.TrackerDispatchR\x06failed\"\x97\x01\n" +
+	"\x06failed\x18\x06 \x03(\v2 .containarium.v1.TrackerDispatchR\x06failed\x12,\n" +
+	"\x12skipped_over_depth\x18\a \x01(\x05R\x10skippedOverDepth\"\x97\x01\n" +
 	"\x1cListTrackerDispatchesRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x1e\n" +
 	"\n" +
