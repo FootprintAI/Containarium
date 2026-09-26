@@ -209,3 +209,22 @@ func TestValidateRouteScope(t *testing.T) {
 		}
 	}
 }
+
+func TestIsScopeLabel(t *testing.T) {
+	for label, want := range map[string]bool{
+		"scope:product":  true,
+		"Scope:product":  true,
+		"SCOPE:x":        true,
+		" scope:product": true,
+		"scope:":         true,
+		"scope":          false,
+		"model:fable":    false,
+		"agent:queued":   false,
+		"myscope:x":      false,
+		"":               false,
+	} {
+		if got := IsScopeLabel(label); got != want {
+			t.Errorf("IsScopeLabel(%q) = %v, want %v", label, got, want)
+		}
+	}
+}

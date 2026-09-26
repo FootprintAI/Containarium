@@ -409,6 +409,32 @@ func (s *Store) ChildrenCount(ctx context.Context, username, connection, runID s
 	return childrenCount(ctx, s.pool, username, connection, runID)
 }
 
+// IssueInRunLineage reports whether issue number is within runID's own
+// lineage on this connection (#2060): the issue the dispatcher started
+// runID for (a tracker_dispatches row with that run_id, in any state), or
+// a follow-up runID filed itself (a tracker_issue_lineage row with
+// created_by_run = runID). An empty runID is in no lineage — dispatch
+// rows default run_id to the empty string. A child whose lineage row
+// failed to record (LineageRecordError) is outside it: fail closed.
+func (s *Store) IssueInRunLineage(ctx context.Context, username, connection, runID string, number int64) (bool, error) {
+	if runID == "" {
+		return false, nil
+	}
+	const sql = `
+		SELECT
+			EXISTS (SELECT 1 FROM tracker_dispatches
+				WHERE username = $1 AND connection = $2 AND run_id = $3 AND issue_number = $4)
+			OR
+			EXISTS (SELECT 1 FROM tracker_issue_lineage
+				WHERE username = $1 AND connection = $2 AND created_by_run = $3 AND child_number = $4)
+	`
+	var in bool
+	if err := s.pool.QueryRow(ctx, sql, username, connection, runID, number).Scan(&in); err != nil {
+		return false, fmt.Errorf("select run lineage: %w", err)
+	}
+	return in, nil
+}
+
 // lineageQuerier is the subset of pgxpool.Pool / pgx.Tx the two reads
 // above need, so they run identically inside and outside RecordChild's
 // transaction.

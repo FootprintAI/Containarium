@@ -137,6 +137,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Security: a run token can no longer route an unrelated issue into a
+  dispatch.** `scope:*` is on the default label allow-list, so a run token
+  could add a routed `scope:<role>` label to any existing, ungated issue on
+  its connection. That issue then dispatched on the next tick at depth 0,
+  past the approval gate and not counted against `max_children_per_run`.
+  `tracker issue label` (`SetTrackerIssueLabels`) now lets a run token add
+  or remove a `scope:` label only on an issue in its own lineage: the issue
+  it was dispatched for, or a follow-up it filed. Any other issue is
+  refused with `PermissionDenied` before any upstream call. The check
+  applies whether or not the issue carries `agent:needs-approval`, and
+  under any label allow-list, including `*`. It runs in addition to the
+  allow-list check. Operator tokens are unaffected. Two approval-gate
+  questions stay open on #2055: a run token can still remove
+  `agent:needs-approval`, and an agent-chosen `parent_number` can still
+  reset depth. (#2060)
+
 - **`tracker issue list` and `tracker dispatch` now see every matching issue,
   not just the first 100.** Both the GitHub and GitLab adapters read a single
   page of 100, so in a busy project an older issue carrying a routed

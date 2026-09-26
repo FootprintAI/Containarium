@@ -325,3 +325,60 @@ func TestDispatchStore_DeleteQueuedOnly(t *testing.T) {
 		t.Fatalf("DeleteQueuedDispatch(running) = (%v, %v), want (false, nil)", ok, err)
 	}
 }
+
+// TestIssueInRunLineage (#2060): a run's lineage is the issue it was
+// dispatched for plus the follow-ups it filed — and nothing else: not
+// another run's dispatched issue or child, not an issue on another
+// connection, not a human-created issue, and nothing for an empty run id.
+func TestIssueInRunLineage(t *testing.T) {
+	store, ctx := newTrackerTestStore(t)
+	const user = "tracker-run-lineage"
+	seedDispatchConnection(t, store, ctx, user)
+	_, _ = store.pool.Exec(ctx, "DELETE FROM tracker_issue_lineage WHERE username = $1", user)
+
+	d := newDispatch(user, 42)
+	d.RunID = "run-a"
+	if _, err := store.InsertDispatch(ctx, d); err != nil {
+		t.Fatalf("InsertDispatch(#42 for run-a): %v", err)
+	}
+	other := newDispatch(user, 60)
+	other.RunID = "run-b"
+	if _, err := store.InsertDispatch(ctx, other); err != nil {
+		t.Fatalf("InsertDispatch(#60 for run-b): %v", err)
+	}
+	for _, c := range []struct {
+		run   string
+		child int64
+	}{{"run-a", 43}, {"run-b", 61}} {
+		if _, err := store.RecordChild(ctx, Lineage{Username: user, Connection: "default", ParentNumber: 42, CreatedByRun: c.run}, 0, 0,
+			func(context.Context) (int64, error) { return c.child, nil }); err != nil {
+			t.Fatalf("RecordChild(#%d by %s): %v", c.child, c.run, err)
+		}
+	}
+
+	for _, tc := range []struct {
+		name       string
+		connection string
+		run        string
+		number     int64
+		want       bool
+	}{
+		{"its dispatched issue", "default", "run-a", 42, true},
+		{"its recorded child", "default", "run-a", 43, true},
+		{"another run's dispatched issue", "default", "run-a", 60, false},
+		{"another run's child", "default", "run-a", 61, false},
+		{"a human-created issue", "default", "run-a", 77, false},
+		{"its issue number on another connection", "other", "run-a", 42, false},
+		{"empty run id", "default", "", 42, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := store.IssueInRunLineage(ctx, user, tc.connection, tc.run, tc.number)
+			if err != nil {
+				t.Fatalf("IssueInRunLineage: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("IssueInRunLineage(%s, %s, #%d) = %v, want %v", tc.connection, tc.run, tc.number, got, tc.want)
+			}
+		})
+	}
+}
