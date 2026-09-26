@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Security: a run token can no longer remove `agent:needs-approval` from
+  an issue outside its own lineage.** The gate label is on the default
+  label allow-list, so a run token could remove it from *any* issue on its
+  connection. An unrelated, human-filed issue that already carried a routed
+  `scope:<role>` label and was parked for approval then dispatched on the
+  next tick at depth 0, past the approval gate and not counted against
+  `max_children_per_run`: the same bypass as #2060 (fixed in 0.90.1),
+  reached through the gate label instead of the scope label.
+  `tracker issue label` (`SetTrackerIssueLabels`) now applies the #2060
+  lineage check to gate removal too: a run token may remove
+  `agent:needs-approval` (matched case-insensitively) only from the issue
+  it was dispatched for or a follow-up it filed. Any other issue is refused
+  with `PermissionDenied` before any upstream call, under any label
+  allow-list, including `*`. Adding the gate is not restricted. Operator
+  tokens are unaffected. This only limits *where* a run may remove the
+  gate. A run can still remove it from its own follow-up, and an
+  agent-chosen `parent_number` can still reset depth; together those can
+  still produce an unattended chain of unbounded length, tracked
+  separately as #2073. (#2068)
+
 ## [0.90.1] - 2026-09-26
 
 ### Fixed

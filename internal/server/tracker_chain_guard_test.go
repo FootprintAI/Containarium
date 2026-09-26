@@ -238,29 +238,15 @@ func TestChainGuards_InjectedIssueCannotWidenScopesOrLabels(t *testing.T) {
 
 // ---- Open maintainer questions (umbrella #2055) ---------------------
 //
-// The two tests below DOCUMENT CURRENT BEHAVIOR; they decide nothing.
-// When the maintainers rule, flip the assertion in the same PR that
-// changes the behavior.
-
-// Open question: may a run token REMOVE agent:needs-approval? Today it
-// may — the gate label is on the default allow-list and CheckLabels
-// applies the same list to add and remove, so a run could release a
-// gated issue itself. (Recommendation on the umbrella: add-only.)
-func TestSetTrackerIssueLabels_RunTokenMayRemoveGate_CurrentBehavior(t *testing.T) {
-	const user = "tracker-chain-oq-gate-removal"
-	provider := &fakeWriterProvider{}
-	s, _, _ := setUpCreateConnection(t, user, provider, nil)
-
-	_, err := s.SetTrackerIssueLabels(dispatchedRunCtx(t, user), &pb.SetTrackerIssueLabelsRequest{
-		Username: user, Connection: "default", Number: 43, RemoveLabels: []string{tracker.LabelNeedsApproval},
-	})
-	if err != nil {
-		t.Fatalf("CURRENT BEHAVIOR changed: a run token removing %s now fails (%v) — update this test with the maintainers' decision", tracker.LabelNeedsApproval, err)
-	}
-	if len(provider.labelsRemove) != 1 || provider.labelsRemove[0] != tracker.LabelNeedsApproval {
-		t.Errorf("labels removed = %v, want [%s]", provider.labelsRemove, tracker.LabelNeedsApproval)
-	}
-}
+// The test below DOCUMENTS CURRENT BEHAVIOR; it decides nothing. When
+// the maintainers rule, flip the assertion in the same PR that changes
+// the behavior.
+//
+// Also still open on #2055: whether a run token may remove
+// agent:needs-approval AT ALL, even inside its own lineage (the umbrella
+// recommends add-only). #2068 decided only its reach — see the
+// RunTokenGateRemoval tests below: today a run may remove the gate from
+// its own dispatched issue or a follow-up it filed, and nowhere else.
 
 // Open question: parent_number is agent-chosen. Depth is derived from the
 // named parent, so a run whose own chain is at max_depth cannot extend
@@ -499,4 +485,194 @@ func containsLabel(labels []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// ---- Run-token gate removal is lineage-bound (#2068) ----------------
+//
+// The same lineage rule as #2060, reached through the other label: a run
+// token may remove agent:needs-approval only from an issue in its own
+// lineage. An unrelated issue that already carries a routed scope label
+// and is parked behind the gate would otherwise be released into a
+// depth-0 dispatch — past the gate, with no lineage row, and uncounted
+// against max_children_per_run. Adding the gate is not bound.
+
+// TestSetTrackerIssueLabels_RunTokenGateRemovalOnUnrelatedIssueRejected is
+// the #2068 finding, flipped (it was pinned as current behavior by
+// ..._RunTokenMayRemoveGate_CurrentBehavior): a run token removing the
+// gate from a routed, human-gated issue it has no lineage to is refused,
+// nothing reaches the forge, and the next tick still skips it as gated.
+func TestSetTrackerIssueLabels_RunTokenGateRemovalOnUnrelatedIssueRejected(t *testing.T) {
+	const user = "tracker-chain-gate-removal-unrelated"
+	provider := &fakeWriterProvider{}
+	s, starter, admin := setUpDispatchableConnection(t, user, provider, nil)
+
+	// #43: human-filed, routed to scope:product, parked for approval.
+	_, err := s.SetTrackerIssueLabels(dispatchedRunCtx(t, user), &pb.SetTrackerIssueLabelsRequest{
+		Username: user, Connection: "default", Number: 43, RemoveLabels: []string{tracker.LabelNeedsApproval},
+	})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("run token removing %s from unrelated #43: code = %v (%v), want PermissionDenied", tracker.LabelNeedsApproval, status.Code(err), err)
+	}
+	if provider.labelsAdd != nil || provider.labelsRemove != nil {
+		t.Fatalf("a rejected gate removal reached the forge: add=%v remove=%v", provider.labelsAdd, provider.labelsRemove)
+	}
+
+	// The forge still shows #43 gated; the next tick starts nothing.
+	gated := tracker.Issue{Number: 43, Labels: []string{"scope:product", tracker.LabelNeedsApproval}, State: pb.TrackerIssueState_TRACKER_ISSUE_STATE_OPEN}
+	provider.issues, provider.issue = []tracker.Issue{gated}, gated
+	tick, err := s.DispatchTrackerIssues(admin, &pb.DispatchTrackerIssuesRequest{Username: user, Connection: "default"})
+	if err != nil {
+		t.Fatalf("DispatchTrackerIssues: %v", err)
+	}
+	if tick.GetSkippedNeedsApproval() != 1 || len(tick.GetStarted()) != 0 || len(starter.calls) != 0 {
+		t.Fatalf("tick = %+v, StartRun calls = %d; want #43 skipped as gated, nothing dispatched", tick, len(starter.calls))
+	}
+}
+
+// TestSetTrackerIssueLabels_RunTokenGateRemovalLineageRules walks every
+// side of the rule with a run the dispatcher actually started, so the
+// run id on its token is the one on its dispatch row.
+func TestSetTrackerIssueLabels_RunTokenGateRemovalLineageRules(t *testing.T) {
+	const user = "tracker-chain-gate-removal-lineage"
+	provider := &fakeWriterProvider{}
+	s, starter, admin := setUpDispatchableConnection(t, user, provider, nil)
+	ctx := context.Background()
+
+	// A human routes #42; the tick dispatches it and chooses the run id.
+	routed := tracker.Issue{Number: 42, Labels: []string{"scope:product"}, State: pb.TrackerIssueState_TRACKER_ISSUE_STATE_OPEN}
+	provider.issues, provider.issue = []tracker.Issue{routed}, routed
+	tick, err := s.DispatchTrackerIssues(admin, &pb.DispatchTrackerIssuesRequest{Username: user, Connection: "default"})
+	if err != nil {
+		t.Fatalf("DispatchTrackerIssues: %v", err)
+	}
+	if len(tick.GetStarted()) != 1 || len(starter.calls) != 1 {
+		t.Fatalf("tick = %+v, StartRun calls = %d; want #42 dispatched", tick, len(starter.calls))
+	}
+	runID := starter.calls[0].RunID
+	s.runRegistry.Register(runID, runlease.Info{SkillID: "product-define", Model: "fable"})
+	run := runCtxFor(t, user, runID)
+
+	// The run files a follow-up: recorded as its child, gate forced on.
+	resp, err := s.CreateTrackerIssue(run, &pb.CreateTrackerIssueRequest{
+		Username: user, Connection: "default", Title: "Architecture for the thing",
+		Body: "Follow-up.", Labels: []string{"scope:product"}, ParentNumber: 42,
+	})
+	if err != nil {
+		t.Fatalf("CreateTrackerIssue (run token): %v", err)
+	}
+	child := resp.GetIssue().GetNumber()
+	if n, err := s.trackerStore.ChildrenCount(ctx, user, "default", runID); err != nil || n != 1 {
+		t.Fatalf("children recorded for the run = %d, %v; want 1", n, err)
+	}
+
+	reset := func() { provider.labelsAdd, provider.labelsRemove = nil, nil }
+	allowed := []struct {
+		name   string
+		number int64
+		add    []string
+		remove []string
+	}{
+		{"remove the gate from its own recorded child", child, nil, []string{tracker.LabelNeedsApproval}},
+		{"remove the gate from its own dispatched issue", 42, nil, []string{tracker.LabelNeedsApproval}},
+		{"remove the gate alongside a model label on its child", child, []string{"model:fable"}, []string{tracker.LabelNeedsApproval}},
+		// Adding the gate only holds an issue back; it is not bound.
+		{"add the gate to an unrelated issue", 88, []string{tracker.LabelNeedsApproval}, nil},
+	}
+	for _, tc := range allowed {
+		t.Run(tc.name, func(t *testing.T) {
+			reset()
+			if _, err := s.SetTrackerIssueLabels(run, &pb.SetTrackerIssueLabelsRequest{
+				Username: user, Connection: "default", Number: tc.number, AddLabels: tc.add, RemoveLabels: tc.remove,
+			}); err != nil {
+				t.Fatalf("SetTrackerIssueLabels(#%d): %v, want success", tc.number, err)
+			}
+			if len(tc.remove) > 0 && (len(provider.labelsRemove) != 1 || provider.labelsRemove[0] != tracker.LabelNeedsApproval) {
+				t.Errorf("labelsRemove = %v, want [%s]", provider.labelsRemove, tracker.LabelNeedsApproval)
+			}
+			if len(tc.add) > 0 && len(provider.labelsAdd) != len(tc.add) {
+				t.Errorf("labelsAdd = %v, want %v", provider.labelsAdd, tc.add)
+			}
+		})
+	}
+
+	refused := []struct {
+		name   string
+		ctx    context.Context
+		number int64
+		add    []string
+		remove []string
+	}{
+		// #88 has no lineage to this run; whether it is routed or gated is
+		// not something the check reads.
+		{"remove the gate from an unrelated issue", run, 88, nil, []string{tracker.LabelNeedsApproval}},
+		{"gate removal mixed with an allowed model label", run, 88, []string{"model:fable"}, []string{tracker.LabelNeedsApproval}},
+		{"gate removal mixed with a non-scope removal", run, 88, nil, []string{"model:fable", tracker.LabelNeedsApproval}},
+		// The dispatched issue and the child belong to THIS run, not to
+		// another run's token on the same connection.
+		{"another run's token on this run's dispatched issue", dispatchedRunCtx(t, user), 42, nil, []string{tracker.LabelNeedsApproval}},
+		{"another run's token on this run's child", dispatchedRunCtx(t, user), child, nil, []string{tracker.LabelNeedsApproval}},
+	}
+	for _, tc := range refused {
+		t.Run(tc.name, func(t *testing.T) {
+			reset()
+			_, err := s.SetTrackerIssueLabels(tc.ctx, &pb.SetTrackerIssueLabelsRequest{
+				Username: user, Connection: "default", Number: tc.number, AddLabels: tc.add, RemoveLabels: tc.remove,
+			})
+			if status.Code(err) != codes.PermissionDenied {
+				t.Fatalf("code = %v (%v), want PermissionDenied", status.Code(err), err)
+			}
+			if provider.labelsAdd != nil || provider.labelsRemove != nil {
+				t.Errorf("upstream SetLabels was called (add=%v remove=%v), want no upstream call", provider.labelsAdd, provider.labelsRemove)
+			}
+		})
+	}
+
+	t.Run("operator token is not lineage-bound", func(t *testing.T) {
+		reset()
+		operator := kmsKeyTestCtx(user, "member", "tracker:write")
+		if _, err := s.SetTrackerIssueLabels(operator, &pb.SetTrackerIssueLabelsRequest{
+			Username: user, Connection: "default", Number: 88, RemoveLabels: []string{tracker.LabelNeedsApproval},
+		}); err != nil {
+			t.Fatalf("operator removing the gate from #88: %v, want success", err)
+		}
+		if len(provider.labelsRemove) != 1 || provider.labelsRemove[0] != tracker.LabelNeedsApproval {
+			t.Errorf("labelsRemove = %v, want [%s]", provider.labelsRemove, tracker.LabelNeedsApproval)
+		}
+	})
+}
+
+// TestSetTrackerIssueLabels_RunTokenGateRemovalUnderPermissiveAllowList:
+// the lineage rule is not an allow-list entry, so a connection that
+// allow-lists "*" still cannot be used by a run to release an unrelated
+// gated issue — in any letter case, since GitHub label names are
+// case-insensitive and "Agent:Needs-Approval" removes the same label.
+func TestSetTrackerIssueLabels_RunTokenGateRemovalUnderPermissiveAllowList(t *testing.T) {
+	variants := []string{tracker.LabelNeedsApproval, "Agent:Needs-Approval", "AGENT:NEEDS-APPROVAL"}
+	for _, allow := range [][]string{{"*"}, {"agent:*"}, variants} {
+		t.Run(strings.Join(allow, ","), func(t *testing.T) {
+			const user = "tracker-chain-gate-removal-allowlist"
+			provider := &fakeWriterProvider{}
+			s, _, _ := setUpDispatchableConnection(t, user, provider, &pb.TrackerPolicy{LabelAllowList: allow})
+			policy := tracker.PolicyFromProto(&pb.TrackerPolicy{LabelAllowList: allow})
+			checked := 0
+			for _, label := range variants {
+				if !policy.LabelAllowed(label) {
+					continue // the allow-list refuses it first (InvalidArgument)
+				}
+				checked++
+				_, err := s.SetTrackerIssueLabels(dispatchedRunCtx(t, user), &pb.SetTrackerIssueLabelsRequest{
+					Username: user, Connection: "default", Number: 43, RemoveLabels: []string{label},
+				})
+				if status.Code(err) != codes.PermissionDenied {
+					t.Errorf("removing %q under allow-list %v: code = %v (%v), want PermissionDenied", label, allow, status.Code(err), err)
+				}
+			}
+			if checked == 0 {
+				t.Fatalf("allow-list %v admitted no gate label; the case exercises nothing", allow)
+			}
+			if provider.labelsAdd != nil || provider.labelsRemove != nil {
+				t.Errorf("upstream SetLabels was called (add=%v remove=%v), want no upstream call", provider.labelsAdd, provider.labelsRemove)
+			}
+		})
+	}
 }
