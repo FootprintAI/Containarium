@@ -140,10 +140,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `skipped_over_depth` (`over-depth=` in the CLI tick line). The policy is
   re-read every tick, so lowering `--max-depth` after a chain was filed still
   stops its deeper issues. The dispatch row and the run's input now carry the
-  issue's real depth (previously always 0). New tests pin every chain-guard
-  criterion through the daemon, including an issue body that instructs the
-  run to widen its policy, routes or labels — each attempt is rejected and
-  nothing reaches the tracker. (#2025)
+  issue's real depth (previously always 0). New tests pin the depth,
+  fan-out and allow-list guards through the daemon, including an issue body
+  that instructs the run to widen its policy, routes or labels — each
+  attempt is rejected and nothing reaches the tracker. Three further tests
+  document open gaps in the approval gate as current behavior, not fixes:
+  a run token can remove `agent:needs-approval`, reset depth through an
+  agent-chosen parent, and add a `scope:*` label that dispatches an ungated
+  issue (#2060). (Part of #2025)
 
 - **`code run` on a box without `agent-box` now names the missing helper** and
   the command that installs it, instead of surfacing

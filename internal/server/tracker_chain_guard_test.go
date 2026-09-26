@@ -237,7 +237,7 @@ func TestChainGuards_InjectedIssueCannotWidenScopesOrLabels(t *testing.T) {
 
 // ---- Open maintainer questions (umbrella #2055) ---------------------
 //
-// The two tests below DOCUMENT CURRENT BEHAVIOR; they decide nothing.
+// The three tests below DOCUMENT CURRENT BEHAVIOR; they decide nothing.
 // When the maintainers rule, flip the assertion in the same PR that
 // changes the behavior.
 
@@ -296,6 +296,49 @@ func TestCreateTrackerIssue_AgentChosenParentResetsDepth_CurrentBehavior(t *test
 	}
 	if !containsLabel(provider.createIssueReqs[0].Labels, tracker.LabelNeedsApproval) {
 		t.Errorf("re-parented follow-up labels = %v, want the gate still forced", provider.createIssueReqs[0].Labels)
+	}
+}
+
+// Known gap, tracked as #2060: scope:* is on the default label allow-list,
+// so a run token may ADD a routed scope label to any existing issue on its
+// connection. An ungated, human-created issue labeled that way dispatches
+// on the next tick at depth 0 — past the approval gate (the run never
+// created it, so no gate was forced), with no lineage row (depth resets),
+// and uncounted against max_children_per_run (labeling is not a create).
+// This is broader than the gate-removal question above: an add-only rule
+// for agent:needs-approval would not close it. Today it succeeds.
+func TestSetTrackerIssueLabels_RunTokenScopeLabelDispatchesUngatedIssue_CurrentBehavior(t *testing.T) {
+	const user = "tracker-chain-gap-scope-label"
+	provider := &fakeWriterProvider{}
+	s, starter, admin := setUpDispatchableConnection(t, user, provider, nil)
+	ctx := context.Background()
+
+	// #77: an existing, human-created issue with no labels at all.
+	_, err := s.SetTrackerIssueLabels(dispatchedRunCtx(t, user), &pb.SetTrackerIssueLabelsRequest{
+		Username: user, Connection: "default", Number: 77, AddLabels: []string{"scope:product"},
+	})
+	if err != nil {
+		t.Fatalf("CURRENT BEHAVIOR changed: a run token adding scope:product to an unrelated issue now fails (%v) — update this test with the #2060 decision", err)
+	}
+	if len(provider.labelsAdd) != 1 || provider.labelsAdd[0] != "scope:product" {
+		t.Fatalf("labels added = %v, want [scope:product]", provider.labelsAdd)
+	}
+	if n, err := s.trackerStore.ChildrenCount(ctx, user, "default", createTestRunID); err != nil || n != 0 {
+		t.Fatalf("children counted against the run = %d, %v; want 0 (labeling is not a create)", n, err)
+	}
+
+	// The forge now shows #77 routed and ungated; the next tick starts it.
+	labeled := tracker.Issue{Number: 77, Labels: []string{"scope:product"}, State: pb.TrackerIssueState_TRACKER_ISSUE_STATE_OPEN}
+	provider.issues, provider.issue, provider.labelsAdd = []tracker.Issue{labeled}, labeled, nil
+	tick, err := s.DispatchTrackerIssues(admin, &pb.DispatchTrackerIssuesRequest{Username: user, Connection: "default"})
+	if err != nil {
+		t.Fatalf("DispatchTrackerIssues: %v", err)
+	}
+	if len(tick.GetStarted()) != 1 || len(starter.calls) != 1 {
+		t.Fatalf("CURRENT BEHAVIOR changed: run-labeled #77 was not dispatched (tick = %+v, StartRun calls = %d) — update this test with the #2060 decision", tick, len(starter.calls))
+	}
+	if d := tick.GetStarted()[0].GetDepth(); d != 0 {
+		t.Errorf("dispatched depth = %d, want 0 (no lineage: the chain resets)", d)
 	}
 }
 

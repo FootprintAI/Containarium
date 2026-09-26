@@ -82,7 +82,7 @@ sequenceDiagram
   loop every --interval
     C->>D: DispatchTrackerIssues(user, conn)
     D->>F: ListIssues(open, label scope:*)
-    D->>D: filter: routed, no agent:* label, not needs-approval, depth < max
+    D->>D: filter: routed, no agent:* label, not needs-approval, depth <= max
     D->>D: INSERT tracker_dispatches (active-unique) — loser skips
     D->>B: start run (RunAgentSkill path, tracker_conn bound, input = TrackerDispatchInput)
     D->>F: labels +agent:queued
@@ -169,6 +169,13 @@ never smuggled through the launch payload.
   `agent:needs-approval` unless `policy.auto_chain` is true. The dispatcher
   filter skips any issue carrying it. The human's only action per hop is
   removing that label.
+  **Known gap (#2060, open):** that is not yet the only path. `scope:*` is
+  on the default label allow-list, so a run token can add a routed scope
+  label to an existing, ungated, human-created issue, which then dispatches
+  at depth 0, uncounted against fan-out. A run token can also remove
+  `agent:needs-approval` itself (open question on #2055). Both are pinned
+  as current behavior by the `*_CurrentBehavior` tests in
+  `internal/server/tracker_chain_guard_test.go`.
 - **Depth.** `tracker_issue_lineage(child → parent, depth)` is written by
   `CreateTrackerIssue` with `depth = parent.depth + 1` (a human-created
   issue has no row → depth 0). Create is rejected when
