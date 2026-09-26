@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -100,8 +101,8 @@ func (a *Adapter) ListIssues(ctx context.Context, conn tracker.Conn, f tracker.I
 	}
 	q.Set("per_page", "100")
 
-	var raw []glIssue
-	if err := a.get(ctx, fmt.Sprintf("%s/projects/%s/issues?%s", apiBase, projectPath, q.Encode()), conn.Credential, &raw); err != nil {
+	raw, err := getAllPages[glIssue](ctx, a, fmt.Sprintf("%s/projects/%s/issues?%s", apiBase, projectPath, q.Encode()), conn.Credential)
+	if err != nil {
 		return nil, err
 	}
 	out := make([]tracker.Issue, 0, len(raw))
@@ -222,17 +223,55 @@ func (a *Adapter) get(ctx context.Context, rawURL, token string, out interface{}
 // JSON-encoded when non-nil; out is JSON-decoded when the call
 // succeeds and out is non-nil.
 func (a *Adapter) do(ctx context.Context, method, rawURL, token string, reqBody, out interface{}) error {
+	_, err := a.doWithHeader(ctx, method, rawURL, token, reqBody, out)
+	return err
+}
+
+// getAllPages GETs firstURL and every page its Link header chains to
+// (rel="next"; GitLab sends it alongside X-Next-Page), collecting each
+// page's items — the fix for #2040, where ListIssues read only the
+// first page of 100. It stops after tracker.MaxListPages pages, logging
+// that the result is truncated, and refuses a next link on a different
+// host (the credential would follow it).
+func getAllPages[T any](ctx context.Context, a *Adapter, firstURL, token string) ([]T, error) {
+	var all []T
+	next := firstURL
+	for page := 1; next != ""; page++ {
+		if page > tracker.MaxListPages {
+			log.Printf("gitlab: list truncated after %d pages (%d items); more pages exist upstream", tracker.MaxListPages, len(all))
+			break
+		}
+		var items []T
+		h, err := a.doWithHeader(ctx, http.MethodGet, next, token, nil, &items)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, items...)
+		n := tracker.NextPageURL(h.Get("Link"))
+		if n != "" {
+			if err := tracker.CheckSameOrigin(next, n); err != nil {
+				return nil, fmt.Errorf("gitlab: %w", err)
+			}
+		}
+		next = n
+	}
+	return all, nil
+}
+
+// doWithHeader is do, also returning the response headers on success
+// (pagination reads the Link header).
+func (a *Adapter) doWithHeader(ctx context.Context, method, rawURL, token string, reqBody, out interface{}) (http.Header, error) {
 	var body io.Reader
 	if reqBody != nil {
 		b, err := json.Marshal(reqBody)
 		if err != nil {
-			return fmt.Errorf("encode request: %w", err)
+			return nil, fmt.Errorf("encode request: %w", err)
 		}
 		body = bytes.NewReader(b)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, rawURL, body)
 	if err != nil {
-		return fmt.Errorf("build request: %w", err)
+		return nil, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("PRIVATE-TOKEN", token)
 	if reqBody != nil {
@@ -241,27 +280,27 @@ func (a *Adapter) do(ctx context.Context, method, rawURL, token string, reqBody,
 
 	resp, err := a.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("%w: %v", tracker.ErrUnreachable, err)
+		return nil, fmt.Errorf("%w: %v", tracker.ErrUnreachable, err)
 	}
 	defer resp.Body.Close()
 
 	switch resp.StatusCode {
 	case http.StatusOK, http.StatusCreated, http.StatusNoContent:
 		if out == nil {
-			return nil
+			return resp.Header, nil
 		}
 		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-			return fmt.Errorf("decode response: %w", err)
+			return nil, fmt.Errorf("decode response: %w", err)
 		}
-		return nil
+		return resp.Header, nil
 	case http.StatusUnauthorized, http.StatusForbidden:
 		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("%w: HTTP %d: %s", tracker.ErrCredentialInvalid, resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("%w: HTTP %d: %s", tracker.ErrCredentialInvalid, resp.StatusCode, string(respBody))
 	case http.StatusNotFound:
-		return fmt.Errorf("%w: %s", tracker.ErrNotFound, rawURL)
+		return nil, fmt.Errorf("%w: %s", tracker.ErrNotFound, rawURL)
 	default:
 		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("gitlab: HTTP %d: %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("gitlab: HTTP %d: %s", resp.StatusCode, string(respBody))
 	}
 }
 
