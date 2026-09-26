@@ -2032,17 +2032,30 @@ skipAppHosting:
 		// up.
 		if mgr := containerServer.GetManager(); mgr != nil {
 			gatewayServer.SetContainerExistsFn(func(username string) bool {
+				// A batched, TTL-cached snapshot (ExistingContainerNames)
+				// replaces what used to be a live Incus round trip per
+				// call here — this closure runs once per /home entry per
+				// request, and on a fleet-sized backend that serialized
+				// into a multi-second response the sentinel's event-driven
+				// key-resync push (#2018) could time out against. A
+				// snapshot-fetch failure with nothing cached yet fails
+				// open (don't filter) rather than orphan every tenant.
+				names, err := mgr.ExistingContainerNames()
+				if err != nil {
+					log.Printf("[gateway] orphan-filter snapshot unavailable, not filtering this cycle: %v", err)
+					return true
+				}
 				// Owner "<o>" → container "<o>-container". Collaborator jump
 				// accounts are "<o>-container-<c>" and map to the SAME
 				// "<o>-container"; the bare `username+"-container"` synthesises
 				// "<o>-container-<c>-container", which never exists, so every
 				// collaborator was misclassified as an orphan and stripped from
 				// keysync → sshpiperd denied it (#1140). Accept either.
-				if mgr.ContainerExists(username + "-container") {
+				if names[username+"-container"] {
 					return true
 				}
 				if c, ok := container.CollaboratorJumpAccountContainer(username); ok {
-					return mgr.ContainerExists(c)
+					return names[c]
 				}
 				return false
 			})
@@ -2756,14 +2769,24 @@ func (ds *DualServer) Start(ctx context.Context) error {
 	if ds.containerServer != nil {
 		if mgr := ds.containerServer.GetManager(); mgr != nil {
 			go container.RunOrphanReaper(ctx, func(username string) bool {
+				// Batched snapshot, same as the keysync filter above — see
+				// its comment. A snapshot failure fails open (report every
+				// user as existing, i.e. reap nothing this cycle): a
+				// destructive userdel path should never treat "couldn't
+				// tell" as "safe to delete".
+				names, err := mgr.ExistingContainerNames()
+				if err != nil {
+					log.Printf("[orphan-reaper] snapshot unavailable, skipping this cycle: %v", err)
+					return true
+				}
 				// Same collaborator-aware mapping as the keysync filter above
 				// (#1140): without it a live collaborator jump account
 				// "<o>-container-<c>" is misread as an orphan and userdel'd.
-				if mgr.ContainerExists(username + "-container") {
+				if names[username+"-container"] {
 					return true
 				}
 				if c, ok := container.CollaboratorJumpAccountContainer(username); ok {
-					return mgr.ContainerExists(c)
+					return names[c]
 				}
 				return false
 			})
