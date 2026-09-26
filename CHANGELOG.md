@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Security: a run token can no longer remove `agent:needs-approval` from
+  an issue outside its own lineage.** The gate label is on the default
+  label allow-list, so a run token could remove it from *any* issue on its
+  connection. An unrelated, human-filed issue that already carried a routed
+  `scope:<role>` label and was parked for approval then dispatched on the
+  next tick at depth 0, past the approval gate and not counted against
+  `max_children_per_run`: the same bypass as #2060, reached through the
+  gate label instead of the scope label. `tracker issue label`
+  (`SetTrackerIssueLabels`) now applies the #2060 lineage check to gate
+  removal too: a run token may remove `agent:needs-approval` (matched
+  case-insensitively) only from the issue it was dispatched for or a
+  follow-up it filed. Any other issue is refused with `PermissionDenied`
+  before any upstream call, under any label allow-list, including `*`.
+  Adding the gate is not restricted. Operator tokens are unaffected. This
+  only limits *where* a run may remove the gate. Whether a run token should
+  be able to remove it at all, even from its own follow-up, is still an
+  open question on #2055. (#2068)
 - **Security: a run token can no longer add or remove a `scope:*` label on
   an issue outside its own lineage.** `scope:*` is on the default label
   allow-list, so a run token could add a routed `scope:<role>` label to any
@@ -21,12 +38,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   call. The check applies whether or not the issue carries
   `agent:needs-approval`, and under any label allow-list, including `*`. It
   runs in addition to the allow-list check. Operator tokens are unaffected.
-  This closes the `scope:*` path only. A run token can still remove
-  `agent:needs-approval` from *any* issue on its connection, not just its
-  own follow-up, so an unrelated issue that is already routed and parked
-  for approval can still be released into a dispatch that way (#2068). An
-  agent-chosen `parent_number` can also still reset depth. Both remain
-  open. (#2060)
+  This closes the `scope:*` path only. The same release through removing
+  `agent:needs-approval` from an unrelated issue is closed separately
+  (#2068, above). An agent-chosen `parent_number` can still reset depth;
+  that remains open. (#2060)
 
 ## [0.90.0] - 2026-09-26
 

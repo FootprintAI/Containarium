@@ -183,16 +183,25 @@ never smuggled through the launch payload.
   human-created issue into a depth-0 dispatch that bypasses the gate and
   fan-out. It closes that label path only. Operator tokens are not
   lineage-bound.
-  **Still open (#2055):** the gate is still not the only path. (1) A run
-  token can remove `agent:needs-approval` from *any* issue on its
-  connection, not only its own gated follow-up. An unrelated issue that is
-  already routed and parked for approval is released into a depth-0
-  dispatch that way, uncounted against fan-out (#2068). (2)
+  **Run-token gate removal (#2068, fixed):** the same lineage check
+  applies when a run token *removes* `agent:needs-approval` (matched
+  case-insensitively): only from the issue it was dispatched for or a
+  follow-up it filed. Any other issue is refused with `PermissionDenied`
+  before any upstream call, whatever the allow-list admits (`*` included).
+  So a run can no longer release an unrelated issue that is already routed
+  and parked for approval into a depth-0 dispatch uncounted against
+  fan-out. Adding the gate is not lineage-bound (it only holds an issue
+  back). Operator tokens are not lineage-bound.
+  **Still open (#2055):** (1) whether a run token may remove
+  `agent:needs-approval` *at all*. #2068 only limits where it may: today a
+  run can still release its own gated follow-up (the umbrella recommends
+  add-only). That is covered by the allowed cases in
+  `TestSetTrackerIssueLabels_RunTokenGateRemovalLineageRules`. (2)
   `parent_number` is agent-chosen, so naming any depth-0 issue as the
   parent files the follow-up at depth 1, which resets the chain's depth
-  (fan-out still bounds the run). Both are pinned as current behavior by
-  the `*_CurrentBehavior` tests in
-  `internal/server/tracker_chain_guard_test.go`.
+  (fan-out still bounds the run). That is pinned as current behavior by
+  `TestCreateTrackerIssue_AgentChosenParentResetsDepth_CurrentBehavior`
+  in `internal/server/tracker_chain_guard_test.go`.
 - **Depth.** `tracker_issue_lineage(child → parent, depth)` is written by
   `CreateTrackerIssue` with `depth = parent.depth + 1` (a human-created
   issue has no row → depth 0). Create is rejected when

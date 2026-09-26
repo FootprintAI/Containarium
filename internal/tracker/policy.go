@@ -152,6 +152,14 @@ func IsReservedStateLabel(label string) bool {
 	return false
 }
 
+// IsGateLabel reports whether label is LabelNeedsApproval, compared after
+// trimming and case-insensitively — GitHub label names are
+// case-insensitive, so removing "Agent:Needs-Approval" releases the gate
+// there. Used to lineage-bind a run token's gate removal (#2068).
+func IsGateLabel(label string) bool {
+	return strings.EqualFold(strings.TrimSpace(label), LabelNeedsApproval)
+}
+
 // LabelAllowed reports whether label matches any allow-list glob.
 // Exact, case-sensitive; see MatchLabelGlob.
 func (p Policy) LabelAllowed(label string) bool {
