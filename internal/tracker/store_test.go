@@ -457,3 +457,123 @@ func TestRecordChild_FanoutCapHoldsUnderConcurrency(t *testing.T) {
 		t.Errorf("fan-out rejections = %d, want 9", capped)
 	}
 }
+
+// newSmallPoolTrackerStore is newTrackerTestStore with the pool capped at
+// maxConns, so a test can reproduce pool exhaustion deterministically.
+func newSmallPoolTrackerStore(t *testing.T, maxConns int32) (*Store, context.Context) {
+	t.Helper()
+	dsn := os.Getenv("CONTAINARIUM_TEST_DSN")
+	if dsn == "" {
+		t.Skip("set CONTAINARIUM_TEST_DSN to run this against Postgres (the store-integration lane does)")
+	}
+	ctx := context.Background()
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("parse DSN: %v", err)
+	}
+	cfg.MaxConns = maxConns
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("connect Postgres: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	store, err := NewStore(ctx, pool)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	return store, ctx
+}
+
+// TestRecordChild_OneRunCannotStarveThePool (#2044): one run token firing
+// many concurrent creates against a slow upstream must not hold the
+// tracker store's pool connections while it waits — neither across the
+// upstream call nor while queued behind its own per-run lock. Reviewer
+// probe, reproduced: 4-connection pool, 500 ms upstream, 16 concurrent
+// creates from one run capped at 5; an unrelated tracker lookup with a
+// 1 s deadline must still complete. The per-run fan-out cap and
+// exactly-once lineage must hold under the same load.
+func TestRecordChild_OneRunCannotStarveThePool(t *testing.T) {
+	store, ctx := newSmallPoolTrackerStore(t, 4)
+	const user = "tracker-store-lineage-starve"
+	_, _ = store.pool.Exec(ctx, "DELETE FROM tracker_issue_lineage WHERE username = $1", user)
+
+	const (
+		creates     = 16
+		maxChildren = 5
+		upstream    = 500 * time.Millisecond
+	)
+	var upstreamCalls atomic.Int64
+	firstUpstream := make(chan struct{})
+	var once sync.Once
+	var wg sync.WaitGroup
+	errs := make([]error, creates)
+	for i := 0; i < creates; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = store.RecordChild(ctx, Lineage{Username: user, Connection: "default", ParentNumber: 1, CreatedByRun: "run-starve"}, 3, maxChildren,
+				func(context.Context) (int64, error) {
+					n := upstreamCalls.Add(1)
+					once.Do(func() { close(firstUpstream) })
+					time.Sleep(upstream)
+					return 5000 + n, nil
+				})
+		}(i)
+	}
+
+	select {
+	case <-firstUpstream:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no upstream create started within 10s")
+	}
+	// Let the remaining creates pile up behind the run's lock.
+	time.Sleep(50 * time.Millisecond)
+
+	lookupCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	if _, err := store.IssueDepth(lookupCtx, "tracker-store-unrelated-tenant", "default", 1); err != nil {
+		t.Errorf("unrelated lookup under one run's create load: %v, want it to complete within its 1s deadline", err)
+	}
+	wg.Wait()
+
+	if got := upstreamCalls.Load(); got != maxChildren {
+		t.Errorf("upstream create calls = %d, want exactly %d", got, maxChildren)
+	}
+	if n, _ := store.ChildrenCount(ctx, user, "default", "run-starve"); n != maxChildren {
+		t.Errorf("lineage rows = %d, want exactly %d", n, maxChildren)
+	}
+	var capped int
+	for _, err := range errs {
+		switch {
+		case err == nil:
+		case errors.Is(err, ErrFanoutExceeded):
+			capped++
+		default:
+			t.Errorf("unexpected error: %v", err)
+		}
+	}
+	if capped != creates-maxChildren {
+		t.Errorf("fan-out rejections = %d, want %d", capped, creates-maxChildren)
+	}
+}
+
+// TestRecordChild_FailedCreateFreesItsFanoutSlot (#2044): a create that
+// fails upstream must not keep consuming one of the run's fan-out slots.
+func TestRecordChild_FailedCreateFreesItsFanoutSlot(t *testing.T) {
+	store, ctx := newTrackerTestStore(t)
+	const user = "tracker-store-lineage-freeslot"
+	_, _ = store.pool.Exec(ctx, "DELETE FROM tracker_issue_lineage WHERE username = $1", user)
+
+	boom := errors.New("upstream down")
+	l := Lineage{Username: user, Connection: "default", ParentNumber: 1, CreatedByRun: "run-f"}
+	if _, err := store.RecordChild(ctx, l, 3, 1, func(context.Context) (int64, error) { return 0, boom }); !errors.Is(err, boom) {
+		t.Fatalf("failing create err = %v, want the create error", err)
+	}
+	rec, err := store.RecordChild(ctx, l, 3, 1, func(context.Context) (int64, error) { return 42, nil })
+	if err != nil {
+		t.Fatalf("create after a failed one with max_children=1: %v, want allowed (the failed create frees its slot)", err)
+	}
+	if rec.ChildNumber != 42 || rec.Depth != 1 {
+		t.Errorf("recorded = %+v, want child=42 depth=1", rec)
+	}
+}
