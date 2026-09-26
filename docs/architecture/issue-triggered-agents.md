@@ -178,15 +178,20 @@ never smuggled through the launch payload.
   whether or not that issue carries `agent:needs-approval`, and whatever
   the connection's label allow-list admits (`scope:*`, `*`). This is on
   top of the allow-list check, not a replacement for it. So a run can no
-  longer route an ungated, human-created issue into a depth-0 dispatch
-  that bypasses the gate and fan-out. Operator tokens are not
+  longer add or remove a `scope:*` label on an issue outside its own
+  lineage, which closes the `scope:*` route for turning an ungated,
+  human-created issue into a depth-0 dispatch that bypasses the gate and
+  fan-out. It closes that label path only. Operator tokens are not
   lineage-bound.
   **Still open (#2055):** the gate is still not the only path. (1) A run
-  token can remove `agent:needs-approval` itself, including from its own
-  gated follow-up. (2) `parent_number` is agent-chosen, so naming any
-  depth-0 issue as the parent files the follow-up at depth 1, which resets
-  the chain's depth (fan-out still bounds the run). Both are pinned as
-  current behavior by the `*_CurrentBehavior` tests in
+  token can remove `agent:needs-approval` from *any* issue on its
+  connection, not only its own gated follow-up. An unrelated issue that is
+  already routed and parked for approval is released into a depth-0
+  dispatch that way, uncounted against fan-out (#2068). (2)
+  `parent_number` is agent-chosen, so naming any depth-0 issue as the
+  parent files the follow-up at depth 1, which resets the chain's depth
+  (fan-out still bounds the run). Both are pinned as current behavior by
+  the `*_CurrentBehavior` tests in
   `internal/server/tracker_chain_guard_test.go`.
 - **Depth.** `tracker_issue_lineage(child → parent, depth)` is written by
   `CreateTrackerIssue` with `depth = parent.depth + 1` (a human-created
