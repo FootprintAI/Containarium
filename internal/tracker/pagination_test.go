@@ -1,6 +1,9 @@
 package tracker
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestNextPageURL(t *testing.T) {
 	for _, tc := range []struct {
@@ -26,10 +29,10 @@ func TestCheckSameOrigin(t *testing.T) {
 	if err := CheckSameOrigin("https://api.example.com/a?page=1", "https://API.example.com/a?page=2"); err != nil {
 		t.Errorf("same origin refused: %v", err)
 	}
-	if err := CheckSameOrigin("https://api.example.com/a", "https://other.example.com/a"); err == nil {
-		t.Error("cross-host link accepted, want refusal")
+	if err := CheckSameOrigin("https://api.example.com/a", "https://other.example.com/a"); !errors.Is(err, ErrCrossOriginNextLink) {
+		t.Errorf("cross-host link: err = %v, want ErrCrossOriginNextLink", err)
 	}
-	if err := CheckSameOrigin("https://api.example.com/a", "http://api.example.com/a"); err == nil {
-		t.Error("scheme downgrade accepted, want refusal")
+	if err := CheckSameOrigin("https://api.example.com/a", "http://api.example.com/a"); !errors.Is(err, ErrCrossOriginNextLink) {
+		t.Errorf("scheme downgrade: err = %v, want ErrCrossOriginNextLink", err)
 	}
 }

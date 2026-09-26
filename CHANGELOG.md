@@ -92,9 +92,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not just the first 100.** Both the GitHub and GitLab adapters read a single
   page of 100, so in a busy project an older issue carrying a routed
   `scope:<role>` label was never dispatched. `ListIssues` (including GitHub
-  search) now follows the `Link: rel="next"` chain up to 50 pages (5,000
-  issues), logs when that bound truncates the result, and refuses a next link
-  that points at a different host than the configured API. (#2040)
+  search) now follows the `Link: rel="next"` chain up to 50 pages of 100.
+  That bound counts everything the upstream returns: the dispatcher lists all
+  open issues with no label filter, and GitHub's issue list also includes open
+  pull requests, so the ceiling is 5,000 open issues plus PRs per project.
+  Results come newest first, so a project past that ceiling still loses its
+  oldest issues, and the truncation is only logged by the server, not reported
+  to the caller. A next link that points at a different host than the
+  configured API is refused. (#2040)
 
 - **`code run` on a box without `agent-box` now names the missing helper** and
   the command that installs it, instead of surfacing

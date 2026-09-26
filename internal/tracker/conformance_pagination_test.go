@@ -2,11 +2,13 @@ package tracker_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/footprintai/containarium/internal/tracker"
@@ -58,20 +60,39 @@ func TestProviderConformance_ListIssuesFollowsPagination(t *testing.T) {
 // TestProviderConformance_ListIssuesRefusesCrossHostNextLink proves a
 // Link header pointing at a different host is not followed: the adapter
 // would otherwise send the tracker credential to whatever host the
-// upstream response names.
+// upstream response names. The next link targets a second, live server
+// that counts every request it receives, so the test proves the
+// credential never left — not merely that some error mentioning "host"
+// came back (a DNS failure for an unresolvable decoy host would satisfy
+// that too, even with the guard removed).
 func TestProviderConformance_ListIssuesRefusesCrossHostNextLink(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		provider tracker.Provider
-		baseURL  string
+		name        string
+		provider    tracker.Provider
+		escapedPath string
+		issueJSON   func(int) string
 	}{
-		{"github", trackergithub.New(nil), newPaginatedFixture(t, "/repos/acme/widgets/issues", "http://elsewhere.invalid", githubIssueJSON)},
-		{"gitlab", trackergitlab.New(nil), newPaginatedFixture(t, "/api/v4/projects/acme%2Fwidgets/issues", "http://elsewhere.invalid", gitlabIssueJSON)},
+		{"github", trackergithub.New(nil), "/repos/acme/widgets/issues", githubIssueJSON},
+		{"gitlab", trackergitlab.New(nil), "/api/v4/projects/acme%2Fwidgets/issues", gitlabIssueJSON},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := tc.provider.ListIssues(context.Background(), tracker.Conn{BaseURL: tc.baseURL, Project: "acme/widgets", Credential: "secret"}, tracker.IssueFilter{})
-			if err == nil || !strings.Contains(err.Error(), "host") {
-				t.Fatalf("%s ListIssues err = %v, want a refusal to follow a cross-host next link", tc.name, err)
+			var decoyHits atomic.Int32
+			decoy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				decoyHits.Add(1)
+				if r.Header.Get("Authorization") != "" || r.Header.Get("PRIVATE-TOKEN") != "" {
+					t.Errorf("%s: credential header reached the cross-host decoy", tc.name)
+				}
+				writeJSON(w, "[]")
+			}))
+			t.Cleanup(decoy.Close)
+
+			baseURL := newPaginatedFixture(t, tc.escapedPath, decoy.URL, tc.issueJSON)
+			_, err := tc.provider.ListIssues(context.Background(), tracker.Conn{BaseURL: baseURL, Project: "acme/widgets", Credential: "secret"}, tracker.IssueFilter{})
+			if got := decoyHits.Load(); got != 0 {
+				t.Fatalf("%s ListIssues sent %d request(s) to the cross-host next link, want 0", tc.name, got)
+			}
+			if !errors.Is(err, tracker.ErrCrossOriginNextLink) {
+				t.Fatalf("%s ListIssues err = %v, want tracker.ErrCrossOriginNextLink", tc.name, err)
 			}
 		})
 	}
