@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.90.0] - 2026-09-26
+
 ### Added
 
 - **Tracker dispatch: failed or stuck runs say so on the issue.** Each
@@ -107,6 +109,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   optional bootstrap bundle, and no credential of any kind. Also adds
   `--no-agent-runtime` to `scripts/install-agent-runtime.sh`. (#2031)
 
+- **`engineer-crew` — issue-to-PR-content catalog crew.** A new
+  `issue-implementer` skill takes a typed task (`{"task": {"title", "body",
+  "url", "labels"}, "constraints": {"max_files"}}` instead of free text) and
+  returns a reviewed file change, reusing the `diff-drafter`/`diff-reviewer`
+  editing discipline. Its artifact adds `pr_title`, `pr_body` and
+  `tests_run` to the existing `files[]`/`summary` shape; an empty `files`
+  with a non-empty `summary` is the "too big for a small change" case, a
+  COMPLETED run, not a FAILED one. The crew makes no GitHub calls itself —
+  an operator runs it with their own credential and opens the PR themselves.
+  `diff-reviewer`'s own prompt is extended (not replaced) to pass those
+  three fields through unchanged when present, so `diff-crew`'s existing
+  behavior is untouched. No CLI/MCP changes: `containarium crew run
+  engineer-crew` and `run_crew` were already crew-id-agnostic. (#2037)
+
 ### Changed
 
 - **Sentinel's primary-registration endpoint hardened.** `/sentinel/primaries`
@@ -188,6 +204,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (both JWTs revoked, run unregistered) and the dispatch row is marked
   `failed`. A run ended by `runtime.Goexit` is likewise reported `failed`,
   never `done`. (#2050)
+- **GCP metrics export migrated off the deprecated
+  `opentelemetry-operations-go/exporter/metric`** (archived upstream after
+  2027-01-01) to the standard `otlpmetricgrpc` exporter, dialing Google
+  Cloud's Telemetry API directly over gRPC+TLS instead of a GAPIC monitoring
+  client. Application Default Credentials and series names are unchanged —
+  Cloud Monitoring applies the same `workload.googleapis.com/` prefix to
+  OTLP-ingested metrics that the old exporter applied client-side, so
+  existing dashboards and alerts keep working. `SinkConfig.GRPCConn` replaces
+  `MonitoringClientOptions` as the test-injection seam. The now-unneeded
+  `staticcheck` SA1019 exclusion and both dependencies are removed. (#1979,
+  #2008)
 
 ## [0.89.0] - 2026-09-24
 
