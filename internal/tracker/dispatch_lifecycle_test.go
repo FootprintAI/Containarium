@@ -449,6 +449,7 @@ func TestStateLabelWriters_OnlyDispatcher(t *testing.T) {
 		"internal/tracker/policy.go":             true, // defines them and reserves them from run tokens
 		"internal/tracker/dispatch.go":           true, // the tick: queued, failed-to-start
 		"internal/tracker/dispatch_lifecycle.go": true, // the completion hook: running, done, failed
+		"internal/tracker/dispatch_sweep.go":     true, // the timeout / lease-lost sweep and failure projection (#2026)
 	}
 	pattern := regexp.MustCompile(`LabelAgent(Queued|Running|Done|Failed)|"agent:(queued|running|done|failed)"`)
 	root := filepath.Join("..", "..")

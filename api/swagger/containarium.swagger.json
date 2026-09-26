@@ -6585,7 +6585,7 @@
     "/v1/tracker/{username}/{connection}/dispatch": {
       "post": {
         "summary": "Run one tracker dispatch tick",
-        "description": "Lists the connection's open issues and, for each one carrying a routed scope:\u003crole\u003e label and no agent:* state label (and not agent:needs-approval), inserts a durable dispatch row, starts the routed skill through the RunAgentSkill path with the issue reference as input, and labels the issue agent:queued. Exactly once per (issue) across restarts and concurrent dispatchers: a partial unique index on active rows makes the second inserter skip. An unrouted scope label gets exactly one stamped warning comment. Requires tracker:admin (and agents:run, to start the runs).",
+        "description": "Lists the connection's open issues and, for each one carrying a routed scope:\u003crole\u003e label and no agent:* state label (and not agent:needs-approval), inserts a durable dispatch row, starts the routed skill through the RunAgentSkill path with the issue reference as input, and labels the issue agent:queued. Exactly once per (issue) across restarts and concurrent dispatchers: a partial unique index on active rows makes the second inserter skip. An unrouted scope label gets exactly one stamped warning comment. Each tick first sweeps active rows: one past the policy run timeout, or with no live lease past a grace period, is failed (lease ended, agent:failed, a comment naming the run and the reason) and returned in timed_out. Requires tracker:admin (and agents:run, to start the runs).",
         "operationId": "TrackerService_DispatchTrackerIssues",
         "responses": {
           "200": {
@@ -10698,7 +10698,7 @@
             "type": "object",
             "$ref": "#/definitions/TrackerDispatch"
           },
-          "description": "Reserved for the run-timeout sweep (#2026): RUNNING rows this tick\nfailed for exceeding the connection policy's run timeout."
+          "description": "Active rows this tick's sweep (#2026) failed: past the connection\npolicy's run timeout (failure TIMEOUT) or with no live lease past\nthe grace period (failure LEASE_LOST)."
         },
         "skippedNeedsApproval": {
           "type": "integer",
@@ -15681,9 +15681,25 @@
         "endedAt": {
           "type": "string",
           "format": "date-time"
+        },
+        "failure": {
+          "$ref": "#/definitions/TrackerDispatchFailure",
+          "description": "Set when state is FAILED (#2026): the typed cause."
         }
       },
       "description": "TrackerDispatch is one durable dispatch: which issue, which scope\nlabel matched, which skill was started as which run, and where the\nrun is in its state machine."
+    },
+    "TrackerDispatchFailure": {
+      "type": "string",
+      "enum": [
+        "TRACKER_DISPATCH_FAILURE_UNSPECIFIED",
+        "TRACKER_DISPATCH_FAILURE_START_ERROR",
+        "TRACKER_DISPATCH_FAILURE_RUN_ERROR",
+        "TRACKER_DISPATCH_FAILURE_TIMEOUT",
+        "TRACKER_DISPATCH_FAILURE_LEASE_LOST"
+      ],
+      "default": "TRACKER_DISPATCH_FAILURE_UNSPECIFIED",
+      "description": "TrackerDispatchFailure is WHY a dispatch ended FAILED (#2026). It\ndrives the failure comment on the issue and the terminal-state\ncounter; the raw error text stays in failure_reason, readable by an\noperator, never on a possibly public issue.\n\n - TRACKER_DISPATCH_FAILURE_UNSPECIFIED: Not failed, or failed before this field existed.\n - TRACKER_DISPATCH_FAILURE_START_ERROR: The run could not be started (provisioning, auth, a cancelled\ntick).\n - TRACKER_DISPATCH_FAILURE_RUN_ERROR: The run started and ended with an error, an empty artifact, or a\npanic in its background half.\n - TRACKER_DISPATCH_FAILURE_TIMEOUT: The run was still active past the connection policy's\nrun_timeout_seconds; the dispatcher ended its lease.\n - TRACKER_DISPATCH_FAILURE_LEASE_LOST: The run has no live lease on this daemon (the daemon restarted\nmid-run, or the run never reported a start) past the grace period."
     },
     "TrackerDispatchState": {
       "type": "string",

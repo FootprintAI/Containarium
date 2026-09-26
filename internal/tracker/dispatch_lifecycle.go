@@ -86,19 +86,29 @@ func (r *dispatchRun) RunStarted(ctx context.Context) {
 func (r *dispatchRun) RunEnded(ctx context.Context, outcome RunOutcome) {
 	ctx, cancel := detached(ctx)
 	defer cancel()
-	to, reason := pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_DONE, ""
-	if outcome.failed() {
-		to, reason = pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_FAILED, fmt.Sprintf("run failed: %v", outcome.Err)
-	}
 	now := r.d.Clock.Now()
+	row := r.row
+	row.EndedAt = now
+	row.State = pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_DONE
+	if outcome.failed() {
+		row.State = pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_FAILED
+		row.Failure = pb.TrackerDispatchFailure_TRACKER_DISPATCH_FAILURE_RUN_ERROR
+		row.FailureReason = fmt.Sprintf("run failed: %v", outcome.Err)
+	}
 	moved := false
 	for _, from := range []pb.TrackerDispatchState{
 		pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_RUNNING,
 		pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_QUEUED,
 	} {
-		ok, err := r.d.Store.TransitionDispatch(ctx, r.row.ID, from, to, reason, now)
+		var ok bool
+		var err error
+		if outcome.failed() {
+			ok, err = r.d.Store.FailDispatch(ctx, row.ID, from, row.Failure, row.FailureReason, now)
+		} else {
+			ok, err = r.d.Store.TransitionDispatch(ctx, row.ID, from, row.State, "", now)
+		}
 		if err != nil {
-			log.Printf("[tracker] dispatch %s: mark %v: %v", r.row.ID, to, err)
+			log.Printf("[tracker] dispatch %s: mark %v: %v", row.ID, row.State, err)
 			return
 		}
 		if ok {
@@ -109,20 +119,14 @@ func (r *dispatchRun) RunEnded(ctx context.Context, outcome RunOutcome) {
 	if !moved {
 		return // already terminal (e.g. failed by a timeout sweep)
 	}
+	r.d.observeEnd(row)
 
-	stale := []string{LabelAgentQueued, LabelAgentRunning}
 	if !outcome.failed() {
-		r.d.projectLabels(ctx, r.row, []string{LabelAgentDone}, append(stale, ScopeLabelPrefix+r.row.Scope))
+		r.d.projectLabels(ctx, row, []string{LabelAgentDone}, []string{LabelAgentQueued, LabelAgentRunning, ScopeLabelPrefix + row.Scope})
 		return
 	}
-	r.d.projectLabels(ctx, r.row, []string{LabelAgentFailed}, stale)
-	body := Sanitize(fmt.Sprintf("The agent run `%s` for `%s%s` failed (dispatch `%s`). "+
-		"An operator can see the reason with `containarium tracker dispatches <username> <connection> --state failed`. "+
-		"To retry, remove `%s`.",
-		r.row.RunID, ScopeLabelPrefix, r.row.Scope, r.row.ID, LabelAgentFailed)) +
-		"\n\n" + Stamp(dispatcherIdentity(r.row.Username, r.row.RunID), KindComment)
-	if _, err := r.d.Provider.Comment(ctx, r.d.Conn, r.row.IssueNumber, body); err != nil {
-		r.d.markLabelsPending(ctx, r.row)
+	if _, err := r.d.projectFailure(ctx, row, 0); err != nil {
+		log.Printf("[tracker] dispatch %s: %v", row.ID, err)
 	}
 }
 
