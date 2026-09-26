@@ -32,6 +32,12 @@ type Manager struct {
 	// default, production) uses defaultCloudInitWait; a test seam so a test
 	// exercising the wait itself doesn't cost the real 5s.
 	cloudInitWait time.Duration
+	// nameCache backs ExistingContainerNames — see its doc comment.
+	nameCache containerNameCache
+	// nameCacheTTL overrides existingContainerNamesCacheTTL. Zero (the
+	// default, production) uses the real constant; a test seam so a test
+	// exercising staleness doesn't need to sleep the real TTL.
+	nameCacheTTL time.Duration
 }
 
 // defaultCloudInitWait is installPackages' production wait when cloud-init

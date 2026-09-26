@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`/authorized-keys`'s orphan filter no longer makes one live Incus call
+  per home directory.** The filter (#343/#1140) that drops a tenant whose
+  container was deleted but whose host user/home dir survived used to call
+  `ContainerExists` — a live round trip — once per entry it enumerated; on a
+  fleet-sized backend that serialized into a multi-second response, which
+  the sentinel's event-driven key-resync push (#2018) could intermittently
+  time out against (a 5s budget), leaving a fresh box waiting for the
+  periodic poll instead of resolving fast. `Manager.ExistingContainerNames`
+  now serves a single `ListContainers` snapshot cached for up to 2s, shared
+  across every lookup in that window; a refresh failure serves the last
+  good snapshot (matching `ContainerExists`' own per-container failure
+  semantics — one hiccup should never orphan the whole fleet at once), and
+  fails open only when nothing has ever been cached. The orphan reaper
+  (#835) shares the same cache and fails open (reaps nothing) on the same
+  condition, since a destructive path should never treat "couldn't tell" as
+  "safe to delete".
 - **Security: a run token can no longer add or remove a `scope:*` label on
   an issue outside its own lineage.** `scope:*` is on the default label
   allow-list, so a run token could add a routed `scope:<role>` label to any
