@@ -305,6 +305,8 @@ message DispatchTrackerIssuesResponse {
   int32 skipped_needs_approval = 3;
   int32 skipped_active = 4;
   int32 skipped_unrouted = 5;
+  repeated TrackerDispatch failed = 6;
+  int32 skipped_over_depth = 7;   // lineage depth > policy.max_depth (#2025)
 }
 ```
 
