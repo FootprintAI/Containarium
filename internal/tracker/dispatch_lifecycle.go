@@ -2,6 +2,7 @@ package tracker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync/atomic"
@@ -34,10 +35,25 @@ func (o RunOutcome) failed() bool { return o.Err != nil }
 // after the terminal one. RunEnded is called once when the run ends.
 // Both are safe to call on a cancelled context and are no-ops when the
 // row has already moved on (a lost compare-and-set).
+//
+// RunStarted reports whether the run may proceed. false means the row
+// reached a terminal state before this run's start could be recorded:
+// the sweep timed it out while it was still provisioning and has already
+// put agent:failed on the issue. The starter must then NOT launch the
+// agent, must end the run's lease at once (revoke its credentials, wipe
+// its seed) and return ErrDispatchEnded: the issue says the run is over,
+// so nothing it holds may stay live (#2026). A store error returns true:
+// the row is still QUEUED, so RunEnded (or the sweep) settles it later.
 type RunLifecycle interface {
-	RunStarted(ctx context.Context)
+	RunStarted(ctx context.Context) (proceed bool)
 	RunEnded(ctx context.Context, outcome RunOutcome)
 }
+
+// ErrDispatchEnded is what a RunStarter returns when RunStarted said the
+// dispatch had already ended: the run was torn down before its agent was
+// launched. The tick does not fail the row again — whoever ended it
+// already reported it.
+var ErrDispatchEnded = errors.New("the dispatch ended before its run was launched")
 
 // lifecycleBookkeepingBudget bounds each hook's store and forge writes
 // once detached from the caller's context.
@@ -60,21 +76,31 @@ func detached(ctx context.Context) (context.Context, context.CancelFunc) {
 }
 
 // RunStarted moves the row QUEUED -> RUNNING and the issue from
-// agent:queued to agent:running.
-func (r *dispatchRun) RunStarted(ctx context.Context) {
+// agent:queued to agent:running. It returns false when the row moved on
+// without this start (see RunLifecycle): the caller must tear the run
+// down. A repeated report after a recorded start returns true.
+func (r *dispatchRun) RunStarted(ctx context.Context) bool {
 	ctx, cancel := detached(ctx)
 	defer cancel()
 	ok, err := r.d.Store.TransitionDispatch(ctx, r.row.ID,
 		pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_QUEUED, pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_RUNNING, "", r.d.Clock.Now())
 	if err != nil {
 		log.Printf("[tracker] dispatch %s: mark running: %v", r.row.ID, err)
-		return
+		return true
 	}
 	if !ok {
-		return // already moved on; whoever moved it owns the labels
+		// Already moved on; whoever moved it owns the labels. Unless this
+		// run's own start was recorded earlier, the row went terminal
+		// under a run that never got to start: it must not launch.
+		if r.started.Load() {
+			return true
+		}
+		log.Printf("[tracker] dispatch %s: ended before run %s started; the run must not launch", r.row.ID, r.row.RunID)
+		return false
 	}
 	r.started.Store(true)
 	r.d.projectLabels(ctx, r.row, []string{LabelAgentRunning}, []string{LabelAgentQueued})
+	return true
 }
 
 // RunEnded moves the row to DONE or FAILED — from RUNNING, or from

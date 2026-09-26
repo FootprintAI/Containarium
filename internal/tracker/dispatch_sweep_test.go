@@ -277,12 +277,54 @@ func TestDispatchSweep_StrandedQueuedRowIsFreed(t *testing.T) {
 	}
 }
 
+// listBarrierStore holds every caller of the first `parties`
+// ListDispatches(RUNNING) calls until all of them have listed, so
+// concurrent sweeps are guaranteed to have read the same active rows
+// before either one fails them — the race the compare-and-set decides.
+type listBarrierStore struct {
+	DispatchStore
+	parties int
+
+	mu      sync.Mutex
+	arrived int
+	release chan struct{}
+}
+
+func newListBarrierStore(s DispatchStore, parties int) *listBarrierStore {
+	return &listBarrierStore{DispatchStore: s, parties: parties, release: make(chan struct{})}
+}
+
+func (b *listBarrierStore) ListDispatches(ctx context.Context, username, connection string, state pb.TrackerDispatchState) ([]Dispatch, error) {
+	rows, err := b.DispatchStore.ListDispatches(ctx, username, connection, state)
+	if state != pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_RUNNING {
+		return rows, err
+	}
+	b.mu.Lock()
+	b.arrived++
+	if b.arrived == b.parties {
+		close(b.release)
+	}
+	wait := b.arrived <= b.parties
+	b.mu.Unlock()
+	if wait {
+		select {
+		case <-b.release:
+		case <-time.After(10 * time.Second):
+			return nil, context.DeadlineExceeded // the other sweep never listed
+		}
+	}
+	return rows, err
+}
+
 // Two dispatchers sweeping the same timed-out row at once report it
 // once: one lease end, one comment, one event (the CAS picks the winner).
+// The barrier guarantees both have listed the row as RUNNING before
+// either fails it, so both really attempt the transition.
 func TestDispatchSweep_ConcurrentSweepsReportOnce(t *testing.T) {
 	const user = "tracker-sweep-concurrent"
 	d, store, provider, _, leases, obs, ctx := newSweepFixture(t, user)
 	clockOf(t, d).Advance(sweepTimeout + time.Minute)
+	d.Store = newListBarrierStore(d.Store, 2)
 	peer := *d
 
 	var wg sync.WaitGroup
@@ -374,6 +416,103 @@ func TestDispatchSweep_LeaseEndGoexitStillProjects(t *testing.T) {
 		t.Fatalf("Tick = (%+v, %v), want one timed out", res, err)
 	}
 	assertFailedOnce(t, store, provider, ctx, user, 7, pb.TrackerDispatchFailure_TRACKER_DISPATCH_FAILURE_TIMEOUT, "timed out")
+}
+
+// A lease end that never returns must not swallow the failure report:
+// the lease end has its own budget and the projection a fresh one after
+// it, so the issue still gets agent:failed and the comment (and nothing
+// is left pending) rather than a terminal row the issue never shows.
+func TestDispatchSweep_HungLeaseEndStillProjects(t *testing.T) {
+	const user = "tracker-sweep-hung"
+	d, store, provider, _, leases, obs, ctx := newSweepFixture(t, user)
+	d.Provider = ctxProvider{provider} // forge writes fail on an expired ctx
+	d.leaseEndBudget = 50 * time.Millisecond
+	clockOf(t, d).Advance(sweepTimeout + time.Minute)
+	hang := make(chan struct{})
+	t.Cleanup(func() { close(hang) })
+	leases.onEnd = func(string) { <-hang } // never returns during the tick
+
+	res, err := d.Tick(ctx, user, "default")
+	if err != nil || len(res.TimedOut) != 1 {
+		t.Fatalf("Tick = (%+v, %v), want one timed out despite the hung lease end", res, err)
+	}
+	row := assertFailedOnce(t, store, provider, ctx, user, 7, pb.TrackerDispatchFailure_TRACKER_DISPATCH_FAILURE_TIMEOUT, "timed out")
+	if row.LabelsPending {
+		t.Errorf("row = %+v, want labels projected, not pending", row)
+	}
+	if evs := obs.all(); len(evs) != 1 {
+		t.Errorf("observer events = %+v, want exactly one", evs)
+	}
+}
+
+// provisioningSweptStarter simulates the race a timeout can hit while a
+// run is still provisioning: during StartRun a peer tick's sweep fails
+// the QUEUED row TIMEOUT (and projects it). Provisioning then succeeds,
+// and the start report must come back "do not proceed" — the starter
+// returns ErrDispatchEnded instead of launching the agent.
+type provisioningSweptStarter struct {
+	t       *testing.T
+	peer    func() *Dispatcher
+	user    string
+	proceed []bool
+}
+
+func (p *provisioningSweptStarter) StartRun(ctx context.Context, req StartRunRequest) error {
+	peer := p.peer()
+	clockOf(p.t, peer).Advance(sweepTimeout + time.Minute) // provisioning takes too long
+	res, err := peer.Tick(ctx, p.user, "default")
+	if err != nil || len(res.TimedOut) != 1 {
+		p.t.Errorf("peer Tick during provisioning = (%+v, %v), want the row swept", res, err)
+	}
+	proceed := req.Lifecycle.RunStarted(ctx) // provisioning succeeded after all
+	p.proceed = append(p.proceed, proceed)
+	if !proceed {
+		return ErrDispatchEnded
+	}
+	return nil
+}
+
+// A dispatch swept while its run was still provisioning: the late start
+// report loses the compare-and-set and says the run must not proceed,
+// the tick does not report the row a second time, and the issue carries
+// exactly the sweep's one failure comment.
+func TestDispatchSweep_TimeoutWhileProvisioningStopsTheRun(t *testing.T) {
+	const user = "tracker-sweep-provisioning"
+	d, store, provider, _, ctx := newLifecycleFixture(t, user, Issue{Number: 7, Labels: []string{"scope:product"}})
+	d.Policy = Policy{RunTimeout: sweepTimeout}
+	obs := &fakeObserver{}
+	d.Observer = obs
+	starter := &provisioningSweptStarter{t: t, user: user}
+	starter.peer = func() *Dispatcher { peer := *d; peer.Runs = &fakeRunStarter{}; return &peer }
+	d.Runs = starter
+
+	res, err := d.Tick(ctx, user, "default")
+	if err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	if len(starter.proceed) != 1 || starter.proceed[0] {
+		t.Fatalf("RunStarted results = %v, want exactly one false (the row already ended)", starter.proceed)
+	}
+	if len(res.Failed) != 0 || len(res.Started) != 0 {
+		t.Errorf("Tick result = %+v, want the run neither started nor failed a second time", res)
+	}
+	assertFailedOnce(t, store, provider, ctx, user, 7, pb.TrackerDispatchFailure_TRACKER_DISPATCH_FAILURE_TIMEOUT, "timed out")
+	if evs := obs.all(); len(evs) != 1 {
+		t.Errorf("observer events = %+v, want exactly one", evs)
+	}
+}
+
+// A start report repeated after a recorded start still says proceed:
+// only a row that ended without this run's start stops the run.
+func TestDispatchLifecycle_RepeatedStartStillProceeds(t *testing.T) {
+	const user = "tracker-lifecycle-restart"
+	d, _, _, runs, ctx := newLifecycleFixture(t, user, Issue{Number: 7, Labels: []string{"scope:product"}})
+	if res, err := d.Tick(ctx, user, "default"); err != nil || len(res.Started) != 1 {
+		t.Fatalf("Tick = (%+v, %v), want one started", res, err)
+	}
+	if !runs.lifecycle(t, 0).RunStarted(ctx) {
+		t.Error("a repeated start report said stop; the run's own start was recorded")
+	}
 }
 
 // Every terminal path is observed exactly once with its state, cause

@@ -114,17 +114,29 @@ func (d *Dispatcher) sweep(ctx context.Context, username, connection string) ([]
 	return swept, nil
 }
 
+// DefaultLeaseEndBudget bounds how long the sweep waits for one swept
+// run's lease end (revocation, seed wipe, audit) before it moves on to
+// the projection. The production lease end caps its revocation half at
+// 6s; this leaves room for the wipe and the audit row.
+const DefaultLeaseEndBudget = 20 * time.Second
+
 // failSwept moves one stuck row to FAILED and, only if this call won the
 // compare-and-set, ends the run's lease and then projects the failure —
 // in that order, so the issue never says agent:failed while the run's
-// credentials are still live. All of it runs on a detached, bounded
-// context: a tick cancelled after the transition must still leave the
-// issue saying so.
+// credentials are still live. All of it runs detached from the tick: a
+// tick cancelled after the transition must still leave the issue saying
+// so.
+//
+// The three steps get independent budgets. The lease end in particular
+// has its own, and the projection starts a fresh one only after it: a
+// lease end that hangs must not use up the projection's budget, or the
+// row would be terminal with the issue still saying agent:running, no
+// comment and no labels_pending — silent, and never retried.
 func (d *Dispatcher) failSwept(tickCtx context.Context, row Dispatch, from pb.TrackerDispatchState, failure pb.TrackerDispatchFailure, reason string, timeout time.Duration) (Dispatch, bool, error) {
-	ctx, cancel := bookkeepingContext(tickCtx)
-	defer cancel()
 	now := d.Clock.Now()
-	won, err := d.Store.FailDispatch(ctx, row.ID, from, failure, reason, now)
+	casCtx, casCancel := bookkeepingContext(tickCtx)
+	won, err := d.Store.FailDispatch(casCtx, row.ID, from, failure, reason, now)
+	casCancel()
 	if err != nil {
 		return row, false, fmt.Errorf("fail stuck dispatch for #%d: %w", row.IssueNumber, err)
 	}
@@ -133,9 +145,11 @@ func (d *Dispatcher) failSwept(tickCtx context.Context, row Dispatch, from pb.Tr
 	}
 	row.State = pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_FAILED
 	row.Failure, row.FailureReason, row.EndedAt = failure, reason, now
-	d.endLease(ctx, row.RunID)
+	d.endLease(tickCtx, row.RunID)
 	d.observeEnd(row)
-	pending, err := d.projectFailure(ctx, row, timeout)
+	projCtx, projCancel := bookkeepingContext(tickCtx)
+	defer projCancel()
+	pending, err := d.projectFailure(projCtx, row, timeout)
 	if err != nil {
 		return row, true, err
 	}
@@ -143,15 +157,22 @@ func (d *Dispatcher) failSwept(tickCtx context.Context, row Dispatch, from pb.Tr
 	return row, true, nil
 }
 
-// endLease ends a swept run's lease on its own goroutine, bounded by
-// ctx: a panic or runtime.Goexit inside it (the lease end calls into
-// the revocation store and the box) ends only that goroutine, and a hung
-// one cannot hold the tick past the bookkeeping budget. The row is
-// already FAILED either way; the projection must still happen.
-func (d *Dispatcher) endLease(ctx context.Context, runID string) {
+// endLease ends a swept run's lease on its own goroutine, detached from
+// the tick and bounded by its own budget (leaseEndBudget): a panic or
+// runtime.Goexit inside it (the lease end calls into the revocation
+// store and the box) ends only that goroutine, and a hung one is
+// abandoned once the budget is spent. The row is already FAILED either
+// way; the projection, on its own fresh budget, must still happen.
+func (d *Dispatcher) endLease(tickCtx context.Context, runID string) {
 	if d.Leases == nil {
 		return
 	}
+	budget := d.leaseEndBudget
+	if budget <= 0 {
+		budget = DefaultLeaseEndBudget
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(tickCtx), budget)
+	defer cancel()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -211,9 +232,12 @@ func failureComment(row Dispatch, timeout time.Duration) string {
 	case pb.TrackerDispatchFailure_TRACKER_DISPATCH_FAILURE_RUN_ERROR:
 		why = "ended with an error"
 	case pb.TrackerDispatchFailure_TRACKER_DISPATCH_FAILURE_TIMEOUT:
-		why = fmt.Sprintf("timed out after %s (the connection's run timeout) and its credentials were revoked", timeout)
+		// Not "its credentials were revoked": that is not yet true for a
+		// run still provisioning (it is torn down once provisioning
+		// returns), and not guaranteed when the lease end fails.
+		why = fmt.Sprintf("timed out after %s (the connection's run timeout) and was marked failed; any result it reports later is ignored", timeout)
 	case pb.TrackerDispatchFailure_TRACKER_DISPATCH_FAILURE_LEASE_LOST:
-		why = "was stopped because it has no live lease on the daemon (the daemon restarted, or the run never reported a start)"
+		why = "was marked failed because it has no live lease on the daemon (the daemon restarted, or the run never reported a start)"
 	default:
 		why = "failed"
 	}

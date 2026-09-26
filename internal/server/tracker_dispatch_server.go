@@ -238,7 +238,9 @@ func (r trackerRunStarter) StartRun(ctx context.Context, req tracker.StartRunReq
 	if err != nil {
 		return err
 	}
-	r.agents.launchDispatchedRun(ctx, run, req.Lifecycle, r.agents.runInBoxAgentResult)
+	if !r.agents.launchDispatchedRun(ctx, run, req.Lifecycle, r.agents.runInBoxAgentResult) {
+		return tracker.ErrDispatchEnded
+	}
 	launched = true
 	return nil
 }
@@ -247,14 +249,27 @@ func (r trackerRunStarter) StartRun(ctx context.Context, req tracker.StartRunReq
 // (QUEUED -> RUNNING, agent:running) and only then launches the in-box
 // agent in the background, so the RUNNING projection can never land
 // after the terminal one. lc is nil for a run with no dispatch row.
-func (s *AgentSkillServer) launchDispatchedRun(ctx context.Context, run *startedSkillRun, lc tracker.RunLifecycle, agent func(containerName, seedDir string) (string, error)) {
+//
+// If the row already went terminal while the run was provisioning (the
+// sweep timed it out, and the issue already says agent:failed), the
+// start report says so and the run is aborted here: its lease is ended
+// at once — JWTs revoked, seed wiped, run unregistered — its agent is
+// never launched, it stops being live, and false is returned (#2026).
+// Letting it go on would leave a run acting with live credentials on an
+// issue that says it is over.
+func (s *AgentSkillServer) launchDispatchedRun(ctx context.Context, run *startedSkillRun, lc tracker.RunLifecycle, agent func(containerName, seedDir string) (string, error)) bool {
 	// Held (and its lease known to the sweep) before the goroutine
 	// exists; finishDispatchedRun lets go of it.
-	s.dispatched.track(run.runID).setLease(run.lease)
-	if lc != nil {
-		lc.RunStarted(ctx)
+	h := s.dispatched.track(run.runID)
+	h.setLease(run.lease)
+	if lc != nil && !lc.RunStarted(ctx) {
+		// Once: the sweep may have ended it already, if it saw the lease.
+		s.endDispatchedLease(context.WithoutCancel(ctx), h, dispatchEndedBeforeLaunchReason)
+		s.dispatched.untrack(run.runID)
+		return false
 	}
 	go s.finishDispatchedRun(ctx, run, agent, lc)
+	return true
 }
 
 // finishDispatchedRun is the background half of a dispatched run: run

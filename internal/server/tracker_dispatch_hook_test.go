@@ -34,17 +34,21 @@ type recordingLifecycle struct {
 	registry  *runlease.Registry
 	runID     string
 	ended     chan struct{}
+	// rejectStart makes RunStarted report that the row already ended
+	// (a lost compare-and-set: swept while provisioning).
+	rejectStart bool
 }
 
 func newRecordingLifecycle() *recordingLifecycle {
 	return &recordingLifecycle{ended: make(chan struct{})}
 }
 
-func (r *recordingLifecycle) RunStarted(ctx context.Context) {
+func (r *recordingLifecycle) RunStarted(ctx context.Context) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.events = append(r.events, "started")
 	r.ctxErrs = append(r.ctxErrs, ctx.Err())
+	return !r.rejectStart
 }
 
 func (r *recordingLifecycle) RunEnded(ctx context.Context, o tracker.RunOutcome) {

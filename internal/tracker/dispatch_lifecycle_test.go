@@ -35,7 +35,9 @@ func (l *lifecycleRunStarter) StartRun(ctx context.Context, req StartRunRequest)
 	end := l.endWith
 	l.mu.Unlock()
 	if req.Lifecycle != nil {
-		req.Lifecycle.RunStarted(ctx)
+		if !req.Lifecycle.RunStarted(ctx) {
+			return ErrDispatchEnded // as the production starter does
+		}
 		if end != nil {
 			req.Lifecycle.RunEnded(ctx, *end)
 		}

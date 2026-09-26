@@ -60,7 +60,9 @@ type StartRunRequest struct {
 //
 // A starter that accepts a run must call req.Lifecycle.RunStarted once
 // the run is registered and before its agent is launched, and
-// req.Lifecycle.RunEnded exactly once when the run ends.
+// req.Lifecycle.RunEnded exactly once when the run ends. When
+// RunStarted returns false the starter must end the run's lease, must
+// not launch the agent, and returns ErrDispatchEnded.
 type RunStarter interface {
 	StartRun(ctx context.Context, req StartRunRequest) error
 }
@@ -110,6 +112,9 @@ type Dispatcher struct {
 	// Observer receives every terminal transition (#2026 metrics). nil
 	// records nothing.
 	Observer DispatchObserver
+
+	// leaseEndBudget overrides DefaultLeaseEndBudget (tests).
+	leaseEndBudget time.Duration
 }
 
 // TickResult is one tick's outcome.
@@ -263,6 +268,12 @@ func (d *Dispatcher) Tick(ctx context.Context, username, connection string) (Tic
 			Username: username, Connection: connection, SkillID: skillID, RunID: row.RunID, InputJSON: input,
 			RepoURL: d.RepoURL, Lifecycle: lc,
 		}); startErr != nil {
+			if errors.Is(startErr, ErrDispatchEnded) {
+				// Swept while it was still provisioning: the sweep already
+				// failed and projected the row, and the starter tore the
+				// run down. Nothing to report a second time.
+				continue
+			}
 			failed, err := d.failStart(ctx, row, startErr)
 			if err != nil {
 				return res, err

@@ -12,8 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Tracker dispatch: failed or stuck runs say so on the issue.** Each
   `tracker dispatch` tick first sweeps the connection's active dispatch
   rows: a run still active past the connection's `--run-timeout` (default
-  1h) has its lease ended (JWTs revoked, seed wiped) and is failed
-  `TIMEOUT`; a row whose run this daemon no longer holds (a daemon restart,
+  1h) is failed `TIMEOUT` and, if provisioned, has its lease ended (JWTs
+  revoked, seed wiped); a run that times out while still provisioning is
+  torn down as soon as provisioning returns (its lease ended, its agent
+  never launched) instead of running on with live credentials under an
+  issue that already says `agent:failed`. A hung lease end can no longer
+  swallow the failure comment: the lease end and the issue projection run
+  on independent budgets. A row whose run this daemon no longer holds (a daemon restart,
   or a tick that died before starting its run) is failed `LEASE_LOST` after
   a 5-minute grace, so a stranded `queued` row no longer locks its issue.
   Every failure — start error, run error, timeout, lost lease — is a

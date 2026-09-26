@@ -72,7 +72,9 @@ func (h *dispatchedRun) setLease(l runlease.Lease) {
 }
 
 // endDispatchedLease ends h's lease once. A run still provisioning has
-// no lease yet: nothing to end (its provisioning path owns the cleanup).
+// no lease yet: nothing to end here (a failed provisioning cleans up
+// after itself; a successful one whose row was failed meanwhile is torn
+// down by launchDispatchedRun).
 func (s *AgentSkillServer) endDispatchedLease(ctx context.Context, h *dispatchedRun, reason string) {
 	h.mu.Lock()
 	if h.ended || h.lease == nil {
@@ -107,7 +109,9 @@ func (r trackerRunStarter) End(ctx context.Context, runID string) {
 	provisioned := h.lease != nil
 	h.mu.Unlock()
 	if !provisioned {
-		log.Printf("[tracker] dispatched run %s: timed out while still provisioning; no lease to end yet", runID)
+		// Its row is already terminal, so its start report will lose the
+		// compare-and-set and launchDispatchedRun tears it down then.
+		log.Printf("[tracker] dispatched run %s: timed out while still provisioning; its lease is ended when provisioning returns", runID)
 		return
 	}
 	r.agents.endDispatchedLease(ctx, h, dispatchSweepReason)

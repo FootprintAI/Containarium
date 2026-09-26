@@ -93,6 +93,90 @@ func TestTrackerRunLeases_SweepEndsLeaseOnce(t *testing.T) {
 	}
 }
 
+// The other ordering: the run's own end comes first and the sweep's End
+// arrives while that end is still being reported (the run is still
+// live). The lease was already ended by the run, so the sweep's End must
+// not revoke again.
+func TestTrackerRunLeases_RunEndFirstThenSweepEndsOnce(t *testing.T) {
+	const runID = "run-end-first"
+	s, _, store := newFinishHarness(t, runID)
+	rev := &countingRevoker{fakeRevocationStore: store}
+	s.SetRevocationStore(rev)
+	leases := trackerRunStarter{s}
+
+	var liveAtSweep bool
+	lc := &callbackLifecycle{onEnd: func() {
+		liveAtSweep = leases.Live(runID)
+		leases.End(context.Background(), runID) // the sweep lands mid-report
+	}}
+	done := make(chan struct{})
+	lc.after = func() { close(done) }
+	s.launchDispatchedRun(ctxAs("alice", true), &startedSkillRun{runID: runID, lease: testLease(runID)}, lc,
+		func(string, string) (string, error) { return "{}", nil })
+	<-done
+	if !liveAtSweep {
+		t.Fatal("run not live while its end was reported; the sweep's End took the not-live path and the ordering is untested")
+	}
+	waitNotLive(t, leases, runID)
+	if got := rev.calls(); got != 2 {
+		t.Errorf("revocations = %d, want 2 (the run's own end only; the sweep's End is a no-op)", got)
+	}
+}
+
+// Security (#2026): a run the sweep timed out while it was still
+// provisioning must not run on with live credentials. The sweep's End
+// finds no lease yet; when provisioning returns and the start report
+// says the dispatch already ended, the run's lease is ended on the spot
+// (both JWTs revoked, run unregistered), its agent is never launched,
+// and it stops being live.
+func TestLaunchDispatchedRun_EndedBeforeLaunchIsTornDown(t *testing.T) {
+	const runID = "run-ended-before-launch"
+	s, registry, store := newFinishHarness(t, runID)
+	rev := &countingRevoker{fakeRevocationStore: store}
+	s.SetRevocationStore(rev)
+	leases := trackerRunStarter{s}
+
+	// StartRun has begun (the run is held) but it is still provisioning
+	// when the timeout sweep fails its row and tries to end its lease.
+	s.dispatched.track(runID)
+	leases.End(context.Background(), runID)
+	if got := rev.calls(); got != 0 {
+		t.Fatalf("revocations while provisioning = %d, want 0 (no lease yet)", got)
+	}
+
+	// Provisioning succeeds after all; the start report loses its CAS.
+	lc := newRecordingLifecycle()
+	lc.rejectStart = true
+	agentRan := make(chan struct{}, 1)
+	launched := s.launchDispatchedRun(ctxAs("alice", true), &startedSkillRun{runID: runID, lease: testLease(runID)}, lc,
+		func(string, string) (string, error) { agentRan <- struct{}{}; return "{}", nil })
+	if launched {
+		t.Fatal("launchDispatchedRun = true for a dispatch that already ended")
+	}
+	if got := rev.calls(); got != 2 {
+		t.Errorf("revocations = %d, want 2 (both JWTs revoked at once)", got)
+	}
+	for _, jti := range []string{"jti-platform", "jti-gateway"} {
+		if revoked, _ := store.IsRevoked(context.Background(), jti); !revoked {
+			t.Errorf("%s not revoked", jti)
+		}
+	}
+	if registry.Live(runID) {
+		t.Error("run still registered after the teardown")
+	}
+	if leases.Live(runID) {
+		t.Error("run still live to the sweep after the teardown")
+	}
+	select {
+	case <-agentRan:
+		t.Error("the in-box agent was launched for a dispatch that already ended")
+	case <-time.After(100 * time.Millisecond):
+	}
+	if events, _, _ := lc.snapshot(); len(events) != 1 || events[0] != "started" {
+		t.Errorf("lifecycle events = %v, want only the rejected start report", events)
+	}
+}
+
 // A run is still live while its end is being reported, so a sweep
 // racing the normal completion cannot fail it as lease-lost.
 func TestTrackerRunLeases_LiveUntilEndReported(t *testing.T) {
@@ -165,7 +249,7 @@ type callbackLifecycle struct {
 	after func()
 }
 
-func (c *callbackLifecycle) RunStarted(context.Context) {}
+func (c *callbackLifecycle) RunStarted(context.Context) bool { return true }
 
 func (c *callbackLifecycle) RunEnded(context.Context, tracker.RunOutcome) {
 	c.onEnd()

@@ -104,6 +104,10 @@ const (
 	// dispatchSweepReason: the tracker dispatcher's sweep ended the run's
 	// lease because it outlived the connection's run timeout (#2026).
 	dispatchSweepReason = "dispatch_sweep"
+	// dispatchEndedBeforeLaunchReason: the run finished provisioning after
+	// its dispatch row had already been failed (the sweep timed it out
+	// mid-provision), so it was torn down before its agent launched.
+	dispatchEndedBeforeLaunchReason = "dispatch_ended_before_launch"
 )
 
 // endRunLeaseCeiling is the design's 6s cap on the REVOCATION half of ending a
