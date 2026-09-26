@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/footprintai/containarium/internal/auth"
 )
 
 // primaryRegisterTTL must align with sentinel.PrimaryTTL. Hardcoded here to
@@ -31,6 +33,13 @@ type PrimaryRegisterConfig struct {
 	PublicBaseDomains []string // suffix-match anchors: <anything>.<one-of-these> routes here. A single backend can host multiple parent domains by listing each.
 	Port              int      // public HTTPS port (typically 443 or 8443)
 	BackendID         string   // optional; for ops visibility in /sentinel/primaries
+	// Secret is the cluster-wide sentinel HMAC secret
+	// (CONTAINARIUM_SENTINEL_AUTH_SECRET), the same one that already gates
+	// /sentinel/certs and /sentinel/keys/resync. /sentinel/primaries is
+	// gated the same way — a stale or absent Secret here means every
+	// registration/heartbeat/deregister call below is rejected, not sent
+	// unsigned.
+	Secret []byte
 }
 
 // runPrimaryRegistration registers with the sentinel, sends periodic
@@ -43,6 +52,15 @@ type PrimaryRegisterConfig struct {
 func runPrimaryRegistration(ctx context.Context, cfg PrimaryRegisterConfig) {
 	if cfg.SentinelURL == "" || cfg.Pool == "" || cfg.PublicHostname == "" || cfg.Port == 0 {
 		// Opt-in: silently skip if the operator hasn't configured all fields.
+		return
+	}
+	if len(cfg.Secret) < auth.SentinelMinSecretLen {
+		// The same misconfiguration notifySentinelKeyChange already guards
+		// against (#687): /sentinel/primaries is HMAC-gated the same as
+		// /sentinel/keys/resync, so an absent or too-short secret means
+		// every call below would be rejected. Skip rather than retry a
+		// doomed request on every heartbeat tick.
+		log.Printf("[primary-register] not registering pool %q: no usable sentinel HMAC secret configured", cfg.Pool)
 		return
 	}
 
@@ -63,7 +81,7 @@ func runPrimaryRegistration(ctx context.Context, cfg PrimaryRegisterConfig) {
 	client := &http.Client{Timeout: 5 * time.Second}
 
 	// Initial registration. Failures are non-fatal: heartbeat ticker will retry.
-	if err := postJSON(ctx, client, registerURL, body); err != nil {
+	if err := postJSON(ctx, client, registerURL, body, cfg.Secret); err != nil {
 		log.Printf("[primary-register] initial registration failed: %v (will retry)", err)
 	} else {
 		log.Printf("[primary-register] registered: pool=%q hostname=%q aliases=%v base_domains=%v port=%d", cfg.Pool, cfg.PublicHostname, cfg.PublicAliases, cfg.PublicBaseDomains, cfg.Port)
@@ -77,7 +95,7 @@ func runPrimaryRegistration(ctx context.Context, cfg PrimaryRegisterConfig) {
 			case <-ctx.Done():
 				// Best-effort deregister with a fresh short-lived context.
 				deregCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-				if err := deleteRequest(deregCtx, client, heartbeatURL); err != nil {
+				if err := deleteRequest(deregCtx, client, heartbeatURL, cfg.Secret); err != nil {
 					log.Printf("[primary-register] deregister failed: %v", err)
 				} else {
 					log.Printf("[primary-register] deregistered: pool=%q", cfg.Pool)
@@ -85,14 +103,14 @@ func runPrimaryRegistration(ctx context.Context, cfg PrimaryRegisterConfig) {
 				cancel()
 				return
 			case <-ticker.C:
-				if err := putRequest(ctx, client, heartbeatURL, nil); err != nil {
+				if err := putRequest(ctx, client, heartbeatURL, nil, cfg.Secret); err != nil {
 					// 404 means the sentinel doesn't know us — re-register.
 					var notFound bool
 					if hErr, ok := err.(*httpStatusError); ok && hErr.code == http.StatusNotFound {
 						notFound = true
 					}
 					if notFound {
-						if err2 := postJSON(ctx, client, registerURL, body); err2 != nil {
+						if err2 := postJSON(ctx, client, registerURL, body, cfg.Secret); err2 != nil {
 							log.Printf("[primary-register] re-registration failed: %v", err2)
 						} else {
 							log.Printf("[primary-register] re-registered after sentinel restart: pool=%q", cfg.Pool)
@@ -115,7 +133,7 @@ func (e *httpStatusError) Error() string {
 	return fmt.Sprintf("status=%d body=%q", e.code, e.body)
 }
 
-func postJSON(ctx context.Context, client *http.Client, url string, body any) error {
+func postJSON(ctx context.Context, client *http.Client, url string, body any, secret []byte) error {
 	buf, err := json.Marshal(body)
 	if err != nil {
 		return err
@@ -125,6 +143,7 @@ func postJSON(ctx context.Context, client *http.Client, url string, body any) er
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	auth.SignSentinelRequest(req, secret)
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
@@ -137,7 +156,7 @@ func postJSON(ctx context.Context, client *http.Client, url string, body any) er
 	return nil
 }
 
-func putRequest(ctx context.Context, client *http.Client, url string, body any) error {
+func putRequest(ctx context.Context, client *http.Client, url string, body any, secret []byte) error {
 	var reader *bytes.Reader
 	if body != nil {
 		buf, err := json.Marshal(body)
@@ -152,6 +171,7 @@ func putRequest(ctx context.Context, client *http.Client, url string, body any) 
 	if err != nil {
 		return err
 	}
+	auth.SignSentinelRequest(req, secret)
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
@@ -164,11 +184,12 @@ func putRequest(ctx context.Context, client *http.Client, url string, body any) 
 	return nil
 }
 
-func deleteRequest(ctx context.Context, client *http.Client, url string) error {
+func deleteRequest(ctx context.Context, client *http.Client, url string, secret []byte) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
 	if err != nil {
 		return err
 	}
+	auth.SignSentinelRequest(req, secret)
 	resp, err := client.Do(req)
 	if err != nil {
 		return err

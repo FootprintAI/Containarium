@@ -107,6 +107,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   optional bootstrap bundle, and no credential of any kind. Also adds
   `--no-agent-runtime` to `scripts/install-agent-runtime.sh`. (#2031)
 
+### Changed
+
+- **Sentinel's primary-registration endpoint hardened.** `/sentinel/primaries`
+  (`GET`/`POST`/`DELETE`) is now HMAC-gated the same as `/sentinel/certs` and
+  `/sentinel/keys/resync`; a direct daemon's own registration/heartbeat/
+  deregister calls are signed accordingly. A daemon with no usable sentinel
+  HMAC secret configured now skips registration (logged) instead of sending
+  requests that would be rejected. Tunnel-registered primaries are
+  unaffected — they never used this endpoint. Operators running a direct
+  (non-tunneled) `--public-hostname` daemon should upgrade promptly and
+  confirm `CONTAINARIUM_SENTINEL_AUTH_SECRET` is configured on it.
+
 ### Fixed
 
 - **`tracker issue list` and `tracker dispatch` now see every matching issue,
