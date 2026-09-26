@@ -46,9 +46,9 @@ type Dispatch struct {
 	// issue is labelled agent:queued, so it is the "label applied" end of
 	// the latency metric. InsertDispatch takes it from the caller's clock
 	// when set, so every timestamp on a row comes from one clock.
-	CreatedAt     time.Time
-	StartedAt     time.Time
-	EndedAt       time.Time
+	CreatedAt time.Time
+	StartedAt time.Time
+	EndedAt   time.Time
 }
 
 // ErrDispatchActive is returned by InsertDispatch when the issue already

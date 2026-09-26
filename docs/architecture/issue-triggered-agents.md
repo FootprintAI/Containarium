@@ -192,7 +192,15 @@ never smuggled through the launch payload.
 | Skill box fails to provision / run start error | dispatcher tick, synchronously | row `failed`, `agent:failed`, comment with reason |
 | Agent exits with error / empty artifact | completion hook | row `failed`, `agent:failed`, comment with run id + error |
 | Run exceeds `policy.run_timeout` (default 1h) | next tick: `running` rows with `started_at + timeout < now` | `runlease.End(run)` (revokes JWT, wipes seed), row `failed`, comment "timed out after …" |
-| Daemon restarts mid-run | `runlease` is single-process; on boot, `running` rows with no live lease are swept to `failed` after a grace period | visible, never silently stuck |
+| Daemon restarts mid-run | `runlease` is single-process; every tick sweeps `running` rows (age from `started_at`) and `queued` rows (age from `created_at`) whose run this daemon does not hold, after a 5-minute grace | row `failed` (`LEASE_LOST`), `agent:failed`, comment naming the run — visible, never silently stuck, and a stranded `queued` row no longer locks the issue |
+
+Every failure above is one compare-and-set into `failed` carrying a typed
+`TrackerDispatchFailure` cause (`START_ERROR`, `RUN_ERROR`, `TIMEOUT`,
+`LEASE_LOST`); only the winner ends the lease, projects `agent:failed` plus
+one comment (run id + reason from the cause, never the raw error), and emits
+one terminal event — `containarium.tracker.dispatch.terminal` by state,
+cause and scope, and `containarium.tracker.dispatch.result_latency` from the
+row's insert (the `agent:queued` label) to the result (#2026).
 | Forge unreachable during label write | row keeps `labels_pending`; tick retries with backoff | state never lost; labels catch up |
 | Unmapped `scope:*` label | tick | one stamped warning comment per (issue, scope); recorded in a `tracker_dispatch_warnings` row so it is not repeated every tick |
 

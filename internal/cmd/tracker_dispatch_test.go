@@ -168,3 +168,20 @@ func TestPrintTrackerDispatches_Empty(t *testing.T) {
 		t.Errorf("output = %q, want a placeholder", out)
 	}
 }
+
+// A tick's swept rows (#2026) are printed with their cause and run, and
+// counted in the summary line.
+func TestPrintDispatchTick_TimedOut(t *testing.T) {
+	out := captureStdout(t, func() {
+		printDispatchTick(&pb.DispatchTrackerIssuesResponse{TimedOut: []*pb.TrackerDispatch{{
+			IssueNumber: 7, Scope: "product", SkillId: "product-define", RunId: "run-7",
+			State: pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_FAILED, Failure: pb.TrackerDispatchFailure_TRACKER_DISPATCH_FAILURE_TIMEOUT,
+			FailureReason: "run exceeded the run timeout of 1h0m0s",
+		}}})
+	})
+	for _, want := range []string{"#7", "scope:product", "run-7", "timeout", "run exceeded the run timeout", "timed_out=1"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output = %q, want %q", out, want)
+		}
+	}
+}
