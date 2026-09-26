@@ -133,8 +133,15 @@ From your laptop (or any host that can reach `containarium.<your-base-domain>`):
 curl -s https://containarium.<your-base-domain>/sentinel/peers \
   | jq '.peers[] | select(.id == "tunnel-<demo-backend>-spot")'
 
-# Primary registry — should show the demo primary with base_domain set
+# Primary registry — HMAC-gated (same secret as key resync / certs), so the
+# request must be signed:
+#   X-Containarium-Sentinel-Ts:  <unix seconds>
+#   X-Containarium-Sentinel-Sig: hex(HMAC-SHA256(secret, "GET\n/sentinel/primaries\n<ts>"))
+SECRET="$CONTAINARIUM_SENTINEL_AUTH_SECRET"   # from the sentinel's own env
+TS=$(date +%s)
+SIG=$(printf 'GET\n/sentinel/primaries\n%s' "$TS" | openssl dgst -sha256 -hmac "$SECRET" -hex | awk '{print $2}')
 curl -s https://containarium.<your-base-domain>/sentinel/primaries \
+  -H "X-Containarium-Sentinel-Ts: $TS" -H "X-Containarium-Sentinel-Sig: $SIG" \
   | jq '.primaries[] | select(.pool == "demo")'
 ```
 
@@ -244,7 +251,7 @@ Rollback is non-destructive on the prod side — the prod sentinel just stops ge
 2. Pool-tag prod backend (`--pool=prod --public-base-domain=<your-base-domain>`) if not already.
 3. Mint a demo-pool tunnel token, add to sentinel's `--tunnel-token-policy`.
 4. Stop the demo sentinel role; install `containarium-tunnel.service` with `--pool=demo --public-base-domain=<demo-base-domain>`.
-5. Verify `/sentinel/peers` and `/sentinel/primaries` on prod.
+5. Verify `/sentinel/peers` and `/sentinel/primaries` on prod (the latter needs a signed request — see Step 2 above).
 6. `curl --resolve` an existing demo hostname against prod sentinel IP — must succeed before DNS change.
 7. Cut DNS `*.<demo-base-domain>` to prod sentinel IP.
 8. After 24h: destroy demo sentinel + its static IP.

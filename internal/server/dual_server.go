@@ -2477,6 +2477,7 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		PublicBaseDomains: ds.config.PublicBaseDomains,
 		Port:              ds.config.PublicPort,
 		BackendID:         ds.config.LocalBackendID,
+		Secret:            loadSentinelHMACSecret(),
 	})
 
 	// Surface the SSH host on every Container.ssh_host. Independent of peer

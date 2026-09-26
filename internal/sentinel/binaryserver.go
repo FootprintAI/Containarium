@@ -89,10 +89,15 @@ func buildBinaryServerMux(binaryPath string, manager *Manager) *http.ServeMux {
 	// Peers endpoint — for daemon multi-backend discovery
 	mux.HandleFunc("/sentinel/peers", manager.PeersHandler())
 
-	// Primaries endpoints — populated by daemon self-registration.
+	// Primaries endpoints — populated by daemon self-registration, gated by
+	// the same sentinel HMAC secret as /sentinel/certs and
+	// /sentinel/keys/resync below. Left unauthenticated until now (tracked
+	// as a known gap in docs/MULTI-POOL.md) — a caller with no credential
+	// at all could otherwise read the full primary registry, overwrite any
+	// pool's declared routing target, or delete it outright.
 	// One handler covers both /sentinel/primaries and /sentinel/primaries/{pool}.
-	mux.HandleFunc("/sentinel/primaries", manager.PrimariesHandler())
-	mux.HandleFunc("/sentinel/primaries/", manager.PrimariesHandler())
+	mux.Handle("/sentinel/primaries", auth.SentinelHMACMiddleware(manager.hmacSecret, manager.PrimariesHandler()))
+	mux.Handle("/sentinel/primaries/", auth.SentinelHMACMiddleware(manager.hmacSecret, manager.PrimariesHandler()))
 
 	// Phase 0.5: peer-CA distribution + leaf-cert issuance. Both
 	// gated by the existing HMAC middleware — the same secret that

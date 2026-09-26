@@ -241,12 +241,14 @@ On tunnel disconnect, the primary entry is removed automatically (`UnregisterByB
 6. **TLS:** wildcard cert on the GLB (`*.example.com`) already covers it. If using per-subdomain certs, add a managed cert.
 7. **Verify:**
    ```
-   curl -s https://<cluster>.example.com/sentinel/primaries | jq
-   # → confirms lab primary is registered
    curl -s https://<cluster>.example.com/sentinel/peers?pool=lab | jq
    # → confirms peers are tagged correctly
    curl -sI https://<lab-pool>.example.com/      # → 200 from lab primary
    ```
+   `/sentinel/primaries` now requires a signed request (see the note below);
+   the sentinel's own log line `[sentinel] primary registered: pool="lab"
+   ...` is the quickest way to confirm the lab primary registered without
+   needing to sign a request by hand.
 
 No sentinel config edits, no Caddy admin API edits, no daemon restart on the existing pool.
 
@@ -255,12 +257,11 @@ No sentinel config edits, no Caddy admin API edits, no daemon restart on the exi
 - **One sentinel = single point of failure for both pools.** A sentinel outage takes both pools' inbound traffic down. We accept this for simplicity; if SLA matters, run a regional GLB with multiple sentinels.
 - **Each pool runs its own postgres/Grafana/Caddy.** That's ~4–6 GB extra RAM per pool. The trade-off is clean isolation: a postgres outage in one pool can't take down the other.
 - **Pool tag is set-once per peer.** Moving a peer between pools requires re-running `setup-peer.sh --pool=...` and a tunnel restart.
-- **`/sentinel/primaries` is currently unauthenticated.** Acceptable for VPC-internal traffic. Add auth (shared secret like the tunnel token, or signed registrations) before exposing publicly.
+- **`/sentinel/primaries` is HMAC-gated**, same as `/sentinel/certs` and `/sentinel/keys/resync` — a request must carry a valid `X-Containarium-Sentinel-*` signature (see `internal/auth/sentinel_hmac.go`) using the cluster's `CONTAINARIUM_SENTINEL_AUTH_SECRET`. A daemon that registers a primary directly (not via a tunnel) needs that secret configured, same as it already does for key resync.
 - **Pools are tags, not first-class entities.** A pool exists the moment a peer or primary registers with the name. There is no "create pool" command — by design.
 
 ## What's still ahead
 
-- Auth on `/sentinel/primaries` (low risk in VPC, real before public exposure).
 - Cross-pool aggregator UI (out of scope today; would be a separate service that queries each primary's `/v1/backends`).
 - Heartbeat-based primary failover (today: sentinel falls back to legacy single-backend on SNI miss; not yet a "primary failed → use a hot spare" path).
 - **Pool-namespaced SSH usernames (correctness — high priority).** Today the sentinel's keysync iterates every backend's `/authorized-keys` and writes one global sshpiper YAML mapping. If two pools both expose a user named `test01`, last-write-wins silently routes `ssh test01` to whichever backend got iterated last. Fix: keysync should emit `<user>-<pool>` (e.g. `test01-lab`, `test01-node-a`) and sshpiper YAML maps that namespaced form to the correct upstream. Requires changes to the sshpiper YAML generator on the sentinel and a one-time SSH config migration on operator side.
