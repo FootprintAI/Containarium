@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`incus.Backend` gains network-ACL and NIC-device operations** for the
+  core-infra network guard (#2076; design in
+  `docs/architecture/core-infra-network-guard.md`): `GetNetworkACL`,
+  `CreateNetworkACL`, `UpdateNetworkACL`, `AttachACLToContainer` move onto
+  the interface, plus two new `Client` methods. `EnsureNICDevice` shadows a
+  profile-inherited NIC with an equal instance-local one — a NIC that only
+  exists through a profile has no instance device to hang `security.acls`
+  on, which is why every core container that inherits `eth0` from the
+  default profile could not be ACL-attached before. `SetDeviceConfig`
+  merges per-device keys and issues no write when already converged, so a
+  reconciler can run it every minute silently. `UnavailableBackend` and
+  `incustest.MockBackend` implement all six.
+
 ### Fixed
 
 - **Security: Grafana in the platform metrics LXC no longer allows anonymous
