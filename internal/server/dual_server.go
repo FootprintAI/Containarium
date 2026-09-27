@@ -26,6 +26,7 @@ import (
 	clusterstore "github.com/footprintai/containarium/internal/cluster"
 	"github.com/footprintai/containarium/internal/collaborator"
 	appconfig "github.com/footprintai/containarium/internal/config"
+	"github.com/footprintai/containarium/internal/coreguard"
 	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/gateway"
 	"github.com/footprintai/containarium/internal/guacamole"
@@ -252,6 +253,7 @@ type DualServer struct {
 	sandboxTTLSweeperManager *ttlsweeper.Manager    // ephemeral sandbox auto-delete (#1488 Phase 4)
 	secretsReconciler        *secretsReconciler     // Phase 4.3 Phase B-3
 	networkPolicyEnforcer    *NetworkPolicyEnforcer // #315 Phase A — eBPF per-tenant net policy (off unless configured)
+	coreGuard                *coreguard.Reconciler  // #2084 — Incus NIC ACLs keeping tenants off core-role containers (off unless CONTAINARIUM_CORE_GUARD=enforce)
 
 	// k8sNetPolicyReconciler converges tenant NetworkPolicy objects on the K8s
 	// backend from the same store the eBPF enforcer reads (#1188). Nil on
@@ -1749,6 +1751,23 @@ skipAppHosting:
 		}
 	}
 
+	// Core-infra network guard (#2084, docs/architecture/core-infra-network-guard.md):
+	// one Incus NIC ACL per core-role container, ingress default-drop with the
+	// role→listener allow table, so tenants on the shared bridge cannot reach
+	// core-postgres / grafana / the Caddy admin API at the network layer.
+	// OFF unless CONTAINARIUM_CORE_GUARD=enforce; constructed regardless so
+	// its status can say "off" instead of the guard simply not existing.
+	// networkCIDR is the bridge's ipv4.address in gateway form as incus
+	// reports it, which is exactly what the reconciler needs.
+	var coreGuard *coreguard.Reconciler
+	if networkIncusClient != nil {
+		coreGuard = coreguard.NewReconciler(networkIncusClient, coreguard.Config{
+			Mode:       coreguard.ParseMode(netCfg.CoreGuard),
+			Bridge:     "incusbr0",
+			BridgeCIDR: networkCIDR,
+		})
+	}
+
 	// Background threat-detection sentry (#1640): built independent of
 	// whether every prerequisite is actually met, so GetSentryStatus can
 	// report DISABLED/UNAVAILABLE explicitly instead of the RPC simply not
@@ -2294,6 +2313,7 @@ skipAppHosting:
 		zapStore:               zapStore,
 		peerPool:               NewPeerPool(config.LocalBackendID, config.SentinelURL, config.Peers, config.Pool),
 		networkPolicyEnforcer:  networkPolicyEnforcer,
+		coreGuard:              coreGuard,
 		k8sNetPolicyReconciler: k8sNetPolicyReconciler,
 		cloudClient:            cloudClient,
 		startTime:              time.Now(),
@@ -2966,6 +2986,30 @@ func (ds *DualServer) Start(ctx context.Context) error {
 	if ds.passthroughSyncJob != nil {
 		ds.passthroughSyncJob.Start(ctx)
 		log.Printf("Passthrough sync job started")
+	}
+
+	// Core-infra network guard (#2084): reconcile at start, on container
+	// events, and every minute. Run returns immediately when the mode is
+	// off, and on ctx cancellation otherwise. Errors are logged inside — a
+	// guard that cannot attach must never block the daemon from serving.
+	if ds.coreGuard != nil {
+		sub := events.GetBus().Subscribe(nil)
+		kick := make(chan struct{}, 1)
+		go func() {
+			defer events.GetBus().Unsubscribe(sub.ID)
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-sub.Events:
+					select {
+					case kick <- struct{}{}:
+					default: // a pass is already pending; coalesce
+					}
+				}
+			}
+		}()
+		go ds.coreGuard.Run(ctx, kick)
 	}
 
 	// Start the eBPF network-policy enforcer if configured (#315 Phase A). A
