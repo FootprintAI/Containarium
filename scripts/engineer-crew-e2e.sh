@@ -775,7 +775,14 @@ for m in $CREW_MEMBERS; do
   # that the key is nowhere in what the box was handed, and naming only the
   # file we expect it not to be in would miss it landing in input.json or a
   # prompt.
-  if sudo incus exec "agent-$m-container" -- grep -rqF "$PROVIDER_KEY" "$RUN_SEED_DIR" 2>/dev/null; then
+  #
+  # The pattern goes in over STDIN (`grep -Ff -`), not as an argv element, so
+  # the real key never appears in the host's process list. A script whose
+  # subject is credential hygiene should not itself be the leak. (The daemon
+  # start above cannot avoid `sudo env KEY=...` — same exposure as
+  # scripts/agent-skill-lease-e2e.sh's, on an ephemeral runner — but every
+  # check after it can, and does.)
+  if printf '%s' "$PROVIDER_KEY" | sudo incus exec "agent-$m-container" -- grep -rqFf - "$RUN_SEED_DIR" 2>/dev/null; then
     fail "assertion 6: the REAL provider key is present inside agent-$m-container's seed directory $RUN_SEED_DIR — the box must only ever hold a scoped gateway token"
   fi
   # And the box really did hold a gateway token, so the check above is not
