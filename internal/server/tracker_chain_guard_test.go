@@ -252,8 +252,10 @@ func TestChainGuards_InjectedIssueCannotWidenScopesOrLabels(t *testing.T) {
 // named parent, so a run whose own chain is at max_depth cannot extend
 // it — but naming any depth-0 (human-created) issue as the parent files
 // the follow-up at depth 1, resetting the chain. Today that succeeds.
-// (The fan-out cap still bounds the run: it is counted per run, not per
-// parent.)
+// The fan-out cap bounds each run (it is counted per run, not per
+// parent) but not the chain: combined with a run removing the gate from
+// its own follow-up, this still allows an unattended chain of unbounded
+// length. Tracked separately as #2073.
 func TestCreateTrackerIssue_AgentChosenParentResetsDepth_CurrentBehavior(t *testing.T) {
 	const user = "tracker-chain-oq-depth-reset"
 	provider := &fakeWriterProvider{}
