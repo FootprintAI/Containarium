@@ -296,10 +296,12 @@ None. Go only, no new deployable, no Docker change, config via env.
    `TestGather_ExcludesControlPlaneFromTenantTagging`'s fake
    `core-postgres-container` name with the real one so the test stops
    asserting something the code doesn't do.
-2. **Application-layer companions, immediately:** Grafana
-   `auth.anonymous.enabled=false`; Caddy admin API bound to loopback
-   (`admin localhost:2019`). Cheap, independent, and worth doing before the
-   guard lands.
+2. **Application-layer companion, immediately:** Grafana
+   `auth.anonymous.enabled=false`. Cheap, independent, and worth doing
+   before the guard lands. (Caddy's admin API on `:2019` can *not* simply be
+   bound to loopback — the daemon drives it over the bridge from the host
+   gateway; the observed live client set is host-only. Closing it to
+   tenants is the guard's job, via the host-gateway-only rule above.)
 3. **Cloud isolation sentry:** add a tenant → core probe so the required CI
    gate also catches a regression of this boundary.
 
