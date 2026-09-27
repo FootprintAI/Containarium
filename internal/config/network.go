@@ -6,6 +6,11 @@ const (
 	EnvNetworkPolicyBPFObject  = "CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT"
 	EnvNetworkPolicyEnforce    = "CONTAINARIUM_NETWORK_POLICY_ENFORCE"
 	EnvNetworkPolicySignatures = "CONTAINARIUM_NETWORK_POLICY_SIGNATURES"
+	// EnvCoreGuard arms the core-infra network guard: Incus NIC ACLs that
+	// keep tenant containers off the platform's core-role containers
+	// (docs/architecture/core-infra-network-guard.md). "enforce" attaches
+	// them; anything else is off.
+	EnvCoreGuard = "CONTAINARIUM_CORE_GUARD"
 )
 
 // Network is the typed view of the CONTAINARIUM_NETWORK_* namespace — the eBPF
@@ -25,6 +30,11 @@ type Network struct {
 	// PolicySignatures arms inbound cleartext exploit-signature scanning (Tier 2,
 	// #661) — separate from PolicyEnforce. (EnvNetworkPolicySignatures)
 	PolicySignatures bool
+
+	// CoreGuard is the raw CONTAINARIUM_CORE_GUARD value ("enforce" arms
+	// the core-infra NIC ACLs; anything else is off). Parsed by
+	// coreguard.ParseMode so the daemon never arms by accident.
+	CoreGuard string
 }
 
 // LoadNetwork reads the CONTAINARIUM_NETWORK_* namespace once. The two arming
@@ -35,5 +45,6 @@ func LoadNetwork() Network {
 		PolicyBPFObject:  getString(EnvNetworkPolicyBPFObject, ""),
 		PolicyEnforce:    getBool(EnvNetworkPolicyEnforce),
 		PolicySignatures: getBool(EnvNetworkPolicySignatures),
+		CoreGuard:        getString(EnvCoreGuard, ""),
 	}
 }

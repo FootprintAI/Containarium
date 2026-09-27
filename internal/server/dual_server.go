@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -25,6 +26,7 @@ import (
 	clusterstore "github.com/footprintai/containarium/internal/cluster"
 	"github.com/footprintai/containarium/internal/collaborator"
 	appconfig "github.com/footprintai/containarium/internal/config"
+	"github.com/footprintai/containarium/internal/coreguard"
 	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/gateway"
 	"github.com/footprintai/containarium/internal/guacamole"
@@ -251,6 +253,7 @@ type DualServer struct {
 	sandboxTTLSweeperManager *ttlsweeper.Manager    // ephemeral sandbox auto-delete (#1488 Phase 4)
 	secretsReconciler        *secretsReconciler     // Phase 4.3 Phase B-3
 	networkPolicyEnforcer    *NetworkPolicyEnforcer // #315 Phase A — eBPF per-tenant net policy (off unless configured)
+	coreGuard                *coreguard.Reconciler  // #2084 — Incus NIC ACLs keeping tenants off core-role containers (off unless CONTAINARIUM_CORE_GUARD=enforce)
 
 	// k8sNetPolicyReconciler converges tenant NetworkPolicy objects on the K8s
 	// backend from the same store the eBPF enforcer reads (#1188). Nil on
@@ -1748,6 +1751,23 @@ skipAppHosting:
 		}
 	}
 
+	// Core-infra network guard (#2084, docs/architecture/core-infra-network-guard.md):
+	// one Incus NIC ACL per core-role container, ingress default-drop with the
+	// role→listener allow table, so tenants on the shared bridge cannot reach
+	// core-postgres / grafana / the Caddy admin API at the network layer.
+	// OFF unless CONTAINARIUM_CORE_GUARD=enforce; constructed regardless so
+	// its status can say "off" instead of the guard simply not existing.
+	// networkCIDR is the bridge's ipv4.address in gateway form as incus
+	// reports it, which is exactly what the reconciler needs.
+	var coreGuard *coreguard.Reconciler
+	if networkIncusClient != nil {
+		coreGuard = coreguard.NewReconciler(networkIncusClient, coreguard.Config{
+			Mode:       coreguard.ParseMode(netCfg.CoreGuard),
+			Bridge:     "incusbr0",
+			BridgeCIDR: networkCIDR,
+		})
+	}
+
 	// Background threat-detection sentry (#1640): built independent of
 	// whether every prerequisite is actually met, so GetSentryStatus can
 	// report DISABLED/UNAVAILABLE explicitly instead of the RPC simply not
@@ -1920,10 +1940,16 @@ skipAppHosting:
 		gatewayServer.SetInternalDialer(internalLis.DialContext)
 
 		// Model-gateway (#674 productionization of #737): when the daemon holds a
-		// provider API key, serve the gateway on the HTTP port and provision skill
-		// boxes to route model calls through it (key custody + per-tenant
-		// metering). Inert when no provider key is set — boxes run in direct mode.
-		if keys := gatewayProviderKeysFromEnv(); len(keys) > 0 {
+		// provider API key — or an operator registered an OpenAI-compatible
+		// upstream whose keys arrive per owner instead (#1725) — serve the gateway
+		// on the HTTP port and provision skill boxes to route model calls through
+		// it (key custody + per-tenant metering). Inert when neither is
+		// configured — boxes run in direct mode.
+		gwProviders, keys, gwRegistered, gwRegErr := gatewayRegistryFromEnv()
+		if gwRegErr != nil {
+			log.Printf("Warning: model-gateway provider registration from the environment failed (%v); serving the built-in providers only", gwRegErr)
+		}
+		if gatewayEnabled(keys, gwRegistered) {
 			// Metering→billing (#674 increment 3): forward per-tenant token usage
 			// to the OTel pipeline (→ VictoriaMetrics → billing) on top of the
 			// in-memory /__gateway/usage readout. Uses the global meter — a no-op
@@ -1958,13 +1984,39 @@ skipAppHosting:
 			if gwPolicy != nil {
 				gwPolicy.Alerts = gatewayPolicyLogSink{}
 			}
+			// Per-owner key resolution (#1725): a gateway token carrying a
+			// key_owner claim spends THAT owner's upstream key, resolved out of
+			// the daemon's encrypted secrets store under a reserved namespace no
+			// tenant can list and no delivery mode ships to a box
+			// (secrets.Store.KeyFor). A token without the claim — every
+			// already-issued skill-box and recipe-box token — keeps resolving
+			// through ProviderKeys below and never reaches the resolver.
+			//
+			// Same explicit nil check as gwRevocations above, and for the same
+			// reason: a nil *secrets.Store in an interface field is a non-nil
+			// interface holding a nil pointer.
+			var gwKeyResolver modelgateway.KeyResolver
+			if containerServer != nil && containerServer.secretsStore != nil {
+				gwKeyResolver = containerServer.secretsStore
+			} else if len(gwRegistered) > 0 {
+				log.Printf("Warning: model-gateway has no secrets store (no Postgres) — per-owner provider keys cannot be resolved; every call falls back to the daemon-global key")
+			}
+			// Owner-level kill-switch (the "customer removed their key" case).
+			// In-memory for now: it is per key owner, not per token, so it needs
+			// its own durable store rather than the jti list, and that lands with
+			// the ModelGatewayService RPCs (#1726). Until then a daemon restart
+			// forgets owner revocations — the per-jti list and removing the key
+			// itself are the durable halves.
+			gwOwnerRevocations := modelgateway.NewMemOwnerRevocations()
 			gw := modelgateway.New(modelgateway.Config{
-				Secret:       []byte(config.JWTSecret),
-				Providers:    modelgateway.DefaultProviders(),
-				ProviderKeys: keys,
-				Sink:         gwSink,
-				Revocations:  gwRevocations,
-				Policy:       gwPolicy,
+				Secret:           []byte(config.JWTSecret),
+				Providers:        gwProviders,
+				ProviderKeys:     keys,
+				KeyResolver:      gwKeyResolver,
+				Sink:             gwSink,
+				Revocations:      gwRevocations,
+				OwnerRevocations: gwOwnerRevocations,
+				Policy:           gwPolicy,
 				// Redact system-prompt (skill persona) leakage on the streaming
 				// chat path (#670 layer 2). Default on; set
 				// CONTAINARIUM_GATEWAY_OUTPUT_FILTER=0 to disable. Streaming token
@@ -1974,10 +2026,20 @@ skipAppHosting:
 			gatewayServer.SetModelGatewayHandler(gw.Handler())
 			primary := gatewayPrimaryProvider(keys)
 			agentSkillServer.SetGatewayProvisioning(primary, config.HTTPPort, []byte(config.JWTSecret), config.HostIP)
-			provs := make([]string, 0, len(keys))
+			// The providers a recipe box may be seeded for: every provider the
+			// daemon holds a global key for, plus every operator-registered
+			// upstream (whose keys arrive per owner, so there is no global key to
+			// infer it from).
+			provs := make([]string, 0, len(keys)+len(gwRegistered))
 			for p := range keys {
 				provs = append(provs, p)
 			}
+			for _, p := range gwRegistered {
+				if _, dup := keys[p]; !dup {
+					provs = append(provs, p)
+				}
+			}
+			sort.Strings(provs)
 			// Recipes that opt in (recipe.ModelGatewayProvider, e.g. the
 			// agent-workspace canvas) route their model calls through the same
 			// gateway — seed their post_start with a scoped token + base URL.
@@ -2251,6 +2313,7 @@ skipAppHosting:
 		zapStore:               zapStore,
 		peerPool:               NewPeerPool(config.LocalBackendID, config.SentinelURL, config.Peers, config.Pool),
 		networkPolicyEnforcer:  networkPolicyEnforcer,
+		coreGuard:              coreGuard,
 		k8sNetPolicyReconciler: k8sNetPolicyReconciler,
 		cloudClient:            cloudClient,
 		startTime:              time.Now(),
@@ -2923,6 +2986,30 @@ func (ds *DualServer) Start(ctx context.Context) error {
 	if ds.passthroughSyncJob != nil {
 		ds.passthroughSyncJob.Start(ctx)
 		log.Printf("Passthrough sync job started")
+	}
+
+	// Core-infra network guard (#2084): reconcile at start, on container
+	// events, and every minute. Run returns immediately when the mode is
+	// off, and on ctx cancellation otherwise. Errors are logged inside — a
+	// guard that cannot attach must never block the daemon from serving.
+	if ds.coreGuard != nil {
+		sub := events.GetBus().Subscribe(nil)
+		kick := make(chan struct{}, 1)
+		go func() {
+			defer events.GetBus().Unsubscribe(sub.ID)
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-sub.Events:
+					select {
+					case kick <- struct{}{}:
+					default: // a pass is already pending; coalesce
+					}
+				}
+			}
+		}()
+		go ds.coreGuard.Run(ctx, kick)
 	}
 
 	// Start the eBPF network-policy enforcer if configured (#315 Phase A). A

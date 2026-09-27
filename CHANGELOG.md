@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Core-infra network guard reconciler, off by default** (#2084; design in
+  `docs/architecture/core-infra-network-guard.md`). With
+  `CONTAINARIUM_CORE_GUARD=enforce`, the daemon keeps one Incus network ACL
+  per core-role container (`containarium-core-guard-<role>`) attached to
+  that container's NIC with ingress default-drop (logged) and egress open,
+  rendered from `internal/coreguard`'s table and the host's live addresses.
+  Reconciles at start, on container events, and every 60 s; writes only on
+  drift; refuses to attach anything when the Incus firewall driver is not
+  `nftables`; a failed host read keeps the previous ACLs in force and is
+  reported as stale. Default remains **off** in this release — see the
+  design's rollout section.
+
 - **`incus.Backend` gains network-ACL and NIC-device operations** for the
   core-infra network guard (#2076; design in
   `docs/architecture/core-infra-network-guard.md`): `GetNetworkACL`,

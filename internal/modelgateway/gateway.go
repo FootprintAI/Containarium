@@ -38,11 +38,26 @@ type Config struct {
 	// token metering is independent and always on. Fail-open regardless.
 	OutputFilter bool
 
+	// KeyResolver resolves the REAL upstream key per KEY OWNER for tokens that
+	// carry a key_owner claim, so one daemon can broker many owners who each pay
+	// for their own upstream (see keyowner.go). Nil — the pre-existing shape —
+	// means every call resolves through ProviderKeys alone.
+	//
+	// ProviderKeys stays the daemon-global fallback either way: a token with no
+	// key_owner never reaches the resolver.
+	KeyResolver KeyResolver
+
 	// Revocations is the kill-switch for issued gateway tokens (see
 	// revocation.go). Nil disables the check, which is the pre-existing
 	// behavior — a standalone daemon with no Postgres has no revocation store
 	// to consult. Production wires the same store used for platform JWTs.
 	Revocations RevocationChecker
+
+	// OwnerRevocations is the kill-switch for every token issued for ONE KEY
+	// OWNER — "the customer removed their key" — as opposed to Revocations,
+	// which kills one token by jti (see keyowner.go). Nil disables the check,
+	// which is the pre-existing behavior.
+	OwnerRevocations OwnerRevocationChecker
 
 	// Policy configures per-tenant quota enforcement and the graduated response
 	// ladder (see policy.go). Nil leaves the gateway metering-only: every tenant
@@ -203,8 +218,21 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	key := g.cfg.ProviderKeys[provName]
-	if key == "" {
+	// Owner kill-switch: every token issued for this key owner before the
+	// recorded cutoff is dead (the "customer removed their key" case). Sits
+	// beside the per-jti check and ahead of the key lookup for the same reason
+	// — a revoked token must never cause a real provider key to be touched.
+	if g.isOwnerRevoked(r.Context(), claims) {
+		g.cfg.Logger.Printf("model-gateway: REVOKED-OWNER tenant=%s key_owner=%s provider=%s jti=%s",
+			claims.Tenant, claims.KeyOwner, provName, claims.ID)
+		http.Error(w, "gateway tokens for this key owner are revoked", http.StatusUnauthorized)
+		return
+	}
+
+	// Whose key this call spends: the token's key_owner if it has one and a
+	// resolver can answer for it, else the daemon-global key (keyowner.go).
+	key, ok := g.resolveKey(r.Context(), claims, provName)
+	if !ok {
 		http.Error(w, "gateway holds no key for provider "+provName, http.StatusBadGateway)
 		return
 	}
@@ -243,7 +271,11 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 			r.Header.Set("Content-Length", strconv.Itoa(len(raw)))
 		}
 	}
-	if provName == "openai" || provName == "gemini-openai" {
+	// Every OpenAI-shaped provider, including one an operator registered at
+	// runtime (ProvidersFromEnv) — keyed off the provider's own trait rather
+	// than a list of names, so a new OpenAI-compatible upstream is metered on
+	// the streaming path from the moment it is registered.
+	if prov.openAIShaped {
 		if raw, rerr := io.ReadAll(r.Body); rerr == nil {
 			_ = r.Body.Close()
 			sysPrompt = extractSystemPrompt(raw)
@@ -394,7 +426,7 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 				// ("stop" -> "tool_calls") on the OpenAI-shaped surface, so an
 				// agent client runs the tool instead of hanging. Only rewrites
 				// when a tool call is actually present; normal responses untouched.
-				if (provName == "openai" || provName == "gemini-openai") && normalizeNonStreamToolFinish(decoded) {
+				if prov.openAIShaped && normalizeNonStreamToolFinish(decoded) {
 					if nb, merr := json.Marshal(decoded); merr == nil {
 						resp.Body = io.NopCloser(bytes.NewReader(nb))
 						resp.ContentLength = int64(len(nb))
