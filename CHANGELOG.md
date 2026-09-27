@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Security: Grafana in the platform metrics LXC no longer allows anonymous
+  access** (#2079). The `grafana.ini` the daemon provisions had
+  `[auth.anonymous] enabled = true, org_role = Viewer`, and the dashboard
+  port sits on the same bridge as every tenant container (see
+  `docs/security/multi-tenant-isolation.md`) — so any tenant could read
+  platform dashboards with no credential at all. The template now writes
+  `enabled = false`, and on every start the daemon backfills an existing
+  host the same way it backfills role labels: if the live ini still has
+  anonymous on, it rewrites just that key and restarts `grafana-server`
+  (Grafana does not re-read its ini on reload). No-op once converged.
+
 - **Security: a run token can no longer remove `agent:needs-approval` from
   an issue outside its own lineage.** The gate label is on the default
   label allow-list, so a run token could remove it from *any* issue on its
