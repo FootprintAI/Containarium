@@ -1,0 +1,8 @@
+version: 1.2.1
+cache: true
+endpoints:
+  custom:
+    - name: "Containarium (your key)"
+      apiKey: "${CTN_GATEWAY_TOKEN}"
+      baseURL: "http://10.0.0.1:8080/v1/model/openai"
+      models: { fetch: true }
