@@ -57,11 +57,16 @@ for core in $CORE_NAMES; do
   ip=$(incus list "$core" --format csv -c 4 2>/dev/null | grep -oE "[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+" | head -1)
   [ -z "$ip" ] && { echo "SKIP $core: no IPv4 address found"; continue; }
 
-  # Ports actually worth checking per role — the ones an app-layer
-  # credential (not network policy) is the only thing gating today.
+  # Ports a tenant must NOT be able to reach per role — everything the
+  # guard's table (internal/coreguard) reserves for the host gateway, the
+  # control plane, or a named core peer. Caddy 80/443 and the OTLP receiver
+  # 4317/4318 are *intended* tenant-reachable and are asserted the other
+  # way round in scripts/core-guard-legit-flows-e2e.sh.
   case "$core" in
     *postgres*) ports="5432" ;;
-    *victoriametrics*) ports="5432 3000" ;; # 5432: talks to postgres too (grafana); 3000: grafana itself
+    *victoriametrics*) ports="3000 8428 8880 9093" ;; # grafana, victoriametrics, vmalert, alertmanager
+    *otelcollector*) ports="13133 8888" ;;             # health, self-metrics
+    *caddy*) ports="2019" ;;                           # admin API — a tenant reaching it can rewrite routes
     *) ports="" ;;
   esac
   [ -z "$ports" ] && continue
