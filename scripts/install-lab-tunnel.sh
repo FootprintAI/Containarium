@@ -52,7 +52,7 @@ fi
 
 if [[ ! -f "$BINARY_SRC" ]]; then
     echo "Error: $BINARY_SRC not found. SCP the binary there first:"
-    echo "  scp bin/containarium-linux-amd64 ubuntu@<host>:/tmp/containariumd"
+    echo "  scp bin/containariumd-linux-amd64 ubuntu@<host>:/tmp/containariumd"
     exit 1
 fi
 
