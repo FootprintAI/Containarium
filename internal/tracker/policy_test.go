@@ -229,3 +229,21 @@ func TestValidateLabel(t *testing.T) {
 		}
 	}
 }
+
+func TestIsGateLabel(t *testing.T) {
+	for label, want := range map[string]bool{
+		"agent:needs-approval":   true,
+		"Agent:Needs-Approval":   true,
+		"AGENT:NEEDS-APPROVAL":   true,
+		" agent:needs-approval ": true,
+		"agent:needs-approva":    false,
+		"agent:needs-approvals":  false,
+		"agent:done":             false,
+		"scope:product":          false,
+		"":                       false,
+	} {
+		if got := IsGateLabel(label); got != want {
+			t.Errorf("IsGateLabel(%q) = %v, want %v", label, got, want)
+		}
+	}
+}

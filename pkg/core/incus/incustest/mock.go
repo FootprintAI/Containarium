@@ -2,6 +2,7 @@
 package incustest
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/footprintai/containarium/pkg/core/incus"
@@ -53,6 +54,12 @@ type MockBackend struct {
 	AddLabelFunc              func(containerName, key, value string) error
 	RemoveLabelFunc           func(containerName, key string) error
 	GetLabelsFunc             func(containerName string) (map[string]string, error)
+	GetNetworkACLFunc         func(name string) (*api.NetworkACL, error)
+	CreateNetworkACLFunc      func(config incus.ACLConfig) error
+	UpdateNetworkACLFunc      func(name string, config incus.ACLConfig) error
+	AttachACLToContainerFunc  func(containerName, aclName, deviceName string) error
+	EnsureNICDeviceFunc       func(containerName string, want incus.NICDevice) error
+	SetDeviceConfigFunc       func(containerName, deviceName string, keys map[string]string) error
 	SetLabelsFunc             func(containerName string, labels map[string]string) error
 	GetServerInfoFunc         func() (*api.Server, error)
 	GetContainerMetricsFunc   func(name string) (*incus.ContainerMetrics, error)
@@ -333,3 +340,48 @@ func (m *MockBackend) StoragePool() string {
 
 // Compile-time assertion that *MockBackend satisfies incus.Backend.
 var _ incus.Backend = (*MockBackend)(nil)
+
+// Network ACLs + NIC devices (core-infra network guard). Defaults are
+// permissive no-ops so existing tests see no change; a test that cares
+// installs the hook.
+func (m *MockBackend) GetNetworkACL(name string) (*api.NetworkACL, error) {
+	if m.GetNetworkACLFunc != nil {
+		return m.GetNetworkACLFunc(name)
+	}
+	return nil, fmt.Errorf("network ACL %q not found", name)
+}
+
+func (m *MockBackend) CreateNetworkACL(config incus.ACLConfig) error {
+	if m.CreateNetworkACLFunc != nil {
+		return m.CreateNetworkACLFunc(config)
+	}
+	return nil
+}
+
+func (m *MockBackend) UpdateNetworkACL(name string, config incus.ACLConfig) error {
+	if m.UpdateNetworkACLFunc != nil {
+		return m.UpdateNetworkACLFunc(name, config)
+	}
+	return nil
+}
+
+func (m *MockBackend) AttachACLToContainer(containerName, aclName, deviceName string) error {
+	if m.AttachACLToContainerFunc != nil {
+		return m.AttachACLToContainerFunc(containerName, aclName, deviceName)
+	}
+	return nil
+}
+
+func (m *MockBackend) EnsureNICDevice(containerName string, want incus.NICDevice) error {
+	if m.EnsureNICDeviceFunc != nil {
+		return m.EnsureNICDeviceFunc(containerName, want)
+	}
+	return nil
+}
+
+func (m *MockBackend) SetDeviceConfig(containerName, deviceName string, keys map[string]string) error {
+	if m.SetDeviceConfigFunc != nil {
+		return m.SetDeviceConfigFunc(containerName, deviceName, keys)
+	}
+	return nil
+}
