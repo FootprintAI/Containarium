@@ -188,8 +188,24 @@ enforcement guards (`internal/config/network.go`).
   `default.ingress.logged` kernel log lines, and answer the one question the
   Incus source does not settle — whether adding an instance-level `eth0`
   override to a running container re-plugs the veth (brief connection drop)
-  or is applied in place. Either answer is fine; it decides whether rollout
-  is "any time" or "low-traffic window, Postgres clients reconnect".
+  or is applied in place.
+
+  **Answered (2026-09-28, lab host, Incus 7.4):** applied in place, no
+  re-plug. Every core container's `volatile.eth0.host_name` and the veth's
+  `ifindex` were identical before and after the override; the platform
+  Postgres's established connections went 36 → 45 across the daemon
+  restart with no resets, and Grafana logged no datastore errors. Both
+  scripts went green on the first pass (8/8 tenant→core paths dropped;
+  all four legitimate flows intact; one kernel-log line per drop), and the
+  reconciler was silent from the second tick on. Rollout on the managed
+  backends therefore needs no maintenance window.
+
+  Two things the spike surfaced that the design had not: a core container
+  whose root disk is at quota makes Incus fail to write its `backup.yaml`
+  on the device update — the change is still applied, the reconciler
+  records the error once and stays quiet after — and the Grafana
+  hardening companion (follow-up 2) only ran on fresh installs until its
+  backfill was moved onto the auto-detected path.
 - Enable host by host on the managed backends; each host is "done" when the
   negative script passes and the positive script passes.
 - **Release N+1:** default flips to `enforce`. Fresh installs are guarded
