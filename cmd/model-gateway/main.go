@@ -25,6 +25,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -74,6 +75,19 @@ func serve(args []string) {
 	secret := readSecret(*secretFile)
 	providers := modelgateway.DefaultProviders()
 
+	// Plus any OpenAI-compatible upstream this deployment registered by setting
+	// <PROVIDER>_UPSTREAM_URL — the endpoint is deployment configuration, so no
+	// such hostname is compiled in (#1725).
+	envProviders, perr := modelgateway.ProvidersFromEnv(os.Environ())
+	if perr != nil {
+		log.Fatalf("model-gateway: %v", perr)
+	}
+	registered := []string{}
+	for name, p := range envProviders {
+		providers[name] = p
+		registered = append(registered, name)
+	}
+
 	// The gateway holds the REAL provider keys (read from its OWN env, never a
 	// box). A provider with no key in env is simply not served.
 	keys := map[string]string{}
@@ -84,8 +98,8 @@ func serve(args []string) {
 			loaded = append(loaded, name)
 		}
 	}
-	if len(keys) == 0 {
-		log.Fatal("no provider keys in env — set one of ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY")
+	if len(keys) == 0 && len(registered) == 0 {
+		log.Fatal("no provider keys in env — set one of ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY, or register an OpenAI-compatible upstream with <PROVIDER>_UPSTREAM_URL")
 	}
 
 	cfg := modelgateway.Config{
@@ -99,6 +113,11 @@ func serve(args []string) {
 		// whether --admin-token-file is set, since a caller could still wire
 		// a token minted with a jti that was revoked through another route.
 		Revocations: modelgateway.NewMemRevocations(),
+		// Same reasoning for the per-KEY-OWNER kill switch: in-memory here, so
+		// RevokeByKeyOwner has somewhere to record a cutoff. This binary has no
+		// per-owner key store either, so every call resolves through
+		// ProviderKeys — the multi-owner shape belongs to the daemon.
+		OwnerRevocations: modelgateway.NewMemOwnerRevocations(),
 	}
 	adminNote := "revoke disabled (no --admin-token-file)"
 	if *adminTokenFile != "" {
@@ -107,8 +126,10 @@ func serve(args []string) {
 	}
 
 	gw := modelgateway.New(cfg)
-	log.Printf("model-gateway: listening on %s, providers=%s (provider keys held in the gateway only), %s",
-		*addr, strings.Join(loaded, ","), adminNote)
+	sort.Strings(loaded)
+	sort.Strings(registered)
+	log.Printf("model-gateway: listening on %s, providers=%s (provider keys held in the gateway only), registered-upstreams=%s, %s",
+		*addr, strings.Join(loaded, ","), strings.Join(registered, ","), adminNote)
 	srv := &http.Server{
 		Addr:         *addr,
 		Handler:      gw.Handler(),

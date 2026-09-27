@@ -35,9 +35,20 @@ const gatewayIssuer = "containarium-model-gateway"
 // the platform JWT (the design's "no new mint verb" point); the prototype's
 // `mint` subcommand calls MintToken directly for testing.
 type GatewayClaims struct {
-	Tenant        string   `json:"tenant"`
-	SkillID       string   `json:"skill_id,omitempty"`
-	RunID         string   `json:"run_id,omitempty"`
+	Tenant  string `json:"tenant"`
+	SkillID string `json:"skill_id,omitempty"`
+	RunID   string `json:"run_id,omitempty"`
+	// KeyOwner names whose REAL upstream key this call spends — a namespaced
+	// string (`user:<username>` or `org:<org_id>`; see keyowner.go), NOT the
+	// tenant/box the token was minted for. The gateway resolves the upstream key
+	// by (KeyOwner, Provider) through Config.KeyResolver, falling back to the
+	// daemon-global Config.ProviderKeys when the owner has none.
+	//
+	// Empty is the pre-existing shape and stays fully supported: a token minted
+	// before this field existed — every live skill-box and recipe-box token —
+	// resolves through Config.ProviderKeys exactly as it did before, and never
+	// reaches the resolver at all.
+	KeyOwner      string   `json:"key_owner,omitempty"`
 	Provider      string   `json:"provider"`
 	AllowedModels []string `json:"allowed_models,omitempty"`
 	jwt.RegisteredClaims

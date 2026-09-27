@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Core-infra network guard reconciler, off by default** (#2084; design in
+  `docs/architecture/core-infra-network-guard.md`). With
+  `CONTAINARIUM_CORE_GUARD=enforce`, the daemon keeps one Incus network ACL
+  per core-role container (`containarium-core-guard-<role>`) attached to
+  that container's NIC with ingress default-drop (logged) and egress open,
+  rendered from `internal/coreguard`'s table and the host's live addresses.
+  Reconciles at start, on container events, and every 60 s; writes only on
+  drift; refuses to attach anything when the Incus firewall driver is not
+  `nftables`; a failed host read keeps the previous ACLs in force and is
+  reported as stale. Default remains **off** in this release — see the
+  design's rollout section.
+
 - **`incus.Backend` gains network-ACL and NIC-device operations** for the
   core-infra network guard (#2076; design in
   `docs/architecture/core-infra-network-guard.md`): `GetNetworkACL`,
@@ -48,6 +60,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Security: a crew run now ends every member's lease when it finishes**
+  (#2100). `RunCrew` provisioned each member's box, took the `runlease.Lease`
+  it got back, used only its seed directory, and dropped the rest — so no
+  member's credentials were ever revoked and no member's seed files or fetched
+  workspace were ever wiped. A crew member box kept a live gateway token and
+  its checkout of the caller's repository indefinitely after the run reached a
+  terminal state, until an operator revoked the token by hand. Every member's
+  lease is now ended, through the same `endRunLease` path a single-skill run
+  already uses, on all three of `RunCrew`'s terminal paths: `driveCrew`
+  success, `driveCrew` failure, and a mid-loop provisioning failure (where the
+  members that already provisioned and started serving are ended too, not just
+  the one that failed). Each member now gets the matching
+  `agent.run_lease_end` audit row beside its existing issue row. Queue workers
+  (`StartAgentWorker`) are deliberately unchanged — a worker is meant to keep
+  serving across many tasks and needs its own lifecycle decision.
 - **Security: Grafana in the platform metrics LXC no longer allows anonymous
   access** (#2079). The `grafana.ini` the daemon provisions had
   `[auth.anonymous] enabled = true, org_role = Viewer`, and the dashboard

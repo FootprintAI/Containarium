@@ -9,6 +9,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/runlease"
 	"github.com/footprintai/containarium/pkg/core/crews"
 	"github.com/footprintai/containarium/pkg/core/skills"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -103,6 +104,79 @@ func (s *CrewServer) RunCrew(ctx context.Context, req *pb.RunCrewRequest) (*pb.R
 		return nil, status.Error(codes.FailedPrecondition, err.Error())
 	}
 
+	// The three collaborators the run itself is driven through. Injected
+	// rather than reached for off s, for the same reason driveCrew already
+	// takes its taskSender as a parameter: none of them is reachable from a
+	// unit test. provisionSkillBox's seed step can only ever FAIL against a
+	// fake container backend ((*container.Manager).Exec type-asserts its
+	// backend to the concrete *incus.Client) and SendAgentTask makes a real
+	// A2A HTTP call, so without this seam RunCrew's success and
+	// driveCrew-failure terminal paths — the ones that must end every member's
+	// lease (#2100) — have no unit-testable form at all. The wiper is a
+	// parameter for exactly the reason endRunLease already takes one.
+	return s.runCrew(ctx, req, crew, runID, crewRunDeps{
+		provision: s.provisionMemberBox,
+		send:      s.agents.SendAgentTask,
+		wiper:     s.agents.boxWiper(),
+	})
+}
+
+// provisionMemberFunc provisions one crew member's box and starts it serving,
+// handing back the lease whose credentials RunCrew must end once the run
+// reaches a terminal state. provisionMemberBox in production.
+type provisionMemberFunc func(ctx context.Context, skill *pb.AgentSkill, req *pb.RunCrewRequest, runID string) (lease runlease.Lease, gitCommit string, err error)
+
+// crewRunDeps are the collaborators runCrew drives a crew run through. See
+// RunCrew's construction of it for why they are parameters.
+type crewRunDeps struct {
+	provision provisionMemberFunc
+	send      taskSender
+	wiper     runlease.Wiper
+}
+
+// provisionMemberBox is the production provisionMemberFunc: provision the
+// member's box (scoped token + per-box allowed_peers policy) and start it in
+// serve mode so it serves /tasks for the hops runCrew drives. Members are
+// seeded with no task input — the crew delivers per-hop input over A2A.
+//
+// git_source/git_ref/git_credential (cloud#1554): every member fetches the
+// SAME repo+ref into its own per-run workspace — its own box, so trivially
+// isolated from every other member's checkout. This is the "git at a pinned
+// SHA, not a shared filesystem" design decision (Containarium-cloud
+// docs/product/coding-skill-on-a-repo.md §Decided, 2026-09-15): a role
+// hand-off between members is a commit on a branch, so two members never
+// write the same file at once.
+func (s *CrewServer) provisionMemberBox(ctx context.Context, skill *pb.AgentSkill, req *pb.RunCrewRequest, runID string) (runlease.Lease, string, error) {
+	containerName, _, lease, gitCommit, _, err := s.agents.provisionSkillBox(ctx, skill, req.BackendId, req.Pool, "", runID,
+		req.GetGitSource(), req.GetGitRef(), req.GetGitCredential(), "")
+	if err != nil {
+		return runlease.Lease{}, "", err
+	}
+	s.agents.startServeMode(containerName, lease.SeedDir)
+	return lease, gitCommit, nil
+}
+
+// endMemberLeases ends every collected member lease: revoke its credentials,
+// wipe its seed files, remove its seed dir + fetched workspace, and write the
+// agent.run_lease_end audit row — RunAgentSkill's single
+// `defer s.endRunLease(...)` applied to a crew's N members (#2100).
+//
+// Nothing detaches the context here: endRunLease already runs on
+// context.WithoutCancel, so a cancelled or timed-out RunCrew still gets every
+// member's credentials killed. Best-effort and independent per member —
+// endRunLease reports through logs and the audit row rather than an error, so
+// one member's unreachable box can never leave the next member's credentials
+// alive.
+func (s *CrewServer) endMemberLeases(ctx context.Context, leases []runlease.Lease, w runlease.Wiper, reason string) {
+	for _, lease := range leases {
+		s.agents.endRunLease(ctx, lease, w, reason)
+	}
+}
+
+// runCrew is RunCrew past its request validation: provision every member,
+// drive the topology, record the terminal state, and end every member's lease
+// at whichever terminal point the run reaches.
+func (s *CrewServer) runCrew(ctx context.Context, req *pb.RunCrewRequest, crew *pb.Crew, runID string, deps crewRunDeps) (*pb.RunCrewResponse, error) {
 	trace := genTraceID()
 	run := &pb.CrewRun{
 		Id:        runID,
@@ -136,40 +210,36 @@ func (s *CrewServer) RunCrew(ctx context.Context, req *pb.RunCrewRequest) (*pb.R
 		log.Printf("[crew] record run %s: %v", run.GetId(), err)
 	}
 
-	// Provision each member box (scoped token + per-box allowed_peers policy)
-	// and start it in serve mode so it serves /tasks for the hops below. Members
-	// are seeded with no task input — the crew delivers per-hop input over A2A.
+	// Every member's lease, in provisioning order. RunAgentSkill holds ONE
+	// lease and ends it with one `defer`; a crew holds one per member and ends
+	// all of them at every terminal point below — including the mid-loop
+	// provisioning failure, where the members already up are serving with live
+	// gateway tokens and a checkout of the caller's repo (#2100).
+	leases := make([]runlease.Lease, 0, len(crew.SkillIds))
+
 	for _, sid := range crew.SkillIds {
 		skill, _ := s.skillByID(sid) // existence already checked by validateCrewTopology
 		// The crew run's own id IS the run id (#1817): every member box's
 		// credentials carry it in their `run_id` claim, and the lease's issue
-		// audit row resolves back to this one handle.
-		//
-		// The lease is deliberately dropped. A crew member runs in serve mode —
-		// long-lived, outliving this RPC — so there is no "run exit" here to end
-		// it on. The issue audit row (written inside provisionSkillBox) plus
-		// `containarium token revoke --jti` are how an operator ends one by hand
-		// in the meantime. Ending crew leases when the crew run completes is
-		// CrewServer's to own and is a later-phase item in the design
-		// (docs/architecture/execution-scoped-authorization.md §3, "Crew members
-		// and queue workers").
-		// git_source/git_ref/git_credential (cloud#1554): every member fetches
-		// the SAME repo+ref into its own per-run workspace — its own box, so
-		// trivially isolated from every other member's checkout. This is the
-		// "git at a pinned SHA, not a shared filesystem" design decision
-		// (Containarium-cloud docs/product/coding-skill-on-a-repo.md
-		// §Decided, 2026-09-15): a role hand-off between members is a commit
-		// on a branch, so two members never write the same file at once.
-		containerName, _, lease, gitCommit, _, err := s.agents.provisionSkillBox(ctx, skill, req.BackendId, req.Pool, "", run.Id,
-			req.GetGitSource(), req.GetGitRef(), req.GetGitCredential(), "")
+		// audit row resolves back to this one handle — as, now, does its
+		// matching agent.run_lease_end row.
+		lease, gitCommit, err := deps.provision(ctx, skill, req, run.Id)
 		if err != nil {
 			run.State = pb.CrewRunState_CREW_RUN_STATE_FAILED
 			run.Error = fmt.Sprintf("provision skill %q: %v", sid, err)
 			if putErr := s.runs.Put(ctx, run); putErr != nil {
 				log.Printf("[crew] record run %s: %v", run.GetId(), putErr)
 			}
+			// The earlier members provisioned and are serving; this RPC IS the
+			// run, so nothing will ever come back for them. End their leases
+			// here or they hold live credentials and their checkout of the
+			// caller's repo indefinitely (#2100). The member that just failed
+			// has no lease to end — provisionSkillBox ends its own partial one
+			// before returning its error.
+			s.endMemberLeases(ctx, leases, deps.wiper, provisionFailedReason)
 			return nil, status.Errorf(codes.Internal, "crew %q: %s", crew.Id, run.Error)
 		}
+		leases = append(leases, lease)
 		// Record the commit the FIRST member's fetch resolved to — every
 		// member fetches the same git_source/git_ref, so they resolve to the
 		// same commit barring a concurrent push mid-run (accepted, same as a
@@ -178,14 +248,13 @@ func (s *CrewServer) RunCrew(ctx context.Context, req *pb.RunCrewRequest) (*pb.R
 		if run.GitCommit == "" && gitCommit != "" {
 			run.GitCommit = gitCommit
 		}
-		s.agents.startServeMode(containerName, lease.SeedDir)
 	}
 
 	// Drive the topology hops over A2A under the shared trace_id, and record the
 	// terminal state. driveCrew failures (e.g. a member's A2A server not up yet)
 	// land the run in FAILED rather than erroring the RPC — the caller gets the
 	// run handle to inspect via GetCrewRun.
-	out, err := driveCrew(ctx, crew, trace, req.InputJson, s.agents.SendAgentTask)
+	out, err := driveCrew(ctx, crew, trace, req.InputJson, deps.send)
 	if err != nil {
 		run.State = pb.CrewRunState_CREW_RUN_STATE_FAILED
 		run.Error = err.Error()
@@ -197,6 +266,13 @@ func (s *CrewServer) RunCrew(ctx context.Context, req *pb.RunCrewRequest) (*pb.R
 	if err := s.runs.Put(ctx, run); err != nil {
 		log.Printf("[crew] record run %s: %v", run.GetId(), err)
 	}
+
+	// The run is over on either branch, so every member's lease ends on either
+	// branch (#2100). Same reason RunAgentSkill records for its own run exit: a
+	// crew member's box is long-lived and keeps serving, but the credentials
+	// and the workspace it was given for THIS run do not outlive it.
+	s.endMemberLeases(ctx, leases, deps.wiper, runExitReason)
+
 	return &pb.RunCrewResponse{Run: run}, nil
 }
 
