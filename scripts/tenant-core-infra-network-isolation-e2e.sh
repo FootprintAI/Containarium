@@ -54,7 +54,11 @@ if [ -z "$CORE_NAMES" ]; then
 fi
 
 for core in $CORE_NAMES; do
-  ip=$(incus list "$core" --format csv -c 4 2>/dev/null | grep -oE "[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+" | head -1)
+  # Prefer the eth0 (bridge) address: a core container never runs docker,
+  # but keep the same rule as the positive script so both agree on IPs.
+  ips=$(incus list "$core" --format csv -c 4 2>/dev/null)
+  ip=$(echo "$ips" | grep -oE "[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+ \(eth0\)" | head -1 | cut -d' ' -f1 | grep . \
+    || echo "$ips" | grep -oE "[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+" | head -1)
   [ -z "$ip" ] && { echo "SKIP $core: no IPv4 address found"; continue; }
 
   # Ports a tenant must NOT be able to reach per role — everything the
