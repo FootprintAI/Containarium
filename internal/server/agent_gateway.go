@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -136,6 +137,53 @@ func gatewayProviderKeysFromEnv() map[string]string {
 		out["gemini-openai"] = v
 	}
 	return out
+}
+
+// gatewayRegistryFromEnv builds the provider registry the daemon serves and the
+// daemon-global keys it holds:
+//
+//   - providers: the compiled-in set (modelgateway.DefaultProviders) plus every
+//     OpenAI-compatible upstream an operator registered by setting
+//     <PROVIDER>_UPSTREAM_URL. Nothing is compiled in for those, which is why a
+//     brokered vendor's hostname lives in the deployment's environment and not
+//     in this repo.
+//   - keys: the daemon-global fallback key per provider — the built-ins as
+//     before, plus <PROVIDER>_API_KEY for each registered provider that has one.
+//   - registered: the names that came from the environment, so the caller can
+//     tell "an operator configured an upstream" from "an operator configured a
+//     key". A registered provider with no global key is the normal multi-owner
+//     shape: its keys arrive per owner (modelgateway.KeyResolver), not from env.
+//
+// A malformed <PROVIDER>_UPSTREAM_URL comes back as an error; the caller logs it
+// and carries on with the built-ins rather than failing the daemon's start.
+func gatewayRegistryFromEnv() (map[string]*modelgateway.Provider, map[string]string, []string, error) {
+	providers := modelgateway.DefaultProviders()
+	keys := gatewayProviderKeysFromEnv()
+
+	envProviders, err := modelgateway.ProvidersFromEnv(os.Environ())
+	if err != nil {
+		return providers, keys, nil, err
+	}
+	registered := make([]string, 0, len(envProviders))
+	for name, p := range envProviders {
+		providers[name] = p
+		registered = append(registered, name)
+		if v := strings.TrimSpace(os.Getenv(p.KeyEnv)); v != "" {
+			keys[name] = v
+		}
+	}
+	sort.Strings(registered)
+	return providers, keys, registered, nil
+}
+
+// gatewayEnabled reports whether the daemon should serve the model gateway at
+// all. Historically that was "it holds at least one provider key"; an
+// operator-registered OpenAI-compatible upstream now also counts, because on a
+// multi-owner deployment the keys arrive per owner over RPC and the daemon may
+// legitimately hold none of its own. With neither, the gateway stays inert and
+// boxes run in direct mode, exactly as before.
+func gatewayEnabled(keys map[string]string, registered []string) bool {
+	return len(keys) > 0 || len(registered) > 0
 }
 
 // gatewayPrimaryProvider picks the provider skill boxes are provisioned for when

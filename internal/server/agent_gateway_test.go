@@ -88,6 +88,97 @@ func TestGatewayProviderKeysFromEnv(t *testing.T) {
 	}
 }
 
+// TestGatewayRegistryFromEnv — the daemon's provider registry is the
+// compiled-in set plus any OpenAI-compatible upstream an operator registered
+// with <PROVIDER>_UPSTREAM_URL, and each registered provider's daemon-global
+// fallback key comes from <PROVIDER>_API_KEY. Registration must not depend on
+// that key: on a multi-owner deployment the keys arrive per owner instead.
+func TestGatewayRegistryFromEnv(t *testing.T) {
+	t.Run("built-ins only", func(t *testing.T) {
+		t.Setenv("ANTHROPIC_API_KEY", "sk-ant")
+		t.Setenv("OPENAI_API_KEY", "")
+		t.Setenv("GEMINI_API_KEY", "")
+		t.Setenv("GOOGLE_API_KEY", "")
+		provs, keys, registered, err := gatewayRegistryFromEnv()
+		if err != nil {
+			t.Fatalf("gatewayRegistryFromEnv: %v", err)
+		}
+		if len(registered) != 0 {
+			t.Errorf("registered = %v, want none", registered)
+		}
+		if provs["anthropic"] == nil || provs["gemini-openai"] == nil {
+			t.Error("the compiled-in providers must still be registered")
+		}
+		if keys["anthropic"] != "sk-ant" {
+			t.Errorf("anthropic key = %q, want sk-ant", keys["anthropic"])
+		}
+	})
+
+	t.Run("operator-registered upstream", func(t *testing.T) {
+		t.Setenv("ANTHROPIC_API_KEY", "")
+		t.Setenv("OPENAI_API_KEY", "")
+		t.Setenv("GEMINI_API_KEY", "")
+		t.Setenv("GOOGLE_API_KEY", "")
+		t.Setenv("ACMEAI_UPSTREAM_URL", "https://region-a.example.com")
+		t.Setenv("ACMEAI_API_KEY", "sk-acme")
+		provs, keys, registered, err := gatewayRegistryFromEnv()
+		if err != nil {
+			t.Fatalf("gatewayRegistryFromEnv: %v", err)
+		}
+		if !containsString(registered, "acmeai") {
+			t.Fatalf("registered = %v, want it to contain acmeai", registered)
+		}
+		if provs["acmeai"] == nil || provs["acmeai"].UpstreamURL != "https://region-a.example.com" {
+			t.Fatalf("acmeai provider = %+v", provs["acmeai"])
+		}
+		if keys["acmeai"] != "sk-acme" {
+			t.Errorf("acmeai global key = %q, want sk-acme", keys["acmeai"])
+		}
+	})
+
+	t.Run("registered with no key of its own", func(t *testing.T) {
+		t.Setenv("ANTHROPIC_API_KEY", "")
+		t.Setenv("OPENAI_API_KEY", "")
+		t.Setenv("GEMINI_API_KEY", "")
+		t.Setenv("GOOGLE_API_KEY", "")
+		t.Setenv("ACMEAI_UPSTREAM_URL", "https://region-a.example.com")
+		t.Setenv("ACMEAI_API_KEY", "")
+		_, keys, registered, err := gatewayRegistryFromEnv()
+		if err != nil {
+			t.Fatalf("gatewayRegistryFromEnv: %v", err)
+		}
+		if !containsString(registered, "acmeai") {
+			t.Fatalf("registered = %v, want it to contain acmeai even with no global key", registered)
+		}
+		if _, ok := keys["acmeai"]; ok {
+			t.Errorf("acmeai must have no daemon-global key: %v", keys)
+		}
+		// This is the multi-owner shape, and the gateway has to come up for it:
+		// the keys arrive per owner over RPC, not from the environment.
+		if !gatewayEnabled(keys, registered) {
+			t.Error("gateway must be enabled for an operator-registered upstream with no global key")
+		}
+	})
+
+	t.Run("disabled when nothing is configured", func(t *testing.T) {
+		if gatewayEnabled(map[string]string{}, nil) {
+			t.Error("gateway must stay inert when no key and no upstream is configured")
+		}
+		if !gatewayEnabled(map[string]string{"anthropic": "k"}, nil) {
+			t.Error("gateway must be enabled when a daemon-global key is set")
+		}
+	})
+}
+
+func containsString(hay []string, needle string) bool {
+	for _, s := range hay {
+		if s == needle {
+			return true
+		}
+	}
+	return false
+}
+
 func TestMintGatewayToken_RoundTrips(t *testing.T) {
 	secret := []byte("test-shared-secret")
 	g := &gatewayProvisioning{provider: "anthropic", httpPort: 8080, secret: secret}
