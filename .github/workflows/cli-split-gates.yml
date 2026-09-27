@@ -3,8 +3,8 @@ name: CLI client/server split gates
 # Pins the guarantee docs/architecture/cli-client-server-split.md (#1769)
 # exists for: the containarium CLIENT (cmd/containarium, -tags
 # containarium_client) cannot fall into local mode because the code isn't
-# there to fall into. Five checks, all from the design's Test strategy
-# section:
+# there to fall into. Seven checks, from the design's Test strategy
+# section and Rollout Phase 2:
 #   1. dependency-graph gate — the client's link is free of daemon-only
 #      packages (scripts/test-cli-split-deps.sh)
 #   2. command-tree allow-list gate — the client's registered command set
@@ -15,6 +15,13 @@ name: CLI client/server split gates
 #   5. stale install-path gate (#1781) — no host-side script/unit/terraform
 #      file installs or downloads the daemon binary under the pre-rollout
 #      /usr/local/bin/containarium path (scripts/test-old-binary-path-gate.sh)
+#   6. release-artifact gate (#1784) — `make build-all` produces
+#      containarium-* as the static client build (incl. windows) and
+#      containariumd-* as the server build, checked on the built binaries
+#      (scripts/test-release-artifacts.sh; build-release runs it too)
+#   7. daemon-artifact-name gate (#1784) — no host-side installer,
+#      provisioner or bundle fetches containarium-<os>-<arch> as the daemon
+#      (scripts/test-daemon-artifact-name-gate.sh)
 #
 # Regression guard on MCP: build-mcp/build-agent-box already exist as
 # their own CI concerns elsewhere (release.yml's build-release covers
@@ -60,6 +67,38 @@ jobs:
 
       - name: Run test-old-binary-path-gate.sh
         run: ./scripts/test-old-binary-path-gate.sh
+
+  daemon-artifact-name-gate:
+    name: Daemon-artifact-name gate (#1784)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Run test-daemon-artifact-name-gate.sh
+        run: ./scripts/test-daemon-artifact-name-gate.sh
+
+  release-artifacts:
+    name: Release-artifact gate (#1784)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.7'
+
+      - name: Build release binaries (make build-all)
+        # The real release recipe, minus its proto/web-ui/swagger-ui
+        # prerequisites (-o marks them up to date): pkg/pb is committed, and
+        # this gate is about which package/tags/cgo each artifact is built
+        # with, not about the embedded UI assets.
+        run: make -o proto -o web-ui -o swagger-ui build-all
+
+      - name: Run test-release-artifacts.sh
+        run: ./scripts/test-release-artifacts.sh bin
 
   build-both-binaries:
     name: Build both binaries (containarium client + containariumd)

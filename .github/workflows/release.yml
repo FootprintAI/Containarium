@@ -143,10 +143,13 @@ jobs:
           make build-bpf
 
       - name: Build all release artifacts
-        # `make build-release` builds containarium + mcp-server +
-        # agent-box for linux/amd64, darwin/amd64, darwin/arm64 and
-        # writes SHA256SUMS.txt. 9 binaries + 1 checksum file. The eBPF
-        # object built above makes this invocation embed it (-tags embed_bpf).
+        # `make build-release` builds containariumd (server) + mcp-server +
+        # agent-box for linux/amd64, darwin/amd64, darwin/arm64, the
+        # containarium CLIENT (-tags containarium_client, static; #1784)
+        # for those three plus windows/amd64, and writes SHA256SUMS.txt.
+        # It then runs scripts/test-release-artifacts.sh, which fails the
+        # release if containarium-* is not the client build. The eBPF object
+        # built above is embedded in containariumd-* only (-tags embed_bpf).
         run: make build-release VERSION="${GITHUB_REF_NAME#v}"
 
       - name: Build pre-built Caddy binary (#1617)
@@ -236,11 +239,12 @@ jobs:
 
           ### Binaries
 
-          Three binaries ship in this release:
+          Four binaries ship in this release:
 
           | Binary | Where it runs | What it does |
           |---|---|---|
-          | `containarium` | The host (and your laptop, for the CLI) | The platform daemon + CLI. `create`, `list`, `expose-port`, `ssh-config`, etc. |
+          | `containariumd` | The host | The platform daemon plus host-side admin commands. |
+          | `containarium` | Your laptop / CI (linux, macOS, windows) | The client CLI: `create`, `list`, `expose-port`, `ssh-config`, etc. against a server (`--server`). |
           | `mcp-server` | Your laptop | The platform MCP — outside-the-box admin (create_container, list_containers, expose_port, list_backends). Wire it into Claude Code / Cursor. |
           | `agent-box` | Inside each Containarium container | The in-the-box MCP — `shell_exec`, `read_file`, `write_file`, etc. Reached over stdio, typically via SSH. |
 
@@ -253,17 +257,18 @@ jobs:
           ### Manual install (any binary, any platform)
 
           ```bash
-          # containarium CLI / daemon (Linux x86_64 example)
-          # #1781: the release artifact is still published as
-          # "containarium-linux-amd64" (renaming that is #1782); only the
-          # on-host install path + compat symlink change in Phase 1.
+          # containariumd daemon (Linux x86_64 host)
           curl -L -o /usr/local/bin/containariumd \
-            https://github.com/footprintai/containarium/releases/download/__RELEASE_REF__/containarium-linux-amd64
+            https://github.com/footprintai/containarium/releases/download/__RELEASE_REF__/containariumd-linux-amd64
           chmod +x /usr/local/bin/containariumd
           ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium
 
-          # Windows: client-only CLI (create/list/ssh/… against a remote daemon;
-          # the daemon/sentinel/tunnel subcommands are Linux/macOS only)
+          # containarium client CLI (your laptop, e.g. macOS arm64)
+          curl -L -o /usr/local/bin/containarium \
+            https://github.com/footprintai/containarium/releases/download/__RELEASE_REF__/containarium-darwin-arm64
+          chmod +x /usr/local/bin/containarium
+
+          # Windows: the same client CLI (create/list/ssh/… against a remote server)
           # PowerShell:
           #   curl.exe -L -o containarium.exe `
           #     https://github.com/footprintai/containarium/releases/download/__RELEASE_REF__/containarium-windows-amd64.exe
