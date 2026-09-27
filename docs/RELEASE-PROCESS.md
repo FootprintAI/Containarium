@@ -77,6 +77,16 @@ anyway; it's the only thing a non-release build has to go on.
    tag — the publish workflows above don't wait for it, so this gate
    is yours to enforce.
 
+   That workflow carries two other release-blocking jobs. `agent-skill-lease`
+   needs nothing from you. `engineer-crew-live` runs a real model against a
+   pinned public fixture and therefore only does anything when a provider-key
+   Actions secret (`ANTHROPIC_API_KEY` or `GEMINI_API_KEY`) exists on the
+   repository; with no secret it emits a `::notice::` and is green without
+   having measured anything, which is expected and not a gate you need to
+   chase. It also waits for `release.yml` to publish the tag's
+   `agent-runtime-bundle.tar.gz` before it can run — so if that publish fails,
+   expect this job to go red for that reason and fix the publish, not the lane.
+
 ## What a tag push actually publishes
 
 A `v*` tag fires **four** workflows in parallel. Three of them publish

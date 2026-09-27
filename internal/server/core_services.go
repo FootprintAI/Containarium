@@ -898,6 +898,9 @@ func (cs *CoreServices) EnsureVictoriaMetrics(ctx context.Context, postgresIP st
 		if info.State == "Running" {
 			cs.victoriaMetricsIP = info.IPAddress
 			log.Printf("VictoriaMetrics container already running at %s", cs.victoriaMetricsIP)
+			// Close anonymous dashboard access on hosts provisioned before
+			// the template turned it off (#2079); no-op once converged.
+			cs.backfillGrafanaAnonymous()
 			// Always re-provision the Grafana dashboard to pick up new panels
 			cs.updateGrafanaDashboard()
 			return cs.victoriaMetricsIP, nil
@@ -916,6 +919,7 @@ func (cs *CoreServices) EnsureVictoriaMetrics(ctx context.Context, postgresIP st
 		if err := cs.waitForVictoriaMetrics(ctx); err != nil {
 			return "", err
 		}
+		cs.backfillGrafanaAnonymous()
 		cs.updateGrafanaDashboard()
 		return cs.victoriaMetricsIP, nil
 	}
@@ -1060,37 +1064,10 @@ WantedBy=multi-user.target
 		log.Printf("Note: Grafana database might already exist")
 	}
 
-	// Configure Grafana
-	grafanaIni := fmt.Sprintf(`[database]
-type = postgres
-host = %s:5432
-name = grafana
-user = %s
-password = %s
-ssl_mode = disable
-max_open_conn = 5
-max_idle_conn = 2
-conn_max_lifetime = 14400
+	// Configure Grafana (anonymous access off — see renderGrafanaIni)
+	grafanaIni := renderGrafanaIni(postgresIP, DefaultPostgresUser, DefaultPostgresPassword)
 
-[security]
-allow_embedding = true
-admin_user = admin
-admin_password = containarium
-
-[auth.anonymous]
-enabled = true
-org_role = Viewer
-
-[users]
-default_theme = light
-
-[server]
-http_port = 3000
-root_url = %%(protocol)s://%%(domain)s/grafana/
-serve_from_sub_path = true
-`, postgresIP, DefaultPostgresUser, DefaultPostgresPassword)
-
-	if err := cs.incusClient.WriteFile(CoreVictoriaMetricsContainer, "/etc/grafana/grafana.ini", []byte(grafanaIni), "0644"); err != nil {
+	if err := cs.incusClient.WriteFile(CoreVictoriaMetricsContainer, grafanaIniPath, []byte(grafanaIni), "0644"); err != nil {
 		return fmt.Errorf("failed to write grafana.ini: %w", err)
 	}
 

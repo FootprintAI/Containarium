@@ -163,6 +163,19 @@ type Backend interface {
 	ResolveGPUInputToPCI(input string) (string, error)
 	CleanupDisk(containerName string) (string, int64, error)
 
+	// Network ACLs + NIC devices. On the interface so the core-infra network
+	// guard's reconciler (docs/architecture/core-infra-network-guard.md) can
+	// be unit-tested against a fake. EnsureNICDevice exists because a
+	// profile-inherited NIC has no instance-local device to hang
+	// security.acls on; SetDeviceConfig merges per-device keys and is a
+	// no-op when converged.
+	GetNetworkACL(name string) (*api.NetworkACL, error)
+	CreateNetworkACL(config ACLConfig) error
+	UpdateNetworkACL(name string, config ACLConfig) error
+	AttachACLToContainer(containerName, aclName, deviceName string) error
+	EnsureNICDevice(containerName string, want NICDevice) error
+	SetDeviceConfig(containerName, deviceName string, keys map[string]string) error
+
 	// GetConsoleLog returns the instance's boot-time console ring-buffer
 	// log — a static read, not a live attach. Empty for an LXC container
 	// (no serial console) or a VM that has produced no console output yet.

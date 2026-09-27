@@ -307,7 +307,20 @@ func (s *Store) initSchema(ctx context.Context) error {
 // `delivery` (Phase 4.3) is one of "" (defaults to file on storage — #1604),
 // "env", "file", "compose". Validated at the API boundary; invalid values
 // reject before any DB work.
+//
+// The reserved model-gateway namespace is refused here (see gateway_keys.go):
+// per-owner gateway keys are written only through SetGatewayProviderKey, so no
+// RPC that forwards a caller-supplied username can plant or overwrite one.
 func (s *Store) Set(ctx context.Context, username, name, value, delivery string) (*SecretMetadata, error) {
+	if IsGatewayKeyNamespace(username) {
+		return nil, fmt.Errorf("%w: %q is the model gateway's own; use SetGatewayProviderKey", ErrReservedNamespace, username)
+	}
+	return s.set(ctx, username, name, value, delivery)
+}
+
+// set is Set without the reserved-namespace guard — the one path that may write
+// into it (SetGatewayProviderKey).
+func (s *Store) set(ctx context.Context, username, name, value, delivery string) (*SecretMetadata, error) {
 	if username == "" {
 		return nil, fmt.Errorf("username is required")
 	}
@@ -784,6 +797,9 @@ func (s *Store) tryRewrapAtVersion(ctx context.Context, username, name string, n
 // and BrokerCredential IS the narrow path broker-only values are meant
 // to flow through.
 func (s *Store) Get(ctx context.Context, username, name string) (meta *SecretMetadata, value string, err error) {
+	if IsGatewayKeyNamespace(username) {
+		return nil, "", fmt.Errorf("%w: %q is the model gateway's own", ErrReservedNamespace, username)
+	}
 	meta, value, err = s.getRaw(ctx, username, name)
 	if err != nil {
 		return nil, "", err
@@ -802,6 +818,12 @@ func (s *Store) Get(ctx context.Context, username, name string) (meta *SecretMet
 // that constructs a tracker.Broker) defeats the point of having it as a
 // separate method from Get. See TestBrokerCredentialCallers_Allowlist.
 func (s *Store) BrokerCredential(ctx context.Context, username, name string) (string, error) {
+	// The model gateway's per-owner keys are broker-mode rows too, but they are
+	// not tracker credentials: keep the two brokered domains from reading each
+	// other's material (see gateway_keys.go).
+	if IsGatewayKeyNamespace(username) {
+		return "", fmt.Errorf("%w: %q is the model gateway's own", ErrReservedNamespace, username)
+	}
 	meta, value, err := s.getRaw(ctx, username, name)
 	if err != nil {
 		return "", err
@@ -865,6 +887,9 @@ func (s *Store) getRaw(ctx context.Context, username, name string) (meta *Secret
 // Values are never returned by this path — only Get returns the
 // decrypted plaintext (and is audit-logged at the caller's layer).
 func (s *Store) List(ctx context.Context, username string) ([]SecretMetadata, error) {
+	if IsGatewayKeyNamespace(username) {
+		return nil, fmt.Errorf("%w: %q is the model gateway's own", ErrReservedNamespace, username)
+	}
 	if username == "" {
 		return nil, fmt.Errorf("username is required")
 	}
@@ -898,6 +923,15 @@ func (s *Store) List(ctx context.Context, username string) ([]SecretMetadata, er
 // row existed (so callers can return a clean 404 instead of a
 // generic 200).
 func (s *Store) Delete(ctx context.Context, username, name string) error {
+	if IsGatewayKeyNamespace(username) {
+		return fmt.Errorf("%w: %q is the model gateway's own; use DeleteGatewayProviderKey", ErrReservedNamespace, username)
+	}
+	return s.deleteSecret(ctx, username, name)
+}
+
+// deleteSecret is Delete without the reserved-namespace guard — the one path
+// that may delete from it (DeleteGatewayProviderKey).
+func (s *Store) deleteSecret(ctx context.Context, username, name string) error {
 	if username == "" {
 		return fmt.Errorf("username is required")
 	}
@@ -1002,6 +1036,12 @@ func (s *Store) LoadAllForUser(ctx context.Context, username string) (map[string
 // written next year inherits the exclusion instead of needing to
 // reimplement it. See docs/architecture/agent-tracker-broker.md.
 func (s *Store) LoadAllForUserWithDelivery(ctx context.Context, username string) (map[string]SecretValue, error) {
+	// Belt and braces on top of the broker-mode exclusion below: the reserved
+	// model-gateway namespace is not a tenant and nothing about it is ever
+	// delivered anywhere (see gateway_keys.go).
+	if IsGatewayKeyNamespace(username) {
+		return nil, fmt.Errorf("%w: %q is the model gateway's own", ErrReservedNamespace, username)
+	}
 	if username == "" {
 		return nil, fmt.Errorf("username is required")
 	}

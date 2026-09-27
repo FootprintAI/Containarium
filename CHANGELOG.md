@@ -7,7 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Core-infra network guard reconciler, off by default** (#2084; design in
+  `docs/architecture/core-infra-network-guard.md`). With
+  `CONTAINARIUM_CORE_GUARD=enforce`, the daemon keeps one Incus network ACL
+  per core-role container (`containarium-core-guard-<role>`) attached to
+  that container's NIC with ingress default-drop (logged) and egress open,
+  rendered from `internal/coreguard`'s table and the host's live addresses.
+  Reconciles at start, on container events, and every 60 s; writes only on
+  drift; refuses to attach anything when the Incus firewall driver is not
+  `nftables`; a failed host read keeps the previous ACLs in force and is
+  reported as stale. Default remains **off** in this release — see the
+  design's rollout section.
+
+- **`incus.Backend` gains network-ACL and NIC-device operations** for the
+  core-infra network guard (#2076; design in
+  `docs/architecture/core-infra-network-guard.md`): `GetNetworkACL`,
+  `CreateNetworkACL`, `UpdateNetworkACL`, `AttachACLToContainer` move onto
+  the interface, plus two new `Client` methods. `EnsureNICDevice` shadows a
+  profile-inherited NIC with an equal instance-local one — a NIC that only
+  exists through a profile has no instance device to hang `security.acls`
+  on, which is why every core container that inherits `eth0` from the
+  default profile could not be ACL-attached before. `SetDeviceConfig`
+  merges per-device keys and issues no write when already converged, so a
+  reconciler can run it every minute silently. `UnavailableBackend` and
+  `incustest.MockBackend` implement all six.
+- **`internal/coreguard`: the core-infra network guard's policy table**
+  (#2077; design in `docs/architecture/core-infra-network-guard.md`). A
+  typed, pure table of which sources may reach each core role on which tcp
+  ports — the host gateway, a named core or control-plane container, or
+  (only for the OTLP receiver and Caddy's public ports) the tenant bridge —
+  and `Compute`, which renders it into one `incus.ACLConfig` per guarded
+  role from a host's live addresses. Unknown core roles get an empty ACL
+  and are reported (fail closed); the control plane is a source, never a
+  subject; every address is validated against the bridge before a rule is
+  rendered; output order is fixed so a converged host diffs clean. No I/O —
+  the reconciler that applies it is #2084.
+
 ### Fixed
+
+- **Security: a crew run now ends every member's lease when it finishes**
+  (#2100). `RunCrew` provisioned each member's box, took the `runlease.Lease`
+  it got back, used only its seed directory, and dropped the rest — so no
+  member's credentials were ever revoked and no member's seed files or fetched
+  workspace were ever wiped. A crew member box kept a live gateway token and
+  its checkout of the caller's repository indefinitely after the run reached a
+  terminal state, until an operator revoked the token by hand. Every member's
+  lease is now ended, through the same `endRunLease` path a single-skill run
+  already uses, on all three of `RunCrew`'s terminal paths: `driveCrew`
+  success, `driveCrew` failure, and a mid-loop provisioning failure (where the
+  members that already provisioned and started serving are ended too, not just
+  the one that failed). Each member now gets the matching
+  `agent.run_lease_end` audit row beside its existing issue row. Queue workers
+  (`StartAgentWorker`) are deliberately unchanged — a worker is meant to keep
+  serving across many tasks and needs its own lifecycle decision.
+- **Security: Grafana in the platform metrics LXC no longer allows anonymous
+  access** (#2079). The `grafana.ini` the daemon provisions had
+  `[auth.anonymous] enabled = true, org_role = Viewer`, and the dashboard
+  port sits on the same bridge as every tenant container (see
+  `docs/security/multi-tenant-isolation.md`) — so any tenant could read
+  platform dashboards with no credential at all. The template now writes
+  `enabled = false`, and on every start the daemon backfills an existing
+  host the same way it backfills role labels: if the live ini still has
+  anonymous on, it rewrites just that key and restarts `grafana-server`
+  (Grafana does not re-read its ini on reload). No-op once converged.
 
 - **Security: a run token can no longer remove `agent:needs-approval` from
   an issue outside its own lineage.** The gate label is on the default
