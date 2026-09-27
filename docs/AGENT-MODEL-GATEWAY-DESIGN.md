@@ -272,6 +272,52 @@ that sets none of it meters exactly as before:
 A window alone is not a configuration — it says when to measure, not how much is
 allowed — so it does not switch enforcement on by itself.
 
+## Per-owner keys and OpenAI-compatible upstreams (built, #1725)
+
+The gateway originally held one real key per provider for the whole daemon
+(`Config.ProviderKeys`). That is right for a single-operator install and wrong
+as soon as one daemon brokers for several owners who each pay for their own
+upstream: the key to inject is a property of the **token**, not of the process.
+
+So a gateway token may carry a `key_owner` claim — a namespaced string,
+`user:<username>` or `org:<org_id>` — and the gateway resolves the real key
+through an injected `KeyResolver` (`KeyFor(ctx, keyOwner, provider)`).
+Resolution order, per call:
+
+1. no `key_owner` → `Config.ProviderKeys` only; the resolver is never asked, so
+   every token issued before this existed behaves exactly as before;
+2. `key_owner` with a key → that key;
+3. `key_owner` with no key → the daemon-global key, logged (that call is billed
+   to the operator, not the owner);
+4. neither → the call is refused without touching an upstream.
+
+The prefix is load-bearing: local usernames and org ids are arbitrary strings
+from the same space, so `user:` / `org:` keeps a crafted username from resolving
+to an org's key.
+
+Per-owner keys live in the daemon's **encrypted secrets store** under the
+reserved namespace `__gateway/<key_owner>/<provider>`, written with `broker`
+delivery. A `/` cannot appear in a tenant username, so no tenant can name that
+namespace; the tenant-facing store methods refuse it outright, and no delivery
+mode ships those rows into a box.
+
+Two kill-switches, both checked ahead of the key lookup so a dead token never
+causes a real key to be touched: the per-`jti` revocation list (above), and
+`RevokeByKeyOwner` — every token issued for one owner up to that instant stops
+on its next call. It records a **cutoff**, not a flag, so an owner who
+re-registers a key works again on freshly minted tokens with no un-revoke verb.
+Both fail open on a lookup error, for the same reason.
+
+**Registering an OpenAI-compatible upstream.** Setting
+`<PROVIDER>_UPSTREAM_URL` registers a provider of that name
+(`ACMEAI_UPSTREAM_URL` → `acmeai`) that speaks OpenAI's chat-completions
+protocol at that endpoint: bearer auth, OpenAI-shaped usage on both the
+non-streaming and the SSE path. Its daemon-global fallback key, if any, comes
+from `<PROVIDER>_API_KEY`; per-owner keys arrive through the resolver instead.
+No upstream is compiled in — a brokered endpoint is deployment configuration —
+and registering one is enough to bring the gateway up even when the daemon holds
+no key of its own, which is the multi-owner shape.
+
 ## Open questions
 
 1. **Where does the gateway run?** A core-service LXC (like the platform
