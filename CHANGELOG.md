@@ -21,6 +21,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   merges per-device keys and issues no write when already converged, so a
   reconciler can run it every minute silently. `UnavailableBackend` and
   `incustest.MockBackend` implement all six.
+- **`internal/coreguard`: the core-infra network guard's policy table**
+  (#2077; design in `docs/architecture/core-infra-network-guard.md`). A
+  typed, pure table of which sources may reach each core role on which tcp
+  ports — the host gateway, a named core or control-plane container, or
+  (only for the OTLP receiver and Caddy's public ports) the tenant bridge —
+  and `Compute`, which renders it into one `incus.ACLConfig` per guarded
+  role from a host's live addresses. Unknown core roles get an empty ACL
+  and are reported (fail closed); the control plane is a source, never a
+  subject; every address is validated against the bridge before a rule is
+  rendered; output order is fixed so a converged host diffs clean. No I/O —
+  the reconciler that applies it is #2084.
 
 ### Fixed
 
