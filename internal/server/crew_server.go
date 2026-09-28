@@ -50,23 +50,55 @@ func NewCrewServer(agents *AgentSkillServer) *CrewServer {
 		runs:    NewMemCrewRunStore(),
 	}
 	// TailRunLog (#2096) resolves a crew run's members from its run record.
+	// #2122 reuses the same store + hook for a standalone skill run: recordSkillRun
+	// writes it, runMembers below resolves it, reapSkillRun sweeps it.
 	if agents != nil {
 		agents.crewRunMembers = s.runMembers
+		agents.recordSkillRun = s.recordSkillRun
+		agents.reapSkillRun = s.reapSkillRunRecord
 	}
 	return s
 }
 
-// runMembers resolves a crew run id to its crew's skill ids, entry first.
+// runMembers resolves a run id to its member skill ids, entry first. Two
+// shapes share this store (#2122): a crew run (crew_id set) resolves its
+// members from the crew catalog, exactly as before; a standalone skill run
+// (crew_id empty, skill_id set — recordSkillRun's record) has no crew to
+// look up and IS its own single-member list.
 func (s *CrewServer) runMembers(ctx context.Context, runID string) ([]string, bool, error) {
 	run, ok, err := s.runs.Get(ctx, runID)
 	if err != nil || !ok {
 		return nil, false, err
+	}
+	if run.GetCrewId() == "" {
+		if run.GetSkillId() == "" {
+			return nil, false, nil
+		}
+		return []string{run.GetSkillId()}, true, nil
 	}
 	crew, err := s.catalog.Get(run.GetCrewId())
 	if err != nil {
 		return nil, false, nil
 	}
 	return append([]string(nil), crew.GetSkillIds()...), true, nil
+}
+
+// recordSkillRun persists a standalone skill run's durable run->skill record
+// (#2122), reusing the crew-run store rather than a second persistence
+// mechanism: crew_id is left empty (this run has no crew) and skill_id is
+// set, which runMembers above resolves directly. Wired onto AgentSkillServer
+// so beginSkillRunWith can call it right after a skill run is provisioned.
+func (s *CrewServer) recordSkillRun(ctx context.Context, runID, skillID string) error {
+	return s.runs.Put(ctx, &pb.CrewRun{Id: runID, SkillId: skillID})
+}
+
+// reapSkillRunRecord removes a standalone skill run's durable record once its
+// journal directory has been reaped (#2122), coupling the record's lifetime
+// to --run-journal-retention. Delegates the crew-run guard to the store (see
+// CrewRunStore.DeleteSkillRun) — this method is safe to call with ANY reaped
+// run id, crew or skill.
+func (s *CrewServer) reapSkillRunRecord(ctx context.Context, runID string) error {
+	return s.runs.DeleteSkillRun(ctx, runID)
 }
 
 // ListCrews returns all built-in crews.

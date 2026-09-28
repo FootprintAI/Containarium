@@ -41,6 +41,22 @@ type boxScriptFunc func(box, script string) (string, error)
 // skill first. ok=false means no crew run has that id.
 type crewRunMembersFunc func(ctx context.Context, runID string) (members []string, ok bool, err error)
 
+// recordSkillRunFunc persists a durable run->skill record for a standalone
+// skill run (#2122), via the crew-run record store crew runs already use —
+// CrewServer.recordSkillRun in production, wired by NewCrewServer the same
+// way crewRunMembers is. Nil is a valid, silent no-op: a daemon (or test)
+// with no CrewServer wired just keeps pre-#2122 behavior — the in-memory
+// runIndex resolves the run until this process exits, and a restart loses it,
+// exactly as before.
+type recordSkillRunFunc func(ctx context.Context, runID, skillID string) error
+
+// reapSkillRunFunc removes a standalone skill run's durable record, called by
+// the run-journal reaper for every run id whose journal directory it reaps
+// (#2122) — crew and skill run ids alike. Implementations must ignore any id
+// that names a crew run; CrewServer.reapSkillRunRecord does, via
+// CrewRunStore.DeleteSkillRun. Nil is a valid, silent no-op.
+type reapSkillRunFunc func(ctx context.Context, runID string) error
+
 // memberBox is the container a skill's box runs in (provisionSkillBox).
 func memberBox(skillID string) string { return agentBoxPrefix + skillID + "-container" }
 

@@ -83,7 +83,12 @@ func (s *AgentSkillServer) runJournalRetention() time.Duration {
 // reapRunJournals removes the stale run directories on each box and returns
 // the paths it removed. Per box and best-effort: one unreachable box never
 // stops the sweep of the next.
-func (s *AgentSkillServer) reapRunJournals(boxes []string, now time.Time) []string {
+//
+// #2122: every reaped run id's durable skill-run record (if it has one) is
+// deleted in the same pass, coupling the record's lifetime to the journal's.
+// Called for both crew and skill run ids — reapSkillRun (nil-guarded) is a
+// no-op for a crew run id, so this can never touch a crew's record.
+func (s *AgentSkillServer) reapRunJournals(ctx context.Context, boxes []string, now time.Time) []string {
 	exec := s.boxScript()
 	if exec == nil {
 		return nil
@@ -109,6 +114,11 @@ func (s *AgentSkillServer) reapRunJournals(boxes []string, now time.Time) []stri
 		}
 		for _, name := range stale {
 			removed = append(removed, box+":"+runJournalRoot+"/"+name)
+			if s.reapSkillRun != nil {
+				if err := s.reapSkillRun(ctx, name); err != nil {
+					log.Printf("[run-journal-reaper] delete run record %s: %v", name, err)
+				}
+			}
 		}
 	}
 	return removed
@@ -138,7 +148,7 @@ func (s *AgentSkillServer) agentBoxes() []string {
 func (s *AgentSkillServer) StartRunJournalReaper(ctx context.Context) {
 	go func() {
 		sweep := func() {
-			if removed := s.reapRunJournals(s.agentBoxes(), time.Now()); len(removed) > 0 {
+			if removed := s.reapRunJournals(ctx, s.agentBoxes(), time.Now()); len(removed) > 0 {
 				log.Printf("[run-journal-reaper] removed %d run journal dir(s) older than %s", len(removed), s.runJournalRetention())
 			}
 		}
