@@ -166,7 +166,7 @@ done
 # Install sshpiper — SSH reverse proxy with built-in fail-to-ban
 # sshpiper sits on port 22, sees real client IPs, and bans after failed auths
 echo "==> Installing sshpiper..."
-SSHPIPER_VERSION="v1.5.3"
+SSHPIPER_VERSION="v1.6.1"
 if [ ! -f /usr/local/bin/sshpiperd ]; then
     cd /tmp
     curl -fsSL "https://github.com/tg123/sshpiper/releases/download/$${SSHPIPER_VERSION}/sshpiperd_with_plugins_linux_x86_64.tar.gz" \

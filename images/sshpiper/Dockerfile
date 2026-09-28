@@ -17,7 +17,7 @@
 #   - listens on :2222, runs as non-root uid 1000
 
 FROM debian:bookworm-slim AS fetch
-ARG SSHPIPER_VERSION=v1.5.3
+ARG SSHPIPER_VERSION=v1.6.1
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
