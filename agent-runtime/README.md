@@ -84,6 +84,9 @@ before a line is written.
 - **Run mode** takes the ids from `CONTAINARIUM_RUN_ID` and
   `CONTAINARIUM_SKILL_ID`, which the daemon exports; missing either is a hard
   failure (exit 2, reason in `artifact.json`).
+- A journal that cannot be opened or written (full disk, unwritable root)
+  never fails a run in either mode: the run continues unjournaled and the
+  process log says why.
 - **Serve mode** takes `run_id` from each A2A task (`AgentTask.run_id`, set
   from the crew run) and the skill id from `CONTAINARIUM_SKILL_ID`. A task
   without a `run_id` runs unjournaled and says so on the process log.

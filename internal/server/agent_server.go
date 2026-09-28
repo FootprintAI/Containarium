@@ -1227,6 +1227,14 @@ func (s *AgentSkillServer) SendAgentTask(ctx context.Context, req *pb.SendAgentT
 	if req.ToPeerId == "" {
 		return nil, status.Error(codes.InvalidArgument, "to_peer_id is required")
 	}
+	// run_id names a directory of the peer's run journal (#2095), so it must
+	// have the same shape RunAgentSkill/RunCrew accept. Empty is allowed: the
+	// task is simply not journaled on the peer.
+	if req.GetRunId() != "" {
+		if _, err := resolveRunID(req.GetRunId()); err != nil {
+			return nil, err
+		}
+	}
 
 	// Enforce allowed_peers at the API boundary (Phase 2). The real caller is
 	// the authenticated token subject when it's an agent box (agent-<skill-id>);

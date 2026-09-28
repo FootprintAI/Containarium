@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -50,6 +50,18 @@ describe("runOnce (run mode)", () => {
     expect(code).toBe(1);
     expect(artifact(seedDir).error).toBe("boom");
     expect(readFileSync(join(root, "run-2", "s.jsonl"), "utf8")).toContain('"text":"run ended exit=1"');
+  });
+
+  it("still runs, unjournaled, when the journal directory cannot be created", async () => {
+    const { seedDir, root } = dirs();
+    const blocker = join(root, "not-a-dir");
+    writeFileSync(blocker, "");
+    const code = await runOnce({
+      env: { CONTAINARIUM_RUN_ID: "run-4", CONTAINARIUM_SKILL_ID: "s" },
+      seedDir, inputJson: "{}", tokenPath: null, engine: okEngine, cfg, model: "m", journalRoot: join(blocker, "runs"),
+    });
+    expect(code).toBe(0);
+    expect(artifact(seedDir).outputJson).toBe('{"ok":true}');
   });
 
   it.each([

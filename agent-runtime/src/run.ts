@@ -1,6 +1,6 @@
 import { writeArtifact } from "./artifact.js";
 import type { Engine, EngineConfig } from "./engine.js";
-import { FileJournal, JOURNAL_ROOT, journalSecrets, runJournaled } from "./journal.js";
+import { JOURNAL_ROOT, journalSecrets, openJournal, runJournaled, type JournalSink } from "./journal.js";
 
 export interface RunOnceOptions {
   env: Readonly<Record<string, string | undefined>>;
@@ -17,18 +17,20 @@ export interface RunOnceOptions {
 // runOnce is run mode: journal the run, run the task once, write
 // artifact.json, and return the process exit code. The daemon exports
 // CONTAINARIUM_RUN_ID and CONTAINARIUM_SKILL_ID in the exec prefix; without
-// them there is no journal path, and that is a hard failure (exit 2, the
-// reason in artifact.json and on stderr) rather than a silent run with no
-// journal.
+// them (or with an unsafe one) there is no journal path, and that is a hard
+// failure (exit 2, the reason in artifact.json and on stderr) rather than a
+// silent run with no journal. A journal directory that cannot be created is
+// an I/O fault, not a bad launch: the run goes ahead unjournaled with a
+// warning (openJournal), the same as a failed append mid-run.
 export async function runOnce(o: RunOnceOptions): Promise<number> {
   const { engine, model } = o;
-  let journal: FileJournal;
+  let journal: JournalSink;
   try {
     const runId = o.env.CONTAINARIUM_RUN_ID;
     const skillId = o.env.CONTAINARIUM_SKILL_ID;
     if (!runId) throw new Error("CONTAINARIUM_RUN_ID is not set; run mode needs it to journal the run");
     if (!skillId) throw new Error("CONTAINARIUM_SKILL_ID is not set; run mode needs it to journal the run");
-    journal = FileJournal.open({
+    journal = openJournal({
       root: o.journalRoot ?? JOURNAL_ROOT,
       runId,
       skillId,

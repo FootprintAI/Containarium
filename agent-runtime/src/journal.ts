@@ -139,6 +139,25 @@ export class FileJournal implements JournalSink {
   }
 }
 
+const defaultWarn = (m: string): void => {
+  process.stderr.write(`agent-runtime: ${m}\n`);
+};
+
+// openJournal opens a run's journal under the one policy the runtime applies
+// to journal I/O: a journal never kills a run. An id that is not a safe path
+// segment still throws (that is a bad request, not an I/O fault); a directory
+// or file that cannot be created or read degrades to NULL_JOURNAL with a
+// warning on the process log, the same as an append that fails mid-run.
+export function openJournal(opts: FileJournalOptions, warn: (msg: string) => void = defaultWarn): JournalSink {
+  journalPath(opts.root ?? JOURNAL_ROOT, opts.runId, opts.skillId);
+  try {
+    return FileJournal.open(opts);
+  } catch (e) {
+    warn(`journal for run ${opts.runId} could not be opened; not journaled: ${e instanceof Error ? e.message : String(e)}`);
+    return NULL_JOURNAL;
+  }
+}
+
 // The env vars that carry a credential into the box: the model-gateway token
 // under each provider's name (the daemon's gatewayProviderEnvs), and the
 // provider keys a direct-mode box is seeded with.
@@ -198,12 +217,13 @@ export interface ServeJournalOptions {
 // serveJournals returns the per-task journal lookup for serve mode: each A2A
 // task names its run (AgentTask.run_id), the box's skill id names the file.
 // Tasks of the same run share one FileJournal so seq stays monotonic. A task
-// with no run_id (a direct SendAgentTask outside a tracked run), or a box
-// started without a skill id, is not journaled; the process log says so.
-// An unsafe run_id throws, which fails that task.
+// with no run_id (a direct SendAgentTask outside a tracked run), a box
+// started without a skill id, or a journal that cannot be opened is not
+// journaled; the process log says so. An unsafe run_id throws, which fails
+// that task.
 export function serveJournals(opts: ServeJournalOptions): (runId: string | undefined) => JournalSink {
-  const warn = opts.warn ?? ((m: string) => process.stderr.write(`agent-runtime: ${m}\n`));
-  const open = new Map<string, FileJournal>();
+  const warn = opts.warn ?? defaultWarn;
+  const open = new Map<string, JournalSink>();
   return (runId) => {
     if (!runId) {
       warn("task has no run_id; not journaled");
@@ -214,11 +234,11 @@ export function serveJournals(opts: ServeJournalOptions): (runId: string | undef
       return NULL_JOURNAL;
     }
     const path = journalPath(opts.root ?? JOURNAL_ROOT, runId, opts.skillId);
-    let j = open.get(path);
-    if (!j) {
-      j = FileJournal.open({ root: opts.root, runId, skillId: opts.skillId, secrets: opts.secrets });
-      open.set(path, j);
-    }
+    const cached = open.get(path);
+    if (cached) return cached;
+    const j = openJournal({ root: opts.root, runId, skillId: opts.skillId, secrets: opts.secrets }, warn);
+    // Only a journal that opened is kept: a later task of the run retries.
+    if (j !== NULL_JOURNAL) open.set(path, j);
     return j;
   };
 }

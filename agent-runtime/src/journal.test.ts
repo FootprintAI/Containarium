@@ -144,9 +144,22 @@ describe("FileJournal", () => {
     j.append(make(secret));
     const raw = readFileSync(j.path, "utf8");
     expect(raw).not.toContain(secret);
-    // Not even a prefix survives the truncation cut.
-    expect(raw).not.toContain(secret.slice(0, 12));
     expect(JournalEventSchema.parse(JSON.parse(raw))).toBeTruthy();
+  });
+
+  // Redaction must run before truncation: truncating first would cut the
+  // secret at the cap, leave its first bytes in the line, and the remaining
+  // fragment would no longer match the secret to redact.
+  it.each(Object.entries(secrets))("redacts the %s before truncating, leaving no byte of it at the cut", (_name, secret) => {
+    const root = tmpRoot();
+    const j = FileJournal.open({ root, runId: "r", skillId: "s", secrets: Object.values(secrets) });
+    const pad = "z".repeat(MAX_FIELD_BYTES - REDACTED.length);
+    j.append({ kind: "tool_result", tool: "shell", text: pad + secret });
+    j.append({ kind: "tool_use", tool: "shell", input: pad + secret });
+    const [result, use] = readLines(j.path) as Array<{ text?: string; input?: string }>;
+    expect(result!.text).toBe(pad + REDACTED);
+    expect(use!.input).toBe(pad + REDACTED);
+    expect(readFileSync(j.path, "utf8")).not.toContain(secret.slice(0, 4));
   });
 
   it("redacts every occurrence and marks it", () => {
@@ -284,6 +297,16 @@ describe("serveJournals", () => {
     journals("run-1").append({ kind: "status", text: "run started" });
     expect(errs[0]).toMatch(/CONTAINARIUM_SKILL_ID/);
     expect(existsSync(join(root, "run-1"))).toBe(false);
+  });
+
+  it("degrades to no journal, with a warning, when the journal directory cannot be created", () => {
+    const blocker = join(tmpRoot(), "not-a-dir");
+    writeFileSync(blocker, "");
+    const errs: string[] = [];
+    const journals = serveJournals({ root: join(blocker, "runs"), skillId: "s", secrets: [], warn: (m) => errs.push(m) });
+    expect(() => journals("run-1").append({ kind: "status", text: "run started" })).not.toThrow();
+    expect(errs).toHaveLength(1);
+    expect(errs[0]).toMatch(/not journaled/);
   });
 
   it("rejects a run_id that would escape the journal root", () => {

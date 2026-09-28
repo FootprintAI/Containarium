@@ -5,7 +5,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/pkg/core/skills"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // #2095: the in-box runtime journals every run under
@@ -128,6 +132,30 @@ func TestRunCrew_EveryHopCarriesTheCrewRunID(t *testing.T) {
 	for i, id := range got {
 		if id != runID {
 			t.Errorf("hop %d run_id = %q, want %q", i, id, runID)
+		}
+	}
+}
+
+// TestSendAgentTask_ValidatesRunID: run_id becomes a path segment of the
+// peer's journal, so a malformed one is rejected before any peer lookup, with
+// the same shape rule RunAgentSkill/RunCrew apply. Empty stays allowed (the
+// task is simply not journaled).
+func TestSendAgentTask_ValidatesRunID(t *testing.T) {
+	s := &AgentSkillServer{catalog: skills.GetDefault()}
+	ctx := auth.ContextWithTestSubjectScopes(
+		context.Background(), "agent-hello-agent", nil, []string{auth.ScopeAgentsCall})
+	for _, bad := range []string{"..", ".", "../etc", "a/b", "has space", strings.Repeat("x", 129)} {
+		_, err := s.SendAgentTask(ctx, &pb.SendAgentTaskRequest{ToPeerId: "other-peer", RunId: bad})
+		if status.Code(err) != codes.InvalidArgument {
+			t.Errorf("run_id %q: got %v, want InvalidArgument", bad, err)
+		}
+	}
+	// A well-formed or empty run_id passes validation and reaches the
+	// allowed_peers check (hello-agent is a leaf, so PermissionDenied).
+	for _, ok := range []string{"", "run-crew-1"} {
+		_, err := s.SendAgentTask(ctx, &pb.SendAgentTaskRequest{ToPeerId: "other-peer", RunId: ok})
+		if status.Code(err) != codes.PermissionDenied {
+			t.Errorf("run_id %q: got %v, want PermissionDenied (validation passed)", ok, err)
 		}
 	}
 }
