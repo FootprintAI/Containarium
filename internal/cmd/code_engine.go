@@ -105,6 +105,17 @@ func resolveCodeInstallPlan(box string) (*codeInstallPlan, error) {
 			strings.TrimSpace(codeProvider), box)
 	}
 
+	// pi on a tenant secret has no gateway to derive an endpoint from, so the
+	// endpoint must come from the operator. Rejected HERE, before the preflight,
+	// rather than when models.json is rendered: the secret preflight does a
+	// secrets RPC in between, and a lookup failure there would mask this purely
+	// local mistake with a network error.
+	if name == engine.NamePi && kind == engine.KindSecret && plan.baseURLOverride == "" {
+		return nil, fmt.Errorf(
+			"--engine pi --credential secret needs --provider-base-url (the complete endpoint URL pi should call, e.g. https://api.openai.com/v1) — " +
+				"only --credential gateway can derive one on its own")
+	}
+
 	plan.version = strings.TrimSpace(codeClaudeCodeVersion)
 	if name == engine.NamePi {
 		plan.version = strings.TrimSpace(codePiVersion)

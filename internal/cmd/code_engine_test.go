@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -421,15 +422,29 @@ func TestCodeInstall_FlagValidation(t *testing.T) {
 			flags: map[string]string{"engine": "pi", "credential": "secret", "provider": "kafeido", "model": "m"},
 			want:  "--provider",
 		},
+		{
+			// pi on a tenant secret has no gateway to derive an endpoint from,
+			// so the missing flag has to be named BEFORE the secrets RPC —
+			// otherwise a lookup failure masks the real, local mistake.
+			name:  "pi on a secret without an endpoint",
+			flags: map[string]string{"engine": "pi", "credential": "secret", "secret-name": "OPENAI_API_KEY", "model": "m"},
+			want:  "--provider-base-url",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			env, err := runInstallEngine(t, "alice", tc.flags, okMint(), nil, nil)
+			// A deliberately failing secrets RPC: a flag mistake must be reported
+			// as itself, not masked by a lookup that should never have happened.
+			secretsErr := errors.New("secrets RPC must not be reached for a flag error")
+			env, err := runInstallEngine(t, "alice", tc.flags, okMint(), nil, secretsErr)
 			if err == nil {
 				t.Fatalf("expected a rejection for %v", tc.flags)
 			}
 			if !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("error should mention %q: %v", tc.want, err)
+			}
+			if strings.Contains(err.Error(), "must not be reached") {
+				t.Errorf("a flag error was masked by a secrets RPC failure: %v", err)
 			}
 			if len(env.scripts) != 0 {
 				t.Errorf("flags were rejected but %d remote script(s) still ran", len(env.scripts))
