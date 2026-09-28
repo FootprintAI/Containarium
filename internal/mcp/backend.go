@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/footprintai/containarium/internal/credentials"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // API is the contract the MCP tool handlers consume. It has two
@@ -45,6 +46,7 @@ type API interface {
 	CallAgent(req CallAgentRequest) (*CallAgentResponse, error)
 	ListCrews() (*ListCrewsResponse, error)
 	RunCrew(req RunCrewRequest) (*RunCrewResponse, error)
+	TailRunLog(req *pb.TailRunLogRequest) (*pb.TailRunLogResponse, error)
 
 	// Backups.
 	CreateBackup(req CreateBackupRequest) (*CreateBackupResponse, error)

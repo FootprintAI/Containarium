@@ -214,6 +214,16 @@ type AgentSkillServer struct {
 	// tracker_connection then fails closed rather than minting an
 	// unvalidated claim — see RunAgentSkill.
 	trackerConnections trackerConnectionChecker
+	// Run journal read path (#2096). runIndex remembers each run's member
+	// skills for TailRunLog; crewRunMembers resolves a crew run from its
+	// durable record (wired by NewCrewServer); execScript is a test seam over
+	// the container manager; runLogPoll overrides the follow poll interval;
+	// journalRetention is how long a run's journal is kept on a member box.
+	runIndex         runMemberIndex
+	crewRunMembers   crewRunMembersFunc
+	execScript       boxScriptFunc
+	runLogPoll       time.Duration
+	journalRetention time.Duration
 }
 
 // trackerConnectionChecker is the one method of *tracker.Store
@@ -705,6 +715,7 @@ func (s *AgentSkillServer) provisionSkillBoxWith(ctx context.Context, skill *pb.
 	// (and its one-time post_start assembly) and just re-mint the token,
 	// re-seed, and re-apply policy below. A stopped box (idle-sleep, host
 	// reboot) is started so the subsequent seed-exec / loop-exec lands.
+	freshBox := false
 	if info, gerr := s.recipes.containers.manager.Get(name); gerr == nil && info != nil {
 		if info.State != "Running" {
 			if err := s.recipes.containers.manager.Start(name); err != nil {
@@ -733,6 +744,7 @@ func (s *AgentSkillServer) provisionSkillBoxWith(ctx context.Context, skill *pb.
 			return "", nil, noLease, "", "", err // already a gRPC status from deploy/CreateContainer
 		}
 		box = dep.Container
+		freshBox = true
 	}
 
 	containerName = name + "-container"
@@ -772,6 +784,13 @@ func (s *AgentSkillServer) provisionSkillBoxWith(ctx context.Context, skill *pb.
 		}
 	}
 	seedScript := buildAgentSeedScript(seedDir, skill.SystemPrompt, token, inputJSON, cardJSON)
+	if freshBox {
+		// A rebuilt box starts with no run journals (#2096): nothing an image
+		// or an earlier incarnation left under the root belongs to a run this
+		// daemon can resolve. A reused box keeps them — a co-resident run may
+		// be writing one right now.
+		seedScript = clearRunJournalsScript + "\n" + seedScript
+	}
 	// Model-gateway provisioning (#674): when the daemon serves a gateway, mint a
 	// per-skill gateway token and append the env-seeding to the same exec, so the
 	// box's engine routes model calls through the gateway (real key never enters
@@ -865,6 +884,7 @@ func (s *AgentSkillServer) provisionSkillBoxWith(ctx context.Context, skill *pb.
 	s.applyAllowedPeersPolicy(ctx, name, skill)
 
 	s.auditRunLease(ctx, "agent.run_lease_issue", runID, runLeaseIssuePayload(lease))
+	s.runIndex.add(runID, skill.Id, time.Now(), s.runJournalRetention())
 
 	return containerName, box, lease, gitCommit, workspacePath, nil
 }
@@ -1227,6 +1247,13 @@ func (s *AgentSkillServer) SendAgentTask(ctx context.Context, req *pb.SendAgentT
 	if req.ToPeerId == "" {
 		return nil, status.Error(codes.InvalidArgument, "to_peer_id is required")
 	}
+	// A run-bound caller journals only into its own run (#2096): stamp an
+	// absent run_id with the token's claim, refuse a different one.
+	runID, err := taskRunID(ctx, req.GetRunId())
+	if err != nil {
+		return nil, err
+	}
+	req.RunId = runID
 	// run_id names a directory of the peer's run journal (#2095), so it must
 	// have the same shape RunAgentSkill/RunCrew accept. Empty is allowed: the
 	// task is simply not journaled on the peer.

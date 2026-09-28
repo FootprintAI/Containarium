@@ -43,12 +43,30 @@ func (s *CrewServer) SetOwner(id string) { s.owner = id }
 // NewCrewServer wires the crew service to the agent-skill server (for box
 // provisioning) and the embedded crew + skill catalogs.
 func NewCrewServer(agents *AgentSkillServer) *CrewServer {
-	return &CrewServer{
+	s := &CrewServer{
 		catalog: crews.GetDefault(),
 		skills:  skills.GetDefault(),
 		agents:  agents,
 		runs:    NewMemCrewRunStore(),
 	}
+	// TailRunLog (#2096) resolves a crew run's members from its run record.
+	if agents != nil {
+		agents.crewRunMembers = s.runMembers
+	}
+	return s
+}
+
+// runMembers resolves a crew run id to its crew's skill ids, entry first.
+func (s *CrewServer) runMembers(ctx context.Context, runID string) ([]string, bool, error) {
+	run, ok, err := s.runs.Get(ctx, runID)
+	if err != nil || !ok {
+		return nil, false, err
+	}
+	crew, err := s.catalog.Get(run.GetCrewId())
+	if err != nil {
+		return nil, false, nil
+	}
+	return append([]string(nil), crew.GetSkillIds()...), true, nil
 }
 
 // ListCrews returns all built-in crews.
