@@ -378,7 +378,7 @@ func (s *AgentSkillServer) RunAgentSkill(ctx context.Context, req *pb.RunAgentSk
 	// its caller — so artifact.json is always read into this Go string BEFORE
 	// endRunLease's directory removal ever runs. A run whose artifact was
 	// returned never loses it to the wipe.
-	artifact := s.runInBoxAgent(containerName, lease.SeedDir)
+	artifact := s.runInBoxAgent(containerName, lease.SeedDir, runID, run.skillID)
 	return &pb.RunAgentSkillResponse{
 		Container:     box,
 		ArtifactJson:  artifact,
@@ -393,6 +393,7 @@ func (s *AgentSkillServer) RunAgentSkill(ctx context.Context, req *pb.RunAgentSk
 // in-box agent returns.
 type startedSkillRun struct {
 	runID, containerName     string
+	skillID                  string
 	box                      *pb.Container
 	lease                    runlease.Lease
 	gitCommit, workspacePath string
@@ -500,7 +501,7 @@ func (s *AgentSkillServer) beginSkillRunWith(ctx context.Context, req *pb.RunAge
 		})
 	}
 	return &startedSkillRun{
-		runID: runID, containerName: containerName, box: box, lease: lease,
+		runID: runID, containerName: containerName, skillID: skill.Id, box: box, lease: lease,
 		gitCommit: gitCommit, workspacePath: workspacePath,
 	}, nil
 }
@@ -905,7 +906,9 @@ func (s *AgentSkillServer) engineEnvPrefix() string {
 // server on :8674) as a background process, so peers/crews can delegate tasks
 // to this box. Best-effort: until the box image ships agent-runtime this is a
 // no-op failure (logged), like runInBoxAgent. Used by RunCrew for members.
-func (s *AgentSkillServer) startServeMode(containerName, seedDir string) {
+// skillID names the member's run journal (#2095); the run id comes with each
+// A2A task, not with the launch.
+func (s *AgentSkillServer) startServeMode(containerName, seedDir, skillID string) {
 	if s.recipes == nil || s.recipes.containers == nil || s.recipes.containers.manager == nil {
 		return
 	}
@@ -931,13 +934,36 @@ func (s *AgentSkillServer) startServeMode(containerName, seedDir string) {
 	// in tests — see TestStartServeMode_StopsPriorInstanceBeforeLaunching.
 	_, _, _, _ = s.recipes.containers.manager.ExecWithExitCode(containerName,
 		[]string{"bash", "-lc", "pkill -9 -f agent-runtime"})
-	cmd := sourceGatewayEnvPrefix(seedDir) + s.engineEnvPrefix() + "CONTAINARIUM_AGENT_MODE=serve AGENT_SEED_DIR=" + seedDir +
-		" setsid agent-runtime >/var/log/agent-runtime.log 2>&1 &"
+	cmd := s.serveModeCommand(seedDir, skillID)
 	if _, stderr, err := s.recipes.containers.manager.ExecWithOutput(containerName,
 		[]string{"bash", "-lc", cmd}); err != nil {
 		log.Printf("[agent-skill] could not start serve mode on %s (image may not ship runtime): %v; stderr=%s",
 			containerName, err, strings.TrimSpace(stderr))
 	}
+}
+
+// serveModeCommand is the in-box command startServeMode backgrounds. It
+// exports CONTAINARIUM_SKILL_ID so the runtime can name each task's journal
+// (/var/log/agent-runtime/runs/<run_id>/<skill_id>.jsonl, #2095); the run id
+// arrives per task on AgentTask.run_id. /var/log/agent-runtime.log stays the
+// process log.
+func (s *AgentSkillServer) serveModeCommand(seedDir, skillID string) string {
+	return sourceGatewayEnvPrefix(seedDir) + s.engineEnvPrefix() +
+		"CONTAINARIUM_SKILL_ID=" + shellSingleQuote(skillID) + " " +
+		"CONTAINARIUM_AGENT_MODE=serve AGENT_SEED_DIR=" + seedDir +
+		" setsid agent-runtime >/var/log/agent-runtime.log 2>&1 &"
+}
+
+// runModeCommand is the in-box command a one-shot (run mode) execution runs.
+// It exports CONTAINARIUM_RUN_ID and CONTAINARIUM_SKILL_ID after the gateway
+// env is sourced, so the runtime journals the run under
+// /var/log/agent-runtime/runs/<run_id>/<skill_id>.jsonl (#2095). The runtime
+// refuses to run in run mode without CONTAINARIUM_RUN_ID.
+func (s *AgentSkillServer) runModeCommand(seedDir, runID, skillID string) string {
+	return sourceGatewayEnvPrefix(seedDir) + s.engineEnvPrefix() +
+		"CONTAINARIUM_RUN_ID=" + shellSingleQuote(runID) + " " +
+		"CONTAINARIUM_SKILL_ID=" + shellSingleQuote(skillID) + " " +
+		"AGENT_SEED_DIR=" + seedDir + " agent-runtime"
 }
 
 // runInBoxAgent executes the in-box agent-runtime over the seeded task and
@@ -946,8 +972,8 @@ func (s *AgentSkillServer) startServeMode(containerName, seedDir string) {
 // key come from the box env (secrets-injected). Best-effort: any failure
 // (runtime absent, exec error, bad artifact) logs and returns "" rather than
 // failing RunAgentSkill — the box is still provisioned + gated + traced.
-func (s *AgentSkillServer) runInBoxAgent(containerName, seedDir string) string {
-	out, err := s.runInBoxAgentResult(containerName, seedDir)
+func (s *AgentSkillServer) runInBoxAgent(containerName, seedDir, runID, skillID string) string {
+	out, err := s.runInBoxAgentResult(containerName, seedDir, runID, skillID)
 	if err != nil {
 		log.Printf("[agent-skill] %v", err)
 		return ""
@@ -959,14 +985,14 @@ func (s *AgentSkillServer) runInBoxAgent(containerName, seedDir string) string {
 // nothing kept as an error — a dispatched run (#2023) records it as the
 // dispatch row's failure_reason. The error text never includes the
 // box's stderr beyond what runInBoxAgent already logged.
-func (s *AgentSkillServer) runInBoxAgentResult(containerName, seedDir string) (string, error) {
+func (s *AgentSkillServer) runInBoxAgentResult(containerName, seedDir, runID, skillID string) (string, error) {
 	if s.recipes == nil || s.recipes.containers == nil || s.recipes.containers.manager == nil {
 		return "", fmt.Errorf("no container manager to run the in-box agent on %s", containerName)
 	}
 	mgr := s.recipes.containers.manager
 
 	if _, stderr, err := mgr.ExecWithOutput(containerName,
-		[]string{"bash", "-lc", sourceGatewayEnvPrefix(seedDir) + s.engineEnvPrefix() + "AGENT_SEED_DIR=" + seedDir + " agent-runtime"}); err != nil {
+		[]string{"bash", "-lc", s.runModeCommand(seedDir, runID, skillID)}); err != nil {
 		log.Printf("[agent-skill] in-box runtime did not run on %s (image may not ship it yet): %v; stderr=%s",
 			containerName, err, strings.TrimSpace(stderr))
 		return "", fmt.Errorf("in-box runtime did not run on %s: %w", containerName, err)
@@ -1229,10 +1255,7 @@ func (s *AgentSkillServer) SendAgentTask(ctx context.Context, req *pb.SendAgentT
 		return nil, err
 	}
 
-	task := &pb.AgentTask{
-		Id:        "task-" + caller + "-" + req.ToPeerId,
-		InputJson: req.InputJson,
-	}
+	task := agentTaskFor(caller, req.ToPeerId, req)
 	art, err := sendA2ATask(ctx, baseURL, task)
 	if err != nil {
 		s.auditHop(ctx, trace, caller, req.ToPeerId, "failed", err.Error())
@@ -1240,6 +1263,17 @@ func (s *AgentSkillServer) SendAgentTask(ctx context.Context, req *pb.SendAgentT
 	}
 	s.auditHop(ctx, trace, caller, req.ToPeerId, "delivered", "")
 	return &pb.SendAgentTaskResponse{Artifact: art, TraceId: trace}, nil
+}
+
+// agentTaskFor shapes the A2A task SendAgentTask delivers to a peer. run_id is
+// forwarded so the peer's runtime journals the task under the caller's run
+// (#2095).
+func agentTaskFor(caller, toPeerID string, req *pb.SendAgentTaskRequest) *pb.AgentTask {
+	return &pb.AgentTask{
+		Id:        "task-" + caller + "-" + toPeerID,
+		InputJson: req.GetInputJson(),
+		RunId:     req.GetRunId(),
+	}
 }
 
 // genTraceID returns a random 128-bit hex correlation id for an A2A run.

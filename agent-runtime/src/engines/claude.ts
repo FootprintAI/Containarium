@@ -1,6 +1,10 @@
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { Engine, EngineConfig, EngineResult } from "../engine.js";
+import type { JournalSink } from "../journal.js";
 import { claudeAllowedTools, claudeMcpServers, mcpServerSpecs } from "../mcp.js";
+
+// ClaudeQuery is the shape of the Agent SDK's query(), injectable for tests.
+export type ClaudeQuery = (params: Parameters<typeof query>[0]) => AsyncIterable<SDKMessage>;
 
 // ClaudeEngine drives the in-box loop with the Claude Agent SDK (the harness
 // that powers Claude Code). It mounts the in-box agent-box binary as an MCP
@@ -12,12 +16,21 @@ import { claudeAllowedTools, claudeMcpServers, mcpServerSpecs } from "../mcp.js"
 // MCP tools (prefix `mcp__<server>__`) and, when the seed carries a
 // platform_mcp.json (#1922 D4), exactly the platform tools the daemon
 // allow-listed — never the whole platform catalog.
+//
+// Journal (#2095): every assistant text block, tool_use block and tool_result
+// block the query() iterator yields is appended as it arrives; an error
+// result is journaled as an error.
 export class ClaudeEngine implements Engine {
   readonly name = "claude";
 
-  async run(task: string, cfg: EngineConfig): Promise<EngineResult> {
+  // queryFn is the Agent SDK's query(); a seam for tests.
+  constructor(private readonly queryFn: ClaudeQuery = query) {}
+
+  async run(task: string, cfg: EngineConfig, journal: JournalSink): Promise<EngineResult> {
     let text = "";
     let usage: unknown;
+    // tool_use id -> tool name, so a tool_result line can name its tool.
+    const toolNames = new Map<string, string>();
 
     const specs = mcpServerSpecs(cfg);
     const options = {
@@ -29,19 +42,46 @@ export class ClaudeEngine implements Engine {
       mcpServers: claudeMcpServers(specs),
     } as Parameters<typeof query>[0]["options"];
 
-    for await (const message of query({ prompt: task, options })) {
-      const m = message as { type: string; message?: { content?: Array<{ type: string; text?: string }> }; usage?: unknown };
-      if (m.type === "assistant" && m.message?.content) {
-        for (const block of m.message.content) {
-          if (block.type === "text" && block.text) text += block.text;
+    for await (const m of this.queryFn({ prompt: task, options })) {
+      if (m.type === "assistant") {
+        for (const block of m.message.content ?? []) {
+          if (block.type === "text" && block.text) {
+            text += block.text;
+            journal.append({ kind: "assistant", text: block.text });
+          } else if (block.type === "tool_use") {
+            toolNames.set(block.id, block.name);
+            journal.append({ kind: "tool_use", tool: block.name, input: JSON.stringify(block.input ?? {}) });
+          }
         }
-      }
-      if (m.type === "result") {
+      } else if (m.type === "user") {
+        const content = m.message.content;
+        if (typeof content === "string") continue;
+        for (const block of content ?? []) {
+          if (block.type !== "tool_result") continue;
+          journal.append({
+            kind: "tool_result",
+            tool: toolNames.get(block.tool_use_id) ?? "unknown",
+            text: toolResultText(block.content),
+          });
+        }
+      } else if (m.type === "result") {
         usage = m.usage;
+        if (m.subtype !== "success") {
+          const detail = (m.errors ?? []).join("; ");
+          journal.append({ kind: "error", text: detail ? `${m.subtype}: ${detail}` : m.subtype });
+        }
         break;
       }
     }
 
     return { outputJson: text.trim(), usage };
   }
+}
+
+// toolResultText flattens a tool_result's content to text: text blocks
+// verbatim, anything else (an image, a document) as a [type] placeholder.
+function toolResultText(content: string | ReadonlyArray<{ type: string; text?: string }> | undefined): string {
+  if (content === undefined) return "";
+  if (typeof content === "string") return content;
+  return content.map((b) => (b.type === "text" && typeof b.text === "string" ? b.text : `[${b.type}]`)).join("\n");
 }

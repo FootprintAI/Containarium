@@ -858,7 +858,12 @@ type AgentTask struct {
 	// Task identifier (assigned by the caller; unique within a run).
 	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	// JSON task input matching the peer's agent_card input schema.
-	InputJson     string `protobuf:"bytes,2,opt,name=input_json,json=inputJson,proto3" json:"input_json,omitempty"`
+	InputJson string `protobuf:"bytes,2,opt,name=input_json,json=inputJson,proto3" json:"input_json,omitempty"`
+	// The run this task belongs to (the crew run's id when a crew drives the
+	// hop). The in-box runtime journals the task under
+	// /var/log/agent-runtime/runs/<run_id>/<skill_id>.jsonl (#2095); empty
+	// means the task is not part of a tracked run and is not journaled.
+	RunId         string `protobuf:"bytes,3,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -903,6 +908,13 @@ func (x *AgentTask) GetId() string {
 func (x *AgentTask) GetInputJson() string {
 	if x != nil {
 		return x.InputJson
+	}
+	return ""
+}
+
+func (x *AgentTask) GetRunId() string {
+	if x != nil {
+		return x.RunId
 	}
 	return ""
 }
@@ -995,7 +1007,12 @@ type SendAgentTaskRequest struct {
 	// Correlation id threaded through the audit trail for this delegation. A
 	// caller (e.g. a crew, Phase 3) sets it so every hop of a run shares one id;
 	// when empty the daemon generates one. Echoed back in the response.
-	TraceId       string `protobuf:"bytes,4,opt,name=trace_id,json=traceId,proto3" json:"trace_id,omitempty"`
+	TraceId string `protobuf:"bytes,4,opt,name=trace_id,json=traceId,proto3" json:"trace_id,omitempty"`
+	// The run this delegation belongs to, forwarded to the peer as
+	// AgentTask.run_id so the peer's in-box runtime journals the task under
+	// that run (#2095). RunCrew sets it to the crew run's id; empty leaves the
+	// task unjournaled on the peer.
+	RunId         string `protobuf:"bytes,5,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1054,6 +1071,13 @@ func (x *SendAgentTaskRequest) GetInputJson() string {
 func (x *SendAgentTaskRequest) GetTraceId() string {
 	if x != nil {
 		return x.TraceId
+	}
+	return ""
+}
+
+func (x *SendAgentTaskRequest) GetRunId() string {
+	if x != nil {
+		return x.RunId
 	}
 	return ""
 }
@@ -2325,24 +2349,26 @@ const file_containarium_v1_agent_proto_rawDesc = "" +
 	"\x06run_id\x18\x03 \x01(\tR\x05runId\x12\x1d\n" +
 	"\n" +
 	"git_commit\x18\x04 \x01(\tR\tgitCommit\x12%\n" +
-	"\x0eworkspace_path\x18\x05 \x01(\tR\rworkspacePath\":\n" +
+	"\x0eworkspace_path\x18\x05 \x01(\tR\rworkspacePath\"Q\n" +
 	"\tAgentTask\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
 	"\n" +
-	"input_json\x18\x02 \x01(\tR\tinputJson\"\x96\x01\n" +
+	"input_json\x18\x02 \x01(\tR\tinputJson\x12\x15\n" +
+	"\x06run_id\x18\x03 \x01(\tR\x05runId\"\x96\x01\n" +
 	"\rAgentArtifact\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x1f\n" +
 	"\voutput_json\x18\x02 \x01(\tR\n" +
 	"outputJson\x125\n" +
 	"\x05state\x18\x03 \x01(\x0e2\x1f.containarium.v1.AgentTaskStateR\x05state\x12\x14\n" +
-	"\x05error\x18\x04 \x01(\tR\x05error\"\x92\x01\n" +
+	"\x05error\x18\x04 \x01(\tR\x05error\"\xa9\x01\n" +
 	"\x14SendAgentTaskRequest\x12\"\n" +
 	"\rfrom_skill_id\x18\x01 \x01(\tR\vfromSkillId\x12\x1c\n" +
 	"\n" +
 	"to_peer_id\x18\x02 \x01(\tR\btoPeerId\x12\x1d\n" +
 	"\n" +
 	"input_json\x18\x03 \x01(\tR\tinputJson\x12\x19\n" +
-	"\btrace_id\x18\x04 \x01(\tR\atraceId\"n\n" +
+	"\btrace_id\x18\x04 \x01(\tR\atraceId\x12\x15\n" +
+	"\x06run_id\x18\x05 \x01(\tR\x05runId\"n\n" +
 	"\x15SendAgentTaskResponse\x12:\n" +
 	"\bartifact\x18\x01 \x01(\v2\x1e.containarium.v1.AgentArtifactR\bartifact\x12\x19\n" +
 	"\btrace_id\x18\x02 \x01(\tR\atraceId\"S\n" +

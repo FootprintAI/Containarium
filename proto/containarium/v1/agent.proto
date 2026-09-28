@@ -189,6 +189,11 @@ message AgentTask {
   string id = 1;
   // JSON task input matching the peer's agent_card input schema.
   string input_json = 2;
+  // The run this task belongs to (the crew run's id when a crew drives the
+  // hop). The in-box runtime journals the task under
+  // /var/log/agent-runtime/runs/<run_id>/<skill_id>.jsonl (#2095); empty
+  // means the task is not part of a tracked run and is not journaled.
+  string run_id = 3;
 }
 
 // AgentArtifact is the result a peer agent returns for a task.
@@ -219,6 +224,12 @@ message SendAgentTaskRequest {
   // caller (e.g. a crew, Phase 3) sets it so every hop of a run shares one id;
   // when empty the daemon generates one. Echoed back in the response.
   string trace_id = 4;
+
+  // The run this delegation belongs to, forwarded to the peer as
+  // AgentTask.run_id so the peer's in-box runtime journals the task under
+  // that run (#2095). RunCrew sets it to the crew run's id; empty leaves the
+  // task unjournaled on the peer.
+  string run_id = 5;
 }
 
 // SendAgentTaskResponse returns the peer's artifact.
