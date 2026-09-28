@@ -156,11 +156,11 @@ cd Containarium
 make build-linux
 
 # Copy to jump server (via load balancer)
-scp bin/containarium-linux-amd64 admin@35.x.x.x:/tmp/
+scp bin/containariumd-linux-amd64 admin@35.x.x.x:/tmp/
 
 # SSH and install
 ssh admin@35.x.x.x
-sudo mv /tmp/containarium-linux-amd64 /usr/local/bin/containariumd
+sudo mv /tmp/containariumd-linux-amd64 /usr/local/bin/containariumd
 sudo chmod +x /usr/local/bin/containariumd
 sudo ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium
 
@@ -170,8 +170,8 @@ containariumd version
 
 **Repeat for each jump server** (if not using load balancer):
 ```bash
-scp bin/containarium-linux-amd64 admin@35.1.1.1:/tmp/
-ssh admin@35.1.1.1 "sudo mv /tmp/containarium-linux-amd64 /usr/local/bin/containariumd && sudo chmod +x /usr/local/bin/containariumd && sudo ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium"
+scp bin/containariumd-linux-amd64 admin@35.1.1.1:/tmp/
+ssh admin@35.1.1.1 "sudo mv /tmp/containariumd-linux-amd64 /usr/local/bin/containariumd && sudo chmod +x /usr/local/bin/containariumd && sudo ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium"
 
 # Repeat for jump-2, jump-3...
 ```

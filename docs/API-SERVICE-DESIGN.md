@@ -463,11 +463,11 @@ If you need to update the daemon on existing servers:
 make build-linux
 
 # 2. Copy to jump servers
-scp bin/containarium-linux-amd64 admin@jump-1:/tmp/
+scp bin/containariumd-linux-amd64 admin@jump-1:/tmp/
 ssh admin@jump-1
 
 # 3. Install binary
-sudo mv /tmp/containarium-linux-amd64 /usr/local/bin/containariumd
+sudo mv /tmp/containariumd-linux-amd64 /usr/local/bin/containariumd
 sudo chmod +x /usr/local/bin/containariumd
 sudo ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium
 
