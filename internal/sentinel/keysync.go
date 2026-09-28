@@ -62,6 +62,15 @@ type KeyStore struct {
 	mu            sync.RWMutex
 	backends      map[string]*backendKeys // keyed by backend ID
 	configChanged bool
+
+	// caTrustContent/caTrustVersion cache the SSH CA trust bundle relayed
+	// from whichever backend's /authorized-keys response last carried one
+	// (cloud#1928: this sentinel has no cloud credential of its own, so it
+	// picks the bundle up from a backend it already polls). "" version =
+	// nothing cached yet — Apply leaves an existing (e.g. operator-dropped)
+	// trusted_user_ca_keys file untouched in that case.
+	caTrustContent string
+	caTrustVersion string
 }
 
 // NewKeyStore creates a new KeyStore.
@@ -112,6 +121,16 @@ func (ks *KeyStore) Sync(backendID, backendIP string, httpPort int) error {
 	bk.sshPort = keysResp.SSHPort
 	bk.lastSync = time.Now()
 	bk.lastErr = nil
+	// Relay the SSH CA trust bundle (cloud#1928). Refuse an empty one: a
+	// backend that hasn't completed its own first cloud heartbeat yet
+	// reports nothing, and caching that over a good bundle would make Apply
+	// remove trust from every certificate-auth login. A version match is
+	// also a no-op — cheapest path, and keeps caTrustContent from being
+	// reassigned (same string) on every poll.
+	if keysResp.TrustedUserCAKeys != "" && keysResp.SSHTrustVersion != ks.caTrustVersion {
+		ks.caTrustContent = keysResp.TrustedUserCAKeys
+		ks.caTrustVersion = keysResp.SSHTrustVersion
+	}
 	ks.mu.Unlock()
 
 	return nil
@@ -218,6 +237,16 @@ func (ks *KeyStore) Apply() error {
 	}
 	if pruned > 0 {
 		log.Printf("[keysync] pruned %d stale sshpiper user dirs", pruned)
+	}
+
+	// Apply the relayed SSH CA trust bundle (cloud#1928), if any, BEFORE
+	// rendering below — sshpiperCAKeysPath() gates purely on the file's
+	// on-disk presence/size, so a first-ever cached bundle must land before
+	// this same Apply() pass renders, not one cycle later. Best-effort: a
+	// write failure here must not block the users/routes config update that
+	// follows, which is why this ONLY logs rather than returning an error.
+	if err := ks.applyCATrustBundle(); err != nil {
+		log.Printf("[keysync] ssh ca trust bundle apply failed: %v", err)
 	}
 
 	// Generate sshpiper YAML config with per-user backend routing.
@@ -412,14 +441,76 @@ func routeTargetPort(backendIP string, advertised int) int {
 // sshpiperCAKeysPath returns the trusted-user-CA-keys path to embed in the
 // generated config, or "" when no CA trust anchor is installed. Gated on the
 // file existing and being non-empty so the daemon's behaviour is unchanged
-// until an operator installs the CA public key there — certificate auth then
-// turns on without a code change or flag flip, and removing the file turns it
-// back off.
+// until something installs the CA public key there — an operator by hand,
+// or (as of cloud#1928) this daemon's own applyCATrustBundle, relaying what
+// a cloud-enrolled backend cached. Either way certificate auth turns on
+// without a code change or flag flip, and removing the file turns it back
+// off.
 func sshpiperCAKeysPath() string {
 	if fi, err := os.Stat(sshpiperTrustedUserCAKeys); err == nil && !fi.IsDir() && fi.Size() > 0 {
 		return sshpiperTrustedUserCAKeys
 	}
 	return ""
+}
+
+// applyCATrustBundle writes the relayed SSH CA trust bundle (cloud#1928) to
+// sshpiperTrustedUserCAKeys when it differs from what's already there,
+// atomically (temp file + rename in the same directory) so sshpiperd never
+// observes a partial file mid-write. No-op when nothing has been cached yet
+// (ks.caTrustVersion == "") — an operator's manually-dropped file, or
+// whatever was applied before this daemon last restarted, is left exactly
+// as-is rather than removed; this only ever ADDS or REPLACES trust, never
+// clears it, matching the "refuse an empty bundle" rule in Sync.
+func (ks *KeyStore) applyCATrustBundle() error {
+	ks.mu.RLock()
+	content, version := ks.caTrustContent, ks.caTrustVersion
+	ks.mu.RUnlock()
+	return writeCATrustBundleFile(sshpiperTrustedUserCAKeys, content, version)
+}
+
+// writeCATrustBundleFile does the actual atomic write for applyCATrustBundle,
+// taking the target path as a parameter so it's directly testable against a
+// temp file instead of the real /etc/sshpiper (which a test can't write to).
+// No-op when version is "" (nothing cached yet). Skips the write entirely
+// when path's current content already matches — the common case on every
+// poll once converged.
+func writeCATrustBundleFile(path, content, version string) error {
+	if version == "" {
+		return nil
+	}
+	if existing, err := os.ReadFile(path); err == nil && string(existing) == content {
+		return nil // already applied; skip the write + rename
+	}
+
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil { // #nosec G301 -- sshd needs to read this directory
+		return fmt.Errorf("ssh ca trust: mkdir %s: %w", dir, err)
+	}
+	tmp, err := os.CreateTemp(dir, ".trusted_user_ca_keys.*")
+	if err != nil {
+		return fmt.Errorf("ssh ca trust: create temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	writeErr := func() error {
+		if _, err := tmp.WriteString(content); err != nil {
+			return fmt.Errorf("write: %w", err)
+		}
+		if err := tmp.Chmod(0644); err != nil { // #nosec G302 -- sshd (root) must be able to read this file
+			return fmt.Errorf("chmod: %w", err)
+		}
+		return tmp.Close()
+	}()
+	if writeErr != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("ssh ca trust: %w", writeErr)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("ssh ca trust: rename into place: %w", err)
+	}
+	log.Printf("[keysync] ssh ca trust bundle applied: version=%s", version)
+	return nil
 }
 
 // renderSSHPiperConfig builds the sshpiper YAML for the given routes. When

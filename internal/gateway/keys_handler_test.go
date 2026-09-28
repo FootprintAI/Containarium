@@ -15,7 +15,7 @@ import (
 
 func TestServeAuthorizedKeys_Empty(t *testing.T) {
 	// The handler reads from /home which we can't override, so test the response structure
-	handler := ServeAuthorizedKeys("", nil)
+	handler := ServeAuthorizedKeys("", nil, nil)
 	req := httptest.NewRequest(http.MethodGet, "/authorized-keys", nil)
 	rr := httptest.NewRecorder()
 
@@ -35,6 +35,63 @@ func TestServeAuthorizedKeys_Empty(t *testing.T) {
 	t.Logf("got %d keys from /home", len(resp.Keys))
 }
 
+// TestServeAuthorizedKeys_TrustBundleAdvertisedWhenCached is the #1928
+// regression guard on the relay's serving side: when the daemon's cloud
+// client has a cached SSH CA trust bundle, /authorized-keys must include it
+// so a polling sentinel can pick it up.
+func TestServeAuthorizedKeys_TrustBundleAdvertisedWhenCached(t *testing.T) {
+	tmpHome := t.TempDir()
+	mkUser(t, tmpHome, "alice", "ssh-ed25519 AAAA_alice alice@laptop\n")
+
+	provider := func() (content, version string, ok bool) {
+		return "# kid=ca-1 (active)\nssh-ed25519 AAAA_ca\n", "v7", true
+	}
+
+	handler := ServeAuthorizedKeys(tmpHome, nil, provider)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/authorized-keys", nil))
+
+	var resp KeysResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.SSHTrustVersion != "v7" {
+		t.Errorf("SSHTrustVersion = %q, want %q", resp.SSHTrustVersion, "v7")
+	}
+	if !strings.Contains(resp.TrustedUserCAKeys, "AAAA_ca") {
+		t.Errorf("TrustedUserCAKeys = %q, want it to carry the cached bundle", resp.TrustedUserCAKeys)
+	}
+}
+
+// TestServeAuthorizedKeys_TrustBundleOmittedWhenNotCached covers both "no
+// provider wired" (nil, not cloud-enrolled) and "provider wired but nothing
+// cached yet" (ok=false) — neither must add a trust-bundle field to the
+// response, so a sentinel reading an older daemon's response (no fields at
+// all) and a not-yet-heartbeated daemon's response behave identically:
+// leave whatever is already on disk untouched.
+func TestServeAuthorizedKeys_TrustBundleOmittedWhenNotCached(t *testing.T) {
+	tmpHome := t.TempDir()
+	mkUser(t, tmpHome, "alice", "ssh-ed25519 AAAA_alice alice@laptop\n")
+
+	notYetCached := func() (content, version string, ok bool) { return "", "", false }
+
+	for name, provider := range map[string]TrustBundleProvider{"nil provider": nil, "not yet cached": notYetCached} {
+		t.Run(name, func(t *testing.T) {
+			handler := ServeAuthorizedKeys(tmpHome, nil, provider)
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/authorized-keys", nil))
+
+			var resp KeysResponse
+			if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+				t.Fatal(err)
+			}
+			if resp.TrustedUserCAKeys != "" || resp.SSHTrustVersion != "" {
+				t.Errorf("got TrustedUserCAKeys=%q SSHTrustVersion=%q, want both empty", resp.TrustedUserCAKeys, resp.SSHTrustVersion)
+			}
+		})
+	}
+}
+
 // TestServeAuthorizedKeys_OrphanFiltered is the regression guard for
 // #343: when a tenant container has been deleted but the host user +
 // authorized_keys file survive (userdel failure, manual provisioning,
@@ -49,7 +106,7 @@ func TestServeAuthorizedKeys_OrphanFiltered(t *testing.T) {
 	// Filter says alice's container exists, orphan's does not.
 	exists := func(username string) bool { return username == "alice" }
 
-	handler := ServeAuthorizedKeys(tmpHome, exists)
+	handler := ServeAuthorizedKeys(tmpHome, exists, nil)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/authorized-keys", nil))
 
@@ -96,7 +153,7 @@ func TestServeAuthorizedKeys_OrphanWarningSkipsNonContainerShell(t *testing.T) {
 	log.SetOutput(&logBuf)
 	defer log.SetOutput(orig)
 
-	handler := ServeAuthorizedKeys(tmpHome, exists)
+	handler := ServeAuthorizedKeys(tmpHome, exists, nil)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/authorized-keys", nil))
 
@@ -126,7 +183,7 @@ func TestServeAuthorizedKeys_NilFilterIncludesAll(t *testing.T) {
 	mkUser(t, tmpHome, "alice", "ssh-ed25519 AAAA_alice alice@laptop\n")
 	mkUser(t, tmpHome, "bob", "ssh-ed25519 AAAA_bob bob@laptop\n")
 
-	handler := ServeAuthorizedKeys(tmpHome, nil)
+	handler := ServeAuthorizedKeys(tmpHome, nil, nil)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/authorized-keys", nil))
 
@@ -143,7 +200,7 @@ func TestServeAuthorizedKeys_NilFilterIncludesAll(t *testing.T) {
 }
 
 func TestServeAuthorizedKeys_MethodNotAllowed(t *testing.T) {
-	handler := ServeAuthorizedKeys("", nil)
+	handler := ServeAuthorizedKeys("", nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/authorized-keys", nil)
 	rr := httptest.NewRecorder()
 

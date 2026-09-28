@@ -2160,6 +2160,16 @@ skipAppHosting:
 			})
 		}
 
+		// SSH CA trust-bundle relay (#1928): when this host is cloud-enrolled,
+		// /authorized-keys also advertises whatever trust bundle the cloud
+		// client has cached from its heartbeat loop, so a sentinel with no
+		// cloud credential of its own picks it up over the channel it already
+		// polls. nil cloudClient (not enrolled) leaves the provider unset —
+		// SetTrustBundleProvider(nil) is the same as not calling it.
+		if cloudClient != nil {
+			gatewayServer.SetTrustBundleProvider(cloudClient.SSHTrustedUserCAKeys)
+		}
+
 		// On the K8s runtime, boxes have no /home on the node — serve
 		// /authorized-keys from box metadata instead (the client keys the
 		// K8s backend records per tenant), and advertise the in-cluster

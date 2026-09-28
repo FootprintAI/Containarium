@@ -87,6 +87,12 @@ type GatewayServer struct {
 	// Wired from dual_server using the container manager.
 	containerExistsFn func(username string) bool
 
+	// trustBundleProvider feeds /authorized-keys' cached SSH CA trust
+	// bundle (#1928). nil = this daemon has no cloud client enrolled, so
+	// the response never carries one. Wired from dual_server to
+	// cloud.Client.SSHTrustedUserCAKeys when the host is cloud-enrolled.
+	trustBundleProvider TrustBundleProvider
+
 	// authorizedKeysHandler overrides the default home-dir-walking
 	// /authorized-keys handler. The K8s runtime installs a lister-backed
 	// handler here (boxes have no /home on the node). nil = default.
@@ -256,6 +262,15 @@ func (gs *GatewayServer) SetSentinelKeyHandler(h http.HandlerFunc) {
 // disconnected" symptom.
 func (gs *GatewayServer) SetContainerExistsFn(fn func(username string) bool) {
 	gs.containerExistsFn = fn
+}
+
+// SetTrustBundleProvider wires /authorized-keys to advertise the cached SSH
+// CA trust bundle (#1928). Called from dual_server with
+// cloudClient.SSHTrustedUserCAKeys when the host is cloud-enrolled; left
+// unset (nil) makes the response never carry a bundle, unchanged from
+// before this existed.
+func (gs *GatewayServer) SetTrustBundleProvider(p TrustBundleProvider) {
+	gs.trustBundleProvider = p
 }
 
 // SetBackendsHandler sets the handler for the /v1/backends endpoint.
@@ -916,7 +931,7 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	httpMux.Handle("/certs", sentinelVerifier.Middleware(ServeCerts(gs.caddyCertDir)))
 	authorizedKeysHandler := gs.authorizedKeysHandler
 	if authorizedKeysHandler == nil {
-		authorizedKeysHandler = ServeAuthorizedKeys("", gs.containerExistsFn)
+		authorizedKeysHandler = ServeAuthorizedKeys("", gs.containerExistsFn, gs.trustBundleProvider)
 	}
 	httpMux.Handle("/authorized-keys", sentinelVerifier.Middleware(authorizedKeysHandler))
 	sentinelKeyHandler := gs.sentinelKeyHandler
