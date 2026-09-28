@@ -29,6 +29,7 @@ on:
 permissions:
   contents: read
   packages: write   # for GHCR push
+  security-events: write   # for the Trivy SARIF upload in each job below
 
 jobs:
   otel-sidecar:
@@ -69,6 +70,7 @@ jobs:
             echo "version=v${version}"
             echo "minor=${minor}"
             echo "tags=${base}:v${version},${base}:${minor},${base}:latest-stable"
+            echo "scan_ref=${base}:v${version}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Build and push otel-sidecar
@@ -83,9 +85,40 @@ jobs:
           push: ${{ startsWith(github.ref, 'refs/tags/v') }}
           tags: ${{ steps.tags.outputs.tags }}
           # Build provenance + SBOM are GHA-default for buildx push;
-          # explicit so it's reviewable.
+          # explicit so it's reviewable. NOTE: this is why the Trivy step
+          # below can't use `load: true` on this same step — buildx's
+          # docker-load exporter can't emit a manifest list, and enabling
+          # provenance/sbom forces one even for a single-platform build
+          # ("docker exporter does not currently support exporting
+          # manifest lists"). Pulling the pushed tag back down avoids it.
           provenance: true
           sbom: true
+
+      # Scans the actual image just published — pulled back from GHCR
+      # rather than `load: true`d out of the build step above (see its
+      # comment). Real tag pushes only: a rehearsal doesn't push anything,
+      # so there is nothing here to pull.
+      - name: Pull published image for scanning
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: docker pull ${{ steps.tags.outputs.scan_ref }}
+
+      - name: Run Trivy vulnerability scanner (image)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.tags.outputs.scan_ref }}
+          format: 'sarif'
+          output: 'trivy-otel-sidecar-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          limit-severities-for-sarif: 'true'
+          ignore-unfixed: 'true'
+          exit-code: '1'
+
+      - name: Upload Trivy SARIF results
+        if: always() && startsWith(github.ref, 'refs/tags/v')
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-otel-sidecar-results.sarif
 
   sshpiper:
     runs-on: ubuntu-latest
@@ -115,6 +148,7 @@ jobs:
           base="ghcr.io/footprintai/containarium-sshpiper"
           {
             echo "tags=${base}:v${version},${base}:${minor},${base}:latest-stable"
+            echo "scan_ref=${base}:v${version}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Build and push containarium-sshpiper
@@ -126,8 +160,36 @@ jobs:
           # Push on tag only; a rehearsal builds the image and discards it.
           push: ${{ startsWith(github.ref, 'refs/tags/v') }}
           tags: ${{ steps.tags.outputs.tags }}
+          # See the otel-sidecar job's comment above for why the Trivy step
+          # below pulls the pushed tag instead of using `load: true` here.
           provenance: true
           sbom: true
+
+      # Note: sshpiper-image.yml already scans a build of this same
+      # Dockerfile on every PR/push to main — this scans the actual image
+      # about to be published on a release tag instead. Real tag pushes
+      # only, same reasoning as the otel-sidecar job above.
+      - name: Pull published image for scanning
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: docker pull ${{ steps.tags.outputs.scan_ref }}
+
+      - name: Run Trivy vulnerability scanner (image)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.tags.outputs.scan_ref }}
+          format: 'sarif'
+          output: 'trivy-sshpiper-release-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          limit-severities-for-sarif: 'true'
+          ignore-unfixed: 'true'
+          exit-code: '1'
+
+      - name: Upload Trivy SARIF results
+        if: always() && startsWith(github.ref, 'refs/tags/v')
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-sshpiper-release-results.sarif
 
   agent-box:
     runs-on: ubuntu-latest
@@ -157,6 +219,7 @@ jobs:
           base="ghcr.io/footprintai/containarium-agent-box"
           {
             echo "tags=${base}:v${version},${base}:${minor},${base}:latest-stable"
+            echo "scan_ref=${base}:v${version}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Build and push containarium-agent-box
@@ -169,5 +232,33 @@ jobs:
           # Push on tag only; a rehearsal builds the image and discards it.
           push: ${{ startsWith(github.ref, 'refs/tags/v') }}
           tags: ${{ steps.tags.outputs.tags }}
+          # See the otel-sidecar job's comment above for why the Trivy step
+          # below pulls the pushed tag instead of using `load: true` here.
           provenance: true
           sbom: true
+
+      # Note: agent-box-image.yml already scans a build of this same
+      # Dockerfile on every PR/push to main — this scans the actual image
+      # about to be published on a release tag instead. Real tag pushes
+      # only, same reasoning as the otel-sidecar job above.
+      - name: Pull published image for scanning
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: docker pull ${{ steps.tags.outputs.scan_ref }}
+
+      - name: Run Trivy vulnerability scanner (image)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.tags.outputs.scan_ref }}
+          format: 'sarif'
+          output: 'trivy-agent-box-release-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          limit-severities-for-sarif: 'true'
+          ignore-unfixed: 'true'
+          exit-code: '1'
+
+      - name: Upload Trivy SARIF results
+        if: always() && startsWith(github.ref, 'refs/tags/v')
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-agent-box-release-results.sarif
