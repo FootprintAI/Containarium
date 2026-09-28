@@ -11,6 +11,7 @@ import (
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/tracker"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -225,7 +226,9 @@ func TestCommentOnTrackerIssue_RejectsEmptyBody(t *testing.T) {
 // a run-scoped caller's comment reaches the provider sanitized and
 // stamped with its run identity, and an audit row is written.
 func TestCommentOnTrackerIssue_StampsSanitizesAndAudits(t *testing.T) {
-	const user = "tracker-rpc-comment-happy"
+	// Unique per invocation: fixed usernames accumulate audit rows when
+	// the same Postgres database is reused, inflating the exact-one counts.
+	user := "tracker-rpc-comment-happy-" + uuid.NewString()
 	provider := &fakeWriterProvider{}
 	s, ctx := setUpWriterConnection(t, user, provider)
 	s.auditStore = mustTestAuditStore(t)
@@ -299,7 +302,9 @@ func TestClaimTrackerIssue_NoClaimLocksConfigured(t *testing.T) {
 // writer connection, acquiring the per-issue lock, and mapping the result
 // onto the response and an audit row.
 func TestClaimTrackerIssue_HappyPath(t *testing.T) {
-	const user = "tracker-rpc-claim-happy"
+	// Unique per invocation: fixed usernames accumulate audit rows when
+	// the same Postgres database is reused, inflating the exact-one counts.
+	user := "tracker-rpc-claim-happy-" + uuid.NewString()
 	provider := &fakeWriterProvider{
 		fakeReaderProvider: fakeReaderProvider{
 			issue: tracker.Issue{Number: 9, State: pb.TrackerIssueState_TRACKER_ISSUE_STATE_OPEN},
@@ -400,7 +405,9 @@ func TestSetTrackerIssueLabels_TrackerReadScopeInsufficient(t *testing.T) {
 }
 
 func TestSetTrackerIssueLabels_HappyPath(t *testing.T) {
-	const user = "tracker-rpc-labels-happy"
+	// Unique per invocation: fixed usernames accumulate audit rows when
+	// the same Postgres database is reused, inflating the exact-one counts.
+	user := "tracker-rpc-labels-happy-" + uuid.NewString()
 	provider := &fakeWriterProvider{}
 	s, ctx := setUpWriterConnection(t, user, provider)
 	s.auditStore = mustTestAuditStore(t)

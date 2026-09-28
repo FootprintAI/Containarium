@@ -11,6 +11,7 @@ import (
 	"github.com/footprintai/containarium/internal/tracker"
 	"github.com/footprintai/containarium/internal/tracker/submit"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -234,7 +235,9 @@ func TestSetTrackerConnection_AuditsCreateUpdateAndDelete(t *testing.T) {
 	secretsStore := mustTestSecretsStore(t)
 	trackerStore := mustTestTrackerStore(t)
 	s := &ContainerServer{secretsStore: secretsStore, trackerStore: trackerStore, auditStore: mustTestAuditStore(t)}
-	const user = "tracker-rpc-connection-audit"
+	// Unique per invocation: fixed usernames accumulate audit rows when
+	// the same Postgres database is reused, inflating the exact-one counts.
+	user := "tracker-rpc-connection-audit-" + uuid.NewString()
 
 	secretCtx := kmsKeyTestCtx(user, "member", "secrets:write")
 	for _, name := range []string{"GH_TOKEN", "GH_TOKEN_2"} {
