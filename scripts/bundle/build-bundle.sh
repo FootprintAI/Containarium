@@ -73,7 +73,7 @@ log_info "Bundle: $BUNDLE_NAME"
 log_info "Repo:   $REPO_ROOT"
 log_info "Cache:  $CACHE_DIR"
 
-require_file "$REPO_ROOT/bin/containarium-${OS}-${ARCH}" \
+require_file "$REPO_ROOT/bin/containariumd-${OS}-${ARCH}" \
   "run 'make build-release' first"
 require_file "$REPO_ROOT/bin/mcp-server-${OS}-${ARCH}" \
   "run 'make build-release' first"
@@ -103,11 +103,10 @@ mkdir -p \
 log_info "Copying core binaries (containariumd, mcp-server, agent-box)"
 # Strip the -${OS}-${ARCH} suffix inside the bundle — once extracted on
 # the target host the user expects `bin/containariumd`, not
-# `bin/containarium-linux-amd64`. #1781/#1782 (design doc, Rollout Phase 1):
-# bin/containarium-${OS}-${ARCH} is still the server build during Phase 1
-# (containarium-* ships the daemon in parallel with containariumd-* — see
-# #1782), so the source path here is unchanged; only the staged name flips.
-install -m 0755 "$REPO_ROOT/bin/containarium-${OS}-${ARCH}" "$STAGING/bin/containariumd"
+# `bin/containariumd-linux-amd64`. #1784 (design doc, Rollout Phase 2): the
+# source is the containariumd-* server build — containarium-* is the client
+# build from Phase 2 on and must never be staged as the daemon.
+install -m 0755 "$REPO_ROOT/bin/containariumd-${OS}-${ARCH}" "$STAGING/bin/containariumd"
 install -m 0755 "$REPO_ROOT/bin/mcp-server-${OS}-${ARCH}"   "$STAGING/bin/mcp-server"
 install -m 0755 "$REPO_ROOT/bin/agent-box-${OS}-${ARCH}"    "$STAGING/bin/agent-box"
 

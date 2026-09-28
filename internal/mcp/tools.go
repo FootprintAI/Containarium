@@ -1691,6 +1691,11 @@ func (s *Server) registerTools() {
 	// `containarium tracker issue/change ...` also calls.
 	s.tools = append(s.tools, trackerTools()...)
 
+	// Model-gateway mint (#1726, gateway_tools.go) — one thin wrapper over the
+	// ModelGatewayService gateway that `containarium gateway mint` also calls.
+	// The key verbs are operator-gated and deliberately absent.
+	s.tools = append(s.tools, gatewayTools()...)
+
 	// Phase 1.7 — assign required scope per tool. Done as a
 	// post-pass so the slice literals above stay short and
 	// the security policy lives in one auditable spot. New
@@ -1731,6 +1736,12 @@ func toolScopeAssignments() map[string]string {
 		"tracker_submit_change": auth.ScopeTrackerWrite,
 		// #2021: route reads are tracker:admin like the RPC itself, so a
 		// run's tracker:read/write token never sees this tool.
+		// model gateway (#1726): minting a scoped, expiring token for a box
+		// the caller owns is gateway:mint. gateway:admin — which writes the
+		// REAL upstream provider key — has no tool at all, so no agent token
+		// can reach it through MCP however it is scoped.
+		"mint_gateway_token": auth.ScopeGatewayMint,
+
 		"tracker_route_list":   auth.ScopeTrackerAdmin,
 		"tracker_create_issue": auth.ScopeTrackerWrite,
 		"code_status":          auth.ScopeCodeWrite,

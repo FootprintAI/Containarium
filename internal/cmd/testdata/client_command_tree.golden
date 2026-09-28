@@ -63,6 +63,11 @@ debug
 delete
 egress-via-client
 expose-port
+gateway key delete
+gateway key set
+gateway key status
+gateway mint
+gateway models
 get
 info
 install-stack

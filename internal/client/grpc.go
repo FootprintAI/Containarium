@@ -29,6 +29,8 @@ type GRPCClient struct {
 	clusterClient pb.ClusterServiceClient
 	sandboxClient pb.SandboxServiceClient
 	trackerClient pb.TrackerServiceClient
+	// modelGatewayClient is the model gateway's admin + mint surface (#1726).
+	modelGatewayClient pb.ModelGatewayServiceClient
 }
 
 // NewGRPCClient creates a new gRPC client
@@ -93,21 +95,23 @@ func NewGRPCClient(serverAddr string, certsDir string, insecureConn bool) (*GRPC
 	clusterClient := pb.NewClusterServiceClient(conn)
 	sandboxClient := pb.NewSandboxServiceClient(conn)
 	trackerClient := pb.NewTrackerServiceClient(conn)
+	modelGatewayClient := pb.NewModelGatewayServiceClient(conn)
 
 	return &GRPCClient{
-		conn:          conn,
-		client:        client,
-		appClient:     appClient,
-		networkClient: networkClient,
-		recipeClient:  recipeClient,
-		backupClient:  backupClient,
-		volumeClient:  volumeClient,
-		kmsClient:     kmsClient,
-		agentClient:   agentClient,
-		crewClient:    crewClient,
-		clusterClient: clusterClient,
-		sandboxClient: sandboxClient,
-		trackerClient: trackerClient,
+		conn:               conn,
+		client:             client,
+		appClient:          appClient,
+		networkClient:      networkClient,
+		recipeClient:       recipeClient,
+		backupClient:       backupClient,
+		volumeClient:       volumeClient,
+		kmsClient:          kmsClient,
+		agentClient:        agentClient,
+		crewClient:         crewClient,
+		clusterClient:      clusterClient,
+		sandboxClient:      sandboxClient,
+		trackerClient:      trackerClient,
+		modelGatewayClient: modelGatewayClient,
 	}, nil
 }
 

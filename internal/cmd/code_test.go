@@ -11,9 +11,22 @@ import (
 	"testing"
 
 	"github.com/footprintai/containarium/internal/coderun"
+	"github.com/footprintai/containarium/internal/coderun/engine"
 	"github.com/footprintai/containarium/internal/connectcore"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/spf13/cobra"
 )
+
+// mustEngine builds an engine or fails the test, for table entries where the
+// two-value form would be unreadable.
+func mustEngine(t *testing.T, name engine.Name, cred engine.CredentialSource) engine.Engine {
+	t.Helper()
+	e, err := engine.For(name, engine.Options{Credential: cred})
+	if err != nil {
+		t.Fatalf("engine.For(%q): %v", name, err)
+	}
+	return e
+}
 
 func TestShellQuoteSingle_RoundTripsThroughARealShell(t *testing.T) {
 	cases := []string{
@@ -396,12 +409,50 @@ func TestCodeInstall_PrintsBothSignInPaths(t *testing.T) {
 // executed on a remote host, where a syntax error surfaces as an opaque exit
 // status hours after the typo.
 func TestCodeInstallScripts_AreValidPOSIXShell(t *testing.T) {
+	// #1727's scripts join this list. They carry JSON (models.json, code.json)
+	// and a bearer token through single-quoted shell words, which is exactly the
+	// kind of concatenation that produces a script that looks fine and is not.
+	piGateway, err := engine.For(engine.NamePi,
+		engine.Options{Credential: engine.GatewayCredential{Provider: "kafeido"}, Model: "kafeido-coder"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	piSecret, err := engine.For(engine.NamePi,
+		engine.Options{Credential: engine.SecretCredential{Name: "OPENAI_API_KEY"}, Model: "gpt-5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	modelsJSON, err := engine.RenderPiModelsJSON(engine.PiModelsParams{
+		Provider:    pb.GatewayProvider_GATEWAY_PROVIDER_KAFEIDO,
+		GatewayBase: "http://10.0.0.1:8866/v1/model/kafeido",
+		TokenEnvVar: engine.GatewayTokenEnvVar,
+		Model:       "kafeido-coder",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	scripts := map[string]string{
 		"claude-install":      claudeInstallScriptFor("1.2.3"),
 		"claude-install-bare": claudeInstallScriptFor(""),
 		"agent-box":           agentBoxInstallScript("v0.89.0"),
 		"bootstrap":           bootstrapScript("https://example.test/b.tar.gz"),
 		"verify":              claudeVerifyScript(),
+
+		"pi-install":        piGateway.InstallScript(engine.InstallOptions{Version: engine.PiVersion, ModelsJSON: string(modelsJSON)}),
+		"pi-verify-gateway": piGateway.VerifyScript(),
+		"pi-verify-secret":  piSecret.VerifyScript(),
+		"claude-verify-gateway": mustEngine(t, engine.NameClaude,
+			engine.GatewayCredential{Provider: "anthropic"}).VerifyScript(),
+		// A token with quotes in it is the shape that breaks naive quoting.
+		"gateway-env": writeGatewayEnvScript("$HOME/.pi/gateway.env", &pb.MintGatewayTokenResponse{
+			BaseUrl: "http://10.0.0.1:8866/v1/model/kafeido",
+			Token:   `tok'with"quotes and $(subshell)`,
+		}),
+		"code-json": writeCodeConfigScript(engine.CodeConfig{
+			Version: 1, Engine: engine.NamePi, Credential: engine.KindGateway,
+			Provider: "kafeido", Model: "kafeido-coder",
+		}),
 	}
 	for name, script := range scripts {
 		t.Run(name, func(t *testing.T) {

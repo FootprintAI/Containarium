@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/coderun"
+	"github.com/footprintai/containarium/internal/coderun/engine"
 	"github.com/footprintai/containarium/internal/connectcore"
+	"github.com/footprintai/containarium/internal/gatewayprovider"
 	"github.com/footprintai/containarium/internal/sshkey"
 	"github.com/footprintai/containarium/pkg/version"
 	"github.com/spf13/cobra"
@@ -41,10 +43,12 @@ import (
 // credential — so this command installs a toolchain and stops there. It
 // neither reads, lists, nor names a Claude.ai token.
 
-// claudeInstallScript is Claude Code's own native installer, run verbatim. It
-// writes to ~/.local/bin/claude — user-level, no root — which is exactly why
-// `code install` doesn't need a daemon-side privileged exec path.
-const claudeInstallScript = "curl -fsSL https://claude.ai/install.sh | bash"
+// claudeInstallScript and codeInstallStateFile moved to
+// internal/coderun/engine with the rest of Claude Code's engine behaviour
+// (#1727). They are ALIASED rather than re-declared so there is exactly one
+// definition: two copies of an installer line is how the CLI and the engine
+// drift, and #2030's tests assert on these names.
+const claudeInstallScript = engine.ClaudeInstallScript
 
 // agentBoxRepo is where the agent-box / mcp-server release assets live. Same
 // assets scripts/install-agent-runtime.sh pulls for the agent-runtime recipe
@@ -57,11 +61,9 @@ const agentBoxRepo = "FootprintAI/Containarium"
 // laptops, not for this path.
 const agentBoxAssetArch = "linux-amd64"
 
-// codeInstallStateFile carries one bit from the install step to the verify
-// step: whether ~/.claude/.credentials.json already existed. A user who
-// signed in through Anthropic's flow legitimately has one, so the assertion
-// that has to hold is "the install did not create it", not "there is none".
-const codeInstallStateFile = "$HOME/.cache/containarium/code-install-state"
+// The install-state file that carries "did a credentials file exist before the
+// install?" from the install step to the verify step now lives with the rest of
+// Claude Code's engine behaviour, as engine.ClaudeInstallStateFile (#1727).
 
 // defaultCodeRunName is the process name used when --name is omitted, so
 // the common case ("one coding task per box at a time") never requires the
@@ -92,6 +94,15 @@ var (
 	codeBootstrapURL      string
 	codeRelease           string
 	codeClaudeCodeVersion string
+
+	// `code install` engine + credential selection (#1727).
+	codeEngine          string
+	codeCredential      string
+	codeProvider        string
+	codeSecretName      string
+	codeProviderBaseURL string
+	codeModel           string
+	codePiVersion       string
 )
 
 // Test seams. Production never reassigns these; they exist so the install
@@ -99,6 +110,14 @@ var (
 var (
 	sshExec             = runSSHCaptured
 	resolveCodeTargetFn = resolveCodeTarget
+	// mintGatewayTokenFn is the ModelGatewayService mint call (#1726), behind a
+	// seam so the install and run paths are testable without a daemon. #1727
+	// CONSUMES that RPC and does not modify it.
+	mintGatewayTokenFn = mintGatewayTokenViaClient
+	// listSecretsFn is the metadata-only secrets read the `secret` credential
+	// source's preflight uses. Metadata only: name and delivery mode, never a
+	// value.
+	listSecretsFn = listSecretMetadata
 )
 
 var codeCmd = &cobra.Command{
@@ -108,12 +127,34 @@ var codeCmd = &cobra.Command{
 
 var codeInstallCmd = &cobra.Command{
 	Use:   "install <box>",
-	Short: "Install the Claude Code CLI onto an existing, already-provisioned box",
-	Long: `Installs Claude Code onto a box you already use, over the existing SSH
+	Short: "Install a coding agent onto an existing, already-provisioned box",
+	Long: `Installs a coding agent onto a box you already use, over the existing SSH
 path — no new box type, no daemon-side privileged exec.
 
-This command installs a toolchain and nothing else. It carries no credential:
-Claude Code's terms require sign-in to complete through Anthropic's own flow
+--engine picks the agent; it DEFAULTS TO claude, so an invocation that worked
+before this flag existed behaves exactly as it did.
+
+  --engine claude   Claude Code (the default)
+  --engine pi       pi (https://pi.dev), which runs inside the box — see
+                    docs/integrations/pi.md
+
+--credential picks where the engine's model credential comes from; it defaults
+to secret, again the pre-existing behaviour.
+
+  --credential secret    the box's own environment carries a provider key,
+                         delivered by the secrets store. With --secret-name the
+                         install checks that secret's delivery mode is one an
+                         SSH shell session can actually see (env delivery is
+                         not — see docs/integrations/pi.md).
+  --credential gateway   the box holds a short-lived, scoped token from the
+                         containarium model gateway instead of a provider key,
+                         and the real upstream key never leaves the daemon.
+                         Needs --provider. Validated at install time with a
+                         dry-run mint, so a missing key is named here rather
+                         than at your first prompt.
+
+Claude Code + secret carries no credential at all: Claude Code's terms require
+sign-in to complete through Anthropic's own flow
 (https://code.claude.com/docs/en/legal-and-compliance), so you bring your own
 afterwards, one of two ways:
 
@@ -128,11 +169,20 @@ afterwards, one of two ways:
   interactive claude and agent-box-launched runs read it.
 
 It also lands the agent-box helper on ~/.local/bin, so containarium code
-run/attach/status/stop work on this box.
+run/attach/status/stop work on this box, and records the choices above in
+~/.containarium/code.json (0600) so ` + "`code run`" + ` never re-asks.
 
-After installing it prints the binary version, asserts the install created no
-~/.claude/.credentials.json, and reports which credential SOURCE the box has —
-names only, never a value.`,
+After installing it prints the binary version and reports which credential
+SOURCE the box has — names only, never a value. On the Claude path it also
+asserts the install created no ~/.claude/.credentials.json.
+
+Examples:
+  containarium code install alice
+  containarium code install alice --engine pi --credential gateway \
+      --provider kafeido --model kafeido-coder
+  containarium code install alice --engine pi --credential secret \
+      --secret-name OPENAI_API_KEY --provider-base-url https://api.openai.com/v1 \
+      --model gpt-5`,
 	Args: cobra.ExactArgs(1),
 	RunE: runCodeInstall,
 }
@@ -169,7 +219,31 @@ func init() {
 	codeInstallCmd.Flags().StringVar(&codeClaudeCodeVersion, "claude-code-version", "",
 		"pin the Claude Code version the installer fetches (default: whatever the installer considers current)")
 
+	// #1727: engine and credential source as typed choices.
+	//
+	// --engine DEFAULTS TO claude. That default is the compatibility contract
+	// for every box and every script that predates this flag, and
+	// TestCodeInstall_EngineDefaultsToClaude pins it.
+	codeInstallCmd.Flags().StringVar(&codeEngine, "engine", string(engine.DefaultName),
+		"coding engine to install: "+strings.Join(engine.Names(), " | "))
+	codeInstallCmd.Flags().StringVar(&codeCredential, "credential", string(engine.DefaultKind),
+		"where the engine's model credential comes from: "+strings.Join(engine.Kinds(), " | "))
+	codeInstallCmd.Flags().StringVar(&codeProvider, "provider", "",
+		"gateway provider to mint tokens for, with --credential gateway (one of: "+strings.Join(gatewayprovider.Names(), ", ")+")")
+	codeInstallCmd.Flags().StringVar(&codeSecretName, "secret-name", "",
+		"tenant secret holding the provider key, with --credential secret (e.g. ANTHROPIC_API_KEY)")
+	codeInstallCmd.Flags().StringVar(&codeProviderBaseURL, "provider-base-url", "",
+		"point the engine at this base URL instead of the gateway's (complete URL; no per-provider suffix is added)")
+	codeInstallCmd.Flags().StringVar(&codeModel, "model", "",
+		"model id to pin runs to; also the gateway token's allowed_models ceiling")
+	codeInstallCmd.Flags().StringVar(&codePiVersion, "pi-version", engine.PiVersion,
+		"pin the pi version installed with --engine pi")
+
 	codeRunCmd.Flags().StringVar(&codeRunPrompt, "prompt", "", "prompt to give the agent (required)")
+	codeRunCmd.Flags().BoolVar(&codeRunContinue, "continue", false,
+		"resume the engine's most recent session in the run's working directory instead of starting a fresh one (`pi -c`, `claude --continue`)")
+	codeRunCmd.Flags().StringVar(&codeRunTokenTTL, "token-ttl", "",
+		"lifetime of the gateway token minted for this run (e.g. 2h); capped server-side. Default 24h")
 	codeRunCmd.Flags().BoolVar(&codeRunStreamJSON, "output-format-stream-json", false,
 		"capture stdout/stderr separately (framed capture_mode) so a JSON stream on stdout isn't corrupted by diagnostics; without this, both are interleaved as plain text")
 	codeAttachCmd.Flags().BoolVar(&codeAttachStreamJSON, "output-format-stream-json", false,
@@ -250,11 +324,6 @@ func resolveCodeSession(ctx context.Context, box string, diag io.Writer) (*coder
 	return sess, nil
 }
 
-// buildClaudeRunCommand renders the command process_start actually spawns:
-// source whatever secrets delivery `containarium code install` set up, then
-// invoke claude non-interactively. Sourcing here — not relying on a
-// login-shell profile — is self-contained per invocation, matching the same
-// reasoning claudeVerifyScript uses.
 // streamAndWait streams path's output to stdout (demultiplexed to
 // stdout+stderr when streamJSON) until ctx is cancelled or name's run has
 // exited, polling process_list independently of the tail_log loop to
@@ -335,19 +404,27 @@ func codeInstallRelease() (string, error) {
 // claudeCodeVersion, when set, is passed to the installer as its argument —
 // the installer's own documented way to pin a version. The command line
 // itself is unchanged.
+// The body now lives on the claude engine (#1727); this is the package-local
+// name #2030's tests drive, delegating so there is one implementation of the
+// script that actually reaches a box.
 func claudeInstallScriptFor(claudeCodeVersion string) string {
-	installer := claudeInstallScript
-	if v := strings.TrimSpace(claudeCodeVersion); v != "" {
-		installer += " -s " + coderun.ShellQuoteSingle(v)
+	return defaultClaudeEngine().InstallScript(engine.InstallOptions{Version: claudeCodeVersion})
+}
+
+// defaultClaudeEngine is the Claude engine on the default credential source —
+// i.e. exactly what `code install` with no #1727 flags resolves to.
+//
+// engine.For cannot fail for a known engine with a non-nil credential, so the
+// error is discarded here rather than propagated into call sites whose signatures
+// predate #1727. The panic-free guarantee is pinned by
+// TestCodeInstall_DefaultEngineConstantIsClaude driving the real install path.
+func defaultClaudeEngine() engine.Engine {
+	e, err := engine.For(engine.NameClaude, engine.Options{Credential: engine.SecretCredential{}})
+	if err != nil {
+		// Unreachable: NameClaude is a known engine and the credential is non-nil.
+		panic("containarium: claude engine unavailable: " + err.Error())
 	}
-	return `set -e
-mkdir -p "$(dirname "` + codeInstallStateFile + `")"
-if [ -f "$HOME/.claude/.credentials.json" ]; then
-  echo present > "` + codeInstallStateFile + `"
-else
-  echo absent > "` + codeInstallStateFile + `"
-fi
-` + installer
+	return e
 }
 
 // agentBoxInstallScript lands agent-box (and, best-effort, mcp-server) in
@@ -410,40 +487,12 @@ cd "$tmp" && ./apply.sh`
 // box has. That last part is deliberately NAMES ONLY — every branch tests for
 // presence and echoes a literal, because expanding any of these would put a
 // live credential into the CLI's output and the user's scrollback.
+// The body now lives on the claude engine (#1727). #2030's tests drive this
+// name, including one that EXECUTES the script against a throwaway HOME — which
+// is why delegating rather than copying matters: that behavioural test now
+// covers the engine's own implementation.
 func claudeVerifyScript() string {
-	return `set -e
-"$HOME/.local/bin/claude" --version
-creds="$HOME/.claude/.credentials.json"
-before=absent
-if [ -f "` + codeInstallStateFile + `" ]; then
-  before="$(cat "` + codeInstallStateFile + `")"
-  rm -f "` + codeInstallStateFile + `"
-fi
-if [ "$before" = absent ] && [ -f "$creds" ]; then
-  echo "the install created $creds — containarium never mints or stores a Claude.ai credential" >&2
-  exit 3
-fi
-echo "credential sources present:"
-found=0
-if [ -f "$creds" ]; then
-  echo "  - $creds (signed in through Anthropic's own flow)"
-  found=1
-fi
-settings="$HOME/.claude/settings.json"
-for key in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN; do
-  if [ -f "$settings" ] && grep -q "\"$key\"" "$settings"; then
-    echo "  - $key in the env block of $settings"
-    found=1
-  fi
-done
-providers="$(env | sed -n 's/^\(CLAUDE_CODE_USE_[A-Z0-9_]*\)=.*/\1/p')"
-if [ -n "$providers" ]; then
-  for p in $providers; do echo "  - $p (3P inference provider)"; done
-  found=1
-fi
-if [ "$found" = 0 ]; then
-  echo "  (none yet — sign in on the box, or place your own key in $settings)"
-fi`
+	return defaultClaudeEngine().VerifyScript()
 }
 
 // buildClaudeSSHArgs wraps connectcore.BuildSSHArgs for this command's
@@ -478,10 +527,30 @@ func runCodeInstall(cmd *cobra.Command, args []string) error {
 		return sshExec(diag, buildClaudeSSHArgs(target, privPath, script))
 	}
 
-	if _, err := run(claudeInstallScriptFor(codeClaudeCodeVersion)); err != nil {
-		return fmt.Errorf("install claude on %q: %w", box, err)
+	// #1727: resolve the engine and its credential source from the flags, and
+	// run the credential source's own install-time preflight BEFORE installing
+	// anything. Failing here costs the user nothing; failing at their first
+	// prompt costs them a debugging session.
+	plan, err := resolveCodeInstallPlan(box)
+	if err != nil {
+		return err
 	}
-	fmt.Fprintf(diag, "✓ claude installed on %s\n", box)
+	mint, err := codeInstallPreflight(ctx, box, plan, diag)
+	if err != nil {
+		return err
+	}
+
+	// models.json needs the gateway base the preflight just resolved, so it is
+	// rendered here rather than in resolveCodeInstallPlan.
+	installOpts, err := plan.installOptions(mint)
+	if err != nil {
+		return err
+	}
+
+	if _, err := run(plan.engine.InstallScript(installOpts)); err != nil {
+		return fmt.Errorf("install %s on %q: %w", plan.engine.Name(), box, err)
+	}
+	fmt.Fprintf(diag, "✓ %s installed on %s\n", plan.engine.Name(), box)
 
 	if _, err := run(agentBoxInstallScript(release)); err != nil {
 		return fmt.Errorf("install agent-box (%s) on %q: %w", release, box, err)
@@ -495,16 +564,32 @@ func runCodeInstall(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(diag, "✓ bootstrap bundle applied on %s\n", box)
 	}
 
-	out, err := run(claudeVerifyScript())
+	// Record the choices so `code run` never re-asks (contract C4).
+	if _, err := run(writeCodeConfigScript(plan.config)); err != nil {
+		return fmt.Errorf("write %s on %q: %w", engine.CodeConfigPath, box, err)
+	}
+	fmt.Fprintf(diag, "✓ recorded %s on %s (engine=%s credential=%s)\n",
+		engine.CodeConfigPath, box, plan.config.Engine, plan.config.Credential)
+
+	// A gateway-credentialled box needs a real token to verify with. It is
+	// deliberately SHORT-LIVED (codeVerifyTokenTTL): its only job is to prove the
+	// box can reach a model once, and `code run` mints its own per run.
+	if plan.credential.Kind() == engine.KindGateway {
+		if err := mintAndWriteVerifyToken(ctx, box, plan, run, diag); err != nil {
+			return err
+		}
+	}
+
+	out, err := run(plan.engine.VerifyScript())
 	if err != nil {
-		return fmt.Errorf("verify claude on %q: %w (output: %s)", box, err, strings.TrimSpace(out))
+		return fmt.Errorf("verify %s on %q: %w (output: %s)", plan.engine.Name(), box, err, strings.TrimSpace(out))
 	}
 	if strings.TrimSpace(out) == "" {
-		return fmt.Errorf("claude --version produced no output on %q", box)
+		return fmt.Errorf("%s --version produced no output on %q", plan.engine.Name(), box)
 	}
 	stdout := cmd.OutOrStdout()
-	fmt.Fprintf(stdout, "✓ claude verified on %s:\n%s\n", box, strings.TrimSpace(out))
-	fmt.Fprint(stdout, codeSignInHelp(box))
+	fmt.Fprintf(stdout, "✓ %s verified on %s:\n%s\n", plan.engine.Name(), box, strings.TrimSpace(out))
+	fmt.Fprint(stdout, codeNextStepsHelp(box, plan))
 	return nil
 }
 
