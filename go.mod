@@ -163,3 +163,15 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.2 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
+
+// google.golang.org/api v0.299.0 hard-requires grpc v1.84.0 (its own go.mod),
+// but v1.84.0 is in the vulnerable range for GO-2026-6443 (CVE-2026-84445,
+// server panic on requests missing :authority/Host headers on our xDS-
+// routed gRPC transport, reachable from internal/server/dual_server.go's
+// server.Start) — fixed only in an unreleased grpc pseudo-version
+// (v1.85.0-dev...), not yet a stable tag. v1.83.2 is the last stable
+// release NOT in any vulnerable range for GO-2026-6443, so pin it here
+// rather than either failing govulncheck's CI gate or pulling in an
+// unreleased grpc build. Remove this replace once grpc cuts a stable
+// v1.85.0+ (or any later fixed release).
+replace google.golang.org/grpc => google.golang.org/grpc v1.83.2
