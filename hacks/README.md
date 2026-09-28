@@ -207,8 +207,8 @@ The script tries to download from GitHub releases. If you haven't created a rele
 ```bash
 # Option 1: Build locally and copy
 make build-linux
-scp bin/containarium-linux-amd64 server:/tmp/
-ssh server "sudo install -m 755 /tmp/containarium-linux-amd64 /usr/local/bin/containarium"
+scp bin/containariumd-linux-amd64 server:/tmp/
+ssh server "sudo install -m 755 /tmp/containariumd-linux-amd64 /usr/local/bin/containarium"
 
 # Then run the rest of the setup
 sudo ./hacks/install.sh --skip-binary

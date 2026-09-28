@@ -28,7 +28,7 @@
 
 set -euo pipefail
 
-BINARY="bin/containarium-linux-amd64"
+BINARY="bin/containariumd-linux-amd64"
 PROJECT="${PROJECT:-<your-gcp-project>}"
 ZONE="${ZONE:-<your-zone>}"
 PRIMARY_VM="${PRIMARY_VM:-<your-primary-vm>}"

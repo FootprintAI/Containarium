@@ -5,9 +5,11 @@
 # -tags containarium_client — see build/build-fast). DAEMON_BINARY_NAME is
 # the full superset build (cmd/containariumd, today's binary unchanged).
 # Release artifacts (build-all/build-release) ship each under its own name
-# since Rollout Phase 2 (#1784); build-linux still builds the daemon under
-# the historical $(BINARY_NAME)-linux-amd64 name for scripts/deploy-binary.sh
-# — see docs/architecture/cli-client-server-split.md, #1773.
+# since Rollout Phase 2 (#1784); build-linux builds the same daemon but under
+# $(DAEMON_BINARY_NAME)-linux-amd64 (#2094 — it used to reuse the
+# $(BINARY_NAME)-linux-amd64 name, which build-all/build-release now fill
+# with the client build) for scripts/deploy-binary.sh — see
+# docs/architecture/cli-client-server-split.md, #1773.
 BINARY_NAME=containarium
 DAEMON_BINARY_NAME=containariumd
 MCP_BINARY_NAME=mcp-server
@@ -128,10 +130,10 @@ build-fast: proto ## Build both containariumd and containarium (skip Swagger UI 
 	@echo "==> Binary built: $(BUILD_DIR)/$(BINARY_NAME)"
 
 build-linux: proto web-ui swagger-ui ## Build for Linux (for deployment to GCE, includes Swagger UI)
-	@echo "==> Building containarium for Linux..."
+	@echo "==> Building containariumd for Linux..."
 	@mkdir -p $(BUILD_DIR)
-	@GOOS=linux GOARCH=amd64 go build $(GOFLAGS) $(GO_TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-linux-amd64 cmd/containariumd/main.go
-	@echo "==> Binary built: $(BUILD_DIR)/$(BINARY_NAME)-linux-amd64"
+	@GOOS=linux GOARCH=amd64 go build $(GOFLAGS) $(GO_TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(DAEMON_BINARY_NAME)-linux-amd64 cmd/containariumd/main.go
+	@echo "==> Binary built: $(BUILD_DIR)/$(DAEMON_BINARY_NAME)-linux-amd64"
 
 build-all: proto web-ui swagger-ui ## Build for all platforms (includes Swagger UI)
 	@echo "==> Building for all platforms..."

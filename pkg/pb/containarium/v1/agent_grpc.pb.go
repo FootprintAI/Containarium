@@ -23,6 +23,7 @@ const (
 	AgentSkillService_GetAgentSkill_FullMethodName     = "/containarium.v1.AgentSkillService/GetAgentSkill"
 	AgentSkillService_RunAgentSkill_FullMethodName     = "/containarium.v1.AgentSkillService/RunAgentSkill"
 	AgentSkillService_SendAgentTask_FullMethodName     = "/containarium.v1.AgentSkillService/SendAgentTask"
+	AgentSkillService_TailRunLog_FullMethodName        = "/containarium.v1.AgentSkillService/TailRunLog"
 	AgentSkillService_EnqueueAgentTask_FullMethodName  = "/containarium.v1.AgentSkillService/EnqueueAgentTask"
 	AgentSkillService_LeaseAgentTask_FullMethodName    = "/containarium.v1.AgentSkillService/LeaseAgentTask"
 	AgentSkillService_CompleteAgentTask_FullMethodName = "/containarium.v1.AgentSkillService/CompleteAgentTask"
@@ -46,6 +47,9 @@ type AgentSkillServiceClient interface {
 	// the peer's artifact. Phase 1 establishes the transport; Phase 2 adds the
 	// allowed_peers / network-policy enforcement around it. (Server impl: #569.)
 	SendAgentTask(ctx context.Context, in *SendAgentTaskRequest, opts ...grpc.CallOption) (*SendAgentTaskResponse, error)
+	// TailRunLog reads a run's journal by byte offset (#2096): resumable (pass
+	// end_offset back as start_offset) and bounded (max_bytes, follow_seconds).
+	TailRunLog(ctx context.Context, in *TailRunLogRequest, opts ...grpc.CallOption) (*TailRunLogResponse, error)
 	// EnqueueAgentTask places a task on the queue for the given skill and returns
 	// its id. Producer side of the pull model.
 	EnqueueAgentTask(ctx context.Context, in *EnqueueAgentTaskRequest, opts ...grpc.CallOption) (*EnqueueAgentTaskResponse, error)
@@ -115,6 +119,16 @@ func (c *agentSkillServiceClient) SendAgentTask(ctx context.Context, in *SendAge
 	return out, nil
 }
 
+func (c *agentSkillServiceClient) TailRunLog(ctx context.Context, in *TailRunLogRequest, opts ...grpc.CallOption) (*TailRunLogResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TailRunLogResponse)
+	err := c.cc.Invoke(ctx, AgentSkillService_TailRunLog_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *agentSkillServiceClient) EnqueueAgentTask(ctx context.Context, in *EnqueueAgentTaskRequest, opts ...grpc.CallOption) (*EnqueueAgentTaskResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(EnqueueAgentTaskResponse)
@@ -172,6 +186,9 @@ type AgentSkillServiceServer interface {
 	// the peer's artifact. Phase 1 establishes the transport; Phase 2 adds the
 	// allowed_peers / network-policy enforcement around it. (Server impl: #569.)
 	SendAgentTask(context.Context, *SendAgentTaskRequest) (*SendAgentTaskResponse, error)
+	// TailRunLog reads a run's journal by byte offset (#2096): resumable (pass
+	// end_offset back as start_offset) and bounded (max_bytes, follow_seconds).
+	TailRunLog(context.Context, *TailRunLogRequest) (*TailRunLogResponse, error)
 	// EnqueueAgentTask places a task on the queue for the given skill and returns
 	// its id. Producer side of the pull model.
 	EnqueueAgentTask(context.Context, *EnqueueAgentTaskRequest) (*EnqueueAgentTaskResponse, error)
@@ -212,6 +229,9 @@ func (UnimplementedAgentSkillServiceServer) RunAgentSkill(context.Context, *RunA
 }
 func (UnimplementedAgentSkillServiceServer) SendAgentTask(context.Context, *SendAgentTaskRequest) (*SendAgentTaskResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SendAgentTask not implemented")
+}
+func (UnimplementedAgentSkillServiceServer) TailRunLog(context.Context, *TailRunLogRequest) (*TailRunLogResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method TailRunLog not implemented")
 }
 func (UnimplementedAgentSkillServiceServer) EnqueueAgentTask(context.Context, *EnqueueAgentTaskRequest) (*EnqueueAgentTaskResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method EnqueueAgentTask not implemented")
@@ -318,6 +338,24 @@ func _AgentSkillService_SendAgentTask_Handler(srv interface{}, ctx context.Conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AgentSkillService_TailRunLog_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TailRunLogRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentSkillServiceServer).TailRunLog(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentSkillService_TailRunLog_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentSkillServiceServer).TailRunLog(ctx, req.(*TailRunLogRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _AgentSkillService_EnqueueAgentTask_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(EnqueueAgentTaskRequest)
 	if err := dec(in); err != nil {
@@ -412,6 +450,10 @@ var AgentSkillService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SendAgentTask",
 			Handler:    _AgentSkillService_SendAgentTask_Handler,
+		},
+		{
+			MethodName: "TailRunLog",
+			Handler:    _AgentSkillService_TailRunLog_Handler,
 		},
 		{
 			MethodName: "EnqueueAgentTask",

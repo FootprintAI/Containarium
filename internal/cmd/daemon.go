@@ -35,6 +35,7 @@ var (
 	daemonAddress          string
 	daemonPort             int
 	daemonHTTPPort         int
+	runJournalRetention    time.Duration
 	enableMTLS             bool
 	enableREST             bool
 	daemonCertsDir         string
@@ -130,6 +131,8 @@ func init() {
 
 	// HTTP/REST settings
 	daemonCmd.Flags().IntVar(&daemonHTTPPort, "http-port", 8080, "HTTP/REST port to listen on")
+	daemonCmd.Flags().DurationVar(&runJournalRetention, "run-journal-retention", server.DefaultRunJournalRetention,
+		"How long a run's journal (/var/log/agent-runtime/runs/<run_id>) stays on an agent box before the daemon's sweep removes it")
 	daemonCmd.Flags().BoolVar(&enableREST, "rest", true, "Enable HTTP/REST API gateway")
 
 	// Authentication settings
@@ -637,6 +640,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		Runtime:                runtime,
 		ZFSTenantRoot:          zfsTenantRoot,
 		ZFSKeysDir:             zfsKeysDir,
+		RunJournalRetention:    runJournalRetention,
 	}
 
 	// Create dual server

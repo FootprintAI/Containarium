@@ -94,7 +94,7 @@ echo "==> Setting up Containarium peer node: $SPOT_ID"
 echo "==> Installing containariumd binary..."
 if [[ ! -f "$BINARY_SRC" ]]; then
     echo "Error: $BINARY_SRC not found. Upload it first:"
-    echo "  scp bin/containarium-linux-amd64 <host>:/tmp/containariumd"
+    echo "  scp bin/containariumd-linux-amd64 <host>:/tmp/containariumd"
     exit 1
 fi
 cp "$BINARY_SRC" "$BINARY_DST"

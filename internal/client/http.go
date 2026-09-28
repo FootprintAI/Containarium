@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/footprintai/containarium/internal/runlog"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/footprintai/containarium/pkg/version"
@@ -1838,6 +1839,26 @@ func (c *HTTPClient) GetCrewRun(id string) (*pb.CrewRun, error) {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 	return out.Run, nil
+}
+
+// TailRunLog reads one window of a run's journal via HTTP (#2096).
+func (c *HTTPClient) TailRunLog(req *pb.TailRunLogRequest) (*pb.TailRunLogResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.doRequest(ctx, http.MethodGet, runlog.Query(req), nil)
+	if err != nil {
+		return nil, fmt.Errorf("tail run log: %w", err)
+	}
+	defer drainClose(resp)
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, httpError(bodyBytes, resp.StatusCode, "tail run log")
+	}
+	out := &pb.TailRunLogResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
 }
 
 // CreateBackup dumps a tenant's database and stores it off-host via HTTP.

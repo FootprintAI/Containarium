@@ -25,7 +25,7 @@ cd /Users/hsinhoyeh/Workspaces/github/footprintai/Containarium
 make build-linux
 
 # Verify binary exists
-ls -lh bin/containarium-linux-amd64
+ls -lh bin/containariumd-linux-amd64
 ```
 
 ### 2. Configure Terraform
@@ -271,9 +271,9 @@ ssh admin@<jump-server-ip> "sudo ss -tlnp | grep 50051"
 terraform state show 'null_resource.copy_containarium_binary[0]'
 
 # Manually copy if needed
-scp bin/containarium-linux-amd64 admin@<jump-server-ip>:/tmp/
+scp bin/containariumd-linux-amd64 admin@<jump-server-ip>:/tmp/
 ssh admin@<jump-server-ip>
-sudo mv /tmp/containarium-linux-amd64 /usr/local/bin/containariumd
+sudo mv /tmp/containariumd-linux-amd64 /usr/local/bin/containariumd
 sudo chmod +x /usr/local/bin/containariumd
 sudo ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium
 sudo systemctl restart containarium
