@@ -71,6 +71,13 @@ jobs:
       # indefinitely for reasons no one here can act on. Same rule
       # security.yml's govulncheck job already applies: "Fail only on
       # vulnerabilities that have a fix we have not applied."
+      # limit-severities-for-sarif: 'true' — without it, trivy-action's own
+      # entrypoint unsets TRIVY_SEVERITY entirely for `format: sarif` (see
+      # its "Building SARIF report with all severities" log line), so the
+      # severity filter below is silently ignored and *any* finding —
+      # including UNKNOWN-severity ones — can trigger exit-code: '1'. Caught
+      # in review (#2126): an UNKNOWN-severity tzdata advisory (DLA-4792-1)
+      # tripped the gate despite not being CRITICAL/HIGH.
       - name: Run Trivy vulnerability scanner (image)
         uses: aquasecurity/trivy-action@master
         with:
@@ -78,6 +85,7 @@ jobs:
           format: 'sarif'
           output: 'trivy-agent-box-results.sarif'
           severity: 'CRITICAL,HIGH'
+          limit-severities-for-sarif: 'true'
           ignore-unfixed: 'true'
           exit-code: '1'
 
