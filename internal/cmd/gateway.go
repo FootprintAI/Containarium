@@ -261,7 +261,7 @@ func readGatewayKeyMaterial(key, keyFile string) (string, error) {
 		}
 		return strings.TrimSpace(string(b)), nil
 	case keyFile != "":
-		b, err := os.ReadFile(keyFile)
+		b, err := os.ReadFile(keyFile) // #nosec G304 -- operator-supplied --key-file path; reading it is the documented CLI behavior
 		if err != nil {
 			return "", fmt.Errorf("reading --key-file: %w", err)
 		}
