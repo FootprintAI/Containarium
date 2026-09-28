@@ -175,7 +175,10 @@ func handleCodeAttach(client API, args map[string]interface{}) (string, error) {
 	return fmt.Sprintf("%s\n\nnext_offset: %d\n\n--- output ---\n%s\n%s", line, next, out, tail), nil
 }
 
-// handleCodeStatus reports liveness and, once finished, the exit code.
+// handleCodeStatus reports liveness and, once finished, the exit code (#2011:
+// this used to report only the header line, never the code, on this surface —
+// coderun.ExitCodeLine is the same renderer the CLI's `code status` uses, so
+// the two cannot drift).
 func handleCodeStatus(client API, args map[string]interface{}) (string, error) {
 	box := strings.TrimSpace(getStringArg(args, "box", ""))
 	if box == "" {
@@ -193,9 +196,12 @@ func handleCodeStatus(client API, args map[string]interface{}) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("process_list on %q: %w", box, err)
 	}
-	line, _ := coderun.RunOutcomeLine(listing, name)
+	line, running := coderun.RunOutcomeLine(listing, name)
 	if line == "" {
 		return fmt.Sprintf("no run named %q on %s", name, box), nil
+	}
+	if !running {
+		return line + "\n" + coderun.ExitCodeLine(listing, name), nil
 	}
 	return line, nil
 }
