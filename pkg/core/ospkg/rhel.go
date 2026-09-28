@@ -38,7 +38,16 @@ func (r *rhelPkgMgr) BasePackages() []string {
 		"htop",
 		"net-tools",
 		"iputils",
+		// #2121: tmux for the persistent login session. mosh is not in the
+		// RHEL/Rocky base repos; see MoshInstallScript.
+		"tmux",
 	}
+}
+
+func (r *rhelPkgMgr) MoshInstallScript() string {
+	// mosh ships in EPEL. Try the configured repos first (EPEL may already be
+	// enabled), then enable EPEL and retry.
+	return "dnf install -y mosh || { dnf install -y epel-release && dnf install -y mosh; }"
 }
 
 func (r *rhelPkgMgr) PodmanAvailableInBaseRepos() bool {

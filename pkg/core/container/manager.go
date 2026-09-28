@@ -723,6 +723,10 @@ func (m *Manager) installPackages(containerName string, enablePodman bool, stack
 		return fmt.Errorf("package install failed: %w", err)
 	}
 
+	// mosh + tmux-on-login for phone clients (#2121). User-independent, so
+	// it stays inside installPackages and lands in baked images too.
+	m.installLoginExtras(containerName, pkgMgr)
+
 	// Enable services and install podman-compose
 	if enablePodman {
 		if err := m.incus.Exec(containerName, []string{"systemctl", "enable", "podman"}); err != nil {

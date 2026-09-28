@@ -219,8 +219,16 @@ type AgentSkillServer struct {
 	// durable record (wired by NewCrewServer); execScript is a test seam over
 	// the container manager; runLogPoll overrides the follow poll interval;
 	// journalRetention is how long a run's journal is kept on a member box.
+	//
+	// recordSkillRun and reapSkillRun (#2122) extend the same durable-record
+	// path to a standalone skill run: recordSkillRun is called once a skill
+	// run's box is provisioned, reapSkillRun once its journal directory is
+	// reaped, both wired by NewCrewServer onto the same store crewRunMembers
+	// already reads from.
 	runIndex         runMemberIndex
 	crewRunMembers   crewRunMembersFunc
+	recordSkillRun   recordSkillRunFunc
+	reapSkillRun     reapSkillRunFunc
 	execScript       boxScriptFunc
 	runLogPoll       time.Duration
 	journalRetention time.Duration
@@ -467,6 +475,20 @@ func (s *AgentSkillServer) beginSkillRunWith(ctx context.Context, req *pb.RunAge
 		req.GetGitSource(), req.GetGitRef(), req.GetGitCredential(), req.GetTrackerConnection(), opts)
 	if err != nil {
 		return nil, err
+	}
+
+	// Durable run->skill record (#2122), so TailRunLog can still resolve this
+	// run's journal after a daemon restart, the same way a crew run already
+	// does from its own record. Only a standalone skill run needs this: a
+	// crew member is provisioned through provisionSkillBox directly (not
+	// through this function), and the crew's own record already covers it.
+	// Best-effort — a write failure here degrades to pre-#2122 behavior (the
+	// in-memory runIndex still resolves the run until this process exits)
+	// rather than failing a run that otherwise provisioned successfully.
+	if s.recordSkillRun != nil {
+		if err := s.recordSkillRun(ctx, runID, skill.Id); err != nil {
+			log.Printf("[agent-skill] run %s: record durable run index: %v", runID, err)
+		}
 	}
 
 	// The run holds its credentials for exactly as long as the run (#1817). A
