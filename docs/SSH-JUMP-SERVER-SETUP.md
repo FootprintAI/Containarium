@@ -137,6 +137,49 @@ ssh -J admin@35.x.x.x alice@10.0.3.100
 ssh -J jump1,jump2 alice@10.0.3.100
 ```
 
+### Phone clients: mosh and a persistent tmux session
+
+Every box ships `tmux` and `mosh-server`, and an interactive SSH login (plain
+`ssh alice-dev`, no command) lands in a tmux session named `main`
+(`tmux new -A -s main`): drop the connection, log in again, and you are back
+where you were; a second login attaches to the same session. Nothing else is
+affected: `ssh host <command>`, `ssh -t host <command>`, scp/sftp/rsync,
+`containarium connect --exec` / `--session`, and IDE remote terminals (VS Code,
+JetBrains) get the same shell as before. The hook is
+`/etc/profile.d/containarium-tmux.sh`; if tmux can't start, the login falls
+back to a plain shell.
+
+Things worth knowing:
+
+- Detaching (`Ctrl-b d`) and `exit` both end the SSH session; they do not drop
+  you to a plain shell. Logging in again re-attaches to the same session.
+- To opt out, run `mkdir -p ~/.containarium && touch ~/.containarium/no-tmux`
+  on the box. `CONTAINARIUM_NO_TMUX=1` also works, but only if the variable is
+  already in the login environment (for example set in `/etc/environment`).
+  The hook runs from `/etc/profile.d`, before `~/.profile`, `~/.bash_profile`
+  and `~/.bashrc` are read, so setting it there has no effect, and the default
+  sshd `AcceptEnv` does not carry it over from the client. Only the literal
+  value `1` opts out; `0`, `true` or an empty value do not.
+- For a one-off plain shell, run `ssh -t alice-dev bash -l`.
+- A scripted `ssh -tt alice-dev` (forced pty, commands piped to stdin, no
+  command argument) goes through tmux and loses the remote exit status. For
+  scripts, use `ssh alice-dev <command>`, or the opt-out file.
+- Users whose login shell is zsh or fish silently get no tmux, because those
+  shells do not read `/etc/profile`. Box users are created with bash, so this
+  only affects users who change their shell.
+- On RHEL/Rocky, mosh comes from EPEL. The box install enables the distro's own
+  EPEL repository (`epel-release`) and leaves it enabled, so box users with
+  sudo can install packages from it and system updates include it.
+
+A mosh login (`mosh alice-dev`) starts the same session. **Network
+prerequisite:** mosh bootstraps over SSH, then talks UDP on ports
+60000-61000 directly to the box, so that range must be reachable from the
+client (or the client must be on a VPN into the box network). Whether a given
+edge or platform forwards it is deployment-specific and outside the box
+image; without it, use plain SSH and let tmux carry the persistence. Boxes
+created from a base image baked before this change (see
+[IMAGE-BAKE.md](IMAGE-BAKE.md)) pick this up on the next re-bake.
+
 ---
 
 ## Method 2: Port Forwarding Setup
