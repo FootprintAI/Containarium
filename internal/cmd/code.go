@@ -332,6 +332,13 @@ func resolveCodeSession(ctx context.Context, box string, diag io.Writer) (*coder
 // stopping — tail_log has no "you've caught up, nothing more is coming"
 // signal of its own, so watching liveness is the only way to know when to
 // stop asking.
+//
+// #2011: the return value now carries the run's own exit status — nil for a
+// zero exit code, non-nil for a non-zero one — instead of always nil once the
+// run stopped. That is what lets `code run`/`code attach`'s process exit
+// status (main.go maps a non-nil RunE error to os.Exit(1)) reflect whether the
+// AGENT succeeded, so CI and shell scripts can gate on `$?` instead of having
+// to separately parse `code status`.
 func streamAndWait(ctx context.Context, sess *coderun.Session, name, logPath string, stdout, stderr io.Writer, streamJSON bool) error {
 	w := stdout
 	if streamJSON {
@@ -367,10 +374,28 @@ func streamAndWait(ctx context.Context, sess *coderun.Session, name, logPath str
 				}
 				cancelStream()
 				<-streamDone
-				return nil
+				return codeRunExitErr(listing, name)
 			}
 		}
 	}
+}
+
+// codeRunExitErr turns name's recorded exit code — read from listing, captured
+// the moment streamAndWait noticed the run had stopped — into the process
+// status `code run`/`code attach` return (#2011).
+//
+// A zero exit code, and a finished run that recorded none at all (agent-box's
+// RunOutcomeUnknown: the box died mid-run before it could record one — see
+// ExitCodeFromListing's doc comment), both return nil: there is nothing solid
+// to gate a failure on either way, and reporting the second as a failure would
+// be a stronger claim than the record supports. Only a genuinely non-zero code
+// becomes a non-nil error, which main.go turns into os.Exit(1).
+func codeRunExitErr(listing, name string) error {
+	code, ok := coderun.ExitCodeFromListing(listing, name)
+	if !ok || code == 0 {
+		return nil
+	}
+	return fmt.Errorf("run %q exited with code %d", name, code)
 }
 
 // defaultAgentBoxRelease is the release the agent-box / mcp-server assets are
