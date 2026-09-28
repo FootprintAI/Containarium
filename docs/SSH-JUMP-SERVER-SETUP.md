@@ -137,6 +137,28 @@ ssh -J admin@35.x.x.x alice@10.0.3.100
 ssh -J jump1,jump2 alice@10.0.3.100
 ```
 
+### Phone clients: mosh and a persistent tmux session
+
+Every box ships `tmux` and `mosh-server`, and an interactive SSH login (plain
+`ssh alice-dev`, no command) lands in a tmux session named `main`
+(`tmux new -A -s main`): drop the connection, log in again, and you are back
+where you were; a second login attaches to the same session. Nothing else is
+affected: `ssh host <command>`, `ssh -t host <command>`, scp/sftp/rsync,
+`containarium connect --exec` / `--session`, and IDE remote terminals (VS Code,
+JetBrains) get the same shell as before. The hook is
+`/etc/profile.d/containarium-tmux.sh`; if tmux can't start, the login falls
+back to a plain shell. To opt out, `mkdir -p ~/.containarium && touch
+~/.containarium/no-tmux` on the box, or have `CONTAINARIUM_NO_TMUX=1` in the
+login environment; for a one-off plain shell, `ssh -t alice-dev bash -l`.
+A mosh login (`mosh alice-dev`) starts the same session. **Network
+prerequisite:** mosh bootstraps over SSH, then talks UDP on ports
+60000-61000 directly to the box, so that range must be reachable from the
+client (or the client must be on a VPN into the box network). Whether a given
+edge or platform forwards it is deployment-specific and outside the box
+image; without it, use plain SSH and let tmux carry the persistence. Boxes
+created from a base image baked before this change (see
+[IMAGE-BAKE.md](IMAGE-BAKE.md)) pick this up on the next re-bake.
+
 ---
 
 ## Method 2: Port Forwarding Setup
