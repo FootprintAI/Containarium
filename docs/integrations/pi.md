@@ -200,6 +200,52 @@ Caddy on the sentinel terminates TLS and forwards to `alice-container:8080`.
 This is the loop that makes an agent box worth more than a local sandbox: pi
 builds it, the box serves it, the URL is real.
 
+## 7. Or let the CLI do all of it, with no provider key on the box
+
+Steps 2–5 are the manual path, and they still work. `containarium code` does the
+same thing in one command, and adds the option of running pi with **no provider
+key on the box at all**:
+
+```bash
+containarium code install alice --engine pi --credential gateway \
+    --provider kafeido --model kafeido-coder
+containarium code run alice --prompt "fix the failing test in ./api"
+containarium code attach alice          # reconnect after a dropped connection
+containarium code status alice          # liveness, then the exit code
+```
+
+`--credential gateway` points pi's `~/.pi/agent/models.json` at the daemon's
+model gateway as a custom OpenAI-compatible provider, with its `apiKey` written
+as `$CONTAINARIUM_GATEWAY_TOKEN` — a reference, not a value. Each `code run`
+mints a fresh scoped token (this box, this run, this model, 24h by default) and
+writes it to `~/.pi/gateway.env` at 0600 just before the run starts. The real
+upstream key never leaves the daemon, so:
+
+```bash
+ssh alice 'grep -r sk- ~/.pi 2>/dev/null'    # empty
+```
+
+Install validates the wiring before it installs anything: a dry-run mint fails
+naming the fix if no inference key is registered for the box's owner.
+
+To use your own key instead, keep the tenant-secret path from step 3:
+
+```bash
+containarium code install alice --engine pi --credential secret \
+    --secret-name ANTHROPIC_API_KEY --provider-base-url https://api.anthropic.com \
+    --model claude-sonnet-5
+```
+
+That variant checks the secret's delivery mode for you and refuses `env`
+delivery, for the reason [step 3](#why-not-env-delivery) explains.
+
+Unlike step 5's `ssh` and `connect --session`, `code run` survives your laptop
+closing: the run is detached on the box and `code attach` replays its output
+byte-exact from where you left off.
+
+`--engine` defaults to `claude`, so `containarium code install alice` on its own
+still installs Claude Code exactly as it always has.
+
 ## Teaching pi the platform
 
 pi's substitute for MCP is "CLI tools with READMEs." The `containarium` CLI is
@@ -235,11 +281,8 @@ Package it (`pi install git:...`) if you want it on every box you create.
   enforcement is armed, skill boxes are pinned to the gateway and direct
   provider domains are dropped. A plain box created with `containarium create`
   is not pinned; if your operator has armed a deny-by-default allowlist, add
-  the provider domain. Routing pi through the gateway itself
-  (`~/.pi/agent/models.json` accepts custom providers speaking the
-  Anthropic/OpenAI/Google API shapes) is possible in principle, but the gateway
-  mints tokens for skill boxes today — see
-  [AGENT-MODEL-GATEWAY-DESIGN.md](../AGENT-MODEL-GATEWAY-DESIGN.md).
+  the provider domain. Routing pi through the gateway instead is a supported
+  path now — see [step 7](#7-or-let-the-cli-do-all-of-it-with-no-provider-key-on-the-box).
 - **`connect --session` needs tmux on the box** (step 2 installs it);
   without it, use plain `--exec` or `ssh`.
 - **One box, one agent identity.** Secrets are per-tenant, so two people
