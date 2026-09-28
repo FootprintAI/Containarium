@@ -270,7 +270,7 @@ setup_commands = <<EOT
    incus --version
 
 3. Copy containarium CLI:
-   scp bin/containarium-linux-amd64 admin@35.x.x.x:/tmp/
+   scp bin/containariumd-linux-amd64 admin@35.x.x.x:/tmp/
    ...
 EOT
 ```
