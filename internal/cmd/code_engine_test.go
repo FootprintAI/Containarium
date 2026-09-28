@@ -346,6 +346,40 @@ func TestCodeInstall_SecretEnvDeliveryNamesTheFix(t *testing.T) {
 	}
 }
 
+// TestCodeInstall_PiSecretModelsJSONReferencesTheDeliveredSecret: on the secret
+// path the run sources /run/containarium/secrets.env, which carries the variable
+// --secret-name named. models.json's apiKey has to reference THAT variable.
+//
+// Referencing $CONTAINARIUM_GATEWAY_TOKEN here — which only the gateway path ever
+// writes — leaves pi unable to resolve any credential at all, and the symptom is
+// an auth failure at the first model call rather than anything pointing at the
+// config.
+func TestCodeInstall_PiSecretModelsJSONReferencesTheDeliveredSecret(t *testing.T) {
+	secrets := []*pb.SecretMetadata{
+		{Name: "OPENAI_API_KEY", DeliveryMode: pb.SecretDelivery_SECRET_DELIVERY_COMPOSE},
+	}
+	env, err := runInstallEngine(t, "alice", map[string]string{
+		"engine": "pi", "credential": "secret", "secret-name": "OPENAI_API_KEY",
+		"model": "gpt-5", "provider-base-url": "https://api.openai.com/v1",
+	}, mintResult{}, secrets, nil)
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	scripts := env.allScripts()
+
+	if !strings.Contains(scripts, `"apiKey": "$OPENAI_API_KEY"`) {
+		t.Errorf("models.json should reference $OPENAI_API_KEY (the delivered secret):\n%s", scripts)
+	}
+	if strings.Contains(scripts, "CONTAINARIUM_GATEWAY_TOKEN") {
+		t.Errorf("the secret path must not reference the gateway token variable — nothing writes it here:\n%s", scripts)
+	}
+	// And the run command sources the file that variable actually arrives in.
+	piSecret := mustEngine(t, engine.NamePi, engine.SecretCredential{Name: "OPENAI_API_KEY"})
+	if !strings.Contains(piSecret.RunCommand("hi", false, false), "/run/containarium/secrets.env") {
+		t.Error("the pi secret run command should source /run/containarium/secrets.env")
+	}
+}
+
 func TestCodeInstall_SecretComposeDeliveryIsAccepted(t *testing.T) {
 	for _, mode := range []pb.SecretDelivery{
 		pb.SecretDelivery_SECRET_DELIVERY_COMPOSE,
@@ -429,6 +463,14 @@ func TestCodeInstall_FlagValidation(t *testing.T) {
 			name:  "pi on a secret without an endpoint",
 			flags: map[string]string{"engine": "pi", "credential": "secret", "secret-name": "OPENAI_API_KEY", "model": "m"},
 			want:  "--provider-base-url",
+		},
+		{
+			// models.json's apiKey is a "$VAR" reference, so there must be a
+			// variable to name. Defaulting to the gateway's variable would point
+			// pi at a value this path never writes.
+			name:  "pi on a secret without a secret name",
+			flags: map[string]string{"engine": "pi", "credential": "secret", "model": "m", "provider-base-url": "https://api.openai.com/v1"},
+			want:  "--secret-name",
 		},
 	}
 	for _, tc := range tests {

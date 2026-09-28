@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -66,6 +67,13 @@ func readBoxCodeConfig(ctx context.Context, sess *coderun.Session, diag io.Write
 
 	blob, err := sess.ReadFile(ctx, path)
 	if err != nil {
+		// ONLY a confirmed absence falls back. A permission error, a sandbox-root
+		// refusal or a dead transport must surface: on a pi/gateway box, silently
+		// falling back would run the wrong engine on the wrong credential and
+		// bury the real failure while doing it.
+		if !errors.Is(err, coderun.ErrFileNotFound) {
+			return nil, fmt.Errorf("read %s: %w", engine.CodeConfigPath, err)
+		}
 		fmt.Fprintf(diag, "• no %s on this box — running the pre-#1727 default (engine=%s credential=%s)\n",
 			engine.CodeConfigPath, engine.DefaultName, engine.DefaultKind)
 		return &engine.CodeConfig{

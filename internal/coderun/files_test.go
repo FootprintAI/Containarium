@@ -180,3 +180,75 @@ func TestSessionReadFile_MissingMarkerIsAnError(t *testing.T) {
 		t.Fatal("a failed read was reported as success")
 	}
 }
+
+// TestSessionReadFile_ClassifiesNotFound is load-bearing well beyond this
+// package: `code run` falls back to the pre-#1727 Claude + tenant-secret default
+// when a box has no code.json, so "absent" and "could not be read" MUST be
+// distinguishable.
+//
+// Conflating them means a transport blip or a permission error on a pi/gateway
+// box silently runs the WRONG engine on the WRONG credential and hides the real
+// failure. Only a confirmed ENOENT may read as absent.
+func TestSessionReadFile_ClassifiesNotFound(t *testing.T) {
+	tests := []struct {
+		name       string
+		reply      string
+		callErr    error
+		wantAbsent bool
+	}{
+		{
+			name:       "missing file, from os.Stat",
+			reply:      "read_file: stat /home/alice/.containarium/code.json: no such file or directory",
+			wantAbsent: true,
+		},
+		{
+			name:       "missing file, from os.Open",
+			reply:      "read_file: open /home/alice/.containarium/code.json: no such file or directory",
+			wantAbsent: true,
+		},
+		{
+			// Everything below is a FAILURE to read, not an absence.
+			name:       "permission denied",
+			reply:      "read_file: open /home/alice/.containarium/code.json: permission denied",
+			wantAbsent: false,
+		},
+		{
+			name:       "outside the sandbox root",
+			reply:      `read_file: path "/home/alice/.containarium/code.json" is outside AGENTBOX_ROOT (/workspace)`,
+			wantAbsent: false,
+		},
+		{
+			name:       "it is a directory",
+			reply:      "read_file: /home/alice/.containarium/code.json is a directory (use list_directory)",
+			wantAbsent: false,
+		},
+		{
+			name:       "transport died",
+			callErr:    errors.New("transport closed: EOF"),
+			wantAbsent: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			conn := &scriptedConn{
+				replies: map[string]string{"read_file": tc.reply},
+				errs:    map[string]error{},
+			}
+			if tc.callErr != nil {
+				conn.errs["read_file"] = tc.callErr
+			}
+			_, err := sessionWith(conn).ReadFile(context.Background(), "/home/alice/.containarium/code.json")
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if got := errors.Is(err, ErrFileNotFound); got != tc.wantAbsent {
+				t.Errorf("errors.Is(err, ErrFileNotFound) = %v, want %v (err: %v)", got, tc.wantAbsent, err)
+			}
+			// Whichever it is, agent-box's own reason must survive for the user.
+			if tc.reply != "" && !strings.Contains(err.Error(), "code.json") {
+				t.Errorf("error lost the path: %v", err)
+			}
+		})
+	}
+}

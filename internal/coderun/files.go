@@ -2,6 +2,7 @@ package coderun
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path"
 	"strings"
@@ -87,19 +88,55 @@ func ExpandHome(home, p string) string {
 	}
 }
 
+// ErrFileNotFound reports that a box-side file does not exist — as distinct from
+// "exists but could not be read".
+//
+// The distinction is load-bearing for `code run`, which falls back to the
+// pre-#1727 Claude + tenant-secret default when a box has no code.json. Treating
+// every read failure as absence would make a transport blip or a permission
+// error on a pi/gateway box silently run the wrong engine on the wrong
+// credential, and swallow the real failure while doing it. So callers that mean
+// "absent" must ask for exactly this, and nothing else may satisfy them.
+var ErrFileNotFound = errors.New("file not found on the box")
+
 // ReadFile reads absPath from the box.
+//
+// A confirmed missing file is reported as ErrFileNotFound; every other failure —
+// permissions, a sandbox-root refusal, a directory, a dead transport — is
+// returned as an ordinary error carrying agent-box's own reason.
 func (s *Session) ReadFile(ctx context.Context, absPath string) (string, error) {
 	text, err := s.callTool(ctx, "read_file", map[string]any{"path": absPath}, true)
 	if err != nil {
+		if isNotExistMessage(err.Error()) {
+			return "", fmt.Errorf("read_file %s: %w", absPath, ErrFileNotFound)
+		}
 		return "", fmt.Errorf("read_file %s: %w", absPath, err)
 	}
 	// read_file frames its reply as a key: value header followed by the
 	// content after a marker line, the same convention tail_log uses.
 	_, content := parseKV(text, fileContentMarker)
 	if content == "" && !strings.Contains(text, fileContentMarker) {
+		if isNotExistMessage(text) {
+			return "", fmt.Errorf("read_file %s: %w", absPath, ErrFileNotFound)
+		}
 		return "", fmt.Errorf("read_file %s returned no content marker (said: %s)", absPath, strings.TrimSpace(text))
 	}
 	return content, nil
+}
+
+// isNotExistMessage recognises an ENOENT that reached us as text.
+//
+// agent-box hands os.Stat/os.Open's error straight to the client as a tool-error
+// string (internal/agentbox/files.go), so there is no typed errno to inspect on
+// this side. Matching Go's own ENOENT rendering is therefore the only available
+// signal — and it is matched NARROWLY and positively: anything this does not
+// recognise stays a hard error, so the failure mode of a wrong guess here is a
+// loud error rather than a silent fallback to the wrong engine.
+//
+// Boxes are Linux (the release publishes only linux-amd64 agent-box), so
+// "no such file or directory" is the text to expect.
+func isNotExistMessage(s string) bool {
+	return strings.Contains(s, "no such file or directory")
 }
 
 // WriteFile writes content to absPath on the box with mode, atomically.

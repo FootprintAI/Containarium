@@ -110,10 +110,21 @@ func resolveCodeInstallPlan(box string) (*codeInstallPlan, error) {
 	// rather than when models.json is rendered: the secret preflight does a
 	// secrets RPC in between, and a lookup failure there would mask this purely
 	// local mistake with a network error.
-	if name == engine.NamePi && kind == engine.KindSecret && plan.baseURLOverride == "" {
-		return nil, fmt.Errorf(
-			"--engine pi --credential secret needs --provider-base-url (the complete endpoint URL pi should call, e.g. https://api.openai.com/v1) — " +
-				"only --credential gateway can derive one on its own")
+	if name == engine.NamePi && kind == engine.KindSecret {
+		if plan.baseURLOverride == "" {
+			return nil, fmt.Errorf(
+				"--engine pi --credential secret needs --provider-base-url (the complete endpoint URL pi should call, e.g. https://api.openai.com/v1) — " +
+					"only --credential gateway can derive one on its own")
+		}
+		// models.json's apiKey is an environment-variable REFERENCE, so there has
+		// to be a variable to name. Without --secret-name there is nothing to
+		// write, and defaulting to the gateway's variable would point pi at a
+		// value this path never sets.
+		if strings.TrimSpace(codeSecretName) == "" {
+			return nil, fmt.Errorf(
+				"--engine pi --credential secret needs --secret-name (the variable pi reads its key from, e.g. OPENAI_API_KEY) — " +
+					"it becomes models.json's apiKey reference and is delivered by `containarium secrets set ... --delivery compose`")
+		}
 	}
 
 	plan.version = strings.TrimSpace(codeClaudeCodeVersion)
@@ -161,11 +172,23 @@ func (p *codeInstallPlan) installOptions(mint *pb.MintGatewayTokenResponse) (eng
 	if base == "" && p.baseURLOverride == "" {
 		return opts, fmt.Errorf("no gateway base URL resolved for --engine pi; pass --provider-base-url or use --credential gateway")
 	}
+	// The variable pi interpolates its apiKey from has to be the one the box
+	// will actually have at run time, and that differs per credential source:
+	// the gateway path writes CONTAINARIUM_GATEWAY_TOKEN to gateway.env, while
+	// the secret path gets --secret-name's own variable out of
+	// /run/containarium/secrets.env. Naming the wrong one leaves pi unable to
+	// resolve any credential, surfacing as an auth failure at the first model
+	// call rather than as anything pointing back here.
+	tokenEnvVar := engine.GatewayTokenEnvVar
+	if p.credential.Kind() == engine.KindSecret {
+		tokenEnvVar = p.config.SecretName
+	}
+
 	blob, err := engine.RenderPiModelsJSON(engine.PiModelsParams{
 		Provider:        p.provider,
 		GatewayBase:     base,
 		BaseURLOverride: p.baseURLOverride,
-		TokenEnvVar:     engine.GatewayTokenEnvVar,
+		TokenEnvVar:     tokenEnvVar,
 		Model:           p.config.Model,
 	})
 	if err != nil {
