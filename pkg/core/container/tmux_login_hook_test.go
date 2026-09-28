@@ -19,6 +19,7 @@ type provisionRecorder struct {
 	writes       map[string][]byte
 	modes        map[string]string
 	writeFileErr error
+	moshExecErr  error // returned by the separate mosh install script (RHEL/EPEL)
 }
 
 func (b *provisionRecorder) ExecWithExitCode(_ string, _ []string) (string, string, int, error) {
@@ -27,7 +28,16 @@ func (b *provisionRecorder) ExecWithExitCode(_ string, _ []string) (string, stri
 
 func (b *provisionRecorder) Exec(_ string, command []string) error {
 	b.execs = append(b.execs, command)
+	if isMoshInstall(command) {
+		return b.moshExecErr
+	}
 	return nil
+}
+
+// isMoshInstall reports whether command is the separate best-effort mosh
+// install script (bash -c '... install -y mosh ...').
+func isMoshInstall(c []string) bool {
+	return len(c) == 3 && c[0] == "bash" && strings.Contains(c[2], "install -y mosh")
 }
 
 func (b *provisionRecorder) WriteFile(_ string, path string, content []byte, mode string) error {
@@ -75,9 +85,7 @@ func TestInstallPackages_InstallsTmuxMoshAndLoginHook(t *testing.T) {
 					t.Errorf("package install %v is missing %q", argv, p)
 				}
 			}
-			ranMosh := slices.ContainsFunc(b.execs, func(c []string) bool {
-				return len(c) == 3 && c[0] == "bash" && strings.Contains(c[2], "install -y mosh")
-			})
+			ranMosh := slices.ContainsFunc(b.execs, isMoshInstall)
 			if ranMosh != tt.wantMoshExec {
 				t.Errorf("separate mosh install ran = %v, want %v", ranMosh, tt.wantMoshExec)
 			}
@@ -101,6 +109,22 @@ func TestInstallPackages_LoginHookWriteFailureIsNotFatal(t *testing.T) {
 	b := &provisionRecorder{writeFileErr: errors.New("push failed")}
 	if err := NewWithBackend(b).installPackages("box-container", false, "", nil, "", ostype.Debian); err != nil {
 		t.Fatalf("installPackages failed on a hook write error: %v", err)
+	}
+}
+
+// mosh is best-effort (on RHEL/Rocky it needs EPEL, which a restricted or
+// non-derivative host may not reach): a failed install must not fail
+// provisioning, and the login hook must still be installed.
+func TestInstallPackages_MoshInstallFailureIsNotFatal(t *testing.T) {
+	b := &provisionRecorder{moshExecErr: errors.New("dnf: no EPEL")}
+	if err := NewWithBackend(b).installPackages("box-container", false, "", nil, "", ostype.RHEL); err != nil {
+		t.Fatalf("installPackages failed on a mosh install error: %v", err)
+	}
+	if !slices.ContainsFunc(b.execs, isMoshInstall) {
+		t.Fatalf("mosh install script never ran, so the test proves nothing; execs: %v", b.execs)
+	}
+	if _, ok := b.writes[tmuxLoginHookPath]; !ok {
+		t.Errorf("login hook not written after a mosh failure; writes: %v", b.writes)
 	}
 }
 

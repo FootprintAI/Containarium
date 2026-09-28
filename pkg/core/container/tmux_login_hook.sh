@@ -19,8 +19,13 @@
 #   stdin+stdout are a tty        no pty, nothing to attach tmux to
 #   SSH_TTY set, or the parent    IDE remote terminals (VS Code, JetBrains):
 #   is mosh-server                they inherit SSH_CONNECTION from the IDE
-#                                 server's non-pty ssh session but not SSH_TTY;
-#                                 mosh starts the login shell without SSH_TTY
+#                                 server's non-pty ssh session but not SSH_TTY.
+#                                 A real mosh login (checked with mosh 1.4.0)
+#                                 keeps a stale SSH_TTY from the ssh session
+#                                 that launched mosh-server, so it passes via
+#                                 the SSH_TTY branch; the mosh-server parent
+#                                 check is only a harmless fallback, for a
+#                                 mosh whose login shell has no SSH_TTY
 #   TMUX unset / STY unset        already inside tmux (this includes
 #                                 `containarium connect --session`) or screen
 #   TERM_PROGRAM != vscode,       belt and braces for IDE terminals
