@@ -150,6 +150,24 @@ const (
 	ScopeTrackerRead  = "tracker:read"
 	ScopeTrackerWrite = "tracker:write"
 	ScopeTrackerAdmin = "tracker:admin"
+
+	// model gateway (ModelGatewayService, #1726). Two scopes, not one, and
+	// neither folded into secrets:write or containers:write, because the two
+	// halves of this surface have different blast radii:
+	//
+	//   - gateway:admin registers and removes the REAL upstream provider key
+	//     one key owner pays with. It is a control-plane / operator verb: the
+	//     credential itself goes in under it. secrets:write would be the wrong
+	//     home — that scope is a tenant's own secrets, and a tenant must never
+	//     be able to write the key its own calls are billed against.
+	//   - gateway:mint issues a SCOPED, short-lived token for a box the caller
+	//     owns. That is a tenant-reachable verb, so it must be grantable
+	//     without also granting the ability to read or replace a real key.
+	//
+	// A token holding only one of the two can do exactly half of this service
+	// and nothing of the other half.
+	ScopeGatewayAdmin = "gateway:admin"
+	ScopeGatewayMint  = "gateway:mint"
 )
 
 // AllScopes is the catalog of every known scope. It backs IsKnownScope so
@@ -174,6 +192,7 @@ var AllScopes = []string{
 	ScopeAuditRead, ScopeNetworkPolicyRead, ScopeTokensRead,
 	ScopeSandboxesRead, ScopeSandboxesWrite,
 	ScopeTrackerRead, ScopeTrackerWrite, ScopeTrackerAdmin,
+	ScopeGatewayAdmin, ScopeGatewayMint,
 }
 
 // HasExplicitScope reports whether want is explicitly in granted (or the

@@ -62,6 +62,10 @@ type API interface {
 	GetEnvelopeCoverage() (*EnvelopeCoverageResponse, error)
 	MigrateToEnvelope(req MigrateToEnvelopeBody) (*MigrateToEnvelopeResponse, error)
 
+	// Model gateway (#1726). Mint only: the key verbs are operator-gated and
+	// deliberately not exposed to an agent (see gateway_tools.go).
+	MintGatewayToken(req MintGatewayTokenBody) (*MintGatewayTokenResponse, error)
+
 	// Routes / backends.
 	AddRoute(req AddRouteRequest) (*AddRouteResponse, error)
 	ListRoutes(username string, activeOnly bool) (*ListRoutesResponse, error)

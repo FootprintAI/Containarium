@@ -2,11 +2,14 @@ package secrets
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // Per-owner model-gateway provider keys.
@@ -103,6 +106,71 @@ func (s *Store) SetGatewayProviderKey(ctx context.Context, keyOwner, provider, k
 	}
 	_, err = s.set(ctx, username, name, key, DeliveryBroker)
 	return err
+}
+
+// gatewayKeyFingerprintHexLen is how much of the SHA-256 the fingerprint shows:
+// 16 hex characters (64 bits). Enough that "the key I pushed is the key that is
+// stored" is answerable and a collision is not something anyone will see;
+// nowhere near enough to be worth attacking.
+const gatewayKeyFingerprintHexLen = 16
+
+// GatewayKeyFingerprint is the display-only identity of a provider key: the
+// first gatewayKeyFingerprintHexLen hex characters of its SHA-256. It is the
+// ONLY key-derived value the ModelGatewayService status RPC ever returns — the
+// key itself has no read path on that API.
+//
+// An empty key has no fingerprint (rather than the SHA-256 of ""), so "unset"
+// can never be mistaken for "set to something".
+func GatewayKeyFingerprint(key string) string {
+	if key == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(sum[:])[:gatewayKeyFingerprintHexLen]
+}
+
+// GatewayKeyStatus is the metadata half of a per-owner gateway key: enough to
+// confirm which key is registered and when, and nothing that could spend it.
+type GatewayKeyStatus struct {
+	// Set reports whether a key is registered for this (key owner, provider).
+	Set bool
+	// Fingerprint is GatewayKeyFingerprint of the stored key; empty when unset.
+	Fingerprint string
+	// SetAt is when the row was last written (a rotation moves it).
+	SetAt time.Time
+}
+
+// GatewayProviderKeyStatus reports whether one owner has a key for one provider
+// and, if so, its fingerprint and when it was last set.
+//
+// It reads the key in order to fingerprint it and then does not return it — the
+// fingerprint has to be derived from what is actually stored, or it would be a
+// claim about the caller's input rather than about the store's contents. A
+// missing row is (Set:false) with a nil error: "no key here" is an answer, not
+// a failure.
+func (s *Store) GatewayProviderKeyStatus(ctx context.Context, keyOwner, provider string) (GatewayKeyStatus, error) {
+	username, name, err := GatewayKeyLocation(keyOwner, provider)
+	if err != nil {
+		return GatewayKeyStatus{}, err
+	}
+	meta, value, err := s.getRaw(ctx, username, name)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return GatewayKeyStatus{}, nil
+		}
+		return GatewayKeyStatus{}, err
+	}
+	// Same refusal as KeyFor: a row that is not broker-only did not come from
+	// SetGatewayProviderKey, so do not describe it as this owner's gateway key.
+	if meta.Delivery != DeliveryBroker {
+		log.Printf("secrets: gateway key %s/%s has delivery %q, want %q; reporting it as unset", username, name, meta.Delivery, DeliveryBroker)
+		return GatewayKeyStatus{}, nil
+	}
+	return GatewayKeyStatus{
+		Set:         true,
+		Fingerprint: GatewayKeyFingerprint(value),
+		SetAt:       meta.UpdatedAt,
+	}, nil
 }
 
 // DeleteGatewayProviderKey removes one owner's key for one provider. Returns
