@@ -598,20 +598,24 @@ jobs:
           platforms: linux/amd64
           # Push on tag only; a rehearsal builds the image and discards it.
           push: ${{ startsWith(github.ref, 'refs/tags/v') }}
-          # load: true — single-platform build, so load+push together is
-          # supported. Keeps the image in the local docker daemon so the
-          # Trivy step below can scan the exact image being published, and
-          # still works on a workflow_dispatch rehearsal where push is false.
-          load: true
           tags: ${{ steps.tags.outputs.tags }}
           # Build provenance + SBOM, explicit so it's reviewable, matching
-          # the daemon and sidecar image jobs.
+          # the daemon and sidecar image jobs. NOTE: this is why the Trivy
+          # step below pulls the pushed tag rather than using `load: true`
+          # here — buildx's docker-load exporter can't emit a manifest list,
+          # and provenance/sbom force one even for a single-platform build.
           provenance: true
           sbom: true
 
-      # This image has no separate PR-validation build, so this is the only
-      # place it ever gets scanned.
+      # This image has no separate PR-validation build, so this only scans
+      # on a real release tag — a workflow_dispatch rehearsal doesn't push,
+      # so there's nothing to pull and scan.
+      - name: Pull published image for scanning
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: docker pull ${{ steps.tags.outputs.scan_ref }}
+
       - name: Run Trivy vulnerability scanner (image)
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ steps.tags.outputs.scan_ref }}
@@ -623,7 +627,7 @@ jobs:
           exit-code: '1'
 
       - name: Upload Trivy SARIF results
+        if: always() && startsWith(github.ref, 'refs/tags/v')
         uses: github/codeql-action/upload-sarif@v3
-        if: always()
         with:
           sarif_file: trivy-model-gateway-results.sarif
