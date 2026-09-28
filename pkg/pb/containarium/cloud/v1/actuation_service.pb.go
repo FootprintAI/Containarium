@@ -4,6 +4,13 @@
 // private cloud Go module (which would break the public repo's go-mod-tidy CI gate
 // + fork builds). Keep in sync with the cloud repo when the actuation contract
 // changes. See docs/CLOUD-ACTUATION-CLIENT-DESIGN.md.
+//
+// Deviation from a byte-identical mirror: `SSHCAKey` is inlined here rather
+// than importing the cloud repo's ssh_ca.proto, which also carries the full
+// SSHCertificateAuthorityService (cert issuance/revocation RPCs — an
+// unrelated ~900-line cloud-admin surface this daemon never calls). Keep
+// SSHCAKey's field numbers/types identical to the cloud repo's copy; a
+// future resync should NOT blindly import ssh_ca.proto wholesale.
 // actuation_service.proto — platform-daemon ⇄ cloud-daemon channel
 // (host-side surface). See prd/cloud/container-actuation.md.
 //
@@ -151,9 +158,17 @@ type HeartbeatResponse struct {
 	// Server time when the heartbeat was recorded. Useful for hosts
 	// that want to skew-correct their heartbeat scheduling against
 	// the cloud's clock.
-	ReceivedAt    *timestamppb.Timestamp `protobuf:"bytes,1,opt,name=received_at,json=receivedAt,proto3" json:"received_at,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	ReceivedAt *timestamppb.Timestamp `protobuf:"bytes,1,opt,name=received_at,json=receivedAt,proto3" json:"received_at,omitempty"`
+	// Current SSH trust-bundle version (cloud design #1076 Change C, cloud
+	// issue #1082). A host that already applied this version has nothing to
+	// do; anything else means "call GetSSHTrustBundle". Piggy-backing on the
+	// heartbeat the host already sends means CA rotation and revocations
+	// propagate at heartbeat cadence without a second polling loop.
+	//
+	// Empty when the cloud daemon has no SSH CA configured.
+	SshTrustVersion string `protobuf:"bytes,2,opt,name=ssh_trust_version,json=sshTrustVersion,proto3" json:"ssh_trust_version,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *HeartbeatResponse) Reset() {
@@ -191,6 +206,13 @@ func (x *HeartbeatResponse) GetReceivedAt() *timestamppb.Timestamp {
 		return x.ReceivedAt
 	}
 	return nil
+}
+
+func (x *HeartbeatResponse) GetSshTrustVersion() string {
+	if x != nil {
+		return x.SshTrustVersion
+	}
+	return ""
 }
 
 // ReportContainerStateRequest is a host's push of its current
@@ -1150,15 +1172,217 @@ func (x *ReportHostStatusResponse) GetReceivedAt() *timestamppb.Timestamp {
 	return nil
 }
 
+// SSHCAKey is one CA public key the host should trust for certificate-based
+// SSH auth. Vendored (message body only, not the whole cloud
+// SSHCertificateAuthorityService) from the cloud repo's ssh_ca.proto — see
+// the vendoring note at the top of this file.
+type SSHCAKey struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Rotation handle. A certificate names the id that signed it, so a
+	// rotation is observable rather than a silent authentication failure.
+	KeyId string `protobuf:"bytes,1,opt,name=key_id,json=keyId,proto3" json:"key_id,omitempty"`
+	// authorized_keys form, for sshd's TrustedUserCAKeys.
+	PublicKey string `protobuf:"bytes,2,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`
+	// True for the key currently used to SIGN. Retired keys stay trusted so a
+	// rotation does not invalidate certificates already in users' hands.
+	Active        bool `protobuf:"varint,3,opt,name=active,proto3" json:"active,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SSHCAKey) Reset() {
+	*x = SSHCAKey{}
+	mi := &file_containarium_cloud_v1_actuation_service_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SSHCAKey) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SSHCAKey) ProtoMessage() {}
+
+func (x *SSHCAKey) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_cloud_v1_actuation_service_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SSHCAKey.ProtoReflect.Descriptor instead.
+func (*SSHCAKey) Descriptor() ([]byte, []int) {
+	return file_containarium_cloud_v1_actuation_service_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *SSHCAKey) GetKeyId() string {
+	if x != nil {
+		return x.KeyId
+	}
+	return ""
+}
+
+func (x *SSHCAKey) GetPublicKey() string {
+	if x != nil {
+		return x.PublicKey
+	}
+	return ""
+}
+
+func (x *SSHCAKey) GetActive() bool {
+	if x != nil {
+		return x.Active
+	}
+	return false
+}
+
+type GetSSHTrustBundleRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Optional. The version the caller already has applied. When it matches
+	// the current one the response sets `unchanged` and omits the payload, so
+	// a frequent poll costs almost nothing.
+	KnownVersion  string `protobuf:"bytes,1,opt,name=known_version,json=knownVersion,proto3" json:"known_version,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetSSHTrustBundleRequest) Reset() {
+	*x = GetSSHTrustBundleRequest{}
+	mi := &file_containarium_cloud_v1_actuation_service_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetSSHTrustBundleRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetSSHTrustBundleRequest) ProtoMessage() {}
+
+func (x *GetSSHTrustBundleRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_cloud_v1_actuation_service_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetSSHTrustBundleRequest.ProtoReflect.Descriptor instead.
+func (*GetSSHTrustBundleRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_cloud_v1_actuation_service_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *GetSSHTrustBundleRequest) GetKnownVersion() string {
+	if x != nil {
+		return x.KnownVersion
+	}
+	return ""
+}
+
+type GetSSHTrustBundleResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// True when known_version matched: ca_keys / krl_spec are omitted and the
+	// host must keep what it has. A host MUST NOT read this as "install
+	// nothing" — see the note on krl_spec.
+	Unchanged bool   `protobuf:"varint,1,opt,name=unchanged,proto3" json:"unchanged,omitempty"`
+	Version   string `protobuf:"bytes,2,opt,name=version,proto3" json:"version,omitempty"`
+	// Every CA key the host should trust, active first. Retired keys are
+	// included on purpose: dropping one the instant a rotation lands would
+	// invalidate every certificate already in users' hands.
+	CaKeys []*SSHCAKey `protobuf:"bytes,3,rep,name=ca_keys,json=caKeys,proto3" json:"ca_keys,omitempty"`
+	// `ssh-keygen -k` input, which the host compiles into the binary KRL that
+	// sshd's RevokedKeys reads. Never empty when `unchanged` is false — a KRL
+	// that revokes nothing is sent as an explicit comment line.
+	KrlSpec       string                 `protobuf:"bytes,4,opt,name=krl_spec,json=krlSpec,proto3" json:"krl_spec,omitempty"`
+	GeneratedAt   *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=generated_at,json=generatedAt,proto3" json:"generated_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetSSHTrustBundleResponse) Reset() {
+	*x = GetSSHTrustBundleResponse{}
+	mi := &file_containarium_cloud_v1_actuation_service_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetSSHTrustBundleResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetSSHTrustBundleResponse) ProtoMessage() {}
+
+func (x *GetSSHTrustBundleResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_cloud_v1_actuation_service_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetSSHTrustBundleResponse.ProtoReflect.Descriptor instead.
+func (*GetSSHTrustBundleResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_cloud_v1_actuation_service_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *GetSSHTrustBundleResponse) GetUnchanged() bool {
+	if x != nil {
+		return x.Unchanged
+	}
+	return false
+}
+
+func (x *GetSSHTrustBundleResponse) GetVersion() string {
+	if x != nil {
+		return x.Version
+	}
+	return ""
+}
+
+func (x *GetSSHTrustBundleResponse) GetCaKeys() []*SSHCAKey {
+	if x != nil {
+		return x.CaKeys
+	}
+	return nil
+}
+
+func (x *GetSSHTrustBundleResponse) GetKrlSpec() string {
+	if x != nil {
+		return x.KrlSpec
+	}
+	return ""
+}
+
+func (x *GetSSHTrustBundleResponse) GetGeneratedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.GeneratedAt
+	}
+	return nil
+}
+
 var File_containarium_cloud_v1_actuation_service_proto protoreflect.FileDescriptor
 
 const file_containarium_cloud_v1_actuation_service_proto_rawDesc = "" +
 	"\n" +
 	"-containarium/cloud/v1/actuation_service.proto\x12\x15containarium.cloud.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x12\n" +
-	"\x10HeartbeatRequest\"P\n" +
+	"\x10HeartbeatRequest\"|\n" +
 	"\x11HeartbeatResponse\x12;\n" +
 	"\vreceived_at\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"receivedAt\"\x93\x01\n" +
+	"receivedAt\x12*\n" +
+	"\x11ssh_trust_version\x18\x02 \x01(\tR\x0fsshTrustVersion\"\x93\x01\n" +
 	"\x1bReportContainerStateRequest\x12!\n" +
 	"\fcontainer_id\x18\x01 \x01(\tR\vcontainerId\x12\x14\n" +
 	"\x05state\x18\x02 \x01(\tR\x05state\x12;\n" +
@@ -1235,18 +1459,32 @@ const file_containarium_cloud_v1_actuation_service_proto_rawDesc = "" +
 	"\fdriver_token\x18\f \x01(\tR\vdriverToken\"W\n" +
 	"\x18ReportHostStatusResponse\x12;\n" +
 	"\vreceived_at\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"receivedAt*{\n" +
+	"receivedAt\"X\n" +
+	"\bSSHCAKey\x12\x15\n" +
+	"\x06key_id\x18\x01 \x01(\tR\x05keyId\x12\x1d\n" +
+	"\n" +
+	"public_key\x18\x02 \x01(\tR\tpublicKey\x12\x16\n" +
+	"\x06active\x18\x03 \x01(\bR\x06active\"?\n" +
+	"\x18GetSSHTrustBundleRequest\x12#\n" +
+	"\rknown_version\x18\x01 \x01(\tR\fknownVersion\"\xe7\x01\n" +
+	"\x19GetSSHTrustBundleResponse\x12\x1c\n" +
+	"\tunchanged\x18\x01 \x01(\bR\tunchanged\x12\x18\n" +
+	"\aversion\x18\x02 \x01(\tR\aversion\x128\n" +
+	"\aca_keys\x18\x03 \x03(\v2\x1f.containarium.cloud.v1.SSHCAKeyR\x06caKeys\x12\x19\n" +
+	"\bkrl_spec\x18\x04 \x01(\tR\akrlSpec\x12=\n" +
+	"\fgenerated_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\vgeneratedAt*{\n" +
 	"\x11NetworkPolicyMode\x12#\n" +
 	"\x1fNETWORK_POLICY_MODE_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cNETWORK_POLICY_MODE_LOG_ONLY\x10\x01\x12\x1f\n" +
-	"\x1bNETWORK_POLICY_MODE_ENFORCE\x10\x022\xdd\x05\n" +
+	"\x1bNETWORK_POLICY_MODE_ENFORCE\x10\x022\xfe\x06\n" +
 	"\x10ActuationService\x12\x82\x01\n" +
 	"\n" +
 	"EnrollHost\x12(.containarium.cloud.v1.EnrollHostRequest\x1a).containarium.cloud.v1.EnrollHostResponse\"\x1f\x82\xd3\xe4\x93\x02\x19:\x01*\"\x14/v1/actuation/enroll\x12\x94\x01\n" +
 	"\x10ReportHostStatus\x12..containarium.cloud.v1.ReportHostStatusRequest\x1a/.containarium.cloud.v1.ReportHostStatusResponse\"\x1f\x82\xd3\xe4\x93\x02\x19:\x01*\"\x14/v1/actuation/status\x12\x82\x01\n" +
 	"\tHeartbeat\x12'.containarium.cloud.v1.HeartbeatRequest\x1a(.containarium.cloud.v1.HeartbeatResponse\"\"\x82\xd3\xe4\x93\x02\x1c:\x01*\"\x17/v1/actuation/heartbeat\x12\xb9\x01\n" +
 	"\x14ReportContainerState\x122.containarium.cloud.v1.ReportContainerStateRequest\x1a3.containarium.cloud.v1.ReportContainerStateResponse\"8\x82\xd3\xe4\x93\x022:\x01*\"-/v1/actuation/containers/{container_id}/state\x12l\n" +
-	"\x10WatchAssignments\x12..containarium.cloud.v1.WatchAssignmentsRequest\x1a&.containarium.cloud.v1.AssignmentBatch0\x01BJZHgithub.com/footprintai/containarium/pkg/pb/containarium/cloud/v1;cloudv1b\x06proto3"
+	"\x10WatchAssignments\x12..containarium.cloud.v1.WatchAssignmentsRequest\x1a&.containarium.cloud.v1.AssignmentBatch0\x01\x12\x9e\x01\n" +
+	"\x11GetSSHTrustBundle\x12/.containarium.cloud.v1.GetSSHTrustBundleRequest\x1a0.containarium.cloud.v1.GetSSHTrustBundleResponse\"&\x82\xd3\xe4\x93\x02 \x12\x1e/v1/actuation/ssh-trust-bundleBJZHgithub.com/footprintai/containarium/pkg/pb/containarium/cloud/v1;cloudv1b\x06proto3"
 
 var (
 	file_containarium_cloud_v1_actuation_service_proto_rawDescOnce sync.Once
@@ -1261,7 +1499,7 @@ func file_containarium_cloud_v1_actuation_service_proto_rawDescGZIP() []byte {
 }
 
 var file_containarium_cloud_v1_actuation_service_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_containarium_cloud_v1_actuation_service_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
+var file_containarium_cloud_v1_actuation_service_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
 var file_containarium_cloud_v1_actuation_service_proto_goTypes = []any{
 	(NetworkPolicyMode)(0),               // 0: containarium.cloud.v1.NetworkPolicyMode
 	(*HeartbeatRequest)(nil),             // 1: containarium.cloud.v1.HeartbeatRequest
@@ -1278,37 +1516,44 @@ var file_containarium_cloud_v1_actuation_service_proto_goTypes = []any{
 	(*HostCapabilityCheck)(nil),          // 12: containarium.cloud.v1.HostCapabilityCheck
 	(*ReportHostStatusRequest)(nil),      // 13: containarium.cloud.v1.ReportHostStatusRequest
 	(*ReportHostStatusResponse)(nil),     // 14: containarium.cloud.v1.ReportHostStatusResponse
-	nil,                                  // 15: containarium.cloud.v1.Assignment.SecretEnvEntry
-	(*timestamppb.Timestamp)(nil),        // 16: google.protobuf.Timestamp
+	(*SSHCAKey)(nil),                     // 15: containarium.cloud.v1.SSHCAKey
+	(*GetSSHTrustBundleRequest)(nil),     // 16: containarium.cloud.v1.GetSSHTrustBundleRequest
+	(*GetSSHTrustBundleResponse)(nil),    // 17: containarium.cloud.v1.GetSSHTrustBundleResponse
+	nil,                                  // 18: containarium.cloud.v1.Assignment.SecretEnvEntry
+	(*timestamppb.Timestamp)(nil),        // 19: google.protobuf.Timestamp
 }
 var file_containarium_cloud_v1_actuation_service_proto_depIdxs = []int32{
-	16, // 0: containarium.cloud.v1.HeartbeatResponse.received_at:type_name -> google.protobuf.Timestamp
-	16, // 1: containarium.cloud.v1.ReportContainerStateRequest.observed_at:type_name -> google.protobuf.Timestamp
-	16, // 2: containarium.cloud.v1.ReportContainerStateResponse.received_at:type_name -> google.protobuf.Timestamp
+	19, // 0: containarium.cloud.v1.HeartbeatResponse.received_at:type_name -> google.protobuf.Timestamp
+	19, // 1: containarium.cloud.v1.ReportContainerStateRequest.observed_at:type_name -> google.protobuf.Timestamp
+	19, // 2: containarium.cloud.v1.ReportContainerStateResponse.received_at:type_name -> google.protobuf.Timestamp
 	7,  // 3: containarium.cloud.v1.Assignment.routes:type_name -> containarium.cloud.v1.PortRoute
-	15, // 4: containarium.cloud.v1.Assignment.secret_env:type_name -> containarium.cloud.v1.Assignment.SecretEnvEntry
-	16, // 5: containarium.cloud.v1.Assignment.updated_at:type_name -> google.protobuf.Timestamp
+	18, // 4: containarium.cloud.v1.Assignment.secret_env:type_name -> containarium.cloud.v1.Assignment.SecretEnvEntry
+	19, // 5: containarium.cloud.v1.Assignment.updated_at:type_name -> google.protobuf.Timestamp
 	0,  // 6: containarium.cloud.v1.NetworkPolicy.mode:type_name -> containarium.cloud.v1.NetworkPolicyMode
 	6,  // 7: containarium.cloud.v1.AssignmentBatch.assignments:type_name -> containarium.cloud.v1.Assignment
-	16, // 8: containarium.cloud.v1.AssignmentBatch.generated_at:type_name -> google.protobuf.Timestamp
+	19, // 8: containarium.cloud.v1.AssignmentBatch.generated_at:type_name -> google.protobuf.Timestamp
 	8,  // 9: containarium.cloud.v1.AssignmentBatch.network_policies:type_name -> containarium.cloud.v1.NetworkPolicy
 	12, // 10: containarium.cloud.v1.ReportHostStatusRequest.checks:type_name -> containarium.cloud.v1.HostCapabilityCheck
-	16, // 11: containarium.cloud.v1.ReportHostStatusResponse.received_at:type_name -> google.protobuf.Timestamp
-	10, // 12: containarium.cloud.v1.ActuationService.EnrollHost:input_type -> containarium.cloud.v1.EnrollHostRequest
-	13, // 13: containarium.cloud.v1.ActuationService.ReportHostStatus:input_type -> containarium.cloud.v1.ReportHostStatusRequest
-	1,  // 14: containarium.cloud.v1.ActuationService.Heartbeat:input_type -> containarium.cloud.v1.HeartbeatRequest
-	3,  // 15: containarium.cloud.v1.ActuationService.ReportContainerState:input_type -> containarium.cloud.v1.ReportContainerStateRequest
-	5,  // 16: containarium.cloud.v1.ActuationService.WatchAssignments:input_type -> containarium.cloud.v1.WatchAssignmentsRequest
-	11, // 17: containarium.cloud.v1.ActuationService.EnrollHost:output_type -> containarium.cloud.v1.EnrollHostResponse
-	14, // 18: containarium.cloud.v1.ActuationService.ReportHostStatus:output_type -> containarium.cloud.v1.ReportHostStatusResponse
-	2,  // 19: containarium.cloud.v1.ActuationService.Heartbeat:output_type -> containarium.cloud.v1.HeartbeatResponse
-	4,  // 20: containarium.cloud.v1.ActuationService.ReportContainerState:output_type -> containarium.cloud.v1.ReportContainerStateResponse
-	9,  // 21: containarium.cloud.v1.ActuationService.WatchAssignments:output_type -> containarium.cloud.v1.AssignmentBatch
-	17, // [17:22] is the sub-list for method output_type
-	12, // [12:17] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	19, // 11: containarium.cloud.v1.ReportHostStatusResponse.received_at:type_name -> google.protobuf.Timestamp
+	15, // 12: containarium.cloud.v1.GetSSHTrustBundleResponse.ca_keys:type_name -> containarium.cloud.v1.SSHCAKey
+	19, // 13: containarium.cloud.v1.GetSSHTrustBundleResponse.generated_at:type_name -> google.protobuf.Timestamp
+	10, // 14: containarium.cloud.v1.ActuationService.EnrollHost:input_type -> containarium.cloud.v1.EnrollHostRequest
+	13, // 15: containarium.cloud.v1.ActuationService.ReportHostStatus:input_type -> containarium.cloud.v1.ReportHostStatusRequest
+	1,  // 16: containarium.cloud.v1.ActuationService.Heartbeat:input_type -> containarium.cloud.v1.HeartbeatRequest
+	3,  // 17: containarium.cloud.v1.ActuationService.ReportContainerState:input_type -> containarium.cloud.v1.ReportContainerStateRequest
+	5,  // 18: containarium.cloud.v1.ActuationService.WatchAssignments:input_type -> containarium.cloud.v1.WatchAssignmentsRequest
+	16, // 19: containarium.cloud.v1.ActuationService.GetSSHTrustBundle:input_type -> containarium.cloud.v1.GetSSHTrustBundleRequest
+	11, // 20: containarium.cloud.v1.ActuationService.EnrollHost:output_type -> containarium.cloud.v1.EnrollHostResponse
+	14, // 21: containarium.cloud.v1.ActuationService.ReportHostStatus:output_type -> containarium.cloud.v1.ReportHostStatusResponse
+	2,  // 22: containarium.cloud.v1.ActuationService.Heartbeat:output_type -> containarium.cloud.v1.HeartbeatResponse
+	4,  // 23: containarium.cloud.v1.ActuationService.ReportContainerState:output_type -> containarium.cloud.v1.ReportContainerStateResponse
+	9,  // 24: containarium.cloud.v1.ActuationService.WatchAssignments:output_type -> containarium.cloud.v1.AssignmentBatch
+	17, // 25: containarium.cloud.v1.ActuationService.GetSSHTrustBundle:output_type -> containarium.cloud.v1.GetSSHTrustBundleResponse
+	20, // [20:26] is the sub-list for method output_type
+	14, // [14:20] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_containarium_cloud_v1_actuation_service_proto_init() }
@@ -1322,7 +1567,7 @@ func file_containarium_cloud_v1_actuation_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_cloud_v1_actuation_service_proto_rawDesc), len(file_containarium_cloud_v1_actuation_service_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   15,
+			NumMessages:   18,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

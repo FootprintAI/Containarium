@@ -3,6 +3,7 @@ package cloud
 import (
 	"context"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 
@@ -36,6 +37,13 @@ type fakeActuation struct {
 	statusBearer         string
 	statusReq            *cloudv1.ReportHostStatusRequest
 	statusReports        int
+
+	// sshTrustVersion/sshTrustKeys configure the canned SSH CA trust bundle.
+	// Zero value = "no SSH CA configured": Heartbeat leaves ssh_trust_version
+	// empty and the client is expected to never call GetSSHTrustBundle.
+	sshTrustVersion string
+	sshTrustKeys    []*cloudv1.SSHCAKey
+	sshTrustCalls   int
 }
 
 // EnrollHost echoes back the host id embedded in the join token (first
@@ -90,7 +98,20 @@ func (f *fakeActuation) Heartbeat(ctx context.Context, _ *cloudv1.HeartbeatReque
 			f.bearer = v[0]
 		}
 	}
-	return &cloudv1.HeartbeatResponse{}, nil
+	return &cloudv1.HeartbeatResponse{SshTrustVersion: f.sshTrustVersion}, nil
+}
+
+// GetSSHTrustBundle mirrors the real server's known_version short-circuit
+// (internal/server/actuation_server.go's GetSSHTrustBundle on the cloud
+// side) so tests exercise the real protocol, not just canned responses.
+func (f *fakeActuation) GetSSHTrustBundle(_ context.Context, req *cloudv1.GetSSHTrustBundleRequest) (*cloudv1.GetSSHTrustBundleResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sshTrustCalls++
+	if known := req.GetKnownVersion(); known != "" && known == f.sshTrustVersion {
+		return &cloudv1.GetSSHTrustBundleResponse{Unchanged: true, Version: f.sshTrustVersion}, nil
+	}
+	return &cloudv1.GetSSHTrustBundleResponse{Version: f.sshTrustVersion, CaKeys: f.sshTrustKeys}, nil
 }
 
 // WatchAssignments sends one batch (with the canned policies) then closes the
@@ -194,6 +215,125 @@ func TestHeartbeatSendsHostBearer(t *testing.T) {
 	}
 	if fake.bearer != "host-1.secretbearer" {
 		t.Errorf("server saw bearer %q, want the configured token", fake.bearer)
+	}
+}
+
+// TestHeartbeatFetchesTrustBundleOnNewVersion is the core #1928 regression
+// guard: a heartbeat that advertises a new ssh_trust_version must cause the
+// client to fetch and cache the bundle, and a SUBSEQUENT heartbeat at the
+// SAME version must NOT re-fetch (the whole point of the version hint is a
+// near-free poll once converged).
+func TestHeartbeatFetchesTrustBundleOnNewVersion(t *testing.T) {
+	cfg := &Config{ControlPlane: "bufconn", HostID: "host-1", Token: "host-1.secretbearer"}
+	c, fake := newTestClient(t, cfg)
+	fake.sshTrustVersion = "v1"
+	fake.sshTrustKeys = []*cloudv1.SSHCAKey{
+		{KeyId: "ca-1", PublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA", Active: true},
+	}
+
+	if err := c.heartbeatOnce(context.Background()); err != nil {
+		t.Fatalf("heartbeatOnce: %v", err)
+	}
+
+	content, version, ok := c.SSHTrustedUserCAKeys()
+	if !ok {
+		t.Fatal("SSHTrustedUserCAKeys: ok = false, want true after a heartbeat advertising a new version")
+	}
+	if version != "v1" {
+		t.Errorf("version = %q, want %q", version, "v1")
+	}
+	if !strings.Contains(content, "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA") {
+		t.Errorf("content = %q, want it to contain the CA public key", content)
+	}
+	if !strings.Contains(content, "kid=ca-1") {
+		t.Errorf("content = %q, want the key-id comment for operator visibility", content)
+	}
+
+	fake.mu.Lock()
+	calls := fake.sshTrustCalls
+	fake.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("GetSSHTrustBundle calls = %d, want 1 before the second heartbeat", calls)
+	}
+
+	// Second heartbeat at the same version: no re-fetch.
+	if err := c.heartbeatOnce(context.Background()); err != nil {
+		t.Fatalf("heartbeatOnce (2nd): %v", err)
+	}
+	fake.mu.Lock()
+	calls = fake.sshTrustCalls
+	fake.mu.Unlock()
+	if calls != 1 {
+		t.Errorf("GetSSHTrustBundle calls after 2nd heartbeat at the same version = %d, want still 1 (short-circuit)", calls)
+	}
+}
+
+// TestHeartbeatSkipsTrustFetchWhenNoCAConfigured covers a cloud daemon with
+// no SSH CA at all: Heartbeat leaves ssh_trust_version empty, and the client
+// must never call GetSSHTrustBundle (which would 501 Unimplemented on such a
+// daemon per the real server — see actuation_server.go).
+func TestHeartbeatSkipsTrustFetchWhenNoCAConfigured(t *testing.T) {
+	cfg := &Config{ControlPlane: "bufconn", HostID: "host-1", Token: "host-1.secretbearer"}
+	c, fake := newTestClient(t, cfg)
+
+	if err := c.heartbeatOnce(context.Background()); err != nil {
+		t.Fatalf("heartbeatOnce: %v", err)
+	}
+
+	if _, _, ok := c.SSHTrustedUserCAKeys(); ok {
+		t.Error("SSHTrustedUserCAKeys: ok = true, want false when the cloud daemon has no SSH CA configured")
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if fake.sshTrustCalls != 0 {
+		t.Errorf("GetSSHTrustBundle calls = %d, want 0", fake.sshTrustCalls)
+	}
+}
+
+// TestRefreshSSHTrustBundleIfStale_EmptyCaKeysRefused pins the safety
+// refusal: a non-unchanged response with zero CA keys (a cloud-side bug, or
+// a wire hiccup) must NOT overwrite a good cached bundle — installing an
+// empty TrustedUserCAKeys file would trust nothing and lock out every
+// certificate-auth user, which is worse than serving stale-but-working trust.
+func TestRefreshSSHTrustBundleIfStale_EmptyCaKeysRefused(t *testing.T) {
+	cfg := &Config{ControlPlane: "bufconn", HostID: "host-1", Token: "host-1.secretbearer"}
+	c, fake := newTestClient(t, cfg)
+	fake.sshTrustVersion = "v1"
+	fake.sshTrustKeys = []*cloudv1.SSHCAKey{{KeyId: "ca-1", PublicKey: "ssh-ed25519 AAAA", Active: true}}
+	if err := c.heartbeatOnce(context.Background()); err != nil {
+		t.Fatalf("heartbeatOnce (seed v1): %v", err)
+	}
+	seededContent, _, _ := c.SSHTrustedUserCAKeys()
+
+	// Cloud rotates to v2 but (bug/hiccup) serves no keys for it.
+	fake.mu.Lock()
+	fake.sshTrustVersion = "v2"
+	fake.sshTrustKeys = nil
+	fake.mu.Unlock()
+	if err := c.heartbeatOnce(context.Background()); err != nil {
+		t.Fatalf("heartbeatOnce (v2, empty keys): %v", err)
+	}
+
+	content, version, ok := c.SSHTrustedUserCAKeys()
+	if !ok {
+		t.Fatal("SSHTrustedUserCAKeys: ok = false, want the v1 cache to survive")
+	}
+	if version != "v1" {
+		t.Errorf("version = %q, want the refusal to keep %q", version, "v1")
+	}
+	if content != seededContent {
+		t.Errorf("content changed despite the empty-keys refusal: got %q, want %q", content, seededContent)
+	}
+}
+
+func TestRenderTrustedUserCAKeysFile(t *testing.T) {
+	got := renderTrustedUserCAKeysFile([]*cloudv1.SSHCAKey{
+		{KeyId: "ca-1", PublicKey: "  ssh-ed25519 AAAAactive  \n", Active: true},
+		{KeyId: "ca-0", PublicKey: "ssh-ed25519 AAAAretired", Active: false},
+	})
+	want := "# kid=ca-1 (active)\nssh-ed25519 AAAAactive\n# kid=ca-0 (retired)\nssh-ed25519 AAAAretired\n"
+	if got != want {
+		t.Errorf("renderTrustedUserCAKeysFile() =\n%q\nwant\n%q", got, want)
 	}
 }
 

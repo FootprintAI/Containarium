@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -78,6 +79,22 @@ func (r *restActuation) ReportHostStatus(ctx context.Context, req *cloudv1.Repor
 	return &resp, nil
 }
 
+// GetSSHTrustBundle fetches the CA trust bundle over the RPC's grpc-gateway
+// GET mapping (/v1/actuation/ssh-trust-bundle), carrying known_version as a
+// query parameter the way grpc-gateway maps a GET request's fields by
+// default.
+func (r *restActuation) GetSSHTrustBundle(ctx context.Context, req *cloudv1.GetSSHTrustBundleRequest, _ ...grpc.CallOption) (*cloudv1.GetSSHTrustBundleResponse, error) {
+	path := "/v1/actuation/ssh-trust-bundle"
+	if kv := req.GetKnownVersion(); kv != "" {
+		path += "?known_version=" + url.QueryEscape(kv)
+	}
+	var resp cloudv1.GetSSHTrustBundleResponse
+	if err := r.get(ctx, path, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 // post sends one protojson request to the control plane and decodes the
 // protojson response. The host bearer (when set) rides the
 // `Grpc-Metadata-Host-Bearer` header → `host-bearer` gRPC metadata at the gateway.
@@ -91,23 +108,39 @@ func (r *restActuation) post(ctx context.Context, path string, in, out proto.Mes
 		return fmt.Errorf("cloud-rest: build %s: %w", path, err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	return r.do(httpReq, path, out)
+}
+
+// get sends a bearer-authenticated GET and decodes the protojson response.
+// Shares response handling with post via do.
+func (r *restActuation) get(ctx context.Context, path string, out proto.Message) error {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, r.base+path, nil)
+	if err != nil {
+		return fmt.Errorf("cloud-rest: build %s: %w", path, err)
+	}
+	return r.do(httpReq, path, out)
+}
+
+// do attaches the host-bearer header, sends httpReq, and decodes the
+// protojson response into out. Shared tail of post and get.
+func (r *restActuation) do(httpReq *http.Request, path string, out proto.Message) error {
 	if r.bearer != "" {
 		httpReq.Header.Set("Grpc-Metadata-Host-Bearer", r.bearer)
 	}
 	resp, err := r.hc.Do(httpReq)
 	if err != nil {
-		return fmt.Errorf("cloud-rest: POST %s: %w", path, err)
+		return fmt.Errorf("cloud-rest: %s %s: %w", httpReq.Method, path, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("cloud-rest: POST %s: %d %s", path, resp.StatusCode, strings.TrimSpace(string(raw)))
+		return fmt.Errorf("cloud-rest: %s %s: %d %s", httpReq.Method, path, resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
 	if len(raw) == 0 {
 		return nil
 	}
 	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(raw, out); err != nil {
-		return fmt.Errorf("cloud-rest: decode %s: %w", path, err)
+		return fmt.Errorf("cloud-rest: decode %s %s: %w", httpReq.Method, path, err)
 	}
 	return nil
 }

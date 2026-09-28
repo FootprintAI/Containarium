@@ -230,6 +230,39 @@
         ]
       }
     },
+    "/v1/actuation/ssh-trust-bundle": {
+      "get": {
+        "summary": "GetSSHTrustBundle returns what this host needs to trust the cloud's SSH\nCA and refuse revoked certificates: the CA public keys for sshd's\nTrustedUserCAKeys, and a KRL spec for RevokedKeys.",
+        "description": "Auth: requires a valid `host-bearer` header — the same channel the host\nalready uses for enrollment and heartbeats, so no new transport, no new\ncredential, and nothing for an operator to wire up per host.\n\nErrors:\n  - Unauthenticated: missing / invalid host-bearer.\n  - Unimplemented: this daemon has no SSH CA configured.",
+        "operationId": "ActuationService_GetSSHTrustBundle",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetSSHTrustBundleResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "knownVersion",
+            "description": "Optional. The version the caller already has applied. When it matches\nthe current one the response sets `unchanged` and omits the payload, so\na frequent poll costs almost nothing.",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "ActuationService"
+        ]
+      }
+    },
     "/v1/actuation/status": {
       "post": {
         "summary": "ReportHostStatus upserts the calling host's capability profile +\n`doctor` self-check and bumps its heartbeat. Requires a valid\n`host-bearer` header. Idempotent.",
@@ -12003,6 +12036,34 @@
         }
       }
     },
+    "GetSSHTrustBundleResponse": {
+      "type": "object",
+      "properties": {
+        "unchanged": {
+          "type": "boolean",
+          "description": "True when known_version matched: ca_keys / krl_spec are omitted and the\nhost must keep what it has. A host MUST NOT read this as \"install\nnothing\" — see the note on krl_spec."
+        },
+        "version": {
+          "type": "string"
+        },
+        "caKeys": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/SSHCAKey"
+          },
+          "description": "Every CA key the host should trust, active first. Retired keys are\nincluded on purpose: dropping one the instant a rotation lands would\ninvalidate every certificate already in users' hands."
+        },
+        "krlSpec": {
+          "type": "string",
+          "description": "`ssh-keygen -k` input, which the host compiles into the binary KRL that\nsshd's RevokedKeys reads. Never empty when `unchanged` is false — a KRL\nthat revokes nothing is sent as an explicit comment line."
+        },
+        "generatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
     "GetScanStatusResponse": {
       "type": "object",
       "properties": {
@@ -12305,6 +12366,10 @@
           "type": "string",
           "format": "date-time",
           "description": "Server time when the heartbeat was recorded. Useful for hosts\nthat want to skew-correct their heartbeat scheduling against\nthe cloud's clock."
+        },
+        "sshTrustVersion": {
+          "type": "string",
+          "description": "Current SSH trust-bundle version (cloud design #1076 Change C, cloud\nissue #1082). A host that already applied this version has nothing to\ndo; anything else means \"call GetSSHTrustBundle\". Piggy-backing on the\nheartbeat the host already sends means CA rotation and revocations\npropagate at heartbeat cadence without a second polling loop.\n\nEmpty when the cloud daemon has no SSH CA configured."
         }
       }
     },
@@ -14791,6 +14856,24 @@
           "$ref": "#/definitions/CrewRun"
         }
       }
+    },
+    "SSHCAKey": {
+      "type": "object",
+      "properties": {
+        "keyId": {
+          "type": "string",
+          "description": "Rotation handle. A certificate names the id that signed it, so a\nrotation is observable rather than a silent authentication failure."
+        },
+        "publicKey": {
+          "type": "string",
+          "description": "authorized_keys form, for sshd's TrustedUserCAKeys."
+        },
+        "active": {
+          "type": "boolean",
+          "description": "True for the key currently used to SIGN. Retired keys stay trusted so a\nrotation does not invalidate certificates already in users' hands."
+        }
+      },
+      "description": "SSHCAKey is one CA public key the host should trust for certificate-based\nSSH auth. Vendored (message body only, not the whole cloud\nSSHCertificateAuthorityService) from the cloud repo's ssh_ca.proto — see\nthe vendoring note at the top of this file."
     },
     "Sandbox": {
       "type": "object",

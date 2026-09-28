@@ -4,6 +4,13 @@
 // private cloud Go module (which would break the public repo's go-mod-tidy CI gate
 // + fork builds). Keep in sync with the cloud repo when the actuation contract
 // changes. See docs/CLOUD-ACTUATION-CLIENT-DESIGN.md.
+//
+// Deviation from a byte-identical mirror: `SSHCAKey` is inlined here rather
+// than importing the cloud repo's ssh_ca.proto, which also carries the full
+// SSHCertificateAuthorityService (cert issuance/revocation RPCs — an
+// unrelated ~900-line cloud-admin surface this daemon never calls). Keep
+// SSHCAKey's field numbers/types identical to the cloud repo's copy; a
+// future resync should NOT blindly import ssh_ca.proto wholesale.
 // actuation_service.proto — platform-daemon ⇄ cloud-daemon channel
 // (host-side surface). See prd/cloud/container-actuation.md.
 //
@@ -53,6 +60,7 @@ const (
 	ActuationService_Heartbeat_FullMethodName            = "/containarium.cloud.v1.ActuationService/Heartbeat"
 	ActuationService_ReportContainerState_FullMethodName = "/containarium.cloud.v1.ActuationService/ReportContainerState"
 	ActuationService_WatchAssignments_FullMethodName     = "/containarium.cloud.v1.ActuationService/WatchAssignments"
+	ActuationService_GetSSHTrustBundle_FullMethodName    = "/containarium.cloud.v1.ActuationService/GetSSHTrustBundle"
 )
 
 // ActuationServiceClient is the client API for ActuationService service.
@@ -107,6 +115,18 @@ type ActuationServiceClient interface {
 	// platform-daemons speaking real gRPC) should just use the
 	// native channel.
 	WatchAssignments(ctx context.Context, in *WatchAssignmentsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[AssignmentBatch], error)
+	// GetSSHTrustBundle returns what this host needs to trust the cloud's SSH
+	// CA and refuse revoked certificates: the CA public keys for sshd's
+	// TrustedUserCAKeys, and a KRL spec for RevokedKeys.
+	//
+	// Auth: requires a valid `host-bearer` header — the same channel the host
+	// already uses for enrollment and heartbeats, so no new transport, no new
+	// credential, and nothing for an operator to wire up per host.
+	//
+	// Errors:
+	//   - Unauthenticated: missing / invalid host-bearer.
+	//   - Unimplemented: this daemon has no SSH CA configured.
+	GetSSHTrustBundle(ctx context.Context, in *GetSSHTrustBundleRequest, opts ...grpc.CallOption) (*GetSSHTrustBundleResponse, error)
 }
 
 type actuationServiceClient struct {
@@ -176,6 +196,16 @@ func (c *actuationServiceClient) WatchAssignments(ctx context.Context, in *Watch
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type ActuationService_WatchAssignmentsClient = grpc.ServerStreamingClient[AssignmentBatch]
 
+func (c *actuationServiceClient) GetSSHTrustBundle(ctx context.Context, in *GetSSHTrustBundleRequest, opts ...grpc.CallOption) (*GetSSHTrustBundleResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetSSHTrustBundleResponse)
+	err := c.cc.Invoke(ctx, ActuationService_GetSSHTrustBundle_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ActuationServiceServer is the server API for ActuationService service.
 // All implementations must embed UnimplementedActuationServiceServer
 // for forward compatibility.
@@ -228,6 +258,18 @@ type ActuationServiceServer interface {
 	// platform-daemons speaking real gRPC) should just use the
 	// native channel.
 	WatchAssignments(*WatchAssignmentsRequest, grpc.ServerStreamingServer[AssignmentBatch]) error
+	// GetSSHTrustBundle returns what this host needs to trust the cloud's SSH
+	// CA and refuse revoked certificates: the CA public keys for sshd's
+	// TrustedUserCAKeys, and a KRL spec for RevokedKeys.
+	//
+	// Auth: requires a valid `host-bearer` header — the same channel the host
+	// already uses for enrollment and heartbeats, so no new transport, no new
+	// credential, and nothing for an operator to wire up per host.
+	//
+	// Errors:
+	//   - Unauthenticated: missing / invalid host-bearer.
+	//   - Unimplemented: this daemon has no SSH CA configured.
+	GetSSHTrustBundle(context.Context, *GetSSHTrustBundleRequest) (*GetSSHTrustBundleResponse, error)
 	mustEmbedUnimplementedActuationServiceServer()
 }
 
@@ -252,6 +294,9 @@ func (UnimplementedActuationServiceServer) ReportContainerState(context.Context,
 }
 func (UnimplementedActuationServiceServer) WatchAssignments(*WatchAssignmentsRequest, grpc.ServerStreamingServer[AssignmentBatch]) error {
 	return status.Error(codes.Unimplemented, "method WatchAssignments not implemented")
+}
+func (UnimplementedActuationServiceServer) GetSSHTrustBundle(context.Context, *GetSSHTrustBundleRequest) (*GetSSHTrustBundleResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetSSHTrustBundle not implemented")
 }
 func (UnimplementedActuationServiceServer) mustEmbedUnimplementedActuationServiceServer() {}
 func (UnimplementedActuationServiceServer) testEmbeddedByValue()                          {}
@@ -357,6 +402,24 @@ func _ActuationService_WatchAssignments_Handler(srv interface{}, stream grpc.Ser
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type ActuationService_WatchAssignmentsServer = grpc.ServerStreamingServer[AssignmentBatch]
 
+func _ActuationService_GetSSHTrustBundle_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetSSHTrustBundleRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ActuationServiceServer).GetSSHTrustBundle(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ActuationService_GetSSHTrustBundle_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ActuationServiceServer).GetSSHTrustBundle(ctx, req.(*GetSSHTrustBundleRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ActuationService_ServiceDesc is the grpc.ServiceDesc for ActuationService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -379,6 +442,10 @@ var ActuationService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ReportContainerState",
 			Handler:    _ActuationService_ReportContainerState_Handler,
+		},
+		{
+			MethodName: "GetSSHTrustBundle",
+			Handler:    _ActuationService_GetSSHTrustBundle_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

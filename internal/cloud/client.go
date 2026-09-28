@@ -142,6 +142,7 @@ type Deps struct {
 type unaryActuation interface {
 	Heartbeat(context.Context, *cloudv1.HeartbeatRequest, ...grpc.CallOption) (*cloudv1.HeartbeatResponse, error)
 	ReportHostStatus(context.Context, *cloudv1.ReportHostStatusRequest, ...grpc.CallOption) (*cloudv1.ReportHostStatusResponse, error)
+	GetSSHTrustBundle(context.Context, *cloudv1.GetSSHTrustBundleRequest, ...grpc.CallOption) (*cloudv1.GetSSHTrustBundleResponse, error)
 }
 
 // Client is the host-side cloud-actuation client. Slice 3 implements the
@@ -172,6 +173,14 @@ type Client struct {
 
 	mu       sync.Mutex
 	failures int // consecutive heartbeat failures, for observability
+
+	// sshTrustMu guards the SSH CA trust-bundle cache. Separate from mu
+	// (heartbeat bookkeeping) since a caller reading the cache (the
+	// gateway's /authorized-keys handler, on the sentinel-facing side) does
+	// so on every sentinel poll, independent of heartbeat timing.
+	sshTrustMu      sync.Mutex
+	sshTrustVersion string // last version successfully cached; "" = none yet
+	sshTrustFile    string // rendered TrustedUserCAKeys file content for sshTrustVersion
 }
 
 // New builds a client from a validated config. deps are optional collaborators
@@ -457,10 +466,102 @@ func (c *Client) beat() {
 
 // heartbeatOnce sends a single Heartbeat with the host-bearer metadata.
 func (c *Client) heartbeatOnce(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(c.authContext(ctx), 10*time.Second)
+	hbCtx, cancel := context.WithTimeout(c.authContext(ctx), 10*time.Second)
 	defer cancel()
-	_, err := c.ac.Heartbeat(ctx, &cloudv1.HeartbeatRequest{})
-	return err
+	resp, err := c.ac.Heartbeat(hbCtx, &cloudv1.HeartbeatRequest{})
+	if err != nil {
+		return err
+	}
+	c.refreshSSHTrustBundleIfStale(ctx, resp.GetSshTrustVersion())
+	return nil
+}
+
+// refreshSSHTrustBundleIfStale fetches and caches a new SSH CA trust bundle
+// when the heartbeat's advertised version differs from what this client has
+// cached (cloud design #1076 Change C, cloud issue #1082 / #1928).
+//
+// Best-effort and separate from the heartbeat's own error return: a fetch
+// failure is logged and retried on the next heartbeat. Failing the heartbeat
+// itself over a stale trust bundle would mark a healthy host stale and get
+// its containers reassigned — wildly disproportionate to "the CA trust hint
+// is a beat behind".
+func (c *Client) refreshSSHTrustBundleIfStale(ctx context.Context, wantVersion string) {
+	if wantVersion == "" {
+		return // this cloud daemon has no SSH CA configured
+	}
+	c.sshTrustMu.Lock()
+	have := c.sshTrustVersion
+	c.sshTrustMu.Unlock()
+	if have == wantVersion {
+		return
+	}
+
+	fetchCtx, cancel := context.WithTimeout(c.authContext(ctx), 10*time.Second)
+	defer cancel()
+	resp, err := c.ac.GetSSHTrustBundle(fetchCtx, &cloudv1.GetSSHTrustBundleRequest{KnownVersion: have})
+	if err != nil {
+		log.Printf("[cloud] ssh trust bundle fetch failed (keeping version %q): %v", have, err)
+		return
+	}
+	if resp.GetUnchanged() {
+		// The version we already had was still current by the time this
+		// request reached the server (the heartbeat hint and this fetch
+		// raced a rotation) — nothing to install, just record the version.
+		c.sshTrustMu.Lock()
+		c.sshTrustVersion = resp.GetVersion()
+		c.sshTrustMu.Unlock()
+		return
+	}
+	if len(resp.GetCaKeys()) == 0 {
+		// Refuse to cache an empty bundle. Mirrors sshca.BuildTrustBundle's
+		// own refusal on the cloud side: a host that installed this would
+		// trust NOTHING, locking out every certificate-auth user, which is
+		// worse than keeping a stale-but-working bundle.
+		log.Printf("[cloud] ssh trust bundle fetch returned no CA keys (keeping version %q)", have)
+		return
+	}
+
+	file := renderTrustedUserCAKeysFile(resp.GetCaKeys())
+	c.sshTrustMu.Lock()
+	c.sshTrustFile = file
+	c.sshTrustVersion = resp.GetVersion()
+	c.sshTrustMu.Unlock()
+	log.Printf("[cloud] ssh trust bundle updated: version=%s keys=%d", resp.GetVersion(), len(resp.GetCaKeys()))
+}
+
+// SSHTrustedUserCAKeys returns the most recently cached SSH CA trust-bundle
+// file content (sshd TrustedUserCAKeys form) and its version. ok is false
+// when nothing has been cached yet — either the cloud daemon has no SSH CA
+// configured, or this client hasn't completed a heartbeat/fetch cycle yet.
+//
+// This is how a host relays trust to a sentinel that has no cloud
+// credential of its own: the sentinel already pulls this host's
+// /authorized-keys on a timer over an existing authenticated channel, and
+// the gateway handler for that endpoint reads this accessor to include the
+// bundle in its response — see internal/gateway/keys_handler.go.
+func (c *Client) SSHTrustedUserCAKeys() (content, version string, ok bool) {
+	c.sshTrustMu.Lock()
+	defer c.sshTrustMu.Unlock()
+	return c.sshTrustFile, c.sshTrustVersion, c.sshTrustVersion != ""
+}
+
+// renderTrustedUserCAKeysFile renders CA keys as sshd's TrustedUserCAKeys
+// file expects: one authorized_keys-form key per line. Mirrors the cloud
+// repo's sshca.TrustBundle.TrustedUserCAKeysFile() rendering exactly, so a
+// host's copy is byte-identical to what the cloud itself would write.
+func renderTrustedUserCAKeysFile(keys []*cloudv1.SSHCAKey) string {
+	var sb strings.Builder
+	for _, k := range keys {
+		state := "retired"
+		if k.GetActive() {
+			state = "active"
+		}
+		// The comment is for an operator reading the file on a host; sshd
+		// ignores it. Seeing WHICH key is which during a rotation is the
+		// difference between a two-minute check and an incident.
+		fmt.Fprintf(&sb, "# kid=%s (%s)\n%s\n", k.GetKeyId(), state, strings.TrimSpace(k.GetPublicKey()))
+	}
+	return sb.String()
 }
 
 // authContext attaches the host bearer the cloud interceptor authenticates on.

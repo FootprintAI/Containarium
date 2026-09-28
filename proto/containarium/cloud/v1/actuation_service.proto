@@ -4,6 +4,13 @@
 // private cloud Go module (which would break the public repo's go-mod-tidy CI gate
 // + fork builds). Keep in sync with the cloud repo when the actuation contract
 // changes. See docs/CLOUD-ACTUATION-CLIENT-DESIGN.md.
+//
+// Deviation from a byte-identical mirror: `SSHCAKey` is inlined here rather
+// than importing the cloud repo's ssh_ca.proto, which also carries the full
+// SSHCertificateAuthorityService (cert issuance/revocation RPCs — an
+// unrelated ~900-line cloud-admin surface this daemon never calls). Keep
+// SSHCAKey's field numbers/types identical to the cloud repo's copy; a
+// future resync should NOT blindly import ssh_ca.proto wholesale.
 // actuation_service.proto — platform-daemon ⇄ cloud-daemon channel
 // (host-side surface). See prd/cloud/container-actuation.md.
 //
@@ -47,6 +54,15 @@ message HeartbeatResponse {
   // that want to skew-correct their heartbeat scheduling against
   // the cloud's clock.
   google.protobuf.Timestamp received_at = 1;
+
+  // Current SSH trust-bundle version (cloud design #1076 Change C, cloud
+  // issue #1082). A host that already applied this version has nothing to
+  // do; anything else means "call GetSSHTrustBundle". Piggy-backing on the
+  // heartbeat the host already sends means CA rotation and revocations
+  // propagate at heartbeat cadence without a second polling loop.
+  //
+  // Empty when the cloud daemon has no SSH CA configured.
+  string ssh_trust_version = 2;
 }
 
 // ReportContainerStateRequest is a host's push of its current
@@ -280,6 +296,49 @@ message ReportHostStatusResponse {
   google.protobuf.Timestamp received_at = 1;
 }
 
+// SSHCAKey is one CA public key the host should trust for certificate-based
+// SSH auth. Vendored (message body only, not the whole cloud
+// SSHCertificateAuthorityService) from the cloud repo's ssh_ca.proto — see
+// the vendoring note at the top of this file.
+message SSHCAKey {
+  // Rotation handle. A certificate names the id that signed it, so a
+  // rotation is observable rather than a silent authentication failure.
+  string key_id = 1;
+  // authorized_keys form, for sshd's TrustedUserCAKeys.
+  string public_key = 2;
+  // True for the key currently used to SIGN. Retired keys stay trusted so a
+  // rotation does not invalidate certificates already in users' hands.
+  bool active = 3;
+}
+
+message GetSSHTrustBundleRequest {
+  // Optional. The version the caller already has applied. When it matches
+  // the current one the response sets `unchanged` and omits the payload, so
+  // a frequent poll costs almost nothing.
+  string known_version = 1;
+}
+
+message GetSSHTrustBundleResponse {
+  // True when known_version matched: ca_keys / krl_spec are omitted and the
+  // host must keep what it has. A host MUST NOT read this as "install
+  // nothing" — see the note on krl_spec.
+  bool unchanged = 1;
+
+  string version = 2;
+
+  // Every CA key the host should trust, active first. Retired keys are
+  // included on purpose: dropping one the instant a rotation lands would
+  // invalidate every certificate already in users' hands.
+  repeated SSHCAKey ca_keys = 3;
+
+  // `ssh-keygen -k` input, which the host compiles into the binary KRL that
+  // sshd's RevokedKeys reads. Never empty when `unchanged` is false — a KRL
+  // that revokes nothing is sent as an explicit comment line.
+  string krl_spec = 4;
+
+  google.protobuf.Timestamp generated_at = 5;
+}
+
 service ActuationService {
   // EnrollHost redeems a single-use join token and registers the BYO host.
   // Self-authenticating via the token in the body (NOT host-bearer — the row
@@ -353,4 +412,21 @@ service ActuationService {
   // platform-daemons speaking real gRPC) should just use the
   // native channel.
   rpc WatchAssignments(WatchAssignmentsRequest) returns (stream AssignmentBatch);
+
+  // GetSSHTrustBundle returns what this host needs to trust the cloud's SSH
+  // CA and refuse revoked certificates: the CA public keys for sshd's
+  // TrustedUserCAKeys, and a KRL spec for RevokedKeys.
+  //
+  // Auth: requires a valid `host-bearer` header — the same channel the host
+  // already uses for enrollment and heartbeats, so no new transport, no new
+  // credential, and nothing for an operator to wire up per host.
+  //
+  // Errors:
+  //   - Unauthenticated: missing / invalid host-bearer.
+  //   - Unimplemented: this daemon has no SSH CA configured.
+  rpc GetSSHTrustBundle(GetSSHTrustBundleRequest) returns (GetSSHTrustBundleResponse) {
+    option (google.api.http) = {
+      get: "/v1/actuation/ssh-trust-bundle"
+    };
+  }
 }
