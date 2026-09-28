@@ -215,6 +215,33 @@ func TestIsKnownScope_TrackerScopes(t *testing.T) {
 	}
 }
 
+// TestIsKnownScope_GatewayScopes guards the same class of bug as the two tests
+// above (#1926) for the model-gateway scopes added with the ModelGatewayService
+// RPCs (#1726).
+func TestIsKnownScope_GatewayScopes(t *testing.T) {
+	for _, s := range []string{ScopeGatewayAdmin, ScopeGatewayMint} {
+		if !IsKnownScope(s) {
+			t.Errorf("IsKnownScope(%q) = false, want true (missing from AllScopes?)", s)
+		}
+	}
+}
+
+// TestGatewayScopesAreDistinct pins the split the design asks for: a
+// control-plane token that may register a tenant's REAL upstream key must not
+// thereby be able to mint box tokens, and a token that may mint must not be
+// able to write a real key.
+func TestGatewayScopesAreDistinct(t *testing.T) {
+	if ScopeGatewayAdmin == ScopeGatewayMint {
+		t.Fatal("gateway:admin and gateway:mint must be separate scopes")
+	}
+	if HasScope([]string{ScopeGatewayMint}, ScopeGatewayAdmin) {
+		t.Error("gateway:mint must not satisfy gateway:admin")
+	}
+	if HasScope([]string{ScopeGatewayAdmin}, ScopeGatewayMint) {
+		t.Error("gateway:admin must not satisfy gateway:mint")
+	}
+}
+
 func TestParseScopes(t *testing.T) {
 	cases := map[string][]string{
 		"":                                   nil,

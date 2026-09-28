@@ -245,9 +245,9 @@ install_containarium_binary() {
 
     # Download binary
     if [ "$CONTAINARIUM_VERSION" == "latest" ]; then
-        DOWNLOAD_URL="https://github.com/footprintai/containarium/releases/latest/download/containarium-linux-${ARCH}"
+        DOWNLOAD_URL="https://github.com/footprintai/containarium/releases/latest/download/containariumd-linux-${ARCH}"
     else
-        DOWNLOAD_URL="https://github.com/footprintai/containarium/releases/download/${CONTAINARIUM_VERSION}/containarium-linux-${ARCH}"
+        DOWNLOAD_URL="https://github.com/footprintai/containarium/releases/download/${CONTAINARIUM_VERSION}/containariumd-linux-${ARCH}"
     fi
 
     log_info "Downloading from: $DOWNLOAD_URL"

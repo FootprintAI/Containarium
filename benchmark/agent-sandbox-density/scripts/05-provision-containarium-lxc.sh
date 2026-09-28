@@ -96,10 +96,10 @@ fi
 echo "resolved tag: \$TAG"
 
 BASE_URL="https://github.com/FootprintAI/Containarium/releases/download/\${TAG}"
-curl -fsSL -o /tmp/containariumd "\${BASE_URL}/containarium-linux-amd64"
+curl -fsSL -o /tmp/containariumd "\${BASE_URL}/containariumd-linux-amd64"
 curl -fsSL -o /tmp/SHA256SUMS.txt "\${BASE_URL}/SHA256SUMS.txt"
 
-EXPECTED=\$(grep 'containarium-linux-amd64\$' /tmp/SHA256SUMS.txt | awk '{print \$1}')
+EXPECTED=\$(grep 'containariumd-linux-amd64\$' /tmp/SHA256SUMS.txt | awk '{print \$1}')
 ACTUAL=\$(sha256sum /tmp/containariumd | awk '{print \$1}')
 [[ "\$EXPECTED" == "\$ACTUAL" ]] || {
 	echo "SHA256 mismatch: expected \$EXPECTED, got \$ACTUAL" >&2

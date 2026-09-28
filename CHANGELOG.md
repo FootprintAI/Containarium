@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Grafana anonymous-access backfill (#2079) now actually runs on
+  existing hosts** (#2103). The daemon auto-detects an existing metrics
+  container at startup and then skips `EnsureVictoriaMetrics` — where the
+  backfill lived — so an upgrade never closed anonymous access on any host
+  that already had Grafana, which is every host the backfill was for.
+  Found by the lab-host verification pass: `grafana.ini` unchanged after
+  the upgrade. The detected path now runs the same idempotent backfill.
+
 ### Added
 
 - **Core-infra network guard reconciler, off by default** (#2084; design in
@@ -44,6 +54,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   subject; every address is validated against the bridge before a rule is
   rendered; output order is fixed so a converged host diffs clean. No I/O —
   the reconciler that applies it is #2084.
+
+### Changed
+
+- **`containarium-*` release artifacts are now the client build** (#1784,
+  CLI client/server split Rollout Phase 2). `containarium-{linux-amd64,
+  darwin-amd64,darwin-arm64,windows-amd64.exe}` are built from
+  `cmd/containarium` with `-tags containarium_client` and `CGO_ENABLED=0`
+  (static, roughly a quarter of the daemon's size) instead of mirroring the
+  daemon. Install the daemon from `containariumd-*`, which is unchanged;
+  `hacks/install.sh`, the air-gapped bundle, the demo terraform and the
+  benchmark provisioners now fetch `containariumd-*`. Running
+  `containarium daemon` (or any other moved server command) on the new
+  client exits 2 and names `containariumd`.
 
 ### Fixed
 
