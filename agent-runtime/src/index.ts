@@ -2,13 +2,14 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { startA2AServer } from "./a2a.js";
-import { writeArtifact } from "./artifact.js";
 import type { Engine, EngineConfig } from "./engine.js";
 import { ClaudeEngine } from "./engines/claude.js";
 import { CodexEngine } from "./engines/codex.js";
 import { GeminiEngine } from "./engines/gemini.js";
+import { journalSecrets, serveJournals } from "./journal.js";
 import { codexConfigToml } from "./mcp.js";
 import { pollConfigFromEnv, runPollLoop } from "./poll.js";
+import { runOnce } from "./run.js";
 import { DEFAULT_SEED_DIR, loadSeed } from "./seed.js";
 
 // The in-box loop entrypoint (Phase 4a). Reads the seed the daemon planted,
@@ -80,8 +81,13 @@ async function main(): Promise<void> {
   if (engine.name === "codex") writeCodexConfig(cfg);
 
   if (mode === "serve") {
-    // Long-running: serve /agent-card + /tasks until the box stops.
-    startA2AServer(seed, engine, cfg);
+    // Long-running: serve /agent-card + /tasks until the box stops. Each task
+    // is journaled under the run_id it carries (#2095).
+    const journals = serveJournals({
+      skillId: process.env.CONTAINARIUM_SKILL_ID,
+      secrets: journalSecrets(process.env, seed.tokenPath),
+    });
+    startA2AServer(seed, engine, cfg, journals);
     return;
   }
 
@@ -93,16 +99,17 @@ async function main(): Promise<void> {
     return;
   }
 
-  try {
-    const res = await engine.run(seed.inputJson, cfg);
-    writeArtifact(seedDir, { outputJson: res.outputJson, engine: engine.name, model, usage: res.usage });
-    process.stdout.write(`agent-runtime: ${engine.name} run complete\n`);
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    writeArtifact(seedDir, { outputJson: "", engine: engine.name, model, error: msg });
-    process.stderr.write(`agent-runtime: ${engine.name} run failed: ${msg}\n`);
-    process.exitCode = 1;
-  }
+  // Run mode: journaled under CONTAINARIUM_RUN_ID / CONTAINARIUM_SKILL_ID,
+  // which the daemon exports; missing either is a hard failure (#2095).
+  process.exitCode = await runOnce({
+    env: process.env,
+    seedDir,
+    inputJson: seed.inputJson,
+    tokenPath: seed.tokenPath,
+    engine,
+    cfg,
+    model,
+  });
 }
 
 void main();
