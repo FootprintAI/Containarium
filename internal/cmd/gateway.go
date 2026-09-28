@@ -261,7 +261,12 @@ func readGatewayKeyMaterial(key, keyFile string) (string, error) {
 		}
 		return strings.TrimSpace(string(b)), nil
 	case keyFile != "":
-		b, err := os.ReadFile(keyFile) // #nosec G304 -- operator-supplied --key-file path; reading it is the documented CLI behavior
+		// #nosec G304 -- operator-supplied path; reading it is the documented
+		// purpose of --key-file (same trust as reading an SSH key file, and the
+		// same annotation crew_ops.go carries for --git-credential-file). The
+		// operator running this command already has whatever filesystem access
+		// the path grants.
+		b, err := os.ReadFile(keyFile)
 		if err != nil {
 			return "", fmt.Errorf("reading --key-file: %w", err)
 		}
