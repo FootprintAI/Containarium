@@ -112,9 +112,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allow-list, including `*`. Adding the gate is not restricted. Operator
   tokens are unaffected. This only limits *where* a run may remove the
   gate. A run can still remove it from its own follow-up, and an
-  agent-chosen `parent_number` can still reset depth; together those can
-  still produce an unattended chain of unbounded length, tracked
-  separately as #2073. (#2068)
+  agent-chosen `parent_number` could still reset depth; together those
+  produced an unattended chain of unbounded length, fixed below as #2073.
+  (#2068)
+- **Security: an agent-chosen `parent_number` can no longer reset a
+  follow-up chain's depth.** `CreateTrackerIssue` derived a follow-up's
+  depth from the named parent alone, and `parent_number` is chosen by the
+  run, so a run dispatched at any depth could file its follow-up at depth
+  1 by naming a human-created issue as the parent. Combined with a run
+  releasing its own follow-up (allowed by design, see #2068), that made an
+  unattended agent chain of unbounded length: with `max_depth: 1`, five
+  of five consecutive agent-filed hops dispatched with no human action.
+  A follow-up's depth is now `max(parent depth, the run's own dispatch
+  depth) + 1`, where the run's dispatch depth is what the dispatcher
+  recorded on its `tracker_dispatches` row from the lineage table when it
+  started the run — never anything the run sends. Depth therefore never
+  decreases along a dispatch chain whatever parent each hop names, and
+  `max_depth` bounds the chain end to end: exactly `max_depth` agent-filed
+  hops can dispatch unattended, then the next create is refused with
+  `FailedPrecondition` before any upstream call. The `parent_number` link
+  and back-link comment are unchanged, a parent deeper than the run (its
+  own child) still counts from the parent, and a run the dispatcher did
+  not start (no dispatch row) keeps `parent depth + 1`. Whether a run may
+  remove `agent:needs-approval` from its own follow-up *at all* is still
+  open on #2055 and is not decided here. (#2073)
 
 ## [0.90.1] - 2026-09-26
 
