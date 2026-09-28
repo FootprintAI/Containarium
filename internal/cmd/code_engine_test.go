@@ -1,0 +1,482 @@
+package cmd
+
+import (
+	"bytes"
+	"context"
+	"io"
+	"strings"
+	"testing"
+
+	"github.com/footprintai/containarium/internal/coderun/engine"
+	"github.com/footprintai/containarium/internal/connectcore"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+	"github.com/spf13/cobra"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
+)
+
+// `code install --engine` tests (#1727).
+//
+// These drive runCodeInstall through the same sshExec / resolveCodeTargetFn seams
+// #2030's tests use, plus two new ones (mintGatewayTokenFn, listSecretsFn), so no
+// box, daemon, or ssh binary is involved.
+
+// installEnv holds the flag state and fakes for one install run.
+type installEnv struct {
+	scripts  []string
+	mintReqs []*pb.MintGatewayTokenRequest
+	stdout   string
+	stderr   string
+}
+
+// mintResult is what the fake mint RPC returns.
+type mintResult struct {
+	resp *pb.MintGatewayTokenResponse
+	err  error
+}
+
+// runInstallEngine drives runCodeInstall with the #1727 flags set.
+func runInstallEngine(t *testing.T, box string, flags map[string]string,
+	mint mintResult, secrets []*pb.SecretMetadata, secretsErr error) (*installEnv, error) {
+	t.Helper()
+
+	origSSH, origResolve := sshExec, resolveCodeTargetFn
+	origMint, origSecrets := mintGatewayTokenFn, listSecretsFn
+	origFlags := []*string{
+		&codeEngine, &codeCredential, &codeProvider, &codeSecretName,
+		&codeProviderBaseURL, &codeModel, &codePiVersion,
+		&codeBootstrapURL, &codeRelease, &codeClaudeCodeVersion,
+	}
+	saved := make([]string, len(origFlags))
+	for i, p := range origFlags {
+		saved[i] = *p
+	}
+	origServer := serverAddr
+	t.Cleanup(func() {
+		sshExec, resolveCodeTargetFn = origSSH, origResolve
+		mintGatewayTokenFn, listSecretsFn = origMint, origSecrets
+		for i, p := range origFlags {
+			*p = saved[i]
+		}
+		serverAddr = origServer
+	})
+
+	// Defaults, exactly as cobra would leave them when no flag is passed.
+	codeEngine = string(engine.DefaultName)
+	codeCredential = string(engine.DefaultKind)
+	codeProvider, codeSecretName, codeProviderBaseURL, codeModel = "", "", "", ""
+	codePiVersion = engine.PiVersion
+	codeBootstrapURL, codeRelease, codeClaudeCodeVersion = "", "", ""
+	serverAddr = "daemon.example.test:9090"
+
+	for k, v := range flags {
+		switch k {
+		case "engine":
+			codeEngine = v
+		case "credential":
+			codeCredential = v
+		case "provider":
+			codeProvider = v
+		case "secret-name":
+			codeSecretName = v
+		case "provider-base-url":
+			codeProviderBaseURL = v
+		case "model":
+			codeModel = v
+		case "pi-version":
+			codePiVersion = v
+		case "release":
+			codeRelease = v
+		case "claude-code-version":
+			codeClaudeCodeVersion = v
+		case "server":
+			serverAddr = v
+		default:
+			t.Fatalf("runInstallEngine: unknown flag %q", k)
+		}
+	}
+
+	env := &installEnv{}
+	resolveCodeTargetFn = func(context.Context, string, io.Writer) (connectcore.Target, string, error) {
+		return connectcore.Target{User: "alice", Host: "box.example.test", Port: 22}, "/dev/null", nil
+	}
+	sshExec = func(_ io.Writer, args []string) (string, error) {
+		script := ""
+		if len(args) > 0 {
+			script = args[len(args)-1]
+		}
+		env.scripts = append(env.scripts, script)
+		return "1.2.3\ncredential sources present:\n  (none)", nil
+	}
+	mintGatewayTokenFn = func(_ context.Context, req *pb.MintGatewayTokenRequest) (*pb.MintGatewayTokenResponse, error) {
+		env.mintReqs = append(env.mintReqs, req)
+		return mint.resp, mint.err
+	}
+	listSecretsFn = func(string) ([]*pb.SecretMetadata, error) { return secrets, secretsErr }
+
+	cmd := &cobra.Command{}
+	var out, errBuf bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errBuf)
+	cmd.SetContext(context.Background())
+	err := runCodeInstall(cmd, []string{box})
+	env.stdout, env.stderr = out.String(), errBuf.String()
+	return env, err
+}
+
+func (e *installEnv) allScripts() string { return strings.Join(e.scripts, "\n") }
+
+func okMint() mintResult {
+	return mintResult{resp: &pb.MintGatewayTokenResponse{
+		Token:     "gw-token-xyz",
+		BaseUrl:   "http://10.0.0.1:8866/v1/model/kafeido",
+		KeyOwner:  "org:acme",
+		TokenId:   "jti-1",
+		ExpiresAt: timestamppb.Now(),
+	}}
+}
+
+// ===========================================================================
+// The regression guard: --engine defaults to claude.
+// ===========================================================================
+
+// TestCodeInstall_EngineDefaultsToClaude is #1727's headline compatibility
+// requirement: "--engine defaults to claude: no behaviour change for existing
+// users."
+//
+// It asserts the DEFAULT install still does exactly what it did before #1727 —
+// Anthropic's installer verbatim, Claude's verify script — and that none of the
+// new machinery activates: no mint RPC, no secrets read, no pi, no models.json.
+func TestCodeInstall_EngineDefaultsToClaude(t *testing.T) {
+	env, err := runInstallEngine(t, "alice", nil, mintResult{}, nil, nil)
+	if err != nil {
+		t.Fatalf("default install failed: %v", err)
+	}
+	scripts := env.allScripts()
+
+	// Claude Code's own installer, unchanged.
+	if !strings.Contains(scripts, "curl -fsSL https://claude.ai/install.sh | bash") {
+		t.Errorf("the default install no longer runs Anthropic's installer verbatim:\n%s", scripts)
+	}
+	// Claude's verify script, unchanged.
+	for _, want := range []string{"$HOME/.local/bin/claude", "--version", ".credentials.json", "CLAUDE_CODE_USE_"} {
+		if !strings.Contains(scripts, want) {
+			t.Errorf("the default install's verify step lost %q:\n%s", want, scripts)
+		}
+	}
+	// None of pi's machinery.
+	for _, banned := range []string{"pi-coding-agent", "models.json", ".pi/", "npm install"} {
+		if strings.Contains(scripts, banned) {
+			t.Errorf("the DEFAULT install (no --engine) ran pi machinery %q:\n%s", banned, scripts)
+		}
+	}
+	// No gateway token was minted, and no secret was read: the default
+	// credential source is the shipped one, whose preflight with no
+	// --secret-name checks nothing (see #2036).
+	if len(env.mintReqs) != 0 {
+		t.Errorf("the default install minted %d gateway token(s); it must mint none", len(env.mintReqs))
+	}
+	// And the record it leaves says claude/secret.
+	if !strings.Contains(scripts, `"engine": "claude"`) || !strings.Contains(scripts, `"credential": "secret"`) {
+		t.Errorf("code.json should record engine=claude credential=secret:\n%s", scripts)
+	}
+	// The sign-in help #2036 added is still what the user is told.
+	if !strings.Contains(env.stdout, "not signed in") {
+		t.Errorf("the default install lost #2036's sign-in help:\n%s", env.stdout)
+	}
+}
+
+// TestCodeInstall_DefaultNeedsNoServer pins the other half of #2036 that #1727
+// must not undo: the default install reaches the box over SSH only, so it must
+// still work with no --server. #1727 adds daemon calls, and they must stay on
+// the paths that asked for them.
+func TestCodeInstall_DefaultNeedsNoServer(t *testing.T) {
+	env, err := runInstallEngine(t, "alice", map[string]string{"server": ""}, mintResult{}, nil, nil)
+	if err != nil {
+		t.Fatalf("default install must not require --server: %v", err)
+	}
+	if len(env.scripts) == 0 {
+		t.Fatal("no remote command ran")
+	}
+}
+
+// TestCodeInstall_DefaultEngineConstantIsClaude guards the constant itself, so
+// flipping the default becomes a deliberate, visible test change rather than a
+// one-word edit that silently re-points every existing user's boxes.
+func TestCodeInstall_DefaultEngineConstantIsClaude(t *testing.T) {
+	if engine.DefaultName != engine.NameClaude {
+		t.Errorf("engine.DefaultName = %q, want claude — changing this breaks every box installed before #1727", engine.DefaultName)
+	}
+	if engine.DefaultKind != engine.KindSecret {
+		t.Errorf("engine.DefaultKind = %q, want secret", engine.DefaultKind)
+	}
+	// And the flag's registered default must match the constant, since that is
+	// what users actually get.
+	f := codeInstallCmd.Flags().Lookup("engine")
+	if f == nil {
+		t.Fatal("--engine is not registered on `code install`")
+	}
+	if f.DefValue != string(engine.NameClaude) {
+		t.Errorf("--engine default = %q, want claude", f.DefValue)
+	}
+}
+
+// ===========================================================================
+// --engine pi
+// ===========================================================================
+
+// TestCodeInstall_PiGateway covers the AC's main path: install pi on the
+// gateway credential, dry-run first, render models.json, record code.json, and
+// verify on a short-lived token.
+func TestCodeInstall_PiGateway(t *testing.T) {
+	env, err := runInstallEngine(t, "alice", map[string]string{
+		"engine": "pi", "credential": "gateway", "provider": "kafeido", "model": "kafeido-coder",
+	}, okMint(), nil, nil)
+	if err != nil {
+		t.Fatalf("install: %v\nstderr: %s", err, env.stderr)
+	}
+	scripts := env.allScripts()
+
+	// pi, pinned, via npm and not the TTY-bound installer.
+	if !strings.Contains(scripts, "@earendil-works/pi-coding-agent@"+engine.PiVersion) {
+		t.Errorf("pi was not installed at the pinned version:\n%s", scripts)
+	}
+	if strings.Contains(scripts, "pi.dev/install.sh") {
+		t.Errorf("the TTY-bound native installer must not be used:\n%s", scripts)
+	}
+	// models.json, at pi's documented path, pointing at the gateway with the
+	// /v1 the OpenAI SDK needs.
+	for _, want := range []string{
+		"$HOME/.pi/agent/models.json",
+		`"api": "openai-completions"`,
+		"/v1/model/kafeido/v1",
+		"$CONTAINARIUM_GATEWAY_TOKEN",
+	} {
+		if !strings.Contains(scripts, want) {
+			t.Errorf("install scripts missing %q:\n%s", want, scripts)
+		}
+	}
+	// code.json, recording every choice so `code run` never re-asks.
+	for _, want := range []string{`"engine": "pi"`, `"credential": "gateway"`, `"provider": "kafeido"`, `"model": "kafeido-coder"`} {
+		if !strings.Contains(scripts, want) {
+			t.Errorf("code.json missing %q:\n%s", want, scripts)
+		}
+	}
+	// Two mints: the dry run, then the short-lived verify token.
+	if len(env.mintReqs) != 2 {
+		t.Fatalf("expected 2 mint calls (dry run + verify token), got %d", len(env.mintReqs))
+	}
+	if !env.mintReqs[0].GetDryRun() {
+		t.Error("the FIRST mint must be a dry run — it validates before anything is installed")
+	}
+	if env.mintReqs[1].GetDryRun() {
+		t.Error("the verify mint must issue a real token")
+	}
+	if got := env.mintReqs[1].GetTtl().AsDuration(); got != codeVerifyTokenTTL {
+		t.Errorf("verify token TTL = %v, want %v (short-lived: it only proves reachability once)", got, codeVerifyTokenTTL)
+	}
+	if got := env.mintReqs[1].GetAllowedModels(); len(got) != 1 || got[0] != "kafeido-coder" {
+		t.Errorf("verify token allowed_models = %v, want [kafeido-coder]", got)
+	}
+	// gateway.env, 0600, umask before the write.
+	if !strings.Contains(scripts, "$HOME/.pi/gateway.env") {
+		t.Errorf("gateway.env was not written:\n%s", scripts)
+	}
+	if !strings.Contains(scripts, "umask 077") {
+		t.Errorf("gateway.env must be written under umask 077, not chmod-after:\n%s", scripts)
+	}
+	// And the verification the AC names.
+	if !strings.Contains(scripts, "print the current working directory") || !strings.Contains(scripts, "--mode json") {
+		t.Errorf("pi verification step missing:\n%s", scripts)
+	}
+}
+
+// TestCodeInstall_PiGatewayNoKeyNamesTheFix is the AC: "Install with --credential
+// gateway and no key for the owner fails naming the fix (dry-run
+// FailedPrecondition)."
+func TestCodeInstall_PiGatewayNoKeyNamesTheFix(t *testing.T) {
+	env, err := runInstallEngine(t, "alice", map[string]string{
+		"engine": "pi", "credential": "gateway", "provider": "kafeido", "model": "kafeido-coder",
+	}, mintResult{err: status.Error(codes.FailedPrecondition, "no key registered for key owner org:acme")}, nil, nil)
+
+	if err == nil {
+		t.Fatal("install succeeded with no inference key registered")
+	}
+	msg := err.Error()
+	// It has to name the fix, not just relay a gRPC status.
+	for _, want := range []string{"Settings", "Inference key", "gateway key set", "kafeido"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error should name the fix (missing %q): %v", want, msg)
+		}
+	}
+	// And nothing may have been installed: the dry run is the FIRST thing.
+	if len(env.scripts) != 0 {
+		t.Errorf("a failed preflight still ran %d remote script(s):\n%s", len(env.scripts), env.allScripts())
+	}
+}
+
+// TestCodeInstall_SecretEnvDeliveryNamesTheFix is the AC's other failure path:
+// "with --credential secret and an env-delivered secret fails the same way".
+//
+// The reason is the one docs/integrations/pi.md documents: env delivery stamps
+// the variable on the LXC, which an SSH shell session — where these engines run —
+// does not inherit.
+func TestCodeInstall_SecretEnvDeliveryNamesTheFix(t *testing.T) {
+	secrets := []*pb.SecretMetadata{
+		{Name: "ANTHROPIC_API_KEY", DeliveryMode: pb.SecretDelivery_SECRET_DELIVERY_ENV},
+	}
+	env, err := runInstallEngine(t, "alice", map[string]string{
+		"engine": "pi", "credential": "secret", "secret-name": "ANTHROPIC_API_KEY",
+		"model": "claude-sonnet-5", "provider-base-url": "https://api.anthropic.com",
+	}, mintResult{}, secrets, nil)
+
+	if err == nil {
+		t.Fatal("install succeeded with an env-delivered secret")
+	}
+	msg := err.Error()
+	for _, want := range []string{"ANTHROPIC_API_KEY", "--delivery compose", "secrets refresh", "SSH shell session"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error should name the fix (missing %q): %v", want, msg)
+		}
+	}
+	if len(env.scripts) != 0 {
+		t.Errorf("a failed preflight still ran remote scripts:\n%s", env.allScripts())
+	}
+}
+
+func TestCodeInstall_SecretComposeDeliveryIsAccepted(t *testing.T) {
+	for _, mode := range []pb.SecretDelivery{
+		pb.SecretDelivery_SECRET_DELIVERY_COMPOSE,
+		pb.SecretDelivery_SECRET_DELIVERY_FILE,
+	} {
+		t.Run(mode.String(), func(t *testing.T) {
+			secrets := []*pb.SecretMetadata{{Name: "OPENAI_API_KEY", DeliveryMode: mode}}
+			_, err := runInstallEngine(t, "alice", map[string]string{
+				"engine": "pi", "credential": "secret", "secret-name": "OPENAI_API_KEY",
+				"model": "gpt-5", "provider-base-url": "https://api.openai.com/v1",
+			}, mintResult{}, secrets, nil)
+			if err != nil {
+				t.Errorf("%s delivery should be accepted: %v", mode, err)
+			}
+		})
+	}
+}
+
+func TestCodeInstall_SecretMissingNamesTheFix(t *testing.T) {
+	_, err := runInstallEngine(t, "alice", map[string]string{
+		"engine": "pi", "credential": "secret", "secret-name": "OPENAI_API_KEY",
+		"model": "gpt-5", "provider-base-url": "https://api.openai.com/v1",
+	}, mintResult{}, nil, nil)
+	if err == nil {
+		t.Fatal("install succeeded with no such secret set")
+	}
+	if !strings.Contains(err.Error(), "secrets set") {
+		t.Errorf("error should name `secrets set`: %v", err)
+	}
+}
+
+// ===========================================================================
+// Flag validation
+// ===========================================================================
+
+func TestCodeInstall_FlagValidation(t *testing.T) {
+	tests := []struct {
+		name  string
+		flags map[string]string
+		want  string
+	}{
+		{
+			name:  "gateway without a provider",
+			flags: map[string]string{"engine": "pi", "credential": "gateway", "model": "m"},
+			want:  "--provider",
+		},
+		{
+			name:  "pi without a model",
+			flags: map[string]string{"engine": "pi", "credential": "gateway", "provider": "kafeido"},
+			want:  "--model",
+		},
+		{
+			name:  "unknown engine",
+			flags: map[string]string{"engine": "codex"},
+			want:  "codex",
+		},
+		{
+			name:  "unknown credential source",
+			flags: map[string]string{"engine": "pi", "credential": "oauth", "model": "m"},
+			want:  "oauth",
+		},
+		{
+			name:  "unknown provider",
+			flags: map[string]string{"engine": "pi", "credential": "gateway", "provider": "bedrock", "model": "m"},
+			want:  "bedrock",
+		},
+		{
+			name:  "secret-name with the gateway credential",
+			flags: map[string]string{"engine": "pi", "credential": "gateway", "provider": "kafeido", "model": "m", "secret-name": "X"},
+			want:  "--secret-name",
+		},
+		{
+			name:  "provider with the secret credential",
+			flags: map[string]string{"engine": "pi", "credential": "secret", "provider": "kafeido", "model": "m"},
+			want:  "--provider",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			env, err := runInstallEngine(t, "alice", tc.flags, okMint(), nil, nil)
+			if err == nil {
+				t.Fatalf("expected a rejection for %v", tc.flags)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error should mention %q: %v", tc.want, err)
+			}
+			if len(env.scripts) != 0 {
+				t.Errorf("flags were rejected but %d remote script(s) still ran", len(env.scripts))
+			}
+		})
+	}
+}
+
+// TestCodeInstall_GatewayEnvNeverLeaksTheTokenIntoAnArgument: the install path
+// writes gateway.env over ssh, so the token IS in a script — but it must be
+// single-quoted and reach the box as a heredoc-style redirect, never as an
+// unquoted word a shell could re-split or a `ps` could show mid-pipeline.
+func TestCodeInstall_GatewayTokenIsShellQuoted(t *testing.T) {
+	mint := okMint()
+	mint.resp.Token = "gw-token with spaces and 'quotes'"
+	env, err := runInstallEngine(t, "alice", map[string]string{
+		"engine": "pi", "credential": "gateway", "provider": "kafeido", "model": "kafeido-coder",
+	}, mint, nil, nil)
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	scripts := env.allScripts()
+	// The raw token must never appear unquoted.
+	if strings.Contains(scripts, "=gw-token with spaces") {
+		t.Errorf("token was interpolated unquoted:\n%s", scripts)
+	}
+	// It must appear in its shell-quoted form.
+	if !strings.Contains(scripts, `'gw-token with spaces and '\''quotes'\'''`) {
+		t.Errorf("token is not shell-quoted:\n%s", scripts)
+	}
+}
+
+// TestCodeInstall_ProviderBaseURLOverride: --provider-base-url replaces the base
+// entirely, and no per-provider suffix is appended to an operator's complete URL.
+func TestCodeInstall_ProviderBaseURLOverride(t *testing.T) {
+	env, err := runInstallEngine(t, "alice", map[string]string{
+		"engine": "pi", "credential": "gateway", "provider": "kafeido", "model": "m",
+		"provider-base-url": "https://inference.example.test/v1",
+	}, okMint(), nil, nil)
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	scripts := env.allScripts()
+	if !strings.Contains(scripts, "https://inference.example.test/v1") {
+		t.Errorf("--provider-base-url not honoured:\n%s", scripts)
+	}
+	if strings.Contains(scripts, "/v1/model/kafeido/v1") {
+		t.Errorf("the gateway base should have been replaced, not appended to:\n%s", scripts)
+	}
+}
