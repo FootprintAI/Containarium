@@ -1,0 +1,237 @@
+syntax = "proto3";
+
+package containarium.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+import "protoc-gen-openapiv2/options/annotations.proto";
+
+option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
+
+// ModelGatewayService is the control surface for the daemon's model gateway
+// (internal/modelgateway): who owns which upstream provider key, and the
+// short-lived scoped tokens a box presents instead of one.
+//
+// The gateway's DATA plane is not here — it stays the HTTP proxy at
+// /v1/model/<provider> that a box calls with its gateway token. This service
+// is the admin + mint surface around it:
+//
+//   - Set/Delete/GetStatus for one key owner's real upstream key. Admin-only
+//     (gateway:admin); the key goes in, and only a fingerprint ever comes back
+//     out. The keys live in the daemon's encrypted secrets store under a
+//     reserved namespace no tenant can list and no delivery mode ships into a
+//     box (internal/secrets.GatewayKeyLocation).
+//   - MintGatewayToken, which issues a scoped, revocable, short-lived token
+//     for a box the CALLER OWNS (gateway:mint). The token's key_owner claim —
+//     the box's cloud-org attribution when stamped, else its owning username —
+//     is what makes the call spend that owner's upstream key rather than the
+//     daemon operator's.
+//   - ListGatewayModels, the upstream model list read through the gateway, so
+//     a caller can see what it may ask for without ever holding a real key.
+//
+// Design: docs/architecture/workspace-own-inference-key.md (cloud repo),
+// component 2 / contract C1.
+service ModelGatewayService {
+  // SetTenantProviderKey upserts the REAL upstream key one key owner pays
+  // with for one provider. Admin-only: the caller is the control plane (or an
+  // operator), never a tenant. The key is write-only over this API — nothing
+  // reads it back out, including this service.
+  rpc SetTenantProviderKey(SetTenantProviderKeyRequest) returns (SetTenantProviderKeyResponse) {
+    option (google.api.http) = {
+      put: "/v1/model-gateway/keys/{key_owner}/{provider}"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Set a key owner's provider key";
+      description: "Stores (or rotates) the real upstream API key one key owner spends for one provider. Requires the gateway:admin scope. The response carries a fingerprint, never the key.";
+      tags: "ModelGateway";
+    };
+  }
+
+  // DeleteTenantProviderKey removes one owner's key for one provider AND
+  // revokes every gateway token already issued for that owner, so a removed
+  // key stops being spendable on the next call rather than when the last
+  // token expires.
+  rpc DeleteTenantProviderKey(DeleteTenantProviderKeyRequest) returns (DeleteTenantProviderKeyResponse) {
+    option (google.api.http) = {delete: "/v1/model-gateway/keys/{key_owner}/{provider}"};
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Delete a key owner's provider key";
+      description: "Removes the stored key and revokes the owner's live gateway tokens. Requires the gateway:admin scope.";
+      tags: "ModelGateway";
+    };
+  }
+
+  // GetTenantProviderKeyStatus reports whether a key is registered and, if so,
+  // its fingerprint and when it was set. Metadata only — the key itself has no
+  // read path on this API at all.
+  rpc GetTenantProviderKeyStatus(GetTenantProviderKeyStatusRequest) returns (GetTenantProviderKeyStatusResponse) {
+    option (google.api.http) = {get: "/v1/model-gateway/keys/{key_owner}/{provider}"};
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get a key owner's provider key status";
+      description: "Returns set/unset, a fingerprint, and set_at. Never returns the key. Requires the gateway:admin scope.";
+      tags: "ModelGateway";
+    };
+  }
+
+  // MintGatewayToken issues a scoped gateway token for a box the caller owns.
+  // The token is bound to the box, the provider, the resolved key_owner, and
+  // optionally one run and a model ceiling; it expires after a server-capped
+  // TTL and can be revoked by its jti before then.
+  rpc MintGatewayToken(MintGatewayTokenRequest) returns (MintGatewayTokenResponse) {
+    option (google.api.http) = {
+      post: "/v1/model-gateway/tokens"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Mint a gateway token for a box";
+      description: "Issues a short-lived scoped token the box presents to the model gateway instead of a real provider key. Requires the gateway:mint scope and ownership of the box. dry_run validates everything and issues nothing.";
+      tags: "ModelGateway";
+    };
+  }
+
+  // ListGatewayModels returns the upstream model list read through the
+  // gateway, spending the resolved key owner's key. The caller needs no
+  // provider key of its own — that is the point.
+  rpc ListGatewayModels(ListGatewayModelsRequest) returns (ListGatewayModelsResponse) {
+    option (google.api.http) = {get: "/v1/model-gateway/{provider}/models"};
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List upstream models through the gateway";
+      description: "Proxies the provider's model list using the resolved key owner's stored key. Requires the gateway:mint scope.";
+      tags: "ModelGateway";
+    };
+  }
+}
+
+// GatewayProvider names one upstream the gateway brokers. An enum, not a
+// string, because the value is "one of a known set" (both repos' CLAUDE.md:
+// protobuf enums over magic strings) — a typo is then a compile error on every
+// generated client instead of a 400 at runtime.
+//
+// The enum names the provider; it does NOT carry its endpoint. Upstream URLs
+// come from the daemon's environment (<PROVIDER>_UPSTREAM_URL, see
+// modelgateway.ProvidersFromEnv), so no brokered vendor's hostname is
+// compiled into this repo. Accepted tradeoff, per the design note: the next
+// OpenAI-compatible vendor still needs a new enum value, a regen, and a
+// redeploy. A provider-kind + name/upstream shape would onboard one with no
+// proto change, but that is a larger refactor of this enum and out of scope.
+enum GatewayProvider {
+  GATEWAY_PROVIDER_UNSPECIFIED = 0;
+  GATEWAY_PROVIDER_ANTHROPIC = 1;
+  GATEWAY_PROVIDER_OPENAI = 2;
+  GATEWAY_PROVIDER_GEMINI = 3;
+  GATEWAY_PROVIDER_GEMINI_OPENAI = 4;
+  // GATEWAY_PROVIDER_KAFEIDO is OpenAI-shaped and registered only when the
+  // operator sets its <PROVIDER>_UPSTREAM_URL; nothing about it is compiled in
+  // beyond this name.
+  GATEWAY_PROVIDER_KAFEIDO = 5;
+}
+
+message SetTenantProviderKeyRequest {
+  // key_owner is the namespaced owner id the key belongs to: "user:<username>"
+  // or "org:<org_id>" (modelgateway.UserKeyOwner / OrgKeyOwner). The prefix is
+  // load-bearing — local usernames and cloud org ids are arbitrary strings from
+  // the same space.
+  string key_owner = 1;
+  GatewayProvider provider = 2;
+  // api_key is the REAL upstream key. Write-only: no RPC on this service ever
+  // returns it.
+  string api_key = 3;
+}
+
+message SetTenantProviderKeyResponse {
+  string key_owner = 1;
+  GatewayProvider provider = 2;
+  // fingerprint is the first 16 hex characters of the key's SHA-256 — enough
+  // to confirm "the key I just pushed is the key that is stored", useless for
+  // spending.
+  string fingerprint = 3;
+  google.protobuf.Timestamp set_at = 4;
+}
+
+message DeleteTenantProviderKeyRequest {
+  string key_owner = 1;
+  GatewayProvider provider = 2;
+}
+
+message DeleteTenantProviderKeyResponse {
+  // tokens_revoked reports whether the owner's live gateway tokens were also
+  // killed. False means the daemon holds no revocable owner-revocation store,
+  // so tokens minted before the delete stay valid until they expire — worth
+  // surfacing rather than implying a clean revocation.
+  bool tokens_revoked = 1;
+}
+
+message GetTenantProviderKeyStatusRequest {
+  string key_owner = 1;
+  GatewayProvider provider = 2;
+}
+
+message GetTenantProviderKeyStatusResponse {
+  string key_owner = 1;
+  GatewayProvider provider = 2;
+  // set reports whether a key is registered for this (key_owner, provider).
+  bool set = 3;
+  // fingerprint is the first 16 hex characters of the key's SHA-256, empty
+  // when unset. The ONLY key-derived value this API ever returns.
+  string fingerprint = 4;
+  google.protobuf.Timestamp set_at = 5;
+}
+
+message MintGatewayTokenRequest {
+  // box names the box the token is for — a box/container name, NOT a key_owner
+  // value. The server resolves key_owner from this box's cloud-org attribution
+  // when it is stamped, else from the box's owning username, and refuses
+  // outright when the caller does not own the box.
+  string box = 1;
+  GatewayProvider provider = 2;
+  // run_id optionally binds the token to one run, so the run's exit can revoke
+  // exactly the token it was given.
+  string run_id = 3;
+  // allowed_models is an optional ceiling: the gateway refuses any model not
+  // in this list. Empty means the gateway's own configured ceiling applies.
+  repeated string allowed_models = 4;
+  // ttl is the requested lifetime. Empty takes the default; anything above the
+  // server's cap is silently capped TO the cap rather than rejected, and
+  // expires_at in the response is the truth.
+  google.protobuf.Duration ttl = 5;
+  // dry_run validates everything a real mint validates — box ownership, the
+  // provider, the resolved key owner's key — and issues NO token. It is how
+  // `code install` names a misconfiguration at install time instead of at the
+  // first model call.
+  bool dry_run = 6;
+}
+
+message MintGatewayTokenResponse {
+  // token is the signed gateway token. ALWAYS EMPTY when dry_run was set.
+  string token = 1;
+  // base_url is what the box points its SDK at: the gateway's per-provider
+  // base, http://<daemon-host>:<http-port>/v1/model/<provider>.
+  string base_url = 2;
+  // key_owner is the owner the server resolved, so the caller can see whose
+  // key this token will spend without decoding the JWT.
+  string key_owner = 3;
+  google.protobuf.Timestamp expires_at = 4;
+  // token_id is the minted jti, so the caller can revoke exactly this token
+  // (`containarium token revoke --jti <id>`) without re-parsing it. Empty on
+  // dry_run.
+  string token_id = 5;
+}
+
+message ListGatewayModelsRequest {
+  GatewayProvider provider = 1;
+  // box optionally scopes the lookup to one box's key owner, resolved exactly
+  // as MintGatewayToken resolves it (and with the same ownership check). Empty
+  // resolves to the calling subject's own owner id.
+  string box = 2;
+}
+
+message GatewayModel {
+  string id = 1;
+}
+
+message ListGatewayModelsResponse {
+  repeated GatewayModel models = 1;
+  // key_owner is the owner whose key was spent listing them.
+  string key_owner = 2;
+}

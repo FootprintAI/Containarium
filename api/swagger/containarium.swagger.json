@@ -69,6 +69,10 @@
       "description": "KmsService exposes read + migration-trigger operations for the\ntenant-secrets envelope-encryption layer (see\ndocs/security/KMS-ENVELOPE-DESIGN.md). It deliberately does NOT\nexpose backend *configuration* — selecting a KMS backend and\nsupplying its credentials stays an operator/systemd concern\n(CONTAINARIUM_KMS_BACKEND + the per-backend env vars), never an\nover-the-wire action. Every RPC requires the `kms:admin` scope\nAND the admin role; these are platform-wide, not tenant-scoped."
     },
     {
+      "name": "ModelGatewayService",
+      "description": "ModelGatewayService is the control surface for the daemon's model gateway\n(internal/modelgateway): who owns which upstream provider key, and the\nshort-lived scoped tokens a box presents instead of one.\n\nThe gateway's DATA plane is not here — it stays the HTTP proxy at\n/v1/model/\u003cprovider\u003e that a box calls with its gateway token. This service\nis the admin + mint surface around it:\n\n  - Set/Delete/GetStatus for one key owner's real upstream key. Admin-only\n    (gateway:admin); the key goes in, and only a fingerprint ever comes back\n    out. The keys live in the daemon's encrypted secrets store under a\n    reserved namespace no tenant can list and no delivery mode ships into a\n    box (internal/secrets.GatewayKeyLocation).\n  - MintGatewayToken, which issues a scoped, revocable, short-lived token\n    for a box the CALLER OWNS (gateway:mint). The token's key_owner claim —\n    the box's cloud-org attribution when stamped, else its owning username —\n    is what makes the call spend that owner's upstream key rather than the\n    daemon operator's.\n  - ListGatewayModels, the upstream model list read through the gateway, so\n    a caller can see what it may ask for without ever holding a real key.\n\nDesign: docs/architecture/workspace-own-inference-key.md (cloud repo),\ncomponent 2 / contract C1."
+    },
+    {
       "name": "NetworkPolicyService",
       "description": "NetworkPolicyService — the control-plane CRUD for per-tenant network\nisolation policies (Phase A of the eBPF network-isolation design, #315).\n\nThis is the policy *store* surface: operators (and the cloud control plane)\nset/get/list/delete a tenant's NetworkPolicy here; the per-veth TC_INGRESS\nBPF loader (a later increment) consumes the stored policies and programs the\nkernel. Admin-only — policies are fleet-shaping config, not tenant-editable."
     },
@@ -3683,6 +3687,230 @@
         ],
         "tags": [
           "Monitoring"
+        ]
+      }
+    },
+    "/v1/model-gateway/keys/{keyOwner}/{provider}": {
+      "get": {
+        "summary": "Get a key owner's provider key status",
+        "description": "Returns set/unset, a fingerprint, and set_at. Never returns the key. Requires the gateway:admin scope.",
+        "operationId": "ModelGatewayService_GetTenantProviderKeyStatus",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetTenantProviderKeyStatusResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "keyOwner",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "provider",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "enum": [
+              "GATEWAY_PROVIDER_UNSPECIFIED",
+              "GATEWAY_PROVIDER_ANTHROPIC",
+              "GATEWAY_PROVIDER_OPENAI",
+              "GATEWAY_PROVIDER_GEMINI",
+              "GATEWAY_PROVIDER_GEMINI_OPENAI",
+              "GATEWAY_PROVIDER_KAFEIDO"
+            ]
+          }
+        ],
+        "tags": [
+          "ModelGateway"
+        ]
+      },
+      "delete": {
+        "summary": "Delete a key owner's provider key",
+        "description": "Removes the stored key and revokes the owner's live gateway tokens. Requires the gateway:admin scope.",
+        "operationId": "ModelGatewayService_DeleteTenantProviderKey",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/DeleteTenantProviderKeyResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "keyOwner",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "provider",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "enum": [
+              "GATEWAY_PROVIDER_UNSPECIFIED",
+              "GATEWAY_PROVIDER_ANTHROPIC",
+              "GATEWAY_PROVIDER_OPENAI",
+              "GATEWAY_PROVIDER_GEMINI",
+              "GATEWAY_PROVIDER_GEMINI_OPENAI",
+              "GATEWAY_PROVIDER_KAFEIDO"
+            ]
+          }
+        ],
+        "tags": [
+          "ModelGateway"
+        ]
+      },
+      "put": {
+        "summary": "Set a key owner's provider key",
+        "description": "Stores (or rotates) the real upstream API key one key owner spends for one provider. Requires the gateway:admin scope. The response carries a fingerprint, never the key.",
+        "operationId": "ModelGatewayService_SetTenantProviderKey",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SetTenantProviderKeyResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "keyOwner",
+            "description": "key_owner is the namespaced owner id the key belongs to: \"user:\u003cusername\u003e\"\nor \"org:\u003corg_id\u003e\" (modelgateway.UserKeyOwner / OrgKeyOwner). The prefix is\nload-bearing — local usernames and cloud org ids are arbitrary strings from\nthe same space.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "provider",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "enum": [
+              "GATEWAY_PROVIDER_UNSPECIFIED",
+              "GATEWAY_PROVIDER_ANTHROPIC",
+              "GATEWAY_PROVIDER_OPENAI",
+              "GATEWAY_PROVIDER_GEMINI",
+              "GATEWAY_PROVIDER_GEMINI_OPENAI",
+              "GATEWAY_PROVIDER_KAFEIDO"
+            ]
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/SetTenantProviderKeyBody"
+            }
+          }
+        ],
+        "tags": [
+          "ModelGateway"
+        ]
+      }
+    },
+    "/v1/model-gateway/tokens": {
+      "post": {
+        "summary": "Mint a gateway token for a box",
+        "description": "Issues a short-lived scoped token the box presents to the model gateway instead of a real provider key. Requires the gateway:mint scope and ownership of the box. dry_run validates everything and issues nothing.",
+        "operationId": "ModelGatewayService_MintGatewayToken",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/MintGatewayTokenResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/MintGatewayTokenRequest"
+            }
+          }
+        ],
+        "tags": [
+          "ModelGateway"
+        ]
+      }
+    },
+    "/v1/model-gateway/{provider}/models": {
+      "get": {
+        "summary": "List upstream models through the gateway",
+        "description": "Proxies the provider's model list using the resolved key owner's stored key. Requires the gateway:mint scope.",
+        "operationId": "ModelGatewayService_ListGatewayModels",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListGatewayModelsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "enum": [
+              "GATEWAY_PROVIDER_UNSPECIFIED",
+              "GATEWAY_PROVIDER_ANTHROPIC",
+              "GATEWAY_PROVIDER_OPENAI",
+              "GATEWAY_PROVIDER_GEMINI",
+              "GATEWAY_PROVIDER_GEMINI_OPENAI",
+              "GATEWAY_PROVIDER_KAFEIDO"
+            ]
+          },
+          {
+            "name": "box",
+            "description": "box optionally scopes the lookup to one box's key owner, resolved exactly\nas MintGatewayToken resolves it (and with the same ownership check). Empty\nresolves to the calling subject's own owner id.",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "ModelGateway"
         ]
       }
     },
@@ -10368,6 +10596,15 @@
         }
       }
     },
+    "DeleteTenantProviderKeyResponse": {
+      "type": "object",
+      "properties": {
+        "tokensRevoked": {
+          "type": "boolean",
+          "description": "tokens_revoked reports whether the owner's live gateway tokens were also\nkilled. False means the daemon holds no revocable owner-revocation store,\nso tokens minted before the delete stay valid until they expire — worth\nsurfacing rather than implying a clean revocation."
+        }
+      }
+    },
     "DeleteTenantStorageResponse": {
       "type": "object",
       "properties": {
@@ -11191,6 +11428,27 @@
       "default": "GPU_VENDOR_UNSPECIFIED",
       "description": "GPU vendor enum"
     },
+    "GatewayModel": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        }
+      }
+    },
+    "GatewayProvider": {
+      "type": "string",
+      "enum": [
+        "GATEWAY_PROVIDER_UNSPECIFIED",
+        "GATEWAY_PROVIDER_ANTHROPIC",
+        "GATEWAY_PROVIDER_OPENAI",
+        "GATEWAY_PROVIDER_GEMINI",
+        "GATEWAY_PROVIDER_GEMINI_OPENAI",
+        "GATEWAY_PROVIDER_KAFEIDO"
+      ],
+      "default": "GATEWAY_PROVIDER_UNSPECIFIED",
+      "description": "GatewayProvider names one upstream the gateway brokers. An enum, not a\nstring, because the value is \"one of a known set\" (both repos' CLAUDE.md:\nprotobuf enums over magic strings) — a typo is then a compile error on every\ngenerated client instead of a 400 at runtime.\n\nThe enum names the provider; it does NOT carry its endpoint. Upstream URLs\ncome from the daemon's environment (\u003cPROVIDER\u003e_UPSTREAM_URL, see\nmodelgateway.ProvidersFromEnv), so no brokered vendor's hostname is\ncompiled into this repo. Accepted tradeoff, per the design note: the next\nOpenAI-compatible vendor still needs a new enum value, a regen, and a\nredeploy. A provider-kind + name/upstream shape would onboard one with no\nproto change, but that is a larger refactor of this enum and out of scope.\n\n - GATEWAY_PROVIDER_KAFEIDO: GATEWAY_PROVIDER_KAFEIDO is OpenAI-shaped and registered only when the\noperator sets its \u003cPROVIDER\u003e_UPSTREAM_URL; nothing about it is compiled in\nbeyond this name."
+    },
     "GetAgentSkillResponse": {
       "type": "object",
       "properties": {
@@ -11768,6 +12026,29 @@
         }
       },
       "title": "GetSystemInfoResponse is the response from getting system information"
+    },
+    "GetTenantProviderKeyStatusResponse": {
+      "type": "object",
+      "properties": {
+        "keyOwner": {
+          "type": "string"
+        },
+        "provider": {
+          "$ref": "#/definitions/GatewayProvider"
+        },
+        "set": {
+          "type": "boolean",
+          "description": "set reports whether a key is registered for this (key_owner, provider)."
+        },
+        "fingerprint": {
+          "type": "string",
+          "description": "fingerprint is the first 16 hex characters of the key's SHA-256, empty\nwhen unset. The ONLY key-derived value this API ever returns."
+        },
+        "setAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
     },
     "GetTrackerChangeResponse": {
       "type": "object",
@@ -12426,6 +12707,22 @@
         }
       }
     },
+    "ListGatewayModelsResponse": {
+      "type": "object",
+      "properties": {
+        "models": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/GatewayModel"
+          }
+        },
+        "keyOwner": {
+          "type": "string",
+          "description": "key_owner is the owner whose key was spent listing them."
+        }
+      }
+    },
     "ListNetworkPoliciesResponse": {
       "type": "object",
       "properties": {
@@ -12743,6 +13040,62 @@
             "type": "object",
             "$ref": "#/definitions/MigrateRowError"
           }
+        }
+      }
+    },
+    "MintGatewayTokenRequest": {
+      "type": "object",
+      "properties": {
+        "box": {
+          "type": "string",
+          "description": "box names the box the token is for — a box/container name, NOT a key_owner\nvalue. The server resolves key_owner from this box's cloud-org attribution\nwhen it is stamped, else from the box's owning username, and refuses\noutright when the caller does not own the box."
+        },
+        "provider": {
+          "$ref": "#/definitions/GatewayProvider"
+        },
+        "runId": {
+          "type": "string",
+          "description": "run_id optionally binds the token to one run, so the run's exit can revoke\nexactly the token it was given."
+        },
+        "allowedModels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "allowed_models is an optional ceiling: the gateway refuses any model not\nin this list. Empty means the gateway's own configured ceiling applies."
+        },
+        "ttl": {
+          "type": "string",
+          "description": "ttl is the requested lifetime. Empty takes the default; anything above the\nserver's cap is silently capped TO the cap rather than rejected, and\nexpires_at in the response is the truth."
+        },
+        "dryRun": {
+          "type": "boolean",
+          "description": "dry_run validates everything a real mint validates — box ownership, the\nprovider, the resolved key owner's key — and issues NO token. It is how\n`code install` names a misconfiguration at install time instead of at the\nfirst model call."
+        }
+      }
+    },
+    "MintGatewayTokenResponse": {
+      "type": "object",
+      "properties": {
+        "token": {
+          "type": "string",
+          "description": "token is the signed gateway token. ALWAYS EMPTY when dry_run was set."
+        },
+        "baseUrl": {
+          "type": "string",
+          "description": "base_url is what the box points its SDK at: the gateway's per-provider\nbase, http://\u003cdaemon-host\u003e:\u003chttp-port\u003e/v1/model/\u003cprovider\u003e."
+        },
+        "keyOwner": {
+          "type": "string",
+          "description": "key_owner is the owner the server resolved, so the caller can see whose\nkey this token will spend without decoding the JWT."
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "tokenId": {
+          "type": "string",
+          "description": "token_id is the minted jti, so the caller can revoke exactly this token\n(`containarium token revoke --jti \u003cid\u003e`) without re-parsing it. Empty on\ndry_run."
         }
       }
     },
@@ -14876,6 +15229,34 @@
         "hasTenantKey": {
           "type": "boolean",
           "description": "True if the tenant now has a per-tenant key (kek_resource_name was\nnon-empty in the request); false if cleared back to the shared KEK."
+        }
+      }
+    },
+    "SetTenantProviderKeyBody": {
+      "type": "object",
+      "properties": {
+        "apiKey": {
+          "type": "string",
+          "description": "api_key is the REAL upstream key. Write-only: no RPC on this service ever\nreturns it."
+        }
+      }
+    },
+    "SetTenantProviderKeyResponse": {
+      "type": "object",
+      "properties": {
+        "keyOwner": {
+          "type": "string"
+        },
+        "provider": {
+          "$ref": "#/definitions/GatewayProvider"
+        },
+        "fingerprint": {
+          "type": "string",
+          "description": "fingerprint is the first 16 hex characters of the key's SHA-256 — enough\nto confirm \"the key I just pushed is the key that is stored\", useless for\nspending."
+        },
+        "setAt": {
+          "type": "string",
+          "format": "date-time"
         }
       }
     },

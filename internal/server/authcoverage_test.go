@@ -100,6 +100,9 @@ var registeredServices = []rpcSurface{
 	{pb.TokensService_ServiceDesc, "TokensServer"},
 	{pb.ThreatDetectionService_ServiceDesc, "ThreatDetectionServer"},
 	{pb.TrackerService_ServiceDesc, "ContainerServer"},
+	// #1726 — every RPC here carries an explicit gateway:admin or gateway:mint
+	// RequireScope in its own body; none is exempt.
+	{pb.ModelGatewayService_ServiceDesc, "ModelGatewayServer"},
 }
 
 // authExemptions lists every registered RPC whose handler carries no auth

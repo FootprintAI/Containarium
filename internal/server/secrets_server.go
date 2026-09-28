@@ -396,6 +396,14 @@ func mapSecretError(err error) error {
 	if errors.Is(err, secrets.ErrNotFound) {
 		return status.Error(codes.NotFound, "secret not found")
 	}
+	// The model gateway's reserved per-owner key namespace (#1725,
+	// `__gateway/<key_owner>/<provider>`). To the TENANT secrets API that
+	// username is not a tenant, so NotFound is the honest answer — and it says
+	// nothing about the namespace existing. Without this the guard surfaced as
+	// Internal, which reads as a daemon fault rather than a refusal. (#1726)
+	if errors.Is(err, secrets.ErrReservedNamespace) {
+		return status.Error(codes.NotFound, "no such tenant")
+	}
 	if errors.Is(err, secrets.ErrTenantKMSNotSupported) {
 		return status.Error(codes.FailedPrecondition, err.Error())
 	}
