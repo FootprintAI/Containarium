@@ -52,6 +52,11 @@ jobs:
       # This is the image dev boxes actually run — security.yml's Trivy job only
       # scans source dependencies (scan-type: fs), it never looks at the built
       # image, so an image-layer scan needs to live here instead.
+      #
+      # exit-code: '1' makes this blocking on CRITICAL/HIGH — unlike
+      # security.yml's fs scan (which only uploads SARIF, non-blocking), an
+      # unpatched CRITICAL/HIGH in the image dev boxes actually run should
+      # stop the build, not just get logged.
       - name: Run Trivy vulnerability scanner (image)
         uses: aquasecurity/trivy-action@master
         with:
@@ -59,6 +64,7 @@ jobs:
           format: 'sarif'
           output: 'trivy-agent-box-results.sarif'
           severity: 'CRITICAL,HIGH'
+          exit-code: '1'
 
       - name: Upload Trivy SARIF results
         uses: github/codeql-action/upload-sarif@v3
