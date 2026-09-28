@@ -47,8 +47,19 @@ esac
 
 # --- discovery ---------------------------------------------------------------
 
+# bridge_ip <container>: the container's address ON THE BRIDGE. A tenant
+# running docker/podman also reports 172.17.0.1 (docker0) & co., and
+# `incus list` prints those first — so prefer the eth0 entry and only fall
+# back to the first IPv4 when there is no eth0 at all.
+bridge_ip() {
+  local ips
+  ips=$(incus list "$1" --format csv -c 4 2>/dev/null)
+  echo "$ips" | grep -oE "[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+ \(eth0\)" | head -1 | cut -d' ' -f1 | grep . \
+    || echo "$ips" | grep -oE "[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+" | head -1
+}
+
 core_ip() { # $1 = role suffix (postgres, caddy, ...)
-  incus list "containarium-core-$1" --format csv -c 4 2>/dev/null | grep -oE "[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+" | head -1
+  bridge_ip "containarium-core-$1"
 }
 
 BRIDGE=$(incus list "$TENANT" --format yaml 2>/dev/null | awk '/^ *network: /{print $2; exit}')
@@ -62,7 +73,7 @@ PG=$(core_ip postgres)
 VM=$(core_ip victoriametrics)
 CADDY=$(core_ip caddy)
 OTEL=$(core_ip otelcollector)
-TENANT_IP=$(incus list "$TENANT" --format csv -c 4 2>/dev/null | grep -oE "[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+" | head -1)
+TENANT_IP=$(bridge_ip "$TENANT")
 
 echo "== bridge=$BRIDGE host_gw=$HOST_GW tenant=$TENANT($TENANT_IP)"
 echo "== core: postgres=${PG:-absent} victoriametrics=${VM:-absent} caddy=${CADDY:-absent} otelcollector=${OTEL:-absent}"

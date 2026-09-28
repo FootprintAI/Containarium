@@ -849,6 +849,15 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 			// env-stamping (see PR #175). Only runs when VM is
 			// available — without a sink there's nothing for the
 			// collector to forward to.
+			// #2103: on a host whose metrics container was auto-detected,
+			// EnsureVictoriaMetrics never runs, so the #2079 Grafana
+			// hardening backfill has to happen here. Reuses coreServices
+			// when it exists, builds a minimal one otherwise, and hands it
+			// on so the OTel block below sees the same instance.
+			if victoriaMetricsURL != "" {
+				coreServices = hardenDetectedGrafana(coreServices, incusClient)
+			}
+
 			if victoriaMetricsURL != "" && coreServices != nil {
 				vmIP := coreServices.GetVictoriaMetricsIP()
 				if vmIP == "" {
