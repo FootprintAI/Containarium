@@ -149,5 +149,4 @@ tool, i.e. through the daemon. (b) matches what the system already does.
   and 8674 is still reachable from a peer box. Under D1 that reachability is
   authorized-but-useless rather than a hole. Narrowing the compiled policy so a
   box cannot reach a peer's 8674 at all is defense-in-depth worth having, and is
-  a change to what `allowed_peers` means; it is tracked separately, not in
-  #2125.
+  a change to what `allowed_peers` means, so it is **#2140**, not #2125.
