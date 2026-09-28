@@ -136,7 +136,7 @@ jobs:
         run: GOOS=windows GOARCH=amd64 go build -tags containarium_client -o /dev/null ./cmd/containarium
 
   test-both-tag-sets:
-    name: go test ./internal/cmd/... (both tag sets)
+    name: go test ./internal/cmd/... ./internal/coderun/... (both tag sets)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -147,14 +147,22 @@ jobs:
         with:
           go-version: '1.26.7'
 
+      # ./internal/coderun/... joins this lane in #1727. It was in NO lane
+      # before — this repo has no `go test ./...` gate (see the note in
+      # cluster-e2e.yml) — so the resumable reader's own forced-disconnect
+      # harness (TestStreamOutput_SurvivesTwentyForcedDrops, Part B1 of
+      # docs/architecture/remote-coding-agent.md) has never run in CI despite
+      # that doc calling it "the layer that runs in CI". It does now, along with
+      # the engine seam's TestRunCommand / TestCodeConfigRoundTrip /
+      # TestPiModelsJSON tables.
       - name: Test containariumd (default tags)
         # Includes TestContainariumdCommandTree_SupersetOfClientGolden —
         # the untagged-build parity gate.
-        run: go test -race -v ./internal/cmd/...
+        run: go test -race -v ./internal/cmd/... ./internal/coderun/...
 
       - name: Test containarium client (containarium_client tag)
         # Includes TestClientCommandTree_MatchesGoldenAllowList — the
         # command-tree allow-list gate — and TestHybridCommands_
         # NoServer_NeverReachRealLocalMode / TestMovedServerCommands_
         # ExitTwoNamingContainariumd from #1775/#1777.
-        run: go test -race -tags containarium_client -v ./internal/cmd/...
+        run: go test -race -tags containarium_client -v ./internal/cmd/... ./internal/coderun/...
