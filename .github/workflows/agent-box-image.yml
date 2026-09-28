@@ -20,6 +20,12 @@ on:
       - 'go.mod'
       - 'go.sum'
       - '.github/workflows/agent-box-image.yml'
+  schedule:
+    # Path filters above mean the Trivy scan only reruns when this image's own
+    # source changes — a CVE disclosed later against an unchanged base image or
+    # OS package would otherwise go undetected indefinitely. Weekly, same slot
+    # as security.yml's fs scan, so both scans age out at the same cadence.
+    - cron: '0 6 * * 1'
 
 permissions:
   contents: read
