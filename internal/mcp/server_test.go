@@ -127,8 +127,8 @@ func TestHandleToolsList(t *testing.T) {
 
 	tools, ok := result["tools"].([]map[string]interface{})
 	require.True(t, ok)
-	// See TestServerCreation's tally comment for the running count — 85.
-	assert.Len(t, tools, 85)
+	// See TestServerCreation's tally comment for the running count — 86.
+	assert.Len(t, tools, 86)
 
 	// Check first tool structure
 	firstTool := tools[0]
