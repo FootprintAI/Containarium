@@ -23,6 +23,7 @@ on:
 
 permissions:
   contents: read
+  security-events: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -47,3 +48,20 @@ jobs:
             test -x /usr/local/bin/agent-box-entrypoint.sh
             id -u | grep -qx 1000
           '
+
+      # This is the image dev boxes actually run — security.yml's Trivy job only
+      # scans source dependencies (scan-type: fs), it never looks at the built
+      # image, so an image-layer scan needs to live here instead.
+      - name: Run Trivy vulnerability scanner (image)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'containarium-agent-box:ci'
+          format: 'sarif'
+          output: 'trivy-agent-box-results.sarif'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Upload Trivy SARIF results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-agent-box-results.sarif
