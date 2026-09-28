@@ -48,6 +48,13 @@ byte offset seen — nothing is re-issued, nothing is lost or duplicated.
 Killing this command (Ctrl-C, closing the laptop) does NOT kill the run;
 reconnect with 'containarium code attach <box>'.
 
+This command's own process exit status reflects the AGENT's exit code once
+the run finishes: zero when the agent exited zero, non-zero when it didn't —
+so CI and shell scripts can gate on '$?' directly, without separately parsing
+'containarium code status'. A run that finishes with no exit code recorded
+(the box died mid-run) is not treated as a failure here; check 'code status'
+for "unknown" in that case.
+
 Requires the box to already have a coding agent installed and credentialed —
 see 'containarium code install <box>'.`,
 	Args: cobra.ExactArgs(1),
@@ -60,7 +67,10 @@ var codeAttachCmd = &cobra.Command{
 	Long: `Reconnects to the run 'containarium code run' started (or one dispatched
 another way with the same --name) and replays everything it has produced
 since it started, byte-exact, then keeps streaming until it exits or you
-disconnect again.`,
+disconnect again.
+
+Like 'code run', this command's own process exit status reflects the agent's
+exit code once the run finishes: non-zero if the agent exited non-zero.`,
 	Args: cobra.ExactArgs(1),
 	RunE: runCodeAttach,
 }
@@ -180,20 +190,14 @@ func runCodeStatus(cmd *cobra.Command, args []string) error {
 	out := cmd.OutOrStdout()
 	fmt.Fprintln(out, line)
 
-	// #1727: report the exit code of a run that finished — including one that
-	// finished while the user was disconnected, which is the whole point of the
-	// durable run record. `--help` has promised this since #1674 and the header
-	// line alone never carried it.
-	//
-	// A finished run with no recorded code prints "unknown", never 0: agent-box's
-	// RunOutcomeUnknown ("PID dead, no recorded exit code") is a real state, and
-	// reporting it as success would be a lie about someone's build.
+	// #1727/#2011: report the exit code of a run that finished — including one
+	// that finished while the user was disconnected, which is the whole point
+	// of the durable run record. `--help` has promised this since #1674 and the
+	// header line alone never carried it. coderun.ExitCodeLine is the one place
+	// that renders this line, shared with the MCP wrapper (handleCodeStatus in
+	// internal/mcp/code_tools.go) so the two surfaces cannot drift.
 	if !running {
-		if code, ok := coderun.ExitCodeFromListing(listing, name); ok {
-			fmt.Fprintf(out, "exit_code: %d\n", code)
-		} else {
-			fmt.Fprintln(out, "exit_code: unknown (the run ended without recording one — the box may have died mid-run)")
-		}
+		fmt.Fprintln(out, coderun.ExitCodeLine(listing, name))
 	}
 	return nil
 }
