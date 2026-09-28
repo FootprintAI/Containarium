@@ -2,6 +2,7 @@ package coderun
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -100,4 +101,47 @@ func LogPathFromListing(listing, name string) (string, error) {
 		return "", fmt.Errorf("process_list entry for %q has no Log path line", name)
 	}
 	return "", fmt.Errorf("no run named %q in process_list", name)
+}
+
+// ExitCodeFromListing extracts name's recorded exit code from process_list's raw
+// text, for `containarium code status` (#1727).
+//
+// It returns found=false for a run that is still going, and for one whose record
+// carries no exit code at all. Those are different situations but the same
+// answer here: there is no exit code to report. The second case is real and
+// deliberate — agent-box's RunOutcomeUnknown ("PID dead, no recorded exit code",
+// Part A finding A2) exists precisely so a box that died mid-run does not report
+// a fabricated 0. Callers must render a missing code as "unknown", never as
+// success.
+//
+// Parsing agent-box's display format rather than adding a typed RPC matches what
+// RunOutcomeLine and LogPathFromListing already do: on this path the contract
+// between the CLI and agent-box is text.
+func ExitCodeFromListing(listing, name string) (code int, found bool) {
+	lines := strings.Split(listing, "\n")
+	for i, l := range lines {
+		fields := strings.Fields(strings.TrimSpace(l))
+		if len(fields) < 2 || fields[1] != name {
+			continue
+		}
+		// Scan this run's own block only. A blank line closes the block
+		// agent-box emits per run; without that bound, a run with no exit code
+		// would report the NEXT run's.
+		for _, follow := range lines[i+1:] {
+			trimmed := strings.TrimSpace(follow)
+			if trimmed == "" {
+				return 0, false
+			}
+			if strings.HasPrefix(trimmed, "Exit code:") {
+				v := strings.TrimSpace(strings.TrimPrefix(trimmed, "Exit code:"))
+				n, err := strconv.Atoi(v)
+				if err != nil {
+					return 0, false
+				}
+				return n, true
+			}
+		}
+		return 0, false
+	}
+	return 0, false
 }

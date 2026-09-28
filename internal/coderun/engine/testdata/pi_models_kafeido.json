@@ -1,0 +1,15 @@
+{
+  "providers": {
+    "containarium": {
+      "name": "Containarium Model Gateway (kafeido)",
+      "baseUrl": "http://10.0.0.1:8866/v1/model/kafeido/v1",
+      "api": "openai-completions",
+      "apiKey": "$CONTAINARIUM_GATEWAY_TOKEN",
+      "models": [
+        {
+          "id": "kafeido-coder"
+        }
+      ]
+    }
+  }
+}

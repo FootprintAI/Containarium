@@ -554,6 +554,14 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to register tracker service gateway: %w", err)
 	}
 
+	// Register ModelGatewayService gateway handler (#1726) — the model gateway's
+	// admin + mint RPCs under /v1/model-gateway/. This is the CONTROL plane; the
+	// gateway's DATA plane stays the separately-mounted /v1/model/ proxy
+	// (SetModelGatewayHandler), and the two prefixes do not overlap.
+	if err := pb.RegisterModelGatewayServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
+		return fmt.Errorf("failed to register model-gateway service gateway: %w", err)
+	}
+
 	// Create HTTP handler with authentication middleware, then audit middleware.
 	// Audit wraps the inner handler so auth runs first (sets username in context),
 	// then audit captures the response on the way out.

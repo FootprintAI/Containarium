@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Grafana anonymous-access backfill (#2079) now actually runs on
+  existing hosts** (#2103). The daemon auto-detects an existing metrics
+  container at startup and then skips `EnsureVictoriaMetrics` — where the
+  backfill lived — so an upgrade never closed anonymous access on any host
+  that already had Grafana, which is every host the backfill was for.
+  Found by the lab-host verification pass: `grafana.ini` unchanged after
+  the upgrade. The detected path now runs the same idempotent backfill.
+
 ### Added
 
 - **Core-infra network guard reconciler, off by default** (#2084; design in

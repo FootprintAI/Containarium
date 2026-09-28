@@ -849,6 +849,15 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 			// env-stamping (see PR #175). Only runs when VM is
 			// available — without a sink there's nothing for the
 			// collector to forward to.
+			// #2103: on a host whose metrics container was auto-detected,
+			// EnsureVictoriaMetrics never runs, so the #2079 Grafana
+			// hardening backfill has to happen here. Reuses coreServices
+			// when it exists, builds a minimal one otherwise, and hands it
+			// on so the OTel block below sees the same instance.
+			if victoriaMetricsURL != "" {
+				coreServices = hardenDetectedGrafana(coreServices, incusClient)
+			}
+
 			if victoriaMetricsURL != "" && coreServices != nil {
 				vmIP := coreServices.GetVictoriaMetricsIP()
 				if vmIP == "" {
@@ -1877,6 +1886,25 @@ skipAppHosting:
 	}
 	pb.RegisterThreatDetectionServiceServer(grpcServer, threatDetectServer)
 
+	// ModelGatewayService (#1726) — the admin + mint surface around the model
+	// gateway: register/remove a key owner's REAL upstream key (gateway:admin),
+	// and mint a scoped, revocable token for a box the caller owns
+	// (gateway:mint).
+	//
+	// Registered unconditionally, and deliberately BEFORE the gateway itself is
+	// built (that happens in the EnableREST block below, and only when the daemon
+	// holds a key or an operator registered an upstream). The key verbs are
+	// useful either way — a control plane pre-registers an org's key so the
+	// region is ready before any box exists — while the mint and list verbs
+	// refuse with FailedPrecondition until SetGatewayProvisioning below says this
+	// daemon actually serves a gateway.
+	modelGatewayServer := NewModelGatewayServer(
+		GatewayKeyStoreOf(containerServer),
+		NewContainerBoxAttribution(containerServer),
+		nil, nil, "", 0,
+	)
+	pb.RegisterModelGatewayServiceServer(grpcServer, modelGatewayServer)
+
 	// Setup alert store and manager
 	var alertStore *alert.Store
 	var alertManager *alert.Manager
@@ -2024,6 +2052,10 @@ skipAppHosting:
 				OutputFilter: os.Getenv(appconfig.EnvGatewayOutputFilter) != "0",
 			})
 			gatewayServer.SetModelGatewayHandler(gw.Handler())
+			// ModelGatewayService's token verbs only work once the service knows
+			// which gateway to mint against and which host a box reaches it on
+			// (#1726). Until this call they refuse; after it they mint.
+			modelGatewayServer.SetGateway(gw, []byte(config.JWTSecret), config.HostIP, config.HTTPPort)
 			primary := gatewayPrimaryProvider(keys)
 			agentSkillServer.SetGatewayProvisioning(primary, config.HTTPPort, []byte(config.JWTSecret), config.HostIP)
 			// The providers a recipe box may be seeded for: every provider the
