@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os/exec"
 	"regexp"
 	"strings"
 	"time"
@@ -89,6 +88,7 @@ var (
 	codeHost      string
 	codePort      int
 	codeName      string
+	codeKeyWait   string
 
 	// `code install` only (#2030).
 	codeBootstrapURL      string
@@ -199,6 +199,7 @@ func init() {
 	codeCmd.PersistentFlags().StringVar(&codeUser, "user", "", "override the SSH username (default: the box's own user)")
 	codeCmd.PersistentFlags().StringVar(&codeHost, "host", "", "override the SSH host (default: the box's sentinel host)")
 	codeCmd.PersistentFlags().IntVar(&codePort, "port", 0, "override the SSH port")
+	codeCmd.PersistentFlags().StringVar(&codeKeyWait, "key-wait", "", keyWaitFlagUsage)
 
 	codeCmd.AddCommand(codeInstallCmd)
 	codeCmd.AddCommand(codeRunCmd)
@@ -313,15 +314,53 @@ func resolveCodeSession(ctx context.Context, box string, diag io.Writer) (*coder
 	if err != nil {
 		return nil, err
 	}
-	sshArgs := connectcore.BuildSSHArgs(target, privPath, "") // no remote command — Connect appends "agent-box"
-	sess, err := coderun.Connect(ctx, sshArgs)
+	// resolveCodeTarget just authorized the key: armed (#2013).
+	kw, err := newKeyWait(codeKeyWait, true, diag)
 	if err != nil {
+		return nil, err
+	}
+	sshArgs := connectcore.BuildSSHArgs(target, privPath, "") // no remote command — Connect appends "agent-box"
+	sess, err := connectCodeSession(ctx, kw, probeSSHArgs(sshArgs), func(ctx context.Context) (*coderun.Session, error) {
+		return coderun.Connect(ctx, sshArgs)
+	})
+	if err != nil {
+		if errors.Is(err, connectcore.ErrKeyNotLearned) {
+			return nil, fmt.Errorf("connect to agent-box on %q: %w", box, err)
+		}
 		if errors.Is(err, coderun.ErrAgentBoxMissing) {
 			return nil, coderun.AgentBoxMissingError(box)
 		}
 		return nil, fmt.Errorf("connect to agent-box on %q: %w", box, err)
 	}
 	return sess, nil
+}
+
+// connectCodeSession opens the agent-box session under kw. A failed MCP
+// dial doesn't say WHY ssh failed (and a publickey denial otherwise looks
+// like "agent-box missing"), so on failure one silent probe classifies it:
+// publickey-denied is retried while the sentinel learns the key; anything
+// else returns the dial's own error unchanged.
+func connectCodeSession(ctx context.Context, kw connectcore.KeyWait, probe []string, dial func(context.Context) (*coderun.Session, error)) (*coderun.Session, error) {
+	var sess *coderun.Session
+	err := kw.Do(ctx, func(ctx context.Context, attempt int) error {
+		if attempt > 1 {
+			if perr := sshProbeFn(ctx, probe); perr != nil {
+				return perr
+			}
+		}
+		s, err := dial(ctx)
+		if err == nil {
+			sess = s
+			return nil
+		}
+		if kw.Armed && kw.Window > 0 {
+			if perr := sshProbeFn(ctx, probe); connectcore.IsPublickeyDenied(perr) {
+				return perr
+			}
+		}
+		return err
+	})
+	return sess, err
 }
 
 // streamAndWait streams path's output to stdout (demultiplexed to
@@ -548,8 +587,20 @@ func runCodeInstall(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	// resolveCodeTarget just authorized the key: armed (#2013).
+	kw, err := newKeyWait(codeKeyWait, true, diag)
+	if err != nil {
+		return err
+	}
+	probe := probeSSHArgs(connectcore.BuildSSHArgs(target, privPath, ""))
 	run := func(script string) (string, error) {
-		return sshExec(diag, buildClaudeSSHArgs(target, privPath, script))
+		var out string
+		err := sshWithKeyWait(ctx, kw, probe, func() error {
+			var e error
+			out, e = sshExec(diag, buildClaudeSSHArgs(target, privPath, script))
+			return e
+		})
+		return out, err
 	}
 
 	// #1727: resolve the engine and its credential source from the flags, and
@@ -643,19 +694,10 @@ Then: containarium code run %s --prompt "..."
 // result gets only the remote command's own bytes — same convention as
 // `connect --exec`.
 func runSSHCaptured(diag io.Writer, args []string) (string, error) {
-	sshBin, err := exec.LookPath("ssh")
-	if err != nil {
-		return "", fmt.Errorf("ssh not found in PATH: %w", err)
-	}
-	// #nosec G204 -- sshBin is the resolved `ssh` binary; args are built
-	// from a validated box name, a daemon-resolved target, and a
-	// package-controlled script (claudeInstallScript / claudeVerifyScript)
-	// — no caller-supplied command reaches this path.
-	c := exec.Command(sshBin, args...)
 	var stdout bytes.Buffer
-	c.Stdout = &stdout
-	c.Stderr = diag
-	if err := c.Run(); err != nil {
+	// runSSHTee classifies an exit-255 publickey denial so `code install`
+	// can wait out key propagation (#2013); the error text is unchanged.
+	if err := runSSHTee(context.Background(), nil, &stdout, diag, args); err != nil {
 		return stdout.String(), fmt.Errorf("ssh: %w", err)
 	}
 	return stdout.String(), nil
