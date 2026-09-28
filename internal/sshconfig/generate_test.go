@@ -130,3 +130,113 @@ func TestGenerate_IdentityFileEmitsIdentitiesOnly(t *testing.T) {
 // see containarium#1980 PR review finding 5 (this package, plugin.go, and
 // egress_via_client.go each had their own copy; all three now share
 // internal/hostport.Split).
+
+// --- FootprintAI/Containarium-cloud#1851 ---------------------------------
+//
+// Against a remote daemon (`--server ... --http`, or gRPC) every container
+// arrives with the *protobuf enum identifier* as its state, not incus's
+// friendly "Running": the HTTP client copies protojson's
+// "CONTAINER_STATE_RUNNING" straight through (internal/client/http.go
+// containerToIncusInfo) and the gRPC client calls State.String(), which
+// yields the same identifier. Generate compared against the local-incus
+// spelling only, so against a hosted control plane it classified *every*
+// box as stopped and wrote an ssh_config with zero Host blocks -- 41
+// running boxes reported as "67 skipped stopped".
+//
+// Same normalization the `connect` verb already does
+// (connectcore.IsRunning, OSS #1036).
+
+func TestGenerate_ProtoEnumRunningRendersHost(t *testing.T) {
+	// The single-box repro: a box the control plane reports RUNNING must
+	// get a Host block, not be counted as "skipped stopped".
+	cs := []incus.ContainerInfo{
+		{Name: "alice", State: "CONTAINER_STATE_RUNNING", IPAddress: "10.0.0.10"},
+	}
+	g := Generate(cs, Options{Sentinel: "sentinel.example.com"})
+	if g.Count != 1 || g.SkippedStopped != 0 {
+		t.Fatalf("Count=%d SkippedStopped=%d, want 1/0 -- a RUNNING box was classified stopped", g.Count, g.SkippedStopped)
+	}
+	if !strings.Contains(g.Content, "Host alice") {
+		t.Errorf("expected a Host block for the running box:\n%s", g.Content)
+	}
+}
+
+func TestGenerate_RunningStateSpellings(t *testing.T) {
+	// Every spelling a running box can arrive as, across transports.
+	for _, state := range []string{
+		"CONTAINER_STATE_RUNNING", // remote: protojson / State.String()
+		"Running",                 // local incus
+		"running",
+		"RUNNING",
+	} {
+		t.Run(state, func(t *testing.T) {
+			g := Generate([]incus.ContainerInfo{
+				{Name: "box", State: state, IPAddress: "10.0.0.1"},
+			}, Options{})
+			if g.Count != 1 {
+				t.Errorf("state %q: Count=%d SkippedStopped=%d, want 1 host", state, g.Count, g.SkippedStopped)
+			}
+		})
+	}
+}
+
+func TestGenerate_ProtoEnumNonRunningStillSkipped(t *testing.T) {
+	// The fix must not turn --include-stopped into the default: the other
+	// proto enum states stay skipped. 18 of the fleet in cloud#1851 were
+	// genuinely in ERROR and must not get Host blocks.
+	for _, state := range []string{
+		"CONTAINER_STATE_STOPPED",
+		"CONTAINER_STATE_ERROR",
+		"CONTAINER_STATE_CREATING",
+		"CONTAINER_STATE_PROVISIONING",
+		"CONTAINER_STATE_UNSPECIFIED",
+		"",
+	} {
+		t.Run(state, func(t *testing.T) {
+			g := Generate([]incus.ContainerInfo{
+				{Name: "box", State: state, IPAddress: "10.0.0.1"},
+			}, Options{})
+			if g.Count != 0 || g.SkippedStopped != 1 {
+				t.Errorf("state %q: Count=%d SkippedStopped=%d, want 0/1", state, g.Count, g.SkippedStopped)
+			}
+		})
+	}
+}
+
+func TestGenerate_MixedFleetMatchesControlPlaneCounts(t *testing.T) {
+	// The whole-fleet shape from the report: a remote daemon reporting a
+	// mix of RUNNING/ERROR/STOPPED as proto enums. Only the running boxes
+	// render; the rest are counted as skipped.
+	cs := []incus.ContainerInfo{
+		{Name: "alice", State: "CONTAINER_STATE_RUNNING", IPAddress: "10.0.0.10"},
+		{Name: "bob", State: "CONTAINER_STATE_RUNNING", IPAddress: "10.0.0.11"},
+		{Name: "broken", State: "CONTAINER_STATE_ERROR", IPAddress: "10.0.0.12"},
+		{Name: "idle", State: "CONTAINER_STATE_STOPPED", IPAddress: "10.0.0.13"},
+	}
+	g := Generate(cs, Options{Sentinel: "sentinel.example.com"})
+	if g.Count != 2 || g.SkippedStopped != 2 || g.SkippedNoAddr != 0 {
+		t.Fatalf("Count=%d SkippedStopped=%d SkippedNoAddr=%d, want 2/2/0", g.Count, g.SkippedStopped, g.SkippedNoAddr)
+	}
+	for _, want := range []string{"Host alice", "Host bob"} {
+		if !strings.Contains(g.Content, want) {
+			t.Errorf("missing %q:\n%s", want, g.Content)
+		}
+	}
+	for _, notWant := range []string{"Host broken", "Host idle"} {
+		if strings.Contains(g.Content, notWant) {
+			t.Errorf("unexpected %q rendered:\n%s", notWant, g.Content)
+		}
+	}
+}
+
+func TestGenerate_SentinelModeRunningWithNoIPStillRenders(t *testing.T) {
+	// In sentinel mode routing is by username, so a running box with no
+	// LAN IP visible to the client (the remote case -- the IP is inside
+	// the backend's own network) still deserves a Host block.
+	g := Generate([]incus.ContainerInfo{
+		{Name: "alice", State: "CONTAINER_STATE_RUNNING"},
+	}, Options{Sentinel: "sentinel.example.com"})
+	if g.Count != 1 || g.SkippedNoAddr != 0 {
+		t.Fatalf("Count=%d SkippedNoAddr=%d, want 1/0", g.Count, g.SkippedNoAddr)
+	}
+}

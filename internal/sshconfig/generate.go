@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/footprintai/containarium/internal/connectcore"
 	"github.com/footprintai/containarium/internal/hostport"
 	"github.com/footprintai/containarium/pkg/core/incus"
 )
@@ -89,7 +90,15 @@ func Generate(containers []incus.ContainerInfo, opts Options) Generated {
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 
 	for _, c := range sorted {
-		if !opts.IncludeStopped && c.State != "Running" {
+		// State spelling depends on the transport, so normalize rather
+		// than compare against one of them (cloud#1851): a local incus
+		// listing says "Running", but both remote clients surface the
+		// protobuf enum identifier -- the HTTP client copies protojson's
+		// "CONTAINER_STATE_RUNNING" through verbatim and the gRPC client
+		// calls State.String(). Comparing to "Running" alone meant every
+		// box on a hosted control plane was classified stopped and sync
+		// wrote an ssh_config with zero Host blocks.
+		if !opts.IncludeStopped && !connectcore.IsRunning(c.State) {
 			g.SkippedStopped++
 			continue
 		}
