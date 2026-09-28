@@ -89,6 +89,9 @@ type DualServerConfig struct {
 
 	// Route sync settings
 	RouteSyncInterval time.Duration // Interval for syncing routes to Caddy (default 5s)
+	// RunJournalRetention is how long a run's journal stays on a member box
+	// before the reaper removes it (#2096). Zero = DefaultRunJournalRetention.
+	RunJournalRetention time.Duration
 
 	// Caddy certificate directory for /certs endpoint (sentinel cert sync)
 	CaddyCertDir string
@@ -217,6 +220,7 @@ type DualServer struct {
 	grpcServer               *grpc.Server
 	internalLis              *auth.InternalListener // in-process transport for the REST gateway
 	containerServer          *ContainerServer
+	agentSkillServer         *AgentSkillServer // run journal reaper (#2096)
 	appServer                *AppServer
 	networkServer            *NetworkServer
 	trafficServer            *TrafficServer
@@ -544,6 +548,7 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	runRegistry := runlease.NewRegistry()
 	agentSkillServer.SetRunRegistry(runRegistry)
 	agentSkillServer.SetPlatformMCPPort(config.HTTPPort)
+	agentSkillServer.SetRunJournalRetention(config.RunJournalRetention)
 	containerServer.SetRunRegistry(runRegistry)
 
 	// #1922 — one shared ClaimLocks so concurrent ClaimTrackerIssue calls
@@ -2289,6 +2294,7 @@ skipAppHosting:
 
 	ds := &DualServer{
 		config:                 config,
+		agentSkillServer:       agentSkillServer,
 		grpcServer:             grpcServer,
 		internalLis:            internalLis,
 		containerServer:        containerServer,
@@ -2553,6 +2559,9 @@ func (ds *DualServer) handleBackendSystemInfo(w http.ResponseWriter, r *http.Req
 }
 
 func (ds *DualServer) Start(ctx context.Context) error {
+	if ds.agentSkillServer != nil {
+		ds.agentSkillServer.StartRunJournalReaper(ctx)
+	}
 	// Register this primary with the sentinel (no-op if --public-hostname is unset).
 	runPrimaryRegistration(ctx, PrimaryRegisterConfig{
 		SentinelURL:       ds.config.SentinelURL,

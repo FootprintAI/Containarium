@@ -10,8 +10,10 @@ import (
 	"strings"
 
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/runlog"
 	"github.com/footprintai/containarium/internal/safecast"
 	"github.com/footprintai/containarium/pkg/core/expose"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // ephemeralKeyDir returns the directory the MCP server writes ephemeral
@@ -1600,6 +1602,38 @@ func (s *Server) registerTools() {
 			Handler: handleRunCrew,
 		},
 		{
+			Name: "crew_logs",
+			Description: "Read one window of a run's journal (crew or single-skill run): " +
+				"the JSON lines its agent wrote (status, assistant, tool_use, " +
+				"tool_result, error). Returns the bytes plus end_offset; pass " +
+				"end_offset back as start_offset to continue, like tail_log. " +
+				"ended=true once the run's last line is 'run ended'. Same function " +
+				"as `containarium crew logs`.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"run_id": map[string]interface{}{
+						"type":        "string",
+						"description": "Run id (from run_crew or run_agent_skill).",
+					},
+					"skill_id": map[string]interface{}{
+						"type":        "string",
+						"description": "Member whose journal to read. Default: the only member, or the crew's entry skill.",
+					},
+					"start_offset": map[string]interface{}{
+						"type":        "number",
+						"description": "Byte offset to read from (default 0).",
+					},
+					"follow_seconds": map[string]interface{}{
+						"type":        "number",
+						"description": "Wait up to this many seconds (0-10) for new bytes when none are available.",
+					},
+				},
+				"required": []string{"run_id"},
+			},
+			Handler: handleCrewLogs,
+		},
+		{
 			Name: "revoke_token",
 			Description: "Admin: revoke a JWT by its jti. The token is rejected " +
 				"on the next request that names it. Pairs with the daemon's " +
@@ -1761,6 +1795,7 @@ func toolScopeAssignments() map[string]string {
 		"call_agent":        auth.ScopeAgentsCall,
 		"list_crews":        auth.ScopeCrewsRead,
 		"run_crew":          auth.ScopeCrewsRun,
+		"crew_logs":         auth.ScopeAgentsRead,
 		// database backups
 		"create_backup":  auth.ScopeBackupsWrite,
 		"restore_backup": auth.ScopeBackupsWrite,
@@ -2995,6 +3030,30 @@ func handleRunCrew(client API, args map[string]interface{}) (string, error) {
 		out += fmt.Sprintf("error: %s\n", resp.Run.Error)
 	}
 	return out, nil
+}
+
+// handleCrewLogs is a thin wrapper over runlog.Window, the function
+// `containarium crew logs` reads through: one bounded window plus end_offset.
+func handleCrewLogs(client API, args map[string]interface{}) (string, error) {
+	req := &pb.TailRunLogRequest{
+		RunId:   getStringArg(args, "run_id", ""),
+		SkillId: getStringArg(args, "skill_id", ""),
+	}
+	if v, ok := getInt64Arg(args, "start_offset"); ok {
+		req.StartOffset = v
+	}
+	if v, ok := getIntArg(args, "follow_seconds"); ok {
+		req.FollowSeconds = int32(min(max(v, 0), runlog.FollowSeconds)) // #nosec G115 -- clamped to 0..10
+	}
+	resp, err := runlog.Window(client, req)
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "end_offset: %d\nended: %v\ntruncated: %v\nskill_ids: %s\n---\n",
+		resp.GetEndOffset(), resp.GetEnded(), resp.GetTruncated(), strings.Join(resp.GetSkillIds(), ","))
+	b.Write(resp.GetChunk())
+	return b.String(), nil
 }
 
 // mcpExposeAdapter implements expose.APIClient against this package's

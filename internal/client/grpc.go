@@ -902,6 +902,14 @@ func (c *GRPCClient) GetCrewRun(id string) (*pb.CrewRun, error) {
 	return resp.Run, nil
 }
 
+// TailRunLog reads one window of a run's journal via gRPC (#2096). The
+// deadline covers the server's follow_seconds wait.
+func (c *GRPCClient) TailRunLog(req *pb.TailRunLogRequest) (*pb.TailRunLogResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return c.agentClient.TailRunLog(ctx, req)
+}
+
 // CreateBackup dumps a tenant's database and stores it off-host via gRPC.
 func (c *GRPCClient) CreateBackup(req *pb.CreateBackupRequest) (*pb.CreateBackupResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // large dumps + upload can take time
