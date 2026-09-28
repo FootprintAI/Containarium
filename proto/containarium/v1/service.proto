@@ -8,6 +8,7 @@ import "containarium/v1/app.proto";
 import "containarium/v1/network.proto";
 import "containarium/v1/alert.proto";
 import "containarium/v1/secrets.proto";
+import "containarium/v1/box_run.proto";
 import "google/api/annotations.proto";
 import "protoc-gen-openapiv2/options/annotations.proto";
 
@@ -473,6 +474,35 @@ service ContainerService {
       summary: "Remove SSH key";
       description: "Removes an SSH public key from a container's authorized_keys file, revoking SSH access for that key. The ssh_public_key should be URL-encoded.";
       tags: "SSH Management";
+    };
+  }
+
+  // ListBoxRuns lists the `code run` records on a box (#2123). Same access
+  // as connecting to the box: ssh:write, and the box owner or one of its
+  // collaborators.
+  rpc ListBoxRuns(ListBoxRunsRequest) returns (ListBoxRunsResponse) {
+    option (google.api.http) = {
+      get: "/v1/containers/{username}/code-runs"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List a box's code runs";
+      description: "Returns the box's current code-run records (containarium code run): name, start and end time, exit code, outcome (running/exited/unknown), and log path. Box owner or collaborator, ssh:write scope.";
+      tags: "Code Runs";
+    };
+  }
+
+  // TailBoxRunLog reads one byte window of a box run's log (#2123), the
+  // TailRunLog contract (#2096) for `code run` logs: resumable (pass
+  // end_offset back as start_offset) and bounded (max_bytes,
+  // follow_seconds). A framed log is demuxed to its stdout.
+  rpc TailBoxRunLog(TailBoxRunLogRequest) returns (TailBoxRunLogResponse) {
+    option (google.api.http) = {
+      get: "/v1/containers/{username}/code-runs/{run_name}/log"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Tail a box code run's log";
+      description: "Returns one byte window of a code run's log plus the offset to resume from; ended once the run has an exit code and the log is read to its end. Framed logs are demuxed to stdout, with stderr_dropped set when stderr frames were skipped. Box owner or collaborator, ssh:write scope.";
+      tags: "Code Runs";
     };
   }
 

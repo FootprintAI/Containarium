@@ -66,8 +66,13 @@ func defaultProcessLogDir() string {
 	if dir := os.Getenv("AGENTBOX_LOG_DIR"); dir != "" {
 		return dir
 	}
-	return "/tmp/agent-box"
+	return DefaultLogDir
 }
+
+// DefaultLogDir is where run logs, records, and exit sidecars live unless
+// AGENTBOX_LOG_DIR says otherwise. The daemon's box-run reader (#2123) reads
+// the same directory from outside the box.
+const DefaultLogDir = "/tmp/agent-box"
 
 const processKillWaitTime = 2 * time.Second
 

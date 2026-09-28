@@ -1154,6 +1154,40 @@ func (s *Server) registerTools() {
 			Handler: handleCodeStop,
 		},
 		{
+			Name: "code_runs",
+			Description: "List the code runs on a box (containarium code run) through the daemon API, " +
+				"no SSH needed: name, outcome (running, exited, or unknown when the run was killed " +
+				"or the box restarted), exit code, start/end time, log path. Same function as " +
+				"`containarium code runs`.",
+			InputSchema: map[string]interface{}{
+				"type":     "object",
+				"required": []string{"box"},
+				"properties": map[string]interface{}{
+					"box": map[string]interface{}{"type": "string", "description": "Box (owner username) whose runs to list."},
+				},
+			},
+			Handler: handleCodeRuns,
+		},
+		{
+			Name: "code_logs",
+			Description: "Read one window of a code run's output through the daemon API, no SSH " +
+				"needed. Returns the bytes plus end_offset; pass end_offset back as start_offset " +
+				"to continue, like tail_log. ended=true once the run has exited and its log is " +
+				"read to the end. A framed (stream-json) run's stderr is left out and flagged by " +
+				"stderr_dropped. Same reader as `containarium code logs`.",
+			InputSchema: map[string]interface{}{
+				"type":     "object",
+				"required": []string{"box", "run"},
+				"properties": map[string]interface{}{
+					"box":            map[string]interface{}{"type": "string", "description": "Box (owner username) the run is on."},
+					"run":            map[string]interface{}{"type": "string", "description": "Run name, from code_runs."},
+					"start_offset":   map[string]interface{}{"type": "number", "description": "Byte offset to read from (default 0)."},
+					"follow_seconds": map[string]interface{}{"type": "number", "description": "Wait up to this many seconds (0-10) for new bytes when none are available."},
+				},
+			},
+			Handler: handleCodeLogs,
+		},
+		{
 			Name: "connect",
 			Description: "Get SSH access to one of your boxes using the token you're already " +
 				"authenticated with — connect authorizes a managed key for you, so there's " +
@@ -1745,6 +1779,8 @@ func toolScopeAssignments() map[string]string {
 		"tracker_route_list":   auth.ScopeTrackerAdmin,
 		"tracker_create_issue": auth.ScopeTrackerWrite,
 		"code_status":          auth.ScopeCodeWrite,
+		"code_runs":            auth.ScopeSSHWrite,
+		"code_logs":            auth.ScopeSSHWrite,
 		"code_stop":            auth.ScopeCodeWrite,
 
 		// container lifecycle
@@ -3063,6 +3099,52 @@ func handleCrewLogs(client API, args map[string]interface{}) (string, error) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "end_offset: %d\nended: %v\ntruncated: %v\nskill_ids: %s\n---\n",
 		resp.GetEndOffset(), resp.GetEnded(), resp.GetTruncated(), strings.Join(resp.GetSkillIds(), ","))
+	b.Write(resp.GetChunk())
+	return b.String(), nil
+}
+
+// handleCodeRuns is a thin wrapper over runlog.WriteBoxRuns, the formatter
+// `containarium code runs` prints with.
+func handleCodeRuns(client API, args map[string]interface{}) (string, error) {
+	box := strings.TrimSpace(getStringArg(args, "box", ""))
+	if box == "" {
+		return "", fmt.Errorf("`box` is required")
+	}
+	runs, err := client.ListBoxRuns(box)
+	if err != nil {
+		return "", fmt.Errorf("list code runs on %s: %w", box, err)
+	}
+	var b strings.Builder
+	if err := runlog.WriteBoxRuns(&b, box, runs); err != nil {
+		return "", err
+	}
+	return b.String(), nil
+}
+
+// handleCodeLogs is a thin wrapper over runlog.BoxWindow, the reader
+// `containarium code logs` copies through: one bounded window plus
+// end_offset.
+func handleCodeLogs(client API, args map[string]interface{}) (string, error) {
+	req := &pb.TailBoxRunLogRequest{
+		Username: strings.TrimSpace(getStringArg(args, "box", "")),
+		RunName:  strings.TrimSpace(getStringArg(args, "run", "")),
+	}
+	if req.Username == "" || req.RunName == "" {
+		return "", fmt.Errorf("`box` and `run` are required")
+	}
+	if v, ok := getInt64Arg(args, "start_offset"); ok {
+		req.StartOffset = v
+	}
+	if v, ok := getIntArg(args, "follow_seconds"); ok {
+		req.FollowSeconds = int32(min(max(v, 0), runlog.FollowSeconds)) // #nosec G115 -- clamped to 0..10
+	}
+	resp, err := runlog.BoxWindow(client, req)
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "end_offset: %d\nended: %v\ntruncated: %v\nstderr_dropped: %v\n---\n",
+		resp.GetEndOffset(), resp.GetEnded(), resp.GetTruncated(), resp.GetStderrDropped())
 	b.Write(resp.GetChunk())
 	return b.String(), nil
 }

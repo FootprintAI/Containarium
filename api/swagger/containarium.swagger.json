@@ -46,6 +46,14 @@
       "description": "BackupService provides logical (pg_dump) database backups for the\ndatabases running inside Containarium containers, stored off-host.\nSee docs/DB-BACKUP-OPERATIONS.md for the operational runbook and the\nISO 27001 A.8.13 control mapping."
     },
     {
+      "name": "SandboxService",
+      "description": "SandboxService is the two-digit-ms spawn path\n(docs/architecture/two-digit-ms-sandbox-spawn.md): an isolated Linux\nprocess for an agent inner loop, claimed against a pool rather than\ncreated fresh per request.\n\nA sandbox is NOT a persistent box. It has no per-tenant Linux account and\nno SSH — access is exclusively these RPCs, over a connection the daemon\nalready holds open. That is the scope cut that makes the latency target\nreachable (see the design note's \"What's in it\" section); a caller that\nneeds `ssh \u003cuser\u003e@box` wants ContainerService instead.\n\nPhase 1 (this contract's first implementation) is the cold path only —\nevery SpawnSandbox call creates a fresh container, same floor as\nContainerService.CreateContainer minus identity seeding. served_from is\nalways COLD until Phase 3 adds the warm pool; the field exists now so\nthat Phase 3 is not a breaking proto change."
+    },
+    {
+      "name": "SpawnService",
+      "description": "SpawnService is agent-box's resident, low-latency counterpart to\nSandboxService's per-call Incus round-trips (#1488 Phase 2). Each Incus\nexec websocket-upgrades at ~50-150ms; a warm gRPC connection straight to\nthe box does the same work in ~3ms. The daemon reaches this over a\nbind-mounted unix socket (see the design note's \"Transport\" section),\nnever over the network.\n\nThis is deliberately the only service in this package with NO\ngoogle.api.http annotations: it is not part of the public API surface —\nSandboxService is what external callers (CLI, MCP, SDK) talk to, and its\nimplementation is what will route through SpawnService once a warm pool\nexists (Phase 3). Nothing here is reachable through the REST gateway,\nand it must not be registered there.\n\nagent-box runs as PID 1 inside a pool member (see the design note's flow\ndiagram), so it owns reaping every process it forks — a design this\nservice inherits from the existing process_start/shell_exec MCP tools in\ninternal/agentbox, not a new mechanism."
+    },
+    {
       "name": "ClusterService",
       "description": "ClusterService manages tenant-facing managed Kubernetes clusters (#1413).\n\nA managed cluster is a platform-operated k3s control plane plus worker\nnodes that are Containarium VMs, grouped into typed size classes the\ncluster-autoscaler expands by fit simulation. The tenant's only surface\nis this service and the kubeconfig it returns — the control-plane VM is\nplatform territory (no tenant SSH, absent from the tenant's container\nlist), and worker VMs are cluster-internal.\n\nDesign: docs/architecture/managed-k8s-clusters.md. Provisioning is\nasynchronous: CreateCluster records the desired cluster and returns; a\ndaemon-side reconciler (#1414) converges VMs and flips the cluster to\nREADY. Kubeconfig and node-join material are read on demand from the\ncontrol-plane VM and are never persisted by the platform."
     },
@@ -79,14 +87,6 @@
     {
       "name": "PentestService",
       "description": "PentestService provides automated penetration testing and vulnerability scanning"
-    },
-    {
-      "name": "SandboxService",
-      "description": "SandboxService is the two-digit-ms spawn path\n(docs/architecture/two-digit-ms-sandbox-spawn.md): an isolated Linux\nprocess for an agent inner loop, claimed against a pool rather than\ncreated fresh per request.\n\nA sandbox is NOT a persistent box. It has no per-tenant Linux account and\nno SSH — access is exclusively these RPCs, over a connection the daemon\nalready holds open. That is the scope cut that makes the latency target\nreachable (see the design note's \"What's in it\" section); a caller that\nneeds `ssh \u003cuser\u003e@box` wants ContainerService instead.\n\nPhase 1 (this contract's first implementation) is the cold path only —\nevery SpawnSandbox call creates a fresh container, same floor as\nContainerService.CreateContainer minus identity seeding. served_from is\nalways COLD until Phase 3 adds the warm pool; the field exists now so\nthat Phase 3 is not a breaking proto change."
-    },
-    {
-      "name": "SpawnService",
-      "description": "SpawnService is agent-box's resident, low-latency counterpart to\nSandboxService's per-call Incus round-trips (#1488 Phase 2). Each Incus\nexec websocket-upgrades at ~50-150ms; a warm gRPC connection straight to\nthe box does the same work in ~3ms. The daemon reaches this over a\nbind-mounted unix socket (see the design note's \"Transport\" section),\nnever over the network.\n\nThis is deliberately the only service in this package with NO\ngoogle.api.http annotations: it is not part of the public API surface —\nSandboxService is what external callers (CLI, MCP, SDK) talk to, and its\nimplementation is what will route through SpawnService once a warm pool\nexists (Phase 3). Nothing here is reachable through the REST gateway,\nand it must not be registered there.\n\nagent-box runs as PID 1 inside a pool member (see the design note's flow\ndiagram), so it owns reaping every process it forks — a design this\nservice inherits from the existing process_start/shell_exec MCP tools in\ninternal/agentbox, not a new mechanism."
     },
     {
       "name": "SecurityService",
@@ -2741,6 +2741,103 @@
         ],
         "tags": [
           "Container Operations"
+        ]
+      }
+    },
+    "/v1/containers/{username}/code-runs": {
+      "get": {
+        "summary": "List a box's code runs",
+        "description": "Returns the box's current code-run records (containarium code run): name, start and end time, exit code, outcome (running/exited/unknown), and log path. Box owner or collaborator, ssh:write scope.",
+        "operationId": "ContainerService_ListBoxRuns",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListBoxRunsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "The box owner's username (the box is \u003cusername\u003e-container).",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Code Runs"
+        ]
+      }
+    },
+    "/v1/containers/{username}/code-runs/{runName}/log": {
+      "get": {
+        "summary": "Tail a box code run's log",
+        "description": "Returns one byte window of a code run's log plus the offset to resume from; ended once the run has an exit code and the log is read to its end. Framed logs are demuxed to stdout, with stderr_dropped set when stderr frames were skipped. Box owner or collaborator, ssh:write scope.",
+        "operationId": "ContainerService_TailBoxRunLog",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/TailBoxRunLogResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "The box owner's username (the box is \u003cusername\u003e-container).",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "runName",
+            "description": "A run_name from ListBoxRuns.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "startOffset",
+            "description": "Byte offset into the log file to start from; 0 = from the beginning.\nPass the previous response's end_offset to resume without loss or\nrepetition. For a FRAMED log this is an offset into the framed file,\nso it must be one a previous response returned (a frame boundary).",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "format": "int64"
+          },
+          {
+            "name": "maxBytes",
+            "description": "Upper bound on log-file bytes consumed per call: \u003c= 262144; 0 means\n65536. A FRAMED log is never split mid-frame, so one call always\nconsumes at least one whole frame.",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          },
+          {
+            "name": "followSeconds",
+            "description": "0..10: when no bytes are available at start_offset, wait up to this\nmany seconds for the log to grow before answering with an empty chunk.",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          }
+        ],
+        "tags": [
+          "Code Runs"
         ]
       }
     },
@@ -9043,6 +9140,52 @@
       },
       "description": "BadDestinationEntry is one entry in the known-bad-destination list (#1641)\nmatched against flow destination IPs — a mining pool or other known-bad\nendpoint."
     },
+    "BoxRun": {
+      "type": "object",
+      "properties": {
+        "runName": {
+          "type": "string",
+          "description": "The run's name as stored on disk; pass it to TailBoxRunLog."
+        },
+        "startedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "endedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Set only once the run has an exit code."
+        },
+        "exitCode": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Set only once the run has exited; absent is not the same as 0."
+        },
+        "outcome": {
+          "$ref": "#/definitions/BoxRunOutcome"
+        },
+        "logPath": {
+          "type": "string",
+          "description": "The log file TailBoxRunLog reads, inside the box."
+        },
+        "captureMode": {
+          "$ref": "#/definitions/CaptureMode",
+          "description": "How the log is written: FRAMED logs are demuxed by TailBoxRunLog."
+        }
+      },
+      "description": "BoxRun is one current run record on a box."
+    },
+    "BoxRunOutcome": {
+      "type": "string",
+      "enum": [
+        "BOX_RUN_OUTCOME_UNSPECIFIED",
+        "BOX_RUN_OUTCOME_RUNNING",
+        "BOX_RUN_OUTCOME_EXITED",
+        "BOX_RUN_OUTCOME_UNKNOWN"
+      ],
+      "default": "BOX_RUN_OUTCOME_UNSPECIFIED",
+      "description": "BoxRunOutcome classifies a run record, the same three outcomes agent-box's\nResolveOutcome reports to process_list.\n\n - BOX_RUN_OUTCOME_RUNNING: Same boot, no exit code recorded, PID still alive.\n - BOX_RUN_OUTCOME_EXITED: An exit code is recorded (by agent-box's reaper or the run's exit\nsidecar).\n - BOX_RUN_OUTCOME_UNKNOWN: No exit code, and the PID is gone or belongs to an earlier boot: the\nrun was killed, OOMed, or the box restarted. Never reported as exited."
+    },
     "BuildpackOptions": {
       "type": "object",
       "properties": {
@@ -9216,6 +9359,16 @@
         }
       },
       "description": "CapacityPolicy bounds what a backend is willing to advertise. The\nadvertisement only computes spare capacity when the current time falls\ninside the allowed window and respects the excluded workload classes.\nOperator-set per backend. See #680."
+    },
+    "CaptureMode": {
+      "type": "string",
+      "enum": [
+        "CAPTURE_MODE_UNSPECIFIED",
+        "CAPTURE_MODE_COMBINED",
+        "CAPTURE_MODE_FRAMED"
+      ],
+      "default": "CAPTURE_MODE_UNSPECIFIED",
+      "description": "CaptureMode selects how a spawned process's combined stdout+stderr is\nwritten to its log file (#1674). COMBINED is today's plain-text behavior;\nFRAMED is opt-in, text-safe per-line framing (\"\u003cstream\u003e \u003cbase64(payload)\u003e\")\nso a client can demux stdout/stderr from the single offset stream without\ncorrupting invalid UTF-8 or runes split across a write — see\ndocs/architecture/remote-coding-agent.md, Part A \"Framing\".\n\n - CAPTURE_MODE_UNSPECIFIED: treated as COMBINED"
     },
     "ClaimTrackerIssueBody": {
       "type": "object",
@@ -12628,6 +12781,19 @@
         }
       }
     },
+    "ListBoxRunsResponse": {
+      "type": "object",
+      "properties": {
+        "runs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/BoxRun"
+          },
+          "description": "Current run records, newest first. Runs rotated aside by a later run\nunder the same name are not listed."
+        }
+      }
+    },
     "ListClamavReportsResponse": {
       "type": "object",
       "properties": {
@@ -15885,6 +16051,34 @@
         }
       },
       "title": "SystemInfo contains information about the host system"
+    },
+    "TailBoxRunLogResponse": {
+      "type": "object",
+      "properties": {
+        "chunk": {
+          "type": "string",
+          "format": "byte",
+          "description": "The run's output in [start_offset, end_offset): the log bytes as-is\nfor a COMBINED log, the demuxed stdout bytes for a FRAMED log."
+        },
+        "endOffset": {
+          "type": "string",
+          "format": "int64",
+          "description": "Pass back as start_offset on the next call."
+        },
+        "truncated": {
+          "type": "boolean",
+          "description": "More bytes were available past end_offset than max_bytes allowed."
+        },
+        "ended": {
+          "type": "boolean",
+          "description": "The run has an exit code and end_offset is at the end of its log:\nnothing more will be written."
+        },
+        "stderrDropped": {
+          "type": "boolean",
+          "description": "This window held stderr frames of a FRAMED log, which are not in chunk."
+        }
+      },
+      "description": "TailBoxRunLogResponse is one window of a box run's log: the\nTailRunLogResponse shape, plus stderr_dropped."
     },
     "TailRunLogResponse": {
       "type": "object",

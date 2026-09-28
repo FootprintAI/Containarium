@@ -612,6 +612,25 @@ func (c *GRPCClient) ListCollaborators(ownerUsername string) (*pb.ListCollaborat
 	return resp, nil
 }
 
+// ListBoxRuns lists a box's code-run records via gRPC (#2123).
+func (c *GRPCClient) ListBoxRuns(username string) ([]*pb.BoxRun, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.client.ListBoxRuns(ctx, &pb.ListBoxRunsRequest{Username: username})
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetRuns(), nil
+}
+
+// TailBoxRunLog reads one window of a box run's log via gRPC (#2123). The
+// deadline covers the server's follow_seconds wait.
+func (c *GRPCClient) TailBoxRunLog(req *pb.TailBoxRunLogRequest) (*pb.TailBoxRunLogResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return c.client.TailBoxRunLog(ctx, req)
+}
+
 // DebugContainer returns a diagnostic report for a container's SSH path.
 func (c *GRPCClient) DebugContainer(username string) (*pb.DebugContainerResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

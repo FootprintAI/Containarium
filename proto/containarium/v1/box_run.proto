@@ -1,0 +1,97 @@
+syntax = "proto3";
+
+package containarium.v1;
+
+import "google/protobuf/timestamp.proto";
+import "containarium/v1/sandbox.proto";
+
+option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
+
+// Box run records (#2123): the daemon-side reader over the durable run
+// records `containarium code run` leaves on a box (agent-box process_start,
+// #1672/#1674). A record is <log-dir>/<run_name>.json beside its log
+// <run_name>.log (log-dir is /tmp/agent-box). The reader never changes
+// either file: their lifecycle stays agent-box's (rotation on name reuse,
+// /tmp cleanup).
+
+// BoxRunOutcome classifies a run record, the same three outcomes agent-box's
+// ResolveOutcome reports to process_list.
+enum BoxRunOutcome {
+  BOX_RUN_OUTCOME_UNSPECIFIED = 0;
+  // Same boot, no exit code recorded, PID still alive.
+  BOX_RUN_OUTCOME_RUNNING = 1;
+  // An exit code is recorded (by agent-box's reaper or the run's exit
+  // sidecar).
+  BOX_RUN_OUTCOME_EXITED = 2;
+  // No exit code, and the PID is gone or belongs to an earlier boot: the
+  // run was killed, OOMed, or the box restarted. Never reported as exited.
+  BOX_RUN_OUTCOME_UNKNOWN = 3;
+}
+
+// BoxRun is one current run record on a box.
+message BoxRun {
+  // The run's name as stored on disk; pass it to TailBoxRunLog.
+  string run_name = 1;
+  google.protobuf.Timestamp started_at = 2;
+  // Set only once the run has an exit code.
+  google.protobuf.Timestamp ended_at = 3;
+  // Set only once the run has exited; absent is not the same as 0.
+  optional int32 exit_code = 4;
+  BoxRunOutcome outcome = 5;
+  // The log file TailBoxRunLog reads, inside the box.
+  string log_path = 6;
+  // How the log is written: FRAMED logs are demuxed by TailBoxRunLog.
+  CaptureMode capture_mode = 7;
+}
+
+message ListBoxRunsRequest {
+  // The box owner's username (the box is <username>-container).
+  string username = 1;
+}
+
+message ListBoxRunsResponse {
+  // Current run records, newest first. Runs rotated aside by a later run
+  // under the same name are not listed.
+  repeated BoxRun runs = 1;
+}
+
+// TailBoxRunLogRequest reads one byte window of a box run's log. Fields and
+// bounds mirror TailRunLogRequest (#2096).
+message TailBoxRunLogRequest {
+  // The box owner's username (the box is <username>-container).
+  string username = 1;
+  // A run_name from ListBoxRuns.
+  string run_name = 2;
+  // Byte offset into the log file to start from; 0 = from the beginning.
+  // Pass the previous response's end_offset to resume without loss or
+  // repetition. For a FRAMED log this is an offset into the framed file,
+  // so it must be one a previous response returned (a frame boundary).
+  int64 start_offset = 3;
+  // Upper bound on log-file bytes consumed per call: <= 262144; 0 means
+  // 65536. A FRAMED log is never split mid-frame, so one call always
+  // consumes at least one whole frame.
+  int32 max_bytes = 4;
+  // 0..10: when no bytes are available at start_offset, wait up to this
+  // many seconds for the log to grow before answering with an empty chunk.
+  int32 follow_seconds = 5;
+}
+
+// TailBoxRunLogResponse is one window of a box run's log: the
+// TailRunLogResponse shape, plus stderr_dropped.
+message TailBoxRunLogResponse {
+  // The run's output in [start_offset, end_offset): the log bytes as-is
+  // for a COMBINED log, the demuxed stdout bytes for a FRAMED log.
+  bytes chunk = 1;
+  // Pass back as start_offset on the next call.
+  int64 end_offset = 2;
+  // More bytes were available past end_offset than max_bytes allowed.
+  bool truncated = 3;
+  // The run has an exit code and end_offset is at the end of its log:
+  // nothing more will be written.
+  bool ended = 4;
+  // Field 5 is TailRunLogResponse.skill_ids, which a box run has no
+  // counterpart for.
+  reserved 5;
+  // This window held stderr frames of a FRAMED log, which are not in chunk.
+  bool stderr_dropped = 6;
+}

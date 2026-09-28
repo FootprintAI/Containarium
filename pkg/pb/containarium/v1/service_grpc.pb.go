@@ -44,6 +44,8 @@ const (
 	ContainerService_SetContainerAttribution_FullMethodName   = "/containarium.v1.ContainerService/SetContainerAttribution"
 	ContainerService_AddSSHKey_FullMethodName                 = "/containarium.v1.ContainerService/AddSSHKey"
 	ContainerService_RemoveSSHKey_FullMethodName              = "/containarium.v1.ContainerService/RemoveSSHKey"
+	ContainerService_ListBoxRuns_FullMethodName               = "/containarium.v1.ContainerService/ListBoxRuns"
+	ContainerService_TailBoxRunLog_FullMethodName             = "/containarium.v1.ContainerService/TailBoxRunLog"
 	ContainerService_AddCollaborator_FullMethodName           = "/containarium.v1.ContainerService/AddCollaborator"
 	ContainerService_RemoveCollaborator_FullMethodName        = "/containarium.v1.ContainerService/RemoveCollaborator"
 	ContainerService_ListCollaborators_FullMethodName         = "/containarium.v1.ContainerService/ListCollaborators"
@@ -248,6 +250,15 @@ type ContainerServiceClient interface {
 	AddSSHKey(ctx context.Context, in *AddSSHKeyRequest, opts ...grpc.CallOption) (*AddSSHKeyResponse, error)
 	// RemoveSSHKey removes an SSH public key from a container
 	RemoveSSHKey(ctx context.Context, in *RemoveSSHKeyRequest, opts ...grpc.CallOption) (*RemoveSSHKeyResponse, error)
+	// ListBoxRuns lists the `code run` records on a box (#2123). Same access
+	// as connecting to the box: ssh:write, and the box owner or one of its
+	// collaborators.
+	ListBoxRuns(ctx context.Context, in *ListBoxRunsRequest, opts ...grpc.CallOption) (*ListBoxRunsResponse, error)
+	// TailBoxRunLog reads one byte window of a box run's log (#2123), the
+	// TailRunLog contract (#2096) for `code run` logs: resumable (pass
+	// end_offset back as start_offset) and bounded (max_bytes,
+	// follow_seconds). A framed log is demuxed to its stdout.
+	TailBoxRunLog(ctx context.Context, in *TailBoxRunLogRequest, opts ...grpc.CallOption) (*TailBoxRunLogResponse, error)
 	// AddCollaborator adds a collaborator to a container
 	AddCollaborator(ctx context.Context, in *AddCollaboratorRequest, opts ...grpc.CallOption) (*AddCollaboratorResponse, error)
 	// RemoveCollaborator removes a collaborator from a container
@@ -645,6 +656,26 @@ func (c *containerServiceClient) RemoveSSHKey(ctx context.Context, in *RemoveSSH
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RemoveSSHKeyResponse)
 	err := c.cc.Invoke(ctx, ContainerService_RemoveSSHKey_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) ListBoxRuns(ctx context.Context, in *ListBoxRunsRequest, opts ...grpc.CallOption) (*ListBoxRunsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListBoxRunsResponse)
+	err := c.cc.Invoke(ctx, ContainerService_ListBoxRuns_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) TailBoxRunLog(ctx context.Context, in *TailBoxRunLogRequest, opts ...grpc.CallOption) (*TailBoxRunLogResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TailBoxRunLogResponse)
+	err := c.cc.Invoke(ctx, ContainerService_TailBoxRunLog_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1195,6 +1226,15 @@ type ContainerServiceServer interface {
 	AddSSHKey(context.Context, *AddSSHKeyRequest) (*AddSSHKeyResponse, error)
 	// RemoveSSHKey removes an SSH public key from a container
 	RemoveSSHKey(context.Context, *RemoveSSHKeyRequest) (*RemoveSSHKeyResponse, error)
+	// ListBoxRuns lists the `code run` records on a box (#2123). Same access
+	// as connecting to the box: ssh:write, and the box owner or one of its
+	// collaborators.
+	ListBoxRuns(context.Context, *ListBoxRunsRequest) (*ListBoxRunsResponse, error)
+	// TailBoxRunLog reads one byte window of a box run's log (#2123), the
+	// TailRunLog contract (#2096) for `code run` logs: resumable (pass
+	// end_offset back as start_offset) and bounded (max_bytes,
+	// follow_seconds). A framed log is demuxed to its stdout.
+	TailBoxRunLog(context.Context, *TailBoxRunLogRequest) (*TailBoxRunLogResponse, error)
 	// AddCollaborator adds a collaborator to a container
 	AddCollaborator(context.Context, *AddCollaboratorRequest) (*AddCollaboratorResponse, error)
 	// RemoveCollaborator removes a collaborator from a container
@@ -1422,6 +1462,12 @@ func (UnimplementedContainerServiceServer) AddSSHKey(context.Context, *AddSSHKey
 }
 func (UnimplementedContainerServiceServer) RemoveSSHKey(context.Context, *RemoveSSHKeyRequest) (*RemoveSSHKeyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RemoveSSHKey not implemented")
+}
+func (UnimplementedContainerServiceServer) ListBoxRuns(context.Context, *ListBoxRunsRequest) (*ListBoxRunsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListBoxRuns not implemented")
+}
+func (UnimplementedContainerServiceServer) TailBoxRunLog(context.Context, *TailBoxRunLogRequest) (*TailBoxRunLogResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method TailBoxRunLog not implemented")
 }
 func (UnimplementedContainerServiceServer) AddCollaborator(context.Context, *AddCollaboratorRequest) (*AddCollaboratorResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AddCollaborator not implemented")
@@ -2004,6 +2050,42 @@ func _ContainerService_RemoveSSHKey_Handler(srv interface{}, ctx context.Context
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ContainerServiceServer).RemoveSSHKey(ctx, req.(*RemoveSSHKeyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_ListBoxRuns_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListBoxRunsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).ListBoxRuns(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_ListBoxRuns_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).ListBoxRuns(ctx, req.(*ListBoxRunsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_TailBoxRunLog_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TailBoxRunLogRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).TailBoxRunLog(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_TailBoxRunLog_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).TailBoxRunLog(ctx, req.(*TailBoxRunLogRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2798,6 +2880,14 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RemoveSSHKey",
 			Handler:    _ContainerService_RemoveSSHKey_Handler,
+		},
+		{
+			MethodName: "ListBoxRuns",
+			Handler:    _ContainerService_ListBoxRuns_Handler,
+		},
+		{
+			MethodName: "TailBoxRunLog",
+			Handler:    _ContainerService_TailBoxRunLog_Handler,
 		},
 		{
 			MethodName: "AddCollaborator",
