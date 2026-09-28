@@ -318,6 +318,82 @@ No upstream is compiled in — a brokered endpoint is deployment configuration �
 and registering one is enough to bring the gateway up even when the daemon holds
 no key of its own, which is the multi-owner shape.
 
+## ModelGatewayService: the admin + mint RPCs (built, #1726)
+
+#1725 made the real upstream key a property of the token. This is the control
+surface that puts keys in and takes tokens out — `ModelGatewayService`, in
+`proto/containarium/v1/model_gateway.proto`, proto-first with grpc-gateway REST
+mappings under `/v1/model-gateway/`. That prefix is the **control** plane; the
+gateway's **data** plane stays the `/v1/model/<provider>` proxy, and the two do
+not overlap.
+
+Two scopes, deliberately not one:
+
+| Scope | RPCs | Why separate |
+|---|---|---|
+| `gateway:admin` | `SetTenantProviderKey`, `DeleteTenantProviderKey`, `GetTenantProviderKeyStatus` | The REAL upstream key goes in under it. A control-plane/operator verb; `secrets:write` would be the wrong home, because that scope is a tenant's own secrets and a tenant must never be able to write the key its calls are billed against. |
+| `gateway:mint` | `MintGatewayToken`, `ListGatewayModels` | Tenant-reachable: mint a scoped, expiring token for a box you own. Must be grantable without also granting the ability to write a real key. |
+
+Neither satisfies the other. The MCP surface carries **only** `mint_gateway_token`
+— there is no tool through which any agent token can write a provider key.
+
+**The key verbs are write-only.** Nothing on this service reads a registered key
+back. `GetTenantProviderKeyStatus` returns set/unset, a **fingerprint** (the first
+16 hex characters of the key's SHA-256) and `set_at`. Deleting a key also calls
+`RevokeByKeyOwner`, so the key stops being spendable on the next call rather than
+when the last token expires; the response says `tokens_revoked=false` when the
+daemon holds no revocable owner-revocation store, instead of implying a clean
+revocation.
+
+**`key_owner` at mint time.** `MintGatewayToken` takes a *box*, never a
+`key_owner`, and resolves the owner itself: the box's `cloud_org_id` attribution
+label when it is stamped (`ContainerService.SetContainerAttribution`) →
+`org:<org_id>`, else the box's owning username → `user:<username>`. The pull-mode
+`user.containarium.tenant` config key is deliberately **not** consulted: the
+sandbox path writes a *username* there and the cloud actuator writes an *org id*,
+and reading a username as an org id is exactly the namespace collision the
+`user:`/`org:` prefixes exist to make impossible.
+
+**Ownership, and why cross-tenant reads as NotFound here.** A caller may only
+mint for a box it owns (admins excepted). Cross-tenant and non-existent return
+the *same* `NotFound`, byte for byte. This differs from
+`SandboxServer.lookupOwnedSandbox`, which returns `PermissionDenied` for
+cross-tenant on purpose — and both are right, because the identifiers differ: a
+sandbox id is a server-generated opaque string, so confirming one exists reveals
+nothing an attacker could have guessed, whereas a box name is `<username>-container`
+and therefore derivable. `PermissionDenied` on this path would be a working
+oracle for "does tenant X have a box on this daemon".
+
+**Refusing rather than silently billing the operator.** Resolution case 3 above
+(a `key_owner` with no key falls back to the daemon-global key) is correct for
+tokens already in the wild, but a *new* token that is known in advance to bill
+the operator is a billing bug we can decline to create. So the mint path returns
+`FailedPrecondition` when the resolved owner has no key for the provider, even
+when a global key exists.
+
+**Token lifetime.** Per run: 24h default, capped server-side at 24h. A request
+above the cap is capped, not rejected, and the response's `expires_at` (which
+equals the signed `exp`) is the only truth. The response also carries the minted
+`token_id`, so `containarium token revoke --jti <id>` kills exactly that token
+without re-parsing it. `dry_run` validates everything a real mint validates —
+ownership, the provider, the owner's key — and issues nothing, which is how an
+install step names a misconfiguration before the first model call.
+
+**`ListGatewayModels`** reads the provider's own `/v1/models` through the same key
+resolution the proxy path uses, so the list a caller gets is the list its calls
+can actually use. A non-OpenAI-shaped provider has no such contract and is
+refused rather than reported as having no models.
+
+**CLI-first**, per CLAUDE.md: `containarium gateway key set|delete|status`,
+`containarium gateway mint <box> [--run-id --ttl --allow-model --dry-run --env]`,
+`containarium gateway models --provider …`. `--env` prints the two exports that
+become the box's 0600 `gateway.env` — the caller writes that file over SSH, the
+daemon never does.
+
+**Still open after this:** the owner-revocation store is in-memory, so owner
+revocations do not survive a daemon restart (the per-`jti` list and removing the
+key itself are the durable halves). A durable store is its own change.
+
 ## Open questions
 
 1. **Where does the gateway run?** A core-service LXC (like the platform

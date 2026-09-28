@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log"
 	"strings"
+
+	"github.com/footprintai/containarium/pkg/core/incus"
 )
 
 // grafanaIniPath is where the daemon writes Grafana's config inside the
@@ -123,4 +125,24 @@ func (cs *CoreServices) backfillGrafanaAnonymous() {
 		return
 	}
 	log.Printf("Disabled Grafana anonymous access on %s (backfill, #2079)", CoreVictoriaMetricsContainer)
+}
+
+// hardenDetectedGrafana runs the Grafana backfill on a host where the
+// metrics container was auto-detected at startup (#2103). That detection
+// pre-sets the VictoriaMetrics URL, which makes the daemon skip
+// EnsureVictoriaMetrics — and with it the backfill above — on every
+// existing host, i.e. exactly the hosts an upgrade is supposed to fix.
+//
+// It reuses the CoreServices the caller already has, builds a minimal one
+// otherwise, and returns whichever it used so later steps (the OTel
+// collector) can share it. Nil backend → nothing to do, nil back.
+func hardenDetectedGrafana(cs *CoreServices, be incus.Backend) *CoreServices {
+	if be == nil {
+		return cs
+	}
+	if cs == nil {
+		cs = NewCoreServices(be, CoreServicesConfig{})
+	}
+	cs.backfillGrafanaAnonymous()
+	return cs
 }

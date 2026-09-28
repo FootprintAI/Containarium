@@ -35,13 +35,12 @@ provider "google" {
 // The startup script otherwise has no source for the binary on a fresh
 // install (no file provisioner, no sentinel binary server set up yet).
 //
-// #1781 (design doc, Rollout Phase 1): the release artifact is still
-// published as containarium-* (renaming that is #1782) — only the
-// startup script's on-host install path changes, to
-// /usr/local/bin/containariumd, with the old name symlinked for compat.
+// #1784 (design doc, Rollout Phase 2): the host installs the containariumd-*
+// server artifact; containarium-* is the client build from Phase 2 on. The
+// startup script installs it at /usr/local/bin/containariumd (#1781).
 locals {
   containarium_binary_url = var.containarium_binary_url != "" ? var.containarium_binary_url : (
-    "https://github.com/footprintai/Containarium/releases/download/v${var.containarium_version}/containarium-linux-amd64"
+    "https://github.com/footprintai/Containarium/releases/download/v${var.containarium_version}/containariumd-linux-amd64"
   )
 }
 
