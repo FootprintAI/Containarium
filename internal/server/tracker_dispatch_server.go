@@ -243,7 +243,10 @@ func (r trackerRunStarter) StartRun(ctx context.Context, req tracker.StartRunReq
 	if err != nil {
 		return err
 	}
-	if !r.agents.launchDispatchedRun(ctx, run, req.Lifecycle, r.agents.runInBoxAgentResult) {
+	agent := func(containerName, seedDir string) (string, error) {
+		return r.agents.runInBoxAgentResult(containerName, seedDir, run.runID, run.skillID)
+	}
+	if !r.agents.launchDispatchedRun(ctx, run, req.Lifecycle, agent) {
 		return tracker.ErrDispatchEnded
 	}
 	launched = true

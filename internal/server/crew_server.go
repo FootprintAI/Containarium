@@ -43,12 +43,30 @@ func (s *CrewServer) SetOwner(id string) { s.owner = id }
 // NewCrewServer wires the crew service to the agent-skill server (for box
 // provisioning) and the embedded crew + skill catalogs.
 func NewCrewServer(agents *AgentSkillServer) *CrewServer {
-	return &CrewServer{
+	s := &CrewServer{
 		catalog: crews.GetDefault(),
 		skills:  skills.GetDefault(),
 		agents:  agents,
 		runs:    NewMemCrewRunStore(),
 	}
+	// TailRunLog (#2096) resolves a crew run's members from its run record.
+	if agents != nil {
+		agents.crewRunMembers = s.runMembers
+	}
+	return s
+}
+
+// runMembers resolves a crew run id to its crew's skill ids, entry first.
+func (s *CrewServer) runMembers(ctx context.Context, runID string) ([]string, bool, error) {
+	run, ok, err := s.runs.Get(ctx, runID)
+	if err != nil || !ok {
+		return nil, false, err
+	}
+	crew, err := s.catalog.Get(run.GetCrewId())
+	if err != nil {
+		return nil, false, nil
+	}
+	return append([]string(nil), crew.GetSkillIds()...), true, nil
 }
 
 // ListCrews returns all built-in crews.
@@ -152,7 +170,7 @@ func (s *CrewServer) provisionMemberBox(ctx context.Context, skill *pb.AgentSkil
 	if err != nil {
 		return runlease.Lease{}, "", err
 	}
-	s.agents.startServeMode(containerName, lease.SeedDir)
+	s.agents.startServeMode(containerName, lease.SeedDir, skill.Id)
 	return lease, gitCommit, nil
 }
 
@@ -254,7 +272,7 @@ func (s *CrewServer) runCrew(ctx context.Context, req *pb.RunCrewRequest, crew *
 	// terminal state. driveCrew failures (e.g. a member's A2A server not up yet)
 	// land the run in FAILED rather than erroring the RPC — the caller gets the
 	// run handle to inspect via GetCrewRun.
-	out, err := driveCrew(ctx, crew, trace, req.InputJson, deps.send)
+	out, err := driveCrew(ctx, crew, trace, req.InputJson, withRunID(deps.send, run.Id))
 	if err != nil {
 		run.State = pb.CrewRunState_CREW_RUN_STATE_FAILED
 		run.Error = err.Error()
@@ -279,6 +297,15 @@ func (s *CrewServer) runCrew(ctx context.Context, req *pb.RunCrewRequest, crew *
 // taskSender delivers one A2A task — AgentSkillServer.SendAgentTask in
 // production, a fake in tests. Lets driveCrew be unit-tested without boxes.
 type taskSender func(ctx context.Context, req *pb.SendAgentTaskRequest) (*pb.SendAgentTaskResponse, error)
+
+// withRunID stamps every hop with the crew run's id, so each member's runtime
+// journals its task under that run (#2095).
+func withRunID(send taskSender, runID string) taskSender {
+	return func(ctx context.Context, req *pb.SendAgentTaskRequest) (*pb.SendAgentTaskResponse, error) {
+		req.RunId = runID
+		return send(ctx, req)
+	}
+}
 
 // driveCrew runs the crew's topology to a final artifact, threading the run's
 // trace_id through every hop:

@@ -13,7 +13,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/footprintai/containarium/internal/runlog"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/footprintai/containarium/pkg/version"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 // Client is a REST API client for Containarium.
@@ -446,6 +449,19 @@ func (c *Client) RunCrew(req RunCrewRequest) (*RunCrewResponse, error) {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 	return &resp, nil
+}
+
+// TailRunLog reads one window of a run's journal (#2096).
+func (c *Client) TailRunLog(req *pb.TailRunLogRequest) (*pb.TailRunLogResponse, error) {
+	respBody, err := c.doRequest("GET", runlog.Query(req), nil)
+	if err != nil {
+		return nil, err
+	}
+	out := &pb.TailRunLogResponse{}
+	if err := protojson.Unmarshal(respBody, out); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return out, nil
 }
 
 // --- database backups (BackupService) ---

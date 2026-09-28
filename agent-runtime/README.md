@@ -60,6 +60,39 @@ default model makes it a budget-friendly way to exercise the mechanism end-to-en
 …and writes `artifact.json` (`{outputJson, engine, model, usage, error?}`,
 mode 0600) for the daemon to return.
 
+## Run journal
+
+Every run leaves an append-only JSON-lines journal on its box at
+`/var/log/agent-runtime/runs/<run_id>/<skill_id>.jsonl` (#2095), one event per
+line, written from each engine's message loop:
+
+| `kind` | Fields | Notes |
+| --- | --- | --- |
+| `status` | `text` | `run started` / `run ended exit=N` bracket every run |
+| `assistant` | `text` | model text |
+| `tool_use` | `tool`, `input` | `input` truncated to 2 KiB |
+| `tool_result` | `tool`, `text` | `text` truncated to 2 KiB |
+| `error` | `text` | |
+
+Every line also carries `seq` (monotonic per file, from 1) and `t` (ISO
+timestamp). The zod schema and one fixture line per kind are exported from
+`src/journal.schema.ts`; `fixtures/journal.jsonl` holds the same lines.
+Credentials the runtime holds (the gateway token / provider keys from the
+environment and the seeded platform JWT) are replaced with `[REDACTED]`
+before a line is written.
+
+- **Run mode** takes the ids from `CONTAINARIUM_RUN_ID` and
+  `CONTAINARIUM_SKILL_ID`, which the daemon exports; missing either is a hard
+  failure (exit 2, reason in `artifact.json`).
+- A journal that cannot be opened or written (full disk, unwritable root)
+  never fails a run in either mode: the run continues unjournaled and the
+  process log says why.
+- **Serve mode** takes `run_id` from each A2A task (`AgentTask.run_id`, set
+  from the crew run) and the skill id from `CONTAINARIUM_SKILL_ID`. A task
+  without a `run_id` runs unjournaled and says so on the process log.
+
+`/var/log/agent-runtime.log` is unchanged: it stays the serve-mode process log.
+
 ## Two credentials, never interchangeable
 
 - **Model-provider key** (Anthropic / OpenAI / Gemini) → drives the model.

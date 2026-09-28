@@ -3,6 +3,7 @@
 // interface so the agent-runtime is harness-agnostic: a skill picks its engine,
 // the rest of the runtime (seed loading, artifact writing, the A2A server in 4b)
 // stays identical.
+import type { JournalSink } from "./journal.js";
 import type { PlatformMcpConfig } from "./seed.js";
 
 export interface EngineConfig {
@@ -31,5 +32,9 @@ export interface EngineResult {
 
 export interface Engine {
   readonly name: string;
-  run(task: string, cfg: EngineConfig): Promise<EngineResult>;
+  // run executes one task, appending each assistant message, tool call and
+  // tool result to journal as it happens (#2095). The caller brackets the run
+  // with status lines (runJournaled); an error that ends the run is thrown,
+  // not journaled here.
+  run(task: string, cfg: EngineConfig, journal: JournalSink): Promise<EngineResult>;
 }

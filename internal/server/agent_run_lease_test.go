@@ -630,7 +630,7 @@ func TestStartServeMode_StopsPriorInstanceBeforeLaunching(t *testing.T) {
 	store := newFakeRevocationStore()
 	s, _, backend := newSkillBoxHarnessInspectable(t, store)
 
-	s.startServeMode("agent-hello-agent", "/etc/containarium/agent/runs/run-1")
+	s.startServeMode("agent-hello-agent", "/etc/containarium/agent/runs/run-1", "hello-agent")
 
 	if len(backend.execCalls) != 1 {
 		t.Fatalf("execCalls = %d, want 1 (the kill step — the launch step uses ExecWithOutput, unreachable on this fake); got %+v",
@@ -647,7 +647,7 @@ func TestStartServeMode_StopsPriorInstanceBeforeLaunching(t *testing.T) {
 
 	// A second call (a later run against the same reused box) must kill
 	// again — the fix is not a one-shot guard, it runs on every call.
-	s.startServeMode("agent-hello-agent", "/etc/containarium/agent/runs/run-2")
+	s.startServeMode("agent-hello-agent", "/etc/containarium/agent/runs/run-2", "hello-agent")
 	if len(backend.execCalls) != 2 {
 		t.Fatalf("after a second call, execCalls = %d, want 2", len(backend.execCalls))
 	}
