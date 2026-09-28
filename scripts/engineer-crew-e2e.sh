@@ -38,9 +38,10 @@
 #      thing under test — so it needs a real key and it declines to run
 #      without one.
 #   2. It exercises RunAgentSkill (one skill, one box, lease ended on exit).
-#      This exercises RunCrew (two skills, two boxes, serve mode). Those have
-#      DIFFERENT credential lifecycles, which is why the "workspace-removed"
-#      half of AC2 reads the way it does below — see assertion 7.
+#      This exercises RunCrew (two skills, two boxes, serve mode) — but RunCrew
+#      now ends every member's lease at each of its three terminal paths too
+#      (#2100/#2101), so the "workspace-removed" half of AC2 holds the same
+#      way it does there; see assertion 7.
 #
 # --- WHAT IT ASSERTS, in order (each prints OK with what it observed) ----
 #
@@ -64,13 +65,12 @@
 #                               gateway token (the model-gateway's whole
 #                               point); and a supplied git_credential leaks
 #                               nowhere either.
-#   7. workspace state        — the fetched workspace was the PINNED commit,
-#                               and the per-run directories are in the state
-#                               RunCrew's own contract says they should be.
-#                               READ ASSERTION 7's COMMENT: that state is NOT
-#                               the same as RunAgentSkill's, and this script
-#                               pins the difference rather than papering over
-#                               it.
+#   7. workspace state        — the fetched workspace was the PINNED commit
+#                               (CrewRun.git_commit), and every member's
+#                               per-run seed directory and workspace are gone
+#                               entirely after the run returns — the same
+#                               contract RunAgentSkill's lease-end already has
+#                               (#2100/#2101); see assertion 7.
 #
 # --- CREDENTIAL CONTRACT (how to make the real half actually run) -------
 # This script reads the SAME provider-key env vars the daemon itself reads
@@ -800,58 +800,25 @@ for m in $CREW_MEMBERS; do
   ok "assertion 6 (box $m): the real provider key is absent from $RUN_SEED_DIR in agent-$m-container"
 done
 
-# ========================================================================
-# assertion 7: WORKSPACE / PER-RUN DIRECTORY STATE.
-#
-# READ THIS BEFORE CHANGING IT. AC2 asks that "the existing credential-hygiene
-# and workspace-removed assertions still pass". The credential-hygiene half is
-# assertion 6 above and it holds. The workspace-removed half does NOT hold on
-# the crew path today, and that is by explicit design, not a bug this lane
-# found:
-#
-#   internal/server/crew_server.go, in RunCrew's member loop:
-#     "The lease is deliberately dropped. A crew member runs in serve mode —
-#      long-lived, outliving this RPC — so there is no 'run exit' here to end
-#      it on. ... Ending crew leases when the crew run completes is
-#      CrewServer's to own and is a later-phase item in the design
-#      (docs/architecture/execution-scoped-authorization.md §3, 'Crew members
-#      and queue workers')."
-#
-# So where RunAgentSkill's lease-end removes the whole per-run seed directory
-# AND the fetched workspace (#1860/#1861, scripts/agent-skill-lease-e2e.sh
-# assertions 3/3b/7), RunCrew leaves both in place. Asserting "removed" here
-# would be asserting a property the product does not claim; asserting nothing
-# would leave AC2's second half silently unaddressed.
-#
-# So this pins the state that IS the contract today, and fails when it changes
-# — pointing the reader at the flip. When crew lease-ending lands, this
-# assertion goes red on the very PR that implements it, and whoever writes it
-# converts these two checks into the same "gone entirely" checks the lease lane
-# already has.
-# ========================================================================
+# --- assertion 7: seed dir AND workspace are both gone entirely, for every
+# crew member (#2100/#2101) -------------------------------------------------
+# RunCrew now ends every member's lease at each of its three terminal paths,
+# so a crew member's per-run seed directory and fetched workspace must not
+# outlive the run — the same contract RunAgentSkill's lease-end already has;
+# see scripts/agent-skill-lease-e2e.sh assertion 7 for the pattern this
+# follows.
 [ "$run_commit" = "$FIXTURE_GIT_SHA" ] \
   || fail "assertion 7: CrewRun.git_commit = '$run_commit', want the pinned $FIXTURE_GIT_SHA — the members did not all check out the commit this lane pinned, so the artifact is about a tree this script never inspected"
 ok "assertion 7 (pinned fetch): every member fetched the pinned commit $FIXTURE_GIT_SHA"
 
 for m in $CREW_MEMBERS; do
-  if ! sudo incus exec "agent-$m-container" -- test -d "$RUN_WORKSPACE_DIR"; then
-    fail "assertion 7: $RUN_WORKSPACE_DIR is GONE in agent-$m-container.
-
-This lane expected it to still be there, because RunCrew deliberately drops
-the run lease (internal/server/crew_server.go) and therefore never removes a
-crew member's per-run directories — unlike RunAgentSkill, which does.
-
-If crew lease-ending has now landed, this is the good kind of red: convert
-this check and the seed-dir one below into 'gone entirely' assertions, exactly
-as scripts/agent-skill-lease-e2e.sh assertion 7 has them, and delete this
-message."
+  if sudo incus exec "agent-$m-container" -- test -e "$RUN_SEED_DIR"; then
+    fail "assertion 7: $RUN_SEED_DIR still exists in agent-$m-container after the crew run returned"
   fi
-  ws_commit="$(sudo incus exec "agent-$m-container" -- git -C "$RUN_WORKSPACE_DIR" rev-parse HEAD 2>/dev/null || true)"
-  [ "$ws_commit" = "$FIXTURE_GIT_SHA" ] \
-    || fail "assertion 7: agent-$m-container's workspace $RUN_WORKSPACE_DIR is at '$ws_commit', want the pinned $FIXTURE_GIT_SHA"
-  sudo incus exec "agent-$m-container" -- test -d "$RUN_SEED_DIR" \
-    || fail "assertion 7: $RUN_SEED_DIR is gone in agent-$m-container — same flip as above; see this assertion's comment"
-  ok "assertion 7 (box $m): per-run dirs are present at the pinned commit, which is RunCrew's documented contract today (crew leases are not ended — see this assertion's comment)"
+  if sudo incus exec "agent-$m-container" -- test -e "$RUN_WORKSPACE_DIR"; then
+    fail "assertion 7: $RUN_WORKSPACE_DIR still exists in agent-$m-container after the crew run returned — a fetched checkout must not outlive its run"
+  fi
+  ok "assertion 7 (box $m): both $RUN_SEED_DIR and $RUN_WORKSPACE_DIR are gone entirely"
 done
 
 echo
