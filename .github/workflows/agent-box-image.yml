@@ -63,6 +63,14 @@ jobs:
       # security.yml's fs scan (which only uploads SARIF, non-blocking), an
       # unpatched CRITICAL/HIGH in the image dev boxes actually run should
       # stop the build, not just get logged.
+      #
+      # ignore-unfixed: 'true' — a live run against this Dockerfile's Debian
+      # base found 4 CRITICAL / 14 unique HIGH OS-package CVEs, every one of
+      # them with no fixed version published yet (perl-base, util-linux,
+      # zlib1g, ...). Without this flag the gate would fail every run
+      # indefinitely for reasons no one here can act on. Same rule
+      # security.yml's govulncheck job already applies: "Fail only on
+      # vulnerabilities that have a fix we have not applied."
       - name: Run Trivy vulnerability scanner (image)
         uses: aquasecurity/trivy-action@master
         with:
@@ -70,6 +78,7 @@ jobs:
           format: 'sarif'
           output: 'trivy-agent-box-results.sarif'
           severity: 'CRITICAL,HIGH'
+          ignore-unfixed: 'true'
           exit-code: '1'
 
       - name: Upload Trivy SARIF results
