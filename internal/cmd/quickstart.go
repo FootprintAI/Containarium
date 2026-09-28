@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,6 +14,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/footprintai/containarium/internal/connectcore"
 	"github.com/footprintai/containarium/internal/sshkey"
 	"github.com/spf13/cobra"
 )
@@ -56,6 +59,7 @@ var (
 	qsSkipMCP     bool
 	qsSkipInclude bool
 	qsNoLaunch    bool
+	qsKeyWait     string
 )
 
 var quickstartCmd = &cobra.Command{
@@ -119,6 +123,7 @@ func init() {
 	quickstartCmd.Flags().StringVar(&qsAgentName, "agent-name", "containarium-box", "Name of the MCP server entry written into agent configs")
 	quickstartCmd.Flags().BoolVar(&qsSkipMCP, "no-mcp", false, "Skip writing any agent MCP config")
 	quickstartCmd.Flags().BoolVar(&qsSkipInclude, "no-ssh-include", false, "Skip appending the Include line to ~/.ssh/config (still writes ~/.containarium/ssh_config)")
+	quickstartCmd.Flags().StringVar(&qsKeyWait, "key-wait", "", keyWaitFlagUsage)
 }
 
 // Seams: the side-effecting steps (daemon RPCs + the agent exec) are indirected
@@ -130,6 +135,7 @@ var (
 	qsStepSSHConfig   = runSSHConfigSync
 	qsStepExposePort  = runExposePort
 	qsStepLaunchAgent = launchAgent
+	qsStepWaitForKey  = waitQuickstartKey
 )
 
 func runQuickstart(cmd *cobra.Command, args []string) error {
@@ -193,10 +199,12 @@ func runQuickstart(cmd *cobra.Command, args []string) error {
 	cpuLimit = qsCPU
 	memoryLimit = qsMemory
 	enablePodman = true
+	created := true
 	if err := qsStepCreate(cmd, args); err != nil {
 		if !isAlreadyExists(err) {
 			return fmt.Errorf("create: %w", err)
 		}
+		created = false
 		fmt.Printf("  box %q already exists — reusing\n", name)
 	}
 
@@ -262,6 +270,20 @@ func runQuickstart(cmd *cobra.Command, args []string) error {
 
 		instruction := buildInstruction(qsAgentName, qsPrompt, qsDomain, qsExposePort)
 		if launching {
+			// #2013: the agent's first act is `ssh <box> agent-box`. A box this
+			// invocation just created reaches sshpiper only on the sentinel's
+			// keysync, so wait that out here rather than have the agent's
+			// first call fail publickey-denied. Direct mode has no sentinel
+			// hop; a reused box fails once, as before.
+			if created && qsSentinel != "" {
+				ctx := cmd.Context()
+				if ctx == nil {
+					ctx = context.Background()
+				}
+				if err := qsStepWaitForKey(ctx, name, sshConfigOutPath); err != nil {
+					return err
+				}
+			}
 			// Hand off: replace this process with the user's agent so they land
 			// straight in the session, already working. Never returns on success.
 			return qsStepLaunchAgent(qsAgent, instruction)
@@ -277,6 +299,23 @@ func runQuickstart(cmd *cobra.Command, args []string) error {
 }
 
 // ─── new helpers: the logic quickstart adds on top of existing commands ───
+
+// waitQuickstartKey probes `ssh -F <sshConfig> <box> true` until the sentinel
+// accepts the key (#2013). Only a key the sentinel never learned within the
+// window is an error; any other probe failure (host key, refused, timeout)
+// is reported and the launch proceeds exactly as it did before this wait.
+func waitQuickstartKey(ctx context.Context, name, sshConfig string) error {
+	kw, err := newKeyWait(qsKeyWait, true, os.Stdout)
+	if err != nil {
+		return err
+	}
+	err = waitForKeyByProbe(ctx, kw, probeSSHArgs([]string{"-F", sshConfig, name}))
+	if err == nil || errors.Is(err, connectcore.ErrKeyNotLearned) {
+		return err
+	}
+	fmt.Printf("  (could not pre-check SSH to %s: %v — launching anyway)\n", name, err)
+	return nil
+}
 
 // invokingUserHome returns the home dir + uid/gid of the human who ran the
 // command, unwrapping sudo (local Incus dev runs as root). SUDO_USER points
