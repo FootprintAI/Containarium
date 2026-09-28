@@ -1929,9 +1929,18 @@ type CrewRun struct {
 	// populated once RunCrew has provisioned at least one member with a
 	// git_source; empty on a run with no git_source, or if every member's
 	// fetch failed before any commit resolved.
-	GitSource     string `protobuf:"bytes,9,opt,name=git_source,json=gitSource,proto3" json:"git_source,omitempty"`
-	GitRef        string `protobuf:"bytes,10,opt,name=git_ref,json=gitRef,proto3" json:"git_ref,omitempty"`
-	GitCommit     string `protobuf:"bytes,11,opt,name=git_commit,json=gitCommit,proto3" json:"git_commit,omitempty"`
+	GitSource string `protobuf:"bytes,9,opt,name=git_source,json=gitSource,proto3" json:"git_source,omitempty"`
+	GitRef    string `protobuf:"bytes,10,opt,name=git_ref,json=gitRef,proto3" json:"git_ref,omitempty"`
+	GitCommit string `protobuf:"bytes,11,opt,name=git_commit,json=gitCommit,proto3" json:"git_commit,omitempty"`
+	// skill_id: set only on a record for a standalone skill run (RunAgentSkill,
+	// no crew involved), never alongside crew_id. TailRunLog's journal lookup
+	// (#2096) needs a durable run -> member-skill record so a finished skill
+	// run's journal is still resolvable after a daemon restart — the same
+	// durability crew_id + catalog already gives a crew run. Rather than add a
+	// second persistence mechanism, a standalone skill run is recorded through
+	// this same store with crew_id empty and skill_id set; CrewServer.runMembers
+	// resolves it directly instead of through a crew's catalog lookup (#2122).
+	SkillId       string `protobuf:"bytes,12,opt,name=skill_id,json=skillId,proto3" json:"skill_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2039,6 +2048,13 @@ func (x *CrewRun) GetGitRef() string {
 func (x *CrewRun) GetGitCommit() string {
 	if x != nil {
 		return x.GitCommit
+	}
+	return ""
+}
+
+func (x *CrewRun) GetSkillId() string {
+	if x != nil {
+		return x.SkillId
 	}
 	return ""
 }
@@ -2596,7 +2612,7 @@ const file_containarium_v1_agent_proto_rawDesc = "" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12 \n" +
 	"\vdescription\x18\x03 \x01(\tR\vdescription\x129\n" +
 	"\btopology\x18\x04 \x01(\x0e2\x1d.containarium.v1.CrewTopologyR\btopology\x12\x1b\n" +
-	"\tskill_ids\x18\x05 \x03(\tR\bskillIds\"\xc9\x02\n" +
+	"\tskill_ids\x18\x05 \x03(\tR\bskillIds\"\xe4\x02\n" +
 	"\aCrewRun\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\acrew_id\x18\x02 \x01(\tR\x06crewId\x12\x19\n" +
@@ -2612,7 +2628,8 @@ const file_containarium_v1_agent_proto_rawDesc = "" +
 	"\agit_ref\x18\n" +
 	" \x01(\tR\x06gitRef\x12\x1d\n" +
 	"\n" +
-	"git_commit\x18\v \x01(\tR\tgitCommit\"\x12\n" +
+	"git_commit\x18\v \x01(\tR\tgitCommit\x12\x19\n" +
+	"\bskill_id\x18\f \x01(\tR\askillId\"\x12\n" +
 	"\x10ListCrewsRequest\"@\n" +
 	"\x11ListCrewsResponse\x12+\n" +
 	"\x05crews\x18\x01 \x03(\v2\x15.containarium.v1.CrewR\x05crews\" \n" +

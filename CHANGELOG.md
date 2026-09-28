@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`TailRunLog` resolves a finished skill run's journal after a daemon
+  restart** (#2122, follow-up to #2096/#2112). A standalone skill run's
+  run→skill mapping now gets a durable record in the same crew-run store
+  crew runs already use (`CrewRun.skill_id`, `crew_id` left empty) instead of
+  only the in-memory index `provisionSkillBox` filled — so a restart no
+  longer turns a finished run's journal into a NotFound. The record is
+  reaped together with its journal on the same `--run-journal-retention`
+  window; a crew run's own record is never touched by either the write or
+  the reap path.
+
 - **The Grafana anonymous-access backfill (#2079) now actually runs on
   existing hosts** (#2103). The daemon auto-detects an existing metrics
   container at startup and then skips `EnsureVictoriaMetrics` — where the
