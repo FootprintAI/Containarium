@@ -36,7 +36,16 @@ func (d *debianPkgMgr) BasePackages() []string {
 		"htop",
 		"net-tools",
 		"iputils-ping",
+		// #2121: a persistent tmux session on interactive login plus
+		// mosh-server, for phone SSH clients on flaky links. mosh is in
+		// Debian main and Ubuntu universe.
+		"tmux",
+		"mosh",
 	}
+}
+
+func (d *debianPkgMgr) MoshInstallScript() string {
+	return "" // mosh is in BasePackages
 }
 
 func (d *debianPkgMgr) PodmanAvailableInBaseRepos() bool {

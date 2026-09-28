@@ -1,0 +1,59 @@
+name: box login hook (mosh + tmux)
+
+# #2121: every box gets tmux + mosh and /etc/profile.d/containarium-tmux.sh,
+# which puts a genuine interactive SSH/mosh login into `tmux new -A -s main`
+# and leaves every other session shape alone. This repo has no repo-wide
+# `go test ./...` lane, so the tests for it run here.
+on:
+  pull_request:
+    paths:
+      - 'pkg/core/container/tmux_login_hook*'
+      - 'pkg/core/container/manager.go'
+      - 'pkg/core/ospkg/**'
+      - 'scripts/test-box-tmux-login-hook.sh'
+      - 'scripts/test-box-login-extras-image.sh'
+      - '.github/workflows/box-login-hook.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'pkg/core/container/tmux_login_hook*'
+      - 'pkg/core/container/manager.go'
+      - 'pkg/core/ospkg/**'
+      - 'scripts/test-box-tmux-login-hook.sh'
+      - 'scripts/test-box-login-extras-image.sh'
+      - '.github/workflows/box-login-hook.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  hook:
+    name: hook table test + provisioning unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.7'
+      - name: shellcheck
+        # Preinstalled on ubuntu-latest.
+        run: |
+          shellcheck pkg/core/container/tmux_login_hook.sh
+          shellcheck scripts/test-box-tmux-login-hook.sh
+          shellcheck scripts/test-box-login-extras-image.sh
+      - name: Hook table test (real bash/dash on a real pty, fake tmux)
+        run: ./scripts/test-box-tmux-login-hook.sh
+      - name: Provisioning unit tests
+        run: go test -count=1 -run 'InstallPackages|TmuxLoginHook|CloudInit' ./pkg/core/container/ ./pkg/core/ospkg/
+
+  image:
+    name: image smoke + real-sshd e2e
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build an Ubuntu box image with tmux/mosh/hook and log in over ssh
+        run: ./scripts/test-box-login-extras-image.sh
