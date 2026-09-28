@@ -82,12 +82,15 @@ func runSentinelSSHSessionPlugin(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("create sshpiperd plugin: %w", err)
 	}
 
-	// sshpiperd v1.5.3's plugin SDK wires its logging through logrus (v1.6+
-	// switched to log/slog — see containarium#1980's discussion of why
-	// sshpiperd's own log output is not a usable audit source); this only
-	// forwards the plugin's own operational log lines to sshpiperd, not
-	// session records themselves, which always go through recorder above.
-	libplugin.ConfigStdioLogrus(piperPlugin, nil, nil)
+	// sshpiperd's plugin SDK (v1.6+, switched from logrus to log/slog — see
+	// containarium#1980's discussion of why sshpiperd's own log output is
+	// not a usable audit source) calls this back with the writer/level/tty
+	// it wants the plugin's operational log lines sent to; ConfigLoggerSlog
+	// is the SDK's own default (wires slog's default logger to that
+	// writer). This only forwards the plugin's own log lines to sshpiperd,
+	// not session records themselves, which always go through recorder
+	// above.
+	piperPlugin.SetConfigLoggerCallback(libplugin.ConfigLoggerSlog)
 
 	// Flush open sessions exactly once, however this process ends: either
 	// Serve() returns on its own (sshpiperd closed our stdio — its own
