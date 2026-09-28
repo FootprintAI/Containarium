@@ -478,6 +478,10 @@ func writeCATrustBundleFile(path, content, version string) error {
 	if version == "" {
 		return nil
 	}
+	// #nosec G304 -- path is always the hardcoded sshpiperTrustedUserCAKeys
+	// const (applyCATrustBundle) or a t.TempDir() path in tests; taking it
+	// as a parameter (rather than a literal) is what makes this function
+	// testable at all — see the doc comment above.
 	if existing, err := os.ReadFile(path); err == nil && string(existing) == content {
 		return nil // already applied; skip the write + rename
 	}
