@@ -240,6 +240,40 @@ message SendAgentTaskResponse {
   string trace_id = 2;
 }
 
+// TailRunLogRequest reads one byte window of a run's journal (#2096). The
+// journal is the append-only JSON-lines file the in-box runtime writes per run
+// per member box (/var/log/agent-runtime/runs/<run_id>/<skill_id>.jsonl).
+message TailRunLogRequest {
+  // The run to read: a RunAgentSkill run id or a RunCrew run id.
+  string run_id = 1;
+  // Which member's journal to read. Empty = the only member of a skill run,
+  // or the entry skill (first member) of a crew run.
+  string skill_id = 2;
+  // Byte offset to start reading from; 0 = from the beginning. Pass the
+  // previous response's end_offset to resume without loss or repetition.
+  int64 start_offset = 3;
+  // Upper bound on chunk size in bytes: <= 262144; 0 means 65536.
+  int32 max_bytes = 4;
+  // 0..10: when no bytes are available at start_offset, wait up to this many
+  // seconds for the journal to grow before answering with an empty chunk.
+  int32 follow_seconds = 5;
+}
+
+// TailRunLogResponse is one window of a run's journal.
+message TailRunLogResponse {
+  // The journal bytes in [start_offset, end_offset).
+  bytes chunk = 1;
+  // Pass back as start_offset on the next call.
+  int64 end_offset = 2;
+  // More bytes were available past end_offset than max_bytes allowed.
+  bool truncated = 3;
+  // The journal's last line is a "run ended" status line and end_offset is
+  // at the end of the file: nothing more is expected for this task.
+  bool ended = 4;
+  // The run's members that have a journal file for this run.
+  repeated string skill_ids = 5;
+}
+
 // AgentSkillService manages and runs individual packaged agents.
 service AgentSkillService {
   // ListAgentSkills returns all available skills (built-in + registered).
@@ -291,6 +325,19 @@ service AgentSkillService {
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Send a task to a peer agent (A2A)";
       description: "Delegates a task to a running peer agent over the agent-to-agent transport and returns the peer's artifact.";
+      tags: "Agents";
+    };
+  }
+
+  // TailRunLog reads a run's journal by byte offset (#2096): resumable (pass
+  // end_offset back as start_offset) and bounded (max_bytes, follow_seconds).
+  rpc TailRunLog(TailRunLogRequest) returns (TailRunLogResponse) {
+    option (google.api.http) = {
+      get: "/v1/agent-runs/{run_id}/log"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Tail a run's journal";
+      description: "Returns one byte window of a run member's journal plus the offset to resume from. Resumable across dropped connections; follow_seconds waits briefly for new bytes.";
       tags: "Agents";
     };
   }

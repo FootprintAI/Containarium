@@ -260,6 +260,70 @@
         ]
       }
     },
+    "/v1/agent-runs/{runId}/log": {
+      "get": {
+        "summary": "Tail a run's journal",
+        "description": "Returns one byte window of a run member's journal plus the offset to resume from. Resumable across dropped connections; follow_seconds waits briefly for new bytes.",
+        "operationId": "AgentSkillService_TailRunLog",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/TailRunLogResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "runId",
+            "description": "The run to read: a RunAgentSkill run id or a RunCrew run id.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "skillId",
+            "description": "Which member's journal to read. Empty = the only member of a skill run,\nor the entry skill (first member) of a crew run.",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "startOffset",
+            "description": "Byte offset to start reading from; 0 = from the beginning. Pass the\nprevious response's end_offset to resume without loss or repetition.",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "format": "int64"
+          },
+          {
+            "name": "maxBytes",
+            "description": "Upper bound on chunk size in bytes: \u003c= 262144; 0 means 65536.",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          },
+          {
+            "name": "followSeconds",
+            "description": "0..10: when no bytes are available at start_offset, wait up to this many\nseconds for the journal to grow before answering with an empty chunk.",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          }
+        ],
+        "tags": [
+          "Agents"
+        ]
+      }
+    },
     "/v1/agent-skills": {
       "get": {
         "summary": "List agent skills",
@@ -15436,6 +15500,37 @@
         }
       },
       "title": "SystemInfo contains information about the host system"
+    },
+    "TailRunLogResponse": {
+      "type": "object",
+      "properties": {
+        "chunk": {
+          "type": "string",
+          "format": "byte",
+          "description": "The journal bytes in [start_offset, end_offset)."
+        },
+        "endOffset": {
+          "type": "string",
+          "format": "int64",
+          "description": "Pass back as start_offset on the next call."
+        },
+        "truncated": {
+          "type": "boolean",
+          "description": "More bytes were available past end_offset than max_bytes allowed."
+        },
+        "ended": {
+          "type": "boolean",
+          "description": "The journal's last line is a \"run ended\" status line and end_offset is\nat the end of the file: nothing more is expected for this task."
+        },
+        "skillIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The run's members that have a journal file for this run."
+        }
+      },
+      "description": "TailRunLogResponse is one window of a run's journal."
     },
     "TestWebhookRequest": {
       "type": "object",
