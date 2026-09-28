@@ -10448,6 +10448,10 @@
         },
         "gitCommit": {
           "type": "string"
+        },
+        "skillId": {
+          "type": "string",
+          "description": "skill_id: set only on a record for a standalone skill run (RunAgentSkill,\nno crew involved), never alongside crew_id. TailRunLog's journal lookup\n(#2096) needs a durable run -\u003e member-skill record so a finished skill\nrun's journal is still resolvable after a daemon restart — the same\ndurability crew_id + catalog already gives a crew run. Rather than add a\nsecond persistence mechanism, a standalone skill run is recorded through\nthis same store with crew_id empty and skill_id set; CrewServer.runMembers\nresolves it directly instead of through a crew's catalog lookup (#2122)."
         }
       },
       "description": "CrewRun is one execution of a crew. Every A2A hop and MCP call made by any\nagent in the run is audit-logged under this run's trace_id, so a run is\nitself an evidence artifact."

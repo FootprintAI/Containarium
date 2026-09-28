@@ -297,6 +297,93 @@ func TestSendAgentTask_RefusesForeignRunID(t *testing.T) {
 	}
 }
 
+// TestTailRunLog_SkillRunSurvivesRestart proves #2122 AC1/AC2: a standalone
+// skill run's journal is still resolvable by a FRESH AgentSkillServer
+// instance wired to the same durable record store — simulating a daemon
+// restart, where the in-memory runIndex is empty (a fresh struct has none)
+// but the store is not.
+func TestTailRunLog_SkillRunSurvivesRestart(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemCrewRunStore()
+
+	// First "daemon instance": records the run the way beginSkillRunWith does
+	// once a skill run's box is provisioned.
+	first := &AgentSkillServer{}
+	firstCrew := NewCrewServer(first)
+	firstCrew.SetRunStore(store)
+	if err := first.recordSkillRun(ctx, "run-restart", "hello-agent"); err != nil {
+		t.Fatalf("recordSkillRun: %v", err)
+	}
+
+	// "Restart": a brand new AgentSkillServer (empty runIndex) wired to a
+	// brand new CrewServer over the SAME store.
+	full := jStarted + jAssistant + jEnded
+	f := &fakeBoxes{}
+	f.put(memberBox("hello-agent"), journalFile("run-restart", "hello-agent"), full)
+	second := &AgentSkillServer{execScript: f.exec, runLogPoll: time.Millisecond}
+	secondCrew := NewCrewServer(second)
+	secondCrew.SetRunStore(store)
+
+	if got := second.runIndex.get("run-restart"); len(got) != 0 {
+		t.Fatalf("fresh server's in-memory index already knows the run: %v (test setup is wrong)", got)
+	}
+
+	resp, err := second.TailRunLog(adminCtx(), &pb.TailRunLogRequest{RunId: "run-restart"})
+	if err != nil {
+		t.Fatalf("TailRunLog after restart: %v", err)
+	}
+	if string(resp.Chunk) != full || !resp.Ended {
+		t.Errorf("chunk=%q ended=%v, want the full finished journal %q", resp.Chunk, resp.Ended, full)
+	}
+	if strings.Join(resp.SkillIds, ",") != "hello-agent" {
+		t.Errorf("skill_ids = %v, want [hello-agent]", resp.SkillIds)
+	}
+}
+
+// TestRunJournalReaper_CouplesSkillRunRecords proves #2122 AC3: reaping a
+// stale run's journal directory also deletes its durable skill-run record in
+// the SAME sweep — and never touches a crew run's record, even when that
+// crew run's own journal directory is reaped in the same pass, because the
+// reaper cannot tell run ids apart by directory name alone.
+func TestRunJournalReaper_CouplesSkillRunRecords(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC)
+
+	store := NewMemCrewRunStore()
+	mustPut(t, store, &pb.CrewRun{Id: "old-skill-run", SkillId: "hello-agent"})
+	mustPut(t, store, &pb.CrewRun{Id: "new-skill-run", SkillId: "hello-agent"})
+	mustPut(t, store, &pb.CrewRun{Id: "old-crew-run", CrewId: "research", State: pb.CrewRunState_CREW_RUN_STATE_COMPLETED})
+
+	listing := fmt.Sprintf("%d old-skill-run\n%d new-skill-run\n%d old-crew-run\n",
+		now.Add(-8*24*time.Hour).Unix(), now.Add(-time.Hour).Unix(), now.Add(-8*24*time.Hour).Unix())
+	s := &AgentSkillServer{execScript: func(box, script string) (string, error) {
+		switch {
+		case script == runJournalListScript:
+			return listing, nil
+		case strings.HasPrefix(script, "rm -rf -- "):
+			return "", nil
+		}
+		return "", fmt.Errorf("unexpected %q", script)
+	}}
+	crewServer := NewCrewServer(s)
+	crewServer.SetRunStore(store)
+
+	removed := s.reapRunJournals(ctx, []string{"agent-a-container"}, now)
+	if len(removed) != 2 {
+		t.Fatalf("removed = %v, want the 2 stale dirs (old-skill-run, old-crew-run)", removed)
+	}
+
+	if _, ok, _ := store.Get(ctx, "old-skill-run"); ok {
+		t.Error("stale skill run's record survived the reap; want it deleted with its journal")
+	}
+	if _, ok, _ := store.Get(ctx, "new-skill-run"); !ok {
+		t.Error("fresh skill run's record was deleted; only the stale one's journal was reaped")
+	}
+	if _, ok, _ := store.Get(ctx, "old-crew-run"); !ok {
+		t.Error("crew run's record was deleted; the reaper must never touch a crew's record")
+	}
+}
+
 func TestRunJournalReaper(t *testing.T) {
 	now := time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC)
 	window := 7 * 24 * time.Hour
@@ -324,7 +411,7 @@ func TestRunJournalReaper(t *testing.T) {
 		}
 		return "", fmt.Errorf("unexpected %q", script)
 	}}
-	removed := s.reapRunJournals([]string{"agent-a-container", "agent-empty-container"}, now)
+	removed := s.reapRunJournals(context.Background(), []string{"agent-a-container", "agent-empty-container"}, now)
 	if want := "agent-a-container:" + runJournalRoot + "/old-run"; strings.Join(removed, ",") != want {
 		t.Errorf("removed = %v, want [%s]", removed, want)
 	}
