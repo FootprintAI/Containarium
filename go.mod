@@ -21,7 +21,7 @@ require (
 	github.com/rs/cors v1.11.1
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.12.1
-	github.com/tg123/sshpiper v1.5.3
+	github.com/tg123/sshpiper v1.6.1
 	github.com/ti-mo/conntrack v0.6.0
 	github.com/ti-mo/netfilter v0.5.3
 	go.opentelemetry.io/contrib/detectors/gcp v1.46.0

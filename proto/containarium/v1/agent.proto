@@ -581,6 +581,16 @@ message CrewRun {
   string git_source = 9;
   string git_ref = 10;
   string git_commit = 11;
+
+  // skill_id: set only on a record for a standalone skill run (RunAgentSkill,
+  // no crew involved), never alongside crew_id. TailRunLog's journal lookup
+  // (#2096) needs a durable run -> member-skill record so a finished skill
+  // run's journal is still resolvable after a daemon restart — the same
+  // durability crew_id + catalog already gives a crew run. Rather than add a
+  // second persistence mechanism, a standalone skill run is recorded through
+  // this same store with crew_id empty and skill_id set; CrewServer.runMembers
+  // resolves it directly instead of through a crew's catalog lookup (#2122).
+  string skill_id = 12;
 }
 
 message ListCrewsRequest {}

@@ -273,6 +273,34 @@ func TestMemCrewRunStore_FailStrandedIsIdempotent(t *testing.T) {
 	}
 }
 
+// DeleteSkillRun (#2122) must remove a standalone skill run's record (crew_id
+// empty) but never a real crew run's — the run-journal reaper calls it for
+// every reaped run id, crew and skill alike, so the guard has to live here.
+func TestMemCrewRunStore_DeleteSkillRun(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemCrewRunStore()
+	mustPut(t, s, &pb.CrewRun{Id: "skill-run", SkillId: "hello-agent"})
+	mustPut(t, s, &pb.CrewRun{Id: "crew-run", CrewId: "research"})
+
+	if err := s.DeleteSkillRun(ctx, "skill-run"); err != nil {
+		t.Fatalf("DeleteSkillRun: %v", err)
+	}
+	if _, ok, _ := s.Get(ctx, "skill-run"); ok {
+		t.Error("skill run record was not deleted")
+	}
+
+	if err := s.DeleteSkillRun(ctx, "crew-run"); err != nil {
+		t.Fatalf("DeleteSkillRun: %v", err)
+	}
+	if _, ok, _ := s.Get(ctx, "crew-run"); !ok {
+		t.Error("DeleteSkillRun must never delete a crew run's record")
+	}
+
+	if err := s.DeleteSkillRun(ctx, "does-not-exist"); err != nil {
+		t.Errorf("DeleteSkillRun on a missing id = %v, want nil (no-op)", err)
+	}
+}
+
 func mustPut(t *testing.T, s CrewRunStore, r *pb.CrewRun) {
 	t.Helper()
 	if err := s.Put(context.Background(), r); err != nil {
