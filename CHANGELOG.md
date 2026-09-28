@@ -55,6 +55,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rendered; output order is fixed so a converged host diffs clean. No I/O —
   the reconciler that applies it is #2084.
 
+### Changed
+
+- **`containarium-*` release artifacts are now the client build** (#1784,
+  CLI client/server split Rollout Phase 2). `containarium-{linux-amd64,
+  darwin-amd64,darwin-arm64,windows-amd64.exe}` are built from
+  `cmd/containarium` with `-tags containarium_client` and `CGO_ENABLED=0`
+  (static, roughly a quarter of the daemon's size) instead of mirroring the
+  daemon. Install the daemon from `containariumd-*`, which is unchanged;
+  `hacks/install.sh`, the air-gapped bundle, the demo terraform and the
+  benchmark provisioners now fetch `containariumd-*`. Running
+  `containarium daemon` (or any other moved server command) on the new
+  client exits 2 and names `containariumd`.
+
 ### Fixed
 
 - **Security: a crew run now ends every member's lease when it finishes**
