@@ -558,6 +558,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      security-events: write   # for the Trivy SARIF upload below
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -585,6 +586,7 @@ jobs:
           base="ghcr.io/footprintai/containarium-model-gateway"
           {
             echo "tags=${base}:v${version},${base}:${minor},${base}:latest"
+            echo "scan_ref=${base}:v${version}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Build and push model-gateway image
@@ -596,8 +598,32 @@ jobs:
           platforms: linux/amd64
           # Push on tag only; a rehearsal builds the image and discards it.
           push: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          # load: true — single-platform build, so load+push together is
+          # supported. Keeps the image in the local docker daemon so the
+          # Trivy step below can scan the exact image being published, and
+          # still works on a workflow_dispatch rehearsal where push is false.
+          load: true
           tags: ${{ steps.tags.outputs.tags }}
           # Build provenance + SBOM, explicit so it's reviewable, matching
           # the daemon and sidecar image jobs.
           provenance: true
           sbom: true
+
+      # This image has no separate PR-validation build, so this is the only
+      # place it ever gets scanned.
+      - name: Run Trivy vulnerability scanner (image)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.tags.outputs.scan_ref }}
+          format: 'sarif'
+          output: 'trivy-model-gateway-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          limit-severities-for-sarif: 'true'
+          ignore-unfixed: 'true'
+          exit-code: '1'
+
+      - name: Upload Trivy SARIF results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-model-gateway-results.sarif

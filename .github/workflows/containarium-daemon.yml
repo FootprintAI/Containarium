@@ -29,6 +29,7 @@ on:
 permissions:
   contents: read
   packages: write   # for GHCR push
+  security-events: write   # for the Trivy SARIF upload below
 
 jobs:
   daemon:
@@ -63,6 +64,7 @@ jobs:
             # :latest is the chart default (Chart.yaml appVersion: latest);
             # keep it in sync with the newest release tag.
             echo "tags=${base}:v${version},${base}:${minor},${base}:latest"
+            echo "scan_ref=${base}:v${version}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Build and push daemon image
@@ -76,8 +78,32 @@ jobs:
           platforms: linux/amd64
           # Push on tag only; a rehearsal builds the image and discards it.
           push: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          # load: true — single-platform build, so load+push together is
+          # supported. Keeps the image in the local docker daemon so the
+          # Trivy step below can scan the exact image being published, and
+          # still works on a workflow_dispatch rehearsal where push is false.
+          load: true
           tags: ${{ steps.tags.outputs.tags }}
           # Build provenance + SBOM (buildx-default on push); explicit so it's
           # reviewable, matching sidecars.yml.
           provenance: true
           sbom: true
+
+      # This image has no separate PR-validation build (unlike agent-box and
+      # sshpiper), so this is the only place it ever gets scanned.
+      - name: Run Trivy vulnerability scanner (image)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.tags.outputs.scan_ref }}
+          format: 'sarif'
+          output: 'trivy-daemon-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          limit-severities-for-sarif: 'true'
+          ignore-unfixed: 'true'
+          exit-code: '1'
+
+      - name: Upload Trivy SARIF results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-daemon-results.sarif

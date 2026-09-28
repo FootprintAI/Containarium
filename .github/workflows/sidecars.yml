@@ -29,6 +29,7 @@ on:
 permissions:
   contents: read
   packages: write   # for GHCR push
+  security-events: write   # for the Trivy SARIF upload in each job below
 
 jobs:
   otel-sidecar:
@@ -69,6 +70,7 @@ jobs:
             echo "version=v${version}"
             echo "minor=${minor}"
             echo "tags=${base}:v${version},${base}:${minor},${base}:latest-stable"
+            echo "scan_ref=${base}:v${version}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Build and push otel-sidecar
@@ -81,11 +83,37 @@ jobs:
           platforms: linux/amd64
           # Push on tag only; a rehearsal builds the image and discards it.
           push: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          # load: true — single-platform build, so load+push together is
+          # supported. Keeps the image in the local docker daemon so the
+          # Trivy step below can scan the exact image being published
+          # (not just a rehearsal stand-in), and still works on a
+          # workflow_dispatch rehearsal where push is false.
+          load: true
           tags: ${{ steps.tags.outputs.tags }}
           # Build provenance + SBOM are GHA-default for buildx push;
           # explicit so it's reviewable.
           provenance: true
           sbom: true
+
+      # Scans the actual image about to be published (or, on a rehearsal,
+      # the identical build that would have been). See agent-box-image.yml
+      # for why each flag is set.
+      - name: Run Trivy vulnerability scanner (image)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.tags.outputs.scan_ref }}
+          format: 'sarif'
+          output: 'trivy-otel-sidecar-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          limit-severities-for-sarif: 'true'
+          ignore-unfixed: 'true'
+          exit-code: '1'
+
+      - name: Upload Trivy SARIF results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-otel-sidecar-results.sarif
 
   sshpiper:
     runs-on: ubuntu-latest
@@ -115,6 +143,7 @@ jobs:
           base="ghcr.io/footprintai/containarium-sshpiper"
           {
             echo "tags=${base}:v${version},${base}:${minor},${base}:latest-stable"
+            echo "scan_ref=${base}:v${version}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Build and push containarium-sshpiper
@@ -125,9 +154,31 @@ jobs:
           platforms: linux/amd64
           # Push on tag only; a rehearsal builds the image and discards it.
           push: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          # See the otel-sidecar job above for why load is always on.
+          load: true
           tags: ${{ steps.tags.outputs.tags }}
           provenance: true
           sbom: true
+
+      # Note: sshpiper-image.yml already scans a build of this same
+      # Dockerfile on every PR/push to main — this scans the actual image
+      # about to be published on a release tag instead.
+      - name: Run Trivy vulnerability scanner (image)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.tags.outputs.scan_ref }}
+          format: 'sarif'
+          output: 'trivy-sshpiper-release-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          limit-severities-for-sarif: 'true'
+          ignore-unfixed: 'true'
+          exit-code: '1'
+
+      - name: Upload Trivy SARIF results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-sshpiper-release-results.sarif
 
   agent-box:
     runs-on: ubuntu-latest
@@ -157,6 +208,7 @@ jobs:
           base="ghcr.io/footprintai/containarium-agent-box"
           {
             echo "tags=${base}:v${version},${base}:${minor},${base}:latest-stable"
+            echo "scan_ref=${base}:v${version}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Build and push containarium-agent-box
@@ -168,6 +220,28 @@ jobs:
           platforms: linux/amd64
           # Push on tag only; a rehearsal builds the image and discards it.
           push: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          # See the otel-sidecar job above for why load is always on.
+          load: true
           tags: ${{ steps.tags.outputs.tags }}
           provenance: true
           sbom: true
+
+      # Note: agent-box-image.yml already scans a build of this same
+      # Dockerfile on every PR/push to main — this scans the actual image
+      # about to be published on a release tag instead.
+      - name: Run Trivy vulnerability scanner (image)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.tags.outputs.scan_ref }}
+          format: 'sarif'
+          output: 'trivy-agent-box-release-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          limit-severities-for-sarif: 'true'
+          ignore-unfixed: 'true'
+          exit-code: '1'
+
+      - name: Upload Trivy SARIF results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-agent-box-release-results.sarif
