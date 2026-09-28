@@ -112,7 +112,7 @@ cd Containarium
 make build-linux
 
 # Verify binary was created
-ls -lh bin/containarium-linux-amd64
+ls -lh bin/containariumd-linux-amd64
 # Should show ~16MB binary
 ```
 
@@ -122,14 +122,14 @@ ls -lh bin/containarium-linux-amd64
 
 ```bash
 # Copy to jump server
-scp bin/containarium-linux-amd64 admin@35.203.123.45:/tmp/
+scp bin/containariumd-linux-amd64 admin@35.203.123.45:/tmp/
 
 # SSH and install
 ssh admin@35.203.123.45
 
 # On the jump server (#1781: install as containariumd, symlink the old
 # name for compat with anything still invoking `containarium <verb>`):
-sudo mv /tmp/containarium-linux-amd64 /usr/local/bin/containariumd
+sudo mv /tmp/containariumd-linux-amd64 /usr/local/bin/containariumd
 sudo chmod +x /usr/local/bin/containariumd
 sudo ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium
 
@@ -153,8 +153,8 @@ SERVERS=("35.203.123.45" "35.203.124.46" "35.203.125.47")
 
 for server in "${SERVERS[@]}"; do
   echo "Deploying to $server..."
-  scp bin/containarium-linux-amd64 admin@$server:/tmp/
-  ssh admin@$server "sudo mv /tmp/containarium-linux-amd64 /usr/local/bin/containariumd && sudo chmod +x /usr/local/bin/containariumd && sudo ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium"
+  scp bin/containariumd-linux-amd64 admin@$server:/tmp/
+  ssh admin@$server "sudo mv /tmp/containariumd-linux-amd64 /usr/local/bin/containariumd && sudo chmod +x /usr/local/bin/containariumd && sudo ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium"
   echo "✓ Deployed to $server"
 done
 EOF
@@ -587,8 +587,8 @@ sudo containarium create user3
 make build-linux
 
 # Copy to jump server
-scp bin/containarium-linux-amd64 admin@35.203.123.45:/tmp/
-ssh admin@35.203.123.45 "sudo mv /tmp/containarium-linux-amd64 /usr/local/bin/containariumd && sudo chmod +x /usr/local/bin/containariumd && sudo ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium"
+scp bin/containariumd-linux-amd64 admin@35.203.123.45:/tmp/
+ssh admin@35.203.123.45 "sudo mv /tmp/containariumd-linux-amd64 /usr/local/bin/containariumd && sudo chmod +x /usr/local/bin/containariumd && sudo ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium"
 ```
 
 Existing containers are NOT affected.
@@ -606,8 +606,8 @@ resource "null_resource" "deploy_containarium" {
   provisioner "local-exec" {
     command = <<-EOT
       sleep 30  # Wait for instance to be ready
-      scp -o StrictHostKeyChecking=no bin/containarium-linux-amd64 admin@${google_compute_address.jump_server_ip.address}:/tmp/
-      ssh -o StrictHostKeyChecking=no admin@${google_compute_address.jump_server_ip.address} "sudo mv /tmp/containarium-linux-amd64 /usr/local/bin/containariumd && sudo chmod +x /usr/local/bin/containariumd && sudo ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium"
+      scp -o StrictHostKeyChecking=no bin/containariumd-linux-amd64 admin@${google_compute_address.jump_server_ip.address}:/tmp/
+      ssh -o StrictHostKeyChecking=no admin@${google_compute_address.jump_server_ip.address} "sudo mv /tmp/containariumd-linux-amd64 /usr/local/bin/containariumd && sudo chmod +x /usr/local/bin/containariumd && sudo ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium"
     EOT
   }
 }
@@ -667,13 +667,13 @@ cd terraform/gce && terraform apply
 make build-linux
 
 # Copy to server
-scp bin/containarium-linux-amd64 admin@<ip>:/tmp/
+scp bin/containariumd-linux-amd64 admin@<ip>:/tmp/
 ```
 
 **On jump server:**
 ```bash
 # Install CLI (one-time)
-sudo mv /tmp/containarium-linux-amd64 /usr/local/bin/containariumd
+sudo mv /tmp/containariumd-linux-amd64 /usr/local/bin/containariumd
 sudo chmod +x /usr/local/bin/containariumd
 sudo ln -sf /usr/local/bin/containariumd /usr/local/bin/containarium
 
