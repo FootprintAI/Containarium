@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -236,55 +237,226 @@ func TestChainGuards_InjectedIssueCannotWidenScopesOrLabels(t *testing.T) {
 	})
 }
 
-// ---- Open maintainer questions (umbrella #2055) ---------------------
+// ---- Open maintainer question (umbrella #2055) ----------------------
 //
-// The test below DOCUMENTS CURRENT BEHAVIOR; it decides nothing. When
-// the maintainers rule, flip the assertion in the same PR that changes
-// the behavior.
-//
-// Also still open on #2055: whether a run token may remove
+// Still open on #2055: whether a run token may remove
 // agent:needs-approval AT ALL, even inside its own lineage (the umbrella
 // recommends add-only). #2068 decided only its reach — see the
 // RunTokenGateRemoval tests below: today a run may remove the gate from
 // its own dispatched issue or a follow-up it filed, and nowhere else.
+// Nothing in this file decides that question.
 
-// Open question: parent_number is agent-chosen. Depth is derived from the
-// named parent, so a run whose own chain is at max_depth cannot extend
-// it — but naming any depth-0 (human-created) issue as the parent files
-// the follow-up at depth 1, resetting the chain. Today that succeeds.
-// The fan-out cap bounds each run (it is counted per run, not per
-// parent) but not the chain: combined with a run removing the gate from
-// its own follow-up, this still allows an unattended chain of unbounded
-// length. Tracked separately as #2073.
-func TestCreateTrackerIssue_AgentChosenParentResetsDepth_CurrentBehavior(t *testing.T) {
-	const user = "tracker-chain-oq-depth-reset"
+// ---- Depth floor (#2073) ---------------------------------------------
+//
+// parent_number is agent-chosen, and depth used to be derived from the
+// named parent alone, so a run dispatched at depth d could file a
+// follow-up at depth 1 by naming any human-created issue as its parent.
+// Combined with removing the gate from its own follow-up, that made an
+// unattended chain of unbounded length. Now a child's depth is
+// max(parent's recorded depth, the run's own dispatch depth) + 1: the
+// floor comes from the run's tracker_dispatches row, which the dispatcher
+// wrote from the lineage table, so nothing a run sends can lower it. The
+// parent_number claim is not rejected — it still links and back-links the
+// parent — it just no longer sets the depth.
+
+// TestCreateTrackerIssue_AgentChosenParentCannotResetDepth is the former
+// ..._AgentChosenParentResetsDepth_CurrentBehavior pin, flipped: a run
+// dispatched at max_depth cannot file a follow-up under an unrelated
+// depth-0 issue any more than under its own chain.
+func TestCreateTrackerIssue_AgentChosenParentCannotResetDepth(t *testing.T) {
+	const user = "tracker-chain-depth-reset-closed"
 	provider := &fakeWriterProvider{}
-	s, runCtx, _ := setUpCreateConnection(t, user, provider, &pb.TrackerPolicy{MaxDepth: 1})
 	ctx := context.Background()
-	// #950 (human) → #951 at depth 1 == max_depth.
+	// Dispatch rows cascade from the connection; setUpCreateConnection
+	// only upserts it.
+	_ = mustTestTrackerStore(t).Delete(ctx, user, "default")
+	s, runCtx, _ := setUpCreateConnection(t, user, provider, &pb.TrackerPolicy{MaxDepth: 1})
+	// #950 (human) → #951 at depth 1 == max_depth, and the dispatcher
+	// started this run for #951: its row carries depth 1.
 	if _, err := s.trackerStore.RecordChild(ctx, tracker.Lineage{Username: user, Connection: "default", ParentNumber: 950, CreatedByRun: "earlier-run"},
 		0, 0, func(context.Context) (int64, error) { return 951, nil }); err != nil {
 		t.Fatalf("seed lineage: %v", err)
+	}
+	if _, err := s.trackerStore.InsertDispatch(ctx, tracker.Dispatch{
+		Username: user, Connection: "default", IssueNumber: 951, Scope: "product", SkillID: "product-define",
+		RunID: createTestRunID, Depth: 1,
+	}); err != nil {
+		t.Fatalf("seed dispatch row: %v", err)
 	}
 
 	// Extending its own chain is refused before any upstream call.
 	if _, err := s.CreateTrackerIssue(runCtx, createReq(user, 951, "scope:architecture")); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("child of #951 (would be depth 2 > max 1): code = %v (%v), want FailedPrecondition", status.Code(err), err)
 	}
+	// Naming an unrelated human-created issue no longer resets the depth:
+	// the run sits at depth 1, so its follow-up would be depth 2 whatever
+	// parent it names.
+	if _, err := s.CreateTrackerIssue(runCtx, createReq(user, 7, "scope:architecture")); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("child under unrelated #7 by a run at depth 1: code = %v (%v), want FailedPrecondition", status.Code(err), err)
+	}
 	if n := len(provider.createIssueReqs); n != 0 {
 		t.Fatalf("upstream CreateIssue calls = %d, want 0", n)
 	}
+	if n := len(provider.commentNumbers); n != 0 {
+		t.Fatalf("back-link comments = %v, want none", provider.commentNumbers)
+	}
+	if n, err := s.trackerStore.ChildrenCount(ctx, user, "default", createTestRunID); err != nil || n != 0 {
+		t.Fatalf("children recorded for the run = %d, %v; want 0", n, err)
+	}
+}
 
-	// Naming an unrelated human-created issue instead resets the depth.
-	resp, err := s.CreateTrackerIssue(runCtx, createReq(user, 7, "scope:architecture"))
+// TestCreateTrackerIssue_ChildDepthFollowsTheRunsRealLineage walks a real
+// dispatch chain and checks the depth of every follow-up the second-hop
+// run files, whatever parent_number it claims: an unrelated depth-0
+// issue, its own dispatched issue, and its own child. Its claim is
+// honored as a link (the back-link lands on the named issue) but ignored
+// for depth.
+func TestCreateTrackerIssue_ChildDepthFollowsTheRunsRealLineage(t *testing.T) {
+	const user = "tracker-chain-depth-real-lineage"
+	provider := &fakeWriterProvider{}
+	s, starter, admin := setUpDispatchableConnection(t, user, provider, &pb.TrackerPolicy{MaxDepth: 3})
+	ctx := context.Background()
+
+	// Hop 0: a human routes #42; the tick dispatches it at depth 0.
+	routed := tracker.Issue{Number: 42, Labels: []string{"scope:product"}, State: pb.TrackerIssueState_TRACKER_ISSUE_STATE_OPEN}
+	provider.issues, provider.issue = []tracker.Issue{routed}, routed
+	if tick, err := s.DispatchTrackerIssues(admin, &pb.DispatchTrackerIssuesRequest{Username: user, Connection: "default"}); err != nil || len(tick.GetStarted()) != 1 {
+		t.Fatalf("tick 0 = %+v, %v; want #42 dispatched", tick, err)
+	}
+	run0 := runCtxFor(t, user, starter.calls[0].RunID)
+	s.runRegistry.Register(starter.calls[0].RunID, runlease.Info{SkillID: "product-define", Model: "fable"})
+
+	// Run 0 files A under #42 (depth 1) and releases it (its own child).
+	resp, err := s.CreateTrackerIssue(run0, createReq(user, 42, "scope:product"))
 	if err != nil {
-		t.Fatalf("CURRENT BEHAVIOR changed: an agent-chosen depth-0 parent is now refused (%v) — update this test with the maintainers' decision", err)
+		t.Fatalf("run 0 CreateTrackerIssue: %v", err)
 	}
-	if d, err := s.trackerStore.IssueDepth(ctx, user, "default", resp.GetIssue().GetNumber()); err != nil || d != 1 {
-		t.Errorf("depth of the re-parented follow-up = %d, %v; want 1 (reset)", d, err)
+	a := resp.GetIssue().GetNumber()
+	if d, err := s.trackerStore.IssueDepth(ctx, user, "default", a); err != nil || d != 1 {
+		t.Fatalf("depth of A (#%d) = %d, %v; want 1", a, d, err)
 	}
-	if !containsLabel(provider.createIssueReqs[0].Labels, tracker.LabelNeedsApproval) {
-		t.Errorf("re-parented follow-up labels = %v, want the gate still forced", provider.createIssueReqs[0].Labels)
+	if _, err := s.SetTrackerIssueLabels(run0, &pb.SetTrackerIssueLabelsRequest{
+		Username: user, Connection: "default", Number: a, RemoveLabels: []string{tracker.LabelNeedsApproval},
+	}); err != nil {
+		t.Fatalf("run 0 removing the gate from its own child: %v", err)
+	}
+
+	// Hop 1: the forge shows A routed and ungated; the tick dispatches it
+	// at depth 1 and starts run 1.
+	aIssue := tracker.Issue{Number: a, Labels: []string{"scope:product"}, State: pb.TrackerIssueState_TRACKER_ISSUE_STATE_OPEN}
+	provider.issues, provider.issue = []tracker.Issue{aIssue}, aIssue
+	if tick, err := s.DispatchTrackerIssues(admin, &pb.DispatchTrackerIssuesRequest{Username: user, Connection: "default"}); err != nil || len(tick.GetStarted()) != 1 || len(starter.calls) != 2 {
+		t.Fatalf("tick 1 = %+v, %v, StartRun calls = %d; want A dispatched", tick, err, len(starter.calls))
+	}
+	run1ID := starter.calls[1].RunID
+	s.runRegistry.Register(run1ID, runlease.Info{SkillID: "product-define", Model: "fable"})
+	run1 := runCtxFor(t, user, run1ID)
+
+	// Run 1 sits at depth 1. Whatever parent it names, its follow-up is at
+	// least depth 2; naming its own child makes the grandchild depth 3.
+	var firstChild int64
+	cases := []struct {
+		name   string
+		parent func() int64
+		want   int32
+	}{
+		{"unrelated depth-0 issue #42 as parent", func() int64 { return 42 }, 2},
+		{"its own dispatched issue A as parent", func() int64 { return a }, 2},
+		{"its own child as parent", func() int64 { return firstChild }, 3},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			parent := tc.parent()
+			provider.commentNumbers = nil
+			resp, err := s.CreateTrackerIssue(run1, createReq(user, parent, "scope:product"))
+			if err != nil {
+				t.Fatalf("CreateTrackerIssue(parent #%d): %v", parent, err)
+			}
+			child := resp.GetIssue().GetNumber()
+			if i == 0 {
+				firstChild = child
+			}
+			if d, err := s.trackerStore.IssueDepth(ctx, user, "default", child); err != nil || d != tc.want {
+				t.Errorf("depth of #%d (parent #%d) = %d, %v; want %d", child, parent, d, err, tc.want)
+			}
+			if !containsLabel(provider.createIssueReqs[len(provider.createIssueReqs)-1].Labels, tracker.LabelNeedsApproval) {
+				t.Errorf("follow-up labels = %v, want the gate still forced", provider.createIssueReqs[len(provider.createIssueReqs)-1].Labels)
+			}
+			// The claim is still honored as a link.
+			if len(provider.commentNumbers) != 1 || provider.commentNumbers[0] != parent {
+				t.Errorf("back-link comments = %v, want exactly one on #%d", provider.commentNumbers, parent)
+			}
+		})
+	}
+	if n, err := s.trackerStore.ChildrenCount(ctx, user, "default", run1ID); err != nil || n != 3 {
+		t.Fatalf("children recorded for run 1 = %d, %v; want 3", n, err)
+	}
+}
+
+// TestChainGuards_UnattendedChainIsBoundedByMaxDepth reproduces the probe
+// from the review of #2070: every hop files a follow-up naming the
+// depth-0 root as parent, removes the gate from it (allowed: its own
+// child), and the next tick dispatches it. Before #2073 that ran 5 of 5
+// hops with max_depth 1. Now the depth floor from each run's own dispatch
+// row stops the chain after exactly max_depth agent-filed hops, with a
+// FailedPrecondition on the next create and nothing sent upstream.
+func TestChainGuards_UnattendedChainIsBoundedByMaxDepth(t *testing.T) {
+	for _, maxDepth := range []int32{1, 2} {
+		t.Run(fmt.Sprintf("max_depth=%d", maxDepth), func(t *testing.T) {
+			user := fmt.Sprintf("tracker-chain-unattended-%d", maxDepth)
+			provider := &fakeWriterProvider{}
+			s, starter, admin := setUpDispatchableConnection(t, user, provider, &pb.TrackerPolicy{MaxDepth: maxDepth})
+
+			routed := tracker.Issue{Number: 42, Labels: []string{"scope:product"}, State: pb.TrackerIssueState_TRACKER_ISSUE_STATE_OPEN}
+			provider.issues, provider.issue = []tracker.Issue{routed}, routed
+			if tick, err := s.DispatchTrackerIssues(admin, &pb.DispatchTrackerIssuesRequest{Username: user, Connection: "default"}); err != nil || len(tick.GetStarted()) != 1 {
+				t.Fatalf("tick 0 = %+v, %v; want #42 dispatched", tick, err)
+			}
+
+			const probeHops = 5 // the reviewer's loop bound; must NOT be what stops the chain
+			dispatched := 0
+			stoppedBy := "the probe's loop bound"
+			for hop := 1; hop <= probeHops; hop++ {
+				runID := starter.calls[len(starter.calls)-1].RunID
+				s.runRegistry.Register(runID, runlease.Info{SkillID: "product-define", Model: "fable"})
+				run := runCtxFor(t, user, runID)
+
+				creates := len(provider.createIssueReqs)
+				resp, err := s.CreateTrackerIssue(run, createReq(user, 42, "scope:product"))
+				if err != nil {
+					if status.Code(err) != codes.FailedPrecondition {
+						t.Fatalf("hop %d: CreateTrackerIssue code = %v (%v), want FailedPrecondition", hop, status.Code(err), err)
+					}
+					if len(provider.createIssueReqs) != creates {
+						t.Fatalf("hop %d: a refused create reached the forge", hop)
+					}
+					stoppedBy = "max_depth"
+					break
+				}
+				child := resp.GetIssue().GetNumber()
+				if _, err := s.SetTrackerIssueLabels(run, &pb.SetTrackerIssueLabelsRequest{
+					Username: user, Connection: "default", Number: child, RemoveLabels: []string{tracker.LabelNeedsApproval},
+				}); err != nil {
+					t.Fatalf("hop %d: run removing the gate from its own child #%d: %v", hop, child, err)
+				}
+				childIssue := tracker.Issue{Number: child, Labels: []string{"scope:product"}, State: pb.TrackerIssueState_TRACKER_ISSUE_STATE_OPEN}
+				provider.issues, provider.issue = []tracker.Issue{childIssue}, childIssue
+				tick, err := s.DispatchTrackerIssues(admin, &pb.DispatchTrackerIssuesRequest{Username: user, Connection: "default"})
+				if err != nil {
+					t.Fatalf("hop %d: DispatchTrackerIssues: %v", hop, err)
+				}
+				if len(tick.GetStarted()) != 1 || tick.GetSkippedOverDepth() != 0 {
+					t.Fatalf("hop %d: tick = %+v; want the released child #%d dispatched", hop, tick, child)
+				}
+				dispatched++
+			}
+			if stoppedBy != "max_depth" {
+				t.Fatalf("chain was stopped by %s after %d hops, want max_depth", stoppedBy, dispatched)
+			}
+			if int32(dispatched) != maxDepth {
+				t.Fatalf("agent-filed hops dispatched unattended = %d, want exactly max_depth (%d)", dispatched, maxDepth)
+			}
+		})
 	}
 }
 
