@@ -192,29 +192,46 @@ never smuggled through the launch payload.
   and parked for approval into a depth-0 dispatch uncounted against
   fan-out. Adding the gate is not lineage-bound (it only holds an issue
   back). Operator tokens are not lineage-bound.
-  **Still open (#2055):** (1) whether a run token may remove
+  **Depth reset through `parent_number` (#2073, fixed):** `parent_number`
+  is agent-chosen, and a follow-up's depth used to be derived from the
+  named parent alone, so a run dispatched at any depth could file a
+  follow-up at depth 1 by naming a human-created issue as its parent.
+  With a run releasing its own follow-up (allowed, see below), that made
+  an unattended chain of unbounded length: fan-out bounds how many
+  follow-ups a *single run* files, not the chain, since each hop is a new
+  run with its own budget. Now `RecordChild` derives the depth as
+  `max(parent.depth, the run's own dispatch depth) + 1`, where the run's
+  dispatch depth is the `depth` column of its `tracker_dispatches` row —
+  written by the dispatcher from the lineage table when it started the
+  run, never from anything the run sends. So depth never decreases along
+  a dispatch chain whatever parent each hop claims, and `max_depth`
+  bounds the chain end to end: a run at depth `d` files at depth `≥ d+1`,
+  and the next tick dispatches that follow-up at `≥ d+1`. The
+  `parent_number` claim is not rejected: it still links and back-links
+  the named issue, and a parent deeper than the run (its own child) still
+  counts from the parent. A run the dispatcher did not start (a human ran
+  the skill by hand, so it has no dispatch row) keeps `parent.depth + 1`.
+  Pinned by `TestCreateTrackerIssue_AgentChosenParentCannotResetDepth`
+  (the flipped `_CurrentBehavior` pin),
+  `TestCreateTrackerIssue_ChildDepthFollowsTheRunsRealLineage` and
+  `TestChainGuards_UnattendedChainIsBoundedByMaxDepth` (the review probe
+  from #2070: exactly `max_depth` agent-filed hops dispatch unattended,
+  then create refuses) in `internal/server/tracker_chain_guard_test.go`,
+  and `TestRecordChild_DepthFloorsAtTheRunsOwnDispatchDepth` at the store.
+  **Still open (#2055):** whether a run token may remove
   `agent:needs-approval` *at all*. #2068 only limits where it may: today a
   run can still release its own gated follow-up (the umbrella recommends
   add-only). That is covered by the allowed cases in
-  `TestSetTrackerIssueLabels_RunTokenGateRemovalLineageRules`. (2)
-  `parent_number` is agent-chosen, so naming any depth-0 issue as the
-  parent files the follow-up at depth 1, which resets the chain's depth.
-  Fan-out bounds how many follow-ups a *single run* can file, but it does
-  not bound the chain: each follow-up is a new run with its own fan-out
-  budget. That is pinned as current behavior by
-  `TestCreateTrackerIssue_AgentChosenParentResetsDepth_CurrentBehavior`
-  in `internal/server/tracker_chain_guard_test.go`. Items (1) and (2) are
-  not independent residuals: together (a run removing the gate from its
-  own child, plus a depth reset through an agent-chosen `parent_number`)
-  they still allow an unattended agent chain of unbounded length, with no
-  human action per hop. That is tracked as a separate P0 security issue,
-  #2073. Closing either item breaks the chain.
+  `TestSetTrackerIssueLabels_RunTokenGateRemovalLineageRules`. #2073 does
+  not decide it; it only makes such a chain bounded by `max_depth`, so
+  every unattended hop still consumes real depth.
 - **Depth.** `tracker_issue_lineage(child → parent, depth)` is written by
-  `CreateTrackerIssue` with `depth = parent.depth + 1` (a human-created
-  issue has no row → depth 0). Create is rejected when
-  `depth > policy.max_depth` (default 3); the dispatcher also refuses to
-  start a run for an issue whose depth exceeds the max, so a policy
-  lowered later still holds.
+  `CreateTrackerIssue` with `depth = max(parent.depth, run.depth) + 1`,
+  where `run.depth` is the calling run's own dispatch depth (a
+  human-created issue has no row → depth 0; a run with no dispatch row →
+  0). Create is rejected when `depth > policy.max_depth` (default 3); the
+  dispatcher also refuses to start a run for an issue whose depth exceeds
+  the max, so a policy lowered later still holds.
 - **Fan-out.** Create is rejected when the calling run already created
   `policy.max_children` (default 5) rows in lineage — counted by `run_id`,
   in the same transaction as the insert.
