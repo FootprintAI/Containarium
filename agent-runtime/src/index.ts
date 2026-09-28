@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { startA2AServer } from "./a2a.js";
+import { A2A_TOKEN_ENV, startA2AServer } from "./a2a.js";
 import type { Engine, EngineConfig } from "./engine.js";
 import { ClaudeEngine } from "./engines/claude.js";
 import { CodexEngine } from "./engines/codex.js";
@@ -83,11 +83,21 @@ async function main(): Promise<void> {
   if (mode === "serve") {
     // Long-running: serve /agent-card + /tasks until the box stops. Each task
     // is journaled under the run_id it carries (#2095).
+    //
+    // POST /tasks is daemon-only (#2125): it demands the per-box secret the
+    // daemon derived for this box and exported as A2A_TOKEN_ENV. Absent, every
+    // task is refused — a box with no credential serves nobody.
     const journals = serveJournals({
       skillId: process.env.CONTAINARIUM_SKILL_ID,
       secrets: journalSecrets(process.env, seed.tokenPath),
     });
-    startA2AServer(seed, engine, cfg, journals);
+    startA2AServer({
+      seed,
+      engine,
+      cfg,
+      journals,
+      expectedToken: (process.env[A2A_TOKEN_ENV] ?? "").trim(),
+    });
     return;
   }
 
