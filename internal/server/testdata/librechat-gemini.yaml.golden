@@ -1,0 +1,13 @@
+version: 1.2.1
+cache: true
+endpoints:
+  custom:
+    - name: "Containarium (Gemini)"
+      apiKey: "${CTN_GATEWAY_TOKEN}"
+      baseURL: "http://10.0.0.1:8080/v1/model/gemini-openai/v1beta/openai"
+      models:
+        default: ["gemini-2.5-flash-lite", "gemini-flash-latest", "gemini-2.5-flash"]
+        fetch: false
+      titleConvo: true
+      titleModel: "gemini-flash-latest"
+      modelDisplayLabel: "Containarium Gemini"

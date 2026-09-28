@@ -29,12 +29,6 @@ ALLOWLIST=(
   # The client-only installer (laptops, CI runners): containarium-* is
   # exactly the artifact it should fetch.
   "hacks/install-cli.sh"
-  # These three use the LOCAL `make build-linux` output, which is still the
-  # daemon built under the historical name (not a release artifact; out of
-  # #1784's scope — tracked separately).
-  "scripts/deploy-binary.sh"
-  "scripts/setup-peer.sh"
-  "scripts/install-lab-tunnel.sh"
 )
 
 is_allowlisted() {

@@ -50,6 +50,18 @@ type CrewRunStore interface {
 	// them: driveCrew has no resumption point, so the honest outcome is a
 	// terminal failure that says why, not a run that claims to be working.
 	FailStranded(ctx context.Context, owner, reason string) (int, error)
+	// DeleteSkillRun removes the record for a standalone skill run — crew_id
+	// empty, skill_id set, put by CrewServer.recordSkillRun for a RunAgentSkill
+	// run (#2122) so TailRunLog can resolve it durably after a restart.
+	// Coupled to the run-journal reaper's retention window rather than kept
+	// forever, unlike a real crew run's record.
+	//
+	// A no-op for any id that names an actual crew run (crew_id set) or that
+	// isn't present at all: the run-journal reaper calls this for every run id
+	// whose journal directory it reaps, crew and skill alike, and must never
+	// be able to delete a crew's record. The guard lives here, in the store,
+	// rather than at the reaper's call site, so it holds regardless of caller.
+	DeleteSkillRun(ctx context.Context, id string) error
 }
 
 // StrandedByRestart is the reason recorded for a run the daemon was driving
@@ -108,6 +120,15 @@ func (s *MemCrewRunStore) FailStranded(_ context.Context, owner, reason string) 
 		n++
 	}
 	return n, nil
+}
+
+func (s *MemCrewRunStore) DeleteSkillRun(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if r, ok := s.runs[id]; ok && r.GetCrewId() == "" {
+		delete(s.runs, id)
+	}
+	return nil
 }
 
 // --- postgres -------------------------------------------------------
@@ -237,6 +258,20 @@ func (s *PostgresCrewRunStore) FailStranded(ctx context.Context, owner, reason s
 		return 0, fmt.Errorf("fail stranded crew runs: %w", err)
 	}
 	return int(tag.RowsAffected()), nil
+}
+
+// DeleteSkillRun is a no-op if id names a crew run (crew_id set) or does not
+// exist — see the interface doc comment for why that guard matters.
+//
+// Not covered by a test that runs: nothing in this repo can execute Postgres
+// SQL today (#1300), same as FailStranded above. MemCrewRunStore's behavior
+// is tested, and the guard's SQL predicate mirrors that test 1:1.
+func (s *PostgresCrewRunStore) DeleteSkillRun(ctx context.Context, id string) error {
+	const q = `DELETE FROM crew_runs WHERE id = $1 AND crew_id = ''`
+	if _, err := s.pool.Exec(ctx, q, id); err != nil {
+		return fmt.Errorf("delete skill run %s: %w", id, err)
+	}
+	return nil
 }
 
 func (s *CrewServer) SetRunStore(store CrewRunStore) {

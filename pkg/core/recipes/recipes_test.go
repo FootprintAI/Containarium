@@ -521,3 +521,33 @@ func TestCodingAgentRecipe(t *testing.T) {
 		}
 	}
 }
+
+// TestLibreChatRecipe_InferenceProviderParam (#1728): the recipe still opts
+// into Gemini by default (model_gateway_provider unchanged), and declares the
+// new inference_provider parameter as optional (no required flag, empty
+// default) so a deploy that doesn't set it gets exactly today's behavior.
+func TestLibreChatRecipe_InferenceProviderParam(t *testing.T) {
+	r, err := GetDefault().Get("librechat")
+	if err != nil {
+		t.Fatalf("get librechat recipe: %v", err)
+	}
+	if r.ModelGatewayProvider != "gemini-openai" {
+		t.Errorf("librechat model_gateway_provider: got %q want gemini-openai", r.ModelGatewayProvider)
+	}
+	var p *pb.RecipeParam
+	for _, param := range r.Parameters {
+		if param.Name == "inference_provider" {
+			p = param
+			break
+		}
+	}
+	if p == nil {
+		t.Fatal("librechat missing parameter \"inference_provider\"")
+	}
+	if p.Required {
+		t.Error("inference_provider must not be required — empty keeps the recipe's default provider")
+	}
+	if p.Default != "" {
+		t.Errorf("inference_provider default: got %q want empty (keeps model_gateway_provider)", p.Default)
+	}
+}

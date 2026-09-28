@@ -28,7 +28,10 @@ import (
 //     auto_chain, and are bounded by max_depth / max_children_per_run —
 //     both counted in the same transaction as the lineage insert, with
 //     the upstream create happening inside that transaction so a cap
-//     can never be raced past;
+//     can never be raced past. The depth is max(parent's recorded depth,
+//     the run's own dispatch depth) + 1 (#2073): parent_number is the
+//     run's to choose, its dispatch depth is not, so naming a shallower
+//     parent links it but never lowers the depth;
 //  4. the body sent upstream is the sanitized agent text plus a parent
 //     link and an identity stamp built only from the verified token;
 //  5. one back-link comment on the parent; one audit row.

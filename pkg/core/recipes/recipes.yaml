@@ -363,6 +363,8 @@ recipes:
   # into post_start (internal/server/recipe_server.go gatewayEnvForRecipe). On a
   # self-hosted daemon with no provider key those are absent and the box comes up
   # with an empty endpoint set (LibreChat then uses its own config — OSS fallback).
+  # A deploy can override which provider that is with the inference_provider
+  # parameter (#1728, see below) instead of always getting Gemini.
   #
   # LibreChat + MongoDB run via Podman on the box's host network; the web UI
   # (:3080) is exposed as a subdomain. The admin user is created from the
@@ -418,6 +420,25 @@ recipes:
           still pins the assistant, and zero-click login is unchanged.
         type: string
         default: full
+      # inference_provider (#1728) overrides model_gateway_provider above for
+      # THIS deploy: empty (the default) keeps the recipe's own Gemini wiring;
+      # set to another model-gateway provider name (validated at DeployRecipe
+      # against the daemon's known providers — InvalidArgument otherwise), the
+      # mint targets that provider instead and carries this box's key_owner, so
+      # an org's own registered key (e.g. an operator-registered
+      # <NAME>_UPSTREAM_URL provider) is what the workspace spends, never the
+      # operator's. See docs/architecture/workspace-own-inference-key.md
+      # (cloud repo) component 4 / contract C3.
+      - name: inference_provider
+        label: Model-gateway provider
+        description: >-
+          Overrides which model-gateway provider this workspace runs on
+          (a provider name the daemon's model-gateway knows, lower case,
+          e.g. "gemini-openai" or an operator-registered upstream). Empty
+          keeps the recipe's default (Gemini). Requires the org/user to
+          have a key registered for that provider — otherwise the box comes
+          up unconfigured, same as no gateway at all.
+        type: string
       - name: skills
         label: Installed skills (hidden personas)
         description: >-
@@ -453,9 +474,22 @@ recipes:
       # the seeded gateway token (LibreChat env-expands ${CTN_GATEWAY_TOKEN}), so
       # the box holds no real provider key and users can't supply their own. No
       # gateway seeded → empty config, LibreChat falls back to its own provider.
+      #
+      # inference_provider (#1728) picks WHICH endpoint block: empty (or
+      # explicitly "gemini-openai", the recipe's own default) keeps the curated
+      # Gemini model list below byte-for-byte; anything else is an
+      # OpenAI-compatible provider the org/user registered their own key for,
+      # so LibreChat fetches its live model list through the gateway instead of
+      # a hard-coded one (`models: { fetch: true }`) — the daemon only minted
+      # this box a token for that provider if it actually holds a key for it
+      # (gatewayEnvForRecipe), so this branch never runs without one.
       - |
         if [ -n "${CONTAINARIUM_MODEL_GATEWAY_URL:-}" ] && [ -n "${CONTAINARIUM_GATEWAY_TOKEN:-}" ]; then
-          printf 'version: 1.2.1\ncache: true\nendpoints:\n  custom:\n    - name: "Containarium (Gemini)"\n      apiKey: "${CTN_GATEWAY_TOKEN}"\n      baseURL: "%s/v1beta/openai"\n      models:\n        default: ["gemini-2.5-flash-lite", "gemini-flash-latest", "gemini-2.5-flash"]\n        fetch: false\n      titleConvo: true\n      titleModel: "gemini-flash-latest"\n      modelDisplayLabel: "Containarium Gemini"\n' "$CONTAINARIUM_MODEL_GATEWAY_URL" > /opt/lc/librechat.yaml
+          if [ -n "${CONTAINARIUM_PARAM_INFERENCE_PROVIDER:-}" ] && [ "${CONTAINARIUM_PARAM_INFERENCE_PROVIDER}" != "gemini-openai" ]; then
+            printf 'version: 1.2.1\ncache: true\nendpoints:\n  custom:\n    - name: "Containarium (your key)"\n      apiKey: "${CTN_GATEWAY_TOKEN}"\n      baseURL: "%s"\n      models: { fetch: true }\n' "$CONTAINARIUM_MODEL_GATEWAY_URL" > /opt/lc/librechat.yaml
+          else
+            printf 'version: 1.2.1\ncache: true\nendpoints:\n  custom:\n    - name: "Containarium (Gemini)"\n      apiKey: "${CTN_GATEWAY_TOKEN}"\n      baseURL: "%s/v1beta/openai"\n      models:\n        default: ["gemini-2.5-flash-lite", "gemini-flash-latest", "gemini-2.5-flash"]\n        fetch: false\n      titleConvo: true\n      titleModel: "gemini-flash-latest"\n      modelDisplayLabel: "Containarium Gemini"\n' "$CONTAINARIUM_MODEL_GATEWAY_URL" > /opt/lc/librechat.yaml
+          fi
         else
           printf 'version: 1.2.1\ncache: true\n' > /opt/lc/librechat.yaml
           echo 'librechat: no managed gateway seeded; configure a provider in LibreChat' >&2

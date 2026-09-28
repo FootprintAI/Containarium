@@ -455,6 +455,29 @@ func issueDepth(ctx context.Context, q lineageQuerier, username, connection stri
 	return depth, nil
 }
 
+// runDispatchDepth returns the depth the dispatcher recorded on runID's
+// own tracker_dispatches row when it started the run — the depth of the
+// issue the run was dispatched for, read from the lineage table at that
+// moment (#2073). 0 for a run the dispatcher did not start (no row: a
+// run a human started by hand), or an empty runID. Written only by the
+// dispatcher's own code path, never from anything a run sends, so it is
+// the floor a run's follow-ups cannot dip below. MAX fails closed should
+// a run id ever carry more than one row.
+func runDispatchDepth(ctx context.Context, q lineageQuerier, username, connection, runID string) (int32, error) {
+	if runID == "" {
+		return 0, nil
+	}
+	const sql = `
+		SELECT COALESCE(MAX(depth), 0) FROM tracker_dispatches
+		WHERE username = $1 AND connection = $2 AND run_id = $3
+	`
+	var depth int32
+	if err := q.QueryRow(ctx, sql, username, connection, runID).Scan(&depth); err != nil {
+		return 0, fmt.Errorf("select run dispatch depth: %w", err)
+	}
+	return depth, nil
+}
+
 // claimedCount counts runID's fan-out slots: its recorded children plus
 // its reservations (in-flight or abandoned creates with no lineage row
 // yet). Both counts MUST come from one statement: under READ COMMITTED
@@ -489,8 +512,10 @@ func childrenCount(ctx context.Context, q lineageQuerier, username, connection, 
 //  1. reserve: take the run's in-process gate (no pool connection held
 //     while queued), then in one short transaction take a per-run
 //     advisory lock (the cross-process guard), derive the child's depth
-//     from the parent's row (+1) and reject with ErrDepthExceeded if it
-//     would exceed maxDepth, count the run's recorded children PLUS its
+//     as max(parent's row, the run's own dispatch row) + 1 (#2073: the
+//     caller-chosen parent cannot lower it) and reject with
+//     ErrDepthExceeded if it would exceed maxDepth, count the run's
+//     recorded children PLUS its
 //     outstanding reservations and reject with ErrFanoutExceeded if that
 //     already reaches maxChildren, then insert a reservation row and
 //     commit — releasing the connection;
@@ -590,13 +615,24 @@ func (s *Store) reserveChild(ctx context.Context, l *Lineage, maxDepth, maxChild
 		return 0, fmt.Errorf("lock run lineage: %w", err)
 	}
 
+	// The child's depth is one below the DEEPER of the named parent and
+	// the run's own dispatched issue (#2073). parent_number is chosen by
+	// the run, so on its own it could name any human-created issue and
+	// reset the chain to depth 1; the run's dispatch depth was written by
+	// the dispatcher from this table and is not the run's to choose. So
+	// depth never decreases along a dispatch chain, whatever parent each
+	// hop claims, and max_depth bounds the chain end to end.
 	parentDepth, err := issueDepth(ctx, tx, l.Username, l.Connection, l.ParentNumber)
 	if err != nil {
 		return 0, err
 	}
-	l.Depth = parentDepth + 1
+	runDepth, err := runDispatchDepth(ctx, tx, l.Username, l.Connection, l.CreatedByRun)
+	if err != nil {
+		return 0, err
+	}
+	l.Depth = max(parentDepth, runDepth) + 1
 	if maxDepth > 0 && l.Depth > maxDepth {
-		return 0, fmt.Errorf("%w: child of #%d would be depth %d, max %d", ErrDepthExceeded, l.ParentNumber, l.Depth, maxDepth)
+		return 0, fmt.Errorf("%w: child of #%d by a run at depth %d would be depth %d, max %d", ErrDepthExceeded, l.ParentNumber, runDepth, l.Depth, maxDepth)
 	}
 
 	recorded, reserved, err := claimedCount(ctx, tx, l.Username, l.Connection, l.CreatedByRun)

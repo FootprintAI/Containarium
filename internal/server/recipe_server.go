@@ -64,30 +64,114 @@ func (s *RecipeServer) SetGatewayProvisioning(httpPort int, secret []byte, provi
 	s.gateway = &recipeGateway{httpPort: httpPort, secret: secret, providers: set}
 }
 
+// inferenceProviderParam is the librechat recipe parameter (#1728) that lets a
+// deploy choose which model-gateway provider the workspace runs on, instead of
+// always using the recipe's baked-in ModelGatewayProvider. Empty keeps that
+// default; set, it overrides the provider gatewayEnvForRecipe mints for and
+// the mint carries the box's key_owner (see resolveRecipeGatewayProvider).
+const inferenceProviderParam = "inference_provider"
+
+// validateInferenceProvider rejects an inference_provider value that names no
+// provider this daemon's model-gateway package knows how to speak to. Empty is
+// always valid (it keeps the recipe's own model_gateway_provider default).
+//
+// There is no proto GatewayProvider enum in this repo to validate against yet:
+// the design doc ("workspace on your own inference key" cloud repo, §C1) puts
+// it in a new OSS proto (proto/containarium/v1/model_gateway.proto), and that
+// lands with #1726 (ModelGatewayService), unmerged as of this change and out
+// of this issue's scope. Validating against code that doesn't exist isn't
+// possible, so this checks against modelgateway's own known-provider surface
+// instead: the compiled-in providers (DefaultProviders — always valid, even on
+// a daemon with no gateway configured) plus, when this daemon serves the
+// gateway, whatever it additionally brokers (an operator-registered
+// <NAME>_UPSTREAM_URL provider, ProvidersFromEnv). A value outside both is
+// rejected. Whether the daemon actually HOLDS A KEY for an otherwise-valid
+// provider is a separate, later question — gatewayEnvForRecipe's degrade path
+// below, not this validation.
+func (s *RecipeServer) validateInferenceProvider(name string) error {
+	if name == "" {
+		return nil
+	}
+	if _, ok := modelgateway.DefaultProviders()[name]; ok {
+		return nil
+	}
+	if s.gateway != nil && s.gateway.providers[name] {
+		return nil
+	}
+	return fmt.Errorf("inference_provider %q is not a recognized model-gateway provider", name)
+}
+
+// resolveRecipeGatewayProvider returns the model-gateway provider a recipe
+// deploy targets and, when the deploy overrides it via the inference_provider
+// parameter, the key_owner the mint should carry.
+//
+// Empty inference_provider keeps the recipe's baked-in ModelGatewayProvider
+// and returns no key_owner: the mint below then carries no KeyOwner claim,
+// which is bit-for-bit the pre-#1728 behavior (modelgateway.GatewayClaims.
+// KeyOwner's doc: a token without the claim resolves through the
+// daemon-global key exactly as it always has). Set, it overrides the provider
+// and stamps key_owner from this box's cloud-org attribution (cloudOrgIDLabel,
+// the same label network_policy_enforcer.go reads) when the cloud stamped one
+// at CreateContainer, else the self-hosted username — mirroring the design
+// doc's "Resolution at mint time" for MintGatewayToken (#1726), implemented
+// here directly since the recipe path mints through modelgateway.MintToken,
+// not through that (unmerged) RPC.
+func resolveRecipeGatewayProvider(recipe *pb.Recipe, boxName string, params, labels map[string]string) (provider, keyOwner string) {
+	provider = recipe.ModelGatewayProvider
+	override := strings.TrimSpace(params[inferenceProviderParam])
+	if override == "" {
+		return provider, ""
+	}
+	return override, recipeKeyOwner(labels, boxName)
+}
+
+// recipeKeyOwner resolves the key_owner a recipe deploy's gateway mint should
+// carry: org:<cloud_org_id> when the box carries the cloud's attribution
+// label, else user:<boxName> for a self-hosted daemon. Falls back to "" (no
+// key_owner claim — the mint then behaves as it did before #1728, resolving
+// through the daemon-global key) if the computed owner is somehow malformed,
+// rather than failing the deploy over it.
+func recipeKeyOwner(labels map[string]string, boxName string) string {
+	if orgID := strings.TrimSpace(labels[cloudOrgIDLabel]); orgID != "" {
+		owner := modelgateway.OrgKeyOwner(orgID)
+		if err := modelgateway.ValidateKeyOwner(owner); err == nil {
+			return owner
+		}
+		log.Printf("[recipe] cloud_org_id label %q on %s does not form a valid key_owner; falling back to the self-hosted username", orgID, boxName)
+	}
+	owner := modelgateway.UserKeyOwner(boxName)
+	if err := modelgateway.ValidateKeyOwner(owner); err != nil {
+		log.Printf("[recipe] box name %q does not form a valid key_owner (%v); minting with no key_owner claim", boxName, err)
+		return ""
+	}
+	return owner
+}
+
 // gatewayEnvForRecipe returns the shell snippet that exports the managed
 // model-gateway env into a recipe's post_start, or "" when the recipe doesn't
 // opt in / the daemon can't broker its provider. It mints a long-lived scoped
-// token bound to this box + recipe + provider. Best-effort: a mint failure logs
-// and degrades to unmanaged (the box still comes up, just unconfigured).
-func (s *RecipeServer) gatewayEnvForRecipe(recipe *pb.Recipe, boxName string) string {
-	prov := recipe.ModelGatewayProvider
-	if prov == "" || s.gateway == nil {
+// token bound to this box + recipe + provider (and, when keyOwner is set, that
+// owner's key — see resolveRecipeGatewayProvider). Best-effort: a mint failure
+// logs and degrades to unmanaged (the box still comes up, just unconfigured).
+func (s *RecipeServer) gatewayEnvForRecipe(recipe *pb.Recipe, boxName, provider, keyOwner string) string {
+	if provider == "" || s.gateway == nil {
 		return ""
 	}
-	if !s.gateway.providers[prov] {
-		log.Printf("[recipe] %q requests model-gateway provider %q but the daemon holds no key for it; box comes up unconfigured", recipe.Id, prov)
+	if !s.gateway.providers[provider] {
+		log.Printf("[recipe] %q requests model-gateway provider %q but the daemon holds no key for it; box comes up unconfigured", recipe.Id, provider)
 		return ""
 	}
 	tok, err := modelgateway.MintToken(s.gateway.secret, modelgateway.GatewayClaims{
 		Tenant:   boxName,
 		SkillID:  recipe.Id,
-		Provider: prov,
+		Provider: provider,
+		KeyOwner: keyOwner,
 	}, recipeGatewayTokenTTL)
 	if err != nil {
 		log.Printf("[recipe] mint gateway token for %s failed (box runs unmanaged): %v", boxName, err)
 		return ""
 	}
-	return gatewayRecipeEnvExports(prov, s.gateway.httpPort, tok)
+	return gatewayRecipeEnvExports(provider, s.gateway.httpPort, tok)
 }
 
 // NewRecipeServer wires the recipe service to the existing container and
@@ -226,6 +310,9 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
+	if err := s.validateInferenceProvider(params[inferenceProviderParam]); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
 
 	// GPU gate: requires_gpu recipes need an explicit device in v1.
 	if recipe.RequiresGpu && req.Gpu == "" {
@@ -269,10 +356,12 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 
 	containerName := req.Name + "-container"
 
-	// Managed model-gateway: if the recipe opts in and the daemon brokers its
+	// Managed model-gateway: if the recipe opts in (or the deploy overrides the
+	// provider via inference_provider, #1728) and the daemon brokers that
 	// provider, mint a scoped token + env exports to prepend to post_start (so
 	// the box uses the platform key, metered, never leaked). "" otherwise.
-	gatewayEnv := s.gatewayEnvForRecipe(recipe, req.Name)
+	provider, keyOwner := resolveRecipeGatewayProvider(recipe, req.Name, params, req.Labels)
+	gatewayEnv := s.gatewayEnvForRecipe(recipe, req.Name, provider, keyOwner)
 
 	// Async path: decouple post_start from the RPC. A recipe's post_start can
 	// pull multi-GB images (e.g. agent-workspace), taking longer than the

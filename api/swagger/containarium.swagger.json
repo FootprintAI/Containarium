@@ -264,6 +264,70 @@
         ]
       }
     },
+    "/v1/agent-runs/{runId}/log": {
+      "get": {
+        "summary": "Tail a run's journal",
+        "description": "Returns one byte window of a run member's journal plus the offset to resume from. Resumable across dropped connections; follow_seconds waits briefly for new bytes.",
+        "operationId": "AgentSkillService_TailRunLog",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/TailRunLogResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "runId",
+            "description": "The run to read: a RunAgentSkill run id or a RunCrew run id.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "skillId",
+            "description": "Which member's journal to read. Empty = the only member of a skill run,\nor the entry skill (first member) of a crew run.",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "startOffset",
+            "description": "Byte offset to start reading from; 0 = from the beginning. Pass the\nprevious response's end_offset to resume without loss or repetition.",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "format": "int64"
+          },
+          {
+            "name": "maxBytes",
+            "description": "Upper bound on chunk size in bytes: \u003c= 262144; 0 means 65536.",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          },
+          {
+            "name": "followSeconds",
+            "description": "0..10: when no bytes are available at start_offset, wait up to this many\nseconds for the journal to grow before answering with an empty chunk.",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          }
+        ],
+        "tags": [
+          "Agents"
+        ]
+      }
+    },
     "/v1/agent-skills": {
       "get": {
         "summary": "List agent skills",
@@ -10384,6 +10448,10 @@
         },
         "gitCommit": {
           "type": "string"
+        },
+        "skillId": {
+          "type": "string",
+          "description": "skill_id: set only on a record for a standalone skill run (RunAgentSkill,\nno crew involved), never alongside crew_id. TailRunLog's journal lookup\n(#2096) needs a durable run -\u003e member-skill record so a finished skill\nrun's journal is still resolvable after a daemon restart — the same\ndurability crew_id + catalog already gives a crew run. Rather than add a\nsecond persistence mechanism, a standalone skill run is recorded through\nthis same store with crew_id empty and skill_id set; CrewServer.runMembers\nresolves it directly instead of through a crew's catalog lookup (#2122)."
         }
       },
       "description": "CrewRun is one execution of a crew. Every A2A hop and MCP call made by any\nagent in the run is audit-logged under this run's trace_id, so a run is\nitself an evidence artifact."
@@ -14980,6 +15048,10 @@
         "traceId": {
           "type": "string",
           "description": "Correlation id threaded through the audit trail for this delegation. A\ncaller (e.g. a crew, Phase 3) sets it so every hop of a run shares one id;\nwhen empty the daemon generates one. Echoed back in the response."
+        },
+        "runId": {
+          "type": "string",
+          "description": "The run this delegation belongs to, forwarded to the peer as\nAgentTask.run_id so the peer's in-box runtime journals the task under\nthat run (#2095). RunCrew sets it to the crew run's id; empty leaves the\ntask unjournaled on the peer."
         }
       },
       "description": "SendAgentTaskRequest delegates a task to a running peer agent. The peer is\naddressed by its agent_card.id (or skill id). In Phase 2 the daemon will\nreject a send to a peer not in the caller's allowed_peers; in Phase 1 the\nfield set is established and the send is best-effort over A2A."
@@ -15813,6 +15885,37 @@
         }
       },
       "title": "SystemInfo contains information about the host system"
+    },
+    "TailRunLogResponse": {
+      "type": "object",
+      "properties": {
+        "chunk": {
+          "type": "string",
+          "format": "byte",
+          "description": "The journal bytes in [start_offset, end_offset)."
+        },
+        "endOffset": {
+          "type": "string",
+          "format": "int64",
+          "description": "Pass back as start_offset on the next call."
+        },
+        "truncated": {
+          "type": "boolean",
+          "description": "More bytes were available past end_offset than max_bytes allowed."
+        },
+        "ended": {
+          "type": "boolean",
+          "description": "The journal's last line is a \"run ended\" status line and end_offset is\nat the end of the file: nothing more is expected for this task."
+        },
+        "skillIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The run's members that have a journal file for this run."
+        }
+      },
+      "description": "TailRunLogResponse is one window of a run's journal."
     },
     "TestWebhookRequest": {
       "type": "object",

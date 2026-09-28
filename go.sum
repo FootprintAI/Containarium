@@ -307,8 +307,8 @@ github.com/stretchr/testify v1.12.1 h1:EuwCh5fleGS7H32xRwO3wRGT7DxrDhLAT6FF8MpWD
 github.com/stretchr/testify v1.12.1/go.mod h1:MDEgiDPPsNp5cuIrHPPCyornHKgEVbtFUmoNlxoYthg=
 github.com/tg123/remotesigner v0.0.3 h1:OA+yzMtlUFwkFpawyu0adG0Jq2NJzw8X7mP/+Z4OxuQ=
 github.com/tg123/remotesigner v0.0.3/go.mod h1:vborNv1HjfGLNCFJhUSmcAqqwks4AE1pE8ind6YDuII=
-github.com/tg123/sshpiper v1.5.3 h1:VlU7KpXrsbduxG4jPnZ4mCzeH2qadTY/WhBNrRodEuY=
-github.com/tg123/sshpiper v1.5.3/go.mod h1:0Tqbd4yXuJDcLrSLIxKZqul76TYykB6whco3obD6khY=
+github.com/tg123/sshpiper v1.6.1 h1:1hhJfJOTIW0e1NLaaZJH5d/SEt2xRgEmAdUhXHoJw3w=
+github.com/tg123/sshpiper v1.6.1/go.mod h1:pu43csCdcZjpQLxoe8vYvLu8iZKJrgpQMFVcI/nK1aA=
 github.com/ti-mo/conntrack v0.6.0 h1:laiW2+dzKyS2u0aVr6FeRQs+v7cj4t7q+twolL/ZkjQ=
 github.com/ti-mo/conntrack v0.6.0/go.mod h1:4HZrFQQLOSuBzgQNid3H/wYyyp1kfGXUYxueXjIGibo=
 github.com/ti-mo/netfilter v0.5.3 h1:ikzduvnaUMwre5bhbNwWOd6bjqLMVb33vv0XXbK0xGQ=

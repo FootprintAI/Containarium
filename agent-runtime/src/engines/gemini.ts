@@ -1,7 +1,8 @@
-import { GoogleGenAI, mcpToTool } from "@google/genai";
+import { GoogleGenAI, mcpToTool, type GenerateContentResponse } from "@google/genai";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { Engine, EngineConfig, EngineResult } from "../engine.js";
+import type { JournalSink } from "../journal.js";
 import { mcpServerSpecs } from "../mcp.js";
 
 // GeminiEngine drives the in-box loop with the Google Gen AI SDK (@google/genai).
@@ -14,10 +15,15 @@ import { mcpServerSpecs } from "../mcp.js";
 // Default model: gemini-2.5-flash — a cheap, fast model. That low cost is the
 // reason this engine exists: a budget-friendly way to exercise the agent
 // mechanism end-to-end without burning frontier-model spend on every test run.
+//
+// Journal (#2095): automatic function calling runs the whole tool loop inside
+// one generateContent call, so the engine's event stream is the response's
+// automaticFunctionCallingHistory; it is journaled, in order, when the call
+// returns (journalGeminiResponse), followed by the final text.
 export class GeminiEngine implements Engine {
   readonly name = "gemini";
 
-  async run(task: string, cfg: EngineConfig): Promise<EngineResult> {
+  async run(task: string, cfg: EngineConfig, journal: JournalSink): Promise<EngineResult> {
     // Gateway mode: CONTAINARIUM_MODEL_GATEWAY_URL + CONTAINARIUM_GATEWAY_TOKEN
     // route calls through the platform's model-gateway so the real Gemini key
     // never lives in the box. Direct mode: GEMINI_API_KEY / GOOGLE_API_KEY hits
@@ -67,9 +73,38 @@ export class GeminiEngine implements Engine {
           automaticFunctionCalling: { maximumRemoteCalls: cfg.maxTurns },
         },
       });
+      journalGeminiResponse(response, journal);
       return { outputJson: (response.text ?? "").trim(), usage: response.usageMetadata };
     } finally {
       await Promise.allSettled(mcpClients.map((c) => c.close()));
     }
   }
+}
+
+// journalGeminiResponse journals a generateContent response: the model's
+// text and function calls and the tool responses from the automatic
+// function-calling history (the user's own prompt and model thoughts are
+// skipped), then the final text.
+export function journalGeminiResponse(
+  response: Pick<GenerateContentResponse, "automaticFunctionCallingHistory" | "text">,
+  journal: JournalSink,
+): void {
+  for (const content of response.automaticFunctionCallingHistory ?? []) {
+    for (const part of content.parts ?? []) {
+      if (content.role === "model") {
+        if (part.text && !part.thought) journal.append({ kind: "assistant", text: part.text });
+        if (part.functionCall) {
+          journal.append({ kind: "tool_use", tool: part.functionCall.name ?? "unknown", input: JSON.stringify(part.functionCall.args ?? {}) });
+        }
+      } else if (part.functionResponse) {
+        journal.append({
+          kind: "tool_result",
+          tool: part.functionResponse.name ?? "unknown",
+          text: JSON.stringify(part.functionResponse.response ?? {}),
+        });
+      }
+    }
+  }
+  const text = response.text;
+  if (text) journal.append({ kind: "assistant", text });
 }

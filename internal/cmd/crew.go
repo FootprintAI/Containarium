@@ -19,7 +19,8 @@ one trace id, and returns the run.
   containarium crew list
   containarium crew get hello-crew
   containarium crew run hello-crew --input '{"q":"hi"}' --server <host>
-  containarium crew status <run-id> --server <host>`,
+  containarium crew status <run-id> --server <host>
+  containarium crew logs <run-id> --follow --server <host>`,
 }
 
 func init() {
@@ -31,6 +32,7 @@ type crewAPI interface {
 	GetCrew(id string) (*pb.Crew, error)
 	RunCrew(crewID, backendID, pool, inputJSON, gitSource, gitRef, gitCredential string) (*pb.CrewRun, error)
 	GetCrewRun(id string) (*pb.CrewRun, error)
+	TailRunLog(req *pb.TailRunLogRequest) (*pb.TailRunLogResponse, error)
 	Close() error
 }
 
