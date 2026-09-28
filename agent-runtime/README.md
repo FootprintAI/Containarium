@@ -38,12 +38,21 @@ default model makes it a budget-friendly way to exercise the mechanism end-to-en
 - `run` (default) — one-shot: read `input.json`, run once, write `artifact.json`.
   This is the `agent run` path (Phase 4a).
 - `serve` — start the in-box **A2A server** on `:8674` and stay up:
-  - `GET /agent-card` → the seeded agent card (peer discovery)
+  - `GET /agent-card` → the seeded agent card (peer discovery; unauthenticated)
   - `POST /tasks` → run one delegated task (`AgentTask` in → `AgentArtifact`
     out), the listener the daemon's `SendAgentTask` reaches (Phase 4b).
 
   A failed task returns `200` with `state: AGENT_TASK_STATE_FAILED` so the caller
   still gets the artifact rather than an HTTP error.
+
+  **`POST /tasks` is daemon-only** (#2125). Every request must carry
+  `Authorization: Bearer $CONTAINARIUM_A2A_TOKEN` — the per-box secret the daemon
+  derives for this box and exports when it launches serve mode. A missing
+  credential is `401`, a wrong one `403`, and neither reaches the engine or
+  writes a journal line. Without `CONTAINARIUM_A2A_TOKEN` in the environment the
+  server still starts, and still serves `/agent-card`, but refuses every task: a
+  box that cannot tell the daemon from a peer serves nobody. Why it is shaped
+  this way: `docs/architecture/execution-scoped-authorization.md`.
 
 ## What it reads (the seed)
 

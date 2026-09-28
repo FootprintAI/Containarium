@@ -976,6 +976,11 @@ func (s *AgentSkillServer) startServeMode(containerName, seedDir, skillID string
 	// in tests — see TestStartServeMode_StopsPriorInstanceBeforeLaunching.
 	_, _, _, _ = s.recipes.containers.manager.ExecWithExitCode(containerName,
 		[]string{"bash", "-lc", "pkill -9 -f agent-runtime"})
+	if s.agentA2ASecret(skillID) == "" {
+		// The box will serve /agent-card and refuse every task (#2125). Say so
+		// here: in-box the only trace is one line in the box's own log.
+		log.Printf("[agent-skill] no A2A credential derivable for %s: its serve mode will refuse every task", containerName)
+	}
 	cmd := s.serveModeCommand(seedDir, skillID)
 	if _, stderr, err := s.recipes.containers.manager.ExecWithOutput(containerName,
 		[]string{"bash", "-lc", cmd}); err != nil {
@@ -989,8 +994,20 @@ func (s *AgentSkillServer) startServeMode(containerName, seedDir, skillID string
 // (/var/log/agent-runtime/runs/<run_id>/<skill_id>.jsonl, #2095); the run id
 // arrives per task on AgentTask.run_id. /var/log/agent-runtime.log stays the
 // process log.
+//
+// It also exports CONTAINARIUM_A2A_TOKEN: this box's own A2A credential
+// (#2125), the one the runtime demands on every POST /tasks so that only the
+// daemon can deliver a task — and so a peer box that can reach :8674 cannot
+// journal output into a run it is not part of. Each box gets a different value,
+// so holding your own is no help against anyone else's. It is omitted when the
+// daemon cannot derive one, which leaves the box refusing every task: a serve
+// mode nobody can reach is a better failure than one anybody can.
 func (s *AgentSkillServer) serveModeCommand(seedDir, skillID string) string {
-	return sourceGatewayEnvPrefix(seedDir) + s.engineEnvPrefix() +
+	a2a := ""
+	if secret := s.agentA2ASecret(skillID); secret != "" {
+		a2a = "CONTAINARIUM_A2A_TOKEN=" + shellSingleQuote(secret) + " "
+	}
+	return sourceGatewayEnvPrefix(seedDir) + s.engineEnvPrefix() + a2a +
 		"CONTAINARIUM_SKILL_ID=" + shellSingleQuote(skillID) + " " +
 		"CONTAINARIUM_AGENT_MODE=serve AGENT_SEED_DIR=" + seedDir +
 		" setsid agent-runtime >/var/log/agent-runtime.log 2>&1 &"
@@ -1306,6 +1323,17 @@ func (s *AgentSkillServer) SendAgentTask(ctx context.Context, req *pb.SendAgentT
 			"skill %q is not permitted to call peer %q (not in its allowed_peers)", caller, req.ToPeerId)
 	}
 
+	// The peer's in-box A2A server takes tasks only from the daemon (#2125) —
+	// which is what stops a box from posting to a peer itself and walking
+	// around the run_id check above. Resolved before the peer is contacted:
+	// without the credential there is no deliverable task.
+	secret := s.agentA2ASecret(req.ToPeerId)
+	if secret == "" {
+		s.auditHop(ctx, trace, caller, req.ToPeerId, "failed", "no A2A credential for peer")
+		return nil, status.Errorf(codes.Internal,
+			"cannot authenticate to peer %q: the daemon holds no A2A credential for it", req.ToPeerId)
+	}
+
 	baseURL, _, err := s.resolvePeerA2A(req.ToPeerId)
 	if err != nil {
 		s.auditHop(ctx, trace, caller, req.ToPeerId, "unreachable", err.Error())
@@ -1313,10 +1341,19 @@ func (s *AgentSkillServer) SendAgentTask(ctx context.Context, req *pb.SendAgentT
 	}
 
 	task := agentTaskFor(caller, req.ToPeerId, req)
-	art, err := sendA2ATask(ctx, baseURL, task)
+	art, err := sendA2ATask(ctx, baseURL, task, secret)
 	if err != nil {
-		s.auditHop(ctx, trace, caller, req.ToPeerId, "failed", err.Error())
-		return nil, status.Errorf(codes.Unavailable, "deliver task to peer %q: %v", req.ToPeerId, err)
+		// A refused credential is not an unreachable peer: that box is serving,
+		// it just does not recognize this daemon (seeded by another one, or
+		// before a signing-key rotation). Reporting it as Unavailable would
+		// send an operator hunting a network fault; Internal, carrying the
+		// peer's own words, points at the box that needs reprovisioning.
+		code, outcome := codes.Unavailable, "failed"
+		if errors.Is(err, errA2AUnauthorized) {
+			code, outcome = codes.Internal, "unauthorized"
+		}
+		s.auditHop(ctx, trace, caller, req.ToPeerId, outcome, err.Error())
+		return nil, status.Errorf(code, "deliver task to peer %q: %v", req.ToPeerId, err)
 	}
 	s.auditHop(ctx, trace, caller, req.ToPeerId, "delivered", "")
 	return &pb.SendAgentTaskResponse{Artifact: art, TraceId: trace}, nil

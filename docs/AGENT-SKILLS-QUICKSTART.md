@@ -107,6 +107,11 @@ discovery.
 
 Driving the call needs the `agents:call` scope.
 
+The hop goes through the daemon by design: a box's in-box A2A server only
+accepts tasks that carry the credential the daemon derived for that box, so one
+box cannot post a task to a peer itself (#2125). See
+`docs/architecture/execution-scoped-authorization.md`.
+
 > **Phase 1 seam.** The in-box A2A *server* (which receives `/tasks`) is the
 > `agent-runtime` image's job. Until it ships, `agent call` to a real box
 > returns `Unavailable`. The daemon-side transport + discovery + resolution are
