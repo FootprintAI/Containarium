@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os/exec"
 	"regexp"
 	"strings"
 	"time"
@@ -89,6 +88,7 @@ var (
 	codeHost      string
 	codePort      int
 	codeName      string
+	codeKeyWait   string
 
 	// `code install` only (#2030).
 	codeBootstrapURL      string
@@ -199,6 +199,7 @@ func init() {
 	codeCmd.PersistentFlags().StringVar(&codeUser, "user", "", "override the SSH username (default: the box's own user)")
 	codeCmd.PersistentFlags().StringVar(&codeHost, "host", "", "override the SSH host (default: the box's sentinel host)")
 	codeCmd.PersistentFlags().IntVar(&codePort, "port", 0, "override the SSH port")
+	codeCmd.PersistentFlags().StringVar(&codeKeyWait, "key-wait", "", keyWaitFlagUsage)
 
 	codeCmd.AddCommand(codeInstallCmd)
 	codeCmd.AddCommand(codeRunCmd)
@@ -313,15 +314,53 @@ func resolveCodeSession(ctx context.Context, box string, diag io.Writer) (*coder
 	if err != nil {
 		return nil, err
 	}
-	sshArgs := connectcore.BuildSSHArgs(target, privPath, "") // no remote command — Connect appends "agent-box"
-	sess, err := coderun.Connect(ctx, sshArgs)
+	// resolveCodeTarget just authorized the key: armed (#2013).
+	kw, err := newKeyWait(codeKeyWait, true, diag)
 	if err != nil {
+		return nil, err
+	}
+	sshArgs := connectcore.BuildSSHArgs(target, privPath, "") // no remote command — Connect appends "agent-box"
+	sess, err := connectCodeSession(ctx, kw, probeSSHArgs(sshArgs), func(ctx context.Context) (*coderun.Session, error) {
+		return coderun.Connect(ctx, sshArgs)
+	})
+	if err != nil {
+		if errors.Is(err, connectcore.ErrKeyNotLearned) {
+			return nil, fmt.Errorf("connect to agent-box on %q: %w", box, err)
+		}
 		if errors.Is(err, coderun.ErrAgentBoxMissing) {
 			return nil, coderun.AgentBoxMissingError(box)
 		}
 		return nil, fmt.Errorf("connect to agent-box on %q: %w", box, err)
 	}
 	return sess, nil
+}
+
+// connectCodeSession opens the agent-box session under kw. A failed MCP
+// dial doesn't say WHY ssh failed (and a publickey denial otherwise looks
+// like "agent-box missing"), so on failure one silent probe classifies it:
+// publickey-denied is retried while the sentinel learns the key; anything
+// else returns the dial's own error unchanged.
+func connectCodeSession(ctx context.Context, kw connectcore.KeyWait, probe []string, dial func(context.Context) (*coderun.Session, error)) (*coderun.Session, error) {
+	var sess *coderun.Session
+	err := kw.Do(ctx, func(ctx context.Context, attempt int) error {
+		if attempt > 1 {
+			if perr := sshProbeFn(ctx, probe); perr != nil {
+				return perr
+			}
+		}
+		s, err := dial(ctx)
+		if err == nil {
+			sess = s
+			return nil
+		}
+		if kw.Armed && kw.Window > 0 {
+			if perr := sshProbeFn(ctx, probe); connectcore.IsPublickeyDenied(perr) {
+				return perr
+			}
+		}
+		return err
+	})
+	return sess, err
 }
 
 // streamAndWait streams path's output to stdout (demultiplexed to
@@ -332,6 +371,13 @@ func resolveCodeSession(ctx context.Context, box string, diag io.Writer) (*coder
 // stopping — tail_log has no "you've caught up, nothing more is coming"
 // signal of its own, so watching liveness is the only way to know when to
 // stop asking.
+//
+// #2011: the return value now carries the run's own exit status — nil for a
+// zero exit code, non-nil for a non-zero one — instead of always nil once the
+// run stopped. That is what lets `code run`/`code attach`'s process exit
+// status (main.go maps a non-nil RunE error to os.Exit(1)) reflect whether the
+// AGENT succeeded, so CI and shell scripts can gate on `$?` instead of having
+// to separately parse `code status`.
 func streamAndWait(ctx context.Context, sess *coderun.Session, name, logPath string, stdout, stderr io.Writer, streamJSON bool) error {
 	w := stdout
 	if streamJSON {
@@ -367,10 +413,28 @@ func streamAndWait(ctx context.Context, sess *coderun.Session, name, logPath str
 				}
 				cancelStream()
 				<-streamDone
-				return nil
+				return codeRunExitErr(listing, name)
 			}
 		}
 	}
+}
+
+// codeRunExitErr turns name's recorded exit code — read from listing, captured
+// the moment streamAndWait noticed the run had stopped — into the process
+// status `code run`/`code attach` return (#2011).
+//
+// A zero exit code, and a finished run that recorded none at all (agent-box's
+// RunOutcomeUnknown: the box died mid-run before it could record one — see
+// ExitCodeFromListing's doc comment), both return nil: there is nothing solid
+// to gate a failure on either way, and reporting the second as a failure would
+// be a stronger claim than the record supports. Only a genuinely non-zero code
+// becomes a non-nil error, which main.go turns into os.Exit(1).
+func codeRunExitErr(listing, name string) error {
+	code, ok := coderun.ExitCodeFromListing(listing, name)
+	if !ok || code == 0 {
+		return nil
+	}
+	return fmt.Errorf("run %q exited with code %d", name, code)
 }
 
 // defaultAgentBoxRelease is the release the agent-box / mcp-server assets are
@@ -523,8 +587,20 @@ func runCodeInstall(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	// resolveCodeTarget just authorized the key: armed (#2013).
+	kw, err := newKeyWait(codeKeyWait, true, diag)
+	if err != nil {
+		return err
+	}
+	probe := probeSSHArgs(connectcore.BuildSSHArgs(target, privPath, ""))
 	run := func(script string) (string, error) {
-		return sshExec(diag, buildClaudeSSHArgs(target, privPath, script))
+		var out string
+		err := sshWithKeyWait(ctx, kw, probe, func() error {
+			var e error
+			out, e = sshExec(diag, buildClaudeSSHArgs(target, privPath, script))
+			return e
+		})
+		return out, err
 	}
 
 	// #1727: resolve the engine and its credential source from the flags, and
@@ -618,19 +694,10 @@ Then: containarium code run %s --prompt "..."
 // result gets only the remote command's own bytes — same convention as
 // `connect --exec`.
 func runSSHCaptured(diag io.Writer, args []string) (string, error) {
-	sshBin, err := exec.LookPath("ssh")
-	if err != nil {
-		return "", fmt.Errorf("ssh not found in PATH: %w", err)
-	}
-	// #nosec G204 -- sshBin is the resolved `ssh` binary; args are built
-	// from a validated box name, a daemon-resolved target, and a
-	// package-controlled script (claudeInstallScript / claudeVerifyScript)
-	// — no caller-supplied command reaches this path.
-	c := exec.Command(sshBin, args...)
 	var stdout bytes.Buffer
-	c.Stdout = &stdout
-	c.Stderr = diag
-	if err := c.Run(); err != nil {
+	// runSSHTee classifies an exit-255 publickey denial so `code install`
+	// can wait out key propagation (#2013); the error text is unchanged.
+	if err := runSSHTee(context.Background(), nil, &stdout, diag, args); err != nil {
 		return stdout.String(), fmt.Errorf("ssh: %w", err)
 	}
 	return stdout.String(), nil

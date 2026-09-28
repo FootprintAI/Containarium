@@ -145,3 +145,18 @@ func ExitCodeFromListing(listing, name string) (code int, found bool) {
 	}
 	return 0, false
 }
+
+// ExitCodeLine renders name's exit-code line the same way for every caller —
+// `code status` (internal/cmd/code_run.go) and its platform-MCP wrapper
+// (internal/mcp/code_tools.go) both print exactly this string under a
+// finished run's header line, so the two surfaces cannot drift (#2011: before
+// this, only the CLI derived one, and by hand).
+//
+// A missing code renders as "unknown", never a fabricated 0 — see
+// ExitCodeFromListing's own doc comment for why that distinction is real.
+func ExitCodeLine(listing, name string) string {
+	if code, ok := ExitCodeFromListing(listing, name); ok {
+		return fmt.Sprintf("exit_code: %d", code)
+	}
+	return "exit_code: unknown (the run ended without recording one — the box may have died mid-run)"
+}

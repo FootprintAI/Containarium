@@ -122,6 +122,37 @@ func TestRunOutcomeLine(t *testing.T) {
 	}
 }
 
+// TestCodeRunExitErr is the #2011 acceptance test for `code run`/`code
+// attach`'s process status: streamAndWait used to return nil once a run
+// stopped, no matter what the agent's own exit code was, so a failing agent
+// looked identical to a passing one to a caller checking $?. A listing
+// carrying both an exited-0 and an exited-1 run must turn only the
+// non-zero one into a non-nil error.
+func TestCodeRunExitErr(t *testing.T) {
+	listing := "Found 3 process(es):\n\n" +
+		"⚪ ok-run  (pid 111, exited)\n" +
+		"   Command:    true\n" +
+		"   Exit code:  0\n" +
+		"   Log path:   /tmp/agent-box/ok-run.log\n\n" +
+		"⚪ bad-run  (pid 222, exited)\n" +
+		"   Command:    false\n" +
+		"   Exit code:  1\n" +
+		"   Log path:   /tmp/agent-box/bad-run.log\n\n" +
+		"⚪ unknown-run  (pid 333, exited)\n" +
+		"   Command:    kill -9 $$\n" +
+		"   Log path:   /tmp/agent-box/unknown-run.log\n\n"
+
+	if err := codeRunExitErr(listing, "ok-run"); err != nil {
+		t.Errorf("a zero exit code must not error (`code run` should exit 0), got %v", err)
+	}
+	if err := codeRunExitErr(listing, "bad-run"); err == nil {
+		t.Error("a non-zero exit code must return a non-nil error so `code run` exits non-zero")
+	}
+	if err := codeRunExitErr(listing, "unknown-run"); err != nil {
+		t.Errorf("a run with no recorded exit code has nothing to gate on and must not error, got %v", err)
+	}
+}
+
 func TestLogPathFromListing(t *testing.T) {
 	listing := "Found 1 process(es):\n\n" +
 		"🟢 code  (pid 111, running)\n" +

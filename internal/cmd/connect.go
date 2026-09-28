@@ -42,6 +42,7 @@ var (
 	connectHost     string
 	connectPort     int
 	connectSession  string
+	connectKeyWait  string
 )
 
 var connectCmd = &cobra.Command{
@@ -81,6 +82,7 @@ func init() {
 	connectCmd.Flags().StringVar(&connectHost, "host", "", "override the SSH host (default: the box's ssh_host, else its IP)")
 	connectCmd.Flags().IntVar(&connectPort, "port", 22, "SSH port")
 	connectCmd.Flags().StringVar(&connectSession, "session", "", "run inside a named tmux session on the box (stateful; persists across calls). With --exec runs the command there; without --exec attaches your terminal.")
+	connectCmd.Flags().StringVar(&connectKeyWait, "key-wait", "", keyWaitFlagUsage)
 	rootCmd.AddCommand(connectCmd)
 }
 
@@ -238,16 +240,24 @@ func runConnect(cmd *cobra.Command, args []string) error {
 	fp, _ := sshkey.Fingerprint(pub)
 	fmt.Fprintf(diag, "✓ %s → %s@%s (authorized %s)\n", box, target.User, target.Host, fp)
 
+	// This invocation just authorized the key, so a publickey denial is most
+	// likely the sentinel not having learned it yet: armed (#2013).
+	kw, err := newKeyWait(connectKeyWait, true, diag)
+	if err != nil {
+		return err
+	}
+	probe := probeSSHArgs(connectcore.BuildSSHArgs(target, privPath, ""))
+
 	// Tier 2 — stateful tmux session on the box.
 	if connectSession != "" {
 		if err := connectcore.ValidateSessionName(connectSession); err != nil {
 			return err
 		}
 		if connectExec != "" {
-			return runSessionExec(diag, cmd.OutOrStdout(), target, privPath, connectSession, connectExec)
+			return runSessionExec(ctx, kw, probe, diag, cmd.OutOrStdout(), target, privPath, connectSession, connectExec)
 		}
 		// No --exec: attach the user's terminal to the session (create if absent).
-		return runSSH(connectcore.BuildAttachArgs(target, privPath, connectSession))
+		return runSSH(ctx, kw, probe, connectcore.BuildAttachArgs(target, privPath, connectSession))
 	}
 
 	sshArgs := connectcore.BuildSSHArgs(target, privPath, connectExec)
@@ -256,43 +266,44 @@ func runConnect(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(cmd.OutOrStdout(), "ssh %s\n", strings.Join(sshArgs, " "))
 		return nil
 	}
-	return runSSH(sshArgs)
+	return runSSH(ctx, kw, probe, sshArgs)
 }
 
 // runSessionExec runs one command inside a named tmux session on the box
 // and prints its captured output. The remote exit code is propagated
 // (os.Exit) so CI / scripts see failures, matching plain --exec.
-func runSessionExec(diag, out io.Writer, target connectcore.Target, identity, session, command string) error {
+func runSessionExec(ctx context.Context, kw connectcore.KeyWait, probe []string, diag, out io.Writer, target connectcore.Target, identity, session, command string) error {
 	marker, err := connectcore.NewMarker()
 	if err != nil {
 		return err
 	}
-	sshBin, err := exec.LookPath("ssh")
-	if err != nil {
+	if _, err := exec.LookPath("ssh"); err != nil {
 		return fmt.Errorf("ssh not found in PATH: %w", err)
 	}
-	// Box-side poll caps at the timeout; give the ssh process a little more
-	// before we abandon it.
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	defer cancel()
 
 	args := connectcore.BuildSessionExecArgs(target, identity, session, marker, connectcore.EncodeCommand(command), 60)
-	// #nosec G204 -- sshBin is the resolved `ssh` binary; args are built from
-	// a validated box name + daemon-resolved target + user flags. Running ssh
-	// is precisely this command's job.
-	c := exec.CommandContext(ctx, sshBin, args...)
-	c.Stdin = strings.NewReader(connectcore.SessionExecScript())
 	var stdout bytes.Buffer
-	c.Stdout = &stdout
-	c.Stderr = diag // ssh's own diagnostics (host-key, connection) to stderr
-	runErr := c.Run()
+	runErr := sshWithKeyWait(ctx, kw, probe, func() error {
+		// Box-side poll caps at the timeout; give the ssh process a little
+		// more before we abandon it. Per attempt, so a key wait doesn't eat it.
+		actx, cancel := context.WithTimeout(ctx, 90*time.Second)
+		defer cancel()
+		stdout.Reset()
+		// ssh's own diagnostics (host-key, connection) go to diag.
+		return runSSHTee(actx, strings.NewReader(connectcore.SessionExecScript()), &stdout, diag, args)
+	})
 	if runErr != nil {
-		var ee *exec.ExitError
-		if !errors.As(runErr, &ee) {
+		var se *connectcore.SSHError
+		var re *remoteExitError
+		switch {
+		case errors.Is(runErr, connectcore.ErrKeyNotLearned):
+			return runErr
+		case errors.As(runErr, &se), errors.As(runErr, &re):
+			// Non-zero ssh exit (e.g. orchestration exit 127) still has
+			// framed output we can parse below; fall through.
+		default:
 			return fmt.Errorf("session exec: %w", runErr)
 		}
-		// Non-zero ssh exit (e.g. orchestration exit 127) still has framed
-		// output we can parse below; fall through.
 	}
 
 	cmdOut, code, perr := connectcore.ParseSessionResult(stdout.String(), marker)
@@ -315,24 +326,13 @@ func runSessionExec(diag, out io.Writer, target connectcore.Target, identity, se
 // interactive session stdin is the user's TTY (ssh allocates a PTY); for
 // --exec it's a one-shot command whose stdout/stderr stream through. The
 // remote exit code is propagated verbatim so CI / agents see failures.
-func runSSH(args []string) error {
-	sshBin, err := exec.LookPath("ssh")
-	if err != nil {
-		return fmt.Errorf("ssh not found in PATH: %w", err)
-	}
-	// #nosec G204 -- sshBin is the resolved `ssh` binary; args are built from
-	// a validated box name + daemon-resolved target + user flags. Running ssh
-	// is precisely this command's job.
-	c := exec.Command(sshBin, args...)
-	c.Stdin = os.Stdin
-	c.Stdout = os.Stdout
-	c.Stderr = os.Stderr
-	if err := c.Run(); err != nil {
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			os.Exit(ee.ExitCode())
-		}
-		return fmt.Errorf("ssh: %w", err)
-	}
-	return nil
+// A publickey denial right after this invocation authorized the key is
+// retried under kw while the sentinel learns the key (#2013).
+func runSSH(ctx context.Context, kw connectcore.KeyWait, probe, args []string) error {
+	err := sshWithKeyWait(ctx, kw, probe, func() error {
+		// Not bound to ctx: an interactive session lives as long as the user
+		// keeps it, exactly as before.
+		return runSSHTee(context.Background(), os.Stdin, os.Stdout, os.Stderr, args)
+	})
+	return exitForSSHError(err)
 }
