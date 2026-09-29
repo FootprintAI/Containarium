@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.91.1] - 2026-09-29
+
+### Added
+
+- `integrity`: configurable heartbeat interval (#2138) (#2159)
+- `modelgateway`: durable Postgres owner-revocation store (#2111) (#2157)
+
+### Fixed
+
+- `cli`: `agent run --tracker-connection` binds a run from the shell (#2042) (#2158)
+- `release`: `verify-agent-runtime-bundle.sh` no longer misflags `*.test.ts` files
+  co-located with engine sources as missing engines — the false positive had
+  broken v0.91.0's release-asset build entirely (see [0.91.0] below; v0.91.0
+  shipped no CLI/MCP/agent-box release assets as a result). (#2165)
+
 ## [0.91.0] - 2026-09-29
 
 ### Fixed
