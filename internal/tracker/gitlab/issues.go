@@ -280,7 +280,7 @@ func (a *Adapter) doWithHeader(ctx context.Context, method, rawURL, token string
 
 	resp, err := a.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", tracker.ErrUnreachable, err)
+		return nil, fmt.Errorf("%w: %w", tracker.ErrUnreachable, err)
 	}
 	defer resp.Body.Close()
 
