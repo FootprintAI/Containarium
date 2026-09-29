@@ -225,7 +225,7 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 	if g.isOwnerRevoked(r.Context(), claims) {
 		g.cfg.Logger.Printf("model-gateway: REVOKED-OWNER tenant=%s key_owner=%s provider=%s jti=%s",
 			claims.Tenant, claims.KeyOwner, provName, claims.ID)
-		http.Error(w, "gateway tokens for this key owner are revoked", http.StatusUnauthorized)
+		http.Error(w, OwnerRevokedMessage, http.StatusUnauthorized)
 		return
 	}
 
