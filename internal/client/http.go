@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -249,15 +250,28 @@ func containerToIncusInfo(c *containerResponse) incus.ContainerInfo {
 	info.GPU = c.GpuDevice
 	info.GPUs = c.GpuDevices
 
-	// Parse createdAt timestamp (RFC3339 format from protobuf JSON)
-	if c.CreatedAt != "" {
-		// CreatedAt may be a Unix timestamp string or RFC3339
-		if t, err := time.Parse(time.RFC3339, c.CreatedAt); err == nil {
-			info.CreatedAt = t
-		}
-	}
+	info.CreatedAt = parseCreatedAt(c.CreatedAt)
 
 	return info
+}
+
+// parseCreatedAt parses the wire `createdAt` field, which is the Container
+// proto's int64 Unix-seconds field (#2146) — protojson renders an int64 as
+// a quoted decimal string (e.g. "1738000000"), not RFC3339. RFC3339 is also
+// accepted so the client keeps working if the wire format ever switches to
+// google.protobuf.Timestamp. Empty or unparseable input leaves the zero
+// time, same as before this fix.
+func parseCreatedAt(s string) time.Time {
+	if s == "" {
+		return time.Time{}
+	}
+	if sec, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return time.Unix(sec, 0)
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t
+	}
+	return time.Time{}
 }
 
 // ListContainers lists all containers via HTTP

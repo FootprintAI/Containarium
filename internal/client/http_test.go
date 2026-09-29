@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/footprintai/containarium/pkg/version"
 	"google.golang.org/grpc/codes"
@@ -238,5 +239,93 @@ func TestHTTPSetContainerTTL_404IsUnimplemented(t *testing.T) {
 	_, err = c.SetContainerTTL("alice", 3600)
 	if status.Code(err) != codes.Unimplemented {
 		t.Errorf("404 mapped to %v; want Unimplemented", status.Code(err))
+	}
+}
+
+// TestContainerToIncusInfo_CreatedAt (#2146): the wire `createdAt` field is
+// the Container proto's int64 Unix-seconds field, which protojson renders as
+// a quoted decimal string (e.g. "1738000000") — not RFC3339. The parser must
+// accept both shapes so it also survives a future switch to
+// google.protobuf.Timestamp; empty or unparseable input leaves the zero
+// time, same as before.
+func TestContainerToIncusInfo_CreatedAt(t *testing.T) {
+	tests := []struct {
+		name      string
+		createdAt string
+		want      time.Time
+	}{
+		{
+			name:      "unix seconds string",
+			createdAt: "1738000000",
+			want:      time.Unix(1738000000, 0),
+		},
+		{
+			name:      "rfc3339 string",
+			createdAt: "2025-01-27T12:00:00Z",
+			want:      time.Date(2025, 1, 27, 12, 0, 0, 0, time.UTC),
+		},
+		{
+			name:      "zero as unix seconds",
+			createdAt: "0",
+			want:      time.Unix(0, 0),
+		},
+		{
+			name:      "empty stays zero time",
+			createdAt: "",
+			want:      time.Time{},
+		},
+		{
+			name:      "garbage stays zero time",
+			createdAt: "not-a-timestamp",
+			want:      time.Time{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			info := containerToIncusInfo(&containerResponse{
+				Name:      "alice-container",
+				CreatedAt: tt.createdAt,
+			})
+			if !info.CreatedAt.Equal(tt.want) {
+				t.Errorf("CreatedAt = %v, want %v", info.CreatedAt, tt.want)
+			}
+		})
+	}
+}
+
+// TestHTTPListContainers_ParsesUnixSecondsCreatedAt (#2146): proves the fix
+// end to end at the client level — an HTTP daemon (mocked here, no live
+// server needed) whose `createdAt` is a Unix-seconds string, as protojson
+// actually renders the int64 field, round-trips through ListContainers into
+// a populated, non-zero CreatedAt. This is the exact fetch `containarium
+// list --http` (and `prune --http`'s preview, which shares the same age
+// formatter) uses, so a non-zero CreatedAt here is what lets the CLI's age
+// column render instead of showing nothing.
+func TestHTTPListContainers_ParsesUnixSecondsCreatedAt(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"containers":[{"name":"alice-container","username":"alice","state":"Running","createdAt":"1738000000"}]}`))
+	}))
+	defer srv.Close()
+
+	c, err := NewHTTPClient(srv.URL, "tok")
+	if err != nil {
+		t.Fatalf("NewHTTPClient: %v", err)
+	}
+	containers, err := c.ListContainers()
+	if err != nil {
+		t.Fatalf("ListContainers: %v", err)
+	}
+	if len(containers) != 1 {
+		t.Fatalf("got %d containers, want 1", len(containers))
+	}
+
+	want := time.Unix(1738000000, 0)
+	if containers[0].CreatedAt.IsZero() {
+		t.Fatalf("CreatedAt is zero — the age column would show nothing, reproducing #2146")
+	}
+	if !containers[0].CreatedAt.Equal(want) {
+		t.Errorf("CreatedAt = %v, want %v", containers[0].CreatedAt, want)
 	}
 }
