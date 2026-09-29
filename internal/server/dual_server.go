@@ -2456,6 +2456,42 @@ func (ds *DualServer) runRevocationCleanup(ctx context.Context) {
 	}
 }
 
+const (
+	integrityHeartbeatIntervalEnv     = "CONTAINARIUM_INTEGRITY_HEARTBEAT_INTERVAL"
+	defaultIntegrityHeartbeatInterval = 5 * time.Minute
+	minIntegrityHeartbeatInterval     = 30 * time.Second
+)
+
+// integrityHeartbeatInterval is the resolved interval and any adjustment made
+// to an operator-provided value. It is kept separate from the heartbeat's
+// lifecycle so its duration policy is easy to test without starting a daemon.
+type integrityHeartbeatInterval struct {
+	interval time.Duration
+	invalid  bool
+	clamped  bool
+}
+
+func resolveIntegrityHeartbeatInterval(raw string) integrityHeartbeatInterval {
+	if raw == "" {
+		return integrityHeartbeatInterval{interval: defaultIntegrityHeartbeatInterval}
+	}
+
+	interval, err := time.ParseDuration(raw)
+	if err != nil || interval <= 0 {
+		return integrityHeartbeatInterval{
+			interval: defaultIntegrityHeartbeatInterval,
+			invalid:  true,
+		}
+	}
+	if interval < minIntegrityHeartbeatInterval {
+		return integrityHeartbeatInterval{
+			interval: minIntegrityHeartbeatInterval,
+			clamped:  true,
+		}
+	}
+	return integrityHeartbeatInterval{interval: interval}
+}
+
 // startIntegrityHeartbeat launches the integrity self-measurement heartbeat
 // (#683). On a fixed cadence the daemon computes + signs a measurement of its
 // own binary, loaded in-kernel program object(s), and policy/config state, and
@@ -2471,7 +2507,17 @@ func (ds *DualServer) startIntegrityHeartbeat(ctx context.Context) {
 	if ds.containerServer == nil {
 		return
 	}
-	const interval = 5 * time.Minute
+	configured := os.Getenv(integrityHeartbeatIntervalEnv)
+	decision := resolveIntegrityHeartbeatInterval(configured)
+	if decision.invalid {
+		log.Printf("[integrity] %s=%q invalid, using default %s",
+			integrityHeartbeatIntervalEnv, configured, defaultIntegrityHeartbeatInterval)
+	}
+	if decision.clamped {
+		log.Printf("[integrity] %s=%q below minimum %s; clamping to %s",
+			integrityHeartbeatIntervalEnv, configured, minIntegrityHeartbeatInterval, decision.interval)
+	}
+	log.Printf("[integrity] self-measurement heartbeat interval=%s", decision.interval)
 
 	emit := func() {
 		m, err := ds.containerServer.computeSelfMeasurement()
@@ -2490,7 +2536,7 @@ func (ds *DualServer) startIntegrityHeartbeat(ctx context.Context) {
 	go func() {
 		// One initial emission once the daemon is up, then on the cadence.
 		emit()
-		t := time.NewTicker(interval)
+		t := time.NewTicker(decision.interval)
 		defer t.Stop()
 		for {
 			select {
