@@ -2,9 +2,11 @@ package server
 
 import (
 	"context"
+	"net/netip"
 	"os"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -12,6 +14,8 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/netbpf"
+	"github.com/footprintai/containarium/internal/netpolicy"
 	"github.com/footprintai/containarium/pkg/core/skills"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -423,6 +427,56 @@ func TestCompileAllowedPeersPolicy(t *testing.T) {
 			t.Errorf("egress_cidrs[%d] = %q, want %q", i, p.EgressCidrs[i], want[i])
 		}
 	}
+
+	// #2140: each peer /32 stays reachable, but not on its A2A port — the only
+	// thing that may post a task to a peer is the daemon (D1), so the box gets a
+	// deny rule for tcp/8674 on every peer it can otherwise reach.
+	wantDeny := []*pb.NetworkPolicyDenyRule{
+		{Cidr: "10.0.0.5/32", Port: a2aPort, Proto: "tcp"},
+		{Cidr: "10.0.0.6/32", Port: a2aPort, Proto: "tcp"},
+	}
+	if len(p.DenyRules) != len(wantDeny) {
+		t.Fatalf("deny_rules = %v, want %v", p.DenyRules, wantDeny)
+	}
+	for i, w := range wantDeny {
+		g := p.DenyRules[i]
+		if g.GetCidr() != w.Cidr || g.GetPort() != w.Port || g.GetProto() != w.Proto {
+			t.Errorf("deny_rules[%d] = {%s %d %s}, want {%s %d %s}", i, g.GetCidr(), g.GetPort(), g.GetProto(), w.Cidr, w.Port, w.Proto)
+		}
+		if g.GetNote() == "" {
+			t.Errorf("deny_rules[%d] has no note; the audit event should say why the hop was refused", i)
+		}
+		if g.GetExpiresAt() != "" {
+			t.Errorf("deny_rules[%d] expires_at = %q, want no expiry", i, g.GetExpiresAt())
+		}
+	}
+}
+
+// TestCompileAllowedPeersPolicy_A2ADenySurvivesCompile runs the agent-skill
+// policy through the same validate/normalize path applyAllowedPeersPolicy uses
+// before storing it, and then into the kernel map entries, so the A2A-port
+// deny is proven to reach the deny_cidr map scoped to tcp/8674 — not collapsed
+// to a whole-host block, and not dropped.
+func TestCompileAllowedPeersPolicy_A2ADenySurvivesCompile(t *testing.T) {
+	resolve := func(string) (string, bool) { return "10.0.0.5", true }
+	p := compileAllowedPeersPolicy("agent-x", []string{"peer-a"}, resolve,
+		[]string{"10.0.1.1/32"}, nil, "10.100.0.1/32", true)
+
+	c, err := netpolicy.Compile(p)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if !slices.Contains(c.EgressCIDRs, netip.MustParsePrefix("10.0.0.5/32")) {
+		t.Errorf("peer /32 must remain an egress allow, got %v", c.EgressCIDRs)
+	}
+	entries, err := netbpf.CompileDeny(7, c)
+	if err != nil {
+		t.Fatalf("CompileDeny: %v", err)
+	}
+	want := netbpf.DenyEntry{PrefixLen: 64, TenantID: 7, Addr: [4]byte{10, 0, 0, 5}, Port: 8674, Proto: 6}
+	if len(entries) != 1 || entries[0] != want {
+		t.Fatalf("deny entries = %+v, want exactly [%+v] (peer only — never the daemon/gateway CIDRs)", entries, want)
+	}
 }
 
 func TestCompileAllowedPeersPolicyNoneRunning(t *testing.T) {
@@ -431,6 +485,9 @@ func TestCompileAllowedPeersPolicyNoneRunning(t *testing.T) {
 	p := compileAllowedPeersPolicy("t", []string{"x", "y"}, func(string) (string, bool) { return "", false }, nil, nil, "", false)
 	if len(p.EgressCidrs) != 0 {
 		t.Errorf("expected no egress cidrs when no peers run, got %v", p.EgressCidrs)
+	}
+	if len(p.DenyRules) != 0 {
+		t.Errorf("expected no deny rules when no peers run, got %v", p.DenyRules)
 	}
 }
 
@@ -525,5 +582,75 @@ func TestPeerAllowed(t *testing.T) {
 	// Unknown caller skill is allowed (not ours to gate here).
 	if !s.peerAllowed("does-not-exist", "some-peer") {
 		t.Error("unknown caller skill should not be gated here")
+	}
+}
+
+// #2140: NetworkPolicyStore.Set deliberately drops deny rules (they are owned
+// by MutateDenyRules), so the A2A-port denies must be written through
+// MutateDenyRules or they never reach the store — and from there the kernel.
+func TestStoreAgentSkillPolicy_PersistsA2ADenies(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemNetworkPolicyStore()
+	running := map[string]string{"peer-a": "10.0.0.5", "peer-b": "10.0.0.6"}
+	resolve := func(id string) (string, bool) { ip, ok := running[id]; return ip, ok }
+
+	denyCIDRs := func() []string {
+		t.Helper()
+		got, err := store.Get(ctx, "agent-x")
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		var out []string
+		for _, r := range got.GetDenyRules() {
+			out = append(out, r.GetCidr()+":"+strconv.Itoa(int(r.GetPort()))+"/"+r.GetProto())
+		}
+		slices.Sort(out)
+		return out
+	}
+
+	p := compileAllowedPeersPolicy("agent-x", []string{"peer-a", "peer-b"}, resolve, nil, defaultAgentEgressDomains, "", false)
+	if err := storeAgentSkillPolicy(ctx, store, p); err != nil {
+		t.Fatalf("storeAgentSkillPolicy: %v", err)
+	}
+	if got, want := denyCIDRs(), []string{"10.0.0.5/32:8674/tcp", "10.0.0.6/32:8674/tcp"}; !slices.Equal(got, want) {
+		t.Fatalf("stored deny rules = %v, want %v", got, want)
+	}
+
+	// An operator's own virtual patch on the tenant must survive a relaunch.
+	if _, err := store.MutateDenyRules(ctx, "agent-x", func(rs []*pb.NetworkPolicyDenyRule) ([]*pb.NetworkPolicyDenyRule, error) {
+		return append(rs, &pb.NetworkPolicyDenyRule{Cidr: "203.0.113.9/32", Note: "CVE-x"}), nil
+	}); err != nil {
+		t.Fatalf("operator MutateDenyRules: %v", err)
+	}
+
+	// Relaunch with only peer-a: peer-b's A2A deny is ours and stale — drop it;
+	// the operator's rule is not ours — keep it.
+	p = compileAllowedPeersPolicy("agent-x", []string{"peer-a"}, resolve, nil, defaultAgentEgressDomains, "", false)
+	if err := storeAgentSkillPolicy(ctx, store, p); err != nil {
+		t.Fatalf("storeAgentSkillPolicy (relaunch): %v", err)
+	}
+	if got, want := denyCIDRs(), []string{"10.0.0.5/32:8674/tcp", "203.0.113.9/32:0/"}; !slices.Equal(got, want) {
+		t.Fatalf("after relaunch deny rules = %v, want %v", got, want)
+	}
+}
+
+func TestMergeA2ADenyRules_OperatorRuleOnSameHostWins(t *testing.T) {
+	// The kernel holds one deny entry per CIDR. An operator rule already on a
+	// peer's /32 (say, a whole-host block) owns that slot: the A2A deny must not
+	// overwrite it, which would silently narrow the operator's block to one port.
+	op := &pb.NetworkPolicyDenyRule{Cidr: "10.0.0.5/32", Note: "operator: isolate host"}
+	desired := []*pb.NetworkPolicyDenyRule{
+		{Cidr: "10.0.0.5/32", Port: a2aPort, Proto: "tcp", Note: a2aDenyNote},
+		{Cidr: "10.0.0.6/32", Port: a2aPort, Proto: "tcp", Note: a2aDenyNote},
+	}
+	got := mergeA2ADenyRules([]*pb.NetworkPolicyDenyRule{op}, desired)
+	if len(got) != 2 {
+		t.Fatalf("merged = %v, want the operator rule + the 10.0.0.6 A2A deny", got)
+	}
+	if got[0] != op {
+		t.Errorf("operator rule on 10.0.0.5/32 was replaced: %v", got[0])
+	}
+	if got[1].GetCidr() != "10.0.0.6/32" || got[1].GetPort() != a2aPort {
+		t.Errorf("A2A deny for 10.0.0.6/32 missing: %v", got[1])
 	}
 }
