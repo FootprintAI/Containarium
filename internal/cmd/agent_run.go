@@ -5,7 +5,6 @@ import (
 	"os"
 	"strings"
 
-	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/spf13/cobra"
 )
 
@@ -72,22 +71,6 @@ func resolveAgentRunGitCredential() (string, error) {
 	return strings.TrimSpace(string(data)), nil
 }
 
-// buildAgentRunRequest maps the `agent run` flags onto the RPC request.
-// tracker_connection is passed through as-is: the daemon validates it
-// against the caller's own connections at launch (#2042).
-func buildAgentRunRequest(skillID, gitCredential string) *pb.RunAgentSkillRequest {
-	return &pb.RunAgentSkillRequest{
-		SkillId:           skillID,
-		BackendId:         agentRunBackendID,
-		Pool:              agentRunPool,
-		InputJson:         agentRunInput,
-		GitSource:         agentRunGitSource,
-		GitRef:            agentRunGitRef,
-		GitCredential:     gitCredential,
-		TrackerConnection: agentRunTrackerConnection,
-	}
-}
-
 func runAgentRun(cmd *cobra.Command, args []string) error {
 	skillID := args[0]
 
@@ -103,7 +86,8 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 	defer func() { _ = c.Close() }()
 
 	fmt.Printf("Running agent skill %q...\n", skillID)
-	resp, err := c.RunAgentSkill(buildAgentRunRequest(skillID, gitCredential))
+	resp, err := c.RunAgentSkill(skillID, agentRunBackendID, agentRunPool, agentRunInput,
+		agentRunGitSource, agentRunGitRef, gitCredential, agentRunTrackerConnection)
 	if err != nil {
 		return err
 	}
