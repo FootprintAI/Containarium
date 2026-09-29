@@ -50,6 +50,7 @@ var (
 	sentinelMetricsExportInterval  int32
 	sentinelConsoleRouterAddr      string
 	sentinelConsoleRouterToken     string
+	sentinelWatchSpotVMs           []string
 )
 
 var sentinelCmd = &cobra.Command{
@@ -109,6 +110,8 @@ func init() {
 		"Export cadence in seconds for --metrics-export. Clamped up to the 60s billing floor.")
 
 	sentinelCmd.Flags().StringVar(&sentinelAlertWebhookURL, "alert-webhook-url", os.Getenv(config.EnvSentinelAlertWebhook), "Webhook POSTed on spot preempted/recovered (always-on alert path; the on-spot vmalert dies with the VM). Falls back to $CONTAINARIUM_SENTINEL_ALERT_WEBHOOK (#514)")
+	sentinelCmd.Flags().StringSliceVar(&sentinelWatchSpotVMs, "watch-spot-vm", nil,
+		"Additional GCP VM to watch for preemption/stop and auto-restart, as 'name:zone' or 'name:zone:project' (project defaults to --project). Repeatable. Unlike --spot-vm, a watch target is NOT added to the HTTP proxy pool and never becomes this sentinel's forwarding target — use it for an independent host (different tenants, possibly a different zone) that just happens to also run on preemptible capacity and has no sentinel of its own watching it.")
 }
 
 // loadPersistedTunnelTokens applies every dynamically-registered tunnel
@@ -195,6 +198,49 @@ func startSentinelMetricsExport(ctx context.Context, m *sentinel.Manager) func()
 	}
 }
 
+// wireWatchOnlyBackends parses --watch-spot-vm entries and registers each
+// as an independent GCPProvider on manager (see AddWatchOnlyBackend /
+// internal/sentinel/watch_recovery.go) — preemption-watched and
+// auto-restarted, but never added to the primary+failover HTTP proxy
+// pool. Must be called before manager.Run(). The returned cleanup func
+// closes every provider's GCP API clients; call it via defer alongside
+// the primary provider's own Close().
+func wireWatchOnlyBackends(ctx context.Context, manager *sentinel.Manager) (cleanup func(), err error) {
+	var providers []*sentinel.GCPProvider
+	cleanup = func() {
+		for _, p := range providers {
+			_ = p.Close()
+		}
+	}
+
+	for _, spec := range sentinelWatchSpotVMs {
+		parts := strings.Split(spec, ":")
+		if len(parts) < 2 || len(parts) > 3 {
+			return cleanup, fmt.Errorf("invalid --watch-spot-vm %q: want name:zone or name:zone:project", spec)
+		}
+		name, zone := parts[0], parts[1]
+		project := sentinelProject
+		if len(parts) == 3 {
+			project = parts[2]
+		}
+		if name == "" || zone == "" {
+			return cleanup, fmt.Errorf("invalid --watch-spot-vm %q: name and zone are required", spec)
+		}
+		if project == "" {
+			return cleanup, fmt.Errorf("invalid --watch-spot-vm %q: no project given and --project is empty", spec)
+		}
+
+		p, perr := sentinel.NewGCPProvider(ctx, project, zone, name)
+		if perr != nil {
+			return cleanup, fmt.Errorf("failed to create watch-only GCP provider for %q: %w", name, perr)
+		}
+		providers = append(providers, p)
+		manager.AddWatchOnlyBackend(name, p)
+		log.Printf("[sentinel] watch-only recovery configured for %s (zone=%s project=%s)", name, zone, project)
+	}
+	return cleanup, nil
+}
+
 func runSentinel(cmd *cobra.Command, args []string) error {
 	// Parse forwarded ports
 	ports, err := parseForwardedPorts(sentinelForwardedPorts)
@@ -259,6 +305,12 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 			}
 
 			manager := sentinel.NewManager(config, gcpProvider)
+
+			watchCleanup, werr := wireWatchOnlyBackends(ctx, manager)
+			defer watchCleanup()
+			if werr != nil {
+				return werr
+			}
 
 			// Start ConnMux on port 443 — multiplexes tunnel and HTTPS
 			muxAddr := fmt.Sprintf(":%d", sentinelHTTPSPort)
@@ -357,6 +409,12 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 
 		manager := sentinel.NewManager(config, provider)
 
+		watchCleanup, werr := wireWatchOnlyBackends(ctx, manager)
+		defer watchCleanup()
+		if werr != nil {
+			return werr
+		}
+
 		// Start ConnMux on port 443 — multiplexes tunnel handshakes and HTTPS
 		// on the same port. No extra firewall port needed.
 		muxAddr := fmt.Sprintf(":%d", sentinelHTTPSPort)
@@ -428,6 +486,12 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 	}
 
 	manager := sentinel.NewManager(config, provider)
+
+	watchCleanup, werr := wireWatchOnlyBackends(ctx, manager)
+	defer watchCleanup()
+	if werr != nil {
+		return werr
+	}
 
 	// Graceful shutdown on signals
 	sigChan := make(chan os.Signal, 1)

@@ -64,7 +64,15 @@ func (m *Manager) fireAlert(event, backend string, outage time.Duration) {
 	if outage > 0 {
 		payload.OutageSeconds = int64(outage.Seconds())
 	}
-	url := m.config.AlertWebhookURL
+	postAlertPayload(m.config.AlertWebhookURL, payload)
+}
+
+// postAlertPayload delivers an alertPayload to url, best-effort and
+// asynchronous so it never blocks (or fails) a caller's event loop.
+// Shared by fireAlert (primary "gcp" backend) and fireWatchOnlyAlert
+// (watch_recovery.go) — the only difference between them is which
+// backend's counters went into the payload.
+func postAlertPayload(url string, payload alertPayload) {
 	go func() {
 		body, err := json.Marshal(payload)
 		if err != nil {
@@ -81,15 +89,15 @@ func (m *Manager) fireAlert(event, backend string, outage time.Duration) {
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
-			log.Printf("[sentinel] alert webhook POST %s failed: %v", event, err)
+			log.Printf("[sentinel] alert webhook POST %s failed: %v", payload.Event, err)
 			return
 		}
 		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode >= 400 {
-			log.Printf("[sentinel] alert webhook POST %s returned %d", event, resp.StatusCode)
+			log.Printf("[sentinel] alert webhook POST %s returned %d", payload.Event, resp.StatusCode)
 			return
 		}
-		log.Printf("[sentinel] alert webhook %s delivered (outstanding=%d)", event, payload.Outstanding)
+		log.Printf("[sentinel] alert webhook %s delivered (backend=%s outstanding=%d)", payload.Event, payload.Backend, payload.Outstanding)
 	}()
 }
 
