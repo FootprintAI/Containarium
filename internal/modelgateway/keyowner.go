@@ -176,6 +176,15 @@ func (g *Gateway) RevokeByKeyOwner(ctx context.Context, keyOwner, reason string)
 	return rev.RevokeOwner(ctx, keyOwner, time.Now(), reason)
 }
 
+// OwnerRevokedMessage is the body of the 401 a token gets once its key owner
+// has been revoked (RevokeByKeyOwner). Skill and crew runs carry key_owner
+// (#2134), so this is what an in-flight run's model call reports mid-run when
+// the owner's key is deleted — worded so the run's error reads as the
+// deliberate kill-switch it is, not as an unexplained authentication failure.
+const OwnerRevokedMessage = "gateway tokens for this key owner are revoked: " +
+	"the owner's provider key was removed or revoked, so tokens issued before that were intentionally invalidated " +
+	"(this is not a gateway fault; register a key and start a new run to mint a fresh token)"
+
 // ownerRevocationLookupTimeout bounds one owner-revocation lookup, mirroring
 // revocationLookupTimeout for the per-jti list.
 const ownerRevocationLookupTimeout = 500 * time.Millisecond

@@ -816,10 +816,11 @@ func (s *AgentSkillServer) provisionSkillBoxWith(ctx context.Context, skill *pb.
 	// Model-gateway provisioning (#674): when the daemon serves a gateway, mint a
 	// per-skill gateway token and append the env-seeding to the same exec, so the
 	// box's engine routes model calls through the gateway (real key never enters
-	// the box). Best-effort: a mint/script error logs and falls back to direct
+	// the box). The token carries the run's key_owner (#2134), so the call
+	// spends the run owner's registered key rather than the daemon-global one. Best-effort: a mint/script error logs and falls back to direct
 	// mode rather than failing provisioning.
 	if s.gateway != nil {
-		if gwTok, gwMinted, gerr := s.gateway.mintGatewayToken(name, skill.Id, runID); gerr != nil {
+		if gwTok, gwMinted, gerr := s.mintRunGatewayToken(ctx, name, skill.Id, runID, box); gerr != nil {
 			log.Printf("[agent-skill] gateway token mint failed for %s (box runs direct mode): %v", name, gerr)
 		} else if envScript, eerr := gatewayEnvScript(s.gateway.provider, s.gateway.httpPort, gwTok, seedDir); eerr != nil {
 			log.Printf("[agent-skill] gateway env script failed for %s (box runs direct mode): %v", name, eerr)

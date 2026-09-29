@@ -182,7 +182,7 @@ func containsString(hay []string, needle string) bool {
 func TestMintGatewayToken_RoundTrips(t *testing.T) {
 	secret := []byte("test-shared-secret")
 	g := &gatewayProvisioning{provider: "anthropic", httpPort: 8080, secret: secret}
-	tok, minted, err := g.mintGatewayToken("agent-hello", "hello-agent", "run-42")
+	tok, minted, err := g.mintGatewayToken("agent-hello", "hello-agent", "run-42", "")
 	if err != nil {
 		t.Fatalf("mint: %v", err)
 	}
