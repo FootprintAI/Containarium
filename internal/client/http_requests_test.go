@@ -133,6 +133,16 @@ func TestConditionalFieldsAreOmittedWhenUnset(t *testing.T) {
 		}
 	})
 
+	t.Run("runAgentSkillRequest tracker_connection", func(t *testing.T) {
+		if contains(marshalKeys(t, runAgentSkillRequest{}), "tracker_connection") {
+			t.Error("tracker_connection must be absent when unset so an unbound run stays byte-identical")
+		}
+		b, _ := json.Marshal(runAgentSkillRequest{TrackerConnection: "conn-a"})
+		if !strings.Contains(string(b), `"tracker_connection":"conn-a"`) {
+			t.Errorf("tracker_connection must be sent when set (#2042), got %s", b)
+		}
+	})
+
 	t.Run("setMetricsExportRequest groups", func(t *testing.T) {
 		if contains(marshalKeys(t, setMetricsExportRequest{}), "groups") {
 			t.Error("groups must be absent when empty so a host-only call stays byte-identical (#1081)")

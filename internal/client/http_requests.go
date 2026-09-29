@@ -249,6 +249,9 @@ type runAgentSkillRequest struct {
 	GitSource     string `json:"git_source"`
 	GitRef        string `json:"git_ref"`
 	GitCredential string `json:"git_credential"`
+	// TrackerConnection is omitted when empty so an unbound run sends
+	// exactly the body it did before #2042.
+	TrackerConnection string `json:"tracker_connection,omitempty"`
 }
 
 // enqueueAgentTaskRequest is POST /v1/agent-tasks.

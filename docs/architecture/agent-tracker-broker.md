@@ -64,7 +64,8 @@ mints it into the run JWT as a typed claim. Tracker verbs called with a run
 token use the claim and reject a request that names a different connection;
 operator tokens (no `run_id`) may name any connection in their tenant. Same
 anti-forgery rule as the `act` claim: derived from the verified token, never
-from a request field.
+from a request field. From the shell, bind a run with
+`containarium agent run <skill-id> --tracker-connection <conn>`.
 
 **D4 — why the platform MCP.** The engine mounts only the in-box `agent-box`
 MCP today (`agent-runtime/src/engines/claude.ts`); `seed.ts` already carries

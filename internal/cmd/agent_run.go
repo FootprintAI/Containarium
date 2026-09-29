@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/spf13/cobra"
 )
 
@@ -15,6 +16,7 @@ var (
 	agentRunGitSource         string
 	agentRunGitRef            string
 	agentRunGitCredentialFile string
+	agentRunTrackerConnection string
 )
 
 var agentRunCmd = &cobra.Command{
@@ -30,7 +32,8 @@ seed; the returned artifact is empty until that lands.
 Examples:
   containarium agent run hello-agent --input '{"q":"hi"}' --server <host>
   containarium agent run code-review --git-source https://github.com/org/repo \
-    --git-ref main --server <host>`,
+    --git-ref main --server <host>
+  containarium agent run triage --tracker-connection <conn> --server <host>`,
 	Args: cobra.ExactArgs(1),
 	RunE: runAgentRun,
 }
@@ -49,6 +52,8 @@ func init() {
 		"Exact ref to check out for --git-source: full SHA (preferred), branch, tag, or refs/pull/N/merge. Empty = the remote's default branch.")
 	agentRunCmd.Flags().StringVar(&agentRunGitCredentialFile, "git-credential-file", "",
 		"Path to a file holding a bearer token for a private --git-source. Used daemon-side for one fetch; never written to the box's .git/config.")
+	agentRunCmd.Flags().StringVar(&agentRunTrackerConnection, "tracker-connection", "",
+		"Name of one of your tracker connections to bind this run to; minted into the run token as its tracker_conn claim. The daemon rejects a name you don't own. Empty = no binding.")
 }
 
 // resolveAgentRunGitCredential reads --git-credential-file if one was
@@ -67,6 +72,22 @@ func resolveAgentRunGitCredential() (string, error) {
 	return strings.TrimSpace(string(data)), nil
 }
 
+// buildAgentRunRequest maps the `agent run` flags onto the RPC request.
+// tracker_connection is passed through as-is: the daemon validates it
+// against the caller's own connections at launch (#2042).
+func buildAgentRunRequest(skillID, gitCredential string) *pb.RunAgentSkillRequest {
+	return &pb.RunAgentSkillRequest{
+		SkillId:           skillID,
+		BackendId:         agentRunBackendID,
+		Pool:              agentRunPool,
+		InputJson:         agentRunInput,
+		GitSource:         agentRunGitSource,
+		GitRef:            agentRunGitRef,
+		GitCredential:     gitCredential,
+		TrackerConnection: agentRunTrackerConnection,
+	}
+}
+
 func runAgentRun(cmd *cobra.Command, args []string) error {
 	skillID := args[0]
 
@@ -82,8 +103,7 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 	defer func() { _ = c.Close() }()
 
 	fmt.Printf("Running agent skill %q...\n", skillID)
-	resp, err := c.RunAgentSkill(skillID, agentRunBackendID, agentRunPool, agentRunInput,
-		agentRunGitSource, agentRunGitRef, gitCredential)
+	resp, err := c.RunAgentSkill(buildAgentRunRequest(skillID, gitCredential))
 	if err != nil {
 		return err
 	}
