@@ -1251,6 +1251,10 @@ func (s *Server) registerTools() {
 				"    public URLs.\n" +
 				"  - Filter by `username` to see only one container's routes, or " +
 				"    `active_only=true` to skip disabled ones.\n\n" +
+				"An inactive entry (`active: false`) is a subdomain reservation that has " +
+				"been claimed but not yet bound to a container, and it still counts " +
+				"against the caller's route quota. After a quota error, list without " +
+				"`active_only` to see which reservations are using it.\n\n" +
 				"Read-only — no side effects. For TCP/UDP passthrough routes (raw L4, not " +
 				"HTTPS), those live on a different daemon endpoint — use " +
 				"list_passthrough_routes instead.",

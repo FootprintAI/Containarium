@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `get_upgrade_status` MCP tools show it, and flag a sentinel that is behind the
   latest release. (#2171)
 
+### Changed
+
+- `mcp`: the `list_routes` description now says inactive entries are claimed-but-unbound
+  subdomain reservations that still count against the caller's route quota (#2160)
+
 ## [0.91.1] - 2026-09-29
 
 ### Added
