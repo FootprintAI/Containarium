@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- MCP `connect` (exec and session modes) now presents the short-lived SSH
+  certificate it was issued. The pure-Go SSH client loaded only the throwaway
+  private key, never the `<key>-cert.pub` beside it (a name only OpenSSH picks
+  up by itself), so every certificate-auth connect offered a bare key and was
+  rejected at the sentinel with `no matching pipe`. A certificate file that is
+  present but unusable is now an error instead of a silent fallback. (#2179)
 - `otel-sidecar`/`core-otelcollector`: bump the pinned upstream `otelcol-contrib`
   release from `0.110.0` to `0.162.0` (decision O1: kept in sync across
   `sidecars/otel-sidecar/Dockerfile` and `internal/server/core_otel_collector.go`).
