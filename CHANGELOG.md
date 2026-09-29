@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.93.0] - 2026-09-29
+
+### Added
+
+- `sentinel`: opt-in `--watch-spot-vm name:zone[:project]` flag (repeatable) so
+  a sentinel can watch an additional, independent GCP spot/preemptible VM for
+  preemption and auto-restart it, without adding it to the primary/failover
+  HTTP proxy pool. Each watch target gets its own recovery/backoff timeline,
+  independent of the primary backend's. (#2175)
+
 ## [0.92.0] - 2026-09-29
 
 ### Added
