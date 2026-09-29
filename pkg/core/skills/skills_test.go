@@ -4,8 +4,10 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/footprintai/containarium/pkg/core/catalogsig"
@@ -192,6 +194,75 @@ func TestEmbeddedCatalogLoads(t *testing.T) {
 	}
 }
 
+// TestDiffCrewSkillsDeclareOutputSchema (#2002): diff-drafter and diff-reviewer
+// declare the JSON Schema of the artifact they emit, so the in-box runtime can
+// hand it to the engine's structured-output mechanism instead of asking for the
+// shape in prose. The schema must be the one the system prompt describes — an
+// object with the files list plus the skill's own summary fields — otherwise
+// enforcement and instruction disagree and the model can satisfy at most one.
+func TestDiffCrewSkillsDeclareOutputSchema(t *testing.T) {
+	type jsonSchema struct {
+		Type                 string                     `json:"type"`
+		Required             []string                   `json:"required"`
+		Properties           map[string]json.RawMessage `json:"properties"`
+		AdditionalProperties *bool                      `json:"additionalProperties"`
+	}
+	cases := []struct {
+		id       string
+		required []string
+	}{
+		{"diff-drafter", []string{"files", "summary"}},
+		{"diff-reviewer", []string{"files", "drafter_summary", "review_notes"}},
+	}
+	m := GetDefault()
+	for _, tc := range cases {
+		t.Run(tc.id, func(t *testing.T) {
+			sk, err := m.Get(tc.id)
+			if err != nil {
+				t.Fatalf("%s missing: %v", tc.id, err)
+			}
+			raw := sk.GetAgentCard().GetOutputSchemaJson()
+			if raw == "" {
+				t.Fatalf("%s declares no agent_card.output_schema_json; nothing for the runtime to enforce", tc.id)
+			}
+			var schema jsonSchema
+			if err := json.Unmarshal([]byte(raw), &schema); err != nil {
+				t.Fatalf("%s output_schema_json is not a JSON object: %v", tc.id, err)
+			}
+			if schema.Type != "object" {
+				t.Errorf("%s output schema type = %q, want object", tc.id, schema.Type)
+			}
+			for _, field := range tc.required {
+				if !slices.Contains(schema.Required, field) {
+					t.Errorf("%s output schema does not require %q (required = %v)", tc.id, field, schema.Required)
+				}
+				if _, ok := schema.Properties[field]; !ok {
+					t.Errorf("%s output schema has no property %q", tc.id, field)
+				}
+			}
+			// The prompt says "exactly this shape": the schema must close the
+			// object, or a stray key is schema-valid and the shape is not
+			// actually enforced.
+			if schema.AdditionalProperties == nil || *schema.AdditionalProperties {
+				t.Errorf("%s output schema must set additionalProperties: false", tc.id)
+			}
+			// files is a list of {path, content}, whole-file content (cloud#1738).
+			var files jsonSchema
+			if err := json.Unmarshal(schema.Properties["files"], &struct {
+				Type  string      `json:"type"`
+				Items *jsonSchema `json:"items"`
+			}{Items: &files}); err != nil {
+				t.Fatalf("%s files property: %v", tc.id, err)
+			}
+			for _, field := range []string{"path", "content"} {
+				if !slices.Contains(files.Required, field) {
+					t.Errorf("%s files items do not require %q (required = %v)", tc.id, field, files.Required)
+				}
+			}
+		})
+	}
+}
+
 func TestValidateRejectsBadManifests(t *testing.T) {
 	cases := map[string]string{
 		"missing recipe_id": `
@@ -199,6 +270,39 @@ skills:
   - id: x
     system_prompt: hi
     allowed_scopes: [containers:read]
+`,
+		// #2002: the runtime enforces output_schema_json, so a catalog that
+		// declares one that cannot be parsed must fail at load, not leave the
+		// skill silently unenforced.
+		"malformed output_schema_json": `
+skills:
+  - id: x
+    recipe_id: agent-runtime
+    system_prompt: hi
+    allowed_scopes: [containers:read]
+    agent_card:
+      id: x
+      output_schema_json: '{not json'
+`,
+		"non-object output_schema_json": `
+skills:
+  - id: x
+    recipe_id: agent-runtime
+    system_prompt: hi
+    allowed_scopes: [containers:read]
+    agent_card:
+      id: x
+      output_schema_json: '["files"]'
+`,
+		"malformed input_schema_json": `
+skills:
+  - id: x
+    recipe_id: agent-runtime
+    system_prompt: hi
+    allowed_scopes: [containers:read]
+    agent_card:
+      id: x
+      input_schema_json: '{'
 `,
 		"missing system_prompt": `
 skills:
@@ -302,6 +406,7 @@ skills:
     agent_card:
       id: ok
       capabilities: [echo]
+      output_schema_json: '{"type": "object", "required": ["ok"]}'
 `
 	m := New()
 	if err := m.LoadFromBytes([]byte(good)); err != nil {
@@ -316,5 +421,10 @@ skills:
 	}
 	if s.AgentCard == nil || s.AgentCard.Id != "ok" {
 		t.Error("agent_card not decoded")
+	}
+	// A well-formed schema passes validation and reaches the proto card
+	// verbatim — it is what the daemon seeds as agent-card.json (#2002).
+	if got := s.GetAgentCard().GetOutputSchemaJson(); got != `{"type": "object", "required": ["ok"]}` {
+		t.Errorf("output_schema_json = %q, want it passed through verbatim", got)
 	}
 }
