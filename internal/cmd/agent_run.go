@@ -15,6 +15,7 @@ var (
 	agentRunGitSource         string
 	agentRunGitRef            string
 	agentRunGitCredentialFile string
+	agentRunTrackerConnection string
 )
 
 var agentRunCmd = &cobra.Command{
@@ -30,7 +31,8 @@ seed; the returned artifact is empty until that lands.
 Examples:
   containarium agent run hello-agent --input '{"q":"hi"}' --server <host>
   containarium agent run code-review --git-source https://github.com/org/repo \
-    --git-ref main --server <host>`,
+    --git-ref main --server <host>
+  containarium agent run triage --tracker-connection <conn> --server <host>`,
 	Args: cobra.ExactArgs(1),
 	RunE: runAgentRun,
 }
@@ -49,6 +51,8 @@ func init() {
 		"Exact ref to check out for --git-source: full SHA (preferred), branch, tag, or refs/pull/N/merge. Empty = the remote's default branch.")
 	agentRunCmd.Flags().StringVar(&agentRunGitCredentialFile, "git-credential-file", "",
 		"Path to a file holding a bearer token for a private --git-source. Used daemon-side for one fetch; never written to the box's .git/config.")
+	agentRunCmd.Flags().StringVar(&agentRunTrackerConnection, "tracker-connection", "",
+		"Name of one of your tracker connections to bind this run to; minted into the run token as its tracker_conn claim. The daemon rejects a name you don't own. Empty = no binding.")
 }
 
 // resolveAgentRunGitCredential reads --git-credential-file if one was
@@ -83,7 +87,7 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("Running agent skill %q...\n", skillID)
 	resp, err := c.RunAgentSkill(skillID, agentRunBackendID, agentRunPool, agentRunInput,
-		agentRunGitSource, agentRunGitRef, gitCredential)
+		agentRunGitSource, agentRunGitRef, gitCredential, agentRunTrackerConnection)
 	if err != nil {
 		return err
 	}

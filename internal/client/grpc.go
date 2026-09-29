@@ -802,19 +802,21 @@ func (c *GRPCClient) GetAgentSkill(id string) (*pb.AgentSkill, error) {
 // RunAgentSkill provisions a skill's box, mints a scoped token, runs one task,
 // and returns the box via gRPC. gitSource/gitRef/gitCredential (#1859) fetch a
 // repo into the run's workspace before the agent starts; empty gitSource
-// means no fetch.
-func (c *GRPCClient) RunAgentSkill(skillID, backendID, pool, inputJSON, gitSource, gitRef, gitCredential string) (*pb.RunAgentSkillResponse, error) {
+// means no fetch. trackerConnection (#2042) binds the run to one of the
+// caller's tracker connections; empty means no binding.
+func (c *GRPCClient) RunAgentSkill(skillID, backendID, pool, inputJSON, gitSource, gitRef, gitCredential, trackerConnection string) (*pb.RunAgentSkillResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // box provisioning can take time
 	defer cancel()
 
 	req := &pb.RunAgentSkillRequest{
-		SkillId:       skillID,
-		BackendId:     backendID,
-		Pool:          pool,
-		InputJson:     inputJSON,
-		GitSource:     gitSource,
-		GitRef:        gitRef,
-		GitCredential: gitCredential,
+		SkillId:           skillID,
+		BackendId:         backendID,
+		Pool:              pool,
+		InputJson:         inputJSON,
+		GitSource:         gitSource,
+		GitRef:            gitRef,
+		GitCredential:     gitCredential,
+		TrackerConnection: trackerConnection,
 	}
 	resp, err := c.agentClient.RunAgentSkill(ctx, req)
 	if err != nil {

@@ -1634,6 +1634,7 @@ skipAppHosting:
 	var auditStore *audit.Store
 	var auditEventSubscriber *audit.EventSubscriber
 	var revocationStoreLocal *auth.PgRevocationStore
+	var ownerRevocationStoreLocal *auth.PgOwnerRevocationStore
 	if postgresConnString != "" {
 		auditPool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
 		if poolErr != nil {
@@ -1670,6 +1671,18 @@ skipAppHosting:
 				tokensServer := NewTokensServer(tokenManager, revStore, 0)
 				pb.RegisterTokensServiceServer(grpcServer, tokensServer)
 				log.Printf("TokensService registered (POST /v1/tokens/revoke, /v1/tokens/delegate)")
+			}
+
+			// #2111 — the model gateway's owner-level kill-switch, durable:
+			// one cutoff row per key owner, so a daemon restart no longer
+			// forgets that an owner's key was removed. Same pool as the jti
+			// list. Handed to the gateway through gatewayOwnerRevocations,
+			// which carries the nil-pointer-in-interface check.
+			ownerRevStore, ownerRevErr := auth.NewPgOwnerRevocationStore(context.Background(), auditPool)
+			if ownerRevErr != nil {
+				log.Printf("Warning: Failed to create model-gateway owner revocation store: %v", ownerRevErr)
+			} else {
+				ownerRevocationStoreLocal = ownerRevStore
 			}
 		}
 	}
@@ -2034,13 +2047,12 @@ skipAppHosting:
 			} else if len(gwRegistered) > 0 {
 				log.Printf("Warning: model-gateway has no secrets store (no Postgres) — per-owner provider keys cannot be resolved; every call falls back to the daemon-global key")
 			}
-			// Owner-level kill-switch (the "customer removed their key" case).
-			// In-memory for now: it is per key owner, not per token, so it needs
-			// its own durable store rather than the jti list, and that lands with
-			// the ModelGatewayService RPCs (#1726). Until then a daemon restart
-			// forgets owner revocations — the per-jti list and removing the key
-			// itself are the durable halves.
-			gwOwnerRevocations := modelgateway.NewMemOwnerRevocations()
+			// Owner-level kill-switch (the "customer removed their key" case):
+			// the durable Postgres store when the daemon has one (#2111), so the
+			// cutoff survives a restart; in-memory otherwise. Chosen through
+			// gatewayOwnerRevocations for the same nil-interface reason as
+			// gwRevocations above.
+			gwOwnerRevocations := gatewayOwnerRevocations(ownerRevocationStoreLocal)
 			gw := modelgateway.New(modelgateway.Config{
 				Secret:           []byte(config.JWTSecret),
 				Providers:        gwProviders,
@@ -2444,6 +2456,42 @@ func (ds *DualServer) runRevocationCleanup(ctx context.Context) {
 	}
 }
 
+const (
+	integrityHeartbeatIntervalEnv     = "CONTAINARIUM_INTEGRITY_HEARTBEAT_INTERVAL"
+	defaultIntegrityHeartbeatInterval = 5 * time.Minute
+	minIntegrityHeartbeatInterval     = 30 * time.Second
+)
+
+// integrityHeartbeatInterval is the resolved interval and any adjustment made
+// to an operator-provided value. It is kept separate from the heartbeat's
+// lifecycle so its duration policy is easy to test without starting a daemon.
+type integrityHeartbeatInterval struct {
+	interval time.Duration
+	invalid  bool
+	clamped  bool
+}
+
+func resolveIntegrityHeartbeatInterval(raw string) integrityHeartbeatInterval {
+	if raw == "" {
+		return integrityHeartbeatInterval{interval: defaultIntegrityHeartbeatInterval}
+	}
+
+	interval, err := time.ParseDuration(raw)
+	if err != nil || interval <= 0 {
+		return integrityHeartbeatInterval{
+			interval: defaultIntegrityHeartbeatInterval,
+			invalid:  true,
+		}
+	}
+	if interval < minIntegrityHeartbeatInterval {
+		return integrityHeartbeatInterval{
+			interval: minIntegrityHeartbeatInterval,
+			clamped:  true,
+		}
+	}
+	return integrityHeartbeatInterval{interval: interval}
+}
+
 // startIntegrityHeartbeat launches the integrity self-measurement heartbeat
 // (#683). On a fixed cadence the daemon computes + signs a measurement of its
 // own binary, loaded in-kernel program object(s), and policy/config state, and
@@ -2459,7 +2507,17 @@ func (ds *DualServer) startIntegrityHeartbeat(ctx context.Context) {
 	if ds.containerServer == nil {
 		return
 	}
-	const interval = 5 * time.Minute
+	configured := os.Getenv(integrityHeartbeatIntervalEnv)
+	decision := resolveIntegrityHeartbeatInterval(configured)
+	if decision.invalid {
+		log.Printf("[integrity] %s=%q invalid, using default %s",
+			integrityHeartbeatIntervalEnv, configured, defaultIntegrityHeartbeatInterval)
+	}
+	if decision.clamped {
+		log.Printf("[integrity] %s=%q below minimum %s; clamping to %s",
+			integrityHeartbeatIntervalEnv, configured, minIntegrityHeartbeatInterval, decision.interval)
+	}
+	log.Printf("[integrity] self-measurement heartbeat interval=%s", decision.interval)
 
 	emit := func() {
 		m, err := ds.containerServer.computeSelfMeasurement()
@@ -2478,7 +2536,7 @@ func (ds *DualServer) startIntegrityHeartbeat(ctx context.Context) {
 	go func() {
 		// One initial emission once the daemon is up, then on the cadence.
 		emit()
-		t := time.NewTicker(interval)
+		t := time.NewTicker(decision.interval)
 		defer t.Stop()
 		for {
 			select {

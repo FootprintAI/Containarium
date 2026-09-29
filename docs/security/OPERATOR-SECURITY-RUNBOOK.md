@@ -1197,6 +1197,15 @@ attacker, not a host-root one who could edit both. Back it up
 off-host (it's a plain append-only JSON-lines file) for anything
 stronger.
 
+### Integrity self-measurement heartbeat
+
+The daemon also emits a self-measurement digest to its log on a periodic
+heartbeat. Set `CONTAINARIUM_INTEGRITY_HEARTBEAT_INTERVAL` in the daemon's
+systemd `Environment=` or `EnvironmentFile` to a Go duration such as `30s`,
+`5m`, or `1h`. It defaults to `5m`. Invalid, zero, and negative values fall
+back to that default; values below `30s` are clamped to `30s` to avoid a log
+flood. The daemon logs the effective interval when the heartbeat starts.
+
 ---
 
 ## References
