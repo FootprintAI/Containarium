@@ -24,14 +24,25 @@ func WithSameOriginRedirects(client *http.Client) *http.Client {
 	clone := *client
 	previous := clone.CheckRedirect
 	clone.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		var current *url.URL
 		if len(via) > 0 {
-			current := via[len(via)-1].URL
+			if via[len(via)-1].URL == nil {
+				return checkSameOriginRedirect(nil, req.URL)
+			}
+			origin := *via[len(via)-1].URL
+			current = &origin
 			if err := checkSameOriginRedirect(current, req.URL); err != nil {
 				return err
 			}
 		}
 		if previous != nil {
-			return previous(req, via)
+			if err := previous(req, via); err != nil {
+				return err
+			}
+			if current != nil {
+				return checkSameOriginRedirect(current, req.URL)
+			}
+			return nil
 		}
 		if len(via) >= 10 {
 			return errors.New("stopped after 10 redirects")
