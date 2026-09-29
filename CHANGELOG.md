@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `otel-sidecar`/`core-otelcollector`: bump the pinned upstream `otelcol-contrib`
+  release from `0.110.0` to `0.162.0` (decision O1: kept in sync across
+  `sidecars/otel-sidecar/Dockerfile` and `internal/server/core_otel_collector.go`).
+  Clears ~50 HIGH/CRITICAL CVEs accumulated in the old build's embedded Go
+  toolchain and transitive dependencies (Go stdlib, grpc-go, x/crypto, x/net,
+  etc.) — none of them ever came from this repo's own code. Verified `v0.162.0`
+  scans clean under the same Trivy policy CI enforces (0 CRITICAL/HIGH,
+  unfixed-only). (#2164)
+
 ## [0.93.0] - 2026-09-29
 
 ### Added
