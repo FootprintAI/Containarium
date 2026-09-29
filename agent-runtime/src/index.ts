@@ -76,6 +76,7 @@ async function main(): Promise<void> {
     agentBoxArgs: [],
     maxTurns,
     platformMcp: seed.platformMcp,
+    outputSchema: seed.outputSchema,
   };
 
   if (engine.name === "codex") writeCodexConfig(cfg);

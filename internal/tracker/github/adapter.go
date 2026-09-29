@@ -33,7 +33,7 @@ func New(httpClient *http.Client) *Adapter {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 10 * time.Second}
 	}
-	return &Adapter{http: httpClient}
+	return &Adapter{http: tracker.WithSameOriginRedirects(httpClient)}
 }
 
 // DescribeCredential reports what the credential can do, per the design
@@ -105,7 +105,7 @@ func (a *Adapter) describeViaUser(ctx context.Context, base, token string) ([]st
 
 	resp, err := a.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", tracker.ErrUnreachable, err)
+		return nil, fmt.Errorf("%w: %w", tracker.ErrUnreachable, err)
 	}
 	defer resp.Body.Close()
 
@@ -130,7 +130,7 @@ func (a *Adapter) probeRateLimit(ctx context.Context, base, token string) error 
 
 	resp, err := a.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("%w: %v", tracker.ErrUnreachable, err)
+		return fmt.Errorf("%w: %w", tracker.ErrUnreachable, err)
 	}
 	defer resp.Body.Close()
 

@@ -38,7 +38,7 @@ func New(httpClient *http.Client) *Adapter {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 10 * time.Second}
 	}
-	return &Adapter{http: httpClient}
+	return &Adapter{http: tracker.WithSameOriginRedirects(httpClient)}
 }
 
 // DescribeCredential reports what the credential can do, per the design
@@ -93,7 +93,7 @@ func (a *Adapter) describeSelf(ctx context.Context, apiBase, token string) (trac
 
 	resp, err := a.http.Do(req)
 	if err != nil {
-		return tracker.CredentialInfo{}, fmt.Errorf("%w: %v", tracker.ErrUnreachable, err)
+		return tracker.CredentialInfo{}, fmt.Errorf("%w: %w", tracker.ErrUnreachable, err)
 	}
 	defer resp.Body.Close()
 
