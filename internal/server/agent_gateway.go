@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -9,9 +10,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/footprintai/containarium/internal/auth"
 	appconfig "github.com/footprintai/containarium/internal/config"
 	"github.com/footprintai/containarium/internal/modelgateway"
 	"github.com/footprintai/containarium/internal/tokenid"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // Model-gateway provisioning for skill boxes (#674 design, productionization of
@@ -59,14 +62,73 @@ var gatewayProviderEnvs = map[string]gatewayProviderEnv{
 // runID binds the token to one skill run (#1817) and the returned MintedID is
 // what lets the run's exit revoke it: without the jti the issuer would have to
 // re-parse its own token to kill it.
-func (g *gatewayProvisioning) mintGatewayToken(tenant, skillID, runID string) (string, tokenid.MintedID, error) {
+//
+// keyOwner is stamped as the token's key_owner claim (#2134) so the gateway
+// spends that owner's registered key; "" mints no claim and the token resolves
+// through the daemon-global key exactly as before. Callers resolve it with
+// runKeyOwner, which only ever returns a validated owner or "".
+func (g *gatewayProvisioning) mintGatewayToken(tenant, skillID, runID, keyOwner string) (string, tokenid.MintedID, error) {
 	return modelgateway.MintTokenWithID(g.secret, modelgateway.GatewayClaims{
 		Tenant:        tenant,
 		SkillID:       skillID,
 		Provider:      g.provider,
 		AllowedModels: g.allowedModels,
 		RunID:         runID,
+		KeyOwner:      keyOwner,
 	}, agentTokenTTL)
+}
+
+// runKeyOwner resolves whose provider key a skill/crew run's model calls spend
+// (#2134), the way MintGatewayToken resolves it for a named box
+// (resolveBoxKeyOwner): the box's cloud_org_id attribution label when the
+// cloud stamped one -> org:<org_id>, else the run's owning username. A skill
+// box is named agent-<skill> and shared by every caller of that skill, so the
+// box name is not an owner; the run belongs to whoever dispatched it — the
+// authenticated subject, the same identity the run's platform token records as
+// its act claim (mintedAgentAct).
+//
+// Returns "" — no key_owner claim, the daemon-global key, as before #2134 —
+// when there is no attributable owner (a system-started run with no subject;
+// decided on FootprintAI/Containarium-cloud#1917, 2026-09-29) or when the
+// resolved owner does not pass modelgateway.ValidateKeyOwner. A malformed
+// owner is never stamped and never degrades to a different owner: a stamped
+// but malformed attribution must not fall through to the caller's username,
+// since that would bill someone the cloud did not attribute the box to.
+func runKeyOwner(ctx context.Context, box *pb.Container) string {
+	var owner string
+	if orgID := strings.TrimSpace(box.GetLabels()[cloudOrgIDLabel]); orgID != "" {
+		owner = modelgateway.OrgKeyOwner(orgID)
+	} else if username, _, ok := auth.SubjectFromGRPCContext(ctx); ok && username != "" {
+		owner = modelgateway.UserKeyOwner(username)
+	} else {
+		return ""
+	}
+	if err := modelgateway.ValidateKeyOwner(owner); err != nil {
+		log.Printf("[agent-skill] run key owner %q is not a valid key_owner (%v); minting with no key_owner claim", owner, err)
+		return ""
+	}
+	return owner
+}
+
+// mintRunGatewayToken mints the gateway token for one skill/crew run on the box
+// `name`, carrying the run's key_owner (runKeyOwner). Every run path — a push
+// run, a crew member, a queue worker — reaches it through provisionSkillBox.
+//
+// An owner with no registered key is still minted a key_owner token: the
+// gateway falls back to the daemon-global key for it and logs that call as
+// billed to the operator (modelgateway resolveKey, case 3). That differs on
+// purpose from MintGatewayToken, which refuses such a mint up front — a caller
+// asking for a token can fix its config and retry, whereas a run that fails
+// outright is worse than one that runs and is logged (#2134).
+//
+// A run with no attributable owner mints no claim, and is logged here, once
+// per run, rather than per model call.
+func (s *AgentSkillServer) mintRunGatewayToken(ctx context.Context, name, skillID, runID string, box *pb.Container) (string, tokenid.MintedID, error) {
+	keyOwner := runKeyOwner(ctx, box)
+	if keyOwner == "" {
+		log.Printf("[agent-skill] run %s on %s has no attributable key owner; its model calls are billed to the daemon-global key", runID, name)
+	}
+	return s.gateway.mintGatewayToken(name, skillID, runID, keyOwner)
 }
 
 // gatewayEnvScript returns a shell snippet (run inside the box, in the same exec
