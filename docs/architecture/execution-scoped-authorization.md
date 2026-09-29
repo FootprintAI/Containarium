@@ -1,7 +1,8 @@
 # Design: execution-scoped authorization
 
 **Date:** 2026-09-28
-**Status:** accepted — D1 below is implemented by the fix for #2125
+**Status:** accepted — D1 below is implemented by the fix for #2125; D2 by the
+fix for #2140
 **Stack:** Go 1.26 (daemon, `internal/auth`, `internal/server`); TypeScript 5.6 /
 Node ≥ 20 (`agent-runtime`). No new languages, no new deployables, no new
 operator configuration.
@@ -130,6 +131,76 @@ tool, i.e. through the daemon. (b) matches what the system already does.
 | The daemon sends the **peer's** secret, so daemon-originated crew hops work | `TestSendA2ATask_SendsBearerToken`, `TestSendAgentTask_SendsPeerA2ASecret` |
 | Serve mode is launched with the box's secret in its environment | `TestServeModeCommand_ExportsA2AToken` |
 
+## D2 (2026-09-29): the network layer denies a box its peers' A2A port
+
+### Problem (#2140)
+
+D1 closed the hop at the application layer but left it reachable:
+`compileAllowedPeersPolicy` still turned each running `allowed_peers` box into
+an egress `/32` for the calling box, so a box could open TCP to a peer's `:8674`
+and get a 401/403 back. D1's in-box check is then the only layer. If it ever
+regresses — an older agent-runtime image, a box launched without its
+credential, a future refactor — nothing else says no.
+
+`allowed_peers` means two things at once: "may delegate to this peer through
+the daemon" (`peerAllowed`, `validateCrewTopology`) and "may open TCP to this
+peer's box" (the compiled `/32`). Narrowing the second changes what the field
+means.
+
+### Options considered
+
+1. Stop emitting peer `/32`s: `allowed_peers` becomes purely an API-boundary
+   concept.
+2. Keep the `/32` and add a `NetworkPolicyDenyRule` for tcp/8674 on it.
+3. Change nothing and rely on D1's in-box credential alone.
+
+### Decision: option 2 — keep the `/32`, deny tcp/8674 on it
+
+Decided on the sprint's open-questions table (2026-09-29).
+
+- **No legitimate box→peer A2A path exists.** The only A2A sender in the tree
+  is `sendA2ATask`, called only from `SendAgentTask`; the in-box agent reaches
+  peers through the `call_agent` MCP tool, i.e. through the daemon. The deny
+  removes a hop nothing makes.
+- **Over option 1:** keeping the `/32` leaves a peer reachable for anything else
+  a skill legitimately does box-to-box, so this narrows exactly the A2A port and
+  needs no audit of non-A2A peer traffic first.
+- **Over option 3:** two independent layers is the point of defense in depth.
+- **The daemon is unaffected.** The deny rule sits on the *calling box's*
+  egress (TC ingress on its host veth, checked before the allow-list — deny
+  beats allow). The daemon delivers a task from the host into the peer's veth,
+  a path no box policy governs, and the peer's reply leaves on a source port of
+  8674, not a destination port.
+
+### Mechanism
+
+1. `compileAllowedPeersPolicy` emits, next to each resolved peer `/32`, a deny
+   rule `{cidr: <peer>/32, port: 8674, proto: tcp}` noted with `a2aDenyNote`.
+   Operator/platform CIDRs and the gateway CIDR get no deny.
+2. `NetworkPolicyStore.Set` deliberately never writes deny rules (they are
+   owned by `MutateDenyRules`, #660), so `storeAgentSkillPolicy` writes the
+   allow-policy with `Set` and merges the denies with `MutateDenyRules`.
+   `mergeA2ADenyRules` replaces only rules carrying `a2aDenyNote` (a relaunch
+   with fewer peers drops the stale ones) and never overwrites an operator
+   rule already on a peer's CIDR — the kernel holds one deny per CIDR, and
+   replacing a whole-host block with a one-port one would weaken it.
+3. Like every agent-skill policy it is `LOG_ONLY` (a would-deny audit event with
+   reason `virtual_patch`) until `CONTAINARIUM_AGENT_NETWORK_POLICY_ENFORCE` and
+   the daemon-wide enforcer are armed; under ENFORCE the SYN is dropped.
+
+### Invariants, and the tests that hold them
+
+| Invariant | Test |
+| --- | --- |
+| Every resolved peer `/32` is still allowed and carries a tcp/8674 deny | `TestCompileAllowedPeersPolicy` |
+| The deny survives compilation into a port-scoped kernel entry, on peers only | `TestCompileAllowedPeersPolicy_A2ADenySurvivesCompile` |
+| The denies reach the store; a relaunch drops stale ones, keeps operator rules | `TestStoreAgentSkillPolicy_PersistsA2ADenies` |
+| An operator rule on a peer's CIDR is not overwritten | `TestMergeA2ADenyRules_OperatorRuleOnSameHostWins` |
+| On a real kernel under ENFORCE: box → peer `:8674` is dropped, box → peer other port connects, host (daemon) → box `:8674` connects | `TestAttachedProgram_BoxCannotReachPeerA2APort` (`-tags=ebpf_load`, the `ebpf-load` CI lane) |
+
+`cmd/netpolicy-smoke` drives the full enforcer against a live container and is
+the manual place to watch the would-deny events on a backend.
+
 ## Not closed here
 
 - **#2069 — delegation out of a run.** `ExchangeDelegatedToken` lets a token
@@ -145,8 +216,7 @@ tool, i.e. through the daemon. (b) matches what the system already does.
   it only reads the journal of a box that is a member of the named run. Closing
   it fully needs the run-to-box binding checked in-box, which needs a per-run
   credential the box cannot forge — the same asymmetric-key work (a) needs.
-- **The network layer.** `allowed_peers` still compiles to peer `/32` egress,
-  and 8674 is still reachable from a peer box. Under D1 that reachability is
-  authorized-but-useless rather than a hole. Narrowing the compiled policy so a
-  box cannot reach a peer's 8674 at all is defense-in-depth worth having, and is
-  a change to what `allowed_peers` means, so it is **#2140**, not #2125.
+- **The network layer on a default install.** D2 (#2140) denies a box its
+  peers' 8674, but agent-skill policies ship `LOG_ONLY`, so on a deployment that
+  has not armed enforcement that deny is observed, not dropped — D1's in-box
+  credential is then the layer that holds.
