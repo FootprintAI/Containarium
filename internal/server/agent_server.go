@@ -1138,9 +1138,53 @@ func (s *AgentSkillServer) applyAllowedPeersPolicy(ctx context.Context, tenant s
 		log.Printf("[agent-skill] invalid network policy for %q: %v", tenant, err)
 		return
 	}
-	if err := s.netpolicy.Store().Set(ctx, compiled.ToProto()); err != nil {
+	if err := storeAgentSkillPolicy(ctx, s.netpolicy.Store(), compiled.ToProto()); err != nil {
 		log.Printf("[agent-skill] could not set network policy for %q: %v", tenant, err)
 	}
+}
+
+// a2aDenyNote marks the deny rules compileAllowedPeersPolicy owns (#2140), the
+// same way quarantineNote marks auto-quarantine's: a relaunch replaces exactly
+// these and leaves every operator-authored rule alone.
+const a2aDenyNote = "agent-skill: peer A2A port is daemon-only (#2140)"
+
+// storeAgentSkillPolicy persists a compiled agent-skill policy. Set stores the
+// allow-policy but deliberately never writes deny rules (they are owned by
+// MutateDenyRules, #660), so the peer A2A-port denies are merged in through
+// MutateDenyRules — otherwise they would be silently dropped and never reach
+// the kernel.
+func storeAgentSkillPolicy(ctx context.Context, store NetworkPolicyStore, p *pb.NetworkPolicy) error {
+	if err := store.Set(ctx, p); err != nil {
+		return err
+	}
+	desired := p.GetDenyRules()
+	_, err := store.MutateDenyRules(ctx, p.GetTenant(), func(existing []*pb.NetworkPolicyDenyRule) ([]*pb.NetworkPolicyDenyRule, error) {
+		return mergeA2ADenyRules(existing, desired), nil
+	})
+	return err
+}
+
+// mergeA2ADenyRules replaces the A2A-port denies in existing (identified by
+// a2aDenyNote — stale ones from a previous launch go too) with desired. An
+// operator rule already on a peer's CIDR keeps that slot: the kernel holds one
+// deny per CIDR, and overwriting it would narrow the operator's block to one
+// port. The in-box A2A credential (D1) still holds on that peer either way.
+func mergeA2ADenyRules(existing, desired []*pb.NetworkPolicyDenyRule) []*pb.NetworkPolicyDenyRule {
+	out := make([]*pb.NetworkPolicyDenyRule, 0, len(existing)+len(desired))
+	taken := make(map[string]bool, len(existing))
+	for _, r := range existing {
+		if r.GetNote() == a2aDenyNote {
+			continue
+		}
+		out = append(out, r)
+		taken[strings.TrimSpace(r.GetCidr())] = true
+	}
+	for _, r := range desired {
+		if !taken[r.GetCidr()] {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // agentNetworkPolicyConfig reads the operator opt-ins for arming enforcement:
@@ -1224,20 +1268,32 @@ func (s *AgentSkillServer) resolvePeerIP(peerID string) (string, bool) {
 }
 
 // compileAllowedPeersPolicy builds a per-box egress NetworkPolicy from a skill's
-// allowed_peers: each currently-running peer's box IP becomes an egress /32.
+// allowed_peers: each currently-running peer's box IP becomes an egress /32,
+// paired with a deny rule for that peer's A2A port (tcp/a2aPort, #2140) — the
+// peer box stays reachable for anything else a skill does, but a task can only
+// reach its in-box A2A server through the daemon (D1 in
+// docs/architecture/execution-scoped-authorization.md). The deny sits on the
+// calling box's egress, so the daemon's own delivery to a box is unaffected.
 // Pure (resolution is injected) so it is unit-testable without a daemon. The
 // policy is LOG_ONLY — observe, never drop — until Phase 2 enforcement is armed.
-// compileAllowedPeersPolicy builds a skill box's egress policy. gatewayCIDR
-// pins the box to the model-gateway (#674 inc 4): when set, the box's model
-// egress is the gateway host (gatewayCIDR — also the daemon API + DNS) and the
-// direct provider domains are DROPPED, so a box can't bypass the gateway to
+//
+// gatewayCIDR pins the box to the model-gateway (#674 inc 4): when set, the
+// box's model egress is the gateway host (gatewayCIDR — also the daemon API +
+// DNS) and the direct provider domains are DROPPED, so a box can't bypass the gateway to
 // reach a provider with a key it doesn't hold. When empty (direct mode) the
 // box gets the provider domains directly, as before.
 func compileAllowedPeersPolicy(tenant string, allowedPeers []string, resolve func(peerID string) (string, bool), extraCIDRs, extraDomains []string, gatewayCIDR string, enforce bool) *pb.NetworkPolicy {
 	var cidrs []string
+	var deny []*pb.NetworkPolicyDenyRule
 	for _, peer := range allowedPeers {
 		if ip, ok := resolve(peer); ok {
 			cidrs = append(cidrs, ip+"/32")
+			deny = append(deny, &pb.NetworkPolicyDenyRule{
+				Cidr:  ip + "/32",
+				Port:  a2aPort,
+				Proto: "tcp",
+				Note:  a2aDenyNote,
+			})
 		}
 	}
 	// Platform egress the agent legitimately needs (daemon API, DNS) so an
@@ -1267,6 +1323,7 @@ func compileAllowedPeersPolicy(tenant string, allowedPeers []string, resolve fun
 		EgressDomains: domains,
 		Mode:          mode,
 		AllowMetadata: false,
+		DenyRules:     deny,
 		Source:        "agent-skill",
 	}
 }
