@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -49,5 +50,22 @@ func TestWithSameOriginRedirectsRefusesCrossOrigin(t *testing.T) {
 	}
 	if decoyHits != 0 {
 		t.Fatalf("decoy received %d request(s), want 0", decoyHits)
+	}
+}
+
+func TestWithSameOriginRedirectsRetainsDefaultLimit(t *testing.T) {
+	var requests int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		http.Redirect(w, r, "/loop", http.StatusFound)
+	}))
+	defer srv.Close()
+
+	_, err := WithSameOriginRedirects(&http.Client{}).Get(srv.URL + "/loop")
+	if err == nil || !strings.Contains(err.Error(), "stopped after 10 redirects") {
+		t.Fatalf("Get error = %v, want default redirect limit error", err)
+	}
+	if requests != 10 {
+		t.Fatalf("requests = %d, want 10", requests)
 	}
 }

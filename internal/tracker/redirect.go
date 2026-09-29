@@ -33,6 +33,9 @@ func WithSameOriginRedirects(client *http.Client) *http.Client {
 		if previous != nil {
 			return previous(req, via)
 		}
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
 		return nil
 	}
 	return &clone
