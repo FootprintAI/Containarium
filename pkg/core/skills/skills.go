@@ -11,6 +11,7 @@ package skills
 
 import (
 	"embed"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -166,6 +167,32 @@ func validate(s *skillDef) error {
 		if !auth.IsKnownScope(sc) {
 			return fmt.Errorf("skill %q declares unknown scope %q", s.ID, sc)
 		}
+	}
+	// The agent card's schemas are load-bearing: output_schema_json is what
+	// the in-box runtime hands to the engine's structured-output mechanism
+	// (#2002). A declared schema that is not a JSON object fails here, at
+	// catalog load, rather than at the first run of the skill.
+	if s.AgentCard != nil {
+		if err := validateSchemaJSON(s.ID, "input_schema_json", s.AgentCard.InputSchemaJSON); err != nil {
+			return err
+		}
+		if err := validateSchemaJSON(s.ID, "output_schema_json", s.AgentCard.OutputSchemaJSON); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateSchemaJSON checks that a declared agent_card schema field is a JSON
+// object (the only shape a JSON Schema document can take). Empty means "not
+// declared" and is fine.
+func validateSchemaJSON(skillID, field, raw string) error {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
+		return fmt.Errorf("skill %q agent_card.%s is not a JSON Schema object: %w", skillID, field, err)
 	}
 	return nil
 }

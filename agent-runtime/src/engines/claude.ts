@@ -6,6 +6,8 @@ import { claudeAllowedTools, claudeMcpServers, mcpServerSpecs } from "../mcp.js"
 // ClaudeQuery is the shape of the Agent SDK's query(), injectable for tests.
 export type ClaudeQuery = (params: Parameters<typeof query>[0]) => AsyncIterable<SDKMessage>;
 
+type ClaudeResult = Extract<SDKMessage, { type: "result" }>;
+
 // ClaudeEngine drives the in-box loop with the Claude Agent SDK (the harness
 // that powers Claude Code). It mounts the in-box agent-box binary as an MCP
 // server, so agent-box's tools (shell/files/process) are the agent's tool
@@ -16,6 +18,17 @@ export type ClaudeQuery = (params: Parameters<typeof query>[0]) => AsyncIterable
 // MCP tools (prefix `mcp__<server>__`) and, when the seed carries a
 // platform_mcp.json (#1922 D4), exactly the platform tools the daemon
 // allow-listed — never the whole platform catalog.
+//
+// Output schema (#2002): when the skill's agent_card declares an
+// output_schema_json, it is passed as the SDK's `outputFormat` (json_schema).
+// The SDK validates the agent's final output against the schema and
+// re-prompts on mismatch; the artifact is the resulting `structured_output`,
+// never the assistant's prose. A run that ends without one — validation
+// retries exhausted (error_max_structured_output_retries), any other error
+// result, or a "success" that carries no structured_output (the SDK documents
+// that case as a failure too) — is rejected by throwing, so the daemon gets
+// an error artifact instead of a schema-violating one. Without a declared
+// schema the artifact is the concatenated assistant text, as before.
 //
 // Journal (#2095): every assistant text block, tool_use block and tool_result
 // block the query() iterator yields is appended as it arrives; an error
@@ -29,6 +42,7 @@ export class ClaudeEngine implements Engine {
   async run(task: string, cfg: EngineConfig, journal: JournalSink): Promise<EngineResult> {
     let text = "";
     let usage: unknown;
+    let result: ClaudeResult | undefined;
     // tool_use id -> tool name, so a tool_result line can name its tool.
     const toolNames = new Map<string, string>();
 
@@ -40,6 +54,7 @@ export class ClaudeEngine implements Engine {
       permissionMode: "dontAsk",
       allowedTools: claudeAllowedTools(specs),
       mcpServers: claudeMcpServers(specs),
+      ...(cfg.outputSchema ? { outputFormat: { type: "json_schema", schema: cfg.outputSchema } } : {}),
     } as Parameters<typeof query>[0]["options"];
 
     for await (const m of this.queryFn({ prompt: task, options })) {
@@ -66,16 +81,36 @@ export class ClaudeEngine implements Engine {
         }
       } else if (m.type === "result") {
         usage = m.usage;
+        result = m;
         if (m.subtype !== "success") {
-          const detail = (m.errors ?? []).join("; ");
-          journal.append({ kind: "error", text: detail ? `${m.subtype}: ${detail}` : m.subtype });
+          journal.append({ kind: "error", text: resultErrorText(m) });
         }
         break;
       }
     }
 
+    if (cfg.outputSchema) {
+      return { outputJson: JSON.stringify(structuredOutput(result)), usage };
+    }
     return { outputJson: text.trim(), usage };
   }
+}
+
+// structuredOutput is the SDK-validated output of a schema-bound run, or
+// throws naming why there is none.
+function structuredOutput(result: ClaudeResult | undefined): unknown {
+  const want = "no structured output matching agent_card.output_schema_json";
+  if (result === undefined) throw new Error(`claude: run ended without a result message — ${want}`);
+  if (result.subtype !== "success") throw new Error(`claude: ${resultErrorText(result)} — ${want}`);
+  if (result.structured_output === undefined) throw new Error(`claude: run ended with ${want}`);
+  return result.structured_output;
+}
+
+// resultErrorText renders an error result as "<subtype>: <errors>" (or just
+// the subtype), the journal's error line for it.
+function resultErrorText(result: ClaudeResult): string {
+  const detail = "errors" in result ? (result.errors ?? []).join("; ") : "";
+  return detail ? `${result.subtype}: ${detail}` : result.subtype;
 }
 
 // toolResultText flattens a tool_result's content to text: text blocks
