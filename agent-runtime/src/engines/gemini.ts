@@ -24,6 +24,22 @@ export class GeminiEngine implements Engine {
   readonly name = "gemini";
 
   async run(task: string, cfg: EngineConfig, journal: JournalSink): Promise<EngineResult> {
+    // TODO(#2002): output schema is prompt-only on this engine. The Gen AI
+    // SDK has a native mechanism (config.responseJsonSchema +
+    // responseMimeType "application/json"), but the Gemini API accepts a
+    // response schema alongside function calling only on Gemini 3 preview
+    // models — on the default gemini-2.5-flash the request is rejected, and
+    // this engine's whole tool surface (agent-box over MCP) is function
+    // calling. Wire it once the engine's default moves to a model that
+    // supports the combination. Until then the gap is journaled so a run is
+    // never silently unenforced.
+    if (cfg.outputSchema) {
+      journal.append({
+        kind: "status",
+        text: "output schema declared by agent_card.output_schema_json is not enforced by the gemini engine (prompt-only): the Gemini API accepts a response schema alongside function calling only on Gemini 3 preview models",
+      });
+    }
+
     // Gateway mode: CONTAINARIUM_MODEL_GATEWAY_URL + CONTAINARIUM_GATEWAY_TOKEN
     // route calls through the platform's model-gateway so the real Gemini key
     // never lives in the box. Direct mode: GEMINI_API_KEY / GOOGLE_API_KEY hits
