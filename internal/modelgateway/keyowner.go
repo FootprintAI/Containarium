@@ -162,7 +162,7 @@ type ownerRevoker interface {
 // un-revoke verb.
 //
 // Requires Config.OwnerRevocations to be a store that can record revocations
-// (MemOwnerRevocations, or the daemon's durable equivalent); with a read-only
+// (MemOwnerRevocations, or the daemon's durable auth.PgOwnerRevocationStore); with a read-only
 // or absent store this returns an error rather than pretending to have revoked
 // anything.
 func (g *Gateway) RevokeByKeyOwner(ctx context.Context, keyOwner, reason string) error {
