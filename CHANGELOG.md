@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.91.0] - 2026-09-29
+
 ### Fixed
 
 - **`TailRunLog` resolves a finished skill run's journal after a daemon
@@ -146,6 +148,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not start (no dispatch row) keeps `parent depth + 1`. Whether a run may
   remove `agent:needs-approval` from its own follow-up *at all* is still
   open on #2055 and is not decided here. (#2073)
+- **Sentinel SSH-CA trust anchor now self-syncs from the cloud instead of
+  requiring a manual file drop** (cloud#1928, cloud#1122). A sentinel has
+  no cloud credential of its own, so `/etc/sshpiper/trusted_user_ca_keys`
+  — the one place a container-SSH user's certificate is actually verified
+  — had been a one-time manual copy since it was first proved working; any
+  sentinel redeploy silently dropped CA trust with nothing to notice or
+  self-heal. The workhorse daemon's cloud client now notices a changed
+  `ssh_trust_version` on heartbeat, fetches the bundle via the (previously
+  unused) `GetSSHTrustBundle` RPC, and caches it; the sentinel relays it
+  home from whatever backend it already polls over the existing
+  `/authorized-keys` channel and writes the trust file atomically. Every
+  hop refuses to destroy trust rather than propagate a gap: a missing or
+  empty bundle anywhere in the chain leaves whatever's already on disk
+  untouched. Does not retroactively fix a sentinel already missing trust
+  today — that still needs this shipped plus a keysync cycle, or a manual
+  file drop as an interim unblock. (#2152)
 
 ## [0.90.1] - 2026-09-26
 
