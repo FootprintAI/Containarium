@@ -1228,6 +1228,7 @@ type LatestReleaseResponse struct {
 	LatestRelease   string `json:"latestRelease"`
 	CurrentVersion  string `json:"currentVersion"`
 	UpdateAvailable bool   `json:"updateAvailable"`
+	TargetVersion   string `json:"targetVersion"` // sentinel-served version (#2171)
 }
 
 // GetLatestRelease reports the latest published Containarium release vs the
@@ -1293,6 +1294,7 @@ type TriggerUpgradeResponse struct {
 	CurrentVersion string `json:"currentVersion"`
 	Message        string `json:"message"`
 	BackendID      string `json:"backendId"`
+	TargetVersion  string `json:"targetVersion"` // #2171
 }
 
 // TriggerUpgrade asks a backend to upgrade its daemon to the sentinel-served
@@ -1320,6 +1322,7 @@ type UpgradeStatusResponse struct {
 	CurrentVersion string `json:"currentVersion"`
 	Error          string `json:"error"`
 	CompletedAt    string `json:"completedAt"`
+	TargetVersion  string `json:"targetVersion"` // #2171
 }
 
 // GetUpgradeStatus polls an upgrade started by TriggerUpgrade. Returns status

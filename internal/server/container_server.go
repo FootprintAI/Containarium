@@ -384,6 +384,7 @@ type upgradeJob struct {
 	backendID      string
 	status         string // in_progress | completed | failed | noop
 	currentVersion string
+	targetVersion  string // best-effort, "" when unknown (#2171)
 	errMsg         string
 	completedAt    string
 }
@@ -2731,7 +2732,32 @@ func (s *ContainerServer) GetLatestRelease(ctx context.Context, req *pb.GetLates
 		LatestRelease:   latest,
 		CurrentVersion:  current,
 		UpdateAvailable: releasecheck.UpdateAvailable(current, latest),
+		TargetVersion:   s.upgradeTargetVersion(ctx, ""),
 	}, nil
+}
+
+// upgradeTargetVersion is the version a TriggerUpgrade with this github_tag
+// would install: the tag itself (resolving "latest" via the cached release
+// check), or else the sentinel-served binary's version. Best-effort — ""
+// when unknown, never an error, since it only informs the caller. #2171.
+func (s *ContainerServer) upgradeTargetVersion(ctx context.Context, githubTag string) string {
+	switch githubTag {
+	case "":
+	case "latest":
+		latest, _ := daemonReleaseChecker.Latest(ctx)
+		return strings.TrimPrefix(latest, "v")
+	default:
+		return strings.TrimPrefix(githubTag, "v")
+	}
+	if s.autoUpdater == nil {
+		return ""
+	}
+	v, err := s.autoUpdater.ServedVersion(ctx)
+	if err != nil {
+		log.Printf("[upgrade] sentinel-served version unavailable: %v", err)
+		return ""
+	}
+	return v
 }
 
 // ValidateGPU launches a throwaway nvidia.runtime LXC on the target backend,
@@ -2862,6 +2888,7 @@ func (s *ContainerServer) TriggerUpgrade(ctx context.Context, req *pb.TriggerUpg
 	}
 
 	current := version.GetVersion()
+	target := s.upgradeTargetVersion(ctx, req.GithubTag)
 	backendKey := s.localBackendID()
 
 	s.upgradeMu.Lock()
@@ -2874,7 +2901,7 @@ func (s *ContainerServer) TriggerUpgrade(ctx context.Context, req *pb.TriggerUpg
 		return nil, status.Error(codes.FailedPrecondition, "an upgrade is already in progress on this backend")
 	}
 	id := fmt.Sprintf("upg-%d", time.Now().UnixNano())
-	job := &upgradeJob{id: id, backendID: req.BackendId, status: "in_progress", currentVersion: current}
+	job := &upgradeJob{id: id, backendID: req.BackendId, status: "in_progress", currentVersion: current, targetVersion: target}
 	s.upgradeJobs[id] = job
 	s.upgradeBusy[backendKey] = true
 	s.upgradeMu.Unlock()
@@ -2929,6 +2956,7 @@ func (s *ContainerServer) TriggerUpgrade(ctx context.Context, req *pb.TriggerUpg
 		CurrentVersion: current,
 		Message:        "upgrade started; if a new binary is applied the daemon restarts — confirm via the backend version in ListBackends",
 		BackendId:      req.BackendId,
+		TargetVersion:  target,
 	}, nil
 }
 
@@ -2963,6 +2991,7 @@ func (s *ContainerServer) GetUpgradeStatus(ctx context.Context, req *pb.GetUpgra
 		CurrentVersion: job.currentVersion,
 		Error:          job.errMsg,
 		CompletedAt:    job.completedAt,
+		TargetVersion:  job.targetVersion,
 	}, nil
 }
 

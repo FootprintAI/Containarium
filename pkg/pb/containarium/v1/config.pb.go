@@ -1723,8 +1723,14 @@ type GetLatestReleaseResponse struct {
 	CurrentVersion string `protobuf:"bytes,2,opt,name=current_version,json=currentVersion,proto3" json:"current_version,omitempty"`
 	// True when latest_release is a newer semver than current_version.
 	UpdateAvailable bool `protobuf:"varint,3,opt,name=update_available,json=updateAvailable,proto3" json:"update_available,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Version of the binary the sentinel currently serves, i.e. what a default
+	// (sentinel-path) TriggerUpgrade would install. Can lag latest_release
+	// until an operator runs `containarium sentinel fetch-release`. Empty when
+	// unknown: no sentinel configured, an older sentinel without
+	// /containarium/version, or the lookup failed. #2171.
+	TargetVersion string `protobuf:"bytes,4,opt,name=target_version,json=targetVersion,proto3" json:"target_version,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *GetLatestReleaseResponse) Reset() {
@@ -1776,6 +1782,13 @@ func (x *GetLatestReleaseResponse) GetUpdateAvailable() bool {
 		return x.UpdateAvailable
 	}
 	return false
+}
+
+func (x *GetLatestReleaseResponse) GetTargetVersion() string {
+	if x != nil {
+		return x.TargetVersion
+	}
+	return ""
 }
 
 // ValidateGPURequest asks a backend to prove GPU passthrough works from inside
@@ -2002,7 +2015,10 @@ type TriggerUpgradeResponse struct {
 	// Human-readable detail (e.g. why it was a noop).
 	Message string `protobuf:"bytes,4,opt,name=message,proto3" json:"message,omitempty"`
 	// Echoes the targeted backend ("" = local).
-	BackendId     string `protobuf:"bytes,5,opt,name=backend_id,json=backendId,proto3" json:"backend_id,omitempty"`
+	BackendId string `protobuf:"bytes,5,opt,name=backend_id,json=backendId,proto3" json:"backend_id,omitempty"`
+	// Version this upgrade will install: the sentinel-served binary's version,
+	// or the requested github_tag. Best-effort — empty when unknown. #2171.
+	TargetVersion string `protobuf:"bytes,6,opt,name=target_version,json=targetVersion,proto3" json:"target_version,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2072,6 +2088,13 @@ func (x *TriggerUpgradeResponse) GetBackendId() string {
 	return ""
 }
 
+func (x *TriggerUpgradeResponse) GetTargetVersion() string {
+	if x != nil {
+		return x.TargetVersion
+	}
+	return ""
+}
+
 // GetUpgradeStatusRequest polls an upgrade started by TriggerUpgrade.
 type GetUpgradeStatusRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -2130,7 +2153,10 @@ type GetUpgradeStatusResponse struct {
 	// Error detail when status == "failed".
 	Error string `protobuf:"bytes,3,opt,name=error,proto3" json:"error,omitempty"`
 	// RFC3339 completion time when status is "completed" or "failed".
-	CompletedAt   string `protobuf:"bytes,4,opt,name=completed_at,json=completedAt,proto3" json:"completed_at,omitempty"`
+	CompletedAt string `protobuf:"bytes,4,opt,name=completed_at,json=completedAt,proto3" json:"completed_at,omitempty"`
+	// Version the upgrade was installing, as recorded when it was triggered.
+	// Empty when unknown, including after a restart dropped the job. #2171.
+	TargetVersion string `protobuf:"bytes,5,opt,name=target_version,json=targetVersion,proto3" json:"target_version,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2189,6 +2215,13 @@ func (x *GetUpgradeStatusResponse) GetError() string {
 func (x *GetUpgradeStatusResponse) GetCompletedAt() string {
 	if x != nil {
 		return x.CompletedAt
+	}
+	return ""
+}
+
+func (x *GetUpgradeStatusResponse) GetTargetVersion() string {
+	if x != nil {
+		return x.TargetVersion
 	}
 	return ""
 }
@@ -5035,11 +5068,12 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"\x15GetSystemInfoResponse\x12/\n" +
 	"\x04info\x18\x01 \x01(\v2\x1b.containarium.v1.SystemInfoR\x04info\x121\n" +
 	"\x05peers\x18\x02 \x03(\v2\x1b.containarium.v1.SystemInfoR\x05peers\"\x19\n" +
-	"\x17GetLatestReleaseRequest\"\x95\x01\n" +
+	"\x17GetLatestReleaseRequest\"\xbc\x01\n" +
 	"\x18GetLatestReleaseResponse\x12%\n" +
 	"\x0elatest_release\x18\x01 \x01(\tR\rlatestRelease\x12'\n" +
 	"\x0fcurrent_version\x18\x02 \x01(\tR\x0ecurrentVersion\x12)\n" +
-	"\x10update_available\x18\x03 \x01(\bR\x0fupdateAvailable\"E\n" +
+	"\x10update_available\x18\x03 \x01(\bR\x0fupdateAvailable\x12%\n" +
+	"\x0etarget_version\x18\x04 \x01(\tR\rtargetVersion\"E\n" +
 	"\x12ValidateGPURequest\x12\x1d\n" +
 	"\n" +
 	"backend_id\x18\x01 \x01(\tR\tbackendId\x12\x10\n" +
@@ -5061,7 +5095,7 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"backend_id\x18\x01 \x01(\tR\tbackendId\x12\x14\n" +
 	"\x05force\x18\x02 \x01(\bR\x05force\x12\x1d\n" +
 	"\n" +
-	"github_tag\x18\x03 \x01(\tR\tgithubTag\"\xb1\x01\n" +
+	"github_tag\x18\x03 \x01(\tR\tgithubTag\"\xd8\x01\n" +
 	"\x16TriggerUpgradeResponse\x12\x1d\n" +
 	"\n" +
 	"upgrade_id\x18\x01 \x01(\tR\tupgradeId\x12\x16\n" +
@@ -5069,15 +5103,17 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"\x0fcurrent_version\x18\x03 \x01(\tR\x0ecurrentVersion\x12\x18\n" +
 	"\amessage\x18\x04 \x01(\tR\amessage\x12\x1d\n" +
 	"\n" +
-	"backend_id\x18\x05 \x01(\tR\tbackendId\"8\n" +
+	"backend_id\x18\x05 \x01(\tR\tbackendId\x12%\n" +
+	"\x0etarget_version\x18\x06 \x01(\tR\rtargetVersion\"8\n" +
 	"\x17GetUpgradeStatusRequest\x12\x1d\n" +
 	"\n" +
-	"upgrade_id\x18\x01 \x01(\tR\tupgradeId\"\x94\x01\n" +
+	"upgrade_id\x18\x01 \x01(\tR\tupgradeId\"\xbb\x01\n" +
 	"\x18GetUpgradeStatusResponse\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12'\n" +
 	"\x0fcurrent_version\x18\x02 \x01(\tR\x0ecurrentVersion\x12\x14\n" +
 	"\x05error\x18\x03 \x01(\tR\x05error\x12!\n" +
-	"\fcompleted_at\x18\x04 \x01(\tR\vcompletedAt\"\xdd\x02\n" +
+	"\fcompleted_at\x18\x04 \x01(\tR\vcompletedAt\x12%\n" +
+	"\x0etarget_version\x18\x05 \x01(\tR\rtargetVersion\"\xdd\x02\n" +
 	"\rNetworkPolicy\x12\x16\n" +
 	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12,\n" +
 	"\x12allow_intra_tenant\x18\x02 \x01(\bR\x10allowIntraTenant\x12!\n" +

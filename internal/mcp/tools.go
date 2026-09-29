@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/releasecheck"
 	"github.com/footprintai/containarium/internal/runlog"
 	"github.com/footprintai/containarium/internal/safecast"
 	"github.com/footprintai/containarium/pkg/core/expose"
@@ -2531,6 +2532,7 @@ func handleCheckForUpdates(client API, args map[string]interface{}) (string, err
 		return "", fmt.Errorf("failed to check for updates: %w", err)
 	}
 	result := fmt.Sprintf("Running version:  %s\n", resp.CurrentVersion)
+	result += fmt.Sprintf("Sentinel serves:  %s\n", releasecheck.TargetSummary(resp.TargetVersion, resp.LatestRelease))
 	if resp.LatestRelease == "" {
 		result += "Latest release:   unknown (GitHub lookup unavailable)\n"
 		return result, nil
@@ -2559,6 +2561,9 @@ func handleUpgradeBackend(client API, args map[string]interface{}) (string, erro
 	if resp.CurrentVersion != "" {
 		result += fmt.Sprintf("  from version: %s\n", resp.CurrentVersion)
 	}
+	if resp.TargetVersion != "" {
+		result += fmt.Sprintf("  to version:   %s\n", resp.TargetVersion)
+	}
 	if resp.Message != "" {
 		result += fmt.Sprintf("  %s\n", resp.Message)
 	}
@@ -2577,6 +2582,9 @@ func handleGetUpgradeStatus(client API, args map[string]interface{}) (string, er
 	result := fmt.Sprintf("Status:   %s\n", resp.Status)
 	if resp.CurrentVersion != "" {
 		result += fmt.Sprintf("Version:  %s\n", resp.CurrentVersion)
+	}
+	if resp.TargetVersion != "" {
+		result += fmt.Sprintf("Target:   %s\n", resp.TargetVersion)
 	}
 	if resp.CompletedAt != "" {
 		result += fmt.Sprintf("Done at:  %s\n", resp.CompletedAt)
