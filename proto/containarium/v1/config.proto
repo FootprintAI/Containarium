@@ -405,6 +405,13 @@ message GetLatestReleaseResponse {
 
   // True when latest_release is a newer semver than current_version.
   bool update_available = 3;
+
+  // Version of the binary the sentinel currently serves, i.e. what a default
+  // (sentinel-path) TriggerUpgrade would install. Can lag latest_release
+  // until an operator runs `containarium sentinel fetch-release`. Empty when
+  // unknown: no sentinel configured, an older sentinel without
+  // /containarium/version, or the lookup failed. #2171.
+  string target_version = 4;
 }
 
 // ValidateGPURequest asks a backend to prove GPU passthrough works from inside
@@ -476,6 +483,10 @@ message TriggerUpgradeResponse {
 
   // Echoes the targeted backend ("" = local).
   string backend_id = 5;
+
+  // Version this upgrade will install: the sentinel-served binary's version,
+  // or the requested github_tag. Best-effort — empty when unknown. #2171.
+  string target_version = 6;
 }
 
 // GetUpgradeStatusRequest polls an upgrade started by TriggerUpgrade.
@@ -499,6 +510,10 @@ message GetUpgradeStatusResponse {
 
   // RFC3339 completion time when status is "completed" or "failed".
   string completed_at = 4;
+
+  // Version the upgrade was installing, as recorded when it was triggered.
+  // Empty when unknown, including after a restart dropped the job. #2171.
+  string target_version = 5;
 }
 
 // NetworkPolicyMode controls whether a tenant's network policy is enforced or

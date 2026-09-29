@@ -12024,6 +12024,10 @@
         "updateAvailable": {
           "type": "boolean",
           "description": "True when latest_release is a newer semver than current_version."
+        },
+        "targetVersion": {
+          "type": "string",
+          "description": "Version of the binary the sentinel currently serves, i.e. what a default\n(sentinel-path) TriggerUpgrade would install. Can lag latest_release\nuntil an operator runs `containarium sentinel fetch-release`. Empty when\nunknown: no sentinel configured, an older sentinel without\n/containarium/version, or the lookup failed. #2171."
         }
       },
       "description": "GetLatestReleaseResponse reports the latest published release vs the\nrunning daemon version. See #354."
@@ -12449,6 +12453,10 @@
         "completedAt": {
           "type": "string",
           "description": "RFC3339 completion time when status is \"completed\" or \"failed\"."
+        },
+        "targetVersion": {
+          "type": "string",
+          "description": "Version the upgrade was installing, as recorded when it was triggered.\nEmpty when unknown, including after a restart dropped the job. #2171."
         }
       },
       "description": "GetUpgradeStatusResponse reports an upgrade's progress. Note: a local\nself-upgrade restarts the daemon, dropping in-memory job state — after a\nrestart this returns status \"unknown\" and callers should compare the\nbackend's version in ListBackends instead. See #354."
@@ -16755,6 +16763,10 @@
         "backendId": {
           "type": "string",
           "description": "Echoes the targeted backend (\"\" = local)."
+        },
+        "targetVersion": {
+          "type": "string",
+          "description": "Version this upgrade will install: the sentinel-served binary's version,\nor the requested github_tag. Best-effort — empty when unknown. #2171."
         }
       },
       "description": "TriggerUpgradeResponse acknowledges that an upgrade was started. The upgrade\nruns asynchronously (the daemon restarts), so callers poll GetUpgradeStatus\nor watch the backend's version in ListBackends for the outcome. See #354."
