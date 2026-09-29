@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.92.0] - 2026-09-29
+
 ### Added
 
 - `sentinel`/`upgrade`: report the version a backend upgrade will install. The
@@ -15,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `GetUpgradeStatus` gain a best-effort `target_version`. `backends versions`,
   `backends upgrade` and the `check_for_updates` / `upgrade_backend` /
   `get_upgrade_status` MCP tools show it, and flag a sentinel that is behind the
-  latest release. (#2171)
+  latest release. (#2171) (#2172)
 
 ## [0.91.1] - 2026-09-29
 
