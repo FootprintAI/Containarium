@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.93.1] - 2026-09-30
+
+### Fixed
+
+- MCP `connect` (exec and session modes) now presents the short-lived SSH
+  certificate it was issued. The pure-Go SSH client loaded only the throwaway
+  private key, never the `<key>-cert.pub` beside it (a name only OpenSSH picks
+  up by itself), so every certificate-auth connect offered a bare key and was
+  rejected at the sentinel with `no matching pipe`. A certificate file that is
+  present but unusable is now an error instead of a silent fallback. (#2179)
+- `otel-sidecar`/`core-otelcollector`: bump the pinned upstream `otelcol-contrib`
+  release from `0.110.0` to `0.162.0` (decision O1: kept in sync across
+  `sidecars/otel-sidecar/Dockerfile` and `internal/server/core_otel_collector.go`).
+  Clears ~50 HIGH/CRITICAL CVEs accumulated in the old build's embedded Go
+  toolchain and transitive dependencies (Go stdlib, grpc-go, x/crypto, x/net,
+  etc.) — none of them ever came from this repo's own code. Verified `v0.162.0`
+  scans clean under the same Trivy policy CI enforces (0 CRITICAL/HIGH,
+  unfixed-only). (#2164)
+
+## [0.93.0] - 2026-09-29
+
+### Added
+
+- `sentinel`: opt-in `--watch-spot-vm name:zone[:project]` flag (repeatable) so
+  a sentinel can watch an additional, independent GCP spot/preemptible VM for
+  preemption and auto-restart it, without adding it to the primary/failover
+  HTTP proxy pool. Each watch target gets its own recovery/backoff timeline,
+  independent of the primary backend's. (#2175)
+
 ## [0.92.0] - 2026-09-29
 
 ### Added

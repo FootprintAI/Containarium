@@ -15,8 +15,9 @@
 FROM debian:bookworm-slim
 
 # Pin to the same upstream collector version the central
-# containarium-core-otelcollector LXC runs (decision O1).
-ARG OTELCOL_VERSION=0.110.0
+# containarium-core-otelcollector LXC runs (decision O1) — kept in sync
+# with internal/server/core_otel_collector.go's otelCollectorVersion.
+ARG OTELCOL_VERSION=0.162.0
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates wget \
