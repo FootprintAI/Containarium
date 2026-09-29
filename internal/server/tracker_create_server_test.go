@@ -12,6 +12,7 @@ import (
 	"github.com/footprintai/containarium/internal/runlease"
 	"github.com/footprintai/containarium/internal/tracker"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -358,7 +359,7 @@ func TestCreateTrackerIssue_BodyHasParentLinkAndStamp(t *testing.T) {
 // TestCreateTrackerIssue_Audited: one audit row per create carrying
 // (tenant, skill, run, model, verb, project, issue, parent).
 func TestCreateTrackerIssue_Audited(t *testing.T) {
-	const user = "tracker-rpc-create-audit"
+	user := "tracker-rpc-create-audit-" + uuid.NewString()
 	provider := &fakeWriterProvider{}
 	s, runCtx, _ := setUpCreateConnection(t, user, provider, nil)
 	s.auditStore = mustTestAuditStore(t)
@@ -375,6 +376,16 @@ func TestCreateTrackerIssue_Audited(t *testing.T) {
 	}
 	if len(rows) != 1 {
 		t.Fatalf("audit rows for tracker.issue_created = %d, want 1", len(rows))
+	}
+	if rows[0].RunID != createTestRunID {
+		t.Errorf("audit RunID = %q, want %q", rows[0].RunID, createTestRunID)
+	}
+	byRun, _, err := s.auditStore.Query(context.Background(), audit.QueryParams{Username: user, Action: "tracker.issue_created", RunID: createTestRunID, Limit: 10})
+	if err != nil {
+		t.Fatalf("audit Query by run id: %v", err)
+	}
+	if len(byRun) != 1 || byRun[0].ResourceID != rows[0].ResourceID {
+		t.Errorf("audit rows filtered by run id = %+v, want created issue #%d", byRun, child)
 	}
 	for _, want := range []string{
 		`"run_id":"` + createTestRunID + `"`,

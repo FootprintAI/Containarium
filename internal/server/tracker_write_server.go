@@ -361,12 +361,16 @@ func (s *ContainerServer) auditTrackerWrite(ctx context.Context, action, usernam
 		log.Printf("[tracker] marshal audit detail for %s: %v", action, err)
 		return
 	}
+	// Use the authenticated claim, not the visible stamp's operator fallback
+	// (which uses the username as an identity when no run is present).
+	runID, _ := auth.RunIDFromGRPCContext(ctx)
 	if err := s.auditStore.Log(ctx, &audit.AuditEntry{
 		Username:     username,
 		Action:       action,
 		ResourceType: "tracker_issue",
 		ResourceID:   fmt.Sprintf("%s/%s#%d", username, connection, number),
 		Detail:       string(payload),
+		RunID:        runID,
 	}); err != nil {
 		log.Printf("[tracker] audit %s %s/%s#%d: %v", action, username, connection, number, err)
 	}
