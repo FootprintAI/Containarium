@@ -148,6 +148,15 @@ func (m *Manager) diagnoseAndRecoverWatchOnly(ctx context.Context, wb *watchedBa
 		log.Printf("[sentinel] watch-only(%s): start command sent", wb.id)
 		m.scheduleWatchOnlyRecovery(wb, m.config.RecoveryBackoffInitial)
 	case StatusProvisioning:
+		// wb.down must be set here too, not just on Stopped/Terminated:
+		// maybeRetryWatchOnlyRecovery only re-checks while wb.down is
+		// true, so a target whose FIRST observed status is Provisioning
+		// (e.g. this sentinel started while the VM was already mid-boot)
+		// would otherwise never be re-polled if it stalls or falls back
+		// to Stopped — nothing else drives a re-check (EventStarted is
+		// log-only, and there is no TCP health check for watch-only
+		// targets the way there is for the primary backend).
+		wb.down = true
 		m.scheduleWatchOnlyRecovery(wb, m.config.RecoveryBackoffInitial)
 	case StatusRunning:
 		if wb.down {

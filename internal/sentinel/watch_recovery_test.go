@@ -124,6 +124,33 @@ func TestWatchOnly_RunningTargetNeverCallsStart(t *testing.T) {
 	}
 }
 
+// A watch-only target whose FIRST observed status is Provisioning (e.g.
+// this sentinel started while the VM was already mid-boot) must still be
+// re-checked later if it stalls or falls back to Stopped — nothing else
+// drives a re-check for a watch-only target (no TCP health check, and
+// EventStarted is log-only).
+func TestWatchOnly_ProvisioningFirstStatusStillGetsRetried(t *testing.T) {
+	p := &fakeRecoveryProvider{status: StatusProvisioning}
+	m := NewManager(Config{RecoveryBackoffInitial: 30 * time.Second, RecoveryBackoffMax: 5 * time.Minute}, &fakeRecoveryProvider{})
+	m.AddWatchOnlyBackend("ase1-prod", p)
+	wb := m.watchOnly[0]
+	ctx := context.Background()
+
+	m.diagnoseAndRecoverWatchOnly(ctx, wb)
+	if !wb.down {
+		t.Fatal("wb.down should be true after observing StatusProvisioning, so a later stall/fallback still gets retried")
+	}
+
+	// Provisioning stalled and fell back to stopped.
+	p.status = StatusStopped
+	wb.nextRecoveryAttempt = time.Now().Add(-time.Second) // force the backoff window open
+	m.maybeRetryWatchOnlyRecovery(ctx, wb)
+
+	if p.startCalls != 1 {
+		t.Fatalf("startCalls = %d, want 1 — the stall/fallback to Stopped should have been re-checked and triggered a start", p.startCalls)
+	}
+}
+
 func TestWatchOnly_MultipleTargetsHaveIndependentTimelines(t *testing.T) {
 	pA := &fakeRecoveryProvider{status: StatusTerminated, startErr: errors.New("a down")}
 	pB := &fakeRecoveryProvider{status: StatusRunning}
