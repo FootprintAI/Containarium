@@ -315,7 +315,7 @@ func listRunRecords() ([]RunRecord, error) {
 			continue
 		}
 		name := e.Name()
-		if !strings.HasSuffix(name, ".json") || rotatedRecordSuffix.MatchString(name) {
+		if !IsCurrentRecordFile(name) {
 			continue
 		}
 		// #nosec G304 -- name is a directory-entry name from os.ReadDir(processLogDir)
@@ -325,9 +325,8 @@ func listRunRecords() ([]RunRecord, error) {
 		if err != nil {
 			continue // best-effort: a file removed mid-scan isn't fatal to the listing
 		}
-		var record RunRecord
-		if err := json.Unmarshal(data, &record); err != nil ||
-			record.Version < runRecordMinReadableVersion || record.Version > RunRecordVersion {
+		record, err := DecodeRunRecord(data)
+		if err != nil {
 			continue // malformed or an incompatible version; skip rather than fail the whole list
 		}
 		// Same sidecar fold as readRunRecord (#1693): process_list is the
@@ -336,6 +335,29 @@ func listRunRecords() ([]RunRecord, error) {
 		records = append(records, applyExitSidecar(processLogDir, record))
 	}
 	return records, nil
+}
+
+// DecodeRunRecord parses one on-disk record with the same version rule
+// listRunRecords applies: a malformed record, or a version this binary
+// cannot read, is an error. Exported for the daemon's box-run reader
+// (#2123), which reads the same files from outside the box.
+func DecodeRunRecord(data []byte) (RunRecord, error) {
+	var record RunRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return RunRecord{}, fmt.Errorf("parse run record: %w", err)
+	}
+	if record.Version < runRecordMinReadableVersion || record.Version > RunRecordVersion {
+		return RunRecord{}, fmt.Errorf("run record %q: unsupported version %d (readable: %d-%d)",
+			record.Name, record.Version, runRecordMinReadableVersion, RunRecordVersion)
+	}
+	return record, nil
+}
+
+// IsCurrentRecordFile reports whether a directory entry name is a current
+// run record: "<name>.json", not one rotateFinishedRun renamed aside.
+func IsCurrentRecordFile(fileName string) bool {
+	return strings.HasSuffix(fileName, ".json") && !strings.HasPrefix(fileName, ".") &&
+		!rotatedRecordSuffix.MatchString(fileName)
 }
 
 // rotateFinishedRun renames record's on-disk record and log aside to

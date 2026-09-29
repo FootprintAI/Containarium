@@ -47,6 +47,8 @@ type API interface {
 	ListCrews() (*ListCrewsResponse, error)
 	RunCrew(req RunCrewRequest) (*RunCrewResponse, error)
 	TailRunLog(req *pb.TailRunLogRequest) (*pb.TailRunLogResponse, error)
+	ListBoxRuns(username string) ([]*pb.BoxRun, error)
+	TailBoxRunLog(req *pb.TailBoxRunLogRequest) (*pb.TailBoxRunLogResponse, error)
 
 	// Backups.
 	CreateBackup(req CreateBackupRequest) (*CreateBackupResponse, error)

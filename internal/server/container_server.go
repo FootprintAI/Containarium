@@ -107,9 +107,17 @@ type ContainerServer struct {
 	// panic on.
 	snapshots           *snapshotOps
 	collaboratorManager *container.CollaboratorManager
-	emitter             *events.Emitter
-	pendingCreations    map[string]*PendingCreation
-	pendingMu           sync.RWMutex
+	// Box code-run reader (#2123, box_run_log.go). All four are test seams:
+	// boxRunExec replaces the container manager's exec, boxRunCollaborator
+	// the collaborator lookup, boxRunLogDir agent-box's log dir, and
+	// boxRunPoll the follow poll interval. Zero values mean production.
+	boxRunExec         boxScriptFunc
+	boxRunCollaborator collaboratorCheckFunc
+	boxRunLogDir       string
+	boxRunPoll         time.Duration
+	emitter            *events.Emitter
+	pendingCreations   map[string]*PendingCreation
+	pendingMu          sync.RWMutex
 	// Monitoring URLs (set by DualServer after setup)
 	victoriaMetricsURL string
 	grafanaURL         string

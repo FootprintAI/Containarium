@@ -1371,6 +1371,46 @@ func (c *HTTPClient) ListCollaborators(ownerUsername string) (*pb.ListCollaborat
 	return out, nil
 }
 
+// ListBoxRuns lists a box's code-run records via HTTP (#2123).
+func (c *HTTPClient) ListBoxRuns(username string) ([]*pb.BoxRun, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.doRequest(ctx, http.MethodGet, runlog.BoxRunsPath(username), nil)
+	if err != nil {
+		return nil, fmt.Errorf("list box runs: %w", err)
+	}
+	defer drainClose(resp)
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, httpError(bodyBytes, resp.StatusCode, "list box runs")
+	}
+	out := &pb.ListBoxRunsResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out.GetRuns(), nil
+}
+
+// TailBoxRunLog reads one window of a box run's log via HTTP (#2123).
+func (c *HTTPClient) TailBoxRunLog(req *pb.TailBoxRunLogRequest) (*pb.TailBoxRunLogResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.doRequest(ctx, http.MethodGet, runlog.BoxQuery(req), nil)
+	if err != nil {
+		return nil, fmt.Errorf("tail box run log: %w", err)
+	}
+	defer drainClose(resp)
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, httpError(bodyBytes, resp.StatusCode, "tail box run log")
+	}
+	out := &pb.TailBoxRunLogResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
 // DebugContainer returns a diagnostic report for a container's SSH path.
 func (c *HTTPClient) DebugContainer(username string) (*pb.DebugContainerResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

@@ -103,11 +103,16 @@ func readExitSidecar(dir, name string) (code int, finishedAt time.Time, found bo
 	if err != nil {
 		return 0, time.Time{}, false
 	}
+	return parseExitSidecar(data)
+}
+
+// parseExitSidecar parses a sidecar's "<code> <unix-seconds>" content.
+func parseExitSidecar(data []byte) (code int, finishedAt time.Time, found bool) {
 	fields := strings.Fields(string(data))
 	if len(fields) == 0 {
 		return 0, time.Time{}, false
 	}
-	code, err = strconv.Atoi(fields[0])
+	code, err := strconv.Atoi(fields[0])
 	if err != nil {
 		return 0, time.Time{}, false
 	}
@@ -129,6 +134,20 @@ func applyExitSidecar(dir string, record RunRecord) RunRecord {
 		return record
 	}
 	code, finishedAt, found := readExitSidecar(dir, record.Name)
+	return foldExit(record, code, finishedAt, found)
+}
+
+// FoldExitSidecar is applyExitSidecar over sidecar bytes already read (empty
+// = no sidecar), for the daemon's box-run reader (#2123).
+func FoldExitSidecar(record RunRecord, sidecar []byte) RunRecord {
+	if record.ExitCode != nil {
+		return record
+	}
+	code, finishedAt, found := parseExitSidecar(sidecar)
+	return foldExit(record, code, finishedAt, found)
+}
+
+func foldExit(record RunRecord, code int, finishedAt time.Time, found bool) RunRecord {
 	if !found {
 		return record
 	}

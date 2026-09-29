@@ -464,6 +464,32 @@ func (c *Client) TailRunLog(req *pb.TailRunLogRequest) (*pb.TailRunLogResponse, 
 	return out, nil
 }
 
+// ListBoxRuns lists a box's code-run records (#2123).
+func (c *Client) ListBoxRuns(username string) ([]*pb.BoxRun, error) {
+	respBody, err := c.doRequest("GET", runlog.BoxRunsPath(username), nil)
+	if err != nil {
+		return nil, err
+	}
+	out := &pb.ListBoxRunsResponse{}
+	if err := protojson.Unmarshal(respBody, out); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return out.GetRuns(), nil
+}
+
+// TailBoxRunLog reads one window of a box run's log (#2123).
+func (c *Client) TailBoxRunLog(req *pb.TailBoxRunLogRequest) (*pb.TailBoxRunLogResponse, error) {
+	respBody, err := c.doRequest("GET", runlog.BoxQuery(req), nil)
+	if err != nil {
+		return nil, err
+	}
+	out := &pb.TailBoxRunLogResponse{}
+	if err := protojson.Unmarshal(respBody, out); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return out, nil
+}
+
 // --- database backups (BackupService) ---
 
 // PgConnectionBody carries pg_dump/pg_restore connection params. Snake_case

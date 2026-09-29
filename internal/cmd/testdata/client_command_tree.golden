@@ -40,7 +40,9 @@ cluster node-pool
 cluster status
 code attach
 code install
+code logs
 code run
+code runs
 code status
 code stop
 collaborator add
