@@ -8,6 +8,21 @@ dist/
 *.test
 *.out
 
+# Root-level build output from `go build ./cmd/<name>` run with no -o flag
+# (lands at the repo root, named after the package) — none of the patterns
+# above catch an extensionless binary sitting there. Anchored to the root
+# (leading /) so this can never shadow a same-named path in a subdirectory.
+# Caught in PR review after one shipped in a PR diff (35MB ELF, 0/0 diff
+# lines — GitHub can't diff a binary, which is the tell).
+/agent-box
+/containarium
+/containariumd
+/ebpf-phase0
+/ebpf-phaseA
+/mcp-server
+/model-gateway
+/netpolicy-smoke
+
 # Go workspace file
 go.work
 go.work.sum
