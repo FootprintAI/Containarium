@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first install; the change that keeps it current on every start (#2188,
   bridge DNS reconciler) is what makes a newly added host take effect on an
   existing deployment. (#2188)
+- `containarium bridge-dns status` (`--json`), the `GetBridgeDNSStatus` RPC
+  (`GET /v1/system/bridge-dns`, admin-only) and the `bridge_dns_status` MCP
+  tool: whether the bridge DNS record for the app-hosting base domain matches
+  core-caddy's live address. State is a `BridgeDNSState` enum (not managed /
+  pending / in sync / degraded) with core-caddy's address, the desired and
+  current record, the last error, the drift count and the last pass / rewrite
+  times. (#2188)
 
 ### Security
 

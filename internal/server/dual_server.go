@@ -2744,6 +2744,9 @@ func (ds *DualServer) Start(ctx context.Context) error {
 	// it unconditionally; empty --ssh-host leaves ssh_host empty.
 	if ds.containerServer != nil {
 		ds.containerServer.SetSSHHost(ds.config.SSHHost)
+		// GetBridgeDNSStatus (#2188): nil when app hosting is off or core-caddy
+		// is not managed by this daemon, which the RPC reports as NOT_MANAGED.
+		ds.containerServer.SetBridgeDNSReconciler(ds.bridgeDNS)
 		// Capability-profile identity (#681): region from --region, falling
 		// back to the pool name; self-reported class from the pool name. Both
 		// may be empty. Wired unconditionally — profiling works on a

@@ -708,6 +708,19 @@ func (c *Client) GetSentryStatus() (*SentryStatusResponse, error) {
 	return &resp, nil
 }
 
+// GetBridgeDNSStatus reports the bridge DNS reconciler's last pass (#2188).
+func (c *Client) GetBridgeDNSStatus() (*BridgeDNSStatusResponse, error) {
+	respBody, err := c.doRequest("GET", "/v1/system/bridge-dns", nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp BridgeDNSStatusResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
 // ListBadDestinations returns the merged baseline + operator-added
 // known-bad-destination list the bad-destination rule (#1641) matches
 // against.
