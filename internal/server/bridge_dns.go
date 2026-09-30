@@ -22,7 +22,8 @@ func normalizeDNSHost(h string) (string, bool) {
 		}
 		for i := 0; i < len(label); i++ {
 			c := label[i]
-			if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+			alnum := c >= 'a' && c <= 'z' || c >= '0' && c <= '9'
+			if !alnum && c != '-' && c != '_' {
 				return "", false
 			}
 		}
