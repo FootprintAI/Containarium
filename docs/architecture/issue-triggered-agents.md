@@ -218,13 +218,20 @@ never smuggled through the launch payload.
   from #2070: exactly `max_depth` agent-filed hops dispatch unattended,
   then create refuses) in `internal/server/tracker_chain_guard_test.go`,
   and `TestRecordChild_DepthFloorsAtTheRunsOwnDispatchDepth` at the store.
-  **Still open (#2055):** whether a run token may remove
-  `agent:needs-approval` *at all*. #2068 only limits where it may: today a
-  run can still release its own gated follow-up (the umbrella recommends
-  add-only). That is covered by the allowed cases in
-  `TestSetTrackerIssueLabels_RunTokenGateRemovalLineageRules`. #2073 does
-  not decide it; it only makes such a chain bounded by `max_depth`, so
-  every unattended hop still consumes real depth.
+  **Run-token gate removal requires `auto_chain` (#2025, fixed):** with
+  `auto_chain` off (the default), a run token may not remove
+  `agent:needs-approval` from any issue, including its own follow-ups and
+  the issue it was dispatched for. The call is refused with
+  `PermissionDenied` before any upstream call. Before this fix, #2068's
+  lineage check still let a run release its own gated follow-up, so with
+  `auto_chain` off a run could chain itself for `max_depth` hops with no
+  human involved. That made "the human's only action per hop" untrue. With
+  `auto_chain` on, a run may remove the gate, still only inside its own
+  lineage (#2068), and #2073's depth floor bounds the chain. Adding the
+  gate is always allowed. Pinned by
+  `TestSetTrackerIssueLabels_RunTokenCannotReleaseGateWithoutAutoChain`.
+  The lineage-rule tests and the unattended-chain probe now run under
+  `auto_chain`, the only mode where a run may release a hop.
 - **Depth.** `tracker_issue_lineage(child → parent, depth)` is written by
   `CreateTrackerIssue` with `depth = max(parent.depth, run.depth) + 1`,
   where `run.depth` is the calling run's own dispatch depth (a
