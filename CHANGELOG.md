@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **A run token can no longer release an agent-filed follow-up unless the
+  connection enables `auto_chain`** (#2025). With `auto_chain` off (the
+  default), `SetTrackerIssueLabels` from a run-scoped token that removes
+  `agent:needs-approval` is refused with `PermissionDenied` before any
+  upstream call, on every issue, including the run's own follow-ups and its
+  dispatched issue. #2068 had bound that removal to the run's own lineage,
+  but inside it a run could still release its own gated follow-up. That let
+  a run chain itself for `max_depth` hops with no human involved, contrary
+  to the "a human releases every hop" default. With `auto_chain` on, a run
+  may still remove the gate within its own lineage. Adding the gate is
+  always allowed, and operator tokens are unchanged.
+
 ## [0.93.1] - 2026-09-30
 
 ### Fixed
@@ -47,6 +61,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `backends upgrade` and the `check_for_updates` / `upgrade_backend` /
   `get_upgrade_status` MCP tools show it, and flag a sentinel that is behind the
   latest release. (#2171) (#2172)
+
+### Changed
+
+- `mcp`: the `list_routes` description now says inactive entries are claimed-but-unbound
+  subdomain reservations that still count against the caller's route quota (#2160)
 
 ## [0.91.1] - 2026-09-29
 

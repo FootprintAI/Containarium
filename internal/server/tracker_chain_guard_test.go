@@ -237,14 +237,110 @@ func TestChainGuards_InjectedIssueCannotWidenScopesOrLabels(t *testing.T) {
 	})
 }
 
-// ---- Open maintainer question (umbrella #2055) ----------------------
+// ---- A run never releases the gate unless auto_chain is on (#2025) --
 //
-// Still open on #2055: whether a run token may remove
-// agent:needs-approval AT ALL, even inside its own lineage (the umbrella
-// recommends add-only). #2068 decided only its reach — see the
-// RunTokenGateRemoval tests below: today a run may remove the gate from
-// its own dispatched issue or a follow-up it filed, and nowhere else.
-// Nothing in this file decides that question.
+// Criterion 1 says the dispatcher ignores an agent-filed follow-up "until
+// a human removes" agent:needs-approval, with auto_chain (default off) as
+// the only way to skip the human. #2068 bound a run token's gate removal
+// to its own lineage, but inside that lineage a run could still release
+// its own follow-up, so with auto_chain off a run chained itself anyway,
+// up to max_depth hops with no human involved. Now a run token may remove
+// the gate only when the connection opted into auto_chain, and then still
+// only inside its own lineage (the RunTokenGateRemoval tests below run
+// under auto_chain for that reason). Adding the gate is never refused.
+
+// TestSetTrackerIssueLabels_RunTokenCannotReleaseGateWithoutAutoChain
+// walks criterion 1 end to end under the default policy: a dispatched
+// run files a follow-up (gate forced on), then tries to release it. The
+// removal, alone or mixed with an allowed label, is refused before any upstream call, on its own
+// child and on its own dispatched issue. The follow-up stays parked, and
+// only a human's removal lets the next tick dispatch it.
+func TestSetTrackerIssueLabels_RunTokenCannotReleaseGateWithoutAutoChain(t *testing.T) {
+	const user = "tracker-chain-gate-release-needs-human"
+	provider := &fakeWriterProvider{}
+	s, starter, admin := setUpDispatchableConnection(t, user, provider, nil)
+
+	routed := tracker.Issue{Number: 42, Labels: []string{"scope:product"}, State: pb.TrackerIssueState_TRACKER_ISSUE_STATE_OPEN}
+	provider.issues, provider.issue = []tracker.Issue{routed}, routed
+	if tick, err := s.DispatchTrackerIssues(admin, &pb.DispatchTrackerIssuesRequest{Username: user, Connection: "default"}); err != nil || len(tick.GetStarted()) != 1 {
+		t.Fatalf("tick 0 = %+v, %v; want #42 dispatched", tick, err)
+	}
+	runID := starter.calls[0].RunID
+	s.runRegistry.Register(runID, runlease.Info{SkillID: "product-define", Model: "fable"})
+	run := runCtxFor(t, user, runID)
+
+	resp, err := s.CreateTrackerIssue(run, createReq(user, 42, "scope:product"))
+	if err != nil {
+		t.Fatalf("CreateTrackerIssue (run token): %v", err)
+	}
+	child := resp.GetIssue().GetNumber()
+	if !containsLabel(provider.createIssueReqs[0].Labels, tracker.LabelNeedsApproval) {
+		t.Fatalf("follow-up labels = %v, want %s forced on", provider.createIssueReqs[0].Labels, tracker.LabelNeedsApproval)
+	}
+
+	refused := []struct {
+		name   string
+		number int64
+		add    []string
+		remove []string
+	}{
+		{"its own recorded child", child, nil, []string{tracker.LabelNeedsApproval}},
+		{"its own child, alongside an allowed model label", child, []string{"model:fable"}, []string{tracker.LabelNeedsApproval}},
+		{"its own dispatched issue", 42, nil, []string{tracker.LabelNeedsApproval}},
+	}
+	for _, tc := range refused {
+		t.Run("run token removing the gate from "+tc.name, func(t *testing.T) {
+			provider.labelsAdd, provider.labelsRemove = nil, nil
+			_, err := s.SetTrackerIssueLabels(run, &pb.SetTrackerIssueLabelsRequest{
+				Username: user, Connection: "default", Number: tc.number, AddLabels: tc.add, RemoveLabels: tc.remove,
+			})
+			if status.Code(err) != codes.PermissionDenied {
+				t.Fatalf("code = %v (%v), want PermissionDenied", status.Code(err), err)
+			}
+			if provider.labelsAdd != nil || provider.labelsRemove != nil {
+				t.Errorf("upstream SetLabels was called (add=%v remove=%v), want no upstream call", provider.labelsAdd, provider.labelsRemove)
+			}
+		})
+	}
+
+	// Adding the gate only holds an issue back, so it is still allowed.
+	provider.labelsAdd, provider.labelsRemove = nil, nil
+	if _, err := s.SetTrackerIssueLabels(run, &pb.SetTrackerIssueLabelsRequest{
+		Username: user, Connection: "default", Number: child, AddLabels: []string{tracker.LabelNeedsApproval},
+	}); err != nil {
+		t.Fatalf("run token adding the gate to its own child: %v, want success", err)
+	}
+
+	// The forge still shows the follow-up gated: every tick skips it.
+	gated := tracker.Issue{Number: child, Labels: []string{"scope:product", tracker.LabelNeedsApproval}, State: pb.TrackerIssueState_TRACKER_ISSUE_STATE_OPEN}
+	provider.issues, provider.issue = []tracker.Issue{gated}, gated
+	tick, err := s.DispatchTrackerIssues(admin, &pb.DispatchTrackerIssuesRequest{Username: user, Connection: "default"})
+	if err != nil {
+		t.Fatalf("DispatchTrackerIssues while gated: %v", err)
+	}
+	if tick.GetSkippedNeedsApproval() != 1 || len(tick.GetStarted()) != 0 || len(starter.calls) != 1 {
+		t.Fatalf("tick = %+v, StartRun calls = %d; want the follow-up skipped as gated", tick, len(starter.calls))
+	}
+
+	// A human (an operator token, no run_id) releases it: the next tick
+	// dispatches it at depth 1.
+	provider.labelsAdd, provider.labelsRemove = nil, nil
+	human := kmsKeyTestCtx(user, "member", "tracker:write")
+	if _, err := s.SetTrackerIssueLabels(human, &pb.SetTrackerIssueLabelsRequest{
+		Username: user, Connection: "default", Number: child, RemoveLabels: []string{tracker.LabelNeedsApproval},
+	}); err != nil {
+		t.Fatalf("human removing the gate: %v, want success", err)
+	}
+	released := tracker.Issue{Number: child, Labels: []string{"scope:product"}, State: pb.TrackerIssueState_TRACKER_ISSUE_STATE_OPEN}
+	provider.issues, provider.issue = []tracker.Issue{released}, released
+	tick, err = s.DispatchTrackerIssues(admin, &pb.DispatchTrackerIssuesRequest{Username: user, Connection: "default"})
+	if err != nil {
+		t.Fatalf("DispatchTrackerIssues after release: %v", err)
+	}
+	if len(tick.GetStarted()) != 1 || tick.GetStarted()[0].GetDepth() != 1 {
+		t.Fatalf("started after human release = %+v, want the follow-up at depth 1", tick.GetStarted())
+	}
+}
 
 // ---- Depth floor (#2073) ---------------------------------------------
 //
@@ -326,7 +422,8 @@ func TestCreateTrackerIssue_ChildDepthFollowsTheRunsRealLineage(t *testing.T) {
 	run0 := runCtxFor(t, user, starter.calls[0].RunID)
 	s.runRegistry.Register(starter.calls[0].RunID, runlease.Info{SkillID: "product-define", Model: "fable"})
 
-	// Run 0 files A under #42 (depth 1) and releases it (its own child).
+	// Run 0 files A under #42 (depth 1); a human releases it (without
+	// auto_chain a run cannot, #2025).
 	resp, err := s.CreateTrackerIssue(run0, createReq(user, 42, "scope:product"))
 	if err != nil {
 		t.Fatalf("run 0 CreateTrackerIssue: %v", err)
@@ -335,10 +432,10 @@ func TestCreateTrackerIssue_ChildDepthFollowsTheRunsRealLineage(t *testing.T) {
 	if d, err := s.trackerStore.IssueDepth(ctx, user, "default", a); err != nil || d != 1 {
 		t.Fatalf("depth of A (#%d) = %d, %v; want 1", a, d, err)
 	}
-	if _, err := s.SetTrackerIssueLabels(run0, &pb.SetTrackerIssueLabelsRequest{
+	if _, err := s.SetTrackerIssueLabels(kmsKeyTestCtx(user, "member", "tracker:write"), &pb.SetTrackerIssueLabelsRequest{
 		Username: user, Connection: "default", Number: a, RemoveLabels: []string{tracker.LabelNeedsApproval},
 	}); err != nil {
-		t.Fatalf("run 0 removing the gate from its own child: %v", err)
+		t.Fatalf("human removing the gate from A: %v", err)
 	}
 
 	// Hop 1: the forge shows A routed and ungated; the tick dispatches it
@@ -400,12 +497,18 @@ func TestCreateTrackerIssue_ChildDepthFollowsTheRunsRealLineage(t *testing.T) {
 // hops with max_depth 1. Now the depth floor from each run's own dispatch
 // row stops the chain after exactly max_depth agent-filed hops, with a
 // FailedPrecondition on the next create and nothing sent upstream.
+//
+// Since #2025 a run can remove the gate only on a connection that opted
+// into auto_chain (without it, the first release is refused, see
+// TestSetTrackerIssueLabels_RunTokenCannotReleaseGateWithoutAutoChain),
+// so the probe runs under auto_chain: that is the one mode where
+// unattended hops are allowed, and max_depth still has to bound them.
 func TestChainGuards_UnattendedChainIsBoundedByMaxDepth(t *testing.T) {
 	for _, maxDepth := range []int32{1, 2} {
 		t.Run(fmt.Sprintf("max_depth=%d", maxDepth), func(t *testing.T) {
 			user := fmt.Sprintf("tracker-chain-unattended-%d", maxDepth)
 			provider := &fakeWriterProvider{}
-			s, starter, admin := setUpDispatchableConnection(t, user, provider, &pb.TrackerPolicy{MaxDepth: maxDepth})
+			s, starter, admin := setUpDispatchableConnection(t, user, provider, &pb.TrackerPolicy{MaxDepth: maxDepth, AutoChain: true})
 
 			routed := tracker.Issue{Number: 42, Labels: []string{"scope:product"}, State: pb.TrackerIssueState_TRACKER_ISSUE_STATE_OPEN}
 			provider.issues, provider.issue = []tracker.Issue{routed}, routed
@@ -669,6 +772,10 @@ func containsLabel(labels []string, want string) bool {
 // and is parked behind the gate would otherwise be released into a
 // depth-0 dispatch — past the gate, with no lineage row, and uncounted
 // against max_children_per_run. Adding the gate is not bound.
+//
+// These tests run under auto_chain: without it a run token may not remove
+// the gate anywhere (#2025), which would make them pass for that reason
+// instead of the lineage rule they pin.
 
 // TestSetTrackerIssueLabels_RunTokenGateRemovalOnUnrelatedIssueRejected is
 // the #2068 finding, flipped (it was pinned as current behavior by
@@ -678,7 +785,7 @@ func containsLabel(labels []string, want string) bool {
 func TestSetTrackerIssueLabels_RunTokenGateRemovalOnUnrelatedIssueRejected(t *testing.T) {
 	const user = "tracker-chain-gate-removal-unrelated"
 	provider := &fakeWriterProvider{}
-	s, starter, admin := setUpDispatchableConnection(t, user, provider, nil)
+	s, starter, admin := setUpDispatchableConnection(t, user, provider, &pb.TrackerPolicy{AutoChain: true})
 
 	// #43: human-filed, routed to scope:product, parked for approval.
 	_, err := s.SetTrackerIssueLabels(dispatchedRunCtx(t, user), &pb.SetTrackerIssueLabelsRequest{
@@ -709,7 +816,7 @@ func TestSetTrackerIssueLabels_RunTokenGateRemovalOnUnrelatedIssueRejected(t *te
 func TestSetTrackerIssueLabels_RunTokenGateRemovalLineageRules(t *testing.T) {
 	const user = "tracker-chain-gate-removal-lineage"
 	provider := &fakeWriterProvider{}
-	s, starter, admin := setUpDispatchableConnection(t, user, provider, nil)
+	s, starter, admin := setUpDispatchableConnection(t, user, provider, &pb.TrackerPolicy{AutoChain: true})
 	ctx := context.Background()
 
 	// A human routes #42; the tick dispatches it and chooses the run id.
@@ -726,7 +833,7 @@ func TestSetTrackerIssueLabels_RunTokenGateRemovalLineageRules(t *testing.T) {
 	s.runRegistry.Register(runID, runlease.Info{SkillID: "product-define", Model: "fable"})
 	run := runCtxFor(t, user, runID)
 
-	// The run files a follow-up: recorded as its child, gate forced on.
+	// The run files a follow-up: recorded as its child (ungated: auto_chain).
 	resp, err := s.CreateTrackerIssue(run, &pb.CreateTrackerIssueRequest{
 		Username: user, Connection: "default", Title: "Architecture for the thing",
 		Body: "Follow-up.", Labels: []string{"scope:product"}, ParentNumber: 42,
@@ -826,7 +933,7 @@ func TestSetTrackerIssueLabels_RunTokenGateRemovalUnderPermissiveAllowList(t *te
 		t.Run(strings.Join(allow, ","), func(t *testing.T) {
 			const user = "tracker-chain-gate-removal-allowlist"
 			provider := &fakeWriterProvider{}
-			s, _, _ := setUpDispatchableConnection(t, user, provider, &pb.TrackerPolicy{LabelAllowList: allow})
+			s, _, _ := setUpDispatchableConnection(t, user, provider, &pb.TrackerPolicy{LabelAllowList: allow, AutoChain: true})
 			policy := tracker.PolicyFromProto(&pb.TrackerPolicy{LabelAllowList: allow})
 			checked := 0
 			for _, label := range variants {

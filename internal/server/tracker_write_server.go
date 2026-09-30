@@ -222,7 +222,8 @@ func (s *ContainerServer) ClaimTrackerIssue(ctx context.Context, req *pb.ClaimTr
 // SetTrackerIssueLabels adds and/or removes labels on an issue, both
 // lists checked against the connection's label allow-list first (#2024);
 // a run token's scope labels, and its removal of the approval gate, are
-// further bound to its own lineage (#2060, #2068).
+// further bound to its own lineage (#2060, #2068), and a run token may
+// remove the approval gate at all only under auto_chain (#2025).
 func (s *ContainerServer) SetTrackerIssueLabels(ctx context.Context, req *pb.SetTrackerIssueLabelsRequest) (*pb.SetTrackerIssueLabelsResponse, error) {
 	if err := auth.RequireScope(ctx, auth.ScopeTrackerWrite); err != nil {
 		return nil, err
@@ -258,6 +259,17 @@ func (s *ContainerServer) SetTrackerIssueLabels(ctx context.Context, req *pb.Set
 	add, remove := trimLabels(req.AddLabels), trimLabels(req.RemoveLabels)
 	if err := policy.CheckLabels(append(append([]string(nil), add...), remove...), isRun); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	// Approval gate (#2025): with auto_chain off, only a human releases an
+	// agent-filed follow-up. A run token removing agent:needs-approval is
+	// refused on every issue, its own follow-ups included; otherwise a run
+	// could release its own children and chain itself, hop after hop, up
+	// to max_depth with no human involved, which is exactly what auto_chain
+	// off is meant to prevent. With auto_chain on, the lineage check below
+	// still bounds where a run may remove it.
+	if isRun && !policy.AutoChain && anyGateLabel(remove) {
+		return nil, status.Errorf(codes.PermissionDenied,
+			"a run-scoped token may not remove %s: this connection does not enable auto_chain, so only a human releases a follow-up", tracker.LabelNeedsApproval)
 	}
 	// Lineage (#2060, #2068), on top of the allow-list and whatever it
 	// admits: a run token may add or remove a scope:<role> label, or remove
