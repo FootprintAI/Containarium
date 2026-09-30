@@ -776,8 +776,8 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// coreServices is hoisted so alert setup can reference it later
 	var coreServices *CoreServices
 	// bridgeDNS keeps the bridge's raw.dnsmasq record on core-caddy's live
-	// address after the start-up write below (#2188). Nil unless the daemon
-	// manages core-caddy itself and app hosting is on.
+	// address on every start (#2188). Nil unless app hosting is on, a base
+	// domain is set and a core-caddy container exists on this host.
 	var bridgeDNS *bridgedns.Reconciler
 	// postgresConnString is hoisted so collaborator init (after skipAppHosting) can use it
 	postgresConnString := config.PostgresConnString
@@ -854,20 +854,17 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 							log.Printf("DNS override: *.%s -> %s (internal hairpin); SSH apex %q and passthrough hosts %q -> upstream", config.BaseDomain, caddyIP, config.SSHHost, config.DNSPassthroughHosts)
 						}
 
-						// The write above happens once. Keep the record on core-caddy's
-						// live address from here on, and retry it if that write failed
-						// (a failure above is only a warning) (#2188). Built whether or
-						// not the write succeeded, so a failed first write is repaired.
-						bridgeDNS = bridgedns.NewReconciler(incusClient, bridgedns.Config{
-							Bridge:         "incusbr0",
-							CaddyContainer: CoreCaddyContainer,
-							Render: func(ip string) string {
-								return bridgeDNSRaw(config.BaseDomain, ip, config.SSHHost, config.DNSPassthroughHosts...)
-							},
-						})
 					}
 				}
 			}
+
+			// Keep the bridge DNS record on core-caddy's live address (#2188).
+			// The start-up write above runs only at first install: on every later
+			// start cmd/daemon.go has already auto-detected the Caddy admin URL,
+			// so the block that writes the record is skipped and a stale address
+			// would stay forever. Built here, outside that block, so it runs on
+			// every start; its first pass repairs a stale record.
+			bridgeDNS = newBridgeDNSReconciler(config, incusClient)
 
 			// Setup VictoriaMetrics + Grafana if no URL provided
 			victoriaMetricsURL := config.VictoriaMetricsURL

@@ -19,13 +19,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - The bridge DNS record that resolves `*.<base-domain>` to core-caddy is now
-  reconciled instead of written once at start-up. If core-caddy's address
-  changes while the daemon keeps running, or the start-up write failed (it was
-  only a warning), boxes resolved the whole base domain to an address nothing
-  answered on until the next restart. A new reconciler compares `raw.dnsmasq`
-  with what the daemon would render for core-caddy's live address at start-up,
-  on container events and every minute, and rewrites it only on drift, logging
-  both values. The daemon owns the whole value, so a hand edit is restored. It
+  reconciled instead of written once, at first install. The write lives in the
+  core-services block that is skipped on every later start, because the daemon
+  has by then auto-detected the Caddy admin URL from the running core-caddy, so
+  a record left stale by a core-caddy address change stayed stale across daemon
+  restarts and upgrades; a failed first write (only a warning) was never
+  retried either. Boxes then resolved the whole base domain to an address
+  nothing answered on. A new reconciler, started on every start whenever app
+  hosting is on, a base domain is set and a core-caddy container exists,
+  compares `raw.dnsmasq` with what the daemon would render for core-caddy's
+  live address at start-up, on container events and every minute, and rewrites
+  it only on drift, logging both values. The daemon owns the whole value, so a hand edit is restored. It
   never writes when core-caddy's address cannot be established. (#2188)
 
 ## [0.93.1] - 2026-09-30
