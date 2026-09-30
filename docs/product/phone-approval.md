@@ -102,7 +102,7 @@ Engine scope: **Claude Code only** in the MVP. pi and others get the #2124
 documented fallback (auto-deny, journaled) so behavior is visible, never
 silent.
 
-### Story 1: a run pauses instead of auto-denying
+### Story 1 (#2183): a run pauses instead of auto-denying
 
 **Story:** As a developer, I want a `code run` agent to pause on a permission
 request instead of being silently denied, so that a narrow-permission run can
@@ -127,7 +127,7 @@ still finish the task.
 
 **Priority:** P0
 
-### Story 2: answer from the CLI
+### Story 2 (#2184): answer from the CLI
 
 **Story:** As a developer at a terminal, I want to see and answer pending
 requests without attaching to the stream, so that the CLI is a complete
@@ -148,7 +148,7 @@ surface on its own (CLI-first; the phone is one more consumer).
 
 **Priority:** P0
 
-### Story 3: the request reaches the phone
+### Story 3 (#2185): the request reaches the phone
 
 **Story:** As a developer away from my laptop, I want a push notification when
 a run is waiting on me, so that I don't have to poll.
@@ -171,7 +171,7 @@ a run is waiting on me, so that I don't have to poll.
 
 **Priority:** P0
 
-### Story 4: answer from the notification
+### Story 4 (#2186): answer from the notification
 
 **Story:** As a developer holding my phone, I want Allow / Deny buttons on the
 notification, so that answering is one tap, not an app or an SSH session.
@@ -193,7 +193,7 @@ notification, so that answering is one tap, not an app or an SSH session.
 
 **Priority:** P0
 
-### Story 5: every answer is attributable
+### Story 5 (#2187): every answer is attributable
 
 **Story:** As the owner of the box, I want every request and answer recorded
 with who answered and through which channel, so that "who approved this?"
