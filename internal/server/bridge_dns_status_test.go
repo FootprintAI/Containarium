@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 	"time"
 
@@ -195,5 +196,29 @@ func TestGetBridgeDNSStatus_DegradedWhenThePassCannotConverge(t *testing.T) {
 	}
 	if resp.State != pb.BridgeDNSState_BRIDGE_DNS_STATE_DEGRADED || resp.LastError == "" || resp.Reason != resp.LastError {
 		t.Fatalf("resp = %+v; want DEGRADED with the error as the reason", resp)
+	}
+}
+
+// The drift count is an int in the reconciler and an int32 on the wire. A
+// counter that has run long enough must saturate, not wrap negative.
+func TestBridgeDNSStatusResponse_DriftCountSaturates(t *testing.T) {
+	maxInt := int(^uint(0) >> 1) // > MaxInt32 on 64-bit, == MaxInt32 on 32-bit
+	cases := []struct {
+		name string
+		in   int
+		want int32
+	}{
+		{"zero", 0, 0},
+		{"ordinary", 7, 7},
+		{"the int32 boundary", math.MaxInt32, math.MaxInt32},
+		{"larger than int32", maxInt, math.MaxInt32},
+		{"negative is clamped to zero", -5, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := bridgeDNSStatusResponse(bridgedns.Status{DriftCount: tc.in}).DriftCount; got != tc.want {
+				t.Fatalf("DriftCount(%d) = %d; want %d", tc.in, got, tc.want)
+			}
+		})
 	}
 }

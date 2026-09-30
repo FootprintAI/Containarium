@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"math"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -27,7 +28,7 @@ func bridgeDNSStatusResponse(st bridgedns.Status) *pb.GetBridgeDNSStatusResponse
 		Desired:    st.Desired,
 		Current:    st.Current,
 		LastError:  st.LastError,
-		DriftCount: int32(st.DriftCount),
+		DriftCount: saturateInt32(st.DriftCount),
 	}
 	if !st.LastPass.IsZero() {
 		resp.LastPass = timestamppb.New(st.LastPass)
@@ -49,6 +50,21 @@ func bridgeDNSStatusResponse(st bridgedns.Status) *pb.GetBridgeDNSStatusResponse
 		resp.Reason = "the record differs from the desired value and the last pass recorded no error"
 	}
 	return resp
+}
+
+// saturateInt32 converts the reconciler's int counter to the wire's int32
+// without wrapping: a counter that has run long enough clamps at MaxInt32, and
+// a negative value (which the reconciler never produces) clamps to zero, so the
+// value on the wire is never a nonsense negative count.
+func saturateInt32(n int) int32 {
+	switch {
+	case n < 0:
+		return 0
+	case n > math.MaxInt32:
+		return math.MaxInt32
+	default:
+		return int32(n)
+	}
 }
 
 // SetBridgeDNSReconciler wires the reconciler GetBridgeDNSStatus reports on.
