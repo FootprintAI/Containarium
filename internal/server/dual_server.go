@@ -160,6 +160,12 @@ type DualServerConfig struct {
 	// direct mode: ssh_host is left empty and clients use the container IP.
 	SSHHost string
 
+	// DNSPassthroughHosts are extra hostnames the bridge DNS record carves
+	// out of the base-domain wildcard so they resolve via the upstream
+	// resolvers, from --dns-passthrough-host (#2188). Empty = only the SSH
+	// host (if set) is carved out, as before.
+	DNSPassthroughHosts []string
+
 	// Alerting settings
 	AlertWebhookURL    string // Webhook URL for alert notifications (optional)
 	AlertWebhookSecret string // HMAC-SHA256 signing secret for webhook payloads (optional)
@@ -290,10 +296,34 @@ type DualServer struct {
 // (→ the sentinel's public IP) instead of the address= override. dnsmasq's
 // longest-match makes the carve-out win. Without it, an in-box `connect`
 // dials the SSH apex and lands on Caddy (no :22) or a stale edge IP (#837.1).
-func bridgeDNSRaw(baseDomain, caddyIP, sshHost string) string {
+//
+// passthroughHosts (--dns-passthrough-host, #2188) are further names the
+// operator needs resolved upstream — e.g. an API host that lives under the
+// base domain but is not served by Caddy. Each gets its own
+// `server=/<host>/#` line after the SSH carve-out, in flag order. Entries are
+// normalized, de-duplicated against each other, the SSH host and the base
+// domain (a carve-out equal to the base would cancel the wildcard), and any
+// entry that is not a plain hostname is dropped so a bad value can never inject
+// a directive. With none configured the result is unchanged.
+func bridgeDNSRaw(baseDomain, caddyIP, sshHost string, passthroughHosts ...string) string {
 	raw := fmt.Sprintf("address=/%s/%s", baseDomain, caddyIP)
+	seen := map[string]bool{}
+	if n, ok := normalizeDNSHost(baseDomain); ok {
+		seen[n] = true
+	}
 	if sshHost != "" && sshHost != baseDomain {
 		raw += "\nserver=/" + sshHost + "/#"
+		if n, ok := normalizeDNSHost(sshHost); ok {
+			seen[n] = true
+		}
+	}
+	for _, h := range passthroughHosts {
+		n, ok := normalizeDNSHost(h)
+		if !ok || seen[n] {
+			continue
+		}
+		seen[n] = true
+		raw += "\nserver=/" + n + "/#"
 	}
 	return raw
 }
@@ -319,6 +349,11 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	}
 	if err := validateTrustedProxyCIDRs(config.TrustedProxyCIDRs); err != nil {
 		return nil, fmt.Errorf("trusted-proxy-cidrs misconfigured: %w", err)
+	}
+	// #2188: a bad passthrough host would silently corrupt the bridge DNS
+	// record, so fail visibly at boot.
+	if err := validateDNSPassthroughHosts(config.DNSPassthroughHosts); err != nil {
+		return nil, fmt.Errorf("dns-passthrough-host misconfigured: %w", err)
 	}
 
 	// Create container server
@@ -783,11 +818,11 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 						// the sentinel (#837.1). Uses the LIVE caddy IP, so each
 						// (re)apply tracks Caddy's current address rather than a
 						// stale one (#837.D).
-						dnsOverride := bridgeDNSRaw(config.BaseDomain, caddyIP, config.SSHHost)
+						dnsOverride := bridgeDNSRaw(config.BaseDomain, caddyIP, config.SSHHost, config.DNSPassthroughHosts...)
 						if out, err := exec.Command("incus", "network", "set", "incusbr0", "raw.dnsmasq", dnsOverride).CombinedOutput(); err != nil { // #nosec G204 -- dnsOverride is built from trusted BaseDomain/CaddyIP/SSHHost config values
 							log.Printf("Warning: failed to set DNS override for %s: %v (%s)", config.BaseDomain, err, string(out))
 						} else {
-							log.Printf("DNS override: *.%s -> %s (internal hairpin); SSH apex %q -> upstream", config.BaseDomain, caddyIP, config.SSHHost)
+							log.Printf("DNS override: *.%s -> %s (internal hairpin); SSH apex %q and passthrough hosts %q -> upstream", config.BaseDomain, caddyIP, config.SSHHost, config.DNSPassthroughHosts)
 						}
 					}
 				}

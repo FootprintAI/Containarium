@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `--dns-passthrough-host` (repeatable): hostnames the bridge DNS record carves
+  out of the `*.<base-domain>` wildcard so boxes resolve them through the
+  upstream resolvers, the way `--ssh-host` already is. For an API host that sits
+  under the base domain but is not served by Caddy. Entries are validated at
+  boot; with none configured the generated `raw.dnsmasq` value is unchanged.
+  (#2188)
+
 ## [0.93.1] - 2026-09-30
 
 ### Fixed
