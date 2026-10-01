@@ -1922,6 +1922,12 @@ type CreateContainerRequest struct {
 	// (#1606). A standalone/single-region daemon ignores it.
 	Region string `json:"region,omitempty"`
 
+	// OSType is the OSType enum *name* ("OS_TYPE_ROCKY_9"), which is what
+	// grpc-gateway's protojson accepts. Empty = not sent = the daemon's
+	// default (Ubuntu 24.04). Advertised in the tool schema since the
+	// start; wired through only with #2208.
+	OSType string `json:"osType,omitempty"`
+
 	// Isolation is the IsolationType enum *name* ("ISOLATION_TYPE_VM"),
 	// which is what grpc-gateway's protojson accepts. Empty = not sent =
 	// the daemon's default (#2196).

@@ -1938,6 +1938,19 @@ func handleCreateContainer(client API, args map[string]interface{}) (string, err
 		return "", fmt.Errorf("username is required")
 	}
 
+	// os_type (#2208): the REST shim takes the enum by name; empty = not
+	// sent = the daemon's default. OSTypeFromString maps an unknown value
+	// to UNSPECIFIED, which here would mean silently handing out Ubuntu for
+	// a typo, so a non-empty value that does not parse is an error.
+	var osTypeWire string
+	if raw := getStringArg(args, "os_type", ""); raw != "" {
+		osType := ostype.OSTypeFromString(raw)
+		if osType == pb.OSType_OS_TYPE_UNSPECIFIED {
+			return "", fmt.Errorf("invalid os_type %q: want ubuntu, rocky9 or rhel9", raw)
+		}
+		osTypeWire = osType.String()
+	}
+
 	// The REST shim takes the enum by name; UNSPECIFIED is simply not sent.
 	isolation, err := ostype.ParseIsolation(getStringArg(args, "isolation", ""))
 	if err != nil {
@@ -1966,6 +1979,7 @@ func handleCreateContainer(client API, args map[string]interface{}) (string, err
 		BackendID:    getStringArg(args, "backend_id", ""),
 		Region:       getStringArg(args, "region", ""),
 		Isolation:    isolationWire,
+		OSType:       osTypeWire,
 	}
 
 	// Handle SSH keys. If the caller passes ssh_keys explicitly we use
