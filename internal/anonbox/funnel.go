@@ -29,6 +29,7 @@ const (
 var AllFunnelKinds = []FunnelKind{
 	FunnelConnect, FunnelShellReady, FunnelReconnect, FunnelClaimLinkIssued, FunnelClaimCompleted,
 	FunnelExpired, FunnelKilledAbuse, FunnelRejectedCapacity, FunnelRejectedRateLimit, FunnelRejectedDoor,
+	FunnelReminderOptIn,
 }
 
 // FunnelEvent is one recorded step.

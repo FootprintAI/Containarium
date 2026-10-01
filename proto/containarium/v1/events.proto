@@ -75,6 +75,7 @@ enum EventType {
   EVENT_TYPE_ANON_REJECTED_RATELIMIT = 68; // refused: per-key / per-IP rate limit
   EVENT_TYPE_ANON_REJECTED_DOOR = 69;      // refused: door closed or key banned (#2200)
   EVENT_TYPE_ANON_LOST_PREEMPTION = 70;    // the anon-pool host was preempted (emitted by the sentinel's spot watcher, not the daemon)
+  EVENT_TYPE_ANON_REMINDER_OPTIN = 71;     // the user asked for an expiry reminder (containarium remind-me), picked up by the warner
 }
 
 // ResourceType identifies which resource type an event pertains to

@@ -81,6 +81,7 @@ const (
 	EventType_EVENT_TYPE_ANON_REJECTED_RATELIMIT EventType = 68 // refused: per-key / per-IP rate limit
 	EventType_EVENT_TYPE_ANON_REJECTED_DOOR      EventType = 69 // refused: door closed or key banned (#2200)
 	EventType_EVENT_TYPE_ANON_LOST_PREEMPTION    EventType = 70 // the anon-pool host was preempted (emitted by the sentinel's spot watcher, not the daemon)
+	EventType_EVENT_TYPE_ANON_REMINDER_OPTIN     EventType = 71 // the user asked for an expiry reminder (containarium remind-me), picked up by the warner
 )
 
 // Enum value maps for EventType.
@@ -113,6 +114,7 @@ var (
 		68: "EVENT_TYPE_ANON_REJECTED_RATELIMIT",
 		69: "EVENT_TYPE_ANON_REJECTED_DOOR",
 		70: "EVENT_TYPE_ANON_LOST_PREEMPTION",
+		71: "EVENT_TYPE_ANON_REMINDER_OPTIN",
 	}
 	EventType_value = map[string]int32{
 		"EVENT_TYPE_UNSPECIFIED":             0,
@@ -142,6 +144,7 @@ var (
 		"EVENT_TYPE_ANON_REJECTED_RATELIMIT": 68,
 		"EVENT_TYPE_ANON_REJECTED_DOOR":      69,
 		"EVENT_TYPE_ANON_LOST_PREEMPTION":    70,
+		"EVENT_TYPE_ANON_REMINDER_OPTIN":     71,
 	}
 )
 
@@ -897,7 +900,7 @@ const file_containarium_v1_events_proto_rawDesc = "" +
 	"\x16SubscribeEventsRequest\x12D\n" +
 	"\x0eresource_types\x18\x01 \x03(\x0e2\x1d.containarium.v1.ResourceTypeR\rresourceTypes\x12'\n" +
 	"\x0finclude_metrics\x18\x02 \x01(\bR\x0eincludeMetrics\x128\n" +
-	"\x18metrics_interval_seconds\x18\x03 \x01(\x05R\x16metricsIntervalSeconds*\x82\a\n" +
+	"\x18metrics_interval_seconds\x18\x03 \x01(\x05R\x16metricsIntervalSeconds*\xa6\a\n" +
 	"\tEventType\x12\x1a\n" +
 	"\x16EVENT_TYPE_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cEVENT_TYPE_CONTAINER_CREATED\x10\x01\x12 \n" +
@@ -926,7 +929,8 @@ const file_containarium_v1_events_proto_rawDesc = "" +
 	"!EVENT_TYPE_ANON_REJECTED_CAPACITY\x10C\x12&\n" +
 	"\"EVENT_TYPE_ANON_REJECTED_RATELIMIT\x10D\x12!\n" +
 	"\x1dEVENT_TYPE_ANON_REJECTED_DOOR\x10E\x12#\n" +
-	"\x1fEVENT_TYPE_ANON_LOST_PREEMPTION\x10F*\xf0\x01\n" +
+	"\x1fEVENT_TYPE_ANON_LOST_PREEMPTION\x10F\x12\"\n" +
+	"\x1eEVENT_TYPE_ANON_REMINDER_OPTIN\x10G*\xf0\x01\n" +
 	"\fResourceType\x12\x1d\n" +
 	"\x19RESOURCE_TYPE_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17RESOURCE_TYPE_CONTAINER\x10\x01\x12\x15\n" +

@@ -105,6 +105,9 @@ type DualServerConfig struct {
 	// "<base>?token=…" in the guest's claim-url file (#2199), e.g.
 	// https://<cloud-domain>/claim. Empty = the bare token is written.
 	AnonClaimURLBase string
+	// AnonReminderWebhook receives one POST per opt-in expiry reminder
+	// (#2206) — the control plane emails the user; empty = reminders off.
+	AnonReminderWebhook string
 	// AnonDoor tunes the anonymous-box guardrails (#2200); zero values
 	// mean anonbox.DefaultLimits / anonbox.DefaultDoorStatePath.
 	AnonDoor      AnonDoorOptions
@@ -1935,9 +1938,14 @@ skipAppHosting:
 			} else {
 				anonFunnel = sink
 			}
+			var anonReminder anonbox.ReminderSender
+			if config.AnonReminderWebhook != "" {
+				anonReminder = newAnonReminderWebhook(config.AnonReminderWebhook)
+			}
 			anonMgr := anonbox.New(anonBoxes, networkIncusClient, anonbox.Config{
 				Limits:        anonLimits,
 				Funnel:        anonFunnel,
+				Reminder:      anonReminder,
 				NICDevice:     "eth0",
 				Bridge:        "incusbr0",
 				DoorStatePath: anonStatePath,

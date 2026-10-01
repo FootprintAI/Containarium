@@ -137,6 +137,9 @@ type Config struct {
 	// delivered, #2202); nil = the standard logger.
 	Logf func(format string, args ...any)
 
+	// Reminder delivers the opt-in expiry reminder (#2206); nil = never sent.
+	Reminder ReminderSender
+
 	// Now is the clock; nil = time.Now.
 	Now func() time.Time
 }

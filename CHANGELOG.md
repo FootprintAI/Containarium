@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Anonymous-box opt-in reminder (#2206): `containarium remind-me <email>`
+  inside the box (`--clear` withdraws it) asks for one email about 30 minutes
+  before the box expires, carrying the sign-up link. The address is picked up
+  inside that window, posted once to `--anon-reminder-webhook` (the control
+  plane sends the mail — the daemon has no SMTP), and discarded; the funnel
+  counts it as `reminder_optin`. Nothing is collected without the command.
+
 - Anonymous-box expiry warnings (#2202): a `wall` into the guest about 10
   minutes and 1 minute before the box's TTL, each at most once, recorded on
   the box (`anon.warned`) so a daemon restart never repeats one; a wall that
