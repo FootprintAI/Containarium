@@ -22,6 +22,7 @@ import (
 	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/autosleep"
+	"github.com/footprintai/containarium/internal/bridgedns"
 	"github.com/footprintai/containarium/internal/cloud"
 	clusterstore "github.com/footprintai/containarium/internal/cluster"
 	"github.com/footprintai/containarium/internal/collaborator"
@@ -263,6 +264,7 @@ type DualServer struct {
 	sandboxTTLSweeperManager *ttlsweeper.Manager    // ephemeral sandbox auto-delete (#1488 Phase 4)
 	secretsReconciler        *secretsReconciler     // Phase 4.3 Phase B-3
 	networkPolicyEnforcer    *NetworkPolicyEnforcer // #315 Phase A — eBPF per-tenant net policy (off unless configured)
+	bridgeDNS                *bridgedns.Reconciler  // #2188 — keeps the bridge raw.dnsmasq record on core-caddy's live address
 	coreGuard                *coreguard.Reconciler  // #2084 — Incus NIC ACLs keeping tenants off core-role containers (off unless CONTAINARIUM_CORE_GUARD=enforce)
 
 	// k8sNetPolicyReconciler converges tenant NetworkPolicy objects on the K8s
@@ -326,6 +328,29 @@ func bridgeDNSRaw(baseDomain, caddyIP, sshHost string, passthroughHosts ...strin
 		raw += "\nserver=/" + n + "/#"
 	}
 	return raw
+}
+
+// containerEventKick returns a channel that receives a coalesced signal for
+// every event on the bus until ctx is done, for reconcilers that wake early on
+// container changes. A pass already pending absorbs further events.
+func containerEventKick(ctx context.Context) <-chan struct{} {
+	sub := events.GetBus().Subscribe(nil)
+	kick := make(chan struct{}, 1)
+	go func() {
+		defer events.GetBus().Unsubscribe(sub.ID)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-sub.Events:
+				select {
+				case kick <- struct{}{}:
+				default:
+				}
+			}
+		}
+	}()
+	return kick
 }
 
 // NewDualServer creates a new dual server instance
@@ -750,6 +775,10 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	var routeSyncJob *app.RouteSyncJob
 	// coreServices is hoisted so alert setup can reference it later
 	var coreServices *CoreServices
+	// bridgeDNS keeps the bridge's raw.dnsmasq record on core-caddy's live
+	// address on every start (#2188). Nil unless app hosting is on, a base
+	// domain is set and a core-caddy container exists on this host.
+	var bridgeDNS *bridgedns.Reconciler
 	// postgresConnString is hoisted so collaborator init (after skipAppHosting) can use it
 	postgresConnString := config.PostgresConnString
 	if config.EnableAppHosting {
@@ -824,9 +853,18 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 						} else {
 							log.Printf("DNS override: *.%s -> %s (internal hairpin); SSH apex %q and passthrough hosts %q -> upstream", config.BaseDomain, caddyIP, config.SSHHost, config.DNSPassthroughHosts)
 						}
+
 					}
 				}
 			}
+
+			// Keep the bridge DNS record on core-caddy's live address (#2188).
+			// The start-up write above runs only at first install: on every later
+			// start cmd/daemon.go has already auto-detected the Caddy admin URL,
+			// so the block that writes the record is skipped and a stale address
+			// would stay forever. Built here, outside that block, so it runs on
+			// every start; its first pass repairs a stale record.
+			bridgeDNS = newBridgeDNSReconciler(config, incusClient)
 
 			// Setup VictoriaMetrics + Grafana if no URL provided
 			victoriaMetricsURL := config.VictoriaMetricsURL
@@ -2408,6 +2446,7 @@ skipAppHosting:
 		zapStore:               zapStore,
 		peerPool:               NewPeerPool(config.LocalBackendID, config.SentinelURL, config.Peers, config.Pool),
 		networkPolicyEnforcer:  networkPolicyEnforcer,
+		bridgeDNS:              bridgeDNS,
 		coreGuard:              coreGuard,
 		k8sNetPolicyReconciler: k8sNetPolicyReconciler,
 		cloudClient:            cloudClient,
@@ -2705,6 +2744,9 @@ func (ds *DualServer) Start(ctx context.Context) error {
 	// it unconditionally; empty --ssh-host leaves ssh_host empty.
 	if ds.containerServer != nil {
 		ds.containerServer.SetSSHHost(ds.config.SSHHost)
+		// GetBridgeDNSStatus (#2188): nil when app hosting is off or core-caddy
+		// is not managed by this daemon, which the RPC reports as NOT_MANAGED.
+		ds.containerServer.SetBridgeDNSReconciler(ds.bridgeDNS)
 		// Capability-profile identity (#681): region from --region, falling
 		// back to the pool name; self-reported class from the pool name. Both
 		// may be empty. Wired unconditionally — profiling works on a
@@ -3154,6 +3196,14 @@ func (ds *DualServer) Start(ctx context.Context) error {
 			}
 		}()
 		go ds.coreGuard.Run(ctx, kick)
+	}
+
+	// Bridge DNS record (#2188): re-apply raw.dnsmasq when core-caddy's address
+	// drifts from it, at start, on container events and every minute. A record
+	// that cannot be repaired is logged and shown in status; it must never block
+	// the daemon from serving.
+	if ds.bridgeDNS != nil {
+		go ds.bridgeDNS.Run(ctx, containerEventKick(ctx))
 	}
 
 	// Start the eBPF network-policy enforcer if configured (#315 Phase A). A

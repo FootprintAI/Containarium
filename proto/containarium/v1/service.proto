@@ -784,6 +784,20 @@ service ContainerService {
     };
   }
 
+  // GetBridgeDNSStatus reports whether the bridge DNS record that resolves the
+  // app-hosting base domain to core-caddy matches core-caddy's live address,
+  // and why not when it does not (#2188). Admin-only.
+  rpc GetBridgeDNSStatus(GetBridgeDNSStatusRequest) returns (GetBridgeDNSStatusResponse) {
+    option (google.api.http) = {
+      get: "/v1/system/bridge-dns"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get bridge DNS record status";
+      description: "Returns the last pass of the reconciler that keeps the Incus bridge's raw.dnsmasq record (base domain -> core-caddy) on core-caddy's live address: state, the desired and current record, core-caddy's address, the last error and drift count. NOT_MANAGED when this daemon does not run the reconciler. Admin-only.";
+      tags: "System";
+    };
+  }
+
   // GetMonitoringInfo gets monitoring configuration (Grafana/VictoriaMetrics URLs)
   rpc GetMonitoringInfo(GetMonitoringInfoRequest) returns (GetMonitoringInfoResponse) {
     option (google.api.http) = {

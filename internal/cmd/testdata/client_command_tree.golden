@@ -26,6 +26,7 @@ backup list
 backup prune
 backup restore
 backup verify
+bridge-dns status
 capacity advertise
 capacity get
 capacity withdraw

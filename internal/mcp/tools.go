@@ -930,6 +930,22 @@ func (s *Server) registerTools() {
 			Handler: handleSecuritySentryStatus,
 		},
 		{
+			Name: "bridge_dns_status",
+			Description: "Report whether the bridge DNS record that resolves the app-hosting base domain " +
+				"to core-caddy matches core-caddy's live address (#2188): 'IN_SYNC', 'PENDING' (no " +
+				"reconcile pass has finished yet), 'DEGRADED' (the last pass could not converge — check " +
+				"`reason`/`lastError`; boxes may resolve the base domain to an address nothing answers " +
+				"on), or 'NOT_MANAGED' (this daemon does not run the reconciler). Includes core-caddy's " +
+				"address, the desired and current record, the drift count and pass timestamps.\n\n" +
+				"Call this when boxes cannot reach the base domain or a hostname under it. Read-only, " +
+				"admin-only. Takes no arguments.",
+			InputSchema: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+			Handler: handleBridgeDNSStatus,
+		},
+		{
 			Name: "list_bad_destinations",
 			Description: "List the known-bad-destination list (#1641) the threat-detection sentry's " +
 				"bad-destination rule matches flow destinations against — a merged view of the " +
@@ -1907,6 +1923,10 @@ func toolScopeAssignments() map[string]string {
 		"compose_status":   auth.ScopeContainersRead,
 		"compose_enable":   auth.ScopeContainersWrite,
 		"compose_disable":  auth.ScopeContainersWrite,
+
+		// bridge DNS record status (#2188): a host-level read like
+		// get_upgrade_status; the RPC itself is admin-role-gated.
+		"bridge_dns_status": auth.ScopeContainersRead,
 	}
 }
 

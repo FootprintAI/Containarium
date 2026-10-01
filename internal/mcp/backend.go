@@ -95,6 +95,9 @@ type API interface {
 	// Threat-detection sentry (#1640).
 	GetSentryStatus() (*SentryStatusResponse, error)
 
+	// Bridge DNS record status (#2188).
+	GetBridgeDNSStatus() (*BridgeDNSStatusResponse, error)
+
 	// Known-bad destination rule (#1641).
 	ListBadDestinations() (*ListBadDestinationsResponse, error)
 	AddBadDestination(cidr, label string) (*BadDestinationEntry, error)
@@ -196,6 +199,10 @@ func (cloudClient) TriggerUpgrade(string, bool) (*TriggerUpgradeResponse, error)
 
 func (cloudClient) GetUpgradeStatus(string) (*UpgradeStatusResponse, error) {
 	return nil, errUnsupportedOnCloud("get_upgrade_status", "")
+}
+
+func (cloudClient) GetBridgeDNSStatus() (*BridgeDNSStatusResponse, error) {
+	return nil, errUnsupportedOnCloud("bridge_dns_status", "the platform operator owns the bridge DNS record")
 }
 
 func (cloudClient) InstallZap() (*InstallZapResponse, error) {

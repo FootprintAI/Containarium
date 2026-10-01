@@ -6263,6 +6263,30 @@
         ]
       }
     },
+    "/v1/system/bridge-dns": {
+      "get": {
+        "summary": "Get bridge DNS record status",
+        "description": "Returns the last pass of the reconciler that keeps the Incus bridge's raw.dnsmasq record (base domain -\u003e core-caddy) on core-caddy's live address: state, the desired and current record, core-caddy's address, the last error and drift count. NOT_MANAGED when this daemon does not run the reconciler. Admin-only.",
+        "operationId": "ContainerService_GetBridgeDNSStatus",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetBridgeDNSStatusResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "tags": [
+          "System"
+        ]
+      }
+    },
     "/v1/system/info": {
       "get": {
         "summary": "Get system information",
@@ -9219,6 +9243,18 @@
       "default": "BOX_RUN_OUTCOME_UNSPECIFIED",
       "description": "BoxRunOutcome classifies a run record, the same three outcomes agent-box's\nResolveOutcome reports to process_list.\n\n - BOX_RUN_OUTCOME_RUNNING: Same boot, no exit code recorded, PID still alive.\n - BOX_RUN_OUTCOME_EXITED: An exit code is recorded (by agent-box's reaper or the run's exit\nsidecar).\n - BOX_RUN_OUTCOME_UNKNOWN: No exit code, and the PID is gone or belongs to an earlier boot: the\nrun was killed, OOMed, or the box restarted. Never reported as exited."
     },
+    "BridgeDNSState": {
+      "type": "string",
+      "enum": [
+        "BRIDGE_DNS_STATE_UNSPECIFIED",
+        "BRIDGE_DNS_STATE_NOT_MANAGED",
+        "BRIDGE_DNS_STATE_PENDING",
+        "BRIDGE_DNS_STATE_IN_SYNC",
+        "BRIDGE_DNS_STATE_DEGRADED"
+      ],
+      "default": "BRIDGE_DNS_STATE_UNSPECIFIED",
+      "description": "BridgeDNSState is the reconcile state of the bridge DNS record that resolves\nthe app-hosting base domain to core-caddy (#2188).\n\n - BRIDGE_DNS_STATE_NOT_MANAGED: The daemon is not running the reconciler: app hosting is off, or core-caddy\nis not managed by this daemon (an operator-supplied Caddy admin URL).\n - BRIDGE_DNS_STATE_PENDING: The reconciler is running but no pass has finished yet.\n - BRIDGE_DNS_STATE_IN_SYNC: The record on the bridge equals what the daemon renders for core-caddy's\nlive address.\n - BRIDGE_DNS_STATE_DEGRADED: The last pass could not converge (see last_error): core-caddy's address\ncould not be established, the record could not be read, or the write failed."
+    },
     "BuildpackOptions": {
       "type": "object",
       "properties": {
@@ -11797,6 +11833,52 @@
           "$ref": "#/definitions/BackupRecord"
         }
       }
+    },
+    "GetBridgeDNSStatusResponse": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "$ref": "#/definitions/BridgeDNSState"
+        },
+        "reason": {
+          "type": "string",
+          "description": "Human-readable explanation for NOT_MANAGED, PENDING and DEGRADED; empty\nwhen IN_SYNC."
+        },
+        "bridge": {
+          "type": "string",
+          "description": "Incus network whose raw.dnsmasq is reconciled (e.g. incusbr0)."
+        },
+        "caddyIp": {
+          "type": "string",
+          "description": "core-caddy's address as of the last pass; empty when it could not be\nestablished."
+        },
+        "desired": {
+          "type": "string",
+          "description": "The raw.dnsmasq value the daemon wants for that address, and the value the\nbridge held after the last pass (equal once IN_SYNC). Operator-configured\nhostnames appear here, so this is admin-only."
+        },
+        "current": {
+          "type": "string"
+        },
+        "lastError": {
+          "type": "string",
+          "description": "Why the last pass could not converge; empty when it did."
+        },
+        "driftCount": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Passes that found the record different from the desired value."
+        },
+        "lastPass": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the last pass finished, and when the record was last rewritten.\nUnset until the first pass / first rewrite."
+        },
+        "lastApplied": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "description": "GetBridgeDNSStatusResponse is the bridge DNS reconciler's last-pass snapshot."
     },
     "GetCapabilityProfileResponse": {
       "type": "object",

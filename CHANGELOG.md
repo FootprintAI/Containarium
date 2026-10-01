@@ -27,6 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first install; the change that keeps it current on every start (#2188,
   bridge DNS reconciler) is what makes a newly added host take effect on an
   existing deployment. (#2188)
+- `containarium bridge-dns status` (`--json`), the `GetBridgeDNSStatus` RPC
+  (`GET /v1/system/bridge-dns`, admin-only) and the `bridge_dns_status` MCP
+  tool: whether the bridge DNS record for the app-hosting base domain matches
+  core-caddy's live address. State is a `BridgeDNSState` enum (not managed /
+  pending / in sync / degraded) with core-caddy's address, the desired and
+  current record, the last error, the drift count and the last pass / rewrite
+  times. (#2188)
 
 ### Security
 
@@ -41,6 +48,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to the "a human releases every hop" default. With `auto_chain` on, a run
   may still remove the gate within its own lineage. Adding the gate is
   always allowed, and operator tokens are unchanged.
+
+### Fixed
+
+- The bridge DNS record that resolves `*.<base-domain>` to core-caddy is now
+  reconciled instead of written once, at first install. The write lives in the
+  core-services block that is skipped on every later start, because the daemon
+  has by then auto-detected the Caddy admin URL from the running core-caddy, so
+  a record left stale by a core-caddy address change stayed stale across daemon
+  restarts and upgrades; a failed first write (only a warning) was never
+  retried either. Boxes then resolved the whole base domain to an address
+  nothing answered on. A new reconciler, started on every start whenever app
+  hosting is on, a base domain is set and a core-caddy container exists,
+  compares `raw.dnsmasq` with what the daemon would render for core-caddy's
+  live address at start-up, on container events and every minute, and rewrites
+  it only on drift, logging both values. The daemon owns the whole value, so a hand edit is restored. It
+  never writes when core-caddy's address cannot be established. (#2188)
 
 ## [0.93.1] - 2026-09-30
 
