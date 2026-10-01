@@ -60,6 +60,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `create_container` in MCP now maps `os_type` (`ubuntu|rocky9|rhel9`) to the
+  daemon's `CreateContainerRequest.OSType` instead of silently defaulting to
+  Ubuntu. Unknown `os_type` values are rejected with an explicit error (#2208).
+
 - The bridge DNS record that resolves `*.<base-domain>` to core-caddy is now
   reconciled instead of written once, at first install. The write lives in the
   core-services block that is skipped on every later start, because the daemon

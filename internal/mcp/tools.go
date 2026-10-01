@@ -1948,6 +1948,15 @@ func handleCreateContainer(client API, args map[string]interface{}) (string, err
 		isolationWire = isolation.String()
 	}
 
+	var osTypeWire string
+	if osTypeStr := getStringArg(args, "os_type", ""); osTypeStr != "" {
+		parsedOSType := ostype.OSTypeFromString(osTypeStr)
+		if parsedOSType == pb.OSType_OS_TYPE_UNSPECIFIED {
+			return "", fmt.Errorf("unknown os_type %q: expected ubuntu, rocky9, rhel9, or windows2022", osTypeStr)
+		}
+		osTypeWire = parsedOSType.String()
+	}
+
 	req := CreateContainerRequest{
 		Username: username,
 		Resources: &ResourceLimits{
@@ -1966,6 +1975,7 @@ func handleCreateContainer(client API, args map[string]interface{}) (string, err
 		BackendID:    getStringArg(args, "backend_id", ""),
 		Region:       getStringArg(args, "region", ""),
 		Isolation:    isolationWire,
+		OSType:       osTypeWire,
 	}
 
 	// Handle SSH keys. If the caller passes ssh_keys explicitly we use
