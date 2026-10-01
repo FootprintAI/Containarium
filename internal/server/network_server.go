@@ -34,7 +34,8 @@ type NetworkServer struct {
 	proxyIP            string                   // e.g., "10.100.0.1"
 	baseDomain         string                   // e.g., "example.com"
 	emitter            *events.Emitter
-	egressMgr          *egressproxy.Manager // egress-via-client relays, keyed by box (#808)
+	egressMgr          *egressproxy.Manager             // egress-via-client relays, keyed by box (#808)
+	anonGuard          func(containerName string) error // #2200: refuses routes to unclaimed anonymous boxes; nil = no check
 }
 
 // resolveFullDomain determines the full domain from a user-provided domain string.
@@ -259,6 +260,10 @@ func (s *NetworkServer) AddRoute(ctx context.Context, req *pb.AddRouteRequest) (
 				}
 			}
 		}
+	}
+
+	if err := s.guardAnon(containerName); err != nil {
+		return nil, err
 	}
 
 	// If RouteStore is available, save to PostgreSQL (source of truth)
@@ -591,6 +596,10 @@ func (s *NetworkServer) AddPassthroughRoute(ctx context.Context, req *pb.AddPass
 	protocol := "tcp"
 	if req.Protocol == pb.RouteProtocol_ROUTE_PROTOCOL_UDP {
 		protocol = "udp"
+	}
+
+	if err := s.guardAnon(s.containerNameForIP(req.ContainerName, req.TargetIp)); err != nil {
+		return nil, err
 	}
 
 	// If PassthroughStore is available, save to PostgreSQL (source of truth)
@@ -1301,4 +1310,34 @@ func bridgeGatewayIP(cidr string) string {
 	copy(gw, ip)
 	gw[3]++ // network address + 1 = the bridge gateway
 	return gw.String()
+}
+
+// SetAnonGuard installs the unclaimed-anonymous-box check (#2200) — see
+// AnonRouteGuard.
+func (s *NetworkServer) SetAnonGuard(g func(containerName string) error) { s.anonGuard = g }
+
+func (s *NetworkServer) guardAnon(containerName string) error {
+	if s.anonGuard == nil {
+		return nil
+	}
+	return s.anonGuard(containerName)
+}
+
+// containerNameForIP resolves the box a route targets when the caller
+// named only an IP, so the anon guard sees the same box AddRoute's own
+// auto-detect does.
+func (s *NetworkServer) containerNameForIP(containerName, targetIP string) string {
+	if containerName != "" || s.incusClient == nil || targetIP == "" {
+		return containerName
+	}
+	containers, err := s.incusClient.ListContainers()
+	if err != nil {
+		return ""
+	}
+	for _, c := range containers {
+		if c.IPAddress == targetIP {
+			return c.Name
+		}
+	}
+	return ""
 }

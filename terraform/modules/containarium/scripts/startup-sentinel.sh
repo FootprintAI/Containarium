@@ -235,6 +235,47 @@ reconcile_sshpiper_service() {
 
 reconcile_sshpiper_service
 
+# reconcile_sshpiper_anon_service is the same live-metadata reconcile for the
+# anonymous-box door's own sshpiperd (sshpiper-anon.service, #2198), keyed on
+# "sshpiper-anon-service-unit". That key exists only when Terraform's
+# anon_door_addr is set: a 404 means "no door" — disable and remove the unit
+# if one is installed — so turning the door off is a terraform apply too.
+reconcile_sshpiper_anon_service() {
+    http_code="$(curl -sS -o /tmp/sshpiper-anon.unit -w '%%{http_code}' -H 'Metadata-Flavor: Google' \
+        'http://metadata.google.internal/computeMetadata/v1/instance/attributes/sshpiper-anon-service-unit')" || {
+        echo "WARNING: failed to fetch sshpiper-anon-service-unit metadata; leaving sshpiper-anon.service as-is"
+        return 0
+    }
+    if [ "$http_code" = "404" ]; then
+        if [ -f /etc/systemd/system/sshpiper-anon.service ]; then
+            systemctl disable --now sshpiper-anon >/dev/null 2>&1 || true
+            rm -f /etc/systemd/system/sshpiper-anon.service
+            systemctl daemon-reload
+            echo "sshpiper-anon.service removed (door disabled)"
+        fi
+        return 0
+    fi
+    if [ "$http_code" != "200" ]; then
+        echo "WARNING: sshpiper-anon-service-unit metadata returned HTTP $http_code; leaving sshpiper-anon.service as-is"
+        return 0
+    fi
+    desired="$(cat /tmp/sshpiper-anon.unit)"
+    if [ -f /etc/systemd/system/sshpiper-anon.service ] && [ "$(cat /etc/systemd/system/sshpiper-anon.service)" = "$desired" ]; then
+        return 0
+    fi
+    printf '%s' "$desired" > /etc/systemd/system/sshpiper-anon.service
+    systemctl daemon-reload
+    # Unlike sshpiper.service it needs no seeded config.yaml, so it can start
+    # as soon as it is installed.
+    systemctl enable --now sshpiper-anon >/dev/null 2>&1 || true
+    if systemctl is-active --quiet sshpiper-anon; then
+        systemctl restart sshpiper-anon
+        echo "sshpiper-anon.service content changed; reloaded and restarted"
+    fi
+}
+
+reconcile_sshpiper_anon_service
+
 # Periodic reconcile timer: re-runs reconcile_sshpiper_service every 6h so a
 # terraform-side tuning change reaches this sentinel without waiting for a
 # reboot/recreation (issue #933).
@@ -256,6 +297,38 @@ fi
 RECONCILE_EOF
 chmod +x /usr/local/bin/reconcile-sshpiper-service.sh
 
+# Door unit (#2198): same reconcile, separate script so a metadata fetch
+# failure on one never blocks the other.
+cat > /usr/local/bin/reconcile-sshpiper-anon-service.sh <<'RECONCILE_EOF'
+#!/bin/bash
+set -euo pipefail
+unit=/etc/systemd/system/sshpiper-anon.service
+code="$(curl -sS -o /tmp/sshpiper-anon.unit -w '%%{http_code}' -H 'Metadata-Flavor: Google' \
+    'http://metadata.google.internal/computeMetadata/v1/instance/attributes/sshpiper-anon-service-unit')" || exit 0
+if [ "$code" = "404" ]; then
+    if [ -f "$unit" ]; then
+        systemctl disable --now sshpiper-anon >/dev/null 2>&1 || true
+        rm -f "$unit"
+        systemctl daemon-reload
+        logger -t sshpiper-reconcile "sshpiper-anon.service removed (door disabled)"
+    fi
+    exit 0
+fi
+[ "$code" = "200" ] || exit 0
+desired="$(cat /tmp/sshpiper-anon.unit)"
+if [ -f "$unit" ] && [ "$(cat "$unit")" = "$desired" ]; then
+    exit 0
+fi
+printf '%s' "$desired" > "$unit"
+systemctl daemon-reload
+systemctl enable --now sshpiper-anon >/dev/null 2>&1 || true
+if systemctl is-active --quiet sshpiper-anon; then
+    systemctl restart sshpiper-anon
+    logger -t sshpiper-reconcile "sshpiper-anon.service content changed; reloaded and restarted"
+fi
+RECONCILE_EOF
+chmod +x /usr/local/bin/reconcile-sshpiper-anon-service.sh
+
 cat > /etc/systemd/system/sshpiper-reconcile.service <<'EOF'
 [Unit]
 Description=Reconcile sshpiper.service against current instance metadata (issue #933)
@@ -263,6 +336,7 @@ Description=Reconcile sshpiper.service against current instance metadata (issue 
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/reconcile-sshpiper-service.sh
+ExecStart=/usr/local/bin/reconcile-sshpiper-anon-service.sh
 EOF
 
 cat > /etc/systemd/system/sshpiper-reconcile.timer <<'EOF'

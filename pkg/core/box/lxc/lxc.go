@@ -125,6 +125,14 @@ func (b *Backend) SetMeta(_ context.Context, ref box.BoxRef, meta map[string]str
 	return b.mgr.SetLabels(ref.Tenant, meta)
 }
 
+// SetOwner records tenant as the box's explicit owner
+// (user.containarium.tenant), overriding the name convention. Used by the
+// anonymous-box claim (#2199): the box keeps its name and login, only its
+// owner changes.
+func (b *Backend) SetOwner(_ context.Context, ref box.BoxRef, tenant string) error {
+	return b.mgr.SetTenant(containerName(ref), tenant)
+}
+
 // GetMeta reads the container's labels.
 func (b *Backend) GetMeta(_ context.Context, ref box.BoxRef) (map[string]string, error) {
 	return b.mgr.GetLabels(ref.Tenant)

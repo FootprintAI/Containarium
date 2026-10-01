@@ -9,6 +9,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Anonymous-box opt-in reminder (#2206): `containarium remind-me <email>`
+  inside the box (`--clear` withdraws it) asks for one email about 30 minutes
+  before the box expires, carrying the sign-up link. The address is picked up
+  inside that window, posted once to `--anon-reminder-webhook` (the control
+  plane sends the mail — the daemon has no SMTP), and discarded; the funnel
+  counts it as `reminder_optin`. Nothing is collected without the command.
+
+- Anonymous-box expiry warnings (#2202): a `wall` into the guest about 10
+  minutes and 1 minute before the box's TTL, each at most once, recorded on
+  the box (`anon.warned`) so a daemon restart never repeats one; a wall that
+  cannot be delivered is logged and not retried.
+
+- Anonymous-box funnel (#2201): every step of the `ssh new.<domain>` journey
+  is an `EVENT_TYPE_ANON_*` event on the event stream (connect, shell_ready
+  with time-to-shell, reconnect, claim_link_issued, claim_completed, expired,
+  killed_abuse, rejected_capacity / _ratelimit / _door) keyed by the sha256 of
+  the key fingerprint, and a matching `containarium_anon_<step>_total` counter
+  plus the `containarium_anon_time_to_shell_seconds` histogram on the daemon's
+  OTel meter. Expired/killed are observed by a one-minute ticker.
+
+- Anonymous-box guardrails (#2200), the gate for putting the door on a
+  public IP: a kill switch with an operator message and per-key bans
+  (`containarium anon enable|disable|status|ban|unban|list`, persisted in
+  `/var/lib/containarium/anon-door.json`; a malformed file closes the door),
+  creation rate limits per key (1 / 10 min, burst 2) and per source IP
+  (6 / 10 min, burst 6), a cap on live unclaimed boxes (20), all tunable
+  with `--anon-*` daemon flags; and `AddRoute` / `AddPassthroughRoute`
+  refuse an unclaimed anonymous box. Reconnects are never rate-limited.
+
+### Documentation
+
+- Anonymous-box door (#2203): SECURITY-FAQ states the tier is VM-isolated
+  (and that the email-signup free tier is not), the Terraform module README
+  lists `anon_door_addr` / `anon_daemon_url`, and the deployment guide gains
+  the anon-pool backend prerequisites (KVM, nftables, disk), `--anon-*` flags
+  and operator verbs.
+
+## [0.94.0] - 2026-10-01
+
+### Added
+
+- Anonymous-box claim (#2199): `ClaimAnonymousBox` redeems the single-use
+  token minted into every anonymous box (`/etc/containarium/claim-url`) and
+  binds the box to a tenant — TTL cleared, egress guard lifted, the tenant's
+  keys added, owner set; the box keeps its name and login and stays reachable
+  through the door. `containarium claim` (inside the box) prints the claim
+  URL or token (`--json`); `containarium anon claim <token> --tenant <u>`
+  redeems it as an admin; daemon flag `--anon-claim-url-base`. A second
+  redeem is AlreadyExists, an expired token FailedPrecondition, a bad one
+  PermissionDenied.
+
+- `containarium sentinel anon-door-plugin` (#2198) — the sshpiperd plugin
+  behind `ssh new.<domain>`: on public-key auth it asks the anon-pool daemon
+  for the key's box (`POST /v1/anon/boxes:ensure`, signed with the sentinel's
+  existing identity) and pipes the session there with the usual upstream key;
+  non-key auth is refused. Terraform: `anon_door_addr` + `anon_daemon_url`
+  install a second `sshpiper-anon.service` (chain: audit → door → failtoban)
+  through the same live-metadata reconcile as `sshpiper.service`; empty =
+  unit removed.
+
 - `AnonymousBoxService` (#2197) — the daemon side of the `ssh new.<domain>`
   door: `EnsureAnonymousBox` resolves or creates an Incus **VM** per SSH-key
   fingerprint (fixed 2 vCPU / 4 GB / 20 GB, 4 h TTL, egress limited to
@@ -77,6 +137,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   live address at start-up, on container events and every minute, and rewrites
   it only on drift, logging both values. The daemon owns the whole value, so a hand edit is restored. It
   never writes when core-caddy's address cannot be established. (#2188)
+
+### Internal
+
+- `testdata/client_command_tree.golden`: add `claim` and `anon claim`, the
+  two client-safe command paths #2199 added, to the #1778 client/server-split
+  allow-list — the gate had been red on `main` since that merge. (#2217)
 
 ## [0.93.1] - 2026-09-30
 
