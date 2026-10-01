@@ -128,6 +128,7 @@ func (m *Manager) Claim(ctx context.Context, req ClaimRequest) (*ClaimResult, er
 	if len(errs) > 0 {
 		return nil, fmt.Errorf("anonbox: %s claimed by %s but conversion incomplete: %w", ref.Name, req.Tenant, errors.Join(errs...))
 	}
+	m.record(FunnelEvent{Kind: FunnelClaimCompleted, FPHash: st.Labels[LabelFPHash], BoxName: ref.Name})
 	return &ClaimResult{BoxName: ref.Name, Tenant: req.Tenant, SSHUser: ref.Tenant}, nil
 }
 

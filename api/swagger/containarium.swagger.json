@@ -3829,7 +3829,8 @@
                 "RESOURCE_TYPE_ROUTE",
                 "RESOURCE_TYPE_METRICS",
                 "RESOURCE_TYPE_TRAFFIC",
-                "RESOURCE_TYPE_SECURITY_FINDING"
+                "RESOURCE_TYPE_SECURITY_FINDING",
+                "RESOURCE_TYPE_ANON_BOX"
               ]
             },
             "collectionFormat": "multi"
@@ -8913,6 +8914,29 @@
       },
       "title": "AlertRule represents an alerting rule evaluated by vmalert"
     },
+    "AnonEvent": {
+      "type": "object",
+      "properties": {
+        "boxName": {
+          "type": "string",
+          "description": "Instance name, e.g. anon-1a2b3c4d-container. Empty on a rejection\nthat never reached a box."
+        },
+        "fingerprintHash": {
+          "type": "string",
+          "description": "sha256 hex of the SSH key fingerprint. Never the fingerprint or key."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Human-readable reason for a rejection / kill, empty otherwise."
+        },
+        "seconds": {
+          "type": "number",
+          "format": "double",
+          "description": "SHELL_READY only: seconds from the key knocking to the box being\nprovisioned (the PRD's time-to-shell)."
+        }
+      },
+      "description": "SecurityFindingEvent contains a security finding raised or updated by the\nthreat-detection engine.\nAnonEvent is the payload of every EVENT_TYPE_ANON_* event (#2201)."
+    },
     "AnonymousBox": {
       "type": "object",
       "properties": {
@@ -11726,6 +11750,13 @@
         },
         "securityFindingEvent": {
           "$ref": "#/definitions/SecurityFindingEvent"
+        },
+        "anonEvent": {
+          "$ref": "#/definitions/AnonEvent"
+        },
+        "fingerprintHash": {
+          "type": "string",
+          "description": "sha256 hex of the SSH key fingerprint for EVENT_TYPE_ANON_* events\n(#2201); empty for every other type. Top-level so subscribers can\ncorrelate a key's journey without opening the payload."
         }
       },
       "title": "Event is the top-level event message sent to clients"
@@ -11748,10 +11779,21 @@
         "EVENT_TYPE_ROUTE_DELETED",
         "EVENT_TYPE_METRICS_UPDATE",
         "EVENT_TYPE_TRAFFIC_UPDATE",
-        "EVENT_TYPE_SECURITY_FINDING"
+        "EVENT_TYPE_SECURITY_FINDING",
+        "EVENT_TYPE_ANON_CONNECT",
+        "EVENT_TYPE_ANON_SHELL_READY",
+        "EVENT_TYPE_ANON_RECONNECT",
+        "EVENT_TYPE_ANON_CLAIM_LINK_ISSUED",
+        "EVENT_TYPE_ANON_CLAIM_COMPLETED",
+        "EVENT_TYPE_ANON_EXPIRED",
+        "EVENT_TYPE_ANON_KILLED_ABUSE",
+        "EVENT_TYPE_ANON_REJECTED_CAPACITY",
+        "EVENT_TYPE_ANON_REJECTED_RATELIMIT",
+        "EVENT_TYPE_ANON_REJECTED_DOOR",
+        "EVENT_TYPE_ANON_LOST_PREEMPTION"
       ],
       "default": "EVENT_TYPE_UNSPECIFIED",
-      "description": "- EVENT_TYPE_UNSPECIFIED: Unspecified event type (should not be used)\n - EVENT_TYPE_CONTAINER_CREATED: Container events (1-9)\nContainer was created\n - EVENT_TYPE_CONTAINER_DELETED: Container was deleted\n - EVENT_TYPE_CONTAINER_STARTED: Container was started\n - EVENT_TYPE_CONTAINER_STOPPED: Container was stopped\n - EVENT_TYPE_CONTAINER_STATE_CHANGED: Container state changed\n - EVENT_TYPE_APP_DEPLOYED: App events (10-19)\nApp was deployed\n - EVENT_TYPE_APP_DELETED: App was deleted\n - EVENT_TYPE_APP_STARTED: App was started\n - EVENT_TYPE_APP_STOPPED: App was stopped\n - EVENT_TYPE_APP_STATE_CHANGED: App state changed\n - EVENT_TYPE_ROUTE_ADDED: Network events (20-29)\nRoute was added\n - EVENT_TYPE_ROUTE_DELETED: Route was deleted\n - EVENT_TYPE_METRICS_UPDATE: System events (30-39)\nMetrics update\n - EVENT_TYPE_TRAFFIC_UPDATE: Traffic events (40-49)\nTraffic/connection update\n - EVENT_TYPE_SECURITY_FINDING: Security events (50-59)\nA security finding was created or updated by the threat-detection engine",
+      "description": "- EVENT_TYPE_UNSPECIFIED: Unspecified event type (should not be used)\n - EVENT_TYPE_CONTAINER_CREATED: Container events (1-9)\nContainer was created\n - EVENT_TYPE_CONTAINER_DELETED: Container was deleted\n - EVENT_TYPE_CONTAINER_STARTED: Container was started\n - EVENT_TYPE_CONTAINER_STOPPED: Container was stopped\n - EVENT_TYPE_CONTAINER_STATE_CHANGED: Container state changed\n - EVENT_TYPE_APP_DEPLOYED: App events (10-19)\nApp was deployed\n - EVENT_TYPE_APP_DELETED: App was deleted\n - EVENT_TYPE_APP_STARTED: App was started\n - EVENT_TYPE_APP_STOPPED: App was stopped\n - EVENT_TYPE_APP_STATE_CHANGED: App state changed\n - EVENT_TYPE_ROUTE_ADDED: Network events (20-29)\nRoute was added\n - EVENT_TYPE_ROUTE_DELETED: Route was deleted\n - EVENT_TYPE_METRICS_UPDATE: System events (30-39)\nMetrics update\n - EVENT_TYPE_TRAFFIC_UPDATE: Traffic events (40-49)\nTraffic/connection update\n - EVENT_TYPE_SECURITY_FINDING: Security events (50-59)\nA security finding was created or updated by the threat-detection engine\n - EVENT_TYPE_ANON_CONNECT: Anonymous-box funnel (#2201, docs/architecture/ssh-new-anonymous-box.md).\nOne event per step of the `ssh new.\u003cdomain\u003e` journey, keyed by the\nsha256 of the key fingerprint (Event.fingerprint_hash) — never the key.\nCounters containarium_anon_\u003cstep\u003e_total mirror them one-for-one.\n\na key knocked (before any decision)\n - EVENT_TYPE_ANON_SHELL_READY: a new box was created and provisioned (carries time-to-shell)\n - EVENT_TYPE_ANON_RECONNECT: an existing box was handed back\n - EVENT_TYPE_ANON_CLAIM_LINK_ISSUED: the claim-url was written into the guest\n - EVENT_TYPE_ANON_CLAIM_COMPLETED: ClaimAnonymousBox succeeded\n - EVENT_TYPE_ANON_EXPIRED: a box is gone after its TTL\n - EVENT_TYPE_ANON_KILLED_ABUSE: a box is gone BEFORE its TTL (operator deleted it)\n - EVENT_TYPE_ANON_REJECTED_CAPACITY: refused: global cap\n - EVENT_TYPE_ANON_REJECTED_RATELIMIT: refused: per-key / per-IP rate limit\n - EVENT_TYPE_ANON_REJECTED_DOOR: refused: door closed or key banned (#2200)\n - EVENT_TYPE_ANON_LOST_PREEMPTION: the anon-pool host was preempted (emitted by the sentinel's spot watcher, not the daemon)",
       "title": "EventType represents the type of resource change event"
     },
     "Evidence": {
@@ -15149,7 +15191,8 @@
         "RESOURCE_TYPE_ROUTE",
         "RESOURCE_TYPE_METRICS",
         "RESOURCE_TYPE_TRAFFIC",
-        "RESOURCE_TYPE_SECURITY_FINDING"
+        "RESOURCE_TYPE_SECURITY_FINDING",
+        "RESOURCE_TYPE_ANON_BOX"
       ],
       "default": "RESOURCE_TYPE_UNSPECIFIED",
       "description": "- RESOURCE_TYPE_UNSPECIFIED: Unspecified resource type\n - RESOURCE_TYPE_CONTAINER: Container resource\n - RESOURCE_TYPE_APP: App resource\n - RESOURCE_TYPE_ROUTE: Route resource\n - RESOURCE_TYPE_METRICS: Metrics resource\n - RESOURCE_TYPE_TRAFFIC: Traffic resource\n - RESOURCE_TYPE_SECURITY_FINDING: Security finding resource",
@@ -15659,8 +15702,7 @@
         "finding": {
           "$ref": "#/definitions/Finding"
         }
-      },
-      "description": "SecurityFindingEvent contains a security finding raised or updated by the\nthreat-detection engine."
+      }
     },
     "SelfMeasurement": {
       "type": "object",

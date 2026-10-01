@@ -129,6 +129,9 @@ type Config struct {
 	// them in memory only. A malformed file fails closed — see DoorStore.
 	DoorStatePath string
 
+	// Funnel records every step of a key's journey (#2201); nil = none.
+	Funnel Funnel
+
 	// Now is the clock; nil = time.Now.
 	Now func() time.Time
 }
@@ -194,8 +197,9 @@ type Manager struct {
 	// reconnect after the sweeper reaped the box can be told apart from a
 	// first visit. Best-effort by design: it does not survive a daemon
 	// restart, and a wrong "false" only costs one banner line.
-	mu   sync.Mutex
-	seen map[string]time.Time
+	mu    sync.Mutex
+	seen  map[string]time.Time
+	known map[string]knownBox // Observe's previous snapshot (#2201)
 
 	// claimMu serializes Claim's compare-and-set on claimed_at: the box
 	// backend has no atomic label update, so the daemon is the lock.
@@ -269,13 +273,19 @@ func (m *Manager) Ensure(ctx context.Context, req EnsureRequest) (*EnsureResult,
 		return nil, InvalidRequestError{Err: fmt.Errorf("anonbox: fingerprint %q does not match the presented key (%s)", req.Fingerprint, fp)}
 	}
 	username := UsernameFor(fp)
+	hash := fpHash(fp)
+	knock := m.cfg.Now()
+	m.record(FunnelEvent{Kind: FunnelConnect, FPHash: hash})
 
 	// Kill switch and bans come before everything, reconnects included:
 	// a closed door is closed for the key that already has a box too.
 	if door := m.door.Get(); !door.Enabled {
-		return nil, DoorClosedError{Message: door.DisabledMessage}
+		err := DoorClosedError{Message: door.DisabledMessage}
+		m.record(FunnelEvent{Kind: FunnelRejectedDoor, FPHash: hash, Reason: err.Error()})
+		return nil, err
 	}
 	if m.door.IsBanned(fp) {
+		m.record(FunnelEvent{Kind: FunnelRejectedDoor, FPHash: hash, Reason: ErrBanned.Error()})
 		return nil, ErrBanned
 	}
 
@@ -285,6 +295,7 @@ func (m *Manager) Ensure(ctx context.Context, req EnsureRequest) (*EnsureResult,
 		// A claimed box reports its new tenant as Ref.Tenant; the login
 		// is still the box's own user (decision on #2199), and its TTL is
 		// gone.
+		m.record(FunnelEvent{Kind: FunnelReconnect, FPHash: hash, BoxName: existing.Ref.Name})
 		return &EnsureResult{
 			BoxName:      existing.Ref.Name,
 			SSHHost:      existing.IPAddress,
@@ -296,7 +307,8 @@ func (m *Manager) Ensure(ctx context.Context, req EnsureRequest) (*EnsureResult,
 	}
 
 	// Creates are what cost us; a reconnect above is free.
-	if !m.keyLimiter.Allow(fpHash(fp)) || !m.ipLimiter.Allow(req.SourceIP) {
+	if !m.keyLimiter.Allow(hash) || !m.ipLimiter.Allow(req.SourceIP) {
+		m.record(FunnelEvent{Kind: FunnelRejectedRateLimit, FPHash: hash, Reason: ErrRateLimited.Error()})
 		return nil, ErrRateLimited
 	}
 	if m.cfg.Limits.MaxBoxes > 0 {
@@ -305,6 +317,7 @@ func (m *Manager) Ensure(ctx context.Context, req EnsureRequest) (*EnsureResult,
 			return nil, err
 		}
 		if live >= m.cfg.Limits.MaxBoxes {
+			m.record(FunnelEvent{Kind: FunnelRejectedCapacity, FPHash: hash, Reason: ErrAtCapacity.Error()})
 			return nil, ErrAtCapacity
 		}
 	}
@@ -350,7 +363,11 @@ func (m *Manager) Ensure(ctx context.Context, req EnsureRequest) (*EnsureResult,
 
 	m.mu.Lock()
 	m.seen[fp] = now
+	if m.known != nil {
+		m.known[ref.Name] = knownBox{fpHash: hash, expiresAt: expiresAt}
+	}
 	m.mu.Unlock()
+	m.record(FunnelEvent{Kind: FunnelShellReady, FPHash: hash, BoxName: ref.Name, Duration: m.cfg.Now().Sub(knock)})
 
 	return &EnsureResult{
 		BoxName:         ref.Name,
@@ -384,7 +401,9 @@ func (m *Manager) provision(ctx context.Context, ref box.BoxRef, st *box.BoxStat
 	}); err != nil {
 		return fmt.Errorf("anonbox: guest files on %s: %w", ref.Name, err)
 	}
-	_ = st
+	if claimURL != "" {
+		m.record(FunnelEvent{Kind: FunnelClaimLinkIssued, FPHash: st.Labels[LabelFPHash], BoxName: ref.Name})
+	}
 	return nil
 }
 

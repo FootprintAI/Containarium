@@ -7,9 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.94.0] - 2026-10-01
-
 ### Added
+
+- Anonymous-box funnel (#2201): every step of the `ssh new.<domain>` journey
+  is an `EVENT_TYPE_ANON_*` event on the event stream (connect, shell_ready
+  with time-to-shell, reconnect, claim_link_issued, claim_completed, expired,
+  killed_abuse, rejected_capacity / _ratelimit / _door) keyed by the sha256 of
+  the key fingerprint, and a matching `containarium_anon_<step>_total` counter
+  plus the `containarium_anon_time_to_shell_seconds` histogram on the daemon's
+  OTel meter. Expired/killed are observed by a one-minute ticker.
 
 - Anonymous-box guardrails (#2200), the gate for putting the door on a
   public IP: a kill switch with an operator message and per-key bans
@@ -19,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (6 / 10 min, burst 6), a cap on live unclaimed boxes (20), all tunable
   with `--anon-*` daemon flags; and `AddRoute` / `AddPassthroughRoute`
   refuse an unclaimed anonymous box. Reconnects are never rate-limited.
+
+## [0.94.0] - 2026-10-01
+
+### Added
 
 - Anonymous-box claim (#2199): `ClaimAnonymousBox` redeems the single-use
   token minted into every anonymous box (`/etc/containarium/claim-url`) and

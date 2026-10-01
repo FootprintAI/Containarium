@@ -18,6 +18,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/footprintai/containarium/internal/alert"
+	"go.opentelemetry.io/otel"
+
 	"github.com/footprintai/containarium/internal/anonbox"
 	"github.com/footprintai/containarium/internal/app"
 	"github.com/footprintai/containarium/internal/audit"
@@ -280,6 +282,7 @@ type DualServer struct {
 	peerPool                 *PeerPool
 	autoSleepManager         *autosleep.Manager
 	ttlSweeperManager        *ttlsweeper.Manager    // ephemeral CI box auto-delete (#299)
+	anonManager              *anonbox.Manager       // anonymous-box door (#2197); nil unless CONTAINARIUM_ANON_DOOR=enable
 	sandboxServer            *SandboxServer         // set in NewDualServer when incus.New succeeds; nil otherwise (#1488)
 	sandboxTTLSweeperManager *ttlsweeper.Manager    // ephemeral sandbox auto-delete (#1488 Phase 4)
 	secretsReconciler        *secretsReconciler     // Phase 4.3 Phase B-3
@@ -1893,6 +1896,7 @@ skipAppHosting:
 	// over an LXC box backend: the manager needs exec + TTL capabilities and
 	// the Incus NIC ACL path for its egress guard, neither of which a K8s
 	// backend offers. Limits are the fixed defaults until #2200 adds flags.
+	var anonManager *anonbox.Manager
 	if os.Getenv("CONTAINARIUM_ANON_DOOR") == "enable" {
 		anonBoxes, ok := containerServer.BoxBackend().(anonbox.Boxes)
 		switch {
@@ -1923,8 +1927,17 @@ skipAppHosting:
 			if anonStatePath == "" {
 				anonStatePath = anonbox.DefaultDoorStatePath
 			}
+			// Funnel (#2201): every step → an ANON_* event on the bus and a
+			// containarium.anon.<step>_total counter on the daemon's meter.
+			var anonFunnel anonbox.Funnel = anonbox.NopFunnel{}
+			if sink, err := newAnonFunnelSink(events.GetBus(), otel.GetMeterProvider()); err != nil {
+				log.Printf("WARNING: anonymous-box funnel metrics disabled: %v", err)
+			} else {
+				anonFunnel = sink
+			}
 			anonMgr := anonbox.New(anonBoxes, networkIncusClient, anonbox.Config{
 				Limits:        anonLimits,
+				Funnel:        anonFunnel,
 				NICDevice:     "eth0",
 				Bridge:        "incusbr0",
 				DoorStatePath: anonStatePath,
@@ -1933,6 +1946,7 @@ skipAppHosting:
 				ClaimSecret:  func(boxName string) string { return tokenManager.DeriveSharedSecret("anon-claim", boxName) },
 				ClaimURLBase: config.AnonClaimURLBase,
 			})
+			anonManager = anonMgr
 			anonServer := NewAnonymousBoxServer(anonMgr, anonBoxes, anonLimits)
 			anonServer.SetClaimer(anonMgr)
 			anonServer.SetDoor(anonMgr)
@@ -2491,6 +2505,7 @@ skipAppHosting:
 	}
 
 	ds := &DualServer{
+		anonManager:            anonManager,
 		config:                 config,
 		agentSkillServer:       agentSkillServer,
 		grpcServer:             grpcServer,
@@ -2804,6 +2819,11 @@ func (ds *DualServer) handleBackendSystemInfo(w http.ResponseWriter, r *http.Req
 }
 
 func (ds *DualServer) Start(ctx context.Context) error {
+	// Anonymous-box funnel (#2201): emit expired / killed events within a
+	// minute of a box disappearing.
+	if ds.anonManager != nil {
+		go anonObserveLoop(ctx, ds.anonManager, time.Minute)
+	}
 	if ds.agentSkillServer != nil {
 		ds.agentSkillServer.StartRunJournalReaper(ctx)
 	}
