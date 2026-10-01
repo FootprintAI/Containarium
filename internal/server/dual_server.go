@@ -66,6 +66,18 @@ import (
 )
 
 // DualServerConfig holds configuration for the dual server
+// AnonDoorOptions are the daemon flags behind the anonymous-box
+// guardrails (#2200). Rates are creates per 10 minutes, the unit the
+// decision on #2204 was taken in.
+type AnonDoorOptions struct {
+	MaxBoxes        int
+	KeyCreatesPer10 int
+	KeyBurst        int
+	IPCreatesPer10  int
+	IPBurst         int
+	StatePath       string
+}
+
 type DualServerConfig struct {
 	// gRPC settings
 	GRPCAddress string
@@ -91,7 +103,10 @@ type DualServerConfig struct {
 	// "<base>?token=…" in the guest's claim-url file (#2199), e.g.
 	// https://<cloud-domain>/claim. Empty = the bare token is written.
 	AnonClaimURLBase string
-	CaddyAdminURL    string
+	// AnonDoor tunes the anonymous-box guardrails (#2200); zero values
+	// mean anonbox.DefaultLimits / anonbox.DefaultDoorStatePath.
+	AnonDoor      AnonDoorOptions
+	CaddyAdminURL string
 
 	// Route sync settings
 	RouteSyncInterval time.Duration // Interval for syncing routes to Caddy (default 5s)
@@ -1887,10 +1902,32 @@ skipAppHosting:
 			log.Printf("AnonymousBox service disabled: no incus client for NIC ACLs")
 		default:
 			anonLimits := anonbox.DefaultLimits()
+			if o := config.AnonDoor; true {
+				if o.MaxBoxes > 0 {
+					anonLimits.MaxBoxes = o.MaxBoxes
+				}
+				if o.KeyCreatesPer10 > 0 {
+					anonLimits.PerKeyPerMinute = float64(o.KeyCreatesPer10) / 10
+				}
+				if o.KeyBurst > 0 {
+					anonLimits.PerKeyBurst = o.KeyBurst
+				}
+				if o.IPCreatesPer10 > 0 {
+					anonLimits.PerIPPerMinute = float64(o.IPCreatesPer10) / 10
+				}
+				if o.IPBurst > 0 {
+					anonLimits.PerIPBurst = o.IPBurst
+				}
+			}
+			anonStatePath := config.AnonDoor.StatePath
+			if anonStatePath == "" {
+				anonStatePath = anonbox.DefaultDoorStatePath
+			}
 			anonMgr := anonbox.New(anonBoxes, networkIncusClient, anonbox.Config{
-				Limits:    anonLimits,
-				NICDevice: "eth0",
-				Bridge:    "incusbr0",
+				Limits:        anonLimits,
+				NICDevice:     "eth0",
+				Bridge:        "incusbr0",
+				DoorStatePath: anonStatePath,
 				// The claim secret is re-derived from the daemon's signing
 				// key per box — nothing to persist, rotates with the key.
 				ClaimSecret:  func(boxName string) string { return tokenManager.DeriveSharedSecret("anon-claim", boxName) },
@@ -1898,7 +1935,15 @@ skipAppHosting:
 			})
 			anonServer := NewAnonymousBoxServer(anonMgr, anonBoxes, anonLimits)
 			anonServer.SetClaimer(anonMgr)
+			anonServer.SetDoor(anonMgr)
+			if err := anonMgr.DoorErr(); err != nil {
+				log.Printf("ERROR: %v — the anonymous door is CLOSED until `containarium anon enable` rewrites it", err)
+			}
 			pb.RegisterAnonymousBoxServiceServer(grpcServer, anonServer)
+			// Unclaimed anonymous boxes may not expose ports or routes (#2200).
+			if networkServer != nil {
+				networkServer.SetAnonGuard(AnonRouteGuard(networkIncusClient.GetLabels))
+			}
 			log.Printf("AnonymousBox service enabled (VM per key, %s vCPU / %s / %s, ttl %s)", anonLimits.CPU, anonLimits.Memory, anonLimits.Disk, anonLimits.TTL)
 		}
 	}

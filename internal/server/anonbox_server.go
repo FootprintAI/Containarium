@@ -32,6 +32,13 @@ type AnonClaimer interface {
 	Claim(ctx context.Context, req anonbox.ClaimRequest) (*anonbox.ClaimResult, error)
 }
 
+// AnonDoor is the operator state slice of anonbox.Manager (#2200).
+type AnonDoor interface {
+	DoorConfig() anonbox.DoorConfig
+	SetDoorConfig(anonbox.DoorConfig) error
+	DoorErr() error
+}
+
 // AnonLister lists boxes so ListAnonymousBoxes can filter on the
 // anon.fingerprint label. Satisfied by any box.BoxBackend.
 type AnonLister interface {
@@ -47,8 +54,13 @@ type AnonymousBoxServer struct {
 	ensurer AnonEnsurer
 	lister  AnonLister
 	claimer AnonClaimer // nil = claims not enabled on this daemon
+	door    AnonDoor    // nil = no kill switch / bans (always open)
 	limits  anonbox.Limits
 }
+
+// SetDoor enables Get/SetAnonymousDoorConfig over the manager's door
+// state (#2200).
+func (s *AnonymousBoxServer) SetDoor(d AnonDoor) { s.door = d }
 
 // SetClaimer enables ClaimAnonymousBox (#2199). Without it the RPC is
 // gated but Unimplemented — a daemon without a claim secret cannot
@@ -138,29 +150,61 @@ func claimErrToStatus(err error) error {
 	}
 }
 
-// GetAnonymousDoorConfig — admin or anon:admin. Until #2200 the door has
-// no kill switch or bans: enabled, nothing banned, limits echoed.
+// GetAnonymousDoorConfig — admin or anon:admin. The door's operator state
+// (kill switch, message, bans) plus the daemon's fixed limits.
 func (s *AnonymousBoxServer) GetAnonymousDoorConfig(ctx context.Context, _ *pb.GetAnonymousDoorConfigRequest) (*pb.AnonymousDoorConfig, error) {
 	if err := auth.RequireRoleOrScope(ctx, auth.RoleAdmin, auth.ScopeAnonAdmin); err != nil {
 		return nil, err
 	}
-	return &pb.AnonymousDoorConfig{
-		Enabled: true,
-		Limits: &pb.AnonymousBoxLimits{
-			Cpu:        s.limits.CPU,
-			Memory:     s.limits.Memory,
-			Disk:       s.limits.Disk,
-			TtlSeconds: int64(s.limits.TTL / time.Second),
-		},
-	}, nil
+	return s.doorConfigProto(), nil
 }
 
-// SetAnonymousDoorConfig — admin or anon:admin. Implemented by #2200.
-func (s *AnonymousBoxServer) SetAnonymousDoorConfig(ctx context.Context, _ *pb.SetAnonymousDoorConfigRequest) (*pb.AnonymousDoorConfig, error) {
+// SetAnonymousDoorConfig — admin or anon:admin. Replaces enabled /
+// disabled_message / banned_fingerprints; limits are read-only (daemon
+// flags) and ignored on input.
+func (s *AnonymousBoxServer) SetAnonymousDoorConfig(ctx context.Context, req *pb.SetAnonymousDoorConfigRequest) (*pb.AnonymousDoorConfig, error) {
 	if err := auth.RequireRoleOrScope(ctx, auth.RoleAdmin, auth.ScopeAnonAdmin); err != nil {
 		return nil, err
 	}
-	return nil, status.Error(codes.Unimplemented, "SetAnonymousDoorConfig lands with #2200")
+	if s.door == nil {
+		return nil, status.Error(codes.Unimplemented, "the anonymous door has no operator state on this daemon")
+	}
+	cfg := req.GetConfig()
+	if cfg == nil {
+		return nil, status.Error(codes.InvalidArgument, "config is required")
+	}
+	if err := s.door.SetDoorConfig(anonbox.DoorConfig{
+		Enabled:            cfg.GetEnabled(),
+		DisabledMessage:    cfg.GetDisabledMessage(),
+		BannedFingerprints: cfg.GetBannedFingerprints(),
+	}); err != nil {
+		return nil, status.Errorf(codes.Internal, "persist door config: %v", err)
+	}
+	return s.doorConfigProto(), nil
+}
+
+func (s *AnonymousBoxServer) doorConfigProto() *pb.AnonymousDoorConfig {
+	out := &pb.AnonymousDoorConfig{
+		Enabled: true,
+		Limits: &pb.AnonymousBoxLimits{
+			Cpu:                 s.limits.CPU,
+			Memory:              s.limits.Memory,
+			Disk:                s.limits.Disk,
+			TtlSeconds:          int64(s.limits.TTL / time.Second),
+			MaxBoxes:            int32(s.limits.MaxBoxes), //nolint:gosec // a small cap
+			PerFingerprintRps:   s.limits.PerKeyPerMinute / 60,
+			PerFingerprintBurst: int32(s.limits.PerKeyBurst), //nolint:gosec // a small burst
+			PerIpRps:            s.limits.PerIPPerMinute / 60,
+			PerIpBurst:          int32(s.limits.PerIPBurst), //nolint:gosec // a small burst
+		},
+	}
+	if s.door != nil {
+		d := s.door.DoorConfig()
+		out.Enabled = d.Enabled
+		out.DisabledMessage = d.DisabledMessage
+		out.BannedFingerprints = d.BannedFingerprints
+	}
+	return out
 }
 
 // ListAnonymousBoxes — admin or anon:admin. Every box carrying the
@@ -196,12 +240,47 @@ func (s *AnonymousBoxServer) ListAnonymousBoxes(ctx context.Context, _ *pb.ListA
 }
 
 // anonErrToStatus maps manager errors onto gRPC codes: a bad key or a
-// fingerprint that does not match it is the caller's fault; anything
-// else (create, ACL, guest files) is the daemon's.
+// fingerprint that does not match it is the caller's fault; a closed
+// door, a ban, a rate limit or the cap are the daemon saying no (#2200);
+// anything else (create, ACL, guest files) is the daemon's fault.
 func anonErrToStatus(err error) error {
 	var invalid anonbox.InvalidRequestError
-	if errors.As(err, &invalid) {
+	var closed anonbox.DoorClosedError
+	switch {
+	case errors.As(err, &invalid):
 		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.As(err, &closed):
+		return status.Error(codes.FailedPrecondition, strings.TrimPrefix(err.Error(), "anonbox: "))
+	case errors.Is(err, anonbox.ErrBanned):
+		return status.Error(codes.PermissionDenied, strings.TrimPrefix(err.Error(), "anonbox: "))
+	case errors.Is(err, anonbox.ErrRateLimited), errors.Is(err, anonbox.ErrAtCapacity):
+		return status.Error(codes.ResourceExhausted, strings.TrimPrefix(err.Error(), "anonbox: "))
+	default:
+		return status.Errorf(codes.Internal, "%v", err)
 	}
-	return status.Errorf(codes.Internal, "%v", err)
+}
+
+// AnonRouteGuard builds the check AddRoute / AddPassthroughRoute run on
+// their target box (#2200): an anonymous box nobody has claimed may not
+// expose anything. getLabels is the daemon's label reader. A lookup
+// failure falls back to the name — an anonymous box is always
+// "anon-<fp8>-container" — so a transient Incus error cannot open a hole,
+// and a normal box is never blocked by one.
+func AnonRouteGuard(getLabels func(containerName string) (map[string]string, error)) func(containerName string) error {
+	return func(name string) error {
+		if name == "" {
+			return nil
+		}
+		labels, err := getLabels(name)
+		if err != nil {
+			if strings.HasPrefix(name, "anon-") {
+				return status.Errorf(codes.FailedPrecondition, "%s looks like an anonymous box and its state could not be read (%v): claim it first", name, err)
+			}
+			return nil
+		}
+		if anonbox.IsUnclaimedAnonymous(labels) {
+			return status.Errorf(codes.FailedPrecondition, "%s is an unclaimed anonymous box: no public ports or routes until it is claimed (containarium claim)", name)
+		}
+		return nil
+	}
 }

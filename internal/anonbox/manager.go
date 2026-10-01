@@ -31,6 +31,7 @@ import (
 	"github.com/lxc/incus/v7/shared/api"
 	"golang.org/x/crypto/ssh"
 
+	"github.com/footprintai/containarium/internal/sandbox/ratelimit"
 	"github.com/footprintai/containarium/pkg/core/box"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -62,11 +63,45 @@ type Limits struct {
 	Memory string
 	Disk   string
 	TTL    time.Duration
+
+	// Guardrails (#2200). MaxBoxes caps live UNCLAIMED anonymous boxes on
+	// this daemon; the rate limits apply to creates only (a reconnect is
+	// free), per key fingerprint and per source IP, as token buckets.
+	// 0 = that limit is off.
+	MaxBoxes        int
+	PerKeyPerMinute float64
+	PerKeyBurst     int
+	PerIPPerMinute  float64
+	PerIPBurst      int
 }
 
-// DefaultLimits is the owner's decision on #2204 (2026-10-01).
+// DefaultLimits is the owner's decision on #2204 (2026-10-01): 2 vCPU /
+// 4 GB / 20 GB / 4 h; cap 20; per key 1 create per 10 min (burst 2); per
+// source IP 6 per 10 min (burst 6).
 func DefaultLimits() Limits {
-	return Limits{CPU: "2", Memory: "4GB", Disk: "20GB", TTL: 4 * time.Hour}
+	return Limits{
+		CPU: "2", Memory: "4GB", Disk: "20GB", TTL: 4 * time.Hour,
+		MaxBoxes: 20, PerKeyPerMinute: 0.1, PerKeyBurst: 2, PerIPPerMinute: 0.6, PerIPBurst: 6,
+	}
+}
+
+// Rejections a caller can cause (#2200). The RPC layer maps them:
+// DoorClosedError → FailedPrecondition with its message, ErrBanned →
+// PermissionDenied, ErrRateLimited / ErrAtCapacity → ResourceExhausted.
+var (
+	ErrBanned      = errors.New("anonbox: this key is banned from the anonymous door")
+	ErrRateLimited = errors.New("anonbox: slow down — too many new boxes from this key or address; try again in a few minutes")
+	ErrAtCapacity  = errors.New("anonbox: we're full right now — sign up for a guaranteed box, or try again later")
+)
+
+// DoorClosedError carries the operator's message for a closed door.
+type DoorClosedError struct{ Message string }
+
+func (e DoorClosedError) Error() string {
+	if e.Message == "" {
+		return "anonbox: the anonymous door is closed"
+	}
+	return "anonbox: " + e.Message
 }
 
 // Config is everything the Manager needs beyond its two backends.
@@ -89,6 +124,10 @@ type Config struct {
 	// = the file holds the bare token (decision on #2199: the CLI prints
 	// it with a note).
 	ClaimURLBase string
+
+	// DoorStatePath persists the kill switch and bans (#2200); "" keeps
+	// them in memory only. A malformed file fails closed — see DoorStore.
+	DoorStatePath string
 
 	// Now is the clock; nil = time.Now.
 	Now func() time.Time
@@ -161,6 +200,11 @@ type Manager struct {
 	// claimMu serializes Claim's compare-and-set on claimed_at: the box
 	// backend has no atomic label update, so the daemon is the lock.
 	claimMu sync.Mutex
+
+	// Guardrails (#2200).
+	door       *DoorStore
+	keyLimiter *ratelimit.Limiter
+	ipLimiter  *ratelimit.Limiter
 }
 
 // New returns a Manager over the given backends.
@@ -174,7 +218,30 @@ func New(boxes Boxes, acls ACLs, cfg Config) *Manager {
 	if cfg.NICDevice == "" {
 		cfg.NICDevice = "eth0"
 	}
-	return &Manager{boxes: boxes, acls: acls, cfg: cfg, seen: map[string]time.Time{}}
+	return &Manager{
+		boxes: boxes, acls: acls, cfg: cfg, seen: map[string]time.Time{},
+		door:       NewDoorStore(cfg.DoorStatePath),
+		keyLimiter: ratelimit.New(cfg.Limits.PerKeyPerMinute/60, cfg.Limits.PerKeyBurst),
+		ipLimiter:  ratelimit.New(cfg.Limits.PerIPPerMinute/60, cfg.Limits.PerIPBurst),
+	}
+}
+
+// DoorConfig is the door's current operator state.
+func (m *Manager) DoorConfig() DoorConfig { return m.door.Get() }
+
+// SetDoorConfig replaces and persists the door's operator state.
+func (m *Manager) SetDoorConfig(cfg DoorConfig) error { return m.door.Set(cfg) }
+
+// DoorErr reports a poisoned door state file (malformed on disk).
+func (m *Manager) DoorErr() error { return m.door.Err() }
+
+// Limits echoes the fixed limits.
+func (m *Manager) Limits() Limits { return m.cfg.Limits }
+
+// IsUnclaimedAnonymous reports whether labels describe an anonymous box
+// nobody has claimed yet — the boxes that may not expose ports or routes.
+func IsUnclaimedAnonymous(labels map[string]string) bool {
+	return labels[LabelFingerprint] != "" && labels[LabelClaimedAt] == ""
 }
 
 // UsernameFor is the box's tenant/login name for a fingerprint: "anon-" +
@@ -203,6 +270,15 @@ func (m *Manager) Ensure(ctx context.Context, req EnsureRequest) (*EnsureResult,
 	}
 	username := UsernameFor(fp)
 
+	// Kill switch and bans come before everything, reconnects included:
+	// a closed door is closed for the key that already has a box too.
+	if door := m.door.Get(); !door.Enabled {
+		return nil, DoorClosedError{Message: door.DisabledMessage}
+	}
+	if m.door.IsBanned(fp) {
+		return nil, ErrBanned
+	}
+
 	if existing, err := m.findLive(ctx, fp); err != nil {
 		return nil, err
 	} else if existing != nil {
@@ -217,6 +293,20 @@ func (m *Manager) Ensure(ctx context.Context, req EnsureRequest) (*EnsureResult,
 			TTLExpiresAt: existing.TTLExpiresAt,
 			Reused:       true,
 		}, nil
+	}
+
+	// Creates are what cost us; a reconnect above is free.
+	if !m.keyLimiter.Allow(fpHash(fp)) || !m.ipLimiter.Allow(req.SourceIP) {
+		return nil, ErrRateLimited
+	}
+	if m.cfg.Limits.MaxBoxes > 0 {
+		live, err := m.countUnclaimed(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if live >= m.cfg.Limits.MaxBoxes {
+			return nil, ErrAtCapacity
+		}
 	}
 
 	m.mu.Lock()
@@ -317,6 +407,22 @@ func (m *Manager) claimURL(boxName, tokenID string, expiresAt time.Time) (string
 		return token, nil
 	}
 	return strings.TrimRight(m.cfg.ClaimURLBase, "/") + "?token=" + token, nil
+}
+
+// countUnclaimed is the global-cap denominator: anonymous boxes nobody
+// has claimed. A claimed box belongs to a tenant and no longer counts.
+func (m *Manager) countUnclaimed(ctx context.Context) (int, error) {
+	all, err := m.boxes.List(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("anonbox: list boxes: %w", err)
+	}
+	n := 0
+	for i := range all {
+		if IsUnclaimedAnonymous(all[i].Labels) {
+			n++
+		}
+	}
+	return n, nil
 }
 
 // findLive returns the box labelled with fp, or nil.

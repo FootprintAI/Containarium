@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Anonymous-box guardrails (#2200), the gate for putting the door on a
+  public IP: a kill switch with an operator message and per-key bans
+  (`containarium anon enable|disable|status|ban|unban|list`, persisted in
+  `/var/lib/containarium/anon-door.json`; a malformed file closes the door),
+  creation rate limits per key (1 / 10 min, burst 2) and per source IP
+  (6 / 10 min, burst 6), a cap on live unclaimed boxes (20), all tunable
+  with `--anon-*` daemon flags; and `AddRoute` / `AddPassthroughRoute`
+  refuse an unclaimed anonymous box. Reconnects are never rate-limited.
+
 - Anonymous-box claim (#2199): `ClaimAnonymousBox` redeems the single-use
   token minted into every anonymous box (`/etc/containarium/claim-url`) and
   binds the box to a tenant — TTL cleared, egress guard lifted, the tenant's

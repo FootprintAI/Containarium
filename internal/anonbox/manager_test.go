@@ -174,12 +174,13 @@ func newHarness(t *testing.T, mut func(*Config)) *harness {
 	t.Helper()
 	h := &harness{boxes: newFakeBoxes(), acls: newFakeACLs(), now: time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)}
 	cfg := Config{
-		Limits:       DefaultLimits(),
-		NICDevice:    "eth0",
-		Bridge:       "containarium0",
-		ClaimSecret:  func(box string) string { return "secret-for-" + box },
-		ClaimURLBase: "https://cloud.example.test/claim",
-		Now:          func() time.Time { return h.now },
+		Limits:        DefaultLimits(),
+		NICDevice:     "eth0",
+		Bridge:        "containarium0",
+		ClaimSecret:   func(box string) string { return "secret-for-" + box },
+		ClaimURLBase:  "https://cloud.example.test/claim",
+		DoorStatePath: "", // in-memory door state
+		Now:           func() time.Time { return h.now },
 	}
 	if mut != nil {
 		mut(&cfg)
