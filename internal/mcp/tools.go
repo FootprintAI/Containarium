@@ -14,6 +14,7 @@ import (
 	"github.com/footprintai/containarium/internal/runlog"
 	"github.com/footprintai/containarium/internal/safecast"
 	"github.com/footprintai/containarium/pkg/core/expose"
+	"github.com/footprintai/containarium/pkg/core/ostype"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -195,6 +196,11 @@ func (s *Server) registerTools() {
 						"type":        "string",
 						"description": "Container OS type: 'ubuntu' (default), 'rocky9' (dev/test), 'rhel9' (production). Overrides image when set.",
 						"enum":        []string{"", "ubuntu", "rocky9", "rhel9"},
+					},
+					"isolation": map[string]interface{}{
+						"type":        "string",
+						"description": "How the box is isolated from the host: 'container' (LXC, shared kernel — the default for Linux) or 'vm' (QEMU/KVM virtual machine with its own kernel; needs a KVM-capable backend, and is the only option for Windows). Mirrors `containarium create --isolation`.",
+						"enum":        []string{"", "container", "vm"},
 					},
 					"monitoring": map[string]interface{}{
 						"type":        "boolean",
@@ -1912,6 +1918,16 @@ func handleCreateContainer(client API, args map[string]interface{}) (string, err
 		return "", fmt.Errorf("username is required")
 	}
 
+	// The REST shim takes the enum by name; UNSPECIFIED is simply not sent.
+	isolation, err := ostype.ParseIsolation(getStringArg(args, "isolation", ""))
+	if err != nil {
+		return "", err
+	}
+	var isolationWire string
+	if isolation != pb.IsolationType_ISOLATION_TYPE_UNSPECIFIED {
+		isolationWire = isolation.String()
+	}
+
 	req := CreateContainerRequest{
 		Username: username,
 		Resources: &ResourceLimits{
@@ -1929,6 +1945,7 @@ func handleCreateContainer(client API, args map[string]interface{}) (string, err
 		Pool:         getStringArg(args, "pool", ""),
 		BackendID:    getStringArg(args, "backend_id", ""),
 		Region:       getStringArg(args, "region", ""),
+		Isolation:    isolationWire,
 	}
 
 	// Handle SSH keys. If the caller passes ssh_keys explicitly we use

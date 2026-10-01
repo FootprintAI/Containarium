@@ -1908,6 +1908,11 @@ type CreateContainerRequest struct {
 	// Region places the container on a multi-region hosted control plane
 	// (#1606). A standalone/single-region daemon ignores it.
 	Region string `json:"region,omitempty"`
+
+	// Isolation is the IsolationType enum *name* ("ISOLATION_TYPE_VM"),
+	// which is what grpc-gateway's protojson accepts. Empty = not sent =
+	// the daemon's default (#2196).
+	Isolation string `json:"isolation,omitempty"`
 }
 
 type ResourceLimits struct {

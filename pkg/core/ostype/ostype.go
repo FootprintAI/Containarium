@@ -1,6 +1,9 @@
 package ostype
 
 import (
+	"fmt"
+	"strings"
+
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -107,6 +110,71 @@ func OSTypeFromString(s string) pb.OSType {
 // IsWindows returns true if the OS type is a Windows variant.
 func IsWindows(osType pb.OSType) bool {
 	return osType == pb.OSType_OS_TYPE_WINDOWS_2022
+}
+
+// Isolation helpers live beside OSType because the two resolve together:
+// the instance type a box runs as is a function of (os_type, isolation)
+// — see container.resolveInstanceType.
+
+// Incus instance type strings as reported on ContainerInfo.InstanceType.
+const (
+	InstanceTypeContainer = "container"
+	InstanceTypeVM        = "virtual-machine"
+)
+
+// ParseIsolation parses a CLI/MCP-friendly string into an IsolationType.
+// Empty is UNSPECIFIED (backend default); anything unrecognized is an
+// error rather than a silent default, since a caller who typed a value
+// meant something by it.
+func ParseIsolation(s string) (pb.IsolationType, error) {
+	switch strings.ToLower(s) {
+	case "":
+		return pb.IsolationType_ISOLATION_TYPE_UNSPECIFIED, nil
+	case "container", "lxc":
+		return pb.IsolationType_ISOLATION_TYPE_CONTAINER, nil
+	case "vm", "virtual-machine":
+		return pb.IsolationType_ISOLATION_TYPE_VM, nil
+	default:
+		return pb.IsolationType_ISOLATION_TYPE_UNSPECIFIED, fmt.Errorf("invalid isolation %q: want container or vm", s)
+	}
+}
+
+// IsolationFromInstanceType maps an Incus instance type string onto the
+// enum. Unknown or empty → UNSPECIFIED.
+func IsolationFromInstanceType(instanceType string) pb.IsolationType {
+	switch instanceType {
+	case InstanceTypeVM:
+		return pb.IsolationType_ISOLATION_TYPE_VM
+	case InstanceTypeContainer:
+		return pb.IsolationType_ISOLATION_TYPE_CONTAINER
+	default:
+		return pb.IsolationType_ISOLATION_TYPE_UNSPECIFIED
+	}
+}
+
+// InstanceTypeFromIsolation is the inverse of IsolationFromInstanceType;
+// UNSPECIFIED → "".
+func InstanceTypeFromIsolation(iso pb.IsolationType) string {
+	switch iso {
+	case pb.IsolationType_ISOLATION_TYPE_VM:
+		return InstanceTypeVM
+	case pb.IsolationType_ISOLATION_TYPE_CONTAINER:
+		return InstanceTypeContainer
+	default:
+		return ""
+	}
+}
+
+// IsolationShort is the table-cell rendering: "vm", "lxc", or "-".
+func IsolationShort(iso pb.IsolationType) string {
+	switch iso {
+	case pb.IsolationType_ISOLATION_TYPE_VM:
+		return "vm"
+	case pb.IsolationType_ISOLATION_TYPE_CONTAINER:
+		return "lxc"
+	default:
+		return "-"
+	}
 }
 
 // Execer is the interface for executing commands in a container.

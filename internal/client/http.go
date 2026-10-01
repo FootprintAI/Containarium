@@ -15,6 +15,7 @@ import (
 
 	"github.com/footprintai/containarium/internal/runlog"
 	"github.com/footprintai/containarium/pkg/core/incus"
+	"github.com/footprintai/containarium/pkg/core/ostype"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/footprintai/containarium/pkg/version"
 	"google.golang.org/grpc/codes"
@@ -181,6 +182,7 @@ type containerResponse struct {
 	PodmanEnabled        bool              `json:"dockerEnabled"`
 	GpuDevice            string            `json:"gpuDevice"`
 	GpuDevices           []string          `json:"gpuDevices"`
+	Isolation            string            `json:"isolation"` // protojson enum name, e.g. ISOLATION_TYPE_VM
 	MonitoringEnabled    bool              `json:"monitoringEnabled"`
 	AutoSleepEnabled     bool              `json:"autoSleepEnabled"`
 	IdleThresholdMinutes int32             `json:"idleThresholdMinutes"`
@@ -233,6 +235,7 @@ func containerToIncusInfo(c *containerResponse) incus.ContainerInfo {
 		Username:             c.Username,
 		State:                c.State,
 		Labels:               c.Labels,
+		InstanceType:         ostype.InstanceTypeFromIsolation(pb.IsolationType(pb.IsolationType_value[c.Isolation])),
 		MonitoringEnabled:    c.MonitoringEnabled,
 		AutoSleepEnabled:     c.AutoSleepEnabled,
 		IdleThresholdMinutes: c.IdleThresholdMinutes,
@@ -325,7 +328,7 @@ type GitSourceOpts struct {
 	WorkspacePath string // empty defaults to /workspace
 }
 
-func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string) (*incus.ContainerInfo, error) {
+func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, isolation pb.IsolationType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string) (*incus.ContainerInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
@@ -345,6 +348,7 @@ func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, 
 		Stack:        stack,
 		GPUs:         gpus,
 		OSType:       osType,
+		Isolation:    isolation,
 		Monitoring:   monitoring,
 		Pool:         pool,
 		BackendID:    backendID,

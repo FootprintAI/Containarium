@@ -9,6 +9,7 @@ import (
 
 	"github.com/footprintai/containarium/internal/mtls"
 	"github.com/footprintai/containarium/pkg/core/incus"
+	"github.com/footprintai/containarium/pkg/core/ostype"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -149,6 +150,7 @@ func (c *GRPCClient) ListContainers() ([]incus.ContainerInfo, error) {
 			Username:             container.Username,
 			State:                container.State.String(),
 			Labels:               container.Labels,
+			InstanceType:         ostype.InstanceTypeFromIsolation(container.Isolation),
 			MonitoringEnabled:    container.MonitoringEnabled,
 			AutoSleepEnabled:     container.AutoSleepEnabled,
 			IdleThresholdMinutes: container.IdleThresholdMinutes,
@@ -177,7 +179,7 @@ func (c *GRPCClient) ListContainers() ([]incus.ContainerInfo, error) {
 }
 
 // CreateContainer creates a container via gRPC
-func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string) (*incus.ContainerInfo, error) {
+func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, isolation pb.IsolationType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string) (*incus.ContainerInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute) // Container creation can take time (includes ultra-aggressive retry logic for google_guest_agent)
 	defer cancel()
 
@@ -197,6 +199,7 @@ func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, 
 		Stack:                     stack,
 		Gpus:                      gpus,
 		OsType:                    osType,
+		Isolation:                 isolation,
 		Monitoring:                monitoring,
 		Pool:                      pool,
 		BackendId:                 backendID,
@@ -220,9 +223,10 @@ func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, 
 	// Convert protobuf Container to incus.ContainerInfo
 	container := resp.Container
 	info := &incus.ContainerInfo{
-		Name:     container.Name,
-		Username: container.Username,
-		State:    container.State.String(),
+		Name:         container.Name,
+		Username:     container.Username,
+		State:        container.State.String(),
+		InstanceType: ostype.InstanceTypeFromIsolation(container.Isolation),
 	}
 
 	if container.Network != nil {

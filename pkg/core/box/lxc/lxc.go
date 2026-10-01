@@ -13,6 +13,7 @@ import (
 	"github.com/footprintai/containarium/pkg/core/box"
 	"github.com/footprintai/containarium/pkg/core/container"
 	"github.com/footprintai/containarium/pkg/core/incus"
+	"github.com/footprintai/containarium/pkg/core/ostype"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -183,6 +184,7 @@ func specToCreateOptions(spec box.BoxSpec) container.CreateOptions {
 		EnablePodman:           spec.EnablePodman,
 		EnablePodmanPrivileged: spec.EnablePodmanPrivileged,
 		OSType:                 spec.OSType,
+		Isolation:              spec.Isolation,
 		Monitoring:             spec.Monitoring,
 		OTelCollectorEndpoint:  spec.OTelCollectorEndpoint,
 		BackendID:              spec.OTelBackendID,
@@ -210,6 +212,7 @@ func StatusFromInfo(info *incus.ContainerInfo) box.BoxStatus {
 		GPUs:                      info.GPUs,
 		BackendID:                 info.BackendID,
 		CreatedAt:                 info.CreatedAt,
+		Isolation:                 ostype.IsolationFromInstanceType(info.InstanceType),
 		IsCore:                    info.Role.IsCoreRole(),
 		MonitoringEnabled:         info.MonitoringEnabled,
 		AutoSleepEnabled:          info.AutoSleepEnabled,

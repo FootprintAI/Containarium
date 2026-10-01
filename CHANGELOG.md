@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `IsolationType` on `CreateContainerRequest` / `Container` and
+  `containarium create --isolation container|vm`: a Linux box can now be an
+  Incus VM (own kernel), not only Windows. Unspecified keeps today's rule
+  (Windows → VM, else container); Windows as a container is rejected. Linux
+  VMs boot the image's `/cloud` variant and skip the baked-image fast path.
+  `list` gains an ISO column (`lxc`/`vm`); the MCP `create_container` tool
+  takes `isolation`; the Kubernetes backend rejects `vm`. Groundwork for the
+  anonymous-box tier (#2196)
+
 - `--dns-passthrough-host` (repeatable): hostnames the bridge DNS record carves
   out of the `*.<base-domain>` wildcard so boxes resolve them through the
   upstream resolvers, the way `--ssh-host` already is. For an API host that sits

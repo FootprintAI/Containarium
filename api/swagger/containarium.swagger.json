@@ -10078,6 +10078,10 @@
         "encryptionState": {
           "$ref": "#/definitions/EncryptionState",
           "description": "Whether this container's data is protected by a per-tenant ZFS key, and\nwhether that key is currently loaded (#1202).\n\nKEY_UNAVAILABLE is the one an operator has to act on: the container will\nnot start and its snapshots cannot be inspected until key custody is\nreachable. It is surfaced on status rather than only at the point of\nfailure so the condition is visible before someone trips over it."
+        },
+        "isolation": {
+          "$ref": "#/definitions/IsolationType",
+          "description": "How the box is isolated from the host: CONTAINER (LXC) or VM\n(QEMU/KVM), read back from the instance itself. UNSPECIFIED when the\nbackend does not report it."
         }
       }
     },
@@ -10455,6 +10459,10 @@
         "region": {
           "type": "string",
           "description": "Region to place this container in (#1606) — a client-side placement\nhint in the same family as `pool` and `backend_id`. A standalone,\nsingle-backend daemon has exactly one region and ignores this field\nentirely: empty stays today's default behavior, and any non-empty\nvalue is likewise a no-op here. It exists so a hosted, multi-region\ncontrol plane fronting several regional daemons has somewhere on this\nwire shape to receive the caller's choice — without it, a create\nagainst such a control plane with no configured default region has no\nway to express one at all. Empty = daemon/control-plane default."
+        },
+        "isolation": {
+          "$ref": "#/definitions/IsolationType",
+          "description": "Isolation picks container (LXC) or VM (QEMU/KVM). UNSPECIFIED keeps\ntoday's behavior: Windows → VM, everything else → container.\nCONTAINER with a Windows os_type is rejected with InvalidArgument.\nOnly the LXC backend honors VM; the Kubernetes backend rejects it."
         }
       },
       "title": "CreateContainerRequest is the request to create a new container"
@@ -12718,6 +12726,16 @@
           "type": "string"
         }
       }
+    },
+    "IsolationType": {
+      "type": "string",
+      "enum": [
+        "ISOLATION_TYPE_UNSPECIFIED",
+        "ISOLATION_TYPE_CONTAINER",
+        "ISOLATION_TYPE_VM"
+      ],
+      "default": "ISOLATION_TYPE_UNSPECIFIED",
+      "description": "IsolationType selects the Incus instance type a box runs as — the\nkernel boundary between the box and the host. Independent of OSType:\na Linux box can be a VM, and until this enum existed only Windows could\n(#2196, the anonymous-box tier in docs/architecture/ssh-new-anonymous-box.md).\n\n - ISOLATION_TYPE_UNSPECIFIED: Backend default: Windows runs as a VM, every other OS as a container.\n - ISOLATION_TYPE_CONTAINER: LXC container — shares the host kernel.\n - ISOLATION_TYPE_VM: QEMU/KVM virtual machine — its own kernel. Requires a KVM-capable\nbackend. Windows cannot be anything else."
     },
     "LeaseAgentTaskRequest": {
       "type": "object",

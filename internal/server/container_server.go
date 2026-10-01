@@ -615,6 +615,7 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 		Stack:                  req.Stack,
 		StackParams:            req.StackParameters,
 		OSType:                 req.OsType,
+		Isolation:              req.Isolation,
 		GPUs:                   req.Gpus, // legacy singular `gpu` no longer honored (#673)
 		StaticIP:               req.StaticIp,
 		// OTel app-monitoring opt-in. The daemon-level collector
@@ -3983,6 +3984,7 @@ func toProtoContainer(st *box.BoxStatus) *pb.Container {
 		GpuDevices:           st.GPUs,
 		BackendId:            st.BackendID,
 		OsType:               osTypeEnum,
+		Isolation:            st.Isolation,
 		AccessType:           accessType,
 		RdpAddress:           rdpAddress,
 		MonitoringEnabled:    st.MonitoringEnabled,
