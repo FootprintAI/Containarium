@@ -4,6 +4,7 @@ agent get
 agent list
 agent run
 agent worker
+anon claim
 app delete
 app deploy
 app get
@@ -32,6 +33,7 @@ capacity get
 capacity withdraw
 cert generate
 cert generate-with-ca
+claim
 cluster create
 cluster delete
 cluster get
