@@ -303,6 +303,11 @@ func (b *Backend) validateTenantName(tenant string) error {
 // Sandbox. Each step is idempotent (AlreadyExists is success) so re-create
 // reuses the box rather than erroring (#669).
 func (b *Backend) Create(ctx context.Context, spec box.BoxSpec) (*box.BoxStatus, error) {
+	// A pod is a container. Refuse a VM request outright rather than hand
+	// back a shared-kernel box the caller believed was VM-isolated (#2196).
+	if spec.Isolation == pb.IsolationType_ISOLATION_TYPE_VM {
+		return nil, fmt.Errorf("isolation=vm is not supported on the kubernetes backend")
+	}
 	tenant := spec.Ref.Tenant
 	if err := b.validateTenantName(tenant); err != nil {
 		return nil, err

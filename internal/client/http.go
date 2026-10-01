@@ -15,6 +15,7 @@ import (
 
 	"github.com/footprintai/containarium/internal/runlog"
 	"github.com/footprintai/containarium/pkg/core/incus"
+	"github.com/footprintai/containarium/pkg/core/ostype"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/footprintai/containarium/pkg/version"
 	"google.golang.org/grpc/codes"
@@ -181,6 +182,7 @@ type containerResponse struct {
 	PodmanEnabled        bool              `json:"dockerEnabled"`
 	GpuDevice            string            `json:"gpuDevice"`
 	GpuDevices           []string          `json:"gpuDevices"`
+	Isolation            string            `json:"isolation"` // protojson enum name, e.g. ISOLATION_TYPE_VM
 	MonitoringEnabled    bool              `json:"monitoringEnabled"`
 	AutoSleepEnabled     bool              `json:"autoSleepEnabled"`
 	IdleThresholdMinutes int32             `json:"idleThresholdMinutes"`
@@ -233,6 +235,7 @@ func containerToIncusInfo(c *containerResponse) incus.ContainerInfo {
 		Username:             c.Username,
 		State:                c.State,
 		Labels:               c.Labels,
+		InstanceType:         ostype.InstanceTypeFromIsolation(pb.IsolationType(pb.IsolationType_value[c.Isolation])),
 		MonitoringEnabled:    c.MonitoringEnabled,
 		AutoSleepEnabled:     c.AutoSleepEnabled,
 		IdleThresholdMinutes: c.IdleThresholdMinutes,
@@ -325,7 +328,7 @@ type GitSourceOpts struct {
 	WorkspacePath string // empty defaults to /workspace
 }
 
-func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string) (*incus.ContainerInfo, error) {
+func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, isolation pb.IsolationType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string) (*incus.ContainerInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
@@ -345,6 +348,7 @@ func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, 
 		Stack:        stack,
 		GPUs:         gpus,
 		OSType:       osType,
+		Isolation:    isolation,
 		Monitoring:   monitoring,
 		Pool:         pool,
 		BackendID:    backendID,
@@ -2947,4 +2951,98 @@ func (c *HTTPClient) CreateTrackerIssue(req *pb.CreateTrackerIssueRequest) (*pb.
 		return nil, err
 	}
 	return out.Issue, nil
+}
+
+// --- AnonymousBoxService (#2197) ---------------------------------------
+
+// anonCall is the shared shape of the five AnonymousBoxService calls: a
+// protojson body in (nil for GET), a protojson message out, the daemon's
+// {"error": …} surfaced verbatim, and a 404 reported as Unimplemented so a
+// pre-#2197 daemon reads as "no such service" rather than "no such box".
+func (c *HTTPClient) anonCall(method, path string, in proto.Message, out proto.Message, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	var body []byte
+	if in != nil {
+		var err error
+		if body, err = protojson.Marshal(in); err != nil {
+			return fmt.Errorf("marshal request: %w", err)
+		}
+	}
+	resp, err := c.doRequest(ctx, method, path, body)
+	if err != nil {
+		return err
+	}
+	defer drainClose(resp)
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusNotFound {
+		return status.Errorf(codes.Unimplemented, "server does not expose AnonymousBoxService (HTTP 404)")
+	}
+	if resp.StatusCode >= 400 {
+		var errResp struct {
+			Error   string `json:"error"`
+			Message string `json:"message"`
+		}
+		if json.Unmarshal(bodyBytes, &errResp) == nil {
+			if errResp.Error != "" {
+				return fmt.Errorf("%s", errResp.Error)
+			}
+			if errResp.Message != "" {
+				return fmt.Errorf("%s", errResp.Message)
+			}
+		}
+		return fmt.Errorf("%s %s: status %d", method, path, resp.StatusCode)
+	}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+	return nil
+}
+
+// EnsureAnonymousBox resolves or creates the anonymous VM for a key.
+func (c *HTTPClient) EnsureAnonymousBox(req *pb.EnsureAnonymousBoxRequest) (*pb.EnsureAnonymousBoxResponse, error) {
+	out := &pb.EnsureAnonymousBoxResponse{}
+	if err := c.anonCall(http.MethodPost, "/v1/anon/boxes:ensure", req, out, 5*time.Minute); err != nil {
+		return nil, fmt.Errorf("ensure anonymous box: %w", err)
+	}
+	return out, nil
+}
+
+// ClaimAnonymousBox binds an anonymous box to a tenant via its claim token.
+func (c *HTTPClient) ClaimAnonymousBox(req *pb.ClaimAnonymousBoxRequest) (*pb.ClaimAnonymousBoxResponse, error) {
+	out := &pb.ClaimAnonymousBoxResponse{}
+	if err := c.anonCall(http.MethodPost, "/v1/anon/boxes:claim", req, out, 2*time.Minute); err != nil {
+		return nil, fmt.Errorf("claim anonymous box: %w", err)
+	}
+	return out, nil
+}
+
+// GetAnonymousDoorConfig returns the door's state and fixed limits.
+func (c *HTTPClient) GetAnonymousDoorConfig() (*pb.AnonymousDoorConfig, error) {
+	out := &pb.AnonymousDoorConfig{}
+	if err := c.anonCall(http.MethodGet, "/v1/anon/door", nil, out, 30*time.Second); err != nil {
+		return nil, fmt.Errorf("get anonymous door config: %w", err)
+	}
+	return out, nil
+}
+
+// SetAnonymousDoorConfig flips the kill switch / edits bans.
+func (c *HTTPClient) SetAnonymousDoorConfig(cfg *pb.AnonymousDoorConfig) (*pb.AnonymousDoorConfig, error) {
+	out := &pb.AnonymousDoorConfig{}
+	// body: "config" on the RPC — the wire body is the config message itself.
+	if err := c.anonCall(http.MethodPut, "/v1/anon/door", cfg, out, 30*time.Second); err != nil {
+		return nil, fmt.Errorf("set anonymous door config: %w", err)
+	}
+	return out, nil
+}
+
+// ListAnonymousBoxes lists every live anonymous box on the daemon.
+func (c *HTTPClient) ListAnonymousBoxes() (*pb.ListAnonymousBoxesResponse, error) {
+	out := &pb.ListAnonymousBoxesResponse{}
+	if err := c.anonCall(http.MethodGet, "/v1/anon/boxes", nil, out, 30*time.Second); err != nil {
+		return nil, fmt.Errorf("list anonymous boxes: %w", err)
+	}
+	return out, nil
 }

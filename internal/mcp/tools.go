@@ -14,6 +14,7 @@ import (
 	"github.com/footprintai/containarium/internal/runlog"
 	"github.com/footprintai/containarium/internal/safecast"
 	"github.com/footprintai/containarium/pkg/core/expose"
+	"github.com/footprintai/containarium/pkg/core/ostype"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -195,6 +196,11 @@ func (s *Server) registerTools() {
 						"type":        "string",
 						"description": "Container OS type: 'ubuntu' (default), 'rocky9' (dev/test), 'rhel9' (production). Overrides image when set.",
 						"enum":        []string{"", "ubuntu", "rocky9", "rhel9"},
+					},
+					"isolation": map[string]interface{}{
+						"type":        "string",
+						"description": "How the box is isolated from the host: 'container' (LXC, shared kernel — the default for Linux) or 'vm' (QEMU/KVM virtual machine with its own kernel; needs a KVM-capable backend, and is the only option for Windows). Mirrors `containarium create --isolation`.",
+						"enum":        []string{"", "container", "vm"},
 					},
 					"monitoring": map[string]interface{}{
 						"type":        "boolean",
@@ -922,6 +928,22 @@ func (s *Server) registerTools() {
 				"properties": map[string]interface{}{},
 			},
 			Handler: handleSecuritySentryStatus,
+		},
+		{
+			Name: "bridge_dns_status",
+			Description: "Report whether the bridge DNS record that resolves the app-hosting base domain " +
+				"to core-caddy matches core-caddy's live address (#2188): 'IN_SYNC', 'PENDING' (no " +
+				"reconcile pass has finished yet), 'DEGRADED' (the last pass could not converge — check " +
+				"`reason`/`lastError`; boxes may resolve the base domain to an address nothing answers " +
+				"on), or 'NOT_MANAGED' (this daemon does not run the reconciler). Includes core-caddy's " +
+				"address, the desired and current record, the drift count and pass timestamps.\n\n" +
+				"Call this when boxes cannot reach the base domain or a hostname under it. Read-only, " +
+				"admin-only. Takes no arguments.",
+			InputSchema: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+			Handler: handleBridgeDNSStatus,
 		},
 		{
 			Name: "list_bad_destinations",
@@ -1901,6 +1923,10 @@ func toolScopeAssignments() map[string]string {
 		"compose_status":   auth.ScopeContainersRead,
 		"compose_enable":   auth.ScopeContainersWrite,
 		"compose_disable":  auth.ScopeContainersWrite,
+
+		// bridge DNS record status (#2188): a host-level read like
+		// get_upgrade_status; the RPC itself is admin-role-gated.
+		"bridge_dns_status": auth.ScopeContainersRead,
 	}
 }
 
@@ -1910,6 +1936,16 @@ func handleCreateContainer(client API, args map[string]interface{}) (string, err
 	username, ok := args["username"].(string)
 	if !ok || username == "" {
 		return "", fmt.Errorf("username is required")
+	}
+
+	// The REST shim takes the enum by name; UNSPECIFIED is simply not sent.
+	isolation, err := ostype.ParseIsolation(getStringArg(args, "isolation", ""))
+	if err != nil {
+		return "", err
+	}
+	var isolationWire string
+	if isolation != pb.IsolationType_ISOLATION_TYPE_UNSPECIFIED {
+		isolationWire = isolation.String()
 	}
 
 	req := CreateContainerRequest{
@@ -1929,6 +1965,7 @@ func handleCreateContainer(client API, args map[string]interface{}) (string, err
 		Pool:         getStringArg(args, "pool", ""),
 		BackendID:    getStringArg(args, "backend_id", ""),
 		Region:       getStringArg(args, "region", ""),
+		Isolation:    isolationWire,
 	}
 
 	// Handle SSH keys. If the caller passes ssh_keys explicitly we use

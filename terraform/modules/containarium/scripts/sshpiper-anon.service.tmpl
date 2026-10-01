@@ -1,0 +1,31 @@
+[Unit]
+Description=SSHPiper anonymous-box door (ssh new.<domain>, #2198)
+After=network.target
+# Same reasoning as sshpiper.service: never let the start-rate limiter give
+# up on the door listener.
+StartLimitIntervalSec=0
+
+[Service]
+# The door plugin signs its daemon calls with the sentinel's own identity
+# (CONTAINARIUM_SENTINEL_AUTH_SECRET / _SIGNING_KEY) — no second secret.
+EnvironmentFile=-/etc/containarium/env.secrets
+ExecStart=/usr/local/bin/sshpiperd \
+  -i /etc/sshpiper/host_key \
+  -l ${anon_listen_host} \
+  -p ${anon_listen_port} \
+  --drop-hostkeys-message \
+  /usr/local/bin/containarium sentinel ssh-session-plugin \
+  --records-file /var/log/containarium/ssh-sessions.jsonl \
+  --sshpiper-config /etc/sshpiper/config.yaml \
+  -- \
+  /usr/local/bin/containarium sentinel anon-door-plugin \
+  --daemon-url ${anon_daemon_url} \
+  -- \
+  failtoban \
+  --max-failures 100 \
+  --ban-duration 5m
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

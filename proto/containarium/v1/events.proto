@@ -59,6 +59,22 @@ enum EventType {
   // Security events (50-59)
   // A security finding was created or updated by the threat-detection engine
   EVENT_TYPE_SECURITY_FINDING = 50;
+
+  // Anonymous-box funnel (#2201, docs/architecture/ssh-new-anonymous-box.md).
+  // One event per step of the `ssh new.<domain>` journey, keyed by the
+  // sha256 of the key fingerprint (Event.fingerprint_hash) — never the key.
+  // Counters containarium_anon_<step>_total mirror them one-for-one.
+  EVENT_TYPE_ANON_CONNECT = 60;            // a key knocked (before any decision)
+  EVENT_TYPE_ANON_SHELL_READY = 61;        // a new box was created and provisioned (carries time-to-shell)
+  EVENT_TYPE_ANON_RECONNECT = 62;          // an existing box was handed back
+  EVENT_TYPE_ANON_CLAIM_LINK_ISSUED = 63;  // the claim-url was written into the guest
+  EVENT_TYPE_ANON_CLAIM_COMPLETED = 64;    // ClaimAnonymousBox succeeded
+  EVENT_TYPE_ANON_EXPIRED = 65;            // a box is gone after its TTL
+  EVENT_TYPE_ANON_KILLED_ABUSE = 66;       // a box is gone BEFORE its TTL (operator deleted it)
+  EVENT_TYPE_ANON_REJECTED_CAPACITY = 67;  // refused: global cap
+  EVENT_TYPE_ANON_REJECTED_RATELIMIT = 68; // refused: per-key / per-IP rate limit
+  EVENT_TYPE_ANON_REJECTED_DOOR = 69;      // refused: door closed or key banned (#2200)
+  EVENT_TYPE_ANON_LOST_PREEMPTION = 70;    // the anon-pool host was preempted (emitted by the sentinel's spot watcher, not the daemon)
 }
 
 // ResourceType identifies which resource type an event pertains to
@@ -77,6 +93,7 @@ enum ResourceType {
   RESOURCE_TYPE_TRAFFIC = 5;
   // Security finding resource
   RESOURCE_TYPE_SECURITY_FINDING = 6;
+  RESOURCE_TYPE_ANON_BOX = 7;
 }
 
 // ContainerEvent contains container-specific event data
@@ -111,6 +128,20 @@ message MetricsEvent {
 
 // SecurityFindingEvent contains a security finding raised or updated by the
 // threat-detection engine.
+// AnonEvent is the payload of every EVENT_TYPE_ANON_* event (#2201).
+message AnonEvent {
+  // Instance name, e.g. anon-1a2b3c4d-container. Empty on a rejection
+  // that never reached a box.
+  string box_name = 1;
+  // sha256 hex of the SSH key fingerprint. Never the fingerprint or key.
+  string fingerprint_hash = 2;
+  // Human-readable reason for a rejection / kill, empty otherwise.
+  string reason = 3;
+  // SHELL_READY only: seconds from the key knocking to the box being
+  // provisioned (the PRD's time-to-shell).
+  double seconds = 4;
+}
+
 message SecurityFindingEvent {
   Finding finding = 1;
 }
@@ -140,7 +171,13 @@ message Event {
     MetricsEvent metrics_event = 13;
     TrafficEvent traffic_event = 14;
     SecurityFindingEvent security_finding_event = 15;
+    AnonEvent anon_event = 16;
   }
+
+  // sha256 hex of the SSH key fingerprint for EVENT_TYPE_ANON_* events
+  // (#2201); empty for every other type. Top-level so subscribers can
+  // correlate a key's journey without opening the payload.
+  string fingerprint_hash = 6;
 }
 
 // SubscribeEventsRequest configures the event subscription

@@ -461,6 +461,86 @@ CONTAINARIUM_WAKE_TRUSTED_PROXIES=130.211.0.0/22,35.191.0.0/16
 
 ---
 
+## Optional: the anonymous-box door (`ssh new.<domain>`)
+
+The door hands a fresh Linux **VM** to any SSH key with no signup, keeps it
+for a few hours, and lets the user claim it by signing up. Design and
+rationale: `docs/architecture/ssh-new-anonymous-box.md`; the security
+position: `docs/security/SECURITY-FAQ.md`. It is off by default and
+needs its own backend — never enable it on a host that also runs tenant
+containers or the core-service LXCs.
+
+### Prerequisites for the anon-pool backend
+
+- **KVM.** The host must expose `/dev/kvm`. On a cloud VM that means
+  nested virtualization on an Intel machine family; check with
+  `ls -l /dev/kvm` and `incus launch images:ubuntu/24.04/cloud probe --vm`
+  (then `incus exec probe -- true` to prove the agent works, and delete it).
+- **nftables firewall driver.** The egress guard is an Incus network ACL
+  on the VM's NIC, which Incus only enforces under nftables:
+  `incus info | grep -A2 firewall` must say `nftables`.
+- **Disk.** VM root disks are 20 GB each; put the storage pool on a data
+  disk sized for `max boxes × 20 GB`, not on the boot disk.
+- The backend's `sshpiper` upstream key must be seeded exactly as for
+  tenant boxes (the door pipes sessions with `/etc/sshpiper/upstream_key`).
+
+### Daemon flags
+
+Start the backend daemon with the pool tag and the door enabled:
+
+```bash
+CONTAINARIUM_ANON_DOOR=enable containarium daemon \
+  --pool=anon \
+  --anon-claim-url-base https://<your cloud domain>/claim \
+  # optional tuning (defaults shown):
+  --anon-max-boxes 20 \
+  --anon-key-creates-per-10min 1 --anon-key-burst 2 \
+  --anon-ip-creates-per-10min 6  --anon-ip-burst 6 \
+  --anon-door-state /var/lib/containarium/anon-door.json
+```
+
+- `--anon-claim-url-base` is what the guest's `/etc/containarium/claim-url`
+  points at; empty writes the bare token and `containarium claim` prints it
+  with a note.
+- `--anon-door-state` persists the kill switch and bans; a malformed file
+  **closes** the door until `containarium anon enable` rewrites it.
+- The daemon logs `AnonymousBox service enabled (VM per key, …)` on start;
+  if it logs `disabled: box backend lacks exec/ttl capabilities` you are
+  on the Kubernetes backend, which cannot run the door.
+
+### Sentinel
+
+Set the two Terraform variables and apply:
+
+```hcl
+anon_door_addr  = "0.0.0.0:2022"            # dev: second port on the existing IP
+# anon_door_addr = "<door ip>:22"           # prod: a dedicated IP, with new.<domain> pointing at it
+anon_daemon_url = "http://<anon daemon private ip>:8080"
+```
+
+The startup script's metadata reconcile installs `sshpiper-anon.service`
+(chain: `ssh-session-plugin → anon-door-plugin → failtoban`) within six
+hours — run `/usr/local/bin/reconcile-sshpiper-anon-service.sh` on the
+sentinel to apply it now — and removes the unit when the variable is
+cleared. The door plugin signs its daemon calls with the sentinel's
+existing `CONTAINARIUM_SENTINEL_AUTH_SECRET` / signing key; no new secret.
+
+### Operating it
+
+```bash
+containarium anon status                      # door open/closed, limits, bans
+containarium anon disable --message "closed for maintenance"
+containarium anon enable
+containarium anon ban SHA256:<fingerprint>    # refuse one key
+containarium anon list                        # live anonymous boxes
+containarium anon claim <token> --tenant <u>  # bind a box to a tenant (the cloud control plane calls the same RPC)
+```
+
+Every step of a key's journey is an `EVENT_TYPE_ANON_*` event on the event
+stream and a `containarium_anon_<step>_total` counter in VictoriaMetrics;
+the design doc has the three dashboard queries. Unclaimed anonymous boxes
+cannot be exposed or routed; claiming lifts that and the TTL.
+
 ## Complete Workflow Summary
 
 ```

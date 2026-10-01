@@ -191,7 +191,7 @@ func TestHTTPCreateContainer_SendsRegion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewHTTPClient: %v", err)
 	}
-	if _, err := c.CreateContainer("alice", "img", "1", "1GB", "10GB", nil, false, "", nil, 0, false, "", "", GitSourceOpts{}, 0, 0, 0, "", EncryptionOpts{}, "", "", "us-east"); err != nil {
+	if _, err := c.CreateContainer("alice", "img", "1", "1GB", "10GB", nil, false, "", nil, 0, 0, false, "", "", GitSourceOpts{}, 0, 0, 0, "", EncryptionOpts{}, "", "", "us-east"); err != nil {
 		t.Fatalf("CreateContainer: %v", err)
 	}
 	if gotBody["region"] != "us-east" {
@@ -215,7 +215,7 @@ func TestHTTPCreateContainer_EmptyRegionOmitted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewHTTPClient: %v", err)
 	}
-	if _, err := c.CreateContainer("alice", "img", "1", "1GB", "10GB", nil, false, "", nil, 0, false, "", "", GitSourceOpts{}, 0, 0, 0, "", EncryptionOpts{}, "", "", ""); err != nil {
+	if _, err := c.CreateContainer("alice", "img", "1", "1GB", "10GB", nil, false, "", nil, 0, 0, false, "", "", GitSourceOpts{}, 0, 0, 0, "", EncryptionOpts{}, "", "", ""); err != nil {
 		t.Fatalf("CreateContainer: %v", err)
 	}
 	if _, present := gotBody["region"]; present {
