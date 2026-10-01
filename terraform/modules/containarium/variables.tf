@@ -460,3 +460,28 @@ variable "zfs_encryption_keyfile" {
   type        = string
   default     = ""
 }
+
+# Anonymous-box door (`ssh new.<domain>`, docs/architecture/ssh-new-anonymous-box.md).
+# Both empty (default) = no door: no second sshpiperd unit is installed, and
+# an already-installed one is disabled and removed on the next reconcile.
+variable "anon_door_addr" {
+  description = "Listen address for the anonymous-box door's own sshpiperd, as host:port. Production uses a dedicated IP on :22 (`<door ip>:22`, with new.<domain> pointing at it); a dev sentinel with no spare IP uses a second port on the existing one (`0.0.0.0:2022`). Empty = door disabled."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.anon_door_addr == "" || can(regex("^[^:]+:[0-9]+$", var.anon_door_addr))
+    error_message = "anon_door_addr must be host:port (e.g. 0.0.0.0:2022) or empty."
+  }
+}
+
+variable "anon_daemon_url" {
+  description = "REST base URL of the anon-pool daemon the door creates boxes on (the dedicated pool=anon backend started with CONTAINARIUM_ANON_DOOR=enable), e.g. http://<private ip>:8080. Required when anon_door_addr is set."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.anon_daemon_url == "" || can(regex("^https?://", var.anon_daemon_url))
+    error_message = "anon_daemon_url must start with http:// or https://, or be empty."
+  }
+}
