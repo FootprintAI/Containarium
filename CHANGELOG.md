@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.94.0] - 2026-10-01
+
 ### Added
 
 - Anonymous-box claim (#2199): `ClaimAnonymousBox` redeems the single-use
@@ -92,6 +94,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   live address at start-up, on container events and every minute, and rewrites
   it only on drift, logging both values. The daemon owns the whole value, so a hand edit is restored. It
   never writes when core-caddy's address cannot be established. (#2188)
+
+### Internal
+
+- `testdata/client_command_tree.golden`: add `claim` and `anon claim`, the
+  two client-safe command paths #2199 added, to the #1778 client/server-split
+  allow-list — the gate had been red on `main` since that merge. (#2217)
 
 ## [0.93.1] - 2026-09-30
 
