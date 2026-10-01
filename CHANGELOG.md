@@ -31,6 +31,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with `--anon-*` daemon flags; and `AddRoute` / `AddPassthroughRoute`
   refuse an unclaimed anonymous box. Reconnects are never rate-limited.
 
+### Documentation
+
+- Anonymous-box door (#2203): SECURITY-FAQ states the tier is VM-isolated
+  (and that the email-signup free tier is not), the Terraform module README
+  lists `anon_door_addr` / `anon_daemon_url`, and the deployment guide gains
+  the anon-pool backend prerequisites (KVM, nftables, disk), `--anon-*` flags
+  and operator verbs.
+
 ## [0.94.0] - 2026-10-01
 
 ### Added
