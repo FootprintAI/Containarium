@@ -4,7 +4,13 @@ agent get
 agent list
 agent run
 agent worker
+anon ban
 anon claim
+anon disable
+anon enable
+anon list
+anon status
+anon unban
 app delete
 app deploy
 app get

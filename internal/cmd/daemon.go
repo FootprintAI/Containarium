@@ -53,6 +53,12 @@ var (
 	postgresConnString     string
 	baseDomain             string
 	anonClaimURLBase       string
+	anonMaxBoxes           int
+	anonKeyCreatesPer10    int
+	anonKeyBurst           int
+	anonIPCreatesPer10     int
+	anonIPBurst            int
+	anonDoorStatePath      string
 	caddyAdminURL          string
 	caddyCertDir           string
 	alertWebhookURL        string
@@ -157,6 +163,12 @@ func init() {
 	daemonCmd.Flags().BoolVar(&enableAppHosting, "app-hosting", false, "Enable app hosting feature (requires PostgreSQL)")
 	daemonCmd.Flags().StringVar(&postgresConnString, "postgres", "", "PostgreSQL connection string for app hosting (e.g., postgres://user:pass@host:5432/db)")
 	daemonCmd.Flags().StringVar(&baseDomain, "base-domain", "example.org", "Base domain for app subdomains (e.g., example.org)")
+	daemonCmd.Flags().IntVar(&anonMaxBoxes, "anon-max-boxes", 0, "Anonymous-box door: cap on live unclaimed boxes on this daemon (0 = default 20)")
+	daemonCmd.Flags().IntVar(&anonKeyCreatesPer10, "anon-key-creates-per-10min", 0, "Anonymous-box door: box creates allowed per key per 10 minutes (0 = default 1)")
+	daemonCmd.Flags().IntVar(&anonKeyBurst, "anon-key-burst", 0, "Anonymous-box door: creation burst per key (0 = default 2)")
+	daemonCmd.Flags().IntVar(&anonIPCreatesPer10, "anon-ip-creates-per-10min", 0, "Anonymous-box door: box creates allowed per source IP per 10 minutes (0 = default 6)")
+	daemonCmd.Flags().IntVar(&anonIPBurst, "anon-ip-burst", 0, "Anonymous-box door: creation burst per source IP (0 = default 6)")
+	daemonCmd.Flags().StringVar(&anonDoorStatePath, "anon-door-state", "", "Anonymous-box door: file persisting the kill switch and bans (default /var/lib/containarium/anon-door.json; a malformed file closes the door)")
 	daemonCmd.Flags().StringVar(&anonClaimURLBase, "anon-claim-url-base", "", "Anonymous-box door only (CONTAINARIUM_ANON_DOOR=enable): URL the guest's claim-url file points at, e.g. https://<cloud-domain>/claim — the token is appended as ?token=…. Empty = the bare token is written and `containarium claim` prints it with a note (#2199).")
 	daemonCmd.Flags().StringVar(&caddyAdminURL, "caddy-admin-url", "", "Caddy admin API URL for reverse proxy configuration (leave empty for auto-setup with --app-hosting)")
 	daemonCmd.Flags().StringVar(&caddyCertDir, "caddy-cert-dir", "/var/lib/caddy/.local/share/caddy", "Caddy certificate directory (for sentinel cert sync via /certs endpoint)")
@@ -601,18 +613,22 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	// Create dual server config
 	config := &server.DualServerConfig{
-		GRPCAddress:            daemonAddress,
-		GRPCPort:               daemonPort,
-		EnableMTLS:             enableMTLS,
-		CertsDir:               daemonCertsDir,
-		HTTPPort:               daemonHTTPPort,
-		EnableREST:             enableREST,
-		JWTSecret:              finalJWTSecret,
-		SwaggerDir:             swaggerDir,
-		EnableAppHosting:       enableAppHosting,
-		PostgresConnString:     postgresConnString,
-		BaseDomain:             baseDomain,
-		AnonClaimURLBase:       anonClaimURLBase,
+		GRPCAddress:        daemonAddress,
+		GRPCPort:           daemonPort,
+		EnableMTLS:         enableMTLS,
+		CertsDir:           daemonCertsDir,
+		HTTPPort:           daemonHTTPPort,
+		EnableREST:         enableREST,
+		JWTSecret:          finalJWTSecret,
+		SwaggerDir:         swaggerDir,
+		EnableAppHosting:   enableAppHosting,
+		PostgresConnString: postgresConnString,
+		BaseDomain:         baseDomain,
+		AnonClaimURLBase:   anonClaimURLBase,
+		AnonDoor: server.AnonDoorOptions{
+			MaxBoxes: anonMaxBoxes, KeyCreatesPer10: anonKeyCreatesPer10, KeyBurst: anonKeyBurst,
+			IPCreatesPer10: anonIPCreatesPer10, IPBurst: anonIPBurst, StatePath: anonDoorStatePath,
+		},
 		CaddyAdminURL:          caddyAdminURL,
 		HostIP:                 hostIPFromCIDR(networkSubnet),
 		DaemonConfigStore:      daemonConfigStore,
