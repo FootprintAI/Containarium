@@ -29,9 +29,9 @@ Two new pieces, both Go, plus small generalisations of existing ones:
 2. **`anonbox`** — a daemon-side manager behind a new
    `AnonymousBoxService`. It owns the fingerprint → box mapping, the
    caps, rate limits, global cap, kill switch, bans, the claim token, and
-   the expiry warner. Its state lives in Incus instance config keys
-   (`user.containarium.anon.*`), the same place TTL and auto-sleep state
-   already live — no new database.
+   the expiry warner. Its state lives in the box's own labels
+   (`anon.*`, i.e. `user.containarium.label.anon.*` in Incus), the same
+   mechanism every other per-box fact rides on — no new database.
 
 ```mermaid
 flowchart LR
@@ -46,14 +46,14 @@ flowchart LR
     subgraph B["backend daemon (pool=anon, KVM host)"]
         A["AnonymousBoxService<br/>internal/anonbox"]
         A --> M["container.Manager<br/>isolation=VM"]
-        A --> NP["netpolicy: dns/80/443 only"]
+        A --> NP["Incus NIC ACL: egress dns/80/443 only"]
         A --> RL["ratelimit: per-fp, per-ip"]
         M --> V["Incus VM anon-&lt;fp8&gt;<br/>ttl_expires_at, anon.* keys"]
         T["ttlsweeper (existing)"] -.reaps.-> V
         W["anonbox.Warner<br/>wall at T-10m / T-1m"] -.exec.-> V
     end
 
-    D -->|"pipe → V.ip:22, user ubuntu"| V
+    D -->|"pipe → V.ip:22, user anon-&lt;fp8&gt;"| V
 
     U2["developer in box:<br/>containarium claim"] -->|prints claim URL| C
 
@@ -75,21 +75,26 @@ flowchart LR
    - kill switch off? → `FailedPrecondition` → `anondoor` rejects auth with
      the operator's message.
    - fingerprint banned? → `PermissionDenied`.
-   - existing live box for this fingerprint (by
-     `user.containarium.anon.fingerprint` label)? → return it (reconnect).
+   - existing live box for this fingerprint (by the `anon.fingerprint`
+     label)? → return it (reconnect).
    - rate limits (per-fp, per-ip) and global cap → `ResourceExhausted`
      with the "slow down" / "we're full" message.
    - otherwise create: `container.Manager.Create` with `Isolation: VM`,
      `pool: anon`, fixed CPU/RAM/disk, `ttl_seconds`, the user's key as
      the only authorized key, labels
      `anon.fingerprint`, `anon.created_at`, `anon.claim_token_id`;
-     then `SetNetworkPolicy` (allow DNS, 80, 443; deny rest); then write
-     `/etc/containarium/claim-url` and the banner (`/etc/motd.d/anon`)
-     into the guest via the existing `WriteFile` exec path.
-4. `anondoor` returns an upstream pipe `host=<vm-ip>:22 user=ubuntu
-   private_key=<sentinel upstream key>` — identical shape to the yaml
-   pipes `renderSSHPiperConfig` emits today. The VM is seeded with the
-   sentinel upstream public key exactly like LXC boxes are.
+     then attach the **Incus NIC egress ACL** (allow DNS, 80, 443; the
+     NIC's default egress action drops the rest — see Guardrails for why
+     not `SetNetworkPolicy`); then write `/etc/containarium/claim-url`
+     and the banner (`/etc/update-motd.d/50-containarium-anon`) into the
+     guest via the existing `WriteFile` exec path.
+4. `anondoor` returns an upstream pipe `host=<vm-ip>:22
+   user=<ssh_user from the response>` with the sentinel upstream key —
+   identical shape to the yaml pipes `renderSSHPiperConfig` emits today.
+   `ssh_user` is the box's tenant-named login (`anon-<fp8>`), seeded by
+   the normal create path like every other box (decision on #2197: no
+   `ubuntu` special case). The VM is seeded with the sentinel upstream
+   public key exactly like LXC boxes are.
 5. The SSH client prints nothing during step 3 (auth is in flight); the
    cold VM boot is what the PRD's p50 ≤ 30 s measures. The warm pool is
    P1 and slots in at step 3's "create" without changing any contract.
@@ -117,10 +122,10 @@ grace.
    new tenant's identity, calls `ClaimAnonymousBox{token, tenant,
    authorized_keys}` on the daemon through its ossshim.
 4. `anonbox.Claim` verifies the HMAC and expiry, then does a
-   compare-and-set on `user.containarium.anon.claimed_at` (empty → now):
+   compare-and-set on the `anon.claimed_at` label (empty → now):
    a second redeem fails with `AlreadyExists`. On success it sets
-   `user.containarium.tenant=<tenant>`, clears `ttl_expires_at`, removes
-   the anon network policy (the plan's default takes over), creates the
+   `user.containarium.tenant=<tenant>`, clears `ttl_expires_at`, detaches
+   the anon egress ACL (the plan's default takes over), creates the
    jump-server account via the normal path, and emits `claim_completed`.
    The box keeps its name and disk.
 
@@ -130,13 +135,13 @@ grace.
 |---|---|---|
 | vCPU / RAM / disk caps | fixed `AnonymousBoxConfig` in daemon config; passed to `Create` | config plumbing yes, values new |
 | TTL | `ttl_seconds` at birth + `ttlsweeper` (lists `InstanceTypeAny`, so VMs are reaped) | yes |
-| Egress deny-by-default | `SetNetworkPolicy` with allow `udp/53, tcp/53, tcp/80, tcp/443` | yes (`network_policy.proto`) |
+| Egress deny-by-default | One shared Incus network ACL (`containarium-anon-egress`: allow `udp/53, tcp/53, tcp/80, tcp/443`) attached to the VM's instance-local NIC with `security.acls.default.egress.action=drop` (+ logged) — the same `EnsureNICDevice`/`SetDeviceConfig` path the core-infra guard uses. **Not** `SetNetworkPolicy`: that model allows by CIDR/domain only (no port allow-list, one deny slot per CIDR) and hooks container veths, so it can neither express this rule nor see a VM NIC. Requires the nftables firewall driver on the anon host (`coreguard.ErrUnsupportedFirewall`; checked by the spike) | yes (`pkg/core/incus/acl.go`) |
 | No expose / routes | `ExposePort`, route RPCs check `anon.fingerprint` label and return `FailedPrecondition` until claimed | new guard, 1 check |
 | Per-fp / per-ip rate limit | `internal/sandbox/ratelimit.Limiter`, two instances keyed by fp hash and source IP | yes, reused |
 | Global cap | count of live instances with `anon.fingerprint` label ≥ cap → reject | new |
 | Kill switch, bans | `SetAnonymousDoorConfig` RPC (admin scope) → persisted to `/var/lib/containarium/anon-door.json`, in-memory copy; CLI `containarium anon disable|enable|ban|unban` | new |
 | Isolation | `Isolation: VM` hard-coded in `anonbox`; a test asserts the created instance type | new |
-| Placement | `pool: "anon"`; only daemons started with `--pool=anon` (KVM-capable, no core LXCs) accept these creates | yes (`pool` field) |
+| Placement | `pool: "anon"`; only daemons started with `--pool=anon` (KVM-capable, no core LXCs) accept these creates. Decision on #2204: the anon pool is a dedicated cloud spot VM with nested virtualization on an Intel family, VM root disks on their own data disk, a startup-script version pin, and a place on the sentinel's `--watch-spot-vm` list. A preemption destroys every live anonymous box — accepted for a 4 h trial tier; the banner says so and the funnel counts it (`ANON_LOST_PREEMPTION`) | yes (`pool` field) |
 
 ### VM generalisation
 
@@ -144,11 +149,14 @@ grace.
 `isWindows`. This design lifts that into an explicit, typed request field:
 
 - proto: `enum IsolationType { ISOLATION_TYPE_UNSPECIFIED; ISOLATION_TYPE_CONTAINER; ISOLATION_TYPE_VM; }` and
-  `IsolationType isolation = 23;` on `CreateContainerRequest`.
-  `UNSPECIFIED` keeps today's behaviour (Windows → VM, else container).
+  `IsolationType isolation = 27;` on `CreateContainerRequest` (23 was
+  already `gpus`), `isolation = 29` on `Container`.
+  `UNSPECIFIED` keeps today's behaviour (Windows → VM, else container);
+  Windows + `CONTAINER` is `InvalidArgument`; the K8s backend rejects `VM`.
 - `CreateOptions.Isolation`; the Windows branch becomes "Windows implies
-  VM" plus the shared VM branch (no nesting, no privileged podman,
-  minimum resources).
+  VM" plus the shared VM branch (no nesting, no privileged podman;
+  Windows keeps its minimum resources, Linux VMs keep the caller's).
+  Shipped in #2196.
 - Linux VM image: `images:ubuntu/24.04/cloud` (the `cloud` variant ships
   the `incus-agent`, which the identity-seeding `Exec`/`WriteFile` path
   depends on). `bake.go` already produces per-host baked images; a baked
@@ -257,15 +265,16 @@ client methods in `internal/client/{grpc.go,http.go}`.
 
 ### `container.proto` change
 
-`IsolationType` enum + `isolation = 23` on `CreateContainerRequest`, as
-above. `Container` message gains `IsolationType isolation` so `list` and
+`IsolationType` enum + `isolation = 27` on `CreateContainerRequest`, as
+above. `Container` gains `IsolationType isolation = 29` so `list` and
 the e2e assertion can read it back without inspecting Incus.
 
 ### `events.proto` change
 
 `EventType` gains `ANON_CONNECT, ANON_SHELL_READY, ANON_RECONNECT,
 ANON_CLAIM_LINK_ISSUED, ANON_CLAIM_COMPLETED, ANON_EXPIRED,
-ANON_KILLED_ABUSE, ANON_REJECTED_CAPACITY, ANON_REJECTED_RATELIMIT`, and
+ANON_KILLED_ABUSE, ANON_REJECTED_CAPACITY, ANON_REJECTED_RATELIMIT,
+ANON_LOST_PREEMPTION`, and
 `Event` carries `fingerprint_hash` (sha256 of the fingerprint, never the
 raw key) for the anon events. Prometheus counters
 `containarium_anon_<event>_total` and a histogram
@@ -273,16 +282,23 @@ raw key) for the anon events. Prometheus counters
 call sites; the dashboard query for the PRD's three metrics is a
 VictoriaMetrics query over those, no join needed.
 
-### Instance config keys (daemon ↔ Incus, the state store)
+### Box labels (daemon ↔ Incus, the state store)
 
-| key | value |
+Ordinary labels (`user.containarium.label.<key>` in Incus), so
+`BoxStatus.Labels` carries them back on every List/Get with no new read
+path. Constants in `internal/anonbox`.
+
+| label key | value |
 |---|---|
-| `user.containarium.anon.fingerprint` | `SHA256:…` (the lookup key; one live instance per value) |
-| `user.containarium.anon.fp_hash` | sha256 hex of the fingerprint (what events carry) |
-| `user.containarium.anon.created_at` | RFC3339 |
-| `user.containarium.anon.claim_token_id` | random 16 B hex, embedded in the token |
-| `user.containarium.anon.claimed_at` | empty until claimed; CAS target |
-| `user.containarium.anon.source_ip` | retained for abuse handling, 30 d via TTL anyway |
+| `anon.fingerprint` | `SHA256:…` (the lookup key; one live instance per value) |
+| `anon.fp_hash` | sha256 hex of the fingerprint (what events carry) |
+| `anon.created_at` | RFC3339 |
+| `anon.claim_token_id` | random 16 B hex, embedded in the token |
+| `anon.claimed_at` | empty until claimed; CAS target |
+| `anon.source_ip` | retained for abuse handling, dies with the box |
+
+The login name is `anon-<first 8 hex of sha256(fingerprint)>` — stable,
+a valid Linux username, not reversible to the key.
 
 ### Claim token
 
