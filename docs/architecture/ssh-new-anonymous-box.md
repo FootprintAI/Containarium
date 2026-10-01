@@ -274,13 +274,59 @@ the e2e assertion can read it back without inspecting Incus.
 `EventType` gains `ANON_CONNECT, ANON_SHELL_READY, ANON_RECONNECT,
 ANON_CLAIM_LINK_ISSUED, ANON_CLAIM_COMPLETED, ANON_EXPIRED,
 ANON_KILLED_ABUSE, ANON_REJECTED_CAPACITY, ANON_REJECTED_RATELIMIT,
-ANON_LOST_PREEMPTION`, and
-`Event` carries `fingerprint_hash` (sha256 of the fingerprint, never the
-raw key) for the anon events. Prometheus counters
-`containarium_anon_<event>_total` and a histogram
-`containarium_anon_time_to_shell_seconds` are emitted from the same
-call sites; the dashboard query for the PRD's three metrics is a
-VictoriaMetrics query over those, no join needed.
+ANON_REJECTED_DOOR, ANON_LOST_PREEMPTION` (60–70), `ResourceType` gains
+`ANON_BOX`, `Event` carries a top-level `fingerprint_hash` (sha256 of the
+fingerprint, never the raw key) and an `AnonEvent` payload (box, hash,
+reason, seconds). Shipped in #2201.
+
+Where each is emitted (all from `internal/anonbox` through the `Funnel`
+seam; the server's `anonFunnelSink` turns a step into the event **and**
+the metric from the same call, so they cannot disagree):
+
+| step | when |
+|---|---|
+| `connect` | a key knocked (`Ensure` entry, before any decision) |
+| `rejected_door` | door closed or key banned (#2200) |
+| `reconnect` | an existing box was handed back |
+| `rejected_ratelimit` / `rejected_capacity` | the #2200 limits refused a create |
+| `shell_ready` | a new box is provisioned; carries knock→ready seconds |
+| `claim_link_issued` | the claim-url was written into the guest |
+| `claim_completed` | `Claim` succeeded |
+| `expired` / `killed_abuse` | `Manager.Observe` (1-minute ticker) saw a box disappear after / before its TTL. The daemon cannot see its own host die: |
+| `lost_preemption` | emitted by the sentinel's spot-VM watcher, not the daemon (follow-up to #2195) |
+
+Metrics are OTel instruments on the daemon's `containarium` meter —
+`containarium.anon.<step>_total` counters and the
+`containarium.anon.time_to_shell_seconds` histogram — which the core OTel
+collector → VictoriaMetrics path renders as
+`containarium_anon_<step>_total` / `containarium_anon_time_to_shell_seconds_bucket`.
+
+#### Funnel queries (the PRD's three success metrics)
+
+```promql
+# 1. Trial → claimed, over the last 4 weeks (keys that claimed ÷ keys that reached a shell).
+#    Counters count events, not distinct keys; shell_ready fires once per NEW box, so it
+#    approximates "distinct keys that got a shell" up to re-creates after expiry.
+sum(increase(containarium_anon_claim_completed_total[4w]))
+  / sum(increase(containarium_anon_shell_ready_total[4w]))
+
+# 2. Time to shell, p50 and p95 over 24h.
+histogram_quantile(0.50, sum(rate(containarium_anon_time_to_shell_seconds_bucket[24h])) by (le))
+histogram_quantile(0.95, sum(rate(containarium_anon_time_to_shell_seconds_bucket[24h])) by (le))
+
+# 3. Abuse rate: boxes killed before their TTL ÷ boxes created, last 4 weeks.
+sum(increase(containarium_anon_killed_abuse_total[4w]))
+  / sum(increase(containarium_anon_shell_ready_total[4w]))
+
+# Door health, for the #2200 guardrails: refusals by reason over 1h.
+sum(increase(containarium_anon_rejected_door_total[1h]))
+sum(increase(containarium_anon_rejected_ratelimit_total[1h]))
+sum(increase(containarium_anon_rejected_capacity_total[1h]))
+```
+
+For per-key journeys (did *this* key claim?), subscribe to the event
+stream and join on `fingerprint_hash`; the counters are deliberately
+unlabelled by key so cardinality stays flat.
 
 ### Box labels (daemon ↔ Incus, the state store)
 
