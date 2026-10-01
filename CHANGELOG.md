@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `AnonymousBoxService` (#2197) — the daemon side of the `ssh new.<domain>`
+  door: `EnsureAnonymousBox` resolves or creates an Incus **VM** per SSH-key
+  fingerprint (fixed 2 vCPU / 4 GB / 20 GB, 4 h TTL, egress limited to
+  DNS/HTTP/HTTPS by an Incus NIC ACL, login banner + claim-url in the guest),
+  reuses a live box on reconnect, and reports an expired one. Scopes
+  `anon:door` / `anon:admin`; typed gRPC + HTTP client methods; opt-in with
+  `CONTAINARIUM_ANON_DOOR=enable` on an LXC backend. `ClaimAnonymousBox` and
+  `SetAnonymousDoorConfig` are registered but land with #2199 / #2200.
+
 - `IsolationType` on `CreateContainerRequest` / `Container` and
   `containarium create --isolation container|vm`: a Linux box can now be an
   Incus VM (own kernel), not only Windows. Unspecified keeps today's rule

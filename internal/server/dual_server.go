@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/footprintai/containarium/internal/alert"
+	"github.com/footprintai/containarium/internal/anonbox"
 	"github.com/footprintai/containarium/internal/app"
 	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/auth"
@@ -1866,6 +1867,30 @@ skipAppHosting:
 			Bridge:     "incusbr0",
 			BridgeCIDR: networkCIDR,
 		})
+	}
+
+	// AnonymousBoxService (#2197): the daemon side of the `ssh new.<domain>`
+	// door. Opt-in — only the dedicated pool=anon backend runs it — and only
+	// over an LXC box backend: the manager needs exec + TTL capabilities and
+	// the Incus NIC ACL path for its egress guard, neither of which a K8s
+	// backend offers. Limits are the fixed defaults until #2200 adds flags.
+	if os.Getenv("CONTAINARIUM_ANON_DOOR") == "enable" {
+		anonBoxes, ok := containerServer.BoxBackend().(anonbox.Boxes)
+		switch {
+		case !ok:
+			log.Printf("AnonymousBox service disabled: box backend lacks exec/ttl capabilities (K8s?)")
+		case networkIncusClient == nil:
+			log.Printf("AnonymousBox service disabled: no incus client for NIC ACLs")
+		default:
+			anonLimits := anonbox.DefaultLimits()
+			anonMgr := anonbox.New(anonBoxes, networkIncusClient, anonbox.Config{
+				Limits:    anonLimits,
+				NICDevice: "eth0",
+				Bridge:    "incusbr0",
+			})
+			pb.RegisterAnonymousBoxServiceServer(grpcServer, NewAnonymousBoxServer(anonMgr, anonBoxes, anonLimits))
+			log.Printf("AnonymousBox service enabled (VM per key, %s vCPU / %s / %s, ttl %s)", anonLimits.CPU, anonLimits.Memory, anonLimits.Disk, anonLimits.TTL)
+		}
 	}
 
 	// Background threat-detection sentry (#1640): built independent of

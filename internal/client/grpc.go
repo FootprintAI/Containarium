@@ -29,6 +29,7 @@ type GRPCClient struct {
 	crewClient    pb.CrewServiceClient
 	clusterClient pb.ClusterServiceClient
 	sandboxClient pb.SandboxServiceClient
+	anonClient    pb.AnonymousBoxServiceClient
 	trackerClient pb.TrackerServiceClient
 	// modelGatewayClient is the model gateway's admin + mint surface (#1726).
 	modelGatewayClient pb.ModelGatewayServiceClient
@@ -95,6 +96,7 @@ func NewGRPCClient(serverAddr string, certsDir string, insecureConn bool) (*GRPC
 	crewClient := pb.NewCrewServiceClient(conn)
 	clusterClient := pb.NewClusterServiceClient(conn)
 	sandboxClient := pb.NewSandboxServiceClient(conn)
+	anonClient := pb.NewAnonymousBoxServiceClient(conn)
 	trackerClient := pb.NewTrackerServiceClient(conn)
 	modelGatewayClient := pb.NewModelGatewayServiceClient(conn)
 
@@ -111,6 +113,7 @@ func NewGRPCClient(serverAddr string, certsDir string, insecureConn bool) (*GRPC
 		crewClient:         crewClient,
 		clusterClient:      clusterClient,
 		sandboxClient:      sandboxClient,
+		anonClient:         anonClient,
 		trackerClient:      trackerClient,
 		modelGatewayClient: modelGatewayClient,
 	}, nil
@@ -1753,4 +1756,41 @@ func (c *GRPCClient) CreateTrackerIssue(req *pb.CreateTrackerIssueRequest) (*pb.
 		return nil, fmt.Errorf("create tracker issue: %w", err)
 	}
 	return resp.Issue, nil
+}
+
+// --- AnonymousBoxService (#2197) ---------------------------------------
+
+// EnsureAnonymousBox resolves or creates the anonymous VM for a key.
+func (c *GRPCClient) EnsureAnonymousBox(req *pb.EnsureAnonymousBoxRequest) (*pb.EnsureAnonymousBoxResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute) // a cold VM boot
+	defer cancel()
+	return c.anonClient.EnsureAnonymousBox(ctx, req)
+}
+
+// ClaimAnonymousBox binds an anonymous box to a tenant via its claim token.
+func (c *GRPCClient) ClaimAnonymousBox(req *pb.ClaimAnonymousBoxRequest) (*pb.ClaimAnonymousBoxResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	return c.anonClient.ClaimAnonymousBox(ctx, req)
+}
+
+// GetAnonymousDoorConfig returns the door's state and fixed limits.
+func (c *GRPCClient) GetAnonymousDoorConfig() (*pb.AnonymousDoorConfig, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return c.anonClient.GetAnonymousDoorConfig(ctx, &pb.GetAnonymousDoorConfigRequest{})
+}
+
+// SetAnonymousDoorConfig flips the kill switch / edits bans.
+func (c *GRPCClient) SetAnonymousDoorConfig(cfg *pb.AnonymousDoorConfig) (*pb.AnonymousDoorConfig, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return c.anonClient.SetAnonymousDoorConfig(ctx, &pb.SetAnonymousDoorConfigRequest{Config: cfg})
+}
+
+// ListAnonymousBoxes lists every live anonymous box on the daemon.
+func (c *GRPCClient) ListAnonymousBoxes() (*pb.ListAnonymousBoxesResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return c.anonClient.ListAnonymousBoxes(ctx, &pb.ListAnonymousBoxesRequest{})
 }
