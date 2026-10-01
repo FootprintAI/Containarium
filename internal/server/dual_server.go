@@ -87,7 +87,11 @@ type DualServerConfig struct {
 	EnableAppHosting   bool
 	PostgresConnString string
 	BaseDomain         string
-	CaddyAdminURL      string
+	// AnonClaimURLBase is prefixed to anonymous-box claim tokens as
+	// "<base>?token=…" in the guest's claim-url file (#2199), e.g.
+	// https://<cloud-domain>/claim. Empty = the bare token is written.
+	AnonClaimURLBase string
+	CaddyAdminURL    string
 
 	// Route sync settings
 	RouteSyncInterval time.Duration // Interval for syncing routes to Caddy (default 5s)
@@ -1887,8 +1891,14 @@ skipAppHosting:
 				Limits:    anonLimits,
 				NICDevice: "eth0",
 				Bridge:    "incusbr0",
+				// The claim secret is re-derived from the daemon's signing
+				// key per box — nothing to persist, rotates with the key.
+				ClaimSecret:  func(boxName string) string { return tokenManager.DeriveSharedSecret("anon-claim", boxName) },
+				ClaimURLBase: config.AnonClaimURLBase,
 			})
-			pb.RegisterAnonymousBoxServiceServer(grpcServer, NewAnonymousBoxServer(anonMgr, anonBoxes, anonLimits))
+			anonServer := NewAnonymousBoxServer(anonMgr, anonBoxes, anonLimits)
+			anonServer.SetClaimer(anonMgr)
+			pb.RegisterAnonymousBoxServiceServer(grpcServer, anonServer)
 			log.Printf("AnonymousBox service enabled (VM per key, %s vCPU / %s / %s, ttl %s)", anonLimits.CPU, anonLimits.Memory, anonLimits.Disk, anonLimits.TTL)
 		}
 	}

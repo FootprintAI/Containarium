@@ -52,6 +52,7 @@ var (
 	enableAppHosting       bool
 	postgresConnString     string
 	baseDomain             string
+	anonClaimURLBase       string
 	caddyAdminURL          string
 	caddyCertDir           string
 	alertWebhookURL        string
@@ -156,6 +157,7 @@ func init() {
 	daemonCmd.Flags().BoolVar(&enableAppHosting, "app-hosting", false, "Enable app hosting feature (requires PostgreSQL)")
 	daemonCmd.Flags().StringVar(&postgresConnString, "postgres", "", "PostgreSQL connection string for app hosting (e.g., postgres://user:pass@host:5432/db)")
 	daemonCmd.Flags().StringVar(&baseDomain, "base-domain", "example.org", "Base domain for app subdomains (e.g., example.org)")
+	daemonCmd.Flags().StringVar(&anonClaimURLBase, "anon-claim-url-base", "", "Anonymous-box door only (CONTAINARIUM_ANON_DOOR=enable): URL the guest's claim-url file points at, e.g. https://<cloud-domain>/claim — the token is appended as ?token=…. Empty = the bare token is written and `containarium claim` prints it with a note (#2199).")
 	daemonCmd.Flags().StringVar(&caddyAdminURL, "caddy-admin-url", "", "Caddy admin API URL for reverse proxy configuration (leave empty for auto-setup with --app-hosting)")
 	daemonCmd.Flags().StringVar(&caddyCertDir, "caddy-cert-dir", "/var/lib/caddy/.local/share/caddy", "Caddy certificate directory (for sentinel cert sync via /certs endpoint)")
 
@@ -610,6 +612,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		EnableAppHosting:       enableAppHosting,
 		PostgresConnString:     postgresConnString,
 		BaseDomain:             baseDomain,
+		AnonClaimURLBase:       anonClaimURLBase,
 		CaddyAdminURL:          caddyAdminURL,
 		HostIP:                 hostIPFromCIDR(networkSubnet),
 		DaemonConfigStore:      daemonConfigStore,

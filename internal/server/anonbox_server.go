@@ -27,6 +27,11 @@ type AnonEnsurer interface {
 	Ensure(ctx context.Context, req anonbox.EnsureRequest) (*anonbox.EnsureResult, error)
 }
 
+// AnonClaimer is the slice of anonbox.Manager that redeems a claim token.
+type AnonClaimer interface {
+	Claim(ctx context.Context, req anonbox.ClaimRequest) (*anonbox.ClaimResult, error)
+}
+
 // AnonLister lists boxes so ListAnonymousBoxes can filter on the
 // anon.fingerprint label. Satisfied by any box.BoxBackend.
 type AnonLister interface {
@@ -41,8 +46,14 @@ type AnonymousBoxServer struct {
 	pb.UnimplementedAnonymousBoxServiceServer
 	ensurer AnonEnsurer
 	lister  AnonLister
+	claimer AnonClaimer // nil = claims not enabled on this daemon
 	limits  anonbox.Limits
 }
+
+// SetClaimer enables ClaimAnonymousBox (#2199). Without it the RPC is
+// gated but Unimplemented — a daemon without a claim secret cannot
+// verify a token.
+func (s *AnonymousBoxServer) SetClaimer(c AnonClaimer) { s.claimer = c }
 
 // NewAnonymousBoxServer wires the service over a manager and a lister.
 func NewAnonymousBoxServer(ensurer AnonEnsurer, lister AnonLister, limits anonbox.Limits) *AnonymousBoxServer {
@@ -82,12 +93,49 @@ func (s *AnonymousBoxServer) EnsureAnonymousBox(ctx context.Context, req *pb.Ens
 	return out, nil
 }
 
-// ClaimAnonymousBox — admin or anon:admin. Implemented by #2199.
-func (s *AnonymousBoxServer) ClaimAnonymousBox(ctx context.Context, _ *pb.ClaimAnonymousBoxRequest) (*pb.ClaimAnonymousBoxResponse, error) {
+// ClaimAnonymousBox — admin or anon:admin (the cloud control plane after
+// signup, or an operator via `containarium anon claim`). Redeems the
+// single-use token and binds the box to the tenant (#2199).
+func (s *AnonymousBoxServer) ClaimAnonymousBox(ctx context.Context, req *pb.ClaimAnonymousBoxRequest) (*pb.ClaimAnonymousBoxResponse, error) {
 	if err := auth.RequireRoleOrScope(ctx, auth.RoleAdmin, auth.ScopeAnonAdmin); err != nil {
 		return nil, err
 	}
-	return nil, status.Error(codes.Unimplemented, "ClaimAnonymousBox lands with #2199")
+	if s.claimer == nil {
+		return nil, status.Error(codes.Unimplemented, "claims are not enabled on this daemon")
+	}
+	if strings.TrimSpace(req.GetClaimToken()) == "" || strings.TrimSpace(req.GetTenant()) == "" {
+		return nil, status.Error(codes.InvalidArgument, "claim_token and tenant are required")
+	}
+	res, err := s.claimer.Claim(ctx, anonbox.ClaimRequest{
+		Token:          strings.TrimSpace(req.GetClaimToken()),
+		Tenant:         strings.TrimSpace(req.GetTenant()),
+		AuthorizedKeys: req.GetAuthorizedKeys(),
+	})
+	if err != nil {
+		return nil, claimErrToStatus(err)
+	}
+	return &pb.ClaimAnonymousBoxResponse{BoxName: res.BoxName, Tenant: res.Tenant}, nil
+}
+
+// claimErrToStatus: the design's codes — second redeem AlreadyExists,
+// expired FailedPrecondition, bad signature/malformed/mismatch
+// PermissionDenied, box gone NotFound, caller fault InvalidArgument.
+func claimErrToStatus(err error) error {
+	var invalid anonbox.InvalidRequestError
+	switch {
+	case errors.Is(err, anonbox.ErrClaimAlreadyClaimed):
+		return status.Error(codes.AlreadyExists, err.Error())
+	case errors.Is(err, anonbox.ErrClaimExpired):
+		return status.Error(codes.FailedPrecondition, err.Error())
+	case errors.Is(err, anonbox.ErrClaimInvalid):
+		return status.Error(codes.PermissionDenied, err.Error())
+	case errors.Is(err, anonbox.ErrClaimNotFound):
+		return status.Error(codes.NotFound, err.Error())
+	case errors.As(err, &invalid):
+		return status.Error(codes.InvalidArgument, err.Error())
+	default:
+		return status.Errorf(codes.Internal, "%v", err)
+	}
 }
 
 // GetAnonymousDoorConfig — admin or anon:admin. Until #2200 the door has

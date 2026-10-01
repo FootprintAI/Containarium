@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Anonymous-box claim (#2199): `ClaimAnonymousBox` redeems the single-use
+  token minted into every anonymous box (`/etc/containarium/claim-url`) and
+  binds the box to a tenant — TTL cleared, egress guard lifted, the tenant's
+  keys added, owner set; the box keeps its name and login and stays reachable
+  through the door. `containarium claim` (inside the box) prints the claim
+  URL or token (`--json`); `containarium anon claim <token> --tenant <u>`
+  redeems it as an admin; daemon flag `--anon-claim-url-base`. A second
+  redeem is AlreadyExists, an expired token FailedPrecondition, a bad one
+  PermissionDenied.
+
 - `containarium sentinel anon-door-plugin` (#2198) — the sshpiperd plugin
   behind `ssh new.<domain>`: on public-key auth it asks the anon-pool daemon
   for the key's box (`POST /v1/anon/boxes:ensure`, signed with the sentinel's
