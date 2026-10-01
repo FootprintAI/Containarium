@@ -80,8 +80,10 @@ func fetchContainersForSSHConfig(client API) ([]incus.ContainerInfo, error) {
 	out := make([]incus.ContainerInfo, 0, len(resp.Containers))
 	for _, c := range resp.Containers {
 		info := incus.ContainerInfo{
-			Name:  c.Name,
-			State: c.State,
+			Name:     c.Name,
+			Username: c.Username,
+			SSHHost:  c.SSHHost,
+			State:    c.State,
 		}
 		if c.Network != nil {
 			info.IPAddress = c.Network.IPAddress

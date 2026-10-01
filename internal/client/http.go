@@ -173,6 +173,7 @@ func parseResponse[T any](resp *http.Response) (*T, error) {
 type containerResponse struct {
 	Name                 string            `json:"name"`
 	Username             string            `json:"username"`
+	SSHHost              string            `json:"sshHost"`
 	State                string            `json:"state"`
 	Resources            *resourceLimits   `json:"resources"`
 	Network              *networkInfo      `json:"network"`
@@ -233,6 +234,7 @@ func containerToIncusInfo(c *containerResponse) incus.ContainerInfo {
 	info := incus.ContainerInfo{
 		Name:                 c.Name,
 		Username:             c.Username,
+		SSHHost:              c.SSHHost,
 		State:                c.State,
 		Labels:               c.Labels,
 		InstanceType:         ostype.InstanceTypeFromIsolation(pb.IsolationType(pb.IsolationType_value[c.Isolation])),

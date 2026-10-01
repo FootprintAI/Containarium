@@ -41,7 +41,8 @@ type Options struct {
 	// agent / global config.
 	IdentityFile string
 	// User overrides the per-Host User. If empty: when Sentinel is set,
-	// User=container-name (sshpiper routes); otherwise User="ubuntu".
+	// User=container-name (sshpiper routes); otherwise the container's
+	// daemon-assigned username, falling back to "ubuntu".
 	User string
 	// IncludeStopped emits Host blocks for stopped containers too. Off
 	// by default — if the container can't accept connections, an entry
@@ -102,7 +103,7 @@ func Generate(containers []incus.ContainerInfo, opts Options) Generated {
 			g.SkippedStopped++
 			continue
 		}
-		if opts.Sentinel == "" && c.IPAddress == "" {
+		if opts.Sentinel == "" && c.SSHHost == "" && c.IPAddress == "" {
 			g.SkippedNoAddr++
 			continue
 		}
@@ -128,9 +129,28 @@ func writeHost(b *strings.Builder, c incus.ContainerInfo, opts Options) {
 		}
 		fmt.Fprintf(b, "    User %s\n", user)
 	} else {
-		fmt.Fprintf(b, "    HostName %s\n", c.IPAddress)
+		// The daemon computes the SSH target per container and reports it
+		// as ssh_host (proto Container.ssh_host): the container's own IP
+		// in a direct deployment, the sentinel's public host on a hosted
+		// control plane. Use it verbatim when it is set — deriving the
+		// target from the IP instead pointed hosted users at a private
+		// address they cannot route to, while the same fleet's `list`
+		// showed the boxes fine. The IP stays the fallback for a daemon
+		// that reports no ssh_host.
+		host := c.SSHHost
+		if host == "" {
+			host = c.IPAddress
+		}
+		fmt.Fprintf(b, "    HostName %s\n", host)
 		fmt.Fprintf(b, "    Port 22\n")
+		// Username is the login the daemon assigned to this container and
+		// what its SSH front routes by; it differs from the container name
+		// wherever the control plane mints its own. "ubuntu" remains the
+		// default for a daemon that reports no username.
 		user := opts.User
+		if user == "" {
+			user = c.Username
+		}
 		if user == "" {
 			user = "ubuntu"
 		}
@@ -139,11 +159,15 @@ func writeHost(b *strings.Builder, c incus.ContainerInfo, opts Options) {
 
 	if opts.IdentityFile != "" {
 		fmt.Fprintf(b, "    IdentityFile %s\n", opts.IdentityFile)
-		// IdentitiesOnly prevents ssh-agent from trying every key it
-		// holds before the right one — useful when the user has many
-		// keys loaded and wants the file's identity to win.
-		fmt.Fprintln(b, "    IdentitiesOnly yes")
 	}
+	// IdentitiesOnly stops ssh offering every key the agent holds before
+	// the right one: sshpiper's failtoban counts each rejected offer
+	// toward its ban budget, so a user with a full agent can lock
+	// themselves out before the correct key is tried. Same reason
+	// `connect` and the MCP ssh hints pass -o IdentitiesOnly=yes. With no
+	// IdentityFile the default ~/.ssh identities still apply — only keys
+	// that live solely in the agent are excluded.
+	fmt.Fprintln(b, "    IdentitiesOnly yes")
 
 	if c.BackendID != "" {
 		fmt.Fprintf(b, "    # backend: %s\n", c.BackendID)

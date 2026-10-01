@@ -34,7 +34,9 @@ After that, ` + "`ssh <container-name>`" + ` and ` + "`scp`" + ` work transparen
 
 Two routing modes:
 
-  - Direct (default):    HostName=<container IP>; for LAN-reachable boxes.
+  - Direct (default):    HostName=<the ssh_host the daemon reports for the
+                         container>, User=<its assigned username>, falling
+                         back to the container IP and ubuntu.
   - Via sentinel:        HostName=<sentinel>, User=<container-name>;
                          sshpiper on the sentinel routes by username.
 
@@ -78,7 +80,8 @@ func init() {
 		c.Flags().StringVar(&sshConfigIdentity, "identity", "",
 			"IdentityFile to render in every Host block (omitted by default)")
 		c.Flags().StringVar(&sshConfigUser, "user", "",
-			"Override per-Host User (default: container name in sentinel mode, ubuntu in direct mode)")
+			"Override per-Host User (default: container name in sentinel mode; in direct mode the "+
+				"username the daemon assigned to the container, or ubuntu when it reports none)")
 		c.Flags().BoolVar(&sshConfigIncludeStopped, "include-stopped", false,
 			"Include stopped containers (default: only running)")
 	}

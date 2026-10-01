@@ -151,6 +151,7 @@ func (c *GRPCClient) ListContainers() ([]incus.ContainerInfo, error) {
 		info := incus.ContainerInfo{
 			Name:                 container.Name,
 			Username:             container.Username,
+			SSHHost:              container.SshHost,
 			State:                container.State.String(),
 			Labels:               container.Labels,
 			InstanceType:         ostype.InstanceTypeFromIsolation(container.Isolation),

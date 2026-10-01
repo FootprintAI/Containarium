@@ -240,3 +240,82 @@ func TestGenerate_SentinelModeRunningWithNoIPStillRenders(t *testing.T) {
 		t.Fatalf("Count=%d SkippedNoAddr=%d, want 1/0", g.Count, g.SkippedNoAddr)
 	}
 }
+
+// --- FootprintAI/Containarium#2089 ---------------------------------------
+//
+// Against a hosted control plane the generated entries pointed at each
+// container's private LAN IP with User=ubuntu, so `ssh <box>` could not
+// reach anything even though `list` showed the boxes running. The daemon
+// already reports the routable target per container (proto
+// Container.ssh_host) plus the login it routes by (username); the
+// generator ignored both, and neither remote client even carried them into
+// ContainerInfo.
+
+func TestGenerate_DirectModeUsesDaemonSSHHostAndUsername(t *testing.T) {
+	g := Generate([]incus.ContainerInfo{{
+		Name:      "alice",
+		Username:  "u-alice",
+		State:     "CONTAINER_STATE_RUNNING",
+		SSHHost:   "<cluster>.example.com",
+		IPAddress: "10.0.3.107",
+	}}, Options{})
+	if g.Count != 1 {
+		t.Fatalf("Count = %d, want 1", g.Count)
+	}
+	if !strings.Contains(g.Content, "HostName <cluster>.example.com") {
+		t.Errorf("expected the daemon-reported ssh_host as HostName:\n%s", g.Content)
+	}
+	if strings.Contains(g.Content, "10.0.3.107") {
+		t.Errorf("the container's private IP is not reachable from a client and must not be the target:\n%s", g.Content)
+	}
+	if !strings.Contains(g.Content, "User u-alice") {
+		t.Errorf("expected the daemon-assigned username as User:\n%s", g.Content)
+	}
+}
+
+func TestGenerate_DirectModeSSHHostWithoutIPStillRenders(t *testing.T) {
+	// A hosted control plane may report the SSH target without exposing
+	// the container's address at all; that box is still reachable.
+	g := Generate([]incus.ContainerInfo{{
+		Name:     "alice",
+		Username: "u-alice",
+		State:    "CONTAINER_STATE_RUNNING",
+		SSHHost:  "<cluster>.example.com",
+	}}, Options{})
+	if g.Count != 1 || g.SkippedNoAddr != 0 {
+		t.Fatalf("Count=%d SkippedNoAddr=%d, want 1/0", g.Count, g.SkippedNoAddr)
+	}
+}
+
+func TestGenerate_DirectModeFallsBackToIPWhenNoSSHHost(t *testing.T) {
+	// A local / LAN daemon reports no ssh_host, so nothing changes there.
+	g := Generate([]incus.ContainerInfo{
+		{Name: "alice", State: "Running", IPAddress: "10.0.0.10"},
+	}, Options{})
+	if !strings.Contains(g.Content, "HostName 10.0.0.10") || !strings.Contains(g.Content, "User ubuntu") {
+		t.Errorf("expected the IP/ubuntu fallback:\n%s", g.Content)
+	}
+}
+
+func TestGenerate_UserOverrideBeatsDaemonUsername(t *testing.T) {
+	g := Generate([]incus.ContainerInfo{
+		{Name: "alice", Username: "u-alice", State: "Running", IPAddress: "10.0.0.10"},
+	}, Options{User: "root"})
+	if !strings.Contains(g.Content, "User root") || strings.Contains(g.Content, "User u-alice") {
+		t.Errorf("--user must win over the daemon-reported username:\n%s", g.Content)
+	}
+}
+
+func TestGenerate_IdentitiesOnlyEmittedWithoutIdentityFile(t *testing.T) {
+	// Every rejected key offer counts toward the SSH front's failtoban
+	// budget, so the pin is not conditional on --identity.
+	g := Generate([]incus.ContainerInfo{
+		{Name: "alice", State: "Running", IPAddress: "10.0.0.10"},
+	}, Options{})
+	if !strings.Contains(g.Content, "IdentitiesOnly yes") {
+		t.Errorf("expected IdentitiesOnly in every Host block:\n%s", g.Content)
+	}
+	if strings.Contains(g.Content, "IdentityFile") {
+		t.Errorf("no IdentityFile was requested:\n%s", g.Content)
+	}
+}

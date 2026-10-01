@@ -472,7 +472,14 @@ type ContainerInfo struct {
 	// generated username at create time), and it's what the daemon's SSH
 	// front routes by — so callers doing SSH/install must use this, not the
 	// requested name. Empty when the daemon doesn't report it.
-	Username     string
+	Username string
+	// SSHHost is the host a client must SSH to in order to reach this
+	// container, as the daemon computed it (proto Container.ssh_host): the
+	// container's own IP in a direct deployment, the sentinel's public host
+	// behind a jump front. Together with Username it is the connect target
+	// `Username@SSHHost`. Empty when the daemon reports none, in which case
+	// callers fall back to IPAddress.
+	SSHHost      string
 	State        string
 	IPAddress    string
 	CPU          string

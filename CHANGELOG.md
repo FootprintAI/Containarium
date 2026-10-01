@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `ssh-config`: Host blocks now use the SSH target the daemon reports per
+  container (`ssh_host`) and the username it routes by, instead of the
+  container's own address and a hardcoded `ubuntu`. Against a hosted control
+  plane the generated entries pointed at addresses a client cannot route to,
+  so `ssh <box>` failed for every box `list` showed. Both remote clients now
+  carry `ssh_host` into `ContainerInfo`, and every block pins
+  `IdentitiesOnly yes` so a loaded ssh-agent cannot spend the SSH front's
+  failtoban budget on rejected key offers. (#2089)
+- `cli`: a `--server` with an `http://` or `https://` scheme selects the HTTP
+  transport on its own — the gRPC dialer used to be handed an HTTP origin and
+  failed with "name resolver error: produced zero addresses", so `--http` was
+  required and only discoverable from that error. `--http` stays as an
+  explicit override. (#2089)
+
 ## [0.94.0] - 2026-10-01
 
 ### Added

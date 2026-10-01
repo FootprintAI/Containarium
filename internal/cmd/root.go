@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/footprintai/containarium/internal/releases"
@@ -81,11 +82,26 @@ Examples:
 			return nil
 		}
 		serverAddr = resolveServerAddr(serverAddr)
+		// An http:// or https:// --server names an HTTP origin, which the
+		// gRPC dialer cannot resolve ("name resolver error: produced zero
+		// addresses"). The scheme already says which transport applies, so
+		// select HTTP from it and keep --http as the explicit override.
+		if !httpMode && !cmd.Flags().Changed("http") && schemeSelectsHTTP(serverAddr) {
+			httpMode = true
+		}
 		if authToken == "" {
 			authToken = resolveAuthToken(serverAddr)
 		}
 		return nil
 	},
+}
+
+// schemeSelectsHTTP reports whether a --server value carries a URL scheme
+// that only the HTTP transport can speak. A bare host:port (the gRPC form)
+// has no scheme and is left to gRPC. The match is case-sensitive, like the
+// one in client.NewHTTPClient that consumes the same value.
+func schemeSelectsHTTP(server string) bool {
+	return strings.HasPrefix(server, "http://") || strings.HasPrefix(server, "https://")
 }
 
 // Execute adds all child commands to the root command and sets flags appropriately.
@@ -162,7 +178,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&insecure, "insecure", os.Getenv("CONTAINARIUM_INSECURE") == "true", "connect without TLS (env: CONTAINARIUM_INSECURE=true; not recommended)")
 
 	// Remote server flags (HTTP mode)
-	rootCmd.PersistentFlags().BoolVar(&httpMode, "http", os.Getenv("CONTAINARIUM_HTTP") == "true", "use HTTP/REST API instead of gRPC (env: CONTAINARIUM_HTTP=true)")
+	rootCmd.PersistentFlags().BoolVar(&httpMode, "http", os.Getenv("CONTAINARIUM_HTTP") == "true", "use HTTP/REST API instead of gRPC (env: CONTAINARIUM_HTTP=true; implied by an http:// or https:// --server)")
 	rootCmd.PersistentFlags().StringVar(&authToken, "token", os.Getenv("CONTAINARIUM_TOKEN"), "JWT authentication token for HTTP API. Precedence: 1) --token flag, 2) CONTAINARIUM_TOKEN env, 3) ~/.containarium/credentials.json (populated by `containarium login`).")
 
 	// Version command with verbose flag
