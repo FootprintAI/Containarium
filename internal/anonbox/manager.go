@@ -24,6 +24,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -132,6 +133,10 @@ type Config struct {
 	// Funnel records every step of a key's journey (#2201); nil = none.
 	Funnel Funnel
 
+	// Logf receives operational warnings (a wall that could not be
+	// delivered, #2202); nil = the standard logger.
+	Logf func(format string, args ...any)
+
 	// Now is the clock; nil = time.Now.
 	Now func() time.Time
 }
@@ -215,6 +220,9 @@ type Manager struct {
 func New(boxes Boxes, acls ACLs, cfg Config) *Manager {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
+	}
+	if cfg.Logf == nil {
+		cfg.Logf = log.Printf
 	}
 	if cfg.Limits == (Limits{}) {
 		cfg.Limits = DefaultLimits()

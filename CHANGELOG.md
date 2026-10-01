@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Anonymous-box expiry warnings (#2202): a `wall` into the guest about 10
+  minutes and 1 minute before the box's TTL, each at most once, recorded on
+  the box (`anon.warned`) so a daemon restart never repeats one; a wall that
+  cannot be delivered is logged and not retried.
+
 - Anonymous-box funnel (#2201): every step of the `ssh new.<domain>` journey
   is an `EVENT_TYPE_ANON_*` event on the event stream (connect, shell_ready
   with time-to-shell, reconnect, claim_link_issued, claim_completed, expired,

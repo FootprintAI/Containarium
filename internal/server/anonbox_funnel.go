@@ -100,8 +100,10 @@ func (s *anonFunnelSink) Record(ev anonbox.FunnelEvent) {
 	}
 }
 
-// anonObserveLoop runs Manager.Observe on a ticker so expiry / kill
-// events are emitted within a minute of the box disappearing.
+// anonObserveLoop is the door's one-minute maintenance tick: expiry
+// warnings into the guests (#2202, Manager.Warn) and the expired / killed
+// funnel events (#2201, Manager.Observe). Warn runs first so a box that
+// is about to disappear still gets its last word.
 func anonObserveLoop(ctx context.Context, m *anonbox.Manager, every time.Duration) {
 	t := time.NewTicker(every)
 	defer t.Stop()
@@ -110,6 +112,9 @@ func anonObserveLoop(ctx context.Context, m *anonbox.Manager, every time.Duratio
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			if err := m.Warn(ctx); err != nil {
+				log.Printf("[anon-warner] %v", err)
+			}
 			if err := m.Observe(ctx); err != nil {
 				log.Printf("[anon-funnel] observe: %v", err)
 			}

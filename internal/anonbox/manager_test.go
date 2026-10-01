@@ -36,6 +36,7 @@ type fakeBoxes struct {
 	ttls    map[string]time.Time
 	files   map[string][]writtenFile
 	execs   [][]string
+	execErr error               // returned by every Exec when set (#2202)
 	owners  map[string]string   // SetOwner, by box name
 	keys    map[string][]string // SetAuthorizedKeys, by box name
 	writes  []box.BoxRef        // every ref a claim-path write was addressed to
@@ -100,6 +101,9 @@ func (f *fakeBoxes) SetTTL(_ context.Context, ref box.BoxRef, at *time.Time) err
 
 func (f *fakeBoxes) Exec(_ context.Context, _ box.BoxRef, cmd []string) (string, string, error) {
 	f.execs = append(f.execs, cmd)
+	if f.execErr != nil {
+		return "", "agent unavailable", f.execErr
+	}
 	return "", "", nil
 }
 
