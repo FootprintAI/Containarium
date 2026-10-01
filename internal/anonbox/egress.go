@@ -78,3 +78,18 @@ func (m *Manager) applyEgressGuard(boxName string) error {
 	}
 	return nil
 }
+
+// liftEgressGuard detaches the anon ACL from the box's NIC and clears the
+// default-action keys so the NIC falls back to Incus's defaults (allow) —
+// what a claimed box on the tenant's plan gets (#2199). Clearing a device
+// key is setting it to "", which SetDeviceConfig merges like any other.
+func (m *Manager) liftEgressGuard(boxName string) error {
+	keys := map[string]string{}
+	for k := range nicACLKeys() {
+		keys[k] = ""
+	}
+	if err := m.acls.SetDeviceConfig(boxName, m.cfg.NICDevice, keys); err != nil {
+		return fmt.Errorf("nic acl keys: %w", err)
+	}
+	return nil
+}

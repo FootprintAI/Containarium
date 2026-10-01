@@ -1474,6 +1474,17 @@ func (m *Manager) GetLabels(username string) (map[string]string, error) {
 	return m.incus.GetLabels(containerName)
 }
 
+// SetTenant sets the container's explicit owning tenant
+// (incus.TenantLabelKey), which status/list report in place of the name
+// convention. Takes the container name, not a username: the whole point
+// is a box whose owner is not the name it was created under (#2199).
+func (m *Manager) SetTenant(containerName, tenant string) error {
+	if tenant == "" {
+		return fmt.Errorf("tenant is required")
+	}
+	return m.incus.UpdateContainerConfig(containerName, incus.TenantLabelKey, tenant)
+}
+
 // AddLabel adds or updates a single label on a container
 func (m *Manager) AddLabel(username, key, value string) error {
 	containerName := username + "-container"

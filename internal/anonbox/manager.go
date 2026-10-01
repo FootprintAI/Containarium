@@ -24,6 +24,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -45,6 +46,7 @@ const (
 	LabelSourceIP     = "anon.source_ip"      // retained for abuse handling; dies with the box
 	LabelClaimTokenID = "anon.claim_token_id" // random 16 B hex, embedded in the claim token (#2199)
 	LabelClaimedAt    = "anon.claimed_at"     // empty until claimed; the CAS target of #2199
+	LabelPublicKey    = "anon.public_key"     // the claiming key's authorized_keys line, kept on claim
 )
 
 // In-guest paths the Manager writes.
@@ -77,10 +79,16 @@ type Config struct {
 	NICDevice string
 	Bridge    string
 
-	// ClaimURL renders the single-use claim URL written into the guest.
-	// nil = no claim-url file (the minter lands with #2199); the banner
-	// still shows the `containarium claim` hint.
-	ClaimURL func(boxName, tokenID string, expiresAt time.Time) string
+	// ClaimSecret returns the per-box HMAC secret for claim tokens —
+	// TokenManager.DeriveSharedSecret("anon-claim", boxName) in the daemon.
+	// nil = no token is minted, no claim-url file is written, and Claim
+	// refuses; the banner still shows the `containarium claim` hint.
+	ClaimSecret func(boxName string) string
+	// ClaimURLBase is prefixed to the token in the guest's claim-url file
+	// as "<base>?token=<token>" (e.g. https://<cloud-domain>/claim). Empty
+	// = the file holds the bare token (decision on #2199: the CLI prints
+	// it with a note).
+	ClaimURLBase string
 
 	// Now is the clock; nil = time.Now.
 	Now func() time.Time
@@ -95,6 +103,10 @@ type Boxes interface {
 	SetTTL(ctx context.Context, ref box.BoxRef, expiresAt *time.Time) error
 	Exec(ctx context.Context, ref box.BoxRef, cmd []string) (stdout, stderr string, err error)
 	WriteFile(ctx context.Context, ref box.BoxRef, path string, content []byte, mode string) error
+	// Claim (#2199) — all addressed by boxRefFor(name), see Claim.
+	SetMeta(ctx context.Context, ref box.BoxRef, meta map[string]string) error
+	SetAuthorizedKeys(ctx context.Context, ref box.BoxRef, keys []string) error
+	SetOwner(ctx context.Context, ref box.BoxRef, tenant string) error
 }
 
 // ACLs is the Incus network-ACL + NIC-device slice. incus.Backend
@@ -145,6 +157,10 @@ type Manager struct {
 	// restart, and a wrong "false" only costs one banner line.
 	mu   sync.Mutex
 	seen map[string]time.Time
+
+	// claimMu serializes Claim's compare-and-set on claimed_at: the box
+	// backend has no atomic label update, so the daemon is the lock.
+	claimMu sync.Mutex
 }
 
 // New returns a Manager over the given backends.
@@ -190,11 +206,14 @@ func (m *Manager) Ensure(ctx context.Context, req EnsureRequest) (*EnsureResult,
 	if existing, err := m.findLive(ctx, fp); err != nil {
 		return nil, err
 	} else if existing != nil {
+		// A claimed box reports its new tenant as Ref.Tenant; the login
+		// is still the box's own user (decision on #2199), and its TTL is
+		// gone.
 		return &EnsureResult{
 			BoxName:      existing.Ref.Name,
 			SSHHost:      existing.IPAddress,
 			SSHPort:      22,
-			SSHUser:      existing.Ref.Tenant,
+			SSHUser:      boxRefFor(existing.Ref.Name).Tenant,
 			TTLExpiresAt: existing.TTLExpiresAt,
 			Reused:       true,
 		}, nil
@@ -221,6 +240,7 @@ func (m *Manager) Ensure(ctx context.Context, req EnsureRequest) (*EnsureResult,
 			LabelCreatedAt:    now.UTC().Format(time.RFC3339),
 			LabelSourceIP:     req.SourceIP,
 			LabelClaimTokenID: tokenID,
+			LabelPublicKey:    strings.TrimSpace(req.PublicKey),
 		},
 		AutoStart: true,
 	}
@@ -262,9 +282,9 @@ func (m *Manager) provision(ctx context.Context, ref box.BoxRef, st *box.BoxStat
 	if err := m.applyEgressGuard(ref.Name); err != nil {
 		return fmt.Errorf("anonbox: egress guard on %s: %w", ref.Name, err)
 	}
-	var claimURL string
-	if m.cfg.ClaimURL != nil {
-		claimURL = m.cfg.ClaimURL(ref.Name, tokenID, expiresAt)
+	claimURL, err := m.claimURL(ref.Name, tokenID, expiresAt)
+	if err != nil {
+		return err
 	}
 	if err := m.writeGuestFiles(ctx, ref, guestFiles{
 		expiresAt:       expiresAt,
@@ -276,6 +296,27 @@ func (m *Manager) provision(ctx context.Context, ref box.BoxRef, st *box.BoxStat
 	}
 	_ = st
 	return nil
+}
+
+// claimURL mints the box's claim token (#2199) and renders what goes into
+// the guest's claim-url file: "<base>?token=<token>", or the bare token
+// when no base is configured. "" when claims are not enabled.
+func (m *Manager) claimURL(boxName, tokenID string, expiresAt time.Time) (string, error) {
+	if m.cfg.ClaimSecret == nil {
+		return "", nil
+	}
+	fp := ""
+	if st, err := m.findByName(context.Background(), boxName); err == nil && st != nil {
+		fp = st.Labels[LabelFPHash]
+	}
+	token, err := MintClaimToken(m.cfg.ClaimSecret(boxName), ClaimToken{BoxName: boxName, FPHash: fp, ExpiresAt: expiresAt, TokenID: tokenID})
+	if err != nil {
+		return "", fmt.Errorf("anonbox: mint claim token for %s: %w", boxName, err)
+	}
+	if m.cfg.ClaimURLBase == "" {
+		return token, nil
+	}
+	return strings.TrimRight(m.cfg.ClaimURLBase, "/") + "?token=" + token, nil
 }
 
 // findLive returns the box labelled with fp, or nil.

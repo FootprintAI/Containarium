@@ -36,10 +36,13 @@ type fakeBoxes struct {
 	ttls    map[string]time.Time
 	files   map[string][]writtenFile
 	execs   [][]string
+	owners  map[string]string   // SetOwner, by box name
+	keys    map[string][]string // SetAuthorizedKeys, by box name
+	writes  []box.BoxRef        // every ref a claim-path write was addressed to
 }
 
 func newFakeBoxes() *fakeBoxes {
-	return &fakeBoxes{ttls: map[string]time.Time{}, files: map[string][]writtenFile{}}
+	return &fakeBoxes{ttls: map[string]time.Time{}, files: map[string][]writtenFile{}, owners: map[string]string{}, keys: map[string][]string{}}
 }
 
 func (f *fakeBoxes) Create(_ context.Context, spec box.BoxSpec) (*box.BoxStatus, error) {
@@ -76,6 +79,11 @@ func (f *fakeBoxes) List(_ context.Context) ([]box.BoxStatus, error) {
 	for i := range out {
 		if exp, ok := f.ttls[out[i].Ref.Name]; ok {
 			out[i].TTLExpiresAt = exp
+		} else {
+			out[i].TTLExpiresAt = time.Time{}
+		}
+		if owner, ok := f.owners[out[i].Ref.Name]; ok {
+			out[i].Ref.Tenant = owner
 		}
 	}
 	return out, nil
@@ -166,13 +174,12 @@ func newHarness(t *testing.T, mut func(*Config)) *harness {
 	t.Helper()
 	h := &harness{boxes: newFakeBoxes(), acls: newFakeACLs(), now: time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)}
 	cfg := Config{
-		Limits:    DefaultLimits(),
-		NICDevice: "eth0",
-		Bridge:    "containarium0",
-		ClaimURL: func(boxName, tokenID string, exp time.Time) string {
-			return "https://cloud.example.test/claim?token=" + tokenID
-		},
-		Now: func() time.Time { return h.now },
+		Limits:       DefaultLimits(),
+		NICDevice:    "eth0",
+		Bridge:       "containarium0",
+		ClaimSecret:  func(box string) string { return "secret-for-" + box },
+		ClaimURLBase: "https://cloud.example.test/claim",
+		Now:          func() time.Time { return h.now },
 	}
 	if mut != nil {
 		mut(&cfg)
@@ -274,7 +281,7 @@ func TestEnsure_NewFingerprint_CreatesVM(t *testing.T) {
 		t.Errorf("first-ever box must not say the previous one expired")
 	}
 	claim := fileNamed(t, files, ClaimURLPath)
-	if !strings.HasPrefix(claim.content, "https://cloud.example.test/claim?token=") || !strings.Contains(claim.content, spec.Labels[LabelClaimTokenID]) {
+	if !strings.HasPrefix(claim.content, "https://cloud.example.test/claim?token=v1."+res.BoxName+".") || !strings.Contains(claim.content, "."+spec.Labels[LabelClaimTokenID]+".") {
 		t.Errorf("claim-url = %q, want the ClaimURL hook's output carrying the token id", claim.content)
 	}
 
@@ -406,7 +413,7 @@ func TestEnsure_BadKey_Rejected(t *testing.T) {
 }
 
 func TestEnsure_NoClaimURLHook_SkipsFile(t *testing.T) {
-	h := newHarness(t, func(c *Config) { c.ClaimURL = nil })
+	h := newHarness(t, func(c *Config) { c.ClaimSecret = nil })
 	key, fp := testKey(t)
 
 	res, err := h.m.Ensure(context.Background(), EnsureRequest{Fingerprint: fp, PublicKey: key})
@@ -474,4 +481,29 @@ func TestEnsure_CallerFaults_AreInvalidRequestErrors(t *testing.T) {
 			t.Errorf("%s: err %v is not an InvalidRequestError", name, err)
 		}
 	}
+}
+
+func (f *fakeBoxes) SetMeta(_ context.Context, ref box.BoxRef, meta map[string]string) error {
+	f.writes = append(f.writes, ref)
+	for i := range f.boxes {
+		if f.boxes[i].Ref.Name == ref.Name {
+			for k, v := range meta {
+				f.boxes[i].Labels[k] = v
+			}
+			return nil
+		}
+	}
+	return errors.New("not found")
+}
+
+func (f *fakeBoxes) SetAuthorizedKeys(_ context.Context, ref box.BoxRef, keys []string) error {
+	f.writes = append(f.writes, ref)
+	f.keys[ref.Name] = append([]string{}, keys...)
+	return nil
+}
+
+func (f *fakeBoxes) SetOwner(_ context.Context, ref box.BoxRef, tenant string) error {
+	f.writes = append(f.writes, ref)
+	f.owners[ref.Name] = tenant
+	return nil
 }
