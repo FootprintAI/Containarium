@@ -141,6 +141,7 @@ recipe get
 recipe list
 recipe workspace-access
 regions
+remind-me
 resize
 route add
 route delete

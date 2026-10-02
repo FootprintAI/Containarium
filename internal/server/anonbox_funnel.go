@@ -40,6 +40,7 @@ var anonFunnelEventTypes = map[anonbox.FunnelKind]pb.EventType{
 	anonbox.FunnelRejectedCapacity:  pb.EventType_EVENT_TYPE_ANON_REJECTED_CAPACITY,
 	anonbox.FunnelRejectedRateLimit: pb.EventType_EVENT_TYPE_ANON_REJECTED_RATELIMIT,
 	anonbox.FunnelRejectedDoor:      pb.EventType_EVENT_TYPE_ANON_REJECTED_DOOR,
+	anonbox.FunnelReminderOptIn:     pb.EventType_EVENT_TYPE_ANON_REMINDER_OPTIN,
 }
 
 // newAnonFunnelSink registers one counter per step on mp's "containarium"
@@ -100,8 +101,10 @@ func (s *anonFunnelSink) Record(ev anonbox.FunnelEvent) {
 	}
 }
 
-// anonObserveLoop runs Manager.Observe on a ticker so expiry / kill
-// events are emitted within a minute of the box disappearing.
+// anonObserveLoop is the door's one-minute maintenance tick: expiry
+// warnings into the guests (#2202, Manager.Warn) and the expired / killed
+// funnel events (#2201, Manager.Observe). Warn runs first so a box that
+// is about to disappear still gets its last word.
 func anonObserveLoop(ctx context.Context, m *anonbox.Manager, every time.Duration) {
 	t := time.NewTicker(every)
 	defer t.Stop()
@@ -110,6 +113,9 @@ func anonObserveLoop(ctx context.Context, m *anonbox.Manager, every time.Duratio
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			if err := m.Warn(ctx); err != nil {
+				log.Printf("[anon-warner] %v", err)
+			}
 			if err := m.Observe(ctx); err != nil {
 				log.Printf("[anon-funnel] observe: %v", err)
 			}

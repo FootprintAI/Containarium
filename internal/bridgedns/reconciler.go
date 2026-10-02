@@ -50,6 +50,17 @@ type Config struct {
 	// It is the same function the start-up write uses, so the two can never
 	// disagree about what "correct" is.
 	Render func(caddyIP string) string
+
+	// CreateIfAbsent lets a pass write the record onto a bridge that has
+	// NONE (#2232). Off by default: a host that worked without a record
+	// keeps working until an operator opts in (--bridge-dns-create), or
+	// this daemon installed core-caddy itself this run. Repairing an
+	// existing record never needs it.
+	CreateIfAbsent bool
+	// BaseDomain and Carveouts are only for the warning a creation logs:
+	// which names will start resolving to core-caddy, and which won't.
+	BaseDomain string
+	Carveouts  []string
 	// Interval overrides DefaultInterval (tests).
 	Interval time.Duration
 }
@@ -73,7 +84,21 @@ type Status struct {
 	// from the desired value; LastApplied is the last successful rewrite.
 	DriftCount  int
 	LastApplied time.Time
+
+	// Absent: the bridge has no record and this reconciler is not allowed
+	// to create one (#2232). Not an error — a state an operator opts out of.
+	Absent bool
+	// LastAction is "created" or "repaired" after the first write.
+	LastAction string
+	// CreatedAt is set once, when a pass wrote a record where none existed.
+	CreatedAt time.Time
 }
+
+// Actions a pass can report in Status.LastAction.
+const (
+	ActionCreated  = "created"
+	ActionRepaired = "repaired"
+)
 
 // Reconciler keeps the bridge record equal to the rendered value. It only ever
 // writes on drift.
@@ -81,8 +106,9 @@ type Reconciler struct {
 	be  Backend
 	cfg Config
 
-	mu     sync.Mutex
-	status Status
+	mu           sync.Mutex
+	status       Status
+	absentLogged bool
 }
 
 // NewReconciler wires a reconciler; nothing runs until ReconcileOnce or Run.
@@ -180,24 +206,73 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) error {
 	if strings.TrimSpace(current) == strings.TrimSpace(desired) {
 		r.update(func(s *Status) {
 			s.CaddyIP, s.Desired, s.Current = info.IPAddress, desired, current
-			s.InSync, s.LastError, s.LastPass = true, "", time.Now()
+			s.InSync, s.Absent, s.LastError, s.LastPass = true, false, "", time.Now()
 		})
 		return nil
 	}
 
-	log.Printf("[bridgedns] drift on %s: %s = %q, want %q (%s at %s); re-applying",
-		r.cfg.Bridge, dnsmasqKey, current, desired, r.cfg.CaddyContainer, info.IPAddress)
+	// No record at all. Creating one changes name resolution for every box
+	// on the bridge — every name under the base domain starts answering
+	// with core-caddy — so it is not a repair, and it is not done unless
+	// asked (#2232).
+	absent := strings.TrimSpace(current) == ""
+	if absent && !r.cfg.CreateIfAbsent {
+		r.update(func(s *Status) {
+			s.CaddyIP, s.Desired, s.Current = info.IPAddress, desired, current
+			s.InSync, s.Absent, s.LastError, s.LastPass = false, true, "", time.Now()
+		})
+		r.logAbsentOnce()
+		return nil
+	}
+
+	action := ActionRepaired
+	if absent {
+		action = ActionCreated
+		log.Printf("[bridgedns] WARNING: creating %s on %s where none existed — every name under %s now resolves to %s (%s) for every box on this bridge%s; value: %q",
+			dnsmasqKey, r.cfg.Bridge, r.cfg.BaseDomain, info.IPAddress, r.cfg.CaddyContainer, carveoutNote(r.cfg.Carveouts), desired)
+	} else {
+		log.Printf("[bridgedns] drift on %s: %s = %q, want %q (%s at %s); re-applying",
+			r.cfg.Bridge, dnsmasqKey, current, desired, r.cfg.CaddyContainer, info.IPAddress)
+	}
 	r.update(func(s *Status) {
 		s.CaddyIP, s.Desired, s.Current = info.IPAddress, desired, current
-		s.DriftCount++
+		s.Absent = false
+		if !absent {
+			s.DriftCount++
+		}
 	})
 	if err := r.be.SetNetworkConfigValue(r.cfg.Bridge, dnsmasqKey, desired); err != nil {
 		return r.fail(fmt.Errorf("bridgedns: write %s.%s: %w", r.cfg.Bridge, dnsmasqKey, err))
 	}
+	now := time.Now()
 	r.update(func(s *Status) {
 		s.Current = desired
 		s.InSync, s.LastError = true, ""
-		s.LastApplied, s.LastPass = time.Now(), time.Now()
+		s.LastApplied, s.LastPass = now, now
+		s.LastAction = action
+		if action == ActionCreated {
+			s.CreatedAt = now
+		}
 	})
 	return nil
+}
+
+// logAbsentOnce says, once per process, why the bridge is being left
+// without a record — the operator's cue to opt in or to leave it.
+func (r *Reconciler) logAbsentOnce() {
+	r.mu.Lock()
+	logged := r.absentLogged
+	r.absentLogged = true
+	r.mu.Unlock()
+	if !logged {
+		log.Printf("[bridgedns] %s has no %s record and this daemon will not create one (start with --bridge-dns-create to opt in); boxes on this bridge resolve %s upstream",
+			r.cfg.Bridge, dnsmasqKey, r.cfg.BaseDomain)
+	}
+}
+
+func carveoutNote(carveouts []string) string {
+	if len(carveouts) == 0 {
+		return " (no carve-outs: --ssh-host / --dns-passthrough-host are unset)"
+	}
+	return " except " + strings.Join(carveouts, ", ")
 }

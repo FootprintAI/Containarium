@@ -31,14 +31,16 @@ type fakeBoxes struct {
 	boxes     []box.BoxStatus
 	createErr error
 
-	created []box.BoxSpec
-	deleted []box.BoxRef
-	ttls    map[string]time.Time
-	files   map[string][]writtenFile
-	execs   [][]string
-	owners  map[string]string   // SetOwner, by box name
-	keys    map[string][]string // SetAuthorizedKeys, by box name
-	writes  []box.BoxRef        // every ref a claim-path write was addressed to
+	created   []box.BoxSpec
+	deleted   []box.BoxRef
+	ttls      map[string]time.Time
+	files     map[string][]writtenFile
+	execs     [][]string
+	execErr   error               // returned by every Exec when set (#2202)
+	catOutput map[string]string   // stdout for `cat <path>` execs (#2206); missing path = error
+	owners    map[string]string   // SetOwner, by box name
+	keys      map[string][]string // SetAuthorizedKeys, by box name
+	writes    []box.BoxRef        // every ref a claim-path write was addressed to
 }
 
 func newFakeBoxes() *fakeBoxes {
@@ -100,6 +102,15 @@ func (f *fakeBoxes) SetTTL(_ context.Context, ref box.BoxRef, at *time.Time) err
 
 func (f *fakeBoxes) Exec(_ context.Context, _ box.BoxRef, cmd []string) (string, string, error) {
 	f.execs = append(f.execs, cmd)
+	if f.execErr != nil {
+		return "", "agent unavailable", f.execErr
+	}
+	if len(cmd) == 2 && cmd[0] == "cat" {
+		if out, ok := f.catOutput[cmd[1]]; ok {
+			return out, "", nil
+		}
+		return "", "No such file or directory", errors.New("exit 1")
+	}
 	return "", "", nil
 }
 

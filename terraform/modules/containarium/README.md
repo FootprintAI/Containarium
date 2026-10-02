@@ -50,9 +50,13 @@ replacement variable to set.
 | `enable_app_hosting` | `false` | Caddy app-hosting / public route management. |
 | `enable_proxy_protocol` | `false` | Prepend PROXY v2 so Caddy sees the real client IP. |
 | `proxy_protocol_trusted_cidrs` | defaulted | Trusted sources for the PROXY header. |
+| `dns_passthrough_hosts` | `[]` | Names under `base_domain` boxes must resolve upstream, not at core-caddy (`--dns-passthrough-host` each) — e.g. the control plane's host. See #2232. |
+| `ssh_host` | `""` | The sentinel's SSH hostname (`--ssh-host`); also carved out of the bridge record. |
 | `allowed_management_sources` | defaulted | CIDRs allowed to reach management/SSH. |
 | `sentinel_auth_secret` | `""` | **Sentinel↔daemon HMAC secret (32+ bytes).** See below. |
 | `enable_peer_mtls` | `false` | Phase 0.5 peer mTLS. **Requires `sentinel_auth_secret`.** |
+| `anon_door_addr` | `""` | Anonymous-box door (`ssh new.<domain>`): listen `host:port` for the door's own `sshpiperd` (`sshpiper-anon.service`). A dedicated IP on `:22` in production, `0.0.0.0:2022` on a dev sentinel with no spare IP. Empty = no door; an installed unit is removed on the next reconcile. |
+| `anon_daemon_url` | `""` | REST base URL of the anon-pool daemon the door creates boxes on, e.g. `http://<private ip>:8080`. Required with `anon_door_addr`. |
 | `kms_key_self_link` | `""` | KMS key for encryption integrations. |
 | `zfs_encryption_keyfile` | `""` | Per-host ZFS encryption keyfile path. |
 

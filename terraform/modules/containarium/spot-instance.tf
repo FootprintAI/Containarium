@@ -177,6 +177,8 @@ resource "google_compute_instance" "jump_server_spot" {
       base_domain                  = var.base_domain
       enable_proxy_protocol        = var.enable_proxy_protocol
       proxy_protocol_trusted_cidrs = local.proxy_protocol_trusted_effective
+      dns_passthrough_hosts        = var.dns_passthrough_hosts
+      ssh_host                     = var.ssh_host
       zfs_encryption_keyfile       = var.zfs_encryption_keyfile
     })
   }
