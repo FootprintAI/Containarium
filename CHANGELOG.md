@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `containarium agent engines` (`--json`), the `ListAgentEngines` RPC
+  (`GET /v1/agent-engines`) and the `list_agent_engines` MCP tool (#2223):
+  one read-only surface reporting which agent engines this deployment can
+  run right now, and why not, using the exact same readiness check a run's
+  own refusal enforces (#2222) — the reason text is never reworded between
+  the three readers. A tenant sees readiness for their own key owner; an
+  admin with no owner scope sees the daemon's global view.
+
+- Web UI Agents page (#2224): one row per engine — readiness, provider,
+  credential source, default badge, and the skills that name it — backed
+  directly by `ListAgentEngines`, so the UI and the CLI can never show two
+  different answers for the same daemon. A daemon with no provider keys
+  renders every engine as not-ready rather than a blank page.
+
+- `two-engine-crew` reference fixture (#2225): a two-member crew
+  (`hello-agent-claude`, `hello-agent-codex`) and
+  `scripts/two-engine-crew-e2e.sh`, proving a crew can run its members on
+  different engines on one daemon — each member's gateway token decodes to
+  its own engine's provider claim, and `containarium agent engines --json`
+  reports exactly the readiness the run itself used.
+
 ### Fixed
 
 - `ssh-config sync` now emits `IdentitiesOnly yes` in every `Host` block, not
