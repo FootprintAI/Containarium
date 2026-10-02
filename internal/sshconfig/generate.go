@@ -148,11 +148,16 @@ func writeHost(b *strings.Builder, c incus.ContainerInfo, opts Options) {
 
 	if opts.IdentityFile != "" {
 		fmt.Fprintf(b, "    IdentityFile %s\n", opts.IdentityFile)
-		// IdentitiesOnly prevents ssh-agent from trying every key it
-		// holds before the right one — useful when the user has many
-		// keys loaded and wants the file's identity to win.
-		fmt.Fprintln(b, "    IdentitiesOnly yes")
 	}
+	// IdentitiesOnly stops ssh offering every key the agent holds before
+	// the right one: sshpiper's failtoban counts each rejected offer
+	// toward its ban budget, so a user with a full agent can lock
+	// themselves out before the correct key is tried. Same reason
+	// `connect` and the MCP ssh hints pass -o IdentitiesOnly=yes. With no
+	// IdentityFile the default ~/.ssh identities still apply — only keys
+	// that live solely in the agent are excluded. Unconditional, not just
+	// alongside --identity (#2089, folded in from #2220's review).
+	fmt.Fprintln(b, "    IdentitiesOnly yes")
 
 	if c.BackendID != "" {
 		fmt.Fprintf(b, "    # backend: %s\n", c.BackendID)

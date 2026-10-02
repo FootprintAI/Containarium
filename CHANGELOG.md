@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ssh-config sync` now emits `IdentitiesOnly yes` in every `Host` block, not
+  only alongside `--identity` (#2089). Each key an agent offers before the
+  right one counts against an SSH front's failed-attempt budget, so a user
+  with several keys loaded could lock themselves out before their real key
+  was ever tried.
+
+## [0.96.0] - 2026-10-02
+
+### Added
+
+- Agent engine on the skill manifest (#2222): a skill can name its agent
+  engine (`engine: claude | codex | gemini` in the skill YAML, a typed
+  `AgentEngine` on the proto), honoured per run, so two skills or two crew
+  members on one daemon can run on different engines instead of every skill
+  box following the one primary engine. An unknown engine name fails at
+  catalog load rather than silently resolving to the default, and a skill
+  naming an engine whose provider has no resolvable key is refused before
+  anything is provisioned. The engine a run used is recorded on its lease and
+  audit event and shown by `containarium agent get`.
+
+### Fixed
+
 - `--server <host>` without a scheme now finds the credentials `containarium
   login` stored under `https://<host>` (#2238). Before, the lookup missed, the
   request went out with no token, and the server's 401 read as "invalid or
