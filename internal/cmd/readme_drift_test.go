@@ -130,7 +130,8 @@ func isEnvAssignment(w string) bool {
 		return false
 	}
 	for j, r := range w[:eq] {
-		if !(r == '_' || unicode.IsLetter(r) || (j > 0 && unicode.IsDigit(r))) {
+		valid := r == '_' || unicode.IsLetter(r) || (j > 0 && unicode.IsDigit(r))
+		if !valid {
 			return false
 		}
 	}
