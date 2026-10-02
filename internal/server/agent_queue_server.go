@@ -172,15 +172,16 @@ func (s *AgentSkillServer) startPollMode(containerName, queueToken, workerID, sk
 //
 // engineRes/model (#2222) are rendered through the same runtimeEnvPrefix as
 // the run/serve paths, so a worker's skill resolves to the same engine its
-// gateway token (minted in provisionSkillBoxWith) was already bound to. Note
-// this function does not source <seedDir>/gateway.env the way runModeCommand
-// and serveModeCommand do (sourceGatewayEnvPrefix) — that gap predates this
-// change and is out of this issue's scope; only the engine/model pin is new
-// here.
+// gateway token (minted in provisionSkillBoxWith) was already bound to. This
+// also now sources <seedDir>/gateway.env the same way runModeCommand and
+// serveModeCommand do (sourceGatewayEnvPrefix) — flagged in review (#2222,
+// PR #2237): without it, a worker resolving to a named gateway engine would
+// export CONTAINARIUM_AGENT_ENGINE with no provider credential in the shell
+// env to actually authenticate it, the same failure #748 fixed for run/serve.
 func buildWorkerPollCommand(queueToken, workerID, skillID, seedDir string, engineRes agentengine.Resolved, model string) string {
 	return fmt.Sprintf(
 		`GW=$(ip route 2>/dev/null | awk '/default/{print $3; exit}'); `+
-			`%s`+
+			`%s%s`+
 			`CONTAINARIUM_AGENT_MODE=poll `+
 			`CONTAINARIUM_QUEUE_URL=http://${GW}:%d `+
 			`CONTAINARIUM_QUEUE_TOKEN=%s `+
@@ -188,6 +189,7 @@ func buildWorkerPollCommand(queueToken, workerID, skillID, seedDir string, engin
 			`CONTAINARIUM_QUEUE_SKILL=%s `+
 			`AGENT_SEED_DIR=%s `+
 			`setsid agent-runtime >/var/log/agent-runtime-poll.log 2>&1 &`,
+		sourceGatewayEnvPrefix(seedDir),
 		runtimeEnvPrefix(engineRes, model),
 		agentWorkerDaemonPort,
 		shellSingleQuote(queueToken),

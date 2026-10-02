@@ -140,6 +140,11 @@ func TestBuildWorkerPollCommand(t *testing.T) {
 		"AGENT_SEED_DIR=/etc/containarium/agent/runs/run-1",
 		"setsid agent-runtime",
 		"&", // detached
+		// #2222 (CodeRabbit review on PR #2237): a worker's gateway
+		// credential must reach the box the same way run/serve mode's does
+		// — otherwise the engine pin below exports an engine with nothing
+		// to authenticate it.
+		sourceGatewayEnvPrefix("/etc/containarium/agent/runs/run-1"),
 	} {
 		if !strings.Contains(cmd, want) {
 			t.Errorf("poll command missing %q\n---\n%s", want, cmd)
