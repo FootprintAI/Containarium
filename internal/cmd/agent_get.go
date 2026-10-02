@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/footprintai/containarium/internal/agentengine"
 	"github.com/footprintai/containarium/pkg/core/skills"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/spf13/cobra"
@@ -45,6 +46,7 @@ func runAgentGet(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Description:   %s\n", s.Description)
 	fmt.Printf("Box (recipe):  %s\n", s.GetRecipeId())
 	fmt.Printf("Model:         %s\n", s.Model)
+	fmt.Printf("Engine:        %s\n", formatEngine(s.GetEngine()))
 	fmt.Printf("Allowed scopes: %s\n", strings.Join(s.AllowedScopes, ", "))
 	peers := "(none — leaf agent)"
 	if len(s.AllowedPeers) > 0 {
@@ -56,4 +58,17 @@ func runAgentGet(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Printf("\nSystem prompt:\n%s\n", s.SystemPrompt)
 	return nil
+}
+
+// formatEngine is the human-readable form of an AgentSkill's engine for `agent
+// get` (#2222). AGENT_ENGINE_UNSPECIFIED gets an explanatory placeholder,
+// never a blank line that could read as "nothing here" — this is the field
+// whose daemon-side meaning is "the gateway's primary provider (or the box's
+// own default in direct mode) decides", which a bare empty string wouldn't
+// convey.
+func formatEngine(e pb.AgentEngine) string {
+	if name := agentengine.EnvValue(e); name != "" {
+		return name
+	}
+	return "(unspecified — runtime/gateway default decides)"
 }

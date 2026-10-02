@@ -10,6 +10,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/footprintai/containarium/internal/agentengine"
 	"github.com/footprintai/containarium/internal/auth"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -125,7 +126,7 @@ func (s *AgentSkillServer) StartAgentWorker(ctx context.Context, req *pb.StartAg
 	// later-phase item in the design
 	// (docs/architecture/execution-scoped-authorization.md §3, "Crew members and
 	// queue workers").
-	containerName, container, lease, _, _, err := s.provisionSkillBox(ctx, skill, req.BackendId, req.Pool, "", runID, "", "", "", "")
+	containerName, container, lease, _, _, engineRes, err := s.provisionSkillBox(ctx, skill, req.BackendId, req.Pool, "", runID, "", "", "", "")
 	if err != nil {
 		return nil, err
 	}
@@ -142,7 +143,7 @@ func (s *AgentSkillServer) StartAgentWorker(ctx context.Context, req *pb.StartAg
 		return nil, status.Errorf(codes.Internal, "failed to mint worker queue credential: %v", err)
 	}
 
-	s.startPollMode(containerName, queueToken, workerID, skill.Id, lease.SeedDir)
+	s.startPollMode(containerName, queueToken, workerID, skill.Id, lease.SeedDir, engineRes, skill.GetModel())
 
 	return &pb.StartAgentWorkerResponse{Container: container, WorkerId: workerID, RunId: runID}, nil
 }
@@ -150,11 +151,11 @@ func (s *AgentSkillServer) StartAgentWorker(ctx context.Context, req *pb.StartAg
 // startPollMode launches agent-runtime in poll mode as a background worker in
 // the box. Best-effort (mirrors startServeMode): a failure (no runtime in the
 // image) logs and the box is still provisioned + credentialed.
-func (s *AgentSkillServer) startPollMode(containerName, queueToken, workerID, skillID, seedDir string) {
+func (s *AgentSkillServer) startPollMode(containerName, queueToken, workerID, skillID, seedDir string, engineRes agentengine.Resolved, model string) {
 	if s.recipes == nil || s.recipes.containers == nil || s.recipes.containers.manager == nil {
 		return
 	}
-	cmd := buildWorkerPollCommand(queueToken, workerID, skillID, seedDir)
+	cmd := buildWorkerPollCommand(queueToken, workerID, skillID, seedDir, engineRes, model)
 	if _, stderr, err := s.recipes.containers.manager.ExecWithOutput(containerName,
 		[]string{"bash", "-lc", cmd}); err != nil {
 		log.Printf("[agent-worker] could not start poll mode on %s (image may not ship runtime): %v; stderr=%s",
@@ -168,9 +169,18 @@ func (s *AgentSkillServer) startPollMode(containerName, queueToken, workerID, sk
 // has to know the bridge address; the agents:run token authorizes the lease/
 // complete calls. Token, worker id, and skill filter are single-quoted; the URL
 // is intentionally unquoted so $GW expands.
-func buildWorkerPollCommand(queueToken, workerID, skillID, seedDir string) string {
+//
+// engineRes/model (#2222) are rendered through the same runtimeEnvPrefix as
+// the run/serve paths, so a worker's skill resolves to the same engine its
+// gateway token (minted in provisionSkillBoxWith) was already bound to. Note
+// this function does not source <seedDir>/gateway.env the way runModeCommand
+// and serveModeCommand do (sourceGatewayEnvPrefix) — that gap predates this
+// change and is out of this issue's scope; only the engine/model pin is new
+// here.
+func buildWorkerPollCommand(queueToken, workerID, skillID, seedDir string, engineRes agentengine.Resolved, model string) string {
 	return fmt.Sprintf(
 		`GW=$(ip route 2>/dev/null | awk '/default/{print $3; exit}'); `+
+			`%s`+
 			`CONTAINARIUM_AGENT_MODE=poll `+
 			`CONTAINARIUM_QUEUE_URL=http://${GW}:%d `+
 			`CONTAINARIUM_QUEUE_TOKEN=%s `+
@@ -178,6 +188,7 @@ func buildWorkerPollCommand(queueToken, workerID, skillID, seedDir string) strin
 			`CONTAINARIUM_QUEUE_SKILL=%s `+
 			`AGENT_SEED_DIR=%s `+
 			`setsid agent-runtime >/var/log/agent-runtime-poll.log 2>&1 &`,
+		runtimeEnvPrefix(engineRes, model),
 		agentWorkerDaemonPort,
 		shellSingleQuote(queueToken),
 		shellSingleQuote(workerID),

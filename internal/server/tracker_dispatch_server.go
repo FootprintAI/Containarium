@@ -244,7 +244,7 @@ func (r trackerRunStarter) StartRun(ctx context.Context, req tracker.StartRunReq
 		return err
 	}
 	agent := func(containerName, seedDir string) (string, error) {
-		return r.agents.runInBoxAgentResult(containerName, seedDir, run.runID, run.skillID)
+		return r.agents.runInBoxAgentResult(containerName, seedDir, run.runID, run.skillID, run.engineRes, run.model)
 	}
 	if !r.agents.launchDispatchedRun(ctx, run, req.Lifecycle, agent) {
 		return tracker.ErrDispatchEnded

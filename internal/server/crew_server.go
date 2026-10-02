@@ -197,12 +197,15 @@ type crewRunDeps struct {
 // hand-off between members is a commit on a branch, so two members never
 // write the same file at once.
 func (s *CrewServer) provisionMemberBox(ctx context.Context, skill *pb.AgentSkill, req *pb.RunCrewRequest, runID string) (runlease.Lease, string, error) {
-	containerName, _, lease, gitCommit, _, err := s.agents.provisionSkillBox(ctx, skill, req.BackendId, req.Pool, "", runID,
+	containerName, _, lease, gitCommit, _, engineRes, err := s.agents.provisionSkillBox(ctx, skill, req.BackendId, req.Pool, "", runID,
 		req.GetGitSource(), req.GetGitRef(), req.GetGitCredential(), "")
 	if err != nil {
 		return runlease.Lease{}, "", err
 	}
-	s.agents.startServeMode(containerName, lease.SeedDir, skill.Id)
+	// #2222: each member resolves its OWN engine from its OWN manifest — a
+	// crew whose members name two different engines gets two members on two
+	// engines, each with its own provider-bound gateway token.
+	s.agents.startServeMode(containerName, lease.SeedDir, skill.Id, engineRes, skill.GetModel())
 	return lease, gitCommit, nil
 }
 

@@ -1,6 +1,10 @@
 package runlease
 
-import "sync"
+import (
+	"sync"
+
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+)
 
 // Info is what other daemon components need to know about a
 // currently-running skill run, keyed by run id — enough to resolve a
@@ -12,6 +16,12 @@ import "sync"
 type Info struct {
 	SkillID string
 	Model   string
+	// Engine is the engine this run actually resolved to (#2222) —
+	// AGENT_ENGINE_UNSPECIFIED for a run that never named one and got no
+	// gateway default either (direct mode, no engine). Recorded beside Model
+	// so a reader resolving a run_id learns both in one lookup, the same way
+	// it already learns Model.
+	Engine pb.AgentEngine
 	// Box is the container name the run's box lives in — the same
 	// value provisionSkillBox already returns and Lease.Box already
 	// carries, duplicated here because SubmitTrackerChange resolves a

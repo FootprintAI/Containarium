@@ -9,6 +9,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/footprintai/containarium/internal/agentengine"
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/pkg/core/skills"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -127,7 +128,7 @@ func TestQueueRPC_RequireRunScope(t *testing.T) {
 }
 
 func TestBuildWorkerPollCommand(t *testing.T) {
-	cmd := buildWorkerPollCommand("tok.tok.tok", "worker-7", "hello-agent", "/etc/containarium/agent/runs/run-1")
+	cmd := buildWorkerPollCommand("tok.tok.tok", "worker-7", "hello-agent", "/etc/containarium/agent/runs/run-1", agentengine.Resolved{}, "")
 
 	for _, want := range []string{
 		"CONTAINARIUM_AGENT_MODE=poll",
@@ -148,5 +149,16 @@ func TestBuildWorkerPollCommand(t *testing.T) {
 	// The URL must stay UNQUOTED so $GW expands; the token must be quoted.
 	if strings.Contains(cmd, `'http://${GW}`) {
 		t.Error("queue URL must not be single-quoted (breaks $GW expansion)")
+	}
+}
+
+// #2222: the pull-queue worker path exports the resolved engine, same as
+// run/serve mode — a skill naming an engine must run on it whether it's
+// pushed, served, or pulled.
+func TestBuildWorkerPollCommand_ExportsResolvedEngine(t *testing.T) {
+	codex := agentengine.Resolved{Engine: pb.AgentEngine_AGENT_ENGINE_CODEX, Provider: "openai"}
+	cmd := buildWorkerPollCommand("tok", "worker-1", "hello-agent", "/seed", codex, "")
+	if !strings.Contains(cmd, "CONTAINARIUM_AGENT_ENGINE=codex ") {
+		t.Errorf("poll command = %q, want it to export CONTAINARIUM_AGENT_ENGINE=codex", cmd)
 	}
 }

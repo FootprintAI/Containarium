@@ -2265,7 +2265,19 @@ skipAppHosting:
 			// (#1726). Until this call they refuse; after it they mint.
 			modelGatewayServer.SetGateway(gw, []byte(config.JWTSecret), config.HostIP, config.HTTPPort)
 			primary := gatewayPrimaryProvider(keys)
-			agentSkillServer.SetGatewayProvisioning(primary, config.HTTPPort, []byte(config.JWTSecret), config.HostIP)
+			// globalProviders (#2222) is agentengine.Resolve's "ready with no
+			// owner lookup needed" set — the same `keys` map gatewayPrimaryProvider
+			// just picked the default from, as a membership set rather than a
+			// value map (key values never leave this scope). gwKeyResolver
+			// (defined above, nil when there's no secrets store) is passed
+			// through unchanged for a named engine whose provider isn't in that
+			// set — modelgateway.KeyResolver already satisfies
+			// agentengine.KeyResolver's identical KeyFor signature.
+			globalProviders := make(map[string]bool, len(keys))
+			for p := range keys {
+				globalProviders[p] = true
+			}
+			agentSkillServer.SetGatewayProvisioning(primary, config.HTTPPort, []byte(config.JWTSecret), config.HostIP, globalProviders, gwKeyResolver)
 			// The providers a recipe box may be seeded for: every provider the
 			// daemon holds a global key for, plus every operator-registered
 			// upstream (whose keys arrive per owner, so there is no global key to
