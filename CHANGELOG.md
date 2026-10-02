@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `ssh-config sync` now emits `IdentitiesOnly yes` in every `Host` block, not
+  only alongside `--identity` (#2089). Each key an agent offers before the
+  right one counts against an SSH front's failed-attempt budget, so a user
+  with several keys loaded could lock themselves out before their real key
+  was ever tried.
+
 ## [0.96.0] - 2026-10-02
 
 ### Added

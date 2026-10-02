@@ -321,3 +321,16 @@ func TestGenerate_SentinelModeIgnoresSSHHost(t *testing.T) {
 		t.Errorf("unexpected block:\n%s", blk)
 	}
 }
+
+// Every rejected key offer counts toward the SSH front's failtoban budget,
+// so the pin is not conditional on --identity (#2089).
+func TestGenerate_IdentitiesOnlyEmittedWithoutIdentityFile(t *testing.T) {
+	cs := []incus.ContainerInfo{{Name: "alice", State: "Running", IPAddress: "10.0.0.10"}}
+	g := Generate(cs, Options{})
+	if !strings.Contains(g.Content, "IdentitiesOnly yes") {
+		t.Errorf("expected IdentitiesOnly in every Host block:\n%s", g.Content)
+	}
+	if strings.Contains(g.Content, "IdentityFile") {
+		t.Errorf("no IdentityFile was requested:\n%s", g.Content)
+	}
+}
