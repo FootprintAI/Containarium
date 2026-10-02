@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.95.0] - 2026-10-02
+
 ### Added
 
 - Anonymous-box opt-in reminder (#2206): `containarium remind-me <email>`
@@ -61,6 +63,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so a backend that shares its base domain with the control plane keeps those
   names on the public resolver.
 
+### Fixed
+
+- `create_container` in MCP now maps `os_type` (`ubuntu|rocky9|rhel9`) to the
+  daemon's `CreateContainerRequest.OSType` instead of silently defaulting to
+  Ubuntu. Unknown `os_type` values are rejected with an explicit error (#2208).
+
 ### Documentation
 
 - Anonymous-box door (#2203): SECURITY-FAQ states the tier is VM-isolated
@@ -68,6 +76,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lists `anon_door_addr` / `anon_daemon_url`, and the deployment guide gains
   the anon-pool backend prerequisites (KVM, nftables, disk), `--anon-*` flags
   and operator verbs.
+
+- PRD + technical design for the agent router: several agent engines on one
+  runtime, routed per skill, with a single `Resolve` shared by every launch
+  path and the readiness RPC (`docs/product/agent-router.md`,
+  `docs/architecture/agent-router.md`).
 
 ## [0.94.0] - 2026-10-01
 
@@ -142,10 +155,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   always allowed, and operator tokens are unchanged.
 
 ### Fixed
-
-- `create_container` in MCP now maps `os_type` (`ubuntu|rocky9|rhel9`) to the
-  daemon's `CreateContainerRequest.OSType` instead of silently defaulting to
-  Ubuntu. Unknown `os_type` values are rejected with an explicit error (#2208).
 
 - The bridge DNS record that resolves `*.<base-domain>` to core-caddy is now
   reconciled instead of written once, at first install. The write lives in the
