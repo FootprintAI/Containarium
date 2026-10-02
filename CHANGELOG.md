@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.97.1] - 2026-10-02
+
+### Fixed
+
+- **v0.97.0's release build failed its own "release is described" gate and
+  never published a GitHub Release.** Its `## [Unreleased]` section had new
+  entries added under it but was never itself renamed to `## [0.97.0]` — a
+  release-cut step skipped, not a build or code defect. The gate caught it
+  before any binary asset was built, but the daemon/sidecar images and the
+  `containarium-telemetry` PyPI package had already published by the time it
+  failed (those three jobs run in parallel with the gated one, not after
+  it). v0.97.0 is left as a dead tag with no GitHub Release; this release
+  supersedes it, matching the `v0.48.0` precedent.
+
 ### Added
 
 - `containarium agent engines` (`--json`), the `ListAgentEngines` RPC
