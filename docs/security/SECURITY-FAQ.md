@@ -89,13 +89,31 @@ should be treated as carrying the same "not hardened against a
 determined anonymous tenant" caveat as the OSS answer above — not a
 weaker one, and not a stronger one.
 
+**The anonymous tier is the exception.** The `ssh new.<domain>` door
+(v0.94.0, `docs/architecture/ssh-new-anonymous-box.md`) hands out a box
+to *any* SSH key with no signup at all — the most anonymous caller we
+have — and for exactly that reason it never lands on the shared-kernel
+substrate: every anonymous box is an Incus **QEMU/KVM virtual machine**
+with its own kernel, on a backend dedicated to that pool, with egress
+limited to DNS/HTTP/HTTPS by a NIC ACL, a hard TTL, no public ports or
+routes until claimed, and creation rate limits, a global cap and a kill
+switch in front of it. A tenant who gets root in that guest kernel has
+not got the host. **This does not close the gap above:** the
+email-signup free tier still runs as LXC containers on the shared
+kernel. Claiming an anonymous box keeps it a VM.
+
 ## Why not just add a VM-backed instance type?
 
-Incus supports QEMU/KVM VMs alongside containers, so it's
-architecturally reachable — it isn't built today. If your workload
-needs hardware-enforced isolation, treat that as a real gap to raise
-with us (or track upstream), not something the current eBPF/RBAC
-layering papers over.
+It exists as of v0.94.0: `containarium create --isolation vm` (the
+`IsolationType` field on the API) makes a Linux box an Incus QEMU/KVM
+VM instead of an LXC container, on any backend with KVM available. The
+anonymous tier uses it unconditionally (previous section). It is *not*
+the default for signed-up tenants: a VM boots slower, costs more, and
+the per-tenant identity, storage and networking features documented
+elsewhere were built for the container path first. If your workload
+needs hardware-enforced isolation, ask for `--isolation vm` on a
+KVM-capable backend rather than treating the eBPF/RBAC layering as a
+substitute.
 
 ## If isolation is weaker than a hypervisor, why choose Containarium?
 

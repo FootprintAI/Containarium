@@ -69,6 +69,7 @@ type CreateOptions struct {
 	Stack                  string            // Software stack to install (e.g., "nodejs", "python")
 	StackParameters        map[string]string // Stack parameters — passed to install scripts as CONTAINARIUM_STACK_<name> env vars
 	OSType                 pb.OSType         // Operating system type for the container
+	Isolation              pb.IsolationType  // Container (LXC) or VM; UNSPECIFIED = Windows→VM, else container (#2196)
 	OnProvisioning         func()            // Called when container is running but still provisioning (installing packages/stack)
 	RDPPassword            string            // Generated RDP password for Windows VMs (output, set by Create)
 
@@ -181,15 +182,27 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 
 	isWindows := ostype.IsWindows(opts.OSType)
 
+	// Container or VM (#2196). Decided before anything is created so an
+	// invalid pair (Windows as a container) never reaches Incus.
+	instanceType, err := resolveInstanceType(opts.OSType, opts.Isolation)
+	if err != nil {
+		return nil, err
+	}
+	isVM := instanceType == incusapi.InstanceTypeVM
+	if isVM && !isWindows {
+		image = vmImageFor(image)
+	}
+
 	// Baked-image fast path (#1037): when an operator has baked a base image
 	// for this exact (source image, podman) combination (`containarium
 	// image-bake`), clone the baked image and skip the multi-minute
 	// in-container package install below — the bake ran the identical
 	// installPackages. Stacks are not baked, so a stack request keeps the
 	// full path. No baked alias (or a lookup error) → today's path,
-	// byte-identical.
+	// byte-identical. Baked images are container images, so a VM never
+	// takes it.
 	usingBakedImage := false
-	if opts.Stack == "" && !isWindows {
+	if opts.Stack == "" && !isVM {
 		alias := BakedImageAliasFor(image)
 		if props, ok, err := m.incus.GetImageAliasProperties(alias); err == nil && ok &&
 			bakedImageMatches(props, image, opts.EnablePodman) {
@@ -230,11 +243,16 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		ExtraConfig:            labelConfig,
 	}
 
-	// Windows VMs: set instance type and enforce minimum resources
-	if isWindows {
+	// VMs: nesting and privileged podman are LXC concepts (the guest has its
+	// own kernel; Docker inside it needs nothing from the host). Windows
+	// additionally gets its minimum resources; Linux VMs keep the caller's
+	// limits (or Incus's own 1 vCPU / 1 GiB defaults).
+	if isVM {
 		config.InstanceType = incusapi.InstanceTypeVM
 		config.EnableNesting = false
 		config.EnablePodmanPrivileged = false
+	}
+	if isWindows {
 		if config.CPU == "" {
 			config.CPU = "4"
 		}
@@ -1454,6 +1472,17 @@ func (m *Manager) SetLabels(username string, labels map[string]string) error {
 func (m *Manager) GetLabels(username string) (map[string]string, error) {
 	containerName := username + "-container"
 	return m.incus.GetLabels(containerName)
+}
+
+// SetTenant sets the container's explicit owning tenant
+// (incus.TenantLabelKey), which status/list report in place of the name
+// convention. Takes the container name, not a username: the whole point
+// is a box whose owner is not the name it was created under (#2199).
+func (m *Manager) SetTenant(containerName, tenant string) error {
+	if tenant == "" {
+		return fmt.Errorf("tenant is required")
+	}
+	return m.incus.UpdateContainerConfig(containerName, incus.TenantLabelKey, tenant)
 }
 
 // AddLabel adds or updates a single label on a container

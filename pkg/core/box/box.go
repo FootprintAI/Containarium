@@ -71,8 +71,12 @@ type BoxSpec struct {
 	// (K8s → the agent-box image's AGENTBOX_MODE: "mcp" forced-command MCP, or
 	// "shell" interactive login shell). Empty uses the backend's configured
 	// default. Ignored by backends without the notion (LXC).
-	Mode       string
-	OSType     pb.OSType
+	Mode   string
+	OSType pb.OSType
+	// Isolation picks LXC container or QEMU/KVM VM (#2196). UNSPECIFIED
+	// is the backend default (Windows → VM, else container). LXC only:
+	// the K8s backend rejects VM, since a pod has no VM to offer.
+	Isolation  pb.IsolationType
 	Resources  ResourceLimits
 	GPUs       []string // empty on K8s v1 (deferred)
 	SSHKeys    []string
@@ -165,6 +169,9 @@ type BoxStatus struct {
 	GPUs      []string // all attached GPU devices
 	BackendID string   // which backend/peer the box runs on
 	CreatedAt time.Time
+	// Isolation is how the box is actually isolated, read back from the
+	// backend (LXC: the Incus instance type). UNSPECIFIED when unknown.
+	Isolation pb.IsolationType
 	// IsCore marks an infrastructure box (the platform's own core services)
 	// rather than a user/tenant box. The server's user-facing guards (TTL,
 	// delete-policy, monitoring, auto-sleep are "for user containers only")

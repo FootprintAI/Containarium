@@ -66,6 +66,22 @@ const (
 	// Security events (50-59)
 	// A security finding was created or updated by the threat-detection engine
 	EventType_EVENT_TYPE_SECURITY_FINDING EventType = 50
+	// Anonymous-box funnel (#2201, docs/architecture/ssh-new-anonymous-box.md).
+	// One event per step of the `ssh new.<domain>` journey, keyed by the
+	// sha256 of the key fingerprint (Event.fingerprint_hash) — never the key.
+	// Counters containarium_anon_<step>_total mirror them one-for-one.
+	EventType_EVENT_TYPE_ANON_CONNECT            EventType = 60 // a key knocked (before any decision)
+	EventType_EVENT_TYPE_ANON_SHELL_READY        EventType = 61 // a new box was created and provisioned (carries time-to-shell)
+	EventType_EVENT_TYPE_ANON_RECONNECT          EventType = 62 // an existing box was handed back
+	EventType_EVENT_TYPE_ANON_CLAIM_LINK_ISSUED  EventType = 63 // the claim-url was written into the guest
+	EventType_EVENT_TYPE_ANON_CLAIM_COMPLETED    EventType = 64 // ClaimAnonymousBox succeeded
+	EventType_EVENT_TYPE_ANON_EXPIRED            EventType = 65 // a box is gone after its TTL
+	EventType_EVENT_TYPE_ANON_KILLED_ABUSE       EventType = 66 // a box is gone BEFORE its TTL (operator deleted it)
+	EventType_EVENT_TYPE_ANON_REJECTED_CAPACITY  EventType = 67 // refused: global cap
+	EventType_EVENT_TYPE_ANON_REJECTED_RATELIMIT EventType = 68 // refused: per-key / per-IP rate limit
+	EventType_EVENT_TYPE_ANON_REJECTED_DOOR      EventType = 69 // refused: door closed or key banned (#2200)
+	EventType_EVENT_TYPE_ANON_LOST_PREEMPTION    EventType = 70 // the anon-pool host was preempted (emitted by the sentinel's spot watcher, not the daemon)
+	EventType_EVENT_TYPE_ANON_REMINDER_OPTIN     EventType = 71 // the user asked for an expiry reminder (containarium remind-me), picked up by the warner
 )
 
 // Enum value maps for EventType.
@@ -87,6 +103,18 @@ var (
 		30: "EVENT_TYPE_METRICS_UPDATE",
 		40: "EVENT_TYPE_TRAFFIC_UPDATE",
 		50: "EVENT_TYPE_SECURITY_FINDING",
+		60: "EVENT_TYPE_ANON_CONNECT",
+		61: "EVENT_TYPE_ANON_SHELL_READY",
+		62: "EVENT_TYPE_ANON_RECONNECT",
+		63: "EVENT_TYPE_ANON_CLAIM_LINK_ISSUED",
+		64: "EVENT_TYPE_ANON_CLAIM_COMPLETED",
+		65: "EVENT_TYPE_ANON_EXPIRED",
+		66: "EVENT_TYPE_ANON_KILLED_ABUSE",
+		67: "EVENT_TYPE_ANON_REJECTED_CAPACITY",
+		68: "EVENT_TYPE_ANON_REJECTED_RATELIMIT",
+		69: "EVENT_TYPE_ANON_REJECTED_DOOR",
+		70: "EVENT_TYPE_ANON_LOST_PREEMPTION",
+		71: "EVENT_TYPE_ANON_REMINDER_OPTIN",
 	}
 	EventType_value = map[string]int32{
 		"EVENT_TYPE_UNSPECIFIED":             0,
@@ -105,6 +133,18 @@ var (
 		"EVENT_TYPE_METRICS_UPDATE":          30,
 		"EVENT_TYPE_TRAFFIC_UPDATE":          40,
 		"EVENT_TYPE_SECURITY_FINDING":        50,
+		"EVENT_TYPE_ANON_CONNECT":            60,
+		"EVENT_TYPE_ANON_SHELL_READY":        61,
+		"EVENT_TYPE_ANON_RECONNECT":          62,
+		"EVENT_TYPE_ANON_CLAIM_LINK_ISSUED":  63,
+		"EVENT_TYPE_ANON_CLAIM_COMPLETED":    64,
+		"EVENT_TYPE_ANON_EXPIRED":            65,
+		"EVENT_TYPE_ANON_KILLED_ABUSE":       66,
+		"EVENT_TYPE_ANON_REJECTED_CAPACITY":  67,
+		"EVENT_TYPE_ANON_REJECTED_RATELIMIT": 68,
+		"EVENT_TYPE_ANON_REJECTED_DOOR":      69,
+		"EVENT_TYPE_ANON_LOST_PREEMPTION":    70,
+		"EVENT_TYPE_ANON_REMINDER_OPTIN":     71,
 	}
 )
 
@@ -153,6 +193,7 @@ const (
 	ResourceType_RESOURCE_TYPE_TRAFFIC ResourceType = 5
 	// Security finding resource
 	ResourceType_RESOURCE_TYPE_SECURITY_FINDING ResourceType = 6
+	ResourceType_RESOURCE_TYPE_ANON_BOX         ResourceType = 7
 )
 
 // Enum value maps for ResourceType.
@@ -165,6 +206,7 @@ var (
 		4: "RESOURCE_TYPE_METRICS",
 		5: "RESOURCE_TYPE_TRAFFIC",
 		6: "RESOURCE_TYPE_SECURITY_FINDING",
+		7: "RESOURCE_TYPE_ANON_BOX",
 	}
 	ResourceType_value = map[string]int32{
 		"RESOURCE_TYPE_UNSPECIFIED":      0,
@@ -174,6 +216,7 @@ var (
 		"RESOURCE_TYPE_METRICS":          4,
 		"RESOURCE_TYPE_TRAFFIC":          5,
 		"RESOURCE_TYPE_SECURITY_FINDING": 6,
+		"RESOURCE_TYPE_ANON_BOX":         7,
 	}
 )
 
@@ -408,6 +451,81 @@ func (x *MetricsEvent) GetMetrics() []*ContainerMetrics {
 
 // SecurityFindingEvent contains a security finding raised or updated by the
 // threat-detection engine.
+// AnonEvent is the payload of every EVENT_TYPE_ANON_* event (#2201).
+type AnonEvent struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Instance name, e.g. anon-1a2b3c4d-container. Empty on a rejection
+	// that never reached a box.
+	BoxName string `protobuf:"bytes,1,opt,name=box_name,json=boxName,proto3" json:"box_name,omitempty"`
+	// sha256 hex of the SSH key fingerprint. Never the fingerprint or key.
+	FingerprintHash string `protobuf:"bytes,2,opt,name=fingerprint_hash,json=fingerprintHash,proto3" json:"fingerprint_hash,omitempty"`
+	// Human-readable reason for a rejection / kill, empty otherwise.
+	Reason string `protobuf:"bytes,3,opt,name=reason,proto3" json:"reason,omitempty"`
+	// SHELL_READY only: seconds from the key knocking to the box being
+	// provisioned (the PRD's time-to-shell).
+	Seconds       float64 `protobuf:"fixed64,4,opt,name=seconds,proto3" json:"seconds,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AnonEvent) Reset() {
+	*x = AnonEvent{}
+	mi := &file_containarium_v1_events_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AnonEvent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AnonEvent) ProtoMessage() {}
+
+func (x *AnonEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_events_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AnonEvent.ProtoReflect.Descriptor instead.
+func (*AnonEvent) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_events_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *AnonEvent) GetBoxName() string {
+	if x != nil {
+		return x.BoxName
+	}
+	return ""
+}
+
+func (x *AnonEvent) GetFingerprintHash() string {
+	if x != nil {
+		return x.FingerprintHash
+	}
+	return ""
+}
+
+func (x *AnonEvent) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *AnonEvent) GetSeconds() float64 {
+	if x != nil {
+		return x.Seconds
+	}
+	return 0
+}
+
 type SecurityFindingEvent struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Finding       *Finding               `protobuf:"bytes,1,opt,name=finding,proto3" json:"finding,omitempty"`
@@ -417,7 +535,7 @@ type SecurityFindingEvent struct {
 
 func (x *SecurityFindingEvent) Reset() {
 	*x = SecurityFindingEvent{}
-	mi := &file_containarium_v1_events_proto_msgTypes[4]
+	mi := &file_containarium_v1_events_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -429,7 +547,7 @@ func (x *SecurityFindingEvent) String() string {
 func (*SecurityFindingEvent) ProtoMessage() {}
 
 func (x *SecurityFindingEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_events_proto_msgTypes[4]
+	mi := &file_containarium_v1_events_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -442,7 +560,7 @@ func (x *SecurityFindingEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SecurityFindingEvent.ProtoReflect.Descriptor instead.
 func (*SecurityFindingEvent) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_events_proto_rawDescGZIP(), []int{4}
+	return file_containarium_v1_events_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *SecurityFindingEvent) GetFinding() *Finding {
@@ -475,14 +593,19 @@ type Event struct {
 	//	*Event_MetricsEvent
 	//	*Event_TrafficEvent
 	//	*Event_SecurityFindingEvent
-	Payload       isEvent_Payload `protobuf_oneof:"payload"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	//	*Event_AnonEvent
+	Payload isEvent_Payload `protobuf_oneof:"payload"`
+	// sha256 hex of the SSH key fingerprint for EVENT_TYPE_ANON_* events
+	// (#2201); empty for every other type. Top-level so subscribers can
+	// correlate a key's journey without opening the payload.
+	FingerprintHash string `protobuf:"bytes,6,opt,name=fingerprint_hash,json=fingerprintHash,proto3" json:"fingerprint_hash,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *Event) Reset() {
 	*x = Event{}
-	mi := &file_containarium_v1_events_proto_msgTypes[5]
+	mi := &file_containarium_v1_events_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -494,7 +617,7 @@ func (x *Event) String() string {
 func (*Event) ProtoMessage() {}
 
 func (x *Event) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_events_proto_msgTypes[5]
+	mi := &file_containarium_v1_events_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -507,7 +630,7 @@ func (x *Event) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Event.ProtoReflect.Descriptor instead.
 func (*Event) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_events_proto_rawDescGZIP(), []int{5}
+	return file_containarium_v1_events_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *Event) GetId() string {
@@ -606,6 +729,22 @@ func (x *Event) GetSecurityFindingEvent() *SecurityFindingEvent {
 	return nil
 }
 
+func (x *Event) GetAnonEvent() *AnonEvent {
+	if x != nil {
+		if x, ok := x.Payload.(*Event_AnonEvent); ok {
+			return x.AnonEvent
+		}
+	}
+	return nil
+}
+
+func (x *Event) GetFingerprintHash() string {
+	if x != nil {
+		return x.FingerprintHash
+	}
+	return ""
+}
+
 type isEvent_Payload interface {
 	isEvent_Payload()
 }
@@ -634,6 +773,10 @@ type Event_SecurityFindingEvent struct {
 	SecurityFindingEvent *SecurityFindingEvent `protobuf:"bytes,15,opt,name=security_finding_event,json=securityFindingEvent,proto3,oneof"`
 }
 
+type Event_AnonEvent struct {
+	AnonEvent *AnonEvent `protobuf:"bytes,16,opt,name=anon_event,json=anonEvent,proto3,oneof"`
+}
+
 func (*Event_ContainerEvent) isEvent_Payload() {}
 
 func (*Event_AppEvent) isEvent_Payload() {}
@@ -645,6 +788,8 @@ func (*Event_MetricsEvent) isEvent_Payload() {}
 func (*Event_TrafficEvent) isEvent_Payload() {}
 
 func (*Event_SecurityFindingEvent) isEvent_Payload() {}
+
+func (*Event_AnonEvent) isEvent_Payload() {}
 
 // SubscribeEventsRequest configures the event subscription
 type SubscribeEventsRequest struct {
@@ -661,7 +806,7 @@ type SubscribeEventsRequest struct {
 
 func (x *SubscribeEventsRequest) Reset() {
 	*x = SubscribeEventsRequest{}
-	mi := &file_containarium_v1_events_proto_msgTypes[6]
+	mi := &file_containarium_v1_events_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -673,7 +818,7 @@ func (x *SubscribeEventsRequest) String() string {
 func (*SubscribeEventsRequest) ProtoMessage() {}
 
 func (x *SubscribeEventsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_events_proto_msgTypes[6]
+	mi := &file_containarium_v1_events_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -686,7 +831,7 @@ func (x *SubscribeEventsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscribeEventsRequest.ProtoReflect.Descriptor instead.
 func (*SubscribeEventsRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_events_proto_rawDescGZIP(), []int{6}
+	return file_containarium_v1_events_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *SubscribeEventsRequest) GetResourceTypes() []ResourceType {
@@ -725,9 +870,14 @@ const file_containarium_v1_events_proto_rawDesc = "" +
 	"RouteEvent\x121\n" +
 	"\x05route\x18\x01 \x01(\v2\x1b.containarium.v1.ProxyRouteR\x05route\"K\n" +
 	"\fMetricsEvent\x12;\n" +
-	"\ametrics\x18\x01 \x03(\v2!.containarium.v1.ContainerMetricsR\ametrics\"J\n" +
+	"\ametrics\x18\x01 \x03(\v2!.containarium.v1.ContainerMetricsR\ametrics\"\x83\x01\n" +
+	"\tAnonEvent\x12\x19\n" +
+	"\bbox_name\x18\x01 \x01(\tR\aboxName\x12)\n" +
+	"\x10fingerprint_hash\x18\x02 \x01(\tR\x0ffingerprintHash\x12\x16\n" +
+	"\x06reason\x18\x03 \x01(\tR\x06reason\x12\x18\n" +
+	"\aseconds\x18\x04 \x01(\x01R\aseconds\"J\n" +
 	"\x14SecurityFindingEvent\x122\n" +
-	"\afinding\x18\x01 \x01(\v2\x18.containarium.v1.FindingR\afinding\"\xa2\x05\n" +
+	"\afinding\x18\x01 \x01(\v2\x18.containarium.v1.FindingR\afinding\"\x8a\x06\n" +
 	"\x05Event\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12.\n" +
 	"\x04type\x18\x02 \x01(\x0e2\x1a.containarium.v1.EventTypeR\x04type\x12B\n" +
@@ -742,12 +892,15 @@ const file_containarium_v1_events_proto_rawDesc = "" +
 	"routeEvent\x12D\n" +
 	"\rmetrics_event\x18\r \x01(\v2\x1d.containarium.v1.MetricsEventH\x00R\fmetricsEvent\x12D\n" +
 	"\rtraffic_event\x18\x0e \x01(\v2\x1d.containarium.v1.TrafficEventH\x00R\ftrafficEvent\x12]\n" +
-	"\x16security_finding_event\x18\x0f \x01(\v2%.containarium.v1.SecurityFindingEventH\x00R\x14securityFindingEventB\t\n" +
+	"\x16security_finding_event\x18\x0f \x01(\v2%.containarium.v1.SecurityFindingEventH\x00R\x14securityFindingEvent\x12;\n" +
+	"\n" +
+	"anon_event\x18\x10 \x01(\v2\x1a.containarium.v1.AnonEventH\x00R\tanonEvent\x12)\n" +
+	"\x10fingerprint_hash\x18\x06 \x01(\tR\x0ffingerprintHashB\t\n" +
 	"\apayload\"\xc1\x01\n" +
 	"\x16SubscribeEventsRequest\x12D\n" +
 	"\x0eresource_types\x18\x01 \x03(\x0e2\x1d.containarium.v1.ResourceTypeR\rresourceTypes\x12'\n" +
 	"\x0finclude_metrics\x18\x02 \x01(\bR\x0eincludeMetrics\x128\n" +
-	"\x18metrics_interval_seconds\x18\x03 \x01(\x05R\x16metricsIntervalSeconds*\x83\x04\n" +
+	"\x18metrics_interval_seconds\x18\x03 \x01(\x05R\x16metricsIntervalSeconds*\xa6\a\n" +
 	"\tEventType\x12\x1a\n" +
 	"\x16EVENT_TYPE_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cEVENT_TYPE_CONTAINER_CREATED\x10\x01\x12 \n" +
@@ -765,7 +918,19 @@ const file_containarium_v1_events_proto_rawDesc = "" +
 	"\x18EVENT_TYPE_ROUTE_DELETED\x10\x15\x12\x1d\n" +
 	"\x19EVENT_TYPE_METRICS_UPDATE\x10\x1e\x12\x1d\n" +
 	"\x19EVENT_TYPE_TRAFFIC_UPDATE\x10(\x12\x1f\n" +
-	"\x1bEVENT_TYPE_SECURITY_FINDING\x102*\xd4\x01\n" +
+	"\x1bEVENT_TYPE_SECURITY_FINDING\x102\x12\x1b\n" +
+	"\x17EVENT_TYPE_ANON_CONNECT\x10<\x12\x1f\n" +
+	"\x1bEVENT_TYPE_ANON_SHELL_READY\x10=\x12\x1d\n" +
+	"\x19EVENT_TYPE_ANON_RECONNECT\x10>\x12%\n" +
+	"!EVENT_TYPE_ANON_CLAIM_LINK_ISSUED\x10?\x12#\n" +
+	"\x1fEVENT_TYPE_ANON_CLAIM_COMPLETED\x10@\x12\x1b\n" +
+	"\x17EVENT_TYPE_ANON_EXPIRED\x10A\x12 \n" +
+	"\x1cEVENT_TYPE_ANON_KILLED_ABUSE\x10B\x12%\n" +
+	"!EVENT_TYPE_ANON_REJECTED_CAPACITY\x10C\x12&\n" +
+	"\"EVENT_TYPE_ANON_REJECTED_RATELIMIT\x10D\x12!\n" +
+	"\x1dEVENT_TYPE_ANON_REJECTED_DOOR\x10E\x12#\n" +
+	"\x1fEVENT_TYPE_ANON_LOST_PREEMPTION\x10F\x12\"\n" +
+	"\x1eEVENT_TYPE_ANON_REMINDER_OPTIN\x10G*\xf0\x01\n" +
 	"\fResourceType\x12\x1d\n" +
 	"\x19RESOURCE_TYPE_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17RESOURCE_TYPE_CONTAINER\x10\x01\x12\x15\n" +
@@ -773,7 +938,8 @@ const file_containarium_v1_events_proto_rawDesc = "" +
 	"\x13RESOURCE_TYPE_ROUTE\x10\x03\x12\x19\n" +
 	"\x15RESOURCE_TYPE_METRICS\x10\x04\x12\x19\n" +
 	"\x15RESOURCE_TYPE_TRAFFIC\x10\x05\x12\"\n" +
-	"\x1eRESOURCE_TYPE_SECURITY_FINDING\x10\x062\xa3\x02\n" +
+	"\x1eRESOURCE_TYPE_SECURITY_FINDING\x10\x06\x12\x1a\n" +
+	"\x16RESOURCE_TYPE_ANON_BOX\x10\a2\xa3\x02\n" +
 	"\fEventService\x12\x92\x02\n" +
 	"\x0fSubscribeEvents\x12'.containarium.v1.SubscribeEventsRequest\x1a\x16.containarium.v1.Event\"\xbb\x01\x92A\x9b\x01\n" +
 	"\x06Events\x12\x1dSubscribe to real-time events\x1arOpens a Server-Sent Events stream for real-time resource updates. Filter by resource types using query parameters.\x82\xd3\xe4\x93\x02\x16\x12\x14/v1/events/subscribe0\x01BKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
@@ -791,7 +957,7 @@ func file_containarium_v1_events_proto_rawDescGZIP() []byte {
 }
 
 var file_containarium_v1_events_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_containarium_v1_events_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_containarium_v1_events_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_containarium_v1_events_proto_goTypes = []any{
 	(EventType)(0),                 // 0: containarium.v1.EventType
 	(ResourceType)(0),              // 1: containarium.v1.ResourceType
@@ -799,44 +965,46 @@ var file_containarium_v1_events_proto_goTypes = []any{
 	(*AppEvent)(nil),               // 3: containarium.v1.AppEvent
 	(*RouteEvent)(nil),             // 4: containarium.v1.RouteEvent
 	(*MetricsEvent)(nil),           // 5: containarium.v1.MetricsEvent
-	(*SecurityFindingEvent)(nil),   // 6: containarium.v1.SecurityFindingEvent
-	(*Event)(nil),                  // 7: containarium.v1.Event
-	(*SubscribeEventsRequest)(nil), // 8: containarium.v1.SubscribeEventsRequest
-	(*Container)(nil),              // 9: containarium.v1.Container
-	(ContainerState)(0),            // 10: containarium.v1.ContainerState
-	(*App)(nil),                    // 11: containarium.v1.App
-	(AppState)(0),                  // 12: containarium.v1.AppState
-	(*ProxyRoute)(nil),             // 13: containarium.v1.ProxyRoute
-	(*ContainerMetrics)(nil),       // 14: containarium.v1.ContainerMetrics
-	(*Finding)(nil),                // 15: containarium.v1.Finding
-	(*timestamppb.Timestamp)(nil),  // 16: google.protobuf.Timestamp
-	(*TrafficEvent)(nil),           // 17: containarium.v1.TrafficEvent
+	(*AnonEvent)(nil),              // 6: containarium.v1.AnonEvent
+	(*SecurityFindingEvent)(nil),   // 7: containarium.v1.SecurityFindingEvent
+	(*Event)(nil),                  // 8: containarium.v1.Event
+	(*SubscribeEventsRequest)(nil), // 9: containarium.v1.SubscribeEventsRequest
+	(*Container)(nil),              // 10: containarium.v1.Container
+	(ContainerState)(0),            // 11: containarium.v1.ContainerState
+	(*App)(nil),                    // 12: containarium.v1.App
+	(AppState)(0),                  // 13: containarium.v1.AppState
+	(*ProxyRoute)(nil),             // 14: containarium.v1.ProxyRoute
+	(*ContainerMetrics)(nil),       // 15: containarium.v1.ContainerMetrics
+	(*Finding)(nil),                // 16: containarium.v1.Finding
+	(*timestamppb.Timestamp)(nil),  // 17: google.protobuf.Timestamp
+	(*TrafficEvent)(nil),           // 18: containarium.v1.TrafficEvent
 }
 var file_containarium_v1_events_proto_depIdxs = []int32{
-	9,  // 0: containarium.v1.ContainerEvent.container:type_name -> containarium.v1.Container
-	10, // 1: containarium.v1.ContainerEvent.previous_state:type_name -> containarium.v1.ContainerState
-	11, // 2: containarium.v1.AppEvent.app:type_name -> containarium.v1.App
-	12, // 3: containarium.v1.AppEvent.previous_state:type_name -> containarium.v1.AppState
-	13, // 4: containarium.v1.RouteEvent.route:type_name -> containarium.v1.ProxyRoute
-	14, // 5: containarium.v1.MetricsEvent.metrics:type_name -> containarium.v1.ContainerMetrics
-	15, // 6: containarium.v1.SecurityFindingEvent.finding:type_name -> containarium.v1.Finding
+	10, // 0: containarium.v1.ContainerEvent.container:type_name -> containarium.v1.Container
+	11, // 1: containarium.v1.ContainerEvent.previous_state:type_name -> containarium.v1.ContainerState
+	12, // 2: containarium.v1.AppEvent.app:type_name -> containarium.v1.App
+	13, // 3: containarium.v1.AppEvent.previous_state:type_name -> containarium.v1.AppState
+	14, // 4: containarium.v1.RouteEvent.route:type_name -> containarium.v1.ProxyRoute
+	15, // 5: containarium.v1.MetricsEvent.metrics:type_name -> containarium.v1.ContainerMetrics
+	16, // 6: containarium.v1.SecurityFindingEvent.finding:type_name -> containarium.v1.Finding
 	0,  // 7: containarium.v1.Event.type:type_name -> containarium.v1.EventType
 	1,  // 8: containarium.v1.Event.resource_type:type_name -> containarium.v1.ResourceType
-	16, // 9: containarium.v1.Event.timestamp:type_name -> google.protobuf.Timestamp
+	17, // 9: containarium.v1.Event.timestamp:type_name -> google.protobuf.Timestamp
 	2,  // 10: containarium.v1.Event.container_event:type_name -> containarium.v1.ContainerEvent
 	3,  // 11: containarium.v1.Event.app_event:type_name -> containarium.v1.AppEvent
 	4,  // 12: containarium.v1.Event.route_event:type_name -> containarium.v1.RouteEvent
 	5,  // 13: containarium.v1.Event.metrics_event:type_name -> containarium.v1.MetricsEvent
-	17, // 14: containarium.v1.Event.traffic_event:type_name -> containarium.v1.TrafficEvent
-	6,  // 15: containarium.v1.Event.security_finding_event:type_name -> containarium.v1.SecurityFindingEvent
-	1,  // 16: containarium.v1.SubscribeEventsRequest.resource_types:type_name -> containarium.v1.ResourceType
-	8,  // 17: containarium.v1.EventService.SubscribeEvents:input_type -> containarium.v1.SubscribeEventsRequest
-	7,  // 18: containarium.v1.EventService.SubscribeEvents:output_type -> containarium.v1.Event
-	18, // [18:19] is the sub-list for method output_type
-	17, // [17:18] is the sub-list for method input_type
-	17, // [17:17] is the sub-list for extension type_name
-	17, // [17:17] is the sub-list for extension extendee
-	0,  // [0:17] is the sub-list for field type_name
+	18, // 14: containarium.v1.Event.traffic_event:type_name -> containarium.v1.TrafficEvent
+	7,  // 15: containarium.v1.Event.security_finding_event:type_name -> containarium.v1.SecurityFindingEvent
+	6,  // 16: containarium.v1.Event.anon_event:type_name -> containarium.v1.AnonEvent
+	1,  // 17: containarium.v1.SubscribeEventsRequest.resource_types:type_name -> containarium.v1.ResourceType
+	9,  // 18: containarium.v1.EventService.SubscribeEvents:input_type -> containarium.v1.SubscribeEventsRequest
+	8,  // 19: containarium.v1.EventService.SubscribeEvents:output_type -> containarium.v1.Event
+	19, // [19:20] is the sub-list for method output_type
+	18, // [18:19] is the sub-list for method input_type
+	18, // [18:18] is the sub-list for extension type_name
+	18, // [18:18] is the sub-list for extension extendee
+	0,  // [0:18] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_events_proto_init() }
@@ -849,13 +1017,14 @@ func file_containarium_v1_events_proto_init() {
 	file_containarium_v1_network_proto_init()
 	file_containarium_v1_traffic_proto_init()
 	file_containarium_v1_threatdetection_proto_init()
-	file_containarium_v1_events_proto_msgTypes[5].OneofWrappers = []any{
+	file_containarium_v1_events_proto_msgTypes[6].OneofWrappers = []any{
 		(*Event_ContainerEvent)(nil),
 		(*Event_AppEvent)(nil),
 		(*Event_RouteEvent)(nil),
 		(*Event_MetricsEvent)(nil),
 		(*Event_TrafficEvent)(nil),
 		(*Event_SecurityFindingEvent)(nil),
+		(*Event_AnonEvent)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -863,7 +1032,7 @@ func file_containarium_v1_events_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_events_proto_rawDesc), len(file_containarium_v1_events_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   7,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

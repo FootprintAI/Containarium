@@ -16,6 +16,7 @@ import (
 	"github.com/footprintai/containarium/internal/app"
 	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/bridgedns"
 	"github.com/footprintai/containarium/internal/capabilities"
 	"github.com/footprintai/containarium/internal/capacity"
 	appconfig "github.com/footprintai/containarium/internal/config"
@@ -116,6 +117,7 @@ type ContainerServer struct {
 	boxRunLogDir       string
 	boxRunPoll         time.Duration
 	emitter            *events.Emitter
+	bridgeDNSDisabled  bool // #2232: --bridge-dns-reconcile=false, for status
 	pendingCreations   map[string]*PendingCreation
 	pendingMu          sync.RWMutex
 	// Monitoring URLs (set by DualServer after setup)
@@ -348,6 +350,10 @@ type ContainerServer struct {
 	// Empty (direct mode / no sentinel) leaves ssh_host empty and clients fall
 	// back to network.ip_address.
 	sshHost string
+
+	// bridgeDNS is the reconciler behind GetBridgeDNSStatus (#2188), set by
+	// DualServer wiring. nil = not managed by this daemon.
+	bridgeDNS *bridgedns.Reconciler
 
 	// auditStore records admin-initiated operations (TriggerUpgrade, etc.).
 	// Nil on daemons without a Postgres pool; nil is safe (ops are logged but
@@ -615,6 +621,7 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 		Stack:                  req.Stack,
 		StackParams:            req.StackParameters,
 		OSType:                 req.OsType,
+		Isolation:              req.Isolation,
 		GPUs:                   req.Gpus, // legacy singular `gpu` no longer honored (#673)
 		StaticIP:               req.StaticIp,
 		// OTel app-monitoring opt-in. The daemon-level collector
@@ -3983,6 +3990,7 @@ func toProtoContainer(st *box.BoxStatus) *pb.Container {
 		GpuDevices:           st.GPUs,
 		BackendId:            st.BackendID,
 		OsType:               osTypeEnum,
+		Isolation:            st.Isolation,
 		AccessType:           accessType,
 		RdpAddress:           rdpAddress,
 		MonitoringEnabled:    st.MonitoringEnabled,

@@ -66,6 +66,14 @@ resource "google_compute_instance" "sentinel" {
     # never reached already-running sentinels (issue #933) — some sentinels
     # kept running months-stale, far more aggressive settings indefinitely.
     sshpiper-service-unit = file("${path.module}/scripts/sshpiper.service.tmpl")
+    # The anonymous-box door's unit, same live-metadata reconcile as above
+    # (#2198). Present only when the door is configured; the startup script
+    # treats an absent key as "disable and remove the unit".
+    sshpiper-anon-service-unit = var.anon_door_addr == "" ? null : templatefile("${path.module}/scripts/sshpiper-anon.service.tmpl", {
+      anon_listen_host = split(":", var.anon_door_addr)[0]
+      anon_listen_port = split(":", var.anon_door_addr)[1]
+      anon_daemon_url  = var.anon_daemon_url
+    })
     startup-script = templatefile("${path.module}/scripts/startup-sentinel.sh", {
       admin_users             = keys(var.admin_ssh_keys)
       containarium_version    = var.containarium_version

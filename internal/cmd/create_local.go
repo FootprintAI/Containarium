@@ -42,7 +42,7 @@ func cleanupJumpServerAccountLocal(username string) {
 }
 
 // createLocal creates a container using local Incus daemon
-func createLocal(username, image, cpu, memory, disk, staticIP string, sshKeys []string, labelMap map[string]string, enablePodman bool, stack string, gpus []string, osType pb.OSType, monitoring bool, git client.GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64, _ string) (*incus.ContainerInfo, error) {
+func createLocal(username, image, cpu, memory, disk, staticIP string, sshKeys []string, labelMap map[string]string, enablePodman bool, stack string, gpus []string, osType pb.OSType, isolation pb.IsolationType, monitoring bool, git client.GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64, _ string) (*incus.ContainerInfo, error) {
 	mgr, err := container.New()
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to Incus: %w (is Incus running?)", err)
@@ -64,6 +64,7 @@ func createLocal(username, image, cpu, memory, disk, staticIP string, sshKeys []
 		Verbose:                verbose,
 		Stack:                  stack,
 		OSType:                 osType,
+		Isolation:              isolation,
 		Monitoring:             monitoring,
 		GitSource:              git.Source,
 		GitRef:                 git.Ref,

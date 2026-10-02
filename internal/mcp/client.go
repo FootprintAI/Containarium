@@ -708,6 +708,19 @@ func (c *Client) GetSentryStatus() (*SentryStatusResponse, error) {
 	return &resp, nil
 }
 
+// GetBridgeDNSStatus reports the bridge DNS reconciler's last pass (#2188).
+func (c *Client) GetBridgeDNSStatus() (*BridgeDNSStatusResponse, error) {
+	respBody, err := c.doRequest("GET", "/v1/system/bridge-dns", nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp BridgeDNSStatusResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
 // ListBadDestinations returns the merged baseline + operator-added
 // known-bad-destination list the bad-destination rule (#1641) matches
 // against.
@@ -1908,6 +1921,16 @@ type CreateContainerRequest struct {
 	// Region places the container on a multi-region hosted control plane
 	// (#1606). A standalone/single-region daemon ignores it.
 	Region string `json:"region,omitempty"`
+
+	// Isolation is the IsolationType enum *name* ("ISOLATION_TYPE_VM"),
+	// which is what grpc-gateway's protojson accepts. Empty = not sent =
+	// the daemon's default (#2196).
+	Isolation string `json:"isolation,omitempty"`
+
+	// OSType is the OSType enum *name* ("OS_TYPE_ROCKY_9"),
+	// which is what grpc-gateway's protojson accepts. Empty = not sent =
+	// the daemon's default (#2208).
+	OSType string `json:"osType,omitempty"`
 }
 
 type ResourceLimits struct {

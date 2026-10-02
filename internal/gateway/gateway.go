@@ -532,6 +532,10 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	if err := pb.RegisterNetworkPolicyServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
 		return fmt.Errorf("failed to register network policy service gateway: %w", err)
 	}
+	// AnonymousBoxService (#2197): the ssh new.<domain> door's daemon side.
+	if err := pb.RegisterAnonymousBoxServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
+		return fmt.Errorf("failed to register anonymous box service gateway: %w", err)
+	}
 
 	// Register TrafficService gateway handler
 	if err := pb.RegisterTrafficServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
@@ -939,6 +943,18 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 		sentinelKeyHandler = ServeSentinelKey()
 	}
 	httpMux.Handle("/authorized-keys/sentinel", sentinelVerifier.Middleware(sentinelKeyHandler))
+
+	// #2197: the anonymous-box door. The sentinel's door plugin signs
+	// EnsureAnonymousBox with the same signature it uses for the routes
+	// above; everyone else still needs a JWT (anon:door or admin). Exact
+	// path, so it wins over the "/v1/" catch-all. The inner chain keeps
+	// the audit middleware but skips JWT auth — the door identity comes
+	// from the verified signature instead.
+	var anonInner http.Handler = mux
+	if gs.auditStore != nil {
+		anonInner = audit.HTTPAuditMiddleware(anonInner, gs.auditStore)
+	}
+	httpMux.Handle(AnonDoorEnsurePath, anonDoorHandler(sentinelVerifier, corsHandler, anonInner, nil))
 
 	// Catch-all fallback: when wake-on-HTTP is enabled, Caddy
 	// forwards user traffic to this daemon while a container is
