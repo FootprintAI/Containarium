@@ -182,7 +182,7 @@ func containsString(hay []string, needle string) bool {
 func TestMintGatewayToken_RoundTrips(t *testing.T) {
 	secret := []byte("test-shared-secret")
 	g := &gatewayProvisioning{httpPort: 8080, secret: secret}
-	tok, minted, err := g.mintGatewayToken("agent-hello", "hello-agent", "run-42", "", "anthropic")
+	tok, minted, err := g.mintGatewayToken("agent-hello", "hello-agent", "run-42", "", "anthropic", "")
 	if err != nil {
 		t.Fatalf("mint: %v", err)
 	}
@@ -198,11 +198,34 @@ func TestMintGatewayToken_RoundTrips(t *testing.T) {
 	if claims.RunID != "run-42" {
 		t.Errorf("run_id claim = %q, want run-42", claims.RunID)
 	}
+	if len(claims.AllowedModels) != 0 {
+		t.Errorf("allowed_models = %v, want none — this mint named no model", claims.AllowedModels)
+	}
 	if minted.JTI == "" || minted.JTI != claims.ID {
 		t.Errorf("minted jti = %q, want the token's own jti %q", minted.JTI, claims.ID)
 	}
 	if minted.ExpiresAt.IsZero() {
 		t.Error("minted expiry is zero — nothing to pass to Revoke(jti, expiresAt, reason)")
+	}
+}
+
+// TestMintGatewayToken_ModelCeiling pins #2229: a non-empty model becomes a
+// real, enforced AllowedModels ceiling of exactly that one model — not the
+// now-removed daemon-global gatewayProvisioning.allowedModels field, which
+// was never assigned by any caller.
+func TestMintGatewayToken_ModelCeiling(t *testing.T) {
+	g := &gatewayProvisioning{httpPort: 8080, secret: []byte("test-shared-secret")}
+
+	tok, _, err := g.mintGatewayToken("agent-hello", "hello-agent", "run-42", "", "anthropic", "claude-3-5-haiku-latest")
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	claims, err := modelgateway.VerifyToken(g.secret, tok)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if len(claims.AllowedModels) != 1 || claims.AllowedModels[0] != "claude-3-5-haiku-latest" {
+		t.Errorf("allowed_models = %v, want exactly [claude-3-5-haiku-latest]", claims.AllowedModels)
 	}
 }
 

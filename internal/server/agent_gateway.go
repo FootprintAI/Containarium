@@ -41,12 +41,26 @@ type gatewayProvisioning struct {
 	httpPort int    // the daemon HTTP port the box dials (resolved to the host's default-route IP in-box)
 	secret   []byte // shared HMAC secret (daemon jwt.secret) — signs the gateway token
 
-	allowedModels []string
+	// models reads a provider's upstream model list (#2229), on the SAME key
+	// a run's gateway token would spend. nil in direct mode and on any daemon
+	// built before this field — provisionSkillBoxWith treats that as "can't
+	// check" exactly like an unsupported provider, never as a refusal.
+	// *modelgateway.Gateway satisfies this; a narrow interface (not the
+	// concrete type) so a test can fake it with a call recorder instead of
+	// standing up a real Gateway.
+	models modelLister
+
 	// egressCIDR is the host the box reaches the gateway on, as a /32 (the LXC
 	// bridge gateway IP — also the daemon API + DNS). When set, the skill box's
 	// egress policy allows ONLY this host (+ peers) for model calls and DROPS the
 	// direct provider domains — so a box can't bypass the gateway (#674 inc 4).
 	egressCIDR string
+}
+
+// modelLister is the one method RunAgentSkill's model-ceiling check (#2229)
+// needs from the model gateway — see gatewayProvisioning.models.
+type modelLister interface {
+	ListModels(ctx context.Context, keyOwner, provider string) ([]string, error)
 }
 
 // gatewayProviderEnv is the per-provider env contract the agent-runtime engines
@@ -78,12 +92,24 @@ var gatewayProviderEnvs = map[string]gatewayProviderEnv{
 // spends that owner's registered key; "" mints no claim and the token resolves
 // through the daemon-global key exactly as before. Callers resolve it with
 // runKeyOwner, which only ever returns a validated owner or "".
-func (g *gatewayProvisioning) mintGatewayToken(tenant, skillID, runID, keyOwner, provider string) (string, tokenid.MintedID, error) {
+//
+// model (#2229) is the skill manifest's own pinned model, already confirmed
+// (by the caller, before this mint) to be one the resolved provider actually
+// serves when a check was possible. Empty means the skill pins none — the
+// token carries no AllowedModels ceiling, the gateway's own default applies,
+// unchanged pre-#2229 behavior. A skill with one DOES get a real ceiling: the
+// token can spend on exactly that model and no other, enforced at the
+// gateway (internal/modelgateway/gateway.go), not just advisory.
+func (g *gatewayProvisioning) mintGatewayToken(tenant, skillID, runID, keyOwner, provider, model string) (string, tokenid.MintedID, error) {
+	var allowedModels []string
+	if model != "" {
+		allowedModels = []string{model}
+	}
 	return modelgateway.MintTokenWithID(g.secret, modelgateway.GatewayClaims{
 		Tenant:        tenant,
 		SkillID:       skillID,
 		Provider:      provider,
-		AllowedModels: g.allowedModels,
+		AllowedModels: allowedModels,
 		RunID:         runID,
 		KeyOwner:      keyOwner,
 	}, agentTokenTTL)
@@ -139,12 +165,15 @@ func runKeyOwner(ctx context.Context, box *pb.Container) string {
 //
 // A run with no attributable owner mints no claim, and is logged here, once
 // per run, rather than per model call.
-func (s *AgentSkillServer) mintRunGatewayToken(ctx context.Context, name, skillID, runID, provider string, box *pb.Container) (string, tokenid.MintedID, error) {
+//
+// model (#2229) is the skill manifest's own pinned model — see
+// gatewayProvisioning.mintGatewayToken's doc for what it does to the token.
+func (s *AgentSkillServer) mintRunGatewayToken(ctx context.Context, name, skillID, runID, provider, model string, box *pb.Container) (string, tokenid.MintedID, error) {
 	keyOwner := runKeyOwner(ctx, box)
 	if keyOwner == "" {
 		log.Printf("[agent-skill] run %s on %s has no attributable key owner; its model calls are billed to the daemon-global key", runID, name)
 	}
-	return s.gateway.mintGatewayToken(name, skillID, runID, keyOwner, provider)
+	return s.gateway.mintGatewayToken(name, skillID, runID, keyOwner, provider, model)
 }
 
 // gatewayEnvScript returns a shell snippet (run inside the box, in the same exec
