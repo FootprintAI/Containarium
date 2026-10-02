@@ -33,7 +33,7 @@ curl https://blog.example.com → hello world
 
 | Path | You end up with | Go to |
 |------|-----------------|-------|
-| **Hosted cloud** | a box you can `ssh` into with your agent wired to it, no server to run | [Sign up at containarium.dev](https://containarium.dev) |
+| **Hosted cloud** | a box you can `ssh` into with your agent wired to it, no server to run | [Sign up at cloud.containarium.dev](https://cloud.containarium.dev) |
 | **Self-host on a VM** | the same, on your own Ubuntu VM (about 5 minutes) | [Quick start](#quick-start) |
 | **See the end result** | a live app served from a box, which is what you end up with | [helloworld.demo.containarium.dev](https://helloworld.demo.containarium.dev) |
 
