@@ -113,6 +113,37 @@ func (f *fakeKeyResolver) KeyFor(_ context.Context, keyOwner, provider string) (
 	return "", false
 }
 
+// TestOverride is the request-override axis #2228 adds: a request naming an
+// engine wins over the manifest's own choice, and Resolve is never told
+// which of the two `want` came from — only Override decides that, once,
+// before Resolve runs.
+func TestOverride(t *testing.T) {
+	unspecified := pb.AgentEngine_AGENT_ENGINE_UNSPECIFIED
+	claude := pb.AgentEngine_AGENT_ENGINE_CLAUDE
+	codex := pb.AgentEngine_AGENT_ENGINE_CODEX
+	gemini := pb.AgentEngine_AGENT_ENGINE_GEMINI
+
+	cases := []struct {
+		name      string
+		manifest  pb.AgentEngine
+		requested pb.AgentEngine
+		want      pb.AgentEngine
+	}{
+		{"no manifest engine, no request override: stays unspecified", unspecified, unspecified, unspecified},
+		{"manifest engine, no request override: manifest wins", claude, unspecified, claude},
+		{"no manifest engine, request override: request wins", unspecified, codex, codex},
+		{"manifest and request differ: request wins", claude, codex, codex},
+		{"manifest and request agree: either way, same result", gemini, gemini, gemini},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := Override(c.manifest, c.requested); got != c.want {
+				t.Errorf("Override(%v, %v) = %v, want %v", c.manifest, c.requested, got, c.want)
+			}
+		})
+	}
+}
+
 func TestResolve(t *testing.T) {
 	ctx := context.Background()
 	claude := pb.AgentEngine_AGENT_ENGINE_CLAUDE

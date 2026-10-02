@@ -584,3 +584,44 @@ func TestExposePort_RejectsContainerWithoutIP(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no IP address")
 }
+
+// TestParseAgentSkillEngineArg pins #2228's AC: run_agent_skill's "engine"
+// argument is validated and normalized to the proto enum's NAME string (the
+// shape protojson expects), empty means no override, and an unknown name is
+// an error listing the valid ones — mirrors `agent run --engine`'s own
+// resolveAgentRunEngine contract on the MCP side.
+func TestParseAgentSkillEngineArg(t *testing.T) {
+	tests := []struct {
+		name       string
+		args       map[string]interface{}
+		wantWire   string
+		wantErr    bool
+		wantErrHas []string
+	}{
+		{name: "no engine arg: no override", args: map[string]interface{}{}, wantWire: ""},
+		{name: "empty engine arg: no override", args: map[string]interface{}{"engine": ""}, wantWire: ""},
+		{name: "claude", args: map[string]interface{}{"engine": "claude"}, wantWire: "AGENT_ENGINE_CLAUDE"},
+		{name: "codex, case-insensitive", args: map[string]interface{}{"engine": "Codex"}, wantWire: "AGENT_ENGINE_CODEX"},
+		{name: "gemini", args: map[string]interface{}{"engine": "gemini"}, wantWire: "AGENT_ENGINE_GEMINI"},
+		{
+			name:       "unknown engine name lists the valid ones",
+			args:       map[string]interface{}{"engine": "clawed"},
+			wantErr:    true,
+			wantErrHas: []string{"claude", "codex", "gemini"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseAgentSkillEngineArg(tt.args)
+			if tt.wantErr {
+				require.Error(t, err)
+				for _, want := range tt.wantErrHas {
+					assert.Contains(t, err.Error(), want)
+				}
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantWire, got)
+		})
+	}
+}

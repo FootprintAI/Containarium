@@ -366,6 +366,11 @@ type RunAgentSkillRequest struct {
 	InputJSON string `json:"input_json,omitempty"`
 	GitSource string `json:"git_source,omitempty"`
 	GitRef    string `json:"git_ref,omitempty"`
+	// Engine (#2228) is the proto enum's NAME string (e.g.
+	// "AGENT_ENGINE_CODEX"), the shape protojson expects for an enum field.
+	// handleRunAgentSkill validates+normalizes the tool's lowercase "engine"
+	// argument into this shape before it ever reaches here.
+	Engine string `json:"engine,omitempty"`
 }
 
 // RunAgentSkillResponse is the result of an agent-skill run.

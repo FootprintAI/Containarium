@@ -255,6 +255,37 @@ type runAgentSkillRequest struct {
 	// TrackerConnection is omitted when empty so an unbound run sends
 	// exactly the body it did before #2042.
 	TrackerConnection string `json:"tracker_connection,omitempty"`
+	// Engine (#2228) is the proto enum's NAME string (e.g.
+	// "AGENT_ENGINE_CODEX"), the shape protojson expects for an enum field —
+	// omitted (so "" never needs translating to AGENT_ENGINE_UNSPECIFIED)
+	// when the caller named no override.
+	Engine string `json:"engine,omitempty"`
+}
+
+// engineJSON converts a typed engine override to the JSON string protojson
+// expects for an enum field: the proto enum's NAME (e.g. "AGENT_ENGINE_
+// CODEX"), or "" for AGENT_ENGINE_UNSPECIFIED so the request's `omitempty`
+// field is dropped entirely rather than sent as the literal unspecified name.
+func engineJSON(e pb.AgentEngine) string {
+	if e == pb.AgentEngine_AGENT_ENGINE_UNSPECIFIED {
+		return ""
+	}
+	return e.String()
+}
+
+// engineOverridesJSON converts a per-member engine override map to the
+// map[string]string shape runCrewRequest.EngineOverrides sends — same
+// name-or-empty conversion as engineJSON, applied per entry. A nil map stays
+// nil so an unset EngineOverrides (every pre-#2228 caller) is omitted.
+func engineOverridesJSON(overrides map[string]pb.AgentEngine) map[string]string {
+	if overrides == nil {
+		return nil
+	}
+	out := make(map[string]string, len(overrides))
+	for skillID, e := range overrides {
+		out[skillID] = engineJSON(e)
+	}
+	return out
 }
 
 // enqueueAgentTaskRequest is POST /v1/agent-tasks.
@@ -287,6 +318,10 @@ type runCrewRequest struct {
 	GitSource     string `json:"git_source"`
 	GitRef        string `json:"git_ref"`
 	GitCredential string `json:"git_credential"`
+	// EngineOverrides (#2228) maps skill_id -> the proto enum's NAME string
+	// (e.g. "AGENT_ENGINE_CODEX"), the shape protojson expects for an enum
+	// map value. Omitted when the caller named no override for any member.
+	EngineOverrides map[string]string `json:"engine_overrides,omitempty"`
 }
 
 // addRouteRequest is POST /v1/network/routes.

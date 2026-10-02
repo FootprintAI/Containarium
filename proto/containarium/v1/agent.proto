@@ -240,6 +240,13 @@ message RunAgentSkillRequest {
   // Empty means the run is not bound to any connection (every pre-#1922
   // run, and any run that doesn't use the tracker broker).
   string tracker_connection = 9;
+  // Per-invocation engine override (#2228): when set, this run's engine is
+  // resolved from THIS value instead of the skill manifest's own `engine`
+  // field — the same agentengine.Resolve readiness check applies either way,
+  // so an override naming an engine with no usable key is refused the same
+  // way an unready manifest engine is. UNSPECIFIED (the default) means "use
+  // the manifest", unchanged pre-#2228 behavior.
+  AgentEngine engine = 10;
 }
 message RunAgentSkillResponse {
   // The box the agent ran in.
@@ -744,6 +751,13 @@ message RunCrewRequest {
   // member's fetch only (an ephemeral http.extraHeader) — never written to
   // any box's .git/config, never logged. Empty = public repo.
   string git_credential = 8;
+  // Per-member engine override (#2228), keyed by skill_id: when a member's
+  // id has an entry here, THIS value resolves that member's engine instead
+  // of its own manifest `engine` field — same agentengine.Resolve readiness
+  // check, same refusal text, as RunAgentSkillRequest.engine. A member with
+  // no entry (or AGENT_ENGINE_UNSPECIFIED) keeps its manifest's own choice,
+  // unchanged pre-#2228 behavior.
+  map<string, AgentEngine> engine_overrides = 9;
 }
 message RunCrewResponse {
   CrewRun run = 1;

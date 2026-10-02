@@ -30,7 +30,7 @@ func init() {
 type crewAPI interface {
 	ListCrews() ([]*pb.Crew, error)
 	GetCrew(id string) (*pb.Crew, error)
-	RunCrew(crewID, backendID, pool, inputJSON, gitSource, gitRef, gitCredential string) (*pb.CrewRun, error)
+	RunCrew(crewID, backendID, pool, inputJSON, gitSource, gitRef, gitCredential string, engineOverrides map[string]pb.AgentEngine) (*pb.CrewRun, error)
 	GetCrewRun(id string) (*pb.CrewRun, error)
 	TailRunLog(req *pb.TailRunLogRequest) (*pb.TailRunLogResponse, error)
 	Close() error

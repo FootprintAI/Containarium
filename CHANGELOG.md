@@ -18,6 +18,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   models it does list. The daemon-global `gatewayProvisioning.allowedModels`
   field (dead code — no caller ever assigned it) is removed; the ceiling is
   now always per-skill.
+- Per-invocation `--engine` override (#2228): `containarium agent run
+  <skill> --engine codex` and `containarium crew run <crew> --engine
+  <skill-id>=<engine>` (repeatable, one per member) resolve that run's
+  engine from the flag instead of the skill manifest's own `engine` field.
+  Refused with the same `FailedPrecondition` text a manifest-named engine
+  gets when its provider has no usable key — the override goes through the
+  identical `agentengine.Resolve` readiness check (#2222), so what a run
+  actually does and what `containarium agent engines` reports can't drift
+  apart. The MCP `run_agent_skill` tool gained the matching `engine`
+  argument.
 
 ## [0.97.1] - 2026-10-02
 

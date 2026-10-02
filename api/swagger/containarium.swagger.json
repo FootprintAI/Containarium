@@ -15558,6 +15558,10 @@
         "trackerConnection": {
           "type": "string",
           "description": "Name of a tracker connection (see TrackerConnection) owned by the\ncalling tenant that this run is bound to (#1922 design note, decision\nD3: \"a run is bound to exactly one connection at launch\"). Validated\nagainst the caller's own connections at launch time and minted into\nthe run's JWT as the `tracker_conn` claim — the tracker verb RPCs\nreject a request naming a different connection than this claim.\nEmpty means the run is not bound to any connection (every pre-#1922\nrun, and any run that doesn't use the tracker broker)."
+        },
+        "engine": {
+          "$ref": "#/definitions/AgentEngine",
+          "description": "Per-invocation engine override (#2228): when set, this run's engine is\nresolved from THIS value instead of the skill manifest's own `engine`\nfield — the same agentengine.Resolve readiness check applies either way,\nso an override naming an engine with no usable key is refused the same\nway an unready manifest engine is. UNSPECIFIED (the default) means \"use\nthe manifest\", unchanged pre-#2228 behavior."
         }
       },
       "description": "RunAgentSkillRequest launches a single skill in its box and sends it one\ntask (no peers). Useful for testing a skill in isolation."
@@ -15615,6 +15619,13 @@
         "gitCredential": {
           "type": "string",
           "description": "Bearer token for a private git_source. Used daemon-side for each\nmember's fetch only (an ephemeral http.extraHeader) — never written to\nany box's .git/config, never logged. Empty = public repo."
+        },
+        "engineOverrides": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/AgentEngine"
+          },
+          "description": "Per-member engine override (#2228), keyed by skill_id: when a member's\nid has an entry here, THIS value resolves that member's engine instead\nof its own manifest `engine` field — same agentengine.Resolve readiness\ncheck, same refusal text, as RunAgentSkillRequest.engine. A member with\nno entry (or AGENT_ENGINE_UNSPECIFIED) keeps its manifest's own choice,\nunchanged pre-#2228 behavior."
         }
       }
     },
