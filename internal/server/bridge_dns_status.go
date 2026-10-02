@@ -36,10 +36,17 @@ func bridgeDNSStatusResponse(st bridgedns.Status) *pb.GetBridgeDNSStatusResponse
 	if !st.LastApplied.IsZero() {
 		resp.LastApplied = timestamppb.New(st.LastApplied)
 	}
+	resp.LastAction = st.LastAction
+	if !st.CreatedAt.IsZero() {
+		resp.CreatedAt = timestamppb.New(st.CreatedAt)
+	}
 	switch {
 	case st.LastPass.IsZero():
 		resp.State = pb.BridgeDNSState_BRIDGE_DNS_STATE_PENDING
 		resp.Reason = "the reconciler has not finished a pass yet"
+	case st.Absent:
+		resp.State = pb.BridgeDNSState_BRIDGE_DNS_STATE_ABSENT
+		resp.Reason = "the bridge has no record and this daemon will not create one; start with --bridge-dns-create to opt in (#2232)"
 	case st.InSync:
 		resp.State = pb.BridgeDNSState_BRIDGE_DNS_STATE_IN_SYNC
 	case st.LastError != "":
@@ -74,6 +81,11 @@ func (s *ContainerServer) SetBridgeDNSReconciler(r *bridgedns.Reconciler) {
 	s.bridgeDNS = r
 }
 
+// SetBridgeDNSDisabled records that the operator switched the reconciler
+// off (--bridge-dns-reconcile=false), so status says that rather than
+// guessing at app hosting or core-caddy (#2232).
+func (s *ContainerServer) SetBridgeDNSDisabled(disabled bool) { s.bridgeDNSDisabled = disabled }
+
 // GetBridgeDNSStatus reports the bridge DNS reconciler's last pass (#2188).
 // Admin-only: the desired and current record carry operator-configured
 // hostnames and core-caddy's bridge address.
@@ -82,9 +94,13 @@ func (s *ContainerServer) GetBridgeDNSStatus(ctx context.Context, req *pb.GetBri
 		return nil, err
 	}
 	if s.bridgeDNS == nil {
+		reason := "this daemon is not running the bridge DNS reconciler: app hosting is off, or core-caddy is not managed by this daemon"
+		if s.bridgeDNSDisabled {
+			reason = "the bridge DNS reconciler is switched off (--bridge-dns-reconcile=false); the record is not managed by this daemon"
+		}
 		return &pb.GetBridgeDNSStatusResponse{
 			State:  pb.BridgeDNSState_BRIDGE_DNS_STATE_NOT_MANAGED,
-			Reason: "this daemon is not running the bridge DNS reconciler: app hosting is off, or core-caddy is not managed by this daemon",
+			Reason: reason,
 		}, nil
 	}
 	return bridgeDNSStatusResponse(s.bridgeDNS.Status()), nil

@@ -351,6 +351,10 @@ const (
 	// The last pass could not converge (see last_error): core-caddy's address
 	// could not be established, the record could not be read, or the write failed.
 	BridgeDNSState_BRIDGE_DNS_STATE_DEGRADED BridgeDNSState = 4
+	// The bridge has no record and this daemon will not create one (#2232):
+	// it only repairs a record that already exists, or creates one in the run
+	// that installs core-caddy, or when started with --bridge-dns-create.
+	BridgeDNSState_BRIDGE_DNS_STATE_ABSENT BridgeDNSState = 5
 )
 
 // Enum value maps for BridgeDNSState.
@@ -361,6 +365,7 @@ var (
 		2: "BRIDGE_DNS_STATE_PENDING",
 		3: "BRIDGE_DNS_STATE_IN_SYNC",
 		4: "BRIDGE_DNS_STATE_DEGRADED",
+		5: "BRIDGE_DNS_STATE_ABSENT",
 	}
 	BridgeDNSState_value = map[string]int32{
 		"BRIDGE_DNS_STATE_UNSPECIFIED": 0,
@@ -368,6 +373,7 @@ var (
 		"BRIDGE_DNS_STATE_PENDING":     2,
 		"BRIDGE_DNS_STATE_IN_SYNC":     3,
 		"BRIDGE_DNS_STATE_DEGRADED":    4,
+		"BRIDGE_DNS_STATE_ABSENT":      5,
 	}
 )
 
@@ -2351,8 +2357,15 @@ type GetBridgeDNSStatusResponse struct {
 	DriftCount int32 `protobuf:"varint,8,opt,name=drift_count,json=driftCount,proto3" json:"drift_count,omitempty"`
 	// When the last pass finished, and when the record was last rewritten.
 	// Unset until the first pass / first rewrite.
-	LastPass      *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=last_pass,json=lastPass,proto3" json:"last_pass,omitempty"`
-	LastApplied   *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=last_applied,json=lastApplied,proto3" json:"last_applied,omitempty"`
+	LastPass    *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=last_pass,json=lastPass,proto3" json:"last_pass,omitempty"`
+	LastApplied *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=last_applied,json=lastApplied,proto3" json:"last_applied,omitempty"`
+	// What the last write was: "created" (no record existed — the daemon made
+	// one, announced in the log) or "repaired" (an existing record was brought
+	// back to the desired value). Empty until the daemon has written. #2232.
+	LastAction string `protobuf:"bytes,11,opt,name=last_action,json=lastAction,proto3" json:"last_action,omitempty"`
+	// When this daemon created the record from nothing; unset if it only
+	// ever repaired one.
+	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2453,6 +2466,20 @@ func (x *GetBridgeDNSStatusResponse) GetLastPass() *timestamppb.Timestamp {
 func (x *GetBridgeDNSStatusResponse) GetLastApplied() *timestamppb.Timestamp {
 	if x != nil {
 		return x.LastApplied
+	}
+	return nil
+}
+
+func (x *GetBridgeDNSStatusResponse) GetLastAction() string {
+	if x != nil {
+		return x.LastAction
+	}
+	return ""
+}
+
+func (x *GetBridgeDNSStatusResponse) GetCreatedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.CreatedAt
 	}
 	return nil
 }
@@ -5345,7 +5372,7 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"\x05error\x18\x03 \x01(\tR\x05error\x12!\n" +
 	"\fcompleted_at\x18\x04 \x01(\tR\vcompletedAt\x12%\n" +
 	"\x0etarget_version\x18\x05 \x01(\tR\rtargetVersion\"\x1b\n" +
-	"\x19GetBridgeDNSStatusRequest\"\x8a\x03\n" +
+	"\x19GetBridgeDNSStatusRequest\"\xe6\x03\n" +
 	"\x1aGetBridgeDNSStatusResponse\x125\n" +
 	"\x05state\x18\x01 \x01(\x0e2\x1f.containarium.v1.BridgeDNSStateR\x05state\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\x12\x16\n" +
@@ -5359,7 +5386,11 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"driftCount\x127\n" +
 	"\tlast_pass\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\blastPass\x12=\n" +
 	"\flast_applied\x18\n" +
-	" \x01(\v2\x1a.google.protobuf.TimestampR\vlastApplied\"\xdd\x02\n" +
+	" \x01(\v2\x1a.google.protobuf.TimestampR\vlastApplied\x12\x1f\n" +
+	"\vlast_action\x18\v \x01(\tR\n" +
+	"lastAction\x129\n" +
+	"\n" +
+	"created_at\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\"\xdd\x02\n" +
 	"\rNetworkPolicy\x12\x16\n" +
 	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12,\n" +
 	"\x12allow_intra_tenant\x18\x02 \x01(\bR\x10allowIntraTenant\x12!\n" +
@@ -5593,13 +5624,14 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"\x14GPU_MODEL_AMD_MI250X\x10\xad\x02\x12\x1e\n" +
 	"\x19GPU_MODEL_AMD_RX_7900_XTX\x10\xae\x02\x12\x1d\n" +
 	"\x18GPU_MODEL_INTEL_MAX_1550\x10\x90\x03\x12\x1d\n" +
-	"\x18GPU_MODEL_INTEL_ARC_A770\x10\x91\x03*\xaf\x01\n" +
+	"\x18GPU_MODEL_INTEL_ARC_A770\x10\x91\x03*\xcc\x01\n" +
 	"\x0eBridgeDNSState\x12 \n" +
 	"\x1cBRIDGE_DNS_STATE_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cBRIDGE_DNS_STATE_NOT_MANAGED\x10\x01\x12\x1c\n" +
 	"\x18BRIDGE_DNS_STATE_PENDING\x10\x02\x12\x1c\n" +
 	"\x18BRIDGE_DNS_STATE_IN_SYNC\x10\x03\x12\x1d\n" +
-	"\x19BRIDGE_DNS_STATE_DEGRADED\x10\x04*{\n" +
+	"\x19BRIDGE_DNS_STATE_DEGRADED\x10\x04\x12\x1b\n" +
+	"\x17BRIDGE_DNS_STATE_ABSENT\x10\x05*{\n" +
 	"\x11NetworkPolicyMode\x12#\n" +
 	"\x1fNETWORK_POLICY_MODE_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cNETWORK_POLICY_MODE_LOG_ONLY\x10\x01\x12\x1f\n" +
@@ -5724,38 +5756,39 @@ var file_containarium_v1_config_proto_depIdxs = []int32{
 	4,  // 18: containarium.v1.GetBridgeDNSStatusResponse.state:type_name -> containarium.v1.BridgeDNSState
 	76, // 19: containarium.v1.GetBridgeDNSStatusResponse.last_pass:type_name -> google.protobuf.Timestamp
 	76, // 20: containarium.v1.GetBridgeDNSStatusResponse.last_applied:type_name -> google.protobuf.Timestamp
-	5,  // 21: containarium.v1.NetworkPolicy.mode:type_name -> containarium.v1.NetworkPolicyMode
-	33, // 22: containarium.v1.NetworkPolicy.deny_rules:type_name -> containarium.v1.NetworkPolicyDenyRule
-	32, // 23: containarium.v1.SetNetworkPolicyRequest.policy:type_name -> containarium.v1.NetworkPolicy
-	32, // 24: containarium.v1.SetNetworkPolicyResponse.policy:type_name -> containarium.v1.NetworkPolicy
-	32, // 25: containarium.v1.GetNetworkPolicyResponse.policy:type_name -> containarium.v1.NetworkPolicy
-	32, // 26: containarium.v1.ListNetworkPoliciesResponse.policies:type_name -> containarium.v1.NetworkPolicy
-	33, // 27: containarium.v1.PatchNetworkPolicyDenyRulesRequest.add:type_name -> containarium.v1.NetworkPolicyDenyRule
-	43, // 28: containarium.v1.SetNetworkPolicySignatureRequest.signature:type_name -> containarium.v1.NetworkPolicySignature
-	43, // 29: containarium.v1.SetNetworkPolicySignatureResponse.signature:type_name -> containarium.v1.NetworkPolicySignature
-	43, // 30: containarium.v1.ListNetworkPolicySignaturesResponse.signatures:type_name -> containarium.v1.NetworkPolicySignature
-	56, // 31: containarium.v1.BackendInfo.gpus:type_name -> containarium.v1.BackendGPU
-	54, // 32: containarium.v1.BackendInfo.headroom:type_name -> containarium.v1.CapacityHeadroom
-	52, // 33: containarium.v1.BackendInfo.capability_profile:type_name -> containarium.v1.CapabilityProfile
-	51, // 34: containarium.v1.BackendInfo.host_load:type_name -> containarium.v1.HostLoad
-	18, // 35: containarium.v1.BackendInfo.storage:type_name -> containarium.v1.BackendStorage
-	53, // 36: containarium.v1.CapabilityProfile.benchmark:type_name -> containarium.v1.CapabilityBenchmark
-	55, // 37: containarium.v1.CapacityHeadroom.policy:type_name -> containarium.v1.CapacityPolicy
-	50, // 38: containarium.v1.ListBackendsResponse.backends:type_name -> containarium.v1.BackendInfo
-	55, // 39: containarium.v1.AdvertiseCapacityRequest.policy:type_name -> containarium.v1.CapacityPolicy
-	54, // 40: containarium.v1.AdvertiseCapacityResponse.headroom:type_name -> containarium.v1.CapacityHeadroom
-	54, // 41: containarium.v1.WithdrawCapacityResponse.headroom:type_name -> containarium.v1.CapacityHeadroom
-	73, // 42: containarium.v1.WithdrawCapacityResponse.failed:type_name -> containarium.v1.WithdrawCapacityResponse.FailedEntry
-	54, // 43: containarium.v1.GetCapacityHeadroomResponse.headroom:type_name -> containarium.v1.CapacityHeadroom
-	52, // 44: containarium.v1.ProfileBackendResponse.profile:type_name -> containarium.v1.CapabilityProfile
-	52, // 45: containarium.v1.GetCapabilityProfileResponse.profile:type_name -> containarium.v1.CapabilityProfile
-	70, // 46: containarium.v1.SelfMeasurement.program_digests:type_name -> containarium.v1.ProgramDigest
-	69, // 47: containarium.v1.GetSelfMeasurementResponse.measurement:type_name -> containarium.v1.SelfMeasurement
-	48, // [48:48] is the sub-list for method output_type
-	48, // [48:48] is the sub-list for method input_type
-	48, // [48:48] is the sub-list for extension type_name
-	48, // [48:48] is the sub-list for extension extendee
-	0,  // [0:48] is the sub-list for field type_name
+	76, // 21: containarium.v1.GetBridgeDNSStatusResponse.created_at:type_name -> google.protobuf.Timestamp
+	5,  // 22: containarium.v1.NetworkPolicy.mode:type_name -> containarium.v1.NetworkPolicyMode
+	33, // 23: containarium.v1.NetworkPolicy.deny_rules:type_name -> containarium.v1.NetworkPolicyDenyRule
+	32, // 24: containarium.v1.SetNetworkPolicyRequest.policy:type_name -> containarium.v1.NetworkPolicy
+	32, // 25: containarium.v1.SetNetworkPolicyResponse.policy:type_name -> containarium.v1.NetworkPolicy
+	32, // 26: containarium.v1.GetNetworkPolicyResponse.policy:type_name -> containarium.v1.NetworkPolicy
+	32, // 27: containarium.v1.ListNetworkPoliciesResponse.policies:type_name -> containarium.v1.NetworkPolicy
+	33, // 28: containarium.v1.PatchNetworkPolicyDenyRulesRequest.add:type_name -> containarium.v1.NetworkPolicyDenyRule
+	43, // 29: containarium.v1.SetNetworkPolicySignatureRequest.signature:type_name -> containarium.v1.NetworkPolicySignature
+	43, // 30: containarium.v1.SetNetworkPolicySignatureResponse.signature:type_name -> containarium.v1.NetworkPolicySignature
+	43, // 31: containarium.v1.ListNetworkPolicySignaturesResponse.signatures:type_name -> containarium.v1.NetworkPolicySignature
+	56, // 32: containarium.v1.BackendInfo.gpus:type_name -> containarium.v1.BackendGPU
+	54, // 33: containarium.v1.BackendInfo.headroom:type_name -> containarium.v1.CapacityHeadroom
+	52, // 34: containarium.v1.BackendInfo.capability_profile:type_name -> containarium.v1.CapabilityProfile
+	51, // 35: containarium.v1.BackendInfo.host_load:type_name -> containarium.v1.HostLoad
+	18, // 36: containarium.v1.BackendInfo.storage:type_name -> containarium.v1.BackendStorage
+	53, // 37: containarium.v1.CapabilityProfile.benchmark:type_name -> containarium.v1.CapabilityBenchmark
+	55, // 38: containarium.v1.CapacityHeadroom.policy:type_name -> containarium.v1.CapacityPolicy
+	50, // 39: containarium.v1.ListBackendsResponse.backends:type_name -> containarium.v1.BackendInfo
+	55, // 40: containarium.v1.AdvertiseCapacityRequest.policy:type_name -> containarium.v1.CapacityPolicy
+	54, // 41: containarium.v1.AdvertiseCapacityResponse.headroom:type_name -> containarium.v1.CapacityHeadroom
+	54, // 42: containarium.v1.WithdrawCapacityResponse.headroom:type_name -> containarium.v1.CapacityHeadroom
+	73, // 43: containarium.v1.WithdrawCapacityResponse.failed:type_name -> containarium.v1.WithdrawCapacityResponse.FailedEntry
+	54, // 44: containarium.v1.GetCapacityHeadroomResponse.headroom:type_name -> containarium.v1.CapacityHeadroom
+	52, // 45: containarium.v1.ProfileBackendResponse.profile:type_name -> containarium.v1.CapabilityProfile
+	52, // 46: containarium.v1.GetCapabilityProfileResponse.profile:type_name -> containarium.v1.CapabilityProfile
+	70, // 47: containarium.v1.SelfMeasurement.program_digests:type_name -> containarium.v1.ProgramDigest
+	69, // 48: containarium.v1.GetSelfMeasurementResponse.measurement:type_name -> containarium.v1.SelfMeasurement
+	49, // [49:49] is the sub-list for method output_type
+	49, // [49:49] is the sub-list for method input_type
+	49, // [49:49] is the sub-list for extension type_name
+	49, // [49:49] is the sub-list for extension extendee
+	0,  // [0:49] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_config_proto_init() }

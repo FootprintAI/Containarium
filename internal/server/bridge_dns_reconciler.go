@@ -14,8 +14,11 @@ import "github.com/footprintai/containarium/internal/bridgedns"
 // core-services block that writes the record at first install is skipped. Tying
 // the reconciler to that block — as the first version of this fix did — meant it
 // never ran in exactly the case that left a dead address in place.
-func newBridgeDNSReconciler(config *DualServerConfig, be bridgedns.Backend) *bridgedns.Reconciler {
-	if !config.EnableAppHosting || config.BaseDomain == "" {
+// createIfAbsent is true when this daemon run installed core-caddy itself
+// (the first-install case) or the operator passed --bridge-dns-create; only
+// then may a pass write a record onto a bridge that has none (#2232).
+func newBridgeDNSReconciler(config *DualServerConfig, be bridgedns.Backend, createIfAbsent bool) *bridgedns.Reconciler {
+	if !config.EnableAppHosting || config.BaseDomain == "" || config.BridgeDNSReconcileDisabled {
 		return nil
 	}
 	if _, err := be.GetContainer(CoreCaddyContainer); err != nil {
@@ -23,11 +26,18 @@ func newBridgeDNSReconciler(config *DualServerConfig, be bridgedns.Backend) *bri
 	}
 	baseDomain, sshHost := config.BaseDomain, config.SSHHost
 	passthrough := append([]string(nil), config.DNSPassthroughHosts...)
+	carveouts := append([]string(nil), passthrough...)
+	if sshHost != "" {
+		carveouts = append([]string{sshHost}, carveouts...)
+	}
 	return bridgedns.NewReconciler(be, bridgedns.Config{
 		Bridge:         "incusbr0",
 		CaddyContainer: CoreCaddyContainer,
 		Render: func(ip string) string {
 			return bridgeDNSRaw(baseDomain, ip, sshHost, passthrough...)
 		},
+		CreateIfAbsent: createIfAbsent || config.BridgeDNSCreate,
+		BaseDomain:     baseDomain,
+		Carveouts:      carveouts,
 	})
 }

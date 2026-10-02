@@ -101,6 +101,15 @@ type DualServerConfig struct {
 	EnableAppHosting   bool
 	PostgresConnString string
 	BaseDomain         string
+	// BridgeDNSReconcileDisabled is the off switch for the bridge raw.dnsmasq
+	// reconciler (#2188) an operator can throw without rolling back (#2232
+	// option 2). Zero value = reconciler on; set by --bridge-dns-reconcile=false.
+	BridgeDNSReconcileDisabled bool
+	// BridgeDNSCreate lets the reconciler write a record onto a bridge that
+	// has none (#2232 option 1). Default false: a host without a record is
+	// left alone unless this run installed core-caddy.
+	BridgeDNSCreate bool
+
 	// AnonClaimURLBase is prefixed to anonymous-box claim tokens as
 	// "<base>?token=…" in the guest's claim-url file (#2199), e.g.
 	// https://<cloud-domain>/claim. Empty = the bare token is written.
@@ -805,6 +814,7 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// address on every start (#2188). Nil unless app hosting is on, a base
 	// domain is set and a core-caddy container exists on this host.
 	var bridgeDNS *bridgedns.Reconciler
+	caddyInstalledThisRun := false
 	// postgresConnString is hoisted so collaborator init (after skipAppHosting) can use it
 	postgresConnString := config.PostgresConnString
 	if config.EnableAppHosting {
@@ -850,6 +860,9 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 					if err != nil {
 						log.Printf("Warning: Failed to setup Caddy: %v. Proxy features disabled.", err)
 					} else {
+						// This run installed core-caddy: the one case the
+						// bridge DNS reconciler may create the record (#2232).
+						caddyInstalledThisRun = true
 						caddyAdminURL = adminURL
 						caddyIP := coreServices.GetCaddyIP()
 						log.Printf("Caddy ready: %s", caddyIP)
@@ -890,7 +903,10 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 			// so the block that writes the record is skipped and a stale address
 			// would stay forever. Built here, outside that block, so it runs on
 			// every start; its first pass repairs a stale record.
-			bridgeDNS = newBridgeDNSReconciler(config, incusClient)
+			bridgeDNS = newBridgeDNSReconciler(config, incusClient, caddyInstalledThisRun)
+			if bridgeDNS == nil && config.BridgeDNSReconcileDisabled {
+				log.Printf("[bridgedns] disabled by --bridge-dns-reconcile=false; the bridge record is not managed by this daemon")
+			}
 
 			// Setup VictoriaMetrics + Grafana if no URL provided
 			victoriaMetricsURL := config.VictoriaMetricsURL
@@ -2855,6 +2871,7 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		// GetBridgeDNSStatus (#2188): nil when app hosting is off or core-caddy
 		// is not managed by this daemon, which the RPC reports as NOT_MANAGED.
 		ds.containerServer.SetBridgeDNSReconciler(ds.bridgeDNS)
+		ds.containerServer.SetBridgeDNSDisabled(ds.config.BridgeDNSReconcileDisabled)
 		// Capability-profile identity (#681): region from --region, falling
 		// back to the pool name; self-reported class from the pool name. Both
 		// may be empty. Wired unconditionally — profiling works on a

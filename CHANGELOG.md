@@ -38,6 +38,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with `--anon-*` daemon flags; and `AddRoute` / `AddPassthroughRoute`
   refuse an unclaimed anonymous box. Reconnects are never rate-limited.
 
+### Changed
+
+- **Bridge DNS reconciler no longer creates a record from nothing** (#2232).
+  v0.94.0's reconciler (#2188) wrote `address=/<base-domain>/<core-caddy IP>`
+  onto any bridge that had no `raw.dnsmasq` record, which on a backend host
+  started without `--ssh-host` / `--dns-passthrough-host` captured every name
+  under the base domain (the control plane, the SSH apex) into core-caddy and
+  broke TLS from inside every box. A pass now repairs an existing record only;
+  an absent record is reported as `ABSENT` by `containarium bridge-dns status`
+  and logged once. The record is still written on the run that installs
+  core-caddy, or when the operator opts in with `--bridge-dns-create`; a
+  creation logs a WARNING naming the base domain, the address and the
+  carve-outs, and the status shows `Last action: created` with the time.
+  `--bridge-dns-reconcile=false` turns the reconciler off without a rollback.
+  Note: rolling back the daemon does **not** remove a record v0.94.0 already
+  created; remove it with `incus network unset incusbr0 raw.dnsmasq` or pass
+  the carve-outs.
+
+- Terraform module: `ssh_host` and `dns_passthrough_hosts` variables render
+  `--ssh-host` / `--dns-passthrough-host` into the spot backend's daemon unit,
+  so a backend that shares its base domain with the control plane keeps those
+  names on the public resolver.
+
 ### Documentation
 
 - Anonymous-box door (#2203): SECURITY-FAQ states the tier is VM-isolated

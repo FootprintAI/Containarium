@@ -50,6 +50,8 @@ replacement variable to set.
 | `enable_app_hosting` | `false` | Caddy app-hosting / public route management. |
 | `enable_proxy_protocol` | `false` | Prepend PROXY v2 so Caddy sees the real client IP. |
 | `proxy_protocol_trusted_cidrs` | defaulted | Trusted sources for the PROXY header. |
+| `dns_passthrough_hosts` | `[]` | Names under `base_domain` boxes must resolve upstream, not at core-caddy (`--dns-passthrough-host` each) — e.g. the control plane's host. See #2232. |
+| `ssh_host` | `""` | The sentinel's SSH hostname (`--ssh-host`); also carved out of the bridge record. |
 | `allowed_management_sources` | defaulted | CIDRs allowed to reach management/SSH. |
 | `sentinel_auth_secret` | `""` | **Sentinel↔daemon HMAC secret (32+ bytes).** See below. |
 | `enable_peer_mtls` | `false` | Phase 0.5 peer mTLS. **Requires `sentinel_auth_secret`.** |

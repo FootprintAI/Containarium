@@ -9512,10 +9512,11 @@
         "BRIDGE_DNS_STATE_NOT_MANAGED",
         "BRIDGE_DNS_STATE_PENDING",
         "BRIDGE_DNS_STATE_IN_SYNC",
-        "BRIDGE_DNS_STATE_DEGRADED"
+        "BRIDGE_DNS_STATE_DEGRADED",
+        "BRIDGE_DNS_STATE_ABSENT"
       ],
       "default": "BRIDGE_DNS_STATE_UNSPECIFIED",
-      "description": "BridgeDNSState is the reconcile state of the bridge DNS record that resolves\nthe app-hosting base domain to core-caddy (#2188).\n\n - BRIDGE_DNS_STATE_NOT_MANAGED: The daemon is not running the reconciler: app hosting is off, or core-caddy\nis not managed by this daemon (an operator-supplied Caddy admin URL).\n - BRIDGE_DNS_STATE_PENDING: The reconciler is running but no pass has finished yet.\n - BRIDGE_DNS_STATE_IN_SYNC: The record on the bridge equals what the daemon renders for core-caddy's\nlive address.\n - BRIDGE_DNS_STATE_DEGRADED: The last pass could not converge (see last_error): core-caddy's address\ncould not be established, the record could not be read, or the write failed."
+      "description": "BridgeDNSState is the reconcile state of the bridge DNS record that resolves\nthe app-hosting base domain to core-caddy (#2188).\n\n - BRIDGE_DNS_STATE_NOT_MANAGED: The daemon is not running the reconciler: app hosting is off, or core-caddy\nis not managed by this daemon (an operator-supplied Caddy admin URL).\n - BRIDGE_DNS_STATE_PENDING: The reconciler is running but no pass has finished yet.\n - BRIDGE_DNS_STATE_IN_SYNC: The record on the bridge equals what the daemon renders for core-caddy's\nlive address.\n - BRIDGE_DNS_STATE_DEGRADED: The last pass could not converge (see last_error): core-caddy's address\ncould not be established, the record could not be read, or the write failed.\n - BRIDGE_DNS_STATE_ABSENT: The bridge has no record and this daemon will not create one (#2232):\nit only repairs a record that already exists, or creates one in the run\nthat installs core-caddy, or when started with --bridge-dns-create."
     },
     "BuildpackOptions": {
       "type": "object",
@@ -12236,6 +12237,15 @@
         "lastApplied": {
           "type": "string",
           "format": "date-time"
+        },
+        "lastAction": {
+          "type": "string",
+          "description": "What the last write was: \"created\" (no record existed — the daemon made\none, announced in the log) or \"repaired\" (an existing record was brought\nback to the desired value). Empty until the daemon has written. #2232."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When this daemon created the record from nothing; unset if it only\never repaired one."
         }
       },
       "description": "GetBridgeDNSStatusResponse is the bridge DNS reconciler's last-pass snapshot."

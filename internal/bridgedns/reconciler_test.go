@@ -1,8 +1,11 @@
 package bridgedns
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -146,20 +149,85 @@ func TestReconcileOnce_HandEditIsRestored(t *testing.T) {
 	}
 }
 
-func TestReconcileOnce_UnsetRecordIsWritten(t *testing.T) {
+// #2232: a bridge with NO record is left alone by default — creating one
+// changes resolution for every box — and the status says so without an
+// error.
+func TestReconcileOnce_UnsetRecordIsLeftAlone(t *testing.T) {
 	be := newFake("10.0.3.5", "")
-	if err := newRec(be, time.Hour).ReconcileOnce(context.Background()); err != nil {
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	r := newRec(be, time.Hour)
+	for i := 0; i < 3; i++ {
+		if err := r.ReconcileOnce(context.Background()); err != nil {
+			t.Fatalf("ReconcileOnce: %v", err)
+		}
+	}
+	if raw, sets := be.snapshot(); raw != "" || len(sets) != 0 {
+		t.Fatalf("raw = %q sets = %v; want nothing written when unset", raw, sets)
+	}
+	st := r.Status()
+	if !st.Absent || st.InSync || st.LastError != "" || st.LastPass.IsZero() || st.LastAction != "" {
+		t.Fatalf("status = %+v; want Absent, not in sync, no error, pass recorded", st)
+	}
+	if n := strings.Count(logs.String(), "will not create one"); n != 1 {
+		t.Fatalf("absent logged %d times, want once:\n%s", n, logs.String())
+	}
+}
+
+// Opting in (--bridge-dns-create, or the run that installed core-caddy)
+// creates the record, and loudly: the warning names the base domain, the
+// address and the carve-outs, and status reports "created".
+func TestReconcileOnce_UnsetRecordIsCreatedWhenOptedIn(t *testing.T) {
+	be := newFake("10.0.3.5", "")
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	r := NewReconciler(be, Config{Bridge: "incusbr0", CaddyContainer: testCaddy, Render: render, Interval: time.Hour,
+		CreateIfAbsent: true, BaseDomain: "example.com", Carveouts: []string{"ssh.example.com"}})
+	if err := r.ReconcileOnce(context.Background()); err != nil {
 		t.Fatalf("ReconcileOnce: %v", err)
 	}
 	if raw, _ := be.snapshot(); raw != render("10.0.3.5") {
-		t.Fatalf("raw = %q; want the record written when unset", raw)
+		t.Fatalf("raw = %q; want the record created when opted in", raw)
+	}
+	st := r.Status()
+	if st.Absent || !st.InSync || st.LastAction != ActionCreated || st.CreatedAt.IsZero() || st.DriftCount != 0 {
+		t.Fatalf("status = %+v; want in sync, created, CreatedAt set, no drift counted", st)
+	}
+	out := logs.String()
+	for _, w := range []string{"WARNING: creating", "example.com", "10.0.3.5", "except ssh.example.com"} {
+		if !strings.Contains(out, w) {
+			t.Errorf("creation log missing %q:\n%s", w, out)
+		}
+	}
+	// A second pass is a no-op and does not re-announce.
+	if err := r.ReconcileOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(logs.String(), "WARNING: creating") != 1 {
+		t.Errorf("creation announced more than once")
+	}
+}
+
+// A drifted record is repaired (never "created"), and says so.
+func TestReconcileOnce_DriftReportsRepaired(t *testing.T) {
+	be := newFake("10.0.3.5", render("10.0.3.9"))
+	r := newRec(be, time.Hour)
+	if err := r.ReconcileOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if st := r.Status(); st.LastAction != ActionRepaired || !st.CreatedAt.IsZero() || st.DriftCount != 1 {
+		t.Fatalf("status = %+v; want repaired, no CreatedAt, one drift", st)
 	}
 }
 
 // Acceptance: core-caddy gets a new address while the daemon keeps running;
 // the next pass moves the record to it.
 func TestReconcileOnce_FollowsCaddyAddressChange(t *testing.T) {
-	be := newFake("10.0.3.5", "")
+	be := newFake("10.0.3.5", render("10.0.3.5"))
 	r := newRec(be, time.Hour)
 	ctx := context.Background()
 	if err := r.ReconcileOnce(ctx); err != nil {
@@ -169,13 +237,15 @@ func TestReconcileOnce_FollowsCaddyAddressChange(t *testing.T) {
 	if err := r.ReconcileOnce(ctx); err != nil {
 		t.Fatalf("pass 2: %v", err)
 	}
-	if raw, sets := be.snapshot(); raw != render("10.0.3.77") || len(sets) != 2 {
-		t.Fatalf("raw=%q sets=%d; want the record on the new address after 2 writes", raw, len(sets))
+	// The record started in sync, so the only write is the move to the new
+	// address (#2232: a pass never writes a record that is already right).
+	if raw, sets := be.snapshot(); raw != render("10.0.3.77") || len(sets) != 1 {
+		t.Fatalf("raw=%q sets=%d; want the record on the new address after exactly 1 write", raw, len(sets))
 	}
 	if err := r.ReconcileOnce(ctx); err != nil {
 		t.Fatalf("pass 3: %v", err)
 	}
-	if _, sets := be.snapshot(); len(sets) != 2 {
+	if _, sets := be.snapshot(); len(sets) != 1 {
 		t.Fatalf("a third pass on a converged record wrote again (%d writes)", len(sets))
 	}
 }

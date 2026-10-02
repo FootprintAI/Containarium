@@ -67,6 +67,8 @@ var (
 	sentinelURL            string
 	sshHost                string
 	dnsPassthroughHosts    []string
+	bridgeDNSReconcile     bool
+	bridgeDNSCreate        bool
 	peerAddrs              []string
 	localBackendID         string
 	pool                   string
@@ -191,6 +193,8 @@ func init() {
 	daemonCmd.Flags().StringVar(&publicHostname, "public-hostname", "", "Public hostname this primary serves (e.g. prod.example.com); enables sentinel primary registration")
 	daemonCmd.Flags().StringSliceVar(&publicAliases, "public-aliases", nil, "Additional hostnames the primary's Caddy serves (e.g. api.example.com,voice.example.com); the sentinel SNI router treats these as aliases of --public-hostname")
 	daemonCmd.Flags().StringArrayVar(&dnsPassthroughHosts, "dns-passthrough-host", nil, "Hostname under --base-domain that boxes must resolve through the upstream resolvers instead of the local Caddy edge (repeatable: one hostname per flag, not comma-separated; a blank or malformed value fails at boot). With app hosting the bridge DNS resolves *.<base-domain> to Caddy; each host given here is carved out of that wildcard, like --ssh-host already is. Use it for an API host under the base domain that Caddy does not serve. Empty = only --ssh-host is carved out.")
+	daemonCmd.Flags().BoolVar(&bridgeDNSReconcile, "bridge-dns-reconcile", true, "Keep the bridge's raw.dnsmasq record for --base-domain on core-caddy's live address (#2188). Set to false to switch the reconciler off without rolling back; the record is then left exactly as it is (#2232).")
+	daemonCmd.Flags().BoolVar(&bridgeDNSCreate, "bridge-dns-create", false, "Let the bridge DNS reconciler CREATE the --base-domain record on a bridge that has none. Default false: a host without a record is left alone (every box would otherwise start resolving every name under the base domain to core-caddy); the record is only created when this daemon installs core-caddy itself, or with this flag (#2232).")
 	daemonCmd.Flags().StringSliceVar(&publicBaseDomains, "public-base-domain", nil, "Suffix-match anchor advertised to the sentinel — inbound SNI of the form <anything>.<public-base-domain> routes here without each subdomain being a registered alias. Repeatable: list multiple to host workloads under different parent domains on the same backend (e.g. --public-base-domain lab.example.com --public-base-domain demo.example.org). Defaults to [--base-domain] when unset. See docs/PER-POOL-BASE-DOMAIN.md.")
 	daemonCmd.Flags().BoolVar(&proxyProtocol, "proxy-protocol", false, "Configure Caddy to accept PROXY v2 headers from --proxy-protocol-trusted CIDRs so containers receive the real client IP. Pair with --proxy-protocol on the sentinel.")
 	daemonCmd.Flags().StringSliceVar(&proxyProtocolTrusted, "proxy-protocol-trusted", []string{"127.0.0.0/8"}, "CIDRs allowed to send PROXY headers (typically the sentinel VPC IP/32). Wildcard 0.0.0.0/0 is rejected.")
@@ -632,40 +636,42 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 			MaxBoxes: anonMaxBoxes, KeyCreatesPer10: anonKeyCreatesPer10, KeyBurst: anonKeyBurst,
 			IPCreatesPer10: anonIPCreatesPer10, IPBurst: anonIPBurst, StatePath: anonDoorStatePath,
 		},
-		CaddyAdminURL:          caddyAdminURL,
-		HostIP:                 hostIPFromCIDR(networkSubnet),
-		DaemonConfigStore:      daemonConfigStore,
-		CaddyCertDir:           caddyCertDir,
-		VictoriaMetricsURL:     victoriaMetricsURL,
-		Standalone:             standaloneMode,
-		DisableSecurityScanner: disableSecurityScanner,
-		DisablePentestScanner:  disablePentestScanner,
-		DisableZapScanner:      disableZapScanner,
-		AlertWebhookURL:        alertWebhookURL,
-		AlertWebhookSecret:     alertWebhookSecret,
-		SentinelURL:            sentinelURL,
-		SSHHost:                sshHost,
-		DNSPassthroughHosts:    dnsPassthroughHosts,
-		Peers:                  peerAddrs,
-		LocalBackendID:         resolveBackendID(localBackendID),
-		Pool:                   pool,
-		Region:                 region,
-		CPUOvercommitFactor:    cpuOvercommitFactor,
-		CPUOvercommitEnforce:   cpuOvercommitEnforce,
-		PlacementCPUAware:      placementCPUAware,
-		PublicHostname:         publicHostname,
-		PublicAliases:          publicAliases,
-		PublicBaseDomains:      resolvePublicBaseDomains(publicBaseDomains, baseDomain),
-		PublicPort:             publicPort,
-		ProxyProtocol:          proxyProtocol,
-		ProxyProtocolTrusted:   proxyProtocolTrusted,
-		ClientIPHeaders:        clientIPHeaders,
-		TrustedProxyCIDRs:      trustedProxyCIDRs,
-		OTelDropLabels:         otelDropLabels,
-		Runtime:                runtime,
-		ZFSTenantRoot:          zfsTenantRoot,
-		ZFSKeysDir:             zfsKeysDir,
-		RunJournalRetention:    runJournalRetention,
+		CaddyAdminURL:              caddyAdminURL,
+		HostIP:                     hostIPFromCIDR(networkSubnet),
+		DaemonConfigStore:          daemonConfigStore,
+		CaddyCertDir:               caddyCertDir,
+		VictoriaMetricsURL:         victoriaMetricsURL,
+		Standalone:                 standaloneMode,
+		DisableSecurityScanner:     disableSecurityScanner,
+		DisablePentestScanner:      disablePentestScanner,
+		DisableZapScanner:          disableZapScanner,
+		AlertWebhookURL:            alertWebhookURL,
+		AlertWebhookSecret:         alertWebhookSecret,
+		SentinelURL:                sentinelURL,
+		SSHHost:                    sshHost,
+		DNSPassthroughHosts:        dnsPassthroughHosts,
+		BridgeDNSReconcileDisabled: !bridgeDNSReconcile,
+		BridgeDNSCreate:            bridgeDNSCreate,
+		Peers:                      peerAddrs,
+		LocalBackendID:             resolveBackendID(localBackendID),
+		Pool:                       pool,
+		Region:                     region,
+		CPUOvercommitFactor:        cpuOvercommitFactor,
+		CPUOvercommitEnforce:       cpuOvercommitEnforce,
+		PlacementCPUAware:          placementCPUAware,
+		PublicHostname:             publicHostname,
+		PublicAliases:              publicAliases,
+		PublicBaseDomains:          resolvePublicBaseDomains(publicBaseDomains, baseDomain),
+		PublicPort:                 publicPort,
+		ProxyProtocol:              proxyProtocol,
+		ProxyProtocolTrusted:       proxyProtocolTrusted,
+		ClientIPHeaders:            clientIPHeaders,
+		TrustedProxyCIDRs:          trustedProxyCIDRs,
+		OTelDropLabels:             otelDropLabels,
+		Runtime:                    runtime,
+		ZFSTenantRoot:              zfsTenantRoot,
+		ZFSKeysDir:                 zfsKeysDir,
+		RunJournalRetention:        runJournalRetention,
 	}
 
 	// Create dual server
