@@ -9,6 +9,7 @@ import (
 
 	"github.com/footprintai/containarium/internal/mtls"
 	"github.com/footprintai/containarium/pkg/core/incus"
+	"github.com/footprintai/containarium/pkg/core/ostype"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -28,6 +29,7 @@ type GRPCClient struct {
 	crewClient    pb.CrewServiceClient
 	clusterClient pb.ClusterServiceClient
 	sandboxClient pb.SandboxServiceClient
+	anonClient    pb.AnonymousBoxServiceClient
 	trackerClient pb.TrackerServiceClient
 	// modelGatewayClient is the model gateway's admin + mint surface (#1726).
 	modelGatewayClient pb.ModelGatewayServiceClient
@@ -94,6 +96,7 @@ func NewGRPCClient(serverAddr string, certsDir string, insecureConn bool) (*GRPC
 	crewClient := pb.NewCrewServiceClient(conn)
 	clusterClient := pb.NewClusterServiceClient(conn)
 	sandboxClient := pb.NewSandboxServiceClient(conn)
+	anonClient := pb.NewAnonymousBoxServiceClient(conn)
 	trackerClient := pb.NewTrackerServiceClient(conn)
 	modelGatewayClient := pb.NewModelGatewayServiceClient(conn)
 
@@ -110,6 +113,7 @@ func NewGRPCClient(serverAddr string, certsDir string, insecureConn bool) (*GRPC
 		crewClient:         crewClient,
 		clusterClient:      clusterClient,
 		sandboxClient:      sandboxClient,
+		anonClient:         anonClient,
 		trackerClient:      trackerClient,
 		modelGatewayClient: modelGatewayClient,
 	}, nil
@@ -149,6 +153,7 @@ func (c *GRPCClient) ListContainers() ([]incus.ContainerInfo, error) {
 			Username:             container.Username,
 			State:                container.State.String(),
 			Labels:               container.Labels,
+			InstanceType:         ostype.InstanceTypeFromIsolation(container.Isolation),
 			MonitoringEnabled:    container.MonitoringEnabled,
 			AutoSleepEnabled:     container.AutoSleepEnabled,
 			IdleThresholdMinutes: container.IdleThresholdMinutes,
@@ -177,7 +182,7 @@ func (c *GRPCClient) ListContainers() ([]incus.ContainerInfo, error) {
 }
 
 // CreateContainer creates a container via gRPC
-func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string) (*incus.ContainerInfo, error) {
+func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, isolation pb.IsolationType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string) (*incus.ContainerInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute) // Container creation can take time (includes ultra-aggressive retry logic for google_guest_agent)
 	defer cancel()
 
@@ -197,6 +202,7 @@ func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, 
 		Stack:                     stack,
 		Gpus:                      gpus,
 		OsType:                    osType,
+		Isolation:                 isolation,
 		Monitoring:                monitoring,
 		Pool:                      pool,
 		BackendId:                 backendID,
@@ -220,9 +226,10 @@ func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, 
 	// Convert protobuf Container to incus.ContainerInfo
 	container := resp.Container
 	info := &incus.ContainerInfo{
-		Name:     container.Name,
-		Username: container.Username,
-		State:    container.State.String(),
+		Name:         container.Name,
+		Username:     container.Username,
+		State:        container.State.String(),
+		InstanceType: ostype.InstanceTypeFromIsolation(container.Isolation),
 	}
 
 	if container.Network != nil {
@@ -1749,4 +1756,41 @@ func (c *GRPCClient) CreateTrackerIssue(req *pb.CreateTrackerIssueRequest) (*pb.
 		return nil, fmt.Errorf("create tracker issue: %w", err)
 	}
 	return resp.Issue, nil
+}
+
+// --- AnonymousBoxService (#2197) ---------------------------------------
+
+// EnsureAnonymousBox resolves or creates the anonymous VM for a key.
+func (c *GRPCClient) EnsureAnonymousBox(req *pb.EnsureAnonymousBoxRequest) (*pb.EnsureAnonymousBoxResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute) // a cold VM boot
+	defer cancel()
+	return c.anonClient.EnsureAnonymousBox(ctx, req)
+}
+
+// ClaimAnonymousBox binds an anonymous box to a tenant via its claim token.
+func (c *GRPCClient) ClaimAnonymousBox(req *pb.ClaimAnonymousBoxRequest) (*pb.ClaimAnonymousBoxResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	return c.anonClient.ClaimAnonymousBox(ctx, req)
+}
+
+// GetAnonymousDoorConfig returns the door's state and fixed limits.
+func (c *GRPCClient) GetAnonymousDoorConfig() (*pb.AnonymousDoorConfig, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return c.anonClient.GetAnonymousDoorConfig(ctx, &pb.GetAnonymousDoorConfigRequest{})
+}
+
+// SetAnonymousDoorConfig flips the kill switch / edits bans.
+func (c *GRPCClient) SetAnonymousDoorConfig(cfg *pb.AnonymousDoorConfig) (*pb.AnonymousDoorConfig, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return c.anonClient.SetAnonymousDoorConfig(ctx, &pb.SetAnonymousDoorConfigRequest{Config: cfg})
+}
+
+// ListAnonymousBoxes lists every live anonymous box on the daemon.
+func (c *GRPCClient) ListAnonymousBoxes() (*pb.ListAnonymousBoxesResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return c.anonClient.ListAnonymousBoxes(ctx, &pb.ListAnonymousBoxesRequest{})
 }

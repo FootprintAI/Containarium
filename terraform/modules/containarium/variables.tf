@@ -460,3 +460,44 @@ variable "zfs_encryption_keyfile" {
   type        = string
   default     = ""
 }
+
+# Anonymous-box door (`ssh new.<domain>`, docs/architecture/ssh-new-anonymous-box.md).
+# Both empty (default) = no door: no second sshpiperd unit is installed, and
+# an already-installed one is disabled and removed on the next reconcile.
+variable "anon_door_addr" {
+  description = "Listen address for the anonymous-box door's own sshpiperd, as host:port. Production uses a dedicated IP on :22 (`<door ip>:22`, with new.<domain> pointing at it); a dev sentinel with no spare IP uses a second port on the existing one (`0.0.0.0:2022`). Empty = door disabled."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.anon_door_addr == "" || can(regex("^[^:]+:[0-9]+$", var.anon_door_addr))
+    error_message = "anon_door_addr must be host:port (e.g. 0.0.0.0:2022) or empty."
+  }
+}
+
+variable "anon_daemon_url" {
+  description = "REST base URL of the anon-pool daemon the door creates boxes on (the dedicated pool=anon backend started with CONTAINARIUM_ANON_DOOR=enable), e.g. http://<private ip>:8080. Required when anon_door_addr is set."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.anon_daemon_url == "" || can(regex("^https?://", var.anon_daemon_url))
+    error_message = "anon_daemon_url must start with http:// or https://, or be empty."
+  }
+}
+
+# Bridge DNS carve-outs for the backend daemon (#2232, #2189). With app
+# hosting on, the bridge resolves every name under base_domain to core-caddy;
+# names core-caddy does not serve — the control plane's API host, the
+# sentinel's SSH apex — must be carved out or boxes cannot reach them.
+variable "dns_passthrough_hosts" {
+  description = "Hostnames under base_domain that boxes must resolve upstream instead of at core-caddy (rendered as one --dns-passthrough-host flag each), e.g. the control plane's hostname. Empty = only ssh_host is carved out."
+  type        = list(string)
+  default     = []
+}
+
+variable "ssh_host" {
+  description = "The sentinel's public SSH hostname (rendered as --ssh-host): surfaced to clients as the host to dial, and carved out of the base-domain bridge record. Empty = direct mode, and the SSH apex is NOT carved out."
+  type        = string
+  default     = ""
+}

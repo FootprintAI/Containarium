@@ -56,10 +56,13 @@ type createContainerRequest struct {
 	// The generated enum, not a string: json.Marshal emits its numeric
 	// value, which is what the previous map sent and what protojson
 	// accepts on the server side.
-	OSType     pb.OSType `json:"osType"`
-	Monitoring bool      `json:"monitoring"`
-	Pool       string    `json:"pool"`
-	BackendID  string    `json:"backendId"`
+	OSType pb.OSType `json:"osType"`
+	// Same shape as OSType; omitted when UNSPECIFIED so an older daemon
+	// never sees a field it does not know.
+	Isolation  pb.IsolationType `json:"isolation,omitempty"`
+	Monitoring bool             `json:"monitoring"`
+	Pool       string           `json:"pool"`
+	BackendID  string           `json:"backendId"`
 
 	GitSource     *string `json:"gitSource,omitempty"`
 	GitRef        *string `json:"gitRef,omitempty"`

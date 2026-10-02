@@ -65,6 +65,7 @@ const (
 	ContainerService_ValidateGPU_FullMethodName               = "/containarium.v1.ContainerService/ValidateGPU"
 	ContainerService_TriggerUpgrade_FullMethodName            = "/containarium.v1.ContainerService/TriggerUpgrade"
 	ContainerService_GetUpgradeStatus_FullMethodName          = "/containarium.v1.ContainerService/GetUpgradeStatus"
+	ContainerService_GetBridgeDNSStatus_FullMethodName        = "/containarium.v1.ContainerService/GetBridgeDNSStatus"
 	ContainerService_GetMonitoringInfo_FullMethodName         = "/containarium.v1.ContainerService/GetMonitoringInfo"
 	ContainerService_SetMetricsExport_FullMethodName          = "/containarium.v1.ContainerService/SetMetricsExport"
 	ContainerService_GetMetricsExport_FullMethodName          = "/containarium.v1.ContainerService/GetMetricsExport"
@@ -337,6 +338,10 @@ type ContainerServiceClient interface {
 	// restart this returns "unknown" — compare the backend version in
 	// ListBackends instead. #354.
 	GetUpgradeStatus(ctx context.Context, in *GetUpgradeStatusRequest, opts ...grpc.CallOption) (*GetUpgradeStatusResponse, error)
+	// GetBridgeDNSStatus reports whether the bridge DNS record that resolves the
+	// app-hosting base domain to core-caddy matches core-caddy's live address,
+	// and why not when it does not (#2188). Admin-only.
+	GetBridgeDNSStatus(ctx context.Context, in *GetBridgeDNSStatusRequest, opts ...grpc.CallOption) (*GetBridgeDNSStatusResponse, error)
 	// GetMonitoringInfo gets monitoring configuration (Grafana/VictoriaMetrics URLs)
 	GetMonitoringInfo(ctx context.Context, in *GetMonitoringInfoRequest, opts ...grpc.CallOption) (*GetMonitoringInfoResponse, error)
 	// SetMetricsExport enables or disables opt-in export of host/container
@@ -872,6 +877,16 @@ func (c *containerServiceClient) GetUpgradeStatus(ctx context.Context, in *GetUp
 	return out, nil
 }
 
+func (c *containerServiceClient) GetBridgeDNSStatus(ctx context.Context, in *GetBridgeDNSStatusRequest, opts ...grpc.CallOption) (*GetBridgeDNSStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetBridgeDNSStatusResponse)
+	err := c.cc.Invoke(ctx, ContainerService_GetBridgeDNSStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *containerServiceClient) GetMonitoringInfo(ctx context.Context, in *GetMonitoringInfoRequest, opts ...grpc.CallOption) (*GetMonitoringInfoResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetMonitoringInfoResponse)
@@ -1313,6 +1328,10 @@ type ContainerServiceServer interface {
 	// restart this returns "unknown" — compare the backend version in
 	// ListBackends instead. #354.
 	GetUpgradeStatus(context.Context, *GetUpgradeStatusRequest) (*GetUpgradeStatusResponse, error)
+	// GetBridgeDNSStatus reports whether the bridge DNS record that resolves the
+	// app-hosting base domain to core-caddy matches core-caddy's live address,
+	// and why not when it does not (#2188). Admin-only.
+	GetBridgeDNSStatus(context.Context, *GetBridgeDNSStatusRequest) (*GetBridgeDNSStatusResponse, error)
 	// GetMonitoringInfo gets monitoring configuration (Grafana/VictoriaMetrics URLs)
 	GetMonitoringInfo(context.Context, *GetMonitoringInfoRequest) (*GetMonitoringInfoResponse, error)
 	// SetMetricsExport enables or disables opt-in export of host/container
@@ -1525,6 +1544,9 @@ func (UnimplementedContainerServiceServer) TriggerUpgrade(context.Context, *Trig
 }
 func (UnimplementedContainerServiceServer) GetUpgradeStatus(context.Context, *GetUpgradeStatusRequest) (*GetUpgradeStatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetUpgradeStatus not implemented")
+}
+func (UnimplementedContainerServiceServer) GetBridgeDNSStatus(context.Context, *GetBridgeDNSStatusRequest) (*GetBridgeDNSStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetBridgeDNSStatus not implemented")
 }
 func (UnimplementedContainerServiceServer) GetMonitoringInfo(context.Context, *GetMonitoringInfoRequest) (*GetMonitoringInfoResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetMonitoringInfo not implemented")
@@ -2432,6 +2454,24 @@ func _ContainerService_GetUpgradeStatus_Handler(srv interface{}, ctx context.Con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ContainerService_GetBridgeDNSStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetBridgeDNSStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).GetBridgeDNSStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_GetBridgeDNSStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).GetBridgeDNSStatus(ctx, req.(*GetBridgeDNSStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _ContainerService_GetMonitoringInfo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetMonitoringInfoRequest)
 	if err := dec(in); err != nil {
@@ -2964,6 +3004,10 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetUpgradeStatus",
 			Handler:    _ContainerService_GetUpgradeStatus_Handler,
+		},
+		{
+			MethodName: "GetBridgeDNSStatus",
+			Handler:    _ContainerService_GetBridgeDNSStatus_Handler,
 		},
 		{
 			MethodName: "GetMonitoringInfo",

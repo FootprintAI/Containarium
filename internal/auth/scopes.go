@@ -110,6 +110,13 @@ const (
 	ScopeCrewsRead = "crews:read"
 	ScopeCrewsRun  = "crews:run"
 
+	// Anonymous-box door (#2197). anon:door is what the sentinel's door
+	// plugin carries to EnsureAnonymousBox — it can resolve/create a box
+	// for a key and nothing else. anon:admin is the operator surface
+	// (claim, kill switch, bans, list).
+	ScopeAnonDoor  = "anon:door"
+	ScopeAnonAdmin = "anon:admin"
+
 	// managed Kubernetes clusters (ClusterServer, #1413).
 	// clusters:read lists/inspects clusters and their scale history;
 	// clusters:write creates/deletes clusters, edits node pools, and
@@ -188,6 +195,7 @@ var AllScopes = []string{
 	ScopeTokensWrite, ScopeTokensDelegate,
 	ScopeAgentsRead, ScopeAgentsRun, ScopeAgentsCall,
 	ScopeCrewsRead, ScopeCrewsRun,
+	ScopeAnonDoor, ScopeAnonAdmin,
 	ScopeClustersRead, ScopeClustersWrite, ScopeClustersScale,
 	ScopeAuditRead, ScopeNetworkPolicyRead, ScopeTokensRead,
 	ScopeSandboxesRead, ScopeSandboxesWrite,

@@ -7,6 +7,126 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Anonymous-box opt-in reminder (#2206): `containarium remind-me <email>`
+  inside the box (`--clear` withdraws it) asks for one email about 30 minutes
+  before the box expires, carrying the sign-up link. The address is picked up
+  inside that window, posted once to `--anon-reminder-webhook` (the control
+  plane sends the mail — the daemon has no SMTP), and discarded; the funnel
+  counts it as `reminder_optin`. Nothing is collected without the command.
+
+- Anonymous-box expiry warnings (#2202): a `wall` into the guest about 10
+  minutes and 1 minute before the box's TTL, each at most once, recorded on
+  the box (`anon.warned`) so a daemon restart never repeats one; a wall that
+  cannot be delivered is logged and not retried.
+
+- Anonymous-box funnel (#2201): every step of the `ssh new.<domain>` journey
+  is an `EVENT_TYPE_ANON_*` event on the event stream (connect, shell_ready
+  with time-to-shell, reconnect, claim_link_issued, claim_completed, expired,
+  killed_abuse, rejected_capacity / _ratelimit / _door) keyed by the sha256 of
+  the key fingerprint, and a matching `containarium_anon_<step>_total` counter
+  plus the `containarium_anon_time_to_shell_seconds` histogram on the daemon's
+  OTel meter. Expired/killed are observed by a one-minute ticker.
+
+- Anonymous-box guardrails (#2200), the gate for putting the door on a
+  public IP: a kill switch with an operator message and per-key bans
+  (`containarium anon enable|disable|status|ban|unban|list`, persisted in
+  `/var/lib/containarium/anon-door.json`; a malformed file closes the door),
+  creation rate limits per key (1 / 10 min, burst 2) and per source IP
+  (6 / 10 min, burst 6), a cap on live unclaimed boxes (20), all tunable
+  with `--anon-*` daemon flags; and `AddRoute` / `AddPassthroughRoute`
+  refuse an unclaimed anonymous box. Reconnects are never rate-limited.
+
+### Changed
+
+- **Bridge DNS reconciler no longer creates a record from nothing** (#2232).
+  v0.94.0's reconciler (#2188) wrote `address=/<base-domain>/<core-caddy IP>`
+  onto any bridge that had no `raw.dnsmasq` record, which on a backend host
+  started without `--ssh-host` / `--dns-passthrough-host` captured every name
+  under the base domain (the control plane, the SSH apex) into core-caddy and
+  broke TLS from inside every box. A pass now repairs an existing record only;
+  an absent record is reported as `ABSENT` by `containarium bridge-dns status`
+  and logged once. The record is still written on the run that installs
+  core-caddy, or when the operator opts in with `--bridge-dns-create`; a
+  creation logs a WARNING naming the base domain, the address and the
+  carve-outs, and the status shows `Last action: created` with the time.
+  `--bridge-dns-reconcile=false` turns the reconciler off without a rollback.
+  Note: rolling back the daemon does **not** remove a record v0.94.0 already
+  created; remove it with `incus network unset incusbr0 raw.dnsmasq` or pass
+  the carve-outs.
+
+- Terraform module: `ssh_host` and `dns_passthrough_hosts` variables render
+  `--ssh-host` / `--dns-passthrough-host` into the spot backend's daemon unit,
+  so a backend that shares its base domain with the control plane keeps those
+  names on the public resolver.
+
+### Documentation
+
+- Anonymous-box door (#2203): SECURITY-FAQ states the tier is VM-isolated
+  (and that the email-signup free tier is not), the Terraform module README
+  lists `anon_door_addr` / `anon_daemon_url`, and the deployment guide gains
+  the anon-pool backend prerequisites (KVM, nftables, disk), `--anon-*` flags
+  and operator verbs.
+
+## [0.94.0] - 2026-10-01
+
+### Added
+
+- Anonymous-box claim (#2199): `ClaimAnonymousBox` redeems the single-use
+  token minted into every anonymous box (`/etc/containarium/claim-url`) and
+  binds the box to a tenant — TTL cleared, egress guard lifted, the tenant's
+  keys added, owner set; the box keeps its name and login and stays reachable
+  through the door. `containarium claim` (inside the box) prints the claim
+  URL or token (`--json`); `containarium anon claim <token> --tenant <u>`
+  redeems it as an admin; daemon flag `--anon-claim-url-base`. A second
+  redeem is AlreadyExists, an expired token FailedPrecondition, a bad one
+  PermissionDenied.
+
+- `containarium sentinel anon-door-plugin` (#2198) — the sshpiperd plugin
+  behind `ssh new.<domain>`: on public-key auth it asks the anon-pool daemon
+  for the key's box (`POST /v1/anon/boxes:ensure`, signed with the sentinel's
+  existing identity) and pipes the session there with the usual upstream key;
+  non-key auth is refused. Terraform: `anon_door_addr` + `anon_daemon_url`
+  install a second `sshpiper-anon.service` (chain: audit → door → failtoban)
+  through the same live-metadata reconcile as `sshpiper.service`; empty =
+  unit removed.
+
+- `AnonymousBoxService` (#2197) — the daemon side of the `ssh new.<domain>`
+  door: `EnsureAnonymousBox` resolves or creates an Incus **VM** per SSH-key
+  fingerprint (fixed 2 vCPU / 4 GB / 20 GB, 4 h TTL, egress limited to
+  DNS/HTTP/HTTPS by an Incus NIC ACL, login banner + claim-url in the guest),
+  reuses a live box on reconnect, and reports an expired one. Scopes
+  `anon:door` / `anon:admin`; typed gRPC + HTTP client methods; opt-in with
+  `CONTAINARIUM_ANON_DOOR=enable` on an LXC backend. `ClaimAnonymousBox` and
+  `SetAnonymousDoorConfig` are registered but land with #2199 / #2200.
+
+- `IsolationType` on `CreateContainerRequest` / `Container` and
+  `containarium create --isolation container|vm`: a Linux box can now be an
+  Incus VM (own kernel), not only Windows. Unspecified keeps today's rule
+  (Windows → VM, else container); Windows as a container is rejected. Linux
+  VMs boot the image's `/cloud` variant and skip the baked-image fast path.
+  `list` gains an ISO column (`lxc`/`vm`); the MCP `create_container` tool
+  takes `isolation`; the Kubernetes backend rejects `vm`. Groundwork for the
+  anonymous-box tier (#2196)
+
+- `--dns-passthrough-host` (repeatable): hostnames the bridge DNS record carves
+  out of the `*.<base-domain>` wildcard so boxes resolve them through the
+  upstream resolvers, the way `--ssh-host` already is. For an API host that sits
+  under the base domain but is not served by Caddy. Entries are validated at
+  boot; with none configured the generated `raw.dnsmasq` value is unchanged.
+  The record is rewritten only when the daemon writes it, which today is at
+  first install; the change that keeps it current on every start (#2188,
+  bridge DNS reconciler) is what makes a newly added host take effect on an
+  existing deployment. (#2188)
+- `containarium bridge-dns status` (`--json`), the `GetBridgeDNSStatus` RPC
+  (`GET /v1/system/bridge-dns`, admin-only) and the `bridge_dns_status` MCP
+  tool: whether the bridge DNS record for the app-hosting base domain matches
+  core-caddy's live address. State is a `BridgeDNSState` enum (not managed /
+  pending / in sync / degraded) with core-caddy's address, the desired and
+  current record, the last error, the drift count and the last pass / rewrite
+  times. (#2188)
+
 ### Security
 
 - **A run token can no longer release an agent-filed follow-up unless the
@@ -20,6 +140,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to the "a human releases every hop" default. With `auto_chain` on, a run
   may still remove the gate within its own lineage. Adding the gate is
   always allowed, and operator tokens are unchanged.
+
+### Fixed
+
+- `create_container` in MCP now maps `os_type` (`ubuntu|rocky9|rhel9`) to the
+  daemon's `CreateContainerRequest.OSType` instead of silently defaulting to
+  Ubuntu. Unknown `os_type` values are rejected with an explicit error (#2208).
+
+- The bridge DNS record that resolves `*.<base-domain>` to core-caddy is now
+  reconciled instead of written once, at first install. The write lives in the
+  core-services block that is skipped on every later start, because the daemon
+  has by then auto-detected the Caddy admin URL from the running core-caddy, so
+  a record left stale by a core-caddy address change stayed stale across daemon
+  restarts and upgrades; a failed first write (only a warning) was never
+  retried either. Boxes then resolved the whole base domain to an address
+  nothing answered on. A new reconciler, started on every start whenever app
+  hosting is on, a base domain is set and a core-caddy container exists,
+  compares `raw.dnsmasq` with what the daemon would render for core-caddy's
+  live address at start-up, on container events and every minute, and rewrites
+  it only on drift, logging both values. The daemon owns the whole value, so a hand edit is restored. It
+  never writes when core-caddy's address cannot be established. (#2188)
+
+### Internal
+
+- `testdata/client_command_tree.golden`: add `claim` and `anon claim`, the
+  two client-safe command paths #2199 added, to the #1778 client/server-split
+  allow-list — the gate had been red on `main` since that merge. (#2217)
 
 ## [0.93.1] - 2026-09-30
 
@@ -61,6 +207,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `backends upgrade` and the `check_for_updates` / `upgrade_backend` /
   `get_upgrade_status` MCP tools show it, and flag a sentinel that is behind the
   latest release. (#2171) (#2172)
+
+### Changed
+
+- `mcp`: the `list_routes` description now says inactive entries are claimed-but-unbound
+  subdomain reservations that still count against the caller's route quota (#2160)
 
 ## [0.91.1] - 2026-09-29
 

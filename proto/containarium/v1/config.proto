@@ -3,6 +3,7 @@ syntax = "proto3";
 package containarium.v1;
 
 import "containarium/v1/container.proto";
+import "google/protobuf/timestamp.proto";
 
 option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
 
@@ -514,6 +515,70 @@ message GetUpgradeStatusResponse {
   // Version the upgrade was installing, as recorded when it was triggered.
   // Empty when unknown, including after a restart dropped the job. #2171.
   string target_version = 5;
+}
+
+// BridgeDNSState is the reconcile state of the bridge DNS record that resolves
+// the app-hosting base domain to core-caddy (#2188).
+enum BridgeDNSState {
+  BRIDGE_DNS_STATE_UNSPECIFIED = 0;
+  // The daemon is not running the reconciler: app hosting is off, or core-caddy
+  // is not managed by this daemon (an operator-supplied Caddy admin URL).
+  BRIDGE_DNS_STATE_NOT_MANAGED = 1;
+  // The reconciler is running but no pass has finished yet.
+  BRIDGE_DNS_STATE_PENDING = 2;
+  // The record on the bridge equals what the daemon renders for core-caddy's
+  // live address.
+  BRIDGE_DNS_STATE_IN_SYNC = 3;
+  // The last pass could not converge (see last_error): core-caddy's address
+  // could not be established, the record could not be read, or the write failed.
+  BRIDGE_DNS_STATE_DEGRADED = 4;
+  // The bridge has no record and this daemon will not create one (#2232):
+  // it only repairs a record that already exists, or creates one in the run
+  // that installs core-caddy, or when started with --bridge-dns-create.
+  BRIDGE_DNS_STATE_ABSENT = 5;
+}
+
+// GetBridgeDNSStatusRequest asks for the bridge DNS reconciler's last pass.
+message GetBridgeDNSStatusRequest {}
+
+// GetBridgeDNSStatusResponse is the bridge DNS reconciler's last-pass snapshot.
+message GetBridgeDNSStatusResponse {
+  BridgeDNSState state = 1;
+
+  // Human-readable explanation for NOT_MANAGED, PENDING and DEGRADED; empty
+  // when IN_SYNC.
+  string reason = 2;
+
+  // Incus network whose raw.dnsmasq is reconciled (e.g. incusbr0).
+  string bridge = 3;
+
+  // core-caddy's address as of the last pass; empty when it could not be
+  // established.
+  string caddy_ip = 4;
+
+  // The raw.dnsmasq value the daemon wants for that address, and the value the
+  // bridge held after the last pass (equal once IN_SYNC). Operator-configured
+  // hostnames appear here, so this is admin-only.
+  string desired = 5;
+  string current = 6;
+
+  // Why the last pass could not converge; empty when it did.
+  string last_error = 7;
+
+  // Passes that found the record different from the desired value.
+  int32 drift_count = 8;
+
+  // When the last pass finished, and when the record was last rewritten.
+  // Unset until the first pass / first rewrite.
+  google.protobuf.Timestamp last_pass = 9;
+  google.protobuf.Timestamp last_applied = 10;
+  // What the last write was: "created" (no record existed — the daemon made
+  // one, announced in the log) or "repaired" (an existing record was brought
+  // back to the desired value). Empty until the daemon has written. #2232.
+  string last_action = 11;
+  // When this daemon created the record from nothing; unset if it only
+  // ever repaired one.
+  google.protobuf.Timestamp created_at = 12;
 }
 
 // NetworkPolicyMode controls whether a tenant's network policy is enforced or

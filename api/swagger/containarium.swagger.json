@@ -38,6 +38,10 @@
       "description": "CrewService runs collaborating sets of skills bound to a task purpose."
     },
     {
+      "name": "AnonymousBoxService",
+      "description": "AnonymousBoxService is the daemon side of the `ssh new.\u003ccloud-domain\u003e`\ndoor (docs/architecture/ssh-new-anonymous-box.md): a Linux VM per SSH\nkey fingerprint, no account required, claimable into a tenant by\nsigning up, destroyed at TTL otherwise. The sentinel's door plugin calls\nEnsureAnonymousBox; the cloud control plane (or an admin) calls\nClaimAnonymousBox; everything else is operator surface."
+    },
+    {
       "name": "AppService",
       "description": "AppService provides application deployment and management"
     },
@@ -826,6 +830,154 @@
         ],
         "tags": [
           "Alerts"
+        ]
+      }
+    },
+    "/v1/anon/boxes": {
+      "get": {
+        "summary": "List anonymous boxes",
+        "description": "Every live anonymous box with its fingerprint hash, expiry and claim state. Admin only.",
+        "operationId": "AnonymousBoxService_ListAnonymousBoxes",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListAnonymousBoxesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "tags": [
+          "AnonymousBox"
+        ]
+      }
+    },
+    "/v1/anon/boxes:claim": {
+      "post": {
+        "summary": "Claim anonymous box",
+        "description": "Bind an anonymous box to a tenant using its claim token. Admin / control plane only.",
+        "operationId": "AnonymousBoxService_ClaimAnonymousBox",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ClaimAnonymousBoxResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/ClaimAnonymousBoxRequest"
+            }
+          }
+        ],
+        "tags": [
+          "AnonymousBox"
+        ]
+      }
+    },
+    "/v1/anon/boxes:ensure": {
+      "post": {
+        "summary": "Ensure anonymous box",
+        "description": "Resolve or create the anonymous VM for an SSH public key. Sentinel door / admin only.",
+        "operationId": "AnonymousBoxService_EnsureAnonymousBox",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/EnsureAnonymousBoxResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/EnsureAnonymousBoxRequest"
+            }
+          }
+        ],
+        "tags": [
+          "AnonymousBox"
+        ]
+      }
+    },
+    "/v1/anon/door": {
+      "get": {
+        "summary": "Get anonymous door config",
+        "description": "Kill switch, bans and the fixed per-box limits of the anonymous tier. Admin only.",
+        "operationId": "AnonymousBoxService_GetAnonymousDoorConfig",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/AnonymousDoorConfig"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "tags": [
+          "AnonymousBox"
+        ]
+      },
+      "put": {
+        "summary": "Set anonymous door config",
+        "description": "Enable/disable the anonymous door and edit banned fingerprints. Admin only.",
+        "operationId": "AnonymousBoxService_SetAnonymousDoorConfig",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/AnonymousDoorConfig"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "config",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/AnonymousDoorConfig"
+            }
+          }
+        ],
+        "tags": [
+          "AnonymousBox"
         ]
       }
     },
@@ -3677,7 +3829,8 @@
                 "RESOURCE_TYPE_ROUTE",
                 "RESOURCE_TYPE_METRICS",
                 "RESOURCE_TYPE_TRAFFIC",
-                "RESOURCE_TYPE_SECURITY_FINDING"
+                "RESOURCE_TYPE_SECURITY_FINDING",
+                "RESOURCE_TYPE_ANON_BOX"
               ]
             },
             "collectionFormat": "multi"
@@ -6263,6 +6416,30 @@
         ]
       }
     },
+    "/v1/system/bridge-dns": {
+      "get": {
+        "summary": "Get bridge DNS record status",
+        "description": "Returns the last pass of the reconciler that keeps the Incus bridge's raw.dnsmasq record (base domain -\u003e core-caddy) on core-caddy's live address: state, the desired and current record, core-caddy's address, the last error and drift count. NOT_MANAGED when this daemon does not run the reconciler. Admin-only.",
+        "operationId": "ContainerService_GetBridgeDNSStatus",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetBridgeDNSStatusResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "tags": [
+          "System"
+        ]
+      }
+    },
     "/v1/system/info": {
       "get": {
         "summary": "Get system information",
@@ -8737,6 +8914,115 @@
       },
       "title": "AlertRule represents an alerting rule evaluated by vmalert"
     },
+    "AnonEvent": {
+      "type": "object",
+      "properties": {
+        "boxName": {
+          "type": "string",
+          "description": "Instance name, e.g. anon-1a2b3c4d-container. Empty on a rejection\nthat never reached a box."
+        },
+        "fingerprintHash": {
+          "type": "string",
+          "description": "sha256 hex of the SSH key fingerprint. Never the fingerprint or key."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Human-readable reason for a rejection / kill, empty otherwise."
+        },
+        "seconds": {
+          "type": "number",
+          "format": "double",
+          "description": "SHELL_READY only: seconds from the key knocking to the box being\nprovisioned (the PRD's time-to-shell)."
+        }
+      },
+      "description": "SecurityFindingEvent contains a security finding raised or updated by the\nthreat-detection engine.\nAnonEvent is the payload of every EVENT_TYPE_ANON_* event (#2201)."
+    },
+    "AnonymousBox": {
+      "type": "object",
+      "properties": {
+        "boxName": {
+          "type": "string"
+        },
+        "fingerprintHash": {
+          "type": "string",
+          "description": "sha256 hex of the fingerprint — never the key or the raw fingerprint."
+        },
+        "sshHost": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "ttlExpiresAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "claimed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "AnonymousBoxLimits": {
+      "type": "object",
+      "properties": {
+        "cpu": {
+          "type": "string"
+        },
+        "memory": {
+          "type": "string"
+        },
+        "disk": {
+          "type": "string"
+        },
+        "ttlSeconds": {
+          "type": "string",
+          "format": "int64"
+        },
+        "maxBoxes": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "perFingerprintRps": {
+          "type": "number",
+          "format": "double"
+        },
+        "perFingerprintBurst": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "perIpRps": {
+          "type": "number",
+          "format": "double"
+        },
+        "perIpBurst": {
+          "type": "integer",
+          "format": "int32"
+        }
+      }
+    },
+    "AnonymousDoorConfig": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "disabledMessage": {
+          "type": "string",
+          "description": "Shown to a rejected caller while the door is disabled."
+        },
+        "bannedFingerprints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "limits": {
+          "$ref": "#/definitions/AnonymousBoxLimits",
+          "description": "Read-only echo of the daemon's fixed limits."
+        }
+      }
+    },
     "Any": {
       "type": "object",
       "properties": {
@@ -9219,6 +9505,19 @@
       "default": "BOX_RUN_OUTCOME_UNSPECIFIED",
       "description": "BoxRunOutcome classifies a run record, the same three outcomes agent-box's\nResolveOutcome reports to process_list.\n\n - BOX_RUN_OUTCOME_RUNNING: Same boot, no exit code recorded, PID still alive.\n - BOX_RUN_OUTCOME_EXITED: An exit code is recorded (by agent-box's reaper or the run's exit\nsidecar).\n - BOX_RUN_OUTCOME_UNKNOWN: No exit code, and the PID is gone or belongs to an earlier boot: the\nrun was killed, OOMed, or the box restarted. Never reported as exited."
     },
+    "BridgeDNSState": {
+      "type": "string",
+      "enum": [
+        "BRIDGE_DNS_STATE_UNSPECIFIED",
+        "BRIDGE_DNS_STATE_NOT_MANAGED",
+        "BRIDGE_DNS_STATE_PENDING",
+        "BRIDGE_DNS_STATE_IN_SYNC",
+        "BRIDGE_DNS_STATE_DEGRADED",
+        "BRIDGE_DNS_STATE_ABSENT"
+      ],
+      "default": "BRIDGE_DNS_STATE_UNSPECIFIED",
+      "description": "BridgeDNSState is the reconcile state of the bridge DNS record that resolves\nthe app-hosting base domain to core-caddy (#2188).\n\n - BRIDGE_DNS_STATE_NOT_MANAGED: The daemon is not running the reconciler: app hosting is off, or core-caddy\nis not managed by this daemon (an operator-supplied Caddy admin URL).\n - BRIDGE_DNS_STATE_PENDING: The reconciler is running but no pass has finished yet.\n - BRIDGE_DNS_STATE_IN_SYNC: The record on the bridge equals what the daemon renders for core-caddy's\nlive address.\n - BRIDGE_DNS_STATE_DEGRADED: The last pass could not converge (see last_error): core-caddy's address\ncould not be established, the record could not be read, or the write failed.\n - BRIDGE_DNS_STATE_ABSENT: The bridge has no record and this daemon will not create one (#2232):\nit only repairs a record that already exists, or creates one in the run\nthat installs core-caddy, or when started with --bridge-dns-create."
+    },
     "BuildpackOptions": {
       "type": "object",
       "properties": {
@@ -9402,6 +9701,36 @@
       ],
       "default": "CAPTURE_MODE_UNSPECIFIED",
       "description": "CaptureMode selects how a spawned process's combined stdout+stderr is\nwritten to its log file (#1674). COMBINED is today's plain-text behavior;\nFRAMED is opt-in, text-safe per-line framing (\"\u003cstream\u003e \u003cbase64(payload)\u003e\")\nso a client can demux stdout/stderr from the single offset stream without\ncorrupting invalid UTF-8 or runes split across a write — see\ndocs/architecture/remote-coding-agent.md, Part A \"Framing\".\n\n - CAPTURE_MODE_UNSPECIFIED: treated as COMBINED"
+    },
+    "ClaimAnonymousBoxRequest": {
+      "type": "object",
+      "properties": {
+        "claimToken": {
+          "type": "string"
+        },
+        "tenant": {
+          "type": "string",
+          "description": "New owner (tenant username)."
+        },
+        "authorizedKeys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The tenant's keys to add; the original key stays."
+        }
+      }
+    },
+    "ClaimAnonymousBoxResponse": {
+      "type": "object",
+      "properties": {
+        "boxName": {
+          "type": "string"
+        },
+        "tenant": {
+          "type": "string"
+        }
+      }
     },
     "ClaimTrackerIssueBody": {
       "type": "object",
@@ -10078,6 +10407,10 @@
         "encryptionState": {
           "$ref": "#/definitions/EncryptionState",
           "description": "Whether this container's data is protected by a per-tenant ZFS key, and\nwhether that key is currently loaded (#1202).\n\nKEY_UNAVAILABLE is the one an operator has to act on: the container will\nnot start and its snapshots cannot be inspected until key custody is\nreachable. It is surfaced on status rather than only at the point of\nfailure so the condition is visible before someone trips over it."
+        },
+        "isolation": {
+          "$ref": "#/definitions/IsolationType",
+          "description": "How the box is isolated from the host: CONTAINER (LXC) or VM\n(QEMU/KVM), read back from the instance itself. UNSPECIFIED when the\nbackend does not report it."
         }
       }
     },
@@ -10455,6 +10788,10 @@
         "region": {
           "type": "string",
           "description": "Region to place this container in (#1606) — a client-side placement\nhint in the same family as `pool` and `backend_id`. A standalone,\nsingle-backend daemon has exactly one region and ignores this field\nentirely: empty stays today's default behavior, and any non-empty\nvalue is likewise a no-op here. It exists so a hosted, multi-region\ncontrol plane fronting several regional daemons has somewhere on this\nwire shape to receive the caller's choice — without it, a create\nagainst such a control plane with no configured default region has no\nway to express one at all. Empty = daemon/control-plane default."
+        },
+        "isolation": {
+          "$ref": "#/definitions/IsolationType",
+          "description": "Isolation picks container (LXC) or VM (QEMU/KVM). UNSPECIFIED keeps\ntoday's behavior: Windows → VM, everything else → container.\nCONTAINER with a Windows os_type is rejected with InvalidArgument.\nOnly the LXC backend honors VM; the Kubernetes backend rejects it."
         }
       },
       "title": "CreateContainerRequest is the request to create a new container"
@@ -11324,6 +11661,55 @@
         }
       }
     },
+    "EnsureAnonymousBoxRequest": {
+      "type": "object",
+      "properties": {
+        "fingerprint": {
+          "type": "string",
+          "description": "\"SHA256:\u003cbase64\u003e\" as ssh.FingerprintSHA256. Optional; when set it\nmust match public_key or the request is rejected."
+        },
+        "publicKey": {
+          "type": "string",
+          "description": "One authorized_keys line. Required."
+        },
+        "sourceIp": {
+          "type": "string",
+          "description": "Connecting client's IP, kept on the box for abuse handling."
+        }
+      }
+    },
+    "EnsureAnonymousBoxResponse": {
+      "type": "object",
+      "properties": {
+        "boxName": {
+          "type": "string"
+        },
+        "sshHost": {
+          "type": "string",
+          "description": "VM address reachable from the sentinel."
+        },
+        "sshPort": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "sshUser": {
+          "type": "string",
+          "description": "The box's login — its tenant-named user, as every other box."
+        },
+        "ttlExpiresAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "reused": {
+          "type": "boolean",
+          "description": "true on a reconnect to an existing live box."
+        },
+        "previousExpired": {
+          "type": "boolean",
+          "description": "true when a prior box for this key is gone (expired or preempted),\nso the banner can say so."
+        }
+      }
+    },
     "Event": {
       "type": "object",
       "properties": {
@@ -11365,6 +11751,13 @@
         },
         "securityFindingEvent": {
           "$ref": "#/definitions/SecurityFindingEvent"
+        },
+        "anonEvent": {
+          "$ref": "#/definitions/AnonEvent"
+        },
+        "fingerprintHash": {
+          "type": "string",
+          "description": "sha256 hex of the SSH key fingerprint for EVENT_TYPE_ANON_* events\n(#2201); empty for every other type. Top-level so subscribers can\ncorrelate a key's journey without opening the payload."
         }
       },
       "title": "Event is the top-level event message sent to clients"
@@ -11387,10 +11780,22 @@
         "EVENT_TYPE_ROUTE_DELETED",
         "EVENT_TYPE_METRICS_UPDATE",
         "EVENT_TYPE_TRAFFIC_UPDATE",
-        "EVENT_TYPE_SECURITY_FINDING"
+        "EVENT_TYPE_SECURITY_FINDING",
+        "EVENT_TYPE_ANON_CONNECT",
+        "EVENT_TYPE_ANON_SHELL_READY",
+        "EVENT_TYPE_ANON_RECONNECT",
+        "EVENT_TYPE_ANON_CLAIM_LINK_ISSUED",
+        "EVENT_TYPE_ANON_CLAIM_COMPLETED",
+        "EVENT_TYPE_ANON_EXPIRED",
+        "EVENT_TYPE_ANON_KILLED_ABUSE",
+        "EVENT_TYPE_ANON_REJECTED_CAPACITY",
+        "EVENT_TYPE_ANON_REJECTED_RATELIMIT",
+        "EVENT_TYPE_ANON_REJECTED_DOOR",
+        "EVENT_TYPE_ANON_LOST_PREEMPTION",
+        "EVENT_TYPE_ANON_REMINDER_OPTIN"
       ],
       "default": "EVENT_TYPE_UNSPECIFIED",
-      "description": "- EVENT_TYPE_UNSPECIFIED: Unspecified event type (should not be used)\n - EVENT_TYPE_CONTAINER_CREATED: Container events (1-9)\nContainer was created\n - EVENT_TYPE_CONTAINER_DELETED: Container was deleted\n - EVENT_TYPE_CONTAINER_STARTED: Container was started\n - EVENT_TYPE_CONTAINER_STOPPED: Container was stopped\n - EVENT_TYPE_CONTAINER_STATE_CHANGED: Container state changed\n - EVENT_TYPE_APP_DEPLOYED: App events (10-19)\nApp was deployed\n - EVENT_TYPE_APP_DELETED: App was deleted\n - EVENT_TYPE_APP_STARTED: App was started\n - EVENT_TYPE_APP_STOPPED: App was stopped\n - EVENT_TYPE_APP_STATE_CHANGED: App state changed\n - EVENT_TYPE_ROUTE_ADDED: Network events (20-29)\nRoute was added\n - EVENT_TYPE_ROUTE_DELETED: Route was deleted\n - EVENT_TYPE_METRICS_UPDATE: System events (30-39)\nMetrics update\n - EVENT_TYPE_TRAFFIC_UPDATE: Traffic events (40-49)\nTraffic/connection update\n - EVENT_TYPE_SECURITY_FINDING: Security events (50-59)\nA security finding was created or updated by the threat-detection engine",
+      "description": "- EVENT_TYPE_UNSPECIFIED: Unspecified event type (should not be used)\n - EVENT_TYPE_CONTAINER_CREATED: Container events (1-9)\nContainer was created\n - EVENT_TYPE_CONTAINER_DELETED: Container was deleted\n - EVENT_TYPE_CONTAINER_STARTED: Container was started\n - EVENT_TYPE_CONTAINER_STOPPED: Container was stopped\n - EVENT_TYPE_CONTAINER_STATE_CHANGED: Container state changed\n - EVENT_TYPE_APP_DEPLOYED: App events (10-19)\nApp was deployed\n - EVENT_TYPE_APP_DELETED: App was deleted\n - EVENT_TYPE_APP_STARTED: App was started\n - EVENT_TYPE_APP_STOPPED: App was stopped\n - EVENT_TYPE_APP_STATE_CHANGED: App state changed\n - EVENT_TYPE_ROUTE_ADDED: Network events (20-29)\nRoute was added\n - EVENT_TYPE_ROUTE_DELETED: Route was deleted\n - EVENT_TYPE_METRICS_UPDATE: System events (30-39)\nMetrics update\n - EVENT_TYPE_TRAFFIC_UPDATE: Traffic events (40-49)\nTraffic/connection update\n - EVENT_TYPE_SECURITY_FINDING: Security events (50-59)\nA security finding was created or updated by the threat-detection engine\n - EVENT_TYPE_ANON_CONNECT: Anonymous-box funnel (#2201, docs/architecture/ssh-new-anonymous-box.md).\nOne event per step of the `ssh new.\u003cdomain\u003e` journey, keyed by the\nsha256 of the key fingerprint (Event.fingerprint_hash) — never the key.\nCounters containarium_anon_\u003cstep\u003e_total mirror them one-for-one.\n\na key knocked (before any decision)\n - EVENT_TYPE_ANON_SHELL_READY: a new box was created and provisioned (carries time-to-shell)\n - EVENT_TYPE_ANON_RECONNECT: an existing box was handed back\n - EVENT_TYPE_ANON_CLAIM_LINK_ISSUED: the claim-url was written into the guest\n - EVENT_TYPE_ANON_CLAIM_COMPLETED: ClaimAnonymousBox succeeded\n - EVENT_TYPE_ANON_EXPIRED: a box is gone after its TTL\n - EVENT_TYPE_ANON_KILLED_ABUSE: a box is gone BEFORE its TTL (operator deleted it)\n - EVENT_TYPE_ANON_REJECTED_CAPACITY: refused: global cap\n - EVENT_TYPE_ANON_REJECTED_RATELIMIT: refused: per-key / per-IP rate limit\n - EVENT_TYPE_ANON_REJECTED_DOOR: refused: door closed or key banned (#2200)\n - EVENT_TYPE_ANON_LOST_PREEMPTION: the anon-pool host was preempted (emitted by the sentinel's spot watcher, not the daemon)\n - EVENT_TYPE_ANON_REMINDER_OPTIN: the user asked for an expiry reminder (containarium remind-me), picked up by the warner",
       "title": "EventType represents the type of resource change event"
     },
     "Evidence": {
@@ -11789,6 +12194,61 @@
           "$ref": "#/definitions/BackupRecord"
         }
       }
+    },
+    "GetBridgeDNSStatusResponse": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "$ref": "#/definitions/BridgeDNSState"
+        },
+        "reason": {
+          "type": "string",
+          "description": "Human-readable explanation for NOT_MANAGED, PENDING and DEGRADED; empty\nwhen IN_SYNC."
+        },
+        "bridge": {
+          "type": "string",
+          "description": "Incus network whose raw.dnsmasq is reconciled (e.g. incusbr0)."
+        },
+        "caddyIp": {
+          "type": "string",
+          "description": "core-caddy's address as of the last pass; empty when it could not be\nestablished."
+        },
+        "desired": {
+          "type": "string",
+          "description": "The raw.dnsmasq value the daemon wants for that address, and the value the\nbridge held after the last pass (equal once IN_SYNC). Operator-configured\nhostnames appear here, so this is admin-only."
+        },
+        "current": {
+          "type": "string"
+        },
+        "lastError": {
+          "type": "string",
+          "description": "Why the last pass could not converge; empty when it did."
+        },
+        "driftCount": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Passes that found the record different from the desired value."
+        },
+        "lastPass": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the last pass finished, and when the record was last rewritten.\nUnset until the first pass / first rewrite."
+        },
+        "lastApplied": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "lastAction": {
+          "type": "string",
+          "description": "What the last write was: \"created\" (no record existed — the daemon made\none, announced in the log) or \"repaired\" (an existing record was brought\nback to the desired value). Empty until the daemon has written. #2232."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When this daemon created the record from nothing; unset if it only\never repaired one."
+        }
+      },
+      "description": "GetBridgeDNSStatusResponse is the bridge DNS reconciler's last-pass snapshot."
     },
     "GetCapabilityProfileResponse": {
       "type": "object",
@@ -12719,6 +13179,16 @@
         }
       }
     },
+    "IsolationType": {
+      "type": "string",
+      "enum": [
+        "ISOLATION_TYPE_UNSPECIFIED",
+        "ISOLATION_TYPE_CONTAINER",
+        "ISOLATION_TYPE_VM"
+      ],
+      "default": "ISOLATION_TYPE_UNSPECIFIED",
+      "description": "IsolationType selects the Incus instance type a box runs as — the\nkernel boundary between the box and the host. Independent of OSType:\na Linux box can be a VM, and until this enum existed only Windows could\n(#2196, the anonymous-box tier in docs/architecture/ssh-new-anonymous-box.md).\n\n - ISOLATION_TYPE_UNSPECIFIED: Backend default: Windows runs as a VM, every other OS as a container.\n - ISOLATION_TYPE_CONTAINER: LXC container — shares the host kernel.\n - ISOLATION_TYPE_VM: QEMU/KVM virtual machine — its own kernel. Requires a KVM-capable\nbackend. Windows cannot be anything else."
+    },
     "LeaseAgentTaskRequest": {
       "type": "object",
       "properties": {
@@ -12797,6 +13267,18 @@
         }
       },
       "title": "ListAlertRulesResponse returns all alert rules"
+    },
+    "ListAnonymousBoxesResponse": {
+      "type": "object",
+      "properties": {
+        "boxes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/AnonymousBox"
+          }
+        }
+      }
     },
     "ListAppsResponse": {
       "type": "object",
@@ -14720,7 +15202,8 @@
         "RESOURCE_TYPE_ROUTE",
         "RESOURCE_TYPE_METRICS",
         "RESOURCE_TYPE_TRAFFIC",
-        "RESOURCE_TYPE_SECURITY_FINDING"
+        "RESOURCE_TYPE_SECURITY_FINDING",
+        "RESOURCE_TYPE_ANON_BOX"
       ],
       "default": "RESOURCE_TYPE_UNSPECIFIED",
       "description": "- RESOURCE_TYPE_UNSPECIFIED: Unspecified resource type\n - RESOURCE_TYPE_CONTAINER: Container resource\n - RESOURCE_TYPE_APP: App resource\n - RESOURCE_TYPE_ROUTE: Route resource\n - RESOURCE_TYPE_METRICS: Metrics resource\n - RESOURCE_TYPE_TRAFFIC: Traffic resource\n - RESOURCE_TYPE_SECURITY_FINDING: Security finding resource",
@@ -15230,8 +15713,7 @@
         "finding": {
           "$ref": "#/definitions/Finding"
         }
-      },
-      "description": "SecurityFindingEvent contains a security finding raised or updated by the\nthreat-detection engine."
+      }
     },
     "SelfMeasurement": {
       "type": "object",

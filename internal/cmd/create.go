@@ -30,6 +30,7 @@ var (
 	stackID                  string
 	gpuDevices               []string
 	osTypeStr                string
+	isolationStr             string
 	monitoring               bool
 	createEncrypted          bool
 	createTenantID           string
@@ -158,6 +159,7 @@ func init() {
 	createCmd.Flags().StringSliceVar(&labels, "labels", []string{}, "Labels in key=value format (can be specified multiple times)")
 	createCmd.Flags().BoolVar(&forceRecreate, "force", false, "Delete and recreate if container already exists")
 	createCmd.Flags().StringVar(&osTypeStr, "os-type", "", "Container OS type: ubuntu, rocky9, rhel9 (overrides --image)")
+	createCmd.Flags().StringVar(&isolationStr, "isolation", "", "Isolation: container (LXC, shared kernel) or vm (QEMU/KVM, own kernel; needs a KVM-capable backend). Default: vm for Windows, container otherwise.")
 	createCmd.Flags().BoolVar(&monitoring, "monitoring", false, "Opt into application-emitted OpenTelemetry. When set, the daemon stamps the container with OTEL_EXPORTER_OTLP_ENDPOINT etc. pointing at the platform's OTel collector, so any OTel SDK inside the container ships telemetry without app-side config. Default off.")
 	createCmd.Flags().BoolVar(&createEncrypted, "encrypted", false, "Encrypt the container's ZFS dataset with a tenant-scoped key instead of the pool-wide key. Requires the daemon to have a KeyProvider configured; the request is refused rather than silently creating an unencrypted container. Default off.")
 	createCmd.Flags().StringVar(&createTenantID, "tenant", "", "Tenant that owns the container, scoping its encryption key. A single-tenant daemon accepts only an empty value or \"default\".")
@@ -436,6 +438,10 @@ func runCreate(cmd *cobra.Command, args []string) error {
 
 	// Parse OS type from flag
 	osType := ostype.OSTypeFromString(osTypeStr)
+	isolation, err := ostype.ParseIsolation(isolationStr)
+	if err != nil {
+		return err
+	}
 
 	// Resolve optional git-source provisioning from flags (reads the
 	// credential file if one was given). Empty Source = no-op.
@@ -446,13 +452,13 @@ func runCreate(cmd *cobra.Command, args []string) error {
 
 	if httpMode && serverAddr != "" {
 		// Remote mode via HTTP
-		info, err = createRemoteHTTP(username, containerImage, cpuLimit, memoryLimit, diskLimit, sshKeys, enablePodman, stackID, gpuDevices, osType, monitoring, createPool, createBackendID, gitOpts, ttlSeconds, idleStopMinutes, deleteAfterStoppedSeconds, createStorageClass, client.EncryptionOpts{Encrypted: createEncrypted, TenantID: createTenantID}, createMemoryRequest, createCPURequest, createRegion)
+		info, err = createRemoteHTTP(username, containerImage, cpuLimit, memoryLimit, diskLimit, sshKeys, enablePodman, stackID, gpuDevices, osType, isolation, monitoring, createPool, createBackendID, gitOpts, ttlSeconds, idleStopMinutes, deleteAfterStoppedSeconds, createStorageClass, client.EncryptionOpts{Encrypted: createEncrypted, TenantID: createTenantID}, createMemoryRequest, createCPURequest, createRegion)
 		if err != nil {
 			return fmt.Errorf("failed to create container via HTTP API: %w", err)
 		}
 	} else if serverAddr != "" {
 		// Remote mode via gRPC
-		info, err = createRemote(username, containerImage, cpuLimit, memoryLimit, diskLimit, sshKeys, enablePodman, stackID, gpuDevices, osType, monitoring, createPool, createBackendID, gitOpts, ttlSeconds, idleStopMinutes, deleteAfterStoppedSeconds, createStorageClass, client.EncryptionOpts{Encrypted: createEncrypted, TenantID: createTenantID}, createMemoryRequest, createCPURequest, createRegion)
+		info, err = createRemote(username, containerImage, cpuLimit, memoryLimit, diskLimit, sshKeys, enablePodman, stackID, gpuDevices, osType, isolation, monitoring, createPool, createBackendID, gitOpts, ttlSeconds, idleStopMinutes, deleteAfterStoppedSeconds, createStorageClass, client.EncryptionOpts{Encrypted: createEncrypted, TenantID: createTenantID}, createMemoryRequest, createCPURequest, createRegion)
 		if err != nil {
 			return fmt.Errorf("failed to create container via remote server: %w", err)
 		}
@@ -475,7 +481,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		if verbose {
 			fmt.Println("Creating container...")
 		}
-		info, err = createLocal(username, containerImage, cpuLimit, memoryLimit, diskLimit, staticIP, sshKeys, parsedLabels, enablePodman, stackID, gpuDevices, osType, monitoring, gitOpts, ttlSeconds, idleStopMinutes, deleteAfterStoppedSeconds, createStorageClass)
+		info, err = createLocal(username, containerImage, cpuLimit, memoryLimit, diskLimit, staticIP, sshKeys, parsedLabels, enablePodman, stackID, gpuDevices, osType, isolation, monitoring, gitOpts, ttlSeconds, idleStopMinutes, deleteAfterStoppedSeconds, createStorageClass)
 		if err != nil {
 			// Cleanup jump server account on failure
 			cleanupJumpServerAccountLocal(username)
@@ -707,23 +713,23 @@ func parseLabels(labelSlice []string) map[string]string {
 }
 
 // createRemote creates a container using remote gRPC server
-func createRemote(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, monitoring bool, pool, backendID string, git client.GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64, storageClass string, enc client.EncryptionOpts, memoryRequest, cpuRequest, region string) (*incus.ContainerInfo, error) {
+func createRemote(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, isolation pb.IsolationType, monitoring bool, pool, backendID string, git client.GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64, storageClass string, enc client.EncryptionOpts, memoryRequest, cpuRequest, region string) (*incus.ContainerInfo, error) {
 	grpcClient, err := client.NewGRPCClient(serverAddr, certsDir, insecure)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = grpcClient.Close() }()
 
-	return grpcClient.CreateContainer(username, image, cpu, memory, disk, sshKeys, enablePodman, stack, gpus, osType, monitoring, pool, backendID, git, ttlSeconds, idleStopMinutes, deleteAfterStoppedSeconds, storageClass, enc, memoryRequest, cpuRequest, region)
+	return grpcClient.CreateContainer(username, image, cpu, memory, disk, sshKeys, enablePodman, stack, gpus, osType, isolation, monitoring, pool, backendID, git, ttlSeconds, idleStopMinutes, deleteAfterStoppedSeconds, storageClass, enc, memoryRequest, cpuRequest, region)
 }
 
 // createRemoteHTTP creates a container using remote HTTP API
-func createRemoteHTTP(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, monitoring bool, pool, backendID string, git client.GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64, storageClass string, enc client.EncryptionOpts, memoryRequest, cpuRequest, region string) (*incus.ContainerInfo, error) {
+func createRemoteHTTP(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, isolation pb.IsolationType, monitoring bool, pool, backendID string, git client.GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64, storageClass string, enc client.EncryptionOpts, memoryRequest, cpuRequest, region string) (*incus.ContainerInfo, error) {
 	httpClient, err := client.NewHTTPClient(serverAddr, authToken)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = httpClient.Close() }()
 
-	return httpClient.CreateContainer(username, image, cpu, memory, disk, sshKeys, enablePodman, stack, gpus, osType, monitoring, pool, backendID, git, ttlSeconds, idleStopMinutes, deleteAfterStoppedSeconds, storageClass, enc, memoryRequest, cpuRequest, region)
+	return httpClient.CreateContainer(username, image, cpu, memory, disk, sshKeys, enablePodman, stack, gpus, osType, isolation, monitoring, pool, backendID, git, ttlSeconds, idleStopMinutes, deleteAfterStoppedSeconds, storageClass, enc, memoryRequest, cpuRequest, region)
 }
