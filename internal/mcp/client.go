@@ -1926,6 +1926,11 @@ type CreateContainerRequest struct {
 	// which is what grpc-gateway's protojson accepts. Empty = not sent =
 	// the daemon's default (#2196).
 	Isolation string `json:"isolation,omitempty"`
+
+	// OSType is the OSType enum *name* ("OS_TYPE_ROCKY_9"),
+	// which is what grpc-gateway's protojson accepts. Empty = not sent =
+	// the daemon's default (#2208).
+	OSType string `json:"osType,omitempty"`
 }
 
 type ResourceLimits struct {

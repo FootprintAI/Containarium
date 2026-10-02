@@ -22,8 +22,8 @@ type guestFiles struct {
 // is configured) into the guest. Parent directories are created first:
 // the Incus file API does not create them.
 func (m *Manager) writeGuestFiles(ctx context.Context, ref box.BoxRef, g guestFiles) error {
-	dirs := []string{path.Dir(BannerPath)}
-	if g.claimURL != "" {
+	dirs := []string{path.Dir(BannerPath), path.Dir(RemindFilePath)}
+	if g.claimURL != "" && path.Dir(ClaimURLPath) != path.Dir(RemindFilePath) {
 		dirs = append(dirs, path.Dir(ClaimURLPath))
 	}
 	if _, stderr, err := m.boxes.Exec(ctx, ref, append([]string{"mkdir", "-p"}, dirs...)); err != nil {
@@ -36,6 +36,12 @@ func (m *Manager) writeGuestFiles(ctx context.Context, ref box.BoxRef, g guestFi
 		if err := m.boxes.WriteFile(ctx, ref, ClaimURLPath, []byte(g.claimURL+"\n"), "0644"); err != nil {
 			return fmt.Errorf("write claim-url: %w", err)
 		}
+	}
+	// The opt-in reminder file (#2206): empty, world-writable, so the
+	// unprivileged box user can opt in without a daemon credential.
+	rp, rmode, rcontent := reminderGuestFile()
+	if err := m.boxes.WriteFile(ctx, ref, rp, rcontent, rmode); err != nil {
+		return fmt.Errorf("write remind-me file: %w", err)
 	}
 	return nil
 }
@@ -60,6 +66,7 @@ func banner(g guestFiles) string {
 		g.limits.CPU, g.limits.Memory, g.limits.Disk)
 	b.WriteString("echo 'This box runs on preemptible capacity and may disappear before it expires.'\n")
 	b.WriteString("echo 'Keep it: run `containarium claim` and sign up with the link it prints.'\n")
+	b.WriteString("echo 'Want a reminder before it expires? containarium remind-me you@example.com (opt-in, used once).'\n")
 	b.WriteString("echo\n")
 	return b.String()
 }

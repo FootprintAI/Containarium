@@ -39,6 +39,8 @@ type bridgeDNSStatusEnvelope struct {
 	DriftCount  int    `json:"driftCount"`
 	LastPass    string `json:"lastPass"`
 	LastApplied string `json:"lastApplied"`
+	LastAction  string `json:"lastAction"`
+	CreatedAt   string `json:"createdAt"`
 }
 
 func runBridgeDNSStatus(cmd *cobra.Command, args []string) error {
@@ -90,6 +92,12 @@ func printBridgeDNSStatus(w io.Writer, out bridgeDNSStatusEnvelope) {
 	}
 	if out.LastApplied != "" {
 		fmt.Fprintf(w, "Last applied: %s\n", out.LastApplied)
+	}
+	if out.LastAction != "" {
+		fmt.Fprintf(w, "Last action:  %s\n", out.LastAction)
+	}
+	if out.CreatedAt != "" {
+		fmt.Fprintf(w, "Created by this daemon at %s — every name under the base domain resolves to core-caddy on this bridge; carve out any it must not capture with --dns-passthrough-host / --ssh-host.\n", out.CreatedAt)
 	}
 	if out.LastError != "" && out.LastError != out.Reason {
 		fmt.Fprintf(w, "Last error:   %s\n", out.LastError)

@@ -532,6 +532,10 @@ enum BridgeDNSState {
   // The last pass could not converge (see last_error): core-caddy's address
   // could not be established, the record could not be read, or the write failed.
   BRIDGE_DNS_STATE_DEGRADED = 4;
+  // The bridge has no record and this daemon will not create one (#2232):
+  // it only repairs a record that already exists, or creates one in the run
+  // that installs core-caddy, or when started with --bridge-dns-create.
+  BRIDGE_DNS_STATE_ABSENT = 5;
 }
 
 // GetBridgeDNSStatusRequest asks for the bridge DNS reconciler's last pass.
@@ -568,6 +572,13 @@ message GetBridgeDNSStatusResponse {
   // Unset until the first pass / first rewrite.
   google.protobuf.Timestamp last_pass = 9;
   google.protobuf.Timestamp last_applied = 10;
+  // What the last write was: "created" (no record existed — the daemon made
+  // one, announced in the log) or "repaired" (an existing record was brought
+  // back to the desired value). Empty until the daemon has written. #2232.
+  string last_action = 11;
+  // When this daemon created the record from nothing; unset if it only
+  // ever repaired one.
+  google.protobuf.Timestamp created_at = 12;
 }
 
 // NetworkPolicyMode controls whether a tenant's network policy is enforced or

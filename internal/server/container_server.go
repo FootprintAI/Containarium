@@ -117,6 +117,7 @@ type ContainerServer struct {
 	boxRunLogDir       string
 	boxRunPoll         time.Duration
 	emitter            *events.Emitter
+	bridgeDNSDisabled  bool // #2232: --bridge-dns-reconcile=false, for status
 	pendingCreations   map[string]*PendingCreation
 	pendingMu          sync.RWMutex
 	// Monitoring URLs (set by DualServer after setup)

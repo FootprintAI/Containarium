@@ -40,9 +40,11 @@ func hostedConfig() *DualServerConfig {
 
 // The reconciler renders exactly what the daemon's own record would be, SSH
 // carve-out and passthrough hosts included, from core-caddy's live address.
+// The bridge starts with a stale record: since #2232 a pass repairs an
+// existing record but never creates one from nothing by default.
 func TestNewBridgeDNSReconciler_RendersTheDaemonsRecord(t *testing.T) {
-	be := &fakeBridgeDNSBackend{present: true, ip: "10.0.3.5"}
-	r := newBridgeDNSReconciler(hostedConfig(), be)
+	be := &fakeBridgeDNSBackend{present: true, ip: "10.0.3.5", raw: "address=/example.com/10.0.3.9"}
+	r := newBridgeDNSReconciler(hostedConfig(), be, false)
 	if r == nil {
 		t.Fatal("want a reconciler when app hosting is on, a base domain is set and core-caddy exists")
 	}
@@ -66,7 +68,7 @@ func TestNewBridgeDNSReconciler_RunsWhenTheCaddyAdminURLWasAutoDetected(t *testi
 	cfg.CaddyAdminURL = "http://10.0.3.5:2019" // what cmd/daemon.go sets from the running core-caddy
 
 	be := &fakeBridgeDNSBackend{present: true, ip: "10.0.3.5", raw: "address=/example.com/10.0.3.9"} // stale
-	r := newBridgeDNSReconciler(cfg, be)
+	r := newBridgeDNSReconciler(cfg, be, false)
 	if r == nil {
 		t.Fatal("reconciler must not depend on CaddyAdminURL being empty")
 	}
@@ -92,7 +94,7 @@ func TestNewBridgeDNSReconciler_NilWhenNotManaged(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := hostedConfig()
 			tc.edit(cfg)
-			if r := newBridgeDNSReconciler(cfg, tc.be); r != nil {
+			if r := newBridgeDNSReconciler(cfg, tc.be, false); r != nil {
 				t.Fatalf("want nil (this daemon does not manage the record), got a reconciler")
 			}
 		})

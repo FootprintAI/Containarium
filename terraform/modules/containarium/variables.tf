@@ -485,3 +485,19 @@ variable "anon_daemon_url" {
     error_message = "anon_daemon_url must start with http:// or https://, or be empty."
   }
 }
+
+# Bridge DNS carve-outs for the backend daemon (#2232, #2189). With app
+# hosting on, the bridge resolves every name under base_domain to core-caddy;
+# names core-caddy does not serve — the control plane's API host, the
+# sentinel's SSH apex — must be carved out or boxes cannot reach them.
+variable "dns_passthrough_hosts" {
+  description = "Hostnames under base_domain that boxes must resolve upstream instead of at core-caddy (rendered as one --dns-passthrough-host flag each), e.g. the control plane's hostname. Empty = only ssh_host is carved out."
+  type        = list(string)
+  default     = []
+}
+
+variable "ssh_host" {
+  description = "The sentinel's public SSH hostname (rendered as --ssh-host): surfaced to clients as the host to dial, and carved out of the base-domain bridge record. Empty = direct mode, and the SSH apex is NOT carved out."
+  type        = string
+  default     = ""
+}

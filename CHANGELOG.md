@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Anonymous-box opt-in reminder (#2206): `containarium remind-me <email>`
+  inside the box (`--clear` withdraws it) asks for one email about 30 minutes
+  before the box expires, carrying the sign-up link. The address is picked up
+  inside that window, posted once to `--anon-reminder-webhook` (the control
+  plane sends the mail — the daemon has no SMTP), and discarded; the funnel
+  counts it as `reminder_optin`. Nothing is collected without the command.
+
 - Anonymous-box expiry warnings (#2202): a `wall` into the guest about 10
   minutes and 1 minute before the box's TTL, each at most once, recorded on
   the box (`anon.warned`) so a daemon restart never repeats one; a wall that
@@ -30,6 +37,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (6 / 10 min, burst 6), a cap on live unclaimed boxes (20), all tunable
   with `--anon-*` daemon flags; and `AddRoute` / `AddPassthroughRoute`
   refuse an unclaimed anonymous box. Reconnects are never rate-limited.
+
+### Changed
+
+- **Bridge DNS reconciler no longer creates a record from nothing** (#2232).
+  v0.94.0's reconciler (#2188) wrote `address=/<base-domain>/<core-caddy IP>`
+  onto any bridge that had no `raw.dnsmasq` record, which on a backend host
+  started without `--ssh-host` / `--dns-passthrough-host` captured every name
+  under the base domain (the control plane, the SSH apex) into core-caddy and
+  broke TLS from inside every box. A pass now repairs an existing record only;
+  an absent record is reported as `ABSENT` by `containarium bridge-dns status`
+  and logged once. The record is still written on the run that installs
+  core-caddy, or when the operator opts in with `--bridge-dns-create`; a
+  creation logs a WARNING naming the base domain, the address and the
+  carve-outs, and the status shows `Last action: created` with the time.
+  `--bridge-dns-reconcile=false` turns the reconciler off without a rollback.
+  Note: rolling back the daemon does **not** remove a record v0.94.0 already
+  created; remove it with `incus network unset incusbr0 raw.dnsmasq` or pass
+  the carve-outs.
+
+- Terraform module: `ssh_host` and `dns_passthrough_hosts` variables render
+  `--ssh-host` / `--dns-passthrough-host` into the spot backend's daemon unit,
+  so a backend that shares its base domain with the control plane keeps those
+  names on the public resolver.
 
 ### Documentation
 
@@ -112,6 +142,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   always allowed, and operator tokens are unchanged.
 
 ### Fixed
+
+- `create_container` in MCP now maps `os_type` (`ubuntu|rocky9|rhel9`) to the
+  daemon's `CreateContainerRequest.OSType` instead of silently defaulting to
+  Ubuntu. Unknown `os_type` values are rejected with an explicit error (#2208).
 
 - The bridge DNS record that resolves `*.<base-domain>` to core-caddy is now
   reconciled instead of written once, at first install. The write lives in the

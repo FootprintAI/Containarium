@@ -44,6 +44,7 @@ func (m *Manager) Warn(ctx context.Context) error {
 		if remaining <= 0 {
 			continue // the sweeper's problem now
 		}
+		m.remind(ctx, st.Ref.Name, st.Labels, st.TTLExpiresAt, now)
 		warned := parseWarned(st.Labels[LabelWarned])
 		var fired []string
 		for _, th := range warnThresholds {

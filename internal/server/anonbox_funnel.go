@@ -40,6 +40,7 @@ var anonFunnelEventTypes = map[anonbox.FunnelKind]pb.EventType{
 	anonbox.FunnelRejectedCapacity:  pb.EventType_EVENT_TYPE_ANON_REJECTED_CAPACITY,
 	anonbox.FunnelRejectedRateLimit: pb.EventType_EVENT_TYPE_ANON_REJECTED_RATELIMIT,
 	anonbox.FunnelRejectedDoor:      pb.EventType_EVENT_TYPE_ANON_REJECTED_DOOR,
+	anonbox.FunnelReminderOptIn:     pb.EventType_EVENT_TYPE_ANON_REMINDER_OPTIN,
 }
 
 // newAnonFunnelSink registers one counter per step on mp's "containarium"

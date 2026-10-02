@@ -145,3 +145,37 @@ func TestRunBridgeDNSStatus_JSONFlag(t *testing.T) {
 		t.Fatalf("runBridgeDNSStatus: %v", err)
 	}
 }
+
+// #2232: an absent record shows its own state and the opt-in hint; a
+// created record says who created it and how to carve names out.
+func TestRunBridgeDNSStatus_AbsentAndCreated(t *testing.T) {
+	url, _ := serveBridgeDNS(t, `{"state": "BRIDGE_DNS_STATE_ABSENT", "reason": "the bridge has no record and this daemon will not create one; start with --bridge-dns-create to opt in (#2232)", "bridge": "incusbr0", "caddyIp": "10.0.3.5", "desired": "address=/example.com/10.0.3.5", "current": ""}`)
+	withServer(t, url)
+	cmd := testCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	if err := runBridgeDNSStatus(cmd, nil); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	for _, w := range []string{"Bridge DNS: ABSENT", "--bridge-dns-create", "(unset)", "address=/example.com/10.0.3.5"} {
+		if !strings.Contains(out, w) {
+			t.Errorf("absent output missing %q:\n%s", w, out)
+		}
+	}
+
+	url2, _ := serveBridgeDNS(t, `{"state": "BRIDGE_DNS_STATE_IN_SYNC", "bridge": "incusbr0", "caddyIp": "10.0.3.5", "current": "address=/example.com/10.0.3.5", "desired": "address=/example.com/10.0.3.5", "lastApplied": "2026-10-02T07:00:00Z", "lastAction": "created", "createdAt": "2026-10-02T07:00:00Z"}`)
+	withServer(t, url2)
+	cmd = testCmd()
+	buf.Reset()
+	cmd.SetOut(&buf)
+	if err := runBridgeDNSStatus(cmd, nil); err != nil {
+		t.Fatal(err)
+	}
+	out = buf.String()
+	for _, w := range []string{"Last action:  created", "Created by this daemon at 2026-10-02T07:00:00Z", "--dns-passthrough-host"} {
+		if !strings.Contains(out, w) {
+			t.Errorf("created output missing %q:\n%s", w, out)
+		}
+	}
+}

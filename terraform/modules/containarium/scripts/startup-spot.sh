@@ -948,7 +948,7 @@ SVCEOF
     cat > /etc/systemd/system/containarium.service.d/override.conf <<EOF
 [Service]
 ExecStart=
-ExecStart=/usr/local/bin/containariumd daemon --address 0.0.0.0 --rest --http-port 8080 --jwt-secret-file /etc/containarium/jwt.secret%{ if enable_app_hosting } --app-hosting%{ if base_domain != "" } --base-domain ${base_domain}%{ endif }%{ endif }%{ if enable_proxy_protocol } --proxy-protocol --proxy-protocol-trusted=${join(",", proxy_protocol_trusted_cidrs)}%{ endif }
+ExecStart=/usr/local/bin/containariumd daemon --address 0.0.0.0 --rest --http-port 8080 --jwt-secret-file /etc/containarium/jwt.secret%{ if enable_app_hosting } --app-hosting%{ if base_domain != "" } --base-domain ${base_domain}%{ endif }%{ endif }%{ if enable_proxy_protocol } --proxy-protocol --proxy-protocol-trusted=${join(",", proxy_protocol_trusted_cidrs)}%{ endif }%{ if ssh_host != "" } --ssh-host ${ssh_host}%{ endif }%{ for h in dns_passthrough_hosts } --dns-passthrough-host ${h}%{ endfor }
 EOF
     echo "✓ wrote override.conf for app-hosting / proxy-protocol"
     systemctl daemon-reload
