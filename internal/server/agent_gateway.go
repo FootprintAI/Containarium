@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/footprintai/containarium/internal/agentengine"
 	"github.com/footprintai/containarium/internal/auth"
 	appconfig "github.com/footprintai/containarium/internal/config"
 	"github.com/footprintai/containarium/internal/modelgateway"
@@ -30,9 +31,16 @@ import (
 // to mint a box's gateway token and seed its env. nil ⇒ no provider key
 // configured ⇒ boxes run in direct mode (the OSS/self-hosted default).
 type gatewayProvisioning struct {
-	provider      string // the gateway's configured provider (anthropic|openai|gemini)
-	httpPort      int    // the daemon HTTP port the box dials (resolved to the host's default-route IP in-box)
-	secret        []byte // shared HMAC secret (daemon jwt.secret) — signs the gateway token
+	// engines is the engine-resolution view of the gateway (#2222): the
+	// default provider, which providers the daemon holds a global key for,
+	// and how to check a per-owner key. provisionSkillBoxWith calls
+	// agentengine.Resolve(ctx, skill.GetEngine(), keyOwner, &engines) once per
+	// run — this is the ONLY thing that decides which provider a run's
+	// gateway token is bound to; nothing else in this file picks a provider.
+	engines  agentengine.Gateway
+	httpPort int    // the daemon HTTP port the box dials (resolved to the host's default-route IP in-box)
+	secret   []byte // shared HMAC secret (daemon jwt.secret) — signs the gateway token
+
 	allowedModels []string
 	// egressCIDR is the host the box reaches the gateway on, as a /32 (the LXC
 	// bridge gateway IP — also the daemon API + DNS). When set, the skill box's
@@ -57,7 +65,10 @@ var gatewayProviderEnvs = map[string]gatewayProviderEnv{
 }
 
 // mintGatewayToken mints a per-skill gateway token bound to this box's tenant +
-// skill + the configured provider, expiring with the in-box token (agentTokenTTL).
+// skill + provider, expiring with the in-box token (agentTokenTTL). provider
+// is the run's RESOLVED provider (#2222, agentengine.Resolve's output) — a
+// crew whose members resolve to two different engines mints two tokens here,
+// each bound to its own member's provider, never the daemon's single default.
 //
 // runID binds the token to one skill run (#1817) and the returned MintedID is
 // what lets the run's exit revoke it: without the jti the issuer would have to
@@ -67,11 +78,11 @@ var gatewayProviderEnvs = map[string]gatewayProviderEnv{
 // spends that owner's registered key; "" mints no claim and the token resolves
 // through the daemon-global key exactly as before. Callers resolve it with
 // runKeyOwner, which only ever returns a validated owner or "".
-func (g *gatewayProvisioning) mintGatewayToken(tenant, skillID, runID, keyOwner string) (string, tokenid.MintedID, error) {
+func (g *gatewayProvisioning) mintGatewayToken(tenant, skillID, runID, keyOwner, provider string) (string, tokenid.MintedID, error) {
 	return modelgateway.MintTokenWithID(g.secret, modelgateway.GatewayClaims{
 		Tenant:        tenant,
 		SkillID:       skillID,
-		Provider:      g.provider,
+		Provider:      provider,
 		AllowedModels: g.allowedModels,
 		RunID:         runID,
 		KeyOwner:      keyOwner,
@@ -111,24 +122,29 @@ func runKeyOwner(ctx context.Context, box *pb.Container) string {
 }
 
 // mintRunGatewayToken mints the gateway token for one skill/crew run on the box
-// `name`, carrying the run's key_owner (runKeyOwner). Every run path — a push
-// run, a crew member, a queue worker — reaches it through provisionSkillBox.
+// `name`, carrying the run's key_owner (runKeyOwner) and bound to provider —
+// the run's RESOLVED provider (#2222), not necessarily the daemon's default.
+// Every run path — a push run, a crew member, a queue worker — reaches it
+// through provisionSkillBoxWith, which resolves provider once per run via
+// agentengine.Resolve before calling here.
 //
 // An owner with no registered key is still minted a key_owner token: the
 // gateway falls back to the daemon-global key for it and logs that call as
 // billed to the operator (modelgateway resolveKey, case 3). That differs on
 // purpose from MintGatewayToken, which refuses such a mint up front — a caller
 // asking for a token can fix its config and retry, whereas a run that fails
-// outright is worse than one that runs and is logged (#2134).
+// outright is worse than one that runs and is logged (#2134). This path never
+// reaches here for a provider agentengine.Resolve already refused: that
+// refusal happens in provisionSkillBoxWith before any mint is attempted.
 //
 // A run with no attributable owner mints no claim, and is logged here, once
 // per run, rather than per model call.
-func (s *AgentSkillServer) mintRunGatewayToken(ctx context.Context, name, skillID, runID string, box *pb.Container) (string, tokenid.MintedID, error) {
+func (s *AgentSkillServer) mintRunGatewayToken(ctx context.Context, name, skillID, runID, provider string, box *pb.Container) (string, tokenid.MintedID, error) {
 	keyOwner := runKeyOwner(ctx, box)
 	if keyOwner == "" {
 		log.Printf("[agent-skill] run %s on %s has no attributable key owner; its model calls are billed to the daemon-global key", runID, name)
 	}
-	return s.gateway.mintGatewayToken(name, skillID, runID, keyOwner)
+	return s.gateway.mintGatewayToken(name, skillID, runID, keyOwner, provider)
 }
 
 // gatewayEnvScript returns a shell snippet (run inside the box, in the same exec

@@ -94,8 +94,35 @@ message AgentSkill {
   repeated string allowed_peers = 9;
 
   // Model identifier the runtime should drive this agent with (e.g.
-  // "claude-opus-4-8"). Empty = runtime default.
+  // "claude-opus-4-8"). Empty = runtime default. Exported to the box
+  // (CONTAINARIUM_AGENT_MODEL) only when `engine` is also set — an
+  // unspecified engine keeps this field display/audit-only, exactly as it
+  // was before `engine` existed, so a daemon whose default engine does not
+  // match this model id does not have its skills break on upgrade.
   string model = 10;
+
+  // Agent engine (SDK) this skill runs on. AGENT_ENGINE_UNSPECIFIED keeps
+  // today's behaviour: the daemon's configured gateway primary provider
+  // picks the engine in gateway mode, or the box's own default/env decides
+  // in direct mode. A named engine is honoured per run — see
+  // docs/architecture/agent-router.md.
+  AgentEngine engine = 11;
+}
+
+// AgentEngine identifies the in-box agent loop (agent-runtime SDK) a skill
+// runs on. One daemon can run skills on different engines at once — the
+// engine is a per-skill choice, not a daemon-wide constant (#2222).
+enum AgentEngine {
+  // Runtime default: the daemon's configured gateway primary provider in
+  // gateway mode, or the box's own default/env in direct mode. Never
+  // rejected — this is what every skill predating this field resolves to.
+  AGENT_ENGINE_UNSPECIFIED = 0;
+  // Claude Agent SDK (provider: anthropic).
+  AGENT_ENGINE_CLAUDE = 1;
+  // OpenAI Codex SDK (provider: openai).
+  AGENT_ENGINE_CODEX = 2;
+  // Google Gen AI SDK (provider: gemini).
+  AGENT_ENGINE_GEMINI = 3;
 }
 
 // ---- AgentSkillService request/response messages ----------------------------

@@ -8792,6 +8792,17 @@
       },
       "description": "AgentCard is the discovery document a skill serves so peer agents can find\nit and learn how to delegate to it (A2A, Phase 1). It is carried in-proto so\nthe wire format stays insulated from upstream A2A churn."
     },
+    "AgentEngine": {
+      "type": "string",
+      "enum": [
+        "AGENT_ENGINE_UNSPECIFIED",
+        "AGENT_ENGINE_CLAUDE",
+        "AGENT_ENGINE_CODEX",
+        "AGENT_ENGINE_GEMINI"
+      ],
+      "default": "AGENT_ENGINE_UNSPECIFIED",
+      "description": "AgentEngine identifies the in-box agent loop (agent-runtime SDK) a skill\nruns on. One daemon can run skills on different engines at once — the\nengine is a per-skill choice, not a daemon-wide constant (#2222).\n\n - AGENT_ENGINE_UNSPECIFIED: Runtime default: the daemon's configured gateway primary provider in\ngateway mode, or the box's own default/env in direct mode. Never\nrejected — this is what every skill predating this field resolves to.\n - AGENT_ENGINE_CLAUDE: Claude Agent SDK (provider: anthropic).\n - AGENT_ENGINE_CODEX: OpenAI Codex SDK (provider: openai).\n - AGENT_ENGINE_GEMINI: Google Gen AI SDK (provider: gemini)."
+    },
     "AgentSkill": {
       "type": "object",
       "properties": {
@@ -8839,7 +8850,11 @@
         },
         "model": {
           "type": "string",
-          "description": "Model identifier the runtime should drive this agent with (e.g.\n\"claude-opus-4-8\"). Empty = runtime default."
+          "description": "Model identifier the runtime should drive this agent with (e.g.\n\"claude-opus-4-8\"). Empty = runtime default. Exported to the box\n(CONTAINARIUM_AGENT_MODEL) only when `engine` is also set — an\nunspecified engine keeps this field display/audit-only, exactly as it\nwas before `engine` existed, so a daemon whose default engine does not\nmatch this model id does not have its skills break on upgrade."
+        },
+        "engine": {
+          "$ref": "#/definitions/AgentEngine",
+          "description": "Agent engine (SDK) this skill runs on. AGENT_ENGINE_UNSPECIFIED keeps\ntoday's behaviour: the daemon's configured gateway primary provider\npicks the engine in gateway mode, or the box's own default/env decides\nin direct mode. A named engine is honoured per run — see\ndocs/architecture/agent-router.md."
         }
       },
       "description": "AgentSkill is a packaged, runnable agent: a Recipe (the box — image,\nresources, GPU) plus the agent layer (who it is, what tools it may call,\nwho it may talk to). This is the unit `containarium agent run` launches.\n\nKey invariant: allowed_scopes and allowed_peers are typed, first-class\nfields — NOT a prompt string. allowed_scopes is minted into the agent's JWT\nat launch; allowed_peers compiles into eBPF network policy (Phase 2). The\ntyping IS the security boundary."

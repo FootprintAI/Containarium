@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/footprintai/containarium/internal/agentengine"
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/pkg/core/container"
 	"github.com/footprintai/containarium/pkg/core/crews"
@@ -546,7 +547,7 @@ func newSkillBoxHarnessForSkills(t *testing.T, store auth.RevocationStore, skill
 		catalog: catalog,
 		recipes: NewRecipeServer(cs, nil),
 		tokens:  tm,
-		gateway: &gatewayProvisioning{provider: "anthropic", httpPort: 8080, secret: []byte("test-shared-secret")},
+		gateway: &gatewayProvisioning{engines: agentengine.Gateway{DefaultProvider: "anthropic"}, httpPort: 8080, secret: []byte("test-shared-secret")},
 	}
 	s.SetRevocationStore(store)
 	return s, out
