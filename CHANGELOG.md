@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.97.1] - 2026-10-02
+
+### Fixed
+
+- **v0.97.0's release build failed its own "release is described" gate and
+  never published a GitHub Release.** Its `## [Unreleased]` section had new
+  entries added under it but was never itself renamed to `## [0.97.0]` — a
+  release-cut step skipped, not a build or code defect. The gate caught it
+  before any binary asset was built, but the daemon/sidecar images and the
+  `containarium-telemetry` PyPI package had already published by the time it
+  failed (those three jobs run in parallel with the gated one, not after
+  it). v0.97.0 is left as a dead tag with no GitHub Release; this release
+  supersedes it, matching the `v0.48.0` precedent.
+
+### Added
+
+- `containarium agent engines` (`--json`), the `ListAgentEngines` RPC
+  (`GET /v1/agent-engines`) and the `list_agent_engines` MCP tool (#2223):
+  one read-only surface reporting which agent engines this deployment can
+  run right now, and why not, using the exact same readiness check a run's
+  own refusal enforces (#2222) — the reason text is never reworded between
+  the three readers. A tenant sees readiness for their own key owner; an
+  admin with no owner scope sees the daemon's global view.
+
+- Web UI Agents page (#2224): one row per engine — readiness, provider,
+  credential source, default badge, and the skills that name it — backed
+  directly by `ListAgentEngines`, so the UI and the CLI can never show two
+  different answers for the same daemon. A daemon with no provider keys
+  renders every engine as not-ready rather than a blank page.
+
+- `two-engine-crew` reference fixture (#2225): a two-member crew
+  (`hello-agent-claude`, `hello-agent-codex`) and
+  `scripts/two-engine-crew-e2e.sh`, proving a crew can run its members on
+  different engines on one daemon — each member's gateway token decodes to
+  its own engine's provider claim, and `containarium agent engines --json`
+  reports exactly the readiness the run itself used.
+
 ### Fixed
 
 - `ssh-config sync` now emits `IdentitiesOnly yes` in every `Host` block, not

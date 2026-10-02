@@ -211,3 +211,107 @@ func TestResolve(t *testing.T) {
 		}
 	})
 }
+
+func statusFor(rows []*pb.AgentEngineStatus, e pb.AgentEngine) *pb.AgentEngineStatus {
+	for _, r := range rows {
+		if r.GetEngine() == e {
+			return r
+		}
+	}
+	return nil
+}
+
+func TestStatuses(t *testing.T) {
+	ctx := context.Background()
+	claude, codex, gemini := pb.AgentEngine_AGENT_ENGINE_CLAUDE, pb.AgentEngine_AGENT_ENGINE_CODEX, pb.AgentEngine_AGENT_ENGINE_GEMINI
+
+	t.Run("direct mode: every row UNKNOWN_DIRECT_MODE, no default, no ready=true", func(t *testing.T) {
+		rows := Statuses(ctx, "", nil, nil)
+		if len(rows) != len(All()) {
+			t.Fatalf("rows = %d, want %d (one per concrete engine)", len(rows), len(All()))
+		}
+		for _, r := range rows {
+			if r.GetReadiness() != pb.AgentEngineReadiness_AGENT_ENGINE_READINESS_UNKNOWN_DIRECT_MODE {
+				t.Errorf("engine %v: readiness = %v, want UNKNOWN_DIRECT_MODE", r.GetEngine(), r.GetReadiness())
+			}
+			if r.GetSource() != pb.AgentCredentialSource_AGENT_CREDENTIAL_SOURCE_DIRECT_MODE {
+				t.Errorf("engine %v: source = %v, want DIRECT_MODE", r.GetEngine(), r.GetSource())
+			}
+			if r.GetIsDefault() {
+				t.Errorf("engine %v: is_default = true, want false (no daemon-side default in direct mode)", r.GetEngine())
+			}
+			if r.GetReason() == "" {
+				t.Errorf("engine %v: reason is empty, want it to say why this daemon can't tell", r.GetEngine())
+			}
+		}
+	})
+
+	t.Run("gateway mode: global key ready, others not, default flagged, skill_ids explicit only", func(t *testing.T) {
+		gw := &Gateway{DefaultProvider: "anthropic", GlobalProviders: map[string]bool{"anthropic": true}}
+		skills := []SkillEngine{
+			{ID: "codex-skill", Engine: codex},
+			{ID: "unspecified-1", Engine: pb.AgentEngine_AGENT_ENGINE_UNSPECIFIED},
+			{ID: "unspecified-2", Engine: pb.AgentEngine_AGENT_ENGINE_UNSPECIFIED},
+		}
+		rows := Statuses(ctx, "user:alice", gw, skills)
+
+		c := statusFor(rows, claude)
+		if c.GetReadiness() != pb.AgentEngineReadiness_AGENT_ENGINE_READINESS_READY {
+			t.Errorf("claude: readiness = %v, want READY", c.GetReadiness())
+		}
+		if c.GetSource() != pb.AgentCredentialSource_AGENT_CREDENTIAL_SOURCE_GLOBAL_KEY {
+			t.Errorf("claude: source = %v, want GLOBAL_KEY", c.GetSource())
+		}
+		if !c.GetIsDefault() {
+			t.Error("claude: is_default = false, want true (it's the daemon's DefaultProvider's engine)")
+		}
+		if len(c.GetSkillIds()) != 0 {
+			t.Errorf("claude: skill_ids = %v, want none — unspecified-engine skills are never attributed (#2222 Q2)", c.GetSkillIds())
+		}
+
+		cx := statusFor(rows, codex)
+		if cx.GetReadiness() != pb.AgentEngineReadiness_AGENT_ENGINE_READINESS_NOT_READY {
+			t.Errorf("codex: readiness = %v, want NOT_READY", cx.GetReadiness())
+		}
+		if cx.GetReason() == "" || !contains(cx.GetReason(), "openai") {
+			t.Errorf("codex: reason = %q, want it to name openai", cx.GetReason())
+		}
+		if cx.GetIsDefault() {
+			t.Error("codex: is_default = true, want false")
+		}
+		if got := cx.GetSkillIds(); len(got) != 1 || got[0] != "codex-skill" {
+			t.Errorf("codex: skill_ids = %v, want [codex-skill]", got)
+		}
+
+		g := statusFor(rows, gemini)
+		if g.GetReadiness() != pb.AgentEngineReadiness_AGENT_ENGINE_READINESS_NOT_READY {
+			t.Errorf("gemini: readiness = %v, want NOT_READY", g.GetReadiness())
+		}
+	})
+
+	t.Run("gateway mode: owner key (no global) reports READY with OWNER_KEY source", func(t *testing.T) {
+		resolver := &fakeKeyResolver{has: map[string]bool{"user:alice/openai": true}}
+		gw := &Gateway{DefaultProvider: "anthropic", GlobalProviders: map[string]bool{"anthropic": true}, Keys: resolver}
+		rows := Statuses(ctx, "user:alice", gw, nil)
+		cx := statusFor(rows, codex)
+		if cx.GetReadiness() != pb.AgentEngineReadiness_AGENT_ENGINE_READINESS_READY {
+			t.Errorf("codex: readiness = %v, want READY", cx.GetReadiness())
+		}
+		if cx.GetSource() != pb.AgentCredentialSource_AGENT_CREDENTIAL_SOURCE_OWNER_KEY {
+			t.Errorf("codex: source = %v, want OWNER_KEY", cx.GetSource())
+		}
+	})
+
+	t.Run("admin view: empty keyOwner still reports the global set correctly", func(t *testing.T) {
+		gw := &Gateway{DefaultProvider: "gemini", GlobalProviders: map[string]bool{"gemini": true}}
+		rows := Statuses(ctx, "", gw, nil)
+		g := statusFor(rows, gemini)
+		if g.GetReadiness() != pb.AgentEngineReadiness_AGENT_ENGINE_READINESS_READY || !g.GetIsDefault() {
+			t.Errorf("gemini: got readiness=%v is_default=%v, want READY/true", g.GetReadiness(), g.GetIsDefault())
+		}
+		c := statusFor(rows, claude)
+		if c.GetReadiness() != pb.AgentEngineReadiness_AGENT_ENGINE_READINESS_NOT_READY {
+			t.Errorf("claude: readiness = %v, want NOT_READY (no key, no owner to check)", c.GetReadiness())
+		}
+	})
+}

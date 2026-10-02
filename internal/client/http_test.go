@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/footprintai/containarium/pkg/version"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -327,5 +328,53 @@ func TestHTTPListContainers_ParsesUnixSecondsCreatedAt(t *testing.T) {
 	}
 	if !containers[0].CreatedAt.Equal(want) {
 		t.Errorf("CreatedAt = %v, want %v", containers[0].CreatedAt, want)
+	}
+}
+
+// TestHTTPListAgentEngines_DecodesReadinessRows (#2223) pins the HTTP path
+// and that the daemon's camelCase JSON enum names decode onto the typed
+// Go/proto values the CLI and MCP tool read — not strings pulled out of a
+// map.
+func TestHTTPListAgentEngines_DecodesReadinessRows(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"engines": [
+				{"engine":"AGENT_ENGINE_CLAUDE","provider":"GATEWAY_PROVIDER_ANTHROPIC","readiness":"AGENT_ENGINE_READINESS_READY","source":"AGENT_CREDENTIAL_SOURCE_GLOBAL_KEY","isDefault":true,"skillIds":["hello-agent"]},
+				{"engine":"AGENT_ENGINE_CODEX","provider":"GATEWAY_PROVIDER_OPENAI","readiness":"AGENT_ENGINE_READINESS_NOT_READY","reason":"no key for provider openai"}
+			],
+			"keyOwner": "user:alice"
+		}`))
+	}))
+	defer srv.Close()
+
+	c, err := NewHTTPClient(srv.URL, "tok")
+	if err != nil {
+		t.Fatalf("NewHTTPClient: %v", err)
+	}
+	resp, err := c.ListAgentEngines()
+	if err != nil {
+		t.Fatalf("ListAgentEngines: %v", err)
+	}
+	if gotPath != "/v1/agent-engines" {
+		t.Errorf("path = %q, want /v1/agent-engines", gotPath)
+	}
+	if resp.GetKeyOwner() != "user:alice" {
+		t.Errorf("key_owner = %q, want user:alice", resp.GetKeyOwner())
+	}
+	if len(resp.GetEngines()) != 2 {
+		t.Fatalf("engines = %d, want 2", len(resp.GetEngines()))
+	}
+	claude := resp.GetEngines()[0]
+	if claude.GetEngine() != pb.AgentEngine_AGENT_ENGINE_CLAUDE ||
+		claude.GetReadiness() != pb.AgentEngineReadiness_AGENT_ENGINE_READINESS_READY ||
+		!claude.GetIsDefault() || claude.GetSkillIds()[0] != "hello-agent" {
+		t.Errorf("claude row decoded wrong: %+v", claude)
+	}
+	codex := resp.GetEngines()[1]
+	if codex.GetReadiness() != pb.AgentEngineReadiness_AGENT_ENGINE_READINESS_NOT_READY || codex.GetReason() == "" {
+		t.Errorf("codex row decoded wrong: %+v", codex)
 	}
 }

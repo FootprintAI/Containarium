@@ -54,6 +54,22 @@ crews:
       - diff-drafter   # diff-drafter.allowed_peers includes diff-reviewer,
       - diff-reviewer  # so the pipeline edge drafter -> reviewer is permitted.
 
+  # two-engine-crew (#2225): the acceptance test fixture for the agent-router
+  # PRD's Story 4 — a two-member crew whose members name two different
+  # engines, proving several engines can run on one daemon at once. Pipeline
+  # topology (not freeform): driveCrew only ever delivers the crew's input to
+  # entry skill ids[0] itself, so a freeform crew's second member would never
+  # actually run unless the first agent chose to delegate to it. Pipeline
+  # guarantees BOTH members run, in order, which is what the e2e lane
+  # (scripts/two-engine-crew-e2e.sh) needs to observe both engines.
+  - id: two-engine-crew
+    name: Two-Engine Crew
+    description: Reference crew for per-skill engine routing — hello-agent-claude runs on the claude engine, then hands off to hello-agent-codex on the codex engine, both against the same daemon.
+    topology: pipeline
+    skill_ids:
+      - hello-agent-claude  # hello-agent-claude.allowed_peers includes
+      - hello-agent-codex   # hello-agent-codex, so this pipeline edge is permitted.
+
   # engineer-crew (Containarium-cloud#2003, Phase 3 Story 1 of the
   # coding-agent issue-to-PR PRD): a GitHub issue in, a reviewed change with
   # a PR title/body out. Reuses diff-crew's own reviewer stage unchanged in

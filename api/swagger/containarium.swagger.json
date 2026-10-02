@@ -30,6 +30,10 @@
       "description": "RecipeService provides one-command deployment of declarative GPU/app\nrecipes onto Containarium backends."
     },
     {
+      "name": "ModelGatewayService",
+      "description": "ModelGatewayService is the control surface for the daemon's model gateway\n(internal/modelgateway): who owns which upstream provider key, and the\nshort-lived scoped tokens a box presents instead of one.\n\nThe gateway's DATA plane is not here — it stays the HTTP proxy at\n/v1/model/\u003cprovider\u003e that a box calls with its gateway token. This service\nis the admin + mint surface around it:\n\n  - Set/Delete/GetStatus for one key owner's real upstream key. Admin-only\n    (gateway:admin); the key goes in, and only a fingerprint ever comes back\n    out. The keys live in the daemon's encrypted secrets store under a\n    reserved namespace no tenant can list and no delivery mode ships into a\n    box (internal/secrets.GatewayKeyLocation).\n  - MintGatewayToken, which issues a scoped, revocable, short-lived token\n    for a box the CALLER OWNS (gateway:mint). The token's key_owner claim —\n    the box's cloud-org attribution when stamped, else its owning username —\n    is what makes the call spend that owner's upstream key rather than the\n    daemon operator's.\n  - ListGatewayModels, the upstream model list read through the gateway, so\n    a caller can see what it may ask for without ever holding a real key.\n\nDesign: docs/architecture/workspace-own-inference-key.md (cloud repo),\ncomponent 2 / contract C1."
+    },
+    {
       "name": "AgentSkillService",
       "description": "AgentSkillService manages and runs individual packaged agents."
     },
@@ -79,10 +83,6 @@
     {
       "name": "KmsService",
       "description": "KmsService exposes read + migration-trigger operations for the\ntenant-secrets envelope-encryption layer (see\ndocs/security/KMS-ENVELOPE-DESIGN.md). It deliberately does NOT\nexpose backend *configuration* — selecting a KMS backend and\nsupplying its credentials stays an operator/systemd concern\n(CONTAINARIUM_KMS_BACKEND + the per-backend env vars), never an\nover-the-wire action. Every RPC requires the `kms:admin` scope\nAND the admin role; these are platform-wide, not tenant-scoped."
-    },
-    {
-      "name": "ModelGatewayService",
-      "description": "ModelGatewayService is the control surface for the daemon's model gateway\n(internal/modelgateway): who owns which upstream provider key, and the\nshort-lived scoped tokens a box presents instead of one.\n\nThe gateway's DATA plane is not here — it stays the HTTP proxy at\n/v1/model/\u003cprovider\u003e that a box calls with its gateway token. This service\nis the admin + mint surface around it:\n\n  - Set/Delete/GetStatus for one key owner's real upstream key. Admin-only\n    (gateway:admin); the key goes in, and only a fingerprint ever comes back\n    out. The keys live in the daemon's encrypted secrets store under a\n    reserved namespace no tenant can list and no delivery mode ships into a\n    box (internal/secrets.GatewayKeyLocation).\n  - MintGatewayToken, which issues a scoped, revocable, short-lived token\n    for a box the CALLER OWNS (gateway:mint). The token's key_owner claim —\n    the box's cloud-org attribution when stamped, else its owning username —\n    is what makes the call spend that owner's upstream key rather than the\n    daemon operator's.\n  - ListGatewayModels, the upstream model list read through the gateway, so\n    a caller can see what it may ask for without ever holding a real key.\n\nDesign: docs/architecture/workspace-own-inference-key.md (cloud repo),\ncomponent 2 / contract C1."
     },
     {
       "name": "NetworkPolicyService",
@@ -298,6 +298,30 @@
         ],
         "tags": [
           "ActuationService"
+        ]
+      }
+    },
+    "/v1/agent-engines": {
+      "get": {
+        "summary": "List agent engines and their readiness",
+        "description": "Returns one row per agent engine: whether a skill naming it would be refused right now, why, and which catalog skills name it explicitly.",
+        "operationId": "AgentSkillService_ListAgentEngines",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListAgentEnginesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "tags": [
+          "Agents"
         ]
       }
     },
@@ -8792,6 +8816,17 @@
       },
       "description": "AgentCard is the discovery document a skill serves so peer agents can find\nit and learn how to delegate to it (A2A, Phase 1). It is carried in-proto so\nthe wire format stays insulated from upstream A2A churn."
     },
+    "AgentCredentialSource": {
+      "type": "string",
+      "enum": [
+        "AGENT_CREDENTIAL_SOURCE_UNSPECIFIED",
+        "AGENT_CREDENTIAL_SOURCE_GLOBAL_KEY",
+        "AGENT_CREDENTIAL_SOURCE_OWNER_KEY",
+        "AGENT_CREDENTIAL_SOURCE_DIRECT_MODE"
+      ],
+      "default": "AGENT_CREDENTIAL_SOURCE_UNSPECIFIED",
+      "description": "AgentCredentialSource is WHERE a READY engine's key resolves from — never\nthe key's value or fingerprint.\n\n - AGENT_CREDENTIAL_SOURCE_GLOBAL_KEY: The daemon's own env/global key for this provider.\n - AGENT_CREDENTIAL_SOURCE_OWNER_KEY: The caller's own per-owner registered key (SetTenantProviderKey).\n - AGENT_CREDENTIAL_SOURCE_DIRECT_MODE: No model gateway is served; the box's own secrets decide."
+    },
     "AgentEngine": {
       "type": "string",
       "enum": [
@@ -8802,6 +8837,51 @@
       ],
       "default": "AGENT_ENGINE_UNSPECIFIED",
       "description": "AgentEngine identifies the in-box agent loop (agent-runtime SDK) a skill\nruns on. One daemon can run skills on different engines at once — the\nengine is a per-skill choice, not a daemon-wide constant (#2222).\n\n - AGENT_ENGINE_UNSPECIFIED: Runtime default: the daemon's configured gateway primary provider in\ngateway mode, or the box's own default/env in direct mode. Never\nrejected — this is what every skill predating this field resolves to.\n - AGENT_ENGINE_CLAUDE: Claude Agent SDK (provider: anthropic).\n - AGENT_ENGINE_CODEX: OpenAI Codex SDK (provider: openai).\n - AGENT_ENGINE_GEMINI: Google Gen AI SDK (provider: gemini)."
+    },
+    "AgentEngineReadiness": {
+      "type": "string",
+      "enum": [
+        "AGENT_ENGINE_READINESS_UNSPECIFIED",
+        "AGENT_ENGINE_READINESS_READY",
+        "AGENT_ENGINE_READINESS_NOT_READY",
+        "AGENT_ENGINE_READINESS_UNKNOWN_DIRECT_MODE"
+      ],
+      "default": "AGENT_ENGINE_READINESS_UNSPECIFIED",
+      "description": "AgentEngineReadiness reports whether a run naming this engine would be\nrefused — the same truth agentengine.Resolve enforces, read-only (#2223).\n\n - AGENT_ENGINE_READINESS_READY: Resolve would use this engine without refusing: a global key, or the\ncaller's own owner key, covers the provider.\n - AGENT_ENGINE_READINESS_NOT_READY: A named run on this engine would be refused FailedPrecondition — no\nkey anywhere Resolve can see. See `reason` for why and the fix.\n - AGENT_ENGINE_READINESS_UNKNOWN_DIRECT_MODE: The daemon serves no model gateway at all (direct mode): the box's own\nsecrets decide, so this daemon cannot say whether the engine would\nactually work — never reported as READY, since that would be a guess."
+    },
+    "AgentEngineStatus": {
+      "type": "object",
+      "properties": {
+        "engine": {
+          "$ref": "#/definitions/AgentEngine"
+        },
+        "provider": {
+          "$ref": "#/definitions/GatewayProvider",
+          "description": "The gateway provider this engine speaks (Provider in agentengine).\nGATEWAY_PROVIDER_UNSPECIFIED only if a future AgentEngine value has no\nprovider mapping yet."
+        },
+        "readiness": {
+          "$ref": "#/definitions/AgentEngineReadiness"
+        },
+        "reason": {
+          "type": "string",
+          "description": "Set exactly when readiness != READY: NOT_READY names the missing key\nand the fix command (the same text RunAgentSkill's refusal uses);\nUNKNOWN_DIRECT_MODE names why this daemon can't say."
+        },
+        "source": {
+          "$ref": "#/definitions/AgentCredentialSource"
+        },
+        "isDefault": {
+          "type": "boolean",
+          "description": "True for the one engine AGENT_ENGINE_UNSPECIFIED resolves to on this\ndaemon right now (gatewayPrimaryProvider's pick in gateway mode; the\nruntime's own default in direct mode)."
+        },
+        "skillIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Catalog skills whose manifest names this engine EXPLICITLY (#2222 Q2,\ndecided 2026-10-01) — never includes an unspecified-engine skill, even\none that would resolve to this engine via is_default."
+        }
+      },
+      "description": "AgentEngineStatus is one engine's readiness row, as ListAgentEngines\nreports it. One row per AgentEngine value (#2223)."
     },
     "AgentSkill": {
       "type": "object",
@@ -13255,6 +13335,23 @@
             "$ref": "#/definitions/ACLPresetInfo"
           },
           "title": "Available presets"
+        }
+      }
+    },
+    "ListAgentEnginesResponse": {
+      "type": "object",
+      "properties": {
+        "engines": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/AgentEngineStatus"
+          },
+          "description": "One row per AgentEngine value (AGENT_ENGINE_UNSPECIFIED excluded — it\nnames no engine of its own to report readiness for)."
+        },
+        "keyOwner": {
+          "type": "string",
+          "description": "The key owner this response's READY/NOT_READY rows were resolved for.\nEmpty for an admin caller with no owner scope (the global view) or in\ndirect mode."
         }
       }
     },

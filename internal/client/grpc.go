@@ -784,6 +784,19 @@ func (c *GRPCClient) DeployRecipe(recipeID, name, gpu, backendID, pool string, p
 	return resp, nil
 }
 
+// ListAgentEngines reports, for each agent engine, whether a run naming it
+// would be refused right now (#2223) — via gRPC.
+func (c *GRPCClient) ListAgentEngines() (*pb.ListAgentEnginesResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := c.agentClient.ListAgentEngines(ctx, &pb.ListAgentEnginesRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list agent engines: %w", err)
+	}
+	return resp, nil
+}
+
 // ListAgentSkills lists all built-in agent skills via gRPC.
 func (c *GRPCClient) ListAgentSkills() ([]*pb.AgentSkill, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

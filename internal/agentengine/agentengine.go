@@ -13,10 +13,12 @@ package agentengine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 
+	"github.com/footprintai/containarium/internal/gatewayprovider"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -233,4 +235,78 @@ func keyOwnerOrPlaceholder(keyOwner string) string {
 		return "<key-owner>"
 	}
 	return keyOwner
+}
+
+// SkillEngine is the minimal view of a catalog skill Statuses needs: its id
+// and its manifest's own engine choice. Deliberately narrower than
+// *pb.AgentSkill — Statuses only ever reads these two fields, and a narrow
+// input type keeps this package's tests from having to construct a full
+// skill (recipe, scopes, agent card, ...) just to exercise grouping.
+type SkillEngine struct {
+	ID     string
+	Engine pb.AgentEngine
+}
+
+// Statuses is Resolve applied to every concrete engine, for one key owner —
+// the read-only readiness report ListAgentEngines serves (#2223). It never
+// errors on a not-ready engine: that IS a row, not a failure. skills groups
+// each row's SkillIds: only a skill whose manifest names that engine
+// EXPLICITLY (#2222 Q2, decided 2026-10-01) — an unspecified-engine skill is
+// never attributed to any row, even the one is_default marks.
+func Statuses(ctx context.Context, keyOwner string, gw *Gateway, skills []SkillEngine) []*pb.AgentEngineStatus {
+	defaultEngine := pb.AgentEngine_AGENT_ENGINE_UNSPECIFIED
+	if gw != nil {
+		defaultEngine = ForProvider(gw.DefaultProvider)
+	}
+
+	skillIDs := make(map[pb.AgentEngine][]string)
+	for _, s := range skills {
+		if s.Engine == pb.AgentEngine_AGENT_ENGINE_UNSPECIFIED {
+			continue
+		}
+		skillIDs[s.Engine] = append(skillIDs[s.Engine], s.ID)
+	}
+
+	out := make([]*pb.AgentEngineStatus, 0, len(All()))
+	for _, e := range All() {
+		provider, _ := Provider(e) // ok=false unreachable for a value from All()
+		providerEnum, _ := gatewayprovider.FromName(provider)
+
+		row := &pb.AgentEngineStatus{
+			Engine:    e,
+			Provider:  providerEnum,
+			IsDefault: gw != nil && e == defaultEngine,
+			SkillIds:  skillIDs[e],
+		}
+
+		if gw == nil {
+			row.Readiness = pb.AgentEngineReadiness_AGENT_ENGINE_READINESS_UNKNOWN_DIRECT_MODE
+			row.Source = pb.AgentCredentialSource_AGENT_CREDENTIAL_SOURCE_DIRECT_MODE
+			row.Reason = "daemon serves no model gateway; the box's own secrets decide"
+			out = append(out, row)
+			continue
+		}
+
+		res, err := Resolve(ctx, e, keyOwner, gw)
+		if err == nil {
+			row.Readiness = pb.AgentEngineReadiness_AGENT_ENGINE_READINESS_READY
+			if gw.GlobalProviders[res.Provider] {
+				row.Source = pb.AgentCredentialSource_AGENT_CREDENTIAL_SOURCE_GLOBAL_KEY
+			} else {
+				row.Source = pb.AgentCredentialSource_AGENT_CREDENTIAL_SOURCE_OWNER_KEY
+			}
+			out = append(out, row)
+			continue
+		}
+
+		row.Readiness = pb.AgentEngineReadiness_AGENT_ENGINE_READINESS_NOT_READY
+		var notReady *NotReadyError
+		if errors.As(err, &notReady) {
+			row.Reason = notReady.Reason + "; fix: " + notReady.Fix
+		} else {
+			row.Reason = err.Error()
+		}
+		out = append(out, row)
+	}
+	return out
 }
