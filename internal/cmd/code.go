@@ -284,7 +284,7 @@ func resolveCodeTarget(ctx context.Context, box string, diag io.Writer) (connect
 		return connectcore.Target{}, "", err
 	}
 	if !connectcore.IsRunning(c.State) {
-		return connectcore.Target{}, "", fmt.Errorf("box %q is %s, not running — start it first (`containarium start %s`)",
+		return connectcore.Target{}, "", fmt.Errorf("box %q is %s, not running — start it first (`containarium wake %s`)",
 			box, connectcore.PrettyState(c.State), box)
 	}
 	target, err := connectcore.BuildTarget(c, codeUser, codeHost, codePort)
