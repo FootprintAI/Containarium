@@ -54,9 +54,15 @@ jobs:
         # client calls broke v0.48.0's release build (webui compiled fine in
         # `next dev`/lint, only `next build`'s full type-check caught it).
         # Same fix shape as #884/#885: run the real release build at PR time.
+        #
+        # #2224: `npm run test` (Vitest) runs alongside the build so the
+        # zod schema / swagger-contract tests and component tests gate PRs
+        # too, not just the type-check `next build` happens to do.
         working-directory: web-ui
         run: |
           npm ci
+          npm run typecheck
+          npm run test
           npm run build
 
       - name: Run unit tests (full tree, minus infra integration)
