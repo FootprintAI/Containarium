@@ -102,7 +102,7 @@ func Generate(containers []incus.ContainerInfo, opts Options) Generated {
 			g.SkippedStopped++
 			continue
 		}
-		if opts.Sentinel == "" && c.IPAddress == "" {
+		if opts.Sentinel == "" && c.IPAddress == "" && c.SSHHost == "" {
 			g.SkippedNoAddr++
 			continue
 		}
@@ -128,13 +128,22 @@ func writeHost(b *strings.Builder, c incus.ContainerInfo, opts Options) {
 		}
 		fmt.Fprintf(b, "    User %s\n", user)
 	} else {
-		fmt.Fprintf(b, "    HostName %s\n", c.IPAddress)
-		fmt.Fprintf(b, "    Port 22\n")
-		user := opts.User
-		if user == "" {
-			user = "ubuntu"
+		// Resolve the target the same way `containarium connect` does so
+		// the two never disagree about how to reach a box (#2239): the
+		// daemon-reported ssh_host and SSH username win; the container IP
+		// and "ubuntu" are only the fallback for a local Incus listing,
+		// which reports neither.
+		ct := connectcore.Container{Username: c.Username, SshHost: c.SSHHost}
+		ct.Network.IpAddress = c.IPAddress
+		t, err := connectcore.BuildTarget(&ct, opts.User, "", 22)
+		if err != nil {
+			// Only reachable with no --user and no daemon-reported
+			// username (local Incus): the historical in-box login.
+			t, _ = connectcore.BuildTarget(&ct, "ubuntu", "", 22)
 		}
-		fmt.Fprintf(b, "    User %s\n", user)
+		fmt.Fprintf(b, "    HostName %s\n", t.Host)
+		fmt.Fprintf(b, "    Port %d\n", t.Port)
+		fmt.Fprintf(b, "    User %s\n", t.User)
 	}
 
 	if opts.IdentityFile != "" {

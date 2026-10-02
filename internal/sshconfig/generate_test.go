@@ -240,3 +240,84 @@ func TestGenerate_SentinelModeRunningWithNoIPStillRenders(t *testing.T) {
 		t.Fatalf("Count=%d SkippedNoAddr=%d, want 1/0", g.Count, g.SkippedNoAddr)
 	}
 }
+
+// block returns the Host block for name from generated content, so a test
+// asserts on one box's lines rather than the whole file.
+func block(t *testing.T, content, name string) string {
+	t.Helper()
+	_, rest, ok := strings.Cut(content, "Host "+name+"\n")
+	if !ok {
+		t.Fatalf("no Host block for %q in:\n%s", name, content)
+	}
+	blk, _, _ := strings.Cut(rest, "\n\n")
+	return blk
+}
+
+// #2239: against a hosted control plane the daemon reports ssh_host and the
+// SSH username; sync must use them instead of the private container IP and
+// the hard-coded "ubuntu".
+func TestGenerate_DirectMode_PrefersDaemonSSHHostAndUsername(t *testing.T) {
+	cs := []incus.ContainerInfo{{
+		Name:      "test",
+		Username:  "test-container-7f3a",
+		State:     "CONTAINER_STATE_RUNNING",
+		IPAddress: "192.0.2.10",
+		SSHHost:   "region-a.example.com",
+	}}
+	blk := block(t, Generate(cs, Options{}).Content, "test")
+	for _, want := range []string{"HostName region-a.example.com", "Port 22", "User test-container-7f3a"} {
+		if !strings.Contains(blk, want) {
+			t.Errorf("block missing %q:\n%s", want, blk)
+		}
+	}
+	for _, bad := range []string{"192.0.2.10", "ubuntu"} {
+		if strings.Contains(blk, bad) {
+			t.Errorf("block must not contain %q:\n%s", bad, blk)
+		}
+	}
+}
+
+// Without ssh_host (older daemon) the IP is still used, but the daemon's
+// username still wins over "ubuntu".
+func TestGenerate_DirectMode_NoSSHHostFallsBackToIP(t *testing.T) {
+	cs := []incus.ContainerInfo{{Name: "test", Username: "alice", State: "Running", IPAddress: "192.0.2.10"}}
+	blk := block(t, Generate(cs, Options{}).Content, "test")
+	if !strings.Contains(blk, "HostName 192.0.2.10") || !strings.Contains(blk, "User alice") {
+		t.Errorf("unexpected block:\n%s", blk)
+	}
+}
+
+// Local Incus reports neither ssh_host nor a username: unchanged output.
+func TestGenerate_DirectMode_LocalIncusKeepsIPAndUbuntu(t *testing.T) {
+	cs := []incus.ContainerInfo{{Name: "test", State: "Running", IPAddress: "192.0.2.10"}}
+	blk := block(t, Generate(cs, Options{}).Content, "test")
+	if !strings.Contains(blk, "HostName 192.0.2.10") || !strings.Contains(blk, "User ubuntu") {
+		t.Errorf("unexpected block:\n%s", blk)
+	}
+}
+
+func TestGenerate_DirectMode_UserFlagStillWins(t *testing.T) {
+	cs := []incus.ContainerInfo{{Name: "test", Username: "alice", State: "Running", SSHHost: "region-a.example.com"}}
+	blk := block(t, Generate(cs, Options{User: "root"}).Content, "test")
+	if !strings.Contains(blk, "User root") || !strings.Contains(blk, "HostName region-a.example.com") {
+		t.Errorf("unexpected block:\n%s", blk)
+	}
+}
+
+// A running box with ssh_host but no IP is reachable and must not be
+// skipped as "no address".
+func TestGenerate_DirectMode_SSHHostWithoutIPIsNotSkipped(t *testing.T) {
+	cs := []incus.ContainerInfo{{Name: "test", Username: "alice", State: "Running", SSHHost: "region-a.example.com"}}
+	g := Generate(cs, Options{})
+	if g.Count != 1 || g.SkippedNoAddr != 0 {
+		t.Fatalf("Count=%d SkippedNoAddr=%d, want 1/0", g.Count, g.SkippedNoAddr)
+	}
+}
+
+func TestGenerate_SentinelModeIgnoresSSHHost(t *testing.T) {
+	cs := []incus.ContainerInfo{{Name: "test", Username: "alice", State: "Running", SSHHost: "region-a.example.com"}}
+	blk := block(t, Generate(cs, Options{Sentinel: "sentinel.example.com"}).Content, "test")
+	if !strings.Contains(blk, "HostName sentinel.example.com") || !strings.Contains(blk, "User test") {
+		t.Errorf("unexpected block:\n%s", blk)
+	}
+}

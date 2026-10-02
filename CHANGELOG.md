@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `--server <host>` without a scheme now finds the credentials `containarium
+  login` stored under `https://<host>` (#2238). Before, the lookup missed, the
+  request went out with no token, and the server's 401 read as "invalid or
+  expired token". A scheme-less value now resolves to the stored URL (an
+  explicit `http://` never matches an `https://` credential), and a genuine
+  miss names the servers you are logged in to.
+
+- `containarium ssh-config sync` against a remote server writes the box's
+  daemon-reported `ssh_host` and SSH username instead of the private container
+  IP and a hard-coded `ubuntu` (#2239), matching what `containarium connect`
+  resolves. Local Incus listings, which report neither, are unchanged.
+
 ## [0.95.0] - 2026-10-02
 
 ### Added

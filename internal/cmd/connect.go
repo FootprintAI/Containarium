@@ -98,7 +98,7 @@ type connectAPI struct {
 func newConnectAPI(server string) (*connectAPI, error) {
 	tok := resolveAuthToken(server)
 	if tok == "" {
-		return nil, fmt.Errorf("no auth token for %s — run `containarium login` first", server)
+		return nil, noTokenError(server)
 	}
 	return &connectAPI{
 		hc:     &http.Client{Timeout: 30 * time.Second},
