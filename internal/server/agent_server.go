@@ -465,6 +465,11 @@ type provisionOptions struct {
 	// its result comment; only the doc change (SubmitTrackerChange,
 	// which needs a recorded git_commit) is unavailable to it.
 	gitSourceBestEffort bool
+	// engineOverride (#2228) wins over the skill's own manifest `engine` when
+	// set — see agentengine.Override. AGENT_ENGINE_UNSPECIFIED (the zero
+	// value) means "no override, use the manifest", unchanged pre-#2228
+	// behavior for every caller that doesn't set this.
+	engineOverride pb.AgentEngine
 }
 
 // beginSkillRunWith is beginSkillRun with internal provisioning options.
@@ -497,6 +502,11 @@ func (s *AgentSkillServer) beginSkillRunWith(ctx context.Context, req *pb.RunAge
 		return nil, status.Error(codes.NotFound, err.Error())
 	}
 
+	// #2228: a per-invocation override on the request wins over the
+	// manifest's own `engine` field. opts is a local copy (Go passes structs
+	// by value), so this only affects this call — a caller's own
+	// gitSourceBestEffort (set above us) is preserved alongside it.
+	opts.engineOverride = req.GetEngine()
 	containerName, box, lease, gitCommit, workspacePath, engineRes, err := s.provisionSkillBoxWith(ctx, skill, req.BackendId, req.Pool, req.InputJson, runID,
 		req.GetGitSource(), req.GetGitRef(), req.GetGitCredential(), req.GetTrackerConnection(), opts)
 	if err != nil {
@@ -815,13 +825,17 @@ func (s *AgentSkillServer) provisionSkillBoxWith(ctx context.Context, skill *pb.
 	// the platform JWT, the seed script, or any git fetch ever happen — not
 	// minutes later inside the box with "Not logged in". box is already
 	// resolved above (reused or freshly provisioned), so keyOwner resolves
-	// exactly as it will for the gateway mint below.
+	// exactly as it will for the gateway mint below. opts.engineOverride
+	// (#2228) wins over the manifest's own choice when the caller set one —
+	// agentengine.Override, not Resolve itself, decides which of the two wins,
+	// so Resolve's own readiness/refusal logic is identical either way.
 	var gwView *agentengine.Gateway
 	if s.gateway != nil {
 		gwView = &s.gateway.engines
 	}
 	keyOwner := runKeyOwner(ctx, box)
-	engineRes, resolveErr := agentengine.Resolve(ctx, skill.GetEngine(), keyOwner, gwView)
+	want := agentengine.Override(skill.GetEngine(), opts.engineOverride)
+	engineRes, resolveErr := agentengine.Resolve(ctx, want, keyOwner, gwView)
 	if resolveErr != nil {
 		var notReady *agentengine.NotReadyError
 		if errors.As(resolveErr, &notReady) {

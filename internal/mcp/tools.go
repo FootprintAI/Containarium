@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/footprintai/containarium/internal/agentengine"
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/releasecheck"
 	"github.com/footprintai/containarium/internal/runlog"
@@ -1610,6 +1611,10 @@ func (s *Server) registerTools() {
 						"type":        "string",
 						"description": "Exact ref to check out for git_source: full SHA (preferred), branch, tag, or refs/pull/N/merge. Empty = the remote's default branch.",
 					},
+					"engine": map[string]interface{}{
+						"type":        "string",
+						"description": "Override the skill manifest's own engine for this run: one of claude, codex, gemini. Refused with the same error a manifest-named engine gets when its provider has no key. Empty = use the manifest.",
+					},
 				},
 				"required": []string{"skill_id"},
 			},
@@ -3112,12 +3117,37 @@ func trimEnumString(s, prefix string) string {
 	return strings.ToLower(s)
 }
 
+// parseAgentSkillEngineArg validates and normalizes run_agent_skill's
+// "engine" tool argument into the wire shape protojson expects for an enum
+// field (the proto enum's NAME string, e.g. "AGENT_ENGINE_CODEX") — the same
+// REST-shim-takes-the-enum-by-name convention as os_type/isolation above.
+// Empty input means "no override, use the manifest", not an error; only an
+// unknown name is (agentengine.Parse's own contract, which lists the valid
+// ones). Split out from handleRunAgentSkill so #2228's validation is
+// unit-testable without a fake implementing the whole API interface.
+func parseAgentSkillEngineArg(args map[string]interface{}) (string, error) {
+	engineStr := getStringArg(args, "engine", "")
+	if engineStr == "" {
+		return "", nil
+	}
+	engine, err := agentengine.Parse(engineStr)
+	if err != nil {
+		return "", err
+	}
+	return engine.String(), nil
+}
+
 func handleRunAgentSkill(client API, args map[string]interface{}) (string, error) {
+	engineWire, err := parseAgentSkillEngineArg(args)
+	if err != nil {
+		return "", err
+	}
 	resp, err := client.RunAgentSkill(RunAgentSkillRequest{
 		SkillID:   getStringArg(args, "skill_id", ""),
 		InputJSON: getStringArg(args, "input_json", ""),
 		GitSource: getStringArg(args, "git_source", ""),
 		GitRef:    getStringArg(args, "git_ref", ""),
+		Engine:    engineWire,
 	})
 	if err != nil {
 		return "", err
