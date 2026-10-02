@@ -1571,6 +1571,19 @@ func (s *Server) registerTools() {
 			Handler: handleListAgentSkills,
 		},
 		{
+			Name: "list_agent_engines",
+			Description: "Report, for each agent engine (claude/codex/gemini), whether " +
+				"a skill naming it in run_agent_skill would be refused right now, and " +
+				"why not. The same check the daemon enforces on the run itself — no " +
+				"live model call, no bundle inspection. Use this before run_agent_skill " +
+				"to pick an engine that is actually ready, or to explain a refusal.",
+			InputSchema: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+			Handler: handleListAgentEngines,
+		},
+		{
 			Name: "run_agent_skill",
 			Description: "Run an agent skill in a box. Provisions the skill's box, " +
 				"mints a token scoped to exactly the skill's allowed_scopes, and " +
@@ -1864,12 +1877,13 @@ func toolScopeAssignments() map[string]string {
 		"list_recipes":  auth.ScopeContainersRead,
 		"deploy_recipe": auth.ScopeContainersWrite,
 
-		"list_agent_skills": auth.ScopeAgentsRead,
-		"run_agent_skill":   auth.ScopeAgentsRun,
-		"call_agent":        auth.ScopeAgentsCall,
-		"list_crews":        auth.ScopeCrewsRead,
-		"run_crew":          auth.ScopeCrewsRun,
-		"crew_logs":         auth.ScopeAgentsRead,
+		"list_agent_skills":  auth.ScopeAgentsRead,
+		"list_agent_engines": auth.ScopeAgentsRead,
+		"run_agent_skill":    auth.ScopeAgentsRun,
+		"call_agent":         auth.ScopeAgentsCall,
+		"list_crews":         auth.ScopeCrewsRead,
+		"run_crew":           auth.ScopeCrewsRun,
+		"crew_logs":          auth.ScopeAgentsRead,
 		// database backups
 		"create_backup":  auth.ScopeBackupsWrite,
 		"restore_backup": auth.ScopeBackupsWrite,
@@ -3054,6 +3068,48 @@ func handleListAgentSkills(client API, _ map[string]interface{}) (string, error)
 			s.ID, s.RecipeID, strings.Join(s.AllowedScopes, ","), s.Description)
 	}
 	return b.String(), nil
+}
+
+func handleListAgentEngines(client API, _ map[string]interface{}) (string, error) {
+	resp, err := client.ListAgentEngines()
+	if err != nil {
+		return "", err
+	}
+	owner := resp.KeyOwner
+	if owner == "" {
+		owner = "(global — admin view, or direct mode)"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Key owner: %s\n\n", owner)
+	fmt.Fprintf(&b, "%-8s %-10s %-20s %-8s %-20s %s\n", "ENGINE", "PROVIDER", "READY", "DEFAULT", "SKILLS", "REASON")
+	for _, e := range resp.Engines {
+		skills := strings.Join(e.SkillIDs, ",")
+		if skills == "" {
+			skills = "-"
+		}
+		fmt.Fprintf(&b, "%-8s %-10s %-20s %-8v %-20s %s\n",
+			trimEnumString(e.Engine, "AGENT_ENGINE_"),
+			trimEnumString(e.Provider, "GATEWAY_PROVIDER_"),
+			trimEnumString(e.Readiness, "AGENT_ENGINE_READINESS_"),
+			e.IsDefault,
+			skills,
+			e.Reason,
+		)
+	}
+	return b.String(), nil
+}
+
+// trimEnumString strips a grpc-gateway-encoded proto enum NAME's prefix,
+// lowercased, e.g. "AGENT_ENGINE_CLAUDE" -> "claude". Mirrors
+// internal/cmd's trimEnumPrefix for the same display purpose, duplicated
+// rather than imported: this package's enum values arrive as plain JSON
+// strings (no generated Go enum type here), while the CLI's trims a typed
+// enum's own String().
+func trimEnumString(s, prefix string) string {
+	if trimmed := strings.TrimPrefix(s, prefix); trimmed != s && trimmed != "" {
+		return strings.ToLower(trimmed)
+	}
+	return strings.ToLower(s)
 }
 
 func handleRunAgentSkill(client API, args map[string]interface{}) (string, error) {

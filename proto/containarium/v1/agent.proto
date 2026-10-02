@@ -6,6 +6,7 @@ import "google/api/annotations.proto";
 import "protoc-gen-openapiv2/options/annotations.proto";
 import "containarium/v1/container.proto";
 import "containarium/v1/recipe.proto";
+import "containarium/v1/model_gateway.proto";
 
 option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
 
@@ -123,6 +124,69 @@ enum AgentEngine {
   AGENT_ENGINE_CODEX = 2;
   // Google Gen AI SDK (provider: gemini).
   AGENT_ENGINE_GEMINI = 3;
+}
+
+// AgentEngineReadiness reports whether a run naming this engine would be
+// refused — the same truth agentengine.Resolve enforces, read-only (#2223).
+enum AgentEngineReadiness {
+  AGENT_ENGINE_READINESS_UNSPECIFIED = 0;
+  // Resolve would use this engine without refusing: a global key, or the
+  // caller's own owner key, covers the provider.
+  AGENT_ENGINE_READINESS_READY = 1;
+  // A named run on this engine would be refused FailedPrecondition — no
+  // key anywhere Resolve can see. See `reason` for why and the fix.
+  AGENT_ENGINE_READINESS_NOT_READY = 2;
+  // The daemon serves no model gateway at all (direct mode): the box's own
+  // secrets decide, so this daemon cannot say whether the engine would
+  // actually work — never reported as READY, since that would be a guess.
+  AGENT_ENGINE_READINESS_UNKNOWN_DIRECT_MODE = 3;
+}
+
+// AgentCredentialSource is WHERE a READY engine's key resolves from — never
+// the key's value or fingerprint.
+enum AgentCredentialSource {
+  AGENT_CREDENTIAL_SOURCE_UNSPECIFIED = 0;
+  // The daemon's own env/global key for this provider.
+  AGENT_CREDENTIAL_SOURCE_GLOBAL_KEY = 1;
+  // The caller's own per-owner registered key (SetTenantProviderKey).
+  AGENT_CREDENTIAL_SOURCE_OWNER_KEY = 2;
+  // No model gateway is served; the box's own secrets decide.
+  AGENT_CREDENTIAL_SOURCE_DIRECT_MODE = 3;
+}
+
+// AgentEngineStatus is one engine's readiness row, as ListAgentEngines
+// reports it. One row per AgentEngine value (#2223).
+message AgentEngineStatus {
+  AgentEngine engine = 1;
+  // The gateway provider this engine speaks (Provider in agentengine).
+  // GATEWAY_PROVIDER_UNSPECIFIED only if a future AgentEngine value has no
+  // provider mapping yet.
+  GatewayProvider provider = 2;
+  AgentEngineReadiness readiness = 3;
+  // Set exactly when readiness != READY: NOT_READY names the missing key
+  // and the fix command (the same text RunAgentSkill's refusal uses);
+  // UNKNOWN_DIRECT_MODE names why this daemon can't say.
+  string reason = 4;
+  AgentCredentialSource source = 5;
+  // True for the one engine AGENT_ENGINE_UNSPECIFIED resolves to on this
+  // daemon right now (gatewayPrimaryProvider's pick in gateway mode; the
+  // runtime's own default in direct mode).
+  bool is_default = 6;
+  // Catalog skills whose manifest names this engine EXPLICITLY (#2222 Q2,
+  // decided 2026-10-01) — never includes an unspecified-engine skill, even
+  // one that would resolve to this engine via is_default.
+  repeated string skill_ids = 7;
+}
+
+message ListAgentEnginesRequest {}
+message ListAgentEnginesResponse {
+  // One row per AgentEngine value (AGENT_ENGINE_UNSPECIFIED excluded — it
+  // names no engine of its own to report readiness for).
+  repeated AgentEngineStatus engines = 1;
+  // The key owner this response's READY/NOT_READY rows were resolved for.
+  // Empty for an admin caller with no owner scope (the global view) or in
+  // direct mode.
+  string key_owner = 2;
 }
 
 // ---- AgentSkillService request/response messages ----------------------------
@@ -311,6 +375,22 @@ service AgentSkillService {
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "List agent skills";
       description: "Returns all packaged agent skills that can be run individually or composed into a crew.";
+      tags: "Agents";
+    };
+  }
+
+  // ListAgentEngines reports, for each AgentEngine, whether a run naming it
+  // would be refused right now — the same check RunAgentSkill's refusal
+  // enforces, read-only (#2223). No live model call, no bundle inspection:
+  // computed from state the daemon already holds (the global provider-key
+  // set and the per-owner key store).
+  rpc ListAgentEngines(ListAgentEnginesRequest) returns (ListAgentEnginesResponse) {
+    option (google.api.http) = {
+      get: "/v1/agent-engines"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List agent engines and their readiness";
+      description: "Returns one row per agent engine: whether a skill naming it would be refused right now, why, and which catalog skills name it explicitly.";
       tags: "Agents";
     };
   }

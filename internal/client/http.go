@@ -1632,6 +1632,29 @@ func (c *HTTPClient) DeployRecipe(recipeID, name, gpu, backendID, pool string, p
 	return out, nil
 }
 
+// ListAgentEngines reports, for each agent engine, whether a run naming it
+// would be refused right now (#2223) — via HTTP.
+func (c *HTTPClient) ListAgentEngines() (*pb.ListAgentEnginesResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := c.doRequest(ctx, http.MethodGet, "/v1/agent-engines", nil)
+	if err != nil {
+		return nil, fmt.Errorf("list agent engines: %w", err)
+	}
+	defer drainClose(resp)
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, httpError(bodyBytes, resp.StatusCode, "list agent engines")
+	}
+	out := &pb.ListAgentEnginesResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
 // ListAgentSkills lists all built-in agent skills via HTTP.
 func (c *HTTPClient) ListAgentSkills() ([]*pb.AgentSkill, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
