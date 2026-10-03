@@ -93,7 +93,7 @@ func WriteBoxRuns(w io.Writer, username string, runs []*pb.BoxRun) error {
 		return err
 	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "NAME\tOUTCOME\tEXIT\tSTARTED\tENDED\tLOG")
+	_, _ = fmt.Fprintln(tw, "NAME\tOUTCOME\tEXIT\tSTARTED\tENDED\tSESSION\tLOG")
 	for _, r := range runs {
 		exit, ended := "-", "-"
 		if r.ExitCode != nil {
@@ -102,8 +102,14 @@ func WriteBoxRuns(w io.Writer, username string, runs []*pb.BoxRun) error {
 		if r.GetEndedAt() != nil {
 			ended = r.GetEndedAt().AsTime().UTC().Format(time.RFC3339)
 		}
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", r.GetRunName(), outcomeWord(r.GetOutcome()), exit,
-			r.GetStartedAt().AsTime().UTC().Format(time.RFC3339), ended, r.GetLogPath())
+		// #2193: empty when the engine exposes no session id, or discovery
+		// hasn't found one yet for a just-started run — never a guess.
+		session := "-"
+		if r.GetSessionId() != "" {
+			session = r.GetSessionId()
+		}
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", r.GetRunName(), outcomeWord(r.GetOutcome()), exit,
+			r.GetStartedAt().AsTime().UTC().Format(time.RFC3339), ended, session, r.GetLogPath())
 	}
 	return tw.Flush()
 }

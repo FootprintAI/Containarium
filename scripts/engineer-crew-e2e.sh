@@ -609,13 +609,16 @@ GW_TOKEN_VAR=""
 # These are gatewayProviderEnvs' `tokenVar` values, verbatim
 # (internal/server/agent_gateway.go) — the variable each engine actually reads
 # out of gateway.env. NOT the provider-key names the daemon reads from ITS
-# env, which is a different set and only coincides for anthropic/openai;
-# gemini's in-box token variable is CONTAINARIUM_GATEWAY_TOKEN, not
-# GEMINI_API_KEY. Getting this wrong makes the lane fail with "never saw X in
-# gateway.env" on a run that was perfectly healthy.
+# env, which is a different set and only coincides for anthropic; openai's
+# in-box token variable is CODEX_API_KEY, not OPENAI_API_KEY (#2256: the
+# Codex CLI's documented headless-auth variable, since a bare OPENAI_API_KEY
+# needs a `codex login` step this box never gets); gemini's is
+# CONTAINARIUM_GATEWAY_TOKEN, not GEMINI_API_KEY. Getting this wrong makes
+# the lane fail with "never saw X in gateway.env" on a run that was
+# perfectly healthy.
 case "$PROVIDER" in
   anthropic) GW_TOKEN_VAR="ANTHROPIC_AUTH_TOKEN" ;;
-  openai)    GW_TOKEN_VAR="OPENAI_API_KEY" ;;
+  openai)    GW_TOKEN_VAR="CODEX_API_KEY" ;;
   gemini)    GW_TOKEN_VAR="CONTAINARIUM_GATEWAY_TOKEN" ;;
   *)         fail "no gateway.env token variable known for provider '$PROVIDER' — add it from gatewayProviderEnvs in internal/server/agent_gateway.go" ;;
 esac

@@ -451,7 +451,10 @@ RUN_PID=$!
 # completion first (internal/server/crew_server.go) — so both tokens are
 # available early, not one-at-a-time as each hop executes.
 declare -A GW_TOKEN
-declare -A GW_TOKEN_VAR=( [hello-agent-claude]=ANTHROPIC_AUTH_TOKEN [hello-agent-codex]=OPENAI_API_KEY )
+# hello-agent-codex's in-box token variable is CODEX_API_KEY, not
+# OPENAI_API_KEY (#2256: the Codex CLI's documented headless-auth variable —
+# a bare OPENAI_API_KEY needs a `codex login` step this box never gets).
+declare -A GW_TOKEN_VAR=( [hello-agent-claude]=ANTHROPIC_AUTH_TOKEN [hello-agent-codex]=CODEX_API_KEY )
 pending="$CREW_MEMBERS"
 log "reading $RUN_SEED_DIR/gateway.env from each member box during the run"
 for _ in $(seq 1 600); do

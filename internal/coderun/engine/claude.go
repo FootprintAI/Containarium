@@ -130,7 +130,7 @@ fi`
 // differs: the box has a scoped gateway token instead of a provider key, and
 // Claude Code reads ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN out of its
 // environment either way.
-func (e claudeEngine) RunCommand(prompt string, streamJSON, continueSession bool) string {
+func (e claudeEngine) RunCommand(prompt string, streamJSON, continueSession bool, sessionID string) string {
 	var cmd string
 	if e.opts.Credential != nil && e.opts.Credential.Kind() == KindGateway {
 		cmd = sourceEnvPrefix(`"`+claudeGatewayEnvPath+`"`) + claudeRunBody(prompt)
@@ -140,7 +140,13 @@ func (e claudeEngine) RunCommand(prompt string, streamJSON, continueSession bool
 	} else {
 		cmd = coderun.BuildClaudeRunCommand(prompt, streamJSON)
 	}
-	if continueSession {
+	switch {
+	case sessionID != "":
+		// --resume names a SPECIFIC session (Claude Code's own session id),
+		// not "the most recent one" — takes priority over continueSession
+		// (#2193; callers must not set both).
+		cmd += " --resume " + shellQuoteSingle(sessionID)
+	case continueSession:
 		cmd += " --continue"
 	}
 	return cmd
