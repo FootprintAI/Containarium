@@ -57,7 +57,11 @@ b64_3() { base64 <&3 | tr -d '\n'; exec 3<&-; }
 `
 
 // boxRunListScript prints "B <boot-id>", "P <live pids>", then one
-// "R <file> <base64 record> <base64 exit sidecar | ->" line per record file.
+// "R <file> <base64 record> <base64 exit sidecar | -> <base64 session id | ->"
+// line per record file. The session sidecar (#2193) is a plain-text file
+// (not JSON, unlike the record/exit sidecar), so it is still read through
+// open3's same symlink/regular-file guard — it lives in the same
+// box-user-owned directory as everything else here.
 func boxRunListScript(dir string) string {
 	return fmt.Sprintf(`d=%s
 %s[ -d "$d" ] || exit 0
@@ -68,7 +72,9 @@ for f in "$d"/*.json; do
   r=$(b64_3)
   x=-
   if open3 "${f%%.json}.exit"; then x=$(b64_3); fi
-  echo "R ${f##*/} ${r:--} ${x:--}"
+  sid=-
+  if open3 "${f%%.json}.session"; then sid=$(b64_3); fi
+  echo "R ${f##*/} ${r:--} ${x:--} ${sid:--}"
 done
 `, shellSingleQuote(dir), boxRunOpenFn)
 }
@@ -93,8 +99,9 @@ tail -c +%d <&3 | head -c %d
 
 // boxRunView is one record as the reader sees it.
 type boxRunView struct {
-	fileName string
-	record   agentbox.RunRecord
+	fileName  string
+	record    agentbox.RunRecord
+	sessionID string
 }
 
 func decodeB64Field(s string) ([]byte, error) {
@@ -124,7 +131,7 @@ func parseBoxRunList(out, dir string) []*pb.BoxRun {
 			}
 		case "R":
 			fields := strings.Fields(rest)
-			if len(fields) != 3 || !agentbox.IsCurrentRecordFile(fields[0]) {
+			if len(fields) != 4 || !agentbox.IsCurrentRecordFile(fields[0]) {
 				continue
 			}
 			name := strings.TrimSuffix(fields[0], ".json")
@@ -143,7 +150,15 @@ func parseBoxRunList(out, dir string) []*pb.BoxRun {
 			if err != nil {
 				sidecar = nil
 			}
-			views = append(views, boxRunView{fileName: name, record: agentbox.FoldExitSidecar(record, sidecar)})
+			sessionIDBytes, err := decodeB64Field(fields[3])
+			if err != nil {
+				sessionIDBytes = nil
+			}
+			views = append(views, boxRunView{
+				fileName:  name,
+				record:    agentbox.FoldExitSidecar(record, sidecar),
+				sessionID: strings.TrimSpace(string(sessionIDBytes)),
+			})
 		}
 	}
 	sort.SliceStable(views, func(i, j int) bool {
@@ -156,7 +171,9 @@ func parseBoxRunList(out, dir string) []*pb.BoxRun {
 	runs := make([]*pb.BoxRun, 0, len(views))
 	for _, v := range views {
 		outcome := agentbox.ResolveOutcome(v.record, boot, func(pid int) bool { return pid > 0 && alive[pid] })
-		runs = append(runs, boxRunProto(v.fileName, dir, v.record, outcome))
+		run := boxRunProto(v.fileName, dir, v.record, outcome)
+		run.SessionId = v.sessionID
+		runs = append(runs, run)
 	}
 	return runs
 }

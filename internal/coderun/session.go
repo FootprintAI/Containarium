@@ -246,6 +246,21 @@ func (s *Session) ProcessStart(ctx context.Context, name, command, cwd, captureM
 	}, nil
 }
 
+// ShellExec runs command on the box via agent-box's shell_exec tool and
+// returns its raw text result (agent-box's own key:value-plus-stdout framing,
+// unparsed — callers that need a single value, like HomeDir, parse it
+// themselves). Exported for #2193's session-id discovery, which backgrounds
+// a poll loop on the box; any other caller needing one-off box-side command
+// execution over this session belongs here too, rather than growing its own
+// shell_exec callTool wrapper.
+func (s *Session) ShellExec(ctx context.Context, command string) (string, error) {
+	text, err := s.callTool(ctx, "shell_exec", map[string]any{"command": command}, true)
+	if err != nil {
+		return "", fmt.Errorf("shell_exec: %w", err)
+	}
+	return text, nil
+}
+
 // Read implements LogReader by calling tail_log. followSeconds bounds how
 // long the SERVER blocks polling for new content before returning — most
 // of StreamOutput's "streaming" feel comes from this blocking, not from

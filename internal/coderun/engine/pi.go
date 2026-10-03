@@ -157,12 +157,19 @@ fi
 // JSONL events on stdout, which is what --output-format-stream-json means for
 // this engine; -c resumes the most recent session for the run's working
 // directory.
-func (e piEngine) RunCommand(prompt string, streamJSON, continueSession bool) string {
+func (e piEngine) RunCommand(prompt string, streamJSON, continueSession bool, sessionID string) string {
 	cmd := e.runPrefix() + "~/.local/bin/pi -p " + shellQuoteSingle(prompt)
 	if streamJSON {
 		cmd += " --mode json"
 	}
-	if continueSession {
+	switch {
+	case sessionID != "":
+		// pi's own --session resumes a SPECIFIC session id (docs/cli.md),
+		// which is a better fit than `-c`'s "most recent" semantics and
+		// takes priority over continueSession (#2193; callers must not set
+		// both).
+		cmd += " --session " + shellQuoteSingle(sessionID)
+	case continueSession:
 		cmd += " -c"
 	}
 	if m := strings.TrimSpace(e.opts.Model); m != "" {

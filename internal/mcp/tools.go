@@ -1126,6 +1126,8 @@ func (s *Server) registerTools() {
 						"description": "Run name, default \"code\". Override to run more than one task concurrently on the same box; the same name is how code_attach/code_status/code_stop find it later."},
 					"stream_json": map[string]interface{}{"type": "boolean",
 						"description": "Capture stdout and stderr separately (framed) so a JSON stream on stdout is not corrupted by diagnostics. Default false."},
+					"session_id": map[string]interface{}{"type": "string",
+						"description": "Resume this specific session id (claude --resume) instead of starting a fresh conversation. From a previous code_runs/BoxRun.session_id, when the engine exposed one."},
 				},
 			},
 			Handler: handleCodeRun,

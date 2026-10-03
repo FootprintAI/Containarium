@@ -102,6 +102,9 @@ func TestCodeRuns_Table(t *testing.T) {
 		{RunName: "live", StartedAt: timestamppb.New(start), Outcome: pb.BoxRunOutcome_BOX_RUN_OUTCOME_RUNNING, LogPath: "/tmp/agent-box/live.log"},
 		{RunName: "done", StartedAt: timestamppb.New(start), EndedAt: timestamppb.New(start.Add(time.Minute)), ExitCode: &code,
 			Outcome: pb.BoxRunOutcome_BOX_RUN_OUTCOME_EXITED, LogPath: "/tmp/agent-box/done.log"},
+		// #2193: a run whose session id has been discovered prints it.
+		{RunName: "sess-7", StartedAt: timestamppb.New(start), Outcome: pb.BoxRunOutcome_BOX_RUN_OUTCOME_RUNNING,
+			LogPath: "/tmp/agent-box/sess-7.log", SessionId: "sess-7"},
 	}}
 	var out bytes.Buffer
 	if err := codeRuns(f, "alice", &out); err != nil {
@@ -111,13 +114,14 @@ func TestCodeRuns_Table(t *testing.T) {
 	if len(f.listed) != 1 || f.listed[0] != "alice" {
 		t.Fatalf("listed %v, want [alice]", f.listed)
 	}
-	if len(lines) != 3 {
-		t.Fatalf("output =\n%s\nwant a header and two rows", out.String())
+	if len(lines) != 4 {
+		t.Fatalf("output =\n%s\nwant a header and three rows", out.String())
 	}
 	for _, want := range [][]string{
-		{"NAME", "OUTCOME", "EXIT", "STARTED", "ENDED", "LOG"},
-		{"live", "running", "-", "2026-09-28T10:00:00Z", "-", "/tmp/agent-box/live.log"},
-		{"done", "exited", "2", "2026-09-28T10:00:00Z", "2026-09-28T10:01:00Z", "/tmp/agent-box/done.log"},
+		{"NAME", "OUTCOME", "EXIT", "STARTED", "ENDED", "SESSION", "LOG"},
+		{"live", "running", "-", "2026-09-28T10:00:00Z", "-", "-", "/tmp/agent-box/live.log"},
+		{"done", "exited", "2", "2026-09-28T10:00:00Z", "2026-09-28T10:01:00Z", "-", "/tmp/agent-box/done.log"},
+		{"sess-7", "running", "-", "2026-09-28T10:00:00Z", "-", "sess-7", "/tmp/agent-box/sess-7.log"},
 	} {
 		got := strings.Fields(lines[0])
 		lines = lines[1:]
