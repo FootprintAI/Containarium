@@ -48,6 +48,33 @@ func TestGatewayEnvScript_GeminiBareBase(t *testing.T) {
 	}
 }
 
+// TestGatewayEnvScript_OpenAICodexKey pins #2256's fix: the box-side token
+// variable for the "openai" provider (the codex engine's only provider) is
+// CODEX_API_KEY, not OPENAI_API_KEY. OpenAI's own docs call a bare
+// OPENAI_API_KEY insufficient for a headless run with no `codex login` step
+// — CODEX_API_KEY is the documented variable that works without one.
+func TestGatewayEnvScript_OpenAICodexKey(t *testing.T) {
+	s, err := gatewayEnvScript("openai", 8080, "tok-codex", "/seed")
+	if err != nil {
+		t.Fatalf("script: %v", err)
+	}
+	if !strings.Contains(s, "CODEX_API_KEY") {
+		t.Errorf("expected the box-side token var to be CODEX_API_KEY:\n%s", s)
+	}
+	if strings.Contains(s, "OPENAI_API_KEY") {
+		t.Errorf("box-side script must not export OPENAI_API_KEY (#2256: insufficient for a headless codex run without `codex login`):\n%s", s)
+	}
+	for _, want := range []string{
+		"OPENAI_BASE_URL",
+		"http://$__ctn_host:8080/v1/model/openai",
+		"tok-codex",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("script missing %q\n%s", want, s)
+		}
+	}
+}
+
 func TestGatewayEnvScript_UnknownProvider(t *testing.T) {
 	if _, err := gatewayEnvScript("bedrock", 8080, "t", "/seed"); err == nil {
 		t.Error("unknown provider must error")

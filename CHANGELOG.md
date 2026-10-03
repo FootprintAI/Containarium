@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A skill box running on the `codex` engine had its gateway token exported
+  as `OPENAI_API_KEY` (#2256). OpenAI's own docs call a bare `OPENAI_API_KEY`
+  environment variable insufficient for a headless Codex CLI run with no
+  `codex login` step — `CODEX_API_KEY` is the documented variable that works
+  without one. The box-side variable is now `CODEX_API_KEY`; the daemon's
+  own `OPENAI_API_KEY` (the operator's real key, read once at startup) is
+  unaffected.
+
 ### Added
 
 - A named-engine skill's pinned `model` is now a real, enforced ceiling on
