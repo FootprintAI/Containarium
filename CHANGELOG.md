@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `containarium code install --engine codex` installs OpenAI's Codex CLI
+  (`@openai/codex`) on a box, parallel to the existing `claude`/`pi` engines
+  (#2273). `code run`/`attach`/`status`/`stop` work with it transparently,
+  same as the other engines. `--credential secret` is supported today;
+  `--credential gateway` is rejected, naming the fix, until the model
+  gateway's provider generalization lands (tracked separately). See
+  `docs/integrations/codex.md`.
+
 ## [0.98.0] - 2026-10-03
 
 ### Fixed
