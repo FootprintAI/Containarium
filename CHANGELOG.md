@@ -29,6 +29,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   apart. The MCP `run_agent_skill` tool gained the matching `engine`
   argument.
 
+### Documentation
+
+- New [BYOC backend bring-up runbook](docs/BYOC-BACKEND-BRINGUP.md): the
+  invariants a tunnel-joined backend must hold (no base domain it does not own,
+  no bridge DNS wildcard, edge-terminated TLS), the checks to run after
+  bring-up and every upgrade, a symptom table, and the recovery procedure for a
+  host that claimed the wrong domain. It documents a silent trap: the daemon
+  persists `base_domain` in `daemon_config` and keeps using it when
+  `--base-domain` is later dropped, so removing the flag does not clear it.
+- `docs/APP-HOSTING-SUMMARY.md` no longer uses a real apex as its
+  `--base-domain` example, and warns that the value persists.
+
 ## [0.97.1] - 2026-10-02
 
 ### Fixed
