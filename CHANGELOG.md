@@ -32,8 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Documentation
 
 - New [BYOC backend bring-up runbook](docs/BYOC-BACKEND-BRINGUP.md): the
-  invariants a tunnel-joined backend must hold (no base domain it does not own,
-  no bridge DNS wildcard, edge-terminated TLS), the checks to run after
+  invariants a tunnel-joined backend must hold (never set a base domain, no
+  bridge DNS wildcard, edge-terminated TLS), the checks to run after
   bring-up and every upgrade, a symptom table, and the recovery procedure for a
   host that claimed the wrong domain. It documents a silent trap: the daemon
   persists `base_domain` in `daemon_config` and keeps using it when

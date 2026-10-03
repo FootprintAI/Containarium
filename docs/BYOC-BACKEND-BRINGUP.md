@@ -26,9 +26,10 @@ They are **not** the control plane's services, which run elsewhere.
 
 A correctly brought-up BYOC backend has all of these:
 
-1. **It does not use the CP's domain as its base domain.** The CP's base domain
-   is the CP's. Leave `base_domain` empty unless this host serves a pool domain
-   *it* owns.
+1. **It never sets a base domain.** A BYOC backend has nothing to configure
+   there: leave `base_domain` empty. The CP's base domain belongs to the CP, and
+   the names that reach this host's boxes arrive as per-hostname routes pushed by
+   the cloud, which need no base domain on the backend.
 2. **No bridge DNS wildcard for a domain it does not own.** With a base domain
    set, the daemon makes every box on the bridge resolve `*.<base-domain>` to the
    local Caddy (`raw.dnsmasq` on the bridge). That silently hides the real
@@ -79,8 +80,7 @@ sudo journalctl -u containarium -b --no-pager -o cat -g 'base-domain'
    ```bash
    sudo containarium pool join --pool <pool> ...
    ```
-2. Start the daemon with app hosting. Do not pass `--base-domain` unless the
-   host owns that domain.
+2. Start the daemon with app hosting. Do not pass `--base-domain`.
    ```bash
    containarium daemon --app-hosting --rest --jwt-secret-file /etc/containarium/jwt.secret ...
    ```
@@ -101,8 +101,7 @@ box.
 # 1. Which base domain is the daemon using, and where did it come from?
 sudo journalctl -u containarium -b --no-pager -o cat -g 'base-domain'
 
-# 2. Is a wildcard DNS record installed on the bridge? (Expect empty unless
-#    this host owns a pool domain.)
+# 2. Is a wildcard DNS record installed on the bridge? (Expect empty.)
 sudo incus network get incusbr0 raw.dnsmasq
 
 # 3. Does Caddy hold a route or certificate subject you did not expect?
@@ -133,9 +132,18 @@ sudo incus exec <box> -- getent ahostsv4 <cp-hostname>
 Do these in order. Each step is reversible: keep the old values.
 
 1. **Clear the stored base domain.** In the host's core Postgres, update the
-   `base_domain` row of `daemon_config` to an empty string (or the correct pool
-   domain), then restart the daemon. Confirm the startup log shows the new
-   value.
+   `base_domain` row of `daemon_config` to an empty string, then restart the
+   daemon. Confirm the startup log shows the new value.
+
+   **Check for live ingress routes first.** With a base domain set, the daemon
+   names a route by its label (the hostname with the base domain stripped); with
+   none, it names the route by the full hostname. A host that already carries
+   routes pushed by the cloud under the old base domain would then hold the same
+   hostname twice, once under each ID, and a later removal by the old ID would
+   miss the new one. Run `containarium route list` (or read Caddy's
+   `/config/apps/http/servers/srv0/routes`) before clearing. If there are live
+   routes, do step 2 alone for now, which fixes the DNS symptom, and leave the
+   stored value until the daemon names routes independently of it (#2262).
 2. **Remove the bridge record.**
    ```bash
    sudo incus network unset incusbr0 raw.dnsmasq
