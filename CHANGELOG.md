@@ -46,6 +46,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the password inside Postgres, so following it locked the daemon out. The
   section now gives the full order (stage, `ALTER ROLE`, restart, verify) and
   how to narrow `pg_hba.conf`.
+- A freshly installed core Postgres no longer lets every address on the
+  container bridge, tenants included, attempt to log in. `pg_hba.conf` now has
+  one `scram-sha-256` rule for the daemon and one for the metrics container's
+  Grafana database, each a single address, and `log_connections` is on. The
+  daemon's source address is read from the route to Postgres, not assumed. After
+  applying the rules the daemon logs in as it will in production; if that
+  fails, the scoped rules are removed and the previous subnet rule is written
+  with an `ERROR` in the log, so a wrong rule cannot leave a new install without
+  a working database (`pg_isready`, which the install used before, cannot see
+  that). Existing hosts are not changed; narrow them by hand or enable the
+  core-infra network guard (`CONTAINARIUM_CORE_GUARD=enforce`).
+- The core Postgres and metrics containers are now pinned to fixed addresses
+  (`.240` and `.239` of the bridge subnet, next to caddy's `.241`) when they are
+  created, so the rule above can name Grafana before it exists. An existing
+  container keeps the address it has.
 
 ### Added
 
