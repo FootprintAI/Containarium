@@ -292,12 +292,12 @@ func TestCompileAllowedPeersPolicy_NoGatewayKeepsDomains(t *testing.T) {
 
 func TestSetGatewayProvisioning_EgressCIDR(t *testing.T) {
 	s := &AgentSkillServer{}
-	s.SetGatewayProvisioning("anthropic", 8080, []byte("secret"), "10.100.0.1", nil, nil)
+	s.SetGatewayProvisioning("anthropic", 8080, []byte("secret"), "10.100.0.1", nil, nil, nil)
 	if s.gateway.egressCIDR != "10.100.0.1/32" {
 		t.Errorf("egressCIDR = %q, want 10.100.0.1/32", s.gateway.egressCIDR)
 	}
 	// Empty host IP → no pinning CIDR (direct provider egress retained).
-	s.SetGatewayProvisioning("anthropic", 8080, []byte("secret"), "", nil, nil)
+	s.SetGatewayProvisioning("anthropic", 8080, []byte("secret"), "", nil, nil, nil)
 	if s.gateway.egressCIDR != "" {
 		t.Errorf("empty hostIP must yield no egressCIDR, got %q", s.gateway.egressCIDR)
 	}
@@ -549,7 +549,7 @@ func TestCompileAllowedPeersPolicyLeafIsDefaultDeny(t *testing.T) {
 
 func TestSetGatewayProvisioning_PopulatesDefaultProvider(t *testing.T) {
 	s := &AgentSkillServer{}
-	s.SetGatewayProvisioning("gemini", 8080, []byte("secret"), "", map[string]bool{"gemini": true}, nil)
+	s.SetGatewayProvisioning("gemini", 8080, []byte("secret"), "", map[string]bool{"gemini": true}, nil, nil)
 	if s.gateway.engines.DefaultProvider != "gemini" {
 		t.Errorf("engines.DefaultProvider = %q, want gemini", s.gateway.engines.DefaultProvider)
 	}
