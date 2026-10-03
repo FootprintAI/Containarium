@@ -188,7 +188,7 @@ func TestTailRunLog(t *testing.T) {
 		{name: "bad run_id shape", req: &pb.TailRunLogRequest{RunId: "../etc"}, wantCode: codes.InvalidArgument, noExec: true},
 		{name: "dot-dot run_id", req: &pb.TailRunLogRequest{RunId: ".."}, wantCode: codes.InvalidArgument, noExec: true},
 		{name: "empty run_id", req: &pb.TailRunLogRequest{}, wantCode: codes.InvalidArgument, noExec: true},
-		{name: "bad skill_id shape", req: &pb.TailRunLogRequest{RunId: "run-skill", SkillId: "a/b"}, wantCode: codes.InvalidArgument, noExec: true},
+		{name: "non-member skill_id with bad shape", req: &pb.TailRunLogRequest{RunId: "run-skill", SkillId: "a/b"}, wantCode: codes.InvalidArgument, noExec: true},
 		{name: "negative offset", req: &pb.TailRunLogRequest{RunId: "run-skill", StartOffset: -1}, wantCode: codes.InvalidArgument, noExec: true},
 	}
 	for _, tc := range cases {
@@ -218,6 +218,37 @@ func TestTailRunLog(t *testing.T) {
 			}
 			if strings.Join(resp.SkillIds, ",") != strings.Join(tc.wantSkills, ",") {
 				t.Errorf("skill_ids = %v, want %v", resp.SkillIds, tc.wantSkills)
+			}
+		})
+	}
+}
+
+// TestTailRunLog_SkillIDShapeCheckedOnItsOwn pins the skill_id shape check
+// (#2129). Each unsafe id is registered as a member of its run first, so the
+// membership check cannot reject it: only the shape check stands between it
+// and the in-box path, and dropping that check makes this test fail.
+func TestTailRunLog_SkillIDShapeCheckedOnItsOwn(t *testing.T) {
+	cases := []struct{ name, skillID string }{
+		{"separator", "a/b"},
+		{"traversal", "../etc"},
+		{"dot-dot", ".."},
+		{"dot", "."},
+		{"newline", "a\nb"},
+		{"NUL", "a\x00b"},
+		{"space", "has space"},
+		{"over-long", strings.Repeat("x", 129)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakeBoxes{}
+			s := newRunLogServer(f)
+			s.runIndex.add("run-hostile", tc.skillID, time.Now(), time.Hour)
+			_, err := s.TailRunLog(adminCtx(), &pb.TailRunLogRequest{RunId: "run-hostile", SkillId: tc.skillID})
+			if status.Code(err) != codes.InvalidArgument {
+				t.Errorf("err = %v, want InvalidArgument", err)
+			}
+			if f.calls != 0 {
+				t.Errorf("ran %d box execs; want none for an unsafe skill_id", f.calls)
 			}
 		})
 	}
