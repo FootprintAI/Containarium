@@ -73,8 +73,15 @@ const coreBridgeName = "incusbr0"
 // deterministic IP that survives a daemon-driven recreate keeps those
 // references self-consistent. Only caddy is pinned today (it's the one those
 // references point at); the map is keyed by container name so others can opt in.
+//
+// Postgres and the metrics container opt in so that the pg_hba.conf written when
+// Postgres is first installed can name the one address Grafana will connect from,
+// instead of admitting the whole subnet. As with caddy this applies when the
+// container is created; an existing container keeps the address it has.
 var coreStaticIPHostOffsets = map[string]uint32{
-	CoreCaddyContainer: 241,
+	CoreCaddyContainer:           241,
+	CorePostgresContainer:        240,
+	CoreVictoriaMetricsContainer: 239,
 }
 
 // coreStaticIP returns the deterministic static IP for a core container within
@@ -129,6 +136,10 @@ type CoreServices struct {
 	caddyIP           string
 	victoriaMetricsIP string
 	otelCollectorIP   string
+
+	// pgLoginProbe logs in to Postgres the way the daemon will; nil means the
+	// real network login. A field only so tests can script the result.
+	pgLoginProbe func(context.Context) error
 }
 
 // NewCoreServices creates a new core services manager
@@ -150,6 +161,23 @@ func NewCoreServices(incusClient incus.Backend, config CoreServicesConfig) *Core
 		incusClient: incusClient,
 		config:      config,
 	}
+}
+
+// pinCoreIP gives a container being created the deterministic address it has in
+// coreStaticIPHostOffsets, so a recreate reuses it. Best effort: when the
+// address cannot be computed it logs and leaves the container on DHCP, which is
+// what happened before containers other than caddy were pinned.
+func (cs *CoreServices) pinCoreIP(config *incus.ContainerConfig, name string) {
+	staticIP, err := coreStaticIP(cs.config.NetworkCIDR, name)
+	if err != nil {
+		log.Printf("Warning: could not compute stable IP for %s (%v); using DHCP", name, err)
+		return
+	}
+	if staticIP == "" {
+		return
+	}
+	config.NIC = &incus.NICDevice{Name: "eth0", Network: coreBridgeName, IPv4Address: staticIP}
+	log.Printf("Assigning stable IP %s to %s", staticIP, name)
 }
 
 // ensureCoreReservation sets a ZFS reservation on a core container's dataset so
@@ -234,6 +262,8 @@ func (cs *CoreServices) EnsurePostgres(ctx context.Context) (string, error) {
 		},
 	}
 
+	cs.pinCoreIP(&config, CorePostgresContainer)
+
 	if err := cs.incusClient.CreateContainer(config); err != nil {
 		return "", fmt.Errorf("failed to create postgres container: %w", err)
 	}
@@ -317,32 +347,15 @@ func (cs *CoreServices) setupPostgres(ctx context.Context) error {
 	}
 
 	// Configure PostgreSQL to listen on all interfaces
-	pgConfPath := "/etc/postgresql/16/main/postgresql.conf"
-	pgHbaPath := "/etc/postgresql/16/main/pg_hba.conf"
-
-	// Update listen_addresses
 	if err := cs.incusClient.Exec(CorePostgresContainer, []string{
 		"bash", "-c", fmt.Sprintf("sed -i \"s/#listen_addresses = 'localhost'/listen_addresses = '*'/\" %s", pgConfPath),
 	}); err != nil {
 		return fmt.Errorf("failed to update postgresql.conf: %w", err)
 	}
 
-	// Allow connections from container network
-	networkPrefix := cs.config.NetworkCIDR
-	hbaEntry := fmt.Sprintf("host    all             all             %s            md5", networkPrefix)
-	if err := cs.incusClient.Exec(CorePostgresContainer, []string{
-		"bash", "-c", fmt.Sprintf("echo '%s' >> %s", hbaEntry, pgHbaPath),
-	}); err != nil {
-		return fmt.Errorf("failed to update pg_hba.conf: %w", err)
-	}
-
-	// Restart PostgreSQL
-	if err := cs.incusClient.Exec(CorePostgresContainer, []string{"systemctl", "restart", "postgresql"}); err != nil {
-		return fmt.Errorf("failed to restart postgresql: %w", err)
-	}
-
-	// Wait for PostgreSQL to be ready
-	if err := cs.waitForPostgres(ctx); err != nil {
+	// Limit who may log in to the core clients, turn on connection logging,
+	// restart, and prove the daemon can still log in.
+	if err := cs.configurePostgresAccess(ctx); err != nil {
 		return err
 	}
 
@@ -939,6 +952,8 @@ func (cs *CoreServices) EnsureVictoriaMetrics(ctx context.Context, postgresIP st
 			Size: "10GB",
 		},
 	}
+
+	cs.pinCoreIP(&config, CoreVictoriaMetricsContainer)
 
 	if err := cs.incusClient.CreateContainer(config); err != nil {
 		return "", fmt.Errorf("failed to create victoriametrics container: %w", err)
