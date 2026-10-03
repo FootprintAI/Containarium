@@ -166,7 +166,7 @@ func TestRunKeyOwner(t *testing.T) {
 func TestMintRunGatewayToken_OwnedRunCarriesKeyOwner(t *testing.T) {
 	rig := newRunGatewayRig(t, nil)
 
-	tok, minted, err := rig.s.mintRunGatewayToken(ctxAs("alice", false), "agent-hello", "hello", "run-1", "openai", boxWithLabels(nil))
+	tok, minted, err := rig.s.mintRunGatewayToken(ctxAs("alice", false), "agent-hello", "hello", "run-1", "openai", "", boxWithLabels(nil))
 	if err != nil {
 		t.Fatalf("mintRunGatewayToken: %v", err)
 	}
@@ -194,7 +194,7 @@ func TestMintRunGatewayToken_SpendsOwnersKey(t *testing.T) {
 		"user:bob|openai":   "BOB-KEY",
 	})
 
-	tok, _, err := rig.s.mintRunGatewayToken(ctxAs("alice", false), "agent-hello", "hello", "run-1", "openai", boxWithLabels(nil))
+	tok, _, err := rig.s.mintRunGatewayToken(ctxAs("alice", false), "agent-hello", "hello", "run-1", "openai", "", boxWithLabels(nil))
 	if err != nil {
 		t.Fatalf("mintRunGatewayToken: %v", err)
 	}
@@ -223,7 +223,7 @@ func TestMintRunGatewayToken_UnownedRunKeepsGlobalKeyAndLogsOnce(t *testing.T) {
 	log.SetFlags(0)
 	t.Cleanup(func() { log.SetOutput(prevOut); log.SetFlags(prevFlags) })
 
-	tok, _, err := rig.s.mintRunGatewayToken(context.Background(), "agent-hello", "hello", "run-sys", "openai", boxWithLabels(nil))
+	tok, _, err := rig.s.mintRunGatewayToken(context.Background(), "agent-hello", "hello", "run-sys", "openai", "", boxWithLabels(nil))
 	if err != nil {
 		t.Fatalf("mintRunGatewayToken: %v", err)
 	}
@@ -271,7 +271,7 @@ func TestMintRunGatewayToken_RevokeByKeyOwnerKillsLiveRunToken(t *testing.T) {
 
 	mint := func(ctx context.Context, runID string) string {
 		t.Helper()
-		tok, _, err := rig.s.mintRunGatewayToken(ctx, "agent-hello", "hello", runID, "openai", boxWithLabels(nil))
+		tok, _, err := rig.s.mintRunGatewayToken(ctx, "agent-hello", "hello", runID, "openai", "", boxWithLabels(nil))
 		if err != nil {
 			t.Fatalf("mintRunGatewayToken(%s): %v", runID, err)
 		}

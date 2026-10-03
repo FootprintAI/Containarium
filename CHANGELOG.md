@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A named-engine skill's pinned `model` is now a real, enforced ceiling on
+  its run's gateway token (#2229): `allowed_models` carries exactly that
+  model, rejected at the gateway if the box ever asks for a different one.
+  When the resolved provider's model list is checkable, `RunAgentSkill`
+  refuses up front with `FailedPrecondition` if the pinned model isn't one
+  the provider actually serves — naming the model, the provider, and the
+  models it does list. The daemon-global `gatewayProvisioning.allowedModels`
+  field (dead code — no caller ever assigned it) is removed; the ceiling is
+  now always per-skill.
 - Per-invocation `--engine` override (#2228): `containarium agent run
   <skill> --engine codex` and `containarium crew run <crew> --engine
   <skill-id>=<engine>` (repeatable, one per member) resolve that run's
