@@ -5,13 +5,10 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 )
 
 const (
@@ -21,9 +18,6 @@ const (
 	// hbaMarker tags every pg_hba.conf line this code writes, so the fallback
 	// can find and remove exactly those lines and nothing an operator added.
 	hbaMarker = "# containarium-core"
-
-	// hbaGrafanaDB is the database Grafana's login is limited to.
-	hbaGrafanaDB = "grafana"
 )
 
 var (
@@ -74,7 +68,7 @@ func postgresHBALines(user, daemonIP, grafanaIP string) ([]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("metrics container address: %w", err)
 		}
-		lines = append(lines, hbaLine(hbaGrafanaDB, user, g))
+		lines = append(lines, hbaLine(grafanaDBName, user, g))
 	}
 	return lines, nil
 }
@@ -214,17 +208,10 @@ func (cs *CoreServices) probeDaemonLogin(ctx context.Context) error {
 func (cs *CoreServices) postgresLogin(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	u := &url.URL{
-		Scheme:   "postgres",
-		User:     url.UserPassword(cs.config.PostgresUser, cs.config.PostgresPassword),
+	return pgxPing(ctx, pgPingArgs{
 		Host:     net.JoinHostPort(cs.postgresIP, strconv.Itoa(DefaultPostgresPort)),
-		Path:     "/" + cs.config.PostgresDB,
-		RawQuery: "sslmode=disable&connect_timeout=5",
-	}
-	conn, err := pgx.Connect(ctx, u.String())
-	if err != nil {
-		return err
-	}
-	defer func() { _ = conn.Close(ctx) }()
-	return conn.Ping(ctx)
+		User:     cs.config.PostgresUser,
+		Password: cs.config.PostgresPassword,
+		Database: cs.config.PostgresDB,
+	})
 }

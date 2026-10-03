@@ -16,6 +16,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without one. The box-side variable is now `CODEX_API_KEY`; the daemon's
   own `OPENAI_API_KEY` (the operator's real key, read once at startup) is
   unaffected.
+- Core services now use the Postgres password the operator configured
+  (#2091). `NewCoreServices` resolves it the way the daemon's own connection
+  does (`CONTAINARIUM_POSTGRES_PASSWORD_FILE`, then
+  `CONTAINARIUM_POSTGRES_PASSWORD`, then the dev default). Before, no caller
+  set it, so the first-install `CREATE USER` and Grafana's `[database]`
+  password always used the compiled-in default, even on a host configured with
+  its own, and a host could not be provisioned with a non-default password at
+  all. The daemon's non-app-hosting Postgres auto-detect resolves it too.
+- Grafana's database password follows the daemon's. A new backfill, run on
+  every start against an existing metrics container, rewrites `[database]
+  password` and restarts Grafana when it differs from the daemon's, but only
+  when the daemon's password actually connects to Grafana's database, so a host
+  rotated by hand is never overwritten with a password that does not work.
+  Passwords Grafana would read as a comment (`#`, `;`) are triple-quoted.
+- A freshly provisioned Grafana no longer ships the literal login `admin` /
+  `containarium` (#2091). Each host gets a random admin password, saved to
+  `/etc/containarium/grafana-admin.password` (mode 0600, overridable with
+  `CONTAINARIUM_GRAFANA_ADMIN_PASSWORD_FILE`) and kept across a re-provision. If
+  it cannot be saved the key is omitted and the daemon warns, so there is never
+  a silently known default. Existing hosts keep their live account; the
+  operator runbook gives the reset command.
+- The daemon escapes the Postgres user and password when it builds its
+  connection URL (`PostgresDSN`, used by all four places that built it by hand).
+  A password containing `@`, `/`, `:` or `#` used to corrupt the URL. For
+  ordinary passwords the string is byte-identical to before.
+- `docs/security/OPERATOR-SECURITY-RUNBOOK.md`: "Rotating Postgres credentials"
+  said updating the file and restarting the daemon was enough. It never changed
+  the password inside Postgres, so following it locked the daemon out. The
+  section now gives the full order (stage, `ALTER ROLE`, restart, verify) and
+  how to narrow `pg_hba.conf`.
 - A freshly installed core Postgres no longer lets every address on the
   container bridge, tenants included, attempt to log in. `pg_hba.conf` now has
   one `scram-sha-256` rule for the daemon and one for the metrics container's

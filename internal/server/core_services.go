@@ -137,6 +137,10 @@ type CoreServices struct {
 	victoriaMetricsIP string
 	otelCollectorIP   string
 
+	// pgPing opens one real connection with the given credentials. It is a
+	// field only so tests can script the result; production uses pgxPing.
+	pgPing func(context.Context, pgPingArgs) error
+
 	// pgLoginProbe logs in to Postgres the way the daemon will; nil means the
 	// real network login. A field only so tests can script the result.
 	pgLoginProbe func(context.Context) error
@@ -148,7 +152,19 @@ func NewCoreServices(incusClient incus.Backend, config CoreServicesConfig) *Core
 		config.PostgresUser = DefaultPostgresUser
 	}
 	if config.PostgresPassword == "" {
-		config.PostgresPassword = DefaultPostgresPassword
+		// Resolve the password the same way the daemon's own connection does
+		// (secret file, then env, then the dev default). No caller sets this
+		// field, so without this the first-install CREATE USER, the readiness
+		// probe and Grafana's config all used the compiled-in default even on
+		// a host configured with its own password (#2091). Quiet: this runs
+		// several times per start and the daemon already logs the default
+		// warning once.
+		pw, _, err := resolvePostgresPasswordQuiet()
+		if err != nil {
+			log.Printf("ERROR: %v — falling back to the compiled-in default for core services", err)
+			pw = DefaultPostgresPassword
+		}
+		config.PostgresPassword = pw
 	}
 	if config.PostgresDB == "" {
 		config.PostgresDB = DefaultPostgresDB
@@ -160,6 +176,7 @@ func NewCoreServices(incusClient incus.Backend, config CoreServicesConfig) *Core
 	return &CoreServices{
 		incusClient: incusClient,
 		config:      config,
+		pgPing:      pgxPing,
 	}
 }
 
@@ -390,13 +407,8 @@ func (cs *CoreServices) waitForPostgres(ctx context.Context) error {
 
 // getPostgresConnString returns the PostgreSQL connection string
 func (cs *CoreServices) getPostgresConnString() string {
-	return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
-		cs.config.PostgresUser,
-		cs.config.PostgresPassword,
-		cs.postgresIP,
-		DefaultPostgresPort,
-		cs.config.PostgresDB,
-	)
+	return PostgresDSN(cs.config.PostgresUser, cs.config.PostgresPassword,
+		cs.postgresIP, DefaultPostgresPort, cs.config.PostgresDB)
 }
 
 // GetPostgresIP returns the PostgreSQL container IP
@@ -914,6 +926,9 @@ func (cs *CoreServices) EnsureVictoriaMetrics(ctx context.Context, postgresIP st
 			// Close anonymous dashboard access on hosts provisioned before
 			// the template turned it off (#2079); no-op once converged.
 			cs.backfillGrafanaAnonymous()
+			// Keep Grafana's database password equal to the daemon's (#2091);
+			// no-op once converged, and only written when it actually connects.
+			cs.backfillGrafanaDBPassword()
 			// Always re-provision the Grafana dashboard to pick up new panels
 			cs.updateGrafanaDashboard()
 			return cs.victoriaMetricsIP, nil
@@ -933,6 +948,7 @@ func (cs *CoreServices) EnsureVictoriaMetrics(ctx context.Context, postgresIP st
 			return "", err
 		}
 		cs.backfillGrafanaAnonymous()
+		cs.backfillGrafanaDBPassword()
 		cs.updateGrafanaDashboard()
 		return cs.victoriaMetricsIP, nil
 	}
@@ -1080,7 +1096,7 @@ WantedBy=multi-user.target
 	}
 
 	// Configure Grafana (anonymous access off — see renderGrafanaIni)
-	grafanaIni := renderGrafanaIni(postgresIP, DefaultPostgresUser, DefaultPostgresPassword)
+	grafanaIni := renderGrafanaIni(postgresIP, DefaultPostgresUser, cs.config.PostgresPassword, cs.grafanaAdminPasswordForProvisioning())
 
 	if err := cs.incusClient.WriteFile(CoreVictoriaMetricsContainer, grafanaIniPath, []byte(grafanaIni), "0644"); err != nil {
 		return fmt.Errorf("failed to write grafana.ini: %w", err)
