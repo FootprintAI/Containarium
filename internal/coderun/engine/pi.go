@@ -149,6 +149,23 @@ fi
 	return script
 }
 
+// piCredentialStatusScript probes for a pi credential by NAME only (#2272),
+// the same posture as claudeCredentialStatusScript: pi's own sign-in
+// (`/login`) writes auth.json, which is this engine's "interactive"; a
+// tenant-secret or compose-delivered key visible to the box's shell is
+// "api-key" (containarium's own secrets delivery, not pi's own flow — the
+// closest equivalent on this engine to a user-placed key); anything else is
+// "none".
+const piCredentialStatusScript = `if [ -f "` + piAgentDir + `/auth.json" ]; then
+  echo interactive
+  exit 0
+fi
+if [ -f /run/containarium/secrets.env ] || [ -d /run/secrets ]; then
+  echo api-key
+  exit 0
+fi
+echo none`
+
 // RunCommand renders the command process_start spawns.
 //
 // pi takes the prompt as a POSITIONAL argument after -p/--print (pi's own
