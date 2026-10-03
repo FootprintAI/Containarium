@@ -29,6 +29,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   apart. The MCP `run_agent_skill` tool gained the matching `engine`
   argument.
 
+### Fixed
+
+- Core services now use the Postgres password the operator configured
+  (#2091). `NewCoreServices` resolves it the way the daemon's own connection
+  does (`CONTAINARIUM_POSTGRES_PASSWORD_FILE`, then
+  `CONTAINARIUM_POSTGRES_PASSWORD`, then the dev default). Before, no caller
+  set it, so the first-install `CREATE USER` and Grafana's `[database]`
+  password always used the compiled-in default, even on a host configured with
+  its own, and a host could not be provisioned with a non-default password at
+  all. The daemon's non-app-hosting Postgres auto-detect resolves it too.
+- Grafana's database password follows the daemon's. A new backfill, run on
+  every start against an existing metrics container, rewrites `[database]
+  password` and restarts Grafana when it differs from the daemon's, but only
+  when the daemon's password actually connects to Grafana's database, so a host
+  rotated by hand is never overwritten with a password that does not work.
+  Passwords Grafana would read as a comment (`#`, `;`) are triple-quoted.
+- `docs/security/OPERATOR-SECURITY-RUNBOOK.md`: "Rotating Postgres credentials"
+  said updating the file and restarting the daemon was enough. It never changed
+  the password inside Postgres, so following it locked the daemon out. The
+  section now gives the full order (stage, `ALTER ROLE`, restart, verify) and
+  how to narrow `pg_hba.conf`.
+
 ## [0.97.1] - 2026-10-02
 
 ### Fixed

@@ -77,6 +77,19 @@ func ResolvePostgresURL() (dsn string, source string, err error) {
 // Returns (password, source) so the caller can log the
 // active source without leaking the password itself.
 func ResolvePostgresPassword() (password string, source string, err error) {
+	password, source, err = resolvePostgresPasswordQuiet()
+	if err == nil && source == "default" {
+		log.Printf("WARNING: Postgres password defaulting to the compiled-in dev value (%q). Set %s or %s for production.",
+			DefaultPostgresPassword, envPostgresPassword, envPostgresPasswordFile)
+	}
+	return password, source, err
+}
+
+// resolvePostgresPasswordQuiet is ResolvePostgresPassword without the
+// default-value warning. NewCoreServices is built several times per start and
+// must resolve the same password the daemon's own connection uses (#2091)
+// without repeating a warning the daemon already logs once.
+func resolvePostgresPasswordQuiet() (password string, source string, err error) {
 	if path := strings.TrimSpace(os.Getenv(envPostgresPasswordFile)); path != "" {
 		b, err := readSecretFile(path, envPostgresPasswordFile)
 		if err != nil {
@@ -87,8 +100,6 @@ func ResolvePostgresPassword() (password string, source string, err error) {
 	if pw := os.Getenv(envPostgresPassword); pw != "" {
 		return pw, "env", nil
 	}
-	log.Printf("WARNING: Postgres password defaulting to the compiled-in dev value (%q). Set %s or %s for production.",
-		DefaultPostgresPassword, envPostgresPassword, envPostgresPasswordFile)
 	return DefaultPostgresPassword, "default", nil
 }
 

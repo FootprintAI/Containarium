@@ -1226,9 +1226,17 @@ skipAppHosting:
 			// Try to auto-detect existing postgres container first
 			if incusClient, err := incus.New(); err == nil {
 				if pgInfo, err := incusClient.FindContainerByRole(incus.RolePostgres); err == nil && pgInfo.IPAddress != "" {
+					// The same password the app-hosting path resolves (secret
+					// file, env, then the dev default), not the compiled-in
+					// default unconditionally (#2091).
+					pgPassword, _, pwErr := ResolvePostgresPassword()
+					if pwErr != nil {
+						log.Printf("ERROR: %v — using the compiled-in default for the detected Postgres", pwErr)
+						pgPassword = DefaultPostgresPassword
+					}
 					postgresConnString = fmt.Sprintf(
 						"postgres://%s:%s@%s:%d/%s?sslmode=disable",
-						DefaultPostgresUser, DefaultPostgresPassword,
+						DefaultPostgresUser, pgPassword,
 						pgInfo.IPAddress, DefaultPostgresPort, DefaultPostgresDB)
 					log.Printf("Detected existing PostgreSQL at: %s", pgInfo.IPAddress)
 					// Re-apply the systemd Restart=on-failure override even

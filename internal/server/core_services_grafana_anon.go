@@ -44,7 +44,7 @@ default_theme = light
 http_port = 3000
 root_url = %%(protocol)s://%%(domain)s/grafana/
 serve_from_sub_path = true
-`, postgresIP, dbUser, dbPassword)
+`, postgresIP, dbUser, grafanaIniValue(dbPassword))
 }
 
 // grafanaAnonymousEnabled reports the value of [auth.anonymous] enabled in
@@ -144,5 +144,6 @@ func hardenDetectedGrafana(cs *CoreServices, be incus.Backend) *CoreServices {
 		cs = NewCoreServices(be, CoreServicesConfig{})
 	}
 	cs.backfillGrafanaAnonymous()
+	cs.backfillGrafanaDBPassword()
 	return cs
 }
