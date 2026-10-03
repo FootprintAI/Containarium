@@ -445,6 +445,78 @@
         ]
       }
     },
+    "/v1/agent-skills/{skillId}/credential-status": {
+      "get": {
+        "summary": "Check a skill box's coding-agent credential source",
+        "description": "Reports the NAME of the credential source (interactive sign-in, a user-placed key, or none) the skill's box would use for its configured engine — never the credential's value, never read/logged/transmitted.",
+        "operationId": "AgentSkillService_GetSkillBoxCredentialStatus",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetSkillBoxCredentialStatusResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "skillId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Agents"
+        ]
+      }
+    },
+    "/v1/agent-skills/{skillId}/provision-box": {
+      "post": {
+        "summary": "Provision a skill's box ahead of any run",
+        "description": "Creates or reuses the skill's deterministic box with no token minted, nothing seeded, and no model call — so a human can sign in to its coding agent before any inference credential exists.",
+        "operationId": "AgentSkillService_ProvisionSkillBox",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ProvisionSkillBoxResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "skillId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/ProvisionSkillBoxBody"
+            }
+          }
+        ],
+        "tags": [
+          "Agents"
+        ]
+      }
+    },
     "/v1/agent-skills/{skillId}/run": {
       "post": {
         "summary": "Run an agent skill",
@@ -10134,6 +10206,17 @@
       "default": "CLUSTER_STATE_UNSPECIFIED",
       "description": "ClusterState is the lifecycle state of a managed cluster.\n\n - CLUSTER_STATE_PROVISIONING: Recorded; the reconciler is provisioning VMs.\n - CLUSTER_STATE_READY: Control plane serving and every group's min nodes Ready.\n - CLUSTER_STATE_DEGRADED: Serving, but observed state diverges from desired (e.g. a lost\nnode being replaced).\n - CLUSTER_STATE_DELETING: Teardown in progress.\n - CLUSTER_STATE_ERROR: Provisioning or reconciliation failed; state_reason says why."
     },
+    "CodeCredentialSource": {
+      "type": "string",
+      "enum": [
+        "CODE_CREDENTIAL_SOURCE_UNSPECIFIED",
+        "CODE_CREDENTIAL_SOURCE_INTERACTIVE",
+        "CODE_CREDENTIAL_SOURCE_API_KEY",
+        "CODE_CREDENTIAL_SOURCE_NONE"
+      ],
+      "default": "CODE_CREDENTIAL_SOURCE_UNSPECIFIED",
+      "description": "CodeCredentialSource is WHERE a box's `containarium code`-style coding\nengine (Claude Code today; Codex once #2273 lands) would currently find a\nhuman/headless sign-in — never the credential's value, never read, logged,\nor transmitted at any layer. Mirrors #2030's `code install` verify output\n(\"report which credential source Claude Code will use, never a value\"),\ncondensed to the one answer GetSkillBoxCredentialStatus needs (#2272).\n\nDeliberately a DIFFERENT enum from AgentCredentialSource above:\nAgentCredentialSource is where a model-GATEWAY token's upstream key comes\nfrom (daemon-held, never the box's concern); CodeCredentialSource is\nwhether a HUMAN has already completed Anthropic's own sign-in flow on this\nbox, or placed their own key, so unattended reuse of that same box needs no\ncredential of containarium's own.\n\n - CODE_CREDENTIAL_SOURCE_INTERACTIVE: The engine's own device-code/browser sign-in has already completed on\nthis box (e.g. Claude Code's own ~/.claude/.credentials.json).\n - CODE_CREDENTIAL_SOURCE_API_KEY: A user-placed provider key/token is visible to the engine's own shell\nenvironment (e.g. ANTHROPIC_API_KEY in ~/.claude/settings.json, or a 3P\nprovider env var) — the headless path #2030 documents.\n - CODE_CREDENTIAL_SOURCE_NONE: Neither of the above. Expected on a freshly provisioned box (#2272)\nuntil a human signs in or places a key."
+    },
     "Collaborator": {
       "type": "object",
       "properties": {
@@ -12893,6 +12976,24 @@
         }
       }
     },
+    "GetSkillBoxCredentialStatusResponse": {
+      "type": "object",
+      "properties": {
+        "engine": {
+          "$ref": "#/definitions/AgentEngine",
+          "description": "The engine this status was checked for: the skill's own `engine` field,\nresolved to AGENT_ENGINE_CLAUDE when the skill leaves it unspecified\n(the only engine `containarium code`'s box-side probe supports today —\nAGENT_ENGINE_CODEX/GEMINI are refused FAILED_PRECONDITION until #2273\nadds Codex's own probe; never guessed)."
+        },
+        "credentialSource": {
+          "$ref": "#/definitions/CodeCredentialSource",
+          "description": "WHERE that engine's credential comes from, if anywhere — names only,\nNEVER a value. Mirrors `containarium code install`'s own verify output\n(#2030): this call does not read, store, log, or transmit the\ncredential itself at any layer, box to daemon to caller."
+        },
+        "checkedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When this check ran."
+        }
+      }
+    },
     "GetSystemInfoResponse": {
       "type": "object",
       "properties": {
@@ -14788,6 +14889,31 @@
       "default": "PROTOCOL_UNSPECIFIED",
       "description": "- PROTOCOL_UNSPECIFIED: Unspecified protocol (should not be used)\n - PROTOCOL_TCP: TCP protocol\n - PROTOCOL_UDP: UDP protocol\n - PROTOCOL_ICMP: ICMP protocol",
       "title": "Protocol represents the network protocol of a connection"
+    },
+    "ProvisionSkillBoxBody": {
+      "type": "object",
+      "properties": {
+        "backendId": {
+          "type": "string",
+          "description": "Target backend/pool placement, same scheme as RunAgentSkillRequest."
+        },
+        "pool": {
+          "type": "string"
+        }
+      },
+      "description": "ProvisionSkillBoxRequest creates or reuses a skill's deterministic box\n(agent-\u003cskill_id\u003e) WITHOUT running it: no token is minted, nothing is\nseeded, and the model is never called (#2272). This is the create-or-reuse\nstep RunAgentSkill/RunCrew already perform as a side effect of a real run\n— surfaced on its own so a crew member's box can exist, and a human can\n`containarium connect` in and sign in to its coding agent, BEFORE any\ninference credential exists. Without this, that box is created only as a\nside effect of a run that itself needs a credential to get that far —\nchicken-and-egg."
+    },
+    "ProvisionSkillBoxResponse": {
+      "type": "object",
+      "properties": {
+        "container": {
+          "$ref": "#/definitions/Container"
+        },
+        "freshlyProvisioned": {
+          "type": "boolean",
+          "description": "True when this call created the box; false when an already-provisioned\nbox (running, or stopped and started back up) was reused instead."
+        }
+      }
     },
     "ProxyRoute": {
       "type": "object",

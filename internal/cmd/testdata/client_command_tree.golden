@@ -1,8 +1,10 @@
 agent call
+agent credential-status
 agent engines
 agent enqueue
 agent get
 agent list
+agent provision-box
 agent run
 agent worker
 anon ban

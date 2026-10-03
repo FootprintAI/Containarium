@@ -1700,6 +1700,60 @@ func (c *HTTPClient) GetAgentSkill(id string) (*pb.AgentSkill, error) {
 	return out.Skill, nil
 }
 
+// ProvisionSkillBox creates or reuses a skill's deterministic box
+// (agent-<skill_id>) via HTTP, without running it: no token minted, nothing
+// seeded, no model call (#2272).
+func (c *HTTPClient) ProvisionSkillBox(skillID, backendID, pool string) (*pb.ProvisionSkillBoxResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute) // box deploy can take time
+	defer cancel()
+
+	path := fmt.Sprintf("/v1/agent-skills/%s/provision-box", url.PathEscape(skillID))
+	body, err := json.Marshal(provisionSkillBoxRequest{SkillID: skillID, BackendID: backendID, Pool: pool})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+	resp, err := c.doRequest(ctx, http.MethodPost, path, body)
+	if err != nil {
+		return nil, fmt.Errorf("provision skill box: %w", err)
+	}
+	defer drainClose(resp)
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, httpError(bodyBytes, resp.StatusCode, "provision skill box")
+	}
+	out := &pb.ProvisionSkillBoxResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
+// GetSkillBoxCredentialStatus reports, via HTTP, whether a skill's
+// already-provisioned box has a credential its configured coding engine
+// would use — the source NAME only, never a value (#2272, #2030 posture).
+func (c *HTTPClient) GetSkillBoxCredentialStatus(skillID string) (*pb.GetSkillBoxCredentialStatusResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	path := fmt.Sprintf("/v1/agent-skills/%s/credential-status", url.PathEscape(skillID))
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("get skill box credential status: %w", err)
+	}
+	defer drainClose(resp)
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, httpError(bodyBytes, resp.StatusCode, "get skill box credential status")
+	}
+	out := &pb.GetSkillBoxCredentialStatusResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
 // RunAgentSkill provisions a skill's box, mints a scoped token, runs one task,
 // and returns the box via HTTP. gitSource/gitRef/gitCredential (#1859) fetch a
 // repo into the run's workspace before the agent starts; empty gitSource
