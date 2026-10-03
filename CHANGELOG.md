@@ -16,31 +16,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without one. The box-side variable is now `CODEX_API_KEY`; the daemon's
   own `OPENAI_API_KEY` (the operator's real key, read once at startup) is
   unaffected.
-
-### Added
-
-- A named-engine skill's pinned `model` is now a real, enforced ceiling on
-  its run's gateway token (#2229): `allowed_models` carries exactly that
-  model, rejected at the gateway if the box ever asks for a different one.
-  When the resolved provider's model list is checkable, `RunAgentSkill`
-  refuses up front with `FailedPrecondition` if the pinned model isn't one
-  the provider actually serves — naming the model, the provider, and the
-  models it does list. The daemon-global `gatewayProvisioning.allowedModels`
-  field (dead code — no caller ever assigned it) is removed; the ceiling is
-  now always per-skill.
-- Per-invocation `--engine` override (#2228): `containarium agent run
-  <skill> --engine codex` and `containarium crew run <crew> --engine
-  <skill-id>=<engine>` (repeatable, one per member) resolve that run's
-  engine from the flag instead of the skill manifest's own `engine` field.
-  Refused with the same `FailedPrecondition` text a manifest-named engine
-  gets when its provider has no usable key — the override goes through the
-  identical `agentengine.Resolve` readiness check (#2222), so what a run
-  actually does and what `containarium agent engines` reports can't drift
-  apart. The MCP `run_agent_skill` tool gained the matching `engine`
-  argument.
-
-### Fixed
-
 - Core services now use the Postgres password the operator configured
   (#2091). `NewCoreServices` resolves it the way the daemon's own connection
   does (`CONTAINARIUM_POSTGRES_PASSWORD_FILE`, then
@@ -71,6 +46,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the password inside Postgres, so following it locked the daemon out. The
   section now gives the full order (stage, `ALTER ROLE`, restart, verify) and
   how to narrow `pg_hba.conf`.
+
+### Added
+
+- A named-engine skill's pinned `model` is now a real, enforced ceiling on
+  its run's gateway token (#2229): `allowed_models` carries exactly that
+  model, rejected at the gateway if the box ever asks for a different one.
+  When the resolved provider's model list is checkable, `RunAgentSkill`
+  refuses up front with `FailedPrecondition` if the pinned model isn't one
+  the provider actually serves — naming the model, the provider, and the
+  models it does list. The daemon-global `gatewayProvisioning.allowedModels`
+  field (dead code — no caller ever assigned it) is removed; the ceiling is
+  now always per-skill.
+- Per-invocation `--engine` override (#2228): `containarium agent run
+  <skill> --engine codex` and `containarium crew run <crew> --engine
+  <skill-id>=<engine>` (repeatable, one per member) resolve that run's
+  engine from the flag instead of the skill manifest's own `engine` field.
+  Refused with the same `FailedPrecondition` text a manifest-named engine
+  gets when its provider has no usable key — the override goes through the
+  identical `agentengine.Resolve` readiness check (#2222), so what a run
+  actually does and what `containarium agent engines` reports can't drift
+  apart. The MCP `run_agent_skill` tool gained the matching `engine`
+  argument.
 
 ## [0.97.1] - 2026-10-02
 
