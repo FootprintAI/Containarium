@@ -2984,6 +2984,45 @@
         "tags": [
           "Code Runs"
         ]
+      },
+      "post": {
+        "summary": "Start a box's code run",
+        "description": "Starts (or resumes) a coding-agent run on a box, no SSH client needed. The engine and its credential source come from the box's own ~/.containarium/code.json (`code install`); this call only says what to run. A previous run under the resolved run_name that is still RUNNING or UNKNOWN is FAILED_PRECONDITION, naming it. Box owner or collaborator, ssh:write scope.",
+        "operationId": "ContainerService_StartBoxRun",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/StartBoxRunResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "The box owner's username (the box is \u003cusername\u003e-container).",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/StartBoxRunBody"
+            }
+          }
+        ],
+        "tags": [
+          "Code Runs"
+        ]
       }
     },
     "/v1/containers/{username}/code-runs/{runName}/log": {
@@ -9585,6 +9624,10 @@
         "captureMode": {
           "$ref": "#/definitions/CaptureMode",
           "description": "How the log is written: FRAMED logs are demuxed by TailBoxRunLog."
+        },
+        "sessionId": {
+          "type": "string",
+          "description": "The engine's own session identifier (#2193), read back from the box\nshortly after the run starts: Claude Code's session id, or pi's session\nfile name. Empty when the engine exposes none, or when discovery hasn't\nfound one yet (a race with a just-started run — poll ListBoxRuns again).\nPass it to StartBoxRun's session_id to resume this exact conversation."
         }
       },
       "description": "BoxRun is one current run record on a box."
@@ -16411,6 +16454,32 @@
         "message": {
           "type": "string",
           "title": "Status message"
+        }
+      }
+    },
+    "StartBoxRunBody": {
+      "type": "object",
+      "properties": {
+        "prompt": {
+          "type": "string",
+          "description": "The task to give the agent."
+        },
+        "sessionId": {
+          "type": "string",
+          "description": "Resume this specific session id instead of starting a fresh one\n(claude --resume \u003cid\u003e; pi --session \u003cid\u003e). Also becomes this run's\nrun_name: StartBoxRun on a box whose run under this name is still RUNNING\nor UNKNOWN is FAILED_PRECONDITION naming it — no queueing. Mutually\nexclusive with continue_session."
+        },
+        "continueSession": {
+          "type": "boolean",
+          "description": "Resume the engine's own \"most recent session in this box's working\ndirectory\" instead of starting a fresh one (`code run --continue`'s\nmeaning, unchanged). Mutually exclusive with session_id."
+        }
+      },
+      "description": "StartBoxRunRequest starts (or resumes) a coding-agent run on a box through\nthe daemon API — no SSH client, no agent-box RPC (#2193): the daemon\nroot-execs the same on-disk contract `containarium code run` leaves via\nagent-box's process_start, so ListBoxRuns and TailBoxRunLog read a\ndaemon-started run exactly like one `code run` started.\n\nThe engine and its credential source are never request fields: they come\nfrom the box's own ~/.containarium/code.json (`code install`, #1727) —\nthis RPC names WHAT TO SAY, never HOW TO RUN. Interactive sign-in is out of\nscope by the same rule #2030 settled for `code install`: this starts or\nresumes an already-authenticated session only."
+    },
+    "StartBoxRunResponse": {
+      "type": "object",
+      "properties": {
+        "run": {
+          "$ref": "#/definitions/BoxRun"
         }
       }
     },

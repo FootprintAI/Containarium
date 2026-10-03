@@ -116,10 +116,20 @@ type ContainerServer struct {
 	boxRunCollaborator collaboratorCheckFunc
 	boxRunLogDir       string
 	boxRunPoll         time.Duration
-	emitter            *events.Emitter
-	bridgeDNSDisabled  bool // #2232: --bridge-dns-reconcile=false, for status
-	pendingCreations   map[string]*PendingCreation
-	pendingMu          sync.RWMutex
+	// boxRunStartExec is StartBoxRun's own exec seam (#2193), separate from
+	// boxRunExec: production needs to run AS the box's own Linux user (so the
+	// spawned engine reads that user's credentials and the files it creates
+	// are owned the same way an SSH-driven `code run` leaves them), which
+	// means wrapping the script in `su - <username> -c`. That wrapping is a
+	// production-exec-layer detail, not something boxRunStartScript's own
+	// text should encode — a test target has no real multi-user box to su
+	// into, so it sets this directly to a plain `sh -c` runner, exactly like
+	// boxRunExec's existing tests do for List/Tail.
+	boxRunStartExec   boxRunStartFunc
+	emitter           *events.Emitter
+	bridgeDNSDisabled bool // #2232: --bridge-dns-reconcile=false, for status
+	pendingCreations  map[string]*PendingCreation
+	pendingMu         sync.RWMutex
 	// Monitoring URLs (set by DualServer after setup)
 	victoriaMetricsURL string
 	grafanaURL         string

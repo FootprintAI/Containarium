@@ -23,29 +23,31 @@ import (
 // a change to three functions and not to the streaming core.
 
 // prepareCodeRun reads the box's code.json, mints this run's credential if it
-// needs one, writes it, and returns the command process_start should spawn.
+// needs one, writes it, and returns the command process_start should spawn
+// plus the resolved engine (the caller needs it afterwards to discover this
+// run's session id, #2193 — the glob it polls is engine-specific).
 //
 // The order matters: the credential file is on the box BEFORE process_start, so
 // the run's very first action can already read it. Minting after the process
 // starts would be a race the run usually loses.
-func prepareCodeRun(ctx context.Context, sess *coderun.Session, box, runName string, diag io.Writer) (string, error) {
+func prepareCodeRun(ctx context.Context, sess *coderun.Session, box, runName string, diag io.Writer) (string, engine.Engine, error) {
 	cfg, err := readBoxCodeConfig(ctx, sess, diag)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 
 	eng, err := cfg.EngineFor()
 	if err != nil {
-		return "", fmt.Errorf("%s on %q: %w", engine.CodeConfigPath, box, err)
+		return "", nil, fmt.Errorf("%s on %q: %w", engine.CodeConfigPath, box, err)
 	}
 
 	if cfg.Credential == engine.KindGateway {
 		if err := mintAndWriteRunToken(ctx, sess, box, runName, cfg, eng, diag); err != nil {
-			return "", err
+			return "", nil, err
 		}
 	}
 
-	return eng.RunCommand(codeRunPrompt, codeRunStreamJSON, codeRunContinue), nil
+	return eng.RunCommand(codeRunPrompt, codeRunStreamJSON, codeRunContinue, codeRunSession), eng, nil
 }
 
 // readBoxCodeConfig reads code.json off the box.
