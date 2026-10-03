@@ -97,7 +97,7 @@ func TestWithGrafanaDBPassword(t *testing.T) {
 // The template must carry the password it is given, quoted when needed — it
 // is the effective one, never a hard-coded default (#2091).
 func TestRenderGrafanaIni_UsesGivenPassword(t *testing.T) {
-	ini := renderGrafanaIni("10.100.0.242", "containarium", "from-the-secret-file")
+	ini := renderGrafanaIni("10.100.0.242", "containarium", "from-the-secret-file", "adminpw")
 	if _, _, pw, ok := grafanaDBSettings(ini); !ok || pw != "from-the-secret-file" {
 		t.Fatalf("rendered password = %q ok=%v\n%s", pw, ok, ini)
 	}
@@ -107,7 +107,7 @@ func TestRenderGrafanaIni_UsesGivenPassword(t *testing.T) {
 		t.Errorf("rendered [database] password is still the compiled-in default")
 	}
 
-	hard := renderGrafanaIni("10.100.0.242", "containarium", "a#b")
+	hard := renderGrafanaIni("10.100.0.242", "containarium", "a#b", "adminpw")
 	if _, _, pw, _ := grafanaDBSettings(hard); pw != "a#b" {
 		t.Fatalf("a password containing # did not survive the template: %q\n%s", pw, hard)
 	}

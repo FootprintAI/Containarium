@@ -3,7 +3,10 @@ package server
 import (
 	"fmt"
 	"log"
+	"net"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -101,6 +104,22 @@ func resolvePostgresPasswordQuiet() (password string, source string, err error) 
 		return pw, "env", nil
 	}
 	return DefaultPostgresPassword, "default", nil
+}
+
+// PostgresDSN builds the connection URL the daemon uses for the core Postgres.
+// User and password go through url.UserPassword, so a character that is
+// meaningful in a URL (@ / : # ? %) is escaped instead of corrupting the host
+// or database (#2091). For the usual alphanumeric values the result is the same
+// string the daemon has always produced, so existing hosts see no change.
+func PostgresDSN(user, password, host string, port int, database string) string {
+	u := &url.URL{
+		Scheme:   "postgres",
+		User:     url.UserPassword(user, password),
+		Host:     net.JoinHostPort(host, strconv.Itoa(port)),
+		Path:     "/" + database,
+		RawQuery: "sslmode=disable",
+	}
+	return u.String()
 }
 
 // readSecretFile reads a credential file with the same

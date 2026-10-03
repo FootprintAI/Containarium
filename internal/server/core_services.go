@@ -394,13 +394,8 @@ func (cs *CoreServices) waitForPostgres(ctx context.Context) error {
 
 // getPostgresConnString returns the PostgreSQL connection string
 func (cs *CoreServices) getPostgresConnString() string {
-	return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
-		cs.config.PostgresUser,
-		cs.config.PostgresPassword,
-		cs.postgresIP,
-		DefaultPostgresPort,
-		cs.config.PostgresDB,
-	)
+	return PostgresDSN(cs.config.PostgresUser, cs.config.PostgresPassword,
+		cs.postgresIP, DefaultPostgresPort, cs.config.PostgresDB)
 }
 
 // GetPostgresIP returns the PostgreSQL container IP
@@ -1086,7 +1081,7 @@ WantedBy=multi-user.target
 	}
 
 	// Configure Grafana (anonymous access off — see renderGrafanaIni)
-	grafanaIni := renderGrafanaIni(postgresIP, DefaultPostgresUser, cs.config.PostgresPassword)
+	grafanaIni := renderGrafanaIni(postgresIP, DefaultPostgresUser, cs.config.PostgresPassword, cs.grafanaAdminPasswordForProvisioning())
 
 	if err := cs.incusClient.WriteFile(CoreVictoriaMetricsContainer, grafanaIniPath, []byte(grafanaIni), "0644"); err != nil {
 		return fmt.Errorf("failed to write grafana.ini: %w", err)

@@ -1234,9 +1234,7 @@ skipAppHosting:
 						log.Printf("ERROR: %v — using the compiled-in default for the detected Postgres", pwErr)
 						pgPassword = DefaultPostgresPassword
 					}
-					postgresConnString = fmt.Sprintf(
-						"postgres://%s:%s@%s:%d/%s?sslmode=disable",
-						DefaultPostgresUser, pgPassword,
+					postgresConnString = PostgresDSN(DefaultPostgresUser, pgPassword,
 						pgInfo.IPAddress, DefaultPostgresPort, DefaultPostgresDB)
 					log.Printf("Detected existing PostgreSQL at: %s", pgInfo.IPAddress)
 					// Re-apply the systemd Restart=on-failure override even

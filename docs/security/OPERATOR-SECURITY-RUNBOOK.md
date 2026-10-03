@@ -276,9 +276,11 @@ The file is only what the daemon *presents*. The password the database
 *accepts* lives in Postgres, so rotating means changing both, in this order.
 Changing only the file and restarting leaves the daemon unable to log in.
 
-Use letters and digits (`A-Za-z0-9`): the daemon assembles a connection URL
-from the password, and characters such as `@`, `/`, `:` or `#` are not escaped
-there.
+Letters and digits (`A-Za-z0-9`) are the simplest choice. The daemon escapes
+the password when it builds its connection URL, and Grafana's config quotes
+values it would read as comments, so `@ / : #` are handled. Avoid single quotes
+and backslashes: the `ALTER ROLE` statement in step 2 is written as SQL and
+does not escape them.
 
 1. **Stage the new password** in the file (mode 0600, root) and make sure the
    daemon's environment points at it, as above. Nothing reads it until the
@@ -319,6 +321,28 @@ there.
      && echo "STILL ACCEPTS THE DEFAULT" || echo "default rejected"
    sudo incus exec containarium-core-victoriametrics -- curl -s localhost:3000/api/health
    ```
+
+### The Grafana admin login
+
+A new host generates a random Grafana admin password at first provisioning and
+saves it to `/etc/containarium/grafana-admin.password` (mode 0600; override the
+path with `CONTAINARIUM_GRAFANA_ADMIN_PASSWORD_FILE`). If the daemon cannot save
+it, it leaves the key out, logs a warning, and Grafana falls back to its own
+default login with a prompt to change it at first login: change it straight
+away, because the dashboard port is reachable from every tenant on the bridge.
+
+A host provisioned before #2091 still has the literal login `admin` /
+`containarium`. Grafana only reads `admin_password` the first time it starts, so
+the daemon cannot change a live account for you. Reset it yourself, and save the
+new value where the operator can find it:
+
+```bash
+NEW=$(openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | cut -c1-32)
+printf '%s\n' "$NEW" | sudo install -m 0600 -o root -g root /dev/stdin /etc/containarium/grafana-admin.password
+sudo incus exec containarium-core-victoriametrics -- \
+  grafana-cli --config /etc/grafana/grafana.ini admin reset-admin-password "$NEW"
+unset NEW
+```
 
 ### Restrict who can connect
 

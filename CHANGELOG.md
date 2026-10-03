@@ -45,6 +45,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when the daemon's password actually connects to Grafana's database, so a host
   rotated by hand is never overwritten with a password that does not work.
   Passwords Grafana would read as a comment (`#`, `;`) are triple-quoted.
+- A freshly provisioned Grafana no longer ships the literal login `admin` /
+  `containarium` (#2091). Each host gets a random admin password, saved to
+  `/etc/containarium/grafana-admin.password` (mode 0600, overridable with
+  `CONTAINARIUM_GRAFANA_ADMIN_PASSWORD_FILE`) and kept across a re-provision. If
+  it cannot be saved the key is omitted and the daemon warns, so there is never
+  a silently known default. Existing hosts keep their live account; the
+  operator runbook gives the reset command.
+- The daemon escapes the Postgres user and password when it builds its
+  connection URL (`PostgresDSN`, used by all four places that built it by hand).
+  A password containing `@`, `/`, `:` or `#` used to corrupt the URL. For
+  ordinary passwords the string is byte-identical to before.
 - `docs/security/OPERATOR-SECURITY-RUNBOOK.md`: "Rotating Postgres credentials"
   said updating the file and restarting the daemon was enough. It never changed
   the password inside Postgres, so following it locked the daemon out. The
