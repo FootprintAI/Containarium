@@ -356,6 +356,155 @@ func TestStartBoxRun_GatewayCredentialIsRefused(t *testing.T) {
 	}
 }
 
+// TestStartBoxRun_PreconditionFailureDoesNotRotateAside is the #2260 review's
+// blocking finding: checkBoxRunCollision's rotate-aside of a finished prior
+// run under the target name must never execute before every
+// precondition/authz/validation check (including the gateway-credential
+// refusal) has passed. Before the fix, a finished run's .json/.log got
+// renamed aside on disk even though StartBoxRun went on to refuse the
+// request — ListBoxRuns/code attach/code status could no longer find it
+// under its original name, for a request that was refused anyway. Each case
+// below fails for a DIFFERENT precondition (gateway credential; malformed
+// code.json) to show the bug generalizes to any later precondition failure,
+// not just the gateway one the reviewer's repro used.
+func TestStartBoxRun_PreconditionFailureDoesNotRotateAside(t *testing.T) {
+	boot := hostBootID(t)
+	cases := []struct {
+		name       string
+		codeConfig string
+		wantErrSub string
+	}{
+		{
+			name:       "gateway credential",
+			codeConfig: `{"version":1,"engine":"claude","credential":"gateway","provider":"anthropic"}`,
+			wantErrSub: "code run",
+		},
+		{
+			name:       "malformed code.json",
+			codeConfig: `{not valid json`,
+			wantErrSub: "code.json",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			mustWriteFile(t, filepath.Join(home, ".containarium"), "", true)
+			mustWriteFile(t, filepath.Join(home, ".containarium", "code.json"), tc.codeConfig, false)
+
+			dir := t.TempDir()
+			// Seed a FINISHED run under the target name ("code", the shared
+			// default — no session_id given below) — exactly the collision
+			// checkBoxRunCollision resolves to rotate=true for.
+			t0 := time.Date(2026, 9, 28, 10, 0, 0, 0, time.UTC)
+			writeRecord(t, dir, recordSpec{name: "code", pid: 1 << 22, boot: boot, started: t0, exitCode: exitWith(0)})
+			writeFile(t, filepath.Join(dir, "code.log"), "finished run's own output\n")
+
+			s := &ContainerServer{
+				boxRunExec:   (&shBox{}).exec,
+				boxRunLogDir: dir,
+				boxRunStartExec: func(box, username, script string) (string, error) {
+					cmd := exec.Command("sh", "-c", script)
+					cmd.Env = append(os.Environ(), "HOME="+home)
+					out, err := cmd.CombinedOutput()
+					if err != nil {
+						return "", fmt.Errorf("%w: %s", err, out)
+					}
+					return string(out), nil
+				},
+			}
+
+			_, err := s.StartBoxRun(tenantCtx("alice"), &pb.StartBoxRunRequest{Username: "alice", Prompt: "hi"})
+			if status.Code(err) != codes.FailedPrecondition {
+				t.Fatalf("err = %v, want FailedPrecondition", err)
+			}
+			if !strings.Contains(err.Error(), tc.wantErrSub) {
+				t.Errorf("error = %v, want it to mention %q", err, tc.wantErrSub)
+			}
+
+			// The whole point: the finished run's files must be UNTOUCHED —
+			// still at their original path, never rotated aside, since the
+			// request was refused before any mutation should have happened.
+			if _, err := os.Stat(filepath.Join(dir, "code.json")); err != nil {
+				t.Errorf("code.json no longer at its original path: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "code.log")); err != nil {
+				t.Errorf("code.log no longer at its original path: %v", err)
+			}
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, e := range entries {
+				if strings.HasPrefix(e.Name(), "code.") && e.Name() != "code.json" && e.Name() != "code.log" {
+					t.Errorf("found unexpected rotated-aside file %q — a refused request must not mutate the filesystem", e.Name())
+				}
+			}
+		})
+	}
+}
+
+// TestStartBoxRun_ConcurrentSameNameOneWinsCleanly is the #2260 review's
+// should-fix: two concurrent StartBoxRun calls racing for the same
+// not-yet-existing session name must not both pass the collision check and
+// clobber each other's log truncate / record write. With the per-(box,name)
+// mutex in place, exactly one call must succeed and the other must see a
+// clean FailedPrecondition collision — never corruption (a truncated log out
+// from under a running child, or an orphaned PID with no record naming it).
+func TestStartBoxRun_ConcurrentSameNameOneWinsCleanly(t *testing.T) {
+	u := newFakeBoxUser(t, 0, 300*time.Millisecond)
+	s, dir, _ := boxRunStartServer(t, u)
+
+	const n = 8
+	type result struct {
+		err error
+	}
+	results := make(chan result, n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			_, err := s.StartBoxRun(tenantCtx("alice"), &pb.StartBoxRunRequest{
+				Username: "alice", Prompt: fmt.Sprintf("race %d", i), SessionId: "race-1",
+			})
+			results <- result{err: err}
+		}(i)
+	}
+
+	var ok, collided int
+	for i := 0; i < n; i++ {
+		r := <-results
+		switch {
+		case r.err == nil:
+			ok++
+		case status.Code(r.err) == codes.FailedPrecondition && strings.Contains(r.err.Error(), "race-1"):
+			collided++
+		default:
+			t.Errorf("unexpected error from concurrent StartBoxRun: %v", r.err)
+		}
+	}
+	if ok != 1 {
+		t.Errorf("%d concurrent calls succeeded, want exactly 1", ok)
+	}
+	if collided != n-1 {
+		t.Errorf("%d concurrent calls got a clean collision refusal, want %d", collided, n-1)
+	}
+
+	// Exactly one current record under the name, and it decodes cleanly —
+	// no half-written/corrupted record from a lost race.
+	waitForOutcome(t, s, "alice", "race-1", pb.BoxRunOutcome_BOX_RUN_OUTCOME_EXITED, 3*time.Second)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var current int
+	for _, e := range entries {
+		if e.Name() == "race-1.json" {
+			current++
+		}
+	}
+	if current != 1 {
+		t.Errorf("found %d current records named race-1.json, want exactly 1", current)
+	}
+}
+
 func mustWriteFile(t *testing.T, path, content string, dir bool) {
 	t.Helper()
 	if dir {

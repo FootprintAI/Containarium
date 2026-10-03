@@ -125,7 +125,15 @@ type ContainerServer struct {
 	// text should encode — a test target has no real multi-user box to su
 	// into, so it sets this directly to a plain `sh -c` runner, exactly like
 	// boxRunExec's existing tests do for List/Tail.
-	boxRunStartExec   boxRunStartFunc
+	boxRunStartExec boxRunStartFunc
+	// boxRunLocks serializes StartBoxRun's check-then-write span (collision
+	// check through record write) per (box, name) (#2260 review: concurrent
+	// calls for the same not-yet-existing name could both pass the collision
+	// check, then race on the log truncate and the record write, corrupting
+	// the log and orphaning a PID with no record naming it). sync.Map's zero
+	// value is ready to use — no constructor needed, so test literals that
+	// build a bare &ContainerServer{} still get correct serialization.
+	boxRunLocks       sync.Map // key: box+":"+name -> *sync.Mutex
 	emitter           *events.Emitter
 	bridgeDNSDisabled bool // #2232: --bridge-dns-reconcile=false, for status
 	pendingCreations  map[string]*PendingCreation

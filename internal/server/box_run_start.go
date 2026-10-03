@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -205,6 +206,24 @@ func checkBoxRunCollision(exec boxScriptFunc, box, dir, name string) (collision 
 	return nil, false, nil
 }
 
+// boxRunLockKey is s.boxRunLocks' key for a given (box, name) pair.
+func boxRunLockKey(box, name string) string {
+	return box + ":" + name
+}
+
+// boxRunLockFor returns s.boxRunLocks' *sync.Mutex for key, creating it on
+// first use (#2260 review, "should fix": two concurrent StartBoxRun calls
+// for the same not-yet-existing name could both pass checkBoxRunCollision,
+// then race on the log truncate and the atomic record write — corrupting
+// the log and orphaning a PID with no record naming it). Locking around the
+// whole check-then-write span per (box, name) makes the second concurrent
+// caller either see the first's collision (clean FailedPrecondition) or
+// proceed only after the first has fully finished writing its record.
+func (s *ContainerServer) boxRunLockFor(key string) *sync.Mutex {
+	v, _ := s.boxRunLocks.LoadOrStore(key, &sync.Mutex{})
+	return v.(*sync.Mutex)
+}
+
 // StartBoxRun starts (or resumes) a coding-agent run on a box with no SSH
 // client needed (#2193).
 func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRequest) (*pb.StartBoxRunResponse, error) {
@@ -242,6 +261,16 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 	box := req.GetUsername() + "-container"
 	dir := s.boxRunDir()
 
+	// #2260 review (should-fix): serialize the whole check-then-write span
+	// per (box, name) so two concurrent calls for the same new name can't
+	// both pass the collision check below and then race on the log
+	// truncate/record write further down. Acquired before the FIRST
+	// filesystem read of this span (the collision check) so the second
+	// caller sees a fully-finished first call, not a half-done one.
+	lock := s.boxRunLockFor(boxRunLockKey(box, name))
+	lock.Lock()
+	defer lock.Unlock()
+
 	collision, rotate, err := checkBoxRunCollision(listExec, box, dir, name)
 	if err != nil {
 		return nil, err
@@ -251,12 +280,14 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 			"run %q on %q is already %s — no queueing; pick a different session, or wait for it to finish",
 			name, req.GetUsername(), strings.ToLower(strings.TrimPrefix(collision.GetOutcome().String(), "BOX_RUN_OUTCOME_")))
 	}
-	if rotate {
-		if _, err := startExec(box, req.GetUsername(), boxRunRotateScript(dir, name, collision.GetStartedAt().AsTime().Unix())); err != nil {
-			return nil, status.Errorf(codes.Unavailable, "rotate finished run %q on %q: %v", name, req.GetUsername(), err)
-		}
-	}
 
+	// #2260 review (blocking): every precondition/validation check — gateway
+	// credential, malformed code.json, anything else that can still fail —
+	// MUST run before the rotate-aside below, which is a filesystem
+	// mutation. Resolving config here is read-only (just $HOME + code.json),
+	// so moving it ahead of the rotate costs nothing and means a refusal
+	// from here on leaves a colliding finished run's files exactly where
+	// they were, still discoverable under their original name.
 	home, cfg, err := resolveBoxRunConfig(startExec, box, req.GetUsername())
 	if err != nil {
 		return nil, err
@@ -274,6 +305,14 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 	eng, err := cfg.EngineFor()
 	if err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "%s on %q: %v", engine.CodeConfigPath, req.GetUsername(), err)
+	}
+
+	// Every precondition has now passed — safe to mutate. Only now does a
+	// finished prior run under this name get rotated aside.
+	if rotate {
+		if _, err := startExec(box, req.GetUsername(), boxRunRotateScript(dir, name, collision.GetStartedAt().AsTime().Unix())); err != nil {
+			return nil, status.Errorf(codes.Unavailable, "rotate finished run %q on %q: %v", name, req.GetUsername(), err)
+		}
 	}
 
 	command := eng.RunCommand(req.GetPrompt(), false, req.GetContinueSession(), req.GetSessionId())
