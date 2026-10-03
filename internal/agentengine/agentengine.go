@@ -168,6 +168,20 @@ func (e *NotReadyError) Error() string {
 	return fmt.Sprintf("engine %s (provider %s) not ready: %s", EnvValue(e.Engine), e.Provider, e.Reason)
 }
 
+// Override picks the engine a run should ask Resolve for: requested when the
+// caller named one (#2228's per-invocation --engine on RunAgentSkillRequest /
+// RunCrewRequest.engine_overrides), else the skill manifest's own choice.
+// Resolve itself stays agnostic to which of the two `want` came from — the
+// same readiness check and the same refusal text apply either way, so an
+// override naming an engine with no usable key is refused exactly like an
+// unready manifest engine.
+func Override(manifest, requested pb.AgentEngine) pb.AgentEngine {
+	if requested != pb.AgentEngine_AGENT_ENGINE_UNSPECIFIED {
+		return requested
+	}
+	return manifest
+}
+
 // Resolve turns a manifest's engine choice into the engine and provider one
 // run actually uses, or a *NotReadyError when a named engine's provider has
 // no key anywhere gw can see.

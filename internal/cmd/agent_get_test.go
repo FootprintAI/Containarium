@@ -48,3 +48,38 @@ func TestFormatEngine(t *testing.T) {
 		}
 	}
 }
+
+// TestFormatModel pins #2229's display rule: whether a pinned model is
+// actually honored is decided entirely by the manifest's own Engine field
+// (#2222) — a bare model string would read as "this is used" even for an
+// unspecified-engine skill, where it never is.
+func TestFormatModel(t *testing.T) {
+	cases := []struct {
+		name   string
+		skill  *pb.AgentSkill
+		wantIn string
+	}{
+		{
+			name:   "no model pinned",
+			skill:  &pb.AgentSkill{},
+			wantIn: "(none — engine's own default)",
+		},
+		{
+			name:   "model pinned, no engine named: not enforced",
+			skill:  &pb.AgentSkill{Model: "claude-opus-4-8"},
+			wantIn: "claude-opus-4-8 (not enforced",
+		},
+		{
+			name:   "model pinned, engine named: honored",
+			skill:  &pb.AgentSkill{Model: "gpt-5-codex", Engine: pb.AgentEngine_AGENT_ENGINE_CODEX},
+			wantIn: "gpt-5-codex (honored",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := formatModel(tc.skill); !strings.Contains(got, tc.wantIn) {
+				t.Errorf("formatModel(%+v) = %q, want it to contain %q", tc.skill, got, tc.wantIn)
+			}
+		})
+	}
+}

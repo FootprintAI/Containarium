@@ -35,6 +35,7 @@ func TestRunCommand(t *testing.T) {
 		model      string
 		streamJSON bool
 		continues  bool
+		sessionID  string
 		want       string
 	}{
 		// ---- claude × secret (today's shipped behaviour) ----
@@ -139,6 +140,57 @@ func TestRunCommand(t *testing.T) {
 			continues:  true,
 			want:       secretPrefix + `~/.local/bin/pi -p 'fix the bug' --mode json -c --model 'claude-sonnet-5'`,
 		},
+
+		// ---- #2193: --session / session_id resume ----
+		{
+			name:       "claude/secret/session",
+			engine:     NameClaude,
+			credential: SecretCredential{},
+			sessionID:  "abc-123",
+			want:       secretPrefix + claudeBody + ` --resume 'abc-123'`,
+		},
+		{
+			name:       "claude/secret/session takes priority over continue",
+			engine:     NameClaude,
+			credential: SecretCredential{},
+			sessionID:  "abc-123",
+			continues:  true,
+			want:       secretPrefix + claudeBody + ` --resume 'abc-123'`,
+		},
+		{
+			name:       "claude/gateway/session",
+			engine:     NameClaude,
+			credential: GatewayCredential{Provider: "anthropic"},
+			sessionID:  "abc-123",
+			streamJSON: true,
+			want:       claudeGatewayPrefix + claudeBody + ` --output-format stream-json --resume 'abc-123'`,
+		},
+		{
+			// The quote-breaking id is the injection half of "quoting
+			// pinned": a session id that tries to terminate the quoted
+			// string early must come back single-quoted just like a prompt.
+			name:       "claude/secret/session with a single quote",
+			engine:     NameClaude,
+			credential: SecretCredential{},
+			sessionID:  "'; touch /tmp/pwned; echo '",
+			want:       secretPrefix + claudeBody + ` --resume ''\''; touch /tmp/pwned; echo '\'''`,
+		},
+		{
+			name:       "pi/secret/session",
+			engine:     NamePi,
+			credential: SecretCredential{Name: "ANTHROPIC_API_KEY"},
+			sessionID:  "sess-9",
+			want:       secretPrefix + `~/.local/bin/pi -p 'fix the bug' --session 'sess-9'`,
+		},
+		{
+			name:       "pi/gateway/session takes priority over continue, before --model",
+			engine:     NamePi,
+			credential: GatewayCredential{Provider: "kafeido"},
+			sessionID:  "sess-9",
+			continues:  true,
+			model:      "kafeido-coder",
+			want:       piGatewayPrefix + `~/.local/bin/pi -p 'fix the bug' --session 'sess-9' --model 'kafeido-coder'`,
+		},
 	}
 
 	for _, tc := range tests {
@@ -147,7 +199,7 @@ func TestRunCommand(t *testing.T) {
 			if err != nil {
 				t.Fatalf("For(%q): %v", tc.engine, err)
 			}
-			got := e.RunCommand(prompt, tc.streamJSON, tc.continues)
+			got := e.RunCommand(prompt, tc.streamJSON, tc.continues, tc.sessionID)
 			if got != tc.want {
 				t.Errorf("RunCommand mismatch\n got: %s\nwant: %s", got, tc.want)
 			}
@@ -176,7 +228,7 @@ func TestRunCommand_PromptQuotingSurvivesARealShell(t *testing.T) {
 				if err != nil {
 					t.Fatalf("For(%q): %v", name, err)
 				}
-				cmd := e.RunCommand(prompt, false, false)
+				cmd := e.RunCommand(prompt, false, false, "")
 
 				// The quoted prompt must appear verbatim in the command...
 				quoted := coderun.ShellQuoteSingle(prompt)
@@ -209,7 +261,7 @@ func TestClaudeSecretRunCommand_IsByteIdenticalToTheShippedBuilder(t *testing.T)
 		if err != nil {
 			t.Fatalf("For(claude): %v", err)
 		}
-		got := e.RunCommand("do the thing", streamJSON, false)
+		got := e.RunCommand("do the thing", streamJSON, false, "")
 		want := coderun.BuildClaudeRunCommand("do the thing", streamJSON)
 		if got != want {
 			t.Errorf("streamJSON=%v: engine seam changed the shipped command\n got: %s\nwant: %s",

@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -326,7 +327,13 @@ func (s *AgentSkillServer) SetRevocationStore(store auth.RevocationStore) {
 // key values themselves); keyResolver checks a per-owner key when a provider
 // isn't in that set — nil when the daemon has no secrets store (no Postgres),
 // which just means only globalProviders can make a provider ready.
-func (s *AgentSkillServer) SetGatewayProvisioning(defaultProvider string, httpPort int, secret []byte, hostIP string, globalProviders map[string]bool, keyResolver modelgateway.KeyResolver) {
+//
+// models (#2229) is the real gateway's ListModels, for validating a named-
+// engine skill's pinned model against what the resolved provider actually
+// serves before minting its token. nil is a legitimate value (direct mode,
+// or a caller not wired for this check) — provisionSkillBoxWith treats a nil
+// models the same as "can't check", never as a refusal.
+func (s *AgentSkillServer) SetGatewayProvisioning(defaultProvider string, httpPort int, secret []byte, hostIP string, globalProviders map[string]bool, keyResolver modelgateway.KeyResolver, models modelLister) {
 	g := &gatewayProvisioning{
 		engines: agentengine.Gateway{
 			DefaultProvider: defaultProvider,
@@ -335,6 +342,7 @@ func (s *AgentSkillServer) SetGatewayProvisioning(defaultProvider string, httpPo
 		},
 		httpPort: httpPort,
 		secret:   secret,
+		models:   models,
 	}
 	if hostIP = strings.TrimSpace(hostIP); hostIP != "" {
 		g.egressCIDR = hostIP + "/32"
@@ -465,6 +473,11 @@ type provisionOptions struct {
 	// its result comment; only the doc change (SubmitTrackerChange,
 	// which needs a recorded git_commit) is unavailable to it.
 	gitSourceBestEffort bool
+	// engineOverride (#2228) wins over the skill's own manifest `engine` when
+	// set — see agentengine.Override. AGENT_ENGINE_UNSPECIFIED (the zero
+	// value) means "no override, use the manifest", unchanged pre-#2228
+	// behavior for every caller that doesn't set this.
+	engineOverride pb.AgentEngine
 }
 
 // beginSkillRunWith is beginSkillRun with internal provisioning options.
@@ -497,6 +510,11 @@ func (s *AgentSkillServer) beginSkillRunWith(ctx context.Context, req *pb.RunAge
 		return nil, status.Error(codes.NotFound, err.Error())
 	}
 
+	// #2228: a per-invocation override on the request wins over the
+	// manifest's own `engine` field. opts is a local copy (Go passes structs
+	// by value), so this only affects this call — a caller's own
+	// gitSourceBestEffort (set above us) is preserved alongside it.
+	opts.engineOverride = req.GetEngine()
 	containerName, box, lease, gitCommit, workspacePath, engineRes, err := s.provisionSkillBoxWith(ctx, skill, req.BackendId, req.Pool, req.InputJson, runID,
 		req.GetGitSource(), req.GetGitRef(), req.GetGitCredential(), req.GetTrackerConnection(), opts)
 	if err != nil {
@@ -815,13 +833,17 @@ func (s *AgentSkillServer) provisionSkillBoxWith(ctx context.Context, skill *pb.
 	// the platform JWT, the seed script, or any git fetch ever happen — not
 	// minutes later inside the box with "Not logged in". box is already
 	// resolved above (reused or freshly provisioned), so keyOwner resolves
-	// exactly as it will for the gateway mint below.
+	// exactly as it will for the gateway mint below. opts.engineOverride
+	// (#2228) wins over the manifest's own choice when the caller set one —
+	// agentengine.Override, not Resolve itself, decides which of the two wins,
+	// so Resolve's own readiness/refusal logic is identical either way.
 	var gwView *agentengine.Gateway
 	if s.gateway != nil {
 		gwView = &s.gateway.engines
 	}
 	keyOwner := runKeyOwner(ctx, box)
-	engineRes, resolveErr := agentengine.Resolve(ctx, skill.GetEngine(), keyOwner, gwView)
+	want := agentengine.Override(skill.GetEngine(), opts.engineOverride)
+	engineRes, resolveErr := agentengine.Resolve(ctx, want, keyOwner, gwView)
 	if resolveErr != nil {
 		var notReady *agentengine.NotReadyError
 		if errors.As(resolveErr, &notReady) {
@@ -833,6 +855,37 @@ func (s *AgentSkillServer) provisionSkillBoxWith(ctx context.Context, skill *pb.
 	}
 	if engineRes.Default && skill.GetModel() != "" {
 		log.Printf("[agent-skill] skill %s pins model %q but names no engine; CONTAINARIUM_AGENT_MODEL is not exported (only named-engine skills carry their pinned model to the box)", skill.Id, skill.GetModel())
+	}
+
+	// #2229: a named-engine skill's pinned model is validated against what the
+	// resolved provider actually serves, WHEN we can check. Skipped entirely
+	// for a Default resolution (above): the model is never exported there, so
+	// checking it would refuse a run over a value that is already ignored.
+	// "Can't check" (an unsupported provider shape, or no key to list with) is
+	// NOT a refusal — proceeding without a check we have no way to perform
+	// matches this function's own best-effort posture for the mint a few
+	// lines below, and is strictly no worse than today's unchecked pass-
+	// through. Only a CONFIRMED mismatch — the list call succeeded and the
+	// model isn't in it — is a FailedPrecondition, naming the model, the
+	// provider, and the models it does list, same shape as the engine refusal
+	// above.
+	// modelCeiling is "" exactly when the model is never exported/enforced —
+	// no engine named (Default) or no model pinned — so the gateway token
+	// minted below carries a ceiling only when one is actually meaningful.
+	var modelCeiling string
+	if !engineRes.Default && skill.GetModel() != "" {
+		modelCeiling = skill.GetModel()
+		if s.gateway != nil && s.gateway.models != nil {
+			if models, lerr := s.gateway.models.ListModels(ctx, keyOwner, engineRes.Provider); lerr == nil {
+				if !slices.Contains(models, modelCeiling) {
+					return "", nil, noLease, "", "", agentengine.Resolved{}, status.Errorf(codes.FailedPrecondition,
+						"skill %s pins model %q but provider %s does not list it; available: %s",
+						skill.Id, modelCeiling, engineRes.Provider, strings.Join(models, ", "))
+				}
+			} else if !errors.Is(lerr, modelgateway.ErrModelListUnsupported) && !errors.Is(lerr, modelgateway.ErrNoKey) {
+				log.Printf("[agent-skill] skill %s: model list check for provider %s failed, proceeding without it: %v", skill.Id, engineRes.Provider, lerr)
+			}
+		}
 	}
 
 	// Mint a JWT scoped to the intersection of the CALLER's own granted scopes
@@ -882,7 +935,7 @@ func (s *AgentSkillServer) provisionSkillBoxWith(ctx context.Context, skill *pb.
 	// provisioning — engineRes itself was already confirmed ready above, so
 	// a failure here is an operational one (mint/script), not a readiness one.
 	if s.gateway != nil {
-		if gwTok, gwMinted, gerr := s.mintRunGatewayToken(ctx, name, skill.Id, runID, engineRes.Provider, box); gerr != nil {
+		if gwTok, gwMinted, gerr := s.mintRunGatewayToken(ctx, name, skill.Id, runID, engineRes.Provider, modelCeiling, box); gerr != nil {
 			log.Printf("[agent-skill] gateway token mint failed for %s (box runs direct mode): %v", name, gerr)
 		} else if envScript, eerr := gatewayEnvScript(engineRes.Provider, s.gateway.httpPort, gwTok, seedDir); eerr != nil {
 			log.Printf("[agent-skill] gateway env script failed for %s (box runs direct mode): %v", name, eerr)

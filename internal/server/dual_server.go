@@ -1226,9 +1226,15 @@ skipAppHosting:
 			// Try to auto-detect existing postgres container first
 			if incusClient, err := incus.New(); err == nil {
 				if pgInfo, err := incusClient.FindContainerByRole(incus.RolePostgres); err == nil && pgInfo.IPAddress != "" {
-					postgresConnString = fmt.Sprintf(
-						"postgres://%s:%s@%s:%d/%s?sslmode=disable",
-						DefaultPostgresUser, DefaultPostgresPassword,
+					// The same password the app-hosting path resolves (secret
+					// file, env, then the dev default), not the compiled-in
+					// default unconditionally (#2091).
+					pgPassword, _, pwErr := ResolvePostgresPassword()
+					if pwErr != nil {
+						log.Printf("ERROR: %v — using the compiled-in default for the detected Postgres", pwErr)
+						pgPassword = DefaultPostgresPassword
+					}
+					postgresConnString = PostgresDSN(DefaultPostgresUser, pgPassword,
 						pgInfo.IPAddress, DefaultPostgresPort, DefaultPostgresDB)
 					log.Printf("Detected existing PostgreSQL at: %s", pgInfo.IPAddress)
 					// Re-apply the systemd Restart=on-failure override even
@@ -2277,7 +2283,7 @@ skipAppHosting:
 			for p := range keys {
 				globalProviders[p] = true
 			}
-			agentSkillServer.SetGatewayProvisioning(primary, config.HTTPPort, []byte(config.JWTSecret), config.HostIP, globalProviders, gwKeyResolver)
+			agentSkillServer.SetGatewayProvisioning(primary, config.HTTPPort, []byte(config.JWTSecret), config.HostIP, globalProviders, gwKeyResolver, gw)
 			// The providers a recipe box may be seeded for: every provider the
 			// daemon holds a global key for, plus every operator-registered
 			// upstream (whose keys arrive per owner, so there is no global key to

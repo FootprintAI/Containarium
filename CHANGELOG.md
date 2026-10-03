@@ -7,6 +7,150 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.98.0] - 2026-10-03
+
+### Fixed
+
+- A skill box running on the `codex` engine had its gateway token exported
+  as `OPENAI_API_KEY` (#2256). OpenAI's own docs call a bare `OPENAI_API_KEY`
+  environment variable insufficient for a headless Codex CLI run with no
+  `codex login` step — `CODEX_API_KEY` is the documented variable that works
+  without one. The box-side variable is now `CODEX_API_KEY`; the daemon's
+  own `OPENAI_API_KEY` (the operator's real key, read once at startup) is
+  unaffected.
+- Core services now use the Postgres password the operator configured
+  (#2091). `NewCoreServices` resolves it the way the daemon's own connection
+  does (`CONTAINARIUM_POSTGRES_PASSWORD_FILE`, then
+  `CONTAINARIUM_POSTGRES_PASSWORD`, then the dev default). Before, no caller
+  set it, so the first-install `CREATE USER` and Grafana's `[database]`
+  password always used the compiled-in default, even on a host configured with
+  its own, and a host could not be provisioned with a non-default password at
+  all. The daemon's non-app-hosting Postgres auto-detect resolves it too.
+- Grafana's database password follows the daemon's. A new backfill, run on
+  every start against an existing metrics container, rewrites `[database]
+  password` and restarts Grafana when it differs from the daemon's, but only
+  when the daemon's password actually connects to Grafana's database, so a host
+  rotated by hand is never overwritten with a password that does not work.
+  Passwords Grafana would read as a comment (`#`, `;`) are triple-quoted.
+- A freshly provisioned Grafana no longer ships the literal login `admin` /
+  `containarium` (#2091). Each host gets a random admin password, saved to
+  `/etc/containarium/grafana-admin.password` (mode 0600, overridable with
+  `CONTAINARIUM_GRAFANA_ADMIN_PASSWORD_FILE`) and kept across a re-provision. If
+  it cannot be saved the key is omitted and the daemon warns, so there is never
+  a silently known default. Existing hosts keep their live account; the
+  operator runbook gives the reset command.
+- The daemon escapes the Postgres user and password when it builds its
+  connection URL (`PostgresDSN`, used by all four places that built it by hand).
+  A password containing `@`, `/`, `:` or `#` used to corrupt the URL. For
+  ordinary passwords the string is byte-identical to before.
+- `docs/security/OPERATOR-SECURITY-RUNBOOK.md`: "Rotating Postgres credentials"
+  said updating the file and restarting the daemon was enough. It never changed
+  the password inside Postgres, so following it locked the daemon out. The
+  section now gives the full order (stage, `ALTER ROLE`, restart, verify) and
+  how to narrow `pg_hba.conf`.
+- A freshly installed core Postgres no longer lets every address on the
+  container bridge, tenants included, attempt to log in. `pg_hba.conf` now has
+  one `scram-sha-256` rule for the daemon and one for the metrics container's
+  Grafana database, each a single address, and `log_connections` is on. The
+  daemon's source address is read from the route to Postgres, not assumed. After
+  applying the rules the daemon logs in as it will in production; if that
+  fails, the scoped rules are removed and the previous subnet rule is written
+  with an `ERROR` in the log, so a wrong rule cannot leave a new install without
+  a working database (`pg_isready`, which the install used before, cannot see
+  that). Existing hosts are not changed; narrow them by hand or enable the
+  core-infra network guard (`CONTAINARIUM_CORE_GUARD=enforce`).
+- The core Postgres and metrics containers are now pinned to fixed addresses
+  (`.240` and `.239` of the bridge subnet, next to caddy's `.241`) when they are
+  created, so the rule above can name Grafana before it exists. An existing
+  container keeps the address it has.
+
+### Added
+
+- A named-engine skill's pinned `model` is now a real, enforced ceiling on
+  its run's gateway token (#2229): `allowed_models` carries exactly that
+  model, rejected at the gateway if the box ever asks for a different one.
+  When the resolved provider's model list is checkable, `RunAgentSkill`
+  refuses up front with `FailedPrecondition` if the pinned model isn't one
+  the provider actually serves — naming the model, the provider, and the
+  models it does list. The daemon-global `gatewayProvisioning.allowedModels`
+  field (dead code — no caller ever assigned it) is removed; the ceiling is
+  now always per-skill.
+- Per-invocation `--engine` override (#2228): `containarium agent run
+  <skill> --engine codex` and `containarium crew run <crew> --engine
+  <skill-id>=<engine>` (repeatable, one per member) resolve that run's
+  engine from the flag instead of the skill manifest's own `engine` field.
+  Refused with the same `FailedPrecondition` text a manifest-named engine
+  gets when its provider has no usable key — the override goes through the
+  identical `agentengine.Resolve` readiness check (#2222), so what a run
+  actually does and what `containarium agent engines` reports can't drift
+  apart. The MCP `run_agent_skill` tool gained the matching `engine`
+  argument.
+- A daemon `StartBoxRun` RPC, and `containarium code run --session <id>`
+  (#2193, #2260). The daemon can now start or resume a coding-agent run on a
+  box through the same on-disk run contract `code run` uses, so `code runs`,
+  `code attach` and `code status` see a daemon-started run exactly like a
+  CLI-started one. It runs as the box's own Linux user and takes its engine and
+  credentials from the box's `~/.containarium/code.json`, never from the
+  request. A run name that is still `RUNNING` is refused with
+  `FAILED_PRECONDITION`; a finished one is rotated aside, and only after every
+  other precondition has passed, so a refused request never moves a finished
+  run's files. `--session` resumes that specific session (`claude --resume`,
+  `pi --session`), is mutually exclusive with `--continue`, and its id becomes
+  the run's name when `--name` is omitted. `code runs` gains a `SESSION`
+  column, `BoxRun` gains `session_id`, and the MCP `code_run` tool gains
+  `session_id`.
+
+### Documentation
+
+- New [BYOC backend bring-up runbook](docs/BYOC-BACKEND-BRINGUP.md): the
+  invariants a tunnel-joined backend must hold (never set a base domain, no
+  bridge DNS wildcard, edge-terminated TLS), the checks to run after
+  bring-up and every upgrade, a symptom table, and the recovery procedure for a
+  host that claimed the wrong domain. It documents a silent trap: the daemon
+  persists `base_domain` in `daemon_config` and keeps using it when
+  `--base-domain` is later dropped, so removing the flag does not clear it.
+- `docs/APP-HOSTING-SUMMARY.md` no longer uses a real apex as its
+  `--base-domain` example, and warns that the value persists.
+- README: a "Choose your path" table up front sends a new reader to the hosted
+  cloud, a self-hosted VM, or a live end result (#2248).
+
+## [0.97.1] - 2026-10-02
+
+### Fixed
+
+- **v0.97.0's release build failed its own "release is described" gate and
+  never published a GitHub Release.** Its `## [Unreleased]` section had new
+  entries added under it but was never itself renamed to `## [0.97.0]` — a
+  release-cut step skipped, not a build or code defect. The gate caught it
+  before any binary asset was built, but the daemon/sidecar images and the
+  `containarium-telemetry` PyPI package had already published by the time it
+  failed (those three jobs run in parallel with the gated one, not after
+  it). v0.97.0 is left as a dead tag with no GitHub Release; this release
+  supersedes it, matching the `v0.48.0` precedent.
+
+### Added
+
+- `containarium agent engines` (`--json`), the `ListAgentEngines` RPC
+  (`GET /v1/agent-engines`) and the `list_agent_engines` MCP tool (#2223):
+  one read-only surface reporting which agent engines this deployment can
+  run right now, and why not, using the exact same readiness check a run's
+  own refusal enforces (#2222) — the reason text is never reworded between
+  the three readers. A tenant sees readiness for their own key owner; an
+  admin with no owner scope sees the daemon's global view.
+
+- Web UI Agents page (#2224): one row per engine — readiness, provider,
+  credential source, default badge, and the skills that name it — backed
+  directly by `ListAgentEngines`, so the UI and the CLI can never show two
+  different answers for the same daemon. A daemon with no provider keys
+  renders every engine as not-ready rather than a blank page.
+
+- `two-engine-crew` reference fixture (#2225): a two-member crew
+  (`hello-agent-claude`, `hello-agent-codex`) and
+  `scripts/two-engine-crew-e2e.sh`, proving a crew can run its members on
+  different engines on one daemon — each member's gateway token decodes to
+  its own engine's provider claim, and `containarium agent engines --json`
+  reports exactly the readiness the run itself used.
+
 ### Fixed
 
 - `ssh-config sync` now emits `IdentitiesOnly yes` in every `Host` block, not
