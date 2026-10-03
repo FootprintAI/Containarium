@@ -73,7 +73,7 @@ type gatewayProviderEnv struct {
 }
 
 var gatewayProviderEnvs = map[string]gatewayProviderEnv{
-	"anthropic": {urlVar: "ANTHROPIC_BASE_URL", tokenVar: "ANTHROPIC_AUTH_TOKEN", urlSuffix: "/v1/model/anthropic"},
+	"anthropic": {urlVar: "ANTHROPIC_BASE_URL", tokenVar: "ANTHROPIC_AUTH_TOKEN", urlSuffix: "/v1/model/anthropic"}, // #nosec G101 -- env var names, not credential values
 	// tokenVar is CODEX_API_KEY, not OPENAI_API_KEY (#2256): the Codex CLI
 	// (spawned by @openai/codex-sdk, the only consumer of the "openai"
 	// provider) documents CODEX_API_KEY as the variable a headless/non-
@@ -85,8 +85,8 @@ var gatewayProviderEnvs = map[string]gatewayProviderEnv{
 	// real key, read once at daemon startup) is a different, unrelated
 	// variable and is unaffected by this — this is only the name exported
 	// INTO the box's gateway.env.
-	"openai": {urlVar: "OPENAI_BASE_URL", tokenVar: "CODEX_API_KEY", urlSuffix: "/v1/model/openai"},
-	"gemini": {urlVar: "CONTAINARIUM_MODEL_GATEWAY_URL", tokenVar: "CONTAINARIUM_GATEWAY_TOKEN", urlSuffix: ""},
+	"openai": {urlVar: "OPENAI_BASE_URL", tokenVar: "CODEX_API_KEY", urlSuffix: "/v1/model/openai"},             // #nosec G101 -- env var names, not credential values
+	"gemini": {urlVar: "CONTAINARIUM_MODEL_GATEWAY_URL", tokenVar: "CONTAINARIUM_GATEWAY_TOKEN", urlSuffix: ""}, // #nosec G101 -- env var names, not credential values
 }
 
 // mintGatewayToken mints a per-skill gateway token bound to this box's tenant +
