@@ -285,6 +285,8 @@ func TestSetTrackerIssueLabels_RunTokenCannotReleaseGateWithoutAutoChain(t *test
 		remove []string
 	}{
 		{"its own recorded child", child, nil, []string{tracker.LabelNeedsApproval}},
+		{"its own child with mixed-case gate", child, nil, []string{"Agent:Needs-Approval"}},
+		{"its own child with whitespace around gate", child, nil, []string{" agent:needs-approval "}},
 		{"its own child, alongside an allowed model label", child, []string{"model:fable"}, []string{tracker.LabelNeedsApproval}},
 		{"its own dispatched issue", 42, nil, []string{tracker.LabelNeedsApproval}},
 	}
