@@ -258,7 +258,7 @@ func TestChainGuards_InjectedIssueCannotWidenScopesOrLabels(t *testing.T) {
 func TestSetTrackerIssueLabels_RunTokenCannotReleaseGateWithoutAutoChain(t *testing.T) {
 	const user = "tracker-chain-gate-release-needs-human"
 	provider := &fakeWriterProvider{}
-	s, starter, admin := setUpDispatchableConnection(t, user, provider, nil)
+	s, starter, admin := setUpDispatchableConnection(t, user, provider, &pb.TrackerPolicy{LabelAllowList: []string{"*"}})
 
 	routed := tracker.Issue{Number: 42, Labels: []string{"scope:product"}, State: pb.TrackerIssueState_TRACKER_ISSUE_STATE_OPEN}
 	provider.issues, provider.issue = []tracker.Issue{routed}, routed
