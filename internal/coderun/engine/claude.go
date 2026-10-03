@@ -131,6 +131,12 @@ fi`
 // own flow), then a user-placed key, then none. set -e is intentionally
 // absent: every branch exits explicitly, and the loop/grep below must not
 // abort the script on a legitimate "not found".
+//
+// #nosec G101 -- this is a shell script that checks for the PRESENCE of a
+// credentials file and the NAMES of env vars (ANTHROPIC_API_KEY,
+// ANTHROPIC_AUTH_TOKEN, CLAUDE_CODE_USE_*) — it never contains, reads, or
+// echoes a credential value. Same rationale as GatewayTokenEnvVar's
+// annotation in engine.go.
 const claudeCredentialStatusScript = `if [ -f "$HOME/.claude/.credentials.json" ]; then
   echo interactive
   exit 0
