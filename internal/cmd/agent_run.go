@@ -5,6 +5,8 @@ import (
 	"os"
 	"strings"
 
+	"github.com/footprintai/containarium/internal/agentengine"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/spf13/cobra"
 )
 
@@ -16,6 +18,7 @@ var (
 	agentRunGitRef            string
 	agentRunGitCredentialFile string
 	agentRunTrackerConnection string
+	agentRunEngine            string
 )
 
 var agentRunCmd = &cobra.Command{
@@ -32,7 +35,8 @@ Examples:
   containarium agent run hello-agent --input '{"q":"hi"}' --server <host>
   containarium agent run code-review --git-source https://github.com/org/repo \
     --git-ref main --server <host>
-  containarium agent run triage --tracker-connection <conn> --server <host>`,
+  containarium agent run triage --tracker-connection <conn> --server <host>
+  containarium agent run hello-agent --engine codex --server <host>`,
 	Args: cobra.ExactArgs(1),
 	RunE: runAgentRun,
 }
@@ -53,6 +57,18 @@ func init() {
 		"Path to a file holding a bearer token for a private --git-source. Used daemon-side for one fetch; never written to the box's .git/config.")
 	agentRunCmd.Flags().StringVar(&agentRunTrackerConnection, "tracker-connection", "",
 		"Name of one of your tracker connections to bind this run to; minted into the run token as its tracker_conn claim. The daemon rejects a name you don't own. Empty = no binding.")
+	agentRunCmd.Flags().StringVar(&agentRunEngine, "engine", "",
+		"Override the skill manifest's own engine for this run: one of "+strings.Join(agentengine.Names(), ", ")+". Refused with the same error a manifest-named engine gets when its provider has no key. Empty = use the manifest.")
+}
+
+// resolveAgentRunEngine parses --engine, empty meaning "no override" (the
+// manifest decides) — agentengine.Parse itself treats "" as an error, since
+// an explicit name is what it exists to validate, not the absence of one.
+func resolveAgentRunEngine() (pb.AgentEngine, error) {
+	if agentRunEngine == "" {
+		return pb.AgentEngine_AGENT_ENGINE_UNSPECIFIED, nil
+	}
+	return agentengine.Parse(agentRunEngine)
 }
 
 // resolveAgentRunGitCredential reads --git-credential-file if one was
@@ -78,6 +94,10 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	engine, err := resolveAgentRunEngine()
+	if err != nil {
+		return err
+	}
 
 	c, err := newAgentClient()
 	if err != nil {
@@ -87,7 +107,7 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("Running agent skill %q...\n", skillID)
 	resp, err := c.RunAgentSkill(skillID, agentRunBackendID, agentRunPool, agentRunInput,
-		agentRunGitSource, agentRunGitRef, gitCredential, agentRunTrackerConnection)
+		agentRunGitSource, agentRunGitRef, gitCredential, agentRunTrackerConnection, engine)
 	if err != nil {
 		return err
 	}

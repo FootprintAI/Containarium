@@ -173,6 +173,7 @@ func parseResponse[T any](resp *http.Response) (*T, error) {
 type containerResponse struct {
 	Name                 string            `json:"name"`
 	Username             string            `json:"username"`
+	SshHost              string            `json:"sshHost"`
 	State                string            `json:"state"`
 	Resources            *resourceLimits   `json:"resources"`
 	Network              *networkInfo      `json:"network"`
@@ -233,6 +234,7 @@ func containerToIncusInfo(c *containerResponse) incus.ContainerInfo {
 	info := incus.ContainerInfo{
 		Name:                 c.Name,
 		Username:             c.Username,
+		SSHHost:              c.SshHost,
 		State:                c.State,
 		Labels:               c.Labels,
 		InstanceType:         ostype.InstanceTypeFromIsolation(pb.IsolationType(pb.IsolationType_value[c.Isolation])),
@@ -1630,6 +1632,29 @@ func (c *HTTPClient) DeployRecipe(recipeID, name, gpu, backendID, pool string, p
 	return out, nil
 }
 
+// ListAgentEngines reports, for each agent engine, whether a run naming it
+// would be refused right now (#2223) — via HTTP.
+func (c *HTTPClient) ListAgentEngines() (*pb.ListAgentEnginesResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := c.doRequest(ctx, http.MethodGet, "/v1/agent-engines", nil)
+	if err != nil {
+		return nil, fmt.Errorf("list agent engines: %w", err)
+	}
+	defer drainClose(resp)
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, httpError(bodyBytes, resp.StatusCode, "list agent engines")
+	}
+	out := &pb.ListAgentEnginesResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
 // ListAgentSkills lists all built-in agent skills via HTTP.
 func (c *HTTPClient) ListAgentSkills() ([]*pb.AgentSkill, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1679,8 +1704,10 @@ func (c *HTTPClient) GetAgentSkill(id string) (*pb.AgentSkill, error) {
 // and returns the box via HTTP. gitSource/gitRef/gitCredential (#1859) fetch a
 // repo into the run's workspace before the agent starts; empty gitSource
 // means no fetch. trackerConnection (#2042) binds the run to one of the
-// caller's tracker connections; empty means no binding.
-func (c *HTTPClient) RunAgentSkill(skillID, backendID, pool, inputJSON, gitSource, gitRef, gitCredential, trackerConnection string) (*pb.RunAgentSkillResponse, error) {
+// caller's tracker connections; empty means no binding. engine (#2228) wins
+// over the skill's own manifest engine; AGENT_ENGINE_UNSPECIFIED means "use
+// the manifest", unchanged pre-#2228 behavior.
+func (c *HTTPClient) RunAgentSkill(skillID, backendID, pool, inputJSON, gitSource, gitRef, gitCredential, trackerConnection string, engine pb.AgentEngine) (*pb.RunAgentSkillResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // box provisioning can take time
 	defer cancel()
 
@@ -1694,6 +1721,7 @@ func (c *HTTPClient) RunAgentSkill(skillID, backendID, pool, inputJSON, gitSourc
 		GitRef:            gitRef,
 		GitCredential:     gitCredential,
 		TrackerConnection: trackerConnection,
+		Engine:            engineJSON(engine),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
@@ -1848,19 +1876,23 @@ func (c *HTTPClient) GetCrew(id string) (*pb.Crew, error) {
 }
 
 // RunCrew launches a crew via HTTP. gitSource/gitRef/gitCredential (#1554)
-// are fetched into EVERY member's own per-run workspace.
-func (c *HTTPClient) RunCrew(crewID, backendID, pool, inputJSON, gitSource, gitRef, gitCredential string) (*pb.CrewRun, error) {
+// are fetched into EVERY member's own per-run workspace. engineOverrides
+// (#2228), keyed by skill_id, wins over that member's own manifest engine; a
+// member with no entry (or AGENT_ENGINE_UNSPECIFIED) keeps its manifest's own
+// choice, unchanged pre-#2228 behavior.
+func (c *HTTPClient) RunCrew(crewID, backendID, pool, inputJSON, gitSource, gitRef, gitCredential string, engineOverrides map[string]pb.AgentEngine) (*pb.CrewRun, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // provisions every member box
 	defer cancel()
 	path := fmt.Sprintf("/v1/crews/%s/run", url.PathEscape(crewID))
 	body, err := json.Marshal(runCrewRequest{
-		CrewID:        crewID,
-		BackendID:     backendID,
-		Pool:          pool,
-		InputJSON:     inputJSON,
-		GitSource:     gitSource,
-		GitRef:        gitRef,
-		GitCredential: gitCredential,
+		CrewID:          crewID,
+		BackendID:       backendID,
+		Pool:            pool,
+		InputJSON:       inputJSON,
+		GitSource:       gitSource,
+		GitRef:          gitRef,
+		GitCredential:   gitCredential,
+		EngineOverrides: engineOverridesJSON(engineOverrides),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)

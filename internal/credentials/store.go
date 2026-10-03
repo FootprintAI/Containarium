@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -218,29 +219,78 @@ func Save(path string, cf *CredentialsFile) error {
 // When server is empty, Get returns the DefaultServer's record.
 // Returns (zero, false) if no matching record exists.
 func (cf *CredentialsFile) Get(server string) (ServerCreds, bool) {
+	_, c, ok := cf.Lookup(server)
+	return c, ok
+}
+
+// Lookup is Get that also returns the stored key the record lives under,
+// so a caller handed a bare "host" can recover the full "https://host"
+// URL that login wrote (and that an HTTP client needs to pick the right
+// scheme).
+//
+// Matching, in order:
+//  1. exact match on the normalized form;
+//  2. a tolerant scan over normalized stored keys (older or hand-edited
+//     files with trailing slashes);
+//  3. only when the caller supplied NO scheme: a stored key that differs
+//     solely by its scheme. An explicit "http://x" never matches a stored
+//     "https://x" — that would send the token in the clear.
+func (cf *CredentialsFile) Lookup(server string) (string, ServerCreds, bool) {
 	if cf == nil || cf.Servers == nil {
-		return ServerCreds{}, false
+		return "", ServerCreds{}, false
 	}
 	key := server
 	if key == "" {
 		key = cf.DefaultServer
 	}
 	if key == "" {
-		return ServerCreds{}, false
+		return "", ServerCreds{}, false
 	}
 	key = NormalizeServer(key)
 	if c, ok := cf.Servers[key]; ok {
-		return c, true
+		return key, c, true
 	}
-	// Fall back to a tolerant lookup: scan keys with their
-	// normalized form. This handles credential files written by
-	// older versions or hand-edited files with trailing slashes.
 	for k, v := range cf.Servers {
 		if NormalizeServer(k) == key {
-			return v, true
+			return k, v, true
 		}
 	}
-	return ServerCreds{}, false
+	if !strings.Contains(key, "://") {
+		// Deterministic when several stored keys share a host: sorted.
+		keys := make([]string, 0, len(cf.Servers))
+		for k := range cf.Servers {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			if stripScheme(NormalizeServer(k)) == key {
+				return k, cf.Servers[k], true
+			}
+		}
+	}
+	return "", ServerCreds{}, false
+}
+
+// stripScheme drops a leading "scheme://", if any.
+func stripScheme(s string) string {
+	if i := strings.Index(s, "://"); i >= 0 {
+		return s[i+3:]
+	}
+	return s
+}
+
+// ServerKeys lists the stored server keys, sorted, for error messages that
+// tell the user which servers they are logged in to.
+func (cf *CredentialsFile) ServerKeys() []string {
+	if cf == nil {
+		return nil
+	}
+	keys := make([]string, 0, len(cf.Servers))
+	for k := range cf.Servers {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // Set inserts or replaces the record for server. The server key is

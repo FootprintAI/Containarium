@@ -206,7 +206,7 @@ func init() {
 //  3. defaultLoginServer constant
 func pickSSHServer(explicit string) string {
 	if explicit != "" {
-		return strings.TrimRight(explicit, "/")
+		return canonicalServerAddr(strings.TrimRight(explicit, "/"))
 	}
 	if path, err := credentials.DefaultPath(); err == nil {
 		if cf, err := credentials.Load(path); err == nil && cf.DefaultServer != "" {
@@ -231,7 +231,7 @@ type sshHTTPClient struct {
 func newSSHHTTPClient(server string) (*sshHTTPClient, error) {
 	tok := resolveAuthToken(server)
 	if tok == "" {
-		return nil, fmt.Errorf("no auth token for %s (run `containarium login`)", server)
+		return nil, noTokenError(server)
 	}
 	return &sshHTTPClient{
 		hc:     &http.Client{Timeout: 30 * time.Second},

@@ -375,7 +375,7 @@ func TestCodeInstall_PiSecretModelsJSONReferencesTheDeliveredSecret(t *testing.T
 	}
 	// And the run command sources the file that variable actually arrives in.
 	piSecret := mustEngine(t, engine.NamePi, engine.SecretCredential{Name: "OPENAI_API_KEY"})
-	if !strings.Contains(piSecret.RunCommand("hi", false, false), "/run/containarium/secrets.env") {
+	if !strings.Contains(piSecret.RunCommand("hi", false, false, ""), "/run/containarium/secrets.env") {
 		t.Error("the pi secret run command should source /run/containarium/secrets.env")
 	}
 }

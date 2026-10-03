@@ -13,6 +13,8 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 
+	"github.com/footprintai/containarium/internal/agentengine"
+
 	"github.com/footprintai/containarium/internal/auth"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -72,7 +74,7 @@ func TestAgentA2ASecret_PerBoxAndStable(t *testing.T) {
 func TestServeModeCommand_ExportsA2AToken(t *testing.T) {
 	s := a2aTestServer(t)
 	want := "CONTAINARIUM_A2A_TOKEN='" + s.agentA2ASecret("hello-agent") + "' "
-	got := s.serveModeCommand("/seed/run-9", "hello-agent")
+	got := s.serveModeCommand("/seed/run-9", "hello-agent", agentengine.Resolved{}, "")
 	if !strings.Contains(got, want) {
 		t.Errorf("serveModeCommand = %q, want it to export %q", got, want)
 	}
@@ -82,7 +84,7 @@ func TestServeModeCommand_ExportsA2AToken(t *testing.T) {
 	}
 	// Without a derivable credential the box is launched with no token at all,
 	// so the runtime fails closed instead of reading an empty one as "any".
-	bare := (&AgentSkillServer{}).serveModeCommand("/seed/run-9", "hello-agent")
+	bare := (&AgentSkillServer{}).serveModeCommand("/seed/run-9", "hello-agent", agentengine.Resolved{}, "")
 	if strings.Contains(bare, "CONTAINARIUM_A2A_TOKEN") {
 		t.Errorf("serveModeCommand without a token manager = %q, want no A2A token export", bare)
 	}

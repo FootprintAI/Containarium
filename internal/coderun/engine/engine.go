@@ -119,8 +119,12 @@ type Engine interface {
 	//
 	// continueSession resumes the engine's most recent session in the run's
 	// working directory rather than starting a fresh one (`--continue` on the
-	// CLI; `-c` for pi).
-	RunCommand(prompt string, streamJSON, continueSession bool) string
+	// CLI; `-c` for pi). sessionID, when non-empty, resumes that SPECIFIC
+	// session instead (`claude --resume <id>`; `pi --session <id>`,
+	// docs/integrations/pi.md) and takes priority over continueSession —
+	// callers validate the two are mutually exclusive before calling this
+	// (#2193), so RunCommand itself never has to choose between them.
+	RunCommand(prompt string, streamJSON, continueSession bool, sessionID string) string
 }
 
 // For returns the engine named n, bound to opts.

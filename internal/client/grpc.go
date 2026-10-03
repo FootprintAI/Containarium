@@ -151,6 +151,7 @@ func (c *GRPCClient) ListContainers() ([]incus.ContainerInfo, error) {
 		info := incus.ContainerInfo{
 			Name:                 container.Name,
 			Username:             container.Username,
+			SSHHost:              container.SshHost,
 			State:                container.State.String(),
 			Labels:               container.Labels,
 			InstanceType:         ostype.InstanceTypeFromIsolation(container.Isolation),
@@ -228,6 +229,7 @@ func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, 
 	info := &incus.ContainerInfo{
 		Name:         container.Name,
 		Username:     container.Username,
+		SSHHost:      container.SshHost,
 		State:        container.State.String(),
 		InstanceType: ostype.InstanceTypeFromIsolation(container.Isolation),
 	}
@@ -782,6 +784,19 @@ func (c *GRPCClient) DeployRecipe(recipeID, name, gpu, backendID, pool string, p
 	return resp, nil
 }
 
+// ListAgentEngines reports, for each agent engine, whether a run naming it
+// would be refused right now (#2223) — via gRPC.
+func (c *GRPCClient) ListAgentEngines() (*pb.ListAgentEnginesResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := c.agentClient.ListAgentEngines(ctx, &pb.ListAgentEnginesRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list agent engines: %w", err)
+	}
+	return resp, nil
+}
+
 // ListAgentSkills lists all built-in agent skills via gRPC.
 func (c *GRPCClient) ListAgentSkills() ([]*pb.AgentSkill, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -810,8 +825,10 @@ func (c *GRPCClient) GetAgentSkill(id string) (*pb.AgentSkill, error) {
 // and returns the box via gRPC. gitSource/gitRef/gitCredential (#1859) fetch a
 // repo into the run's workspace before the agent starts; empty gitSource
 // means no fetch. trackerConnection (#2042) binds the run to one of the
-// caller's tracker connections; empty means no binding.
-func (c *GRPCClient) RunAgentSkill(skillID, backendID, pool, inputJSON, gitSource, gitRef, gitCredential, trackerConnection string) (*pb.RunAgentSkillResponse, error) {
+// caller's tracker connections; empty means no binding. engine (#2228) wins
+// over the skill's own manifest engine; AGENT_ENGINE_UNSPECIFIED means "use
+// the manifest", unchanged pre-#2228 behavior.
+func (c *GRPCClient) RunAgentSkill(skillID, backendID, pool, inputJSON, gitSource, gitRef, gitCredential, trackerConnection string, engine pb.AgentEngine) (*pb.RunAgentSkillResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // box provisioning can take time
 	defer cancel()
 
@@ -824,6 +841,7 @@ func (c *GRPCClient) RunAgentSkill(skillID, backendID, pool, inputJSON, gitSourc
 		GitRef:            gitRef,
 		GitCredential:     gitCredential,
 		TrackerConnection: trackerConnection,
+		Engine:            engine,
 	}
 	resp, err := c.agentClient.RunAgentSkill(ctx, req)
 	if err != nil {
@@ -905,17 +923,21 @@ func (c *GRPCClient) GetCrew(id string) (*pb.Crew, error) {
 // RunCrew launches a crew via gRPC. gitSource/gitRef/gitCredential (#1554)
 // are fetched into EVERY member's own per-run workspace — see
 // RunCrewRequest.git_source in proto/containarium/v1/agent.proto.
-func (c *GRPCClient) RunCrew(crewID, backendID, pool, inputJSON, gitSource, gitRef, gitCredential string) (*pb.CrewRun, error) {
+// engineOverrides (#2228), keyed by skill_id, wins over that member's own
+// manifest engine; a member with no entry (or AGENT_ENGINE_UNSPECIFIED) keeps
+// its manifest's own choice, unchanged pre-#2228 behavior.
+func (c *GRPCClient) RunCrew(crewID, backendID, pool, inputJSON, gitSource, gitRef, gitCredential string, engineOverrides map[string]pb.AgentEngine) (*pb.CrewRun, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // provisions every member box
 	defer cancel()
 	resp, err := c.crewClient.RunCrew(ctx, &pb.RunCrewRequest{
-		CrewId:        crewID,
-		BackendId:     backendID,
-		Pool:          pool,
-		InputJson:     inputJSON,
-		GitSource:     gitSource,
-		GitRef:        gitRef,
-		GitCredential: gitCredential,
+		CrewId:          crewID,
+		BackendId:       backendID,
+		Pool:            pool,
+		InputJson:       inputJSON,
+		GitSource:       gitSource,
+		GitRef:          gitRef,
+		GitCredential:   gitCredential,
+		EngineOverrides: engineOverrides,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to run crew: %w", err)

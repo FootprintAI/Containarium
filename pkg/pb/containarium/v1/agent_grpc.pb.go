@@ -20,6 +20,7 @@ const _ = grpc.SupportPackageIsVersion9
 
 const (
 	AgentSkillService_ListAgentSkills_FullMethodName   = "/containarium.v1.AgentSkillService/ListAgentSkills"
+	AgentSkillService_ListAgentEngines_FullMethodName  = "/containarium.v1.AgentSkillService/ListAgentEngines"
 	AgentSkillService_GetAgentSkill_FullMethodName     = "/containarium.v1.AgentSkillService/GetAgentSkill"
 	AgentSkillService_RunAgentSkill_FullMethodName     = "/containarium.v1.AgentSkillService/RunAgentSkill"
 	AgentSkillService_SendAgentTask_FullMethodName     = "/containarium.v1.AgentSkillService/SendAgentTask"
@@ -38,6 +39,12 @@ const (
 type AgentSkillServiceClient interface {
 	// ListAgentSkills returns all available skills (built-in + registered).
 	ListAgentSkills(ctx context.Context, in *ListAgentSkillsRequest, opts ...grpc.CallOption) (*ListAgentSkillsResponse, error)
+	// ListAgentEngines reports, for each AgentEngine, whether a run naming it
+	// would be refused right now — the same check RunAgentSkill's refusal
+	// enforces, read-only (#2223). No live model call, no bundle inspection:
+	// computed from state the daemon already holds (the global provider-key
+	// set and the per-owner key store).
+	ListAgentEngines(ctx context.Context, in *ListAgentEnginesRequest, opts ...grpc.CallOption) (*ListAgentEnginesResponse, error)
 	// GetAgentSkill returns a single skill definition by id.
 	GetAgentSkill(ctx context.Context, in *GetAgentSkillRequest, opts ...grpc.CallOption) (*GetAgentSkillResponse, error)
 	// RunAgentSkill launches a single skill in a box and runs one task against
@@ -83,6 +90,16 @@ func (c *agentSkillServiceClient) ListAgentSkills(ctx context.Context, in *ListA
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListAgentSkillsResponse)
 	err := c.cc.Invoke(ctx, AgentSkillService_ListAgentSkills_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *agentSkillServiceClient) ListAgentEngines(ctx context.Context, in *ListAgentEnginesRequest, opts ...grpc.CallOption) (*ListAgentEnginesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListAgentEnginesResponse)
+	err := c.cc.Invoke(ctx, AgentSkillService_ListAgentEngines_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -177,6 +194,12 @@ func (c *agentSkillServiceClient) StartAgentWorker(ctx context.Context, in *Star
 type AgentSkillServiceServer interface {
 	// ListAgentSkills returns all available skills (built-in + registered).
 	ListAgentSkills(context.Context, *ListAgentSkillsRequest) (*ListAgentSkillsResponse, error)
+	// ListAgentEngines reports, for each AgentEngine, whether a run naming it
+	// would be refused right now — the same check RunAgentSkill's refusal
+	// enforces, read-only (#2223). No live model call, no bundle inspection:
+	// computed from state the daemon already holds (the global provider-key
+	// set and the per-owner key store).
+	ListAgentEngines(context.Context, *ListAgentEnginesRequest) (*ListAgentEnginesResponse, error)
 	// GetAgentSkill returns a single skill definition by id.
 	GetAgentSkill(context.Context, *GetAgentSkillRequest) (*GetAgentSkillResponse, error)
 	// RunAgentSkill launches a single skill in a box and runs one task against
@@ -220,6 +243,9 @@ type UnimplementedAgentSkillServiceServer struct{}
 
 func (UnimplementedAgentSkillServiceServer) ListAgentSkills(context.Context, *ListAgentSkillsRequest) (*ListAgentSkillsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListAgentSkills not implemented")
+}
+func (UnimplementedAgentSkillServiceServer) ListAgentEngines(context.Context, *ListAgentEnginesRequest) (*ListAgentEnginesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListAgentEngines not implemented")
 }
 func (UnimplementedAgentSkillServiceServer) GetAgentSkill(context.Context, *GetAgentSkillRequest) (*GetAgentSkillResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetAgentSkill not implemented")
@@ -280,6 +306,24 @@ func _AgentSkillService_ListAgentSkills_Handler(srv interface{}, ctx context.Con
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(AgentSkillServiceServer).ListAgentSkills(ctx, req.(*ListAgentSkillsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentSkillService_ListAgentEngines_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListAgentEnginesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentSkillServiceServer).ListAgentEngines(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentSkillService_ListAgentEngines_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentSkillServiceServer).ListAgentEngines(ctx, req.(*ListAgentEnginesRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -438,6 +482,10 @@ var AgentSkillService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListAgentSkills",
 			Handler:    _AgentSkillService_ListAgentSkills_Handler,
+		},
+		{
+			MethodName: "ListAgentEngines",
+			Handler:    _AgentSkillService_ListAgentEngines_Handler,
 		},
 		{
 			MethodName: "GetAgentSkill",

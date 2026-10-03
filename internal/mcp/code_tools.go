@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/coderun"
+	"github.com/footprintai/containarium/internal/coderun/engine"
 	"github.com/footprintai/containarium/internal/connectcore"
 	"github.com/footprintai/containarium/internal/sshkey"
 )
@@ -105,6 +106,7 @@ func handleCodeRun(client API, args map[string]interface{}) (string, error) {
 	}
 	streamJSON := getBoolArg(args, "stream_json", false)
 	name := codeRunNameArg(args)
+	sessionID := strings.TrimSpace(getStringArg(args, "session_id", ""))
 
 	sess, done, err := mcpCodeSession(client, box)
 	if err != nil {
@@ -112,22 +114,50 @@ func handleCodeRun(client API, args map[string]interface{}) (string, error) {
 	}
 	defer done()
 
+	command := coderun.BuildClaudeRunCommand(prompt, streamJSON)
+	if sessionID != "" {
+		// Mirrors claudeEngine.RunCommand's --resume handling (#2193). This
+		// tool only ever builds a Claude command (it predates the engine
+		// seam, #1727) — session resume is applied the same way here.
+		command += " --resume " + coderun.ShellQuoteSingle(sessionID)
+	}
+
 	ctx := context.Background()
 	started, err := sess.ProcessStart(ctx,
 		name,
-		coderun.BuildClaudeRunCommand(prompt, streamJSON),
+		command,
 		"",
 		coderun.CaptureModeFor(streamJSON),
 	)
 	if err != nil {
 		return "", fmt.Errorf("start run on %q: %w", box, err)
 	}
+	mcpStartSessionDiscovery(ctx, sess, started.LogPath)
 
 	out, next := readCodeWindow(ctx, sess, started.LogPath, 0, streamJSON)
 	return fmt.Sprintf(
 		"✓ started %q (pid %d) on %s\n\nlog_path: %s\nnext_offset: %d\n\n--- output so far ---\n%s\n"+
 			"(the run continues on the box — call code_attach with name=%q and offset=%d for more)",
 		started.Name, started.PID, box, started.LogPath, next, out, started.Name, next), nil
+}
+
+// mcpStartSessionDiscovery best-effort backgrounds the lookup of this run's
+// session id on the box (#2193), the MCP-tool twin of code_run.go's
+// startSessionDiscovery. This tool only ever builds a Claude command (see
+// handleCodeRun), so the engine is fixed; a lookup failure is never fatal —
+// code_runs simply reports no session id for this run, which the AC already
+// allows.
+func mcpStartSessionDiscovery(ctx context.Context, sess *coderun.Session, logPath string) {
+	home, err := sess.HomeDir(ctx)
+	if err != nil {
+		return
+	}
+	sidecarPath := strings.TrimSuffix(logPath, ".log") + ".session"
+	cmd, ok := engine.SessionDiscoveryBackgroundCommand(engine.NameClaude, home, home, sidecarPath)
+	if !ok {
+		return
+	}
+	_, _ = sess.ShellExec(ctx, cmd)
 }
 
 // handleCodeAttach resumes a run's output from a byte offset. Passing back the
