@@ -140,3 +140,29 @@ via `/engineer-implement`:
 Either direction should be proven with this same test script (or its
 descendants) turning green as the acceptance criterion, not a config
 review.
+
+## Status since this assessment
+
+This page records what was found at the time; the follow-up work is:
+
+- **Network layer.** The core-infra network guard
+  ([`docs/architecture/core-infra-network-guard.md`](../architecture/core-infra-network-guard.md))
+  denies tenant sources to core-role listener ports with Incus network ACLs. It
+  ships off by default; turn it on with `CONTAINARIUM_CORE_GUARD=enforce`. This
+  is the stronger control for Finding 1, because it does not depend on the
+  database's own configuration being right.
+- **Application layer, new installs.** A freshly installed core Postgres no
+  longer admits the whole bridge subnet. `pg_hba.conf` is written with one
+  `scram-sha-256` rule for the daemon and one for the metrics container's
+  Grafana database, each a single address, and connection logging is on. The
+  core Postgres and metrics containers are pinned to fixed addresses so the rule
+  can name Grafana before it exists. After applying the rules the daemon logs in
+  the way it will in production; if that fails, the scoped rules are removed and
+  the old subnet rule is written, with an `ERROR` in the log, so a wrong rule
+  cannot leave an install without a working database.
+- **Existing hosts are not changed automatically.** Their `pg_hba.conf` keeps
+  whatever it has. Narrow it by hand (see the operator security runbook) or rely
+  on the network guard.
+- **Credentials.** Using the operator's configured Postgres password for the
+  role and for Grafana, and removing Grafana's literal admin login, is tracked
+  in #2091.

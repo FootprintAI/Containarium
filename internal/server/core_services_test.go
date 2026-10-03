@@ -32,9 +32,24 @@ func TestCoreStaticIP(t *testing.T) {
 			want:      "10.100.0.241",
 		},
 		{
-			name:      "container without an assigned offset falls back to DHCP",
+			// Postgres and the metrics container are pinned too, so the
+			// pg_hba.conf written when Postgres is first installed can name the
+			// exact address Grafana will have, instead of the whole subnet.
+			name:      "postgres is pinned",
 			cidr:      "10.100.0.1/24",
 			container: CorePostgresContainer,
+			want:      "10.100.0.240",
+		},
+		{
+			name:      "metrics container is pinned",
+			cidr:      "10.100.0.1/24",
+			container: CoreVictoriaMetricsContainer,
+			want:      "10.100.0.239",
+		},
+		{
+			name:      "container without an assigned offset falls back to DHCP",
+			cidr:      "10.100.0.1/24",
+			container: CoreSecurityContainer,
 			want:      "", // no offset → empty, no error
 		},
 		{
@@ -67,6 +82,21 @@ func TestCoreStaticIP(t *testing.T) {
 				t.Fatalf("coreStaticIP(%q,%q) = %q, want %q", tc.cidr, tc.container, got, tc.want)
 			}
 		})
+	}
+}
+
+// Two core containers on one address would be an outage that looks like a
+// network fault. The pinned offsets must stay distinct and inside a /24.
+func TestCoreStaticIPHostOffsets_DistinctAndInRange(t *testing.T) {
+	seen := map[uint32]string{}
+	for name, off := range coreStaticIPHostOffsets {
+		if other, dup := seen[off]; dup {
+			t.Errorf("%s and %s are both pinned to host offset %d", name, other, off)
+		}
+		seen[off] = name
+		if off < 3 || off > 253 {
+			t.Errorf("%s offset %d is outside the usable range of a /24", name, off)
+		}
 	}
 }
 
