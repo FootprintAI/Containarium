@@ -477,6 +477,23 @@ service ContainerService {
     };
   }
 
+  // StartBoxRun starts (or resumes) a coding-agent run on a box through the
+  // daemon API, with no SSH client needed (#2193) — the host-with-no-SSH
+  // case ListBoxRuns/TailBoxRunLog could read but not drive. Same access as
+  // connecting to the box: ssh:write, and the box owner or one of its
+  // collaborators.
+  rpc StartBoxRun(StartBoxRunRequest) returns (StartBoxRunResponse) {
+    option (google.api.http) = {
+      post: "/v1/containers/{username}/code-runs"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Start a box's code run";
+      description: "Starts (or resumes) a coding-agent run on a box, no SSH client needed. The engine and its credential source come from the box's own ~/.containarium/code.json (`code install`); this call only says what to run. A previous run under the resolved run_name that is still RUNNING or UNKNOWN is FAILED_PRECONDITION, naming it. Box owner or collaborator, ssh:write scope.";
+      tags: "Code Runs";
+    };
+  }
+
   // ListBoxRuns lists the `code run` records on a box (#2123). Same access
   // as connecting to the box: ssh:write, and the box owner or one of its
   // collaborators.

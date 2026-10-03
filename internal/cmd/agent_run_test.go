@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -29,6 +30,7 @@ func resetAgentRunFlags() {
 	agentRunGitRef = ""
 	agentRunGitCredentialFile = ""
 	agentRunTrackerConnection = ""
+	agentRunEngine = ""
 }
 
 func TestAgentRun_TrackerConnectionFlagRegistered(t *testing.T) {
@@ -117,12 +119,21 @@ func TestAgentRun_FlagsReachDaemonRequest(t *testing.T) {
 			want: &pb.RunAgentSkillRequest{SkillId: "hello-agent", TrackerConnection: "conn-a"},
 		},
 		{
+			// #2228: --engine must parse through agentengine.Parse and land on
+			// the request's own `engine` field, not be dropped or mapped to
+			// the wrong field.
+			name: "engine override",
+			args: []string{"--engine", "codex"},
+			want: &pb.RunAgentSkillRequest{SkillId: "hello-agent", Engine: pb.AgentEngine_AGENT_ENGINE_CODEX},
+		},
+		{
 			// Distinct value per flag, so any two swapped arguments show up.
 			name: "every flag",
 			args: []string{
 				"--backend-id", "local", "--pool", "p1", "--input", `{"q":"hi"}`,
 				"--git-source", "https://example.test/repo.git", "--git-ref", "main",
 				"--git-credential-file", credFile, "--tracker-connection", "conn-a",
+				"--engine", "codex",
 			},
 			want: &pb.RunAgentSkillRequest{
 				SkillId:           "hello-agent",
@@ -133,6 +144,7 @@ func TestAgentRun_FlagsReachDaemonRequest(t *testing.T) {
 				GitRef:            "main",
 				GitCredential:     "tok",
 				TrackerConnection: "conn-a",
+				Engine:            pb.AgentEngine_AGENT_ENGINE_CODEX,
 			},
 		},
 	}
@@ -157,6 +169,27 @@ func TestAgentRun_FlagsReachDaemonRequest(t *testing.T) {
 					t.Errorf("daemon received a different request\n got: %v\nwant: %v", got, tt.want)
 				}
 			})
+		}
+	}
+}
+
+// TestAgentRun_InvalidEngineFlag_ListsValidNames pins #2228's AC: an unknown
+// --engine value is an error listing the valid names (agentengine.Parse's own
+// contract), caught before any RPC — never silently sent to the daemon as
+// AGENT_ENGINE_UNSPECIFIED.
+func TestAgentRun_InvalidEngineFlag_ListsValidNames(t *testing.T) {
+	resetAgentRunFlags()
+	t.Cleanup(resetAgentRunFlags)
+	if err := agentRunCmd.ParseFlags([]string{"--engine", "clawed"}); err != nil {
+		t.Fatalf("parse flags: %v", err)
+	}
+	_, err := resolveAgentRunEngine()
+	if err == nil {
+		t.Fatal("resolveAgentRunEngine: want an error for an unknown engine name")
+	}
+	for _, name := range []string{"claude", "codex", "gemini"} {
+		if !strings.Contains(err.Error(), name) {
+			t.Errorf("error %q does not list valid engine name %q", err, name)
 		}
 	}
 }

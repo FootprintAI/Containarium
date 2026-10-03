@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/footprintai/containarium/pkg/core/catalogsig"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 const extSkillYAML = `
@@ -294,6 +295,17 @@ skills:
       id: x
       output_schema_json: '["files"]'
 `,
+		// #2222: an unrecognized engine name must fail at catalog load, not
+		// reach RunAgentSkill, where it would resolve as UNSPECIFIED and
+		// silently run on the daemon's default engine instead.
+		"unknown engine": `
+skills:
+  - id: x
+    recipe_id: agent-runtime
+    system_prompt: hi
+    allowed_scopes: [containers:read]
+    engine: cluade
+`,
 		"malformed input_schema_json": `
 skills:
   - id: x
@@ -426,5 +438,41 @@ skills:
 	// verbatim — it is what the daemon seeds as agent-card.json (#2002).
 	if got := s.GetAgentCard().GetOutputSchemaJson(); got != `{"type": "object", "required": ["ok"]}` {
 		t.Errorf("output_schema_json = %q, want it passed through verbatim", got)
+	}
+}
+
+// TestEngineFieldRoundTrips covers #2222: engine is optional (an unset
+// manifest keeps today's UNSPECIFIED/no-engine behaviour), and a named one
+// parses case-insensitively to its typed proto value.
+func TestEngineFieldRoundTrips(t *testing.T) {
+	const withEngine = `
+skills:
+  - id: has-engine
+    recipe_id: agent-runtime
+    system_prompt: hi
+    allowed_scopes: [containers:read]
+    engine: Codex
+  - id: no-engine
+    recipe_id: agent-runtime
+    system_prompt: hi
+    allowed_scopes: [containers:read]
+`
+	m := New()
+	if err := m.LoadFromBytes([]byte(withEngine)); err != nil {
+		t.Fatalf("unexpected load error: %v", err)
+	}
+	named, err := m.Get("has-engine")
+	if err != nil {
+		t.Fatalf("get has-engine: %v", err)
+	}
+	if named.GetEngine() != pb.AgentEngine_AGENT_ENGINE_CODEX {
+		t.Errorf("has-engine: Engine = %v, want AGENT_ENGINE_CODEX", named.GetEngine())
+	}
+	unnamed, err := m.Get("no-engine")
+	if err != nil {
+		t.Fatalf("get no-engine: %v", err)
+	}
+	if unnamed.GetEngine() != pb.AgentEngine_AGENT_ENGINE_UNSPECIFIED {
+		t.Errorf("no-engine: Engine = %v, want AGENT_ENGINE_UNSPECIFIED (unset manifest)", unnamed.GetEngine())
 	}
 }

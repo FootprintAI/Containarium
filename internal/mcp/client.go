@@ -319,6 +319,41 @@ func (c *Client) ListAgentSkills() (*ListAgentSkillsResponse, error) {
 	return &resp, nil
 }
 
+// AgentEngineStatusSummary is one entry of the /v1/agent-engines response.
+// JSON tags are the grpc-gateway camelCase output names; Engine/Provider/
+// Readiness/Source arrive as the proto enum's NAME string (e.g.
+// "AGENT_ENGINE_CLAUDE"), which is grpc-gateway's default enum encoding.
+type AgentEngineStatusSummary struct {
+	Engine    string   `json:"engine"`
+	Provider  string   `json:"provider"`
+	Readiness string   `json:"readiness"`
+	Reason    string   `json:"reason"`
+	Source    string   `json:"source"`
+	IsDefault bool     `json:"isDefault"`
+	SkillIDs  []string `json:"skillIds"`
+}
+
+// ListAgentEnginesResponse is the /v1/agent-engines response (#2223).
+type ListAgentEnginesResponse struct {
+	Engines  []AgentEngineStatusSummary `json:"engines"`
+	KeyOwner string                     `json:"keyOwner"`
+}
+
+// ListAgentEngines reports, for each agent engine, whether a run naming it
+// would be refused right now — the same check RunAgentSkill's refusal
+// enforces, read-only.
+func (c *Client) ListAgentEngines() (*ListAgentEnginesResponse, error) {
+	respBody, err := c.doRequest("GET", "/v1/agent-engines", nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp ListAgentEnginesResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
 // RunAgentSkillRequest is the body for an agent-skill run. Snake_case tags
 // match the proto field names, which grpc-gateway accepts on input.
 // GitSource/GitRef (#1859) fetch a repo into the run's workspace before the
@@ -331,6 +366,11 @@ type RunAgentSkillRequest struct {
 	InputJSON string `json:"input_json,omitempty"`
 	GitSource string `json:"git_source,omitempty"`
 	GitRef    string `json:"git_ref,omitempty"`
+	// Engine (#2228) is the proto enum's NAME string (e.g.
+	// "AGENT_ENGINE_CODEX"), the shape protojson expects for an enum field.
+	// handleRunAgentSkill validates+normalizes the tool's lowercase "engine"
+	// argument into this shape before it ever reaches here.
+	Engine string `json:"engine,omitempty"`
 }
 
 // RunAgentSkillResponse is the result of an agent-skill run.

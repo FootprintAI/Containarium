@@ -430,9 +430,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 			if perr != nil {
 				return fmt.Errorf("resolve postgres password: %w", perr)
 			}
-			postgresConnString = fmt.Sprintf(
-				"postgres://%s:%s@%s:%d/%s?sslmode=disable",
-				server.DefaultPostgresUser, password,
+			postgresConnString = server.PostgresDSN(server.DefaultPostgresUser, password,
 				pgInfo.IPAddress, server.DefaultPostgresPort, server.DefaultPostgresDB)
 			log.Printf("Detected PostgreSQL at: %s (password source: %s)", pgInfo.IPAddress, pwSource)
 		} else {

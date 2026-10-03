@@ -243,6 +243,8 @@ func init() {
 	codeRunCmd.Flags().StringVar(&codeRunPrompt, "prompt", "", "prompt to give the agent (required)")
 	codeRunCmd.Flags().BoolVar(&codeRunContinue, "continue", false,
 		"resume the engine's most recent session in the run's working directory instead of starting a fresh one (`pi -c`, `claude --continue`)")
+	codeRunCmd.Flags().StringVar(&codeRunSession, "session", "",
+		"resume this specific session id instead of starting a fresh one (`claude --resume <id>`, `pi --session <id>`) — mutually exclusive with --continue; also becomes this run's --name unless --name is given explicitly")
 	codeRunCmd.Flags().StringVar(&codeRunTokenTTL, "token-ttl", "",
 		"lifetime of the gateway token minted for this run (e.g. 2h); capped server-side. Default 24h")
 	codeRunCmd.Flags().BoolVar(&codeRunStreamJSON, "output-format-stream-json", false,
@@ -255,6 +257,14 @@ func init() {
 func codeRunName() string {
 	if codeName != "" {
 		return codeName
+	}
+	// #2193: resuming a specific session with no explicit --name uses the
+	// session id as the run name too — the same name attach/status/stop
+	// already need to find this run by, and what the daemon's StartBoxRun
+	// does for the same reason (a resumed session's collision check is keyed
+	// on its own id, not on the shared "code" default every fresh run uses).
+	if codeRunSession != "" {
+		return codeRunSession
 	}
 	return defaultCodeRunName
 }

@@ -426,9 +426,14 @@ sudo systemctl start caddy
 containariumd daemon \
   --app-hosting \
   --postgres "postgres://user:pass@localhost:5432/containarium" \
-  --base-domain "containarium.dev" \
+  --base-domain "apps.example.com" \
   --caddy-admin-url "http://localhost:2019"
 ```
+
+> Use a domain this host actually serves. The value is persisted and is used on
+> later starts even when the flag is dropped, and it makes boxes resolve
+> `*.<base-domain>` to the local Caddy. On a BYOC backend, leave it unset — see
+> [BYOC-BACKEND-BRINGUP.md](./BYOC-BACKEND-BRINGUP.md).
 
 See [CADDY-SETUP.md](./CADDY-SETUP.md) for detailed configuration guide.
 

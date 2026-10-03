@@ -42,6 +42,7 @@ type API interface {
 	ListRecipes() (*ListRecipesResponse, error)
 	DeployRecipe(req DeployRecipeRequest) (*DeployRecipeResponse, error)
 	ListAgentSkills() (*ListAgentSkillsResponse, error)
+	ListAgentEngines() (*ListAgentEnginesResponse, error)
 	RunAgentSkill(req RunAgentSkillRequest) (*RunAgentSkillResponse, error)
 	CallAgent(req CallAgentRequest) (*CallAgentResponse, error)
 	ListCrews() (*ListCrewsResponse, error)

@@ -39,6 +39,55 @@ skills:
         - echo
         - summarize
 
+  # hello-agent-claude / hello-agent-codex (#2225): hello-agent clones that each
+  # NAME an engine, so two-engine-crew (pkg/core/crews) is the reference fixture
+  # for per-skill engine routing (#2222) — the acceptance test for the whole
+  # agent-router PRD. No model is pinned: engine.ts/index.ts's own per-engine
+  # default decides (claude-opus-4-8 for claude, codex's own CLI default for
+  # codex), so this fixture never needs updating when either default changes.
+  - id: hello-agent-claude
+    name: Hello Agent (Claude)
+    description: hello-agent, pinned to the claude engine. Reference fixture for per-skill engine routing; not intended for real work.
+    recipe_id: agent-runtime
+    system_prompt: >-
+      You are a minimal reference agent. Read the task input, do the smallest
+      useful thing it asks, and return a concise JSON artifact. You are a
+      demonstration of the runtime, not a production assistant.
+    allowed_scopes:
+      - containers:read
+    # two-engine-crew is a pipeline: this member runs first and hands its
+    # output to hello-agent-codex, so its allowed_peers must permit that hop.
+    allowed_peers:
+      - hello-agent-codex
+    engine: claude
+    agent_card:
+      id: hello-agent-claude
+      name: Hello Agent (Claude)
+      description: A neutral reference agent, pinned to the claude engine, used to validate per-skill engine routing.
+      capabilities:
+        - echo
+        - summarize
+
+  - id: hello-agent-codex
+    name: Hello Agent (Codex)
+    description: hello-agent, pinned to the codex engine. Reference fixture for per-skill engine routing; not intended for real work.
+    recipe_id: agent-runtime
+    system_prompt: >-
+      You are a minimal reference agent. Read the task input, do the smallest
+      useful thing it asks, and return a concise JSON artifact. You are a
+      demonstration of the runtime, not a production assistant.
+    allowed_scopes:
+      - containers:read
+    allowed_peers: []
+    engine: codex
+    agent_card:
+      id: hello-agent-codex
+      name: Hello Agent (Codex)
+      description: A neutral reference agent, pinned to the codex engine, used to validate per-skill engine routing.
+      capabilities:
+        - echo
+        - summarize
+
   # relay-agent is a second neutral reference skill that is allowed to delegate
   # to hello-agent. It exists so the reference crew (pkg/core/crews) has a valid
   # A2A edge (relay -> hello) to validate the crew topology end-to-end.

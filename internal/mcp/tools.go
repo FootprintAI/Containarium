@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/footprintai/containarium/internal/agentengine"
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/releasecheck"
 	"github.com/footprintai/containarium/internal/runlog"
@@ -1125,6 +1126,8 @@ func (s *Server) registerTools() {
 						"description": "Run name, default \"code\". Override to run more than one task concurrently on the same box; the same name is how code_attach/code_status/code_stop find it later."},
 					"stream_json": map[string]interface{}{"type": "boolean",
 						"description": "Capture stdout and stderr separately (framed) so a JSON stream on stdout is not corrupted by diagnostics. Default false."},
+					"session_id": map[string]interface{}{"type": "string",
+						"description": "Resume this specific session id (claude --resume) instead of starting a fresh conversation. From a previous code_runs/BoxRun.session_id, when the engine exposed one."},
 				},
 			},
 			Handler: handleCodeRun,
@@ -1571,6 +1574,19 @@ func (s *Server) registerTools() {
 			Handler: handleListAgentSkills,
 		},
 		{
+			Name: "list_agent_engines",
+			Description: "Report, for each agent engine (claude/codex/gemini), whether " +
+				"a skill naming it in run_agent_skill would be refused right now, and " +
+				"why not. The same check the daemon enforces on the run itself — no " +
+				"live model call, no bundle inspection. Use this before run_agent_skill " +
+				"to pick an engine that is actually ready, or to explain a refusal.",
+			InputSchema: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+			Handler: handleListAgentEngines,
+		},
+		{
 			Name: "run_agent_skill",
 			Description: "Run an agent skill in a box. Provisions the skill's box, " +
 				"mints a token scoped to exactly the skill's allowed_scopes, and " +
@@ -1596,6 +1612,10 @@ func (s *Server) registerTools() {
 					"git_ref": map[string]interface{}{
 						"type":        "string",
 						"description": "Exact ref to check out for git_source: full SHA (preferred), branch, tag, or refs/pull/N/merge. Empty = the remote's default branch.",
+					},
+					"engine": map[string]interface{}{
+						"type":        "string",
+						"description": "Override the skill manifest's own engine for this run: one of claude, codex, gemini. Refused with the same error a manifest-named engine gets when its provider has no key. Empty = use the manifest.",
 					},
 				},
 				"required": []string{"skill_id"},
@@ -1864,12 +1884,13 @@ func toolScopeAssignments() map[string]string {
 		"list_recipes":  auth.ScopeContainersRead,
 		"deploy_recipe": auth.ScopeContainersWrite,
 
-		"list_agent_skills": auth.ScopeAgentsRead,
-		"run_agent_skill":   auth.ScopeAgentsRun,
-		"call_agent":        auth.ScopeAgentsCall,
-		"list_crews":        auth.ScopeCrewsRead,
-		"run_crew":          auth.ScopeCrewsRun,
-		"crew_logs":         auth.ScopeAgentsRead,
+		"list_agent_skills":  auth.ScopeAgentsRead,
+		"list_agent_engines": auth.ScopeAgentsRead,
+		"run_agent_skill":    auth.ScopeAgentsRun,
+		"call_agent":         auth.ScopeAgentsCall,
+		"list_crews":         auth.ScopeCrewsRead,
+		"run_crew":           auth.ScopeCrewsRun,
+		"crew_logs":          auth.ScopeAgentsRead,
 		// database backups
 		"create_backup":  auth.ScopeBackupsWrite,
 		"restore_backup": auth.ScopeBackupsWrite,
@@ -3056,12 +3077,79 @@ func handleListAgentSkills(client API, _ map[string]interface{}) (string, error)
 	return b.String(), nil
 }
 
+func handleListAgentEngines(client API, _ map[string]interface{}) (string, error) {
+	resp, err := client.ListAgentEngines()
+	if err != nil {
+		return "", err
+	}
+	owner := resp.KeyOwner
+	if owner == "" {
+		owner = "(global — admin view, or direct mode)"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Key owner: %s\n\n", owner)
+	fmt.Fprintf(&b, "%-8s %-10s %-20s %-8s %-20s %s\n", "ENGINE", "PROVIDER", "READY", "DEFAULT", "SKILLS", "REASON")
+	for _, e := range resp.Engines {
+		skills := strings.Join(e.SkillIDs, ",")
+		if skills == "" {
+			skills = "-"
+		}
+		fmt.Fprintf(&b, "%-8s %-10s %-20s %-8v %-20s %s\n",
+			trimEnumString(e.Engine, "AGENT_ENGINE_"),
+			trimEnumString(e.Provider, "GATEWAY_PROVIDER_"),
+			trimEnumString(e.Readiness, "AGENT_ENGINE_READINESS_"),
+			e.IsDefault,
+			skills,
+			e.Reason,
+		)
+	}
+	return b.String(), nil
+}
+
+// trimEnumString strips a grpc-gateway-encoded proto enum NAME's prefix,
+// lowercased, e.g. "AGENT_ENGINE_CLAUDE" -> "claude". Mirrors
+// internal/cmd's trimEnumPrefix for the same display purpose, duplicated
+// rather than imported: this package's enum values arrive as plain JSON
+// strings (no generated Go enum type here), while the CLI's trims a typed
+// enum's own String().
+func trimEnumString(s, prefix string) string {
+	if trimmed := strings.TrimPrefix(s, prefix); trimmed != s && trimmed != "" {
+		return strings.ToLower(trimmed)
+	}
+	return strings.ToLower(s)
+}
+
+// parseAgentSkillEngineArg validates and normalizes run_agent_skill's
+// "engine" tool argument into the wire shape protojson expects for an enum
+// field (the proto enum's NAME string, e.g. "AGENT_ENGINE_CODEX") — the same
+// REST-shim-takes-the-enum-by-name convention as os_type/isolation above.
+// Empty input means "no override, use the manifest", not an error; only an
+// unknown name is (agentengine.Parse's own contract, which lists the valid
+// ones). Split out from handleRunAgentSkill so #2228's validation is
+// unit-testable without a fake implementing the whole API interface.
+func parseAgentSkillEngineArg(args map[string]interface{}) (string, error) {
+	engineStr := getStringArg(args, "engine", "")
+	if engineStr == "" {
+		return "", nil
+	}
+	engine, err := agentengine.Parse(engineStr)
+	if err != nil {
+		return "", err
+	}
+	return engine.String(), nil
+}
+
 func handleRunAgentSkill(client API, args map[string]interface{}) (string, error) {
+	engineWire, err := parseAgentSkillEngineArg(args)
+	if err != nil {
+		return "", err
+	}
 	resp, err := client.RunAgentSkill(RunAgentSkillRequest{
 		SkillID:   getStringArg(args, "skill_id", ""),
 		InputJSON: getStringArg(args, "input_json", ""),
 		GitSource: getStringArg(args, "git_source", ""),
 		GitRef:    getStringArg(args, "git_ref", ""),
+		Engine:    engineWire,
 	})
 	if err != nil {
 		return "", err

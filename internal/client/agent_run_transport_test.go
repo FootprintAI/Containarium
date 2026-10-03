@@ -110,13 +110,13 @@ func startGatewayAgentServer(t *testing.T, fake *fakeAgentSkillServer) *HTTPClie
 
 // agentRunner is the method under test, shared by both clients.
 type agentRunner interface {
-	RunAgentSkill(skillID, backendID, pool, inputJSON, gitSource, gitRef, gitCredential, trackerConnection string) (*pb.RunAgentSkillResponse, error)
+	RunAgentSkill(skillID, backendID, pool, inputJSON, gitSource, gitRef, gitCredential, trackerConnection string, engine pb.AgentEngine) (*pb.RunAgentSkillResponse, error)
 }
 
 // runAgentSkill calls c with req's fields in RunAgentSkill's positional order.
 func runAgentSkill(c agentRunner, req *pb.RunAgentSkillRequest) (*pb.RunAgentSkillResponse, error) {
 	return c.RunAgentSkill(req.GetSkillId(), req.GetBackendId(), req.GetPool(), req.GetInputJson(),
-		req.GetGitSource(), req.GetGitRef(), req.GetGitCredential(), req.GetTrackerConnection())
+		req.GetGitSource(), req.GetGitRef(), req.GetGitCredential(), req.GetTrackerConnection(), req.GetEngine())
 }
 
 var agentRunTransports = []struct {
@@ -141,6 +141,13 @@ func TestRunAgentSkill_RequestReachesServerIntact(t *testing.T) {
 			req:  &pb.RunAgentSkillRequest{SkillId: "hello-agent", TrackerConnection: "conn-a"},
 		},
 		{
+			// #2228: the request-level engine override must round-trip
+			// byte-for-byte on both transports, the same proof every other
+			// field on this request already gets.
+			name: "engine override only",
+			req:  &pb.RunAgentSkillRequest{SkillId: "hello-agent", Engine: pb.AgentEngine_AGENT_ENGINE_CODEX},
+		},
+		{
 			name: "every CLI field",
 			req: &pb.RunAgentSkillRequest{
 				SkillId:           "hello-agent",
@@ -151,6 +158,7 @@ func TestRunAgentSkill_RequestReachesServerIntact(t *testing.T) {
 				GitRef:            "main",
 				GitCredential:     "tok",
 				TrackerConnection: "conn-a",
+				Engine:            pb.AgentEngine_AGENT_ENGINE_CODEX,
 			},
 		},
 	}

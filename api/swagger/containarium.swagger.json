@@ -30,6 +30,10 @@
       "description": "RecipeService provides one-command deployment of declarative GPU/app\nrecipes onto Containarium backends."
     },
     {
+      "name": "ModelGatewayService",
+      "description": "ModelGatewayService is the control surface for the daemon's model gateway\n(internal/modelgateway): who owns which upstream provider key, and the\nshort-lived scoped tokens a box presents instead of one.\n\nThe gateway's DATA plane is not here — it stays the HTTP proxy at\n/v1/model/\u003cprovider\u003e that a box calls with its gateway token. This service\nis the admin + mint surface around it:\n\n  - Set/Delete/GetStatus for one key owner's real upstream key. Admin-only\n    (gateway:admin); the key goes in, and only a fingerprint ever comes back\n    out. The keys live in the daemon's encrypted secrets store under a\n    reserved namespace no tenant can list and no delivery mode ships into a\n    box (internal/secrets.GatewayKeyLocation).\n  - MintGatewayToken, which issues a scoped, revocable, short-lived token\n    for a box the CALLER OWNS (gateway:mint). The token's key_owner claim —\n    the box's cloud-org attribution when stamped, else its owning username —\n    is what makes the call spend that owner's upstream key rather than the\n    daemon operator's.\n  - ListGatewayModels, the upstream model list read through the gateway, so\n    a caller can see what it may ask for without ever holding a real key.\n\nDesign: docs/architecture/workspace-own-inference-key.md (cloud repo),\ncomponent 2 / contract C1."
+    },
+    {
       "name": "AgentSkillService",
       "description": "AgentSkillService manages and runs individual packaged agents."
     },
@@ -79,10 +83,6 @@
     {
       "name": "KmsService",
       "description": "KmsService exposes read + migration-trigger operations for the\ntenant-secrets envelope-encryption layer (see\ndocs/security/KMS-ENVELOPE-DESIGN.md). It deliberately does NOT\nexpose backend *configuration* — selecting a KMS backend and\nsupplying its credentials stays an operator/systemd concern\n(CONTAINARIUM_KMS_BACKEND + the per-backend env vars), never an\nover-the-wire action. Every RPC requires the `kms:admin` scope\nAND the admin role; these are platform-wide, not tenant-scoped."
-    },
-    {
-      "name": "ModelGatewayService",
-      "description": "ModelGatewayService is the control surface for the daemon's model gateway\n(internal/modelgateway): who owns which upstream provider key, and the\nshort-lived scoped tokens a box presents instead of one.\n\nThe gateway's DATA plane is not here — it stays the HTTP proxy at\n/v1/model/\u003cprovider\u003e that a box calls with its gateway token. This service\nis the admin + mint surface around it:\n\n  - Set/Delete/GetStatus for one key owner's real upstream key. Admin-only\n    (gateway:admin); the key goes in, and only a fingerprint ever comes back\n    out. The keys live in the daemon's encrypted secrets store under a\n    reserved namespace no tenant can list and no delivery mode ships into a\n    box (internal/secrets.GatewayKeyLocation).\n  - MintGatewayToken, which issues a scoped, revocable, short-lived token\n    for a box the CALLER OWNS (gateway:mint). The token's key_owner claim —\n    the box's cloud-org attribution when stamped, else its owning username —\n    is what makes the call spend that owner's upstream key rather than the\n    daemon operator's.\n  - ListGatewayModels, the upstream model list read through the gateway, so\n    a caller can see what it may ask for without ever holding a real key.\n\nDesign: docs/architecture/workspace-own-inference-key.md (cloud repo),\ncomponent 2 / contract C1."
     },
     {
       "name": "NetworkPolicyService",
@@ -298,6 +298,30 @@
         ],
         "tags": [
           "ActuationService"
+        ]
+      }
+    },
+    "/v1/agent-engines": {
+      "get": {
+        "summary": "List agent engines and their readiness",
+        "description": "Returns one row per agent engine: whether a skill naming it would be refused right now, why, and which catalog skills name it explicitly.",
+        "operationId": "AgentSkillService_ListAgentEngines",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListAgentEnginesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "tags": [
+          "Agents"
         ]
       }
     },
@@ -2955,6 +2979,45 @@
             "in": "path",
             "required": true,
             "type": "string"
+          }
+        ],
+        "tags": [
+          "Code Runs"
+        ]
+      },
+      "post": {
+        "summary": "Start a box's code run",
+        "description": "Starts (or resumes) a coding-agent run on a box, no SSH client needed. The engine and its credential source come from the box's own ~/.containarium/code.json (`code install`); this call only says what to run. A previous run under the resolved run_name that is still RUNNING or UNKNOWN is FAILED_PRECONDITION, naming it. Box owner or collaborator, ssh:write scope.",
+        "operationId": "ContainerService_StartBoxRun",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/StartBoxRunResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "The box owner's username (the box is \u003cusername\u003e-container).",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/StartBoxRunBody"
+            }
           }
         ],
         "tags": [
@@ -8792,6 +8855,73 @@
       },
       "description": "AgentCard is the discovery document a skill serves so peer agents can find\nit and learn how to delegate to it (A2A, Phase 1). It is carried in-proto so\nthe wire format stays insulated from upstream A2A churn."
     },
+    "AgentCredentialSource": {
+      "type": "string",
+      "enum": [
+        "AGENT_CREDENTIAL_SOURCE_UNSPECIFIED",
+        "AGENT_CREDENTIAL_SOURCE_GLOBAL_KEY",
+        "AGENT_CREDENTIAL_SOURCE_OWNER_KEY",
+        "AGENT_CREDENTIAL_SOURCE_DIRECT_MODE"
+      ],
+      "default": "AGENT_CREDENTIAL_SOURCE_UNSPECIFIED",
+      "description": "AgentCredentialSource is WHERE a READY engine's key resolves from — never\nthe key's value or fingerprint.\n\n - AGENT_CREDENTIAL_SOURCE_GLOBAL_KEY: The daemon's own env/global key for this provider.\n - AGENT_CREDENTIAL_SOURCE_OWNER_KEY: The caller's own per-owner registered key (SetTenantProviderKey).\n - AGENT_CREDENTIAL_SOURCE_DIRECT_MODE: No model gateway is served; the box's own secrets decide."
+    },
+    "AgentEngine": {
+      "type": "string",
+      "enum": [
+        "AGENT_ENGINE_UNSPECIFIED",
+        "AGENT_ENGINE_CLAUDE",
+        "AGENT_ENGINE_CODEX",
+        "AGENT_ENGINE_GEMINI"
+      ],
+      "default": "AGENT_ENGINE_UNSPECIFIED",
+      "description": "AgentEngine identifies the in-box agent loop (agent-runtime SDK) a skill\nruns on. One daemon can run skills on different engines at once — the\nengine is a per-skill choice, not a daemon-wide constant (#2222).\n\n - AGENT_ENGINE_UNSPECIFIED: Runtime default: the daemon's configured gateway primary provider in\ngateway mode, or the box's own default/env in direct mode. Never\nrejected — this is what every skill predating this field resolves to.\n - AGENT_ENGINE_CLAUDE: Claude Agent SDK (provider: anthropic).\n - AGENT_ENGINE_CODEX: OpenAI Codex SDK (provider: openai).\n - AGENT_ENGINE_GEMINI: Google Gen AI SDK (provider: gemini)."
+    },
+    "AgentEngineReadiness": {
+      "type": "string",
+      "enum": [
+        "AGENT_ENGINE_READINESS_UNSPECIFIED",
+        "AGENT_ENGINE_READINESS_READY",
+        "AGENT_ENGINE_READINESS_NOT_READY",
+        "AGENT_ENGINE_READINESS_UNKNOWN_DIRECT_MODE"
+      ],
+      "default": "AGENT_ENGINE_READINESS_UNSPECIFIED",
+      "description": "AgentEngineReadiness reports whether a run naming this engine would be\nrefused — the same truth agentengine.Resolve enforces, read-only (#2223).\n\n - AGENT_ENGINE_READINESS_READY: Resolve would use this engine without refusing: a global key, or the\ncaller's own owner key, covers the provider.\n - AGENT_ENGINE_READINESS_NOT_READY: A named run on this engine would be refused FailedPrecondition — no\nkey anywhere Resolve can see. See `reason` for why and the fix.\n - AGENT_ENGINE_READINESS_UNKNOWN_DIRECT_MODE: The daemon serves no model gateway at all (direct mode): the box's own\nsecrets decide, so this daemon cannot say whether the engine would\nactually work — never reported as READY, since that would be a guess."
+    },
+    "AgentEngineStatus": {
+      "type": "object",
+      "properties": {
+        "engine": {
+          "$ref": "#/definitions/AgentEngine"
+        },
+        "provider": {
+          "$ref": "#/definitions/GatewayProvider",
+          "description": "The gateway provider this engine speaks (Provider in agentengine).\nGATEWAY_PROVIDER_UNSPECIFIED only if a future AgentEngine value has no\nprovider mapping yet."
+        },
+        "readiness": {
+          "$ref": "#/definitions/AgentEngineReadiness"
+        },
+        "reason": {
+          "type": "string",
+          "description": "Set exactly when readiness != READY: NOT_READY names the missing key\nand the fix command (the same text RunAgentSkill's refusal uses);\nUNKNOWN_DIRECT_MODE names why this daemon can't say."
+        },
+        "source": {
+          "$ref": "#/definitions/AgentCredentialSource"
+        },
+        "isDefault": {
+          "type": "boolean",
+          "description": "True for the one engine AGENT_ENGINE_UNSPECIFIED resolves to on this\ndaemon right now (gatewayPrimaryProvider's pick in gateway mode; the\nruntime's own default in direct mode)."
+        },
+        "skillIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Catalog skills whose manifest names this engine EXPLICITLY (#2222 Q2,\ndecided 2026-10-01) — never includes an unspecified-engine skill, even\none that would resolve to this engine via is_default."
+        }
+      },
+      "description": "AgentEngineStatus is one engine's readiness row, as ListAgentEngines\nreports it. One row per AgentEngine value (#2223)."
+    },
     "AgentSkill": {
       "type": "object",
       "properties": {
@@ -8839,7 +8969,11 @@
         },
         "model": {
           "type": "string",
-          "description": "Model identifier the runtime should drive this agent with (e.g.\n\"claude-opus-4-8\"). Empty = runtime default."
+          "description": "Model identifier the runtime should drive this agent with (e.g.\n\"claude-opus-4-8\"). Empty = runtime default. Exported to the box\n(CONTAINARIUM_AGENT_MODEL) only when `engine` is also set — an\nunspecified engine keeps this field display/audit-only, exactly as it\nwas before `engine` existed, so a daemon whose default engine does not\nmatch this model id does not have its skills break on upgrade."
+        },
+        "engine": {
+          "$ref": "#/definitions/AgentEngine",
+          "description": "Agent engine (SDK) this skill runs on. AGENT_ENGINE_UNSPECIFIED keeps\ntoday's behaviour: the daemon's configured gateway primary provider\npicks the engine in gateway mode, or the box's own default/env decides\nin direct mode. A named engine is honoured per run — see\ndocs/architecture/agent-router.md."
         }
       },
       "description": "AgentSkill is a packaged, runnable agent: a Recipe (the box — image,\nresources, GPU) plus the agent layer (who it is, what tools it may call,\nwho it may talk to). This is the unit `containarium agent run` launches.\n\nKey invariant: allowed_scopes and allowed_peers are typed, first-class\nfields — NOT a prompt string. allowed_scopes is minted into the agent's JWT\nat launch; allowed_peers compiles into eBPF network policy (Phase 2). The\ntyping IS the security boundary."
@@ -9490,6 +9624,10 @@
         "captureMode": {
           "$ref": "#/definitions/CaptureMode",
           "description": "How the log is written: FRAMED logs are demuxed by TailBoxRunLog."
+        },
+        "sessionId": {
+          "type": "string",
+          "description": "The engine's own session identifier (#2193), read back from the box\nshortly after the run starts: Claude Code's session id, or pi's session\nfile name. Empty when the engine exposes none, or when discovery hasn't\nfound one yet (a race with a just-started run — poll ListBoxRuns again).\nPass it to StartBoxRun's session_id to resume this exact conversation."
         }
       },
       "description": "BoxRun is one current run record on a box."
@@ -13243,6 +13381,23 @@
         }
       }
     },
+    "ListAgentEnginesResponse": {
+      "type": "object",
+      "properties": {
+        "engines": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/AgentEngineStatus"
+          },
+          "description": "One row per AgentEngine value (AGENT_ENGINE_UNSPECIFIED excluded — it\nnames no engine of its own to report readiness for)."
+        },
+        "keyOwner": {
+          "type": "string",
+          "description": "The key owner this response's READY/NOT_READY rows were resolved for.\nEmpty for an admin caller with no owner scope (the global view) or in\ndirect mode."
+        }
+      }
+    },
     "ListAgentSkillsResponse": {
       "type": "object",
       "properties": {
@@ -15446,6 +15601,10 @@
         "trackerConnection": {
           "type": "string",
           "description": "Name of a tracker connection (see TrackerConnection) owned by the\ncalling tenant that this run is bound to (#1922 design note, decision\nD3: \"a run is bound to exactly one connection at launch\"). Validated\nagainst the caller's own connections at launch time and minted into\nthe run's JWT as the `tracker_conn` claim — the tracker verb RPCs\nreject a request naming a different connection than this claim.\nEmpty means the run is not bound to any connection (every pre-#1922\nrun, and any run that doesn't use the tracker broker)."
+        },
+        "engine": {
+          "$ref": "#/definitions/AgentEngine",
+          "description": "Per-invocation engine override (#2228): when set, this run's engine is\nresolved from THIS value instead of the skill manifest's own `engine`\nfield — the same agentengine.Resolve readiness check applies either way,\nso an override naming an engine with no usable key is refused the same\nway an unready manifest engine is. UNSPECIFIED (the default) means \"use\nthe manifest\", unchanged pre-#2228 behavior."
         }
       },
       "description": "RunAgentSkillRequest launches a single skill in its box and sends it one\ntask (no peers). Useful for testing a skill in isolation."
@@ -15503,6 +15662,13 @@
         "gitCredential": {
           "type": "string",
           "description": "Bearer token for a private git_source. Used daemon-side for each\nmember's fetch only (an ephemeral http.extraHeader) — never written to\nany box's .git/config, never logged. Empty = public repo."
+        },
+        "engineOverrides": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/AgentEngine"
+          },
+          "description": "Per-member engine override (#2228), keyed by skill_id: when a member's\nid has an entry here, THIS value resolves that member's engine instead\nof its own manifest `engine` field — same agentengine.Resolve readiness\ncheck, same refusal text, as RunAgentSkillRequest.engine. A member with\nno entry (or AGENT_ENGINE_UNSPECIFIED) keeps its manifest's own choice,\nunchanged pre-#2228 behavior."
         }
       }
     },
@@ -16288,6 +16454,32 @@
         "message": {
           "type": "string",
           "title": "Status message"
+        }
+      }
+    },
+    "StartBoxRunBody": {
+      "type": "object",
+      "properties": {
+        "prompt": {
+          "type": "string",
+          "description": "The task to give the agent."
+        },
+        "sessionId": {
+          "type": "string",
+          "description": "Resume this specific session id instead of starting a fresh one\n(claude --resume \u003cid\u003e; pi --session \u003cid\u003e). Also becomes this run's\nrun_name: StartBoxRun on a box whose run under this name is still RUNNING\nor UNKNOWN is FAILED_PRECONDITION naming it — no queueing. Mutually\nexclusive with continue_session."
+        },
+        "continueSession": {
+          "type": "boolean",
+          "description": "Resume the engine's own \"most recent session in this box's working\ndirectory\" instead of starting a fresh one (`code run --continue`'s\nmeaning, unchanged). Mutually exclusive with session_id."
+        }
+      },
+      "description": "StartBoxRunRequest starts (or resumes) a coding-agent run on a box through\nthe daemon API — no SSH client, no agent-box RPC (#2193): the daemon\nroot-execs the same on-disk contract `containarium code run` leaves via\nagent-box's process_start, so ListBoxRuns and TailBoxRunLog read a\ndaemon-started run exactly like one `code run` started.\n\nThe engine and its credential source are never request fields: they come\nfrom the box's own ~/.containarium/code.json (`code install`, #1727) —\nthis RPC names WHAT TO SAY, never HOW TO RUN. Interactive sign-in is out of\nscope by the same rule #2030 settled for `code install`: this starts or\nresumes an already-authenticated session only."
+    },
+    "StartBoxRunResponse": {
+      "type": "object",
+      "properties": {
+        "run": {
+          "$ref": "#/definitions/BoxRun"
         }
       }
     },
