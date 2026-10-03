@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.98.0] - 2026-10-03
+
 ### Fixed
 
 - A skill box running on the `codex` engine had its gateway token exported
@@ -83,6 +85,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   actually does and what `containarium agent engines` reports can't drift
   apart. The MCP `run_agent_skill` tool gained the matching `engine`
   argument.
+- A daemon `StartBoxRun` RPC, and `containarium code run --session <id>`
+  (#2193, #2260). The daemon can now start or resume a coding-agent run on a
+  box through the same on-disk run contract `code run` uses, so `code runs`,
+  `code attach` and `code status` see a daemon-started run exactly like a
+  CLI-started one. It runs as the box's own Linux user and takes its engine and
+  credentials from the box's `~/.containarium/code.json`, never from the
+  request. A run name that is still `RUNNING` is refused with
+  `FAILED_PRECONDITION`; a finished one is rotated aside, and only after every
+  other precondition has passed, so a refused request never moves a finished
+  run's files. `--session` resumes that specific session (`claude --resume`,
+  `pi --session`), is mutually exclusive with `--continue`, and its id becomes
+  the run's name when `--name` is omitted. `code runs` gains a `SESSION`
+  column, `BoxRun` gains `session_id`, and the MCP `code_run` tool gains
+  `session_id`.
 
 ### Documentation
 
@@ -95,6 +111,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--base-domain` is later dropped, so removing the flag does not clear it.
 - `docs/APP-HOSTING-SUMMARY.md` no longer uses a real apex as its
   `--base-domain` example, and warns that the value persists.
+- README: a "Choose your path" table up front sends a new reader to the hosted
+  cloud, a self-hosted VM, or a live end result (#2248).
 
 ## [0.97.1] - 2026-10-02
 
