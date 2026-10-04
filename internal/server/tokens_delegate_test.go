@@ -444,7 +444,7 @@ func TestExchangeDelegatedToken_RunTokenCannotMintRunlessToken(t *testing.T) {
 	runToken, _, err := s.tokenManager.GenerateDelegatedTokenWithRun(
 		"agent-custom-skill", []string{}, 30*time.Minute,
 		&auth.Actor{Subject: "alice@example.com"},
-		"run-2069", "conn-a",
+		auth.RunBinding{RunID: "run-2069", TrackerConn: "conn-a"},
 		auth.ScopeTokensDelegate, auth.ScopeContainersRead)
 	if err != nil {
 		t.Fatalf("mint run token: %v", err)
