@@ -61,7 +61,7 @@ func (s *ContainerServer) GetTrackerIssue(ctx context.Context, req *pb.GetTracke
 	if req.Username == "" {
 		return nil, status.Error(codes.InvalidArgument, "username is required")
 	}
-	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+	if err := auth.AuthorizeTrackerTenant(ctx, req.Username); err != nil {
 		return nil, err
 	}
 
@@ -88,7 +88,7 @@ func (s *ContainerServer) ListTrackerIssues(ctx context.Context, req *pb.ListTra
 	if req.Username == "" {
 		return nil, status.Error(codes.InvalidArgument, "username is required")
 	}
-	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+	if err := auth.AuthorizeTrackerTenant(ctx, req.Username); err != nil {
 		return nil, err
 	}
 
@@ -124,7 +124,7 @@ func (s *ContainerServer) GetTrackerChange(ctx context.Context, req *pb.GetTrack
 	if req.Username == "" {
 		return nil, status.Error(codes.InvalidArgument, "username is required")
 	}
-	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+	if err := auth.AuthorizeTrackerTenant(ctx, req.Username); err != nil {
 		return nil, err
 	}
 

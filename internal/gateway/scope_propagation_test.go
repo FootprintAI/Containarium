@@ -215,7 +215,7 @@ func TestTrackerConnClaim_EndToEndPropagation(t *testing.T) {
 	}
 	mw := auth.NewAuthMiddleware(tm)
 
-	tok, _, err := tm.GenerateDelegatedTokenWithRun("alice", []string{"user"}, time.Hour, nil, "run-abc123", "default", auth.ScopeTrackerWrite)
+	tok, _, err := tm.GenerateDelegatedTokenWithRun("alice", []string{"user"}, time.Hour, nil, auth.RunBinding{RunID: "run-abc123", TrackerConn: "default"}, auth.ScopeTrackerWrite)
 	if err != nil {
 		t.Fatalf("GenerateDelegatedTokenWithRun: %v", err)
 	}
@@ -275,6 +275,89 @@ func TestTrackerConnClaim_AbsentClaimPropagatesAsAbsent(t *testing.T) {
 
 	if got := capturedMD.Get(auth.MDKeyTrackerConn); len(got) != 0 {
 		t.Fatalf("a run not bound to a connection should NOT propagate tracker_conn metadata; got %v", got)
+	}
+}
+
+// TestRunTenantClaim_EndToEndPropagation is TestTrackerConnClaim_EndToEndPropagation's
+// counterpart for the `run_tenant` claim (#2268): the tenant a run token
+// was started for must survive the same HTTP-middleware -> annotateContext
+// -> gRPC-metadata hop, since AuthorizeTrackerTenant matches req.Username
+// against it (the token's own subject is the box, agent-<skill-id>).
+func TestRunTenantClaim_EndToEndPropagation(t *testing.T) {
+	tm, err := auth.NewTokenManager("propagation-test-secret-at-least-32-bytes-ok", "test")
+	if err != nil {
+		t.Fatalf("NewTokenManager: %v", err)
+	}
+	mw := auth.NewAuthMiddleware(tm)
+
+	run := auth.RunBinding{RunID: "run-abc123", TrackerConn: "default", Tenant: "alice"}
+	tok, _, err := tm.GenerateDelegatedTokenWithRun("agent-product-define", nil, time.Hour, &auth.Actor{Subject: "alice"}, run, auth.ScopeTrackerWrite)
+	if err != nil {
+		t.Fatalf("GenerateDelegatedTokenWithRun: %v", err)
+	}
+
+	var capturedMD metadata.MD
+	stub := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedMD = annotateContext(r.Context(), r)
+		w.WriteHeader(http.StatusOK)
+	})
+	wrapped := mw.HTTPMiddleware(stub)
+
+	req := httptest.NewRequest("POST", "/v1/tracker/alice/default/issues/1/comments", nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	rec := httptest.NewRecorder()
+	wrapped.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	if got := capturedMD.Get(auth.MDKeyRunTenant); len(got) != 1 || got[0] != "alice" {
+		t.Fatalf("run_tenant metadata = %v; want [alice]", got)
+	}
+	if got := capturedMD.Get(auth.MDKeyUsername); len(got) != 1 || got[0] != "agent-product-define" {
+		t.Fatalf("username metadata = %v; want the box [agent-product-define] — the tenant travels in run_tenant, not as the subject", got)
+	}
+
+	grpcCtx := metadata.NewIncomingContext(context.Background(), capturedMD)
+	if got, ok := auth.RunTenantFromGRPCContext(grpcCtx); !ok || got != "alice" {
+		t.Fatalf("RunTenantFromGRPCContext = %q, %v; want alice, true", got, ok)
+	}
+	// What the tracker verbs do with it, on the metadata the handler sees.
+	if err := auth.AuthorizeTrackerTenant(grpcCtx, "alice"); err != nil {
+		t.Fatalf("AuthorizeTrackerTenant(alice) after the hop: %v", err)
+	}
+	if err := auth.AuthorizeTrackerTenant(grpcCtx, "bob"); err == nil {
+		t.Fatal("AuthorizeTrackerTenant(bob) after the hop: want PermissionDenied, got nil")
+	}
+}
+
+func TestRunTenantClaim_AbsentClaimPropagatesAsAbsent(t *testing.T) {
+	// An operator/human token (and any run token minted before #2268)
+	// carries no run_tenant — AuthorizeTrackerTenant must see it as absent,
+	// never as "" matching an empty req.Username.
+	tm, _ := auth.NewTokenManager("propagation-test-secret-at-least-32-bytes-ok", "test")
+	mw := auth.NewAuthMiddleware(tm)
+
+	tok, _, err := tm.GenerateDelegatedTokenWithID("alice", []string{"user"}, time.Hour, nil, "run-abc123", auth.ScopeTrackerWrite)
+	if err != nil {
+		t.Fatalf("GenerateDelegatedTokenWithID: %v", err)
+	}
+
+	var capturedMD metadata.MD
+	stub := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedMD = annotateContext(r.Context(), r)
+		w.WriteHeader(http.StatusOK)
+	})
+	wrapped := mw.HTTPMiddleware(stub)
+
+	req := httptest.NewRequest("POST", "/v1/tracker/alice/default/issues/1/comments", nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	rec := httptest.NewRecorder()
+	wrapped.ServeHTTP(rec, req)
+
+	if got := capturedMD.Get(auth.MDKeyRunTenant); len(got) != 0 {
+		t.Fatalf("a token minted without a run tenant should NOT propagate run_tenant metadata; got %v", got)
 	}
 }
 

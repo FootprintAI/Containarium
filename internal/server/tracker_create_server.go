@@ -49,7 +49,7 @@ func (s *ContainerServer) CreateTrackerIssue(ctx context.Context, req *pb.Create
 	if req.Username == "" {
 		return nil, status.Error(codes.InvalidArgument, "username is required")
 	}
-	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+	if err := auth.AuthorizeTrackerTenant(ctx, req.Username); err != nil {
 		return nil, err
 	}
 	title := sanitizeIssueTitle(req.Title)
