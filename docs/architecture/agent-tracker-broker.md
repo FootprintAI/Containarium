@@ -67,6 +67,21 @@ anti-forgery rule as the `act` claim: derived from the verified token, never
 from a request field. From the shell, bind a run with
 `containarium agent run <skill-id> --tracker-connection <conn>`.
 
+The binding is a *(tenant, connection)* pair, and the run JWT carries both
+halves (#2268). Its subject is the **box** (`agent-<skill-id>`, no roles) —
+not the tenant — so the generic per-tenant check (`auth.AuthorizeTenant`)
+can never match it to the tenant the in-box `tracker_*` tools name in
+`username`. The tenant the run was started for travels as the `run_tenant`
+claim, minted from the dispatching caller's verified subject (the same
+identity the connection was validated under). The tracker read/write verbs
+authorize with `auth.AuthorizeTrackerTenant`: unchanged for operator and
+admin tokens, and for a run token (`run_id` present) it passes for exactly
+the tenant in `run_tenant` — a run started for tenant A is still refused on
+tenant B's connection, same-named or not. Nothing else honors the claim: a
+run token is not the tenant for containers, secrets or any non-tracker RPC,
+and connection CRUD / routes / dispatch stay `tracker:admin`, a scope a run
+token never holds.
+
 **D4 — why the platform MCP.** The engine mounts only the in-box `agent-box`
 MCP today (`agent-runtime/src/engines/claude.ts`); `seed.ts` already carries
 `tokenPath` "for the platform MCP", and `cmd/mcp-server` already supports
@@ -231,6 +246,7 @@ from anything in the bundle or the box.
 | --- | --- |
 | Missing scope / revoked or expired JWT / lease ended | `PERMISSION_DENIED` / `UNAUTHENTICATED` before any upstream call |
 | Run token names a connection other than its claim | `PERMISSION_DENIED` |
+| Run token names a tenant other than its `run_tenant` claim | `PERMISSION_DENIED` |
 | No connection, or secret missing / not broker-mode | `FAILED_PRECONDITION`, names the connection, never the secret value |
 | Upstream 401/403 | `FAILED_PRECONDITION` "credential rejected by tracker" + audit event; surfaces in `tracker status` |
 | Upstream 429 / 5xx | `UNAVAILABLE` with retry-after when the provider supplies one. **No daemon-side retry of writes** — a duplicate comment is worse than a surfaced error |
@@ -271,7 +287,7 @@ is parsed and validated in `seed.ts`, not cast.
 | Any caller ↔ daemon | `TrackerService`: `Create/Get/List/DeleteTrackerConnection`, `GetTrackerStatus`, `GetTrackerIssue`, `ListTrackerIssues`, `GetTrackerChange`, `CommentOnTrackerIssue`, `ClaimTrackerIssue`, `SetTrackerIssueLabels`, `SubmitTrackerChange` | `proto/containarium/v1/tracker.proto` with `google.api.http` + OpenAPI annotations | `pkg/pb`, `.pb.gw.go`, swagger via `make proto` |
 | Enums | `TrackerProvider`, `TrackerIssueState`, `TrackerCiVerdict` (`UNSPECIFIED`, `NONE`, `PENDING`, `SUCCESS`, `FAILED`), `TrackerCredentialBreadth` (`PREFERRED`, `BROAD`) | same | same |
 | Secrets | `SECRET_DELIVERY_BROKER_ONLY = 4` | `secrets.proto` | same |
-| Run ↔ connection | `RunAgentSkillRequest.tracker_connection`; JWT claim `tracker_conn` on `auth.Claims` | `agent.proto`; `internal/auth/token.go` | — |
+| Run ↔ connection | `RunAgentSkillRequest.tracker_connection`; JWT claims `tracker_conn` + `run_tenant` on `auth.Claims` (minted together as `auth.RunBinding`) | `agent.proto`; `internal/auth/token.go` | — |
 | Scopes | `tracker:read`, `tracker:write`, `tracker:admin` (connection CRUD) | `internal/auth/scopes.go` | — |
 | Daemon ↔ in-box runtime | `platform_mcp.json` in the run's seed dir: `{command, args, server_url, token_file, tools}` | Go struct in `internal/server`, validated parse in `agent-runtime/src/seed.ts` | — (a fixture shared by both test suites pins it) |
 | Core ↔ adapters | `tracker.Provider` | `internal/tracker/provider.go` | — |

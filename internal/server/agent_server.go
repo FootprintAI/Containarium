@@ -825,6 +825,20 @@ func mintedAgentAct(ctx context.Context) *auth.Actor {
 	return &auth.Actor{Subject: username, Act: callerAct}
 }
 
+// mintedRunTenant is the tenant a run token is minted for (#2268): the
+// caller's own verified subject — the identity requireDispatchCaller
+// demanded and validateTrackerConnection looked the connection up under —
+// so the run_tenant claim can only ever name a tenant whose own token
+// started the run. Like mintedAgentAct, derived ONLY from ctx, never from
+// the request proto. "" (no claim) for an unauthenticated/system context.
+func mintedRunTenant(ctx context.Context) string {
+	username, _, ok := auth.SubjectFromGRPCContext(ctx)
+	if !ok {
+		return ""
+	}
+	return username
+}
+
 // mintedAgentTokenScopes computes the scopes for a skill's in-box token: the
 // intersection of the caller's own granted scopes and the skill manifest's
 // allowed_scopes (#1676). auth.ScopesFromGRPCContext — not the plain
@@ -856,6 +870,48 @@ func mintedAgentTokenScopes(ctx context.Context, skill *pb.AgentSkill) []string 
 // doc comment. A future admin-tier scope gets added here on the same
 // reasoning, not by auditing every skill manifest for it.
 var runForbiddenScopes = []string{auth.ScopeTrackerAdmin}
+
+// mintRunToken mints the run's platform JWT — the one credential every
+// in-box call back to the daemon presents — and returns it with the lease
+// credential record (jti + expiry) the run's exit revokes.
+//
+// The token is minted for the box's own subject (agent-<skill-id>, no
+// roles), scoped to the intersection of the CALLER's own granted scopes
+// and the skill's allowed_scopes (#1676: the manifest is a ceiling, never
+// a floor — a caller with no scopes claim/wildcard gets the manifest
+// unchanged, anyone else only receives scopes they already hold), carrying
+// the dispatching caller as its `act` delegation claim (#1677) so an
+// auditor asking "who authorized this?" doesn't get the name of a robot.
+// Minted through the WithRun variant so the daemon keeps the jti + expiry
+// of what it issued, with runID so the token itself says which run it
+// belongs to (the `run_id` claim), and with trackerConnection — already
+// validated against the caller's own tenant by validateTrackerConnection
+// before this function was called — so the token also says which tracker
+// connection the run is bound to (the `tracker_conn` claim, #1922 step 6).
+// Empty trackerConnection mints no claim, unchanged pre-#1922 behavior.
+//
+// The token also carries the tenant the run was started for (the
+// `run_tenant` claim, #2268) — the caller's own verified subject, the same
+// identity validateTrackerConnection checked the connection under — so the
+// tracker verbs can authorize the run for THAT tenant: its own subject is
+// the box, which auth.AuthorizeTenant can never match to the tenant the
+// in-box tracker_* tools name. See auth.AuthorizeTrackerTenant.
+//
+// This is the ONLY place a run token is minted: provisionSkillBoxWith
+// calls it for every run (RunAgentSkill, RunCrew, the tracker dispatcher),
+// and the tests that prove what a real run token can and cannot do call
+// it directly (#2268) rather than hand-building a subject.
+func (s *AgentSkillServer) mintRunToken(ctx context.Context, skill *pb.AgentSkill, runID, trackerConnection string) (token string, cred runlease.Credential, err error) {
+	name := agentBoxPrefix + skill.Id
+	run := auth.RunBinding{RunID: runID, TrackerConn: trackerConnection, Tenant: mintedRunTenant(ctx)}
+	token, minted, mintErr := s.tokens.GenerateDelegatedTokenWithRun(name, []string{}, agentTokenTTL, mintedAgentAct(ctx), run, mintedAgentTokenScopes(ctx, skill)...)
+	if mintErr != nil {
+		return "", runlease.Credential{}, status.Errorf(codes.Internal, "failed to mint scoped agent token: %v", mintErr)
+	}
+	return token, runlease.Credential{
+		Kind: runlease.KindPlatformJWT, JTI: minted.JTI, ExpiresAt: minted.ExpiresAt,
+	}, nil
+}
 
 // provisionSkillBox provisions (or reuses) the skill's box, mints its
 // credentials, seeds the task, and — when gitSource is set (#1859) —
@@ -1022,26 +1078,11 @@ func (s *AgentSkillServer) provisionSkillBoxWith(ctx context.Context, skill *pb.
 		}
 	}
 
-	// Mint a JWT scoped to the intersection of the CALLER's own granted scopes
-	// and the skill's allowed_scopes (#1676: the manifest is a ceiling, never
-	// a floor — a caller with no scopes claim/wildcard gets the manifest
-	// unchanged, anyone else only receives scopes they already hold), carrying
-	// the dispatching caller as its `act` delegation claim (#1677) so an
-	// auditor asking "who authorized this?" doesn't get the name of a robot.
-	// Minted through the WithRun variant so the daemon keeps the jti + expiry
-	// of what it issued, with runID so the token itself says which run it
-	// belongs to (the `run_id` claim), and with trackerConnection — already
-	// validated against the caller's own tenant by validateTrackerConnection
-	// before this function was called — so the token also says which tracker
-	// connection the run is bound to (the `tracker_conn` claim, #1922 step 6).
-	// Empty trackerConnection mints no claim, unchanged pre-#1922 behavior.
-	token, minted, mintErr := s.tokens.GenerateDelegatedTokenWithRun(name, []string{}, agentTokenTTL, mintedAgentAct(ctx), runID, trackerConnection, mintedAgentTokenScopes(ctx, skill)...)
+	token, platformCred, mintErr := s.mintRunToken(ctx, skill, runID, trackerConnection)
 	if mintErr != nil {
-		return "", nil, noLease, "", "", agentengine.Resolved{}, status.Errorf(codes.Internal, "failed to mint scoped agent token: %v", mintErr)
+		return "", nil, noLease, "", "", agentengine.Resolved{}, mintErr
 	}
-	lease.Credentials = append(lease.Credentials, runlease.Credential{
-		Kind: runlease.KindPlatformJWT, JTI: minted.JTI, ExpiresAt: minted.ExpiresAt,
-	})
+	lease.Credentials = append(lease.Credentials, platformCred)
 
 	// Seed the prompt/token/input/card into the box.
 	cardJSON := ""

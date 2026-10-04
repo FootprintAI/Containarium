@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A dispatched skill run could not call any tracker verb for its own tenant
+  (#2268). The run JWT is minted for the box's subject (`agent-<skill-id>`,
+  no roles), while every `tracker_*` verb authorized the tenant named in the
+  request against that subject — so `tracker_comment`, `tracker_create_issue`,
+  `tracker_submit_change` and the reads were refused from inside every real
+  run. The server tests never caught it because they built the run's context
+  with the tenant as the subject by hand. The run JWT now also carries the
+  tenant it was started for (`run_tenant`, derived from the dispatching
+  caller's verified subject — the same identity its `tracker_conn` was
+  validated under — and reserved against header injection), and the tracker
+  read/write verbs authorize a run token for exactly that tenant
+  (`auth.AuthorizeTrackerTenant`). Operator and admin tokens are unchanged;
+  a run token is still not the tenant anywhere else, and a run started for
+  tenant A is still refused on tenant B's connection. The new tests mint
+  through the real run-token path and present the token through the real
+  auth middleware, so a hand-built subject can no longer hide a mismatch.
+
 ### Added
 
 - `containarium code install --engine codex` installs OpenAI's Codex CLI
