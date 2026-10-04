@@ -337,6 +337,25 @@ func (s *TokensServer) ExchangeDelegatedToken(ctx context.Context, req *pb.Excha
 		return nil, err
 	}
 
+	// A run token never delegates (#2069). The token minted below carries no
+	// run_id, and every run-token guard — #2060's lineage binding, #2112's
+	// taskRunID, the run_log claim check — applies only `if runID != ""`. A
+	// run-bound caller that got here would walk out of its own run with all
+	// of them shed at once.
+	//
+	// runForbiddenScopes already strips tokens:delegate when a run token is
+	// minted; this refusal is the same rule at the point of use, so a run
+	// token minted before that (still live until it expires) or by any
+	// future mint path that bypasses mintedAgentTokenScopes is caught too.
+	// Refusing, rather than copying the caller's run_id onto the new token,
+	// keeps this endpoint what it is: a fronting service acting for a user,
+	// which never happens from inside a run.
+	if runID, isRun := auth.RunIDFromGRPCContext(ctx); isRun {
+		return nil, status.Errorf(codes.PermissionDenied,
+			"run token (run_id %q) cannot exchange for a delegated token: the result would carry no run_id "+
+				"and so escape every run-scoped guard", runID)
+	}
+
 	// This endpoint FAILS CLOSED on an unscoped token, regardless of
 	// CONTAINARIUM_STRICT_SCOPES. Everywhere else a missing scopes claim is
 	// tolerated (#1679) so that tokens minted before scopes existed keep

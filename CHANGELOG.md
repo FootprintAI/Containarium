@@ -17,6 +17,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gateway's provider generalization lands (tracked separately). See
   `docs/integrations/codex.md`.
 
+### Fixed
+
+- A run token can no longer delegate its way out of its own run (#2069).
+  `ExchangeDelegatedToken` mints a token with no `run_id`, and every
+  run-token guard (the #2060 scope-label lineage binding, #2112's
+  `SendAgentTask` run check, `TailRunLog`'s claim check) applies only to a
+  token that carries one. `tokens:delegate` is now in `runForbiddenScopes`,
+  so it is stripped from every minted run token whatever the skill manifest
+  grants, and `ExchangeDelegatedToken` refuses any caller carrying a
+  `run_id` with `PermissionDenied`. No shipped skill grants
+  `tokens:delegate`; a custom skill loaded via `CONTAINARIUM_SKILLS_DIR`
+  could. Delegation from a token with no `run_id` (an operator or fronting
+  service) is unchanged.
+
 ## [0.98.0] - 2026-10-03
 
 ### Fixed
