@@ -11,6 +11,7 @@ import (
 	"time"
 
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // `containarium tracker dispatch` / `tracker dispatches` (#2022).
@@ -159,6 +160,27 @@ func TestTrackerDispatches_HTTPModeHitsGatewayPath(t *testing.T) {
 	}
 	if !strings.Contains(out, "failed") || !strings.Contains(out, "run did not start: boom") {
 		t.Errorf("output = %q, want the state and failure reason", out)
+	}
+}
+
+// A row whose run still holds lineage reservations (#2062) says how many
+// and since when; a row with none says nothing extra.
+func TestPrintTrackerDispatches_LineageReservations(t *testing.T) {
+	since := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	out := captureStdout(t, func() {
+		printTrackerDispatches("alice", "default", []*pb.TrackerDispatch{
+			{IssueNumber: 7, Scope: "product", SkillId: "product-define", RunId: "run-7",
+				State: pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_RUNNING, LineageReservations: 2,
+				OldestLineageReservationAt: timestamppb.New(since)},
+			{IssueNumber: 8, Scope: "product", SkillId: "product-define", RunId: "run-8",
+				State: pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_RUNNING},
+		})
+	})
+	if !strings.Contains(out, "reserved=2 since 2026-01-02T03:04:05Z") {
+		t.Errorf("output = %q, want run-7's reservations and their age", out)
+	}
+	if strings.Count(out, "reserved=") != 1 {
+		t.Errorf("output = %q, want only run-7 to report reservations", out)
 	}
 }
 
