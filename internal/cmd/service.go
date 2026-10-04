@@ -342,6 +342,7 @@ func renderIncusCPUWeightDropIn() string {
 // applyPlatformCPUWeightNow for the already-running incusd.
 func ensureIncusCPUWeightDropIn(root string) error {
 	path := filepath.Join(root, incusCPUWeightDropInPath)
+	// #nosec G301 -- systemd drop-in directory under /etc/systemd/system, world-readable by convention like its parent; no secrets
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("failed to create %s: %w", filepath.Dir(path), err)
 	}
