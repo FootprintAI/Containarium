@@ -298,10 +298,17 @@ Treat `is-failed` as the cheap first layer, not the whole story. The
 out-of-band supplement is the metrics-export backup-health series
 (`containarium monitoring export enable`, if not already on for other
 reasons) — one gauge per tenant, recomputed from this same on-disk
-index at every export tick, alertable even when the host it runs on is
-completely unreachable. See
-`docs/METRICS-EXPORT-DEADMAN-ALERT-RUNBOOK.md`'s "Backup-health alert"
-section for the metric and a ready-to-use alert policy.
+index at every export tick. Its actual coverage is narrower than "the
+host died": a gauge nobody is re-observing simply freezes at its last
+reported value rather than climbing past any threshold, so a genuinely
+dead host is still the existing `containarium.export.heartbeat`
+dead-man alert's job, not this one. What this series catches that
+*neither* `is-failed` *nor* the heartbeat can is the host and daemon
+staying perfectly healthy while the backup schedule itself silently
+breaks. See `docs/METRICS-EXPORT-DEADMAN-ALERT-RUNBOOK.md`'s
+"Backup-health alert" section for the metric, its actual scope, and a
+ready-to-use alert policy — and keep the heartbeat policy configured
+alongside it for host-death coverage.
 
 For a tighter RPO than "nightly," add Postgres WAL archiving inside the
 container (`archive_command` → GCS) on top of these base dumps; that gives

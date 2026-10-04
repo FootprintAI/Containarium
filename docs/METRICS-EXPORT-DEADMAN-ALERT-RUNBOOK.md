@@ -382,10 +382,19 @@ gcloud alpha monitoring policies create \
   the backup-health series is present and updating every tick for as
   long as the daemon is alive, with a *value* that climbs when stale —
   a threshold condition on that value is the right primitive, the same
-  reasoning as the provisioning-failure policy above. `conditionAbsent`
-  only fits a signal that should always exist and climbs stop; this
-  series' absence means "never backed up," a setup gap, not a staleness
-  page.
+  reasoning as the provisioning-failure policy above. **This policy
+  alone does NOT cover a dead host or dead daemon**: once nothing is
+  re-observing the gauge, it freezes at whatever age it last reported
+  and never climbs further, so it will not cross the threshold just
+  because the host went dark days ago. That coverage is specifically
+  the existing heartbeat dead-man policy's job (`conditionAbsent` on
+  `containarium.export.heartbeat`) — configure both, not one in place
+  of the other; they catch genuinely different failures.
+  `conditionAbsent` on the backup series itself only fits "a tenant
+  that already has backup history suddenly has none" and even then
+  behaves like this threshold does once the host is dead (the series
+  simply stops updating rather than vanishing outright) — it is not a
+  substitute for the heartbeat.
 - **`duration: "0s"`**: the series already represents elapsed time, so
   there is no need to also require the threshold to hold for a window —
   a single aligned point past the threshold means the backup really is
@@ -425,8 +434,17 @@ Not reproducible in CI, same as every policy in this runbook:
   backed up nightly.
 - **A tenant that's never been activated is invisible to this alert, not
   silently passing it:** no series point exists for them at all (see
-  above). If you need to be paged for "I expected tenant X to have
-  backups and it never does," that is `conditionAbsent` on this same
-  metric type scoped to that username — a different, narrower policy
-  than the one above, and arguably a one-time setup check rather than a
-  recurring alert.
+  above). A `conditionAbsent` policy scoped to that username does
+  **not** reliably fix this: Cloud Monitoring's metric-absence
+  evaluation is generally only meaningful for a label combination that
+  has matched real data at least once — a username that has never
+  appeared in this series at all has no prior time series for the
+  policy to watch go absent, so it can sit silently un-firing forever,
+  exactly the "setup appears configured, nothing ever happens" trap
+  `docs/DB-BACKUP-OPERATIONS.md` already warns about for the backup
+  mechanism itself. If you need "I expected tenant X to have backups
+  and it never does," use an inventory-based check instead — compare
+  the tenants you expect (e.g. `/etc/containarium/backup-tenants.conf`)
+  against which `username` values actually show up in this metric in
+  Metrics Explorer or via the API, not an alert policy on the metric
+  itself.
