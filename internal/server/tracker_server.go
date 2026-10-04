@@ -134,9 +134,6 @@ func (s *ContainerServer) SetTrackerConnection(ctx context.Context, req *pb.SetT
 	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
 		return nil, err
 	}
-	if err := validateTrackerConnectionName(req.Username, req.Name); err != nil {
-		return nil, err
-	}
 
 	if err := s.requireBrokerOnlySecret(ctx, req.Username, req.CredentialSecret); err != nil {
 		return nil, err
@@ -506,55 +503,6 @@ func toProtoTrackerConnection(c *tracker.Connection) *pb.TrackerConnection {
 		out.CredentialExpiresAt = timestamppb.New(c.CredentialExpiresAt)
 	}
 	return out
-}
-
-// reservedTrackerConnectionNames are the connection-name literals that
-// appear as fixed path segments right after {username}/{connection} in
-// proto/containarium/v1/tracker.proto's REST mapping. A connection
-// literally named one of these makes
-// GET /v1/tracker/connections/{username}/{name} unreachable over REST for
-// that name: e.g. GET /v1/tracker/connections/alice/routes matches BOTH
-// GetTrackerConnection(username=alice, name=routes) and
-// ListTrackerRoutes(username=connections, connection=alice) — grpc-gateway
-// v2 resolves the later-registered pattern, so GetTrackerConnection loses
-// (#2035). Keep this in sync with every new `/{username}/{connection}/<verb>`
-// literal the design adds — see docs/architecture/agent-tracker-broker.md's
-// REST-surface note.
-var reservedTrackerConnectionNames = map[string]bool{
-	"issues":     true, // GET /v1/tracker/{username}/{connection}/issues (and /{number}, /{number}/comments, /{number}/claim, /{number}/labels)
-	"changes":    true, // POST /v1/tracker/{username}/{connection}/changes, GET .../changes/{number}
-	"routes":     true, // GET/PUT/DELETE /v1/tracker/{username}/{connection}/routes[/{scope}]
-	"dispatch":   true, // POST /v1/tracker/{username}/{connection}/dispatch
-	"dispatches": true, // GET /v1/tracker/{username}/{connection}/dispatches
-}
-
-// reservedTrackerUsernames are username literals that collide with the
-// OTHER half of the same path family: GET
-// /v1/tracker/connections/{username}/{name} treats "connections" as a
-// fixed segment, so a username literally equal to "connections" makes
-// /v1/tracker/connections/<connection>/issues ambiguous between
-// GetTrackerConnection(username=<connection>, name="issues") and
-// ListTrackerIssues(username="connections", connection=<connection>)
-// (#2035).
-var reservedTrackerUsernames = map[string]bool{
-	"connections": true,
-}
-
-// validateTrackerConnectionName rejects a username or connection name that
-// collides with a fixed REST path segment elsewhere in TrackerService's
-// `google.api.http` mapping (#2035). Checked at SetTrackerConnection so the
-// collision is refused at creation time instead of silently shadowing a
-// verb over REST later.
-func validateTrackerConnectionName(username, name string) error {
-	if reservedTrackerUsernames[username] {
-		return status.Errorf(codes.InvalidArgument,
-			"username %q is reserved for the tracker REST surface and cannot be used as a tracker connection's username", username)
-	}
-	if reservedTrackerConnectionNames[name] {
-		return status.Errorf(codes.InvalidArgument,
-			"connection name %q is reserved for the tracker REST surface and cannot be used as a connection name", name)
-	}
-	return nil
 }
 
 // validateTrackerPolicy rejects a policy that can't mean anything: a
