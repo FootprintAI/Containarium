@@ -275,6 +275,7 @@ func (s *BackupServer) VerifyBackup(ctx context.Context, req *pb.VerifyBackupReq
 		SourceContainer: sourceName,
 		Conn:            connFromProto(req.Connection),
 		VerifiedBy:      subject,
+		AgeIdentity:     req.AgeIdentity, // per-call; never logged or stored (#1831, #2295)
 	})
 	if err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "verification could not run: %v", err)
