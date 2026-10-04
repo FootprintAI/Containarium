@@ -37,6 +37,12 @@ label. A scope:* label with no route gets one warning comment.
 
   containarium tracker dispatch alice default --once
   containarium tracker dispatch alice default --interval 60s
+  containarium tracker dispatch alice default --once --max-starts 2
+
+--max-starts N stops each tick once N runs have started (failed starts
+and skipped issues do not count). The eligible issues past the limit get
+no dispatch row and no label, so a later tick picks them up; the tick
+line reports them as left-undispatched.
 
 Requires tracker:admin and agents:run.`,
 	Args: cobra.ExactArgs(2),
@@ -56,6 +62,9 @@ var (
 	trackerDispatchOnce     bool
 	trackerDispatchInterval time.Duration
 	trackerDispatchesState  string
+	// trackerDispatchMaxStarts bounds the runs each tick starts (#2270);
+	// 0 is unlimited.
+	trackerDispatchMaxStarts int32
 )
 
 func init() {
@@ -63,6 +72,8 @@ func init() {
 	trackerDispatchCmd.Flags().BoolVar(&trackerDispatchOnce, "once", false, "Run one tick and exit.")
 	trackerDispatchCmd.Flags().DurationVar(&trackerDispatchInterval, "interval", defaultDispatchInterval,
 		"Time between ticks when looping (minimum 1s). Stops on Ctrl-C / SIGTERM.")
+	trackerDispatchCmd.Flags().Int32Var(&trackerDispatchMaxStarts, "max-starts", 0,
+		"Most runs each tick may start; the rest are left for a later tick. 0 is unlimited.")
 
 	trackerCmd.AddCommand(trackerDispatchesCmd)
 	trackerDispatchesCmd.Flags().StringVar(&trackerDispatchesState, "state", "",
@@ -72,7 +83,7 @@ func init() {
 // trackerDispatchClient is the slice of the typed client these commands
 // need; both transports satisfy it.
 type trackerDispatchClient interface {
-	DispatchTrackerIssues(username, connection string) (*pb.DispatchTrackerIssuesResponse, error)
+	DispatchTrackerIssues(username, connection string, maxStarts int32) (*pb.DispatchTrackerIssuesResponse, error)
 	ListTrackerDispatches(username, connection string, state pb.TrackerDispatchState) ([]*pb.TrackerDispatch, error)
 	Close() error
 }
@@ -93,8 +104,12 @@ func newTrackerDispatchClient() (trackerDispatchClient, error) {
 }
 
 // validateDispatchFlags rejects --once combined with an explicit
-// --interval, and an interval short enough to hammer the forge.
-func validateDispatchFlags(once bool, interval time.Duration, intervalChanged bool) error {
+// --interval, an interval short enough to hammer the forge, and a
+// negative --max-starts.
+func validateDispatchFlags(once bool, interval time.Duration, intervalChanged bool, maxStarts int32) error {
+	if maxStarts < 0 {
+		return fmt.Errorf("--max-starts must be 0 (unlimited) or positive, got %d", maxStarts)
+	}
 	if once && intervalChanged {
 		return fmt.Errorf("--once and --interval are mutually exclusive")
 	}
@@ -149,7 +164,7 @@ func runDispatchLoop(ctx context.Context, once bool, interval time.Duration, tic
 func runTrackerDispatch(cmd *cobra.Command, args []string) error {
 	username, connection := args[0], args[1]
 	intervalChanged := cmd.Flags().Changed("interval")
-	if err := validateDispatchFlags(trackerDispatchOnce, trackerDispatchInterval, intervalChanged); err != nil {
+	if err := validateDispatchFlags(trackerDispatchOnce, trackerDispatchInterval, intervalChanged, trackerDispatchMaxStarts); err != nil {
 		return err
 	}
 	c, err := newTrackerDispatchClient()
@@ -166,7 +181,7 @@ func runTrackerDispatch(cmd *cobra.Command, args []string) error {
 	defer stop()
 
 	tick := func() error {
-		resp, err := c.DispatchTrackerIssues(username, connection)
+		resp, err := c.DispatchTrackerIssues(username, connection, trackerDispatchMaxStarts)
 		if err != nil {
 			return err
 		}
@@ -209,9 +224,10 @@ func printDispatchTick(resp *pb.DispatchTrackerIssuesResponse) {
 		fmt.Printf("%s swept   #%d %s%s -> %s (run %s) %s: %s\n", ts, d.GetIssueNumber(), scopeLabelPrefix, d.GetScope(), d.GetSkillId(),
 			d.GetRunId(), cause, d.GetFailureReason())
 	}
-	fmt.Printf("%s tick: started=%d failed=%d timed_out=%d skipped approval=%d active=%d unrouted=%d over-depth=%d\n", ts,
+	fmt.Printf("%s tick: started=%d failed=%d timed_out=%d skipped approval=%d active=%d unrouted=%d over-depth=%d left-undispatched=%d\n", ts,
 		len(resp.GetStarted()), len(resp.GetFailed()), len(resp.GetTimedOut()),
-		resp.GetSkippedNeedsApproval(), resp.GetSkippedActive(), resp.GetSkippedUnrouted(), resp.GetSkippedOverDepth())
+		resp.GetSkippedNeedsApproval(), resp.GetSkippedActive(), resp.GetSkippedUnrouted(), resp.GetSkippedOverDepth(),
+		resp.GetLeftUndispatched())
 }
 
 // lineageReservationsDetail names the fan-out slots a row's run still

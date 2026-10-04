@@ -1681,11 +1681,12 @@ func (c *GRPCClient) DeleteTrackerRoute(req *pb.DeleteTrackerRouteRequest) (stri
 
 // DispatchTrackerIssues runs one dispatcher tick (#2022). Same long
 // deadline as the HTTP transport: the tick provisions boxes
-// synchronously.
-func (c *GRPCClient) DispatchTrackerIssues(username, connection string) (*pb.DispatchTrackerIssuesResponse, error) {
+// synchronously. maxStarts bounds the runs the tick starts (#2270); 0
+// is unlimited.
+func (c *GRPCClient) DispatchTrackerIssues(username, connection string, maxStarts int32) (*pb.DispatchTrackerIssuesResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), TrackerDispatchTimeout)
 	defer cancel()
-	resp, err := c.trackerClient.DispatchTrackerIssues(ctx, &pb.DispatchTrackerIssuesRequest{Username: username, Connection: connection})
+	resp, err := c.trackerClient.DispatchTrackerIssues(ctx, &pb.DispatchTrackerIssuesRequest{Username: username, Connection: connection, MaxStarts: maxStarts})
 	if err != nil {
 		return nil, fmt.Errorf("dispatch tracker issues: %w", err)
 	}

@@ -51,6 +51,9 @@ func (s *ContainerServer) DispatchTrackerIssues(ctx context.Context, req *pb.Dis
 	if err := requireDispatchCaller(ctx, req.Username); err != nil {
 		return nil, err
 	}
+	if req.MaxStarts < 0 {
+		return nil, status.Errorf(codes.InvalidArgument, "max_starts must be 0 (unlimited) or positive, got %d", req.MaxStarts)
+	}
 	if s.trackerRunStarter == nil {
 		return nil, status.Error(codes.Unavailable, "tracker dispatch is not configured on this daemon (no run starter)")
 	}
@@ -94,6 +97,8 @@ func (s *ContainerServer) DispatchTrackerIssues(ctx context.Context, req *pb.Dis
 		// The sweep (#2026): this daemon's view of its live dispatched
 		// runs, and the success metrics.
 		Observer: trackerDispatchObserverFromGlobal(),
+		// The caller's per-tick budget (#2270); 0 is unlimited.
+		MaxStarts: req.MaxStarts,
 	}
 	if leases, ok := s.trackerRunStarter.(tracker.RunLeases); ok {
 		d.Leases = leases
@@ -108,6 +113,7 @@ func (s *ContainerServer) DispatchTrackerIssues(ctx context.Context, req *pb.Dis
 		SkippedActive:        res.SkippedActive,
 		SkippedUnrouted:      res.SkippedUnrouted,
 		SkippedOverDepth:     res.SkippedOverDepth,
+		LeftUndispatched:     res.LeftUndispatched,
 	}
 	for i := range res.Started {
 		out.Started = append(out.Started, toProtoTrackerDispatch(&res.Started[i]))
@@ -118,9 +124,9 @@ func (s *ContainerServer) DispatchTrackerIssues(ctx context.Context, req *pb.Dis
 	for i := range res.TimedOut {
 		out.TimedOut = append(out.TimedOut, toProtoTrackerDispatch(&res.TimedOut[i]))
 	}
-	log.Printf("[tracker] dispatch %s/%s: started=%d failed=%d timed_out=%d skipped(approval=%d active=%d unrouted=%d over_depth=%d)",
+	log.Printf("[tracker] dispatch %s/%s: started=%d failed=%d timed_out=%d skipped(approval=%d active=%d unrouted=%d over_depth=%d) left_undispatched=%d",
 		req.Username, req.Connection, len(res.Started), len(res.Failed), len(res.TimedOut),
-		res.SkippedNeedsApproval, res.SkippedActive, res.SkippedUnrouted, res.SkippedOverDepth)
+		res.SkippedNeedsApproval, res.SkippedActive, res.SkippedUnrouted, res.SkippedOverDepth, res.LeftUndispatched)
 	return out, nil
 }
 

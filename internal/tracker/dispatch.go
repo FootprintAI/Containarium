@@ -136,6 +136,12 @@ type Dispatcher struct {
 	// Observer receives every terminal transition (#2026 metrics). nil
 	// records nothing.
 	Observer DispatchObserver
+	// MaxStarts bounds how many runs one Tick starts (#2270). Only runs
+	// that actually started count — not skips, not failed starts. An
+	// eligible issue past the limit gets no row and no label (a later
+	// tick picks it up) and is counted in TickResult.LeftUndispatched.
+	// Zero or negative means unlimited; the RPC rejects negative.
+	MaxStarts int32
 
 	// leaseEndBudget overrides DefaultLeaseEndBudget (tests).
 	leaseEndBudget time.Duration
@@ -155,6 +161,10 @@ type TickResult struct {
 	// SkippedOverDepth counts issues whose recorded lineage depth
 	// exceeds the policy's max_depth (#2025).
 	SkippedOverDepth int32
+	// LeftUndispatched counts issues that passed every check made before
+	// the insert but were not dispatched because MaxStarts runs had
+	// already started (#2270).
+	LeftUndispatched int32
 }
 
 // Tick lists the connection's open issues and, for each one with a
@@ -253,6 +263,14 @@ func (d *Dispatcher) Tick(ctx context.Context, username, connection string) (Tic
 		}
 		if !policy.DepthAllowed(depth) {
 			res.SkippedOverDepth++
+			continue
+		}
+
+		// The caller's budget (#2270): once MaxStarts runs have started,
+		// an issue that got this far is left for a later tick — no row, no
+		// label. Checked before the insert so nothing is written for it.
+		if d.MaxStarts > 0 && int32(len(res.Started)) >= d.MaxStarts {
+			res.LeftUndispatched++
 			continue
 		}
 

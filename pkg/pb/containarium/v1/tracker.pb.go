@@ -1637,9 +1637,15 @@ func (x *TrackerDispatchInput) GetUsername() string {
 // the routed skill, label agent:queued. `containarium tracker
 // dispatch --interval` calls this in a loop.
 type DispatchTrackerIssuesRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Username      string                 `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"`
-	Connection    string                 `protobuf:"bytes,2,opt,name=connection,proto3" json:"connection,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Username   string                 `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"`
+	Connection string                 `protobuf:"bytes,2,opt,name=connection,proto3" json:"connection,omitempty"`
+	// Most runs this tick may start (#2270), so a caller enforcing its
+	// own budget (concurrency, runs per day) can bound one tick. Only
+	// runs that actually started count; a start that failed does not.
+	// Issues past the limit get no dispatch row and no label, so a later
+	// tick picks them up. 0 means unlimited; negative is rejected.
+	MaxStarts     int32 `protobuf:"varint,3,opt,name=max_starts,json=maxStarts,proto3" json:"max_starts,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1688,6 +1694,13 @@ func (x *DispatchTrackerIssuesRequest) GetConnection() string {
 	return ""
 }
 
+func (x *DispatchTrackerIssuesRequest) GetMaxStarts() int32 {
+	if x != nil {
+		return x.MaxStarts
+	}
+	return 0
+}
+
 type DispatchTrackerIssuesResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Dispatches this tick inserted and started: RUNNING once the run
@@ -1714,6 +1727,12 @@ type DispatchTrackerIssuesResponse struct {
 	// max_depth (#2025) — filed under a looser policy, then lowered. The
 	// daemon reads depth from its own lineage table, never the issue.
 	SkippedOverDepth int32 `protobuf:"varint,7,opt,name=skipped_over_depth,json=skippedOverDepth,proto3" json:"skipped_over_depth,omitempty"`
+	// Issues that passed every check this tick makes before inserting a
+	// dispatch row (routed scope, no gate or state label, depth within
+	// policy) but were not dispatched because max_starts runs had already
+	// started (#2270). They have no row and no label; a later tick picks
+	// them up. Always 0 when max_starts is 0.
+	LeftUndispatched int32 `protobuf:"varint,8,opt,name=left_undispatched,json=leftUndispatched,proto3" json:"left_undispatched,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -1793,6 +1812,13 @@ func (x *DispatchTrackerIssuesResponse) GetFailed() []*TrackerDispatch {
 func (x *DispatchTrackerIssuesResponse) GetSkippedOverDepth() int32 {
 	if x != nil {
 		return x.SkippedOverDepth
+	}
+	return 0
+}
+
+func (x *DispatchTrackerIssuesResponse) GetLeftUndispatched() int32 {
+	if x != nil {
+		return x.LeftUndispatched
 	}
 	return 0
 }
@@ -3539,12 +3565,14 @@ const file_containarium_v1_tracker_proto_rawDesc = "" +
 	"\vdispatch_id\x18\x04 \x01(\tR\n" +
 	"dispatchId\x12\x14\n" +
 	"\x05depth\x18\x05 \x01(\x05R\x05depth\x12\x1a\n" +
-	"\busername\x18\x06 \x01(\tR\busername\"Z\n" +
+	"\busername\x18\x06 \x01(\tR\busername\"y\n" +
 	"\x1cDispatchTrackerIssuesRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x1e\n" +
 	"\n" +
 	"connection\x18\x02 \x01(\tR\n" +
-	"connection\"\x8a\x03\n" +
+	"connection\x12\x1d\n" +
+	"\n" +
+	"max_starts\x18\x03 \x01(\x05R\tmaxStarts\"\xb7\x03\n" +
 	"\x1dDispatchTrackerIssuesResponse\x12:\n" +
 	"\astarted\x18\x01 \x03(\v2 .containarium.v1.TrackerDispatchR\astarted\x12=\n" +
 	"\ttimed_out\x18\x02 \x03(\v2 .containarium.v1.TrackerDispatchR\btimedOut\x124\n" +
@@ -3552,7 +3580,8 @@ const file_containarium_v1_tracker_proto_rawDesc = "" +
 	"\x0eskipped_active\x18\x04 \x01(\x05R\rskippedActive\x12)\n" +
 	"\x10skipped_unrouted\x18\x05 \x01(\x05R\x0fskippedUnrouted\x128\n" +
 	"\x06failed\x18\x06 \x03(\v2 .containarium.v1.TrackerDispatchR\x06failed\x12,\n" +
-	"\x12skipped_over_depth\x18\a \x01(\x05R\x10skippedOverDepth\"\x97\x01\n" +
+	"\x12skipped_over_depth\x18\a \x01(\x05R\x10skippedOverDepth\x12+\n" +
+	"\x11left_undispatched\x18\b \x01(\x05R\x10leftUndispatched\"\x97\x01\n" +
 	"\x1cListTrackerDispatchesRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x1e\n" +
 	"\n" +
@@ -3714,7 +3743,7 @@ const file_containarium_v1_tracker_proto_rawDesc = "" +
 	"$TRACKER_DISPATCH_FAILURE_START_ERROR\x10\x01\x12&\n" +
 	"\"TRACKER_DISPATCH_FAILURE_RUN_ERROR\x10\x02\x12$\n" +
 	" TRACKER_DISPATCH_FAILURE_TIMEOUT\x10\x03\x12'\n" +
-	"#TRACKER_DISPATCH_FAILURE_LEASE_LOST\x10\x042\xe9A\n" +
+	"#TRACKER_DISPATCH_FAILURE_LEASE_LOST\x10\x042\xa9C\n" +
 	"\x0eTrackerService\x12\xb8\x03\n" +
 	"\x14SetTrackerConnection\x12,.containarium.v1.SetTrackerConnectionRequest\x1a-.containarium.v1.SetTrackerConnectionResponse\"\xc2\x02\x92A\x9c\x02\n" +
 	"\aTracker\x12%Create or update a tracker connection\x1a\xe9\x01Registers where a tenant's issue tracker is (provider, base URL, project) and which broker-only secret holds its credential. The credential itself is never accepted or returned here — only the secret's name. Requires tracker:admin.\x82\xd3\xe4\x93\x02\x1c:\x01*\"\x17/v1/tracker/connections\x12\xa8\x02\n" +
@@ -3729,9 +3758,9 @@ const file_containarium_v1_tracker_proto_rawDesc = "" +
 	"\x11ListTrackerRoutes\x12).containarium.v1.ListTrackerRoutesRequest\x1a*.containarium.v1.ListTrackerRoutesResponse\"\xcb\x01\x92A\x89\x01\n" +
 	"\aTracker\x12\x19List tracker scope routes\x1acLists every scope -> skill route on a tracker connection, ordered by scope. Requires tracker:admin.\x82\xd3\xe4\x93\x028\x126/v1/tracker/connections/{username}/{connection}/routes\x12\xe4\x02\n" +
 	"\x12DeleteTrackerRoute\x12*.containarium.v1.DeleteTrackerRouteRequest\x1a+.containarium.v1.DeleteTrackerRouteResponse\"\xf4\x01\x92A\xaa\x01\n" +
-	"\aTracker\x12\x1cDelete a tracker scope route\x1a\x80\x01Removes the route for scope:<scope> on this connection; issues with that label are no longer dispatched. Requires tracker:admin.\x82\xd3\xe4\x93\x02@*>/v1/tracker/connections/{username}/{connection}/routes/{scope}\x12\xff\a\n" +
-	"\x15DispatchTrackerIssues\x12-.containarium.v1.DispatchTrackerIssuesRequest\x1a..containarium.v1.DispatchTrackerIssuesResponse\"\x86\a\x92A\xbf\x06\n" +
-	"\aTracker\x12\x1dRun one tracker dispatch tick\x1a\x94\x06Lists the connection's open issues and, for each one carrying a routed scope:<role> label and no agent:* state label (and not agent:needs-approval), inserts a durable dispatch row, starts the routed skill through the RunAgentSkill path with the issue reference as input, and labels the issue agent:queued. Exactly once per (issue) across restarts and concurrent dispatchers: a partial unique index on active rows makes the second inserter skip. An unrouted scope label gets exactly one stamped warning comment. Each tick first sweeps active rows: one past the policy run timeout, or with no live lease past a grace period, is failed (lease ended, agent:failed, a comment naming the run and the reason) and returned in timed_out. Requires tracker:admin (and agents:run, to start the runs).\x82\xd3\xe4\x93\x02=:\x01*\"8/v1/tracker/connections/{username}/{connection}/dispatch\x12\xbe\x04\n" +
+	"\aTracker\x12\x1cDelete a tracker scope route\x1a\x80\x01Removes the route for scope:<scope> on this connection; issues with that label are no longer dispatched. Requires tracker:admin.\x82\xd3\xe4\x93\x02@*>/v1/tracker/connections/{username}/{connection}/routes/{scope}\x12\xbf\t\n" +
+	"\x15DispatchTrackerIssues\x12-.containarium.v1.DispatchTrackerIssuesRequest\x1a..containarium.v1.DispatchTrackerIssuesResponse\"\xc6\b\x92A\xff\a\n" +
+	"\aTracker\x12\x1dRun one tracker dispatch tick\x1a\xd4\aLists the connection's open issues and, for each one carrying a routed scope:<role> label and no agent:* state label (and not agent:needs-approval), inserts a durable dispatch row, starts the routed skill through the RunAgentSkill path with the issue reference as input, and labels the issue agent:queued. Exactly once per (issue) across restarts and concurrent dispatchers: a partial unique index on active rows makes the second inserter skip. An unrouted scope label gets exactly one stamped warning comment. Each tick first sweeps active rows: one past the policy run timeout, or with no live lease past a grace period, is failed (lease ended, agent:failed, a comment naming the run and the reason) and returned in timed_out. A nonzero max_starts stops the tick once that many runs have started; the eligible issues past it get no row and no label, are counted in left_undispatched, and are picked up by a later tick. Requires tracker:admin (and agents:run, to start the runs).\x82\xd3\xe4\x93\x02=:\x01*\"8/v1/tracker/connections/{username}/{connection}/dispatch\x12\xbe\x04\n" +
 	"\x15ListTrackerDispatches\x12-.containarium.v1.ListTrackerDispatchesRequest\x1a..containarium.v1.ListTrackerDispatchesResponse\"\xc5\x03\x92A\xff\x02\n" +
 	"\aTracker\x12\x17List tracker dispatches\x1a\xda\x02Lists a connection's dispatch rows (issue, scope, skill, run id, state, failure reason, timestamps), newest first, optionally filtered by state. Each row also reports the fan-out slots its run still holds as lineage reservations, and when the oldest was claimed, so an operator can see why a run's fan-out looks exhausted. Requires tracker:admin.\x82\xd3\xe4\x93\x02<\x12:/v1/tracker/connections/{username}/{connection}/dispatches\x12\xac\x04\n" +
 	"\x10GetTrackerStatus\x12(.containarium.v1.GetTrackerStatusRequest\x1a).containarium.v1.GetTrackerStatusResponse\"\xc2\x03\x92A\x86\x03\n" +
