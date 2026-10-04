@@ -32,6 +32,16 @@ type BackupServer struct {
 	mgr        *backup.Manager
 }
 
+// Manager exposes the backup core for wiring into other subsystems that
+// need read access to the durable backup index — currently the metrics
+// export collector's backup-health series (#2294), via
+// ContainerServer.SetBackupManager. Nothing else should need this: it is
+// a seam for cross-cutting observability, not a general escape hatch
+// around BackupServer's own RPC surface.
+func (s *BackupServer) Manager() *backup.Manager {
+	return s.mgr
+}
+
 // NewBackupServer wires the backup service to the container manager. A GCS
 // uploader is constructed best-effort: if `gcloud` is absent the daemon
 // still serves LOCAL backups and rejects GCS requests with a clear error,

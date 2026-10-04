@@ -285,3 +285,148 @@ Also not reproducible in CI — verify against a real project:
 - **Scope to one backend:** add
   `AND metric.label.backend_id = "<backend-id>"` to the filter, same as
   the heartbeat policy.
+
+## Backup-health alert (#2294)
+
+**Goal:** page an operator when a *specific tenant's* scheduled backup
+goes stale — the systemd-timer path (`docs/DB-BACKUP-OPERATIONS.md`)
+silently breaking (a disabled timer, a wrong hook path, a bad conf line)
+while the host and daemon it runs on stay perfectly healthy. This is
+deliberately a different failure class from the dead-man heartbeat
+above: the heartbeat catches the *host* going dark; this catches the
+*backup schedule* going dark on a *live* host, which the heartbeat
+cannot see at all — `containarium.export.heartbeat` keeps reporting `1`
+the whole time a broken backup timer is failing silently.
+
+**Why per-tenant, and why that's a deliberate, reviewed exception to
+this file's own "no org/tenant UUID labels ever" rule:** see
+`docs/CLOUD-NATIVE-METRICS-EXPORT-DESIGN.md`'s "One reviewed exception
+(#2294)" note. Short version: an OSS username is not the Cloud product's
+org/tenant UUID the rule targets, it's already exported via
+`container_name`, and an alert that can't name which tenant broke isn't
+actionable.
+
+### The series
+
+| Field | Value |
+|---|---|
+| Metric (OTel instrument) | `containarium.backup.last_success_age_seconds` |
+| Cloud Monitoring metric type | `workload.googleapis.com/containarium.backup.last_success_age_seconds` |
+| Monitored resource | `gce_instance` |
+| Kind / value | gauge, seconds since that tenant's most recent stored backup |
+| Labels | `backend_id`, `hostname`, `region`, `username` |
+| Emit cadence | every export interval, recomputed fresh each tick from the daemon's on-disk backup index — not cached, so it is correct immediately after a daemon restart |
+
+A tenant with **zero** stored backups ever has no point in this series
+at all — there is nothing to report an age against. That is a different,
+and arguably worse, problem than staleness (nobody ever activated
+backups for that tenant in the first place); `conditionAbsent` below
+cannot distinguish the two, which is exactly why it is scoped to tenants
+you already expect a schedule for, not "alert if any tenant is missing."
+
+### Create the alert policy
+
+One policy per tenant you want paged on (the filter below adds
+`metric.label.username`). Replace `${PROJECT_ID}`, `${CHANNEL_ID}`, and
+`${USERNAME}` — and `${THRESHOLD_SECONDS}`, sized to your schedule's
+interval plus slack (e.g. a nightly 02:30 timer with 15-minute jitter:
+`90000` ≈ 25h, generous enough that one slow run never pages, tight
+enough that a truly skipped night does by the next morning):
+
+```json
+{
+  "displayName": "Containarium backup stale: ${USERNAME}",
+  "documentation": {
+    "content": "Tenant ${USERNAME}'s last successful backup is older than ${THRESHOLD_SECONDS}s. Check containarium-backup.service's journal on the host serving this tenant (journalctl -u containarium-backup), confirm the timer is enabled (systemctl list-timers containarium-backup.timer), and confirm the tenant's line in /etc/containarium/backup-tenants.conf still points at a working hook/database. The daemon's own heartbeat may be perfectly healthy while this fires — that is the gap this alert exists to close.",
+    "mimeType": "text/markdown"
+  },
+  "combiner": "OR",
+  "conditions": [
+    {
+      "displayName": "Backup age over threshold for ${USERNAME}",
+      "conditionThreshold": {
+        "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.backup.last_success_age_seconds\" AND metric.label.username = \"${USERNAME}\"",
+        "comparison": "COMPARISON_GT",
+        "thresholdValue": ${THRESHOLD_SECONDS},
+        "duration": "0s",
+        "aggregations": [
+          {
+            "alignmentPeriod": "60s",
+            "perSeriesAligner": "ALIGN_MAX"
+          }
+        ],
+        "trigger": { "count": 1 }
+      }
+    }
+  ],
+  "notificationChannels": [
+    "projects/${PROJECT_ID}/notificationChannels/${CHANNEL_ID}"
+  ],
+  "alertStrategy": {
+    "autoClose": "1800s"
+  }
+}
+```
+
+Create it:
+
+```bash
+gcloud alpha monitoring policies create \
+  --project="${PROJECT_ID}" \
+  --policy-from-file=backup-stale-policy.json
+```
+
+### Why these values
+
+- **`conditionThreshold`, not `conditionAbsent`**, unlike the heartbeat:
+  the backup-health series is present and updating every tick for as
+  long as the daemon is alive, with a *value* that climbs when stale —
+  a threshold condition on that value is the right primitive, the same
+  reasoning as the provisioning-failure policy above. `conditionAbsent`
+  only fits a signal that should always exist and climbs stop; this
+  series' absence means "never backed up," a setup gap, not a staleness
+  page.
+- **`duration: "0s"`**: the series already represents elapsed time, so
+  there is no need to also require the threshold to hold for a window —
+  a single aligned point past the threshold means the backup really is
+  that old, no averaging needed.
+- **`ALIGN_MAX`** over the 60s alignment period is cosmetic here (one
+  point per period regardless of aligner, since the series updates once
+  per export tick) — kept only for consistency with how a threshold
+  condition is conventionally written.
+- **One policy per tenant** (via `metric.label.username` in the filter),
+  deliberately not one fleet-wide policy: different tenants may deserve
+  different thresholds (a tenant backed up hourly vs. nightly), and a
+  fleet-wide policy's documentation text can't name which tenant fired.
+
+### Verify (live)
+
+Not reproducible in CI, same as every policy in this runbook:
+
+1. Activate a tenant's backup per `docs/DB-BACKUP-OPERATIONS.md`,
+   confirm one real backup succeeds, and confirm the series appears in
+   Metrics Explorer near 0 seconds.
+2. Create the policy above for that tenant with a low
+   `${THRESHOLD_SECONDS}` for the test (e.g. `120`).
+3. Wait past the threshold without running another backup. Confirm the
+   policy transitions to **firing** and the notification channel pages —
+   while confirming `containarium.export.heartbeat` for the same host
+   stays healthy throughout, proving this alert caught something the
+   heartbeat structurally cannot.
+4. Run the backup again by hand. Confirm the series resets near 0 on the
+   next export tick and the incident auto-closes.
+
+### Tuning notes
+
+- **Threshold per schedule, not one global value:** size
+  `${THRESHOLD_SECONDS}` to each tenant's actual cadence plus slack, the
+  same way the heartbeat's `duration` is sized to its export interval —
+  a tenant backed up hourly deserves a much tighter threshold than one
+  backed up nightly.
+- **A tenant that's never been activated is invisible to this alert, not
+  silently passing it:** no series point exists for them at all (see
+  above). If you need to be paged for "I expected tenant X to have
+  backups and it never does," that is `conditionAbsent` on this same
+  metric type scoped to that username — a different, narrower policy
+  than the one above, and arguably a one-time setup check rather than a
+  recurring alert.
