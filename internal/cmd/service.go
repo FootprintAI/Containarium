@@ -362,9 +362,10 @@ func ensureIncusCPUWeightDropIn(root string) error {
 // next incus restart or boot). Best-effort: a host without systemd or
 // without incus running just logs it.
 func applyPlatformCPUWeightNow() {
-	args := []string{"set-property", "--runtime", "incus.service",
-		fmt.Sprintf("CPUWeight=%d", hostcheck.PlatformCPUWeight), "CPUAccounting=yes"}
-	if out, err := exec.Command("systemctl", args...).CombinedOutput(); err != nil {
+	// #nosec G204 -- fixed argv: a constant unit name and a compile-time weight, no caller input
+	out, err := exec.Command("systemctl", "set-property", "--runtime", "incus.service",
+		fmt.Sprintf("CPUWeight=%d", hostcheck.PlatformCPUWeight), "CPUAccounting=yes").CombinedOutput()
+	if err != nil {
 		log.Printf("could not apply CPUWeight to the running incus.service (will apply on its next restart): %v %s", err, strings.TrimSpace(string(out)))
 		return
 	}
