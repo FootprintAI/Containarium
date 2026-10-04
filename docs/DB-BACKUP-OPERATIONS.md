@@ -134,11 +134,27 @@ stored object is named `<id>.dump.age` and the record carries
   fails before anything touches the target database.
 - Integrity is verified on the **ciphertext** (the SHA-256 covers what is
   stored) *before* decryption, so a tampered object is caught first.
-- `backup verify` (restore-test) refuses an encrypted record up front — it
-  would need the identity too, and the platform does not hold it. It
-  likewise refuses a hook record (opaque stream). Both are refused before
-  any scratch database is created, and nothing is recorded as a
-  verification outcome. Restore-testing an encrypted backup is a follow-up.
+- `backup verify` (restore-test) also decrypts an encrypted record, given
+  `--age-identity-file` (#2295) — the same flag `backup restore` takes.
+  This is the check that catches a backup silently encrypted to a key
+  nobody holds: `backup list` and the nightly schedule both say
+  "success" regardless, and only an attempted decrypt tells the
+  difference. With no identity supplied at all, verification refuses up
+  front, same as a hook record (opaque stream) — both before any scratch
+  database is created, and nothing is recorded as an outcome. With the
+  **wrong** identity, decryption fails and *that* is recorded as a FAILED
+  verification (a result, not an error) — durable evidence that this
+  particular key does not work, exactly the audit trail a key-rotation or
+  disaster-recovery check needs.
+- The identity is a private key and travels in the request body, so both
+  `backup restore` and `backup verify` refuse to send it over a cleartext
+  connection (gRPC `--insecure`, or `--http` with an `http://` or
+  scheme-less server) to anything but loopback. Use an `https://` server
+  with `--http`, or gRPC with mTLS.
+
+  ```
+  containarium backup verify alice-app-… --target scratch --age-identity-file backup.key --server <host>
+  ```
 
 **Where the encryption happens, honestly:** in this release the dump is
 encrypted **in the daemon process, in memory**, after it is pulled from
