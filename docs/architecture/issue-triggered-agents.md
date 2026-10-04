@@ -117,6 +117,18 @@ sequenceDiagram
   (add/remove sets). If the forge call fails the row keeps a
   `labels_pending` flag and the next tick retries — state is authoritative
   in Postgres, the forge is a projection of it.
+- Entering `done` or `failed` sets `labels_pending` in the same write as
+  the transition; the projection clears it once it lands (#2047, #2052).
+  Every tick first re-projects the labels of each issue's latest terminal
+  row that is still pending, and an issue whose latest row is terminal and
+  pending is **not dispatched again**: the row, not the missing label,
+  says it was handled. The retry writes labels only — the failure comment
+  is posted once per dispatch id, by the transition's compare-and-set
+  winner, never once per tick. The projection counts as landed when the
+  write succeeds or when the issue already carries the row's state label,
+  so with a forge that keeps refusing the dispatcher's label writes (a
+  token that may comment but not label) a human applies
+  `agent:done|failed` by hand and then removes it to re-run, as above.
 
 ### Exactly-once
 
@@ -138,10 +150,18 @@ re-running an issue a peer has already finished (row `done`, labels
 insert). So after winning the insert the tick re-reads the issue (#2023)
 and starts the run only if it is still open, still carries the routed
 scope label, and has no state or gate label; otherwise it deletes its
-never-started `queued` row and skips. `agent:running` is projected
-synchronously before the in-box agent is launched, so any row that reaches
-`done` has already put a state label on the forge by the time a peer
-re-reads it.
+never-started `queued` row and skips. The re-read alone is not enough:
+if every label projection of the previous generation failed, the issue
+still carries `scope:<role>` and no `agent:*` label although its row is
+`done` (or `failed`) — and the re-read would start a second run (#2052;
+#2047 for `failed`, one new row and one failure comment per tick). So
+the tick also skips an issue whose latest row is terminal with
+`labels_pending`, before the insert and again right after winning it (the
+previous generation may have ended in between); after the insert it
+deletes its never-started `queued` row. Because `labels_pending` is set
+with the terminal transition itself, there is no window — not even while
+the projection's forge write is still in flight — in which a terminal row
+is neither on the forge nor pending.
 
 ### Run workspace (#2023)
 
@@ -257,7 +277,7 @@ never smuggled through the launch payload.
 | Agent exits with error / empty artifact | completion hook | row `failed`, `agent:failed`, comment with run id + error |
 | Run exceeds `policy.run_timeout` (default 1h) | next tick: `running` rows with `started_at + timeout < now` (and `queued` rows past it from `created_at`) | row `failed` (`TIMEOUT`), comment "timed out after …"; a provisioned run's lease is ended (`runlease.End`: revokes its JWTs, wipes its seed); a run still provisioning has no lease yet, so it is torn down the moment provisioning returns — its start report loses the compare-and-set, its lease is ended and its agent is never launched |
 | Daemon restarts mid-run | `runlease` is single-process; every tick sweeps `running` rows (age from `started_at`) and `queued` rows (age from `created_at`) whose run this daemon does not hold, after a 5-minute grace | row `failed` (`LEASE_LOST`), `agent:failed`, comment naming the run — visible, never silently stuck, and a stranded `queued` row no longer locks the issue. The pre-restart run's JWTs cannot be revoked by this daemon (it never held them); they expire on their own |
-| Forge unreachable during label write | row keeps `labels_pending`; tick retries with backoff | state never lost; labels catch up |
+| Forge unreachable during label write | row keeps `labels_pending`; every tick retries a terminal row's labels (its latest row per issue; never the comment) | state never lost; labels catch up; the issue is not dispatched again meanwhile (#2047, #2052) |
 | Unmapped `scope:*` label | tick | one stamped warning comment per (issue, scope); recorded in a `tracker_dispatch_warnings` row so it is not repeated every tick |
 
 Every failure above is one compare-and-set into `failed` carrying a typed
@@ -480,6 +500,7 @@ pushed branch, as today. Named tests are the deliverable per issue.
 - `TestDispatch_StartRunErrorFails` — `RunStarter` error → row `failed`, `agent:failed`, reason comment.
 - `TestDispatch_TimeoutSweep` — advance clock past `run_timeout` → `runlease.End` called, row `failed`, comment.
 - `TestDispatch_LabelWriteRetry` — provider fails `SetLabels` once → `labels_pending`, next tick clears it.
+- `dispatch_labels_pending_test.go` (#2047, #2052) — with `SetLabels` always failing: a start error over N ticks leaves one `failed` row and one comment; a successful run over N ticks is one run; a tick racing the terminal projection, or ending between the retry and the insert, starts nothing; a human-applied state label releases the row; re-run after done/failed (#2023) still starts exactly one new generation.
 - `TestDispatch_InputIsReferenceOnly` — the `input_json` handed to `RunStarter` decodes to `TrackerDispatchInput` and contains no issue body.
 
 ### `CreateTrackerIssue` (`internal/server/tracker_server_test.go` + conformance)
