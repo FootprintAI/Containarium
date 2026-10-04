@@ -146,6 +146,11 @@ stored object is named `<id>.dump.age` and the record carries
   verification (a result, not an error) — durable evidence that this
   particular key does not work, exactly the audit trail a key-rotation or
   disaster-recovery check needs.
+- The identity is a private key and travels in the request body, so both
+  `backup restore` and `backup verify` refuse to send it over a cleartext
+  connection (gRPC `--insecure`, or `--http` with an `http://` or
+  scheme-less server) to anything but loopback. Use an `https://` server
+  with `--http`, or gRPC with mTLS.
 
   ```
   containarium backup verify alice-app-… --target scratch --age-identity-file backup.key --server <host>
