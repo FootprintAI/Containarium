@@ -54,6 +54,16 @@ Group=root
 # for 27 days precisely because nothing was measuring.
 MemoryAccounting=yes
 
+# CPU weight well above the tenant default (#2284). Every tenant instance
+# runs at systemd's default weight of 100; so did this daemon, which meant a
+# CPU-saturated host starved the very process that creates boxes while the
+# platform software was healthy. A weight is a share, not a cap or a
+# priority: under contention the daemon gets ~10x a tenant's slice, and when
+# the host is idle nothing changes. incusd gets the same weight via a
+# drop-in (see ensureIncusCPUWeightDropIn); hostcheck checks both.
+CPUAccounting=yes
+CPUWeight=1000
+
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

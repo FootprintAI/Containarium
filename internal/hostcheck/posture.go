@@ -47,34 +47,36 @@ import (
 // real host — a posture check that can only be tested on a correctly
 // hardened machine is a posture check nobody will ever run red.
 type posturePaths struct {
-	procMounts       string // /proc/mounts
-	sysBlock         string // /sys/block
-	efiVars          string // /sys/firmware/efi/efivars
-	auditdPID        string // /run/auditd.pid
-	sshdConfig       string // /etc/ssh/sshd_config
-	sshdConfigDir    string // /etc/ssh/sshd_config.d
-	aptPeriodic      string // /etc/apt/apt.conf.d/20auto-upgrades
-	tunnelUnit       string // /etc/systemd/system/containarium-tunnel.service
-	tunnelUnitDropIn string // /etc/systemd/system/containarium-tunnel.service.d
-	incusDataDir     string // /var/lib/incus — the volume that holds tenant data
-	recoveryDir      string // /mnt/incus-data — where containarium-recovery.yaml is written (#1154)
-	metadataDialer   func() error
+	procMounts        string // /proc/mounts
+	sysBlock          string // /sys/block
+	efiVars           string // /sys/firmware/efi/efivars
+	auditdPID         string // /run/auditd.pid
+	sshdConfig        string // /etc/ssh/sshd_config
+	sshdConfigDir     string // /etc/ssh/sshd_config.d
+	aptPeriodic       string // /etc/apt/apt.conf.d/20auto-upgrades
+	tunnelUnit        string // /etc/systemd/system/containarium-tunnel.service
+	tunnelUnitDropIn  string // /etc/systemd/system/containarium-tunnel.service.d
+	incusDataDir      string // /var/lib/incus — the volume that holds tenant data
+	recoveryDir       string // /mnt/incus-data — where containarium-recovery.yaml is written (#1154)
+	cgroupSystemSlice string // /sys/fs/cgroup/system.slice — per-unit realized cpu.weight (#2284)
+	metadataDialer    func() error
 }
 
 func defaultPosturePaths() posturePaths {
 	return posturePaths{
-		procMounts:       "/proc/mounts",
-		sysBlock:         "/sys/block",
-		efiVars:          "/sys/firmware/efi/efivars",
-		auditdPID:        "/run/auditd.pid",
-		sshdConfig:       "/etc/ssh/sshd_config",
-		sshdConfigDir:    "/etc/ssh/sshd_config.d",
-		aptPeriodic:      "/etc/apt/apt.conf.d/20auto-upgrades",
-		tunnelUnit:       "/etc/systemd/system/containarium-tunnel.service",
-		tunnelUnitDropIn: "/etc/systemd/system/containarium-tunnel.service.d",
-		incusDataDir:     "/var/lib/incus",
-		recoveryDir:      DefaultRecoveryDir,
-		metadataDialer:   dialMetadataServer,
+		procMounts:        "/proc/mounts",
+		sysBlock:          "/sys/block",
+		efiVars:           "/sys/firmware/efi/efivars",
+		auditdPID:         "/run/auditd.pid",
+		sshdConfig:        "/etc/ssh/sshd_config",
+		sshdConfigDir:     "/etc/ssh/sshd_config.d",
+		aptPeriodic:       "/etc/apt/apt.conf.d/20auto-upgrades",
+		tunnelUnit:        "/etc/systemd/system/containarium-tunnel.service",
+		tunnelUnitDropIn:  "/etc/systemd/system/containarium-tunnel.service.d",
+		incusDataDir:      "/var/lib/incus",
+		recoveryDir:       DefaultRecoveryDir,
+		cgroupSystemSlice: DefaultCgroupSystemSlice,
+		metadataDialer:    dialMetadataServer,
 	}
 }
 
@@ -100,6 +102,7 @@ func runPosture(p posturePaths) []Check {
 		metadataReachableCheck(p),
 		recoveryConfigDurableCheck(p),
 		tunnelTokenExposedCheck(p),
+		platformCPUWeightCheck(p),
 	}
 	for i := range checks {
 		checks[i].Kind = KindPosture
