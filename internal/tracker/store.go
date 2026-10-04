@@ -60,7 +60,8 @@ type Store struct {
 
 // NewStore opens the tracker-connections store, creating the table on
 // first run. Idempotent on every subsequent call, same idiom as
-// internal/secrets.NewStore.
+// internal/secrets.NewStore. Safe to call from several processes at once
+// (#2061): see initSchema.
 func NewStore(ctx context.Context, pool *pgxpool.Pool) (*Store, error) {
 	if pool == nil {
 		return nil, errors.New("tracker: pool is nil")
@@ -72,7 +73,56 @@ func NewStore(ctx context.Context, pool *pgxpool.Pool) (*Store, error) {
 	return s, nil
 }
 
+// schemaLockKey is the advisory-lock key concurrent initSchema calls
+// serialize on — one constant for the whole tracker schema, hashed the
+// same way as reserveChild's per-run key. It is only ever taken inside
+// initSchema's transaction, so it costs nothing after startup.
+const schemaLockKey = "tracker/schema"
+
+// initSchema creates or upgrades the tracker tables, in one transaction
+// under a transaction-scoped advisory lock (#2061).
+//
+// CREATE TABLE IF NOT EXISTS is not safe to race: it checks pg_class and
+// then inserts the table's row type into pg_type, so two sessions that
+// both passed the check collide on pg_type_typname_nsp_index (SQLSTATE
+// 23505) and the loser's whole batch rolls back. Nothing in the first-run
+// path serialized the sessions before that point: the upgrade path only
+// looked safe because ALTER TABLE ... ADD COLUMN takes an ACCESS EXCLUSIVE
+// lock on tracker_connections and holds it to the end of ITS implicit
+// transaction, which covered the CREATE after it in the same batch — and
+// nothing in the two batches that follow.
+//
+// So the lock has to cover every CREATE in every batch, not just the
+// first-run one. Taking it once around the whole init does that: the
+// winner creates everything, each later holder sees the tables committed
+// and every statement becomes the no-op its IF NOT EXISTS promises. It
+// is transaction-scoped, same as the lineage lock in reserveChild, so it
+// releases at commit or rollback and never touches a query afterward;
+// on an already-initialized database it adds one lock round trip to a
+// path that runs once per process start.
 func (s *Store) initSchema(ctx context.Context) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin schema transaction: %w", err)
+	}
+	// No-op after a successful Commit. Detached so a cancelled context
+	// still releases the transaction (and with it the lock) cleanly.
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, schemaLockKey); err != nil {
+		return fmt.Errorf("lock schema: %w", err)
+	}
+	if err := applySchema(ctx, tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit schema: %w", err)
+	}
+	return nil
+}
+
+// applySchema runs the three schema batches, in dependency order, on tx.
+func applySchema(ctx context.Context, tx pgx.Tx) error {
 	const schema = `
 		CREATE TABLE IF NOT EXISTS tracker_connections (
 			username          TEXT NOT NULL,
@@ -121,17 +171,17 @@ func (s *Store) initSchema(ctx context.Context) error {
 		CREATE INDEX IF NOT EXISTS tracker_lineage_reservations_run
 			ON tracker_lineage_reservations (username, connection, created_by_run);
 	`
-	if _, err := s.pool.Exec(ctx, schema); err != nil {
+	if _, err := tx.Exec(ctx, schema); err != nil {
 		return err
 	}
 	// #2021: scope routes hang off a connection by foreign key, so they
 	// are created after tracker_connections.
-	if _, err := s.pool.Exec(ctx, routeSchema); err != nil {
+	if _, err := tx.Exec(ctx, routeSchema); err != nil {
 		return err
 	}
 	// #2022: dispatch rows and unrouted-scope warnings, also keyed off a
 	// connection.
-	_, err := s.pool.Exec(ctx, dispatchSchema)
+	_, err := tx.Exec(ctx, dispatchSchema)
 	return err
 }
 
