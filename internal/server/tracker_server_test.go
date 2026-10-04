@@ -170,6 +170,86 @@ func TestSetTrackerConnection_RejectsNonBrokerSecret(t *testing.T) {
 	}
 }
 
+// TestSetTrackerConnection_RejectsReservedConnectionName pins #2035's
+// fix: a connection name that collides with a fixed REST path literal
+// elsewhere in tracker.proto (GET .../{username}/{connection}/<literal>)
+// is rejected here, before it can ever shadow
+// GetTrackerConnection over REST. No secretsStore is needed — the
+// reserved-name check runs before requireBrokerOnlySecret.
+func TestSetTrackerConnection_RejectsReservedConnectionName(t *testing.T) {
+	s := &ContainerServer{trackerStore: mustTestTrackerStore(t)}
+	const user = "tracker-rpc-reserved-name"
+	ctx := kmsKeyTestCtx(user, "member", "tracker:admin")
+
+	for _, name := range []string{"issues", "changes", "routes", "dispatch", "dispatches"} {
+		t.Run(name, func(t *testing.T) {
+			_, err := s.SetTrackerConnection(ctx, &pb.SetTrackerConnectionRequest{
+				Username: user, Name: name,
+			})
+			if status.Code(err) != codes.InvalidArgument {
+				t.Fatalf("code = %v, want InvalidArgument", status.Code(err))
+			}
+			if !strings.Contains(err.Error(), name) {
+				t.Errorf("error = %q, want it to name the reserved word %q", err.Error(), name)
+			}
+		})
+	}
+}
+
+// TestSetTrackerConnection_RejectsReservedUsername pins the other half of
+// #2035's fix: a username of "connections" collides with the literal
+// segment in GET /v1/tracker/connections/{username}/{name}.
+func TestSetTrackerConnection_RejectsReservedUsername(t *testing.T) {
+	s := &ContainerServer{trackerStore: mustTestTrackerStore(t)}
+	ctx := kmsKeyTestCtx("connections", "member", "tracker:admin")
+	_, err := s.SetTrackerConnection(ctx, &pb.SetTrackerConnectionRequest{
+		Username: "connections", Name: "default",
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("code = %v, want InvalidArgument", status.Code(err))
+	}
+	if !strings.Contains(err.Error(), "connections") {
+		t.Errorf("error = %q, want it to name the reserved word %q", err.Error(), "connections")
+	}
+}
+
+// TestSetTrackerConnection_AcceptsNonReservedNames proves the validator
+// does not over-reject: ordinary connection names (including ones that
+// merely contain a reserved word as a substring, or are a prefix/suffix
+// of one) still reach the store. Paired with
+// TestTrackerConnectionGetRoute_ReachableForAcceptedNames
+// (internal/gateway), which proves these same names are reachable over
+// the real grpc-gateway mux.
+func TestSetTrackerConnection_AcceptsNonReservedNames(t *testing.T) {
+	secretsStore := mustTestSecretsStore(t)
+	trackerStore := mustTestTrackerStore(t)
+	s := &ContainerServer{secretsStore: secretsStore, trackerStore: trackerStore}
+	const user = "tracker-rpc-accepts-non-reserved"
+
+	secretCtx := kmsKeyTestCtx(user, "member", "secrets:write")
+	if _, err := s.SetSecret(secretCtx, &pb.SetSecretRequest{
+		Username: user, Name: "GH_TOKEN", Value: "ghp_x",
+		DeliveryMode: pb.SecretDelivery_SECRET_DELIVERY_BROKER_ONLY,
+	}); err != nil {
+		t.Fatalf("SetSecret (broker-only): %v", err)
+	}
+
+	ctx := kmsKeyTestCtx(user, "member", "tracker:admin")
+	for _, name := range []string{"default", "my-connection", "issues-tracker", "routes2"} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := s.SetTrackerConnection(ctx, &pb.SetTrackerConnectionRequest{
+				Username:         user,
+				Name:             name,
+				Provider:         pb.TrackerProvider_TRACKER_PROVIDER_GITHUB,
+				Project:          "acme/widgets",
+				CredentialSecret: "GH_TOKEN",
+			}); err != nil {
+				t.Fatalf("SetTrackerConnection(name=%q): %v", name, err)
+			}
+		})
+	}
+}
+
 // TestTrackerConnection_CRUDRoundTrip is the happy path end to end
 // through the RPC layer: a broker-only secret, then Set / Get / List /
 // Delete on the connection that references it.
