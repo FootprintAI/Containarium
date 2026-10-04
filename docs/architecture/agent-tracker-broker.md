@@ -296,6 +296,29 @@ is parsed and validated in `seed.ts`, not cast.
 `make proto` rewrites the gateway shims with version-drift noise; keep only
 the files the change actually touches.
 
+**Reserved connection-name / username literals (#2035).** `TrackerService`'s
+REST mapping has two path shapes sharing the `/v1/tracker/` prefix:
+`GET /v1/tracker/connections/{username}/{name}` (connection CRUD, literal
+segment `connections`) and `GET /v1/tracker/{username}/{connection}/<verb>`
+(the per-connection verbs: issues, changes, routes, dispatch). A connection
+whose `name` equals one of those verb literals, or a `username` equal to
+`connections`, makes the two shapes collide — grpc-gateway v2 resolves the
+later-registered pattern, so `GetTrackerConnection` becomes unreachable
+over REST for that name. `SetTrackerConnection` rejects the collision at
+write time instead (`internal/server/tracker_server.go`,
+`reservedTrackerConnectionNames` / `reservedTrackerUsernames`):
+
+| Reserved as connection `name` | Reserved as `username` |
+| --- | --- |
+| `issues`, `changes`, `routes`, `dispatch`, `dispatches` | `connections` |
+
+Adding a new `/v1/tracker/{username}/{connection}/<literal>` REST verb?
+Add its literal to `reservedTrackerConnectionNames` (and to the table
+above) before it ships — otherwise a connection already using that name
+silently loses REST reachability for `GetTrackerConnection`. See
+`docs/architecture/issue-triggered-agents.md`'s RPC/REST table for the
+verbs that introduced `routes`, `dispatch`, and `dispatches`.
+
 ## Test strategy
 
 Each component names its tests before its implementation. Unit tests are
