@@ -540,6 +540,9 @@ func runPoolJoin(cmd *cobra.Command, args []string) error {
 	if err := exec.Command("systemctl", "daemon-reload").Run(); err != nil {
 		return fmt.Errorf("systemctl daemon-reload: %w", err)
 	}
+	// ensureDaemonUnitAndSecret wrote the incusd CPU-weight drop-in; apply it
+	// to the already-running incusd too (#2284) — same as `service install`.
+	applyPlatformCPUWeightNow()
 	if err := exec.Command("systemctl", "enable", "--now", "containarium").Run(); err != nil {
 		return fmt.Errorf("systemctl enable --now containarium: %w", err)
 	}

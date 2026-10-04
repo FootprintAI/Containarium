@@ -162,9 +162,34 @@ per-box one; a single tenant left on `limits.cpu: 8` (any 8 cores) shares the
 reserved set and the floor is partial. Document the convention for the host
 and verify it with `containarium info`'s core-committed line.
 
-The host daemons themselves (`incusd`, `containarium`) are not covered by any
-of the above yet: they will be protected separately, by a systemd `CPUWeight=`
-drop-in installed with the daemon unit, in the second part of #2284.
+### Host daemons: `CPUWeight=` for `incusd` and the daemon
+
+The budget above is about containers. The two host processes every create
+depends on — `incusd` and the `containarium` daemon — used to run in
+`system.slice` at systemd's default `CPUWeight=100`, the same weight every
+tenant instance has, so a saturated host starved the processes that would
+have created the next box. `containariumd service install` (and therefore
+`hacks/install.sh`, `scripts/setup-peer.sh` and `pool join`) now installs:
+
+- `CPUAccounting=yes` + `CPUWeight=1000` inline in `containarium.service`;
+- the same two lines as a drop-in for the packaged incus unit,
+  `/etc/systemd/system/incus.service.d/50-containarium-cpu-weight.conf`
+  (incus.service is the distro's / Zabbly's file and is never edited in place);
+- `systemctl set-property --runtime incus.service CPUWeight=1000` right after
+  `daemon-reload`, so the running `incusd` picks the weight up without a
+  restart (a restart would stop every tenant); the drop-in takes over at the
+  next boot.
+
+A weight is a share under contention, not a cap and not a real-time
+priority: when the host is idle nothing changes, and when ~70 tenants are
+runnable the two daemons each get roughly ten times one tenant's slice.
+The number lives in one place, `hostcheck.PlatformCPUWeight`.
+
+`containarium doctor` reports **platform daemons CPU weight** as a posture
+check. It reads the *effective* `cpu.weight` of both units' cgroups
+(`/sys/fs/cgroup/system.slice/<unit>/cpu.weight`), so a drop-in that was
+written but never applied, or a cgroup v1 host, shows red with the reason;
+like every posture check it is non-blocking.
 
 ## Semantics and scope
 
