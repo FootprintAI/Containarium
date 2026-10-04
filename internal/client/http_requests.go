@@ -240,6 +240,14 @@ type deployRecipeRequest struct {
 	Parameters map[string]string `json:"parameters"`
 }
 
+// provisionSkillBoxRequest is POST /v1/agent-skills/{skill_id}/provision-box
+// (#2272): create-or-reuse the skill's box, no token minted, nothing seeded.
+type provisionSkillBoxRequest struct {
+	SkillID   string `json:"skill_id"`
+	BackendID string `json:"backend_id"`
+	Pool      string `json:"pool"`
+}
+
 // runAgentSkillRequest is POST /v1/agent-skills/run. GitSource/GitRef/
 // GitCredential (#1859) fetch a repo into the run's workspace before the
 // agent starts; empty GitSource means no fetch, matching every request

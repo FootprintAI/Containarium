@@ -2320,4 +2320,13 @@ type SystemInfo struct {
 	// whether an external SSH/deploy entrypoint exists and what host it is,
 	// instead of assuming a sentinel that may not exist. See #1011.
 	SSHIngressHost string `json:"sshIngressHost,omitempty"`
+	// CPU budget (#2284): tenant-committed, core-committed and physical
+	// cores plus the admission gate's posture, exactly as the daemon's
+	// SystemInfo carries them (enum by its proto name). CpuAdmissionMode
+	// empty or UNSPECIFIED means the daemon predates the field.
+	TotalCpus             int32   `json:"totalCpus"`
+	CommittedCpuCores     float64 `json:"committedCpuCores"`
+	CoreCommittedCpuCores float64 `json:"coreCommittedCpuCores"`
+	CpuAdmissionMode      string  `json:"cpuAdmissionMode,omitempty"`
+	CpuOvercommitFactor   float64 `json:"cpuOvercommitFactor"`
 }

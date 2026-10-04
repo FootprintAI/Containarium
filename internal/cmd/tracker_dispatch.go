@@ -214,6 +214,20 @@ func printDispatchTick(resp *pb.DispatchTrackerIssuesResponse) {
 		resp.GetSkippedNeedsApproval(), resp.GetSkippedActive(), resp.GetSkippedUnrouted(), resp.GetSkippedOverDepth())
 }
 
+// lineageReservationsDetail names the fan-out slots a row's run still
+// holds as lineage reservations (#2062), and since when — "" when none.
+func lineageReservationsDetail(d *pb.TrackerDispatch) string {
+	n := d.GetLineageReservations()
+	if n == 0 {
+		return ""
+	}
+	s := fmt.Sprintf("  reserved=%d", n)
+	if at := d.GetOldestLineageReservationAt(); at != nil {
+		s += " since " + at.AsTime().UTC().Format(time.RFC3339)
+	}
+	return s
+}
+
 func printTrackerDispatches(username, connection string, rows []*pb.TrackerDispatch) {
 	if len(rows) == 0 {
 		fmt.Printf("(no dispatches on %s/%s)\n", username, connection)
@@ -228,6 +242,7 @@ func printTrackerDispatches(username, connection string, rows []*pb.TrackerDispa
 		if r := d.GetFailureReason(); r != "" {
 			detail += "  " + r
 		}
+		detail += lineageReservationsDetail(d)
 		fmt.Printf("%-8s %-8s %-24s %-24s %-38s %s\n", fmt.Sprintf("#%d", d.GetIssueNumber()), dispatchStateName(d.GetState()),
 			scopeLabelPrefix+d.GetScope(), d.GetSkillId(), d.GetRunId(), strings.TrimSpace(detail))
 	}

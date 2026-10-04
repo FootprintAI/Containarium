@@ -305,6 +305,17 @@ message TrackerDispatch {
   google.protobuf.Timestamp ended_at = 13;
   // Set when state is FAILED (#2026): the typed cause.
   TrackerDispatchFailure failure = 14;
+  // Fan-out slots run_id still holds as lineage reservations (#2062):
+  // follow-up creates in flight, or ones that were never cleared (the
+  // daemon died mid-create, or recording the follow-up failed). Each
+  // counts against the connection's max_children_per_run exactly like a
+  // filed follow-up, so a run whose fan-out looks exhausted shows why
+  // here. Swept when the run's lease ends. Filled in by
+  // ListTrackerDispatches only.
+  int32 lineage_reservations = 15;
+  // When the oldest of those reservations was claimed; unset when there
+  // are none. Filled in by ListTrackerDispatches only.
+  google.protobuf.Timestamp oldest_lineage_reservation_at = 16;
 }
 
 // TrackerDispatchInput is EXACTLY the run's input_json (protojson
@@ -740,7 +751,7 @@ service TrackerService {
   // SetTrackerRoute maps a scope label on a connection to a skill.
   rpc SetTrackerRoute(SetTrackerRouteRequest) returns (SetTrackerRouteResponse) {
     option (google.api.http) = {
-      put: "/v1/tracker/{username}/{connection}/routes/{scope}"
+      put: "/v1/tracker/connections/{username}/{connection}/routes/{scope}"
       body: "*"
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
@@ -753,7 +764,7 @@ service TrackerService {
   // ListTrackerRoutes returns a connection's scope routes.
   rpc ListTrackerRoutes(ListTrackerRoutesRequest) returns (ListTrackerRoutesResponse) {
     option (google.api.http) = {
-      get: "/v1/tracker/{username}/{connection}/routes"
+      get: "/v1/tracker/connections/{username}/{connection}/routes"
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "List tracker scope routes";
@@ -765,7 +776,7 @@ service TrackerService {
   // DeleteTrackerRoute removes one scope route.
   rpc DeleteTrackerRoute(DeleteTrackerRouteRequest) returns (DeleteTrackerRouteResponse) {
     option (google.api.http) = {
-      delete: "/v1/tracker/{username}/{connection}/routes/{scope}"
+      delete: "/v1/tracker/connections/{username}/{connection}/routes/{scope}"
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Delete a tracker scope route";
@@ -781,7 +792,7 @@ service TrackerService {
   // DispatchTrackerIssues runs one dispatcher tick for a connection.
   rpc DispatchTrackerIssues(DispatchTrackerIssuesRequest) returns (DispatchTrackerIssuesResponse) {
     option (google.api.http) = {
-      post: "/v1/tracker/{username}/{connection}/dispatch"
+      post: "/v1/tracker/connections/{username}/{connection}/dispatch"
       body: "*"
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
@@ -794,11 +805,11 @@ service TrackerService {
   // ListTrackerDispatches returns a connection's dispatch rows.
   rpc ListTrackerDispatches(ListTrackerDispatchesRequest) returns (ListTrackerDispatchesResponse) {
     option (google.api.http) = {
-      get: "/v1/tracker/{username}/{connection}/dispatches"
+      get: "/v1/tracker/connections/{username}/{connection}/dispatches"
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "List tracker dispatches";
-      description: "Lists a connection's dispatch rows (issue, scope, skill, run id, state, failure reason, timestamps), newest first, optionally filtered by state. Requires tracker:admin.";
+      description: "Lists a connection's dispatch rows (issue, scope, skill, run id, state, failure reason, timestamps), newest first, optionally filtered by state. Each row also reports the fan-out slots its run still holds as lineage reservations, and when the oldest was claimed, so an operator can see why a run's fan-out looks exhausted. Requires tracker:admin.";
       tags: "Tracker";
     };
   }
@@ -821,7 +832,7 @@ service TrackerService {
   // GetTrackerIssue reads a single issue, including its comments.
   rpc GetTrackerIssue(GetTrackerIssueRequest) returns (GetTrackerIssueResponse) {
     option (google.api.http) = {
-      get: "/v1/tracker/{username}/{connection}/issues/{number}"
+      get: "/v1/tracker/connections/{username}/{connection}/issues/{number}"
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Get a tracker issue";
@@ -833,7 +844,7 @@ service TrackerService {
   // ListTrackerIssues enumerates issues, optionally filtered.
   rpc ListTrackerIssues(ListTrackerIssuesRequest) returns (ListTrackerIssuesResponse) {
     option (google.api.http) = {
-      get: "/v1/tracker/{username}/{connection}/issues"
+      get: "/v1/tracker/connections/{username}/{connection}/issues"
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "List tracker issues";
@@ -846,7 +857,7 @@ service TrackerService {
   // verdict.
   rpc GetTrackerChange(GetTrackerChangeRequest) returns (GetTrackerChangeResponse) {
     option (google.api.http) = {
-      get: "/v1/tracker/{username}/{connection}/changes/{number}"
+      get: "/v1/tracker/connections/{username}/{connection}/changes/{number}"
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Get a tracker change request";
@@ -859,7 +870,7 @@ service TrackerService {
   // issue or change request.
   rpc CommentOnTrackerIssue(CommentOnTrackerIssueRequest) returns (CommentOnTrackerIssueResponse) {
     option (google.api.http) = {
-      post: "/v1/tracker/{username}/{connection}/issues/{number}/comments"
+      post: "/v1/tracker/connections/{username}/{connection}/issues/{number}/comments"
       body: "*"
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
@@ -872,7 +883,7 @@ service TrackerService {
   // ClaimTrackerIssue attempts to claim an issue for the calling run.
   rpc ClaimTrackerIssue(ClaimTrackerIssueRequest) returns (ClaimTrackerIssueResponse) {
     option (google.api.http) = {
-      post: "/v1/tracker/{username}/{connection}/issues/{number}/claim"
+      post: "/v1/tracker/connections/{username}/{connection}/issues/{number}/claim"
       body: "*"
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
@@ -885,7 +896,7 @@ service TrackerService {
   // SetTrackerIssueLabels adds and/or removes labels on an issue.
   rpc SetTrackerIssueLabels(SetTrackerIssueLabelsRequest) returns (SetTrackerIssueLabelsResponse) {
     option (google.api.http) = {
-      post: "/v1/tracker/{username}/{connection}/issues/{number}/labels"
+      post: "/v1/tracker/connections/{username}/{connection}/issues/{number}/labels"
       body: "*"
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
@@ -898,7 +909,7 @@ service TrackerService {
   // CreateTrackerIssue files a follow-up issue (#2024).
   rpc CreateTrackerIssue(CreateTrackerIssueRequest) returns (CreateTrackerIssueResponse) {
     option (google.api.http) = {
-      post: "/v1/tracker/{username}/{connection}/issues"
+      post: "/v1/tracker/connections/{username}/{connection}/issues"
       body: "*"
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
@@ -913,7 +924,7 @@ service TrackerService {
   // entering the box.
   rpc SubmitTrackerChange(SubmitTrackerChangeRequest) returns (SubmitTrackerChangeResponse) {
     option (google.api.http) = {
-      post: "/v1/tracker/{username}/{connection}/changes"
+      post: "/v1/tracker/connections/{username}/{connection}/changes"
       body: "*"
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {

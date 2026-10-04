@@ -67,6 +67,18 @@ func resolveCodeInstallPlan(box string) (*codeInstallPlan, error) {
 		return nil, err
 	}
 
+	// #2273: codex's gateway path depends on the model gateway's provider
+	// generalization (#1369/#1374 on Containarium-cloud), which this change
+	// does not assume has landed. Rejecting here — before any preflight —
+	// means a user who tries it gets the fix named instead of an untested
+	// path reaching a box. Tracked as a follow-up, not a redesign: the
+	// gateway-shaped methods already exist on codexEngine (codex.go).
+	if name == engine.NameCodex && kind == engine.KindGateway {
+		return nil, fmt.Errorf(
+			"--engine codex --credential gateway is not supported yet (tracked as a follow-up to #2273) — " +
+				"use --credential secret --secret-name CODEX_API_KEY (or OPENAI_API_KEY)")
+	}
+
 	plan := &codeInstallPlan{baseURLOverride: strings.TrimSpace(codeProviderBaseURL)}
 
 	switch kind {
@@ -128,8 +140,11 @@ func resolveCodeInstallPlan(box string) (*codeInstallPlan, error) {
 	}
 
 	plan.version = strings.TrimSpace(codeClaudeCodeVersion)
-	if name == engine.NamePi {
+	switch name {
+	case engine.NamePi:
 		plan.version = strings.TrimSpace(codePiVersion)
+	case engine.NameCodex:
+		plan.version = strings.TrimSpace(codeCodexVersion)
 	}
 
 	eng, err := engine.For(name, engine.Options{Credential: plan.credential, Model: model})
@@ -399,12 +414,32 @@ it one of:
       containarium secrets set %s %s <value> --delivery compose
       containarium secrets refresh %s
 
-  pi's own interactive sign-in, inside the box:
+  %s's own interactive sign-in, inside the box:
       containarium connect %s
-      pi   # then /login
+      %s
 
 Then: containarium code run %s --prompt "..."
-`, plan.engine.Name(), box, name, box, box, box)
+`, plan.engine.Name(), box, name, box, plan.engine.Name(), box, engineLoginCommand(plan.engine.Name()), box)
+}
+
+// engineLoginCommand is the interactive, inside-the-box sign-in command for
+// an engine on the secret credential path — the thing codeNextStepsHelp
+// tells the user to run after `containarium connect <box>`.
+//
+// #2273: this used to be hardcoded to pi's own "pi   # then /login" inline,
+// which was correct only because pi was the only non-Claude engine. Adding
+// codex, whose sign-in command is different (codex login --device-auth,
+// developers.openai.com/codex/auth — not a slash command inside a REPL),
+// would have silently printed nonsense for it. Any FUTURE non-Claude engine
+// needs a case here too, rather than falling into a default that assumes
+// pi's shape again.
+func engineLoginCommand(n engine.Name) string {
+	switch n {
+	case engine.NameCodex:
+		return "codex login --device-auth   # or: codex login (opens a browser)"
+	default: // pi, today's only other case.
+		return string(n) + "   # then /login"
+	}
 }
 
 // mintGatewayTokenViaClient is the production MintGatewayToken call, dispatched

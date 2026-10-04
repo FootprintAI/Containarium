@@ -6,6 +6,7 @@ import (
 	"log"
 	"runtime/debug"
 	"strings"
+	"time"
 
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/tracker"
@@ -129,7 +130,42 @@ func (s *ContainerServer) ListTrackerDispatches(ctx context.Context, req *pb.Lis
 	for i := range rows {
 		out = append(out, toProtoTrackerDispatch(&rows[i]))
 	}
+	// #2062: show the fan-out slots each run still holds, so a run whose
+	// fan-out looks exhausted shows why.
+	reservations, err := s.trackerStore.ListLineageReservations(ctx, req.Username, req.Connection)
+	if err != nil {
+		return nil, mapTrackerDispatchError(err)
+	}
+	attachLineageReservations(out, reservations)
 	return &pb.ListTrackerDispatchesResponse{Dispatches: out}, nil
+}
+
+// attachLineageReservations sets each row's lineage_reservations and
+// oldest_lineage_reservation_at from its run's reservations. A
+// reservation whose run has no row in the listing is not shown.
+func attachLineageReservations(rows []*pb.TrackerDispatch, reservations []tracker.LineageReservation) {
+	type held struct {
+		count  int32
+		oldest time.Time
+	}
+	byRun := map[string]*held{}
+	for _, r := range reservations {
+		h, ok := byRun[r.CreatedByRun]
+		if !ok {
+			h = &held{oldest: r.CreatedAt}
+			byRun[r.CreatedByRun] = h
+		}
+		h.count++
+		if r.CreatedAt.Before(h.oldest) {
+			h.oldest = r.CreatedAt
+		}
+	}
+	for _, d := range rows {
+		if h, ok := byRun[d.GetRunId()]; ok && d.GetRunId() != "" {
+			d.LineageReservations = h.count
+			d.OldestLineageReservationAt = timestamppb.New(h.oldest)
+		}
+	}
 }
 
 func mapTrackerDispatchError(err error) error {

@@ -1064,6 +1064,10 @@ func annotateContext(ctx context.Context, req *http.Request) metadata.MD {
 	if conn, ok := auth.TrackerConnFromContext(ctx); ok && conn != "" {
 		md.Set(auth.MDKeyTrackerConn, conn)
 	}
+	// #2268 — forward the optional `run_tenant` claim the same way.
+	if tenant, ok := auth.RunTenantFromContext(ctx); ok && tenant != "" {
+		md.Set(auth.MDKeyRunTenant, tenant)
+	}
 	return md
 }
 

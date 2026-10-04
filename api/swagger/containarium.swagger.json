@@ -445,6 +445,78 @@
         ]
       }
     },
+    "/v1/agent-skills/{skillId}/credential-status": {
+      "get": {
+        "summary": "Check a skill box's coding-agent credential source",
+        "description": "Reports the NAME of the credential source (interactive sign-in, a user-placed key, or none) the skill's box would use for its configured engine — never the credential's value, never read/logged/transmitted.",
+        "operationId": "AgentSkillService_GetSkillBoxCredentialStatus",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetSkillBoxCredentialStatusResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "skillId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Agents"
+        ]
+      }
+    },
+    "/v1/agent-skills/{skillId}/provision-box": {
+      "post": {
+        "summary": "Provision a skill's box ahead of any run",
+        "description": "Creates or reuses the skill's deterministic box with no token minted, nothing seeded, and no model call — so a human can sign in to its coding agent before any inference credential exists.",
+        "operationId": "AgentSkillService_ProvisionSkillBox",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ProvisionSkillBoxResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "skillId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/ProvisionSkillBoxBody"
+            }
+          }
+        ],
+        "tags": [
+          "Agents"
+        ]
+      }
+    },
     "/v1/agent-skills/{skillId}/run": {
       "post": {
         "summary": "Run an agent skill",
@@ -7041,119 +7113,7 @@
         ]
       }
     },
-    "/v1/tracker/connections/{username}/{name}": {
-      "get": {
-        "summary": "Get a tracker connection",
-        "description": "Returns a single named tracker connection's metadata. Never returns the credential value.",
-        "operationId": "TrackerService_GetTrackerConnection",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/GetTrackerConnectionResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/rpc.Status"
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "username",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "name",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          }
-        ],
-        "tags": [
-          "Tracker"
-        ]
-      },
-      "delete": {
-        "summary": "Delete a tracker connection",
-        "description": "Removes a named tracker connection. Does not delete the underlying credential secret.",
-        "operationId": "TrackerService_DeleteTrackerConnection",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/DeleteTrackerConnectionResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/rpc.Status"
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "username",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "name",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          }
-        ],
-        "tags": [
-          "Tracker"
-        ]
-      }
-    },
-    "/v1/tracker/connections/{username}/{name}/status": {
-      "get": {
-        "summary": "Check a tracker connection's live status",
-        "description": "Asks the tracker to describe the connection's own credential: reachability, whether the credential is still valid, its granted scopes and expiry, and whether it's broader than the provider's preferred credential type. Also reports the daemon host's git version and whether it meets SubmitTrackerChange's minimum. Requires tracker:admin.",
-        "operationId": "TrackerService_GetTrackerStatus",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/GetTrackerStatusResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/rpc.Status"
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "username",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "name",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          }
-        ],
-        "tags": [
-          "Tracker"
-        ]
-      }
-    },
-    "/v1/tracker/{username}/{connection}/changes": {
+    "/v1/tracker/connections/{username}/{connection}/changes": {
       "post": {
         "summary": "Submit a tracker change request",
         "description": "Bundles the run's committed workspace out of the box and pushes it from a fresh temporary bare repository on the host to a daemon-chosen branch, then opens a change request referencing issue — no push credential ever enters the box. Requires tracker:write and a run with a recorded git_source. Opened as a draft when draft is true.",
@@ -7199,7 +7159,7 @@
         ]
       }
     },
-    "/v1/tracker/{username}/{connection}/changes/{number}": {
+    "/v1/tracker/connections/{username}/{connection}/changes/{number}": {
       "get": {
         "summary": "Get a tracker change request",
         "description": "Returns a pull/merge request's state and normalized CI verdict. Requires tracker:read.",
@@ -7244,7 +7204,7 @@
         ]
       }
     },
-    "/v1/tracker/{username}/{connection}/dispatch": {
+    "/v1/tracker/connections/{username}/{connection}/dispatch": {
       "post": {
         "summary": "Run one tracker dispatch tick",
         "description": "Lists the connection's open issues and, for each one carrying a routed scope:\u003crole\u003e label and no agent:* state label (and not agent:needs-approval), inserts a durable dispatch row, starts the routed skill through the RunAgentSkill path with the issue reference as input, and labels the issue agent:queued. Exactly once per (issue) across restarts and concurrent dispatchers: a partial unique index on active rows makes the second inserter skip. An unrouted scope label gets exactly one stamped warning comment. Each tick first sweeps active rows: one past the policy run timeout, or with no live lease past a grace period, is failed (lease ended, agent:failed, a comment naming the run and the reason) and returned in timed_out. Requires tracker:admin (and agents:run, to start the runs).",
@@ -7290,10 +7250,10 @@
         ]
       }
     },
-    "/v1/tracker/{username}/{connection}/dispatches": {
+    "/v1/tracker/connections/{username}/{connection}/dispatches": {
       "get": {
         "summary": "List tracker dispatches",
-        "description": "Lists a connection's dispatch rows (issue, scope, skill, run id, state, failure reason, timestamps), newest first, optionally filtered by state. Requires tracker:admin.",
+        "description": "Lists a connection's dispatch rows (issue, scope, skill, run id, state, failure reason, timestamps), newest first, optionally filtered by state. Each row also reports the fan-out slots its run still holds as lineage reservations, and when the oldest was claimed, so an operator can see why a run's fan-out looks exhausted. Requires tracker:admin.",
         "operationId": "TrackerService_ListTrackerDispatches",
         "responses": {
           "200": {
@@ -7343,7 +7303,7 @@
         ]
       }
     },
-    "/v1/tracker/{username}/{connection}/issues": {
+    "/v1/tracker/connections/{username}/{connection}/issues": {
       "get": {
         "summary": "List tracker issues",
         "description": "Lists issues, optionally filtered by state, labels (AND), or free-text search. Never includes comments — use GetTrackerIssue for a single issue's comments. Requires tracker:read.",
@@ -7457,7 +7417,7 @@
         ]
       }
     },
-    "/v1/tracker/{username}/{connection}/issues/{number}": {
+    "/v1/tracker/connections/{username}/{connection}/issues/{number}": {
       "get": {
         "summary": "Get a tracker issue",
         "description": "Returns a single issue's body, state, labels, assignee, and comments, normalized across GitHub and GitLab. Requires tracker:read.",
@@ -7503,7 +7463,7 @@
         ]
       }
     },
-    "/v1/tracker/{username}/{connection}/issues/{number}/claim": {
+    "/v1/tracker/connections/{username}/{connection}/issues/{number}/claim": {
       "post": {
         "summary": "Claim a tracker issue",
         "description": "Posts a stamped claim comment and assigns the calling run if the issue is unassigned, unless a live or recent claim from a different run already holds it. Idempotent for the same run. Requires tracker:write.",
@@ -7556,7 +7516,7 @@
         ]
       }
     },
-    "/v1/tracker/{username}/{connection}/issues/{number}/comments": {
+    "/v1/tracker/connections/{username}/{connection}/issues/{number}/comments": {
       "post": {
         "summary": "Comment on a tracker issue or change",
         "description": "Posts a comment, stamped with the acting run's platform identity and sanitized against forged markers and GitLab quick-actions. Requires tracker:write.",
@@ -7609,7 +7569,7 @@
         ]
       }
     },
-    "/v1/tracker/{username}/{connection}/issues/{number}/labels": {
+    "/v1/tracker/connections/{username}/{connection}/issues/{number}/labels": {
       "post": {
         "summary": "Set labels on a tracker issue",
         "description": "Adds and/or removes labels on an issue. Requires tracker:write.",
@@ -7662,7 +7622,7 @@
         ]
       }
     },
-    "/v1/tracker/{username}/{connection}/routes": {
+    "/v1/tracker/connections/{username}/{connection}/routes": {
       "get": {
         "summary": "List tracker scope routes",
         "description": "Lists every scope -\u003e skill route on a tracker connection, ordered by scope. Requires tracker:admin.",
@@ -7700,7 +7660,7 @@
         ]
       }
     },
-    "/v1/tracker/{username}/{connection}/routes/{scope}": {
+    "/v1/tracker/connections/{username}/{connection}/routes/{scope}": {
       "delete": {
         "summary": "Delete a tracker scope route",
         "description": "Removes the route for scope:\u003cscope\u003e on this connection; issues with that label are no longer dispatched. Requires tracker:admin.",
@@ -7787,6 +7747,118 @@
             "schema": {
               "$ref": "#/definitions/SetTrackerRouteBody"
             }
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      }
+    },
+    "/v1/tracker/connections/{username}/{name}": {
+      "get": {
+        "summary": "Get a tracker connection",
+        "description": "Returns a single named tracker connection's metadata. Never returns the credential value.",
+        "operationId": "TrackerService_GetTrackerConnection",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetTrackerConnectionResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      },
+      "delete": {
+        "summary": "Delete a tracker connection",
+        "description": "Removes a named tracker connection. Does not delete the underlying credential secret.",
+        "operationId": "TrackerService_DeleteTrackerConnection",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/DeleteTrackerConnectionResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      }
+    },
+    "/v1/tracker/connections/{username}/{name}/status": {
+      "get": {
+        "summary": "Check a tracker connection's live status",
+        "description": "Asks the tracker to describe the connection's own credential: reachability, whether the credential is still valid, its granted scopes and expiry, and whether it's broader than the provider's preferred credential type. Also reports the daemon host's git version and whether it meets SubmitTrackerChange's minimum. Requires tracker:admin.",
+        "operationId": "TrackerService_GetTrackerStatus",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetTrackerStatusResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "type": "string"
           }
         ],
         "tags": [
@@ -9682,6 +9754,17 @@
       },
       "title": "BuildpackOptions for auto-generating Dockerfiles/Containerfiles"
     },
+    "CPUAdmissionMode": {
+      "type": "string",
+      "enum": [
+        "CPU_ADMISSION_MODE_UNSPECIFIED",
+        "CPU_ADMISSION_MODE_DISABLED",
+        "CPU_ADMISSION_MODE_ADVISORY",
+        "CPU_ADMISSION_MODE_ENFORCING"
+      ],
+      "default": "CPU_ADMISSION_MODE_UNSPECIFIED",
+      "description": "CPUAdmissionMode is the CPU overcommit admission gate's posture\n(docs/CPU-CAPACITY-ADMISSION.md, #1029). An enum rather than a pair of\nbare flags so a client switches on typed constants and cannot mistake\n\"factor set but not enforced\" for protection (#2284).\n\n - CPU_ADMISSION_MODE_UNSPECIFIED: The backend did not report a posture (pre-#2284 daemon).\n - CPU_ADMISSION_MODE_DISABLED: No factor configured: the gate never runs (the default).\n - CPU_ADMISSION_MODE_ADVISORY: A factor is configured but over-ceiling creates are only logged, never\nrejected.\n - CPU_ADMISSION_MODE_ENFORCING: Over-ceiling creates are rejected with ResourceExhausted."
+    },
     "CapabilityBenchmark": {
       "type": "object",
       "properties": {
@@ -10133,6 +10216,17 @@
       ],
       "default": "CLUSTER_STATE_UNSPECIFIED",
       "description": "ClusterState is the lifecycle state of a managed cluster.\n\n - CLUSTER_STATE_PROVISIONING: Recorded; the reconciler is provisioning VMs.\n - CLUSTER_STATE_READY: Control plane serving and every group's min nodes Ready.\n - CLUSTER_STATE_DEGRADED: Serving, but observed state diverges from desired (e.g. a lost\nnode being replaced).\n - CLUSTER_STATE_DELETING: Teardown in progress.\n - CLUSTER_STATE_ERROR: Provisioning or reconciliation failed; state_reason says why."
+    },
+    "CodeCredentialSource": {
+      "type": "string",
+      "enum": [
+        "CODE_CREDENTIAL_SOURCE_UNSPECIFIED",
+        "CODE_CREDENTIAL_SOURCE_INTERACTIVE",
+        "CODE_CREDENTIAL_SOURCE_API_KEY",
+        "CODE_CREDENTIAL_SOURCE_NONE"
+      ],
+      "default": "CODE_CREDENTIAL_SOURCE_UNSPECIFIED",
+      "description": "CodeCredentialSource is WHERE a box's `containarium code`-style coding\nengine (Claude Code today; Codex once #2273 lands) would currently find a\nhuman/headless sign-in — never the credential's value, never read, logged,\nor transmitted at any layer. Mirrors #2030's `code install` verify output\n(\"report which credential source Claude Code will use, never a value\"),\ncondensed to the one answer GetSkillBoxCredentialStatus needs (#2272).\n\nDeliberately a DIFFERENT enum from AgentCredentialSource above:\nAgentCredentialSource is where a model-GATEWAY token's upstream key comes\nfrom (daemon-held, never the box's concern); CodeCredentialSource is\nwhether a HUMAN has already completed Anthropic's own sign-in flow on this\nbox, or placed their own key, so unattended reuse of that same box needs no\ncredential of containarium's own.\n\n - CODE_CREDENTIAL_SOURCE_INTERACTIVE: The engine's own device-code/browser sign-in has already completed on\nthis box (e.g. Claude Code's own ~/.claude/.credentials.json).\n - CODE_CREDENTIAL_SOURCE_API_KEY: A user-placed provider key/token is visible to the engine's own shell\nenvironment (e.g. ANTHROPIC_API_KEY in ~/.claude/settings.json, or a 3P\nprovider env var) — the headless path #2030 documents.\n - CODE_CREDENTIAL_SOURCE_NONE: Neither of the above. Expected on a freshly provisioned box (#2272)\nuntil a human signs in or places a key."
     },
     "Collaborator": {
       "type": "object",
@@ -12893,6 +12987,24 @@
         }
       }
     },
+    "GetSkillBoxCredentialStatusResponse": {
+      "type": "object",
+      "properties": {
+        "engine": {
+          "$ref": "#/definitions/AgentEngine",
+          "description": "The engine this status was checked for: the skill's own `engine` field,\nresolved to AGENT_ENGINE_CLAUDE when the skill leaves it unspecified\n(the only engine `containarium code`'s box-side probe supports today —\nAGENT_ENGINE_CODEX/GEMINI are refused FAILED_PRECONDITION until #2273\nadds Codex's own probe; never guessed)."
+        },
+        "credentialSource": {
+          "$ref": "#/definitions/CodeCredentialSource",
+          "description": "WHERE that engine's credential comes from, if anywhere — names only,\nNEVER a value. Mirrors `containarium code install`'s own verify output\n(#2030): this call does not read, store, log, or transmit the\ncredential itself at any layer, box to daemon to caller."
+        },
+        "checkedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When this check ran."
+        }
+      }
+    },
     "GetSystemInfoResponse": {
       "type": "object",
       "properties": {
@@ -14788,6 +14900,31 @@
       "default": "PROTOCOL_UNSPECIFIED",
       "description": "- PROTOCOL_UNSPECIFIED: Unspecified protocol (should not be used)\n - PROTOCOL_TCP: TCP protocol\n - PROTOCOL_UDP: UDP protocol\n - PROTOCOL_ICMP: ICMP protocol",
       "title": "Protocol represents the network protocol of a connection"
+    },
+    "ProvisionSkillBoxBody": {
+      "type": "object",
+      "properties": {
+        "backendId": {
+          "type": "string",
+          "description": "Target backend/pool placement, same scheme as RunAgentSkillRequest."
+        },
+        "pool": {
+          "type": "string"
+        }
+      },
+      "description": "ProvisionSkillBoxRequest creates or reuses a skill's deterministic box\n(agent-\u003cskill_id\u003e) WITHOUT running it: no token is minted, nothing is\nseeded, and the model is never called (#2272). This is the create-or-reuse\nstep RunAgentSkill/RunCrew already perform as a side effect of a real run\n— surfaced on its own so a crew member's box can exist, and a human can\n`containarium connect` in and sign in to its coding agent, BEFORE any\ninference credential exists. Without this, that box is created only as a\nside effect of a run that itself needs a credential to get that far —\nchicken-and-egg."
+    },
+    "ProvisionSkillBoxResponse": {
+      "type": "object",
+      "properties": {
+        "container": {
+          "$ref": "#/definitions/Container"
+        },
+        "freshlyProvisioned": {
+          "type": "boolean",
+          "description": "True when this call created the box; false when an already-provisioned\nbox (running, or stopped and started back up) was reused instead."
+        }
+      }
     },
     "ProxyRoute": {
       "type": "object",
@@ -16812,7 +16949,21 @@
         "committedCpuCores": {
           "type": "number",
           "format": "double",
-          "description": "committed_cpu_cores is the sum of this host's TENANT containers'\ncommitted CPU (limits.cpu / limits.cpu.allowance, summed via\nincus.CommittedCores) — the \"how much is actually spoken for\" number\nthat pairs with total_cpus to answer \"is this host over its CPU\novercommit ceiling right now\" (#1580). A caller derives the ratio as\ncommitted_cpu_cores / total_cpus.\n\nThis is TENANT capacity, not total host capacity: the platform's own\ncore-infra containers (Postgres, Caddy, control-plane — not tenant\nworkload) are deliberately excluded, the same exclusion the CPU\nadmission gate (docs/CPU-CAPACITY-ADMISSION.md, #1029) already applies.\nAn operator combining this with total_cpus to size an overcommit factor\nmust still separately budget the host's own known core-infra CPU\nfootprint on top of it.\n\n0 on the K8s runtime, same as total_cpus (the Incus resource read\nno-ops there) — \"not applicable to this runtime,\" not \"nothing\ncommitted.\" See #1571/#1578 for the design this closes the visibility\nhalf of."
+          "description": "committed_cpu_cores is the sum of this host's TENANT containers'\ncommitted CPU (limits.cpu / limits.cpu.allowance, summed via\nincus.CommittedCores) — the \"how much is actually spoken for\" number\nthat pairs with total_cpus to answer \"is this host over its CPU\novercommit ceiling right now\" (#1580). A caller derives the ratio as\ncommitted_cpu_cores / total_cpus.\n\nThis is TENANT capacity, not total host capacity: the platform's own\ncore-infra containers (Postgres, Caddy, control-plane — not tenant\nworkload) are deliberately excluded, the same exclusion the CPU\nadmission gate (docs/CPU-CAPACITY-ADMISSION.md, #1029) already applies.\nThe platform's own footprint is reported separately in\ncore_committed_cpu_cores (#2284) so an operator sizing a factor can\nsee both halves instead of guessing the second.\n\n0 on the K8s runtime, same as total_cpus (the Incus resource read\nno-ops there) — \"not applicable to this runtime,\" not \"nothing\ncommitted.\" See #1571/#1578 for the design this closes the visibility\nhalf of."
+        },
+        "coreCommittedCpuCores": {
+          "type": "number",
+          "format": "double",
+          "description": "core_committed_cpu_cores is the sum of this host's CORE-ROLE containers'\ncommitted CPU (Postgres, Caddy, VictoriaMetrics, control plane, ... —\nthe platform's own processes), the half committed_cpu_cores leaves out.\nTogether with committed_cpu_cores and total_cpus it gives the full\ntenant / core / physical picture the admission gate reasons about only\nhalf of, so a saturated host is visible as such (#2284). 0 on the K8s\nruntime, like the other two."
+        },
+        "cpuAdmissionMode": {
+          "$ref": "#/definitions/CPUAdmissionMode",
+          "description": "cpu_admission_mode is the CPU overcommit admission gate's posture on\nthis backend (docs/CPU-CAPACITY-ADMISSION.md): disabled, advisory\n(logs what it would reject, admits everything) or enforcing. Surfaced so\na client can tell that a host past its ceiling is NOT being protected —\nadvisory mode otherwise fails silently (#2284). UNSPECIFIED means the\nbackend predates this field, not that the gate is off."
+        },
+        "cpuOvercommitFactor": {
+          "type": "number",
+          "format": "double",
+          "description": "cpu_overcommit_factor is the gate's configured ceiling multiple of\ntotal_cpus (the --cpu-overcommit-factor flag). 0 when the gate is\ndisabled. The ceiling in cores is total_cpus × cpu_overcommit_factor;\nthe host is over it when committed_cpu_cores exceeds that."
         }
       },
       "title": "SystemInfo contains information about the host system"
@@ -17133,6 +17284,16 @@
         "failure": {
           "$ref": "#/definitions/TrackerDispatchFailure",
           "description": "Set when state is FAILED (#2026): the typed cause."
+        },
+        "lineageReservations": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Fan-out slots run_id still holds as lineage reservations (#2062):\nfollow-up creates in flight, or ones that were never cleared (the\ndaemon died mid-create, or recording the follow-up failed). Each\ncounts against the connection's max_children_per_run exactly like a\nfiled follow-up, so a run whose fan-out looks exhausted shows why\nhere. Swept when the run's lease ends. Filled in by\nListTrackerDispatches only."
+        },
+        "oldestLineageReservationAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the oldest of those reservations was claimed; unset when there\nare none. Filled in by ListTrackerDispatches only."
         }
       },
       "description": "TrackerDispatch is one durable dispatch: which issue, which scope\nlabel matched, which skill was started as which run, and where the\nrun is in its state machine."

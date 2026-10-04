@@ -696,6 +696,8 @@ func (c *GRPCClient) GetSystemInfo() (*incus.ServerInfo, error) {
 	info := &incus.ServerInfo{
 		Version:       resp.Info.IncusVersion,
 		KernelVersion: resp.Info.KernelVersion,
+		CPUBudget: cpuBudgetFromWire(resp.Info.TotalCpus, resp.Info.CommittedCpuCores,
+			resp.Info.CoreCommittedCpuCores, resp.Info.CpuAdmissionMode, resp.Info.CpuOvercommitFactor),
 	}
 
 	return info, nil
@@ -819,6 +821,40 @@ func (c *GRPCClient) GetAgentSkill(id string) (*pb.AgentSkill, error) {
 		return nil, fmt.Errorf("failed to get agent skill: %w", err)
 	}
 	return resp.Skill, nil
+}
+
+// ProvisionSkillBox creates or reuses a skill's deterministic box
+// (agent-<skill_id>) via gRPC, without running it: no token minted, nothing
+// seeded, no model call (#2272). Lets a human get the box provisioned ahead
+// of any real run, so they can sign in to its coding agent before any
+// inference credential exists.
+func (c *GRPCClient) ProvisionSkillBox(skillID, backendID, pool string) (*pb.ProvisionSkillBoxResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute) // box deploy can take time
+	defer cancel()
+
+	resp, err := c.agentClient.ProvisionSkillBox(ctx, &pb.ProvisionSkillBoxRequest{
+		SkillId:   skillID,
+		BackendId: backendID,
+		Pool:      pool,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to provision skill box: %w", err)
+	}
+	return resp, nil
+}
+
+// GetSkillBoxCredentialStatus reports, via gRPC, whether a skill's
+// already-provisioned box has a credential its configured coding engine
+// would use — the source NAME only, never a value (#2272, #2030 posture).
+func (c *GRPCClient) GetSkillBoxCredentialStatus(skillID string) (*pb.GetSkillBoxCredentialStatusResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := c.agentClient.GetSkillBoxCredentialStatus(ctx, &pb.GetSkillBoxCredentialStatusRequest{SkillId: skillID})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get skill box credential status: %w", err)
+	}
+	return resp, nil
 }
 
 // RunAgentSkill provisions a skill's box, mints a scoped token, runs one task,

@@ -1380,9 +1380,20 @@ type TrackerDispatch struct {
 	StartedAt     *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
 	EndedAt       *timestamppb.Timestamp `protobuf:"bytes,13,opt,name=ended_at,json=endedAt,proto3" json:"ended_at,omitempty"`
 	// Set when state is FAILED (#2026): the typed cause.
-	Failure       TrackerDispatchFailure `protobuf:"varint,14,opt,name=failure,proto3,enum=containarium.v1.TrackerDispatchFailure" json:"failure,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Failure TrackerDispatchFailure `protobuf:"varint,14,opt,name=failure,proto3,enum=containarium.v1.TrackerDispatchFailure" json:"failure,omitempty"`
+	// Fan-out slots run_id still holds as lineage reservations (#2062):
+	// follow-up creates in flight, or ones that were never cleared (the
+	// daemon died mid-create, or recording the follow-up failed). Each
+	// counts against the connection's max_children_per_run exactly like a
+	// filed follow-up, so a run whose fan-out looks exhausted shows why
+	// here. Swept when the run's lease ends. Filled in by
+	// ListTrackerDispatches only.
+	LineageReservations int32 `protobuf:"varint,15,opt,name=lineage_reservations,json=lineageReservations,proto3" json:"lineage_reservations,omitempty"`
+	// When the oldest of those reservations was claimed; unset when there
+	// are none. Filled in by ListTrackerDispatches only.
+	OldestLineageReservationAt *timestamppb.Timestamp `protobuf:"bytes,16,opt,name=oldest_lineage_reservation_at,json=oldestLineageReservationAt,proto3" json:"oldest_lineage_reservation_at,omitempty"`
+	unknownFields              protoimpl.UnknownFields
+	sizeCache                  protoimpl.SizeCache
 }
 
 func (x *TrackerDispatch) Reset() {
@@ -1511,6 +1522,20 @@ func (x *TrackerDispatch) GetFailure() TrackerDispatchFailure {
 		return x.Failure
 	}
 	return TrackerDispatchFailure_TRACKER_DISPATCH_FAILURE_UNSPECIFIED
+}
+
+func (x *TrackerDispatch) GetLineageReservations() int32 {
+	if x != nil {
+		return x.LineageReservations
+	}
+	return 0
+}
+
+func (x *TrackerDispatch) GetOldestLineageReservationAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.OldestLineageReservationAt
+	}
+	return nil
 }
 
 // TrackerDispatchInput is EXACTLY the run's input_json (protojson
@@ -3482,7 +3507,7 @@ const file_containarium_v1_tracker_proto_rawDesc = "" +
 	"connection\x12\x14\n" +
 	"\x05scope\x18\x03 \x01(\tR\x05scope\"6\n" +
 	"\x1aDeleteTrackerRouteResponse\x12\x18\n" +
-	"\amessage\x18\x01 \x01(\tR\amessage\"\xb2\x04\n" +
+	"\amessage\x18\x01 \x01(\tR\amessage\"\xc4\x05\n" +
 	"\x0fTrackerDispatch\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n" +
 	"\busername\x18\x02 \x01(\tR\busername\x12\x1e\n" +
@@ -3502,7 +3527,9 @@ const file_containarium_v1_tracker_proto_rawDesc = "" +
 	"\n" +
 	"started_at\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\tstartedAt\x125\n" +
 	"\bended_at\x18\r \x01(\v2\x1a.google.protobuf.TimestampR\aendedAt\x12A\n" +
-	"\afailure\x18\x0e \x01(\x0e2'.containarium.v1.TrackerDispatchFailureR\afailure\"\xc2\x01\n" +
+	"\afailure\x18\x0e \x01(\x0e2'.containarium.v1.TrackerDispatchFailureR\afailure\x121\n" +
+	"\x14lineage_reservations\x18\x0f \x01(\x05R\x13lineageReservations\x12]\n" +
+	"\x1doldest_lineage_reservation_at\x18\x10 \x01(\v2\x1a.google.protobuf.TimestampR\x1aoldestLineageReservationAt\"\xc2\x01\n" +
 	"\x14TrackerDispatchInput\x12\x1e\n" +
 	"\n" +
 	"connection\x18\x01 \x01(\tR\n" +
@@ -3687,7 +3714,7 @@ const file_containarium_v1_tracker_proto_rawDesc = "" +
 	"$TRACKER_DISPATCH_FAILURE_START_ERROR\x10\x01\x12&\n" +
 	"\"TRACKER_DISPATCH_FAILURE_RUN_ERROR\x10\x02\x12$\n" +
 	" TRACKER_DISPATCH_FAILURE_TIMEOUT\x10\x03\x12'\n" +
-	"#TRACKER_DISPATCH_FAILURE_LEASE_LOST\x10\x042\xba<\n" +
+	"#TRACKER_DISPATCH_FAILURE_LEASE_LOST\x10\x042\x88?\n" +
 	"\x0eTrackerService\x12\xb8\x03\n" +
 	"\x14SetTrackerConnection\x12,.containarium.v1.SetTrackerConnectionRequest\x1a-.containarium.v1.SetTrackerConnectionResponse\"\xc2\x02\x92A\x9c\x02\n" +
 	"\aTracker\x12%Create or update a tracker connection\x1a\xe9\x01Registers where a tenant's issue tracker is (provider, base URL, project) and which broker-only secret holds its credential. The credential itself is never accepted or returned here — only the secret's name. Requires tracker:admin.\x82\xd3\xe4\x93\x02\x1c:\x01*\"\x17/v1/tracker/connections\x12\xa8\x02\n" +
@@ -3696,35 +3723,35 @@ const file_containarium_v1_tracker_proto_rawDesc = "" +
 	"\x16ListTrackerConnections\x12..containarium.v1.ListTrackerConnectionsRequest\x1a/.containarium.v1.ListTrackerConnectionsResponse\"\x83\x01\x92AV\n" +
 	"\aTracker\x12\x18List tracker connections\x1a1Lists every tracker connection owned by a tenant.\x82\xd3\xe4\x93\x02$\x12\"/v1/tracker/connections/{username}\x12\xb0\x02\n" +
 	"\x17DeleteTrackerConnection\x12/.containarium.v1.DeleteTrackerConnectionRequest\x1a0.containarium.v1.DeleteTrackerConnectionResponse\"\xb1\x01\x92A}\n" +
-	"\aTracker\x12\x1bDelete a tracker connection\x1aURemoves a named tracker connection. Does not delete the underlying credential secret.\x82\xd3\xe4\x93\x02+*)/v1/tracker/connections/{username}/{name}\x12\xf2\x02\n" +
-	"\x0fSetTrackerRoute\x12'.containarium.v1.SetTrackerRouteRequest\x1a(.containarium.v1.SetTrackerRouteResponse\"\x8b\x02\x92A\xca\x01\n" +
-	"\aTracker\x12\x19Set a tracker scope route\x1a\xa3\x01Creates or updates the route that sends issues labeled scope:<scope> on this connection to skill_id. Idempotent. The connection must exist. Requires tracker:admin.\x82\xd3\xe4\x93\x027:\x01*\x1a2/v1/tracker/{username}/{connection}/routes/{scope}\x12\xac\x02\n" +
-	"\x11ListTrackerRoutes\x12).containarium.v1.ListTrackerRoutesRequest\x1a*.containarium.v1.ListTrackerRoutesResponse\"\xbf\x01\x92A\x89\x01\n" +
-	"\aTracker\x12\x19List tracker scope routes\x1acLists every scope -> skill route on a tracker connection, ordered by scope. Requires tracker:admin.\x82\xd3\xe4\x93\x02,\x12*/v1/tracker/{username}/{connection}/routes\x12\xd8\x02\n" +
-	"\x12DeleteTrackerRoute\x12*.containarium.v1.DeleteTrackerRouteRequest\x1a+.containarium.v1.DeleteTrackerRouteResponse\"\xe8\x01\x92A\xaa\x01\n" +
-	"\aTracker\x12\x1cDelete a tracker scope route\x1a\x80\x01Removes the route for scope:<scope> on this connection; issues with that label are no longer dispatched. Requires tracker:admin.\x82\xd3\xe4\x93\x024*2/v1/tracker/{username}/{connection}/routes/{scope}\x12\xf3\a\n" +
-	"\x15DispatchTrackerIssues\x12-.containarium.v1.DispatchTrackerIssuesRequest\x1a..containarium.v1.DispatchTrackerIssuesResponse\"\xfa\x06\x92A\xbf\x06\n" +
-	"\aTracker\x12\x1dRun one tracker dispatch tick\x1a\x94\x06Lists the connection's open issues and, for each one carrying a routed scope:<role> label and no agent:* state label (and not agent:needs-approval), inserts a durable dispatch row, starts the routed skill through the RunAgentSkill path with the issue reference as input, and labels the issue agent:queued. Exactly once per (issue) across restarts and concurrent dispatchers: a partial unique index on active rows makes the second inserter skip. An unrouted scope label gets exactly one stamped warning comment. Each tick first sweeps active rows: one past the policy run timeout, or with no live lease past a grace period, is failed (lease ended, agent:failed, a comment naming the run and the reason) and returned in timed_out. Requires tracker:admin (and agents:run, to start the runs).\x82\xd3\xe4\x93\x021:\x01*\",/v1/tracker/{username}/{connection}/dispatch\x12\x80\x03\n" +
-	"\x15ListTrackerDispatches\x12-.containarium.v1.ListTrackerDispatchesRequest\x1a..containarium.v1.ListTrackerDispatchesResponse\"\x87\x02\x92A\xcd\x01\n" +
-	"\aTracker\x12\x17List tracker dispatches\x1a\xa8\x01Lists a connection's dispatch rows (issue, scope, skill, run id, state, failure reason, timestamps), newest first, optionally filtered by state. Requires tracker:admin.\x82\xd3\xe4\x93\x020\x12./v1/tracker/{username}/{connection}/dispatches\x12\xac\x04\n" +
+	"\aTracker\x12\x1bDelete a tracker connection\x1aURemoves a named tracker connection. Does not delete the underlying credential secret.\x82\xd3\xe4\x93\x02+*)/v1/tracker/connections/{username}/{name}\x12\xfe\x02\n" +
+	"\x0fSetTrackerRoute\x12'.containarium.v1.SetTrackerRouteRequest\x1a(.containarium.v1.SetTrackerRouteResponse\"\x97\x02\x92A\xca\x01\n" +
+	"\aTracker\x12\x19Set a tracker scope route\x1a\xa3\x01Creates or updates the route that sends issues labeled scope:<scope> on this connection to skill_id. Idempotent. The connection must exist. Requires tracker:admin.\x82\xd3\xe4\x93\x02C:\x01*\x1a>/v1/tracker/connections/{username}/{connection}/routes/{scope}\x12\xb8\x02\n" +
+	"\x11ListTrackerRoutes\x12).containarium.v1.ListTrackerRoutesRequest\x1a*.containarium.v1.ListTrackerRoutesResponse\"\xcb\x01\x92A\x89\x01\n" +
+	"\aTracker\x12\x19List tracker scope routes\x1acLists every scope -> skill route on a tracker connection, ordered by scope. Requires tracker:admin.\x82\xd3\xe4\x93\x028\x126/v1/tracker/connections/{username}/{connection}/routes\x12\xe4\x02\n" +
+	"\x12DeleteTrackerRoute\x12*.containarium.v1.DeleteTrackerRouteRequest\x1a+.containarium.v1.DeleteTrackerRouteResponse\"\xf4\x01\x92A\xaa\x01\n" +
+	"\aTracker\x12\x1cDelete a tracker scope route\x1a\x80\x01Removes the route for scope:<scope> on this connection; issues with that label are no longer dispatched. Requires tracker:admin.\x82\xd3\xe4\x93\x02@*>/v1/tracker/connections/{username}/{connection}/routes/{scope}\x12\xff\a\n" +
+	"\x15DispatchTrackerIssues\x12-.containarium.v1.DispatchTrackerIssuesRequest\x1a..containarium.v1.DispatchTrackerIssuesResponse\"\x86\a\x92A\xbf\x06\n" +
+	"\aTracker\x12\x1dRun one tracker dispatch tick\x1a\x94\x06Lists the connection's open issues and, for each one carrying a routed scope:<role> label and no agent:* state label (and not agent:needs-approval), inserts a durable dispatch row, starts the routed skill through the RunAgentSkill path with the issue reference as input, and labels the issue agent:queued. Exactly once per (issue) across restarts and concurrent dispatchers: a partial unique index on active rows makes the second inserter skip. An unrouted scope label gets exactly one stamped warning comment. Each tick first sweeps active rows: one past the policy run timeout, or with no live lease past a grace period, is failed (lease ended, agent:failed, a comment naming the run and the reason) and returned in timed_out. Requires tracker:admin (and agents:run, to start the runs).\x82\xd3\xe4\x93\x02=:\x01*\"8/v1/tracker/connections/{username}/{connection}/dispatch\x12\xbe\x04\n" +
+	"\x15ListTrackerDispatches\x12-.containarium.v1.ListTrackerDispatchesRequest\x1a..containarium.v1.ListTrackerDispatchesResponse\"\xc5\x03\x92A\xff\x02\n" +
+	"\aTracker\x12\x17List tracker dispatches\x1a\xda\x02Lists a connection's dispatch rows (issue, scope, skill, run id, state, failure reason, timestamps), newest first, optionally filtered by state. Each row also reports the fan-out slots its run still holds as lineage reservations, and when the oldest was claimed, so an operator can see why a run's fan-out looks exhausted. Requires tracker:admin.\x82\xd3\xe4\x93\x02<\x12:/v1/tracker/connections/{username}/{connection}/dispatches\x12\xac\x04\n" +
 	"\x10GetTrackerStatus\x12(.containarium.v1.GetTrackerStatusRequest\x1a).containarium.v1.GetTrackerStatusResponse\"\xc2\x03\x92A\x86\x03\n" +
-	"\aTracker\x12(Check a tracker connection's live status\x1a\xd0\x02Asks the tracker to describe the connection's own credential: reachability, whether the credential is still valid, its granted scopes and expiry, and whether it's broader than the provider's preferred credential type. Also reports the daemon host's git version and whether it meets SubmitTrackerChange's minimum. Requires tracker:admin.\x82\xd3\xe4\x93\x022\x120/v1/tracker/connections/{username}/{name}/status\x12\xc8\x02\n" +
-	"\x0fGetTrackerIssue\x12'.containarium.v1.GetTrackerIssueRequest\x1a(.containarium.v1.GetTrackerIssueResponse\"\xe1\x01\x92A\xa2\x01\n" +
-	"\aTracker\x12\x13Get a tracker issue\x1a\x81\x01Returns a single issue's body, state, labels, assignee, and comments, normalized across GitHub and GitLab. Requires tracker:read.\x82\xd3\xe4\x93\x025\x123/v1/tracker/{username}/{connection}/issues/{number}\x12\xf8\x02\n" +
-	"\x11ListTrackerIssues\x12).containarium.v1.ListTrackerIssuesRequest\x1a*.containarium.v1.ListTrackerIssuesResponse\"\x8b\x02\x92A\xd5\x01\n" +
-	"\aTracker\x12\x13List tracker issues\x1a\xb4\x01Lists issues, optionally filtered by state, labels (AND), or free-text search. Never includes comments — use GetTrackerIssue for a single issue's comments. Requires tracker:read.\x82\xd3\xe4\x93\x02,\x12*/v1/tracker/{username}/{connection}/issues\x12\xa8\x02\n" +
-	"\x10GetTrackerChange\x12(.containarium.v1.GetTrackerChangeRequest\x1a).containarium.v1.GetTrackerChangeResponse\"\xbe\x01\x92A\x7f\n" +
-	"\aTracker\x12\x1cGet a tracker change request\x1aVReturns a pull/merge request's state and normalized CI verdict. Requires tracker:read.\x82\xd3\xe4\x93\x026\x124/v1/tracker/{username}/{connection}/changes/{number}\x12\x8d\x03\n" +
-	"\x15CommentOnTrackerIssue\x12-.containarium.v1.CommentOnTrackerIssueRequest\x1a..containarium.v1.CommentOnTrackerIssueResponse\"\x94\x02\x92A\xc9\x01\n" +
-	"\aTracker\x12$Comment on a tracker issue or change\x1a\x97\x01Posts a comment, stamped with the acting run's platform identity and sanitized against forged markers and GitLab quick-actions. Requires tracker:write.\x82\xd3\xe4\x93\x02A:\x01*\"</v1/tracker/{username}/{connection}/issues/{number}/comments\x12\xa7\x03\n" +
-	"\x11ClaimTrackerIssue\x12).containarium.v1.ClaimTrackerIssueRequest\x1a*.containarium.v1.ClaimTrackerIssueResponse\"\xba\x02\x92A\xf2\x01\n" +
-	"\aTracker\x12\x15Claim a tracker issue\x1a\xcf\x01Posts a stamped claim comment and assigns the calling run if the issue is unassigned, unless a live or recent claim from a different run already holds it. Idempotent for the same run. Requires tracker:write.\x82\xd3\xe4\x93\x02>:\x01*\"9/v1/tracker/{username}/{connection}/issues/{number}/claim\x12\xaa\x02\n" +
-	"\x15SetTrackerIssueLabels\x12-.containarium.v1.SetTrackerIssueLabelsRequest\x1a..containarium.v1.SetTrackerIssueLabelsResponse\"\xb1\x01\x92Ai\n" +
-	"\aTracker\x12\x1dSet labels on a tracker issue\x1a?Adds and/or removes labels on an issue. Requires tracker:write.\x82\xd3\xe4\x93\x02?:\x01*\":/v1/tracker/{username}/{connection}/issues/{number}/labels\x12\xe3\x05\n" +
-	"\x12CreateTrackerIssue\x12*.containarium.v1.CreateTrackerIssueRequest\x1a+.containarium.v1.CreateTrackerIssueResponse\"\xf3\x04\x92A\xba\x04\n" +
-	"\aTracker\x12\x16Create a tracker issue\x1a\x96\x04Files an issue on the connection's tracker — the follow-up verb for issue-triggered role agents. Labels must pass the connection's label allow-list (checked before any upstream call). A run-scoped token must name a parent issue: the child is recorded in the issue lineage (depth and per-run fan-out are capped by the connection policy), gets agent:needs-approval unless the policy enables auto_chain, and its body ends with the parent link and the run's identity stamp; the parent gets one back-link comment. Requires tracker:write.\x82\xd3\xe4\x93\x02/:\x01*\"*/v1/tracker/{username}/{connection}/issues\x12\xa7\x04\n" +
-	"\x13SubmitTrackerChange\x12+.containarium.v1.SubmitTrackerChangeRequest\x1a,.containarium.v1.SubmitTrackerChangeResponse\"\xb4\x03\x92A\xfa\x02\n" +
-	"\aTracker\x12\x1fSubmit a tracker change request\x1a\xcd\x02Bundles the run's committed workspace out of the box and pushes it from a fresh temporary bare repository on the host to a daemon-chosen branch, then opens a change request referencing issue — no push credential ever enters the box. Requires tracker:write and a run with a recorded git_source. Opened as a draft when draft is true.\x82\xd3\xe4\x93\x020:\x01*\"+/v1/tracker/{username}/{connection}/changesBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
+	"\aTracker\x12(Check a tracker connection's live status\x1a\xd0\x02Asks the tracker to describe the connection's own credential: reachability, whether the credential is still valid, its granted scopes and expiry, and whether it's broader than the provider's preferred credential type. Also reports the daemon host's git version and whether it meets SubmitTrackerChange's minimum. Requires tracker:admin.\x82\xd3\xe4\x93\x022\x120/v1/tracker/connections/{username}/{name}/status\x12\xd4\x02\n" +
+	"\x0fGetTrackerIssue\x12'.containarium.v1.GetTrackerIssueRequest\x1a(.containarium.v1.GetTrackerIssueResponse\"\xed\x01\x92A\xa2\x01\n" +
+	"\aTracker\x12\x13Get a tracker issue\x1a\x81\x01Returns a single issue's body, state, labels, assignee, and comments, normalized across GitHub and GitLab. Requires tracker:read.\x82\xd3\xe4\x93\x02A\x12?/v1/tracker/connections/{username}/{connection}/issues/{number}\x12\x84\x03\n" +
+	"\x11ListTrackerIssues\x12).containarium.v1.ListTrackerIssuesRequest\x1a*.containarium.v1.ListTrackerIssuesResponse\"\x97\x02\x92A\xd5\x01\n" +
+	"\aTracker\x12\x13List tracker issues\x1a\xb4\x01Lists issues, optionally filtered by state, labels (AND), or free-text search. Never includes comments — use GetTrackerIssue for a single issue's comments. Requires tracker:read.\x82\xd3\xe4\x93\x028\x126/v1/tracker/connections/{username}/{connection}/issues\x12\xb4\x02\n" +
+	"\x10GetTrackerChange\x12(.containarium.v1.GetTrackerChangeRequest\x1a).containarium.v1.GetTrackerChangeResponse\"\xca\x01\x92A\x7f\n" +
+	"\aTracker\x12\x1cGet a tracker change request\x1aVReturns a pull/merge request's state and normalized CI verdict. Requires tracker:read.\x82\xd3\xe4\x93\x02B\x12@/v1/tracker/connections/{username}/{connection}/changes/{number}\x12\x99\x03\n" +
+	"\x15CommentOnTrackerIssue\x12-.containarium.v1.CommentOnTrackerIssueRequest\x1a..containarium.v1.CommentOnTrackerIssueResponse\"\xa0\x02\x92A\xc9\x01\n" +
+	"\aTracker\x12$Comment on a tracker issue or change\x1a\x97\x01Posts a comment, stamped with the acting run's platform identity and sanitized against forged markers and GitLab quick-actions. Requires tracker:write.\x82\xd3\xe4\x93\x02M:\x01*\"H/v1/tracker/connections/{username}/{connection}/issues/{number}/comments\x12\xb3\x03\n" +
+	"\x11ClaimTrackerIssue\x12).containarium.v1.ClaimTrackerIssueRequest\x1a*.containarium.v1.ClaimTrackerIssueResponse\"\xc6\x02\x92A\xf2\x01\n" +
+	"\aTracker\x12\x15Claim a tracker issue\x1a\xcf\x01Posts a stamped claim comment and assigns the calling run if the issue is unassigned, unless a live or recent claim from a different run already holds it. Idempotent for the same run. Requires tracker:write.\x82\xd3\xe4\x93\x02J:\x01*\"E/v1/tracker/connections/{username}/{connection}/issues/{number}/claim\x12\xb6\x02\n" +
+	"\x15SetTrackerIssueLabels\x12-.containarium.v1.SetTrackerIssueLabelsRequest\x1a..containarium.v1.SetTrackerIssueLabelsResponse\"\xbd\x01\x92Ai\n" +
+	"\aTracker\x12\x1dSet labels on a tracker issue\x1a?Adds and/or removes labels on an issue. Requires tracker:write.\x82\xd3\xe4\x93\x02K:\x01*\"F/v1/tracker/connections/{username}/{connection}/issues/{number}/labels\x12\xef\x05\n" +
+	"\x12CreateTrackerIssue\x12*.containarium.v1.CreateTrackerIssueRequest\x1a+.containarium.v1.CreateTrackerIssueResponse\"\xff\x04\x92A\xba\x04\n" +
+	"\aTracker\x12\x16Create a tracker issue\x1a\x96\x04Files an issue on the connection's tracker — the follow-up verb for issue-triggered role agents. Labels must pass the connection's label allow-list (checked before any upstream call). A run-scoped token must name a parent issue: the child is recorded in the issue lineage (depth and per-run fan-out are capped by the connection policy), gets agent:needs-approval unless the policy enables auto_chain, and its body ends with the parent link and the run's identity stamp; the parent gets one back-link comment. Requires tracker:write.\x82\xd3\xe4\x93\x02;:\x01*\"6/v1/tracker/connections/{username}/{connection}/issues\x12\xb3\x04\n" +
+	"\x13SubmitTrackerChange\x12+.containarium.v1.SubmitTrackerChangeRequest\x1a,.containarium.v1.SubmitTrackerChangeResponse\"\xc0\x03\x92A\xfa\x02\n" +
+	"\aTracker\x12\x1fSubmit a tracker change request\x1a\xcd\x02Bundles the run's committed workspace out of the box and pushes it from a fresh temporary bare repository on the host to a daemon-chosen branch, then opens a change request referencing issue — no push credential ever enters the box. Requires tracker:write and a run with a recorded git_source. Opened as a draft when draft is true.\x82\xd3\xe4\x93\x02<:\x01*\"7/v1/tracker/connections/{username}/{connection}/changesBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
 
 var (
 	file_containarium_v1_tracker_proto_rawDescOnce sync.Once
@@ -3809,67 +3836,68 @@ var file_containarium_v1_tracker_proto_depIdxs = []int32{
 	50, // 12: containarium.v1.TrackerDispatch.started_at:type_name -> google.protobuf.Timestamp
 	50, // 13: containarium.v1.TrackerDispatch.ended_at:type_name -> google.protobuf.Timestamp
 	5,  // 14: containarium.v1.TrackerDispatch.failure:type_name -> containarium.v1.TrackerDispatchFailure
-	22, // 15: containarium.v1.DispatchTrackerIssuesResponse.started:type_name -> containarium.v1.TrackerDispatch
-	22, // 16: containarium.v1.DispatchTrackerIssuesResponse.timed_out:type_name -> containarium.v1.TrackerDispatch
-	22, // 17: containarium.v1.DispatchTrackerIssuesResponse.failed:type_name -> containarium.v1.TrackerDispatch
-	4,  // 18: containarium.v1.ListTrackerDispatchesRequest.state:type_name -> containarium.v1.TrackerDispatchState
-	22, // 19: containarium.v1.ListTrackerDispatchesResponse.dispatches:type_name -> containarium.v1.TrackerDispatch
-	6,  // 20: containarium.v1.GetTrackerStatusResponse.connection:type_name -> containarium.v1.TrackerConnection
-	3,  // 21: containarium.v1.GetTrackerStatusResponse.credential_breadth:type_name -> containarium.v1.TrackerCredentialBreadth
-	50, // 22: containarium.v1.GetTrackerStatusResponse.credential_expires_at:type_name -> google.protobuf.Timestamp
-	50, // 23: containarium.v1.TrackerComment.created_at:type_name -> google.protobuf.Timestamp
-	1,  // 24: containarium.v1.TrackerIssue.state:type_name -> containarium.v1.TrackerIssueState
-	30, // 25: containarium.v1.TrackerIssue.comments:type_name -> containarium.v1.TrackerComment
-	1,  // 26: containarium.v1.TrackerChange.state:type_name -> containarium.v1.TrackerIssueState
-	2,  // 27: containarium.v1.TrackerChange.ci_verdict:type_name -> containarium.v1.TrackerCiVerdict
-	31, // 28: containarium.v1.GetTrackerIssueResponse.issue:type_name -> containarium.v1.TrackerIssue
-	1,  // 29: containarium.v1.ListTrackerIssuesRequest.state:type_name -> containarium.v1.TrackerIssueState
-	31, // 30: containarium.v1.ListTrackerIssuesResponse.issues:type_name -> containarium.v1.TrackerIssue
-	32, // 31: containarium.v1.GetTrackerChangeResponse.change:type_name -> containarium.v1.TrackerChange
-	30, // 32: containarium.v1.CommentOnTrackerIssueResponse.comment:type_name -> containarium.v1.TrackerComment
-	31, // 33: containarium.v1.CreateTrackerIssueResponse.issue:type_name -> containarium.v1.TrackerIssue
-	32, // 34: containarium.v1.SubmitTrackerChangeResponse.change:type_name -> containarium.v1.TrackerChange
-	7,  // 35: containarium.v1.TrackerService.SetTrackerConnection:input_type -> containarium.v1.SetTrackerConnectionRequest
-	9,  // 36: containarium.v1.TrackerService.GetTrackerConnection:input_type -> containarium.v1.GetTrackerConnectionRequest
-	11, // 37: containarium.v1.TrackerService.ListTrackerConnections:input_type -> containarium.v1.ListTrackerConnectionsRequest
-	13, // 38: containarium.v1.TrackerService.DeleteTrackerConnection:input_type -> containarium.v1.DeleteTrackerConnectionRequest
-	16, // 39: containarium.v1.TrackerService.SetTrackerRoute:input_type -> containarium.v1.SetTrackerRouteRequest
-	18, // 40: containarium.v1.TrackerService.ListTrackerRoutes:input_type -> containarium.v1.ListTrackerRoutesRequest
-	20, // 41: containarium.v1.TrackerService.DeleteTrackerRoute:input_type -> containarium.v1.DeleteTrackerRouteRequest
-	24, // 42: containarium.v1.TrackerService.DispatchTrackerIssues:input_type -> containarium.v1.DispatchTrackerIssuesRequest
-	26, // 43: containarium.v1.TrackerService.ListTrackerDispatches:input_type -> containarium.v1.ListTrackerDispatchesRequest
-	28, // 44: containarium.v1.TrackerService.GetTrackerStatus:input_type -> containarium.v1.GetTrackerStatusRequest
-	33, // 45: containarium.v1.TrackerService.GetTrackerIssue:input_type -> containarium.v1.GetTrackerIssueRequest
-	35, // 46: containarium.v1.TrackerService.ListTrackerIssues:input_type -> containarium.v1.ListTrackerIssuesRequest
-	37, // 47: containarium.v1.TrackerService.GetTrackerChange:input_type -> containarium.v1.GetTrackerChangeRequest
-	39, // 48: containarium.v1.TrackerService.CommentOnTrackerIssue:input_type -> containarium.v1.CommentOnTrackerIssueRequest
-	41, // 49: containarium.v1.TrackerService.ClaimTrackerIssue:input_type -> containarium.v1.ClaimTrackerIssueRequest
-	43, // 50: containarium.v1.TrackerService.SetTrackerIssueLabels:input_type -> containarium.v1.SetTrackerIssueLabelsRequest
-	46, // 51: containarium.v1.TrackerService.CreateTrackerIssue:input_type -> containarium.v1.CreateTrackerIssueRequest
-	48, // 52: containarium.v1.TrackerService.SubmitTrackerChange:input_type -> containarium.v1.SubmitTrackerChangeRequest
-	8,  // 53: containarium.v1.TrackerService.SetTrackerConnection:output_type -> containarium.v1.SetTrackerConnectionResponse
-	10, // 54: containarium.v1.TrackerService.GetTrackerConnection:output_type -> containarium.v1.GetTrackerConnectionResponse
-	12, // 55: containarium.v1.TrackerService.ListTrackerConnections:output_type -> containarium.v1.ListTrackerConnectionsResponse
-	14, // 56: containarium.v1.TrackerService.DeleteTrackerConnection:output_type -> containarium.v1.DeleteTrackerConnectionResponse
-	17, // 57: containarium.v1.TrackerService.SetTrackerRoute:output_type -> containarium.v1.SetTrackerRouteResponse
-	19, // 58: containarium.v1.TrackerService.ListTrackerRoutes:output_type -> containarium.v1.ListTrackerRoutesResponse
-	21, // 59: containarium.v1.TrackerService.DeleteTrackerRoute:output_type -> containarium.v1.DeleteTrackerRouteResponse
-	25, // 60: containarium.v1.TrackerService.DispatchTrackerIssues:output_type -> containarium.v1.DispatchTrackerIssuesResponse
-	27, // 61: containarium.v1.TrackerService.ListTrackerDispatches:output_type -> containarium.v1.ListTrackerDispatchesResponse
-	29, // 62: containarium.v1.TrackerService.GetTrackerStatus:output_type -> containarium.v1.GetTrackerStatusResponse
-	34, // 63: containarium.v1.TrackerService.GetTrackerIssue:output_type -> containarium.v1.GetTrackerIssueResponse
-	36, // 64: containarium.v1.TrackerService.ListTrackerIssues:output_type -> containarium.v1.ListTrackerIssuesResponse
-	38, // 65: containarium.v1.TrackerService.GetTrackerChange:output_type -> containarium.v1.GetTrackerChangeResponse
-	40, // 66: containarium.v1.TrackerService.CommentOnTrackerIssue:output_type -> containarium.v1.CommentOnTrackerIssueResponse
-	42, // 67: containarium.v1.TrackerService.ClaimTrackerIssue:output_type -> containarium.v1.ClaimTrackerIssueResponse
-	44, // 68: containarium.v1.TrackerService.SetTrackerIssueLabels:output_type -> containarium.v1.SetTrackerIssueLabelsResponse
-	47, // 69: containarium.v1.TrackerService.CreateTrackerIssue:output_type -> containarium.v1.CreateTrackerIssueResponse
-	49, // 70: containarium.v1.TrackerService.SubmitTrackerChange:output_type -> containarium.v1.SubmitTrackerChangeResponse
-	53, // [53:71] is the sub-list for method output_type
-	35, // [35:53] is the sub-list for method input_type
-	35, // [35:35] is the sub-list for extension type_name
-	35, // [35:35] is the sub-list for extension extendee
-	0,  // [0:35] is the sub-list for field type_name
+	50, // 15: containarium.v1.TrackerDispatch.oldest_lineage_reservation_at:type_name -> google.protobuf.Timestamp
+	22, // 16: containarium.v1.DispatchTrackerIssuesResponse.started:type_name -> containarium.v1.TrackerDispatch
+	22, // 17: containarium.v1.DispatchTrackerIssuesResponse.timed_out:type_name -> containarium.v1.TrackerDispatch
+	22, // 18: containarium.v1.DispatchTrackerIssuesResponse.failed:type_name -> containarium.v1.TrackerDispatch
+	4,  // 19: containarium.v1.ListTrackerDispatchesRequest.state:type_name -> containarium.v1.TrackerDispatchState
+	22, // 20: containarium.v1.ListTrackerDispatchesResponse.dispatches:type_name -> containarium.v1.TrackerDispatch
+	6,  // 21: containarium.v1.GetTrackerStatusResponse.connection:type_name -> containarium.v1.TrackerConnection
+	3,  // 22: containarium.v1.GetTrackerStatusResponse.credential_breadth:type_name -> containarium.v1.TrackerCredentialBreadth
+	50, // 23: containarium.v1.GetTrackerStatusResponse.credential_expires_at:type_name -> google.protobuf.Timestamp
+	50, // 24: containarium.v1.TrackerComment.created_at:type_name -> google.protobuf.Timestamp
+	1,  // 25: containarium.v1.TrackerIssue.state:type_name -> containarium.v1.TrackerIssueState
+	30, // 26: containarium.v1.TrackerIssue.comments:type_name -> containarium.v1.TrackerComment
+	1,  // 27: containarium.v1.TrackerChange.state:type_name -> containarium.v1.TrackerIssueState
+	2,  // 28: containarium.v1.TrackerChange.ci_verdict:type_name -> containarium.v1.TrackerCiVerdict
+	31, // 29: containarium.v1.GetTrackerIssueResponse.issue:type_name -> containarium.v1.TrackerIssue
+	1,  // 30: containarium.v1.ListTrackerIssuesRequest.state:type_name -> containarium.v1.TrackerIssueState
+	31, // 31: containarium.v1.ListTrackerIssuesResponse.issues:type_name -> containarium.v1.TrackerIssue
+	32, // 32: containarium.v1.GetTrackerChangeResponse.change:type_name -> containarium.v1.TrackerChange
+	30, // 33: containarium.v1.CommentOnTrackerIssueResponse.comment:type_name -> containarium.v1.TrackerComment
+	31, // 34: containarium.v1.CreateTrackerIssueResponse.issue:type_name -> containarium.v1.TrackerIssue
+	32, // 35: containarium.v1.SubmitTrackerChangeResponse.change:type_name -> containarium.v1.TrackerChange
+	7,  // 36: containarium.v1.TrackerService.SetTrackerConnection:input_type -> containarium.v1.SetTrackerConnectionRequest
+	9,  // 37: containarium.v1.TrackerService.GetTrackerConnection:input_type -> containarium.v1.GetTrackerConnectionRequest
+	11, // 38: containarium.v1.TrackerService.ListTrackerConnections:input_type -> containarium.v1.ListTrackerConnectionsRequest
+	13, // 39: containarium.v1.TrackerService.DeleteTrackerConnection:input_type -> containarium.v1.DeleteTrackerConnectionRequest
+	16, // 40: containarium.v1.TrackerService.SetTrackerRoute:input_type -> containarium.v1.SetTrackerRouteRequest
+	18, // 41: containarium.v1.TrackerService.ListTrackerRoutes:input_type -> containarium.v1.ListTrackerRoutesRequest
+	20, // 42: containarium.v1.TrackerService.DeleteTrackerRoute:input_type -> containarium.v1.DeleteTrackerRouteRequest
+	24, // 43: containarium.v1.TrackerService.DispatchTrackerIssues:input_type -> containarium.v1.DispatchTrackerIssuesRequest
+	26, // 44: containarium.v1.TrackerService.ListTrackerDispatches:input_type -> containarium.v1.ListTrackerDispatchesRequest
+	28, // 45: containarium.v1.TrackerService.GetTrackerStatus:input_type -> containarium.v1.GetTrackerStatusRequest
+	33, // 46: containarium.v1.TrackerService.GetTrackerIssue:input_type -> containarium.v1.GetTrackerIssueRequest
+	35, // 47: containarium.v1.TrackerService.ListTrackerIssues:input_type -> containarium.v1.ListTrackerIssuesRequest
+	37, // 48: containarium.v1.TrackerService.GetTrackerChange:input_type -> containarium.v1.GetTrackerChangeRequest
+	39, // 49: containarium.v1.TrackerService.CommentOnTrackerIssue:input_type -> containarium.v1.CommentOnTrackerIssueRequest
+	41, // 50: containarium.v1.TrackerService.ClaimTrackerIssue:input_type -> containarium.v1.ClaimTrackerIssueRequest
+	43, // 51: containarium.v1.TrackerService.SetTrackerIssueLabels:input_type -> containarium.v1.SetTrackerIssueLabelsRequest
+	46, // 52: containarium.v1.TrackerService.CreateTrackerIssue:input_type -> containarium.v1.CreateTrackerIssueRequest
+	48, // 53: containarium.v1.TrackerService.SubmitTrackerChange:input_type -> containarium.v1.SubmitTrackerChangeRequest
+	8,  // 54: containarium.v1.TrackerService.SetTrackerConnection:output_type -> containarium.v1.SetTrackerConnectionResponse
+	10, // 55: containarium.v1.TrackerService.GetTrackerConnection:output_type -> containarium.v1.GetTrackerConnectionResponse
+	12, // 56: containarium.v1.TrackerService.ListTrackerConnections:output_type -> containarium.v1.ListTrackerConnectionsResponse
+	14, // 57: containarium.v1.TrackerService.DeleteTrackerConnection:output_type -> containarium.v1.DeleteTrackerConnectionResponse
+	17, // 58: containarium.v1.TrackerService.SetTrackerRoute:output_type -> containarium.v1.SetTrackerRouteResponse
+	19, // 59: containarium.v1.TrackerService.ListTrackerRoutes:output_type -> containarium.v1.ListTrackerRoutesResponse
+	21, // 60: containarium.v1.TrackerService.DeleteTrackerRoute:output_type -> containarium.v1.DeleteTrackerRouteResponse
+	25, // 61: containarium.v1.TrackerService.DispatchTrackerIssues:output_type -> containarium.v1.DispatchTrackerIssuesResponse
+	27, // 62: containarium.v1.TrackerService.ListTrackerDispatches:output_type -> containarium.v1.ListTrackerDispatchesResponse
+	29, // 63: containarium.v1.TrackerService.GetTrackerStatus:output_type -> containarium.v1.GetTrackerStatusResponse
+	34, // 64: containarium.v1.TrackerService.GetTrackerIssue:output_type -> containarium.v1.GetTrackerIssueResponse
+	36, // 65: containarium.v1.TrackerService.ListTrackerIssues:output_type -> containarium.v1.ListTrackerIssuesResponse
+	38, // 66: containarium.v1.TrackerService.GetTrackerChange:output_type -> containarium.v1.GetTrackerChangeResponse
+	40, // 67: containarium.v1.TrackerService.CommentOnTrackerIssue:output_type -> containarium.v1.CommentOnTrackerIssueResponse
+	42, // 68: containarium.v1.TrackerService.ClaimTrackerIssue:output_type -> containarium.v1.ClaimTrackerIssueResponse
+	44, // 69: containarium.v1.TrackerService.SetTrackerIssueLabels:output_type -> containarium.v1.SetTrackerIssueLabelsResponse
+	47, // 70: containarium.v1.TrackerService.CreateTrackerIssue:output_type -> containarium.v1.CreateTrackerIssueResponse
+	49, // 71: containarium.v1.TrackerService.SubmitTrackerChange:output_type -> containarium.v1.SubmitTrackerChangeResponse
+	54, // [54:72] is the sub-list for method output_type
+	36, // [36:54] is the sub-list for method input_type
+	36, // [36:36] is the sub-list for extension type_name
+	36, // [36:36] is the sub-list for extension extendee
+	0,  // [0:36] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_tracker_proto_init() }

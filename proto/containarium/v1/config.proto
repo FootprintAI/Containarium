@@ -232,15 +232,54 @@ message SystemInfo {
   // core-infra containers (Postgres, Caddy, control-plane — not tenant
   // workload) are deliberately excluded, the same exclusion the CPU
   // admission gate (docs/CPU-CAPACITY-ADMISSION.md, #1029) already applies.
-  // An operator combining this with total_cpus to size an overcommit factor
-  // must still separately budget the host's own known core-infra CPU
-  // footprint on top of it.
+  // The platform's own footprint is reported separately in
+  // core_committed_cpu_cores (#2284) so an operator sizing a factor can
+  // see both halves instead of guessing the second.
   //
   // 0 on the K8s runtime, same as total_cpus (the Incus resource read
   // no-ops there) — "not applicable to this runtime," not "nothing
   // committed." See #1571/#1578 for the design this closes the visibility
   // half of.
   double committed_cpu_cores = 24;
+
+  // core_committed_cpu_cores is the sum of this host's CORE-ROLE containers'
+  // committed CPU (Postgres, Caddy, VictoriaMetrics, control plane, ... —
+  // the platform's own processes), the half committed_cpu_cores leaves out.
+  // Together with committed_cpu_cores and total_cpus it gives the full
+  // tenant / core / physical picture the admission gate reasons about only
+  // half of, so a saturated host is visible as such (#2284). 0 on the K8s
+  // runtime, like the other two.
+  double core_committed_cpu_cores = 25;
+
+  // cpu_admission_mode is the CPU overcommit admission gate's posture on
+  // this backend (docs/CPU-CAPACITY-ADMISSION.md): disabled, advisory
+  // (logs what it would reject, admits everything) or enforcing. Surfaced so
+  // a client can tell that a host past its ceiling is NOT being protected —
+  // advisory mode otherwise fails silently (#2284). UNSPECIFIED means the
+  // backend predates this field, not that the gate is off.
+  CPUAdmissionMode cpu_admission_mode = 26;
+
+  // cpu_overcommit_factor is the gate's configured ceiling multiple of
+  // total_cpus (the --cpu-overcommit-factor flag). 0 when the gate is
+  // disabled. The ceiling in cores is total_cpus × cpu_overcommit_factor;
+  // the host is over it when committed_cpu_cores exceeds that.
+  double cpu_overcommit_factor = 27;
+}
+
+// CPUAdmissionMode is the CPU overcommit admission gate's posture
+// (docs/CPU-CAPACITY-ADMISSION.md, #1029). An enum rather than a pair of
+// bare flags so a client switches on typed constants and cannot mistake
+// "factor set but not enforced" for protection (#2284).
+enum CPUAdmissionMode {
+  // The backend did not report a posture (pre-#2284 daemon).
+  CPU_ADMISSION_MODE_UNSPECIFIED = 0;
+  // No factor configured: the gate never runs (the default).
+  CPU_ADMISSION_MODE_DISABLED = 1;
+  // A factor is configured but over-ceiling creates are only logged, never
+  // rejected.
+  CPU_ADMISSION_MODE_ADVISORY = 2;
+  // Over-ceiling creates are rejected with ResourceExhausted.
+  CPU_ADMISSION_MODE_ENFORCING = 3;
 }
 
 // StorageDriver identifies the incus storage-pool driver backing a backend's

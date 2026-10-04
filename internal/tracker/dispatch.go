@@ -75,6 +75,11 @@ type DispatchStore interface {
 	FailDispatch(ctx context.Context, id string, from pb.TrackerDispatchState, failure pb.TrackerDispatchFailure, reason string, at time.Time) (bool, error)
 	ListDispatches(ctx context.Context, username, connection string, state pb.TrackerDispatchState) ([]Dispatch, error)
 	SetDispatchLabelsPending(ctx context.Context, id string, pending bool) error
+	// ListLabelsPendingDispatches and PriorDispatchLabelsPending find
+	// terminal rows whose projection has not reached the forge (#2047,
+	// #2052).
+	ListLabelsPendingDispatches(ctx context.Context, username, connection string) ([]Dispatch, error)
+	PriorDispatchLabelsPending(ctx context.Context, username, connection string, issue int64, excludeID string) (bool, error)
 	DeleteQueuedDispatch(ctx context.Context, id string) (bool, error)
 	RecordDispatchWarning(ctx context.Context, username, connection string, issue int64, scope string) (bool, error)
 	ForgetDispatchWarning(ctx context.Context, username, connection string, issue int64, scope string) error
@@ -148,6 +153,12 @@ type TickResult struct {
 // comments the reason. An unrouted scope label gets one stamped warning
 // comment, ever.
 //
+// The row, not the label, says whether an issue was already handled
+// (#2047, #2052): an issue whose latest row is terminal with
+// labels_pending — its agent:done|failed never reached the forge — is
+// skipped as if the label were there, and the tick retries that
+// projection first, until it lands or a human puts the state label on.
+//
 // A forge list error or a store error aborts the tick; per-issue forge
 // write failures do not (they are recorded and the tick moves on).
 func (d *Dispatcher) Tick(ctx context.Context, username, connection string) (TickResult, error) {
@@ -166,6 +177,12 @@ func (d *Dispatcher) Tick(ctx context.Context, username, connection string) (Tic
 	// run this daemon no longer holds, is failed and projected before
 	// anything new starts.
 	if res.TimedOut, err = d.sweep(ctx, username, connection); err != nil {
+		return res, err
+	}
+	// Then terminal rows whose labels never landed: retried, and their
+	// issues held back from a second dispatch while they still lag.
+	held, err := d.retryPendingLabels(ctx, username, connection)
+	if err != nil {
 		return res, err
 	}
 
@@ -188,7 +205,7 @@ func (d *Dispatcher) Tick(ctx context.Context, username, connection string) (Tic
 			res.SkippedNeedsApproval++
 			continue
 		}
-		if hasAnyLabel(issue.Labels, ReservedStateLabels...) {
+		if hasAnyLabel(issue.Labels, ReservedStateLabels...) || held[issue.Number] {
 			res.SkippedActive++
 			continue
 		}
@@ -250,6 +267,22 @@ func (d *Dispatcher) Tick(ctx context.Context, username, connection string) (Tic
 				return res, err
 			}
 			return res, cerr
+		}
+
+		// The previous generation may have gone terminal after the retry
+		// above and before this insert, with its projection failing (or
+		// still in flight): the issue shows no state label, but it was
+		// handled. The row says so; the label cannot (#2047, #2052). A
+		// failed read (a cancelled tick included) abandons the row too.
+		if prior, err := d.Store.PriorDispatchLabelsPending(ctx, username, connection, issue.Number, row.ID); err != nil || prior {
+			if aerr := d.abandon(ctx, row); aerr != nil {
+				return res, errors.Join(err, aerr)
+			}
+			if err != nil {
+				return res, fmt.Errorf("read prior dispatch of #%d: %w", issue.Number, err)
+			}
+			res.SkippedActive++
+			continue
 		}
 
 		// Re-read before starting anything (#2023): the list above can be

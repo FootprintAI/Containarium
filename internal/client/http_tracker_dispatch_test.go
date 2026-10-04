@@ -32,8 +32,8 @@ func TestTrackerDispatch_HTTPPathsAndDecoding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DispatchTrackerIssues: %v", err)
 	}
-	if gotMethod != http.MethodPost || gotPath != "/v1/tracker/alice/a%2Fb/dispatch" {
-		t.Errorf("DispatchTrackerIssues %s %s, want POST /v1/tracker/alice/a%%2Fb/dispatch", gotMethod, gotPath)
+	if gotMethod != http.MethodPost || gotPath != "/v1/tracker/connections/alice/a%2Fb/dispatch" {
+		t.Errorf("DispatchTrackerIssues %s %s, want POST /v1/tracker/connections/alice/a%%2Fb/dispatch", gotMethod, gotPath)
 	}
 	if len(resp.GetStarted()) != 1 || resp.GetStarted()[0].GetIssueNumber() != 42 ||
 		resp.GetStarted()[0].GetState() != pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_QUEUED ||
@@ -46,8 +46,8 @@ func TestTrackerDispatch_HTTPPathsAndDecoding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTrackerDispatches: %v", err)
 	}
-	if gotMethod != http.MethodGet || gotPath != "/v1/tracker/alice/default/dispatches" || gotQuery != "state=TRACKER_DISPATCH_STATE_RUNNING" {
-		t.Errorf("ListTrackerDispatches %s %s?%s, want GET /v1/tracker/alice/default/dispatches?state=TRACKER_DISPATCH_STATE_RUNNING", gotMethod, gotPath, gotQuery)
+	if gotMethod != http.MethodGet || gotPath != "/v1/tracker/connections/alice/default/dispatches" || gotQuery != "state=TRACKER_DISPATCH_STATE_RUNNING" {
+		t.Errorf("ListTrackerDispatches %s %s?%s, want GET /v1/tracker/connections/alice/default/dispatches?state=TRACKER_DISPATCH_STATE_RUNNING", gotMethod, gotPath, gotQuery)
 	}
 	if len(rows) != 1 || rows[0].GetState() != pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_RUNNING {
 		t.Errorf("ListTrackerDispatches = %+v", rows)

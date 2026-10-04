@@ -7,6 +7,89 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING:** the tracker data-plane REST routes now live under the
+  connection resource. The 13 routes that began `/v1/tracker/{username}/{connection}/`
+  (scope routes, dispatch, issues, comments/claim/labels, changes) are now
+  `/v1/tracker/connections/{username}/{connection}/...`; the verb and the rest of
+  each path are unchanged (e.g. `GET /v1/tracker/connections/alice/work/issues/7`).
+  The old paths are removed outright, with no alias and no deprecation window.
+  Why: the old shape put a wildcard right after `/v1/tracker/`, so a username of
+  `connections` or a connection named `routes`, `issues`, `changes`, `dispatch`
+  or `dispatches` matched two routes at once. Nesting means a verb can only
+  appear after the connection name, so the ambiguity is gone structurally rather
+  than papered over with a reserved-word list. Connection CRUD and
+  `GetTrackerStatus` keep their paths. The CLI, the Go HTTP client and the MCP
+  tracker tools are updated here; any other REST caller must move with this
+  release. Pinned by `internal/gateway/tracker_route_ambiguity_test.go`, which
+  drives the real grpc-gateway mux with adversarial names and asserts the old
+  paths 404. Supersedes #2281.
+
+### Fixed
+
+- A dispatched skill run could not call any tracker verb for its own tenant
+  (#2268). The run JWT is minted for the box's subject (`agent-<skill-id>`,
+  no roles), while every `tracker_*` verb authorized the tenant named in the
+  request against that subject — so `tracker_comment`, `tracker_create_issue`,
+  `tracker_submit_change` and the reads were refused from inside every real
+  run. The server tests never caught it because they built the run's context
+  with the tenant as the subject by hand. The run JWT now also carries the
+  tenant it was started for (`run_tenant`, derived from the dispatching
+  caller's verified subject — the same identity its `tracker_conn` was
+  validated under — and reserved against header injection), and the tracker
+  read/write verbs authorize a run token for exactly that tenant
+  (`auth.AuthorizeTrackerTenant`). Operator and admin tokens are unchanged;
+  a run token is still not the tenant anywhere else, and a run started for
+  tenant A is still refused on tenant B's connection. The new tests mint
+  through the real run-token path and present the token through the real
+  auth middleware, so a hand-built subject can no longer hide a mismatch.
+
+### Added
+
+- `SystemInfo` reports the platform's own CPU commitment next to the tenant
+  one: new `core_committed_cpu_cores` (sum of core-role containers' `limits.cpu`),
+  the admission gate's posture as a `CPUAdmissionMode` enum (`DISABLED` /
+  `ADVISORY` / `ENFORCING`) and `cpu_overcommit_factor`; `committed_cpu_cores`
+  keeps its tenant-only meaning. `containarium info` prints a `CPU Budget:`
+  block (physical / tenant / core / gate) and the MCP `get_system_info` tool
+  prints the same. When the gate is advisory and tenant-committed cores already
+  exceed `total_cpus × factor`, the daemon logs one `[cpu-admission] WARNING:`
+  line at start and `containarium info` prints one, naming the ratio and that
+  the gate is not enforcing — advisory mode used to fail silently.
+  `docs/CPU-CAPACITY-ADMISSION.md` gains the headroom recipe
+  (`factor ≤ (total_cpus − core_committed) / total_cpus`) and the reserved
+  core-set option. Part of #2284.
+- `containariumd service install` (and so `hacks/install.sh`, `setup-peer.sh`
+  and `pool join`) now gives the platform's own daemons a CPU weight well above
+  the tenant default: `CPUWeight=1000` inline in `containarium.service`, the
+  same as a drop-in at `/etc/systemd/system/incus.service.d/50-containarium-cpu-weight.conf`,
+  and `systemctl set-property --runtime incus.service CPUWeight=1000` so the
+  running `incusd` picks it up without a restart. `containarium doctor` gains
+  the non-blocking posture check **platform daemons CPU weight**, which reads
+  the effective `cpu.weight` of both units' cgroups. Closes #2284.
+- `containarium code install --engine codex` installs OpenAI's Codex CLI
+  (`@openai/codex`) on a box, parallel to the existing `claude`/`pi` engines
+  (#2273). `code run`/`attach`/`status`/`stop` work with it transparently,
+  same as the other engines. `--credential secret` is supported today;
+  `--credential gateway` is rejected, naming the fix, until the model
+  gateway's provider generalization lands (tracked separately). See
+  `docs/integrations/codex.md`.
+
+### Fixed
+
+- A run token can no longer delegate its way out of its own run (#2069).
+  `ExchangeDelegatedToken` mints a token with no `run_id`, and every
+  run-token guard (the #2060 scope-label lineage binding, #2112's
+  `SendAgentTask` run check, `TailRunLog`'s claim check) applies only to a
+  token that carries one. `tokens:delegate` is now in `runForbiddenScopes`,
+  so it is stripped from every minted run token whatever the skill manifest
+  grants, and `ExchangeDelegatedToken` refuses any caller carrying a
+  `run_id` with `PermissionDenied`. No shipped skill grants
+  `tokens:delegate`; a custom skill loaded via `CONTAINARIUM_SKILLS_DIR`
+  could. Delegation from a token with no `run_id` (an operator or fronting
+  service) is unchanged.
+
 ## [0.98.0] - 2026-10-03
 
 ### Fixed

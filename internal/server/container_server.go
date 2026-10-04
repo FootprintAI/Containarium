@@ -3107,6 +3107,14 @@ func (s *ContainerServer) GetSystemInfo(ctx context.Context, req *pb.GetSystemIn
 		// via committedTenantCores — one summation shared by both, not two.
 		CommittedCpuCores: committedTenantCores(containers, nil),
 	}
+	// The rest of the CPU budget (#2284): the platform's own core-role
+	// commitment next to the tenant one, and the gate's posture so a
+	// reader can tell whether being over the ceiling is being acted on.
+	// Same container list, one assembly shared with the boot-time log.
+	budget := s.cpuBudget(containers, float64(sysResources.TotalCPUs))
+	info.CoreCommittedCpuCores = budget.CoreCommittedCores
+	info.CpuAdmissionMode = cpuAdmissionModeToProto(budget.AdmissionMode)
+	info.CpuOvercommitFactor = budget.OvercommitFactor
 
 	// The storage pool backing this backend's containers, and whether it
 	// isolates tenant volumes (#1209). Left null when the pool can't be read:
