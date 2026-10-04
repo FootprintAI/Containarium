@@ -32,11 +32,12 @@ type Adapter struct {
 
 var _ tracker.CredentialDescriber = (*Adapter)(nil)
 
-// New returns an Adapter. A nil httpClient gets a sensible default
-// timeout; pass your own for custom transport (tracing, retries).
+// New returns an Adapter. A nil httpClient gets tracker.DefaultHTTPTimeout,
+// which is never shorter than tracker.UpstreamCreateTimeout (#2045); pass
+// your own for custom transport (tracing, retries).
 func New(httpClient *http.Client) *Adapter {
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 10 * time.Second}
+		httpClient = &http.Client{Timeout: tracker.DefaultHTTPTimeout}
 	}
 	return &Adapter{http: tracker.WithSameOriginRedirects(httpClient)}
 }
