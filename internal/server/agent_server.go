@@ -852,10 +852,19 @@ func mintedAgentTokenScopes(ctx context.Context, skill *pb.AgentSkill) []string 
 
 // runForbiddenScopes never reach a minted run token, regardless of what
 // the dispatching caller or the skill manifest's allowed_scopes grant.
-// tracker:admin is the only entry today — see mintedAgentTokenScopes's
-// doc comment. A future admin-tier scope gets added here on the same
-// reasoning, not by auditing every skill manifest for it.
-var runForbiddenScopes = []string{auth.ScopeTrackerAdmin}
+// A future admin-tier scope gets added here on the same reasoning, not by
+// auditing every skill manifest for it.
+//
+//   - tracker:admin — see mintedAgentTokenScopes's doc comment.
+//   - tokens:delegate (#2069) — ExchangeDelegatedToken mints a token with
+//     no run_id, and every run-token guard (#2060's lineage binding,
+//     #2112's taskRunID, the run_log claim check) applies only
+//     `if runID != ""`. A run token holding it could delegate its way out
+//     of its own run and shed all of them at once. No shipped skill grants
+//     it; a custom skill via CONTAINARIUM_SKILLS_DIR could. The handler
+//     also refuses any run-bound caller outright, so a run token minted
+//     before this entry existed is covered too.
+var runForbiddenScopes = []string{auth.ScopeTrackerAdmin, auth.ScopeTokensDelegate}
 
 // provisionSkillBox provisions (or reuses) the skill's box, mints its
 // credentials, seeds the task, and — when gitSource is set (#1859) —

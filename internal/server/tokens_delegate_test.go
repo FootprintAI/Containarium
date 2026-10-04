@@ -425,3 +425,80 @@ func TestExchangeDelegatedToken_RolelessCallerCannotMintARole(t *testing.T) {
 		t.Fatalf("a caller with no roles minted an admin token; roles=%v", claims.Roles)
 	}
 }
+
+// #2069: a run token must never delegate its way out of its own run. Every
+// run-token guard — #2060's lineage binding, #2112's taskRunID, run_log's
+// claim check — only bites `if runID != ""`, and this endpoint mints a token
+// with no run_id. A run-bound caller reaching it would therefore shed every
+// one of those guards at once, so it is refused outright rather than minted.
+//
+// The caller here is a REAL run token — minted the way RunAgentSkill mints
+// one, then validated — carrying tokens:delegate as if a custom skill
+// (CONTAINARIUM_SKILLS_DIR) granted it. runForbiddenScopes now strips that
+// scope at mint, so this is the shape a run token minted before that change
+// keeps until it expires, and the shape any future mint path that skips
+// mintedAgentTokenScopes would produce.
+func TestExchangeDelegatedToken_RunTokenCannotMintRunlessToken(t *testing.T) {
+	s := delegateTestServer(t)
+
+	runToken, _, err := s.tokenManager.GenerateDelegatedTokenWithRun(
+		"agent-custom-skill", []string{}, 30*time.Minute,
+		&auth.Actor{Subject: "alice@example.com"},
+		"run-2069", "conn-a",
+		auth.ScopeTokensDelegate, auth.ScopeContainersRead)
+	if err != nil {
+		t.Fatalf("mint run token: %v", err)
+	}
+	claims, err := s.tokenManager.ValidateToken(runToken)
+	if err != nil {
+		t.Fatalf("validate run token: %v", err)
+	}
+	if claims.RunID != "run-2069" {
+		t.Fatalf("run token run_id = %q, want run-2069 — test precondition", claims.RunID)
+	}
+
+	ctx := auth.ContextWithTestRunID(
+		callerCtx(claims.Username, claims.Scopes, claims.Act), claims.RunID)
+
+	for _, tc := range []struct {
+		name   string
+		scopes []string
+	}{
+		{"asks for its own scopes", nil},
+		{"asks for a subset", []string{auth.ScopeContainersRead}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := s.ExchangeDelegatedToken(ctx, &pb.ExchangeDelegatedTokenRequest{
+				Subject: "alice@example.com",
+				Scopes:  tc.scopes,
+			})
+			if status.Code(err) != codes.PermissionDenied {
+				t.Fatalf("code = %v (token returned: %t), want PermissionDenied: a run token must not mint a run_id-less token",
+					status.Code(err), resp.GetToken() != "")
+			}
+			if resp.GetToken() != "" {
+				t.Fatal("a token was returned alongside the refusal")
+			}
+		})
+	}
+}
+
+// The #2069 refusal is keyed on the caller carrying a run_id, not on
+// tokens:delegate itself: an operator / fronting-service token with no run_id
+// keeps delegating exactly as before (containarium-cloud#1427).
+func TestExchangeDelegatedToken_NonRunCallerStillDelegates(t *testing.T) {
+	s := delegateTestServer(t)
+	ctx := callerCtx("cloud-daemon",
+		[]string{auth.ScopeTokensDelegate, auth.ScopeContainersRead}, nil)
+
+	resp, err := s.ExchangeDelegatedToken(ctx, &pb.ExchangeDelegatedTokenRequest{
+		Subject: "alice@example.com",
+		Scopes:  []string{auth.ScopeContainersRead},
+	})
+	if err != nil {
+		t.Fatalf("exchange from a non-run caller: %v", err)
+	}
+	if resp.GetToken() == "" {
+		t.Fatal("no token returned")
+	}
+}
