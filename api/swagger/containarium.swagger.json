@@ -7253,7 +7253,7 @@
     "/v1/tracker/connections/{username}/{connection}/dispatches": {
       "get": {
         "summary": "List tracker dispatches",
-        "description": "Lists a connection's dispatch rows (issue, scope, skill, run id, state, failure reason, timestamps), newest first, optionally filtered by state. Requires tracker:admin.",
+        "description": "Lists a connection's dispatch rows (issue, scope, skill, run id, state, failure reason, timestamps), newest first, optionally filtered by state. Each row also reports the fan-out slots its run still holds as lineage reservations, and when the oldest was claimed, so an operator can see why a run's fan-out looks exhausted. Requires tracker:admin.",
         "operationId": "TrackerService_ListTrackerDispatches",
         "responses": {
           "200": {
@@ -17284,6 +17284,16 @@
         "failure": {
           "$ref": "#/definitions/TrackerDispatchFailure",
           "description": "Set when state is FAILED (#2026): the typed cause."
+        },
+        "lineageReservations": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Fan-out slots run_id still holds as lineage reservations (#2062):\nfollow-up creates in flight, or ones that were never cleared (the\ndaemon died mid-create, or recording the follow-up failed). Each\ncounts against the connection's max_children_per_run exactly like a\nfiled follow-up, so a run whose fan-out looks exhausted shows why\nhere. Swept when the run's lease ends. Filled in by\nListTrackerDispatches only."
+        },
+        "oldestLineageReservationAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the oldest of those reservations was claimed; unset when there\nare none. Filled in by ListTrackerDispatches only."
         }
       },
       "description": "TrackerDispatch is one durable dispatch: which issue, which scope\nlabel matched, which skill was started as which run, and where the\nrun is in its state machine."

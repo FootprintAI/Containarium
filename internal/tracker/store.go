@@ -584,7 +584,9 @@ func childrenCount(ctx context.Context, q lineageQuerier, username, connection, 
 // A reservation that is never cleared (the process died mid-create, or
 // the cleanup itself failed) keeps counting against the run's fan-out.
 // That is deliberate: the create may have succeeded upstream, so
-// over-counting is the fail-closed side.
+// over-counting is the fail-closed side. Such reservations are visible
+// through ListLineageReservations, and are swept by
+// ReleaseRunReservations when the run's lease ends (#2062).
 func (s *Store) RecordChild(ctx context.Context, l Lineage, maxDepth, maxChildren int32, create func(ctx context.Context) (int64, error)) (Lineage, error) {
 	if l.Username == "" || l.Connection == "" {
 		return Lineage{}, errors.New("tracker: username and connection are required")
@@ -731,6 +733,74 @@ func (s *Store) recordReservedChild(ctx context.Context, l Lineage, reservationI
 		return fmt.Errorf("commit issue lineage: %w", err)
 	}
 	return nil
+}
+
+// LineageReservation is one tracker_lineage_reservations row: a fan-out
+// slot RecordChild claimed and has not yet recorded or released.
+type LineageReservation struct {
+	ID           int64
+	Username     string
+	Connection   string
+	CreatedByRun string
+	CreatedAt    time.Time
+}
+
+// ListLineageReservations returns a connection's outstanding fan-out
+// reservations, oldest first (#2062). Each one counts against its run's
+// max_children_per_run exactly like a recorded child: a create still in
+// flight, or one RecordChild could not clear (the daemon died mid-create,
+// the release failed, or the lineage row did not record). Read-only; it
+// is how an operator sees why a run's fan-out looks exhausted.
+func (s *Store) ListLineageReservations(ctx context.Context, username, connection string) ([]LineageReservation, error) {
+	if username == "" {
+		return nil, errors.New("tracker: username is required")
+	}
+	const q = `
+		SELECT id, created_by_run, created_at FROM tracker_lineage_reservations
+		WHERE username = $1 AND connection = $2
+		ORDER BY created_at, id
+	`
+	rows, err := s.pool.Query(ctx, q, username, connection)
+	if err != nil {
+		return nil, fmt.Errorf("list lineage reservations: %w", err)
+	}
+	defer rows.Close()
+	var out []LineageReservation
+	for rows.Next() {
+		r := LineageReservation{Username: username, Connection: connection}
+		if err := rows.Scan(&r.ID, &r.CreatedByRun, &r.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan lineage reservation row: %w", err)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate lineage reservation rows: %w", err)
+	}
+	return out, nil
+}
+
+// ReleaseRunReservations deletes every reservation runID still holds for
+// username, on any connection, and returns how many it removed (#2062).
+// Called when the run's lease ends: its credentials are revoked by then,
+// so it cannot start another create, and the fail-closed reason for
+// keeping a stale reservation (the create may have succeeded upstream and
+// must keep counting) no longer has a cap to protect. A create already
+// past its reservation step finishes normally — recording its lineage
+// row, or releasing a reservation that is already gone.
+//
+// Scoped to (username, runID), never runID alone: a run id can be
+// caller-chosen, so the same string may name another tenant's run.
+// Idempotent.
+func (s *Store) ReleaseRunReservations(ctx context.Context, username, runID string) (int64, error) {
+	if username == "" || runID == "" {
+		return 0, errors.New("tracker: username and run id are required")
+	}
+	const q = `DELETE FROM tracker_lineage_reservations WHERE username = $1 AND created_by_run = $2`
+	tag, err := s.pool.Exec(ctx, q, username, runID)
+	if err != nil {
+		return 0, fmt.Errorf("release run lineage reservations: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 // runGates is a set of per-key, context-aware mutexes. A key's entry

@@ -305,6 +305,17 @@ message TrackerDispatch {
   google.protobuf.Timestamp ended_at = 13;
   // Set when state is FAILED (#2026): the typed cause.
   TrackerDispatchFailure failure = 14;
+  // Fan-out slots run_id still holds as lineage reservations (#2062):
+  // follow-up creates in flight, or ones that were never cleared (the
+  // daemon died mid-create, or recording the follow-up failed). Each
+  // counts against the connection's max_children_per_run exactly like a
+  // filed follow-up, so a run whose fan-out looks exhausted shows why
+  // here. Swept when the run's lease ends. Filled in by
+  // ListTrackerDispatches only.
+  int32 lineage_reservations = 15;
+  // When the oldest of those reservations was claimed; unset when there
+  // are none. Filled in by ListTrackerDispatches only.
+  google.protobuf.Timestamp oldest_lineage_reservation_at = 16;
 }
 
 // TrackerDispatchInput is EXACTLY the run's input_json (protojson
@@ -798,7 +809,7 @@ service TrackerService {
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "List tracker dispatches";
-      description: "Lists a connection's dispatch rows (issue, scope, skill, run id, state, failure reason, timestamps), newest first, optionally filtered by state. Requires tracker:admin.";
+      description: "Lists a connection's dispatch rows (issue, scope, skill, run id, state, failure reason, timestamps), newest first, optionally filtered by state. Each row also reports the fan-out slots its run still holds as lineage reservations, and when the oldest was claimed, so an operator can see why a run's fan-out looks exhausted. Requires tracker:admin.";
       tags: "Tracker";
     };
   }

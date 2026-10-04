@@ -219,6 +219,10 @@ type AgentSkillServer struct {
 	// tracker_connection then fails closed rather than minting an
 	// unvalidated claim — see RunAgentSkill.
 	trackerConnections trackerConnectionChecker
+	// lineageReservations sweeps a run's leftover fan-out reservations
+	// when its lease ends (#2062). Nil on a daemon without the tracker
+	// store wired: there is nothing to sweep.
+	lineageReservations lineageReservationReleaser
 	// Run journal read path (#2096). runIndex remembers each run's member
 	// skills for TailRunLog; crewRunMembers resolves a crew run from its
 	// durable record (wired by NewCrewServer); execScript is a test seam over
@@ -270,6 +274,20 @@ func (s *AgentSkillServer) SetPlatformMCPPort(port int) {
 // closed with FailedPrecondition.
 func (s *AgentSkillServer) SetTrackerConnections(c trackerConnectionChecker) {
 	s.trackerConnections = c
+}
+
+// lineageReservationReleaser is the one method of *tracker.Store
+// endRunLease needs (#2062), narrowed like trackerConnectionChecker.
+type lineageReservationReleaser interface {
+	ReleaseRunReservations(ctx context.Context, username, runID string) (int64, error)
+}
+
+// SetLineageReservations wires the tracker store so a run's leftover
+// fan-out reservations are swept when its lease ends (#2062). Nil (the
+// default) leaves them in place. As with SetRevocationStore, the caller
+// must pass a true nil, not a nil *tracker.Store.
+func (s *AgentSkillServer) SetLineageReservations(r lineageReservationReleaser) {
+	s.lineageReservations = r
 }
 
 // auditLogger is the one method of *audit.Store this server uses. Narrowed to
@@ -748,7 +766,44 @@ func (s *AgentSkillServer) endRunLease(ctx context.Context, lease runlease.Lease
 		log.Printf("[agent-skill] run %s: ending lease: %v", lease.RunID, err)
 	}
 
+	// After the revocations: with its credentials dead the run cannot
+	// start another create, so its leftover reservations protect nothing.
+	s.releaseLineageReservations(detached, lease.RunID)
+
 	s.auditRunLease(detached, "agent.run_lease_end", lease.RunID, runLeaseEndPayload(lease, reason, out))
+}
+
+// lineageReleaseBudget bounds the reservation sweep in endRunLease, for the
+// same reason auditWriteBudget bounds the audit write: it runs on a
+// detached context inside the RPC's deferred cleanup.
+const lineageReleaseBudget = 3 * time.Second
+
+// releaseLineageReservations sweeps the fan-out reservations runID still
+// holds (#2062): ones RecordChild could not clear, which would otherwise
+// count against the run's max_children_per_run forever. Scoped to the
+// run's own tenant — the authenticated subject the run was started for,
+// the same identity its token was minted for and auditRunLease records —
+// because a run id alone can be caller-chosen. With no subject nothing is
+// swept: over-counting is the fail-closed side. Best-effort: a failure is
+// logged and leaves the rows, which ListTrackerDispatches still shows.
+func (s *AgentSkillServer) releaseLineageReservations(ctx context.Context, runID string) {
+	if s.lineageReservations == nil || runID == "" {
+		return
+	}
+	username, _, ok := auth.SubjectFromGRPCContext(ctx)
+	if !ok || username == "" {
+		return
+	}
+	rctx, cancel := context.WithTimeout(ctx, lineageReleaseBudget)
+	defer cancel()
+	n, err := s.lineageReservations.ReleaseRunReservations(rctx, username, runID)
+	if err != nil {
+		log.Printf("[agent-skill] run %s: releasing lineage reservations: %v", runID, err)
+		return
+	}
+	if n > 0 {
+		log.Printf("[agent-skill] run %s: released %d stale lineage reservation(s) at lease end", runID, n)
+	}
 }
 
 // agentRuntimeReleaseTag returns the GitHub release tag the agent-runtime box

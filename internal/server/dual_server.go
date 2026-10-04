@@ -1095,6 +1095,9 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 			} else {
 				containerServer.SetTrackerStore(trkStore)
 				agentSkillServer.SetTrackerConnections(trkStore)
+				// #2062: a run's leftover fan-out reservations are swept
+				// when its lease ends.
+				agentSkillServer.SetLineageReservations(trkStore)
 				// #2022: dispatched runs start through the RunAgentSkill path.
 				containerServer.SetTrackerRunStarter(NewTrackerRunStarter(agentSkillServer))
 				pb.RegisterTrackerServiceServer(grpcServer, containerServer)
