@@ -214,8 +214,8 @@ func TestGetTrackerIssue_PathAndDecoding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetTrackerIssue: %v", err)
 	}
-	if gotPath != "/v1/tracker/alice/default/issues/42" {
-		t.Errorf("path = %q, want /v1/tracker/alice/default/issues/42", gotPath)
+	if gotPath != "/v1/tracker/connections/alice/default/issues/42" {
+		t.Errorf("path = %q, want /v1/tracker/connections/alice/default/issues/42", gotPath)
 	}
 	if issue.GetNumber() != 42 || issue.GetAssignee() != "alice" {
 		t.Errorf("issue = %+v, want number=42 assignee=alice", issue)
@@ -247,8 +247,8 @@ func TestListTrackerIssues_QueryParams(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTrackerIssues: %v", err)
 	}
-	if gotPath != "/v1/tracker/alice/default/issues" {
-		t.Errorf("path = %q, want /v1/tracker/alice/default/issues", gotPath)
+	if gotPath != "/v1/tracker/connections/alice/default/issues" {
+		t.Errorf("path = %q, want /v1/tracker/connections/alice/default/issues", gotPath)
 	}
 	if !strings.Contains(gotQuery, "state=TRACKER_ISSUE_STATE_OPEN") {
 		t.Errorf("query = %q, want the state enum name", gotQuery)
@@ -303,8 +303,8 @@ func TestGetTrackerChange_PathAndDecoding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetTrackerChange: %v", err)
 	}
-	if gotPath != "/v1/tracker/alice/default/changes/10" {
-		t.Errorf("path = %q, want /v1/tracker/alice/default/changes/10", gotPath)
+	if gotPath != "/v1/tracker/connections/alice/default/changes/10" {
+		t.Errorf("path = %q, want /v1/tracker/connections/alice/default/changes/10", gotPath)
 	}
 	if change.GetState() != pb.TrackerIssueState_TRACKER_ISSUE_STATE_MERGED || change.GetCiVerdict() != pb.TrackerCiVerdict_TRACKER_CI_VERDICT_SUCCESS {
 		t.Errorf("change = %+v, want state=MERGED ci_verdict=SUCCESS", change)
@@ -337,8 +337,8 @@ func TestSubmitTrackerChange_PathMethodAndBody(t *testing.T) {
 	if gotMethod != http.MethodPost {
 		t.Errorf("method = %q, want POST", gotMethod)
 	}
-	if gotPath != "/v1/tracker/alice/default/changes" {
-		t.Errorf("path = %q, want /v1/tracker/alice/default/changes", gotPath)
+	if gotPath != "/v1/tracker/connections/alice/default/changes" {
+		t.Errorf("path = %q, want /v1/tracker/connections/alice/default/changes", gotPath)
 	}
 	if !strings.Contains(string(gotBody), `"title":"My change"`) {
 		t.Errorf("request body = %s, want it to carry the title", gotBody)
@@ -374,8 +374,8 @@ func TestCommentOnTrackerIssue_PathMethodAndBody(t *testing.T) {
 	if gotMethod != http.MethodPost {
 		t.Errorf("method = %q, want POST", gotMethod)
 	}
-	if gotPath != "/v1/tracker/alice/default/issues/7/comments" {
-		t.Errorf("path = %q, want /v1/tracker/alice/default/issues/7/comments", gotPath)
+	if gotPath != "/v1/tracker/connections/alice/default/issues/7/comments" {
+		t.Errorf("path = %q, want /v1/tracker/connections/alice/default/issues/7/comments", gotPath)
 	}
 	if !strings.Contains(string(gotBody), `"body":"hello"`) {
 		t.Errorf("request body = %s, want it to carry the comment body", gotBody)
@@ -411,8 +411,8 @@ func TestClaimTrackerIssue_PathMethodAndDecoding(t *testing.T) {
 	if gotMethod != http.MethodPost {
 		t.Errorf("method = %q, want POST", gotMethod)
 	}
-	if gotPath != "/v1/tracker/alice/default/issues/9/claim" {
-		t.Errorf("path = %q, want /v1/tracker/alice/default/issues/9/claim", gotPath)
+	if gotPath != "/v1/tracker/connections/alice/default/issues/9/claim" {
+		t.Errorf("path = %q, want /v1/tracker/connections/alice/default/issues/9/claim", gotPath)
 	}
 	if !strings.Contains(string(gotBody), `"staleAfterSeconds":"3600"`) {
 		t.Errorf("request body = %s, want the stale-after value (int64 fields marshal as strings in protojson)", gotBody)
@@ -449,8 +449,8 @@ func TestSetTrackerIssueLabels_PathMethodAndBody(t *testing.T) {
 	if gotMethod != http.MethodPost {
 		t.Errorf("method = %q, want POST", gotMethod)
 	}
-	if gotPath != "/v1/tracker/alice/default/issues/3/labels" {
-		t.Errorf("path = %q, want /v1/tracker/alice/default/issues/3/labels", gotPath)
+	if gotPath != "/v1/tracker/connections/alice/default/issues/3/labels" {
+		t.Errorf("path = %q, want /v1/tracker/connections/alice/default/issues/3/labels", gotPath)
 	}
 	if !strings.Contains(string(gotBody), `"addLabels":["triaged"]`) || !strings.Contains(string(gotBody), `"removeLabels":["needs-triage"]`) {
 		t.Errorf("request body = %s, want both label lists", gotBody)
@@ -487,8 +487,8 @@ func TestCreateTrackerIssue_PathMethodAndBody(t *testing.T) {
 	if gotMethod != http.MethodPost {
 		t.Errorf("method = %q, want POST", gotMethod)
 	}
-	if gotPath != "/v1/tracker/alice/default/issues" {
-		t.Errorf("path = %q, want /v1/tracker/alice/default/issues", gotPath)
+	if gotPath != "/v1/tracker/connections/alice/default/issues" {
+		t.Errorf("path = %q, want /v1/tracker/connections/alice/default/issues", gotPath)
 	}
 	for _, want := range []string{`"title":"follow-up"`, `"body":"child body"`, `"labels":["scope:architecture"]`, `"parentNumber":"42"`} {
 		if !strings.Contains(string(gotBody), want) {

@@ -100,7 +100,7 @@ func contextFromBearer(t *testing.T, tm *auth.TokenManager, token, path string) 
 func realRunCtx(t *testing.T, user, runID string) context.Context {
 	t.Helper()
 	tok, tm := mintRealRunToken(t, user, runID, "default")
-	return contextFromBearer(t, tm, tok, "/v1/tracker/"+user+"/default/issues/42")
+	return contextFromBearer(t, tm, tok, "/v1/tracker/connections/"+user+"/default/issues/42")
 }
 
 // TestTrackerVerbs_RealRunToken_AuthorizesOwnTenant is the #2268 "Done

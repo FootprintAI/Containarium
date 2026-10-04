@@ -378,10 +378,10 @@ message DispatchTrackerIssuesResponse {
 
 | RPC | Scope | REST (`google.api.http`) |
 | --- | --- | --- |
-| `SetTrackerRoute` / `ListTrackerRoutes` / `DeleteTrackerRoute` | `tracker:admin` | `PUT/GET/DELETE /v1/tracker/{username}/{connection}/routes[/{scope}]` |
-| `DispatchTrackerIssues` | `tracker:admin` | `POST /v1/tracker/{username}/{connection}/dispatch` |
-| `ListTrackerDispatches` | `tracker:admin` | `GET /v1/tracker/{username}/{connection}/dispatches` |
-| `CreateTrackerIssue` | `tracker:write` (run or operator) | `POST /v1/tracker/{username}/{connection}/issues` |
+| `SetTrackerRoute` / `ListTrackerRoutes` / `DeleteTrackerRoute` | `tracker:admin` | `PUT/GET/DELETE /v1/tracker/connections/{username}/{connection}/routes[/{scope}]` |
+| `DispatchTrackerIssues` | `tracker:admin` | `POST /v1/tracker/connections/{username}/{connection}/dispatch` |
+| `ListTrackerDispatches` | `tracker:admin` | `GET /v1/tracker/connections/{username}/{connection}/dispatches` |
+| `CreateTrackerIssue` | `tracker:write` (run or operator) | `POST /v1/tracker/connections/{username}/{connection}/issues` |
 
 `TrackerPolicy` is set through the existing `SetTrackerConnection`
 (`tracker connect … --label-allow … --auto-chain --max-depth …`).

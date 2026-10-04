@@ -50,7 +50,7 @@ func TestMintRunToken_CarriesTenantRunAndConnection(t *testing.T) {
 	// tenant and nobody else; the generic tenant check still refuses the
 	// run token even for its own tenant — it is the box, and must not
 	// reach the tenant's containers, secrets or anything else.
-	run := contextFromBearer(t, tm, tok, "/v1/tracker/"+user+"/default/issues/1")
+	run := contextFromBearer(t, tm, tok, "/v1/tracker/connections/"+user+"/default/issues/1")
 	if err := auth.AuthorizeTrackerTenant(run, user); err != nil {
 		t.Errorf("AuthorizeTrackerTenant(run, its tenant): %v, want nil", err)
 	}

@@ -132,8 +132,8 @@ func TestTrackerDispatch_HTTPModeOnceHitsGatewayPath(t *testing.T) {
 			t.Errorf("runTrackerDispatch: %v", err)
 		}
 	})
-	if *method != http.MethodPost || *path != "/v1/tracker/alice/default/dispatch" {
-		t.Errorf("%s %s, want POST /v1/tracker/alice/default/dispatch", *method, *path)
+	if *method != http.MethodPost || *path != "/v1/tracker/connections/alice/default/dispatch" {
+		t.Errorf("%s %s, want POST /v1/tracker/connections/alice/default/dispatch", *method, *path)
 	}
 	if !strings.Contains(out, "#42") || !strings.Contains(out, "scope:product") || !strings.Contains(out, "run-1") {
 		t.Errorf("output = %q, want the started issue, label and run id", out)
@@ -154,7 +154,7 @@ func TestTrackerDispatches_HTTPModeHitsGatewayPath(t *testing.T) {
 			t.Errorf("runTrackerDispatches: %v", err)
 		}
 	})
-	if *method != http.MethodGet || *path != "/v1/tracker/alice/default/dispatches" || *query != "state=TRACKER_DISPATCH_STATE_FAILED" {
+	if *method != http.MethodGet || *path != "/v1/tracker/connections/alice/default/dispatches" || *query != "state=TRACKER_DISPATCH_STATE_FAILED" {
 		t.Errorf("%s %s?%s, want GET .../dispatches?state=TRACKER_DISPATCH_STATE_FAILED", *method, *path, *query)
 	}
 	if !strings.Contains(out, "failed") || !strings.Contains(out, "run did not start: boom") {

@@ -2839,7 +2839,7 @@ func (c *HTTPClient) DeleteTrackerConnection(username, name string) (string, err
 // trackerRoutesPath is the REST collection for a connection's scope
 // routes (#2021), matching tracker.proto's google.api.http mapping.
 func trackerRoutesPath(username, connection string) string {
-	return "/v1/tracker/" + url.PathEscape(username) + "/" + url.PathEscape(connection) + "/routes"
+	return "/v1/tracker/connections/" + url.PathEscape(username) + "/" + url.PathEscape(connection) + "/routes"
 }
 
 // SetTrackerRoute creates or updates a scope -> skill route via REST
@@ -2889,7 +2889,7 @@ func (c *HTTPClient) DispatchTrackerIssues(username, connection string) (*pb.Dis
 		return nil, fmt.Errorf("encode request: %w", err)
 	}
 	out := &pb.DispatchTrackerIssuesResponse{}
-	path := "/v1/tracker/" + url.PathEscape(username) + "/" + url.PathEscape(connection) + "/dispatch"
+	path := "/v1/tracker/connections/" + url.PathEscape(username) + "/" + url.PathEscape(connection) + "/dispatch"
 	if err := c.trackerDoTimeout(TrackerDispatchTimeout, http.MethodPost, path, "dispatch tracker issues", body, out); err != nil {
 		return nil, err
 	}
@@ -2899,7 +2899,7 @@ func (c *HTTPClient) DispatchTrackerIssues(username, connection string) (*pb.Dis
 // ListTrackerDispatches returns a connection's dispatch rows via REST
 // (#2022), newest first. UNSPECIFIED state sends no filter.
 func (c *HTTPClient) ListTrackerDispatches(username, connection string, state pb.TrackerDispatchState) ([]*pb.TrackerDispatch, error) {
-	path := "/v1/tracker/" + url.PathEscape(username) + "/" + url.PathEscape(connection) + "/dispatches"
+	path := "/v1/tracker/connections/" + url.PathEscape(username) + "/" + url.PathEscape(connection) + "/dispatches"
 	if state != pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_UNSPECIFIED {
 		path += "?" + url.Values{"state": {state.String()}}.Encode()
 	}
@@ -2925,7 +2925,7 @@ func (c *HTTPClient) GetTrackerStatus(username, name string) (*pb.GetTrackerStat
 // REST.
 func (c *HTTPClient) GetTrackerIssue(req *pb.GetTrackerIssueRequest) (*pb.TrackerIssue, error) {
 	out := &pb.GetTrackerIssueResponse{}
-	path := fmt.Sprintf("/v1/tracker/%s/%s/issues/%d", url.PathEscape(req.Username), url.PathEscape(req.Connection), req.Number)
+	path := fmt.Sprintf("/v1/tracker/connections/%s/%s/issues/%d", url.PathEscape(req.Username), url.PathEscape(req.Connection), req.Number)
 	if err := c.trackerDo(http.MethodGet, path, "get tracker issue", nil, out); err != nil {
 		return nil, err
 	}
@@ -2945,7 +2945,7 @@ func (c *HTTPClient) ListTrackerIssues(req *pb.ListTrackerIssuesRequest) ([]*pb.
 	if req.Search != "" {
 		q.Set("search", req.Search)
 	}
-	path := fmt.Sprintf("/v1/tracker/%s/%s/issues", url.PathEscape(req.Username), url.PathEscape(req.Connection))
+	path := fmt.Sprintf("/v1/tracker/connections/%s/%s/issues", url.PathEscape(req.Username), url.PathEscape(req.Connection))
 	if len(q) > 0 {
 		path += "?" + q.Encode()
 	}
@@ -2959,7 +2959,7 @@ func (c *HTTPClient) ListTrackerIssues(req *pb.ListTrackerIssuesRequest) ([]*pb.
 // verdict, via REST.
 func (c *HTTPClient) GetTrackerChange(req *pb.GetTrackerChangeRequest) (*pb.TrackerChange, error) {
 	out := &pb.GetTrackerChangeResponse{}
-	path := fmt.Sprintf("/v1/tracker/%s/%s/changes/%d", url.PathEscape(req.Username), url.PathEscape(req.Connection), req.Number)
+	path := fmt.Sprintf("/v1/tracker/connections/%s/%s/changes/%d", url.PathEscape(req.Username), url.PathEscape(req.Connection), req.Number)
 	if err := c.trackerDo(http.MethodGet, path, "get tracker change", nil, out); err != nil {
 		return nil, err
 	}
@@ -2974,7 +2974,7 @@ func (c *HTTPClient) SubmitTrackerChange(req *pb.SubmitTrackerChangeRequest) (*p
 		return nil, fmt.Errorf("encode request: %w", err)
 	}
 	out := &pb.SubmitTrackerChangeResponse{}
-	path := fmt.Sprintf("/v1/tracker/%s/%s/changes", url.PathEscape(req.Username), url.PathEscape(req.Connection))
+	path := fmt.Sprintf("/v1/tracker/connections/%s/%s/changes", url.PathEscape(req.Username), url.PathEscape(req.Connection))
 	if err := c.trackerDo(http.MethodPost, path, "submit tracker change", body, out); err != nil {
 		return nil, err
 	}
@@ -2989,7 +2989,7 @@ func (c *HTTPClient) CommentOnTrackerIssue(req *pb.CommentOnTrackerIssueRequest)
 		return nil, fmt.Errorf("encode request: %w", err)
 	}
 	out := &pb.CommentOnTrackerIssueResponse{}
-	path := fmt.Sprintf("/v1/tracker/%s/%s/issues/%d/comments", url.PathEscape(req.Username), url.PathEscape(req.Connection), req.Number)
+	path := fmt.Sprintf("/v1/tracker/connections/%s/%s/issues/%d/comments", url.PathEscape(req.Username), url.PathEscape(req.Connection), req.Number)
 	if err := c.trackerDo(http.MethodPost, path, "comment on tracker issue", body, out); err != nil {
 		return nil, err
 	}
@@ -3003,7 +3003,7 @@ func (c *HTTPClient) ClaimTrackerIssue(req *pb.ClaimTrackerIssueRequest) (*pb.Cl
 		return nil, fmt.Errorf("encode request: %w", err)
 	}
 	out := &pb.ClaimTrackerIssueResponse{}
-	path := fmt.Sprintf("/v1/tracker/%s/%s/issues/%d/claim", url.PathEscape(req.Username), url.PathEscape(req.Connection), req.Number)
+	path := fmt.Sprintf("/v1/tracker/connections/%s/%s/issues/%d/claim", url.PathEscape(req.Username), url.PathEscape(req.Connection), req.Number)
 	if err := c.trackerDo(http.MethodPost, path, "claim tracker issue", body, out); err != nil {
 		return nil, err
 	}
@@ -3017,7 +3017,7 @@ func (c *HTTPClient) SetTrackerIssueLabels(req *pb.SetTrackerIssueLabelsRequest)
 		return "", fmt.Errorf("encode request: %w", err)
 	}
 	out := &pb.SetTrackerIssueLabelsResponse{}
-	path := fmt.Sprintf("/v1/tracker/%s/%s/issues/%d/labels", url.PathEscape(req.Username), url.PathEscape(req.Connection), req.Number)
+	path := fmt.Sprintf("/v1/tracker/connections/%s/%s/issues/%d/labels", url.PathEscape(req.Username), url.PathEscape(req.Connection), req.Number)
 	if err := c.trackerDo(http.MethodPost, path, "set tracker issue labels", body, out); err != nil {
 		return "", err
 	}
@@ -3032,7 +3032,7 @@ func (c *HTTPClient) CreateTrackerIssue(req *pb.CreateTrackerIssueRequest) (*pb.
 		return nil, fmt.Errorf("encode request: %w", err)
 	}
 	out := &pb.CreateTrackerIssueResponse{}
-	path := fmt.Sprintf("/v1/tracker/%s/%s/issues", url.PathEscape(req.Username), url.PathEscape(req.Connection))
+	path := fmt.Sprintf("/v1/tracker/connections/%s/%s/issues", url.PathEscape(req.Username), url.PathEscape(req.Connection))
 	if err := c.trackerDo(http.MethodPost, path, "create tracker issue", body, out); err != nil {
 		return nil, err
 	}

@@ -29,7 +29,7 @@ func TestMCPClient_GetTrackerIssue(t *testing.T) {
 	issue, err := c.GetTrackerIssue(GetTrackerIssueRequest{Username: "alice", Connection: "default", Number: 7})
 	require.NoError(t, err)
 	assert.Equal(t, http.MethodGet, sawMethod)
-	assert.Equal(t, "/v1/tracker/alice/default/issues/7", sawPath)
+	assert.Equal(t, "/v1/tracker/connections/alice/default/issues/7", sawPath)
 	assert.Equal(t, int64(7), issue.Number)
 	assert.Equal(t, "bug", issue.Title)
 	assert.Equal(t, "agent", issue.Assignee)
@@ -49,7 +49,7 @@ func TestMCPClient_GetTrackerIssue_PathEscapesConnectionName(t *testing.T) {
 	c := NewClient(server.URL, "tok")
 	_, err := c.GetTrackerIssue(GetTrackerIssueRequest{Username: "alice", Connection: "a/b", Number: 1})
 	require.NoError(t, err)
-	assert.Equal(t, "/v1/tracker/alice/a%2Fb/issues/1", sawPath)
+	assert.Equal(t, "/v1/tracker/connections/alice/a%2Fb/issues/1", sawPath)
 }
 
 func TestMCPClient_ListTrackerIssues_FiltersAsQueryParams(t *testing.T) {
@@ -87,7 +87,7 @@ func TestMCPClient_GetTrackerChange(t *testing.T) {
 	c := NewClient(server.URL, "tok")
 	change, err := c.GetTrackerChange(GetTrackerChangeRequest{Username: "alice", Connection: "default", Number: 2})
 	require.NoError(t, err)
-	assert.Equal(t, "/v1/tracker/alice/default/changes/2", sawPath)
+	assert.Equal(t, "/v1/tracker/connections/alice/default/changes/2", sawPath)
 	assert.Equal(t, int64(2), change.Number)
 	assert.Equal(t, "TRACKER_ISSUE_STATE_MERGED", change.State)
 	assert.Equal(t, "TRACKER_CI_VERDICT_SUCCESS", change.CiVerdict)
@@ -110,7 +110,7 @@ func TestMCPClient_CommentOnTrackerIssue(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, http.MethodPost, sawMethod)
-	assert.Equal(t, "/v1/tracker/alice/default/issues/7/comments", sawPath)
+	assert.Equal(t, "/v1/tracker/connections/alice/default/issues/7/comments", sawPath)
 	assert.Equal(t, "hello", sawBody["body"])
 	assert.NotContains(t, sawBody, "username", "path-bound fields must not also ride in the body")
 	assert.Equal(t, "agent-bot", comment.Author)
@@ -132,7 +132,7 @@ func TestMCPClient_ClaimTrackerIssue(t *testing.T) {
 		Username: "alice", Connection: "default", Number: 9, StaleAfterSeconds: 3600,
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "/v1/tracker/alice/default/issues/9/claim", sawPath)
+	assert.Equal(t, "/v1/tracker/connections/alice/default/issues/9/claim", sawPath)
 	assert.Equal(t, float64(3600), sawBody["staleAfterSeconds"])
 	assert.True(t, result.Claimed)
 	assert.True(t, result.Assigned)
@@ -169,7 +169,7 @@ func TestMCPClient_SetTrackerIssueLabels(t *testing.T) {
 		AddLabels: []string{"triaged"}, RemoveLabels: []string{"needs-triage"},
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "/v1/tracker/alice/default/issues/3/labels", sawPath)
+	assert.Equal(t, "/v1/tracker/connections/alice/default/issues/3/labels", sawPath)
 	assert.Equal(t, []any{"triaged"}, sawBody["addLabels"])
 	assert.Equal(t, []any{"needs-triage"}, sawBody["removeLabels"])
 }
@@ -191,7 +191,7 @@ func TestMCPClient_SubmitTrackerChange(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, http.MethodPost, sawMethod)
-	assert.Equal(t, "/v1/tracker/alice/default/changes", sawPath)
+	assert.Equal(t, "/v1/tracker/connections/alice/default/changes", sawPath)
 	assert.Equal(t, "My change", sawBody["title"])
 	assert.NotContains(t, sawBody, "username", "path-bound fields must not also ride in the body")
 	assert.Equal(t, int64(6), change.Number)
@@ -216,7 +216,7 @@ func TestMCPClient_CreateTrackerIssue(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, http.MethodPost, sawMethod)
-	assert.Equal(t, "/v1/tracker/alice/default/issues", sawPath)
+	assert.Equal(t, "/v1/tracker/connections/alice/default/issues", sawPath)
 	assert.Equal(t, "follow-up", sawBody["title"])
 	assert.Equal(t, "child body", sawBody["body"])
 	assert.Equal(t, []any{"scope:architecture"}, sawBody["labels"])

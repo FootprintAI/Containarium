@@ -155,7 +155,7 @@ func TestRunIDClaim_EndToEndPropagation(t *testing.T) {
 	})
 	wrapped := mw.HTTPMiddleware(stub)
 
-	req := httptest.NewRequest("POST", "/v1/tracker/alice/default/issues/1/comments", nil)
+	req := httptest.NewRequest("POST", "/v1/tracker/connections/alice/default/issues/1/comments", nil)
 	req.Header.Set("Authorization", "Bearer "+tok)
 	rec := httptest.NewRecorder()
 	wrapped.ServeHTTP(rec, req)
@@ -227,7 +227,7 @@ func TestTrackerConnClaim_EndToEndPropagation(t *testing.T) {
 	})
 	wrapped := mw.HTTPMiddleware(stub)
 
-	req := httptest.NewRequest("POST", "/v1/tracker/alice/default/issues/1/comments", nil)
+	req := httptest.NewRequest("POST", "/v1/tracker/connections/alice/default/issues/1/comments", nil)
 	req.Header.Set("Authorization", "Bearer "+tok)
 	rec := httptest.NewRecorder()
 	wrapped.ServeHTTP(rec, req)
@@ -268,7 +268,7 @@ func TestTrackerConnClaim_AbsentClaimPropagatesAsAbsent(t *testing.T) {
 	})
 	wrapped := mw.HTTPMiddleware(stub)
 
-	req := httptest.NewRequest("POST", "/v1/tracker/alice/default/issues/1/comments", nil)
+	req := httptest.NewRequest("POST", "/v1/tracker/connections/alice/default/issues/1/comments", nil)
 	req.Header.Set("Authorization", "Bearer "+tok)
 	rec := httptest.NewRecorder()
 	wrapped.ServeHTTP(rec, req)
@@ -303,7 +303,7 @@ func TestRunTenantClaim_EndToEndPropagation(t *testing.T) {
 	})
 	wrapped := mw.HTTPMiddleware(stub)
 
-	req := httptest.NewRequest("POST", "/v1/tracker/alice/default/issues/1/comments", nil)
+	req := httptest.NewRequest("POST", "/v1/tracker/connections/alice/default/issues/1/comments", nil)
 	req.Header.Set("Authorization", "Bearer "+tok)
 	rec := httptest.NewRecorder()
 	wrapped.ServeHTTP(rec, req)
@@ -351,7 +351,7 @@ func TestRunTenantClaim_AbsentClaimPropagatesAsAbsent(t *testing.T) {
 	})
 	wrapped := mw.HTTPMiddleware(stub)
 
-	req := httptest.NewRequest("POST", "/v1/tracker/alice/default/issues/1/comments", nil)
+	req := httptest.NewRequest("POST", "/v1/tracker/connections/alice/default/issues/1/comments", nil)
 	req.Header.Set("Authorization", "Bearer "+tok)
 	rec := httptest.NewRecorder()
 	wrapped.ServeHTTP(rec, req)

@@ -7113,119 +7113,7 @@
         ]
       }
     },
-    "/v1/tracker/connections/{username}/{name}": {
-      "get": {
-        "summary": "Get a tracker connection",
-        "description": "Returns a single named tracker connection's metadata. Never returns the credential value.",
-        "operationId": "TrackerService_GetTrackerConnection",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/GetTrackerConnectionResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/rpc.Status"
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "username",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "name",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          }
-        ],
-        "tags": [
-          "Tracker"
-        ]
-      },
-      "delete": {
-        "summary": "Delete a tracker connection",
-        "description": "Removes a named tracker connection. Does not delete the underlying credential secret.",
-        "operationId": "TrackerService_DeleteTrackerConnection",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/DeleteTrackerConnectionResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/rpc.Status"
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "username",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "name",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          }
-        ],
-        "tags": [
-          "Tracker"
-        ]
-      }
-    },
-    "/v1/tracker/connections/{username}/{name}/status": {
-      "get": {
-        "summary": "Check a tracker connection's live status",
-        "description": "Asks the tracker to describe the connection's own credential: reachability, whether the credential is still valid, its granted scopes and expiry, and whether it's broader than the provider's preferred credential type. Also reports the daemon host's git version and whether it meets SubmitTrackerChange's minimum. Requires tracker:admin.",
-        "operationId": "TrackerService_GetTrackerStatus",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/GetTrackerStatusResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/rpc.Status"
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "username",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "name",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          }
-        ],
-        "tags": [
-          "Tracker"
-        ]
-      }
-    },
-    "/v1/tracker/{username}/{connection}/changes": {
+    "/v1/tracker/connections/{username}/{connection}/changes": {
       "post": {
         "summary": "Submit a tracker change request",
         "description": "Bundles the run's committed workspace out of the box and pushes it from a fresh temporary bare repository on the host to a daemon-chosen branch, then opens a change request referencing issue — no push credential ever enters the box. Requires tracker:write and a run with a recorded git_source. Opened as a draft when draft is true.",
@@ -7271,7 +7159,7 @@
         ]
       }
     },
-    "/v1/tracker/{username}/{connection}/changes/{number}": {
+    "/v1/tracker/connections/{username}/{connection}/changes/{number}": {
       "get": {
         "summary": "Get a tracker change request",
         "description": "Returns a pull/merge request's state and normalized CI verdict. Requires tracker:read.",
@@ -7316,7 +7204,7 @@
         ]
       }
     },
-    "/v1/tracker/{username}/{connection}/dispatch": {
+    "/v1/tracker/connections/{username}/{connection}/dispatch": {
       "post": {
         "summary": "Run one tracker dispatch tick",
         "description": "Lists the connection's open issues and, for each one carrying a routed scope:\u003crole\u003e label and no agent:* state label (and not agent:needs-approval), inserts a durable dispatch row, starts the routed skill through the RunAgentSkill path with the issue reference as input, and labels the issue agent:queued. Exactly once per (issue) across restarts and concurrent dispatchers: a partial unique index on active rows makes the second inserter skip. An unrouted scope label gets exactly one stamped warning comment. Each tick first sweeps active rows: one past the policy run timeout, or with no live lease past a grace period, is failed (lease ended, agent:failed, a comment naming the run and the reason) and returned in timed_out. Requires tracker:admin (and agents:run, to start the runs).",
@@ -7362,7 +7250,7 @@
         ]
       }
     },
-    "/v1/tracker/{username}/{connection}/dispatches": {
+    "/v1/tracker/connections/{username}/{connection}/dispatches": {
       "get": {
         "summary": "List tracker dispatches",
         "description": "Lists a connection's dispatch rows (issue, scope, skill, run id, state, failure reason, timestamps), newest first, optionally filtered by state. Requires tracker:admin.",
@@ -7415,7 +7303,7 @@
         ]
       }
     },
-    "/v1/tracker/{username}/{connection}/issues": {
+    "/v1/tracker/connections/{username}/{connection}/issues": {
       "get": {
         "summary": "List tracker issues",
         "description": "Lists issues, optionally filtered by state, labels (AND), or free-text search. Never includes comments — use GetTrackerIssue for a single issue's comments. Requires tracker:read.",
@@ -7529,7 +7417,7 @@
         ]
       }
     },
-    "/v1/tracker/{username}/{connection}/issues/{number}": {
+    "/v1/tracker/connections/{username}/{connection}/issues/{number}": {
       "get": {
         "summary": "Get a tracker issue",
         "description": "Returns a single issue's body, state, labels, assignee, and comments, normalized across GitHub and GitLab. Requires tracker:read.",
@@ -7575,7 +7463,7 @@
         ]
       }
     },
-    "/v1/tracker/{username}/{connection}/issues/{number}/claim": {
+    "/v1/tracker/connections/{username}/{connection}/issues/{number}/claim": {
       "post": {
         "summary": "Claim a tracker issue",
         "description": "Posts a stamped claim comment and assigns the calling run if the issue is unassigned, unless a live or recent claim from a different run already holds it. Idempotent for the same run. Requires tracker:write.",
@@ -7628,7 +7516,7 @@
         ]
       }
     },
-    "/v1/tracker/{username}/{connection}/issues/{number}/comments": {
+    "/v1/tracker/connections/{username}/{connection}/issues/{number}/comments": {
       "post": {
         "summary": "Comment on a tracker issue or change",
         "description": "Posts a comment, stamped with the acting run's platform identity and sanitized against forged markers and GitLab quick-actions. Requires tracker:write.",
@@ -7681,7 +7569,7 @@
         ]
       }
     },
-    "/v1/tracker/{username}/{connection}/issues/{number}/labels": {
+    "/v1/tracker/connections/{username}/{connection}/issues/{number}/labels": {
       "post": {
         "summary": "Set labels on a tracker issue",
         "description": "Adds and/or removes labels on an issue. Requires tracker:write.",
@@ -7734,7 +7622,7 @@
         ]
       }
     },
-    "/v1/tracker/{username}/{connection}/routes": {
+    "/v1/tracker/connections/{username}/{connection}/routes": {
       "get": {
         "summary": "List tracker scope routes",
         "description": "Lists every scope -\u003e skill route on a tracker connection, ordered by scope. Requires tracker:admin.",
@@ -7772,7 +7660,7 @@
         ]
       }
     },
-    "/v1/tracker/{username}/{connection}/routes/{scope}": {
+    "/v1/tracker/connections/{username}/{connection}/routes/{scope}": {
       "delete": {
         "summary": "Delete a tracker scope route",
         "description": "Removes the route for scope:\u003cscope\u003e on this connection; issues with that label are no longer dispatched. Requires tracker:admin.",
@@ -7859,6 +7747,118 @@
             "schema": {
               "$ref": "#/definitions/SetTrackerRouteBody"
             }
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      }
+    },
+    "/v1/tracker/connections/{username}/{name}": {
+      "get": {
+        "summary": "Get a tracker connection",
+        "description": "Returns a single named tracker connection's metadata. Never returns the credential value.",
+        "operationId": "TrackerService_GetTrackerConnection",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetTrackerConnectionResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      },
+      "delete": {
+        "summary": "Delete a tracker connection",
+        "description": "Removes a named tracker connection. Does not delete the underlying credential secret.",
+        "operationId": "TrackerService_DeleteTrackerConnection",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/DeleteTrackerConnectionResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      }
+    },
+    "/v1/tracker/connections/{username}/{name}/status": {
+      "get": {
+        "summary": "Check a tracker connection's live status",
+        "description": "Asks the tracker to describe the connection's own credential: reachability, whether the credential is still valid, its granted scopes and expiry, and whether it's broader than the provider's preferred credential type. Also reports the daemon host's git version and whether it meets SubmitTrackerChange's minimum. Requires tracker:admin.",
+        "operationId": "TrackerService_GetTrackerStatus",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetTrackerStatusResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "type": "string"
           }
         ],
         "tags": [

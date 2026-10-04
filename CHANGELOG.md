@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING:** the tracker data-plane REST routes now live under the
+  connection resource. The 13 routes that began `/v1/tracker/{username}/{connection}/`
+  (scope routes, dispatch, issues, comments/claim/labels, changes) are now
+  `/v1/tracker/connections/{username}/{connection}/...`; the verb and the rest of
+  each path are unchanged (e.g. `GET /v1/tracker/connections/alice/work/issues/7`).
+  The old paths are removed outright, with no alias and no deprecation window.
+  Why: the old shape put a wildcard right after `/v1/tracker/`, so a username of
+  `connections` or a connection named `routes`, `issues`, `changes`, `dispatch`
+  or `dispatches` matched two routes at once. Nesting means a verb can only
+  appear after the connection name, so the ambiguity is gone structurally rather
+  than papered over with a reserved-word list. Connection CRUD and
+  `GetTrackerStatus` keep their paths. The CLI, the Go HTTP client and the MCP
+  tracker tools are updated here; any other REST caller must move with this
+  release. Pinned by `internal/gateway/tracker_route_ambiguity_test.go`, which
+  drives the real grpc-gateway mux with adversarial names and asserts the old
+  paths 404. Supersedes #2281.
+
 ### Fixed
 
 - A dispatched skill run could not call any tracker verb for its own tenant
