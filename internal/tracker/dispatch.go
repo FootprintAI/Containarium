@@ -94,11 +94,24 @@ var _ DispatchStore = (*Store)(nil)
 type Dispatcher struct {
 	Store    DispatchStore
 	Provider DispatchProvider
-	// Conn is the resolved forge connection (base URL, project,
-	// credential) the provider calls use.
-	Conn  Conn
-	Runs  RunStarter
-	Clock Clock
+	// Conn is the forge connection (base URL, project) the provider
+	// calls use. Its Credential is used as given only when Credentials
+	// is nil; otherwise it is replaced at every call (see forgeConn).
+	Conn Conn
+	// Credentials resolves the connection's broker credential at each
+	// forge call — every RunStarted / RunEnded / sweep / retry write —
+	// never once per tick (#2269). RunEnded and the sweep can run up to
+	// the policy's run timeout after the tick that started the run, by
+	// when a rotated or short-lived credential (a GitHub App
+	// installation token lives ~1h) resolved at tick time is stale. The
+	// tenant is the dispatch's username; the secret is CredentialSecret.
+	// nil uses Conn.Credential unchanged.
+	Credentials CredentialSource
+	// CredentialSecret names the connection's broker-only secret that
+	// Credentials resolves.
+	CredentialSecret string
+	Runs             RunStarter
+	Clock            Clock
 	// RepoURL is the connection's repository clone URL, handed to every
 	// run this dispatcher starts (StartRunRequest.RepoURL).
 	RepoURL string
@@ -186,7 +199,11 @@ func (d *Dispatcher) Tick(ctx context.Context, username, connection string) (Tic
 		return res, err
 	}
 
-	issues, err := d.Provider.ListIssues(ctx, d.Conn, IssueFilter{State: pb.TrackerIssueState_TRACKER_ISSUE_STATE_OPEN})
+	conn, err := d.forgeConn(ctx, username)
+	if err != nil {
+		return res, fmt.Errorf("list issues: %w", err)
+	}
+	issues, err := d.Provider.ListIssues(ctx, conn, IssueFilter{State: pb.TrackerIssueState_TRACKER_ISSUE_STATE_OPEN})
 	if err != nil {
 		return res, fmt.Errorf("list issues: %w", err)
 	}
@@ -352,7 +369,11 @@ func (d *Dispatcher) Tick(ctx context.Context, username, connection string) (Tic
 // neither double-run nor locked, and the caller skips it this tick.
 // The only error returned is a store error.
 func (d *Dispatcher) stillDispatchable(ctx context.Context, row *Dispatch, scope string) (bool, error) {
-	fresh, err := d.Provider.GetIssue(ctx, d.Conn, row.IssueNumber)
+	conn, err := d.forgeConn(ctx, row.Username)
+	var fresh Issue
+	if err == nil {
+		fresh, err = d.Provider.GetIssue(ctx, conn, row.IssueNumber)
+	}
 	keep := err == nil &&
 		fresh.State != pb.TrackerIssueState_TRACKER_ISSUE_STATE_CLOSED &&
 		containsExact(fresh.Labels, ScopeLabelPrefix+scope) &&
@@ -384,7 +405,11 @@ func (d *Dispatcher) abandon(ctx context.Context, row *Dispatch) error {
 func (d *Dispatcher) labelQueued(ctx context.Context, row *Dispatch) error {
 	lctx, cancel := bookkeepingContext(ctx)
 	defer cancel()
-	if err := d.Provider.SetLabels(lctx, d.Conn, row.IssueNumber, []string{LabelAgentQueued}, nil); err == nil {
+	conn, err := d.forgeConn(lctx, row.Username)
+	if err == nil {
+		err = d.Provider.SetLabels(lctx, conn, row.IssueNumber, []string{LabelAgentQueued}, nil)
+	}
+	if err == nil {
 		return nil
 	}
 	if err := d.Store.SetDispatchLabelsPending(lctx, row.ID, true); err != nil {
@@ -483,7 +508,11 @@ func (d *Dispatcher) warnUnrouted(ctx context.Context, username, connection stri
 			ScopeLabelPrefix, scope, scope)
 	}
 	body := Sanitize(text) + "\n\n" + Stamp(dispatcherIdentity(username, ""), KindComment)
-	if _, err := d.Provider.Comment(ctx, d.Conn, issue, body); err != nil {
+	conn, err := d.forgeConn(ctx, username)
+	if err == nil {
+		_, err = d.Provider.Comment(ctx, conn, issue, body)
+	}
+	if err != nil {
 		if ferr := d.Store.ForgetDispatchWarning(ctx, username, connection, issue, scope); ferr != nil {
 			return fmt.Errorf("forget unrouted warning for #%d: %w", issue, ferr)
 		}
@@ -499,6 +528,26 @@ func dispatcherIdentity(username, runID string) Identity {
 		runID = username
 	}
 	return Identity{RunID: runID, SkillID: "dispatcher"}
+}
+
+// forgeConn is the connection for ONE forge call: d.Conn with the
+// broker credential resolved now, through d.Credentials, for tenant
+// (#2269). Every provider call goes through it and the result is never
+// kept, so a credential rotated since the tick began — or since the run
+// started — is picked up by the next write. A resolve error is that
+// write's error: the caller treats it like the forge refusing the call
+// (labels_pending for a projection, a failed tick for the list).
+func (d *Dispatcher) forgeConn(ctx context.Context, tenant string) (Conn, error) {
+	c := d.Conn
+	if d.Credentials == nil {
+		return c, nil
+	}
+	cred, err := d.Credentials.BrokerCredential(ctx, tenant, d.CredentialSecret)
+	if err != nil {
+		return Conn{}, fmt.Errorf("resolve broker credential: %w", err)
+	}
+	c.Credential = cred
+	return c, nil
 }
 
 // effectivePolicy is d.Policy, or the documented defaults when unset.
