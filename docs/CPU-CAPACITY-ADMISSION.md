@@ -162,9 +162,9 @@ per-box one; a single tenant left on `limits.cpu: 8` (any 8 cores) shares the
 reserved set and the floor is partial. Document the convention for the host
 and verify it with `containarium info`'s core-committed line.
 
-The host daemons themselves (`incusd`, `containarium`) are protected
-separately, by a systemd `CPUWeight=` drop-in installed with the daemon unit
-(see the host-protection section once #2284's second part lands).
+The host daemons themselves (`incusd`, `containarium`) are not covered by any
+of the above yet: they will be protected separately, by a systemd `CPUWeight=`
+drop-in installed with the daemon unit, in the second part of #2284.
 
 ## Semantics and scope
 
