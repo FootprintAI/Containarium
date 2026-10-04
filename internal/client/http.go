@@ -227,6 +227,13 @@ type systemInfo struct {
 	TotalCPUCores        int32  `json:"totalCpuCores"`
 	TotalMemoryBytes     int64  `json:"totalMemoryBytes"`
 	AvailableMemoryBytes int64  `json:"availableMemoryBytes"`
+	// CPU budget (#2284), as grpc-gateway emits SystemInfo: camelCase keys,
+	// the enum by name. Absent on an older daemon → zero values → no budget.
+	TotalCpus             int32   `json:"totalCpus"`
+	CommittedCpuCores     float64 `json:"committedCpuCores"`
+	CoreCommittedCpuCores float64 `json:"coreCommittedCpuCores"`
+	CpuAdmissionMode      string  `json:"cpuAdmissionMode"`
+	CpuOvercommitFactor   float64 `json:"cpuOvercommitFactor"`
 }
 
 // containerToIncusInfo converts API response to incus.ContainerInfo
@@ -1493,6 +1500,10 @@ func (c *HTTPClient) GetSystemInfo() (*incus.ServerInfo, error) {
 	info := &incus.ServerInfo{
 		Version:       result.Info.IncusVersion,
 		KernelVersion: result.Info.KernelVersion,
+		CPUBudget: cpuBudgetFromWire(result.Info.TotalCpus, result.Info.CommittedCpuCores,
+			result.Info.CoreCommittedCpuCores,
+			pb.CPUAdmissionMode(pb.CPUAdmissionMode_value[result.Info.CpuAdmissionMode]),
+			result.Info.CpuOvercommitFactor),
 	}
 
 	return info, nil

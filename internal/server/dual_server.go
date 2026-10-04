@@ -2910,6 +2910,11 @@ func (ds *DualServer) Start(ctx context.Context) error {
 				mode = "enforcing"
 			}
 			log.Printf("[cpu-admission] CPU overcommit gate enabled: factor=%.2f× mode=%s", ds.config.CPUOvercommitFactor, mode)
+			// One budget line at boot (#2284): an advisory gate on a host
+			// already past its ceiling must say so up front, not only one
+			// "would reject" line per create. Off the boot path — it reads
+			// Incus, and a slow Incus must not delay the daemon coming up.
+			go ds.containerServer.LogCPUBudgetPosture()
 		}
 
 		// Integrity self-measurement posture (#683): the policy/config state the

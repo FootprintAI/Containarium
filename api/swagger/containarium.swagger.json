@@ -9754,6 +9754,17 @@
       },
       "title": "BuildpackOptions for auto-generating Dockerfiles/Containerfiles"
     },
+    "CPUAdmissionMode": {
+      "type": "string",
+      "enum": [
+        "CPU_ADMISSION_MODE_UNSPECIFIED",
+        "CPU_ADMISSION_MODE_DISABLED",
+        "CPU_ADMISSION_MODE_ADVISORY",
+        "CPU_ADMISSION_MODE_ENFORCING"
+      ],
+      "default": "CPU_ADMISSION_MODE_UNSPECIFIED",
+      "description": "CPUAdmissionMode is the CPU overcommit admission gate's posture\n(docs/CPU-CAPACITY-ADMISSION.md, #1029). An enum rather than a pair of\nbare flags so a client switches on typed constants and cannot mistake\n\"factor set but not enforced\" for protection (#2284).\n\n - CPU_ADMISSION_MODE_UNSPECIFIED: The backend did not report a posture (pre-#2284 daemon).\n - CPU_ADMISSION_MODE_DISABLED: No factor configured: the gate never runs (the default).\n - CPU_ADMISSION_MODE_ADVISORY: A factor is configured but over-ceiling creates are only logged, never\nrejected.\n - CPU_ADMISSION_MODE_ENFORCING: Over-ceiling creates are rejected with ResourceExhausted."
+    },
     "CapabilityBenchmark": {
       "type": "object",
       "properties": {
@@ -16938,7 +16949,21 @@
         "committedCpuCores": {
           "type": "number",
           "format": "double",
-          "description": "committed_cpu_cores is the sum of this host's TENANT containers'\ncommitted CPU (limits.cpu / limits.cpu.allowance, summed via\nincus.CommittedCores) — the \"how much is actually spoken for\" number\nthat pairs with total_cpus to answer \"is this host over its CPU\novercommit ceiling right now\" (#1580). A caller derives the ratio as\ncommitted_cpu_cores / total_cpus.\n\nThis is TENANT capacity, not total host capacity: the platform's own\ncore-infra containers (Postgres, Caddy, control-plane — not tenant\nworkload) are deliberately excluded, the same exclusion the CPU\nadmission gate (docs/CPU-CAPACITY-ADMISSION.md, #1029) already applies.\nAn operator combining this with total_cpus to size an overcommit factor\nmust still separately budget the host's own known core-infra CPU\nfootprint on top of it.\n\n0 on the K8s runtime, same as total_cpus (the Incus resource read\nno-ops there) — \"not applicable to this runtime,\" not \"nothing\ncommitted.\" See #1571/#1578 for the design this closes the visibility\nhalf of."
+          "description": "committed_cpu_cores is the sum of this host's TENANT containers'\ncommitted CPU (limits.cpu / limits.cpu.allowance, summed via\nincus.CommittedCores) — the \"how much is actually spoken for\" number\nthat pairs with total_cpus to answer \"is this host over its CPU\novercommit ceiling right now\" (#1580). A caller derives the ratio as\ncommitted_cpu_cores / total_cpus.\n\nThis is TENANT capacity, not total host capacity: the platform's own\ncore-infra containers (Postgres, Caddy, control-plane — not tenant\nworkload) are deliberately excluded, the same exclusion the CPU\nadmission gate (docs/CPU-CAPACITY-ADMISSION.md, #1029) already applies.\nThe platform's own footprint is reported separately in\ncore_committed_cpu_cores (#2284) so an operator sizing a factor can\nsee both halves instead of guessing the second.\n\n0 on the K8s runtime, same as total_cpus (the Incus resource read\nno-ops there) — \"not applicable to this runtime,\" not \"nothing\ncommitted.\" See #1571/#1578 for the design this closes the visibility\nhalf of."
+        },
+        "coreCommittedCpuCores": {
+          "type": "number",
+          "format": "double",
+          "description": "core_committed_cpu_cores is the sum of this host's CORE-ROLE containers'\ncommitted CPU (Postgres, Caddy, VictoriaMetrics, control plane, ... —\nthe platform's own processes), the half committed_cpu_cores leaves out.\nTogether with committed_cpu_cores and total_cpus it gives the full\ntenant / core / physical picture the admission gate reasons about only\nhalf of, so a saturated host is visible as such (#2284). 0 on the K8s\nruntime, like the other two."
+        },
+        "cpuAdmissionMode": {
+          "$ref": "#/definitions/CPUAdmissionMode",
+          "description": "cpu_admission_mode is the CPU overcommit admission gate's posture on\nthis backend (docs/CPU-CAPACITY-ADMISSION.md): disabled, advisory\n(logs what it would reject, admits everything) or enforcing. Surfaced so\na client can tell that a host past its ceiling is NOT being protected —\nadvisory mode otherwise fails silently (#2284). UNSPECIFIED means the\nbackend predates this field, not that the gate is off."
+        },
+        "cpuOvercommitFactor": {
+          "type": "number",
+          "format": "double",
+          "description": "cpu_overcommit_factor is the gate's configured ceiling multiple of\ntotal_cpus (the --cpu-overcommit-factor flag). 0 when the gate is\ndisabled. The ceiling in cores is total_cpus × cpu_overcommit_factor;\nthe host is over it when committed_cpu_cores exceeds that."
         }
       },
       "title": "SystemInfo contains information about the host system"

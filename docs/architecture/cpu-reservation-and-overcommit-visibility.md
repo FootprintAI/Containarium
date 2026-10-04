@@ -268,6 +268,16 @@ issue if the rolling-upgrade window's fleet-visibility gap is judged worth
 closing generally. `committed_cpu_cores` accepts the same transient
 blind spot every other field already carries.
 
+**Addendum (#2284).** The core-role exclusion above left the platform's own
+footprint invisible; `SystemInfo` now also carries `core_committed_cpu_cores`
+(the excluded half), the gate's posture as the `CPUAdmissionMode` enum and
+`cpu_overcommit_factor`, so a reader has tenant / core / physical and knows
+whether an over-ceiling host is being protected. `committed_cpu_cores` keeps
+its tenant-only meaning unchanged. The daemon logs a WARNING at start, and
+`containarium info` prints one, when the gate is advisory and the host is
+already past its ceiling. See docs/CPU-CAPACITY-ADMISSION.md, "Budgeting the
+platform's own CPU".
+
 ### C. Documentation: name the gate as the floor mechanism
 
 `docs/CPU-CAPACITY-ADMISSION.md` gains a short paragraph stating explicitly

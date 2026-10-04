@@ -47,6 +47,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `SystemInfo` reports the platform's own CPU commitment next to the tenant
+  one: new `core_committed_cpu_cores` (sum of core-role containers' `limits.cpu`),
+  the admission gate's posture as a `CPUAdmissionMode` enum (`DISABLED` /
+  `ADVISORY` / `ENFORCING`) and `cpu_overcommit_factor`; `committed_cpu_cores`
+  keeps its tenant-only meaning. `containarium info` prints a `CPU Budget:`
+  block (physical / tenant / core / gate) and the MCP `get_system_info` tool
+  prints the same. When the gate is advisory and tenant-committed cores already
+  exceed `total_cpus × factor`, the daemon logs one `[cpu-admission] WARNING:`
+  line at start and `containarium info` prints one, naming the ratio and that
+  the gate is not enforcing — advisory mode used to fail silently.
+  `docs/CPU-CAPACITY-ADMISSION.md` gains the headroom recipe
+  (`factor ≤ (total_cpus − core_committed) / total_cpus`) and the reserved
+  core-set option. Part of #2284.
 - `containarium code install --engine codex` installs OpenAI's Codex CLI
   (`@openai/codex`) on a box, parallel to the existing `claude`/`pi` engines
   (#2273). `code run`/`attach`/`status`/`stop` work with it transparently,

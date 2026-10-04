@@ -102,6 +102,70 @@ the network-policy engine was rolled out — observe first:
    with gRPC `ResourceExhausted` and a message naming the numbers; the caller
    can retry on a less-loaded backend/pool.
 
+## Budgeting the platform's own CPU (#2284)
+
+The gate budgets **tenant** CPU only. Core-role containers — Postgres, Caddy,
+VictoriaMetrics, the control plane, the security and OTel sidecars — are
+skipped by `committedCoresExcluding`, and `SystemInfo.committed_cpu_cores`
+applies the same exclusion. That is deliberate (it is the number a
+tenant-facing factor is sized against), but it means the factor alone says
+nothing about whether the platform's own processes still get CPU when
+tenants contend. One live 8-CPU host carried ~199 tenant cores against a 4×
+(32-core) advisory ceiling with 49 `would reject` lines in a day and blocked
+none; creates then stalled while the daemon and `incusd` were healthy but
+starved.
+
+Three things make that visible now:
+
+- **`SystemInfo` reports all three numbers**: `committed_cpu_cores` (tenant),
+  `core_committed_cpu_cores` (platform) and `total_cpus` (physical), plus the
+  gate's posture as the `CPUAdmissionMode` enum (`DISABLED` / `ADVISORY` /
+  `ENFORCING`) and `cpu_overcommit_factor`. `containarium info` prints them as
+  a `CPU Budget:` block; the MCP `get_system_info` tool prints the same.
+- **Advisory mode warns instead of failing silently.** When the gate is
+  advisory and tenant-committed cores already exceed `total_cpus × factor`,
+  the daemon logs one `[cpu-admission] WARNING:` line at start naming the
+  ratio and saying the gate is not enforcing, and `containarium info` prints
+  the same `WARNING:` line. Under the ceiling, or in enforcing / disabled
+  mode, the daemon logs a plain `CPU budget:` posture line and the CLI shows
+  the numbers without a warning.
+- **A headroom recipe.** The declared CPU is a real floor only when the gate
+  is enforced at a factor that leaves the platform's cores un-overcommitted:
+
+  ```
+  factor ≤ (total_cpus − core_committed_cpu_cores) / total_cpus
+  ```
+
+  Worked example: 8 logical CPUs, core containers committing 2 + 1 + 1 + 4 = 8
+  cores (the `core_services.go` defaults) → headroom factor 0: the platform
+  alone already covers the host, and *any* tenant commitment overcommits it.
+  Trim the core requests (or use a bigger host) until core-committed is well
+  under `total_cpus`; e.g. 16 CPUs with 4 core cores → factor ≤ 0.75. A factor
+  above that is a ceiling, not a floor (see "When a declared CPU is a real
+  floor" above), and should be described as such.
+
+### Optional: a reserved core set for platform containers
+
+For an absolute floor rather than a budget, pin the core-role containers to a
+CPU set with the existing `limits.cpu` range notation and keep tenants off
+those cores:
+
+```
+incus config set core-postgres limits.cpu 0-1        # platform on cores 0–1
+containarium create alice --cpu 2-7                   # tenants on the rest
+```
+
+`incus.CommittedCores` counts a range by its width (`0-1` → 2 cores), so the
+budget numbers above stay correct. The pin is only a floor if **every** tenant
+on the host is kept off the reserved cores — a fleet-wide setting, not a
+per-box one; a single tenant left on `limits.cpu: 8` (any 8 cores) shares the
+reserved set and the floor is partial. Document the convention for the host
+and verify it with `containarium info`'s core-committed line.
+
+The host daemons themselves (`incusd`, `containarium`) are protected
+separately, by a systemd `CPUWeight=` drop-in installed with the daemon unit
+(see the host-protection section once #2284's second part lands).
+
 ## Semantics and scope
 
 - **Per-host, and it composes with pools.** The gate runs on the daemon that

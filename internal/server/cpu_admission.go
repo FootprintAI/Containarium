@@ -9,6 +9,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/footprintai/containarium/pkg/core/incus"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // cpuReservationTTL bounds how long an admitted request's reservation
@@ -310,4 +311,82 @@ func committedTenantCores(containers []incus.ContainerInfo, skip func(c *incus.C
 		sum += incus.CommittedCores(c.CPU)
 	}
 	return sum
+}
+
+// cpuAdmissionMode is the gate's posture as a typed value (#2284): the
+// factor decides whether the gate runs at all, and only then does enforce
+// decide whether it rejects or merely logs.
+func (s *ContainerServer) cpuAdmissionMode() incus.CPUAdmissionMode {
+	switch {
+	case s.cpuOvercommitFactor <= 0:
+		return incus.CPUAdmissionDisabled
+	case s.cpuOvercommitEnforce:
+		return incus.CPUAdmissionEnforcing
+	default:
+		return incus.CPUAdmissionAdvisory
+	}
+}
+
+// cpuBudget assembles the host's CPU budget (#2284) from an already-fetched
+// container list and core count, so GetSystemInfo reuses the list it has
+// rather than re-reading Incus. The tenant half is committedTenantCores —
+// the same summation committed_cpu_cores and the admission gate use — and
+// the core half is the complement the gate deliberately skips.
+func (s *ContainerServer) cpuBudget(containers []incus.ContainerInfo, physical float64) incus.CPUBudget {
+	factor := s.cpuOvercommitFactor
+	if factor < 0 {
+		factor = 0
+	}
+	return incus.CPUBudget{
+		PhysicalCPUs:         physical,
+		TenantCommittedCores: committedTenantCores(containers, nil),
+		CoreCommittedCores:   incus.CoreCommittedCores(containers),
+		OvercommitFactor:     factor,
+		AdmissionMode:        s.cpuAdmissionMode(),
+	}
+}
+
+// cpuBudgetPostureLine reads the host and renders the one boot-time line
+// LogCPUBudgetPosture prints: a WARNING when the gate is advisory and the
+// host is already past its ceiling (the posture that otherwise fails
+// silently — #2284 gap 4), a plain budget line otherwise. Read failures
+// degrade to "unknown" numbers and never to a warning, mirroring the
+// gate's own fail-open rule.
+func (s *ContainerServer) cpuBudgetPostureLine() (line string, warn bool) {
+	physical, err := s.hostPhysicalCores()
+	if err != nil {
+		physical = 0
+	}
+	containers, err := s.manager.List()
+	if err != nil {
+		return fmt.Sprintf("[cpu-admission] CPU budget unknown (container list failed: %v)", err), false
+	}
+	b := s.cpuBudget(containers, physical)
+	if msg, ok := b.AdvisoryWarning(); ok {
+		return "[cpu-admission] WARNING: " + msg, true
+	}
+	return fmt.Sprintf("[cpu-admission] CPU budget: %.2f tenant + %.2f core cores committed on %.0f logical CPUs (tenant %.2f×); gate %s factor=%.2f× ceiling=%.2f cores",
+		b.TenantCommittedCores, b.CoreCommittedCores, b.PhysicalCPUs, b.TenantRatio(), b.AdmissionMode, b.OvercommitFactor, b.Ceiling()), false
+}
+
+// LogCPUBudgetPosture logs the host's CPU budget once at daemon start so an
+// advisory gate on an already-over-ceiling host is visible in the journal,
+// not only one "would reject" line per create (#2284).
+func (s *ContainerServer) LogCPUBudgetPosture() {
+	line, _ := s.cpuBudgetPostureLine()
+	log.Print(line)
+}
+
+// cpuAdmissionModeToProto maps the runtime posture onto the wire enum.
+func cpuAdmissionModeToProto(m incus.CPUAdmissionMode) pb.CPUAdmissionMode {
+	switch m {
+	case incus.CPUAdmissionDisabled:
+		return pb.CPUAdmissionMode_CPU_ADMISSION_MODE_DISABLED
+	case incus.CPUAdmissionAdvisory:
+		return pb.CPUAdmissionMode_CPU_ADMISSION_MODE_ADVISORY
+	case incus.CPUAdmissionEnforcing:
+		return pb.CPUAdmissionMode_CPU_ADMISSION_MODE_ENFORCING
+	default:
+		return pb.CPUAdmissionMode_CPU_ADMISSION_MODE_UNSPECIFIED
+	}
 }
