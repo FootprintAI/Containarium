@@ -872,18 +872,16 @@ const lineageRecordTimeout = 10 * time.Second
 // detached from the caller's cancellation — RecordChild's create callback
 // and CreateTrackerIssue's operator path both use it.
 //
-// It is the one budget for an upstream create: the adapters' default
-// HTTP client timeout (DefaultHTTPTimeout) is set from it, so neither
-// fires before the other (#2045). Whichever fires, the result is the
-// same ambiguous timeout (IsAmbiguousUpstreamError).
+// It is the budget for an upstream create request: the GitHub and GitLab
+// adapters run CreateIssue under it, not under their general client
+// timeout (#2045). Whichever fires, the result is the same ambiguous
+// timeout (IsAmbiguousUpstreamError).
 const UpstreamCreateTimeout = 30 * time.Second
 
 // DefaultHTTPTimeout is the timeout of the HTTP client the GitHub and
-// GitLab adapters build when none is passed in. It must not be shorter
-// than UpstreamCreateTimeout (#2045): before that was pinned, a 10s client
-// timeout always fired first, so a forge that accepted a create but
-// answered slowly failed long before the detached create budget ran out.
-const DefaultHTTPTimeout = UpstreamCreateTimeout
+// GitLab adapters build when none is passed in, for every call except
+// issue creates (which use UpstreamCreateTimeout).
+const DefaultHTTPTimeout = 10 * time.Second
 
 // ErrUpstreamOutcomeUnknown marks an upstream create whose request was
 // sent but whose answer never arrived in time (#2045): the issue may or

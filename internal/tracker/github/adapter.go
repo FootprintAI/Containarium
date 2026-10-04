@@ -21,7 +21,8 @@ const defaultAPIBase = "https://api.github.com"
 
 // Adapter talks to the GitHub REST API.
 type Adapter struct {
-	http *http.Client
+	http   *http.Client
+	create *http.Client
 }
 
 var _ tracker.CredentialDescriber = (*Adapter)(nil)
@@ -31,9 +32,13 @@ var _ tracker.CredentialDescriber = (*Adapter)(nil)
 // your own for custom transport (tracing, retries).
 func New(httpClient *http.Client) *Adapter {
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: tracker.DefaultHTTPTimeout}
+		return &Adapter{
+			http:   tracker.WithSameOriginRedirects(&http.Client{Timeout: tracker.DefaultHTTPTimeout}),
+			create: tracker.WithSameOriginRedirects(&http.Client{Timeout: tracker.UpstreamCreateTimeout}),
+		}
 	}
-	return &Adapter{http: tracker.WithSameOriginRedirects(httpClient)}
+	client := tracker.WithSameOriginRedirects(httpClient)
+	return &Adapter{http: client, create: client}
 }
 
 // DescribeCredential reports what the credential can do, per the design
