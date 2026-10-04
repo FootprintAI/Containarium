@@ -194,6 +194,31 @@ func (e codexEngine) RunCommand(prompt string, streamJSON, continueSession bool,
 	return cmd + " " + shellQuoteSingle(prompt)
 }
 
+// codexCredentialStatusScript probes for a codex credential by NAME only
+// (#2277), the same posture as claudeCredentialStatusScript/
+// piCredentialStatusScript: codex's own sign-in (`codex login` /
+// `codex login --device-auth`) caches `~/.codex/auth.json`, which is this
+// engine's "interactive"; CODEX_API_KEY or OPENAI_API_KEY visible to the
+// box's shell environment — the two names `codex exec` itself reads
+// directly, per developers.openai.com/codex/environment-variables — is
+// "api-key"; anything else is "none". Interactive is checked first, so a
+// box with both a sign-in and a leftover env var still reports interactive,
+// the same priority VerifyScript's own multi-line report lists in.
+//
+// #nosec G101 -- this is a shell script that checks for the PRESENCE of
+// ~/.codex/auth.json and the NAMES of two env vars (CODEX_API_KEY,
+// OPENAI_API_KEY) — it never contains, reads, or echoes a credential
+// value. Same rationale as claudeCredentialStatusScript's annotation above.
+const codexCredentialStatusScript = `if [ -f "` + codexHome + `/auth.json" ]; then
+  echo interactive
+  exit 0
+fi
+if [ -n "$CODEX_API_KEY" ] || [ -n "$OPENAI_API_KEY" ]; then
+  echo api-key
+  exit 0
+fi
+echo none`
+
 // runPrefix is the env-loading prefix for this box's credential source,
 // matching pi's shape: a gateway credential sources codex's own gateway.env
 // (not yet reachable from the cmd layer — see the type doc comment); a

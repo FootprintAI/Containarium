@@ -60,6 +60,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/CPU-CAPACITY-ADMISSION.md` gains the headroom recipe
   (`factor ≤ (total_cpus − core_committed) / total_cpus`) and the reserved
   core-set option. Part of #2284.
+- `containariumd service install` (and so `hacks/install.sh`, `setup-peer.sh`
+  and `pool join`) now gives the platform's own daemons a CPU weight well above
+  the tenant default: `CPUWeight=1000` inline in `containarium.service`, the
+  same as a drop-in at `/etc/systemd/system/incus.service.d/50-containarium-cpu-weight.conf`,
+  and `systemctl set-property --runtime incus.service CPUWeight=1000` so the
+  running `incusd` picks it up without a restart. `containarium doctor` gains
+  the non-blocking posture check **platform daemons CPU weight**, which reads
+  the effective `cpu.weight` of both units' cgroups. Closes #2284.
 - `containarium code install --engine codex` installs OpenAI's Codex CLI
   (`@openai/codex`) on a box, parallel to the existing `claude`/`pi` engines
   (#2273). `code run`/`attach`/`status`/`stop` work with it transparently,
