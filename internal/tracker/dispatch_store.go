@@ -39,8 +39,12 @@ type Dispatch struct {
 	// Failure is the typed cause of a FAILED row (#2026); UNSPECIFIED
 	// otherwise.
 	Failure pb.TrackerDispatchFailure
-	// LabelsPending is set when the forge label write that projects
-	// State failed; the retry is #2026's.
+	// LabelsPending is set when the forge may not show State yet: a
+	// projection failed, or the row is terminal and its projection has
+	// not landed (set with the terminal transition, cleared once it
+	// lands). An issue whose latest row is terminal and pending is never
+	// dispatched again, and every tick retries the projection (#2047,
+	// #2052).
 	LabelsPending bool
 	// CreatedAt is when the row was inserted — immediately before the
 	// issue is labelled agent:queued, so it is the "label applied" end of
@@ -252,7 +256,8 @@ func (s *Store) InsertDispatch(ctx context.Context, d Dispatch) (*Dispatch, erro
 // row from `from` to `to` only if it is still in `from`. A lost race (or
 // an unknown id) returns (false, nil) — never a double transition.
 // Entering RUNNING stamps started_at; entering DONE/FAILED stamps
-// ended_at. reason, when non-empty, is recorded as failure_reason.
+// ended_at and sets labels_pending (see FailDispatch). reason, when
+// non-empty, is recorded as failure_reason.
 func (s *Store) TransitionDispatch(ctx context.Context, id string, from, to pb.TrackerDispatchState, reason string, at time.Time) (bool, error) {
 	if !validDispatchTransition(from, to) {
 		return false, fmt.Errorf("%w: %v -> %v", ErrInvalidDispatchTransition, from, to)
@@ -270,7 +275,8 @@ func (s *Store) TransitionDispatch(ctx context.Context, id string, from, to pb.T
 			state          = $3,
 			started_at     = CASE WHEN $3 = 'running' THEN $4::timestamptz ELSE started_at END,
 			ended_at       = CASE WHEN $3 IN ('done', 'failed') THEN $4::timestamptz ELSE ended_at END,
-			failure_reason = CASE WHEN $5 <> '' THEN $5 ELSE failure_reason END
+			failure_reason = CASE WHEN $5 <> '' THEN $5 ELSE failure_reason END,
+			labels_pending = CASE WHEN $3 IN ('done', 'failed') THEN true ELSE labels_pending END
 		WHERE id = $1 AND state = $2
 	`
 	tag, err := s.pool.Exec(ctx, q, id, fromStr, toStr, at, reason)
@@ -286,6 +292,13 @@ func (s *Store) TransitionDispatch(ctx context.Context, id string, from, to pb.T
 // failure. A lost race returns (false, nil), so of any number of
 // concurrent failers (a timeout sweep, the run's own end, a peer
 // dispatcher) exactly one reports the failure.
+//
+// Entering a terminal state sets labels_pending in the same write
+// (#2047, #2052): the forge does not show the row's state until the
+// projection lands and clears it. So a terminal row is never
+// unprojected yet not pending, and a tick that races the projection —
+// or runs after it failed — sees the flag and does not dispatch the
+// issue again.
 func (s *Store) FailDispatch(ctx context.Context, id string, from pb.TrackerDispatchState, failure pb.TrackerDispatchFailure, reason string, at time.Time) (bool, error) {
 	if !validDispatchTransition(from, pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_FAILED) {
 		return false, fmt.Errorf("%w: %v -> FAILED", ErrInvalidDispatchTransition, from)
@@ -299,7 +312,7 @@ func (s *Store) FailDispatch(ctx context.Context, id string, from pb.TrackerDisp
 		return false, err
 	}
 	const q = `
-		UPDATE tracker_dispatches SET state = 'failed', ended_at = $3, failure_reason = $4, failure = $5
+		UPDATE tracker_dispatches SET state = 'failed', ended_at = $3, failure_reason = $4, failure = $5, labels_pending = true
 		WHERE id = $1 AND state = $2
 	`
 	tag, err := s.pool.Exec(ctx, q, id, fromStr, at, reason, failureStr)
@@ -390,6 +403,57 @@ func (s *Store) ListDispatches(ctx context.Context, username, connection string,
 		return nil, fmt.Errorf("iterate tracker dispatch rows: %w", err)
 	}
 	return out, nil
+}
+
+// ListLabelsPendingDispatches returns the connection's terminal rows
+// whose projection has not landed (labels_pending), newest first — only
+// rows that are still their issue's latest: a newer generation owns the
+// issue's labels, so an older row is never projected over it.
+func (s *Store) ListLabelsPendingDispatches(ctx context.Context, username, connection string) ([]Dispatch, error) {
+	q := `SELECT ` + dispatchColumns + ` FROM tracker_dispatches d
+		WHERE d.username = $1 AND d.connection = $2 AND d.labels_pending AND d.state IN ('done', 'failed')
+		  AND NOT EXISTS (
+			SELECT 1 FROM tracker_dispatches n
+			WHERE n.username = d.username AND n.connection = d.connection
+			  AND n.issue_number = d.issue_number AND n.seq > d.seq)
+		ORDER BY d.seq DESC`
+	rows, err := s.pool.Query(ctx, q, username, connection)
+	if err != nil {
+		return nil, fmt.Errorf("list labels-pending tracker dispatches: %w", err)
+	}
+	defer rows.Close()
+	var out []Dispatch
+	for rows.Next() {
+		d, err := scanDispatch(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan tracker dispatch row: %w", err)
+		}
+		out = append(out, *d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate tracker dispatch rows: %w", err)
+	}
+	return out, nil
+}
+
+// PriorDispatchLabelsPending reports whether the issue's newest row
+// other than excludeID is terminal with labels_pending — the tick's
+// check, after it won the insert, that the previous generation's state
+// has actually reached the forge (#2047, #2052).
+func (s *Store) PriorDispatchLabelsPending(ctx context.Context, username, connection string, issue int64, excludeID string) (bool, error) {
+	const q = `
+		SELECT state IN ('done', 'failed') AND labels_pending FROM tracker_dispatches
+		WHERE username = $1 AND connection = $2 AND issue_number = $3 AND id <> $4
+		ORDER BY seq DESC LIMIT 1
+	`
+	var pending bool
+	if err := s.pool.QueryRow(ctx, q, username, connection, issue, excludeID).Scan(&pending); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read prior tracker dispatch: %w", err)
+	}
+	return pending, nil
 }
 
 // RecordDispatchWarning records that the unrouted-scope warning for
