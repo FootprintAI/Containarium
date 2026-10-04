@@ -7374,7 +7374,7 @@
       },
       "post": {
         "summary": "Create a tracker issue",
-        "description": "Files an issue on the connection's tracker — the follow-up verb for issue-triggered role agents. Labels must pass the connection's label allow-list (checked before any upstream call). A run-scoped token must name a parent issue: the child is recorded in the issue lineage (depth and per-run fan-out are capped by the connection policy), gets agent:needs-approval unless the policy enables auto_chain, and its body ends with the parent link and the run's identity stamp; the parent gets one back-link comment. Requires tracker:write.",
+        "description": "Files an issue on the connection's tracker — the follow-up verb for issue-triggered role agents. Labels must pass the connection's label allow-list (checked before any upstream call). A run-scoped token must name a parent issue: the child is recorded in the issue lineage (depth and per-run fan-out are capped by the connection policy), gets agent:needs-approval unless the policy enables auto_chain, and its body ends with the parent link and the run's identity stamp; the parent gets one back-link comment. If the tracker does not answer the create in time, the outcome is unknown (the issue may already exist upstream): the call fails with code UNKNOWN and a message starting UPSTREAM_CREATE_OUTCOME_UNKNOWN, the attempt is audited, and for a run it keeps counting against max_children_per_run — do not retry blindly; check the tracker for the issue first. Requires tracker:write.",
         "operationId": "TrackerService_CreateTrackerIssue",
         "responses": {
           "200": {

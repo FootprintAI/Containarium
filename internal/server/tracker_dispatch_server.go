@@ -72,12 +72,20 @@ func (s *ContainerServer) DispatchTrackerIssues(ctx context.Context, req *pb.Dis
 	// after a chain was filed still stops the deeper issues (#2025). The
 	// same value's RunTimeout also bounds the sweep below (#2026).
 	policy := tracker.PolicyFromProto(record.Policy)
+
+	// The credential resolved above only proves it resolves before any
+	// write; every forge call — including RunEnded and the sweep, up to
+	// the run timeout after this tick — resolves it again through the
+	// secrets store, so a rotated or short-lived credential is never
+	// reused stale (#2269).
 	d := &tracker.Dispatcher{
-		Store:    s.trackerStore,
-		Provider: provider,
-		Conn:     conn,
-		Runs:     s.trackerRunStarter,
-		Clock:    tracker.SystemClock,
+		Store:            s.trackerStore,
+		Provider:         provider,
+		Conn:             conn,
+		Credentials:      s.secretsStore,
+		CredentialSecret: record.CredentialSecret,
+		Runs:             s.trackerRunStarter,
+		Clock:            tracker.SystemClock,
 		// The run's workspace is the connection's own repository, built
 		// from the connection record like SubmitTrackerChange's push
 		// target — never from the issue or the box (#2023).
