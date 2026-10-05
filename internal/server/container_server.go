@@ -32,6 +32,7 @@ import (
 	"github.com/footprintai/containarium/internal/secrets"
 	"github.com/footprintai/containarium/internal/tracker"
 	"github.com/footprintai/containarium/internal/tracker/submit"
+	"github.com/footprintai/containarium/pkg/core/backup"
 	"github.com/footprintai/containarium/pkg/core/box"
 	boxlxc "github.com/footprintai/containarium/pkg/core/box/lxc"
 	"github.com/footprintai/containarium/pkg/core/container"
@@ -152,6 +153,11 @@ type ContainerServer struct {
 	coreServices       *CoreServices
 	daemonConfigStore  daemonConfigKV
 	peerPool           *PeerPool
+	// backupMgr is the backup core's read side, wired in for the metrics
+	// export collector's backup-health series (set by DualServer after
+	// setup, #2294) — nil-safe like peerPool/alertStore above. Not used
+	// for anything but SetBackupManager's seam into serverPlatformSources.
+	backupMgr *backup.Manager
 	// Cloud-native metrics export (#1069). metricsExportMu guards the
 	// in-memory config so SetMetricsExport/GetMetricsExport round-trip
 	// without a daemon restart; daemonConfigStore (when present) makes
@@ -4070,6 +4076,15 @@ func extractAuthToken(ctx context.Context) string {
 // SetPeerPool sets the peer pool for multi-backend support
 func (s *ContainerServer) SetPeerPool(pool *PeerPool) {
 	s.peerPool = pool
+}
+
+// SetBackupManager wires the backup core's read side in for the metrics
+// export collector's backup-health series (#2294). Called once from
+// DualServer setup, after NewBackupServer exists, via its Manager()
+// getter — BackupServer depends on ContainerServer, not the reverse, so
+// this is the only way the two ever connect.
+func (s *ContainerServer) SetBackupManager(mgr *backup.Manager) {
+	s.backupMgr = mgr
 }
 
 // SetStartTime wires the daemon's process start time so ListBackends can
