@@ -301,6 +301,31 @@ The service exits non-zero if **any** tenant fails, so a monitoring check on
 total failures. Alert on **absence** too — a timer that was disabled emits
 no failure line, only silence.
 
+**This check is host-local — it fate-shares with the host it watches**
+(#2294). If the box itself dies or wedges, there is no process left to
+run `is-failed` at all: silence, not a page. Found operationally: a set
+of tenants ran this exact mechanism for roughly a week with nobody
+watching it, host-local or otherwise, and the failure that actually
+occurred (encrypting to a dead key — see `backup verify
+--age-identity-file` above) wouldn't have shown up here even if someone
+had been watching, since the service genuinely exited 0 every night.
+
+Treat `is-failed` as the cheap first layer, not the whole story. The
+out-of-band supplement is the metrics-export backup-health series
+(`containarium monitoring export enable`, if not already on for other
+reasons) — one gauge per tenant, recomputed from this same on-disk
+index at every export tick. Its actual coverage is narrower than "the
+host died": a gauge nobody is re-observing simply freezes at its last
+reported value rather than climbing past any threshold, so a genuinely
+dead host is still the existing `containarium.export.heartbeat`
+dead-man alert's job, not this one. What this series catches that
+*neither* `is-failed` *nor* the heartbeat can is the host and daemon
+staying perfectly healthy while the backup schedule itself silently
+breaks. See `docs/METRICS-EXPORT-DEADMAN-ALERT-RUNBOOK.md`'s
+"Backup-health alert" section for the metric, its actual scope, and a
+ready-to-use alert policy — and keep the heartbeat policy configured
+alongside it for host-death coverage.
+
 For a tighter RPO than "nightly," add Postgres WAL archiving inside the
 container (`archive_command` → GCS) on top of these base dumps; that gives
 point-in-time recovery with an RPO of minutes, still cheaply.
