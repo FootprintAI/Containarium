@@ -698,7 +698,12 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// GCS). Orchestration over the container manager; the GCS uploader is
 	// best-effort (LOCAL-only if `gcloud` is absent). See
 	// docs/DB-BACKUP-OPERATIONS.md.
-	pb.RegisterBackupServiceServer(grpcServer, NewBackupServer(containerServer))
+	backupServer := NewBackupServer(containerServer)
+	pb.RegisterBackupServiceServer(grpcServer, backupServer)
+	// Metrics export's backup-health series (#2294) reads the same
+	// backup core backupServer orchestrates — wired here since
+	// BackupServer depends on ContainerServer, not the reverse.
+	containerServer.SetBackupManager(backupServer.Manager())
 	log.Printf("Backup service enabled")
 
 	// Register VolumeService — shared, multi-writer CephFS volumes (#384).
@@ -1095,6 +1100,9 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 			} else {
 				containerServer.SetTrackerStore(trkStore)
 				agentSkillServer.SetTrackerConnections(trkStore)
+				// #2062: a run's leftover fan-out reservations are swept
+				// when its lease ends.
+				agentSkillServer.SetLineageReservations(trkStore)
 				// #2022: dispatched runs start through the RunAgentSkill path.
 				containerServer.SetTrackerRunStarter(NewTrackerRunStarter(agentSkillServer))
 				pb.RegisterTrackerServiceServer(grpcServer, containerServer)
@@ -2910,6 +2918,11 @@ func (ds *DualServer) Start(ctx context.Context) error {
 				mode = "enforcing"
 			}
 			log.Printf("[cpu-admission] CPU overcommit gate enabled: factor=%.2f× mode=%s", ds.config.CPUOvercommitFactor, mode)
+			// One budget line at boot (#2284): an advisory gate on a host
+			// already past its ceiling must say so up front, not only one
+			// "would reject" line per create. Off the boot path — it reads
+			// Incus, and a slow Incus must not delay the daemon coming up.
+			go ds.containerServer.LogCPUBudgetPosture()
 		}
 
 		// Integrity self-measurement posture (#683): the policy/config state the

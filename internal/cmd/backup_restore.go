@@ -102,6 +102,9 @@ func runBackupRestore(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("%s: %w", backupRestoreAgeIdentityFile, err)
 		}
+		if err := requireSecureTransportForIdentity(serverAddr, httpMode, insecure); err != nil {
+			return err
+		}
 	}
 
 	c, err := newBackupClientFn()

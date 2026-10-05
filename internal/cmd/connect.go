@@ -222,7 +222,7 @@ func runConnect(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if !connectcore.IsRunning(c.State) {
-		return fmt.Errorf("box %q is %s, not running — start it first (`containarium start %s`)",
+		return fmt.Errorf("box %q is %s, not running — start it first (`containarium wake %s`)",
 			box, connectcore.PrettyState(c.State), box)
 	}
 	target, err := connectcore.BuildTarget(c, connectUser, connectHost, connectPort)

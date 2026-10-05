@@ -32,6 +32,7 @@ import (
 	"github.com/footprintai/containarium/internal/secrets"
 	"github.com/footprintai/containarium/internal/tracker"
 	"github.com/footprintai/containarium/internal/tracker/submit"
+	"github.com/footprintai/containarium/pkg/core/backup"
 	"github.com/footprintai/containarium/pkg/core/box"
 	boxlxc "github.com/footprintai/containarium/pkg/core/box/lxc"
 	"github.com/footprintai/containarium/pkg/core/container"
@@ -152,6 +153,11 @@ type ContainerServer struct {
 	coreServices       *CoreServices
 	daemonConfigStore  daemonConfigKV
 	peerPool           *PeerPool
+	// backupMgr is the backup core's read side, wired in for the metrics
+	// export collector's backup-health series (set by DualServer after
+	// setup, #2294) — nil-safe like peerPool/alertStore above. Not used
+	// for anything but SetBackupManager's seam into serverPlatformSources.
+	backupMgr *backup.Manager
 	// Cloud-native metrics export (#1069). metricsExportMu guards the
 	// in-memory config so SetMetricsExport/GetMetricsExport round-trip
 	// without a daemon restart; daemonConfigStore (when present) makes
@@ -3107,6 +3113,14 @@ func (s *ContainerServer) GetSystemInfo(ctx context.Context, req *pb.GetSystemIn
 		// via committedTenantCores — one summation shared by both, not two.
 		CommittedCpuCores: committedTenantCores(containers, nil),
 	}
+	// The rest of the CPU budget (#2284): the platform's own core-role
+	// commitment next to the tenant one, and the gate's posture so a
+	// reader can tell whether being over the ceiling is being acted on.
+	// Same container list, one assembly shared with the boot-time log.
+	budget := s.cpuBudget(containers, float64(sysResources.TotalCPUs))
+	info.CoreCommittedCpuCores = budget.CoreCommittedCores
+	info.CpuAdmissionMode = cpuAdmissionModeToProto(budget.AdmissionMode)
+	info.CpuOvercommitFactor = budget.OvercommitFactor
 
 	// The storage pool backing this backend's containers, and whether it
 	// isolates tenant volumes (#1209). Left null when the pool can't be read:
@@ -4062,6 +4076,15 @@ func extractAuthToken(ctx context.Context) string {
 // SetPeerPool sets the peer pool for multi-backend support
 func (s *ContainerServer) SetPeerPool(pool *PeerPool) {
 	s.peerPool = pool
+}
+
+// SetBackupManager wires the backup core's read side in for the metrics
+// export collector's backup-health series (#2294). Called once from
+// DualServer setup, after NewBackupServer exists, via its Manager()
+// getter — BackupServer depends on ContainerServer, not the reverse, so
+// this is the only way the two ever connect.
+func (s *ContainerServer) SetBackupManager(mgr *backup.Manager) {
+	s.backupMgr = mgr
 }
 
 // SetStartTime wires the daemon's process start time so ListBackends can

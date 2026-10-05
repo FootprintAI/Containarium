@@ -154,6 +154,39 @@ func TestMintedAgentTokenScopes_TrackerAdminNeverGranted(t *testing.T) {
 	})
 }
 
+// TestMintedAgentTokenScopes_TokensDelegateNeverGranted is #2069: a run
+// token holding tokens:delegate could call ExchangeDelegatedToken and mint a
+// token with no run_id, which skips every run-token guard (#2060's lineage
+// binding, #2112's taskRunID) because they all apply only `if runID != ""`.
+// No shipped skill grants it, but a custom skill (CONTAINARIUM_SKILLS_DIR)
+// could — so it is stripped at mint the same way tracker:admin is.
+func TestMintedAgentTokenScopes_TokensDelegateNeverGranted(t *testing.T) {
+	skill := &pb.AgentSkill{
+		Id:            "custom-delegating-skill",
+		AllowedScopes: []string{auth.ScopeContainersRead, auth.ScopeTokensDelegate},
+	}
+
+	t.Run("unrestricted caller", func(t *testing.T) {
+		ctx := auth.ContextWithTestSubjectScopes(context.Background(), "some-caller", nil, nil)
+		got := mintedAgentTokenScopes(ctx, skill)
+		if slices.Contains(got, auth.ScopeTokensDelegate) {
+			t.Fatalf("mintedAgentTokenScopes = %v, must never carry tokens:delegate", got)
+		}
+		if !slices.Contains(got, auth.ScopeContainersRead) {
+			t.Fatalf("mintedAgentTokenScopes = %v, want containers:read still granted (only tokens:delegate is stripped)", got)
+		}
+	})
+
+	t.Run("caller explicitly holds tokens:delegate", func(t *testing.T) {
+		ctx := auth.ContextWithTestSubjectScopes(context.Background(), "some-caller", nil,
+			[]string{auth.ScopeContainersRead, auth.ScopeTokensDelegate})
+		got := mintedAgentTokenScopes(ctx, skill)
+		if slices.Contains(got, auth.ScopeTokensDelegate) {
+			t.Fatalf("mintedAgentTokenScopes = %v, must never carry tokens:delegate even when the caller holds it", got)
+		}
+	})
+}
+
 // TestSendAgentTaskRequiresCallScope confirms the agents:call gate.
 func TestSendAgentTaskRequiresCallScope(t *testing.T) {
 	s := &AgentSkillServer{catalog: skills.GetDefault()}

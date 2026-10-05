@@ -44,6 +44,15 @@ const (
 	// NamePi is pi (https://pi.dev, @earendil-works/pi-coding-agent), a
 	// local-first agent that runs inside the box. See docs/integrations/pi.md.
 	NamePi Name = "pi"
+	// NameCodex is OpenAI's Codex CLI (https://developers.openai.com/codex/cli,
+	// npm package @openai/codex) — #2273, parallel to claude and pi. A
+	// DIFFERENT vocabulary from pkg/pb's AGENT_ENGINE_CODEX / internal/agentengine
+	// (which routes an already-running in-box SKILL to the model gateway's
+	// "openai" provider): this package only ever lands a CLI toolchain on a
+	// box for `code run`/`attach`/`status`/`stop` to drive, same as claude and
+	// pi. See codex.go's doc comment for what was verified about its
+	// install/run/auth shape and what was not.
+	NameCodex Name = "codex"
 )
 
 // DefaultName is what --engine resolves to when the flag is absent.
@@ -137,6 +146,8 @@ func For(n Name, opts Options) (Engine, error) {
 		return claudeEngine{opts: opts}, nil
 	case NamePi:
 		return piEngine{opts: opts}, nil
+	case NameCodex:
+		return codexEngine{opts: opts}, nil
 	default:
 		return nil, fmt.Errorf("unknown engine %q (one of: %s)", n, strings.Join(Names(), ", "))
 	}
@@ -144,7 +155,7 @@ func For(n Name, opts Options) (Engine, error) {
 
 // Names lists every engine --engine accepts, for flag help and error messages.
 func Names() []string {
-	out := []string{string(NameClaude), string(NamePi)}
+	out := []string{string(NameClaude), string(NamePi), string(NameCodex)}
 	sort.Strings(out)
 	return out
 }
@@ -156,7 +167,7 @@ func Names() []string {
 // they typed "cluade" is not a recoverable mistake.
 func ParseName(s string) (Name, error) {
 	switch n := Name(strings.ToLower(strings.TrimSpace(s))); n {
-	case NameClaude, NamePi:
+	case NameClaude, NamePi, NameCodex:
 		return n, nil
 	default:
 		return "", fmt.Errorf("unknown engine %q (one of: %s)", s, strings.Join(Names(), ", "))

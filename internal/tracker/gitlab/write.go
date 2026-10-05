@@ -140,7 +140,7 @@ func (a *Adapter) CreateIssue(ctx context.Context, conn tracker.Conn, n tracker.
 	}{Title: n.Title, Description: n.Body, Labels: strings.Join(n.Labels, ",")}
 
 	var raw glIssue
-	if err := a.do(ctx, http.MethodPost, fmt.Sprintf("%s/projects/%s/issues", apiBase, projectPath),
+	if err := a.doCreate(ctx, http.MethodPost, fmt.Sprintf("%s/projects/%s/issues", apiBase, projectPath),
 		conn.Credential, reqBody, &raw); err != nil {
 		return tracker.Issue{}, err
 	}
