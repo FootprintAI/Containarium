@@ -29,6 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Tracker write audit rows now record the run id (#2043, #2168). The shared tracker-write audit helper
+  populates `AuditEntry.RunID` from the authenticated run claim, so `audit query --run-id <id>` finds the
+  comment, claim, label, issue-creation and submit-change rows a run produced. Operator calls carry no
+  run claim and leave the column empty rather than inheriting the username used for the visible stamp.
 - A busy host no longer becomes unplaceable because its health probe is slow (#2317). The local
   backend's liveness probe listed every instance and then asked Incus for its server info under a
   fixed 3s budget, failing closed, so on a host with many instances under CPU pressure a slow but
