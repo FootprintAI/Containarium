@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The `mcp-server` image's runtime stage now runs `apt-get upgrade -y`, like the daemon, sshpiper,
+  otel-sidecar, model-gateway and agent-box images, so it no longer ships `debian:bookworm-slim`'s
+  stale `libpcre2-8-0` (HIGH, fixed in `deb12u2`). No workflow publishes this image today; the
+  change protects anyone who builds it.
+
 ## [0.99.1] - 2026-10-05
 
 ### Fixed
