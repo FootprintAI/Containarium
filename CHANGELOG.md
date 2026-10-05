@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A hung Incus hardware scan no longer blocks container creation, `GetSystemInfo` or `ListBackends` (#2325).
+  Incus' `/1.0/resources` can stop answering on a saturated host, and the daemon read it through a client with no
+  timeout from the CPU admission gate (on every create, before the gate logged anything), `GetSystemInfo`,
+  `ListBackends` and the metrics collectors, so each blocked for as long as Incus did: boxes stayed `PENDING`,
+  `list_backends` timed out and the control plane reported the region as not serving. The read is now shared (one
+  in-flight request), bounded to a few seconds, and cached: the hardware-static values (CPU count, CPU model, memory
+  and disk totals, GPUs) are kept and served stale when a refresh fails, used memory and disk refresh about every 10
+  seconds, and the load averages are always read fresh. If Incus has never answered, the admission gate falls back to
+  the OS's logical CPU count. See `docs/CPU-CAPACITY-ADMISSION.md`.
+
 ## [0.99.2] - 2026-10-05
 
 ### Added
