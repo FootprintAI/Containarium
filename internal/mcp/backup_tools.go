@@ -150,6 +150,10 @@ func backupTools() []Tool {
 						"type":        "string",
 						"description": "Postgres password on the target. Omit for peer/trust auth.",
 					},
+					"age_identity_file": map[string]interface{}{
+						"type":        "string",
+						"description": "Path (on the MCP host) to the age identity file (AGE-SECRET-KEY-1...) for a backup created with age_recipient. Required to verify an encrypted record at all; the platform holds no decryption key. A WRONG identity is reported as a failed check, not a tool error — that is exactly the gap this tool closes: a backup can report success while being encrypted to a key nobody holds, and only an attempted decrypt reveals that. Read from the file so the private key never appears in tool arguments; used for this one call, never stored.",
+					},
 				},
 				"required": []string{"id", "target_username"},
 			},
@@ -251,9 +255,21 @@ func handleRestoreBackup(client API, args map[string]interface{}) (string, error
 }
 
 func handleVerifyBackup(client API, args map[string]interface{}) (string, error) {
+	var ageIdentity string
+	if path := getStringArg(args, "age_identity_file", ""); path != "" {
+		content, err := os.ReadFile(path) // #nosec G304 -- operator-named identity file, read on the MCP host
+		if err != nil {
+			return "", fmt.Errorf("read age identity file: %w", err)
+		}
+		ageIdentity, err = parseAgeIdentityFile(content)
+		if err != nil {
+			return "", fmt.Errorf("%s: %w", path, err)
+		}
+	}
 	resp, err := client.VerifyBackup(VerifyBackupRequest{
 		ID:             getStringArg(args, "id", ""),
 		TargetUsername: getStringArg(args, "target_username", ""),
+		AgeIdentity:    ageIdentity,
 		Connection: &PgConnectionBody{
 			Password: getStringArg(args, "db_password", ""),
 		},

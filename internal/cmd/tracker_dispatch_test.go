@@ -55,6 +55,7 @@ func TestValidateDispatchFlags(t *testing.T) {
 		once            bool
 		interval        time.Duration
 		intervalChanged bool
+		maxStarts       int32
 		wantErr         string
 	}{
 		{name: "default loop", interval: 60 * time.Second},
@@ -62,10 +63,12 @@ func TestValidateDispatchFlags(t *testing.T) {
 		{name: "explicit interval", interval: 5 * time.Minute, intervalChanged: true},
 		{name: "once with interval", once: true, interval: time.Minute, intervalChanged: true, wantErr: "mutually exclusive"},
 		{name: "interval too short", interval: 100 * time.Millisecond, intervalChanged: true, wantErr: "at least"},
+		{name: "max starts", once: true, interval: time.Minute, maxStarts: 2},
+		{name: "negative max starts", once: true, interval: time.Minute, maxStarts: -1, wantErr: "--max-starts"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateDispatchFlags(tt.once, tt.interval, tt.intervalChanged)
+			err := validateDispatchFlags(tt.once, tt.interval, tt.intervalChanged, tt.maxStarts)
 			if tt.wantErr == "" {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
@@ -141,6 +144,49 @@ func TestTrackerDispatch_HTTPModeOnceHitsGatewayPath(t *testing.T) {
 	}
 	if !strings.Contains(out, "unrouted=1") || !strings.Contains(out, "over-depth=2") {
 		t.Errorf("output = %q, want the skip counts", out)
+	}
+}
+
+// --max-starts (#2270) is sent on the request, and the tick line reports
+// how many eligible issues it left for a later tick.
+func TestTrackerDispatch_MaxStartsPassesThrough(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"leftUndispatched":3}`)
+	}))
+	t.Cleanup(srv.Close)
+	oldServer, oldHTTP, oldToken := serverAddr, httpMode, authToken
+	oldOnce, oldMax := trackerDispatchOnce, trackerDispatchMaxStarts
+	t.Cleanup(func() {
+		serverAddr, httpMode, authToken = oldServer, oldHTTP, oldToken
+		trackerDispatchOnce, trackerDispatchMaxStarts = oldOnce, oldMax
+	})
+	serverAddr, httpMode, authToken = srv.URL, true, "tok"
+	trackerDispatchOnce, trackerDispatchMaxStarts = true, 2
+
+	out := captureStdout(t, func() {
+		if err := runTrackerDispatch(trackerDispatchCmd, []string{"alice", "default"}); err != nil {
+			t.Errorf("runTrackerDispatch: %v", err)
+		}
+	})
+	if !strings.Contains(gotBody, `"maxStarts":2`) {
+		t.Errorf("request body = %s, want maxStarts 2", gotBody)
+	}
+	if !strings.Contains(out, "left-undispatched=3") {
+		t.Errorf("output = %q, want the left-undispatched count", out)
+	}
+}
+
+func TestTrackerDispatch_NegativeMaxStartsRejected(t *testing.T) {
+	oldOnce, oldMax := trackerDispatchOnce, trackerDispatchMaxStarts
+	t.Cleanup(func() { trackerDispatchOnce, trackerDispatchMaxStarts = oldOnce, oldMax })
+	trackerDispatchOnce, trackerDispatchMaxStarts = true, -1
+	err := runTrackerDispatch(trackerDispatchCmd, []string{"alice", "default"})
+	if err == nil || !strings.Contains(err.Error(), "--max-starts") {
+		t.Fatalf("err = %v, want a --max-starts error before any request", err)
 	}
 }
 

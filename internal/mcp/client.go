@@ -657,6 +657,9 @@ type VerifyBackupRequest struct {
 	ID             string            `json:"id"`
 	TargetUsername string            `json:"target_username"`
 	Connection     *PgConnectionBody `json:"connection,omitempty"`
+	// AgeIdentity decrypts an encrypted record for this one call, same
+	// contract as RestoreBackupRequest.AgeIdentity (#1831, #2295).
+	AgeIdentity string `json:"age_identity,omitempty"`
 }
 
 // VerifyBackupResponse is the result of a restore test.

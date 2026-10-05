@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"sync"
 	"time"
 
@@ -572,7 +573,11 @@ func childrenCount(ctx context.Context, q lineageQuerier, username, connection, 
 //  2. call create — the caller's upstream call, which returns the new
 //     issue's number — with NO transaction or pool connection held;
 //  3. record: insert the lineage row and delete the reservation in one
-//     transaction; or, if create failed, delete the reservation.
+//     transaction; or, if create failed, delete the reservation — unless
+//     the failure leaves the outcome unknown (IsAmbiguousUpstreamError),
+//     in which case the reservation stays and the error wraps
+//     ErrUpstreamOutcomeUnknown, with the returned Lineage carrying the
+//     depth the child would have had (#2045).
 //
 // The guards therefore run BEFORE any upstream call, and a reservation
 // is counted exactly like a recorded child, so a cap cannot be raced past
@@ -622,6 +627,13 @@ func (s *Store) RecordChild(ctx context.Context, l Lineage, maxDepth, maxChildre
 	recCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), lineageRecordTimeout)
 	defer cancel()
 
+	if err != nil && IsAmbiguousUpstreamError(err) {
+		// The request was sent but no answer came back in time: the issue
+		// may exist upstream (#2045). Keep the slot claimed so a retry is
+		// counted against the cap — the fail-closed side, like any other
+		// stale reservation, released when the run's lease ends.
+		return l, fmt.Errorf("%w: %w", ErrUpstreamOutcomeUnknown, err)
+	}
 	if err != nil {
 		// Nothing was created: free the slot. If even that fails the stale
 		// reservation over-counts, which is the fail-closed side.
@@ -859,7 +871,46 @@ const lineageRecordTimeout = 10 * time.Second
 // UpstreamCreateTimeout bounds an upstream issue create that has been
 // detached from the caller's cancellation — RecordChild's create callback
 // and CreateTrackerIssue's operator path both use it.
+//
+// It is the budget for an upstream create request: the GitHub and GitLab
+// adapters run CreateIssue under it, not under their general client
+// timeout (#2045). Whichever fires, the result is the same ambiguous
+// timeout (IsAmbiguousUpstreamError).
 const UpstreamCreateTimeout = 30 * time.Second
+
+// DefaultHTTPTimeout is the timeout of the HTTP client the GitHub and
+// GitLab adapters build when none is passed in, for every call except
+// issue creates (which use UpstreamCreateTimeout).
+const DefaultHTTPTimeout = 10 * time.Second
+
+// ErrUpstreamOutcomeUnknown marks an upstream create whose request was
+// sent but whose answer never arrived in time (#2045): the issue may or
+// may not exist on the tracker, and the daemon does not know its number.
+// RecordChild keeps the run's fan-out slot claimed for it (fail-closed:
+// it is released with the run's other reservations when the lease ends),
+// and CreateTrackerIssue audits it and tells the caller not to retry
+// blindly. The cause stays in the chain.
+var ErrUpstreamOutcomeUnknown = errors.New("tracker: upstream create outcome unknown")
+
+// IsAmbiguousUpstreamError reports whether err from an upstream create
+// leaves its outcome unknown: a timeout — the detached context's deadline,
+// or the HTTP client's own timeout (net/http's timeout errors match
+// context.DeadlineExceeded) — rather than an answer from the forge. A
+// timeout while still connecting is reported the same way: the adapters
+// cannot tell it apart from one after the request was sent, and treating
+// it as ambiguous is the fail-closed side (it costs a fan-out slot, never
+// a duplicate). A refused connection or any HTTP status is a definite
+// failure: nothing was created.
+func IsAmbiguousUpstreamError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var nerr net.Error
+	return errors.As(err, &nerr) && nerr.Timeout()
+}
 
 // LineageRecordError is returned by RecordChild when the upstream create
 // SUCCEEDED but its lineage row could not be recorded. The issue exists on
