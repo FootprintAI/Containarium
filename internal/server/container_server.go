@@ -76,6 +76,9 @@ func (p *PendingCreation) active() bool { return p != nil && !p.Done && !p.Cance
 // ContainerServer implements the gRPC ContainerService
 type ContainerServer struct {
 	pb.UnimplementedContainerServiceServer
+	// systemInfoFn overrides the local GetSystemInfo probe in ListBackends.
+	// Nil in production; a test seam for a wedged local incusd (#2318).
+	systemInfoFn func(context.Context, *pb.GetSystemInfoRequest) (*pb.GetSystemInfoResponse, error)
 	// TrackerService is its own proto service (tracker.proto), not part
 	// of ContainerService — embedding its Unimplemented server here lets
 	// ContainerServer satisfy pb.TrackerServiceServer without a
@@ -3227,23 +3230,17 @@ func (s *ContainerServer) ListBackends(ctx context.Context, _ *pb.ListBackendsRe
 	// container manager + Incus. Guard the nil manager so a daemon (or test)
 	// without one still reports the local backend's identity + health
 	// instead of panicking.
+	// The local probe is bounded by its own deadline (#2318): a wedged or
+	// starved incusd must degrade to "no load block" (UNKNOWN), not block
+	// the whole listing. It runs concurrently with the peer probes below.
+	var localInfo *pb.SystemInfo
+	var localDone chan struct{}
 	if s.manager != nil {
-		if sysResp, err := s.GetSystemInfo(ctx, &pb.GetSystemInfoRequest{}); err == nil && sysResp.Info != nil {
-			local.Hostname = sysResp.Info.Hostname
-			local.Os = sysResp.Info.Os
-			local.IncusVersion = sysResp.Info.IncusVersion
-			local.ContainerCount = sysResp.Info.ContainersRunning
-			local.Gpus = backendGPUsFromSystemInfo(sysResp.Info)
-			// The same SystemInfo already carries the host's measured load
-			// and memory/disk usage; surface it instead of discarding it
-			// (cloud #966). Null when the probe produced nothing usable.
-			local.HostLoad = hostLoadFromSystemInfo(sysResp.Info, time.Now())
-			// Which storage pool backs this host's containers, and whether it
-			// isolates tenant volumes (#1209). GetSystemInfo already measured
-			// it; pass it straight through, null included, so "unreadable"
-			// stays distinguishable from "isolated".
-			local.Storage = sysResp.Info.Storage
-		}
+		localDone = make(chan struct{})
+		go func() {
+			defer close(localDone)
+			localInfo = s.probeLocalSystemInfo(ctx)
+		}()
 	}
 	// Surface the local backend's spare-capacity advertisement (#680). Only
 	// attach when something is actively advertised — an unadvertised backend
@@ -3262,9 +3259,14 @@ func (s *ContainerServer) ListBackends(ctx context.Context, _ *pb.ListBackendsRe
 
 	// Peer backends. Forward GetSystemInfo to each healthy peer using the
 	// caller's (admin) token — the same mechanism GetSystemInfo's peer
-	// fan-out uses.
+	// fan-out uses. Peers are probed in parallel, each under its own
+	// deadline, and written to a pre-sized slot so the response keeps the
+	// pool's peer order (#2318).
 	authToken := extractAuthToken(ctx)
-	for _, peer := range s.peerPool.Peers() {
+	peers := s.peerPool.Peers()
+	peerInfos := make([]*pb.BackendInfo, len(peers))
+	var wg sync.WaitGroup
+	for i, peer := range peers {
 		pi := &pb.BackendInfo{
 			Id:      peer.ID,
 			Type:    "tunnel",
@@ -3273,34 +3275,95 @@ func (s *ContainerServer) ListBackends(ctx context.Context, _ *pb.ListBackendsRe
 		if !peer.LastSeenAt.IsZero() {
 			pi.LastSeenAt = peer.LastSeenAt.UTC().Format(time.RFC3339)
 		}
-		if peer.Healthy {
-			if body, err := peer.ForwardGetSystemInfo(authToken); err == nil {
-				var peerResp pb.GetSystemInfoResponse
-				if protojson.Unmarshal(body, &peerResp) == nil && peerResp.Info != nil {
-					pi.Hostname = peerResp.Info.Hostname
-					pi.Os = peerResp.Info.Os
-					pi.Version = peerResp.Info.DaemonVersion
-					pi.IncusVersion = peerResp.Info.IncusVersion
-					pi.ContainerCount = peerResp.Info.ContainersRunning
-					pi.Gpus = backendGPUsFromSystemInfo(peerResp.Info)
-					// Live load for peers — including BYOC tunnel hosts,
-					// which had no load signal anywhere in the product
-					// (cloud #966). This rides the peer fan-out that
-					// already works, so it does not depend on the BYOC
-					// driver-token path that cloud #933 is stuck on.
-					pi.HostLoad = hostLoadFromSystemInfo(peerResp.Info, time.Now())
-					// Peers report their own pool's driver + isolation over
-					// the same fan-out, so a BYOC tunnel host on a shared
-					// filesystem is visible from the fleet view rather than
-					// only in that host's own startup log (#1209).
-					pi.Storage = peerResp.Info.Storage
-				}
-			}
+		peerInfos[i] = pi
+		if !peer.Healthy {
+			continue
 		}
-		backends = append(backends, pi)
+		wg.Add(1)
+		go func(peer *PeerClient, pi *pb.BackendInfo) {
+			defer wg.Done()
+			pctx, cancel := context.WithTimeout(ctx, listBackendsProbeTimeout)
+			defer cancel()
+			body, err := peer.ForwardGetSystemInfoCtx(pctx, authToken)
+			if err != nil {
+				return
+			}
+			var peerResp pb.GetSystemInfoResponse
+			if protojson.Unmarshal(body, &peerResp) != nil || peerResp.Info == nil {
+				return
+			}
+			pi.Hostname = peerResp.Info.Hostname
+			pi.Os = peerResp.Info.Os
+			pi.Version = peerResp.Info.DaemonVersion
+			pi.IncusVersion = peerResp.Info.IncusVersion
+			pi.ContainerCount = peerResp.Info.ContainersRunning
+			pi.Gpus = backendGPUsFromSystemInfo(peerResp.Info)
+			// Live load for peers — including BYOC tunnel hosts, which had
+			// no load signal anywhere in the product (cloud #966).
+			pi.HostLoad = hostLoadFromSystemInfo(peerResp.Info, time.Now())
+			// Peers report their own pool's driver + isolation over the same
+			// fan-out (#1209).
+			pi.Storage = peerResp.Info.Storage
+		}(peer, pi)
+	}
+	wg.Wait()
+	backends = append(backends, peerInfos...)
+
+	// The local probe has its own deadline, so this wait is bounded too.
+	if localDone != nil {
+		<-localDone
+		if localInfo != nil {
+			local.Hostname = localInfo.Hostname
+			local.Os = localInfo.Os
+			local.IncusVersion = localInfo.IncusVersion
+			local.ContainerCount = localInfo.ContainersRunning
+			local.Gpus = backendGPUsFromSystemInfo(localInfo)
+			// The same SystemInfo already carries the host's measured load
+			// and memory/disk usage (cloud #966). Null when unusable.
+			local.HostLoad = hostLoadFromSystemInfo(localInfo, time.Now())
+			// Storage pool + tenant-volume isolation (#1209); null stays
+			// distinguishable from "isolated".
+			local.Storage = localInfo.Storage
+		}
 	}
 
 	return &pb.ListBackendsResponse{Backends: backends}, nil
+}
+
+// listBackendsProbeTimeout bounds each per-backend GetSystemInfo probe made by
+// ListBackends (the local one and every peer), so one wedged backend cannot
+// hold the whole fleet listing hostage (#2318). A var so tests can shrink it.
+var listBackendsProbeTimeout = 5 * time.Second
+
+// probeLocalSystemInfo runs the local GetSystemInfo under
+// listBackendsProbeTimeout and returns nil on error or timeout. The underlying
+// manager/Incus calls take no context and cannot be cancelled, so on timeout
+// the worker goroutine finishes on its own when the call returns; its result
+// channel is buffered so it never blocks on send.
+func (s *ContainerServer) probeLocalSystemInfo(ctx context.Context) *pb.SystemInfo {
+	fn := s.GetSystemInfo
+	if s.systemInfoFn != nil {
+		fn = s.systemInfoFn
+	}
+	ch := make(chan *pb.SystemInfo, 1)
+	go func() {
+		resp, err := fn(ctx, &pb.GetSystemInfoRequest{})
+		if err != nil || resp == nil {
+			ch <- nil
+			return
+		}
+		ch <- resp.Info
+	}()
+	t := time.NewTimer(listBackendsProbeTimeout)
+	defer t.Stop()
+	select {
+	case info := <-ch:
+		return info
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return nil
+	}
 }
 
 // capStore returns the lazily-initialized per-daemon capacity store. Safe to
