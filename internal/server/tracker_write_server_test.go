@@ -256,6 +256,9 @@ func TestCommentOnTrackerIssue_StampsSanitizesAndAudits(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("audit rows for tracker.comment = %d, want 1", len(rows))
 	}
+	if rows[0].RunID != "run-abc123" {
+		t.Errorf("audit RunID = %q, want run-abc123", rows[0].RunID)
+	}
 	if !strings.Contains(rows[0].Detail, "run-abc123") {
 		t.Errorf("audit detail = %q, want it to carry run_id", rows[0].Detail)
 	}
@@ -265,9 +268,10 @@ func TestCommentOnTrackerIssue_StampsSanitizesAndAudits(t *testing.T) {
 // for a caller with no run_id claim (a human/CI token via the CLI):
 // stamped as "operator/<username>", never left blank.
 func TestCommentOnTrackerIssue_OperatorIdentity_NoRunID(t *testing.T) {
-	const user = "tracker-rpc-comment-operator"
+	user := "tracker-rpc-comment-operator-" + uuid.NewString()
 	provider := &fakeWriterProvider{}
 	s, _ := setUpWriterConnection(t, user, provider)
+	s.auditStore = mustTestAuditStore(t)
 	operatorCtx := kmsKeyTestCtx(user, "member", "tracker:write") // no run_id
 
 	if _, err := s.CommentOnTrackerIssue(operatorCtx, &pb.CommentOnTrackerIssueRequest{
@@ -280,6 +284,16 @@ func TestCommentOnTrackerIssue_OperatorIdentity_NoRunID(t *testing.T) {
 	// the full, untruncated value.
 	if !strings.Contains(provider.commentBody, "skill=operator") || !strings.Contains(provider.commentBody, "run="+user) {
 		t.Errorf("comment body = %q, want a marker with skill=operator run=%s", provider.commentBody, user)
+	}
+	rows, _, err := s.auditStore.Query(context.Background(), audit.QueryParams{Username: user, Action: "tracker.comment", Limit: 10})
+	if err != nil {
+		t.Fatalf("audit Query: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("audit rows for operator tracker.comment = %d, want 1", len(rows))
+	}
+	if rows[0].RunID != "" {
+		t.Errorf("operator audit RunID = %q, want empty", rows[0].RunID)
 	}
 }
 
@@ -335,6 +349,9 @@ func TestClaimTrackerIssue_HappyPath(t *testing.T) {
 	}
 	if len(rows) != 1 {
 		t.Fatalf("audit rows for tracker.claim = %d, want 1", len(rows))
+	}
+	if rows[0].RunID != "run-abc123" {
+		t.Errorf("audit RunID = %q, want run-abc123", rows[0].RunID)
 	}
 	if !strings.Contains(rows[0].Detail, `"claimed":true`) {
 		t.Errorf("audit detail = %q, want claimed:true", rows[0].Detail)
@@ -445,6 +462,9 @@ func TestSetTrackerIssueLabels_HappyPath(t *testing.T) {
 	}
 	if len(rows) != 1 {
 		t.Fatalf("audit rows for tracker.set_labels = %d, want 1", len(rows))
+	}
+	if rows[0].RunID != "run-abc123" {
+		t.Errorf("audit RunID = %q, want run-abc123", rows[0].RunID)
 	}
 	if !strings.Contains(rows[0].Detail, "triaged") {
 		t.Errorf("audit detail = %q, want it to carry the added label", rows[0].Detail)
