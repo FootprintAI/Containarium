@@ -7,8 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.99.2] - 2026-10-05
+
+### Added
+
+- **Backup freshness is now alertable per tenant** (#2294, #2304). New platform-group metric series
+  `containarium.backup.last_success_age_seconds`: seconds since each tenant's most recent stored backup,
+  recomputed at every export tick from the daemon's durable on-disk backup index (not cached state), so it
+  is correct immediately after a daemon restart. It closes the gap the host-local `systemctl is-failed`
+  check and `containarium.export.heartbeat` cannot see: a backup *schedule* silently breaking (a disabled
+  timer, a wrong hook path, a bad conf line) while the host and daemon stay healthy. This is the first
+  series in the export to carry a tenant identifier (a `username` label), a reviewed and test-locked
+  exception to the "no org/tenant identifiers" rule (see `docs/CLOUD-NATIVE-METRICS-EXPORT-DESIGN.md`). A
+  ready-to-use alert policy is in `docs/METRICS-EXPORT-DEADMAN-ALERT-RUNBOOK.md`.
+
+### Changed
+
+- Dependency updates: `sigs.k8s.io/controller-runtime`, `go.opentelemetry.io/proto/otlp`,
+  `cloud.google.com/go/compute`, `github.com/grpc-ecosystem/grpc-gateway/v2` and `google.golang.org/api`
+  (#2311, #2312, #2313, #2314, #2315).
+
 ### Fixed
 
+- Tracker write audit rows now record the run id (#2043, #2168). The shared tracker-write audit helper
+  populates `AuditEntry.RunID` from the authenticated run claim, so `audit query --run-id <id>` finds the
+  comment, claim, label, issue-creation and submit-change rows a run produced. Operator calls carry no
+  run claim and leave the column empty rather than inheriting the username used for the visible stamp.
 - A busy host no longer becomes unplaceable because its health probe is slow (#2317). The local
   backend's liveness probe listed every instance and then asked Incus for its server info under a
   fixed 3s budget, failing closed, so on a host with many instances under CPU pressure a slow but
