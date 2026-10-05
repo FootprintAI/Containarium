@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.99.3] - 2026-10-05
+
 ### Fixed
 
 - A hung Incus hardware scan no longer blocks container creation, `GetSystemInfo` or `ListBackends` (#2325).
@@ -18,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and disk totals, GPUs) are kept and served stale when a refresh fails, used memory and disk refresh about every 10
   seconds, and the load averages are always read fresh. If Incus has never answered, the admission gate falls back to
   the OS's logical CPU count. See `docs/CPU-CAPACITY-ADMISSION.md`.
+
+### Changed
+
+- Dependency update: `sigs.k8s.io/agent-sandbox` 1.0.4 -> 1.0.5 (#2316).
 
 ## [0.99.2] - 2026-10-05
 
