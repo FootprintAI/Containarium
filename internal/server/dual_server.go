@@ -698,7 +698,12 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// GCS). Orchestration over the container manager; the GCS uploader is
 	// best-effort (LOCAL-only if `gcloud` is absent). See
 	// docs/DB-BACKUP-OPERATIONS.md.
-	pb.RegisterBackupServiceServer(grpcServer, NewBackupServer(containerServer))
+	backupServer := NewBackupServer(containerServer)
+	pb.RegisterBackupServiceServer(grpcServer, backupServer)
+	// Metrics export's backup-health series (#2294) reads the same
+	// backup core backupServer orchestrates — wired here since
+	// BackupServer depends on ContainerServer, not the reverse.
+	containerServer.SetBackupManager(backupServer.Manager())
 	log.Printf("Backup service enabled")
 
 	// Register VolumeService — shared, multi-writer CephFS volumes (#384).
