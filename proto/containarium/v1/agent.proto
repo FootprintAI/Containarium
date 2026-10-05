@@ -3,6 +3,7 @@ syntax = "proto3";
 package containarium.v1;
 
 import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
 import "protoc-gen-openapiv2/options/annotations.proto";
 import "containarium/v1/container.proto";
 import "containarium/v1/recipe.proto";
@@ -154,6 +155,33 @@ enum AgentCredentialSource {
   AGENT_CREDENTIAL_SOURCE_DIRECT_MODE = 3;
 }
 
+// CodeCredentialSource is WHERE a box's `containarium code`-style coding
+// engine (Claude Code today; Codex once #2273 lands) would currently find a
+// human/headless sign-in — never the credential's value, never read, logged,
+// or transmitted at any layer. Mirrors #2030's `code install` verify output
+// ("report which credential source Claude Code will use, never a value"),
+// condensed to the one answer GetSkillBoxCredentialStatus needs (#2272).
+//
+// Deliberately a DIFFERENT enum from AgentCredentialSource above:
+// AgentCredentialSource is where a model-GATEWAY token's upstream key comes
+// from (daemon-held, never the box's concern); CodeCredentialSource is
+// whether a HUMAN has already completed Anthropic's own sign-in flow on this
+// box, or placed their own key, so unattended reuse of that same box needs no
+// credential of containarium's own.
+enum CodeCredentialSource {
+  CODE_CREDENTIAL_SOURCE_UNSPECIFIED = 0;
+  // The engine's own device-code/browser sign-in has already completed on
+  // this box (e.g. Claude Code's own ~/.claude/.credentials.json).
+  CODE_CREDENTIAL_SOURCE_INTERACTIVE = 1;
+  // A user-placed provider key/token is visible to the engine's own shell
+  // environment (e.g. ANTHROPIC_API_KEY in ~/.claude/settings.json, or a 3P
+  // provider env var) — the headless path #2030 documents.
+  CODE_CREDENTIAL_SOURCE_API_KEY = 2;
+  // Neither of the above. Expected on a freshly provisioned box (#2272)
+  // until a human signs in or places a key.
+  CODE_CREDENTIAL_SOURCE_NONE = 3;
+}
+
 // AgentEngineStatus is one engine's readiness row, as ListAgentEngines
 // reports it. One row per AgentEngine value (#2223).
 message AgentEngineStatus {
@@ -201,6 +229,50 @@ message GetAgentSkillRequest {
 }
 message GetAgentSkillResponse {
   AgentSkill skill = 1;
+}
+
+// ProvisionSkillBoxRequest creates or reuses a skill's deterministic box
+// (agent-<skill_id>) WITHOUT running it: no token is minted, nothing is
+// seeded, and the model is never called (#2272). This is the create-or-reuse
+// step RunAgentSkill/RunCrew already perform as a side effect of a real run
+// — surfaced on its own so a crew member's box can exist, and a human can
+// `containarium connect` in and sign in to its coding agent, BEFORE any
+// inference credential exists. Without this, that box is created only as a
+// side effect of a run that itself needs a credential to get that far —
+// chicken-and-egg.
+message ProvisionSkillBoxRequest {
+  string skill_id = 1;
+  // Target backend/pool placement, same scheme as RunAgentSkillRequest.
+  string backend_id = 2;
+  string pool = 3;
+}
+message ProvisionSkillBoxResponse {
+  Container container = 1;
+  // True when this call created the box; false when an already-provisioned
+  // box (running, or stopped and started back up) was reused instead.
+  bool freshly_provisioned = 2;
+}
+
+// GetSkillBoxCredentialStatusRequest asks whether a skill's already-
+// provisioned box has a credential its configured coding engine would use
+// to sign in — a presence check only (#2272's re-scoping comment).
+message GetSkillBoxCredentialStatusRequest {
+  string skill_id = 1;
+}
+message GetSkillBoxCredentialStatusResponse {
+  // The engine this status was checked for: the skill's own `engine` field,
+  // resolved to AGENT_ENGINE_CLAUDE when the skill leaves it unspecified
+  // (the only engine `containarium code`'s box-side probe supports today —
+  // AGENT_ENGINE_CODEX/GEMINI are refused FAILED_PRECONDITION until #2273
+  // adds Codex's own probe; never guessed).
+  AgentEngine engine = 1;
+  // WHERE that engine's credential comes from, if anywhere — names only,
+  // NEVER a value. Mirrors `containarium code install`'s own verify output
+  // (#2030): this call does not read, store, log, or transmit the
+  // credential itself at any layer, box to daemon to caller.
+  CodeCredentialSource credential_source = 2;
+  // When this check ran.
+  google.protobuf.Timestamp checked_at = 3;
 }
 
 // RunAgentSkillRequest launches a single skill in its box and sends it one
@@ -410,6 +482,40 @@ service AgentSkillService {
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Get agent skill";
       description: "Returns one skill's definition, including its agent card, allowed scopes, and allowed peers.";
+      tags: "Agents";
+    };
+  }
+
+  // ProvisionSkillBox creates or reuses a skill's deterministic box
+  // (agent-<skill_id>) without running it: no token minted, nothing seeded,
+  // the model never called (#2272). Lets a crew member's box exist, and a
+  // human sign in to its coding agent, before any inference credential does
+  // — RunAgentSkill/RunCrew are otherwise the only path that creates this
+  // box, and both require a credential just to get that far.
+  rpc ProvisionSkillBox(ProvisionSkillBoxRequest) returns (ProvisionSkillBoxResponse) {
+    option (google.api.http) = {
+      post: "/v1/agent-skills/{skill_id}/provision-box"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Provision a skill's box ahead of any run";
+      description: "Creates or reuses the skill's deterministic box with no token minted, nothing seeded, and no model call — so a human can sign in to its coding agent before any inference credential exists.";
+      tags: "Agents";
+    };
+  }
+
+  // GetSkillBoxCredentialStatus reports whether a skill's already-
+  // provisioned box has a credential its configured coding engine would use
+  // — the source name only (e.g. "interactive" / "api-key" / "none"), never
+  // a value, mirroring `containarium code install`'s own verify posture
+  // (#2030, #2272).
+  rpc GetSkillBoxCredentialStatus(GetSkillBoxCredentialStatusRequest) returns (GetSkillBoxCredentialStatusResponse) {
+    option (google.api.http) = {
+      get: "/v1/agent-skills/{skill_id}/credential-status"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Check a skill box's coding-agent credential source";
+      description: "Reports the NAME of the credential source (interactive sign-in, a user-placed key, or none) the skill's box would use for its configured engine — never the credential's value, never read/logged/transmitted.";
       tags: "Agents";
     };
   }

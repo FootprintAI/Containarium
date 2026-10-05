@@ -227,6 +227,13 @@ type systemInfo struct {
 	TotalCPUCores        int32  `json:"totalCpuCores"`
 	TotalMemoryBytes     int64  `json:"totalMemoryBytes"`
 	AvailableMemoryBytes int64  `json:"availableMemoryBytes"`
+	// CPU budget (#2284), as grpc-gateway emits SystemInfo: camelCase keys,
+	// the enum by name. Absent on an older daemon → zero values → no budget.
+	TotalCpus             int32   `json:"totalCpus"`
+	CommittedCpuCores     float64 `json:"committedCpuCores"`
+	CoreCommittedCpuCores float64 `json:"coreCommittedCpuCores"`
+	CpuAdmissionMode      string  `json:"cpuAdmissionMode"`
+	CpuOvercommitFactor   float64 `json:"cpuOvercommitFactor"`
 }
 
 // containerToIncusInfo converts API response to incus.ContainerInfo
@@ -1493,6 +1500,10 @@ func (c *HTTPClient) GetSystemInfo() (*incus.ServerInfo, error) {
 	info := &incus.ServerInfo{
 		Version:       result.Info.IncusVersion,
 		KernelVersion: result.Info.KernelVersion,
+		CPUBudget: cpuBudgetFromWire(result.Info.TotalCpus, result.Info.CommittedCpuCores,
+			result.Info.CoreCommittedCpuCores,
+			pb.CPUAdmissionMode(pb.CPUAdmissionMode_value[result.Info.CpuAdmissionMode]),
+			result.Info.CpuOvercommitFactor),
 	}
 
 	return info, nil
@@ -1698,6 +1709,60 @@ func (c *HTTPClient) GetAgentSkill(id string) (*pb.AgentSkill, error) {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 	return out.Skill, nil
+}
+
+// ProvisionSkillBox creates or reuses a skill's deterministic box
+// (agent-<skill_id>) via HTTP, without running it: no token minted, nothing
+// seeded, no model call (#2272).
+func (c *HTTPClient) ProvisionSkillBox(skillID, backendID, pool string) (*pb.ProvisionSkillBoxResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute) // box deploy can take time
+	defer cancel()
+
+	path := fmt.Sprintf("/v1/agent-skills/%s/provision-box", url.PathEscape(skillID))
+	body, err := json.Marshal(provisionSkillBoxRequest{SkillID: skillID, BackendID: backendID, Pool: pool})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+	resp, err := c.doRequest(ctx, http.MethodPost, path, body)
+	if err != nil {
+		return nil, fmt.Errorf("provision skill box: %w", err)
+	}
+	defer drainClose(resp)
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, httpError(bodyBytes, resp.StatusCode, "provision skill box")
+	}
+	out := &pb.ProvisionSkillBoxResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
+// GetSkillBoxCredentialStatus reports, via HTTP, whether a skill's
+// already-provisioned box has a credential its configured coding engine
+// would use — the source NAME only, never a value (#2272, #2030 posture).
+func (c *HTTPClient) GetSkillBoxCredentialStatus(skillID string) (*pb.GetSkillBoxCredentialStatusResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	path := fmt.Sprintf("/v1/agent-skills/%s/credential-status", url.PathEscape(skillID))
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("get skill box credential status: %w", err)
+	}
+	defer drainClose(resp)
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, httpError(bodyBytes, resp.StatusCode, "get skill box credential status")
+	}
+	out := &pb.GetSkillBoxCredentialStatusResponse{}
+	if err := protojson.Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
 }
 
 // RunAgentSkill provisions a skill's box, mints a scoped token, runs one task,
@@ -2785,7 +2850,7 @@ func (c *HTTPClient) DeleteTrackerConnection(username, name string) (string, err
 // trackerRoutesPath is the REST collection for a connection's scope
 // routes (#2021), matching tracker.proto's google.api.http mapping.
 func trackerRoutesPath(username, connection string) string {
-	return "/v1/tracker/" + url.PathEscape(username) + "/" + url.PathEscape(connection) + "/routes"
+	return "/v1/tracker/connections/" + url.PathEscape(username) + "/" + url.PathEscape(connection) + "/routes"
 }
 
 // SetTrackerRoute creates or updates a scope -> skill route via REST
@@ -2828,14 +2893,15 @@ func (c *HTTPClient) DeleteTrackerRoute(req *pb.DeleteTrackerRouteRequest) (stri
 const TrackerDispatchTimeout = 10 * time.Minute
 
 // DispatchTrackerIssues runs one dispatcher tick via REST (#2022).
-// Requires tracker:admin and agents:run.
-func (c *HTTPClient) DispatchTrackerIssues(username, connection string) (*pb.DispatchTrackerIssuesResponse, error) {
-	body, err := protojson.Marshal(&pb.DispatchTrackerIssuesRequest{Username: username, Connection: connection})
+// Requires tracker:admin and agents:run. maxStarts bounds the runs the
+// tick starts (#2270); 0 is unlimited.
+func (c *HTTPClient) DispatchTrackerIssues(username, connection string, maxStarts int32) (*pb.DispatchTrackerIssuesResponse, error) {
+	body, err := protojson.Marshal(&pb.DispatchTrackerIssuesRequest{Username: username, Connection: connection, MaxStarts: maxStarts})
 	if err != nil {
 		return nil, fmt.Errorf("encode request: %w", err)
 	}
 	out := &pb.DispatchTrackerIssuesResponse{}
-	path := "/v1/tracker/" + url.PathEscape(username) + "/" + url.PathEscape(connection) + "/dispatch"
+	path := "/v1/tracker/connections/" + url.PathEscape(username) + "/" + url.PathEscape(connection) + "/dispatch"
 	if err := c.trackerDoTimeout(TrackerDispatchTimeout, http.MethodPost, path, "dispatch tracker issues", body, out); err != nil {
 		return nil, err
 	}
@@ -2845,7 +2911,7 @@ func (c *HTTPClient) DispatchTrackerIssues(username, connection string) (*pb.Dis
 // ListTrackerDispatches returns a connection's dispatch rows via REST
 // (#2022), newest first. UNSPECIFIED state sends no filter.
 func (c *HTTPClient) ListTrackerDispatches(username, connection string, state pb.TrackerDispatchState) ([]*pb.TrackerDispatch, error) {
-	path := "/v1/tracker/" + url.PathEscape(username) + "/" + url.PathEscape(connection) + "/dispatches"
+	path := "/v1/tracker/connections/" + url.PathEscape(username) + "/" + url.PathEscape(connection) + "/dispatches"
 	if state != pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_UNSPECIFIED {
 		path += "?" + url.Values{"state": {state.String()}}.Encode()
 	}
@@ -2871,7 +2937,7 @@ func (c *HTTPClient) GetTrackerStatus(username, name string) (*pb.GetTrackerStat
 // REST.
 func (c *HTTPClient) GetTrackerIssue(req *pb.GetTrackerIssueRequest) (*pb.TrackerIssue, error) {
 	out := &pb.GetTrackerIssueResponse{}
-	path := fmt.Sprintf("/v1/tracker/%s/%s/issues/%d", url.PathEscape(req.Username), url.PathEscape(req.Connection), req.Number)
+	path := fmt.Sprintf("/v1/tracker/connections/%s/%s/issues/%d", url.PathEscape(req.Username), url.PathEscape(req.Connection), req.Number)
 	if err := c.trackerDo(http.MethodGet, path, "get tracker issue", nil, out); err != nil {
 		return nil, err
 	}
@@ -2891,7 +2957,7 @@ func (c *HTTPClient) ListTrackerIssues(req *pb.ListTrackerIssuesRequest) ([]*pb.
 	if req.Search != "" {
 		q.Set("search", req.Search)
 	}
-	path := fmt.Sprintf("/v1/tracker/%s/%s/issues", url.PathEscape(req.Username), url.PathEscape(req.Connection))
+	path := fmt.Sprintf("/v1/tracker/connections/%s/%s/issues", url.PathEscape(req.Username), url.PathEscape(req.Connection))
 	if len(q) > 0 {
 		path += "?" + q.Encode()
 	}
@@ -2905,7 +2971,7 @@ func (c *HTTPClient) ListTrackerIssues(req *pb.ListTrackerIssuesRequest) ([]*pb.
 // verdict, via REST.
 func (c *HTTPClient) GetTrackerChange(req *pb.GetTrackerChangeRequest) (*pb.TrackerChange, error) {
 	out := &pb.GetTrackerChangeResponse{}
-	path := fmt.Sprintf("/v1/tracker/%s/%s/changes/%d", url.PathEscape(req.Username), url.PathEscape(req.Connection), req.Number)
+	path := fmt.Sprintf("/v1/tracker/connections/%s/%s/changes/%d", url.PathEscape(req.Username), url.PathEscape(req.Connection), req.Number)
 	if err := c.trackerDo(http.MethodGet, path, "get tracker change", nil, out); err != nil {
 		return nil, err
 	}
@@ -2920,7 +2986,7 @@ func (c *HTTPClient) SubmitTrackerChange(req *pb.SubmitTrackerChangeRequest) (*p
 		return nil, fmt.Errorf("encode request: %w", err)
 	}
 	out := &pb.SubmitTrackerChangeResponse{}
-	path := fmt.Sprintf("/v1/tracker/%s/%s/changes", url.PathEscape(req.Username), url.PathEscape(req.Connection))
+	path := fmt.Sprintf("/v1/tracker/connections/%s/%s/changes", url.PathEscape(req.Username), url.PathEscape(req.Connection))
 	if err := c.trackerDo(http.MethodPost, path, "submit tracker change", body, out); err != nil {
 		return nil, err
 	}
@@ -2935,7 +3001,7 @@ func (c *HTTPClient) CommentOnTrackerIssue(req *pb.CommentOnTrackerIssueRequest)
 		return nil, fmt.Errorf("encode request: %w", err)
 	}
 	out := &pb.CommentOnTrackerIssueResponse{}
-	path := fmt.Sprintf("/v1/tracker/%s/%s/issues/%d/comments", url.PathEscape(req.Username), url.PathEscape(req.Connection), req.Number)
+	path := fmt.Sprintf("/v1/tracker/connections/%s/%s/issues/%d/comments", url.PathEscape(req.Username), url.PathEscape(req.Connection), req.Number)
 	if err := c.trackerDo(http.MethodPost, path, "comment on tracker issue", body, out); err != nil {
 		return nil, err
 	}
@@ -2949,7 +3015,7 @@ func (c *HTTPClient) ClaimTrackerIssue(req *pb.ClaimTrackerIssueRequest) (*pb.Cl
 		return nil, fmt.Errorf("encode request: %w", err)
 	}
 	out := &pb.ClaimTrackerIssueResponse{}
-	path := fmt.Sprintf("/v1/tracker/%s/%s/issues/%d/claim", url.PathEscape(req.Username), url.PathEscape(req.Connection), req.Number)
+	path := fmt.Sprintf("/v1/tracker/connections/%s/%s/issues/%d/claim", url.PathEscape(req.Username), url.PathEscape(req.Connection), req.Number)
 	if err := c.trackerDo(http.MethodPost, path, "claim tracker issue", body, out); err != nil {
 		return nil, err
 	}
@@ -2963,7 +3029,7 @@ func (c *HTTPClient) SetTrackerIssueLabels(req *pb.SetTrackerIssueLabelsRequest)
 		return "", fmt.Errorf("encode request: %w", err)
 	}
 	out := &pb.SetTrackerIssueLabelsResponse{}
-	path := fmt.Sprintf("/v1/tracker/%s/%s/issues/%d/labels", url.PathEscape(req.Username), url.PathEscape(req.Connection), req.Number)
+	path := fmt.Sprintf("/v1/tracker/connections/%s/%s/issues/%d/labels", url.PathEscape(req.Username), url.PathEscape(req.Connection), req.Number)
 	if err := c.trackerDo(http.MethodPost, path, "set tracker issue labels", body, out); err != nil {
 		return "", err
 	}
@@ -2978,7 +3044,7 @@ func (c *HTTPClient) CreateTrackerIssue(req *pb.CreateTrackerIssueRequest) (*pb.
 		return nil, fmt.Errorf("encode request: %w", err)
 	}
 	out := &pb.CreateTrackerIssueResponse{}
-	path := fmt.Sprintf("/v1/tracker/%s/%s/issues", url.PathEscape(req.Username), url.PathEscape(req.Connection))
+	path := fmt.Sprintf("/v1/tracker/connections/%s/%s/issues", url.PathEscape(req.Username), url.PathEscape(req.Connection))
 	if err := c.trackerDo(http.MethodPost, path, "create tracker issue", body, out); err != nil {
 		return nil, err
 	}

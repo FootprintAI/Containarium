@@ -117,7 +117,7 @@ func (s *ContainerServer) CommentOnTrackerIssue(ctx context.Context, req *pb.Com
 	if req.Username == "" {
 		return nil, status.Error(codes.InvalidArgument, "username is required")
 	}
-	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+	if err := auth.AuthorizeTrackerTenant(ctx, req.Username); err != nil {
 		return nil, err
 	}
 	if req.Body == "" {
@@ -176,7 +176,7 @@ func (s *ContainerServer) ClaimTrackerIssue(ctx context.Context, req *pb.ClaimTr
 	if req.Username == "" {
 		return nil, status.Error(codes.InvalidArgument, "username is required")
 	}
-	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+	if err := auth.AuthorizeTrackerTenant(ctx, req.Username); err != nil {
 		return nil, err
 	}
 
@@ -234,7 +234,7 @@ func (s *ContainerServer) SetTrackerIssueLabels(ctx context.Context, req *pb.Set
 	if req.Username == "" {
 		return nil, status.Error(codes.InvalidArgument, "username is required")
 	}
-	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
+	if err := auth.AuthorizeTrackerTenant(ctx, req.Username); err != nil {
 		return nil, err
 	}
 	if len(req.AddLabels) == 0 && len(req.RemoveLabels) == 0 {
@@ -373,12 +373,16 @@ func (s *ContainerServer) auditTrackerWrite(ctx context.Context, action, usernam
 		log.Printf("[tracker] marshal audit detail for %s: %v", action, err)
 		return
 	}
+	// Use the authenticated claim, not the visible stamp's operator fallback
+	// (which uses the username as an identity when no run is present).
+	runID, _ := auth.RunIDFromGRPCContext(ctx)
 	if err := s.auditStore.Log(ctx, &audit.AuditEntry{
 		Username:     username,
 		Action:       action,
 		ResourceType: "tracker_issue",
 		ResourceID:   fmt.Sprintf("%s/%s#%d", username, connection, number),
 		Detail:       string(payload),
+		RunID:        runID,
 	}); err != nil {
 		log.Printf("[tracker] audit %s %s/%s#%d: %v", action, username, connection, number, err)
 	}

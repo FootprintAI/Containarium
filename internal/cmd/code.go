@@ -103,6 +103,7 @@ var (
 	codeProviderBaseURL string
 	codeModel           string
 	codePiVersion       string
+	codeCodexVersion    string
 )
 
 // Test seams. Production never reassigns these; they exist so the install
@@ -137,6 +138,10 @@ before this flag existed behaves exactly as it did.
   --engine claude   Claude Code (the default)
   --engine pi       pi (https://pi.dev), which runs inside the box — see
                     docs/integrations/pi.md
+  --engine codex    OpenAI's Codex CLI (https://developers.openai.com/codex/cli),
+                    which also runs inside the box — see docs/integrations/codex.md.
+                    --credential gateway is not supported for codex yet; use
+                    --credential secret.
 
 --credential picks where the engine's model credential comes from; it defaults
 to secret, again the pre-existing behaviour.
@@ -182,7 +187,9 @@ Examples:
       --provider kafeido --model kafeido-coder
   containarium code install alice --engine pi --credential secret \
       --secret-name OPENAI_API_KEY --provider-base-url https://api.openai.com/v1 \
-      --model gpt-5`,
+      --model gpt-5
+  containarium code install alice --engine codex --credential secret \
+      --secret-name CODEX_API_KEY`,
 	Args: cobra.ExactArgs(1),
 	RunE: runCodeInstall,
 }
@@ -239,6 +246,8 @@ func init() {
 		"model id to pin runs to; also the gateway token's allowed_models ceiling")
 	codeInstallCmd.Flags().StringVar(&codePiVersion, "pi-version", engine.PiVersion,
 		"pin the pi version installed with --engine pi")
+	codeInstallCmd.Flags().StringVar(&codeCodexVersion, "codex-version", "",
+		"pin the Codex CLI version installed with --engine codex (default: whatever npm considers current)")
 
 	codeRunCmd.Flags().StringVar(&codeRunPrompt, "prompt", "", "prompt to give the agent (required)")
 	codeRunCmd.Flags().BoolVar(&codeRunContinue, "continue", false,
@@ -294,7 +303,7 @@ func resolveCodeTarget(ctx context.Context, box string, diag io.Writer) (connect
 		return connectcore.Target{}, "", err
 	}
 	if !connectcore.IsRunning(c.State) {
-		return connectcore.Target{}, "", fmt.Errorf("box %q is %s, not running — start it first (`containarium start %s`)",
+		return connectcore.Target{}, "", fmt.Errorf("box %q is %s, not running — start it first (`containarium wake %s`)",
 			box, connectcore.PrettyState(c.State), box)
 	}
 	target, err := connectcore.BuildTarget(c, codeUser, codeHost, codePort)

@@ -102,6 +102,115 @@ the network-policy engine was rolled out — observe first:
    with gRPC `ResourceExhausted` and a message naming the numbers; the caller
    can retry on a less-loaded backend/pool.
 
+## Budgeting the platform's own CPU (#2284)
+
+The gate budgets **tenant** CPU only. Core-role containers — Postgres, Caddy,
+VictoriaMetrics, the control plane, the security and OTel sidecars — are
+skipped by `committedCoresExcluding`, and `SystemInfo.committed_cpu_cores`
+applies the same exclusion. That is deliberate (it is the number a
+tenant-facing factor is sized against), but it means the factor alone says
+nothing about whether the platform's own processes still get CPU when
+tenants contend. One live 8-CPU host carried ~199 tenant cores against a 4×
+(32-core) advisory ceiling with 49 `would reject` lines in a day and blocked
+none; creates then stalled while the daemon and `incusd` were healthy but
+starved.
+
+Three things make that visible now:
+
+- **`SystemInfo` reports all three numbers**: `committed_cpu_cores` (tenant),
+  `core_committed_cpu_cores` (platform) and `total_cpus` (physical), plus the
+  gate's posture as the `CPUAdmissionMode` enum (`DISABLED` / `ADVISORY` /
+  `ENFORCING`) and `cpu_overcommit_factor`. `containarium info` prints them as
+  a `CPU Budget:` block; the MCP `get_system_info` tool prints the same.
+- **Advisory mode warns instead of failing silently.** When the gate is
+  advisory and tenant-committed cores already exceed `total_cpus × factor`,
+  the daemon logs one `[cpu-admission] WARNING:` line at start naming the
+  ratio and saying the gate is not enforcing, and `containarium info` prints
+  the same `WARNING:` line. Under the ceiling, or in enforcing / disabled
+  mode, the daemon logs a plain `CPU budget:` posture line and the CLI shows
+  the numbers without a warning.
+- **A headroom recipe.** The declared CPU is a real floor only when the gate
+  is enforced at a factor that leaves the platform's cores un-overcommitted:
+
+  ```
+  factor ≤ (total_cpus − core_committed_cpu_cores) / total_cpus
+  ```
+
+  Worked example: 8 logical CPUs, core containers committing 2 + 1 + 1 + 4 = 8
+  cores (the `core_services.go` defaults) → headroom factor 0: the platform
+  alone already covers the host, and *any* tenant commitment overcommits it.
+  Trim the core requests (or use a bigger host) until core-committed is well
+  under `total_cpus`; e.g. 16 CPUs with 4 core cores → factor ≤ 0.75. A factor
+  above that is a ceiling, not a floor (see "When a declared CPU is a real
+  floor" above), and should be described as such.
+
+### Optional: a reserved core set for platform containers
+
+For an absolute floor rather than a budget, pin the core-role containers to a
+CPU set with the existing `limits.cpu` range notation and keep tenants off
+those cores:
+
+```
+incus config set core-postgres limits.cpu 0-1        # platform on cores 0–1
+containarium create alice --cpu 2-7                   # tenants on the rest
+```
+
+`incus.CommittedCores` counts a range by its width (`0-1` → 2 cores), so the
+budget numbers above stay correct. The pin is only a floor if **every** tenant
+on the host is kept off the reserved cores — a fleet-wide setting, not a
+per-box one; a single tenant left on `limits.cpu: 8` (any 8 cores) shares the
+reserved set and the floor is partial. Document the convention for the host
+and verify it with `containarium info`'s core-committed line.
+
+### Host daemons: `CPUWeight=` for `incusd` and the daemon
+
+The budget above is about containers. The two host processes every create
+depends on — `incusd` and the `containarium` daemon — used to run in
+`system.slice` at systemd's default `CPUWeight=100`, the same weight every
+tenant instance has, so a saturated host starved the processes that would
+have created the next box. `containariumd service install` (and therefore
+`hacks/install.sh`, `scripts/setup-peer.sh` and `pool join`) now installs:
+
+- `CPUAccounting=yes` + `CPUWeight=1000` inline in `containarium.service`;
+- the same two lines as a drop-in for the packaged incus unit,
+  `/etc/systemd/system/incus.service.d/50-containarium-cpu-weight.conf`
+  (incus.service is the distro's / Zabbly's file and is never edited in place);
+- `systemctl set-property --runtime incus.service CPUWeight=1000` right after
+  `daemon-reload`, so the running `incusd` picks the weight up without a
+  restart (a restart would stop every tenant); the drop-in takes over at the
+  next boot.
+
+A weight is a share under contention, not a cap and not a real-time
+priority: when the host is idle nothing changes, and when ~70 tenants are
+runnable the two daemons each get roughly ten times one tenant's slice.
+The number lives in one place, `hostcheck.PlatformCPUWeight`.
+
+`containarium doctor` reports **platform daemons CPU weight** as a posture
+check. It reads the *effective* `cpu.weight` of both units' cgroups
+(`/sys/fs/cgroup/system.slice/<unit>/cpu.weight`), so a drop-in that was
+written but never applied, or a cgroup v1 host, shows red with the reason;
+like every posture check it is non-blocking.
+
+### The local health probe on a busy host (#2317)
+
+Placement refuses the local backend when it is not fit to take new work
+(`no healthy backend found in pool …`), and `containarium backends` / the
+`ListBackends` RPC report the same verdict as the local entry's `Healthy` field.
+On a host that carries many instances under CPU pressure, that verdict has to
+stay answerable: it asks Incus for its server info only (not a listing of every
+instance, so the cost does not grow with the tenant count), one probe is shared
+by all concurrent callers, and a single failed or slow sample does not flip the
+host to unhealthy while Incus has answered within the last 15 seconds. A daemon
+that stays unresponsive past that window is still reported unhealthy.
+
+- `CONTAINARIUM_LOCAL_HEALTH_TIMEOUT` (a Go duration, default `3s`, accepted
+  range `100ms`–`30s`) is how long a caller waits for the probe. Raise it on a
+  host that is routinely saturated; out-of-range values fall back to the default.
+- The daemon logs `[health] local backend unhealthy: …` and
+  `[health] local backend healthy again` only on a change, and
+  `[health] local backend probe slow: …` (at most once per 30s) when a probe that
+  succeeded used over a quarter of its budget — the early sign of saturation.
+
 ## Semantics and scope
 
 - **Per-host, and it composes with pools.** The gate runs on the daemon that

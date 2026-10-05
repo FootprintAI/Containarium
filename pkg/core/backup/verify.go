@@ -58,6 +58,14 @@ type VerifyOptions struct {
 	// VerifiedBy is the authenticated subject requesting the test, for
 	// the "who" half of the audit record.
 	VerifiedBy string
+	// AgeIdentity ("AGE-SECRET-KEY-1…") decrypts an Encrypted record for
+	// this one call, same contract as RestoreOptions.AgeIdentity (#1831).
+	// Required for an encrypted record — the platform holds no
+	// decryption key of its own, so verification refuses to even attempt
+	// a restore test without it. Given the wrong identity, decryption
+	// fails and is recorded as a FAILED verification (a result, not an
+	// error) so the failure survives as audit evidence (#2295).
+	AgeIdentity string
 }
 
 // scratchPrefix marks the throwaway databases verification creates, so a
@@ -87,15 +95,19 @@ func (m *Manager) Verify(opts VerifyOptions) (*Verification, error) {
 		return nil, fmt.Errorf("target container is required: a restore test needs a throwaway container to load into")
 	}
 	// A restore test only means something for a dump the platform can
-	// load. A hook dump is opaque (#1831) and an encrypted dump is
-	// ciphertext the platform cannot open; refuse both here, before a
-	// scratch database exists, rather than recording a FAILED verification
-	// that reads like a corrupt backup.
+	// load. A hook dump is opaque (#1831) — refuse it here, before a
+	// scratch database exists, rather than recording a FAILED
+	// verification that reads like a corrupt backup.
 	if r.Engine == EngineHook {
 		return nil, fmt.Errorf("backup %s was produced by tenant hook %s and is an opaque stream: the platform cannot restore-test it", r.ID, r.Hook)
 	}
-	if r.Encrypted {
-		return nil, fmt.Errorf("backup %s is encrypted to %s: restore-testing an encrypted backup is not supported (the platform holds no decryption key)", r.ID, r.AgeRecipient)
+	// An encrypted dump needs the matching identity to even attempt a
+	// restore test — with none supplied there is nothing to try, same
+	// usage-error class as the hook refusal above (#2295). Supplied, a
+	// wrong identity is a real test outcome (handled below as a FAILED
+	// check), not refused here.
+	if r.Encrypted && strings.TrimSpace(opts.AgeIdentity) == "" {
+		return nil, fmt.Errorf("backup %s is encrypted to %s: supply the matching age identity to verify (the platform holds no decryption key)", r.ID, r.AgeRecipient)
 	}
 	// The whole control depends on this: a restore test that can reach
 	// the source container is a destructive operation wearing a
@@ -127,13 +139,32 @@ func (m *Manager) Verify(opts VerifyOptions) (*Verification, error) {
 		v.Checks = append(v.Checks, Check{Name: check, Passed: true, Detail: detail})
 	}
 
-	// 1. Integrity — a corrupt dump never reaches the engine.
+	// 1. Integrity — a corrupt dump never reaches the engine. For an
+	// encrypted record the checksum covers the ciphertext, so integrity
+	// is verified BEFORE decryption — same ordering as Restore.
 	data, err := m.fetchDump(r)
 	if err != nil {
 		fail("integrity", err.Error())
 		return m.commitVerification(r, v, started)
 	}
 	pass("integrity", fmt.Sprintf("sha256 matches recorded checksum (%d bytes)", len(data)))
+
+	// 1b. Decrypt — the check that answers "does anyone actually hold a
+	// working key for this backup?" (#2295). A backup can be perfectly
+	// intact (integrity above passes) and still be permanently
+	// unrecoverable if the registered recipient's matching private key
+	// is lost; only an attempted decrypt can tell the two apart. Recorded
+	// as its own named check so "decrypt failed" is distinguishable from
+	// "restore failed" in the evidence.
+	if r.Encrypted {
+		pt, err := decryptWithIdentity(data, opts.AgeIdentity)
+		if err != nil {
+			fail("decrypt", fmt.Sprintf("could not decrypt with the supplied identity: %v", err))
+			return m.commitVerification(r, v, started)
+		}
+		data = pt
+		pass("decrypt", fmt.Sprintf("decrypted with the supplied identity (%d plaintext bytes)", len(data)))
+	}
 
 	// 2. Create the throwaway database in the target container.
 	if _, stderr, err := m.ops.ExecWithOutput(opts.TargetContainer,

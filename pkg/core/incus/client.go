@@ -703,6 +703,10 @@ type ContainerMetrics struct {
 type ServerInfo struct {
 	Version       string
 	KernelVersion string
+	// CPUBudget is the daemon's tenant / core / physical CPU breakdown and
+	// admission-gate posture (#2284). Nil when the source did not report
+	// one — local Incus mode, or a daemon that predates the field.
+	CPUBudget *CPUBudget
 }
 
 // DefaultSocketPath is the Incus unix socket path used by New() and by any

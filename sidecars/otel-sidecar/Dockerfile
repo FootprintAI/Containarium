@@ -19,7 +19,11 @@ FROM debian:bookworm-slim
 # with internal/server/core_otel_collector.go's otelCollectorVersion.
 ARG OTELCOL_VERSION=0.162.0
 
+# apt-get upgrade: picks up security patches that shipped since
+# debian:bookworm-slim's last rebuild (e.g. libpcre2 deb12u2, which failed the
+# release Trivy gate on v0.99.0). Same fix as images/agent-box/Dockerfile.
 RUN apt-get update \
+    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends ca-certificates wget \
     && rm -rf /var/lib/apt/lists/*
 

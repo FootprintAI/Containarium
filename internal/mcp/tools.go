@@ -2566,6 +2566,8 @@ func handleGetSystemInfo(client API, args map[string]interface{}) (string, error
 	result += fmt.Sprintf("  Stopped: %d\n", resp.Info.ContainersStopped)
 	result += fmt.Sprintf("  Total: %d\n", resp.Info.ContainersTotal)
 
+	result += "\n" + formatCPUBudget(resp.Info)
+
 	// OTLP endpoint: where monitoring=true containers ship telemetry.
 	// Point docker-in-LXC apps here when they can't inherit the
 	// env-stamped OTEL_EXPORTER_OTLP_ENDPOINT. See #370.

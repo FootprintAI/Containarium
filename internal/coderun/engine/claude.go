@@ -123,6 +123,37 @@ fi`
 	return script
 }
 
+// claudeCredentialStatusScript probes for a Claude Code credential by NAME
+// only (#2272), mirroring VerifyScript's own detection above but condensed to
+// the single canonical answer a caller needs: the one source a run would
+// actually use right now, in the same priority a human reading VerifyScript's
+// multi-line output would pick — an interactive sign-in first (Anthropic's
+// own flow), then a user-placed key, then none. set -e is intentionally
+// absent: every branch exits explicitly, and the loop/grep below must not
+// abort the script on a legitimate "not found".
+//
+// #nosec G101 -- this is a shell script that checks for the PRESENCE of a
+// credentials file and the NAMES of env vars (ANTHROPIC_API_KEY,
+// ANTHROPIC_AUTH_TOKEN, CLAUDE_CODE_USE_*) — it never contains, reads, or
+// echoes a credential value. Same rationale as GatewayTokenEnvVar's
+// annotation in engine.go.
+const claudeCredentialStatusScript = `if [ -f "$HOME/.claude/.credentials.json" ]; then
+  echo interactive
+  exit 0
+fi
+settings="$HOME/.claude/settings.json"
+for key in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN; do
+  if [ -f "$settings" ] && grep -q "\"$key\"" "$settings"; then
+    echo api-key
+    exit 0
+  fi
+done
+if env | grep -q '^CLAUDE_CODE_USE_[A-Z0-9_]*='; then
+  echo api-key
+  exit 0
+fi
+echo none`
+
 // RunCommand renders the command process_start spawns.
 //
 // For a tenant secret this is coderun.BuildClaudeRunCommand verbatim — the

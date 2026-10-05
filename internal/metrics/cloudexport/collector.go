@@ -115,6 +115,22 @@ const (
 	// their behalf.
 	MetricPlatformPeersConnected = "containarium.platform.peers.connected"
 	MetricPlatformTunnelState    = "containarium.platform.tunnel.state"
+
+	// MetricBackupLastSuccessAgeSeconds is the backup-health series
+	// (#2294): seconds elapsed since each tenant's most recent
+	// successful backup, recomputed fresh at every export tick from the
+	// daemon's own durable backup index — not cached in-memory state, so
+	// it survives a daemon restart unlike a naive "record at success
+	// time" counter would. A straightforward conditionThreshold alert
+	// ("age > expected interval + slack") catches a tenant's scheduled
+	// backup silently breaking (disabled timer, wrong hook path,
+	// misconfigured conf line) even while the daemon itself — and its
+	// own containarium.export.heartbeat — stays perfectly healthy; that
+	// is the gap this series closes, distinct from (and a supplement to)
+	// the heartbeat's whole-host dead-man coverage. See
+	// docs/METRICS-EXPORT-DEADMAN-ALERT-RUNBOOK.md's backup-alert
+	// section for the policy JSON.
+	MetricBackupLastSuccessAgeSeconds = "containarium.backup.last_success_age_seconds"
 )
 
 // Label keys — the complete allowlist. No org/tenant identifier ever
@@ -149,6 +165,13 @@ const (
 	// narrower than host/platform (no hostname/region), per the design
 	// doc's allowlist.
 	LabelContainerName = "container_name"
+	// LabelUsername tags the backup-health series with which tenant a
+	// point is for (#2294) — see BackupHealthState for why this is a
+	// deliberate, reviewed exception to every other label in this file
+	// being tenant-identifier-free. No other series may use this label;
+	// TestNoTenantLabels_* for every other series still asserts its
+	// absence there.
+	LabelUsername = "username"
 )
 
 // Labels is the fixed identity stamped on every exported series. These
@@ -231,6 +254,19 @@ func (l Labels) containerAttributeSet(containerName string) attribute.Set {
 	)
 }
 
+// backupAttributeSet is the backup-health label set (backend_id,
+// hostname, region, username) (#2294) — the host-series identity plus
+// which tenant this point is for. See LabelUsername for why this one
+// series carries a tenant identifier when nothing else here does.
+func (l Labels) backupAttributeSet(username string) attribute.Set {
+	return attribute.NewSet(
+		attribute.String(LabelBackendID, l.BackendID),
+		attribute.String(LabelHostname, l.Hostname),
+		attribute.String(LabelRegion, l.Region),
+		attribute.String(LabelUsername, username),
+	)
+}
+
 // CollectorOptions are the construction inputs for a CloudExportCollector.
 type CollectorOptions struct {
 	// Sources is the seam over the daemon's metric collection. Required.
@@ -259,6 +295,10 @@ type CollectorOptions struct {
 	// selection resolves to [HOST], so a collector built from a v0.60.0
 	// config exports exactly the #1070 host series.
 	Groups []pb.CloudMetricsGroup
+	// Now is the clock the backup-health series (#2294) reads to turn a
+	// tenant's last-success timestamp into an age. Test seam; nil
+	// defaults to time.Now in production.
+	Now func() time.Time
 }
 
 // healthState is the collector's live export health, surfaced through
@@ -328,6 +368,7 @@ type CloudExportCollector struct {
 	interval        time.Duration
 	groups          []pb.CloudMetricsGroup
 	health          *healthState
+	now             func() time.Time
 
 	mu      sync.Mutex
 	mp      *sdkmetric.MeterProvider
@@ -341,6 +382,10 @@ func NewCollector(opts CollectorOptions) *CloudExportCollector {
 	if floor := MinIntervalSeconds * time.Second; interval < floor {
 		interval = floor
 	}
+	now := opts.Now
+	if now == nil {
+		now = time.Now
+	}
 	return &CloudExportCollector{
 		sources:         opts.Sources,
 		platformSources: opts.PlatformSources,
@@ -350,6 +395,7 @@ func NewCollector(opts CollectorOptions) *CloudExportCollector {
 		interval:        interval,
 		groups:          NormalizeGroups(opts.Groups),
 		health:          &healthState{},
+		now:             now,
 	}
 }
 
@@ -423,7 +469,7 @@ func (c *CloudExportCollector) buildMeterProvider(reader sdkmetric.Reader) (*sdk
 	}
 	mp := sdkmetric.NewMeterProvider(mpOpts...)
 	for _, g := range c.groups {
-		if err := registerGroupInstruments(mp, g, c.sources, c.platformSources, c.labels); err != nil {
+		if err := registerGroupInstruments(mp, g, c.sources, c.platformSources, c.labels, c.now); err != nil {
 			return nil, err
 		}
 	}
@@ -447,7 +493,7 @@ func (c *CloudExportCollector) buildMeterProvider(reader sdkmetric.Reader) (*sdk
 // whatever groups are enabled, because the dead-man signal must never be
 // gated by group selection or a Sources error (see
 // registerHeartbeatInstrument).
-func registerGroupInstruments(mp *sdkmetric.MeterProvider, group pb.CloudMetricsGroup, sources Sources, platformSources PlatformSources, labels Labels) error {
+func registerGroupInstruments(mp *sdkmetric.MeterProvider, group pb.CloudMetricsGroup, sources Sources, platformSources PlatformSources, labels Labels, now func() time.Time) error {
 	switch group {
 	case pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_HOST:
 		return registerHostInstruments(mp, sources, labels)
@@ -460,21 +506,23 @@ func registerGroupInstruments(mp *sdkmetric.MeterProvider, group pb.CloudMetrics
 			// the pre-#1082 "reserved" behavior, never an error.
 			return nil
 		}
-		return registerPlatformInstruments(mp, platformSources, labels)
+		return registerPlatformInstruments(mp, platformSources, labels, now)
 	default:
 		return fmt.Errorf("cloudexport: unregisterable metric group %v", group)
 	}
 }
 
 // registerPlatformInstruments creates the platform group's API-health
-// (#1082), provisioning-outcome (#1083), and connectivity (#1084)
-// instruments and wires one callback per concern, each pulling a single
-// snapshot per tick. API-health and provisioning are counters: OTel
-// async-counter semantics expect the current cumulative total on every
-// observation (platformstats.Stats already accumulates for the daemon's
-// lifetime), which is exactly what those snapshots report. Connectivity
-// is gauges: peer health is current state, not an accumulating count.
-func registerPlatformInstruments(mp *sdkmetric.MeterProvider, sources PlatformSources, labels Labels) error {
+// (#1082), provisioning-outcome (#1083), connectivity (#1084), and
+// backup-health (#2294) instruments and wires one callback per concern,
+// each pulling a single snapshot per tick. API-health and provisioning
+// are counters: OTel async-counter semantics expect the current
+// cumulative total on every observation (platformstats.Stats already
+// accumulates for the daemon's lifetime), which is exactly what those
+// snapshots report. Connectivity and backup-health are gauges: both are
+// current state (peer health; seconds since last success), not an
+// accumulating count.
+func registerPlatformInstruments(mp *sdkmetric.MeterProvider, sources PlatformSources, labels Labels, now func() time.Time) error {
 	meter := mp.Meter(meterName)
 
 	requests, err := meter.Int64ObservableCounter(MetricPlatformAPIRequests,
@@ -571,6 +619,27 @@ func registerPlatformInstruments(mp *sdkmetric.MeterProvider, sources PlatformSo
 			return nil
 		},
 		peersConnected, tunnelState,
+	)
+	if err != nil {
+		return err
+	}
+
+	backupAge, err := meter.Float64ObservableGauge(MetricBackupLastSuccessAgeSeconds,
+		metric.WithUnit("s"), metric.WithDescription("Seconds since each tenant's most recent successful backup. Absence from the series means no stored backup exists for that tenant at all, not freshness."))
+	if err != nil {
+		return err
+	}
+
+	_, err = meter.RegisterCallback(
+		func(ctx context.Context, o metric.Observer) error {
+			n := now()
+			for _, s := range sources.BackupHealth() {
+				age := n.Sub(s.LastSuccessAt).Seconds()
+				o.ObserveFloat64(backupAge, age, metric.WithAttributeSet(labels.backupAttributeSet(s.Username)))
+			}
+			return nil
+		},
+		backupAge,
 	)
 	return err
 }
