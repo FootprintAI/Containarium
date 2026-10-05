@@ -269,7 +269,7 @@ func (d *Dispatcher) Tick(ctx context.Context, username, connection string) (Tic
 		// The caller's budget (#2270): once MaxStarts runs have started,
 		// an issue that got this far is left for a later tick — no row, no
 		// label. Checked before the insert so nothing is written for it.
-		if d.MaxStarts > 0 && int32(len(res.Started)) >= d.MaxStarts {
+		if d.MaxStarts > 0 && len(res.Started) >= int(d.MaxStarts) {
 			res.LeftUndispatched++
 			continue
 		}
