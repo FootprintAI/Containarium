@@ -43,6 +43,17 @@ instead visible through the *primary's* connectivity series
 alert section below for the same `gcloud`/JSON recipe pattern applied to a
 `tunnel.state = 0` condition instead.
 
+**This alert does not cover a GCE instance that is stopped or deleted
+outright.** Cloud Monitoring's metric-absence evaluation explicitly
+excludes `TERMINATED`/`DELETED` resources from consideration, so
+`conditionAbsent` will not open an incident for an instance that was
+intentionally or accidentally shut down or removed — only for one that
+is still running but has stopped reporting. Catching a stopped/deleted
+instance needs a separate instance-state check (an uptime check, or an
+inventory alert over `compute.instances.list`); read "host down"
+throughout this runbook as "host unreachable while the resource still
+exists," not "resource gone."
+
 ## Prerequisites
 
 1. Export enabled on the backend and confirmed healthy:
@@ -386,10 +397,15 @@ gcloud alpha monitoring policies create \
   alone does NOT cover a dead host or dead daemon**: once nothing is
   re-observing the gauge, it freezes at whatever age it last reported
   and never climbs further, so it will not cross the threshold just
-  because the host went dark days ago. That coverage is specifically
-  the existing heartbeat dead-man policy's job (`conditionAbsent` on
+  because the host went dark days ago. That gap is the existing
+  heartbeat dead-man policy's job (`conditionAbsent` on
   `containarium.export.heartbeat`) — configure both, not one in place
-  of the other; they catch genuinely different failures.
+  of the other; they catch genuinely different failures. That said,
+  the heartbeat policy has its own blind spot for a stopped/deleted
+  instance (see "This alert does not cover a GCE instance that is
+  stopped or deleted outright" above) — a frozen backup-age gauge
+  won't cross its threshold either if the instance stopped before it
+  got there, so neither policy catches that specific case.
   `conditionAbsent` on the backup series itself only fits "a tenant
   that already has backup history suddenly has none" and even then
   behaves like this threshold does once the host is dead (the series
