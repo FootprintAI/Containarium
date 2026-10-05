@@ -258,7 +258,7 @@ func TestChainGuards_InjectedIssueCannotWidenScopesOrLabels(t *testing.T) {
 func TestSetTrackerIssueLabels_RunTokenCannotReleaseGateWithoutAutoChain(t *testing.T) {
 	const user = "tracker-chain-gate-release-needs-human"
 	provider := &fakeWriterProvider{}
-	s, starter, admin := setUpDispatchableConnection(t, user, provider, nil)
+	s, starter, admin := setUpDispatchableConnection(t, user, provider, &pb.TrackerPolicy{LabelAllowList: []string{"*"}})
 
 	routed := tracker.Issue{Number: 42, Labels: []string{"scope:product"}, State: pb.TrackerIssueState_TRACKER_ISSUE_STATE_OPEN}
 	provider.issues, provider.issue = []tracker.Issue{routed}, routed
@@ -285,6 +285,8 @@ func TestSetTrackerIssueLabels_RunTokenCannotReleaseGateWithoutAutoChain(t *test
 		remove []string
 	}{
 		{"its own recorded child", child, nil, []string{tracker.LabelNeedsApproval}},
+		{"its own child with mixed-case gate", child, nil, []string{"Agent:Needs-Approval"}},
+		{"its own child with whitespace around gate", child, nil, []string{" agent:needs-approval "}},
 		{"its own child, alongside an allowed model label", child, []string{"model:fable"}, []string{tracker.LabelNeedsApproval}},
 		{"its own dispatched issue", 42, nil, []string{tracker.LabelNeedsApproval}},
 	}

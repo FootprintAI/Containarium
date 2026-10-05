@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A busy host no longer becomes unplaceable because its health probe is slow (#2317). The local
+  backend's liveness probe listed every instance and then asked Incus for its server info under a
+  fixed 3s budget, failing closed, so on a host with many instances under CPU pressure a slow but
+  responsive incusd made every create into the pool fail with `no healthy backend found in pool`, and
+  each timed-out probe leaked a goroutine and an Incus connection. The probe now asks Incus for its
+  server info only (cost independent of the instance count), one probe is shared by concurrent callers,
+  and a failed or slow sample does not flip the verdict while Incus answered within the last 15s. A
+  daemon that stays unresponsive is still reported unhealthy. `CONTAINARIUM_LOCAL_HEALTH_TIMEOUT`
+  (default `3s`, range `100ms`-`30s`) tunes the per-call budget, and the daemon logs transitions and
+  slow probes. See `docs/CPU-CAPACITY-ADMISSION.md`.
+- `ListBackends` (the fleet view / `list_backends`) is now bounded: the local `GetSystemInfo` probe
+  has its own 5s deadline and peers are probed in parallel (each with a 5s deadline) instead of one
+  after another, so a wedged local daemon or several unresponsive peers can no longer make the
+  listing outlast the caller's deadline. A backend that does not answer keeps its identity and
+  health fields and simply has no load block (unknown, not idle); (#2318).
 - The `mcp-server` image's runtime stage now runs `apt-get upgrade -y`, like the daemon, sshpiper,
   otel-sidecar, model-gateway and agent-box images, so it no longer ships `debian:bookworm-slim`'s
   stale `libpcre2-8-0` (HIGH, fixed in `deb12u2`). No workflow publishes this image today; the
