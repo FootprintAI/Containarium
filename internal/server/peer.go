@@ -889,14 +889,20 @@ func (pc *PeerClient) ForwardCreateContainer(authToken string, pbReq *pb.CreateC
 // ForwardRequest forwards an arbitrary HTTP request to the peer and returns the response body.
 // GET requests use a 5s timeout to avoid blocking the UI; POST/PUT use 30s for mutations.
 func (pc *PeerClient) ForwardRequest(method, path, authToken string, body []byte) ([]byte, int, error) {
-	url := fmt.Sprintf("%s://%s%s", pc.urlScheme(), pc.Addr, path)
-
 	timeout := 5 * time.Second
 	if method != "GET" {
 		timeout = 30 * time.Second
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+	return pc.ForwardRequestCtx(ctx, method, path, authToken, body)
+}
+
+// ForwardRequestCtx is ForwardRequest with a caller-supplied context, so a
+// caller with its own (shorter) budget can cancel the in-flight request
+// instead of leaving it running to the fixed default timeout.
+func (pc *PeerClient) ForwardRequestCtx(ctx context.Context, method, path, authToken string, body []byte) ([]byte, int, error) {
+	url := fmt.Sprintf("%s://%s%s", pc.urlScheme(), pc.Addr, path)
 
 	var bodyReader io.Reader
 	if body != nil {
@@ -982,7 +988,15 @@ func (pc *PeerClient) refreshCachedInfo() {
 
 // ForwardGetSystemInfo fetches system info from a peer.
 func (pc *PeerClient) ForwardGetSystemInfo(authToken string) ([]byte, error) {
-	body, status, err := pc.ForwardRequest("GET", "/v1/system/info", authToken, nil)
+	return pc.ForwardGetSystemInfoCtx(context.Background(), authToken)
+}
+
+// ForwardGetSystemInfoCtx is ForwardGetSystemInfo bounded by ctx (the fixed
+// per-request default still applies on top of it).
+func (pc *PeerClient) ForwardGetSystemInfoCtx(ctx context.Context, authToken string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	body, status, err := pc.ForwardRequestCtx(ctx, "GET", "/v1/system/info", authToken, nil)
 	if err != nil {
 		return nil, fmt.Errorf("forward system-info to %s: %w", pc.ID, err)
 	}

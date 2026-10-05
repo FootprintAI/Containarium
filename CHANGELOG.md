@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ListBackends` (the fleet view / `list_backends`) is now bounded: the local `GetSystemInfo` probe
+  has its own 5s deadline and peers are probed in parallel (each with a 5s deadline) instead of one
+  after another, so a wedged local daemon or several unresponsive peers can no longer make the
+  listing outlast the caller's deadline. A backend that does not answer keeps its identity and
+  health fields and simply has no load block (unknown, not idle); peer order is unchanged (#2318).
 - The `mcp-server` image's runtime stage now runs `apt-get upgrade -y`, like the daemon, sshpiper,
   otel-sidecar, model-gateway and agent-box images, so it no longer ships `debian:bookworm-slim`'s
   stale `libpcre2-8-0` (HIGH, fixed in `deb12u2`). No workflow publishes this image today; the
