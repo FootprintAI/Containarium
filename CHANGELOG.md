@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The daemon, sshpiper, otel-sidecar and model-gateway images now run `apt-get upgrade -y`
+  in their runtime stage, as agent-box already did. `debian:bookworm-slim` is unpinned and lags
+  Debian's security archive, so the v0.99.0 release image scan found `libpcre2-8-0`
+  `10.42-1+deb12u1` (HIGH, fixed in `deb12u2`) in all four and failed the Trivy gate. v0.99.0's
+  binaries and PyPI package are unaffected; its images carry the vulnerable library, so use
+  v0.99.1.
+
 ## [0.99.0] - 2026-10-05
 
 ### Changed
