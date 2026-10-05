@@ -190,6 +190,11 @@ type ContainerServer struct {
 	// backend without a live Incus daemon. nil in production; the real probe
 	// runs.
 	localHealthCheckFn func() bool
+	// localHealthOnce / localHealthState: the debounced, single-flight local
+	// liveness verdict behind localBackendHealthy (#2317). Built lazily on first
+	// use so the env override is read once.
+	localHealthOnce  sync.Once
+	localHealthState *localHealth
 	// CPU overcommit admission (#1029 direction 2). cpuOvercommitFactor is the
 	// ceiling multiple of physical cores a host may commit; <= 0 disables the
 	// gate (the default). cpuOvercommitEnforce=false makes an enabled gate
@@ -4326,24 +4331,20 @@ func (s *ContainerServer) resolvePoolPlacement(req *pb.CreateContainerRequest) e
 	return nil
 }
 
-// localHealthCheckTimeout bounds localBackendHealthy's liveness probe below
-// — long enough for a briefly busy incusd to answer, short enough that a
-// genuinely wedged daemon (see #755 — CPU-starved incusd from a runaway
-// rsyslog/OOM-crash-loop neighbor) doesn't stall a placement decision for
-// more than a couple of seconds.
-const localHealthCheckTimeout = 3 * time.Second
-
 // localBackendHealthy reports whether this daemon's own LOCAL backend is
 // currently fit to receive newly scheduled work. It is the single source of
 // truth shared by ListBackends (the local entry's Healthy field) and
 // resolvePoolPlacement's local-backend short-circuit (#920) — previously
 // ListBackends hardcoded Healthy=true for local and resolvePoolPlacement
-// didn't check health at all, so the two paths could never actually
-// disagree in a way that would ever surface as a bug: both were simply
-// blind to real local health. This performs the same connectivity probe
-// GetSystemInfo already runs (container list + Incus server info) but skips
-// GetSystemInfo's admin-role gate, since this is an internal call made on
+// didn't check health at all, so both were blind to real local health. This
+// skips GetSystemInfo's admin-role gate, since it is an internal call made on
 // behalf of any caller's placement decision, not a fresh RPC.
+//
+// The verdict comes from localHealth (local_health.go, #2317): an Incus
+// server-info probe whose cost does not grow with the instance count, shared
+// by concurrent callers, and debounced so one slow sample on a busy host does
+// not make it unplaceable. It still fails closed on a daemon that stays
+// unresponsive. CONTAINARIUM_LOCAL_HEALTH_TIMEOUT tunes the per-call budget.
 //
 // localHealthCheckFn, when set (tests), overrides the real probe.
 func (s *ContainerServer) localBackendHealthy() bool {
@@ -4356,32 +4357,11 @@ func (s *ContainerServer) localBackendHealthy() bool {
 		// tests that don't exercise this signal are unaffected.
 		return true
 	}
-	done := make(chan bool, 1)
-	go func() {
-		if _, err := s.manager.List(); err != nil {
-			done <- false
-			return
-		}
-		client, err := incus.New()
-		if err != nil {
-			done <- false
-			return
-		}
-		if _, err := client.GetServerInfo(); err != nil {
-			done <- false
-			return
-		}
-		done <- true
-	}()
-	select {
-	case healthy := <-done:
-		return healthy
-	case <-time.After(localHealthCheckTimeout):
-		// Didn't answer in time — fail CLOSED (unhealthy) rather than block
-		// the caller indefinitely on a wedged daemon, and rather than
-		// silently treat "didn't check in time" as "must be fine".
-		return false
-	}
+	s.localHealthOnce.Do(func() {
+		timeout := localHealthTimeoutFromEnv()
+		s.localHealthState = newLocalHealth(incusLivenessProbe(probeCeilingFactor*timeout), timeout, localHealthGrace)
+	})
+	return s.localHealthState.Healthy()
 }
 
 // SetRouteCleanupDeps wires the route store + proxy manager so
