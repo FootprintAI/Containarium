@@ -3,7 +3,7 @@ module github.com/footprintai/containarium
 go 1.26.7
 
 require (
-	cloud.google.com/go/compute v1.70.0
+	cloud.google.com/go/compute v1.71.0
 	filippo.io/age v1.3.2
 	github.com/BurntSushi/toml v1.6.0
 	github.com/blang/semver/v4 v4.0.0
@@ -20,6 +20,7 @@ require (
 	github.com/pires/go-proxyproto v0.15.0
 	github.com/rs/cors v1.11.1
 	github.com/spf13/cobra v1.10.2
+	github.com/spf13/pflag v1.0.10
 	github.com/stretchr/testify v1.12.1
 	github.com/tg123/sshpiper v1.6.1
 	github.com/ti-mo/conntrack v0.6.0
@@ -98,7 +99,7 @@ require (
 	github.com/google/jsonschema-go v0.4.2 // indirect
 	github.com/google/s2a-go v0.1.10 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.22 // indirect
-	github.com/googleapis/gax-go/v2 v2.24.1 // indirect
+	github.com/googleapis/gax-go/v2 v2.26.2 // indirect
 	github.com/gorilla/securecookie v1.1.2 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
@@ -133,7 +134,6 @@ require (
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 // indirect
 	github.com/sirupsen/logrus v1.10.2 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
-	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/tg123/remotesigner v0.0.3 // indirect
 	github.com/urfave/cli v1.22.17 // indirect
 	github.com/urfave/cli/v2 v2.27.7 // indirect
