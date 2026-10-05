@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.99.1] - 2026-10-05
+
 ### Fixed
 
 - The daemon, sshpiper, otel-sidecar and model-gateway images now run `apt-get upgrade -y`
@@ -19,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.99.0] - 2026-10-05
 
 ### Changed
+
 - **BREAKING:** the tracker data-plane REST routes now live under the
   connection resource. The 13 routes that began `/v1/tracker/{username}/{connection}/`
   (scope routes, dispatch, issues, comments/claim/labels, changes) are now
@@ -44,6 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Documented in `docs/DB-BACKUP-OPERATIONS.md` (#2295, #2302).
 
 ### Added
+
 - `SystemInfo` reports the platform's own CPU commitment next to the tenant
   one: new `core_committed_cpu_cores` (sum of core-role containers' `limits.cpu`),
   the admission gate's posture as a `CPUAdmissionMode` enum (`DISABLED` /
@@ -97,6 +101,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   live run are kept on purpose: the create may have succeeded upstream (#2062, #2291).
 
 ### Fixed
+
 - A dispatched skill run could not call any tracker verb for its own tenant
   (#2268). The run JWT is minted for the box's subject (`agent-<skill-id>`,
   no roles), while every `tracker_*` verb authorized the tenant named in the
