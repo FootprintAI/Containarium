@@ -81,9 +81,10 @@ func TestListBackends_UnresponsivePeersDoNotBlockListing(t *testing.T) {
 	}
 }
 
-// The response keeps the pool's peer order regardless of which probe
-// finishes first.
-func TestListBackends_PeerOrderIsStable(t *testing.T) {
+// Parallel probing must not cross wires: each peer entry carries the info
+// returned by that peer, however the probes interleave. (PeerPool.Peers()
+// iterates a map, so the listing's peer order was never deterministic.)
+func TestListBackends_ParallelProbesKeepResultsPerPeer(t *testing.T) {
 	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(150 * time.Millisecond)
 		_, _ = w.Write([]byte(`{"info":{"hostname":"slow"}}`))
@@ -97,7 +98,6 @@ func TestListBackends_PeerOrderIsStable(t *testing.T) {
 	pool := NewPeerPool("local-spot", "", nil, "")
 	addTestPeer(pool, "p-slow", slow, true)
 	addTestPeer(pool, "p-fast", fast, true)
-	want := pool.Peers()
 
 	s := &ContainerServer{peerPool: pool}
 	ctx := auth.ContextWithTestSubject(context.Background(), "ops", auth.RoleAdmin)
@@ -105,12 +105,13 @@ func TestListBackends_PeerOrderIsStable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(resp.Backends) != 1+len(want) {
+	want := map[string]string{"p-slow": "slow", "p-fast": "fast"}
+	if len(resp.Backends) != 3 {
 		t.Fatalf("got %d backends", len(resp.Backends))
 	}
-	for i, p := range want {
-		if got := resp.Backends[i+1].Id; got != p.ID {
-			t.Errorf("position %d: got %s want %s", i+1, got, p.ID)
+	for _, b := range resp.Backends[1:] {
+		if b.Hostname != want[b.Id] {
+			t.Errorf("%s: hostname %q, want %q", b.Id, b.Hostname, want[b.Id])
 		}
 	}
 }
