@@ -22,7 +22,7 @@ type fakeBackend struct {
 	containers  []incus.ContainerInfo
 	listErr     error
 	firewall    string
-	noBridgeACL bool // Incus 6.0: no network_bridge_acl extension
+	noBridgeACL bool // Incus 6.0.0: no network_bridge_acl_devices extension
 
 	acls    map[string]api.NetworkACL
 	devices map[string]map[string]map[string]string // container → device → keys
@@ -53,9 +53,9 @@ func (f *fakeBackend) ListContainers() ([]incus.ContainerInfo, error) {
 }
 
 func (f *fakeBackend) GetServerInfo() (*api.Server, error) {
-	exts := []string{"network_acl", "network_bridge_acl"}
+	exts := []string{"network_acl", "network_bridge_acl", "network_bridge_acl_devices"}
 	if f.noBridgeACL {
-		exts = []string{"network_acl"}
+		exts = []string{"network_acl", "network_bridge_acl"} // Incus 6.0.0
 	}
 	return &api.Server{
 		ServerUntrusted: api.ServerUntrusted{APIExtensions: exts},

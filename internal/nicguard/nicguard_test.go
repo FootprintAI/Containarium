@@ -93,9 +93,9 @@ func TestCheckSupport(t *testing.T) {
 		wantErr     error
 		unsupported bool
 	}{
-		{"nftables + extension", "nftables", []string{"network_acl", "network_bridge_acl"}, nil, false},
-		{"xtables", "xtables", []string{"network_bridge_acl"}, ErrUnsupportedFirewall, true},
-		{"incus 6.0 without the extension", "nftables", []string{"network_acl"}, ErrUnsupportedIncus, true},
+		{"nftables + extension", "nftables", []string{"network_acl", "network_bridge_acl", "network_bridge_acl_devices"}, nil, false},
+		{"xtables", "xtables", []string{"network_bridge_acl_devices"}, ErrUnsupportedFirewall, true},
+		{"incus 6.0.0: bridge-level ACLs only, no NIC-level", "nftables", []string{"network_acl", "network_bridge_acl"}, ErrUnsupportedIncus, true},
 		{"no extensions at all", "nftables", nil, ErrUnsupportedIncus, true},
 	}
 	for _, tc := range tests {

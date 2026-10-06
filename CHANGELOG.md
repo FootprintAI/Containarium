@@ -22,8 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the daemon's first pass; one that cannot be is left running and reported. The core-infra guard (#2084) changes
   its default the same way. `CONTAINARIUM_TENANT_GUARD` and `CONTAINARIUM_CORE_GUARD` now treat unset as
   `enforce`; only `off` disables, and anything else fails closed to `enforce`. Both guards need Incus's `nftables`
-  firewall driver and the `network_bridge_acl` API extension (Incus 7.x from the Zabbly repository has it; Ubuntu's
-  packaged Incus 6.0 LTS does not). A host that cannot carry bridge NIC ACLs at all is **not** guarded: creates
+  firewall driver and the `network_bridge_acl_devices` API extension (Incus 6.9+; the Zabbly 7.x builds have it, Ubuntu's
+  packaged Incus 6.0.0 does not). A host that cannot carry bridge NIC ACLs at all is **not** guarded: creates
   still succeed, the daemon logs the gap once, and the guard's status reports it, so a missing capability never
   turns into an outage. What changes for tenants: reaching a *co-tenant's*
   box by bridge address is denied; reaching your own other boxes, Caddy, OTel, DNS, DHCP and the internet is not.

@@ -51,17 +51,19 @@ func ParseMode(s string) Mode {
 var ErrUnsupportedFirewall = errors.New("incus firewall driver is not nftables; bridge NIC ACLs cannot be enforced")
 
 // ErrUnsupportedIncus is returned when the host's Incus predates NIC-level
-// ACLs on bridge networks (API extension network_bridge_acl; Ubuntu's
-// packaged Incus 6.0 LTS lacks it, Incus 7.x has it).
-var ErrUnsupportedIncus = errors.New("incus lacks the network_bridge_acl API extension; upgrade Incus to apply bridge NIC ACLs")
+// ACLs on bridged NICs (API extension network_bridge_acl_devices, Incus
+// 6.9+; Ubuntu's packaged Incus 6.0.0 lacks it, the Zabbly 7.x builds
+// have it). The older network_bridge_acl extension is the bridge-level
+// key and is NOT sufficient.
+var ErrUnsupportedIncus = errors.New("incus lacks the network_bridge_acl_devices API extension (Incus 6.9+); upgrade Incus to apply bridge NIC ACLs")
 
 // RequiredFirewall is the only Incus firewall driver that renders NIC-level
 // ACLs (doc/howto/network_acls.md, "Bridge limitations").
 const RequiredFirewall = "nftables"
 
 // RequiredExtension is the Incus API extension that brings security.acls
-// (and the default action/logged keys) to bridge NICs.
-const RequiredExtension = "network_bridge_acl"
+// (and the default action/logged keys) to bridged NIC devices.
+const RequiredExtension = "network_bridge_acl_devices"
 
 // Unsupported reports whether err means this host cannot carry bridge NIC
 // ACLs at all (wrong firewall driver, Incus too old) — as opposed to a
