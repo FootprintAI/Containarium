@@ -2873,6 +2873,29 @@ func (ds *DualServer) handleBackendSystemInfo(w http.ResponseWriter, r *http.Req
 	w.Write(respBody)
 }
 
+// startCapabilityProfile self-profiles a joining backend once per daemon,
+// after pool identity is wired. Pool join installs --pool on the daemon;
+// restarting a pool member takes the same path. The measurement runs off the
+// startup path, and failure never prevents membership or serving requests.
+// The returned channel closes when this best-effort startup work is finished.
+func (ds *DualServer) startCapabilityProfile(ctx context.Context) <-chan struct{} {
+	done := make(chan struct{})
+	if ds.config.Pool == "" || ds.containerServer == nil {
+		close(done)
+		return done
+	}
+	go func() {
+		defer close(done)
+		if ctx.Err() != nil {
+			return
+		}
+		if _, err := ds.containerServer.recordCapabilityProfile(false, true); err != nil {
+			log.Printf("[capabilities] automatic pool-member profile failed: %v; use ProfileBackend to retry", err)
+		}
+	}()
+	return done
+}
+
 func (ds *DualServer) Start(ctx context.Context) error {
 	// Anonymous-box funnel (#2201): emit expired / killed events within a
 	// minute of a box disappearing.
@@ -3039,6 +3062,9 @@ func (ds *DualServer) Start(ctx context.Context) error {
 			ds.gatewayServer.SetTerminalPeerProxy(ds.peerPool)
 		}
 	}
+
+	// Self-profile the joining host, never the primary's host (#2136).
+	ds.startCapabilityProfile(ctx)
 
 	// Resume cloud host-series export (#1070) if it was enabled before a
 	// restart. Sequenced here — after SetCapabilityIdentity and, when

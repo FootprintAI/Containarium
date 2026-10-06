@@ -1355,8 +1355,19 @@ type SystemInfo struct {
 	// disabled. The ceiling in cores is total_cpus × cpu_overcommit_factor;
 	// the host is over it when committed_cpu_cores exceeds that.
 	CpuOvercommitFactor float64 `protobuf:"fixed64,27,opt,name=cpu_overcommit_factor,json=cpuOvercommitFactor,proto3" json:"cpu_overcommit_factor,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// headroom is the spare scheduling capacity this backend currently
+	// advertises (#680), or null when nothing is advertised (withdrawn or
+	// never published) — null stays distinguishable from "offering zero".
+	// Carried on SystemInfo so ListBackends' existing GetSystemInfo fan-out
+	// surfaces a peer's advertisement with no extra forwarded call (#2135).
+	Headroom *CapacityHeadroom `protobuf:"bytes,28,opt,name=headroom,proto3" json:"headroom,omitempty"`
+	// capability_profile is this backend's last-recorded hardware capability
+	// profile (#681), or null until ProfileBackend has run — null stays
+	// distinguishable from "profiled CPU-only". Carried here for the same
+	// peer fan-out as headroom (#2135).
+	CapabilityProfile *CapabilityProfile `protobuf:"bytes,29,opt,name=capability_profile,json=capabilityProfile,proto3" json:"capability_profile,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *SystemInfo) Reset() {
@@ -1576,6 +1587,20 @@ func (x *SystemInfo) GetCpuOvercommitFactor() float64 {
 		return x.CpuOvercommitFactor
 	}
 	return 0
+}
+
+func (x *SystemInfo) GetHeadroom() *CapacityHeadroom {
+	if x != nil {
+		return x.Headroom
+	}
+	return nil
+}
+
+func (x *SystemInfo) GetCapabilityProfile() *CapabilityProfile {
+	if x != nil {
+		return x.CapabilityProfile
+	}
+	return nil
 }
 
 // BackendStorage describes the storage pool backing a backend's containers.
@@ -5377,7 +5402,8 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"updateMask\"a\n" +
 	"\x14UpdateConfigResponse\x12\x18\n" +
 	"\amessage\x18\x01 \x01(\tR\amessage\x12/\n" +
-	"\x06config\x18\x02 \x01(\v2\x17.containarium.v1.ConfigR\x06config\"\xa3\t\n" +
+	"\x06config\x18\x02 \x01(\v2\x17.containarium.v1.ConfigR\x06config\"\xb5\n" +
+	"\n" +
 	"\n" +
 	"SystemInfo\x12#\n" +
 	"\rincus_version\x18\x01 \x01(\tR\fincusVersion\x12\x0e\n" +
@@ -5409,7 +5435,9 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"\x13committed_cpu_cores\x18\x18 \x01(\x01R\x11committedCpuCores\x127\n" +
 	"\x18core_committed_cpu_cores\x18\x19 \x01(\x01R\x15coreCommittedCpuCores\x12O\n" +
 	"\x12cpu_admission_mode\x18\x1a \x01(\x0e2!.containarium.v1.CPUAdmissionModeR\x10cpuAdmissionMode\x122\n" +
-	"\x15cpu_overcommit_factor\x18\x1b \x01(\x01R\x13cpuOvercommitFactor\"\xbe\x01\n" +
+	"\x15cpu_overcommit_factor\x18\x1b \x01(\x01R\x13cpuOvercommitFactor\x12=\n" +
+	"\bheadroom\x18\x1c \x01(\v2!.containarium.v1.CapacityHeadroomR\bheadroom\x12Q\n" +
+	"\x12capability_profile\x18\x1d \x01(\v2\".containarium.v1.CapabilityProfileR\x11capabilityProfile\"\xbe\x01\n" +
 	"\x0eBackendStorage\x12\x12\n" +
 	"\x04pool\x18\x01 \x01(\tR\x04pool\x126\n" +
 	"\x06driver\x18\x02 \x01(\x0e2\x1e.containarium.v1.StorageDriverR\x06driver\x12?\n" +
@@ -5858,49 +5886,51 @@ var file_containarium_v1_config_proto_depIdxs = []int32{
 	20, // 9: containarium.v1.SystemInfo.gpus:type_name -> containarium.v1.GPUInfo
 	19, // 10: containarium.v1.SystemInfo.storage:type_name -> containarium.v1.BackendStorage
 	0,  // 11: containarium.v1.SystemInfo.cpu_admission_mode:type_name -> containarium.v1.CPUAdmissionMode
-	1,  // 12: containarium.v1.BackendStorage.driver:type_name -> containarium.v1.StorageDriver
-	2,  // 13: containarium.v1.BackendStorage.isolation:type_name -> containarium.v1.StorageIsolation
-	3,  // 14: containarium.v1.GPUInfo.vendor:type_name -> containarium.v1.GPUVendor
-	4,  // 15: containarium.v1.GPUInfo.model:type_name -> containarium.v1.GPUModel
-	18, // 16: containarium.v1.GetSystemInfoResponse.info:type_name -> containarium.v1.SystemInfo
-	18, // 17: containarium.v1.GetSystemInfoResponse.peers:type_name -> containarium.v1.SystemInfo
-	8,  // 18: containarium.v1.ValidateGPUResponse.status:type_name -> containarium.v1.ValidateGPUResponse.GPUStatus
-	5,  // 19: containarium.v1.GetBridgeDNSStatusResponse.state:type_name -> containarium.v1.BridgeDNSState
-	77, // 20: containarium.v1.GetBridgeDNSStatusResponse.last_pass:type_name -> google.protobuf.Timestamp
-	77, // 21: containarium.v1.GetBridgeDNSStatusResponse.last_applied:type_name -> google.protobuf.Timestamp
-	77, // 22: containarium.v1.GetBridgeDNSStatusResponse.created_at:type_name -> google.protobuf.Timestamp
-	6,  // 23: containarium.v1.NetworkPolicy.mode:type_name -> containarium.v1.NetworkPolicyMode
-	34, // 24: containarium.v1.NetworkPolicy.deny_rules:type_name -> containarium.v1.NetworkPolicyDenyRule
-	33, // 25: containarium.v1.SetNetworkPolicyRequest.policy:type_name -> containarium.v1.NetworkPolicy
-	33, // 26: containarium.v1.SetNetworkPolicyResponse.policy:type_name -> containarium.v1.NetworkPolicy
-	33, // 27: containarium.v1.GetNetworkPolicyResponse.policy:type_name -> containarium.v1.NetworkPolicy
-	33, // 28: containarium.v1.ListNetworkPoliciesResponse.policies:type_name -> containarium.v1.NetworkPolicy
-	34, // 29: containarium.v1.PatchNetworkPolicyDenyRulesRequest.add:type_name -> containarium.v1.NetworkPolicyDenyRule
-	44, // 30: containarium.v1.SetNetworkPolicySignatureRequest.signature:type_name -> containarium.v1.NetworkPolicySignature
-	44, // 31: containarium.v1.SetNetworkPolicySignatureResponse.signature:type_name -> containarium.v1.NetworkPolicySignature
-	44, // 32: containarium.v1.ListNetworkPolicySignaturesResponse.signatures:type_name -> containarium.v1.NetworkPolicySignature
-	57, // 33: containarium.v1.BackendInfo.gpus:type_name -> containarium.v1.BackendGPU
-	55, // 34: containarium.v1.BackendInfo.headroom:type_name -> containarium.v1.CapacityHeadroom
-	53, // 35: containarium.v1.BackendInfo.capability_profile:type_name -> containarium.v1.CapabilityProfile
-	52, // 36: containarium.v1.BackendInfo.host_load:type_name -> containarium.v1.HostLoad
-	19, // 37: containarium.v1.BackendInfo.storage:type_name -> containarium.v1.BackendStorage
-	54, // 38: containarium.v1.CapabilityProfile.benchmark:type_name -> containarium.v1.CapabilityBenchmark
-	56, // 39: containarium.v1.CapacityHeadroom.policy:type_name -> containarium.v1.CapacityPolicy
-	51, // 40: containarium.v1.ListBackendsResponse.backends:type_name -> containarium.v1.BackendInfo
-	56, // 41: containarium.v1.AdvertiseCapacityRequest.policy:type_name -> containarium.v1.CapacityPolicy
-	55, // 42: containarium.v1.AdvertiseCapacityResponse.headroom:type_name -> containarium.v1.CapacityHeadroom
-	55, // 43: containarium.v1.WithdrawCapacityResponse.headroom:type_name -> containarium.v1.CapacityHeadroom
-	74, // 44: containarium.v1.WithdrawCapacityResponse.failed:type_name -> containarium.v1.WithdrawCapacityResponse.FailedEntry
-	55, // 45: containarium.v1.GetCapacityHeadroomResponse.headroom:type_name -> containarium.v1.CapacityHeadroom
-	53, // 46: containarium.v1.ProfileBackendResponse.profile:type_name -> containarium.v1.CapabilityProfile
-	53, // 47: containarium.v1.GetCapabilityProfileResponse.profile:type_name -> containarium.v1.CapabilityProfile
-	71, // 48: containarium.v1.SelfMeasurement.program_digests:type_name -> containarium.v1.ProgramDigest
-	70, // 49: containarium.v1.GetSelfMeasurementResponse.measurement:type_name -> containarium.v1.SelfMeasurement
-	50, // [50:50] is the sub-list for method output_type
-	50, // [50:50] is the sub-list for method input_type
-	50, // [50:50] is the sub-list for extension type_name
-	50, // [50:50] is the sub-list for extension extendee
-	0,  // [0:50] is the sub-list for field type_name
+	55, // 12: containarium.v1.SystemInfo.headroom:type_name -> containarium.v1.CapacityHeadroom
+	53, // 13: containarium.v1.SystemInfo.capability_profile:type_name -> containarium.v1.CapabilityProfile
+	1,  // 14: containarium.v1.BackendStorage.driver:type_name -> containarium.v1.StorageDriver
+	2,  // 15: containarium.v1.BackendStorage.isolation:type_name -> containarium.v1.StorageIsolation
+	3,  // 16: containarium.v1.GPUInfo.vendor:type_name -> containarium.v1.GPUVendor
+	4,  // 17: containarium.v1.GPUInfo.model:type_name -> containarium.v1.GPUModel
+	18, // 18: containarium.v1.GetSystemInfoResponse.info:type_name -> containarium.v1.SystemInfo
+	18, // 19: containarium.v1.GetSystemInfoResponse.peers:type_name -> containarium.v1.SystemInfo
+	8,  // 20: containarium.v1.ValidateGPUResponse.status:type_name -> containarium.v1.ValidateGPUResponse.GPUStatus
+	5,  // 21: containarium.v1.GetBridgeDNSStatusResponse.state:type_name -> containarium.v1.BridgeDNSState
+	77, // 22: containarium.v1.GetBridgeDNSStatusResponse.last_pass:type_name -> google.protobuf.Timestamp
+	77, // 23: containarium.v1.GetBridgeDNSStatusResponse.last_applied:type_name -> google.protobuf.Timestamp
+	77, // 24: containarium.v1.GetBridgeDNSStatusResponse.created_at:type_name -> google.protobuf.Timestamp
+	6,  // 25: containarium.v1.NetworkPolicy.mode:type_name -> containarium.v1.NetworkPolicyMode
+	34, // 26: containarium.v1.NetworkPolicy.deny_rules:type_name -> containarium.v1.NetworkPolicyDenyRule
+	33, // 27: containarium.v1.SetNetworkPolicyRequest.policy:type_name -> containarium.v1.NetworkPolicy
+	33, // 28: containarium.v1.SetNetworkPolicyResponse.policy:type_name -> containarium.v1.NetworkPolicy
+	33, // 29: containarium.v1.GetNetworkPolicyResponse.policy:type_name -> containarium.v1.NetworkPolicy
+	33, // 30: containarium.v1.ListNetworkPoliciesResponse.policies:type_name -> containarium.v1.NetworkPolicy
+	34, // 31: containarium.v1.PatchNetworkPolicyDenyRulesRequest.add:type_name -> containarium.v1.NetworkPolicyDenyRule
+	44, // 32: containarium.v1.SetNetworkPolicySignatureRequest.signature:type_name -> containarium.v1.NetworkPolicySignature
+	44, // 33: containarium.v1.SetNetworkPolicySignatureResponse.signature:type_name -> containarium.v1.NetworkPolicySignature
+	44, // 34: containarium.v1.ListNetworkPolicySignaturesResponse.signatures:type_name -> containarium.v1.NetworkPolicySignature
+	57, // 35: containarium.v1.BackendInfo.gpus:type_name -> containarium.v1.BackendGPU
+	55, // 36: containarium.v1.BackendInfo.headroom:type_name -> containarium.v1.CapacityHeadroom
+	53, // 37: containarium.v1.BackendInfo.capability_profile:type_name -> containarium.v1.CapabilityProfile
+	52, // 38: containarium.v1.BackendInfo.host_load:type_name -> containarium.v1.HostLoad
+	19, // 39: containarium.v1.BackendInfo.storage:type_name -> containarium.v1.BackendStorage
+	54, // 40: containarium.v1.CapabilityProfile.benchmark:type_name -> containarium.v1.CapabilityBenchmark
+	56, // 41: containarium.v1.CapacityHeadroom.policy:type_name -> containarium.v1.CapacityPolicy
+	51, // 42: containarium.v1.ListBackendsResponse.backends:type_name -> containarium.v1.BackendInfo
+	56, // 43: containarium.v1.AdvertiseCapacityRequest.policy:type_name -> containarium.v1.CapacityPolicy
+	55, // 44: containarium.v1.AdvertiseCapacityResponse.headroom:type_name -> containarium.v1.CapacityHeadroom
+	55, // 45: containarium.v1.WithdrawCapacityResponse.headroom:type_name -> containarium.v1.CapacityHeadroom
+	74, // 46: containarium.v1.WithdrawCapacityResponse.failed:type_name -> containarium.v1.WithdrawCapacityResponse.FailedEntry
+	55, // 47: containarium.v1.GetCapacityHeadroomResponse.headroom:type_name -> containarium.v1.CapacityHeadroom
+	53, // 48: containarium.v1.ProfileBackendResponse.profile:type_name -> containarium.v1.CapabilityProfile
+	53, // 49: containarium.v1.GetCapabilityProfileResponse.profile:type_name -> containarium.v1.CapabilityProfile
+	71, // 50: containarium.v1.SelfMeasurement.program_digests:type_name -> containarium.v1.ProgramDigest
+	70, // 51: containarium.v1.GetSelfMeasurementResponse.measurement:type_name -> containarium.v1.SelfMeasurement
+	52, // [52:52] is the sub-list for method output_type
+	52, // [52:52] is the sub-list for method input_type
+	52, // [52:52] is the sub-list for extension type_name
+	52, // [52:52] is the sub-list for extension extendee
+	0,  // [0:52] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_config_proto_init() }
