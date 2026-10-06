@@ -122,6 +122,7 @@ moved:service
 moved:sync-accounts
 moved:tunnel
 moved:upgrade-watchdog
+network-guard status
 network-policy delete
 network-policy get
 network-policy list
