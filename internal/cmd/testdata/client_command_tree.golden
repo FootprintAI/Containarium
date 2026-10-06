@@ -83,6 +83,10 @@ gateway key status
 gateway mint
 gateway models
 get
+guardrail apply
+guardrail keygen
+guardrail scan
+guardrail verify
 info
 install-stack
 kms envelope-coverage
