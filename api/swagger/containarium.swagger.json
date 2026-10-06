@@ -81,6 +81,10 @@
       "description": "EventService provides real-time event streaming"
     },
     {
+      "name": "GuardrailEngineService",
+      "description": "GuardrailEngineService is implemented by an ENGINE, not by the\nContainarium daemon: the CLI (and later the daemon) is its client.\nStateless by contract — nothing is persisted on the engine side and\nrepeating a request repeats the scan. No REST mapping: this is an\ninternal plug point between two processes on the same side of a trust\nboundary, not a product endpoint."
+    },
+    {
       "name": "KmsService",
       "description": "KmsService exposes read + migration-trigger operations for the\ntenant-secrets envelope-encryption layer (see\ndocs/security/KMS-ENVELOPE-DESIGN.md). It deliberately does NOT\nexpose backend *configuration* — selecting a KMS backend and\nsupplying its credentials stays an operator/systemd concern\n(CONTAINARIUM_KMS_BACKEND + the per-backend env vars), never an\nover-the-wire action. Every RPC requires the `kms:admin` scope\nAND the admin role; these are platform-wide, not tenant-scoped."
     },

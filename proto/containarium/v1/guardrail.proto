@@ -1,0 +1,173 @@
+syntax = "proto3";
+
+package containarium.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
+
+// Guardrails: the contract between Containarium and a detection engine, and
+// the attestation a dataset carries once it has been through one
+// (docs/architecture/guardrail.md).
+//
+// Containarium does not detect anything itself. It drives an ENGINE — any
+// process that implements GuardrailEngineService — over a set of text units,
+// rewrites what the engine flagged, re-scans the result as the gate, and
+// signs a GuardrailAttestation that a consumer (a training sandbox, a CI
+// job) verifies before it touches the data. The in-tree reference engine is
+// a handful of regular expressions that exist so the flow is runnable and
+// testable end to end; a production engine plugs in behind the same RPC.
+
+// GuardrailKind is the family a finding belongs to. Enum, not a string: a
+// policy is keyed by it and a consumer decides by it.
+enum GuardrailKind {
+  GUARDRAIL_KIND_UNSPECIFIED = 0;
+  // Personal data: names, contact details, government identifiers,
+  // financial identifiers, addresses, amounts in a personal context.
+  GUARDRAIL_KIND_PII = 1;
+  // Non-personal sensitive material: credentials, private keys, connection
+  // strings, internal topology. Distinct from PII because the right action
+  // differs (a secret is never tokenized into a persisted vault).
+  GUARDRAIL_KIND_SECRET = 2;
+}
+
+// GuardrailAction is what the policy does with a finding of a given kind.
+enum GuardrailAction {
+  GUARDRAIL_ACTION_UNSPECIFIED = 0;
+  // Leave the span as-is; count it.
+  GUARDRAIL_ACTION_ALLOW = 1;
+  // Replace the span with a stable placeholder token.
+  GUARDRAIL_ACTION_REDACT = 2;
+  // Any finding of this kind fails the gate for the whole subject.
+  GUARDRAIL_ACTION_BLOCK = 3;
+}
+
+// GuardrailVerdict is the gate's answer for one subject.
+enum GuardrailVerdict {
+  GUARDRAIL_VERDICT_UNSPECIFIED = 0;
+  // Residual findings within policy and no coverage gaps.
+  GUARDRAIL_VERDICT_PASS = 1;
+  GUARDRAIL_VERDICT_FAIL = 2;
+}
+
+// GuardrailTextUnit is one piece of text handed to an engine. Offsets in
+// the findings it produces are Unicode CODE POINT offsets into `text` —
+// not bytes, not UTF-16 units — so every engine, whatever its runtime's
+// string model, reports in one coordinate system and an adapter converts.
+message GuardrailTextUnit {
+  // Caller-chosen key, echoed back on every finding for this unit. Opaque
+  // to the engine; unique within one request.
+  string unit_id = 1;
+  string text = 2;
+}
+
+// GuardrailFinding is one flagged span.
+message GuardrailFinding {
+  string unit_id = 1;
+  // [start, end) in code points of GuardrailTextUnit.text.
+  int32 start = 2;
+  int32 end = 3;
+  GuardrailKind kind = 4;
+  // The engine's own type name within the kind (e.g. "EMAIL", "IBAN",
+  // "API_KEY"). Free text by design: Containarium never branches on it,
+  // only reports it; the kind is what policy keys on.
+  string type = 5;
+  // 0..1. Engines that do not score report 1.
+  double confidence = 6;
+}
+
+// GuardrailScanGap is a unit (or part of one) an engine could not fully
+// scan. A gap is never silent: the gate treats any gap as a failure, since
+// "no findings" from an engine that did not look is not "clean".
+message GuardrailScanGap {
+  string unit_id = 1;
+  // Reviewer-readable reason. Never contains the unit's text.
+  string detail = 2;
+}
+
+message GuardrailScanRequest {
+  repeated GuardrailTextUnit units = 1;
+  // Which kinds to look for. Empty means every kind the engine supports.
+  // A kind named here that the engine does not support is an error, not a
+  // partial scan, so a caller's policy can never assume a kind was covered
+  // when it was not.
+  repeated GuardrailKind kinds = 2;
+}
+
+message GuardrailScanResponse {
+  repeated GuardrailFinding findings = 1;
+  repeated GuardrailScanGap gaps = 2;
+  // Identifies the engine and the exact configuration (rules, model pins)
+  // that produced these findings, so an attestation can name what judged
+  // the data. Opaque to Containarium; stable for a given configuration.
+  string engine_id = 3;
+  string engine_version = 4;
+}
+
+// GuardrailEngineService is implemented by an ENGINE, not by the
+// Containarium daemon: the CLI (and later the daemon) is its client.
+// Stateless by contract — nothing is persisted on the engine side and
+// repeating a request repeats the scan. No REST mapping: this is an
+// internal plug point between two processes on the same side of a trust
+// boundary, not a product endpoint.
+service GuardrailEngineService {
+  rpc Scan(GuardrailScanRequest) returns (GuardrailScanResponse);
+}
+
+// GuardrailRule is one line of policy: what to do with findings of a kind,
+// and how many may remain after redaction before the gate fails.
+message GuardrailRule {
+  GuardrailKind kind = 1;
+  GuardrailAction action = 2;
+  // Residual findings of this kind tolerated on the re-scan of the redacted
+  // output. 0 is the strict default. Only meaningful with REDACT; BLOCK
+  // fails on the first finding and ALLOW never fails.
+  int32 max_residual = 3;
+}
+
+// GuardrailPolicy is the whole policy for one run. Its canonical encoding
+// is hashed into the attestation so a verifier knows which policy a PASS
+// was measured against.
+message GuardrailPolicy {
+  repeated GuardrailRule rules = 1;
+}
+
+// GuardrailKindCount is findings-per-kind, as a typed pair rather than a
+// map so the attestation's canonical bytes are deterministic.
+message GuardrailKindCount {
+  GuardrailKind kind = 1;
+  int64 findings = 2;
+}
+
+// GuardrailAttestation is the signed record a subject (a dataset directory,
+// a file) carries after a guardrail run. A consumer verifies the signature
+// with the signer's PUBLIC key, recomputes subject_sha256 over the bytes it
+// actually received, and requires verdict == PASS before using the data.
+//
+// What it proves: that these bytes are the ones the named engine scanned
+// under the named policy, and what the gate concluded. What it does not
+// prove: that the engine was any good. The key is held by whoever ran the
+// guardrail — the data owner — never by the consumer, otherwise the
+// consumer could attest its own input.
+message GuardrailAttestation {
+  // SHA-256 over the subject's canonical bytes (for a directory: every
+  // regular file, by relative path order, path and content).
+  string subject_sha256 = 1;
+  string engine_id = 2;
+  string engine_version = 3;
+  // SHA-256 over the canonical proto bytes of the GuardrailPolicy applied.
+  string policy_hash = 4;
+  // Findings on the ORIGINAL subject, per kind, before redaction.
+  repeated GuardrailKindCount found = 5;
+  // Findings on the REDACTED subject, per kind — what the gate judged.
+  repeated GuardrailKindCount residual = 6;
+  int64 coverage_gaps = 7;
+  GuardrailVerdict verdict = 8;
+  google.protobuf.Timestamp attested_at = 9;
+  // Identifies the signing key (SHA-256 of the public key, hex) so a
+  // verifier holding several tenants' keys picks the right one.
+  string key_id = 10;
+  // Ed25519 signature over the canonical proto bytes of this message with
+  // `signature` cleared.
+  bytes signature = 11;
+}
