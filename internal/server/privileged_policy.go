@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/footprintai/containarium/internal/auth"
@@ -41,15 +42,15 @@ import (
 // Operators set the env var to `admin-only` once they've
 // verified that no non-admin workflow requires privileged Podman.
 //
-// Matching is exact (#2299): the value must be one of the three
-// lowercase spellings above, with no surrounding whitespace. Unset —
-// or set to the empty string, which is how most env templating
-// spells "unset" — keeps the `all` default. Anything else (a typo,
-// `ALL`, `Disabled `, `none`) fails closed: the daemon refuses to
-// start (validatePrivilegedPolicyEnv, called from NewDualServer), and
-// any path that reads the policy without that check treats it as
-// `disabled`. A mistyped restrictive setting must never silently
-// become the most permissive one.
+// The value is normalised before matching (surrounding whitespace
+// trimmed, lower-cased), so `ALL`, `Admin-Only` and `disabled ` select
+// their policy. Unset, or empty after normalisation, keeps the `all`
+// default. A value that is set but still unrecognised after
+// normalisation (`none`, `off`, `admin_only`, a typo) fails closed
+// (#2299): the daemon refuses to start (validatePrivilegedPolicyEnv,
+// called from NewDualServer), and any path that reads the policy
+// without that check treats it as `disabled`. A mistyped restrictive
+// setting must never silently become the most permissive one.
 //
 // A future iteration can split `enable_podman` from
 // `enable_privileged` in the proto contract; this PR keeps the
@@ -65,8 +66,8 @@ const (
 	PrivilegedPolicyDisabled
 )
 
-// The accepted spellings, one per policy. Parsing compares against these
-// exactly; String renders them back.
+// The accepted spellings, one per policy. Parsing compares the normalised
+// value against these; String renders them back.
 const (
 	privilegedPolicyValueAll       = "all"
 	privilegedPolicyValueAdminOnly = "admin-only"
@@ -92,16 +93,17 @@ var (
 )
 
 // parsePrivilegedPolicy maps the raw env value to a policy. set reports
-// whether the variable is present in the environment at all. An unset or
-// empty value yields the backwards-compatible `all`. Any other value that
-// is not exactly one of the three accepted spellings returns an error AND
-// PrivilegedPolicyDisabled, so a caller that ignores the error still fails
-// closed.
+// whether the variable is present in the environment at all. The value is
+// trimmed and lower-cased first. An unset value, or one that is empty after
+// that, yields the backwards-compatible `all`. A value that still matches
+// none of the three spellings returns an error AND PrivilegedPolicyDisabled,
+// so a caller that ignores the error still fails closed.
 func parsePrivilegedPolicy(raw string, set bool) (PrivilegedPolicy, error) {
-	if !set || raw == "" {
+	norm := strings.ToLower(strings.TrimSpace(raw))
+	if !set || norm == "" {
 		return PrivilegedPolicyAll, nil
 	}
-	switch raw {
+	switch norm {
 	case privilegedPolicyValueAll:
 		return PrivilegedPolicyAll, nil
 	case privilegedPolicyValueAdminOnly:
@@ -110,7 +112,7 @@ func parsePrivilegedPolicy(raw string, set bool) (PrivilegedPolicy, error) {
 		return PrivilegedPolicyDisabled, nil
 	}
 	return PrivilegedPolicyDisabled, fmt.Errorf(
-		"%s=%q is not a recognised policy; it must be exactly one of %q, %q or %q (lowercase, no surrounding whitespace), or unset",
+		"%s=%q is not a recognised policy; it must be one of %q, %q or %q (case-insensitive), or unset",
 		privilegedPolicyEnv, raw,
 		privilegedPolicyValueAll, privilegedPolicyValueAdminOnly, privilegedPolicyValueDisabled)
 }

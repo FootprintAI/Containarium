@@ -102,8 +102,10 @@ func TestAuthorizePrivilegedPodman_Disabled_DowngradesEvenForAdmin(t *testing.T)
 	}
 }
 
-// #2299 — a set-but-unrecognised policy value must fail closed, never
-// fall back to the permissive `all`.
+// #2299 — a value that is set but unrecognised (after the usual trim +
+// lower-case normalisation) must fail closed, never fall back to the
+// permissive `all`. Case and whitespace variants of the three valid
+// spellings stay valid, as they are on main.
 
 // unsetPrivilegedPolicyEnv removes the variable for the test (t.Setenv first
 // so the original value is restored afterwards).
@@ -115,30 +117,50 @@ func unsetPrivilegedPolicyEnv(t *testing.T) {
 	}
 }
 
-// malformedPrivilegedPolicyValues are values an operator could plausibly
-// type when they meant one of the three valid spellings. Each must be
-// refused: matching is exact, so case variants and stray whitespace are
-// rejected rather than guessed at.
+// normalisedPrivilegedPolicyValues are case and whitespace variants of the
+// valid spellings. Normalisation (TrimSpace + ToLower) resolves each to its
+// policy. Whitespace-only trims to empty and so means "unset" (`all`).
+var normalisedPrivilegedPolicyValues = []struct {
+	raw  string
+	want PrivilegedPolicy
+}{
+	{"ALL", PrivilegedPolicyAll},
+	{"All", PrivilegedPolicyAll},
+	{" all", PrivilegedPolicyAll},
+	{"all\t", PrivilegedPolicyAll},
+	{"ADMIN-ONLY", PrivilegedPolicyAdminOnly},
+	{"Admin-Only", PrivilegedPolicyAdminOnly},
+	{" admin-only ", PrivilegedPolicyAdminOnly},
+	{"Disabled ", PrivilegedPolicyDisabled},
+	{"Disabled", PrivilegedPolicyDisabled},
+	{"DISABLED", PrivilegedPolicyDisabled},
+	{" disabled", PrivilegedPolicyDisabled},
+	{"disabled ", PrivilegedPolicyDisabled},
+	{"\tdisabled", PrivilegedPolicyDisabled},
+	{"disabled\n", PrivilegedPolicyDisabled},
+	{" ", PrivilegedPolicyAll},
+	{"\t", PrivilegedPolicyAll},
+}
+
+// malformedPrivilegedPolicyValues stay unrecognised after normalisation.
+// Each must be refused.
 var malformedPrivilegedPolicyValues = []string{
-	"Disabled ",
-	"ALL",
-	"All",
-	"Disabled",
-	"ADMIN-ONLY",
-	"admin_only",
-	"adminonly",
 	"none",
+	"NONE",
+	" none ",
 	"off",
 	"false",
+	"no",
+	"0",
 	"alll",
-	" disabled",
-	"disabled ",
-	"\tdisabled",
-	"disabled\n",
-	" all",
-	"all\t",
-	" ",
-	"\t",
+	"admin_only",
+	"adminonly",
+	"admin only",
+	"Admin_Only",
+	"disable",
+	"\tdisable",
+	"enabled",
+	"privileged",
 }
 
 func TestParsePrivilegedPolicy_ValidAndUnset(t *testing.T) {
@@ -153,6 +175,14 @@ func TestParsePrivilegedPolicy_ValidAndUnset(t *testing.T) {
 		{"all", "all", true, PrivilegedPolicyAll},
 		{"admin-only", "admin-only", true, PrivilegedPolicyAdminOnly},
 		{"disabled", "disabled", true, PrivilegedPolicyDisabled},
+	}
+	for _, v := range normalisedPrivilegedPolicyValues {
+		cases = append(cases, struct {
+			name string
+			raw  string
+			set  bool
+			want PrivilegedPolicy
+		}{fmt.Sprintf("normalised %q", v.raw), v.raw, true, v.want})
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -192,7 +222,11 @@ func TestValidatePrivilegedPolicyEnv(t *testing.T) {
 			t.Fatalf("unset must start: %v", err)
 		}
 	})
-	for _, v := range []string{"", "all", "admin-only", "disabled"} {
+	valid := []string{"", "all", "admin-only", "disabled"}
+	for _, v := range normalisedPrivilegedPolicyValues {
+		valid = append(valid, v.raw)
+	}
+	for _, v := range valid {
 		t.Run(fmt.Sprintf("valid %q", v), func(t *testing.T) {
 			t.Setenv(privilegedPolicyEnv, v)
 			resetPrivilegedPolicy(t)
@@ -212,9 +246,40 @@ func TestValidatePrivilegedPolicyEnv(t *testing.T) {
 	}
 }
 
+// Normalised variants gate callers exactly like the canonical spelling.
+func TestAuthorizePrivilegedPodman_NormalisedVariants(t *testing.T) {
+	admin := auth.ContextWithSystemIdentity(context.Background())
+	nonAdmin := auth.ContextWithTestSubject(context.Background(), "alice", "user")
+	for _, v := range normalisedPrivilegedPolicyValues {
+		t.Run(fmt.Sprintf("%q", v.raw), func(t *testing.T) {
+			t.Setenv(privilegedPolicyEnv, v.raw)
+			resetPrivilegedPolicy(t)
+			adminAllowed, adminErr := authorizePrivilegedPodman(admin)
+			userAllowed, userErr := authorizePrivilegedPodman(nonAdmin)
+			switch v.want {
+			case PrivilegedPolicyAll:
+				if !adminAllowed || adminErr != nil || !userAllowed || userErr != nil {
+					t.Fatalf("all: admin=(%v,%v) user=(%v,%v), want both (true,nil)", adminAllowed, adminErr, userAllowed, userErr)
+				}
+			case PrivilegedPolicyAdminOnly:
+				if !adminAllowed || adminErr != nil {
+					t.Fatalf("admin-only: admin=(%v,%v), want (true,nil)", adminAllowed, adminErr)
+				}
+				if userAllowed || status.Code(userErr) != codes.PermissionDenied {
+					t.Fatalf("admin-only: non-admin=(%v,%v), want (false, PermissionDenied)", userAllowed, userErr)
+				}
+			case PrivilegedPolicyDisabled:
+				if adminAllowed || adminErr != nil || userAllowed || userErr != nil {
+					t.Fatalf("disabled: admin=(%v,%v) user=(%v,%v), want both (false,nil)", adminAllowed, adminErr, userAllowed, userErr)
+				}
+			}
+		})
+	}
+}
+
 // The lazy path (a caller that never ran the startup validation) must fail
-// closed too: a malformed value never yields a privileged container, not
-// even for an admin.
+// closed too: an unrecognised value never yields a privileged container,
+// not even for an admin.
 func TestAuthorizePrivilegedPodman_MalformedNeverPrivileged(t *testing.T) {
 	for _, raw := range malformedPrivilegedPolicyValues {
 		t.Run(fmt.Sprintf("%q", raw), func(t *testing.T) {
@@ -230,7 +295,7 @@ func TestAuthorizePrivilegedPodman_MalformedNeverPrivileged(t *testing.T) {
 			} {
 				allowed, _ := authorizePrivilegedPodman(ctx)
 				if allowed {
-					t.Fatalf("%s caller got privileged Podman under malformed policy %q", name, raw)
+					t.Fatalf("%s caller got privileged Podman under unrecognised policy %q", name, raw)
 				}
 			}
 		})
@@ -246,14 +311,14 @@ func TestAuthorizePrivilegedPodman_UnsetStaysAll(t *testing.T) {
 	}
 }
 
-// The daemon refuses to start on a malformed value — the check is wired into
-// NewDualServer, so a typo surfaces at boot, not at the first create.
+// The daemon refuses to start on an unrecognised value — the check is wired
+// into NewDualServer, so a typo surfaces at boot, not at the first create.
 func TestNewDualServer_RefusesMalformedPrivilegedPolicy(t *testing.T) {
-	t.Setenv(privilegedPolicyEnv, "Disabled ")
+	t.Setenv(privilegedPolicyEnv, "none")
 	resetPrivilegedPolicy(t)
 	ds, err := NewDualServer(&DualServerConfig{})
 	if err == nil {
-		t.Fatalf("NewDualServer started (%T) with a malformed %s", ds, privilegedPolicyEnv)
+		t.Fatalf("NewDualServer started (%T) with an unrecognised %s", ds, privilegedPolicyEnv)
 	}
 	if !strings.Contains(err.Error(), privilegedPolicyEnv) {
 		t.Fatalf("startup error %q must name %s", err, privilegedPolicyEnv)
