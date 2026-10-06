@@ -75,6 +75,11 @@ type DispatchStore interface {
 	FailDispatch(ctx context.Context, id string, from pb.TrackerDispatchState, failure pb.TrackerDispatchFailure, reason string, at time.Time) (bool, error)
 	ListDispatches(ctx context.Context, username, connection string, state pb.TrackerDispatchState) ([]Dispatch, error)
 	SetDispatchLabelsPending(ctx context.Context, id string, pending bool) error
+	// ListLabelsPendingDispatches and PriorDispatchLabelsPending find
+	// terminal rows whose projection has not reached the forge (#2047,
+	// #2052).
+	ListLabelsPendingDispatches(ctx context.Context, username, connection string) ([]Dispatch, error)
+	PriorDispatchLabelsPending(ctx context.Context, username, connection string, issue int64, excludeID string) (bool, error)
 	DeleteQueuedDispatch(ctx context.Context, id string) (bool, error)
 	RecordDispatchWarning(ctx context.Context, username, connection string, issue int64, scope string) (bool, error)
 	ForgetDispatchWarning(ctx context.Context, username, connection string, issue int64, scope string) error
@@ -89,11 +94,24 @@ var _ DispatchStore = (*Store)(nil)
 type Dispatcher struct {
 	Store    DispatchStore
 	Provider DispatchProvider
-	// Conn is the resolved forge connection (base URL, project,
-	// credential) the provider calls use.
-	Conn  Conn
-	Runs  RunStarter
-	Clock Clock
+	// Conn is the forge connection (base URL, project) the provider
+	// calls use. Its Credential is used as given only when Credentials
+	// is nil; otherwise it is replaced at every call (see forgeConn).
+	Conn Conn
+	// Credentials resolves the connection's broker credential at each
+	// forge call — every RunStarted / RunEnded / sweep / retry write —
+	// never once per tick (#2269). RunEnded and the sweep can run up to
+	// the policy's run timeout after the tick that started the run, by
+	// when a rotated or short-lived credential (a GitHub App
+	// installation token lives ~1h) resolved at tick time is stale. The
+	// tenant is the dispatch's username; the secret is CredentialSecret.
+	// nil uses Conn.Credential unchanged.
+	Credentials CredentialSource
+	// CredentialSecret names the connection's broker-only secret that
+	// Credentials resolves.
+	CredentialSecret string
+	Runs             RunStarter
+	Clock            Clock
 	// RepoURL is the connection's repository clone URL, handed to every
 	// run this dispatcher starts (StartRunRequest.RepoURL).
 	RepoURL string
@@ -118,6 +136,12 @@ type Dispatcher struct {
 	// Observer receives every terminal transition (#2026 metrics). nil
 	// records nothing.
 	Observer DispatchObserver
+	// MaxStarts bounds how many runs one Tick starts (#2270). Only runs
+	// that actually started count — not skips, not failed starts. An
+	// eligible issue past the limit gets no row and no label (a later
+	// tick picks it up) and is counted in TickResult.LeftUndispatched.
+	// Zero or negative means unlimited; the RPC rejects negative.
+	MaxStarts int32
 
 	// leaseEndBudget overrides DefaultLeaseEndBudget (tests).
 	leaseEndBudget time.Duration
@@ -137,6 +161,10 @@ type TickResult struct {
 	// SkippedOverDepth counts issues whose recorded lineage depth
 	// exceeds the policy's max_depth (#2025).
 	SkippedOverDepth int32
+	// LeftUndispatched counts issues that passed every check made before
+	// the insert but were not dispatched because MaxStarts runs had
+	// already started (#2270).
+	LeftUndispatched int32
 }
 
 // Tick lists the connection's open issues and, for each one with a
@@ -147,6 +175,12 @@ type TickResult struct {
 // agent:queued. A start error fails the row, labels agent:failed and
 // comments the reason. An unrouted scope label gets one stamped warning
 // comment, ever.
+//
+// The row, not the label, says whether an issue was already handled
+// (#2047, #2052): an issue whose latest row is terminal with
+// labels_pending — its agent:done|failed never reached the forge — is
+// skipped as if the label were there, and the tick retries that
+// projection first, until it lands or a human puts the state label on.
 //
 // A forge list error or a store error aborts the tick; per-issue forge
 // write failures do not (they are recorded and the tick moves on).
@@ -168,8 +202,18 @@ func (d *Dispatcher) Tick(ctx context.Context, username, connection string) (Tic
 	if res.TimedOut, err = d.sweep(ctx, username, connection); err != nil {
 		return res, err
 	}
+	// Then terminal rows whose labels never landed: retried, and their
+	// issues held back from a second dispatch while they still lag.
+	held, err := d.retryPendingLabels(ctx, username, connection)
+	if err != nil {
+		return res, err
+	}
 
-	issues, err := d.Provider.ListIssues(ctx, d.Conn, IssueFilter{State: pb.TrackerIssueState_TRACKER_ISSUE_STATE_OPEN})
+	conn, err := d.forgeConn(ctx, username)
+	if err != nil {
+		return res, fmt.Errorf("list issues: %w", err)
+	}
+	issues, err := d.Provider.ListIssues(ctx, conn, IssueFilter{State: pb.TrackerIssueState_TRACKER_ISSUE_STATE_OPEN})
 	if err != nil {
 		return res, fmt.Errorf("list issues: %w", err)
 	}
@@ -188,7 +232,7 @@ func (d *Dispatcher) Tick(ctx context.Context, username, connection string) (Tic
 			res.SkippedNeedsApproval++
 			continue
 		}
-		if hasAnyLabel(issue.Labels, ReservedStateLabels...) {
+		if hasAnyLabel(issue.Labels, ReservedStateLabels...) || held[issue.Number] {
 			res.SkippedActive++
 			continue
 		}
@@ -222,6 +266,14 @@ func (d *Dispatcher) Tick(ctx context.Context, username, connection string) (Tic
 			continue
 		}
 
+		// The caller's budget (#2270): once MaxStarts runs have started,
+		// an issue that got this far is left for a later tick — no row, no
+		// label. Checked before the insert so nothing is written for it.
+		if d.MaxStarts > 0 && len(res.Started) >= int(d.MaxStarts) {
+			res.LeftUndispatched++
+			continue
+		}
+
 		// From the insert until StartRun has succeeded, no cancellation
 		// point may leave the row QUEUED with no run behind it (#2049):
 		// the active-row index would skip the issue on every later tick,
@@ -250,6 +302,22 @@ func (d *Dispatcher) Tick(ctx context.Context, username, connection string) (Tic
 				return res, err
 			}
 			return res, cerr
+		}
+
+		// The previous generation may have gone terminal after the retry
+		// above and before this insert, with its projection failing (or
+		// still in flight): the issue shows no state label, but it was
+		// handled. The row says so; the label cannot (#2047, #2052). A
+		// failed read (a cancelled tick included) abandons the row too.
+		if prior, err := d.Store.PriorDispatchLabelsPending(ctx, username, connection, issue.Number, row.ID); err != nil || prior {
+			if aerr := d.abandon(ctx, row); aerr != nil {
+				return res, errors.Join(err, aerr)
+			}
+			if err != nil {
+				return res, fmt.Errorf("read prior dispatch of #%d: %w", issue.Number, err)
+			}
+			res.SkippedActive++
+			continue
 		}
 
 		// Re-read before starting anything (#2023): the list above can be
@@ -319,7 +387,11 @@ func (d *Dispatcher) Tick(ctx context.Context, username, connection string) (Tic
 // neither double-run nor locked, and the caller skips it this tick.
 // The only error returned is a store error.
 func (d *Dispatcher) stillDispatchable(ctx context.Context, row *Dispatch, scope string) (bool, error) {
-	fresh, err := d.Provider.GetIssue(ctx, d.Conn, row.IssueNumber)
+	conn, err := d.forgeConn(ctx, row.Username)
+	var fresh Issue
+	if err == nil {
+		fresh, err = d.Provider.GetIssue(ctx, conn, row.IssueNumber)
+	}
 	keep := err == nil &&
 		fresh.State != pb.TrackerIssueState_TRACKER_ISSUE_STATE_CLOSED &&
 		containsExact(fresh.Labels, ScopeLabelPrefix+scope) &&
@@ -351,7 +423,11 @@ func (d *Dispatcher) abandon(ctx context.Context, row *Dispatch) error {
 func (d *Dispatcher) labelQueued(ctx context.Context, row *Dispatch) error {
 	lctx, cancel := bookkeepingContext(ctx)
 	defer cancel()
-	if err := d.Provider.SetLabels(lctx, d.Conn, row.IssueNumber, []string{LabelAgentQueued}, nil); err == nil {
+	conn, err := d.forgeConn(lctx, row.Username)
+	if err == nil {
+		err = d.Provider.SetLabels(lctx, conn, row.IssueNumber, []string{LabelAgentQueued}, nil)
+	}
+	if err == nil {
 		return nil
 	}
 	if err := d.Store.SetDispatchLabelsPending(lctx, row.ID, true); err != nil {
@@ -450,7 +526,11 @@ func (d *Dispatcher) warnUnrouted(ctx context.Context, username, connection stri
 			ScopeLabelPrefix, scope, scope)
 	}
 	body := Sanitize(text) + "\n\n" + Stamp(dispatcherIdentity(username, ""), KindComment)
-	if _, err := d.Provider.Comment(ctx, d.Conn, issue, body); err != nil {
+	conn, err := d.forgeConn(ctx, username)
+	if err == nil {
+		_, err = d.Provider.Comment(ctx, conn, issue, body)
+	}
+	if err != nil {
 		if ferr := d.Store.ForgetDispatchWarning(ctx, username, connection, issue, scope); ferr != nil {
 			return fmt.Errorf("forget unrouted warning for #%d: %w", issue, ferr)
 		}
@@ -466,6 +546,26 @@ func dispatcherIdentity(username, runID string) Identity {
 		runID = username
 	}
 	return Identity{RunID: runID, SkillID: "dispatcher"}
+}
+
+// forgeConn is the connection for ONE forge call: d.Conn with the
+// broker credential resolved now, through d.Credentials, for tenant
+// (#2269). Every provider call goes through it and the result is never
+// kept, so a credential rotated since the tick began — or since the run
+// started — is picked up by the next write. A resolve error is that
+// write's error: the caller treats it like the forge refusing the call
+// (labels_pending for a projection, a failed tick for the list).
+func (d *Dispatcher) forgeConn(ctx context.Context, tenant string) (Conn, error) {
+	c := d.Conn
+	if d.Credentials == nil {
+		return c, nil
+	}
+	cred, err := d.Credentials.BrokerCredential(ctx, tenant, d.CredentialSecret)
+	if err != nil {
+		return Conn{}, fmt.Errorf("resolve broker credential: %w", err)
+	}
+	c.Credential = cred
+	return c, nil
 }
 
 // effectivePolicy is d.Policy, or the documented defaults when unset.

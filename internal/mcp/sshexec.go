@@ -27,8 +27,42 @@ import (
 
 const mcpSSHDialTimeout = 15 * time.Second
 
-// dialSSH opens a pure-Go SSH client to the target using the managed
-// private key at privPath. No system `ssh` binary required.
+// withCertIfPresent wraps signer with the certificate issueCertForBox wrote
+// next to the key as "<key>-cert.pub". OpenSSH picks that file up on its
+// own; this pure-Go client does not, so without this the dial offered the
+// bare throwaway key, which no authorized_keys holds, and every cert-auth
+// connect failed with "no matching pipe" at the sentinel (#2179).
+//
+// No file = the managed-key path; signer is returned unchanged. A file that
+// is present but unusable is an error rather than a quiet fallback to the
+// bare key, which would only fail later with a far less useful message.
+func withCertIfPresent(privPath string, signer ssh.Signer) (ssh.Signer, error) {
+	certPath := privPath + "-cert.pub"
+	certBytes, err := os.ReadFile(certPath) // #nosec G304 -- sibling of the key issueCertForBox wrote
+	if errors.Is(err, os.ErrNotExist) {
+		return signer, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read certificate %s: %w", certPath, err)
+	}
+	pub, _, _, _, err := ssh.ParseAuthorizedKey(certBytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse certificate %s: %w", certPath, err)
+	}
+	cert, ok := pub.(*ssh.Certificate)
+	if !ok {
+		return nil, fmt.Errorf("%s holds a plain public key, not a certificate", certPath)
+	}
+	certSigner, err := ssh.NewCertSigner(cert, signer)
+	if err != nil {
+		return nil, fmt.Errorf("pair certificate with key: %w", err)
+	}
+	return certSigner, nil
+}
+
+// dialSSH opens a pure-Go SSH client to the target using the private key at
+// privPath — and, when one sits next to it, the certificate issued for it.
+// No system `ssh` binary required.
 func dialSSH(ctx context.Context, t connectcore.Target, privPath string) (*ssh.Client, error) {
 	keyBytes, err := os.ReadFile(privPath) // #nosec G304 -- privPath is the managed key sshkey.LocateOrGenerate resolved
 	if err != nil {
@@ -37,6 +71,10 @@ func dialSSH(ctx context.Context, t connectcore.Target, privPath string) (*ssh.C
 	signer, err := ssh.ParsePrivateKey(keyBytes)
 	if err != nil {
 		return nil, fmt.Errorf("parse managed key: %w", err)
+	}
+	signer, err = withCertIfPresent(privPath, signer)
+	if err != nil {
+		return nil, err
 	}
 	hostKeyCB, err := tofuHostKeyCallback()
 	if err != nil {

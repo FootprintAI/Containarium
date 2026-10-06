@@ -56,6 +56,10 @@ type Client struct {
 	// the sentinel. These are unrelated concepts that share a word; see
 	// docs/MULTI-POOL.md.
 	storagePool string
+
+	// socketPath is the Incus unix socket this client was connected to. Empty for clients built around a test
+	// double. GetSystemResources uses it to share one bounded, cached read per socket (#2325).
+	socketPath string
 }
 
 // DefaultStoragePool is the incus storage pool used when none is configured.
@@ -477,9 +481,15 @@ type ContainerInfo struct {
 	// generated username at create time), and it's what the daemon's SSH
 	// front routes by — so callers doing SSH/install must use this, not the
 	// requested name. Empty when the daemon doesn't report it.
-	Username     string
-	State        string
-	IPAddress    string
+	Username  string
+	State     string
+	IPAddress string
+	// SSHHost is the host a client should SSH to, as computed by the
+	// daemon from its own routing config (proto Container.ssh_host): the
+	// container IP in direct mode, the sentinel's public host when routed
+	// through one. Empty when the daemon doesn't report it (local Incus,
+	// older daemons) — callers then fall back to IPAddress.
+	SSHHost      string
 	CPU          string
 	Memory       string
 	Disk         string
@@ -702,6 +712,10 @@ type ContainerMetrics struct {
 type ServerInfo struct {
 	Version       string
 	KernelVersion string
+	// CPUBudget is the daemon's tenant / core / physical CPU breakdown and
+	// admission-gate posture (#2284). Nil when the source did not report
+	// one — local Incus mode, or a daemon that predates the field.
+	CPUBudget *CPUBudget
 }
 
 // DefaultSocketPath is the Incus unix socket path used by New() and by any
@@ -729,7 +743,7 @@ func NewWithSocket(socketPath string) (*Client, error) {
 		return nil, fmt.Errorf("failed to connect to Incus: %w", err)
 	}
 
-	return &Client{server: server}, nil
+	return &Client{server: server, socketPath: socketPath}, nil
 }
 
 // NewWithSocketAndTimeout creates a new Incus client whose every HTTP call
@@ -759,7 +773,7 @@ func NewWithSocketAndTimeout(socketPath string, timeout time.Duration) (*Client,
 		return nil, fmt.Errorf("failed to connect to Incus: %w", err)
 	}
 
-	return &Client{server: server}, nil
+	return &Client{server: server, socketPath: socketPath}, nil
 }
 
 // parseImageSource parses an image string and returns the appropriate InstanceSource
@@ -1675,6 +1689,16 @@ type SystemResources struct {
 
 // GetSystemResources gets system resource information from Incus
 func (c *Client) GetSystemResources() (*SystemResources, error) {
+	if c.socketPath == "" {
+		return c.fetchSystemResources() // test doubles: no socket, no shared cache
+	}
+	return resourcesCacheFor(c.socketPath).get()
+}
+
+// fetchSystemResources performs the actual Incus reads (hardware discovery, pool list, each pool's usage). It has no
+// deadline of its own: GetSystemResources runs it on a short-timeout client behind the cache, because
+// GetServerResources can hang on a saturated host (#2325).
+func (c *Client) fetchSystemResources() (*SystemResources, error) {
 	resources, err := c.server.GetServerResources()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get server resources: %w", err)

@@ -3,9 +3,11 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/footprintai/containarium/internal/coderun"
+	"github.com/footprintai/containarium/internal/coderun/engine"
 	"github.com/spf13/cobra"
 )
 
@@ -19,6 +21,10 @@ var (
 	// --token-ttl bounds the gateway token minted for this one run.
 	codeRunContinue bool
 	codeRunTokenTTL string
+
+	// #2193: --session resumes one SPECIFIC session id instead of --continue's
+	// "most recent" — mutually exclusive with it (validated in runCodeRun).
+	codeRunSession string
 )
 
 var codeRunCmd = &cobra.Command{
@@ -101,6 +107,9 @@ func runCodeRun(cmd *cobra.Command, args []string) error {
 	if strings.TrimSpace(codeRunPrompt) == "" {
 		return fmt.Errorf("--prompt is required")
 	}
+	if codeRunSession != "" && codeRunContinue {
+		return fmt.Errorf("--session and --continue are mutually exclusive (--session resumes one specific session; --continue resumes whichever the engine considers most recent)")
+	}
 	ctx := cmd.Context()
 	if ctx == nil {
 		ctx = context.Background()
@@ -118,7 +127,7 @@ func runCodeRun(cmd *cobra.Command, args []string) error {
 	// this run uses. A box installed before #1727 has no record, and
 	// prepareCodeRun falls back to the Claude + tenant-secret path it was
 	// installed with — so an existing box keeps working untouched.
-	command, err := prepareCodeRun(ctx, sess, box, name, diag)
+	command, eng, err := prepareCodeRun(ctx, sess, box, name, diag)
 	if err != nil {
 		return err
 	}
@@ -129,7 +138,43 @@ func runCodeRun(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Fprintf(diag, "✓ started %q (pid %d) on %s\n", started.Name, started.PID, box)
 
+	startSessionDiscovery(ctx, sess, eng, started.LogPath, diag)
+
 	return streamAndWait(ctx, sess, started.Name, started.LogPath, cmd.OutOrStdout(), diag, codeRunStreamJSON)
+}
+
+// startSessionDiscovery best-effort backgrounds the lookup of this run's own
+// session id on the box (#2193), so a later `code run --session <id>` or
+// `code runs`/BoxRun.session_id can name this exact conversation. It is
+// launched via ONE non-blocking shell_exec call — the poll loop itself runs
+// detached ON THE BOX (engine.SessionDiscoveryBackgroundCommand setsid's it),
+// so this never delays streaming the run's own output. A failure here is
+// never fatal to the run: it only means `code runs` won't show a session id
+// for it, which the AC already allows ("absent for engines that don't expose
+// one").
+func startSessionDiscovery(ctx context.Context, sess *coderun.Session, eng engine.Engine, logPath string, diag io.Writer) {
+	if eng == nil {
+		return
+	}
+	home, err := sess.HomeDir(ctx)
+	if err != nil {
+		fmt.Fprintf(diag, "note: could not resolve $HOME to look for this run's session id: %v\n", err)
+		return
+	}
+	// process_start was given no --cwd, so the run inherited agent-box's own
+	// cwd — which over an interactive SSH login is $HOME. Best-effort: if the
+	// box's actual login shell lands somewhere else, discovery simply won't
+	// find a match and session_id stays absent, same as any other engine
+	// that exposes none.
+	cwd := home
+	sidecarPath := strings.TrimSuffix(logPath, ".log") + ".session"
+	cmd, ok := engine.SessionDiscoveryBackgroundCommand(eng.Name(), home, cwd, sidecarPath)
+	if !ok {
+		return
+	}
+	if _, err := sess.ShellExec(ctx, cmd); err != nil {
+		fmt.Fprintf(diag, "note: could not start looking for this run's session id (non-fatal): %v\n", err)
+	}
 }
 
 func runCodeAttach(cmd *cobra.Command, args []string) error {

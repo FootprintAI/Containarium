@@ -46,7 +46,7 @@ func runInstallEngine(t *testing.T, box string, flags map[string]string,
 	origMint, origSecrets := mintGatewayTokenFn, listSecretsFn
 	origFlags := []*string{
 		&codeEngine, &codeCredential, &codeProvider, &codeSecretName,
-		&codeProviderBaseURL, &codeModel, &codePiVersion,
+		&codeProviderBaseURL, &codeModel, &codePiVersion, &codeCodexVersion,
 		&codeBootstrapURL, &codeRelease, &codeClaudeCodeVersion,
 	}
 	saved := make([]string, len(origFlags))
@@ -68,6 +68,7 @@ func runInstallEngine(t *testing.T, box string, flags map[string]string,
 	codeCredential = string(engine.DefaultKind)
 	codeProvider, codeSecretName, codeProviderBaseURL, codeModel = "", "", "", ""
 	codePiVersion = engine.PiVersion
+	codeCodexVersion = ""
 	codeBootstrapURL, codeRelease, codeClaudeCodeVersion = "", "", ""
 	serverAddr = "daemon.example.test:9090"
 
@@ -87,6 +88,8 @@ func runInstallEngine(t *testing.T, box string, flags map[string]string,
 			codeModel = v
 		case "pi-version":
 			codePiVersion = v
+		case "codex-version":
+			codeCodexVersion = v
 		case "release":
 			codeRelease = v
 		case "claude-code-version":
@@ -375,7 +378,7 @@ func TestCodeInstall_PiSecretModelsJSONReferencesTheDeliveredSecret(t *testing.T
 	}
 	// And the run command sources the file that variable actually arrives in.
 	piSecret := mustEngine(t, engine.NamePi, engine.SecretCredential{Name: "OPENAI_API_KEY"})
-	if !strings.Contains(piSecret.RunCommand("hi", false, false), "/run/containarium/secrets.env") {
+	if !strings.Contains(piSecret.RunCommand("hi", false, false, ""), "/run/containarium/secrets.env") {
 		t.Error("the pi secret run command should source /run/containarium/secrets.env")
 	}
 }
@@ -432,9 +435,11 @@ func TestCodeInstall_FlagValidation(t *testing.T) {
 			want:  "--model",
 		},
 		{
+			// #2273: codex is now a real engine (see the dedicated codex
+			// tests below) — "unknown" needs a genuinely invalid value.
 			name:  "unknown engine",
-			flags: map[string]string{"engine": "codex"},
-			want:  "codex",
+			flags: map[string]string{"engine": "gronk"},
+			want:  "gronk",
 		},
 		{
 			name:  "unknown credential source",
@@ -535,5 +540,94 @@ func TestCodeInstall_ProviderBaseURLOverride(t *testing.T) {
 	}
 	if strings.Contains(scripts, "/v1/model/kafeido/v1") {
 		t.Errorf("the gateway base should have been replaced, not appended to:\n%s", scripts)
+	}
+}
+
+// ===========================================================================
+// --engine codex (#2273)
+// ===========================================================================
+
+// TestCodeInstall_CodexSecret covers the AC's main path: install codex on
+// the secret credential, record code.json, and verify with `codex exec
+// --json`. No daemon calls at all — codex's preflight is identical to
+// Claude's and pi's secret path (metadata-only, and only when --secret-name
+// is given).
+func TestCodeInstall_CodexSecret(t *testing.T) {
+	secrets := []*pb.SecretMetadata{
+		{Name: "CODEX_API_KEY", DeliveryMode: pb.SecretDelivery_SECRET_DELIVERY_COMPOSE},
+	}
+	env, err := runInstallEngine(t, "alice", map[string]string{
+		"engine": "codex", "credential": "secret", "secret-name": "CODEX_API_KEY",
+	}, mintResult{}, secrets, nil)
+	if err != nil {
+		t.Fatalf("install: %v\nstderr: %s", err, env.stderr)
+	}
+	scripts := env.allScripts()
+
+	// codex, via npm, with its postinstall script left enabled.
+	if !strings.Contains(scripts, "@openai/codex") {
+		t.Errorf("codex was not installed via npm:\n%s", scripts)
+	}
+	if strings.Contains(scripts, "--ignore-scripts") {
+		t.Errorf("codex's install must not skip npm scripts (it needs the postinstall binary fetch):\n%s", scripts)
+	}
+	// No gateway token minted: this is the secret path.
+	if len(env.mintReqs) != 0 {
+		t.Errorf("the secret path minted %d gateway token(s); it must mint none", len(env.mintReqs))
+	}
+	// code.json records the choice.
+	for _, want := range []string{`"engine": "codex"`, `"credential": "secret"`, `"secret_name": "CODEX_API_KEY"`} {
+		if !strings.Contains(scripts, want) {
+			t.Errorf("code.json missing %q:\n%s", want, scripts)
+		}
+	}
+	// Verification the AC names.
+	if !strings.Contains(scripts, "codex exec --json") || !strings.Contains(scripts, "print the current working directory") {
+		t.Errorf("codex verification step missing:\n%s", scripts)
+	}
+	// Next-steps help names codex's OWN sign-in command, not pi's leftover
+	// "/login" text.
+	if !strings.Contains(env.stdout, "codex login") {
+		t.Errorf("next-steps help should name codex's own sign-in command:\n%s", env.stdout)
+	}
+	if strings.Contains(env.stdout, "# then /login") {
+		t.Errorf("next-steps help must not print pi's /login text for codex:\n%s", env.stdout)
+	}
+}
+
+// TestCodeInstall_CodexVersionPin covers --codex-version.
+func TestCodeInstall_CodexVersionPin(t *testing.T) {
+	env, err := runInstallEngine(t, "alice", map[string]string{
+		"engine": "codex", "credential": "secret", "codex-version": "0.50.0",
+	}, mintResult{}, nil, nil)
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if !strings.Contains(env.allScripts(), "@openai/codex@0.50.0") {
+		t.Errorf("--codex-version was not honoured:\n%s", env.allScripts())
+	}
+}
+
+// TestCodeInstall_CodexGatewayNotYetSupported pins the #2273 scoping
+// decision: --engine codex --credential gateway is rejected, naming the fix,
+// rather than shipping an unverified path. Nothing runs on the box.
+func TestCodeInstall_CodexGatewayNotYetSupported(t *testing.T) {
+	env, err := runInstallEngine(t, "alice", map[string]string{
+		"engine": "codex", "credential": "gateway", "provider": "openai", "model": "gpt-5-codex",
+	}, okMint(), nil, nil)
+	if err == nil {
+		t.Fatal("install succeeded with --engine codex --credential gateway, which is not supported yet")
+	}
+	msg := err.Error()
+	for _, want := range []string{"not supported", "CODEX_API_KEY", "secret"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error should name the fix (missing %q): %v", want, msg)
+		}
+	}
+	if len(env.scripts) != 0 {
+		t.Errorf("a rejected flag combination still ran %d remote script(s):\n%s", len(env.scripts), env.allScripts())
+	}
+	if len(env.mintReqs) != 0 {
+		t.Errorf("a rejected flag combination still minted a gateway token")
 	}
 }

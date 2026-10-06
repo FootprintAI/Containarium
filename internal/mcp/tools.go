@@ -9,10 +9,13 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/footprintai/containarium/internal/agentengine"
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/releasecheck"
 	"github.com/footprintai/containarium/internal/runlog"
 	"github.com/footprintai/containarium/internal/safecast"
 	"github.com/footprintai/containarium/pkg/core/expose"
+	"github.com/footprintai/containarium/pkg/core/ostype"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -194,6 +197,11 @@ func (s *Server) registerTools() {
 						"type":        "string",
 						"description": "Container OS type: 'ubuntu' (default), 'rocky9' (dev/test), 'rhel9' (production). Overrides image when set.",
 						"enum":        []string{"", "ubuntu", "rocky9", "rhel9"},
+					},
+					"isolation": map[string]interface{}{
+						"type":        "string",
+						"description": "How the box is isolated from the host: 'container' (LXC, shared kernel — the default for Linux) or 'vm' (QEMU/KVM virtual machine with its own kernel; needs a KVM-capable backend, and is the only option for Windows). Mirrors `containarium create --isolation`.",
+						"enum":        []string{"", "container", "vm"},
 					},
 					"monitoring": map[string]interface{}{
 						"type":        "boolean",
@@ -923,6 +931,22 @@ func (s *Server) registerTools() {
 			Handler: handleSecuritySentryStatus,
 		},
 		{
+			Name: "bridge_dns_status",
+			Description: "Report whether the bridge DNS record that resolves the app-hosting base domain " +
+				"to core-caddy matches core-caddy's live address (#2188): 'IN_SYNC', 'PENDING' (no " +
+				"reconcile pass has finished yet), 'DEGRADED' (the last pass could not converge — check " +
+				"`reason`/`lastError`; boxes may resolve the base domain to an address nothing answers " +
+				"on), or 'NOT_MANAGED' (this daemon does not run the reconciler). Includes core-caddy's " +
+				"address, the desired and current record, the drift count and pass timestamps.\n\n" +
+				"Call this when boxes cannot reach the base domain or a hostname under it. Read-only, " +
+				"admin-only. Takes no arguments.",
+			InputSchema: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+			Handler: handleBridgeDNSStatus,
+		},
+		{
 			Name: "list_bad_destinations",
 			Description: "List the known-bad-destination list (#1641) the threat-detection sentry's " +
 				"bad-destination rule matches flow destinations against — a merged view of the " +
@@ -1102,6 +1126,8 @@ func (s *Server) registerTools() {
 						"description": "Run name, default \"code\". Override to run more than one task concurrently on the same box; the same name is how code_attach/code_status/code_stop find it later."},
 					"stream_json": map[string]interface{}{"type": "boolean",
 						"description": "Capture stdout and stderr separately (framed) so a JSON stream on stdout is not corrupted by diagnostics. Default false."},
+					"session_id": map[string]interface{}{"type": "string",
+						"description": "Resume this specific session id (claude --resume) instead of starting a fresh conversation. From a previous code_runs/BoxRun.session_id, when the engine exposed one."},
 				},
 			},
 			Handler: handleCodeRun,
@@ -1250,6 +1276,10 @@ func (s *Server) registerTools() {
 				"    public URLs.\n" +
 				"  - Filter by `username` to see only one container's routes, or " +
 				"    `active_only=true` to skip disabled ones.\n\n" +
+				"An inactive entry (`active: false`) is a subdomain reservation that has " +
+				"been claimed but not yet bound to a container, and it still counts " +
+				"against the caller's route quota. After a quota error, list without " +
+				"`active_only` to see which reservations are using it.\n\n" +
 				"Read-only — no side effects. For TCP/UDP passthrough routes (raw L4, not " +
 				"HTTPS), those live on a different daemon endpoint — use " +
 				"list_passthrough_routes instead.",
@@ -1544,6 +1574,19 @@ func (s *Server) registerTools() {
 			Handler: handleListAgentSkills,
 		},
 		{
+			Name: "list_agent_engines",
+			Description: "Report, for each agent engine (claude/codex/gemini), whether " +
+				"a skill naming it in run_agent_skill would be refused right now, and " +
+				"why not. The same check the daemon enforces on the run itself — no " +
+				"live model call, no bundle inspection. Use this before run_agent_skill " +
+				"to pick an engine that is actually ready, or to explain a refusal.",
+			InputSchema: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+			Handler: handleListAgentEngines,
+		},
+		{
 			Name: "run_agent_skill",
 			Description: "Run an agent skill in a box. Provisions the skill's box, " +
 				"mints a token scoped to exactly the skill's allowed_scopes, and " +
@@ -1569,6 +1612,10 @@ func (s *Server) registerTools() {
 					"git_ref": map[string]interface{}{
 						"type":        "string",
 						"description": "Exact ref to check out for git_source: full SHA (preferred), branch, tag, or refs/pull/N/merge. Empty = the remote's default branch.",
+					},
+					"engine": map[string]interface{}{
+						"type":        "string",
+						"description": "Override the skill manifest's own engine for this run: one of claude, codex, gemini. Refused with the same error a manifest-named engine gets when its provider has no key. Empty = use the manifest.",
 					},
 				},
 				"required": []string{"skill_id"},
@@ -1837,12 +1884,13 @@ func toolScopeAssignments() map[string]string {
 		"list_recipes":  auth.ScopeContainersRead,
 		"deploy_recipe": auth.ScopeContainersWrite,
 
-		"list_agent_skills": auth.ScopeAgentsRead,
-		"run_agent_skill":   auth.ScopeAgentsRun,
-		"call_agent":        auth.ScopeAgentsCall,
-		"list_crews":        auth.ScopeCrewsRead,
-		"run_crew":          auth.ScopeCrewsRun,
-		"crew_logs":         auth.ScopeAgentsRead,
+		"list_agent_skills":  auth.ScopeAgentsRead,
+		"list_agent_engines": auth.ScopeAgentsRead,
+		"run_agent_skill":    auth.ScopeAgentsRun,
+		"call_agent":         auth.ScopeAgentsCall,
+		"list_crews":         auth.ScopeCrewsRead,
+		"run_crew":           auth.ScopeCrewsRun,
+		"crew_logs":          auth.ScopeAgentsRead,
 		// database backups
 		"create_backup":  auth.ScopeBackupsWrite,
 		"restore_backup": auth.ScopeBackupsWrite,
@@ -1896,6 +1944,10 @@ func toolScopeAssignments() map[string]string {
 		"compose_status":   auth.ScopeContainersRead,
 		"compose_enable":   auth.ScopeContainersWrite,
 		"compose_disable":  auth.ScopeContainersWrite,
+
+		// bridge DNS record status (#2188): a host-level read like
+		// get_upgrade_status; the RPC itself is admin-role-gated.
+		"bridge_dns_status": auth.ScopeContainersRead,
 	}
 }
 
@@ -1905,6 +1957,25 @@ func handleCreateContainer(client API, args map[string]interface{}) (string, err
 	username, ok := args["username"].(string)
 	if !ok || username == "" {
 		return "", fmt.Errorf("username is required")
+	}
+
+	// The REST shim takes the enum by name; UNSPECIFIED is simply not sent.
+	isolation, err := ostype.ParseIsolation(getStringArg(args, "isolation", ""))
+	if err != nil {
+		return "", err
+	}
+	var isolationWire string
+	if isolation != pb.IsolationType_ISOLATION_TYPE_UNSPECIFIED {
+		isolationWire = isolation.String()
+	}
+
+	var osTypeWire string
+	if osTypeStr := getStringArg(args, "os_type", ""); osTypeStr != "" {
+		parsedOSType := ostype.OSTypeFromString(osTypeStr)
+		if parsedOSType == pb.OSType_OS_TYPE_UNSPECIFIED {
+			return "", fmt.Errorf("unknown os_type %q: expected ubuntu, rocky9, rhel9, or windows2022", osTypeStr)
+		}
+		osTypeWire = parsedOSType.String()
 	}
 
 	req := CreateContainerRequest{
@@ -1924,6 +1995,8 @@ func handleCreateContainer(client API, args map[string]interface{}) (string, err
 		Pool:         getStringArg(args, "pool", ""),
 		BackendID:    getStringArg(args, "backend_id", ""),
 		Region:       getStringArg(args, "region", ""),
+		Isolation:    isolationWire,
+		OSType:       osTypeWire,
 	}
 
 	// Handle SSH keys. If the caller passes ssh_keys explicitly we use
@@ -2493,6 +2566,8 @@ func handleGetSystemInfo(client API, args map[string]interface{}) (string, error
 	result += fmt.Sprintf("  Stopped: %d\n", resp.Info.ContainersStopped)
 	result += fmt.Sprintf("  Total: %d\n", resp.Info.ContainersTotal)
 
+	result += "\n" + formatCPUBudget(resp.Info)
+
 	// OTLP endpoint: where monitoring=true containers ship telemetry.
 	// Point docker-in-LXC apps here when they can't inherit the
 	// env-stamped OTEL_EXPORTER_OTLP_ENDPOINT. See #370.
@@ -2531,6 +2606,7 @@ func handleCheckForUpdates(client API, args map[string]interface{}) (string, err
 		return "", fmt.Errorf("failed to check for updates: %w", err)
 	}
 	result := fmt.Sprintf("Running version:  %s\n", resp.CurrentVersion)
+	result += fmt.Sprintf("Sentinel serves:  %s\n", releasecheck.TargetSummary(resp.TargetVersion, resp.LatestRelease))
 	if resp.LatestRelease == "" {
 		result += "Latest release:   unknown (GitHub lookup unavailable)\n"
 		return result, nil
@@ -2559,6 +2635,9 @@ func handleUpgradeBackend(client API, args map[string]interface{}) (string, erro
 	if resp.CurrentVersion != "" {
 		result += fmt.Sprintf("  from version: %s\n", resp.CurrentVersion)
 	}
+	if resp.TargetVersion != "" {
+		result += fmt.Sprintf("  to version:   %s\n", resp.TargetVersion)
+	}
 	if resp.Message != "" {
 		result += fmt.Sprintf("  %s\n", resp.Message)
 	}
@@ -2577,6 +2656,9 @@ func handleGetUpgradeStatus(client API, args map[string]interface{}) (string, er
 	result := fmt.Sprintf("Status:   %s\n", resp.Status)
 	if resp.CurrentVersion != "" {
 		result += fmt.Sprintf("Version:  %s\n", resp.CurrentVersion)
+	}
+	if resp.TargetVersion != "" {
+		result += fmt.Sprintf("Target:   %s\n", resp.TargetVersion)
 	}
 	if resp.CompletedAt != "" {
 		result += fmt.Sprintf("Done at:  %s\n", resp.CompletedAt)
@@ -2997,12 +3079,79 @@ func handleListAgentSkills(client API, _ map[string]interface{}) (string, error)
 	return b.String(), nil
 }
 
+func handleListAgentEngines(client API, _ map[string]interface{}) (string, error) {
+	resp, err := client.ListAgentEngines()
+	if err != nil {
+		return "", err
+	}
+	owner := resp.KeyOwner
+	if owner == "" {
+		owner = "(global — admin view, or direct mode)"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Key owner: %s\n\n", owner)
+	fmt.Fprintf(&b, "%-8s %-10s %-20s %-8s %-20s %s\n", "ENGINE", "PROVIDER", "READY", "DEFAULT", "SKILLS", "REASON")
+	for _, e := range resp.Engines {
+		skills := strings.Join(e.SkillIDs, ",")
+		if skills == "" {
+			skills = "-"
+		}
+		fmt.Fprintf(&b, "%-8s %-10s %-20s %-8v %-20s %s\n",
+			trimEnumString(e.Engine, "AGENT_ENGINE_"),
+			trimEnumString(e.Provider, "GATEWAY_PROVIDER_"),
+			trimEnumString(e.Readiness, "AGENT_ENGINE_READINESS_"),
+			e.IsDefault,
+			skills,
+			e.Reason,
+		)
+	}
+	return b.String(), nil
+}
+
+// trimEnumString strips a grpc-gateway-encoded proto enum NAME's prefix,
+// lowercased, e.g. "AGENT_ENGINE_CLAUDE" -> "claude". Mirrors
+// internal/cmd's trimEnumPrefix for the same display purpose, duplicated
+// rather than imported: this package's enum values arrive as plain JSON
+// strings (no generated Go enum type here), while the CLI's trims a typed
+// enum's own String().
+func trimEnumString(s, prefix string) string {
+	if trimmed := strings.TrimPrefix(s, prefix); trimmed != s && trimmed != "" {
+		return strings.ToLower(trimmed)
+	}
+	return strings.ToLower(s)
+}
+
+// parseAgentSkillEngineArg validates and normalizes run_agent_skill's
+// "engine" tool argument into the wire shape protojson expects for an enum
+// field (the proto enum's NAME string, e.g. "AGENT_ENGINE_CODEX") — the same
+// REST-shim-takes-the-enum-by-name convention as os_type/isolation above.
+// Empty input means "no override, use the manifest", not an error; only an
+// unknown name is (agentengine.Parse's own contract, which lists the valid
+// ones). Split out from handleRunAgentSkill so #2228's validation is
+// unit-testable without a fake implementing the whole API interface.
+func parseAgentSkillEngineArg(args map[string]interface{}) (string, error) {
+	engineStr := getStringArg(args, "engine", "")
+	if engineStr == "" {
+		return "", nil
+	}
+	engine, err := agentengine.Parse(engineStr)
+	if err != nil {
+		return "", err
+	}
+	return engine.String(), nil
+}
+
 func handleRunAgentSkill(client API, args map[string]interface{}) (string, error) {
+	engineWire, err := parseAgentSkillEngineArg(args)
+	if err != nil {
+		return "", err
+	}
 	resp, err := client.RunAgentSkill(RunAgentSkillRequest{
 		SkillID:   getStringArg(args, "skill_id", ""),
 		InputJSON: getStringArg(args, "input_json", ""),
 		GitSource: getStringArg(args, "git_source", ""),
 		GitRef:    getStringArg(args, "git_ref", ""),
+		Engine:    engineWire,
 	})
 	if err != nil {
 		return "", err

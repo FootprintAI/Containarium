@@ -13,6 +13,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/footprintai/containarium/internal/agentengine"
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/netbpf"
 	"github.com/footprintai/containarium/internal/netpolicy"
@@ -149,6 +150,39 @@ func TestMintedAgentTokenScopes_TrackerAdminNeverGranted(t *testing.T) {
 		got := mintedAgentTokenScopes(ctx, skill)
 		if slices.Contains(got, auth.ScopeTrackerAdmin) {
 			t.Fatalf("mintedAgentTokenScopes = %v, must never carry tracker:admin even when the caller holds it", got)
+		}
+	})
+}
+
+// TestMintedAgentTokenScopes_TokensDelegateNeverGranted is #2069: a run
+// token holding tokens:delegate could call ExchangeDelegatedToken and mint a
+// token with no run_id, which skips every run-token guard (#2060's lineage
+// binding, #2112's taskRunID) because they all apply only `if runID != ""`.
+// No shipped skill grants it, but a custom skill (CONTAINARIUM_SKILLS_DIR)
+// could — so it is stripped at mint the same way tracker:admin is.
+func TestMintedAgentTokenScopes_TokensDelegateNeverGranted(t *testing.T) {
+	skill := &pb.AgentSkill{
+		Id:            "custom-delegating-skill",
+		AllowedScopes: []string{auth.ScopeContainersRead, auth.ScopeTokensDelegate},
+	}
+
+	t.Run("unrestricted caller", func(t *testing.T) {
+		ctx := auth.ContextWithTestSubjectScopes(context.Background(), "some-caller", nil, nil)
+		got := mintedAgentTokenScopes(ctx, skill)
+		if slices.Contains(got, auth.ScopeTokensDelegate) {
+			t.Fatalf("mintedAgentTokenScopes = %v, must never carry tokens:delegate", got)
+		}
+		if !slices.Contains(got, auth.ScopeContainersRead) {
+			t.Fatalf("mintedAgentTokenScopes = %v, want containers:read still granted (only tokens:delegate is stripped)", got)
+		}
+	})
+
+	t.Run("caller explicitly holds tokens:delegate", func(t *testing.T) {
+		ctx := auth.ContextWithTestSubjectScopes(context.Background(), "some-caller", nil,
+			[]string{auth.ScopeContainersRead, auth.ScopeTokensDelegate})
+		got := mintedAgentTokenScopes(ctx, skill)
+		if slices.Contains(got, auth.ScopeTokensDelegate) {
+			t.Fatalf("mintedAgentTokenScopes = %v, must never carry tokens:delegate even when the caller holds it", got)
 		}
 	})
 }
@@ -291,12 +325,12 @@ func TestCompileAllowedPeersPolicy_NoGatewayKeepsDomains(t *testing.T) {
 
 func TestSetGatewayProvisioning_EgressCIDR(t *testing.T) {
 	s := &AgentSkillServer{}
-	s.SetGatewayProvisioning("anthropic", 8080, []byte("secret"), "10.100.0.1")
+	s.SetGatewayProvisioning("anthropic", 8080, []byte("secret"), "10.100.0.1", nil, nil, nil)
 	if s.gateway.egressCIDR != "10.100.0.1/32" {
 		t.Errorf("egressCIDR = %q, want 10.100.0.1/32", s.gateway.egressCIDR)
 	}
 	// Empty host IP → no pinning CIDR (direct provider egress retained).
-	s.SetGatewayProvisioning("anthropic", 8080, []byte("secret"), "")
+	s.SetGatewayProvisioning("anthropic", 8080, []byte("secret"), "", nil, nil, nil)
 	if s.gateway.egressCIDR != "" {
 		t.Errorf("empty hostIP must yield no egressCIDR, got %q", s.gateway.egressCIDR)
 	}
@@ -539,31 +573,47 @@ func TestCompileAllowedPeersPolicyLeafIsDefaultDeny(t *testing.T) {
 	}
 }
 
-func TestEngineForProvider(t *testing.T) {
-	cases := map[string]string{
-		"anthropic": "claude",
-		"gemini":    "gemini",
-		"openai":    "codex",
-		"":          "",
-		"bogus":     "",
+// #2222: engineForProvider and engineEnvPrefix moved into internal/agentengine
+// (Provider/ForProvider, Resolve) and into runtimeEnvPrefix (rendering only)
+// respectively. The provider<->engine mapping table they pinned now lives in
+// agentengine's TestProviderRoundTrip; runtimeEnvPrefix's own rendering rules
+// are pinned below. SetGatewayProvisioning now also populates
+// engines.DefaultProvider from gatewayPrimaryProvider's own provider string.
+
+func TestSetGatewayProvisioning_PopulatesDefaultProvider(t *testing.T) {
+	s := &AgentSkillServer{}
+	s.SetGatewayProvisioning("gemini", 8080, []byte("secret"), "", map[string]bool{"gemini": true}, nil, nil)
+	if s.gateway.engines.DefaultProvider != "gemini" {
+		t.Errorf("engines.DefaultProvider = %q, want gemini", s.gateway.engines.DefaultProvider)
 	}
-	for provider, want := range cases {
-		if got := engineForProvider(provider); got != want {
-			t.Errorf("engineForProvider(%q) = %q, want %q", provider, got, want)
-		}
+	if !s.gateway.engines.GlobalProviders["gemini"] {
+		t.Errorf("engines.GlobalProviders = %v, want gemini present", s.gateway.engines.GlobalProviders)
 	}
 }
 
-func TestEngineEnvPrefix(t *testing.T) {
-	// No gateway (direct mode): no engine pin — the box's own default decides.
-	if got := (&AgentSkillServer{}).engineEnvPrefix(); got != "" {
-		t.Errorf("no gateway: prefix = %q, want empty", got)
+func TestRuntimeEnvPrefix(t *testing.T) {
+	// Direct mode, no engine named: no engine pin at all — the box's own
+	// default decides. Byte-identical to every box that predates this field.
+	if got := runtimeEnvPrefix(agentengine.Resolved{}, ""); got != "" {
+		t.Errorf("unspecified: prefix = %q, want empty", got)
 	}
-	// Gateway with a known provider: pin the matching engine (#748) so the box
-	// doesn't fall back to claude on a gemini gateway.
-	s := &AgentSkillServer{gateway: &gatewayProvisioning{provider: "gemini"}}
-	if got := s.engineEnvPrefix(); got != "CONTAINARIUM_AGENT_ENGINE=gemini " {
-		t.Errorf("gemini gateway: prefix = %q, want CONTAINARIUM_AGENT_ENGINE=gemini ", got)
+	// A resolved engine is always pinned (#748's original fix, now computed
+	// by agentengine.Resolve upstream instead of a daemon-wide lookup here).
+	gemini := agentengine.Resolved{Engine: pb.AgentEngine_AGENT_ENGINE_GEMINI, Provider: "gemini", Default: true}
+	if got := runtimeEnvPrefix(gemini, ""); got != "CONTAINARIUM_AGENT_ENGINE=gemini " {
+		t.Errorf("gemini default: prefix = %q, want CONTAINARIUM_AGENT_ENGINE=gemini ", got)
+	}
+	// Q1 (docs/product/agent-router.md): the manifest's model is exported
+	// only when the engine was NAMED by the manifest (Default=false) — a
+	// default-resolved engine (Default=true) never exports the model, even
+	// when one is set, so an unspecified-engine skill cannot start failing
+	// on a daemon whose default engine doesn't match its pinned model.
+	named := agentengine.Resolved{Engine: pb.AgentEngine_AGENT_ENGINE_CODEX, Provider: "openai", Default: false}
+	if got := runtimeEnvPrefix(named, "gpt-5"); got != "CONTAINARIUM_AGENT_ENGINE=codex CONTAINARIUM_AGENT_MODEL='gpt-5' " {
+		t.Errorf("named engine with model: prefix = %q, want both exported", got)
+	}
+	if got := runtimeEnvPrefix(gemini, "claude-opus-4-8"); got != "CONTAINARIUM_AGENT_ENGINE=gemini " {
+		t.Errorf("default-resolved engine must never export the manifest's model, got %q", got)
 	}
 }
 

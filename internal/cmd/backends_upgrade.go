@@ -64,6 +64,7 @@ type triggerUpgradeResp struct {
 	CurrentVersion string `json:"currentVersion"`
 	Message        string `json:"message"`
 	BackendID      string `json:"backendId"`
+	TargetVersion  string `json:"targetVersion"` // #2171
 }
 
 func runBackendsUpgrade(cmd *cobra.Command, args []string) error {
@@ -115,6 +116,9 @@ func runBackendsUpgrade(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(cmd.OutOrStdout(), "Upgrade %s on %s (job %s)\n", out.Status, target, out.UpgradeID)
 	if out.CurrentVersion != "" {
 		fmt.Fprintf(cmd.OutOrStdout(), "  from version: %s\n", out.CurrentVersion)
+	}
+	if out.TargetVersion != "" {
+		fmt.Fprintf(cmd.OutOrStdout(), "  to version:   %s\n", out.TargetVersion)
 	}
 	if out.Message != "" {
 		fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", out.Message)

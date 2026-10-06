@@ -30,12 +30,20 @@
       "description": "RecipeService provides one-command deployment of declarative GPU/app\nrecipes onto Containarium backends."
     },
     {
+      "name": "ModelGatewayService",
+      "description": "ModelGatewayService is the control surface for the daemon's model gateway\n(internal/modelgateway): who owns which upstream provider key, and the\nshort-lived scoped tokens a box presents instead of one.\n\nThe gateway's DATA plane is not here — it stays the HTTP proxy at\n/v1/model/\u003cprovider\u003e that a box calls with its gateway token. This service\nis the admin + mint surface around it:\n\n  - Set/Delete/GetStatus for one key owner's real upstream key. Admin-only\n    (gateway:admin); the key goes in, and only a fingerprint ever comes back\n    out. The keys live in the daemon's encrypted secrets store under a\n    reserved namespace no tenant can list and no delivery mode ships into a\n    box (internal/secrets.GatewayKeyLocation).\n  - MintGatewayToken, which issues a scoped, revocable, short-lived token\n    for a box the CALLER OWNS (gateway:mint). The token's key_owner claim —\n    the box's cloud-org attribution when stamped, else its owning username —\n    is what makes the call spend that owner's upstream key rather than the\n    daemon operator's.\n  - ListGatewayModels, the upstream model list read through the gateway, so\n    a caller can see what it may ask for without ever holding a real key.\n\nDesign: docs/architecture/workspace-own-inference-key.md (cloud repo),\ncomponent 2 / contract C1."
+    },
+    {
       "name": "AgentSkillService",
       "description": "AgentSkillService manages and runs individual packaged agents."
     },
     {
       "name": "CrewService",
       "description": "CrewService runs collaborating sets of skills bound to a task purpose."
+    },
+    {
+      "name": "AnonymousBoxService",
+      "description": "AnonymousBoxService is the daemon side of the `ssh new.\u003ccloud-domain\u003e`\ndoor (docs/architecture/ssh-new-anonymous-box.md): a Linux VM per SSH\nkey fingerprint, no account required, claimable into a tenant by\nsigning up, destroyed at TTL otherwise. The sentinel's door plugin calls\nEnsureAnonymousBox; the cloud control plane (or an admin) calls\nClaimAnonymousBox; everything else is operator surface."
     },
     {
       "name": "AppService",
@@ -75,10 +83,6 @@
     {
       "name": "KmsService",
       "description": "KmsService exposes read + migration-trigger operations for the\ntenant-secrets envelope-encryption layer (see\ndocs/security/KMS-ENVELOPE-DESIGN.md). It deliberately does NOT\nexpose backend *configuration* — selecting a KMS backend and\nsupplying its credentials stays an operator/systemd concern\n(CONTAINARIUM_KMS_BACKEND + the per-backend env vars), never an\nover-the-wire action. Every RPC requires the `kms:admin` scope\nAND the admin role; these are platform-wide, not tenant-scoped."
-    },
-    {
-      "name": "ModelGatewayService",
-      "description": "ModelGatewayService is the control surface for the daemon's model gateway\n(internal/modelgateway): who owns which upstream provider key, and the\nshort-lived scoped tokens a box presents instead of one.\n\nThe gateway's DATA plane is not here — it stays the HTTP proxy at\n/v1/model/\u003cprovider\u003e that a box calls with its gateway token. This service\nis the admin + mint surface around it:\n\n  - Set/Delete/GetStatus for one key owner's real upstream key. Admin-only\n    (gateway:admin); the key goes in, and only a fingerprint ever comes back\n    out. The keys live in the daemon's encrypted secrets store under a\n    reserved namespace no tenant can list and no delivery mode ships into a\n    box (internal/secrets.GatewayKeyLocation).\n  - MintGatewayToken, which issues a scoped, revocable, short-lived token\n    for a box the CALLER OWNS (gateway:mint). The token's key_owner claim —\n    the box's cloud-org attribution when stamped, else its owning username —\n    is what makes the call spend that owner's upstream key rather than the\n    daemon operator's.\n  - ListGatewayModels, the upstream model list read through the gateway, so\n    a caller can see what it may ask for without ever holding a real key.\n\nDesign: docs/architecture/workspace-own-inference-key.md (cloud repo),\ncomponent 2 / contract C1."
     },
     {
       "name": "NetworkPolicyService",
@@ -297,6 +301,30 @@
         ]
       }
     },
+    "/v1/agent-engines": {
+      "get": {
+        "summary": "List agent engines and their readiness",
+        "description": "Returns one row per agent engine: whether a skill naming it would be refused right now, why, and which catalog skills name it explicitly.",
+        "operationId": "AgentSkillService_ListAgentEngines",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListAgentEnginesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "tags": [
+          "Agents"
+        ]
+      }
+    },
     "/v1/agent-runs/{runId}/log": {
       "get": {
         "summary": "Tail a run's journal",
@@ -410,6 +438,78 @@
             "in": "path",
             "required": true,
             "type": "string"
+          }
+        ],
+        "tags": [
+          "Agents"
+        ]
+      }
+    },
+    "/v1/agent-skills/{skillId}/credential-status": {
+      "get": {
+        "summary": "Check a skill box's coding-agent credential source",
+        "description": "Reports the NAME of the credential source (interactive sign-in, a user-placed key, or none) the skill's box would use for its configured engine — never the credential's value, never read/logged/transmitted.",
+        "operationId": "AgentSkillService_GetSkillBoxCredentialStatus",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetSkillBoxCredentialStatusResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "skillId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Agents"
+        ]
+      }
+    },
+    "/v1/agent-skills/{skillId}/provision-box": {
+      "post": {
+        "summary": "Provision a skill's box ahead of any run",
+        "description": "Creates or reuses the skill's deterministic box with no token minted, nothing seeded, and no model call — so a human can sign in to its coding agent before any inference credential exists.",
+        "operationId": "AgentSkillService_ProvisionSkillBox",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ProvisionSkillBoxResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "skillId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/ProvisionSkillBoxBody"
+            }
           }
         ],
         "tags": [
@@ -826,6 +926,154 @@
         ],
         "tags": [
           "Alerts"
+        ]
+      }
+    },
+    "/v1/anon/boxes": {
+      "get": {
+        "summary": "List anonymous boxes",
+        "description": "Every live anonymous box with its fingerprint hash, expiry and claim state. Admin only.",
+        "operationId": "AnonymousBoxService_ListAnonymousBoxes",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListAnonymousBoxesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "tags": [
+          "AnonymousBox"
+        ]
+      }
+    },
+    "/v1/anon/boxes:claim": {
+      "post": {
+        "summary": "Claim anonymous box",
+        "description": "Bind an anonymous box to a tenant using its claim token. Admin / control plane only.",
+        "operationId": "AnonymousBoxService_ClaimAnonymousBox",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ClaimAnonymousBoxResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/ClaimAnonymousBoxRequest"
+            }
+          }
+        ],
+        "tags": [
+          "AnonymousBox"
+        ]
+      }
+    },
+    "/v1/anon/boxes:ensure": {
+      "post": {
+        "summary": "Ensure anonymous box",
+        "description": "Resolve or create the anonymous VM for an SSH public key. Sentinel door / admin only.",
+        "operationId": "AnonymousBoxService_EnsureAnonymousBox",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/EnsureAnonymousBoxResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/EnsureAnonymousBoxRequest"
+            }
+          }
+        ],
+        "tags": [
+          "AnonymousBox"
+        ]
+      }
+    },
+    "/v1/anon/door": {
+      "get": {
+        "summary": "Get anonymous door config",
+        "description": "Kill switch, bans and the fixed per-box limits of the anonymous tier. Admin only.",
+        "operationId": "AnonymousBoxService_GetAnonymousDoorConfig",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/AnonymousDoorConfig"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "tags": [
+          "AnonymousBox"
+        ]
+      },
+      "put": {
+        "summary": "Set anonymous door config",
+        "description": "Enable/disable the anonymous door and edit banned fingerprints. Admin only.",
+        "operationId": "AnonymousBoxService_SetAnonymousDoorConfig",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/AnonymousDoorConfig"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "config",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/AnonymousDoorConfig"
+            }
+          }
+        ],
+        "tags": [
+          "AnonymousBox"
         ]
       }
     },
@@ -1470,7 +1718,7 @@
     "/v1/backups/{id}/verify": {
       "post": {
         "summary": "Verify a backup",
-        "description": "Restore-tests a stored dump by loading it into a throwaway database inside a target container and running sanity checks, then dropping the scratch database. Never touches the source container. Records the outcome on the backup as durable A.8.13 evidence.",
+        "description": "Restore-tests a stored dump by loading it into a throwaway database inside a target container and running sanity checks, then dropping the scratch database. Never touches the source container. An encrypted backup needs age_identity to decrypt; a wrong identity comes back as a FAILED result, not an error. Records the outcome on the backup as durable A.8.13 evidence.",
         "operationId": "BackupService_VerifyBackup",
         "responses": {
           "200": {
@@ -2808,6 +3056,45 @@
         "tags": [
           "Code Runs"
         ]
+      },
+      "post": {
+        "summary": "Start a box's code run",
+        "description": "Starts (or resumes) a coding-agent run on a box, no SSH client needed. The engine and its credential source come from the box's own ~/.containarium/code.json (`code install`); this call only says what to run. A previous run under the resolved run_name that is still RUNNING or UNKNOWN is FAILED_PRECONDITION, naming it. Box owner or collaborator, ssh:write scope.",
+        "operationId": "ContainerService_StartBoxRun",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/StartBoxRunResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "The box owner's username (the box is \u003cusername\u003e-container).",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/StartBoxRunBody"
+            }
+          }
+        ],
+        "tags": [
+          "Code Runs"
+        ]
       }
     },
     "/v1/containers/{username}/code-runs/{runName}/log": {
@@ -3677,7 +3964,8 @@
                 "RESOURCE_TYPE_ROUTE",
                 "RESOURCE_TYPE_METRICS",
                 "RESOURCE_TYPE_TRAFFIC",
-                "RESOURCE_TYPE_SECURITY_FINDING"
+                "RESOURCE_TYPE_SECURITY_FINDING",
+                "RESOURCE_TYPE_ANON_BOX"
               ]
             },
             "collectionFormat": "multi"
@@ -6263,6 +6551,30 @@
         ]
       }
     },
+    "/v1/system/bridge-dns": {
+      "get": {
+        "summary": "Get bridge DNS record status",
+        "description": "Returns the last pass of the reconciler that keeps the Incus bridge's raw.dnsmasq record (base domain -\u003e core-caddy) on core-caddy's live address: state, the desired and current record, core-caddy's address, the last error and drift count. NOT_MANAGED when this daemon does not run the reconciler. Admin-only.",
+        "operationId": "ContainerService_GetBridgeDNSStatus",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetBridgeDNSStatusResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "tags": [
+          "System"
+        ]
+      }
+    },
     "/v1/system/info": {
       "get": {
         "summary": "Get system information",
@@ -6801,6 +7113,647 @@
         ]
       }
     },
+    "/v1/tracker/connections/{username}/{connection}/changes": {
+      "post": {
+        "summary": "Submit a tracker change request",
+        "description": "Bundles the run's committed workspace out of the box and pushes it from a fresh temporary bare repository on the host to a daemon-chosen branch, then opens a change request referencing issue — no push credential ever enters the box. Requires tracker:write and a run with a recorded git_source. Opened as a draft when draft is true.",
+        "operationId": "TrackerService_SubmitTrackerChange",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SubmitTrackerChangeResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "connection",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/SubmitTrackerChangeBody"
+            }
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      }
+    },
+    "/v1/tracker/connections/{username}/{connection}/changes/{number}": {
+      "get": {
+        "summary": "Get a tracker change request",
+        "description": "Returns a pull/merge request's state and normalized CI verdict. Requires tracker:read.",
+        "operationId": "TrackerService_GetTrackerChange",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetTrackerChangeResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "connection",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "number",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "format": "int64"
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      }
+    },
+    "/v1/tracker/connections/{username}/{connection}/dispatch": {
+      "post": {
+        "summary": "Run one tracker dispatch tick",
+        "description": "Lists the connection's open issues and, for each one carrying a routed scope:\u003crole\u003e label and no agent:* state label (and not agent:needs-approval), inserts a durable dispatch row, starts the routed skill through the RunAgentSkill path with the issue reference as input, and labels the issue agent:queued. Exactly once per (issue) across restarts and concurrent dispatchers: a partial unique index on active rows makes the second inserter skip. An unrouted scope label gets exactly one stamped warning comment. Each tick first sweeps active rows: one past the policy run timeout, or with no live lease past a grace period, is failed (lease ended, agent:failed, a comment naming the run and the reason) and returned in timed_out. A nonzero max_starts stops the tick once that many runs have started; the eligible issues past it get no row and no label, are counted in left_undispatched, and are picked up by a later tick. Requires tracker:admin (and agents:run, to start the runs).",
+        "operationId": "TrackerService_DispatchTrackerIssues",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/DispatchTrackerIssuesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "connection",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/DispatchTrackerIssuesBody"
+            }
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      }
+    },
+    "/v1/tracker/connections/{username}/{connection}/dispatches": {
+      "get": {
+        "summary": "List tracker dispatches",
+        "description": "Lists a connection's dispatch rows (issue, scope, skill, run id, state, failure reason, timestamps), newest first, optionally filtered by state. Each row also reports the fan-out slots its run still holds as lineage reservations, and when the oldest was claimed, so an operator can see why a run's fan-out looks exhausted. Requires tracker:admin.",
+        "operationId": "TrackerService_ListTrackerDispatches",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListTrackerDispatchesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "connection",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "state",
+            "description": "UNSPECIFIED matches any state.",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "enum": [
+              "TRACKER_DISPATCH_STATE_UNSPECIFIED",
+              "TRACKER_DISPATCH_STATE_QUEUED",
+              "TRACKER_DISPATCH_STATE_RUNNING",
+              "TRACKER_DISPATCH_STATE_DONE",
+              "TRACKER_DISPATCH_STATE_FAILED"
+            ],
+            "default": "TRACKER_DISPATCH_STATE_UNSPECIFIED"
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      }
+    },
+    "/v1/tracker/connections/{username}/{connection}/issues": {
+      "get": {
+        "summary": "List tracker issues",
+        "description": "Lists issues, optionally filtered by state, labels (AND), or free-text search. Never includes comments — use GetTrackerIssue for a single issue's comments. Requires tracker:read.",
+        "operationId": "TrackerService_ListTrackerIssues",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListTrackerIssuesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "connection",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "state",
+            "description": "UNSPECIFIED matches any state.\n\n - TRACKER_ISSUE_STATE_MERGED: Changes (pull/merge requests) only — never set on a plain issue,\nwhich has no merge concept. Kept on this shared enum rather than a\nseparate one because the two states can never be ambiguous: only a\nTrackerChange ever carries MERGED.",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "enum": [
+              "TRACKER_ISSUE_STATE_UNSPECIFIED",
+              "TRACKER_ISSUE_STATE_OPEN",
+              "TRACKER_ISSUE_STATE_CLOSED",
+              "TRACKER_ISSUE_STATE_MERGED"
+            ],
+            "default": "TRACKER_ISSUE_STATE_UNSPECIFIED"
+          },
+          {
+            "name": "labels",
+            "description": "Non-empty requires ALL of these labels present (both providers'\nnative list APIs support this as an AND filter).",
+            "in": "query",
+            "required": false,
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "collectionFormat": "multi"
+          },
+          {
+            "name": "search",
+            "description": "Free-text query against title/body, passed through to the\nprovider's own search — best-effort, not authoritative, since no\nnormalization is possible across two different search\nimplementations.",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      },
+      "post": {
+        "summary": "Create a tracker issue",
+        "description": "Files an issue on the connection's tracker — the follow-up verb for issue-triggered role agents. Labels must pass the connection's label allow-list (checked before any upstream call). A run-scoped token must name a parent issue: the child is recorded in the issue lineage (depth and per-run fan-out are capped by the connection policy), gets agent:needs-approval unless the policy enables auto_chain, and its body ends with the parent link and the run's identity stamp; the parent gets one back-link comment. If the tracker does not answer the create in time, the outcome is unknown (the issue may already exist upstream): the call fails with code UNKNOWN and a message starting UPSTREAM_CREATE_OUTCOME_UNKNOWN, the attempt is audited, and for a run it keeps counting against max_children_per_run — do not retry blindly; check the tracker for the issue first. Requires tracker:write.",
+        "operationId": "TrackerService_CreateTrackerIssue",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/CreateTrackerIssueResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "connection",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/CreateTrackerIssueBody"
+            }
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      }
+    },
+    "/v1/tracker/connections/{username}/{connection}/issues/{number}": {
+      "get": {
+        "summary": "Get a tracker issue",
+        "description": "Returns a single issue's body, state, labels, assignee, and comments, normalized across GitHub and GitLab. Requires tracker:read.",
+        "operationId": "TrackerService_GetTrackerIssue",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetTrackerIssueResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "connection",
+            "description": "Connection name. A run-scoped JWT's tracker_conn claim must match\nthis field once run binding lands (#1922 step 6); an operator\ntoken may name any connection in its tenant.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "number",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "format": "int64"
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      }
+    },
+    "/v1/tracker/connections/{username}/{connection}/issues/{number}/claim": {
+      "post": {
+        "summary": "Claim a tracker issue",
+        "description": "Posts a stamped claim comment and assigns the calling run if the issue is unassigned, unless a live or recent claim from a different run already holds it. Idempotent for the same run. Requires tracker:write.",
+        "operationId": "TrackerService_ClaimTrackerIssue",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ClaimTrackerIssueResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "connection",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "number",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "format": "int64"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/ClaimTrackerIssueBody"
+            }
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      }
+    },
+    "/v1/tracker/connections/{username}/{connection}/issues/{number}/comments": {
+      "post": {
+        "summary": "Comment on a tracker issue or change",
+        "description": "Posts a comment, stamped with the acting run's platform identity and sanitized against forged markers and GitLab quick-actions. Requires tracker:write.",
+        "operationId": "TrackerService_CommentOnTrackerIssue",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/CommentOnTrackerIssueResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "connection",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "number",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "format": "int64"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/CommentOnTrackerIssueBody"
+            }
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      }
+    },
+    "/v1/tracker/connections/{username}/{connection}/issues/{number}/labels": {
+      "post": {
+        "summary": "Set labels on a tracker issue",
+        "description": "Adds and/or removes labels on an issue. Requires tracker:write.",
+        "operationId": "TrackerService_SetTrackerIssueLabels",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SetTrackerIssueLabelsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "connection",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "number",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "format": "int64"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/SetTrackerIssueLabelsBody"
+            }
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      }
+    },
+    "/v1/tracker/connections/{username}/{connection}/routes": {
+      "get": {
+        "summary": "List tracker scope routes",
+        "description": "Lists every scope -\u003e skill route on a tracker connection, ordered by scope. Requires tracker:admin.",
+        "operationId": "TrackerService_ListTrackerRoutes",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListTrackerRoutesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "connection",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      }
+    },
+    "/v1/tracker/connections/{username}/{connection}/routes/{scope}": {
+      "delete": {
+        "summary": "Delete a tracker scope route",
+        "description": "Removes the route for scope:\u003cscope\u003e on this connection; issues with that label are no longer dispatched. Requires tracker:admin.",
+        "operationId": "TrackerService_DeleteTrackerRoute",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/DeleteTrackerRouteResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "connection",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "scope",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      },
+      "put": {
+        "summary": "Set a tracker scope route",
+        "description": "Creates or updates the route that sends issues labeled scope:\u003cscope\u003e on this connection to skill_id. Idempotent. The connection must exist. Requires tracker:admin.",
+        "operationId": "TrackerService_SetTrackerRoute",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SetTrackerRouteResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "connection",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "scope",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/SetTrackerRouteBody"
+            }
+          }
+        ],
+        "tags": [
+          "Tracker"
+        ]
+      }
+    },
     "/v1/tracker/connections/{username}/{name}": {
       "get": {
         "summary": "Get a tracker connection",
@@ -6906,647 +7859,6 @@
             "in": "path",
             "required": true,
             "type": "string"
-          }
-        ],
-        "tags": [
-          "Tracker"
-        ]
-      }
-    },
-    "/v1/tracker/{username}/{connection}/changes": {
-      "post": {
-        "summary": "Submit a tracker change request",
-        "description": "Bundles the run's committed workspace out of the box and pushes it from a fresh temporary bare repository on the host to a daemon-chosen branch, then opens a change request referencing issue — no push credential ever enters the box. Requires tracker:write and a run with a recorded git_source. Opened as a draft when draft is true.",
-        "operationId": "TrackerService_SubmitTrackerChange",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/SubmitTrackerChangeResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/rpc.Status"
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "username",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "connection",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "body",
-            "in": "body",
-            "required": true,
-            "schema": {
-              "$ref": "#/definitions/SubmitTrackerChangeBody"
-            }
-          }
-        ],
-        "tags": [
-          "Tracker"
-        ]
-      }
-    },
-    "/v1/tracker/{username}/{connection}/changes/{number}": {
-      "get": {
-        "summary": "Get a tracker change request",
-        "description": "Returns a pull/merge request's state and normalized CI verdict. Requires tracker:read.",
-        "operationId": "TrackerService_GetTrackerChange",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/GetTrackerChangeResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/rpc.Status"
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "username",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "connection",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "number",
-            "in": "path",
-            "required": true,
-            "type": "string",
-            "format": "int64"
-          }
-        ],
-        "tags": [
-          "Tracker"
-        ]
-      }
-    },
-    "/v1/tracker/{username}/{connection}/dispatch": {
-      "post": {
-        "summary": "Run one tracker dispatch tick",
-        "description": "Lists the connection's open issues and, for each one carrying a routed scope:\u003crole\u003e label and no agent:* state label (and not agent:needs-approval), inserts a durable dispatch row, starts the routed skill through the RunAgentSkill path with the issue reference as input, and labels the issue agent:queued. Exactly once per (issue) across restarts and concurrent dispatchers: a partial unique index on active rows makes the second inserter skip. An unrouted scope label gets exactly one stamped warning comment. Each tick first sweeps active rows: one past the policy run timeout, or with no live lease past a grace period, is failed (lease ended, agent:failed, a comment naming the run and the reason) and returned in timed_out. Requires tracker:admin (and agents:run, to start the runs).",
-        "operationId": "TrackerService_DispatchTrackerIssues",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/DispatchTrackerIssuesResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/rpc.Status"
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "username",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "connection",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "body",
-            "in": "body",
-            "required": true,
-            "schema": {
-              "$ref": "#/definitions/DispatchTrackerIssuesBody"
-            }
-          }
-        ],
-        "tags": [
-          "Tracker"
-        ]
-      }
-    },
-    "/v1/tracker/{username}/{connection}/dispatches": {
-      "get": {
-        "summary": "List tracker dispatches",
-        "description": "Lists a connection's dispatch rows (issue, scope, skill, run id, state, failure reason, timestamps), newest first, optionally filtered by state. Requires tracker:admin.",
-        "operationId": "TrackerService_ListTrackerDispatches",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/ListTrackerDispatchesResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/rpc.Status"
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "username",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "connection",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "state",
-            "description": "UNSPECIFIED matches any state.",
-            "in": "query",
-            "required": false,
-            "type": "string",
-            "enum": [
-              "TRACKER_DISPATCH_STATE_UNSPECIFIED",
-              "TRACKER_DISPATCH_STATE_QUEUED",
-              "TRACKER_DISPATCH_STATE_RUNNING",
-              "TRACKER_DISPATCH_STATE_DONE",
-              "TRACKER_DISPATCH_STATE_FAILED"
-            ],
-            "default": "TRACKER_DISPATCH_STATE_UNSPECIFIED"
-          }
-        ],
-        "tags": [
-          "Tracker"
-        ]
-      }
-    },
-    "/v1/tracker/{username}/{connection}/issues": {
-      "get": {
-        "summary": "List tracker issues",
-        "description": "Lists issues, optionally filtered by state, labels (AND), or free-text search. Never includes comments — use GetTrackerIssue for a single issue's comments. Requires tracker:read.",
-        "operationId": "TrackerService_ListTrackerIssues",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/ListTrackerIssuesResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/rpc.Status"
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "username",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "connection",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "state",
-            "description": "UNSPECIFIED matches any state.\n\n - TRACKER_ISSUE_STATE_MERGED: Changes (pull/merge requests) only — never set on a plain issue,\nwhich has no merge concept. Kept on this shared enum rather than a\nseparate one because the two states can never be ambiguous: only a\nTrackerChange ever carries MERGED.",
-            "in": "query",
-            "required": false,
-            "type": "string",
-            "enum": [
-              "TRACKER_ISSUE_STATE_UNSPECIFIED",
-              "TRACKER_ISSUE_STATE_OPEN",
-              "TRACKER_ISSUE_STATE_CLOSED",
-              "TRACKER_ISSUE_STATE_MERGED"
-            ],
-            "default": "TRACKER_ISSUE_STATE_UNSPECIFIED"
-          },
-          {
-            "name": "labels",
-            "description": "Non-empty requires ALL of these labels present (both providers'\nnative list APIs support this as an AND filter).",
-            "in": "query",
-            "required": false,
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "collectionFormat": "multi"
-          },
-          {
-            "name": "search",
-            "description": "Free-text query against title/body, passed through to the\nprovider's own search — best-effort, not authoritative, since no\nnormalization is possible across two different search\nimplementations.",
-            "in": "query",
-            "required": false,
-            "type": "string"
-          }
-        ],
-        "tags": [
-          "Tracker"
-        ]
-      },
-      "post": {
-        "summary": "Create a tracker issue",
-        "description": "Files an issue on the connection's tracker — the follow-up verb for issue-triggered role agents. Labels must pass the connection's label allow-list (checked before any upstream call). A run-scoped token must name a parent issue: the child is recorded in the issue lineage (depth and per-run fan-out are capped by the connection policy), gets agent:needs-approval unless the policy enables auto_chain, and its body ends with the parent link and the run's identity stamp; the parent gets one back-link comment. Requires tracker:write.",
-        "operationId": "TrackerService_CreateTrackerIssue",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/CreateTrackerIssueResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/rpc.Status"
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "username",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "connection",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "body",
-            "in": "body",
-            "required": true,
-            "schema": {
-              "$ref": "#/definitions/CreateTrackerIssueBody"
-            }
-          }
-        ],
-        "tags": [
-          "Tracker"
-        ]
-      }
-    },
-    "/v1/tracker/{username}/{connection}/issues/{number}": {
-      "get": {
-        "summary": "Get a tracker issue",
-        "description": "Returns a single issue's body, state, labels, assignee, and comments, normalized across GitHub and GitLab. Requires tracker:read.",
-        "operationId": "TrackerService_GetTrackerIssue",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/GetTrackerIssueResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/rpc.Status"
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "username",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "connection",
-            "description": "Connection name. A run-scoped JWT's tracker_conn claim must match\nthis field once run binding lands (#1922 step 6); an operator\ntoken may name any connection in its tenant.",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "number",
-            "in": "path",
-            "required": true,
-            "type": "string",
-            "format": "int64"
-          }
-        ],
-        "tags": [
-          "Tracker"
-        ]
-      }
-    },
-    "/v1/tracker/{username}/{connection}/issues/{number}/claim": {
-      "post": {
-        "summary": "Claim a tracker issue",
-        "description": "Posts a stamped claim comment and assigns the calling run if the issue is unassigned, unless a live or recent claim from a different run already holds it. Idempotent for the same run. Requires tracker:write.",
-        "operationId": "TrackerService_ClaimTrackerIssue",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/ClaimTrackerIssueResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/rpc.Status"
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "username",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "connection",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "number",
-            "in": "path",
-            "required": true,
-            "type": "string",
-            "format": "int64"
-          },
-          {
-            "name": "body",
-            "in": "body",
-            "required": true,
-            "schema": {
-              "$ref": "#/definitions/ClaimTrackerIssueBody"
-            }
-          }
-        ],
-        "tags": [
-          "Tracker"
-        ]
-      }
-    },
-    "/v1/tracker/{username}/{connection}/issues/{number}/comments": {
-      "post": {
-        "summary": "Comment on a tracker issue or change",
-        "description": "Posts a comment, stamped with the acting run's platform identity and sanitized against forged markers and GitLab quick-actions. Requires tracker:write.",
-        "operationId": "TrackerService_CommentOnTrackerIssue",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/CommentOnTrackerIssueResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/rpc.Status"
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "username",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "connection",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "number",
-            "in": "path",
-            "required": true,
-            "type": "string",
-            "format": "int64"
-          },
-          {
-            "name": "body",
-            "in": "body",
-            "required": true,
-            "schema": {
-              "$ref": "#/definitions/CommentOnTrackerIssueBody"
-            }
-          }
-        ],
-        "tags": [
-          "Tracker"
-        ]
-      }
-    },
-    "/v1/tracker/{username}/{connection}/issues/{number}/labels": {
-      "post": {
-        "summary": "Set labels on a tracker issue",
-        "description": "Adds and/or removes labels on an issue. Requires tracker:write.",
-        "operationId": "TrackerService_SetTrackerIssueLabels",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/SetTrackerIssueLabelsResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/rpc.Status"
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "username",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "connection",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "number",
-            "in": "path",
-            "required": true,
-            "type": "string",
-            "format": "int64"
-          },
-          {
-            "name": "body",
-            "in": "body",
-            "required": true,
-            "schema": {
-              "$ref": "#/definitions/SetTrackerIssueLabelsBody"
-            }
-          }
-        ],
-        "tags": [
-          "Tracker"
-        ]
-      }
-    },
-    "/v1/tracker/{username}/{connection}/routes": {
-      "get": {
-        "summary": "List tracker scope routes",
-        "description": "Lists every scope -\u003e skill route on a tracker connection, ordered by scope. Requires tracker:admin.",
-        "operationId": "TrackerService_ListTrackerRoutes",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/ListTrackerRoutesResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/rpc.Status"
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "username",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "connection",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          }
-        ],
-        "tags": [
-          "Tracker"
-        ]
-      }
-    },
-    "/v1/tracker/{username}/{connection}/routes/{scope}": {
-      "delete": {
-        "summary": "Delete a tracker scope route",
-        "description": "Removes the route for scope:\u003cscope\u003e on this connection; issues with that label are no longer dispatched. Requires tracker:admin.",
-        "operationId": "TrackerService_DeleteTrackerRoute",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/DeleteTrackerRouteResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/rpc.Status"
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "username",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "connection",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "scope",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          }
-        ],
-        "tags": [
-          "Tracker"
-        ]
-      },
-      "put": {
-        "summary": "Set a tracker scope route",
-        "description": "Creates or updates the route that sends issues labeled scope:\u003cscope\u003e on this connection to skill_id. Idempotent. The connection must exist. Requires tracker:admin.",
-        "operationId": "TrackerService_SetTrackerRoute",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/SetTrackerRouteResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/rpc.Status"
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "username",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "connection",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "scope",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          },
-          {
-            "name": "body",
-            "in": "body",
-            "required": true,
-            "schema": {
-              "$ref": "#/definitions/SetTrackerRouteBody"
-            }
           }
         ],
         "tags": [
@@ -8615,6 +8927,73 @@
       },
       "description": "AgentCard is the discovery document a skill serves so peer agents can find\nit and learn how to delegate to it (A2A, Phase 1). It is carried in-proto so\nthe wire format stays insulated from upstream A2A churn."
     },
+    "AgentCredentialSource": {
+      "type": "string",
+      "enum": [
+        "AGENT_CREDENTIAL_SOURCE_UNSPECIFIED",
+        "AGENT_CREDENTIAL_SOURCE_GLOBAL_KEY",
+        "AGENT_CREDENTIAL_SOURCE_OWNER_KEY",
+        "AGENT_CREDENTIAL_SOURCE_DIRECT_MODE"
+      ],
+      "default": "AGENT_CREDENTIAL_SOURCE_UNSPECIFIED",
+      "description": "AgentCredentialSource is WHERE a READY engine's key resolves from — never\nthe key's value or fingerprint.\n\n - AGENT_CREDENTIAL_SOURCE_GLOBAL_KEY: The daemon's own env/global key for this provider.\n - AGENT_CREDENTIAL_SOURCE_OWNER_KEY: The caller's own per-owner registered key (SetTenantProviderKey).\n - AGENT_CREDENTIAL_SOURCE_DIRECT_MODE: No model gateway is served; the box's own secrets decide."
+    },
+    "AgentEngine": {
+      "type": "string",
+      "enum": [
+        "AGENT_ENGINE_UNSPECIFIED",
+        "AGENT_ENGINE_CLAUDE",
+        "AGENT_ENGINE_CODEX",
+        "AGENT_ENGINE_GEMINI"
+      ],
+      "default": "AGENT_ENGINE_UNSPECIFIED",
+      "description": "AgentEngine identifies the in-box agent loop (agent-runtime SDK) a skill\nruns on. One daemon can run skills on different engines at once — the\nengine is a per-skill choice, not a daemon-wide constant (#2222).\n\n - AGENT_ENGINE_UNSPECIFIED: Runtime default: the daemon's configured gateway primary provider in\ngateway mode, or the box's own default/env in direct mode. Never\nrejected — this is what every skill predating this field resolves to.\n - AGENT_ENGINE_CLAUDE: Claude Agent SDK (provider: anthropic).\n - AGENT_ENGINE_CODEX: OpenAI Codex SDK (provider: openai).\n - AGENT_ENGINE_GEMINI: Google Gen AI SDK (provider: gemini)."
+    },
+    "AgentEngineReadiness": {
+      "type": "string",
+      "enum": [
+        "AGENT_ENGINE_READINESS_UNSPECIFIED",
+        "AGENT_ENGINE_READINESS_READY",
+        "AGENT_ENGINE_READINESS_NOT_READY",
+        "AGENT_ENGINE_READINESS_UNKNOWN_DIRECT_MODE"
+      ],
+      "default": "AGENT_ENGINE_READINESS_UNSPECIFIED",
+      "description": "AgentEngineReadiness reports whether a run naming this engine would be\nrefused — the same truth agentengine.Resolve enforces, read-only (#2223).\n\n - AGENT_ENGINE_READINESS_READY: Resolve would use this engine without refusing: a global key, or the\ncaller's own owner key, covers the provider.\n - AGENT_ENGINE_READINESS_NOT_READY: A named run on this engine would be refused FailedPrecondition — no\nkey anywhere Resolve can see. See `reason` for why and the fix.\n - AGENT_ENGINE_READINESS_UNKNOWN_DIRECT_MODE: The daemon serves no model gateway at all (direct mode): the box's own\nsecrets decide, so this daemon cannot say whether the engine would\nactually work — never reported as READY, since that would be a guess."
+    },
+    "AgentEngineStatus": {
+      "type": "object",
+      "properties": {
+        "engine": {
+          "$ref": "#/definitions/AgentEngine"
+        },
+        "provider": {
+          "$ref": "#/definitions/GatewayProvider",
+          "description": "The gateway provider this engine speaks (Provider in agentengine).\nGATEWAY_PROVIDER_UNSPECIFIED only if a future AgentEngine value has no\nprovider mapping yet."
+        },
+        "readiness": {
+          "$ref": "#/definitions/AgentEngineReadiness"
+        },
+        "reason": {
+          "type": "string",
+          "description": "Set exactly when readiness != READY: NOT_READY names the missing key\nand the fix command (the same text RunAgentSkill's refusal uses);\nUNKNOWN_DIRECT_MODE names why this daemon can't say."
+        },
+        "source": {
+          "$ref": "#/definitions/AgentCredentialSource"
+        },
+        "isDefault": {
+          "type": "boolean",
+          "description": "True for the one engine AGENT_ENGINE_UNSPECIFIED resolves to on this\ndaemon right now (gatewayPrimaryProvider's pick in gateway mode; the\nruntime's own default in direct mode)."
+        },
+        "skillIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Catalog skills whose manifest names this engine EXPLICITLY (#2222 Q2,\ndecided 2026-10-01) — never includes an unspecified-engine skill, even\none that would resolve to this engine via is_default."
+        }
+      },
+      "description": "AgentEngineStatus is one engine's readiness row, as ListAgentEngines\nreports it. One row per AgentEngine value (#2223)."
+    },
     "AgentSkill": {
       "type": "object",
       "properties": {
@@ -8662,7 +9041,11 @@
         },
         "model": {
           "type": "string",
-          "description": "Model identifier the runtime should drive this agent with (e.g.\n\"claude-opus-4-8\"). Empty = runtime default."
+          "description": "Model identifier the runtime should drive this agent with (e.g.\n\"claude-opus-4-8\"). Empty = runtime default. Exported to the box\n(CONTAINARIUM_AGENT_MODEL) only when `engine` is also set — an\nunspecified engine keeps this field display/audit-only, exactly as it\nwas before `engine` existed, so a daemon whose default engine does not\nmatch this model id does not have its skills break on upgrade."
+        },
+        "engine": {
+          "$ref": "#/definitions/AgentEngine",
+          "description": "Agent engine (SDK) this skill runs on. AGENT_ENGINE_UNSPECIFIED keeps\ntoday's behaviour: the daemon's configured gateway primary provider\npicks the engine in gateway mode, or the box's own default/env decides\nin direct mode. A named engine is honoured per run — see\ndocs/architecture/agent-router.md."
         }
       },
       "description": "AgentSkill is a packaged, runnable agent: a Recipe (the box — image,\nresources, GPU) plus the agent layer (who it is, what tools it may call,\nwho it may talk to). This is the unit `containarium agent run` launches.\n\nKey invariant: allowed_scopes and allowed_peers are typed, first-class\nfields — NOT a prompt string. allowed_scopes is minted into the agent's JWT\nat launch; allowed_peers compiles into eBPF network policy (Phase 2). The\ntyping IS the security boundary."
@@ -8736,6 +9119,115 @@
         }
       },
       "title": "AlertRule represents an alerting rule evaluated by vmalert"
+    },
+    "AnonEvent": {
+      "type": "object",
+      "properties": {
+        "boxName": {
+          "type": "string",
+          "description": "Instance name, e.g. anon-1a2b3c4d-container. Empty on a rejection\nthat never reached a box."
+        },
+        "fingerprintHash": {
+          "type": "string",
+          "description": "sha256 hex of the SSH key fingerprint. Never the fingerprint or key."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Human-readable reason for a rejection / kill, empty otherwise."
+        },
+        "seconds": {
+          "type": "number",
+          "format": "double",
+          "description": "SHELL_READY only: seconds from the key knocking to the box being\nprovisioned (the PRD's time-to-shell)."
+        }
+      },
+      "description": "SecurityFindingEvent contains a security finding raised or updated by the\nthreat-detection engine.\nAnonEvent is the payload of every EVENT_TYPE_ANON_* event (#2201)."
+    },
+    "AnonymousBox": {
+      "type": "object",
+      "properties": {
+        "boxName": {
+          "type": "string"
+        },
+        "fingerprintHash": {
+          "type": "string",
+          "description": "sha256 hex of the fingerprint — never the key or the raw fingerprint."
+        },
+        "sshHost": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "ttlExpiresAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "claimed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "AnonymousBoxLimits": {
+      "type": "object",
+      "properties": {
+        "cpu": {
+          "type": "string"
+        },
+        "memory": {
+          "type": "string"
+        },
+        "disk": {
+          "type": "string"
+        },
+        "ttlSeconds": {
+          "type": "string",
+          "format": "int64"
+        },
+        "maxBoxes": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "perFingerprintRps": {
+          "type": "number",
+          "format": "double"
+        },
+        "perFingerprintBurst": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "perIpRps": {
+          "type": "number",
+          "format": "double"
+        },
+        "perIpBurst": {
+          "type": "integer",
+          "format": "int32"
+        }
+      }
+    },
+    "AnonymousDoorConfig": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "disabledMessage": {
+          "type": "string",
+          "description": "Shown to a rejected caller while the door is disabled."
+        },
+        "bannedFingerprints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "limits": {
+          "$ref": "#/definitions/AnonymousBoxLimits",
+          "description": "Read-only echo of the daemon's fixed limits."
+        }
+      }
     },
     "Any": {
       "type": "object",
@@ -9204,6 +9696,10 @@
         "captureMode": {
           "$ref": "#/definitions/CaptureMode",
           "description": "How the log is written: FRAMED logs are demuxed by TailBoxRunLog."
+        },
+        "sessionId": {
+          "type": "string",
+          "description": "The engine's own session identifier (#2193), read back from the box\nshortly after the run starts: Claude Code's session id, or pi's session\nfile name. Empty when the engine exposes none, or when discovery hasn't\nfound one yet (a race with a just-started run — poll ListBoxRuns again).\nPass it to StartBoxRun's session_id to resume this exact conversation."
         }
       },
       "description": "BoxRun is one current run record on a box."
@@ -9218,6 +9714,19 @@
       ],
       "default": "BOX_RUN_OUTCOME_UNSPECIFIED",
       "description": "BoxRunOutcome classifies a run record, the same three outcomes agent-box's\nResolveOutcome reports to process_list.\n\n - BOX_RUN_OUTCOME_RUNNING: Same boot, no exit code recorded, PID still alive.\n - BOX_RUN_OUTCOME_EXITED: An exit code is recorded (by agent-box's reaper or the run's exit\nsidecar).\n - BOX_RUN_OUTCOME_UNKNOWN: No exit code, and the PID is gone or belongs to an earlier boot: the\nrun was killed, OOMed, or the box restarted. Never reported as exited."
+    },
+    "BridgeDNSState": {
+      "type": "string",
+      "enum": [
+        "BRIDGE_DNS_STATE_UNSPECIFIED",
+        "BRIDGE_DNS_STATE_NOT_MANAGED",
+        "BRIDGE_DNS_STATE_PENDING",
+        "BRIDGE_DNS_STATE_IN_SYNC",
+        "BRIDGE_DNS_STATE_DEGRADED",
+        "BRIDGE_DNS_STATE_ABSENT"
+      ],
+      "default": "BRIDGE_DNS_STATE_UNSPECIFIED",
+      "description": "BridgeDNSState is the reconcile state of the bridge DNS record that resolves\nthe app-hosting base domain to core-caddy (#2188).\n\n - BRIDGE_DNS_STATE_NOT_MANAGED: The daemon is not running the reconciler: app hosting is off, or core-caddy\nis not managed by this daemon (an operator-supplied Caddy admin URL).\n - BRIDGE_DNS_STATE_PENDING: The reconciler is running but no pass has finished yet.\n - BRIDGE_DNS_STATE_IN_SYNC: The record on the bridge equals what the daemon renders for core-caddy's\nlive address.\n - BRIDGE_DNS_STATE_DEGRADED: The last pass could not converge (see last_error): core-caddy's address\ncould not be established, the record could not be read, or the write failed.\n - BRIDGE_DNS_STATE_ABSENT: The bridge has no record and this daemon will not create one (#2232):\nit only repairs a record that already exists, or creates one in the run\nthat installs core-caddy, or when started with --bridge-dns-create."
     },
     "BuildpackOptions": {
       "type": "object",
@@ -9244,6 +9753,17 @@
         }
       },
       "title": "BuildpackOptions for auto-generating Dockerfiles/Containerfiles"
+    },
+    "CPUAdmissionMode": {
+      "type": "string",
+      "enum": [
+        "CPU_ADMISSION_MODE_UNSPECIFIED",
+        "CPU_ADMISSION_MODE_DISABLED",
+        "CPU_ADMISSION_MODE_ADVISORY",
+        "CPU_ADMISSION_MODE_ENFORCING"
+      ],
+      "default": "CPU_ADMISSION_MODE_UNSPECIFIED",
+      "description": "CPUAdmissionMode is the CPU overcommit admission gate's posture\n(docs/CPU-CAPACITY-ADMISSION.md, #1029). An enum rather than a pair of\nbare flags so a client switches on typed constants and cannot mistake\n\"factor set but not enforced\" for protection (#2284).\n\n - CPU_ADMISSION_MODE_UNSPECIFIED: The backend did not report a posture (pre-#2284 daemon).\n - CPU_ADMISSION_MODE_DISABLED: No factor configured: the gate never runs (the default).\n - CPU_ADMISSION_MODE_ADVISORY: A factor is configured but over-ceiling creates are only logged, never\nrejected.\n - CPU_ADMISSION_MODE_ENFORCING: Over-ceiling creates are rejected with ResourceExhausted."
     },
     "CapabilityBenchmark": {
       "type": "object",
@@ -9402,6 +9922,36 @@
       ],
       "default": "CAPTURE_MODE_UNSPECIFIED",
       "description": "CaptureMode selects how a spawned process's combined stdout+stderr is\nwritten to its log file (#1674). COMBINED is today's plain-text behavior;\nFRAMED is opt-in, text-safe per-line framing (\"\u003cstream\u003e \u003cbase64(payload)\u003e\")\nso a client can demux stdout/stderr from the single offset stream without\ncorrupting invalid UTF-8 or runes split across a write — see\ndocs/architecture/remote-coding-agent.md, Part A \"Framing\".\n\n - CAPTURE_MODE_UNSPECIFIED: treated as COMBINED"
+    },
+    "ClaimAnonymousBoxRequest": {
+      "type": "object",
+      "properties": {
+        "claimToken": {
+          "type": "string"
+        },
+        "tenant": {
+          "type": "string",
+          "description": "New owner (tenant username)."
+        },
+        "authorizedKeys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The tenant's keys to add; the original key stays."
+        }
+      }
+    },
+    "ClaimAnonymousBoxResponse": {
+      "type": "object",
+      "properties": {
+        "boxName": {
+          "type": "string"
+        },
+        "tenant": {
+          "type": "string"
+        }
+      }
     },
     "ClaimTrackerIssueBody": {
       "type": "object",
@@ -9666,6 +10216,17 @@
       ],
       "default": "CLUSTER_STATE_UNSPECIFIED",
       "description": "ClusterState is the lifecycle state of a managed cluster.\n\n - CLUSTER_STATE_PROVISIONING: Recorded; the reconciler is provisioning VMs.\n - CLUSTER_STATE_READY: Control plane serving and every group's min nodes Ready.\n - CLUSTER_STATE_DEGRADED: Serving, but observed state diverges from desired (e.g. a lost\nnode being replaced).\n - CLUSTER_STATE_DELETING: Teardown in progress.\n - CLUSTER_STATE_ERROR: Provisioning or reconciliation failed; state_reason says why."
+    },
+    "CodeCredentialSource": {
+      "type": "string",
+      "enum": [
+        "CODE_CREDENTIAL_SOURCE_UNSPECIFIED",
+        "CODE_CREDENTIAL_SOURCE_INTERACTIVE",
+        "CODE_CREDENTIAL_SOURCE_API_KEY",
+        "CODE_CREDENTIAL_SOURCE_NONE"
+      ],
+      "default": "CODE_CREDENTIAL_SOURCE_UNSPECIFIED",
+      "description": "CodeCredentialSource is WHERE a box's `containarium code`-style coding\nengine (Claude Code today; Codex once #2273 lands) would currently find a\nhuman/headless sign-in — never the credential's value, never read, logged,\nor transmitted at any layer. Mirrors #2030's `code install` verify output\n(\"report which credential source Claude Code will use, never a value\"),\ncondensed to the one answer GetSkillBoxCredentialStatus needs (#2272).\n\nDeliberately a DIFFERENT enum from AgentCredentialSource above:\nAgentCredentialSource is where a model-GATEWAY token's upstream key comes\nfrom (daemon-held, never the box's concern); CodeCredentialSource is\nwhether a HUMAN has already completed Anthropic's own sign-in flow on this\nbox, or placed their own key, so unattended reuse of that same box needs no\ncredential of containarium's own.\n\n - CODE_CREDENTIAL_SOURCE_INTERACTIVE: The engine's own device-code/browser sign-in has already completed on\nthis box (e.g. Claude Code's own ~/.claude/.credentials.json).\n - CODE_CREDENTIAL_SOURCE_API_KEY: A user-placed provider key/token is visible to the engine's own shell\nenvironment (e.g. ANTHROPIC_API_KEY in ~/.claude/settings.json, or a 3P\nprovider env var) — the headless path #2030 documents.\n - CODE_CREDENTIAL_SOURCE_NONE: Neither of the above. Expected on a freshly provisioned box (#2272)\nuntil a human signs in or places a key."
     },
     "Collaborator": {
       "type": "object",
@@ -10078,6 +10639,10 @@
         "encryptionState": {
           "$ref": "#/definitions/EncryptionState",
           "description": "Whether this container's data is protected by a per-tenant ZFS key, and\nwhether that key is currently loaded (#1202).\n\nKEY_UNAVAILABLE is the one an operator has to act on: the container will\nnot start and its snapshots cannot be inspected until key custody is\nreachable. It is surfaced on status rather than only at the point of\nfailure so the condition is visible before someone trips over it."
+        },
+        "isolation": {
+          "$ref": "#/definitions/IsolationType",
+          "description": "How the box is isolated from the host: CONTAINER (LXC) or VM\n(QEMU/KVM), read back from the instance itself. UNSPECIFIED when the\nbackend does not report it."
         }
       }
     },
@@ -10455,6 +11020,10 @@
         "region": {
           "type": "string",
           "description": "Region to place this container in (#1606) — a client-side placement\nhint in the same family as `pool` and `backend_id`. A standalone,\nsingle-backend daemon has exactly one region and ignores this field\nentirely: empty stays today's default behavior, and any non-empty\nvalue is likewise a no-op here. It exists so a hosted, multi-region\ncontrol plane fronting several regional daemons has somewhere on this\nwire shape to receive the caller's choice — without it, a create\nagainst such a control plane with no configured default region has no\nway to express one at all. Empty = daemon/control-plane default."
+        },
+        "isolation": {
+          "$ref": "#/definitions/IsolationType",
+          "description": "Isolation picks container (LXC) or VM (QEMU/KVM). UNSPECIFIED keeps\ntoday's behavior: Windows → VM, everything else → container.\nCONTAINER with a Windows os_type is rejected with InvalidArgument.\nOnly the LXC backend honors VM; the Kubernetes backend rejects it."
         }
       },
       "title": "CreateContainerRequest is the request to create a new container"
@@ -11170,6 +11739,13 @@
     },
     "DispatchTrackerIssuesBody": {
       "type": "object",
+      "properties": {
+        "maxStarts": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Most runs this tick may start (#2270), so a caller enforcing its\nown budget (concurrency, runs per day) can bound one tick. Only\nruns that actually started count; a start that failed does not.\nIssues past the limit get no dispatch row and no label, so a later\ntick picks them up. 0 means unlimited; negative is rejected."
+        }
+      },
       "description": "DispatchTrackerIssuesRequest runs ONE dispatcher tick for a\nconnection: list open issues, filter, insert a dispatch row, start\nthe routed skill, label agent:queued. `containarium tracker\ndispatch --interval` calls this in a loop."
     },
     "DispatchTrackerIssuesResponse": {
@@ -11218,6 +11794,11 @@
           "type": "integer",
           "format": "int32",
           "description": "Issues whose recorded lineage depth exceeds the connection policy's\nmax_depth (#2025) — filed under a looser policy, then lowered. The\ndaemon reads depth from its own lineage table, never the issue."
+        },
+        "leftUndispatched": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Issues that passed every check this tick makes before inserting a\ndispatch row (routed scope, no gate or state label, depth within\npolicy) but were not dispatched because max_starts runs had already\nstarted (#2270). They have no row and no label; a later tick picks\nthem up. Always 0 when max_starts is 0."
         }
       }
     },
@@ -11324,6 +11905,55 @@
         }
       }
     },
+    "EnsureAnonymousBoxRequest": {
+      "type": "object",
+      "properties": {
+        "fingerprint": {
+          "type": "string",
+          "description": "\"SHA256:\u003cbase64\u003e\" as ssh.FingerprintSHA256. Optional; when set it\nmust match public_key or the request is rejected."
+        },
+        "publicKey": {
+          "type": "string",
+          "description": "One authorized_keys line. Required."
+        },
+        "sourceIp": {
+          "type": "string",
+          "description": "Connecting client's IP, kept on the box for abuse handling."
+        }
+      }
+    },
+    "EnsureAnonymousBoxResponse": {
+      "type": "object",
+      "properties": {
+        "boxName": {
+          "type": "string"
+        },
+        "sshHost": {
+          "type": "string",
+          "description": "VM address reachable from the sentinel."
+        },
+        "sshPort": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "sshUser": {
+          "type": "string",
+          "description": "The box's login — its tenant-named user, as every other box."
+        },
+        "ttlExpiresAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "reused": {
+          "type": "boolean",
+          "description": "true on a reconnect to an existing live box."
+        },
+        "previousExpired": {
+          "type": "boolean",
+          "description": "true when a prior box for this key is gone (expired or preempted),\nso the banner can say so."
+        }
+      }
+    },
     "Event": {
       "type": "object",
       "properties": {
@@ -11365,6 +11995,13 @@
         },
         "securityFindingEvent": {
           "$ref": "#/definitions/SecurityFindingEvent"
+        },
+        "anonEvent": {
+          "$ref": "#/definitions/AnonEvent"
+        },
+        "fingerprintHash": {
+          "type": "string",
+          "description": "sha256 hex of the SSH key fingerprint for EVENT_TYPE_ANON_* events\n(#2201); empty for every other type. Top-level so subscribers can\ncorrelate a key's journey without opening the payload."
         }
       },
       "title": "Event is the top-level event message sent to clients"
@@ -11387,10 +12024,22 @@
         "EVENT_TYPE_ROUTE_DELETED",
         "EVENT_TYPE_METRICS_UPDATE",
         "EVENT_TYPE_TRAFFIC_UPDATE",
-        "EVENT_TYPE_SECURITY_FINDING"
+        "EVENT_TYPE_SECURITY_FINDING",
+        "EVENT_TYPE_ANON_CONNECT",
+        "EVENT_TYPE_ANON_SHELL_READY",
+        "EVENT_TYPE_ANON_RECONNECT",
+        "EVENT_TYPE_ANON_CLAIM_LINK_ISSUED",
+        "EVENT_TYPE_ANON_CLAIM_COMPLETED",
+        "EVENT_TYPE_ANON_EXPIRED",
+        "EVENT_TYPE_ANON_KILLED_ABUSE",
+        "EVENT_TYPE_ANON_REJECTED_CAPACITY",
+        "EVENT_TYPE_ANON_REJECTED_RATELIMIT",
+        "EVENT_TYPE_ANON_REJECTED_DOOR",
+        "EVENT_TYPE_ANON_LOST_PREEMPTION",
+        "EVENT_TYPE_ANON_REMINDER_OPTIN"
       ],
       "default": "EVENT_TYPE_UNSPECIFIED",
-      "description": "- EVENT_TYPE_UNSPECIFIED: Unspecified event type (should not be used)\n - EVENT_TYPE_CONTAINER_CREATED: Container events (1-9)\nContainer was created\n - EVENT_TYPE_CONTAINER_DELETED: Container was deleted\n - EVENT_TYPE_CONTAINER_STARTED: Container was started\n - EVENT_TYPE_CONTAINER_STOPPED: Container was stopped\n - EVENT_TYPE_CONTAINER_STATE_CHANGED: Container state changed\n - EVENT_TYPE_APP_DEPLOYED: App events (10-19)\nApp was deployed\n - EVENT_TYPE_APP_DELETED: App was deleted\n - EVENT_TYPE_APP_STARTED: App was started\n - EVENT_TYPE_APP_STOPPED: App was stopped\n - EVENT_TYPE_APP_STATE_CHANGED: App state changed\n - EVENT_TYPE_ROUTE_ADDED: Network events (20-29)\nRoute was added\n - EVENT_TYPE_ROUTE_DELETED: Route was deleted\n - EVENT_TYPE_METRICS_UPDATE: System events (30-39)\nMetrics update\n - EVENT_TYPE_TRAFFIC_UPDATE: Traffic events (40-49)\nTraffic/connection update\n - EVENT_TYPE_SECURITY_FINDING: Security events (50-59)\nA security finding was created or updated by the threat-detection engine",
+      "description": "- EVENT_TYPE_UNSPECIFIED: Unspecified event type (should not be used)\n - EVENT_TYPE_CONTAINER_CREATED: Container events (1-9)\nContainer was created\n - EVENT_TYPE_CONTAINER_DELETED: Container was deleted\n - EVENT_TYPE_CONTAINER_STARTED: Container was started\n - EVENT_TYPE_CONTAINER_STOPPED: Container was stopped\n - EVENT_TYPE_CONTAINER_STATE_CHANGED: Container state changed\n - EVENT_TYPE_APP_DEPLOYED: App events (10-19)\nApp was deployed\n - EVENT_TYPE_APP_DELETED: App was deleted\n - EVENT_TYPE_APP_STARTED: App was started\n - EVENT_TYPE_APP_STOPPED: App was stopped\n - EVENT_TYPE_APP_STATE_CHANGED: App state changed\n - EVENT_TYPE_ROUTE_ADDED: Network events (20-29)\nRoute was added\n - EVENT_TYPE_ROUTE_DELETED: Route was deleted\n - EVENT_TYPE_METRICS_UPDATE: System events (30-39)\nMetrics update\n - EVENT_TYPE_TRAFFIC_UPDATE: Traffic events (40-49)\nTraffic/connection update\n - EVENT_TYPE_SECURITY_FINDING: Security events (50-59)\nA security finding was created or updated by the threat-detection engine\n - EVENT_TYPE_ANON_CONNECT: Anonymous-box funnel (#2201, docs/architecture/ssh-new-anonymous-box.md).\nOne event per step of the `ssh new.\u003cdomain\u003e` journey, keyed by the\nsha256 of the key fingerprint (Event.fingerprint_hash) — never the key.\nCounters containarium_anon_\u003cstep\u003e_total mirror them one-for-one.\n\na key knocked (before any decision)\n - EVENT_TYPE_ANON_SHELL_READY: a new box was created and provisioned (carries time-to-shell)\n - EVENT_TYPE_ANON_RECONNECT: an existing box was handed back\n - EVENT_TYPE_ANON_CLAIM_LINK_ISSUED: the claim-url was written into the guest\n - EVENT_TYPE_ANON_CLAIM_COMPLETED: ClaimAnonymousBox succeeded\n - EVENT_TYPE_ANON_EXPIRED: a box is gone after its TTL\n - EVENT_TYPE_ANON_KILLED_ABUSE: a box is gone BEFORE its TTL (operator deleted it)\n - EVENT_TYPE_ANON_REJECTED_CAPACITY: refused: global cap\n - EVENT_TYPE_ANON_REJECTED_RATELIMIT: refused: per-key / per-IP rate limit\n - EVENT_TYPE_ANON_REJECTED_DOOR: refused: door closed or key banned (#2200)\n - EVENT_TYPE_ANON_LOST_PREEMPTION: the anon-pool host was preempted (emitted by the sentinel's spot watcher, not the daemon)\n - EVENT_TYPE_ANON_REMINDER_OPTIN: the user asked for an expiry reminder (containarium remind-me), picked up by the warner",
       "title": "EventType represents the type of resource change event"
     },
     "Evidence": {
@@ -11790,6 +12439,61 @@
         }
       }
     },
+    "GetBridgeDNSStatusResponse": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "$ref": "#/definitions/BridgeDNSState"
+        },
+        "reason": {
+          "type": "string",
+          "description": "Human-readable explanation for NOT_MANAGED, PENDING and DEGRADED; empty\nwhen IN_SYNC."
+        },
+        "bridge": {
+          "type": "string",
+          "description": "Incus network whose raw.dnsmasq is reconciled (e.g. incusbr0)."
+        },
+        "caddyIp": {
+          "type": "string",
+          "description": "core-caddy's address as of the last pass; empty when it could not be\nestablished."
+        },
+        "desired": {
+          "type": "string",
+          "description": "The raw.dnsmasq value the daemon wants for that address, and the value the\nbridge held after the last pass (equal once IN_SYNC). Operator-configured\nhostnames appear here, so this is admin-only."
+        },
+        "current": {
+          "type": "string"
+        },
+        "lastError": {
+          "type": "string",
+          "description": "Why the last pass could not converge; empty when it did."
+        },
+        "driftCount": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Passes that found the record different from the desired value."
+        },
+        "lastPass": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the last pass finished, and when the record was last rewritten.\nUnset until the first pass / first rewrite."
+        },
+        "lastApplied": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "lastAction": {
+          "type": "string",
+          "description": "What the last write was: \"created\" (no record existed — the daemon made\none, announced in the log) or \"repaired\" (an existing record was brought\nback to the desired value). Empty until the daemon has written. #2232."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When this daemon created the record from nothing; unset if it only\never repaired one."
+        }
+      },
+      "description": "GetBridgeDNSStatusResponse is the bridge DNS reconciler's last-pass snapshot."
+    },
     "GetCapabilityProfileResponse": {
       "type": "object",
       "properties": {
@@ -12024,6 +12728,10 @@
         "updateAvailable": {
           "type": "boolean",
           "description": "True when latest_release is a newer semver than current_version."
+        },
+        "targetVersion": {
+          "type": "string",
+          "description": "Version of the binary the sentinel currently serves, i.e. what a default\n(sentinel-path) TriggerUpgrade would install. Can lag latest_release\nuntil an operator runs `containarium sentinel fetch-release`. Empty when\nunknown: no sentinel configured, an older sentinel without\n/containarium/version, or the lookup failed. #2171."
         }
       },
       "description": "GetLatestReleaseResponse reports the latest published release vs the\nrunning daemon version. See #354."
@@ -12291,6 +12999,24 @@
         }
       }
     },
+    "GetSkillBoxCredentialStatusResponse": {
+      "type": "object",
+      "properties": {
+        "engine": {
+          "$ref": "#/definitions/AgentEngine",
+          "description": "The engine this status was checked for: the skill's own `engine` field,\nresolved to AGENT_ENGINE_CLAUDE when the skill leaves it unspecified\n(the only engine `containarium code`'s box-side probe supports today —\nAGENT_ENGINE_CODEX/GEMINI are refused FAILED_PRECONDITION until #2273\nadds Codex's own probe; never guessed)."
+        },
+        "credentialSource": {
+          "$ref": "#/definitions/CodeCredentialSource",
+          "description": "WHERE that engine's credential comes from, if anywhere — names only,\nNEVER a value. Mirrors `containarium code install`'s own verify output\n(#2030): this call does not read, store, log, or transmit the\ncredential itself at any layer, box to daemon to caller."
+        },
+        "checkedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When this check ran."
+        }
+      }
+    },
     "GetSystemInfoResponse": {
       "type": "object",
       "properties": {
@@ -12449,6 +13175,10 @@
         "completedAt": {
           "type": "string",
           "description": "RFC3339 completion time when status is \"completed\" or \"failed\"."
+        },
+        "targetVersion": {
+          "type": "string",
+          "description": "Version the upgrade was installing, as recorded when it was triggered.\nEmpty when unknown, including after a restart dropped the job. #2171."
         }
       },
       "description": "GetUpgradeStatusResponse reports an upgrade's progress. Note: a local\nself-upgrade restarts the daemon, dropping in-memory job state — after a\nrestart this returns status \"unknown\" and callers should compare the\nbackend's version in ListBackends instead. See #354."
@@ -12711,6 +13441,16 @@
         }
       }
     },
+    "IsolationType": {
+      "type": "string",
+      "enum": [
+        "ISOLATION_TYPE_UNSPECIFIED",
+        "ISOLATION_TYPE_CONTAINER",
+        "ISOLATION_TYPE_VM"
+      ],
+      "default": "ISOLATION_TYPE_UNSPECIFIED",
+      "description": "IsolationType selects the Incus instance type a box runs as — the\nkernel boundary between the box and the host. Independent of OSType:\na Linux box can be a VM, and until this enum existed only Windows could\n(#2196, the anonymous-box tier in docs/architecture/ssh-new-anonymous-box.md).\n\n - ISOLATION_TYPE_UNSPECIFIED: Backend default: Windows runs as a VM, every other OS as a container.\n - ISOLATION_TYPE_CONTAINER: LXC container — shares the host kernel.\n - ISOLATION_TYPE_VM: QEMU/KVM virtual machine — its own kernel. Requires a KVM-capable\nbackend. Windows cannot be anything else."
+    },
     "LeaseAgentTaskRequest": {
       "type": "object",
       "properties": {
@@ -12765,6 +13505,23 @@
         }
       }
     },
+    "ListAgentEnginesResponse": {
+      "type": "object",
+      "properties": {
+        "engines": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/AgentEngineStatus"
+          },
+          "description": "One row per AgentEngine value (AGENT_ENGINE_UNSPECIFIED excluded — it\nnames no engine of its own to report readiness for)."
+        },
+        "keyOwner": {
+          "type": "string",
+          "description": "The key owner this response's READY/NOT_READY rows were resolved for.\nEmpty for an admin caller with no owner scope (the global view) or in\ndirect mode."
+        }
+      }
+    },
     "ListAgentSkillsResponse": {
       "type": "object",
       "properties": {
@@ -12789,6 +13546,18 @@
         }
       },
       "title": "ListAlertRulesResponse returns all alert rules"
+    },
+    "ListAnonymousBoxesResponse": {
+      "type": "object",
+      "properties": {
+        "boxes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/AnonymousBox"
+          }
+        }
+      }
     },
     "ListAppsResponse": {
       "type": "object",
@@ -14144,6 +14913,31 @@
       "description": "- PROTOCOL_UNSPECIFIED: Unspecified protocol (should not be used)\n - PROTOCOL_TCP: TCP protocol\n - PROTOCOL_UDP: UDP protocol\n - PROTOCOL_ICMP: ICMP protocol",
       "title": "Protocol represents the network protocol of a connection"
     },
+    "ProvisionSkillBoxBody": {
+      "type": "object",
+      "properties": {
+        "backendId": {
+          "type": "string",
+          "description": "Target backend/pool placement, same scheme as RunAgentSkillRequest."
+        },
+        "pool": {
+          "type": "string"
+        }
+      },
+      "description": "ProvisionSkillBoxRequest creates or reuses a skill's deterministic box\n(agent-\u003cskill_id\u003e) WITHOUT running it: no token is minted, nothing is\nseeded, and the model is never called (#2272). This is the create-or-reuse\nstep RunAgentSkill/RunCrew already perform as a side effect of a real run\n— surfaced on its own so a crew member's box can exist, and a human can\n`containarium connect` in and sign in to its coding agent, BEFORE any\ninference credential exists. Without this, that box is created only as a\nside effect of a run that itself needs a credential to get that far —\nchicken-and-egg."
+    },
+    "ProvisionSkillBoxResponse": {
+      "type": "object",
+      "properties": {
+        "container": {
+          "$ref": "#/definitions/Container"
+        },
+        "freshlyProvisioned": {
+          "type": "boolean",
+          "description": "True when this call created the box; false when an already-provisioned\nbox (running, or stopped and started back up) was reused instead."
+        }
+      }
+    },
     "ProxyRoute": {
       "type": "object",
       "properties": {
@@ -14712,7 +15506,8 @@
         "RESOURCE_TYPE_ROUTE",
         "RESOURCE_TYPE_METRICS",
         "RESOURCE_TYPE_TRAFFIC",
-        "RESOURCE_TYPE_SECURITY_FINDING"
+        "RESOURCE_TYPE_SECURITY_FINDING",
+        "RESOURCE_TYPE_ANON_BOX"
       ],
       "default": "RESOURCE_TYPE_UNSPECIFIED",
       "description": "- RESOURCE_TYPE_UNSPECIFIED: Unspecified resource type\n - RESOURCE_TYPE_CONTAINER: Container resource\n - RESOURCE_TYPE_APP: App resource\n - RESOURCE_TYPE_ROUTE: Route resource\n - RESOURCE_TYPE_METRICS: Metrics resource\n - RESOURCE_TYPE_TRAFFIC: Traffic resource\n - RESOURCE_TYPE_SECURITY_FINDING: Security finding resource",
@@ -14955,6 +15750,10 @@
         "trackerConnection": {
           "type": "string",
           "description": "Name of a tracker connection (see TrackerConnection) owned by the\ncalling tenant that this run is bound to (#1922 design note, decision\nD3: \"a run is bound to exactly one connection at launch\"). Validated\nagainst the caller's own connections at launch time and minted into\nthe run's JWT as the `tracker_conn` claim — the tracker verb RPCs\nreject a request naming a different connection than this claim.\nEmpty means the run is not bound to any connection (every pre-#1922\nrun, and any run that doesn't use the tracker broker)."
+        },
+        "engine": {
+          "$ref": "#/definitions/AgentEngine",
+          "description": "Per-invocation engine override (#2228): when set, this run's engine is\nresolved from THIS value instead of the skill manifest's own `engine`\nfield — the same agentengine.Resolve readiness check applies either way,\nso an override naming an engine with no usable key is refused the same\nway an unready manifest engine is. UNSPECIFIED (the default) means \"use\nthe manifest\", unchanged pre-#2228 behavior."
         }
       },
       "description": "RunAgentSkillRequest launches a single skill in its box and sends it one\ntask (no peers). Useful for testing a skill in isolation."
@@ -15012,6 +15811,13 @@
         "gitCredential": {
           "type": "string",
           "description": "Bearer token for a private git_source. Used daemon-side for each\nmember's fetch only (an ephemeral http.extraHeader) — never written to\nany box's .git/config, never logged. Empty = public repo."
+        },
+        "engineOverrides": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/AgentEngine"
+          },
+          "description": "Per-member engine override (#2228), keyed by skill_id: when a member's\nid has an entry here, THIS value resolves that member's engine instead\nof its own manifest `engine` field — same agentengine.Resolve readiness\ncheck, same refusal text, as RunAgentSkillRequest.engine. A member with\nno entry (or AGENT_ENGINE_UNSPECIFIED) keeps its manifest's own choice,\nunchanged pre-#2228 behavior."
         }
       }
     },
@@ -15222,8 +16028,7 @@
         "finding": {
           "$ref": "#/definitions/Finding"
         }
-      },
-      "description": "SecurityFindingEvent contains a security finding raised or updated by the\nthreat-detection engine."
+      }
     },
     "SelfMeasurement": {
       "type": "object",
@@ -15801,6 +16606,32 @@
         }
       }
     },
+    "StartBoxRunBody": {
+      "type": "object",
+      "properties": {
+        "prompt": {
+          "type": "string",
+          "description": "The task to give the agent."
+        },
+        "sessionId": {
+          "type": "string",
+          "description": "Resume this specific session id instead of starting a fresh one\n(claude --resume \u003cid\u003e; pi --session \u003cid\u003e). Also becomes this run's\nrun_name: StartBoxRun on a box whose run under this name is still RUNNING\nor UNKNOWN is FAILED_PRECONDITION naming it — no queueing. Mutually\nexclusive with continue_session."
+        },
+        "continueSession": {
+          "type": "boolean",
+          "description": "Resume the engine's own \"most recent session in this box's working\ndirectory\" instead of starting a fresh one (`code run --continue`'s\nmeaning, unchanged). Mutually exclusive with session_id."
+        }
+      },
+      "description": "StartBoxRunRequest starts (or resumes) a coding-agent run on a box through\nthe daemon API — no SSH client, no agent-box RPC (#2193): the daemon\nroot-execs the same on-disk contract `containarium code run` leaves via\nagent-box's process_start, so ListBoxRuns and TailBoxRunLog read a\ndaemon-started run exactly like one `code run` started.\n\nThe engine and its credential source are never request fields: they come\nfrom the box's own ~/.containarium/code.json (`code install`, #1727) —\nthis RPC names WHAT TO SAY, never HOW TO RUN. Interactive sign-in is out of\nscope by the same rule #2030 settled for `code install`: this starts or\nresumes an already-authenticated session only."
+    },
+    "StartBoxRunResponse": {
+      "type": "object",
+      "properties": {
+        "run": {
+          "$ref": "#/definitions/BoxRun"
+        }
+      }
+    },
     "StartContainerBody": {
       "type": "object",
       "properties": {
@@ -16130,7 +16961,21 @@
         "committedCpuCores": {
           "type": "number",
           "format": "double",
-          "description": "committed_cpu_cores is the sum of this host's TENANT containers'\ncommitted CPU (limits.cpu / limits.cpu.allowance, summed via\nincus.CommittedCores) — the \"how much is actually spoken for\" number\nthat pairs with total_cpus to answer \"is this host over its CPU\novercommit ceiling right now\" (#1580). A caller derives the ratio as\ncommitted_cpu_cores / total_cpus.\n\nThis is TENANT capacity, not total host capacity: the platform's own\ncore-infra containers (Postgres, Caddy, control-plane — not tenant\nworkload) are deliberately excluded, the same exclusion the CPU\nadmission gate (docs/CPU-CAPACITY-ADMISSION.md, #1029) already applies.\nAn operator combining this with total_cpus to size an overcommit factor\nmust still separately budget the host's own known core-infra CPU\nfootprint on top of it.\n\n0 on the K8s runtime, same as total_cpus (the Incus resource read\nno-ops there) — \"not applicable to this runtime,\" not \"nothing\ncommitted.\" See #1571/#1578 for the design this closes the visibility\nhalf of."
+          "description": "committed_cpu_cores is the sum of this host's TENANT containers'\ncommitted CPU (limits.cpu / limits.cpu.allowance, summed via\nincus.CommittedCores) — the \"how much is actually spoken for\" number\nthat pairs with total_cpus to answer \"is this host over its CPU\novercommit ceiling right now\" (#1580). A caller derives the ratio as\ncommitted_cpu_cores / total_cpus.\n\nThis is TENANT capacity, not total host capacity: the platform's own\ncore-infra containers (Postgres, Caddy, control-plane — not tenant\nworkload) are deliberately excluded, the same exclusion the CPU\nadmission gate (docs/CPU-CAPACITY-ADMISSION.md, #1029) already applies.\nThe platform's own footprint is reported separately in\ncore_committed_cpu_cores (#2284) so an operator sizing a factor can\nsee both halves instead of guessing the second.\n\n0 on the K8s runtime, same as total_cpus (the Incus resource read\nno-ops there) — \"not applicable to this runtime,\" not \"nothing\ncommitted.\" See #1571/#1578 for the design this closes the visibility\nhalf of."
+        },
+        "coreCommittedCpuCores": {
+          "type": "number",
+          "format": "double",
+          "description": "core_committed_cpu_cores is the sum of this host's CORE-ROLE containers'\ncommitted CPU (Postgres, Caddy, VictoriaMetrics, control plane, ... —\nthe platform's own processes), the half committed_cpu_cores leaves out.\nTogether with committed_cpu_cores and total_cpus it gives the full\ntenant / core / physical picture the admission gate reasons about only\nhalf of, so a saturated host is visible as such (#2284). 0 on the K8s\nruntime, like the other two."
+        },
+        "cpuAdmissionMode": {
+          "$ref": "#/definitions/CPUAdmissionMode",
+          "description": "cpu_admission_mode is the CPU overcommit admission gate's posture on\nthis backend (docs/CPU-CAPACITY-ADMISSION.md): disabled, advisory\n(logs what it would reject, admits everything) or enforcing. Surfaced so\na client can tell that a host past its ceiling is NOT being protected —\nadvisory mode otherwise fails silently (#2284). UNSPECIFIED means the\nbackend predates this field, not that the gate is off."
+        },
+        "cpuOvercommitFactor": {
+          "type": "number",
+          "format": "double",
+          "description": "cpu_overcommit_factor is the gate's configured ceiling multiple of\ntotal_cpus (the --cpu-overcommit-factor flag). 0 when the gate is\ndisabled. The ceiling in cores is total_cpus × cpu_overcommit_factor;\nthe host is over it when committed_cpu_cores exceeds that."
         }
       },
       "title": "SystemInfo contains information about the host system"
@@ -16451,6 +17296,16 @@
         "failure": {
           "$ref": "#/definitions/TrackerDispatchFailure",
           "description": "Set when state is FAILED (#2026): the typed cause."
+        },
+        "lineageReservations": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Fan-out slots run_id still holds as lineage reservations (#2062):\nfollow-up creates in flight, or ones that were never cleared (the\ndaemon died mid-create, or recording the follow-up failed). Each\ncounts against the connection's max_children_per_run exactly like a\nfiled follow-up, so a run whose fan-out looks exhausted shows why\nhere. Swept when the run's lease ends. Filled in by\nListTrackerDispatches only."
+        },
+        "oldestLineageReservationAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the oldest of those reservations was claimed; unset when there\nare none. Filled in by ListTrackerDispatches only."
         }
       },
       "description": "TrackerDispatch is one durable dispatch: which issue, which scope\nlabel matched, which skill was started as which run, and where the\nrun is in its state machine."
@@ -16755,6 +17610,10 @@
         "backendId": {
           "type": "string",
           "description": "Echoes the targeted backend (\"\" = local)."
+        },
+        "targetVersion": {
+          "type": "string",
+          "description": "Version this upgrade will install: the sentinel-served binary's version,\nor the requested github_tag. Best-effort — empty when unknown. #2171."
         }
       },
       "description": "TriggerUpgradeResponse acknowledges that an upgrade was started. The upgrade\nruns asynchronously (the daemon restarts), so callers poll GetUpgradeStatus\nor watch the backend's version in ListBackends for the outcome. See #354."
@@ -17104,6 +17963,10 @@
         "connection": {
           "$ref": "#/definitions/PgConnection",
           "description": "Connection parameters for the *target* container's Postgres. The\nscratch database name is generated by the daemon, so\nconnection.database is ignored here."
+        },
+        "ageIdentity": {
+          "type": "string",
+          "description": "For a record with encrypted=true: the age X25519 identity\n(\"AGE-SECRET-KEY-1…\") that matches the record's age_recipient\n(#1831). Used to decrypt for this one call and never stored or\nlogged, same contract as RestoreBackupRequest.age_identity.\nRequired for an encrypted record — the daemon refuses to even\nattempt the test without it, because it holds no decryption key of\nits own. A wrong identity comes back as a FAILED verification\nresult, not an RPC error (#2295)."
         }
       },
       "description": "VerifyBackupRequest restore-tests a stored dump: it loads the dump into\na throwaway database inside a *target* container and runs\nengine-appropriate sanity checks, then drops the scratch database.\n\nThe target is always a container other than the one the backup came\nfrom — verification must never touch the source database. Supply a\ndisposable container as the target; the daemon rejects a request whose\ntarget resolves to the source container."

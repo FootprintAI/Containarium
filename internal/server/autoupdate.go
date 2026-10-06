@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -22,7 +24,18 @@ type AutoUpdater struct {
 	binaryPath        string // e.g. "/usr/local/bin/containariumd" (#1779)
 	interval          time.Duration
 	watchdogHealthURL string // polled by upgrade-watchdog to confirm liveness (#507); defaults to http://localhost:8080/health
+
+	// Short-lived cache of the sentinel-served version (#2171). Callers such
+	// as a control plane rendering a host page hit GetLatestRelease often, and
+	// each sentinel lookup checksums the served binary.
+	servedMu      sync.Mutex
+	servedVersion string
+	servedAt      time.Time
 }
+
+// servedVersionTTL bounds how stale ServedVersion may be. A fetch-release on
+// the sentinel shows up within this window.
+const servedVersionTTL = time.Minute
 
 // NewAutoUpdater creates a new auto-updater.
 func NewAutoUpdater(sentinelURL, binaryPath string, interval time.Duration) *AutoUpdater {
@@ -174,6 +187,43 @@ func (u *AutoUpdater) checkAndUpdate(ctx context.Context, force bool) (bool, err
 	}()
 
 	return true, nil
+}
+
+// ServedVersion returns the version of the binary the sentinel currently
+// serves — what a sentinel-path upgrade would install — from the sentinel's
+// /containarium/version. Errors (including a 404 from an older sentinel
+// without the route) mean "unknown"; they are not cached. #2171.
+func (u *AutoUpdater) ServedVersion(ctx context.Context) (string, error) {
+	u.servedMu.Lock()
+	defer u.servedMu.Unlock()
+	if u.servedVersion != "" && time.Since(u.servedAt) < servedVersionTTL {
+		return u.servedVersion, nil
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", u.sentinelURL+"/containarium/version", nil)
+	if err != nil {
+		return "", err
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("status %d", resp.StatusCode)
+	}
+	var body struct {
+		Version string `json:"version"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return "", fmt.Errorf("decode: %w", err)
+	}
+	if body.Version == "" {
+		return "", fmt.Errorf("empty version")
+	}
+	u.servedVersion, u.servedAt = body.Version, time.Now()
+	return body.Version, nil
 }
 
 func (u *AutoUpdater) getRemoteChecksum(ctx context.Context) (string, error) {

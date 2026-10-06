@@ -18,10 +18,14 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/footprintai/containarium/internal/alert"
+	"go.opentelemetry.io/otel"
+
+	"github.com/footprintai/containarium/internal/anonbox"
 	"github.com/footprintai/containarium/internal/app"
 	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/autosleep"
+	"github.com/footprintai/containarium/internal/bridgedns"
 	"github.com/footprintai/containarium/internal/cloud"
 	clusterstore "github.com/footprintai/containarium/internal/cluster"
 	"github.com/footprintai/containarium/internal/collaborator"
@@ -64,6 +68,18 @@ import (
 )
 
 // DualServerConfig holds configuration for the dual server
+// AnonDoorOptions are the daemon flags behind the anonymous-box
+// guardrails (#2200). Rates are creates per 10 minutes, the unit the
+// decision on #2204 was taken in.
+type AnonDoorOptions struct {
+	MaxBoxes        int
+	KeyCreatesPer10 int
+	KeyBurst        int
+	IPCreatesPer10  int
+	IPBurst         int
+	StatePath       string
+}
+
 type DualServerConfig struct {
 	// gRPC settings
 	GRPCAddress string
@@ -85,7 +101,26 @@ type DualServerConfig struct {
 	EnableAppHosting   bool
 	PostgresConnString string
 	BaseDomain         string
-	CaddyAdminURL      string
+	// BridgeDNSReconcileDisabled is the off switch for the bridge raw.dnsmasq
+	// reconciler (#2188) an operator can throw without rolling back (#2232
+	// option 2). Zero value = reconciler on; set by --bridge-dns-reconcile=false.
+	BridgeDNSReconcileDisabled bool
+	// BridgeDNSCreate lets the reconciler write a record onto a bridge that
+	// has none (#2232 option 1). Default false: a host without a record is
+	// left alone unless this run installed core-caddy.
+	BridgeDNSCreate bool
+
+	// AnonClaimURLBase is prefixed to anonymous-box claim tokens as
+	// "<base>?token=…" in the guest's claim-url file (#2199), e.g.
+	// https://<cloud-domain>/claim. Empty = the bare token is written.
+	AnonClaimURLBase string
+	// AnonReminderWebhook receives one POST per opt-in expiry reminder
+	// (#2206) — the control plane emails the user; empty = reminders off.
+	AnonReminderWebhook string
+	// AnonDoor tunes the anonymous-box guardrails (#2200); zero values
+	// mean anonbox.DefaultLimits / anonbox.DefaultDoorStatePath.
+	AnonDoor      AnonDoorOptions
+	CaddyAdminURL string
 
 	// Route sync settings
 	RouteSyncInterval time.Duration // Interval for syncing routes to Caddy (default 5s)
@@ -159,6 +194,12 @@ type DualServerConfig struct {
 	// the connect target username@ssh_host without inferring it. Empty =
 	// direct mode: ssh_host is left empty and clients use the container IP.
 	SSHHost string
+
+	// DNSPassthroughHosts are extra hostnames the bridge DNS record carves
+	// out of the base-domain wildcard so they resolve via the upstream
+	// resolvers, from --dns-passthrough-host (#2188). Empty = only the SSH
+	// host (if set) is carved out, as before.
+	DNSPassthroughHosts []string
 
 	// Alerting settings
 	AlertWebhookURL    string // Webhook URL for alert notifications (optional)
@@ -253,10 +294,12 @@ type DualServer struct {
 	peerPool                 *PeerPool
 	autoSleepManager         *autosleep.Manager
 	ttlSweeperManager        *ttlsweeper.Manager    // ephemeral CI box auto-delete (#299)
+	anonManager              *anonbox.Manager       // anonymous-box door (#2197); nil unless CONTAINARIUM_ANON_DOOR=enable
 	sandboxServer            *SandboxServer         // set in NewDualServer when incus.New succeeds; nil otherwise (#1488)
 	sandboxTTLSweeperManager *ttlsweeper.Manager    // ephemeral sandbox auto-delete (#1488 Phase 4)
 	secretsReconciler        *secretsReconciler     // Phase 4.3 Phase B-3
 	networkPolicyEnforcer    *NetworkPolicyEnforcer // #315 Phase A — eBPF per-tenant net policy (off unless configured)
+	bridgeDNS                *bridgedns.Reconciler  // #2188 — keeps the bridge raw.dnsmasq record on core-caddy's live address
 	coreGuard                *coreguard.Reconciler  // #2084 — Incus NIC ACLs keeping tenants off core-role containers (off unless CONTAINARIUM_CORE_GUARD=enforce)
 
 	// k8sNetPolicyReconciler converges tenant NetworkPolicy objects on the K8s
@@ -290,12 +333,59 @@ type DualServer struct {
 // (→ the sentinel's public IP) instead of the address= override. dnsmasq's
 // longest-match makes the carve-out win. Without it, an in-box `connect`
 // dials the SSH apex and lands on Caddy (no :22) or a stale edge IP (#837.1).
-func bridgeDNSRaw(baseDomain, caddyIP, sshHost string) string {
+//
+// passthroughHosts (--dns-passthrough-host, #2188) are further names the
+// operator needs resolved upstream — e.g. an API host that lives under the
+// base domain but is not served by Caddy. Each gets its own
+// `server=/<host>/#` line after the SSH carve-out, in flag order. Entries are
+// normalized, de-duplicated against each other, the SSH host and the base
+// domain (a carve-out equal to the base would cancel the wildcard), and any
+// entry that is not a plain hostname is dropped so a bad value can never inject
+// a directive. With none configured the result is unchanged.
+func bridgeDNSRaw(baseDomain, caddyIP, sshHost string, passthroughHosts ...string) string {
 	raw := fmt.Sprintf("address=/%s/%s", baseDomain, caddyIP)
+	seen := map[string]bool{}
+	if n, ok := normalizeDNSHost(baseDomain); ok {
+		seen[n] = true
+	}
 	if sshHost != "" && sshHost != baseDomain {
 		raw += "\nserver=/" + sshHost + "/#"
+		if n, ok := normalizeDNSHost(sshHost); ok {
+			seen[n] = true
+		}
+	}
+	for _, h := range passthroughHosts {
+		n, ok := normalizeDNSHost(h)
+		if !ok || seen[n] {
+			continue
+		}
+		seen[n] = true
+		raw += "\nserver=/" + n + "/#"
 	}
 	return raw
+}
+
+// containerEventKick returns a channel that receives a coalesced signal for
+// every event on the bus until ctx is done, for reconcilers that wake early on
+// container changes. A pass already pending absorbs further events.
+func containerEventKick(ctx context.Context) <-chan struct{} {
+	sub := events.GetBus().Subscribe(nil)
+	kick := make(chan struct{}, 1)
+	go func() {
+		defer events.GetBus().Unsubscribe(sub.ID)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-sub.Events:
+				select {
+				case kick <- struct{}{}:
+				default:
+				}
+			}
+		}
+	}()
+	return kick
 }
 
 // NewDualServer creates a new dual server instance
@@ -319,6 +409,16 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	}
 	if err := validateTrustedProxyCIDRs(config.TrustedProxyCIDRs); err != nil {
 		return nil, fmt.Errorf("trusted-proxy-cidrs misconfigured: %w", err)
+	}
+	// #2188: a bad passthrough host would silently corrupt the bridge DNS
+	// record, so fail visibly at boot.
+	if err := validateDNSPassthroughHosts(config.DNSPassthroughHosts); err != nil {
+		return nil, fmt.Errorf("dns-passthrough-host misconfigured: %w", err)
+	}
+	// #2299: an unrecognised privileged-podman policy must not silently
+	// become the permissive default, so refuse to start on one.
+	if err := validatePrivilegedPolicyEnv(); err != nil {
+		return nil, fmt.Errorf("privileged-podman policy misconfigured: %w", err)
 	}
 
 	// Create container server
@@ -603,7 +703,12 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// GCS). Orchestration over the container manager; the GCS uploader is
 	// best-effort (LOCAL-only if `gcloud` is absent). See
 	// docs/DB-BACKUP-OPERATIONS.md.
-	pb.RegisterBackupServiceServer(grpcServer, NewBackupServer(containerServer))
+	backupServer := NewBackupServer(containerServer)
+	pb.RegisterBackupServiceServer(grpcServer, backupServer)
+	// Metrics export's backup-health series (#2294) reads the same
+	// backup core backupServer orchestrates — wired here since
+	// BackupServer depends on ContainerServer, not the reverse.
+	containerServer.SetBackupManager(backupServer.Manager())
 	log.Printf("Backup service enabled")
 
 	// Register VolumeService — shared, multi-writer CephFS volumes (#384).
@@ -715,6 +820,11 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	var routeSyncJob *app.RouteSyncJob
 	// coreServices is hoisted so alert setup can reference it later
 	var coreServices *CoreServices
+	// bridgeDNS keeps the bridge's raw.dnsmasq record on core-caddy's live
+	// address on every start (#2188). Nil unless app hosting is on, a base
+	// domain is set and a core-caddy container exists on this host.
+	var bridgeDNS *bridgedns.Reconciler
+	caddyInstalledThisRun := false
 	// postgresConnString is hoisted so collaborator init (after skipAppHosting) can use it
 	postgresConnString := config.PostgresConnString
 	if config.EnableAppHosting {
@@ -760,6 +870,9 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 					if err != nil {
 						log.Printf("Warning: Failed to setup Caddy: %v. Proxy features disabled.", err)
 					} else {
+						// This run installed core-caddy: the one case the
+						// bridge DNS reconciler may create the record (#2232).
+						caddyInstalledThisRun = true
 						caddyAdminURL = adminURL
 						caddyIP := coreServices.GetCaddyIP()
 						log.Printf("Caddy ready: %s", caddyIP)
@@ -783,14 +896,26 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 						// the sentinel (#837.1). Uses the LIVE caddy IP, so each
 						// (re)apply tracks Caddy's current address rather than a
 						// stale one (#837.D).
-						dnsOverride := bridgeDNSRaw(config.BaseDomain, caddyIP, config.SSHHost)
+						dnsOverride := bridgeDNSRaw(config.BaseDomain, caddyIP, config.SSHHost, config.DNSPassthroughHosts...)
 						if out, err := exec.Command("incus", "network", "set", "incusbr0", "raw.dnsmasq", dnsOverride).CombinedOutput(); err != nil { // #nosec G204 -- dnsOverride is built from trusted BaseDomain/CaddyIP/SSHHost config values
 							log.Printf("Warning: failed to set DNS override for %s: %v (%s)", config.BaseDomain, err, string(out))
 						} else {
-							log.Printf("DNS override: *.%s -> %s (internal hairpin); SSH apex %q -> upstream", config.BaseDomain, caddyIP, config.SSHHost)
+							log.Printf("DNS override: *.%s -> %s (internal hairpin); SSH apex %q and passthrough hosts %q -> upstream", config.BaseDomain, caddyIP, config.SSHHost, config.DNSPassthroughHosts)
 						}
+
 					}
 				}
+			}
+
+			// Keep the bridge DNS record on core-caddy's live address (#2188).
+			// The start-up write above runs only at first install: on every later
+			// start cmd/daemon.go has already auto-detected the Caddy admin URL,
+			// so the block that writes the record is skipped and a stale address
+			// would stay forever. Built here, outside that block, so it runs on
+			// every start; its first pass repairs a stale record.
+			bridgeDNS = newBridgeDNSReconciler(config, incusClient, caddyInstalledThisRun)
+			if bridgeDNS == nil && config.BridgeDNSReconcileDisabled {
+				log.Printf("[bridgedns] disabled by --bridge-dns-reconcile=false; the bridge record is not managed by this daemon")
 			}
 
 			// Setup VictoriaMetrics + Grafana if no URL provided
@@ -980,6 +1105,9 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 			} else {
 				containerServer.SetTrackerStore(trkStore)
 				agentSkillServer.SetTrackerConnections(trkStore)
+				// #2062: a run's leftover fan-out reservations are swept
+				// when its lease ends.
+				agentSkillServer.SetLineageReservations(trkStore)
 				// #2022: dispatched runs start through the RunAgentSkill path.
 				containerServer.SetTrackerRunStarter(NewTrackerRunStarter(agentSkillServer))
 				pb.RegisterTrackerServiceServer(grpcServer, containerServer)
@@ -1111,9 +1239,15 @@ skipAppHosting:
 			// Try to auto-detect existing postgres container first
 			if incusClient, err := incus.New(); err == nil {
 				if pgInfo, err := incusClient.FindContainerByRole(incus.RolePostgres); err == nil && pgInfo.IPAddress != "" {
-					postgresConnString = fmt.Sprintf(
-						"postgres://%s:%s@%s:%d/%s?sslmode=disable",
-						DefaultPostgresUser, DefaultPostgresPassword,
+					// The same password the app-hosting path resolves (secret
+					// file, env, then the dev default), not the compiled-in
+					// default unconditionally (#2091).
+					pgPassword, _, pwErr := ResolvePostgresPassword()
+					if pwErr != nil {
+						log.Printf("ERROR: %v — using the compiled-in default for the detected Postgres", pwErr)
+						pgPassword = DefaultPostgresPassword
+					}
+					postgresConnString = PostgresDSN(DefaultPostgresUser, pgPassword,
 						pgInfo.IPAddress, DefaultPostgresPort, DefaultPostgresDB)
 					log.Printf("Detected existing PostgreSQL at: %s", pgInfo.IPAddress)
 					// Re-apply the systemd Restart=on-failure override even
@@ -1634,6 +1768,7 @@ skipAppHosting:
 	var auditStore *audit.Store
 	var auditEventSubscriber *audit.EventSubscriber
 	var revocationStoreLocal *auth.PgRevocationStore
+	var ownerRevocationStoreLocal *auth.PgOwnerRevocationStore
 	if postgresConnString != "" {
 		auditPool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
 		if poolErr != nil {
@@ -1670,6 +1805,18 @@ skipAppHosting:
 				tokensServer := NewTokensServer(tokenManager, revStore, 0)
 				pb.RegisterTokensServiceServer(grpcServer, tokensServer)
 				log.Printf("TokensService registered (POST /v1/tokens/revoke, /v1/tokens/delegate)")
+			}
+
+			// #2111 — the model gateway's owner-level kill-switch, durable:
+			// one cutoff row per key owner, so a daemon restart no longer
+			// forgets that an owner's key was removed. Same pool as the jti
+			// list. Handed to the gateway through gatewayOwnerRevocations,
+			// which carries the nil-pointer-in-interface check.
+			ownerRevStore, ownerRevErr := auth.NewPgOwnerRevocationStore(context.Background(), auditPool)
+			if ownerRevErr != nil {
+				log.Printf("Warning: Failed to create model-gateway owner revocation store: %v", ownerRevErr)
+			} else {
+				ownerRevocationStoreLocal = ownerRevStore
 			}
 		}
 	}
@@ -1780,6 +1927,82 @@ skipAppHosting:
 			Bridge:     "incusbr0",
 			BridgeCIDR: networkCIDR,
 		})
+	}
+
+	// AnonymousBoxService (#2197): the daemon side of the `ssh new.<domain>`
+	// door. Opt-in — only the dedicated pool=anon backend runs it — and only
+	// over an LXC box backend: the manager needs exec + TTL capabilities and
+	// the Incus NIC ACL path for its egress guard, neither of which a K8s
+	// backend offers. Limits are the fixed defaults until #2200 adds flags.
+	var anonManager *anonbox.Manager
+	if os.Getenv("CONTAINARIUM_ANON_DOOR") == "enable" {
+		anonBoxes, ok := containerServer.BoxBackend().(anonbox.Boxes)
+		switch {
+		case !ok:
+			log.Printf("AnonymousBox service disabled: box backend lacks exec/ttl capabilities (K8s?)")
+		case networkIncusClient == nil:
+			log.Printf("AnonymousBox service disabled: no incus client for NIC ACLs")
+		default:
+			anonLimits := anonbox.DefaultLimits()
+			if o := config.AnonDoor; true {
+				if o.MaxBoxes > 0 {
+					anonLimits.MaxBoxes = o.MaxBoxes
+				}
+				if o.KeyCreatesPer10 > 0 {
+					anonLimits.PerKeyPerMinute = float64(o.KeyCreatesPer10) / 10
+				}
+				if o.KeyBurst > 0 {
+					anonLimits.PerKeyBurst = o.KeyBurst
+				}
+				if o.IPCreatesPer10 > 0 {
+					anonLimits.PerIPPerMinute = float64(o.IPCreatesPer10) / 10
+				}
+				if o.IPBurst > 0 {
+					anonLimits.PerIPBurst = o.IPBurst
+				}
+			}
+			anonStatePath := config.AnonDoor.StatePath
+			if anonStatePath == "" {
+				anonStatePath = anonbox.DefaultDoorStatePath
+			}
+			// Funnel (#2201): every step → an ANON_* event on the bus and a
+			// containarium.anon.<step>_total counter on the daemon's meter.
+			var anonFunnel anonbox.Funnel = anonbox.NopFunnel{}
+			if sink, err := newAnonFunnelSink(events.GetBus(), otel.GetMeterProvider()); err != nil {
+				log.Printf("WARNING: anonymous-box funnel metrics disabled: %v", err)
+			} else {
+				anonFunnel = sink
+			}
+			var anonReminder anonbox.ReminderSender
+			if config.AnonReminderWebhook != "" {
+				anonReminder = newAnonReminderWebhook(config.AnonReminderWebhook)
+			}
+			anonMgr := anonbox.New(anonBoxes, networkIncusClient, anonbox.Config{
+				Limits:        anonLimits,
+				Funnel:        anonFunnel,
+				Reminder:      anonReminder,
+				NICDevice:     "eth0",
+				Bridge:        "incusbr0",
+				DoorStatePath: anonStatePath,
+				// The claim secret is re-derived from the daemon's signing
+				// key per box — nothing to persist, rotates with the key.
+				ClaimSecret:  func(boxName string) string { return tokenManager.DeriveSharedSecret("anon-claim", boxName) },
+				ClaimURLBase: config.AnonClaimURLBase,
+			})
+			anonManager = anonMgr
+			anonServer := NewAnonymousBoxServer(anonMgr, anonBoxes, anonLimits)
+			anonServer.SetClaimer(anonMgr)
+			anonServer.SetDoor(anonMgr)
+			if err := anonMgr.DoorErr(); err != nil {
+				log.Printf("ERROR: %v — the anonymous door is CLOSED until `containarium anon enable` rewrites it", err)
+			}
+			pb.RegisterAnonymousBoxServiceServer(grpcServer, anonServer)
+			// Unclaimed anonymous boxes may not expose ports or routes (#2200).
+			if networkServer != nil {
+				networkServer.SetAnonGuard(AnonRouteGuard(networkIncusClient.GetLabels))
+			}
+			log.Printf("AnonymousBox service enabled (VM per key, %s vCPU / %s / %s, ttl %s)", anonLimits.CPU, anonLimits.Memory, anonLimits.Disk, anonLimits.TTL)
+		}
 	}
 
 	// Background threat-detection sentry (#1640): built independent of
@@ -2034,13 +2257,12 @@ skipAppHosting:
 			} else if len(gwRegistered) > 0 {
 				log.Printf("Warning: model-gateway has no secrets store (no Postgres) — per-owner provider keys cannot be resolved; every call falls back to the daemon-global key")
 			}
-			// Owner-level kill-switch (the "customer removed their key" case).
-			// In-memory for now: it is per key owner, not per token, so it needs
-			// its own durable store rather than the jti list, and that lands with
-			// the ModelGatewayService RPCs (#1726). Until then a daemon restart
-			// forgets owner revocations — the per-jti list and removing the key
-			// itself are the durable halves.
-			gwOwnerRevocations := modelgateway.NewMemOwnerRevocations()
+			// Owner-level kill-switch (the "customer removed their key" case):
+			// the durable Postgres store when the daemon has one (#2111), so the
+			// cutoff survives a restart; in-memory otherwise. Chosen through
+			// gatewayOwnerRevocations for the same nil-interface reason as
+			// gwRevocations above.
+			gwOwnerRevocations := gatewayOwnerRevocations(ownerRevocationStoreLocal)
 			gw := modelgateway.New(modelgateway.Config{
 				Secret:           []byte(config.JWTSecret),
 				Providers:        gwProviders,
@@ -2062,7 +2284,19 @@ skipAppHosting:
 			// (#1726). Until this call they refuse; after it they mint.
 			modelGatewayServer.SetGateway(gw, []byte(config.JWTSecret), config.HostIP, config.HTTPPort)
 			primary := gatewayPrimaryProvider(keys)
-			agentSkillServer.SetGatewayProvisioning(primary, config.HTTPPort, []byte(config.JWTSecret), config.HostIP)
+			// globalProviders (#2222) is agentengine.Resolve's "ready with no
+			// owner lookup needed" set — the same `keys` map gatewayPrimaryProvider
+			// just picked the default from, as a membership set rather than a
+			// value map (key values never leave this scope). gwKeyResolver
+			// (defined above, nil when there's no secrets store) is passed
+			// through unchanged for a named engine whose provider isn't in that
+			// set — modelgateway.KeyResolver already satisfies
+			// agentengine.KeyResolver's identical KeyFor signature.
+			globalProviders := make(map[string]bool, len(keys))
+			for p := range keys {
+				globalProviders[p] = true
+			}
+			agentSkillServer.SetGatewayProvisioning(primary, config.HTTPPort, []byte(config.JWTSecret), config.HostIP, globalProviders, gwKeyResolver, gw)
 			// The providers a recipe box may be seeded for: every provider the
 			// daemon holds a global key for, plus every operator-registered
 			// upstream (whose keys arrive per owner, so there is no global key to
@@ -2326,6 +2560,7 @@ skipAppHosting:
 	}
 
 	ds := &DualServer{
+		anonManager:            anonManager,
 		config:                 config,
 		agentSkillServer:       agentSkillServer,
 		grpcServer:             grpcServer,
@@ -2361,6 +2596,7 @@ skipAppHosting:
 		zapStore:               zapStore,
 		peerPool:               NewPeerPool(config.LocalBackendID, config.SentinelURL, config.Peers, config.Pool),
 		networkPolicyEnforcer:  networkPolicyEnforcer,
+		bridgeDNS:              bridgeDNS,
 		coreGuard:              coreGuard,
 		k8sNetPolicyReconciler: k8sNetPolicyReconciler,
 		cloudClient:            cloudClient,
@@ -2444,6 +2680,42 @@ func (ds *DualServer) runRevocationCleanup(ctx context.Context) {
 	}
 }
 
+const (
+	integrityHeartbeatIntervalEnv     = "CONTAINARIUM_INTEGRITY_HEARTBEAT_INTERVAL"
+	defaultIntegrityHeartbeatInterval = 5 * time.Minute
+	minIntegrityHeartbeatInterval     = 30 * time.Second
+)
+
+// integrityHeartbeatInterval is the resolved interval and any adjustment made
+// to an operator-provided value. It is kept separate from the heartbeat's
+// lifecycle so its duration policy is easy to test without starting a daemon.
+type integrityHeartbeatInterval struct {
+	interval time.Duration
+	invalid  bool
+	clamped  bool
+}
+
+func resolveIntegrityHeartbeatInterval(raw string) integrityHeartbeatInterval {
+	if raw == "" {
+		return integrityHeartbeatInterval{interval: defaultIntegrityHeartbeatInterval}
+	}
+
+	interval, err := time.ParseDuration(raw)
+	if err != nil || interval <= 0 {
+		return integrityHeartbeatInterval{
+			interval: defaultIntegrityHeartbeatInterval,
+			invalid:  true,
+		}
+	}
+	if interval < minIntegrityHeartbeatInterval {
+		return integrityHeartbeatInterval{
+			interval: minIntegrityHeartbeatInterval,
+			clamped:  true,
+		}
+	}
+	return integrityHeartbeatInterval{interval: interval}
+}
+
 // startIntegrityHeartbeat launches the integrity self-measurement heartbeat
 // (#683). On a fixed cadence the daemon computes + signs a measurement of its
 // own binary, loaded in-kernel program object(s), and policy/config state, and
@@ -2459,7 +2731,17 @@ func (ds *DualServer) startIntegrityHeartbeat(ctx context.Context) {
 	if ds.containerServer == nil {
 		return
 	}
-	const interval = 5 * time.Minute
+	configured := os.Getenv(integrityHeartbeatIntervalEnv)
+	decision := resolveIntegrityHeartbeatInterval(configured)
+	if decision.invalid {
+		log.Printf("[integrity] %s=%q invalid, using default %s",
+			integrityHeartbeatIntervalEnv, configured, defaultIntegrityHeartbeatInterval)
+	}
+	if decision.clamped {
+		log.Printf("[integrity] %s=%q below minimum %s; clamping to %s",
+			integrityHeartbeatIntervalEnv, configured, minIntegrityHeartbeatInterval, decision.interval)
+	}
+	log.Printf("[integrity] self-measurement heartbeat interval=%s", decision.interval)
 
 	emit := func() {
 		m, err := ds.containerServer.computeSelfMeasurement()
@@ -2478,7 +2760,7 @@ func (ds *DualServer) startIntegrityHeartbeat(ctx context.Context) {
 	go func() {
 		// One initial emission once the daemon is up, then on the cadence.
 		emit()
-		t := time.NewTicker(interval)
+		t := time.NewTicker(decision.interval)
 		defer t.Stop()
 		for {
 			select {
@@ -2592,6 +2874,11 @@ func (ds *DualServer) handleBackendSystemInfo(w http.ResponseWriter, r *http.Req
 }
 
 func (ds *DualServer) Start(ctx context.Context) error {
+	// Anonymous-box funnel (#2201): emit expired / killed events within a
+	// minute of a box disappearing.
+	if ds.anonManager != nil {
+		go anonObserveLoop(ctx, ds.anonManager, time.Minute)
+	}
 	if ds.agentSkillServer != nil {
 		ds.agentSkillServer.StartRunJournalReaper(ctx)
 	}
@@ -2612,6 +2899,10 @@ func (ds *DualServer) Start(ctx context.Context) error {
 	// it unconditionally; empty --ssh-host leaves ssh_host empty.
 	if ds.containerServer != nil {
 		ds.containerServer.SetSSHHost(ds.config.SSHHost)
+		// GetBridgeDNSStatus (#2188): nil when app hosting is off or core-caddy
+		// is not managed by this daemon, which the RPC reports as NOT_MANAGED.
+		ds.containerServer.SetBridgeDNSReconciler(ds.bridgeDNS)
+		ds.containerServer.SetBridgeDNSDisabled(ds.config.BridgeDNSReconcileDisabled)
 		// Capability-profile identity (#681): region from --region, falling
 		// back to the pool name; self-reported class from the pool name. Both
 		// may be empty. Wired unconditionally — profiling works on a
@@ -2632,6 +2923,11 @@ func (ds *DualServer) Start(ctx context.Context) error {
 				mode = "enforcing"
 			}
 			log.Printf("[cpu-admission] CPU overcommit gate enabled: factor=%.2f× mode=%s", ds.config.CPUOvercommitFactor, mode)
+			// One budget line at boot (#2284): an advisory gate on a host
+			// already past its ceiling must say so up front, not only one
+			// "would reject" line per create. Off the boot path — it reads
+			// Incus, and a slow Incus must not delay the daemon coming up.
+			go ds.containerServer.LogCPUBudgetPosture()
 		}
 
 		// Integrity self-measurement posture (#683): the policy/config state the
@@ -3061,6 +3357,14 @@ func (ds *DualServer) Start(ctx context.Context) error {
 			}
 		}()
 		go ds.coreGuard.Run(ctx, kick)
+	}
+
+	// Bridge DNS record (#2188): re-apply raw.dnsmasq when core-caddy's address
+	// drifts from it, at start, on container events and every minute. A record
+	// that cannot be repaired is logged and shown in status; it must never block
+	// the daemon from serving.
+	if ds.bridgeDNS != nil {
+		go ds.bridgeDNS.Run(ctx, containerEventKick(ctx))
 	}
 
 	// Start the eBPF network-policy enforcer if configured (#315 Phase A). A

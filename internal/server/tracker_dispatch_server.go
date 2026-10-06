@@ -6,6 +6,7 @@ import (
 	"log"
 	"runtime/debug"
 	"strings"
+	"time"
 
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/tracker"
@@ -50,6 +51,9 @@ func (s *ContainerServer) DispatchTrackerIssues(ctx context.Context, req *pb.Dis
 	if err := requireDispatchCaller(ctx, req.Username); err != nil {
 		return nil, err
 	}
+	if req.MaxStarts < 0 {
+		return nil, status.Errorf(codes.InvalidArgument, "max_starts must be 0 (unlimited) or positive, got %d", req.MaxStarts)
+	}
 	if s.trackerRunStarter == nil {
 		return nil, status.Error(codes.Unavailable, "tracker dispatch is not configured on this daemon (no run starter)")
 	}
@@ -71,12 +75,20 @@ func (s *ContainerServer) DispatchTrackerIssues(ctx context.Context, req *pb.Dis
 	// after a chain was filed still stops the deeper issues (#2025). The
 	// same value's RunTimeout also bounds the sweep below (#2026).
 	policy := tracker.PolicyFromProto(record.Policy)
+
+	// The credential resolved above only proves it resolves before any
+	// write; every forge call — including RunEnded and the sweep, up to
+	// the run timeout after this tick — resolves it again through the
+	// secrets store, so a rotated or short-lived credential is never
+	// reused stale (#2269).
 	d := &tracker.Dispatcher{
-		Store:    s.trackerStore,
-		Provider: provider,
-		Conn:     conn,
-		Runs:     s.trackerRunStarter,
-		Clock:    tracker.SystemClock,
+		Store:            s.trackerStore,
+		Provider:         provider,
+		Conn:             conn,
+		Credentials:      s.secretsStore,
+		CredentialSecret: record.CredentialSecret,
+		Runs:             s.trackerRunStarter,
+		Clock:            tracker.SystemClock,
 		// The run's workspace is the connection's own repository, built
 		// from the connection record like SubmitTrackerChange's push
 		// target — never from the issue or the box (#2023).
@@ -85,6 +97,8 @@ func (s *ContainerServer) DispatchTrackerIssues(ctx context.Context, req *pb.Dis
 		// The sweep (#2026): this daemon's view of its live dispatched
 		// runs, and the success metrics.
 		Observer: trackerDispatchObserverFromGlobal(),
+		// The caller's per-tick budget (#2270); 0 is unlimited.
+		MaxStarts: req.MaxStarts,
 	}
 	if leases, ok := s.trackerRunStarter.(tracker.RunLeases); ok {
 		d.Leases = leases
@@ -99,6 +113,7 @@ func (s *ContainerServer) DispatchTrackerIssues(ctx context.Context, req *pb.Dis
 		SkippedActive:        res.SkippedActive,
 		SkippedUnrouted:      res.SkippedUnrouted,
 		SkippedOverDepth:     res.SkippedOverDepth,
+		LeftUndispatched:     res.LeftUndispatched,
 	}
 	for i := range res.Started {
 		out.Started = append(out.Started, toProtoTrackerDispatch(&res.Started[i]))
@@ -109,9 +124,9 @@ func (s *ContainerServer) DispatchTrackerIssues(ctx context.Context, req *pb.Dis
 	for i := range res.TimedOut {
 		out.TimedOut = append(out.TimedOut, toProtoTrackerDispatch(&res.TimedOut[i]))
 	}
-	log.Printf("[tracker] dispatch %s/%s: started=%d failed=%d timed_out=%d skipped(approval=%d active=%d unrouted=%d over_depth=%d)",
+	log.Printf("[tracker] dispatch %s/%s: started=%d failed=%d timed_out=%d skipped(approval=%d active=%d unrouted=%d over_depth=%d) left_undispatched=%d",
 		req.Username, req.Connection, len(res.Started), len(res.Failed), len(res.TimedOut),
-		res.SkippedNeedsApproval, res.SkippedActive, res.SkippedUnrouted, res.SkippedOverDepth)
+		res.SkippedNeedsApproval, res.SkippedActive, res.SkippedUnrouted, res.SkippedOverDepth, res.LeftUndispatched)
 	return out, nil
 }
 
@@ -129,7 +144,42 @@ func (s *ContainerServer) ListTrackerDispatches(ctx context.Context, req *pb.Lis
 	for i := range rows {
 		out = append(out, toProtoTrackerDispatch(&rows[i]))
 	}
+	// #2062: show the fan-out slots each run still holds, so a run whose
+	// fan-out looks exhausted shows why.
+	reservations, err := s.trackerStore.ListLineageReservations(ctx, req.Username, req.Connection)
+	if err != nil {
+		return nil, mapTrackerDispatchError(err)
+	}
+	attachLineageReservations(out, reservations)
 	return &pb.ListTrackerDispatchesResponse{Dispatches: out}, nil
+}
+
+// attachLineageReservations sets each row's lineage_reservations and
+// oldest_lineage_reservation_at from its run's reservations. A
+// reservation whose run has no row in the listing is not shown.
+func attachLineageReservations(rows []*pb.TrackerDispatch, reservations []tracker.LineageReservation) {
+	type held struct {
+		count  int32
+		oldest time.Time
+	}
+	byRun := map[string]*held{}
+	for _, r := range reservations {
+		h, ok := byRun[r.CreatedByRun]
+		if !ok {
+			h = &held{oldest: r.CreatedAt}
+			byRun[r.CreatedByRun] = h
+		}
+		h.count++
+		if r.CreatedAt.Before(h.oldest) {
+			h.oldest = r.CreatedAt
+		}
+	}
+	for _, d := range rows {
+		if h, ok := byRun[d.GetRunId()]; ok && d.GetRunId() != "" {
+			d.LineageReservations = h.count
+			d.OldestLineageReservationAt = timestamppb.New(h.oldest)
+		}
+	}
 }
 
 func mapTrackerDispatchError(err error) error {
@@ -244,7 +294,7 @@ func (r trackerRunStarter) StartRun(ctx context.Context, req tracker.StartRunReq
 		return err
 	}
 	agent := func(containerName, seedDir string) (string, error) {
-		return r.agents.runInBoxAgentResult(containerName, seedDir, run.runID, run.skillID)
+		return r.agents.runInBoxAgentResult(containerName, seedDir, run.runID, run.skillID, run.engineRes, run.model)
 	}
 	if !r.agents.launchDispatchedRun(ctx, run, req.Lifecycle, agent) {
 		return tracker.ErrDispatchEnded

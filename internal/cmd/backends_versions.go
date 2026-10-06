@@ -42,6 +42,7 @@ type latestReleaseResponse struct {
 	LatestRelease   string `json:"latestRelease"`
 	CurrentVersion  string `json:"currentVersion"`
 	UpdateAvailable bool   `json:"updateAvailable"`
+	TargetVersion   string `json:"targetVersion"` // sentinel-served version (#2171)
 }
 
 // backendVersionRow is the rendered per-backend version line.
@@ -54,8 +55,11 @@ type backendVersionRow struct {
 }
 
 type backendsVersionsOutput struct {
-	LatestRelease string              `json:"latestRelease"`
-	Backends      []backendVersionRow `json:"backends"`
+	LatestRelease string `json:"latestRelease"`
+	// SentinelVersion is what `backends upgrade` would install (the
+	// sentinel-served binary); empty when unknown. #2171.
+	SentinelVersion string              `json:"sentinelVersion"`
+	Backends        []backendVersionRow `json:"backends"`
 }
 
 // backendVersionStatus classifies a backend's version against the latest
@@ -114,7 +118,7 @@ func runBackendsVersions(cmd *cobra.Command, args []string) error {
 	sort.Slice(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
 
 	if backendsVersionsFormat == "json" {
-		out := backendsVersionsOutput{LatestRelease: latest.LatestRelease, Backends: rows}
+		out := backendsVersionsOutput{LatestRelease: latest.LatestRelease, SentinelVersion: latest.TargetVersion, Backends: rows}
 		enc := json.NewEncoder(cmd.OutOrStdout())
 		enc.SetIndent("", "  ")
 		return enc.Encode(out)
@@ -122,10 +126,11 @@ func runBackendsVersions(cmd *cobra.Command, args []string) error {
 
 	w := cmd.OutOrStdout()
 	if latest.LatestRelease != "" {
-		fmt.Fprintf(w, "Latest release: %s\n\n", latest.LatestRelease)
+		fmt.Fprintf(w, "Latest release:  %s\n", latest.LatestRelease)
 	} else {
-		fmt.Fprintf(w, "Latest release: (unavailable)\n\n")
+		fmt.Fprintf(w, "Latest release:  (unavailable)\n")
 	}
+	fmt.Fprintf(w, "Sentinel serves: %s\n\n", releasecheck.TargetSummary(latest.TargetVersion, latest.LatestRelease))
 	fmt.Fprintf(w, "%-28s %-8s %-12s %s\n", "BACKEND", "TYPE", "VERSION", "STATUS")
 	for _, r := range rows {
 		ver := r.Version

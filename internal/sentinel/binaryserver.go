@@ -70,6 +70,10 @@ func buildBinaryServerMux(binaryPath string, manager *Manager) *http.ServeMux {
 		w.Header().Set("Content-Type", "text/plain")
 		fmt.Fprint(w, hex.EncodeToString(h.Sum(nil)))
 	})
+	// Served-binary version (#2171) — what a daemon's sentinel-path upgrade
+	// would install. Unauthenticated like /containarium/checksum: the binary
+	// itself is public at /containarium, so its version string is too.
+	mux.HandleFunc("/containarium/version", newServedVersionCache().handler(binaryPath))
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))

@@ -55,7 +55,7 @@ type getTrackerIssueResponse struct {
 
 // GetTrackerIssue reads a single issue, including its comments.
 func (c *Client) GetTrackerIssue(req GetTrackerIssueRequest) (*TrackerIssue, error) {
-	path := fmt.Sprintf("/v1/tracker/%s/%s/issues/%d",
+	path := fmt.Sprintf("/v1/tracker/connections/%s/%s/issues/%d",
 		url.PathEscape(req.Username), url.PathEscape(req.Connection), req.Number)
 	respBody, err := c.doRequest("GET", path, nil)
 	if err != nil {
@@ -96,7 +96,7 @@ func (c *Client) ListTrackerIssues(req ListTrackerIssuesRequest) ([]TrackerIssue
 	if req.Search != "" {
 		q.Set("search", req.Search)
 	}
-	path := fmt.Sprintf("/v1/tracker/%s/%s/issues", url.PathEscape(req.Username), url.PathEscape(req.Connection))
+	path := fmt.Sprintf("/v1/tracker/connections/%s/%s/issues", url.PathEscape(req.Username), url.PathEscape(req.Connection))
 	if enc := q.Encode(); enc != "" {
 		path += "?" + enc
 	}
@@ -124,7 +124,7 @@ type getTrackerChangeResponse struct {
 
 // GetTrackerChange reads a single change request's state and CI verdict.
 func (c *Client) GetTrackerChange(req GetTrackerChangeRequest) (*TrackerChange, error) {
-	path := fmt.Sprintf("/v1/tracker/%s/%s/changes/%d",
+	path := fmt.Sprintf("/v1/tracker/connections/%s/%s/changes/%d",
 		url.PathEscape(req.Username), url.PathEscape(req.Connection), req.Number)
 	respBody, err := c.doRequest("GET", path, nil)
 	if err != nil {
@@ -152,7 +152,7 @@ type commentOnTrackerIssueResponse struct {
 
 // CommentOnTrackerIssue posts a stamped, sanitized comment.
 func (c *Client) CommentOnTrackerIssue(req CommentOnTrackerIssueRequest) (*TrackerComment, error) {
-	path := fmt.Sprintf("/v1/tracker/%s/%s/issues/%d/comments",
+	path := fmt.Sprintf("/v1/tracker/connections/%s/%s/issues/%d/comments",
 		url.PathEscape(req.Username), url.PathEscape(req.Connection), req.Number)
 	respBody, err := c.doRequest("POST", path, struct {
 		Body string `json:"body"`
@@ -184,7 +184,7 @@ type ClaimTrackerIssueResult struct {
 
 // ClaimTrackerIssue attempts to claim an issue for the calling run.
 func (c *Client) ClaimTrackerIssue(req ClaimTrackerIssueRequest) (*ClaimTrackerIssueResult, error) {
-	path := fmt.Sprintf("/v1/tracker/%s/%s/issues/%d/claim",
+	path := fmt.Sprintf("/v1/tracker/connections/%s/%s/issues/%d/claim",
 		url.PathEscape(req.Username), url.PathEscape(req.Connection), req.Number)
 	respBody, err := c.doRequest("POST", path, struct {
 		StaleAfterSeconds int64 `json:"staleAfterSeconds,omitempty"`
@@ -211,7 +211,7 @@ type SetTrackerIssueLabelsRequest struct {
 
 // SetTrackerIssueLabels adds and/or removes labels on an issue.
 func (c *Client) SetTrackerIssueLabels(req SetTrackerIssueLabelsRequest) error {
-	path := fmt.Sprintf("/v1/tracker/%s/%s/issues/%d/labels",
+	path := fmt.Sprintf("/v1/tracker/connections/%s/%s/issues/%d/labels",
 		url.PathEscape(req.Username), url.PathEscape(req.Connection), req.Number)
 	_, err := c.doRequest("POST", path, struct {
 		AddLabels    []string `json:"addLabels,omitempty"`
@@ -239,7 +239,7 @@ type createTrackerIssueResponse struct {
 
 // CreateTrackerIssue files a follow-up issue on the connection's tracker.
 func (c *Client) CreateTrackerIssue(req CreateTrackerIssueRequest) (*TrackerIssue, error) {
-	path := fmt.Sprintf("/v1/tracker/%s/%s/issues",
+	path := fmt.Sprintf("/v1/tracker/connections/%s/%s/issues",
 		url.PathEscape(req.Username), url.PathEscape(req.Connection))
 	respBody, err := c.doRequest("POST", path, req)
 	if err != nil {
@@ -273,7 +273,7 @@ type submitTrackerChangeResponse struct {
 // SubmitTrackerChange bundles the calling run's committed workspace out
 // of its box, pushes it, and opens a change request.
 func (c *Client) SubmitTrackerChange(req SubmitTrackerChangeRequest) (*TrackerChange, error) {
-	path := fmt.Sprintf("/v1/tracker/%s/%s/changes", url.PathEscape(req.Username), url.PathEscape(req.Connection))
+	path := fmt.Sprintf("/v1/tracker/connections/%s/%s/changes", url.PathEscape(req.Username), url.PathEscape(req.Connection))
 	respBody, err := c.doRequest("POST", path, struct {
 		Issue       int64  `json:"issue"`
 		Title       string `json:"title"`
@@ -311,7 +311,7 @@ type listTrackerRoutesResponse struct {
 // ListTrackerRoutes returns a connection's scope routes — the same
 // ListTrackerRoutes endpoint `containarium tracker route list` calls.
 func (c *Client) ListTrackerRoutes(req ListTrackerRoutesRequest) ([]TrackerRoute, error) {
-	path := fmt.Sprintf("/v1/tracker/%s/%s/routes", url.PathEscape(req.Username), url.PathEscape(req.Connection))
+	path := fmt.Sprintf("/v1/tracker/connections/%s/%s/routes", url.PathEscape(req.Username), url.PathEscape(req.Connection))
 	respBody, err := c.doRequest("GET", path, nil)
 	if err != nil {
 		return nil, err

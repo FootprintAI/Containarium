@@ -23,6 +23,7 @@ func TestRunCommand(t *testing.T) {
 	const secretPrefix = `set -a; [ -f /run/containarium/secrets.env ] && . /run/containarium/secrets.env; set +a; `
 	const claudeGatewayPrefix = `set -a; [ -f "$HOME/.claude/gateway.env" ] && . "$HOME/.claude/gateway.env"; set +a; `
 	const piGatewayPrefix = `set -a; [ -f "$HOME/.pi/gateway.env" ] && . "$HOME/.pi/gateway.env"; set +a; `
+	const codexGatewayPrefix = `set -a; [ -f "$HOME/.codex/gateway.env" ] && . "$HOME/.codex/gateway.env"; set +a; `
 
 	// Claude's own body is unchanged from BuildClaudeRunCommand — the
 	// conditional --mcp-config dance included.
@@ -35,6 +36,7 @@ func TestRunCommand(t *testing.T) {
 		model      string
 		streamJSON bool
 		continues  bool
+		sessionID  string
 		want       string
 	}{
 		// ---- claude × secret (today's shipped behaviour) ----
@@ -139,6 +141,95 @@ func TestRunCommand(t *testing.T) {
 			continues:  true,
 			want:       secretPrefix + `~/.local/bin/pi -p 'fix the bug' --mode json -c --model 'claude-sonnet-5'`,
 		},
+
+		// ---- #2193: --session / session_id resume ----
+		{
+			name:       "claude/secret/session",
+			engine:     NameClaude,
+			credential: SecretCredential{},
+			sessionID:  "abc-123",
+			want:       secretPrefix + claudeBody + ` --resume 'abc-123'`,
+		},
+		{
+			name:       "claude/secret/session takes priority over continue",
+			engine:     NameClaude,
+			credential: SecretCredential{},
+			sessionID:  "abc-123",
+			continues:  true,
+			want:       secretPrefix + claudeBody + ` --resume 'abc-123'`,
+		},
+		{
+			name:       "claude/gateway/session",
+			engine:     NameClaude,
+			credential: GatewayCredential{Provider: "anthropic"},
+			sessionID:  "abc-123",
+			streamJSON: true,
+			want:       claudeGatewayPrefix + claudeBody + ` --output-format stream-json --resume 'abc-123'`,
+		},
+		{
+			// The quote-breaking id is the injection half of "quoting
+			// pinned": a session id that tries to terminate the quoted
+			// string early must come back single-quoted just like a prompt.
+			name:       "claude/secret/session with a single quote",
+			engine:     NameClaude,
+			credential: SecretCredential{},
+			sessionID:  "'; touch /tmp/pwned; echo '",
+			want:       secretPrefix + claudeBody + ` --resume ''\''; touch /tmp/pwned; echo '\'''`,
+		},
+		{
+			name:       "pi/secret/session",
+			engine:     NamePi,
+			credential: SecretCredential{Name: "ANTHROPIC_API_KEY"},
+			sessionID:  "sess-9",
+			want:       secretPrefix + `~/.local/bin/pi -p 'fix the bug' --session 'sess-9'`,
+		},
+		{
+			name:       "pi/gateway/session takes priority over continue, before --model",
+			engine:     NamePi,
+			credential: GatewayCredential{Provider: "kafeido"},
+			sessionID:  "sess-9",
+			continues:  true,
+			model:      "kafeido-coder",
+			want:       piGatewayPrefix + `~/.local/bin/pi -p 'fix the bug' --session 'sess-9' --model 'kafeido-coder'`,
+		},
+
+		// ---- #2273: codex, the third engine. `codex exec` takes the prompt
+		// POSITIONAL (no -p), resume is its only continuation mechanism (no
+		// bare --continue), and --json/--model come before the prompt — see
+		// codex.go's doc comment for the docs these are checked against.
+		{
+			name:       "codex/secret/plain",
+			engine:     NameCodex,
+			credential: SecretCredential{Name: "CODEX_API_KEY"},
+			want:       secretPrefix + `~/.local/bin/codex exec 'fix the bug'`,
+		},
+		{
+			name:       "codex/secret/streamJSON+continue+model",
+			engine:     NameCodex,
+			credential: SecretCredential{Name: "CODEX_API_KEY"},
+			model:      "gpt-5-codex",
+			streamJSON: true,
+			continues:  true,
+			want:       secretPrefix + `~/.local/bin/codex exec resume --last --json --model 'gpt-5-codex' 'fix the bug'`,
+		},
+		{
+			name:       "codex/gateway/plain",
+			engine:     NameCodex,
+			credential: GatewayCredential{Provider: "openai"},
+			want:       codexGatewayPrefix + `~/.local/bin/codex exec 'fix the bug'`,
+		},
+		{
+			// Same priority rule as claude/pi: a specific session id wins over
+			// --continue, and both flags land before the prompt.
+			name:       "codex/gateway/session takes priority over continue, before --json and --model",
+			engine:     NameCodex,
+			credential: GatewayCredential{Provider: "openai"},
+			sessionID:  "sess-9",
+			continues:  true,
+			streamJSON: true,
+			model:      "gpt-5-codex",
+			want:       codexGatewayPrefix + `~/.local/bin/codex exec resume 'sess-9' --json --model 'gpt-5-codex' 'fix the bug'`,
+		},
 	}
 
 	for _, tc := range tests {
@@ -147,7 +238,7 @@ func TestRunCommand(t *testing.T) {
 			if err != nil {
 				t.Fatalf("For(%q): %v", tc.engine, err)
 			}
-			got := e.RunCommand(prompt, tc.streamJSON, tc.continues)
+			got := e.RunCommand(prompt, tc.streamJSON, tc.continues, tc.sessionID)
 			if got != tc.want {
 				t.Errorf("RunCommand mismatch\n got: %s\nwant: %s", got, tc.want)
 			}
@@ -169,14 +260,14 @@ func TestRunCommand_PromptQuotingSurvivesARealShell(t *testing.T) {
 		`back\slash and "double" quotes`,
 	}
 
-	for _, name := range []Name{NameClaude, NamePi} {
+	for _, name := range []Name{NameClaude, NamePi, NameCodex} {
 		for _, prompt := range prompts {
 			t.Run(string(name)+"/"+prompt, func(t *testing.T) {
 				e, err := For(name, Options{Credential: SecretCredential{}})
 				if err != nil {
 					t.Fatalf("For(%q): %v", name, err)
 				}
-				cmd := e.RunCommand(prompt, false, false)
+				cmd := e.RunCommand(prompt, false, false, "")
 
 				// The quoted prompt must appear verbatim in the command...
 				quoted := coderun.ShellQuoteSingle(prompt)
@@ -209,7 +300,7 @@ func TestClaudeSecretRunCommand_IsByteIdenticalToTheShippedBuilder(t *testing.T)
 		if err != nil {
 			t.Fatalf("For(claude): %v", err)
 		}
-		got := e.RunCommand("do the thing", streamJSON, false)
+		got := e.RunCommand("do the thing", streamJSON, false, "")
 		want := coderun.BuildClaudeRunCommand("do the thing", streamJSON)
 		if got != want {
 			t.Errorf("streamJSON=%v: engine seam changed the shipped command\n got: %s\nwant: %s",
@@ -234,7 +325,15 @@ func TestParseName(t *testing.T) {
 			t.Errorf("ParseName(%q) = %q, %v; want pi, nil", in, got, err)
 		}
 	}
-	for _, in := range []string{"", "codex", "cluade", "claude-code"} {
+	// #2273: codex is now a real, accepted engine — parallel to claude and pi,
+	// not the rejected value docs/product/agent-router.md's P1 list named.
+	for _, in := range []string{"codex", "CODEX", " codex "} {
+		got, err := ParseName(in)
+		if err != nil || got != NameCodex {
+			t.Errorf("ParseName(%q) = %q, %v; want codex, nil", in, got, err)
+		}
+	}
+	for _, in := range []string{"", "codexx", "cluade", "claude-code"} {
 		_, err := ParseName(in)
 		if err == nil {
 			t.Errorf("ParseName(%q) should be an error, not a silent default", in)
@@ -287,6 +386,7 @@ func TestGatewayEnvPath(t *testing.T) {
 	}{
 		{NamePi, "$HOME/.pi/gateway.env"},
 		{NameClaude, "$HOME/.claude/gateway.env"},
+		{NameCodex, "$HOME/.codex/gateway.env"},
 	}
 	for _, tc := range tests {
 		e, err := For(tc.engine, Options{Credential: GatewayCredential{Provider: "kafeido"}})
@@ -367,5 +467,106 @@ func TestVerifyScript_Pi(t *testing.T) {
 		if strings.Contains(script, banned) {
 			t.Errorf("pi verify script must never expand the token (%q):\n%s", banned, script)
 		}
+	}
+}
+
+// TestInstallScript_CodexIsNpmInstalledWithScriptsEnabled is the #2273 gap
+// made testable: codex's npm package (@openai/codex) needs its postinstall
+// script to fetch the platform-specific binary — the OPPOSITE of pi, whose
+// --ignore-scripts this must NOT copy, or the install would leave a binary
+// that cannot run.
+func TestInstallScript_CodexIsNpmInstalledWithScriptsEnabled(t *testing.T) {
+	e, err := For(NameCodex, Options{Credential: SecretCredential{Name: "CODEX_API_KEY"}})
+	if err != nil {
+		t.Fatalf("For(codex): %v", err)
+	}
+	script := e.InstallScript(InstallOptions{Version: "0.50.0"})
+
+	for _, want := range []string{
+		"@openai/codex@0.50.0", // the pin itself
+		"npm config set prefix",
+		"$HOME/.local",
+		"16", // the Node floor (lower than pi's)
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("codex install script is missing %q:\n%s", want, script)
+		}
+	}
+	for _, banned := range []string{
+		"--ignore-scripts", // pi's flag — codex's postinstall MUST run
+		"sudo",
+		"/dev/tty",
+	} {
+		if strings.Contains(script, banned) {
+			t.Errorf("codex install script must not contain %q:\n%s", banned, script)
+		}
+	}
+}
+
+// TestInstallScript_CodexNoVersionOmitsThePin mirrors Claude's own installer
+// behaviour (empty Version = "whatever the installer considers current"),
+// not pi's hard pin — codex has no models.json-shaped fixture this repo owns
+// that an unpinned install could silently invalidate.
+func TestInstallScript_CodexNoVersionOmitsThePin(t *testing.T) {
+	e, err := For(NameCodex, Options{Credential: SecretCredential{Name: "CODEX_API_KEY"}})
+	if err != nil {
+		t.Fatalf("For(codex): %v", err)
+	}
+	script := e.InstallScript(InstallOptions{})
+	if strings.Contains(script, "@openai/codex@") {
+		t.Errorf("an empty Version must not pin a version:\n%s", script)
+	}
+	if !strings.Contains(script, "npm install -g --no-fund --no-audit '@openai/codex'") {
+		t.Errorf("unpinned install should install the bare package name:\n%s", script)
+	}
+}
+
+// TestVerifyScript_Codex covers the #2273 AC's verification step: `codex
+// exec --json "print the current working directory"`, run on whatever
+// credential the box now has, never expanding it.
+func TestVerifyScript_Codex(t *testing.T) {
+	e, err := For(NameCodex, Options{Credential: GatewayCredential{Provider: "openai"}})
+	if err != nil {
+		t.Fatalf("For(codex): %v", err)
+	}
+	script := e.VerifyScript()
+	for _, want := range []string{
+		"--version",
+		"codex exec --json",
+		"print the current working directory",
+		"$HOME/.codex/gateway.env",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("codex verify script is missing %q:\n%s", want, script)
+		}
+	}
+	for _, banned := range []string{
+		"$CONTAINARIUM_GATEWAY_TOKEN\"",
+		"echo $CONTAINARIUM_GATEWAY_TOKEN",
+		"cat \"$HOME/.codex/gateway.env\"",
+	} {
+		if strings.Contains(script, banned) {
+			t.Errorf("codex verify script must never expand the token (%q):\n%s", banned, script)
+		}
+	}
+}
+
+// TestVerifyScript_Codex_SecretReportsSourcesByNameOnly pins the secret-path
+// branch: the delivery files and codex's own auth.json are reported by NAME,
+// matching the "report credential source by name only, never a value" rule
+// #2273 carries over from the Claude path (#2030).
+func TestVerifyScript_Codex_SecretReportsSourcesByNameOnly(t *testing.T) {
+	e, err := For(NameCodex, Options{Credential: SecretCredential{Name: "CODEX_API_KEY"}})
+	if err != nil {
+		t.Fatalf("For(codex): %v", err)
+	}
+	script := e.VerifyScript()
+	for _, want := range []string{"secrets.env", "/run/secrets", "auth.json", "codex login"} {
+		if !strings.Contains(script, want) {
+			t.Errorf("codex verify script (secret) missing %q:\n%s", want, script)
+		}
+	}
+	if strings.Contains(script, "$CODEX_API_KEY") || strings.Contains(script, "$OPENAI_API_KEY") {
+		t.Errorf("codex verify script must never expand a key value:\n%s", script)
 	}
 }

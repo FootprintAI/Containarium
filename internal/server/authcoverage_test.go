@@ -90,6 +90,7 @@ var registeredServices = []rpcSurface{
 	{pb.BackupService_ServiceDesc, "BackupServer"},
 	{pb.VolumeService_ServiceDesc, "VolumeServer"},
 	{pb.SandboxService_ServiceDesc, "SandboxServer"},
+	{pb.AnonymousBoxService_ServiceDesc, "AnonymousBoxServer"},
 	{pb.ClusterService_ServiceDesc, "ClusterServer"},
 	{pb.KmsService_ServiceDesc, "KmsServer"},
 	{pb.TrafficService_ServiceDesc, "TrafficServer"},

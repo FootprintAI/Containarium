@@ -170,6 +170,56 @@ func TestSetTrackerConnection_RejectsNonBrokerSecret(t *testing.T) {
 	}
 }
 
+// TestSetTrackerConnection_AcceptsNamesThatLookLikeRouteVerbs pins the
+// outcome of nesting the data-plane REST routes under the connection
+// (/v1/tracker/connections/{username}/{connection}/<verb>, #2035): a verb
+// word never occupies a wildcard position any more, so no connection name or
+// username is reserved. These names were rejected before; they must reach the
+// store now. Reachability over REST is proven against the real grpc-gateway
+// mux in internal/gateway/tracker_route_ambiguity_test.go.
+func TestSetTrackerConnection_AcceptsNamesThatLookLikeRouteVerbs(t *testing.T) {
+	cases := []struct{ user, name string }{
+		{"tracker-rpc-verbnames", "issues"},
+		{"tracker-rpc-verbnames", "changes"},
+		{"tracker-rpc-verbnames", "routes"},
+		{"tracker-rpc-verbnames", "dispatch"},
+		{"tracker-rpc-verbnames", "dispatches"},
+		{"tracker-rpc-verbnames", "status"},
+		{"tracker-rpc-verbnames", "connections"},
+		{"tracker-rpc-verbnames", "default"},
+		{"connections", "default"}, // a username equal to the path's literal segment
+	}
+	secretsStore := mustTestSecretsStore(t)
+	trackerStore := mustTestTrackerStore(t)
+	s := &ContainerServer{secretsStore: secretsStore, trackerStore: trackerStore}
+
+	seeded := map[string]bool{}
+	for _, tc := range cases {
+		if !seeded[tc.user] {
+			secretCtx := kmsKeyTestCtx(tc.user, "member", "secrets:write")
+			if _, err := s.SetSecret(secretCtx, &pb.SetSecretRequest{
+				Username: tc.user, Name: "GH_TOKEN", Value: "ghp_x",
+				DeliveryMode: pb.SecretDelivery_SECRET_DELIVERY_BROKER_ONLY,
+			}); err != nil {
+				t.Fatalf("SetSecret (broker-only) for %q: %v", tc.user, err)
+			}
+			seeded[tc.user] = true
+		}
+		t.Run(tc.user+"/"+tc.name, func(t *testing.T) {
+			ctx := kmsKeyTestCtx(tc.user, "member", "tracker:admin")
+			if _, err := s.SetTrackerConnection(ctx, &pb.SetTrackerConnectionRequest{
+				Username:         tc.user,
+				Name:             tc.name,
+				Provider:         pb.TrackerProvider_TRACKER_PROVIDER_GITHUB,
+				Project:          "acme/widgets",
+				CredentialSecret: "GH_TOKEN",
+			}); err != nil {
+				t.Fatalf("SetTrackerConnection(user=%q, name=%q): %v", tc.user, tc.name, err)
+			}
+		})
+	}
+}
+
 // TestTrackerConnection_CRUDRoundTrip is the happy path end to end
 // through the RPC layer: a broker-only secret, then Set / Get / List /
 // Delete on the connection that references it.

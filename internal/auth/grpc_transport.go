@@ -43,7 +43,7 @@ const gatewayForwardMDKey = "x-containarium-gateway-forward"
 // identity or trust markers. No untrusted party may set them.
 var ReservedIdentityMetadataKeys = []string{
 	MDKeyUsername, MDKeyRoles, MDKeyScopes, MDKeyAct, MDKeyJTI,
-	MDKeyRunID, MDKeyTrackerConn, gatewayForwardMDKey,
+	MDKeyRunID, MDKeyTrackerConn, MDKeyRunTenant, gatewayForwardMDKey,
 }
 
 // IsReservedIdentityMetadataKey reports whether key (any case) is reserved.

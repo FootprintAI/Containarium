@@ -80,7 +80,7 @@ Examples:
 		case loginCmd, logoutCmd, whoamiCmd, configGetTokenCmd:
 			return nil
 		}
-		serverAddr = resolveServerAddr(serverAddr)
+		serverAddr = canonicalServerAddr(resolveServerAddr(serverAddr))
 		if authToken == "" {
 			authToken = resolveAuthToken(serverAddr)
 		}

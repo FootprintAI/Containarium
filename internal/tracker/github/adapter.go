@@ -10,7 +10,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/footprintai/containarium/internal/tracker"
 )
@@ -22,18 +21,24 @@ const defaultAPIBase = "https://api.github.com"
 
 // Adapter talks to the GitHub REST API.
 type Adapter struct {
-	http *http.Client
+	http   *http.Client
+	create *http.Client
 }
 
 var _ tracker.CredentialDescriber = (*Adapter)(nil)
 
-// New returns an Adapter. A nil httpClient gets a sensible default
-// timeout; pass your own for custom transport (tracing, retries).
+// New returns an Adapter. A nil httpClient gets tracker.DefaultHTTPTimeout,
+// which is never shorter than tracker.UpstreamCreateTimeout (#2045); pass
+// your own for custom transport (tracing, retries).
 func New(httpClient *http.Client) *Adapter {
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 10 * time.Second}
+		return &Adapter{
+			http:   tracker.WithSameOriginRedirects(&http.Client{Timeout: tracker.DefaultHTTPTimeout}),
+			create: tracker.WithSameOriginRedirects(&http.Client{Timeout: tracker.UpstreamCreateTimeout}),
+		}
 	}
-	return &Adapter{http: httpClient}
+	client := tracker.WithSameOriginRedirects(httpClient)
+	return &Adapter{http: client, create: client}
 }
 
 // DescribeCredential reports what the credential can do, per the design
@@ -105,7 +110,7 @@ func (a *Adapter) describeViaUser(ctx context.Context, base, token string) ([]st
 
 	resp, err := a.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", tracker.ErrUnreachable, err)
+		return nil, fmt.Errorf("%w: %w", tracker.ErrUnreachable, err)
 	}
 	defer resp.Body.Close()
 
@@ -130,7 +135,7 @@ func (a *Adapter) probeRateLimit(ctx context.Context, base, token string) error 
 
 	resp, err := a.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("%w: %v", tracker.ErrUnreachable, err)
+		return fmt.Errorf("%w: %w", tracker.ErrUnreachable, err)
 	}
 	defer resp.Body.Close()
 

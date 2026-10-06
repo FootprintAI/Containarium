@@ -63,7 +63,11 @@ RUN mkdir -p /out/plugins \
     && ( cd cmd/sshpiperd && go build -trimpath -ldflags "-s -w -X main.mainver=${SSHPIPER_VERSION}" -o /out/sshpiperd . )
 
 FROM debian:bookworm-slim
+# apt-get upgrade: picks up security patches that shipped since
+# debian:bookworm-slim's last rebuild (e.g. libpcre2 deb12u2, which failed the
+# release Trivy gate on v0.99.0). Same fix as images/agent-box/Dockerfile.
 RUN apt-get update \
+    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 1000 --shell /usr/sbin/nologin sshpiper
