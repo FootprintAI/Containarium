@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ListBackends` now reports a peer backend's spare-capacity advertisement (`headroom`) and capability profile
+  (`capability_profile`), not only the local backend's (#2135). Both ride the `GetSystemInfo` response the fan-out
+  already fetches from each healthy peer, so there is no extra forwarded call; each stays null when the peer advertises
+  or profiled nothing, could not be reached, is unhealthy, or runs a daemon that predates the fields.
+
 - `containarium doctor` (and the posture printed by `pool join` / `cloud enroll`, and the posture checks reported to
   the cloud) gains the non-blocking posture check **container bridge blocked from cloud metadata endpoint (rule + boot
   unit)**. It fails when the iptables FORWARD rule from `incusbr0`'s subnet to `169.254.169.254` is not in the kernel,

@@ -3143,6 +3143,12 @@ func (s *ContainerServer) GetSystemInfo(ctx context.Context, req *pb.GetSystemIn
 		info.Storage = backendStorageFromPool("default", driver)
 	}
 
+	// This backend's spare-capacity advertisement (#680) and capability
+	// profile (#681), so a peer's GetSystemInfo carries them to the
+	// ListBackends fan-out with no extra forwarded call (#2135). Both stay
+	// null when absent, same as on the local BackendInfo.
+	info.Headroom, info.CapabilityProfile = s.capacitySignals(hostStateFrom(containers, sysResources, time.Now()))
+
 	// Populate GPU info
 	for _, gpu := range sysResources.GPUs {
 		info.Gpus = append(info.Gpus, &pb.GPUInfo{
@@ -3247,19 +3253,9 @@ func (s *ContainerServer) ListBackends(ctx context.Context, _ *pb.ListBackendsRe
 			localInfo = s.probeLocalSystemInfo(ctx)
 		}()
 	}
-	// Surface the local backend's spare-capacity advertisement (#680). Only
-	// attach when something is actively advertised — an unadvertised backend
-	// leaves headroom null so the control plane can tell "not offering" from
-	// "offering zero".
-	if h := s.capStore().Current(s.hostStateSnapshot()); h.Advertised {
-		local.Headroom = headroomToProto(h)
-	}
-	// Surface the local backend's last-recorded capability profile (#681).
-	// Null until ProfileBackend has run, so the control plane can tell
-	// "unprofiled" from "profiled CPU-only".
-	if p, ok := s.capabStore().Current(); ok {
-		local.CapabilityProfile = profileToProto(p)
-	}
+	// Surface the local backend's spare-capacity advertisement (#680) and
+	// last-recorded capability profile (#681); see capacitySignals.
+	local.Headroom, local.CapabilityProfile = s.capacitySignals(s.hostStateSnapshot())
 	backends = append(backends, local)
 
 	// Peer backends. Forward GetSystemInfo to each healthy peer using the
@@ -3309,6 +3305,11 @@ func (s *ContainerServer) ListBackends(ctx context.Context, _ *pb.ListBackendsRe
 			// Peers report their own pool's driver + isolation over the same
 			// fan-out (#1209).
 			pi.Storage = peerResp.Info.Storage
+			// A peer's spare-capacity advertisement and capability profile
+			// ride the same SystemInfo (#2135); a peer that advertises or
+			// profiled nothing — or predates these fields — leaves them null.
+			pi.Headroom = peerResp.Info.Headroom
+			pi.CapabilityProfile = peerResp.Info.CapabilityProfile
 		}(peer, pi)
 	}
 	wg.Wait()
@@ -3423,19 +3424,29 @@ func (s *ContainerServer) StopWorkload(ctx context.Context, username string, for
 // missing manager or Incus call yields a zero-resource snapshot rather than an
 // error, so advertise/withdraw still work on an unwired server.
 func (s *ContainerServer) hostStateSnapshot() capacity.HostState {
-	st := capacity.HostState{Now: time.Now()}
 	if s.manager == nil {
-		return st
+		return capacity.HostState{Now: time.Now()}
 	}
-	if containers, err := s.manager.List(); err == nil {
-		st.Containers = containers
-	}
+	containers, _ := s.manager.List()
 	client, err := incus.New()
 	if err != nil {
-		return st
+		return hostStateFrom(containers, nil, time.Now())
 	}
 	res, err := client.GetSystemResources()
-	if err != nil || res == nil {
+	if err != nil {
+		res = nil
+	}
+	return hostStateFrom(containers, res, time.Now())
+}
+
+// hostStateFrom builds the headroom computation's host snapshot from an
+// already-fetched container list and Incus resource read, so GetSystemInfo
+// can compute its headroom (#2135) from the figures it just gathered instead
+// of re-querying Incus. A nil res yields zero resources, same as a failed
+// read in hostStateSnapshot.
+func hostStateFrom(containers []incus.ContainerInfo, res *incus.SystemResources, now time.Time) capacity.HostState {
+	st := capacity.HostState{Now: now, Containers: containers}
+	if res == nil {
 		return st
 	}
 	st.AvailableMemoryBytes = res.TotalMemoryBytes - res.UsedMemoryBytes
@@ -3470,6 +3481,25 @@ func policyFromProto(p *pb.CapacityPolicy) capacity.Policy {
 		ExcludedWorkloadClasses: p.GetExcludedWorkloadClasses(),
 		ReserveFraction:         p.GetReserveFraction(),
 	}
+}
+
+// capacitySignals returns this backend's spare-capacity advertisement (#680)
+// and last-recorded capability profile (#681) on the wire types. Each is nil
+// when absent: headroom only when something is actively advertised, so the
+// control plane can tell "not offering" from "offering zero", and the
+// profile only once ProfileBackend has run, so "unprofiled" stays distinct
+// from "profiled CPU-only". Shared by ListBackends' local entry and
+// GetSystemInfo, which carries both to a peer's ListBackends (#2135).
+func (s *ContainerServer) capacitySignals(st capacity.HostState) (*pb.CapacityHeadroom, *pb.CapabilityProfile) {
+	var headroom *pb.CapacityHeadroom
+	if h := s.capStore().Current(st); h.Advertised {
+		headroom = headroomToProto(h)
+	}
+	var profile *pb.CapabilityProfile
+	if p, ok := s.capabStore().Current(); ok {
+		profile = profileToProto(p)
+	}
+	return headroom, profile
 }
 
 // headroomToProto maps the internal headroom onto the wire type.
