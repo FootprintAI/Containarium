@@ -2,56 +2,43 @@ package guardrail
 
 import (
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"unicode/utf8"
 
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // LoadUnits turns a directory into text units, one per regular file, keyed
-// by slash-separated relative path. A file that is not valid UTF-8 is not
-// repaired and not silently skipped: it becomes a gap, which fails the gate,
-// because a lenient decode would hand the engine quietly corrupted text.
+// by slash-separated relative path (symlinks and other non-regular files
+// are skipped, as in SubjectDigest, so the two agree on what the subject
+// is). A file that is not valid UTF-8 is not repaired and not silently
+// skipped: it becomes a gap, which fails the gate, because a lenient decode
+// would hand the engine quietly corrupted text.
 func LoadUnits(dir string) ([]*pb.GuardrailTextUnit, []*pb.GuardrailScanGap, error) {
-	var units []*pb.GuardrailTextUnit
-	var gaps []*pb.GuardrailScanGap
-	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			return nil
-		}
-		info, err := os.Stat(p)
-		if err != nil {
-			return err
-		}
-		if !info.Mode().IsRegular() {
-			return nil
-		}
-		rel, err := filepath.Rel(dir, p)
-		if err != nil {
-			return err
-		}
-		id := filepath.ToSlash(rel)
-		b, err := os.ReadFile(p)
-		if err != nil {
-			return err
-		}
-		if !utf8.Valid(b) {
-			gaps = append(gaps, &pb.GuardrailScanGap{UnitId: id, Detail: "not valid UTF-8; not scanned"})
-			return nil
-		}
-		units = append(units, &pb.GuardrailTextUnit{UnitId: id, Text: string(b)})
-		return nil
-	})
+	root, err := os.OpenRoot(dir)
 	if err != nil {
 		return nil, nil, err
 	}
-	sort.Slice(units, func(i, j int) bool { return units[i].UnitId < units[j].UnitId })
+	defer func() { _ = root.Close() }()
+
+	paths, err := regularFiles(root)
+	if err != nil {
+		return nil, nil, err
+	}
+	var units []*pb.GuardrailTextUnit
+	var gaps []*pb.GuardrailScanGap
+	for _, id := range paths {
+		b, err := root.ReadFile(filepath.FromSlash(id))
+		if err != nil {
+			return nil, nil, err
+		}
+		if !utf8.Valid(b) {
+			gaps = append(gaps, &pb.GuardrailScanGap{UnitId: id, Detail: "not valid UTF-8; not scanned"})
+			continue
+		}
+		units = append(units, &pb.GuardrailTextUnit{UnitId: id, Text: string(b)})
+	}
 	return units, gaps, nil
 }
 

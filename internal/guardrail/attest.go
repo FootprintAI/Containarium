@@ -22,40 +22,29 @@ import (
 
 // SubjectDigest is the canonical SHA-256 of a directory: one line per
 // regular file, "<slash-separated relative path>\n<sha256 of content>\n",
-// in sorted path order, hashed together. Symlinked directories are not
-// followed; a symlink to a file hashes the file. It depends on content and
+// in sorted path order, hashed together. Symlinks are not followed — they
+// are skipped, like every non-regular file — so a tree cannot pull bytes
+// from outside itself into its own digest. It depends on content and
 // names only, never on mtimes or modes, so the same tree produced on two
 // machines digests the same.
+//
+// Walks and opens go through os.Root (as internal/transfer does), so every
+// open is kernel-enforced to stay inside dir even if the tree changes
+// under us between the walk and the open.
 func SubjectDigest(dir string) (string, error) {
-	var paths []string
-	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			return nil
-		}
-		info, err := os.Stat(p) // follows a file symlink; a dangling one errors
-		if err != nil {
-			return err
-		}
-		if !info.Mode().IsRegular() {
-			return nil
-		}
-		rel, err := filepath.Rel(dir, p)
-		if err != nil {
-			return err
-		}
-		paths = append(paths, filepath.ToSlash(rel))
-		return nil
-	})
+	root, err := os.OpenRoot(dir)
 	if err != nil {
 		return "", err
 	}
-	sort.Strings(paths)
+	defer func() { _ = root.Close() }()
+
+	paths, err := regularFiles(root)
+	if err != nil {
+		return "", err
+	}
 	h := sha256.New()
 	for _, rel := range paths {
-		f, err := os.Open(filepath.Join(dir, filepath.FromSlash(rel)))
+		f, err := root.Open(filepath.FromSlash(rel))
 		if err != nil {
 			return "", err
 		}
@@ -68,6 +57,33 @@ func SubjectDigest(dir string) (string, error) {
 		fmt.Fprintf(h, "%s\n%s\n", rel, hex.EncodeToString(fh.Sum(nil)))
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// regularFiles lists the regular files under root as sorted slash paths.
+func regularFiles(root *os.Root) ([]string, error) {
+	var paths []string
+	err := fs.WalkDir(root.FS(), ".", func(rel string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		paths = append(paths, filepath.ToSlash(rel))
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(paths)
+	return paths, nil
 }
 
 // PolicyHash is the SHA-256 of the policy's deterministic proto encoding.
@@ -195,7 +211,7 @@ func LoadPublicKey(path string) (ed25519.PublicKey, error) {
 }
 
 func readKeyFile(path string) ([]byte, error) {
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) // #nosec G304 -- operator-named key file, read on the operator's own machine
 	if err != nil {
 		return nil, err
 	}

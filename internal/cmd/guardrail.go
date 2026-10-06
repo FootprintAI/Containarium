@@ -244,7 +244,7 @@ func runGuardrailApply(cmd *cobra.Command, args []string) error {
 	}
 	policy := guardrail.DefaultPolicy()
 	if guardrailPolicyFile != "" {
-		b, err := os.ReadFile(guardrailPolicyFile)
+		b, err := os.ReadFile(guardrailPolicyFile) // #nosec G304 -- operator-supplied --policy path; CLI runs as the operator's UID
 		if err != nil {
 			return err
 		}
@@ -353,7 +353,7 @@ func runGuardrailVerify(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	b, err := os.ReadFile(guardrailAttestFile)
+	b, err := os.ReadFile(guardrailAttestFile) // #nosec G304 -- operator-supplied --attestation path; CLI runs as the operator's UID
 	if err != nil {
 		return err
 	}
@@ -383,7 +383,7 @@ func runGuardrailKeygen(cmd *cobra.Command, _ []string) error {
 // 0600, and says so: the key is what makes tokens stable across runs, so
 // losing it means the next run tokenizes the same values differently.
 func loadOrCreateRedactionKey(cmd *cobra.Command, path string) ([]byte, error) {
-	if b, err := os.ReadFile(path); err == nil {
+	if b, err := os.ReadFile(path); err == nil { // #nosec G304 -- operator-supplied --redaction-key path; CLI runs as the operator's UID
 		key, err := hex.DecodeString(strings.TrimSpace(string(b)))
 		if err != nil || len(key) != 32 {
 			return nil, fmt.Errorf("--redaction-key %s: want 32 bytes as hex", path)
