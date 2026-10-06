@@ -1,0 +1,226 @@
+name: Tenant network guard e2e
+
+# Proves the two Incus NIC-ACL guards for real (#2349, design
+# docs/architecture/tenant-network-guard.md): a real daemon at its
+# DEFAULTS (no CONTAINARIUM_*_GUARD set — both guards on) on a real
+# Incus/ZFS backend, three real tenant containers (two of one tenant, one
+# of another), and the four host-run probe scripts:
+#
+#   scripts/tenant-tenant-network-isolation-e2e.sh   tenant <-> tenant DENIED (both ways)
+#   scripts/tenant-guard-legit-flows-e2e.sh          same-tenant / host / DHCP still work, drops logged
+#   scripts/tenant-core-infra-network-isolation-e2e.sh  tenant -> core internals DENIED (skips with no core LXCs)
+#   scripts/core-guard-legit-flows-e2e.sh            core flows still work          (skips with no core LXCs)
+#
+# The guards need Incus's nftables firewall driver. A stock runner has
+# Docker's iptables rules installed, which makes Incus fall back to
+# xtables, so the lane removes them BEFORE Incus starts and then asserts
+# the driver it got — a lane that silently ran on xtables would prove
+# nothing. --standalone skips the core LXCs, so the two core scripts
+# exit 0 with "nothing to test" here; they stay in the lane so a future
+# lane that provisions core LXCs gets them for free.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'internal/tenantguard/**'
+      - 'internal/coreguard/**'
+      - 'internal/nicguard/**'
+      - 'pkg/core/container/nic_guard.go'
+      - 'pkg/core/incus/acl.go'
+      - 'pkg/core/incus/nic_device.go'
+      - 'scripts/tenant-tenant-network-isolation-e2e.sh'
+      - 'scripts/tenant-guard-legit-flows-e2e.sh'
+      - 'scripts/tenant-core-infra-network-isolation-e2e.sh'
+      - 'scripts/core-guard-legit-flows-e2e.sh'
+      - '.github/workflows/tenant-guard-e2e.yml'
+  # No `branches:` filter — a base filter leaves stacked PRs with no checks
+  # at all (#1215, same reasoning incus-create.yml documents).
+  pull_request:
+    paths:
+      - 'internal/tenantguard/**'
+      - 'internal/coreguard/**'
+      - 'internal/nicguard/**'
+      - 'pkg/core/container/nic_guard.go'
+      - 'pkg/core/incus/acl.go'
+      - 'pkg/core/incus/nic_device.go'
+      - 'scripts/tenant-tenant-network-isolation-e2e.sh'
+      - 'scripts/tenant-guard-legit-flows-e2e.sh'
+      - 'scripts/tenant-core-infra-network-isolation-e2e.sh'
+      - 'scripts/core-guard-legit-flows-e2e.sh'
+      - '.github/workflows/tenant-guard-e2e.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tenant-guard-e2e:
+    name: Tenant + core NIC-ACL guards (real Incus, daemon at defaults)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    env:
+      CONTAINARIUM_LANE_IMAGE: lane-box
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Free disk space
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost || true
+          df -h /
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Install ZFS
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends zfsutils-linux
+          if ! sudo modprobe zfs 2>/dev/null; then
+            sudo apt-get install -y "linux-modules-extra-$(uname -r)"
+            sudo modprobe zfs
+          fi
+          test -e /dev/zfs || { echo "::error::/dev/zfs absent"; exit 1; }
+
+      - name: Create the ZFS pool the daemon detects
+        run: |
+          set -euo pipefail
+          sudo truncate -s 20G /mnt/incus-zfs.img
+          sudo zpool create -f -m /mnt/incus-local incus-local /mnt/incus-zfs.img
+          sudo zfs create incus-local/containers
+
+      # Incus picks xtables when iptables already holds rules (Docker's on a
+      # stock runner), and NIC ACLs are nftables-only. Clear them first.
+      - name: Make Incus choose the nftables firewall driver
+        run: |
+          set -euo pipefail
+          sudo systemctl stop docker.socket docker.service containerd.service 2>/dev/null || true
+          for t in filter nat mangle raw; do
+            sudo iptables -t $t -F || true; sudo iptables -t $t -X || true
+            sudo ip6tables -t $t -F || true; sudo ip6tables -t $t -X || true
+          done
+          sudo iptables -P FORWARD ACCEPT
+          sudo apt-get install -y --no-install-recommends nftables
+          sudo nft list ruleset >/dev/null
+
+      - name: Install Incus
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y --no-install-recommends incus dnsmasq-base
+          sudo incus version
+
+      - name: Make the runner able to host containers
+        run: |
+          set -euo pipefail
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          grep -q '^root:' /etc/subuid || echo 'root:1000000:1000000000' | sudo tee -a /etc/subuid
+          grep -q '^root:' /etc/subgid || echo 'root:1000000:1000000000' | sudo tee -a /etc/subgid
+
+      - name: Assert the firewall driver is nftables (fail, don't skip)
+        run: |
+          set -euo pipefail
+          test -S /var/lib/incus/unix.socket || { echo "::error::no Incus socket"; exit 1; }
+          driver=$(sudo incus info | awk '/^  firewall:/ {print $2}')
+          echo "incus firewall driver: $driver"
+          [ "$driver" = "nftables" ] || {
+            echo "::error::Incus chose '$driver'; NIC ACLs need nftables — the guard would report ErrUnsupportedFirewall and this lane would prove nothing"
+            sudo iptables -S | head -20 || true
+            exit 1
+          }
+
+      - name: Pre-pull the box image
+        run: |
+          set -euo pipefail
+          pulled=""
+          for attempt in 1 2 3 4 5; do
+            if sudo incus image copy images:ubuntu/24.04 local: --alias lane-box >/dev/null 2>&1; then pulled=yes; break; fi
+            echo "image pull attempt $attempt failed; retrying in 15s"; sleep 15
+          done
+          [ -n "$pulled" ] || { echo "::error::could not pull images:ubuntu/24.04 — the mirror, not the code under test"; exit 1; }
+
+      - name: Build the daemon
+        run: |
+          set -euo pipefail
+          sudo -E env "PATH=$PATH" go build -o /tmp/containarium ./cmd/containariumd
+
+      # DEFAULTS on purpose: no CONTAINARIUM_TENANT_GUARD / CORE_GUARD in
+      # the environment. This is the posture an upgraded host gets.
+      - name: Start the daemon at its defaults (both guards on)
+        env:
+          JWT_SECRET: lane-only-secret-not-a-credential
+        run: |
+          set -euo pipefail
+          env | grep -q '^CONTAINARIUM_.*GUARD=' && { echo "::error::a guard env var leaked into the lane; the point is the default"; exit 1; } || true
+          sudo -E env "PATH=$PATH" /tmp/containarium daemon --standalone --rest \
+              --jwt-secret "$JWT_SECRET" > /tmp/daemon.log 2>&1 &
+          TOKEN=$(/tmp/containarium token generate --username admin --roles admin \
+                    --expiry 24h --secret "$JWT_SECRET" | tr -d " \t" | grep -E "^ey" | head -1)
+          test -n "$TOKEN" || { echo "::error::could not mint a token"; exit 1; }
+          echo "CONTAINARIUM_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+          echo "CONTAINARIUM_HTTP=true" >> "$GITHUB_ENV"
+          echo "SERVER=http://localhost:8080" >> "$GITHUB_ENV"
+          ready=""
+          for i in $(seq 1 60); do
+            if CONTAINARIUM_TOKEN="$TOKEN" CONTAINARIUM_HTTP=true /tmp/containarium --server http://localhost:8080 list >/tmp/probe.log 2>&1; then ready=yes; break; fi
+            sleep 5
+          done
+          [ -n "$ready" ] || { echo "::error::the daemon never answered the CLI"; cat /tmp/probe.log; tail -60 /tmp/daemon.log; exit 1; }
+          grep -E "\[tenantguard\]|\[coreguard\]" /tmp/daemon.log || true
+          grep -q "\[tenantguard\] started" /tmp/daemon.log || { echo "::error::tenant guard did not start at the defaults"; tail -60 /tmp/daemon.log; exit 1; }
+
+      # Two tenants: alice has two boxes (alice-container by name convention
+      # plus a second box labelled with alice's org id), bob has one.
+      - name: Create three tenant containers (alice x2, bob x1)
+        run: |
+          set -euo pipefail
+          for T in alice bob; do
+            /tmp/containarium --server "$SERVER" create "$T" --no-ssh-key --podman=false --disk 5GB --image "$CONTAINARIUM_LANE_IMAGE"
+          done
+          /tmp/containarium --server "$SERVER" create alice2 --no-ssh-key --podman=false --disk 5GB --image "$CONTAINARIUM_LANE_IMAGE" \
+            --labels cloud_org_id=alice
+          /tmp/containarium --server "$SERVER" list
+          # Give the reconciler one event-driven pass to converge sibling tables.
+          sleep 15
+          for c in alice-container alice2-container bob-container; do
+            echo "$c security.acls=$(sudo incus config device get $c eth0 security.acls 2>/dev/null || echo '<unset>')"
+          done
+
+      - name: tenant <-> tenant must be denied
+        run: sudo bash scripts/tenant-tenant-network-isolation-e2e.sh alice-container bob-container
+
+      - name: legitimate flows must survive, drops must be logged
+        run: sudo bash scripts/tenant-guard-legit-flows-e2e.sh alice-container alice2-container bob-container
+
+      - name: tenant -> core internals must be denied (no core LXCs under --standalone; exits 0 with nothing to test)
+        run: sudo bash scripts/tenant-core-infra-network-isolation-e2e.sh alice-container
+
+      - name: core flows must survive (no core LXCs under --standalone; every row SKIPs and the script passes)
+        run: sudo bash scripts/core-guard-legit-flows-e2e.sh alice-container
+
+      - name: Collect diagnostics on failure
+        if: failure()
+        run: |
+          echo "--- daemon log (last 200 lines) ---"; tail -200 /tmp/daemon.log || true
+          echo "--- incus list ---"; sudo incus list --format compact || true
+          echo "--- network acls ---"; sudo incus network acl list || true
+          for c in alice-container alice2-container bob-container; do
+            echo "--- $c eth0 ---"; sudo incus config device show $c | sed -n '/eth0:/,/^[^ ]/p' || true
+          done
+          echo "--- nft ruleset (incus) ---"; sudo nft list table inet incus 2>/dev/null | head -150 || true
+          sudo dmesg | tail -50 || true
+
+      - name: Tear down
+        if: always()
+        run: |
+          sudo pkill -f "containarium daemon" || true
+          for c in alice-container alice2-container bob-container; do sudo incus delete -f $c 2>/dev/null || true; done
