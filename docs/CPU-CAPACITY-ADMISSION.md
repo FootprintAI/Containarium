@@ -191,6 +191,37 @@ check. It reads the *effective* `cpu.weight` of both units' cgroups
 written but never applied, or a cgroup v1 host, shows red with the reason;
 like every posture check it is non-blocking.
 
+### The local health probe on a busy host (#2317)
+
+Placement refuses the local backend when it is not fit to take new work
+(`no healthy backend found in pool …`), and `containarium backends` / the
+`ListBackends` RPC report the same verdict as the local entry's `Healthy` field.
+On a host that carries many instances under CPU pressure, that verdict has to
+stay answerable: it asks Incus for its server info only (not a listing of every
+instance, so the cost does not grow with the tenant count), one probe is shared
+by all concurrent callers, and a single failed or slow sample does not flip the
+host to unhealthy while Incus has answered within the last 15 seconds. A daemon
+that stays unresponsive past that window is still reported unhealthy.
+
+- `CONTAINARIUM_LOCAL_HEALTH_TIMEOUT` (a Go duration, default `3s`, accepted
+  range `100ms`–`30s`) is how long a caller waits for the probe. Raise it on a
+  host that is routinely saturated; out-of-range values fall back to the default.
+- The daemon logs `[health] local backend unhealthy: …` and
+  `[health] local backend healthy again` only on a change, and
+  `[health] local backend probe slow: …` (at most once per 30s) when a probe that
+  succeeded used over a quarter of its budget — the early sign of saturation.
+
+### Reading the host's CPU count when Incus is slow (#2325)
+
+The gate needs the host's logical CPU count on every create. That number is hardware-static, so the daemon reads
+Incus' resource inventory once and then serves it from memory: a read shares one in-flight request, is bounded to a
+few seconds, and keeps serving the last good value (stale is fine for the CPU count, model, memory total and GPUs)
+if a later refresh fails or times out. Incus' hardware scan can stop answering on a saturated host; without this a
+create would have blocked on it before reaching the gate's own logging. If Incus has never answered, the gate falls
+back to the OS's logical CPU count (logged once per daemon run) so it keeps working instead of skipping itself. The
+same bounded read serves `GetSystemInfo`, `ListBackends` and the metrics collectors; used memory and disk are
+refreshed about every 10 seconds, and the load averages are always read fresh from `/proc/loadavg`.
+
 ## Semantics and scope
 
 - **Per-host, and it composes with pools.** The gate runs on the daemon that

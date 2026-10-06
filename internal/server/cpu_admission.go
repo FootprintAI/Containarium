@@ -3,6 +3,8 @@ package server
 import (
 	"fmt"
 	"log"
+	"runtime"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -253,16 +255,44 @@ func (s *ContainerServer) hostPhysicalCores() (float64, error) {
 	if s.hostCoresFn != nil {
 		return s.hostCoresFn()
 	}
-	client, err := incus.New()
-	if err != nil {
-		return 0, err
-	}
-	res, err := client.GetSystemResources()
-	if err != nil {
-		return 0, err
-	}
-	return float64(res.TotalCPUs), nil
+	return coresWithLocalFallback(func() (float64, error) {
+		client, err := incus.New()
+		if err != nil {
+			return 0, err
+		}
+		// Bounded and cached (#2325): after the first successful read this is served from memory, and a hung
+		// hardware scan returns an error within seconds instead of blocking the create.
+		res, err := client.GetSystemResources()
+		if err != nil {
+			return 0, err
+		}
+		return float64(res.TotalCPUs), nil
+	}, runtime.NumCPU)
 }
+
+// coresWithLocalFallback returns the Incus-reported logical CPU count, or, when Incus cannot answer (a hung hardware
+// scan on a saturated host, #2325) and nothing is cached, the OS's logical CPU count, so the admission gate keeps
+// working through the outage instead of blocking the create or silently skipping itself. The count is hardware-
+// static, so the OS value is the same number the gate would have read from Incus.
+func coresWithLocalFallback(read func() (float64, error), local func() int) (float64, error) {
+	cores, err := read()
+	if err == nil && cores > 0 {
+		return cores, nil
+	}
+	if n := local(); n > 0 {
+		cpuFallbackLogOnce.Do(func() {
+			log.Printf("[cpu-admission] Incus did not report the host's CPU count (%v); using the OS count (%d logical CPUs)", err, n)
+		})
+		return float64(n), nil
+	}
+	if err == nil {
+		err = fmt.Errorf("host reported no CPUs")
+	}
+	return 0, err
+}
+
+// cpuFallbackLogOnce keeps the fallback notice to one line per daemon run: it is a symptom, not a per-create event.
+var cpuFallbackLogOnce sync.Once
 
 // committedCoresExcluding sums the committed cores of every tenant container on
 // this host, skipping core-infra boxes (postgres/caddy — not tenant workload)

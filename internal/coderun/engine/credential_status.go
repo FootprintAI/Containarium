@@ -63,13 +63,15 @@ func ParseCredentialStatusSource(s string) (CredentialStatusSource, error) {
 // CredentialStatusScript renders a POSIX script that probes box state for
 // the named engine and echoes EXACTLY ONE line: one of the
 // CredentialStatusSource values above. ok=false means this engine has no
-// probe yet (Codex: #2273) — callers must refuse cleanly, never guess.
+// probe yet — callers must refuse cleanly, never guess.
 func CredentialStatusScript(n Name) (script string, ok bool) {
 	switch n {
 	case NameClaude:
 		return claudeCredentialStatusScript, true
 	case NamePi:
 		return piCredentialStatusScript, true
+	case NameCodex:
+		return codexCredentialStatusScript, true
 	default:
 		return "", false
 	}

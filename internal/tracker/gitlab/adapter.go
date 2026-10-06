@@ -27,18 +27,24 @@ const apiDateLayout = "2006-01-02"
 
 // Adapter talks to the GitLab REST API v4.
 type Adapter struct {
-	http *http.Client
+	http   *http.Client
+	create *http.Client
 }
 
 var _ tracker.CredentialDescriber = (*Adapter)(nil)
 
-// New returns an Adapter. A nil httpClient gets a sensible default
-// timeout; pass your own for custom transport (tracing, retries).
+// New returns an Adapter. A nil httpClient gets tracker.DefaultHTTPTimeout,
+// which is never shorter than tracker.UpstreamCreateTimeout (#2045); pass
+// your own for custom transport (tracing, retries).
 func New(httpClient *http.Client) *Adapter {
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 10 * time.Second}
+		return &Adapter{
+			http:   tracker.WithSameOriginRedirects(&http.Client{Timeout: tracker.DefaultHTTPTimeout}),
+			create: tracker.WithSameOriginRedirects(&http.Client{Timeout: tracker.UpstreamCreateTimeout}),
+		}
 	}
-	return &Adapter{http: tracker.WithSameOriginRedirects(httpClient)}
+	client := tracker.WithSameOriginRedirects(httpClient)
+	return &Adapter{http: client, create: client}
 }
 
 // DescribeCredential reports what the credential can do, per the design

@@ -2893,9 +2893,10 @@ func (c *HTTPClient) DeleteTrackerRoute(req *pb.DeleteTrackerRouteRequest) (stri
 const TrackerDispatchTimeout = 10 * time.Minute
 
 // DispatchTrackerIssues runs one dispatcher tick via REST (#2022).
-// Requires tracker:admin and agents:run.
-func (c *HTTPClient) DispatchTrackerIssues(username, connection string) (*pb.DispatchTrackerIssuesResponse, error) {
-	body, err := protojson.Marshal(&pb.DispatchTrackerIssuesRequest{Username: username, Connection: connection})
+// Requires tracker:admin and agents:run. maxStarts bounds the runs the
+// tick starts (#2270); 0 is unlimited.
+func (c *HTTPClient) DispatchTrackerIssues(username, connection string, maxStarts int32) (*pb.DispatchTrackerIssuesResponse, error) {
+	body, err := protojson.Marshal(&pb.DispatchTrackerIssuesRequest{Username: username, Connection: connection, MaxStarts: maxStarts})
 	if err != nil {
 		return nil, fmt.Errorf("encode request: %w", err)
 	}

@@ -219,6 +219,10 @@ type AgentSkillServer struct {
 	// tracker_connection then fails closed rather than minting an
 	// unvalidated claim — see RunAgentSkill.
 	trackerConnections trackerConnectionChecker
+	// lineageReservations sweeps a run's leftover fan-out reservations
+	// when its lease ends (#2062). Nil on a daemon without the tracker
+	// store wired: there is nothing to sweep.
+	lineageReservations lineageReservationReleaser
 	// Run journal read path (#2096). runIndex remembers each run's member
 	// skills for TailRunLog; crewRunMembers resolves a crew run from its
 	// durable record (wired by NewCrewServer); execScript is a test seam over
@@ -237,6 +241,31 @@ type AgentSkillServer struct {
 	execScript       boxScriptFunc
 	runLogPoll       time.Duration
 	journalRetention time.Duration
+
+	// boxOps overrides the container manager for a run's seed, git fetch,
+	// workspace seed and lease wipe (#2161). Nil in production; see
+	// agentBoxOps.
+	boxOps agentBoxOps
+}
+
+// agentBoxOps is the part of *container.Manager that provisionSkillBoxWith's
+// seed / git-fetch / workspace steps and the run-lease wipe go through.
+// *container.Manager satisfies it. It exists as a test seam, like execScript
+// for TailRunLog: (*container.Manager).Exec only works against a real incus
+// client, so without it no unit test gets past the seed to the fetch.
+type agentBoxOps interface {
+	Exec(container string, cmd []string) error
+	FetchGitSource(container string, spec containerpkg.GitSourceSpec) (string, error)
+}
+
+var _ agentBoxOps = (*containerpkg.Manager)(nil)
+
+// agentBox returns the boxOps override, else the container manager.
+func (s *AgentSkillServer) agentBox() agentBoxOps {
+	if s.boxOps != nil {
+		return s.boxOps
+	}
+	return s.recipes.containers.manager
 }
 
 // trackerConnectionChecker is the one method of *tracker.Store
@@ -270,6 +299,20 @@ func (s *AgentSkillServer) SetPlatformMCPPort(port int) {
 // closed with FailedPrecondition.
 func (s *AgentSkillServer) SetTrackerConnections(c trackerConnectionChecker) {
 	s.trackerConnections = c
+}
+
+// lineageReservationReleaser is the one method of *tracker.Store
+// endRunLease needs (#2062), narrowed like trackerConnectionChecker.
+type lineageReservationReleaser interface {
+	ReleaseRunReservations(ctx context.Context, username, runID string) (int64, error)
+}
+
+// SetLineageReservations wires the tracker store so a run's leftover
+// fan-out reservations are swept when its lease ends (#2062). Nil (the
+// default) leaves them in place. As with SetRevocationStore, the caller
+// must pass a true nil, not a nil *tracker.Store.
+func (s *AgentSkillServer) SetLineageReservations(r lineageReservationReleaser) {
+	s.lineageReservations = r
 }
 
 // auditLogger is the one method of *audit.Store this server uses. Narrowed to
@@ -706,8 +749,12 @@ func (s *AgentSkillServer) beginSkillRunWith(ctx context.Context, req *pb.RunAge
 // boxWiper is the seam runlease.End wipes a run's seed files through.
 // *container.Manager already satisfies runlease.Wiper; nil when no container
 // manager is wired (then the wipe is skipped and reported as not done),
-// mirroring runInBoxAgent's own guard.
+// mirroring runInBoxAgent's own guard. The boxOps override, when set, wipes
+// too, so a test sees the same box the run was seeded into.
 func (s *AgentSkillServer) boxWiper() runlease.Wiper {
+	if s.boxOps != nil {
+		return s.boxOps
+	}
 	if s.recipes == nil || s.recipes.containers == nil || s.recipes.containers.manager == nil {
 		return nil
 	}
@@ -748,7 +795,44 @@ func (s *AgentSkillServer) endRunLease(ctx context.Context, lease runlease.Lease
 		log.Printf("[agent-skill] run %s: ending lease: %v", lease.RunID, err)
 	}
 
+	// After the revocations: with its credentials dead the run cannot
+	// start another create, so its leftover reservations protect nothing.
+	s.releaseLineageReservations(detached, lease.RunID)
+
 	s.auditRunLease(detached, "agent.run_lease_end", lease.RunID, runLeaseEndPayload(lease, reason, out))
+}
+
+// lineageReleaseBudget bounds the reservation sweep in endRunLease, for the
+// same reason auditWriteBudget bounds the audit write: it runs on a
+// detached context inside the RPC's deferred cleanup.
+const lineageReleaseBudget = 3 * time.Second
+
+// releaseLineageReservations sweeps the fan-out reservations runID still
+// holds (#2062): ones RecordChild could not clear, which would otherwise
+// count against the run's max_children_per_run forever. Scoped to the
+// run's own tenant — the authenticated subject the run was started for,
+// the same identity its token was minted for and auditRunLease records —
+// because a run id alone can be caller-chosen. With no subject nothing is
+// swept: over-counting is the fail-closed side. Best-effort: a failure is
+// logged and leaves the rows, which ListTrackerDispatches still shows.
+func (s *AgentSkillServer) releaseLineageReservations(ctx context.Context, runID string) {
+	if s.lineageReservations == nil || runID == "" {
+		return
+	}
+	username, _, ok := auth.SubjectFromGRPCContext(ctx)
+	if !ok || username == "" {
+		return
+	}
+	rctx, cancel := context.WithTimeout(ctx, lineageReleaseBudget)
+	defer cancel()
+	n, err := s.lineageReservations.ReleaseRunReservations(rctx, username, runID)
+	if err != nil {
+		log.Printf("[agent-skill] run %s: releasing lineage reservations: %v", runID, err)
+		return
+	}
+	if n > 0 {
+		log.Printf("[agent-skill] run %s: released %d stale lineage reservation(s) at lease end", runID, n)
+	}
 }
 
 // agentRuntimeReleaseTag returns the GitHub release tag the agent-runtime box
@@ -1137,7 +1221,7 @@ func (s *AgentSkillServer) provisionSkillBoxWith(ctx context.Context, skill *pb.
 	if mcpScript, ok := platformMCPSeedScript(seedDir, s.platformMCPPort, trackerConnection); ok {
 		seedScript += "\n" + mcpScript
 	}
-	if err := s.recipes.containers.manager.Exec(containerName,
+	if err := s.agentBox().Exec(containerName,
 		[]string{"bash", "-c", seedScript}); err != nil {
 		// Credentials exist but the box never received them (or received only
 		// part of the seed). RunAgentSkill's defer isn't armed yet — it arms on
@@ -1166,7 +1250,7 @@ func (s *AgentSkillServer) provisionSkillBoxWith(ctx context.Context, skill *pb.
 		// leaves a (credential-free, empty) workspace dir behind. Ending the
 		// lease below must target it for removal even on this failure path.
 		lease.Workspace = workspacePath
-		commit, ferr := s.recipes.containers.manager.FetchGitSource(containerName, containerpkg.GitSourceSpec{
+		commit, ferr := s.agentBox().FetchGitSource(containerName, containerpkg.GitSourceSpec{
 			Source:        gitSource,
 			Ref:           gitRef,
 			Credential:    gitCredential,
@@ -1196,7 +1280,7 @@ func (s *AgentSkillServer) provisionSkillBoxWith(ctx context.Context, skill *pb.
 				GitRef:    gitRef,
 				GitCommit: gitCommit,
 			})
-			if werr := s.recipes.containers.manager.Exec(containerName, []string{"bash", "-c", wsScript}); werr != nil {
+			if werr := s.agentBox().Exec(containerName, []string{"bash", "-c", wsScript}); werr != nil {
 				log.Printf("[agent-skill] workspace.json seed failed for %s (runtime won't see the workspace path via the contract file): %v", containerName, werr)
 			}
 		}

@@ -124,7 +124,7 @@ func (a *Adapter) CreateIssue(ctx context.Context, conn tracker.Conn, n tracker.
 	}{Title: n.Title, Body: n.Body, Labels: n.Labels}
 
 	var raw ghIssue
-	if err := a.do(ctx, http.MethodPost, fmt.Sprintf("%s/repos/%s/issues", base, conn.Project),
+	if err := a.doCreate(ctx, http.MethodPost, fmt.Sprintf("%s/repos/%s/issues", base, conn.Project),
 		conn.Credential, reqBody, &raw); err != nil {
 		return tracker.Issue{}, err
 	}

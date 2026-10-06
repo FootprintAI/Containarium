@@ -179,7 +179,9 @@ func trackerTools() []Tool {
 				"anything else is rejected before the tracker is touched. A run must name parent_number: the " +
 				"follow-up is linked to its parent, filed with agent:needs-approval unless the connection " +
 				"auto-chains, stamped with this run's identity, and bounded by the connection's depth and " +
-				"fan-out caps. Mirrors `containarium tracker issue create`.",
+				"fan-out caps. If the error starts with UPSTREAM_CREATE_OUTCOME_UNKNOWN, the tracker did not " +
+				"answer in time and the issue may already exist: do NOT retry blindly — check the tracker for it " +
+				"first (the attempt still counts against the fan-out cap). Mirrors `containarium tracker issue create`.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{

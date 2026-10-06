@@ -7,6 +7,115 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `containarium guardrail scan|apply|verify|keygen`: run a detection engine over a directory, redact findings into stable placeholder tokens, re-scan the result as a token-aware gate, and sign an ed25519 `GuardrailAttestation` a consumer verifies before using the data. New proto contract `GuardrailEngineService` (engines plug in behind it; the in-tree reference engine is regex-only and says so) and `internal/guardrail`. Design: `docs/architecture/guardrail.md`.
+- `ListBackends` now reports a peer backend's spare-capacity advertisement (`headroom`) and capability profile
+  (`capability_profile`), not only the local backend's (#2135). Both ride the `GetSystemInfo` response the fan-out
+  already fetches from each healthy peer, so there is no extra forwarded call; each stays null when the peer advertises
+  or profiled nothing, could not be reached, is unhealthy, or runs a daemon that predates the fields.
+
+- `containarium doctor` (and the posture printed by `pool join` / `cloud enroll`, and the posture checks reported to
+  the cloud) gains the non-blocking posture check **container bridge blocked from cloud metadata endpoint (rule + boot
+  unit)**. It fails when the iptables FORWARD rule from `incusbr0`'s subnet to `169.254.169.254` is not in the kernel,
+  or when `containarium-imds-block.service` is not installed and enabled to re-apply it after a reboot, and names the
+  fix. The existing **cloud metadata endpoint blocked** check dials from the host, whose own traffic the block
+  deliberately leaves alone, so it could not tell a host that lost its block from one that has it. `containarium
+  hostharden block-metadata` gains `--persist`, which also installs the boot unit, and `pool join` / `cloud enroll`
+  now apply the block before printing posture so the printed result reflects it. Closes #2298.
+
+### Fixed
+
+- An unrecognised `CONTAINARIUM_PRIVILEGED_PODMAN_POLICY` value no longer falls back to `all` (#2299). The value is
+  still trimmed and lower-cased, so `ALL`, `Admin-Only` and `disabled ` keep working, and unset or empty still means
+  `all`. A value that matches none of `all`, `admin-only` or `disabled` after that (`none`, `off`, `admin_only`, a
+  typo) now stops the daemon at boot with an error naming the variable, instead of silently granting every caller
+  privileged Podman.
+
+- `scripts/core-guard-legit-flows-e2e.sh` no longer reports logged drops as unlogged (#2323). The "each drop
+  must be logged" check piped `journalctl -k` into `grep -q` under `set -o pipefail`: `grep -q` exits at the
+  first match, `journalctl` takes a SIGPIPE writing the rest of the window, and `pipefail` turned that into a
+  FAIL even though the line was there. It only happened once the log window exceeded the ~4 KB pipe buffer, so
+  it was intermittent (it depends on how long the script ran and how noisy the log was). The window is now
+  captured first and the captured text is searched; a genuinely missing log line still fails the check.
+
+## [0.99.3] - 2026-10-05
+
+### Fixed
+
+- A hung Incus hardware scan no longer blocks container creation, `GetSystemInfo` or `ListBackends` (#2325).
+  Incus' `/1.0/resources` can stop answering on a saturated host, and the daemon read it through a client with no
+  timeout from the CPU admission gate (on every create, before the gate logged anything), `GetSystemInfo`,
+  `ListBackends` and the metrics collectors, so each blocked for as long as Incus did: boxes stayed `PENDING`,
+  `list_backends` timed out and the control plane reported the region as not serving. The read is now shared (one
+  in-flight request), bounded to a few seconds, and cached: the hardware-static values (CPU count, CPU model, memory
+  and disk totals, GPUs) are kept and served stale when a refresh fails, used memory and disk refresh about every 10
+  seconds, and the load averages are always read fresh. If Incus has never answered, the admission gate falls back to
+  the OS's logical CPU count. See `docs/CPU-CAPACITY-ADMISSION.md`.
+
+### Changed
+
+- Dependency update: `sigs.k8s.io/agent-sandbox` 1.0.4 -> 1.0.5 (#2316).
+
+## [0.99.2] - 2026-10-05
+
+### Added
+
+- **Backup freshness is now alertable per tenant** (#2294, #2304). New platform-group metric series
+  `containarium.backup.last_success_age_seconds`: seconds since each tenant's most recent stored backup,
+  recomputed at every export tick from the daemon's durable on-disk backup index (not cached state), so it
+  is correct immediately after a daemon restart. It closes the gap the host-local `systemctl is-failed`
+  check and `containarium.export.heartbeat` cannot see: a backup *schedule* silently breaking (a disabled
+  timer, a wrong hook path, a bad conf line) while the host and daemon stay healthy. This is the first
+  series in the export to carry a tenant identifier (a `username` label), a reviewed and test-locked
+  exception to the "no org/tenant identifiers" rule (see `docs/CLOUD-NATIVE-METRICS-EXPORT-DESIGN.md`). A
+  ready-to-use alert policy is in `docs/METRICS-EXPORT-DEADMAN-ALERT-RUNBOOK.md`.
+
+### Changed
+
+- Dependency updates: `sigs.k8s.io/controller-runtime`, `go.opentelemetry.io/proto/otlp`,
+  `cloud.google.com/go/compute`, `github.com/grpc-ecosystem/grpc-gateway/v2` and `google.golang.org/api`
+  (#2311, #2312, #2313, #2314, #2315).
+
+### Fixed
+
+- Tracker write audit rows now record the run id (#2043, #2168). The shared tracker-write audit helper
+  populates `AuditEntry.RunID` from the authenticated run claim, so `audit query --run-id <id>` finds the
+  comment, claim, label, issue-creation and submit-change rows a run produced. Operator calls carry no
+  run claim and leave the column empty rather than inheriting the username used for the visible stamp.
+- A busy host no longer becomes unplaceable because its health probe is slow (#2317). The local
+  backend's liveness probe listed every instance and then asked Incus for its server info under a
+  fixed 3s budget, failing closed, so on a host with many instances under CPU pressure a slow but
+  responsive incusd made every create into the pool fail with `no healthy backend found in pool`, and
+  each timed-out probe leaked a goroutine and an Incus connection. The probe now asks Incus for its
+  server info only (cost independent of the instance count), one probe is shared by concurrent callers,
+  and a failed or slow sample does not flip the verdict while Incus answered within the last 15s. A
+  daemon that stays unresponsive is still reported unhealthy. `CONTAINARIUM_LOCAL_HEALTH_TIMEOUT`
+  (default `3s`, range `100ms`-`30s`) tunes the per-call budget, and the daemon logs transitions and
+  slow probes. See `docs/CPU-CAPACITY-ADMISSION.md`.
+- `ListBackends` (the fleet view / `list_backends`) is now bounded: the local `GetSystemInfo` probe
+  has its own 5s deadline and peers are probed in parallel (each with a 5s deadline) instead of one
+  after another, so a wedged local daemon or several unresponsive peers can no longer make the
+  listing outlast the caller's deadline. A backend that does not answer keeps its identity and
+  health fields and simply has no load block (unknown, not idle); (#2318).
+- The `mcp-server` image's runtime stage now runs `apt-get upgrade -y`, like the daemon, sshpiper,
+  otel-sidecar, model-gateway and agent-box images, so it no longer ships `debian:bookworm-slim`'s
+  stale `libpcre2-8-0` (HIGH, fixed in `deb12u2`). No workflow publishes this image today; the
+  change protects anyone who builds it.
+
+## [0.99.1] - 2026-10-05
+
+### Fixed
+
+- The daemon, sshpiper, otel-sidecar and model-gateway images now run `apt-get upgrade -y`
+  in their runtime stage, as agent-box already did. `debian:bookworm-slim` is unpinned and lags
+  Debian's security archive, so the v0.99.0 release image scan found `libpcre2-8-0`
+  `10.42-1+deb12u1` (HIGH, fixed in `deb12u2`) in all four and failed the Trivy gate. v0.99.0's
+  binaries and PyPI package are unaffected; its images carry the vulnerable library, so use
+  v0.99.1.
+
+## [0.99.0] - 2026-10-05
+
 ### Changed
 
 - **BREAKING:** the tracker data-plane REST routes now live under the
@@ -25,25 +134,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   release. Pinned by `internal/gateway/tracker_route_ambiguity_test.go`, which
   drives the real grpc-gateway mux with adversarial names and asserts the old
   paths 404. Supersedes #2281.
-
-### Fixed
-
-- A dispatched skill run could not call any tracker verb for its own tenant
-  (#2268). The run JWT is minted for the box's subject (`agent-<skill-id>`,
-  no roles), while every `tracker_*` verb authorized the tenant named in the
-  request against that subject — so `tracker_comment`, `tracker_create_issue`,
-  `tracker_submit_change` and the reads were refused from inside every real
-  run. The server tests never caught it because they built the run's context
-  with the tenant as the subject by hand. The run JWT now also carries the
-  tenant it was started for (`run_tenant`, derived from the dispatching
-  caller's verified subject — the same identity its `tracker_conn` was
-  validated under — and reserved against header injection), and the tracker
-  read/write verbs authorize a run token for exactly that tenant
-  (`auth.AuthorizeTrackerTenant`). Operator and admin tokens are unchanged;
-  a run token is still not the tenant anywhere else, and a run started for
-  tenant A is still refused on tenant B's connection. The new tests mint
-  through the real run-token path and present the token through the real
-  auth middleware, so a hand-built subject can no longer hide a mismatch.
+- `containarium backup verify` and `containarium backup restore` now refuse to
+  send an age identity (a private key, carried in the request body) over a
+  cleartext connection to a non-loopback host: gRPC `--insecure`, or `--http`
+  with an `http://` or scheme-less server (the HTTP client prepends `http://`).
+  Loopback stays allowed and runs with no identity are unchanged. **Anyone
+  restoring an encrypted backup through `--http` must use an `https://` server.**
+  Documented in `docs/DB-BACKUP-OPERATIONS.md` (#2295, #2302).
 
 ### Added
 
@@ -75,9 +172,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--credential gateway` is rejected, naming the fix, until the model
   gateway's provider generalization lands (tracked separately). See
   `docs/integrations/codex.md`.
+- `containarium backup verify` can now restore-test an **encrypted** backup:
+  pass `--age-identity-file` (the same flag `backup restore` takes; the MCP tool
+  takes `age_identity_file`). Previously an encrypted record was refused outright,
+  so verification could not catch a backup that reports success while encrypted to
+  a key nobody holds. With no identity, verification still refuses up front and
+  records nothing; with the wrong identity, decryption fails and that is recorded
+  as a FAILED verification, a durable result rather than an RPC error (#2295, #2302).
+- `containarium tracker dispatch --max-starts N` lets a caller with its own budget
+  cap how many runs one dispatch tick starts (`DispatchTrackerIssuesRequest.max_starts`;
+  `0` is unlimited, a negative value is `InvalidArgument`). Issues held back by the
+  limit get no dispatch row and no label, so a later tick picks them up, and are
+  counted in the new `left_undispatched` response field, which the CLI prints (#2270, #2306).
+- `containarium agent provision-box <skill-id>` (the `ProvisionSkillBox` RPC) creates
+  or reuses a skill's box without minting a token or calling a model, plus a presence-only
+  check of the box's coding-agent credential source (`interactive` / `api-key` / `none`,
+  new `CodeCredentialSource` enum). It never reads, stores or transmits a credential
+  value. This lets an org that wants to sign in with its own subscription get the box
+  provisioned ahead of time. Walkthrough in `docs/AGENT-SKILLS-QUICKSTART.md` (#2272, #2274).
+- A run's leftover fan-out reservations are released when its lease ends, and they are
+  listed so an operator can see why a run's `max_children_per_run` looks exhausted.
+  `tracker.Store.ReleaseRunReservations` is idempotent and is called from the existing
+  lease-end hook, which every kind of run already passes through. Reservations of a
+  live run are kept on purpose: the create may have succeeded upstream (#2062, #2291).
 
 ### Fixed
 
+- A dispatched skill run could not call any tracker verb for its own tenant
+  (#2268). The run JWT is minted for the box's subject (`agent-<skill-id>`,
+  no roles), while every `tracker_*` verb authorized the tenant named in the
+  request against that subject — so `tracker_comment`, `tracker_create_issue`,
+  `tracker_submit_change` and the reads were refused from inside every real
+  run. The server tests never caught it because they built the run's context
+  with the tenant as the subject by hand. The run JWT now also carries the
+  tenant it was started for (`run_tenant`, derived from the dispatching
+  caller's verified subject — the same identity its `tracker_conn` was
+  validated under — and reserved against header injection), and the tracker
+  read/write verbs authorize a run token for exactly that tenant
+  (`auth.AuthorizeTrackerTenant`). Operator and admin tokens are unchanged;
+  a run token is still not the tenant anywhere else, and a run started for
+  tenant A is still refused on tenant B's connection. The new tests mint
+  through the real run-token path and present the token through the real
+  auth middleware, so a hand-built subject can no longer hide a mismatch.
 - A run token can no longer delegate its way out of its own run (#2069).
   `ExchangeDelegatedToken` mints a token with no `run_id`, and every
   run-token guard (the #2060 scope-label lineage binding, #2112's
@@ -89,6 +225,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tokens:delegate`; a custom skill loaded via `CONTAINARIUM_SKILLS_DIR`
   could. Delegation from a token with no `run_id` (an operator or fronting
   service) is unchanged.
+- `containarium code` credential-status checks now work for the Codex engine. The probe
+  was deferred when the status check landed and was never added with `code install --engine
+  codex`, so Codex fell through as "no probe" and callers refused it as `Unimplemented` even
+  after a successful `codex login`. Presence-only, like the other engines (#2277, #2289).
+- An upstream tracker create that times out after the forge accepted it is no longer
+  silently retried. The adapters' default 10s HTTP timeout shadowed the 30s detached create
+  budget, so a slow forge produced `Unavailable` with an issue upstream but no lineage or
+  audit row, and the freed fan-out slot let a retry file a duplicate. Both adapters now share
+  one timeout budget; an ambiguous failure keeps the reservation, writes a
+  `tracker.issue_create_outcome_unknown` audit row (never the credential) and returns
+  `codes.Unknown` with `UPSTREAM_CREATE_OUTCOME_UNKNOWN`, telling the caller to check the
+  tracker before retrying (#2045, #2297).
+- The dispatcher resolves the broker credential at each forge write instead of once per tick.
+  `RunStarted`, `RunEnded` and the sweep fire up to the run timeout (default 1h) after the tick
+  that started the run, by which time a rotated or short-lived credential (a GitHub App
+  installation token lasts about an hour) had gone stale, so the `agent:done` / `agent:failed`
+  write failed. An unresolvable credential now counts as a failed write and the next tick
+  retries it (#2269, #2296).
+- `SubmitTrackerChange`'s push now sends the form GitHub documents for App installation
+  tokens (`ghs_...`): Basic auth with the `x-access-token` username, instead of a bearer
+  header. Personal access tokens and GitLab tokens keep the bearer form (#2271, #2292).
+- Several replicas starting against a fresh database no longer race to create the tracker
+  schema. `CREATE TABLE IF NOT EXISTS` is not safe to run concurrently and the loser failed
+  with a catalog unique violation, so `NewStore` failed on every replica but one. First-run
+  schema creation is now serialized with an advisory lock (#2061, #2290).
+- A dispatch row that reaches a terminal state (FAILED or DONE) but whose `agent:*` label
+  never reached the forge no longer lets the next tick dispatch the issue again, which
+  posted a new failure comment or started a second run each time. The `labels_pending` retry
+  the design describes is now implemented, where before it was set and never read
+  (#2047, #2052, #2282).
+- The not-running hint in `containarium connect` and `containarium code` now points at
+  `containarium wake` instead of the non-existent `containarium start` (#2251, #2254).
 
 ## [0.98.0] - 2026-10-03
 

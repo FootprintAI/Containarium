@@ -35,6 +35,10 @@ import (
 //  4. the body sent upstream is the sanitized agent text plus a parent
 //     link and an identity stamp built only from the verified token;
 //  5. one back-link comment on the parent; one audit row.
+//  6. an upstream create that times out after the request was sent is
+//     "outcome unknown" (#2045): audited, a run's fan-out slot stays
+//     claimed, and the caller gets ErrorReasonUpstreamCreateOutcomeUnknown
+//     telling it not to retry blindly.
 //
 // An operator/human token (no run_id claim) files a root or child issue
 // with no lineage row — a human-created issue is depth 0 by definition
@@ -130,6 +134,8 @@ func (s *ContainerServer) CreateTrackerIssue(ctx context.Context, req *pb.Create
 			return nil, status.Errorf(codes.FailedPrecondition, "follow-up would exceed the connection's max_depth (%d): %v", policy.MaxDepth, err)
 		case errors.Is(err, tracker.ErrFanoutExceeded):
 			return nil, status.Errorf(codes.ResourceExhausted, "this run has reached the connection's max_children_per_run (%d): %v", policy.MaxChildrenPerRun, err)
+		case errors.Is(err, tracker.ErrUpstreamOutcomeUnknown):
+			return nil, s.upstreamCreateOutcomeUnknown(ctx, req, record, id, title, labels, rec.Depth, true, err)
 		case upstreamErr != nil:
 			return nil, mapProviderError(upstreamErr)
 		default:
@@ -142,6 +148,9 @@ func (s *ContainerServer) CreateTrackerIssue(ctx context.Context, req *pb.Create
 		createCtx, cancelCreate := context.WithTimeout(context.WithoutCancel(ctx), tracker.UpstreamCreateTimeout)
 		created, err = provider.CreateIssue(createCtx, conn, newIssue)
 		cancelCreate()
+		if tracker.IsAmbiguousUpstreamError(err) {
+			return nil, s.upstreamCreateOutcomeUnknown(ctx, req, record, id, title, labels, 0, false, err)
+		}
 		if err != nil {
 			return nil, mapProviderError(err)
 		}
@@ -202,6 +211,83 @@ type trackerIssueCreatedAuditDetail struct {
 	// counted for depth/fan-out and needs operator attention). Always
 	// false for an operator token, which records no lineage by design.
 	LineageRecorded bool `json:"lineage_recorded"`
+}
+
+// An upstream create whose outcome is unknown (#2045): the request was
+// sent, but no answer came back within tracker.UpstreamCreateTimeout, so
+// the issue may exist on the tracker without the daemon knowing its
+// number. CreateTrackerIssue then
+//
+//   - writes one tracker.issue_create_outcome_unknown audit row (what was
+//     being filed, by whom, under which parent) so an operator can find
+//     the issue — there is no lineage row to go by;
+//   - keeps a run's fan-out slot claimed (tracker.RecordChild), so a
+//     retry is counted against max_children_per_run and cannot file past
+//     it; the slot is released with the run's other reservations when its
+//     lease ends;
+//   - returns codes.Unknown with ErrorReasonUpstreamCreateOutcomeUnknown
+//     at the start of the message: the documented signal that the caller
+//     must NOT retry blindly, but look for the issue on the tracker first.
+//
+// The daemon does not search the tracker for the issue itself; that
+// reconciliation is a possible follow-up, deliberately left out here.
+const (
+	auditActionIssueCreateOutcomeUnknown = "tracker.issue_create_outcome_unknown"
+
+	// ErrorReasonUpstreamCreateOutcomeUnknown prefixes the status message
+	// of a CreateTrackerIssue whose upstream outcome is unknown. Stable:
+	// callers (and users of the tracker_create_issue MCP tool) match on it.
+	ErrorReasonUpstreamCreateOutcomeUnknown = "UPSTREAM_CREATE_OUTCOME_UNKNOWN"
+)
+
+// trackerIssueCreateOutcomeUnknownAuditDetail is the audit payload for
+// tracker.issue_create_outcome_unknown. There is no issue number — the
+// forge's answer never arrived — so the title and parent are what an
+// operator matches the upstream issue by.
+type trackerIssueCreateOutcomeUnknownAuditDetail struct {
+	Connection   string   `json:"connection"`
+	Project      string   `json:"project"`
+	Title        string   `json:"title"`
+	ParentNumber int64    `json:"parent_number,omitempty"`
+	Depth        int32    `json:"depth,omitempty"`
+	RunID        string   `json:"run_id"`
+	SkillID      string   `json:"skill_id,omitempty"`
+	Model        string   `json:"model,omitempty"`
+	Labels       []string `json:"labels,omitempty"`
+	// SlotRetained is true when the attempt keeps counting against the
+	// run's max_children_per_run (a run token); always false for an
+	// operator token, which has no fan-out cap.
+	SlotRetained bool   `json:"slot_retained"`
+	Error        string `json:"error"`
+}
+
+// upstreamCreateOutcomeUnknown audits an ambiguous upstream create and
+// returns the distinct error for it. The audit write is detached from the
+// caller's cancellation, like the success path's.
+func (s *ContainerServer) upstreamCreateOutcomeUnknown(ctx context.Context, req *pb.CreateTrackerIssueRequest, record *tracker.Connection, id tracker.Identity, title string, labels []string, depth int32, slotRetained bool, cause error) error {
+	log.Printf("[tracker] %s/%s: upstream create outcome unknown (title %q, parent #%d): %v", req.Username, req.Connection, title, req.ParentNumber, cause)
+	auditCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), postCreateTimeout)
+	defer cancel()
+	s.auditTrackerWrite(auditCtx, auditActionIssueCreateOutcomeUnknown, req.Username, req.Connection, 0, trackerIssueCreateOutcomeUnknownAuditDetail{
+		Connection:   req.Connection,
+		Project:      record.Project,
+		Title:        title,
+		ParentNumber: req.ParentNumber,
+		Depth:        depth,
+		RunID:        id.RunID,
+		SkillID:      id.SkillID,
+		Model:        id.Model,
+		Labels:       labels,
+		SlotRetained: slotRetained,
+		Error:        cause.Error(),
+	})
+	counted := ""
+	if slotRetained {
+		counted = " This attempt counts against the run's max_children_per_run."
+	}
+	return status.Errorf(codes.Unknown,
+		"%s: the tracker did not answer the create within %s, so issue %q may already exist upstream; do not retry blindly — check the tracker for it first.%s Cause: %v",
+		ErrorReasonUpstreamCreateOutcomeUnknown, tracker.UpstreamCreateTimeout, title, counted, cause)
 }
 
 // postCreateTimeout bounds the detached back-link + audit writes that

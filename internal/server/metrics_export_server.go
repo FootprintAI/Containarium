@@ -291,7 +291,7 @@ func (s *ContainerServer) buildMetricsExportCollector(ctx context.Context, cfg c
 
 	return cloudexport.NewCollector(cloudexport.CollectorOptions{
 		Sources:         sources,
-		PlatformSources: serverPlatformSources{stats: s.platformStats, peers: s.peerPool},
+		PlatformSources: serverPlatformSources{stats: s.platformStats, peers: s.peerPool, backupMgr: s.backupMgr},
 		Exporter:        exporter,
 		Resource:        res,
 		Labels:          s.currentExportLabels(sources.Hostname()),

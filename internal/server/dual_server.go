@@ -415,6 +415,11 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	if err := validateDNSPassthroughHosts(config.DNSPassthroughHosts); err != nil {
 		return nil, fmt.Errorf("dns-passthrough-host misconfigured: %w", err)
 	}
+	// #2299: an unrecognised privileged-podman policy must not silently
+	// become the permissive default, so refuse to start on one.
+	if err := validatePrivilegedPolicyEnv(); err != nil {
+		return nil, fmt.Errorf("privileged-podman policy misconfigured: %w", err)
+	}
 
 	// Create container server
 	containerServer, err := NewContainerServer(config.Runtime)
@@ -698,7 +703,12 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// GCS). Orchestration over the container manager; the GCS uploader is
 	// best-effort (LOCAL-only if `gcloud` is absent). See
 	// docs/DB-BACKUP-OPERATIONS.md.
-	pb.RegisterBackupServiceServer(grpcServer, NewBackupServer(containerServer))
+	backupServer := NewBackupServer(containerServer)
+	pb.RegisterBackupServiceServer(grpcServer, backupServer)
+	// Metrics export's backup-health series (#2294) reads the same
+	// backup core backupServer orchestrates — wired here since
+	// BackupServer depends on ContainerServer, not the reverse.
+	containerServer.SetBackupManager(backupServer.Manager())
 	log.Printf("Backup service enabled")
 
 	// Register VolumeService — shared, multi-writer CephFS volumes (#384).
@@ -1095,6 +1105,9 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 			} else {
 				containerServer.SetTrackerStore(trkStore)
 				agentSkillServer.SetTrackerConnections(trkStore)
+				// #2062: a run's leftover fan-out reservations are swept
+				// when its lease ends.
+				agentSkillServer.SetLineageReservations(trkStore)
 				// #2022: dispatched runs start through the RunAgentSkill path.
 				containerServer.SetTrackerRunStarter(NewTrackerRunStarter(agentSkillServer))
 				pb.RegisterTrackerServiceServer(grpcServer, containerServer)
@@ -2860,6 +2873,29 @@ func (ds *DualServer) handleBackendSystemInfo(w http.ResponseWriter, r *http.Req
 	w.Write(respBody)
 }
 
+// startCapabilityProfile self-profiles a joining backend once per daemon,
+// after pool identity is wired. Pool join installs --pool on the daemon;
+// restarting a pool member takes the same path. The measurement runs off the
+// startup path, and failure never prevents membership or serving requests.
+// The returned channel closes when this best-effort startup work is finished.
+func (ds *DualServer) startCapabilityProfile(ctx context.Context) <-chan struct{} {
+	done := make(chan struct{})
+	if ds.config.Pool == "" || ds.containerServer == nil {
+		close(done)
+		return done
+	}
+	go func() {
+		defer close(done)
+		if ctx.Err() != nil {
+			return
+		}
+		if _, err := ds.containerServer.recordCapabilityProfile(false, true); err != nil {
+			log.Printf("[capabilities] automatic pool-member profile failed: %v; use ProfileBackend to retry", err)
+		}
+	}()
+	return done
+}
+
 func (ds *DualServer) Start(ctx context.Context) error {
 	// Anonymous-box funnel (#2201): emit expired / killed events within a
 	// minute of a box disappearing.
@@ -3026,6 +3062,9 @@ func (ds *DualServer) Start(ctx context.Context) error {
 			ds.gatewayServer.SetTerminalPeerProxy(ds.peerPool)
 		}
 	}
+
+	// Self-profile the joining host, never the primary's host (#2136).
+	ds.startCapabilityProfile(ctx)
 
 	// Resume cloud host-series export (#1070) if it was enabled before a
 	// restart. Sequenced here — after SetCapabilityIdentity and, when

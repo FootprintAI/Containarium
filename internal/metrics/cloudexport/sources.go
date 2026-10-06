@@ -2,6 +2,7 @@ package cloudexport
 
 import (
 	"context"
+	"time"
 
 	"github.com/footprintai/containarium/internal/metrics/platformstats"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -66,12 +67,33 @@ type PeerState struct {
 	Healthy bool
 }
 
+// BackupHealthState is a point-in-time snapshot of one tenant's backup
+// freshness (#2294), read via PlatformSources.BackupHealth(). A tenant
+// with zero stored backups is simply absent from the slice — there is
+// nothing to report an age against.
+//
+// Username is a DELIBERATE, reviewed exception to this package's
+// otherwise-absolute "no org/tenant identifier" posture (see
+// docs/CLOUD-NATIVE-METRICS-EXPORT-DESIGN.md's "no org/tenant UUID
+// labels ever" hard rule). Decided for #2294: the rule targets the Cloud
+// product's org/tenant UUIDs — an opaque identifier with no legitimate
+// reason to leave the platform's own database — not an OSS daemon's
+// tenant username, which this package already exports today via
+// container_name (container names are literally
+// "<username>-container"). A per-tenant alert is also the entire point
+// of this series: "a backup went silent" is actionable only if it names
+// which tenant. See the #2294 issue thread for the decision record.
+type BackupHealthState struct {
+	Username      string
+	LastSuccessAt time.Time
+}
+
 // PlatformSources is the read-side seam over platform-domain facts the
-// platform metric group (#1082/#1083/#1084) observes at each export
-// tick — a snapshot read with no server import, so the collector stays
-// unit-testable with a fake. Extended incrementally as more platform
-// series land: #1083 adds provisioning outcomes, #1084 adds peer/tunnel
-// connectivity.
+// platform metric group (#1082/#1083/#1084/#2294) observes at each
+// export tick — a snapshot read with no server import, so the collector
+// stays unit-testable with a fake. Extended incrementally as more
+// platform series land: #1083 adds provisioning outcomes, #1084 adds
+// peer/tunnel connectivity, #2294 adds backup health.
 type PlatformSources interface {
 	// APIStats returns the current cumulative API request/error counters
 	// by code_class (#1082).
@@ -86,4 +108,10 @@ type PlatformSources interface {
 	// instant of the call, with no isolation from concurrent registry
 	// mutation beyond what the underlying registry itself provides.
 	Peers() []PeerState
+
+	// BackupHealth returns a point-in-time snapshot of every tenant with
+	// at least one stored backup (#2294) — see BackupHealthState for why
+	// this, alone among PlatformSources methods, carries a tenant
+	// identifier.
+	BackupHealth() []BackupHealthState
 }

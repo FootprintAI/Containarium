@@ -28,7 +28,7 @@ func TestTrackerDispatch_HTTPPathsAndDecoding(t *testing.T) {
 	}
 
 	respBody = `{"started":[{"id":"d1","issueNumber":"42","scope":"product","skillId":"product-define","runId":"r1","state":"TRACKER_DISPATCH_STATE_QUEUED"}],"skippedActive":2,"skippedUnrouted":1}`
-	resp, err := c.DispatchTrackerIssues("alice", "a/b")
+	resp, err := c.DispatchTrackerIssues("alice", "a/b", 0)
 	if err != nil {
 		t.Fatalf("DispatchTrackerIssues: %v", err)
 	}
