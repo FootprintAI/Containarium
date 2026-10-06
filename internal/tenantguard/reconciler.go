@@ -70,6 +70,12 @@ type Reconciler struct {
 	mu     sync.Mutex
 	status Status
 	warned string // last unsupported reason logged
+
+	// writeMu serialises every Incus write (ACL + NIC) across a reconcile
+	// pass and Prepare. Without it the event-driven pass a create fires
+	// and the ACL-at-birth hook for that same create race on one
+	// instance, and Incus answers the loser with an ETag mismatch.
+	writeMu sync.Mutex
 }
 
 // NewReconciler wires a reconciler; nothing runs until ReconcileOnce, Run
@@ -178,6 +184,8 @@ func (r *Reconciler) Prepare(ctx context.Context, containerName, tenant string) 
 		return fmt.Errorf("tenantguard: %w", err)
 	}
 	desired := pol.ACLs[tenant]
+	r.writeMu.Lock()
+	defer r.writeMu.Unlock()
 	if _, err := nicguard.EnsureACL(r.be, desired); err != nil {
 		return fmt.Errorf("tenantguard: %w", err)
 	}
@@ -224,7 +232,9 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) error {
 	}
 
 	// Write phase: per tenant the ACL, then per box the NIC. An ACL that
-	// could not be written is never attached.
+	// could not be written is never attached. Serialised with Prepare.
+	r.writeMu.Lock()
+	defer r.writeMu.Unlock()
 	var firstErr error
 	note := func(err error) {
 		if firstErr == nil {
@@ -324,15 +334,46 @@ func (r *Reconciler) gather() (Inputs, []string, error) {
 }
 
 // attach makes the NIC instance-local and sets the guard keys. Both calls
-// are no-ops when converged.
+// are no-ops when converged. A transient Incus conflict (another writer
+// changed the instance between our read and write, or the instance is
+// mid-operation) is retried a few times; the writes are read-modify-write
+// and idempotent, so a retry after a conflict is safe.
 func (r *Reconciler) attach(container, acl string) error {
-	if err := r.be.EnsureNICDevice(container, incus.NICDevice{Name: r.cfg.NICDevice, Network: r.cfg.Bridge}); err != nil {
-		return fmt.Errorf("nic device on %s: %w", container, err)
+	return retryTransient(func() error {
+		if err := r.be.EnsureNICDevice(container, incus.NICDevice{Name: r.cfg.NICDevice, Network: r.cfg.Bridge}); err != nil {
+			return fmt.Errorf("nic device on %s: %w", container, err)
+		}
+		if err := r.be.SetDeviceConfig(container, r.cfg.NICDevice, nicguard.NICKeys(acl)); err != nil {
+			return fmt.Errorf("nic acl keys on %s: %w", container, err)
+		}
+		return nil
+	})
+}
+
+// transientAttempts and transientBackoff bound the retry; a test lowers
+// the backoff.
+var (
+	transientAttempts = 5
+	transientBackoff  = 200 * time.Millisecond
+)
+
+func isTransient(err error) bool {
+	if err == nil {
+		return false
 	}
-	if err := r.be.SetDeviceConfig(container, r.cfg.NICDevice, nicguard.NICKeys(acl)); err != nil {
-		return fmt.Errorf("nic acl keys on %s: %w", container, err)
+	msg := err.Error()
+	return strings.Contains(msg, "ETag doesn't match") || strings.Contains(msg, "Instance is busy")
+}
+
+func retryTransient(f func() error) error {
+	var err error
+	for i := 0; i < transientAttempts; i++ {
+		if err = f(); err == nil || !isTransient(err) {
+			return err
+		}
+		time.Sleep(transientBackoff)
 	}
-	return nil
+	return fmt.Errorf("%w (gave up after %d attempts)", err, transientAttempts)
 }
 
 // pruneStale deletes containarium-tenant-* ACLs that no current tenant

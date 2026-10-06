@@ -5,7 +5,10 @@ import (
 	"errors"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/lxc/incus/v7/shared/api"
 
@@ -33,6 +36,14 @@ type fakeBackend struct {
 	nicAdds  []string
 	keyWrite []string
 	aclErr   error
+
+	fmu sync.Mutex // the fake itself is used from two goroutines in the serialisation test
+	// nicErrs are returned, in order, by successive SetDeviceConfig calls
+	// before the real behaviour resumes (transient-conflict tests).
+	nicErrs []error
+	// active counts in-flight writes; maxActive records the peak, which
+	// must stay 1 when the reconciler serialises correctly.
+	active, maxActive int32
 }
 
 func newFakeBackend(firewall string, containers ...incus.ContainerInfo) *fakeBackend {
@@ -46,6 +57,8 @@ func newFakeBackend(firewall string, containers ...incus.ContainerInfo) *fakeBac
 }
 
 func (f *fakeBackend) ListContainers() ([]incus.ContainerInfo, error) {
+	f.fmu.Lock()
+	defer f.fmu.Unlock()
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
@@ -64,6 +77,8 @@ func (f *fakeBackend) GetServerInfo() (*api.Server, error) {
 }
 
 func (f *fakeBackend) GetNetworkACL(name string) (*api.NetworkACL, error) {
+	f.fmu.Lock()
+	defer f.fmu.Unlock()
 	acl, ok := f.acls[name]
 	if !ok {
 		return nil, errors.New("not found")
@@ -85,6 +100,8 @@ func toAPI(cfg incus.ACLConfig) api.NetworkACL {
 }
 
 func (f *fakeBackend) CreateNetworkACL(cfg incus.ACLConfig) error {
+	f.fmu.Lock()
+	defer f.fmu.Unlock()
 	if f.aclErr != nil {
 		return f.aclErr
 	}
@@ -97,6 +114,8 @@ func (f *fakeBackend) CreateNetworkACL(cfg incus.ACLConfig) error {
 }
 
 func (f *fakeBackend) UpdateNetworkACL(name string, cfg incus.ACLConfig) error {
+	f.fmu.Lock()
+	defer f.fmu.Unlock()
 	if f.aclErr != nil {
 		return f.aclErr
 	}
@@ -109,6 +128,8 @@ func (f *fakeBackend) UpdateNetworkACL(name string, cfg incus.ACLConfig) error {
 }
 
 func (f *fakeBackend) ListNetworkACLs() ([]api.NetworkACL, error) {
+	f.fmu.Lock()
+	defer f.fmu.Unlock()
 	out := make([]api.NetworkACL, 0, len(f.acls))
 	for _, a := range f.acls {
 		out = append(out, a)
@@ -117,6 +138,8 @@ func (f *fakeBackend) ListNetworkACLs() ([]api.NetworkACL, error) {
 }
 
 func (f *fakeBackend) DeleteNetworkACL(name string) error {
+	f.fmu.Lock()
+	defer f.fmu.Unlock()
 	for _, devs := range f.devices {
 		for _, dev := range devs {
 			for _, n := range strings.Split(dev["security.acls"], ",") {
@@ -132,6 +155,10 @@ func (f *fakeBackend) DeleteNetworkACL(name string) error {
 }
 
 func (f *fakeBackend) EnsureNICDevice(container string, want incus.NICDevice) error {
+	f.enter()
+	defer f.leave()
+	f.fmu.Lock()
+	defer f.fmu.Unlock()
 	if f.devices[container] == nil {
 		f.devices[container] = map[string]map[string]string{}
 	}
@@ -143,7 +170,30 @@ func (f *fakeBackend) EnsureNICDevice(container string, want incus.NICDevice) er
 	return nil
 }
 
+func (f *fakeBackend) enter() {
+	n := atomic.AddInt32(&f.active, 1)
+	for {
+		m := atomic.LoadInt32(&f.maxActive)
+		if n <= m || atomic.CompareAndSwapInt32(&f.maxActive, m, n) {
+			break
+		}
+	}
+	time.Sleep(2 * time.Millisecond) // widen the window so an overlap is observable
+}
+func (f *fakeBackend) leave() { atomic.AddInt32(&f.active, -1) }
+
 func (f *fakeBackend) SetDeviceConfig(container, device string, keys map[string]string) error {
+	f.enter()
+	defer f.leave()
+	f.fmu.Lock()
+	defer f.fmu.Unlock()
+	if len(f.nicErrs) > 0 {
+		err := f.nicErrs[0]
+		f.nicErrs = f.nicErrs[1:]
+		if err != nil {
+			return err
+		}
+	}
 	dev, ok := f.devices[container][device]
 	if !ok {
 		return errors.New("device " + device + " not instance-local on " + container)
@@ -496,5 +546,66 @@ func TestPrepare_OffIsNoop(t *testing.T) {
 	}
 	if f.writes() != 0 {
 		t.Errorf("off mode wrote %d times", f.writes())
+	}
+}
+
+// A transient Incus conflict on the NIC write (another writer changed the
+// instance first, or it is mid-operation) is retried; a real error is not.
+func TestAttach_RetriesTransientConflicts(t *testing.T) {
+	transientBackoff = time.Millisecond
+	defer func() { transientBackoff = 200 * time.Millisecond }()
+
+	f := twoTenantHost()
+	f.nicErrs = []error{
+		errors.New("ensure nic device eth0 on bob-container: ETag doesn't match: aaa vs bbb"),
+		errors.New("Failed to create instance update operation: Instance is busy running a \"delete\" operation"),
+	}
+	r := NewReconciler(f, enforceCfg())
+	if err := r.Prepare(context.Background(), "bob-container", "bob"); err != nil {
+		t.Fatalf("Prepare should have retried past two transient conflicts: %v", err)
+	}
+	if dev := f.devices["bob-container"]["eth0"]; dev == nil || dev["security.acls"] != ACLName("bob") {
+		t.Errorf("NIC not guarded after retries: %v", dev)
+	}
+
+	f = twoTenantHost()
+	f.nicErrs = []error{errors.New("Invalid devices: Device validation failed for \"eth0\"")}
+	r = NewReconciler(f, enforceCfg())
+	if err := r.Prepare(context.Background(), "bob-container", "bob"); err == nil {
+		t.Fatal("a non-transient error must not be retried into success")
+	}
+
+	f = twoTenantHost()
+	for i := 0; i < transientAttempts+1; i++ {
+		f.nicErrs = append(f.nicErrs, errors.New("ETag doesn't match"))
+	}
+	r = NewReconciler(f, enforceCfg())
+	if err := r.Prepare(context.Background(), "bob-container", "bob"); err == nil || !strings.Contains(err.Error(), "gave up") {
+		t.Errorf("expected to give up after %d attempts, got %v", transientAttempts, err)
+	}
+}
+
+// The event-driven pass a create fires and the ACL-at-birth hook for that
+// same create must never write Incus at the same time (that is the race
+// the lane caught: ETag mismatch, create refused). The fake records the
+// peak number of in-flight writes.
+func TestPrepareAndReconcile_WritesAreSerialised(t *testing.T) {
+	f := twoTenantHost()
+	r := NewReconciler(f, enforceCfg())
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_ = r.ReconcileOnce(context.Background())
+		}()
+		go func(i int) {
+			defer wg.Done()
+			_ = r.Prepare(context.Background(), "cld-new", "org-new")
+		}(i)
+	}
+	wg.Wait()
+	if atomic.LoadInt32(&f.maxActive) != 1 {
+		t.Errorf("peak in-flight Incus writes = %d, want 1 (writes must be serialised)", f.maxActive)
 	}
 }
