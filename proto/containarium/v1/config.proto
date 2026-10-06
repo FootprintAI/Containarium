@@ -264,6 +264,19 @@ message SystemInfo {
   // disabled. The ceiling in cores is total_cpus × cpu_overcommit_factor;
   // the host is over it when committed_cpu_cores exceeds that.
   double cpu_overcommit_factor = 27;
+
+  // headroom is the spare scheduling capacity this backend currently
+  // advertises (#680), or null when nothing is advertised (withdrawn or
+  // never published) — null stays distinguishable from "offering zero".
+  // Carried on SystemInfo so ListBackends' existing GetSystemInfo fan-out
+  // surfaces a peer's advertisement with no extra forwarded call (#2135).
+  CapacityHeadroom headroom = 28;
+
+  // capability_profile is this backend's last-recorded hardware capability
+  // profile (#681), or null until ProfileBackend has run — null stays
+  // distinguishable from "profiled CPU-only". Carried here for the same
+  // peer fan-out as headroom (#2135).
+  CapabilityProfile capability_profile = 29;
 }
 
 // CPUAdmissionMode is the CPU overcommit admission gate's posture

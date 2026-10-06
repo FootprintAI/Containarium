@@ -16976,6 +16976,14 @@
           "type": "number",
           "format": "double",
           "description": "cpu_overcommit_factor is the gate's configured ceiling multiple of\ntotal_cpus (the --cpu-overcommit-factor flag). 0 when the gate is\ndisabled. The ceiling in cores is total_cpus × cpu_overcommit_factor;\nthe host is over it when committed_cpu_cores exceeds that."
+        },
+        "headroom": {
+          "$ref": "#/definitions/CapacityHeadroom",
+          "description": "headroom is the spare scheduling capacity this backend currently\nadvertises (#680), or null when nothing is advertised (withdrawn or\nnever published) — null stays distinguishable from \"offering zero\".\nCarried on SystemInfo so ListBackends' existing GetSystemInfo fan-out\nsurfaces a peer's advertisement with no extra forwarded call (#2135)."
+        },
+        "capabilityProfile": {
+          "$ref": "#/definitions/CapabilityProfile",
+          "description": "capability_profile is this backend's last-recorded hardware capability\nprofile (#681), or null until ProfileBackend has run — null stays\ndistinguishable from \"profiled CPU-only\". Carried here for the same\npeer fan-out as headroom (#2135)."
         }
       },
       "title": "SystemInfo contains information about the host system"
