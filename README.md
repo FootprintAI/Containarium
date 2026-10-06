@@ -103,14 +103,15 @@ export CONTAINARIUM_HTTP=true
 export CONTAINARIUM_SERVER=http://localhost:8080
 export CONTAINARIUM_TOKEN="$(sudo cat /etc/containarium/admin.token)"
 
-containarium quickstart alice --no-mcp
+containarium quickstart alice
 ```
 
-`quickstart` does four things: it creates the box; it reuses your
-`~/.ssh` key or generates a managed one (`~/.ssh/containarium_ed25519`); it
-writes `~/.containarium/ssh_config`; and it adds the single
-`Include ~/.containarium/ssh_config` line to `~/.ssh/config`. Passing
-`--no-mcp` leaves the agent wiring for step 3. It's safe to run again.
+`quickstart` creates the box, reuses your `~/.ssh` key or generates a
+managed one (`~/.ssh/containarium_ed25519`), writes
+`~/.containarium/ssh_config`, adds the single
+`Include ~/.containarium/ssh_config` line to `~/.ssh/config`, and wires
+the box into your agent's MCP config (Claude Code by default). It's safe
+to run again, including to repair an older quickstart's MCP command.
 
 ✅ **Check:** `quickstart` ends with `✓ quickstart complete`, and the box is
 listed as running.
@@ -188,23 +189,31 @@ and the binary is there:
 ssh alice 'test -x ~/.local/bin/agent-box && echo agent-box ready'   # → agent-box ready
 ```
 
-Then register the box with your agent, on the machine where the agent
-runs. The file is `~/.claude.json` for Claude Code and
-`~/.cursor/mcp.json` for Cursor:
+On the machine where your agent runs, `quickstart` wires the MCP config
+automatically. Step 1 already did this for Claude Code on the VM. If your
+agent runs on your laptop, run this there using the API connection from
+step 2; it reuses the existing box:
+
+```bash
+containarium quickstart alice --agent claude
+# For Gemini or Codex, use --agent gemini or --agent codex instead.
+```
+
+For Cursor, add the server to `~/.cursor/mcp.json` manually:
 
 ```jsonc
 {
   "mcpServers": {
     "containarium-box": {
       "command": "ssh",
-      "args": ["alice", "~/.local/bin/agent-box"]
+      "args": ["alice", "sh -c 'PATH=\"$HOME/.local/bin:/usr/local/bin:$PATH\" exec agent-box'"]
     }
   }
 }
 ```
 
-The full path is needed because a non-interactive `ssh` doesn't put
-`~/.local/bin` on `PATH`. The box's shell expands the `~`.
+This command sets the box's `PATH` for non-interactive SSH and supports
+both user-level and system-wide installs of `agent-box`.
 
 ✅ **Check:** your agent lists `containarium-box` as a connected MCP server
 (in Claude Code, `claude mcp list`). Asking it to *"run `uname -a` in the

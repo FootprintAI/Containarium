@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/footprintai/containarium/internal/hostharden"
 )
 
 // Host security-posture checks (#1103).
@@ -59,7 +61,12 @@ type posturePaths struct {
 	incusDataDir      string // /var/lib/incus — the volume that holds tenant data
 	recoveryDir       string // /mnt/incus-data — where containarium-recovery.yaml is written (#1154)
 	cgroupSystemSlice string // /sys/fs/cgroup/system.slice — per-unit realized cpu.weight (#2284)
+	imdsBlockUnit     string // /etc/systemd/system/containarium-imds-block.service (#2298)
+	imdsBlockWants    string // /etc/systemd/system/multi-user.target.wants/containarium-imds-block.service — the symlink `systemctl enable` creates
 	metadataDialer    func() error
+	// metadataBlockProbe reports whether the bridge's metadata FORWARD rule
+	// is in the kernel now; a non-nil error means it could not tell.
+	metadataBlockProbe func() (present bool, detail string, err error)
 }
 
 func defaultPosturePaths() posturePaths {
@@ -76,7 +83,12 @@ func defaultPosturePaths() posturePaths {
 		incusDataDir:      "/var/lib/incus",
 		recoveryDir:       DefaultRecoveryDir,
 		cgroupSystemSlice: DefaultCgroupSystemSlice,
+		imdsBlockUnit:     hostharden.ImdsBlockUnitPath,
+		imdsBlockWants:    filepath.Join("/etc/systemd/system/multi-user.target.wants", filepath.Base(hostharden.ImdsBlockUnitPath)),
 		metadataDialer:    dialMetadataServer,
+		metadataBlockProbe: func() (bool, string, error) {
+			return hostharden.MetadataBlockPresent(hostharden.DefaultBridge)
+		},
 	}
 }
 
@@ -100,6 +112,7 @@ func runPosture(p posturePaths) []Check {
 		sshdConfigCheck(p),
 		unattendedUpgradesCheck(p),
 		metadataReachableCheck(p),
+		metadataBlockCheck(p),
 		recoveryConfigDurableCheck(p),
 		tunnelTokenExposedCheck(p),
 		platformCPUWeightCheck(p),
@@ -466,6 +479,79 @@ func metadataReachableCheck(p posturePaths) Check {
 	}
 	c.Detail = "169.254.169.254:80 is reachable from the host: a workload that escapes its container can reach instance credentials"
 	return c
+}
+
+// --- metadata-endpoint block (#2298) -----------------------------------
+
+// metadataBlockCheck reports whether hostharden's container-bridge block of
+// the metadata endpoint is armed: the iptables FORWARD rule is in the kernel
+// now, AND the boot unit that re-applies it is installed and enabled.
+//
+// metadataReachableCheck cannot answer this. It dials from the host itself,
+// and the block deliberately leaves the host's OUTPUT chain alone, so on a
+// cloud host that dial succeeds whether or not the block is in place. A host
+// whose `pool join` / `cloud enroll` block step failed or was skipped looks
+// identical there to one that has it; here it does not.
+//
+// Both halves are needed for a pass: a rule with no enabled unit is gone
+// after the next reboot, and a unit with no rule is not protecting anything
+// now.
+func metadataBlockCheck(p posturePaths) Check {
+	c := Check{Name: "container bridge blocked from cloud metadata endpoint (rule + boot unit)"}
+	fix := "fix: run `containarium hostharden block-metadata --persist " + hostharden.DefaultBridge + "`"
+
+	if p.metadataBlockProbe == nil {
+		c.Detail = "could not determine: no probe configured"
+		return c
+	}
+	present, detail, err := p.metadataBlockProbe()
+	if err != nil {
+		c.Detail = fmt.Sprintf("could not determine whether the FORWARD rule is present: %v", err)
+		return c
+	}
+
+	var missing []string
+	if !present {
+		missing = append(missing, "the FORWARD rule is not in the kernel ("+detail+")")
+	}
+	unitInstalled, err := pathExists(p.imdsBlockUnit, os.Stat)
+	if err != nil {
+		c.Detail = fmt.Sprintf("could not determine: checking %s: %v", p.imdsBlockUnit, err)
+		return c
+	}
+	if !unitInstalled {
+		missing = append(missing, "boot unit "+p.imdsBlockUnit+" is not installed, so the rule will not survive a reboot")
+	} else {
+		enabled, err := pathExists(p.imdsBlockWants, os.Lstat)
+		if err != nil {
+			c.Detail = fmt.Sprintf("could not determine: checking %s: %v", p.imdsBlockWants, err)
+			return c
+		}
+		if !enabled {
+			missing = append(missing, "boot unit is installed but not enabled (no "+p.imdsBlockWants+"), so the rule will not survive a reboot")
+		}
+	}
+	if len(missing) > 0 {
+		c.Detail = strings.Join(missing, "; ") + " — " + fix
+		return c
+	}
+	c.OK = true
+	c.Detail = detail + "; boot unit installed and enabled"
+	return c
+}
+
+// pathExists separates "definitely absent" (false, nil) from "could not
+// look" (a non-nil error), which rule 1 above reports differently.
+func pathExists(path string, stat func(string) (os.FileInfo, error)) (bool, error) {
+	_, err := stat(path)
+	switch {
+	case err == nil:
+		return true, nil
+	case os.IsNotExist(err):
+		return false, nil
+	default:
+		return false, err
+	}
 }
 
 // --- tunnel token exposure --------------------------------------------

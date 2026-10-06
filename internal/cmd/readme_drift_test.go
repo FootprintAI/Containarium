@@ -28,6 +28,30 @@ import (
 
 const readmePath = "../../README.md"
 
+func TestREADMEQuickstartUsesAutomaticMCP(t *testing.T) {
+	md := readDriftFile(t, readmePath)
+	_, section, ok := strings.Cut(md, "## Quick start\n")
+	if !ok {
+		t.Fatal("Quick start section missing")
+	}
+	section, _, _ = strings.Cut(section, "## After your first box\n")
+	found := false
+	for _, invocation := range extractCLIInvocations(section) {
+		if len(invocation.Args) == 0 || invocation.Args[0] != "quickstart" {
+			continue
+		}
+		found = true
+		for _, arg := range invocation.Args {
+			if arg == "--no-mcp" {
+				t.Fatal("Quick start still disables automatic MCP wiring")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("Quick start does not invoke quickstart")
+	}
+}
+
 // cliInvocation is one `containarium …` command found in a fenced shell
 // block: the words after the binary name, and where it was found.
 type cliInvocation struct {

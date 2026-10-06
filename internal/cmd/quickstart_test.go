@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -98,8 +99,8 @@ func TestMergeMCPServerJSON(t *testing.T) {
 		if entry.Command != "ssh" {
 			t.Fatalf("command = %q, want ssh", entry.Command)
 		}
-		if strings.Join(entry.Args, " ") != "alice agent-box" {
-			t.Fatalf("args = %v, want [alice agent-box]", entry.Args)
+		if len(entry.Args) != 2 || entry.Args[0] != "alice" || entry.Args[1] != wantAgentBoxRemoteCommand {
+			t.Fatalf("args = %v, want alice and the PATH-prefixed remote command", entry.Args)
 		}
 	})
 
@@ -179,7 +180,7 @@ func TestCodexAppendMCP(t *testing.T) {
 		for _, want := range []string{
 			"[mcp_servers.containarium-box]",
 			`command = "ssh"`,
-			`args = ["alice", "agent-box"]`,
+			"args = [\"alice\", " + strconv.Quote(wantAgentBoxRemoteCommand) + "]",
 		} {
 			if !strings.Contains(got, want) {
 				t.Fatalf("missing %q in:\n%s", want, got)
