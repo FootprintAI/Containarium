@@ -11,12 +11,14 @@ package skills
 
 import (
 	"embed"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 
+	"github.com/footprintai/containarium/internal/agentengine"
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/pkg/core/catalogsig"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -50,10 +52,20 @@ type skillDef struct {
 	AgentCard     *cardDef `yaml:"agent_card,omitempty"`
 	AllowedPeers  []string `yaml:"allowed_peers,omitempty"`
 	Model         string   `yaml:"model,omitempty"`
+	// Engine names the agent engine (SDK) this skill runs on — "claude",
+	// "codex", or "gemini", case-insensitive (#2222). Empty keeps
+	// AGENT_ENGINE_UNSPECIFIED: the daemon's gateway primary / box default
+	// decides, exactly as every skill behaved before this field existed.
+	Engine string `yaml:"engine,omitempty"`
 }
 
-// ToProto converts a skillDef to its pb.AgentSkill representation.
+// ToProto converts a skillDef to its pb.AgentSkill representation. Engine's
+// parse error is ignored here: validate (called before ToProto on every load
+// path) already rejects an unparseable value, so by the time ToProto runs,
+// s.Engine is either "" (UNSPECIFIED, Parse's zero-value return on error) or
+// a name Parse accepts.
 func (s *skillDef) ToProto() *pb.AgentSkill {
+	engine, _ := agentengine.Parse(s.Engine)
 	out := &pb.AgentSkill{
 		Id:            s.ID,
 		Name:          s.Name,
@@ -63,6 +75,7 @@ func (s *skillDef) ToProto() *pb.AgentSkill {
 		AllowedScopes: s.AllowedScopes,
 		AllowedPeers:  s.AllowedPeers,
 		Model:         s.Model,
+		Engine:        engine,
 	}
 	if s.AgentCard != nil {
 		out.AgentCard = &pb.AgentCard{
@@ -166,6 +179,41 @@ func validate(s *skillDef) error {
 		if !auth.IsKnownScope(sc) {
 			return fmt.Errorf("skill %q declares unknown scope %q", s.ID, sc)
 		}
+	}
+	// #2222: an unrecognized engine name fails catalog load, the same bar as
+	// an unknown scope above — never a silent fall back to UNSPECIFIED, which
+	// would run the skill on the daemon's default engine without anyone
+	// noticing their manifest had a typo.
+	if s.Engine != "" {
+		if _, err := agentengine.Parse(s.Engine); err != nil {
+			return fmt.Errorf("skill %q: %w", s.ID, err)
+		}
+	}
+	// The agent card's schemas are load-bearing: output_schema_json is what
+	// the in-box runtime hands to the engine's structured-output mechanism
+	// (#2002). A declared schema that is not a JSON object fails here, at
+	// catalog load, rather than at the first run of the skill.
+	if s.AgentCard != nil {
+		if err := validateSchemaJSON(s.ID, "input_schema_json", s.AgentCard.InputSchemaJSON); err != nil {
+			return err
+		}
+		if err := validateSchemaJSON(s.ID, "output_schema_json", s.AgentCard.OutputSchemaJSON); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateSchemaJSON checks that a declared agent_card schema field is a JSON
+// object (the only shape a JSON Schema document can take). Empty means "not
+// declared" and is fine.
+func validateSchemaJSON(skillID, field, raw string) error {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
+		return fmt.Errorf("skill %q agent_card.%s is not a JSON Schema object: %w", skillID, field, err)
 	}
 	return nil
 }

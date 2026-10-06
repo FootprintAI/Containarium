@@ -386,6 +386,7 @@ func buildDaemonAPI() (runner.DaemonAPI, runner.DaemonCreator, error) {
 				"",   // stack
 				nil,  // gpus
 				ostype.OSTypeFromString("ubuntu"),
+				0,                       // isolation: daemon default (container)
 				false,                   // monitoring
 				runnerPool,              // pool: steer placement like `create --pool` (#1216)
 				runnerBackendID,         // backend-id: ditto (#1216)
@@ -428,6 +429,7 @@ func buildDaemonAPI() (runner.DaemonAPI, runner.DaemonCreator, error) {
 			"",  // stack
 			nil, // gpus
 			ostype.OSTypeFromString("ubuntu"),
+			0,                       // isolation: daemon default (container)
 			false,                   // monitoring
 			runnerPool,              // pool: steer placement like `create --pool` (#1216)
 			runnerBackendID,         // backend-id: ditto (#1216)

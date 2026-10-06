@@ -21,6 +21,13 @@ export interface EngineConfig {
   // The platform MCP to mount beside agent-box, from the seed (D4). Absent or
   // null means agent-box alone — the behavior before the tracker broker.
   platformMcp?: PlatformMcpConfig | null;
+  // The skill's agent_card.output_schema_json, parsed (#2002): the JSON Schema
+  // the artifact must satisfy. An engine hands it to its provider's native
+  // structured-output mechanism so the shape is enforced by the SDK, not
+  // requested in prose; an engine whose provider has no usable mechanism says
+  // so in the journal. Absent or null means free-form output, as before. A
+  // JSON Schema is a genuinely open document, hence the one untyped record.
+  outputSchema?: Record<string, unknown> | null;
 }
 
 export interface EngineResult {

@@ -19,15 +19,18 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	AgentSkillService_ListAgentSkills_FullMethodName   = "/containarium.v1.AgentSkillService/ListAgentSkills"
-	AgentSkillService_GetAgentSkill_FullMethodName     = "/containarium.v1.AgentSkillService/GetAgentSkill"
-	AgentSkillService_RunAgentSkill_FullMethodName     = "/containarium.v1.AgentSkillService/RunAgentSkill"
-	AgentSkillService_SendAgentTask_FullMethodName     = "/containarium.v1.AgentSkillService/SendAgentTask"
-	AgentSkillService_TailRunLog_FullMethodName        = "/containarium.v1.AgentSkillService/TailRunLog"
-	AgentSkillService_EnqueueAgentTask_FullMethodName  = "/containarium.v1.AgentSkillService/EnqueueAgentTask"
-	AgentSkillService_LeaseAgentTask_FullMethodName    = "/containarium.v1.AgentSkillService/LeaseAgentTask"
-	AgentSkillService_CompleteAgentTask_FullMethodName = "/containarium.v1.AgentSkillService/CompleteAgentTask"
-	AgentSkillService_StartAgentWorker_FullMethodName  = "/containarium.v1.AgentSkillService/StartAgentWorker"
+	AgentSkillService_ListAgentSkills_FullMethodName             = "/containarium.v1.AgentSkillService/ListAgentSkills"
+	AgentSkillService_ListAgentEngines_FullMethodName            = "/containarium.v1.AgentSkillService/ListAgentEngines"
+	AgentSkillService_GetAgentSkill_FullMethodName               = "/containarium.v1.AgentSkillService/GetAgentSkill"
+	AgentSkillService_ProvisionSkillBox_FullMethodName           = "/containarium.v1.AgentSkillService/ProvisionSkillBox"
+	AgentSkillService_GetSkillBoxCredentialStatus_FullMethodName = "/containarium.v1.AgentSkillService/GetSkillBoxCredentialStatus"
+	AgentSkillService_RunAgentSkill_FullMethodName               = "/containarium.v1.AgentSkillService/RunAgentSkill"
+	AgentSkillService_SendAgentTask_FullMethodName               = "/containarium.v1.AgentSkillService/SendAgentTask"
+	AgentSkillService_TailRunLog_FullMethodName                  = "/containarium.v1.AgentSkillService/TailRunLog"
+	AgentSkillService_EnqueueAgentTask_FullMethodName            = "/containarium.v1.AgentSkillService/EnqueueAgentTask"
+	AgentSkillService_LeaseAgentTask_FullMethodName              = "/containarium.v1.AgentSkillService/LeaseAgentTask"
+	AgentSkillService_CompleteAgentTask_FullMethodName           = "/containarium.v1.AgentSkillService/CompleteAgentTask"
+	AgentSkillService_StartAgentWorker_FullMethodName            = "/containarium.v1.AgentSkillService/StartAgentWorker"
 )
 
 // AgentSkillServiceClient is the client API for AgentSkillService service.
@@ -38,8 +41,27 @@ const (
 type AgentSkillServiceClient interface {
 	// ListAgentSkills returns all available skills (built-in + registered).
 	ListAgentSkills(ctx context.Context, in *ListAgentSkillsRequest, opts ...grpc.CallOption) (*ListAgentSkillsResponse, error)
+	// ListAgentEngines reports, for each AgentEngine, whether a run naming it
+	// would be refused right now — the same check RunAgentSkill's refusal
+	// enforces, read-only (#2223). No live model call, no bundle inspection:
+	// computed from state the daemon already holds (the global provider-key
+	// set and the per-owner key store).
+	ListAgentEngines(ctx context.Context, in *ListAgentEnginesRequest, opts ...grpc.CallOption) (*ListAgentEnginesResponse, error)
 	// GetAgentSkill returns a single skill definition by id.
 	GetAgentSkill(ctx context.Context, in *GetAgentSkillRequest, opts ...grpc.CallOption) (*GetAgentSkillResponse, error)
+	// ProvisionSkillBox creates or reuses a skill's deterministic box
+	// (agent-<skill_id>) without running it: no token minted, nothing seeded,
+	// the model never called (#2272). Lets a crew member's box exist, and a
+	// human sign in to its coding agent, before any inference credential does
+	// — RunAgentSkill/RunCrew are otherwise the only path that creates this
+	// box, and both require a credential just to get that far.
+	ProvisionSkillBox(ctx context.Context, in *ProvisionSkillBoxRequest, opts ...grpc.CallOption) (*ProvisionSkillBoxResponse, error)
+	// GetSkillBoxCredentialStatus reports whether a skill's already-
+	// provisioned box has a credential its configured coding engine would use
+	// — the source name only (e.g. "interactive" / "api-key" / "none"), never
+	// a value, mirroring `containarium code install`'s own verify posture
+	// (#2030, #2272).
+	GetSkillBoxCredentialStatus(ctx context.Context, in *GetSkillBoxCredentialStatusRequest, opts ...grpc.CallOption) (*GetSkillBoxCredentialStatusResponse, error)
 	// RunAgentSkill launches a single skill in a box and runs one task against
 	// it. The agent's JWT is minted with exactly the skill's allowed_scopes.
 	RunAgentSkill(ctx context.Context, in *RunAgentSkillRequest, opts ...grpc.CallOption) (*RunAgentSkillResponse, error)
@@ -89,10 +111,40 @@ func (c *agentSkillServiceClient) ListAgentSkills(ctx context.Context, in *ListA
 	return out, nil
 }
 
+func (c *agentSkillServiceClient) ListAgentEngines(ctx context.Context, in *ListAgentEnginesRequest, opts ...grpc.CallOption) (*ListAgentEnginesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListAgentEnginesResponse)
+	err := c.cc.Invoke(ctx, AgentSkillService_ListAgentEngines_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *agentSkillServiceClient) GetAgentSkill(ctx context.Context, in *GetAgentSkillRequest, opts ...grpc.CallOption) (*GetAgentSkillResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetAgentSkillResponse)
 	err := c.cc.Invoke(ctx, AgentSkillService_GetAgentSkill_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *agentSkillServiceClient) ProvisionSkillBox(ctx context.Context, in *ProvisionSkillBoxRequest, opts ...grpc.CallOption) (*ProvisionSkillBoxResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ProvisionSkillBoxResponse)
+	err := c.cc.Invoke(ctx, AgentSkillService_ProvisionSkillBox_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *agentSkillServiceClient) GetSkillBoxCredentialStatus(ctx context.Context, in *GetSkillBoxCredentialStatusRequest, opts ...grpc.CallOption) (*GetSkillBoxCredentialStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetSkillBoxCredentialStatusResponse)
+	err := c.cc.Invoke(ctx, AgentSkillService_GetSkillBoxCredentialStatus_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -177,8 +229,27 @@ func (c *agentSkillServiceClient) StartAgentWorker(ctx context.Context, in *Star
 type AgentSkillServiceServer interface {
 	// ListAgentSkills returns all available skills (built-in + registered).
 	ListAgentSkills(context.Context, *ListAgentSkillsRequest) (*ListAgentSkillsResponse, error)
+	// ListAgentEngines reports, for each AgentEngine, whether a run naming it
+	// would be refused right now — the same check RunAgentSkill's refusal
+	// enforces, read-only (#2223). No live model call, no bundle inspection:
+	// computed from state the daemon already holds (the global provider-key
+	// set and the per-owner key store).
+	ListAgentEngines(context.Context, *ListAgentEnginesRequest) (*ListAgentEnginesResponse, error)
 	// GetAgentSkill returns a single skill definition by id.
 	GetAgentSkill(context.Context, *GetAgentSkillRequest) (*GetAgentSkillResponse, error)
+	// ProvisionSkillBox creates or reuses a skill's deterministic box
+	// (agent-<skill_id>) without running it: no token minted, nothing seeded,
+	// the model never called (#2272). Lets a crew member's box exist, and a
+	// human sign in to its coding agent, before any inference credential does
+	// — RunAgentSkill/RunCrew are otherwise the only path that creates this
+	// box, and both require a credential just to get that far.
+	ProvisionSkillBox(context.Context, *ProvisionSkillBoxRequest) (*ProvisionSkillBoxResponse, error)
+	// GetSkillBoxCredentialStatus reports whether a skill's already-
+	// provisioned box has a credential its configured coding engine would use
+	// — the source name only (e.g. "interactive" / "api-key" / "none"), never
+	// a value, mirroring `containarium code install`'s own verify posture
+	// (#2030, #2272).
+	GetSkillBoxCredentialStatus(context.Context, *GetSkillBoxCredentialStatusRequest) (*GetSkillBoxCredentialStatusResponse, error)
 	// RunAgentSkill launches a single skill in a box and runs one task against
 	// it. The agent's JWT is minted with exactly the skill's allowed_scopes.
 	RunAgentSkill(context.Context, *RunAgentSkillRequest) (*RunAgentSkillResponse, error)
@@ -221,8 +292,17 @@ type UnimplementedAgentSkillServiceServer struct{}
 func (UnimplementedAgentSkillServiceServer) ListAgentSkills(context.Context, *ListAgentSkillsRequest) (*ListAgentSkillsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListAgentSkills not implemented")
 }
+func (UnimplementedAgentSkillServiceServer) ListAgentEngines(context.Context, *ListAgentEnginesRequest) (*ListAgentEnginesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListAgentEngines not implemented")
+}
 func (UnimplementedAgentSkillServiceServer) GetAgentSkill(context.Context, *GetAgentSkillRequest) (*GetAgentSkillResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetAgentSkill not implemented")
+}
+func (UnimplementedAgentSkillServiceServer) ProvisionSkillBox(context.Context, *ProvisionSkillBoxRequest) (*ProvisionSkillBoxResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ProvisionSkillBox not implemented")
+}
+func (UnimplementedAgentSkillServiceServer) GetSkillBoxCredentialStatus(context.Context, *GetSkillBoxCredentialStatusRequest) (*GetSkillBoxCredentialStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetSkillBoxCredentialStatus not implemented")
 }
 func (UnimplementedAgentSkillServiceServer) RunAgentSkill(context.Context, *RunAgentSkillRequest) (*RunAgentSkillResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RunAgentSkill not implemented")
@@ -284,6 +364,24 @@ func _AgentSkillService_ListAgentSkills_Handler(srv interface{}, ctx context.Con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AgentSkillService_ListAgentEngines_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListAgentEnginesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentSkillServiceServer).ListAgentEngines(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentSkillService_ListAgentEngines_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentSkillServiceServer).ListAgentEngines(ctx, req.(*ListAgentEnginesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _AgentSkillService_GetAgentSkill_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetAgentSkillRequest)
 	if err := dec(in); err != nil {
@@ -298,6 +396,42 @@ func _AgentSkillService_GetAgentSkill_Handler(srv interface{}, ctx context.Conte
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(AgentSkillServiceServer).GetAgentSkill(ctx, req.(*GetAgentSkillRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentSkillService_ProvisionSkillBox_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ProvisionSkillBoxRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentSkillServiceServer).ProvisionSkillBox(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentSkillService_ProvisionSkillBox_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentSkillServiceServer).ProvisionSkillBox(ctx, req.(*ProvisionSkillBoxRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentSkillService_GetSkillBoxCredentialStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetSkillBoxCredentialStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentSkillServiceServer).GetSkillBoxCredentialStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentSkillService_GetSkillBoxCredentialStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentSkillServiceServer).GetSkillBoxCredentialStatus(ctx, req.(*GetSkillBoxCredentialStatusRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -440,8 +574,20 @@ var AgentSkillService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _AgentSkillService_ListAgentSkills_Handler,
 		},
 		{
+			MethodName: "ListAgentEngines",
+			Handler:    _AgentSkillService_ListAgentEngines_Handler,
+		},
+		{
 			MethodName: "GetAgentSkill",
 			Handler:    _AgentSkillService_GetAgentSkill_Handler,
+		},
+		{
+			MethodName: "ProvisionSkillBox",
+			Handler:    _AgentSkillService_ProvisionSkillBox_Handler,
+		},
+		{
+			MethodName: "GetSkillBoxCredentialStatus",
+			Handler:    _AgentSkillService_GetSkillBoxCredentialStatus_Handler,
 		},
 		{
 			MethodName: "RunAgentSkill",

@@ -159,6 +159,12 @@ func (am *AuthMiddleware) HTTPMiddleware(next http.Handler) http.Handler {
 		if claims.TrackerConn != "" {
 			mdPairs = append(mdPairs, MDKeyTrackerConn, claims.TrackerConn)
 		}
+		// #2268 — propagate the optional `run_tenant` claim the same way,
+		// so the tracker verb RPCs can authorize a run token for the
+		// tenant it was started for (its own subject is the box).
+		if claims.RunTenant != "" {
+			mdPairs = append(mdPairs, MDKeyRunTenant, claims.RunTenant)
+		}
 		md := metadata.Pairs(mdPairs...)
 		ctx = metadata.NewOutgoingContext(ctx, md)
 

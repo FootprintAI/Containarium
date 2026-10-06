@@ -1038,3 +1038,42 @@ func resolveAuthToken(server string) string {
 	}
 	return creds.Token
 }
+
+// canonicalServerAddr maps a scheme-less --server value ("host") onto the
+// full URL login stored its credentials under ("https://host"), so both the
+// token lookup and the HTTP client's scheme choice agree with what the user
+// logged in to (#2238). Anything that doesn't match a stored server — an
+// explicit scheme, an unknown host, an unreadable credentials file — is
+// returned unchanged.
+func canonicalServerAddr(server string) string {
+	if server == "" || strings.Contains(server, "://") {
+		return server
+	}
+	path, err := credentials.DefaultPath()
+	if err != nil {
+		return server
+	}
+	cf, err := credentials.Load(path)
+	if err != nil {
+		return server
+	}
+	if key, _, ok := cf.Lookup(server); ok {
+		return key
+	}
+	return server
+}
+
+// noTokenError explains a missing token by naming the servers the user IS
+// logged in to, since the usual cause is a --server value that doesn't match
+// the one login stored (not an expired token).
+func noTokenError(server string) error {
+	msg := fmt.Sprintf("no auth token for %s — run `containarium login` first", server)
+	if path, err := credentials.DefaultPath(); err == nil {
+		if cf, err := credentials.Load(path); err == nil {
+			if keys := cf.ServerKeys(); len(keys) > 0 {
+				msg += fmt.Sprintf(" (logged in to: %s; --server must match one of these)", strings.Join(keys, ", "))
+			}
+		}
+	}
+	return fmt.Errorf("%s", msg)
+}

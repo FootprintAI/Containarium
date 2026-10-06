@@ -15,10 +15,15 @@
 FROM debian:bookworm-slim
 
 # Pin to the same upstream collector version the central
-# containarium-core-otelcollector LXC runs (decision O1).
-ARG OTELCOL_VERSION=0.110.0
+# containarium-core-otelcollector LXC runs (decision O1) — kept in sync
+# with internal/server/core_otel_collector.go's otelCollectorVersion.
+ARG OTELCOL_VERSION=0.162.0
 
+# apt-get upgrade: picks up security patches that shipped since
+# debian:bookworm-slim's last rebuild (e.g. libpcre2 deb12u2, which failed the
+# release Trivy gate on v0.99.0). Same fix as images/agent-box/Dockerfile.
 RUN apt-get update \
+    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends ca-certificates wget \
     && rm -rf /var/lib/apt/lists/*
 

@@ -247,7 +247,7 @@ func TestInternalListenerTrustsForwardedClaims(t *testing.T) {
 }
 
 func TestReservedIdentityMetadataKeys(t *testing.T) {
-	for _, k := range []string{"username", "Roles", "SCOPES", "act", "jti", "run_id", "tracker_conn", "x-containarium-gateway-forward"} {
+	for _, k := range []string{"username", "Roles", "SCOPES", "act", "jti", "run_id", "tracker_conn", "run_tenant", "x-containarium-gateway-forward"} {
 		if !IsReservedIdentityMetadataKey(k) {
 			t.Errorf("%q must be reserved", k)
 		}

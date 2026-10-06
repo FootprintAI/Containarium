@@ -93,6 +93,24 @@ Hard rules: no org/tenant UUID labels ever (reuse the intent of
 fixed default 60s, floor 60s (cost guard); a deleted container's series stop at
 the next interval because collection enumerates live containers each tick.
 
+> **One reviewed exception (#2294):** the backup-health series,
+> `containarium.backup.last_success_age_seconds` (platform group,
+> `backend_id, hostname, region, username`), carries a tenant's OSS
+> `username` label — the only series in this file that does. This rule
+> targets the Cloud product's opaque org/tenant UUIDs, which have no
+> legitimate reason to leave the platform's own database; an OSS
+> username is already exported today via the container-series'
+> `container_name` (which is literally `<username>-container`), and a
+> per-tenant backup alert is pointless if it can't name which tenant
+> broke. See the #2294 issue thread for the decision record if this
+> precedent is ever revisited.
+
+The rest of this table predates #1082/#1083/#1084/#2294's platform-group
+additions and was never backfilled with them — see
+`internal/metrics/cloudexport/collector.go`'s instrument constants for
+the current, authoritative allowlist instead of treating this table as
+exhaustive.
+
 ### Data flow, including failure paths
 
 1. Enable: CLI → `SetMetricsExport{provider: GCP}` → server validates enum ≠

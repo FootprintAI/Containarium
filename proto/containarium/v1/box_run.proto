@@ -42,6 +42,44 @@ message BoxRun {
   string log_path = 6;
   // How the log is written: FRAMED logs are demuxed by TailBoxRunLog.
   CaptureMode capture_mode = 7;
+  // The engine's own session identifier (#2193), read back from the box
+  // shortly after the run starts: Claude Code's session id, or pi's session
+  // file name. Empty when the engine exposes none, or when discovery hasn't
+  // found one yet (a race with a just-started run — poll ListBoxRuns again).
+  // Pass it to StartBoxRun's session_id to resume this exact conversation.
+  string session_id = 8;
+}
+
+// StartBoxRunRequest starts (or resumes) a coding-agent run on a box through
+// the daemon API — no SSH client, no agent-box RPC (#2193): the daemon
+// root-execs the same on-disk contract `containarium code run` leaves via
+// agent-box's process_start, so ListBoxRuns and TailBoxRunLog read a
+// daemon-started run exactly like one `code run` started.
+//
+// The engine and its credential source are never request fields: they come
+// from the box's own ~/.containarium/code.json (`code install`, #1727) —
+// this RPC names WHAT TO SAY, never HOW TO RUN. Interactive sign-in is out of
+// scope by the same rule #2030 settled for `code install`: this starts or
+// resumes an already-authenticated session only.
+message StartBoxRunRequest {
+  // The box owner's username (the box is <username>-container).
+  string username = 1;
+  // The task to give the agent.
+  string prompt = 2;
+  // Resume this specific session id instead of starting a fresh one
+  // (claude --resume <id>; pi --session <id>). Also becomes this run's
+  // run_name: StartBoxRun on a box whose run under this name is still RUNNING
+  // or UNKNOWN is FAILED_PRECONDITION naming it — no queueing. Mutually
+  // exclusive with continue_session.
+  string session_id = 3;
+  // Resume the engine's own "most recent session in this box's working
+  // directory" instead of starting a fresh one (`code run --continue`'s
+  // meaning, unchanged). Mutually exclusive with session_id.
+  bool continue_session = 4;
+}
+
+message StartBoxRunResponse {
+  BoxRun run = 1;
 }
 
 message ListBoxRunsRequest {

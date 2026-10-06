@@ -72,10 +72,62 @@ The operator/agent token that drives the AgentSkillService needs:
 | --- | --- |
 | `agent list` / `agent get` (via `--server`) | `agents:read` |
 | `agent run` | `agents:run` (+ `containers:write`, since a run provisions a box) |
+| `agent provision-box` | `agents:run` (it still creates/starts a container) |
+| `agent credential-status` | `agents:read` |
 | `agent call` | `agents:call` |
 
 These gate the *caller*. They are separate from the skill's **own** in-box
 token, which carries only the skill's declared `allowed_scopes`.
+
+## Sign a human into a box's coding agent, before any inference credential exists
+
+`agent run`/a crew run both provision a skill's box as a side effect — but
+only on a run that already carries an inference credential. For an org that
+wants to use its **own Claude Code (or Codex) subscription** on a box instead
+of registering an API key with the daemon, that is a chicken-and-egg problem:
+the box a human would sign in on does not exist until a credentialed run
+creates it.
+
+`agent provision-box` breaks that: it does the same create-or-reuse step
+`run` does, but **never mints a token, seeds a task, or calls a model** — so
+it needs no credential at all.
+
+```bash
+containarium agent provision-box engineer-crew-member --server <host>
+
+# Provisioning box for skill "engineer-crew-member" (no credential needed, no model call)...
+#
+# ✓ box created: agent-engineer-crew-member-container (RUNNING)
+#
+# Next: `containarium connect agent-engineer-crew-member-container` and sign in
+# to the coding agent interactively (e.g. `claude`).
+```
+
+Then, on the box itself:
+
+```bash
+containarium connect agent-engineer-crew-member-container
+claude   # or codex, once that engine lands (#2273) — complete the device-code sign-in
+```
+
+That sign-in is a one-time step: the box is reused (not recreated) by every
+later run, so the session survives. To check — without ever reading or
+printing the credential itself, only **which source** the engine would use —
+run:
+
+```bash
+containarium agent credential-status engineer-crew-member --server <host>
+
+# Engine:            claude
+# Credential source: interactive
+# Checked at:        2026-10-04T12:00:00Z
+```
+
+`credential-status` reports exactly one of `interactive` (a human completed
+the engine's own sign-in), `api-key` (a user-placed key is visible to the
+engine's shell environment), or `none` — the same posture `containarium code
+install`'s own verify step uses: a presence check, never a value, at any
+layer from the box to this output.
 
 ## Talk to a peer (A2A) — Phase 1
 

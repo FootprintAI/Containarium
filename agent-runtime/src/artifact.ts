@@ -5,8 +5,10 @@ import { join } from "node:path";
 // reads artifact.json to populate RunAgentSkillResponse.artifact_json (and, for
 // the A2A server, the AgentArtifact returned from /tasks).
 export interface Artifact {
-  // The agent's final output (JSON string, ideally matching the skill's
-  // agent_card.output_schema_json).
+  // The agent's final output as a JSON string. When the skill declares an
+  // agent_card.output_schema_json, this is the engine's provider-validated
+  // structured output (#2002) — a run that produced none fails with `error`
+  // set instead of writing non-conforming text here. Free-form otherwise.
   outputJson: string;
   // Which engine produced it (claude | codex | gemini) and the model used — for audit.
   engine: string;

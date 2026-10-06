@@ -32,6 +32,10 @@ import (
 // run id) read from the verified token, never a request field — this
 // is the hop that carries Claims.RunID from the HTTP/JWT layer to the
 // gRPC handler the same way jti does.
+//
+// #2268 — `run_tenant` joined too: the tenant a run token acts for, which
+// AuthorizeTrackerTenant matches req.Username against (the token's own
+// subject is the box, not the tenant).
 const (
 	MDKeyUsername    = "username"
 	MDKeyRoles       = "roles"
@@ -40,6 +44,7 @@ const (
 	MDKeyJTI         = "jti"
 	MDKeyRunID       = "run_id"
 	MDKeyTrackerConn = "tracker_conn"
+	MDKeyRunTenant   = "run_tenant"
 )
 
 // RoleAdmin is the role granted to operator / system tokens. Holders
@@ -131,6 +136,16 @@ func ContextWithTestTrackerConn(ctx context.Context, conn string) context.Contex
 	md, _ := metadata.FromIncomingContext(ctx)
 	md = md.Copy()
 	md.Set(MDKeyTrackerConn, conn)
+	return metadata.NewIncomingContext(ctx, md)
+}
+
+// ContextWithTestRunTenant is a test-only helper that stamps a run_tenant
+// onto an existing gRPC-incoming test context, the same way
+// ContextWithTestTrackerConn layers a tracker_conn on. #2268.
+func ContextWithTestRunTenant(ctx context.Context, tenant string) context.Context {
+	md, _ := metadata.FromIncomingContext(ctx)
+	md = md.Copy()
+	md.Set(MDKeyRunTenant, tenant)
 	return metadata.NewIncomingContext(ctx, md)
 }
 
@@ -275,6 +290,23 @@ func TrackerConnFromGRPCContext(ctx context.Context) (conn string, present bool)
 	}
 	if c, found := TrackerConnFromContext(ctx); found && c != "" {
 		return c, true
+	}
+	return "", false
+}
+
+// RunTenantFromGRPCContext returns the authenticated token's `run_tenant`
+// claim (#2268), propagated through metadata or context the same way
+// TrackerConnFromGRPCContext's claim is. Returns ("", false) when no run
+// tenant was carried — every operator/human token, and every run token
+// minted before the claim existed.
+func RunTenantFromGRPCContext(ctx context.Context) (tenant string, present bool) {
+	if md, mdOk := metadata.FromIncomingContext(ctx); mdOk {
+		if vals := md.Get(MDKeyRunTenant); len(vals) > 0 && vals[0] != "" {
+			return vals[0], true
+		}
+	}
+	if t, found := RunTenantFromContext(ctx); found && t != "" {
+		return t, true
 	}
 	return "", false
 }

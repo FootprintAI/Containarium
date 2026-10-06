@@ -180,6 +180,19 @@ type Manager struct {
 	recoveryBackoff     time.Duration
 	nextRecoveryAttempt time.Time
 
+	// watchOnly holds additional GCP-backed instances this sentinel
+	// watches for preemption/stop and attempts to restart, entirely
+	// independent of the primary+failover HTTP proxy pool above. Unlike
+	// the "gcp" backend, these never become m.primary and are never
+	// considered by SelectPrimary — they may be wholly unrelated hosts
+	// (different tenants, different zone) that just happen to also run
+	// on preemptible capacity. Each entry owns its own recovery/backoff
+	// timeline (see watch_recovery.go) so independent targets can't
+	// corrupt one another's state the way a single shared timeline
+	// would. Populated via AddWatchOnlyBackend before Run() starts the
+	// per-target goroutines; read-only afterward, so no lock needed.
+	watchOnly []*watchedBackend
+
 	// Backend-failover observability (#1358). failoverTotal is atomic and
 	// backendHealth is mutex-guarded because both are written by the
 	// health-check loop and read by the /metrics HTTP goroutine. The older
@@ -811,6 +824,13 @@ func (m *Manager) Run(ctx context.Context) error {
 	// below so a wedged pipeline (the exact thing it's checking for)
 	// can't also stall event processing.
 	go m.runSelfCheckLoop(ctx)
+
+	// Watch-only backends (see AddWatchOnlyBackend / watch_recovery.go):
+	// one independent goroutine per target, each with its own event
+	// watcher and backoff timeline. Never touches m.backends/m.primary.
+	for _, wb := range m.watchOnly {
+		go m.runWatchOnlyRecovery(ctx, wb)
+	}
 
 	// End-to-end reachability probe for tunnel-promoted primaries (#1872):
 	// registering in PrimaryRegistry only proves the sentinel can route

@@ -17,6 +17,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
+	"github.com/footprintai/containarium/internal/agentengine"
 	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/runlease"
@@ -307,7 +308,7 @@ func TestRunLeaseAuditPayloads(t *testing.T) {
 	lease := testLease("run-audit")
 
 	var issue runLeaseIssueDetail
-	if err := json.Unmarshal([]byte(runLeaseIssuePayload(lease)), &issue); err != nil {
+	if err := json.Unmarshal([]byte(runLeaseIssuePayload(lease, pb.AgentEngine_AGENT_ENGINE_CLAUDE)), &issue); err != nil {
 		t.Fatalf("unmarshal issue payload: %v", err)
 	}
 	if issue.RunID != "run-audit" {
@@ -315,6 +316,12 @@ func TestRunLeaseAuditPayloads(t *testing.T) {
 	}
 	if issue.Box != lease.Box {
 		t.Errorf("issue box = %q, want %q", issue.Box, lease.Box)
+	}
+	// #2222: the run's resolved engine rides the same audit row, as its
+	// EnvValue name — what an auditor reading the daemon's own
+	// CONTAINARIUM_AGENT_ENGINE export would see.
+	if issue.Engine != "claude" {
+		t.Errorf("issue engine = %q, want claude", issue.Engine)
 	}
 	if len(issue.Credentials) != 2 {
 		t.Fatalf("issue credentials = %d, want both minted credentials", len(issue.Credentials))
@@ -449,7 +456,7 @@ func TestRunLeaseAuditRows(t *testing.T) {
 
 		// Exactly the call provisionSkillBox makes after a successful seed.
 		lease := testLease("run-issue")
-		s.auditRunLease(ctx, "agent.run_lease_issue", lease.RunID, runLeaseIssuePayload(lease))
+		s.auditRunLease(ctx, "agent.run_lease_issue", lease.RunID, runLeaseIssuePayload(lease, pb.AgentEngine_AGENT_ENGINE_UNSPECIFIED))
 
 		issue := audits.byAction("agent.run_lease_issue")
 		if len(issue) != 1 {
@@ -523,7 +530,7 @@ func newSkillBoxHarnessInspectable(t *testing.T, store auth.RevocationStore) (*A
 		catalog: catalog,
 		recipes: NewRecipeServer(cs, nil),
 		tokens:  tm,
-		gateway: &gatewayProvisioning{provider: "anthropic", httpPort: 8080, secret: []byte("test-shared-secret")},
+		gateway: &gatewayProvisioning{engines: agentengine.Gateway{DefaultProvider: "anthropic"}, httpPort: 8080, secret: []byte("test-shared-secret")},
 	}
 	s.SetRevocationStore(store)
 	return s, skill, backend
@@ -537,7 +544,7 @@ func TestProvisionSkillBox_EndsPartialLeaseOnSeedFailure(t *testing.T) {
 	store := newFakeRevocationStore()
 	s, skill := newSkillBoxHarness(t, store)
 
-	_, _, lease, _, _, err := s.provisionSkillBox(ctxAs("admin", true), skill, "", "", "{}", "run-partial", "", "", "", "")
+	_, _, lease, _, _, _, err := s.provisionSkillBox(ctxAs("admin", true), skill, "", "", "{}", "run-partial", "", "", "", "")
 	if err == nil {
 		t.Fatal("provisionSkillBox must fail when the seed exec fails")
 	}
@@ -630,7 +637,7 @@ func TestStartServeMode_StopsPriorInstanceBeforeLaunching(t *testing.T) {
 	store := newFakeRevocationStore()
 	s, _, backend := newSkillBoxHarnessInspectable(t, store)
 
-	s.startServeMode("agent-hello-agent", "/etc/containarium/agent/runs/run-1", "hello-agent")
+	s.startServeMode("agent-hello-agent", "/etc/containarium/agent/runs/run-1", "hello-agent", agentengine.Resolved{}, "")
 
 	if len(backend.execCalls) != 1 {
 		t.Fatalf("execCalls = %d, want 1 (the kill step — the launch step uses ExecWithOutput, unreachable on this fake); got %+v",
@@ -647,7 +654,7 @@ func TestStartServeMode_StopsPriorInstanceBeforeLaunching(t *testing.T) {
 
 	// A second call (a later run against the same reused box) must kill
 	// again — the fix is not a one-shot guard, it runs on every call.
-	s.startServeMode("agent-hello-agent", "/etc/containarium/agent/runs/run-2", "hello-agent")
+	s.startServeMode("agent-hello-agent", "/etc/containarium/agent/runs/run-2", "hello-agent", agentengine.Resolved{}, "")
 	if len(backend.execCalls) != 2 {
 		t.Fatalf("after a second call, execCalls = %d, want 2", len(backend.execCalls))
 	}

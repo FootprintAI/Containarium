@@ -261,17 +261,109 @@ Set in the daemon's systemd unit:
 Environment="CONTAINARIUM_POSTGRES_PASSWORD_FILE=/etc/containarium/postgres.password"
 ```
 
-To rotate, update the file in place and restart the daemon. No code
-or config change required:
-
-```bash
-echo -n "$NEW_PG_PASSWORD" | sudo tee /etc/containarium/postgres.password > /dev/null
-sudo chmod 0600 /etc/containarium/postgres.password
-sudo systemctl restart containarium
-```
-
 The daemon refuses to start if the file is world-readable — same
 contract as the JWT token file (Phase C-HIGH-7).
+
+**First install.** Set the password file (or env var) *before* the first
+start. The daemon creates the core Postgres role with the password it
+resolves, so a host configured up front never has the compiled-in default.
+(Before #2091 the role was always created with the default, whatever was
+configured.)
+
+### Rotating a running host
+
+The file is only what the daemon *presents*. The password the database
+*accepts* lives in Postgres, so rotating means changing both, in this order.
+Changing only the file and restarting leaves the daemon unable to log in.
+
+Letters and digits (`A-Za-z0-9`) are the simplest choice. The daemon escapes
+the password when it builds its connection URL, and Grafana's config quotes
+values it would read as comments, so `@ / : #` are handled. Avoid single quotes
+and backslashes: the `ALTER ROLE` statement in step 2 is written as SQL and
+does not escape them.
+
+1. **Stage the new password** in the file (mode 0600, root) and make sure the
+   daemon's environment points at it, as above. Nothing reads it until the
+   daemon restarts.
+
+2. **Change it in Postgres.** Pipe the statement on stdin so the password
+   never appears in a process argument list:
+
+   ```bash
+   printf "ALTER ROLE containarium WITH PASSWORD '%s';\n" "$(cat /etc/containarium/postgres.password)" \
+     | sudo incus exec containarium-core-postgres -- sudo -u postgres psql
+   ```
+
+   From here new connections made with the old password fail, and so does
+   Grafana's, until steps 3 and 4 finish. Existing daemon connections keep
+   working. Do the next steps straight away.
+
+3. **Restart the daemon.** It reads the file, reconnects, and brings Grafana's
+   database password in line on its own: it rewrites `[database] password` in
+   Grafana's config and restarts Grafana, but only if the new password
+   actually connects to Grafana's database, so a host that was rotated by hand
+   is never overwritten with something wrong.
+
+   ```bash
+   sudo systemctl restart containarium
+   ```
+
+   (On a daemon older than #2091, edit `[database] password` in
+   `/etc/grafana/grafana.ini` inside the metrics container and restart
+   `grafana-server` yourself.)
+
+4. **Verify** the old password is rejected and the new one works, and that
+   Grafana is healthy. Neither check should print a password:
+
+   ```bash
+   sudo incus exec containarium-core-postgres -- \
+     env PGPASSWORD=containarium psql -w -h <postgres-ip> -U containarium -d containarium -Atc 'select 1' \
+     && echo "STILL ACCEPTS THE DEFAULT" || echo "default rejected"
+   sudo incus exec containarium-core-victoriametrics -- curl -s localhost:3000/api/health
+   ```
+
+### The Grafana admin login
+
+A new host generates a random Grafana admin password at first provisioning and
+saves it to `/etc/containarium/grafana-admin.password` (mode 0600; override the
+path with `CONTAINARIUM_GRAFANA_ADMIN_PASSWORD_FILE`). If the daemon cannot save
+it, it leaves the key out, logs a warning, and Grafana falls back to its own
+default login with a prompt to change it at first login: change it straight
+away, because the dashboard port is reachable from every tenant on the bridge.
+
+A host provisioned before #2091 still has the literal login `admin` /
+`containarium`. Grafana only reads `admin_password` the first time it starts, so
+the daemon cannot change a live account for you. Reset it yourself, and save the
+new value where the operator can find it:
+
+```bash
+NEW=$(openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | cut -c1-32)
+printf '%s\n' "$NEW" | sudo install -m 0600 -o root -g root /dev/stdin /etc/containarium/grafana-admin.password
+sudo incus exec containarium-core-victoriametrics -- \
+  grafana-cli --config /etc/grafana/grafana.ini admin reset-admin-password "$NEW"
+unset NEW
+```
+
+### Restrict who can connect
+
+A default install lets every address on the container bridge, tenants
+included, attempt to log in to the core Postgres. After rotating, narrow the
+`pg_hba.conf` rule to the clients that need it, using `scram-sha-256`. On a
+standard host those are the daemon (the bridge gateway address) and Grafana
+(the metrics container). A client you leave out is locked out, so list the
+live ones first:
+
+```bash
+sudo incus exec containarium-core-postgres -- sudo -u postgres psql -Atc \
+  "select client_addr, usename, datname, count(*) from pg_stat_activity
+   where backend_type='client backend' group by 1,2,3"
+```
+
+Replace the bridge-wide `md5` line with one `scram-sha-256` line per client,
+reload (`select pg_reload_conf();`), and turn on connection logging
+(`alter system set log_connections = on;`, then reload) so an unexpected client
+shows up. Blocking tenant traffic to the core services at the network layer is
+the stronger control; see the core-guard runbook.
 
 ---
 
@@ -1196,6 +1288,15 @@ filesystem permissions — it defends against a Postgres-privileged
 attacker, not a host-root one who could edit both. Back it up
 off-host (it's a plain append-only JSON-lines file) for anything
 stronger.
+
+### Integrity self-measurement heartbeat
+
+The daemon also emits a self-measurement digest to its log on a periodic
+heartbeat. Set `CONTAINARIUM_INTEGRITY_HEARTBEAT_INTERVAL` in the daemon's
+systemd `Environment=` or `EnvironmentFile` to a Go duration such as `30s`,
+`5m`, or `1h`. It defaults to `5m`. Invalid, zero, and negative values fall
+back to that default; values below `30s` are clamped to `30s` to avoid a log
+flood. The daemon logs the effective interval when the heartbeat starts.
 
 ---
 

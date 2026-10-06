@@ -3,9 +3,11 @@ syntax = "proto3";
 package containarium.v1;
 
 import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
 import "protoc-gen-openapiv2/options/annotations.proto";
 import "containarium/v1/container.proto";
 import "containarium/v1/recipe.proto";
+import "containarium/v1/model_gateway.proto";
 
 option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
 
@@ -94,8 +96,125 @@ message AgentSkill {
   repeated string allowed_peers = 9;
 
   // Model identifier the runtime should drive this agent with (e.g.
-  // "claude-opus-4-8"). Empty = runtime default.
+  // "claude-opus-4-8"). Empty = runtime default. Exported to the box
+  // (CONTAINARIUM_AGENT_MODEL) only when `engine` is also set — an
+  // unspecified engine keeps this field display/audit-only, exactly as it
+  // was before `engine` existed, so a daemon whose default engine does not
+  // match this model id does not have its skills break on upgrade.
   string model = 10;
+
+  // Agent engine (SDK) this skill runs on. AGENT_ENGINE_UNSPECIFIED keeps
+  // today's behaviour: the daemon's configured gateway primary provider
+  // picks the engine in gateway mode, or the box's own default/env decides
+  // in direct mode. A named engine is honoured per run — see
+  // docs/architecture/agent-router.md.
+  AgentEngine engine = 11;
+}
+
+// AgentEngine identifies the in-box agent loop (agent-runtime SDK) a skill
+// runs on. One daemon can run skills on different engines at once — the
+// engine is a per-skill choice, not a daemon-wide constant (#2222).
+enum AgentEngine {
+  // Runtime default: the daemon's configured gateway primary provider in
+  // gateway mode, or the box's own default/env in direct mode. Never
+  // rejected — this is what every skill predating this field resolves to.
+  AGENT_ENGINE_UNSPECIFIED = 0;
+  // Claude Agent SDK (provider: anthropic).
+  AGENT_ENGINE_CLAUDE = 1;
+  // OpenAI Codex SDK (provider: openai).
+  AGENT_ENGINE_CODEX = 2;
+  // Google Gen AI SDK (provider: gemini).
+  AGENT_ENGINE_GEMINI = 3;
+}
+
+// AgentEngineReadiness reports whether a run naming this engine would be
+// refused — the same truth agentengine.Resolve enforces, read-only (#2223).
+enum AgentEngineReadiness {
+  AGENT_ENGINE_READINESS_UNSPECIFIED = 0;
+  // Resolve would use this engine without refusing: a global key, or the
+  // caller's own owner key, covers the provider.
+  AGENT_ENGINE_READINESS_READY = 1;
+  // A named run on this engine would be refused FailedPrecondition — no
+  // key anywhere Resolve can see. See `reason` for why and the fix.
+  AGENT_ENGINE_READINESS_NOT_READY = 2;
+  // The daemon serves no model gateway at all (direct mode): the box's own
+  // secrets decide, so this daemon cannot say whether the engine would
+  // actually work — never reported as READY, since that would be a guess.
+  AGENT_ENGINE_READINESS_UNKNOWN_DIRECT_MODE = 3;
+}
+
+// AgentCredentialSource is WHERE a READY engine's key resolves from — never
+// the key's value or fingerprint.
+enum AgentCredentialSource {
+  AGENT_CREDENTIAL_SOURCE_UNSPECIFIED = 0;
+  // The daemon's own env/global key for this provider.
+  AGENT_CREDENTIAL_SOURCE_GLOBAL_KEY = 1;
+  // The caller's own per-owner registered key (SetTenantProviderKey).
+  AGENT_CREDENTIAL_SOURCE_OWNER_KEY = 2;
+  // No model gateway is served; the box's own secrets decide.
+  AGENT_CREDENTIAL_SOURCE_DIRECT_MODE = 3;
+}
+
+// CodeCredentialSource is WHERE a box's `containarium code`-style coding
+// engine (Claude Code today; Codex once #2273 lands) would currently find a
+// human/headless sign-in — never the credential's value, never read, logged,
+// or transmitted at any layer. Mirrors #2030's `code install` verify output
+// ("report which credential source Claude Code will use, never a value"),
+// condensed to the one answer GetSkillBoxCredentialStatus needs (#2272).
+//
+// Deliberately a DIFFERENT enum from AgentCredentialSource above:
+// AgentCredentialSource is where a model-GATEWAY token's upstream key comes
+// from (daemon-held, never the box's concern); CodeCredentialSource is
+// whether a HUMAN has already completed Anthropic's own sign-in flow on this
+// box, or placed their own key, so unattended reuse of that same box needs no
+// credential of containarium's own.
+enum CodeCredentialSource {
+  CODE_CREDENTIAL_SOURCE_UNSPECIFIED = 0;
+  // The engine's own device-code/browser sign-in has already completed on
+  // this box (e.g. Claude Code's own ~/.claude/.credentials.json).
+  CODE_CREDENTIAL_SOURCE_INTERACTIVE = 1;
+  // A user-placed provider key/token is visible to the engine's own shell
+  // environment (e.g. ANTHROPIC_API_KEY in ~/.claude/settings.json, or a 3P
+  // provider env var) — the headless path #2030 documents.
+  CODE_CREDENTIAL_SOURCE_API_KEY = 2;
+  // Neither of the above. Expected on a freshly provisioned box (#2272)
+  // until a human signs in or places a key.
+  CODE_CREDENTIAL_SOURCE_NONE = 3;
+}
+
+// AgentEngineStatus is one engine's readiness row, as ListAgentEngines
+// reports it. One row per AgentEngine value (#2223).
+message AgentEngineStatus {
+  AgentEngine engine = 1;
+  // The gateway provider this engine speaks (Provider in agentengine).
+  // GATEWAY_PROVIDER_UNSPECIFIED only if a future AgentEngine value has no
+  // provider mapping yet.
+  GatewayProvider provider = 2;
+  AgentEngineReadiness readiness = 3;
+  // Set exactly when readiness != READY: NOT_READY names the missing key
+  // and the fix command (the same text RunAgentSkill's refusal uses);
+  // UNKNOWN_DIRECT_MODE names why this daemon can't say.
+  string reason = 4;
+  AgentCredentialSource source = 5;
+  // True for the one engine AGENT_ENGINE_UNSPECIFIED resolves to on this
+  // daemon right now (gatewayPrimaryProvider's pick in gateway mode; the
+  // runtime's own default in direct mode).
+  bool is_default = 6;
+  // Catalog skills whose manifest names this engine EXPLICITLY (#2222 Q2,
+  // decided 2026-10-01) — never includes an unspecified-engine skill, even
+  // one that would resolve to this engine via is_default.
+  repeated string skill_ids = 7;
+}
+
+message ListAgentEnginesRequest {}
+message ListAgentEnginesResponse {
+  // One row per AgentEngine value (AGENT_ENGINE_UNSPECIFIED excluded — it
+  // names no engine of its own to report readiness for).
+  repeated AgentEngineStatus engines = 1;
+  // The key owner this response's READY/NOT_READY rows were resolved for.
+  // Empty for an admin caller with no owner scope (the global view) or in
+  // direct mode.
+  string key_owner = 2;
 }
 
 // ---- AgentSkillService request/response messages ----------------------------
@@ -110,6 +229,50 @@ message GetAgentSkillRequest {
 }
 message GetAgentSkillResponse {
   AgentSkill skill = 1;
+}
+
+// ProvisionSkillBoxRequest creates or reuses a skill's deterministic box
+// (agent-<skill_id>) WITHOUT running it: no token is minted, nothing is
+// seeded, and the model is never called (#2272). This is the create-or-reuse
+// step RunAgentSkill/RunCrew already perform as a side effect of a real run
+// — surfaced on its own so a crew member's box can exist, and a human can
+// `containarium connect` in and sign in to its coding agent, BEFORE any
+// inference credential exists. Without this, that box is created only as a
+// side effect of a run that itself needs a credential to get that far —
+// chicken-and-egg.
+message ProvisionSkillBoxRequest {
+  string skill_id = 1;
+  // Target backend/pool placement, same scheme as RunAgentSkillRequest.
+  string backend_id = 2;
+  string pool = 3;
+}
+message ProvisionSkillBoxResponse {
+  Container container = 1;
+  // True when this call created the box; false when an already-provisioned
+  // box (running, or stopped and started back up) was reused instead.
+  bool freshly_provisioned = 2;
+}
+
+// GetSkillBoxCredentialStatusRequest asks whether a skill's already-
+// provisioned box has a credential its configured coding engine would use
+// to sign in — a presence check only (#2272's re-scoping comment).
+message GetSkillBoxCredentialStatusRequest {
+  string skill_id = 1;
+}
+message GetSkillBoxCredentialStatusResponse {
+  // The engine this status was checked for: the skill's own `engine` field,
+  // resolved to AGENT_ENGINE_CLAUDE when the skill leaves it unspecified
+  // (the only engine `containarium code`'s box-side probe supports today —
+  // AGENT_ENGINE_CODEX/GEMINI are refused FAILED_PRECONDITION until #2273
+  // adds Codex's own probe; never guessed).
+  AgentEngine engine = 1;
+  // WHERE that engine's credential comes from, if anywhere — names only,
+  // NEVER a value. Mirrors `containarium code install`'s own verify output
+  // (#2030): this call does not read, store, log, or transmit the
+  // credential itself at any layer, box to daemon to caller.
+  CodeCredentialSource credential_source = 2;
+  // When this check ran.
+  google.protobuf.Timestamp checked_at = 3;
 }
 
 // RunAgentSkillRequest launches a single skill in its box and sends it one
@@ -149,6 +312,13 @@ message RunAgentSkillRequest {
   // Empty means the run is not bound to any connection (every pre-#1922
   // run, and any run that doesn't use the tracker broker).
   string tracker_connection = 9;
+  // Per-invocation engine override (#2228): when set, this run's engine is
+  // resolved from THIS value instead of the skill manifest's own `engine`
+  // field — the same agentengine.Resolve readiness check applies either way,
+  // so an override naming an engine with no usable key is refused the same
+  // way an unready manifest engine is. UNSPECIFIED (the default) means "use
+  // the manifest", unchanged pre-#2228 behavior.
+  AgentEngine engine = 10;
 }
 message RunAgentSkillResponse {
   // The box the agent ran in.
@@ -288,6 +458,22 @@ service AgentSkillService {
     };
   }
 
+  // ListAgentEngines reports, for each AgentEngine, whether a run naming it
+  // would be refused right now — the same check RunAgentSkill's refusal
+  // enforces, read-only (#2223). No live model call, no bundle inspection:
+  // computed from state the daemon already holds (the global provider-key
+  // set and the per-owner key store).
+  rpc ListAgentEngines(ListAgentEnginesRequest) returns (ListAgentEnginesResponse) {
+    option (google.api.http) = {
+      get: "/v1/agent-engines"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List agent engines and their readiness";
+      description: "Returns one row per agent engine: whether a skill naming it would be refused right now, why, and which catalog skills name it explicitly.";
+      tags: "Agents";
+    };
+  }
+
   // GetAgentSkill returns a single skill definition by id.
   rpc GetAgentSkill(GetAgentSkillRequest) returns (GetAgentSkillResponse) {
     option (google.api.http) = {
@@ -296,6 +482,40 @@ service AgentSkillService {
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Get agent skill";
       description: "Returns one skill's definition, including its agent card, allowed scopes, and allowed peers.";
+      tags: "Agents";
+    };
+  }
+
+  // ProvisionSkillBox creates or reuses a skill's deterministic box
+  // (agent-<skill_id>) without running it: no token minted, nothing seeded,
+  // the model never called (#2272). Lets a crew member's box exist, and a
+  // human sign in to its coding agent, before any inference credential does
+  // — RunAgentSkill/RunCrew are otherwise the only path that creates this
+  // box, and both require a credential just to get that far.
+  rpc ProvisionSkillBox(ProvisionSkillBoxRequest) returns (ProvisionSkillBoxResponse) {
+    option (google.api.http) = {
+      post: "/v1/agent-skills/{skill_id}/provision-box"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Provision a skill's box ahead of any run";
+      description: "Creates or reuses the skill's deterministic box with no token minted, nothing seeded, and no model call — so a human can sign in to its coding agent before any inference credential exists.";
+      tags: "Agents";
+    };
+  }
+
+  // GetSkillBoxCredentialStatus reports whether a skill's already-
+  // provisioned box has a credential its configured coding engine would use
+  // — the source name only (e.g. "interactive" / "api-key" / "none"), never
+  // a value, mirroring `containarium code install`'s own verify posture
+  // (#2030, #2272).
+  rpc GetSkillBoxCredentialStatus(GetSkillBoxCredentialStatusRequest) returns (GetSkillBoxCredentialStatusResponse) {
+    option (google.api.http) = {
+      get: "/v1/agent-skills/{skill_id}/credential-status"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Check a skill box's coding-agent credential source";
+      description: "Reports the NAME of the credential source (interactive sign-in, a user-placed key, or none) the skill's box would use for its configured engine — never the credential's value, never read/logged/transmitted.";
       tags: "Agents";
     };
   }
@@ -637,6 +857,13 @@ message RunCrewRequest {
   // member's fetch only (an ephemeral http.extraHeader) — never written to
   // any box's .git/config, never logged. Empty = public repo.
   string git_credential = 8;
+  // Per-member engine override (#2228), keyed by skill_id: when a member's
+  // id has an entry here, THIS value resolves that member's engine instead
+  // of its own manifest `engine` field — same agentengine.Resolve readiness
+  // check, same refusal text, as RunAgentSkillRequest.engine. A member with
+  // no entry (or AGENT_ENGINE_UNSPECIFIED) keeps its manifest's own choice,
+  // unchanged pre-#2228 behavior.
+  map<string, AgentEngine> engine_overrides = 9;
 }
 message RunCrewResponse {
   CrewRun run = 1;

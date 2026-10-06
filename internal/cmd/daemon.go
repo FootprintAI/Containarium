@@ -52,12 +52,23 @@ var (
 	enableAppHosting       bool
 	postgresConnString     string
 	baseDomain             string
+	anonClaimURLBase       string
+	anonReminderWebhook    string
+	anonMaxBoxes           int
+	anonKeyCreatesPer10    int
+	anonKeyBurst           int
+	anonIPCreatesPer10     int
+	anonIPBurst            int
+	anonDoorStatePath      string
 	caddyAdminURL          string
 	caddyCertDir           string
 	alertWebhookURL        string
 	alertWebhookSecret     string
 	sentinelURL            string
 	sshHost                string
+	dnsPassthroughHosts    []string
+	bridgeDNSReconcile     bool
+	bridgeDNSCreate        bool
 	peerAddrs              []string
 	localBackendID         string
 	pool                   string
@@ -155,6 +166,14 @@ func init() {
 	daemonCmd.Flags().BoolVar(&enableAppHosting, "app-hosting", false, "Enable app hosting feature (requires PostgreSQL)")
 	daemonCmd.Flags().StringVar(&postgresConnString, "postgres", "", "PostgreSQL connection string for app hosting (e.g., postgres://user:pass@host:5432/db)")
 	daemonCmd.Flags().StringVar(&baseDomain, "base-domain", "example.org", "Base domain for app subdomains (e.g., example.org)")
+	daemonCmd.Flags().IntVar(&anonMaxBoxes, "anon-max-boxes", 0, "Anonymous-box door: cap on live unclaimed boxes on this daemon (0 = default 20)")
+	daemonCmd.Flags().IntVar(&anonKeyCreatesPer10, "anon-key-creates-per-10min", 0, "Anonymous-box door: box creates allowed per key per 10 minutes (0 = default 1)")
+	daemonCmd.Flags().IntVar(&anonKeyBurst, "anon-key-burst", 0, "Anonymous-box door: creation burst per key (0 = default 2)")
+	daemonCmd.Flags().IntVar(&anonIPCreatesPer10, "anon-ip-creates-per-10min", 0, "Anonymous-box door: box creates allowed per source IP per 10 minutes (0 = default 6)")
+	daemonCmd.Flags().IntVar(&anonIPBurst, "anon-ip-burst", 0, "Anonymous-box door: creation burst per source IP (0 = default 6)")
+	daemonCmd.Flags().StringVar(&anonDoorStatePath, "anon-door-state", "", "Anonymous-box door: file persisting the kill switch and bans (default /var/lib/containarium/anon-door.json; a malformed file closes the door)")
+	daemonCmd.Flags().StringVar(&anonReminderWebhook, "anon-reminder-webhook", "", "Anonymous-box door only: URL that receives one POST {email, box_name, claim_url, expires_at} per opt-in expiry reminder (`containarium remind-me`); the control plane turns it into an email. Empty = reminders never sent (#2206).")
+	daemonCmd.Flags().StringVar(&anonClaimURLBase, "anon-claim-url-base", "", "Anonymous-box door only (CONTAINARIUM_ANON_DOOR=enable): URL the guest's claim-url file points at, e.g. https://<cloud-domain>/claim — the token is appended as ?token=…. Empty = the bare token is written and `containarium claim` prints it with a note (#2199).")
 	daemonCmd.Flags().StringVar(&caddyAdminURL, "caddy-admin-url", "", "Caddy admin API URL for reverse proxy configuration (leave empty for auto-setup with --app-hosting)")
 	daemonCmd.Flags().StringVar(&caddyCertDir, "caddy-cert-dir", "/var/lib/caddy/.local/share/caddy", "Caddy certificate directory (for sentinel cert sync via /certs endpoint)")
 
@@ -173,6 +192,9 @@ func init() {
 	daemonCmd.Flags().StringVar(&region, "region", "", "Region this backend serves; recorded in its capability profile (containarium backends profile). Empty falls back to the --pool name.")
 	daemonCmd.Flags().StringVar(&publicHostname, "public-hostname", "", "Public hostname this primary serves (e.g. prod.example.com); enables sentinel primary registration")
 	daemonCmd.Flags().StringSliceVar(&publicAliases, "public-aliases", nil, "Additional hostnames the primary's Caddy serves (e.g. api.example.com,voice.example.com); the sentinel SNI router treats these as aliases of --public-hostname")
+	daemonCmd.Flags().StringArrayVar(&dnsPassthroughHosts, "dns-passthrough-host", nil, "Hostname under --base-domain that boxes must resolve through the upstream resolvers instead of the local Caddy edge (repeatable: one hostname per flag, not comma-separated; a blank or malformed value fails at boot). With app hosting the bridge DNS resolves *.<base-domain> to Caddy; each host given here is carved out of that wildcard, like --ssh-host already is. Use it for an API host under the base domain that Caddy does not serve. Empty = only --ssh-host is carved out.")
+	daemonCmd.Flags().BoolVar(&bridgeDNSReconcile, "bridge-dns-reconcile", true, "Keep the bridge's raw.dnsmasq record for --base-domain on core-caddy's live address (#2188). Set to false to switch the reconciler off without rolling back; the record is then left exactly as it is (#2232).")
+	daemonCmd.Flags().BoolVar(&bridgeDNSCreate, "bridge-dns-create", false, "Let the bridge DNS reconciler CREATE the --base-domain record on a bridge that has none. Default false: a host without a record is left alone (every box would otherwise start resolving every name under the base domain to core-caddy); the record is only created when this daemon installs core-caddy itself, or with this flag (#2232).")
 	daemonCmd.Flags().StringSliceVar(&publicBaseDomains, "public-base-domain", nil, "Suffix-match anchor advertised to the sentinel — inbound SNI of the form <anything>.<public-base-domain> routes here without each subdomain being a registered alias. Repeatable: list multiple to host workloads under different parent domains on the same backend (e.g. --public-base-domain lab.example.com --public-base-domain demo.example.org). Defaults to [--base-domain] when unset. See docs/PER-POOL-BASE-DOMAIN.md.")
 	daemonCmd.Flags().BoolVar(&proxyProtocol, "proxy-protocol", false, "Configure Caddy to accept PROXY v2 headers from --proxy-protocol-trusted CIDRs so containers receive the real client IP. Pair with --proxy-protocol on the sentinel.")
 	daemonCmd.Flags().StringSliceVar(&proxyProtocolTrusted, "proxy-protocol-trusted", []string{"127.0.0.0/8"}, "CIDRs allowed to send PROXY headers (typically the sentinel VPC IP/32). Wildcard 0.0.0.0/0 is rejected.")
@@ -408,9 +430,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 			if perr != nil {
 				return fmt.Errorf("resolve postgres password: %w", perr)
 			}
-			postgresConnString = fmt.Sprintf(
-				"postgres://%s:%s@%s:%d/%s?sslmode=disable",
-				server.DefaultPostgresUser, password,
+			postgresConnString = server.PostgresDSN(server.DefaultPostgresUser, password,
 				pgInfo.IPAddress, server.DefaultPostgresPort, server.DefaultPostgresDB)
 			log.Printf("Detected PostgreSQL at: %s (password source: %s)", pgInfo.IPAddress, pwSource)
 		} else {
@@ -597,50 +617,59 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	// Create dual server config
 	config := &server.DualServerConfig{
-		GRPCAddress:            daemonAddress,
-		GRPCPort:               daemonPort,
-		EnableMTLS:             enableMTLS,
-		CertsDir:               daemonCertsDir,
-		HTTPPort:               daemonHTTPPort,
-		EnableREST:             enableREST,
-		JWTSecret:              finalJWTSecret,
-		SwaggerDir:             swaggerDir,
-		EnableAppHosting:       enableAppHosting,
-		PostgresConnString:     postgresConnString,
-		BaseDomain:             baseDomain,
-		CaddyAdminURL:          caddyAdminURL,
-		HostIP:                 hostIPFromCIDR(networkSubnet),
-		DaemonConfigStore:      daemonConfigStore,
-		CaddyCertDir:           caddyCertDir,
-		VictoriaMetricsURL:     victoriaMetricsURL,
-		Standalone:             standaloneMode,
-		DisableSecurityScanner: disableSecurityScanner,
-		DisablePentestScanner:  disablePentestScanner,
-		DisableZapScanner:      disableZapScanner,
-		AlertWebhookURL:        alertWebhookURL,
-		AlertWebhookSecret:     alertWebhookSecret,
-		SentinelURL:            sentinelURL,
-		SSHHost:                sshHost,
-		Peers:                  peerAddrs,
-		LocalBackendID:         resolveBackendID(localBackendID),
-		Pool:                   pool,
-		Region:                 region,
-		CPUOvercommitFactor:    cpuOvercommitFactor,
-		CPUOvercommitEnforce:   cpuOvercommitEnforce,
-		PlacementCPUAware:      placementCPUAware,
-		PublicHostname:         publicHostname,
-		PublicAliases:          publicAliases,
-		PublicBaseDomains:      resolvePublicBaseDomains(publicBaseDomains, baseDomain),
-		PublicPort:             publicPort,
-		ProxyProtocol:          proxyProtocol,
-		ProxyProtocolTrusted:   proxyProtocolTrusted,
-		ClientIPHeaders:        clientIPHeaders,
-		TrustedProxyCIDRs:      trustedProxyCIDRs,
-		OTelDropLabels:         otelDropLabels,
-		Runtime:                runtime,
-		ZFSTenantRoot:          zfsTenantRoot,
-		ZFSKeysDir:             zfsKeysDir,
-		RunJournalRetention:    runJournalRetention,
+		GRPCAddress:         daemonAddress,
+		GRPCPort:            daemonPort,
+		EnableMTLS:          enableMTLS,
+		CertsDir:            daemonCertsDir,
+		HTTPPort:            daemonHTTPPort,
+		EnableREST:          enableREST,
+		JWTSecret:           finalJWTSecret,
+		SwaggerDir:          swaggerDir,
+		EnableAppHosting:    enableAppHosting,
+		PostgresConnString:  postgresConnString,
+		BaseDomain:          baseDomain,
+		AnonClaimURLBase:    anonClaimURLBase,
+		AnonReminderWebhook: anonReminderWebhook,
+		AnonDoor: server.AnonDoorOptions{
+			MaxBoxes: anonMaxBoxes, KeyCreatesPer10: anonKeyCreatesPer10, KeyBurst: anonKeyBurst,
+			IPCreatesPer10: anonIPCreatesPer10, IPBurst: anonIPBurst, StatePath: anonDoorStatePath,
+		},
+		CaddyAdminURL:              caddyAdminURL,
+		HostIP:                     hostIPFromCIDR(networkSubnet),
+		DaemonConfigStore:          daemonConfigStore,
+		CaddyCertDir:               caddyCertDir,
+		VictoriaMetricsURL:         victoriaMetricsURL,
+		Standalone:                 standaloneMode,
+		DisableSecurityScanner:     disableSecurityScanner,
+		DisablePentestScanner:      disablePentestScanner,
+		DisableZapScanner:          disableZapScanner,
+		AlertWebhookURL:            alertWebhookURL,
+		AlertWebhookSecret:         alertWebhookSecret,
+		SentinelURL:                sentinelURL,
+		SSHHost:                    sshHost,
+		DNSPassthroughHosts:        dnsPassthroughHosts,
+		BridgeDNSReconcileDisabled: !bridgeDNSReconcile,
+		BridgeDNSCreate:            bridgeDNSCreate,
+		Peers:                      peerAddrs,
+		LocalBackendID:             resolveBackendID(localBackendID),
+		Pool:                       pool,
+		Region:                     region,
+		CPUOvercommitFactor:        cpuOvercommitFactor,
+		CPUOvercommitEnforce:       cpuOvercommitEnforce,
+		PlacementCPUAware:          placementCPUAware,
+		PublicHostname:             publicHostname,
+		PublicAliases:              publicAliases,
+		PublicBaseDomains:          resolvePublicBaseDomains(publicBaseDomains, baseDomain),
+		PublicPort:                 publicPort,
+		ProxyProtocol:              proxyProtocol,
+		ProxyProtocolTrusted:       proxyProtocolTrusted,
+		ClientIPHeaders:            clientIPHeaders,
+		TrustedProxyCIDRs:          trustedProxyCIDRs,
+		OTelDropLabels:             otelDropLabels,
+		Runtime:                    runtime,
+		ZFSTenantRoot:              zfsTenantRoot,
+		ZFSKeysDir:                 zfsKeysDir,
+		RunJournalRetention:        runJournalRetention,
 	}
 
 	// Create dual server

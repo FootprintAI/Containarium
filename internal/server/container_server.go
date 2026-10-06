@@ -16,6 +16,7 @@ import (
 	"github.com/footprintai/containarium/internal/app"
 	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/bridgedns"
 	"github.com/footprintai/containarium/internal/capabilities"
 	"github.com/footprintai/containarium/internal/capacity"
 	appconfig "github.com/footprintai/containarium/internal/config"
@@ -31,6 +32,7 @@ import (
 	"github.com/footprintai/containarium/internal/secrets"
 	"github.com/footprintai/containarium/internal/tracker"
 	"github.com/footprintai/containarium/internal/tracker/submit"
+	"github.com/footprintai/containarium/pkg/core/backup"
 	"github.com/footprintai/containarium/pkg/core/box"
 	boxlxc "github.com/footprintai/containarium/pkg/core/box/lxc"
 	"github.com/footprintai/containarium/pkg/core/container"
@@ -74,6 +76,9 @@ func (p *PendingCreation) active() bool { return p != nil && !p.Done && !p.Cance
 // ContainerServer implements the gRPC ContainerService
 type ContainerServer struct {
 	pb.UnimplementedContainerServiceServer
+	// systemInfoFn overrides the local GetSystemInfo probe in ListBackends.
+	// Nil in production; a test seam for a wedged local incusd (#2318).
+	systemInfoFn func(context.Context, *pb.GetSystemInfoRequest) (*pb.GetSystemInfoResponse, error)
 	// TrackerService is its own proto service (tracker.proto), not part
 	// of ContainerService — embedding its Unimplemented server here lets
 	// ContainerServer satisfy pb.TrackerServiceServer without a
@@ -115,9 +120,28 @@ type ContainerServer struct {
 	boxRunCollaborator collaboratorCheckFunc
 	boxRunLogDir       string
 	boxRunPoll         time.Duration
-	emitter            *events.Emitter
-	pendingCreations   map[string]*PendingCreation
-	pendingMu          sync.RWMutex
+	// boxRunStartExec is StartBoxRun's own exec seam (#2193), separate from
+	// boxRunExec: production needs to run AS the box's own Linux user (so the
+	// spawned engine reads that user's credentials and the files it creates
+	// are owned the same way an SSH-driven `code run` leaves them), which
+	// means wrapping the script in `su - <username> -c`. That wrapping is a
+	// production-exec-layer detail, not something boxRunStartScript's own
+	// text should encode — a test target has no real multi-user box to su
+	// into, so it sets this directly to a plain `sh -c` runner, exactly like
+	// boxRunExec's existing tests do for List/Tail.
+	boxRunStartExec boxRunStartFunc
+	// boxRunLocks serializes StartBoxRun's check-then-write span (collision
+	// check through record write) per (box, name) (#2260 review: concurrent
+	// calls for the same not-yet-existing name could both pass the collision
+	// check, then race on the log truncate and the record write, corrupting
+	// the log and orphaning a PID with no record naming it). sync.Map's zero
+	// value is ready to use — no constructor needed, so test literals that
+	// build a bare &ContainerServer{} still get correct serialization.
+	boxRunLocks       sync.Map // key: box+":"+name -> *sync.Mutex
+	emitter           *events.Emitter
+	bridgeDNSDisabled bool // #2232: --bridge-dns-reconcile=false, for status
+	pendingCreations  map[string]*PendingCreation
+	pendingMu         sync.RWMutex
 	// Monitoring URLs (set by DualServer after setup)
 	victoriaMetricsURL string
 	grafanaURL         string
@@ -132,6 +156,11 @@ type ContainerServer struct {
 	coreServices       *CoreServices
 	daemonConfigStore  daemonConfigKV
 	peerPool           *PeerPool
+	// backupMgr is the backup core's read side, wired in for the metrics
+	// export collector's backup-health series (set by DualServer after
+	// setup, #2294) — nil-safe like peerPool/alertStore above. Not used
+	// for anything but SetBackupManager's seam into serverPlatformSources.
+	backupMgr *backup.Manager
 	// Cloud-native metrics export (#1069). metricsExportMu guards the
 	// in-memory config so SetMetricsExport/GetMetricsExport round-trip
 	// without a daemon restart; daemonConfigStore (when present) makes
@@ -170,6 +199,11 @@ type ContainerServer struct {
 	// backend without a live Incus daemon. nil in production; the real probe
 	// runs.
 	localHealthCheckFn func() bool
+	// localHealthOnce / localHealthState: the debounced, single-flight local
+	// liveness verdict behind localBackendHealthy (#2317). Built lazily on first
+	// use so the env override is read once.
+	localHealthOnce  sync.Once
+	localHealthState *localHealth
 	// CPU overcommit admission (#1029 direction 2). cpuOvercommitFactor is the
 	// ceiling multiple of physical cores a host may commit; <= 0 disables the
 	// gate (the default). cpuOvercommitEnforce=false makes an enabled gate
@@ -349,6 +383,10 @@ type ContainerServer struct {
 	// back to network.ip_address.
 	sshHost string
 
+	// bridgeDNS is the reconciler behind GetBridgeDNSStatus (#2188), set by
+	// DualServer wiring. nil = not managed by this daemon.
+	bridgeDNS *bridgedns.Reconciler
+
 	// auditStore records admin-initiated operations (TriggerUpgrade, etc.).
 	// Nil on daemons without a Postgres pool; nil is safe (ops are logged but
 	// not persisted). #354.
@@ -384,6 +422,7 @@ type upgradeJob struct {
 	backendID      string
 	status         string // in_progress | completed | failed | noop
 	currentVersion string
+	targetVersion  string // best-effort, "" when unknown (#2171)
 	errMsg         string
 	completedAt    string
 }
@@ -614,6 +653,7 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 		Stack:                  req.Stack,
 		StackParams:            req.StackParameters,
 		OSType:                 req.OsType,
+		Isolation:              req.Isolation,
 		GPUs:                   req.Gpus, // legacy singular `gpu` no longer honored (#673)
 		StaticIP:               req.StaticIp,
 		// OTel app-monitoring opt-in. The daemon-level collector
@@ -2731,7 +2771,32 @@ func (s *ContainerServer) GetLatestRelease(ctx context.Context, req *pb.GetLates
 		LatestRelease:   latest,
 		CurrentVersion:  current,
 		UpdateAvailable: releasecheck.UpdateAvailable(current, latest),
+		TargetVersion:   s.upgradeTargetVersion(ctx, ""),
 	}, nil
+}
+
+// upgradeTargetVersion is the version a TriggerUpgrade with this github_tag
+// would install: the tag itself (resolving "latest" via the cached release
+// check), or else the sentinel-served binary's version. Best-effort — ""
+// when unknown, never an error, since it only informs the caller. #2171.
+func (s *ContainerServer) upgradeTargetVersion(ctx context.Context, githubTag string) string {
+	switch githubTag {
+	case "":
+	case "latest":
+		latest, _ := daemonReleaseChecker.Latest(ctx)
+		return strings.TrimPrefix(latest, "v")
+	default:
+		return strings.TrimPrefix(githubTag, "v")
+	}
+	if s.autoUpdater == nil {
+		return ""
+	}
+	v, err := s.autoUpdater.ServedVersion(ctx)
+	if err != nil {
+		log.Printf("[upgrade] sentinel-served version unavailable: %v", err)
+		return ""
+	}
+	return v
 }
 
 // ValidateGPU launches a throwaway nvidia.runtime LXC on the target backend,
@@ -2862,6 +2927,7 @@ func (s *ContainerServer) TriggerUpgrade(ctx context.Context, req *pb.TriggerUpg
 	}
 
 	current := version.GetVersion()
+	target := s.upgradeTargetVersion(ctx, req.GithubTag)
 	backendKey := s.localBackendID()
 
 	s.upgradeMu.Lock()
@@ -2874,7 +2940,7 @@ func (s *ContainerServer) TriggerUpgrade(ctx context.Context, req *pb.TriggerUpg
 		return nil, status.Error(codes.FailedPrecondition, "an upgrade is already in progress on this backend")
 	}
 	id := fmt.Sprintf("upg-%d", time.Now().UnixNano())
-	job := &upgradeJob{id: id, backendID: req.BackendId, status: "in_progress", currentVersion: current}
+	job := &upgradeJob{id: id, backendID: req.BackendId, status: "in_progress", currentVersion: current, targetVersion: target}
 	s.upgradeJobs[id] = job
 	s.upgradeBusy[backendKey] = true
 	s.upgradeMu.Unlock()
@@ -2929,6 +2995,7 @@ func (s *ContainerServer) TriggerUpgrade(ctx context.Context, req *pb.TriggerUpg
 		CurrentVersion: current,
 		Message:        "upgrade started; if a new binary is applied the daemon restarts — confirm via the backend version in ListBackends",
 		BackendId:      req.BackendId,
+		TargetVersion:  target,
 	}, nil
 }
 
@@ -2963,6 +3030,7 @@ func (s *ContainerServer) GetUpgradeStatus(ctx context.Context, req *pb.GetUpgra
 		CurrentVersion: job.currentVersion,
 		Error:          job.errMsg,
 		CompletedAt:    job.completedAt,
+		TargetVersion:  job.targetVersion,
 	}, nil
 }
 
@@ -3053,6 +3121,14 @@ func (s *ContainerServer) GetSystemInfo(ctx context.Context, req *pb.GetSystemIn
 		// via committedTenantCores — one summation shared by both, not two.
 		CommittedCpuCores: committedTenantCores(containers, nil),
 	}
+	// The rest of the CPU budget (#2284): the platform's own core-role
+	// commitment next to the tenant one, and the gate's posture so a
+	// reader can tell whether being over the ceiling is being acted on.
+	// Same container list, one assembly shared with the boot-time log.
+	budget := s.cpuBudget(containers, float64(sysResources.TotalCPUs))
+	info.CoreCommittedCpuCores = budget.CoreCommittedCores
+	info.CpuAdmissionMode = cpuAdmissionModeToProto(budget.AdmissionMode)
+	info.CpuOvercommitFactor = budget.OvercommitFactor
 
 	// The storage pool backing this backend's containers, and whether it
 	// isolates tenant volumes (#1209). Left null when the pool can't be read:
@@ -3154,23 +3230,17 @@ func (s *ContainerServer) ListBackends(ctx context.Context, _ *pb.ListBackendsRe
 	// container manager + Incus. Guard the nil manager so a daemon (or test)
 	// without one still reports the local backend's identity + health
 	// instead of panicking.
+	// The local probe is bounded by its own deadline (#2318): a wedged or
+	// starved incusd must degrade to "no load block" (UNKNOWN), not block
+	// the whole listing. It runs concurrently with the peer probes below.
+	var localInfo *pb.SystemInfo
+	var localDone chan struct{}
 	if s.manager != nil {
-		if sysResp, err := s.GetSystemInfo(ctx, &pb.GetSystemInfoRequest{}); err == nil && sysResp.Info != nil {
-			local.Hostname = sysResp.Info.Hostname
-			local.Os = sysResp.Info.Os
-			local.IncusVersion = sysResp.Info.IncusVersion
-			local.ContainerCount = sysResp.Info.ContainersRunning
-			local.Gpus = backendGPUsFromSystemInfo(sysResp.Info)
-			// The same SystemInfo already carries the host's measured load
-			// and memory/disk usage; surface it instead of discarding it
-			// (cloud #966). Null when the probe produced nothing usable.
-			local.HostLoad = hostLoadFromSystemInfo(sysResp.Info, time.Now())
-			// Which storage pool backs this host's containers, and whether it
-			// isolates tenant volumes (#1209). GetSystemInfo already measured
-			// it; pass it straight through, null included, so "unreadable"
-			// stays distinguishable from "isolated".
-			local.Storage = sysResp.Info.Storage
-		}
+		localDone = make(chan struct{})
+		go func() {
+			defer close(localDone)
+			localInfo = s.probeLocalSystemInfo(ctx)
+		}()
 	}
 	// Surface the local backend's spare-capacity advertisement (#680). Only
 	// attach when something is actively advertised — an unadvertised backend
@@ -3189,9 +3259,14 @@ func (s *ContainerServer) ListBackends(ctx context.Context, _ *pb.ListBackendsRe
 
 	// Peer backends. Forward GetSystemInfo to each healthy peer using the
 	// caller's (admin) token — the same mechanism GetSystemInfo's peer
-	// fan-out uses.
+	// fan-out uses. Peers are probed in parallel, each under its own
+	// deadline, and written to a pre-sized slot so the response keeps the
+	// pool's peer order (#2318).
 	authToken := extractAuthToken(ctx)
-	for _, peer := range s.peerPool.Peers() {
+	peers := s.peerPool.Peers()
+	peerInfos := make([]*pb.BackendInfo, len(peers))
+	var wg sync.WaitGroup
+	for i, peer := range peers {
 		pi := &pb.BackendInfo{
 			Id:      peer.ID,
 			Type:    "tunnel",
@@ -3200,34 +3275,95 @@ func (s *ContainerServer) ListBackends(ctx context.Context, _ *pb.ListBackendsRe
 		if !peer.LastSeenAt.IsZero() {
 			pi.LastSeenAt = peer.LastSeenAt.UTC().Format(time.RFC3339)
 		}
-		if peer.Healthy {
-			if body, err := peer.ForwardGetSystemInfo(authToken); err == nil {
-				var peerResp pb.GetSystemInfoResponse
-				if protojson.Unmarshal(body, &peerResp) == nil && peerResp.Info != nil {
-					pi.Hostname = peerResp.Info.Hostname
-					pi.Os = peerResp.Info.Os
-					pi.Version = peerResp.Info.DaemonVersion
-					pi.IncusVersion = peerResp.Info.IncusVersion
-					pi.ContainerCount = peerResp.Info.ContainersRunning
-					pi.Gpus = backendGPUsFromSystemInfo(peerResp.Info)
-					// Live load for peers — including BYOC tunnel hosts,
-					// which had no load signal anywhere in the product
-					// (cloud #966). This rides the peer fan-out that
-					// already works, so it does not depend on the BYOC
-					// driver-token path that cloud #933 is stuck on.
-					pi.HostLoad = hostLoadFromSystemInfo(peerResp.Info, time.Now())
-					// Peers report their own pool's driver + isolation over
-					// the same fan-out, so a BYOC tunnel host on a shared
-					// filesystem is visible from the fleet view rather than
-					// only in that host's own startup log (#1209).
-					pi.Storage = peerResp.Info.Storage
-				}
-			}
+		peerInfos[i] = pi
+		if !peer.Healthy {
+			continue
 		}
-		backends = append(backends, pi)
+		wg.Add(1)
+		go func(peer *PeerClient, pi *pb.BackendInfo) {
+			defer wg.Done()
+			pctx, cancel := context.WithTimeout(ctx, listBackendsProbeTimeout)
+			defer cancel()
+			body, err := peer.ForwardGetSystemInfoCtx(pctx, authToken)
+			if err != nil {
+				return
+			}
+			var peerResp pb.GetSystemInfoResponse
+			if protojson.Unmarshal(body, &peerResp) != nil || peerResp.Info == nil {
+				return
+			}
+			pi.Hostname = peerResp.Info.Hostname
+			pi.Os = peerResp.Info.Os
+			pi.Version = peerResp.Info.DaemonVersion
+			pi.IncusVersion = peerResp.Info.IncusVersion
+			pi.ContainerCount = peerResp.Info.ContainersRunning
+			pi.Gpus = backendGPUsFromSystemInfo(peerResp.Info)
+			// Live load for peers — including BYOC tunnel hosts, which had
+			// no load signal anywhere in the product (cloud #966).
+			pi.HostLoad = hostLoadFromSystemInfo(peerResp.Info, time.Now())
+			// Peers report their own pool's driver + isolation over the same
+			// fan-out (#1209).
+			pi.Storage = peerResp.Info.Storage
+		}(peer, pi)
+	}
+	wg.Wait()
+	backends = append(backends, peerInfos...)
+
+	// The local probe has its own deadline, so this wait is bounded too.
+	if localDone != nil {
+		<-localDone
+		if localInfo != nil {
+			local.Hostname = localInfo.Hostname
+			local.Os = localInfo.Os
+			local.IncusVersion = localInfo.IncusVersion
+			local.ContainerCount = localInfo.ContainersRunning
+			local.Gpus = backendGPUsFromSystemInfo(localInfo)
+			// The same SystemInfo already carries the host's measured load
+			// and memory/disk usage (cloud #966). Null when unusable.
+			local.HostLoad = hostLoadFromSystemInfo(localInfo, time.Now())
+			// Storage pool + tenant-volume isolation (#1209); null stays
+			// distinguishable from "isolated".
+			local.Storage = localInfo.Storage
+		}
 	}
 
 	return &pb.ListBackendsResponse{Backends: backends}, nil
+}
+
+// listBackendsProbeTimeout bounds each per-backend GetSystemInfo probe made by
+// ListBackends (the local one and every peer), so one wedged backend cannot
+// hold the whole fleet listing hostage (#2318). A var so tests can shrink it.
+var listBackendsProbeTimeout = 5 * time.Second
+
+// probeLocalSystemInfo runs the local GetSystemInfo under
+// listBackendsProbeTimeout and returns nil on error or timeout. The underlying
+// manager/Incus calls take no context and cannot be cancelled, so on timeout
+// the worker goroutine finishes on its own when the call returns; its result
+// channel is buffered so it never blocks on send.
+func (s *ContainerServer) probeLocalSystemInfo(ctx context.Context) *pb.SystemInfo {
+	fn := s.GetSystemInfo
+	if s.systemInfoFn != nil {
+		fn = s.systemInfoFn
+	}
+	ch := make(chan *pb.SystemInfo, 1)
+	go func() {
+		resp, err := fn(ctx, &pb.GetSystemInfoRequest{})
+		if err != nil || resp == nil {
+			ch <- nil
+			return
+		}
+		ch <- resp.Info
+	}()
+	t := time.NewTimer(listBackendsProbeTimeout)
+	defer t.Stop()
+	select {
+	case info := <-ch:
+		return info
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return nil
+	}
 }
 
 // capStore returns the lazily-initialized per-daemon capacity store. Safe to
@@ -3954,6 +4090,7 @@ func toProtoContainer(st *box.BoxStatus) *pb.Container {
 		GpuDevices:           st.GPUs,
 		BackendId:            st.BackendID,
 		OsType:               osTypeEnum,
+		Isolation:            st.Isolation,
 		AccessType:           accessType,
 		RdpAddress:           rdpAddress,
 		MonitoringEnabled:    st.MonitoringEnabled,
@@ -4007,6 +4144,15 @@ func extractAuthToken(ctx context.Context) string {
 // SetPeerPool sets the peer pool for multi-backend support
 func (s *ContainerServer) SetPeerPool(pool *PeerPool) {
 	s.peerPool = pool
+}
+
+// SetBackupManager wires the backup core's read side in for the metrics
+// export collector's backup-health series (#2294). Called once from
+// DualServer setup, after NewBackupServer exists, via its Manager()
+// getter — BackupServer depends on ContainerServer, not the reverse, so
+// this is the only way the two ever connect.
+func (s *ContainerServer) SetBackupManager(mgr *backup.Manager) {
+	s.backupMgr = mgr
 }
 
 // SetStartTime wires the daemon's process start time so ListBackends can
@@ -4263,24 +4409,20 @@ func (s *ContainerServer) resolvePoolPlacement(req *pb.CreateContainerRequest) e
 	return nil
 }
 
-// localHealthCheckTimeout bounds localBackendHealthy's liveness probe below
-// — long enough for a briefly busy incusd to answer, short enough that a
-// genuinely wedged daemon (see #755 — CPU-starved incusd from a runaway
-// rsyslog/OOM-crash-loop neighbor) doesn't stall a placement decision for
-// more than a couple of seconds.
-const localHealthCheckTimeout = 3 * time.Second
-
 // localBackendHealthy reports whether this daemon's own LOCAL backend is
 // currently fit to receive newly scheduled work. It is the single source of
 // truth shared by ListBackends (the local entry's Healthy field) and
 // resolvePoolPlacement's local-backend short-circuit (#920) — previously
 // ListBackends hardcoded Healthy=true for local and resolvePoolPlacement
-// didn't check health at all, so the two paths could never actually
-// disagree in a way that would ever surface as a bug: both were simply
-// blind to real local health. This performs the same connectivity probe
-// GetSystemInfo already runs (container list + Incus server info) but skips
-// GetSystemInfo's admin-role gate, since this is an internal call made on
+// didn't check health at all, so both were blind to real local health. This
+// skips GetSystemInfo's admin-role gate, since it is an internal call made on
 // behalf of any caller's placement decision, not a fresh RPC.
+//
+// The verdict comes from localHealth (local_health.go, #2317): an Incus
+// server-info probe whose cost does not grow with the instance count, shared
+// by concurrent callers, and debounced so one slow sample on a busy host does
+// not make it unplaceable. It still fails closed on a daemon that stays
+// unresponsive. CONTAINARIUM_LOCAL_HEALTH_TIMEOUT tunes the per-call budget.
 //
 // localHealthCheckFn, when set (tests), overrides the real probe.
 func (s *ContainerServer) localBackendHealthy() bool {
@@ -4293,32 +4435,11 @@ func (s *ContainerServer) localBackendHealthy() bool {
 		// tests that don't exercise this signal are unaffected.
 		return true
 	}
-	done := make(chan bool, 1)
-	go func() {
-		if _, err := s.manager.List(); err != nil {
-			done <- false
-			return
-		}
-		client, err := incus.New()
-		if err != nil {
-			done <- false
-			return
-		}
-		if _, err := client.GetServerInfo(); err != nil {
-			done <- false
-			return
-		}
-		done <- true
-	}()
-	select {
-	case healthy := <-done:
-		return healthy
-	case <-time.After(localHealthCheckTimeout):
-		// Didn't answer in time — fail CLOSED (unhealthy) rather than block
-		// the caller indefinitely on a wedged daemon, and rather than
-		// silently treat "didn't check in time" as "must be fine".
-		return false
-	}
+	s.localHealthOnce.Do(func() {
+		timeout := localHealthTimeoutFromEnv()
+		s.localHealthState = newLocalHealth(incusLivenessProbe(probeCeilingFactor*timeout), timeout, localHealthGrace)
+	})
+	return s.localHealthState.Healthy()
 }
 
 // SetRouteCleanupDeps wires the route store + proxy manager so

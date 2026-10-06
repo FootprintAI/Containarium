@@ -11,6 +11,7 @@ import (
 	_ "google.golang.org/genproto/googleapis/api/annotations"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -22,6 +23,257 @@ const (
 	// Verify that runtime/protoimpl is sufficiently up-to-date.
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
+
+// AgentEngine identifies the in-box agent loop (agent-runtime SDK) a skill
+// runs on. One daemon can run skills on different engines at once — the
+// engine is a per-skill choice, not a daemon-wide constant (#2222).
+type AgentEngine int32
+
+const (
+	// Runtime default: the daemon's configured gateway primary provider in
+	// gateway mode, or the box's own default/env in direct mode. Never
+	// rejected — this is what every skill predating this field resolves to.
+	AgentEngine_AGENT_ENGINE_UNSPECIFIED AgentEngine = 0
+	// Claude Agent SDK (provider: anthropic).
+	AgentEngine_AGENT_ENGINE_CLAUDE AgentEngine = 1
+	// OpenAI Codex SDK (provider: openai).
+	AgentEngine_AGENT_ENGINE_CODEX AgentEngine = 2
+	// Google Gen AI SDK (provider: gemini).
+	AgentEngine_AGENT_ENGINE_GEMINI AgentEngine = 3
+)
+
+// Enum value maps for AgentEngine.
+var (
+	AgentEngine_name = map[int32]string{
+		0: "AGENT_ENGINE_UNSPECIFIED",
+		1: "AGENT_ENGINE_CLAUDE",
+		2: "AGENT_ENGINE_CODEX",
+		3: "AGENT_ENGINE_GEMINI",
+	}
+	AgentEngine_value = map[string]int32{
+		"AGENT_ENGINE_UNSPECIFIED": 0,
+		"AGENT_ENGINE_CLAUDE":      1,
+		"AGENT_ENGINE_CODEX":       2,
+		"AGENT_ENGINE_GEMINI":      3,
+	}
+)
+
+func (x AgentEngine) Enum() *AgentEngine {
+	p := new(AgentEngine)
+	*p = x
+	return p
+}
+
+func (x AgentEngine) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (AgentEngine) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_agent_proto_enumTypes[0].Descriptor()
+}
+
+func (AgentEngine) Type() protoreflect.EnumType {
+	return &file_containarium_v1_agent_proto_enumTypes[0]
+}
+
+func (x AgentEngine) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use AgentEngine.Descriptor instead.
+func (AgentEngine) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{0}
+}
+
+// AgentEngineReadiness reports whether a run naming this engine would be
+// refused — the same truth agentengine.Resolve enforces, read-only (#2223).
+type AgentEngineReadiness int32
+
+const (
+	AgentEngineReadiness_AGENT_ENGINE_READINESS_UNSPECIFIED AgentEngineReadiness = 0
+	// Resolve would use this engine without refusing: a global key, or the
+	// caller's own owner key, covers the provider.
+	AgentEngineReadiness_AGENT_ENGINE_READINESS_READY AgentEngineReadiness = 1
+	// A named run on this engine would be refused FailedPrecondition — no
+	// key anywhere Resolve can see. See `reason` for why and the fix.
+	AgentEngineReadiness_AGENT_ENGINE_READINESS_NOT_READY AgentEngineReadiness = 2
+	// The daemon serves no model gateway at all (direct mode): the box's own
+	// secrets decide, so this daemon cannot say whether the engine would
+	// actually work — never reported as READY, since that would be a guess.
+	AgentEngineReadiness_AGENT_ENGINE_READINESS_UNKNOWN_DIRECT_MODE AgentEngineReadiness = 3
+)
+
+// Enum value maps for AgentEngineReadiness.
+var (
+	AgentEngineReadiness_name = map[int32]string{
+		0: "AGENT_ENGINE_READINESS_UNSPECIFIED",
+		1: "AGENT_ENGINE_READINESS_READY",
+		2: "AGENT_ENGINE_READINESS_NOT_READY",
+		3: "AGENT_ENGINE_READINESS_UNKNOWN_DIRECT_MODE",
+	}
+	AgentEngineReadiness_value = map[string]int32{
+		"AGENT_ENGINE_READINESS_UNSPECIFIED":         0,
+		"AGENT_ENGINE_READINESS_READY":               1,
+		"AGENT_ENGINE_READINESS_NOT_READY":           2,
+		"AGENT_ENGINE_READINESS_UNKNOWN_DIRECT_MODE": 3,
+	}
+)
+
+func (x AgentEngineReadiness) Enum() *AgentEngineReadiness {
+	p := new(AgentEngineReadiness)
+	*p = x
+	return p
+}
+
+func (x AgentEngineReadiness) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (AgentEngineReadiness) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_agent_proto_enumTypes[1].Descriptor()
+}
+
+func (AgentEngineReadiness) Type() protoreflect.EnumType {
+	return &file_containarium_v1_agent_proto_enumTypes[1]
+}
+
+func (x AgentEngineReadiness) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use AgentEngineReadiness.Descriptor instead.
+func (AgentEngineReadiness) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{1}
+}
+
+// AgentCredentialSource is WHERE a READY engine's key resolves from — never
+// the key's value or fingerprint.
+type AgentCredentialSource int32
+
+const (
+	AgentCredentialSource_AGENT_CREDENTIAL_SOURCE_UNSPECIFIED AgentCredentialSource = 0
+	// The daemon's own env/global key for this provider.
+	AgentCredentialSource_AGENT_CREDENTIAL_SOURCE_GLOBAL_KEY AgentCredentialSource = 1
+	// The caller's own per-owner registered key (SetTenantProviderKey).
+	AgentCredentialSource_AGENT_CREDENTIAL_SOURCE_OWNER_KEY AgentCredentialSource = 2
+	// No model gateway is served; the box's own secrets decide.
+	AgentCredentialSource_AGENT_CREDENTIAL_SOURCE_DIRECT_MODE AgentCredentialSource = 3
+)
+
+// Enum value maps for AgentCredentialSource.
+var (
+	AgentCredentialSource_name = map[int32]string{
+		0: "AGENT_CREDENTIAL_SOURCE_UNSPECIFIED",
+		1: "AGENT_CREDENTIAL_SOURCE_GLOBAL_KEY",
+		2: "AGENT_CREDENTIAL_SOURCE_OWNER_KEY",
+		3: "AGENT_CREDENTIAL_SOURCE_DIRECT_MODE",
+	}
+	AgentCredentialSource_value = map[string]int32{
+		"AGENT_CREDENTIAL_SOURCE_UNSPECIFIED": 0,
+		"AGENT_CREDENTIAL_SOURCE_GLOBAL_KEY":  1,
+		"AGENT_CREDENTIAL_SOURCE_OWNER_KEY":   2,
+		"AGENT_CREDENTIAL_SOURCE_DIRECT_MODE": 3,
+	}
+)
+
+func (x AgentCredentialSource) Enum() *AgentCredentialSource {
+	p := new(AgentCredentialSource)
+	*p = x
+	return p
+}
+
+func (x AgentCredentialSource) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (AgentCredentialSource) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_agent_proto_enumTypes[2].Descriptor()
+}
+
+func (AgentCredentialSource) Type() protoreflect.EnumType {
+	return &file_containarium_v1_agent_proto_enumTypes[2]
+}
+
+func (x AgentCredentialSource) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use AgentCredentialSource.Descriptor instead.
+func (AgentCredentialSource) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{2}
+}
+
+// CodeCredentialSource is WHERE a box's `containarium code`-style coding
+// engine (Claude Code today; Codex once #2273 lands) would currently find a
+// human/headless sign-in — never the credential's value, never read, logged,
+// or transmitted at any layer. Mirrors #2030's `code install` verify output
+// ("report which credential source Claude Code will use, never a value"),
+// condensed to the one answer GetSkillBoxCredentialStatus needs (#2272).
+//
+// Deliberately a DIFFERENT enum from AgentCredentialSource above:
+// AgentCredentialSource is where a model-GATEWAY token's upstream key comes
+// from (daemon-held, never the box's concern); CodeCredentialSource is
+// whether a HUMAN has already completed Anthropic's own sign-in flow on this
+// box, or placed their own key, so unattended reuse of that same box needs no
+// credential of containarium's own.
+type CodeCredentialSource int32
+
+const (
+	CodeCredentialSource_CODE_CREDENTIAL_SOURCE_UNSPECIFIED CodeCredentialSource = 0
+	// The engine's own device-code/browser sign-in has already completed on
+	// this box (e.g. Claude Code's own ~/.claude/.credentials.json).
+	CodeCredentialSource_CODE_CREDENTIAL_SOURCE_INTERACTIVE CodeCredentialSource = 1
+	// A user-placed provider key/token is visible to the engine's own shell
+	// environment (e.g. ANTHROPIC_API_KEY in ~/.claude/settings.json, or a 3P
+	// provider env var) — the headless path #2030 documents.
+	CodeCredentialSource_CODE_CREDENTIAL_SOURCE_API_KEY CodeCredentialSource = 2
+	// Neither of the above. Expected on a freshly provisioned box (#2272)
+	// until a human signs in or places a key.
+	CodeCredentialSource_CODE_CREDENTIAL_SOURCE_NONE CodeCredentialSource = 3
+)
+
+// Enum value maps for CodeCredentialSource.
+var (
+	CodeCredentialSource_name = map[int32]string{
+		0: "CODE_CREDENTIAL_SOURCE_UNSPECIFIED",
+		1: "CODE_CREDENTIAL_SOURCE_INTERACTIVE",
+		2: "CODE_CREDENTIAL_SOURCE_API_KEY",
+		3: "CODE_CREDENTIAL_SOURCE_NONE",
+	}
+	CodeCredentialSource_value = map[string]int32{
+		"CODE_CREDENTIAL_SOURCE_UNSPECIFIED": 0,
+		"CODE_CREDENTIAL_SOURCE_INTERACTIVE": 1,
+		"CODE_CREDENTIAL_SOURCE_API_KEY":     2,
+		"CODE_CREDENTIAL_SOURCE_NONE":        3,
+	}
+)
+
+func (x CodeCredentialSource) Enum() *CodeCredentialSource {
+	p := new(CodeCredentialSource)
+	*p = x
+	return p
+}
+
+func (x CodeCredentialSource) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (CodeCredentialSource) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_agent_proto_enumTypes[3].Descriptor()
+}
+
+func (CodeCredentialSource) Type() protoreflect.EnumType {
+	return &file_containarium_v1_agent_proto_enumTypes[3]
+}
+
+func (x CodeCredentialSource) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use CodeCredentialSource.Descriptor instead.
+func (CodeCredentialSource) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{3}
+}
 
 // AgentTaskState tracks the lifecycle of a delegated A2A task.
 type AgentTaskState int32
@@ -63,11 +315,11 @@ func (x AgentTaskState) String() string {
 }
 
 func (AgentTaskState) Descriptor() protoreflect.EnumDescriptor {
-	return file_containarium_v1_agent_proto_enumTypes[0].Descriptor()
+	return file_containarium_v1_agent_proto_enumTypes[4].Descriptor()
 }
 
 func (AgentTaskState) Type() protoreflect.EnumType {
-	return &file_containarium_v1_agent_proto_enumTypes[0]
+	return &file_containarium_v1_agent_proto_enumTypes[4]
 }
 
 func (x AgentTaskState) Number() protoreflect.EnumNumber {
@@ -76,7 +328,7 @@ func (x AgentTaskState) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use AgentTaskState.Descriptor instead.
 func (AgentTaskState) EnumDescriptor() ([]byte, []int) {
-	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{0}
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{4}
 }
 
 // CrewTopology describes how a crew's skills are wired together.
@@ -120,11 +372,11 @@ func (x CrewTopology) String() string {
 }
 
 func (CrewTopology) Descriptor() protoreflect.EnumDescriptor {
-	return file_containarium_v1_agent_proto_enumTypes[1].Descriptor()
+	return file_containarium_v1_agent_proto_enumTypes[5].Descriptor()
 }
 
 func (CrewTopology) Type() protoreflect.EnumType {
-	return &file_containarium_v1_agent_proto_enumTypes[1]
+	return &file_containarium_v1_agent_proto_enumTypes[5]
 }
 
 func (x CrewTopology) Number() protoreflect.EnumNumber {
@@ -133,7 +385,7 @@ func (x CrewTopology) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use CrewTopology.Descriptor instead.
 func (CrewTopology) EnumDescriptor() ([]byte, []int) {
-	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{1}
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{5}
 }
 
 // CrewRunState tracks the lifecycle of a single crew execution.
@@ -179,11 +431,11 @@ func (x CrewRunState) String() string {
 }
 
 func (CrewRunState) Descriptor() protoreflect.EnumDescriptor {
-	return file_containarium_v1_agent_proto_enumTypes[2].Descriptor()
+	return file_containarium_v1_agent_proto_enumTypes[6].Descriptor()
 }
 
 func (CrewRunState) Type() protoreflect.EnumType {
-	return &file_containarium_v1_agent_proto_enumTypes[2]
+	return &file_containarium_v1_agent_proto_enumTypes[6]
 }
 
 func (x CrewRunState) Number() protoreflect.EnumNumber {
@@ -192,7 +444,7 @@ func (x CrewRunState) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use CrewRunState.Descriptor instead.
 func (CrewRunState) EnumDescriptor() ([]byte, []int) {
-	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{2}
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{6}
 }
 
 // AgentCard is the discovery document a skill serves so peer agents can find
@@ -330,8 +582,18 @@ type AgentSkill struct {
 	// until Phase 2.
 	AllowedPeers []string `protobuf:"bytes,9,rep,name=allowed_peers,json=allowedPeers,proto3" json:"allowed_peers,omitempty"`
 	// Model identifier the runtime should drive this agent with (e.g.
-	// "claude-opus-4-8"). Empty = runtime default.
-	Model         string `protobuf:"bytes,10,opt,name=model,proto3" json:"model,omitempty"`
+	// "claude-opus-4-8"). Empty = runtime default. Exported to the box
+	// (CONTAINARIUM_AGENT_MODEL) only when `engine` is also set — an
+	// unspecified engine keeps this field display/audit-only, exactly as it
+	// was before `engine` existed, so a daemon whose default engine does not
+	// match this model id does not have its skills break on upgrade.
+	Model string `protobuf:"bytes,10,opt,name=model,proto3" json:"model,omitempty"`
+	// Agent engine (SDK) this skill runs on. AGENT_ENGINE_UNSPECIFIED keeps
+	// today's behaviour: the daemon's configured gateway primary provider
+	// picks the engine in gateway mode, or the box's own default/env decides
+	// in direct mode. A named engine is honoured per run — see
+	// docs/architecture/agent-router.md.
+	Engine        AgentEngine `protobuf:"varint,11,opt,name=engine,proto3,enum=containarium.v1.AgentEngine" json:"engine,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -447,6 +709,13 @@ func (x *AgentSkill) GetModel() string {
 	return ""
 }
 
+func (x *AgentSkill) GetEngine() AgentEngine {
+	if x != nil {
+		return x.Engine
+	}
+	return AgentEngine_AGENT_ENGINE_UNSPECIFIED
+}
+
 type isAgentSkill_Box interface {
 	isAgentSkill_Box()
 }
@@ -465,6 +734,205 @@ func (*AgentSkill_RecipeId) isAgentSkill_Box() {}
 
 func (*AgentSkill_Recipe) isAgentSkill_Box() {}
 
+// AgentEngineStatus is one engine's readiness row, as ListAgentEngines
+// reports it. One row per AgentEngine value (#2223).
+type AgentEngineStatus struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Engine AgentEngine            `protobuf:"varint,1,opt,name=engine,proto3,enum=containarium.v1.AgentEngine" json:"engine,omitempty"`
+	// The gateway provider this engine speaks (Provider in agentengine).
+	// GATEWAY_PROVIDER_UNSPECIFIED only if a future AgentEngine value has no
+	// provider mapping yet.
+	Provider  GatewayProvider      `protobuf:"varint,2,opt,name=provider,proto3,enum=containarium.v1.GatewayProvider" json:"provider,omitempty"`
+	Readiness AgentEngineReadiness `protobuf:"varint,3,opt,name=readiness,proto3,enum=containarium.v1.AgentEngineReadiness" json:"readiness,omitempty"`
+	// Set exactly when readiness != READY: NOT_READY names the missing key
+	// and the fix command (the same text RunAgentSkill's refusal uses);
+	// UNKNOWN_DIRECT_MODE names why this daemon can't say.
+	Reason string                `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"`
+	Source AgentCredentialSource `protobuf:"varint,5,opt,name=source,proto3,enum=containarium.v1.AgentCredentialSource" json:"source,omitempty"`
+	// True for the one engine AGENT_ENGINE_UNSPECIFIED resolves to on this
+	// daemon right now (gatewayPrimaryProvider's pick in gateway mode; the
+	// runtime's own default in direct mode).
+	IsDefault bool `protobuf:"varint,6,opt,name=is_default,json=isDefault,proto3" json:"is_default,omitempty"`
+	// Catalog skills whose manifest names this engine EXPLICITLY (#2222 Q2,
+	// decided 2026-10-01) — never includes an unspecified-engine skill, even
+	// one that would resolve to this engine via is_default.
+	SkillIds      []string `protobuf:"bytes,7,rep,name=skill_ids,json=skillIds,proto3" json:"skill_ids,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AgentEngineStatus) Reset() {
+	*x = AgentEngineStatus{}
+	mi := &file_containarium_v1_agent_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AgentEngineStatus) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AgentEngineStatus) ProtoMessage() {}
+
+func (x *AgentEngineStatus) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_agent_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AgentEngineStatus.ProtoReflect.Descriptor instead.
+func (*AgentEngineStatus) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *AgentEngineStatus) GetEngine() AgentEngine {
+	if x != nil {
+		return x.Engine
+	}
+	return AgentEngine_AGENT_ENGINE_UNSPECIFIED
+}
+
+func (x *AgentEngineStatus) GetProvider() GatewayProvider {
+	if x != nil {
+		return x.Provider
+	}
+	return GatewayProvider_GATEWAY_PROVIDER_UNSPECIFIED
+}
+
+func (x *AgentEngineStatus) GetReadiness() AgentEngineReadiness {
+	if x != nil {
+		return x.Readiness
+	}
+	return AgentEngineReadiness_AGENT_ENGINE_READINESS_UNSPECIFIED
+}
+
+func (x *AgentEngineStatus) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *AgentEngineStatus) GetSource() AgentCredentialSource {
+	if x != nil {
+		return x.Source
+	}
+	return AgentCredentialSource_AGENT_CREDENTIAL_SOURCE_UNSPECIFIED
+}
+
+func (x *AgentEngineStatus) GetIsDefault() bool {
+	if x != nil {
+		return x.IsDefault
+	}
+	return false
+}
+
+func (x *AgentEngineStatus) GetSkillIds() []string {
+	if x != nil {
+		return x.SkillIds
+	}
+	return nil
+}
+
+type ListAgentEnginesRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListAgentEnginesRequest) Reset() {
+	*x = ListAgentEnginesRequest{}
+	mi := &file_containarium_v1_agent_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListAgentEnginesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListAgentEnginesRequest) ProtoMessage() {}
+
+func (x *ListAgentEnginesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_agent_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListAgentEnginesRequest.ProtoReflect.Descriptor instead.
+func (*ListAgentEnginesRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{3}
+}
+
+type ListAgentEnginesResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// One row per AgentEngine value (AGENT_ENGINE_UNSPECIFIED excluded — it
+	// names no engine of its own to report readiness for).
+	Engines []*AgentEngineStatus `protobuf:"bytes,1,rep,name=engines,proto3" json:"engines,omitempty"`
+	// The key owner this response's READY/NOT_READY rows were resolved for.
+	// Empty for an admin caller with no owner scope (the global view) or in
+	// direct mode.
+	KeyOwner      string `protobuf:"bytes,2,opt,name=key_owner,json=keyOwner,proto3" json:"key_owner,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListAgentEnginesResponse) Reset() {
+	*x = ListAgentEnginesResponse{}
+	mi := &file_containarium_v1_agent_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListAgentEnginesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListAgentEnginesResponse) ProtoMessage() {}
+
+func (x *ListAgentEnginesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_agent_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListAgentEnginesResponse.ProtoReflect.Descriptor instead.
+func (*ListAgentEnginesResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *ListAgentEnginesResponse) GetEngines() []*AgentEngineStatus {
+	if x != nil {
+		return x.Engines
+	}
+	return nil
+}
+
+func (x *ListAgentEnginesResponse) GetKeyOwner() string {
+	if x != nil {
+		return x.KeyOwner
+	}
+	return ""
+}
+
 type ListAgentSkillsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -473,7 +941,7 @@ type ListAgentSkillsRequest struct {
 
 func (x *ListAgentSkillsRequest) Reset() {
 	*x = ListAgentSkillsRequest{}
-	mi := &file_containarium_v1_agent_proto_msgTypes[2]
+	mi := &file_containarium_v1_agent_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -485,7 +953,7 @@ func (x *ListAgentSkillsRequest) String() string {
 func (*ListAgentSkillsRequest) ProtoMessage() {}
 
 func (x *ListAgentSkillsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_agent_proto_msgTypes[2]
+	mi := &file_containarium_v1_agent_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -498,7 +966,7 @@ func (x *ListAgentSkillsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAgentSkillsRequest.ProtoReflect.Descriptor instead.
 func (*ListAgentSkillsRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{2}
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{5}
 }
 
 type ListAgentSkillsResponse struct {
@@ -510,7 +978,7 @@ type ListAgentSkillsResponse struct {
 
 func (x *ListAgentSkillsResponse) Reset() {
 	*x = ListAgentSkillsResponse{}
-	mi := &file_containarium_v1_agent_proto_msgTypes[3]
+	mi := &file_containarium_v1_agent_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -522,7 +990,7 @@ func (x *ListAgentSkillsResponse) String() string {
 func (*ListAgentSkillsResponse) ProtoMessage() {}
 
 func (x *ListAgentSkillsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_agent_proto_msgTypes[3]
+	mi := &file_containarium_v1_agent_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -535,7 +1003,7 @@ func (x *ListAgentSkillsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAgentSkillsResponse.ProtoReflect.Descriptor instead.
 func (*ListAgentSkillsResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{3}
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *ListAgentSkillsResponse) GetSkills() []*AgentSkill {
@@ -554,7 +1022,7 @@ type GetAgentSkillRequest struct {
 
 func (x *GetAgentSkillRequest) Reset() {
 	*x = GetAgentSkillRequest{}
-	mi := &file_containarium_v1_agent_proto_msgTypes[4]
+	mi := &file_containarium_v1_agent_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -566,7 +1034,7 @@ func (x *GetAgentSkillRequest) String() string {
 func (*GetAgentSkillRequest) ProtoMessage() {}
 
 func (x *GetAgentSkillRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_agent_proto_msgTypes[4]
+	mi := &file_containarium_v1_agent_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -579,7 +1047,7 @@ func (x *GetAgentSkillRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetAgentSkillRequest.ProtoReflect.Descriptor instead.
 func (*GetAgentSkillRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{4}
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *GetAgentSkillRequest) GetId() string {
@@ -598,7 +1066,7 @@ type GetAgentSkillResponse struct {
 
 func (x *GetAgentSkillResponse) Reset() {
 	*x = GetAgentSkillResponse{}
-	mi := &file_containarium_v1_agent_proto_msgTypes[5]
+	mi := &file_containarium_v1_agent_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -610,7 +1078,7 @@ func (x *GetAgentSkillResponse) String() string {
 func (*GetAgentSkillResponse) ProtoMessage() {}
 
 func (x *GetAgentSkillResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_agent_proto_msgTypes[5]
+	mi := &file_containarium_v1_agent_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -623,12 +1091,253 @@ func (x *GetAgentSkillResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetAgentSkillResponse.ProtoReflect.Descriptor instead.
 func (*GetAgentSkillResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{5}
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *GetAgentSkillResponse) GetSkill() *AgentSkill {
 	if x != nil {
 		return x.Skill
+	}
+	return nil
+}
+
+// ProvisionSkillBoxRequest creates or reuses a skill's deterministic box
+// (agent-<skill_id>) WITHOUT running it: no token is minted, nothing is
+// seeded, and the model is never called (#2272). This is the create-or-reuse
+// step RunAgentSkill/RunCrew already perform as a side effect of a real run
+// — surfaced on its own so a crew member's box can exist, and a human can
+// `containarium connect` in and sign in to its coding agent, BEFORE any
+// inference credential exists. Without this, that box is created only as a
+// side effect of a run that itself needs a credential to get that far —
+// chicken-and-egg.
+type ProvisionSkillBoxRequest struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	SkillId string                 `protobuf:"bytes,1,opt,name=skill_id,json=skillId,proto3" json:"skill_id,omitempty"`
+	// Target backend/pool placement, same scheme as RunAgentSkillRequest.
+	BackendId     string `protobuf:"bytes,2,opt,name=backend_id,json=backendId,proto3" json:"backend_id,omitempty"`
+	Pool          string `protobuf:"bytes,3,opt,name=pool,proto3" json:"pool,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProvisionSkillBoxRequest) Reset() {
+	*x = ProvisionSkillBoxRequest{}
+	mi := &file_containarium_v1_agent_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProvisionSkillBoxRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProvisionSkillBoxRequest) ProtoMessage() {}
+
+func (x *ProvisionSkillBoxRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_agent_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProvisionSkillBoxRequest.ProtoReflect.Descriptor instead.
+func (*ProvisionSkillBoxRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *ProvisionSkillBoxRequest) GetSkillId() string {
+	if x != nil {
+		return x.SkillId
+	}
+	return ""
+}
+
+func (x *ProvisionSkillBoxRequest) GetBackendId() string {
+	if x != nil {
+		return x.BackendId
+	}
+	return ""
+}
+
+func (x *ProvisionSkillBoxRequest) GetPool() string {
+	if x != nil {
+		return x.Pool
+	}
+	return ""
+}
+
+type ProvisionSkillBoxResponse struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Container *Container             `protobuf:"bytes,1,opt,name=container,proto3" json:"container,omitempty"`
+	// True when this call created the box; false when an already-provisioned
+	// box (running, or stopped and started back up) was reused instead.
+	FreshlyProvisioned bool `protobuf:"varint,2,opt,name=freshly_provisioned,json=freshlyProvisioned,proto3" json:"freshly_provisioned,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *ProvisionSkillBoxResponse) Reset() {
+	*x = ProvisionSkillBoxResponse{}
+	mi := &file_containarium_v1_agent_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProvisionSkillBoxResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProvisionSkillBoxResponse) ProtoMessage() {}
+
+func (x *ProvisionSkillBoxResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_agent_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProvisionSkillBoxResponse.ProtoReflect.Descriptor instead.
+func (*ProvisionSkillBoxResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *ProvisionSkillBoxResponse) GetContainer() *Container {
+	if x != nil {
+		return x.Container
+	}
+	return nil
+}
+
+func (x *ProvisionSkillBoxResponse) GetFreshlyProvisioned() bool {
+	if x != nil {
+		return x.FreshlyProvisioned
+	}
+	return false
+}
+
+// GetSkillBoxCredentialStatusRequest asks whether a skill's already-
+// provisioned box has a credential its configured coding engine would use
+// to sign in — a presence check only (#2272's re-scoping comment).
+type GetSkillBoxCredentialStatusRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SkillId       string                 `protobuf:"bytes,1,opt,name=skill_id,json=skillId,proto3" json:"skill_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetSkillBoxCredentialStatusRequest) Reset() {
+	*x = GetSkillBoxCredentialStatusRequest{}
+	mi := &file_containarium_v1_agent_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetSkillBoxCredentialStatusRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetSkillBoxCredentialStatusRequest) ProtoMessage() {}
+
+func (x *GetSkillBoxCredentialStatusRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_agent_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetSkillBoxCredentialStatusRequest.ProtoReflect.Descriptor instead.
+func (*GetSkillBoxCredentialStatusRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *GetSkillBoxCredentialStatusRequest) GetSkillId() string {
+	if x != nil {
+		return x.SkillId
+	}
+	return ""
+}
+
+type GetSkillBoxCredentialStatusResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The engine this status was checked for: the skill's own `engine` field,
+	// resolved to AGENT_ENGINE_CLAUDE when the skill leaves it unspecified
+	// (the only engine `containarium code`'s box-side probe supports today —
+	// AGENT_ENGINE_CODEX/GEMINI are refused FAILED_PRECONDITION until #2273
+	// adds Codex's own probe; never guessed).
+	Engine AgentEngine `protobuf:"varint,1,opt,name=engine,proto3,enum=containarium.v1.AgentEngine" json:"engine,omitempty"`
+	// WHERE that engine's credential comes from, if anywhere — names only,
+	// NEVER a value. Mirrors `containarium code install`'s own verify output
+	// (#2030): this call does not read, store, log, or transmit the
+	// credential itself at any layer, box to daemon to caller.
+	CredentialSource CodeCredentialSource `protobuf:"varint,2,opt,name=credential_source,json=credentialSource,proto3,enum=containarium.v1.CodeCredentialSource" json:"credential_source,omitempty"`
+	// When this check ran.
+	CheckedAt     *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=checked_at,json=checkedAt,proto3" json:"checked_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetSkillBoxCredentialStatusResponse) Reset() {
+	*x = GetSkillBoxCredentialStatusResponse{}
+	mi := &file_containarium_v1_agent_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetSkillBoxCredentialStatusResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetSkillBoxCredentialStatusResponse) ProtoMessage() {}
+
+func (x *GetSkillBoxCredentialStatusResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_agent_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetSkillBoxCredentialStatusResponse.ProtoReflect.Descriptor instead.
+func (*GetSkillBoxCredentialStatusResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *GetSkillBoxCredentialStatusResponse) GetEngine() AgentEngine {
+	if x != nil {
+		return x.Engine
+	}
+	return AgentEngine_AGENT_ENGINE_UNSPECIFIED
+}
+
+func (x *GetSkillBoxCredentialStatusResponse) GetCredentialSource() CodeCredentialSource {
+	if x != nil {
+		return x.CredentialSource
+	}
+	return CodeCredentialSource_CODE_CREDENTIAL_SOURCE_UNSPECIFIED
+}
+
+func (x *GetSkillBoxCredentialStatusResponse) GetCheckedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.CheckedAt
 	}
 	return nil
 }
@@ -671,13 +1380,20 @@ type RunAgentSkillRequest struct {
 	// Empty means the run is not bound to any connection (every pre-#1922
 	// run, and any run that doesn't use the tracker broker).
 	TrackerConnection string `protobuf:"bytes,9,opt,name=tracker_connection,json=trackerConnection,proto3" json:"tracker_connection,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// Per-invocation engine override (#2228): when set, this run's engine is
+	// resolved from THIS value instead of the skill manifest's own `engine`
+	// field — the same agentengine.Resolve readiness check applies either way,
+	// so an override naming an engine with no usable key is refused the same
+	// way an unready manifest engine is. UNSPECIFIED (the default) means "use
+	// the manifest", unchanged pre-#2228 behavior.
+	Engine        AgentEngine `protobuf:"varint,10,opt,name=engine,proto3,enum=containarium.v1.AgentEngine" json:"engine,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *RunAgentSkillRequest) Reset() {
 	*x = RunAgentSkillRequest{}
-	mi := &file_containarium_v1_agent_proto_msgTypes[6]
+	mi := &file_containarium_v1_agent_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -689,7 +1405,7 @@ func (x *RunAgentSkillRequest) String() string {
 func (*RunAgentSkillRequest) ProtoMessage() {}
 
 func (x *RunAgentSkillRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_agent_proto_msgTypes[6]
+	mi := &file_containarium_v1_agent_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -702,7 +1418,7 @@ func (x *RunAgentSkillRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunAgentSkillRequest.ProtoReflect.Descriptor instead.
 func (*RunAgentSkillRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{6}
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *RunAgentSkillRequest) GetSkillId() string {
@@ -768,6 +1484,13 @@ func (x *RunAgentSkillRequest) GetTrackerConnection() string {
 	return ""
 }
 
+func (x *RunAgentSkillRequest) GetEngine() AgentEngine {
+	if x != nil {
+		return x.Engine
+	}
+	return AgentEngine_AGENT_ENGINE_UNSPECIFIED
+}
+
 type RunAgentSkillResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The box the agent ran in.
@@ -789,7 +1512,7 @@ type RunAgentSkillResponse struct {
 
 func (x *RunAgentSkillResponse) Reset() {
 	*x = RunAgentSkillResponse{}
-	mi := &file_containarium_v1_agent_proto_msgTypes[7]
+	mi := &file_containarium_v1_agent_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -801,7 +1524,7 @@ func (x *RunAgentSkillResponse) String() string {
 func (*RunAgentSkillResponse) ProtoMessage() {}
 
 func (x *RunAgentSkillResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_agent_proto_msgTypes[7]
+	mi := &file_containarium_v1_agent_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -814,7 +1537,7 @@ func (x *RunAgentSkillResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunAgentSkillResponse.ProtoReflect.Descriptor instead.
 func (*RunAgentSkillResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{7}
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *RunAgentSkillResponse) GetContainer() *Container {
@@ -870,7 +1593,7 @@ type AgentTask struct {
 
 func (x *AgentTask) Reset() {
 	*x = AgentTask{}
-	mi := &file_containarium_v1_agent_proto_msgTypes[8]
+	mi := &file_containarium_v1_agent_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -882,7 +1605,7 @@ func (x *AgentTask) String() string {
 func (*AgentTask) ProtoMessage() {}
 
 func (x *AgentTask) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_agent_proto_msgTypes[8]
+	mi := &file_containarium_v1_agent_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -895,7 +1618,7 @@ func (x *AgentTask) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentTask.ProtoReflect.Descriptor instead.
 func (*AgentTask) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{8}
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *AgentTask) GetId() string {
@@ -936,7 +1659,7 @@ type AgentArtifact struct {
 
 func (x *AgentArtifact) Reset() {
 	*x = AgentArtifact{}
-	mi := &file_containarium_v1_agent_proto_msgTypes[9]
+	mi := &file_containarium_v1_agent_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -948,7 +1671,7 @@ func (x *AgentArtifact) String() string {
 func (*AgentArtifact) ProtoMessage() {}
 
 func (x *AgentArtifact) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_agent_proto_msgTypes[9]
+	mi := &file_containarium_v1_agent_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -961,7 +1684,7 @@ func (x *AgentArtifact) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentArtifact.ProtoReflect.Descriptor instead.
 func (*AgentArtifact) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{9}
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *AgentArtifact) GetTaskId() string {
@@ -1019,7 +1742,7 @@ type SendAgentTaskRequest struct {
 
 func (x *SendAgentTaskRequest) Reset() {
 	*x = SendAgentTaskRequest{}
-	mi := &file_containarium_v1_agent_proto_msgTypes[10]
+	mi := &file_containarium_v1_agent_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1031,7 +1754,7 @@ func (x *SendAgentTaskRequest) String() string {
 func (*SendAgentTaskRequest) ProtoMessage() {}
 
 func (x *SendAgentTaskRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_agent_proto_msgTypes[10]
+	mi := &file_containarium_v1_agent_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1044,7 +1767,7 @@ func (x *SendAgentTaskRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendAgentTaskRequest.ProtoReflect.Descriptor instead.
 func (*SendAgentTaskRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{10}
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *SendAgentTaskRequest) GetFromSkillId() string {
@@ -1095,7 +1818,7 @@ type SendAgentTaskResponse struct {
 
 func (x *SendAgentTaskResponse) Reset() {
 	*x = SendAgentTaskResponse{}
-	mi := &file_containarium_v1_agent_proto_msgTypes[11]
+	mi := &file_containarium_v1_agent_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1107,7 +1830,7 @@ func (x *SendAgentTaskResponse) String() string {
 func (*SendAgentTaskResponse) ProtoMessage() {}
 
 func (x *SendAgentTaskResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_agent_proto_msgTypes[11]
+	mi := &file_containarium_v1_agent_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1120,7 +1843,7 @@ func (x *SendAgentTaskResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendAgentTaskResponse.ProtoReflect.Descriptor instead.
 func (*SendAgentTaskResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{11}
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *SendAgentTaskResponse) GetArtifact() *AgentArtifact {
@@ -1161,7 +1884,7 @@ type TailRunLogRequest struct {
 
 func (x *TailRunLogRequest) Reset() {
 	*x = TailRunLogRequest{}
-	mi := &file_containarium_v1_agent_proto_msgTypes[12]
+	mi := &file_containarium_v1_agent_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1173,7 +1896,7 @@ func (x *TailRunLogRequest) String() string {
 func (*TailRunLogRequest) ProtoMessage() {}
 
 func (x *TailRunLogRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_agent_proto_msgTypes[12]
+	mi := &file_containarium_v1_agent_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1186,7 +1909,7 @@ func (x *TailRunLogRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TailRunLogRequest.ProtoReflect.Descriptor instead.
 func (*TailRunLogRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{12}
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *TailRunLogRequest) GetRunId() string {
@@ -1244,7 +1967,7 @@ type TailRunLogResponse struct {
 
 func (x *TailRunLogResponse) Reset() {
 	*x = TailRunLogResponse{}
-	mi := &file_containarium_v1_agent_proto_msgTypes[13]
+	mi := &file_containarium_v1_agent_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1256,7 +1979,7 @@ func (x *TailRunLogResponse) String() string {
 func (*TailRunLogResponse) ProtoMessage() {}
 
 func (x *TailRunLogResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_agent_proto_msgTypes[13]
+	mi := &file_containarium_v1_agent_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1269,7 +1992,7 @@ func (x *TailRunLogResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TailRunLogResponse.ProtoReflect.Descriptor instead.
 func (*TailRunLogResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{13}
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *TailRunLogResponse) GetChunk() []byte {
@@ -1320,7 +2043,7 @@ type EnqueueAgentTaskRequest struct {
 
 func (x *EnqueueAgentTaskRequest) Reset() {
 	*x = EnqueueAgentTaskRequest{}
-	mi := &file_containarium_v1_agent_proto_msgTypes[14]
+	mi := &file_containarium_v1_agent_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1332,7 +2055,7 @@ func (x *EnqueueAgentTaskRequest) String() string {
 func (*EnqueueAgentTaskRequest) ProtoMessage() {}
 
 func (x *EnqueueAgentTaskRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_agent_proto_msgTypes[14]
+	mi := &file_containarium_v1_agent_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1345,7 +2068,7 @@ func (x *EnqueueAgentTaskRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnqueueAgentTaskRequest.ProtoReflect.Descriptor instead.
 func (*EnqueueAgentTaskRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{14}
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *EnqueueAgentTaskRequest) GetSkillId() string {
@@ -1372,7 +2095,7 @@ type EnqueueAgentTaskResponse struct {
 
 func (x *EnqueueAgentTaskResponse) Reset() {
 	*x = EnqueueAgentTaskResponse{}
-	mi := &file_containarium_v1_agent_proto_msgTypes[15]
+	mi := &file_containarium_v1_agent_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1384,7 +2107,7 @@ func (x *EnqueueAgentTaskResponse) String() string {
 func (*EnqueueAgentTaskResponse) ProtoMessage() {}
 
 func (x *EnqueueAgentTaskResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_agent_proto_msgTypes[15]
+	mi := &file_containarium_v1_agent_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1397,7 +2120,7 @@ func (x *EnqueueAgentTaskResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnqueueAgentTaskResponse.ProtoReflect.Descriptor instead.
 func (*EnqueueAgentTaskResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{15}
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *EnqueueAgentTaskResponse) GetTaskId() string {
@@ -1423,7 +2146,7 @@ type LeaseAgentTaskRequest struct {
 
 func (x *LeaseAgentTaskRequest) Reset() {
 	*x = LeaseAgentTaskRequest{}
-	mi := &file_containarium_v1_agent_proto_msgTypes[16]
+	mi := &file_containarium_v1_agent_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1435,7 +2158,7 @@ func (x *LeaseAgentTaskRequest) String() string {
 func (*LeaseAgentTaskRequest) ProtoMessage() {}
 
 func (x *LeaseAgentTaskRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_agent_proto_msgTypes[16]
+	mi := &file_containarium_v1_agent_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1448,7 +2171,7 @@ func (x *LeaseAgentTaskRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LeaseAgentTaskRequest.ProtoReflect.Descriptor instead.
 func (*LeaseAgentTaskRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{16}
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *LeaseAgentTaskRequest) GetWorkerId() string {
@@ -1489,7 +2212,7 @@ type LeaseAgentTaskResponse struct {
 
 func (x *LeaseAgentTaskResponse) Reset() {
 	*x = LeaseAgentTaskResponse{}
-	mi := &file_containarium_v1_agent_proto_msgTypes[17]
+	mi := &file_containarium_v1_agent_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1501,7 +2224,7 @@ func (x *LeaseAgentTaskResponse) String() string {
 func (*LeaseAgentTaskResponse) ProtoMessage() {}
 
 func (x *LeaseAgentTaskResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_agent_proto_msgTypes[17]
+	mi := &file_containarium_v1_agent_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1514,7 +2237,7 @@ func (x *LeaseAgentTaskResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LeaseAgentTaskResponse.ProtoReflect.Descriptor instead.
 func (*LeaseAgentTaskResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{17}
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *LeaseAgentTaskResponse) GetHasTask() bool {
@@ -1568,7 +2291,7 @@ type CompleteAgentTaskRequest struct {
 
 func (x *CompleteAgentTaskRequest) Reset() {
 	*x = CompleteAgentTaskRequest{}
-	mi := &file_containarium_v1_agent_proto_msgTypes[18]
+	mi := &file_containarium_v1_agent_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1580,7 +2303,7 @@ func (x *CompleteAgentTaskRequest) String() string {
 func (*CompleteAgentTaskRequest) ProtoMessage() {}
 
 func (x *CompleteAgentTaskRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_agent_proto_msgTypes[18]
+	mi := &file_containarium_v1_agent_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1593,7 +2316,7 @@ func (x *CompleteAgentTaskRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompleteAgentTaskRequest.ProtoReflect.Descriptor instead.
 func (*CompleteAgentTaskRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{18}
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *CompleteAgentTaskRequest) GetTaskId() string {
@@ -1635,7 +2358,7 @@ type CompleteAgentTaskResponse struct {
 
 func (x *CompleteAgentTaskResponse) Reset() {
 	*x = CompleteAgentTaskResponse{}
-	mi := &file_containarium_v1_agent_proto_msgTypes[19]
+	mi := &file_containarium_v1_agent_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1647,7 +2370,7 @@ func (x *CompleteAgentTaskResponse) String() string {
 func (*CompleteAgentTaskResponse) ProtoMessage() {}
 
 func (x *CompleteAgentTaskResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_agent_proto_msgTypes[19]
+	mi := &file_containarium_v1_agent_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1660,7 +2383,7 @@ func (x *CompleteAgentTaskResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompleteAgentTaskResponse.ProtoReflect.Descriptor instead.
 func (*CompleteAgentTaskResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{19}
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *CompleteAgentTaskResponse) GetAccepted() bool {
@@ -1688,7 +2411,7 @@ type StartAgentWorkerRequest struct {
 
 func (x *StartAgentWorkerRequest) Reset() {
 	*x = StartAgentWorkerRequest{}
-	mi := &file_containarium_v1_agent_proto_msgTypes[20]
+	mi := &file_containarium_v1_agent_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1700,7 +2423,7 @@ func (x *StartAgentWorkerRequest) String() string {
 func (*StartAgentWorkerRequest) ProtoMessage() {}
 
 func (x *StartAgentWorkerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_agent_proto_msgTypes[20]
+	mi := &file_containarium_v1_agent_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1713,7 +2436,7 @@ func (x *StartAgentWorkerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartAgentWorkerRequest.ProtoReflect.Descriptor instead.
 func (*StartAgentWorkerRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{20}
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *StartAgentWorkerRequest) GetSkillId() string {
@@ -1760,7 +2483,7 @@ type StartAgentWorkerResponse struct {
 
 func (x *StartAgentWorkerResponse) Reset() {
 	*x = StartAgentWorkerResponse{}
-	mi := &file_containarium_v1_agent_proto_msgTypes[21]
+	mi := &file_containarium_v1_agent_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1772,7 +2495,7 @@ func (x *StartAgentWorkerResponse) String() string {
 func (*StartAgentWorkerResponse) ProtoMessage() {}
 
 func (x *StartAgentWorkerResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_agent_proto_msgTypes[21]
+	mi := &file_containarium_v1_agent_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1785,7 +2508,7 @@ func (x *StartAgentWorkerResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartAgentWorkerResponse.ProtoReflect.Descriptor instead.
 func (*StartAgentWorkerResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{21}
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *StartAgentWorkerResponse) GetContainer() *Container {
@@ -1829,7 +2552,7 @@ type Crew struct {
 
 func (x *Crew) Reset() {
 	*x = Crew{}
-	mi := &file_containarium_v1_agent_proto_msgTypes[22]
+	mi := &file_containarium_v1_agent_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1841,7 +2564,7 @@ func (x *Crew) String() string {
 func (*Crew) ProtoMessage() {}
 
 func (x *Crew) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_agent_proto_msgTypes[22]
+	mi := &file_containarium_v1_agent_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1854,7 +2577,7 @@ func (x *Crew) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Crew.ProtoReflect.Descriptor instead.
 func (*Crew) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{22}
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *Crew) GetId() string {
@@ -1947,7 +2670,7 @@ type CrewRun struct {
 
 func (x *CrewRun) Reset() {
 	*x = CrewRun{}
-	mi := &file_containarium_v1_agent_proto_msgTypes[23]
+	mi := &file_containarium_v1_agent_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1959,7 +2682,7 @@ func (x *CrewRun) String() string {
 func (*CrewRun) ProtoMessage() {}
 
 func (x *CrewRun) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_agent_proto_msgTypes[23]
+	mi := &file_containarium_v1_agent_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1972,7 +2695,7 @@ func (x *CrewRun) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CrewRun.ProtoReflect.Descriptor instead.
 func (*CrewRun) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{23}
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *CrewRun) GetId() string {
@@ -2067,7 +2790,7 @@ type ListCrewsRequest struct {
 
 func (x *ListCrewsRequest) Reset() {
 	*x = ListCrewsRequest{}
-	mi := &file_containarium_v1_agent_proto_msgTypes[24]
+	mi := &file_containarium_v1_agent_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2079,7 +2802,7 @@ func (x *ListCrewsRequest) String() string {
 func (*ListCrewsRequest) ProtoMessage() {}
 
 func (x *ListCrewsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_agent_proto_msgTypes[24]
+	mi := &file_containarium_v1_agent_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2092,7 +2815,7 @@ func (x *ListCrewsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCrewsRequest.ProtoReflect.Descriptor instead.
 func (*ListCrewsRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{24}
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{31}
 }
 
 type ListCrewsResponse struct {
@@ -2104,7 +2827,7 @@ type ListCrewsResponse struct {
 
 func (x *ListCrewsResponse) Reset() {
 	*x = ListCrewsResponse{}
-	mi := &file_containarium_v1_agent_proto_msgTypes[25]
+	mi := &file_containarium_v1_agent_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2116,7 +2839,7 @@ func (x *ListCrewsResponse) String() string {
 func (*ListCrewsResponse) ProtoMessage() {}
 
 func (x *ListCrewsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_agent_proto_msgTypes[25]
+	mi := &file_containarium_v1_agent_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2129,7 +2852,7 @@ func (x *ListCrewsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCrewsResponse.ProtoReflect.Descriptor instead.
 func (*ListCrewsResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{25}
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *ListCrewsResponse) GetCrews() []*Crew {
@@ -2148,7 +2871,7 @@ type GetCrewRequest struct {
 
 func (x *GetCrewRequest) Reset() {
 	*x = GetCrewRequest{}
-	mi := &file_containarium_v1_agent_proto_msgTypes[26]
+	mi := &file_containarium_v1_agent_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2160,7 +2883,7 @@ func (x *GetCrewRequest) String() string {
 func (*GetCrewRequest) ProtoMessage() {}
 
 func (x *GetCrewRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_agent_proto_msgTypes[26]
+	mi := &file_containarium_v1_agent_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2173,7 +2896,7 @@ func (x *GetCrewRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCrewRequest.ProtoReflect.Descriptor instead.
 func (*GetCrewRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{26}
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *GetCrewRequest) GetId() string {
@@ -2192,7 +2915,7 @@ type GetCrewResponse struct {
 
 func (x *GetCrewResponse) Reset() {
 	*x = GetCrewResponse{}
-	mi := &file_containarium_v1_agent_proto_msgTypes[27]
+	mi := &file_containarium_v1_agent_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2204,7 +2927,7 @@ func (x *GetCrewResponse) String() string {
 func (*GetCrewResponse) ProtoMessage() {}
 
 func (x *GetCrewResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_agent_proto_msgTypes[27]
+	mi := &file_containarium_v1_agent_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2217,7 +2940,7 @@ func (x *GetCrewResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCrewResponse.ProtoReflect.Descriptor instead.
 func (*GetCrewResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{27}
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *GetCrewResponse) GetCrew() *Crew {
@@ -2260,13 +2983,20 @@ type RunCrewRequest struct {
 	// member's fetch only (an ephemeral http.extraHeader) — never written to
 	// any box's .git/config, never logged. Empty = public repo.
 	GitCredential string `protobuf:"bytes,8,opt,name=git_credential,json=gitCredential,proto3" json:"git_credential,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// Per-member engine override (#2228), keyed by skill_id: when a member's
+	// id has an entry here, THIS value resolves that member's engine instead
+	// of its own manifest `engine` field — same agentengine.Resolve readiness
+	// check, same refusal text, as RunAgentSkillRequest.engine. A member with
+	// no entry (or AGENT_ENGINE_UNSPECIFIED) keeps its manifest's own choice,
+	// unchanged pre-#2228 behavior.
+	EngineOverrides map[string]AgentEngine `protobuf:"bytes,9,rep,name=engine_overrides,json=engineOverrides,proto3" json:"engine_overrides,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value,enum=containarium.v1.AgentEngine"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *RunCrewRequest) Reset() {
 	*x = RunCrewRequest{}
-	mi := &file_containarium_v1_agent_proto_msgTypes[28]
+	mi := &file_containarium_v1_agent_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2278,7 +3008,7 @@ func (x *RunCrewRequest) String() string {
 func (*RunCrewRequest) ProtoMessage() {}
 
 func (x *RunCrewRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_agent_proto_msgTypes[28]
+	mi := &file_containarium_v1_agent_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2291,7 +3021,7 @@ func (x *RunCrewRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunCrewRequest.ProtoReflect.Descriptor instead.
 func (*RunCrewRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{28}
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *RunCrewRequest) GetCrewId() string {
@@ -2350,6 +3080,13 @@ func (x *RunCrewRequest) GetGitCredential() string {
 	return ""
 }
 
+func (x *RunCrewRequest) GetEngineOverrides() map[string]AgentEngine {
+	if x != nil {
+		return x.EngineOverrides
+	}
+	return nil
+}
+
 type RunCrewResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Run           *CrewRun               `protobuf:"bytes,1,opt,name=run,proto3" json:"run,omitempty"`
@@ -2359,7 +3096,7 @@ type RunCrewResponse struct {
 
 func (x *RunCrewResponse) Reset() {
 	*x = RunCrewResponse{}
-	mi := &file_containarium_v1_agent_proto_msgTypes[29]
+	mi := &file_containarium_v1_agent_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2371,7 +3108,7 @@ func (x *RunCrewResponse) String() string {
 func (*RunCrewResponse) ProtoMessage() {}
 
 func (x *RunCrewResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_agent_proto_msgTypes[29]
+	mi := &file_containarium_v1_agent_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2384,7 +3121,7 @@ func (x *RunCrewResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunCrewResponse.ProtoReflect.Descriptor instead.
 func (*RunCrewResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{29}
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *RunCrewResponse) GetRun() *CrewRun {
@@ -2403,7 +3140,7 @@ type GetCrewRunRequest struct {
 
 func (x *GetCrewRunRequest) Reset() {
 	*x = GetCrewRunRequest{}
-	mi := &file_containarium_v1_agent_proto_msgTypes[30]
+	mi := &file_containarium_v1_agent_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2415,7 +3152,7 @@ func (x *GetCrewRunRequest) String() string {
 func (*GetCrewRunRequest) ProtoMessage() {}
 
 func (x *GetCrewRunRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_agent_proto_msgTypes[30]
+	mi := &file_containarium_v1_agent_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2428,7 +3165,7 @@ func (x *GetCrewRunRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCrewRunRequest.ProtoReflect.Descriptor instead.
 func (*GetCrewRunRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{30}
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *GetCrewRunRequest) GetId() string {
@@ -2447,7 +3184,7 @@ type GetCrewRunResponse struct {
 
 func (x *GetCrewRunResponse) Reset() {
 	*x = GetCrewRunResponse{}
-	mi := &file_containarium_v1_agent_proto_msgTypes[31]
+	mi := &file_containarium_v1_agent_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2459,7 +3196,7 @@ func (x *GetCrewRunResponse) String() string {
 func (*GetCrewRunResponse) ProtoMessage() {}
 
 func (x *GetCrewRunResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_agent_proto_msgTypes[31]
+	mi := &file_containarium_v1_agent_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2472,7 +3209,7 @@ func (x *GetCrewRunResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCrewRunResponse.ProtoReflect.Descriptor instead.
 func (*GetCrewRunResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{31}
+	return file_containarium_v1_agent_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *GetCrewRunResponse) GetRun() *CrewRun {
@@ -2486,14 +3223,14 @@ var File_containarium_v1_agent_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_agent_proto_rawDesc = "" +
 	"\n" +
-	"\x1bcontainarium/v1/agent.proto\x12\x0fcontainarium.v1\x1a\x1cgoogle/api/annotations.proto\x1a.protoc-gen-openapiv2/options/annotations.proto\x1a\x1fcontainarium/v1/container.proto\x1a\x1ccontainarium/v1/recipe.proto\"\xcf\x01\n" +
+	"\x1bcontainarium/v1/agent.proto\x12\x0fcontainarium.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a.protoc-gen-openapiv2/options/annotations.proto\x1a\x1fcontainarium/v1/container.proto\x1a\x1ccontainarium/v1/recipe.proto\x1a#containarium/v1/model_gateway.proto\"\xcf\x01\n" +
 	"\tAgentCard\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12 \n" +
 	"\vdescription\x18\x03 \x01(\tR\vdescription\x12\"\n" +
 	"\fcapabilities\x18\x04 \x03(\tR\fcapabilities\x12*\n" +
 	"\x11input_schema_json\x18\x05 \x01(\tR\x0finputSchemaJson\x12,\n" +
-	"\x12output_schema_json\x18\x06 \x01(\tR\x10outputSchemaJson\"\xed\x02\n" +
+	"\x12output_schema_json\x18\x06 \x01(\tR\x10outputSchemaJson\"\xa3\x03\n" +
 	"\n" +
 	"AgentSkill\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
@@ -2507,15 +3244,44 @@ const file_containarium_v1_agent_proto_rawDesc = "" +
 	"agent_card\x18\b \x01(\v2\x1a.containarium.v1.AgentCardR\tagentCard\x12#\n" +
 	"\rallowed_peers\x18\t \x03(\tR\fallowedPeers\x12\x14\n" +
 	"\x05model\x18\n" +
-	" \x01(\tR\x05modelB\x05\n" +
-	"\x03box\"\x18\n" +
+	" \x01(\tR\x05model\x124\n" +
+	"\x06engine\x18\v \x01(\x0e2\x1c.containarium.v1.AgentEngineR\x06engineB\x05\n" +
+	"\x03box\"\xe0\x02\n" +
+	"\x11AgentEngineStatus\x124\n" +
+	"\x06engine\x18\x01 \x01(\x0e2\x1c.containarium.v1.AgentEngineR\x06engine\x12<\n" +
+	"\bprovider\x18\x02 \x01(\x0e2 .containarium.v1.GatewayProviderR\bprovider\x12C\n" +
+	"\treadiness\x18\x03 \x01(\x0e2%.containarium.v1.AgentEngineReadinessR\treadiness\x12\x16\n" +
+	"\x06reason\x18\x04 \x01(\tR\x06reason\x12>\n" +
+	"\x06source\x18\x05 \x01(\x0e2&.containarium.v1.AgentCredentialSourceR\x06source\x12\x1d\n" +
+	"\n" +
+	"is_default\x18\x06 \x01(\bR\tisDefault\x12\x1b\n" +
+	"\tskill_ids\x18\a \x03(\tR\bskillIds\"\x19\n" +
+	"\x17ListAgentEnginesRequest\"u\n" +
+	"\x18ListAgentEnginesResponse\x12<\n" +
+	"\aengines\x18\x01 \x03(\v2\".containarium.v1.AgentEngineStatusR\aengines\x12\x1b\n" +
+	"\tkey_owner\x18\x02 \x01(\tR\bkeyOwner\"\x18\n" +
 	"\x16ListAgentSkillsRequest\"N\n" +
 	"\x17ListAgentSkillsResponse\x123\n" +
 	"\x06skills\x18\x01 \x03(\v2\x1b.containarium.v1.AgentSkillR\x06skills\"&\n" +
 	"\x14GetAgentSkillRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"J\n" +
 	"\x15GetAgentSkillResponse\x121\n" +
-	"\x05skill\x18\x01 \x01(\v2\x1b.containarium.v1.AgentSkillR\x05skill\"\xa8\x02\n" +
+	"\x05skill\x18\x01 \x01(\v2\x1b.containarium.v1.AgentSkillR\x05skill\"h\n" +
+	"\x18ProvisionSkillBoxRequest\x12\x19\n" +
+	"\bskill_id\x18\x01 \x01(\tR\askillId\x12\x1d\n" +
+	"\n" +
+	"backend_id\x18\x02 \x01(\tR\tbackendId\x12\x12\n" +
+	"\x04pool\x18\x03 \x01(\tR\x04pool\"\x86\x01\n" +
+	"\x19ProvisionSkillBoxResponse\x128\n" +
+	"\tcontainer\x18\x01 \x01(\v2\x1a.containarium.v1.ContainerR\tcontainer\x12/\n" +
+	"\x13freshly_provisioned\x18\x02 \x01(\bR\x12freshlyProvisioned\"?\n" +
+	"\"GetSkillBoxCredentialStatusRequest\x12\x19\n" +
+	"\bskill_id\x18\x01 \x01(\tR\askillId\"\xea\x01\n" +
+	"#GetSkillBoxCredentialStatusResponse\x124\n" +
+	"\x06engine\x18\x01 \x01(\x0e2\x1c.containarium.v1.AgentEngineR\x06engine\x12R\n" +
+	"\x11credential_source\x18\x02 \x01(\x0e2%.containarium.v1.CodeCredentialSourceR\x10credentialSource\x129\n" +
+	"\n" +
+	"checked_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\tcheckedAt\"\xde\x02\n" +
 	"\x14RunAgentSkillRequest\x12\x19\n" +
 	"\bskill_id\x18\x01 \x01(\tR\askillId\x12\x1d\n" +
 	"\n" +
@@ -2528,7 +3294,9 @@ const file_containarium_v1_agent_proto_rawDesc = "" +
 	"git_source\x18\x06 \x01(\tR\tgitSource\x12\x17\n" +
 	"\agit_ref\x18\a \x01(\tR\x06gitRef\x12%\n" +
 	"\x0egit_credential\x18\b \x01(\tR\rgitCredential\x12-\n" +
-	"\x12tracker_connection\x18\t \x01(\tR\x11trackerConnection\"\xd3\x01\n" +
+	"\x12tracker_connection\x18\t \x01(\tR\x11trackerConnection\x124\n" +
+	"\x06engine\x18\n" +
+	" \x01(\x0e2\x1c.containarium.v1.AgentEngineR\x06engine\"\xd3\x01\n" +
 	"\x15RunAgentSkillResponse\x128\n" +
 	"\tcontainer\x18\x01 \x01(\v2\x1a.containarium.v1.ContainerR\tcontainer\x12#\n" +
 	"\rartifact_json\x18\x02 \x01(\tR\fartifactJson\x12\x15\n" +
@@ -2636,7 +3404,7 @@ const file_containarium_v1_agent_proto_rawDesc = "" +
 	"\x0eGetCrewRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"<\n" +
 	"\x0fGetCrewResponse\x12)\n" +
-	"\x04crew\x18\x01 \x01(\v2\x15.containarium.v1.CrewR\x04crew\"\xf1\x01\n" +
+	"\x04crew\x18\x01 \x01(\v2\x15.containarium.v1.CrewR\x04crew\"\xb4\x03\n" +
 	"\x0eRunCrewRequest\x12\x17\n" +
 	"\acrew_id\x18\x01 \x01(\tR\x06crewId\x12\x1d\n" +
 	"\n" +
@@ -2648,13 +3416,37 @@ const file_containarium_v1_agent_proto_rawDesc = "" +
 	"\n" +
 	"git_source\x18\x06 \x01(\tR\tgitSource\x12\x17\n" +
 	"\agit_ref\x18\a \x01(\tR\x06gitRef\x12%\n" +
-	"\x0egit_credential\x18\b \x01(\tR\rgitCredential\"=\n" +
+	"\x0egit_credential\x18\b \x01(\tR\rgitCredential\x12_\n" +
+	"\x10engine_overrides\x18\t \x03(\v24.containarium.v1.RunCrewRequest.EngineOverridesEntryR\x0fengineOverrides\x1a`\n" +
+	"\x14EngineOverridesEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x122\n" +
+	"\x05value\x18\x02 \x01(\x0e2\x1c.containarium.v1.AgentEngineR\x05value:\x028\x01\"=\n" +
 	"\x0fRunCrewResponse\x12*\n" +
 	"\x03run\x18\x01 \x01(\v2\x18.containarium.v1.CrewRunR\x03run\"#\n" +
 	"\x11GetCrewRunRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"@\n" +
 	"\x12GetCrewRunResponse\x12*\n" +
-	"\x03run\x18\x01 \x01(\v2\x18.containarium.v1.CrewRunR\x03run*\xad\x01\n" +
+	"\x03run\x18\x01 \x01(\v2\x18.containarium.v1.CrewRunR\x03run*u\n" +
+	"\vAgentEngine\x12\x1c\n" +
+	"\x18AGENT_ENGINE_UNSPECIFIED\x10\x00\x12\x17\n" +
+	"\x13AGENT_ENGINE_CLAUDE\x10\x01\x12\x16\n" +
+	"\x12AGENT_ENGINE_CODEX\x10\x02\x12\x17\n" +
+	"\x13AGENT_ENGINE_GEMINI\x10\x03*\xb6\x01\n" +
+	"\x14AgentEngineReadiness\x12&\n" +
+	"\"AGENT_ENGINE_READINESS_UNSPECIFIED\x10\x00\x12 \n" +
+	"\x1cAGENT_ENGINE_READINESS_READY\x10\x01\x12$\n" +
+	" AGENT_ENGINE_READINESS_NOT_READY\x10\x02\x12.\n" +
+	"*AGENT_ENGINE_READINESS_UNKNOWN_DIRECT_MODE\x10\x03*\xb8\x01\n" +
+	"\x15AgentCredentialSource\x12'\n" +
+	"#AGENT_CREDENTIAL_SOURCE_UNSPECIFIED\x10\x00\x12&\n" +
+	"\"AGENT_CREDENTIAL_SOURCE_GLOBAL_KEY\x10\x01\x12%\n" +
+	"!AGENT_CREDENTIAL_SOURCE_OWNER_KEY\x10\x02\x12'\n" +
+	"#AGENT_CREDENTIAL_SOURCE_DIRECT_MODE\x10\x03*\xab\x01\n" +
+	"\x14CodeCredentialSource\x12&\n" +
+	"\"CODE_CREDENTIAL_SOURCE_UNSPECIFIED\x10\x00\x12&\n" +
+	"\"CODE_CREDENTIAL_SOURCE_INTERACTIVE\x10\x01\x12\"\n" +
+	"\x1eCODE_CREDENTIAL_SOURCE_API_KEY\x10\x02\x12\x1f\n" +
+	"\x1bCODE_CREDENTIAL_SOURCE_NONE\x10\x03*\xad\x01\n" +
 	"\x0eAgentTaskState\x12 \n" +
 	"\x1cAGENT_TASK_STATE_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aAGENT_TASK_STATE_SUBMITTED\x10\x01\x12\x1c\n" +
@@ -2672,12 +3464,18 @@ const file_containarium_v1_agent_proto_rawDesc = "" +
 	"\x16CREW_RUN_STATE_RUNNING\x10\x02\x12\x1c\n" +
 	"\x18CREW_RUN_STATE_COMPLETED\x10\x03\x12\x19\n" +
 	"\x15CREW_RUN_STATE_FAILED\x10\x04\x12\x1c\n" +
-	"\x18CREW_RUN_STATE_CANCELLED\x10\x052\xc3\x14\n" +
+	"\x18CREW_RUN_STATE_CANCELLED\x10\x052\xfa\x1d\n" +
 	"\x11AgentSkillService\x12\xf6\x01\n" +
 	"\x0fListAgentSkills\x12'.containarium.v1.ListAgentSkillsRequest\x1a(.containarium.v1.ListAgentSkillsResponse\"\x8f\x01\x92At\n" +
-	"\x06Agents\x12\x11List agent skills\x1aWReturns all packaged agent skills that can be run individually or composed into a crew.\x82\xd3\xe4\x93\x02\x12\x12\x10/v1/agent-skills\x12\xf8\x01\n" +
+	"\x06Agents\x12\x11List agent skills\x1aWReturns all packaged agent skills that can be run individually or composed into a crew.\x82\xd3\xe4\x93\x02\x12\x12\x10/v1/agent-skills\x12\xc3\x02\n" +
+	"\x10ListAgentEngines\x12(.containarium.v1.ListAgentEnginesRequest\x1a).containarium.v1.ListAgentEnginesResponse\"\xd9\x01\x92A\xbc\x01\n" +
+	"\x06Agents\x12&List agent engines and their readiness\x1a\x89\x01Returns one row per agent engine: whether a skill naming it would be refused right now, why, and which catalog skills name it explicitly.\x82\xd3\xe4\x93\x02\x13\x12\x11/v1/agent-engines\x12\xf8\x01\n" +
 	"\rGetAgentSkill\x12%.containarium.v1.GetAgentSkillRequest\x1a&.containarium.v1.GetAgentSkillResponse\"\x97\x01\x92Aw\n" +
-	"\x06Agents\x12\x0fGet agent skill\x1a\\Returns one skill's definition, including its agent card, allowed scopes, and allowed peers.\x82\xd3\xe4\x93\x02\x17\x12\x15/v1/agent-skills/{id}\x12\x86\x02\n" +
+	"\x06Agents\x12\x0fGet agent skill\x1a\\Returns one skill's definition, including its agent card, allowed scopes, and allowed peers.\x82\xd3\xe4\x93\x02\x17\x12\x15/v1/agent-skills/{id}\x12\x98\x03\n" +
+	"\x11ProvisionSkillBox\x12).containarium.v1.ProvisionSkillBoxRequest\x1a*.containarium.v1.ProvisionSkillBoxResponse\"\xab\x02\x92A\xf3\x01\n" +
+	"\x06Agents\x12(Provision a skill's box ahead of any run\x1a\xbe\x01Creates or reuses the skill's deterministic box with no token minted, nothing seeded, and no model call — so a human can sign in to its coding agent before any inference credential exists.\x82\xd3\xe4\x93\x02.:\x01*\")/v1/agent-skills/{skill_id}/provision-box\x12\xd3\x03\n" +
+	"\x1bGetSkillBoxCredentialStatus\x123.containarium.v1.GetSkillBoxCredentialStatusRequest\x1a4.containarium.v1.GetSkillBoxCredentialStatusResponse\"\xc8\x02\x92A\x8f\x02\n" +
+	"\x06Agents\x122Check a skill box's coding-agent credential source\x1a\xd0\x01Reports the NAME of the credential source (interactive sign-in, a user-placed key, or none) the skill's box would use for its configured engine — never the credential's value, never read/logged/transmitted.\x82\xd3\xe4\x93\x02/\x12-/v1/agent-skills/{skill_id}/credential-status\x12\x86\x02\n" +
 	"\rRunAgentSkill\x12%.containarium.v1.RunAgentSkillRequest\x1a&.containarium.v1.RunAgentSkillResponse\"\xa5\x01\x92Ax\n" +
 	"\x06Agents\x12\x12Run an agent skill\x1aZProvisions the skill's box, mints a scoped token, runs one task, and returns the artifact.\x82\xd3\xe4\x93\x02$:\x01*\"\x1f/v1/agent-skills/{skill_id}/run\x12\xaa\x02\n" +
 	"\rSendAgentTask\x12%.containarium.v1.SendAgentTaskRequest\x1a&.containarium.v1.SendAgentTaskResponse\"\xc9\x01\x92A\x98\x01\n" +
@@ -2718,93 +3516,126 @@ func file_containarium_v1_agent_proto_rawDescGZIP() []byte {
 	return file_containarium_v1_agent_proto_rawDescData
 }
 
-var file_containarium_v1_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_containarium_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 32)
+var file_containarium_v1_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 7)
+var file_containarium_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 40)
 var file_containarium_v1_agent_proto_goTypes = []any{
-	(AgentTaskState)(0),               // 0: containarium.v1.AgentTaskState
-	(CrewTopology)(0),                 // 1: containarium.v1.CrewTopology
-	(CrewRunState)(0),                 // 2: containarium.v1.CrewRunState
-	(*AgentCard)(nil),                 // 3: containarium.v1.AgentCard
-	(*AgentSkill)(nil),                // 4: containarium.v1.AgentSkill
-	(*ListAgentSkillsRequest)(nil),    // 5: containarium.v1.ListAgentSkillsRequest
-	(*ListAgentSkillsResponse)(nil),   // 6: containarium.v1.ListAgentSkillsResponse
-	(*GetAgentSkillRequest)(nil),      // 7: containarium.v1.GetAgentSkillRequest
-	(*GetAgentSkillResponse)(nil),     // 8: containarium.v1.GetAgentSkillResponse
-	(*RunAgentSkillRequest)(nil),      // 9: containarium.v1.RunAgentSkillRequest
-	(*RunAgentSkillResponse)(nil),     // 10: containarium.v1.RunAgentSkillResponse
-	(*AgentTask)(nil),                 // 11: containarium.v1.AgentTask
-	(*AgentArtifact)(nil),             // 12: containarium.v1.AgentArtifact
-	(*SendAgentTaskRequest)(nil),      // 13: containarium.v1.SendAgentTaskRequest
-	(*SendAgentTaskResponse)(nil),     // 14: containarium.v1.SendAgentTaskResponse
-	(*TailRunLogRequest)(nil),         // 15: containarium.v1.TailRunLogRequest
-	(*TailRunLogResponse)(nil),        // 16: containarium.v1.TailRunLogResponse
-	(*EnqueueAgentTaskRequest)(nil),   // 17: containarium.v1.EnqueueAgentTaskRequest
-	(*EnqueueAgentTaskResponse)(nil),  // 18: containarium.v1.EnqueueAgentTaskResponse
-	(*LeaseAgentTaskRequest)(nil),     // 19: containarium.v1.LeaseAgentTaskRequest
-	(*LeaseAgentTaskResponse)(nil),    // 20: containarium.v1.LeaseAgentTaskResponse
-	(*CompleteAgentTaskRequest)(nil),  // 21: containarium.v1.CompleteAgentTaskRequest
-	(*CompleteAgentTaskResponse)(nil), // 22: containarium.v1.CompleteAgentTaskResponse
-	(*StartAgentWorkerRequest)(nil),   // 23: containarium.v1.StartAgentWorkerRequest
-	(*StartAgentWorkerResponse)(nil),  // 24: containarium.v1.StartAgentWorkerResponse
-	(*Crew)(nil),                      // 25: containarium.v1.Crew
-	(*CrewRun)(nil),                   // 26: containarium.v1.CrewRun
-	(*ListCrewsRequest)(nil),          // 27: containarium.v1.ListCrewsRequest
-	(*ListCrewsResponse)(nil),         // 28: containarium.v1.ListCrewsResponse
-	(*GetCrewRequest)(nil),            // 29: containarium.v1.GetCrewRequest
-	(*GetCrewResponse)(nil),           // 30: containarium.v1.GetCrewResponse
-	(*RunCrewRequest)(nil),            // 31: containarium.v1.RunCrewRequest
-	(*RunCrewResponse)(nil),           // 32: containarium.v1.RunCrewResponse
-	(*GetCrewRunRequest)(nil),         // 33: containarium.v1.GetCrewRunRequest
-	(*GetCrewRunResponse)(nil),        // 34: containarium.v1.GetCrewRunResponse
-	(*Recipe)(nil),                    // 35: containarium.v1.Recipe
-	(*Container)(nil),                 // 36: containarium.v1.Container
+	(AgentEngine)(0),                            // 0: containarium.v1.AgentEngine
+	(AgentEngineReadiness)(0),                   // 1: containarium.v1.AgentEngineReadiness
+	(AgentCredentialSource)(0),                  // 2: containarium.v1.AgentCredentialSource
+	(CodeCredentialSource)(0),                   // 3: containarium.v1.CodeCredentialSource
+	(AgentTaskState)(0),                         // 4: containarium.v1.AgentTaskState
+	(CrewTopology)(0),                           // 5: containarium.v1.CrewTopology
+	(CrewRunState)(0),                           // 6: containarium.v1.CrewRunState
+	(*AgentCard)(nil),                           // 7: containarium.v1.AgentCard
+	(*AgentSkill)(nil),                          // 8: containarium.v1.AgentSkill
+	(*AgentEngineStatus)(nil),                   // 9: containarium.v1.AgentEngineStatus
+	(*ListAgentEnginesRequest)(nil),             // 10: containarium.v1.ListAgentEnginesRequest
+	(*ListAgentEnginesResponse)(nil),            // 11: containarium.v1.ListAgentEnginesResponse
+	(*ListAgentSkillsRequest)(nil),              // 12: containarium.v1.ListAgentSkillsRequest
+	(*ListAgentSkillsResponse)(nil),             // 13: containarium.v1.ListAgentSkillsResponse
+	(*GetAgentSkillRequest)(nil),                // 14: containarium.v1.GetAgentSkillRequest
+	(*GetAgentSkillResponse)(nil),               // 15: containarium.v1.GetAgentSkillResponse
+	(*ProvisionSkillBoxRequest)(nil),            // 16: containarium.v1.ProvisionSkillBoxRequest
+	(*ProvisionSkillBoxResponse)(nil),           // 17: containarium.v1.ProvisionSkillBoxResponse
+	(*GetSkillBoxCredentialStatusRequest)(nil),  // 18: containarium.v1.GetSkillBoxCredentialStatusRequest
+	(*GetSkillBoxCredentialStatusResponse)(nil), // 19: containarium.v1.GetSkillBoxCredentialStatusResponse
+	(*RunAgentSkillRequest)(nil),                // 20: containarium.v1.RunAgentSkillRequest
+	(*RunAgentSkillResponse)(nil),               // 21: containarium.v1.RunAgentSkillResponse
+	(*AgentTask)(nil),                           // 22: containarium.v1.AgentTask
+	(*AgentArtifact)(nil),                       // 23: containarium.v1.AgentArtifact
+	(*SendAgentTaskRequest)(nil),                // 24: containarium.v1.SendAgentTaskRequest
+	(*SendAgentTaskResponse)(nil),               // 25: containarium.v1.SendAgentTaskResponse
+	(*TailRunLogRequest)(nil),                   // 26: containarium.v1.TailRunLogRequest
+	(*TailRunLogResponse)(nil),                  // 27: containarium.v1.TailRunLogResponse
+	(*EnqueueAgentTaskRequest)(nil),             // 28: containarium.v1.EnqueueAgentTaskRequest
+	(*EnqueueAgentTaskResponse)(nil),            // 29: containarium.v1.EnqueueAgentTaskResponse
+	(*LeaseAgentTaskRequest)(nil),               // 30: containarium.v1.LeaseAgentTaskRequest
+	(*LeaseAgentTaskResponse)(nil),              // 31: containarium.v1.LeaseAgentTaskResponse
+	(*CompleteAgentTaskRequest)(nil),            // 32: containarium.v1.CompleteAgentTaskRequest
+	(*CompleteAgentTaskResponse)(nil),           // 33: containarium.v1.CompleteAgentTaskResponse
+	(*StartAgentWorkerRequest)(nil),             // 34: containarium.v1.StartAgentWorkerRequest
+	(*StartAgentWorkerResponse)(nil),            // 35: containarium.v1.StartAgentWorkerResponse
+	(*Crew)(nil),                                // 36: containarium.v1.Crew
+	(*CrewRun)(nil),                             // 37: containarium.v1.CrewRun
+	(*ListCrewsRequest)(nil),                    // 38: containarium.v1.ListCrewsRequest
+	(*ListCrewsResponse)(nil),                   // 39: containarium.v1.ListCrewsResponse
+	(*GetCrewRequest)(nil),                      // 40: containarium.v1.GetCrewRequest
+	(*GetCrewResponse)(nil),                     // 41: containarium.v1.GetCrewResponse
+	(*RunCrewRequest)(nil),                      // 42: containarium.v1.RunCrewRequest
+	(*RunCrewResponse)(nil),                     // 43: containarium.v1.RunCrewResponse
+	(*GetCrewRunRequest)(nil),                   // 44: containarium.v1.GetCrewRunRequest
+	(*GetCrewRunResponse)(nil),                  // 45: containarium.v1.GetCrewRunResponse
+	nil,                                         // 46: containarium.v1.RunCrewRequest.EngineOverridesEntry
+	(*Recipe)(nil),                              // 47: containarium.v1.Recipe
+	(GatewayProvider)(0),                        // 48: containarium.v1.GatewayProvider
+	(*Container)(nil),                           // 49: containarium.v1.Container
+	(*timestamppb.Timestamp)(nil),               // 50: google.protobuf.Timestamp
 }
 var file_containarium_v1_agent_proto_depIdxs = []int32{
-	35, // 0: containarium.v1.AgentSkill.recipe:type_name -> containarium.v1.Recipe
-	3,  // 1: containarium.v1.AgentSkill.agent_card:type_name -> containarium.v1.AgentCard
-	4,  // 2: containarium.v1.ListAgentSkillsResponse.skills:type_name -> containarium.v1.AgentSkill
-	4,  // 3: containarium.v1.GetAgentSkillResponse.skill:type_name -> containarium.v1.AgentSkill
-	36, // 4: containarium.v1.RunAgentSkillResponse.container:type_name -> containarium.v1.Container
-	0,  // 5: containarium.v1.AgentArtifact.state:type_name -> containarium.v1.AgentTaskState
-	12, // 6: containarium.v1.SendAgentTaskResponse.artifact:type_name -> containarium.v1.AgentArtifact
-	36, // 7: containarium.v1.StartAgentWorkerResponse.container:type_name -> containarium.v1.Container
-	1,  // 8: containarium.v1.Crew.topology:type_name -> containarium.v1.CrewTopology
-	2,  // 9: containarium.v1.CrewRun.state:type_name -> containarium.v1.CrewRunState
-	25, // 10: containarium.v1.ListCrewsResponse.crews:type_name -> containarium.v1.Crew
-	25, // 11: containarium.v1.GetCrewResponse.crew:type_name -> containarium.v1.Crew
-	26, // 12: containarium.v1.RunCrewResponse.run:type_name -> containarium.v1.CrewRun
-	26, // 13: containarium.v1.GetCrewRunResponse.run:type_name -> containarium.v1.CrewRun
-	5,  // 14: containarium.v1.AgentSkillService.ListAgentSkills:input_type -> containarium.v1.ListAgentSkillsRequest
-	7,  // 15: containarium.v1.AgentSkillService.GetAgentSkill:input_type -> containarium.v1.GetAgentSkillRequest
-	9,  // 16: containarium.v1.AgentSkillService.RunAgentSkill:input_type -> containarium.v1.RunAgentSkillRequest
-	13, // 17: containarium.v1.AgentSkillService.SendAgentTask:input_type -> containarium.v1.SendAgentTaskRequest
-	15, // 18: containarium.v1.AgentSkillService.TailRunLog:input_type -> containarium.v1.TailRunLogRequest
-	17, // 19: containarium.v1.AgentSkillService.EnqueueAgentTask:input_type -> containarium.v1.EnqueueAgentTaskRequest
-	19, // 20: containarium.v1.AgentSkillService.LeaseAgentTask:input_type -> containarium.v1.LeaseAgentTaskRequest
-	21, // 21: containarium.v1.AgentSkillService.CompleteAgentTask:input_type -> containarium.v1.CompleteAgentTaskRequest
-	23, // 22: containarium.v1.AgentSkillService.StartAgentWorker:input_type -> containarium.v1.StartAgentWorkerRequest
-	27, // 23: containarium.v1.CrewService.ListCrews:input_type -> containarium.v1.ListCrewsRequest
-	29, // 24: containarium.v1.CrewService.GetCrew:input_type -> containarium.v1.GetCrewRequest
-	31, // 25: containarium.v1.CrewService.RunCrew:input_type -> containarium.v1.RunCrewRequest
-	33, // 26: containarium.v1.CrewService.GetCrewRun:input_type -> containarium.v1.GetCrewRunRequest
-	6,  // 27: containarium.v1.AgentSkillService.ListAgentSkills:output_type -> containarium.v1.ListAgentSkillsResponse
-	8,  // 28: containarium.v1.AgentSkillService.GetAgentSkill:output_type -> containarium.v1.GetAgentSkillResponse
-	10, // 29: containarium.v1.AgentSkillService.RunAgentSkill:output_type -> containarium.v1.RunAgentSkillResponse
-	14, // 30: containarium.v1.AgentSkillService.SendAgentTask:output_type -> containarium.v1.SendAgentTaskResponse
-	16, // 31: containarium.v1.AgentSkillService.TailRunLog:output_type -> containarium.v1.TailRunLogResponse
-	18, // 32: containarium.v1.AgentSkillService.EnqueueAgentTask:output_type -> containarium.v1.EnqueueAgentTaskResponse
-	20, // 33: containarium.v1.AgentSkillService.LeaseAgentTask:output_type -> containarium.v1.LeaseAgentTaskResponse
-	22, // 34: containarium.v1.AgentSkillService.CompleteAgentTask:output_type -> containarium.v1.CompleteAgentTaskResponse
-	24, // 35: containarium.v1.AgentSkillService.StartAgentWorker:output_type -> containarium.v1.StartAgentWorkerResponse
-	28, // 36: containarium.v1.CrewService.ListCrews:output_type -> containarium.v1.ListCrewsResponse
-	30, // 37: containarium.v1.CrewService.GetCrew:output_type -> containarium.v1.GetCrewResponse
-	32, // 38: containarium.v1.CrewService.RunCrew:output_type -> containarium.v1.RunCrewResponse
-	34, // 39: containarium.v1.CrewService.GetCrewRun:output_type -> containarium.v1.GetCrewRunResponse
-	27, // [27:40] is the sub-list for method output_type
-	14, // [14:27] is the sub-list for method input_type
-	14, // [14:14] is the sub-list for extension type_name
-	14, // [14:14] is the sub-list for extension extendee
-	0,  // [0:14] is the sub-list for field type_name
+	47, // 0: containarium.v1.AgentSkill.recipe:type_name -> containarium.v1.Recipe
+	7,  // 1: containarium.v1.AgentSkill.agent_card:type_name -> containarium.v1.AgentCard
+	0,  // 2: containarium.v1.AgentSkill.engine:type_name -> containarium.v1.AgentEngine
+	0,  // 3: containarium.v1.AgentEngineStatus.engine:type_name -> containarium.v1.AgentEngine
+	48, // 4: containarium.v1.AgentEngineStatus.provider:type_name -> containarium.v1.GatewayProvider
+	1,  // 5: containarium.v1.AgentEngineStatus.readiness:type_name -> containarium.v1.AgentEngineReadiness
+	2,  // 6: containarium.v1.AgentEngineStatus.source:type_name -> containarium.v1.AgentCredentialSource
+	9,  // 7: containarium.v1.ListAgentEnginesResponse.engines:type_name -> containarium.v1.AgentEngineStatus
+	8,  // 8: containarium.v1.ListAgentSkillsResponse.skills:type_name -> containarium.v1.AgentSkill
+	8,  // 9: containarium.v1.GetAgentSkillResponse.skill:type_name -> containarium.v1.AgentSkill
+	49, // 10: containarium.v1.ProvisionSkillBoxResponse.container:type_name -> containarium.v1.Container
+	0,  // 11: containarium.v1.GetSkillBoxCredentialStatusResponse.engine:type_name -> containarium.v1.AgentEngine
+	3,  // 12: containarium.v1.GetSkillBoxCredentialStatusResponse.credential_source:type_name -> containarium.v1.CodeCredentialSource
+	50, // 13: containarium.v1.GetSkillBoxCredentialStatusResponse.checked_at:type_name -> google.protobuf.Timestamp
+	0,  // 14: containarium.v1.RunAgentSkillRequest.engine:type_name -> containarium.v1.AgentEngine
+	49, // 15: containarium.v1.RunAgentSkillResponse.container:type_name -> containarium.v1.Container
+	4,  // 16: containarium.v1.AgentArtifact.state:type_name -> containarium.v1.AgentTaskState
+	23, // 17: containarium.v1.SendAgentTaskResponse.artifact:type_name -> containarium.v1.AgentArtifact
+	49, // 18: containarium.v1.StartAgentWorkerResponse.container:type_name -> containarium.v1.Container
+	5,  // 19: containarium.v1.Crew.topology:type_name -> containarium.v1.CrewTopology
+	6,  // 20: containarium.v1.CrewRun.state:type_name -> containarium.v1.CrewRunState
+	36, // 21: containarium.v1.ListCrewsResponse.crews:type_name -> containarium.v1.Crew
+	36, // 22: containarium.v1.GetCrewResponse.crew:type_name -> containarium.v1.Crew
+	46, // 23: containarium.v1.RunCrewRequest.engine_overrides:type_name -> containarium.v1.RunCrewRequest.EngineOverridesEntry
+	37, // 24: containarium.v1.RunCrewResponse.run:type_name -> containarium.v1.CrewRun
+	37, // 25: containarium.v1.GetCrewRunResponse.run:type_name -> containarium.v1.CrewRun
+	0,  // 26: containarium.v1.RunCrewRequest.EngineOverridesEntry.value:type_name -> containarium.v1.AgentEngine
+	12, // 27: containarium.v1.AgentSkillService.ListAgentSkills:input_type -> containarium.v1.ListAgentSkillsRequest
+	10, // 28: containarium.v1.AgentSkillService.ListAgentEngines:input_type -> containarium.v1.ListAgentEnginesRequest
+	14, // 29: containarium.v1.AgentSkillService.GetAgentSkill:input_type -> containarium.v1.GetAgentSkillRequest
+	16, // 30: containarium.v1.AgentSkillService.ProvisionSkillBox:input_type -> containarium.v1.ProvisionSkillBoxRequest
+	18, // 31: containarium.v1.AgentSkillService.GetSkillBoxCredentialStatus:input_type -> containarium.v1.GetSkillBoxCredentialStatusRequest
+	20, // 32: containarium.v1.AgentSkillService.RunAgentSkill:input_type -> containarium.v1.RunAgentSkillRequest
+	24, // 33: containarium.v1.AgentSkillService.SendAgentTask:input_type -> containarium.v1.SendAgentTaskRequest
+	26, // 34: containarium.v1.AgentSkillService.TailRunLog:input_type -> containarium.v1.TailRunLogRequest
+	28, // 35: containarium.v1.AgentSkillService.EnqueueAgentTask:input_type -> containarium.v1.EnqueueAgentTaskRequest
+	30, // 36: containarium.v1.AgentSkillService.LeaseAgentTask:input_type -> containarium.v1.LeaseAgentTaskRequest
+	32, // 37: containarium.v1.AgentSkillService.CompleteAgentTask:input_type -> containarium.v1.CompleteAgentTaskRequest
+	34, // 38: containarium.v1.AgentSkillService.StartAgentWorker:input_type -> containarium.v1.StartAgentWorkerRequest
+	38, // 39: containarium.v1.CrewService.ListCrews:input_type -> containarium.v1.ListCrewsRequest
+	40, // 40: containarium.v1.CrewService.GetCrew:input_type -> containarium.v1.GetCrewRequest
+	42, // 41: containarium.v1.CrewService.RunCrew:input_type -> containarium.v1.RunCrewRequest
+	44, // 42: containarium.v1.CrewService.GetCrewRun:input_type -> containarium.v1.GetCrewRunRequest
+	13, // 43: containarium.v1.AgentSkillService.ListAgentSkills:output_type -> containarium.v1.ListAgentSkillsResponse
+	11, // 44: containarium.v1.AgentSkillService.ListAgentEngines:output_type -> containarium.v1.ListAgentEnginesResponse
+	15, // 45: containarium.v1.AgentSkillService.GetAgentSkill:output_type -> containarium.v1.GetAgentSkillResponse
+	17, // 46: containarium.v1.AgentSkillService.ProvisionSkillBox:output_type -> containarium.v1.ProvisionSkillBoxResponse
+	19, // 47: containarium.v1.AgentSkillService.GetSkillBoxCredentialStatus:output_type -> containarium.v1.GetSkillBoxCredentialStatusResponse
+	21, // 48: containarium.v1.AgentSkillService.RunAgentSkill:output_type -> containarium.v1.RunAgentSkillResponse
+	25, // 49: containarium.v1.AgentSkillService.SendAgentTask:output_type -> containarium.v1.SendAgentTaskResponse
+	27, // 50: containarium.v1.AgentSkillService.TailRunLog:output_type -> containarium.v1.TailRunLogResponse
+	29, // 51: containarium.v1.AgentSkillService.EnqueueAgentTask:output_type -> containarium.v1.EnqueueAgentTaskResponse
+	31, // 52: containarium.v1.AgentSkillService.LeaseAgentTask:output_type -> containarium.v1.LeaseAgentTaskResponse
+	33, // 53: containarium.v1.AgentSkillService.CompleteAgentTask:output_type -> containarium.v1.CompleteAgentTaskResponse
+	35, // 54: containarium.v1.AgentSkillService.StartAgentWorker:output_type -> containarium.v1.StartAgentWorkerResponse
+	39, // 55: containarium.v1.CrewService.ListCrews:output_type -> containarium.v1.ListCrewsResponse
+	41, // 56: containarium.v1.CrewService.GetCrew:output_type -> containarium.v1.GetCrewResponse
+	43, // 57: containarium.v1.CrewService.RunCrew:output_type -> containarium.v1.RunCrewResponse
+	45, // 58: containarium.v1.CrewService.GetCrewRun:output_type -> containarium.v1.GetCrewRunResponse
+	43, // [43:59] is the sub-list for method output_type
+	27, // [27:43] is the sub-list for method input_type
+	27, // [27:27] is the sub-list for extension type_name
+	27, // [27:27] is the sub-list for extension extendee
+	0,  // [0:27] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_agent_proto_init() }
@@ -2814,6 +3645,7 @@ func file_containarium_v1_agent_proto_init() {
 	}
 	file_containarium_v1_container_proto_init()
 	file_containarium_v1_recipe_proto_init()
+	file_containarium_v1_model_gateway_proto_init()
 	file_containarium_v1_agent_proto_msgTypes[1].OneofWrappers = []any{
 		(*AgentSkill_RecipeId)(nil),
 		(*AgentSkill_Recipe)(nil),
@@ -2823,8 +3655,8 @@ func file_containarium_v1_agent_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_agent_proto_rawDesc), len(file_containarium_v1_agent_proto_rawDesc)),
-			NumEnums:      3,
-			NumMessages:   32,
+			NumEnums:      7,
+			NumMessages:   40,
 			NumExtensions: 0,
 			NumServices:   2,
 		},

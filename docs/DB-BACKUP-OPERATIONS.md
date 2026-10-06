@@ -134,11 +134,27 @@ stored object is named `<id>.dump.age` and the record carries
   fails before anything touches the target database.
 - Integrity is verified on the **ciphertext** (the SHA-256 covers what is
   stored) *before* decryption, so a tampered object is caught first.
-- `backup verify` (restore-test) refuses an encrypted record up front — it
-  would need the identity too, and the platform does not hold it. It
-  likewise refuses a hook record (opaque stream). Both are refused before
-  any scratch database is created, and nothing is recorded as a
-  verification outcome. Restore-testing an encrypted backup is a follow-up.
+- `backup verify` (restore-test) also decrypts an encrypted record, given
+  `--age-identity-file` (#2295) — the same flag `backup restore` takes.
+  This is the check that catches a backup silently encrypted to a key
+  nobody holds: `backup list` and the nightly schedule both say
+  "success" regardless, and only an attempted decrypt tells the
+  difference. With no identity supplied at all, verification refuses up
+  front, same as a hook record (opaque stream) — both before any scratch
+  database is created, and nothing is recorded as an outcome. With the
+  **wrong** identity, decryption fails and *that* is recorded as a FAILED
+  verification (a result, not an error) — durable evidence that this
+  particular key does not work, exactly the audit trail a key-rotation or
+  disaster-recovery check needs.
+- The identity is a private key and travels in the request body, so both
+  `backup restore` and `backup verify` refuse to send it over a cleartext
+  connection (gRPC `--insecure`, or `--http` with an `http://` or
+  scheme-less server) to anything but loopback. Use an `https://` server
+  with `--http`, or gRPC with mTLS.
+
+  ```
+  containarium backup verify alice-app-… --target scratch --age-identity-file backup.key --server <host>
+  ```
 
 **Where the encryption happens, honestly:** in this release the dump is
 encrypted **in the daemon process, in memory**, after it is pulled from
@@ -284,6 +300,31 @@ The service exits non-zero if **any** tenant fails, so a monitoring check on
 `systemctl is-failed containarium-backup.service` catches both partial and
 total failures. Alert on **absence** too — a timer that was disabled emits
 no failure line, only silence.
+
+**This check is host-local — it fate-shares with the host it watches**
+(#2294). If the box itself dies or wedges, there is no process left to
+run `is-failed` at all: silence, not a page. Found operationally: a set
+of tenants ran this exact mechanism for roughly a week with nobody
+watching it, host-local or otherwise, and the failure that actually
+occurred (encrypting to a dead key — see `backup verify
+--age-identity-file` above) wouldn't have shown up here even if someone
+had been watching, since the service genuinely exited 0 every night.
+
+Treat `is-failed` as the cheap first layer, not the whole story. The
+out-of-band supplement is the metrics-export backup-health series
+(`containarium monitoring export enable`, if not already on for other
+reasons) — one gauge per tenant, recomputed from this same on-disk
+index at every export tick. Its actual coverage is narrower than "the
+host died": a gauge nobody is re-observing simply freezes at its last
+reported value rather than climbing past any threshold, so a genuinely
+dead host is still the existing `containarium.export.heartbeat`
+dead-man alert's job, not this one. What this series catches that
+*neither* `is-failed` *nor* the heartbeat can is the host and daemon
+staying perfectly healthy while the backup schedule itself silently
+breaks. See `docs/METRICS-EXPORT-DEADMAN-ALERT-RUNBOOK.md`'s
+"Backup-health alert" section for the metric, its actual scope, and a
+ready-to-use alert policy — and keep the heartbeat policy configured
+alongside it for host-death coverage.
 
 For a tighter RPO than "nightly," add Postgres WAL archiving inside the
 container (`archive_command` → GCS) on top of these base dumps; that gives

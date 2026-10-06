@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -17,9 +18,13 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/footprintai/containarium/internal/agentengine"
 	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/coderun/engine"
+	"github.com/footprintai/containarium/internal/modelgateway"
 	"github.com/footprintai/containarium/internal/netpolicy"
 	"github.com/footprintai/containarium/internal/runlease"
 	"github.com/footprintai/containarium/internal/tracker"
@@ -214,6 +219,10 @@ type AgentSkillServer struct {
 	// tracker_connection then fails closed rather than minting an
 	// unvalidated claim — see RunAgentSkill.
 	trackerConnections trackerConnectionChecker
+	// lineageReservations sweeps a run's leftover fan-out reservations
+	// when its lease ends (#2062). Nil on a daemon without the tracker
+	// store wired: there is nothing to sweep.
+	lineageReservations lineageReservationReleaser
 	// Run journal read path (#2096). runIndex remembers each run's member
 	// skills for TailRunLog; crewRunMembers resolves a crew run from its
 	// durable record (wired by NewCrewServer); execScript is a test seam over
@@ -267,6 +276,20 @@ func (s *AgentSkillServer) SetTrackerConnections(c trackerConnectionChecker) {
 	s.trackerConnections = c
 }
 
+// lineageReservationReleaser is the one method of *tracker.Store
+// endRunLease needs (#2062), narrowed like trackerConnectionChecker.
+type lineageReservationReleaser interface {
+	ReleaseRunReservations(ctx context.Context, username, runID string) (int64, error)
+}
+
+// SetLineageReservations wires the tracker store so a run's leftover
+// fan-out reservations are swept when its lease ends (#2062). Nil (the
+// default) leaves them in place. As with SetRevocationStore, the caller
+// must pass a true nil, not a nil *tracker.Store.
+func (s *AgentSkillServer) SetLineageReservations(r lineageReservationReleaser) {
+	s.lineageReservations = r
+}
+
 // auditLogger is the one method of *audit.Store this server uses. Narrowed to
 // an interface so what actually lands in audit_logs — the action, the resource
 // type, the run id column — is assertable in a unit test; *audit.Store itself
@@ -310,12 +333,37 @@ func (s *AgentSkillServer) SetRevocationStore(store auth.RevocationStore) {
 // each provisioned box gets a per-skill gateway token + the SDK base-URL env so
 // its model calls route through the daemon-served gateway (key custody +
 // metering). Wired from dual_server when a provider key is configured; nil-safe
-// (no call ⇒ direct mode). provider is the gateway's configured provider,
-// httpPort the daemon HTTP port the box dials, secret the shared jwt secret,
-// hostIP the bridge gateway IP the box reaches the gateway/daemon/DNS on (used
-// to pin skill-box egress to the gateway, #674 inc 4; empty disables pinning).
-func (s *AgentSkillServer) SetGatewayProvisioning(provider string, httpPort int, secret []byte, hostIP string) {
-	g := &gatewayProvisioning{provider: provider, httpPort: httpPort, secret: secret}
+// (no call ⇒ direct mode).
+//
+// defaultProvider is what an UNSPECIFIED-engine skill resolves to (today's
+// gatewayPrimaryProvider(keys)); httpPort the daemon HTTP port the box dials;
+// secret the shared jwt secret; hostIP the bridge gateway IP the box reaches
+// the gateway/daemon/DNS on (used to pin skill-box egress to the gateway,
+// #674 inc 4; empty disables pinning).
+//
+// globalProviders and keyResolver (#2222) are agentengine.Resolve's view of
+// which providers are ready: globalProviders is the set the daemon holds an
+// env/global key for (keys from dual_server's gatewayRegistryFromEnv, not the
+// key values themselves); keyResolver checks a per-owner key when a provider
+// isn't in that set — nil when the daemon has no secrets store (no Postgres),
+// which just means only globalProviders can make a provider ready.
+//
+// models (#2229) is the real gateway's ListModels, for validating a named-
+// engine skill's pinned model against what the resolved provider actually
+// serves before minting its token. nil is a legitimate value (direct mode,
+// or a caller not wired for this check) — provisionSkillBoxWith treats a nil
+// models the same as "can't check", never as a refusal.
+func (s *AgentSkillServer) SetGatewayProvisioning(defaultProvider string, httpPort int, secret []byte, hostIP string, globalProviders map[string]bool, keyResolver modelgateway.KeyResolver, models modelLister) {
+	g := &gatewayProvisioning{
+		engines: agentengine.Gateway{
+			DefaultProvider: defaultProvider,
+			GlobalProviders: globalProviders,
+			Keys:            keyResolver,
+		},
+		httpPort: httpPort,
+		secret:   secret,
+		models:   models,
+	}
 	if hostIP = strings.TrimSpace(hostIP); hostIP != "" {
 		g.egressCIDR = hostIP + "/32"
 	}
@@ -359,6 +407,124 @@ func (s *AgentSkillServer) GetAgentSkill(ctx context.Context, req *pb.GetAgentSk
 	return &pb.GetAgentSkillResponse{Skill: skill}, nil
 }
 
+// ProvisionSkillBox creates or reuses a skill's deterministic box
+// (agent-<skill_id>) WITHOUT running it: no token is minted, nothing is
+// seeded, and the model is never called (#2272). RunAgentSkill/RunCrew are
+// otherwise the ONLY path that creates this box, and both require an
+// inference credential just to get that far — so a human could never get a
+// box provisioned ahead of time to sign in to its coding agent. This RPC is
+// the create-or-reuse step on its own, same gate as RunAgentSkill
+// (agents:run) since it still creates/starts a container under the tenant.
+func (s *AgentSkillServer) ProvisionSkillBox(ctx context.Context, req *pb.ProvisionSkillBoxRequest) (*pb.ProvisionSkillBoxResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeAgentsRun); err != nil {
+		return nil, err
+	}
+	if req.GetSkillId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "skill_id is required")
+	}
+	skill, err := s.catalog.Get(req.GetSkillId())
+	if err != nil {
+		return nil, status.Error(codes.NotFound, err.Error())
+	}
+	_, box, fresh, err := s.provisionBoxOnly(ctx, skill, req.GetBackendId(), req.GetPool())
+	if err != nil {
+		return nil, err
+	}
+	return &pb.ProvisionSkillBoxResponse{Container: box, FreshlyProvisioned: fresh}, nil
+}
+
+// codeEngineFor maps a skill's AgentEngine to the internal/coderun/engine
+// Name whose CredentialStatusScript probes it. AGENT_ENGINE_UNSPECIFIED
+// resolves to Claude — the only engine the "coding-agent" recipe installs
+// today. AGENT_ENGINE_CODEX/GEMINI have no probe yet (#2273 adds Codex's);
+// ok=false rather than a guess.
+func codeEngineFor(e pb.AgentEngine) (name engine.Name, resolved pb.AgentEngine, ok bool) {
+	switch e {
+	case pb.AgentEngine_AGENT_ENGINE_UNSPECIFIED, pb.AgentEngine_AGENT_ENGINE_CLAUDE:
+		return engine.NameClaude, pb.AgentEngine_AGENT_ENGINE_CLAUDE, true
+	default:
+		return "", e, false
+	}
+}
+
+// codeCredentialSourcePB converts the engine package's credential-status
+// answer to the wire enum. Never reached with an unrecognized value: the
+// caller already validated src via engine.ParseCredentialStatusSource.
+func codeCredentialSourcePB(src engine.CredentialStatusSource) pb.CodeCredentialSource {
+	switch src {
+	case engine.CredentialStatusInteractive:
+		return pb.CodeCredentialSource_CODE_CREDENTIAL_SOURCE_INTERACTIVE
+	case engine.CredentialStatusAPIKey:
+		return pb.CodeCredentialSource_CODE_CREDENTIAL_SOURCE_API_KEY
+	case engine.CredentialStatusNone:
+		return pb.CodeCredentialSource_CODE_CREDENTIAL_SOURCE_NONE
+	default:
+		return pb.CodeCredentialSource_CODE_CREDENTIAL_SOURCE_UNSPECIFIED
+	}
+}
+
+// GetSkillBoxCredentialStatus reports whether a skill's already-provisioned
+// box has a credential its configured coding engine would use to sign in —
+// NAMES ONLY, never a value (#2272, mirroring #2030's `code install` verify
+// posture). Every check the rendered probe runs is a file's existence or an
+// env var's name; this method never reads, logs, or transmits a credential
+// at any layer, box to daemon to caller. Read-only: agents:read, the same
+// gate ListAgentEngines uses for its own readiness report.
+func (s *AgentSkillServer) GetSkillBoxCredentialStatus(ctx context.Context, req *pb.GetSkillBoxCredentialStatusRequest) (*pb.GetSkillBoxCredentialStatusResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeAgentsRead); err != nil {
+		return nil, err
+	}
+	if req.GetSkillId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "skill_id is required")
+	}
+	skill, err := s.catalog.Get(req.GetSkillId())
+	if err != nil {
+		return nil, status.Error(codes.NotFound, err.Error())
+	}
+
+	name := "agent-" + skill.Id
+	if err := auth.AuthorizeTenant(ctx, name); err != nil {
+		return nil, err
+	}
+	if s.recipes == nil || s.recipes.containers == nil || s.recipes.containers.manager == nil {
+		return nil, status.Error(codes.FailedPrecondition, "no container manager configured on this daemon")
+	}
+	if info, gerr := s.recipes.containers.manager.Get(name); gerr != nil || info == nil {
+		return nil, status.Errorf(codes.NotFound,
+			"box %s is not provisioned yet; call ProvisionSkillBox (or run the skill) first", name)
+	}
+
+	engineName, resolvedEngine, ok := codeEngineFor(skill.GetEngine())
+	if !ok {
+		return nil, status.Errorf(codes.Unimplemented,
+			"credential-status check for engine %s is not implemented yet", agentengine.EnvValue(skill.GetEngine()))
+	}
+	script, ok := engine.CredentialStatusScript(engineName)
+	if !ok {
+		return nil, status.Errorf(codes.Unimplemented,
+			"credential-status check for engine %s is not implemented yet", agentengine.EnvValue(resolvedEngine))
+	}
+
+	containerName := name + "-container"
+	stdout, stderr, exitCode, execErr := s.recipes.containers.manager.ExecWithExitCode(containerName, []string{"bash", "-c", script})
+	if execErr != nil {
+		return nil, status.Errorf(codes.Internal, "checking credential status on %s: %v", containerName, execErr)
+	}
+	if exitCode != 0 {
+		return nil, status.Errorf(codes.Internal, "credential-status probe on %s exited %d: %s", containerName, exitCode, strings.TrimSpace(stderr))
+	}
+	src, perr := engine.ParseCredentialStatusSource(strings.TrimSpace(stdout))
+	if perr != nil {
+		return nil, status.Errorf(codes.Internal, "credential-status probe on %s: %v", containerName, perr)
+	}
+
+	return &pb.GetSkillBoxCredentialStatusResponse{
+		Engine:           resolvedEngine,
+		CredentialSource: codeCredentialSourcePB(src),
+		CheckedAt:        timestamppb.Now(),
+	}, nil
+}
+
 // RunAgentSkill provisions a skill's box, mints a token scoped to exactly the
 // skill's allowed_scopes, seeds the prompt/token/input into the box, and
 // returns the box. Gated on agents:run; the inner provisioning still enforces
@@ -396,7 +562,7 @@ func (s *AgentSkillServer) RunAgentSkill(ctx context.Context, req *pb.RunAgentSk
 	// its caller — so artifact.json is always read into this Go string BEFORE
 	// endRunLease's directory removal ever runs. A run whose artifact was
 	// returned never loses it to the wipe.
-	artifact := s.runInBoxAgent(containerName, lease.SeedDir, runID, run.skillID)
+	artifact := s.runInBoxAgent(containerName, lease.SeedDir, runID, run.skillID, run.engineRes, run.model)
 	return &pb.RunAgentSkillResponse{
 		Container:     box,
 		ArtifactJson:  artifact,
@@ -415,6 +581,12 @@ type startedSkillRun struct {
 	box                      *pb.Container
 	lease                    runlease.Lease
 	gitCommit, workspacePath string
+	// engineRes and model (#2222) are provisionSkillBoxWith's resolved engine
+	// and the skill's manifest model, carried through so whichever exec path
+	// a caller launches next (runInBoxAgent, a dispatcher's own re-exec) uses
+	// the SAME engine the box's gateway token was already bound to.
+	engineRes agentengine.Resolved
+	model     string
 }
 
 // beginSkillRun is RunAgentSkill up to (and including) registering the
@@ -439,6 +611,11 @@ type provisionOptions struct {
 	// its result comment; only the doc change (SubmitTrackerChange,
 	// which needs a recorded git_commit) is unavailable to it.
 	gitSourceBestEffort bool
+	// engineOverride (#2228) wins over the skill's own manifest `engine` when
+	// set — see agentengine.Override. AGENT_ENGINE_UNSPECIFIED (the zero
+	// value) means "no override, use the manifest", unchanged pre-#2228
+	// behavior for every caller that doesn't set this.
+	engineOverride pb.AgentEngine
 }
 
 // beginSkillRunWith is beginSkillRun with internal provisioning options.
@@ -471,7 +648,12 @@ func (s *AgentSkillServer) beginSkillRunWith(ctx context.Context, req *pb.RunAge
 		return nil, status.Error(codes.NotFound, err.Error())
 	}
 
-	containerName, box, lease, gitCommit, workspacePath, err := s.provisionSkillBoxWith(ctx, skill, req.BackendId, req.Pool, req.InputJson, runID,
+	// #2228: a per-invocation override on the request wins over the
+	// manifest's own `engine` field. opts is a local copy (Go passes structs
+	// by value), so this only affects this call — a caller's own
+	// gitSourceBestEffort (set above us) is preserved alongside it.
+	opts.engineOverride = req.GetEngine()
+	containerName, box, lease, gitCommit, workspacePath, engineRes, err := s.provisionSkillBoxWith(ctx, skill, req.BackendId, req.Pool, req.InputJson, runID,
 		req.GetGitSource(), req.GetGitRef(), req.GetGitCredential(), req.GetTrackerConnection(), opts)
 	if err != nil {
 		return nil, err
@@ -526,6 +708,7 @@ func (s *AgentSkillServer) beginSkillRunWith(ctx context.Context, req *pb.RunAge
 		s.runs.Register(runID, runlease.Info{
 			SkillID:   skill.Id,
 			Model:     skill.Model,
+			Engine:    engineRes.Engine,
 			Box:       containerName,
 			GitCommit: gitCommit,
 			Workspace: workspacePath,
@@ -534,7 +717,7 @@ func (s *AgentSkillServer) beginSkillRunWith(ctx context.Context, req *pb.RunAge
 	}
 	return &startedSkillRun{
 		runID: runID, containerName: containerName, skillID: skill.Id, box: box, lease: lease,
-		gitCommit: gitCommit, workspacePath: workspacePath,
+		gitCommit: gitCommit, workspacePath: workspacePath, engineRes: engineRes, model: skill.GetModel(),
 	}, nil
 }
 
@@ -583,7 +766,44 @@ func (s *AgentSkillServer) endRunLease(ctx context.Context, lease runlease.Lease
 		log.Printf("[agent-skill] run %s: ending lease: %v", lease.RunID, err)
 	}
 
+	// After the revocations: with its credentials dead the run cannot
+	// start another create, so its leftover reservations protect nothing.
+	s.releaseLineageReservations(detached, lease.RunID)
+
 	s.auditRunLease(detached, "agent.run_lease_end", lease.RunID, runLeaseEndPayload(lease, reason, out))
+}
+
+// lineageReleaseBudget bounds the reservation sweep in endRunLease, for the
+// same reason auditWriteBudget bounds the audit write: it runs on a
+// detached context inside the RPC's deferred cleanup.
+const lineageReleaseBudget = 3 * time.Second
+
+// releaseLineageReservations sweeps the fan-out reservations runID still
+// holds (#2062): ones RecordChild could not clear, which would otherwise
+// count against the run's max_children_per_run forever. Scoped to the
+// run's own tenant — the authenticated subject the run was started for,
+// the same identity its token was minted for and auditRunLease records —
+// because a run id alone can be caller-chosen. With no subject nothing is
+// swept: over-counting is the fail-closed side. Best-effort: a failure is
+// logged and leaves the rows, which ListTrackerDispatches still shows.
+func (s *AgentSkillServer) releaseLineageReservations(ctx context.Context, runID string) {
+	if s.lineageReservations == nil || runID == "" {
+		return
+	}
+	username, _, ok := auth.SubjectFromGRPCContext(ctx)
+	if !ok || username == "" {
+		return
+	}
+	rctx, cancel := context.WithTimeout(ctx, lineageReleaseBudget)
+	defer cancel()
+	n, err := s.lineageReservations.ReleaseRunReservations(rctx, username, runID)
+	if err != nil {
+		log.Printf("[agent-skill] run %s: releasing lineage reservations: %v", runID, err)
+		return
+	}
+	if n > 0 {
+		log.Printf("[agent-skill] run %s: released %d stale lineage reservation(s) at lease end", runID, n)
+	}
 }
 
 // agentRuntimeReleaseTag returns the GitHub release tag the agent-runtime box
@@ -660,6 +880,20 @@ func mintedAgentAct(ctx context.Context) *auth.Actor {
 	return &auth.Actor{Subject: username, Act: callerAct}
 }
 
+// mintedRunTenant is the tenant a run token is minted for (#2268): the
+// caller's own verified subject — the identity requireDispatchCaller
+// demanded and validateTrackerConnection looked the connection up under —
+// so the run_tenant claim can only ever name a tenant whose own token
+// started the run. Like mintedAgentAct, derived ONLY from ctx, never from
+// the request proto. "" (no claim) for an unauthenticated/system context.
+func mintedRunTenant(ctx context.Context) string {
+	username, _, ok := auth.SubjectFromGRPCContext(ctx)
+	if !ok {
+		return ""
+	}
+	return username
+}
+
 // mintedAgentTokenScopes computes the scopes for a skill's in-box token: the
 // intersection of the caller's own granted scopes and the skill manifest's
 // allowed_scopes (#1676). auth.ScopesFromGRPCContext — not the plain
@@ -687,10 +921,61 @@ func mintedAgentTokenScopes(ctx context.Context, skill *pb.AgentSkill) []string 
 
 // runForbiddenScopes never reach a minted run token, regardless of what
 // the dispatching caller or the skill manifest's allowed_scopes grant.
-// tracker:admin is the only entry today — see mintedAgentTokenScopes's
-// doc comment. A future admin-tier scope gets added here on the same
-// reasoning, not by auditing every skill manifest for it.
-var runForbiddenScopes = []string{auth.ScopeTrackerAdmin}
+// A future admin-tier scope gets added here on the same reasoning, not by
+// auditing every skill manifest for it.
+//
+//   - tracker:admin — see mintedAgentTokenScopes's doc comment.
+//   - tokens:delegate (#2069) — ExchangeDelegatedToken mints a token with
+//     no run_id, and every run-token guard (#2060's lineage binding,
+//     #2112's taskRunID, the run_log claim check) applies only
+//     `if runID != ""`. A run token holding it could delegate its way out
+//     of its own run and shed all of them at once. No shipped skill grants
+//     it; a custom skill via CONTAINARIUM_SKILLS_DIR could. The handler
+//     also refuses any run-bound caller outright, so a run token minted
+//     before this entry existed is covered too.
+var runForbiddenScopes = []string{auth.ScopeTrackerAdmin, auth.ScopeTokensDelegate}
+
+// mintRunToken mints the run's platform JWT — the one credential every
+// in-box call back to the daemon presents — and returns it with the lease
+// credential record (jti + expiry) the run's exit revokes.
+//
+// The token is minted for the box's own subject (agent-<skill-id>, no
+// roles), scoped to the intersection of the CALLER's own granted scopes
+// and the skill's allowed_scopes (#1676: the manifest is a ceiling, never
+// a floor — a caller with no scopes claim/wildcard gets the manifest
+// unchanged, anyone else only receives scopes they already hold), carrying
+// the dispatching caller as its `act` delegation claim (#1677) so an
+// auditor asking "who authorized this?" doesn't get the name of a robot.
+// Minted through the WithRun variant so the daemon keeps the jti + expiry
+// of what it issued, with runID so the token itself says which run it
+// belongs to (the `run_id` claim), and with trackerConnection — already
+// validated against the caller's own tenant by validateTrackerConnection
+// before this function was called — so the token also says which tracker
+// connection the run is bound to (the `tracker_conn` claim, #1922 step 6).
+// Empty trackerConnection mints no claim, unchanged pre-#1922 behavior.
+//
+// The token also carries the tenant the run was started for (the
+// `run_tenant` claim, #2268) — the caller's own verified subject, the same
+// identity validateTrackerConnection checked the connection under — so the
+// tracker verbs can authorize the run for THAT tenant: its own subject is
+// the box, which auth.AuthorizeTenant can never match to the tenant the
+// in-box tracker_* tools name. See auth.AuthorizeTrackerTenant.
+//
+// This is the ONLY place a run token is minted: provisionSkillBoxWith
+// calls it for every run (RunAgentSkill, RunCrew, the tracker dispatcher),
+// and the tests that prove what a real run token can and cannot do call
+// it directly (#2268) rather than hand-building a subject.
+func (s *AgentSkillServer) mintRunToken(ctx context.Context, skill *pb.AgentSkill, runID, trackerConnection string) (token string, cred runlease.Credential, err error) {
+	name := agentBoxPrefix + skill.Id
+	run := auth.RunBinding{RunID: runID, TrackerConn: trackerConnection, Tenant: mintedRunTenant(ctx)}
+	token, minted, mintErr := s.tokens.GenerateDelegatedTokenWithRun(name, []string{}, agentTokenTTL, mintedAgentAct(ctx), run, mintedAgentTokenScopes(ctx, skill)...)
+	if mintErr != nil {
+		return "", runlease.Credential{}, status.Errorf(codes.Internal, "failed to mint scoped agent token: %v", mintErr)
+	}
+	return token, runlease.Credential{
+		Kind: runlease.KindPlatformJWT, JTI: minted.JTI, ExpiresAt: minted.ExpiresAt,
+	}, nil
+}
 
 // provisionSkillBox provisions (or reuses) the skill's box, mints its
 // credentials, seeds the task, and — when gitSource is set (#1859) —
@@ -706,19 +991,32 @@ var runForbiddenScopes = []string{auth.ScopeTrackerAdmin}
 // runs of the same skill overwrite each other's checkout exactly as they
 // already overwrite each other's seed files; #1860 gives both their own
 // per-run directory.
-func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.AgentSkill, backendID, pool, inputJSON, runID, gitSource, gitRef, gitCredential, trackerConnection string) (containerName string, box *pb.Container, lease runlease.Lease, gitCommit, workspacePath string, err error) {
+// The 7th return value, engineRes, is the engine this run actually resolved
+// to (#2222, agentengine.Resolve) — the daemon's default when the skill names
+// none, or the skill's own named engine, refused up front in gateway mode if
+// its provider has no resolvable key. Callers thread it into whichever exec
+// path launches the box (run/serve/poll) so the box gets the SAME engine
+// readiness reported.
+func (s *AgentSkillServer) provisionSkillBox(ctx context.Context, skill *pb.AgentSkill, backendID, pool, inputJSON, runID, gitSource, gitRef, gitCredential, trackerConnection string) (containerName string, box *pb.Container, lease runlease.Lease, gitCommit, workspacePath string, engineRes agentengine.Resolved, err error) {
 	return s.provisionSkillBoxWith(ctx, skill, backendID, pool, inputJSON, runID, gitSource, gitRef, gitCredential, trackerConnection, provisionOptions{})
 }
 
 // provisionSkillBoxWith is provisionSkillBox with internal options.
-func (s *AgentSkillServer) provisionSkillBoxWith(ctx context.Context, skill *pb.AgentSkill, backendID, pool, inputJSON, runID, gitSource, gitRef, gitCredential, trackerConnection string, opts provisionOptions) (containerName string, box *pb.Container, lease runlease.Lease, gitCommit, workspacePath string, err error) {
-	var noLease runlease.Lease
-
+// provisionBoxOnly resolves a skill's deterministic box name
+// (agent-<skill-id>) and creates it if absent, or starts-and-reuses it if
+// present — WITHOUT minting a run token, resolving an engine, seeding
+// anything, or fetching git. This is the create-or-reuse half of
+// provisionSkillBoxWith (everything up to its old `containerName = name +
+// "-container"` line), factored out for #2272: ProvisionSkillBox calls this
+// directly so a crew member's box can exist — and a human can sign in to its
+// coding agent — before any inference credential does. No call on this path
+// ever reaches a model.
+func (s *AgentSkillServer) provisionBoxOnly(ctx context.Context, skill *pb.AgentSkill, backendID, pool string) (containerName string, box *pb.Container, freshBox bool, err error) {
 	// Phase 0 supports only the recipe_id box form (catalog skills). Inline
 	// recipes are an API-only construct deferred to a later phase.
 	recipeID := skill.GetRecipeId()
 	if recipeID == "" {
-		return "", nil, noLease, "", "", status.Error(codes.Unimplemented,
+		return "", nil, false, status.Error(codes.Unimplemented,
 			"inline-recipe skills are not supported yet; use a skill that references a recipe_id")
 	}
 
@@ -726,7 +1024,7 @@ func (s *AgentSkillServer) provisionSkillBoxWith(ctx context.Context, skill *pb.
 	// per-run-box / warm-pool concern, see docs/EPHEMERAL-SANDBOX-DESIGN.md).
 	name := "agent-" + skill.Id
 	if err := auth.AuthorizeTenant(ctx, name); err != nil {
-		return "", nil, noLease, "", "", err
+		return "", nil, false, err
 	}
 
 	// Provision the box, idempotently. The normal skill flow is run → (set a
@@ -737,39 +1035,46 @@ func (s *AgentSkillServer) provisionSkillBoxWith(ctx context.Context, skill *pb.
 	// (and its one-time post_start assembly) and just re-mint the token,
 	// re-seed, and re-apply policy below. A stopped box (idle-sleep, host
 	// reboot) is started so the subsequent seed-exec / loop-exec lands.
-	freshBox := false
 	if info, gerr := s.recipes.containers.manager.Get(name); gerr == nil && info != nil {
 		if info.State != "Running" {
 			if err := s.recipes.containers.manager.Start(name); err != nil {
-				return "", nil, noLease, "", "", status.Errorf(codes.Internal, "failed to start existing agent box %s: %v", name, err)
+				return "", nil, false, status.Errorf(codes.Internal, "failed to start existing agent box %s: %v", name, err)
 			}
 			if reread, rerr := s.recipes.containers.manager.Get(name); rerr == nil && reread != nil {
 				info = reread
 			}
 		}
 		st := boxlxc.StatusFromInfo(info)
-		box = toProtoContainer(&st)
-	} else {
-		// First provision. Pass the daemon's version as the agent-runtime
-		// recipe's `release` param so the box's post_start pulls matching
-		// agent-box + agent-runtime artifacts (box-image assembly). Recipes that
-		// don't declare these params ignore the extras; assembly is best-effort
-		// (a dev/unpublished version just skips it).
-		dep, err := s.recipes.deploy(ctx, &pb.DeployRecipeRequest{
-			RecipeId:   recipeID,
-			Name:       name,
-			BackendId:  backendID,
-			Pool:       pool,
-			Parameters: map[string]string{"release": agentRuntimeReleaseTag()},
-		})
-		if err != nil {
-			return "", nil, noLease, "", "", err // already a gRPC status from deploy/CreateContainer
-		}
-		box = dep.Container
-		freshBox = true
+		return name + "-container", toProtoContainer(&st), false, nil
 	}
 
-	containerName = name + "-container"
+	// First provision. Pass the daemon's version as the agent-runtime
+	// recipe's `release` param so the box's post_start pulls matching
+	// agent-box + agent-runtime artifacts (box-image assembly). Recipes that
+	// don't declare these params ignore the extras; assembly is best-effort
+	// (a dev/unpublished version just skips it).
+	dep, derr := s.recipes.deploy(ctx, &pb.DeployRecipeRequest{
+		RecipeId:   recipeID,
+		Name:       name,
+		BackendId:  backendID,
+		Pool:       pool,
+		Parameters: map[string]string{"release": agentRuntimeReleaseTag()},
+	})
+	if derr != nil {
+		return "", nil, false, derr // already a gRPC status from deploy/CreateContainer
+	}
+	return name + "-container", dep.Container, true, nil
+}
+
+func (s *AgentSkillServer) provisionSkillBoxWith(ctx context.Context, skill *pb.AgentSkill, backendID, pool, inputJSON, runID, gitSource, gitRef, gitCredential, trackerConnection string, opts provisionOptions) (containerName string, box *pb.Container, lease runlease.Lease, gitCommit, workspacePath string, engineRes agentengine.Resolved, err error) {
+	var noLease runlease.Lease
+
+	containerName, box, freshBox, err := s.provisionBoxOnly(ctx, skill, backendID, pool)
+	if err != nil {
+		return "", nil, noLease, "", "", agentengine.Resolved{}, err
+	}
+	name := "agent-" + skill.Id
+
 	// The run's lease: every credential minted below is recorded here so the
 	// run's exit can revoke exactly what the run was given (#1817). SeedDir is
 	// per-run (#1860) so concurrent runs of the same skill — which share this
@@ -777,26 +1082,71 @@ func (s *AgentSkillServer) provisionSkillBoxWith(ctx context.Context, skill *pb.
 	seedDir := seedDirFor(runID)
 	lease = runlease.Lease{RunID: runID, Box: containerName, SeedDir: seedDir}
 
-	// Mint a JWT scoped to the intersection of the CALLER's own granted scopes
-	// and the skill's allowed_scopes (#1676: the manifest is a ceiling, never
-	// a floor — a caller with no scopes claim/wildcard gets the manifest
-	// unchanged, anyone else only receives scopes they already hold), carrying
-	// the dispatching caller as its `act` delegation claim (#1677) so an
-	// auditor asking "who authorized this?" doesn't get the name of a robot.
-	// Minted through the WithRun variant so the daemon keeps the jti + expiry
-	// of what it issued, with runID so the token itself says which run it
-	// belongs to (the `run_id` claim), and with trackerConnection — already
-	// validated against the caller's own tenant by validateTrackerConnection
-	// before this function was called — so the token also says which tracker
-	// connection the run is bound to (the `tracker_conn` claim, #1922 step 6).
-	// Empty trackerConnection mints no claim, unchanged pre-#1922 behavior.
-	token, minted, mintErr := s.tokens.GenerateDelegatedTokenWithRun(name, []string{}, agentTokenTTL, mintedAgentAct(ctx), runID, trackerConnection, mintedAgentTokenScopes(ctx, skill)...)
-	if mintErr != nil {
-		return "", nil, noLease, "", "", status.Errorf(codes.Internal, "failed to mint scoped agent token: %v", mintErr)
+	// Resolve the run's engine BEFORE minting anything (#2222): a skill naming
+	// an engine whose provider has no resolvable key is refused here, before
+	// the platform JWT, the seed script, or any git fetch ever happen — not
+	// minutes later inside the box with "Not logged in". box is already
+	// resolved above (reused or freshly provisioned), so keyOwner resolves
+	// exactly as it will for the gateway mint below. opts.engineOverride
+	// (#2228) wins over the manifest's own choice when the caller set one —
+	// agentengine.Override, not Resolve itself, decides which of the two wins,
+	// so Resolve's own readiness/refusal logic is identical either way.
+	var gwView *agentengine.Gateway
+	if s.gateway != nil {
+		gwView = &s.gateway.engines
 	}
-	lease.Credentials = append(lease.Credentials, runlease.Credential{
-		Kind: runlease.KindPlatformJWT, JTI: minted.JTI, ExpiresAt: minted.ExpiresAt,
-	})
+	keyOwner := runKeyOwner(ctx, box)
+	want := agentengine.Override(skill.GetEngine(), opts.engineOverride)
+	engineRes, resolveErr := agentengine.Resolve(ctx, want, keyOwner, gwView)
+	if resolveErr != nil {
+		var notReady *agentengine.NotReadyError
+		if errors.As(resolveErr, &notReady) {
+			return "", nil, noLease, "", "", agentengine.Resolved{}, status.Errorf(codes.FailedPrecondition,
+				"skill %s needs engine %s (provider %s) but %s; fix: %s",
+				skill.Id, agentengine.EnvValue(notReady.Engine), notReady.Provider, notReady.Reason, notReady.Fix)
+		}
+		return "", nil, noLease, "", "", agentengine.Resolved{}, status.Errorf(codes.Internal, "resolving engine for skill %s: %v", skill.Id, resolveErr)
+	}
+	if engineRes.Default && skill.GetModel() != "" {
+		log.Printf("[agent-skill] skill %s pins model %q but names no engine; CONTAINARIUM_AGENT_MODEL is not exported (only named-engine skills carry their pinned model to the box)", skill.Id, skill.GetModel())
+	}
+
+	// #2229: a named-engine skill's pinned model is validated against what the
+	// resolved provider actually serves, WHEN we can check. Skipped entirely
+	// for a Default resolution (above): the model is never exported there, so
+	// checking it would refuse a run over a value that is already ignored.
+	// "Can't check" (an unsupported provider shape, or no key to list with) is
+	// NOT a refusal — proceeding without a check we have no way to perform
+	// matches this function's own best-effort posture for the mint a few
+	// lines below, and is strictly no worse than today's unchecked pass-
+	// through. Only a CONFIRMED mismatch — the list call succeeded and the
+	// model isn't in it — is a FailedPrecondition, naming the model, the
+	// provider, and the models it does list, same shape as the engine refusal
+	// above.
+	// modelCeiling is "" exactly when the model is never exported/enforced —
+	// no engine named (Default) or no model pinned — so the gateway token
+	// minted below carries a ceiling only when one is actually meaningful.
+	var modelCeiling string
+	if !engineRes.Default && skill.GetModel() != "" {
+		modelCeiling = skill.GetModel()
+		if s.gateway != nil && s.gateway.models != nil {
+			if models, lerr := s.gateway.models.ListModels(ctx, keyOwner, engineRes.Provider); lerr == nil {
+				if !slices.Contains(models, modelCeiling) {
+					return "", nil, noLease, "", "", agentengine.Resolved{}, status.Errorf(codes.FailedPrecondition,
+						"skill %s pins model %q but provider %s does not list it; available: %s",
+						skill.Id, modelCeiling, engineRes.Provider, strings.Join(models, ", "))
+				}
+			} else if !errors.Is(lerr, modelgateway.ErrModelListUnsupported) && !errors.Is(lerr, modelgateway.ErrNoKey) {
+				log.Printf("[agent-skill] skill %s: model list check for provider %s failed, proceeding without it: %v", skill.Id, engineRes.Provider, lerr)
+			}
+		}
+	}
+
+	token, platformCred, mintErr := s.mintRunToken(ctx, skill, runID, trackerConnection)
+	if mintErr != nil {
+		return "", nil, noLease, "", "", agentengine.Resolved{}, mintErr
+	}
+	lease.Credentials = append(lease.Credentials, platformCred)
 
 	// Seed the prompt/token/input/card into the box.
 	cardJSON := ""
@@ -814,14 +1164,19 @@ func (s *AgentSkillServer) provisionSkillBoxWith(ctx context.Context, skill *pb.
 		seedScript = clearRunJournalsScript + "\n" + seedScript
 	}
 	// Model-gateway provisioning (#674): when the daemon serves a gateway, mint a
-	// per-skill gateway token and append the env-seeding to the same exec, so the
-	// box's engine routes model calls through the gateway (real key never enters
-	// the box). Best-effort: a mint/script error logs and falls back to direct
-	// mode rather than failing provisioning.
+	// per-skill gateway token — bound to engineRes.Provider (#2222), the run's
+	// RESOLVED provider, not necessarily the daemon's default — and append the
+	// env-seeding to the same exec, so the box's engine routes model calls
+	// through the gateway (real key never enters the box). The token carries
+	// the run's key_owner (#2134), so the call spends the run owner's
+	// registered key rather than the daemon-global one. Best-effort: a mint/
+	// script error logs and falls back to direct mode rather than failing
+	// provisioning — engineRes itself was already confirmed ready above, so
+	// a failure here is an operational one (mint/script), not a readiness one.
 	if s.gateway != nil {
-		if gwTok, gwMinted, gerr := s.gateway.mintGatewayToken(name, skill.Id, runID); gerr != nil {
+		if gwTok, gwMinted, gerr := s.mintRunGatewayToken(ctx, name, skill.Id, runID, engineRes.Provider, modelCeiling, box); gerr != nil {
 			log.Printf("[agent-skill] gateway token mint failed for %s (box runs direct mode): %v", name, gerr)
-		} else if envScript, eerr := gatewayEnvScript(s.gateway.provider, s.gateway.httpPort, gwTok, seedDir); eerr != nil {
+		} else if envScript, eerr := gatewayEnvScript(engineRes.Provider, s.gateway.httpPort, gwTok, seedDir); eerr != nil {
 			log.Printf("[agent-skill] gateway env script failed for %s (box runs direct mode): %v", name, eerr)
 		} else {
 			seedScript += "\n" + envScript
@@ -849,7 +1204,7 @@ func (s *AgentSkillServer) provisionSkillBoxWith(ctx context.Context, skill *pb.
 		// lost write, and it lists the jtis it revoked — so an operator meeting
 		// one can still answer "what was this run given".
 		s.endRunLease(ctx, lease, s.boxWiper(), provisionFailedReason)
-		return "", nil, noLease, "", "", status.Errorf(codes.Internal, "failed to seed agent box %s: %v", containerName, err)
+		return "", nil, noLease, "", "", agentengine.Resolved{}, status.Errorf(codes.Internal, "failed to seed agent box %s: %v", containerName, err)
 	}
 
 	// #1859/#1860: fetch the run's repo, if any, now that the box has
@@ -880,7 +1235,7 @@ func (s *AgentSkillServer) provisionSkillBoxWith(ctx context.Context, skill *pb.
 			workspacePath = ""
 		} else if ferr != nil {
 			s.endRunLease(ctx, lease, s.boxWiper(), provisionFailedReason)
-			return "", nil, noLease, "", "", status.Errorf(codes.FailedPrecondition, "git fetch into agent box %s failed: %v", containerName, ferr)
+			return "", nil, noLease, "", "", agentengine.Resolved{}, status.Errorf(codes.FailedPrecondition, "git fetch into agent box %s failed: %v", containerName, ferr)
 		}
 		gitCommit = commit
 
@@ -905,43 +1260,38 @@ func (s *AgentSkillServer) provisionSkillBoxWith(ctx context.Context, skill *pb.
 	// Compile allowed_peers into the per-box egress policy (Phase 2).
 	s.applyAllowedPeersPolicy(ctx, name, skill)
 
-	s.auditRunLease(ctx, "agent.run_lease_issue", runID, runLeaseIssuePayload(lease))
+	s.auditRunLease(ctx, "agent.run_lease_issue", runID, runLeaseIssuePayload(lease, engineRes.Engine))
 	s.runIndex.add(runID, skill.Id, time.Now(), s.runJournalRetention())
 
-	return containerName, box, lease, gitCommit, workspacePath, nil
+	return containerName, box, lease, gitCommit, workspacePath, engineRes, nil
 }
 
-// engineForProvider maps a gateway provider to the agent-runtime engine that
-// speaks it. Empty for an unknown provider (caller then leaves the engine
-// unset, so the box falls back to its own default).
-func engineForProvider(provider string) string {
-	switch provider {
-	case "anthropic":
-		return "claude"
-	case "gemini":
-		return "gemini"
-	case "openai":
-		return "codex"
-	default:
+// runtimeEnvPrefix renders the `CONTAINARIUM_AGENT_ENGINE=... ` and
+// `CONTAINARIUM_AGENT_MODEL=... ` exports for one run's resolved engine
+// (#2222, replacing the old engineEnvPrefix — agentengine.Resolve now makes
+// this decision, this function only renders it).
+//
+//   - res.Engine == UNSPECIFIED exports nothing: byte-identical to every box
+//     that predates this field (direct mode with no engine named).
+//   - Otherwise CONTAINARIUM_AGENT_ENGINE is always exported — in gateway mode
+//     this is what #748 originally fixed (an unpinned box falls back to claude
+//     and a gemini/openai gateway run fails "Not logged in"), now computed by
+//     Resolve instead of a daemon-wide primary-provider lookup.
+//   - CONTAINARIUM_AGENT_MODEL is exported only when res.Default is false —
+//     i.e. only when the manifest named the engine itself, not when Resolve
+//     filled one in from the gateway's default (Q1,
+//     docs/product/agent-router.md: an unspecified-engine skill's pinned
+//     model is never exported, so a skill written before this field can't
+//     start failing on a daemon whose default engine doesn't match it).
+func runtimeEnvPrefix(res agentengine.Resolved, model string) string {
+	if res.Engine == pb.AgentEngine_AGENT_ENGINE_UNSPECIFIED {
 		return ""
 	}
-}
-
-// engineEnvPrefix returns a `CONTAINARIUM_AGENT_ENGINE=<engine> ` command prefix
-// pinning the box to the engine that matches the gateway provider (#748). When
-// the daemon serves a gateway it knows the provider, so it must tell the box
-// which engine to run — otherwise the box uses its default (claude) and a
-// gemini/openai gateway run fails ("Not logged in") because the default engine
-// looks for the wrong gateway env vars. Empty in direct mode (no gateway): the
-// box's own env/default decides.
-func (s *AgentSkillServer) engineEnvPrefix() string {
-	if s.gateway == nil {
-		return ""
+	out := "CONTAINARIUM_AGENT_ENGINE=" + agentengine.EnvValue(res.Engine) + " "
+	if !res.Default && model != "" {
+		out += "CONTAINARIUM_AGENT_MODEL=" + shellSingleQuote(model) + " "
 	}
-	if eng := engineForProvider(s.gateway.provider); eng != "" {
-		return "CONTAINARIUM_AGENT_ENGINE=" + eng + " "
-	}
-	return ""
+	return out
 }
 
 // startServeMode launches the in-box agent-runtime in serve mode (the A2A
@@ -950,7 +1300,7 @@ func (s *AgentSkillServer) engineEnvPrefix() string {
 // no-op failure (logged), like runInBoxAgent. Used by RunCrew for members.
 // skillID names the member's run journal (#2095); the run id comes with each
 // A2A task, not with the launch.
-func (s *AgentSkillServer) startServeMode(containerName, seedDir, skillID string) {
+func (s *AgentSkillServer) startServeMode(containerName, seedDir, skillID string, engineRes agentengine.Resolved, model string) {
 	if s.recipes == nil || s.recipes.containers == nil || s.recipes.containers.manager == nil {
 		return
 	}
@@ -981,7 +1331,7 @@ func (s *AgentSkillServer) startServeMode(containerName, seedDir, skillID string
 		// here: in-box the only trace is one line in the box's own log.
 		log.Printf("[agent-skill] no A2A credential derivable for %s: its serve mode will refuse every task", containerName)
 	}
-	cmd := s.serveModeCommand(seedDir, skillID)
+	cmd := s.serveModeCommand(seedDir, skillID, engineRes, model)
 	if _, stderr, err := s.recipes.containers.manager.ExecWithOutput(containerName,
 		[]string{"bash", "-lc", cmd}); err != nil {
 		log.Printf("[agent-skill] could not start serve mode on %s (image may not ship runtime): %v; stderr=%s",
@@ -1002,12 +1352,12 @@ func (s *AgentSkillServer) startServeMode(containerName, seedDir, skillID string
 // so holding your own is no help against anyone else's. It is omitted when the
 // daemon cannot derive one, which leaves the box refusing every task: a serve
 // mode nobody can reach is a better failure than one anybody can.
-func (s *AgentSkillServer) serveModeCommand(seedDir, skillID string) string {
+func (s *AgentSkillServer) serveModeCommand(seedDir, skillID string, engineRes agentengine.Resolved, model string) string {
 	a2a := ""
 	if secret := s.agentA2ASecret(skillID); secret != "" {
 		a2a = "CONTAINARIUM_A2A_TOKEN=" + shellSingleQuote(secret) + " "
 	}
-	return sourceGatewayEnvPrefix(seedDir) + s.engineEnvPrefix() + a2a +
+	return sourceGatewayEnvPrefix(seedDir) + runtimeEnvPrefix(engineRes, model) + a2a +
 		"CONTAINARIUM_SKILL_ID=" + shellSingleQuote(skillID) + " " +
 		"CONTAINARIUM_AGENT_MODE=serve AGENT_SEED_DIR=" + seedDir +
 		" setsid agent-runtime >/var/log/agent-runtime.log 2>&1 &"
@@ -1018,8 +1368,8 @@ func (s *AgentSkillServer) serveModeCommand(seedDir, skillID string) string {
 // env is sourced, so the runtime journals the run under
 // /var/log/agent-runtime/runs/<run_id>/<skill_id>.jsonl (#2095). The runtime
 // refuses to run in run mode without CONTAINARIUM_RUN_ID.
-func (s *AgentSkillServer) runModeCommand(seedDir, runID, skillID string) string {
-	return sourceGatewayEnvPrefix(seedDir) + s.engineEnvPrefix() +
+func (s *AgentSkillServer) runModeCommand(seedDir, runID, skillID string, engineRes agentengine.Resolved, model string) string {
+	return sourceGatewayEnvPrefix(seedDir) + runtimeEnvPrefix(engineRes, model) +
 		"CONTAINARIUM_RUN_ID=" + shellSingleQuote(runID) + " " +
 		"CONTAINARIUM_SKILL_ID=" + shellSingleQuote(skillID) + " " +
 		"AGENT_SEED_DIR=" + seedDir + " agent-runtime"
@@ -1031,8 +1381,8 @@ func (s *AgentSkillServer) runModeCommand(seedDir, runID, skillID string) string
 // key come from the box env (secrets-injected). Best-effort: any failure
 // (runtime absent, exec error, bad artifact) logs and returns "" rather than
 // failing RunAgentSkill — the box is still provisioned + gated + traced.
-func (s *AgentSkillServer) runInBoxAgent(containerName, seedDir, runID, skillID string) string {
-	out, err := s.runInBoxAgentResult(containerName, seedDir, runID, skillID)
+func (s *AgentSkillServer) runInBoxAgent(containerName, seedDir, runID, skillID string, engineRes agentengine.Resolved, model string) string {
+	out, err := s.runInBoxAgentResult(containerName, seedDir, runID, skillID, engineRes, model)
 	if err != nil {
 		log.Printf("[agent-skill] %v", err)
 		return ""
@@ -1043,15 +1393,18 @@ func (s *AgentSkillServer) runInBoxAgent(containerName, seedDir, runID, skillID 
 // runInBoxAgentResult is runInBoxAgent with the reason a run produced
 // nothing kept as an error — a dispatched run (#2023) records it as the
 // dispatch row's failure_reason. The error text never includes the
-// box's stderr beyond what runInBoxAgent already logged.
-func (s *AgentSkillServer) runInBoxAgentResult(containerName, seedDir, runID, skillID string) (string, error) {
+// box's stderr beyond what runInBoxAgent already logged. engineRes/model
+// (#2222) are the run's already-resolved engine (provisionSkillBoxWith) —
+// this function only renders them into the exec, it never resolves anything
+// itself.
+func (s *AgentSkillServer) runInBoxAgentResult(containerName, seedDir, runID, skillID string, engineRes agentengine.Resolved, model string) (string, error) {
 	if s.recipes == nil || s.recipes.containers == nil || s.recipes.containers.manager == nil {
 		return "", fmt.Errorf("no container manager to run the in-box agent on %s", containerName)
 	}
 	mgr := s.recipes.containers.manager
 
 	if _, stderr, err := mgr.ExecWithOutput(containerName,
-		[]string{"bash", "-lc", s.runModeCommand(seedDir, runID, skillID)}); err != nil {
+		[]string{"bash", "-lc", s.runModeCommand(seedDir, runID, skillID, engineRes, model)}); err != nil {
 		log.Printf("[agent-skill] in-box runtime did not run on %s (image may not ship it yet): %v; stderr=%s",
 			containerName, err, strings.TrimSpace(stderr))
 		return "", fmt.Errorf("in-box runtime did not run on %s: %w", containerName, err)
@@ -1137,9 +1490,53 @@ func (s *AgentSkillServer) applyAllowedPeersPolicy(ctx context.Context, tenant s
 		log.Printf("[agent-skill] invalid network policy for %q: %v", tenant, err)
 		return
 	}
-	if err := s.netpolicy.Store().Set(ctx, compiled.ToProto()); err != nil {
+	if err := storeAgentSkillPolicy(ctx, s.netpolicy.Store(), compiled.ToProto()); err != nil {
 		log.Printf("[agent-skill] could not set network policy for %q: %v", tenant, err)
 	}
+}
+
+// a2aDenyNote marks the deny rules compileAllowedPeersPolicy owns (#2140), the
+// same way quarantineNote marks auto-quarantine's: a relaunch replaces exactly
+// these and leaves every operator-authored rule alone.
+const a2aDenyNote = "agent-skill: peer A2A port is daemon-only (#2140)"
+
+// storeAgentSkillPolicy persists a compiled agent-skill policy. Set stores the
+// allow-policy but deliberately never writes deny rules (they are owned by
+// MutateDenyRules, #660), so the peer A2A-port denies are merged in through
+// MutateDenyRules — otherwise they would be silently dropped and never reach
+// the kernel.
+func storeAgentSkillPolicy(ctx context.Context, store NetworkPolicyStore, p *pb.NetworkPolicy) error {
+	if err := store.Set(ctx, p); err != nil {
+		return err
+	}
+	desired := p.GetDenyRules()
+	_, err := store.MutateDenyRules(ctx, p.GetTenant(), func(existing []*pb.NetworkPolicyDenyRule) ([]*pb.NetworkPolicyDenyRule, error) {
+		return mergeA2ADenyRules(existing, desired), nil
+	})
+	return err
+}
+
+// mergeA2ADenyRules replaces the A2A-port denies in existing (identified by
+// a2aDenyNote — stale ones from a previous launch go too) with desired. An
+// operator rule already on a peer's CIDR keeps that slot: the kernel holds one
+// deny per CIDR, and overwriting it would narrow the operator's block to one
+// port. The in-box A2A credential (D1) still holds on that peer either way.
+func mergeA2ADenyRules(existing, desired []*pb.NetworkPolicyDenyRule) []*pb.NetworkPolicyDenyRule {
+	out := make([]*pb.NetworkPolicyDenyRule, 0, len(existing)+len(desired))
+	taken := make(map[string]bool, len(existing))
+	for _, r := range existing {
+		if r.GetNote() == a2aDenyNote {
+			continue
+		}
+		out = append(out, r)
+		taken[strings.TrimSpace(r.GetCidr())] = true
+	}
+	for _, r := range desired {
+		if !taken[r.GetCidr()] {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // agentNetworkPolicyConfig reads the operator opt-ins for arming enforcement:
@@ -1223,20 +1620,32 @@ func (s *AgentSkillServer) resolvePeerIP(peerID string) (string, bool) {
 }
 
 // compileAllowedPeersPolicy builds a per-box egress NetworkPolicy from a skill's
-// allowed_peers: each currently-running peer's box IP becomes an egress /32.
+// allowed_peers: each currently-running peer's box IP becomes an egress /32,
+// paired with a deny rule for that peer's A2A port (tcp/a2aPort, #2140) — the
+// peer box stays reachable for anything else a skill does, but a task can only
+// reach its in-box A2A server through the daemon (D1 in
+// docs/architecture/execution-scoped-authorization.md). The deny sits on the
+// calling box's egress, so the daemon's own delivery to a box is unaffected.
 // Pure (resolution is injected) so it is unit-testable without a daemon. The
 // policy is LOG_ONLY — observe, never drop — until Phase 2 enforcement is armed.
-// compileAllowedPeersPolicy builds a skill box's egress policy. gatewayCIDR
-// pins the box to the model-gateway (#674 inc 4): when set, the box's model
-// egress is the gateway host (gatewayCIDR — also the daemon API + DNS) and the
-// direct provider domains are DROPPED, so a box can't bypass the gateway to
+//
+// gatewayCIDR pins the box to the model-gateway (#674 inc 4): when set, the
+// box's model egress is the gateway host (gatewayCIDR — also the daemon API +
+// DNS) and the direct provider domains are DROPPED, so a box can't bypass the gateway to
 // reach a provider with a key it doesn't hold. When empty (direct mode) the
 // box gets the provider domains directly, as before.
 func compileAllowedPeersPolicy(tenant string, allowedPeers []string, resolve func(peerID string) (string, bool), extraCIDRs, extraDomains []string, gatewayCIDR string, enforce bool) *pb.NetworkPolicy {
 	var cidrs []string
+	var deny []*pb.NetworkPolicyDenyRule
 	for _, peer := range allowedPeers {
 		if ip, ok := resolve(peer); ok {
 			cidrs = append(cidrs, ip+"/32")
+			deny = append(deny, &pb.NetworkPolicyDenyRule{
+				Cidr:  ip + "/32",
+				Port:  a2aPort,
+				Proto: "tcp",
+				Note:  a2aDenyNote,
+			})
 		}
 	}
 	// Platform egress the agent legitimately needs (daemon API, DNS) so an
@@ -1266,6 +1675,7 @@ func compileAllowedPeersPolicy(tenant string, allowedPeers []string, resolve fun
 		EgressDomains: domains,
 		Mode:          mode,
 		AllowMetadata: false,
+		DenyRules:     deny,
 		Source:        "agent-skill",
 	}
 }
@@ -1443,6 +1853,11 @@ type runLeaseIssueDetail struct {
 	RunID       string               `json:"run_id"`
 	Box         string               `json:"box"`
 	Credentials []runLeaseCredential `json:"credentials"`
+	// Engine is the run's resolved engine (#2222), its EnvValue name — "" for
+	// AGENT_ENGINE_UNSPECIFIED (direct mode, no engine named), matching what
+	// an auditor reading the daemon's own CONTAINARIUM_AGENT_ENGINE export
+	// would see rather than the proto enum's numeric value.
+	Engine string `json:"engine,omitempty"`
 }
 
 // runLeaseEndDetail is the Detail of agent.run_lease_end: what actually
@@ -1457,11 +1872,12 @@ type runLeaseEndDetail struct {
 	Errors      []string `json:"errors"`
 }
 
-func runLeaseIssuePayload(lease runlease.Lease) string {
+func runLeaseIssuePayload(lease runlease.Lease, engine pb.AgentEngine) string {
 	d := runLeaseIssueDetail{
 		RunID:       lease.RunID,
 		Box:         lease.Box,
 		Credentials: make([]runLeaseCredential, 0, len(lease.Credentials)),
+		Engine:      agentengine.EnvValue(engine),
 	}
 	for _, c := range lease.Credentials {
 		d.Credentials = append(d.Credentials, runLeaseCredential{

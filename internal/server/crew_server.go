@@ -197,12 +197,22 @@ type crewRunDeps struct {
 // hand-off between members is a commit on a branch, so two members never
 // write the same file at once.
 func (s *CrewServer) provisionMemberBox(ctx context.Context, skill *pb.AgentSkill, req *pb.RunCrewRequest, runID string) (runlease.Lease, string, error) {
-	containerName, _, lease, gitCommit, _, err := s.agents.provisionSkillBox(ctx, skill, req.BackendId, req.Pool, "", runID,
-		req.GetGitSource(), req.GetGitRef(), req.GetGitCredential(), "")
+	// #2228: a per-member override in the request (keyed by skill_id) wins
+	// over that member's own manifest `engine` field — same mechanism as
+	// RunAgentSkillRequest.engine, applied once per member. A member with no
+	// entry gets the map's zero value, AGENT_ENGINE_UNSPECIFIED, which
+	// agentengine.Override treats as "no override".
+	opts := provisionOptions{engineOverride: req.GetEngineOverrides()[skill.Id]}
+	containerName, _, lease, gitCommit, _, engineRes, err := s.agents.provisionSkillBoxWith(ctx, skill, req.BackendId, req.Pool, "", runID,
+		req.GetGitSource(), req.GetGitRef(), req.GetGitCredential(), "", opts)
 	if err != nil {
 		return runlease.Lease{}, "", err
 	}
-	s.agents.startServeMode(containerName, lease.SeedDir, skill.Id)
+	// #2222: each member resolves its OWN engine from its OWN manifest (or
+	// this request's override, #2228) — a crew whose members name two
+	// different engines gets two members on two engines, each with its own
+	// provider-bound gateway token.
+	s.agents.startServeMode(containerName, lease.SeedDir, skill.Id, engineRes, skill.GetModel())
 	return lease, gitCommit, nil
 }
 

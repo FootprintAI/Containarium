@@ -48,6 +48,33 @@ func TestGatewayEnvScript_GeminiBareBase(t *testing.T) {
 	}
 }
 
+// TestGatewayEnvScript_OpenAICodexKey pins #2256's fix: the box-side token
+// variable for the "openai" provider (the codex engine's only provider) is
+// CODEX_API_KEY, not OPENAI_API_KEY. OpenAI's own docs call a bare
+// OPENAI_API_KEY insufficient for a headless run with no `codex login` step
+// — CODEX_API_KEY is the documented variable that works without one.
+func TestGatewayEnvScript_OpenAICodexKey(t *testing.T) {
+	s, err := gatewayEnvScript("openai", 8080, "tok-codex", "/seed")
+	if err != nil {
+		t.Fatalf("script: %v", err)
+	}
+	if !strings.Contains(s, "CODEX_API_KEY") {
+		t.Errorf("expected the box-side token var to be CODEX_API_KEY:\n%s", s)
+	}
+	if strings.Contains(s, "OPENAI_API_KEY") {
+		t.Errorf("box-side script must not export OPENAI_API_KEY (#2256: insufficient for a headless codex run without `codex login`):\n%s", s)
+	}
+	for _, want := range []string{
+		"OPENAI_BASE_URL",
+		"http://$__ctn_host:8080/v1/model/openai",
+		"tok-codex",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("script missing %q\n%s", want, s)
+		}
+	}
+}
+
 func TestGatewayEnvScript_UnknownProvider(t *testing.T) {
 	if _, err := gatewayEnvScript("bedrock", 8080, "t", "/seed"); err == nil {
 		t.Error("unknown provider must error")
@@ -181,8 +208,8 @@ func containsString(hay []string, needle string) bool {
 
 func TestMintGatewayToken_RoundTrips(t *testing.T) {
 	secret := []byte("test-shared-secret")
-	g := &gatewayProvisioning{provider: "anthropic", httpPort: 8080, secret: secret}
-	tok, minted, err := g.mintGatewayToken("agent-hello", "hello-agent", "run-42")
+	g := &gatewayProvisioning{httpPort: 8080, secret: secret}
+	tok, minted, err := g.mintGatewayToken("agent-hello", "hello-agent", "run-42", "", "anthropic", "")
 	if err != nil {
 		t.Fatalf("mint: %v", err)
 	}
@@ -198,11 +225,34 @@ func TestMintGatewayToken_RoundTrips(t *testing.T) {
 	if claims.RunID != "run-42" {
 		t.Errorf("run_id claim = %q, want run-42", claims.RunID)
 	}
+	if len(claims.AllowedModels) != 0 {
+		t.Errorf("allowed_models = %v, want none — this mint named no model", claims.AllowedModels)
+	}
 	if minted.JTI == "" || minted.JTI != claims.ID {
 		t.Errorf("minted jti = %q, want the token's own jti %q", minted.JTI, claims.ID)
 	}
 	if minted.ExpiresAt.IsZero() {
 		t.Error("minted expiry is zero — nothing to pass to Revoke(jti, expiresAt, reason)")
+	}
+}
+
+// TestMintGatewayToken_ModelCeiling pins #2229: a non-empty model becomes a
+// real, enforced AllowedModels ceiling of exactly that one model — not the
+// now-removed daemon-global gatewayProvisioning.allowedModels field, which
+// was never assigned by any caller.
+func TestMintGatewayToken_ModelCeiling(t *testing.T) {
+	g := &gatewayProvisioning{httpPort: 8080, secret: []byte("test-shared-secret")}
+
+	tok, _, err := g.mintGatewayToken("agent-hello", "hello-agent", "run-42", "", "anthropic", "claude-3-5-haiku-latest")
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	claims, err := modelgateway.VerifyToken(g.secret, tok)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if len(claims.AllowedModels) != 1 || claims.AllowedModels[0] != "claude-3-5-haiku-latest" {
+		t.Errorf("allowed_models = %v, want exactly [claude-3-5-haiku-latest]", claims.AllowedModels)
 	}
 }
 
