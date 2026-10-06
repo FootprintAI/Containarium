@@ -292,6 +292,11 @@ func TestReconcile_FirstPassGuardsEveryTenantBox(t *testing.T) {
 		if dev["security.acls.default.ingress.action"] != "drop" || dev["security.acls.default.egress.action"] != "allow" || dev["security.acls"] == "" {
 			t.Errorf("%s: guard keys = %v", c, dev)
 		}
+		// Source-based allow rules are only as strong as the source: the
+		// NIC must not be able to spoof a sibling, the gateway or Caddy.
+		if dev["security.mac_filtering"] != "true" || dev["security.ipv4_filtering"] != "true" {
+			t.Errorf("%s: anti-spoof keys missing: %v", c, dev)
+		}
 	}
 	if f.devices["containarium-core-postgres"] != nil || f.devices["containarium-core-caddy"] != nil {
 		t.Error("core NICs must not be touched by the tenant guard")
@@ -607,5 +612,39 @@ func TestPrepareAndReconcile_WritesAreSerialised(t *testing.T) {
 	wg.Wait()
 	if atomic.LoadInt32(&f.maxActive) != 1 {
 		t.Errorf("peak in-flight Incus writes = %d, want 1 (writes must be serialised)", f.maxActive)
+	}
+}
+
+// A box whose reported "primary" address is not on the bridge (a podman
+// box reporting its cni gateway first) or equals the host gateway must not
+// abort the pass or enter an allow rule; it is guarded with no sibling rule.
+func TestReconcile_OffBridgeAddressDoesNotPoisonThePass(t *testing.T) {
+	f := newFakeBackend("nftables",
+		core("containarium-core-caddy", incus.RoleCaddy, "172.17.0.1"), // off-bridge: no initiator rule
+		box("alice", "10.100.0.17"),
+		cloudBox("cld-podman", "alice", "10.88.0.1"), // off-bridge
+		cloudBox("cld-gw", "bob", "10.100.0.1"),      // the gateway's own address
+	)
+	r := NewReconciler(f, enforceCfg())
+	if err := r.ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("pass must not abort on a bad address: %v", err)
+	}
+	alice := srcSet(f.acls[ACLName("alice")])
+	for _, bad := range []string{"10.88.0.1/32", "172.17.0.1/32", "10.100.0.1/32"} {
+		if bad == "10.100.0.1/32" {
+			continue // the gateway IS allowed — as the host, never as a box
+		}
+		if alice[bad] {
+			t.Errorf("alice's ACL admits an off-bridge address %s", bad)
+		}
+	}
+	for _, c := range []string{"alice-container", "cld-podman", "cld-gw"} {
+		if f.devices[c]["eth0"] == nil || f.devices[c]["eth0"]["security.acls"] == "" {
+			t.Errorf("%s not guarded", c)
+		}
+	}
+	st := r.Status()
+	if st.LastError != "" {
+		t.Errorf("unexpected pass error: %s", st.LastError)
 	}
 }

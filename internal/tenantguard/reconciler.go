@@ -149,6 +149,8 @@ func (r *Reconciler) Prepare(ctx context.Context, containerName, tenant string) 
 	if strings.TrimSpace(tenant) == "" {
 		return fmt.Errorf("tenantguard: %s has no resolvable tenant", containerName)
 	}
+	r.writeMu.Lock()
+	defer r.writeMu.Unlock()
 	if _, err := nicguard.CheckSupport(r.be); err != nil {
 		if nicguard.Unsupported(err) {
 			// This host cannot carry bridge NIC ACLs at all (driver or
@@ -184,8 +186,6 @@ func (r *Reconciler) Prepare(ctx context.Context, containerName, tenant string) 
 		return fmt.Errorf("tenantguard: %w", err)
 	}
 	desired := pol.ACLs[tenant]
-	r.writeMu.Lock()
-	defer r.writeMu.Unlock()
 	if _, err := nicguard.EnsureACL(r.be, desired); err != nil {
 		return fmt.Errorf("tenantguard: %w", err)
 	}
@@ -210,6 +210,12 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) error {
 		return err
 	}
 
+	// One pass at a time, and never concurrently with Prepare: a pass that
+	// gathered before a box existed must not prune the ACL Prepare just
+	// created for it, and two writers must not race on one instance.
+	r.writeMu.Lock()
+	defer r.writeMu.Unlock()
+
 	driver, err := nicguard.CheckSupport(r.be)
 	if err != nil {
 		r.setStatus(func(s *Status) { s.FirewallDriver = driver; s.Unsupported = nicguard.Unsupported(err) })
@@ -232,9 +238,7 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) error {
 	}
 
 	// Write phase: per tenant the ACL, then per box the NIC. An ACL that
-	// could not be written is never attached. Serialised with Prepare.
-	r.writeMu.Lock()
-	defer r.writeMu.Unlock()
+	// could not be written is never attached.
 	var firstErr error
 	note := func(err error) {
 		if firstErr == nil {
@@ -313,8 +317,15 @@ func (r *Reconciler) gather() (Inputs, []string, error) {
 	in := Inputs{BridgeCIDR: bridge, HostGateway: gateway, Initiators: map[incus.Role][]netip.Addr{}}
 	var unresolved []string
 	for _, c := range containers {
+		// ContainerInfo.IPAddress is the daemon's "primary" address and can
+		// come from an interface that is not the bridge (a podman box
+		// reports its cni/docker gateway first on some images). An address
+		// outside the bridge, or the gateway's own, must not reach Compute:
+		// it would fail validation and abort the whole pass — or, worse,
+		// end up in an allow rule for the wrong thing. Such a box is
+		// guarded (default drop) but contributes no sibling rule this pass.
 		if c.Role.IsCoreRole() {
-			if a, perr := netip.ParseAddr(c.IPAddress); perr == nil {
+			if a, perr := netip.ParseAddr(c.IPAddress); perr == nil && (!a.Is4() || (bridge.Contains(a) && a != gateway)) {
 				in.Initiators[c.Role] = append(in.Initiators[c.Role], a)
 			}
 			continue
@@ -325,7 +336,7 @@ func (r *Reconciler) gather() (Inputs, []string, error) {
 			continue
 		}
 		b := Box{Name: c.Name, Tenant: tenant}
-		if a, perr := netip.ParseAddr(c.IPAddress); perr == nil && a.Is4() {
+		if a, perr := netip.ParseAddr(c.IPAddress); perr == nil && a.Is4() && bridge.Contains(a) && a != gateway {
 			b.IPv4 = a
 		}
 		in.Boxes = append(in.Boxes, b)
@@ -343,11 +354,26 @@ func (r *Reconciler) attach(container, acl string) error {
 		if err := r.be.EnsureNICDevice(container, incus.NICDevice{Name: r.cfg.NICDevice, Network: r.cfg.Bridge}); err != nil {
 			return fmt.Errorf("nic device on %s: %w", container, err)
 		}
-		if err := r.be.SetDeviceConfig(container, r.cfg.NICDevice, nicguard.NICKeys(acl)); err != nil {
+		if err := r.be.SetDeviceConfig(container, r.cfg.NICDevice, tenantNICKeys(acl)); err != nil {
 			return fmt.Errorf("nic acl keys on %s: %w", container, err)
 		}
 		return nil
 	})
+}
+
+// tenantNICKeys are the guard keys plus Incus's anti-spoofing filters. The
+// allow table admits by SOURCE ADDRESS, so without them a tenant could send
+// with a sibling's, the gateway's or Caddy's address and be admitted;
+// security.mac_filtering + security.ipv4_filtering pin a NIC to its own MAC
+// and its DHCP/static IPv4 and drop spoofed ARP. (security.ipv6_filtering
+// is left for the IPv6 sibling work: no allow rule names an IPv6 source
+// yet, so there is nothing to spoof toward, and some kernels refuse it
+// without br_netfilter.)
+func tenantNICKeys(acl string) map[string]string {
+	keys := nicguard.NICKeys(acl)
+	keys["security.mac_filtering"] = "true"
+	keys["security.ipv4_filtering"] = "true"
+	return keys
 }
 
 // transientAttempts and transientBackoff bound the retry; a test lowers
