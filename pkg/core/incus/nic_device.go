@@ -3,9 +3,16 @@ package incus
 import (
 	"fmt"
 	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/lxc/incus/v7/shared/api"
+	"github.com/lxc/incus/v7/shared/units"
 )
+
+// zfsDeviceUpdateHeadroomBytes leaves room for Incus's metadata rewrite while
+// remaining negligible beside the root-disk sizes this path manages.
+const zfsDeviceUpdateHeadroomBytes int64 = 64 * 1024 * 1024
 
 // EnsureNICDevice makes sure containerName has an instance-local NIC device
 // named want.Name on want.Network, pinned to want.IPv4Address when that is
@@ -112,59 +119,44 @@ func (c *Client) SetDeviceConfig(containerName, deviceName string, keys map[stri
 }
 
 func (c *Client) updateInstanceDevices(containerName string, inst *api.Instance, etag, what string) error {
-	// Incus writes backup.yaml as part of an instance update. A ZFS-backed root
-	// dataset can have a quota below its effective root-disk size (or have been
-	// left at an older quota), which makes that metadata write fail even though
-	// the device update itself is valid. Reapply the effective root size before
-	// issuing a device update so both NIC paths get the existing protection.
-	//
-	// This is deliberately non-fatal, matching SetDeviceSize: an unavailable
-	// ZFS command must not hide the actual Incus update result.
-	if err := c.prepareZFSQuotaHeadroomForDeviceUpdate(containerName, inst); err != nil {
+	restore, err := c.prepareZFSQuotaHeadroomForDeviceUpdate(containerName, inst)
+	if err != nil {
 		fmt.Printf("Warning: ZFS quota pre-expand before %s on %s failed (non-fatal): %v\n", what, containerName, err)
 	}
 
-	op, err := c.server.UpdateInstance(containerName, inst.Writable(), etag)
-	if err != nil {
-		return fmt.Errorf("%s on %s: %w", what, containerName, err)
+	op, updateErr := c.server.UpdateInstance(containerName, inst.Writable(), etag)
+	if updateErr == nil {
+		updateErr = op.Wait()
+		if updateErr != nil {
+			updateErr = fmt.Errorf("%s on %s (operation failed): %w", what, containerName, updateErr)
+		}
+	} else {
+		updateErr = fmt.Errorf("%s on %s: %w", what, containerName, updateErr)
 	}
-	if err := op.Wait(); err != nil {
-		return fmt.Errorf("%s on %s (operation failed): %w", what, containerName, err)
+
+	if restore != nil {
+		if restoreErr := restore(); restoreErr != nil {
+			if updateErr != nil {
+				fmt.Printf("Warning: restore ZFS quota after %s on %s failed: %v\n", what, containerName, restoreErr)
+			} else {
+				return fmt.Errorf("%s on %s: restore ZFS quota headroom: %w", what, containerName, restoreErr)
+			}
+		}
+	}
+	if updateErr != nil {
+		return updateErr
 	}
 	return nil
 }
 
-// prepareZFSQuotaHeadroomForDeviceUpdate reapplies the effective root-disk
-// size as the ZFS quota before a device update. The root disk may be inherited
-// from a profile, so ExpandedDevices is the primary source; an instance-local
-// root device takes precedence for keys changed in this update.
-//
-// Non-ZFS pools and roots without a size need no quota preparation.
-func (c *Client) prepareZFSQuotaHeadroomForDeviceUpdate(containerName string, inst *api.Instance) error {
-	if inst == nil {
-		return nil
-	}
-
-	root, ok := inst.ExpandedDevices["root"]
-	if !ok {
-		root = inst.Devices["root"]
-	}
-	if root == nil {
-		return nil
-	}
-
-	pool := root["pool"]
-	targetSize := root["size"]
-	if localRoot, ok := inst.Devices["root"]; ok {
-		if localRoot["pool"] != "" {
-			pool = localRoot["pool"]
-		}
-		if localRoot["size"] != "" {
-			targetSize = localRoot["size"]
-		}
-	}
-	if targetSize == "" {
-		return nil
+// prepareZFSQuotaHeadroomForDeviceUpdate makes a temporary enlargement only
+// when the live ZFS limit leaves less than zfsDeviceUpdateHeadroomBytes above
+// the usage Incus accounts for. Its restore function re-reads the instance so
+// a concurrent resize is never overwritten with the stale pre-update size.
+func (c *Client) prepareZFSQuotaHeadroomForDeviceUpdate(containerName string, inst *api.Instance) (func() error, error) {
+	pool, targetSize, ok := effectiveRootDisk(inst)
+	if !ok || targetSize == "" {
+		return nil, nil
 	}
 	if pool == "" {
 		pool = c.StoragePool()
@@ -172,19 +164,152 @@ func (c *Client) prepareZFSQuotaHeadroomForDeviceUpdate(containerName string, in
 
 	storagePool, _, err := c.server.GetStoragePool(pool)
 	if err != nil {
-		return fmt.Errorf("get storage pool %s: %w", pool, err)
+		return nil, fmt.Errorf("get storage pool %s: %w", pool, err)
 	}
 	if storagePool == nil {
-		return fmt.Errorf("get storage pool %s: empty response", pool)
+		return nil, fmt.Errorf("get storage pool %s: empty response", pool)
 	}
 	if storagePool.Driver != "zfs" {
-		return nil
+		return nil, nil
 	}
 
-	if c.ensureZFSQuotaHeadroomFn != nil {
-		return c.ensureZFSQuotaHeadroomFn(containerName, pool, targetSize)
+	quotaProperty, usageProperty, err := c.zfsQuotaProperties(containerName, pool, storagePool)
+	if err != nil {
+		return nil, err
 	}
-	return c.ensureZFSQuotaHeadroom(containerName, pool, targetSize)
+	dataset, err := c.ContainerDataset(containerName, pool)
+	if err != nil {
+		return nil, err
+	}
+	usage, err := c.getZFSByteProperty(dataset, usageProperty)
+	if err != nil {
+		return nil, err
+	}
+	liveLimit, unlimited, err := c.getZFSLimitProperty(dataset, quotaProperty)
+	if err != nil {
+		return nil, err
+	}
+	if unlimited || liveLimit-usage >= zfsDeviceUpdateHeadroomBytes {
+		return nil, nil
+	}
+
+	intended, err := units.ParseByteSizeString(targetSize)
+	if err != nil {
+		return nil, fmt.Errorf("parse root disk size %q: %w", targetSize, err)
+	}
+	temporary := max(intended, usage+zfsDeviceUpdateHeadroomBytes)
+	if err := c.setZFSProperty(dataset, quotaProperty, strconv.FormatInt(temporary, 10)); err != nil {
+		return nil, err
+	}
+
+	return func() error {
+		return c.restoreZFSQuotaHeadroom(containerName, pool, dataset, quotaProperty)
+	}, nil
+}
+
+func (c *Client) restoreZFSQuotaHeadroom(containerName, pool, dataset, quotaProperty string) error {
+	inst, _, err := c.server.GetInstance(containerName)
+	if err != nil {
+		return fmt.Errorf("re-read container for quota restore: %w", err)
+	}
+	currentPool, targetSize, ok := effectiveRootDisk(inst)
+	if !ok || targetSize == "" {
+		return nil
+	}
+	if currentPool == "" {
+		currentPool = c.StoragePool()
+	}
+	// A move to another pool or a mode change is owned by the concurrent Incus
+	// update; do not overwrite either setting from this older operation.
+	if currentPool != pool {
+		return nil
+	}
+	storagePool, _, err := c.server.GetStoragePool(pool)
+	if err != nil {
+		return fmt.Errorf("get storage pool %s for quota restore: %w", pool, err)
+	}
+	if storagePool == nil {
+		return fmt.Errorf("get storage pool %s for quota restore: empty response", pool)
+	}
+	currentProperty, _, err := c.zfsQuotaProperties(containerName, pool, storagePool)
+	if err != nil {
+		return err
+	}
+	if currentProperty != quotaProperty {
+		return nil
+	}
+	return c.setZFSProperty(dataset, quotaProperty, targetSize)
+}
+
+func effectiveRootDisk(inst *api.Instance) (pool, size string, ok bool) {
+	if inst == nil {
+		return "", "", false
+	}
+	root, ok := inst.ExpandedDevices["root"]
+	if !ok {
+		root = inst.Devices["root"]
+	}
+	if root == nil {
+		return "", "", false
+	}
+	pool, size = root["pool"], root["size"]
+	if localRoot, ok := inst.Devices["root"]; ok {
+		if localRoot["pool"] != "" {
+			pool = localRoot["pool"]
+		}
+		if localRoot["size"] != "" {
+			size = localRoot["size"]
+		}
+	}
+	return pool, size, true
+}
+
+func (c *Client) zfsQuotaProperties(containerName, pool string, storagePool *api.StoragePool) (quotaProperty, usageProperty string, err error) {
+	volume, _, err := c.server.GetStoragePoolVolume(pool, "container", containerName)
+	if err != nil {
+		return "", "", fmt.Errorf("get instance volume %s/%s: %w", pool, containerName, err)
+	}
+	useRefquota := storagePool.Config["volume.zfs.use_refquota"]
+	if volume != nil && volume.Config["zfs.use_refquota"] != "" {
+		useRefquota = volume.Config["zfs.use_refquota"]
+	}
+	if useRefquota != "" {
+		value, err := strconv.ParseBool(strings.TrimSpace(useRefquota))
+		if err != nil {
+			return "", "", fmt.Errorf("parse zfs.use_refquota %q: %w", useRefquota, err)
+		}
+		if value {
+			return "refquota", "referenced", nil
+		}
+	}
+	return "quota", "used", nil
+}
+
+func (c *Client) getZFSByteProperty(dataset, property string) (int64, error) {
+	value, err := c.getZFSProperty(dataset, property)
+	if err != nil {
+		return 0, err
+	}
+	bytes, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse zfs %s %q on %s: %w", property, value, dataset, err)
+	}
+	return bytes, nil
+}
+
+func (c *Client) getZFSLimitProperty(dataset, property string) (int64, bool, error) {
+	value, err := c.getZFSProperty(dataset, property)
+	if err != nil {
+		return 0, false, err
+	}
+	if value == "none" || value == "-" {
+		return 0, true, nil
+	}
+	bytes, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0, false, fmt.Errorf("parse zfs %s %q on %s: %w", property, value, dataset, err)
+	}
+	return bytes, false, nil
 }
 
 // sortedKeys renders a key list deterministically for error messages.
