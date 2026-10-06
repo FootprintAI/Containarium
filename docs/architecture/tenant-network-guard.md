@@ -80,8 +80,10 @@ policy system.
    `default.ingress.action=drop`, `default.ingress.logged=true`,
    `default.egress.action=allow`. ACLs for tenants that no longer have a
    container on the host are deleted. Kicked by the event bus and every
-   minute, like the core guard. Requires the nftables driver and reports
-   `ErrUnsupportedFirewall` otherwise.
+   minute, like the core guard. Requires the nftables driver **and** the
+   `network_bridge_acl` API extension (NIC-level `security.acls`; Incus 7.x
+   from the Zabbly repository has it, Ubuntu's packaged Incus 6.0 LTS does
+   not) and reports the host as `Unsupported` otherwise.
 
 3. **ACL-at-birth hook in `pkg/core/container` (`manager.go`)**. The
    reconciler alone leaves a window between a container starting and the
@@ -89,13 +91,18 @@ policy system.
    therefore takes a `NICGuard` interface (`Prepare(ctx, name, tenant)
    error`) and calls it after the instance is created and before it is
    started. `tenantguard` implements it by ensuring the tenant's ACL
-   exists and attaching it to the instance-local NIC. **Fail-closed:** if
-   `Prepare` fails while the guard is `enforce`, create returns
-   `FAILED_PRECONDITION` with the reason, mirroring how `--encrypted`
-   refuses rather than silently producing an unguarded box. Existing
-   containers found unguarded by a pass are fail-open with an `ERROR`
-   log and a red status entry, so an upgrade cannot take running tenants
-   down.
+   exists and attaching it to the instance-local NIC. **Fail-closed on a
+   capable host:** if `Prepare` fails while the guard is `enforce`, create
+   returns `FAILED_PRECONDITION` with the reason, mirroring how
+   `--encrypted` refuses rather than silently producing an unguarded box.
+   **Fail-open on an incapable host:** when the host cannot carry bridge
+   NIC ACLs at all (wrong firewall driver, Incus without
+   `network_bridge_acl`), `Prepare` lets the create proceed, the daemon
+   logs the gap once and the guard's status reports `Unsupported`. A
+   missing capability is an operator finding, not an outage. Existing
+   containers found unguarded by a pass on a capable host are fail-open
+   with an `ERROR` log and a red status entry, so an upgrade cannot take
+   running tenants down.
 
 4. **`pkg/core/incus/acl.go` fixes (#2348)**. `AttachACLToContainer`
    becomes `EnsureNICDevice` + `SetDeviceConfig`, so a profile-inherited
@@ -169,8 +176,12 @@ allowed: every unknown source is a drop.
   co-tenant's box do not).
 - **First pass is loud.** The reconciler logs the count of containers it
   guarded, the tenants it could not resolve, and the firewall driver.
-  Doctor goes red on an iptables host rather than silently leaving the
-  guard off.
+  On a host that cannot carry NIC ACLs (iptables driver, or Incus without
+  `network_bridge_acl`) nothing is guarded, creates keep working, and
+  doctor goes red with the reason rather than the guard silently looking
+  on. The README's recommended Zabbly Incus has the extension; Ubuntu's
+  packaged Incus 6.0 does not, which is also why the CI lane installs
+  the Zabbly build.
 - **`off` is the only escape hatch** and it is per-host, so an operator
   who needs cross-tenant reachability on a lab host sets it knowingly.
   Per-tenant cross-tenant allow (a tenant sharing a service with another)
