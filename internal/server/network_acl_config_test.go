@@ -5,7 +5,6 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"github.com/footprintai/containarium/pkg/core/incus"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -120,5 +119,4 @@ func TestPresetFromProto_exhaustive(t *testing.T) {
 	if values.Len() < 4 {
 		t.Fatalf("ACLPreset has %d values, expected at least 4", values.Len())
 	}
-	var _ protoreflect.EnumNumber = values.Get(0).Number()
 }

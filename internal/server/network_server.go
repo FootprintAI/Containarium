@@ -1087,8 +1087,6 @@ func (s *NetworkServer) actionToProto(action string) pb.ACLAction {
 	}
 }
 
-func (s *NetworkServer) protoToAction(action pb.ACLAction) string { return protoToAction(action) }
-
 // protoToAction maps the wire action to the Incus rule action.
 func protoToAction(action pb.ACLAction) string {
 	switch action {
