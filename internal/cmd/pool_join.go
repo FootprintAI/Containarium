@@ -13,6 +13,7 @@ import (
 
 	"github.com/footprintai/containarium/internal/cloud"
 	"github.com/footprintai/containarium/internal/hostcheck"
+	"github.com/footprintai/containarium/internal/hostharden"
 )
 
 // pool join — the turnkey, one-command path that turns a fresh Linux host
@@ -566,9 +567,10 @@ func runPoolJoin(cmd *cobra.Command, args []string) error {
 	// Host security posture (#1103) — printed loudly at the moment this host
 	// joins the pool, not just discoverable later via a separate `doctor` run
 	// or the cloud webui. Advisory only, same as `doctor`: it does not block
-	// the join.
+	// the join. The metadata block goes first so the posture printed reports
+	// whether it took, not the state just before it ran (#2298).
+	applyMetadataBlock(cmd, hostharden.DefaultBridge)
 	printPosture(hostcheck.RunPosture())
-	applyMetadataBlock(cmd, "incusbr0")
 
 	// 5b. Verify the tunnel handshake was actually ACCEPTED before claiming
 	// the host joined (#1051). Everything above is host-side: units enabled,

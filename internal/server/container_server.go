@@ -253,6 +253,11 @@ type ContainerServer struct {
 	// GPU-probe LXC + a benchmark on the host, so concurrent/repeated calls
 	// must coalesce rather than stack a probe storm that can wedge the runtime.
 	profileMu sync.Mutex
+	// Hardware operations default to the bounded benchmark and the manager's
+	// passthrough probe; injectable so failures can be exercised without Incus.
+	capabilityBenchmark func() (container.BenchmarkResult, error)
+	capabilityGPUProbe  func() container.GPUValidationResult
+	capabilityResources func() (*incus.SystemResources, error)
 	// region is the region this backend serves, wired from --region (falling
 	// back to the pool name). Recorded into the capability profile. Empty when
 	// unset.
@@ -3138,6 +3143,12 @@ func (s *ContainerServer) GetSystemInfo(ctx context.Context, req *pb.GetSystemIn
 		info.Storage = backendStorageFromPool("default", driver)
 	}
 
+	// This backend's spare-capacity advertisement (#680) and capability
+	// profile (#681), so a peer's GetSystemInfo carries them to the
+	// ListBackends fan-out with no extra forwarded call (#2135). Both stay
+	// null when absent, same as on the local BackendInfo.
+	info.Headroom, info.CapabilityProfile = s.capacitySignals(hostStateFrom(containers, sysResources, time.Now()))
+
 	// Populate GPU info
 	for _, gpu := range sysResources.GPUs {
 		info.Gpus = append(info.Gpus, &pb.GPUInfo{
@@ -3242,19 +3253,9 @@ func (s *ContainerServer) ListBackends(ctx context.Context, _ *pb.ListBackendsRe
 			localInfo = s.probeLocalSystemInfo(ctx)
 		}()
 	}
-	// Surface the local backend's spare-capacity advertisement (#680). Only
-	// attach when something is actively advertised — an unadvertised backend
-	// leaves headroom null so the control plane can tell "not offering" from
-	// "offering zero".
-	if h := s.capStore().Current(s.hostStateSnapshot()); h.Advertised {
-		local.Headroom = headroomToProto(h)
-	}
-	// Surface the local backend's last-recorded capability profile (#681).
-	// Null until ProfileBackend has run, so the control plane can tell
-	// "unprofiled" from "profiled CPU-only".
-	if p, ok := s.capabStore().Current(); ok {
-		local.CapabilityProfile = profileToProto(p)
-	}
+	// Surface the local backend's spare-capacity advertisement (#680) and
+	// last-recorded capability profile (#681); see capacitySignals.
+	local.Headroom, local.CapabilityProfile = s.capacitySignals(s.hostStateSnapshot())
 	backends = append(backends, local)
 
 	// Peer backends. Forward GetSystemInfo to each healthy peer using the
@@ -3304,6 +3305,11 @@ func (s *ContainerServer) ListBackends(ctx context.Context, _ *pb.ListBackendsRe
 			// Peers report their own pool's driver + isolation over the same
 			// fan-out (#1209).
 			pi.Storage = peerResp.Info.Storage
+			// A peer's spare-capacity advertisement and capability profile
+			// ride the same SystemInfo (#2135); a peer that advertises or
+			// profiled nothing — or predates these fields — leaves them null.
+			pi.Headroom = peerResp.Info.Headroom
+			pi.CapabilityProfile = peerResp.Info.CapabilityProfile
 		}(peer, pi)
 	}
 	wg.Wait()
@@ -3418,19 +3424,29 @@ func (s *ContainerServer) StopWorkload(ctx context.Context, username string, for
 // missing manager or Incus call yields a zero-resource snapshot rather than an
 // error, so advertise/withdraw still work on an unwired server.
 func (s *ContainerServer) hostStateSnapshot() capacity.HostState {
-	st := capacity.HostState{Now: time.Now()}
 	if s.manager == nil {
-		return st
+		return capacity.HostState{Now: time.Now()}
 	}
-	if containers, err := s.manager.List(); err == nil {
-		st.Containers = containers
-	}
+	containers, _ := s.manager.List()
 	client, err := incus.New()
 	if err != nil {
-		return st
+		return hostStateFrom(containers, nil, time.Now())
 	}
 	res, err := client.GetSystemResources()
-	if err != nil || res == nil {
+	if err != nil {
+		res = nil
+	}
+	return hostStateFrom(containers, res, time.Now())
+}
+
+// hostStateFrom builds the headroom computation's host snapshot from an
+// already-fetched container list and Incus resource read, so GetSystemInfo
+// can compute its headroom (#2135) from the figures it just gathered instead
+// of re-querying Incus. A nil res yields zero resources, same as a failed
+// read in hostStateSnapshot.
+func hostStateFrom(containers []incus.ContainerInfo, res *incus.SystemResources, now time.Time) capacity.HostState {
+	st := capacity.HostState{Now: now, Containers: containers}
+	if res == nil {
 		return st
 	}
 	st.AvailableMemoryBytes = res.TotalMemoryBytes - res.UsedMemoryBytes
@@ -3465,6 +3481,25 @@ func policyFromProto(p *pb.CapacityPolicy) capacity.Policy {
 		ExcludedWorkloadClasses: p.GetExcludedWorkloadClasses(),
 		ReserveFraction:         p.GetReserveFraction(),
 	}
+}
+
+// capacitySignals returns this backend's spare-capacity advertisement (#680)
+// and last-recorded capability profile (#681) on the wire types. Each is nil
+// when absent: headroom only when something is actively advertised, so the
+// control plane can tell "not offering" from "offering zero", and the
+// profile only once ProfileBackend has run, so "unprofiled" stays distinct
+// from "profiled CPU-only". Shared by ListBackends' local entry and
+// GetSystemInfo, which carries both to a peer's ListBackends (#2135).
+func (s *ContainerServer) capacitySignals(st capacity.HostState) (*pb.CapacityHeadroom, *pb.CapabilityProfile) {
+	var headroom *pb.CapacityHeadroom
+	if h := s.capStore().Current(st); h.Advertised {
+		headroom = headroomToProto(h)
+	}
+	var profile *pb.CapabilityProfile
+	if p, ok := s.capabStore().Current(); ok {
+		profile = profileToProto(p)
+	}
+	return headroom, profile
 }
 
 // headroomToProto maps the internal headroom onto the wire type.
@@ -3610,44 +3645,106 @@ func (s *ContainerServer) capabStore() *capabilities.Store {
 // host system resources (CPU cores + model, RAM, disk) via the same Incus call
 // GetSystemInfo uses, the GPU passthrough probe (unless skipped), the bounded
 // CPU/memory micro-benchmark, and the operator-set region / reported class.
-// Best-effort on the resource read: a missing Incus client yields zero hardware
-// figures rather than an error, so a profile is always recordable.
-func (s *ContainerServer) gatherHostFacts(skipGPU bool) capabilities.HostFacts {
+// Missing resources, a failed GPU probe or an invalid benchmark leave the
+// previous profile untouched; unknown host capacity must not become a profile.
+func (s *ContainerServer) gatherHostFacts(skipGPU bool) (capabilities.HostFacts, error) {
 	f := capabilities.HostFacts{
 		Now:           time.Now(),
 		Region:        s.region,
 		ReportedClass: s.reportedClass,
 	}
 
-	if client, err := incus.New(); err == nil {
-		if res, err := client.GetSystemResources(); err == nil && res != nil {
-			f.CPUCores = res.TotalCPUs
-			f.CPUModel = res.CPUModel
-			f.TotalMemoryBytes = res.TotalMemoryBytes
-			f.TotalDiskBytes = res.TotalDiskBytes
+	var res *incus.SystemResources
+	var resourceErr error
+	if s.capabilityResources != nil {
+		res, resourceErr = s.capabilityResources()
+	} else if client, err := incus.New(); err == nil {
+		res, resourceErr = client.GetSystemResources()
+	} else {
+		resourceErr = err
+	}
+	if resourceErr != nil {
+		return capabilities.HostFacts{}, fmt.Errorf("system resource discovery: %w", resourceErr)
+	}
+	if res == nil {
+		return capabilities.HostFacts{}, fmt.Errorf("system resource discovery returned no resources")
+	}
+	if res.TotalCPUs <= 0 || res.TotalMemoryBytes <= 0 {
+		return capabilities.HostFacts{}, fmt.Errorf("system resource discovery returned invalid CPU or memory capacity")
+	}
+	// Only NVIDIA hosts need the nvidia.runtime probe; CPU-only hosts have
+	// no GPU to validate.
+	probeGPU := false
+	f.CPUCores = res.TotalCPUs
+	f.CPUModel = res.CPUModel
+	f.TotalMemoryBytes = res.TotalMemoryBytes
+	f.TotalDiskBytes = res.TotalDiskBytes
+	for _, gpu := range res.GPUs {
+		vendor := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(gpu.Vendor)), "0x")
+		if vendor == "10de" || strings.Contains(vendor, "nvidia") {
+			probeGPU = true
+			break
 		}
 	}
 
 	// GPU model/driver from the existing nvidia.runtime passthrough probe —
 	// the same ValidateGPU the validate-gpu command runs. Skipped on request
 	// (CPU-only backends) or when no container manager is wired.
-	if !skipGPU && s.manager != nil {
-		res := s.manager.ValidateGPU("")
-		if res.Status == container.GPUStatusOK {
-			f.GPUAvailable = true
-			f.GPUModel = res.Model
-			f.GPUDriverVersion = res.DriverVersion
+	if !skipGPU && probeGPU && (s.manager != nil || s.capabilityGPUProbe != nil) {
+		var res container.GPUValidationResult
+		if s.capabilityGPUProbe != nil {
+			res = s.capabilityGPUProbe()
+		} else {
+			res = s.manager.ValidateGPU("")
 		}
+		if res.Status != container.GPUStatusOK {
+			return capabilities.HostFacts{}, fmt.Errorf("GPU probe: %s", res.Detail)
+		}
+		f.GPUAvailable = true
+		f.GPUModel = res.Model
+		f.GPUDriverVersion = res.DriverVersion
 	}
 
 	// Bounded CPU/memory micro-benchmark.
-	b := container.RunBenchmark()
+	var b container.BenchmarkResult
+	if s.capabilityBenchmark != nil {
+		var err error
+		b, err = s.capabilityBenchmark()
+		if err != nil {
+			return capabilities.HostFacts{}, fmt.Errorf("benchmark: %w", err)
+		}
+	} else {
+		b = container.RunBenchmark()
+	}
+	if b.CPUOpsPerSec <= 0 || b.MemBytesPerSec <= 0 || b.DurationMs <= 0 {
+		return capabilities.HostFacts{}, fmt.Errorf("benchmark returned invalid measurements")
+	}
 	f.Benchmark = capabilities.Benchmark{
 		CPUOpsPerSec:   b.CPUOpsPerSec,
 		MemBytesPerSec: b.MemBytesPerSec,
 		DurationMs:     b.DurationMs,
 	}
-	return f
+	return f, nil
+}
+
+// recordCapabilityProfile is shared by the explicit RPC and pool startup.
+// Recheck existence under the same lock that protects explicit profiles so
+// startup can never overwrite a profile recorded by a concurrent operator.
+func (s *ContainerServer) recordCapabilityProfile(skipGPU, onlyIfMissing bool) (capabilities.Profile, error) {
+	if !s.profileMu.TryLock() {
+		return capabilities.Profile{}, status.Error(codes.Aborted, "a backend profile is already in progress; retry shortly")
+	}
+	defer s.profileMu.Unlock()
+	if onlyIfMissing {
+		if p, ok := s.capabStore().Current(); ok {
+			return p, nil
+		}
+	}
+	f, err := s.gatherHostFacts(skipGPU)
+	if err != nil {
+		return capabilities.Profile{}, status.Errorf(codes.Internal, "profile backend: %v", err)
+	}
+	return s.capabStore().Record(f), nil
 }
 
 // profileToProto maps the internal capability profile onto the wire type.
@@ -3717,11 +3814,10 @@ func (s *ContainerServer) ProfileBackend(ctx context.Context, req *pb.ProfileBac
 	// Local backend. Serialize against concurrent profiles: gatherHostFacts
 	// spins a throwaway GPU-probe LXC + runs a benchmark, so a second caller
 	// (retry, multi-replica control plane) must not stack a second probe.
-	if !s.profileMu.TryLock() {
-		return nil, status.Error(codes.Aborted, "a backend profile is already in progress; retry shortly")
+	p, err := s.recordCapabilityProfile(req.SkipGpu, false)
+	if err != nil {
+		return nil, err
 	}
-	defer s.profileMu.Unlock()
-	p := s.capabStore().Record(s.gatherHostFacts(req.SkipGpu))
 	return &pb.ProfileBackendResponse{
 		Profile:   profileToProto(p),
 		BackendId: req.BackendId,
