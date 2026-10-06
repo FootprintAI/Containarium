@@ -136,7 +136,7 @@ jobs:
         run: GOOS=windows GOARCH=amd64 go build -tags containarium_client -o /dev/null ./cmd/containarium
 
   test-both-tag-sets:
-    name: go test ./internal/cmd/... ./internal/coderun/... (both tag sets)
+    name: go test ./internal/cmd/... ./internal/coderun/... ./internal/sshconfig/... (both tag sets)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -158,11 +158,11 @@ jobs:
       - name: Test containariumd (default tags)
         # Includes TestContainariumdCommandTree_SupersetOfClientGolden —
         # the untagged-build parity gate.
-        run: go test -race -v ./internal/cmd/... ./internal/coderun/...
+        run: go test -race -v ./internal/cmd/... ./internal/coderun/... ./internal/sshconfig/...
 
       - name: Test containarium client (containarium_client tag)
         # Includes TestClientCommandTree_MatchesGoldenAllowList — the
         # command-tree allow-list gate — and TestHybridCommands_
         # NoServer_NeverReachRealLocalMode / TestMovedServerCommands_
         # ExitTwoNamingContainariumd from #1775/#1777.
-        run: go test -race -tags containarium_client -v ./internal/cmd/... ./internal/coderun/...
+        run: go test -race -tags containarium_client -v ./internal/cmd/... ./internal/coderun/... ./internal/sshconfig/...
