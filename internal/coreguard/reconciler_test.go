@@ -52,7 +52,10 @@ func (f *fakeBackend) ListContainers() ([]incus.ContainerInfo, error) {
 }
 
 func (f *fakeBackend) GetServerInfo() (*api.Server, error) {
-	return &api.Server{Environment: api.ServerEnvironment{Firewall: f.firewall}}, nil
+	return &api.Server{
+		ServerUntrusted: api.ServerUntrusted{APIExtensions: []string{"network_acl", "network_bridge_acl"}},
+		Environment:     api.ServerEnvironment{Firewall: f.firewall},
+	}, nil
 }
 
 func (f *fakeBackend) GetNetworkACL(name string) (*api.NetworkACL, error) {

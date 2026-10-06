@@ -50,14 +50,33 @@ func ParseMode(s string) Mode {
 // guarded.
 var ErrUnsupportedFirewall = errors.New("incus firewall driver is not nftables; bridge NIC ACLs cannot be enforced")
 
+// ErrUnsupportedIncus is returned when the host's Incus predates NIC-level
+// ACLs on bridge networks (API extension network_bridge_acl; Ubuntu's
+// packaged Incus 6.0 LTS lacks it, Incus 7.x has it).
+var ErrUnsupportedIncus = errors.New("incus lacks the network_bridge_acl API extension; upgrade Incus to apply bridge NIC ACLs")
+
 // RequiredFirewall is the only Incus firewall driver that renders NIC-level
 // ACLs (doc/howto/network_acls.md, "Bridge limitations").
 const RequiredFirewall = "nftables"
 
-// CheckFirewall reads the server's firewall driver and returns
-// ErrUnsupportedFirewall (wrapped with the driver name) when it is not
-// RequiredFirewall. The driver is returned either way for status reporting.
-func CheckFirewall(be incus.Backend) (string, error) {
+// RequiredExtension is the Incus API extension that brings security.acls
+// (and the default action/logged keys) to bridge NICs.
+const RequiredExtension = "network_bridge_acl"
+
+// Unsupported reports whether err means this host cannot carry bridge NIC
+// ACLs at all (wrong firewall driver, Incus too old) — as opposed to a
+// failure on a host that can. The distinction decides fail-open vs
+// fail-closed: a host that cannot be guarded is reported loudly and left
+// as it was; a box that could not be guarded on a capable host is refused.
+func Unsupported(err error) bool {
+	return errors.Is(err, ErrUnsupportedFirewall) || errors.Is(err, ErrUnsupportedIncus)
+}
+
+// CheckSupport reads the server and returns the firewall driver plus an
+// Unsupported error when NIC ACLs cannot be applied here. Checked every
+// pass: a driver or an Incus upgrade changes the answer without a daemon
+// restart.
+func CheckSupport(be incus.Backend) (string, error) {
 	info, err := be.GetServerInfo()
 	if err != nil {
 		return "", fmt.Errorf("server info: %w", err)
@@ -65,6 +84,16 @@ func CheckFirewall(be incus.Backend) (string, error) {
 	driver := info.Environment.Firewall
 	if driver != RequiredFirewall {
 		return driver, fmt.Errorf("%w (driver=%q)", ErrUnsupportedFirewall, driver)
+	}
+	hasExt := false
+	for _, e := range info.APIExtensions {
+		if e == RequiredExtension {
+			hasExt = true
+			break
+		}
+	}
+	if !hasExt {
+		return driver, fmt.Errorf("%w (incus %s)", ErrUnsupportedIncus, info.Environment.ServerVersion)
 	}
 	return driver, nil
 }

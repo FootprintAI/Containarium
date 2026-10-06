@@ -31,10 +31,6 @@ func ParseMode(s string) Mode { return nicguard.ParseMode(s) }
 // cannot enforce bridge NIC ACLs (only nftables can).
 var ErrUnsupportedFirewall = nicguard.ErrUnsupportedFirewall
 
-// requiredFirewall is the only Incus firewall driver that renders NIC-level
-// ACLs (doc/howto/network_acls.md, "Bridge limitations").
-const requiredFirewall = nicguard.RequiredFirewall
-
 // DefaultInterval is the steady-state reconcile cadence; bus events
 // converge sooner.
 const DefaultInterval = 60 * time.Second
@@ -162,14 +158,10 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) error {
 		return r.fail(err)
 	}
 
-	info, err := r.be.GetServerInfo()
+	driver, err := nicguard.CheckSupport(r.be)
 	if err != nil {
-		return r.fail(fmt.Errorf("coreguard: server info: %w", err))
-	}
-	driver := info.Environment.Firewall
-	if driver != requiredFirewall {
 		r.setStatus(func(s *Status) { s.FirewallDriver = driver })
-		return r.fail(fmt.Errorf("%w (driver=%q)", ErrUnsupportedFirewall, driver))
+		return r.fail(fmt.Errorf("coreguard: %w", err))
 	}
 
 	containers, err := r.be.ListContainers()

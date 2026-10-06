@@ -19,9 +19,10 @@ import (
 type fakeBackend struct {
 	*incus.UnavailableBackend
 
-	containers []incus.ContainerInfo
-	listErr    error
-	firewall   string
+	containers  []incus.ContainerInfo
+	listErr     error
+	firewall    string
+	noBridgeACL bool // Incus 6.0: no network_bridge_acl extension
 
 	acls    map[string]api.NetworkACL
 	devices map[string]map[string]map[string]string // container → device → keys
@@ -52,7 +53,14 @@ func (f *fakeBackend) ListContainers() ([]incus.ContainerInfo, error) {
 }
 
 func (f *fakeBackend) GetServerInfo() (*api.Server, error) {
-	return &api.Server{Environment: api.ServerEnvironment{Firewall: f.firewall}}, nil
+	exts := []string{"network_acl", "network_bridge_acl"}
+	if f.noBridgeACL {
+		exts = []string{"network_acl"}
+	}
+	return &api.Server{
+		ServerUntrusted: api.ServerUntrusted{APIExtensions: exts},
+		Environment:     api.ServerEnvironment{Firewall: f.firewall, ServerVersion: "7.4"},
+	}, nil
 }
 
 func (f *fakeBackend) GetNetworkACL(name string) (*api.NetworkACL, error) {
@@ -328,8 +336,49 @@ func TestReconcile_UnsupportedFirewall(t *testing.T) {
 		t.Errorf("wrote on an unsupported driver: %d writes", f.writes())
 	}
 	st := r.Status()
-	if st.LastError == "" || st.FirewallDriver != "xtables" || st.StaleSince.IsZero() {
+	if st.LastError == "" || st.FirewallDriver != "xtables" || st.StaleSince.IsZero() || !st.Unsupported {
 		t.Errorf("status = %+v", st)
+	}
+}
+
+func TestReconcile_IncusWithoutBridgeACLs(t *testing.T) {
+	f := twoTenantHost()
+	f.noBridgeACL = true
+	r := NewReconciler(f, enforceCfg())
+	err := r.ReconcileOnce(context.Background())
+	if !errors.Is(err, nicguard.ErrUnsupportedIncus) {
+		t.Fatalf("err = %v, want ErrUnsupportedIncus", err)
+	}
+	if f.writes() != 0 {
+		t.Errorf("wrote on an Incus without bridge ACLs: %d writes", f.writes())
+	}
+	if st := r.Status(); !st.Unsupported {
+		t.Errorf("status.Unsupported = false; %+v", st)
+	}
+}
+
+// On a host that cannot carry NIC ACLs at all, Prepare must not turn the
+// missing capability into an outage: the create proceeds unguarded and the
+// gap is reported, while a capable host still fails closed.
+func TestPrepare_UnsupportedHostIsFailOpen(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mut  func(*fakeBackend)
+	}{
+		{"xtables driver", func(f *fakeBackend) { f.firewall = "xtables" }},
+		{"incus without network_bridge_acl", func(f *fakeBackend) { f.noBridgeACL = true }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := twoTenantHost()
+			tc.mut(f)
+			r := NewReconciler(f, enforceCfg())
+			if err := r.Prepare(context.Background(), "cld-new", "org-new"); err != nil {
+				t.Fatalf("Prepare on an unsupported host must not refuse the create: %v", err)
+			}
+			if f.writes() != 0 {
+				t.Errorf("wrote on an unsupported host: %d writes", f.writes())
+			}
+		})
 	}
 }
 
@@ -432,10 +481,6 @@ func TestPrepare_FailsClosed(t *testing.T) {
 		t.Error("NIC must not be touched when the ACL failed")
 	}
 	f.aclErr = nil
-	f.firewall = "xtables"
-	if err := r.Prepare(context.Background(), "cld-new", "org-new"); !errors.Is(err, nicguard.ErrUnsupportedFirewall) {
-		t.Errorf("err = %v, want ErrUnsupportedFirewall", err)
-	}
 	if err := r.Prepare(context.Background(), "cld-new", ""); err == nil {
 		t.Error("expected an error for an empty tenant")
 	}

@@ -2,7 +2,6 @@ package tenantguard
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"net/netip"
@@ -53,9 +52,13 @@ type Status struct {
 	// attributable to a tenant; they are left unguarded and reported.
 	Unresolved []string
 	Tenants    int
-	StaleSince time.Time
-	LastError  string
-	LastPass   time.Time
+	// Unsupported is set when this host cannot carry bridge NIC ACLs
+	// (firewall driver or Incus too old): nothing is guarded, creates are
+	// not refused, and LastError says why. Doctor treats it as red.
+	Unsupported bool
+	StaleSince  time.Time
+	LastError   string
+	LastPass    time.Time
 }
 
 // Reconciler keeps every tenant container's NIC ACL equal to what Compute
@@ -66,6 +69,7 @@ type Reconciler struct {
 
 	mu     sync.Mutex
 	status Status
+	warned string // last unsupported reason logged
 }
 
 // NewReconciler wires a reconciler; nothing runs until ReconcileOnce, Run
@@ -139,7 +143,16 @@ func (r *Reconciler) Prepare(ctx context.Context, containerName, tenant string) 
 	if strings.TrimSpace(tenant) == "" {
 		return fmt.Errorf("tenantguard: %s has no resolvable tenant", containerName)
 	}
-	if _, err := nicguard.CheckFirewall(r.be); err != nil {
+	if _, err := nicguard.CheckSupport(r.be); err != nil {
+		if nicguard.Unsupported(err) {
+			// This host cannot carry bridge NIC ACLs at all (driver or
+			// Incus too old). Refusing every create here would turn a
+			// missing capability into an outage; the pass reports it and
+			// doctor goes red instead. A capable host that fails to guard
+			// one box still fails closed below.
+			r.warnUnsupported(err)
+			return nil
+		}
 		return fmt.Errorf("tenantguard: %w", err)
 	}
 	in, _, err := r.gather()
@@ -189,11 +202,15 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) error {
 		return err
 	}
 
-	driver, err := nicguard.CheckFirewall(r.be)
+	driver, err := nicguard.CheckSupport(r.be)
 	if err != nil {
-		r.setStatus(func(s *Status) { s.FirewallDriver = driver })
+		r.setStatus(func(s *Status) { s.FirewallDriver = driver; s.Unsupported = nicguard.Unsupported(err) })
+		if nicguard.Unsupported(err) {
+			r.warnUnsupported(err)
+		}
 		return r.fail(fmt.Errorf("tenantguard: %w", err))
 	}
+	r.setStatus(func(s *Status) { s.Unsupported = false })
 
 	in, unresolved, err := r.gather()
 	if err != nil {
@@ -342,6 +359,17 @@ func (r *Reconciler) pruneStale(pol Policy) error {
 	return firstErr
 }
 
+// warnUnsupported logs the capability gap once per reason, not every pass.
+func (r *Reconciler) warnUnsupported(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.warned == err.Error() {
+		return
+	}
+	r.warned = err.Error()
+	log.Printf("[tenantguard] UNSUPPORTED on this host — tenants are NOT isolated from each other: %v (containarium doctor reports this; install Incus from the Zabbly repository with the nftables driver, or set CONTAINARIUM_TENANT_GUARD=off to acknowledge)", err)
+}
+
 func (r *Reconciler) fail(err error) error {
 	r.setStatus(func(s *Status) {
 		s.Mode = r.cfg.Mode
@@ -359,6 +387,3 @@ func (r *Reconciler) setStatus(f func(*Status)) {
 	defer r.mu.Unlock()
 	f(&r.status)
 }
-
-// ErrOff is returned by callers that need the guard armed and find it off.
-var ErrOff = errors.New("tenantguard: off")
