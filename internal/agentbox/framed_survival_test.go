@@ -118,14 +118,14 @@ func summarizeSurvivalFailure(dir, name string) string {
 	if data, err := os.ReadFile(recordPath); err == nil {
 		var rec RunRecord
 		if err := json.Unmarshal(data, &rec); err == nil {
-			b.WriteString(fmt.Sprintf("record pid: %d\n", rec.PID))
+			fmt.Fprintf(&b, "record pid: %d\n", rec.PID)
 			if rec.PID > 0 {
 				if err := syscall.Kill(rec.PID, syscall.Signal(0)); err == nil {
 					b.WriteString("child pid alive: yes\n")
 				} else if err == syscall.ESRCH {
 					b.WriteString("child pid alive: no\n")
 				} else {
-					b.WriteString(fmt.Sprintf("child pid alive: unknown (%v)\n", err))
+					fmt.Fprintf(&b, "child pid alive: unknown (%v)\n", err)
 				}
 			}
 		} else {
