@@ -241,6 +241,31 @@ type AgentSkillServer struct {
 	execScript       boxScriptFunc
 	runLogPoll       time.Duration
 	journalRetention time.Duration
+
+	// boxOps overrides the container manager for a run's seed, git fetch,
+	// workspace seed and lease wipe (#2161). Nil in production; see
+	// agentBoxOps.
+	boxOps agentBoxOps
+}
+
+// agentBoxOps is the part of *container.Manager that provisionSkillBoxWith's
+// seed / git-fetch / workspace steps and the run-lease wipe go through.
+// *container.Manager satisfies it. It exists as a test seam, like execScript
+// for TailRunLog: (*container.Manager).Exec only works against a real incus
+// client, so without it no unit test gets past the seed to the fetch.
+type agentBoxOps interface {
+	Exec(container string, cmd []string) error
+	FetchGitSource(container string, spec containerpkg.GitSourceSpec) (string, error)
+}
+
+var _ agentBoxOps = (*containerpkg.Manager)(nil)
+
+// agentBox returns the boxOps override, else the container manager.
+func (s *AgentSkillServer) agentBox() agentBoxOps {
+	if s.boxOps != nil {
+		return s.boxOps
+	}
+	return s.recipes.containers.manager
 }
 
 // trackerConnectionChecker is the one method of *tracker.Store
@@ -724,8 +749,12 @@ func (s *AgentSkillServer) beginSkillRunWith(ctx context.Context, req *pb.RunAge
 // boxWiper is the seam runlease.End wipes a run's seed files through.
 // *container.Manager already satisfies runlease.Wiper; nil when no container
 // manager is wired (then the wipe is skipped and reported as not done),
-// mirroring runInBoxAgent's own guard.
+// mirroring runInBoxAgent's own guard. The boxOps override, when set, wipes
+// too, so a test sees the same box the run was seeded into.
 func (s *AgentSkillServer) boxWiper() runlease.Wiper {
+	if s.boxOps != nil {
+		return s.boxOps
+	}
 	if s.recipes == nil || s.recipes.containers == nil || s.recipes.containers.manager == nil {
 		return nil
 	}
@@ -1192,7 +1221,7 @@ func (s *AgentSkillServer) provisionSkillBoxWith(ctx context.Context, skill *pb.
 	if mcpScript, ok := platformMCPSeedScript(seedDir, s.platformMCPPort, trackerConnection); ok {
 		seedScript += "\n" + mcpScript
 	}
-	if err := s.recipes.containers.manager.Exec(containerName,
+	if err := s.agentBox().Exec(containerName,
 		[]string{"bash", "-c", seedScript}); err != nil {
 		// Credentials exist but the box never received them (or received only
 		// part of the seed). RunAgentSkill's defer isn't armed yet — it arms on
@@ -1221,7 +1250,7 @@ func (s *AgentSkillServer) provisionSkillBoxWith(ctx context.Context, skill *pb.
 		// leaves a (credential-free, empty) workspace dir behind. Ending the
 		// lease below must target it for removal even on this failure path.
 		lease.Workspace = workspacePath
-		commit, ferr := s.recipes.containers.manager.FetchGitSource(containerName, containerpkg.GitSourceSpec{
+		commit, ferr := s.agentBox().FetchGitSource(containerName, containerpkg.GitSourceSpec{
 			Source:        gitSource,
 			Ref:           gitRef,
 			Credential:    gitCredential,
@@ -1251,7 +1280,7 @@ func (s *AgentSkillServer) provisionSkillBoxWith(ctx context.Context, skill *pb.
 				GitRef:    gitRef,
 				GitCommit: gitCommit,
 			})
-			if werr := s.recipes.containers.manager.Exec(containerName, []string{"bash", "-c", wsScript}); werr != nil {
+			if werr := s.agentBox().Exec(containerName, []string{"bash", "-c", wsScript}); werr != nil {
 				log.Printf("[agent-skill] workspace.json seed failed for %s (runtime won't see the workspace path via the contract file): %v", containerName, werr)
 			}
 		}
