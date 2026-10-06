@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `containarium doctor` (and the posture printed by `pool join` / `cloud enroll`, and the posture checks reported to
+  the cloud) gains the non-blocking posture check **container bridge blocked from cloud metadata endpoint (rule + boot
+  unit)**. It fails when the iptables FORWARD rule from `incusbr0`'s subnet to `169.254.169.254` is not in the kernel,
+  or when `containarium-imds-block.service` is not installed and enabled to re-apply it after a reboot, and names the
+  fix. The existing **cloud metadata endpoint blocked** check dials from the host, whose own traffic the block
+  deliberately leaves alone, so it could not tell a host that lost its block from one that has it. `containarium
+  hostharden block-metadata` gains `--persist`, which also installs the boot unit, and `pool join` / `cloud enroll`
+  now apply the block before printing posture so the printed result reflects it. Closes #2298.
+
 ### Fixed
 
 - An unrecognised `CONTAINARIUM_PRIVILEGED_PODMAN_POLICY` value no longer falls back to `all` (#2299). The value is
