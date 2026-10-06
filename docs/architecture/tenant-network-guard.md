@@ -81,9 +81,10 @@ policy system.
    `default.egress.action=allow`. ACLs for tenants that no longer have a
    container on the host are deleted. Kicked by the event bus and every
    minute, like the core guard. Requires the nftables driver **and** the
-   `network_bridge_acl` API extension (NIC-level `security.acls`; Incus 7.x
-   from the Zabbly repository has it, Ubuntu's packaged Incus 6.0 LTS does
-   not) and reports the host as `Unsupported` otherwise.
+   `network_bridge_acl_devices` API extension (NIC-level `security.acls`,
+   Incus 6.9+; the Zabbly 7.x builds have it, Ubuntu's packaged Incus 6.0.0
+   does not — its older `network_bridge_acl` is the bridge-level key and
+   is not enough) and reports the host as `Unsupported` otherwise.
 
 3. **ACL-at-birth hook in `pkg/core/container` (`manager.go`)**. The
    reconciler alone leaves a window between a container starting and the
@@ -97,7 +98,7 @@ policy system.
    `--encrypted` refuses rather than silently producing an unguarded box.
    **Fail-open on an incapable host:** when the host cannot carry bridge
    NIC ACLs at all (wrong firewall driver, Incus without
-   `network_bridge_acl`), `Prepare` lets the create proceed, the daemon
+   `network_bridge_acl_devices`), `Prepare` lets the create proceed, the daemon
    logs the gap once and the guard's status reports `Unsupported`. A
    missing capability is an operator finding, not an outage. Existing
    containers found unguarded by a pass on a capable host are fail-open
@@ -177,7 +178,7 @@ allowed: every unknown source is a drop.
 - **First pass is loud.** The reconciler logs the count of containers it
   guarded, the tenants it could not resolve, and the firewall driver.
   On a host that cannot carry NIC ACLs (iptables driver, or Incus without
-  `network_bridge_acl`) nothing is guarded, creates keep working, and
+  `network_bridge_acl_devices`) nothing is guarded, creates keep working, and
   doctor goes red with the reason rather than the guard silently looking
   on. The README's recommended Zabbly Incus has the extension; Ubuntu's
   packaged Incus 6.0 does not, which is also why the CI lane installs
