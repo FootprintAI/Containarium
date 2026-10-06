@@ -9,9 +9,11 @@ import (
 )
 
 // TestCredentialStatusScript_UnknownEngine pins that an engine with no probe
-// (Codex, until #2273) fails closed with ok=false, never a guessed answer.
+// fails closed with ok=false, never a guessed answer. Codex had no probe
+// until #2277 (it is covered by its own TestCredentialStatusScript_Codex
+// below now), so this uses a name no engine will ever have.
 func TestCredentialStatusScript_UnknownEngine(t *testing.T) {
-	if _, ok := CredentialStatusScript(Name("codex")); ok {
+	if _, ok := CredentialStatusScript(Name("not-a-real-engine")); ok {
 		t.Error("an engine with no probe should report ok=false, not a script")
 	}
 }
@@ -158,6 +160,99 @@ func TestCredentialStatusScript_Pi(t *testing.T) {
 				t.Errorf("script output = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestCredentialStatusScript_Codex mirrors the Claude/pi tables for codex's
+// own probe (#2277): ~/.codex/auth.json is codex login's interactive
+// sign-in, the same shape as claude's .credentials.json and pi's
+// auth.json.
+func TestCredentialStatusScript_Codex(t *testing.T) {
+	script, ok := CredentialStatusScript(NameCodex)
+	if !ok {
+		t.Fatal("CredentialStatusScript(NameCodex) ok=false")
+	}
+
+	tests := []struct {
+		name string
+		seed func(home string)
+		want CredentialStatusSource
+	}{
+		{
+			name: "nothing present",
+			seed: func(string) {},
+			want: CredentialStatusNone,
+		},
+		{
+			name: "interactive sign-in present",
+			seed: func(home string) {
+				mustMkdirAll(t, filepath.Join(home, ".codex"))
+				// As with claude/pi above: only the file's PRESENCE is
+				// checked, so a placeholder proves the point without a real
+				// credential value ever existing in the fixture.
+				mustWriteFile(t, filepath.Join(home, ".codex", "auth.json"), `{"placeholder":"not a real credential"}`)
+			},
+			want: CredentialStatusInteractive,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			tc.seed(home)
+			got := runCredentialStatusScript(t, script, home, nil)
+			if got != string(tc.want) {
+				t.Errorf("script output = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCredentialStatusScript_Codex_APIKeyEnv covers both env-var names codex
+// reads directly (developers.openai.com/codex/environment-variables):
+// CODEX_API_KEY is preferred, OPENAI_API_KEY also works. Like
+// TestCredentialStatusScript_Claude_ProviderEnv, this needs a process env
+// var rather than a seeded file.
+func TestCredentialStatusScript_Codex_APIKeyEnv(t *testing.T) {
+	script, ok := CredentialStatusScript(NameCodex)
+	if !ok {
+		t.Fatal("CredentialStatusScript(NameCodex) ok=false")
+	}
+
+	tests := []struct {
+		name     string
+		extraEnv []string
+	}{
+		{name: "CODEX_API_KEY set", extraEnv: []string{"CODEX_API_KEY=placeholder"}},
+		{name: "OPENAI_API_KEY set", extraEnv: []string{"OPENAI_API_KEY=placeholder"}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			got := runCredentialStatusScript(t, script, home, tc.extraEnv)
+			if got != string(CredentialStatusAPIKey) {
+				t.Errorf("script output = %q, want %q", got, CredentialStatusAPIKey)
+			}
+		})
+	}
+}
+
+// TestCredentialStatusScript_Codex_InteractiveWinsOverAPIKey mirrors the
+// Claude table's "interactive wins" case: both an auth.json and an env var
+// present must still report interactive, the same priority order
+// VerifyScript documents (sign-in checked before the env vars).
+func TestCredentialStatusScript_Codex_InteractiveWinsOverAPIKey(t *testing.T) {
+	script, ok := CredentialStatusScript(NameCodex)
+	if !ok {
+		t.Fatal("CredentialStatusScript(NameCodex) ok=false")
+	}
+	home := t.TempDir()
+	mustMkdirAll(t, filepath.Join(home, ".codex"))
+	mustWriteFile(t, filepath.Join(home, ".codex", "auth.json"), `{"placeholder":"not a real credential"}`)
+	got := runCredentialStatusScript(t, script, home, []string{"CODEX_API_KEY=placeholder"})
+	if got != string(CredentialStatusInteractive) {
+		t.Errorf("script output = %q, want %q", got, CredentialStatusInteractive)
 	}
 }
 

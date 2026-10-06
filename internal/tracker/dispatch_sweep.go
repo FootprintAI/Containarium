@@ -212,8 +212,16 @@ func (d *Dispatcher) observeEnd(row Dispatch) {
 // it; only that store write's error is returned.
 func (d *Dispatcher) projectFailure(ctx context.Context, row Dispatch, timeout time.Duration) (pending bool, err error) {
 	add, remove := terminalLabels(row)
-	labelErr := d.Provider.SetLabels(ctx, d.Conn, row.IssueNumber, add, remove)
-	if _, commentErr := d.Provider.Comment(ctx, d.Conn, row.IssueNumber, failureComment(row, timeout)); commentErr != nil {
+	// Each write resolves its own credential (#2269).
+	conn, labelErr := d.forgeConn(ctx, row.Username)
+	if labelErr == nil {
+		labelErr = d.Provider.SetLabels(ctx, conn, row.IssueNumber, add, remove)
+	}
+	conn, commentErr := d.forgeConn(ctx, row.Username)
+	if commentErr == nil {
+		_, commentErr = d.Provider.Comment(ctx, conn, row.IssueNumber, failureComment(row, timeout))
+	}
+	if commentErr != nil {
 		log.Printf("[tracker] dispatch %s: failure comment on #%d: %v", row.ID, row.IssueNumber, commentErr)
 	}
 	if labelErr == nil {
@@ -273,8 +281,16 @@ func (d *Dispatcher) retryPendingLabels(ctx context.Context, username, connectio
 			return held, err
 		}
 		add, remove := terminalLabels(row)
-		if err := d.Provider.SetLabels(ctx, d.Conn, row.IssueNumber, add, remove); err != nil {
-			issue, gerr := d.Provider.GetIssue(ctx, d.Conn, row.IssueNumber)
+		conn, err := d.forgeConn(ctx, row.Username)
+		if err == nil {
+			err = d.Provider.SetLabels(ctx, conn, row.IssueNumber, add, remove)
+		}
+		if err != nil {
+			var issue Issue
+			conn, gerr := d.forgeConn(ctx, row.Username)
+			if gerr == nil {
+				issue, gerr = d.Provider.GetIssue(ctx, conn, row.IssueNumber)
+			}
 			if gerr != nil || !hasAnyLabel(issue.Labels, add...) {
 				log.Printf("[tracker] dispatch %s: retry labels on #%d: %v", row.ID, row.IssueNumber, err)
 				held[row.IssueNumber] = true

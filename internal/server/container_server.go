@@ -32,6 +32,7 @@ import (
 	"github.com/footprintai/containarium/internal/secrets"
 	"github.com/footprintai/containarium/internal/tracker"
 	"github.com/footprintai/containarium/internal/tracker/submit"
+	"github.com/footprintai/containarium/pkg/core/backup"
 	"github.com/footprintai/containarium/pkg/core/box"
 	boxlxc "github.com/footprintai/containarium/pkg/core/box/lxc"
 	"github.com/footprintai/containarium/pkg/core/container"
@@ -75,6 +76,9 @@ func (p *PendingCreation) active() bool { return p != nil && !p.Done && !p.Cance
 // ContainerServer implements the gRPC ContainerService
 type ContainerServer struct {
 	pb.UnimplementedContainerServiceServer
+	// systemInfoFn overrides the local GetSystemInfo probe in ListBackends.
+	// Nil in production; a test seam for a wedged local incusd (#2318).
+	systemInfoFn func(context.Context, *pb.GetSystemInfoRequest) (*pb.GetSystemInfoResponse, error)
 	// TrackerService is its own proto service (tracker.proto), not part
 	// of ContainerService — embedding its Unimplemented server here lets
 	// ContainerServer satisfy pb.TrackerServiceServer without a
@@ -152,6 +156,11 @@ type ContainerServer struct {
 	coreServices       *CoreServices
 	daemonConfigStore  daemonConfigKV
 	peerPool           *PeerPool
+	// backupMgr is the backup core's read side, wired in for the metrics
+	// export collector's backup-health series (set by DualServer after
+	// setup, #2294) — nil-safe like peerPool/alertStore above. Not used
+	// for anything but SetBackupManager's seam into serverPlatformSources.
+	backupMgr *backup.Manager
 	// Cloud-native metrics export (#1069). metricsExportMu guards the
 	// in-memory config so SetMetricsExport/GetMetricsExport round-trip
 	// without a daemon restart; daemonConfigStore (when present) makes
@@ -190,6 +199,11 @@ type ContainerServer struct {
 	// backend without a live Incus daemon. nil in production; the real probe
 	// runs.
 	localHealthCheckFn func() bool
+	// localHealthOnce / localHealthState: the debounced, single-flight local
+	// liveness verdict behind localBackendHealthy (#2317). Built lazily on first
+	// use so the env override is read once.
+	localHealthOnce  sync.Once
+	localHealthState *localHealth
 	// CPU overcommit admission (#1029 direction 2). cpuOvercommitFactor is the
 	// ceiling multiple of physical cores a host may commit; <= 0 disables the
 	// gate (the default). cpuOvercommitEnforce=false makes an enabled gate
@@ -239,6 +253,11 @@ type ContainerServer struct {
 	// GPU-probe LXC + a benchmark on the host, so concurrent/repeated calls
 	// must coalesce rather than stack a probe storm that can wedge the runtime.
 	profileMu sync.Mutex
+	// Hardware operations default to the bounded benchmark and the manager's
+	// passthrough probe; injectable so failures can be exercised without Incus.
+	capabilityBenchmark func() (container.BenchmarkResult, error)
+	capabilityGPUProbe  func() container.GPUValidationResult
+	capabilityResources func() (*incus.SystemResources, error)
 	// region is the region this backend serves, wired from --region (falling
 	// back to the pool name). Recorded into the capability profile. Empty when
 	// unset.
@@ -3124,6 +3143,12 @@ func (s *ContainerServer) GetSystemInfo(ctx context.Context, req *pb.GetSystemIn
 		info.Storage = backendStorageFromPool("default", driver)
 	}
 
+	// This backend's spare-capacity advertisement (#680) and capability
+	// profile (#681), so a peer's GetSystemInfo carries them to the
+	// ListBackends fan-out with no extra forwarded call (#2135). Both stay
+	// null when absent, same as on the local BackendInfo.
+	info.Headroom, info.CapabilityProfile = s.capacitySignals(hostStateFrom(containers, sysResources, time.Now()))
+
 	// Populate GPU info
 	for _, gpu := range sysResources.GPUs {
 		info.Gpus = append(info.Gpus, &pb.GPUInfo{
@@ -3216,44 +3241,33 @@ func (s *ContainerServer) ListBackends(ctx context.Context, _ *pb.ListBackendsRe
 	// container manager + Incus. Guard the nil manager so a daemon (or test)
 	// without one still reports the local backend's identity + health
 	// instead of panicking.
+	// The local probe is bounded by its own deadline (#2318): a wedged or
+	// starved incusd must degrade to "no load block" (UNKNOWN), not block
+	// the whole listing. It runs concurrently with the peer probes below.
+	var localInfo *pb.SystemInfo
+	var localDone chan struct{}
 	if s.manager != nil {
-		if sysResp, err := s.GetSystemInfo(ctx, &pb.GetSystemInfoRequest{}); err == nil && sysResp.Info != nil {
-			local.Hostname = sysResp.Info.Hostname
-			local.Os = sysResp.Info.Os
-			local.IncusVersion = sysResp.Info.IncusVersion
-			local.ContainerCount = sysResp.Info.ContainersRunning
-			local.Gpus = backendGPUsFromSystemInfo(sysResp.Info)
-			// The same SystemInfo already carries the host's measured load
-			// and memory/disk usage; surface it instead of discarding it
-			// (cloud #966). Null when the probe produced nothing usable.
-			local.HostLoad = hostLoadFromSystemInfo(sysResp.Info, time.Now())
-			// Which storage pool backs this host's containers, and whether it
-			// isolates tenant volumes (#1209). GetSystemInfo already measured
-			// it; pass it straight through, null included, so "unreadable"
-			// stays distinguishable from "isolated".
-			local.Storage = sysResp.Info.Storage
-		}
+		localDone = make(chan struct{})
+		go func() {
+			defer close(localDone)
+			localInfo = s.probeLocalSystemInfo(ctx)
+		}()
 	}
-	// Surface the local backend's spare-capacity advertisement (#680). Only
-	// attach when something is actively advertised — an unadvertised backend
-	// leaves headroom null so the control plane can tell "not offering" from
-	// "offering zero".
-	if h := s.capStore().Current(s.hostStateSnapshot()); h.Advertised {
-		local.Headroom = headroomToProto(h)
-	}
-	// Surface the local backend's last-recorded capability profile (#681).
-	// Null until ProfileBackend has run, so the control plane can tell
-	// "unprofiled" from "profiled CPU-only".
-	if p, ok := s.capabStore().Current(); ok {
-		local.CapabilityProfile = profileToProto(p)
-	}
+	// Surface the local backend's spare-capacity advertisement (#680) and
+	// last-recorded capability profile (#681); see capacitySignals.
+	local.Headroom, local.CapabilityProfile = s.capacitySignals(s.hostStateSnapshot())
 	backends = append(backends, local)
 
 	// Peer backends. Forward GetSystemInfo to each healthy peer using the
 	// caller's (admin) token — the same mechanism GetSystemInfo's peer
-	// fan-out uses.
+	// fan-out uses. Peers are probed in parallel, each under its own
+	// deadline, and written to a pre-sized slot so the response keeps the
+	// pool's peer order (#2318).
 	authToken := extractAuthToken(ctx)
-	for _, peer := range s.peerPool.Peers() {
+	peers := s.peerPool.Peers()
+	peerInfos := make([]*pb.BackendInfo, len(peers))
+	var wg sync.WaitGroup
+	for i, peer := range peers {
 		pi := &pb.BackendInfo{
 			Id:      peer.ID,
 			Type:    "tunnel",
@@ -3262,34 +3276,100 @@ func (s *ContainerServer) ListBackends(ctx context.Context, _ *pb.ListBackendsRe
 		if !peer.LastSeenAt.IsZero() {
 			pi.LastSeenAt = peer.LastSeenAt.UTC().Format(time.RFC3339)
 		}
-		if peer.Healthy {
-			if body, err := peer.ForwardGetSystemInfo(authToken); err == nil {
-				var peerResp pb.GetSystemInfoResponse
-				if protojson.Unmarshal(body, &peerResp) == nil && peerResp.Info != nil {
-					pi.Hostname = peerResp.Info.Hostname
-					pi.Os = peerResp.Info.Os
-					pi.Version = peerResp.Info.DaemonVersion
-					pi.IncusVersion = peerResp.Info.IncusVersion
-					pi.ContainerCount = peerResp.Info.ContainersRunning
-					pi.Gpus = backendGPUsFromSystemInfo(peerResp.Info)
-					// Live load for peers — including BYOC tunnel hosts,
-					// which had no load signal anywhere in the product
-					// (cloud #966). This rides the peer fan-out that
-					// already works, so it does not depend on the BYOC
-					// driver-token path that cloud #933 is stuck on.
-					pi.HostLoad = hostLoadFromSystemInfo(peerResp.Info, time.Now())
-					// Peers report their own pool's driver + isolation over
-					// the same fan-out, so a BYOC tunnel host on a shared
-					// filesystem is visible from the fleet view rather than
-					// only in that host's own startup log (#1209).
-					pi.Storage = peerResp.Info.Storage
-				}
-			}
+		peerInfos[i] = pi
+		if !peer.Healthy {
+			continue
 		}
-		backends = append(backends, pi)
+		wg.Add(1)
+		go func(peer *PeerClient, pi *pb.BackendInfo) {
+			defer wg.Done()
+			pctx, cancel := context.WithTimeout(ctx, listBackendsProbeTimeout)
+			defer cancel()
+			body, err := peer.ForwardGetSystemInfoCtx(pctx, authToken)
+			if err != nil {
+				return
+			}
+			var peerResp pb.GetSystemInfoResponse
+			if protojson.Unmarshal(body, &peerResp) != nil || peerResp.Info == nil {
+				return
+			}
+			pi.Hostname = peerResp.Info.Hostname
+			pi.Os = peerResp.Info.Os
+			pi.Version = peerResp.Info.DaemonVersion
+			pi.IncusVersion = peerResp.Info.IncusVersion
+			pi.ContainerCount = peerResp.Info.ContainersRunning
+			pi.Gpus = backendGPUsFromSystemInfo(peerResp.Info)
+			// Live load for peers — including BYOC tunnel hosts, which had
+			// no load signal anywhere in the product (cloud #966).
+			pi.HostLoad = hostLoadFromSystemInfo(peerResp.Info, time.Now())
+			// Peers report their own pool's driver + isolation over the same
+			// fan-out (#1209).
+			pi.Storage = peerResp.Info.Storage
+			// A peer's spare-capacity advertisement and capability profile
+			// ride the same SystemInfo (#2135); a peer that advertises or
+			// profiled nothing — or predates these fields — leaves them null.
+			pi.Headroom = peerResp.Info.Headroom
+			pi.CapabilityProfile = peerResp.Info.CapabilityProfile
+		}(peer, pi)
+	}
+	wg.Wait()
+	backends = append(backends, peerInfos...)
+
+	// The local probe has its own deadline, so this wait is bounded too.
+	if localDone != nil {
+		<-localDone
+		if localInfo != nil {
+			local.Hostname = localInfo.Hostname
+			local.Os = localInfo.Os
+			local.IncusVersion = localInfo.IncusVersion
+			local.ContainerCount = localInfo.ContainersRunning
+			local.Gpus = backendGPUsFromSystemInfo(localInfo)
+			// The same SystemInfo already carries the host's measured load
+			// and memory/disk usage (cloud #966). Null when unusable.
+			local.HostLoad = hostLoadFromSystemInfo(localInfo, time.Now())
+			// Storage pool + tenant-volume isolation (#1209); null stays
+			// distinguishable from "isolated".
+			local.Storage = localInfo.Storage
+		}
 	}
 
 	return &pb.ListBackendsResponse{Backends: backends}, nil
+}
+
+// listBackendsProbeTimeout bounds each per-backend GetSystemInfo probe made by
+// ListBackends (the local one and every peer), so one wedged backend cannot
+// hold the whole fleet listing hostage (#2318). A var so tests can shrink it.
+var listBackendsProbeTimeout = 5 * time.Second
+
+// probeLocalSystemInfo runs the local GetSystemInfo under
+// listBackendsProbeTimeout and returns nil on error or timeout. The underlying
+// manager/Incus calls take no context and cannot be cancelled, so on timeout
+// the worker goroutine finishes on its own when the call returns; its result
+// channel is buffered so it never blocks on send.
+func (s *ContainerServer) probeLocalSystemInfo(ctx context.Context) *pb.SystemInfo {
+	fn := s.GetSystemInfo
+	if s.systemInfoFn != nil {
+		fn = s.systemInfoFn
+	}
+	ch := make(chan *pb.SystemInfo, 1)
+	go func() {
+		resp, err := fn(ctx, &pb.GetSystemInfoRequest{})
+		if err != nil || resp == nil {
+			ch <- nil
+			return
+		}
+		ch <- resp.Info
+	}()
+	t := time.NewTimer(listBackendsProbeTimeout)
+	defer t.Stop()
+	select {
+	case info := <-ch:
+		return info
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return nil
+	}
 }
 
 // capStore returns the lazily-initialized per-daemon capacity store. Safe to
@@ -3344,19 +3424,29 @@ func (s *ContainerServer) StopWorkload(ctx context.Context, username string, for
 // missing manager or Incus call yields a zero-resource snapshot rather than an
 // error, so advertise/withdraw still work on an unwired server.
 func (s *ContainerServer) hostStateSnapshot() capacity.HostState {
-	st := capacity.HostState{Now: time.Now()}
 	if s.manager == nil {
-		return st
+		return capacity.HostState{Now: time.Now()}
 	}
-	if containers, err := s.manager.List(); err == nil {
-		st.Containers = containers
-	}
+	containers, _ := s.manager.List()
 	client, err := incus.New()
 	if err != nil {
-		return st
+		return hostStateFrom(containers, nil, time.Now())
 	}
 	res, err := client.GetSystemResources()
-	if err != nil || res == nil {
+	if err != nil {
+		res = nil
+	}
+	return hostStateFrom(containers, res, time.Now())
+}
+
+// hostStateFrom builds the headroom computation's host snapshot from an
+// already-fetched container list and Incus resource read, so GetSystemInfo
+// can compute its headroom (#2135) from the figures it just gathered instead
+// of re-querying Incus. A nil res yields zero resources, same as a failed
+// read in hostStateSnapshot.
+func hostStateFrom(containers []incus.ContainerInfo, res *incus.SystemResources, now time.Time) capacity.HostState {
+	st := capacity.HostState{Now: now, Containers: containers}
+	if res == nil {
 		return st
 	}
 	st.AvailableMemoryBytes = res.TotalMemoryBytes - res.UsedMemoryBytes
@@ -3391,6 +3481,25 @@ func policyFromProto(p *pb.CapacityPolicy) capacity.Policy {
 		ExcludedWorkloadClasses: p.GetExcludedWorkloadClasses(),
 		ReserveFraction:         p.GetReserveFraction(),
 	}
+}
+
+// capacitySignals returns this backend's spare-capacity advertisement (#680)
+// and last-recorded capability profile (#681) on the wire types. Each is nil
+// when absent: headroom only when something is actively advertised, so the
+// control plane can tell "not offering" from "offering zero", and the
+// profile only once ProfileBackend has run, so "unprofiled" stays distinct
+// from "profiled CPU-only". Shared by ListBackends' local entry and
+// GetSystemInfo, which carries both to a peer's ListBackends (#2135).
+func (s *ContainerServer) capacitySignals(st capacity.HostState) (*pb.CapacityHeadroom, *pb.CapabilityProfile) {
+	var headroom *pb.CapacityHeadroom
+	if h := s.capStore().Current(st); h.Advertised {
+		headroom = headroomToProto(h)
+	}
+	var profile *pb.CapabilityProfile
+	if p, ok := s.capabStore().Current(); ok {
+		profile = profileToProto(p)
+	}
+	return headroom, profile
 }
 
 // headroomToProto maps the internal headroom onto the wire type.
@@ -3536,44 +3645,106 @@ func (s *ContainerServer) capabStore() *capabilities.Store {
 // host system resources (CPU cores + model, RAM, disk) via the same Incus call
 // GetSystemInfo uses, the GPU passthrough probe (unless skipped), the bounded
 // CPU/memory micro-benchmark, and the operator-set region / reported class.
-// Best-effort on the resource read: a missing Incus client yields zero hardware
-// figures rather than an error, so a profile is always recordable.
-func (s *ContainerServer) gatherHostFacts(skipGPU bool) capabilities.HostFacts {
+// Missing resources, a failed GPU probe or an invalid benchmark leave the
+// previous profile untouched; unknown host capacity must not become a profile.
+func (s *ContainerServer) gatherHostFacts(skipGPU bool) (capabilities.HostFacts, error) {
 	f := capabilities.HostFacts{
 		Now:           time.Now(),
 		Region:        s.region,
 		ReportedClass: s.reportedClass,
 	}
 
-	if client, err := incus.New(); err == nil {
-		if res, err := client.GetSystemResources(); err == nil && res != nil {
-			f.CPUCores = res.TotalCPUs
-			f.CPUModel = res.CPUModel
-			f.TotalMemoryBytes = res.TotalMemoryBytes
-			f.TotalDiskBytes = res.TotalDiskBytes
+	var res *incus.SystemResources
+	var resourceErr error
+	if s.capabilityResources != nil {
+		res, resourceErr = s.capabilityResources()
+	} else if client, err := incus.New(); err == nil {
+		res, resourceErr = client.GetSystemResources()
+	} else {
+		resourceErr = err
+	}
+	if resourceErr != nil {
+		return capabilities.HostFacts{}, fmt.Errorf("system resource discovery: %w", resourceErr)
+	}
+	if res == nil {
+		return capabilities.HostFacts{}, fmt.Errorf("system resource discovery returned no resources")
+	}
+	if res.TotalCPUs <= 0 || res.TotalMemoryBytes <= 0 {
+		return capabilities.HostFacts{}, fmt.Errorf("system resource discovery returned invalid CPU or memory capacity")
+	}
+	// Only NVIDIA hosts need the nvidia.runtime probe; CPU-only hosts have
+	// no GPU to validate.
+	probeGPU := false
+	f.CPUCores = res.TotalCPUs
+	f.CPUModel = res.CPUModel
+	f.TotalMemoryBytes = res.TotalMemoryBytes
+	f.TotalDiskBytes = res.TotalDiskBytes
+	for _, gpu := range res.GPUs {
+		vendor := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(gpu.Vendor)), "0x")
+		if vendor == "10de" || strings.Contains(vendor, "nvidia") {
+			probeGPU = true
+			break
 		}
 	}
 
 	// GPU model/driver from the existing nvidia.runtime passthrough probe —
 	// the same ValidateGPU the validate-gpu command runs. Skipped on request
 	// (CPU-only backends) or when no container manager is wired.
-	if !skipGPU && s.manager != nil {
-		res := s.manager.ValidateGPU("")
-		if res.Status == container.GPUStatusOK {
-			f.GPUAvailable = true
-			f.GPUModel = res.Model
-			f.GPUDriverVersion = res.DriverVersion
+	if !skipGPU && probeGPU && (s.manager != nil || s.capabilityGPUProbe != nil) {
+		var res container.GPUValidationResult
+		if s.capabilityGPUProbe != nil {
+			res = s.capabilityGPUProbe()
+		} else {
+			res = s.manager.ValidateGPU("")
 		}
+		if res.Status != container.GPUStatusOK {
+			return capabilities.HostFacts{}, fmt.Errorf("GPU probe: %s", res.Detail)
+		}
+		f.GPUAvailable = true
+		f.GPUModel = res.Model
+		f.GPUDriverVersion = res.DriverVersion
 	}
 
 	// Bounded CPU/memory micro-benchmark.
-	b := container.RunBenchmark()
+	var b container.BenchmarkResult
+	if s.capabilityBenchmark != nil {
+		var err error
+		b, err = s.capabilityBenchmark()
+		if err != nil {
+			return capabilities.HostFacts{}, fmt.Errorf("benchmark: %w", err)
+		}
+	} else {
+		b = container.RunBenchmark()
+	}
+	if b.CPUOpsPerSec <= 0 || b.MemBytesPerSec <= 0 || b.DurationMs <= 0 {
+		return capabilities.HostFacts{}, fmt.Errorf("benchmark returned invalid measurements")
+	}
 	f.Benchmark = capabilities.Benchmark{
 		CPUOpsPerSec:   b.CPUOpsPerSec,
 		MemBytesPerSec: b.MemBytesPerSec,
 		DurationMs:     b.DurationMs,
 	}
-	return f
+	return f, nil
+}
+
+// recordCapabilityProfile is shared by the explicit RPC and pool startup.
+// Recheck existence under the same lock that protects explicit profiles so
+// startup can never overwrite a profile recorded by a concurrent operator.
+func (s *ContainerServer) recordCapabilityProfile(skipGPU, onlyIfMissing bool) (capabilities.Profile, error) {
+	if !s.profileMu.TryLock() {
+		return capabilities.Profile{}, status.Error(codes.Aborted, "a backend profile is already in progress; retry shortly")
+	}
+	defer s.profileMu.Unlock()
+	if onlyIfMissing {
+		if p, ok := s.capabStore().Current(); ok {
+			return p, nil
+		}
+	}
+	f, err := s.gatherHostFacts(skipGPU)
+	if err != nil {
+		return capabilities.Profile{}, status.Errorf(codes.Internal, "profile backend: %v", err)
+	}
+	return s.capabStore().Record(f), nil
 }
 
 // profileToProto maps the internal capability profile onto the wire type.
@@ -3643,11 +3814,10 @@ func (s *ContainerServer) ProfileBackend(ctx context.Context, req *pb.ProfileBac
 	// Local backend. Serialize against concurrent profiles: gatherHostFacts
 	// spins a throwaway GPU-probe LXC + runs a benchmark, so a second caller
 	// (retry, multi-replica control plane) must not stack a second probe.
-	if !s.profileMu.TryLock() {
-		return nil, status.Error(codes.Aborted, "a backend profile is already in progress; retry shortly")
+	p, err := s.recordCapabilityProfile(req.SkipGpu, false)
+	if err != nil {
+		return nil, err
 	}
-	defer s.profileMu.Unlock()
-	p := s.capabStore().Record(s.gatherHostFacts(req.SkipGpu))
 	return &pb.ProfileBackendResponse{
 		Profile:   profileToProto(p),
 		BackendId: req.BackendId,
@@ -4072,6 +4242,15 @@ func (s *ContainerServer) SetPeerPool(pool *PeerPool) {
 	s.peerPool = pool
 }
 
+// SetBackupManager wires the backup core's read side in for the metrics
+// export collector's backup-health series (#2294). Called once from
+// DualServer setup, after NewBackupServer exists, via its Manager()
+// getter — BackupServer depends on ContainerServer, not the reverse, so
+// this is the only way the two ever connect.
+func (s *ContainerServer) SetBackupManager(mgr *backup.Manager) {
+	s.backupMgr = mgr
+}
+
 // SetStartTime wires the daemon's process start time so ListBackends can
 // report the local backend's uptime. Called once from DualServer setup.
 func (s *ContainerServer) SetStartTime(t time.Time) {
@@ -4326,24 +4505,20 @@ func (s *ContainerServer) resolvePoolPlacement(req *pb.CreateContainerRequest) e
 	return nil
 }
 
-// localHealthCheckTimeout bounds localBackendHealthy's liveness probe below
-// — long enough for a briefly busy incusd to answer, short enough that a
-// genuinely wedged daemon (see #755 — CPU-starved incusd from a runaway
-// rsyslog/OOM-crash-loop neighbor) doesn't stall a placement decision for
-// more than a couple of seconds.
-const localHealthCheckTimeout = 3 * time.Second
-
 // localBackendHealthy reports whether this daemon's own LOCAL backend is
 // currently fit to receive newly scheduled work. It is the single source of
 // truth shared by ListBackends (the local entry's Healthy field) and
 // resolvePoolPlacement's local-backend short-circuit (#920) — previously
 // ListBackends hardcoded Healthy=true for local and resolvePoolPlacement
-// didn't check health at all, so the two paths could never actually
-// disagree in a way that would ever surface as a bug: both were simply
-// blind to real local health. This performs the same connectivity probe
-// GetSystemInfo already runs (container list + Incus server info) but skips
-// GetSystemInfo's admin-role gate, since this is an internal call made on
+// didn't check health at all, so both were blind to real local health. This
+// skips GetSystemInfo's admin-role gate, since it is an internal call made on
 // behalf of any caller's placement decision, not a fresh RPC.
+//
+// The verdict comes from localHealth (local_health.go, #2317): an Incus
+// server-info probe whose cost does not grow with the instance count, shared
+// by concurrent callers, and debounced so one slow sample on a busy host does
+// not make it unplaceable. It still fails closed on a daemon that stays
+// unresponsive. CONTAINARIUM_LOCAL_HEALTH_TIMEOUT tunes the per-call budget.
 //
 // localHealthCheckFn, when set (tests), overrides the real probe.
 func (s *ContainerServer) localBackendHealthy() bool {
@@ -4356,32 +4531,11 @@ func (s *ContainerServer) localBackendHealthy() bool {
 		// tests that don't exercise this signal are unaffected.
 		return true
 	}
-	done := make(chan bool, 1)
-	go func() {
-		if _, err := s.manager.List(); err != nil {
-			done <- false
-			return
-		}
-		client, err := incus.New()
-		if err != nil {
-			done <- false
-			return
-		}
-		if _, err := client.GetServerInfo(); err != nil {
-			done <- false
-			return
-		}
-		done <- true
-	}()
-	select {
-	case healthy := <-done:
-		return healthy
-	case <-time.After(localHealthCheckTimeout):
-		// Didn't answer in time — fail CLOSED (unhealthy) rather than block
-		// the caller indefinitely on a wedged daemon, and rather than
-		// silently treat "didn't check in time" as "must be fine".
-		return false
-	}
+	s.localHealthOnce.Do(func() {
+		timeout := localHealthTimeoutFromEnv()
+		s.localHealthState = newLocalHealth(incusLivenessProbe(probeCeilingFactor*timeout), timeout, localHealthGrace)
+	})
+	return s.localHealthState.Healthy()
 }
 
 // SetRouteCleanupDeps wires the route store + proxy manager so

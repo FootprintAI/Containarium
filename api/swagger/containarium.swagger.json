@@ -81,6 +81,10 @@
       "description": "EventService provides real-time event streaming"
     },
     {
+      "name": "GuardrailEngineService",
+      "description": "GuardrailEngineService is implemented by an ENGINE, not by the\nContainarium daemon: the CLI (and later the daemon) is its client.\nStateless by contract — nothing is persisted on the engine side and\nrepeating a request repeats the scan. No REST mapping: this is an\ninternal plug point between two processes on the same side of a trust\nboundary, not a product endpoint."
+    },
+    {
       "name": "KmsService",
       "description": "KmsService exposes read + migration-trigger operations for the\ntenant-secrets envelope-encryption layer (see\ndocs/security/KMS-ENVELOPE-DESIGN.md). It deliberately does NOT\nexpose backend *configuration* — selecting a KMS backend and\nsupplying its credentials stays an operator/systemd concern\n(CONTAINARIUM_KMS_BACKEND + the per-backend env vars), never an\nover-the-wire action. Every RPC requires the `kms:admin` scope\nAND the admin role; these are platform-wide, not tenant-scoped."
     },
@@ -1718,7 +1722,7 @@
     "/v1/backups/{id}/verify": {
       "post": {
         "summary": "Verify a backup",
-        "description": "Restore-tests a stored dump by loading it into a throwaway database inside a target container and running sanity checks, then dropping the scratch database. Never touches the source container. Records the outcome on the backup as durable A.8.13 evidence.",
+        "description": "Restore-tests a stored dump by loading it into a throwaway database inside a target container and running sanity checks, then dropping the scratch database. Never touches the source container. An encrypted backup needs age_identity to decrypt; a wrong identity comes back as a FAILED result, not an error. Records the outcome on the backup as durable A.8.13 evidence.",
         "operationId": "BackupService_VerifyBackup",
         "responses": {
           "200": {
@@ -7207,7 +7211,7 @@
     "/v1/tracker/connections/{username}/{connection}/dispatch": {
       "post": {
         "summary": "Run one tracker dispatch tick",
-        "description": "Lists the connection's open issues and, for each one carrying a routed scope:\u003crole\u003e label and no agent:* state label (and not agent:needs-approval), inserts a durable dispatch row, starts the routed skill through the RunAgentSkill path with the issue reference as input, and labels the issue agent:queued. Exactly once per (issue) across restarts and concurrent dispatchers: a partial unique index on active rows makes the second inserter skip. An unrouted scope label gets exactly one stamped warning comment. Each tick first sweeps active rows: one past the policy run timeout, or with no live lease past a grace period, is failed (lease ended, agent:failed, a comment naming the run and the reason) and returned in timed_out. Requires tracker:admin (and agents:run, to start the runs).",
+        "description": "Lists the connection's open issues and, for each one carrying a routed scope:\u003crole\u003e label and no agent:* state label (and not agent:needs-approval), inserts a durable dispatch row, starts the routed skill through the RunAgentSkill path with the issue reference as input, and labels the issue agent:queued. Exactly once per (issue) across restarts and concurrent dispatchers: a partial unique index on active rows makes the second inserter skip. An unrouted scope label gets exactly one stamped warning comment. Each tick first sweeps active rows: one past the policy run timeout, or with no live lease past a grace period, is failed (lease ended, agent:failed, a comment naming the run and the reason) and returned in timed_out. A nonzero max_starts stops the tick once that many runs have started; the eligible issues past it get no row and no label, are counted in left_undispatched, and are picked up by a later tick. Requires tracker:admin (and agents:run, to start the runs).",
         "operationId": "TrackerService_DispatchTrackerIssues",
         "responses": {
           "200": {
@@ -7253,7 +7257,7 @@
     "/v1/tracker/connections/{username}/{connection}/dispatches": {
       "get": {
         "summary": "List tracker dispatches",
-        "description": "Lists a connection's dispatch rows (issue, scope, skill, run id, state, failure reason, timestamps), newest first, optionally filtered by state. Requires tracker:admin.",
+        "description": "Lists a connection's dispatch rows (issue, scope, skill, run id, state, failure reason, timestamps), newest first, optionally filtered by state. Each row also reports the fan-out slots its run still holds as lineage reservations, and when the oldest was claimed, so an operator can see why a run's fan-out looks exhausted. Requires tracker:admin.",
         "operationId": "TrackerService_ListTrackerDispatches",
         "responses": {
           "200": {
@@ -7374,7 +7378,7 @@
       },
       "post": {
         "summary": "Create a tracker issue",
-        "description": "Files an issue on the connection's tracker — the follow-up verb for issue-triggered role agents. Labels must pass the connection's label allow-list (checked before any upstream call). A run-scoped token must name a parent issue: the child is recorded in the issue lineage (depth and per-run fan-out are capped by the connection policy), gets agent:needs-approval unless the policy enables auto_chain, and its body ends with the parent link and the run's identity stamp; the parent gets one back-link comment. Requires tracker:write.",
+        "description": "Files an issue on the connection's tracker — the follow-up verb for issue-triggered role agents. Labels must pass the connection's label allow-list (checked before any upstream call). A run-scoped token must name a parent issue: the child is recorded in the issue lineage (depth and per-run fan-out are capped by the connection policy), gets agent:needs-approval unless the policy enables auto_chain, and its body ends with the parent link and the run's identity stamp; the parent gets one back-link comment. If the tracker does not answer the create in time, the outcome is unknown (the issue may already exist upstream): the call fails with code UNKNOWN and a message starting UPSTREAM_CREATE_OUTCOME_UNKNOWN, the attempt is audited, and for a run it keeps counting against max_children_per_run — do not retry blindly; check the tracker for the issue first. Requires tracker:write.",
         "operationId": "TrackerService_CreateTrackerIssue",
         "responses": {
           "200": {
@@ -11739,6 +11743,13 @@
     },
     "DispatchTrackerIssuesBody": {
       "type": "object",
+      "properties": {
+        "maxStarts": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Most runs this tick may start (#2270), so a caller enforcing its\nown budget (concurrency, runs per day) can bound one tick. Only\nruns that actually started count; a start that failed does not.\nIssues past the limit get no dispatch row and no label, so a later\ntick picks them up. 0 means unlimited; negative is rejected."
+        }
+      },
       "description": "DispatchTrackerIssuesRequest runs ONE dispatcher tick for a\nconnection: list open issues, filter, insert a dispatch row, start\nthe routed skill, label agent:queued. `containarium tracker\ndispatch --interval` calls this in a loop."
     },
     "DispatchTrackerIssuesResponse": {
@@ -11787,6 +11798,11 @@
           "type": "integer",
           "format": "int32",
           "description": "Issues whose recorded lineage depth exceeds the connection policy's\nmax_depth (#2025) — filed under a looser policy, then lowered. The\ndaemon reads depth from its own lineage table, never the issue."
+        },
+        "leftUndispatched": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Issues that passed every check this tick makes before inserting a\ndispatch row (routed scope, no gate or state label, depth within\npolicy) but were not dispatched because max_starts runs had already\nstarted (#2270). They have no row and no label; a later tick picks\nthem up. Always 0 when max_starts is 0."
         }
       }
     },
@@ -16964,6 +16980,14 @@
           "type": "number",
           "format": "double",
           "description": "cpu_overcommit_factor is the gate's configured ceiling multiple of\ntotal_cpus (the --cpu-overcommit-factor flag). 0 when the gate is\ndisabled. The ceiling in cores is total_cpus × cpu_overcommit_factor;\nthe host is over it when committed_cpu_cores exceeds that."
+        },
+        "headroom": {
+          "$ref": "#/definitions/CapacityHeadroom",
+          "description": "headroom is the spare scheduling capacity this backend currently\nadvertises (#680), or null when nothing is advertised (withdrawn or\nnever published) — null stays distinguishable from \"offering zero\".\nCarried on SystemInfo so ListBackends' existing GetSystemInfo fan-out\nsurfaces a peer's advertisement with no extra forwarded call (#2135)."
+        },
+        "capabilityProfile": {
+          "$ref": "#/definitions/CapabilityProfile",
+          "description": "capability_profile is this backend's last-recorded hardware capability\nprofile (#681), or null until ProfileBackend has run — null stays\ndistinguishable from \"profiled CPU-only\". Carried here for the same\npeer fan-out as headroom (#2135)."
         }
       },
       "title": "SystemInfo contains information about the host system"
@@ -17284,6 +17308,16 @@
         "failure": {
           "$ref": "#/definitions/TrackerDispatchFailure",
           "description": "Set when state is FAILED (#2026): the typed cause."
+        },
+        "lineageReservations": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Fan-out slots run_id still holds as lineage reservations (#2062):\nfollow-up creates in flight, or ones that were never cleared (the\ndaemon died mid-create, or recording the follow-up failed). Each\ncounts against the connection's max_children_per_run exactly like a\nfiled follow-up, so a run whose fan-out looks exhausted shows why\nhere. Swept when the run's lease ends. Filled in by\nListTrackerDispatches only."
+        },
+        "oldestLineageReservationAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the oldest of those reservations was claimed; unset when there\nare none. Filled in by ListTrackerDispatches only."
         }
       },
       "description": "TrackerDispatch is one durable dispatch: which issue, which scope\nlabel matched, which skill was started as which run, and where the\nrun is in its state machine."
@@ -17941,6 +17975,10 @@
         "connection": {
           "$ref": "#/definitions/PgConnection",
           "description": "Connection parameters for the *target* container's Postgres. The\nscratch database name is generated by the daemon, so\nconnection.database is ignored here."
+        },
+        "ageIdentity": {
+          "type": "string",
+          "description": "For a record with encrypted=true: the age X25519 identity\n(\"AGE-SECRET-KEY-1…\") that matches the record's age_recipient\n(#1831). Used to decrypt for this one call and never stored or\nlogged, same contract as RestoreBackupRequest.age_identity.\nRequired for an encrypted record — the daemon refuses to even\nattempt the test without it, because it holds no decryption key of\nits own. A wrong identity comes back as a FAILED verification\nresult, not an RPC error (#2295)."
         }
       },
       "description": "VerifyBackupRequest restore-tests a stored dump: it loads the dump into\na throwaway database inside a *target* container and runs\nengine-appropriate sanity checks, then drops the scratch database.\n\nThe target is always a container other than the one the backup came\nfrom — verification must never touch the source database. Supply a\ndisposable container as the target; the daemon rejects a request whose\ntarget resolves to the source container."

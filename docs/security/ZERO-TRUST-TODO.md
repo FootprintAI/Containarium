@@ -475,6 +475,9 @@ on the internal network. Land them first.
         privileged regardless of role). Tests in
         `internal/server/privileged_policy_test.go`. Proto contract
         unchanged — server-side gate, not a wire-level split.
+        The value is trimmed and lower-cased; unset (or empty) keeps
+        `all`. A value still unrecognised after that makes the daemon
+        refuse to start; it no longer falls back to `all` (#2299).
 - [x] **3.3** Cap `ssh_keys` length — `proto/.../container.proto:210` (**B-MED-1**)
       — Server-side bounds in `internal/server/create_bounds.go`:
         max 32 keys, each ≤ 8 KiB. Enforced at the top of

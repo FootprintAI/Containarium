@@ -12,6 +12,7 @@ import (
 
 	"github.com/footprintai/containarium/internal/cloud"
 	"github.com/footprintai/containarium/internal/hostcheck"
+	"github.com/footprintai/containarium/internal/hostharden"
 )
 
 // defaultDaemonJWTSecretFile aliases the cloud package's shared default so
@@ -238,9 +239,10 @@ func runCloudEnroll(cmd *cobra.Command, _ []string) error {
 	// discoverable later via a separate `containarium doctor` run or the
 	// cloud webui's per-host posture badges. Advisory only: it does not
 	// block enrollment (see #1103 for the open product decision on whether
-	// it eventually should).
+	// it eventually should). The metadata block goes first so the posture
+	// printed reports whether it took (#2298).
+	applyMetadataBlock(cmd, hostharden.DefaultBridge)
 	printPosture(hostcheck.RunPosture())
-	applyMetadataBlock(cmd, "incusbr0")
 	return nil
 }
 
