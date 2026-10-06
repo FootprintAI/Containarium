@@ -334,3 +334,28 @@ func TestGenerate_IdentitiesOnlyEmittedWithoutIdentityFile(t *testing.T) {
 		t.Errorf("no IdentityFile was requested:\n%s", g.Content)
 	}
 }
+
+func TestGenerate_JumpHostOnlyForBoxesWithoutSSHHost(t *testing.T) {
+	g := Generate([]incus.ContainerInfo{
+		{Name: "alice-container", Username: "alice", State: "Running", IPAddress: "10.0.3.100"},
+		{Name: "bob-container", Username: "bob", State: "Running", SSHHost: "ssh.example.com"},
+		{Name: "stopped-container", Username: "stopped", State: "Stopped", IPAddress: "10.0.3.101"},
+	}, Options{JumpHost: "vm.example.com", IdentityFile: "~/.ssh/box_key"})
+	if g.Count != 2 || g.SkippedStopped != 1 {
+		t.Fatalf("Count=%d SkippedStopped=%d, want 2/1", g.Count, g.SkippedStopped)
+	}
+	alice := block(t, g.Content, "alice-container")
+	jump := block(t, g.Content, "alice-container-jump")
+	bob := block(t, g.Content, "bob-container")
+	if !strings.Contains(alice, "ProxyJump alice-container-jump") || !strings.Contains(jump, "User alice") {
+		t.Fatalf("missing per-box jump route:\n%s", g.Content)
+	}
+	for _, blk := range []string{alice, jump} {
+		if !strings.Contains(blk, "IdentityFile ~/.ssh/box_key") || !strings.Contains(blk, "IdentitiesOnly yes") {
+			t.Errorf("key must apply on both hops:\n%s", blk)
+		}
+	}
+	if strings.Contains(bob, "ProxyJump") || !strings.Contains(bob, "HostName ssh.example.com") || strings.Contains(g.Content, "Host bob-container-jump") || strings.Contains(g.Content, "Host stopped-container-jump") {
+		t.Fatalf("jump route replaced advertised SSH host or rendered a stopped box:\n%s", g.Content)
+	}
+}

@@ -2,9 +2,14 @@ package cmd
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 
+	"github.com/footprintai/containarium/internal/connectcore"
+	"github.com/footprintai/containarium/internal/hostport"
 	"github.com/footprintai/containarium/internal/sshconfig"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/spf13/cobra"
@@ -12,6 +17,7 @@ import (
 
 var (
 	sshConfigSentinel       string
+	sshConfigJumpHost       string
 	sshConfigPort           int
 	sshConfigIdentity       string
 	sshConfigUser           string
@@ -32,9 +38,12 @@ single line to ~/.ssh/config to wire it in once:
 
 After that, ` + "`ssh <container-name>`" + ` and ` + "`scp`" + ` work transparently.
 
-Two routing modes:
+Routing modes:
 
-  - Direct (default):    HostName=<container IP>; for LAN-reachable boxes.
+  - Local:               HostName=<container IP>; for LAN-reachable boxes.
+  - Remote single VM:    ProxyJump through the API host's SSH port (22)
+                         when the daemon does not advertise ssh_host.
+                         Use --jump-host for an API tunnel or custom SSH port.
   - Via sentinel:        HostName=<sentinel>, User=<container-name>;
                          sshpiper on the sentinel routes by username.
 
@@ -48,6 +57,9 @@ Examples:
 
   # Behind a sentinel
   containarium ssh-config sync --sentinel sentinel.example.com
+
+  # Single VM with the API forwarded to localhost
+  containarium ssh-config sync --http --server http://localhost:8080 --jump-host vm.example.com
 
   # With a dedicated identity file
   containarium ssh-config sync --identity ~/.ssh/containarium_ed25519`,
@@ -75,6 +87,8 @@ func init() {
 				"When set, all entries route through it via sshpiper. Empty = direct mode.")
 		c.Flags().IntVar(&sshConfigPort, "sentinel-port", 22,
 			"SSH port on the sentinel (overridden by host:port form in --sentinel)")
+		c.Flags().StringVar(&sshConfigJumpHost, "jump-host", "",
+			"VM SSH endpoint (host or host:port) for boxes without ssh_host (default: remote API host on port 22; required for API tunnels)")
 		c.Flags().StringVar(&sshConfigIdentity, "identity", "",
 			"IdentityFile to render in every Host block (omitted by default)")
 		c.Flags().StringVar(&sshConfigUser, "user", "",
@@ -94,7 +108,10 @@ func runSSHConfigShow(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	g := sshconfig.Generate(containers, sshConfigOptions())
+	g, err := generateManagedSSHConfig(containers)
+	if err != nil {
+		return err
+	}
 	fmt.Print(g.Content)
 	fmt.Fprintf(os.Stderr,
 		"\n# %d host(s) generated, %d skipped (stopped), %d skipped (no address)\n",
@@ -107,7 +124,10 @@ func runSSHConfigSync(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	g := sshconfig.Generate(containers, sshConfigOptions())
+	g, err := generateManagedSSHConfig(containers)
+	if err != nil {
+		return err
+	}
 
 	out := sshConfigOutPath
 	if out == "" {
@@ -142,13 +162,51 @@ func runSSHConfigSync(cmd *cobra.Command, args []string) error {
 }
 
 func sshConfigOptions() sshconfig.Options {
+	jumpHost := sshConfigJumpHost
+	if jumpHost == "" && serverAddr != "" {
+		server := serverAddr
+		if !strings.Contains(server, "://") {
+			server = "//" + server
+		}
+		if u, err := url.Parse(server); err == nil {
+			// The API port is not the SSH port. Keep only the hostname;
+			// bracket IPv6 so hostport.Split can recognize a bare literal.
+			jumpHost = u.Hostname()
+			if strings.Contains(jumpHost, ":") {
+				jumpHost = "[" + jumpHost + "]"
+			}
+		}
+	}
 	return sshconfig.Options{
 		Sentinel:       sshConfigSentinel,
+		JumpHost:       jumpHost,
 		SentinelPort:   sshConfigPort,
 		IdentityFile:   sshConfigIdentity,
 		User:           sshConfigUser,
 		IncludeStopped: sshConfigIncludeStopped,
 	}
+}
+
+func generateManagedSSHConfig(containers []incus.ContainerInfo) (sshconfig.Generated, error) {
+	opts := sshConfigOptions()
+	if opts.Sentinel == "" && (serverAddr != "" || sshConfigJumpHost != "") {
+		for _, c := range containers {
+			if (!opts.IncludeStopped && !connectcore.IsRunning(c.State)) || c.SSHHost != "" || c.IPAddress == "" {
+				continue
+			}
+			if opts.JumpHost == "" {
+				return sshconfig.Generated{}, fmt.Errorf("cannot determine the VM SSH host for %s: pass --jump-host <vm-host>, configure the daemon's --ssh-host, or use --sentinel", c.Name)
+			}
+			host, _ := hostport.Split(opts.JumpHost, 22)
+			if sshConfigJumpHost == "" && (strings.EqualFold(host, "localhost") || net.ParseIP(host).IsLoopback()) {
+				return sshconfig.Generated{}, fmt.Errorf("the API host is loopback and may be an SSH tunnel: pass --jump-host <vm-host>, configure the daemon's --ssh-host, or use --sentinel")
+			}
+			if c.Username == "" {
+				return sshconfig.Generated{}, fmt.Errorf("cannot determine the jump account for %s: the daemon must report a username; configure the daemon's --ssh-host or use --sentinel", c.Name)
+			}
+		}
+	}
+	return sshconfig.Generate(containers, opts), nil
 }
 
 // loadContainersForSSHConfig pulls the container list using whichever

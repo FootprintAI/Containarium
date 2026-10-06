@@ -137,13 +137,14 @@ containarium ssh-config sync --identity ~/.ssh/containarium_ed25519
 ssh alice hostname   # → alice-container
 ```
 
-**Variant B: from your laptop. Needs a sentinel or `--ssh-host`.** A fresh
-single-VM install doesn't advertise a public SSH host. A laptop-side sync
-would therefore write the box's private bridge IP, and `ssh alice` couldn't
-connect. Use this variant when your deployment has a
-[sentinel](#sentinel--sshpiper--caddy--proxy-protocol) or the daemon runs
-with `--ssh-host`. Making this work out of the box is tracked in
-[#2249](https://github.com/FootprintAI/Containarium/issues/2249).
+**Variant B: from your laptop.** On a single VM, `ssh-config sync` adds a
+`ProxyJump` through the VM's per-user jump account when the daemon doesn't
+advertise `ssh_host`. If the API is reached directly, the jump host defaults
+to the API hostname, on SSH port 22. With the API tunnel below, name the
+actual VM with `--jump-host` (use `<vm-host>:<ssh-port>` for a custom SSH port).
+Deployments with a [sentinel](#sentinel--sshpiper--caddy--proxy-protocol) can
+use `--sentinel <sentinel-host>` instead; a daemon's `--ssh-host` still takes
+precedence over the jump route.
 
 ```bash
 # On your laptop: install the client only.
@@ -155,18 +156,19 @@ export CONTAINARIUM_HTTP=true
 export CONTAINARIUM_SERVER=http://localhost:8080
 export CONTAINARIUM_TOKEN="$(ssh <you>@<vm-host> sudo cat /etc/containarium/admin.token)"
 
-# Leave out --sentinel when the daemon runs with --ssh-host.
-containarium ssh-config sync --sentinel <sentinel-host>
+containarium ssh-config sync --jump-host <vm-host>
 ```
 
 Then make `Include ~/.containarium/ssh_config` the first line of your
-laptop's `~/.ssh/config`. Your laptop's public key also has to be on the box
-(see `containarium collaborator add --help`).
+laptop's `~/.ssh/config`. Use the key whose public half was supplied when
+creating the box: that key is authorized on both the box and its VM jump
+account. Add `--identity ~/.ssh/<your-private-key>` to sync if needed; it
+applies to both SSH connections.
 
 ✅ **Check:**
 
 ```bash
-containarium ssh-config show --sentinel <sentinel-host> | grep '^Host '   # → Host alice
+ssh alice-container hostname   # → alice-container
 ```
 
 ### 3. Wire your agent to the box

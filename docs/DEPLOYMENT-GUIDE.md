@@ -306,6 +306,21 @@ sudo containarium info alice
 
 #### 4.2. Give Users Their SSH Config
 
+The CLI can generate this config automatically, using the jump account
+created for each box's username (no administrator SSH key needed):
+
+```bash
+# On the laptop, with API credentials already configured:
+containarium ssh-config sync --http --server http://<vm-host>:8080 --identity ~/.ssh/alice_key
+```
+
+Add `Include ~/.containarium/ssh_config` at the top of `~/.ssh/config`, then
+connect with `ssh alice-container`. Use the same key supplied at box creation.
+When the API is tunneled to localhost, add `--jump-host <vm-host>`; a custom
+SSH port can be specified as `--jump-host <vm-host>:2222`.
+
+For deployments that manage SSH config by hand:
+
 Send this to alice:
 
 ```ssh-config
