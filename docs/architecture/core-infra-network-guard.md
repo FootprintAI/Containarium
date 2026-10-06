@@ -182,7 +182,12 @@ correctness never depends on the pin — the pin only removes churn.
 `CONTAINARIUM_CORE_GUARD=off|enforce`, read once at startup like the other
 enforcement guards (`internal/config/network.go`).
 
-- **Release N:** ships with default `off`. Nothing changes on upgrade.
+- **Release N:** shipped with default `off`. Nothing changed on upgrade.
+- **Since the tenant network guard (#2347,
+  [`tenant-network-guard.md`](tenant-network-guard.md)):** unset means
+  `enforce` and only `off` disables, for this guard and the tenant guard
+  alike (`internal/nicguard.ParseMode`). The breaking-change entry in the
+  changelog names the two variables.
 - **Spike on a lab host** (the only step that touches a real host before
   code is trusted): enable, run both e2e scripts (below), read the
   `default.ingress.logged` kernel log lines, and answer the one question the

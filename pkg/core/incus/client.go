@@ -181,6 +181,8 @@ type Backend interface {
 	GetNetworkACL(name string) (*api.NetworkACL, error)
 	CreateNetworkACL(config ACLConfig) error
 	UpdateNetworkACL(name string, config ACLConfig) error
+	ListNetworkACLs() ([]api.NetworkACL, error)
+	DeleteNetworkACL(name string) error
 	AttachACLToContainer(containerName, aclName, deviceName string) error
 	EnsureNICDevice(containerName string, want NICDevice) error
 	SetDeviceConfig(containerName, deviceName string, keys map[string]string) error
@@ -445,6 +447,34 @@ const RoleKey = "user.containarium.role"
 // doesn't follow the naming convention. See NETWORK-ISOLATION-DESIGN.md
 // "Cloud extension".
 const TenantLabelKey = "user.containarium.tenant"
+
+// CloudOrgIDLabel is the attribution label (under LabelPrefix) the hosted
+// control plane stamps on every container it creates via the OSS-primary
+// driver — the owning org UUID. ResolveTenant reads it as the second
+// source of tenant identity.
+const CloudOrgIDLabel = "cloud_org_id"
+
+// ContainerNameSuffix is the <tenant>-container naming convention's suffix.
+const ContainerNameSuffix = "-container"
+
+// ResolveTenant determines a container's owning tenant, in the precedence
+// every tenant-scoped control shares (the eBPF enforcer, the tenant guard):
+// the explicit tenant label (TenantLabelKey) wins; then the cloud_org_id
+// attribution label; then the <tenant>-container naming convention. ""
+// when none yields a tenant — the container is then left unmanaged and
+// reported, never guessed.
+func ResolveTenant(tenantLabel, cloudOrgID, containerName string) string {
+	if t := strings.TrimSpace(tenantLabel); t != "" {
+		return t
+	}
+	if t := strings.TrimSpace(cloudOrgID); t != "" {
+		return t
+	}
+	if !strings.HasSuffix(containerName, ContainerNameSuffix) {
+		return ""
+	}
+	return strings.TrimSuffix(containerName, ContainerNameSuffix)
+}
 
 // Role is a typed string for core container roles.
 type Role string

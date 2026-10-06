@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -970,6 +971,11 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 	// Sync mode - wait for completion
 	info, err := s.boxes().Create(ctx, spec)
 	if err != nil {
+		if errors.Is(err, container.ErrNICGuard) {
+			// Fail closed (tenant network guard): the box was removed
+			// rather than started reachable by co-tenants.
+			return nil, status.Error(codes.FailedPrecondition, err.Error())
+		}
 		return nil, fmt.Errorf("failed to create container: %w", err)
 	}
 

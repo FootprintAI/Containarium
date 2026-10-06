@@ -38,11 +38,13 @@ import (
 	"github.com/footprintai/containarium/internal/metrics/platformstats"
 	"github.com/footprintai/containarium/internal/modelgateway"
 	"github.com/footprintai/containarium/internal/mtls"
+	"github.com/footprintai/containarium/internal/nicguard"
 	"github.com/footprintai/containarium/internal/pentest"
 	"github.com/footprintai/containarium/internal/runlease"
 	"github.com/footprintai/containarium/internal/sandbox/ratelimit"
 	secretsstore "github.com/footprintai/containarium/internal/secrets"
 	"github.com/footprintai/containarium/internal/security"
+	"github.com/footprintai/containarium/internal/tenantguard"
 	"github.com/footprintai/containarium/internal/threatdetect"
 	trackerstore "github.com/footprintai/containarium/internal/tracker"
 	"github.com/footprintai/containarium/internal/traffic"
@@ -293,14 +295,15 @@ type DualServer struct {
 	zapStore                 *zapscanner.Store
 	peerPool                 *PeerPool
 	autoSleepManager         *autosleep.Manager
-	ttlSweeperManager        *ttlsweeper.Manager    // ephemeral CI box auto-delete (#299)
-	anonManager              *anonbox.Manager       // anonymous-box door (#2197); nil unless CONTAINARIUM_ANON_DOOR=enable
-	sandboxServer            *SandboxServer         // set in NewDualServer when incus.New succeeds; nil otherwise (#1488)
-	sandboxTTLSweeperManager *ttlsweeper.Manager    // ephemeral sandbox auto-delete (#1488 Phase 4)
-	secretsReconciler        *secretsReconciler     // Phase 4.3 Phase B-3
-	networkPolicyEnforcer    *NetworkPolicyEnforcer // #315 Phase A — eBPF per-tenant net policy (off unless configured)
-	bridgeDNS                *bridgedns.Reconciler  // #2188 — keeps the bridge raw.dnsmasq record on core-caddy's live address
-	coreGuard                *coreguard.Reconciler  // #2084 — Incus NIC ACLs keeping tenants off core-role containers (off unless CONTAINARIUM_CORE_GUARD=enforce)
+	ttlSweeperManager        *ttlsweeper.Manager     // ephemeral CI box auto-delete (#299)
+	anonManager              *anonbox.Manager        // anonymous-box door (#2197); nil unless CONTAINARIUM_ANON_DOOR=enable
+	sandboxServer            *SandboxServer          // set in NewDualServer when incus.New succeeds; nil otherwise (#1488)
+	sandboxTTLSweeperManager *ttlsweeper.Manager     // ephemeral sandbox auto-delete (#1488 Phase 4)
+	secretsReconciler        *secretsReconciler      // Phase 4.3 Phase B-3
+	networkPolicyEnforcer    *NetworkPolicyEnforcer  // #315 Phase A — eBPF per-tenant net policy (off unless configured)
+	bridgeDNS                *bridgedns.Reconciler   // #2188 — keeps the bridge raw.dnsmasq record on core-caddy's live address
+	coreGuard                *coreguard.Reconciler   // #2084 — Incus NIC ACLs keeping tenants off core-role containers (on unless CONTAINARIUM_CORE_GUARD=off)
+	tenantGuard              *tenantguard.Reconciler // #2347 — Incus NIC ACLs keeping tenants off each other (on unless CONTAINARIUM_TENANT_GUARD=off)
 
 	// k8sNetPolicyReconciler converges tenant NetworkPolicy objects on the K8s
 	// backend from the same store the eBPF enforcer reads (#1188). Nil on
@@ -1929,6 +1932,24 @@ skipAppHosting:
 		})
 	}
 
+	// Tenant network guard (#2347, docs/architecture/tenant-network-guard.md):
+	// one Incus NIC ACL per tenant, ingress default-drop with host gateway +
+	// core initiators + same-tenant addresses allowed, so tenants on the
+	// shared bridge cannot reach each other. ON unless
+	// CONTAINARIUM_TENANT_GUARD=off; also consulted at container birth so a
+	// new box is guarded before it starts.
+	var tenantGuard *tenantguard.Reconciler
+	if networkIncusClient != nil {
+		tenantGuard = tenantguard.NewReconciler(networkIncusClient, tenantguard.Config{
+			Mode:       nicguard.ParseMode(netCfg.TenantGuard),
+			Bridge:     "incusbr0",
+			BridgeCIDR: networkCIDR,
+		})
+		if mgr := containerServer.GetManager(); mgr != nil {
+			mgr.SetNICGuard(tenantGuard)
+		}
+	}
+
 	// AnonymousBoxService (#2197): the daemon side of the `ssh new.<domain>`
 	// door. Opt-in — only the dedicated pool=anon backend runs it — and only
 	// over an LXC box backend: the manager needs exec + TTL capabilities and
@@ -2598,6 +2619,7 @@ skipAppHosting:
 		networkPolicyEnforcer:  networkPolicyEnforcer,
 		bridgeDNS:              bridgeDNS,
 		coreGuard:              coreGuard,
+		tenantGuard:            tenantGuard,
 		k8sNetPolicyReconciler: k8sNetPolicyReconciler,
 		cloudClient:            cloudClient,
 		startTime:              time.Now(),
@@ -3383,6 +3405,25 @@ func (ds *DualServer) Start(ctx context.Context) error {
 			}
 		}()
 		go ds.coreGuard.Run(ctx, kick)
+	}
+	if ds.tenantGuard != nil {
+		sub := events.GetBus().Subscribe(nil)
+		kick := make(chan struct{}, 1)
+		go func() {
+			defer events.GetBus().Unsubscribe(sub.ID)
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-sub.Events:
+					select {
+					case kick <- struct{}{}:
+					default: // a pass is already pending; coalesce
+					}
+				}
+			}
+		}()
+		go ds.tenantGuard.Run(ctx, kick)
 	}
 
 	// Bridge DNS record (#2188): re-apply raw.dnsmasq when core-caddy's address

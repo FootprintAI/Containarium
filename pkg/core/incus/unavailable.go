@@ -90,6 +90,8 @@ func (*UnavailableBackend) GetImageAliasProperties(string) (map[string]string, b
 func (*UnavailableBackend) GetNetworkACL(string) (*api.NetworkACL, error)     { return nil, ErrUnavailable }
 func (*UnavailableBackend) CreateNetworkACL(ACLConfig) error                  { return ErrUnavailable }
 func (*UnavailableBackend) UpdateNetworkACL(string, ACLConfig) error          { return ErrUnavailable }
+func (*UnavailableBackend) ListNetworkACLs() ([]api.NetworkACL, error)        { return nil, ErrUnavailable }
+func (*UnavailableBackend) DeleteNetworkACL(string) error                     { return ErrUnavailable }
 func (*UnavailableBackend) AttachACLToContainer(string, string, string) error { return ErrUnavailable }
 func (*UnavailableBackend) EnsureNICDevice(string, NICDevice) error           { return ErrUnavailable }
 func (*UnavailableBackend) SetDeviceConfig(string, string, map[string]string) error {

@@ -931,13 +931,7 @@ const cloudOrgIDLabel = "cloud_org_id"
 // the <tenant>-container naming convention; "" if none yield a tenant (the
 // container is then left unmanaged).
 func resolveTenant(tenantLabel, cloudOrgID, containerName string) string {
-	if t := strings.TrimSpace(tenantLabel); t != "" {
-		return t
-	}
-	if t := strings.TrimSpace(cloudOrgID); t != "" {
-		return t
-	}
-	return tenantOf(containerName)
+	return incus.ResolveTenant(tenantLabel, cloudOrgID, containerName)
 }
 
 // tenantOf extracts the tenant name from a container name, or "" if it doesn't
