@@ -113,11 +113,11 @@ jobs:
           sudo apt-get install -y --no-install-recommends nftables
           sudo nft list ruleset >/dev/null
 
-      # Ubuntu's packaged Incus 6.0 predates the network_bridge_acl API
-      # extension (NIC-level security.acls), so the guards would report
+      # Ubuntu's packaged Incus 6.0.0 predates the network_bridge_acl_devices
+      # API extension (NIC-level security.acls, Incus 6.9+), so the guards would report
       # Unsupported and prove nothing. Install the README's recommended
       # Zabbly stable build (7.x), the same source the fleet runs.
-      - name: Install Incus (Zabbly stable, has network_bridge_acl)
+      - name: Install Incus (Zabbly stable, has network_bridge_acl_devices)
         run: |
           set -euo pipefail
           curl -fsSL https://pkgs.zabbly.com/key.asc | sudo gpg --dearmor -o /usr/share/keyrings/zabbly-incus.gpg
@@ -140,9 +140,13 @@ jobs:
           test -S /var/lib/incus/unix.socket || { echo "::error::no Incus socket"; exit 1; }
           driver=$(sudo incus info | awk '/^  firewall:/ {print $2}')
           echo "incus firewall driver: $driver"
-          sudo incus info | grep -q '^- network_bridge_acl$' || {
-            echo "::error::this Incus lacks the network_bridge_acl API extension; the guards would report Unsupported"
-            sudo incus version; exit 1
+          # NIC-level security.acls needs network_bridge_acl_devices (Incus
+          # 6.9+, lxc/incus#1587); the older network_bridge_acl is the
+          # bridge-level key and is not enough. Read the API, not `incus
+          # info`'s abbreviated print.
+          sudo incus query /1.0 | jq -e '.api_extensions | index("network_bridge_acl_devices")' >/dev/null || {
+            echo "::error::this Incus lacks the network_bridge_acl_devices API extension; the guards would report Unsupported"
+            sudo incus version; sudo incus query /1.0 | jq -r '.api_extensions[]' | grep acl; exit 1
           }
           [ "$driver" = "nftables" ] || {
             echo "::error::Incus chose '$driver'; NIC ACLs need nftables — the guard would report ErrUnsupportedFirewall and this lane would prove nothing"
