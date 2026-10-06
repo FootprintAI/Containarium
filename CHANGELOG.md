@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   typo) now stops the daemon at boot with an error naming the variable, instead of silently granting every caller
   privileged Podman.
 
+- `scripts/core-guard-legit-flows-e2e.sh` no longer reports logged drops as unlogged (#2323). The "each drop
+  must be logged" check piped `journalctl -k` into `grep -q` under `set -o pipefail`: `grep -q` exits at the
+  first match, `journalctl` takes a SIGPIPE writing the rest of the window, and `pipefail` turned that into a
+  FAIL even though the line was there. It only happened once the log window exceeded the ~4 KB pipe buffer, so
+  it was intermittent (it depends on how long the script ran and how noisy the log was). The window is now
+  captured first and the captured text is searched; a genuinely missing log line still fails the check.
+
 ## [0.99.3] - 2026-10-05
 
 ### Fixed
