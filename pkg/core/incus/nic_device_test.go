@@ -23,6 +23,7 @@ type fakeDeviceServer struct {
 	storageVolumeErr error
 	updateErr        error
 	afterUpdate      *api.Instance
+	afterUpdateHook  func()
 
 	updates []api.InstancePut
 	events  []string
@@ -48,6 +49,9 @@ func (f *fakeDeviceServer) UpdateInstance(_ string, put api.InstancePut, _ strin
 	}
 	if f.afterUpdate != nil {
 		f.inst = f.afterUpdate
+	}
+	if f.afterUpdateHook != nil {
+		f.afterUpdateHook()
 	}
 	return fakeOp{}, nil
 }
@@ -233,7 +237,7 @@ func TestEnsureNICDevice_PreparesZFSQuotaHeadroomBeforeUpdate(t *testing.T) {
 	if len(f.events) != 3 {
 		t.Fatalf("events = %v, want temporary set, update, restore", f.events)
 	}
-	if !strings.HasPrefix(f.events[0], "set:quota:7583301632") || f.events[1] != "update" || f.events[2] != "set:quota:7GiB" {
+	if !strings.HasPrefix(f.events[0], "set:quota:7583301632") || f.events[1] != "update" || f.events[2] != "set:quota:7516192768" {
 		t.Errorf("events = %v, want temporary quota set, update, restore", f.events)
 	}
 }
@@ -254,8 +258,55 @@ func TestEnsureNICDevice_PreparesRefquotaHeadroomBeforeUpdate(t *testing.T) {
 	if err := c.EnsureNICDevice("box", NICDevice{Name: "eth0", Network: "incusbr0"}); err != nil {
 		t.Fatalf("EnsureNICDevice: %v", err)
 	}
-	if len(f.events) != 3 || !strings.HasPrefix(f.events[0], "set:refquota:") || f.events[1] != "update" || f.events[2] != "set:refquota:7GiB" {
+	if len(f.events) != 3 || !strings.HasPrefix(f.events[0], "set:refquota:") || f.events[1] != "update" || f.events[2] != "set:refquota:7516192768" {
 		t.Errorf("events = %v, want temporary refquota set, update, restore", f.events)
+	}
+}
+
+func TestEnsureNICDevice_PreservesStricterLiveQuota(t *testing.T) {
+	f := withRootDisk(profileNIC(), "zfs")
+	f.inst.ExpandedDevices["root"]["size"] = "10GiB"
+	properties := map[string]string{"used": "8589934592", "quota": "8589934592"}
+	var values []string
+	c := &Client{
+		server:           f,
+		zfsGetPropertyFn: func(_ string, property string) (string, error) { return properties[property], nil },
+		zfsSetPropertyFn: func(_ string, property, value string) error {
+			values = append(values, value)
+			properties[property] = value
+			return nil
+		},
+	}
+
+	if err := c.EnsureNICDevice("box", NICDevice{Name: "eth0", Network: "incusbr0"}); err != nil {
+		t.Fatalf("EnsureNICDevice: %v", err)
+	}
+	if len(values) != 2 || values[0] != "10737418240" || values[1] != "8589934592" {
+		t.Errorf("ZFS set values = %v, want temporary 10GiB and original live 8GiB", values)
+	}
+}
+
+func TestEnsureNICDevice_UnlimitedQuotaDoesNotNeedHeadroom(t *testing.T) {
+	f := withRootDisk(profileNIC(), "zfs")
+	properties := map[string]string{"used": "7516192768", "quota": "none"}
+	sets := 0
+	c := &Client{
+		server:           f,
+		zfsGetPropertyFn: func(_ string, property string) (string, error) { return properties[property], nil },
+		zfsSetPropertyFn: func(string, string, string) error {
+			sets++
+			return nil
+		},
+	}
+
+	if err := c.EnsureNICDevice("box", NICDevice{Name: "eth0", Network: "incusbr0"}); err != nil {
+		t.Fatalf("EnsureNICDevice: %v", err)
+	}
+	if sets != 0 {
+		t.Fatalf("ZFS sets = %d, want none for an unlimited quota", sets)
+	}
+	if len(f.updates) != 1 {
+		t.Fatalf("UpdateInstance calls = %d, want 1", len(f.updates))
 	}
 }
 
@@ -510,13 +561,13 @@ func TestSetDeviceConfig_RestoreUsesCurrentRootSizeAfterConcurrentResize(t *test
 	initial := &api.Instance{InstancePut: api.InstancePut{Devices: map[string]map[string]string{
 		"eth0": {"type": "nic", "name": "eth0", "network": "incusbr0", "security.acls": "old"},
 	}}, ExpandedDevices: map[string]map[string]string{
-		"root": {"type": "disk", "path": "/", "pool": "default", "size": "7GiB"},
+		"root": {"type": "disk", "path": "/", "pool": "default", "size": "10GiB"},
 	}}
 	current := &api.Instance{InstancePut: initial.InstancePut, ExpandedDevices: map[string]map[string]string{
-		"root": {"type": "disk", "path": "/", "pool": "default", "size": "11GiB"},
+		"root": {"type": "disk", "path": "/", "pool": "default", "size": "20GiB"},
 	}}
 	f := &fakeDeviceServer{inst: initial, afterUpdate: current, storagePool: &api.StoragePool{Name: "default", Driver: "zfs"}}
-	properties := map[string]string{"used": "7516192768", "quota": "7516192768"}
+	properties := map[string]string{"used": "8589934592", "quota": "8589934592"}
 	var values []string
 	c := &Client{
 		server:           f,
@@ -526,21 +577,58 @@ func TestSetDeviceConfig_RestoreUsesCurrentRootSizeAfterConcurrentResize(t *test
 	if err := c.SetDeviceConfig("box", "eth0", map[string]string{"security.acls": "guard"}); err != nil {
 		t.Fatalf("SetDeviceConfig: %v", err)
 	}
-	if len(values) != 2 || values[1] != "11GiB" {
-		t.Errorf("ZFS set values = %v, want restore to current 11GiB", values)
+	if len(values) != 2 || values[1] != "20GiB" {
+		t.Errorf("ZFS set values = %v, want restore to current 20GiB", values)
 	}
 }
 
-func equalStrings(got, want []string) bool {
-	if len(got) != len(want) {
-		return false
+func TestSetDeviceConfig_RestoreSkipsConcurrentPoolChange(t *testing.T) {
+	initial := deviceConfigInstanceWithRoot("default", "7GiB")
+	current := deviceConfigInstanceWithRoot("other", "7GiB")
+	f := &fakeDeviceServer{inst: initial, afterUpdate: current, storagePool: &api.StoragePool{Name: "default", Driver: "zfs"}}
+	properties := map[string]string{"used": "7516192768", "quota": "7516192768"}
+	var values []string
+	c := &Client{
+		server:           f,
+		zfsGetPropertyFn: func(_ string, property string) (string, error) { return properties[property], nil },
+		zfsSetPropertyFn: func(_ string, _ string, value string) error { values = append(values, value); return nil },
 	}
-	for i := range got {
-		if got[i] != want[i] {
-			return false
-		}
+
+	if err := c.SetDeviceConfig("box", "eth0", map[string]string{"security.acls": "guard"}); err != nil {
+		t.Fatalf("SetDeviceConfig: %v", err)
 	}
-	return true
+	if len(values) != 1 {
+		t.Errorf("ZFS set values = %v, want only temporary set after pool change", values)
+	}
+}
+
+func TestSetDeviceConfig_RestoreSkipsConcurrentQuotaModeChange(t *testing.T) {
+	f := &fakeDeviceServer{inst: deviceConfigInstanceWithRoot("default", "7GiB"), storagePool: &api.StoragePool{Name: "default", Driver: "zfs"}}
+	f.afterUpdateHook = func() {
+		f.storagePool.Config = map[string]string{"volume.zfs.use_refquota": "true"}
+	}
+	properties := map[string]string{"used": "7516192768", "quota": "7516192768"}
+	var values []string
+	c := &Client{
+		server:           f,
+		zfsGetPropertyFn: func(_ string, property string) (string, error) { return properties[property], nil },
+		zfsSetPropertyFn: func(_ string, _ string, value string) error { values = append(values, value); return nil },
+	}
+
+	if err := c.SetDeviceConfig("box", "eth0", map[string]string{"security.acls": "guard"}); err != nil {
+		t.Fatalf("SetDeviceConfig: %v", err)
+	}
+	if len(values) != 1 {
+		t.Errorf("ZFS set values = %v, want only temporary set after quota-mode change", values)
+	}
+}
+
+func deviceConfigInstanceWithRoot(pool, size string) *api.Instance {
+	return &api.Instance{InstancePut: api.InstancePut{Devices: map[string]map[string]string{
+		"eth0": {"type": "nic", "name": "eth0", "network": "incusbr0", "security.acls": "old"},
+	}}, ExpandedDevices: map[string]map[string]string{
+		"root": {"type": "disk", "path": "/", "pool": pool, "size": size},
+	}}
 }
 
 // The guard's reconciler is written against Backend, so every method it

@@ -14,6 +14,20 @@ import (
 // remaining negligible beside the root-disk sizes this path manages.
 const zfsDeviceUpdateHeadroomBytes int64 = 64 * 1024 * 1024
 
+type zfsLimit struct {
+	value     string
+	bytes     int64
+	unlimited bool
+}
+
+type zfsQuotaRestoreState struct {
+	pool              string
+	dataset           string
+	quotaProperty     string
+	preparedRootSize  string
+	originalLiveLimit string
+}
+
 // EnsureNICDevice makes sure containerName has an instance-local NIC device
 // named want.Name on want.Network, pinned to want.IPv4Address when that is
 // non-empty. It is idempotent: an equal instance-local device is a no-op.
@@ -151,8 +165,9 @@ func (c *Client) updateInstanceDevices(containerName string, inst *api.Instance,
 
 // prepareZFSQuotaHeadroomForDeviceUpdate makes a temporary enlargement only
 // when the live ZFS limit leaves less than zfsDeviceUpdateHeadroomBytes above
-// the usage Incus accounts for. Its restore function re-reads the instance so
-// a concurrent resize is never overwritten with the stale pre-update size.
+// the usage Incus accounts for. Its restore function preserves the exact live
+// limit unless re-reading the instance shows that a concurrent resize changed
+// the configured root size.
 func (c *Client) prepareZFSQuotaHeadroomForDeviceUpdate(containerName string, inst *api.Instance) (func() error, error) {
 	pool, targetSize, ok := effectiveRootDisk(inst)
 	if !ok || targetSize == "" {
@@ -185,11 +200,11 @@ func (c *Client) prepareZFSQuotaHeadroomForDeviceUpdate(containerName string, in
 	if err != nil {
 		return nil, err
 	}
-	liveLimit, unlimited, err := c.getZFSLimitProperty(dataset, quotaProperty)
+	liveLimit, err := c.getZFSLimitProperty(dataset, quotaProperty)
 	if err != nil {
 		return nil, err
 	}
-	if unlimited || liveLimit-usage >= zfsDeviceUpdateHeadroomBytes {
+	if liveLimit.unlimited || liveLimit.bytes-usage >= zfsDeviceUpdateHeadroomBytes {
 		return nil, nil
 	}
 
@@ -202,12 +217,19 @@ func (c *Client) prepareZFSQuotaHeadroomForDeviceUpdate(containerName string, in
 		return nil, err
 	}
 
+	restoreState := zfsQuotaRestoreState{
+		pool:              pool,
+		dataset:           dataset,
+		quotaProperty:     quotaProperty,
+		preparedRootSize:  targetSize,
+		originalLiveLimit: liveLimit.value,
+	}
 	return func() error {
-		return c.restoreZFSQuotaHeadroom(containerName, pool, dataset, quotaProperty)
+		return c.restoreZFSQuotaHeadroom(containerName, restoreState)
 	}, nil
 }
 
-func (c *Client) restoreZFSQuotaHeadroom(containerName, pool, dataset, quotaProperty string) error {
+func (c *Client) restoreZFSQuotaHeadroom(containerName string, state zfsQuotaRestoreState) error {
 	inst, _, err := c.server.GetInstance(containerName)
 	if err != nil {
 		return fmt.Errorf("re-read container for quota restore: %w", err)
@@ -221,24 +243,28 @@ func (c *Client) restoreZFSQuotaHeadroom(containerName, pool, dataset, quotaProp
 	}
 	// A move to another pool or a mode change is owned by the concurrent Incus
 	// update; do not overwrite either setting from this older operation.
-	if currentPool != pool {
+	if currentPool != state.pool {
 		return nil
 	}
-	storagePool, _, err := c.server.GetStoragePool(pool)
+	storagePool, _, err := c.server.GetStoragePool(state.pool)
 	if err != nil {
-		return fmt.Errorf("get storage pool %s for quota restore: %w", pool, err)
+		return fmt.Errorf("get storage pool %s for quota restore: %w", state.pool, err)
 	}
 	if storagePool == nil {
-		return fmt.Errorf("get storage pool %s for quota restore: empty response", pool)
+		return fmt.Errorf("get storage pool %s for quota restore: empty response", state.pool)
 	}
-	currentProperty, _, err := c.zfsQuotaProperties(containerName, pool, storagePool)
+	currentProperty, _, err := c.zfsQuotaProperties(containerName, state.pool, storagePool)
 	if err != nil {
 		return err
 	}
-	if currentProperty != quotaProperty {
+	if currentProperty != state.quotaProperty {
 		return nil
 	}
-	return c.setZFSProperty(dataset, quotaProperty, targetSize)
+	restoreLimit := state.originalLiveLimit
+	if targetSize != state.preparedRootSize {
+		restoreLimit = targetSize
+	}
+	return c.setZFSProperty(state.dataset, state.quotaProperty, restoreLimit)
 }
 
 func effectiveRootDisk(inst *api.Instance) (pool, size string, ok bool) {
@@ -297,19 +323,19 @@ func (c *Client) getZFSByteProperty(dataset, property string) (int64, error) {
 	return bytes, nil
 }
 
-func (c *Client) getZFSLimitProperty(dataset, property string) (int64, bool, error) {
+func (c *Client) getZFSLimitProperty(dataset, property string) (zfsLimit, error) {
 	value, err := c.getZFSProperty(dataset, property)
 	if err != nil {
-		return 0, false, err
+		return zfsLimit{}, err
 	}
 	if value == "none" || value == "-" {
-		return 0, true, nil
+		return zfsLimit{value: value, unlimited: true}, nil
 	}
 	bytes, err := strconv.ParseInt(value, 10, 64)
 	if err != nil {
-		return 0, false, fmt.Errorf("parse zfs %s %q on %s: %w", property, value, dataset, err)
+		return zfsLimit{}, fmt.Errorf("parse zfs %s %q on %s: %w", property, value, dataset, err)
 	}
-	return bytes, false, nil
+	return zfsLimit{value: value, bytes: bytes}, nil
 }
 
 // sortedKeys renders a key list deterministically for error messages.
