@@ -14,6 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already fetches from each healthy peer, so there is no extra forwarded call; each stays null when the peer advertises
   or profiled nothing, could not be reached, is unhealthy, or runs a daemon that predates the fields.
 
+### Fixed
+
+- An unrecognised `CONTAINARIUM_PRIVILEGED_PODMAN_POLICY` value no longer falls back to `all` (#2299). The value is
+  still trimmed and lower-cased, so `ALL`, `Admin-Only` and `disabled ` keep working, and unset or empty still means
+  `all`. A value that matches none of `all`, `admin-only` or `disabled` after that (`none`, `off`, `admin_only`, a
+  typo) now stops the daemon at boot with an error naming the variable, instead of silently granting every caller
+  privileged Podman.
+
 ## [0.99.3] - 2026-10-05
 
 ### Fixed
