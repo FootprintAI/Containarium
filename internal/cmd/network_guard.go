@@ -88,11 +88,20 @@ func runNetworkGuardStatus(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-// guardHealthy is the one-line verdict doctor and this command share: a
-// guard is healthy only when it is enforcing, supported here, and its last
-// pass had no error.
+// guardHealthy is the one-line verdict: a guard is healthy only when it is
+// enforcing, supported here, its last pass had no error, every subject is
+// attached, and nothing was left unresolved — an unguarded tenant is a
+// failed guard even when the pass itself succeeded.
 func guardHealthy(g *guardStatusJSON) bool {
-	return g != nil && g.Mode == "GUARD_MODE_ENFORCE" && !g.Unsupported && g.LastError == ""
+	if g == nil || g.Mode != "GUARD_MODE_ENFORCE" || g.Unsupported || g.LastError != "" || len(g.Unresolved) > 0 {
+		return false
+	}
+	for _, e := range g.Entries {
+		if !e.Attached || e.LastError != "" {
+			return false
+		}
+	}
+	return true
 }
 
 func printGuard(w interface{ Write([]byte) (int, error) }, title string, g *guardStatusJSON) {
@@ -107,8 +116,8 @@ func printGuard(w interface{ Write([]byte) (int, error) }, title string, g *guar
 		verdict = "OFF"
 	case g.Unsupported:
 		verdict = "UNSUPPORTED — nothing guarded"
-	case g.LastError != "":
-		verdict = "DEGRADED"
+	case !guardHealthy(g):
+		verdict = "DEGRADED — a subject is unattached, errored or unresolved"
 	}
 	fmt.Fprintf(w, "  verdict:   %s\n", verdict)
 	fmt.Fprintf(w, "  mode:      %s\n", strings.TrimPrefix(g.Mode, "GUARD_MODE_"))
