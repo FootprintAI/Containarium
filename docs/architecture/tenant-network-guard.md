@@ -78,7 +78,18 @@ policy system.
    under a guessed tenant), `Compute`, then per tenant `ensureACL`, and per
    container `EnsureNICDevice` + `SetDeviceConfig` with `security.acls`,
    `default.ingress.action=drop`, `default.ingress.logged=true`,
-   `default.egress.action=allow`. ACLs for tenants that no longer have a
+   `default.egress.action=allow`, **plus Incus's anti-spoofing filters
+   `security.mac_filtering=true` and `security.ipv4_filtering=true`**: the
+   allow table admits by source address, so a NIC that could send with a
+   sibling's, the gateway's or Caddy's address would walk through it.
+   (`security.ipv6_filtering` waits for the IPv6 sibling work: no allow
+   rule names an IPv6 source yet, and some kernels refuse it without
+   `br_netfilter`.) A box whose reported primary address is off the bridge
+   (a podman box can report its CNI gateway first) or equals the host
+   gateway is guarded but contributes no sibling rule; it never aborts the
+   pass. One mutex covers a whole pass and all of `Prepare`, so a pass that
+   gathered before a box existed cannot prune the ACL `Prepare` just
+   created for it. ACLs for tenants that no longer have a
    container on the host are deleted. Kicked by the event bus and every
    minute, like the core guard. Requires the nftables driver **and** the
    `network_bridge_acl_devices` API extension (NIC-level `security.acls`,
@@ -92,7 +103,13 @@ policy system.
    therefore takes a `NICGuard` interface (`Prepare(ctx, name, tenant)
    error`) and calls it after the instance is created and before it is
    started. `tenantguard` implements it by ensuring the tenant's ACL
-   exists and attaching it to the instance-local NIC. **Fail-closed on a
+   exists and attaching it to the instance-local NIC. The per-container
+   ACL a tenant may attach through `UpdateContainerACL` composes with the
+   tenant ACL by Incus semantics — the first matching rule in any attached
+   ACL wins — so an ingress `allow` from a broad source there would
+   re-open what the guard closed. That gap and its options are #2359;
+   until it lands, a tenant can expose its own box to co-tenants through
+   that RPC, never reach others. **Fail-closed on a
    capable host:** if `Prepare` fails while the guard is `enforce`, create
    returns `FAILED_PRECONDITION` with the reason, mirroring how
    `--encrypted` refuses rather than silently producing an unguarded box.
@@ -117,8 +134,13 @@ policy system.
 
 5. **Daemon wiring and config (`internal/config/network.go`,
    `internal/server/dual_server.go`)**. `EnvTenantGuard =
-   "CONTAINARIUM_TENANT_GUARD"`. Both guards parse with `ParseMode`, where
-   `""` → `enforce` and only the literal `off` disables. The tenant guard
+   "CONTAINARIUM_TENANT_GUARD"`. Both guards parse with one shared parser,
+   `internal/nicguard.ParseMode`, **which replaces the core guard's own**
+   (`coreguard.ParseMode` becomes an alias): unset → `enforce`; `off`,
+   `0`, `false`, `no`, `disabled` → off; anything else, including a typo,
+   fails closed to `enforce`. The core guard's existing test that pinned
+   "unset means off" changes deliberately with it; `nicguard`'s table test
+   covers unset, `off`, `enforce` and invalid values. The tenant guard
    is constructed next to the core guard, subscribed to the same event
    bus, and injected into the container manager as its `NICGuard`.
    `CONTAINARIUM_CORE_GUARD`'s missing-value default changes from `off`
@@ -127,12 +149,21 @@ policy system.
 6. **Status surface (proto-first)**. `GetNetworkGuardStatus` on
    `NetworkService` returns `NetworkGuardStatus{core: GuardStatus, tenant:
    GuardStatus}` with `GuardMode` as an enum (`GUARD_MODE_OFF`,
-   `GUARD_MODE_ENFORCE`), the firewall driver, last pass time, last error,
-   and per-subject entries. REST at `GET /v1/network/guard`. The CLI adds
-   `containarium network-guard status`; `containarium doctor` calls the
-   same client function and fails its check when either guard is not
-   `enforce` or has a last error; the MCP server wraps the client
-   function (`network_guard_status`). No hand-rolled gateway handler.
+   `GUARD_MODE_ENFORCE`), the firewall driver, whether the host is
+   `Unsupported`, last pass time, last error, per-subject entries, and the
+   containers the guard could not attribute. REST at `GET /v1/network/guard`.
+   The CLI adds `containarium network-guard status`, whose verdict is
+   healthy only when the guard enforces, the host is supported, the last
+   pass had no error, **every subject is attached and nothing is
+   unresolved** — an unguarded tenant is a failed guard even when the pass
+   succeeded. `containarium doctor` is host-level and has no daemon token,
+   so its check reads Incus directly (firewall driver, the
+   `network_bridge_acl_devices` extension, and every running tenant
+   container's `eth0` `security.acls`) and fails when any running tenant
+   container carries no tenant ACL; that is also the stronger check, since
+   it catches a daemon that believes it is guarding a host that is not.
+   The MCP server wraps the REST endpoint (`network_guard_status`). No
+   hand-rolled gateway handler.
 
 7. **e2e probes and CI (#2349)**. `scripts/tenant-tenant-network-isolation-e2e.sh`
    (exists; must turn green) plus a new
