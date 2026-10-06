@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -414,6 +415,10 @@ type mcpServerEntry struct {
 	Args    []string `json:"args"`
 }
 
+type codexMCPConfig struct {
+	Servers map[string]mcpServerEntry `toml:"mcp_servers"`
+}
+
 // mergeMCPServerJSON inserts the box's MCP server or upgrades its legacy bare
 // agent-box command, preserving custom entries and every other key.
 // Round-trips through a generic map so unrelated settings survive verbatim —
@@ -470,9 +475,9 @@ func mergeMCPServerJSON(path, mcpKey, name, sshHost string) (bool, error) {
 // codexAppendMCP wires the box server into codex's TOML config
 // (~/.codex/config.toml) under [mcp_servers.<name>]. codex uses TOML, not
 // JSON, so we append a table rather than merge a map. Existing custom entries
-// stay untouched; the exact legacy stanza emitted by quickstart is upgraded in
-// place so comments, formatting, and unrelated settings survive. Re-runs are
-// no-ops once the entry is current.
+// stay untouched; legacy ssh/host/agent-box entries are upgraded in place so
+// comments, formatting, and unrelated settings survive. Re-runs are no-ops
+// once the entry is current.
 //
 // name/sshHost are box identifiers (already validated by create's naming
 // rules), so they need no TOML escaping here.
@@ -485,8 +490,7 @@ func codexAppendMCP(path, name, sshHost string) (bool, error) {
 	switch {
 	case err == nil:
 		if strings.Contains(string(existing), header) {
-			legacy := fmt.Sprintf("%s\ncommand = \"ssh\"\nargs = [%q, \"agent-box\"]\n", header, sshHost)
-			updated, changed := upgradeCodexMCPTable(string(existing), legacy, table)
+			updated, changed := upgradeCodexMCPTable(string(existing), name, sshHost)
 			if !changed {
 				return false, nil
 			}
@@ -519,25 +523,34 @@ func codexAppendMCP(path, name, sshHost string) (bool, error) {
 	return true, nil
 }
 
-// upgradeCodexMCPTable only replaces quickstart's own legacy stanza. Parsing
-// the prefix rules out a lookalike inside a multiline string or another value.
-// The existing TOML dependency is used for validation, not re-serialization.
-func upgradeCodexMCPTable(existing, legacy, table string) (string, bool) {
-	for offset := 0; offset < len(existing); {
-		index := strings.Index(existing[offset:], legacy)
-		if index < 0 {
-			break
+// upgradeCodexMCPTable recognizes the legacy entry by its parsed command/args,
+// regardless of optional settings or their order. Only replace a quoted token
+// when decoding the result confirms the target server's args were upgraded:
+// lookalikes in comments, other tables, or multiline strings cannot match.
+func upgradeCodexMCPTable(existing, name, sshHost string) (string, bool) {
+	var config codexMCPConfig
+	if _, err := toml.Decode(existing, &config); err != nil {
+		return existing, false
+	}
+	entry := config.Servers[name]
+	if entry.Command != "ssh" || !slices.Equal(entry.Args, []string{sshHost, "agent-box"}) {
+		return existing, false
+	}
+	args := []string{sshHost, coderun.AgentBoxRemoteCommand}
+	for _, token := range []string{`"agent-box"`, `'agent-box'`} {
+		for offset := 0; offset < len(existing); {
+			index := strings.Index(existing[offset:], token)
+			if index < 0 {
+				break
+			}
+			index += offset
+			offset = index + len(token)
+			updated := existing[:index] + strconv.Quote(coderun.AgentBoxRemoteCommand) + existing[offset:]
+			var decoded codexMCPConfig
+			if _, err := toml.Decode(updated, &decoded); err == nil && slices.Equal(decoded.Servers[name].Args, args) {
+				return updated, true
+			}
 		}
-		index += offset
-		offset = index + len(legacy)
-		if index > 0 && existing[index-1] != '\n' {
-			continue
-		}
-		var prefix map[string]any
-		if _, err := toml.Decode(existing[:index], &prefix); err != nil {
-			continue
-		}
-		return existing[:index] + table + existing[offset:], true
 	}
 	return existing, false
 }

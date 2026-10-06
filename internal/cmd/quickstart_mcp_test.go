@@ -126,6 +126,9 @@ func TestCodexAppendMCP_UpgradeLegacy(t *testing.T) {
 	}{
 		{"generated", legacy, true},
 		{"extra settings", legacy + "startup_timeout_sec = 30\n", true},
+		{"setting before args", strings.Replace(legacy, "args =", "startup_timeout_sec = 30\nargs =", 1), true},
+		{"command after args", "args = [\"alice\", \"agent-box\"]\ncommand = \"ssh\"\n", true},
+		{"literal strings", "command = 'ssh'\nargs = ['alice', 'agent-box']\n", true},
 		{"different host", strings.Replace(legacy, "alice", "bob", 1), false},
 		{"custom command", strings.Replace(legacy, "ssh", "custom", 1), false},
 		{"custom flags", "command = \"ssh\"\nargs = [\"-T\", \"alice\", \"agent-box\"]\n", false},
@@ -146,6 +149,7 @@ func TestCodexAppendMCP_UpgradeLegacy(t *testing.T) {
 			wantEntry := tc.entry
 			if tc.upgrade {
 				wantEntry = strings.Replace(wantEntry, `"agent-box"`, strconv.Quote(wantAgentBoxRemoteCommand), 1)
+				wantEntry = strings.Replace(wantEntry, `'agent-box'`, strconv.Quote(wantAgentBoxRemoteCommand), 1)
 			}
 			before := readFile(t, path)
 			if before != prefix+header+wantEntry+suffix {
