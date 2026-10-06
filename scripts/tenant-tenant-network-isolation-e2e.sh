@@ -57,47 +57,72 @@ for c in "$A" "$B"; do
 done
 [ "$A" = "$B" ] && { echo "FATAL: tenant-a and tenant-b must differ"; exit 2; }
 
+# tenant_of resolves the fixture's tenant the way the daemon does (explicit
+# tenant key, cloud attribution label, <tenant>-container name). A fixture
+# whose tenant cannot be established is a fixture error — never a synthetic
+# tenant, which would let two unattributable boxes pass the "different
+# tenants" precondition without being tenant containers at all.
 tenant_of() {
   local c="$1" t
   t=$(incus config get "$c" user.containarium.tenant 2>/dev/null)
-  [ -z "$t" ] && t=$(incus config get "$c" user.cloud_org_id 2>/dev/null)
+  [ -z "$t" ] && t=$(incus config get "$c" user.containarium.label.cloud_org_id 2>/dev/null)
   [ -z "$t" ] && case "$c" in *-container) t="${c%-container}" ;; esac
-  echo "${t:-<unlabelled:$c>}"
+  echo "$t"
 }
 
 TA=$(tenant_of "$A"); TB=$(tenant_of "$B")
+[ -z "$TA" ] && { echo "FATAL: cannot establish a tenant for $A (no tenant key, no cloud_org_id label, not <tenant>-container)"; exit 2; }
+[ -z "$TB" ] && { echo "FATAL: cannot establish a tenant for $B (no tenant key, no cloud_org_id label, not <tenant>-container)"; exit 2; }
 echo "== fixtures: $A (tenant $TA)  <->  $B (tenant $TB)"
 if [ "$TA" = "$TB" ] && [ "${EXPECT_SAME_TENANT:-0}" != "1" ]; then
   echo "FATAL: both containers resolve to the same tenant ($TA); this test needs two tenants. Set EXPECT_SAME_TENANT=1 to run the mechanism check anyway."
   exit 2
 fi
 
+# bridge_ip: the fixture's IPv4 on eth0 (the bridge NIC), matched by EXACT
+# name — `incus list NAME` is a prefix filter, and a podman box also reports
+# docker0/cni addresses, so neither "first match" nor "first address" will do.
 bridge_ip() {
-  local ips
-  ips=$(incus list "$1" --format csv -c 4 2>/dev/null)
-  echo "$ips" | grep -oE "[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+ \(eth0\)" | head -1 | cut -d' ' -f1 | grep . \
-    || echo "$ips" | grep -oE "[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+" | head -1
+  incus list "^$1\$" --format csv -c 4 2>/dev/null | tr ',' '\n' \
+    | grep -oE "[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+ \(eth0\)" | head -1 | cut -d' ' -f1
 }
 
 IPA=$(bridge_ip "$A"); IPB=$(bridge_ip "$B")
-[ -z "$IPA" ] || [ -z "$IPB" ] && { echo "FATAL: could not resolve a bridge IPv4 for both containers"; exit 2; }
+[ -z "$IPA" ] && { echo "FATAL: $A has no IPv4 on eth0"; exit 2; }
+[ -z "$IPB" ] && { echo "FATAL: $B has no IPv4 on eth0"; exit 2; }
 
-echo "== NIC isolation keys on the tenant NICs (empty = not set)"
+# The effective NIC: tenant eth0 is usually profile-inherited, so read the
+# expanded config rather than instance-local devices.
+nic_keys() {
+  incus config show --expanded "$1" 2>/dev/null \
+    | awk '/^devices:/{d=1;next} d && /^  eth0:/{e=1;next} e && /^  [^ ]/{e=0} e && /security\./{gsub(/^ +/,""); print}'
+}
+echo "== effective NIC security keys on the tenant NICs (nothing printed = none set)"
 for c in "$A" "$B"; do
-  for k in security.port_isolation security.mac_filtering security.ipv4_filtering security.acls; do
-    v=$(incus config device get "$c" eth0 "$k" 2>/dev/null || true)
-    echo "  $c eth0 $k=${v:-<unset>}"
-  done
+  echo "  $c eth0:"; nic_keys "$c" | sed 's/^/    /'
 done
 
+# in_box <container> <script>: run a probe inside the container and print its
+# RESULT line. A probe that could not run at all (incus exec failed, no shell,
+# timeout binary missing) is a FATAL probe error, never a "failed connect":
+# otherwise a broken fixture would print PASS without testing anything.
+in_box() {
+  local out
+  out=$(incus exec "$1" -- bash -c "$2" 2>&1) || true
+  case "$out" in
+    *RESULT:*) echo "$out" | sed -n 's/.*RESULT://p' | tail -1 ;;
+    *) echo "FATAL: probe could not run in $1: ${out:-<no output>}"; exit 3 ;;
+  esac
+}
+
 # probe <from> <to-name> <to-ip>: ICMP echo, then TCP to sshd (22, present on
-# every Containarium box). Either succeeding means there is no network-layer
-# boundary between the two tenants.
+# every Containarium box), then a closed port. Any of them succeeding means
+# there is no network-layer boundary between the two tenants.
 probe() {
   local from="$1" to="$2" ip="$3" r
   # incus exec runs as root in the container, so ping has cap_net_raw; if it
   # still reports "Operation not permitted" the probe is inconclusive, not OK.
-  r=$(incus exec "$from" -- bash -c "out=\$(ping -c1 -W2 $ip 2>&1); rc=\$?; case \"\$out\" in *'not permitted'*) echo inconclusive;; *) [ \$rc -eq 0 ] && echo succeeded || echo failed;; esac")
+  r=$(in_box "$from" "out=\$(ping -c1 -W2 $ip 2>&1); rc=\$?; case \"\$out\" in *'not permitted'*) echo RESULT:inconclusive;; *) [ \$rc -eq 0 ] && echo RESULT:succeeded || echo RESULT:failed;; esac") || exit 3
   echo "$from -> $to ($ip): ICMP echo $r"
   case "$r" in
     succeeded)
@@ -110,7 +135,7 @@ probe() {
   esac
   # A closed port answering with RST is still reachability: distinguish
   # "refused" (reachable) from a silent timeout (dropped).
-  r=$(incus exec "$from" -- bash -c "timeout 3 bash -c 'echo > /dev/tcp/$ip/9' 2>&1 | grep -q 'refused' && echo refused || echo timeout")
+  r=$(in_box "$from" "command -v timeout >/dev/null || { echo no-timeout; exit 0; }; if timeout 3 bash -c 'echo > /dev/tcp/$ip/9' 2>&1 | grep -q refused; then echo RESULT:refused; else echo RESULT:timeout; fi") || exit 3
   echo "$from -> $to ($ip:9, closed port): $r"
   if [ "$r" = "refused" ]; then
     echo "  FAIL: peer answered with RST — reachable at L3"
@@ -118,7 +143,7 @@ probe() {
   else
     echo "  OK: no answer (dropped or filtered)"
   fi
-  r=$(incus exec "$from" -- bash -c "timeout 3 bash -c 'echo > /dev/tcp/$ip/22' 2>/dev/null && echo succeeded || echo failed")
+  r=$(in_box "$from" "command -v timeout >/dev/null || { echo no-timeout; exit 0; }; timeout 3 bash -c 'echo > /dev/tcp/$ip/22' 2>/dev/null && echo RESULT:succeeded || echo RESULT:failed") || exit 3
   echo "$from -> $to ($ip:22): TCP connect $r"
   if [ "$r" = "succeeded" ]; then
     echo "  FAIL: tenant container opened a TCP connection to another tenant's sshd"
@@ -135,7 +160,12 @@ probe "$B" "$A" "$IPA"
 
 echo
 if [ "$FAILS" -eq 0 ]; then
-  echo "PASS: no tenant->tenant network path found between $A and $B"
+  # Scope the claim to what was exercised: three probes (ICMP, TCP/22, a
+  # closed TCP port) in each direction. A port-specific rule set could pass
+  # these while leaving a service port open; the guard's acceptance gate is
+  # the default-deny mechanism itself, which the keys printed above and
+  # scripts/tenant-guard-legit-flows-e2e.sh assert.
+  echo "PASS: no tenant->tenant network path found between $A and $B on the probed paths (ICMP, TCP/22, TCP/9, both directions)"
 else
   echo "FAILED: $FAILS tenant->tenant network path(s) exist with no isolation boundary — see docs/security/multi-tenant-isolation.md"
   exit 1
