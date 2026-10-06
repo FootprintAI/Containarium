@@ -14,6 +14,8 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/BurntSushi/toml"
+	"github.com/footprintai/containarium/internal/coderun"
 	"github.com/footprintai/containarium/internal/connectcore"
 	"github.com/footprintai/containarium/internal/sshkey"
 	"github.com/spf13/cobra"
@@ -406,15 +408,14 @@ func ensureSSHInclude(sshConfigPath, includePath string, uid, gid int) (bool, er
 }
 
 // mcpServerEntry is the JSON shape claude/gemini expect: an ssh command that
-// runs `agent-box` inside the named host and speaks MCP over stdio (README
-// step 4).
+// runs `agent-box` inside the named host and speaks MCP over stdio.
 type mcpServerEntry struct {
 	Command string   `json:"command"`
 	Args    []string `json:"args"`
 }
 
-// mergeMCPServerJSON inserts (or leaves untouched) the box's MCP server under
-// .<mcpKey>[name] in a JSON agent-config file, preserving every other key.
+// mergeMCPServerJSON inserts the box's MCP server or upgrades its legacy bare
+// agent-box command, preserving custom entries and every other key.
 // Round-trips through a generic map so unrelated settings survive verbatim —
 // the one legitimate map[string]any use (a foreign JSON doc we don't own).
 // Used for claude (~/.claude.json) and gemini (~/.gemini/settings.json), which
@@ -443,10 +444,17 @@ func mergeMCPServerJSON(path, mcpKey, name, sshHost string) (bool, error) {
 	if servers == nil {
 		servers = map[string]any{}
 	}
-	if _, present := servers[name]; present {
-		return false, nil // don't clobber a user's existing entry
+	args := []string{sshHost, coderun.AgentBoxRemoteCommand}
+	if existing, present := servers[name]; present {
+		entry, ok := existing.(map[string]any)
+		oldArgs, argsOK := entry["args"].([]any)
+		if !ok || entry["command"] != "ssh" || !argsOK || len(oldArgs) != 2 || oldArgs[0] != sshHost || oldArgs[1] != "agent-box" {
+			return false, nil // don't clobber a user's custom entry
+		}
+		entry["args"] = args // retain optional settings on the legacy entry
+	} else {
+		servers[name] = mcpServerEntry{Command: "ssh", Args: args}
 	}
-	servers[name] = mcpServerEntry{Command: "ssh", Args: []string{sshHost, "agent-box"}}
 	root[mcpKey] = servers
 
 	out, err := json.MarshalIndent(root, "", "  ")
@@ -461,22 +469,31 @@ func mergeMCPServerJSON(path, mcpKey, name, sshHost string) (bool, error) {
 
 // codexAppendMCP wires the box server into codex's TOML config
 // (~/.codex/config.toml) under [mcp_servers.<name>]. codex uses TOML, not
-// JSON, so we append a table rather than merge a map. Idempotent: if a table
-// header for this name already exists we leave the file untouched (a full TOML
-// merge would need a parser dependency; appending a fresh table is safe and
-// dependency-free — TOML tables are order-independent).
+// JSON, so we append a table rather than merge a map. Existing custom entries
+// stay untouched; the exact legacy stanza emitted by quickstart is upgraded in
+// place so comments, formatting, and unrelated settings survive. Re-runs are
+// no-ops once the entry is current.
 //
 // name/sshHost are box identifiers (already validated by create's naming
 // rules), so they need no TOML escaping here.
 func codexAppendMCP(path, name, sshHost string) (bool, error) {
 	header := fmt.Sprintf("[mcp_servers.%s]", name)
+	table := fmt.Sprintf("%s\ncommand = \"ssh\"\nargs = [%q, %q]\n", header, sshHost, coderun.AgentBoxRemoteCommand)
 	// #nosec G304 -- path is the caller's own ~/.codex/config.toml, not
 	// attacker-controlled.
 	existing, err := os.ReadFile(path)
 	switch {
 	case err == nil:
 		if strings.Contains(string(existing), header) {
-			return false, nil
+			legacy := fmt.Sprintf("%s\ncommand = \"ssh\"\nargs = [%q, \"agent-box\"]\n", header, sshHost)
+			updated, changed := upgradeCodexMCPTable(string(existing), legacy, table)
+			if !changed {
+				return false, nil
+			}
+			if err := os.WriteFile(path, []byte(updated), 0o600); err != nil {
+				return false, err
+			}
+			return true, nil
 		}
 	case os.IsNotExist(err):
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -494,14 +511,35 @@ func codexAppendMCP(path, name, sshHost string) (bool, error) {
 		}
 		b.WriteByte('\n')
 	}
-	b.WriteString(header + "\n")
-	b.WriteString("command = \"ssh\"\n")
-	fmt.Fprintf(&b, "args = [%q, \"agent-box\"]\n", sshHost)
+	b.WriteString(table)
 
 	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+// upgradeCodexMCPTable only replaces quickstart's own legacy stanza. Parsing
+// the prefix rules out a lookalike inside a multiline string or another value.
+// The existing TOML dependency is used for validation, not re-serialization.
+func upgradeCodexMCPTable(existing, legacy, table string) (string, bool) {
+	for offset := 0; offset < len(existing); {
+		index := strings.Index(existing[offset:], legacy)
+		if index < 0 {
+			break
+		}
+		index += offset
+		offset = index + len(legacy)
+		if index > 0 && existing[index-1] != '\n' {
+			continue
+		}
+		var prefix map[string]any
+		if _, err := toml.Decode(existing[:index], &prefix); err != nil {
+			continue
+		}
+		return existing[:index] + table + existing[offset:], true
+	}
+	return existing, false
 }
 
 // ─── agent launch (BYOA: your agent, your key, your laptop) ───────────────
