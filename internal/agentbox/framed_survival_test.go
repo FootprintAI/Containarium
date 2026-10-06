@@ -1,10 +1,13 @@
 package agentbox
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -51,12 +54,12 @@ func TestSpawn_SurvivesParentExit(t *testing.T) {
 
 			raw, err := os.ReadFile(exitPath)
 			if err != nil {
-				t.Fatalf("no exit sidecar — the run did not survive the parent: %v", err)
+				t.Fatalf("no exit sidecar — the run did not survive the parent: %v\n%s", err, summarizeSurvivalFailure(dir, name))
 			}
 			code := strings.Fields(string(raw))
 			if len(code) == 0 || code[0] != "5" {
 				// 141 here is SIGPIPE: the #1701 regression.
-				t.Fatalf("exit code = %q, want 5 (141 means SIGPIPE — the child was killed by the parent's exit)", raw)
+				t.Fatalf("exit code = %q, want 5 (141 means SIGPIPE — the child was killed by the parent's exit)\n%s", raw, summarizeSurvivalFailure(dir, name))
 			}
 
 			logData, err := os.ReadFile(logPath)
@@ -83,6 +86,60 @@ func TestSpawn_SurvivesParentExit(t *testing.T) {
 			}
 		})
 	}
+}
+
+func summarizeSurvivalFailure(dir, name string) string {
+	var b strings.Builder
+	b.WriteString("-- run debug --\n")
+	logPath := filepath.Join(dir, name+".log")
+	if data, err := os.ReadFile(logPath); err == nil {
+		b.WriteString("log_path: ")
+		b.WriteString(logPath)
+		b.WriteString("\n")
+		if len(data) > 0 {
+			b.WriteString("log preview:\n")
+			preview := data
+			if len(preview) > 4096 {
+				preview = preview[:4096]
+				b.WriteString("...truncated...\n")
+			}
+			b.WriteString(string(preview))
+			if !strings.HasSuffix(string(preview), "\n") {
+				b.WriteString("\n")
+			}
+		}
+	} else {
+		b.WriteString("log read error: ")
+		b.WriteString(err.Error())
+		b.WriteString("\n")
+	}
+
+	recordPath := filepath.Join(dir, name+".json")
+	if data, err := os.ReadFile(recordPath); err == nil {
+		var rec RunRecord
+		if err := json.Unmarshal(data, &rec); err == nil {
+			fmt.Fprintf(&b, "record pid: %d\n", rec.PID)
+			if rec.PID > 0 {
+				if err := syscall.Kill(rec.PID, syscall.Signal(0)); err == nil {
+					b.WriteString("child pid alive: yes\n")
+				} else if err == syscall.ESRCH {
+					b.WriteString("child pid alive: no\n")
+				} else {
+					fmt.Fprintf(&b, "child pid alive: unknown (%v)\n", err)
+				}
+			}
+		} else {
+			b.WriteString("record parse error: ")
+			b.WriteString(err.Error())
+			b.WriteString("\n")
+		}
+	} else {
+		b.WriteString("record read error: ")
+		b.WriteString(err.Error())
+		b.WriteString("\n")
+	}
+	b.WriteString("-- end run debug --\n")
+	return b.String()
 }
 
 func mcpStartScript(name, mode, command string) string {
