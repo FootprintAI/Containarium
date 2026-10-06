@@ -319,6 +319,7 @@ type DualServer struct {
 	threatDetectServer    *ThreatDetectionServer
 	threatDetectNotifier  *threatdetect.WebhookNotifier // nil unless threatDetectEngine is also non-nil (#1643)
 	threatDetectSweepStop context.CancelFunc
+	capabilityChecksStop  context.CancelFunc
 }
 
 // bridgeDNSRaw builds the incusbr0 `raw.dnsmasq` value for container DNS.
@@ -3060,6 +3061,7 @@ func (ds *DualServer) Start(ctx context.Context) error {
 
 	// Self-profile the joining host, never the primary's host (#2136).
 	ds.startCapabilityProfile(ctx)
+	ds.startCapabilityChecks(ctx, envDuration("CONTAINARIUM_CAPABILITY_CHECK_INTERVAL", 5*time.Minute))
 
 	// Resume cloud host-series export (#1070) if it was enabled before a
 	// restart. Sequenced here — after SetCapabilityIdentity and, when
@@ -3584,6 +3586,9 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		return err
 	case <-ctx.Done():
 		log.Println("Shutting down servers...")
+		if ds.capabilityChecksStop != nil {
+			ds.capabilityChecksStop()
+		}
 		if ds.routeSyncJob != nil {
 			ds.routeSyncJob.Stop()
 		}
@@ -3751,4 +3756,37 @@ func envTruthy(v string) bool {
 // an operation every backend has (#1189).
 type k8sClientsetProvider interface {
 	Clientset() kubernetes.Interface
+}
+
+// startCapabilityChecks periodically discovers hardware changes on pool members.
+func (ds *DualServer) startCapabilityChecks(ctx context.Context, interval time.Duration) <-chan struct{} {
+	done := make(chan struct{})
+	if ds.config.Pool == "" || ds.containerServer == nil {
+		close(done)
+		return done
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	ds.capabilityChecksStop = cancel
+	if interval <= 0 {
+		interval = 5 * time.Minute
+	}
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if ctx.Err() != nil {
+					return
+				}
+				if err := ds.containerServer.refreshCapabilityProfile(); err != nil {
+					log.Printf("[capabilities] hardware refresh failed: %v", err)
+				}
+			}
+		}
+	}()
+	return done
 }
