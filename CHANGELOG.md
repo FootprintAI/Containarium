@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- An unrecognised `CONTAINARIUM_PRIVILEGED_PODMAN_POLICY` value no longer falls back to `all` (#2299). The daemon now
+  refuses to start unless the value is exactly `all`, `admin-only` or `disabled` (lowercase, no surrounding
+  whitespace), so a mistyped restrictive setting can no longer silently grant every caller privileged Podman. Unset or
+  empty still means `all`. **Upgrade note:** a value that only worked because it was lower-cased and trimmed (`ALL`,
+  `Admin-Only`, `disabled `) now stops the daemon at boot with an error naming the variable; fix the spelling.
+
 ## [0.99.3] - 2026-10-05
 
 ### Fixed
