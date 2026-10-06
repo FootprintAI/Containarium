@@ -202,14 +202,24 @@ jobs:
           for T in alice bob; do
             /tmp/containarium --server "$SERVER" create "$T" --no-ssh-key --podman=false --disk 5GB --image "$CONTAINARIUM_LANE_IMAGE"
           done
-          /tmp/containarium --server "$SERVER" create alice2 --no-ssh-key --podman=false --disk 5GB --image "$CONTAINARIUM_LANE_IMAGE" \
-            --labels cloud_org_id=alice
+          /tmp/containarium --server "$SERVER" create alice2 --no-ssh-key --podman=false --disk 5GB --image "$CONTAINARIUM_LANE_IMAGE"
+          # alice2 belongs to alice: stamp the explicit tenant key (what the
+          # pull-mode cloud actuator writes) and let the reconciler re-resolve
+          # it on its next pass. The guard must converge alice2 onto alice's
+          # ACL, which is also what makes the same-tenant rows below meaningful.
+          sudo incus config set alice2-container user.containarium.tenant=alice
           /tmp/containarium --server "$SERVER" list
-          # Give the reconciler one event-driven pass to converge sibling tables.
-          sleep 15
+          want=$(sudo incus config device get alice-container eth0 security.acls)
+          converged=""
+          for i in $(seq 1 24); do
+            got=$(sudo incus config device get alice2-container eth0 security.acls 2>/dev/null || true)
+            [ -n "$want" ] && [ "$got" = "$want" ] && { converged=yes; break; }
+            sleep 5
+          done
           for c in alice-container alice2-container bob-container; do
             echo "$c security.acls=$(sudo incus config device get $c eth0 security.acls 2>/dev/null || echo '<unset>')"
           done
+          [ -n "$converged" ] || { echo "::error::alice2-container did not converge onto alice's tenant ACL within 120s"; grep -E '\[tenantguard\]' /tmp/daemon.log | tail -20; exit 1; }
 
       - name: tenant <-> tenant must be denied
         run: sudo bash scripts/tenant-tenant-network-isolation-e2e.sh alice-container bob-container
