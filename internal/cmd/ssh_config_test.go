@@ -200,3 +200,68 @@ func TestSSHConfigOptions_UserOverrideKeepsJumpAccount(t *testing.T) {
 		t.Fatalf("--user must only override the in-box user:\n%s", g.Content)
 	}
 }
+
+func TestSSHConfigSync_InvalidJumpPortPreservesConfig(t *testing.T) {
+	for _, endpoint := range []string{
+		"vm.example.com:notaport", "vm.example.com:0", "vm.example.com:65536",
+		"vm.example.com:-1", "vm.example.com:", "vm.example.com:99999999999999999999",
+		"[2001:db8::1]:notaport", "[2001:db8::1]:0", "[2001:db8::1]:65536",
+	} {
+		t.Run(endpoint, func(t *testing.T) {
+			resetSSHConfigGlobals(t)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"containers":[{"name":"alice-container","username":"alice","state":"CONTAINER_STATE_RUNNING","network":{"ipAddress":"10.0.3.100"}}]}`))
+			}))
+			defer srv.Close()
+			serverAddr, httpMode, sshConfigJumpHost = srv.URL, true, endpoint
+			sshConfigOutPath = filepath.Join(t.TempDir(), "ssh_config")
+			const previous = "Host existing\n    HostName existing.example.com\n"
+			if err := os.WriteFile(sshConfigOutPath, []byte(previous), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			for _, run := range []func() error{
+				func() error { return runSSHConfigShow(sshConfigShowCmd, nil) },
+				func() error { return runSSHConfigSync(sshConfigSyncCmd, nil) },
+			} {
+				if err := run(); err == nil || !strings.Contains(err.Error(), "--jump-host") || !strings.Contains(err.Error(), "65535") {
+					t.Errorf("want explicit jump port error for %q, got %v", endpoint, err)
+				}
+			}
+			content, err := os.ReadFile(sshConfigOutPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(content) != previous {
+				t.Errorf("invalid jump port replaced the existing config:\n%s", content)
+			}
+			if _, err := os.Stat(sshConfigOutPath + ".bak"); !os.IsNotExist(err) {
+				t.Errorf("invalid jump port must not touch the backup, got %v", err)
+			}
+		})
+	}
+}
+
+func TestSSHConfig_ValidJumpPorts(t *testing.T) {
+	for _, tc := range []struct{ endpoint, host, port string }{
+		{"vm.example.com", "vm.example.com", "22"},
+		{"vm.example.com:1", "vm.example.com", "1"},
+		{"vm.example.com:65535", "vm.example.com", "65535"},
+		{"2001:db8::1", "2001:db8::1", "22"},
+		{"[2001:db8::1]", "2001:db8::1", "22"},
+		{"[2001:db8::1]:2222", "2001:db8::1", "2222"},
+	} {
+		t.Run(tc.endpoint, func(t *testing.T) {
+			resetSSHConfigGlobals(t)
+			sshConfigJumpHost = tc.endpoint
+			g, err := generateManagedSSHConfig([]incus.ContainerInfo{{Name: "alice-container", Username: "alice", State: "Running", IPAddress: "10.0.3.100"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "Host alice-container-jump\n    HostName " + tc.host + "\n    Port " + tc.port + "\n"
+			if !strings.Contains(g.Content, want) {
+				t.Fatalf("valid jump endpoint rendered incorrectly:\n%s", g.Content)
+			}
+		})
+	}
+}

@@ -93,6 +93,14 @@ func Generate(containers []incus.ContainerInfo, opts Options) Generated {
 	copy(sorted, containers)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 
+	// Reserve every destination before choosing jump aliases, including
+	// destinations that sort after their jump's owner. Also reserve each
+	// allocated jump alias so all Host blocks remain distinct.
+	aliases := make(map[string]bool, len(sorted))
+	for _, c := range sorted {
+		aliases[strings.ToLower(c.Name)] = true
+	}
+
 	for _, c := range sorted {
 		// State spelling depends on the transport, so normalize rather
 		// than compare against one of them (cloud#1851): a local incus
@@ -110,7 +118,15 @@ func Generate(containers []incus.ContainerInfo, opts Options) Generated {
 			g.SkippedNoAddr++
 			continue
 		}
-		writeHost(&b, c, opts)
+		jumpAlias := ""
+		if opts.Sentinel == "" && c.SSHHost == "" && opts.JumpHost != "" {
+			jumpAlias = c.Name + "-jump"
+			for suffix := 2; aliases[strings.ToLower(jumpAlias)]; suffix++ {
+				jumpAlias = fmt.Sprintf("%s-jump-%d", c.Name, suffix)
+			}
+			aliases[strings.ToLower(jumpAlias)] = true
+		}
+		writeHost(&b, c, opts, jumpAlias)
 		g.Count++
 	}
 
@@ -119,8 +135,7 @@ func Generate(containers []incus.ContainerInfo, opts Options) Generated {
 	return g
 }
 
-func writeHost(b *strings.Builder, c incus.ContainerInfo, opts Options) {
-	jump := opts.Sentinel == "" && c.SSHHost == "" && opts.JumpHost != ""
+func writeHost(b *strings.Builder, c incus.ContainerInfo, opts Options, jumpAlias string) {
 	fmt.Fprintf(b, "Host %s\n", c.Name)
 
 	if opts.Sentinel != "" {
@@ -150,8 +165,8 @@ func writeHost(b *strings.Builder, c incus.ContainerInfo, opts Options) {
 		fmt.Fprintf(b, "    Port %d\n", t.Port)
 		fmt.Fprintf(b, "    User %s\n", t.User)
 	}
-	if jump {
-		fmt.Fprintf(b, "    ProxyJump %s-jump\n", c.Name)
+	if jumpAlias != "" {
+		fmt.Fprintf(b, "    ProxyJump %s\n", jumpAlias)
 	}
 
 	if opts.IdentityFile != "" {
@@ -171,11 +186,11 @@ func writeHost(b *strings.Builder, c incus.ContainerInfo, opts Options) {
 		fmt.Fprintf(b, "    # backend: %s\n", c.BackendID)
 	}
 	fmt.Fprintln(b)
-	if jump {
+	if jumpAlias != "" {
 		// ProxyJump does not inherit the destination's IdentityFile. A
 		// separate Host block pins the same key on both SSH connections.
 		host, port := hostport.Split(opts.JumpHost, 22)
-		fmt.Fprintf(b, "Host %s-jump\n", c.Name)
+		fmt.Fprintf(b, "Host %s\n", jumpAlias)
 		fmt.Fprintf(b, "    HostName %s\n", host)
 		fmt.Fprintf(b, "    Port %d\n", port)
 		fmt.Fprintf(b, "    User %s\n", c.Username)

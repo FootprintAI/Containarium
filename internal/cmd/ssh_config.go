@@ -3,9 +3,11 @@ package cmd
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/footprintai/containarium/internal/connectcore"
@@ -190,6 +192,9 @@ func sshConfigOptions() sshconfig.Options {
 func generateManagedSSHConfig(containers []incus.ContainerInfo) (sshconfig.Generated, error) {
 	opts := sshConfigOptions()
 	if opts.Sentinel == "" && (serverAddr != "" || sshConfigJumpHost != "") {
+		if err := validateSSHConfigJumpPort(opts.JumpHost); err != nil {
+			return sshconfig.Generated{}, err
+		}
 		for _, c := range containers {
 			if (!opts.IncludeStopped && !connectcore.IsRunning(c.State)) || c.SSHHost != "" || c.IPAddress == "" {
 				continue
@@ -207,6 +212,23 @@ func generateManagedSSHConfig(containers []incus.ContainerInfo) (sshconfig.Gener
 		}
 	}
 	return sshconfig.Generate(containers, opts), nil
+}
+
+// Jump endpoints must not inherit Split's permissive fallback: a typo in
+// an explicit port is an error, while bare hosts and IPv6 keep port 22.
+func validateSSHConfigJumpPort(endpoint string) error {
+	bare := strings.TrimSuffix(strings.TrimPrefix(endpoint, "["), "]")
+	if _, err := netip.ParseAddr(bare); err == nil || !strings.Contains(endpoint, ":") {
+		return nil
+	}
+	_, portText, err := net.SplitHostPort(endpoint)
+	if err == nil {
+		port, err := strconv.Atoi(portText)
+		if err == nil && port >= 1 && port <= 65535 {
+			return nil
+		}
+	}
+	return fmt.Errorf("invalid --jump-host %q: explicit SSH port must be an integer from 1 to 65535 (use host or host:port)", endpoint)
 }
 
 // loadContainersForSSHConfig pulls the container list using whichever
