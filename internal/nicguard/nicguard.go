@@ -74,6 +74,12 @@ func Unsupported(err error) bool {
 	return errors.Is(err, ErrUnsupportedFirewall) || errors.Is(err, ErrUnsupportedIncus)
 }
 
+// UnsupportedReason reports whether a status LastError string was produced
+// by an Unsupported error (for statuses that keep only the text).
+func UnsupportedReason(lastError string) bool {
+	return lastError != "" && (strings.Contains(lastError, ErrUnsupportedFirewall.Error()) || strings.Contains(lastError, ErrUnsupportedIncus.Error()))
+}
+
 // CheckSupport reads the server and returns the firewall driver plus an
 // Unsupported error when NIC ACLs cannot be applied here. Checked every
 // pass: a driver or an Incus upgrade changes the answer without a daemon

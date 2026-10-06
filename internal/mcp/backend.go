@@ -71,6 +71,10 @@ type API interface {
 	// deliberately not exposed to an agent (see gateway_tools.go).
 	MintGatewayToken(req MintGatewayTokenBody) (*MintGatewayTokenResponse, error)
 
+	// Network guards (#2353): the tenant ↔ tenant and tenant → core NIC-ACL
+	// posture of the backend, read-only.
+	GetNetworkGuardStatus() (*NetworkGuardStatusResponse, error)
+
 	// Routes / backends.
 	AddRoute(req AddRouteRequest) (*AddRouteResponse, error)
 	ListRoutes(username string, activeOnly bool) (*ListRoutesResponse, error)
