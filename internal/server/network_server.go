@@ -896,54 +896,28 @@ func (s *NetworkServer) UpdateContainerACL(ctx context.Context, req *pb.UpdateCo
 		return nil, fmt.Errorf("container not found: %w", err)
 	}
 
-	aclName := fmt.Sprintf("acl-%s", req.Username)
-
-	var config incus.ACLConfig
-
-	if req.Preset != pb.ACLPreset_ACL_PRESET_CUSTOM && req.Preset != pb.ACLPreset_ACL_PRESET_UNSPECIFIED {
-		// Use preset
-		preset := s.protoToPreset(req.Preset)
-		config = incus.GetPresetACL(preset, s.proxyIP, s.containerNetwork)
-		config.Name = aclName
-	} else {
-		// Custom rules
-		config = incus.ACLConfig{
-			Name:        aclName,
-			Description: "Custom firewall rules",
-		}
-
-		for _, rule := range req.IngressRules {
-			config.IngressRules = append(config.IngressRules, incus.ACLRule{
-				Action:          s.protoToAction(rule.Action),
-				Source:          rule.Source,
-				Destination:     rule.Destination,
-				DestinationPort: rule.DestinationPort,
-				Protocol:        rule.Protocol,
-				Description:     rule.Description,
-			})
-		}
-
-		for _, rule := range req.EgressRules {
-			config.EgressRules = append(config.EgressRules, incus.ACLRule{
-				Action:          s.protoToAction(rule.Action),
-				Source:          rule.Source,
-				Destination:     rule.Destination,
-				DestinationPort: rule.DestinationPort,
-				Protocol:        rule.Protocol,
-				Description:     rule.Description,
-			})
-		}
+	// The rule set is a pure function of the request (#2348): custom rules
+	// are written verbatim, a named preset expands, and an unspecified
+	// preset is an error rather than a silent full-isolation.
+	config, err := aclConfigFromRequest(req, s.proxyIP, s.containerNetwork)
+	if err != nil {
+		return nil, err
 	}
+	aclName := config.Name
 
-	// Create or update ACL using the container-focused method
-	_, err = s.incusClient.EnsureACLForContainer(req.Username, s.protoToPreset(req.Preset), s.proxyIP, s.containerNetwork)
+	// Create or update the ACL with exactly that rule set.
+	if _, getErr := s.incusClient.GetNetworkACL(aclName); getErr == nil {
+		err = s.incusClient.UpdateNetworkACL(aclName, config)
+	} else {
+		err = s.incusClient.CreateNetworkACL(config)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to update ACL: %w", err)
 	}
 
-	// Attach ACL to container
-	err = s.incusClient.AttachACLToContainer(containerName, aclName, "eth0")
-	if err != nil {
+	// Attach ACL to container (shadows a profile-inherited eth0, appends to
+	// any ACL already on the NIC, no-op when already attached).
+	if err := s.incusClient.AttachACLToContainer(containerName, aclName, "eth0"); err != nil {
 		return nil, fmt.Errorf("failed to attach ACL to container: %w", err)
 	}
 
@@ -1064,7 +1038,10 @@ func (s *NetworkServer) ListACLPresets(ctx context.Context, req *pb.ListACLPrese
 			continue
 		}
 
-		preset := s.protoToPreset(p.Preset)
+		preset, ok := presetFromProto(p.Preset)
+		if !ok {
+			continue
+		}
 		config := incus.GetPresetACL(preset, s.proxyIP, s.containerNetwork)
 
 		for _, rule := range config.IngressRules {
@@ -1110,7 +1087,8 @@ func (s *NetworkServer) actionToProto(action string) pb.ACLAction {
 	}
 }
 
-func (s *NetworkServer) protoToAction(action pb.ACLAction) string {
+// protoToAction maps the wire action to the Incus rule action.
+func protoToAction(action pb.ACLAction) string {
 	switch action {
 	case pb.ACLAction_ACL_ACTION_ALLOW:
 		return "allow"
@@ -1123,16 +1101,56 @@ func (s *NetworkServer) protoToAction(action pb.ACLAction) string {
 	}
 }
 
-func (s *NetworkServer) protoToPreset(preset pb.ACLPreset) incus.ACLPreset {
+// presetFromProto maps a named preset to its Incus rule set. CUSTOM and
+// UNSPECIFIED are not presets and return ok=false — there is deliberately no
+// default case, so a new enum value is mapped on purpose or not at all.
+func presetFromProto(preset pb.ACLPreset) (incus.ACLPreset, bool) {
 	switch preset {
 	case pb.ACLPreset_ACL_PRESET_FULL_ISOLATION:
-		return incus.ACLPresetFullIsolation
+		return incus.ACLPresetFullIsolation, true
 	case pb.ACLPreset_ACL_PRESET_HTTP_ONLY:
-		return incus.ACLPresetHTTPOnly
+		return incus.ACLPresetHTTPOnly, true
 	case pb.ACLPreset_ACL_PRESET_PERMISSIVE:
-		return incus.ACLPresetPermissive
-	default:
-		return incus.ACLPresetFullIsolation
+		return incus.ACLPresetPermissive, true
+	case pb.ACLPreset_ACL_PRESET_CUSTOM, pb.ACLPreset_ACL_PRESET_UNSPECIFIED:
+		return "", false
+	}
+	return "", false
+}
+
+// aclConfigFromRequest builds the ACL an UpdateContainerACL call writes.
+func aclConfigFromRequest(req *pb.UpdateContainerACLRequest, proxyIP, containerNetwork string) (incus.ACLConfig, error) {
+	aclName := fmt.Sprintf("acl-%s", req.Username)
+	switch req.Preset {
+	case pb.ACLPreset_ACL_PRESET_UNSPECIFIED:
+		return incus.ACLConfig{}, status.Error(codes.InvalidArgument, "preset is required: choose a named preset or ACL_PRESET_CUSTOM with rules")
+	case pb.ACLPreset_ACL_PRESET_CUSTOM:
+		config := incus.ACLConfig{Name: aclName, Description: "Custom firewall rules"}
+		for _, rule := range req.IngressRules {
+			config.IngressRules = append(config.IngressRules, aclRuleFromProto(rule))
+		}
+		for _, rule := range req.EgressRules {
+			config.EgressRules = append(config.EgressRules, aclRuleFromProto(rule))
+		}
+		return config, nil
+	}
+	preset, ok := presetFromProto(req.Preset)
+	if !ok {
+		return incus.ACLConfig{}, status.Errorf(codes.InvalidArgument, "unknown ACL preset %v", req.Preset)
+	}
+	config := incus.GetPresetACL(preset, proxyIP, containerNetwork)
+	config.Name = aclName
+	return config, nil
+}
+
+func aclRuleFromProto(rule *pb.ACLRule) incus.ACLRule {
+	return incus.ACLRule{
+		Action:          protoToAction(rule.Action),
+		Source:          rule.Source,
+		Destination:     rule.Destination,
+		DestinationPort: rule.DestinationPort,
+		Protocol:        rule.Protocol,
+		Description:     rule.Description,
 	}
 }
 
