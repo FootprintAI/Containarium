@@ -179,10 +179,3 @@ func (s *Store) Current() (Profile, bool) {
 	}
 	return *s.profile, true
 }
-
-// Clear removes an obsolete profile while replacement measurements are pending.
-func (s *Store) Clear() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.profile = nil
-}

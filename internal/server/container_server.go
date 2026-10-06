@@ -7,7 +7,6 @@ import (
 	"log"
 	"net"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -253,8 +252,7 @@ type ContainerServer struct {
 	// profileMu serializes ProfileBackend: each profile spins a throwaway
 	// GPU-probe LXC + a benchmark on the host, so concurrent/repeated calls
 	// must coalesce rather than stack a probe storm that can wedge the runtime.
-	profileMu          sync.Mutex
-	capabilityHardware string
+	profileMu sync.Mutex
 	// Hardware operations default to the bounded benchmark and the manager's
 	// passthrough probe; injectable so failures can be exercised without Incus.
 	capabilityBenchmark func() (container.BenchmarkResult, error)
@@ -3613,8 +3611,19 @@ func (s *ContainerServer) capabStore() *capabilities.Store {
 	return s.capabilityStore
 }
 
-// capabilityHostResources discovers and validates hardware capacity.
-func (s *ContainerServer) capabilityHostResources() (*incus.SystemResources, error) {
+// gatherHostFacts collects the inputs the capability profile is computed from:
+// host system resources (CPU cores + model, RAM, disk) via the same Incus call
+// GetSystemInfo uses, the GPU passthrough probe (unless skipped), the bounded
+// CPU/memory micro-benchmark, and the operator-set region / reported class.
+// Missing resources, a failed GPU probe or an invalid benchmark leave the
+// previous profile untouched; unknown host capacity must not become a profile.
+func (s *ContainerServer) gatherHostFacts(skipGPU bool) (capabilities.HostFacts, error) {
+	f := capabilities.HostFacts{
+		Now:           time.Now(),
+		Region:        s.region,
+		ReportedClass: s.reportedClass,
+	}
+
 	var res *incus.SystemResources
 	var resourceErr error
 	if s.capabilityResources != nil {
@@ -3625,18 +3634,14 @@ func (s *ContainerServer) capabilityHostResources() (*incus.SystemResources, err
 		resourceErr = err
 	}
 	if resourceErr != nil {
-		return nil, fmt.Errorf("system resource discovery: %w", resourceErr)
+		return capabilities.HostFacts{}, fmt.Errorf("system resource discovery: %w", resourceErr)
 	}
 	if res == nil {
-		return nil, fmt.Errorf("system resource discovery returned no resources")
+		return capabilities.HostFacts{}, fmt.Errorf("system resource discovery returned no resources")
 	}
 	if res.TotalCPUs <= 0 || res.TotalMemoryBytes <= 0 {
-		return nil, fmt.Errorf("system resource discovery returned invalid CPU or memory capacity")
+		return capabilities.HostFacts{}, fmt.Errorf("system resource discovery returned invalid CPU or memory capacity")
 	}
-	return res, nil
-}
-
-func (s *ContainerServer) gatherCapabilityFacts(skipGPU bool, res *incus.SystemResources, f capabilities.HostFacts) (capabilities.HostFacts, error) {
 	// Only NVIDIA hosts need the nvidia.runtime probe; CPU-only hosts have
 	// no GPU to validate.
 	probeGPU := false
@@ -3705,15 +3710,10 @@ func (s *ContainerServer) recordCapabilityProfile(skipGPU, onlyIfMissing bool) (
 			return p, nil
 		}
 	}
-	res, err := s.capabilityHostResources()
+	f, err := s.gatherHostFacts(skipGPU)
 	if err != nil {
 		return capabilities.Profile{}, status.Errorf(codes.Internal, "profile backend: %v", err)
 	}
-	f, err := s.gatherCapabilityFacts(skipGPU, res, capabilities.HostFacts{Now: time.Now(), Region: s.region, ReportedClass: s.reportedClass})
-	if err != nil {
-		return capabilities.Profile{}, status.Errorf(codes.Internal, "profile backend: %v", err)
-	}
-	s.capabilityHardware = capabilityHardwareKey(res)
 	return s.capabStore().Record(f), nil
 }
 
@@ -4812,39 +4812,4 @@ func (s *ContainerServer) deregisterGuacamoleConnection(username string) {
 	}
 
 	log.Printf("Guacamole RDP connection removed for %s (id=%s)", username, connID)
-}
-
-// capabilityHardwareKey excludes load, uptime and free capacity; GPU order is irrelevant.
-func capabilityHardwareKey(res *incus.SystemResources) string {
-	gpus := make([]string, 0, len(res.GPUs))
-	for _, g := range res.GPUs {
-		gpus = append(gpus, fmt.Sprintf("%q/%q/%q/%q/%q/%d", g.Vendor, g.Model, g.PCIAddress, g.DriverVersion, g.CUDAVersion, g.VRAMBytes))
-	}
-	sort.Strings(gpus)
-	return fmt.Sprintf("%d/%q/%d/%d/%q", res.TotalCPUs, res.CPUModel, res.TotalMemoryBytes, res.TotalDiskBytes, gpus)
-}
-
-// refreshCapabilityProfile invalidates stale measurements before attempting replacement.
-func (s *ContainerServer) refreshCapabilityProfile() error {
-	if !s.profileMu.TryLock() {
-		return nil
-	}
-	defer s.profileMu.Unlock()
-	res, err := s.capabilityHostResources()
-	if err != nil {
-		return err
-	}
-	key := capabilityHardwareKey(res)
-	if _, ok := s.capabStore().Current(); ok && key == s.capabilityHardware {
-		return nil
-	}
-	s.capabStore().Clear()
-	s.capabilityHardware = ""
-	f, err := s.gatherCapabilityFacts(false, res, capabilities.HostFacts{Now: time.Now(), Region: s.region, ReportedClass: s.reportedClass})
-	if err != nil {
-		return err
-	}
-	s.capabStore().Record(f)
-	s.capabilityHardware = key
-	return nil
 }
