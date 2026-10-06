@@ -211,6 +211,17 @@ that stays unresponsive past that window is still reported unhealthy.
   `[health] local backend probe slow: …` (at most once per 30s) when a probe that
   succeeded used over a quarter of its budget — the early sign of saturation.
 
+### Reading the host's CPU count when Incus is slow (#2325)
+
+The gate needs the host's logical CPU count on every create. That number is hardware-static, so the daemon reads
+Incus' resource inventory once and then serves it from memory: a read shares one in-flight request, is bounded to a
+few seconds, and keeps serving the last good value (stale is fine for the CPU count, model, memory total and GPUs)
+if a later refresh fails or times out. Incus' hardware scan can stop answering on a saturated host; without this a
+create would have blocked on it before reaching the gate's own logging. If Incus has never answered, the gate falls
+back to the OS's logical CPU count (logged once per daemon run) so it keeps working instead of skipping itself. The
+same bounded read serves `GetSystemInfo`, `ListBackends` and the metrics collectors; used memory and disk are
+refreshed about every 10 seconds, and the load averages are always read fresh from `/proc/loadavg`.
+
 ## Semantics and scope
 
 - **Per-host, and it composes with pools.** The gate runs on the daemon that

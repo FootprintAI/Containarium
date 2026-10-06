@@ -415,6 +415,11 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	if err := validateDNSPassthroughHosts(config.DNSPassthroughHosts); err != nil {
 		return nil, fmt.Errorf("dns-passthrough-host misconfigured: %w", err)
 	}
+	// #2299: an unrecognised privileged-podman policy must not silently
+	// become the permissive default, so refuse to start on one.
+	if err := validatePrivilegedPolicyEnv(); err != nil {
+		return nil, fmt.Errorf("privileged-podman policy misconfigured: %w", err)
+	}
 
 	// Create container server
 	containerServer, err := NewContainerServer(config.Runtime)
