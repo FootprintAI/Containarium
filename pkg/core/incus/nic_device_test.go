@@ -16,7 +16,12 @@ type fakeDeviceServer struct {
 	inst   *api.Instance
 	getErr error
 
+	storagePool    *api.StoragePool
+	storagePoolErr error
+	updateErr      error
+
 	updates []api.InstancePut
+	events  []string
 }
 
 func (f *fakeDeviceServer) GetInstance(string) (*api.Instance, string, error) {
@@ -33,7 +38,18 @@ func (f *fakeDeviceServer) GetInstance(string) (*api.Instance, string, error) {
 
 func (f *fakeDeviceServer) UpdateInstance(_ string, put api.InstancePut, _ string) (incusclient.Operation, error) {
 	f.updates = append(f.updates, put)
+	f.events = append(f.events, "update")
+	if f.updateErr != nil {
+		return nil, f.updateErr
+	}
 	return fakeOp{}, nil
+}
+
+func (f *fakeDeviceServer) GetStoragePool(string) (*api.StoragePool, string, error) {
+	if f.storagePoolErr != nil {
+		return nil, "", f.storagePoolErr
+	}
+	return f.storagePool, "etag", nil
 }
 
 type fakeOp struct{ incusclient.Operation }
@@ -62,6 +78,16 @@ func profileNIC() *api.Instance {
 			"eth0": {"type": "nic", "name": "eth0", "network": "incusbr0"},
 		},
 	}
+}
+
+func withRootDisk(inst *api.Instance, driver string) *fakeDeviceServer {
+	inst.ExpandedDevices["root"] = map[string]string{
+		"type": "disk",
+		"path": "/",
+		"pool": "default",
+		"size": "7GiB",
+	}
+	return &fakeDeviceServer{inst: inst, storagePool: &api.StoragePool{Name: "default", Driver: driver}}
 }
 
 func TestEnsureNICDevice(t *testing.T) {
@@ -172,6 +198,51 @@ func TestEnsureNICDevice_RejectsEmptyName(t *testing.T) {
 	}
 }
 
+func TestEnsureNICDevice_PreparesZFSQuotaHeadroomBeforeUpdate(t *testing.T) {
+	f := withRootDisk(profileNIC(), "zfs")
+	var gotContainer, gotPool, gotSize string
+	c := &Client{
+		server: f,
+		ensureZFSQuotaHeadroomFn: func(containerName, pool, targetSize string) error {
+			f.events = append(f.events, "quota")
+			gotContainer, gotPool, gotSize = containerName, pool, targetSize
+			return nil
+		},
+	}
+
+	if err := c.EnsureNICDevice("box", NICDevice{Name: "eth0", Network: "incusbr0"}); err != nil {
+		t.Fatalf("EnsureNICDevice: %v", err)
+	}
+	if gotContainer != "box" || gotPool != "default" || gotSize != "7GiB" {
+		t.Errorf("quota headroom arguments = (%q, %q, %q), want (box, default, 7GiB)", gotContainer, gotPool, gotSize)
+	}
+	if got, want := f.events, []string{"quota", "update"}; !equalStrings(got, want) {
+		t.Errorf("events = %v, want %v", got, want)
+	}
+}
+
+func TestEnsureNICDevice_SkipsQuotaHeadroomForNonZFSPool(t *testing.T) {
+	f := withRootDisk(profileNIC(), "dir")
+	called := false
+	c := &Client{
+		server: f,
+		ensureZFSQuotaHeadroomFn: func(string, string, string) error {
+			called = true
+			return nil
+		},
+	}
+
+	if err := c.EnsureNICDevice("box", NICDevice{Name: "eth0", Network: "incusbr0"}); err != nil {
+		t.Fatalf("EnsureNICDevice: %v", err)
+	}
+	if called {
+		t.Fatal("quota headroom ran for a non-ZFS pool")
+	}
+	if len(f.updates) != 1 {
+		t.Fatalf("UpdateInstance calls = %d, want 1", len(f.updates))
+	}
+}
+
 func TestSetDeviceConfig(t *testing.T) {
 	local := func() *api.Instance {
 		return &api.Instance{InstancePut: api.InstancePut{Devices: map[string]map[string]string{
@@ -249,6 +320,63 @@ func TestSetDeviceConfig(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSetDeviceConfig_QuotaPreparationFailureDoesNotMaskUpdateResult(t *testing.T) {
+	local := func() *api.Instance {
+		return &api.Instance{InstancePut: api.InstancePut{Devices: map[string]map[string]string{
+			"eth0": {"type": "nic", "name": "eth0", "network": "incusbr0", "security.acls": "old"},
+		}}, ExpandedDevices: map[string]map[string]string{}}
+	}
+
+	tests := []struct {
+		name      string
+		updateErr error
+	}{
+		{name: "successful update remains successful"},
+		{name: "Incus update error is returned", updateErr: errors.New("update failed")},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := withRootDisk(local(), "zfs")
+			f.updateErr = tc.updateErr
+			quotaErr := errors.New("zfs unavailable")
+			quotaCalls := 0
+			c := &Client{
+				server: f,
+				ensureZFSQuotaHeadroomFn: func(string, string, string) error {
+					quotaCalls++
+					return quotaErr
+				},
+			}
+
+			err := c.SetDeviceConfig("box", "eth0", map[string]string{"security.acls": "guard"})
+			if tc.updateErr == nil && err != nil {
+				t.Fatalf("SetDeviceConfig error = %v, want nil", err)
+			}
+			if tc.updateErr != nil && !errors.Is(err, tc.updateErr) {
+				t.Fatalf("SetDeviceConfig error = %v, want wrapping %v", err, tc.updateErr)
+			}
+			if len(f.updates) != 1 {
+				t.Fatalf("UpdateInstance calls = %d, want 1", len(f.updates))
+			}
+			if quotaCalls != 1 {
+				t.Fatalf("quota headroom calls = %d, want 1", quotaCalls)
+			}
+		})
+	}
+}
+
+func equalStrings(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // The guard's reconciler is written against Backend, so every method it

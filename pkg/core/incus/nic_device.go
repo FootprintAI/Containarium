@@ -112,6 +112,18 @@ func (c *Client) SetDeviceConfig(containerName, deviceName string, keys map[stri
 }
 
 func (c *Client) updateInstanceDevices(containerName string, inst *api.Instance, etag, what string) error {
+	// Incus writes backup.yaml as part of an instance update. A ZFS-backed root
+	// dataset can have a quota below its effective root-disk size (or have been
+	// left at an older quota), which makes that metadata write fail even though
+	// the device update itself is valid. Reapply the effective root size before
+	// issuing a device update so both NIC paths get the existing protection.
+	//
+	// This is deliberately non-fatal, matching SetDeviceSize: an unavailable
+	// ZFS command must not hide the actual Incus update result.
+	if err := c.prepareZFSQuotaHeadroomForDeviceUpdate(containerName, inst); err != nil {
+		fmt.Printf("Warning: ZFS quota pre-expand before %s on %s failed (non-fatal): %v\n", what, containerName, err)
+	}
+
 	op, err := c.server.UpdateInstance(containerName, inst.Writable(), etag)
 	if err != nil {
 		return fmt.Errorf("%s on %s: %w", what, containerName, err)
@@ -120,6 +132,59 @@ func (c *Client) updateInstanceDevices(containerName string, inst *api.Instance,
 		return fmt.Errorf("%s on %s (operation failed): %w", what, containerName, err)
 	}
 	return nil
+}
+
+// prepareZFSQuotaHeadroomForDeviceUpdate reapplies the effective root-disk
+// size as the ZFS quota before a device update. The root disk may be inherited
+// from a profile, so ExpandedDevices is the primary source; an instance-local
+// root device takes precedence for keys changed in this update.
+//
+// Non-ZFS pools and roots without a size need no quota preparation.
+func (c *Client) prepareZFSQuotaHeadroomForDeviceUpdate(containerName string, inst *api.Instance) error {
+	if inst == nil {
+		return nil
+	}
+
+	root, ok := inst.ExpandedDevices["root"]
+	if !ok {
+		root = inst.Devices["root"]
+	}
+	if root == nil {
+		return nil
+	}
+
+	pool := root["pool"]
+	targetSize := root["size"]
+	if localRoot, ok := inst.Devices["root"]; ok {
+		if localRoot["pool"] != "" {
+			pool = localRoot["pool"]
+		}
+		if localRoot["size"] != "" {
+			targetSize = localRoot["size"]
+		}
+	}
+	if targetSize == "" {
+		return nil
+	}
+	if pool == "" {
+		pool = c.StoragePool()
+	}
+
+	storagePool, _, err := c.server.GetStoragePool(pool)
+	if err != nil {
+		return fmt.Errorf("get storage pool %s: %w", pool, err)
+	}
+	if storagePool == nil {
+		return fmt.Errorf("get storage pool %s: empty response", pool)
+	}
+	if storagePool.Driver != "zfs" {
+		return nil
+	}
+
+	if c.ensureZFSQuotaHeadroomFn != nil {
+		return c.ensureZFSQuotaHeadroomFn(containerName, pool, targetSize)
+	}
+	return c.ensureZFSQuotaHeadroom(containerName, pool, targetSize)
 }
 
 // sortedKeys renders a key list deterministically for error messages.

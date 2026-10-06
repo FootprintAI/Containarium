@@ -35,6 +35,10 @@ func detectZFSContainersDataset() bool {
 type Client struct {
 	server incus.InstanceServer
 
+	// ensureZFSQuotaHeadroomFn replaces the host ZFS command in unit tests.
+	// Nil uses ensureZFSQuotaHeadroom.
+	ensureZFSQuotaHeadroomFn func(containerName, pool, targetSize string) error
+
 	// storagePolicy decides what EnsureStorage does when a pool does not
 	// isolate tenant volumes (#1206). Zero value warns, which preserves the
 	// pre-existing behaviour for dev hosts and single-tenant boxes.
@@ -2008,7 +2012,8 @@ func (c *Client) SetDeviceSize(containerName, deviceName, size string) error {
 	}
 
 	// If the disk is full, Incus cannot write backup.yaml during UpdateInstance.
-	// Detect this case and temporarily expand the ZFS quota to unblock the operation.
+	// Detect this case and expand the ZFS quota to the requested size to unblock
+	// the operation.
 	if deviceName == "root" {
 		if err := c.ensureZFSQuotaHeadroom(containerName, device["pool"], size); err != nil {
 			fmt.Printf("Warning: ZFS quota pre-expand failed (non-fatal): %v\n", err)
@@ -2083,8 +2088,9 @@ func buildContainerDataset(poolSource, poolName, containerName string) string {
 	return fmt.Sprintf("%s/containers/%s", zfsPool, containerName)
 }
 
-// ensureZFSQuotaHeadroom checks if the container's ZFS dataset is at quota and
-// temporarily expands it to the target size so Incus can write its backup.yaml.
+// ensureZFSQuotaHeadroom sets the container's ZFS dataset quota to targetSize
+// so Incus can write its backup.yaml. The quota change persists until a later
+// size update changes it again.
 func (c *Client) ensureZFSQuotaHeadroom(containerName, pool, targetSize string) error {
 	if pool == "" {
 		pool = c.StoragePool()
