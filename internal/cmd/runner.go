@@ -25,6 +25,7 @@ var (
 	runnerCount        int
 	runnerNamePrefix   string
 	runnerLabels       string
+	runnerGroup        string
 	runnerNameTemplate string
 	runnerSSHKeyPath   string
 	runnerSentinelHost string
@@ -79,7 +80,11 @@ Examples:
 
   # Custom labels (workflows target with runs-on: [self-hosted, gpu])
   containarium runner provision footprintai/containarium \
-      --github-pat ghp_xxxx --count 2 --labels gpu,containarium`,
+      --github-pat ghp_xxxx --count 2 --labels gpu,containarium
+
+  # Organization runners in the org's "gpu" runner group
+  containarium runner provision footprintai \
+      --github-pat ghp_xxxx --count 2 --runner-group gpu`,
 	Args: cobra.ExactArgs(1),
 	RunE: runRunnerProvision,
 }
@@ -119,10 +124,11 @@ func init() {
 	runnerCmd.AddCommand(runnerRemoveCmd)
 
 	// Provision flags.
-	runnerProvisionCmd.Flags().StringVar(&runnerPAT, "github-pat", os.Getenv("GH_PAT"), "GitHub PAT with `repo` scope (env: GH_PAT). REQUIRED.")
+	runnerProvisionCmd.Flags().StringVar(&runnerPAT, "github-pat", os.Getenv("GH_PAT"), "GitHub PAT: `repo` scope for an owner/repo target, `admin:org` for an organization (env: GH_PAT). REQUIRED.")
 	runnerProvisionCmd.Flags().IntVar(&runnerCount, "count", 1, "How many runners to provision (1..100)")
 	runnerProvisionCmd.Flags().StringVar(&runnerNamePrefix, "name-prefix", "ci-runner", "Prefix for generated box names")
 	runnerProvisionCmd.Flags().StringVar(&runnerLabels, "labels", "containarium,ephemeral", "Comma-separated runner labels")
+	runnerProvisionCmd.Flags().StringVar(&runnerGroup, "runner-group", "", "Organization runner group to register into (organization targets only; default: the org's default group)")
 	runnerProvisionCmd.Flags().StringVar(&runnerNameTemplate, "runner-name-template", "{prefix}-{i}", "Template for box names; {prefix} and {i} are substituted")
 	runnerProvisionCmd.Flags().StringVar(&runnerSSHKeyPath, "ssh-key", "", "Path to SSH public key used when creating new boxes (default: ~/.ssh/id_rsa.pub)")
 	runnerProvisionCmd.Flags().StringVar(&runnerSentinelHost, "sentinel", os.Getenv(config.EnvSentinelHost), "Sentinel SSH host (env: CONTAINARIUM_SENTINEL_HOST). REQUIRED for the install step.")
@@ -131,12 +137,12 @@ func init() {
 	runnerProvisionCmd.Flags().StringVar(&runnerPool, "pool", "", "Place the runner boxes on any healthy backend in this pool. Same semantics as `containarium create --pool`; mutually exclusive with --backend-id, validated by the daemon.")
 
 	// List flags.
-	runnerListCmd.Flags().StringVar(&runnerPAT, "github-pat", os.Getenv("GH_PAT"), "GitHub PAT with `repo` scope (env: GH_PAT). REQUIRED.")
+	runnerListCmd.Flags().StringVar(&runnerPAT, "github-pat", os.Getenv("GH_PAT"), "GitHub PAT: `repo` scope for an owner/repo target, `admin:org` for an organization (env: GH_PAT). REQUIRED.")
 	runnerListCmd.Flags().StringVar(&runnerNamePrefix, "name-prefix", "ci-runner", "Box name prefix to filter on")
 	runnerListCmd.Flags().StringVar(&runnerListFormat, "format", "table", "Output format: table or json")
 
 	// Remove flags. Reuse PAT/sentinel from above.
-	runnerRemoveCmd.Flags().StringVar(&runnerPAT, "github-pat", os.Getenv("GH_PAT"), "GitHub PAT with `repo` scope (env: GH_PAT). REQUIRED.")
+	runnerRemoveCmd.Flags().StringVar(&runnerPAT, "github-pat", os.Getenv("GH_PAT"), "GitHub PAT: `repo` scope for an owner/repo target, `admin:org` for an organization (env: GH_PAT). REQUIRED.")
 }
 
 // runRunnerProvision is the cobra handler. Most of the actual
@@ -151,6 +157,7 @@ func runRunnerProvision(_ *cobra.Command, args []string) error {
 		Count:        runnerCount,
 		NamePrefix:   runnerNamePrefix,
 		Labels:       runnerLabels,
+		RunnerGroup:  runnerGroup,
 		NameTemplate: runnerNameTemplate,
 	}
 	if err := runner.ValidateOptions(opts); err != nil {
