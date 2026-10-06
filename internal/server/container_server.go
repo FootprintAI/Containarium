@@ -253,6 +253,11 @@ type ContainerServer struct {
 	// GPU-probe LXC + a benchmark on the host, so concurrent/repeated calls
 	// must coalesce rather than stack a probe storm that can wedge the runtime.
 	profileMu sync.Mutex
+	// Hardware operations default to the bounded benchmark and the manager's
+	// passthrough probe; injectable so failures can be exercised without Incus.
+	capabilityBenchmark func() (container.BenchmarkResult, error)
+	capabilityGPUProbe  func() container.GPUValidationResult
+	capabilityResources func() (*incus.SystemResources, error)
 	// region is the region this backend serves, wired from --region (falling
 	// back to the pool name). Recorded into the capability profile. Empty when
 	// unset.
@@ -3640,44 +3645,106 @@ func (s *ContainerServer) capabStore() *capabilities.Store {
 // host system resources (CPU cores + model, RAM, disk) via the same Incus call
 // GetSystemInfo uses, the GPU passthrough probe (unless skipped), the bounded
 // CPU/memory micro-benchmark, and the operator-set region / reported class.
-// Best-effort on the resource read: a missing Incus client yields zero hardware
-// figures rather than an error, so a profile is always recordable.
-func (s *ContainerServer) gatherHostFacts(skipGPU bool) capabilities.HostFacts {
+// Missing resources, a failed GPU probe or an invalid benchmark leave the
+// previous profile untouched; unknown host capacity must not become a profile.
+func (s *ContainerServer) gatherHostFacts(skipGPU bool) (capabilities.HostFacts, error) {
 	f := capabilities.HostFacts{
 		Now:           time.Now(),
 		Region:        s.region,
 		ReportedClass: s.reportedClass,
 	}
 
-	if client, err := incus.New(); err == nil {
-		if res, err := client.GetSystemResources(); err == nil && res != nil {
-			f.CPUCores = res.TotalCPUs
-			f.CPUModel = res.CPUModel
-			f.TotalMemoryBytes = res.TotalMemoryBytes
-			f.TotalDiskBytes = res.TotalDiskBytes
+	var res *incus.SystemResources
+	var resourceErr error
+	if s.capabilityResources != nil {
+		res, resourceErr = s.capabilityResources()
+	} else if client, err := incus.New(); err == nil {
+		res, resourceErr = client.GetSystemResources()
+	} else {
+		resourceErr = err
+	}
+	if resourceErr != nil {
+		return capabilities.HostFacts{}, fmt.Errorf("system resource discovery: %w", resourceErr)
+	}
+	if res == nil {
+		return capabilities.HostFacts{}, fmt.Errorf("system resource discovery returned no resources")
+	}
+	if res.TotalCPUs <= 0 || res.TotalMemoryBytes <= 0 {
+		return capabilities.HostFacts{}, fmt.Errorf("system resource discovery returned invalid CPU or memory capacity")
+	}
+	// Only NVIDIA hosts need the nvidia.runtime probe; CPU-only hosts have
+	// no GPU to validate.
+	probeGPU := false
+	f.CPUCores = res.TotalCPUs
+	f.CPUModel = res.CPUModel
+	f.TotalMemoryBytes = res.TotalMemoryBytes
+	f.TotalDiskBytes = res.TotalDiskBytes
+	for _, gpu := range res.GPUs {
+		vendor := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(gpu.Vendor)), "0x")
+		if vendor == "10de" || strings.Contains(vendor, "nvidia") {
+			probeGPU = true
+			break
 		}
 	}
 
 	// GPU model/driver from the existing nvidia.runtime passthrough probe —
 	// the same ValidateGPU the validate-gpu command runs. Skipped on request
 	// (CPU-only backends) or when no container manager is wired.
-	if !skipGPU && s.manager != nil {
-		res := s.manager.ValidateGPU("")
-		if res.Status == container.GPUStatusOK {
-			f.GPUAvailable = true
-			f.GPUModel = res.Model
-			f.GPUDriverVersion = res.DriverVersion
+	if !skipGPU && probeGPU && (s.manager != nil || s.capabilityGPUProbe != nil) {
+		var res container.GPUValidationResult
+		if s.capabilityGPUProbe != nil {
+			res = s.capabilityGPUProbe()
+		} else {
+			res = s.manager.ValidateGPU("")
 		}
+		if res.Status != container.GPUStatusOK {
+			return capabilities.HostFacts{}, fmt.Errorf("GPU probe: %s", res.Detail)
+		}
+		f.GPUAvailable = true
+		f.GPUModel = res.Model
+		f.GPUDriverVersion = res.DriverVersion
 	}
 
 	// Bounded CPU/memory micro-benchmark.
-	b := container.RunBenchmark()
+	var b container.BenchmarkResult
+	if s.capabilityBenchmark != nil {
+		var err error
+		b, err = s.capabilityBenchmark()
+		if err != nil {
+			return capabilities.HostFacts{}, fmt.Errorf("benchmark: %w", err)
+		}
+	} else {
+		b = container.RunBenchmark()
+	}
+	if b.CPUOpsPerSec <= 0 || b.MemBytesPerSec <= 0 || b.DurationMs <= 0 {
+		return capabilities.HostFacts{}, fmt.Errorf("benchmark returned invalid measurements")
+	}
 	f.Benchmark = capabilities.Benchmark{
 		CPUOpsPerSec:   b.CPUOpsPerSec,
 		MemBytesPerSec: b.MemBytesPerSec,
 		DurationMs:     b.DurationMs,
 	}
-	return f
+	return f, nil
+}
+
+// recordCapabilityProfile is shared by the explicit RPC and pool startup.
+// Recheck existence under the same lock that protects explicit profiles so
+// startup can never overwrite a profile recorded by a concurrent operator.
+func (s *ContainerServer) recordCapabilityProfile(skipGPU, onlyIfMissing bool) (capabilities.Profile, error) {
+	if !s.profileMu.TryLock() {
+		return capabilities.Profile{}, status.Error(codes.Aborted, "a backend profile is already in progress; retry shortly")
+	}
+	defer s.profileMu.Unlock()
+	if onlyIfMissing {
+		if p, ok := s.capabStore().Current(); ok {
+			return p, nil
+		}
+	}
+	f, err := s.gatherHostFacts(skipGPU)
+	if err != nil {
+		return capabilities.Profile{}, status.Errorf(codes.Internal, "profile backend: %v", err)
+	}
+	return s.capabStore().Record(f), nil
 }
 
 // profileToProto maps the internal capability profile onto the wire type.
@@ -3747,11 +3814,10 @@ func (s *ContainerServer) ProfileBackend(ctx context.Context, req *pb.ProfileBac
 	// Local backend. Serialize against concurrent profiles: gatherHostFacts
 	// spins a throwaway GPU-probe LXC + runs a benchmark, so a second caller
 	// (retry, multi-replica control plane) must not stack a second probe.
-	if !s.profileMu.TryLock() {
-		return nil, status.Error(codes.Aborted, "a backend profile is already in progress; retry shortly")
+	p, err := s.recordCapabilityProfile(req.SkipGpu, false)
+	if err != nil {
+		return nil, err
 	}
-	defer s.profileMu.Unlock()
-	p := s.capabStore().Record(s.gatherHostFacts(req.SkipGpu))
 	return &pb.ProfileBackendResponse{
 		Profile:   profileToProto(p),
 		BackendId: req.BackendId,

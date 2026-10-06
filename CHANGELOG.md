@@ -14,6 +14,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already fetches from each healthy peer, so there is no extra forwarded call; each stays null when the peer advertises
   or profiled nothing, could not be reached, is unhealthy, or runs a daemon that predates the fields.
 
+- `containarium doctor` (and the posture printed by `pool join` / `cloud enroll`, and the posture checks reported to
+  the cloud) gains the non-blocking posture check **container bridge blocked from cloud metadata endpoint (rule + boot
+  unit)**. It fails when the iptables FORWARD rule from `incusbr0`'s subnet to `169.254.169.254` is not in the kernel,
+  or when `containarium-imds-block.service` is not installed and enabled to re-apply it after a reboot, and names the
+  fix. The existing **cloud metadata endpoint blocked** check dials from the host, whose own traffic the block
+  deliberately leaves alone, so it could not tell a host that lost its block from one that has it. `containarium
+  hostharden block-metadata` gains `--persist`, which also installs the boot unit, and `pool join` / `cloud enroll`
+  now apply the block before printing posture so the printed result reflects it. Closes #2298.
+
 ### Fixed
 
 - An unrecognised `CONTAINARIUM_PRIVILEGED_PODMAN_POLICY` value no longer falls back to `all` (#2299). The value is
@@ -21,6 +30,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `all`. A value that matches none of `all`, `admin-only` or `disabled` after that (`none`, `off`, `admin_only`, a
   typo) now stops the daemon at boot with an error naming the variable, instead of silently granting every caller
   privileged Podman.
+
+- `scripts/core-guard-legit-flows-e2e.sh` no longer reports logged drops as unlogged (#2323). The "each drop
+  must be logged" check piped `journalctl -k` into `grep -q` under `set -o pipefail`: `grep -q` exits at the
+  first match, `journalctl` takes a SIGPIPE writing the rest of the window, and `pipefail` turned that into a
+  FAIL even though the line was there. It only happened once the log window exceeded the ~4 KB pipe buffer, so
+  it was intermittent (it depends on how long the script ran and how noisy the log was). The window is now
+  captured first and the captured text is searched; a genuinely missing log line still fails the check.
 
 ## [0.99.3] - 2026-10-05
 

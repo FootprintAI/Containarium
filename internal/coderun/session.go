@@ -27,10 +27,10 @@ const tailLogContentMarker = "--- content ---\n"
 // found.
 const agentBoxPathPrefix = `PATH="$HOME/.local/bin:/usr/local/bin:$PATH"`
 
-// agentBoxRemoteCommand is the remote command dial() runs. exec replaces the
-// wrapping shell so agent-box owns the stdio MCP speaks over, and so a signal
-// reaches the helper rather than an intermediate shell.
-const agentBoxRemoteCommand = `sh -c '` + agentBoxPathPrefix + ` exec agent-box'`
+// AgentBoxRemoteCommand is the remote command used by code run and quickstart's
+// MCP configs. exec replaces the wrapping shell so agent-box owns the stdio MCP
+// speaks over, and so a signal reaches the helper rather than an intermediate shell.
+const AgentBoxRemoteCommand = `sh -c '` + agentBoxPathPrefix + ` exec agent-box'`
 
 // agentBoxProbeCommand answers one question after a failed handshake: is the
 // helper there at all? Distinguishing "not installed" from "installed but the
@@ -110,7 +110,7 @@ func Connect(ctx context.Context, sshArgs []string) (*Session, error) {
 }
 
 func (s *Session) dial(ctx context.Context) (mcpConn, error) {
-	args := append(append([]string{}, s.sshArgs...), agentBoxRemoteCommand)
+	args := append(append([]string{}, s.sshArgs...), AgentBoxRemoteCommand)
 	c, err := dialMCP(args)
 	if err != nil {
 		return nil, fmt.Errorf("start agent-box over ssh: %w", err)

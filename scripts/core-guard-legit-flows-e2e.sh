@@ -137,7 +137,11 @@ else
   for spec in "$PG:5432" "$VM:3000" "$CADDY:2019"; do
     ip="${spec%%:*}"; port="${spec##*:}"
     [ -z "$ip" ] && continue
-    if journalctl -k --since "$SINCE" --no-pager 2>/dev/null | grep -qE "SRC=$TENANT_IP .*DST=$ip .*DPT=$port\b"; then
+    # Capture the window first and grep the captured text. `journalctl | grep -q` under `set -o pipefail` reports
+    # FAILURE even on a match: grep -q exits at the first hit, journalctl takes SIGPIPE writing the rest of the
+    # window, and pipefail surfaces that as the pipeline's status, so every logged drop looked unlogged.
+    klog="$(journalctl -k --since "$SINCE" --no-pager 2>/dev/null || true)"
+    if grep -qE "SRC=$TENANT_IP .*DST=$ip .*DPT=$port\b" <<<"$klog"; then
       echo "OK    drop logged: $TENANT_IP -> $ip:$port"
     else
       echo "FAIL  no kernel-log line for $TENANT_IP -> $ip:$port since $SINCE (is default.ingress.logged=true on that NIC?)"
