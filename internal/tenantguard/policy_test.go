@@ -186,11 +186,15 @@ func TestACLName(t *testing.T) {
 	if ACLName("alice") == ACLName("bob") {
 		t.Error("distinct tenants collide")
 	}
-	if ACLName("alice") != ACLName("alice") {
-		t.Error("not stable")
+	first := ACLName("alice")
+	for i := 0; i < 3; i++ {
+		if ACLName("alice") != first {
+			t.Error("not stable across calls")
+		}
 	}
 	for _, c := range n {
-		if !(c == '-' || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+		ok := c == '-' || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
+		if !ok {
 			t.Errorf("ACLName %q has a character Incus may reject: %q", n, c)
 		}
 	}
