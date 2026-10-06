@@ -113,9 +113,17 @@ jobs:
           sudo apt-get install -y --no-install-recommends nftables
           sudo nft list ruleset >/dev/null
 
-      - name: Install Incus
+      # Ubuntu's packaged Incus 6.0 predates the network_bridge_acl API
+      # extension (NIC-level security.acls), so the guards would report
+      # Unsupported and prove nothing. Install the README's recommended
+      # Zabbly stable build (7.x), the same source the fleet runs.
+      - name: Install Incus (Zabbly stable, has network_bridge_acl)
         run: |
           set -euo pipefail
+          curl -fsSL https://pkgs.zabbly.com/key.asc | sudo gpg --dearmor -o /usr/share/keyrings/zabbly-incus.gpg
+          echo "deb [signed-by=/usr/share/keyrings/zabbly-incus.gpg] https://pkgs.zabbly.com/incus/stable $(. /etc/os-release && echo $VERSION_CODENAME) main" \
+            | sudo tee /etc/apt/sources.list.d/zabbly-incus-stable.list
+          sudo apt-get update
           sudo apt-get install -y --no-install-recommends incus dnsmasq-base
           sudo incus version
 
@@ -126,12 +134,16 @@ jobs:
           grep -q '^root:' /etc/subuid || echo 'root:1000000:1000000000' | sudo tee -a /etc/subuid
           grep -q '^root:' /etc/subgid || echo 'root:1000000:1000000000' | sudo tee -a /etc/subgid
 
-      - name: Assert the firewall driver is nftables (fail, don't skip)
+      - name: Assert the firewall driver is nftables and bridge ACLs exist (fail, don't skip)
         run: |
           set -euo pipefail
           test -S /var/lib/incus/unix.socket || { echo "::error::no Incus socket"; exit 1; }
           driver=$(sudo incus info | awk '/^  firewall:/ {print $2}')
           echo "incus firewall driver: $driver"
+          sudo incus info | grep -q '^- network_bridge_acl$' || {
+            echo "::error::this Incus lacks the network_bridge_acl API extension; the guards would report Unsupported"
+            sudo incus version; exit 1
+          }
           [ "$driver" = "nftables" ] || {
             echo "::error::Incus chose '$driver'; NIC ACLs need nftables — the guard would report ErrUnsupportedFirewall and this lane would prove nothing"
             sudo iptables -S | head -20 || true
