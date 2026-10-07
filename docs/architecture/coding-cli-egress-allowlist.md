@@ -25,7 +25,7 @@ Verified by reading `origin/main`:
 | --- | --- |
 | The platform's eBPF enforcer attaches **TCX hooks to each box's host-side network interface**. A packet seen there carries no process identity | `internal/netbpf/loader.go` (`AttachTCX`, ingress/egress), `docs/EBPF-CI-LOADING-LANE-DESIGN.md` |
 | Its allow-list model is **IPv4 CIDR, keyed by tenant id**, with a mode enum (`LOG_ONLY` / `ENFORCE`) shared with the proto `NetworkPolicyMode` | `internal/netbpf/policymap.go`, `proto/containarium/v1/config.proto` |
-| `egress_domains` are validated and stored but **not enforced**: the daemon-side resolver that would fold resolved IPs into the map is marked "Phase C" and is not built | `internal/netpolicy/netpolicy.go` (`compileDomains`), `internal/netbpf/policymap.go` |
+| The kernel only ever sees CIDRs: `egress_domains` are validated by `netpolicy`, then resolved to addresses in user space by the daemon and folded into the same map | `internal/netpolicy/netpolicy.go` (`compileDomains`), `internal/netbpf/policymap.go` |
 | **No cgroup-attached BPF program exists** in the repo (no `cgroup_skb`, `cgroup/connect`, or `sock_addr`) | repo-wide search |
 | `agent-box` starts the coding CLI with `/bin/sh -c` in a `setsid`'d child. There is **no cgroup, uid or network-namespace separation** between the CLI and the rest of the box | `internal/agentbox/process.go`, `internal/agentbox/shell.go` |
 | `coderun` reaches the box over ssh and never touches the network layer | `internal/coderun/session.go` |
