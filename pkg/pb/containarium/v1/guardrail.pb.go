@@ -713,7 +713,13 @@ type GuardrailAttestation struct {
 	KeyId string `protobuf:"bytes,10,opt,name=key_id,json=keyId,proto3" json:"key_id,omitempty"`
 	// Ed25519 signature over the canonical proto bytes of this message with
 	// `signature` cleared.
-	Signature     []byte `protobuf:"bytes,11,opt,name=signature,proto3" json:"signature,omitempty"`
+	Signature []byte `protobuf:"bytes,11,opt,name=signature,proto3" json:"signature,omitempty"`
+	// The kinds the engine was asked for — and, because an engine that cannot
+	// scan a requested kind answers FAILED_PRECONDITION rather than scanning
+	// the rest, the kinds that were actually covered. A consumer that needs
+	// SECRET covered checks for it here; a PASS that never looked for a kind
+	// must be distinguishable from one that did (#2362). Sorted ascending.
+	KindsScanned  []GuardrailKind `protobuf:"varint,12,rep,packed,name=kinds_scanned,json=kindsScanned,proto3,enum=containarium.v1.GuardrailKind" json:"kinds_scanned,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -825,6 +831,13 @@ func (x *GuardrailAttestation) GetSignature() []byte {
 	return nil
 }
 
+func (x *GuardrailAttestation) GetKindsScanned() []GuardrailKind {
+	if x != nil {
+		return x.KindsScanned
+	}
+	return nil
+}
+
 var File_containarium_v1_guardrail_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_guardrail_proto_rawDesc = "" +
@@ -861,7 +874,7 @@ const file_containarium_v1_guardrail_proto_rawDesc = "" +
 	"\x05rules\x18\x01 \x03(\v2\x1e.containarium.v1.GuardrailRuleR\x05rules\"d\n" +
 	"\x12GuardrailKindCount\x122\n" +
 	"\x04kind\x18\x01 \x01(\x0e2\x1e.containarium.v1.GuardrailKindR\x04kind\x12\x1a\n" +
-	"\bfindings\x18\x02 \x01(\x03R\bfindings\"\xf2\x03\n" +
+	"\bfindings\x18\x02 \x01(\x03R\bfindings\"\xb7\x04\n" +
 	"\x14GuardrailAttestation\x12%\n" +
 	"\x0esubject_sha256\x18\x01 \x01(\tR\rsubjectSha256\x12\x1b\n" +
 	"\tengine_id\x18\x02 \x01(\tR\bengineId\x12%\n" +
@@ -876,7 +889,8 @@ const file_containarium_v1_guardrail_proto_rawDesc = "" +
 	"attestedAt\x12\x15\n" +
 	"\x06key_id\x18\n" +
 	" \x01(\tR\x05keyId\x12\x1c\n" +
-	"\tsignature\x18\v \x01(\fR\tsignature*b\n" +
+	"\tsignature\x18\v \x01(\fR\tsignature\x12C\n" +
+	"\rkinds_scanned\x18\f \x03(\x0e2\x1e.containarium.v1.GuardrailKindR\fkindsScanned*b\n" +
 	"\rGuardrailKind\x12\x1e\n" +
 	"\x1aGUARDRAIL_KIND_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12GUARDRAIL_KIND_PII\x10\x01\x12\x19\n" +
@@ -936,13 +950,14 @@ var file_containarium_v1_guardrail_proto_depIdxs = []int32{
 	10, // 10: containarium.v1.GuardrailAttestation.residual:type_name -> containarium.v1.GuardrailKindCount
 	2,  // 11: containarium.v1.GuardrailAttestation.verdict:type_name -> containarium.v1.GuardrailVerdict
 	12, // 12: containarium.v1.GuardrailAttestation.attested_at:type_name -> google.protobuf.Timestamp
-	6,  // 13: containarium.v1.GuardrailEngineService.Scan:input_type -> containarium.v1.GuardrailScanRequest
-	7,  // 14: containarium.v1.GuardrailEngineService.Scan:output_type -> containarium.v1.GuardrailScanResponse
-	14, // [14:15] is the sub-list for method output_type
-	13, // [13:14] is the sub-list for method input_type
-	13, // [13:13] is the sub-list for extension type_name
-	13, // [13:13] is the sub-list for extension extendee
-	0,  // [0:13] is the sub-list for field type_name
+	0,  // 13: containarium.v1.GuardrailAttestation.kinds_scanned:type_name -> containarium.v1.GuardrailKind
+	6,  // 14: containarium.v1.GuardrailEngineService.Scan:input_type -> containarium.v1.GuardrailScanRequest
+	7,  // 15: containarium.v1.GuardrailEngineService.Scan:output_type -> containarium.v1.GuardrailScanResponse
+	15, // [15:16] is the sub-list for method output_type
+	14, // [14:15] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_guardrail_proto_init() }

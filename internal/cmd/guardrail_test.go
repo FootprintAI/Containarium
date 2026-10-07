@@ -15,6 +15,7 @@ func resetGuardrailFlags() {
 	guardrailOut, guardrailPolicyFile, guardrailVaultFile = "", "", ""
 	guardrailRedactKey, guardrailSignKey, guardrailAttestFile = "", "", ""
 	guardrailPublicKey, guardrailKeygenPrefix = "", ""
+	guardrailRequireKinds = nil
 }
 
 func runGuardrail(t *testing.T, args ...string) (string, error) {
