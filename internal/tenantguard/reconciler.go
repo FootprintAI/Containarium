@@ -73,9 +73,12 @@ type Status struct {
 	// (firewall driver or Incus too old): nothing is guarded, creates are
 	// not refused, and LastError says why. Doctor treats it as red.
 	Unsupported bool
-	StaleSince  time.Time
-	LastError   string
-	LastPass    time.Time
+	// LegacyIngressCleared counts per-container ACLs (acl-<user>) whose
+	// pre-#2359 ingress rules this reconciler has cleared since start.
+	LegacyIngressCleared int
+	StaleSince           time.Time
+	LastError            string
+	LastPass             time.Time
 }
 
 // Reconciler keeps every tenant container's NIC ACL equal to what Compute
@@ -180,7 +183,7 @@ func (r *Reconciler) Prepare(ctx context.Context, containerName, tenant string) 
 		}
 		return fmt.Errorf("tenantguard: %w", err)
 	}
-	in, _, err := r.gather()
+	in, _, err := r.gather(ctx)
 	if err != nil {
 		return fmt.Errorf("tenantguard: %w", err)
 	}
@@ -243,7 +246,7 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) error {
 	}
 	r.setStatus(func(s *Status) { s.Unsupported = false })
 
-	in, unresolved, err := r.gather()
+	in, unresolved, err := r.gather(ctx)
 	if err != nil {
 		r.setStatus(func(s *Status) { s.FirewallDriver = driver })
 		return r.fail(fmt.Errorf("tenantguard: %w", err))
@@ -296,6 +299,14 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) error {
 	if err := r.pruneStale(pol); err != nil {
 		note(err)
 	}
+	// Legacy: per-container ACLs written before #2359 may still carry
+	// ingress allows, which Incus evaluates next to ours and which could
+	// re-open what we close. Clear their ingress, keep their egress and
+	// attachments.
+	cleared, err := r.sanitizeLegacyACLs()
+	if err != nil {
+		note(err)
+	}
 
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Container < entries[j].Container })
 	sort.Strings(unresolved)
@@ -305,6 +316,7 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) error {
 		s.Entries = entries
 		s.Unresolved = unresolved
 		s.Tenants = len(pol.ACLs)
+		s.LegacyIngressCleared += cleared
 		s.LastPass = time.Now()
 		if firstErr != nil {
 			s.LastError = firstErr.Error()
@@ -322,7 +334,7 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) error {
 // gather reads the host into Inputs. Core-role containers become
 // initiators (when their role is one) and are never subjects; a container
 // with no resolvable tenant is reported, not guessed.
-func (r *Reconciler) gather() (Inputs, []string, error) {
+func (r *Reconciler) gather(ctx context.Context) (Inputs, []string, error) {
 	bridge, gateway, err := nicguard.ParseBridge(r.cfg.BridgeCIDR)
 	if err != nil {
 		return Inputs{}, nil, err
@@ -333,7 +345,7 @@ func (r *Reconciler) gather() (Inputs, []string, error) {
 	}
 	in := Inputs{BridgeCIDR: bridge, HostGateway: gateway, Initiators: map[incus.Role][]netip.Addr{}}
 	if r.cfg.Policies != nil {
-		policies, perr := r.cfg.Policies.List(context.Background())
+		policies, perr := r.cfg.Policies.List(ctx)
 		if perr != nil {
 			// A policy read failure must not drop cross-tenant allows that
 			// were in force (a pass would then close doors mid-flight); fail
@@ -388,7 +400,13 @@ func (r *Reconciler) attach(container, acl string) error {
 		if err := r.be.EnsureNICDevice(container, incus.NICDevice{Name: r.cfg.NICDevice, Network: r.cfg.Bridge}); err != nil {
 			return fmt.Errorf("nic device on %s: %w", container, err)
 		}
-		if err := r.be.SetDeviceConfig(container, r.cfg.NICDevice, tenantNICKeys(acl)); err != nil {
+		// The ACL name is APPENDED to security.acls (a per-container
+		// acl-<user> egress ACL may already be there), never overwritten;
+		// the default-action and anti-spoof keys are merged alongside.
+		if err := r.be.AttachACLToContainer(container, acl, r.cfg.NICDevice); err != nil {
+			return fmt.Errorf("attach acl on %s: %w", container, err)
+		}
+		if err := r.be.SetDeviceConfig(container, r.cfg.NICDevice, tenantNICKeys()); err != nil {
 			return fmt.Errorf("nic acl keys on %s: %w", container, err)
 		}
 		return nil
@@ -403,8 +421,9 @@ func (r *Reconciler) attach(container, acl string) error {
 // is left for the IPv6 sibling work: no allow rule names an IPv6 source
 // yet, so there is nothing to spoof toward, and some kernels refuse it
 // without br_netfilter.)
-func tenantNICKeys(acl string) map[string]string {
-	keys := nicguard.NICKeys(acl)
+func tenantNICKeys() map[string]string {
+	keys := nicguard.NICKeys("")
+	delete(keys, "security.acls") // appended by AttachACLToContainer, not overwritten here
 	keys["security.mac_filtering"] = "true"
 	keys["security.ipv4_filtering"] = "true"
 	return keys
@@ -469,6 +488,41 @@ func (r *Reconciler) warnUnsupported(err error) {
 	}
 	r.warned = err.Error()
 	log.Printf("[tenantguard] UNSUPPORTED on this host — tenants are NOT isolated from each other: %v (containarium doctor reports this; install Incus from the Zabbly repository with the nftables driver, or set CONTAINARIUM_TENANT_GUARD=off to acknowledge)", err)
+}
+
+// legacyACLPrefix names the per-container ACLs UpdateContainerACL writes.
+const legacyACLPrefix = "acl-"
+
+// sanitizeLegacyACLs rewrites every acl-<user> ACL that still has ingress
+// rules so it keeps only its egress half. Returns how many it cleared.
+func (r *Reconciler) sanitizeLegacyACLs() (int, error) {
+	acls, err := r.be.ListNetworkACLs()
+	if err != nil {
+		return 0, fmt.Errorf("list acls: %w", err)
+	}
+	var firstErr error
+	cleared := 0
+	for _, a := range acls {
+		if !strings.HasPrefix(a.Name, legacyACLPrefix) || len(a.Ingress) == 0 {
+			continue
+		}
+		cfg := incus.ACLConfig{Name: a.Name, Description: a.Description}
+		for _, rl := range a.Egress {
+			cfg.EgressRules = append(cfg.EgressRules, incus.ACLRule{
+				Action: rl.Action, Source: rl.Source, Destination: rl.Destination,
+				DestinationPort: rl.DestinationPort, Protocol: rl.Protocol, Description: rl.Description,
+			})
+		}
+		if uerr := r.be.UpdateNetworkACL(a.Name, cfg); uerr != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("clear legacy ingress on %s: %w", a.Name, uerr)
+			}
+			continue
+		}
+		log.Printf("[tenantguard] cleared %d legacy ingress rule(s) from per-container ACL %s (ingress is the guard's since #2359; egress kept)", len(a.Ingress), a.Name)
+		cleared++
+	}
+	return cleared, firstErr
 }
 
 func (r *Reconciler) fail(err error) error {

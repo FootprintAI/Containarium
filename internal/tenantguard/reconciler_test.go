@@ -89,14 +89,17 @@ func (f *fakeBackend) GetNetworkACL(name string) (*api.NetworkACL, error) {
 }
 
 func toAPI(cfg incus.ACLConfig) api.NetworkACL {
-	var in []api.NetworkACLRule
-	for _, r := range cfg.IngressRules {
-		in = append(in, api.NetworkACLRule{Action: r.Action, Source: r.Source, Destination: r.Destination,
-			Protocol: r.Protocol, DestinationPort: r.DestinationPort, Description: r.Description, State: "enabled"})
+	conv := func(rules []incus.ACLRule) []api.NetworkACLRule {
+		var out []api.NetworkACLRule
+		for _, r := range rules {
+			out = append(out, api.NetworkACLRule{Action: r.Action, Source: r.Source, Destination: r.Destination,
+				Protocol: r.Protocol, DestinationPort: r.DestinationPort, Description: r.Description, State: "enabled"})
+		}
+		return out
 	}
 	return api.NetworkACL{
 		NetworkACLPost: api.NetworkACLPost{Name: cfg.Name},
-		NetworkACLPut:  api.NetworkACLPut{Description: cfg.Description, Ingress: in},
+		NetworkACLPut:  api.NetworkACLPut{Description: cfg.Description, Ingress: conv(cfg.IngressRules), Egress: conv(cfg.EgressRules)},
 	}
 }
 
@@ -182,6 +185,31 @@ func (f *fakeBackend) enter() {
 	time.Sleep(2 * time.Millisecond) // widen the window so an overlap is observable
 }
 func (f *fakeBackend) leave() { atomic.AddInt32(&f.active, -1) }
+
+// AttachACLToContainer mirrors the real client (#2348): appends to an
+// existing security.acls list, no write when already present.
+func (f *fakeBackend) AttachACLToContainer(container, acl, device string) error {
+	f.enter()
+	defer f.leave()
+	f.fmu.Lock()
+	defer f.fmu.Unlock()
+	dev, ok := f.devices[container][device]
+	if !ok {
+		return errors.New("device " + device + " not found on " + container)
+	}
+	for _, n := range strings.Split(dev["security.acls"], ",") {
+		if n == acl {
+			return nil
+		}
+	}
+	if dev["security.acls"] == "" {
+		dev["security.acls"] = acl
+	} else {
+		dev["security.acls"] += "," + acl
+	}
+	f.keyWrite = append(f.keyWrite, container+"/"+device)
+	return nil
+}
 
 func (f *fakeBackend) SetDeviceConfig(container, device string, keys map[string]string) error {
 	f.enter()
@@ -677,5 +705,47 @@ func TestReconcile_AllowFromTenantsFromPolicyStore(t *testing.T) {
 	}
 	if f.writes() != 0 {
 		t.Errorf("wrote %d times although policies could not be read", f.writes())
+	}
+}
+
+// A per-container ACL written before #2359 still carrying ingress allows is
+// rewritten to its egress half on the next pass; its egress rules and its
+// attachment survive, and ACLs that are not per-container are untouched.
+func TestReconcile_ClearsLegacyPerContainerIngress(t *testing.T) {
+	f := twoTenantHost()
+	f.acls["acl-alice"] = toAPI(incus.ACLConfig{Name: "acl-alice", Description: "Custom firewall rules",
+		IngressRules: []incus.ACLRule{{Action: "allow", Source: "0.0.0.0/0", DestinationPort: "5432", Protocol: "tcp"}},
+		EgressRules:  []incus.ACLRule{{Action: "drop", Destination: "10.100.0.0/24", Description: "no bridge"}}})
+	f.devices["alice-container"] = map[string]map[string]string{"eth0": {"type": "nic", "name": "eth0", "network": "incusbr0", "security.acls": "acl-alice"}}
+	f.acls["somebody-elses-acl"] = toAPI(incus.ACLConfig{Name: "somebody-elses-acl",
+		IngressRules: []incus.ACLRule{{Action: "allow", Source: "10.0.0.0/8"}}})
+
+	r := NewReconciler(f, enforceCfg())
+	if err := r.ReconcileOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got := f.acls["acl-alice"]
+	if len(got.Ingress) != 0 {
+		t.Errorf("legacy ingress not cleared: %+v", got.Ingress)
+	}
+	if len(got.Egress) != 1 || got.Egress[0].Destination != "10.100.0.0/24" {
+		t.Errorf("egress not preserved: %+v", got.Egress)
+	}
+	if acls := f.devices["alice-container"]["eth0"]["security.acls"]; !strings.Contains(acls, "acl-alice") || !strings.Contains(acls, ACLName("alice")) {
+		t.Errorf("attachment lost or guard not attached: %q", acls)
+	}
+	if len(f.acls["somebody-elses-acl"].Ingress) != 1 {
+		t.Error("an ACL that is not per-container must not be touched")
+	}
+	if st := r.Status(); st.LegacyIngressCleared != 1 {
+		t.Errorf("LegacyIngressCleared = %d, want 1", st.LegacyIngressCleared)
+	}
+	// Converged: a second pass rewrites nothing.
+	before := len(f.updated)
+	if err := r.ReconcileOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.updated) != before {
+		t.Errorf("second pass rewrote ACLs: %v", f.updated[before:])
 	}
 }
