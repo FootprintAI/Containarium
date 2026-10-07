@@ -158,7 +158,7 @@ This page records what was found at the time; the follow-up work is:
 - **Network layer.** The core-infra network guard
   ([`docs/architecture/core-infra-network-guard.md`](../architecture/core-infra-network-guard.md))
   denies tenant sources to core-role listener ports with Incus network ACLs. It
-  ships off by default; turn it on with `CONTAINARIUM_CORE_GUARD=enforce`. This
+  shipped off by default; since #2347 it is on unless `CONTAINARIUM_CORE_GUARD=off`. This
   is the stronger control for Finding 1, because it does not depend on the
   database's own configuration being right.
 - **Application layer, new installs.** A freshly installed core Postgres no

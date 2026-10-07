@@ -11,6 +11,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `containarium guardrail apply` now asks the engine for exactly the kinds its policy covers instead of an empty list (which meant "whatever the engine has enabled"), so an engine that cannot scan a kind the policy names — SECRET against a PII-only detector — fails the run with `FAILED_PRECONDITION` before anything is written, rather than attesting a PASS that never looked (#2362). `GuardrailAttestation` gains `kinds_scanned`, `apply` prints it, and `guardrail verify --require-kind pii,secret` refuses an attestation that did not cover a required kind. `--kind` remains on `scan` only.
 
+### Changed
+
+- **Breaking: tenant containers on a shared backend can no longer reach each other, and both Incus NIC-ACL guards
+  are on by default** (#2347, design `docs/architecture/tenant-network-guard.md`). A new tenant network guard
+  attaches one Incus network ACL per tenant to every tenant container's NIC: ingress default-drop, allowing only
+  the host gateway, the core initiators (Caddy and a co-located control plane) and the tenant's own containers.
+  Egress is untouched (it stays the eBPF enforcer's). A box is guarded at birth, before its first start; a box that
+  cannot be guarded is removed and the create fails with `FAILED_PRECONDITION`. Pre-existing boxes are guarded on
+  the daemon's first pass; one that cannot be is left running and reported. The core-infra guard (#2084) changes
+  its default the same way. `CONTAINARIUM_TENANT_GUARD` and `CONTAINARIUM_CORE_GUARD` now treat unset as
+  `enforce`; only `off` disables, and anything else fails closed to `enforce`. Both guards need Incus's `nftables`
+  firewall driver and the `network_bridge_acl_devices` API extension (Incus 6.9+; the Zabbly 7.x builds have it, Ubuntu's
+  packaged Incus 6.0.0 does not). A host that cannot carry bridge NIC ACLs at all is **not** guarded: creates
+  still succeed, the daemon logs the gap once, and the guard's status reports it, so a missing capability never
+  turns into an outage. What changes for tenants: reaching a *co-tenant's*
+  box by bridge address is denied; reaching your own other boxes, Caddy, OTel, DNS, DHCP and the internet is not.
+  An operator who needs the old behaviour on a host sets `CONTAINARIUM_TENANT_GUARD=off`.
+
 ### Added
 
 - `containarium guardrail scan|apply|verify|keygen`: run a detection engine over a directory, redact findings into stable placeholder tokens, re-scan the result as a token-aware gate, and sign an ed25519 `GuardrailAttestation` a consumer verifies before using the data. New proto contract `GuardrailEngineService` (engines plug in behind it; the in-tree reference engine is regex-only and says so) and `internal/guardrail`. Design: `docs/architecture/guardrail.md`.

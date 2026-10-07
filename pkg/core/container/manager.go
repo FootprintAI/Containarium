@@ -32,6 +32,9 @@ type Manager struct {
 	// default, production) uses defaultCloudInitWait; a test seam so a test
 	// exercising the wait itself doesn't cost the real 5s.
 	cloudInitWait time.Duration
+	// nicGuard, when non-nil, guards a new container's NIC between create
+	// and start (see NICGuard). Nil = no hook.
+	nicGuard NICGuard
 	// nameCache backs ExistingContainerNames — see its doc comment.
 	nameCache containerNameCache
 	// nameCacheTTL overrides existingContainerNamesCacheTTL. Zero (the
@@ -322,6 +325,13 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		return m.incus.CreateContainer(config)
 	}); err != nil {
 		return nil, fmt.Errorf("failed to create container: %w", err)
+	}
+
+	// Guard the NIC before the first start (tenant network guard): a box
+	// that cannot be guarded is deleted rather than started reachable.
+	if err := m.guardNIC(containerName, opts); err != nil {
+		_ = m.incus.DeleteContainer(containerName)
+		return nil, err
 	}
 
 	// Step 2: Start container

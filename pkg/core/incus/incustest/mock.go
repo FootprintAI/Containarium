@@ -57,6 +57,8 @@ type MockBackend struct {
 	GetNetworkACLFunc         func(name string) (*api.NetworkACL, error)
 	CreateNetworkACLFunc      func(config incus.ACLConfig) error
 	UpdateNetworkACLFunc      func(name string, config incus.ACLConfig) error
+	ListNetworkACLsFunc       func() ([]api.NetworkACL, error)
+	DeleteNetworkACLFunc      func(name string) error
 	AttachACLToContainerFunc  func(containerName, aclName, deviceName string) error
 	EnsureNICDeviceFunc       func(containerName string, want incus.NICDevice) error
 	SetDeviceConfigFunc       func(containerName, deviceName string, keys map[string]string) error
@@ -361,6 +363,20 @@ func (m *MockBackend) CreateNetworkACL(config incus.ACLConfig) error {
 func (m *MockBackend) UpdateNetworkACL(name string, config incus.ACLConfig) error {
 	if m.UpdateNetworkACLFunc != nil {
 		return m.UpdateNetworkACLFunc(name, config)
+	}
+	return nil
+}
+
+func (m *MockBackend) ListNetworkACLs() ([]api.NetworkACL, error) {
+	if m.ListNetworkACLsFunc != nil {
+		return m.ListNetworkACLsFunc()
+	}
+	return nil, nil
+}
+
+func (m *MockBackend) DeleteNetworkACL(name string) error {
+	if m.DeleteNetworkACLFunc != nil {
+		return m.DeleteNetworkACLFunc(name)
 	}
 	return nil
 }
