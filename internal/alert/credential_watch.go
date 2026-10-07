@@ -28,11 +28,11 @@ const CredentialWatchInterval = 15 * time.Minute
 
 // CredentialExpiredAlertName is the alert name on the webhook payload and in
 // the webhook_deliveries record.
-const CredentialExpiredAlertName = "CodeCredentialExpired"
+const CredentialExpiredAlertName = "CodeCredentialExpired" // #nosec G101 -- an alert NAME, not a credential value
 
 // credentialWatchDeliverySource is the webhook_deliveries.source value for
 // deliveries from this watcher.
-const credentialWatchDeliverySource = "credential-watch"
+const credentialWatchDeliverySource = "credential-watch" // #nosec G101 -- a delivery-source label, not a credential value
 
 // CredentialWatchTarget is one provisioned skill box to probe.
 type CredentialWatchTarget struct {
