@@ -34,9 +34,10 @@ gate, attest, verify. Two gaps remain.
 | Q11 | Admin-only policy service with Get/Set and a CLI. `verify` requires the attestation's policy hash to equal the server policy's. A typed `Recipe.guardrail_gate` is verified server-side by a synchronous `DeployRecipe` before `post_start`; async is refused. |
 | Q1 | Kernel-level enforcement is out of scope (#2374). |
 
-This doc adds four design points those decisions leave open. Each is
+This doc adds five design points those decisions leave open. Each is
 marked **(new)** where it appears: trusted signers, the tool-call
-buffering rule, the dataset input to the gate, and the typed scan status.
+buffering rule, blocking unscannable bodies, the dataset input to the gate,
+and the typed scan status.
 
 ## Trust-model change
 
@@ -135,6 +136,8 @@ const (
     InboundReasonFinding            // a BLOCK-action kind matched
     InboundReasonCoverageGap        // engine could not scan a unit
     InboundReasonEngineError        // unreachable, timeout, or unsupported kind
+    InboundReasonOverLimit          // held message exceeded the byte limit
+    InboundReasonPolicyUnavailable  // policy store could not be read
 )
 ```
 
@@ -161,20 +164,48 @@ delivered, so in scanned mode the gateway holds back:
 
 - **Non-streaming JSON:** the whole body is already read in
   `ModifyResponse`; scan before restoring it.
-- **Streaming (SSE):** text chunks may flow through a bounded hold-back
-  window only if the window covers the longest signature; tool-call chunks
-  are **held until that tool call's arguments are complete**, then scanned
-  and released together. The simplest correct first cut, and the one this
+- **Streaming (SSE):** the simplest correct first cut, and the one this
   design specifies, is to hold the whole assistant message until
   `finish_reason`, scan it once, then flush or block. It costs time to
   first token for scanned tenants only; a windowed refinement is a later
   optimisation, not part of the contract.
 
+  **Where the hold happens.** The hold must complete *inside*
+  `ModifyResponse`, before it returns: once the reverse proxy has committed
+  the response (status and headers written), the gateway can no longer turn
+  it into an error. So in scanned mode the gateway reads the upstream stream
+  to its end there, scans, and then either sets an error status or returns a
+  body that replays the held events unchanged. (Today's streaming path
+  returns immediately with a pipe, `internal/modelgateway/gateway.go`; the
+  scanned path deliberately does not.)
+
+  **Hard limit.** The held message is bounded by a configured byte limit.
+  When the limit is reached before `finish_reason`, everything buffered is
+  discarded and the response is blocked (`EngineError`-class reason
+  `OverLimit`), releasing none of it. An unbounded hold would let one long
+  or hostile response pin memory per request.
+
+  **Known hazard: strict streaming clients.** The existing filter documents
+  that tool-call chunks "must not be dropped or held back" because doing so
+  hangs the agent, and that some clients abort on altered streams
+  (`internal/modelgateway/sse.go`, the tool-call pass-through comment; the
+  compressed-stream note in `gateway.go`). Holding the message is exactly
+  that change, so it is gated: the replay must be byte-for-byte what the
+  provider sent (a held event is released unmodified, with the existing
+  `finish_reason` normalisation applied once as today), the client must see
+  no bytes until the scan completes, and the gateway sends nothing
+  speculative (no keep-alive comment lines) because some clients treat any
+  early byte as the start of the response. A client that times out while the
+  message is held is a **known cost of scanned mode**, stated to the admin
+  in the policy's description, not hidden. PR B2 must pass the strict-client
+  test below before scanned mode can be enabled.
+
 On a block the gateway:
 
-1. delivers **no** model output for that response (a typed error body,
-   HTTP 502-class for non-streaming; for a stream that has not started, the
-   same error before any event; the stream is never half-opened),
+1. delivers **no** model output for that response (a typed error body with
+   an HTTP 502-class status for both non-streaming and streaming requests;
+   because the hold completes inside `ModifyResponse`, the status can still
+   be set, and a stream is never half-opened),
 2. writes an audit entry (below),
 3. increments a counter labelled by kind.
 
@@ -182,11 +213,14 @@ Fail-closed scope, stated precisely:
 
 | Condition | Result |
 | --- | --- |
-| Policy has no inbound BLOCK rule | Passes through, unchanged |
+| Policy store reports **not configured** (the explicit, stored "no policy" state), or has no inbound BLOCK rule | Passes through, unchanged |
+| Policy store **cannot be read** (database error, timeout) | Treated as an error, **not** as "no policy": blocked for a tenant that last had an active inbound rule (the gateway keeps the last known policy revision for this decision), and logged and counted. A transient outage never turns an active policy off |
+| Gateway runs **standalone** (`cmd/model-gateway`, no database of its own) with no policy provider wired | No policy source exists, so scanning is unavailable and the gateway says so at startup; runs report `UNSCANNED_NO_POLICY`. This is a visible state, not a silent one |
 | Finding of a BLOCK kind | Blocked |
+| Held message exceeds the byte limit | Blocked (`OverLimit`); nothing released |
 | Engine reports a coverage gap | Blocked (`CoverageGap`) |
 | Engine unreachable / times out / does not support a requested kind | Blocked (`EngineError`) |
-| Response is compressed or an unrecognised content type | **Blocked** in scanned mode. Today these pass through unmetered; an unscannable body cannot be allowed through a gate that claims to scan |
+| **(new)** Response is compressed or an unrecognised content type | **Blocked** in scanned mode. Today these pass through unmetered; an unscannable body cannot be allowed through a gate that claims to scan |
 | Existing prompt-leak output filter | Unchanged: still fail-open. The new scan does not touch it |
 
 There is no "fail open" switch. The break-glass for an engine outage is an
@@ -283,9 +317,18 @@ not `UNSPECIFIED`; no duplicate kind; `max_residual >= 0`; every signer's
 `INVALID_ARGUMENT` and the stored policy is untouched.
 
 Storage: one row (a singleton with a monotonic revision) in Postgres,
-following the existing per-package `store.go` pattern. A daemon with no
-database has no server policy, and every consumer treats that as "no policy"
-(inbound scan off, no gate), which is today's behaviour.
+following the existing per-package `store.go` pattern. **"Not configured"
+is an explicit stored state, not an absence**: `PolicyProvider.Get` returns a
+typed `ErrNotConfigured` when no policy was ever set, and any other error
+(database down, timeout) is a different error. Consumers treat only
+`ErrNotConfigured` as "no policy" (inbound scan off, ungated deploys
+unaffected), which is today's behaviour. A read error is never read as "no
+policy": the gateway blocks for a tenant that last had an active inbound rule
+and a gated deploy is refused. A daemon with no database at all has no
+provider wired and behaves as "not configured", visibly (see the
+fail-closed table). The ungated fallback applies **only** to ungated
+deploys: a gated recipe with no policy is refused, as the gate procedure
+below states.
 
 ### CLI
 
@@ -300,6 +343,19 @@ when it can reach the daemon. `--policy` is **refused unless it hashes to
 the server's policy**: a local policy can no longer weaken the gate
 silently. With no reachable daemon the existing local behaviour is kept and
 the CLI says on stderr that the result is not server-attested.
+
+**This is a deliberate change to a stated property.** Today every
+`guardrail` verb is local and none talks to the daemon
+(`internal/cmd/guardrail.go`, and `guardrail.md`'s framing of the engine and
+CLI as the data owner's side). Fetching the server policy makes `apply` and
+`verify` contact the platform, which the owner may not want for a dataset
+that must not be described to anyone. The contact carries no dataset
+content: `apply` sends nothing but a read of the policy, and `verify` sends
+nothing at all (it checks the attestation against a policy and signers it
+already fetched). Where an owner must stay fully offline, the local mode
+remains and its results are marked not server-attested, so a gated deploy
+will refuse them. The "raw data never leaves the owner's side" argument is
+unchanged; what changes is that the *policy* now originates on the platform.
 
 `verify` gains the server check: it requires the attestation's
 `policy_hash` to equal the server policy's hash and the signer's `key_id` to
@@ -426,6 +482,18 @@ fake engine
   pass through unchanged when no rule is active.
 - The existing prompt-leak filter tests pass unchanged (still fail-open).
 - A failing audit sink still blocks.
+- **Strict-client replay (gates enabling scanned mode):** a harness client
+  that, like the strict clients the existing filter protects, aborts on any
+  byte before the response completes and on any altered event. Assert that a
+  clean held message is replayed byte-for-byte, that no byte precedes the
+  scan's completion, and that a blocked stream yields a real error status
+  (not a half-open 200).
+- Hard-limit rows: a message over the byte limit is discarded and blocked
+  with nothing released, in streaming and non-streaming.
+- Policy-read rows: `ErrNotConfigured` passes through; a store error blocks
+  for a tenant with an active rule and does not turn the policy off; a
+  standalone gateway with no provider reports `UNSCANNED_NO_POLICY` and logs
+  that at startup.
 - Audit assertion: the recorded `InboundBlock` has kinds and counts and the
   fixture's flagged string appears nowhere in it or in logs.
 - `code run` scan-status: three rows, one per enum value.
@@ -454,6 +522,8 @@ from the existing fixtures); a fake container backend for the gate.
 | --- | --- | --- |
 | **Tenant-key runs are unscanned** | Their model traffic goes straight to the provider; nothing on the platform sees it. `code run` now says so instead of staying silent | #2370 / #2374 forcing the traffic through the gateway; a TLS-intercepting proxy was rejected (below) |
 | **A box can skip the gateway** with a key of its own | The gateway is an enforcement point, not a kernel boundary | #2374 (kernel-level enforcement) and #2370 |
+| **Datasets delivered by `containarium push` / `sync` after deploy** get past the gate | Those are client-side ssh copies; the gate verifies what the deploy request stages, before the box exists | The `ship` verb as the only sanctioned delivery path, and the recipe convention below |
+| **A standalone gateway has no policy source** | `cmd/model-gateway` has no database of its own; scanning needs a wired provider | Wire the daemon's provider into the standalone binary, or run the gateway in the daemon |
 | **Datasets `post_start` downloads itself** get past the gate | The gate checks what the deploy request stages, not what the workload later fetches | The `ship` verb and a recipe convention that forbids fetching data after the gate (an open item in `guardrail.md`) |
 | **No platform path to stage a dataset on the daemon host** | `staging_ref` assumes an operator or `ship` put it there; a remote control plane cannot yet | The `ship` verb |
 | **Dataset read-only in the box** | Recipes have no read-only mount field | A typed recipe field, separate change |
