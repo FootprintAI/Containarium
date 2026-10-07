@@ -215,6 +215,7 @@ Fail-closed scope, stated precisely:
 | --- | --- |
 | Policy store reports **not configured** (the explicit, stored "no policy" state), or has no inbound BLOCK rule | Passes through, unchanged |
 | Policy store **cannot be read** (database error, timeout) | Treated as an error, **not** as "no policy": blocked for a tenant that last had an active inbound rule (the gateway keeps the last known policy revision for this decision), and logged and counted. A transient outage never turns an active policy off |
+| **Cold start**: a policy provider is wired but the **first read has not succeeded** (no cached revision, so the gateway cannot know whether any tenant has an active rule) | The gateway does not guess in either direction. It is **not ready** (its health check fails) and answers model calls with a typed `PolicyUnavailable` 503 until the first read returns a policy or `ErrNotConfigured`. This applies only when a provider is wired; the no-provider case is the standalone row below. The wait is bounded by the daemon's own startup, not by a timeout that falls back to passing traffic |
 | Gateway runs **standalone** (`cmd/model-gateway`, no database of its own) with no policy provider wired | No policy source exists, so scanning is unavailable and the gateway says so at startup; runs report `UNSCANNED_NO_POLICY`. This is a visible state, not a silent one |
 | Finding of a BLOCK kind | Blocked |
 | Held message exceeds the byte limit | Blocked (`OverLimit`); nothing released |
@@ -490,6 +491,10 @@ fake engine
   (not a half-open 200).
 - Hard-limit rows: a message over the byte limit is discarded and blocked
   with nothing released, in streaming and non-streaming.
+- Cold-start row: with a provider wired and no successful read yet, the
+  gateway reports not-ready and returns `PolicyUnavailable` for every model
+  call; after the first read returns `ErrNotConfigured` it passes through,
+  and after it returns a policy it enforces. No timeout path passes traffic.
 - Policy-read rows: `ErrNotConfigured` passes through; a store error blocks
   for a tenant with an active rule and does not turn the policy off; a
   standalone gateway with no provider reports `UNSCANNED_NO_POLICY` and logs
