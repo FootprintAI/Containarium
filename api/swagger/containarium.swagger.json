@@ -4765,6 +4765,30 @@
         ]
       }
     },
+    "/v1/network/guard": {
+      "get": {
+        "summary": "Network guard status",
+        "description": "Reports the core-infra guard (#2084) and the tenant guard (#2347): arming mode, Incus firewall driver, whether this host can carry bridge NIC ACLs at all, the last pass time and error, and one entry per guarded container. Admin only.",
+        "operationId": "NetworkService_GetNetworkGuardStatus",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/NetworkGuardStatus"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "tags": [
+          "Network"
+        ]
+      }
+    },
     "/v1/network/passthrough": {
       "get": {
         "summary": "List passthrough routes",
@@ -13243,6 +13267,88 @@
         }
       }
     },
+    "GuardEntry": {
+      "type": "object",
+      "properties": {
+        "container": {
+          "type": "string"
+        },
+        "subject": {
+          "type": "string",
+          "description": "Role for the core guard (e.g. core-postgres); tenant for the tenant guard."
+        },
+        "ip": {
+          "type": "string"
+        },
+        "aclName": {
+          "type": "string"
+        },
+        "attached": {
+          "type": "boolean"
+        },
+        "lastError": {
+          "type": "string"
+        }
+      },
+      "description": "GuardEntry is one guarded subject (a core-role or tenant container) as of\nthe guard's last pass."
+    },
+    "GuardMode": {
+      "type": "string",
+      "enum": [
+        "GUARD_MODE_UNSPECIFIED",
+        "GUARD_MODE_OFF",
+        "GUARD_MODE_ENFORCE"
+      ],
+      "default": "GUARD_MODE_UNSPECIFIED",
+      "description": "GuardMode is a NIC-ACL guard's arming state (internal/nicguard). There\nis no audit mode: an Incus NIC ACL either drops or it doesn't.\n\n - GUARD_MODE_OFF: The guard is disabled on this host (CONTAINARIUM_*_GUARD=off).\n - GUARD_MODE_ENFORCE: The guard attaches ACLs and they drop (the default)."
+    },
+    "GuardStatus": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "$ref": "#/definitions/GuardMode"
+        },
+        "firewallDriver": {
+          "type": "string",
+          "description": "Incus firewall driver seen on the last pass (\"nftables\" is required)."
+        },
+        "unsupported": {
+          "type": "boolean",
+          "description": "Unsupported is true when this host cannot carry bridge NIC ACLs at all\n(firewall driver, or Incus without network_bridge_acl_devices): nothing\nis guarded, creates are not refused, last_error says why."
+        },
+        "lastPass": {
+          "type": "string",
+          "description": "last_pass is the RFC 3339 time of the last pass; empty before the first."
+        },
+        "lastError": {
+          "type": "string"
+        },
+        "staleSince": {
+          "type": "string",
+          "description": "stale_since is set (RFC 3339) while passes keep failing; the ACLs from\nthe last good pass stay in force meanwhile."
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/GuardEntry"
+          }
+        },
+        "unresolved": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Containers the guard could not attribute (tenant guard) or roles its\ntable does not know (core guard). Reported, never guessed."
+        },
+        "subjects": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Number of distinct subjects (tenants for the tenant guard)."
+        }
+      },
+      "description": "GuardStatus is one guard's last-pass snapshot."
+    },
     "HeartbeatRequest": {
       "type": "object",
       "description": "HeartbeatRequest is intentionally empty for v1. The host's identity\ncomes from the bearer; there's nothing else the cloud needs to\nknow to bump last_heartbeat_at. Future fields (current observed\nstate, host-side health flags) are additive."
@@ -14295,6 +14401,20 @@
         }
       },
       "title": "NetworkEdge represents a connection between nodes"
+    },
+    "NetworkGuardStatus": {
+      "type": "object",
+      "properties": {
+        "core": {
+          "$ref": "#/definitions/GuardStatus",
+          "description": "core keeps tenants off core-role containers (#2084)."
+        },
+        "tenant": {
+          "$ref": "#/definitions/GuardStatus",
+          "description": "tenant keeps tenants off each other (#2347)."
+        }
+      },
+      "description": "NetworkGuardStatus is the posture of both Incus NIC-ACL guards on this\nbackend (docs/architecture/tenant-network-guard.md)."
     },
     "NetworkInfo": {
       "type": "object",
@@ -17785,7 +17905,7 @@
             "type": "object",
             "$ref": "#/definitions/ACLRule"
           },
-          "title": "Custom ingress rules (only if preset is CUSTOM)"
+          "description": "Custom ingress rules. No longer accepted (#2359): tenant ingress is owned\nby the tenant network guard, and a per-container allow would be evaluated\nnext to it and could re-open what it closed. A request carrying any is\nrefused with INVALID_ARGUMENT; to admit another tenant use\nNetworkPolicy.allow_from_tenants. Presets apply their egress half only."
         },
         "egressRules": {
           "type": "array",
@@ -18411,6 +18531,13 @@
             "$ref": "#/definitions/NetworkPolicyDenyRule"
           },
           "description": "Virtual-patch deny rules (#660). Each blocks traffic to a destination\nCIDR (optionally scoped to a port/proto) and is evaluated BEFORE the\negress allow-list: deny beats allow, the same way the metadata IP does.\nUse to \"virtually patch\" a known-vulnerable destination/service until the\nreal upstream fix ships — instant, in-kernel, zero downtime. A rule whose\nexpires_at is in the past is dropped at compile time, so the patch\nself-removes once the fix lands."
+        },
+        "allowFromTenants": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Tenants whose containers may reach this tenant's containers over the\nbridge (#2359). Consumed by the tenant network guard\n(docs/architecture/tenant-network-guard.md): every box of a listed\ntenant becomes an allowed ingress source on this tenant's NIC ACL.\nThis is the only way to open tenant ingress to another tenant; the\nper-container ACL (UpdateContainerACL) no longer carries ingress rules.\nNormalised on set: trimmed, deduplicated, sorted; the tenant itself is\nrejected (use allow_intra_tenant). One-directional: listing bob here\nlets bob reach us, not the reverse."
         }
       },
       "description": "NetworkPolicy is a tenant's network-isolation policy, enforced at each of the\ntenant's container host-veth TC_INGRESS hooks (the sender side of every flow;\nsee the Phase 0 findings in NETWORK-ISOLATION-DESIGN.md). #315."

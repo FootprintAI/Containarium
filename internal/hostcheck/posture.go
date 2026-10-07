@@ -67,6 +67,8 @@ type posturePaths struct {
 	// metadataBlockProbe reports whether the bridge's metadata FORWARD rule
 	// is in the kernel now; a non-nil error means it could not tell.
 	metadataBlockProbe func() (present bool, detail string, err error)
+	// nicGuardProbe reads the tenant-guard facts from Incus (nic_guard.go).
+	nicGuardProbe NICGuardProbe
 }
 
 func defaultPosturePaths() posturePaths {
@@ -89,6 +91,7 @@ func defaultPosturePaths() posturePaths {
 		metadataBlockProbe: func() (bool, string, error) {
 			return hostharden.MetadataBlockPresent(hostharden.DefaultBridge)
 		},
+		nicGuardProbe: defaultNICGuardProbe,
 	}
 }
 
@@ -116,6 +119,7 @@ func runPosture(p posturePaths) []Check {
 		recoveryConfigDurableCheck(p),
 		tunnelTokenExposedCheck(p),
 		platformCPUWeightCheck(p),
+		nicGuardCheck(p),
 	}
 	for i := range checks {
 		checks[i].Kind = KindPosture

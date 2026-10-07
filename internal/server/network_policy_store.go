@@ -125,6 +125,7 @@ func clonePolicy(p *pb.NetworkPolicy) *pb.NetworkPolicy {
 		Mode:             p.GetMode(),
 		Source:           p.GetSource(),
 		DenyRules:        cloneDenyRules(p.GetDenyRules()),
+		AllowFromTenants: append([]string(nil), p.GetAllowFromTenants()...),
 	}
 }
 
@@ -212,6 +213,8 @@ func NewPostgresNetworkPolicyStore(ctx context.Context, pool *pgxpool.Pool) (*Po
 		ALTER TABLE network_policies ADD COLUMN IF NOT EXISTS allow_metadata BOOLEAN NOT NULL DEFAULT false;
 		ALTER TABLE network_policies ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT '';
 		ALTER TABLE network_policies ADD COLUMN IF NOT EXISTS deny_rules JSONB NOT NULL DEFAULT '[]';
+		-- allow_from_tenants: #2359 cross-tenant allow, consumed by the tenant guard.
+		ALTER TABLE network_policies ADD COLUMN IF NOT EXISTS allow_from_tenants TEXT[] NOT NULL DEFAULT '{}';
 	`
 	if _, err := pool.Exec(ctx, schema); err != nil {
 		return nil, fmt.Errorf("init network_policies schema: %w", err)
@@ -226,8 +229,8 @@ func (s *PostgresNetworkPolicyStore) Set(ctx context.Context, p *pb.NetworkPolic
 	// existing tenant's deny rules untouched — so `set` never clobbers them and
 	// needs no client round-trip.
 	const q = `
-		INSERT INTO network_policies (tenant, allow_intra_tenant, egress_cidrs, egress_domains, mode, allow_metadata, source, deny_rules, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, '[]'::jsonb, NOW())
+		INSERT INTO network_policies (tenant, allow_intra_tenant, egress_cidrs, egress_domains, mode, allow_metadata, source, deny_rules, allow_from_tenants, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, '[]'::jsonb, $8, NOW())
 		ON CONFLICT (tenant) DO UPDATE SET
 			allow_intra_tenant = EXCLUDED.allow_intra_tenant,
 			egress_cidrs = EXCLUDED.egress_cidrs,
@@ -235,6 +238,7 @@ func (s *PostgresNetworkPolicyStore) Set(ctx context.Context, p *pb.NetworkPolic
 			mode = EXCLUDED.mode,
 			allow_metadata = EXCLUDED.allow_metadata,
 			source = EXCLUDED.source,
+			allow_from_tenants = EXCLUDED.allow_from_tenants,
 			updated_at = NOW()
 	`
 	// egress_cidrs / egress_domains are `TEXT[] NOT NULL DEFAULT '{}'`, but the
@@ -246,7 +250,7 @@ func (s *PostgresNetworkPolicyStore) Set(ctx context.Context, p *pb.NetworkPolic
 	_, err := s.pool.Exec(ctx, q,
 		p.GetTenant(), p.GetAllowIntraTenant(),
 		nonNilStrings(p.GetEgressCidrs()), nonNilStrings(p.GetEgressDomains()), int32(p.GetMode()),
-		p.GetAllowMetadata(), p.GetSource())
+		p.GetAllowMetadata(), p.GetSource(), nonNilStrings(p.GetAllowFromTenants()))
 	if err != nil {
 		return fmt.Errorf("save network policy: %w", err)
 	}
@@ -263,12 +267,12 @@ func nonNilStrings(s []string) []string {
 }
 
 func (s *PostgresNetworkPolicyStore) Get(ctx context.Context, tenant string) (*pb.NetworkPolicy, error) {
-	const q = `SELECT tenant, allow_intra_tenant, egress_cidrs, egress_domains, mode, allow_metadata, source, deny_rules
+	const q = `SELECT tenant, allow_intra_tenant, egress_cidrs, egress_domains, mode, allow_metadata, source, deny_rules, allow_from_tenants
 		FROM network_policies WHERE tenant = $1`
 	p := &pb.NetworkPolicy{}
 	var mode int32
 	var denyJSON []byte
-	err := s.pool.QueryRow(ctx, q, tenant).Scan(&p.Tenant, &p.AllowIntraTenant, &p.EgressCidrs, &p.EgressDomains, &mode, &p.AllowMetadata, &p.Source, &denyJSON)
+	err := s.pool.QueryRow(ctx, q, tenant).Scan(&p.Tenant, &p.AllowIntraTenant, &p.EgressCidrs, &p.EgressDomains, &mode, &p.AllowMetadata, &p.Source, &denyJSON, &p.AllowFromTenants)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNetworkPolicyNotFound
@@ -283,7 +287,7 @@ func (s *PostgresNetworkPolicyStore) Get(ctx context.Context, tenant string) (*p
 }
 
 func (s *PostgresNetworkPolicyStore) List(ctx context.Context) ([]*pb.NetworkPolicy, error) {
-	const q = `SELECT tenant, allow_intra_tenant, egress_cidrs, egress_domains, mode, allow_metadata, source, deny_rules
+	const q = `SELECT tenant, allow_intra_tenant, egress_cidrs, egress_domains, mode, allow_metadata, source, deny_rules, allow_from_tenants
 		FROM network_policies ORDER BY tenant`
 	rows, err := s.pool.Query(ctx, q)
 	if err != nil {
@@ -295,7 +299,7 @@ func (s *PostgresNetworkPolicyStore) List(ctx context.Context) ([]*pb.NetworkPol
 		p := &pb.NetworkPolicy{}
 		var mode int32
 		var denyJSON []byte
-		if err := rows.Scan(&p.Tenant, &p.AllowIntraTenant, &p.EgressCidrs, &p.EgressDomains, &mode, &p.AllowMetadata, &p.Source, &denyJSON); err != nil {
+		if err := rows.Scan(&p.Tenant, &p.AllowIntraTenant, &p.EgressCidrs, &p.EgressDomains, &mode, &p.AllowMetadata, &p.Source, &denyJSON, &p.AllowFromTenants); err != nil {
 			return nil, fmt.Errorf("scan network policy: %w", err)
 		}
 		p.Mode = pb.NetworkPolicyMode(mode)
@@ -327,9 +331,9 @@ func (s *PostgresNetworkPolicyStore) MutateDenyRules(ctx context.Context, tenant
 	p := &pb.NetworkPolicy{Tenant: tenant}
 	var mode int32
 	var denyJSON []byte
-	err = tx.QueryRow(ctx, `SELECT allow_intra_tenant, egress_cidrs, egress_domains, mode, allow_metadata, source, deny_rules
+	err = tx.QueryRow(ctx, `SELECT allow_intra_tenant, egress_cidrs, egress_domains, mode, allow_metadata, source, deny_rules, allow_from_tenants
 		FROM network_policies WHERE tenant = $1 FOR UPDATE`, tenant).
-		Scan(&p.AllowIntraTenant, &p.EgressCidrs, &p.EgressDomains, &mode, &p.AllowMetadata, &p.Source, &denyJSON)
+		Scan(&p.AllowIntraTenant, &p.EgressCidrs, &p.EgressDomains, &mode, &p.AllowMetadata, &p.Source, &denyJSON, &p.AllowFromTenants)
 	if err != nil {
 		return nil, fmt.Errorf("lock policy: %w", err)
 	}
