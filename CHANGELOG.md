@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `containarium guardrail apply` now asks the engine for exactly the kinds its policy covers instead of an empty list (which meant "whatever the engine has enabled"), so an engine that cannot scan a kind the policy names — SECRET against a PII-only detector — fails the run with `FAILED_PRECONDITION` before anything is written, rather than attesting a PASS that never looked (#2362). `GuardrailAttestation` gains `kinds_scanned`, `apply` prints it, and `guardrail verify --require-kind pii,secret` refuses an attestation that did not cover a required kind. `--kind` remains on `scan` only.
+
 ### Added
 
 - `containarium guardrail scan|apply|verify|keygen`: run a detection engine over a directory, redact findings into stable placeholder tokens, re-scan the result as a token-aware gate, and sign an ed25519 `GuardrailAttestation` a consumer verifies before using the data. New proto contract `GuardrailEngineService` (engines plug in behind it; the in-tree reference engine is regex-only and says so) and `internal/guardrail`. Design: `docs/architecture/guardrail.md`.

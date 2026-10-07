@@ -33,7 +33,12 @@ raw ─► scan ─► redact ─► re-scan (gate) ─► attest ──► ship
 
 1. **Scan.** Every regular file becomes a text unit; an *engine* reports
    findings as `(unit, start, end, kind, type, confidence)` with offsets in
-   Unicode code points.
+   Unicode code points. The run asks for **exactly the kinds its policy
+   covers** — never an empty list, which by contract means "whatever the
+   engine has enabled". An engine that cannot scan one of them answers
+   `FAILED_PRECONDITION` and the run stops before writing anything: a
+   policy that says REDACT SECRET against a PII-only detector fails, it does
+   not attest a PASS that never looked (#2362).
 2. **Redact.** Each finding is replaced by a stable placeholder,
    `[[EMAIL:1a2b3c4d5e6f]]`: the engine's type name and 12 hex characters of
    an HMAC over (kind, type, value) under a key that stays local. Same value,
@@ -48,11 +53,14 @@ raw ─► scan ─► redact ─► re-scan (gate) ─► attest ──► ship
    were the detector reading the placeholder itself, and a gate that can
    never reach PASS is not a gate.
 4. **Attest.** The run writes a `GuardrailAttestation`: subject digest,
-   engine id + version, policy hash, per-kind counts before and after,
-   gaps, verdict, timestamp — signed with the data owner's ed25519 key.
+   engine id + version, policy hash, **the kinds scanned**, per-kind counts
+   before and after, gaps, verdict, timestamp — signed with the data owner's
+   ed25519 key.
 5. **Verify.** The consumer checks the signature with the owner's public key,
-   recomputes the digest over the bytes it actually received, and requires
-   PASS. Only then is the data used.
+   recomputes the digest over the bytes it actually received, requires PASS,
+   and states what it needs covered (`--require-kind pii,secret`): an
+   attestation whose `kinds_scanned` lacks a required kind is refused by
+   name. Only then is the data used.
 
 ## Contract (proto first)
 
@@ -82,7 +90,7 @@ Containarium slices one way.
 containarium guardrail keygen --out ./tenant
 containarium guardrail scan   ./export [--engine host:port] [--kind pii,secret] [--json]
 containarium guardrail apply  ./export --out ./export-clean --sign-key ./tenant.key [--policy policy.json]
-containarium guardrail verify ./export-clean --attestation ./export-clean.attestation.json --public-key ./tenant.pub
+containarium guardrail verify ./export-clean --attestation ./export-clean.attestation.json --public-key ./tenant.pub [--require-kind pii,secret]
 ```
 
 `apply` writes the vault, the redaction key and the attestation **beside**

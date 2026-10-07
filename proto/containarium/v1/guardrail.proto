@@ -170,4 +170,10 @@ message GuardrailAttestation {
   // Ed25519 signature over the canonical proto bytes of this message with
   // `signature` cleared.
   bytes signature = 11;
+  // The kinds the engine was asked for — and, because an engine that cannot
+  // scan a requested kind answers FAILED_PRECONDITION rather than scanning
+  // the rest, the kinds that were actually covered. A consumer that needs
+  // SECRET covered checks for it here; a PASS that never looked for a kind
+  // must be distinguishable from one that did (#2362). Sorted ascending.
+  repeated GuardrailKind kinds_scanned = 12;
 }
