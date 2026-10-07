@@ -135,7 +135,10 @@ probe() {
   esac
   # A closed port answering with RST is still reachability: distinguish
   # "refused" (reachable) from a silent timeout (dropped).
-  r=$(in_box "$from" "command -v timeout >/dev/null || { echo no-timeout; exit 0; }; if timeout 3 bash -c 'echo > /dev/tcp/$ip/9' 2>&1 | grep -q refused; then echo RESULT:refused; else echo RESULT:timeout; fi") || exit 3
+  # Decide by exit status, not by bash's (localised) error text: timeout(1)
+  # exits 124 when the connect hung (dropped); anything else means the peer
+  # answered — a RST (refused) or, oddly, an open port 9. Both are reachability.
+  r=$(in_box "$from" "command -v timeout >/dev/null || { echo 'FATAL: no timeout(1) in the box'; exit 0; }; timeout 3 bash -c 'echo > /dev/tcp/$ip/9' >/dev/null 2>&1; rc=\$?; if [ \$rc -eq 124 ]; then echo RESULT:timeout; else echo RESULT:refused; fi") || exit 3
   echo "$from -> $to ($ip:9, closed port): $r"
   if [ "$r" = "refused" ]; then
     echo "  FAIL: peer answered with RST — reachable at L3"
@@ -143,7 +146,7 @@ probe() {
   else
     echo "  OK: no answer (dropped or filtered)"
   fi
-  r=$(in_box "$from" "command -v timeout >/dev/null || { echo no-timeout; exit 0; }; timeout 3 bash -c 'echo > /dev/tcp/$ip/22' 2>/dev/null && echo RESULT:succeeded || echo RESULT:failed") || exit 3
+  r=$(in_box "$from" "command -v timeout >/dev/null || { echo 'FATAL: no timeout(1) in the box'; exit 0; }; timeout 3 bash -c 'echo > /dev/tcp/$ip/22' 2>/dev/null && echo RESULT:succeeded || echo RESULT:failed") || exit 3
   echo "$from -> $to ($ip:22): TCP connect $r"
   if [ "$r" = "succeeded" ]; then
     echo "  FAIL: tenant container opened a TCP connection to another tenant's sshd"
