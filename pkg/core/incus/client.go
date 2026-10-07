@@ -184,6 +184,7 @@ type Backend interface {
 	ListNetworkACLs() ([]api.NetworkACL, error)
 	DeleteNetworkACL(name string) error
 	AttachACLToContainer(containerName, aclName, deviceName string) error
+	SetOwnedACL(containerName, aclName, deviceName, ownedPrefix string) error
 	EnsureNICDevice(containerName string, want NICDevice) error
 	SetDeviceConfig(containerName, deviceName string, keys map[string]string) error
 

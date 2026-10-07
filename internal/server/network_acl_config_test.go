@@ -12,8 +12,9 @@ import (
 
 // #2348: UpdateContainerACL used to build the custom rule set and then throw
 // it away (EnsureACLForContainer was called with a preset), and mapped
-// CUSTOM/UNSPECIFIED to full-isolation silently. The config an update writes
-// is now a pure function of the request.
+// CUSTOM/UNSPECIFIED to full-isolation silently. #2359: ingress is owned by
+// the tenant network guard, so the per-container ACL carries egress only.
+// The config an update writes is a pure function of the request.
 func TestACLConfigFromRequest(t *testing.T) {
 	const proxyIP, bridge = "10.100.0.2", "10.100.0.0/24"
 
@@ -24,13 +25,10 @@ func TestACLConfigFromRequest(t *testing.T) {
 		check    func(t *testing.T, cfg incus.ACLConfig)
 	}{
 		{
-			name: "custom rules are applied verbatim",
+			name: "custom egress rules are applied verbatim",
 			req: &pb.UpdateContainerACLRequest{
 				Username: "alice",
 				Preset:   pb.ACLPreset_ACL_PRESET_CUSTOM,
-				IngressRules: []*pb.ACLRule{{
-					Action: pb.ACLAction_ACL_ACTION_ALLOW, Source: "10.100.0.7/32", DestinationPort: "5432", Protocol: "tcp", Description: "db from bob",
-				}},
 				EgressRules: []*pb.ACLRule{{
 					Action: pb.ACLAction_ACL_ACTION_DROP, Destination: "10.100.0.0/24", Description: "no bridge",
 				}},
@@ -39,17 +37,26 @@ func TestACLConfigFromRequest(t *testing.T) {
 				if cfg.Name != "acl-alice" {
 					t.Errorf("name = %q, want acl-alice", cfg.Name)
 				}
-				if len(cfg.IngressRules) != 1 || len(cfg.EgressRules) != 1 {
-					t.Fatalf("rules = %d ingress / %d egress, want 1/1", len(cfg.IngressRules), len(cfg.EgressRules))
+				if len(cfg.IngressRules) != 0 || len(cfg.EgressRules) != 1 {
+					t.Fatalf("rules = %d ingress / %d egress, want 0/1", len(cfg.IngressRules), len(cfg.EgressRules))
 				}
-				in := cfg.IngressRules[0]
-				if in.Action != "allow" || in.Source != "10.100.0.7/32" || in.DestinationPort != "5432" || in.Protocol != "tcp" || in.Description != "db from bob" {
-					t.Errorf("ingress rule not verbatim: %+v", in)
-				}
-				if out := cfg.EgressRules[0]; out.Action != "drop" || out.Destination != "10.100.0.0/24" {
+				if out := cfg.EgressRules[0]; out.Action != "drop" || out.Destination != "10.100.0.0/24" || out.Description != "no bridge" {
 					t.Errorf("egress rule not verbatim: %+v", out)
 				}
 			},
+		},
+		{
+			// #2359: a per-container ingress allow would be evaluated next to
+			// the guard's ACL and could re-open what it closed.
+			name: "custom ingress rules are refused, pointing at allow_from_tenants",
+			req: &pb.UpdateContainerACLRequest{
+				Username: "alice",
+				Preset:   pb.ACLPreset_ACL_PRESET_CUSTOM,
+				IngressRules: []*pb.ACLRule{{
+					Action: pb.ACLAction_ACL_ACTION_ALLOW, Source: "0.0.0.0/0", DestinationPort: "5432", Protocol: "tcp",
+				}},
+			},
+			wantCode: codes.InvalidArgument,
 		},
 		{
 			name:     "unspecified preset is rejected, never substituted",
@@ -57,15 +64,15 @@ func TestACLConfigFromRequest(t *testing.T) {
 			wantCode: codes.InvalidArgument,
 		},
 		{
-			name: "a named preset expands with the container's name",
+			name: "a named preset expands with the container's name, egress half only",
 			req:  &pb.UpdateContainerACLRequest{Username: "alice", Preset: pb.ACLPreset_ACL_PRESET_HTTP_ONLY},
 			check: func(t *testing.T, cfg incus.ACLConfig) {
 				want := incus.GetPresetACL(incus.ACLPresetHTTPOnly, proxyIP, bridge)
 				if cfg.Name != "acl-alice" {
 					t.Errorf("name = %q, want acl-alice", cfg.Name)
 				}
-				if len(cfg.IngressRules) != len(want.IngressRules) || len(cfg.EgressRules) != len(want.EgressRules) {
-					t.Errorf("preset rules differ: got %d/%d want %d/%d", len(cfg.IngressRules), len(cfg.EgressRules), len(want.IngressRules), len(want.EgressRules))
+				if len(cfg.IngressRules) != 0 || len(cfg.EgressRules) != len(want.EgressRules) {
+					t.Errorf("preset rules differ: got %d/%d want 0/%d", len(cfg.IngressRules), len(cfg.EgressRules), len(want.EgressRules))
 				}
 			},
 		},
@@ -115,7 +122,6 @@ func TestPresetFromProto_exhaustive(t *testing.T) {
 			}
 		}
 	}
-	// Guard against the descriptor lookup silently covering nothing.
 	if values.Len() < 4 {
 		t.Fatalf("ACLPreset has %d values, expected at least 4", values.Len())
 	}

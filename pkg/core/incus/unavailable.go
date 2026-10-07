@@ -93,6 +93,7 @@ func (*UnavailableBackend) UpdateNetworkACL(string, ACLConfig) error          { 
 func (*UnavailableBackend) ListNetworkACLs() ([]api.NetworkACL, error)        { return nil, ErrUnavailable }
 func (*UnavailableBackend) DeleteNetworkACL(string) error                     { return ErrUnavailable }
 func (*UnavailableBackend) AttachACLToContainer(string, string, string) error { return ErrUnavailable }
+func (*UnavailableBackend) SetOwnedACL(string, string, string, string) error  { return ErrUnavailable }
 func (*UnavailableBackend) EnsureNICDevice(string, NICDevice) error           { return ErrUnavailable }
 func (*UnavailableBackend) SetDeviceConfig(string, string, map[string]string) error {
 	return ErrUnavailable
