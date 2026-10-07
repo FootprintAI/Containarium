@@ -1423,6 +1423,48 @@ func (c *Client) DeleteRoute(domain string) error {
 	return err
 }
 
+// GuardEntryResponse / GuardStatusResponse / NetworkGuardStatusResponse mirror
+// the proto NetworkGuardStatus as grpc-gateway renders it (GET /v1/network/guard).
+type GuardEntryResponse struct {
+	Container string `json:"container"`
+	Subject   string `json:"subject"`
+	IP        string `json:"ip"`
+	ACLName   string `json:"aclName"`
+	Attached  bool   `json:"attached"`
+	LastError string `json:"lastError"`
+}
+
+type GuardStatusResponse struct {
+	Mode           string               `json:"mode"`
+	FirewallDriver string               `json:"firewallDriver"`
+	Unsupported    bool                 `json:"unsupported"`
+	LastPass       string               `json:"lastPass"`
+	LastError      string               `json:"lastError"`
+	StaleSince     string               `json:"staleSince"`
+	Entries        []GuardEntryResponse `json:"entries"`
+	Unresolved     []string             `json:"unresolved"`
+	Subjects       int                  `json:"subjects"`
+}
+
+type NetworkGuardStatusResponse struct {
+	Core   *GuardStatusResponse `json:"core"`
+	Tenant *GuardStatusResponse `json:"tenant"`
+}
+
+// GetNetworkGuardStatus reads both NIC-ACL guards' last-pass state — the
+// same endpoint `containarium network-guard status` uses (#2353).
+func (c *Client) GetNetworkGuardStatus() (*NetworkGuardStatusResponse, error) {
+	respBody, err := c.doRequest("GET", "/v1/network/guard", nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp NetworkGuardStatusResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
 // ListRoutes returns all proxy routes the sentinel currently serves. Both
 // filter params are optional — empty `username` or `activeOnly=false`
 // means "no filter on that dimension". Mirrors GET /v1/network/routes.

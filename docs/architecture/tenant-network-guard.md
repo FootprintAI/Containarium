@@ -63,8 +63,13 @@ policy system.
    org UUIDs or free-form names; the ACL name must be a stable, Incus-safe
    identifier). Rules, in order: allow from host gateway `/32`; allow from
    each core initiator `/32`; allow from each same-tenant address (`/32`
-   and `/128`); everything else falls to the NIC's default ingress
-   `drop`. A tenant with one box gets a table with no sibling entries,
+   and `/128`); then, for every tenant this tenant lists in
+   `NetworkPolicy.allow_from_tenants` (#2359), allow from each of that
+   tenant's boxes — one-directional, unknown tenants contribute nothing,
+   the tenant's own name is refused at `set` time; everything else falls
+   to the NIC's default ingress `drop`. The reconciler reads the policies
+   through a `PolicySource` (the daemon's network-policy store); a policy
+   read failure fails the pass rather than closing doors mid-flight. A tenant with one box gets a table with no sibling entries,
    which is already the safe state. No I/O, no Incus types beyond
    `ACLConfig`, so it is table-testable.
 
@@ -106,10 +111,13 @@ policy system.
    exists and attaching it to the instance-local NIC. The per-container
    ACL a tenant may attach through `UpdateContainerACL` composes with the
    tenant ACL by Incus semantics — the first matching rule in any attached
-   ACL wins — so an ingress `allow` from a broad source there would
-   re-open what the guard closed. That gap and its options are #2359;
-   until it lands, a tenant can expose its own box to co-tenants through
-   that RPC, never reach others. **Fail-closed on a
+   ACL wins — so an ingress `allow` there would re-open what the guard
+   closed. Decision (#2359, option 2): the per-container ACL carries
+   **egress only** — a custom request with ingress rules is refused with
+   `INVALID_ARGUMENT` naming the replacement, presets apply their egress
+   half — and cross-tenant ingress is a typed
+   `NetworkPolicy.allow_from_tenants` consumed by the guard. The guard is
+   therefore the only thing that opens tenant ingress. **Fail-closed on a
    capable host:** if `Prepare` fails while the guard is `enforce`, create
    returns `FAILED_PRECONDITION` with the reason, mirroring how
    `--encrypted` refuses rather than silently producing an unguarded box.
@@ -351,8 +359,8 @@ through Caddy.
   per NIC is linear; the reconciler's per-pass `ListContainers` is the same
   cost the core guard already pays. Beyond that, move sibling membership
   into an nftables set per tenant instead of per-address rules.
-- Cross-tenant sharing (tenant A exposes a service to tenant B): a typed
-  `allow_from_tenants` on the existing `NetworkPolicy` proto, consumed by
-  `Compute` as extra initiator addresses. Not needed to close #2347.
+- Cross-tenant sharing is `NetworkPolicy.allow_from_tenants` (#2359),
+  consumed by `Compute`. A per-port scope on it (allow bob on 5432 only) is
+  the next refinement; today it is all ports of the listed tenant's boxes.
 - Per-tenant bridges: `Compute` keeps working; `Inputs.BridgeCIDR` becomes
   per tenant.

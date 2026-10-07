@@ -2648,9 +2648,19 @@ type NetworkPolicy struct {
 	// real upstream fix ships — instant, in-kernel, zero downtime. A rule whose
 	// expires_at is in the past is dropped at compile time, so the patch
 	// self-removes once the fix lands.
-	DenyRules     []*NetworkPolicyDenyRule `protobuf:"bytes,8,rep,name=deny_rules,json=denyRules,proto3" json:"deny_rules,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	DenyRules []*NetworkPolicyDenyRule `protobuf:"bytes,8,rep,name=deny_rules,json=denyRules,proto3" json:"deny_rules,omitempty"`
+	// Tenants whose containers may reach this tenant's containers over the
+	// bridge (#2359). Consumed by the tenant network guard
+	// (docs/architecture/tenant-network-guard.md): every box of a listed
+	// tenant becomes an allowed ingress source on this tenant's NIC ACL.
+	// This is the only way to open tenant ingress to another tenant; the
+	// per-container ACL (UpdateContainerACL) no longer carries ingress rules.
+	// Normalised on set: trimmed, deduplicated, sorted; the tenant itself is
+	// rejected (use allow_intra_tenant). One-directional: listing bob here
+	// lets bob reach us, not the reverse.
+	AllowFromTenants []string `protobuf:"bytes,9,rep,name=allow_from_tenants,json=allowFromTenants,proto3" json:"allow_from_tenants,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *NetworkPolicy) Reset() {
@@ -2735,6 +2745,13 @@ func (x *NetworkPolicy) GetSource() string {
 func (x *NetworkPolicy) GetDenyRules() []*NetworkPolicyDenyRule {
 	if x != nil {
 		return x.DenyRules
+	}
+	return nil
+}
+
+func (x *NetworkPolicy) GetAllowFromTenants() []string {
+	if x != nil {
+		return x.AllowFromTenants
 	}
 	return nil
 }
@@ -5523,7 +5540,7 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"\vlast_action\x18\v \x01(\tR\n" +
 	"lastAction\x129\n" +
 	"\n" +
-	"created_at\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\"\xdd\x02\n" +
+	"created_at\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\"\x8b\x03\n" +
 	"\rNetworkPolicy\x12\x16\n" +
 	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12,\n" +
 	"\x12allow_intra_tenant\x18\x02 \x01(\bR\x10allowIntraTenant\x12!\n" +
@@ -5533,7 +5550,8 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"\x0eallow_metadata\x18\x06 \x01(\bR\rallowMetadata\x12\x16\n" +
 	"\x06source\x18\a \x01(\tR\x06source\x12E\n" +
 	"\n" +
-	"deny_rules\x18\b \x03(\v2&.containarium.v1.NetworkPolicyDenyRuleR\tdenyRules\"\x88\x01\n" +
+	"deny_rules\x18\b \x03(\v2&.containarium.v1.NetworkPolicyDenyRuleR\tdenyRules\x12,\n" +
+	"\x12allow_from_tenants\x18\t \x03(\tR\x10allowFromTenants\"\x88\x01\n" +
 	"\x15NetworkPolicyDenyRule\x12\x12\n" +
 	"\x04cidr\x18\x01 \x01(\tR\x04cidr\x12\x12\n" +
 	"\x04port\x18\x02 \x01(\rR\x04port\x12\x14\n" +

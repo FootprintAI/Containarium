@@ -40,6 +40,10 @@ type CompiledPolicy struct {
 	// here (not filtered) so the package stays time-pure; the daemon drops expired
 	// rules with DenyRule.Expired(now) before pushing them to the kernel.
 	DenyRules []DenyRule
+	// AllowFromTenants (#2359) lists tenants whose boxes may reach this
+	// tenant's boxes; trimmed, deduped, sorted, never the tenant itself.
+	// Consumed by the tenant network guard, not by the eBPF program.
+	AllowFromTenants []string
 }
 
 // DenyRule is one normalized virtual-patch block rule (#660). The destination
@@ -89,6 +93,10 @@ func Compile(p *pb.NetworkPolicy) (CompiledPolicy, error) {
 	if err != nil {
 		return CompiledPolicy{}, err
 	}
+	allowFrom, err := compileAllowFromTenants(tenant, p.GetAllowFromTenants())
+	if err != nil {
+		return CompiledPolicy{}, err
+	}
 
 	// Unspecified defaults to log-only in Phase A; reject unknown enum values.
 	mode := p.GetMode()
@@ -111,7 +119,30 @@ func Compile(p *pb.NetworkPolicy) (CompiledPolicy, error) {
 		Mode:             mode,
 		LogOnly:          mode != pb.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE,
 		DenyRules:        deny,
+		AllowFromTenants: allowFrom,
 	}, nil
+}
+
+// compileAllowFromTenants trims, drops empties, dedups and sorts the list,
+// and refuses the tenant's own name — same-tenant traffic is
+// allow_intra_tenant's switch, and a self entry would read as if it did
+// something.
+func compileAllowFromTenants(tenant string, in []string) ([]string, error) {
+	seen := map[string]bool{}
+	var out []string
+	for _, raw := range in {
+		t := strings.TrimSpace(raw)
+		if t == "" || seen[t] {
+			continue
+		}
+		if t == tenant {
+			return nil, fmt.Errorf("network policy: allow_from_tenants must not list the tenant itself (%q); use allow_intra_tenant for same-tenant traffic", t)
+		}
+		seen[t] = true
+		out = append(out, t)
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 // ToProto renders a CompiledPolicy back into a NetworkPolicy message — the
@@ -147,6 +178,7 @@ func (c CompiledPolicy) ToProto() *pb.NetworkPolicy {
 		AllowMetadata:    c.AllowMetadata,
 		Mode:             c.Mode,
 		DenyRules:        deny,
+		AllowFromTenants: append([]string(nil), c.AllowFromTenants...),
 	}
 }
 
