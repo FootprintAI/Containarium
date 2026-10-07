@@ -180,6 +180,14 @@ enum CodeCredentialSource {
   // Neither of the above. Expected on a freshly provisioned box (#2272)
   // until a human signs in or places a key.
   CODE_CREDENTIAL_SOURCE_NONE = 3;
+  // The engine's own device-code/browser sign-in exists on this box, but the
+  // expiry timestamp recorded in its sign-in credentials file (e.g. the
+  // `expiresAt` field of Claude Code's ~/.claude/.credentials.json) is in
+  // the past (#2371). Only that timestamp is parsed — the credential value
+  // is never read, logged, or transmitted. A sign-in file with no expiry
+  // timestamp reports INTERACTIVE, never EXPIRED: an unknown expiry is not
+  // guessed to be a past one.
+  CODE_CREDENTIAL_SOURCE_EXPIRED = 4;
 }
 
 // AgentEngineStatus is one engine's readiness row, as ListAgentEngines

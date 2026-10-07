@@ -137,7 +137,27 @@ fi`
 // ANTHROPIC_AUTH_TOKEN, CLAUDE_CODE_USE_*) — it never contains, reads, or
 // echoes a credential value. Same rationale as GatewayTokenEnvVar's
 // annotation in engine.go.
-const claudeCredentialStatusScript = `if [ -f "$HOME/.claude/.credentials.json" ]; then
+//
+// Expiry (#2371): when the sign-in file exists, the ONLY thing read out of
+// it is the numeric `expiresAt` timestamp. `grep -o` emits just the
+// `"expiresAt":<digits>` match — never the rest of the line, which in the
+// minified file also holds the token values — and that match is captured
+// into a shell variable, reduced to its digits, and never echoed. Claude
+// Code writes epoch milliseconds; a value of 13+ digits is divided down to
+// seconds, a shorter one is taken as seconds already. No timestamp at all
+// reports "interactive": an unknown expiry is not guessed to be past.
+const claudeCredentialStatusScript = `cred="$HOME/.claude/.credentials.json"
+if [ -f "$cred" ]; then
+  exp=$(grep -o '"expiresAt"[[:space:]]*:[[:space:]]*[0-9][0-9]*' "$cred" 2>/dev/null | head -n 1 | grep -o '[0-9][0-9]*$')
+  if [ -n "$exp" ]; then
+    if [ "${#exp}" -ge 13 ]; then
+      exp=$((exp / 1000))
+    fi
+    if [ "$exp" -le "$(date +%s)" ]; then
+      echo expired
+      exit 0
+    fi
+  fi
   echo interactive
   exit 0
 fi
