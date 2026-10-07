@@ -38,18 +38,36 @@ func TestCoreStaticIP(t *testing.T) {
 			name:      "postgres is pinned",
 			cidr:      "10.100.0.1/24",
 			container: CorePostgresContainer,
-			want:      "10.100.0.240",
+			want:      "10.100.0.242",
 		},
 		{
 			name:      "metrics container is pinned",
 			cidr:      "10.100.0.1/24",
 			container: CoreVictoriaMetricsContainer,
-			want:      "10.100.0.239",
+			want:      "10.100.0.243",
+		},
+		{
+			name:      "otel collector is pinned",
+			cidr:      "10.100.0.1/24",
+			container: CoreOTelCollectorContainer,
+			want:      "10.100.0.244",
+		},
+		{
+			name:      "security is pinned",
+			cidr:      "10.100.0.1/24",
+			container: CoreSecurityContainer,
+			want:      "10.100.0.245",
+		},
+		{
+			name:      "guacamole is pinned",
+			cidr:      "10.100.0.1/24",
+			container: CoreGuacamoleContainer,
+			want:      "10.100.0.246",
 		},
 		{
 			name:      "container without an assigned offset falls back to DHCP",
 			cidr:      "10.100.0.1/24",
-			container: CoreSecurityContainer,
+			container: "unknown-container",
 			want:      "", // no offset → empty, no error
 		},
 		{
