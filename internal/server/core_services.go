@@ -38,6 +38,9 @@ const (
 	// CoreSecurityContainer is the name of the core ClamAV security container
 	CoreSecurityContainer = "containarium-core-security"
 
+	// CoreGuacamoleContainer is the name of the core Guacamole container
+	CoreGuacamoleContainer = "containarium-core-guacamole"
+
 	// CoreVictoriaMetricsContainer is the name of the core Victoria Metrics + Grafana container
 	CoreVictoriaMetricsContainer = "containarium-core-victoriametrics"
 
@@ -80,8 +83,11 @@ const coreBridgeName = "incusbr0"
 // container is created; an existing container keeps the address it has.
 var coreStaticIPHostOffsets = map[string]uint32{
 	CoreCaddyContainer:           241,
-	CorePostgresContainer:        240,
-	CoreVictoriaMetricsContainer: 239,
+	CorePostgresContainer:        242,
+	CoreVictoriaMetricsContainer: 243,
+	CoreOTelCollectorContainer:   244,
+	CoreSecurityContainer:        245,
+	CoreGuacamoleContainer:       246,
 }
 
 // coreStaticIP returns the deterministic static IP for a core container within
@@ -1611,6 +1617,8 @@ func (cs *CoreServices) EnsureSecurity(ctx context.Context) error {
 			Size: "5GB",
 		},
 	}
+
+	cs.pinCoreIP(&config, CoreSecurityContainer)
 
 	if err := cs.incusClient.CreateContainer(config); err != nil {
 		return fmt.Errorf("failed to create security container: %w", err)
