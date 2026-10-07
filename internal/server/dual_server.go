@@ -263,7 +263,8 @@ type DualServer struct {
 	grpcServer               *grpc.Server
 	internalLis              *auth.InternalListener // in-process transport for the REST gateway
 	containerServer          *ContainerServer
-	agentSkillServer         *AgentSkillServer // run journal reaper (#2096)
+	agentSkillServer         *AgentSkillServer        // run journal reaper (#2096)
+	credentialWatcher        *alert.CredentialWatcher // credential-expiry alert (#2371); nil without Postgres
 	appServer                *AppServer
 	networkServer            *NetworkServer
 	trafficServer            *TrafficServer
@@ -2194,6 +2195,33 @@ skipAppHosting:
 		}
 	}
 
+	// Credential-expiry watch (#2371): every CredentialWatchInterval, probe
+	// each running skill box's coding-engine sign-in (names and the expiry
+	// timestamp only, never a value) and send ONE alert per flip into
+	// expired through the operator webhook — the same DaemonConfigStore
+	// URL/secret and HMAC signing as the threat-detection notifier, and
+	// independent of VictoriaMetrics for the same reason. Needs Postgres:
+	// the last-seen state lives there so a restart does not re-fire.
+	var credentialWatcher *alert.CredentialWatcher
+	if postgresConnString != "" && config.DaemonConfigStore != nil {
+		if cwPool, poolErr := connectToPostgres(postgresConnString, 2, 3*time.Second); poolErr != nil {
+			log.Printf("Warning: credential-expiry watch Postgres connect failed (%v); watch disabled", poolErr)
+		} else if stateStore, stErr := alert.NewPGCredentialStateStore(context.Background(), cwPool); stErr != nil {
+			log.Printf("Warning: credential-expiry watch state store init failed (%v); watch disabled", stErr)
+			cwPool.Close()
+		} else {
+			var cwDelivery *alert.DeliveryStore
+			if d, dErr := alert.NewDeliveryStore(context.Background(), cwPool); dErr != nil {
+				log.Printf("Warning: credential-expiry watch delivery store init failed (%v); deliveries will be attempted but not recorded", dErr)
+			} else {
+				cwDelivery = d
+			}
+			credentialWatcher = alert.NewCredentialWatcher(agentSkillServer, stateStore,
+				alert.NewCredentialWebhookNotifier(config.DaemonConfigStore, cwDelivery))
+			log.Printf("Credential-expiry watch enabled (every %s)", alert.CredentialWatchInterval)
+		}
+	}
+
 	// Create gateway server if REST is enabled
 	var gatewayServer *gateway.GatewayServer
 	if config.EnableREST {
@@ -2584,6 +2612,7 @@ skipAppHosting:
 		anonManager:            anonManager,
 		config:                 config,
 		agentSkillServer:       agentSkillServer,
+		credentialWatcher:      credentialWatcher,
 		grpcServer:             grpcServer,
 		internalLis:            internalLis,
 		containerServer:        containerServer,
@@ -2926,6 +2955,9 @@ func (ds *DualServer) Start(ctx context.Context) error {
 	}
 	if ds.agentSkillServer != nil {
 		ds.agentSkillServer.StartRunJournalReaper(ctx)
+	}
+	if ds.credentialWatcher != nil {
+		ds.credentialWatcher.Start(ctx)
 	}
 	// Register this primary with the sentinel (no-op if --public-hostname is unset).
 	runPrimaryRegistration(ctx, PrimaryRegisterConfig{
@@ -3630,6 +3662,9 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		return err
 	case <-ctx.Done():
 		log.Println("Shutting down servers...")
+		if ds.credentialWatcher != nil {
+			ds.credentialWatcher.Stop()
+		}
 		if ds.routeSyncJob != nil {
 			ds.routeSyncJob.Stop()
 		}

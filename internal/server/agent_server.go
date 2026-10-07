@@ -483,6 +483,8 @@ func codeCredentialSourcePB(src engine.CredentialStatusSource) pb.CodeCredential
 		return pb.CodeCredentialSource_CODE_CREDENTIAL_SOURCE_API_KEY
 	case engine.CredentialStatusNone:
 		return pb.CodeCredentialSource_CODE_CREDENTIAL_SOURCE_NONE
+	case engine.CredentialStatusExpired:
+		return pb.CodeCredentialSource_CODE_CREDENTIAL_SOURCE_EXPIRED
 	default:
 		return pb.CodeCredentialSource_CODE_CREDENTIAL_SOURCE_UNSPECIFIED
 	}
@@ -524,30 +526,42 @@ func (s *AgentSkillServer) GetSkillBoxCredentialStatus(ctx context.Context, req 
 		return nil, status.Errorf(codes.Unimplemented,
 			"credential-status check for engine %s is not implemented yet", agentengine.EnvValue(skill.GetEngine()))
 	}
-	script, ok := engine.CredentialStatusScript(engineName)
-	if !ok {
-		return nil, status.Errorf(codes.Unimplemented,
-			"credential-status check for engine %s is not implemented yet", agentengine.EnvValue(resolvedEngine))
-	}
-
-	containerName := name + "-container"
-	stdout, stderr, exitCode, execErr := s.recipes.containers.manager.ExecWithExitCode(containerName, []string{"bash", "-c", script})
-	if execErr != nil {
-		return nil, status.Errorf(codes.Internal, "checking credential status on %s: %v", containerName, execErr)
-	}
-	if exitCode != 0 {
-		return nil, status.Errorf(codes.Internal, "credential-status probe on %s exited %d: %s", containerName, exitCode, strings.TrimSpace(stderr))
-	}
-	src, perr := engine.ParseCredentialStatusSource(strings.TrimSpace(stdout))
-	if perr != nil {
-		return nil, status.Errorf(codes.Internal, "credential-status probe on %s: %v", containerName, perr)
+	src, err := s.probeBoxCredential(name+"-container", engineName, resolvedEngine)
+	if err != nil {
+		return nil, err
 	}
 
 	return &pb.GetSkillBoxCredentialStatusResponse{
 		Engine:           resolvedEngine,
-		CredentialSource: codeCredentialSourcePB(src),
+		CredentialSource: src,
 		CheckedAt:        timestamppb.Now(),
 	}, nil
+}
+
+// probeBoxCredential runs engineName's credential-status probe in
+// containerName and returns the wire source. It is the ONE probe path:
+// GetSkillBoxCredentialStatus and the credential-expiry watcher (#2371,
+// ProbeCredential) both call it, so an alert can never disagree with what an
+// operator sees checking by hand. Errors are gRPC statuses.
+func (s *AgentSkillServer) probeBoxCredential(containerName string, engineName engine.Name, resolvedEngine pb.AgentEngine) (pb.CodeCredentialSource, error) {
+	const unknown = pb.CodeCredentialSource_CODE_CREDENTIAL_SOURCE_UNSPECIFIED
+	script, ok := engine.CredentialStatusScript(engineName)
+	if !ok {
+		return unknown, status.Errorf(codes.Unimplemented,
+			"credential-status check for engine %s is not implemented yet", agentengine.EnvValue(resolvedEngine))
+	}
+	stdout, stderr, exitCode, execErr := s.recipes.containers.manager.ExecWithExitCode(containerName, []string{"bash", "-c", script})
+	if execErr != nil {
+		return unknown, status.Errorf(codes.Internal, "checking credential status on %s: %v", containerName, execErr)
+	}
+	if exitCode != 0 {
+		return unknown, status.Errorf(codes.Internal, "credential-status probe on %s exited %d: %s", containerName, exitCode, strings.TrimSpace(stderr))
+	}
+	src, perr := engine.ParseCredentialStatusSource(strings.TrimSpace(stdout))
+	if perr != nil {
+		return unknown, status.Errorf(codes.Internal, "credential-status probe on %s: %v", containerName, perr)
+	}
+	return codeCredentialSourcePB(src), nil
 }
 
 // RunAgentSkill provisions a skill's box, mints a token scoped to exactly the

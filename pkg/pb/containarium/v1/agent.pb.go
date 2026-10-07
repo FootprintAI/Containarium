@@ -230,6 +230,14 @@ const (
 	// Neither of the above. Expected on a freshly provisioned box (#2272)
 	// until a human signs in or places a key.
 	CodeCredentialSource_CODE_CREDENTIAL_SOURCE_NONE CodeCredentialSource = 3
+	// The engine's own device-code/browser sign-in exists on this box, but the
+	// expiry timestamp recorded in its sign-in credentials file (e.g. the
+	// `expiresAt` field of Claude Code's ~/.claude/.credentials.json) is in
+	// the past (#2371). Only that timestamp is parsed — the credential value
+	// is never read, logged, or transmitted. A sign-in file with no expiry
+	// timestamp reports INTERACTIVE, never EXPIRED: an unknown expiry is not
+	// guessed to be a past one.
+	CodeCredentialSource_CODE_CREDENTIAL_SOURCE_EXPIRED CodeCredentialSource = 4
 )
 
 // Enum value maps for CodeCredentialSource.
@@ -239,12 +247,14 @@ var (
 		1: "CODE_CREDENTIAL_SOURCE_INTERACTIVE",
 		2: "CODE_CREDENTIAL_SOURCE_API_KEY",
 		3: "CODE_CREDENTIAL_SOURCE_NONE",
+		4: "CODE_CREDENTIAL_SOURCE_EXPIRED",
 	}
 	CodeCredentialSource_value = map[string]int32{
 		"CODE_CREDENTIAL_SOURCE_UNSPECIFIED": 0,
 		"CODE_CREDENTIAL_SOURCE_INTERACTIVE": 1,
 		"CODE_CREDENTIAL_SOURCE_API_KEY":     2,
 		"CODE_CREDENTIAL_SOURCE_NONE":        3,
+		"CODE_CREDENTIAL_SOURCE_EXPIRED":     4,
 	}
 )
 
@@ -3441,12 +3451,13 @@ const file_containarium_v1_agent_proto_rawDesc = "" +
 	"#AGENT_CREDENTIAL_SOURCE_UNSPECIFIED\x10\x00\x12&\n" +
 	"\"AGENT_CREDENTIAL_SOURCE_GLOBAL_KEY\x10\x01\x12%\n" +
 	"!AGENT_CREDENTIAL_SOURCE_OWNER_KEY\x10\x02\x12'\n" +
-	"#AGENT_CREDENTIAL_SOURCE_DIRECT_MODE\x10\x03*\xab\x01\n" +
+	"#AGENT_CREDENTIAL_SOURCE_DIRECT_MODE\x10\x03*\xcf\x01\n" +
 	"\x14CodeCredentialSource\x12&\n" +
 	"\"CODE_CREDENTIAL_SOURCE_UNSPECIFIED\x10\x00\x12&\n" +
 	"\"CODE_CREDENTIAL_SOURCE_INTERACTIVE\x10\x01\x12\"\n" +
 	"\x1eCODE_CREDENTIAL_SOURCE_API_KEY\x10\x02\x12\x1f\n" +
-	"\x1bCODE_CREDENTIAL_SOURCE_NONE\x10\x03*\xad\x01\n" +
+	"\x1bCODE_CREDENTIAL_SOURCE_NONE\x10\x03\x12\"\n" +
+	"\x1eCODE_CREDENTIAL_SOURCE_EXPIRED\x10\x04*\xad\x01\n" +
 	"\x0eAgentTaskState\x12 \n" +
 	"\x1cAGENT_TASK_STATE_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aAGENT_TASK_STATE_SUBMITTED\x10\x01\x12\x1c\n" +
