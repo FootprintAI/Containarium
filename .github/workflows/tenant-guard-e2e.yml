@@ -69,6 +69,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false # later steps run under sudo and need no git auth
 
       - name: Free disk space
         run: |
@@ -248,5 +250,5 @@ jobs:
       - name: Tear down
         if: always()
         run: |
-          sudo pkill -f "containarium daemon" || true
+          sudo pkill -f "[c]ontainarium daemon" || true # bracket: never matches this script's own text
           for c in alice-container alice2-container bob-container; do sudo incus delete -f $c 2>/dev/null || true; done

@@ -58,7 +58,12 @@ bridge_ip() {
 IP_A1=$(bridge_ip "$A1"); IP_A2=$(bridge_ip "$A2"); IP_B=$(bridge_ip "$B")
 [ -z "$IP_A1" ] || [ -z "$IP_A2" ] || [ -z "$IP_B" ] && { echo "FATAL: could not resolve a bridge IPv4 for all three containers"; exit 2; }
 CADDY=$(incus list --format csv -c n 2>/dev/null | grep -E '^containarium-core-caddy$' || true)
-IP_CADDY=""; [ -n "$CADDY" ] && IP_CADDY=$(bridge_ip "$CADDY")
+IP_CADDY=""
+if [ -n "$CADDY" ]; then
+  IP_CADDY=$(bridge_ip "$CADDY")
+  # Present but unaddressed is a fixture error, not "no caddy here".
+  [ -z "$IP_CADDY" ] && { echo "FATAL: $CADDY exists but has no IPv4 on eth0"; exit 2; }
+fi
 SINCE=$(date '+%Y-%m-%d %H:%M:%S')
 
 echo "== fixtures: $A1 ($IP_A1), $A2 ($IP_A2) same tenant; $B ($IP_B) other tenant; caddy=${CADDY:-<none>}"
@@ -96,7 +101,14 @@ echo "== DHCP renew inside a guarded box (offers come from the host gateway)"
 renew=$(incus exec "$A1" -- bash -c '
   if command -v dhclient >/dev/null 2>&1; then timeout 20 dhclient -1 -v eth0 >/tmp/dhcp.log 2>&1 && echo ok || echo fail;
   elif command -v udhcpc >/dev/null 2>&1; then timeout 20 udhcpc -i eth0 -n -q >/tmp/dhcp.log 2>&1 && echo ok || echo fail;
-  elif command -v networkctl >/dev/null 2>&1; then networkctl renew eth0 >/dev/null 2>&1 && sleep 3 && ip -4 addr show eth0 | grep -q inet && echo ok || echo fail;
+  elif command -v networkctl >/dev/null 2>&1; then
+    # Verify a NEW lease arrived, not that the old address is still there:
+    # systemd-networkd rewrites the lease file on renewal.
+    lf=/run/systemd/netif/leases/$(cat /sys/class/net/eth0/ifindex)
+    before=$(stat -c %Y "$lf" 2>/dev/null || echo 0)
+    networkctl renew eth0 >/dev/null 2>&1 || { echo fail; exit 0; }
+    for i in 1 2 3 4 5 6 7 8 9 10; do sleep 1; after=$(stat -c %Y "$lf" 2>/dev/null || echo 0); [ "$after" -gt "$before" ] && break; done
+    [ "${after:-0}" -gt "$before" ] && echo ok || echo fail;
   else echo skip; fi' 2>/dev/null)
 case "$renew" in
   ok)   echo "OK    $A1 renewed its lease" ;;
