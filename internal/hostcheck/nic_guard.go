@@ -1,11 +1,13 @@
 package hostcheck
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os/exec"
 	"sort"
 	"strings"
+	"time"
 )
 
 // NICGuardProbe is what the tenant-isolation posture check reads from the
@@ -24,6 +26,7 @@ type nicGuardFacts struct {
 }
 
 const (
+	nicGuardProbeTimeout      = 10 * time.Second
 	nicGuardRequiredDriver    = "nftables"
 	nicGuardRequiredExtension = "network_bridge_acl_devices"
 	nicGuardACLPrefix         = "containarium-tenant-"
@@ -75,7 +78,11 @@ func nicGuardCheck(p posturePaths) Check {
 // expanded eth0 device (security.acls).
 func defaultNICGuardProbe() (nicGuardFacts, error) {
 	var f nicGuardFacts
-	raw, err := exec.Command("incus", "query", "/1.0").Output()
+	// Bounded: a wedged incusd must not hang `doctor` on a non-required
+	// check. A timeout surfaces as "could not determine" like any probe error.
+	ctx, cancel := context.WithTimeout(context.Background(), nicGuardProbeTimeout)
+	defer cancel()
+	raw, err := exec.CommandContext(ctx, "incus", "query", "/1.0").Output()
 	if err != nil {
 		return f, fmt.Errorf("incus query /1.0: %w", err)
 	}
@@ -95,7 +102,11 @@ func defaultNICGuardProbe() (nicGuardFacts, error) {
 			break
 		}
 	}
-	raw, err = exec.Command("incus", "list", "--format", "json").Output()
+	// The daemon guards the default project (its GetInstanceNames has no
+	// project argument); pin the probe to it rather than the CLI's selected
+	// project, or a different `incus project switch` would hide guarded
+	// tenants and let the check pass.
+	raw, err = exec.CommandContext(ctx, "incus", "list", "--project", "default", "--format", "json").Output()
 	if err != nil {
 		return f, fmt.Errorf("incus list: %w", err)
 	}

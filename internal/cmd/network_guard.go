@@ -93,7 +93,9 @@ func runNetworkGuardStatus(cmd *cobra.Command, _ []string) error {
 // attached, and nothing was left unresolved — an unguarded tenant is a
 // failed guard even when the pass itself succeeded.
 func guardHealthy(g *guardStatusJSON) bool {
-	if g == nil || g.Mode != "GUARD_MODE_ENFORCE" || g.Unsupported || g.LastError != "" || len(g.Unresolved) > 0 {
+	// An empty lastPass means no pass has completed yet: nothing has been
+	// verified, so nothing is healthy.
+	if g == nil || g.Mode != "GUARD_MODE_ENFORCE" || g.Unsupported || g.LastError != "" || g.LastPass == "" || len(g.Unresolved) > 0 {
 		return false
 	}
 	for _, e := range g.Entries {
@@ -116,6 +118,8 @@ func printGuard(w interface{ Write([]byte) (int, error) }, title string, g *guar
 		verdict = "OFF"
 	case g.Unsupported:
 		verdict = "UNSUPPORTED — nothing guarded"
+	case g.LastPass == "":
+		verdict = "PENDING — no pass has completed yet"
 	case !guardHealthy(g):
 		verdict = "DEGRADED — a subject is unattached, errored or unresolved"
 	}

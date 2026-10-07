@@ -5,7 +5,7 @@ import "testing"
 // An unguarded tenant is a failed guard even when the pass succeeded.
 func TestGuardHealthy(t *testing.T) {
 	ok := func() *guardStatusJSON {
-		return &guardStatusJSON{Mode: "GUARD_MODE_ENFORCE", FirewallDriver: "nftables",
+		return &guardStatusJSON{Mode: "GUARD_MODE_ENFORCE", FirewallDriver: "nftables", LastPass: "2026-10-07T00:00:00Z",
 			Entries: []guardEntryJSON{{Container: "a", Attached: true}}}
 	}
 	tests := []struct {
@@ -15,6 +15,7 @@ func TestGuardHealthy(t *testing.T) {
 	}{
 		{"healthy", func(*guardStatusJSON) {}, true},
 		{"off", func(g *guardStatusJSON) { g.Mode = "GUARD_MODE_OFF" }, false},
+		{"no pass yet", func(g *guardStatusJSON) { g.LastPass = "" }, false},
 		{"unsupported host", func(g *guardStatusJSON) { g.Unsupported = true }, false},
 		{"pass error", func(g *guardStatusJSON) { g.LastError = "boom" }, false},
 		{"unresolved tenant", func(g *guardStatusJSON) { g.Unresolved = []string{"mystery"} }, false},
