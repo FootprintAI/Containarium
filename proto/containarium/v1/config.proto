@@ -686,6 +686,16 @@ message NetworkPolicy {
   // expires_at is in the past is dropped at compile time, so the patch
   // self-removes once the fix lands.
   repeated NetworkPolicyDenyRule deny_rules = 8;
+  // Tenants whose containers may reach this tenant's containers over the
+  // bridge (#2359). Consumed by the tenant network guard
+  // (docs/architecture/tenant-network-guard.md): every box of a listed
+  // tenant becomes an allowed ingress source on this tenant's NIC ACL.
+  // This is the only way to open tenant ingress to another tenant; the
+  // per-container ACL (UpdateContainerACL) no longer carries ingress rules.
+  // Normalised on set: trimmed, deduplicated, sorted; the tenant itself is
+  // rejected (use allow_intra_tenant). One-directional: listing bob here
+  // lets bob reach us, not the reverse.
+  repeated string allow_from_tenants = 9;
 }
 
 // NetworkPolicyDenyRule is one virtual-patch block rule (#660). Traffic from a

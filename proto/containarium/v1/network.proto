@@ -465,7 +465,11 @@ message UpdateContainerACLRequest {
   // Use a preset (mutually exclusive with custom rules)
   ACLPreset preset = 2;
 
-  // Custom ingress rules (only if preset is CUSTOM)
+  // Custom ingress rules. No longer accepted (#2359): tenant ingress is owned
+  // by the tenant network guard, and a per-container allow would be evaluated
+  // next to it and could re-open what it closed. A request carrying any is
+  // refused with INVALID_ARGUMENT; to admit another tenant use
+  // NetworkPolicy.allow_from_tenants. Presets apply their egress half only.
   repeated ACLRule ingress_rules = 3;
 
   // Custom egress rules (only if preset is CUSTOM)

@@ -42,6 +42,7 @@ var (
 	npEgressDomains    []string
 	npMode             string
 	npAllowMetadata    bool
+	npAllowFromTenants []string
 )
 
 var networkPolicySetCmd = &cobra.Command{
@@ -131,6 +132,8 @@ func init() {
 		"Allowed egress domain (repeatable, e.g. --egress-domain api.github.com)")
 	networkPolicySetCmd.Flags().StringVar(&npMode, "mode", "log_only",
 		"Enforcement mode: log_only | enforce")
+	networkPolicySetCmd.Flags().StringSliceVar(&npAllowFromTenants, "allow-from-tenant", nil,
+		"Tenant whose containers may reach this tenant's containers over the bridge (repeatable; #2359). The only way to open tenant ingress to another tenant — one-directional.")
 	networkPolicySetCmd.Flags().BoolVar(&npAllowMetadata, "allow-metadata", false,
 		"Allow reaching the cloud metadata service (169.254.169.254); default deny even if a CIDR would cover it")
 	networkPolicySetCmd.Flags().BoolVar(&npJSONOut, "json", false, "Output the stored policy as JSON")
@@ -291,6 +294,7 @@ type netPolicyJSON struct {
 	EgressCidrs      []string       `json:"egressCidrs"`
 	EgressDomains    []string       `json:"egressDomains"`
 	AllowMetadata    bool           `json:"allowMetadata"`
+	AllowFromTenants []string       `json:"allowFromTenants,omitempty"`
 	Mode             string         `json:"mode"`
 	Source           string         `json:"source"`
 	DenyRules        []denyRuleJSON `json:"denyRules,omitempty"`
@@ -345,6 +349,7 @@ func runNetworkPolicySet(cmd *cobra.Command, args []string) error {
 		EgressCidrs:      npEgressCidrs,
 		EgressDomains:    npEgressDomains,
 		AllowMetadata:    npAllowMetadata,
+		AllowFromTenants: npAllowFromTenants,
 		Mode:             mode,
 	}}
 	var out policyEnvelope
@@ -638,6 +643,9 @@ func printPolicy(w io.Writer, p netPolicyJSON) {
 	}
 	if len(p.EgressDomains) > 0 {
 		fmt.Fprintf(w, "  egress-domains:     %s\n", strings.Join(p.EgressDomains, ", "))
+	}
+	if len(p.AllowFromTenants) > 0 {
+		fmt.Fprintf(w, "  allow-from-tenants: %s\n", strings.Join(p.AllowFromTenants, ", "))
 	}
 	printDenyRules(w, p.DenyRules)
 }

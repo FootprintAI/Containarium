@@ -111,3 +111,53 @@ func TestGetContainerACL_readsExpandedDevices(t *testing.T) {
 		t.Errorf("GetContainerACL = %q, want %q", got, "from-profile")
 	}
 }
+
+// SetOwnedACL (#2364): the tenant guard owns every containarium-tenant-*
+// entry on a NIC. Re-attributing a box to another tenant must replace its
+// old tenant ACL, never stack the two (the old table would keep admitting the
+// old siblings); entries the guard does not own are left alone.
+func TestSetOwnedACL(t *testing.T) {
+	const prefix = "containarium-tenant-"
+	tests := []struct {
+		name       string
+		inst       *api.Instance
+		acl        string
+		wantWrites int
+		wantACLs   string
+	}{
+		{"profile NIC is shadowed and gets the ACL", profileNIC(), prefix + "new", 1, prefix + "new"},
+		{"another tenant's ACL is replaced", localNIC(prefix + "old"), prefix + "new", 1, prefix + "new"},
+		{"per-container ACL is kept, old tenant ACL replaced", localNIC("acl-alice," + prefix + "old"), prefix + "new", 1, "acl-alice," + prefix + "new"},
+		{"already exactly right is a no-op", localNIC("acl-alice," + prefix + "new"), prefix + "new", 0, ""},
+		{"owned ACL appended when absent, others kept", localNIC("acl-alice"), prefix + "new", 1, "acl-alice," + prefix + "new"},
+		{"duplicates of the owned ACL collapse", localNIC(prefix + "new," + prefix + "new"), prefix + "new", 1, prefix + "new"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := &fakeDeviceServer{inst: tt.inst}
+			c := &Client{server: srv}
+			if err := c.SetOwnedACL("alice-container", tt.acl, "eth0", prefix); err != nil {
+				t.Fatalf("SetOwnedACL: %v", err)
+			}
+			if got := len(srv.updates); got != tt.wantWrites {
+				t.Fatalf("writes = %d, want %d", got, tt.wantWrites)
+			}
+			if tt.wantWrites == 1 {
+				eth0 := srv.updates[0].Devices["eth0"]
+				if eth0["security.acls"] != tt.wantACLs {
+					t.Errorf("security.acls = %q, want %q", eth0["security.acls"], tt.wantACLs)
+				}
+				if eth0["network"] != "incusbr0" || eth0["type"] != "nic" {
+					t.Errorf("profile keys lost: %v", eth0)
+				}
+			}
+		})
+	}
+	c := &Client{server: &fakeDeviceServer{inst: localNIC("")}}
+	if err := c.SetOwnedACL("alice-container", "", "eth0", prefix); err == nil {
+		t.Error("an empty ACL name must be refused")
+	}
+	if err := c.SetOwnedACL("alice-container", "x", "eth0", ""); err == nil {
+		t.Error("an empty owned prefix must be refused (it would own every ACL)")
+	}
+}

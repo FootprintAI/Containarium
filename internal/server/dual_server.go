@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -1477,6 +1478,14 @@ skipAppHosting:
 	// on any failure we keep the in-memory store (policies won't survive a
 	// restart, but the service stays up). Swap happens before grpcServer.Serve,
 	// so it races with no live RPCs.
+	// policyStoreDurable says whether npServer's store is the source of truth
+	// for network policies: true with no Postgres configured (the in-memory
+	// store IS the store) or once the Postgres store is installed; false
+	// while Postgres was configured but could not be reached, because the
+	// in-memory fallback is then empty and must not be read as "no policies"
+	// (#2359 — the tenant guard would strip persisted allow_from_tenants).
+	var policyStoreDurable atomic.Bool
+	policyStoreDurable.Store(postgresConnString == "")
 	if postgresConnString != "" {
 		pool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
 		if poolErr != nil {
@@ -1499,6 +1508,7 @@ skipAppHosting:
 				log.Printf("Warning: Failed to create Postgres network policy store: %v", npErr)
 			} else {
 				npServer.SetStore(pgStore)
+				policyStoreDurable.Store(true)
 				log.Printf("NetworkPolicy persistence enabled (Postgres store)")
 				// Operator signatures (#661 PR-B) share the same pool.
 				if sigStore, sErr := NewPostgresNetworkPolicySignatureStore(context.Background(), pool); sErr != nil {
@@ -1944,6 +1954,17 @@ skipAppHosting:
 			Mode:       nicguard.ParseMode(netCfg.TenantGuard),
 			Bridge:     "incusbr0",
 			BridgeCIDR: networkCIDR,
+			// allow_from_tenants (#2359) comes from the network-policy store;
+			// read through npServer each pass because the store is swapped to
+			// Postgres after construction.
+			Policies: tenantguard.PolicySourceFunc(func(ctx context.Context) ([]*pb.NetworkPolicy, error) {
+				if !policyStoreDurable.Load() {
+					// An empty fallback is not "no policies": fail the pass
+					// so the ACLs from the last good pass stay in force.
+					return nil, fmt.Errorf("network-policy store is the in-memory fallback (Postgres unavailable at startup); keeping existing ACLs")
+				}
+				return npServer.Store().List(ctx)
+			}),
 		})
 		if mgr := containerServer.GetManager(); mgr != nil {
 			mgr.SetNICGuard(tenantGuard)

@@ -199,3 +199,51 @@ func TestACLName(t *testing.T) {
 		}
 	}
 }
+
+// allow_from_tenants (#2359): every box of a listed tenant becomes an
+// allowed ingress source on the listing tenant's ACL — one-directional,
+// unknown tenants ignored, never the listing tenant's own name.
+func TestCompute_AllowFromTenants(t *testing.T) {
+	in := baseInputs(
+		Box{Name: "alice-container", Tenant: "alice", IPv4: addr("10.100.0.17")},
+		Box{Name: "bob-1", Tenant: "bob", IPv4: addr("10.100.0.33")},
+		Box{Name: "bob-2", Tenant: "bob", IPv4: addr("10.100.0.34"), IPv6: []netip.Addr{addr("fd42::34")}},
+		Box{Name: "carol-container", Tenant: "carol", IPv4: addr("10.100.0.50")},
+	)
+	in.CrossTenantAllow = map[string][]string{
+		"alice": {"bob", "nobody-here"}, // bob's boxes may reach alice; unknown tenant ignored
+	}
+	pol, err := Compute(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alice := map[string]bool{}
+	for _, s := range sources(pol.ACLs["alice"]) {
+		alice[s] = true
+	}
+	for _, want := range []string{"10.100.0.33/32", "10.100.0.34/32", "fd42::34/128"} {
+		if !alice[want] {
+			t.Errorf("alice's ACL must admit bob's box %s: %v", want, sources(pol.ACLs["alice"]))
+		}
+	}
+	if alice["10.100.0.50/32"] {
+		t.Error("alice's ACL admits carol, who is not allowed")
+	}
+	// Not symmetric: bob did not allow alice.
+	for _, s := range sources(pol.ACLs["bob"]) {
+		if s == "10.100.0.17/32" {
+			t.Error("bob's ACL admits alice although only alice allowed bob")
+		}
+	}
+	// Rule order: host, initiators, siblings, then cross-tenant, so an
+	// unchanged host still yields byte-identical ACLs.
+	got := sources(pol.ACLs["alice"])
+	if got[len(got)-1] != "fd42::34/128" || got[len(got)-3] != "10.100.0.33/32" {
+		t.Errorf("cross-tenant rules must come last, sorted by box: %v", got)
+	}
+	for _, r := range pol.ACLs["alice"].IngressRules {
+		if r.Source == "10.100.0.33/32" && !strings.Contains(r.Description, "allowed tenant bob") {
+			t.Errorf("cross-tenant rule should say which tenant allowed it: %+v", r)
+		}
+	}
+}

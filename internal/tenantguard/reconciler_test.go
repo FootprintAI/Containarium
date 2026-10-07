@@ -14,6 +14,7 @@ import (
 
 	"github.com/footprintai/containarium/internal/nicguard"
 	"github.com/footprintai/containarium/pkg/core/incus"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // fakeBackend is the smallest incus.Backend the reconciler needs, with
@@ -88,14 +89,17 @@ func (f *fakeBackend) GetNetworkACL(name string) (*api.NetworkACL, error) {
 }
 
 func toAPI(cfg incus.ACLConfig) api.NetworkACL {
-	var in []api.NetworkACLRule
-	for _, r := range cfg.IngressRules {
-		in = append(in, api.NetworkACLRule{Action: r.Action, Source: r.Source, Destination: r.Destination,
-			Protocol: r.Protocol, DestinationPort: r.DestinationPort, Description: r.Description, State: "enabled"})
+	conv := func(rules []incus.ACLRule) []api.NetworkACLRule {
+		var out []api.NetworkACLRule
+		for _, r := range rules {
+			out = append(out, api.NetworkACLRule{Action: r.Action, Source: r.Source, Destination: r.Destination,
+				Protocol: r.Protocol, DestinationPort: r.DestinationPort, Description: r.Description, State: "enabled"})
+		}
+		return out
 	}
 	return api.NetworkACL{
 		NetworkACLPost: api.NetworkACLPost{Name: cfg.Name},
-		NetworkACLPut:  api.NetworkACLPut{Description: cfg.Description, Ingress: in},
+		NetworkACLPut:  api.NetworkACLPut{Description: cfg.Description, Ingress: conv(cfg.IngressRules), Egress: conv(cfg.EgressRules)},
 	}
 }
 
@@ -181,6 +185,57 @@ func (f *fakeBackend) enter() {
 	time.Sleep(2 * time.Millisecond) // widen the window so an overlap is observable
 }
 func (f *fakeBackend) leave() { atomic.AddInt32(&f.active, -1) }
+
+// AttachACLToContainer mirrors the real client (#2348): appends to an
+// existing security.acls list, no write when already present.
+func (f *fakeBackend) AttachACLToContainer(container, acl, device string) error {
+	f.enter()
+	defer f.leave()
+	f.fmu.Lock()
+	defer f.fmu.Unlock()
+	dev, ok := f.devices[container][device]
+	if !ok {
+		return errors.New("device " + device + " not found on " + container)
+	}
+	for _, n := range strings.Split(dev["security.acls"], ",") {
+		if n == acl {
+			return nil
+		}
+	}
+	if dev["security.acls"] == "" {
+		dev["security.acls"] = acl
+	} else {
+		dev["security.acls"] += "," + acl
+	}
+	f.keyWrite = append(f.keyWrite, container+"/"+device)
+	return nil
+}
+
+// SetOwnedACL mirrors the real client: replaces every attached ACL under the
+// owned prefix with aclName, keeps the rest.
+func (f *fakeBackend) SetOwnedACL(container, acl, device, ownedPrefix string) error {
+	f.enter()
+	defer f.leave()
+	f.fmu.Lock()
+	defer f.fmu.Unlock()
+	dev, ok := f.devices[container][device]
+	if !ok {
+		return errors.New("device " + device + " not found on " + container)
+	}
+	var out []string
+	for _, n := range strings.Split(dev["security.acls"], ",") {
+		if n != "" && !strings.HasPrefix(n, ownedPrefix) {
+			out = append(out, n)
+		}
+	}
+	want := strings.Join(append(out, acl), ",")
+	if dev["security.acls"] == want {
+		return nil
+	}
+	dev["security.acls"] = want
+	f.keyWrite = append(f.keyWrite, container+"/"+device)
+	return nil
+}
 
 func (f *fakeBackend) SetDeviceConfig(container, device string, keys map[string]string) error {
 	f.enter()
@@ -646,5 +701,116 @@ func TestReconcile_OffBridgeAddressDoesNotPoisonThePass(t *testing.T) {
 	st := r.Status()
 	if st.LastError != "" {
 		t.Errorf("unexpected pass error: %s", st.LastError)
+	}
+}
+
+// allow_from_tenants read from the policy store reaches the ACLs (#2359);
+// a failed policy read fails the pass instead of silently closing doors.
+func TestReconcile_AllowFromTenantsFromPolicyStore(t *testing.T) {
+	f := twoTenantHost()
+	cfg := enforceCfg()
+	cfg.Policies = PolicySourceFunc(func(context.Context) ([]*pb.NetworkPolicy, error) {
+		return []*pb.NetworkPolicy{{Tenant: "alice", AllowFromTenants: []string{"bob"}}}, nil
+	})
+	r := NewReconciler(f, cfg)
+	if err := r.ReconcileOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !srcSet(f.acls[ACLName("alice")])["10.100.0.33/32"] {
+		t.Errorf("alice's ACL must admit bob's box: %v", srcSet(f.acls[ACLName("alice")]))
+	}
+	if srcSet(f.acls[ACLName("bob")])["10.100.0.17/32"] {
+		t.Error("bob's ACL must not admit alice (one-directional)")
+	}
+
+	f = twoTenantHost()
+	cfg.Policies = PolicySourceFunc(func(context.Context) ([]*pb.NetworkPolicy, error) { return nil, errors.New("pg down") })
+	r = NewReconciler(f, cfg)
+	if err := r.ReconcileOnce(context.Background()); err == nil || !strings.Contains(err.Error(), "pg down") {
+		t.Errorf("a policy read failure must fail the pass, got %v", err)
+	}
+	if f.writes() != 0 {
+		t.Errorf("wrote %d times although policies could not be read", f.writes())
+	}
+}
+
+// A per-container ACL written before #2359 still carrying ingress allows is
+// rewritten to its egress half on the next pass; its egress rules and its
+// attachment survive, and ACLs that are not per-container are untouched.
+func TestReconcile_ClearsLegacyPerContainerIngress(t *testing.T) {
+	f := twoTenantHost()
+	f.acls["acl-alice"] = toAPI(incus.ACLConfig{Name: "acl-alice", Description: "Custom firewall rules",
+		IngressRules: []incus.ACLRule{{Action: "allow", Source: "0.0.0.0/0", DestinationPort: "5432", Protocol: "tcp"}},
+		EgressRules:  []incus.ACLRule{{Action: "drop", Destination: "10.100.0.0/24", Description: "no bridge"}}})
+	f.devices["alice-container"] = map[string]map[string]string{"eth0": {"type": "nic", "name": "eth0", "network": "incusbr0", "security.acls": "acl-alice"}}
+	f.acls["somebody-elses-acl"] = toAPI(incus.ACLConfig{Name: "somebody-elses-acl",
+		IngressRules: []incus.ACLRule{{Action: "allow", Source: "10.0.0.0/8"}}})
+
+	r := NewReconciler(f, enforceCfg())
+	if err := r.ReconcileOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got := f.acls["acl-alice"]
+	if len(got.Ingress) != 0 {
+		t.Errorf("legacy ingress not cleared: %+v", got.Ingress)
+	}
+	if len(got.Egress) != 1 || got.Egress[0].Destination != "10.100.0.0/24" {
+		t.Errorf("egress not preserved: %+v", got.Egress)
+	}
+	if acls := f.devices["alice-container"]["eth0"]["security.acls"]; !strings.Contains(acls, "acl-alice") || !strings.Contains(acls, ACLName("alice")) {
+		t.Errorf("attachment lost or guard not attached: %q", acls)
+	}
+	if len(f.acls["somebody-elses-acl"].Ingress) != 1 {
+		t.Error("an ACL that is not per-container must not be touched")
+	}
+	if st := r.Status(); st.LegacyIngressCleared != 1 {
+		t.Errorf("LegacyIngressCleared = %d, want 1", st.LegacyIngressCleared)
+	}
+	// Converged: a second pass rewrites nothing.
+	before := len(f.updated)
+	if err := r.ReconcileOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.updated) != before {
+		t.Errorf("second pass rewrote ACLs: %v", f.updated[before:])
+	}
+}
+
+// A box re-attributed to another tenant (explicit tenant key set after
+// create) must end up on the NEW tenant's ACL only: the old tenant's ACL is
+// detached, so it is no longer admitted-by and can be pruned. This is what
+// the CI lane caught — stacking left the old siblings admitted and the old
+// ACL undeletable ("in use").
+func TestReconcile_ReattributedBoxLeavesItsOldTenantACL(t *testing.T) {
+	f := newFakeBackend("nftables",
+		box("alice", "10.100.0.17"),
+		cloudBox("cld-moved", "alice2", "10.100.0.18"), // starts as its own tenant
+	)
+	r := NewReconciler(f, enforceCfg())
+	if err := r.ReconcileOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	oldACL := ACLName("alice2")
+	if f.devices["cld-moved"]["eth0"]["security.acls"] != oldACL {
+		t.Fatalf("setup: cld-moved should start on %s, has %q", oldACL, f.devices["cld-moved"]["eth0"]["security.acls"])
+	}
+
+	// The tenant key is stamped after create: the box now belongs to alice.
+	for i := range f.containers {
+		if f.containers[i].Name == "cld-moved" {
+			f.containers[i].Tenant = "alice"
+		}
+	}
+	if err := r.ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("pass after re-attribution: %v", err)
+	}
+	if got := f.devices["cld-moved"]["eth0"]["security.acls"]; got != ACLName("alice") {
+		t.Errorf("security.acls = %q, want only %q", got, ACLName("alice"))
+	}
+	if _, still := f.acls[oldACL]; still {
+		t.Error("the old tenant's ACL must be pruned once nothing references it")
+	}
+	if !srcSet(f.acls[ACLName("alice")])["10.100.0.18/32"] {
+		t.Error("alice's ACL must now admit the moved box as a sibling")
 	}
 }
