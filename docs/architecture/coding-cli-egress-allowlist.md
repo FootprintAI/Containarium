@@ -98,8 +98,18 @@ confirmed in shape and changed in four ways:
    hooks only see new connections. The cost, a late `EPERM`-less drop rather
    than an immediate `connect` error, is accepted.
 2. **Where it attaches:** the **box's cgroup**, not the child. The program
-   inherits down, so nothing the tenant creates below it can opt out; the
-   child cgroup id only selects *which traffic the allowlist applies to*.
+   applies to every descendant, and the child cgroup id only selects *which
+   traffic the allowlist applies to*. "Nothing below it can opt out" depends
+   on the **attach mode**, so it is a requirement, not an assumption:
+   cgroup BPF inheritance differs by mode (`BPF_F_ALLOW_OVERRIDE` lets a
+   descendant program replace the parent's; `BPF_F_ALLOW_MULTI` runs
+   descendant programs in addition; with neither, a descendant cannot attach
+   a program of that type at all). The loader must use a mode in which no
+   program attached in a descendant cgroup can replace or bypass this one,
+   and PR 2 pins the chosen mode with a test. The expectation that a process
+   inside an unprivileged box cannot attach any cgroup program (it lacks the
+   needed capability in the initial user namespace) is part of claim C1 and
+   is proven on the live host, not assumed.
 3. **Who places the process:** the **host**, not `agent-box` — a
    *placement handshake* (below). If `agent-box` were allowed to write its
    own `cgroup.procs`, the CLI could write it too.
@@ -303,7 +313,13 @@ Tests are named before implementation.
 
 **BPF program and loader**
 - Map layout test (Go and C agree).
-- Verifier load in the existing eBPF CI lane.
+- Verifier load in the existing eBPF CI lane. The lane must **fail loudly**
+  if the verifier rejects the program for using `bpf_skb_cgroup_id` in a
+  `cgroup_skb/egress` program on a supported kernel (claim C2), so a helper
+  that is unavailable surfaces in CI instead of at the live-host spike.
+- Attach-mode test: a program attached at a descendant cgroup (in a test
+  cgroup tree, as root on the CI runner) does not replace or bypass the
+  program at the box cgroup in the mode the loader uses.
 - **Packet-level test with `BPF_PROG_TEST_RUN`** (no real network): allowed
   destination passes; denied drops under `ENFORCE`; denied passes with an event
   under `LOG_ONLY`; a packet from an unrestricted cgroup always passes; IPv6
