@@ -211,6 +211,32 @@ func (f *fakeBackend) AttachACLToContainer(container, acl, device string) error 
 	return nil
 }
 
+// SetOwnedACL mirrors the real client: replaces every attached ACL under the
+// owned prefix with aclName, keeps the rest.
+func (f *fakeBackend) SetOwnedACL(container, acl, device, ownedPrefix string) error {
+	f.enter()
+	defer f.leave()
+	f.fmu.Lock()
+	defer f.fmu.Unlock()
+	dev, ok := f.devices[container][device]
+	if !ok {
+		return errors.New("device " + device + " not found on " + container)
+	}
+	var out []string
+	for _, n := range strings.Split(dev["security.acls"], ",") {
+		if n != "" && !strings.HasPrefix(n, ownedPrefix) {
+			out = append(out, n)
+		}
+	}
+	want := strings.Join(append(out, acl), ",")
+	if dev["security.acls"] == want {
+		return nil
+	}
+	dev["security.acls"] = want
+	f.keyWrite = append(f.keyWrite, container+"/"+device)
+	return nil
+}
+
 func (f *fakeBackend) SetDeviceConfig(container, device string, keys map[string]string) error {
 	f.enter()
 	defer f.leave()
@@ -747,5 +773,44 @@ func TestReconcile_ClearsLegacyPerContainerIngress(t *testing.T) {
 	}
 	if len(f.updated) != before {
 		t.Errorf("second pass rewrote ACLs: %v", f.updated[before:])
+	}
+}
+
+// A box re-attributed to another tenant (explicit tenant key set after
+// create) must end up on the NEW tenant's ACL only: the old tenant's ACL is
+// detached, so it is no longer admitted-by and can be pruned. This is what
+// the CI lane caught — stacking left the old siblings admitted and the old
+// ACL undeletable ("in use").
+func TestReconcile_ReattributedBoxLeavesItsOldTenantACL(t *testing.T) {
+	f := newFakeBackend("nftables",
+		box("alice", "10.100.0.17"),
+		cloudBox("cld-moved", "alice2", "10.100.0.18"), // starts as its own tenant
+	)
+	r := NewReconciler(f, enforceCfg())
+	if err := r.ReconcileOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	oldACL := ACLName("alice2")
+	if f.devices["cld-moved"]["eth0"]["security.acls"] != oldACL {
+		t.Fatalf("setup: cld-moved should start on %s, has %q", oldACL, f.devices["cld-moved"]["eth0"]["security.acls"])
+	}
+
+	// The tenant key is stamped after create: the box now belongs to alice.
+	for i := range f.containers {
+		if f.containers[i].Name == "cld-moved" {
+			f.containers[i].Tenant = "alice"
+		}
+	}
+	if err := r.ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("pass after re-attribution: %v", err)
+	}
+	if got := f.devices["cld-moved"]["eth0"]["security.acls"]; got != ACLName("alice") {
+		t.Errorf("security.acls = %q, want only %q", got, ACLName("alice"))
+	}
+	if _, still := f.acls[oldACL]; still {
+		t.Error("the old tenant's ACL must be pruned once nothing references it")
+	}
+	if !srcSet(f.acls[ACLName("alice")])["10.100.0.18/32"] {
+		t.Error("alice's ACL must now admit the moved box as a sibling")
 	}
 }

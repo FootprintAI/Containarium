@@ -74,8 +74,11 @@ var initiatorRoles = []incus.Role{incus.RoleCaddy, incus.RoleControlPlane}
 // Incus-safe regardless.
 func ACLName(tenant string) string {
 	sum := sha256.Sum256([]byte(tenant))
-	return "containarium-tenant-" + hex.EncodeToString(sum[:])[:12]
+	return tenantACLPrefix + hex.EncodeToString(sum[:])[:12]
 }
+
+// tenantACLPrefix is the naming family the tenant guard owns on a NIC.
+const tenantACLPrefix = "containarium-tenant-"
 
 // Compute renders the allow table for one host. It validates every IPv4
 // address against the bridge first — a rule with a wrong subnet would be a

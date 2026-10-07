@@ -250,15 +250,52 @@ func (c *Client) AttachACLToContainer(containerName, aclName, deviceName string)
 	if aclName == "" {
 		return fmt.Errorf("attach acl to %s/%s: acl name is required", containerName, deviceName)
 	}
+	return c.editNICACLs(containerName, deviceName, "attach acl "+aclName+" to "+deviceName, func(have []string) []string {
+		for _, name := range have {
+			if name == aclName {
+				return have // already attached; stay silent
+			}
+		}
+		return append(have, aclName)
+	})
+}
+
+// SetOwnedACL makes aclName the only attached ACL whose name starts with
+// ownedPrefix, leaving every other attached ACL alone. It is how a guard that
+// owns a naming family (the tenant guard owns containarium-tenant-*) moves a
+// box to a new ACL without leaving the old one attached: appending alone
+// would stack a previous tenant's allow table on top of the new one. Same
+// profile-NIC shadowing and no-write-when-converged behaviour as
+// AttachACLToContainer.
+func (c *Client) SetOwnedACL(containerName, aclName, deviceName, ownedPrefix string) error {
+	if aclName == "" {
+		return fmt.Errorf("set owned acl on %s/%s: acl name is required", containerName, deviceName)
+	}
+	if ownedPrefix == "" {
+		return fmt.Errorf("set owned acl on %s/%s: owned prefix is required (empty would own every ACL)", containerName, deviceName)
+	}
+	return c.editNICACLs(containerName, deviceName, "set owned acl "+aclName+" on "+deviceName, func(have []string) []string {
+		out := make([]string, 0, len(have)+1)
+		for _, name := range have {
+			if !strings.HasPrefix(name, ownedPrefix) {
+				out = append(out, name)
+			}
+		}
+		return append(out, aclName)
+	})
+}
+
+// editNICACLs applies edit to a NIC's security.acls list. A profile-inherited
+// NIC is shadowed by an instance-local copy carrying the profile's settings in
+// the same write; nothing is written when the resulting list equals the
+// current one.
+func (c *Client) editNICACLs(containerName, deviceName, what string, edit func(have []string) []string) error {
 	inst, etag, err := c.server.GetInstance(containerName)
 	if err != nil {
 		return fmt.Errorf("failed to get container %s: %w", containerName, err)
 	}
 	device, local := inst.Devices[deviceName]
 	if !local {
-		// A profile NIC has no instance-local device to hang the key on:
-		// shadow it with a copy of the expanded (profile-merged) view so the
-		// profile's own settings survive, in the same write.
 		expanded, ok := inst.ExpandedDevices[deviceName]
 		if !ok {
 			return fmt.Errorf("device %s not found in container %s", deviceName, containerName)
@@ -271,18 +308,17 @@ func (c *Client) AttachACLToContainer(containerName, aclName, deviceName string)
 		device["name"] = deviceName
 	}
 	have := splitACLList(device["security.acls"])
-	for _, name := range have {
-		if name == aclName {
-			return nil // already attached; stay silent
-		}
+	want := strings.Join(edit(append([]string(nil), have...)), ",")
+	if local && want == strings.Join(have, ",") {
+		return nil
 	}
-	device["security.acls"] = strings.Join(append(have, aclName), ",")
+	device["security.acls"] = want
 	if inst.Devices == nil {
 		inst.Devices = map[string]map[string]string{}
 	}
 	inst.Devices[deviceName] = device
-	if err := c.updateInstanceDevices(containerName, inst, etag, "attach acl "+aclName+" to "+deviceName); err != nil {
-		return fmt.Errorf("failed to attach ACL to container: %w", err)
+	if err := c.updateInstanceDevices(containerName, inst, etag, what); err != nil {
+		return fmt.Errorf("failed to update ACLs on container: %w", err)
 	}
 	return nil
 }

@@ -400,11 +400,13 @@ func (r *Reconciler) attach(container, acl string) error {
 		if err := r.be.EnsureNICDevice(container, incus.NICDevice{Name: r.cfg.NICDevice, Network: r.cfg.Bridge}); err != nil {
 			return fmt.Errorf("nic device on %s: %w", container, err)
 		}
-		// The ACL name is APPENDED to security.acls (a per-container
-		// acl-<user> egress ACL may already be there), never overwritten;
-		// the default-action and anti-spoof keys are merged alongside.
-		if err := r.be.AttachACLToContainer(container, acl, r.cfg.NICDevice); err != nil {
-			return fmt.Errorf("attach acl on %s: %w", container, err)
+		// The guard owns every containarium-tenant-* entry on the NIC: this
+		// tenant's ACL replaces any other tenant's (a box re-attributed to
+		// another tenant must not keep admitting its old siblings), while a
+		// per-container acl-<user> egress ACL already there is kept. The
+		// default-action and anti-spoof keys are merged alongside.
+		if err := r.be.SetOwnedACL(container, acl, r.cfg.NICDevice, tenantACLPrefix); err != nil {
+			return fmt.Errorf("set tenant acl on %s: %w", container, err)
 		}
 		if err := r.be.SetDeviceConfig(container, r.cfg.NICDevice, tenantNICKeys()); err != nil {
 			return fmt.Errorf("nic acl keys on %s: %w", container, err)
@@ -469,7 +471,7 @@ func (r *Reconciler) pruneStale(pol Policy) error {
 	}
 	var firstErr error
 	for _, a := range acls {
-		if !strings.HasPrefix(a.Name, "containarium-tenant-") || live[a.Name] {
+		if !strings.HasPrefix(a.Name, tenantACLPrefix) || live[a.Name] {
 			continue
 		}
 		if err := r.be.DeleteNetworkACL(a.Name); err != nil && firstErr == nil {
