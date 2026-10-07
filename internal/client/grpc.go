@@ -183,10 +183,49 @@ func (c *GRPCClient) ListContainers() ([]incus.ContainerInfo, error) {
 }
 
 // CreateContainer creates a container via gRPC
-func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, isolation pb.IsolationType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string) (*incus.ContainerInfo, error) {
+func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, isolation pb.IsolationType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string, labels map[string]string) (*incus.ContainerInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute) // Container creation can take time (includes ultra-aggressive retry logic for google_guest_agent)
 	defer cancel()
+	req := newCreateContainerRequest(username, image, cpu, memory, disk, sshKeys, enablePodman, stack, gpus, osType, isolation, monitoring, pool, backendID, git, ttlSeconds, idleStopMinutes, deleteAfterStoppedSeconds, storageClass, enc, memoryRequest, cpuRequest, region, labels)
+	resp, err := c.client.CreateContainer(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create container: %w", err)
+	}
 
+	// Convert protobuf Container to incus.ContainerInfo
+	container := resp.Container
+	info := &incus.ContainerInfo{
+		Name:         container.Name,
+		Username:     container.Username,
+		SSHHost:      container.SshHost,
+		State:        container.State.String(),
+		InstanceType: ostype.InstanceTypeFromIsolation(container.Isolation),
+		Labels:       container.Labels, // what the daemon stored, incl. --labels (#2358)
+	}
+
+	if container.Network != nil {
+		info.IPAddress = container.Network.IpAddress
+	}
+
+	if container.Resources != nil {
+		info.CPU = container.Resources.Cpu
+		info.Memory = container.Resources.Memory
+	}
+
+	info.GPU = container.GpuDevice
+	info.GPUs = container.GpuDevices
+
+	if container.CreatedAt > 0 {
+		info.CreatedAt = time.Unix(container.CreatedAt, 0)
+	}
+
+	return info, nil
+}
+
+// newCreateContainerRequest builds the wire request for CreateContainer;
+// pure, so what the CLI flags turn into is unit-testable (#2358 — labels
+// used to be dropped between the CLI and this request).
+func newCreateContainerRequest(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, isolation pb.IsolationType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string, labels map[string]string) *pb.CreateContainerRequest {
 	req := &pb.CreateContainerRequest{
 		Username: username,
 		Resources: &pb.ResourceLimits{
@@ -219,38 +258,10 @@ func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, 
 		Region:                    region,
 	}
 
-	resp, err := c.client.CreateContainer(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create container: %w", err)
+	if len(labels) > 0 {
+		req.Labels = labels
 	}
-
-	// Convert protobuf Container to incus.ContainerInfo
-	container := resp.Container
-	info := &incus.ContainerInfo{
-		Name:         container.Name,
-		Username:     container.Username,
-		SSHHost:      container.SshHost,
-		State:        container.State.String(),
-		InstanceType: ostype.InstanceTypeFromIsolation(container.Isolation),
-	}
-
-	if container.Network != nil {
-		info.IPAddress = container.Network.IpAddress
-	}
-
-	if container.Resources != nil {
-		info.CPU = container.Resources.Cpu
-		info.Memory = container.Resources.Memory
-	}
-
-	info.GPU = container.GpuDevice
-	info.GPUs = container.GpuDevices
-
-	if container.CreatedAt > 0 {
-		info.CreatedAt = time.Unix(container.CreatedAt, 0)
-	}
-
-	return info, nil
+	return req
 }
 
 // ToggleMonitoring enables / disables OTel app telemetry on an
@@ -553,6 +564,7 @@ func (c *GRPCClient) GetContainer(username string) (*incus.ContainerInfo, error)
 		MonitoringEnabled:    container.MonitoringEnabled,
 		AutoSleepEnabled:     container.AutoSleepEnabled,
 		IdleThresholdMinutes: container.IdleThresholdMinutes,
+		Labels:               container.Labels,
 	}
 
 	if container.Network != nil {
