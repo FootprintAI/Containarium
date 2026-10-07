@@ -146,6 +146,47 @@ func Verify(att *pb.GuardrailAttestation, pub ed25519.PublicKey) error {
 	return nil
 }
 
+// KindsFor is the set of kinds a run must ask the engine for under policy:
+// every kind whose action is not ALLOW, sorted. An unlisted kind defaults
+// to REDACT (see actionsByKind), so it is included too. Requesting exactly
+// these — never an empty list, which would mean "whatever the engine has
+// enabled" — is what makes an engine that cannot scan one of them fail the
+// run with FAILED_PRECONDITION instead of attesting a PASS that never
+// looked (#2362).
+func KindsFor(policy *pb.GuardrailPolicy) []pb.GuardrailKind {
+	actions := actionsByKind(policy)
+	out := make([]pb.GuardrailKind, 0, len(actions))
+	for k, a := range actions {
+		if a != pb.GuardrailAction_GUARDRAIL_ACTION_ALLOW {
+			out = append(out, k)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+// VerifyCoverage checks that every kind in required is in the
+// attestation's kinds_scanned. It is a consumer's statement of what it
+// needs covered, independent of what policy the producer ran: a training
+// job that must not see secrets requires SECRET here, and an attestation
+// that only ever scanned PII is refused by name.
+func VerifyCoverage(att *pb.GuardrailAttestation, required []pb.GuardrailKind) error {
+	have := map[pb.GuardrailKind]bool{}
+	for _, k := range att.GetKindsScanned() {
+		have[k] = true
+	}
+	var missing []string
+	for _, k := range required {
+		if !have[k] {
+			missing = append(missing, strings.TrimPrefix(k.String(), "GUARDRAIL_KIND_"))
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("guardrail: attestation does not cover kind(s) %s — the engine was never asked to scan for them", strings.Join(missing, ", "))
+	}
+	return nil
+}
+
 // VerifySubject is what a consumer runs before using data: the signature
 // verifies, the directory's digest is the attested one, and the verdict is
 // PASS. Each failure is its own error so a log says which.

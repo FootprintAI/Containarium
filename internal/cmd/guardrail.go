@@ -47,6 +47,7 @@ var (
 	guardrailSignKey      string
 	guardrailAttestFile   string
 	guardrailPublicKey    string
+	guardrailRequireKinds []string
 	guardrailKeygenPrefix string
 )
 
@@ -118,8 +119,12 @@ func init() {
 
 	for _, c := range []*cobra.Command{guardrailScanCmd, guardrailApplyCmd} {
 		c.Flags().StringVar(&guardrailEngineAddr, "engine", "", "GuardrailEngineService gRPC address (host:port). Empty = the in-tree reference rules engine")
-		c.Flags().StringSliceVar(&guardrailKinds, "kind", nil, "Kinds to scan for: pii, secret. Empty = every kind the engine supports")
 	}
+	// --kind is a scan-only diagnostic. apply derives the kinds from its
+	// policy (#2362): an empty list would mean "whatever the engine has
+	// enabled", and a policy that says REDACT SECRET against an engine that
+	// cannot scan secrets must fail, not attest a PASS that never looked.
+	guardrailScanCmd.Flags().StringSliceVar(&guardrailKinds, "kind", nil, "Kinds to scan for: pii, secret. Empty = every kind the engine supports")
 	guardrailScanCmd.Flags().BoolVar(&guardrailJSON, "json", false, "Print findings as JSON (offsets and types only, never the text)")
 
 	guardrailApplyCmd.Flags().StringVar(&guardrailOut, "out", "", "Directory to write the redacted copy to (required)")
@@ -132,6 +137,7 @@ func init() {
 
 	guardrailVerifyCmd.Flags().StringVar(&guardrailAttestFile, "attestation", "", "Attestation JSON written by 'guardrail apply' (required)")
 	guardrailVerifyCmd.Flags().StringVar(&guardrailPublicKey, "public-key", "", "Signer's .pub file (required)")
+	guardrailVerifyCmd.Flags().StringSliceVar(&guardrailRequireKinds, "require-kind", nil, "Kinds the attestation must have scanned for (pii, secret); a PASS that never looked for one is refused")
 	_ = guardrailVerifyCmd.MarkFlagRequired("attestation")
 	_ = guardrailVerifyCmd.MarkFlagRequired("public-key")
 
@@ -155,19 +161,32 @@ func guardrailEngine(cmd *cobra.Command) (guardrail.Engine, func(), error) {
 	return guardrail.NewGRPCEngine(conn), func() { _ = conn.Close() }, nil
 }
 
-func guardrailKindsFromFlag() ([]pb.GuardrailKind, error) {
+// parseGuardrailKinds turns a --kind / --require-kind value list into kinds.
+func parseGuardrailKinds(flag string, raw []string) ([]pb.GuardrailKind, error) {
 	var out []pb.GuardrailKind
-	for _, k := range guardrailKinds {
+	for _, k := range raw {
 		switch strings.ToLower(strings.TrimSpace(k)) {
 		case "pii":
 			out = append(out, pb.GuardrailKind_GUARDRAIL_KIND_PII)
 		case "secret":
 			out = append(out, pb.GuardrailKind_GUARDRAIL_KIND_SECRET)
 		default:
-			return nil, fmt.Errorf("--kind %q: want pii or secret", k)
+			return nil, fmt.Errorf("--%s %q: want pii or secret", flag, k)
 		}
 	}
 	return out, nil
+}
+
+func guardrailKindsFromFlag() ([]pb.GuardrailKind, error) {
+	return parseGuardrailKinds("kind", guardrailKinds)
+}
+
+func kindNames(kinds []pb.GuardrailKind) string {
+	names := make([]string, 0, len(kinds))
+	for _, k := range kinds {
+		names = append(names, strings.ToLower(strings.TrimPrefix(k.String(), "GUARDRAIL_KIND_")))
+	}
+	return strings.Join(names, ",")
 }
 
 func runGuardrailScan(cmd *cobra.Command, args []string) error {
@@ -238,10 +257,6 @@ func runGuardrailApply(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer closeEngine()
-	kinds, err := guardrailKindsFromFlag()
-	if err != nil {
-		return err
-	}
 	policy := guardrail.DefaultPolicy()
 	if guardrailPolicyFile != "" {
 		b, err := os.ReadFile(guardrailPolicyFile) // #nosec G304 -- operator-supplied --policy path; CLI runs as the operator's UID
@@ -253,6 +268,9 @@ func runGuardrailApply(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("--policy %s: %w", guardrailPolicyFile, err)
 		}
 	}
+	// Exactly the kinds the policy covers, never empty (#2362): an engine
+	// that cannot scan one of them must fail this run, not pass it.
+	kinds := guardrail.KindsFor(policy)
 	key, err := loadOrCreateRedactionKey(cmd, guardrailRedactKey)
 	if err != nil {
 		return err
@@ -276,7 +294,7 @@ func runGuardrailApply(cmd *cobra.Command, args []string) error {
 	}
 	first, err := engine.Scan(ctx, &pb.GuardrailScanRequest{Units: units, Kinds: kinds})
 	if err != nil {
-		return fmt.Errorf("scan: %w", err)
+		return fmt.Errorf("scan for %s: %w — nothing written; the engine must cover every kind the policy names", kindNames(kinds), err)
 	}
 	red, err := guardrail.Redact(units, first.GetFindings(), policy, key)
 	if err != nil {
@@ -321,6 +339,7 @@ func runGuardrailApply(cmd *cobra.Command, args []string) error {
 		CoverageGaps:  gate.Gaps,
 		Verdict:       gate.Verdict,
 		AttestedAt:    timestamppb.New(time.Now().UTC()),
+		KindsScanned:  kinds,
 	}
 	if signer != nil {
 		if err := signer(att); err != nil {
@@ -337,7 +356,7 @@ func runGuardrailApply(cmd *cobra.Command, args []string) error {
 	}
 
 	w := cmd.OutOrStdout()
-	fmt.Fprintf(w, "engine: %s %s\n", att.EngineId, att.EngineVersion)
+	fmt.Fprintf(w, "engine: %s %s  kinds scanned: %s\n", att.EngineId, att.EngineVersion, kindNames(kinds))
 	fmt.Fprintf(w, "units: %d, found %d, redacted into %s\n", len(units), len(first.GetFindings()), out)
 	fmt.Fprintf(w, "re-scan: %d residual judged, %d inside placeholders ignored, %d gap(s)\n", sumCounts(gate.Residual), gate.InPlaceholder, gate.Gaps)
 	fmt.Fprintf(w, "vault: %s (%d tokens)  attestation: %s  signed: %v\n", guardrailVaultFile, len(red.Vault), guardrailAttestFile, signer != nil)
@@ -361,11 +380,18 @@ func runGuardrailVerify(cmd *cobra.Command, args []string) error {
 	if err := protojson.Unmarshal(b, att); err != nil {
 		return fmt.Errorf("attestation %s: %w", guardrailAttestFile, err)
 	}
+	required, err := parseGuardrailKinds("require-kind", guardrailRequireKinds)
+	if err != nil {
+		return err
+	}
 	if err := guardrail.VerifySubject(att, pub, args[0]); err != nil {
 		return err
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "verified: %s is the subject attested PASS by %s %s (key %s) at %s\n",
-		args[0], att.GetEngineId(), att.GetEngineVersion(), att.GetKeyId()[:12], att.GetAttestedAt().AsTime().Format(time.RFC3339))
+	if err := guardrail.VerifyCoverage(att, required); err != nil {
+		return err
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "verified: %s is the subject attested PASS by %s %s (kinds scanned: %s; key %s) at %s\n",
+		args[0], att.GetEngineId(), att.GetEngineVersion(), kindNames(att.GetKindsScanned()), att.GetKeyId()[:12], att.GetAttestedAt().AsTime().Format(time.RFC3339))
 	return nil
 }
 
