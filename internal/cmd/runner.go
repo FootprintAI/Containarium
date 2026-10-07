@@ -406,6 +406,7 @@ func buildDaemonAPI() (runner.DaemonAPI, runner.DaemonCreator, error) {
 				"",                      // memory-request: runner boxes use request==limit (#1557)
 				"",                      // cpu-request: ditto
 				"",                      // region: runner boxes don't steer by region (#1606)
+				nil,                     // labels: runner boxes carry no user labels (#2358)
 			)
 			if err != nil {
 				return "", "", err
@@ -449,6 +450,7 @@ func buildDaemonAPI() (runner.DaemonAPI, runner.DaemonCreator, error) {
 			"",                      // memory-request: runner boxes use request==limit (#1557)
 			"",                      // cpu-request: ditto
 			"",                      // region: runner boxes don't steer by region (#1606)
+			nil,                     // labels: runner boxes carry no user labels (#2358)
 		)
 		if err != nil {
 			return "", "", err

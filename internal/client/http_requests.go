@@ -84,6 +84,10 @@ type createContainerRequest struct {
 	// (#1606) — a standalone/single-region daemon ignores it. Absent unless
 	// set, so a plain create's body is unchanged.
 	Region string `json:"region,omitempty"`
+	// Labels are user labels (`--labels k=v`), stored under the daemon's
+	// label prefix; omitted when empty so older daemons see the same body
+	// (#2358).
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 // toggleAutoSleepRequest is POST /v1/containers/{name}/autosleep.

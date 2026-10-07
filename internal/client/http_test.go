@@ -192,11 +192,46 @@ func TestHTTPCreateContainer_SendsRegion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewHTTPClient: %v", err)
 	}
-	if _, err := c.CreateContainer("alice", "img", "1", "1GB", "10GB", nil, false, "", nil, 0, 0, false, "", "", GitSourceOpts{}, 0, 0, 0, "", EncryptionOpts{}, "", "", "us-east"); err != nil {
+	if _, err := c.CreateContainer("alice", "img", "1", "1GB", "10GB", nil, false, "", nil, 0, 0, false, "", "", GitSourceOpts{}, 0, 0, 0, "", EncryptionOpts{}, "", "", "us-east", nil); err != nil {
 		t.Fatalf("CreateContainer: %v", err)
 	}
 	if gotBody["region"] != "us-east" {
 		t.Errorf("region = %v, want us-east", gotBody["region"])
+	}
+}
+
+// TestHTTPCreateContainer_SendsLabels: --labels reach the daemon over the
+// REST path (#2358 — they used to be parsed and then dropped on the floor
+// before the request was built).
+func TestHTTPCreateContainer_SendsLabels(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"container":{"name":"c","username":"alice"}}`))
+	}))
+	defer srv.Close()
+
+	c, err := NewHTTPClient(srv.URL, "tok")
+	if err != nil {
+		t.Fatalf("NewHTTPClient: %v", err)
+	}
+	labels := map[string]string{"cloud_org_id": "org-a", "team": "dev"}
+	if _, err := c.CreateContainer("alice", "img", "1", "1GB", "10GB", nil, false, "", nil, 0, 0, false, "", "", GitSourceOpts{}, 0, 0, 0, "", EncryptionOpts{}, "", "", "", labels); err != nil {
+		t.Fatalf("CreateContainer: %v", err)
+	}
+	got, _ := gotBody["labels"].(map[string]any)
+	if got["cloud_org_id"] != "org-a" || got["team"] != "dev" {
+		t.Errorf("labels = %v, want %v", gotBody["labels"], labels)
+	}
+
+	// No labels → no field, so an older daemon sees the same body as before.
+	gotBody = nil
+	if _, err := c.CreateContainer("alice", "img", "1", "1GB", "10GB", nil, false, "", nil, 0, 0, false, "", "", GitSourceOpts{}, 0, 0, 0, "", EncryptionOpts{}, "", "", "", nil); err != nil {
+		t.Fatalf("CreateContainer: %v", err)
+	}
+	if _, present := gotBody["labels"]; present {
+		t.Errorf("labels present in body = %v, want absent when unset", gotBody["labels"])
 	}
 }
 
@@ -216,7 +251,7 @@ func TestHTTPCreateContainer_EmptyRegionOmitted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewHTTPClient: %v", err)
 	}
-	if _, err := c.CreateContainer("alice", "img", "1", "1GB", "10GB", nil, false, "", nil, 0, 0, false, "", "", GitSourceOpts{}, 0, 0, 0, "", EncryptionOpts{}, "", "", ""); err != nil {
+	if _, err := c.CreateContainer("alice", "img", "1", "1GB", "10GB", nil, false, "", nil, 0, 0, false, "", "", GitSourceOpts{}, 0, 0, 0, "", EncryptionOpts{}, "", "", "", nil); err != nil {
 		t.Fatalf("CreateContainer: %v", err)
 	}
 	if _, present := gotBody["region"]; present {
