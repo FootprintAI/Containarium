@@ -1299,6 +1299,24 @@ func (s *Server) registerTools() {
 			Handler: handleListRoutes,
 		},
 		{
+			Name: "network_guard_status",
+			Description: "Report the backend's tenant-isolation posture: the two Incus NIC-ACL " +
+				"guards (`core`: tenants kept off core-role containers; `tenant`: tenants kept " +
+				"off each other — docs/architecture/tenant-network-guard.md). For each: `mode` " +
+				"(GUARD_MODE_ENFORCE is the default, GUARD_MODE_OFF means the operator disabled " +
+				"it), `firewallDriver`, `unsupported` (this host cannot carry bridge NIC ACLs at " +
+				"all — wrong driver or Incus without network_bridge_acl_devices — so nothing is " +
+				"guarded), `lastPass`, `lastError`, and one entry per guarded container.\n\n" +
+				"Use this before relying on isolation between boxes, or when a box cannot " +
+				"reach a sibling (same tenant) or a core service it should. Wraps the same " +
+				"endpoint as `containarium network-guard status`. Admin role required.",
+			InputSchema: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+			Handler: handleNetworkGuardStatus,
+		},
+		{
 			Name: "delete_route",
 			Description: "Remove a proxy route by its domain — the unexpose counterpart of " +
 				"`expose_port`. After this, https://<domain>/ no longer reaches any container, " +
@@ -1865,9 +1883,11 @@ func toolScopeAssignments() map[string]string {
 		"get_secret":      auth.ScopeSecretsRead,
 		"list_secrets":    auth.ScopeSecretsRead,
 		// routes / network exposure
-		"list_routes":  auth.ScopeRoutesRead,
-		"expose_port":  auth.ScopeRoutesWrite,
-		"delete_route": auth.ScopeRoutesWrite,
+		"list_routes": auth.ScopeRoutesRead,
+		// network guards (#2353): read-only security posture.
+		"network_guard_status": auth.ScopeSecurityRead,
+		"expose_port":          auth.ScopeRoutesWrite,
+		"delete_route":         auth.ScopeRoutesWrite,
 		// collaborators (#1145) — container access control, scoped like any
 		// other container write/read (the RPCs themselves gate on
 		// AuthorizeTenant, same as create/delete container).
@@ -2784,6 +2804,18 @@ func handleListRoutes(client API, args map[string]interface{}) (string, error) {
 		return "", fmt.Errorf("failed to list routes: %w", err)
 	}
 
+	out, err := json.MarshalIndent(resp, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal response: %w", err)
+	}
+	return string(out), nil
+}
+
+func handleNetworkGuardStatus(client API, _ map[string]interface{}) (string, error) {
+	resp, err := client.GetNetworkGuardStatus()
+	if err != nil {
+		return "", fmt.Errorf("failed to read network guard status: %w", err)
+	}
 	out, err := json.MarshalIndent(resp, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal response: %w", err)
