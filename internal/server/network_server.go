@@ -11,9 +11,11 @@ import (
 
 	"github.com/footprintai/containarium/internal/app"
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/coreguard"
 	"github.com/footprintai/containarium/internal/egressproxy"
 	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/safecast"
+	"github.com/footprintai/containarium/internal/tenantguard"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/footprintai/containarium/pkg/core/network"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -36,6 +38,8 @@ type NetworkServer struct {
 	emitter            *events.Emitter
 	egressMgr          *egressproxy.Manager             // egress-via-client relays, keyed by box (#808)
 	anonGuard          func(containerName string) error // #2200: refuses routes to unclaimed anonymous boxes; nil = no check
+	coreGuard          *coreguard.Reconciler            // #2084: reported by GetNetworkGuardStatus; nil = no incus here
+	tenantGuard        *tenantguard.Reconciler          // #2347: same
 }
 
 // resolveFullDomain determines the full domain from a user-provided domain string.

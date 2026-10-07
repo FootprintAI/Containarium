@@ -259,6 +259,59 @@ func (ACLPreset) EnumDescriptor() ([]byte, []int) {
 	return file_containarium_v1_network_proto_rawDescGZIP(), []int{3}
 }
 
+// GuardMode is a NIC-ACL guard's arming state (internal/nicguard). There
+// is no audit mode: an Incus NIC ACL either drops or it doesn't.
+type GuardMode int32
+
+const (
+	GuardMode_GUARD_MODE_UNSPECIFIED GuardMode = 0
+	// The guard is disabled on this host (CONTAINARIUM_*_GUARD=off).
+	GuardMode_GUARD_MODE_OFF GuardMode = 1
+	// The guard attaches ACLs and they drop (the default).
+	GuardMode_GUARD_MODE_ENFORCE GuardMode = 2
+)
+
+// Enum value maps for GuardMode.
+var (
+	GuardMode_name = map[int32]string{
+		0: "GUARD_MODE_UNSPECIFIED",
+		1: "GUARD_MODE_OFF",
+		2: "GUARD_MODE_ENFORCE",
+	}
+	GuardMode_value = map[string]int32{
+		"GUARD_MODE_UNSPECIFIED": 0,
+		"GUARD_MODE_OFF":         1,
+		"GUARD_MODE_ENFORCE":     2,
+	}
+)
+
+func (x GuardMode) Enum() *GuardMode {
+	p := new(GuardMode)
+	*p = x
+	return p
+}
+
+func (x GuardMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (GuardMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_network_proto_enumTypes[4].Descriptor()
+}
+
+func (GuardMode) Type() protoreflect.EnumType {
+	return &file_containarium_v1_network_proto_enumTypes[4]
+}
+
+func (x GuardMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use GuardMode.Descriptor instead.
+func (GuardMode) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{4}
+}
+
 // ACLRule represents a single firewall rule
 type ACLRule struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -2592,6 +2645,304 @@ func (x *ListACLPresetsResponse) GetPresets() []*ACLPresetInfo {
 	return nil
 }
 
+// GuardEntry is one guarded subject (a core-role or tenant container) as of
+// the guard's last pass.
+type GuardEntry struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Container string                 `protobuf:"bytes,1,opt,name=container,proto3" json:"container,omitempty"`
+	// Role for the core guard (e.g. core-postgres); tenant for the tenant guard.
+	Subject       string `protobuf:"bytes,2,opt,name=subject,proto3" json:"subject,omitempty"`
+	Ip            string `protobuf:"bytes,3,opt,name=ip,proto3" json:"ip,omitempty"`
+	AclName       string `protobuf:"bytes,4,opt,name=acl_name,json=aclName,proto3" json:"acl_name,omitempty"`
+	Attached      bool   `protobuf:"varint,5,opt,name=attached,proto3" json:"attached,omitempty"`
+	LastError     string `protobuf:"bytes,6,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GuardEntry) Reset() {
+	*x = GuardEntry{}
+	mi := &file_containarium_v1_network_proto_msgTypes[35]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GuardEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GuardEntry) ProtoMessage() {}
+
+func (x *GuardEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_network_proto_msgTypes[35]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GuardEntry.ProtoReflect.Descriptor instead.
+func (*GuardEntry) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{35}
+}
+
+func (x *GuardEntry) GetContainer() string {
+	if x != nil {
+		return x.Container
+	}
+	return ""
+}
+
+func (x *GuardEntry) GetSubject() string {
+	if x != nil {
+		return x.Subject
+	}
+	return ""
+}
+
+func (x *GuardEntry) GetIp() string {
+	if x != nil {
+		return x.Ip
+	}
+	return ""
+}
+
+func (x *GuardEntry) GetAclName() string {
+	if x != nil {
+		return x.AclName
+	}
+	return ""
+}
+
+func (x *GuardEntry) GetAttached() bool {
+	if x != nil {
+		return x.Attached
+	}
+	return false
+}
+
+func (x *GuardEntry) GetLastError() string {
+	if x != nil {
+		return x.LastError
+	}
+	return ""
+}
+
+// GuardStatus is one guard's last-pass snapshot.
+type GuardStatus struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Mode  GuardMode              `protobuf:"varint,1,opt,name=mode,proto3,enum=containarium.v1.GuardMode" json:"mode,omitempty"`
+	// Incus firewall driver seen on the last pass ("nftables" is required).
+	FirewallDriver string `protobuf:"bytes,2,opt,name=firewall_driver,json=firewallDriver,proto3" json:"firewall_driver,omitempty"`
+	// Unsupported is true when this host cannot carry bridge NIC ACLs at all
+	// (firewall driver, or Incus without network_bridge_acl_devices): nothing
+	// is guarded, creates are not refused, last_error says why.
+	Unsupported bool `protobuf:"varint,3,opt,name=unsupported,proto3" json:"unsupported,omitempty"`
+	// last_pass is the RFC 3339 time of the last pass; empty before the first.
+	LastPass  string `protobuf:"bytes,4,opt,name=last_pass,json=lastPass,proto3" json:"last_pass,omitempty"`
+	LastError string `protobuf:"bytes,5,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`
+	// stale_since is set (RFC 3339) while passes keep failing; the ACLs from
+	// the last good pass stay in force meanwhile.
+	StaleSince string        `protobuf:"bytes,6,opt,name=stale_since,json=staleSince,proto3" json:"stale_since,omitempty"`
+	Entries    []*GuardEntry `protobuf:"bytes,7,rep,name=entries,proto3" json:"entries,omitempty"`
+	// Containers the guard could not attribute (tenant guard) or roles its
+	// table does not know (core guard). Reported, never guessed.
+	Unresolved []string `protobuf:"bytes,8,rep,name=unresolved,proto3" json:"unresolved,omitempty"`
+	// Number of distinct subjects (tenants for the tenant guard).
+	Subjects      int32 `protobuf:"varint,9,opt,name=subjects,proto3" json:"subjects,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GuardStatus) Reset() {
+	*x = GuardStatus{}
+	mi := &file_containarium_v1_network_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GuardStatus) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GuardStatus) ProtoMessage() {}
+
+func (x *GuardStatus) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_network_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GuardStatus.ProtoReflect.Descriptor instead.
+func (*GuardStatus) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *GuardStatus) GetMode() GuardMode {
+	if x != nil {
+		return x.Mode
+	}
+	return GuardMode_GUARD_MODE_UNSPECIFIED
+}
+
+func (x *GuardStatus) GetFirewallDriver() string {
+	if x != nil {
+		return x.FirewallDriver
+	}
+	return ""
+}
+
+func (x *GuardStatus) GetUnsupported() bool {
+	if x != nil {
+		return x.Unsupported
+	}
+	return false
+}
+
+func (x *GuardStatus) GetLastPass() string {
+	if x != nil {
+		return x.LastPass
+	}
+	return ""
+}
+
+func (x *GuardStatus) GetLastError() string {
+	if x != nil {
+		return x.LastError
+	}
+	return ""
+}
+
+func (x *GuardStatus) GetStaleSince() string {
+	if x != nil {
+		return x.StaleSince
+	}
+	return ""
+}
+
+func (x *GuardStatus) GetEntries() []*GuardEntry {
+	if x != nil {
+		return x.Entries
+	}
+	return nil
+}
+
+func (x *GuardStatus) GetUnresolved() []string {
+	if x != nil {
+		return x.Unresolved
+	}
+	return nil
+}
+
+func (x *GuardStatus) GetSubjects() int32 {
+	if x != nil {
+		return x.Subjects
+	}
+	return 0
+}
+
+type GetNetworkGuardStatusRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetNetworkGuardStatusRequest) Reset() {
+	*x = GetNetworkGuardStatusRequest{}
+	mi := &file_containarium_v1_network_proto_msgTypes[37]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetNetworkGuardStatusRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetNetworkGuardStatusRequest) ProtoMessage() {}
+
+func (x *GetNetworkGuardStatusRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_network_proto_msgTypes[37]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetNetworkGuardStatusRequest.ProtoReflect.Descriptor instead.
+func (*GetNetworkGuardStatusRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{37}
+}
+
+// NetworkGuardStatus is the posture of both Incus NIC-ACL guards on this
+// backend (docs/architecture/tenant-network-guard.md).
+type NetworkGuardStatus struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// core keeps tenants off core-role containers (#2084).
+	Core *GuardStatus `protobuf:"bytes,1,opt,name=core,proto3" json:"core,omitempty"`
+	// tenant keeps tenants off each other (#2347).
+	Tenant        *GuardStatus `protobuf:"bytes,2,opt,name=tenant,proto3" json:"tenant,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *NetworkGuardStatus) Reset() {
+	*x = NetworkGuardStatus{}
+	mi := &file_containarium_v1_network_proto_msgTypes[38]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NetworkGuardStatus) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NetworkGuardStatus) ProtoMessage() {}
+
+func (x *NetworkGuardStatus) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_network_proto_msgTypes[38]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NetworkGuardStatus.ProtoReflect.Descriptor instead.
+func (*NetworkGuardStatus) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{38}
+}
+
+func (x *NetworkGuardStatus) GetCore() *GuardStatus {
+	if x != nil {
+		return x.Core
+	}
+	return nil
+}
+
+func (x *NetworkGuardStatus) GetTenant() *GuardStatus {
+	if x != nil {
+		return x.Tenant
+	}
+	return nil
+}
+
 // StartEgressProxyRequest asks the daemon to bridge a host-loopback SOCKS into
 // a box's netns (#808 egress-via-client).
 type StartEgressProxyRequest struct {
@@ -2611,7 +2962,7 @@ type StartEgressProxyRequest struct {
 
 func (x *StartEgressProxyRequest) Reset() {
 	*x = StartEgressProxyRequest{}
-	mi := &file_containarium_v1_network_proto_msgTypes[35]
+	mi := &file_containarium_v1_network_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2623,7 +2974,7 @@ func (x *StartEgressProxyRequest) String() string {
 func (*StartEgressProxyRequest) ProtoMessage() {}
 
 func (x *StartEgressProxyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_network_proto_msgTypes[35]
+	mi := &file_containarium_v1_network_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2636,7 +2987,7 @@ func (x *StartEgressProxyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartEgressProxyRequest.ProtoReflect.Descriptor instead.
 func (*StartEgressProxyRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_network_proto_rawDescGZIP(), []int{35}
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *StartEgressProxyRequest) GetContainerName() string {
@@ -2673,7 +3024,7 @@ type StartEgressProxyResponse struct {
 
 func (x *StartEgressProxyResponse) Reset() {
 	*x = StartEgressProxyResponse{}
-	mi := &file_containarium_v1_network_proto_msgTypes[36]
+	mi := &file_containarium_v1_network_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2685,7 +3036,7 @@ func (x *StartEgressProxyResponse) String() string {
 func (*StartEgressProxyResponse) ProtoMessage() {}
 
 func (x *StartEgressProxyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_network_proto_msgTypes[36]
+	mi := &file_containarium_v1_network_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2698,7 +3049,7 @@ func (x *StartEgressProxyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartEgressProxyResponse.ProtoReflect.Descriptor instead.
 func (*StartEgressProxyResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_network_proto_rawDescGZIP(), []int{36}
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *StartEgressProxyResponse) GetSocksAddress() string {
@@ -2718,7 +3069,7 @@ type StopEgressProxyRequest struct {
 
 func (x *StopEgressProxyRequest) Reset() {
 	*x = StopEgressProxyRequest{}
-	mi := &file_containarium_v1_network_proto_msgTypes[37]
+	mi := &file_containarium_v1_network_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2730,7 +3081,7 @@ func (x *StopEgressProxyRequest) String() string {
 func (*StopEgressProxyRequest) ProtoMessage() {}
 
 func (x *StopEgressProxyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_network_proto_msgTypes[37]
+	mi := &file_containarium_v1_network_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2743,7 +3094,7 @@ func (x *StopEgressProxyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StopEgressProxyRequest.ProtoReflect.Descriptor instead.
 func (*StopEgressProxyRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_network_proto_rawDescGZIP(), []int{37}
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *StopEgressProxyRequest) GetContainerName() string {
@@ -2763,7 +3114,7 @@ type StopEgressProxyResponse struct {
 
 func (x *StopEgressProxyResponse) Reset() {
 	*x = StopEgressProxyResponse{}
-	mi := &file_containarium_v1_network_proto_msgTypes[38]
+	mi := &file_containarium_v1_network_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2775,7 +3126,7 @@ func (x *StopEgressProxyResponse) String() string {
 func (*StopEgressProxyResponse) ProtoMessage() {}
 
 func (x *StopEgressProxyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_network_proto_msgTypes[38]
+	mi := &file_containarium_v1_network_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2788,7 +3139,7 @@ func (x *StopEgressProxyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StopEgressProxyResponse.ProtoReflect.Descriptor instead.
 func (*StopEgressProxyResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_network_proto_rawDescGZIP(), []int{38}
+	return file_containarium_v1_network_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *StopEgressProxyResponse) GetStopped() bool {
@@ -2972,7 +3323,34 @@ const file_containarium_v1_network_proto_rawDesc = "" +
 	"\x15default_ingress_rules\x18\x04 \x03(\v2\x18.containarium.v1.ACLRuleR\x13defaultIngressRules\x12J\n" +
 	"\x14default_egress_rules\x18\x05 \x03(\v2\x18.containarium.v1.ACLRuleR\x12defaultEgressRules\"R\n" +
 	"\x16ListACLPresetsResponse\x128\n" +
-	"\apresets\x18\x01 \x03(\v2\x1e.containarium.v1.ACLPresetInfoR\apresets\"\x84\x01\n" +
+	"\apresets\x18\x01 \x03(\v2\x1e.containarium.v1.ACLPresetInfoR\apresets\"\xaa\x01\n" +
+	"\n" +
+	"GuardEntry\x12\x1c\n" +
+	"\tcontainer\x18\x01 \x01(\tR\tcontainer\x12\x18\n" +
+	"\asubject\x18\x02 \x01(\tR\asubject\x12\x0e\n" +
+	"\x02ip\x18\x03 \x01(\tR\x02ip\x12\x19\n" +
+	"\bacl_name\x18\x04 \x01(\tR\aaclName\x12\x1a\n" +
+	"\battached\x18\x05 \x01(\bR\battached\x12\x1d\n" +
+	"\n" +
+	"last_error\x18\x06 \x01(\tR\tlastError\"\xd8\x02\n" +
+	"\vGuardStatus\x12.\n" +
+	"\x04mode\x18\x01 \x01(\x0e2\x1a.containarium.v1.GuardModeR\x04mode\x12'\n" +
+	"\x0ffirewall_driver\x18\x02 \x01(\tR\x0efirewallDriver\x12 \n" +
+	"\vunsupported\x18\x03 \x01(\bR\vunsupported\x12\x1b\n" +
+	"\tlast_pass\x18\x04 \x01(\tR\blastPass\x12\x1d\n" +
+	"\n" +
+	"last_error\x18\x05 \x01(\tR\tlastError\x12\x1f\n" +
+	"\vstale_since\x18\x06 \x01(\tR\n" +
+	"staleSince\x125\n" +
+	"\aentries\x18\a \x03(\v2\x1b.containarium.v1.GuardEntryR\aentries\x12\x1e\n" +
+	"\n" +
+	"unresolved\x18\b \x03(\tR\n" +
+	"unresolved\x12\x1a\n" +
+	"\bsubjects\x18\t \x01(\x05R\bsubjects\"\x1e\n" +
+	"\x1cGetNetworkGuardStatusRequest\"|\n" +
+	"\x12NetworkGuardStatus\x120\n" +
+	"\x04core\x18\x01 \x01(\v2\x1c.containarium.v1.GuardStatusR\x04core\x124\n" +
+	"\x06tenant\x18\x02 \x01(\v2\x1c.containarium.v1.GuardStatusR\x06tenant\"\x84\x01\n" +
 	"\x17StartEgressProxyRequest\x12%\n" +
 	"\x0econtainer_name\x18\x01 \x01(\tR\rcontainerName\x12#\n" +
 	"\rupstream_port\x18\x02 \x01(\x05R\fupstreamPort\x12\x1d\n" +
@@ -3005,8 +3383,14 @@ const file_containarium_v1_network_proto_rawDesc = "" +
 	"\x19ACL_PRESET_FULL_ISOLATION\x10\x01\x12\x18\n" +
 	"\x14ACL_PRESET_HTTP_ONLY\x10\x02\x12\x19\n" +
 	"\x15ACL_PRESET_PERMISSIVE\x10\x03\x12\x15\n" +
-	"\x11ACL_PRESET_CUSTOM\x10\x042\xe9 \n" +
-	"\x0eNetworkService\x12\xdd\x01\n" +
+	"\x11ACL_PRESET_CUSTOM\x10\x04*S\n" +
+	"\tGuardMode\x12\x1a\n" +
+	"\x16GUARD_MODE_UNSPECIFIED\x10\x00\x12\x12\n" +
+	"\x0eGUARD_MODE_OFF\x10\x01\x12\x16\n" +
+	"\x12GUARD_MODE_ENFORCE\x10\x022\x82$\n" +
+	"\x0eNetworkService\x12\x96\x03\n" +
+	"\x15GetNetworkGuardStatus\x12-.containarium.v1.GetNetworkGuardStatusRequest\x1a#.containarium.v1.NetworkGuardStatus\"\xa8\x02\x92A\x8b\x02\n" +
+	"\aNetwork\x12\x14Network guard status\x1a\xe9\x01Reports the core-infra guard (#2084) and the tenant guard (#2347): arming mode, Incus firewall driver, whether this host can carry bridge NIC ACLs at all, the last pass time and error, and one entry per guarded container. Admin only.\x82\xd3\xe4\x93\x02\x13\x12\x11/v1/network/guard\x12\xdd\x01\n" +
 	"\tGetRoutes\x12!.containarium.v1.GetRoutesRequest\x1a\".containarium.v1.GetRoutesResponse\"\x88\x01\x92Ak\n" +
 	"\aNetwork\x12\x11List proxy routes\x1aMReturns all DNS/domain to container mappings configured in the reverse proxy.\x82\xd3\xe4\x93\x02\x14\x12\x12/v1/network/routes\x12\xd0\x01\n" +
 	"\bAddRoute\x12 .containarium.v1.AddRouteRequest\x1a!.containarium.v1.AddRouteResponse\"\x7f\x92A_\n" +
@@ -3050,119 +3434,130 @@ func file_containarium_v1_network_proto_rawDescGZIP() []byte {
 	return file_containarium_v1_network_proto_rawDescData
 }
 
-var file_containarium_v1_network_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_containarium_v1_network_proto_msgTypes = make([]protoimpl.MessageInfo, 39)
+var file_containarium_v1_network_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
+var file_containarium_v1_network_proto_msgTypes = make([]protoimpl.MessageInfo, 43)
 var file_containarium_v1_network_proto_goTypes = []any{
 	(RouteType)(0),                         // 0: containarium.v1.RouteType
 	(RouteProtocol)(0),                     // 1: containarium.v1.RouteProtocol
 	(ACLAction)(0),                         // 2: containarium.v1.ACLAction
 	(ACLPreset)(0),                         // 3: containarium.v1.ACLPreset
-	(*ACLRule)(nil),                        // 4: containarium.v1.ACLRule
-	(*NetworkACL)(nil),                     // 5: containarium.v1.NetworkACL
-	(*ProxyRoute)(nil),                     // 6: containarium.v1.ProxyRoute
-	(*PassthroughRoute)(nil),               // 7: containarium.v1.PassthroughRoute
-	(*NetworkNode)(nil),                    // 8: containarium.v1.NetworkNode
-	(*NetworkEdge)(nil),                    // 9: containarium.v1.NetworkEdge
-	(*NetworkTopology)(nil),                // 10: containarium.v1.NetworkTopology
-	(*GetRoutesRequest)(nil),               // 11: containarium.v1.GetRoutesRequest
-	(*GetRoutesResponse)(nil),              // 12: containarium.v1.GetRoutesResponse
-	(*AddRouteRequest)(nil),                // 13: containarium.v1.AddRouteRequest
-	(*AddRouteResponse)(nil),               // 14: containarium.v1.AddRouteResponse
-	(*UpdateRouteRequest)(nil),             // 15: containarium.v1.UpdateRouteRequest
-	(*UpdateRouteResponse)(nil),            // 16: containarium.v1.UpdateRouteResponse
-	(*DeleteRouteRequest)(nil),             // 17: containarium.v1.DeleteRouteRequest
-	(*DeleteRouteResponse)(nil),            // 18: containarium.v1.DeleteRouteResponse
-	(*ListPassthroughRoutesRequest)(nil),   // 19: containarium.v1.ListPassthroughRoutesRequest
-	(*ListPassthroughRoutesResponse)(nil),  // 20: containarium.v1.ListPassthroughRoutesResponse
-	(*AddPassthroughRouteRequest)(nil),     // 21: containarium.v1.AddPassthroughRouteRequest
-	(*AddPassthroughRouteResponse)(nil),    // 22: containarium.v1.AddPassthroughRouteResponse
-	(*DeletePassthroughRouteRequest)(nil),  // 23: containarium.v1.DeletePassthroughRouteRequest
-	(*DeletePassthroughRouteResponse)(nil), // 24: containarium.v1.DeletePassthroughRouteResponse
-	(*UpdatePassthroughRouteRequest)(nil),  // 25: containarium.v1.UpdatePassthroughRouteRequest
-	(*UpdatePassthroughRouteResponse)(nil), // 26: containarium.v1.UpdatePassthroughRouteResponse
-	(*DNSRecord)(nil),                      // 27: containarium.v1.DNSRecord
-	(*ListDNSRecordsRequest)(nil),          // 28: containarium.v1.ListDNSRecordsRequest
-	(*ListDNSRecordsResponse)(nil),         // 29: containarium.v1.ListDNSRecordsResponse
-	(*GetContainerACLRequest)(nil),         // 30: containarium.v1.GetContainerACLRequest
-	(*GetContainerACLResponse)(nil),        // 31: containarium.v1.GetContainerACLResponse
-	(*UpdateContainerACLRequest)(nil),      // 32: containarium.v1.UpdateContainerACLRequest
-	(*UpdateContainerACLResponse)(nil),     // 33: containarium.v1.UpdateContainerACLResponse
-	(*GetNetworkTopologyRequest)(nil),      // 34: containarium.v1.GetNetworkTopologyRequest
-	(*GetNetworkTopologyResponse)(nil),     // 35: containarium.v1.GetNetworkTopologyResponse
-	(*ListACLPresetsRequest)(nil),          // 36: containarium.v1.ListACLPresetsRequest
-	(*ACLPresetInfo)(nil),                  // 37: containarium.v1.ACLPresetInfo
-	(*ListACLPresetsResponse)(nil),         // 38: containarium.v1.ListACLPresetsResponse
-	(*StartEgressProxyRequest)(nil),        // 39: containarium.v1.StartEgressProxyRequest
-	(*StartEgressProxyResponse)(nil),       // 40: containarium.v1.StartEgressProxyResponse
-	(*StopEgressProxyRequest)(nil),         // 41: containarium.v1.StopEgressProxyRequest
-	(*StopEgressProxyResponse)(nil),        // 42: containarium.v1.StopEgressProxyResponse
+	(GuardMode)(0),                         // 4: containarium.v1.GuardMode
+	(*ACLRule)(nil),                        // 5: containarium.v1.ACLRule
+	(*NetworkACL)(nil),                     // 6: containarium.v1.NetworkACL
+	(*ProxyRoute)(nil),                     // 7: containarium.v1.ProxyRoute
+	(*PassthroughRoute)(nil),               // 8: containarium.v1.PassthroughRoute
+	(*NetworkNode)(nil),                    // 9: containarium.v1.NetworkNode
+	(*NetworkEdge)(nil),                    // 10: containarium.v1.NetworkEdge
+	(*NetworkTopology)(nil),                // 11: containarium.v1.NetworkTopology
+	(*GetRoutesRequest)(nil),               // 12: containarium.v1.GetRoutesRequest
+	(*GetRoutesResponse)(nil),              // 13: containarium.v1.GetRoutesResponse
+	(*AddRouteRequest)(nil),                // 14: containarium.v1.AddRouteRequest
+	(*AddRouteResponse)(nil),               // 15: containarium.v1.AddRouteResponse
+	(*UpdateRouteRequest)(nil),             // 16: containarium.v1.UpdateRouteRequest
+	(*UpdateRouteResponse)(nil),            // 17: containarium.v1.UpdateRouteResponse
+	(*DeleteRouteRequest)(nil),             // 18: containarium.v1.DeleteRouteRequest
+	(*DeleteRouteResponse)(nil),            // 19: containarium.v1.DeleteRouteResponse
+	(*ListPassthroughRoutesRequest)(nil),   // 20: containarium.v1.ListPassthroughRoutesRequest
+	(*ListPassthroughRoutesResponse)(nil),  // 21: containarium.v1.ListPassthroughRoutesResponse
+	(*AddPassthroughRouteRequest)(nil),     // 22: containarium.v1.AddPassthroughRouteRequest
+	(*AddPassthroughRouteResponse)(nil),    // 23: containarium.v1.AddPassthroughRouteResponse
+	(*DeletePassthroughRouteRequest)(nil),  // 24: containarium.v1.DeletePassthroughRouteRequest
+	(*DeletePassthroughRouteResponse)(nil), // 25: containarium.v1.DeletePassthroughRouteResponse
+	(*UpdatePassthroughRouteRequest)(nil),  // 26: containarium.v1.UpdatePassthroughRouteRequest
+	(*UpdatePassthroughRouteResponse)(nil), // 27: containarium.v1.UpdatePassthroughRouteResponse
+	(*DNSRecord)(nil),                      // 28: containarium.v1.DNSRecord
+	(*ListDNSRecordsRequest)(nil),          // 29: containarium.v1.ListDNSRecordsRequest
+	(*ListDNSRecordsResponse)(nil),         // 30: containarium.v1.ListDNSRecordsResponse
+	(*GetContainerACLRequest)(nil),         // 31: containarium.v1.GetContainerACLRequest
+	(*GetContainerACLResponse)(nil),        // 32: containarium.v1.GetContainerACLResponse
+	(*UpdateContainerACLRequest)(nil),      // 33: containarium.v1.UpdateContainerACLRequest
+	(*UpdateContainerACLResponse)(nil),     // 34: containarium.v1.UpdateContainerACLResponse
+	(*GetNetworkTopologyRequest)(nil),      // 35: containarium.v1.GetNetworkTopologyRequest
+	(*GetNetworkTopologyResponse)(nil),     // 36: containarium.v1.GetNetworkTopologyResponse
+	(*ListACLPresetsRequest)(nil),          // 37: containarium.v1.ListACLPresetsRequest
+	(*ACLPresetInfo)(nil),                  // 38: containarium.v1.ACLPresetInfo
+	(*ListACLPresetsResponse)(nil),         // 39: containarium.v1.ListACLPresetsResponse
+	(*GuardEntry)(nil),                     // 40: containarium.v1.GuardEntry
+	(*GuardStatus)(nil),                    // 41: containarium.v1.GuardStatus
+	(*GetNetworkGuardStatusRequest)(nil),   // 42: containarium.v1.GetNetworkGuardStatusRequest
+	(*NetworkGuardStatus)(nil),             // 43: containarium.v1.NetworkGuardStatus
+	(*StartEgressProxyRequest)(nil),        // 44: containarium.v1.StartEgressProxyRequest
+	(*StartEgressProxyResponse)(nil),       // 45: containarium.v1.StartEgressProxyResponse
+	(*StopEgressProxyRequest)(nil),         // 46: containarium.v1.StopEgressProxyRequest
+	(*StopEgressProxyResponse)(nil),        // 47: containarium.v1.StopEgressProxyResponse
 }
 var file_containarium_v1_network_proto_depIdxs = []int32{
 	2,  // 0: containarium.v1.ACLRule.action:type_name -> containarium.v1.ACLAction
 	3,  // 1: containarium.v1.NetworkACL.preset:type_name -> containarium.v1.ACLPreset
-	4,  // 2: containarium.v1.NetworkACL.ingress_rules:type_name -> containarium.v1.ACLRule
-	4,  // 3: containarium.v1.NetworkACL.egress_rules:type_name -> containarium.v1.ACLRule
+	5,  // 2: containarium.v1.NetworkACL.ingress_rules:type_name -> containarium.v1.ACLRule
+	5,  // 3: containarium.v1.NetworkACL.egress_rules:type_name -> containarium.v1.ACLRule
 	1,  // 4: containarium.v1.ProxyRoute.protocol:type_name -> containarium.v1.RouteProtocol
 	1,  // 5: containarium.v1.PassthroughRoute.protocol:type_name -> containarium.v1.RouteProtocol
-	8,  // 6: containarium.v1.NetworkTopology.nodes:type_name -> containarium.v1.NetworkNode
-	9,  // 7: containarium.v1.NetworkTopology.edges:type_name -> containarium.v1.NetworkEdge
-	6,  // 8: containarium.v1.GetRoutesResponse.routes:type_name -> containarium.v1.ProxyRoute
+	9,  // 6: containarium.v1.NetworkTopology.nodes:type_name -> containarium.v1.NetworkNode
+	10, // 7: containarium.v1.NetworkTopology.edges:type_name -> containarium.v1.NetworkEdge
+	7,  // 8: containarium.v1.GetRoutesResponse.routes:type_name -> containarium.v1.ProxyRoute
 	1,  // 9: containarium.v1.AddRouteRequest.protocol:type_name -> containarium.v1.RouteProtocol
-	6,  // 10: containarium.v1.AddRouteResponse.route:type_name -> containarium.v1.ProxyRoute
+	7,  // 10: containarium.v1.AddRouteResponse.route:type_name -> containarium.v1.ProxyRoute
 	1,  // 11: containarium.v1.UpdateRouteRequest.protocol:type_name -> containarium.v1.RouteProtocol
-	6,  // 12: containarium.v1.UpdateRouteResponse.route:type_name -> containarium.v1.ProxyRoute
-	7,  // 13: containarium.v1.ListPassthroughRoutesResponse.routes:type_name -> containarium.v1.PassthroughRoute
+	7,  // 12: containarium.v1.UpdateRouteResponse.route:type_name -> containarium.v1.ProxyRoute
+	8,  // 13: containarium.v1.ListPassthroughRoutesResponse.routes:type_name -> containarium.v1.PassthroughRoute
 	1,  // 14: containarium.v1.AddPassthroughRouteRequest.protocol:type_name -> containarium.v1.RouteProtocol
-	7,  // 15: containarium.v1.AddPassthroughRouteResponse.route:type_name -> containarium.v1.PassthroughRoute
+	8,  // 15: containarium.v1.AddPassthroughRouteResponse.route:type_name -> containarium.v1.PassthroughRoute
 	1,  // 16: containarium.v1.DeletePassthroughRouteRequest.protocol:type_name -> containarium.v1.RouteProtocol
 	1,  // 17: containarium.v1.UpdatePassthroughRouteRequest.protocol:type_name -> containarium.v1.RouteProtocol
-	7,  // 18: containarium.v1.UpdatePassthroughRouteResponse.route:type_name -> containarium.v1.PassthroughRoute
-	27, // 19: containarium.v1.ListDNSRecordsResponse.records:type_name -> containarium.v1.DNSRecord
-	5,  // 20: containarium.v1.GetContainerACLResponse.acl:type_name -> containarium.v1.NetworkACL
+	8,  // 18: containarium.v1.UpdatePassthroughRouteResponse.route:type_name -> containarium.v1.PassthroughRoute
+	28, // 19: containarium.v1.ListDNSRecordsResponse.records:type_name -> containarium.v1.DNSRecord
+	6,  // 20: containarium.v1.GetContainerACLResponse.acl:type_name -> containarium.v1.NetworkACL
 	3,  // 21: containarium.v1.UpdateContainerACLRequest.preset:type_name -> containarium.v1.ACLPreset
-	4,  // 22: containarium.v1.UpdateContainerACLRequest.ingress_rules:type_name -> containarium.v1.ACLRule
-	4,  // 23: containarium.v1.UpdateContainerACLRequest.egress_rules:type_name -> containarium.v1.ACLRule
-	5,  // 24: containarium.v1.UpdateContainerACLResponse.acl:type_name -> containarium.v1.NetworkACL
-	10, // 25: containarium.v1.GetNetworkTopologyResponse.topology:type_name -> containarium.v1.NetworkTopology
+	5,  // 22: containarium.v1.UpdateContainerACLRequest.ingress_rules:type_name -> containarium.v1.ACLRule
+	5,  // 23: containarium.v1.UpdateContainerACLRequest.egress_rules:type_name -> containarium.v1.ACLRule
+	6,  // 24: containarium.v1.UpdateContainerACLResponse.acl:type_name -> containarium.v1.NetworkACL
+	11, // 25: containarium.v1.GetNetworkTopologyResponse.topology:type_name -> containarium.v1.NetworkTopology
 	3,  // 26: containarium.v1.ACLPresetInfo.preset:type_name -> containarium.v1.ACLPreset
-	4,  // 27: containarium.v1.ACLPresetInfo.default_ingress_rules:type_name -> containarium.v1.ACLRule
-	4,  // 28: containarium.v1.ACLPresetInfo.default_egress_rules:type_name -> containarium.v1.ACLRule
-	37, // 29: containarium.v1.ListACLPresetsResponse.presets:type_name -> containarium.v1.ACLPresetInfo
-	11, // 30: containarium.v1.NetworkService.GetRoutes:input_type -> containarium.v1.GetRoutesRequest
-	13, // 31: containarium.v1.NetworkService.AddRoute:input_type -> containarium.v1.AddRouteRequest
-	15, // 32: containarium.v1.NetworkService.UpdateRoute:input_type -> containarium.v1.UpdateRouteRequest
-	17, // 33: containarium.v1.NetworkService.DeleteRoute:input_type -> containarium.v1.DeleteRouteRequest
-	28, // 34: containarium.v1.NetworkService.ListDNSRecords:input_type -> containarium.v1.ListDNSRecordsRequest
-	19, // 35: containarium.v1.NetworkService.ListPassthroughRoutes:input_type -> containarium.v1.ListPassthroughRoutesRequest
-	21, // 36: containarium.v1.NetworkService.AddPassthroughRoute:input_type -> containarium.v1.AddPassthroughRouteRequest
-	23, // 37: containarium.v1.NetworkService.DeletePassthroughRoute:input_type -> containarium.v1.DeletePassthroughRouteRequest
-	25, // 38: containarium.v1.NetworkService.UpdatePassthroughRoute:input_type -> containarium.v1.UpdatePassthroughRouteRequest
-	30, // 39: containarium.v1.NetworkService.GetContainerACL:input_type -> containarium.v1.GetContainerACLRequest
-	32, // 40: containarium.v1.NetworkService.UpdateContainerACL:input_type -> containarium.v1.UpdateContainerACLRequest
-	34, // 41: containarium.v1.NetworkService.GetNetworkTopology:input_type -> containarium.v1.GetNetworkTopologyRequest
-	36, // 42: containarium.v1.NetworkService.ListACLPresets:input_type -> containarium.v1.ListACLPresetsRequest
-	39, // 43: containarium.v1.NetworkService.StartEgressProxy:input_type -> containarium.v1.StartEgressProxyRequest
-	41, // 44: containarium.v1.NetworkService.StopEgressProxy:input_type -> containarium.v1.StopEgressProxyRequest
-	12, // 45: containarium.v1.NetworkService.GetRoutes:output_type -> containarium.v1.GetRoutesResponse
-	14, // 46: containarium.v1.NetworkService.AddRoute:output_type -> containarium.v1.AddRouteResponse
-	16, // 47: containarium.v1.NetworkService.UpdateRoute:output_type -> containarium.v1.UpdateRouteResponse
-	18, // 48: containarium.v1.NetworkService.DeleteRoute:output_type -> containarium.v1.DeleteRouteResponse
-	29, // 49: containarium.v1.NetworkService.ListDNSRecords:output_type -> containarium.v1.ListDNSRecordsResponse
-	20, // 50: containarium.v1.NetworkService.ListPassthroughRoutes:output_type -> containarium.v1.ListPassthroughRoutesResponse
-	22, // 51: containarium.v1.NetworkService.AddPassthroughRoute:output_type -> containarium.v1.AddPassthroughRouteResponse
-	24, // 52: containarium.v1.NetworkService.DeletePassthroughRoute:output_type -> containarium.v1.DeletePassthroughRouteResponse
-	26, // 53: containarium.v1.NetworkService.UpdatePassthroughRoute:output_type -> containarium.v1.UpdatePassthroughRouteResponse
-	31, // 54: containarium.v1.NetworkService.GetContainerACL:output_type -> containarium.v1.GetContainerACLResponse
-	33, // 55: containarium.v1.NetworkService.UpdateContainerACL:output_type -> containarium.v1.UpdateContainerACLResponse
-	35, // 56: containarium.v1.NetworkService.GetNetworkTopology:output_type -> containarium.v1.GetNetworkTopologyResponse
-	38, // 57: containarium.v1.NetworkService.ListACLPresets:output_type -> containarium.v1.ListACLPresetsResponse
-	40, // 58: containarium.v1.NetworkService.StartEgressProxy:output_type -> containarium.v1.StartEgressProxyResponse
-	42, // 59: containarium.v1.NetworkService.StopEgressProxy:output_type -> containarium.v1.StopEgressProxyResponse
-	45, // [45:60] is the sub-list for method output_type
-	30, // [30:45] is the sub-list for method input_type
-	30, // [30:30] is the sub-list for extension type_name
-	30, // [30:30] is the sub-list for extension extendee
-	0,  // [0:30] is the sub-list for field type_name
+	5,  // 27: containarium.v1.ACLPresetInfo.default_ingress_rules:type_name -> containarium.v1.ACLRule
+	5,  // 28: containarium.v1.ACLPresetInfo.default_egress_rules:type_name -> containarium.v1.ACLRule
+	38, // 29: containarium.v1.ListACLPresetsResponse.presets:type_name -> containarium.v1.ACLPresetInfo
+	4,  // 30: containarium.v1.GuardStatus.mode:type_name -> containarium.v1.GuardMode
+	40, // 31: containarium.v1.GuardStatus.entries:type_name -> containarium.v1.GuardEntry
+	41, // 32: containarium.v1.NetworkGuardStatus.core:type_name -> containarium.v1.GuardStatus
+	41, // 33: containarium.v1.NetworkGuardStatus.tenant:type_name -> containarium.v1.GuardStatus
+	42, // 34: containarium.v1.NetworkService.GetNetworkGuardStatus:input_type -> containarium.v1.GetNetworkGuardStatusRequest
+	12, // 35: containarium.v1.NetworkService.GetRoutes:input_type -> containarium.v1.GetRoutesRequest
+	14, // 36: containarium.v1.NetworkService.AddRoute:input_type -> containarium.v1.AddRouteRequest
+	16, // 37: containarium.v1.NetworkService.UpdateRoute:input_type -> containarium.v1.UpdateRouteRequest
+	18, // 38: containarium.v1.NetworkService.DeleteRoute:input_type -> containarium.v1.DeleteRouteRequest
+	29, // 39: containarium.v1.NetworkService.ListDNSRecords:input_type -> containarium.v1.ListDNSRecordsRequest
+	20, // 40: containarium.v1.NetworkService.ListPassthroughRoutes:input_type -> containarium.v1.ListPassthroughRoutesRequest
+	22, // 41: containarium.v1.NetworkService.AddPassthroughRoute:input_type -> containarium.v1.AddPassthroughRouteRequest
+	24, // 42: containarium.v1.NetworkService.DeletePassthroughRoute:input_type -> containarium.v1.DeletePassthroughRouteRequest
+	26, // 43: containarium.v1.NetworkService.UpdatePassthroughRoute:input_type -> containarium.v1.UpdatePassthroughRouteRequest
+	31, // 44: containarium.v1.NetworkService.GetContainerACL:input_type -> containarium.v1.GetContainerACLRequest
+	33, // 45: containarium.v1.NetworkService.UpdateContainerACL:input_type -> containarium.v1.UpdateContainerACLRequest
+	35, // 46: containarium.v1.NetworkService.GetNetworkTopology:input_type -> containarium.v1.GetNetworkTopologyRequest
+	37, // 47: containarium.v1.NetworkService.ListACLPresets:input_type -> containarium.v1.ListACLPresetsRequest
+	44, // 48: containarium.v1.NetworkService.StartEgressProxy:input_type -> containarium.v1.StartEgressProxyRequest
+	46, // 49: containarium.v1.NetworkService.StopEgressProxy:input_type -> containarium.v1.StopEgressProxyRequest
+	43, // 50: containarium.v1.NetworkService.GetNetworkGuardStatus:output_type -> containarium.v1.NetworkGuardStatus
+	13, // 51: containarium.v1.NetworkService.GetRoutes:output_type -> containarium.v1.GetRoutesResponse
+	15, // 52: containarium.v1.NetworkService.AddRoute:output_type -> containarium.v1.AddRouteResponse
+	17, // 53: containarium.v1.NetworkService.UpdateRoute:output_type -> containarium.v1.UpdateRouteResponse
+	19, // 54: containarium.v1.NetworkService.DeleteRoute:output_type -> containarium.v1.DeleteRouteResponse
+	30, // 55: containarium.v1.NetworkService.ListDNSRecords:output_type -> containarium.v1.ListDNSRecordsResponse
+	21, // 56: containarium.v1.NetworkService.ListPassthroughRoutes:output_type -> containarium.v1.ListPassthroughRoutesResponse
+	23, // 57: containarium.v1.NetworkService.AddPassthroughRoute:output_type -> containarium.v1.AddPassthroughRouteResponse
+	25, // 58: containarium.v1.NetworkService.DeletePassthroughRoute:output_type -> containarium.v1.DeletePassthroughRouteResponse
+	27, // 59: containarium.v1.NetworkService.UpdatePassthroughRoute:output_type -> containarium.v1.UpdatePassthroughRouteResponse
+	32, // 60: containarium.v1.NetworkService.GetContainerACL:output_type -> containarium.v1.GetContainerACLResponse
+	34, // 61: containarium.v1.NetworkService.UpdateContainerACL:output_type -> containarium.v1.UpdateContainerACLResponse
+	36, // 62: containarium.v1.NetworkService.GetNetworkTopology:output_type -> containarium.v1.GetNetworkTopologyResponse
+	39, // 63: containarium.v1.NetworkService.ListACLPresets:output_type -> containarium.v1.ListACLPresetsResponse
+	45, // 64: containarium.v1.NetworkService.StartEgressProxy:output_type -> containarium.v1.StartEgressProxyResponse
+	47, // 65: containarium.v1.NetworkService.StopEgressProxy:output_type -> containarium.v1.StopEgressProxyResponse
+	50, // [50:66] is the sub-list for method output_type
+	34, // [34:50] is the sub-list for method input_type
+	34, // [34:34] is the sub-list for extension type_name
+	34, // [34:34] is the sub-list for extension extendee
+	0,  // [0:34] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_network_proto_init() }
@@ -3177,8 +3572,8 @@ func file_containarium_v1_network_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_network_proto_rawDesc), len(file_containarium_v1_network_proto_rawDesc)),
-			NumEnums:      4,
-			NumMessages:   39,
+			NumEnums:      5,
+			NumMessages:   43,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

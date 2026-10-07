@@ -1970,6 +1970,9 @@ skipAppHosting:
 			mgr.SetNICGuard(tenantGuard)
 		}
 	}
+	if networkServer != nil {
+		networkServer.SetGuards(coreGuard, tenantGuard)
+	}
 
 	// AnonymousBoxService (#2197): the daemon side of the `ssh new.<domain>`
 	// door. Opt-in — only the dedicated pool=anon backend runs it — and only
