@@ -200,6 +200,7 @@ func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, 
 		SSHHost:      container.SshHost,
 		State:        container.State.String(),
 		InstanceType: ostype.InstanceTypeFromIsolation(container.Isolation),
+		Labels:       container.Labels, // what the daemon stored, incl. --labels (#2358)
 	}
 
 	if container.Network != nil {
@@ -563,6 +564,7 @@ func (c *GRPCClient) GetContainer(username string) (*incus.ContainerInfo, error)
 		MonitoringEnabled:    container.MonitoringEnabled,
 		AutoSleepEnabled:     container.AutoSleepEnabled,
 		IdleThresholdMinutes: container.IdleThresholdMinutes,
+		Labels:               container.Labels,
 	}
 
 	if container.Network != nil {
