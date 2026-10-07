@@ -2214,7 +2214,11 @@ type UpdateContainerACLRequest struct {
 	Username string `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"`
 	// Use a preset (mutually exclusive with custom rules)
 	Preset ACLPreset `protobuf:"varint,2,opt,name=preset,proto3,enum=containarium.v1.ACLPreset" json:"preset,omitempty"`
-	// Custom ingress rules (only if preset is CUSTOM)
+	// Custom ingress rules. No longer accepted (#2359): tenant ingress is owned
+	// by the tenant network guard, and a per-container allow would be evaluated
+	// next to it and could re-open what it closed. A request carrying any is
+	// refused with INVALID_ARGUMENT; to admit another tenant use
+	// NetworkPolicy.allow_from_tenants. Presets apply their egress half only.
 	IngressRules []*ACLRule `protobuf:"bytes,3,rep,name=ingress_rules,json=ingressRules,proto3" json:"ingress_rules,omitempty"`
 	// Custom egress rules (only if preset is CUSTOM)
 	EgressRules   []*ACLRule `protobuf:"bytes,4,rep,name=egress_rules,json=egressRules,proto3" json:"egress_rules,omitempty"`

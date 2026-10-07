@@ -14,6 +14,7 @@ import (
 
 	"github.com/footprintai/containarium/internal/nicguard"
 	"github.com/footprintai/containarium/pkg/core/incus"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // fakeBackend is the smallest incus.Backend the reconciler needs, with
@@ -646,5 +647,35 @@ func TestReconcile_OffBridgeAddressDoesNotPoisonThePass(t *testing.T) {
 	st := r.Status()
 	if st.LastError != "" {
 		t.Errorf("unexpected pass error: %s", st.LastError)
+	}
+}
+
+// allow_from_tenants read from the policy store reaches the ACLs (#2359);
+// a failed policy read fails the pass instead of silently closing doors.
+func TestReconcile_AllowFromTenantsFromPolicyStore(t *testing.T) {
+	f := twoTenantHost()
+	cfg := enforceCfg()
+	cfg.Policies = PolicySourceFunc(func(context.Context) ([]*pb.NetworkPolicy, error) {
+		return []*pb.NetworkPolicy{{Tenant: "alice", AllowFromTenants: []string{"bob"}}}, nil
+	})
+	r := NewReconciler(f, cfg)
+	if err := r.ReconcileOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !srcSet(f.acls[ACLName("alice")])["10.100.0.33/32"] {
+		t.Errorf("alice's ACL must admit bob's box: %v", srcSet(f.acls[ACLName("alice")]))
+	}
+	if srcSet(f.acls[ACLName("bob")])["10.100.0.17/32"] {
+		t.Error("bob's ACL must not admit alice (one-directional)")
+	}
+
+	f = twoTenantHost()
+	cfg.Policies = PolicySourceFunc(func(context.Context) ([]*pb.NetworkPolicy, error) { return nil, errors.New("pg down") })
+	r = NewReconciler(f, cfg)
+	if err := r.ReconcileOnce(context.Background()); err == nil || !strings.Contains(err.Error(), "pg down") {
+		t.Errorf("a policy read failure must fail the pass, got %v", err)
+	}
+	if f.writes() != 0 {
+		t.Errorf("wrote %d times although policies could not be read", f.writes())
 	}
 }

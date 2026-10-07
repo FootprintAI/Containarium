@@ -17784,7 +17784,7 @@
             "type": "object",
             "$ref": "#/definitions/ACLRule"
           },
-          "title": "Custom ingress rules (only if preset is CUSTOM)"
+          "description": "Custom ingress rules. No longer accepted (#2359): tenant ingress is owned\nby the tenant network guard, and a per-container allow would be evaluated\nnext to it and could re-open what it closed. A request carrying any is\nrefused with INVALID_ARGUMENT; to admit another tenant use\nNetworkPolicy.allow_from_tenants. Presets apply their egress half only."
         },
         "egressRules": {
           "type": "array",
@@ -18410,6 +18410,13 @@
             "$ref": "#/definitions/NetworkPolicyDenyRule"
           },
           "description": "Virtual-patch deny rules (#660). Each blocks traffic to a destination\nCIDR (optionally scoped to a port/proto) and is evaluated BEFORE the\negress allow-list: deny beats allow, the same way the metadata IP does.\nUse to \"virtually patch\" a known-vulnerable destination/service until the\nreal upstream fix ships — instant, in-kernel, zero downtime. A rule whose\nexpires_at is in the past is dropped at compile time, so the patch\nself-removes once the fix lands."
+        },
+        "allowFromTenants": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Tenants whose containers may reach this tenant's containers over the\nbridge (#2359). Consumed by the tenant network guard\n(docs/architecture/tenant-network-guard.md): every box of a listed\ntenant becomes an allowed ingress source on this tenant's NIC ACL.\nThis is the only way to open tenant ingress to another tenant; the\nper-container ACL (UpdateContainerACL) no longer carries ingress rules.\nNormalised on set: trimmed, deduplicated, sorted; the tenant itself is\nrejected (use allow_intra_tenant). One-directional: listing bob here\nlets bob reach us, not the reverse."
         }
       },
       "description": "NetworkPolicy is a tenant's network-isolation policy, enforced at each of the\ntenant's container host-veth TC_INGRESS hooks (the sender side of every flow;\nsee the Phase 0 findings in NETWORK-ISOLATION-DESIGN.md). #315."

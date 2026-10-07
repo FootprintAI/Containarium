@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** the per-container ACL (`UpdateContainerACL`) no longer carries ingress rules: a custom request with
+  ingress rules is refused with `INVALID_ARGUMENT` that names the replacement, and the named presets keep only
+  their egress half. Incus evaluates every attached ACL, so a per-container ingress allow could re-open what the
+  tenant guard closed (#2359). Egress rules are unchanged.
+
 - **Breaking: tenant containers on a shared backend can no longer reach each other, and both Incus NIC-ACL guards
   are on by default** (#2347, design `docs/architecture/tenant-network-guard.md`). A new tenant network guard
   attaches one Incus network ACL per tenant to every tenant container's NIC: ingress default-drop, allowing only
@@ -32,6 +37,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `containarium guardrail scan|apply|verify|keygen`: run a detection engine over a directory, redact findings into stable placeholder tokens, re-scan the result as a token-aware gate, and sign an ed25519 `GuardrailAttestation` a consumer verifies before using the data. New proto contract `GuardrailEngineService` (engines plug in behind it; the in-tree reference engine is regex-only and says so) and `internal/guardrail`. Design: `docs/architecture/guardrail.md`.
+
+- `NetworkPolicy.allow_from_tenants` and `containarium network-policy set <tenant> --allow-from-tenant <other>`
+  (#2359): the one way to let another tenant's containers reach yours over the bridge. The tenant network guard
+  turns every box of a listed tenant into an allowed ingress source on the listing tenant's NIC ACLs;
+  one-directional, normalised on set, and the tenant itself is refused (same-tenant traffic is
+  `allow_intra_tenant`). Stored in a new `allow_from_tenants` column (added in place on upgrade).
 - `ListBackends` now reports a peer backend's spare-capacity advertisement (`headroom`) and capability profile
   (`capability_profile`), not only the local backend's (#2135). Both ride the `GetSystemInfo` response the fan-out
   already fetches from each healthy peer, so there is no extra forwarded call; each stays null when the peer advertises

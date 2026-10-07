@@ -12,15 +12,32 @@ import (
 
 	"github.com/footprintai/containarium/internal/nicguard"
 	"github.com/footprintai/containarium/pkg/core/incus"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // DefaultInterval is the steady-state reconcile cadence; bus events
 // converge sooner.
 const DefaultInterval = 60 * time.Second
 
+// PolicySource is where the reconciler reads NetworkPolicy.allow_from_tenants
+// (#2359). The daemon's network-policy store satisfies it; nil means no
+// cross-tenant allow anywhere.
+type PolicySource interface {
+	List(ctx context.Context) ([]*pb.NetworkPolicy, error)
+}
+
+// PolicySourceFunc adapts a function to PolicySource (the daemon swaps its
+// store after construction, so it passes a closure that reads the current
+// one).
+type PolicySourceFunc func(ctx context.Context) ([]*pb.NetworkPolicy, error)
+
+func (f PolicySourceFunc) List(ctx context.Context) ([]*pb.NetworkPolicy, error) { return f(ctx) }
+
 // Config is the reconciler's static wiring.
 type Config struct {
 	Mode nicguard.Mode
+	// Policies supplies allow_from_tenants per tenant; optional.
+	Policies PolicySource
 	// Bridge is the Incus network tenant NICs sit on (e.g. incusbr0).
 	Bridge string
 	// BridgeCIDR is the bridge's ipv4.address as Incus reports it, gateway
@@ -315,6 +332,23 @@ func (r *Reconciler) gather() (Inputs, []string, error) {
 		return Inputs{}, nil, fmt.Errorf("list containers: %w", err)
 	}
 	in := Inputs{BridgeCIDR: bridge, HostGateway: gateway, Initiators: map[incus.Role][]netip.Addr{}}
+	if r.cfg.Policies != nil {
+		policies, perr := r.cfg.Policies.List(context.Background())
+		if perr != nil {
+			// A policy read failure must not drop cross-tenant allows that
+			// were in force (a pass would then close doors mid-flight); fail
+			// the pass and keep yesterday's ACLs.
+			return Inputs{}, nil, fmt.Errorf("list network policies: %w", perr)
+		}
+		for _, p := range policies {
+			if len(p.GetAllowFromTenants()) > 0 {
+				if in.CrossTenantAllow == nil {
+					in.CrossTenantAllow = map[string][]string{}
+				}
+				in.CrossTenantAllow[p.GetTenant()] = append([]string(nil), p.GetAllowFromTenants()...)
+			}
+		}
+	}
 	var unresolved []string
 	for _, c := range containers {
 		// ContainerInfo.IPAddress is the daemon's "primary" address and can

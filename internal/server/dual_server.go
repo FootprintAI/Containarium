@@ -1944,6 +1944,12 @@ skipAppHosting:
 			Mode:       nicguard.ParseMode(netCfg.TenantGuard),
 			Bridge:     "incusbr0",
 			BridgeCIDR: networkCIDR,
+			// allow_from_tenants (#2359) comes from the network-policy store;
+			// read through npServer each pass because the store is swapped to
+			// Postgres after construction.
+			Policies: tenantguard.PolicySourceFunc(func(ctx context.Context) ([]*pb.NetworkPolicy, error) {
+				return npServer.Store().List(ctx)
+			}),
 		})
 		if mgr := containerServer.GetManager(); mgr != nil {
 			mgr.SetNICGuard(tenantGuard)

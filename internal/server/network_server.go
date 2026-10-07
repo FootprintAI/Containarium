@@ -1125,10 +1125,14 @@ func aclConfigFromRequest(req *pb.UpdateContainerACLRequest, proxyIP, containerN
 	case pb.ACLPreset_ACL_PRESET_UNSPECIFIED:
 		return incus.ACLConfig{}, status.Error(codes.InvalidArgument, "preset is required: choose a named preset or ACL_PRESET_CUSTOM with rules")
 	case pb.ACLPreset_ACL_PRESET_CUSTOM:
-		config := incus.ACLConfig{Name: aclName, Description: "Custom firewall rules"}
-		for _, rule := range req.IngressRules {
-			config.IngressRules = append(config.IngressRules, aclRuleFromProto(rule))
+		// Ingress is owned by the tenant network guard (#2359): a per-container
+		// allow rule would be evaluated alongside the guard's ACL and could
+		// re-open what it closed. Cross-tenant ingress is a NetworkPolicy
+		// setting (allow_from_tenants); refuse rather than silently drop.
+		if len(req.IngressRules) > 0 {
+			return incus.ACLConfig{}, status.Error(codes.InvalidArgument, "ingress rules are not accepted on a per-container ACL: tenant ingress is owned by the tenant network guard; to admit another tenant use `containarium network-policy set <tenant> --allow-from-tenant <other>`")
 		}
+		config := incus.ACLConfig{Name: aclName, Description: "Custom firewall rules (egress only; ingress is the tenant guard's)"}
 		for _, rule := range req.EgressRules {
 			config.EgressRules = append(config.EgressRules, aclRuleFromProto(rule))
 		}
@@ -1140,6 +1144,9 @@ func aclConfigFromRequest(req *pb.UpdateContainerACLRequest, proxyIP, containerN
 	}
 	config := incus.GetPresetACL(preset, proxyIP, containerNetwork)
 	config.Name = aclName
+	// Presets keep only their egress half for the same reason as above; the
+	// tenant guard already provides what their ingress half tried to.
+	config.IngressRules = nil
 	return config, nil
 }
 

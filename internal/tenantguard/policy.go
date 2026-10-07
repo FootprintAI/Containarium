@@ -48,6 +48,11 @@ type Inputs struct {
 	// Boxes are the tenant containers on the host. A box whose tenant could
 	// not be resolved must not be here; the reconciler reports it instead.
 	Boxes []Box
+	// CrossTenantAllow maps a tenant to the tenants whose boxes may reach
+	// it (NetworkPolicy.allow_from_tenants, #2359). One-directional: an
+	// entry alice → [bob] admits bob's boxes on alice's NICs only. A listed
+	// tenant with no box on this host contributes nothing.
+	CrossTenantAllow map[string][]string
 }
 
 // Policy is Compute's output: one ACL per tenant present on the host.
@@ -114,6 +119,21 @@ func Compute(in Inputs) (Policy, error) {
 			}
 			for _, a := range sortedAddrs(b.IPv6) {
 				add(hostPrefix(a), "same tenant: "+b.Name)
+			}
+		}
+		// Cross-tenant allow (#2359): the boxes of every tenant this tenant
+		// listed, after the siblings so the order stays stable.
+		for _, from := range sortedUniq(in.CrossTenantAllow[tenant]) {
+			if from == tenant {
+				continue // siblings are already allowed; allow_intra_tenant's job
+			}
+			for _, b := range sortedBoxes(byTenant[from]) {
+				if b.IPv4.IsValid() {
+					add(host32(b.IPv4), "allowed tenant "+from+": "+b.Name)
+				}
+				for _, a := range sortedAddrs(b.IPv6) {
+					add(hostPrefix(a), "allowed tenant "+from+": "+b.Name)
+				}
 			}
 		}
 		pol.ACLs[tenant] = acl
@@ -183,6 +203,20 @@ func hostPrefix(a netip.Addr) string {
 func sortedAddrs(in []netip.Addr) []netip.Addr {
 	out := append([]netip.Addr(nil), in...)
 	sort.Slice(out, func(i, j int) bool { return out[i].Less(out[j]) })
+	return out
+}
+
+func sortedUniq(in []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	sort.Strings(out)
 	return out
 }
 
