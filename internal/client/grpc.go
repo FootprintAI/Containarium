@@ -33,6 +33,8 @@ type GRPCClient struct {
 	trackerClient pb.TrackerServiceClient
 	// modelGatewayClient is the model gateway's admin + mint surface (#1726).
 	modelGatewayClient pb.ModelGatewayServiceClient
+	// guardrailPolicyClient is the server-side guardrail policy (#2368).
+	guardrailPolicyClient pb.GuardrailPolicyServiceClient
 }
 
 // NewGRPCClient creates a new gRPC client
@@ -116,6 +118,8 @@ func NewGRPCClient(serverAddr string, certsDir string, insecureConn bool) (*GRPC
 		anonClient:         anonClient,
 		trackerClient:      trackerClient,
 		modelGatewayClient: modelGatewayClient,
+
+		guardrailPolicyClient: pb.NewGuardrailPolicyServiceClient(conn),
 	}, nil
 }
 
@@ -1210,6 +1214,29 @@ func (c *GRPCClient) MigrateToEnvelope(req *pb.MigrateToEnvelopeRequest) (*pb.Mi
 	resp, err := c.kmsClient.MigrateToEnvelope(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("migrate to envelope: %w", err)
+	}
+	return resp, nil
+}
+
+// GetGuardrailPolicy reads the server-side guardrail policy via gRPC (#2368).
+func (c *GRPCClient) GetGuardrailPolicy() (*pb.GetGuardrailPolicyResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.guardrailPolicyClient.GetGuardrailPolicy(ctx, &pb.GetGuardrailPolicyRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("get guardrail policy: %w", err)
+	}
+	return resp, nil
+}
+
+// SetGuardrailPolicy replaces the server-side guardrail policy via gRPC
+// (admin only).
+func (c *GRPCClient) SetGuardrailPolicy(req *pb.SetGuardrailPolicyRequest) (*pb.SetGuardrailPolicyResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.guardrailPolicyClient.SetGuardrailPolicy(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("set guardrail policy: %w", err)
 	}
 	return resp, nil
 }

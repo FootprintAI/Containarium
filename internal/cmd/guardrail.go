@@ -25,9 +25,11 @@ import (
 // `containarium guardrail` — run a detection engine over a directory of
 // text, redact what it flags, re-scan the result as the gate, and sign an
 // attestation a consumer verifies before using the data
-// (docs/architecture/guardrail.md). Every verb is local to the machine it
-// runs on: this is the data owner's side of a trust boundary, and nothing
-// here talks to the daemon. The engine is a separate process reached over
+// (docs/architecture/guardrail.md). Every verb in this file is local to the
+// machine it runs on: this is the data owner's side of a trust boundary, and
+// nothing here talks to the daemon. (`guardrail policy`, in
+// guardrail_policy.go, is the exception: it reads or sets the server-side
+// policy, #2368.) The engine is a separate process reached over
 // gRPC (--engine); with no --engine the in-tree reference rules engine
 // runs, which is a handful of regular expressions for proving the flow,
 // not a detector anyone should ship data on.
