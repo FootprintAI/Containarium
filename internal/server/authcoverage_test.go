@@ -104,6 +104,8 @@ var registeredServices = []rpcSurface{
 	// #1726 — every RPC here carries an explicit gateway:admin or gateway:mint
 	// RequireScope in its own body; none is exempt.
 	{pb.ModelGatewayService_ServiceDesc, "ModelGatewayServer"},
+	// #2378 — Set/Delete RequireRole(admin); Get RequireRoleOrScope + AuthorizeTenant.
+	{pb.CodingToolEgressPolicyService_ServiceDesc, "CodingToolEgressPolicyServer"},
 }
 
 // authExemptions lists every registered RPC whose handler carries no auth
