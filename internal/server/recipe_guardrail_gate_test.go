@@ -301,6 +301,27 @@ func keys(m map[string][]byte) []string {
 	return out
 }
 
+// TestDeployGate_InternalErrorsDoNotEchoHostPaths: a staging root that is
+// configured but gone refuses the deploy, creates nothing, and the error the
+// caller sees names no daemon-side path.
+func TestDeployGate_InternalErrorsDoNotEchoHostPaths(t *testing.T) {
+	f := newGateFixture(t)
+	root := f.srv.guardrailStagingRoot
+	if err := os.RemoveAll(root); err != nil {
+		t.Fatal(err)
+	}
+	_, err := f.deploy(t)
+	if err == nil {
+		t.Fatal("deploy with a vanished staging root = nil error")
+	}
+	if strings.Contains(err.Error(), root) || strings.Contains(err.Error(), os.TempDir()) {
+		t.Fatalf("error %q echoes a daemon-side path", err)
+	}
+	if len(f.boxes.created) != 0 {
+		t.Fatalf("created %v", f.boxes.created)
+	}
+}
+
 // An ungated recipe ignores guardrail_input entirely and never reads the
 // policy: the gate is the recipe's decision.
 func TestDeployGate_UngatedRecipeUnaffected(t *testing.T) {

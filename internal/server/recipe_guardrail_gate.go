@@ -13,6 +13,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/footprintai/containarium/internal/guardrail"
 	"github.com/footprintai/containarium/internal/guardrailpolicy"
 	"github.com/footprintai/containarium/internal/guardrailstage"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -84,9 +85,16 @@ func (s *RecipeServer) checkGuardrailGate(ctx context.Context, recipe *pb.Recipe
 	if in == nil || in.GetAttestation() == nil || in.GetStagingRef() == "" {
 		return nil, gateRefusal("recipe %q is guardrail-gated: guardrail_input with staging_ref and attestation is required", recipe.GetId())
 	}
+	// Errors below that are not one of the typed refusals may carry
+	// daemon-side paths: they are logged, and the caller gets a generic
+	// message (guardrailstage's error contract).
 	area, err := guardrailstage.New(s.guardrailStagingRoot)
+	if errors.Is(err, guardrailstage.ErrNoStagingRoot) {
+		return nil, gateRefusal("this daemon has no guardrail staging root configured")
+	}
 	if err != nil {
-		return nil, gateRefusal("guardrail staging root: %v", err)
+		log.Printf("[recipe] guardrail gate: staging root: %v", err)
+		return nil, gateRefusal("the guardrail staging root is unavailable")
 	}
 	ref, err := guardrailStagingRef(req.GetName(), in.GetStagingRef())
 	if err != nil {
@@ -96,16 +104,40 @@ func (s *RecipeServer) checkGuardrailGate(ctx context.Context, recipe *pb.Recipe
 	if errors.Is(err, guardrailstage.ErrBadRef) {
 		return nil, gateRefusal("staging_ref %q: %v", in.GetStagingRef(), err)
 	}
+	if errors.Is(err, guardrailstage.ErrStagingRootUnavailable) {
+		return nil, gateRefusal("the guardrail staging root is unavailable")
+	}
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "guardrail gate: snapshot staging_ref %q: %v", in.GetStagingRef(), err)
+		log.Printf("[recipe] guardrail gate: snapshot %q: %v", ref, err)
+		return nil, status.Error(codes.Internal, "guardrail gate: could not snapshot the staged dataset")
 	}
 	if _, err := guardrailpolicy.VerifyAttestation(in.GetAttestation(), policy, snap.Dir, recipe.GetGuardrailGate().GetRequireKinds()); err != nil {
 		if rmErr := snap.Remove(); rmErr != nil {
 			log.Printf("[recipe] remove guardrail snapshot %s: %v", snap.Dir, rmErr)
 		}
-		return nil, gateRefusal("%v", err)
+		if isVerifyRefusal(err) {
+			return nil, gateRefusal("%v", err)
+		}
+		log.Printf("[recipe] guardrail gate: verify: %v", err)
+		return nil, status.Error(codes.Internal, "guardrail gate: could not verify the staged dataset")
 	}
 	return snap, nil
+}
+
+// isVerifyRefusal is true for the typed reasons VerifyAttestation refuses
+// (their messages carry hashes and key ids only); anything else, such as an
+// I/O error while digesting the snapshot, is internal.
+func isVerifyRefusal(err error) bool {
+	for _, target := range []error{
+		guardrailpolicy.ErrNoServerPolicy, guardrailpolicy.ErrNoTrustedSigner, guardrailpolicy.ErrUntrustedSigner,
+		guardrailpolicy.ErrPolicyMismatch, guardrailpolicy.ErrVerdictNotPass, guardrailpolicy.ErrKindNotCovered,
+		guardrailpolicy.ErrDigestMismatch, guardrail.ErrBadSignature,
+	} {
+		if errors.Is(err, target) {
+			return true
+		}
+	}
+	return false
 }
 
 // deliverGuardrailDataset copies every regular file under dir (the verified

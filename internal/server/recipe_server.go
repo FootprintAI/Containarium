@@ -416,7 +416,8 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 	// precedes post_start.)
 	if dataset != nil {
 		if err := deliverGuardrailDataset(s.boxOps(), containerName, recipe.GetGuardrailGate().GetDatasetPath(), dataset.Dir); err != nil {
-			return nil, status.Errorf(codes.Internal, "deliver the verified dataset to %s: %v", containerName, err)
+			log.Printf("[recipe] guardrail gate: deliver dataset to %s: %v", containerName, err)
+			return nil, status.Errorf(codes.Internal, "could not deliver the verified dataset to %s", containerName)
 		}
 	}
 
