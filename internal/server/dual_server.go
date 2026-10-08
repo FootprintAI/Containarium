@@ -639,8 +639,9 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	log.Printf("NetworkPolicy service enabled (in-memory store; Phase A)")
 
 	// GuardrailPolicyService (#2368): the admin-owned, cluster-wide guardrail
-	// policy. In-memory until the Postgres pool exists (swapped below).
-	guardrailPolicyServer := NewGuardrailPolicyServer(guardrailpolicy.NewMemoryStore())
+	// policy. It starts fail-closed; the real store is chosen by
+	// guardrailPolicyStartupStore once postgresConnString is final (below).
+	guardrailPolicyServer := NewGuardrailPolicyServer(unavailableGuardrailPolicyStore{})
 	pb.RegisterGuardrailPolicyServiceServer(grpcServer, guardrailPolicyServer)
 
 	// Register AgentSkillService — agent-as-a-box (Phase 0) + A2A transport
@@ -1494,6 +1495,9 @@ skipAppHosting:
 	// (#2359 — the tenant guard would strip persisted allow_from_tenants).
 	var policyStoreDurable atomic.Bool
 	policyStoreDurable.Store(postgresConnString == "")
+	// The Postgres guardrail policy store (#2368), or nil if it is not
+	// installed below; guardrailPolicyStartupStore turns nil into fail-closed.
+	var guardrailPGStore guardrailpolicy.Store
 	if postgresConnString != "" {
 		pool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
 		if poolErr != nil {
@@ -1516,7 +1520,7 @@ skipAppHosting:
 			if gpStore, gErr := guardrailpolicypg.New(context.Background(), pool); gErr != nil {
 				log.Printf("Warning: Failed to create Postgres guardrail policy store: %v", gErr)
 			} else {
-				guardrailPolicyServer.SetStore(gpStore)
+				guardrailPGStore = gpStore
 				log.Printf("Guardrail policy persistence enabled (Postgres store)")
 			}
 
@@ -1565,6 +1569,7 @@ skipAppHosting:
 			}
 		}
 	}
+	guardrailPolicyServer.SetStore(guardrailPolicyStartupStore(postgresConnString != "", guardrailPGStore))
 
 	// Managed-cluster reconciler (#1414): converges cluster records into
 	// control-plane + worker VMs (pure Decide policy in

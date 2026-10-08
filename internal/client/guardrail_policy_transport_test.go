@@ -1,13 +1,13 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
@@ -90,6 +90,27 @@ func startGatewayGuardrailPolicy(t *testing.T, srv *server.GuardrailPolicyServer
 	return c
 }
 
+// restSetStatus PUTs req to the gateway behind c and returns the HTTP status,
+// so a refusal is asserted by its status rather than by error text.
+func restSetStatus(t *testing.T, c *HTTPClient, req *pb.SetGuardrailPolicyRequest) int {
+	t.Helper()
+	body, err := protojson.Marshal(req)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	hreq, err := http.NewRequest(http.MethodPut, c.baseURL+"/v1/guardrail/policy", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	hreq.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(hreq)
+	if err != nil {
+		t.Fatalf("PUT /v1/guardrail/policy: %v", err)
+	}
+	_ = resp.Body.Close()
+	return resp.StatusCode
+}
+
 func gpTransportRequest(maxResidual int32) *pb.SetGuardrailPolicyRequest {
 	seed := make([]byte, ed25519.SeedSize)
 	pub := ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)
@@ -153,8 +174,11 @@ func TestGuardrailPolicy_RESTAndGRPCAgree(t *testing.T) {
 	if _, err := clients["grpc"].SetGuardrailPolicy(bad); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("grpc Set invalid = %v, want InvalidArgument", err)
 	}
-	if _, err := clients["rest"].SetGuardrailPolicy(bad); err == nil || !strings.Contains(err.Error(), "InvalidArgument") {
-		t.Fatalf("rest Set invalid = %v, want InvalidArgument", err)
+	if _, err := clients["rest"].SetGuardrailPolicy(bad); err == nil {
+		t.Fatalf("rest Set invalid succeeded, want a refusal")
+	}
+	if got := restSetStatus(t, clients["rest"].(*HTTPClient), bad); got != http.StatusBadRequest {
+		t.Fatalf("rest Set invalid = HTTP %d, want %d (InvalidArgument)", got, http.StatusBadRequest)
 	}
 	viaREST, _ = clients["rest"].GetGuardrailPolicy()
 	if viaREST.GetPolicy().GetRevision() != 2 {
@@ -170,8 +194,11 @@ func TestGuardrailPolicy_NonAdminSetRefusedOnBothTransports(t *testing.T) {
 	if _, err := g.SetGuardrailPolicy(gpTransportRequest(0)); status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("grpc non-admin Set = %v, want PermissionDenied", err)
 	}
-	if _, err := h.SetGuardrailPolicy(gpTransportRequest(0)); err == nil || !strings.Contains(err.Error(), "PermissionDenied") {
-		t.Fatalf("rest non-admin Set = %v, want PermissionDenied", err)
+	if _, err := h.SetGuardrailPolicy(gpTransportRequest(0)); err == nil {
+		t.Fatalf("rest non-admin Set succeeded, want a refusal")
+	}
+	if got := restSetStatus(t, h, gpTransportRequest(0)); got != http.StatusForbidden {
+		t.Fatalf("rest non-admin Set = HTTP %d, want %d (PermissionDenied)", got, http.StatusForbidden)
 	}
 	if got, err := h.GetGuardrailPolicy(); err != nil || got.GetConfigured() {
 		t.Fatalf("non-admin Get = (%v, %v), want readable and still not configured", got, err)

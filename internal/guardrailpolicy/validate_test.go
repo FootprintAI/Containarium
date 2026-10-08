@@ -1,10 +1,12 @@
 package guardrailpolicy_test
 
 import (
+	"crypto/ed25519"
 	"encoding/base64"
 	"strings"
 	"testing"
 
+	"github.com/footprintai/containarium/internal/guardrail"
 	"github.com/footprintai/containarium/internal/guardrailpolicy"
 	"github.com/footprintai/containarium/internal/guardrailpolicy/storetest"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -14,7 +16,12 @@ func TestValidate(t *testing.T) {
 	good := storetest.Signer(t, 1, "release key")
 	other := storetest.Signer(t, 2, "other key")
 	mismatched := &pb.GuardrailTrustedSigner{KeyId: other.GetKeyId(), PublicKey: good.GetPublicKey(), Label: "mismatch"}
-	shortKey := &pb.GuardrailTrustedSigner{KeyId: good.GetKeyId(), PublicKey: good.GetPublicKey()[:16]}
+	// The short key's key_id is derived from the short key itself, so the
+	// key_id check alone would accept it: only the length check refuses it.
+	short := good.GetPublicKey()[:16]
+	shortKey := &pb.GuardrailTrustedSigner{KeyId: guardrail.KeyID(ed25519.PublicKey(short)), PublicKey: short}
+	// Likewise an empty key carrying the key_id of an empty key.
+	emptyKey := &pb.GuardrailTrustedSigner{KeyId: guardrail.KeyID(nil)}
 
 	rule := func(k pb.GuardrailKind, a pb.GuardrailAction, max int32) *pb.GuardrailRule {
 		return &pb.GuardrailRule{Kind: k, Action: a, MaxResidual: max}
@@ -43,8 +50,10 @@ func TestValidate(t *testing.T) {
 		{name: "negative residual", policy: &pb.GuardrailPolicy{Rules: []*pb.GuardrailRule{rule(pii, redact, -1)}}, wantErr: "max_residual"},
 		{name: "nil rule", policy: &pb.GuardrailPolicy{Rules: []*pb.GuardrailRule{nil}}, wantErr: "kind"},
 		{name: "signer key_id does not match its key", policy: storetest.Policy(0), signers: []*pb.GuardrailTrustedSigner{good, mismatched}, wantErr: "key_id"},
-		{name: "signer key is not ed25519-sized", policy: storetest.Policy(0), signers: []*pb.GuardrailTrustedSigner{shortKey}, wantErr: "public_key"},
-		{name: "nil signer", policy: storetest.Policy(0), signers: []*pb.GuardrailTrustedSigner{nil}, wantErr: "public_key"},
+		// These wantErr strings are text only the length branch produces.
+		{name: "signer key is not ed25519-sized", policy: storetest.Policy(0), signers: []*pb.GuardrailTrustedSigner{shortKey}, wantErr: "public_key is 16 bytes, want an Ed25519 key"},
+		{name: "signer with an empty key", policy: storetest.Policy(0), signers: []*pb.GuardrailTrustedSigner{emptyKey}, wantErr: "public_key is 0 bytes, want an Ed25519 key"},
+		{name: "nil signer", policy: storetest.Policy(0), signers: []*pb.GuardrailTrustedSigner{nil}, wantErr: "want an Ed25519 key"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
