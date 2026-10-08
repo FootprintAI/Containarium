@@ -1,4 +1,7 @@
-package guardrailpolicy
+// Package storetest is the behavioural contract every guardrailpolicy.Store
+// must meet. The in-memory store runs it in the unit suite; the Postgres
+// store runs it in the store-integration lane against a real database.
+package storetest
 
 import (
 	"context"
@@ -9,12 +12,13 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/footprintai/containarium/internal/guardrail"
+	"github.com/footprintai/containarium/internal/guardrailpolicy"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
-// testSigner builds a valid trusted signer from a deterministic seed, so
+// Signer builds a valid trusted signer from a deterministic seed, so
 // fixtures are synthetic and stable.
-func testSigner(t *testing.T, seed byte, label string) *pb.GuardrailTrustedSigner {
+func Signer(t *testing.T, seed byte, label string) *pb.GuardrailTrustedSigner {
 	t.Helper()
 	s := make([]byte, ed25519.SeedSize)
 	for i := range s {
@@ -24,31 +28,31 @@ func testSigner(t *testing.T, seed byte, label string) *pb.GuardrailTrustedSigne
 	return &pb.GuardrailTrustedSigner{KeyId: guardrail.KeyID(pub), PublicKey: pub, Label: label}
 }
 
-func testPolicy(maxResidual int32) *pb.GuardrailPolicy {
+// Policy is a two-rule fixture policy.
+func Policy(maxResidual int32) *pb.GuardrailPolicy {
 	return &pb.GuardrailPolicy{Rules: []*pb.GuardrailRule{
 		{Kind: pb.GuardrailKind_GUARDRAIL_KIND_PII, Action: pb.GuardrailAction_GUARDRAIL_ACTION_REDACT, MaxResidual: maxResidual},
 		{Kind: pb.GuardrailKind_GUARDRAIL_KIND_SECRET, Action: pb.GuardrailAction_GUARDRAIL_ACTION_BLOCK},
 	}}
 }
 
-// runStoreContract is the behaviour both implementations must share. The
-// in-memory store runs it in the unit suite; the Postgres store runs it in
-// the store-integration lane against a real database.
-func runStoreContract(t *testing.T, newStore func(t *testing.T) Store) {
+// RunStoreContract runs the shared behaviour against stores built by newStore
+// (each subtest gets a fresh, empty store).
+func RunStoreContract(t *testing.T, newStore func(t *testing.T) guardrailpolicy.Store) {
 	ctx := context.Background()
 
 	t.Run("not configured is the typed ErrNotConfigured", func(t *testing.T) {
 		s := newStore(t)
 		got, err := s.Get(ctx)
-		if !errors.Is(err, ErrNotConfigured) {
+		if !errors.Is(err, guardrailpolicy.ErrNotConfigured) {
 			t.Fatalf("Get on an empty store = (%v, %v), want ErrNotConfigured", got, err)
 		}
 	})
 
 	t.Run("set then get round-trips", func(t *testing.T) {
 		s := newStore(t)
-		signer := testSigner(t, 1, "release key")
-		res, err := s.Set(ctx, testPolicy(2), []*pb.GuardrailTrustedSigner{signer}, "admin-a")
+		signer := Signer(t, 1, "release key")
+		res, err := s.Set(ctx, Policy(2), []*pb.GuardrailTrustedSigner{signer}, "admin-a")
 		if err != nil {
 			t.Fatalf("Set: %v", err)
 		}
@@ -62,8 +66,8 @@ func runStoreContract(t *testing.T, newStore func(t *testing.T) Store) {
 		if err != nil {
 			t.Fatalf("Get: %v", err)
 		}
-		if !proto.Equal(got.GetPolicy(), testPolicy(2)) {
-			t.Fatalf("policy = %v, want %v", got.GetPolicy(), testPolicy(2))
+		if !proto.Equal(got.GetPolicy(), Policy(2)) {
+			t.Fatalf("policy = %v, want %v", got.GetPolicy(), Policy(2))
 		}
 		if len(got.GetTrustedSigners()) != 1 || !proto.Equal(got.GetTrustedSigners()[0], signer) {
 			t.Fatalf("signers = %v, want [%v]", got.GetTrustedSigners(), signer)
@@ -81,7 +85,7 @@ func runStoreContract(t *testing.T, newStore func(t *testing.T) Store) {
 		s := newStore(t)
 		var prev *pb.ServerGuardrailPolicy
 		for want := int64(1); want <= 3; want++ {
-			res, err := s.Set(ctx, testPolicy(int32(want)), nil, "admin-a")
+			res, err := s.Set(ctx, Policy(int32(want)), nil, "admin-a")
 			if err != nil {
 				t.Fatalf("Set #%d: %v", want, err)
 			}
@@ -111,7 +115,7 @@ func runStoreContract(t *testing.T, newStore func(t *testing.T) Store) {
 
 	t.Run("returned values do not alias the store", func(t *testing.T) {
 		s := newStore(t)
-		res, err := s.Set(ctx, testPolicy(0), nil, "admin-a")
+		res, err := s.Set(ctx, Policy(0), nil, "admin-a")
 		if err != nil {
 			t.Fatalf("Set: %v", err)
 		}
@@ -124,8 +128,4 @@ func runStoreContract(t *testing.T, newStore func(t *testing.T) Store) {
 			t.Fatalf("mutating Set's result changed the stored policy")
 		}
 	})
-}
-
-func TestMemoryStore_Contract(t *testing.T) {
-	runStoreContract(t, func(*testing.T) Store { return NewMemoryStore() })
 }

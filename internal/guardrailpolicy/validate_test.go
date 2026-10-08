@@ -1,16 +1,18 @@
-package guardrailpolicy
+package guardrailpolicy_test
 
 import (
 	"encoding/base64"
 	"strings"
 	"testing"
 
+	"github.com/footprintai/containarium/internal/guardrailpolicy"
+	"github.com/footprintai/containarium/internal/guardrailpolicy/storetest"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 func TestValidate(t *testing.T) {
-	good := testSigner(t, 1, "release key")
-	other := testSigner(t, 2, "other key")
+	good := storetest.Signer(t, 1, "release key")
+	other := storetest.Signer(t, 2, "other key")
 	mismatched := &pb.GuardrailTrustedSigner{KeyId: other.GetKeyId(), PublicKey: good.GetPublicKey(), Label: "mismatch"}
 	shortKey := &pb.GuardrailTrustedSigner{KeyId: good.GetKeyId(), PublicKey: good.GetPublicKey()[:16]}
 
@@ -30,7 +32,7 @@ func TestValidate(t *testing.T) {
 		signers []*pb.GuardrailTrustedSigner
 		wantErr string // substring; empty = valid
 	}{
-		{name: "valid policy with signers", policy: testPolicy(1), signers: []*pb.GuardrailTrustedSigner{good, other}},
+		{name: "valid policy with signers", policy: storetest.Policy(1), signers: []*pb.GuardrailTrustedSigner{good, other}},
 		{name: "empty rule list is valid", policy: &pb.GuardrailPolicy{}},
 		{name: "missing policy", policy: nil, wantErr: "policy is required"},
 		{name: "unspecified kind", policy: &pb.GuardrailPolicy{Rules: []*pb.GuardrailRule{rule(pb.GuardrailKind_GUARDRAIL_KIND_UNSPECIFIED, redact, 0)}}, wantErr: "kind"},
@@ -40,13 +42,13 @@ func TestValidate(t *testing.T) {
 		{name: "duplicate kind", policy: &pb.GuardrailPolicy{Rules: []*pb.GuardrailRule{rule(pii, redact, 0), rule(secret, block, 0), rule(pii, block, 0)}}, wantErr: "duplicate"},
 		{name: "negative residual", policy: &pb.GuardrailPolicy{Rules: []*pb.GuardrailRule{rule(pii, redact, -1)}}, wantErr: "max_residual"},
 		{name: "nil rule", policy: &pb.GuardrailPolicy{Rules: []*pb.GuardrailRule{nil}}, wantErr: "kind"},
-		{name: "signer key_id does not match its key", policy: testPolicy(0), signers: []*pb.GuardrailTrustedSigner{good, mismatched}, wantErr: "key_id"},
-		{name: "signer key is not ed25519-sized", policy: testPolicy(0), signers: []*pb.GuardrailTrustedSigner{shortKey}, wantErr: "public_key"},
-		{name: "nil signer", policy: testPolicy(0), signers: []*pb.GuardrailTrustedSigner{nil}, wantErr: "public_key"},
+		{name: "signer key_id does not match its key", policy: storetest.Policy(0), signers: []*pb.GuardrailTrustedSigner{good, mismatched}, wantErr: "key_id"},
+		{name: "signer key is not ed25519-sized", policy: storetest.Policy(0), signers: []*pb.GuardrailTrustedSigner{shortKey}, wantErr: "public_key"},
+		{name: "nil signer", policy: storetest.Policy(0), signers: []*pb.GuardrailTrustedSigner{nil}, wantErr: "public_key"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := Validate(tc.policy, tc.signers)
+			err := guardrailpolicy.Validate(tc.policy, tc.signers)
 			if tc.wantErr == "" {
 				if err != nil {
 					t.Fatalf("Validate = %v, want nil", err)
@@ -64,10 +66,10 @@ func TestValidate(t *testing.T) {
 // SetGuardrailPolicyRequest, with enum names, and an unknown field is an
 // error rather than silently dropped (a typo must not weaken a policy).
 func TestParseSetRequest(t *testing.T) {
-	good := testSigner(t, 1, "release key")
+	good := storetest.Signer(t, 1, "release key")
 	ok := `{"policy":{"rules":[{"kind":"GUARDRAIL_KIND_PII","action":"GUARDRAIL_ACTION_REDACT","maxResidual":1}]},` +
 		`"trustedSigners":[{"keyId":"` + good.GetKeyId() + `","publicKey":"` + b64(good.GetPublicKey()) + `","label":"release key"}]}`
-	req, err := ParseSetRequest([]byte(ok))
+	req, err := guardrailpolicy.ParseSetRequest([]byte(ok))
 	if err != nil {
 		t.Fatalf("ParseSetRequest(valid) = %v", err)
 	}
@@ -82,7 +84,7 @@ func TestParseSetRequest(t *testing.T) {
 		"unknown field": `{"policy":{"rules":[]},"policyy":{}}`,
 		"not json":      `rules: []`,
 	} {
-		if _, err := ParseSetRequest([]byte(in)); err == nil {
+		if _, err := guardrailpolicy.ParseSetRequest([]byte(in)); err == nil {
 			t.Errorf("ParseSetRequest(%s) = nil, want an error", name)
 		}
 	}

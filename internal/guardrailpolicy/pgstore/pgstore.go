@@ -1,4 +1,7 @@
-package guardrailpolicy
+// Package pgstore is the Postgres guardrailpolicy.Store. It is a separate
+// package so the containarium client binary, which uses guardrailpolicy for
+// validation and display, does not link the database driver.
+package pgstore
 
 import (
 	"context"
@@ -8,20 +11,21 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/footprintai/containarium/internal/guardrailpolicy"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
-// PostgresStore keeps the policy in a singleton row. The row is seeded at
+// Store keeps the policy in a singleton row. The row is seeded at
 // bootstrap with a NULL policy, which is the stored "not configured" state;
 // every Set locks that row, so concurrent Sets serialize and the revision
 // never repeats.
-type PostgresStore struct {
+type Store struct {
 	pool *pgxpool.Pool
 }
 
-// NewPostgresStore bootstraps the table and its singleton row on a pool the
+// New bootstraps the table and its singleton row on a pool the
 // daemon already owns. Idempotent: an existing row (and its revision) is kept.
-func NewPostgresStore(ctx context.Context, pool *pgxpool.Pool) (*PostgresStore, error) {
+func New(ctx context.Context, pool *pgxpool.Pool) (*Store, error) {
 	if _, err := pool.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS guardrail_policy (
 			id         SMALLINT PRIMARY KEY CHECK (id = 1),
@@ -34,7 +38,7 @@ func NewPostgresStore(ctx context.Context, pool *pgxpool.Pool) (*PostgresStore, 
 	`); err != nil {
 		return nil, fmt.Errorf("init guardrail_policy schema: %w", err)
 	}
-	return &PostgresStore{pool: pool}, nil
+	return &Store{pool: pool}, nil
 }
 
 // decodeRow turns the row into a policy; a NULL policy column is "not
@@ -51,7 +55,7 @@ func decodeRow(revision int64, raw []byte) (*pb.ServerGuardrailPolicy, error) {
 	return p, nil
 }
 
-func (s *PostgresStore) Get(ctx context.Context) (*pb.ServerGuardrailPolicy, error) {
+func (s *Store) Get(ctx context.Context) (*pb.ServerGuardrailPolicy, error) {
 	var (
 		revision int64
 		raw      []byte
@@ -66,12 +70,12 @@ func (s *PostgresStore) Get(ctx context.Context) (*pb.ServerGuardrailPolicy, err
 		return nil, err
 	}
 	if p == nil {
-		return nil, ErrNotConfigured
+		return nil, guardrailpolicy.ErrNotConfigured
 	}
 	return p, nil
 }
 
-func (s *PostgresStore) Set(ctx context.Context, policy *pb.GuardrailPolicy, signers []*pb.GuardrailTrustedSigner, updatedBy string) (*SetResult, error) {
+func (s *Store) Set(ctx context.Context, policy *pb.GuardrailPolicy, signers []*pb.GuardrailTrustedSigner, updatedBy string) (*guardrailpolicy.SetResult, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("begin guardrail policy set: %w", err)
@@ -89,7 +93,7 @@ func (s *PostgresStore) Set(ctx context.Context, policy *pb.GuardrailPolicy, sig
 	if err != nil {
 		return nil, err
 	}
-	cur := next(prev, policy, signers, updatedBy, time.Now())
+	cur := guardrailpolicy.Next(prev, policy, signers, updatedBy, time.Now())
 	if prev == nil {
 		cur.Revision = revision + 1
 	}
@@ -105,5 +109,5 @@ func (s *PostgresStore) Set(ctx context.Context, policy *pb.GuardrailPolicy, sig
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit guardrail policy: %w", err)
 	}
-	return &SetResult{Previous: prev, Current: clone(cur)}, nil
+	return &guardrailpolicy.SetResult{Previous: prev, Current: guardrailpolicy.Clone(cur)}, nil
 }

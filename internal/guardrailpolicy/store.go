@@ -51,8 +51,10 @@ func Hash(p *pb.ServerGuardrailPolicy) (string, error) {
 	return guardrail.PolicyHash(p.GetPolicy())
 }
 
-// next builds the record a Set stores on top of prev (nil = not configured).
-func next(prev *pb.ServerGuardrailPolicy, policy *pb.GuardrailPolicy, signers []*pb.GuardrailTrustedSigner, updatedBy string, now time.Time) *pb.ServerGuardrailPolicy {
+// Next builds the record a Set stores on top of prev (nil = not configured):
+// revision prev+1, the given rules and signers (copied), now and updatedBy.
+// Exported for the Postgres store in pgstore.
+func Next(prev *pb.ServerGuardrailPolicy, policy *pb.GuardrailPolicy, signers []*pb.GuardrailTrustedSigner, updatedBy string, now time.Time) *pb.ServerGuardrailPolicy {
 	out := &pb.ServerGuardrailPolicy{
 		Policy:    proto.Clone(policy).(*pb.GuardrailPolicy),
 		Revision:  prev.GetRevision() + 1,
@@ -65,7 +67,8 @@ func next(prev *pb.ServerGuardrailPolicy, policy *pb.GuardrailPolicy, signers []
 	return out
 }
 
-func clone(p *pb.ServerGuardrailPolicy) *pb.ServerGuardrailPolicy {
+// Clone deep-copies p; nil stays nil.
+func Clone(p *pb.ServerGuardrailPolicy) *pb.ServerGuardrailPolicy {
 	if p == nil {
 		return nil
 	}
@@ -87,13 +90,13 @@ func (m *MemoryStore) Get(context.Context) (*pb.ServerGuardrailPolicy, error) {
 	if m.cur == nil {
 		return nil, ErrNotConfigured
 	}
-	return clone(m.cur), nil
+	return Clone(m.cur), nil
 }
 
 func (m *MemoryStore) Set(_ context.Context, policy *pb.GuardrailPolicy, signers []*pb.GuardrailTrustedSigner, updatedBy string) (*SetResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	prev := m.cur
-	m.cur = next(prev, policy, signers, updatedBy, time.Now())
-	return &SetResult{Previous: clone(prev), Current: clone(m.cur)}, nil
+	m.cur = Next(prev, policy, signers, updatedBy, time.Now())
+	return &SetResult{Previous: Clone(prev), Current: Clone(m.cur)}, nil
 }

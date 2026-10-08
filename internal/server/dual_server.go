@@ -36,6 +36,7 @@ import (
 	"github.com/footprintai/containarium/internal/gateway"
 	"github.com/footprintai/containarium/internal/guacamole"
 	"github.com/footprintai/containarium/internal/guardrailpolicy"
+	guardrailpolicypg "github.com/footprintai/containarium/internal/guardrailpolicy/pgstore"
 	"github.com/footprintai/containarium/internal/metrics"
 	"github.com/footprintai/containarium/internal/metrics/platformstats"
 	"github.com/footprintai/containarium/internal/modelgateway"
@@ -1512,7 +1513,7 @@ skipAppHosting:
 			}
 
 			// Guardrail policy (#2368), independent of the netpol store below.
-			if gpStore, gErr := guardrailpolicy.NewPostgresStore(context.Background(), pool); gErr != nil {
+			if gpStore, gErr := guardrailpolicypg.New(context.Background(), pool); gErr != nil {
 				log.Printf("Warning: Failed to create Postgres guardrail policy store: %v", gErr)
 			} else {
 				guardrailPolicyServer.SetStore(gpStore)

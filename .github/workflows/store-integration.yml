@@ -103,7 +103,7 @@ jobs:
 
           go test -tags=integration -count=1 -timeout 10m -v \
             ./internal/server/ ./internal/cluster/ ./internal/auth/ \
-            ./internal/alert/ ./internal/collaborator/ ./internal/guardrailpolicy/ 2>&1 | tee integration.log
+            ./internal/alert/ ./internal/collaborator/ ./internal/guardrailpolicy/... 2>&1 | tee integration.log
 
           # internal/audit and internal/threatdetect both write to the same
           # audit_logs table, and each package's own tests reset it (DROP
