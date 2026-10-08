@@ -1,0 +1,164 @@
+syntax = "proto3";
+
+package containarium.v1;
+
+option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
+
+import "containarium/v1/config.proto";
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+import "protoc-gen-openapiv2/options/annotations.proto";
+
+// CodingToolEgressPolicyService — the admin-approved egress allowlist for the
+// coding CLI's own traffic (#2370, docs/architecture/coding-cli-egress-allowlist.md).
+//
+// Separate from NetworkPolicyService on purpose: a coding-tool policy never
+// changes what a tenant's own NetworkPolicy means. This service is the policy
+// store only; the kernel-side enforcement is a later increment.
+service CodingToolEgressPolicyService {
+  // SetCodingToolEgressPolicy creates or replaces a policy (upsert by tenant;
+  // an empty tenant is the cluster default). Validated with the same rules as
+  // NetworkPolicy; the stored form, with its new revision, is echoed back.
+  rpc SetCodingToolEgressPolicy(SetCodingToolEgressPolicyRequest) returns (SetCodingToolEgressPolicyResponse) {
+    option (google.api.http) = {
+      put: "/v1/code/egress-policy/{policy.tenant}"
+      body: "policy"
+      additional_bindings {
+        put: "/v1/code/egress-policy"
+        body: "policy"
+      }
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Set coding-tool egress policy";
+      description: "Create or replace the coding tool's egress allowlist for a tenant, or the cluster default when no tenant is given. Admin-only.";
+      tags: "CodingToolEgressPolicy";
+    };
+  }
+
+  // GetCodingToolEgressPolicy returns the stored policy for the key (absent
+  // when none is set) and the effective policy a run for that tenant takes.
+  rpc GetCodingToolEgressPolicy(GetCodingToolEgressPolicyRequest) returns (GetCodingToolEgressPolicyResponse) {
+    option (google.api.http) = {
+      get: "/v1/code/egress-policy/{tenant}"
+      additional_bindings {
+        get: "/v1/code/egress-policy"
+      }
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get coding-tool egress policy";
+      description: "Return the stored and effective coding-tool egress policy for a tenant (or the cluster default). Admin, or the tenant itself holding the code-egress:read scope.";
+      tags: "CodingToolEgressPolicy";
+    };
+  }
+
+  // DeleteCodingToolEgressPolicy removes a policy. Idempotent.
+  rpc DeleteCodingToolEgressPolicy(DeleteCodingToolEgressPolicyRequest) returns (DeleteCodingToolEgressPolicyResponse) {
+    option (google.api.http) = {
+      delete: "/v1/code/egress-policy/{tenant}"
+      additional_bindings {
+        delete: "/v1/code/egress-policy"
+      }
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Delete coding-tool egress policy";
+      description: "Remove the coding-tool egress policy for a tenant, or the cluster default (idempotent). Admin-only.";
+      tags: "CodingToolEgressPolicy";
+    };
+  }
+}
+
+// CodingToolEgressPolicy is the admin's allowlist for the coding tool's own
+// traffic. A tenant policy replaces the cluster default; it does not merge
+// with it.
+message CodingToolEgressPolicy {
+  // Empty tenant = the cluster default.
+  string tenant = 1;
+  // LOG_ONLY records what would be dropped, ENFORCE drops it. UNSPECIFIED is
+  // stored as LOG_ONLY, the same rule NetworkPolicy uses.
+  NetworkPolicyMode mode = 2;
+  // Validated and normalized by the same rules as NetworkPolicy.
+  repeated string egress_cidrs = 3;
+  repeated string egress_domains = 4;
+  // Server-assigned and monotonic; ignored on input.
+  int64 revision = 5;
+  google.protobuf.Timestamp updated_at = 6;
+  string updated_by = 7;
+}
+
+// CodingToolEgressPolicySource says which stored policy a tenant's runs take.
+enum CodingToolEgressPolicySource {
+  CODING_TOOL_EGRESS_POLICY_SOURCE_UNSPECIFIED = 0;
+  // Nothing configured: runs are unrestricted (decision Q7).
+  CODING_TOOL_EGRESS_POLICY_SOURCE_NONE = 1;
+  CODING_TOOL_EGRESS_POLICY_SOURCE_TENANT = 2;
+  CODING_TOOL_EGRESS_POLICY_SOURCE_CLUSTER_DEFAULT = 3;
+}
+
+// CodingToolEgressImplicitKind names a destination that is always allowed
+// while a policy is in effect, without the admin listing it.
+enum CodingToolEgressImplicitKind {
+  CODING_TOOL_EGRESS_IMPLICIT_KIND_UNSPECIFIED = 0;
+  // The box's DNS resolver; without it no listed domain resolves.
+  CODING_TOOL_EGRESS_IMPLICIT_KIND_DNS_RESOLVER = 1;
+  // The platform's model gateway. Applies to gateway-credential runs only.
+  CODING_TOOL_EGRESS_IMPLICIT_KIND_MODEL_GATEWAY = 2;
+}
+
+message CodingToolEgressImplicitEntry {
+  CodingToolEgressImplicitKind kind = 1;
+  // host:port when the daemon can name it; empty when it is resolved per box
+  // at run start.
+  string destination = 2;
+  string description = 3;
+}
+
+// EffectiveCodingToolEgressPolicy is what a run for the tenant takes.
+message EffectiveCodingToolEgressPolicy {
+  string tenant = 1;
+  CodingToolEgressPolicySource source = 2;
+  // False when no policy applies: runs take today's unrestricted path.
+  bool restricted = 3;
+  NetworkPolicyMode mode = 4;
+  repeated string egress_cidrs = 5;
+  repeated string egress_domains = 6;
+  // True when the policy lists nothing and is ENFORCE: no admin-listed
+  // destination is reachable, only the implicit entries.
+  bool deny_all = 7;
+  // Present whenever restricted is true.
+  repeated CodingToolEgressImplicitEntry implicit = 8;
+  // Revision of the policy this was resolved from; 0 when unrestricted.
+  int64 revision = 9;
+}
+
+// CodeEgressEnforcement is how strongly a run's egress allowlist is enforced.
+// Reported per run by a later increment; defined here with the policy.
+enum CodeEgressEnforcement {
+  CODE_EGRESS_ENFORCEMENT_UNSPECIFIED = 0;
+  CODE_EGRESS_ENFORCEMENT_NONE_NO_POLICY = 1;       // Q7: nothing configured
+  CODE_EGRESS_ENFORCEMENT_LOG_ONLY = 2;             // recorded, not dropped
+  CODE_EGRESS_ENFORCEMENT_ENFORCED = 3;             // dropped; run user cannot escalate
+  CODE_EGRESS_ENFORCEMENT_ENFORCED_ESCAPABLE = 4;   // dropped, but the run user can become box root
+}
+
+message SetCodingToolEgressPolicyRequest {
+  CodingToolEgressPolicy policy = 1;
+}
+message SetCodingToolEgressPolicyResponse {
+  CodingToolEgressPolicy policy = 1;
+}
+
+message GetCodingToolEgressPolicyRequest {
+  // Empty = the cluster default.
+  string tenant = 1;
+}
+message GetCodingToolEgressPolicyResponse {
+  // The policy stored under exactly this key; absent when none is set.
+  CodingToolEgressPolicy policy = 1;
+  EffectiveCodingToolEgressPolicy effective = 2;
+}
+
+message DeleteCodingToolEgressPolicyRequest {
+  // Empty = the cluster default.
+  string tenant = 1;
+}
+message DeleteCodingToolEgressPolicyResponse {}

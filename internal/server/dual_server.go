@@ -29,6 +29,7 @@ import (
 	"github.com/footprintai/containarium/internal/bridgedns"
 	"github.com/footprintai/containarium/internal/cloud"
 	clusterstore "github.com/footprintai/containarium/internal/cluster"
+	"github.com/footprintai/containarium/internal/codeegress"
 	"github.com/footprintai/containarium/internal/collaborator"
 	appconfig "github.com/footprintai/containarium/internal/config"
 	"github.com/footprintai/containarium/internal/coreguard"
@@ -635,6 +636,12 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	npServer.SetSignatureStore(NewMemNetworkPolicySignatureStore()) // #661 PR-B; swapped to Postgres below when available
 	pb.RegisterNetworkPolicyServiceServer(grpcServer, npServer)
 	log.Printf("NetworkPolicy service enabled (in-memory store; Phase A)")
+
+	// CodingToolEgressPolicyService (#2378): the coding tool's egress
+	// allowlist. In-memory until the Postgres pool exists; store only, no
+	// enforcement yet.
+	codeEgressServer := NewCodingToolEgressPolicyServer(NewMemCodingToolEgressPolicyStore())
+	pb.RegisterCodingToolEgressPolicyServiceServer(grpcServer, codeEgressServer)
 
 	// Register AgentSkillService — agent-as-a-box (Phase 0) + A2A transport
 	// (Phase 1). Reuses the recipe server for box provisioning, the token
@@ -1511,6 +1518,12 @@ skipAppHosting:
 				npServer.SetStore(pgStore)
 				policyStoreDurable.Store(true)
 				log.Printf("NetworkPolicy persistence enabled (Postgres store)")
+				if ceStore, ceErr := NewPostgresCodingToolEgressPolicyStore(context.Background(), pool); ceErr != nil {
+					log.Printf("Warning: Failed to create Postgres coding-tool egress policy store: %v", ceErr)
+				} else {
+					codeEgressServer.SetStore(ceStore)
+					log.Printf("Coding-tool egress policy persistence enabled (Postgres store)")
+				}
 				// Operator signatures (#661 PR-B) share the same pool.
 				if sigStore, sErr := NewPostgresNetworkPolicySignatureStore(context.Background(), pool); sErr != nil {
 					log.Printf("Warning: Failed to create Postgres network-policy signature store: %v", sErr)
@@ -1798,6 +1811,7 @@ skipAppHosting:
 				// which was registered on grpcServer above (before this
 				// store existed) and has been a no-op until now.
 				auditGRPCInterceptor.SetStore(auditStore)
+				codeEgressServer.SetAuditStore(auditStore)
 				log.Printf("Audit logging service enabled")
 			}
 
@@ -2356,6 +2370,9 @@ skipAppHosting:
 			// which gateway to mint against and which host a box reaches it on
 			// (#1726). Until this call they refuse; after it they mint.
 			modelGatewayServer.SetGateway(gw, []byte(config.JWTSecret), config.HostIP, config.HTTPPort)
+			if config.HostIP != "" && config.HTTPPort != 0 {
+				codeEgressServer.SetImplicit(codeegress.Implicit{GatewayEndpoint: net.JoinHostPort(config.HostIP, strconv.Itoa(config.HTTPPort))})
+			}
 			primary := gatewayPrimaryProvider(keys)
 			// globalProviders (#2222) is agentengine.Resolve's "ready with no
 			// owner lookup needed" set — the same `keys` map gatewayPrimaryProvider

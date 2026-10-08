@@ -1794,6 +1794,8 @@ func (s *Server) registerTools() {
 	// ModelGatewayService gateway that `containarium gateway mint` also calls.
 	// The key verbs are operator-gated and deliberately absent.
 	s.tools = append(s.tools, gatewayTools()...)
+	// Coding-tool egress allowlist (#2378): read only; writes are admin CLI.
+	s.tools = append(s.tools, codeEgressTools()...)
 
 	// Phase 1.7 — assign required scope per tool. Done as a
 	// post-pass so the slice literals above stay short and
@@ -1840,6 +1842,8 @@ func toolScopeAssignments() map[string]string {
 		// REAL upstream provider key — has no tool at all, so no agent token
 		// can reach it through MCP however it is scoped.
 		"mint_gateway_token": auth.ScopeGatewayMint,
+		// #2378: reading the coding tool's egress allowlist.
+		"code_egress_policy": auth.ScopeCodeEgressRead,
 
 		"tracker_route_list":   auth.ScopeTrackerAdmin,
 		"tracker_create_issue": auth.ScopeTrackerWrite,
