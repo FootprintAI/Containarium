@@ -7,9 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
+### Added
 
-- `containarium guardrail apply` now asks the engine for exactly the kinds its policy covers instead of an empty list (which meant "whatever the engine has enabled"), so an engine that cannot scan a kind the policy names — SECRET against a PII-only detector — fails the run with `FAILED_PRECONDITION` before anything is written, rather than attesting a PASS that never looked (#2362). `GuardrailAttestation` gains `kinds_scanned`, `apply` prints it, and `guardrail verify --require-kind pii,secret` refuses an attestation that did not cover a required kind. `--kind` remains on `scan` only.
+- Guardrail inbound foundations (#2367, slice A; the model-gateway enforcement is a later slice, so nothing is
+  deployed behaviour yet). `GuardrailKind` gains `UNSAFE_CODE` and `PROMPT_INJECTION`, and the in-tree reference
+  engine ships text-shape rules for them: `DOWNLOAD_EXECUTE`, `DESTRUCTIVE_SHELL` and `CREDENTIAL_EXFIL` for unsafe
+  code, `INSTRUCTION_OVERRIDE`, `ROLE_HIJACK` and `SYSTEM_PROMPT_EXFIL` for prompt injection. They match shapes, not
+  intent. `internal/guardrail` also gains a typed `InboundDecision` and `InboundReason` (clean, finding, coverage
+  gap, engine error, over limit, policy unavailable) with `DecideInbound`, so a caller gets a reason it can audit
+  rather than a bare allow or block. The `Scan` RPC is unchanged and the outbound CLI still asks only for PII and
+  SECRET. The reference engine's rules version changes, so new attestations name a new `rules@...` version.
+
+### Changed
+
+- `GuardrailEngineService.Scan` now refuses a request that names a kind the engine has no rules for, with
+  `FAILED_PRECONDITION`. Before, the engine skipped that kind without saying so and returned a clean result for a
+  kind it never looked at.
+
+## [0.100.0] - 2026-10-08
 
 ### Changed
 
@@ -56,8 +71,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deliberately leaves alone, so it could not tell a host that lost its block from one that has it. `containarium
   hostharden block-metadata` gains `--persist`, which also installs the boot unit, and `pool join` / `cloud enroll`
   now apply the block before printing posture so the printed result reflects it. Closes #2298.
+- `containarium network-guard status [--json]`, the `GetNetworkGuardStatus` RPC (`GET /v1/network/guard`) and the
+  `network_guard_status` MCP tool report the core-infra and tenant guards: mode, firewall driver, whether the host
+  can carry bridge NIC ACLs at all, and any box that could not be guarded. The command exits non-zero unless both
+  guards enforce cleanly. `containarium doctor` gains a matching posture check that reads Incus itself (firewall
+  driver, `network_bridge_acl_devices`, and each running tenant box's NIC ACLs), so an unguarded host goes red
+  (#2357).
+- An alert when a skill box's coding-agent sign-in expires (#2371). The daemon probes every running skill box every
+  15 minutes and sends one `CodeCredentialExpired` alert to the operator webhook (`alert_webhook_url` /
+  `alert_webhook_secret`, signed like the threat-detection alerts) each time a box flips to expired. The alert state
+  is persisted before sending, so an alert can be late but never duplicated. `CodeCredentialSource` gains
+  `CODE_CREDENTIAL_SOURCE_EXPIRED`, which `containarium agent credential-status` shows as `expired`. See
+  `docs/ALERTING-SETUP.md`.
+- `--runner-group` (CLI) and `runner_group` (MCP) place an organization-scope runner in a GitHub runner group.
+  Groups exist only at organization scope; one on an `owner/repo` target is refused up front. Runners installed
+  without a group are unchanged (#1217). The `--github-pat` help text now says an organization target needs
+  `admin:org`, not `repo`.
+- `containarium ssh-config sync|show` against a remote single-VM daemon whose boxes report no `ssh_host` now writes a
+  per-box `ProxyJump` block through the VM instead of an unroutable private address. `--jump-host <host>[:port]`
+  covers forwarded APIs and non-default SSH ports; ports outside 1-65535, ambiguous loopback endpoints and a missing
+  jump user are rejected before the config or its backup is touched (#2249).
+- A pool member profiles itself at daemon startup when `--pool` is set and it has no capability profile yet, so
+  `ListBackends` stops reporting pool members as unprofiled until an operator calls `ProfileBackend`. It never blocks
+  startup or the join, and the explicit RPC remains for retry or re-profiling. Profiling now rejects resource-read
+  errors and non-positive CPU or memory instead of recording a zero-capacity profile (#2136).
 
 ### Fixed
+
+- `containarium guardrail apply` now asks the engine for exactly the kinds its policy covers instead of an empty list (which meant "whatever the engine has enabled"), so an engine that cannot scan a kind the policy names — SECRET against a PII-only detector — fails the run with `FAILED_PRECONDITION` before anything is written, rather than attesting a PASS that never looked (#2362). `GuardrailAttestation` gains `kinds_scanned`, `apply` prints it, and `guardrail verify --require-kind pii,secret` refuses an attestation that did not cover a required kind. `--kind` remains on `scan` only.
 
 - An unrecognised `CONTAINARIUM_PRIVILEGED_PODMAN_POLICY` value no longer falls back to `all` (#2299). The value is
   still trimmed and lower-cased, so `ALL`, `Admin-Only` and `disabled ` keep working, and unset or empty still means
@@ -71,6 +112,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   FAIL even though the line was there. It only happened once the log window exceeded the ~4 KB pipe buffer, so
   it was intermittent (it depends on how long the script ran and how noisy the log was). The window is now
   captured first and the captured text is searched; a genuinely missing log line still fails the check.
+
+- `containarium create --labels` now reaches the daemon in remote mode, over both gRPC and HTTP; before, only a
+  local create applied them and a remote create dropped them silently (#2358).
+- The per-container ACL attaches to the NIC a tenant box actually has: a profile-inherited `eth0` is shadowed by an
+  instance-local copy that keeps the profile's settings and adds `security.acls`, and an existing ACL list and custom
+  rules are kept. `GetContainerACL` now reports an ACL carried by a profile. `UpdateContainerACL` with
+  `ACL_PRESET_UNSPECIFIED` is refused with `INVALID_ARGUMENT` instead of silently falling back to full isolation
+  (#2348).
+- Core services get deterministic static addresses (last-octet offsets `.241` to `.246` of the bridge subnet for
+  Caddy, PostgreSQL, VictoriaMetrics, the OTel collector, the security container and Guacamole), pinned on the NIC when
+  the container is created (#2365).
+- Incus device updates prepare ZFS quota headroom first, so a container whose dataset is effectively full no longer
+  fails the metadata write and leaves the core-guard reconciler retrying valid NIC updates forever (#2104).
+- `containarium quickstart` wires the in-box MCP server with the PATH-prefixed command `code run` already uses, so a
+  user-level `agent-box` install is found over a non-interactive SSH shell (it was `exit status 127: agent-box: not
+  found`). Re-running quickstart upgrades a recognised legacy entry for the same host and leaves custom commands,
+  hosts, flags and explicit paths alone (#2250).
 
 ## [0.99.3] - 2026-10-05
 
