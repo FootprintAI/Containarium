@@ -10,6 +10,9 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -44,7 +47,50 @@ var referenceRules = []rule{
 		regexp.MustCompile(`-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----`), nil},
 	{pb.GuardrailKind_GUARDRAIL_KIND_SECRET, "AWS_ACCESS_KEY_ID",
 		regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`), nil},
+
+	// Inbound kinds: signatures over model output on its way into a box
+	// (docs/architecture/guardrail-inbound-and-server-policy.md). Shapes,
+	// not semantics: a starting point, not a detector to rely on.
+
+	// A fetched script piped straight into an interpreter.
+	{pb.GuardrailKind_GUARDRAIL_KIND_UNSAFE_CODE, "DOWNLOAD_EXECUTE",
+		regexp.MustCompile(`(?i)\b(?:curl|wget)\b[^\n|;&]*\|\s*(?:sudo\s+)?(?:(?:ba|z|da|k)?sh|python[0-9.]*|perl|ruby|node)\b`), nil},
+	{pb.GuardrailKind_GUARDRAIL_KIND_UNSAFE_CODE, "DOWNLOAD_EXECUTE",
+		regexp.MustCompile(`(?i)\b(?:(?:ba|z)?sh|source|\.)\s+<\(\s*(?:curl|wget)\b`), nil},
+	// Recursive force-delete of the filesystem root or the home directory
+	// itself (not a path under it).
+	{pb.GuardrailKind_GUARDRAIL_KIND_UNSAFE_CODE, "DESTRUCTIVE_SHELL",
+		regexp.MustCompile(`\brm\s+(?:-[A-Za-z]*(?:rf|fr|r[A-Za-z]*f|f[A-Za-z]*r)[A-Za-z]*|-r\s+-f|-f\s+-r|--recursive\s+--force|--force\s+--recursive)\s+(?:--no-preserve-root\s+)?(?:/\*?|~/?|\$HOME/?|\$\{HOME\}/?)(?:[\s;&|]|$)`), nil},
+	// Formatting or overwriting a block device.
+	{pb.GuardrailKind_GUARDRAIL_KIND_UNSAFE_CODE, "DESTRUCTIVE_SHELL",
+		regexp.MustCompile(`\bmkfs(?:\.[a-z0-9]+)?\s+(?:-\S+\s+)*/dev/`), nil},
+	{pb.GuardrailKind_GUARDRAIL_KIND_UNSAFE_CODE, "DESTRUCTIVE_SHELL",
+		regexp.MustCompile(`\bdd\b[^\n]*\bof=/dev/(?:sd|hd|vd|xvd|nvme|disk|mmcblk)`), nil},
+	// The classic shell fork bomb.
+	{pb.GuardrailKind_GUARDRAIL_KIND_UNSAFE_CODE, "DESTRUCTIVE_SHELL",
+		regexp.MustCompile(`:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:`), nil},
+	// A network client handed a credential file, either as an argument or
+	// on its stdin.
+	{pb.GuardrailKind_GUARDRAIL_KIND_UNSAFE_CODE, "CREDENTIAL_EXFIL",
+		regexp.MustCompile(`(?i)\b(?:curl|wget|nc|ncat|scp)\b[^\n]*(?:` + credentialPath + `)`), nil},
+	{pb.GuardrailKind_GUARDRAIL_KIND_UNSAFE_CODE, "CREDENTIAL_EXFIL",
+		regexp.MustCompile(`(?i)(?:` + credentialPath + `)[^\n]*\|\s*(?:curl|wget|nc|ncat)\b`), nil},
+
+	// "Ignore the previous instructions" and its near variants.
+	{pb.GuardrailKind_GUARDRAIL_KIND_PROMPT_INJECTION, "INSTRUCTION_OVERRIDE",
+		regexp.MustCompile(`(?i)\b(?:ignore|disregard|forget|override)\s+(?:all\s+|any\s+)?(?:of\s+)?(?:the\s+|your\s+|my\s+)?(?:previous|prior|above|earlier|preceding|system|original)\s+(?:instructions|prompts?|rules|directions|guidelines)\b`), nil},
+	// An attempt to switch the model into an unrestricted persona.
+	{pb.GuardrailKind_GUARDRAIL_KIND_PROMPT_INJECTION, "ROLE_HIJACK",
+		regexp.MustCompile(`(?i)\byou\s+are\s+now\s+(?:in\s+)?(?:DAN\b|developer\s+mode|jailbreak\s+mode|an?\s+unrestricted\b)`), nil},
+	// An attempt to make the model disclose its own instructions.
+	{pb.GuardrailKind_GUARDRAIL_KIND_PROMPT_INJECTION, "SYSTEM_PROMPT_EXFIL",
+		regexp.MustCompile(`(?i)\b(?:reveal|print|output|repeat|show|leak)\s+(?:me\s+)?your\s+(?:system\s+prompt|hidden\s+instructions|initial\s+instructions)\b`), nil},
 }
+
+// credentialPath is the set of credential files whose appearance next to a
+// network client reads as exfiltration. The public half of a key pair
+// (id_*.pub) is excluded by requiring the match to end there.
+const credentialPath = `(?:~|\$HOME|\$\{HOME\}|/root|/home/[^/\s]+)/\.(?:ssh/id_[a-z0-9_]+\b(?:[^.]|$)|aws/credentials|docker/config\.json|kube/config|netrc)|/etc/shadow\b`
 
 // RulesEngine is the reference Engine. Zero value is ready to use.
 type RulesEngine struct{}
@@ -66,6 +112,12 @@ func (e RulesEngine) Scan(_ context.Context, req *pb.GuardrailScanRequest) (*pb.
 	for _, k := range req.GetKinds() {
 		if k == pb.GuardrailKind_GUARDRAIL_KIND_UNSPECIFIED {
 			return nil, fmt.Errorf("guardrail: kind UNSPECIFIED is not scannable")
+		}
+		// A kind with no rules is refused, never silently skipped: the
+		// caller would otherwise read "no findings" as "looked and clean"
+		// (proto: an unsupported kind is an error, not a partial scan).
+		if !referenceSupports(k) {
+			return nil, status.Errorf(codes.FailedPrecondition, "guardrail: the reference engine has no rules for kind %v", k)
 		}
 		want[k] = true
 	}
@@ -97,6 +149,16 @@ func (e RulesEngine) Scan(_ context.Context, req *pb.GuardrailScanRequest) (*pb.
 		}
 	}
 	return resp, nil
+}
+
+// referenceSupports reports whether the rule table has a rule of kind k.
+func referenceSupports(k pb.GuardrailKind) bool {
+	for _, r := range referenceRules {
+		if r.kind == k {
+			return true
+		}
+	}
+	return false
 }
 
 // luhnOK is the card-number checksum, over the digits of a match that may

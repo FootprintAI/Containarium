@@ -35,6 +35,12 @@ const (
 	// strings, internal topology. Distinct from PII because the right action
 	// differs (a secret is never tokenized into a persisted vault).
 	GuardrailKind_GUARDRAIL_KIND_SECRET GuardrailKind = 2
+	// Inbound (model output on its way into a box): code shapes that are
+	// dangerous to run, e.g. download-and-execute, destructive shell,
+	// credential exfiltration (docs/architecture/guardrail-inbound-and-server-policy.md).
+	GuardrailKind_GUARDRAIL_KIND_UNSAFE_CODE GuardrailKind = 3
+	// Inbound: instruction-override signatures embedded in returned content.
+	GuardrailKind_GUARDRAIL_KIND_PROMPT_INJECTION GuardrailKind = 4
 )
 
 // Enum value maps for GuardrailKind.
@@ -43,11 +49,15 @@ var (
 		0: "GUARDRAIL_KIND_UNSPECIFIED",
 		1: "GUARDRAIL_KIND_PII",
 		2: "GUARDRAIL_KIND_SECRET",
+		3: "GUARDRAIL_KIND_UNSAFE_CODE",
+		4: "GUARDRAIL_KIND_PROMPT_INJECTION",
 	}
 	GuardrailKind_value = map[string]int32{
-		"GUARDRAIL_KIND_UNSPECIFIED": 0,
-		"GUARDRAIL_KIND_PII":         1,
-		"GUARDRAIL_KIND_SECRET":      2,
+		"GUARDRAIL_KIND_UNSPECIFIED":      0,
+		"GUARDRAIL_KIND_PII":              1,
+		"GUARDRAIL_KIND_SECRET":           2,
+		"GUARDRAIL_KIND_UNSAFE_CODE":      3,
+		"GUARDRAIL_KIND_PROMPT_INJECTION": 4,
 	}
 )
 
@@ -890,11 +900,13 @@ const file_containarium_v1_guardrail_proto_rawDesc = "" +
 	"\x06key_id\x18\n" +
 	" \x01(\tR\x05keyId\x12\x1c\n" +
 	"\tsignature\x18\v \x01(\fR\tsignature\x12C\n" +
-	"\rkinds_scanned\x18\f \x03(\x0e2\x1e.containarium.v1.GuardrailKindR\fkindsScanned*b\n" +
+	"\rkinds_scanned\x18\f \x03(\x0e2\x1e.containarium.v1.GuardrailKindR\fkindsScanned*\xa7\x01\n" +
 	"\rGuardrailKind\x12\x1e\n" +
 	"\x1aGUARDRAIL_KIND_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12GUARDRAIL_KIND_PII\x10\x01\x12\x19\n" +
-	"\x15GUARDRAIL_KIND_SECRET\x10\x02*\x88\x01\n" +
+	"\x15GUARDRAIL_KIND_SECRET\x10\x02\x12\x1e\n" +
+	"\x1aGUARDRAIL_KIND_UNSAFE_CODE\x10\x03\x12#\n" +
+	"\x1fGUARDRAIL_KIND_PROMPT_INJECTION\x10\x04*\x88\x01\n" +
 	"\x0fGuardrailAction\x12 \n" +
 	"\x1cGUARDRAIL_ACTION_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16GUARDRAIL_ACTION_ALLOW\x10\x01\x12\x1b\n" +

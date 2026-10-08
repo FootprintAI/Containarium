@@ -29,6 +29,12 @@ enum GuardrailKind {
   // strings, internal topology. Distinct from PII because the right action
   // differs (a secret is never tokenized into a persisted vault).
   GUARDRAIL_KIND_SECRET = 2;
+  // Inbound (model output on its way into a box): code shapes that are
+  // dangerous to run, e.g. download-and-execute, destructive shell,
+  // credential exfiltration (docs/architecture/guardrail-inbound-and-server-policy.md).
+  GUARDRAIL_KIND_UNSAFE_CODE = 3;
+  // Inbound: instruction-override signatures embedded in returned content.
+  GUARDRAIL_KIND_PROMPT_INJECTION = 4;
 }
 
 // GuardrailAction is what the policy does with a finding of a given kind.
