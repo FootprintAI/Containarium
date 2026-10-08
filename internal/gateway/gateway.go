@@ -532,6 +532,10 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	if err := pb.RegisterNetworkPolicyServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
 		return fmt.Errorf("failed to register network policy service gateway: %w", err)
 	}
+	// CodingToolEgressPolicyService (#2378)
+	if err := pb.RegisterCodingToolEgressPolicyServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
+		return fmt.Errorf("failed to register coding-tool egress policy service gateway: %w", err)
+	}
 	// GuardrailPolicyService (#2368): the server-side guardrail policy.
 	if err := pb.RegisterGuardrailPolicyServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
 		return fmt.Errorf("failed to register guardrail policy service gateway: %w", err)
