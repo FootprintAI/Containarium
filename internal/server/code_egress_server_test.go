@@ -46,7 +46,7 @@ func setReq(tenant string, mode pb.NetworkPolicyMode, cidrs, domains []string) *
 	}}
 }
 
-func TestSetPolicy_AdminOnly(t *testing.T) {
+func TestCodeEgressSetPolicy_AdminOnly(t *testing.T) {
 	s, a := newTestCodeEgressServer()
 	req := setReq("alice", pb.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE, []string{"192.0.2.0/24"}, nil)
 
@@ -86,7 +86,7 @@ func TestSetPolicy_AdminOnly(t *testing.T) {
 	}
 }
 
-func TestSetPolicy_Validation(t *testing.T) {
+func TestCodeEgressSetPolicy_Validation(t *testing.T) {
 	s, a := newTestCodeEgressServer()
 	ok, err := s.SetCodingToolEgressPolicy(ceAdminCtx(), setReq("alice", pb.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE, []string{"192.0.2.0/24"}, []string{"api.example.com"}))
 	if err != nil {

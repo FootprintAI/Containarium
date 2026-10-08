@@ -6,6 +6,7 @@ package codeegress
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/footprintai/containarium/internal/netpolicy"
@@ -25,12 +26,19 @@ type Implicit struct {
 }
 
 // Normalize validates a policy with the same rules as NetworkPolicy and
-// returns its stored form: masked, deduped, sorted CIDRs; normalized domains;
-// UNSPECIFIED mode resolved to LOG_ONLY. Server-assigned fields (revision,
-// updated_at, updated_by) are dropped; the store sets them.
+// returns its stored form: masked, deduped, sorted CIDRs; normalized domains.
+// Unlike NetworkPolicy, the mode has no default: UNSPECIFIED (or an unknown
+// value) is an error, so a caller who forgets it cannot store a policy that
+// drops nothing. Server-assigned fields (revision, updated_at, updated_by)
+// are dropped; the store sets them.
 func Normalize(p *pb.CodingToolEgressPolicy) (*pb.CodingToolEgressPolicy, error) {
 	if p == nil {
 		return nil, errors.New("coding-tool egress policy is required")
+	}
+	switch p.GetMode() {
+	case pb.NetworkPolicyMode_NETWORK_POLICY_MODE_LOG_ONLY, pb.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE:
+	default:
+		return nil, fmt.Errorf("mode must be LOG_ONLY or ENFORCE, got %v: a coding-tool egress policy has no default mode", p.GetMode())
 	}
 	tenant := strings.TrimSpace(p.GetTenant())
 	check := tenant

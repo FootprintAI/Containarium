@@ -155,14 +155,17 @@ jobs:
       # that doc calling it "the layer that runs in CI". It does now, along with
       # the engine seam's TestRunCommand / TestCodeConfigRoundTrip /
       # TestPiModelsJSON tables.
+      # ./internal/guardrail/... joins in #2367 for the same reason: its own
+      # package tests (reference rules, InboundDecision) were in no lane.
+      # The job name above is left unchanged so a required-check name stays put.
       - name: Test containariumd (default tags)
         # Includes TestContainariumdCommandTree_SupersetOfClientGolden —
         # the untagged-build parity gate.
-        run: go test -race -v ./internal/cmd/... ./internal/coderun/... ./internal/sshconfig/...
+        run: go test -race -v ./internal/cmd/... ./internal/coderun/... ./internal/sshconfig/... ./internal/guardrail/...
 
       - name: Test containarium client (containarium_client tag)
         # Includes TestClientCommandTree_MatchesGoldenAllowList — the
         # command-tree allow-list gate — and TestHybridCommands_
         # NoServer_NeverReachRealLocalMode / TestMovedServerCommands_
         # ExitTwoNamingContainariumd from #1775/#1777.
-        run: go test -race -tags containarium_client -v ./internal/cmd/... ./internal/coderun/... ./internal/sshconfig/...
+        run: go test -race -tags containarium_client -v ./internal/cmd/... ./internal/coderun/... ./internal/sshconfig/... ./internal/guardrail/...

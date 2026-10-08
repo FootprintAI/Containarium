@@ -89,6 +89,10 @@
       "description": "GuardrailEngineService is implemented by an ENGINE, not by the\nContainarium daemon: the CLI (and later the daemon) is its client.\nStateless by contract — nothing is persisted on the engine side and\nrepeating a request repeats the scan. No REST mapping: this is an\ninternal plug point between two processes on the same side of a trust\nboundary, not a product endpoint."
     },
     {
+      "name": "GuardrailPolicyService",
+      "description": "GuardrailPolicyService is the daemon's store for the server-side policy.\nGet: any authenticated caller (a data owner needs the policy to run\n`guardrail apply` against it). Set: admin role only, audited."
+    },
+    {
       "name": "KmsService",
       "description": "KmsService exposes read + migration-trigger operations for the\ntenant-secrets envelope-encryption layer (see\ndocs/security/KMS-ENVELOPE-DESIGN.md). It deliberately does NOT\nexpose backend *configuration* — selecting a KMS backend and\nsupplying its credentials stays an operator/systemd concern\n(CONTAINARIUM_KMS_BACKEND + the per-backend env vars), never an\nover-the-wire action. Every RPC requires the `kms:admin` scope\nAND the admin role; these are platform-wide, not tenant-scoped."
     },
@@ -2193,7 +2197,7 @@
     "/v1/code/egress-policy": {
       "get": {
         "summary": "Get coding-tool egress policy",
-        "description": "Return the stored and effective coding-tool egress policy for a tenant (or the cluster default). Admin, or the tenant itself holding the code-egress:read scope.",
+        "description": "Return the stored and effective coding-tool egress policy. On GET /v1/code/egress-policy/{tenant} the tenant is the URL value; on the bare GET /v1/code/egress-policy it is the optional ?tenant= query parameter, and with none the cluster default (admin only). Admin, or the tenant itself holding the code-egress:read scope.",
         "operationId": "CodingToolEgressPolicyService_GetCodingToolEgressPolicy2",
         "responses": {
           "200": {
@@ -2224,7 +2228,7 @@
       },
       "delete": {
         "summary": "Delete coding-tool egress policy",
-        "description": "Remove the coding-tool egress policy for a tenant, or the cluster default (idempotent). Admin-only.",
+        "description": "Remove a coding-tool egress policy (idempotent). On DELETE /v1/code/egress-policy/{tenant} the tenant is the URL value; on the bare DELETE /v1/code/egress-policy it is the optional ?tenant= query parameter, and with none the cluster default. Admin-only.",
         "operationId": "CodingToolEgressPolicyService_DeleteCodingToolEgressPolicy2",
         "responses": {
           "200": {
@@ -2255,7 +2259,7 @@
       },
       "put": {
         "summary": "Set coding-tool egress policy",
-        "description": "Create or replace the coding tool's egress allowlist for a tenant, or the cluster default when no tenant is given. Admin-only.",
+        "description": "Create or replace the coding tool's egress allowlist. Admin-only. On PUT /v1/code/egress-policy/{policy.tenant} the tenant is the URL value, which wins over any policy.tenant in the body (path parameters are applied after the body is decoded). On the bare PUT /v1/code/egress-policy the tenant is policy.tenant from the body; an empty tenant sets the cluster default. mode is required: LOG_ONLY or ENFORCE; UNSPECIFIED is rejected with INVALID_ARGUMENT.",
         "operationId": "CodingToolEgressPolicyService_SetCodingToolEgressPolicy2",
         "responses": {
           "200": {
@@ -2289,7 +2293,7 @@
     "/v1/code/egress-policy/{policy.tenant}": {
       "put": {
         "summary": "Set coding-tool egress policy",
-        "description": "Create or replace the coding tool's egress allowlist for a tenant, or the cluster default when no tenant is given. Admin-only.",
+        "description": "Create or replace the coding tool's egress allowlist. Admin-only. On PUT /v1/code/egress-policy/{policy.tenant} the tenant is the URL value, which wins over any policy.tenant in the body (path parameters are applied after the body is decoded). On the bare PUT /v1/code/egress-policy the tenant is policy.tenant from the body; an empty tenant sets the cluster default. mode is required: LOG_ONLY or ENFORCE; UNSPECIFIED is rejected with INVALID_ARGUMENT.",
         "operationId": "CodingToolEgressPolicyService_SetCodingToolEgressPolicy",
         "responses": {
           "200": {
@@ -2308,7 +2312,7 @@
         "parameters": [
           {
             "name": "policy.tenant",
-            "description": "Empty tenant = the cluster default.",
+            "description": "Empty tenant = the cluster default. On the REST path with {policy.tenant}\nthe URL value replaces whatever is sent here.",
             "in": "path",
             "required": true,
             "type": "string"
@@ -2322,7 +2326,7 @@
               "properties": {
                 "mode": {
                   "$ref": "#/definitions/containarium.v1.NetworkPolicyMode",
-                  "description": "LOG_ONLY records what would be dropped, ENFORCE drops it. UNSPECIFIED is\nstored as LOG_ONLY, the same rule NetworkPolicy uses."
+                  "description": "Required. LOG_ONLY records what would be dropped, ENFORCE drops it.\nUnlike NetworkPolicy there is no default: UNSPECIFIED (or an unknown\nvalue) is INVALID_ARGUMENT, so a forgotten mode never stores a policy\nthat drops nothing."
                 },
                 "egressCidrs": {
                   "type": "array",
@@ -2362,7 +2366,7 @@
     "/v1/code/egress-policy/{tenant}": {
       "get": {
         "summary": "Get coding-tool egress policy",
-        "description": "Return the stored and effective coding-tool egress policy for a tenant (or the cluster default). Admin, or the tenant itself holding the code-egress:read scope.",
+        "description": "Return the stored and effective coding-tool egress policy. On GET /v1/code/egress-policy/{tenant} the tenant is the URL value; on the bare GET /v1/code/egress-policy it is the optional ?tenant= query parameter, and with none the cluster default (admin only). Admin, or the tenant itself holding the code-egress:read scope.",
         "operationId": "CodingToolEgressPolicyService_GetCodingToolEgressPolicy",
         "responses": {
           "200": {
@@ -2393,7 +2397,7 @@
       },
       "delete": {
         "summary": "Delete coding-tool egress policy",
-        "description": "Remove the coding-tool egress policy for a tenant, or the cluster default (idempotent). Admin-only.",
+        "description": "Remove a coding-tool egress policy (idempotent). On DELETE /v1/code/egress-policy/{tenant} the tenant is the URL value; on the bare DELETE /v1/code/egress-policy it is the optional ?tenant= query parameter, and with none the cluster default. Admin-only.",
         "operationId": "CodingToolEgressPolicyService_DeleteCodingToolEgressPolicy",
         "responses": {
           "200": {
@@ -4229,6 +4233,62 @@
         ],
         "tags": [
           "Events"
+        ]
+      }
+    },
+    "/v1/guardrail/policy": {
+      "get": {
+        "summary": "Get the server guardrail policy",
+        "description": "Return the cluster-wide guardrail policy, its trusted signers, revision and policy hash. configured=false when no policy was ever set. Any authenticated caller.",
+        "operationId": "GuardrailPolicyService_GetGuardrailPolicy",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetGuardrailPolicyResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "tags": [
+          "Guardrail"
+        ]
+      },
+      "put": {
+        "summary": "Set the server guardrail policy",
+        "description": "Replace the cluster-wide guardrail policy and trusted signers. Validated first (no unspecified or duplicate kind, max_residual \u003e= 0, every signer key_id equal to the SHA-256 of its Ed25519 key); an invalid policy is INVALID_ARGUMENT and the stored policy is untouched. Increments the revision and writes an audit entry. Admin role only.",
+        "operationId": "GuardrailPolicyService_SetGuardrailPolicy",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SetGuardrailPolicyResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/SetGuardrailPolicyRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Guardrail"
         ]
       }
     },
@@ -10524,11 +10584,11 @@
       "properties": {
         "tenant": {
           "type": "string",
-          "description": "Empty tenant = the cluster default."
+          "description": "Empty tenant = the cluster default. On the REST path with {policy.tenant}\nthe URL value replaces whatever is sent here."
         },
         "mode": {
           "$ref": "#/definitions/containarium.v1.NetworkPolicyMode",
-          "description": "LOG_ONLY records what would be dropped, ENFORCE drops it. UNSPECIFIED is\nstored as LOG_ONLY, the same rule NetworkPolicy uses."
+          "description": "Required. LOG_ONLY records what would be dropped, ENFORCE drops it.\nUnlike NetworkPolicy there is no default: UNSPECIFIED (or an unknown\nvalue) is INVALID_ARGUMENT, so a forgotten mode never stores a policy\nthat drops nothing."
         },
         "egressCidrs": {
           "type": "array",
@@ -12160,7 +12220,8 @@
           "description": "False when no policy applies: runs take today's unrestricted path."
         },
         "mode": {
-          "$ref": "#/definitions/containarium.v1.NetworkPolicyMode"
+          "$ref": "#/definitions/containarium.v1.NetworkPolicyMode",
+          "description": "The applied policy's mode: LOG_ONLY or ENFORCE whenever restricted is\ntrue (a stored policy always has one); UNSPECIFIED only when unrestricted."
         },
         "egressCidrs": {
           "type": "array",
@@ -13097,6 +13158,22 @@
         }
       }
     },
+    "GetGuardrailPolicyResponse": {
+      "type": "object",
+      "properties": {
+        "configured": {
+          "type": "boolean",
+          "description": "False when no policy was ever set. `policy` is then empty and consumers\nbehave as before the server policy existed (ungated deploys unaffected,\ninbound scan off). A read error is an RPC error, never configured=false."
+        },
+        "policy": {
+          "$ref": "#/definitions/ServerGuardrailPolicy"
+        },
+        "policyHash": {
+          "type": "string",
+          "description": "SHA-256 of policy.policy (the same hash an attestation records). Empty\nwhen not configured."
+        }
+      }
+    },
     "GetKMSStatusResponse": {
       "type": "object",
       "properties": {
@@ -13723,6 +13800,78 @@
         }
       },
       "description": "GuardStatus is one guard's last-pass snapshot."
+    },
+    "GuardrailAction": {
+      "type": "string",
+      "enum": [
+        "GUARDRAIL_ACTION_UNSPECIFIED",
+        "GUARDRAIL_ACTION_ALLOW",
+        "GUARDRAIL_ACTION_REDACT",
+        "GUARDRAIL_ACTION_BLOCK"
+      ],
+      "default": "GUARDRAIL_ACTION_UNSPECIFIED",
+      "description": "GuardrailAction is what the policy does with a finding of a given kind.\n\n - GUARDRAIL_ACTION_ALLOW: Leave the span as-is; count it.\n - GUARDRAIL_ACTION_REDACT: Replace the span with a stable placeholder token.\n - GUARDRAIL_ACTION_BLOCK: Any finding of this kind fails the gate for the whole subject."
+    },
+    "GuardrailKind": {
+      "type": "string",
+      "enum": [
+        "GUARDRAIL_KIND_UNSPECIFIED",
+        "GUARDRAIL_KIND_PII",
+        "GUARDRAIL_KIND_SECRET",
+        "GUARDRAIL_KIND_UNSAFE_CODE",
+        "GUARDRAIL_KIND_PROMPT_INJECTION"
+      ],
+      "default": "GUARDRAIL_KIND_UNSPECIFIED",
+      "description": "GuardrailKind is the family a finding belongs to. Enum, not a string: a\npolicy is keyed by it and a consumer decides by it.\n\n - GUARDRAIL_KIND_PII: Personal data: names, contact details, government identifiers,\nfinancial identifiers, addresses, amounts in a personal context.\n - GUARDRAIL_KIND_SECRET: Non-personal sensitive material: credentials, private keys, connection\nstrings, internal topology. Distinct from PII because the right action\ndiffers (a secret is never tokenized into a persisted vault).\n - GUARDRAIL_KIND_UNSAFE_CODE: Inbound (model output on its way into a box): code shapes that are\ndangerous to run, e.g. download-and-execute, destructive shell,\ncredential exfiltration (docs/architecture/guardrail-inbound-and-server-policy.md).\n - GUARDRAIL_KIND_PROMPT_INJECTION: Inbound: instruction-override signatures embedded in returned content."
+    },
+    "GuardrailPolicy": {
+      "type": "object",
+      "properties": {
+        "rules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/GuardrailRule"
+          }
+        }
+      },
+      "description": "GuardrailPolicy is the whole policy for one run. Its canonical encoding\nis hashed into the attestation so a verifier knows which policy a PASS\nwas measured against."
+    },
+    "GuardrailRule": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/GuardrailKind"
+        },
+        "action": {
+          "$ref": "#/definitions/GuardrailAction"
+        },
+        "maxResidual": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Residual findings of this kind tolerated on the re-scan of the redacted\noutput. 0 is the strict default. Only meaningful with REDACT; BLOCK\nfails on the first finding and ALLOW never fails."
+        }
+      },
+      "description": "GuardrailRule is one line of policy: what to do with findings of a kind,\nand how many may remain after redaction before the gate fails."
+    },
+    "GuardrailTrustedSigner": {
+      "type": "object",
+      "properties": {
+        "keyId": {
+          "type": "string",
+          "description": "SHA-256 of public_key, hex (matches GuardrailAttestation.key_id). Set\nrejects a signer whose key_id is not the hash of its key."
+        },
+        "publicKey": {
+          "type": "string",
+          "format": "byte",
+          "description": "Ed25519 public key, 32 bytes."
+        },
+        "label": {
+          "type": "string",
+          "description": "Reviewer-readable name. No personal data."
+        }
+      },
+      "description": "GuardrailTrustedSigner is a signing key an admin registered. A verifier\ntrusts these keys, never a key a deploy request carries."
     },
     "HeartbeatRequest": {
       "type": "object",
@@ -16645,6 +16794,36 @@
       "default": "SERVED_FROM_UNSPECIFIED",
       "description": "ServedFrom names which path actually served a SpawnSandbox call, so a\ncaller measuring the two-digit-ms SLO can tell a fast sample from a slow\none instead of an opaque latency number. See the design note's \"Latency\nbudget\" section: a latency SLO whose slow path is invisible isn't one.\n\n - SERVED_FROM_COLD: Fresh container, no warm pool involved. Always this value in Phase 1.\n - SERVED_FROM_POOL: Claimed from an already-booted, already-provisioned pool member.\nPhase 3+ only."
     },
+    "ServerGuardrailPolicy": {
+      "type": "object",
+      "properties": {
+        "policy": {
+          "$ref": "#/definitions/GuardrailPolicy",
+          "description": "The rules. GuardrailAttestation.policy_hash covers THIS message only, so\nrotating a trusted signer does not invalidate existing attestations."
+        },
+        "trustedSigners": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/GuardrailTrustedSigner"
+          }
+        },
+        "revision": {
+          "type": "string",
+          "format": "int64",
+          "description": "Server-assigned, monotonic: every successful Set increments it by one."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedBy": {
+          "type": "string",
+          "description": "Authenticated subject that made the last Set."
+        }
+      },
+      "description": "ServerGuardrailPolicy is the stored policy plus the server's bookkeeping."
+    },
     "SetCodingToolEgressPolicyResponse": {
       "type": "object",
       "properties": {
@@ -16720,6 +16899,34 @@
         }
       },
       "description": "SetContainerTTLResponse reports the new TTL state."
+    },
+    "SetGuardrailPolicyRequest": {
+      "type": "object",
+      "properties": {
+        "policy": {
+          "$ref": "#/definitions/GuardrailPolicy",
+          "description": "Required. An empty rule list is a valid policy (it clears every rule)."
+        },
+        "trustedSigners": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/GuardrailTrustedSigner"
+          }
+        }
+      }
+    },
+    "SetGuardrailPolicyResponse": {
+      "type": "object",
+      "properties": {
+        "policy": {
+          "$ref": "#/definitions/ServerGuardrailPolicy",
+          "description": "The stored policy, with its new revision."
+        },
+        "policyHash": {
+          "type": "string"
+        }
+      }
     },
     "SetMetricsExportRequest": {
       "type": "object",

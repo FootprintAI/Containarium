@@ -85,6 +85,8 @@ gateway models
 get
 guardrail apply
 guardrail keygen
+guardrail policy get
+guardrail policy set
 guardrail scan
 guardrail verify
 info
