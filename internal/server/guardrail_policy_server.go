@@ -41,6 +41,46 @@ func NewGuardrailPolicyServer(store guardrailpolicy.Store) *GuardrailPolicyServe
 	return &GuardrailPolicyServer{store: store}
 }
 
+// errGuardrailPolicyStoreUnavailable is what every read and write returns
+// while Postgres is configured but its guardrail policy store is not
+// installed. It is a real error, never guardrailpolicy.ErrNotConfigured.
+var errGuardrailPolicyStoreUnavailable = errors.New("guardrail policy store unavailable: Postgres is configured but the Postgres guardrail policy store was not installed at startup")
+
+// unavailableGuardrailPolicyStore fails closed. An empty in-memory fallback
+// would answer "no policy" (a PolicyProvider consumer would then switch the
+// inbound scan off) and accept admin Sets a restart silently loses. This is
+// the same case NetworkPolicy guards with policyStoreDurable (#2359).
+type unavailableGuardrailPolicyStore struct{}
+
+func (unavailableGuardrailPolicyStore) Get(context.Context) (*pb.ServerGuardrailPolicy, error) {
+	return nil, errGuardrailPolicyStoreUnavailable
+}
+
+func (unavailableGuardrailPolicyStore) Set(context.Context, *pb.GuardrailPolicy, []*pb.GuardrailTrustedSigner, string) (*guardrailpolicy.SetResult, error) {
+	return nil, errGuardrailPolicyStoreUnavailable
+}
+
+// guardrailPolicyStartupStore picks the store the server runs on, once the
+// daemon knows whether Postgres is configured. pg is the Postgres store, or
+// nil when it was not installed: the pool could not be reached, or the
+// store's bootstrap failed.
+//   - No Postgres configured: the in-memory store is the store. That is
+//     logged, because a policy set now does not survive a restart.
+//   - Postgres configured with pg installed: pg.
+//   - Postgres configured without pg: fail closed (unavailableGuardrailPolicyStore).
+func guardrailPolicyStartupStore(postgresConfigured bool, pg guardrailpolicy.Store) guardrailpolicy.Store {
+	switch {
+	case !postgresConfigured:
+		log.Printf("Guardrail policy: no database configured; using the in-memory store (a policy set now is lost on restart)")
+		return guardrailpolicy.NewMemoryStore()
+	case pg != nil:
+		return pg
+	default:
+		log.Printf("Warning: guardrail policy store UNAVAILABLE: Postgres is configured but its store was not installed; policy reads and writes fail until a restart reaches the database")
+		return unavailableGuardrailPolicyStore{}
+	}
+}
+
 // SetStore swaps the backing store. Startup only (the in-memory store is
 // upgraded to Postgres once the pool exists), before the server serves.
 func (s *GuardrailPolicyServer) SetStore(store guardrailpolicy.Store) { s.store = store }
@@ -66,11 +106,15 @@ func (s *GuardrailPolicyServer) GetGuardrailPolicy(ctx context.Context, _ *pb.Ge
 		return &pb.GetGuardrailPolicyResponse{Configured: false}, nil
 	}
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "read guardrail policy: %v", err)
+		// Get is open to any authenticated caller: keep the database detail
+		// in the daemon log, not in the response.
+		log.Printf("[guardrail-policy] read: %v", err)
+		return nil, status.Error(codes.Internal, "read guardrail policy failed")
 	}
 	hash, err := guardrailpolicy.Hash(p)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "hash guardrail policy: %v", err)
+		log.Printf("[guardrail-policy] hash: %v", err)
+		return nil, status.Error(codes.Internal, "hash guardrail policy failed")
 	}
 	return &pb.GetGuardrailPolicyResponse{Configured: true, Policy: p, PolicyHash: hash}, nil
 }
