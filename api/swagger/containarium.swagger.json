@@ -66,6 +66,10 @@
       "description": "ClusterService manages tenant-facing managed Kubernetes clusters (#1413).\n\nA managed cluster is a platform-operated k3s control plane plus worker\nnodes that are Containarium VMs, grouped into typed size classes the\ncluster-autoscaler expands by fit simulation. The tenant's only surface\nis this service and the kubeconfig it returns — the control-plane VM is\nplatform territory (no tenant SSH, absent from the tenant's container\nlist), and worker VMs are cluster-internal.\n\nDesign: docs/architecture/managed-k8s-clusters.md. Provisioning is\nasynchronous: CreateCluster records the desired cluster and returns; a\ndaemon-side reconciler (#1414) converges VMs and flips the cluster to\nREADY. Kubeconfig and node-join material are read on demand from the\ncontrol-plane VM and are never persisted by the platform."
     },
     {
+      "name": "CodingToolEgressPolicyService",
+      "description": "CodingToolEgressPolicyService — the admin-approved egress allowlist for the\ncoding CLI's own traffic (#2370, docs/architecture/coding-cli-egress-allowlist.md).\n\nSeparate from NetworkPolicyService on purpose: a coding-tool policy never\nchanges what a tenant's own NetworkPolicy means. This service is the policy\nstore only; the kernel-side enforcement is a later increment."
+    },
+    {
       "name": "ComposeAutostartService"
     },
     {
@@ -2187,6 +2191,239 @@
         ],
         "tags": [
           "Clusters"
+        ]
+      }
+    },
+    "/v1/code/egress-policy": {
+      "get": {
+        "summary": "Get coding-tool egress policy",
+        "description": "Return the stored and effective coding-tool egress policy. On GET /v1/code/egress-policy/{tenant} the tenant is the URL value; on the bare GET /v1/code/egress-policy it is the optional ?tenant= query parameter, and with none the cluster default (admin only). Admin, or the tenant itself holding the code-egress:read scope.",
+        "operationId": "CodingToolEgressPolicyService_GetCodingToolEgressPolicy2",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetCodingToolEgressPolicyResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "tenant",
+            "description": "Empty = the cluster default.",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "CodingToolEgressPolicy"
+        ]
+      },
+      "delete": {
+        "summary": "Delete coding-tool egress policy",
+        "description": "Remove a coding-tool egress policy (idempotent). On DELETE /v1/code/egress-policy/{tenant} the tenant is the URL value; on the bare DELETE /v1/code/egress-policy it is the optional ?tenant= query parameter, and with none the cluster default. Admin-only.",
+        "operationId": "CodingToolEgressPolicyService_DeleteCodingToolEgressPolicy2",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/DeleteCodingToolEgressPolicyResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "tenant",
+            "description": "Empty = the cluster default.",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "CodingToolEgressPolicy"
+        ]
+      },
+      "put": {
+        "summary": "Set coding-tool egress policy",
+        "description": "Create or replace the coding tool's egress allowlist. Admin-only. On PUT /v1/code/egress-policy/{policy.tenant} the tenant is the URL value, which wins over any policy.tenant in the body (path parameters are applied after the body is decoded). On the bare PUT /v1/code/egress-policy the tenant is policy.tenant from the body; an empty tenant sets the cluster default. mode is required: LOG_ONLY or ENFORCE; UNSPECIFIED is rejected with INVALID_ARGUMENT.",
+        "operationId": "CodingToolEgressPolicyService_SetCodingToolEgressPolicy2",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SetCodingToolEgressPolicyResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "policy",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/CodingToolEgressPolicy"
+            }
+          }
+        ],
+        "tags": [
+          "CodingToolEgressPolicy"
+        ]
+      }
+    },
+    "/v1/code/egress-policy/{policy.tenant}": {
+      "put": {
+        "summary": "Set coding-tool egress policy",
+        "description": "Create or replace the coding tool's egress allowlist. Admin-only. On PUT /v1/code/egress-policy/{policy.tenant} the tenant is the URL value, which wins over any policy.tenant in the body (path parameters are applied after the body is decoded). On the bare PUT /v1/code/egress-policy the tenant is policy.tenant from the body; an empty tenant sets the cluster default. mode is required: LOG_ONLY or ENFORCE; UNSPECIFIED is rejected with INVALID_ARGUMENT.",
+        "operationId": "CodingToolEgressPolicyService_SetCodingToolEgressPolicy",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SetCodingToolEgressPolicyResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "policy.tenant",
+            "description": "Empty tenant = the cluster default. On the REST path with {policy.tenant}\nthe URL value replaces whatever is sent here.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "policy",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "type": "object",
+              "properties": {
+                "mode": {
+                  "$ref": "#/definitions/containarium.v1.NetworkPolicyMode",
+                  "description": "Required. LOG_ONLY records what would be dropped, ENFORCE drops it.\nUnlike NetworkPolicy there is no default: UNSPECIFIED (or an unknown\nvalue) is INVALID_ARGUMENT, so a forgotten mode never stores a policy\nthat drops nothing."
+                },
+                "egressCidrs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Validated and normalized by the same rules as NetworkPolicy."
+                },
+                "egressDomains": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "revision": {
+                  "type": "string",
+                  "format": "int64",
+                  "description": "Server-assigned and monotonic; ignored on input."
+                },
+                "updatedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "updatedBy": {
+                  "type": "string"
+                }
+              },
+              "description": "CodingToolEgressPolicy is the admin's allowlist for the coding tool's own\ntraffic. A tenant policy replaces the cluster default; it does not merge\nwith it."
+            }
+          }
+        ],
+        "tags": [
+          "CodingToolEgressPolicy"
+        ]
+      }
+    },
+    "/v1/code/egress-policy/{tenant}": {
+      "get": {
+        "summary": "Get coding-tool egress policy",
+        "description": "Return the stored and effective coding-tool egress policy. On GET /v1/code/egress-policy/{tenant} the tenant is the URL value; on the bare GET /v1/code/egress-policy it is the optional ?tenant= query parameter, and with none the cluster default (admin only). Admin, or the tenant itself holding the code-egress:read scope.",
+        "operationId": "CodingToolEgressPolicyService_GetCodingToolEgressPolicy",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetCodingToolEgressPolicyResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "tenant",
+            "description": "Empty = the cluster default.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "CodingToolEgressPolicy"
+        ]
+      },
+      "delete": {
+        "summary": "Delete coding-tool egress policy",
+        "description": "Remove a coding-tool egress policy (idempotent). On DELETE /v1/code/egress-policy/{tenant} the tenant is the URL value; on the bare DELETE /v1/code/egress-policy it is the optional ?tenant= query parameter, and with none the cluster default. Admin-only.",
+        "operationId": "CodingToolEgressPolicyService_DeleteCodingToolEgressPolicy",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/DeleteCodingToolEgressPolicyResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "tenant",
+            "description": "Empty = the cluster default.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "CodingToolEgressPolicy"
         ]
       }
     },
@@ -10317,6 +10554,81 @@
       "default": "CODE_CREDENTIAL_SOURCE_UNSPECIFIED",
       "description": "CodeCredentialSource is WHERE a box's `containarium code`-style coding\nengine (Claude Code today; Codex once #2273 lands) would currently find a\nhuman/headless sign-in — never the credential's value, never read, logged,\nor transmitted at any layer. Mirrors #2030's `code install` verify output\n(\"report which credential source Claude Code will use, never a value\"),\ncondensed to the one answer GetSkillBoxCredentialStatus needs (#2272).\n\nDeliberately a DIFFERENT enum from AgentCredentialSource above:\nAgentCredentialSource is where a model-GATEWAY token's upstream key comes\nfrom (daemon-held, never the box's concern); CodeCredentialSource is\nwhether a HUMAN has already completed Anthropic's own sign-in flow on this\nbox, or placed their own key, so unattended reuse of that same box needs no\ncredential of containarium's own.\n\n - CODE_CREDENTIAL_SOURCE_INTERACTIVE: The engine's own device-code/browser sign-in has already completed on\nthis box (e.g. Claude Code's own ~/.claude/.credentials.json).\n - CODE_CREDENTIAL_SOURCE_API_KEY: A user-placed provider key/token is visible to the engine's own shell\nenvironment (e.g. ANTHROPIC_API_KEY in ~/.claude/settings.json, or a 3P\nprovider env var) — the headless path #2030 documents.\n - CODE_CREDENTIAL_SOURCE_NONE: Neither of the above. Expected on a freshly provisioned box (#2272)\nuntil a human signs in or places a key.\n - CODE_CREDENTIAL_SOURCE_EXPIRED: The engine's own device-code/browser sign-in exists on this box, but the\nexpiry timestamp recorded in its sign-in credentials file (e.g. the\n`expiresAt` field of Claude Code's ~/.claude/.credentials.json) is in\nthe past (#2371). Only that timestamp is parsed — the credential value\nis never read, logged, or transmitted. A sign-in file with no expiry\ntimestamp reports INTERACTIVE, never EXPIRED: an unknown expiry is not\nguessed to be a past one."
     },
+    "CodingToolEgressImplicitEntry": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/CodingToolEgressImplicitKind"
+        },
+        "destination": {
+          "type": "string",
+          "description": "host:port when the daemon can name it; empty when it is resolved per box\nat run start."
+        },
+        "description": {
+          "type": "string"
+        }
+      }
+    },
+    "CodingToolEgressImplicitKind": {
+      "type": "string",
+      "enum": [
+        "CODING_TOOL_EGRESS_IMPLICIT_KIND_UNSPECIFIED",
+        "CODING_TOOL_EGRESS_IMPLICIT_KIND_DNS_RESOLVER",
+        "CODING_TOOL_EGRESS_IMPLICIT_KIND_MODEL_GATEWAY"
+      ],
+      "default": "CODING_TOOL_EGRESS_IMPLICIT_KIND_UNSPECIFIED",
+      "description": "CodingToolEgressImplicitKind names a destination that is always allowed\nwhile a policy is in effect, without the admin listing it.\n\n - CODING_TOOL_EGRESS_IMPLICIT_KIND_DNS_RESOLVER: The box's DNS resolver; without it no listed domain resolves.\n - CODING_TOOL_EGRESS_IMPLICIT_KIND_MODEL_GATEWAY: The platform's model gateway. Applies to gateway-credential runs only."
+    },
+    "CodingToolEgressPolicy": {
+      "type": "object",
+      "properties": {
+        "tenant": {
+          "type": "string",
+          "description": "Empty tenant = the cluster default. On the REST path with {policy.tenant}\nthe URL value replaces whatever is sent here."
+        },
+        "mode": {
+          "$ref": "#/definitions/containarium.v1.NetworkPolicyMode",
+          "description": "Required. LOG_ONLY records what would be dropped, ENFORCE drops it.\nUnlike NetworkPolicy there is no default: UNSPECIFIED (or an unknown\nvalue) is INVALID_ARGUMENT, so a forgotten mode never stores a policy\nthat drops nothing."
+        },
+        "egressCidrs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Validated and normalized by the same rules as NetworkPolicy."
+        },
+        "egressDomains": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "revision": {
+          "type": "string",
+          "format": "int64",
+          "description": "Server-assigned and monotonic; ignored on input."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedBy": {
+          "type": "string"
+        }
+      },
+      "description": "CodingToolEgressPolicy is the admin's allowlist for the coding tool's own\ntraffic. A tenant policy replaces the cluster default; it does not merge\nwith it."
+    },
+    "CodingToolEgressPolicySource": {
+      "type": "string",
+      "enum": [
+        "CODING_TOOL_EGRESS_POLICY_SOURCE_UNSPECIFIED",
+        "CODING_TOOL_EGRESS_POLICY_SOURCE_NONE",
+        "CODING_TOOL_EGRESS_POLICY_SOURCE_TENANT",
+        "CODING_TOOL_EGRESS_POLICY_SOURCE_CLUSTER_DEFAULT"
+      ],
+      "default": "CODING_TOOL_EGRESS_POLICY_SOURCE_UNSPECIFIED",
+      "description": "CodingToolEgressPolicySource says which stored policy a tenant's runs take.\n\n - CODING_TOOL_EGRESS_POLICY_SOURCE_NONE: Nothing configured: runs are unrestricted (decision Q7)."
+    },
     "Collaborator": {
       "type": "object",
       "properties": {
@@ -11432,6 +11744,9 @@
         }
       }
     },
+    "DeleteCodingToolEgressPolicyResponse": {
+      "type": "object"
+    },
     "DeleteContainerResponse": {
       "type": "object",
       "properties": {
@@ -11890,6 +12205,55 @@
           "description": "Issues that passed every check this tick makes before inserting a\ndispatch row (routed scope, no gate or state label, depth within\npolicy) but were not dispatched because max_starts runs had already\nstarted (#2270). They have no row and no label; a later tick picks\nthem up. Always 0 when max_starts is 0."
         }
       }
+    },
+    "EffectiveCodingToolEgressPolicy": {
+      "type": "object",
+      "properties": {
+        "tenant": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/definitions/CodingToolEgressPolicySource"
+        },
+        "restricted": {
+          "type": "boolean",
+          "description": "False when no policy applies: runs take today's unrestricted path."
+        },
+        "mode": {
+          "$ref": "#/definitions/containarium.v1.NetworkPolicyMode",
+          "description": "The applied policy's mode: LOG_ONLY or ENFORCE whenever restricted is\ntrue (a stored policy always has one); UNSPECIFIED only when unrestricted."
+        },
+        "egressCidrs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "egressDomains": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "denyAll": {
+          "type": "boolean",
+          "description": "True when the policy lists nothing and is ENFORCE: no admin-listed\ndestination is reachable, only the implicit entries."
+        },
+        "implicit": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/CodingToolEgressImplicitEntry"
+          },
+          "description": "Present whenever restricted is true."
+        },
+        "revision": {
+          "type": "string",
+          "format": "int64",
+          "description": "Revision of the policy this was resolved from; 0 when unrestricted."
+        }
+      },
+      "description": "EffectiveCodingToolEgressPolicy is what a run for the tenant takes."
     },
     "EnableBody": {
       "type": "object",
@@ -12686,6 +13050,18 @@
             "$ref": "#/definitions/ScaleEvent"
           },
           "description": "Newest first."
+        }
+      }
+    },
+    "GetCodingToolEgressPolicyResponse": {
+      "type": "object",
+      "properties": {
+        "policy": {
+          "$ref": "#/definitions/CodingToolEgressPolicy",
+          "description": "The policy stored under exactly this key; absent when none is set."
+        },
+        "effective": {
+          "$ref": "#/definitions/EffectiveCodingToolEgressPolicy"
         }
       }
     },
@@ -16447,6 +16823,14 @@
         }
       },
       "description": "ServerGuardrailPolicy is the stored policy plus the server's bookkeeping."
+    },
+    "SetCodingToolEgressPolicyResponse": {
+      "type": "object",
+      "properties": {
+        "policy": {
+          "$ref": "#/definitions/CodingToolEgressPolicy"
+        }
+      }
     },
     "SetContainerAttributionBody": {
       "type": "object",
