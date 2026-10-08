@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,8 +34,12 @@ type fakeRecipeBoxes struct {
 	mu       sync.Mutex
 	created  []string
 	files    map[string][]byte // path in the box -> bytes
+	modes    map[string]string // path in the box -> mode it was written with
 	events   []string          // "create", "write <path>", "exec <argv0>"
 	onCreate func()            // runs inside CreateContainer (between verify and copy)
+	// failWrite, when set, fails every file written into the box with an
+	// error that names a daemon-side path (which must not reach the caller).
+	failWrite error
 }
 
 func (f *fakeRecipeBoxes) CreateContainer(_ context.Context, req *pb.CreateContainerRequest) (*pb.CreateContainerResponse, error) {
@@ -60,13 +65,21 @@ func (f *fakeRecipeBoxes) Exec(_ string, command []string) error {
 	return nil
 }
 
-func (f *fakeRecipeBoxes) WriteFile(_ string, path string, content []byte, _ string) error {
+func (f *fakeRecipeBoxes) PushFile(_ string, path string, content io.ReadSeeker, mode string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.files == nil {
-		f.files = map[string][]byte{}
+	if f.failWrite != nil {
+		f.events = append(f.events, "write-failed "+path)
+		return f.failWrite
 	}
-	f.files[path] = append([]byte(nil), content...)
+	b, err := io.ReadAll(content)
+	if err != nil {
+		return err
+	}
+	if f.files == nil {
+		f.files, f.modes = map[string][]byte{}, map[string]string{}
+	}
+	f.files[path], f.modes[path] = b, mode
 	f.events = append(f.events, "write "+path)
 	return nil
 }
@@ -109,6 +122,16 @@ type gateFixture struct {
 	req     *pb.DeployRecipeRequest
 	perr    error // policy read error
 	noStore bool  // daemon has no policy provider
+	// snapParent is where the gate makes its snapshots; every test asserts
+	// it is empty afterwards (a leaked snapshot is a full dataset copy).
+	snapParent string
+}
+
+func (f *gateFixture) assertNoSnapshotLeft(t *testing.T) {
+	t.Helper()
+	if entries, _ := os.ReadDir(f.snapParent); len(entries) != 0 {
+		t.Errorf("%d snapshot(s) left in the snapshot dir after the deploy", len(entries))
+	}
 }
 
 func newGateFixture(t *testing.T) *gateFixture {
@@ -145,7 +168,8 @@ func newGateFixture(t *testing.T) *gateFixture {
 		TrustedSigners: []*pb.GuardrailTrustedSigner{{KeyId: guardrail.KeyID(pub), PublicKey: pub, Label: "release"}},
 		Revision:       1,
 	}
-	f.srv = &RecipeServer{catalog: catalog, boxes: f.boxes, guardrailStagingRoot: root}
+	f.snapParent = t.TempDir()
+	f.srv = &RecipeServer{catalog: catalog, boxes: f.boxes, guardrailStagingRoot: root, guardrailSnapshotParent: f.snapParent}
 	f.req = &pb.DeployRecipeRequest{
 		RecipeId: "gated",
 		Name:     "alice",
@@ -225,6 +249,18 @@ func TestDeployGate(t *testing.T) {
 				t.Fatal(err)
 			}
 		}, codes.FailedPrecondition, "cover"},
+		{"require_kinds alone demands a kind the attestation lacks", func(t *testing.T, f *gateFixture) {
+			// The server policy ALLOWs PII, so the policy alone does not
+			// need it scanned; only the recipe's require_kinds [pii] does.
+			f.policy.Policy.Rules[0].Action = pb.GuardrailAction_GUARDRAIL_ACTION_ALLOW
+			f.req.GuardrailInput.Attestation = f.attest(t, f.policy.GetPolicy(), pb.GuardrailVerdict_GUARDRAIL_VERDICT_PASS, f.priv)
+			if got := f.req.GuardrailInput.Attestation.GetKindsScanned(); len(got) != 1 || got[0] != pb.GuardrailKind_GUARDRAIL_KIND_SECRET {
+				t.Fatalf("fixture: kinds_scanned = %v, want [SECRET] only", got)
+			}
+		}, codes.FailedPrecondition, "PII"},
+		{"snapshot dir inside the staging root", func(_ *testing.T, f *gateFixture) {
+			f.srv.guardrailSnapshotParent = filepath.Join(f.srv.guardrailStagingRoot, "alice")
+		}, codes.FailedPrecondition, "snapshot dir is misconfigured"},
 		{"tampered byte: digest mismatch", func(t *testing.T, f *gateFixture) {
 			if err := os.WriteFile(filepath.Join(f.staged, "a.txt"), []byte("clean row onE\n"), 0o600); err != nil {
 				t.Fatal(err)
@@ -241,6 +277,12 @@ func TestDeployGate(t *testing.T) {
 			}
 			if len(f.boxes.created) != 0 || len(f.boxes.events) != 0 {
 				t.Fatalf("a refused deploy touched the backend: created %v, events %v", f.boxes.created, f.boxes.events)
+			}
+			f.assertNoSnapshotLeft(t)
+			for _, p := range []string{f.srv.guardrailStagingRoot, f.snapParent} {
+				if p != "" && strings.Contains(err.Error(), p) {
+					t.Errorf("error %q echoes the daemon-side path %s", err, p)
+				}
 			}
 		})
 	}
@@ -263,6 +305,84 @@ func TestDeployGate_Pass(t *testing.T) {
 	}
 	if f.boxes.events[0] != "create" {
 		t.Fatalf("events %v: want create first", f.boxes.events)
+	}
+	f.assertNoSnapshotLeft(t)
+}
+
+// TestDeployGate_DeliveryFailureKeepsTheBox is the accepted Q13 behaviour:
+// when copying the verified bytes INTO the new box fails, the deploy errors,
+// post_start does not run, the box is kept (as a post_start failure keeps
+// it), the snapshot is removed, and no daemon-side path is echoed.
+func TestDeployGate_DeliveryFailureKeepsTheBox(t *testing.T) {
+	f := newGateFixture(t)
+	f.boxes.failWrite = fmt.Errorf("push %s/guardrail-snapshot-9/a.txt: %w", f.snapParent, syscall.EIO)
+	_, err := f.deploy(t)
+	if err == nil {
+		t.Fatal("deploy with a failing copy into the box = nil error")
+	}
+	if len(f.boxes.created) != 1 {
+		t.Fatalf("created %v, want the one box, kept", f.boxes.created)
+	}
+	for _, ev := range f.boxes.events {
+		if ev == "exec post_start" {
+			t.Fatalf("post_start ran on a box without its dataset: events %v", f.boxes.events)
+		}
+	}
+	if strings.Contains(err.Error(), f.snapParent) || strings.Contains(err.Error(), f.srv.guardrailStagingRoot) {
+		t.Fatalf("error %q echoes a daemon-side path", err)
+	}
+	f.assertNoSnapshotLeft(t)
+}
+
+// TestDeployGate_BadAttestationIsRefusedBeforeAnyCopy: the attestation-only
+// checks run before the dataset is copied, so a garbage or untrusted
+// attestation never costs a snapshot.
+func TestDeployGate_BadAttestationIsRefusedBeforeAnyCopy(t *testing.T) {
+	f := newGateFixture(t)
+	_, other, _ := ed25519.GenerateKey(rand.Reader)
+	f.req.GuardrailInput.Attestation = f.attest(t, f.policy.GetPolicy(), pb.GuardrailVerdict_GUARDRAIL_VERDICT_PASS, other)
+	snapshots := 0
+	f.srv.guardrailSnapshot = func(a *guardrailstage.Area, ref, parent string) (*guardrailstage.Snapshot, error) {
+		snapshots++
+		return a.Snapshot(ref, parent)
+	}
+	if _, err := f.deploy(t); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("deploy = %v, want FAILED_PRECONDITION", err)
+	}
+	if snapshots != 0 {
+		t.Fatalf("an untrusted attestation cost %d snapshot(s), want 0", snapshots)
+	}
+}
+
+// TestSetGuardrailGate_SnapshotDirIsUsed: the daemon's
+// --guardrail-snapshot-dir reaches the gate, and snapshots land there.
+func TestSetGuardrailGate_SnapshotDirIsUsed(t *testing.T) {
+	f := newGateFixture(t)
+	dir := t.TempDir()
+	f.srv.SetGuardrailGate(nil, f.srv.guardrailStagingRoot, dir)
+	var parents []string
+	f.srv.guardrailSnapshot = func(a *guardrailstage.Area, ref, parent string) (*guardrailstage.Snapshot, error) {
+		parents = append(parents, parent)
+		return a.Snapshot(ref, parent)
+	}
+	if _, err := f.deploy(t); err != nil {
+		t.Fatalf("deploy: %v", err)
+	}
+	if len(parents) != 1 || parents[0] != dir {
+		t.Fatalf("snapshots made under %v, want [%s]", parents, dir)
+	}
+}
+
+// TestGuardrailStagingRef: the deploy name scopes the ref and must be a
+// single path component (an admin may pass any name).
+func TestGuardrailStagingRef(t *testing.T) {
+	for _, name := range []string{"", ".", "..", "a/b", `a\b`, "../bob", "bob/.."} {
+		if _, err := guardrailStagingRef(name, "ds1"); !errors.Is(err, guardrailstage.ErrBadRef) {
+			t.Errorf("guardrailStagingRef(%q) = %v, want ErrBadRef", name, err)
+		}
+	}
+	if got, err := guardrailStagingRef("alice", "ds1"); err != nil || got != "alice/ds1" {
+		t.Errorf("guardrailStagingRef(alice, ds1) = (%q, %v), want alice/ds1", got, err)
 	}
 }
 
@@ -292,6 +412,9 @@ func assertDelivered(t *testing.T, boxes *fakeRecipeBoxes, want map[string]strin
 		got, ok := boxes.files["/data/train/"+rel]
 		if !ok || string(got) != body {
 			t.Fatalf("/data/train/%s = %q (present %v), want %q", rel, got, ok, body)
+		}
+		if mode := boxes.modes["/data/train/"+rel]; mode != "0644" {
+			t.Fatalf("/data/train/%s written with mode %q, want 0644 (Q13)", rel, mode)
 		}
 	}
 }

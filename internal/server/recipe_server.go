@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net/url"
 	"strings"
@@ -60,8 +61,8 @@ type RecipeServer struct {
 	guardrailPolicy      guardrailpolicy.PolicyProvider
 	guardrailStagingRoot string
 	// guardrailSnapshotParent is where verification snapshots are made ("" =
-	// os.TempDir()); guardrailSnapshot makes them (nil = the stager's
-	// Snapshot). Both are seams for tests.
+	// os.TempDir(); --guardrail-snapshot-dir). guardrailSnapshot makes them
+	// (nil = the stager's Snapshot; a seam for tests).
 	guardrailSnapshotParent string
 	guardrailSnapshot       func(area *guardrailstage.Area, ref, parent string) (*guardrailstage.Snapshot, error)
 }
@@ -70,7 +71,8 @@ type RecipeServer struct {
 type recipeBoxes interface {
 	CreateContainer(ctx context.Context, req *pb.CreateContainerRequest) (*pb.CreateContainerResponse, error)
 	Exec(containerName string, command []string) error
-	WriteFile(containerName, path string, content []byte, mode string) error
+	// PushFile streams a file into the box (never buffering it whole).
+	PushFile(containerName, path string, content io.ReadSeeker, mode string) error
 	Get(username string) (*incus.ContainerInfo, error)
 }
 
@@ -83,8 +85,8 @@ func (c containerServerBoxes) CreateContainer(ctx context.Context, req *pb.Creat
 func (c containerServerBoxes) Exec(name string, command []string) error {
 	return c.s.manager.Exec(name, command)
 }
-func (c containerServerBoxes) WriteFile(name, path string, content []byte, mode string) error {
-	return c.s.manager.WriteFile(name, path, content, mode)
+func (c containerServerBoxes) PushFile(name, path string, content io.ReadSeeker, mode string) error {
+	return c.s.manager.PushFile(name, path, content, mode)
 }
 func (c containerServerBoxes) Get(username string) (*incus.ContainerInfo, error) {
 	return c.s.manager.Get(username)

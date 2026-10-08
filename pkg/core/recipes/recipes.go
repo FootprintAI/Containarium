@@ -72,9 +72,12 @@ type recipeDef struct {
 	// ModelGatewayProvider opts the recipe into the managed model-gateway for the
 	// named provider (e.g. "gemini-openai"); see the proto field for semantics.
 	ModelGatewayProvider string `yaml:"model_gateway_provider,omitempty"`
-	// GuardrailGate gates every deploy on a guardrail attestation; see the
-	// proto field for semantics.
-	GuardrailGate *guardrailGateDef `yaml:"guardrail_gate,omitempty"`
+	// GuardrailGateNode gates every deploy on a guardrail attestation; see
+	// the proto field for semantics. Kept as a node so that a present but
+	// empty or null `guardrail_gate:` is seen (and refused) rather than
+	// loading as an ungated recipe; validate decodes it into GuardrailGate.
+	GuardrailGateNode yaml.Node         `yaml:"guardrail_gate,omitempty"`
+	GuardrailGate     *guardrailGateDef `yaml:"-"`
 }
 
 // guardrailGateDef is the YAML shape of pb.GuardrailGate. require_kinds
@@ -263,7 +266,16 @@ func validate(r *recipeDef) error {
 			return fmt.Errorf("recipe %q port %d has invalid external_port: %d", r.ID, p.ContainerPort, p.ExternalPort)
 		}
 	}
-	if r.GuardrailGate != nil {
+	if n := r.GuardrailGateNode; n.Kind != 0 {
+		// The key is present: that is a gate declaration, so an empty or
+		// null value is an incomplete gate, never "no gate".
+		if n.Kind != yaml.MappingNode {
+			return fmt.Errorf("recipe %q guardrail_gate is present but not a mapping (an empty gate is refused, not ignored)", r.ID)
+		}
+		r.GuardrailGate = &guardrailGateDef{}
+		if err := n.Decode(r.GuardrailGate); err != nil {
+			return fmt.Errorf("recipe %q guardrail_gate: %w", r.ID, err)
+		}
 		return validateGuardrailGate(r.ID, r.GuardrailGate)
 	}
 	return nil

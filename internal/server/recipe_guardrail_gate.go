@@ -36,12 +36,16 @@ import (
 //     bytes and nothing else, to dataset_path;
 //  6. (in deploy) run post_start.
 
-// SetGuardrailGate wires the gate: the server policy provider and the
-// daemon's guardrail staging root. Startup only, after the policy store's
-// startup swap. "" root leaves gated recipes refused.
-func (s *RecipeServer) SetGuardrailGate(provider guardrailpolicy.PolicyProvider, stagingRoot string) {
+// SetGuardrailGate wires the gate: the server policy provider, the daemon's
+// guardrail staging root, and where verification snapshots are made.
+// Startup only, after the policy store's startup swap. "" root leaves gated
+// recipes refused. "" snapshotDir is the OS temp dir; a snapshotDir must be
+// daemon-private and outside the staging root, or every gated deploy is
+// refused (the stager's ErrBadParent rule, checked on every snapshot).
+func (s *RecipeServer) SetGuardrailGate(provider guardrailpolicy.PolicyProvider, stagingRoot, snapshotDir string) {
 	s.guardrailPolicy = provider
 	s.guardrailStagingRoot = stagingRoot
+	s.guardrailSnapshotParent = snapshotDir
 }
 
 // guardrailStagingRef scopes a request's staging_ref to the deploying
@@ -101,6 +105,12 @@ func (s *RecipeServer) checkGuardrailGate(ctx context.Context, recipe *pb.Recipe
 	if err != nil {
 		return nil, gateRefusal("staging_ref: %v", err)
 	}
+	// Cheap checks first (signer, signature, policy hash, verdict, kinds):
+	// a bad attestation is refused before any dataset is copied. The full
+	// VerifyAttestation over the snapshot below is still what accepts.
+	if _, err := guardrailpolicy.VerifyClaims(in.GetAttestation(), policy, recipe.GetGuardrailGate().GetRequireKinds()); err != nil {
+		return nil, verifyFailure(err)
+	}
 	snapshot := (*guardrailstage.Area).Snapshot
 	if s.guardrailSnapshot != nil {
 		snapshot = s.guardrailSnapshot
@@ -111,6 +121,10 @@ func (s *RecipeServer) checkGuardrailGate(ctx context.Context, recipe *pb.Recipe
 	}
 	if errors.Is(err, guardrailstage.ErrStagingRootUnavailable) {
 		return nil, gateRefusal("the guardrail staging root is unavailable")
+	}
+	if errors.Is(err, guardrailstage.ErrBadParent) {
+		log.Printf("[recipe] guardrail gate: snapshot dir %q: %v", s.guardrailSnapshotParent, err)
+		return nil, gateRefusal("the daemon's guardrail snapshot dir is misconfigured (it must be daemon-private and outside the staging root)")
 	}
 	if err != nil {
 		log.Printf("[recipe] guardrail gate: snapshot %q: %v", ref, err)
@@ -126,13 +140,20 @@ func (s *RecipeServer) checkGuardrailGate(ctx context.Context, recipe *pb.Recipe
 		if rmErr := snap.Remove(); rmErr != nil {
 			log.Printf("[recipe] remove guardrail snapshot %s: %v", snap.Dir, rmErr)
 		}
-		if isVerifyRefusal(err) {
-			return nil, gateRefusal("%v", err)
-		}
-		log.Printf("[recipe] guardrail gate: verify: %v", err)
-		return nil, status.Error(codes.Internal, "guardrail gate: could not verify the staged dataset")
+		return nil, verifyFailure(err)
 	}
 	return snap, nil
+}
+
+// verifyFailure maps a VerifyClaims/VerifyAttestation error to the caller's
+// status: the typed refusals keep their message (hashes and key ids only),
+// anything else is logged and answered generically.
+func verifyFailure(err error) error {
+	if isVerifyRefusal(err) {
+		return gateRefusal("%v", err)
+	}
+	log.Printf("[recipe] guardrail gate: verify: %v", err)
+	return status.Error(codes.Internal, "guardrail gate: could not verify the staged dataset")
 }
 
 // isVerifyRefusal is true for the typed reasons VerifyAttestation refuses
@@ -154,7 +175,8 @@ func isVerifyRefusal(err error) bool {
 // deliverGuardrailDataset copies every regular file under dir (the verified
 // snapshot) to datasetPath in the box: directories first via mkdir -p, then
 // each file, root-owned 0644. The snapshot holds only directories and
-// regular files.
+// regular files. Each file is streamed from the snapshot, never read whole
+// into daemon memory (datasets have no size limit by decision).
 func deliverGuardrailDataset(boxes recipeBoxes, containerName, datasetPath, dir string) error {
 	root, err := os.OpenRoot(dir)
 	if err != nil {
@@ -175,10 +197,11 @@ func deliverGuardrailDataset(boxes recipeBoxes, containerName, datasetPath, dir 
 		if !d.Type().IsRegular() {
 			return nil
 		}
-		b, err := fs.ReadFile(root.FS(), rel)
+		f, err := root.Open(rel)
 		if err != nil {
 			return err
 		}
-		return boxes.WriteFile(containerName, dst, b, "0644")
+		defer func() { _ = f.Close() }()
+		return boxes.PushFile(containerName, dst, f, "0644")
 	})
 }
