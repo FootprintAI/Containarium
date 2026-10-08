@@ -2,12 +2,15 @@ package backup
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"path"
 	"strings"
 
 	"filippo.io/age"
+
+	"github.com/footprintai/containarium/pkg/core/secrets"
 )
 
 // EngineHook marks a dump produced by a tenant-supplied backup hook
@@ -76,16 +79,26 @@ func parseRecipient(s string) (age.Recipient, error) {
 	return r, nil
 }
 
-// encryptWithRecipient encrypts data to recipient entirely in memory. The
-// caller stores the returned ciphertext; plaintext never reaches disk on
-// the daemon host or any off-host store (#1831).
-func encryptWithRecipient(data []byte, recipient string) ([]byte, error) {
-	r, err := parseRecipient(recipient)
-	if err != nil {
-		return nil, err
+// encryptWithRecipients encrypts data to every recipient entirely in
+// memory, as one age file any of them can open. The caller stores the
+// returned ciphertext; plaintext never reaches disk on the daemon host or
+// any off-host store (#1831). Two recipients — the per-backup managed
+// identity and the tenant's legacy recipient — is how BOTH mode keeps the
+// `.dump.age` format unchanged while either path can decrypt (#2402).
+func encryptWithRecipients(data []byte, recipients ...string) ([]byte, error) {
+	if len(recipients) == 0 {
+		return nil, fmt.Errorf("age encrypt: no recipients")
+	}
+	rs := make([]age.Recipient, 0, len(recipients))
+	for _, s := range recipients {
+		r, err := parseRecipient(s)
+		if err != nil {
+			return nil, err
+		}
+		rs = append(rs, r)
 	}
 	var buf bytes.Buffer
-	w, err := age.Encrypt(&buf, r)
+	w, err := age.Encrypt(&buf, rs...)
 	if err != nil {
 		return nil, fmt.Errorf("age encrypt: %w", err)
 	}
@@ -96,6 +109,29 @@ func encryptWithRecipient(data []byte, recipient string) ([]byte, error) {
 		return nil, fmt.Errorf("age encrypt: %w", err)
 	}
 	return buf.Bytes(), nil
+}
+
+// wrapNewIdentity generates the ephemeral age identity for one managed
+// backup (#2402) and hands its secret string to the wrapper. Only the
+// public recipient and the wrapped bytes leave this function: the secret
+// is zeroed before return, the identity object never escapes, and nothing
+// is logged or written. The daemon itself cannot reverse the wrap — that
+// is the whole point of an encrypt-only KMS binding.
+func wrapNewIdentity(ctx context.Context, wrapper secrets.KMSClient) (recipient string, wrapped []byte, kekID string, err error) {
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		return "", nil, "", fmt.Errorf("generate backup identity: %w", err)
+	}
+	secret := []byte(id.String())
+	defer secrets.ZeroBytes(secret)
+	wrapped, kekID, err = wrapper.Wrap(ctx, secret)
+	if err != nil {
+		return "", nil, "", fmt.Errorf("wrap backup key: %w", err)
+	}
+	if len(wrapped) == 0 || kekID == "" {
+		return "", nil, "", fmt.Errorf("wrap backup key: wrapper returned an empty wrapped key or kek id")
+	}
+	return id.Recipient().String(), wrapped, kekID, nil
 }
 
 // decryptWithIdentity decrypts an age ciphertext with an X25519 identity
