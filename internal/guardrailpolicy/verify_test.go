@@ -67,6 +67,19 @@ func (f *verifyFixture) attest(t *testing.T, policy *pb.GuardrailPolicy, kinds [
 	return att
 }
 
+// signingBytesForTest is what guardrail.Sign signs: the attestation with the
+// signature cleared, deterministically encoded.
+func signingBytesForTest(t *testing.T, att *pb.GuardrailAttestation) []byte {
+	t.Helper()
+	clone := proto.Clone(att).(*pb.GuardrailAttestation)
+	clone.Signature = nil
+	b, err := proto.MarshalOptions{Deterministic: true}.Marshal(clone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
 func TestVerifyAttestation(t *testing.T) {
 	pii := pb.GuardrailKind_GUARDRAIL_KIND_PII
 	secret := pb.GuardrailKind_GUARDRAIL_KIND_SECRET
@@ -92,6 +105,14 @@ func TestVerifyAttestation(t *testing.T) {
 		}},
 		{name: "signature does not verify", wantErr: guardrail.ErrBadSignature, mutate: func(_ *testing.T, f *verifyFixture) []pb.GuardrailKind {
 			f.att.Residual = []*pb.GuardrailKindCount{{Kind: pii, Findings: 9}} // changed after signing
+			return nil
+		}},
+		{name: "key_id names a trusted signer but another key signed", wantErr: guardrail.ErrBadSignature, mutate: func(t *testing.T, f *verifyFixture) []pb.GuardrailKind {
+			_, attacker, _ := ed25519.GenerateKey(rand.Reader)
+			trustedKeyID := f.att.GetKeyId()
+			f.att = f.attest(t, f.server.GetPolicy(), f.att.GetKindsScanned(), pb.GuardrailVerdict_GUARDRAIL_VERDICT_PASS, attacker)
+			f.att.KeyId = trustedKeyID // claim the trusted signer, and sign that claim with the attacker's key
+			f.att.Signature = ed25519.Sign(attacker, signingBytesForTest(t, f.att))
 			return nil
 		}},
 		{name: "wrong policy hash", wantErr: guardrailpolicy.ErrPolicyMismatch, mutate: func(t *testing.T, f *verifyFixture) []pb.GuardrailKind {
