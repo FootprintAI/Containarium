@@ -1785,6 +1785,9 @@ func (s *Server) registerTools() {
 	// KmsService gateway that `containarium kms` also calls.
 	s.tools = append(s.tools, kmsTools()...)
 
+	// Guardrail policy read (#2368, guardrail_tools.go); no write tool.
+	s.tools = append(s.tools, guardrailTools()...)
+
 	// Tracker broker agent-facing verbs (#1922 step 7, tracker_tools.go)
 	// — thin wrappers over the TrackerService gateway that
 	// `containarium tracker issue/change ...` also calls.
@@ -1923,6 +1926,9 @@ func toolScopeAssignments() map[string]string {
 		"kms_status":              auth.ScopeKMSAdmin,
 		"kms_envelope_coverage":   auth.ScopeKMSAdmin,
 		"kms_migrate_to_envelope": auth.ScopeKMSAdmin,
+		// server-side guardrail policy (#2368): a read of security config,
+		// gated like security_findings. The write has no tool.
+		"guardrail_policy_get": auth.ScopeSecurityRead,
 		// security tools
 		"security_scan":          auth.ScopeSecurityWrite,
 		"security_remediate":     auth.ScopeSecurityWrite,
