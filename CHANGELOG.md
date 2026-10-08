@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Guardrail deploy gate (#2368, slice C). A recipe can declare `guardrail_gate` (`dataset_path`, `require_kinds`).
+  `DeployRecipe` then requires `guardrail_input` (`staging_ref` and the attestation). Before any container exists it
+  refuses async, a missing server policy or trusted signer, a policy read error and a missing input. It snapshots the
+  staged dataset from `<--guardrail-staging-root>/<name>/<staging_ref>` and verifies the snapshot against the server
+  policy and its trusted signers. Every refusal is `FAILED_PRECONDITION` (a policy read error is `UNAVAILABLE`), and
+  no box is created. On PASS it copies exactly the verified snapshot to `dataset_path`, then runs `post_start`.
+  `containarium recipe deploy` gains `--guardrail-staging-ref` and `--guardrail-attestation`. Nothing on the platform
+  stages a dataset yet (the `ship` verb is a documented gap), and no built-in recipe is gated.
 - Guardrail inbound foundations (#2367, slice A; the model-gateway enforcement is a later slice, so nothing is
   deployed behaviour yet). `GuardrailKind` gains `UNSAFE_CODE` and `PROMPT_INJECTION`, and the in-tree reference
   engine ships text-shape rules for them: `DOWNLOAD_EXECUTE`, `DESTRUCTIVE_SHELL` and `CREDENTIAL_EXFIL` for unsafe

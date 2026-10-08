@@ -2,9 +2,13 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
+	"google.golang.org/protobuf/encoding/protojson"
+
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 var (
@@ -12,7 +16,31 @@ var (
 	recipeDeployBackendID string
 	recipeDeployPool      string
 	recipeDeployParams    []string
+
+	recipeDeployGuardrailRef         string
+	recipeDeployGuardrailAttestation string
 )
+
+// recipeGuardrailInput builds guardrail_input for a guardrail-gated recipe
+// (#2368) from --guardrail-staging-ref and --guardrail-attestation. Neither
+// set: nil (an ungated deploy; a gated recipe then refuses on the daemon).
+func recipeGuardrailInput(ref, attestationFile string) (*pb.GuardrailGateInput, error) {
+	if ref == "" && attestationFile == "" {
+		return nil, nil
+	}
+	if ref == "" || attestationFile == "" {
+		return nil, fmt.Errorf("--guardrail-staging-ref and --guardrail-attestation go together")
+	}
+	b, err := os.ReadFile(attestationFile) // #nosec G304 -- operator-supplied --guardrail-attestation path
+	if err != nil {
+		return nil, err
+	}
+	att := &pb.GuardrailAttestation{}
+	if err := protojson.Unmarshal(b, att); err != nil {
+		return nil, fmt.Errorf("--guardrail-attestation %s: %w", attestationFile, err)
+	}
+	return &pb.GuardrailGateInput{StagingRef: ref, Attestation: att}, nil
+}
 
 var recipeDeployCmd = &cobra.Command{
 	Use:   "deploy <recipe-id> <name>",
@@ -40,12 +68,20 @@ func init() {
 		"Target pool (not supported in v1)")
 	recipeDeployCmd.Flags().StringArrayVar(&recipeDeployParams, "param", nil,
 		"Recipe parameter as key=value (repeatable)")
+	recipeDeployCmd.Flags().StringVar(&recipeDeployGuardrailRef, "guardrail-staging-ref", "",
+		"Guardrail-gated recipes: the staged dataset's directory under <staging root>/<name>/ on the daemon host")
+	recipeDeployCmd.Flags().StringVar(&recipeDeployGuardrailAttestation, "guardrail-attestation", "",
+		"Guardrail-gated recipes: the attestation 'guardrail apply' wrote for that dataset")
 }
 
 func runRecipeDeploy(cmd *cobra.Command, args []string) error {
 	recipeID, name := args[0], args[1]
 
 	params, err := parseKeyValues(recipeDeployParams)
+	if err != nil {
+		return err
+	}
+	guardrailInput, err := recipeGuardrailInput(recipeDeployGuardrailRef, recipeDeployGuardrailAttestation)
 	if err != nil {
 		return err
 	}
@@ -57,7 +93,7 @@ func runRecipeDeploy(cmd *cobra.Command, args []string) error {
 	defer func() { _ = c.Close() }()
 
 	fmt.Printf("Deploying recipe %q as %q...\n", recipeID, name)
-	resp, err := c.DeployRecipe(recipeID, name, recipeDeployGPU, recipeDeployBackendID, recipeDeployPool, params)
+	resp, err := c.DeployRecipe(recipeID, name, recipeDeployGPU, recipeDeployBackendID, recipeDeployPool, params, guardrailInput)
 	if err != nil {
 		return err
 	}

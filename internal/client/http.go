@@ -1613,19 +1613,29 @@ func (c *HTTPClient) GetWorkspaceAccess(name string) (*pb.GetWorkspaceAccessResp
 }
 
 // DeployRecipe provisions a new dedicated container from a recipe via HTTP.
-func (c *HTTPClient) DeployRecipe(recipeID, name, gpu, backendID, pool string, params map[string]string) (*pb.DeployRecipeResponse, error) {
+// guardrailInput is the dataset and attestation for a guardrail-gated recipe
+// (#2368); nil for an ungated one.
+func (c *HTTPClient) DeployRecipe(recipeID, name, gpu, backendID, pool string, params map[string]string, guardrailInput *pb.GuardrailGateInput) (*pb.DeployRecipeResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // image + model pulls can take time
 	defer cancel()
 
 	path := fmt.Sprintf("/v1/recipes/%s/deploy", url.PathEscape(recipeID))
-	body, err := json.Marshal(deployRecipeRequest{
+	reqBody := deployRecipeRequest{
 		RecipeID:   recipeID,
 		Name:       name,
 		GPU:        gpu,
 		BackendID:  backendID,
 		Pool:       pool,
 		Parameters: params,
-	})
+	}
+	if guardrailInput != nil {
+		raw, err := protojson.Marshal(guardrailInput)
+		if err != nil {
+			return nil, fmt.Errorf("marshal guardrail_input: %w", err)
+		}
+		reqBody.GuardrailInput = raw
+	}
+	body, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
