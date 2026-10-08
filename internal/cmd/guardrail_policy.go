@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -29,11 +30,16 @@ type guardrailPolicyAPI interface {
 	SetGuardrailPolicy(req *pb.SetGuardrailPolicyRequest) (*pb.SetGuardrailPolicyResponse, error)
 }
 
+// errNoGuardrailServer is newGuardrailPolicyAPI's answer when no --server is
+// configured. `policy get|set` report it; `apply` and `verify` read it as "no
+// daemon", their local mode (guardrail_server.go).
+var errNoGuardrailServer = errors.New("--server is required for guardrail policy commands")
+
 // newGuardrailPolicyAPI builds the client from the global --server/--http
 // flags. A variable so tests can substitute a fake.
 var newGuardrailPolicyAPI = func() (guardrailPolicyAPI, func(), error) {
 	if serverAddr == "" {
-		return nil, nil, fmt.Errorf("--server is required for guardrail policy commands")
+		return nil, nil, errNoGuardrailServer
 	}
 	if httpMode {
 		h, err := client.NewHTTPClient(serverAddr, authToken)

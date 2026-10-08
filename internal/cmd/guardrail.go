@@ -19,17 +19,20 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/footprintai/containarium/internal/guardrail"
+	"github.com/footprintai/containarium/internal/guardrailpolicy"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // `containarium guardrail` — run a detection engine over a directory of
 // text, redact what it flags, re-scan the result as the gate, and sign an
 // attestation a consumer verifies before using the data
-// (docs/architecture/guardrail.md). Every verb in this file is local to the
-// machine it runs on: this is the data owner's side of a trust boundary, and
-// nothing here talks to the daemon. (`guardrail policy`, in
-// guardrail_policy.go, is the exception: it reads or sets the server-side
-// policy, #2368.) The engine is a separate process reached over
+// (docs/architecture/guardrail.md). This is the data owner's side of a trust
+// boundary: scanning, redaction and signing run on the machine the CLI runs
+// on, and no dataset content ever leaves it. Since #2368 that is no longer
+// "nothing talks to the daemon": `apply` and `verify` READ the server-side
+// guardrail policy when a daemon is reachable (guardrail_server.go says
+// exactly what is sent, which is only that read), and `guardrail policy`
+// (guardrail_policy.go) reads or sets it. The engine is a separate process reached over
 // gRPC (--engine); with no --engine the in-tree reference rules engine
 // runs, which is a handful of regular expressions for proving the flow,
 // not a detector anyone should ship data on.
@@ -81,6 +84,13 @@ The vault (token -> original) and the redaction key are written beside
 With --sign-key the attestation is signed so a consumer can verify it with
 the matching .pub (see 'guardrail keygen' and 'guardrail verify').
 
+Policy: when a daemon is reachable (--server) and holds a guardrail policy,
+apply runs under the server's policy, and --policy is refused unless it is
+the same policy (same hash). Only the policy is read from the daemon; no
+dataset content is sent. With no reachable daemon, or no server policy,
+apply runs under --policy (or the default) and says on stderr that the
+result is NOT server-attested.
+
 Examples:
   containarium guardrail keygen --out ./tenant
   containarium guardrail apply ./export --out ./export-clean --sign-key ./tenant.key
@@ -92,12 +102,19 @@ Examples:
 var guardrailVerifyCmd = &cobra.Command{
 	Use:   "verify <dir>",
 	Short: "Check a directory against its attestation before using the data",
-	Long: `Verify the attestation's signature with --public-key, recompute the
-digest of <dir> and require it to match, and require the verdict to be
-PASS. Exit status 0 only when all three hold. This is what a training job
-or a CI step runs first.
+	Long: `Verify the attestation's signature, recompute the digest of <dir> and
+require it to match, and require the verdict to be PASS. Exit status 0 only
+when all hold. This is what a training job or a CI step runs first.
 
-Example:
+When a daemon is reachable (--server) and holds a guardrail policy, the
+check is server-trusted: the attestation's policy hash must equal the
+server policy's, and its signer must be one of the server's trusted signers
+(--public-key is then ignored). Only the policy is read from the daemon;
+nothing is sent. Offline (no reachable daemon, or no server policy),
+--public-key is required and the result is reported as NOT server-trusted.
+
+Examples:
+  containarium guardrail verify ./export-clean --attestation ./export-clean.attestation.json --server <host>:50051
   containarium guardrail verify ./export-clean --attestation ./export-clean.attestation.json --public-key ./tenant.pub`,
 	Args: cobra.ExactArgs(1),
 	RunE: runGuardrailVerify,
@@ -138,10 +155,9 @@ func init() {
 	guardrailApplyCmd.Flags().StringVar(&guardrailAttestFile, "attestation", "", "Where to write the attestation (default <out>.attestation.json)")
 
 	guardrailVerifyCmd.Flags().StringVar(&guardrailAttestFile, "attestation", "", "Attestation JSON written by 'guardrail apply' (required)")
-	guardrailVerifyCmd.Flags().StringVar(&guardrailPublicKey, "public-key", "", "Signer's .pub file (required)")
+	guardrailVerifyCmd.Flags().StringVar(&guardrailPublicKey, "public-key", "", "Signer's .pub file (required offline; ignored when a server policy is in force)")
 	guardrailVerifyCmd.Flags().StringSliceVar(&guardrailRequireKinds, "require-kind", nil, "Kinds the attestation must have scanned for (pii, secret); a PASS that never looked for one is refused")
 	_ = guardrailVerifyCmd.MarkFlagRequired("attestation")
-	_ = guardrailVerifyCmd.MarkFlagRequired("public-key")
 
 	guardrailKeygenCmd.Flags().StringVar(&guardrailKeygenPrefix, "out", "", "Path prefix for <prefix>.key and <prefix>.pub (required)")
 	_ = guardrailKeygenCmd.MarkFlagRequired("out")
@@ -254,22 +270,17 @@ func runGuardrailApply(cmd *cobra.Command, args []string) error {
 		guardrailRedactKey = strings.TrimRight(out, "/") + ".redaction.key"
 	}
 
+	// The policy is settled before anything is written, so a refused
+	// --policy leaves nothing behind.
+	policy, server, err := resolveApplyPolicy(cmd)
+	if err != nil {
+		return err
+	}
 	engine, closeEngine, err := guardrailEngine(cmd)
 	if err != nil {
 		return err
 	}
 	defer closeEngine()
-	policy := guardrail.DefaultPolicy()
-	if guardrailPolicyFile != "" {
-		b, err := os.ReadFile(guardrailPolicyFile) // #nosec G304 -- operator-supplied --policy path; CLI runs as the operator's UID
-		if err != nil {
-			return err
-		}
-		policy = &pb.GuardrailPolicy{}
-		if err := protojson.Unmarshal(b, policy); err != nil {
-			return fmt.Errorf("--policy %s: %w", guardrailPolicyFile, err)
-		}
-	}
 	// Exactly the kinds the policy covers, never empty (#2362): an engine
 	// that cannot scan one of them must fail this run, not pass it.
 	kinds := guardrail.KindsFor(policy)
@@ -362,6 +373,11 @@ func runGuardrailApply(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(w, "units: %d, found %d, redacted into %s\n", len(units), len(first.GetFindings()), out)
 	fmt.Fprintf(w, "re-scan: %d residual judged, %d inside placeholders ignored, %d gap(s)\n", sumCounts(gate.Residual), gate.InPlaceholder, gate.Gaps)
 	fmt.Fprintf(w, "vault: %s (%d tokens)  attestation: %s  signed: %v\n", guardrailVaultFile, len(red.Vault), guardrailAttestFile, signer != nil)
+	if server.policy != nil {
+		fmt.Fprintf(w, "policy: server policy revision %d (hash %s)\n", server.policy.GetRevision(), shortGuardrailHash(server.hash))
+	} else {
+		fmt.Fprintf(w, "policy: local (hash %s), NOT server-attested\n", shortGuardrailHash(policyHash))
+	}
 	fmt.Fprintf(w, "verdict: %s\n", strings.TrimPrefix(gate.Verdict.String(), "GUARDRAIL_VERDICT_"))
 	if gate.Verdict != pb.GuardrailVerdict_GUARDRAIL_VERDICT_PASS {
 		return errors.New("guardrail gate FAILED: " + strings.Join(gate.Reasons, "; "))
@@ -370,10 +386,6 @@ func runGuardrailApply(cmd *cobra.Command, args []string) error {
 }
 
 func runGuardrailVerify(cmd *cobra.Command, args []string) error {
-	pub, err := guardrail.LoadPublicKey(guardrailPublicKey)
-	if err != nil {
-		return err
-	}
 	b, err := os.ReadFile(guardrailAttestFile) // #nosec G304 -- operator-supplied --attestation path; CLI runs as the operator's UID
 	if err != nil {
 		return err
@@ -386,15 +398,83 @@ func runGuardrailVerify(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	server, err := fetchGuardrailServerView()
+	if err != nil {
+		return err
+	}
+	verified := fmt.Sprintf("verified: %s is the subject attested PASS by %s %s (kinds scanned: %s; key %s) at %s",
+		args[0], att.GetEngineId(), att.GetEngineVersion(), kindNames(att.GetKindsScanned()), shortGuardrailHash(att.GetKeyId()), att.GetAttestedAt().AsTime().Format(time.RFC3339))
+
+	// With a server policy, the server decides: its policy hash and its
+	// trusted signers, never a key the caller hands in.
+	if server.policy != nil {
+		if guardrailPublicKey != "" {
+			fmt.Fprintln(cmd.ErrOrStderr(), "guardrail: --public-key ignored; the server's trusted signers decide who may sign")
+		}
+		signer, err := guardrailpolicy.VerifyAttestation(att, server.policy, args[0], required)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "%s; server-trusted (policy revision %d, signer %q)\n", verified, server.policy.GetRevision(), signer.GetLabel())
+		return nil
+	}
+
+	if guardrailPublicKey == "" {
+		return fmt.Errorf("%s: offline verify needs --public-key", server.localReason)
+	}
+	pub, err := guardrail.LoadPublicKey(guardrailPublicKey)
+	if err != nil {
+		return err
+	}
 	if err := guardrail.VerifySubject(att, pub, args[0]); err != nil {
 		return err
 	}
 	if err := guardrail.VerifyCoverage(att, required); err != nil {
 		return err
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "verified: %s is the subject attested PASS by %s %s (kinds scanned: %s; key %s) at %s\n",
-		args[0], att.GetEngineId(), att.GetEngineVersion(), kindNames(att.GetKindsScanned()), att.GetKeyId()[:12], att.GetAttestedAt().AsTime().Format(time.RFC3339))
+	fmt.Fprintf(cmd.OutOrStdout(), "%s; NOT server-trusted (%s; checked against --public-key only)\n", verified, server.localReason)
 	return nil
+}
+
+// resolveApplyPolicy picks the policy apply runs under. With a server policy
+// in force it is the server's, and --policy is refused unless it hashes to
+// the server's: a local file can no longer weaken the gate silently. In
+// local mode it is --policy, or the default, and stderr says the result is
+// not server-attested.
+func resolveApplyPolicy(cmd *cobra.Command) (*pb.GuardrailPolicy, *guardrailServerView, error) {
+	var local *pb.GuardrailPolicy
+	if guardrailPolicyFile != "" {
+		b, err := os.ReadFile(guardrailPolicyFile) // #nosec G304 -- operator-supplied --policy path; CLI runs as the operator's UID
+		if err != nil {
+			return nil, nil, err
+		}
+		local = &pb.GuardrailPolicy{}
+		if err := protojson.Unmarshal(b, local); err != nil {
+			return nil, nil, fmt.Errorf("--policy %s: %w", guardrailPolicyFile, err)
+		}
+	}
+	server, err := fetchGuardrailServerView()
+	if err != nil {
+		return nil, nil, err
+	}
+	if server.policy == nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "guardrail: %s; running under the local policy. This result is NOT server-attested.\n", server.localReason)
+		if local == nil {
+			local = guardrail.DefaultPolicy()
+		}
+		return local, server, nil
+	}
+	if local != nil {
+		h, err := guardrail.PolicyHash(local)
+		if err != nil {
+			return nil, nil, err
+		}
+		if h != server.hash {
+			return nil, nil, fmt.Errorf("--policy %s (hash %s) does not match the server guardrail policy (revision %d, hash %s); omit --policy to run under the server's",
+				guardrailPolicyFile, shortGuardrailHash(h), server.policy.GetRevision(), shortGuardrailHash(server.hash))
+		}
+	}
+	return server.policy.GetPolicy(), server, nil
 }
 
 func runGuardrailKeygen(cmd *cobra.Command, _ []string) error {
