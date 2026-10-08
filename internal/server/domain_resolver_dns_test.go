@@ -28,7 +28,7 @@ func startFakeDNS(t *testing.T, name string, records []fakeDNSRecord) string {
 	if err != nil {
 		t.Skipf("no local UDP: %v", err)
 	}
-	t.Cleanup(func() { pc.Close() })
+	t.Cleanup(func() { _ = pc.Close() })
 	go func() {
 		buf := make([]byte, 1500)
 		for {

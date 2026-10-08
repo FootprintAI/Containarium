@@ -3,9 +3,10 @@ package server
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"fmt"
-	"math/rand/v2"
 	"net"
 	"net/netip"
 	"os"
@@ -54,11 +55,11 @@ func newSystemTTLResolver() addrTTLResolver {
 // resolvConfServers returns the "nameserver" entries of a resolv.conf as
 // host:port (port 53). Unparseable entries are skipped; a missing file is none.
 func resolvConfServers(path string) []string {
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 -- /etc/resolv.conf in production; a temp file in tests
 	if err != nil {
 		return nil
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	var out []string
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
@@ -112,7 +113,12 @@ func (r *dnsTTLResolver) queryAny(ctx context.Context, name dnsmessage.Name, qty
 }
 
 func (r *dnsTTLResolver) query(ctx context.Context, server string, name dnsmessage.Name, qtype dnsmessage.Type) ([]netip.Addr, time.Duration, error) {
-	id := uint16(rand.Uint32())
+	// An unpredictable query ID is part of the defence against spoofed replies.
+	var idb [2]byte
+	if _, err := rand.Read(idb[:]); err != nil {
+		return nil, ttlUnknown, err
+	}
+	id := binary.BigEndian.Uint16(idb[:])
 	b := dnsmessage.NewBuilder(nil, dnsmessage.Header{ID: id, RecursionDesired: true})
 	b.EnableCompression()
 	_ = b.StartQuestions()
@@ -132,7 +138,7 @@ func (r *dnsTTLResolver) query(ctx context.Context, server string, name dnsmessa
 	if err != nil {
 		return nil, ttlUnknown, err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	if dl, ok := ctx.Deadline(); ok {
 		_ = conn.SetDeadline(dl)
 	}
