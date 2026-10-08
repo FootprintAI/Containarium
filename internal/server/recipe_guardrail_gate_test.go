@@ -5,10 +5,12 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 
 	"google.golang.org/grpc/codes"
@@ -18,6 +20,7 @@ import (
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/guardrail"
 	"github.com/footprintai/containarium/internal/guardrailpolicy"
+	"github.com/footprintai/containarium/internal/guardrailstage"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/footprintai/containarium/pkg/core/recipes"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -319,6 +322,60 @@ func TestDeployGate_InternalErrorsDoNotEchoHostPaths(t *testing.T) {
 	}
 	if len(f.boxes.created) != 0 {
 		t.Fatalf("created %v", f.boxes.created)
+	}
+}
+
+// TestDeployGate_SnapshotCopyFailureDegradesCleanly: provisioned storage is
+// the only capacity control on staged datasets, so a snapshot copy that
+// fails (a full disk, an unreadable staged file) must refuse the deploy with
+// a typed status, name no daemon-side path, leave no partial snapshot, and
+// create no box.
+func TestDeployGate_SnapshotCopyFailureDegradesCleanly(t *testing.T) {
+	t.Run("out of disk space", func(t *testing.T) {
+		f := newGateFixture(t)
+		parent := t.TempDir()
+		f.srv.guardrailSnapshotParent = parent
+		f.srv.guardrailSnapshot = func(_ *guardrailstage.Area, ref, p string) (*guardrailstage.Snapshot, error) {
+			return nil, fmt.Errorf("snapshot %q: write %s/guardrail-snapshot-1/a.txt: %w", ref, p, syscall.ENOSPC)
+		}
+		_, err := f.deploy(t)
+		if status.Code(err) != codes.ResourceExhausted {
+			t.Fatalf("deploy on a full disk = %v, want RESOURCE_EXHAUSTED", err)
+		}
+		assertCleanRefusal(t, f, err, parent)
+	})
+	t.Run("staged file unreadable mid-copy", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root reads a 0000 file; this row needs a non-root user")
+		}
+		f := newGateFixture(t)
+		parent := t.TempDir()
+		f.srv.guardrailSnapshotParent = parent
+		unreadable := filepath.Join(f.staged, "sub", "b.txt")
+		if err := os.Chmod(unreadable, 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(unreadable, 0o600) })
+		_, err := f.deploy(t)
+		if status.Code(err) != codes.FailedPrecondition {
+			t.Fatalf("deploy with an unreadable staged file = %v, want FAILED_PRECONDITION", err)
+		}
+		assertCleanRefusal(t, f, err, parent)
+	})
+}
+
+func assertCleanRefusal(t *testing.T, f *gateFixture, err error, parent string) {
+	t.Helper()
+	for _, p := range []string{parent, f.srv.guardrailStagingRoot, os.TempDir()} {
+		if strings.Contains(err.Error(), p) {
+			t.Errorf("error %q echoes the daemon-side path %s", err, p)
+		}
+	}
+	if entries, _ := os.ReadDir(parent); len(entries) != 0 {
+		t.Errorf("a failed snapshot left %d entries in the snapshot parent", len(entries))
+	}
+	if len(f.boxes.created) != 0 || len(f.boxes.events) != 0 {
+		t.Errorf("a refused deploy touched the backend: %v %v", f.boxes.created, f.boxes.events)
 	}
 }
 

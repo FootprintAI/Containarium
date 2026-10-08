@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"syscall"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -100,7 +101,11 @@ func (s *RecipeServer) checkGuardrailGate(ctx context.Context, recipe *pb.Recipe
 	if err != nil {
 		return nil, gateRefusal("staging_ref: %v", err)
 	}
-	snap, err := area.Snapshot(ref, "")
+	snapshot := (*guardrailstage.Area).Snapshot
+	if s.guardrailSnapshot != nil {
+		snapshot = s.guardrailSnapshot
+	}
+	snap, err := snapshot(area, ref, s.guardrailSnapshotParent)
 	if errors.Is(err, guardrailstage.ErrBadRef) {
 		return nil, gateRefusal("staging_ref %q: %v", in.GetStagingRef(), err)
 	}
@@ -109,7 +114,13 @@ func (s *RecipeServer) checkGuardrailGate(ctx context.Context, recipe *pb.Recipe
 	}
 	if err != nil {
 		log.Printf("[recipe] guardrail gate: snapshot %q: %v", ref, err)
-		return nil, status.Error(codes.Internal, "guardrail gate: could not snapshot the staged dataset")
+		// Provisioned storage is the only capacity control on staged
+		// datasets, so a full disk is an expected, typed refusal. The
+		// stager has already removed its partial snapshot.
+		if errors.Is(err, syscall.ENOSPC) || errors.Is(err, syscall.EDQUOT) {
+			return nil, status.Error(codes.ResourceExhausted, "guardrail gate: the daemon's storage is full; could not make a private copy of the staged dataset")
+		}
+		return nil, gateRefusal("could not make a private copy of the staged dataset (unreadable or changing while copied)")
 	}
 	if _, err := guardrailpolicy.VerifyAttestation(in.GetAttestation(), policy, snap.Dir, recipe.GetGuardrailGate().GetRequireKinds()); err != nil {
 		if rmErr := snap.Remove(); rmErr != nil {

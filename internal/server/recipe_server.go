@@ -59,6 +59,11 @@ type RecipeServer struct {
 	// unaffected.
 	guardrailPolicy      guardrailpolicy.PolicyProvider
 	guardrailStagingRoot string
+	// guardrailSnapshotParent is where verification snapshots are made ("" =
+	// os.TempDir()); guardrailSnapshot makes them (nil = the stager's
+	// Snapshot). Both are seams for tests.
+	guardrailSnapshotParent string
+	guardrailSnapshot       func(area *guardrailstage.Area, ref, parent string) (*guardrailstage.Snapshot, error)
 }
 
 // recipeBoxes is the box surface deploy drives.
