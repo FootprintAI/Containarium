@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,14 +22,21 @@ import (
 // fakeGuardrailPolicyAPI records what the CLI sends and serves from an
 // in-memory store, the same one the daemon uses without a database.
 type fakeGuardrailPolicyAPI struct {
-	store *guardrailpolicy.MemoryStore
-	sets  []*pb.SetGuardrailPolicyRequest
+	store  *guardrailpolicy.MemoryStore
+	sets   []*pb.SetGuardrailPolicyRequest
+	getErr error // when set, Get fails the way an unreachable daemon does
 }
 
 func (f *fakeGuardrailPolicyAPI) GetGuardrailPolicy() (*pb.GetGuardrailPolicyResponse, error) {
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
 	p, err := f.store.Get(context.Background())
-	if err != nil {
+	if errors.Is(err, guardrailpolicy.ErrNotConfigured) {
 		return &pb.GetGuardrailPolicyResponse{}, nil
+	}
+	if err != nil {
+		return nil, err
 	}
 	h, _ := guardrailpolicy.Hash(p)
 	return &pb.GetGuardrailPolicyResponse{Configured: true, Policy: p, PolicyHash: h}, nil
@@ -102,8 +111,15 @@ func TestGuardrailPolicyCLI_GetSet(t *testing.T) {
 			t.Fatalf("get output missing %q:\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, base64.StdEncoding.EncodeToString(pub)) {
-		t.Fatalf("text output prints the raw public key:\n%s", out)
+	for enc, key := range map[string]string{
+		"base64":     base64.StdEncoding.EncodeToString(pub),
+		"base64 raw": base64.RawStdEncoding.EncodeToString(pub),
+		"base64 url": base64.RawURLEncoding.EncodeToString(pub),
+		"hex":        hex.EncodeToString(pub),
+	} {
+		if strings.Contains(strings.ToLower(out), strings.ToLower(key)) {
+			t.Fatalf("text output prints the raw public key (%s):\n%s", enc, out)
+		}
 	}
 
 	out, err = runGuardrailPolicy(t, "get", "--json")
@@ -116,6 +132,23 @@ func TestGuardrailPolicyCLI_GetSet(t *testing.T) {
 	}
 	if !decoded.GetConfigured() || decoded.GetPolicyHash() != wantHash {
 		t.Fatalf("get --json = %v, want configured with hash %s", &decoded, wantHash)
+	}
+}
+
+// TestGuardrailPolicyCLI_GetErrorIsAnError: a failed Get (daemon down, or
+// the store unavailable) is a command error, never a "not configured"
+// report, in both the text and --json forms.
+func TestGuardrailPolicyCLI_GetErrorIsAnError(t *testing.T) {
+	fake := withFakeGuardrailPolicyAPI(t)
+	fake.getErr = errors.New("rpc error: code = Internal desc = read guardrail policy failed")
+	for _, args := range [][]string{{"get"}, {"get", "--json"}} {
+		out, err := runGuardrailPolicy(t, args...)
+		if err == nil {
+			t.Fatalf("%v with a failing daemon = nil error (output %q), want the error", args, out)
+		}
+		if strings.Contains(out, "configured") {
+			t.Fatalf("%v with a failing daemon printed %q, want no policy report", args, out)
+		}
 	}
 }
 
