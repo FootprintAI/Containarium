@@ -147,6 +147,75 @@ func (BackupEngine) EnumDescriptor() ([]byte, []int) {
 	return file_containarium_v1_backup_proto_rawDescGZIP(), []int{1}
 }
 
+// BackupKeyMode names who holds the key that opens an encrypted backup
+// (#2402). It replaces reading `encrypted && age_recipient != ""` as a
+// mode: a reader that needs to know whether a backup is platform-managed
+// checks this field, not a combination of others.
+type BackupKeyMode int32
+
+const (
+	// On a record: not encrypted. On a request: the daemon default —
+	// MANAGED when the daemon has a key wrapper configured (BOTH when a
+	// legacy recipient also resolves), otherwise the AGE_RECIPIENT /
+	// plaintext behaviour of #1831 / #1836.
+	BackupKeyMode_BACKUP_KEY_MODE_UNSPECIFIED BackupKeyMode = 0
+	// Encrypted to a tenant-held age recipient only (#1831). The platform
+	// holds no key; restore needs the matching identity from the caller.
+	BackupKeyMode_BACKUP_KEY_MODE_AGE_RECIPIENT BackupKeyMode = 1
+	// Encrypted to a per-backup ephemeral age identity whose secret is
+	// wrapped by the daemon's KMS wrapper and stored on the record
+	// (wrapped_key / kek_id). The daemon can wrap but not unwrap; only a
+	// holder of the KMS decrypt role can open the backup. Requesting this
+	// on a daemon with no wrapper is an error, not a fallback.
+	BackupKeyMode_BACKUP_KEY_MODE_MANAGED BackupKeyMode = 2
+	// Both of the above in one age file: either the legacy identity or
+	// the unwrapped managed identity decrypts it. Requires a recipient.
+	BackupKeyMode_BACKUP_KEY_MODE_BOTH BackupKeyMode = 3
+)
+
+// Enum value maps for BackupKeyMode.
+var (
+	BackupKeyMode_name = map[int32]string{
+		0: "BACKUP_KEY_MODE_UNSPECIFIED",
+		1: "BACKUP_KEY_MODE_AGE_RECIPIENT",
+		2: "BACKUP_KEY_MODE_MANAGED",
+		3: "BACKUP_KEY_MODE_BOTH",
+	}
+	BackupKeyMode_value = map[string]int32{
+		"BACKUP_KEY_MODE_UNSPECIFIED":   0,
+		"BACKUP_KEY_MODE_AGE_RECIPIENT": 1,
+		"BACKUP_KEY_MODE_MANAGED":       2,
+		"BACKUP_KEY_MODE_BOTH":          3,
+	}
+)
+
+func (x BackupKeyMode) Enum() *BackupKeyMode {
+	p := new(BackupKeyMode)
+	*p = x
+	return p
+}
+
+func (x BackupKeyMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (BackupKeyMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_backup_proto_enumTypes[2].Descriptor()
+}
+
+func (BackupKeyMode) Type() protoreflect.EnumType {
+	return &file_containarium_v1_backup_proto_enumTypes[2]
+}
+
+func (x BackupKeyMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use BackupKeyMode.Descriptor instead.
+func (BackupKeyMode) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_backup_proto_rawDescGZIP(), []int{2}
+}
+
 // VerificationResult is the outcome of a restore test. A backup whose
 // bytes are intact but which cannot be loaded by the engine is FAILED —
 // that distinction is the whole point of verification (see #1159).
@@ -188,11 +257,11 @@ func (x VerificationResult) String() string {
 }
 
 func (VerificationResult) Descriptor() protoreflect.EnumDescriptor {
-	return file_containarium_v1_backup_proto_enumTypes[2].Descriptor()
+	return file_containarium_v1_backup_proto_enumTypes[3].Descriptor()
 }
 
 func (VerificationResult) Type() protoreflect.EnumType {
-	return &file_containarium_v1_backup_proto_enumTypes[2]
+	return &file_containarium_v1_backup_proto_enumTypes[3]
 }
 
 func (x VerificationResult) Number() protoreflect.EnumNumber {
@@ -201,7 +270,7 @@ func (x VerificationResult) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use VerificationResult.Descriptor instead.
 func (VerificationResult) EnumDescriptor() ([]byte, []int) {
-	return file_containarium_v1_backup_proto_rawDescGZIP(), []int{2}
+	return file_containarium_v1_backup_proto_rawDescGZIP(), []int{3}
 }
 
 // BackupRecord is the metadata index entry for one stored dump. The dump
@@ -259,7 +328,21 @@ type BackupRecord struct {
 	AgeRecipient string `protobuf:"bytes,13,opt,name=age_recipient,json=ageRecipient,proto3" json:"age_recipient,omitempty"`
 	// For BACKUP_ENGINE_HOOK: the absolute in-container path of the hook
 	// that produced the dump. Empty for pg_dump records.
-	Hook          string `protobuf:"bytes,14,opt,name=hook,proto3" json:"hook,omitempty"`
+	Hook string `protobuf:"bytes,14,opt,name=hook,proto3" json:"hook,omitempty"`
+	// Managed key mode (#2402). wrapped_key is the per-backup age
+	// identity's secret string, wrapped by the daemon's KMS; kek_id is the
+	// key version it was wrapped under (for GCP, the full CryptoKeyVersion
+	// resource name, so a version with backups still under it can be
+	// guarded against destruction). Both empty unless key_mode is MANAGED
+	// or BOTH. The daemon never unwraps wrapped_key: whoever restores or
+	// verifies unwraps it under their own KMS credentials and supplies
+	// the identity in the request, as for any encrypted record.
+	WrappedKey []byte `protobuf:"bytes,15,opt,name=wrapped_key,json=wrappedKey,proto3" json:"wrapped_key,omitempty"`
+	KekId      string `protobuf:"bytes,16,opt,name=kek_id,json=kekId,proto3" json:"kek_id,omitempty"`
+	// Who holds the key: UNSPECIFIED for a plaintext record,
+	// AGE_RECIPIENT for a record encrypted to a tenant-held recipient only
+	// (including every record written before this field existed).
+	KeyMode       BackupKeyMode `protobuf:"varint,17,opt,name=key_mode,json=keyMode,proto3,enum=containarium.v1.BackupKeyMode" json:"key_mode,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -390,6 +473,27 @@ func (x *BackupRecord) GetHook() string {
 		return x.Hook
 	}
 	return ""
+}
+
+func (x *BackupRecord) GetWrappedKey() []byte {
+	if x != nil {
+		return x.WrappedKey
+	}
+	return nil
+}
+
+func (x *BackupRecord) GetKekId() string {
+	if x != nil {
+		return x.KekId
+	}
+	return ""
+}
+
+func (x *BackupRecord) GetKeyMode() BackupKeyMode {
+	if x != nil {
+		return x.KeyMode
+	}
+	return BackupKeyMode_BACKUP_KEY_MODE_UNSPECIFIED
 }
 
 // VerificationCheck is one engine-appropriate assertion made during a
@@ -704,7 +808,16 @@ type CreateBackupRequest struct {
 	// staged or uploaded, so the daemon's disk, the object store and the
 	// operator only ever hold ciphertext. Restore needs the matching
 	// identity, which the platform never stores.
-	AgeRecipient  string `protobuf:"bytes,7,opt,name=age_recipient,json=ageRecipient,proto3" json:"age_recipient,omitempty"`
+	AgeRecipient string `protobuf:"bytes,7,opt,name=age_recipient,json=ageRecipient,proto3" json:"age_recipient,omitempty"`
+	// Who should hold the key (#2402). UNSPECIFIED takes the daemon
+	// default: MANAGED when the daemon has a key wrapper configured
+	// (CONTAINARIUM_BACKUP_KMS_KEY_NAME), BOTH when a recipient also
+	// resolves, otherwise AGE_RECIPIENT with a recipient or plaintext
+	// without. An explicit mode the daemon cannot satisfy — MANAGED or
+	// BOTH with no wrapper (FAILED_PRECONDITION), AGE_RECIPIENT or BOTH
+	// with no recipient (INVALID_ARGUMENT) — is rejected, never silently
+	// downgraded.
+	KeyMode       BackupKeyMode `protobuf:"varint,8,opt,name=key_mode,json=keyMode,proto3,enum=containarium.v1.BackupKeyMode" json:"key_mode,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -786,6 +899,13 @@ func (x *CreateBackupRequest) GetAgeRecipient() string {
 		return x.AgeRecipient
 	}
 	return ""
+}
+
+func (x *CreateBackupRequest) GetKeyMode() BackupKeyMode {
+	if x != nil {
+		return x.KeyMode
+	}
+	return BackupKeyMode_BACKUP_KEY_MODE_UNSPECIFIED
 }
 
 type CreateBackupResponse struct {
@@ -1562,7 +1682,7 @@ var File_containarium_v1_backup_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_backup_proto_rawDesc = "" +
 	"\n" +
-	"\x1ccontainarium/v1/backup.proto\x12\x0fcontainarium.v1\x1a\x1cgoogle/api/annotations.proto\x1a.protoc-gen-openapiv2/options/annotations.proto\"\xad\x04\n" +
+	"\x1ccontainarium/v1/backup.proto\x12\x0fcontainarium.v1\x1a\x1cgoogle/api/annotations.proto\x1a.protoc-gen-openapiv2/options/annotations.proto\"\xa0\x05\n" +
 	"\fBackupRecord\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n" +
 	"\busername\x18\x02 \x01(\tR\busername\x12\x1a\n" +
@@ -1580,7 +1700,11 @@ const file_containarium_v1_backup_proto_rawDesc = "" +
 	"\x0erelation_count\x18\v \x01(\x03H\x00R\rrelationCount\x88\x01\x01\x12\x1c\n" +
 	"\tencrypted\x18\f \x01(\bR\tencrypted\x12#\n" +
 	"\rage_recipient\x18\r \x01(\tR\fageRecipient\x12\x12\n" +
-	"\x04hook\x18\x0e \x01(\tR\x04hookB\x11\n" +
+	"\x04hook\x18\x0e \x01(\tR\x04hook\x12\x1f\n" +
+	"\vwrapped_key\x18\x0f \x01(\fR\n" +
+	"wrappedKey\x12\x15\n" +
+	"\x06kek_id\x18\x10 \x01(\tR\x05kekId\x129\n" +
+	"\bkey_mode\x18\x11 \x01(\x0e2\x1e.containarium.v1.BackupKeyModeR\akeyModeB\x11\n" +
 	"\x0f_relation_count\"W\n" +
 	"\x11VerificationCheck\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x16\n" +
@@ -1603,7 +1727,7 @@ const file_containarium_v1_backup_proto_rawDesc = "" +
 	"\x04user\x18\x02 \x01(\tR\x04user\x12\x1a\n" +
 	"\bpassword\x18\x03 \x01(\tR\bpassword\x12\x12\n" +
 	"\x04host\x18\x04 \x01(\tR\x04host\x12\x12\n" +
-	"\x04port\x18\x05 \x01(\x05R\x04port\"\xa4\x02\n" +
+	"\x04port\x18\x05 \x01(\x05R\x04port\"\xdf\x02\n" +
 	"\x13CreateBackupRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12=\n" +
 	"\n" +
@@ -1614,7 +1738,8 @@ const file_containarium_v1_backup_proto_rawDesc = "" +
 	"gcs_bucket\x18\x04 \x01(\tR\tgcsBucket\x12\x12\n" +
 	"\x04hook\x18\x05 \x01(\tR\x04hook\x12\x14\n" +
 	"\x05label\x18\x06 \x01(\tR\x05label\x12#\n" +
-	"\rage_recipient\x18\a \x01(\tR\fageRecipient\"\xbc\x01\n" +
+	"\rage_recipient\x18\a \x01(\tR\fageRecipient\x129\n" +
+	"\bkey_mode\x18\b \x01(\x0e2\x1e.containarium.v1.BackupKeyModeR\akeyMode\"\xbc\x01\n" +
 	"\x14CreateBackupResponse\x12\x18\n" +
 	"\amessage\x18\x01 \x01(\tR\amessage\x125\n" +
 	"\x06record\x18\x02 \x01(\v2\x1d.containarium.v1.BackupRecordR\x06record\x127\n" +
@@ -1668,7 +1793,12 @@ const file_containarium_v1_backup_proto_rawDesc = "" +
 	"\fBackupEngine\x12\x1d\n" +
 	"\x19BACKUP_ENGINE_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16BACKUP_ENGINE_POSTGRES\x10\x01\x12\x16\n" +
-	"\x12BACKUP_ENGINE_HOOK\x10\x02*y\n" +
+	"\x12BACKUP_ENGINE_HOOK\x10\x02*\x8a\x01\n" +
+	"\rBackupKeyMode\x12\x1f\n" +
+	"\x1bBACKUP_KEY_MODE_UNSPECIFIED\x10\x00\x12!\n" +
+	"\x1dBACKUP_KEY_MODE_AGE_RECIPIENT\x10\x01\x12\x1b\n" +
+	"\x17BACKUP_KEY_MODE_MANAGED\x10\x02\x12\x18\n" +
+	"\x14BACKUP_KEY_MODE_BOTH\x10\x03*y\n" +
 	"\x12VerificationResult\x12#\n" +
 	"\x1fVERIFICATION_RESULT_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aVERIFICATION_RESULT_PASSED\x10\x01\x12\x1e\n" +
@@ -1701,66 +1831,69 @@ func file_containarium_v1_backup_proto_rawDescGZIP() []byte {
 	return file_containarium_v1_backup_proto_rawDescData
 }
 
-var file_containarium_v1_backup_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
+var file_containarium_v1_backup_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
 var file_containarium_v1_backup_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
 var file_containarium_v1_backup_proto_goTypes = []any{
 	(BackupDestination)(0),        // 0: containarium.v1.BackupDestination
 	(BackupEngine)(0),             // 1: containarium.v1.BackupEngine
-	(VerificationResult)(0),       // 2: containarium.v1.VerificationResult
-	(*BackupRecord)(nil),          // 3: containarium.v1.BackupRecord
-	(*VerificationCheck)(nil),     // 4: containarium.v1.VerificationCheck
-	(*BackupVerification)(nil),    // 5: containarium.v1.BackupVerification
-	(*PgConnection)(nil),          // 6: containarium.v1.PgConnection
-	(*CreateBackupRequest)(nil),   // 7: containarium.v1.CreateBackupRequest
-	(*CreateBackupResponse)(nil),  // 8: containarium.v1.CreateBackupResponse
-	(*ListBackupsRequest)(nil),    // 9: containarium.v1.ListBackupsRequest
-	(*ListBackupsResponse)(nil),   // 10: containarium.v1.ListBackupsResponse
-	(*GetBackupRequest)(nil),      // 11: containarium.v1.GetBackupRequest
-	(*GetBackupResponse)(nil),     // 12: containarium.v1.GetBackupResponse
-	(*RestoreBackupRequest)(nil),  // 13: containarium.v1.RestoreBackupRequest
-	(*RestoreBackupResponse)(nil), // 14: containarium.v1.RestoreBackupResponse
-	(*VerifyBackupRequest)(nil),   // 15: containarium.v1.VerifyBackupRequest
-	(*VerifyBackupResponse)(nil),  // 16: containarium.v1.VerifyBackupResponse
-	(*DeleteBackupRequest)(nil),   // 17: containarium.v1.DeleteBackupRequest
-	(*DeleteBackupResponse)(nil),  // 18: containarium.v1.DeleteBackupResponse
-	(*PruneBackupsRequest)(nil),   // 19: containarium.v1.PruneBackupsRequest
-	(*PruneBackupsResponse)(nil),  // 20: containarium.v1.PruneBackupsResponse
+	(BackupKeyMode)(0),            // 2: containarium.v1.BackupKeyMode
+	(VerificationResult)(0),       // 3: containarium.v1.VerificationResult
+	(*BackupRecord)(nil),          // 4: containarium.v1.BackupRecord
+	(*VerificationCheck)(nil),     // 5: containarium.v1.VerificationCheck
+	(*BackupVerification)(nil),    // 6: containarium.v1.BackupVerification
+	(*PgConnection)(nil),          // 7: containarium.v1.PgConnection
+	(*CreateBackupRequest)(nil),   // 8: containarium.v1.CreateBackupRequest
+	(*CreateBackupResponse)(nil),  // 9: containarium.v1.CreateBackupResponse
+	(*ListBackupsRequest)(nil),    // 10: containarium.v1.ListBackupsRequest
+	(*ListBackupsResponse)(nil),   // 11: containarium.v1.ListBackupsResponse
+	(*GetBackupRequest)(nil),      // 12: containarium.v1.GetBackupRequest
+	(*GetBackupResponse)(nil),     // 13: containarium.v1.GetBackupResponse
+	(*RestoreBackupRequest)(nil),  // 14: containarium.v1.RestoreBackupRequest
+	(*RestoreBackupResponse)(nil), // 15: containarium.v1.RestoreBackupResponse
+	(*VerifyBackupRequest)(nil),   // 16: containarium.v1.VerifyBackupRequest
+	(*VerifyBackupResponse)(nil),  // 17: containarium.v1.VerifyBackupResponse
+	(*DeleteBackupRequest)(nil),   // 18: containarium.v1.DeleteBackupRequest
+	(*DeleteBackupResponse)(nil),  // 19: containarium.v1.DeleteBackupResponse
+	(*PruneBackupsRequest)(nil),   // 20: containarium.v1.PruneBackupsRequest
+	(*PruneBackupsResponse)(nil),  // 21: containarium.v1.PruneBackupsResponse
 }
 var file_containarium_v1_backup_proto_depIdxs = []int32{
 	0,  // 0: containarium.v1.BackupRecord.destination:type_name -> containarium.v1.BackupDestination
 	1,  // 1: containarium.v1.BackupRecord.engine:type_name -> containarium.v1.BackupEngine
-	5,  // 2: containarium.v1.BackupRecord.last_verification:type_name -> containarium.v1.BackupVerification
-	2,  // 3: containarium.v1.BackupVerification.result:type_name -> containarium.v1.VerificationResult
-	4,  // 4: containarium.v1.BackupVerification.checks:type_name -> containarium.v1.VerificationCheck
-	6,  // 5: containarium.v1.CreateBackupRequest.connection:type_name -> containarium.v1.PgConnection
-	0,  // 6: containarium.v1.CreateBackupRequest.destination:type_name -> containarium.v1.BackupDestination
-	3,  // 7: containarium.v1.CreateBackupResponse.record:type_name -> containarium.v1.BackupRecord
-	3,  // 8: containarium.v1.CreateBackupResponse.records:type_name -> containarium.v1.BackupRecord
-	3,  // 9: containarium.v1.ListBackupsResponse.records:type_name -> containarium.v1.BackupRecord
-	3,  // 10: containarium.v1.GetBackupResponse.record:type_name -> containarium.v1.BackupRecord
-	6,  // 11: containarium.v1.RestoreBackupRequest.connection:type_name -> containarium.v1.PgConnection
-	6,  // 12: containarium.v1.VerifyBackupRequest.connection:type_name -> containarium.v1.PgConnection
-	5,  // 13: containarium.v1.VerifyBackupResponse.verification:type_name -> containarium.v1.BackupVerification
-	3,  // 14: containarium.v1.VerifyBackupResponse.record:type_name -> containarium.v1.BackupRecord
-	7,  // 15: containarium.v1.BackupService.CreateBackup:input_type -> containarium.v1.CreateBackupRequest
-	9,  // 16: containarium.v1.BackupService.ListBackups:input_type -> containarium.v1.ListBackupsRequest
-	11, // 17: containarium.v1.BackupService.GetBackup:input_type -> containarium.v1.GetBackupRequest
-	13, // 18: containarium.v1.BackupService.RestoreBackup:input_type -> containarium.v1.RestoreBackupRequest
-	15, // 19: containarium.v1.BackupService.VerifyBackup:input_type -> containarium.v1.VerifyBackupRequest
-	17, // 20: containarium.v1.BackupService.DeleteBackup:input_type -> containarium.v1.DeleteBackupRequest
-	19, // 21: containarium.v1.BackupService.PruneBackups:input_type -> containarium.v1.PruneBackupsRequest
-	8,  // 22: containarium.v1.BackupService.CreateBackup:output_type -> containarium.v1.CreateBackupResponse
-	10, // 23: containarium.v1.BackupService.ListBackups:output_type -> containarium.v1.ListBackupsResponse
-	12, // 24: containarium.v1.BackupService.GetBackup:output_type -> containarium.v1.GetBackupResponse
-	14, // 25: containarium.v1.BackupService.RestoreBackup:output_type -> containarium.v1.RestoreBackupResponse
-	16, // 26: containarium.v1.BackupService.VerifyBackup:output_type -> containarium.v1.VerifyBackupResponse
-	18, // 27: containarium.v1.BackupService.DeleteBackup:output_type -> containarium.v1.DeleteBackupResponse
-	20, // 28: containarium.v1.BackupService.PruneBackups:output_type -> containarium.v1.PruneBackupsResponse
-	22, // [22:29] is the sub-list for method output_type
-	15, // [15:22] is the sub-list for method input_type
-	15, // [15:15] is the sub-list for extension type_name
-	15, // [15:15] is the sub-list for extension extendee
-	0,  // [0:15] is the sub-list for field type_name
+	6,  // 2: containarium.v1.BackupRecord.last_verification:type_name -> containarium.v1.BackupVerification
+	2,  // 3: containarium.v1.BackupRecord.key_mode:type_name -> containarium.v1.BackupKeyMode
+	3,  // 4: containarium.v1.BackupVerification.result:type_name -> containarium.v1.VerificationResult
+	5,  // 5: containarium.v1.BackupVerification.checks:type_name -> containarium.v1.VerificationCheck
+	7,  // 6: containarium.v1.CreateBackupRequest.connection:type_name -> containarium.v1.PgConnection
+	0,  // 7: containarium.v1.CreateBackupRequest.destination:type_name -> containarium.v1.BackupDestination
+	2,  // 8: containarium.v1.CreateBackupRequest.key_mode:type_name -> containarium.v1.BackupKeyMode
+	4,  // 9: containarium.v1.CreateBackupResponse.record:type_name -> containarium.v1.BackupRecord
+	4,  // 10: containarium.v1.CreateBackupResponse.records:type_name -> containarium.v1.BackupRecord
+	4,  // 11: containarium.v1.ListBackupsResponse.records:type_name -> containarium.v1.BackupRecord
+	4,  // 12: containarium.v1.GetBackupResponse.record:type_name -> containarium.v1.BackupRecord
+	7,  // 13: containarium.v1.RestoreBackupRequest.connection:type_name -> containarium.v1.PgConnection
+	7,  // 14: containarium.v1.VerifyBackupRequest.connection:type_name -> containarium.v1.PgConnection
+	6,  // 15: containarium.v1.VerifyBackupResponse.verification:type_name -> containarium.v1.BackupVerification
+	4,  // 16: containarium.v1.VerifyBackupResponse.record:type_name -> containarium.v1.BackupRecord
+	8,  // 17: containarium.v1.BackupService.CreateBackup:input_type -> containarium.v1.CreateBackupRequest
+	10, // 18: containarium.v1.BackupService.ListBackups:input_type -> containarium.v1.ListBackupsRequest
+	12, // 19: containarium.v1.BackupService.GetBackup:input_type -> containarium.v1.GetBackupRequest
+	14, // 20: containarium.v1.BackupService.RestoreBackup:input_type -> containarium.v1.RestoreBackupRequest
+	16, // 21: containarium.v1.BackupService.VerifyBackup:input_type -> containarium.v1.VerifyBackupRequest
+	18, // 22: containarium.v1.BackupService.DeleteBackup:input_type -> containarium.v1.DeleteBackupRequest
+	20, // 23: containarium.v1.BackupService.PruneBackups:input_type -> containarium.v1.PruneBackupsRequest
+	9,  // 24: containarium.v1.BackupService.CreateBackup:output_type -> containarium.v1.CreateBackupResponse
+	11, // 25: containarium.v1.BackupService.ListBackups:output_type -> containarium.v1.ListBackupsResponse
+	13, // 26: containarium.v1.BackupService.GetBackup:output_type -> containarium.v1.GetBackupResponse
+	15, // 27: containarium.v1.BackupService.RestoreBackup:output_type -> containarium.v1.RestoreBackupResponse
+	17, // 28: containarium.v1.BackupService.VerifyBackup:output_type -> containarium.v1.VerifyBackupResponse
+	19, // 29: containarium.v1.BackupService.DeleteBackup:output_type -> containarium.v1.DeleteBackupResponse
+	21, // 30: containarium.v1.BackupService.PruneBackups:output_type -> containarium.v1.PruneBackupsResponse
+	24, // [24:31] is the sub-list for method output_type
+	17, // [17:24] is the sub-list for method input_type
+	17, // [17:17] is the sub-list for extension type_name
+	17, // [17:17] is the sub-list for extension extendee
+	0,  // [0:17] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_backup_proto_init() }
@@ -1774,7 +1907,7 @@ func file_containarium_v1_backup_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_backup_proto_rawDesc), len(file_containarium_v1_backup_proto_rawDesc)),
-			NumEnums:      3,
+			NumEnums:      4,
 			NumMessages:   18,
 			NumExtensions: 0,
 			NumServices:   1,

@@ -9866,6 +9866,17 @@
       "default": "BACKUP_ENGINE_UNSPECIFIED",
       "description": "BackupEngine identifies the database engine a backup was taken from.\n\nPostgres is the only engine implemented today; the enum exists so that a\nsecond one has somewhere to be named, and so that the engine a record was\ntaken with is a typed value rather than a string the reader has to trust.\n\n - BACKUP_ENGINE_UNSPECIFIED: Unset, or a record written by a daemon that predates this enum.\nRejected wherever an engine has to be chosen — never treated as\nPostgres by default, because guessing the engine of a dump is how a\nrestore silently targets the wrong one.\n - BACKUP_ENGINE_HOOK: A dump produced by a tenant-supplied backup hook (#1831): an opaque\nbyte stream the daemon captured from the hook's stdout. The daemon\ndoes not know its format, so a HOOK record can be listed, fetched,\nintegrity-checked and deleted, but is never restored or restore-tested\nby the platform — apply it with the tenant's own tooling."
     },
+    "BackupKeyMode": {
+      "type": "string",
+      "enum": [
+        "BACKUP_KEY_MODE_UNSPECIFIED",
+        "BACKUP_KEY_MODE_AGE_RECIPIENT",
+        "BACKUP_KEY_MODE_MANAGED",
+        "BACKUP_KEY_MODE_BOTH"
+      ],
+      "default": "BACKUP_KEY_MODE_UNSPECIFIED",
+      "description": "BackupKeyMode names who holds the key that opens an encrypted backup\n(#2402). It replaces reading `encrypted \u0026\u0026 age_recipient != \"\"` as a\nmode: a reader that needs to know whether a backup is platform-managed\nchecks this field, not a combination of others.\n\n - BACKUP_KEY_MODE_UNSPECIFIED: On a record: not encrypted. On a request: the daemon default —\nMANAGED when the daemon has a key wrapper configured (BOTH when a\nlegacy recipient also resolves), otherwise the AGE_RECIPIENT /\nplaintext behaviour of #1831 / #1836.\n - BACKUP_KEY_MODE_AGE_RECIPIENT: Encrypted to a tenant-held age recipient only (#1831). The platform\nholds no key; restore needs the matching identity from the caller.\n - BACKUP_KEY_MODE_MANAGED: Encrypted to a per-backup ephemeral age identity whose secret is\nwrapped by the daemon's KMS wrapper and stored on the record\n(wrapped_key / kek_id). The daemon can wrap but not unwrap; only a\nholder of the KMS decrypt role can open the backup. Requesting this\non a daemon with no wrapper is an error, not a fallback.\n - BACKUP_KEY_MODE_BOTH: Both of the above in one age file: either the legacy identity or\nthe unwrapped managed identity decrypts it. Requires a recipient."
+    },
     "BackupRecord": {
       "type": "object",
       "properties": {
@@ -9926,6 +9937,18 @@
         "hook": {
           "type": "string",
           "description": "For BACKUP_ENGINE_HOOK: the absolute in-container path of the hook\nthat produced the dump. Empty for pg_dump records."
+        },
+        "wrappedKey": {
+          "type": "string",
+          "format": "byte",
+          "description": "Managed key mode (#2402). wrapped_key is the per-backup age\nidentity's secret string, wrapped by the daemon's KMS; kek_id is the\nkey version it was wrapped under (for GCP, the full CryptoKeyVersion\nresource name, so a version with backups still under it can be\nguarded against destruction). Both empty unless key_mode is MANAGED\nor BOTH. The daemon never unwraps wrapped_key: whoever restores or\nverifies unwraps it under their own KMS credentials and supplies\nthe identity in the request, as for any encrypted record."
+        },
+        "kekId": {
+          "type": "string"
+        },
+        "keyMode": {
+          "$ref": "#/definitions/BackupKeyMode",
+          "description": "Who holds the key: UNSPECIFIED for a plaintext record,\nAGE_RECIPIENT for a record encrypted to a tenant-held recipient only\n(including every record written before this field existed)."
         }
       },
       "description": "BackupRecord is the metadata index entry for one stored dump. The dump\nitself lives at `location`; this record is persisted as a small JSON\nsidecar in the daemon's backup directory so `ListBackups` works without\na database dependency (the thing we are backing up may itself be down)."
@@ -11231,6 +11254,10 @@
         "ageRecipient": {
           "type": "string",
           "description": "User-held encryption (#1831): an age X25519 recipient (\"age1…\"). When\nset, the dump is encrypted to it in the daemon process before it is\nstaged or uploaded, so the daemon's disk, the object store and the\noperator only ever hold ciphertext. Restore needs the matching\nidentity, which the platform never stores."
+        },
+        "keyMode": {
+          "$ref": "#/definitions/BackupKeyMode",
+          "description": "Who should hold the key (#2402). UNSPECIFIED takes the daemon\ndefault: MANAGED when the daemon has a key wrapper configured\n(CONTAINARIUM_BACKUP_KMS_KEY_NAME), BOTH when a recipient also\nresolves, otherwise AGE_RECIPIENT with a recipient or plaintext\nwithout. An explicit mode the daemon cannot satisfy — MANAGED or\nBOTH with no wrapper (FAILED_PRECONDITION), AGE_RECIPIENT or BOTH\nwith no recipient (INVALID_ARGUMENT) — is rejected, never silently\ndowngraded."
         }
       },
       "description": "CreateBackupRequest dumps a container's database and stores it at the\nchosen destination."
