@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // backupTools is the MCP-side catalog for the database-backup feature.
@@ -28,7 +30,7 @@ func backupTools() []Tool {
 				"size, and SHA-256. Two opt-in options: 'hook' runs the tenant's " +
 				"own in-container program and stores its stdout instead of running " +
 				"pg_dump (no DB credential needed; the dump is opaque and not " +
-				"auto-restorable); 'age_recipient' encrypts the dump to a user-held " +
+				"auto-restorable unless 'hook_format' declares it pg_custom); 'age_recipient' encrypts the dump to a user-held " +
 				"age public key before storage, so the platform only holds " +
 				"ciphertext. 'key_mode' selects who holds the key on a daemon " +
 				"with a backup KMS key configured ('managed': a per-backup key " +
@@ -69,6 +71,11 @@ func backupTools() []Tool {
 					"label": map[string]interface{}{
 						"type":        "string",
 						"description": "Label for a hook backup, used in the backup id (default: the hook's basename).",
+					},
+					"hook_format": map[string]interface{}{
+						"type":        "string",
+						"description": "Declared format of the hook's output. 'opaque' (default): stored and fetched, never restored or restore-tested by the platform. 'pg_custom': the hook emits a pg_dump -Fc archive, so the backup can be restore-tested (verify_backup) and restored into a named target other than its source. A promise about the hook's output; the daemon does not check it at create time. Only with 'hook'.",
+						"enum":        []string{"opaque", "pg_custom"},
 					},
 					"age_recipient": map[string]interface{}{
 						"type":        "string",
@@ -191,12 +198,17 @@ func handleCreateBackup(client API, args map[string]interface{}) (string, error)
 	if err != nil {
 		return "", err
 	}
+	hookFormat, err := hookFormatArg(getStringArg(args, "hook_format", ""))
+	if err != nil {
+		return "", err
+	}
 	resp, err := client.CreateBackup(CreateBackupRequest{
 		Username:     getStringArg(args, "username", ""),
 		Destination:  destEnum,
 		GCSBucket:    getStringArg(args, "gcs_bucket", ""),
 		Hook:         hook,
 		Label:        getStringArg(args, "label", ""),
+		HookFormat:   hookFormat,
 		AgeRecipient: getStringArg(args, "age_recipient", ""),
 		KeyMode:      keyMode,
 		Connection: &PgConnectionBody{
@@ -215,7 +227,11 @@ func handleCreateBackup(client API, args map[string]interface{}) (string, error)
 		out += fmt.Sprintf("SHA-256:  %s\n", r.SHA256)
 		out += fmt.Sprintf("Location: %s\n", r.Location)
 		if r.Hook != "" {
-			out += fmt.Sprintf("Hook:     %s (opaque dump; not auto-restorable)\n", r.Hook)
+			if r.HookFormat == pb.HookFormat_HOOK_FORMAT_PG_CUSTOM.String() {
+				out += fmt.Sprintf("Hook:     %s (pg_custom dump; restore-testable)\n", r.Hook)
+			} else {
+				out += fmt.Sprintf("Hook:     %s (opaque dump; not auto-restorable)\n", r.Hook)
+			}
 		}
 		if r.Encrypted {
 			out += fmt.Sprintf("Encrypted: yes, to %s (restore needs the matching identity file)\n", r.AgeRecipient)
@@ -251,6 +267,25 @@ func keyModeEnumName(arg string) (string, error) {
 // vocabulary, for output.
 func keyModeArgName(enumName string) string {
 	return strings.ToLower(strings.TrimPrefix(enumName, "BACKUP_KEY_MODE_"))
+}
+
+// hookFormatArg maps the create_backup hook_format argument to the
+// pb.HookFormat value name protojson expects on the wire (#2405), mirroring
+// the CLI's --hook-format. Empty stays empty (omitted; daemon default
+// opaque).
+func hookFormatArg(s string) (string, error) {
+	var f pb.HookFormat
+	switch s {
+	case "":
+		return "", nil
+	case "opaque":
+		f = pb.HookFormat_HOOK_FORMAT_OPAQUE
+	case "pg_custom":
+		f = pb.HookFormat_HOOK_FORMAT_PG_CUSTOM
+	default:
+		return "", fmt.Errorf("invalid hook_format %q (expected 'opaque' or 'pg_custom')", s)
+	}
+	return f.String(), nil
 }
 
 func handleListBackups(client API, args map[string]interface{}) (string, error) {

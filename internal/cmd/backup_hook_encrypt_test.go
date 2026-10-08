@@ -52,10 +52,12 @@ func resetBackupCreateFlags(t *testing.T) {
 	backupCreateDatabase, backupCreateDest, backupCreateBucket = "", "local", ""
 	backupCreateHook, backupCreateLabel, backupCreateAgeRecipient = "", "", ""
 	backupCreateKeyMode = ""
+	backupCreateHookFormat = ""
 	t.Cleanup(func() {
 		backupCreateDatabase, backupCreateDest, backupCreateBucket = "", "local", ""
 		backupCreateHook, backupCreateLabel, backupCreateAgeRecipient = "", "", ""
 		backupCreateKeyMode = ""
+		backupCreateHookFormat = ""
 	})
 }
 
