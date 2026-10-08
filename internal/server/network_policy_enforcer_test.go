@@ -3,10 +3,44 @@ package server
 import (
 	"context"
 	"net"
+	"net/netip"
 	"testing"
+	"time"
 
 	"github.com/footprintai/containarium/pkg/core/incus"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
+
+// TestCompiledPolicies_DomainAddrsReachEnforcerAsIPv4Only locks down #2379:
+// the resolver is dual-stack, but the enforcer's BPF egress map is IPv4-only,
+// so a domain's AAAA answers must never be folded into its allow-list.
+func TestCompiledPolicies_DomainAddrsReachEnforcerAsIPv4Only(t *testing.T) {
+	store := NewMemNetworkPolicyStore()
+	if err := store.Set(context.Background(), &pb.NetworkPolicy{
+		Tenant:        "acme",
+		EgressDomains: []string{"dual.example"},
+	}); err != nil {
+		t.Fatalf("store.Set: %v", err)
+	}
+	e := NewNetworkPolicyEnforcer("", store, NewMemTenantRegistry(), nil, nil, nil, false)
+	e.ctx = context.Background()
+	e.resolver = newDomainResolver(&fakeTTLResolver{answers: map[string]dnsAnswer{
+		"dual.example": {Addrs: addrs("192.0.2.5", "2001:db8::5"), TTL: 30 * time.Second},
+	}}, newResolverClock().now)
+	e.refreshDomains()
+
+	if got := len(e.resolver.Addrs("dual.example")); got != 2 {
+		t.Fatalf("setup: resolver should hold both families, got %d addrs", got)
+	}
+	compiled, err := e.compiledPolicies(context.Background())
+	if err != nil {
+		t.Fatalf("compiledPolicies: %v", err)
+	}
+	cidrs := compiled["acme"].EgressCIDRs
+	if len(cidrs) != 1 || cidrs[0] != netip.MustParsePrefix("192.0.2.5/32") {
+		t.Fatalf("EgressCIDRs = %v, want only [192.0.2.5/32]", cidrs)
+	}
+}
 
 // fakeInspector is a containerInspector that counts GetRawInstance calls so a
 // test can assert the reconcile no longer inspects every container every cycle

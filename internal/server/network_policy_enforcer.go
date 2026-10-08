@@ -59,12 +59,6 @@ type FlowSink interface {
 	PersistEBPFFlows(flows []traffic.EBPFFlow)
 }
 
-// defaultDomainRefreshInterval is how often egress_domains are re-resolved to
-// IPs (Phase C). A fixed interval rather than per-record DNS TTL — TTL-aware
-// refresh (raw DNS) is a future enhancement; for now a short fixed cadence keeps
-// the allow-list reasonably fresh without a DNS library.
-const defaultDomainRefreshInterval = 60 * time.Second
-
 // containerInspector is the slice of the Incus client the enforcer needs.
 type containerInspector interface {
 	ListContainers() ([]incus.ContainerInfo, error)
@@ -89,8 +83,7 @@ type NetworkPolicyEnforcer struct {
 	interval       time.Duration
 	enforceEnabled bool // daemon-wide guard: ENFORCE policies only drop when true
 
-	resolver      *DomainResolver // Phase C: egress_domains -> IPs
-	domainRefresh time.Duration
+	resolver *DomainResolver // Phase C: egress_domains -> IPs (refresh cadence: min(TTL, 60s), #2379)
 
 	flowSink        FlowSink      // #627: traffic-view flow accounting (nil = disabled)
 	flowPoll        time.Duration // how often to read the BPF flows map
@@ -142,7 +135,6 @@ func NewNetworkPolicyEnforcer(objPath string, store NetworkPolicyStore, registry
 		interval:          defaultNetPolicyReconcileInterval,
 		enforceEnabled:    enforceEnabled,
 		resolver:          NewDomainResolver(nil),
-		domainRefresh:     defaultDomainRefreshInterval,
 		flowPoll:          defaultFlowPollInterval,
 		flowIdleTimeout:   defaultFlowIdleTimeout,
 		vethCache:         make(map[string]string),
@@ -337,13 +329,14 @@ func (e *NetworkPolicyEnforcer) Start(ctx context.Context) error {
 		log.Printf("[netpolicy] initial reconcile: %v", err)
 	}
 
-	// Domain refresh loop (Phase C): re-resolve egress_domains on a cadence. The
+	// Domain refresh loop (Phase C): wake when the earliest name is due —
+	// min(record TTL, 60s) per name (#2379) — and re-resolve the due ones. The
 	// next reconcile folds the refreshed IPs into the egress map (and diffEgress
 	// prunes IPs a domain no longer resolves to).
 	e.wg.Add(1)
 	go func() {
 		defer e.wg.Done()
-		t := time.NewTicker(e.domainRefresh)
+		t := time.NewTimer(e.resolver.NextRefreshDelay())
 		defer t.Stop()
 		for {
 			select {
@@ -351,6 +344,7 @@ func (e *NetworkPolicyEnforcer) Start(ctx context.Context) error {
 				return
 			case <-t.C:
 				e.refreshDomains()
+				t.Reset(e.resolver.NextRefreshDelay())
 			}
 		}
 	}()
@@ -905,9 +899,9 @@ func (e *NetworkPolicyEnforcer) refreshDomains() {
 	for _, p := range stored {
 		domains = append(domains, p.GetEgressDomains()...)
 	}
-	if len(domains) == 0 {
-		return
-	}
+	// No early return on an empty list: Refresh with no domains prunes the
+	// cache, so a removed last domain cannot leave a stale past-due entry that
+	// would floor NextRefreshDelay and wake this loop every second.
 	cctx, cancel := context.WithTimeout(e.ctx, 10*time.Second)
 	defer cancel()
 	e.resolver.Refresh(cctx, domains)
