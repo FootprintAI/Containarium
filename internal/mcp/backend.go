@@ -66,6 +66,8 @@ type API interface {
 	GetKMSStatus() (*KMSStatusResponse, error)
 	GetEnvelopeCoverage() (*EnvelopeCoverageResponse, error)
 	MigrateToEnvelope(req MigrateToEnvelopeBody) (*MigrateToEnvelopeResponse, error)
+	// Guardrail policy (#2368): read only; the write stays CLI-only.
+	GetGuardrailPolicy() (*pb.GetGuardrailPolicyResponse, error)
 
 	// Model gateway (#1726). Mint only: the key verbs are operator-gated and
 	// deliberately not exposed to an agent (see gateway_tools.go).

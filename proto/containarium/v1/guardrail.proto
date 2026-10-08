@@ -2,7 +2,9 @@ syntax = "proto3";
 
 package containarium.v1;
 
+import "google/api/annotations.proto";
 import "google/protobuf/timestamp.proto";
+import "protoc-gen-openapiv2/options/annotations.proto";
 
 option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
 
@@ -29,6 +31,12 @@ enum GuardrailKind {
   // strings, internal topology. Distinct from PII because the right action
   // differs (a secret is never tokenized into a persisted vault).
   GUARDRAIL_KIND_SECRET = 2;
+  // Inbound (model output on its way into a box): code shapes that are
+  // dangerous to run, e.g. download-and-execute, destructive shell,
+  // credential exfiltration (docs/architecture/guardrail-inbound-and-server-policy.md).
+  GUARDRAIL_KIND_UNSAFE_CODE = 3;
+  // Inbound: instruction-override signatures embedded in returned content.
+  GUARDRAIL_KIND_PROMPT_INJECTION = 4;
 }
 
 // GuardrailAction is what the policy does with a finding of a given kind.
@@ -176,4 +184,87 @@ message GuardrailAttestation {
   // SECRET covered checks for it here; a PASS that never looked for a kind
   // must be distinguishable from one that did (#2362). Sorted ascending.
   repeated GuardrailKind kinds_scanned = 12;
+}
+
+// --- Server-side guardrail policy (#2368) ---------------------------------
+// docs/architecture/guardrail-inbound-and-server-policy.md, "Policy service".
+// The platform admin owns one cluster-wide policy; a gated deploy and the
+// model gateway read it. Not configured is an explicit state, distinct from
+// "the store could not be read".
+
+// GuardrailTrustedSigner is a signing key an admin registered. A verifier
+// trusts these keys, never a key a deploy request carries.
+message GuardrailTrustedSigner {
+  // SHA-256 of public_key, hex (matches GuardrailAttestation.key_id). Set
+  // rejects a signer whose key_id is not the hash of its key.
+  string key_id = 1;
+  // Ed25519 public key, 32 bytes.
+  bytes public_key = 2;
+  // Reviewer-readable name. No personal data.
+  string label = 3;
+}
+
+// ServerGuardrailPolicy is the stored policy plus the server's bookkeeping.
+message ServerGuardrailPolicy {
+  // The rules. GuardrailAttestation.policy_hash covers THIS message only, so
+  // rotating a trusted signer does not invalidate existing attestations.
+  GuardrailPolicy policy = 1;
+  repeated GuardrailTrustedSigner trusted_signers = 2;
+  // Server-assigned, monotonic: every successful Set increments it by one.
+  int64 revision = 3;
+  google.protobuf.Timestamp updated_at = 4;
+  // Authenticated subject that made the last Set.
+  string updated_by = 5;
+}
+
+message GetGuardrailPolicyRequest {}
+
+message GetGuardrailPolicyResponse {
+  // False when no policy was ever set. `policy` is then empty and consumers
+  // behave as before the server policy existed (ungated deploys unaffected,
+  // inbound scan off). A read error is an RPC error, never configured=false.
+  bool configured = 1;
+  ServerGuardrailPolicy policy = 2;
+  // SHA-256 of policy.policy (the same hash an attestation records). Empty
+  // when not configured.
+  string policy_hash = 3;
+}
+
+message SetGuardrailPolicyRequest {
+  // Required. An empty rule list is a valid policy (it clears every rule).
+  GuardrailPolicy policy = 1;
+  repeated GuardrailTrustedSigner trusted_signers = 2;
+}
+
+message SetGuardrailPolicyResponse {
+  // The stored policy, with its new revision.
+  ServerGuardrailPolicy policy = 1;
+  string policy_hash = 2;
+}
+
+// GuardrailPolicyService is the daemon's store for the server-side policy.
+// Get: any authenticated caller (a data owner needs the policy to run
+// `guardrail apply` against it). Set: admin role only, audited.
+service GuardrailPolicyService {
+  rpc GetGuardrailPolicy(GetGuardrailPolicyRequest) returns (GetGuardrailPolicyResponse) {
+    option (google.api.http) = {
+      get: "/v1/guardrail/policy"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get the server guardrail policy";
+      description: "Return the cluster-wide guardrail policy, its trusted signers, revision and policy hash. configured=false when no policy was ever set. Any authenticated caller.";
+      tags: "Guardrail";
+    };
+  }
+  rpc SetGuardrailPolicy(SetGuardrailPolicyRequest) returns (SetGuardrailPolicyResponse) {
+    option (google.api.http) = {
+      put: "/v1/guardrail/policy"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Set the server guardrail policy";
+      description: "Replace the cluster-wide guardrail policy and trusted signers. Validated first (no unspecified or duplicate kind, max_residual >= 0, every signer key_id equal to the SHA-256 of its Ed25519 key); an invalid policy is INVALID_ARGUMENT and the stored policy is untouched. Increments the revision and writes an audit entry. Admin role only.";
+      tags: "Guardrail";
+    };
+  }
 }

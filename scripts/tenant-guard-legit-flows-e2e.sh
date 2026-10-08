@@ -70,9 +70,13 @@ echo "== fixtures: $A1 ($IP_A1), $A2 ($IP_A2) same tenant; $B ($IP_B) other tena
 
 # connect <label> <expect ok|drop> <from-container|host> <ip> <port>
 connect() {
-  local label="$1" expect="$2" from="$3" ip="$4" port="$5" r
+  local label="$1" expect="$2" from="$3" ip="$4" port="$5" r out rc
   if [ "$from" = "host" ]; then
-    r=$(timeout "$CONNECT_TIMEOUT" bash -c "echo > /dev/tcp/$ip/$port" 2>&1 | grep -q refused && echo refused || { timeout "$CONNECT_TIMEOUT" bash -c "echo > /dev/tcp/$ip/$port" >/dev/null 2>&1 && echo ok || echo timeout; })
+    # Capture the output first and match the captured text. `... 2>&1 | grep -q refused` under `set -o pipefail`
+    # takes the failing connect's status as the pipeline status even when grep matched, so a box with nothing
+    # listening on the port (an RST, reachable at L3) was reported as a timeout. Same class as core-guard #2323.
+    out=$(timeout "$CONNECT_TIMEOUT" bash -c "echo > /dev/tcp/$ip/$port" 2>&1); rc=$?
+    case "$out" in *refused*) r=refused ;; *) if [ "$rc" -eq 0 ]; then r=ok; else r=timeout; fi ;; esac
   else
     r=$(incus exec "$from" -- bash -c "out=\$(timeout $CONNECT_TIMEOUT bash -c 'echo > /dev/tcp/$ip/$port' 2>&1); rc=\$?; case \"\$out\" in *refused*) echo refused;; *) [ \$rc -eq 0 ] && echo ok || echo timeout;; esac")
   fi
