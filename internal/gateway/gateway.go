@@ -532,6 +532,10 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	if err := pb.RegisterNetworkPolicyServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
 		return fmt.Errorf("failed to register network policy service gateway: %w", err)
 	}
+	// GuardrailPolicyService (#2368): the server-side guardrail policy.
+	if err := pb.RegisterGuardrailPolicyServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
+		return fmt.Errorf("failed to register guardrail policy service gateway: %w", err)
+	}
 	// AnonymousBoxService (#2197): the ssh new.<domain> door's daemon side.
 	if err := pb.RegisterAnonymousBoxServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
 		return fmt.Errorf("failed to register anonymous box service gateway: %w", err)
