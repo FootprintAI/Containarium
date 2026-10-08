@@ -22,6 +22,8 @@ func resetPrivilegedPolicy(t *testing.T) {
 	privilegedPolicyOnce = sync.Once{}
 }
 
+// TestPrivilegedPolicy_DefaultIsAll preserves the backwards-compatible default
+// when the policy variable is genuinely absent.
 func TestPrivilegedPolicy_DefaultIsAll(t *testing.T) {
 	unsetPrivilegedPolicyEnv(t)
 	resetPrivilegedPolicy(t)
@@ -166,6 +168,8 @@ var malformedPrivilegedPolicyValues = []string{
 	"privileged",
 }
 
+// TestParsePrivilegedPolicy_ValidAndUnset accepts the three policies and their
+// normalised variants, reserving the default for an unset variable.
 func TestParsePrivilegedPolicy_ValidAndUnset(t *testing.T) {
 	cases := []struct {
 		name string
@@ -216,6 +220,8 @@ func TestParsePrivilegedPolicy_MalformedFailsClosed(t *testing.T) {
 	}
 }
 
+// TestValidatePrivilegedPolicyEnv accepts unset and valid settings at startup
+// while refusing present-but-blank and unrecognised values.
 func TestValidatePrivilegedPolicyEnv(t *testing.T) {
 	t.Run("unset", func(t *testing.T) {
 		unsetPrivilegedPolicyEnv(t)
@@ -313,8 +319,8 @@ func TestAuthorizePrivilegedPodman_UnsetStaysAll(t *testing.T) {
 	}
 }
 
-// The daemon refuses to start on an unrecognised value — the check is wired
-// into NewDualServer, so a typo surfaces at boot, not at the first create.
+// TestNewDualServer_RefusesMalformedPrivilegedPolicy verifies that blank and
+// unrecognised values fail at startup, before container initialisation.
 func TestNewDualServer_RefusesMalformedPrivilegedPolicy(t *testing.T) {
 	for _, raw := range malformedPrivilegedPolicyValues {
 		t.Run(fmt.Sprintf("%q", raw), func(t *testing.T) {
