@@ -1494,11 +1494,25 @@ skipAppHosting:
 	// (#2359 — the tenant guard would strip persisted allow_from_tenants).
 	var policyStoreDurable atomic.Bool
 	policyStoreDurable.Store(postgresConnString == "")
+	// The coding-tool egress policy store (#2378) gets the same guard: with
+	// Postgres configured it refuses every RPC until its Postgres store is
+	// installed below, instead of answering "unrestricted" from the empty
+	// in-memory stand-in.
+	codeEgressServer.SetDurable(postgresConnString == "")
 	if postgresConnString != "" {
 		pool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
 		if poolErr != nil {
 			log.Printf("Warning: Failed to connect to PostgreSQL for network policy store: %v", poolErr)
 		} else {
+			// Wired independently of the network-policy store below, so a
+			// failure there does not leave this one on the stand-in.
+			if ceErr := codeEgressServer.InstallDurableStore(func() (CodingToolEgressPolicyStore, error) {
+				return NewPostgresCodingToolEgressPolicyStore(context.Background(), pool)
+			}); ceErr != nil {
+				log.Printf("Warning: Failed to create Postgres coding-tool egress policy store (its RPCs fail UNAVAILABLE): %v", ceErr)
+			} else {
+				log.Printf("Coding-tool egress policy persistence enabled (Postgres store)")
+			}
 			// Managed-cluster state (#1413) is wired FIRST and
 			// independently: a network-policy store failure below must
 			// not silently leave clusters on the in-memory store (the
@@ -1518,12 +1532,6 @@ skipAppHosting:
 				npServer.SetStore(pgStore)
 				policyStoreDurable.Store(true)
 				log.Printf("NetworkPolicy persistence enabled (Postgres store)")
-				if ceStore, ceErr := NewPostgresCodingToolEgressPolicyStore(context.Background(), pool); ceErr != nil {
-					log.Printf("Warning: Failed to create Postgres coding-tool egress policy store: %v", ceErr)
-				} else {
-					codeEgressServer.SetStore(ceStore)
-					log.Printf("Coding-tool egress policy persistence enabled (Postgres store)")
-				}
 				// Operator signatures (#661 PR-B) share the same pool.
 				if sigStore, sErr := NewPostgresNetworkPolicySignatureStore(context.Background(), pool); sErr != nil {
 					log.Printf("Warning: Failed to create Postgres network-policy signature store: %v", sErr)

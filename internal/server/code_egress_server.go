@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"strings"
+	"sync/atomic"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -29,14 +30,50 @@ type CodingToolEgressPolicyServer struct {
 	store    CodingToolEgressPolicyStore
 	audit    auditLogger
 	implicit codeegress.Implicit
+	// durable says whether store is the source of truth: true with no
+	// Postgres configured (the in-memory store IS the store) or once the
+	// Postgres store is installed; false while Postgres is configured but
+	// its store is not in place. Then the in-memory store is an empty
+	// stand-in, and answering from it would report every tenant as
+	// unrestricted and drop admin writes at restart, so every RPC fails
+	// with UNAVAILABLE instead (the network-policy store's
+	// policyStoreDurable guard, #2359).
+	durable atomic.Bool
 }
 
 func NewCodingToolEgressPolicyServer(store CodingToolEgressPolicyStore) *CodingToolEgressPolicyServer {
-	return &CodingToolEgressPolicyServer{store: store}
+	s := &CodingToolEgressPolicyServer{store: store}
+	s.durable.Store(true)
+	return s
 }
 
 // SetStore swaps the backing store. Startup only, before serving.
 func (s *CodingToolEgressPolicyServer) SetStore(store CodingToolEgressPolicyStore) { s.store = store }
+
+// SetDurable records whether the current store is the source of truth.
+// Startup only: false when Postgres is configured, until its store is
+// installed.
+func (s *CodingToolEgressPolicyServer) SetDurable(durable bool) { s.durable.Store(durable) }
+
+// InstallDurableStore opens the Postgres store and makes it the source of
+// truth. On failure the server keeps refusing (UNAVAILABLE) rather than
+// serving the empty in-memory stand-in.
+func (s *CodingToolEgressPolicyServer) InstallDurableStore(open func() (CodingToolEgressPolicyStore, error)) error {
+	st, err := open()
+	if err != nil {
+		return err
+	}
+	s.SetStore(st)
+	s.SetDurable(true)
+	return nil
+}
+
+func (s *CodingToolEgressPolicyServer) requireDurable() error {
+	if !s.durable.Load() {
+		return status.Error(codes.Unavailable, "coding-tool egress policy store unavailable: Postgres is configured but its store was not initialised at startup")
+	}
+	return nil
+}
 
 // SetAuditStore wires the audit log once it exists. A nil *audit.Store is
 // kept as "no audit" rather than a non-nil interface holding nil.
@@ -54,6 +91,9 @@ func (s *CodingToolEgressPolicyServer) SetImplicit(imp codeegress.Implicit) { s.
 
 func (s *CodingToolEgressPolicyServer) SetCodingToolEgressPolicy(ctx context.Context, req *pb.SetCodingToolEgressPolicyRequest) (*pb.SetCodingToolEgressPolicyResponse, error) {
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
+	if err := s.requireDurable(); err != nil {
 		return nil, err
 	}
 	norm, err := codeegress.Normalize(req.GetPolicy())
@@ -90,6 +130,9 @@ func (s *CodingToolEgressPolicyServer) GetCodingToolEgressPolicy(ctx context.Con
 	} else if err := auth.AuthorizeTenant(ctx, tenant); err != nil {
 		return nil, err
 	}
+	if err := s.requireDurable(); err != nil {
+		return nil, err
+	}
 	own, err := s.lookup(ctx, tenant)
 	if err != nil {
 		return nil, err
@@ -112,6 +155,9 @@ func (s *CodingToolEgressPolicyServer) GetCodingToolEgressPolicy(ctx context.Con
 
 func (s *CodingToolEgressPolicyServer) DeleteCodingToolEgressPolicy(ctx context.Context, req *pb.DeleteCodingToolEgressPolicyRequest) (*pb.DeleteCodingToolEgressPolicyResponse, error) {
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
+	if err := s.requireDurable(); err != nil {
 		return nil, err
 	}
 	tenant := strings.TrimSpace(req.GetTenant())
