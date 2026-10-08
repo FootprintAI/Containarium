@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Guardrail inbound foundations (#2367, slice A; the model-gateway enforcement is a later slice, so nothing is
+  deployed behaviour yet). `GuardrailKind` gains `UNSAFE_CODE` and `PROMPT_INJECTION`, and the in-tree reference
+  engine ships text-shape rules for them: `DOWNLOAD_EXECUTE`, `DESTRUCTIVE_SHELL` and `CREDENTIAL_EXFIL` for unsafe
+  code, `INSTRUCTION_OVERRIDE`, `ROLE_HIJACK` and `SYSTEM_PROMPT_EXFIL` for prompt injection. They match shapes, not
+  intent. `internal/guardrail` also gains a typed `InboundDecision` and `InboundReason` (clean, finding, coverage
+  gap, engine error, over limit, policy unavailable) with `DecideInbound`, so a caller gets a reason it can audit
+  rather than a bare allow or block. The `Scan` RPC is unchanged and the outbound CLI still asks only for PII and
+  SECRET. The reference engine's rules version changes, so new attestations name a new `rules@...` version.
+
+### Changed
+
+- `GuardrailEngineService.Scan` now refuses a request that names a kind the engine has no rules for, with
+  `FAILED_PRECONDITION`. Before, the engine skipped that kind without saying so and returned a clean result for a
+  kind it never looked at.
+
 ## [0.100.0] - 2026-10-08
 
 ### Changed
