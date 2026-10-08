@@ -146,28 +146,60 @@ func (r *dnsTTLResolver) query(ctx context.Context, server string, name dnsmessa
 		return nil, ttlUnknown, err
 	}
 	buf := make([]byte, 1232)
-	n, err := conn.Read(buf)
-	if err != nil {
-		return nil, ttlUnknown, err
+	for {
+		n, err := conn.Read(buf)
+		if err != nil {
+			return nil, ttlUnknown, err // includes the deadline: no matching reply in time
+		}
+		addrs, ttl, err := parseDNSReply(buf[:n], id, name, qtype)
+		if errors.Is(err, errStrayReply) {
+			continue // not a reply to this query: keep waiting until the deadline
+		}
+		return addrs, ttl, err
 	}
+}
 
+// errStrayReply marks a packet that is not a reply to our query (wrong ID).
+var errStrayReply = errors.New("dns: reply id does not match the query")
+
+// maxCNAMEChain bounds how many CNAME hops are followed (and breaks loops).
+const maxCNAMEChain = 8
+
+// dnsRecord is one parsed answer record of a type the chain walk uses.
+type dnsRecord struct {
+	owner  string // lower-case FQDN
+	typ    dnsmessage.Type
+	ttl    time.Duration
+	addr   netip.Addr // A / AAAA
+	target string     // CNAME, lower-case FQDN
+}
+
+// parseDNSReply validates a reply against the query (ID, single echoed
+// question = name/type/class) and returns the qtype addresses on the queried
+// name's CNAME chain, with the smallest TTL over that chain only. Records for
+// any other owner name are ignored, so an off-name record cannot reach an
+// allow-list.
+func parseDNSReply(msg []byte, id uint16, name dnsmessage.Name, qtype dnsmessage.Type) ([]netip.Addr, time.Duration, error) {
 	var p dnsmessage.Parser
-	h, err := p.Start(buf[:n])
+	h, err := p.Start(msg)
 	switch {
 	case err != nil:
 		return nil, ttlUnknown, err
 	case h.ID != id || !h.Response:
-		return nil, ttlUnknown, errors.New("dns: mismatched reply")
+		return nil, ttlUnknown, errStrayReply
 	case h.Truncated:
 		return nil, ttlUnknown, errors.New("dns: truncated reply")
 	case h.RCode != dnsmessage.RCodeSuccess:
 		return nil, ttlUnknown, fmt.Errorf("dns: %s for %s", h.RCode, name)
 	}
-	if err := p.SkipAllQuestions(); err != nil {
+	qs, err := p.AllQuestions()
+	if err != nil {
 		return nil, ttlUnknown, err
 	}
-	var addrs []netip.Addr
-	ttl := ttlUnknown
+	if len(qs) != 1 || !strings.EqualFold(qs[0].Name.String(), name.String()) || qs[0].Type != qtype || qs[0].Class != dnsmessage.ClassINET {
+		return nil, ttlUnknown, errors.New("dns: reply question does not match the query")
+	}
+	var recs []dnsRecord
 	for {
 		rh, err := p.AnswerHeader()
 		if errors.Is(err, dnsmessage.ErrSectionDone) {
@@ -176,28 +208,72 @@ func (r *dnsTTLResolver) query(ctx context.Context, server string, name dnsmessa
 		if err != nil {
 			return nil, ttlUnknown, err
 		}
-		// Every record in the chain (CNAMEs included) bounds the answer's life.
-		if t := time.Duration(rh.TTL) * time.Second; ttl == ttlUnknown || t < ttl {
-			ttl = t
-		}
+		rec := dnsRecord{owner: strings.ToLower(rh.Name.String()), typ: rh.Type, ttl: time.Duration(rh.TTL) * time.Second}
 		switch rh.Type {
 		case dnsmessage.TypeA:
 			rr, err := p.AResource()
 			if err != nil {
 				return nil, ttlUnknown, err
 			}
-			addrs = append(addrs, netip.AddrFrom4(rr.A))
+			rec.addr = netip.AddrFrom4(rr.A)
 		case dnsmessage.TypeAAAA:
 			rr, err := p.AAAAResource()
 			if err != nil {
 				return nil, ttlUnknown, err
 			}
-			addrs = append(addrs, netip.AddrFrom16(rr.AAAA))
+			rec.addr = netip.AddrFrom16(rr.AAAA)
+		case dnsmessage.TypeCNAME:
+			rr, err := p.CNAMEResource()
+			if err != nil {
+				return nil, ttlUnknown, err
+			}
+			rec.target = strings.ToLower(rr.CNAME.String())
 		default:
 			if err := p.SkipAnswer(); err != nil {
 				return nil, ttlUnknown, err
 			}
+			continue
 		}
+		recs = append(recs, rec)
 	}
-	return addrs, ttl, nil
+	return followCNAMEChain(recs, strings.ToLower(name.String()), qtype)
+}
+
+// followCNAMEChain walks from the queried name through CNAMEs, returning the
+// qtype records owned by the first chain name that has any. The TTL is the
+// minimum over the CNAMEs walked and those records; no address → ttlUnknown.
+func followCNAMEChain(recs []dnsRecord, owner string, qtype dnsmessage.Type) ([]netip.Addr, time.Duration, error) {
+	chainTTL := ttlUnknown
+	lower := func(cur, t time.Duration) time.Duration {
+		if cur == ttlUnknown || t < cur {
+			return t
+		}
+		return cur
+	}
+	for hop := 0; ; hop++ {
+		var addrs []netip.Addr
+		ttl := chainTTL
+		var cname *dnsRecord
+		for i := range recs {
+			switch r := &recs[i]; {
+			case r.owner != owner:
+				// off-chain record: ignored
+			case r.typ == qtype:
+				addrs = append(addrs, r.addr)
+				ttl = lower(ttl, r.ttl)
+			case r.typ == dnsmessage.TypeCNAME:
+				cname = r
+			}
+		}
+		switch {
+		case len(addrs) > 0:
+			return addrs, ttl, nil
+		case cname == nil:
+			return nil, ttlUnknown, nil
+		case hop >= maxCNAMEChain:
+			return nil, ttlUnknown, errors.New("dns: CNAME chain too long or looping")
+		}
+		chainTTL = lower(chainTTL, cname.ttl)
+		owner = cname.target
+	}
 }
