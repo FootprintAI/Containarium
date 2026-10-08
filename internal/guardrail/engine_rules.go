@@ -72,9 +72,9 @@ var referenceRules = []rule{
 	// A network client handed a credential file, either as an argument or
 	// on its stdin.
 	{pb.GuardrailKind_GUARDRAIL_KIND_UNSAFE_CODE, "CREDENTIAL_EXFIL",
-		regexp.MustCompile(`(?i)\b(?:curl|wget|nc|ncat|scp)\b[^\n]*(?:` + credentialPath + `)`), nil},
+		regexp.MustCompile(`(?i)\b(?:curl|wget|nc|ncat|scp)\b[^\n]*(?:` + exfilTargetFiles + `)`), nil},
 	{pb.GuardrailKind_GUARDRAIL_KIND_UNSAFE_CODE, "CREDENTIAL_EXFIL",
-		regexp.MustCompile(`(?i)(?:` + credentialPath + `)[^\n]*\|\s*(?:curl|wget|nc|ncat)\b`), nil},
+		regexp.MustCompile(`(?i)(?:` + exfilTargetFiles + `)[^\n]*\|\s*(?:curl|wget|nc|ncat)\b`), nil},
 
 	// "Ignore the previous instructions" and its near variants.
 	{pb.GuardrailKind_GUARDRAIL_KIND_PROMPT_INJECTION, "INSTRUCTION_OVERRIDE",
@@ -87,10 +87,10 @@ var referenceRules = []rule{
 		regexp.MustCompile(`(?i)\b(?:reveal|print|output|repeat|show|leak)\s+(?:me\s+)?your\s+(?:system\s+prompt|hidden\s+instructions|initial\s+instructions)\b`), nil},
 }
 
-// credentialPath is the set of credential files whose appearance next to a
+// exfilTargetFiles is the set of sensitive files whose appearance next to a
 // network client reads as exfiltration. The public half of a key pair
 // (id_*.pub) is excluded by requiring the match to end there.
-const credentialPath = `(?:~|\$HOME|\$\{HOME\}|/root|/home/[^/\s]+)/\.(?:ssh/id_[a-z0-9_]+\b(?:[^.]|$)|aws/credentials|docker/config\.json|kube/config|netrc)|/etc/shadow\b`
+const exfilTargetFiles = `(?:~|\$HOME|\$\{HOME\}|/root|/home/[^/\s]+)/\.(?:ssh/id_[a-z0-9_]+\b(?:[^.]|$)|aws/credentials|docker/config\.json|kube/config|netrc)|/etc/shadow\b`
 
 // RulesEngine is the reference Engine. Zero value is ready to use.
 type RulesEngine struct{}
