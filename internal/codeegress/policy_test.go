@@ -30,7 +30,7 @@ func TestNormalize(t *testing.T) {
 		},
 		{
 			name: "normalizes domains",
-			in: &pb.CodingToolEgressPolicy{Tenant: "alice",
+			in: &pb.CodingToolEgressPolicy{Tenant: "alice", Mode: logOnly,
 				EgressDomains: []string{"API.Example.com", "api.example.com.", " models.example.org "}},
 			wantDomains: []string{"api.example.com", "models.example.org"},
 			wantMode:    logOnly,
@@ -40,14 +40,18 @@ func TestNormalize(t *testing.T) {
 			in:       &pb.CodingToolEgressPolicy{Mode: enforce},
 			wantMode: enforce,
 		},
-		{name: "unspecified mode is stored as LOG_ONLY", in: &pb.CodingToolEgressPolicy{Tenant: "t"}, wantMode: logOnly},
+		{name: "log_only is stored as given", in: &pb.CodingToolEgressPolicy{Tenant: "t", Mode: logOnly}, wantMode: logOnly},
+		// No default mode (unlike NetworkPolicy): a forgotten mode must not
+		// store a policy that drops nothing.
+		{name: "unspecified mode is rejected", in: &pb.CodingToolEgressPolicy{Tenant: "t"}, wantErr: "mode must be LOG_ONLY or ENFORCE"},
+		{name: "unspecified mode is rejected even with destinations", in: &pb.CodingToolEgressPolicy{Tenant: "t", EgressCidrs: []string{"192.0.2.0/24"}}, wantErr: "no default mode"},
 		{name: "nil", in: nil, wantErr: "policy is required"},
-		{name: "bad cidr", in: &pb.CodingToolEgressPolicy{EgressCidrs: []string{"not-a-cidr"}}, wantErr: "invalid egress CIDR"},
-		{name: "bad cidr bits", in: &pb.CodingToolEgressPolicy{EgressCidrs: []string{"10.0.0.0/40"}}, wantErr: "invalid egress CIDR"},
-		{name: "bad ipv6 bits", in: &pb.CodingToolEgressPolicy{EgressCidrs: []string{"2001:db8::/129"}}, wantErr: "invalid egress CIDR"},
-		{name: "domain with scheme", in: &pb.CodingToolEgressPolicy{EgressDomains: []string{"https://x.example.com"}}, wantErr: "bare hostname"},
-		{name: "domain with port", in: &pb.CodingToolEgressPolicy{EgressDomains: []string{"x.example.com:443"}}, wantErr: "bare hostname"},
-		{name: "unknown mode", in: &pb.CodingToolEgressPolicy{Mode: pb.NetworkPolicyMode(99)}, wantErr: "unknown mode"},
+		{name: "bad cidr", in: &pb.CodingToolEgressPolicy{Mode: logOnly, EgressCidrs: []string{"not-a-cidr"}}, wantErr: "invalid egress CIDR"},
+		{name: "bad cidr bits", in: &pb.CodingToolEgressPolicy{Mode: logOnly, EgressCidrs: []string{"10.0.0.0/40"}}, wantErr: "invalid egress CIDR"},
+		{name: "bad ipv6 bits", in: &pb.CodingToolEgressPolicy{Mode: logOnly, EgressCidrs: []string{"2001:db8::/129"}}, wantErr: "invalid egress CIDR"},
+		{name: "domain with scheme", in: &pb.CodingToolEgressPolicy{Mode: logOnly, EgressDomains: []string{"https://x.example.com"}}, wantErr: "bare hostname"},
+		{name: "domain with port", in: &pb.CodingToolEgressPolicy{Mode: logOnly, EgressDomains: []string{"x.example.com:443"}}, wantErr: "bare hostname"},
+		{name: "unknown mode", in: &pb.CodingToolEgressPolicy{Mode: pb.NetworkPolicyMode(99)}, wantErr: "mode must be LOG_ONLY or ENFORCE"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -78,7 +82,7 @@ func TestNormalize(t *testing.T) {
 }
 
 func TestNormalize_IgnoresServerAssignedFields(t *testing.T) {
-	got, err := Normalize(&pb.CodingToolEgressPolicy{Tenant: "t", Revision: 42, UpdatedBy: "someone"})
+	got, err := Normalize(&pb.CodingToolEgressPolicy{Tenant: "t", Mode: logOnly, Revision: 42, UpdatedBy: "someone"})
 	if err != nil {
 		t.Fatal(err)
 	}

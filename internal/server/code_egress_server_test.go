@@ -46,7 +46,7 @@ func setReq(tenant string, mode pb.NetworkPolicyMode, cidrs, domains []string) *
 	}}
 }
 
-func TestSetPolicy_AdminOnly(t *testing.T) {
+func TestCodeEgressSetPolicy_AdminOnly(t *testing.T) {
 	s, a := newTestCodeEgressServer()
 	req := setReq("alice", pb.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE, []string{"192.0.2.0/24"}, nil)
 
@@ -86,7 +86,7 @@ func TestSetPolicy_AdminOnly(t *testing.T) {
 	}
 }
 
-func TestSetPolicy_Validation(t *testing.T) {
+func TestCodeEgressSetPolicy_Validation(t *testing.T) {
 	s, a := newTestCodeEgressServer()
 	ok, err := s.SetCodingToolEgressPolicy(ceAdminCtx(), setReq("alice", pb.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE, []string{"192.0.2.0/24"}, []string{"api.example.com"}))
 	if err != nil {
@@ -103,6 +103,9 @@ func TestSetPolicy_Validation(t *testing.T) {
 		{"invalid ipv6 cidr", setReq("alice", pb.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE, []string{"2001:db8::/129"}, nil)},
 		{"invalid domain", setReq("alice", pb.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE, nil, []string{"https://api.example.com"})},
 		{"unknown mode", setReq("alice", pb.NetworkPolicyMode(99), nil, nil)},
+		// No default mode: a forgotten mode must not store a log-only policy.
+		{"unspecified mode", setReq("alice", pb.NetworkPolicyMode_NETWORK_POLICY_MODE_UNSPECIFIED, []string{"192.0.2.0/24"}, nil)},
+		{"unspecified mode, cluster default", setReq("", pb.NetworkPolicyMode_NETWORK_POLICY_MODE_UNSPECIFIED, nil, nil)},
 		{"missing policy", &pb.SetCodingToolEgressPolicyRequest{}},
 	}
 	for _, tc := range bad {

@@ -193,10 +193,13 @@ func (CodeEgressEnforcement) EnumDescriptor() ([]byte, []int) {
 // with it.
 type CodingToolEgressPolicy struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Empty tenant = the cluster default.
+	// Empty tenant = the cluster default. On the REST path with {policy.tenant}
+	// the URL value replaces whatever is sent here.
 	Tenant string `protobuf:"bytes,1,opt,name=tenant,proto3" json:"tenant,omitempty"`
-	// LOG_ONLY records what would be dropped, ENFORCE drops it. UNSPECIFIED is
-	// stored as LOG_ONLY, the same rule NetworkPolicy uses.
+	// Required. LOG_ONLY records what would be dropped, ENFORCE drops it.
+	// Unlike NetworkPolicy there is no default: UNSPECIFIED (or an unknown
+	// value) is INVALID_ARGUMENT, so a forgotten mode never stores a policy
+	// that drops nothing.
 	Mode NetworkPolicyMode `protobuf:"varint,2,opt,name=mode,proto3,enum=containarium.v1.NetworkPolicyMode" json:"mode,omitempty"`
 	// Validated and normalized by the same rules as NetworkPolicy.
 	EgressCidrs   []string `protobuf:"bytes,3,rep,name=egress_cidrs,json=egressCidrs,proto3" json:"egress_cidrs,omitempty"`
@@ -356,7 +359,9 @@ type EffectiveCodingToolEgressPolicy struct {
 	Tenant string                       `protobuf:"bytes,1,opt,name=tenant,proto3" json:"tenant,omitempty"`
 	Source CodingToolEgressPolicySource `protobuf:"varint,2,opt,name=source,proto3,enum=containarium.v1.CodingToolEgressPolicySource" json:"source,omitempty"`
 	// False when no policy applies: runs take today's unrestricted path.
-	Restricted    bool              `protobuf:"varint,3,opt,name=restricted,proto3" json:"restricted,omitempty"`
+	Restricted bool `protobuf:"varint,3,opt,name=restricted,proto3" json:"restricted,omitempty"`
+	// The applied policy's mode: LOG_ONLY or ENFORCE whenever restricted is
+	// true (a stored policy always has one); UNSPECIFIED only when unrestricted.
 	Mode          NetworkPolicyMode `protobuf:"varint,4,opt,name=mode,proto3,enum=containarium.v1.NetworkPolicyMode" json:"mode,omitempty"`
 	EgressCidrs   []string          `protobuf:"bytes,5,rep,name=egress_cidrs,json=egressCidrs,proto3" json:"egress_cidrs,omitempty"`
 	EgressDomains []string          `protobuf:"bytes,6,rep,name=egress_domains,json=egressDomains,proto3" json:"egress_domains,omitempty"`
@@ -788,14 +793,14 @@ const file_containarium_v1_code_egress_proto_rawDesc = "" +
 	"&CODE_EGRESS_ENFORCEMENT_NONE_NO_POLICY\x10\x01\x12$\n" +
 	" CODE_EGRESS_ENFORCEMENT_LOG_ONLY\x10\x02\x12$\n" +
 	" CODE_EGRESS_ENFORCEMENT_ENFORCED\x10\x03\x12.\n" +
-	"*CODE_EGRESS_ENFORCEMENT_ENFORCED_ESCAPABLE\x10\x042\xd6\t\n" +
-	"\x1dCodingToolEgressPolicyService\x12\x98\x03\n" +
-	"\x19SetCodingToolEgressPolicy\x121.containarium.v1.SetCodingToolEgressPolicyRequest\x1a2.containarium.v1.SetCodingToolEgressPolicyResponse\"\x93\x02\x92A\xb7\x01\n" +
-	"\x16CodingToolEgressPolicy\x12\x1dSet coding-tool egress policy\x1a~Create or replace the coding tool's egress allowlist for a tenant, or the cluster default when no tenant is given. Admin-only.\x82\xd3\xe4\x93\x02R:\x06policyZ :\x06policy\x1a\x16/v1/code/egress-policy\x1a&/v1/code/egress-policy/{policy.tenant}\x12\xa4\x03\n" +
-	"\x19GetCodingToolEgressPolicy\x121.containarium.v1.GetCodingToolEgressPolicyRequest\x1a2.containarium.v1.GetCodingToolEgressPolicyResponse\"\x9f\x02\x92A\xda\x01\n" +
-	"\x16CodingToolEgressPolicy\x12\x1dGet coding-tool egress policy\x1a\xa0\x01Return the stored and effective coding-tool egress policy for a tenant (or the cluster default). Admin, or the tenant itself holding the code-egress:read scope.\x82\xd3\xe4\x93\x02;Z\x18\x12\x16/v1/code/egress-policy\x12\x1f/v1/code/egress-policy/{tenant}\x12\xf2\x02\n" +
-	"\x1cDeleteCodingToolEgressPolicy\x124.containarium.v1.DeleteCodingToolEgressPolicyRequest\x1a5.containarium.v1.DeleteCodingToolEgressPolicyResponse\"\xe4\x01\x92A\x9f\x01\n" +
-	"\x16CodingToolEgressPolicy\x12 Delete coding-tool egress policy\x1acRemove the coding-tool egress policy for a tenant, or the cluster default (idempotent). Admin-only.\x82\xd3\xe4\x93\x02;Z\x18*\x16/v1/code/egress-policy*\x1f/v1/code/egress-policy/{tenant}BKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
+	"*CODE_EGRESS_ENFORCEMENT_ENFORCED_ESCAPABLE\x10\x042\xdb\x0e\n" +
+	"\x1dCodingToolEgressPolicyService\x12\xe0\x05\n" +
+	"\x19SetCodingToolEgressPolicy\x121.containarium.v1.SetCodingToolEgressPolicyRequest\x1a2.containarium.v1.SetCodingToolEgressPolicyResponse\"\xdb\x04\x92A\xff\x03\n" +
+	"\x16CodingToolEgressPolicy\x12\x1dSet coding-tool egress policy\x1a\xc5\x03Create or replace the coding tool's egress allowlist. Admin-only. On PUT /v1/code/egress-policy/{policy.tenant} the tenant is the URL value, which wins over any policy.tenant in the body (path parameters are applied after the body is decoded). On the bare PUT /v1/code/egress-policy the tenant is policy.tenant from the body; an empty tenant sets the cluster default. mode is required: LOG_ONLY or ENFORCE; UNSPECIFIED is rejected with INVALID_ARGUMENT.\x82\xd3\xe4\x93\x02R:\x06policyZ :\x06policy\x1a\x16/v1/code/egress-policy\x1a&/v1/code/egress-policy/{policy.tenant}\x12\xc6\x04\n" +
+	"\x19GetCodingToolEgressPolicy\x121.containarium.v1.GetCodingToolEgressPolicyRequest\x1a2.containarium.v1.GetCodingToolEgressPolicyResponse\"\xc1\x03\x92A\xfc\x02\n" +
+	"\x16CodingToolEgressPolicy\x12\x1dGet coding-tool egress policy\x1a\xc2\x02Return the stored and effective coding-tool egress policy. On GET /v1/code/egress-policy/{tenant} the tenant is the URL value; on the bare GET /v1/code/egress-policy it is the optional ?tenant= query parameter, and with none the cluster default (admin only). Admin, or the tenant itself holding the code-egress:read scope.\x82\xd3\xe4\x93\x02;Z\x18\x12\x16/v1/code/egress-policy\x12\x1f/v1/code/egress-policy/{tenant}\x12\x8d\x04\n" +
+	"\x1cDeleteCodingToolEgressPolicy\x124.containarium.v1.DeleteCodingToolEgressPolicyRequest\x1a5.containarium.v1.DeleteCodingToolEgressPolicyResponse\"\xff\x02\x92A\xba\x02\n" +
+	"\x16CodingToolEgressPolicy\x12 Delete coding-tool egress policy\x1a\xfd\x01Remove a coding-tool egress policy (idempotent). On DELETE /v1/code/egress-policy/{tenant} the tenant is the URL value; on the bare DELETE /v1/code/egress-policy it is the optional ?tenant= query parameter, and with none the cluster default. Admin-only.\x82\xd3\xe4\x93\x02;Z\x18*\x16/v1/code/egress-policy*\x1f/v1/code/egress-policy/{tenant}BKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
 
 var (
 	file_containarium_v1_code_egress_proto_rawDescOnce sync.Once

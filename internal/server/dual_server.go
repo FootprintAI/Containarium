@@ -36,6 +36,8 @@ import (
 	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/gateway"
 	"github.com/footprintai/containarium/internal/guacamole"
+	"github.com/footprintai/containarium/internal/guardrailpolicy"
+	guardrailpolicypg "github.com/footprintai/containarium/internal/guardrailpolicy/pgstore"
 	"github.com/footprintai/containarium/internal/metrics"
 	"github.com/footprintai/containarium/internal/metrics/platformstats"
 	"github.com/footprintai/containarium/internal/modelgateway"
@@ -642,6 +644,12 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// enforcement yet.
 	codeEgressServer := NewCodingToolEgressPolicyServer(NewMemCodingToolEgressPolicyStore())
 	pb.RegisterCodingToolEgressPolicyServiceServer(grpcServer, codeEgressServer)
+
+	// GuardrailPolicyService (#2368): the admin-owned, cluster-wide guardrail
+	// policy. It starts fail-closed; the real store is chosen by
+	// guardrailPolicyStartupStore once postgresConnString is final (below).
+	guardrailPolicyServer := NewGuardrailPolicyServer(unavailableGuardrailPolicyStore{})
+	pb.RegisterGuardrailPolicyServiceServer(grpcServer, guardrailPolicyServer)
 
 	// Register AgentSkillService — agent-as-a-box (Phase 0) + A2A transport
 	// (Phase 1). Reuses the recipe server for box provisioning, the token
@@ -1499,6 +1507,10 @@ skipAppHosting:
 	// installed below, instead of answering "unrestricted" from the empty
 	// in-memory stand-in.
 	codeEgressServer.SetDurable(postgresConnString == "")
+
+	// The Postgres guardrail policy store (#2368), or nil if it is not
+	// installed below; guardrailPolicyStartupStore turns nil into fail-closed.
+	var guardrailPGStore guardrailpolicy.Store
 	if postgresConnString != "" {
 		pool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
 		if poolErr != nil {
@@ -1524,6 +1536,14 @@ skipAppHosting:
 			} else {
 				clusterServer.SetStore(clStore)
 				log.Printf("Managed-cluster persistence enabled (Postgres store)")
+			}
+
+			// Guardrail policy (#2368), independent of the netpol store below.
+			if gpStore, gErr := guardrailpolicypg.New(context.Background(), pool); gErr != nil {
+				log.Printf("Warning: Failed to create Postgres guardrail policy store: %v", gErr)
+			} else {
+				guardrailPGStore = gpStore
+				log.Printf("Guardrail policy persistence enabled (Postgres store)")
 			}
 
 			if pgStore, npErr := NewPostgresNetworkPolicyStore(context.Background(), pool); npErr != nil {
@@ -1571,6 +1591,7 @@ skipAppHosting:
 			}
 		}
 	}
+	guardrailPolicyServer.SetStore(guardrailPolicyStartupStore(postgresConnString != "", guardrailPGStore))
 
 	// Managed-cluster reconciler (#1414): converges cluster records into
 	// control-plane + worker VMs (pure Decide policy in
@@ -2537,6 +2558,8 @@ skipAppHosting:
 			agentSkillServer.SetAuditStore(auditStore)
 			// Container server logs admin-initiated upgrade operations (#354).
 			containerServer.SetAuditStore(auditStore)
+			// guardrail.policy.set entries (#2368).
+			guardrailPolicyServer.SetAuditStore(auditStore)
 		}
 
 		// Wire Grafana reverse proxy if VictoriaMetrics is configured

@@ -35,14 +35,27 @@ const (
 // changes what a tenant's own NetworkPolicy means. This service is the policy
 // store only; the kernel-side enforcement is a later increment.
 type CodingToolEgressPolicyServiceClient interface {
-	// SetCodingToolEgressPolicy creates or replaces a policy (upsert by tenant;
-	// an empty tenant is the cluster default). Validated with the same rules as
-	// NetworkPolicy; the stored form, with its new revision, is echoed back.
+	// SetCodingToolEgressPolicy creates or replaces a policy (upsert by tenant).
+	// Validated with the same rules as NetworkPolicy, and the mode is required;
+	// the stored form, with its new revision, is echoed back.
+	//
+	// Which tenant: on PUT /v1/code/egress-policy/{policy.tenant} the tenant is
+	// the URL value. The gateway decodes the body first and then applies the
+	// path parameter, so the URL wins over a different policy.tenant in the
+	// body. On the bare PUT /v1/code/egress-policy the tenant is policy.tenant
+	// from the body, and an empty tenant means the cluster default. Over gRPC
+	// it is policy.tenant, with the same empty = cluster default rule.
 	SetCodingToolEgressPolicy(ctx context.Context, in *SetCodingToolEgressPolicyRequest, opts ...grpc.CallOption) (*SetCodingToolEgressPolicyResponse, error)
 	// GetCodingToolEgressPolicy returns the stored policy for the key (absent
 	// when none is set) and the effective policy a run for that tenant takes.
+	// Which tenant: on GET /v1/code/egress-policy/{tenant} the URL value. On the
+	// bare GET /v1/code/egress-policy the optional ?tenant= query parameter,
+	// and with none the cluster default.
 	GetCodingToolEgressPolicy(ctx context.Context, in *GetCodingToolEgressPolicyRequest, opts ...grpc.CallOption) (*GetCodingToolEgressPolicyResponse, error)
-	// DeleteCodingToolEgressPolicy removes a policy. Idempotent.
+	// DeleteCodingToolEgressPolicy removes a policy. Idempotent. Which tenant:
+	// on DELETE /v1/code/egress-policy/{tenant} the URL value; on the bare
+	// DELETE /v1/code/egress-policy the optional ?tenant= query parameter, and
+	// with none the cluster default.
 	DeleteCodingToolEgressPolicy(ctx context.Context, in *DeleteCodingToolEgressPolicyRequest, opts ...grpc.CallOption) (*DeleteCodingToolEgressPolicyResponse, error)
 }
 
@@ -95,14 +108,27 @@ func (c *codingToolEgressPolicyServiceClient) DeleteCodingToolEgressPolicy(ctx c
 // changes what a tenant's own NetworkPolicy means. This service is the policy
 // store only; the kernel-side enforcement is a later increment.
 type CodingToolEgressPolicyServiceServer interface {
-	// SetCodingToolEgressPolicy creates or replaces a policy (upsert by tenant;
-	// an empty tenant is the cluster default). Validated with the same rules as
-	// NetworkPolicy; the stored form, with its new revision, is echoed back.
+	// SetCodingToolEgressPolicy creates or replaces a policy (upsert by tenant).
+	// Validated with the same rules as NetworkPolicy, and the mode is required;
+	// the stored form, with its new revision, is echoed back.
+	//
+	// Which tenant: on PUT /v1/code/egress-policy/{policy.tenant} the tenant is
+	// the URL value. The gateway decodes the body first and then applies the
+	// path parameter, so the URL wins over a different policy.tenant in the
+	// body. On the bare PUT /v1/code/egress-policy the tenant is policy.tenant
+	// from the body, and an empty tenant means the cluster default. Over gRPC
+	// it is policy.tenant, with the same empty = cluster default rule.
 	SetCodingToolEgressPolicy(context.Context, *SetCodingToolEgressPolicyRequest) (*SetCodingToolEgressPolicyResponse, error)
 	// GetCodingToolEgressPolicy returns the stored policy for the key (absent
 	// when none is set) and the effective policy a run for that tenant takes.
+	// Which tenant: on GET /v1/code/egress-policy/{tenant} the URL value. On the
+	// bare GET /v1/code/egress-policy the optional ?tenant= query parameter,
+	// and with none the cluster default.
 	GetCodingToolEgressPolicy(context.Context, *GetCodingToolEgressPolicyRequest) (*GetCodingToolEgressPolicyResponse, error)
-	// DeleteCodingToolEgressPolicy removes a policy. Idempotent.
+	// DeleteCodingToolEgressPolicy removes a policy. Idempotent. Which tenant:
+	// on DELETE /v1/code/egress-policy/{tenant} the URL value; on the bare
+	// DELETE /v1/code/egress-policy the optional ?tenant= query parameter, and
+	// with none the cluster default.
 	DeleteCodingToolEgressPolicy(context.Context, *DeleteCodingToolEgressPolicyRequest) (*DeleteCodingToolEgressPolicyResponse, error)
 	mustEmbedUnimplementedCodingToolEgressPolicyServiceServer()
 }
