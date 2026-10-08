@@ -20,6 +20,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `containarium guardrail apply` and `guardrail verify` now read the server-side guardrail policy when a server is
+  named explicitly with `--server` or `CONTAINARIUM_SERVER` (#2368, slice C). A login's default server does not count:
+  logging in does not make these commands contact the platform. This reverses the old "every guardrail verb is
+  local" property for that one read, which carries the caller's credentials and no dataset content. `apply` runs
+  under the server's policy, refuses a `--policy` file that does not hash to it, and warns when `--sign-key` is
+  missing or not a trusted signer. `verify` requires the attestation's policy hash to equal the server's and its
+  signer to be one of the server's trusted signers. If the named server cannot be reached or answers with an error
+  (TLS, timeout, 5xx, unauthenticated, store error), both fail with a non-zero exit and never fall back to local
+  mode. With no named server, or a named server that has no policy, both keep the old local behaviour (`verify` then
+  needs `--public-key`) and say the result is NOT server-attested or NOT server-trusted.
 - `GuardrailEngineService.Scan` now refuses a request that names a kind the engine has no rules for, with
   `FAILED_PRECONDITION`. Before, the engine skipped that kind without saying so and returned a clean result for a
   kind it never looked at.
