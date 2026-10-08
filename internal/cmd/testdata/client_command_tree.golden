@@ -51,6 +51,9 @@ cluster list
 cluster node-pool
 cluster status
 code attach
+code egress-policy delete
+code egress-policy get
+code egress-policy set
 code install
 code logs
 code run
