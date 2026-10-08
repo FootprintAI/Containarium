@@ -13441,10 +13441,12 @@
       "enum": [
         "GUARDRAIL_KIND_UNSPECIFIED",
         "GUARDRAIL_KIND_PII",
-        "GUARDRAIL_KIND_SECRET"
+        "GUARDRAIL_KIND_SECRET",
+        "GUARDRAIL_KIND_UNSAFE_CODE",
+        "GUARDRAIL_KIND_PROMPT_INJECTION"
       ],
       "default": "GUARDRAIL_KIND_UNSPECIFIED",
-      "description": "GuardrailKind is the family a finding belongs to. Enum, not a string: a\npolicy is keyed by it and a consumer decides by it.\n\n - GUARDRAIL_KIND_PII: Personal data: names, contact details, government identifiers,\nfinancial identifiers, addresses, amounts in a personal context.\n - GUARDRAIL_KIND_SECRET: Non-personal sensitive material: credentials, private keys, connection\nstrings, internal topology. Distinct from PII because the right action\ndiffers (a secret is never tokenized into a persisted vault)."
+      "description": "GuardrailKind is the family a finding belongs to. Enum, not a string: a\npolicy is keyed by it and a consumer decides by it.\n\n - GUARDRAIL_KIND_PII: Personal data: names, contact details, government identifiers,\nfinancial identifiers, addresses, amounts in a personal context.\n - GUARDRAIL_KIND_SECRET: Non-personal sensitive material: credentials, private keys, connection\nstrings, internal topology. Distinct from PII because the right action\ndiffers (a secret is never tokenized into a persisted vault).\n - GUARDRAIL_KIND_UNSAFE_CODE: Inbound (model output on its way into a box): code shapes that are\ndangerous to run, e.g. download-and-execute, destructive shell,\ncredential exfiltration (docs/architecture/guardrail-inbound-and-server-policy.md).\n - GUARDRAIL_KIND_PROMPT_INJECTION: Inbound: instruction-override signatures embedded in returned content."
     },
     "GuardrailPolicy": {
       "type": "object",
