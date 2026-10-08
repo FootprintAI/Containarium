@@ -11,6 +11,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// explicitServerAddr is the server named by --server or CONTAINARIUM_SERVER
+// for this invocation ("" when only a login's default_server, or nothing,
+// supplied one).
+var explicitServerAddr string
+
 var (
 	cfgFile        string
 	verbose        bool
@@ -80,6 +85,10 @@ Examples:
 		case loginCmd, logoutCmd, whoamiCmd, configGetTokenCmd:
 			return nil
 		}
+		// Recorded before resolution: --server or CONTAINARIUM_SERVER, never
+		// the credentials file's default_server. `guardrail apply/verify`
+		// contact a server only when it was named this way (#2368).
+		explicitServerAddr = serverAddr
 		serverAddr = canonicalServerAddr(resolveServerAddr(serverAddr))
 		if authToken == "" {
 			authToken = resolveAuthToken(serverAddr)
