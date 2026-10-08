@@ -156,7 +156,8 @@ message CodingToolEgressPolicy {
   // not merge with it.
   string tenant = 1;
   // Reuses the existing enum: LOG_ONLY records what would be dropped,
-  // ENFORCE drops it.
+  // ENFORCE drops it. Required: unlike NetworkPolicy, UNSPECIFIED is
+  // INVALID_ARGUMENT, not LOG_ONLY.
   NetworkPolicyMode mode = 2;
   // Validated by the same rules as NetworkPolicy (netpolicy.Validate).
   repeated string egress_cidrs = 3;
@@ -171,6 +172,10 @@ message CodingToolEgressPolicy {
   default, a run takes today's path and none of the machinery below runs.
 - **Set with empty lists and `ENFORCE` means deny everything the tool
   calls.** An empty list is an explicit choice, never a default.
+- **The mode has no default.** A Set with `UNSPECIFIED` (or an unknown) mode
+  is `INVALID_ARGUMENT`, so a caller who forgets it cannot store a policy that
+  drops nothing. The effective policy therefore always carries `LOG_ONLY` or
+  `ENFORCE` while restricted, and `UNSPECIFIED` only when unrestricted.
 - **Always allowed, not listed by the admin:** the box's DNS resolver
   (otherwise no domain works), and for a gateway-credential run the
   platform's own gateway endpoint. Both are documented and visible in the

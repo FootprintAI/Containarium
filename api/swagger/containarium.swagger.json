@@ -2197,7 +2197,7 @@
     "/v1/code/egress-policy": {
       "get": {
         "summary": "Get coding-tool egress policy",
-        "description": "Return the stored and effective coding-tool egress policy for a tenant (or the cluster default). Admin, or the tenant itself holding the code-egress:read scope.",
+        "description": "Return the stored and effective coding-tool egress policy. On GET /v1/code/egress-policy/{tenant} the tenant is the URL value; on the bare GET /v1/code/egress-policy it is the optional ?tenant= query parameter, and with none the cluster default (admin only). Admin, or the tenant itself holding the code-egress:read scope.",
         "operationId": "CodingToolEgressPolicyService_GetCodingToolEgressPolicy2",
         "responses": {
           "200": {
@@ -2228,7 +2228,7 @@
       },
       "delete": {
         "summary": "Delete coding-tool egress policy",
-        "description": "Remove the coding-tool egress policy for a tenant, or the cluster default (idempotent). Admin-only.",
+        "description": "Remove a coding-tool egress policy (idempotent). On DELETE /v1/code/egress-policy/{tenant} the tenant is the URL value; on the bare DELETE /v1/code/egress-policy it is the optional ?tenant= query parameter, and with none the cluster default. Admin-only.",
         "operationId": "CodingToolEgressPolicyService_DeleteCodingToolEgressPolicy2",
         "responses": {
           "200": {
@@ -2259,7 +2259,7 @@
       },
       "put": {
         "summary": "Set coding-tool egress policy",
-        "description": "Create or replace the coding tool's egress allowlist for a tenant, or the cluster default when no tenant is given. Admin-only.",
+        "description": "Create or replace the coding tool's egress allowlist. Admin-only. On PUT /v1/code/egress-policy/{policy.tenant} the tenant is the URL value, which wins over any policy.tenant in the body (path parameters are applied after the body is decoded). On the bare PUT /v1/code/egress-policy the tenant is policy.tenant from the body; an empty tenant sets the cluster default. mode is required: LOG_ONLY or ENFORCE; UNSPECIFIED is rejected with INVALID_ARGUMENT.",
         "operationId": "CodingToolEgressPolicyService_SetCodingToolEgressPolicy2",
         "responses": {
           "200": {
@@ -2293,7 +2293,7 @@
     "/v1/code/egress-policy/{policy.tenant}": {
       "put": {
         "summary": "Set coding-tool egress policy",
-        "description": "Create or replace the coding tool's egress allowlist for a tenant, or the cluster default when no tenant is given. Admin-only.",
+        "description": "Create or replace the coding tool's egress allowlist. Admin-only. On PUT /v1/code/egress-policy/{policy.tenant} the tenant is the URL value, which wins over any policy.tenant in the body (path parameters are applied after the body is decoded). On the bare PUT /v1/code/egress-policy the tenant is policy.tenant from the body; an empty tenant sets the cluster default. mode is required: LOG_ONLY or ENFORCE; UNSPECIFIED is rejected with INVALID_ARGUMENT.",
         "operationId": "CodingToolEgressPolicyService_SetCodingToolEgressPolicy",
         "responses": {
           "200": {
@@ -2312,7 +2312,7 @@
         "parameters": [
           {
             "name": "policy.tenant",
-            "description": "Empty tenant = the cluster default.",
+            "description": "Empty tenant = the cluster default. On the REST path with {policy.tenant}\nthe URL value replaces whatever is sent here.",
             "in": "path",
             "required": true,
             "type": "string"
@@ -2326,7 +2326,7 @@
               "properties": {
                 "mode": {
                   "$ref": "#/definitions/containarium.v1.NetworkPolicyMode",
-                  "description": "LOG_ONLY records what would be dropped, ENFORCE drops it. UNSPECIFIED is\nstored as LOG_ONLY, the same rule NetworkPolicy uses."
+                  "description": "Required. LOG_ONLY records what would be dropped, ENFORCE drops it.\nUnlike NetworkPolicy there is no default: UNSPECIFIED (or an unknown\nvalue) is INVALID_ARGUMENT, so a forgotten mode never stores a policy\nthat drops nothing."
                 },
                 "egressCidrs": {
                   "type": "array",
@@ -2366,7 +2366,7 @@
     "/v1/code/egress-policy/{tenant}": {
       "get": {
         "summary": "Get coding-tool egress policy",
-        "description": "Return the stored and effective coding-tool egress policy for a tenant (or the cluster default). Admin, or the tenant itself holding the code-egress:read scope.",
+        "description": "Return the stored and effective coding-tool egress policy. On GET /v1/code/egress-policy/{tenant} the tenant is the URL value; on the bare GET /v1/code/egress-policy it is the optional ?tenant= query parameter, and with none the cluster default (admin only). Admin, or the tenant itself holding the code-egress:read scope.",
         "operationId": "CodingToolEgressPolicyService_GetCodingToolEgressPolicy",
         "responses": {
           "200": {
@@ -2397,7 +2397,7 @@
       },
       "delete": {
         "summary": "Delete coding-tool egress policy",
-        "description": "Remove the coding-tool egress policy for a tenant, or the cluster default (idempotent). Admin-only.",
+        "description": "Remove a coding-tool egress policy (idempotent). On DELETE /v1/code/egress-policy/{tenant} the tenant is the URL value; on the bare DELETE /v1/code/egress-policy it is the optional ?tenant= query parameter, and with none the cluster default. Admin-only.",
         "operationId": "CodingToolEgressPolicyService_DeleteCodingToolEgressPolicy",
         "responses": {
           "200": {
@@ -10584,11 +10584,11 @@
       "properties": {
         "tenant": {
           "type": "string",
-          "description": "Empty tenant = the cluster default."
+          "description": "Empty tenant = the cluster default. On the REST path with {policy.tenant}\nthe URL value replaces whatever is sent here."
         },
         "mode": {
           "$ref": "#/definitions/containarium.v1.NetworkPolicyMode",
-          "description": "LOG_ONLY records what would be dropped, ENFORCE drops it. UNSPECIFIED is\nstored as LOG_ONLY, the same rule NetworkPolicy uses."
+          "description": "Required. LOG_ONLY records what would be dropped, ENFORCE drops it.\nUnlike NetworkPolicy there is no default: UNSPECIFIED (or an unknown\nvalue) is INVALID_ARGUMENT, so a forgotten mode never stores a policy\nthat drops nothing."
         },
         "egressCidrs": {
           "type": "array",
@@ -12220,7 +12220,8 @@
           "description": "False when no policy applies: runs take today's unrestricted path."
         },
         "mode": {
-          "$ref": "#/definitions/containarium.v1.NetworkPolicyMode"
+          "$ref": "#/definitions/containarium.v1.NetworkPolicyMode",
+          "description": "The applied policy's mode: LOG_ONLY or ENFORCE whenever restricted is\ntrue (a stored policy always has one); UNSPECIFIED only when unrestricted."
         },
         "egressCidrs": {
           "type": "array",
