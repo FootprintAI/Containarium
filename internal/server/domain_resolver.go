@@ -207,6 +207,20 @@ func (d *DomainResolver) IPs(domain string) []netip.Addr {
 	return v4
 }
 
+// Postpone pushes every past-due name to one interval from now, keeping its
+// addresses: used when the refresh cannot run at all (the policy store is
+// down), so the loop backs off instead of waking at the floor.
+func (d *DomainResolver) Postpone() {
+	now := d.now()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, e := range d.cache {
+		if !now.Before(e.due) {
+			e.due = now.Add(e.interval)
+		}
+	}
+}
+
 // NextRefreshDelay is how long until the earliest cached name is due, clamped
 // to [minDomainRefresh, maxDomainRefresh]; maxDomainRefresh when nothing is
 // cached, so newly added domains are picked up within the cap.

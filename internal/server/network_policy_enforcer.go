@@ -334,20 +334,7 @@ func (e *NetworkPolicyEnforcer) Start(ctx context.Context) error {
 	// next reconcile folds the refreshed IPs into the egress map (and diffEgress
 	// prunes IPs a domain no longer resolves to).
 	e.wg.Add(1)
-	go func() {
-		defer e.wg.Done()
-		t := time.NewTimer(e.resolver.NextRefreshDelay())
-		defer t.Stop()
-		for {
-			select {
-			case <-e.ctx.Done():
-				return
-			case <-t.C:
-				e.refreshDomains()
-				t.Reset(e.resolver.NextRefreshDelay())
-			}
-		}
-	}()
+	go e.domainRefreshLoop()
 
 	// Perf consumer: would-deny events -> audit rows.
 	rd, err := perf.NewReader(loader.EventsMap(), 4096)
@@ -887,12 +874,32 @@ func (e *NetworkPolicyEnforcer) compiledPolicies(ctx context.Context) (map[strin
 	return out, nil
 }
 
+// domainRefreshLoop (Phase C, #2379) wakes when the earliest cached name is due
+// and re-resolves; it runs until e.ctx is cancelled. The caller does wg.Add(1).
+func (e *NetworkPolicyEnforcer) domainRefreshLoop() {
+	defer e.wg.Done()
+	t := time.NewTimer(e.resolver.NextRefreshDelay())
+	defer t.Stop()
+	for {
+		select {
+		case <-e.ctx.Done():
+			return
+		case <-t.C:
+			e.refreshDomains()
+			t.Reset(e.resolver.NextRefreshDelay())
+		}
+	}
+}
+
 // refreshDomains re-resolves every egress_domain across all stored policies into
 // the resolver cache. Best-effort: store/lookup errors are logged, not fatal.
 func (e *NetworkPolicyEnforcer) refreshDomains() {
 	stored, err := e.store.List(e.ctx)
 	if err != nil {
 		log.Printf("[netpolicy] domain refresh: list policies: %v", err)
+		// Keep the cached addresses and retry on each name's interval, so a
+		// store outage is not polled at the 1s floor.
+		e.resolver.Postpone()
 		return
 	}
 	var domains []string

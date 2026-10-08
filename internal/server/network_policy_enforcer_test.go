@@ -2,14 +2,97 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/netip"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/footprintai/containarium/pkg/core/incus"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
+
+// listFailingStore is a policy store whose List is down (an outage).
+type listFailingStore struct {
+	NetworkPolicyStore
+	fail bool
+}
+
+func (s *listFailingStore) List(ctx context.Context) ([]*pb.NetworkPolicy, error) {
+	if s.fail {
+		return nil, errors.New("store unavailable")
+	}
+	return s.NetworkPolicyStore.List(ctx)
+}
+
+// TestRefreshDomains_StoreOutageBacksOff locks down the #2389 review finding:
+// when the policy store cannot be listed, Refresh never runs, so the cached
+// names stay past due and NextRefreshDelay would floor at 1s — polling the
+// failing store every second. An outage must back off to each name's interval.
+func TestRefreshDomains_StoreOutageBacksOff(t *testing.T) {
+	store := &listFailingStore{NetworkPolicyStore: NewMemNetworkPolicyStore()}
+	if err := store.Set(context.Background(), &pb.NetworkPolicy{Tenant: "acme", EgressDomains: []string{"a.example"}}); err != nil {
+		t.Fatalf("store.Set: %v", err)
+	}
+	e := NewNetworkPolicyEnforcer("", store, NewMemTenantRegistry(), nil, nil, nil, false)
+	e.ctx = context.Background()
+	clk := newResolverClock()
+	f := &fakeTTLResolver{answers: map[string]dnsAnswer{"a.example": {Addrs: addrs("192.0.2.5"), TTL: 30 * time.Second}}}
+	e.resolver = newDomainResolver(f, clk.now)
+	e.refreshDomains()
+
+	store.fail = true
+	clk.advance(30 * time.Second) // a.example is now due
+	e.refreshDomains()
+	if got := e.resolver.NextRefreshDelay(); got != 30*time.Second {
+		t.Fatalf("after a store outage NextRefreshDelay = %v, want the 30s interval (not the 1s floor)", got)
+	}
+	if got := addrStrings(e.resolver.Addrs("a.example")); len(got) != 1 {
+		t.Fatalf("an outage must keep the cached addresses, got %v", got)
+	}
+	if f.calls["a.example"] != 1 {
+		t.Fatalf("no lookup should run while the store is down, calls = %d", f.calls["a.example"])
+	}
+}
+
+// countingTTLResolver is a goroutine-safe fake DNS that counts lookups.
+type countingTTLResolver struct {
+	calls atomic.Int32
+	ttl   time.Duration
+}
+
+func (c *countingTTLResolver) LookupAddrsTTL(context.Context, string) (dnsAnswer, error) {
+	c.calls.Add(1)
+	return dnsAnswer{Addrs: addrs("192.0.2.5"), TTL: c.ttl}, nil
+}
+
+// TestDomainRefreshLoop_FollowsTTL drives the real timer loop: with a TTL-0
+// record (floored to 1s) the loop re-resolves within a couple of seconds —
+// far sooner than the old fixed 60s ticker — and exits on cancel.
+func TestDomainRefreshLoop_FollowsTTL(t *testing.T) {
+	store := NewMemNetworkPolicyStore()
+	if err := store.Set(context.Background(), &pb.NetworkPolicy{Tenant: "acme", EgressDomains: []string{"a.example"}}); err != nil {
+		t.Fatalf("store.Set: %v", err)
+	}
+	e := NewNetworkPolicyEnforcer("", store, NewMemTenantRegistry(), nil, nil, nil, false)
+	e.ctx, e.cancel = context.WithCancel(context.Background())
+	dns := &countingTTLResolver{ttl: 0}
+	e.resolver = newDomainResolver(dns, time.Now)
+	e.refreshDomains() // what Start does before launching the loop
+
+	e.wg.Add(1)
+	go e.domainRefreshLoop()
+	deadline := time.Now().Add(5 * time.Second)
+	for dns.calls.Load() < 3 && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	e.cancel()
+	e.wg.Wait()
+	if got := dns.calls.Load(); got < 3 {
+		t.Fatalf("loop re-resolved %d times in 5s, want >= 3 (TTL-driven 1s cadence)", got)
+	}
+}
 
 // TestCompiledPolicies_DomainAddrsReachEnforcerAsIPv4Only locks down #2379:
 // the resolver is dual-stack, but the enforcer's BPF egress map is IPv4-only,
