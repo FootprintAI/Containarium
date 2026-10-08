@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** a set-but-empty or whitespace-only `CONTAINARIUM_PRIVILEGED_PODMAN_POLICY` now refuses daemon
+  startup with an error naming the variable, instead of granting privileged Podman to every caller (#2345).
+  Env files or unit templates that use `CONTAINARIUM_PRIVILEGED_PODMAN_POLICY=` to mean unset must omit the
+  assignment or specify `all`, `admin-only` or `disabled`. A truly unset variable still defaults to `all` with
+  a warning; case and whitespace variants of valid values keep working.
+
 - `GuardrailEngineService.Scan` now refuses a request that names a kind the engine has no rules for, with
   `FAILED_PRECONDITION`. Before, the engine skipped that kind without saying so and returned a clean result for a
   kind it never looked at.

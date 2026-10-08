@@ -44,10 +44,10 @@ import (
 //
 // The value is normalised before matching (surrounding whitespace
 // trimmed, lower-cased), so `ALL`, `Admin-Only` and `disabled ` select
-// their policy. Unset, or empty after normalisation, keeps the `all`
-// default. A value that is set but still unrecognised after
-// normalisation (`none`, `off`, `admin_only`, a typo) fails closed
-// (#2299): the daemon refuses to start (validatePrivilegedPolicyEnv,
+// their policy. Only an unset variable keeps the `all` default. A value
+// that is set but blank or still unrecognised after normalisation
+// (`none`, `off`, `admin_only`, a typo) fails closed (#2299, #2345):
+// the daemon refuses to start (validatePrivilegedPolicyEnv,
 // called from NewDualServer), and any path that reads the policy
 // without that check treats it as `disabled`. A mistyped restrictive
 // setting must never silently become the most permissive one.
@@ -94,13 +94,13 @@ var (
 
 // parsePrivilegedPolicy maps the raw env value to a policy. set reports
 // whether the variable is present in the environment at all. The value is
-// trimmed and lower-cased first. An unset value, or one that is empty after
-// that, yields the backwards-compatible `all`. A value that still matches
-// none of the three spellings returns an error AND PrivilegedPolicyDisabled,
+// trimmed and lower-cased first. Only an unset variable yields the
+// backwards-compatible `all`. A set value, including a blank one, that
+// matches none of the three spellings returns an error AND PrivilegedPolicyDisabled,
 // so a caller that ignores the error still fails closed.
 func parsePrivilegedPolicy(raw string, set bool) (PrivilegedPolicy, error) {
 	norm := strings.ToLower(strings.TrimSpace(raw))
-	if !set || norm == "" {
+	if !set {
 		return PrivilegedPolicyAll, nil
 	}
 	switch norm {

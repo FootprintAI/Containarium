@@ -23,7 +23,7 @@ func resetPrivilegedPolicy(t *testing.T) {
 }
 
 func TestPrivilegedPolicy_DefaultIsAll(t *testing.T) {
-	t.Setenv(privilegedPolicyEnv, "")
+	unsetPrivilegedPolicyEnv(t)
 	resetPrivilegedPolicy(t)
 	if got := loadPrivilegedPolicy(); got != PrivilegedPolicyAll {
 		t.Fatalf("policy = %v, want PrivilegedPolicyAll (backwards-compat default)", got)
@@ -119,7 +119,7 @@ func unsetPrivilegedPolicyEnv(t *testing.T) {
 
 // normalisedPrivilegedPolicyValues are case and whitespace variants of the
 // valid spellings. Normalisation (TrimSpace + ToLower) resolves each to its
-// policy. Whitespace-only trims to empty and so means "unset" (`all`).
+// policy.
 var normalisedPrivilegedPolicyValues = []struct {
 	raw  string
 	want PrivilegedPolicy
@@ -138,13 +138,16 @@ var normalisedPrivilegedPolicyValues = []struct {
 	{"disabled ", PrivilegedPolicyDisabled},
 	{"\tdisabled", PrivilegedPolicyDisabled},
 	{"disabled\n", PrivilegedPolicyDisabled},
-	{" ", PrivilegedPolicyAll},
-	{"\t", PrivilegedPolicyAll},
 }
 
 // malformedPrivilegedPolicyValues stay unrecognised after normalisation.
-// Each must be refused.
+// Each must be refused, including a present-but-blank value (#2345).
 var malformedPrivilegedPolicyValues = []string{
+	"",
+	" ",
+	"\t",
+	"\n",
+	"\t\n ",
 	"none",
 	"NONE",
 	" none ",
@@ -171,7 +174,6 @@ func TestParsePrivilegedPolicy_ValidAndUnset(t *testing.T) {
 		want PrivilegedPolicy
 	}{
 		{"unset keeps the backwards-compat default", "", false, PrivilegedPolicyAll},
-		{"set-but-empty is treated as unset", "", true, PrivilegedPolicyAll},
 		{"all", "all", true, PrivilegedPolicyAll},
 		{"admin-only", "admin-only", true, PrivilegedPolicyAdminOnly},
 		{"disabled", "disabled", true, PrivilegedPolicyDisabled},
@@ -222,7 +224,7 @@ func TestValidatePrivilegedPolicyEnv(t *testing.T) {
 			t.Fatalf("unset must start: %v", err)
 		}
 	})
-	valid := []string{"", "all", "admin-only", "disabled"}
+	valid := []string{"all", "admin-only", "disabled"}
 	for _, v := range normalisedPrivilegedPolicyValues {
 		valid = append(valid, v.raw)
 	}
@@ -314,13 +316,18 @@ func TestAuthorizePrivilegedPodman_UnsetStaysAll(t *testing.T) {
 // The daemon refuses to start on an unrecognised value — the check is wired
 // into NewDualServer, so a typo surfaces at boot, not at the first create.
 func TestNewDualServer_RefusesMalformedPrivilegedPolicy(t *testing.T) {
-	t.Setenv(privilegedPolicyEnv, "none")
-	resetPrivilegedPolicy(t)
-	ds, err := NewDualServer(&DualServerConfig{})
-	if err == nil {
-		t.Fatalf("NewDualServer started (%T) with an unrecognised %s", ds, privilegedPolicyEnv)
-	}
-	if !strings.Contains(err.Error(), privilegedPolicyEnv) {
-		t.Fatalf("startup error %q must name %s", err, privilegedPolicyEnv)
+	for _, raw := range malformedPrivilegedPolicyValues {
+		t.Run(fmt.Sprintf("%q", raw), func(t *testing.T) {
+			t.Setenv(privilegedPolicyEnv, raw)
+			resetPrivilegedPolicy(t)
+
+			ds, err := NewDualServer(&DualServerConfig{})
+			if err == nil {
+				t.Fatalf("NewDualServer started (%T) with an unrecognised %s=%q", ds, privilegedPolicyEnv, raw)
+			}
+			if !strings.Contains(err.Error(), privilegedPolicyEnv) {
+				t.Fatalf("startup error %q must name %s", err, privilegedPolicyEnv)
+			}
+		})
 	}
 }
