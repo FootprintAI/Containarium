@@ -30,7 +30,10 @@ func backupTools() []Tool {
 				"pg_dump (no DB credential needed; the dump is opaque and not " +
 				"auto-restorable); 'age_recipient' encrypts the dump to a user-held " +
 				"age public key before storage, so the platform only holds " +
-				"ciphertext. Mirrors `containarium backup create`.",
+				"ciphertext. 'key_mode' selects who holds the key on a daemon " +
+				"with a backup KMS key configured ('managed': a per-backup key " +
+				"wrapped by the KMS; 'both': managed plus the age recipient). " +
+				"Mirrors `containarium backup create`.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -70,6 +73,11 @@ func backupTools() []Tool {
 					"age_recipient": map[string]interface{}{
 						"type":        "string",
 						"description": "age public key (age1...) to encrypt the dump to before it is stored, overriding any recipient the tenant has already self-registered as the CONTAINARIUM_BACKUP_AGE_RECIPIENT secret (set_secret). Omit this to use the registered one automatically, or omit both for a plaintext dump. Restore then requires the matching identity file, which the platform never holds.",
+					},
+					"key_mode": map[string]interface{}{
+						"type":        "string",
+						"description": "Who holds the key (#2402). 'managed': encrypt to a fresh per-backup identity whose secret the daemon wraps with its KMS key and stores on the record; 'both': managed plus the age recipient, so either opens the file; 'age_recipient': the recipient only, no wrapping. Omit for the daemon default (managed/both when a backup KMS key is configured, otherwise the recipient/plaintext behaviour). A mode the daemon cannot provide is refused, not downgraded. The daemon never unwraps: restore/verify still take the identity, unwrapped under your own KMS credentials.",
+						"enum":        []string{"age_recipient", "managed", "both"},
 					},
 				},
 				"required": []string{"username"},
@@ -179,6 +187,10 @@ func handleCreateBackup(client API, args map[string]interface{}) (string, error)
 	if database == "" && hook == "" {
 		return "", fmt.Errorf("either database or hook is required")
 	}
+	keyMode, err := keyModeEnumName(getStringArg(args, "key_mode", ""))
+	if err != nil {
+		return "", err
+	}
 	resp, err := client.CreateBackup(CreateBackupRequest{
 		Username:     getStringArg(args, "username", ""),
 		Destination:  destEnum,
@@ -186,6 +198,7 @@ func handleCreateBackup(client API, args map[string]interface{}) (string, error)
 		Hook:         hook,
 		Label:        getStringArg(args, "label", ""),
 		AgeRecipient: getStringArg(args, "age_recipient", ""),
+		KeyMode:      keyMode,
 		Connection: &PgConnectionBody{
 			Database: database,
 			User:     getStringArg(args, "db_user", ""),
@@ -207,8 +220,37 @@ func handleCreateBackup(client API, args map[string]interface{}) (string, error)
 		if r.Encrypted {
 			out += fmt.Sprintf("Encrypted: yes, to %s (restore needs the matching identity file)\n", r.AgeRecipient)
 		}
+		if r.KeyMode == "BACKUP_KEY_MODE_MANAGED" || r.KeyMode == "BACKUP_KEY_MODE_BOTH" {
+			out += fmt.Sprintf("Key mode: %s (key version %s; unwrap the record's wrapped key under your own KMS credentials to restore)\n",
+				keyModeArgName(r.KeyMode), r.KekID)
+		}
 	}
 	return out, nil
+}
+
+// keyModeEnumName maps the tool's key_mode argument to the proto enum
+// NAME the gateway expects (#2402). Empty stays empty — UNSPECIFIED, the
+// daemon default — and an unknown value is refused here rather than
+// bounced by the gateway as an opaque 400.
+func keyModeEnumName(arg string) (string, error) {
+	switch arg {
+	case "":
+		return "", nil
+	case "age_recipient":
+		return "BACKUP_KEY_MODE_AGE_RECIPIENT", nil
+	case "managed":
+		return "BACKUP_KEY_MODE_MANAGED", nil
+	case "both":
+		return "BACKUP_KEY_MODE_BOTH", nil
+	default:
+		return "", fmt.Errorf("invalid key_mode %q (expected 'age_recipient', 'managed' or 'both')", arg)
+	}
+}
+
+// keyModeArgName is the inverse: the wire enum name as the tool's own
+// vocabulary, for output.
+func keyModeArgName(enumName string) string {
+	return strings.ToLower(strings.TrimPrefix(enumName, "BACKUP_KEY_MODE_"))
 }
 
 func handleListBackups(client API, args map[string]interface{}) (string, error) {

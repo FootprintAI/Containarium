@@ -716,7 +716,13 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// GCS). Orchestration over the container manager; the GCS uploader is
 	// best-effort (LOCAL-only if `gcloud` is absent). See
 	// docs/DB-BACKUP-OPERATIONS.md.
-	backupServer := NewBackupServer(containerServer)
+	// A configured-but-unloadable managed-backup key wrapper (#2402) is
+	// a startup error, not a warning: silently serving legacy backups
+	// where managed ones were configured is the failure this refuses.
+	backupServer, err := NewBackupServer(containerServer)
+	if err != nil {
+		return nil, fmt.Errorf("backup service: %w", err)
+	}
 	pb.RegisterBackupServiceServer(grpcServer, backupServer)
 	// Metrics export's backup-health series (#2294) reads the same
 	// backup core backupServer orchestrates — wired here since

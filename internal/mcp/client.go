@@ -554,6 +554,10 @@ type CreateBackupRequest struct {
 	Hook         string `json:"hook,omitempty"`
 	Label        string `json:"label,omitempty"`
 	AgeRecipient string `json:"age_recipient,omitempty"`
+
+	// #2402: the proto enum NAME ("BACKUP_KEY_MODE_MANAGED", ...). Empty
+	// is UNSPECIFIED — the daemon default.
+	KeyMode string `json:"key_mode,omitempty"`
 }
 
 // BackupRecord mirrors the proto BackupRecord on the response side
@@ -575,6 +579,12 @@ type BackupRecord struct {
 	Encrypted    bool   `json:"encrypted,omitempty"`
 	AgeRecipient string `json:"ageRecipient,omitempty"`
 	Hook         string `json:"hook,omitempty"`
+
+	// #2402: the proto enum NAME; bytes are base64 in proto JSON. The
+	// daemon never unwraps WrappedKey — whoever restores does.
+	WrappedKey string `json:"wrappedKey,omitempty"`
+	KekID      string `json:"kekId,omitempty"`
+	KeyMode    string `json:"keyMode,omitempty"`
 }
 
 // VerificationCheck is one assertion made during a restore test.

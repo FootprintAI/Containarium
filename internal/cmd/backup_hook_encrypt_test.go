@@ -51,9 +51,11 @@ func resetBackupCreateFlags(t *testing.T) {
 	t.Helper()
 	backupCreateDatabase, backupCreateDest, backupCreateBucket = "", "local", ""
 	backupCreateHook, backupCreateLabel, backupCreateAgeRecipient = "", "", ""
+	backupCreateKeyMode = ""
 	t.Cleanup(func() {
 		backupCreateDatabase, backupCreateDest, backupCreateBucket = "", "local", ""
 		backupCreateHook, backupCreateLabel, backupCreateAgeRecipient = "", "", ""
+		backupCreateKeyMode = ""
 	})
 }
 
