@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -71,7 +72,10 @@ func init() {
 	codeCmd.AddCommand(codeEgressPolicyCmd)
 	codeEgressPolicyCmd.AddCommand(codeEgressPolicyGetCmd, codeEgressPolicySetCmd, codeEgressPolicyDeleteCmd)
 	codeEgressPolicyGetCmd.Flags().BoolVar(&codeEgressJSON, "json", false, "Print the response as JSON")
-	codeEgressPolicySetCmd.Flags().StringVar(&codeEgressMode, "mode", "log_only", "log_only (record what would be dropped) | enforce (drop)")
+	// No default: an admin who forgot --mode enforce would otherwise store
+	// a policy that drops nothing (#2378).
+	codeEgressPolicySetCmd.Flags().StringVar(&codeEgressMode, "mode", "", "Required: log_only (record what would be dropped) | enforce (drop)")
+	_ = codeEgressPolicySetCmd.MarkFlagRequired("mode")
 	codeEgressPolicySetCmd.Flags().StringSliceVar(&codeEgressCIDRs, "egress-cidr", nil, "Allowed destination CIDR, IPv4 or IPv6 (repeatable)")
 	codeEgressPolicySetCmd.Flags().StringSliceVar(&codeEgressDomains, "egress-domain", nil, "Allowed destination hostname (repeatable)")
 }
@@ -130,8 +134,8 @@ func runCodeEgressSet(w io.Writer, args []string, mode string, cidrs, domains []
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(w, "✓ coding-tool egress policy stored for %s: revision %d, %d CIDR(s), %d domain(s)\n",
-		displayCodeEgressTenant(p.GetTenant()), p.GetRevision(), len(p.GetEgressCidrs()), len(p.GetEgressDomains()))
+	_, err = fmt.Fprintf(w, "✓ coding-tool egress policy stored for %s: revision %d, mode %s, %d CIDR(s), %d domain(s)\n",
+		displayCodeEgressTenant(p.GetTenant()), p.GetRevision(), codeEgressModeName(p.GetMode()), len(p.GetEgressCidrs()), len(p.GetEgressDomains()))
 	return err
 }
 
@@ -147,6 +151,11 @@ func runCodeEgressDelete(w io.Writer, args []string) error {
 	}
 	_, err = fmt.Fprintf(w, "✓ coding-tool egress policy removed for %s\n", displayCodeEgressTenant(tenant))
 	return err
+}
+
+// codeEgressModeName prints the mode the daemon stored, in --mode spelling.
+func codeEgressModeName(m pb.NetworkPolicyMode) string {
+	return strings.ToLower(strings.TrimPrefix(m.String(), "NETWORK_POLICY_MODE_"))
 }
 
 func displayCodeEgressTenant(t string) string {
