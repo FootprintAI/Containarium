@@ -3,7 +3,8 @@
 // Postgres coverage for the guardrail policy store (#2368). The in-memory
 // store runs the same contract in the unit suite; this file adds what only a
 // database can show: the revision survives a restart, concurrent Sets get
-// distinct revisions, and a read error is not "not configured".
+// distinct revisions, and a read error, an undecodable stored policy or a
+// missing singleton row is never "not configured".
 //
 //	CONTAINARIUM_TEST_DSN=postgres://... go test -tags=integration ./internal/guardrailpolicy/pgstore/
 package pgstore
@@ -148,5 +149,70 @@ func TestGuardrailPolicyPGStore_ReadErrorIsNotNotConfigured(t *testing.T) {
 	_, err = broken.Get(ctx)
 	if err == nil || errors.Is(err, guardrailpolicy.ErrNotConfigured) {
 		t.Fatalf("Get with the database unreachable = %v, want a read error distinct from guardrailpolicy.ErrNotConfigured", err)
+	}
+}
+
+// requireDamagedError fails unless err is a real error, distinct from
+// guardrailpolicy.ErrNotConfigured: a damaged table must never read as "no policy".
+func requireDamagedError(t *testing.T, op string, err error) {
+	t.Helper()
+	if err == nil || errors.Is(err, guardrailpolicy.ErrNotConfigured) {
+		t.Fatalf("%s on a damaged table = %v, want an error distinct from guardrailpolicy.ErrNotConfigured", op, err)
+	}
+}
+
+// TestGuardrailPolicyPGStore_CorruptStoredPolicyIsAnError: a policy column
+// that does not decode fails both Get and Set (Set must not overwrite what
+// it could not read), and the row is left as it was.
+func TestGuardrailPolicyPGStore_CorruptStoredPolicyIsAnError(t *testing.T) {
+	ctx := context.Background()
+	pool := policyPool(t)
+	s := pgStore(t, pool)
+	if _, err := s.Set(ctx, storetest.Policy(1), nil, "admin-a"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	// Field 1, length 5, one byte of payload: a truncated message.
+	corrupt := []byte{0x0a, 0x05, 0x01}
+	if _, err := pool.Exec(ctx, `UPDATE guardrail_policy SET policy = $1 WHERE id = 1`, corrupt); err != nil {
+		t.Fatalf("corrupt the row: %v", err)
+	}
+	_, err := s.Get(ctx)
+	requireDamagedError(t, "Get", err)
+	_, err = s.Set(ctx, storetest.Policy(2), nil, "admin-b")
+	requireDamagedError(t, "Set", err)
+
+	var (
+		revision int64
+		raw      []byte
+	)
+	if err := pool.QueryRow(ctx, `SELECT revision, policy FROM guardrail_policy WHERE id = 1`).Scan(&revision, &raw); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if revision != 1 || string(raw) != string(corrupt) {
+		t.Fatalf("after the refused Set: revision %d, policy %x; want revision 1 and the bytes untouched", revision, raw)
+	}
+}
+
+// TestGuardrailPolicyPGStore_MissingRowIsAnError: the bootstrap seeds the
+// singleton row, so a missing row is a damaged table. Get and Set both fail;
+// neither treats it as "not configured", and Set does not recreate the row.
+func TestGuardrailPolicyPGStore_MissingRowIsAnError(t *testing.T) {
+	ctx := context.Background()
+	pool := policyPool(t)
+	s := pgStore(t, pool)
+	if _, err := pool.Exec(ctx, `DELETE FROM guardrail_policy WHERE id = 1`); err != nil {
+		t.Fatalf("delete the row: %v", err)
+	}
+	_, err := s.Get(ctx)
+	requireDamagedError(t, "Get", err)
+	_, err = s.Set(ctx, storetest.Policy(1), nil, "admin-a")
+	requireDamagedError(t, "Set", err)
+
+	var rows int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM guardrail_policy`).Scan(&rows); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if rows != 0 {
+		t.Fatalf("rows after the refused Set = %d, want 0", rows)
 	}
 }
