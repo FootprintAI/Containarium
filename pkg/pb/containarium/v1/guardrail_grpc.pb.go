@@ -134,3 +134,152 @@ var GuardrailEngineService_ServiceDesc = grpc.ServiceDesc{
 	Streams:  []grpc.StreamDesc{},
 	Metadata: "containarium/v1/guardrail.proto",
 }
+
+const (
+	GuardrailPolicyService_GetGuardrailPolicy_FullMethodName = "/containarium.v1.GuardrailPolicyService/GetGuardrailPolicy"
+	GuardrailPolicyService_SetGuardrailPolicy_FullMethodName = "/containarium.v1.GuardrailPolicyService/SetGuardrailPolicy"
+)
+
+// GuardrailPolicyServiceClient is the client API for GuardrailPolicyService service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+//
+// GuardrailPolicyService is the daemon's store for the server-side policy.
+// Get: any authenticated caller (a data owner needs the policy to run
+// `guardrail apply` against it). Set: admin role only, audited.
+type GuardrailPolicyServiceClient interface {
+	GetGuardrailPolicy(ctx context.Context, in *GetGuardrailPolicyRequest, opts ...grpc.CallOption) (*GetGuardrailPolicyResponse, error)
+	SetGuardrailPolicy(ctx context.Context, in *SetGuardrailPolicyRequest, opts ...grpc.CallOption) (*SetGuardrailPolicyResponse, error)
+}
+
+type guardrailPolicyServiceClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewGuardrailPolicyServiceClient(cc grpc.ClientConnInterface) GuardrailPolicyServiceClient {
+	return &guardrailPolicyServiceClient{cc}
+}
+
+func (c *guardrailPolicyServiceClient) GetGuardrailPolicy(ctx context.Context, in *GetGuardrailPolicyRequest, opts ...grpc.CallOption) (*GetGuardrailPolicyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetGuardrailPolicyResponse)
+	err := c.cc.Invoke(ctx, GuardrailPolicyService_GetGuardrailPolicy_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *guardrailPolicyServiceClient) SetGuardrailPolicy(ctx context.Context, in *SetGuardrailPolicyRequest, opts ...grpc.CallOption) (*SetGuardrailPolicyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetGuardrailPolicyResponse)
+	err := c.cc.Invoke(ctx, GuardrailPolicyService_SetGuardrailPolicy_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// GuardrailPolicyServiceServer is the server API for GuardrailPolicyService service.
+// All implementations must embed UnimplementedGuardrailPolicyServiceServer
+// for forward compatibility.
+//
+// GuardrailPolicyService is the daemon's store for the server-side policy.
+// Get: any authenticated caller (a data owner needs the policy to run
+// `guardrail apply` against it). Set: admin role only, audited.
+type GuardrailPolicyServiceServer interface {
+	GetGuardrailPolicy(context.Context, *GetGuardrailPolicyRequest) (*GetGuardrailPolicyResponse, error)
+	SetGuardrailPolicy(context.Context, *SetGuardrailPolicyRequest) (*SetGuardrailPolicyResponse, error)
+	mustEmbedUnimplementedGuardrailPolicyServiceServer()
+}
+
+// UnimplementedGuardrailPolicyServiceServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedGuardrailPolicyServiceServer struct{}
+
+func (UnimplementedGuardrailPolicyServiceServer) GetGuardrailPolicy(context.Context, *GetGuardrailPolicyRequest) (*GetGuardrailPolicyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetGuardrailPolicy not implemented")
+}
+func (UnimplementedGuardrailPolicyServiceServer) SetGuardrailPolicy(context.Context, *SetGuardrailPolicyRequest) (*SetGuardrailPolicyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetGuardrailPolicy not implemented")
+}
+func (UnimplementedGuardrailPolicyServiceServer) mustEmbedUnimplementedGuardrailPolicyServiceServer() {
+}
+func (UnimplementedGuardrailPolicyServiceServer) testEmbeddedByValue() {}
+
+// UnsafeGuardrailPolicyServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to GuardrailPolicyServiceServer will
+// result in compilation errors.
+type UnsafeGuardrailPolicyServiceServer interface {
+	mustEmbedUnimplementedGuardrailPolicyServiceServer()
+}
+
+func RegisterGuardrailPolicyServiceServer(s grpc.ServiceRegistrar, srv GuardrailPolicyServiceServer) {
+	// If the following call panics, it indicates UnimplementedGuardrailPolicyServiceServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&GuardrailPolicyService_ServiceDesc, srv)
+}
+
+func _GuardrailPolicyService_GetGuardrailPolicy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetGuardrailPolicyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GuardrailPolicyServiceServer).GetGuardrailPolicy(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: GuardrailPolicyService_GetGuardrailPolicy_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GuardrailPolicyServiceServer).GetGuardrailPolicy(ctx, req.(*GetGuardrailPolicyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _GuardrailPolicyService_SetGuardrailPolicy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetGuardrailPolicyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GuardrailPolicyServiceServer).SetGuardrailPolicy(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: GuardrailPolicyService_SetGuardrailPolicy_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GuardrailPolicyServiceServer).SetGuardrailPolicy(ctx, req.(*SetGuardrailPolicyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// GuardrailPolicyService_ServiceDesc is the grpc.ServiceDesc for GuardrailPolicyService service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var GuardrailPolicyService_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "containarium.v1.GuardrailPolicyService",
+	HandlerType: (*GuardrailPolicyServiceServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "GetGuardrailPolicy",
+			Handler:    _GuardrailPolicyService_GetGuardrailPolicy_Handler,
+		},
+		{
+			MethodName: "SetGuardrailPolicy",
+			Handler:    _GuardrailPolicyService_SetGuardrailPolicy_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "containarium/v1/guardrail.proto",
+}
