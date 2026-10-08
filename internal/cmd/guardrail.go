@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -30,8 +31,9 @@ import (
 // boundary: scanning, redaction and signing run on the machine the CLI runs
 // on, and no dataset content ever leaves it. Since #2368 that is no longer
 // "nothing talks to the daemon": `apply` and `verify` READ the server-side
-// guardrail policy when a daemon is reachable (guardrail_server.go says
-// exactly what is sent, which is only that read), and `guardrail policy`
+// guardrail policy when a server is named explicitly with --server or
+// CONTAINARIUM_SERVER (guardrail_server.go states the rule and exactly what
+// is sent, which is only that read), and `guardrail policy`
 // (guardrail_policy.go) reads or sets it. The engine is a separate process reached over
 // gRPC (--engine); with no --engine the in-tree reference rules engine
 // runs, which is a handful of regular expressions for proving the flow,
@@ -84,12 +86,16 @@ The vault (token -> original) and the redaction key are written beside
 With --sign-key the attestation is signed so a consumer can verify it with
 the matching .pub (see 'guardrail keygen' and 'guardrail verify').
 
-Policy: when a daemon is reachable (--server) and holds a guardrail policy,
-apply runs under the server's policy, and --policy is refused unless it is
-the same policy (same hash). Only the policy is read from the daemon; no
-dataset content is sent. With no reachable daemon, or no server policy,
-apply runs under --policy (or the default) and says on stderr that the
-result is NOT server-attested.
+Policy: apply contacts a server only when one is named explicitly, with
+--server or CONTAINARIUM_SERVER. A login's default server does not count;
+logging in does not make apply contact the platform. With a named server
+that holds a guardrail policy, apply runs under the server's policy, and
+--policy is refused unless it is the same policy (same hash). The only
+request is a read of the policy, carrying your credentials; no dataset
+content is sent. If the named server cannot be reached or answers with an
+error, apply fails (non-zero exit); it never falls back silently. With no
+named server, or a named server that has no policy configured, apply runs
+under --policy (or the default) and says the result is NOT server-attested.
 
 Examples:
   containarium guardrail keygen --out ./tenant
@@ -106,12 +112,17 @@ var guardrailVerifyCmd = &cobra.Command{
 require it to match, and require the verdict to be PASS. Exit status 0 only
 when all hold. This is what a training job or a CI step runs first.
 
-When a daemon is reachable (--server) and holds a guardrail policy, the
-check is server-trusted: the attestation's policy hash must equal the
-server policy's, and its signer must be one of the server's trusted signers
-(--public-key is then ignored). Only the policy is read from the daemon;
-nothing is sent. Offline (no reachable daemon, or no server policy),
---public-key is required and the result is reported as NOT server-trusted.
+verify contacts a server only when one is named explicitly, with --server
+or CONTAINARIUM_SERVER; a login's default server does not count. With a
+named server that holds a guardrail policy, the check is server-trusted:
+the attestation's policy hash must equal the server policy's, and its
+signer must be one of the server's trusted signers (--public-key is then
+ignored). The only request is a read of the policy, carrying your
+credentials; no dataset content and no attestation is sent. If the named
+server cannot be reached or answers with an error, verify fails (non-zero
+exit); it never falls back silently. With no named server, or a named
+server that has no policy configured, --public-key is required and the
+result is reported as NOT server-trusted.
 
 Examples:
   containarium guardrail verify ./export-clean --attestation ./export-clean.attestation.json --server <host>:50051
@@ -289,12 +300,17 @@ func runGuardrailApply(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	var signer func(*pb.GuardrailAttestation) error
+	var signKey ed25519.PrivateKey
 	if guardrailSignKey != "" {
 		priv, err := guardrail.LoadSigningKey(guardrailSignKey)
 		if err != nil {
 			return err
 		}
+		signKey = priv
 		signer = func(att *pb.GuardrailAttestation) error { return guardrail.Sign(att, priv) }
+	}
+	if server.policy != nil {
+		warnIfNotTrustedSigner(cmd, server.policy, signKey)
 	}
 
 	ctx := cmd.Context()

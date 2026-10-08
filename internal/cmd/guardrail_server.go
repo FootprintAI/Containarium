@@ -1,14 +1,13 @@
 package cmd
 
 import (
-	"errors"
+	"crypto/ed25519"
 	"fmt"
-	"net"
-	"net/url"
+	"strings"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	"github.com/spf13/cobra"
 
+	"github.com/footprintai/containarium/internal/guardrail"
 	"github.com/footprintai/containarium/internal/guardrailpolicy"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -19,14 +18,25 @@ import (
 //
 // This deliberately reverses a stated property of the guardrail CLI: before
 // #2368 every guardrail verb was local and none talked to the daemon. Now
-// apply and verify contact the platform, for ONE thing only: a read of the
-// policy (GetGuardrailPolicy). No dataset content, finding, vault entry or
-// key ever leaves the machine; apply sends nothing but that read, and verify
-// checks the attestation locally against the policy and signers it fetched.
-// What changes is that the *policy* now originates on the platform. An owner
-// who must stay fully offline still can (no --server, or no reachable
-// daemon); the result is then labelled not server-attested / not
-// server-trusted.
+// apply and verify contact the platform for ONE thing only, a read of the
+// policy (GetGuardrailPolicy, carrying the caller's credentials). No dataset
+// content, finding, vault entry, attestation or key ever leaves the machine;
+// verify checks the attestation locally against the policy and signers it
+// read. What changes is that the *policy* now originates on the platform.
+//
+// The rule for when they contact a server:
+//
+//   - Only when a server is named EXPLICITLY for this invocation: the
+//     --server flag or CONTAINARIUM_SERVER. A login's default_server
+//     (credentials.json) does not count: logging in does not make these two
+//     commands contact the platform. With no explicit server they run in
+//     local mode exactly as before #2368, labelled NOT server-attested /
+//     NOT server-trusted.
+//   - With an explicit server there is no silent fallback: unreachable, a
+//     TLS or certificate failure, UNAVAILABLE, a 5xx, a timeout,
+//     unauthenticated, a store read error are all errors (non-zero exit).
+//     The one local outcome is an authenticated answer that the server has
+//     no policy configured; that result is labelled NOT server-attested.
 
 // guardrailServerView is what apply/verify learned from the daemon.
 type guardrailServerView struct {
@@ -39,26 +49,19 @@ type guardrailServerView struct {
 	localReason string
 }
 
-// fetchGuardrailServerView reads the server policy. Local mode is chosen
-// only when there is no daemon to ask (no --server) or the daemon cannot be
-// reached at all, or it answers that no policy is configured. A daemon that
-// answers with an error (its store unreadable, the caller unauthenticated)
-// is an error: a read error is never treated as "no policy".
+// fetchGuardrailServerView applies the rule above.
 func fetchGuardrailServerView() (*guardrailServerView, error) {
-	api, done, err := newGuardrailPolicyAPI()
-	if errors.Is(err, errNoGuardrailServer) {
-		return &guardrailServerView{localReason: "no --server configured"}, nil
+	if explicitServerAddr == "" {
+		return &guardrailServerView{localReason: "no server named (--server or CONTAINARIUM_SERVER; a login's default server does not count)"}, nil
 	}
+	api, done, err := newGuardrailPolicyAPI()
 	if err != nil {
-		return nil, fmt.Errorf("read server guardrail policy: %w", err)
+		return nil, fmt.Errorf("read server guardrail policy from %s: %w (an explicitly named server is never skipped; omit --server to run locally)", explicitServerAddr, err)
 	}
 	defer done()
 	resp, err := api.GetGuardrailPolicy()
 	if err != nil {
-		if guardrailDaemonUnreachable(err) {
-			return &guardrailServerView{localReason: fmt.Sprintf("daemon unreachable (%v)", err)}, nil
-		}
-		return nil, fmt.Errorf("read server guardrail policy: %w", err)
+		return nil, fmt.Errorf("read server guardrail policy from %s: %w (an explicitly named server is never skipped; omit --server to run locally)", explicitServerAddr, err)
 	}
 	if !resp.GetConfigured() {
 		return &guardrailServerView{localReason: "the server has no guardrail policy configured"}, nil
@@ -73,22 +76,34 @@ func fetchGuardrailServerView() (*guardrailServerView, error) {
 	return &guardrailServerView{policy: resp.GetPolicy(), hash: hash}, nil
 }
 
+// warnIfNotTrustedSigner tells an apply under a server policy, on stderr,
+// that its attestation will not be server-trusted: unsigned, or signed by a
+// key the server does not trust. Key id prefixes only, never key bytes.
+func warnIfNotTrustedSigner(cmd *cobra.Command, server *pb.ServerGuardrailPolicy, signKey ed25519.PrivateKey) {
+	var trusted []string
+	for _, s := range server.GetTrustedSigners() {
+		trusted = append(trusted, shortGuardrailHash(s.GetKeyId()))
+	}
+	names := strings.Join(trusted, ", ")
+	if names == "" {
+		names = "none"
+	}
+	if signKey == nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "guardrail: no --sign-key: the attestation is unsigned, so verify and a gated deploy will refuse it (server trusted signers: %s)\n", names)
+		return
+	}
+	id := guardrail.KeyID(signKey.Public().(ed25519.PublicKey))
+	for _, s := range server.GetTrustedSigners() {
+		if s.GetKeyId() == id {
+			return
+		}
+	}
+	fmt.Fprintf(cmd.ErrOrStderr(), "guardrail: --sign-key %s is not one of the server's trusted signers (%s); verify and a gated deploy will refuse this attestation\n", shortGuardrailHash(id), names)
+}
+
 func shortGuardrailHash(h string) string {
 	if len(h) > 12 {
 		return h[:12]
 	}
 	return h
-}
-
-// guardrailDaemonUnreachable is true only for transport failures: gRPC
-// UNAVAILABLE (connection refused, DNS failure) or an HTTP request that never
-// got a response. Every status the daemon itself returns is not "unreachable".
-func guardrailDaemonUnreachable(err error) bool {
-	var st interface{ GRPCStatus() *status.Status }
-	if errors.As(err, &st) {
-		return st.GRPCStatus().Code() == codes.Unavailable
-	}
-	var uerr *url.Error
-	var nerr *net.OpError
-	return errors.As(err, &uerr) || errors.As(err, &nerr)
 }

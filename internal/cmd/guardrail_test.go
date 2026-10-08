@@ -18,9 +18,25 @@ func resetGuardrailFlags() {
 	guardrailRequireKinds = nil
 }
 
+// guardrailTestHomeEnv marks the private HOME runGuardrail set for the
+// current test, so later runs in the same test keep it (and anything the
+// test wrote there) instead of minting a new one.
+const guardrailTestHomeEnv = "CONTAINARIUM_GUARDRAIL_TEST_HOME"
+
 func runGuardrail(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	resetGuardrailFlags()
+	// Hermetic: no developer or CI credentials file, certs or server env
+	// may change which mode apply/verify run in (#2368). A test that wants
+	// a login's credentials writes them into this HOME itself.
+	if home := os.Getenv("HOME"); home == "" || os.Getenv(guardrailTestHomeEnv) != home {
+		home = t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv(guardrailTestHomeEnv, home)
+	}
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(os.Getenv("HOME"), ".config"))
+	serverAddr, explicitServerAddr, authToken = "", "", ""
+	certsDir, insecure, httpMode = "", false, false
 	var out, errb bytes.Buffer
 	rootCmd.SetOut(&out)
 	rootCmd.SetErr(&errb)
