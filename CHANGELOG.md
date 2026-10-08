@@ -24,6 +24,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `FAILED_PRECONDITION`. Before, the engine skipped that kind without saying so and returned a clean result for a
   kind it never looked at.
 
+### Fixed
+
+- `scripts/tenant-guard-legit-flows-e2e.sh` no longer reports a reachable box as a timeout on its `host -> box` row. The
+  probe piped the connect into `grep -q refused` under `set -o pipefail`, so the failing connect's status became the
+  pipeline's even when `grep` matched, and a box with nothing listening on the port (an RST, so reachable at L3) was
+  reported as a timeout. It failed on any fixture without an sshd. The output is now captured first and the captured
+  text is matched, as `core-guard-legit-flows-e2e.sh` does since #2323. No guard behaviour changed.
+
 ## [0.100.0] - 2026-10-08
 
 ### Changed
