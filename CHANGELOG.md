@@ -20,6 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `containarium guardrail apply` and `guardrail verify` now read the server-side guardrail policy when a daemon is
+  reachable (#2368, slice C). This reverses the old "every guardrail verb is local" property for that one read: no
+  dataset content is ever sent. `apply` runs under the server's policy and refuses a `--policy` file that does not
+  hash to it. `verify` requires the attestation's policy hash to equal the server's and its signer to be one of the
+  server's trusted signers. With no reachable daemon, or no server policy, both keep the old local behaviour
+  (`verify` then needs `--public-key`) and say the result is NOT server-attested or NOT server-trusted. A daemon that
+  answers with an error is an error, never a fallback to local mode.
 - `GuardrailEngineService.Scan` now refuses a request that names a kind the engine has no rules for, with
   `FAILED_PRECONDITION`. Before, the engine skipped that kind without saying so and returned a clean result for a
   kind it never looked at.
