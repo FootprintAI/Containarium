@@ -70,7 +70,9 @@ func (f *fakeMultiKeyGCPKMS) handle(w http.ResponseWriter, r *http.Request) {
 		nonce := make([]byte, aead.NonceSize())
 		_, _ = io.ReadFull(rand.Reader, nonce)
 		ct := aead.Seal(nonce, nonce, pt, nil)
+		// As Cloud KMS does, name the CryptoKeyVersion used (#2402).
 		_ = json.NewEncoder(w).Encode(map[string]string{
+			"name":       keyResourceName + "/cryptoKeyVersions/1",
 			"ciphertext": base64.StdEncoding.EncodeToString(ct),
 		})
 	case "decrypt":
@@ -204,8 +206,8 @@ func TestSetTenantKMSKey_RewrapsExistingSecretsUnderTheNewKey(t *testing.T) {
 	).Scan(&kekID); err != nil {
 		t.Fatalf("query kek_id: %v", err)
 	}
-	if kekID != corecrypto.GCPKEKPrefix+tenantKey {
-		t.Fatalf("kek_id = %q, want %q (the tenant's own key)", kekID, corecrypto.GCPKEKPrefix+tenantKey)
+	if kekID != corecrypto.GCPKEKPrefix+tenantKey+"/cryptoKeyVersions/1" {
+		t.Fatalf("kek_id = %q, want %q (the tenant's own key)", kekID, corecrypto.GCPKEKPrefix+tenantKey+"/cryptoKeyVersions/1")
 	}
 }
 
@@ -293,7 +295,7 @@ func TestClearTenantKMSKey_LeavesExistingRowsOnTheirOwnKeyAndIsIdempotent(t *tes
 	_, _ = pool.Exec(ctx, "DELETE FROM tenant_kms_keys WHERE username = $1", user)
 
 	tenantKey := "projects/p/locations/l/keyRings/r/cryptoKeys/" + user
-	wantTenantKekID := corecrypto.GCPKEKPrefix + tenantKey
+	wantTenantKekID := corecrypto.GCPKEKPrefix + tenantKey + "/cryptoKeyVersions/1"
 	if err := store.SetTenantKMSKey(ctx, user, tenantKey); err != nil {
 		t.Fatalf("SetTenantKMSKey: %v", err)
 	}
@@ -355,7 +357,7 @@ func TestClearTenantKMSKey_LeavesExistingRowsOnTheirOwnKeyAndIsIdempotent(t *tes
 	if _, err := store.Set(ctx, user, "NEW_AFTER_CLEAR", "new-value", ""); err != nil {
 		t.Fatalf("Set after clear: %v", err)
 	}
-	wantSharedKekID := corecrypto.GCPKEKPrefix + "projects/p/locations/l/keyRings/r/cryptoKeys/shared"
+	wantSharedKekID := corecrypto.GCPKEKPrefix + "projects/p/locations/l/keyRings/r/cryptoKeys/shared/cryptoKeyVersions/1"
 	if got := kekIDOf("NEW_AFTER_CLEAR"); got != wantSharedKekID {
 		t.Fatalf("kek_id of a write after clear = %q, want the shared key %q", got, wantSharedKekID)
 	}
@@ -419,8 +421,8 @@ func TestLoadTenantKEKCache_SurvivesRestart(t *testing.T) {
 	).Scan(&kekID); err != nil {
 		t.Fatalf("query kek_id: %v", err)
 	}
-	if kekID != corecrypto.GCPKEKPrefix+tenantKey {
-		t.Fatalf("kek_id after restart = %q, want %q — the tenant override did not survive the restart", kekID, corecrypto.GCPKEKPrefix+tenantKey)
+	if kekID != corecrypto.GCPKEKPrefix+tenantKey+"/cryptoKeyVersions/1" {
+		t.Fatalf("kek_id after restart = %q, want %q — the tenant override did not survive the restart", kekID, corecrypto.GCPKEKPrefix+tenantKey+"/cryptoKeyVersions/1")
 	}
 }
 
@@ -530,8 +532,8 @@ func TestRewrapOne_HappyPathConvergesWithoutVersionBump(t *testing.T) {
 	).Scan(&kekID); err != nil {
 		t.Fatalf("query kek_id: %v", err)
 	}
-	if kekID != corecrypto.GCPKEKPrefix+tenantKey {
-		t.Fatalf("kek_id = %q, want %q", kekID, corecrypto.GCPKEKPrefix+tenantKey)
+	if kekID != corecrypto.GCPKEKPrefix+tenantKey+"/cryptoKeyVersions/1" {
+		t.Fatalf("kek_id = %q, want %q", kekID, corecrypto.GCPKEKPrefix+tenantKey+"/cryptoKeyVersions/1")
 	}
 }
 
@@ -613,7 +615,7 @@ func TestRewrapOne_RetriesPastAStaleFirstAttempt(t *testing.T) {
 	).Scan(&kekID); err != nil {
 		t.Fatalf("query kek_id: %v", err)
 	}
-	if kekID != corecrypto.GCPKEKPrefix+tenantKey {
-		t.Fatalf("kek_id = %q, want %q — the secret must still end up under the tenant's new key despite the race", kekID, corecrypto.GCPKEKPrefix+tenantKey)
+	if kekID != corecrypto.GCPKEKPrefix+tenantKey+"/cryptoKeyVersions/1" {
+		t.Fatalf("kek_id = %q, want %q — the secret must still end up under the tenant's new key despite the race", kekID, corecrypto.GCPKEKPrefix+tenantKey+"/cryptoKeyVersions/1")
 	}
 }

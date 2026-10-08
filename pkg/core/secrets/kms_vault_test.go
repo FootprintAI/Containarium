@@ -221,18 +221,18 @@ func TestVaultKMS_RejectsRowFromDifferentBackend(t *testing.T) {
 	}
 }
 
-func TestVaultKMS_RejectsBadDEKSize(t *testing.T) {
+func TestVaultKMS_RejectsEmptyOrOversizedPlaintext(t *testing.T) {
 	srv, _ := newFakeVault(t)
 	defer srv.Close()
 	k, _ := NewVaultKMS(VaultConfig{
 		Address: srv.URL, Token: "root-token", KeyName: "k",
 	})
 
-	for _, badSize := range []int{0, 16, 64} {
+	for _, badSize := range []int{0, MaxWrapPlaintext + 1} {
 		dek := make([]byte, badSize)
 		_, _, err := k.Wrap(context.Background(), dek)
 		if err == nil {
-			t.Fatalf("Wrap with DEK size %d should fail", badSize)
+			t.Fatalf("Wrap with plaintext size %d should fail", badSize)
 		}
 	}
 }
