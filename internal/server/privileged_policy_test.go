@@ -15,6 +15,8 @@ import (
 
 // Phase 3.2 — privileged-Podman policy gate (audit A-HIGH-3).
 
+// resetPrivilegedPolicy clears the process-wide policy cache so each test reads
+// its own environment setting.
 func resetPrivilegedPolicy(t *testing.T) {
 	t.Helper()
 	privilegedPolicy = PrivilegedPolicyAll
@@ -203,6 +205,8 @@ func TestParsePrivilegedPolicy_ValidAndUnset(t *testing.T) {
 	}
 }
 
+// TestParsePrivilegedPolicy_MalformedFailsClosed requires blank and invalid
+// values to return a disabled policy and an error naming the variable.
 func TestParsePrivilegedPolicy_MalformedFailsClosed(t *testing.T) {
 	for _, raw := range malformedPrivilegedPolicyValues {
 		t.Run(fmt.Sprintf("%q", raw), func(t *testing.T) {
@@ -310,6 +314,8 @@ func TestAuthorizePrivilegedPodman_MalformedNeverPrivileged(t *testing.T) {
 	}
 }
 
+// TestAuthorizePrivilegedPodman_UnsetStaysAll preserves privileged access for an
+// unrestricted caller when the policy variable is genuinely absent.
 func TestAuthorizePrivilegedPodman_UnsetStaysAll(t *testing.T) {
 	unsetPrivilegedPolicyEnv(t)
 	resetPrivilegedPolicy(t)
