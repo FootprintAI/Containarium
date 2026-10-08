@@ -35,6 +35,8 @@ import (
 	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/gateway"
 	"github.com/footprintai/containarium/internal/guacamole"
+	"github.com/footprintai/containarium/internal/guardrailpolicy"
+	guardrailpolicypg "github.com/footprintai/containarium/internal/guardrailpolicy/pgstore"
 	"github.com/footprintai/containarium/internal/metrics"
 	"github.com/footprintai/containarium/internal/metrics/platformstats"
 	"github.com/footprintai/containarium/internal/modelgateway"
@@ -635,6 +637,11 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	npServer.SetSignatureStore(NewMemNetworkPolicySignatureStore()) // #661 PR-B; swapped to Postgres below when available
 	pb.RegisterNetworkPolicyServiceServer(grpcServer, npServer)
 	log.Printf("NetworkPolicy service enabled (in-memory store; Phase A)")
+
+	// GuardrailPolicyService (#2368): the admin-owned, cluster-wide guardrail
+	// policy. In-memory until the Postgres pool exists (swapped below).
+	guardrailPolicyServer := NewGuardrailPolicyServer(guardrailpolicy.NewMemoryStore())
+	pb.RegisterGuardrailPolicyServiceServer(grpcServer, guardrailPolicyServer)
 
 	// Register AgentSkillService — agent-as-a-box (Phase 0) + A2A transport
 	// (Phase 1). Reuses the recipe server for box provisioning, the token
@@ -1503,6 +1510,14 @@ skipAppHosting:
 			} else {
 				clusterServer.SetStore(clStore)
 				log.Printf("Managed-cluster persistence enabled (Postgres store)")
+			}
+
+			// Guardrail policy (#2368), independent of the netpol store below.
+			if gpStore, gErr := guardrailpolicypg.New(context.Background(), pool); gErr != nil {
+				log.Printf("Warning: Failed to create Postgres guardrail policy store: %v", gErr)
+			} else {
+				guardrailPolicyServer.SetStore(gpStore)
+				log.Printf("Guardrail policy persistence enabled (Postgres store)")
 			}
 
 			if pgStore, npErr := NewPostgresNetworkPolicyStore(context.Background(), pool); npErr != nil {
@@ -2512,6 +2527,8 @@ skipAppHosting:
 			agentSkillServer.SetAuditStore(auditStore)
 			// Container server logs admin-initiated upgrade operations (#354).
 			containerServer.SetAuditStore(auditStore)
+			// guardrail.policy.set entries (#2368).
+			guardrailPolicyServer.SetAuditStore(auditStore)
 		}
 
 		// Wire Grafana reverse proxy if VictoriaMetrics is configured

@@ -2270,6 +2270,47 @@ func (c *HTTPClient) MigrateToEnvelope(req *pb.MigrateToEnvelopeRequest) (*pb.Mi
 	return out, nil
 }
 
+// GetGuardrailPolicy reads the server-side guardrail policy via HTTP (#2368).
+func (c *HTTPClient) GetGuardrailPolicy() (*pb.GetGuardrailPolicyResponse, error) {
+	out := &pb.GetGuardrailPolicyResponse{}
+	if err := c.guardrailPolicyCall(http.MethodGet, nil, out, "get guardrail policy"); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// SetGuardrailPolicy replaces the server-side guardrail policy via HTTP
+// (admin only).
+func (c *HTTPClient) SetGuardrailPolicy(req *pb.SetGuardrailPolicyRequest) (*pb.SetGuardrailPolicyResponse, error) {
+	body, err := protojson.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("encode request: %w", err)
+	}
+	out := &pb.SetGuardrailPolicyResponse{}
+	if err := c.guardrailPolicyCall(http.MethodPut, body, out, "set guardrail policy"); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *HTTPClient) guardrailPolicyCall(method string, body []byte, out proto.Message, op string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.doRequest(ctx, method, "/v1/guardrail/policy", body)
+	if err != nil {
+		return fmt.Errorf("%s: %w", op, err)
+	}
+	defer drainClose(resp)
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return httpError(bodyBytes, resp.StatusCode, op)
+	}
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(bodyBytes, out); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+	return nil
+}
+
 // httpError extracts a JSON {"error": ...} message from a gateway error body,
 // falling back to the status code.
 func httpError(bodyBytes []byte, statusCode int, op string) error {
