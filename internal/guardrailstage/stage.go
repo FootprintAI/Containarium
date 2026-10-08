@@ -11,7 +11,10 @@
 //   - refuses any ref that does not name a real directory inside the root:
 //     absolute paths, "..", non-clean forms, and any symlink on the ref's own
 //     path, even one that points back inside the root (another tenant's
-//     directory is inside the root too);
+//     directory is inside the root too). The ref is opened one component at
+//     a time and each opened directory must be the inode that was checked,
+//     so swapping a component for a symlink mid-open is refused, not
+//     followed;
 //   - copies the staged regular files into a fresh private directory (the
 //     snapshot). The gate verifies the snapshot and delivers the snapshot, so
 //     the bytes verified and the bytes delivered are the same bytes, however
@@ -19,7 +22,18 @@
 //
 // Opens go through os.Root, so no read can leave the staging root even if
 // the tree is changed while it is being copied. Symlinks inside the dataset
-// are skipped, exactly as guardrail.SubjectDigest skips them.
+// are skipped, exactly as guardrail.SubjectDigest skips them. Files are
+// opened non-blocking and must still be regular files once open, so a file
+// swapped for a FIFO is skipped instead of hanging the snapshot.
+//
+// Hard links are not symlinks: a hard link inside the dataset to a file
+// outside the root is copied. That needs no special handling, because
+// whoever stages can only hard-link a file they can already read (and, with
+// fs.protected_hardlinks, own or write), so it grants them nothing.
+//
+// Errors: ErrBadRef and ErrBadParent name only the caller's ref. Any other
+// error is internal (it may carry daemon-side detail); callers such as the
+// DeployRecipe gate must log it and return a generic message, never echo it.
 package guardrailstage
 
 import (
@@ -30,6 +44,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // ErrNoStagingRoot means the daemon has no staging root configured, so a
@@ -38,6 +53,14 @@ var ErrNoStagingRoot = errors.New("guardrail staging root is not configured")
 
 // ErrBadRef wraps every reason a staging_ref is refused.
 var ErrBadRef = errors.New("staging_ref must name a directory inside the guardrail staging root")
+
+// ErrBadParent means the snapshot's parent directory is inside the staging
+// root, where whoever stages could swap the snapshot after verification.
+var ErrBadParent = errors.New("guardrail snapshot parent must be a daemon-private directory outside the staging root")
+
+// ErrStagingRootUnavailable means the configured root could not be opened
+// (removed or unreadable since New). It never embeds the host path.
+var ErrStagingRootUnavailable = errors.New("guardrail staging root is unavailable")
 
 // Area is a configured staging root.
 type Area struct {
@@ -71,6 +94,22 @@ type Snapshot struct {
 // Remove deletes the snapshot.
 func (s *Snapshot) Remove() error { return os.RemoveAll(s.Dir) }
 
+// testHook, when set by a test, runs at the named point with the name about
+// to be opened. It lets a test change the tree at exactly the instant a
+// race would, deterministically. nil in production.
+var testHook func(point, name string)
+
+const (
+	hookBeforeOpenDir  = "before-open-dir"
+	hookBeforeOpenFile = "before-open-file"
+)
+
+func hook(point, name string) {
+	if testHook != nil {
+		testHook(point, name)
+	}
+}
+
 // validRef is the lexical check: a relative, slash-separated path in clean
 // form with no "..", ".", empty or backslash component.
 func validRef(ref string) error {
@@ -80,33 +119,86 @@ func validRef(ref string) error {
 	return nil
 }
 
+// checkParent refuses a snapshot parent inside the staging root ("" is
+// os.TempDir()). The parent must be daemon-private (or sticky, like /tmp):
+// whoever can rename entries in it could swap the snapshot between
+// verification and delivery.
+func (a *Area) checkParent(parent string) error {
+	if parent == "" {
+		parent = os.TempDir()
+	}
+	p, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrBadParent, err)
+	}
+	r, err := filepath.EvalSymlinks(a.root)
+	if err != nil {
+		return ErrStagingRootUnavailable
+	}
+	if rel, err := filepath.Rel(r, p); err == nil && filepath.IsLocal(rel) || p == r {
+		return ErrBadParent
+	}
+	return nil
+}
+
+// openNoSymlinks opens ref under root one component at a time. Each
+// component must Lstat as a real directory, and the directory then opened
+// must be that same inode: a component swapped for a symlink (even one
+// staying inside the root) between the check and the open is refused.
+func openNoSymlinks(root *os.Root, ref string) (*os.Root, error) {
+	cur := root
+	release := func() {
+		if cur != root {
+			_ = cur.Close()
+		}
+	}
+	for _, part := range strings.Split(ref, "/") {
+		info, err := cur.Lstat(part)
+		if err != nil {
+			release()
+			return nil, fmt.Errorf("%w: %q: %s: %v", ErrBadRef, ref, part, errors.Unwrap(err))
+		}
+		if !info.IsDir() {
+			release()
+			return nil, fmt.Errorf("%w: %q: %s is not a directory (symlinks are refused)", ErrBadRef, ref, part)
+		}
+		hook(hookBeforeOpenDir, part)
+		next, err := cur.OpenRoot(part)
+		if err != nil {
+			release()
+			return nil, fmt.Errorf("%w: %q: %s: %v", ErrBadRef, ref, part, errors.Unwrap(err))
+		}
+		got, err := next.Stat(".")
+		if err != nil || !os.SameFile(info, got) {
+			_ = next.Close()
+			release()
+			return nil, fmt.Errorf("%w: %q: %s changed while it was being opened", ErrBadRef, ref, part)
+		}
+		release()
+		cur = next
+	}
+	return cur, nil
+}
+
 // Snapshot copies the dataset staged at ref into a new directory under
-// parent. On any error nothing is left under parent.
+// parent ("" = os.TempDir()). parent must be daemon-private and outside the
+// staging root. On any error nothing is left under parent.
 func (a *Area) Snapshot(ref, parent string) (*Snapshot, error) {
 	if err := validRef(ref); err != nil {
 		return nil, err
 	}
+	if err := a.checkParent(parent); err != nil {
+		return nil, err
+	}
 	root, err := os.OpenRoot(a.root)
 	if err != nil {
-		return nil, fmt.Errorf("guardrail staging root: %w", err)
+		return nil, ErrStagingRootUnavailable
 	}
 	defer func() { _ = root.Close() }()
 
-	// Every component of ref must be a real directory, not a symlink.
-	parts := strings.Split(ref, "/")
-	for i := range parts {
-		p := strings.Join(parts[:i+1], "/")
-		info, err := root.Lstat(p)
-		if err != nil {
-			return nil, fmt.Errorf("%w: %q: %v", ErrBadRef, ref, err)
-		}
-		if !info.IsDir() {
-			return nil, fmt.Errorf("%w: %q: %s is not a directory (symlinks are refused)", ErrBadRef, ref, p)
-		}
-	}
-	src, err := root.OpenRoot(ref)
+	src, err := openNoSymlinks(root, ref)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %q: %v", ErrBadRef, ref, err)
+		return nil, err
 	}
 	defer func() { _ = src.Close() }()
 
@@ -122,7 +214,7 @@ func (a *Area) Snapshot(ref, parent string) (*Snapshot, error) {
 }
 
 // copyTree copies every directory and regular file under src into dst.
-// Everything else (symlinks, devices, sockets) is skipped.
+// Everything else (symlinks, devices, sockets, FIFOs) is skipped.
 func copyTree(src *os.Root, dst string) error {
 	out, err := os.OpenRoot(dst)
 	if err != nil {
@@ -150,12 +242,23 @@ func copyTree(src *os.Root, dst string) error {
 	})
 }
 
+// copyFile copies one file, re-checking its type on the open handle: the
+// walk's type check is a name lookup, and the name may have been swapped
+// since. O_NONBLOCK keeps an open of a swapped-in FIFO from blocking.
 func copyFile(src, out *os.Root, rel string) error {
-	in, err := src.Open(rel)
+	hook(hookBeforeOpenFile, rel)
+	in, err := src.OpenFile(rel, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = in.Close() }()
+	info, err := in.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return nil
+	}
 	w, err := out.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
