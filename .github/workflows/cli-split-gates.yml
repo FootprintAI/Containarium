@@ -53,7 +53,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: '1.26.7'
+          go-version: '1.26.9'
 
       - name: Run test-cli-split-deps.sh
         run: ./scripts/test-cli-split-deps.sh
@@ -88,7 +88,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: '1.26.7'
+          go-version: '1.26.9'
 
       - name: Build release binaries (make build-all)
         # The real release recipe, minus its proto/web-ui/swagger-ui
@@ -110,7 +110,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: '1.26.7'
+          go-version: '1.26.9'
 
       - name: Build containarium (client)
         run: CGO_ENABLED=0 go build -tags containarium_client -o /dev/null ./cmd/containarium
@@ -145,7 +145,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: '1.26.7'
+          go-version: '1.26.9'
 
       # ./internal/coderun/... joins this lane in #1727. It was in NO lane
       # before — this repo has no `go test ./...` gate (see the note in
