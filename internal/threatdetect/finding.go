@@ -102,6 +102,17 @@ func (e Evidence) Capped() Evidence {
 
 // merged returns e followed by more, for the upsert paths that append a
 // re-fire's evidence onto an open finding's.
+// maxSeverity returns the more severe of a and b. A deduped repeat can only
+// raise an open finding's severity, never lower it: a box that was MEDIUM
+// (tampering undone) and is now HIGH (still permissive) must escalate, while
+// a later quieter pass must not hide that it was once worse.
+func maxSeverity(a, b pb.ThreatSeverity) pb.ThreatSeverity {
+	if b > a {
+		return b
+	}
+	return a
+}
+
 func (e Evidence) merged(more Evidence) Evidence {
 	return Evidence{
 		Flows:   append(append([]FlowEvidence(nil), e.Flows...), more.Flows...),

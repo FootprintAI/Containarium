@@ -119,3 +119,23 @@ func TestFinding_ToProto_ZeroTimeOmitted(t *testing.T) {
 		t.Errorf("LastSeen = %v, want nil for a zero time.Time", got.LastSeen)
 	}
 }
+
+// A deduped repeat may raise an open finding's severity, never lower it.
+func TestMaxSeverity(t *testing.T) {
+	const (
+		unspec = pb.ThreatSeverity_THREAT_SEVERITY_UNSPECIFIED
+		medium = pb.ThreatSeverity_THREAT_SEVERITY_MEDIUM
+		high   = pb.ThreatSeverity_THREAT_SEVERITY_HIGH
+	)
+	for _, c := range []struct{ a, b, want pb.ThreatSeverity }{
+		{medium, high, high},
+		{high, medium, high},
+		{medium, medium, medium},
+		{unspec, medium, medium},
+		{medium, unspec, medium},
+	} {
+		if got := maxSeverity(c.a, c.b); got != c.want {
+			t.Errorf("maxSeverity(%v, %v) = %v, want %v", c.a, c.b, got, c.want)
+		}
+	}
+}

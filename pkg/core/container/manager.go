@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"github.com/footprintai/containarium/pkg/core/sshdpolicy"
 	"io"
 	"log"
 	"os"
@@ -14,6 +13,7 @@ import (
 	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/footprintai/containarium/pkg/core/ospkg"
 	"github.com/footprintai/containarium/pkg/core/ostype"
+	"github.com/footprintai/containarium/pkg/core/sshdpolicy"
 	"github.com/footprintai/containarium/pkg/core/stacks"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	incusapi "github.com/lxc/incus/v7/shared/api"
@@ -461,6 +461,13 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		_ = m.cleanup(containerName)
 		return nil, fmt.Errorf("failed to install packages: %w", err)
 	}
+
+	// Bring the box under the sshd policy at birth (#2424), on the baked
+	// path too (it skips installPackages, but the baked image carries the
+	// drop-in). Without the marker the posture reconciler would read a
+	// tenant edit made before its first pass as "never applied" and
+	// backfill it silently instead of raising a finding.
+	m.markSSHDPolicy(containerName)
 
 	// Make podman workloads reboot-durable (#387). Runs on BOTH the baked
 	// and full paths: the rootful half is already enabled in a baked image
@@ -1556,4 +1563,14 @@ func (m *Manager) ListWithLabels(labelFilter map[string]string) ([]incus.Contain
 	}
 
 	return filtered, nil
+}
+
+// markSSHDPolicy stamps the host-side marker that tells the sshd posture
+// reconciler this box was provisioned under the key-only policy. Best
+// effort: a box without the marker is still key-only, it just gets the
+// reconciler's silent first-pass backfill instead of tamper detection.
+func (m *Manager) markSSHDPolicy(containerName string) {
+	if err := m.incus.SetConfig(containerName, sshdpolicy.MarkerKey, sshdpolicy.MarkerValue); err != nil {
+		log.Printf("[sshd-policy] %s: set %s: %v", containerName, sshdpolicy.MarkerKey, err)
+	}
 }
