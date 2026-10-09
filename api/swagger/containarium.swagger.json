@@ -10831,6 +10831,32 @@
       },
       "description": "ComposeStack is the public-safe metadata for one discovered compose\ndirectory inside a tenant's LXC. Mirrors the agent-box-side struct\nof the same name (internal/agentbox/compose.go).\n\n`running_count` + `total_count` are deliberately NOT a single\nboolean: agents need to distinguish fully-up / partial-degradation\n/ fully-down to decide whether to alert vs. restart vs. ignore.\n\"running\" matches docker compose's State=\"running\" and podman's\nequivalent; \"total\" is every service declared in the compose file\nregardless of state."
     },
+    "ConfigEvidence": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "File the effective value came from, or the directory when the exact\nfile could not be attributed."
+        },
+        "directive": {
+          "type": "string",
+          "description": "Directive name, e.g. \"PasswordAuthentication\"."
+        },
+        "value": {
+          "type": "string",
+          "description": "Effective value at detection time, e.g. \"yes\"."
+        },
+        "remediated": {
+          "type": "boolean",
+          "description": "Whether the platform re-asserted its managed configuration in the\nsame pass (the violation is closed on the stock service, and this\nfinding records that it happened)."
+        },
+        "note": {
+          "type": "string",
+          "description": "Free-text detail, e.g. \"managed drop-in missing\"."
+        }
+      },
+      "description": "ConfigEvidence captures one configuration directive whose effective value\nviolated policy, attached to a posture finding (#2424)."
+    },
     "Connection": {
       "type": "object",
       "properties": {
@@ -12588,9 +12614,16 @@
             "type": "object",
             "$ref": "#/definitions/DenyEvidence"
           }
+        },
+        "configs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/ConfigEvidence"
+          }
         }
       },
-      "description": "Evidence bundles the flow and deny records that triggered a finding.\nCapped by the store to the most recent entries — see FindingStore."
+      "description": "Evidence bundles the flow, deny and configuration records that triggered\na finding. Capped by the store to the most recent entries — see\nFindingStore."
     },
     "ExchangeDelegatedTokenRequest": {
       "type": "object",
@@ -18145,10 +18178,11 @@
         "THREAT_RULE_ID_UNSPECIFIED",
         "THREAT_RULE_ID_BAD_DESTINATION",
         "THREAT_RULE_ID_CROSS_TENANT_FLOW",
-        "THREAT_RULE_ID_DENY_BURST"
+        "THREAT_RULE_ID_DENY_BURST",
+        "THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH"
       ],
       "default": "THREAT_RULE_ID_UNSPECIFIED",
-      "description": "ThreatRuleId identifies which detection rule raised a finding.\n\n - THREAT_RULE_ID_BAD_DESTINATION: Flow to a known-bad destination (e.g. a mining pool).\n - THREAT_RULE_ID_CROSS_TENANT_FLOW: Flow whose source and destination belong to different tenants.\n - THREAT_RULE_ID_DENY_BURST: Burst of policy denies for one tenant within a time window."
+      "description": "ThreatRuleId identifies which detection rule raised a finding.\n\n - THREAT_RULE_ID_BAD_DESTINATION: Flow to a known-bad destination (e.g. a mining pool).\n - THREAT_RULE_ID_CROSS_TENANT_FLOW: Flow whose source and destination belong to different tenants.\n - THREAT_RULE_ID_DENY_BURST: Burst of policy denies for one tenant within a time window.\n - THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH: A box's effective sshd configuration permitted password login, or the\nplatform-managed key-only drop-in had been removed or altered (#2424).\nRaised by the box sshd posture reconciler after it re-asserts the\ndrop-in; the evidence names the offending directive and file."
     },
     "ThreatSeverity": {
       "type": "string",

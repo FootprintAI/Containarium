@@ -62,25 +62,52 @@ type DenyEvidence struct {
 	Count    int64  `json:"count"`
 }
 
-// Evidence bundles the flow and deny records that triggered a finding. It is
-// the named struct written into the security_findings.evidence JSONB
-// column — a storage encoding, never an ad-hoc map.
-type Evidence struct {
-	Flows  []FlowEvidence `json:"flows,omitempty"`
-	Denies []DenyEvidence `json:"denies,omitempty"`
+// ConfigEvidence is one configuration directive whose effective value
+// violated policy (#2424): which file, which directive, what value, and
+// whether the platform re-asserted its managed configuration in the same
+// pass.
+type ConfigEvidence struct {
+	Path       string `json:"path"`
+	Directive  string `json:"directive"`
+	Value      string `json:"value"`
+	Remediated bool   `json:"remediated"`
+	Note       string `json:"note,omitempty"`
 }
 
-// Capped returns a copy of e with Flows and Denies each truncated to the
-// most recent EvidenceCap entries.
+// Evidence bundles the flow, deny and configuration records that triggered
+// a finding. It is the named struct written into the
+// security_findings.evidence JSONB column — a storage encoding, never an
+// ad-hoc map.
+type Evidence struct {
+	Flows   []FlowEvidence   `json:"flows,omitempty"`
+	Denies  []DenyEvidence   `json:"denies,omitempty"`
+	Configs []ConfigEvidence `json:"configs,omitempty"`
+}
+
+// Capped returns a copy of e with each evidence kind truncated to the most
+// recent EvidenceCap entries.
 func (e Evidence) Capped() Evidence {
-	out := Evidence{Flows: e.Flows, Denies: e.Denies}
+	out := Evidence{Flows: e.Flows, Denies: e.Denies, Configs: e.Configs}
 	if len(out.Flows) > EvidenceCap {
 		out.Flows = out.Flows[len(out.Flows)-EvidenceCap:]
 	}
 	if len(out.Denies) > EvidenceCap {
 		out.Denies = out.Denies[len(out.Denies)-EvidenceCap:]
 	}
+	if len(out.Configs) > EvidenceCap {
+		out.Configs = out.Configs[len(out.Configs)-EvidenceCap:]
+	}
 	return out
+}
+
+// merged returns e followed by more, for the upsert paths that append a
+// re-fire's evidence onto an open finding's.
+func (e Evidence) merged(more Evidence) Evidence {
+	return Evidence{
+		Flows:   append(append([]FlowEvidence(nil), e.Flows...), more.Flows...),
+		Denies:  append(append([]DenyEvidence(nil), e.Denies...), more.Denies...),
+		Configs: append(append([]ConfigEvidence(nil), e.Configs...), more.Configs...),
+	}
 }
 
 // FindingState is the lifecycle state of a Finding.
@@ -158,6 +185,17 @@ func (f *Finding) ToProto() *pb.Finding {
 		})
 	}
 
+	configs := make([]*pb.ConfigEvidence, 0, len(f.Evidence.Configs))
+	for _, c := range f.Evidence.Configs {
+		configs = append(configs, &pb.ConfigEvidence{
+			Path:       c.Path,
+			Directive:  c.Directive,
+			Value:      c.Value,
+			Remediated: c.Remediated,
+			Note:       c.Note,
+		})
+	}
+
 	return &pb.Finding{
 		Id:        f.ID,
 		Rule:      f.Rule,
@@ -169,8 +207,9 @@ func (f *Finding) ToProto() *pb.Finding {
 		State:     state,
 		Count:     f.Count,
 		Evidence: &pb.Evidence{
-			Flows:  flows,
-			Denies: denies,
+			Flows:   flows,
+			Denies:  denies,
+			Configs: configs,
 		},
 		FirstSeen: timestampProto(f.FirstSeen),
 		LastSeen:  timestampProto(f.LastSeen),
