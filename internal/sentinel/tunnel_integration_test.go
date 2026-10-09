@@ -130,8 +130,12 @@ func TestTunnelIntegration(t *testing.T) {
 	// 3. Start tunnel client on the "spot VM"
 	// ---------------------------------------------------------------
 
+	// The client's TLS transport is terminated by a test TLS front in front
+	// of the mux.
+	id := newTestTunnelIdentity(t)
 	client := &TunnelClient{
-		SentinelAddr: fmt.Sprintf("127.0.0.1:%d", muxPort),
+		SentinelAddr: startTLSTunnelFront(t, id, fmt.Sprintf("127.0.0.1:%d", muxPort)),
+		SentinelPins: []TunnelPin{id.Pin()},
 		Token:        token,
 		SpotID:       "integration-spot",
 		Ports:        []int{spotDaemonPort, spotHTTPSPort},

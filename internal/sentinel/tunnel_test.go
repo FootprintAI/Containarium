@@ -133,8 +133,12 @@ func TestTunnelEndToEnd(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// 3. Start tunnel client
+	// The client speaks TLS; a test TLS front with a sentinel identity sits
+	// before the tunnel server.
+	id := newTestTunnelIdentity(t)
 	client := &TunnelClient{
-		SentinelAddr: fmt.Sprintf("127.0.0.1:%d", tunnelPort),
+		SentinelAddr: startTLSTunnelFront(t, id, fmt.Sprintf("127.0.0.1:%d", tunnelPort)),
+		SentinelPins: []TunnelPin{id.Pin()},
 		Token:        token,
 		SpotID:       "test-spot",
 		Ports:        []int{echoPort},
@@ -334,8 +338,12 @@ func TestConnMuxWithTunnelClient(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Start tunnel client pointing at the mux port (same as HTTPS)
+	// Reach the mux through a test TLS front that terminates the client's
+	// TLS transport.
+	id := newTestTunnelIdentity(t)
 	client := &TunnelClient{
-		SentinelAddr: fmt.Sprintf("127.0.0.1:%d", muxPort),
+		SentinelAddr: startTLSTunnelFront(t, id, fmt.Sprintf("127.0.0.1:%d", muxPort)),
+		SentinelPins: []TunnelPin{id.Pin()},
 		Token:        token,
 		SpotID:       "mux-spot",
 		Ports:        []int{echoPort},
