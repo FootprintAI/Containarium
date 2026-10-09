@@ -251,6 +251,12 @@ type Manager struct {
 	// silently forget it. Empty means DefaultTunnelTokenStorePath; tests
 	// override via SetTunnelTokenStorePath to use a tmp dir.
 	tunnelTokenStorePath string
+
+	// auditIngestTokenStorePath / auditIngestTokenStoreMu: the per-backend
+	// audit-ingest token file (#2415). Empty path means
+	// DefaultAuditIngestTokenStorePath; tests override it.
+	auditIngestTokenStorePath string
+	auditIngestTokenStoreMu   sync.Mutex
 	// tunnelTokenStoreMu serializes the WHOLE load-modify-save sequence in
 	// persistTunnelToken/unpersistTunnelToken (cloud#999 step 4 review
 	// follow-up): without it, a register racing a deregister (or two
