@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"strings"
@@ -1083,6 +1084,15 @@ func (m *Manager) WriteFile(containerName, path string, content []byte, mode str
 		return real.WriteFile(containerName, path, content, mode)
 	}
 	return fmt.Errorf("WriteFile not supported on this incus backend (mock?)")
+}
+
+// PushFile is WriteFile streamed from content instead of held in memory
+// (the guardrail deploy gate delivers whole datasets this way).
+func (m *Manager) PushFile(containerName, path string, content io.ReadSeeker, mode string) error {
+	if real, ok := m.incus.(*incus.Client); ok {
+		return real.PushFile(containerName, path, content, mode)
+	}
+	return fmt.Errorf("PushFile not supported on this incus backend (mock?)")
 }
 
 // Exec runs a command inside the container. Phase 4.3 uses

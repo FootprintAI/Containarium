@@ -785,17 +785,20 @@ func (c *GRPCClient) GetWorkspaceAccess(name string) (*pb.GetWorkspaceAccessResp
 }
 
 // DeployRecipe provisions a new dedicated container from a recipe via gRPC.
-func (c *GRPCClient) DeployRecipe(recipeID, name, gpu, backendID, pool string, params map[string]string) (*pb.DeployRecipeResponse, error) {
+// guardrailInput is the dataset and attestation for a guardrail-gated recipe
+// (#2368); nil for an ungated one.
+func (c *GRPCClient) DeployRecipe(recipeID, name, gpu, backendID, pool string, params map[string]string, guardrailInput *pb.GuardrailGateInput) (*pb.DeployRecipeResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // image + model pulls can take time
 	defer cancel()
 
 	req := &pb.DeployRecipeRequest{
-		RecipeId:   recipeID,
-		Name:       name,
-		Gpu:        gpu,
-		BackendId:  backendID,
-		Pool:       pool,
-		Parameters: params,
+		RecipeId:       recipeID,
+		Name:           name,
+		Gpu:            gpu,
+		BackendId:      backendID,
+		Pool:           pool,
+		Parameters:     params,
+		GuardrailInput: guardrailInput,
 	}
 	resp, err := c.recipeClient.DeployRecipe(ctx, req)
 	if err != nil {

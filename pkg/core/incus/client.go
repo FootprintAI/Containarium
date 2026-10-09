@@ -2567,9 +2567,15 @@ func (c *Client) GetNetworkSubnet(networkName string) (string, error) {
 
 // WriteFile writes content to a file inside a container
 func (c *Client) WriteFile(containerName, path string, content []byte, mode string) error {
+	return c.PushFile(containerName, path, bytes.NewReader(content), mode)
+}
+
+// PushFile streams content to a file inside a container, so a caller with a
+// large file never has to hold it in memory.
+func (c *Client) PushFile(containerName, path string, content io.ReadSeeker, mode string) error {
 	// Use incus file push functionality via the API
 	args := incus.InstanceFileArgs{
-		Content:   bytes.NewReader(content),
+		Content:   content,
 		WriteMode: "overwrite",
 	}
 

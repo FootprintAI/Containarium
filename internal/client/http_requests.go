@@ -1,6 +1,10 @@
 package client
 
-import pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+import (
+	"encoding/json"
+
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+)
 
 // Request payload types for the REST client.
 //
@@ -242,6 +246,10 @@ type deployRecipeRequest struct {
 	BackendID  string            `json:"backend_id"`
 	Pool       string            `json:"pool"`
 	Parameters map[string]string `json:"parameters"`
+	// GuardrailInput is the protojson of pb.GuardrailGateInput (the
+	// attestation carries enums and bytes, so it is encoded the way the
+	// grpc-gateway decodes it, not by encoding/json).
+	GuardrailInput json.RawMessage `json:"guardrail_input,omitempty"`
 }
 
 // provisionSkillBoxRequest is POST /v1/agent-skills/{skill_id}/provision-box

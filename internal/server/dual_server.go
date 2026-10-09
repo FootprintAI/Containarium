@@ -100,6 +100,13 @@ type DualServerConfig struct {
 	// Authentication settings
 	JWTSecret string
 
+	// GuardrailStagingRoot is the daemon-side directory gated recipe deploys
+	// read staged datasets from (#2368). Empty = gated deploys are refused.
+	GuardrailStagingRoot string
+	// GuardrailSnapshotDir is where the gate makes verification snapshots
+	// ("" = the OS temp dir). Daemon-private, outside the staging root.
+	GuardrailSnapshotDir string
+
 	// Swagger settings
 	SwaggerDir string
 
@@ -1598,6 +1605,11 @@ skipAppHosting:
 		}
 	}
 	guardrailPolicyServer.SetStore(guardrailPolicyStartupStore(postgresConnString != "", guardrailPGStore))
+	// The deploy gate reads the same store (after the swap above).
+	recipeServer.SetGuardrailGate(guardrailPolicyServer.Provider(), config.GuardrailStagingRoot, config.GuardrailSnapshotDir)
+	if config.GuardrailStagingRoot == "" {
+		log.Printf("Guardrail gate: no --guardrail-staging-root; guardrail-gated recipe deploys are refused")
+	}
 
 	// Managed-cluster reconciler (#1414): converges cluster records into
 	// control-plane + worker VMs (pure Decide policy in

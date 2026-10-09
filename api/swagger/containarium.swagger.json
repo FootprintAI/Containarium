@@ -26,6 +26,14 @@
       "description": "NetworkService provides network and firewall management"
     },
     {
+      "name": "GuardrailEngineService",
+      "description": "GuardrailEngineService is implemented by an ENGINE, not by the\nContainarium daemon: the CLI (and later the daemon) is its client.\nStateless by contract — nothing is persisted on the engine side and\nrepeating a request repeats the scan. No REST mapping: this is an\ninternal plug point between two processes on the same side of a trust\nboundary, not a product endpoint."
+    },
+    {
+      "name": "GuardrailPolicyService",
+      "description": "GuardrailPolicyService is the daemon's store for the server-side policy.\nGet: any authenticated caller (a data owner needs the policy to run\n`guardrail apply` against it). Set: admin role only, audited."
+    },
+    {
       "name": "RecipeService",
       "description": "RecipeService provides one-command deployment of declarative GPU/app\nrecipes onto Containarium backends."
     },
@@ -87,14 +95,6 @@
     {
       "name": "EventService",
       "description": "EventService provides real-time event streaming"
-    },
-    {
-      "name": "GuardrailEngineService",
-      "description": "GuardrailEngineService is implemented by an ENGINE, not by the\nContainarium daemon: the CLI (and later the daemon) is its client.\nStateless by contract — nothing is persisted on the engine side and\nrepeating a request repeats the scan. No REST mapping: this is an\ninternal plug point between two processes on the same side of a trust\nboundary, not a product endpoint."
-    },
-    {
-      "name": "GuardrailPolicyService",
-      "description": "GuardrailPolicyService is the daemon's store for the server-side policy.\nGet: any authenticated caller (a data owner needs the policy to run\n`guardrail apply` against it). Set: admin role only, audited."
     },
     {
       "name": "KmsService",
@@ -12075,6 +12075,10 @@
         "async": {
           "type": "boolean",
           "description": "async runs the recipe's post_start in the background: the RPC returns as\nsoon as the container is created (state CREATING) instead of blocking until\npost_start finishes. Set this when the deploy is driven over a connection\nwith a request/idle timeout shorter than the post_start (e.g. a control\nplane reaching a BYOC host through a peer-proxy): a recipe that pulls a\nmulti-GB image can exceed that timeout, which would otherwise abort the\ndeploy mid-pull. The CLI leaves this false so a human sees post_start's\nresult inline. The box becomes fully functional once the background\npost_start completes; poll the container / its workspace access to detect\nreadiness."
+        },
+        "guardrailInput": {
+          "$ref": "#/definitions/GuardrailGateInput",
+          "description": "The dataset and attestation for a recipe with guardrail_gate set.\nRequired for such a recipe (absent is FAILED_PRECONDITION); ignored for\nan ungated one. A gated recipe cannot be deployed async."
         }
       },
       "description": "DeployRecipeRequest provisions a new dedicated container from a recipe."
@@ -13885,6 +13889,100 @@
       "default": "GUARDRAIL_ACTION_UNSPECIFIED",
       "description": "GuardrailAction is what the policy does with a finding of a given kind.\n\n - GUARDRAIL_ACTION_ALLOW: Leave the span as-is; count it.\n - GUARDRAIL_ACTION_REDACT: Replace the span with a stable placeholder token.\n - GUARDRAIL_ACTION_BLOCK: Any finding of this kind fails the gate for the whole subject."
     },
+    "GuardrailAttestation": {
+      "type": "object",
+      "properties": {
+        "subjectSha256": {
+          "type": "string",
+          "description": "SHA-256 over the subject's canonical bytes (for a directory: every\nregular file, by relative path order, path and content)."
+        },
+        "engineId": {
+          "type": "string"
+        },
+        "engineVersion": {
+          "type": "string"
+        },
+        "policyHash": {
+          "type": "string",
+          "description": "SHA-256 over the canonical proto bytes of the GuardrailPolicy applied."
+        },
+        "found": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/GuardrailKindCount"
+          },
+          "description": "Findings on the ORIGINAL subject, per kind, before redaction."
+        },
+        "residual": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/GuardrailKindCount"
+          },
+          "description": "Findings on the REDACTED subject, per kind — what the gate judged."
+        },
+        "coverageGaps": {
+          "type": "string",
+          "format": "int64"
+        },
+        "verdict": {
+          "$ref": "#/definitions/GuardrailVerdict"
+        },
+        "attestedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "keyId": {
+          "type": "string",
+          "description": "Identifies the signing key (SHA-256 of the public key, hex) so a\nverifier holding several tenants' keys picks the right one."
+        },
+        "signature": {
+          "type": "string",
+          "format": "byte",
+          "description": "Ed25519 signature over the canonical proto bytes of this message with\n`signature` cleared."
+        },
+        "kindsScanned": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GuardrailKind"
+          },
+          "description": "The kinds the engine was asked for — and, because an engine that cannot\nscan a requested kind answers FAILED_PRECONDITION rather than scanning\nthe rest, the kinds that were actually covered. A consumer that needs\nSECRET covered checks for it here; a PASS that never looked for a kind\nmust be distinguishable from one that did (#2362). Sorted ascending."
+        }
+      },
+      "description": "GuardrailAttestation is the signed record a subject (a dataset directory,\na file) carries after a guardrail run. A consumer verifies the signature\nwith the signer's PUBLIC key, recomputes subject_sha256 over the bytes it\nactually received, and requires verdict == PASS before using the data.\n\nWhat it proves: that these bytes are the ones the named engine scanned\nunder the named policy, and what the gate concluded. What it does not\nprove: that the engine was any good. The key is held by whoever ran the\nguardrail — the data owner — never by the consumer, otherwise the\nconsumer could attest its own input."
+    },
+    "GuardrailGate": {
+      "type": "object",
+      "properties": {
+        "datasetPath": {
+          "type": "string",
+          "description": "Absolute path in the new box where the verified bytes are placed before\npost_start."
+        },
+        "requireKinds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GuardrailKind"
+          },
+          "description": "Kinds the attestation must have covered, in addition to the server\npolicy's own."
+        }
+      },
+      "description": "GuardrailGate is a recipe's guardrail precondition\n(docs/architecture/guardrail-inbound-and-server-policy.md, \"The gate\")."
+    },
+    "GuardrailGateInput": {
+      "type": "object",
+      "properties": {
+        "stagingRef": {
+          "type": "string",
+          "description": "A directory under the daemon's guardrail staging root (the daemon flag\n--guardrail-staging-root), as a clean relative path. Nothing on the\nplatform stages a dataset there yet: an operator or an out-of-band copy\ndoes (the `ship` verb is a documented gap)."
+        },
+        "attestation": {
+          "$ref": "#/definitions/GuardrailAttestation",
+          "description": "The attestation `containarium guardrail apply` wrote for that directory."
+        }
+      },
+      "description": "GuardrailGateInput is the dataset a gated deploy checks."
+    },
     "GuardrailKind": {
       "type": "string",
       "enum": [
@@ -13896,6 +13994,19 @@
       ],
       "default": "GUARDRAIL_KIND_UNSPECIFIED",
       "description": "GuardrailKind is the family a finding belongs to. Enum, not a string: a\npolicy is keyed by it and a consumer decides by it.\n\n - GUARDRAIL_KIND_PII: Personal data: names, contact details, government identifiers,\nfinancial identifiers, addresses, amounts in a personal context.\n - GUARDRAIL_KIND_SECRET: Non-personal sensitive material: credentials, private keys, connection\nstrings, internal topology. Distinct from PII because the right action\ndiffers (a secret is never tokenized into a persisted vault).\n - GUARDRAIL_KIND_UNSAFE_CODE: Inbound (model output on its way into a box): code shapes that are\ndangerous to run, e.g. download-and-execute, destructive shell,\ncredential exfiltration (docs/architecture/guardrail-inbound-and-server-policy.md).\n - GUARDRAIL_KIND_PROMPT_INJECTION: Inbound: instruction-override signatures embedded in returned content."
+    },
+    "GuardrailKindCount": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/GuardrailKind"
+        },
+        "findings": {
+          "type": "string",
+          "format": "int64"
+        }
+      },
+      "description": "GuardrailKindCount is findings-per-kind, as a typed pair rather than a\nmap so the attestation's canonical bytes are deterministic."
     },
     "GuardrailPolicy": {
       "type": "object",
@@ -13945,6 +14056,16 @@
         }
       },
       "description": "GuardrailTrustedSigner is a signing key an admin registered. A verifier\ntrusts these keys, never a key a deploy request carries."
+    },
+    "GuardrailVerdict": {
+      "type": "string",
+      "enum": [
+        "GUARDRAIL_VERDICT_UNSPECIFIED",
+        "GUARDRAIL_VERDICT_PASS",
+        "GUARDRAIL_VERDICT_FAIL"
+      ],
+      "default": "GUARDRAIL_VERDICT_UNSPECIFIED",
+      "description": "GuardrailVerdict is the gate's answer for one subject.\n\n - GUARDRAIL_VERDICT_PASS: Residual findings within policy and no coverage gaps."
     },
     "HeartbeatRequest": {
       "type": "object",
@@ -15901,6 +16022,10 @@
         "modelGatewayProvider": {
           "type": "string",
           "description": "When non-empty, the daemon brokers this recipe's model calls through the\nmanaged model-gateway for the named provider (e.g. \"gemini-openai\"): it\nmints a scoped, revocable gateway token and exports\nCONTAINARIUM_MODEL_GATEWAY_URL + CONTAINARIUM_GATEWAY_TOKEN into post_start,\nso the box uses the platform key (metered, never leaked) instead of one the\nuser supplies. Inert when the daemon holds no key for the provider — the\nbox then comes up unconfigured (self-hosted default)."
+        },
+        "guardrailGate": {
+          "$ref": "#/definitions/GuardrailGate",
+          "description": "When set, every deploy of this recipe is gated on a guardrail\nattestation (#2368): DeployRecipe verifies the dataset the request\nstages against the server guardrail policy and its trusted signers\nBEFORE the container is created, copies exactly the verified bytes to\ndataset_path, and only then runs post_start. The recipe decides whether\na gate applies; a caller cannot opt out by leaving guardrail_input out."
         }
       },
       "description": "Recipe is a declarative definition of a GPU/app workload that Containarium\ncan provision as a new dedicated container. The container is an LXC system\ncontainer; the recipe's image runs inside it via Podman (post_start),\nmirroring how the kubeflow stack runs k3s inside an LXC."

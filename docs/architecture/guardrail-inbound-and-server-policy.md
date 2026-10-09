@@ -532,6 +532,7 @@ from the existing fixtures); a fake container backend for the gate.
 | **Datasets `post_start` downloads itself** get past the gate | The gate checks what the deploy request stages, not what the workload later fetches | The `ship` verb and a recipe convention that forbids fetching data after the gate (an open item in `guardrail.md`) |
 | **No platform path to stage a dataset on the daemon host** | `staging_ref` assumes an operator or `ship` put it there; a remote control plane cannot yet | The `ship` verb |
 | **Dataset read-only in the box** | Recipes have no read-only mount field | A typed recipe field, separate change |
+| **The verification snapshot is unbounded in size and file count** | By decision: there are no byte or file-count limits on a staged dataset. Capacity is the daemon's provisioned storage (point `--guardrail-snapshot-dir` at it; a full disk refuses the deploy with `RESOURCE_EXHAUSTED` and creates no box). Delivery into the box streams each file, so a large file costs disk, not daemon memory | Usage is controlled by rate limiting the guardrail APIs (#2404), not by a size cap |
 | **Reference engine is not a production detector** | Unchanged from `guardrail.md` | A production engine behind the same `Scan` contract |
 | **Gateway availability for scanned tenants** | Fail-closed is the decision (Q10) | Engine redundancy; the audited break-glass is clearing the inbound rules |
 
