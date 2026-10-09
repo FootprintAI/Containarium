@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.101.0-rc.1] - 2026-10-09
+
+_Pre-release for the dev rung of the managed backup encryption sprint (#2406). The final 0.101.0 is cut once the dev
+verification pass clears; its notes fold this section in._
+
 ### Added
 
 - Guardrail inbound foundations (#2367, slice A; the model-gateway enforcement is a later slice, so nothing is
@@ -17,6 +22,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gap, engine error, over limit, policy unavailable) with `DecideInbound`, so a caller gets a reason it can audit
   rather than a bare allow or block. The `Scan` RPC is unchanged and the outbound CLI still asks only for PII and
   SECRET. The reference engine's rules version changes, so new attestations name a new `rules@...` version.
+- **Managed backup key mode** (#2402). `backup create --key-mode managed|both|age-recipient`: in `managed` mode the
+  daemon generates a fresh age identity per backup, wraps it through the configured KMS client
+  (`CONTAINARIUM_BACKUP_KMS_KEY_NAME`; GCP, AWS, Vault or the in-process test backend), and records `wrapped_key`,
+  `kek_id` (the exact KMS key version that wrapped it) and `key_mode` on the backup record. `both` also encrypts to
+  the `--age-recipient`. The `.meta.json` sidecar is uploaded next to the dump on GCS and removed with it on prune, and
+  the plaintext identity never touches the host disk. Design: managed backup encryption (cloud-side design doc).
+- **Hook dumps with a declared format** (#2405). `backup create --hook-format pg_custom` (new `BackupRecord.hook_format`)
+  declares that a `--hook`'s output is a `pg_dump -Fc` archive, so `backup verify` runs the full check set on it
+  (restore into the throwaway target, relation count from `pg_restore --list`) instead of refusing the stream as opaque.
+  Undeclared hook output stays `OPAQUE` and is refused as before.
+- **Restore and verify with the managed key** (#2403). `backup restore --managed --latest --user <tenant> --database <db>
+  --target <tenant>-container` and `backup verify --managed`: the CLI and the `restore_backup` / `verify_backup` MCP
+  tools unwrap the record's wrapped key with the operator's own KMS credentials (`CONTAINARIUM_KMS_BACKEND=gcp` plus
+  `CONTAINARIUM_GCP_KMS_TOKEN` or `_TOKEN_FILE`; every unwrap is a KMS `Decrypt` audited under that principal), pick
+  the newest record for a tenant and database, and restore into a named target container (`RestoreBackupRequest.target_container`);
+  the server derives the target's tenant from the container name and authorizes it. New package `internal/backupkey`.
+  The client binary still links no Postgres driver.
+- **Coding-tool egress policy** (#2378): `CodingToolEgressPolicyService` (admin-only `GET`/`PUT`, a required `mode`),
+  `containarium code egress-policy get|set|delete` and the `code_egress_policy` MCP tool. The policy logic is the pure
+  package `internal/codeegress`.
+- **Server-side guardrail policy** (#2368, B1): `GuardrailPolicyService` (`GET`/`PUT /v1/guardrail/policy`; `Get` is
+  open to any authenticated caller, `Set` is admin-only; Postgres-backed, fails closed when the store is unavailable,
+  in-memory without a database), `containarium guardrail policy get|set`, and the read-only `guardrail_policy_get` MCP
+  tool. Design: `docs/architecture/guardrail-inbound-and-server-policy.md`.
+- **Guardrail staging area** (#2368, C2): `internal/guardrailstage` snapshots a `staging_ref` under the daemon's
+  staging root into a private `0700` directory before the gate verifies it, refusing any ref that could leave the root
+  (absolute, `..`, non-clean, or through a symlink) and skipping symlinks inside the dataset, so the bytes verified are
+  the bytes delivered.
+- **TTL-aware dual-stack domain resolver with rotation overlap** (#2379): network-policy domain rules refresh on the
+  record's TTL (capped at 60s), carry A and AAAA addresses, and keep the previous set for two refresh intervals after a
+  rotation; a failed lookup keeps the last good set. `internal/hostcheck` gains the egress prerequisite checks
+  (kernel >= 6.6, cgroup v2, `cgroup_skb` attach).
 
 ### Changed
 
@@ -33,6 +70,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `GuardrailEngineService.Scan` now refuses a request that names a kind the engine has no rules for, with
   `FAILED_PRECONDITION`. Before, the engine skipped that kind without saying so and returned a clean result for a
   kind it never looked at.
+- Release tooling: a tag with a pre-release suffix (`v0.101.0-rc.1`) is published as a GitHub pre-release, pushes
+  only its exact image tag (the `latest`, `latest-stable` and minor-series tags keep pointing at the newest full
+  release), and does not publish to PyPI. `releases/latest`, and so the daemon's update check and the host install
+  path, keep serving the newest full release; an rc is installed on the dev rung by exact tag only.
+- Toolchain: Go 1.26.9 and `golang.org/x/net` v0.60.0 (#2412), clearing the govulncheck advisories GO-2026-6604 to
+  GO-2026-6617 that had turned the lane red for every PR.
 
 ### Fixed
 
