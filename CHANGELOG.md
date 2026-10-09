@@ -48,6 +48,15 @@ verification pass clears; its notes fold this section in._
   `--guardrail-staging-root` and `--guardrail-snapshot-dir` (daemon-private, outside the staging root; default the OS
   temp dir). A present but empty `guardrail_gate:` in a recipe, or an unknown key under it, is refused at load. Nothing on the platform
   stages a dataset yet (the `ship` verb is a documented gap), and no built-in recipe is gated.
+
+- OpenVAS (Greenbone) pentest module (#2426, scanner side). `internal/pentest` gains an `openvas` module that drives
+  a dedicated scanner box through `gvm-cli` and imports results into the existing findings store, with CVSS mapped
+  to the pentest severity scale. Scanning is opt-in per container (`CONTAINARIUM_OPENVAS_OPT_IN`; empty scans
+  nothing), uses the "Full and fast" config that excludes dangerous NVTs, runs at most two tasks at once, and stops
+  a scan after two hours. Findings never feed auto-quarantine. Owner notification and the default-on policy are
+  tracked separately; the opt-in list is not yet persisted per box, and feed age and last-run status are not yet in
+  the API. See `docs/OPENVAS-SCANNING.md`.
+
 - Guardrail inbound foundations (#2367, slice A; the model-gateway enforcement is a later slice, so nothing is
   deployed behaviour yet). `GuardrailKind` gains `UNSAFE_CODE` and `PROMPT_INJECTION`, and the in-tree reference
   engine ships text-shape rules for them: `DOWNLOAD_EXECUTE`, `DESTRUCTIVE_SHELL` and `CREDENTIAL_EXFIL` for unsafe
