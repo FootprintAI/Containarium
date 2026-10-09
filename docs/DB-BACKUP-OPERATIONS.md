@@ -169,6 +169,56 @@ The two compose: `--hook … --age-recipient …` captures an opaque hook
 stream and encrypts it. Plaintext `pg_dump` backups are byte-for-byte
 unchanged when neither flag is given.
 
+### C. Managed keys: a KMS-wrapped per-backup identity (#2402)
+
+A user-held recipient has one failure mode nothing above can see: the
+backup uploads, verifies, and the one person holding the identity has
+lost it. Managed key mode puts custody of the key under a KMS the
+operator controls, without ever giving the daemon the ability to read a
+backup.
+
+```
+# daemon host, alongside the existing CONTAINARIUM_KMS_BACKEND=gcp config
+CONTAINARIUM_BACKUP_KMS_KEY_NAME=projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>
+```
+
+With that set, every `backup create`:
+
+1. generates a fresh age identity for this one backup;
+2. encrypts the dump to it — and, when a recipient also resolves
+   (`--age-recipient` or the registered secret), to that recipient too,
+   in the same `.dump.age` file, so **either** identity opens it;
+3. wraps the identity's secret with the KMS key (`Encrypt` only) and
+   stores `wrapped_key`, `kek_id` (the exact key *version* used) and
+   `key_mode` (`managed` or `both`) on the record;
+4. for `--dest gcs`, uploads the sidecar `<id>.meta.json` next to the
+   dump, so the bucket alone — dump plus wrapped key — restores after a
+   host loss.
+
+The host identity needs only the KMS *encrypter* role on that key. The
+daemon can wrap but cannot unwrap: `backup restore` and `backup verify`
+still take `--age-identity-file`, and whoever runs them first unwraps
+`wrapped_key` under their own KMS credentials (`gcloud kms decrypt`, or
+the CLI path that follows in #2403). Every unwrap is a KMS data-access
+audit event naming the principal and the key version.
+
+- **Nothing is silent.** A KMS failure fails the backup — no file, no
+  sidecar, no upload, no fallback to plaintext or to the recipient alone.
+  A set `CONTAINARIUM_BACKUP_KMS_KEY_NAME` the daemon cannot load (backend
+  not `gcp`, bad name, missing credentials) is a startup error, not a
+  warning. `--key-mode managed` on a daemon with no key is refused.
+- **`--key-mode`** picks explicitly: `managed`, `both` (needs a
+  recipient), or `age-recipient` to opt one backup out of wrapping.
+  Omitted, the daemon default is `managed`, or `both` when a recipient
+  resolves. Without a configured key, behaviour is exactly sections A/B.
+- **Retention**: `backup prune` and `backup delete` remove the dump
+  object first, then its sidecar; a sidecar delete failure is reported
+  in the prune result, not swallowed. Records written before this
+  existed have no bucket sidecar, which is not a failure.
+- **Key destruction**: `kek_id` is a `cryptoKeyVersions/<n>` resource
+  name on purpose — before destroying a key version, list backups and
+  check none still carry it.
+
 ### Self-registering a recipient for scheduled backups (#1836)
 
 A scheduled backup has no operator present to type `--age-recipient` on
@@ -506,5 +556,6 @@ rather than loading corrupt data.
 - **Restorability**: `backup verify` — a restore test against a throwaway
   target; last-verified state shows in `backup list`
 - **Host backup dir**: `/var/lib/containarium/backups` (override with `CONTAINARIUM_BACKUP_DIR`)
+- **Managed keys**: `CONTAINARIUM_BACKUP_KMS_KEY_NAME=<CryptoKey resource name>` (with `CONTAINARIUM_KMS_BACKEND=gcp`) wraps a per-backup identity; `backup create --key-mode managed|both|age-recipient` (#2402). GCS backups then carry their sidecar in the bucket.
 - **GCS requirement**: the daemon host needs `gcloud` on `PATH`; without it the daemon serves LOCAL backups and rejects GCS with a clear error
 - **Engine**: PostgreSQL (v1)

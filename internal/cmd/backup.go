@@ -89,6 +89,39 @@ func engineLabel(e pb.BackupEngine) string {
 	}
 }
 
+// parseKeyMode maps the --key-mode flag to the typed enum (#2402). Empty
+// is UNSPECIFIED: the daemon's default, never a client-side guess.
+func parseKeyMode(s string) (pb.BackupKeyMode, error) {
+	switch s {
+	case "":
+		return pb.BackupKeyMode_BACKUP_KEY_MODE_UNSPECIFIED, nil
+	case "age-recipient":
+		return pb.BackupKeyMode_BACKUP_KEY_MODE_AGE_RECIPIENT, nil
+	case "managed":
+		return pb.BackupKeyMode_BACKUP_KEY_MODE_MANAGED, nil
+	case "both":
+		return pb.BackupKeyMode_BACKUP_KEY_MODE_BOTH, nil
+	default:
+		return pb.BackupKeyMode_BACKUP_KEY_MODE_UNSPECIFIED,
+			fmt.Errorf("invalid --key-mode %q (expected 'age-recipient', 'managed' or 'both')", s)
+	}
+}
+
+// keyModeLabel renders a key mode for human output, in the --key-mode
+// vocabulary so what `backup get` shows is what `backup create` takes.
+func keyModeLabel(m pb.BackupKeyMode) string {
+	switch m {
+	case pb.BackupKeyMode_BACKUP_KEY_MODE_AGE_RECIPIENT:
+		return "age-recipient"
+	case pb.BackupKeyMode_BACKUP_KEY_MODE_MANAGED:
+		return "managed"
+	case pb.BackupKeyMode_BACKUP_KEY_MODE_BOTH:
+		return "both"
+	default:
+		return "unspecified"
+	}
+}
+
 func destLabel(d pb.BackupDestination) string {
 	switch d {
 	case pb.BackupDestination_BACKUP_DESTINATION_LOCAL:

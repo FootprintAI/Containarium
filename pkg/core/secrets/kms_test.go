@@ -64,17 +64,19 @@ func TestInProcKMS_RejectsWrongKEKID(t *testing.T) {
 	}
 }
 
-func TestInProcKMS_RejectsWrongDEKSize(t *testing.T) {
+// Wrap takes any small secret — a 32-byte DEK or a backup key identity
+// string (#2402) — but never nothing, and never more than the smallest
+// backend can carry.
+func TestInProcKMS_RejectsEmptyOrOversizedPlaintext(t *testing.T) {
 	kms, _ := NewInProcKMS(makeMasterKey(t))
 	cases := [][]byte{
 		nil,
-		make([]byte, 16), // half size
-		make([]byte, 64), // double size
+		make([]byte, MaxWrapPlaintext+1),
 	}
 	for _, c := range cases {
 		_, _, err := kms.Wrap(context.Background(), c)
 		if err == nil {
-			t.Fatalf("Wrap should reject DEK of size %d", len(c))
+			t.Fatalf("Wrap should reject plaintext of size %d", len(c))
 		}
 	}
 }
