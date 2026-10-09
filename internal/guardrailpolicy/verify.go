@@ -40,6 +40,25 @@ var (
 // DeployRecipe gate call it, so the two cannot disagree on what "verified"
 // means.
 func VerifyAttestation(att *pb.GuardrailAttestation, server *pb.ServerGuardrailPolicy, dir string, require []pb.GuardrailKind) (*pb.GuardrailTrustedSigner, error) {
+	signer, err := VerifyClaims(att, server, require)
+	if err != nil {
+		return nil, err
+	}
+	got, err := guardrail.SubjectDigest(dir)
+	if err != nil {
+		return nil, err
+	}
+	if got != att.GetSubjectSha256() {
+		return nil, fmt.Errorf("%w (got %s, attested %s): the bytes changed after attestation", ErrDigestMismatch, shortHex(got), shortHex(att.GetSubjectSha256()))
+	}
+	return signer, nil
+}
+
+// VerifyClaims is every check of VerifyAttestation except the digest: it
+// needs only the attestation and the server policy, not the bytes. A caller
+// may run it first to refuse a bad attestation cheaply, but it proves nothing
+// about any data; VerifyAttestation must still be the check that accepts.
+func VerifyClaims(att *pb.GuardrailAttestation, server *pb.ServerGuardrailPolicy, require []pb.GuardrailKind) (*pb.GuardrailTrustedSigner, error) {
 	if server == nil || server.GetPolicy() == nil {
 		return nil, ErrNoServerPolicy
 	}
@@ -72,13 +91,6 @@ func VerifyAttestation(att *pb.GuardrailAttestation, server *pb.ServerGuardrailP
 	required := append(guardrail.KindsFor(server.GetPolicy()), require...)
 	if err := guardrail.VerifyCoverage(att, required); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrKindNotCovered, err)
-	}
-	got, err := guardrail.SubjectDigest(dir)
-	if err != nil {
-		return nil, err
-	}
-	if got != att.GetSubjectSha256() {
-		return nil, fmt.Errorf("%w (got %s, attested %s): the bytes changed after attestation", ErrDigestMismatch, shortHex(got), shortHex(att.GetSubjectSha256()))
 	}
 	return signer, nil
 }

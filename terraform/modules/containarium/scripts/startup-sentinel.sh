@@ -276,6 +276,39 @@ reconcile_sshpiper_anon_service() {
 
 reconcile_sshpiper_anon_service
 
+# SSH session sink rotation + retention (#2415, ISO 27001 A.8.15).
+# The sshpiperd ssh-session-plugin appends one JSONL record per accepted/closed
+# session to this file; the shipper (inside `containarium sentinel`) copies each
+# record into the owning backend's tamper-evident audit chain. This stanza only
+# bounds the LOCAL copy: without it the file grows without limit and no
+# retention period can be stated.
+#
+#  - `create` + a SIGHUP to the plugin (which reopens its sink). NOT
+#    copytruncate: that loses records written between the copy and the
+#    truncate, and replaces no inode, so the shipper could not tell the file
+#    had rotated.
+#  - delaycompress keeps the just-rotated file (.1) uncompressed for one more
+#    cycle, which is the file the shipper reads to finish its tail.
+#  - The pkill pattern is ANCHORED: sshpiperd's own command line contains the
+#    plugin's, and it must not receive the signal.
+#  - Retention = `rotate N` with `daily`, i.e. N days. Set via the Terraform
+#    variable ssh_session_log_retention_days (default 90).
+cat > /etc/logrotate.d/containarium-ssh-sessions <<'LOGROTATE_EOF'
+/var/log/containarium/ssh-sessions.jsonl {
+    daily
+    rotate ${ssh_session_log_retention_days}
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0600 root root
+    postrotate
+        pkill -HUP -f '^/usr/local/bin/containariumd? sentinel ssh-session-plugin' || true
+    endscript
+}
+LOGROTATE_EOF
+chmod 0644 /etc/logrotate.d/containarium-ssh-sessions
+
 # Periodic reconcile timer: re-runs reconcile_sshpiper_service every 6h so a
 # terraform-side tuning change reaches this sentinel without waiting for a
 # reboot/recreation (issue #933).

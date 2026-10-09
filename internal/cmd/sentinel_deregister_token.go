@@ -3,15 +3,11 @@
 package cmd
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
-	"time"
 
-	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/config"
 	"github.com/footprintai/containarium/internal/sentinel"
 	"github.com/spf13/cobra"
@@ -22,6 +18,8 @@ var (
 	sentinelDeregisterTokenToken       string
 	sentinelDeregisterTokenTokenPrefix string
 	sentinelDeregisterTokenSecret      string
+	sentinelDeregisterTokenKind        = sentinelTokenKindTunnelJoin
+	sentinelDeregisterTokenBackend     string
 )
 
 var sentinelDeregisterTokenCmd = &cobra.Command{
@@ -77,6 +75,9 @@ func init() {
 	sentinelDeregisterTokenCmd.Flags().StringVar(&sentinelDeregisterTokenTokenPrefix, "token-prefix", "", `Host-id prefix to revoke every token under, e.g. "<host-id>." (must end with ".")`)
 	sentinelDeregisterTokenCmd.Flags().StringVar(&sentinelDeregisterTokenSecret, "secret", os.Getenv(config.EnvSentinelAdminSecret), "Sentinel admin secret (defaults to $CONTAINARIUM_SENTINEL_ADMIN_SECRET)")
 
+	sentinelDeregisterTokenCmd.Flags().Var(&sentinelDeregisterTokenKind, "kind", `Which credential to remove: "tunnel-join" (default) or "audit-ingest" (a backend's SSH session shipper token, #2415)`)
+	sentinelDeregisterTokenCmd.Flags().StringVar(&sentinelDeregisterTokenBackend, "backend", "", "Backend id whose audit-ingest token to remove (required for --kind audit-ingest)")
+
 	_ = sentinelDeregisterTokenCmd.MarkFlagRequired("url")
 }
 
@@ -84,41 +85,45 @@ func runSentinelDeregisterToken(cmd *cobra.Command, args []string) error {
 	if sentinelDeregisterTokenSecret == "" {
 		return fmt.Errorf("sentinel admin secret is required — pass --secret or set CONTAINARIUM_SENTINEL_ADMIN_SECRET")
 	}
-	if sentinelDeregisterTokenToken == "" && sentinelDeregisterTokenTokenPrefix == "" {
-		return fmt.Errorf("pass exactly one of --token or --token-prefix")
-	}
-	if sentinelDeregisterTokenToken != "" && sentinelDeregisterTokenTokenPrefix != "" {
-		return fmt.Errorf("pass exactly one of --token or --token-prefix, not both")
-	}
 
-	body, err := json.Marshal(sentinel.TunnelTokenDeregisterRequest{
-		Token:       sentinelDeregisterTokenToken,
-		TokenPrefix: sentinelDeregisterTokenTokenPrefix,
-	})
+	var (
+		endpoint string
+		body     []byte
+		err      error
+	)
+	switch sentinelDeregisterTokenKind {
+	case sentinelTokenKindAuditIngest:
+		if sentinelDeregisterTokenBackend == "" {
+			return fmt.Errorf("--backend is required with --kind audit-ingest")
+		}
+		if sentinelDeregisterTokenToken != "" || sentinelDeregisterTokenTokenPrefix != "" {
+			return fmt.Errorf("--token/--token-prefix do not apply to --kind audit-ingest (it removes the --backend's token)")
+		}
+		endpoint = sentinelDeregisterTokenSentinelURL + "/sentinel/audit-ingest-tokens"
+		body, err = json.Marshal(sentinel.AuditIngestTokenDeregisterRequest{BackendID: sentinelDeregisterTokenBackend})
+	default: // sentinelTokenKindTunnelJoin
+		if sentinelDeregisterTokenBackend != "" {
+			return fmt.Errorf("--backend applies only to --kind audit-ingest")
+		}
+		if sentinelDeregisterTokenToken == "" && sentinelDeregisterTokenTokenPrefix == "" {
+			return fmt.Errorf("pass exactly one of --token or --token-prefix")
+		}
+		if sentinelDeregisterTokenToken != "" && sentinelDeregisterTokenTokenPrefix != "" {
+			return fmt.Errorf("pass exactly one of --token or --token-prefix, not both")
+		}
+		endpoint = sentinelDeregisterTokenSentinelURL + "/sentinel/tunnel-tokens"
+		body, err = json.Marshal(sentinel.TunnelTokenDeregisterRequest{
+			Token:       sentinelDeregisterTokenToken,
+			TokenPrefix: sentinelDeregisterTokenTokenPrefix,
+		})
+	}
 	if err != nil {
 		return err
 	}
 
-	endpoint := sentinelDeregisterTokenSentinelURL + "/sentinel/tunnel-tokens"
-	req, err := http.NewRequest(http.MethodDelete, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("build request: %w", err)
+	if err := sendSentinelAdminRequest(http.MethodDelete, endpoint, sentinelDeregisterTokenSecret, body); err != nil {
+		return err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	auth.SignSentinelRequest(req, []byte(sentinelDeregisterTokenSecret))
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("DELETE %s: %w", endpoint, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("sentinel returned %d: %s", resp.StatusCode, string(respBody))
-	}
-
 	fmt.Fprintf(cmd.OutOrStdout(), "token deregistered\n")
 	return nil
 }

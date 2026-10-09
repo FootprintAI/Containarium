@@ -132,6 +132,12 @@ func buildBinaryServerMux(binaryPath string, manager *Manager) *http.ServeMux {
 	// handler's own method check above. See TunnelTokenDeregisterHandler.
 	mux.Handle("DELETE /sentinel/tunnel-tokens", auth.SentinelHMACMiddleware(manager.adminSecret, manager.TunnelTokenDeregisterHandler()))
 
+	// Per-backend audit-ingest tokens for the SSH session shipper (#2415).
+	// Admin-secret gated like tunnel-token registration: letting the
+	// sentinel append to a backend's audit chain is an authority decision.
+	mux.Handle("/sentinel/audit-ingest-tokens", auth.SentinelHMACMiddleware(manager.adminSecret, manager.AuditIngestTokenRegisterHandler()))
+	mux.Handle("DELETE /sentinel/audit-ingest-tokens", auth.SentinelHMACMiddleware(manager.adminSecret, manager.AuditIngestTokenDeregisterHandler()))
+
 	// Cloud pushes the authoritative BYOC public-ingress bindings
 	// (subdomain → tunnel host) here. Gated by the admin secret (an
 	// authority decision, like tunnel-token registration) — never the
