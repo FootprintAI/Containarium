@@ -69,7 +69,13 @@ jobs:
             echo "image=${base}"
             echo "version=v${version}"
             echo "minor=${minor}"
-            echo "tags=${base}:v${version},${base}:${minor},${base}:latest-stable"
+            # A pre-release tag (0.101.0-rc.1) pushes only its exact tag:
+            # the moving tags keep pointing at the newest full release.
+            case "$version" in
+              *-*) tags="${base}:v${version}" ;;
+              *)   tags="${base}:v${version},${base}:${minor},${base}:latest-stable" ;;
+            esac
+            echo "tags=${tags}"
             echo "scan_ref=${base}:v${version}"
           } >> "$GITHUB_OUTPUT"
 
@@ -147,7 +153,13 @@ jobs:
           minor="v$(echo "$version" | cut -d. -f1-2)"
           base="ghcr.io/footprintai/containarium-sshpiper"
           {
-            echo "tags=${base}:v${version},${base}:${minor},${base}:latest-stable"
+            # A pre-release tag (0.101.0-rc.1) pushes only its exact tag:
+            # the moving tags keep pointing at the newest full release.
+            case "$version" in
+              *-*) tags="${base}:v${version}" ;;
+              *)   tags="${base}:v${version},${base}:${minor},${base}:latest-stable" ;;
+            esac
+            echo "tags=${tags}"
             echo "scan_ref=${base}:v${version}"
           } >> "$GITHUB_OUTPUT"
 
@@ -218,7 +230,13 @@ jobs:
           minor="v$(echo "$version" | cut -d. -f1-2)"
           base="ghcr.io/footprintai/containarium-agent-box"
           {
-            echo "tags=${base}:v${version},${base}:${minor},${base}:latest-stable"
+            # A pre-release tag (0.101.0-rc.1) pushes only its exact tag:
+            # the moving tags keep pointing at the newest full release.
+            case "$version" in
+              *-*) tags="${base}:v${version}" ;;
+              *)   tags="${base}:v${version},${base}:${minor},${base}:latest-stable" ;;
+            esac
+            echo "tags=${tags}"
             echo "scan_ref=${base}:v${version}"
           } >> "$GITHUB_OUTPUT"
 

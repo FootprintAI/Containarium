@@ -411,6 +411,14 @@ message RestoreBackupRequest {
   // for an encrypted record; the daemon refuses the restore without it
   // because it holds no decryption key of its own.
   string age_identity = 4;
+
+  // Container to restore into, by its container name
+  // ("<username>-container"). Empty restores into the backup's own source
+  // container, in place (#2403). The caller must be authorized for the
+  // target's tenant as well as the backup's. A hook record declared
+  // HOOK_FORMAT_PG_CUSTOM can only be restored this way, into a target
+  // other than its source (#2405).
+  string target_container = 5;
 }
 
 message RestoreBackupResponse {

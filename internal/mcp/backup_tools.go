@@ -19,7 +19,7 @@ import (
 // endpoint the CLI's `containarium backup` subcommands call (the generated
 // BackupService gateway). No agent-only code path.
 func backupTools() []Tool {
-	return []Tool{
+	tools := []Tool{
 		{
 			Name: "create_backup",
 			Description: "Back up a tenant's database off-host. Runs pg_dump inside " +
@@ -119,7 +119,7 @@ func backupTools() []Tool {
 				"properties": map[string]interface{}{
 					"id": map[string]interface{}{
 						"type":        "string",
-						"description": "Backup ID to restore (see list_backups).",
+						"description": "Backup ID to restore (see list_backups). Omit with latest.",
 					},
 					"clean": map[string]interface{}{
 						"type":        "boolean",
@@ -133,8 +133,11 @@ func backupTools() []Tool {
 						"type":        "string",
 						"description": "Path (on the MCP host) to the age identity file (AGE-SECRET-KEY-1...) for a backup created with age_recipient. Read from the file so the private key never appears in tool arguments; used for this one call, never stored.",
 					},
+					"target": map[string]interface{}{
+						"type":        "string",
+						"description": "Container to restore into, <username>-container (default: the backup's own container). A pg_custom hook backup restores only into a target other than its source. Mirrors --target.",
+					},
 				},
-				"required": []string{"id"},
 			},
 			Handler: handleRestoreBackup,
 		},
@@ -155,7 +158,7 @@ func backupTools() []Tool {
 				"properties": map[string]interface{}{
 					"id": map[string]interface{}{
 						"type":        "string",
-						"description": "Backup ID to verify (see list_backups).",
+						"description": "Backup ID to verify (see list_backups). Omit with latest.",
 					},
 					"target_username": map[string]interface{}{
 						"type":        "string",
@@ -170,11 +173,21 @@ func backupTools() []Tool {
 						"description": "Path (on the MCP host) to the age identity file (AGE-SECRET-KEY-1...) for a backup created with age_recipient. Required to verify an encrypted record at all; the platform holds no decryption key. A WRONG identity is reported as a failed check, not a tool error — that is exactly the gap this tool closes: a backup can report success while being encrypted to a key nobody holds, and only an attempted decrypt reveals that. Read from the file so the private key never appears in tool arguments; used for this one call, never stored.",
 					},
 				},
-				"required": []string{"id", "target_username"},
+				"required": []string{"target_username"},
 			},
 			Handler: handleVerifyBackup,
 		},
 	}
+	// restore_backup and verify_backup share the CLI's key/selection flags (#2403).
+	for _, t := range tools {
+		if t.Name == "restore_backup" || t.Name == "verify_backup" {
+			props := t.InputSchema["properties"].(map[string]interface{})
+			for k, v := range managedSelectionProps() {
+				props[k] = v
+			}
+		}
+	}
+	return tools
 }
 
 func handleCreateBackup(client API, args map[string]interface{}) (string, error) {
@@ -305,23 +318,40 @@ func handleListBackups(client API, args map[string]interface{}) (string, error) 
 	return b.String(), nil
 }
 
-func handleRestoreBackup(client API, args map[string]interface{}) (string, error) {
-	var ageIdentity string
-	if path := getStringArg(args, "age_identity_file", ""); path != "" {
-		content, err := os.ReadFile(path) // #nosec G304 -- operator-named identity file, read on the MCP host
-		if err != nil {
-			return "", fmt.Errorf("read age identity file: %w", err)
-		}
-		ageIdentity, err = parseAgeIdentityFile(content)
-		if err != nil {
-			return "", fmt.Errorf("%s: %w", path, err)
-		}
+// readToolIdentityFile reads the optional age_identity_file argument.
+func readToolIdentityFile(args map[string]interface{}) (string, error) {
+	path := getStringArg(args, "age_identity_file", "")
+	if path == "" {
+		return "", nil
 	}
+	content, err := os.ReadFile(path) // #nosec G304 -- operator-named identity file, read on the MCP host
+	if err != nil {
+		return "", fmt.Errorf("read age identity file: %w", err)
+	}
+	id, err := parseAgeIdentityFile(content)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", path, err)
+	}
+	return id, nil
+}
+
+func handleRestoreBackup(client API, args map[string]interface{}) (string, error) {
+	rec, err := resolveToolBackup(client, args)
+	if err != nil {
+		return "", err
+	}
+	ageIdentity, zero, err := toolIdentity(rec, args)
+	if err != nil {
+		return "", err
+	}
+	defer zero()
 	resp, err := client.RestoreBackup(RestoreBackupRequest{
-		ID:          getStringArg(args, "id", ""),
-		Clean:       getBoolArg(args, "clean", false),
-		AgeIdentity: ageIdentity,
+		ID:              rec.Id,
+		Clean:           getBoolArg(args, "clean", false),
+		AgeIdentity:     ageIdentity,
+		TargetContainer: getStringArg(args, "target", ""),
 		Connection: &PgConnectionBody{
+			Database: getStringArg(args, "database", ""),
 			Password: getStringArg(args, "db_password", ""),
 		},
 	})
@@ -332,19 +362,17 @@ func handleRestoreBackup(client API, args map[string]interface{}) (string, error
 }
 
 func handleVerifyBackup(client API, args map[string]interface{}) (string, error) {
-	var ageIdentity string
-	if path := getStringArg(args, "age_identity_file", ""); path != "" {
-		content, err := os.ReadFile(path) // #nosec G304 -- operator-named identity file, read on the MCP host
-		if err != nil {
-			return "", fmt.Errorf("read age identity file: %w", err)
-		}
-		ageIdentity, err = parseAgeIdentityFile(content)
-		if err != nil {
-			return "", fmt.Errorf("%s: %w", path, err)
-		}
+	rec, err := resolveToolBackup(client, args)
+	if err != nil {
+		return "", err
 	}
+	ageIdentity, zero, err := toolIdentity(rec, args)
+	if err != nil {
+		return "", err
+	}
+	defer zero()
 	resp, err := client.VerifyBackup(VerifyBackupRequest{
-		ID:             getStringArg(args, "id", ""),
+		ID:             rec.Id,
 		TargetUsername: getStringArg(args, "target_username", ""),
 		AgeIdentity:    ageIdentity,
 		Connection: &PgConnectionBody{

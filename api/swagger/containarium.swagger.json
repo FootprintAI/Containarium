@@ -16238,6 +16238,10 @@
         "ageIdentity": {
           "type": "string",
           "description": "For a record with encrypted=true: the age X25519 identity\n(\"AGE-SECRET-KEY-1…\") that matches the record's age_recipient (#1831).\nUsed to decrypt for this one call and never stored or logged. Required\nfor an encrypted record; the daemon refuses the restore without it\nbecause it holds no decryption key of its own."
+        },
+        "targetContainer": {
+          "type": "string",
+          "description": "Container to restore into, by its container name\n(\"\u003cusername\u003e-container\"). Empty restores into the backup's own source\ncontainer, in place (#2403). The caller must be authorized for the\ntarget's tenant as well as the backup's. A hook record declared\nHOOK_FORMAT_PG_CUSTOM can only be restored this way, into a target\nother than its source (#2405)."
         }
       },
       "description": "RestoreBackupRequest streams a stored dump back into a container's\ndatabase via pg_restore. Destructive: with `clean` set it drops and\nrecreates objects before loading."
