@@ -121,6 +121,15 @@ func (s *Store) initSchema(ctx context.Context) error {
 		ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS run_id TEXT NOT NULL DEFAULT '';
 		ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS hash_version SMALLINT NOT NULL DEFAULT 1;
 
+		-- #2415: idempotency key for externally sourced batches (sentinel SSH
+		-- session records). NULL for every row written by Log. Deliberately NOT
+		-- an input to computeRowHash at any version: it has no evidentiary
+		-- value, it only makes a replayed batch a no-op, and keeping it out of
+		-- the digest leaves every existing row and VerifyChain untouched.
+		ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS dedupe_key TEXT NULL;
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_logs_dedupe_key
+			ON audit_logs(dedupe_key) WHERE dedupe_key IS NOT NULL;
+
 		CREATE INDEX IF NOT EXISTS idx_audit_logs_timestamp
 			ON audit_logs(timestamp DESC);
 		CREATE INDEX IF NOT EXISTS idx_audit_logs_username
@@ -202,41 +211,71 @@ func (s *Store) Log(ctx context.Context, entry *AuditEntry) error {
 	// This serializes all audit appends against each other. That is the point
 	// — a hash chain is inherently sequential, and a chain that forks under
 	// load is not tamper-evident, only tamper-suggestive.
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, auditChainLockKey); err != nil {
-		return fmt.Errorf("audit: lock chain: %w", err)
+	prevHash, err := lockChainTail(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if _, _, err := insertChained(ctx, tx, entry, prevHash, ""); err != nil {
+		return err
 	}
 
-	// Get prev_hash from the chain tail.
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("audit: commit: %w", err)
+	}
+	return nil
+}
+
+// lockChainTail takes the chain's advisory lock for the rest of tx and
+// returns the current tail's row_hash (HashEmpty on an empty table). Shared
+// by Log and LogBatch so there is exactly one place that serializes
+// appenders; see the comment in Log for why this is an advisory lock and
+// not SELECT ... FOR UPDATE on the tail row.
+func lockChainTail(ctx context.Context, tx pgx.Tx) (string, error) {
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, auditChainLockKey); err != nil {
+		return "", fmt.Errorf("audit: lock chain: %w", err)
+	}
 	var prevHash string
-	err = tx.QueryRow(ctx,
+	err := tx.QueryRow(ctx,
 		`SELECT row_hash FROM audit_logs ORDER BY id DESC LIMIT 1`,
 	).Scan(&prevHash)
 	if err != nil {
-		// First row in the table — no predecessor.
 		if errors.Is(err, pgx.ErrNoRows) {
-			prevHash = HashEmpty
-		} else {
-			return fmt.Errorf("audit: read chain tail: %w", err)
+			return HashEmpty, nil // first row: no predecessor
 		}
+		return "", fmt.Errorf("audit: read chain tail: %w", err)
 	}
+	return prevHash, nil
+}
 
+// insertChained computes entry's row hash against prevHash and inserts it.
+// dedupeKey == "" stores NULL (every plain Log row); a non-empty key makes
+// the insert ON CONFLICT DO NOTHING and reports inserted=false when the key
+// already exists, in which case nothing is written and the caller must keep
+// prevHash unchanged, so a skipped duplicate never becomes anyone's
+// predecessor. The caller must hold the chain lock.
+func insertChained(ctx context.Context, tx pgx.Tx, entry *AuditEntry, prevHash, dedupeKey string) (rowHash string, inserted bool, err error) {
 	// #1678 — every newly-written row uses CurrentHashVersion; a row's
 	// hash_version is what VerifyChain later replays it under, so old
 	// rows (backfilled to HashVersion1 by initSchema's column default)
 	// stay verifiable without this write path ever touching them.
-	rowHash, err := computeRowHash(entry, prevHash, CurrentHashVersion)
+	rowHash, err = computeRowHash(entry, prevHash, CurrentHashVersion)
 	if err != nil {
-		return fmt.Errorf("audit: compute hash: %w", err)
+		return "", false, fmt.Errorf("audit: compute hash: %w", err)
 	}
 
-	_, err = tx.Exec(ctx, `
+	var key any // nil -> NULL
+	conflict := ""
+	if dedupeKey != "" {
+		key = dedupeKey
+		conflict = ` ON CONFLICT (dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING`
+	}
+	tag, err := tx.Exec(ctx, `
 		INSERT INTO audit_logs (
 			timestamp, username, action, resource_type, resource_id,
 			detail, source_ip, status_code, actor, delegation_chain,
-			token_id, org_id, run_id, row_hash, prev_hash, hash_version
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
-	`,
-		ts,
+			token_id, org_id, run_id, row_hash, prev_hash, hash_version, dedupe_key
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`+conflict,
+		entry.Timestamp,
 		entry.Username,
 		entry.Action,
 		entry.ResourceType,
@@ -252,15 +291,84 @@ func (s *Store) Log(ctx context.Context, entry *AuditEntry) error {
 		rowHash,
 		prevHash,
 		CurrentHashVersion,
+		key,
 	)
 	if err != nil {
-		return fmt.Errorf("audit: insert: %w", err)
+		return "", false, fmt.Errorf("audit: insert: %w", err)
+	}
+	return rowHash, tag.RowsAffected() == 1, nil
+}
+
+// BatchEntry is one row of a LogBatch call. DedupeKey must be non-empty:
+// it is what makes the row idempotent.
+type BatchEntry struct {
+	Entry     AuditEntry
+	DedupeKey string
+}
+
+// BatchOutcome is LogBatch's per-entry result.
+type BatchOutcome int
+
+const (
+	// BatchInserted: the row was appended to the chain.
+	BatchInserted BatchOutcome = iota + 1
+	// BatchDuplicate: an entry with this DedupeKey already exists; nothing
+	// was written.
+	BatchDuplicate
+)
+
+// LogBatch appends entries in order inside ONE transaction, taking the
+// chain's advisory lock once for the whole batch (#2415). It returns one
+// outcome per entry, in order. On any error nothing is committed, so a
+// caller can retry the identical batch: entries that already exist report
+// BatchDuplicate and are skipped before they can become a predecessor, so a
+// replay never forks or pads the chain.
+func (s *Store) LogBatch(ctx context.Context, entries []BatchEntry) ([]BatchOutcome, error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	for i := range entries {
+		if entries[i].DedupeKey == "" {
+			return nil, fmt.Errorf("audit: batch entry %d has no dedupe key", i)
+		}
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("audit: begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // best-effort cleanup; Commit() supersedes
+
+	prevHash, err := lockChainTail(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+
+	outcomes := make([]BatchOutcome, len(entries))
+	for i := range entries {
+		e := entries[i].Entry // copy: don't mutate the caller's slice
+		if e.Timestamp.IsZero() {
+			e.Timestamp = time.Now()
+		}
+		// Truncate to what Postgres stores before hashing (see Log).
+		e.Timestamp = e.Timestamp.Truncate(time.Microsecond)
+
+		rowHash, inserted, err := insertChained(ctx, tx, &e, prevHash, entries[i].DedupeKey)
+		if err != nil {
+			return nil, fmt.Errorf("batch entry %d: %w", i, err)
+		}
+		if inserted {
+			outcomes[i] = BatchInserted
+			prevHash = rowHash
+		} else {
+			outcomes[i] = BatchDuplicate
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("audit: commit: %w", err)
+		return nil, fmt.Errorf("audit: commit: %w", err)
 	}
-	return nil
+	return outcomes, nil
 }
 
 // MaxRowID returns the highest id currently in
