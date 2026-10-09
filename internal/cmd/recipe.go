@@ -30,7 +30,7 @@ func init() {
 type recipeAPI interface {
 	ListRecipes() ([]*pb.Recipe, error)
 	GetRecipe(id string) (*pb.Recipe, error)
-	DeployRecipe(recipeID, name, gpu, backendID, pool string, params map[string]string) (*pb.DeployRecipeResponse, error)
+	DeployRecipe(recipeID, name, gpu, backendID, pool string, params map[string]string, guardrailInput *pb.GuardrailGateInput) (*pb.DeployRecipeResponse, error)
 	GetWorkspaceAccess(name string) (*pb.GetWorkspaceAccessResponse, error)
 	Close() error
 }

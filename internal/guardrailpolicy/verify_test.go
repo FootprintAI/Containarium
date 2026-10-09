@@ -158,6 +158,41 @@ func TestVerifyAttestation(t *testing.T) {
 	}
 }
 
+// TestVerifyClaims: every check of VerifyAttestation except the digest. It
+// refuses what VerifyAttestation refuses on the attestation alone, and
+// passes an attestation whose bytes changed (only the digest catches that).
+func TestVerifyClaims(t *testing.T) {
+	f := newVerifyFixture(t)
+	if _, err := guardrailpolicy.VerifyClaims(f.att, f.server, nil); err != nil {
+		t.Fatalf("valid attestation: %v", err)
+	}
+	if _, err := guardrailpolicy.VerifyClaims(f.att, f.server, []pb.GuardrailKind{pb.GuardrailKind_GUARDRAIL_KIND_SECRET}); !errors.Is(err, guardrailpolicy.ErrKindNotCovered) {
+		t.Errorf("uncovered require kind = %v, want ErrKindNotCovered", err)
+	}
+	_, other, _ := ed25519.GenerateKey(rand.Reader)
+	untrusted := f.attest(t, f.server.GetPolicy(), f.att.GetKindsScanned(), pb.GuardrailVerdict_GUARDRAIL_VERDICT_PASS, other)
+	if _, err := guardrailpolicy.VerifyClaims(untrusted, f.server, nil); !errors.Is(err, guardrailpolicy.ErrUntrustedSigner) {
+		t.Errorf("untrusted signer = %v, want ErrUntrustedSigner", err)
+	}
+	wrongPolicy := f.attest(t, guardrail.DefaultPolicy(), f.att.GetKindsScanned(), pb.GuardrailVerdict_GUARDRAIL_VERDICT_PASS, f.priv)
+	if _, err := guardrailpolicy.VerifyClaims(wrongPolicy, f.server, nil); !errors.Is(err, guardrailpolicy.ErrPolicyMismatch) {
+		t.Errorf("different policy = %v, want ErrPolicyMismatch", err)
+	}
+	fail := f.attest(t, f.server.GetPolicy(), f.att.GetKindsScanned(), pb.GuardrailVerdict_GUARDRAIL_VERDICT_FAIL, f.priv)
+	if _, err := guardrailpolicy.VerifyClaims(fail, f.server, nil); !errors.Is(err, guardrailpolicy.ErrVerdictNotPass) {
+		t.Errorf("FAIL verdict = %v, want ErrVerdictNotPass", err)
+	}
+	if err := os.WriteFile(filepath.Join(f.dir, "a.txt"), []byte("changed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := guardrailpolicy.VerifyClaims(f.att, f.server, nil); err != nil {
+		t.Errorf("claims check looked at the bytes: %v", err)
+	}
+	if _, err := guardrailpolicy.VerifyAttestation(f.att, f.server, f.dir, nil); !errors.Is(err, guardrailpolicy.ErrDigestMismatch) {
+		t.Errorf("full verify after the change = %v, want ErrDigestMismatch", err)
+	}
+}
+
 // The server policy and attestation are inputs, never outputs: a verify
 // must not change either.
 func TestVerifyAttestation_DoesNotMutateInputs(t *testing.T) {

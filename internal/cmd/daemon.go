@@ -31,6 +31,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// daemonGuardrailStagingRoot is where guardrail-gated recipe deploys read
+// staged datasets from (#2368). Empty = gated deploys are refused.
+var daemonGuardrailStagingRoot string
+
+// daemonGuardrailSnapshotDir is where the gate makes its private
+// verification snapshots ("" = the OS temp dir).
+var daemonGuardrailSnapshotDir string
+
 var (
 	daemonAddress          string
 	daemonPort             int
@@ -136,6 +144,10 @@ func init() {
 
 	// gRPC settings
 	daemonCmd.Flags().StringVar(&daemonAddress, "address", "0.0.0.0", "Address to listen on")
+	daemonCmd.Flags().StringVar(&daemonGuardrailStagingRoot, "guardrail-staging-root", "",
+		"Absolute directory a guardrail-gated recipe deploy reads its staged dataset from, as <root>/<name>/<staging_ref>. Empty = gated deploys are refused")
+	daemonCmd.Flags().StringVar(&daemonGuardrailSnapshotDir, "guardrail-snapshot-dir", os.Getenv("CONTAINARIUM_GUARDRAIL_SNAPSHOT_DIR"),
+		"Daemon-private directory, outside the staging root, for the gate's verification snapshots (a full copy of each staged dataset while a deploy runs; point it at provisioned storage, not tmpfs). Empty = the OS temp dir (env: CONTAINARIUM_GUARDRAIL_SNAPSHOT_DIR)")
 	daemonCmd.Flags().IntVar(&daemonPort, "port", 50051, "gRPC port to listen on")
 	daemonCmd.Flags().BoolVar(&enableMTLS, "mtls", false, "Serve the external gRPC listener, requiring mutual TLS (identity comes from the client certificate). Without it there is no external gRPC listener; the REST gateway uses an in-process one")
 	daemonCmd.Flags().StringVar(&daemonCertsDir, "certs-dir", mtls.DefaultCertsDir, "Directory containing TLS certificates")
@@ -634,6 +646,8 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 			MaxBoxes: anonMaxBoxes, KeyCreatesPer10: anonKeyCreatesPer10, KeyBurst: anonKeyBurst,
 			IPCreatesPer10: anonIPCreatesPer10, IPBurst: anonIPBurst, StatePath: anonDoorStatePath,
 		},
+		GuardrailStagingRoot:       daemonGuardrailStagingRoot,
+		GuardrailSnapshotDir:       daemonGuardrailSnapshotDir,
 		CaddyAdminURL:              caddyAdminURL,
 		HostIP:                     hostIPFromCIDR(networkSubnet),
 		DaemonConfigStore:          daemonConfigStore,
