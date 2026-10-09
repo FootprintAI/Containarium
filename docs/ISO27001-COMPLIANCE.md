@@ -84,7 +84,7 @@ This document assesses Containarium against ISO 27001:2022 Annex A controls, tra
 | A.8.12 | Data leakage prevention | Partial | `.gitignore` for secrets, file-based secret storage | Gap: no DLP tooling |
 | A.8.13 | Information backup | Partial | ZFS snapshots, GCP disk persistence on STOP | Gap: no documented backup schedule or restore testing |
 | A.8.14 | Redundancy | Present | Sentinel HA with auto-recovery (`internal/sentinel/`, `docs/SENTINEL-DESIGN.md`) | ~85s recovery time |
-| A.8.15 | Logging | Partial | stdout/stderr via systemd, OpenTelemetry (`internal/metrics/otel.go`), conntrack (`internal/traffic/`), centralized audit log in PostgreSQL (`internal/audit/`) with HTTP request + event bus persistence. **Control-plane API audit and in-box SSH session audit both cover both backends** — the collector reads sessions through a backend-neutral source (`internal/audit/session_source.go`): OpenSSH `auth.log` on LXC, box pod logs on Kubernetes (#1189). Records share one store, one action, and one query surface. | Gap: no SIEM integration (see A.8.16) |
+| A.8.15 | Logging | Partial | stdout/stderr via systemd, OpenTelemetry (`internal/metrics/otel.go`), conntrack (`internal/traffic/`), centralized audit log in PostgreSQL (`internal/audit/`) with HTTP request + event bus persistence. **Control-plane API audit and in-box SSH session audit both cover both backends** — the collector reads sessions through a backend-neutral source (`internal/audit/session_source.go`): OpenSSH `auth.log` on LXC, box pod logs on Kubernetes (#1189). Records share one store, one action, and one query surface. **Front-door SSH logins (re-assessed 2026-10-09, #2415):** the sentinel's session records (real client IP, credential identity, routed target, open/close) are shipped into each backend's hash-chained, externally anchored audit store as `ssh_session_open` / `ssh_session_close` (`internal/sentinel/sshsession/shipper.go`, `internal/server/audit_server.go`, `internal/audit/store.go`); the local file is rotated with a configurable retention, default 90 days (`terraform/*/scripts/startup-sentinel.sh`). Operator setup and the auditor verification procedure (`containarium audit query` / `verify` / `verify-anchor`): [SENTINEL-SSH-SESSION-AUDIT.md](SENTINEL-SSH-SESSION-AUDIT.md). | Gaps: no SIEM integration (see A.8.16); SSH authentication failures/bans stay in the sentinel's journal and are not shipped; audit-table retention is not enforced automatically; records not yet shipped are lost if the sentinel VM is destroyed first |
 | A.8.16 | Monitoring activities | Partial | OpenTelemetry metrics, Grafana dashboards, traffic monitoring | Gap: no SIEM integration, no alerting rules |
 | A.8.17 | Clock synchronization | Missing | No NTP configuration documented | Needs: document NTP/chrony setup on VMs |
 | A.8.20 | Network security | Present | GCP firewall rules (`terraform/modules/containarium/main.tf`), source IP restrictions, SSH jump architecture | Well implemented |
@@ -117,6 +117,7 @@ This document assesses Containarium against ISO 27001:2022 Annex A controls, tra
 | ~~H4~~ | ~~A.8.15~~ | ~~Add centralized, tamper-proof audit logging~~ | Done | `internal/audit/` (store, HTTP middleware, event subscriber) |
 | H5 | A.5.24 | Write incident response plan | — | `docs/INCIDENT-RESPONSE.md` |
 | ~~H8~~ | ~~A.8.15~~ | ~~Extend in-box SSH session audit to the Kubernetes backend~~ | Done | `internal/audit/session_source.go`, `internal/audit/k8s_session_source.go`, `internal/audit/dropbear_parser.go` |
+| ~~H9~~ | ~~A.8.15~~ | ~~Ship sentinel SSH session records into the tamper-evident audit store; rotate and bound the local file~~ | Done | `internal/sentinel/sshsession/shipper.go`, `internal/server/audit_server.go`, `docs/SENTINEL-SSH-SESSION-AUDIT.md` |
 | ~~H6~~ | ~~A.8.8~~ | ~~Add automated dependency scanning to CI~~ | Done | `.github/dependabot.yml`, `.github/workflows/security.yml` (Trivy + govulncheck) |
 | ~~H7~~ | ~~A.8.25~~ | ~~Add SAST to CI pipeline~~ | Done | `.github/workflows/security.yml` (gosec with SARIF upload) |
 
@@ -132,6 +133,8 @@ This document assesses Containarium against ISO 27001:2022 Annex A controls, tra
 | M6 | A.8.9 | Implement infrastructure drift detection | — | Terraform Cloud or CI drift checks |
 | M7 | A.8.32 | Document change approval process | — | `docs/CHANGE-MANAGEMENT.md` |
 | M8 | — | Fix default PostgreSQL password (`changeme`) | — | `deployments/docker-compose.yml` |
+| M9 | A.8.15 | Ship SSH authentication failures / bans from the sentinel's journal into the audit store (#2419) | — | `internal/sentinel/sshsession/`, `internal/audit/` |
+| M10 | A.8.15 | Define and enforce audit-table retention (no automatic purge today) (#2420) | — | `internal/audit/`, `docs/SENTINEL-SSH-SESSION-AUDIT.md` |
 
 ### Priority 3 — Low
 
@@ -161,6 +164,7 @@ These controls are strong evidence toward Annex A compliance:
 | Network segmentation | GCP firewall + Incus bridge isolation | `terraform/modules/containarium/main.tf` |
 | Build integrity | SHA256 checksums on releases | `.github/workflows/release-mcp.yml` |
 | HA / Resilience | Sentinel auto-recovery (~85s) | `internal/sentinel/manager.go`, `docs/SENTINEL-DESIGN.md` |
+| Front-door SSH audit | Sentinel session records shipped into the hash-chained, anchored audit store; verifiable with `audit verify` | `internal/sentinel/sshsession/`, `docs/SENTINEL-SSH-SESSION-AUDIT.md` |
 | Resource limits | CPU/memory/disk quotas per container | `internal/container/manager.go` |
 
 ---

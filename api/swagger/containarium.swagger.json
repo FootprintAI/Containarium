@@ -58,6 +58,10 @@
       "description": "AppService provides application deployment and management"
     },
     {
+      "name": "AuditService",
+      "description": "AuditService — the proto-defined surface of the tamper-evident audit\nstore (internal/audit). Today it carries one write RPC (#2415): the\nsentinel ships the SSH session records its sshpiperd plugin appends\nlocally (internal/sentinel/sshsession) into THIS backend's audit chain,\nso the platform's front-door logins get the same hash chain and\nexternal anchoring (#1706) as in-box sessions and API calls.\n\nReads stay on the legacy /v1/audit/logs gateway route for now."
+    },
+    {
       "name": "BackupService",
       "description": "BackupService provides logical (pg_dump) database backups for the\ndatabases running inside Containarium containers, stored off-host.\nSee docs/DB-BACKUP-OPERATIONS.md for the operational runbook and the\nISO 27001 A.8.13 control mapping."
     },
@@ -1461,6 +1465,40 @@
         ],
         "tags": [
           "Application Operations"
+        ]
+      }
+    },
+    "/v1/audit/ssh-sessions/ingest": {
+      "post": {
+        "summary": "Ingest sentinel SSH session records",
+        "description": "Append sentinel SSH session open/close records to this backend's tamper-evident audit chain. Idempotent per (session_id, phase); all-or-nothing per batch. Requires the audit:ingest scope.",
+        "operationId": "AuditService_IngestSSHSessionRecords",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/IngestSSHSessionRecordsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/IngestSSHSessionRecordsRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Audit"
         ]
       }
     },
@@ -14184,6 +14222,53 @@
       },
       "description": "HostLoad is a point-in-time sample of a backend host's real resource\nusage, taken when ListBackends was served.\n\nThis is the \"live usage\" half of backend visibility: capacity and\ncommitted sums say what has been *allocated* on a host, which can be\narbitrarily far from what it is *using*. Without this an operator cannot\nanswer \"how loaded is this machine right now?\" from the product at all,\nand placement decisions are made blind to actual load.\n\nEvery field is measured on the host itself (the same\nGetSystemResources probe that backs GetSystemInfo), not self-reported\npolicy, so it cannot be inflated by a backend advertising optimistic\nnumbers."
     },
+    "IngestOutcome": {
+      "type": "string",
+      "enum": [
+        "INGEST_OUTCOME_UNSPECIFIED",
+        "INGEST_OUTCOME_INSERTED",
+        "INGEST_OUTCOME_DUPLICATE"
+      ],
+      "default": "INGEST_OUTCOME_UNSPECIFIED",
+      "description": "IngestOutcome is the per-record result of an OK ingest call."
+    },
+    "IngestSSHSessionRecordsRequest": {
+      "type": "object",
+      "properties": {
+        "records": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/SSHSessionRecord"
+          },
+          "description": "1..500 records in file order."
+        },
+        "sentinelId": {
+          "type": "string",
+          "description": "Informational identifier of the shipping sentinel; recorded in each\nrow's detail, never used for authorization."
+        }
+      }
+    },
+    "IngestSSHSessionRecordsResponse": {
+      "type": "object",
+      "properties": {
+        "outcomes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/IngestOutcome"
+          },
+          "description": "Same length and order as the request's records."
+        },
+        "inserted": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "duplicates": {
+          "type": "integer",
+          "format": "int32"
+        }
+      }
+    },
     "InstallPentestToolRequest": {
       "type": "object",
       "properties": {
@@ -16652,6 +16737,17 @@
         }
       }
     },
+    "SSHAuthMethod": {
+      "type": "string",
+      "enum": [
+        "SSH_AUTH_METHOD_UNSPECIFIED",
+        "SSH_AUTH_METHOD_CERTIFICATE",
+        "SSH_AUTH_METHOD_PUBLICKEY",
+        "SSH_AUTH_METHOD_UNKNOWN"
+      ],
+      "default": "SSH_AUTH_METHOD_UNSPECIFIED",
+      "description": "SSHAuthMethod mirrors internal/sentinel/sshsession.AuthMethod.\n\n - SSH_AUTH_METHOD_UNKNOWN: The offered key could not be parsed; credential fields are empty."
+    },
     "SSHCAKey": {
       "type": "object",
       "properties": {
@@ -16669,6 +16765,90 @@
         }
       },
       "description": "SSHCAKey is one CA public key the host should trust for certificate-based\nSSH auth. Vendored (message body only, not the whole cloud\nSSHCertificateAuthorityService) from the cloud repo's ssh_ca.proto — see\nthe vendoring note at the top of this file."
+    },
+    "SSHCloseReason": {
+      "type": "string",
+      "enum": [
+        "SSH_CLOSE_REASON_UNSPECIFIED",
+        "SSH_CLOSE_REASON_NORMAL",
+        "SSH_CLOSE_REASON_UPSTREAM_GONE",
+        "SSH_CLOSE_REASON_PROXY_SHUTDOWN",
+        "SSH_CLOSE_REASON_ERROR",
+        "SSH_CLOSE_REASON_UNKNOWN_ORPHAN"
+      ],
+      "default": "SSH_CLOSE_REASON_UNSPECIFIED",
+      "description": "SSHCloseReason mirrors internal/sentinel/sshsession.CloseReason. Set only\non a CLOSE record.\n\n - SSH_CLOSE_REASON_UNKNOWN_ORPHAN: Emitted by the shipper's --reconcile for an OPEN record that never got\na CLOSE (plugin hard-killed), once it is older than the orphan\nthreshold. Never written by the plugin itself."
+    },
+    "SSHSessionCredential": {
+      "type": "object",
+      "properties": {
+        "keyId": {
+          "type": "string"
+        },
+        "serial": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "caKeyFingerprint": {
+          "type": "string"
+        },
+        "keyFingerprint": {
+          "type": "string"
+        }
+      },
+      "description": "SSHSessionCredential is the non-secret handle identifying the credential\na session authenticated with — fingerprints, a key_id and a serial, never\nkey material."
+    },
+    "SSHSessionPhase": {
+      "type": "string",
+      "enum": [
+        "SSH_SESSION_PHASE_UNSPECIFIED",
+        "SSH_SESSION_PHASE_OPEN",
+        "SSH_SESSION_PHASE_CLOSE"
+      ],
+      "default": "SSH_SESSION_PHASE_UNSPECIFIED",
+      "description": "SSHSessionPhase mirrors internal/sentinel/sshsession.SessionPhase."
+    },
+    "SSHSessionRecord": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "phase": {
+          "$ref": "#/definitions/SSHSessionPhase"
+        },
+        "occurredAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "clientIp": {
+          "type": "string",
+          "description": "Real downstream (client-facing) address."
+        },
+        "clientPort": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "login": {
+          "type": "string",
+          "description": "SSH username presented; under certificate auth this names the target\naccount, the credential names the person."
+        },
+        "target": {
+          "type": "string",
+          "description": "Backend endpoint (host:port) the sentinel routed the login to; may be\nempty if unresolvable at record time."
+        },
+        "authMethod": {
+          "$ref": "#/definitions/SSHAuthMethod"
+        },
+        "credential": {
+          "$ref": "#/definitions/SSHSessionCredential"
+        },
+        "closeReason": {
+          "$ref": "#/definitions/SSHCloseReason",
+          "description": "Set only when phase == SSH_SESSION_PHASE_CLOSE."
+        }
+      },
+      "description": "SSHSessionRecord is one session lifecycle event, field for field the\nsentinel's sshsession.Record."
     },
     "Sandbox": {
       "type": "object",

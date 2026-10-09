@@ -3,7 +3,9 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"sync"
@@ -47,7 +49,15 @@ Blocks serving the plugin gRPC protocol over stdio until sshpiperd closes it
 (e.g. on its own shutdown/restart), at which point any session this process
 saw an open for but never a close gets a final record with
 close_reason=proxy_shutdown, so it isn't left indistinguishable from a session
-still legitimately running.`,
+still legitimately running.
+
+On SIGHUP it closes and reopens --records-file at the same path, so logrotate
+can rotate the sink (rename + create) without restarting sshpiperd:
+  postrotate: pkill -HUP -f '^/usr/local/bin/containariumd? sentinel ssh-session-plugin'
+The pattern is anchored because sshpiperd's own command line CONTAINS this
+plugin's, and it must not receive the signal. It accepts both binary names
+(containarium is the compat symlink to containariumd) so it keeps matching after
+the unit's ExecStart moves to the daemon name.`,
 	RunE: runSentinelSSHSessionPlugin,
 }
 
@@ -109,6 +119,17 @@ func runSentinelSSHSessionPlugin(cmd *cobra.Command, args []string) error {
 	sigc := make(chan os.Signal, 1)
 	signal.Notify(sigc, syscall.SIGTERM, syscall.SIGINT)
 	defer signal.Stop(sigc)
+
+	// SIGHUP: logrotate (create mode) renamed the sink — reopen the path
+	// (#2415). Registering the handler also matters on its own: Go's default
+	// action for SIGHUP is to terminate, which would take the SSH proxy's
+	// plugin chain down on every rotation.
+	hupc := make(chan os.Signal, 1)
+	signal.Notify(hupc, syscall.SIGHUP)
+	defer signal.Stop(hupc)
+	reopenCtx, stopReopen := context.WithCancel(context.Background())
+	defer stopReopen()
+	go sshsession.ReopenOn(reopenCtx, hupc, recorder, log.Printf)
 
 	done := make(chan error, 1)
 	go func() { done <- piperPlugin.Serve() }()
