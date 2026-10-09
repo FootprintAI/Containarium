@@ -33,24 +33,24 @@ func captureClientHello(t *testing.T, cfg *tls.Config) []byte {
 
 // buildClientHello hand-assembles a record-framed ClientHello carrying the
 // given raw extensions block.
-func buildClientHello(exts []byte) []byte { //nolint:gosec // test helper: lengths come from small fixed inputs
+func buildClientHello(exts []byte) []byte {
 	var body []byte
 	body = append(body, 0x03, 0x03)          // legacy_version
 	body = append(body, make([]byte, 32)...) // random
 	body = append(body, 0x00)                // session id length
 	body = append(body, 0x00, 0x02, 0x13, 0x01)
 	body = append(body, 0x01, 0x00) // compression
-	body = append(body, byte(len(exts)>>8), byte(len(exts)))
+	body = append(body, byte(len(exts)>>8), byte(len(exts))) // #nosec G115 -- test fixture lengths are small and fixed
 	body = append(body, exts...)
 
-	hs := []byte{0x01, byte(len(body) >> 16), byte(len(body) >> 8), byte(len(body))}
+	hs := []byte{0x01, byte(len(body) >> 16), byte(len(body) >> 8), byte(len(body))} // #nosec G115 -- test fixture lengths are small and fixed
 	hs = append(hs, body...)
-	rec := []byte{0x16, 0x03, 0x01, byte(len(hs) >> 8), byte(len(hs))}
+	rec := []byte{0x16, 0x03, 0x01, byte(len(hs) >> 8), byte(len(hs))} // #nosec G115 -- test fixture lengths are small and fixed
 	return append(rec, hs...)
 }
 
-func ext(typ int, data []byte) []byte { //nolint:gosec // test helper: lengths come from small fixed inputs
-	out := []byte{byte(typ >> 8), byte(typ), byte(len(data) >> 8), byte(len(data))}
+func ext(typ int, data []byte) []byte {
+	out := []byte{byte(typ >> 8), byte(typ), byte(len(data) >> 8), byte(len(data))} // #nosec G115 -- test fixture lengths are small and fixed
 	return append(out, data...)
 }
 
