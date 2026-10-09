@@ -33,7 +33,7 @@ func captureClientHello(t *testing.T, cfg *tls.Config) []byte {
 
 // buildClientHello hand-assembles a record-framed ClientHello carrying the
 // given raw extensions block.
-func buildClientHello(exts []byte) []byte {
+func buildClientHello(exts []byte) []byte { //nolint:gosec // test helper: lengths come from small fixed inputs
 	var body []byte
 	body = append(body, 0x03, 0x03)          // legacy_version
 	body = append(body, make([]byte, 32)...) // random
@@ -49,7 +49,7 @@ func buildClientHello(exts []byte) []byte {
 	return append(rec, hs...)
 }
 
-func ext(typ int, data []byte) []byte {
+func ext(typ int, data []byte) []byte { //nolint:gosec // test helper: lengths come from small fixed inputs
 	out := []byte{byte(typ >> 8), byte(typ), byte(len(data) >> 8), byte(len(data))}
 	return append(out, data...)
 }
