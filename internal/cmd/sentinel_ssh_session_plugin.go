@@ -53,9 +53,11 @@ still legitimately running.
 
 On SIGHUP it closes and reopens --records-file at the same path, so logrotate
 can rotate the sink (rename + create) without restarting sshpiperd:
-  postrotate: pkill -HUP -f '^/usr/local/bin/containarium sentinel ssh-session-plugin'
+  postrotate: pkill -HUP -f '^/usr/local/bin/containariumd? sentinel ssh-session-plugin'
 The pattern is anchored because sshpiperd's own command line CONTAINS this
-plugin's, and it must not receive the signal.`,
+plugin's, and it must not receive the signal. It accepts both binary names
+(containarium is the compat symlink to containariumd) so it keeps matching after
+the unit's ExecStart moves to the daemon name.`,
 	RunE: runSentinelSSHSessionPlugin,
 }
 

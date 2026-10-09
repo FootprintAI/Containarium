@@ -55,7 +55,7 @@ func TestSentinelScripts_LogrotateStanza(t *testing.T) {
 				"postrotate", "endscript",
 				// Anchored: sshpiperd's own command line CONTAINS the plugin's,
 				// and it must not receive the SIGHUP.
-				"pkill -HUP -f '^/usr/local/bin/containarium sentinel ssh-session-plugin'",
+				"pkill -HUP -f '^/usr/local/bin/containariumd? sentinel ssh-session-plugin'",
 			} {
 				if !strings.Contains(st, want) {
 					t.Errorf("stanza missing %q:\n%s", want, st)
