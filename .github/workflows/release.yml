@@ -371,7 +371,11 @@ jobs:
             bin/caddy-linux-amd64
             bin/SHA256SUMS.txt
           draft: false
-          prerelease: false
+          # A tag with a pre-release suffix (v0.101.0-rc.1) is a GitHub
+          # pre-release: it is left out of releases/latest, so the daemon's
+          # update check and the host install path keep serving the newest
+          # full release. Only the dev rung installs an rc, by exact tag.
+          prerelease: ${{ contains(github.ref_name, '-') }}
 
       - name: Apply release notes
         # Composes the release body idempotently (#1600).
@@ -536,7 +540,11 @@ jobs:
             dist/containarium-bundle-${{ github.ref_name }}-${{ matrix.target.os }}-${{ matrix.target.arch }}.tar.gz
             dist/containarium-bundle-${{ github.ref_name }}-${{ matrix.target.os }}-${{ matrix.target.arch }}.tar.gz.sha256
           draft: false
-          prerelease: false
+          # A tag with a pre-release suffix (v0.101.0-rc.1) is a GitHub
+          # pre-release: it is left out of releases/latest, so the daemon's
+          # update check and the host install path keep serving the newest
+          # full release. Only the dev rung installs an rc, by exact tag.
+          prerelease: ${{ contains(github.ref_name, '-') }}
 
   # model-gateway credential-proxy image (#1820). The daemon
   # (images/daemon/Dockerfile) and the sidecar images each publish from their
@@ -585,7 +593,13 @@ jobs:
           minor="v$(echo "$version" | cut -d. -f1-2)"
           base="ghcr.io/footprintai/containarium-model-gateway"
           {
-            echo "tags=${base}:v${version},${base}:${minor},${base}:latest"
+            # A pre-release tag (0.101.0-rc.1) pushes only its exact tag:
+            # the moving tags keep pointing at the newest full release.
+            case "$version" in
+              *-*) tags="${base}:v${version}" ;;
+              *)   tags="${base}:v${version},${base}:${minor},${base}:latest" ;;
+            esac
+            echo "tags=${tags}"
             echo "scan_ref=${base}:v${version}"
           } >> "$GITHUB_OUTPUT"
 
