@@ -41,8 +41,11 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/mark3labs/mcp-go/server"
 
@@ -99,7 +102,28 @@ func main() {
 	}
 
 	log.Printf("[agent-box] starting MCP server on stdio (version %s)", version.Version)
-	if err := server.ServeStdio(mcpServer); err != nil {
+	if err := serveStdio(mcpServer); err != nil {
 		log.Fatalf("[agent-box] stdio serve error: %v", err)
 	}
+}
+
+// serveStdio is server.ServeStdio with the stdio pair routed through
+// agentbox.DrainingStdio: EOF on stdin is withheld until every request the
+// server already read has been answered. Without it, a request sent
+// immediately before the client closes stdin (a one-shot pipe, or an SSH
+// session dropping right after process_start) can be dropped by the
+// library's worker pool under load. See DrainingStdio's doc.
+func serveStdio(mcpServer *server.MCPServer) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
+	go func() {
+		<-sigChan
+		cancel()
+	}()
+
+	stdio := agentbox.NewDrainingStdio(os.Stdin, os.Stdout, agentbox.DefaultStdioDrainGrace)
+	return server.NewStdioServer(mcpServer).Listen(ctx, stdio, stdio)
 }

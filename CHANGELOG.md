@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- agent-box no longer drops a request its MCP client sent right before closing stdin. The stdio
+  server library cancels in-flight work on EOF before it drains its tool-call queue, so a
+  `process_start` from a one-shot pipe, or from an SSH session that dropped straight after the
+  call, could be lost under load. agent-box now withholds EOF from the server
+  until every request it has read is answered (bounded by a 30 s grace period). This is what made
+  `TestSpawn_SurvivesParentExit/framed` flaky in CI; that test now also asserts the
+  `process_start` response itself, so a dropped call is reported as such. The sentinel tunnel
+  tests poll for their listeners instead of sleeping 100 ms, which produced "connection refused"
+  on loaded runners.
+
 - Boxes are now key-only for SSH (#2424). A box's sshd previously inherited the image default
   (`PasswordAuthentication yes`), and the owner's `NOPASSWD` sudo was one `passwd` away from making
   that reachable from the tenant's other boxes, the LAN on direct in-network backends, or anywhere a
