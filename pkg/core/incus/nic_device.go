@@ -150,11 +150,10 @@ func (c *Client) updateInstanceDevices(containerName string, inst *api.Instance,
 
 	if restore != nil {
 		if restoreErr := restore(); restoreErr != nil {
-			if updateErr != nil {
-				fmt.Printf("Warning: restore ZFS quota after %s on %s failed: %v\n", what, containerName, restoreErr)
-			} else {
-				return fmt.Errorf("%s on %s: restore ZFS quota headroom: %w", what, containerName, restoreErr)
-			}
+			// A restore miss must not fail a successful device update: the NIC/ACL
+			// attach already landed, and ZFS rejecting a zero restore limit is a
+			// distinct warning (see #2397).
+			fmt.Printf("Warning: restore ZFS quota after %s on %s failed: %v\n", what, containerName, restoreErr)
 		}
 	}
 	if updateErr != nil {
@@ -264,7 +263,21 @@ func (c *Client) restoreZFSQuotaHeadroom(containerName string, state zfsQuotaRes
 	if targetSize != state.preparedRootSize {
 		restoreLimit = targetSize
 	}
+	// ZFS rejects quota/refquota=0 ("use 'none' to disable"). A captured live
+	// limit of 0/empty must not be written back literally (#2397).
+	restoreLimit = normalizeZFSQuotaRestoreLimit(restoreLimit)
 	return c.setZFSProperty(state.dataset, state.quotaProperty, restoreLimit)
+}
+
+// normalizeZFSQuotaRestoreLimit maps values ZFS will not accept as a quota
+// back to the disable token.
+func normalizeZFSQuotaRestoreLimit(limit string) string {
+	switch strings.TrimSpace(limit) {
+	case "", "0":
+		return "none"
+	default:
+		return limit
+	}
 }
 
 func effectiveRootDisk(inst *api.Instance) (pool, size string, ok bool) {

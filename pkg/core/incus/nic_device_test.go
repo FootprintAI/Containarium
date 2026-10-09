@@ -523,8 +523,9 @@ func TestSetDeviceConfig_RestoresHeadroomAndPreservesUpdateFailure(t *testing.T)
 		restoreErr error
 		wantErr    error
 	}{
-		{name: "restore after success", restoreErr: errors.New("restore failed"), wantErr: errors.New("restore failed")},
-		{name: "update failure wins over restore failure", updateErr: errors.New("update failed"), restoreErr: errors.New("restore failed")},
+		// Restore failure after a successful update is warned, not returned (#2397).
+		{name: "restore after success is non-fatal", restoreErr: errors.New("restore failed")},
+		{name: "update failure wins over restore failure", updateErr: errors.New("update failed"), restoreErr: errors.New("restore failed"), wantErr: errors.New("update failed")},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -543,17 +544,65 @@ func TestSetDeviceConfig_RestoresHeadroomAndPreservesUpdateFailure(t *testing.T)
 				},
 			}
 			err := c.SetDeviceConfig("box", "eth0", map[string]string{"security.acls": "guard"})
-			if tc.updateErr != nil {
-				if !errors.Is(err, tc.updateErr) {
+			if tc.wantErr != nil {
+				if err == nil || !strings.Contains(err.Error(), "update failed") {
 					t.Fatalf("err = %v, want update failure", err)
 				}
-			} else if err == nil || !strings.Contains(err.Error(), "restore failed") {
-				t.Fatalf("err = %v, want restoration failure", err)
+			} else if err != nil {
+				t.Fatalf("err = %v, want nil (restore failure is a warning)", err)
 			}
 			if sets != 2 {
 				t.Fatalf("ZFS sets = %d, want temporary set and restoration", sets)
 			}
 		})
+	}
+}
+
+func TestNormalizeZFSQuotaRestoreLimit(t *testing.T) {
+	tests := []struct {
+		in, want string
+	}{
+		{in: "0", want: "none"},
+		{in: "", want: "none"},
+		{in: " 0 ", want: "none"},
+		{in: "7516192768", want: "7516192768"},
+		{in: "none", want: "none"},
+		{in: "10GiB", want: "10GiB"},
+	}
+	for _, tc := range tests {
+		if got := normalizeZFSQuotaRestoreLimit(tc.in); got != tc.want {
+			t.Errorf("normalizeZFSQuotaRestoreLimit(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestRestoreZFSQuotaHeadroom_ZeroOriginalLimitMapsToNone(t *testing.T) {
+	f := &fakeDeviceServer{
+		inst: &api.Instance{ExpandedDevices: map[string]map[string]string{
+			"root": {"type": "disk", "path": "/", "pool": "default", "size": "50GiB"},
+		}},
+		storagePool: &api.StoragePool{Name: "default", Driver: "zfs"},
+	}
+	var gotProperty, gotValue string
+	c := &Client{
+		server: f,
+		zfsSetPropertyFn: func(_ string, property, value string) error {
+			gotProperty, gotValue = property, value
+			return nil
+		},
+	}
+	err := c.restoreZFSQuotaHeadroom("box", zfsQuotaRestoreState{
+		pool:              "default",
+		dataset:           "default/containers/box",
+		quotaProperty:     "quota",
+		preparedRootSize:  "50GiB",
+		originalLiveLimit: "0",
+	})
+	if err != nil {
+		t.Fatalf("restoreZFSQuotaHeadroom: %v", err)
+	}
+	if gotProperty != "quota" || gotValue != "none" {
+		t.Fatalf("zfs set %s=%s, want quota=none", gotProperty, gotValue)
 	}
 }
 
