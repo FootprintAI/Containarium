@@ -1,6 +1,6 @@
 module github.com/footprintai/containarium
 
-go 1.26.7
+go 1.26.9
 
 require (
 	cloud.google.com/go/compute v1.71.0
@@ -37,7 +37,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.46.0
 	go.opentelemetry.io/proto/otlp v1.11.1
 	golang.org/x/crypto v0.57.0
-	golang.org/x/net v0.59.0
+	golang.org/x/net v0.60.0
 	golang.org/x/oauth2 v0.37.0
 	golang.org/x/sync v0.23.0
 	golang.org/x/sys v0.48.0
