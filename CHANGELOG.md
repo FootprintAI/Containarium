@@ -83,6 +83,12 @@ verification pass clears; its notes fold this section in._
 
 ### Changed
 
+- **Breaking:** a set-but-empty or whitespace-only `CONTAINARIUM_PRIVILEGED_PODMAN_POLICY` now refuses daemon
+  startup with an error naming the variable, instead of granting privileged Podman to every caller (#2345).
+  Env files or unit templates that use `CONTAINARIUM_PRIVILEGED_PODMAN_POLICY=` to mean unset must omit the
+  assignment or specify `all`, `admin-only` or `disabled`. A truly unset variable still defaults to `all` with
+  a warning; case and whitespace variants of valid values keep working.
+
 - `containarium guardrail apply` and `guardrail verify` now read the server-side guardrail policy when a server is
   named explicitly with `--server` or `CONTAINARIUM_SERVER` (#2368, slice C). A login's default server does not count:
   logging in does not make these commands contact the platform. This reverses the old "every guardrail verb is

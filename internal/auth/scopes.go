@@ -138,6 +138,14 @@ const (
 	ScopeNetworkPolicyRead = "network-policy:read" // NetworkPolicyService Get/List
 	ScopeTokensRead        = "tokens:read"         // token listing
 
+	// audit:ingest (#2415) is the ONLY scope that may append externally
+	// sourced rows to the tamper-evident audit chain — today, the
+	// sentinel's SSH session records via AuditService.IngestSSHSessionRecords.
+	// It is deliberately not implied by audit:read, by any role, or by an
+	// unscoped token: the handler gates on RequireExplicitScope, so a token
+	// must name it.
+	ScopeAuditIngest = "audit:ingest"
+
 	// code-egress:read lets a tenant read its own coding-tool egress policy
 	// (CodingToolEgressPolicyService Get, #2378). Writes stay admin-only.
 	ScopeCodeEgressRead = "code-egress:read"
@@ -202,6 +210,7 @@ var AllScopes = []string{
 	ScopeAnonDoor, ScopeAnonAdmin,
 	ScopeClustersRead, ScopeClustersWrite, ScopeClustersScale,
 	ScopeAuditRead, ScopeNetworkPolicyRead, ScopeTokensRead,
+	ScopeAuditIngest,
 	ScopeCodeEgressRead,
 	ScopeSandboxesRead, ScopeSandboxesWrite,
 	ScopeTrackerRead, ScopeTrackerWrite, ScopeTrackerAdmin,
