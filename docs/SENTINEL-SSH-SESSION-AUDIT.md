@@ -61,12 +61,14 @@ A stolen token can only append `ssh_session_*` rows to one backend. It cannot re
 
 ### Backfill, replay and orphans
 
+The standalone `ship` form sends every record to the one `--url` backend, so use it only for a sink that holds that backend's records. It keeps its own checkpoint (`standalone-checkpoint.json`) and must never share the sentinel's. Pass `--checkpoint-file` explicitly if you run several.
+
 ```bash
 # one pass, non-zero exit if anything could not be shipped
-containarium sentinel ssh-sessions ship --once --url http://<backend>:8080 --token-file <file>
+containarium sentinel ssh-sessions ship --once --checkpoint-file <own-file> --url http://<backend>:8080 --token-file <file>
 
 # sessions with an open and no close older than 24h (a plugin hard-kill leaves these)
-containarium sentinel ssh-sessions ship --reconcile --orphan-after 24h --url http://<backend>:8080 --token-file <file>
+containarium sentinel ssh-sessions ship --reconcile --orphan-after 24h --checkpoint-file <own-file> --url http://<backend>:8080 --token-file <file>
 ```
 
 Re-running either adds no rows. `--reconcile` writes a `close_reason=unknown_orphan` row and never rewrites the local file. It is a heuristic: a genuinely long-lived session older than the threshold is reported too, and its real close is still recorded separately when it arrives.

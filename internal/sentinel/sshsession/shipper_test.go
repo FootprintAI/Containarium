@@ -637,3 +637,35 @@ func TestShipOnce_SameInodeDifferentContentIsANewFile(t *testing.T) {
 	mustOnce(h)
 	eq(t, h.backends["b1"].shipped(), []string{"old1:OPEN", "new1:OPEN", "new2:OPEN", "new3:OPEN"})
 }
+
+// readyResolver is a mapResolver whose routing becomes authoritative later,
+// like a key store that has not finished its first sync.
+type readyResolver struct {
+	mapResolver
+	ready *bool
+}
+
+func (r readyResolver) RoutingReady() bool { return *r.ready }
+
+// An unroutable login must not be checkpointed past while key sync is still
+// pending (even with a default backend set): once sync completes the record
+// routes properly instead of being lost or misfiled.
+func TestShipOnce_UnroutableRecordHeldUntilRoutingReady(t *testing.T) {
+	h := newHarness(t, map[string]string{"alice": "b1", "bob": "b2"})
+	h.cfg.DefaultBackend = "b1"
+	ready := false
+	h.cfg.Resolver = readyResolver{mapResolver: mapResolver{"alice": "b1"}, ready: &ready}
+	h.appendRecs(rec("s1", SessionPhaseOpen, "alice", h.now), rec("s2", SessionPhaseOpen, "bob", h.now), rec("s3", SessionPhaseOpen, "alice", h.now))
+
+	st := mustOnce(h)
+	eq(t, h.backends["b1"].shipped(), []string{"s1:OPEN"})
+	if st.SkippedUnroutable != 0 {
+		t.Fatalf("SkippedUnroutable = %d, want 0 while routing is not ready", st.SkippedUnroutable)
+	}
+
+	ready = true
+	h.cfg.Resolver = readyResolver{mapResolver: mapResolver{"alice": "b1", "bob": "b2"}, ready: &ready}
+	mustOnce(h)
+	eq(t, h.backends["b2"].shipped(), []string{"s2:OPEN"})
+	eq(t, h.backends["b1"].shipped(), []string{"s1:OPEN", "s3:OPEN"})
+}

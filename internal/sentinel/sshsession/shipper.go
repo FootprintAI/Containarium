@@ -321,6 +321,19 @@ func (c *ShipConfig) resolve(rec Record) (string, bool) {
 	return "", false
 }
 
+// RoutingReadiness is optionally implemented by a BackendResolver whose
+// answers are only authoritative once it has finished its initial sync.
+type RoutingReadiness interface {
+	RoutingReady() bool
+}
+
+// routingHeld reports whether an unroutable record must wait: the resolver is
+// not yet authoritative, so "no backend" may just mean "not synced yet".
+func (c *ShipConfig) routingHeld() bool {
+	r, ok := c.Resolver.(RoutingReadiness)
+	return ok && !r.RoutingReady()
+}
+
 // parseLine decodes one JSONL line into a validated Record. Validation is
 // the server's own (FromProto), so a record that would be rejected is caught
 // here, counted, and skipped instead of poisoning a whole batch.
@@ -481,6 +494,14 @@ func shipFile(ctx context.Context, cfg *ShipConfig, path string, ck *Checkpoint,
 			cfg.logf("WARNING: %s: skipping malformed record ending at byte %d: %v", path, end, perr)
 			pos = end
 			continue
+		}
+		if cfg.Resolver != nil {
+			if _, known := cfg.Resolver.BackendForLogin(rec.Login); !known && cfg.routingHeld() {
+				// Key sync has not finished: leave this record (and what
+				// follows) unconfirmed so the next pass routes it properly.
+				cfg.logf("holding %s at byte %d: login %q cannot be routed until key sync completes", path, pos, rec.Login)
+				break
+			}
 		}
 		backend, ok := cfg.resolve(rec)
 		if !ok {

@@ -109,6 +109,10 @@ so re-running adds no rows.
                ship a close_reason=unknown_orphan record for each. The sink is
                never rewritten and the checkpoint is not touched.
 
+Standalone shipping sends EVERY record to the one --url backend, so use it
+only for a sink that holds that backend's records (the sentinel's own shipper
+routes per backend). It keeps its own checkpoint file for that reason.
+
 The token is a JWT minted on that backend with the audit:ingest scope:
   containarium token generate --username sentinel-shipper --roles service \
       --scopes audit:ingest --expiry 2160h --secret-file /etc/containarium/jwt.secret
@@ -173,7 +177,7 @@ Examples:
 
 	f := cmd.Flags()
 	f.StringVar(&recordsFile, "records-file", sshsession.DefaultRecordsFile, "Path to the SSH session records JSONL sink to ship")
-	f.StringVar(&checkpointFile, "checkpoint-file", sshsession.DefaultCheckpointFile, "Where to persist shipping progress (byte offset + inode)")
+	f.StringVar(&checkpointFile, "checkpoint-file", sshsession.DefaultStandaloneCheckpointFile, "Where to persist shipping progress (byte offset + inode); separate from the sentinel's in-process shipper, never share it")
 	f.StringVar(&url, "url", "", "Backend REST base URL, e.g. http://<backend>:8080 (required)")
 	f.StringVar(&token, "token", "", "audit:ingest JWT minted on that backend (prefer --token-file or $"+envAuditIngestToken+": a flag shows up in ps)")
 	f.StringVar(&tokenFile, "token-file", "", "File containing the audit:ingest JWT")

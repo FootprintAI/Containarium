@@ -63,7 +63,29 @@ func (m *Manager) ShipperBackendURL(backendID string) (string, error) {
 // SSHSessionBackendResolver maps a record's login to the backend sshpiper
 // routed it to, by keysync's own rule.
 func (m *Manager) SSHSessionBackendResolver() sshsession.BackendResolver {
-	return m.keyStore
+	return keyStoreResolver{ks: m.keyStore, pool: m.backends}
+}
+
+// keyStoreResolver adds routing readiness to the key store: a login is only
+// known to be unroutable once every healthy backend has synced its users.
+type keyStoreResolver struct {
+	ks   *KeyStore
+	pool *BackendPool
+}
+
+func (r keyStoreResolver) BackendForLogin(login string) (string, bool) {
+	return r.ks.BackendForLogin(login)
+}
+
+func (r keyStoreResolver) RoutingReady() bool {
+	r.ks.mu.RLock()
+	defer r.ks.mu.RUnlock()
+	for _, b := range r.pool.Healthy() {
+		if bk, ok := r.ks.backends[b.ID]; !ok || bk.lastSync.IsZero() {
+			return false
+		}
+	}
+	return true
 }
 
 // AuditIngestTokens is the shipper's token source: the register-token store,
