@@ -95,10 +95,12 @@ func (m *Manager) Verify(opts VerifyOptions) (*Verification, error) {
 		return nil, fmt.Errorf("target container is required: a restore test needs a throwaway container to load into")
 	}
 	// A restore test only means something for a dump the platform can
-	// load. A hook dump is opaque (#1831) — refuse it here, before a
-	// scratch database exists, rather than recording a FAILED
-	// verification that reads like a corrupt backup.
-	if r.Engine == EngineHook {
+	// load. An undeclared hook dump is opaque (#1831) — refuse it here,
+	// before a scratch database exists, rather than recording a FAILED
+	// verification that reads like a corrupt backup. A hook that declared
+	// a pg_custom archive (#2405) is the same bytes database mode
+	// produces, so it runs every check below unchanged.
+	if r.Engine == EngineHook && r.HookFormat != HookFormatPGCustom {
 		return nil, fmt.Errorf("backup %s was produced by tenant hook %s and is an opaque stream: the platform cannot restore-test it", r.ID, r.Hook)
 	}
 	// An encrypted dump needs the matching identity to even attempt a
@@ -268,6 +270,19 @@ func (m *Manager) countUserRelations(container string, conn PgConn, db string) (
 		return 0, fmt.Errorf("unreadable relation count %q", strings.TrimSpace(stdout))
 	}
 	return n, nil
+}
+
+// countArchiveTables reads the table of contents of a custom-format
+// archive at path inside container and counts the user tables it declares
+// (countTOCTables). Used for a pg_custom hook dump, whose source catalog
+// the daemon cannot query (#2405). Needs pg_restore in the container; the
+// caller records no manifest when it is missing.
+func (m *Manager) countArchiveTables(container, path string) (int64, error) {
+	stdout, stderr, err := m.ops.ExecWithOutput(container, wrapPg("", "pg_restore --list "+shellQuote(path)))
+	if err != nil {
+		return 0, fmt.Errorf("pg_restore --list: %s", engineErr(stderr, err))
+	}
+	return countTOCTables(stdout), nil
 }
 
 // scratchName derives a safe, unquoted-identifier-shaped Postgres

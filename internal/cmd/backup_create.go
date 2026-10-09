@@ -23,6 +23,8 @@ var (
 
 	// #2402
 	backupCreateKeyMode string
+	// #2405
+	backupCreateHookFormat string
 )
 
 var backupCreateCmd = &cobra.Command{
@@ -45,7 +47,13 @@ own program inside the container and capture its stdout as the dump. No
 DB credential crosses to the platform, and databases the platform can't
 reach directly (e.g. nested inside an in-container Docker stack) become
 backup-able. The path must be absolute with no arguments. Hook dumps are
-opaque: stored, listed and fetched, but never auto-restored.
+opaque by default: stored, listed and fetched, but never auto-restored.
+
+If the hook emits a 'pg_dump -Fc' custom-format archive, say so with
+--hook-format pg_custom. The backup can then be restore-tested with
+'backup verify', and restored into a named target container other than
+its source (never in place). This is a promise about the hook's output;
+the daemon does not check it when the backup is taken.
 
 User-held encryption (--age-recipient): encrypt the dump to an age public
 key before it is staged or uploaded, so the daemon's disk, the object
@@ -77,6 +85,8 @@ Examples:
       --gcs-bucket gs://my-backups/pg --db-password "$PGPW" --server <host>
   containarium backup create alice --hook /opt/backup/db-dump.sh --dest gcs \
       --gcs-bucket gs://my-backups/pg --server <host>
+  containarium backup create alice --hook /opt/backup/pg-dump-fc.sh \
+      --hook-format pg_custom --dest local --server <host>
   containarium backup create alice --database app --age-recipient age1... \
       --dest gcs --gcs-bucket gs://my-backups/pg --server <host>`,
 	Args: cobra.ExactArgs(1),
@@ -95,6 +105,7 @@ func init() {
 	f.Int32Var(&backupCreateDBPort, "db-port", 0, "DB port (default: 5432)")
 	f.StringVar(&backupCreateHook, "hook", "", "absolute path of an in-container program whose stdout is the dump; bypasses pg_dump and --db-* (#1831)")
 	f.StringVar(&backupCreateLabel, "label", "", "label for a --hook backup, used in the backup id (default: the hook's basename)")
+	f.StringVar(&backupCreateHookFormat, "hook-format", "", "declared format of the --hook output: 'opaque' (default) or 'pg_custom' (a pg_dump -Fc archive, restore-testable)")
 	f.StringVar(&backupCreateAgeRecipient, "age-recipient", "", "age public key (age1...) to encrypt the dump to before it is stored; restore needs the matching identity")
 	f.StringVar(&backupCreateKeyMode, "key-mode", "", "who holds the key: 'managed' (KMS-wrapped per-backup key), 'both' (managed plus --age-recipient), 'age-recipient' (no wrapping); omit for the daemon default (#2402)")
 }
@@ -109,6 +120,10 @@ func runBackupCreate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--gcs-bucket is required when --dest gcs")
 	}
 	keyMode, err := parseKeyMode(backupCreateKeyMode)
+	if err != nil {
+		return err
+	}
+	hookFormat, err := parseHookFormat(backupCreateHookFormat)
 	if err != nil {
 		return err
 	}
@@ -136,6 +151,7 @@ func runBackupCreate(cmd *cobra.Command, args []string) error {
 		GcsBucket:    backupCreateBucket,
 		Hook:         backupCreateHook,
 		Label:        backupCreateLabel,
+		HookFormat:   hookFormat,
 		AgeRecipient: backupCreateAgeRecipient,
 		KeyMode:      keyMode,
 		Connection: &pb.PgConnection{

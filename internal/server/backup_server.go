@@ -154,6 +154,11 @@ func (s *BackupServer) CreateBackup(ctx context.Context, req *pb.CreateBackupReq
 		return nil, err
 	}
 
+	hookFormat, err := hookFormatFromProto(req.HookFormat)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
 	info, err := s.containers.manager.Get(req.Username)
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "container for user %s not found: %v", req.Username, err)
@@ -167,6 +172,7 @@ func (s *BackupServer) CreateBackup(ctx context.Context, req *pb.CreateBackupReq
 		GCSBucket:     req.GcsBucket,
 		Hook:          req.Hook,
 		Label:         req.Label,
+		HookFormat:    hookFormat,
 		AgeRecipient:  ageRecipient,
 		KeyMode:       keyMode,
 	}
@@ -542,6 +548,32 @@ func keyModeToProto(r *backup.Record) pb.BackupKeyMode {
 	}
 }
 
+// hookFormatFromProto maps a create request's declared hook format to the
+// core (#2405). UNSPECIFIED stays empty, which the core treats as opaque.
+func hookFormatFromProto(f pb.HookFormat) (backup.HookFormat, error) {
+	switch f {
+	case pb.HookFormat_HOOK_FORMAT_UNSPECIFIED:
+		return "", nil
+	case pb.HookFormat_HOOK_FORMAT_OPAQUE:
+		return backup.HookFormatOpaque, nil
+	case pb.HookFormat_HOOK_FORMAT_PG_CUSTOM:
+		return backup.HookFormatPGCustom, nil
+	default:
+		return "", fmt.Errorf("unknown hook_format %v", f)
+	}
+}
+
+func hookFormatToProto(f backup.HookFormat) pb.HookFormat {
+	switch f {
+	case backup.HookFormatOpaque:
+		return pb.HookFormat_HOOK_FORMAT_OPAQUE
+	case backup.HookFormatPGCustom:
+		return pb.HookFormat_HOOK_FORMAT_PG_CUSTOM
+	default:
+		return pb.HookFormat_HOOK_FORMAT_UNSPECIFIED
+	}
+}
+
 func connFromProto(c *pb.PgConnection) backup.PgConn {
 	if c == nil {
 		return backup.PgConn{}
@@ -611,5 +643,6 @@ func recordToProto(r *backup.Record) *pb.BackupRecord {
 		WrappedKey: r.WrappedKey,
 		KekId:      r.KEKID,
 		KeyMode:    keyModeToProto(r),
+		HookFormat: hookFormatToProto(r.HookFormat),
 	}
 }

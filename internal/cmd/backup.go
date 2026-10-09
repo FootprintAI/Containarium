@@ -58,6 +58,22 @@ func newBackupClient() (backupAPI, error) {
 	return client.NewGRPCClient(serverAddr, certsDir, insecure)
 }
 
+// parseHookFormat maps the --hook-format flag to the proto enum (#2405).
+// Empty leaves it unspecified, which the daemon treats as opaque.
+func parseHookFormat(s string) (pb.HookFormat, error) {
+	switch s {
+	case "":
+		return pb.HookFormat_HOOK_FORMAT_UNSPECIFIED, nil
+	case "opaque":
+		return pb.HookFormat_HOOK_FORMAT_OPAQUE, nil
+	case "pg_custom":
+		return pb.HookFormat_HOOK_FORMAT_PG_CUSTOM, nil
+	default:
+		return pb.HookFormat_HOOK_FORMAT_UNSPECIFIED,
+			fmt.Errorf("invalid --hook-format %q (expected 'opaque' or 'pg_custom')", s)
+	}
+}
+
 // parseDestination maps the --dest flag to the proto enum.
 func parseDestination(s string) (pb.BackupDestination, error) {
 	switch s {

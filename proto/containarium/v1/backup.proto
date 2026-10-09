@@ -41,11 +41,12 @@ enum BackupEngine {
 
   BACKUP_ENGINE_POSTGRES = 1;
 
-  // A dump produced by a tenant-supplied backup hook (#1831): an opaque
-  // byte stream the daemon captured from the hook's stdout. The daemon
-  // does not know its format, so a HOOK record can be listed, fetched,
-  // integrity-checked and deleted, but is never restored or restore-tested
-  // by the platform — apply it with the tenant's own tooling.
+  // A dump produced by a tenant-supplied backup hook (#1831): a byte
+  // stream the daemon captured from the hook's stdout. Unless the hook
+  // declared its format (see HookFormat, #2405) the daemon does not know
+  // it, so an opaque HOOK record can be listed, fetched, integrity-checked
+  // and deleted, but is never restored or restore-tested by the platform —
+  // apply it with the tenant's own tooling.
   BACKUP_ENGINE_HOOK = 2;
 }
 
@@ -74,6 +75,28 @@ enum BackupKeyMode {
   // Both of the above in one age file: either the legacy identity or
   // the unwrapped managed identity decrypts it. Requires a recipient.
   BACKUP_KEY_MODE_BOTH = 3;
+}
+
+// HookFormat is what a backup hook declares it writes to stdout (#2405).
+//
+// The declaration is a promise made by whoever configures the hook; the
+// daemon does not inspect the bytes at create time. It decides what the
+// platform may do with a HOOK record afterwards.
+enum HookFormat {
+  // Unset. On a CreateBackupRequest with a hook it means OPAQUE; on a
+  // record it means the record is not a hook backup.
+  HOOK_FORMAT_UNSPECIFIED = 0;
+
+  // Undeclared output: stored, listed, integrity-checked, fetched and
+  // deleted, never restored or restore-tested by the platform. What a
+  // hook record written before this field existed reads as.
+  HOOK_FORMAT_OPAQUE = 1;
+
+  // A `pg_dump -Fc` custom-format archive, the same bytes a database-mode
+  // backup produces. Restore-testable with VerifyBackup, and restorable
+  // into an explicitly named target container other than its source
+  // (never in place: the daemon cannot reach the source's Postgres).
+  HOOK_FORMAT_PG_CUSTOM = 2;
 }
 
 // BackupRecord is the metadata index entry for one stored dump. The dump
@@ -159,6 +182,11 @@ message BackupRecord {
   // AGE_RECIPIENT for a record encrypted to a tenant-held recipient only
   // (including every record written before this field existed).
   BackupKeyMode key_mode = 17;
+
+  // For BACKUP_ENGINE_HOOK: the format the hook declared for its output
+  // (#2405). OPAQUE for a hook record that declared none. UNSPECIFIED for
+  // pg_dump records.
+  HookFormat hook_format = 18;
 }
 
 // VerificationResult is the outcome of a restore test. A backup whose
@@ -307,6 +335,14 @@ message CreateBackupRequest {
   // with no recipient (INVALID_ARGUMENT) — is rejected, never silently
   // downgraded.
   BackupKeyMode key_mode = 8;
+
+  // Declared format of the hook's output (#2405). UNSPECIFIED means
+  // OPAQUE, today's behaviour. Set PG_CUSTOM only for a hook that emits a
+  // `pg_dump -Fc` archive: the record then gets a relation-count manifest
+  // read from the archive's table of contents (when pg_restore is
+  // available in the container) and can be restore-tested. Rejected
+  // without `hook`.
+  HookFormat hook_format = 9;
 }
 
 message CreateBackupResponse {
