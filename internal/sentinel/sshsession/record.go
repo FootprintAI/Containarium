@@ -58,6 +58,13 @@ const (
 	// CloseReasonNormal, which is the property acceptance criterion 5
 	// actually requires.
 	CloseReasonError CloseReason = "error"
+	// CloseReasonUnknownOrphan is never written by the plugin. The shipper's
+	// --reconcile emits it (#2415) for an "open" record that never got a
+	// "close" and is older than the orphan threshold — a plugin hard-kill
+	// (kill -9, OOM) is the only way to get there, since clean stops flush
+	// CloseReasonProxyShutdown. It is shipped to the audit store only; the
+	// source JSONL file is never rewritten.
+	CloseReasonUnknownOrphan CloseReason = "unknown_orphan"
 )
 
 // Credential is the non-secret handle that identifies the credential used
