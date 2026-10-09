@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   disk while copying the snapshot is `RESOURCE_EXHAUSTED`), no daemon-side path is echoed, and no box is created. On PASS it copies exactly the verified snapshot to `dataset_path`, then runs `post_start`.
   `containarium recipe deploy` gains `--guardrail-staging-ref` and `--guardrail-attestation`; the daemon gains
   `--guardrail-staging-root` and `--guardrail-snapshot-dir` (daemon-private, outside the staging root; default the OS
-  temp dir). A present but empty `guardrail_gate:` in a recipe is refused at load, not read as ungated. Nothing on the platform
+  temp dir). A present but empty `guardrail_gate:` in a recipe, or an unknown key under it, is refused at load. Nothing on the platform
   stages a dataset yet (the `ship` verb is a documented gap), and no built-in recipe is gated.
 - Guardrail inbound foundations (#2367, slice A; the model-gateway enforcement is a later slice, so nothing is
   deployed behaviour yet). `GuardrailKind` gains `UNSAFE_CODE` and `PROMPT_INJECTION`, and the in-tree reference

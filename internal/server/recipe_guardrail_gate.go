@@ -29,7 +29,9 @@ import (
 //     READ ERROR is its own refusal, never "no policy");
 //  3. refuse when guardrail_input is absent: the recipe, not the caller,
 //     decides whether a gate applies;
-//  4. snapshot the staged dataset and verify the snapshot in process
+//  4. refuse a bad attestation before copying anything
+//     (guardrailpolicy.VerifyClaims: every check except the digest), then
+//     snapshot the staged dataset and verify the snapshot in process
 //     (guardrailpolicy.VerifyAttestation: trusted signer, policy hash,
 //     PASS, kinds, digest). Any failure: FAILED_PRECONDITION, no box;
 //  5. (in deploy) create the box and copy the snapshot, the verified

@@ -272,6 +272,13 @@ func validate(r *recipeDef) error {
 		if n.Kind != yaml.MappingNode {
 			return fmt.Errorf("recipe %q guardrail_gate is present but not a mapping (an empty gate is refused, not ignored)", r.ID)
 		}
+		// Strict: Node.Decode ignores unknown keys, and a misspelt
+		// require_kinds would silently drop the recipe's own requirement.
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			if k := n.Content[i].Value; k != "dataset_path" && k != "require_kinds" {
+				return fmt.Errorf("recipe %q guardrail_gate: unknown key %q (want dataset_path, require_kinds)", r.ID, k)
+			}
+		}
 		r.GuardrailGate = &guardrailGateDef{}
 		if err := n.Decode(r.GuardrailGate); err != nil {
 			return fmt.Errorf("recipe %q guardrail_gate: %w", r.ID, err)
