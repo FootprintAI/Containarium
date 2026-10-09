@@ -1847,6 +1847,10 @@ skipAppHosting:
 				// store existed) and has been a no-op until now.
 				auditGRPCInterceptor.SetStore(auditStore)
 				codeEgressServer.SetAuditStore(auditStore)
+				// #2415 — the sentinel ships its SSH session records here.
+				// Registered only when the store exists; without Postgres the
+				// RPC is simply absent (Unimplemented) rather than a stub.
+				pb.RegisterAuditServiceServer(grpcServer, NewAuditServer(auditStore))
 				log.Printf("Audit logging service enabled")
 			}
 
