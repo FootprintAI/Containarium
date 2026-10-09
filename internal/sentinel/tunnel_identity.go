@@ -85,7 +85,7 @@ func GenerateTunnelIdentity() (*TunnelIdentity, error) {
 // public key matches the certificate. A missing file yields an error for
 // which os.IsNotExist reports true.
 func LoadTunnelIdentity(path string) (*TunnelIdentity, error) {
-	data, err := os.ReadFile(path) //nolint:gosec // operator-supplied identity path
+	data, err := os.ReadFile(path) // #nosec G304 -- operator-configured identity file path, read by the service that owns it
 	if err != nil {
 		return nil, err
 	}
