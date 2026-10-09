@@ -17,12 +17,30 @@ last-run status are not yet exposed through the API.
 
 ## Who gets scanned: opt-in only
 
-Scanning is an action on a workload, so nothing is scanned by default.
-`CONTAINARIUM_OPENVAS_OPT_IN` is a comma-separated list of container names.
+Scanning is an action on a workload, so nothing is scanned by default. A
+container is scanned only when one of these allows it, checked in this order:
 
-- Empty (default): no container is scanned, and no GMP command is sent.
-- Names: only those containers are scanned.
-- `*`: every container. Use it only on hosts the operator owns.
+1. **A recorded decision** for the container. It wins over everything else, in
+   both directions: a recorded refusal beats the operator list below, and a
+   recorded opt-in works without an entry in it.
+2. **The operator list**, `CONTAINARIUM_OPENVAS_OPT_IN`, a comma-separated list
+   of container names. `*` selects every container; use it only on hosts the
+   operator owns.
+3. Otherwise the container is not scanned. If the recorded decision cannot be
+   read (database error), the container is skipped; consent is never assumed.
+
+Record a decision with the CLI (the container's owner or an admin may):
+
+```
+containarium security scan-opt-in allow  <container> --reason "..."
+containarium security scan-opt-in refuse <container> --reason "..."
+containarium security scan-opt-in list [container]    # all containers needs admin
+```
+
+REST: `PUT /v1/pentest/scan-opt-ins/{container_name}` and
+`GET /v1/pentest/scan-opt-ins`. Each decision stores who made it, when, and
+why (the latest replaces the earlier one), and every change is written to the
+audit log as `pentest.scan_opt_in.set` with the reason and the previous value.
 
 Only container IPs are scanned; routes are skipped, as are core service boxes.
 

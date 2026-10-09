@@ -48,6 +48,13 @@ verification pass clears; its notes fold this section in._
 
 ### Added
 
+- Per-container OpenVAS scan opt-in is now persisted (#2426). New `pentest_scan_opt_ins` table, `SetPentestScanOptIn`
+  and `ListPentestScanOptIns` RPCs (`PUT /v1/pentest/scan-opt-ins/{container_name}`, `GET /v1/pentest/scan-opt-ins`),
+  and `containarium security scan-opt-in allow|refuse|list`. The container's owner or an admin records the decision with
+  a reason; the latest decision is kept with who and when, and each change is written to the audit log as
+  `pentest.scan_opt_in.set`. A recorded decision wins over `CONTAINARIUM_OPENVAS_OPT_IN` in both directions (an
+  owner's refusal beats `*`), and an unreadable decision skips the container rather than assuming consent.
+
 - Guardrail deploy gate (#2368, slice C). A recipe can declare `guardrail_gate` (`dataset_path`, `require_kinds`).
   `DeployRecipe` then requires `guardrail_input` (`staging_ref` and the attestation). Before any container exists it
   refuses async, a missing server policy or trusted signer, a policy read error and a missing input. It snapshots the

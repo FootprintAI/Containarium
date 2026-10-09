@@ -5690,6 +5690,79 @@
         ]
       }
     },
+    "/v1/pentest/scan-opt-ins": {
+      "get": {
+        "summary": "List scan opt-ins",
+        "description": "Lists the recorded scan decisions, for one container or (admin) for all.",
+        "operationId": "PentestService_ListPentestScanOptIns",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListPentestScanOptInsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "containerName",
+            "description": "Optional: only this container. Empty lists every recorded decision\n(admin only).",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Pentest"
+        ]
+      }
+    },
+    "/v1/pentest/scan-opt-ins/{containerName}": {
+      "put": {
+        "summary": "Set a container's scan opt-in",
+        "description": "Records, with the caller and a reason, whether a container may be scanned by an intrusive scanner such as OpenVAS. The container owner or an admin may call it; an explicit refusal overrides any operator-wide opt-in. Every change is written to the audit log.",
+        "operationId": "PentestService_SetPentestScanOptIn",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SetPentestScanOptInResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "containerName",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/SetPentestScanOptInBody"
+            }
+          }
+        ],
+        "tags": [
+          "Pentest"
+        ]
+      }
+    },
     "/v1/pentest/scans": {
       "get": {
         "summary": "List pentest scan runs",
@@ -14769,6 +14842,18 @@
         }
       }
     },
+    "ListPentestScanOptInsResponse": {
+      "type": "object",
+      "properties": {
+        "optIns": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/PentestScanOptIn"
+          }
+        }
+      }
+    },
     "ListPentestScanRunsResponse": {
       "type": "object",
       "properties": {
@@ -15637,6 +15722,34 @@
       },
       "title": "PentestFindingSummary provides aggregate counts"
     },
+    "PentestScanOptIn": {
+      "type": "object",
+      "properties": {
+        "containerName": {
+          "type": "string"
+        },
+        "scanner": {
+          "$ref": "#/definitions/PentestScanner"
+        },
+        "optedIn": {
+          "type": "boolean",
+          "description": "true = scanning allowed, false = explicitly refused. A refusal wins over\nan operator-wide opt-in, so an owner can always say no."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Free-text reason given when the decision was recorded."
+        },
+        "updatedBy": {
+          "type": "string",
+          "description": "Authenticated subject that recorded the decision."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "description": "PentestScanOptIn is the recorded scan decision for one container and\nscanner. It is the consent record: who decided, when, and why."
+    },
     "PentestScanRun": {
       "type": "object",
       "properties": {
@@ -15709,6 +15822,15 @@
         }
       },
       "title": "PentestScanRun represents a single penetration test scan execution"
+    },
+    "PentestScanner": {
+      "type": "string",
+      "enum": [
+        "PENTEST_SCANNER_UNSPECIFIED",
+        "PENTEST_SCANNER_OPENVAS"
+      ],
+      "default": "PENTEST_SCANNER_UNSPECIFIED",
+      "description": "PentestScanner names a scanner whose use on a container needs the\ncontainer owner's (or an operator's) explicit consent. The cheap\nbuilt-in modules (headers, TLS, ports, ...) are not listed here.\n\n - PENTEST_SCANNER_OPENVAS: OpenVAS (Greenbone) network vulnerability scanner."
     },
     "PgConnection": {
       "type": "object",
@@ -17395,6 +17517,28 @@
         "signature": {
           "$ref": "#/definitions/NetworkPolicySignature",
           "title": "stored form, with the assigned id"
+        }
+      }
+    },
+    "SetPentestScanOptInBody": {
+      "type": "object",
+      "properties": {
+        "scanner": {
+          "$ref": "#/definitions/PentestScanner"
+        },
+        "optedIn": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "SetPentestScanOptInResponse": {
+      "type": "object",
+      "properties": {
+        "optIn": {
+          "$ref": "#/definitions/PentestScanOptIn"
         }
       }
     },
