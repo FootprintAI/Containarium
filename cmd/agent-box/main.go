@@ -111,8 +111,8 @@ func main() {
 // agentbox.DrainingStdio: EOF on stdin is withheld until every request the
 // server already read has been answered. Without it, a request sent
 // immediately before the client closes stdin (a one-shot pipe, or an SSH
-// session dropping right after process_start) is dropped by the library's
-// worker pool about half the time under load. See DrainingStdio's doc.
+// session dropping right after process_start) can be dropped by the
+// library's worker pool under load. See DrainingStdio's doc.
 func serveStdio(mcpServer *server.MCPServer) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
