@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	internalsecrets "github.com/footprintai/containarium/internal/secrets"
 	"github.com/footprintai/containarium/pkg/core/secrets"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -35,7 +34,7 @@ func LoadOperatorKMS(kekID string) (secrets.KMSClient, error) {
 	if !ok {
 		return nil, fmt.Errorf("kek_id %q is not a GCP KMS key version: only gcp managed keys can be unwrapped here", kekID)
 	}
-	c, err := internalsecrets.LoadKMSClientForKey(keyName)
+	c, err := LoadKMSClientForKey(keyName)
 	if err != nil {
 		return nil, fmt.Errorf("build your KMS client: %w; %s", err, operatorEnvHint)
 	}

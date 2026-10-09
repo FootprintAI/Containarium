@@ -165,20 +165,12 @@ func vaultConfigFromEnv() (corecrypto.VaultConfig, error) {
 // _TOKEN_FILE. Optional: CONTAINARIUM_GCP_KMS_ENDPOINT (private-endpoint
 // deployments override this), CONTAINARIUM_GCP_KMS_TIMEOUT (default 5s).
 func gcpConfigFromEnv() (corecrypto.GCPConfig, error) {
-	keyName := strings.TrimSpace(os.Getenv(config.EnvGCPKMSKeyName))
-	if keyName == "" {
-		return corecrypto.GCPConfig{}, fmt.Errorf("CONTAINARIUM_GCP_KMS_KEY_NAME is required (e.g. projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>)")
-	}
-	cfg, err := gcpAuthConfigFromEnv()
-	cfg.KeyName = keyName
-	return cfg, err
-}
-
-// gcpAuthConfigFromEnv reads everything but the key name: the endpoint,
-// the token source and the timeout.
-func gcpAuthConfigFromEnv() (corecrypto.GCPConfig, error) {
 	cfg := corecrypto.GCPConfig{
+		KeyName:  strings.TrimSpace(os.Getenv(config.EnvGCPKMSKeyName)),
 		Endpoint: strings.TrimSpace(os.Getenv(config.EnvGCPKMSEndpoint)),
+	}
+	if cfg.KeyName == "" {
+		return cfg, fmt.Errorf("CONTAINARIUM_GCP_KMS_KEY_NAME is required (e.g. projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>)")
 	}
 
 	// Token source: a static token (CONTAINARIUM_GCP_KMS_TOKEN) or — recommended
@@ -290,23 +282,4 @@ func readBearerLikeFile(path string) (string, error) {
 		return "", fmt.Errorf("%s is empty", path)
 	}
 	return s, nil
-}
-
-// LoadKMSClientForKey builds a GCP KMS client for one named CryptoKey from
-// the KMS auth env (token / token file / endpoint / timeout), without
-// CONTAINARIUM_GCP_KMS_KEY_NAME: on an operator machine the key comes from
-// the backup record's kek_id, not from a shared daemon KEK (#2403). The
-// token is the caller's own (`gcloud auth print-access-token`), so every
-// Decrypt is made, and audited, as that principal.
-func LoadKMSClientForKey(keyResourceName string) (corecrypto.KMSClient, error) {
-	backend := strings.ToLower(strings.TrimSpace(os.Getenv(config.EnvKMSBackend)))
-	if backend != KMSBackendGCP {
-		return nil, fmt.Errorf("%s must be %q (got %q)", config.EnvKMSBackend, KMSBackendGCP, backend)
-	}
-	cfg, err := gcpAuthConfigFromEnv()
-	if err != nil {
-		return nil, err
-	}
-	cfg.KeyName = keyResourceName
-	return corecrypto.NewGCPKMS(cfg)
 }
