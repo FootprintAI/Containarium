@@ -77,10 +77,7 @@ func (s *MemFindingStore) Upsert(ctx context.Context, f *Finding) (*Finding, err
 		prevCount, prevLastSeen, prevEvidence := existing.Count, existing.LastSeen, existing.Evidence
 		existing.Count++
 		existing.LastSeen = now
-		existing.Evidence = Evidence{
-			Flows:  append(append([]FlowEvidence(nil), existing.Evidence.Flows...), f.Evidence.Flows...),
-			Denies: append(append([]DenyEvidence(nil), existing.Evidence.Denies...), f.Evidence.Denies...),
-		}.Capped()
+		existing.Evidence = existing.Evidence.merged(f.Evidence).Capped()
 		out = existing
 		rollback = func() {
 			s.mu.Lock()

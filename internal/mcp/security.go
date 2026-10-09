@@ -120,11 +120,24 @@ type DenyEvidence struct {
 	Count    string `json:"count"`
 }
 
+// ConfigEvidence mirrors the daemon's ConfigEvidence (#2424): one
+// configuration directive whose effective value violated policy, and
+// whether the platform re-asserted its managed configuration in the same
+// pass.
+type ConfigEvidence struct {
+	Path       string `json:"path"`
+	Directive  string `json:"directive"`
+	Value      string `json:"value"`
+	Remediated bool   `json:"remediated"`
+	Note       string `json:"note,omitempty"`
+}
+
 // SentryEvidence mirrors the daemon's Evidence message — the wire shape
 // nested under Finding.evidence, not flattened onto SentryFinding.
 type SentryEvidence struct {
-	Flows  []FlowEvidence `json:"flows,omitempty"`
-	Denies []DenyEvidence `json:"denies,omitempty"`
+	Flows   []FlowEvidence   `json:"flows,omitempty"`
+	Denies  []DenyEvidence   `json:"denies,omitempty"`
+	Configs []ConfigEvidence `json:"configs,omitempty"`
 }
 
 // SentryFinding mirrors the daemon's Finding (#1639/#1643): a single
