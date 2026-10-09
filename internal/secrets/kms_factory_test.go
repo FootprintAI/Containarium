@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	corecrypto "github.com/footprintai/containarium/pkg/core/secrets"
@@ -450,7 +451,12 @@ func fakeTenantKMSEndpoint(t *testing.T, gotPath *string) *httptest.Server {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"ciphertext": body.Plaintext})
+		// As Cloud KMS does, name the CryptoKeyVersion used (#2402).
+		key := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/"), ":encrypt")
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"name":       key + "/cryptoKeyVersions/1",
+			"ciphertext": body.Plaintext,
+		})
 	}))
 }
 
@@ -492,8 +498,8 @@ func TestLoadTenantKMSFactory_GCPBuildsAClientPerKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Wrap against fake endpoint: %v", err)
 	}
-	if kekID != "gcp:"+otherKey {
-		t.Fatalf("kek_id = %q; want %q (the per-tenant key, not the shared one)", kekID, "gcp:"+otherKey)
+	if kekID != "gcp:"+otherKey+"/cryptoKeyVersions/1" {
+		t.Fatalf("kek_id = %q; want %q (the per-tenant key, not the shared one)", kekID, "gcp:"+otherKey+"/cryptoKeyVersions/1")
 	}
 	wantPath := "/v1/" + otherKey + ":encrypt"
 	if gotPath != wantPath {

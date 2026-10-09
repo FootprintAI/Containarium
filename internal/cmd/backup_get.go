@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/spf13/cobra"
 )
 
@@ -42,6 +43,11 @@ func runBackupGet(cmd *cobra.Command, args []string) error {
 	}
 	if r.Encrypted {
 		fmt.Printf("Encrypted:   yes (age recipient %s; restore needs --age-identity-file)\n", r.AgeRecipient)
+	}
+	if r.KeyMode == pb.BackupKeyMode_BACKUP_KEY_MODE_MANAGED || r.KeyMode == pb.BackupKeyMode_BACKUP_KEY_MODE_BOTH {
+		fmt.Printf("Key mode:    %s\n", keyModeLabel(r.KeyMode))
+		fmt.Printf("Key version: %s\n", r.KekId)
+		fmt.Printf("Wrapped key: %d bytes (unwrap under your own KMS credentials to obtain the identity)\n", len(r.WrappedKey))
 	}
 	return nil
 }

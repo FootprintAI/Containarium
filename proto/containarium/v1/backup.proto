@@ -49,6 +49,33 @@ enum BackupEngine {
   BACKUP_ENGINE_HOOK = 2;
 }
 
+// BackupKeyMode names who holds the key that opens an encrypted backup
+// (#2402). It replaces reading `encrypted && age_recipient != ""` as a
+// mode: a reader that needs to know whether a backup is platform-managed
+// checks this field, not a combination of others.
+enum BackupKeyMode {
+  // On a record: not encrypted. On a request: the daemon default —
+  // MANAGED when the daemon has a key wrapper configured (BOTH when a
+  // legacy recipient also resolves), otherwise the AGE_RECIPIENT /
+  // plaintext behaviour of #1831 / #1836.
+  BACKUP_KEY_MODE_UNSPECIFIED = 0;
+
+  // Encrypted to a tenant-held age recipient only (#1831). The platform
+  // holds no key; restore needs the matching identity from the caller.
+  BACKUP_KEY_MODE_AGE_RECIPIENT = 1;
+
+  // Encrypted to a per-backup ephemeral age identity whose secret is
+  // wrapped by the daemon's KMS wrapper and stored on the record
+  // (wrapped_key / kek_id). The daemon can wrap but not unwrap; only a
+  // holder of the KMS decrypt role can open the backup. Requesting this
+  // on a daemon with no wrapper is an error, not a fallback.
+  BACKUP_KEY_MODE_MANAGED = 2;
+
+  // Both of the above in one age file: either the legacy identity or
+  // the unwrapped managed identity decrypts it. Requires a recipient.
+  BACKUP_KEY_MODE_BOTH = 3;
+}
+
 // BackupRecord is the metadata index entry for one stored dump. The dump
 // itself lives at `location`; this record is persisted as a small JSON
 // sidecar in the daemon's backup directory so `ListBackups` works without
@@ -117,6 +144,21 @@ message BackupRecord {
   // For BACKUP_ENGINE_HOOK: the absolute in-container path of the hook
   // that produced the dump. Empty for pg_dump records.
   string hook = 14;
+
+  // Managed key mode (#2402). wrapped_key is the per-backup age
+  // identity's secret string, wrapped by the daemon's KMS; kek_id is the
+  // key version it was wrapped under (for GCP, the full CryptoKeyVersion
+  // resource name, so a version with backups still under it can be
+  // guarded against destruction). Both empty unless key_mode is MANAGED
+  // or BOTH. The daemon never unwraps wrapped_key: whoever restores or
+  // verifies unwraps it under their own KMS credentials and supplies
+  // the identity in the request, as for any encrypted record.
+  bytes wrapped_key = 15;
+  string kek_id = 16;
+  // Who holds the key: UNSPECIFIED for a plaintext record,
+  // AGE_RECIPIENT for a record encrypted to a tenant-held recipient only
+  // (including every record written before this field existed).
+  BackupKeyMode key_mode = 17;
 }
 
 // VerificationResult is the outcome of a restore test. A backup whose
@@ -255,6 +297,16 @@ message CreateBackupRequest {
   // operator only ever hold ciphertext. Restore needs the matching
   // identity, which the platform never stores.
   string age_recipient = 7;
+
+  // Who should hold the key (#2402). UNSPECIFIED takes the daemon
+  // default: MANAGED when the daemon has a key wrapper configured
+  // (CONTAINARIUM_BACKUP_KMS_KEY_NAME), BOTH when a recipient also
+  // resolves, otherwise AGE_RECIPIENT with a recipient or plaintext
+  // without. An explicit mode the daemon cannot satisfy — MANAGED or
+  // BOTH with no wrapper (FAILED_PRECONDITION), AGE_RECIPIENT or BOTH
+  // with no recipient (INVALID_ARGUMENT) — is rejected, never silently
+  // downgraded.
+  BackupKeyMode key_mode = 8;
 }
 
 message CreateBackupResponse {
