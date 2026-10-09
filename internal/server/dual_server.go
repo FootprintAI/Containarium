@@ -29,6 +29,7 @@ import (
 	"github.com/footprintai/containarium/internal/bridgedns"
 	"github.com/footprintai/containarium/internal/cloud"
 	clusterstore "github.com/footprintai/containarium/internal/cluster"
+	"github.com/footprintai/containarium/internal/codeegress"
 	"github.com/footprintai/containarium/internal/collaborator"
 	appconfig "github.com/footprintai/containarium/internal/config"
 	"github.com/footprintai/containarium/internal/coreguard"
@@ -637,6 +638,12 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	npServer.SetSignatureStore(NewMemNetworkPolicySignatureStore()) // #661 PR-B; swapped to Postgres below when available
 	pb.RegisterNetworkPolicyServiceServer(grpcServer, npServer)
 	log.Printf("NetworkPolicy service enabled (in-memory store; Phase A)")
+
+	// CodingToolEgressPolicyService (#2378): the coding tool's egress
+	// allowlist. In-memory until the Postgres pool exists; store only, no
+	// enforcement yet.
+	codeEgressServer := NewCodingToolEgressPolicyServer(NewMemCodingToolEgressPolicyStore())
+	pb.RegisterCodingToolEgressPolicyServiceServer(grpcServer, codeEgressServer)
 
 	// GuardrailPolicyService (#2368): the admin-owned, cluster-wide guardrail
 	// policy. It starts fail-closed; the real store is chosen by
@@ -1495,6 +1502,12 @@ skipAppHosting:
 	// (#2359 — the tenant guard would strip persisted allow_from_tenants).
 	var policyStoreDurable atomic.Bool
 	policyStoreDurable.Store(postgresConnString == "")
+	// The coding-tool egress policy store (#2378) gets the same guard: with
+	// Postgres configured it refuses every RPC until its Postgres store is
+	// installed below, instead of answering "unrestricted" from the empty
+	// in-memory stand-in.
+	codeEgressServer.SetDurable(postgresConnString == "")
+
 	// The Postgres guardrail policy store (#2368), or nil if it is not
 	// installed below; guardrailPolicyStartupStore turns nil into fail-closed.
 	var guardrailPGStore guardrailpolicy.Store
@@ -1503,6 +1516,15 @@ skipAppHosting:
 		if poolErr != nil {
 			log.Printf("Warning: Failed to connect to PostgreSQL for network policy store: %v", poolErr)
 		} else {
+			// Wired independently of the network-policy store below, so a
+			// failure there does not leave this one on the stand-in.
+			if ceErr := codeEgressServer.InstallDurableStore(func() (CodingToolEgressPolicyStore, error) {
+				return NewPostgresCodingToolEgressPolicyStore(context.Background(), pool)
+			}); ceErr != nil {
+				log.Printf("Warning: Failed to create Postgres coding-tool egress policy store (its RPCs fail UNAVAILABLE): %v", ceErr)
+			} else {
+				log.Printf("Coding-tool egress policy persistence enabled (Postgres store)")
+			}
 			// Managed-cluster state (#1413) is wired FIRST and
 			// independently: a network-policy store failure below must
 			// not silently leave clusters on the in-memory store (the
@@ -1818,6 +1840,7 @@ skipAppHosting:
 				// which was registered on grpcServer above (before this
 				// store existed) and has been a no-op until now.
 				auditGRPCInterceptor.SetStore(auditStore)
+				codeEgressServer.SetAuditStore(auditStore)
 				log.Printf("Audit logging service enabled")
 			}
 
@@ -2376,6 +2399,9 @@ skipAppHosting:
 			// which gateway to mint against and which host a box reaches it on
 			// (#1726). Until this call they refuse; after it they mint.
 			modelGatewayServer.SetGateway(gw, []byte(config.JWTSecret), config.HostIP, config.HTTPPort)
+			if config.HostIP != "" && config.HTTPPort != 0 {
+				codeEgressServer.SetImplicit(codeegress.Implicit{GatewayEndpoint: net.JoinHostPort(config.HostIP, strconv.Itoa(config.HTTPPort))})
+			}
 			primary := gatewayPrimaryProvider(keys)
 			// globalProviders (#2222) is agentengine.Resolve's "ready with no
 			// owner lookup needed" set — the same `keys` map gatewayPrimaryProvider

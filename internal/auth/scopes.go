@@ -138,6 +138,10 @@ const (
 	ScopeNetworkPolicyRead = "network-policy:read" // NetworkPolicyService Get/List
 	ScopeTokensRead        = "tokens:read"         // token listing
 
+	// code-egress:read lets a tenant read its own coding-tool egress policy
+	// (CodingToolEgressPolicyService Get, #2378). Writes stay admin-only.
+	ScopeCodeEgressRead = "code-egress:read"
+
 	// ephemeral sandboxes (SandboxServer, #1488). A sandbox has no
 	// per-tenant Linux account and no SSH — spawn/exec/file/delete is its
 	// entire access surface, and an agent's own token is what reaches it,
@@ -198,6 +202,7 @@ var AllScopes = []string{
 	ScopeAnonDoor, ScopeAnonAdmin,
 	ScopeClustersRead, ScopeClustersWrite, ScopeClustersScale,
 	ScopeAuditRead, ScopeNetworkPolicyRead, ScopeTokensRead,
+	ScopeCodeEgressRead,
 	ScopeSandboxesRead, ScopeSandboxesWrite,
 	ScopeTrackerRead, ScopeTrackerWrite, ScopeTrackerAdmin,
 	ScopeGatewayAdmin, ScopeGatewayMint,
