@@ -4,6 +4,7 @@ package hostcheck
 
 import (
 	"fmt"
+	"github.com/footprintai/containarium/pkg/core/sshdpolicy"
 	"net"
 	"os"
 	"path/filepath"
@@ -338,68 +339,33 @@ func sshdConfigCheck(p posturePaths) Check {
 	return c
 }
 
-// readSSHDConfig concatenates the main config with its drop-in
-// directory, in the order sshd itself would read them: an Include is
-// expanded where it appears, and modern distros put the Include at the
-// TOP of sshd_config. Since first-match-wins (below), drop-ins therefore
-// override the main file — get this order backwards and the check
-// reports the overridden value.
+// readSSHDConfig gathers the main config and its *.conf drop-ins and hands
+// them to sshdpolicy.Merge, which orders them the way sshd reads them
+// (drop-ins first, lexically, then the main file — the Include sits at the
+// top of a modern sshd_config). One parser is shared with the per-box
+// posture reconciler (#2424) so host and box checks cannot disagree.
 func readSSHDConfig(mainPath, dropInDir string) (string, error) {
 	main, err := os.ReadFile(mainPath) // #nosec G304 -- mainPath is a package-owned constant (/etc/ssh/sshd_config), overridden only by tests
 	if err != nil {
 		return "", fmt.Errorf("reading %s: %w", mainPath, err)
 	}
-	var b strings.Builder
-	entries, derr := os.ReadDir(dropInDir)
-	if derr == nil {
-		names := make([]string, 0, len(entries))
+	var dropIns []sshdpolicy.DropIn
+	if entries, derr := os.ReadDir(dropInDir); derr == nil {
 		for _, e := range entries {
-			if strings.HasSuffix(e.Name(), ".conf") {
-				names = append(names, e.Name())
-			}
-		}
-		sort.Strings(names) // sshd globs *.conf; lexical order is what it gets
-		for _, n := range names {
-			d, rerr := os.ReadFile(filepath.Join(dropInDir, filepath.Base(n))) // #nosec G304 -- dropInDir is a package-owned constant; n is Base()-bounded
+			d, rerr := os.ReadFile(filepath.Join(dropInDir, filepath.Base(e.Name()))) // #nosec G304 -- dropInDir is a package-owned constant; name is Base()-bounded
 			if rerr != nil {
 				continue
 			}
-			b.Write(d)
-			b.WriteString("\n")
+			dropIns = append(dropIns, sshdpolicy.DropIn{Name: e.Name(), Content: string(d)})
 		}
 	}
-	b.Write(main)
-	return b.String(), nil
+	return sshdpolicy.Merge(string(main), dropIns), nil
 }
 
-// sshdDirective returns the effective value of key, or def if unset.
-//
-// FIRST occurrence wins — that is OpenSSH's rule for these keywords, and
-// it is the opposite of the "last wins" most config formats use. A
-// last-wins implementation would report the wrong value on any host with
-// a drop-in, which is most modern ones.
-//
-// Match blocks are ignored: a directive inside `Match` is conditional,
-// and treating it as global would misreport. Anything after the first
-// Match line is skipped.
+// sshdDirective is sshdpolicy.Directive (first occurrence wins, Match
+// blocks ignored); kept as a local name so the check reads naturally.
 func sshdDirective(config, key, def string) string {
-	for _, line := range strings.Split(config, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) == 0 {
-			continue
-		}
-		if strings.EqualFold(fields[0], "Match") {
-			break // conditional territory; stop reading globals
-		}
-		if strings.EqualFold(fields[0], key) && len(fields) >= 2 {
-			return fields[1]
-		}
-	}
-	return def
+	return sshdpolicy.Directive(config, key, def)
 }
 
 // --- unattended upgrades ---------------------------------------------

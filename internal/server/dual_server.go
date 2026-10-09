@@ -331,6 +331,7 @@ type DualServer struct {
 	// GetSentryStatus regardless, reporting DISABLED/UNAVAILABLE explicitly
 	// when the engine itself wasn't constructed.
 	threatDetectEngine    *threatdetect.Engine
+	sshdPosture           *security.SSHDPostureReconciler // box sshd key-only reconciler (#2424); nil when disabled
 	threatDetectServer    *ThreatDetectionServer
 	threatDetectNotifier  *threatdetect.WebhookNotifier // nil unless threatDetectEngine is also non-nil (#1643)
 	threatDetectSweepStop context.CancelFunc
@@ -2136,6 +2137,10 @@ skipAppHosting:
 	case auditStore == nil:
 		sentryUnavailableReason = "audit store unavailable (every finding must ride the audit hash chain; requires Postgres)"
 	}
+	// findingSink is also what the box sshd posture reconciler (#2424)
+	// records into; it stays nil when the sentry is off or unavailable and
+	// the reconciler then logs instead.
+	var findingSink threatdetect.FindingSink
 	if threatCfg.SentryEnabled && sentryAvailable {
 		var sink threatdetect.FindingSink
 		var findingsPool *pgxpool.Pool
@@ -2191,6 +2196,7 @@ skipAppHosting:
 				}
 			}
 
+			findingSink = sink
 			threatDetectEngine = threatdetect.NewEngine(sink, "", degraded, networkPolicyEnforcer.TenantForIP, nil)
 			// Fence-probe rules (#1642): a breached fence (cross-tenant
 			// flow) and a probed fence (deny-burst) are both continuous
@@ -2210,6 +2216,22 @@ skipAppHosting:
 	}
 	threatDetectServer := NewThreatDetectionServer(threatDetectEngine, threatCfg.SentryEnabled, sentryAvailable, sentryUnavailableReason)
 	threatDetectServer.SetFindingStore(threatDetectStore)
+
+	// Box sshd posture reconciler (#2424): keeps every running box's sshd
+	// key-only by re-asserting the managed drop-in and recording tampering
+	// as a finding. Independent of Postgres and eBPF — it needs only the
+	// incus file API — so it runs on every backend unless disabled.
+	var sshdPosture *security.SSHDPostureReconciler
+	if postureCfg := appconfig.LoadSSHDPosture(); postureCfg.Disabled {
+		log.Printf("Box sshd posture reconciler disabled (%s)", appconfig.EnvSSHDPostureDisable)
+	} else if postureIncus, perr := incus.New(); perr != nil {
+		log.Printf("Warning: box sshd posture reconciler disabled: incus client: %v", perr)
+	} else {
+		sshdPosture = security.NewSSHDPostureReconciler(postureIncus, findingSink, postureCfg.Interval)
+		if findingSink == nil {
+			log.Printf("Box sshd posture reconciler: no finding sink (threat sentry off or unavailable); tampering will be logged, not recorded")
+		}
+	}
 
 	// Known-bad-destination rule (#1641): constructed independent of
 	// threatCfg.SentryEnabled — an operator can curate the list via CLI/MCP
@@ -2725,6 +2747,7 @@ skipAppHosting:
 		daemonConfigStore:      config.DaemonConfigStore,
 		metricsCollector:       metricsCollector,
 		securityScanner:        securityScanner,
+		sshdPosture:            sshdPosture,
 		securityStore:          securityStore,
 		securityServer:         securityServerInstance,
 		auditStore:             auditStore,
@@ -3202,6 +3225,9 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		if ds.threatDetectEngine != nil {
 			ds.threatDetectEngine.SetBackendID(ds.peerPool.LocalBackendID())
 		}
+		if ds.sshdPosture != nil {
+			ds.sshdPosture.SetBackendID(ds.peerPool.LocalBackendID())
+		}
 
 		// Register /v1/backends endpoint on gateway
 		if ds.gatewayServer != nil {
@@ -3434,6 +3460,10 @@ func (ds *DualServer) Start(ctx context.Context) error {
 	// runtime; the eBPF enforcer serves those.
 	if ds.k8sNetPolicyReconciler != nil {
 		ds.k8sNetPolicyReconciler.Start(ctx)
+	}
+
+	if ds.sshdPosture != nil {
+		ds.sshdPosture.Start(ctx)
 	}
 
 	if ds.securityScanner != nil {
@@ -3797,6 +3827,9 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		}
 		if ds.metricsCollector != nil {
 			ds.metricsCollector.Stop()
+		}
+		if ds.sshdPosture != nil {
+			ds.sshdPosture.Stop()
 		}
 		if ds.securityScanner != nil {
 			ds.securityScanner.Stop()

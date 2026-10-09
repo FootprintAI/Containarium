@@ -42,6 +42,7 @@ type MockBackend struct {
 	ExecWithExitCodeFunc      func(containerName string, command []string) (string, string, int, error)
 	WriteFileFunc             func(containerName, path string, content []byte, mode string) error
 	ReadFileFunc              func(containerName, path string) ([]byte, error)
+	ListDirFunc               func(containerName, path string) ([]string, error)
 	SetConfigFunc             func(containerName, key, value string) error
 	SetCPULimitFunc           func(containerName, cpu string) error
 	UnsetConfigFunc           func(containerName, key string) error
@@ -202,6 +203,13 @@ func (m *MockBackend) WriteFile(containerName, path string, content []byte, mode
 func (m *MockBackend) ReadFile(containerName, path string) ([]byte, error) {
 	if m.ReadFileFunc != nil {
 		return m.ReadFileFunc(containerName, path)
+	}
+	return nil, nil
+}
+
+func (m *MockBackend) ListDir(containerName, path string) ([]string, error) {
+	if m.ListDirFunc != nil {
+		return m.ListDirFunc(containerName, path)
 	}
 	return nil, nil
 }

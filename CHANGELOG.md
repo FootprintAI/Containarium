@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Boxes are now key-only for SSH (#2424). A box's sshd previously inherited the image default
+  (`PasswordAuthentication yes`), and the owner's `NOPASSWD` sudo was one `passwd` away from making
+  that reachable from the tenant's other boxes, the LAN on direct in-network backends, or anywhere a
+  reverse tunnel pointed. Provisioning now writes `/etc/ssh/sshd_config.d/00-containarium.conf`
+  (`PasswordAuthentication no`, `KbdInteractiveAuthentication no`, `PermitEmptyPasswords no`) before
+  (re)starting sshd, into baked base images too. A new daemon-side posture reconciler re-reads every
+  running box's effective sshd configuration through the incus file API every 10 minutes
+  (`CONTAINARIUM_SSHD_POSTURE_INTERVAL_MINUTES`, `CONTAINARIUM_SSHD_POSTURE_DISABLE`), re-asserts the
+  drop-in when it is missing or altered, and records tampering as a `THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH`
+  security finding (MEDIUM when the pass closed it, HIGH when the box is still permissive) with
+  `ConfigEvidence` naming the directive and file. Existing boxes are backfilled silently on the first
+  pass. The public SSH ingress was already key-only (the sentinel pipes to the backend host sshd, not
+  the box); this closes the in-network and reverse-tunnel paths for the stock sshd.
+
 ### Removed
 
 - The dead `SecurityConfig.require_ssh_keys` and `SecurityConfig.min_password_length` proto fields

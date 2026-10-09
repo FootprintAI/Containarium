@@ -231,10 +231,7 @@ func (s *FindingStore) tryUpsert(ctx context.Context, f *Finding) (out *Finding,
 		if uerr := json.Unmarshal(evidenceJSON, &existing); uerr != nil {
 			return nil, false, fmt.Errorf("threatdetect: unmarshal existing evidence: %w", uerr)
 		}
-		merged := Evidence{
-			Flows:  append(existing.Flows, f.Evidence.Flows...),
-			Denies: append(existing.Denies, f.Evidence.Denies...),
-		}.Capped()
+		merged := existing.merged(f.Evidence).Capped()
 		mergedJSON, merr := json.Marshal(merged)
 		if merr != nil {
 			return nil, false, fmt.Errorf("threatdetect: marshal merged evidence: %w", merr)

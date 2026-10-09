@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"github.com/footprintai/containarium/pkg/core/sshdpolicy"
 	"io"
 	"log"
 	"os"
@@ -788,12 +789,30 @@ func (m *Manager) installPackages(containerName string, enablePodman bool, stack
 		// (#1037) can run it into a shared base image. See issue #387.
 	}
 
+	// Key-only SSH inside the box (#2424). A box sshd otherwise inherits
+	// the image default (PasswordAuthentication yes), and the owner's
+	// NOPASSWD sudo is one `passwd` away from making that reachable. The
+	// managed drop-in sorts before every distro/cloud-init drop-in, so it
+	// wins under sshd's first-match rule. It is user-independent, so it
+	// lands in baked base images too; the posture reconciler
+	// (internal/security) re-asserts it on running boxes afterwards.
+	// Fatal on failure: a box this daemon cannot write a file into is not
+	// a box the rest of provisioning will succeed on either.
+	if err := m.incus.Exec(containerName, []string{"mkdir", "-p", sshdpolicy.DropInDir}); err != nil {
+		return fmt.Errorf("failed to create %s: %w", sshdpolicy.DropInDir, err)
+	}
+	if err := m.incus.WriteFile(containerName, sshdpolicy.DropInPath, sshdpolicy.DropInContent(), sshdpolicy.DropInMode); err != nil {
+		return fmt.Errorf("failed to write sshd policy drop-in: %w", err)
+	}
+
 	sshService := pkgMgr.SSHServiceName()
 	if err := m.incus.Exec(containerName, []string{"systemctl", "enable", sshService}); err != nil {
 		return fmt.Errorf("failed to enable %s: %w", sshService, err)
 	}
-	if err := m.incus.Exec(containerName, []string{"systemctl", "start", sshService}); err != nil {
-		return fmt.Errorf("failed to start %s: %w", sshService, err)
+	// restart, not start: an image that ships sshd already running would
+	// otherwise keep serving the pre-drop-in configuration.
+	if err := m.incus.Exec(containerName, []string{"systemctl", "restart", sshService}); err != nil {
+		return fmt.Errorf("failed to restart %s: %w", sshService, err)
 	}
 
 	// Run base scripts post-install commands as root

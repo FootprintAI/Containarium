@@ -26,6 +26,11 @@ enum ThreatRuleId {
   THREAT_RULE_ID_CROSS_TENANT_FLOW = 2;
   // Burst of policy denies for one tenant within a time window.
   THREAT_RULE_ID_DENY_BURST = 3;
+  // A box's effective sshd configuration permitted password login, or the
+  // platform-managed key-only drop-in had been removed or altered (#2424).
+  // Raised by the box sshd posture reconciler after it re-asserts the
+  // drop-in; the evidence names the offending directive and file.
+  THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH = 4;
 }
 
 // FindingState is the lifecycle state of a security finding.
@@ -59,11 +64,31 @@ message DenyEvidence {
   int64 count = 5;
 }
 
-// Evidence bundles the flow and deny records that triggered a finding.
-// Capped by the store to the most recent entries — see FindingStore.
+// ConfigEvidence captures one configuration directive whose effective value
+// violated policy, attached to a posture finding (#2424).
+message ConfigEvidence {
+  // File the effective value came from, or the directory when the exact
+  // file could not be attributed.
+  string path = 1;
+  // Directive name, e.g. "PasswordAuthentication".
+  string directive = 2;
+  // Effective value at detection time, e.g. "yes".
+  string value = 3;
+  // Whether the platform re-asserted its managed configuration in the
+  // same pass (the violation is closed on the stock service, and this
+  // finding records that it happened).
+  bool remediated = 4;
+  // Free-text detail, e.g. "managed drop-in missing".
+  string note = 5;
+}
+
+// Evidence bundles the flow, deny and configuration records that triggered
+// a finding. Capped by the store to the most recent entries — see
+// FindingStore.
 message Evidence {
   repeated FlowEvidence flows = 1;
   repeated DenyEvidence denies = 2;
+  repeated ConfigEvidence configs = 3;
 }
 
 // Finding is a single security finding raised by the threat-detection
