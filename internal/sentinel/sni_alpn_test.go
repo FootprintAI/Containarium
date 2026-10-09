@@ -39,7 +39,7 @@ func buildClientHello(exts []byte) []byte {
 	body = append(body, make([]byte, 32)...) // random
 	body = append(body, 0x00)                // session id length
 	body = append(body, 0x00, 0x02, 0x13, 0x01)
-	body = append(body, 0x01, 0x00) // compression
+	body = append(body, 0x01, 0x00)                          // compression
 	body = append(body, byte(len(exts)>>8), byte(len(exts))) // #nosec G115 -- test fixture lengths are small and fixed
 	body = append(body, exts...)
 
