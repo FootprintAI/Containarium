@@ -37,6 +37,43 @@ func (s staticTokens) TokenFor(b string) (string, bool, error) {
 }
 func (s staticTokens) Backends() ([]string, error) { return []string{s.backend}, nil }
 
+// sentinelShipperOptions are the in-process shipper's file locations.
+type sentinelShipperOptions struct {
+	RecordsFile, CheckpointFile, SentinelID, DefaultBackend string
+}
+
+// shipperSources are the sentinel-process state the shipper reads: where a
+// login was routed, each backend's registered token, and each backend's URL.
+type shipperSources struct {
+	Resolver   sshsession.BackendResolver
+	Tokens     sshsession.TokenSource
+	BackendURL func(backendID string) (string, error)
+}
+
+// inProcessShipConfig assembles the multi-backend shipper configuration. The
+// typed client is built here rather than in internal/sentinel because that
+// package cannot import internal/client (it would form an import cycle in
+// internal/client's test build).
+func inProcessShipConfig(src shipperSources, opts sentinelShipperOptions) sshsession.ShipConfig {
+	return sshsession.ShipConfig{
+		RecordsFile:    opts.RecordsFile,
+		CheckpointFile: opts.CheckpointFile,
+		SentinelID:     opts.SentinelID,
+		DefaultBackend: opts.DefaultBackend,
+		Resolver:       src.Resolver,
+		Tokens:         src.Tokens,
+		NewClient: func(backendID, token string) (sshsession.IngestClient, error) {
+			base, err := src.BackendURL(backendID)
+			if err != nil {
+				return nil, err
+			}
+			return client.NewHTTPClient(base, token)
+		},
+		Rejected: client.IsIngestRejected,
+		Logf:     func(format string, args ...any) { log.Printf("[sentinel] ssh-session-shipper: "+format, args...) },
+	}
+}
+
 // newSentinelSSHSessionsShipCmd builds `sentinel ssh-sessions ship`. It is a
 // constructor (not package-level flag vars) so each invocation, and each
 // test, gets fresh flag state.

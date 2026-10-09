@@ -4,6 +4,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -528,19 +529,39 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 
 // startSSHSessionShipper runs the SSH session shipper (#2415) for the life of
 // the sentinel: it needs this process's backend pool, keysync routing and
-// token store. Returns the stop func to defer. A no-op when disabled.
+// token store. Returns the stop func to defer (it waits for the loop to exit).
+// A no-op when disabled.
 func startSSHSessionShipper(ctx context.Context, m *sentinel.Manager) func() {
 	if !sentinelShipSSHSessions {
 		return func() {}
 	}
 	host, _ := os.Hostname()
-	return m.StartSSHSessionShipper(ctx, sentinel.SSHSessionShipperOptions{
+	opts := sentinelShipperOptions{
 		RecordsFile:    sentinelSSHSessionsFile,
 		CheckpointFile: sentinelSSHSessionsCkpt,
-		Interval:       sentinelSSHSessionsInterval,
 		SentinelID:     host,
 		DefaultBackend: sentinelSSHSessionsDefaultBE,
-	})
+	}
+	cfg := inProcessShipConfig(shipperSources{
+		Resolver:   m.SSHSessionBackendResolver(),
+		Tokens:     m.AuditIngestTokens(),
+		BackendURL: m.ShipperBackendURL,
+	}, opts)
+
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		log.Printf("[sentinel] ssh-session-shipper started (records=%s checkpoint=%s interval=%s)",
+			opts.RecordsFile, opts.CheckpointFile, sentinelSSHSessionsInterval)
+		if err := sshsession.Ship(ctx, cfg, sentinelSSHSessionsInterval); err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("[sentinel] ssh-session-shipper stopped: %v", err)
+		}
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
 }
 
 // maybeStartConsoleRouter starts the console router (#1756) in the

@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -265,5 +266,41 @@ func TestSentinelCmd_ShipperFlagDefaults(t *testing.T) {
 		if fl.DefValue != want {
 			t.Errorf("--%s default = %q, want %q", name, fl.DefValue, want)
 		}
+	}
+}
+
+// The in-process shipper's wiring: each backend's records go to the URL the
+// sentinel's pool gives for it, with that backend's token as the bearer.
+func TestInProcessShipConfig_ClientTargetsTheBackendURLWithItsToken(t *testing.T) {
+	stub := newIngestStub(t)
+	cfg := inProcessShipConfig(shipperSources{
+		Tokens: staticTokens{backend: "b1", token: "tok-b1"},
+		BackendURL: func(id string) (string, error) {
+			if id != "b1" {
+				return "", errors.New("not in pool")
+			}
+			return stub.srv.URL, nil
+		},
+	}, sentinelShipperOptions{RecordsFile: "r", CheckpointFile: "c", SentinelID: "s"})
+
+	if cfg.RecordsFile != "r" || cfg.CheckpointFile != "c" || cfg.SentinelID != "s" || cfg.Rejected == nil {
+		t.Fatalf("options not carried through: %+v", cfg)
+	}
+
+	c, err := cfg.NewClient("b1", "tok-b1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.IngestSSHSessionRecords(context.Background(), &pb.IngestSSHSessionRecordsRequest{
+		Records: []*pb.SSHSessionRecord{{SessionId: "s1", Phase: pb.SSHSessionPhase_SSH_SESSION_PHASE_OPEN}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(stub.auth) != 1 || stub.auth[0] != "Bearer tok-b1" {
+		t.Fatalf("Authorization = %v", stub.auth)
+	}
+
+	if _, err := cfg.NewClient("gone", "x"); err == nil {
+		t.Fatal("a backend missing from the pool must be an error (the shipper retries it next pass)")
 	}
 }

@@ -45,10 +45,10 @@ func TestManager_ShipperBackendURL(t *testing.T) {
 	m := &Manager{backends: NewBackendPool(), config: Config{HealthPort: 8080}}
 	m.backends.Add(&Backend{ID: "b1", IP: "10.0.0.7"})
 
-	if got, err := m.shipperBackendURL("b1"); err != nil || got != "http://10.0.0.7:8080" {
+	if got, err := m.ShipperBackendURL("b1"); err != nil || got != "http://10.0.0.7:8080" {
 		t.Fatalf("url = %q, %v", got, err)
 	}
-	if _, err := m.shipperBackendURL("gone"); err == nil {
+	if _, err := m.ShipperBackendURL("gone"); err == nil {
 		t.Fatal("a backend not in the pool must be an error (retried next pass)")
 	}
 }

@@ -133,8 +133,8 @@ This document assesses Containarium against ISO 27001:2022 Annex A controls, tra
 | M6 | A.8.9 | Implement infrastructure drift detection | — | Terraform Cloud or CI drift checks |
 | M7 | A.8.32 | Document change approval process | — | `docs/CHANGE-MANAGEMENT.md` |
 | M8 | — | Fix default PostgreSQL password (`changeme`) | — | `deployments/docker-compose.yml` |
-| M9 | A.8.15 | Ship SSH authentication failures / bans from the sentinel's journal into the audit store | — | `internal/sentinel/sshsession/`, `internal/audit/` |
-| M10 | A.8.15 | Define and enforce audit-table retention (no automatic purge today) | — | `internal/audit/`, `docs/SENTINEL-SSH-SESSION-AUDIT.md` |
+| M9 | A.8.15 | Ship SSH authentication failures / bans from the sentinel's journal into the audit store (#2419) | — | `internal/sentinel/sshsession/`, `internal/audit/` |
+| M10 | A.8.15 | Define and enforce audit-table retention (no automatic purge today) (#2420) | — | `internal/audit/`, `docs/SENTINEL-SSH-SESSION-AUDIT.md` |
 
 ### Priority 3 — Low
 
