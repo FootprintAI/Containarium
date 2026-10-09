@@ -351,7 +351,10 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 	inMode, inOK := g.inbound.resolve(r.Context())
 	if !inOK {
 		dec := guardrail.InboundBlocked(guardrail.InboundReasonPolicyUnavailable)
-		g.inbound.block(inSub, dec, inMode.revision)
+		// block's returned error is what ModifyResponse hands the proxy; here
+		// the response is written directly, so only its side effects
+		// (log, counters, audit) are wanted.
+		_ = g.inbound.block(inSub, dec, inMode.revision)
 		g.failed.Add(1)
 		writeInboundBlock(w, http.StatusServiceUnavailable, dec)
 		return
