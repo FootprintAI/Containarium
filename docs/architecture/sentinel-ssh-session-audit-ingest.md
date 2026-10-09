@@ -205,7 +205,7 @@ The shipper is **a goroutine inside `containarium sentinel`**, not a separate pr
 
 - Checkpoint file: `/var/lib/containarium/ssh-session-shipper/checkpoint.json`, typed `Checkpoint{Inode uint64; Offsets map[backendID]int64}`, written atomically after each `OK`.
 - Per-backend offsets mean one unreachable backend does not stall the others; each pass scans the file from `min(offsets)` and skips records already past a backend's own offset.
-- A record whose login resolves to no backend, or whose backend has no registered token, is **counted and skipped** (`ssh_session_shipper_skipped_total{reason}`), not retried forever; the offset still advances. Both are operator-visible misconfigurations, not transient faults.
+- A record whose login resolves to no backend is **counted and skipped**; the offset still advances. (A backend with no registered token is *not* skipped; see "As built" below.)
 - A line that fails to parse into `sshsession.Record` is counted and skipped the same way. Server-side `InvalidArgument` is therefore a contract bug (test gap), not a runtime path; the shipper treats it as fatal for the batch and logs it loudly.
 - Inode change (rotation) → read the old file to EOF via its rotated name if still present, then reset all offsets to 0 on the new inode. Rotation mechanics themselves are out of scope here.
 
@@ -307,3 +307,19 @@ Tests 5, 6 (contract) and 8 run in the existing `store-integration.yml` lane; ev
 ## What would have to change at 10×
 
 Nothing structural. At thousands of sessions per minute per backend, the only pressure point is the advisory lock held per batch; batch size (500) and pass interval are the knobs, and the audit chain is already a single-writer design by intent. A sentinel fronting dozens of backends would want the per-backend passes run concurrently, which the per-backend checkpoint already permits.
+
+## As built (deviations from the text above)
+
+Implementation of #2415 followed this design, with these deliberate differences, each found while building and testing it.
+
+1. **A backend with no registered token blocks; it is not skipped.** The design said such records are counted and skipped. That would lose every record shipped before an operator registers the token, which is the first-deploy case. Now the backend is treated as failed: its offset holds, an error is logged on the loop's backoff, and the records ship once the token exists. Only a login that routes to no backend (and no `--ssh-session-default-backend`) is skipped.
+2. **Orphan closes have their own dedupe key** (`sshsession:<id>:close:orphan`). With the shared close key, an orphan close would have swallowed the session's genuine close if it arrived later. Both rows now coexist, and re-running `--reconcile` stays a no-op.
+3. **Token expiry warnings run every pass, even an idle one**, through `TokenSource.Backends()`, and the once-a-day bookkeeping is persisted in the checkpoint. The design only checked tokens at the moment a batch was sent.
+4. **No Prometheus counter.** Skips and shipped counts are in `ShipStats`, printed by `ship --once` and logged by the loop. A metric can follow with the sentinel's other metrics; nothing here depends on it.
+5. **Checkpoint shape.** A single `base` offset (everything before it is shipped for every backend) plus per-backend offsets ahead of it. A record skipped as unroutable while another backend is failing is recounted on the retry, because the scan restarts at `base`.
+6. **Gaps in `audit_logs.id`.** `ON CONFLICT DO NOTHING` consumes a sequence value per skipped duplicate, as a rolled-back insert already does. The chain links by `prev_hash` and the verifier reads `id > fromID`, so gaps do not affect verification; row counts, not max id, are the right measure.
+7. **`AuditService` is registered only when the audit store exists.** Without Postgres the RPC is absent (Unimplemented) instead of a stub that errors.
+8. **The standalone `ship` command is single-backend** (`--url`, one token), the form the design described for tests, backfill and replay. The multi-backend routing lives in the in-process loop.
+9. **The gce startup script reads its retention from the instance metadata attribute** `ssh-session-log-retention-days` (default 90), because that script is not rendered with a template variable. The module script takes the Terraform variable.
+10. **`deregister-token --kind audit-ingest --backend <id>`** was added alongside register, as designed, and both validate their flags per kind.
+11. The auth-coverage backstop test now lists `AuditService` and accepts `RequireExplicitScope` as a guard.

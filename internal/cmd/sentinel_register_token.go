@@ -58,7 +58,7 @@ Examples:
   #       --scopes audit:ingest --expiry 2160h --secret-file /etc/containarium/jwt.secret
   # Registering again for the same --backend replaces the token (rotation).
   containarium sentinel register-token --kind audit-ingest \
-      --url http://asia-east1.containarium.dev:8888 \
+      --url http://<sentinel>:8888 \
       --backend <backend-id> --token <jwt>`,
 	RunE: runSentinelRegisterToken,
 }
