@@ -317,7 +317,7 @@ func (ir *inboundRequest) enforce(resp *http.Response) error {
 		return fail(guardrail.InboundBlocked(guardrail.InboundReasonEngineError))
 	}
 	if len(held) > ir.in.limit {
-		held = nil
+		// The buffer is dropped with this frame; none of it is released.
 		return fail(guardrail.InboundBlocked(guardrail.InboundReasonOverLimit))
 	}
 	var units []*pb.GuardrailTextUnit
