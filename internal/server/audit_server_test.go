@@ -230,3 +230,24 @@ func TestIngest_RowMapping(t *testing.T) {
 		t.Fatalf("close detail close_reason = %q, want normal", cd.CloseReason)
 	}
 }
+
+// An orphan close is synthesized by the shipper's --reconcile. It must not
+// share a dedupe identity with a session's genuine close: if the real close
+// arrives later it is still recorded, and re-running reconcile stays a no-op.
+func TestIngest_OrphanCloseHasItsOwnDedupeKey(t *testing.T) {
+	orphan := closeRec("sess-9")
+	orphan.CloseReason = pb.SSHCloseReason_SSH_CLOSE_REASON_UNKNOWN_ORPHAN
+	f := &fakeBatchLogger{}
+	_, err := NewAuditServer(f).IngestSSHSessionRecords(ingestCtx(), &pb.IngestSSHSessionRecordsRequest{
+		Records: []*pb.SSHSessionRecord{orphan, closeRec("sess-9")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.got[0].DedupeKey != "sshsession:sess-9:close:orphan" || f.got[1].DedupeKey != "sshsession:sess-9:close" {
+		t.Fatalf("dedupe keys = %q / %q", f.got[0].DedupeKey, f.got[1].DedupeKey)
+	}
+	if f.got[0].Entry.Action != "ssh_session_close" {
+		t.Fatalf("orphan close action = %q", f.got[0].Entry.Action)
+	}
+}

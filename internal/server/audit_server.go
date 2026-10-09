@@ -153,6 +153,17 @@ func sshSessionBatchEntry(rec sshsession.Record, sentinelID, jti string) (audit.
 			SourceIP:     rec.ClientIP,
 			TokenID:      jti,
 		},
-		DedupeKey: fmt.Sprintf("sshsession:%s:%s", rec.SessionID, rec.Phase),
+		DedupeKey: sshSessionDedupeKey(rec),
 	}, nil
+}
+
+// sshSessionDedupeKey is the row's idempotency identity: one row per
+// (session, phase). A synthesized orphan close gets its own suffix so it
+// never occupies the identity of the session's genuine close.
+func sshSessionDedupeKey(rec sshsession.Record) string {
+	key := fmt.Sprintf("sshsession:%s:%s", rec.SessionID, rec.Phase)
+	if rec.CloseReason == sshsession.CloseReasonUnknownOrphan {
+		key += ":orphan"
+	}
+	return key
 }

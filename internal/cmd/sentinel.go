@@ -18,6 +18,7 @@ import (
 	"github.com/footprintai/containarium/internal/config"
 	"github.com/footprintai/containarium/internal/metrics/cloudexport"
 	"github.com/footprintai/containarium/internal/sentinel"
+	"github.com/footprintai/containarium/internal/sentinel/sshsession"
 	"github.com/spf13/cobra"
 )
 
@@ -51,6 +52,14 @@ var (
 	sentinelConsoleRouterAddr      string
 	sentinelConsoleRouterToken     string
 	sentinelWatchSpotVMs           []string
+
+	// SSH session shipper (#2415): ships the ssh-session-plugin's JSONL sink
+	// into each backend's tamper-evident audit chain.
+	sentinelShipSSHSessions      bool
+	sentinelSSHSessionsFile      string
+	sentinelSSHSessionsCkpt      string
+	sentinelSSHSessionsInterval  time.Duration
+	sentinelSSHSessionsDefaultBE string
 )
 
 var sentinelCmd = &cobra.Command{
@@ -108,6 +117,13 @@ func init() {
 		"GCP project for --metrics-export. Empty infers it from the metadata server.")
 	sentinelCmd.Flags().Int32Var(&sentinelMetricsExportInterval, "metrics-export-interval", 60,
 		"Export cadence in seconds for --metrics-export. Clamped up to the 60s billing floor.")
+
+	sentinelCmd.Flags().BoolVar(&sentinelShipSSHSessions, "ssh-session-shipper", true,
+		"Ship the ssh-session-plugin's JSONL records into each backend's tamper-evident audit chain (#2415). A backend with no registered token (sentinel register-token --kind audit-ingest) is retried with a loud log line, never skipped.")
+	sentinelCmd.Flags().StringVar(&sentinelSSHSessionsFile, "ssh-session-records-file", sshsession.DefaultRecordsFile, "SSH session records sink the shipper tails (must match the plugin's --records-file)")
+	sentinelCmd.Flags().StringVar(&sentinelSSHSessionsCkpt, "ssh-session-checkpoint-file", sshsession.DefaultCheckpointFile, "Where the shipper persists its progress")
+	sentinelCmd.Flags().DurationVar(&sentinelSSHSessionsInterval, "ssh-session-ship-interval", 5*time.Second, "How often the shipper checks the sink for new records")
+	sentinelCmd.Flags().StringVar(&sentinelSSHSessionsDefaultBE, "ssh-session-default-backend", "", "Backend id that receives records whose login routes to no backend (e.g. a user deleted before the record shipped). Empty skips and counts them.")
 
 	sentinelCmd.Flags().StringVar(&sentinelAlertWebhookURL, "alert-webhook-url", os.Getenv(config.EnvSentinelAlertWebhook), "Webhook POSTed on spot preempted/recovered (always-on alert path; the on-spot vmalert dies with the VM). Falls back to $CONTAINARIUM_SENTINEL_ALERT_WEBHOOK (#514)")
 	sentinelCmd.Flags().StringSliceVar(&sentinelWatchSpotVMs, "watch-spot-vm", nil,
@@ -359,6 +375,7 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 			}()
 
 			defer startSentinelMetricsExport(ctx, manager)()
+			defer startSSHSessionShipper(ctx, manager)()
 			return manager.Run(ctx)
 		}
 
@@ -460,6 +477,7 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 		}()
 
 		defer startSentinelMetricsExport(ctx, manager)()
+		defer startSSHSessionShipper(ctx, manager)()
 		return manager.Run(ctx)
 
 	default:
@@ -504,7 +522,25 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 	}()
 
 	defer startSentinelMetricsExport(ctx, manager)()
+	defer startSSHSessionShipper(ctx, manager)()
 	return manager.Run(ctx)
+}
+
+// startSSHSessionShipper runs the SSH session shipper (#2415) for the life of
+// the sentinel: it needs this process's backend pool, keysync routing and
+// token store. Returns the stop func to defer. A no-op when disabled.
+func startSSHSessionShipper(ctx context.Context, m *sentinel.Manager) func() {
+	if !sentinelShipSSHSessions {
+		return func() {}
+	}
+	host, _ := os.Hostname()
+	return m.StartSSHSessionShipper(ctx, sentinel.SSHSessionShipperOptions{
+		RecordsFile:    sentinelSSHSessionsFile,
+		CheckpointFile: sentinelSSHSessionsCkpt,
+		Interval:       sentinelSSHSessionsInterval,
+		SentinelID:     host,
+		DefaultBackend: sentinelSSHSessionsDefaultBE,
+	})
 }
 
 // maybeStartConsoleRouter starts the console router (#1756) in the
