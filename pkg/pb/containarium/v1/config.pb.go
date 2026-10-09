@@ -976,12 +976,8 @@ type SecurityConfig struct {
 	SelinuxContext string `protobuf:"bytes,3,opt,name=selinux_context,json=selinuxContext,proto3" json:"selinux_context,omitempty"`
 	// Enable seccomp filtering
 	EnableSeccomp bool `protobuf:"varint,4,opt,name=enable_seccomp,json=enableSeccomp,proto3" json:"enable_seccomp,omitempty"`
-	// Require SSH keys (don't allow password auth)
-	RequireSshKeys bool `protobuf:"varint,5,opt,name=require_ssh_keys,json=requireSshKeys,proto3" json:"require_ssh_keys,omitempty"`
-	// Minimum password length if passwords are allowed
-	MinPasswordLength int32 `protobuf:"varint,6,opt,name=min_password_length,json=minPasswordLength,proto3" json:"min_password_length,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SecurityConfig) Reset() {
@@ -1040,20 +1036,6 @@ func (x *SecurityConfig) GetEnableSeccomp() bool {
 		return x.EnableSeccomp
 	}
 	return false
-}
-
-func (x *SecurityConfig) GetRequireSshKeys() bool {
-	if x != nil {
-		return x.RequireSshKeys
-	}
-	return false
-}
-
-func (x *SecurityConfig) GetMinPasswordLength() int32 {
-	if x != nil {
-		return x.MinPasswordLength
-	}
-	return 0
 }
 
 // GetConfigRequest is the request to get current configuration
@@ -5402,14 +5384,12 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"\tpool_name\x18\x01 \x01(\tR\bpoolName\x12\x16\n" +
 	"\x06driver\x18\x02 \x01(\tR\x06driver\x12\x1b\n" +
 	"\tpool_path\x18\x03 \x01(\tR\bpoolPath\x12,\n" +
-	"\x12default_disk_quota\x18\x04 \x01(\tR\x10defaultDiskQuota\"\x9e\x02\n" +
+	"\x12default_disk_quota\x18\x04 \x01(\tR\x10defaultDiskQuota\"\xf7\x01\n" +
 	"\x0eSecurityConfig\x127\n" +
 	"\x17unprivileged_containers\x18\x01 \x01(\bR\x16unprivilegedContainers\x12)\n" +
 	"\x10apparmor_profile\x18\x02 \x01(\tR\x0fapparmorProfile\x12'\n" +
 	"\x0fselinux_context\x18\x03 \x01(\tR\x0eselinuxContext\x12%\n" +
-	"\x0eenable_seccomp\x18\x04 \x01(\bR\renableSeccomp\x12(\n" +
-	"\x10require_ssh_keys\x18\x05 \x01(\bR\x0erequireSshKeys\x12.\n" +
-	"\x13min_password_length\x18\x06 \x01(\x05R\x11minPasswordLength\"\x12\n" +
+	"\x0eenable_seccomp\x18\x04 \x01(\bR\renableSeccompJ\x04\b\x05\x10\x06J\x04\b\x06\x10\aR\x10require_ssh_keysR\x13min_password_length\"\x12\n" +
 	"\x10GetConfigRequest\"D\n" +
 	"\x11GetConfigResponse\x12/\n" +
 	"\x06config\x18\x01 \x01(\v2\x17.containarium.v1.ConfigR\x06config\"g\n" +

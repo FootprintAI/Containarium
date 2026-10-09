@@ -130,7 +130,7 @@ func TestTunnelEndToEnd(t *testing.T) {
 	}
 
 	go func() { _ = server.Run(ctx) }()
-	time.Sleep(100 * time.Millisecond)
+	waitForListener(t, fmt.Sprintf("127.0.0.1:%d", tunnelPort))
 
 	// 3. Start tunnel client
 	client := &TunnelClient{
@@ -159,10 +159,10 @@ func TestTunnelEndToEnd(t *testing.T) {
 	// On Linux, the proxy binds to 127.0.0.2:echoPort (loopback alias).
 	// On macOS, the alias doesn't exist, so the proxy either fails to bind
 	// or falls back to 127.0.0.1 (which may conflict with the echo service).
-	time.Sleep(200 * time.Millisecond)
-
+	// The proxy listener is bound after OnConnect fires, so poll for it
+	// rather than sleeping a fixed amount (flaky on a loaded runner).
 	proxyAddr := net.JoinHostPort(spot.LocalIP, fmt.Sprintf("%d", echoPort))
-	conn, err := net.DialTimeout("tcp", proxyAddr, 2*time.Second)
+	conn, err := dialRetry(proxyAddr, 2*time.Second)
 	if err != nil {
 		t.Logf("proxy not reachable at %s (expected on non-Linux): %v", proxyAddr, err)
 		t.Log("tunnel handshake, yamux session, and registration verified successfully")
@@ -194,7 +194,7 @@ func TestTunnelWrongToken(t *testing.T) {
 	server := NewTunnelServer(fmt.Sprintf("127.0.0.1:%d", tunnelPort), policyAny("correct-token"), registry, 0)
 
 	go func() { _ = server.Run(ctx) }()
-	time.Sleep(100 * time.Millisecond)
+	waitForListener(t, fmt.Sprintf("127.0.0.1:%d", tunnelPort))
 
 	// Connect with wrong token
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", tunnelPort), 3*time.Second)
@@ -224,8 +224,7 @@ func TestConnMuxRouting(t *testing.T) {
 	mux := NewConnMuxFromListener(ln)
 	go mux.Run()
 	defer func() { _ = mux.Close() }()
-
-	time.Sleep(50 * time.Millisecond)
+	waitForListener(t, fmt.Sprintf("127.0.0.1:%d", muxPort))
 
 	// Test 1: Send a '{' byte → should appear on TunnelListener
 	tunnelDone := make(chan string, 1)
@@ -330,8 +329,7 @@ func TestConnMuxWithTunnelClient(t *testing.T) {
 		connectCh <- spot
 	}
 	go func() { _ = tunnelServer.Serve(ctx, mux.TunnelListener()) }()
-
-	time.Sleep(100 * time.Millisecond)
+	waitForListener(t, fmt.Sprintf("127.0.0.1:%d", muxPort))
 
 	// Start tunnel client pointing at the mux port (same as HTTPS)
 	client := &TunnelClient{
@@ -352,6 +350,37 @@ func TestConnMuxWithTunnelClient(t *testing.T) {
 	}
 
 	assert.True(t, registry.Connected())
+}
+
+// waitForListener blocks until addr accepts a TCP connection, failing the
+// test after a generous deadline. Tests used to `time.Sleep(100ms)` after
+// starting a server goroutine and then dial; on a loaded CI runner the
+// listener was not always bound yet and the dial got "connection refused".
+// A readiness poll is both faster on an idle machine and correct on a busy
+// one.
+func waitForListener(t *testing.T, addr string) {
+	t.Helper()
+	if _, err := dialRetry(addr, 5*time.Second); err != nil {
+		t.Fatalf("listener %s never came up: %v", addr, err)
+	}
+}
+
+// dialRetry dials addr until it succeeds or timeout elapses, returning the
+// open connection or the last dial error.
+func dialRetry(addr string, timeout time.Duration) (net.Conn, error) {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+		if time.Now().After(deadline) {
+			return nil, lastErr
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func freePort(t *testing.T) int {
