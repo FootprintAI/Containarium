@@ -631,6 +631,9 @@ type RestoreBackupRequest struct {
 	Clean      bool              `json:"clean,omitempty"`
 	// AgeIdentity decrypts an encrypted record for this one call (#1831).
 	AgeIdentity string `json:"age_identity,omitempty"`
+	// TargetContainer restores into another tenant container; empty is
+	// the backup's own container (#2403).
+	TargetContainer string `json:"target_container,omitempty"`
 }
 
 // RestoreBackupResponse is the result of a restore.

@@ -156,9 +156,8 @@ What changes with `pg_custom`:
   container stays refused: the hook exists because the daemon cannot
   reach that Postgres, and restoring through the tenant's own tooling is
   a separate feature. Restoring into a different, explicitly named
-  container works like a database-mode restore. The daemon supports it
-  today; the `backup restore` flag that names the target is tracked
-  separately.
+  container works like a database-mode restore: `backup restore <id>
+  --target <tenant>-container` (#2403).
 - Records taken before the format existed, and hooks created without
   `--hook-format`, read as `opaque` and behave exactly as before.
 
@@ -247,11 +246,40 @@ With that set, every `backup create`:
    host loss.
 
 The host identity needs only the KMS *encrypter* role on that key. The
-daemon can wrap but cannot unwrap: `backup restore` and `backup verify`
-still take `--age-identity-file`, and whoever runs them first unwraps
-`wrapped_key` under their own KMS credentials (`gcloud kms decrypt`, or
-the CLI path that follows in #2403). Every unwrap is a KMS data-access
-audit event naming the principal and the key version.
+daemon can wrap but cannot unwrap: whoever restores or verifies unwraps
+`wrapped_key` under their own KMS credentials. Every unwrap is a KMS
+data-access audit event naming the principal and the key version.
+
+**Restoring a managed backup (#2403).** `backup restore --managed` and
+`backup verify --managed` fetch the record, unwrap its key *in the CLI
+process* with your own cloud identity, and send the identity over the
+same TLS-only path as `--age-identity-file` (a cleartext `--server` is
+refused before the unwrap). The identity is zeroed after the call and
+never written to disk. A principal without the decrypter role gets the
+KMS permission error before any restore or verify call reaches the host.
+On the operator machine:
+
+```bash
+export CONTAINARIUM_KMS_BACKEND=gcp
+export CONTAINARIUM_GCP_KMS_TOKEN=$(gcloud auth print-access-token)   # your own principal
+
+# newest backup of a tenant database, into a scratch container
+containarium backup restore --managed --latest --user <tenant> --database <db> \
+    --target <scratch-tenant>-container --server <host>
+containarium backup verify  --managed --latest --user <tenant> --database <db> \
+    --target <scratch-tenant> --server <host>
+```
+
+The key itself comes from the record's `kek_id`; the operator does not set
+`CONTAINARIUM_GCP_KMS_KEY_NAME`. The token is short-lived (about an hour),
+so re-run the `gcloud` line for a later session. `--latest` needs both
+`--user` and `--database` and refuses a tie rather than pick one.
+`--target` on restore names a tenant container (`<username>-container`);
+you must be authorized for that tenant too, and empty restores in place.
+A `pg_custom` hook backup restores only through `--target`. The MCP
+`restore_backup` / `verify_backup` tools take the same `managed`,
+`latest`, `username`, `database` (and on restore `target`) inputs and run
+the same code on the MCP host.
 
 - **Nothing is silent.** A KMS failure fails the backup — no file, no
   sidecar, no upload, no fallback to plaintext or to the recipient alone.

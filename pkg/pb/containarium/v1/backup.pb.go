@@ -1278,9 +1278,16 @@ type RestoreBackupRequest struct {
 	// Used to decrypt for this one call and never stored or logged. Required
 	// for an encrypted record; the daemon refuses the restore without it
 	// because it holds no decryption key of its own.
-	AgeIdentity   string `protobuf:"bytes,4,opt,name=age_identity,json=ageIdentity,proto3" json:"age_identity,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	AgeIdentity string `protobuf:"bytes,4,opt,name=age_identity,json=ageIdentity,proto3" json:"age_identity,omitempty"`
+	// Container to restore into, by its container name
+	// ("<username>-container"). Empty restores into the backup's own source
+	// container, in place (#2403). The caller must be authorized for the
+	// target's tenant as well as the backup's. A hook record declared
+	// HOOK_FORMAT_PG_CUSTOM can only be restored this way, into a target
+	// other than its source (#2405).
+	TargetContainer string `protobuf:"bytes,5,opt,name=target_container,json=targetContainer,proto3" json:"target_container,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *RestoreBackupRequest) Reset() {
@@ -1337,6 +1344,13 @@ func (x *RestoreBackupRequest) GetClean() bool {
 func (x *RestoreBackupRequest) GetAgeIdentity() string {
 	if x != nil {
 		return x.AgeIdentity
+	}
+	return ""
+}
+
+func (x *RestoreBackupRequest) GetTargetContainer() string {
+	if x != nil {
+		return x.TargetContainer
 	}
 	return ""
 }
@@ -1845,14 +1859,15 @@ const file_containarium_v1_backup_proto_rawDesc = "" +
 	"\x10GetBackupRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"J\n" +
 	"\x11GetBackupResponse\x125\n" +
-	"\x06record\x18\x01 \x01(\v2\x1d.containarium.v1.BackupRecordR\x06record\"\x9e\x01\n" +
+	"\x06record\x18\x01 \x01(\v2\x1d.containarium.v1.BackupRecordR\x06record\"\xc9\x01\n" +
 	"\x14RestoreBackupRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12=\n" +
 	"\n" +
 	"connection\x18\x02 \x01(\v2\x1d.containarium.v1.PgConnectionR\n" +
 	"connection\x12\x14\n" +
 	"\x05clean\x18\x03 \x01(\bR\x05clean\x12!\n" +
-	"\fage_identity\x18\x04 \x01(\tR\vageIdentity\"1\n" +
+	"\fage_identity\x18\x04 \x01(\tR\vageIdentity\x12)\n" +
+	"\x10target_container\x18\x05 \x01(\tR\x0ftargetContainer\"1\n" +
 	"\x15RestoreBackupResponse\x12\x18\n" +
 	"\amessage\x18\x01 \x01(\tR\amessage\"\xb0\x01\n" +
 	"\x13VerifyBackupRequest\x12\x0e\n" +
