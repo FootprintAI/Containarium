@@ -3,6 +3,7 @@ package modelgateway
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"math"
@@ -14,6 +15,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/footprintai/containarium/internal/guardrail"
+	"github.com/footprintai/containarium/internal/guardrailpolicy"
 )
 
 // UsageSink receives every metered model call so token usage can be forwarded
@@ -72,15 +76,30 @@ type Config struct {
 	// requires "Authorization: Bearer <AdminToken>", compared in constant
 	// time (#1820).
 	AdminToken string
+
+	// Inbound guardrail scan (#2367; see inbound.go). InboundPolicy is the
+	// server policy source; nil (the standalone binary) means no policy
+	// source exists, scanning is unavailable, and the gateway says so at
+	// startup. With a provider wired, responses are scanned by InboundEngine
+	// whenever the policy carries an inbound BLOCK rule, and every failure
+	// to scan blocks. InboundAudit receives one entry per block (nil = log
+	// only). InboundHoldLimit (bytes) and InboundScanTimeout take the
+	// Default* constants when zero.
+	InboundPolicy      guardrailpolicy.PolicyProvider
+	InboundEngine      guardrail.Engine
+	InboundAudit       InboundAuditSink
+	InboundHoldLimit   int
+	InboundScanTimeout time.Duration
 }
 
 // Gateway brokers every agent box's model calls: it authenticates the box's
 // scoped gateway token, injects the real provider key (which never leaves the
 // gateway), proxies to the provider, and meters per-tenant token usage.
 type Gateway struct {
-	cfg    Config
-	meter  *Meter
-	policy *Policy
+	cfg     Config
+	meter   *Meter
+	policy  *Policy
+	inbound *inbound
 
 	// Request-lifecycle observability: a monotonic request id, a live
 	// in-flight gauge, and lifetime completed/failed counters. These make
@@ -102,8 +121,13 @@ func New(cfg Config) *Gateway {
 	if cfg.Policy != nil {
 		pc = *cfg.Policy
 	}
-	return &Gateway{cfg: cfg, meter: NewMeter(), policy: NewPolicy(pc)}
+	return &Gateway{cfg: cfg, meter: NewMeter(), policy: NewPolicy(pc), inbound: newInbound(cfg)}
 }
+
+// InboundStatus exposes the inbound scan state: whether a policy source is
+// wired, whether the first read has happened, whether the last known policy
+// scans, and the block counters.
+func (g *Gateway) InboundStatus() InboundStatus { return g.inbound.status() }
 
 // Meter exposes the usage rollups (for tests / the usage endpoint).
 func (g *Gateway) Meter() *Meter { return g.meter }
@@ -131,7 +155,14 @@ func (g *Gateway) Handler() http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(g.policy.Status())
 	})
-	mux.HandleFunc("/__gateway/healthz", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/__gateway/healthz", func(w http.ResponseWriter, r *http.Request) {
+		// Cold start with a policy provider wired: until the first policy
+		// read succeeds the gateway cannot know whether to scan, so it is
+		// not ready rather than guessing in either direction.
+		if !g.inbound.ready(r.Context()) {
+			http.Error(w, "inbound guardrail policy not yet read", http.StatusServiceUnavailable)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
@@ -152,6 +183,7 @@ func (g *Gateway) Handler() http.Handler {
 			"inflight":  g.inflight.Load(),
 			"completed": g.completed.Load(),
 			"failed":    g.failed.Load(),
+			"inbound":   g.inbound.status(),
 		})
 	})
 	return mux
@@ -311,6 +343,24 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Inbound guardrail policy (#2367). Resolved per call, before the ladder
+	// and the Director: a call refused because the policy is unavailable
+	// (cold start, or a read error while the last known policy scanned)
+	// never reaches the provider. ir is nil when this call is not scanned.
+	inSub := inboundSubject{tenant: claims.Tenant, skill: claims.SkillID, provider: provName, model: logModel}
+	inMode, inOK := g.inbound.resolve(r.Context())
+	if !inOK {
+		dec := guardrail.InboundBlocked(guardrail.InboundReasonPolicyUnavailable)
+		g.inbound.block(inSub, dec, inMode.revision)
+		g.failed.Add(1)
+		writeInboundBlock(w, http.StatusServiceUnavailable, dec)
+		return
+	}
+	var ir *inboundRequest
+	if inMode.scan {
+		ir = &inboundRequest{in: g.inbound, mode: inMode, sub: inSub}
+	}
+
 	// Enforcement ladder. Deliberately the last gate before proxying: a denied
 	// request never reaches the Director, so the real provider key is never
 	// injected and never leaves the gateway on a call we refused.
@@ -369,6 +419,15 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 			req.Header.Del("Accept-Encoding")
 		},
 		ModifyResponse: func(resp *http.Response) error {
+			// Scanned mode (#2367): hold the whole response here, scan it,
+			// and either block (typed error via ErrorHandler, nothing
+			// committed to the client yet) or restore the held bytes for the
+			// unchanged metering/filter path below. See inbound.go.
+			if ir != nil {
+				if err := ir.enforce(resp); err != nil {
+					return err
+				}
+			}
 			// Streaming (SSE): intercept to meter usage + redact prompt leakage.
 			if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
 				meterModel := reqModel
@@ -437,6 +496,11 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+			var blocked *inboundBlockError
+			if errors.As(err, &blocked) {
+				writeInboundBlock(w, http.StatusBadGateway, blocked.dec)
+				return
+			}
 			http.Error(w, "upstream error: "+err.Error(), http.StatusBadGateway)
 		},
 	}
