@@ -23,6 +23,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pass. The public SSH ingress was already key-only (the sentinel pipes to the backend host sshd, not
   the box); this closes the in-network and reverse-tunnel paths for the stock sshd.
 
+### Removed
+
+- The dead `SecurityConfig.require_ssh_keys` and `SecurityConfig.min_password_length` proto fields
+  (#2424). Nothing read them: `config.proto` declares no service, so `SecurityConfig` was never
+  reachable over the API, the CLI or the MCP server, and the key-only guarantee they implied is now
+  enforced by the provisioner's sshd drop-in and the posture reconciler instead. Tags 5 and 6 and
+  both names are reserved.
+
 ## [0.101.0-rc.1] - 2026-10-09
 
 _Pre-release for the dev rung of the managed backup encryption sprint (#2406). The final 0.101.0 is cut once the dev
