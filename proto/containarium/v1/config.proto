@@ -99,11 +99,12 @@ message SecurityConfig {
   // Enable seccomp filtering
   bool enable_seccomp = 4;
 
-  // Require SSH keys (don't allow password auth)
-  bool require_ssh_keys = 5;
-
-  // Minimum password length if passwords are allowed
-  int32 min_password_length = 6;
+  // Fields 5 and 6 were require_ssh_keys and min_password_length. Nothing
+  // ever read them: this file declares no service, so SecurityConfig is not
+  // reachable over the API. Box SSH is key-only by construction instead
+  // (the provisioner's sshd drop-in plus the posture reconciler, #2424).
+  reserved 5, 6;
+  reserved "require_ssh_keys", "min_password_length";
 }
 
 // GetConfigRequest is the request to get current configuration
