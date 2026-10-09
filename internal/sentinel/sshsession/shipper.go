@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -357,11 +359,19 @@ func ShipOnce(ctx context.Context, cfg ShipConfig) (ShipStats, error) {
 		return st, fmt.Errorf("stat %s: %w", cfg.RecordsFile, err)
 	}
 	ino, haveIno := inodeOf(fi)
+	head := firstLineHash(cfg.RecordsFile)
+
+	// The path holds a different file than the checkpoint describes when its
+	// inode changed (rename rotation) OR its first line did (the inode was
+	// reused, or the file was rewritten in place). The inode alone is not
+	// enough: a delete-and-recreate can hand the new file the old number.
+	replaced := (haveIno && ck.Inode != 0 && ck.Inode != ino) ||
+		(ck.Head != "" && head != "" && head != ck.Head)
 
 	switch {
 	case ck.Inode == 0:
 		ck.Inode = ino
-	case haveIno && ck.Inode != ino:
+	case replaced:
 		// The file was rotated away. Finish the old file's tail first.
 		if old := findByInode(cfg.rotatedFiles(), ck.Inode); old != "" {
 			passErr := shipFile(ctx, &cfg, old, ck, &st)
@@ -373,18 +383,44 @@ func ShipOnce(ctx context.Context, cfg ShipConfig) (ShipStats, error) {
 			}
 		} else {
 			st.RotatedFileMissing++
-			cfg.logf("WARNING: %s was rotated but the previous file (inode %d) is not at %v — records written after the last pass may be unshipped",
+			cfg.logf("WARNING: %s was replaced (rotated, deleted or rewritten) but the previous file (inode %d) is not at %v — records written after the last pass may be unshipped",
 				cfg.RecordsFile, ck.Inode, cfg.rotatedFiles())
 		}
 		warned := ck.ExpiryWarned
-		*ck = Checkpoint{Inode: ino, ExpiryWarned: warned}
+		*ck = Checkpoint{Inode: ino, Head: head, ExpiryWarned: warned}
 	}
 
 	passErr := shipFile(ctx, &cfg, cfg.RecordsFile, ck, &st)
+	if ck.Head == "" {
+		// The first line may only have become complete during this pass.
+		ck.Head = firstLineHash(cfg.RecordsFile)
+	}
 	if saveErr := SaveCheckpoint(cfg.CheckpointFile, ck); saveErr != nil {
 		return st, errors.Join(passErr, saveErr)
 	}
 	return st, passErr
+}
+
+// firstLineHash fingerprints the file's first complete line, or returns ""
+// if there is none yet (empty file, or the first record is still being
+// written) or the file cannot be read. Bounded to 64KiB: a session record is
+// a few hundred bytes.
+func firstLineHash(path string) string {
+	f, err := os.Open(path) // #nosec G304 -- operator-configured sink path
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = f.Close() }()
+	buf, err := io.ReadAll(io.LimitReader(f, 64*1024))
+	if err != nil {
+		return ""
+	}
+	i := bytes.IndexByte(buf, '\n')
+	if i < 0 {
+		return ""
+	}
+	sum := sha256.Sum256(buf[:i])
+	return hex.EncodeToString(sum[:])
 }
 
 func findByInode(candidates []string, want uint64) string {

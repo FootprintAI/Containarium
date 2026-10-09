@@ -138,7 +138,7 @@ func (h *harness) append(path string, lines ...string) {
 	if err != nil {
 		h.t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	for _, l := range lines {
 		if _, err := f.WriteString(l); err != nil {
 			h.t.Fatal(err)
@@ -602,4 +602,38 @@ func TestShipOnce_WarnsOncePerDayWhenTokenNearExpiry(t *testing.T) {
 	if warns() != 2 {
 		t.Fatalf("want a second warning after a day, got %d", warns())
 	}
+}
+
+// Inode numbers are reused: delete a file and recreate it and the new one
+// can get the SAME inode (CI's filesystem does; so can any). The shipper must
+// not trust the inode alone, or it resumes at the old offset in a different
+// file and silently skips the new file's first records. Rewriting a file in
+// place reproduces that deterministically: same inode, new content, and a
+// size at or past the old checkpoint, so neither the inode nor the
+// truncation check can see it.
+func TestShipOnce_SameInodeDifferentContentIsANewFile(t *testing.T) {
+	h := newHarness(t, map[string]string{"alice": "b1"})
+	h.appendRecs(rec("old1", SessionPhaseOpen, "alice", h.now))
+	mustOnce(h)
+
+	before, _ := os.Stat(h.cfg.RecordsFile)
+	var fresh []string
+	for _, id := range []string{"new1", "new2", "new3"} {
+		fresh = append(fresh, line(t, rec(id, SessionPhaseOpen, "alice", h.now)))
+	}
+	if err := os.WriteFile(h.cfg.RecordsFile, []byte(strings.Join(fresh, "")), 0o600); err != nil { // same inode
+		t.Fatal(err)
+	}
+	after, _ := os.Stat(h.cfg.RecordsFile)
+	if ib, _ := inodeOf(before); ib != 0 {
+		if ia, _ := inodeOf(after); ia != ib {
+			t.Skip("filesystem did not keep the inode; nothing to prove here")
+		}
+	}
+	if after.Size() < before.Size() {
+		t.Fatalf("test setup: new file (%d) must be at least as large as the checkpoint (%d)", after.Size(), before.Size())
+	}
+
+	mustOnce(h)
+	eq(t, h.backends["b1"].shipped(), []string{"old1:OPEN", "new1:OPEN", "new2:OPEN", "new3:OPEN"})
 }

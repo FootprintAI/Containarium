@@ -158,7 +158,7 @@ func e2eWrite(t *testing.T, path string, recs ...sshsession.Record) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	for _, r := range recs {
 		b, _ := json.Marshal(r)
 		_, _ = f.Write(append(b, '\n'))
@@ -326,7 +326,7 @@ func TestE2E_GRPCAndRESTProduceIdenticalRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	gctx := metadata.AppendToOutgoingContext(context.Background(), "authorization", "Bearer "+tokScoped)
 	if _, err := pb.NewAuditServiceClient(conn).IngestSSHSessionRecords(gctx, req); err != nil {
 		t.Fatalf("gRPC: %v", err)

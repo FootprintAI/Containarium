@@ -30,7 +30,12 @@ const DefaultCheckpointFile = "/var/lib/containarium/ssh-session-shipper/checkpo
 // covers — the checkpoint rule that, together with the server's dedupe,
 // gives at-least-once delivery with exactly-once rows.
 type Checkpoint struct {
-	Inode   uint64           `json:"inode"`
+	Inode uint64 `json:"inode"`
+	// Head is a hash of the file's first complete line. An append-only file's
+	// first line never changes, so a different one means the path now holds a
+	// different file even if the inode number is the same (inode numbers are
+	// reused after a delete). Empty until the first line is complete.
+	Head    string           `json:"head,omitempty"`
 	Base    int64            `json:"base"`
 	Offsets map[string]int64 `json:"offsets,omitempty"`
 	// ExpiryWarned records, per backend, the unix time of the last

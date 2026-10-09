@@ -33,7 +33,7 @@ func TestJSONLRecorder_ReopenFollowsThePath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rec.Close()
+	defer func() { _ = rec.Close() }()
 
 	at := time.Date(2026, 10, 9, 0, 0, 0, 0, time.UTC)
 	if err := rec.Record(Record{SessionID: "before", Phase: SessionPhaseOpen, OccurredAt: at}); err != nil {
@@ -83,7 +83,7 @@ func TestJSONLRecorder_FailedReopenKeepsWriting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rec.Close()
+	defer func() { _ = rec.Close() }()
 	// Make the path unopenable: replace its directory with a plain file.
 	if err := os.Rename(filepath.Join(dir, "sub"), filepath.Join(dir, "sub.moved")); err != nil {
 		t.Fatal(err)
@@ -108,7 +108,7 @@ func TestJSONLRecorder_ReopenConcurrentWithRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rec.Close()
+	defer func() { _ = rec.Close() }()
 	var wg sync.WaitGroup
 	for i := 0; i < 4; i++ {
 		wg.Add(1)
@@ -202,7 +202,7 @@ func TestReopenOn_RealSIGHUPMovesTheSink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rec.Close()
+	defer func() { _ = rec.Close() }()
 
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGHUP)

@@ -109,7 +109,7 @@ func (f *shipFixture) write(t *testing.T, recs ...sshsession.Record) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer fh.Close()
+	defer func() { _ = fh.Close() }()
 	for _, r := range recs {
 		b, _ := json.Marshal(r)
 		_, _ = fh.Write(append(b, '\n'))
