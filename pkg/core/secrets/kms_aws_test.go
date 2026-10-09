@@ -334,16 +334,16 @@ func TestAWSKMS_RejectsRowFromDifferentBackend(t *testing.T) {
 	}
 }
 
-func TestAWSKMS_RejectsBadDEKSize(t *testing.T) {
+func TestAWSKMS_RejectsEmptyOrOversizedPlaintext(t *testing.T) {
 	srv, _ := newFakeAWSKMS(t)
 	defer srv.Close()
 	k, _ := NewAWSKMS(AWSConfig{
 		Region: awsTestRegion, KeyID: awsTestKeyID,
 		AccessKeyID: awsTestAccess, SecretAccessKey: awsTestSecret, Endpoint: srv.URL,
 	})
-	for _, badSize := range []int{0, 16, 64} {
+	for _, badSize := range []int{0, MaxWrapPlaintext + 1} {
 		if _, _, err := k.Wrap(context.Background(), make([]byte, badSize)); err == nil {
-			t.Fatalf("Wrap with DEK size %d should fail", badSize)
+			t.Fatalf("Wrap with plaintext size %d should fail", badSize)
 		}
 	}
 }

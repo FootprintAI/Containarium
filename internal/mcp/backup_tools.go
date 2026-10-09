@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // backupTools is the MCP-side catalog for the database-backup feature.
@@ -17,7 +19,7 @@ import (
 // endpoint the CLI's `containarium backup` subcommands call (the generated
 // BackupService gateway). No agent-only code path.
 func backupTools() []Tool {
-	return []Tool{
+	tools := []Tool{
 		{
 			Name: "create_backup",
 			Description: "Back up a tenant's database off-host. Runs pg_dump inside " +
@@ -28,9 +30,12 @@ func backupTools() []Tool {
 				"size, and SHA-256. Two opt-in options: 'hook' runs the tenant's " +
 				"own in-container program and stores its stdout instead of running " +
 				"pg_dump (no DB credential needed; the dump is opaque and not " +
-				"auto-restorable); 'age_recipient' encrypts the dump to a user-held " +
+				"auto-restorable unless 'hook_format' declares it pg_custom); 'age_recipient' encrypts the dump to a user-held " +
 				"age public key before storage, so the platform only holds " +
-				"ciphertext. Mirrors `containarium backup create`.",
+				"ciphertext. 'key_mode' selects who holds the key on a daemon " +
+				"with a backup KMS key configured ('managed': a per-backup key " +
+				"wrapped by the KMS; 'both': managed plus the age recipient). " +
+				"Mirrors `containarium backup create`.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -67,9 +72,19 @@ func backupTools() []Tool {
 						"type":        "string",
 						"description": "Label for a hook backup, used in the backup id (default: the hook's basename).",
 					},
+					"hook_format": map[string]interface{}{
+						"type":        "string",
+						"description": "Declared format of the hook's output. 'opaque' (default): stored and fetched, never restored or restore-tested by the platform. 'pg_custom': the hook emits a pg_dump -Fc archive, so the backup can be restore-tested (verify_backup) and restored into a named target other than its source. A promise about the hook's output; the daemon does not check it at create time. Only with 'hook'.",
+						"enum":        []string{"opaque", "pg_custom"},
+					},
 					"age_recipient": map[string]interface{}{
 						"type":        "string",
 						"description": "age public key (age1...) to encrypt the dump to before it is stored, overriding any recipient the tenant has already self-registered as the CONTAINARIUM_BACKUP_AGE_RECIPIENT secret (set_secret). Omit this to use the registered one automatically, or omit both for a plaintext dump. Restore then requires the matching identity file, which the platform never holds.",
+					},
+					"key_mode": map[string]interface{}{
+						"type":        "string",
+						"description": "Who holds the key (#2402). 'managed': encrypt to a fresh per-backup identity whose secret the daemon wraps with its KMS key and stores on the record; 'both': managed plus the age recipient, so either opens the file; 'age_recipient': the recipient only, no wrapping. Omit for the daemon default (managed/both when a backup KMS key is configured, otherwise the recipient/plaintext behaviour). A mode the daemon cannot provide is refused, not downgraded. The daemon never unwraps: restore/verify still take the identity, unwrapped under your own KMS credentials.",
+						"enum":        []string{"age_recipient", "managed", "both"},
 					},
 				},
 				"required": []string{"username"},
@@ -104,7 +119,7 @@ func backupTools() []Tool {
 				"properties": map[string]interface{}{
 					"id": map[string]interface{}{
 						"type":        "string",
-						"description": "Backup ID to restore (see list_backups).",
+						"description": "Backup ID to restore (see list_backups). Omit with latest.",
 					},
 					"clean": map[string]interface{}{
 						"type":        "boolean",
@@ -118,8 +133,11 @@ func backupTools() []Tool {
 						"type":        "string",
 						"description": "Path (on the MCP host) to the age identity file (AGE-SECRET-KEY-1...) for a backup created with age_recipient. Read from the file so the private key never appears in tool arguments; used for this one call, never stored.",
 					},
+					"target": map[string]interface{}{
+						"type":        "string",
+						"description": "Container to restore into, <username>-container (default: the backup's own container). A pg_custom hook backup restores only into a target other than its source. Mirrors --target.",
+					},
 				},
-				"required": []string{"id"},
 			},
 			Handler: handleRestoreBackup,
 		},
@@ -140,7 +158,7 @@ func backupTools() []Tool {
 				"properties": map[string]interface{}{
 					"id": map[string]interface{}{
 						"type":        "string",
-						"description": "Backup ID to verify (see list_backups).",
+						"description": "Backup ID to verify (see list_backups). Omit with latest.",
 					},
 					"target_username": map[string]interface{}{
 						"type":        "string",
@@ -155,11 +173,21 @@ func backupTools() []Tool {
 						"description": "Path (on the MCP host) to the age identity file (AGE-SECRET-KEY-1...) for a backup created with age_recipient. Required to verify an encrypted record at all; the platform holds no decryption key. A WRONG identity is reported as a failed check, not a tool error — that is exactly the gap this tool closes: a backup can report success while being encrypted to a key nobody holds, and only an attempted decrypt reveals that. Read from the file so the private key never appears in tool arguments; used for this one call, never stored.",
 					},
 				},
-				"required": []string{"id", "target_username"},
+				"required": []string{"target_username"},
 			},
 			Handler: handleVerifyBackup,
 		},
 	}
+	// restore_backup and verify_backup share the CLI's key/selection flags (#2403).
+	for _, t := range tools {
+		if t.Name == "restore_backup" || t.Name == "verify_backup" {
+			props := t.InputSchema["properties"].(map[string]interface{})
+			for k, v := range managedSelectionProps() {
+				props[k] = v
+			}
+		}
+	}
+	return tools
 }
 
 func handleCreateBackup(client API, args map[string]interface{}) (string, error) {
@@ -179,13 +207,23 @@ func handleCreateBackup(client API, args map[string]interface{}) (string, error)
 	if database == "" && hook == "" {
 		return "", fmt.Errorf("either database or hook is required")
 	}
+	keyMode, err := keyModeEnumName(getStringArg(args, "key_mode", ""))
+	if err != nil {
+		return "", err
+	}
+	hookFormat, err := hookFormatArg(getStringArg(args, "hook_format", ""))
+	if err != nil {
+		return "", err
+	}
 	resp, err := client.CreateBackup(CreateBackupRequest{
 		Username:     getStringArg(args, "username", ""),
 		Destination:  destEnum,
 		GCSBucket:    getStringArg(args, "gcs_bucket", ""),
 		Hook:         hook,
 		Label:        getStringArg(args, "label", ""),
+		HookFormat:   hookFormat,
 		AgeRecipient: getStringArg(args, "age_recipient", ""),
+		KeyMode:      keyMode,
 		Connection: &PgConnectionBody{
 			Database: database,
 			User:     getStringArg(args, "db_user", ""),
@@ -202,13 +240,65 @@ func handleCreateBackup(client API, args map[string]interface{}) (string, error)
 		out += fmt.Sprintf("SHA-256:  %s\n", r.SHA256)
 		out += fmt.Sprintf("Location: %s\n", r.Location)
 		if r.Hook != "" {
-			out += fmt.Sprintf("Hook:     %s (opaque dump; not auto-restorable)\n", r.Hook)
+			if r.HookFormat == pb.HookFormat_HOOK_FORMAT_PG_CUSTOM.String() {
+				out += fmt.Sprintf("Hook:     %s (pg_custom dump; restore-testable)\n", r.Hook)
+			} else {
+				out += fmt.Sprintf("Hook:     %s (opaque dump; not auto-restorable)\n", r.Hook)
+			}
 		}
 		if r.Encrypted {
 			out += fmt.Sprintf("Encrypted: yes, to %s (restore needs the matching identity file)\n", r.AgeRecipient)
 		}
+		if r.KeyMode == "BACKUP_KEY_MODE_MANAGED" || r.KeyMode == "BACKUP_KEY_MODE_BOTH" {
+			out += fmt.Sprintf("Key mode: %s (key version %s; unwrap the record's wrapped key under your own KMS credentials to restore)\n",
+				keyModeArgName(r.KeyMode), r.KekID)
+		}
 	}
 	return out, nil
+}
+
+// keyModeEnumName maps the tool's key_mode argument to the proto enum
+// NAME the gateway expects (#2402). Empty stays empty — UNSPECIFIED, the
+// daemon default — and an unknown value is refused here rather than
+// bounced by the gateway as an opaque 400.
+func keyModeEnumName(arg string) (string, error) {
+	switch arg {
+	case "":
+		return "", nil
+	case "age_recipient":
+		return "BACKUP_KEY_MODE_AGE_RECIPIENT", nil
+	case "managed":
+		return "BACKUP_KEY_MODE_MANAGED", nil
+	case "both":
+		return "BACKUP_KEY_MODE_BOTH", nil
+	default:
+		return "", fmt.Errorf("invalid key_mode %q (expected 'age_recipient', 'managed' or 'both')", arg)
+	}
+}
+
+// keyModeArgName is the inverse: the wire enum name as the tool's own
+// vocabulary, for output.
+func keyModeArgName(enumName string) string {
+	return strings.ToLower(strings.TrimPrefix(enumName, "BACKUP_KEY_MODE_"))
+}
+
+// hookFormatArg maps the create_backup hook_format argument to the
+// pb.HookFormat value name protojson expects on the wire (#2405), mirroring
+// the CLI's --hook-format. Empty stays empty (omitted; daemon default
+// opaque).
+func hookFormatArg(s string) (string, error) {
+	var f pb.HookFormat
+	switch s {
+	case "":
+		return "", nil
+	case "opaque":
+		f = pb.HookFormat_HOOK_FORMAT_OPAQUE
+	case "pg_custom":
+		f = pb.HookFormat_HOOK_FORMAT_PG_CUSTOM
+	default:
+		return "", fmt.Errorf("invalid hook_format %q (expected 'opaque' or 'pg_custom')", s)
+	}
+	return f.String(), nil
 }
 
 func handleListBackups(client API, args map[string]interface{}) (string, error) {
@@ -228,23 +318,40 @@ func handleListBackups(client API, args map[string]interface{}) (string, error) 
 	return b.String(), nil
 }
 
-func handleRestoreBackup(client API, args map[string]interface{}) (string, error) {
-	var ageIdentity string
-	if path := getStringArg(args, "age_identity_file", ""); path != "" {
-		content, err := os.ReadFile(path) // #nosec G304 -- operator-named identity file, read on the MCP host
-		if err != nil {
-			return "", fmt.Errorf("read age identity file: %w", err)
-		}
-		ageIdentity, err = parseAgeIdentityFile(content)
-		if err != nil {
-			return "", fmt.Errorf("%s: %w", path, err)
-		}
+// readToolIdentityFile reads the optional age_identity_file argument.
+func readToolIdentityFile(args map[string]interface{}) (string, error) {
+	path := getStringArg(args, "age_identity_file", "")
+	if path == "" {
+		return "", nil
 	}
+	content, err := os.ReadFile(path) // #nosec G304 -- operator-named identity file, read on the MCP host
+	if err != nil {
+		return "", fmt.Errorf("read age identity file: %w", err)
+	}
+	id, err := parseAgeIdentityFile(content)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", path, err)
+	}
+	return id, nil
+}
+
+func handleRestoreBackup(client API, args map[string]interface{}) (string, error) {
+	rec, err := resolveToolBackup(client, args)
+	if err != nil {
+		return "", err
+	}
+	ageIdentity, zero, err := toolIdentity(rec, args)
+	if err != nil {
+		return "", err
+	}
+	defer zero()
 	resp, err := client.RestoreBackup(RestoreBackupRequest{
-		ID:          getStringArg(args, "id", ""),
-		Clean:       getBoolArg(args, "clean", false),
-		AgeIdentity: ageIdentity,
+		ID:              rec.Id,
+		Clean:           getBoolArg(args, "clean", false),
+		AgeIdentity:     ageIdentity,
+		TargetContainer: getStringArg(args, "target", ""),
 		Connection: &PgConnectionBody{
+			Database: getStringArg(args, "database", ""),
 			Password: getStringArg(args, "db_password", ""),
 		},
 	})
@@ -255,19 +362,17 @@ func handleRestoreBackup(client API, args map[string]interface{}) (string, error
 }
 
 func handleVerifyBackup(client API, args map[string]interface{}) (string, error) {
-	var ageIdentity string
-	if path := getStringArg(args, "age_identity_file", ""); path != "" {
-		content, err := os.ReadFile(path) // #nosec G304 -- operator-named identity file, read on the MCP host
-		if err != nil {
-			return "", fmt.Errorf("read age identity file: %w", err)
-		}
-		ageIdentity, err = parseAgeIdentityFile(content)
-		if err != nil {
-			return "", fmt.Errorf("%s: %w", path, err)
-		}
+	rec, err := resolveToolBackup(client, args)
+	if err != nil {
+		return "", err
 	}
+	ageIdentity, zero, err := toolIdentity(rec, args)
+	if err != nil {
+		return "", err
+	}
+	defer zero()
 	resp, err := client.VerifyBackup(VerifyBackupRequest{
-		ID:             getStringArg(args, "id", ""),
+		ID:             rec.Id,
 		TargetUsername: getStringArg(args, "target_username", ""),
 		AgeIdentity:    ageIdentity,
 		Connection: &PgConnectionBody{

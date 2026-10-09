@@ -2,20 +2,96 @@ package backup
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"path"
 	"strings"
 
 	"filippo.io/age"
+
+	"github.com/footprintai/containarium/pkg/core/secrets"
 )
 
 // EngineHook marks a dump produced by a tenant-supplied backup hook
-// (#1831): an opaque byte stream the platform captured from the hook's
-// stdout. The daemon has no knowledge of its format — it could be a
-// pg_dump archive, a mysqldump, anything — so hook backups are stored,
-// listed, integrity-checked, fetched and deleted, but never pg_restore'd.
+// (#1831): a byte stream the platform captured from the hook's stdout.
+// Unless the hook declares its format (HookFormat, #2405) the daemon has
+// no knowledge of it — it could be a pg_dump archive, a mysqldump,
+// anything — so an opaque hook backup is stored, listed,
+// integrity-checked, fetched and deleted, but never pg_restore'd.
 const EngineHook = "hook"
+
+// HookFormat is what a hook declares it emits (#2405). Kept as a string in
+// the core, like Destination, so the package stays free of the pb
+// dependency; the server maps it to/from pb.HookFormat.
+//
+// The declaration is a promise made by whoever configures the hook, not
+// something the daemon checks when the backup is taken.
+type HookFormat string
+
+const (
+	// HookFormatOpaque is an undeclared byte stream: stored, listed,
+	// integrity-checked, fetched and deleted, never restored or
+	// restore-tested by the platform. The default for a hook, and what a
+	// hook record written before #2405 loads as.
+	HookFormatOpaque HookFormat = "opaque"
+	// HookFormatPGCustom is a `pg_dump -Fc` custom-format archive, the same
+	// bytes database mode produces, so it can be restore-tested and
+	// restored into a named target container.
+	HookFormatPGCustom HookFormat = "pg_custom"
+)
+
+// validateHookFormat checks a requested format against the hook it
+// describes: a format means nothing without a hook, and only the declared
+// set is accepted. Empty is valid (it means opaque).
+func validateHookFormat(format HookFormat, hookMode bool) error {
+	switch format {
+	case "":
+		return nil
+	case HookFormatOpaque, HookFormatPGCustom:
+		if !hookMode {
+			return fmt.Errorf("hook format %q applies only to a hook backup", format)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown hook format %q (expected %q or %q)", format, HookFormatOpaque, HookFormatPGCustom)
+	}
+}
+
+// countTOCTables counts the user tables a custom-format archive declares,
+// from `pg_restore --list` output — the dump-side counterpart of
+// userRelationQuery, so a pg_custom hook record gets the same manifest a
+// database-mode record reads from the source catalog (#2405).
+//
+// A TOC entry line is "<dumpId>; <tableoid> <oid> <DESC> <schema> <name>
+// <owner>", where DESC may be several words. Ordinary and partitioned
+// tables are both "TABLE"; "TABLE DATA" and "TABLE ATTACH" are entries
+// about a table, not tables, and FOREIGN TABLE / VIEW / SEQUENCE are not
+// counted by userRelationQuery either. pg_dump never emits system
+// catalogs, so no schema filter is needed.
+func countTOCTables(toc string) int64 {
+	var n int64
+	for _, line := range strings.Split(toc, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, ";") {
+			continue
+		}
+		semi := strings.Index(line, "; ")
+		if semi < 0 {
+			continue
+		}
+		// tableoid, oid, then DESC.
+		fields := strings.Fields(line[semi+2:])
+		if len(fields) < 4 || fields[2] != "TABLE" {
+			continue
+		}
+		if fields[3] == "DATA" || fields[3] == "ATTACH" {
+			continue
+		}
+		n++
+	}
+	return n
+}
 
 // validateHook accepts only a bare absolute executable path inside the
 // container. The hook is the tenant's own program; the platform runs it
@@ -76,16 +152,26 @@ func parseRecipient(s string) (age.Recipient, error) {
 	return r, nil
 }
 
-// encryptWithRecipient encrypts data to recipient entirely in memory. The
-// caller stores the returned ciphertext; plaintext never reaches disk on
-// the daemon host or any off-host store (#1831).
-func encryptWithRecipient(data []byte, recipient string) ([]byte, error) {
-	r, err := parseRecipient(recipient)
-	if err != nil {
-		return nil, err
+// encryptWithRecipients encrypts data to every recipient entirely in
+// memory, as one age file any of them can open. The caller stores the
+// returned ciphertext; plaintext never reaches disk on the daemon host or
+// any off-host store (#1831). Two recipients — the per-backup managed
+// identity and the tenant's legacy recipient — is how BOTH mode keeps the
+// `.dump.age` format unchanged while either path can decrypt (#2402).
+func encryptWithRecipients(data []byte, recipients ...string) ([]byte, error) {
+	if len(recipients) == 0 {
+		return nil, fmt.Errorf("age encrypt: no recipients")
+	}
+	rs := make([]age.Recipient, 0, len(recipients))
+	for _, s := range recipients {
+		r, err := parseRecipient(s)
+		if err != nil {
+			return nil, err
+		}
+		rs = append(rs, r)
 	}
 	var buf bytes.Buffer
-	w, err := age.Encrypt(&buf, r)
+	w, err := age.Encrypt(&buf, rs...)
 	if err != nil {
 		return nil, fmt.Errorf("age encrypt: %w", err)
 	}
@@ -96,6 +182,29 @@ func encryptWithRecipient(data []byte, recipient string) ([]byte, error) {
 		return nil, fmt.Errorf("age encrypt: %w", err)
 	}
 	return buf.Bytes(), nil
+}
+
+// wrapNewIdentity generates the ephemeral age identity for one managed
+// backup (#2402) and hands its secret string to the wrapper. Only the
+// public recipient and the wrapped bytes leave this function: the secret
+// is zeroed before return, the identity object never escapes, and nothing
+// is logged or written. The daemon itself cannot reverse the wrap — that
+// is the whole point of an encrypt-only KMS binding.
+func wrapNewIdentity(ctx context.Context, wrapper secrets.KMSClient) (recipient string, wrapped []byte, kekID string, err error) {
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		return "", nil, "", fmt.Errorf("generate backup identity: %w", err)
+	}
+	secret := []byte(id.String())
+	defer secrets.ZeroBytes(secret)
+	wrapped, kekID, err = wrapper.Wrap(ctx, secret)
+	if err != nil {
+		return "", nil, "", fmt.Errorf("wrap backup key: %w", err)
+	}
+	if len(wrapped) == 0 || kekID == "" {
+		return "", nil, "", fmt.Errorf("wrap backup key: wrapper returned an empty wrapped key or kek id")
+	}
+	return id.Recipient().String(), wrapped, kekID, nil
 }
 
 // decryptWithIdentity decrypts an age ciphertext with an X25519 identity
