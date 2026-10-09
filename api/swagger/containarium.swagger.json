@@ -9864,7 +9864,7 @@
         "BACKUP_ENGINE_HOOK"
       ],
       "default": "BACKUP_ENGINE_UNSPECIFIED",
-      "description": "BackupEngine identifies the database engine a backup was taken from.\n\nPostgres is the only engine implemented today; the enum exists so that a\nsecond one has somewhere to be named, and so that the engine a record was\ntaken with is a typed value rather than a string the reader has to trust.\n\n - BACKUP_ENGINE_UNSPECIFIED: Unset, or a record written by a daemon that predates this enum.\nRejected wherever an engine has to be chosen — never treated as\nPostgres by default, because guessing the engine of a dump is how a\nrestore silently targets the wrong one.\n - BACKUP_ENGINE_HOOK: A dump produced by a tenant-supplied backup hook (#1831): an opaque\nbyte stream the daemon captured from the hook's stdout. The daemon\ndoes not know its format, so a HOOK record can be listed, fetched,\nintegrity-checked and deleted, but is never restored or restore-tested\nby the platform — apply it with the tenant's own tooling."
+      "description": "BackupEngine identifies the database engine a backup was taken from.\n\nPostgres is the only engine implemented today; the enum exists so that a\nsecond one has somewhere to be named, and so that the engine a record was\ntaken with is a typed value rather than a string the reader has to trust.\n\n - BACKUP_ENGINE_UNSPECIFIED: Unset, or a record written by a daemon that predates this enum.\nRejected wherever an engine has to be chosen — never treated as\nPostgres by default, because guessing the engine of a dump is how a\nrestore silently targets the wrong one.\n - BACKUP_ENGINE_HOOK: A dump produced by a tenant-supplied backup hook (#1831): a byte\nstream the daemon captured from the hook's stdout. Unless the hook\ndeclared its format (see HookFormat, #2405) the daemon does not know\nit, so an opaque HOOK record can be listed, fetched, integrity-checked\nand deleted, but is never restored or restore-tested by the platform —\napply it with the tenant's own tooling."
     },
     "BackupKeyMode": {
       "type": "string",
@@ -9949,6 +9949,10 @@
         "keyMode": {
           "$ref": "#/definitions/BackupKeyMode",
           "description": "Who holds the key: UNSPECIFIED for a plaintext record,\nAGE_RECIPIENT for a record encrypted to a tenant-held recipient only\n(including every record written before this field existed)."
+        },
+        "hookFormat": {
+          "$ref": "#/definitions/HookFormat",
+          "description": "For BACKUP_ENGINE_HOOK: the format the hook declared for its output\n(#2405). OPAQUE for a hook record that declared none. UNSPECIFIED for\npg_dump records."
         }
       },
       "description": "BackupRecord is the metadata index entry for one stored dump. The dump\nitself lives at `location`; this record is persisted as a small JSON\nsidecar in the daemon's backup directory so `ListBackups` works without\na database dependency (the thing we are backing up may itself be down)."
@@ -11258,6 +11262,10 @@
         "keyMode": {
           "$ref": "#/definitions/BackupKeyMode",
           "description": "Who should hold the key (#2402). UNSPECIFIED takes the daemon\ndefault: MANAGED when the daemon has a key wrapper configured\n(CONTAINARIUM_BACKUP_KMS_KEY_NAME), BOTH when a recipient also\nresolves, otherwise AGE_RECIPIENT with a recipient or plaintext\nwithout. An explicit mode the daemon cannot satisfy — MANAGED or\nBOTH with no wrapper (FAILED_PRECONDITION), AGE_RECIPIENT or BOTH\nwith no recipient (INVALID_ARGUMENT) — is rejected, never silently\ndowngraded."
+        },
+        "hookFormat": {
+          "$ref": "#/definitions/HookFormat",
+          "description": "Declared format of the hook's output (#2405). UNSPECIFIED means\nOPAQUE, today's behaviour. Set PG_CUSTOM only for a hook that emits a\n`pg_dump -Fc` archive: the record then gets a relation-count manifest\nread from the archive's table of contents (when pg_restore is\navailable in the container) and can be restore-tested. Rejected\nwithout `hook`."
         }
       },
       "description": "CreateBackupRequest dumps a container's database and stores it at the\nchosen destination."
@@ -14105,6 +14113,16 @@
       },
       "title": "HistoricalConnection represents a persisted connection record"
     },
+    "HookFormat": {
+      "type": "string",
+      "enum": [
+        "HOOK_FORMAT_UNSPECIFIED",
+        "HOOK_FORMAT_OPAQUE",
+        "HOOK_FORMAT_PG_CUSTOM"
+      ],
+      "default": "HOOK_FORMAT_UNSPECIFIED",
+      "description": "HookFormat is what a backup hook declares it writes to stdout (#2405).\n\nThe declaration is a promise made by whoever configures the hook; the\ndaemon does not inspect the bytes at create time. It decides what the\nplatform may do with a HOOK record afterwards.\n\n - HOOK_FORMAT_UNSPECIFIED: Unset. On a CreateBackupRequest with a hook it means OPAQUE; on a\nrecord it means the record is not a hook backup.\n - HOOK_FORMAT_OPAQUE: Undeclared output: stored, listed, integrity-checked, fetched and\ndeleted, never restored or restore-tested by the platform. What a\nhook record written before this field existed reads as.\n - HOOK_FORMAT_PG_CUSTOM: A `pg_dump -Fc` custom-format archive, the same bytes a database-mode\nbackup produces. Restore-testable with VerifyBackup, and restorable\ninto an explicitly named target container other than its source\n(never in place: the daemon cannot reach the source's Postgres)."
+    },
     "HostCapabilityCheck": {
       "type": "object",
       "properties": {
@@ -16345,6 +16363,10 @@
         "ageIdentity": {
           "type": "string",
           "description": "For a record with encrypted=true: the age X25519 identity\n(\"AGE-SECRET-KEY-1…\") that matches the record's age_recipient (#1831).\nUsed to decrypt for this one call and never stored or logged. Required\nfor an encrypted record; the daemon refuses the restore without it\nbecause it holds no decryption key of its own."
+        },
+        "targetContainer": {
+          "type": "string",
+          "description": "Container to restore into, by its container name\n(\"\u003cusername\u003e-container\"). Empty restores into the backup's own source\ncontainer, in place (#2403). The caller must be authorized for the\ntarget's tenant as well as the backup's. A hook record declared\nHOOK_FORMAT_PG_CUSTOM can only be restored this way, into a target\nother than its source (#2405)."
         }
       },
       "description": "RestoreBackupRequest streams a stored dump back into a container's\ndatabase via pg_restore. Destructive: with `clean` set it drops and\nrecreates objects before loading."

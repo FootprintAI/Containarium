@@ -558,6 +558,11 @@ type CreateBackupRequest struct {
 	// #2402: the proto enum NAME ("BACKUP_KEY_MODE_MANAGED", ...). Empty
 	// is UNSPECIFIED — the daemon default.
 	KeyMode string `json:"key_mode,omitempty"`
+
+	// #2405: declared hook output format, as the pb.HookFormat value NAME
+	// (what protojson decodes). Empty is omitted, which the daemon reads
+	// as opaque.
+	HookFormat string `json:"hook_format,omitempty"`
 }
 
 // BackupRecord mirrors the proto BackupRecord on the response side
@@ -585,6 +590,7 @@ type BackupRecord struct {
 	WrappedKey string `json:"wrappedKey,omitempty"`
 	KekID      string `json:"kekId,omitempty"`
 	KeyMode    string `json:"keyMode,omitempty"`
+	HookFormat string `json:"hookFormat,omitempty"` // #2405, enum value name
 }
 
 // VerificationCheck is one assertion made during a restore test.
@@ -625,6 +631,9 @@ type RestoreBackupRequest struct {
 	Clean      bool              `json:"clean,omitempty"`
 	// AgeIdentity decrypts an encrypted record for this one call (#1831).
 	AgeIdentity string `json:"age_identity,omitempty"`
+	// TargetContainer restores into another tenant container; empty is
+	// the backup's own container (#2403).
+	TargetContainer string `json:"target_container,omitempty"`
 }
 
 // RestoreBackupResponse is the result of a restore.

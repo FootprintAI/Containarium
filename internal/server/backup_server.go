@@ -154,6 +154,11 @@ func (s *BackupServer) CreateBackup(ctx context.Context, req *pb.CreateBackupReq
 		return nil, err
 	}
 
+	hookFormat, err := hookFormatFromProto(req.HookFormat)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
 	info, err := s.containers.manager.Get(req.Username)
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "container for user %s not found: %v", req.Username, err)
@@ -167,6 +172,7 @@ func (s *BackupServer) CreateBackup(ctx context.Context, req *pb.CreateBackupReq
 		GCSBucket:     req.GcsBucket,
 		Hook:          req.Hook,
 		Label:         req.Label,
+		HookFormat:    hookFormat,
 		AgeRecipient:  ageRecipient,
 		KeyMode:       keyMode,
 	}
@@ -280,18 +286,50 @@ func (s *BackupServer) RestoreBackup(ctx context.Context, req *pb.RestoreBackupR
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "container for user %s not found: %v", rec.Username, err)
 	}
+	target, err := s.resolveRestoreTarget(ctx, req.TargetContainer)
+	if err != nil {
+		return nil, err
+	}
 
 	if err := s.mgr.Restore(backup.RestoreOptions{
-		ID:            req.Id,
-		ContainerName: info.Name,
-		Conn:          connFromProto(req.Connection),
-		Clean:         req.Clean,
-		AgeIdentity:   req.AgeIdentity, // per-call; never logged or stored (#1831)
+		ID:              req.Id,
+		ContainerName:   info.Name,
+		TargetContainer: target,
+		Conn:            connFromProto(req.Connection),
+		Clean:           req.Clean,
+		AgeIdentity:     req.AgeIdentity, // per-call; never logged or stored (#1831)
 	}); err != nil {
 		return nil, status.Errorf(codes.Internal, "restore failed: %v", err)
 	}
-	log.Printf("[backup] restored id=%s user=%s db=%s clean=%t", rec.ID, rec.Username, rec.Database, req.Clean)
+	if target == "" {
+		target = info.Name
+	}
+	log.Printf("[backup] restored id=%s user=%s db=%s target=%s clean=%t", rec.ID, rec.Username, rec.Database, target, req.Clean)
 	return &pb.RestoreBackupResponse{Message: "restore complete: " + rec.ID}, nil
+}
+
+// resolveRestoreTarget checks a RestoreBackupRequest.target_container
+// (#2403). Empty stays empty: the core then restores in place. Otherwise
+// the name must be a tenant container ("<username>-container"), the
+// caller must be authorized for that tenant (the restore writes into it),
+// and it must exist. Every refusal precedes any container command.
+func (s *BackupServer) resolveRestoreTarget(ctx context.Context, name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", nil
+	}
+	owner, ok := strings.CutSuffix(name, "-container")
+	if !ok || owner == "" {
+		return "", status.Errorf(codes.InvalidArgument, "target_container %q is not a tenant container (expected <username>-container)", name)
+	}
+	if err := auth.AuthorizeTenant(ctx, owner); err != nil {
+		return "", err
+	}
+	info, err := s.containers.manager.Get(owner)
+	if err != nil {
+		return "", status.Errorf(codes.NotFound, "target container %s not found: %v", name, err)
+	}
+	return info.Name, nil
 }
 
 // VerifyBackup restore-tests a stored dump against a throwaway database
@@ -542,6 +580,32 @@ func keyModeToProto(r *backup.Record) pb.BackupKeyMode {
 	}
 }
 
+// hookFormatFromProto maps a create request's declared hook format to the
+// core (#2405). UNSPECIFIED stays empty, which the core treats as opaque.
+func hookFormatFromProto(f pb.HookFormat) (backup.HookFormat, error) {
+	switch f {
+	case pb.HookFormat_HOOK_FORMAT_UNSPECIFIED:
+		return "", nil
+	case pb.HookFormat_HOOK_FORMAT_OPAQUE:
+		return backup.HookFormatOpaque, nil
+	case pb.HookFormat_HOOK_FORMAT_PG_CUSTOM:
+		return backup.HookFormatPGCustom, nil
+	default:
+		return "", fmt.Errorf("unknown hook_format %v", f)
+	}
+}
+
+func hookFormatToProto(f backup.HookFormat) pb.HookFormat {
+	switch f {
+	case backup.HookFormatOpaque:
+		return pb.HookFormat_HOOK_FORMAT_OPAQUE
+	case backup.HookFormatPGCustom:
+		return pb.HookFormat_HOOK_FORMAT_PG_CUSTOM
+	default:
+		return pb.HookFormat_HOOK_FORMAT_UNSPECIFIED
+	}
+}
+
 func connFromProto(c *pb.PgConnection) backup.PgConn {
 	if c == nil {
 		return backup.PgConn{}
@@ -611,5 +675,6 @@ func recordToProto(r *backup.Record) *pb.BackupRecord {
 		WrappedKey: r.WrappedKey,
 		KekId:      r.KEKID,
 		KeyMode:    keyModeToProto(r),
+		HookFormat: hookFormatToProto(r.HookFormat),
 	}
 }
