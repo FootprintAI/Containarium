@@ -86,18 +86,13 @@ func (tc *TunnelClient) connectAndServe(ctx context.Context) error {
 
 	log.Printf("[tunnel-client] connected to sentinel %s", tc.SentinelAddr)
 
-	// Send handshake
-	hs := &TunnelHandshake{
-		Token:             tc.Token,
-		SpotID:            tc.SpotID,
-		Ports:             tc.Ports,
-		Pool:              tc.Pool,
-		PublicHostname:    tc.PublicHostname,
-		PublicAliases:     tc.PublicAliases,
-		PublicBaseDomains: tc.PublicBaseDomains,
-		PublicPort:        tc.PublicPort,
+	// Send the v2 handshake: the token stays here; the sentinel gets its
+	// id and a proof bound to this TLS session.
+	ekm, err := tunnelTokenEKM(conn.ConnectionState())
+	if err != nil {
+		return err
 	}
-	if err := writeHandshake(conn, hs); err != nil {
+	if err := writeHandshake(conn, tc.handshakeV2(ekm)); err != nil {
 		return fmt.Errorf("write handshake: %w", err)
 	}
 
@@ -138,6 +133,23 @@ func (tc *TunnelClient) connectAndServe(ctx context.Context) error {
 
 	// Accept streams from sentinel and proxy to local ports
 	return tc.serveStreams(ctx, session)
+}
+
+// handshakeV2 builds the handshake sent inside a TLS session whose
+// exported keying material is ekm. It never carries the token itself.
+func (tc *TunnelClient) handshakeV2(ekm []byte) *TunnelHandshake {
+	return &TunnelHandshake{
+		V:                 tunnelHandshakeV2,
+		TokenID:           tunnelTokenID(tc.Token),
+		Proof:             tunnelTokenProof(tc.Token, ekm),
+		SpotID:            tc.SpotID,
+		Ports:             tc.Ports,
+		Pool:              tc.Pool,
+		PublicHostname:    tc.PublicHostname,
+		PublicAliases:     tc.PublicAliases,
+		PublicBaseDomains: tc.PublicBaseDomains,
+		PublicPort:        tc.PublicPort,
+	}
 }
 
 // serveStreams accepts yamux streams from the sentinel and proxies each one

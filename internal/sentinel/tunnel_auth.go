@@ -1,12 +1,55 @@
 package sentinel
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"crypto/subtle"
+	"crypto/tls"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
 	"sync"
 )
+
+// Handshake v2 is the shape a tunnel client sends inside a TLS session. It
+// carries no token. Instead it names the token by a short id and proves
+// possession of it with an HMAC over keying material exported from the
+// TLS session (RFC 8446 §7.5), so the proof is only meaningful to the two
+// ends of that one session.
+const (
+	tunnelHandshakeV2     = 2
+	tunnelTokenIDLen      = 16
+	tunnelTokenProofLabel = "containarium-tunnel-token-proof/1" // #nosec G101 -- a keying-material export label, not a credential value
+	tunnelTokenProofLen   = 32
+)
+
+// tunnelTokenID is the public name of a token: the first 16 hex characters
+// of its SHA-256. It lets the policy find the token without the client
+// sending it.
+func tunnelTokenID(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])[:tunnelTokenIDLen]
+}
+
+// tunnelTokenProof is base64(HMAC-SHA256(key = token, msg = ekm)).
+func tunnelTokenProof(token string, ekm []byte) string {
+	mac := hmac.New(sha256.New, []byte(token))
+	mac.Write(ekm)
+	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
+}
+
+// tunnelTokenEKM exports the per-session keying material both peers derive
+// from the same TLS session, which the proof is computed over.
+func tunnelTokenEKM(cs tls.ConnectionState) ([]byte, error) {
+	ekm, err := cs.ExportKeyingMaterial(tunnelTokenProofLabel, nil, tunnelTokenProofLen)
+	if err != nil {
+		return nil, fmt.Errorf("export tunnel keying material: %w", err)
+	}
+	return ekm, nil
+}
 
 // TokenPolicy maps tunnel tokens to the set of pools each token is allowed
 // to join. Used by validateHandshake to reject pool spoofing — a token
@@ -21,12 +64,43 @@ import (
 type TokenPolicy struct {
 	mu    sync.RWMutex
 	rules map[string][]Pool
+	// byID indexes rules by tunnelTokenID so a v2 handshake, which names
+	// the token by id only, resolves to the token(s) to check its proof
+	// against. Normally one token per id.
+	byID map[string][]string
 }
 
 // NewTokenPolicy returns an empty policy. With no entries, every handshake
 // is rejected — Allow at least one token before serving traffic.
 func NewTokenPolicy() *TokenPolicy {
-	return &TokenPolicy{rules: make(map[string][]Pool)}
+	return &TokenPolicy{rules: make(map[string][]Pool), byID: make(map[string][]string)}
+}
+
+// indexLocked adds token to the id index; the caller holds mu.
+func (tp *TokenPolicy) indexLocked(token string) {
+	id := tunnelTokenID(token)
+	for _, t := range tp.byID[id] {
+		if t == token {
+			return
+		}
+	}
+	tp.byID[id] = append(tp.byID[id], token)
+}
+
+// unindexLocked removes token from the id index; the caller holds mu.
+func (tp *TokenPolicy) unindexLocked(token string) {
+	id := tunnelTokenID(token)
+	kept := tp.byID[id][:0]
+	for _, t := range tp.byID[id] {
+		if t != token {
+			kept = append(kept, t)
+		}
+	}
+	if len(kept) == 0 {
+		delete(tp.byID, id)
+		return
+	}
+	tp.byID[id] = kept
 }
 
 // Allow registers a token authorized for the given pools. Pass PoolAny
@@ -36,6 +110,7 @@ func (tp *TokenPolicy) Allow(token string, pools ...Pool) {
 	tp.mu.Lock()
 	defer tp.mu.Unlock()
 	tp.rules[token] = pools
+	tp.indexLocked(token)
 }
 
 // Deny removes token's rule, so a future handshake presenting it is
@@ -47,6 +122,7 @@ func (tp *TokenPolicy) Deny(token string) {
 	tp.mu.Lock()
 	defer tp.mu.Unlock()
 	delete(tp.rules, token)
+	tp.unindexLocked(token)
 }
 
 // DenyPrefix removes every rule whose token starts with prefix — the
@@ -66,6 +142,7 @@ func (tp *TokenPolicy) DenyPrefix(prefix string) {
 	for token := range tp.rules {
 		if strings.HasPrefix(token, prefix) {
 			delete(tp.rules, token)
+			tp.unindexLocked(token)
 		}
 	}
 }
@@ -112,13 +189,51 @@ func (tp *TokenPolicy) Validate(token string, pool Pool) error {
 	return fmt.Errorf("token not authorized for pool %q", pool)
 }
 
+// ValidateProof is the v2 counterpart of Validate: it resolves tokenID to
+// the registered token(s), checks that proof is the HMAC of this session's
+// keying material under one of them, and then applies the same pool rule
+// as Validate. Comparison is constant-time. A nil policy rejects.
+func (tp *TokenPolicy) ValidateProof(tokenID, proof string, ekm []byte, pool Pool) error {
+	if tp == nil {
+		return fmt.Errorf("no token policy configured")
+	}
+	got, err := base64.StdEncoding.DecodeString(proof)
+	if err != nil {
+		return fmt.Errorf("invalid proof encoding")
+	}
+	tp.mu.RLock()
+	candidates := append([]string(nil), tp.byID[tokenID]...)
+	tp.mu.RUnlock()
+	if len(candidates) == 0 {
+		return fmt.Errorf("invalid token")
+	}
+	for _, token := range candidates {
+		mac := hmac.New(sha256.New, []byte(token))
+		mac.Write(ekm)
+		if subtle.ConstantTimeCompare(mac.Sum(nil), got) == 1 {
+			return tp.Validate(token, pool)
+		}
+	}
+	return fmt.Errorf("invalid token proof")
+}
+
 // TunnelHandshake is sent by the spot (tunnel client) to the sentinel (tunnel server)
 // immediately after the TCP connection is established.
 type TunnelHandshake struct {
-	Token  string `json:"token"`
-	SpotID string `json:"spot_id"`
-	Ports  []int  `json:"ports"`
-	Pool   Pool   `json:"pool,omitempty"`
+	// V is the handshake version: absent (0) for the legacy cleartext
+	// shape that carries Token, tunnelHandshakeV2 for the shape sent
+	// inside TLS that carries TokenID and Proof instead.
+	V int `json:"v,omitempty"`
+	// Token is the legacy credential field, accepted only on the cleartext
+	// path. A v2 handshake leaves it empty.
+	Token string `json:"token,omitempty"`
+	// TokenID names the token (tunnelTokenID) and Proof demonstrates
+	// possession of it for this TLS session (tunnelTokenProof).
+	TokenID string `json:"token_id,omitempty"`
+	Proof   string `json:"proof,omitempty"`
+	SpotID  string `json:"spot_id"`
+	Ports   []int  `json:"ports"`
+	Pool    Pool   `json:"pool,omitempty"`
 
 	// Optional primary registration (slice 6). When PublicHostname is set,
 	// the sentinel auto-registers this tunnel as the primary for its pool,
@@ -208,9 +323,9 @@ func writeHandshakeResponse(w io.Writer, resp *TunnelHandshakeResponse) error {
 	return json.NewEncoder(w).Encode(resp)
 }
 
-// validateHandshake checks required fields, then asks the policy whether
-// the presented token is authorized for the claimed pool.
-func validateHandshake(hs *TunnelHandshake, policy *TokenPolicy) error {
+// validateHandshakeFields checks the fields every handshake version
+// shares.
+func validateHandshakeFields(hs *TunnelHandshake) error {
 	if hs.SpotID == "" {
 		return fmt.Errorf("spot_id is required")
 	}
@@ -225,8 +340,48 @@ func validateHandshake(hs *TunnelHandshake, policy *TokenPolicy) error {
 			return fmt.Errorf("pool is required when public_hostname is set")
 		}
 	}
+	return nil
+}
+
+// validateHandshake is the legacy (cleartext) validator: required fields,
+// then the policy's answer for the presented token and pool. A v2
+// handshake is not accepted here — its proof is bound to a TLS session
+// this path does not have.
+func validateHandshake(hs *TunnelHandshake, policy *TokenPolicy) error {
+	if err := validateHandshakeFields(hs); err != nil {
+		return err
+	}
+	if hs.V >= tunnelHandshakeV2 {
+		return fmt.Errorf("handshake v%d is only accepted over tls", hs.V)
+	}
 	if policy == nil {
 		return fmt.Errorf("no token policy configured")
 	}
 	return policy.Validate(hs.Token, hs.Pool)
+}
+
+// validateHandshakeV2 is the validator for handshakes read inside a TLS
+// session: the v2 shape is required (no token field; token_id and proof
+// present), and the proof must match ekm, the keying material this end
+// exported from the same session.
+func validateHandshakeV2(hs *TunnelHandshake, policy *TokenPolicy, ekm []byte) error {
+	if err := validateHandshakeFields(hs); err != nil {
+		return err
+	}
+	if hs.V != tunnelHandshakeV2 {
+		return fmt.Errorf("handshake v%d is required inside tls, got v%d", tunnelHandshakeV2, hs.V)
+	}
+	if hs.Token != "" {
+		return fmt.Errorf("token field is not accepted inside tls; send token_id and proof")
+	}
+	if hs.TokenID == "" {
+		return fmt.Errorf("token_id is required")
+	}
+	if hs.Proof == "" {
+		return fmt.Errorf("proof is required")
+	}
+	if len(ekm) != tunnelTokenProofLen {
+		return fmt.Errorf("no session keying material to check the proof against")
+	}
+	return policy.ValidateProof(hs.TokenID, hs.Proof, ekm, hs.Pool)
 }

@@ -24,42 +24,6 @@ func newTestTunnelIdentity(t *testing.T) *TunnelIdentity {
 	return id
 }
 
-// startTLSTunnelFront terminates the tunnel TLS transport with id and
-// forwards the decrypted bytes to backendAddr (a plain TunnelServer or a
-// ConnMux). It lets tests drive an unchanged TunnelServer from a TLS client.
-// Returns the address clients dial.
-func startTLSTunnelFront(t *testing.T, id *TunnelIdentity, backendAddr string) string {
-	t.Helper()
-	ln, err := tls.Listen("tcp", "127.0.0.1:0", tunnelTLSServerConfig(id))
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = ln.Close() })
-
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go func(front net.Conn) {
-				defer func() { _ = front.Close() }()
-				if err := front.(*tls.Conn).Handshake(); err != nil {
-					return
-				}
-				back, err := net.DialTimeout("tcp", backendAddr, 5*time.Second)
-				if err != nil {
-					return
-				}
-				defer func() { _ = back.Close() }()
-				done := make(chan struct{}, 2)
-				go func() { _, _ = io.Copy(back, front); done <- struct{}{} }()
-				go func() { _, _ = io.Copy(front, back); done <- struct{}{} }()
-				<-done
-			}(conn)
-		}
-	}()
-	return ln.Addr().String()
-}
-
 // countingListener counts the application bytes its accepted connections
 // deliver to the reader (for a TLS listener: decrypted bytes only).
 type countingListener struct {
