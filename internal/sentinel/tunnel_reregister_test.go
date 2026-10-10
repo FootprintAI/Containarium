@@ -124,14 +124,14 @@ func TestReconnectKeepsTheNewRegistration(t *testing.T) {
 
 	firstSession, closeFirst := newSessionPair(t)
 	defer closeFirst()
-	firstIP, firstGen, err := r.Register(handshake("spot-1"), firstSession)
+	firstIP, firstGen, err := r.Register(handshake("spot-1"), firstSession, TunnelTransportCleartext)
 	require.NoError(t, err)
 
 	// The backend reboots and reconnects under the same id. Register closes
 	// the previous session as part of replacing it.
 	secondSession, closeSecond := newSessionPair(t)
 	defer closeSecond()
-	secondIP, secondGen, err := r.Register(handshake("spot-1"), secondSession)
+	secondIP, secondGen, err := r.Register(handshake("spot-1"), secondSession, TunnelTransportCleartext)
 	require.NoError(t, err)
 
 	require.Equal(t, firstIP, secondIP, "a reconnect must reuse the loopback alias, or sshpiper's config goes stale")
@@ -156,7 +156,7 @@ func TestGenuineDisconnectStillUnregisters(t *testing.T) {
 
 	session, closeSession := newSessionPair(t)
 	defer closeSession()
-	_, gen, err := r.Register(handshake("spot-1"), session)
+	_, gen, err := r.Register(handshake("spot-1"), session, TunnelTransportCleartext)
 	require.NoError(t, err)
 
 	removed := r.UnregisterIfCurrent("spot-1", gen)
@@ -194,7 +194,7 @@ func TestMonitorSessionIgnoresSupersededGeneration(t *testing.T) {
 	// First registration, with its listeners and its monitor.
 	firstSession, closeFirst := newSessionPair(t)
 	defer closeFirst()
-	_, firstGen, err := registry.Register(handshake("spot-1"), firstSession)
+	_, firstGen, err := registry.Register(handshake("spot-1"), firstSession, TunnelTransportCleartext)
 	require.NoError(t, err)
 	// Bind on 127.0.0.1 rather than the (stubbed, non-existent) alias, and on
 	// a port picked at run time rather than named here. A privileged remote
@@ -214,7 +214,7 @@ func TestMonitorSessionIgnoresSupersededGeneration(t *testing.T) {
 	// Reconnect: Register closes firstSession, which wakes the monitor above.
 	secondSession, closeSecond := newSessionPair(t)
 	defer closeSecond()
-	_, secondGen, err := registry.Register(handshake("spot-1"), secondSession)
+	_, secondGen, err := registry.Register(handshake("spot-1"), secondSession, TunnelTransportCleartext)
 	require.NoError(t, err)
 	// The same port as the first registration: a reconnect rebinds what the
 	// superseded generation had.
@@ -269,7 +269,7 @@ func TestMonitorSessionCleansUpCurrentGeneration(t *testing.T) {
 
 	session, closeSession := newSessionPair(t)
 	defer closeSession()
-	_, gen, err := registry.Register(handshake("spot-1"), session)
+	_, gen, err := registry.Register(handshake("spot-1"), session, TunnelTransportCleartext)
 	require.NoError(t, err)
 	ts.startProxies(ctx, "spot-1", gen, "127.0.0.1", 0, []int{freeLoopbackPort(t)}, session)
 

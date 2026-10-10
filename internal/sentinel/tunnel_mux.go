@@ -1,18 +1,22 @@
 package sentinel
 
 import (
+	"bufio"
 	"io"
 	"log"
 	"net"
+	"slices"
 	"sync"
 	"time"
 )
 
 // ConnMux multiplexes a single TCP listener into tunnel and HTTPS connections
-// based on the first byte of each connection.
+// based on the first bytes of each connection.
 //
-// Tunnel handshakes start with '{' (JSON), while TLS/HTTPS starts with 0x16
-// (TLS record layer). All non-tunnel connections are routed to HTTPS handling.
+// A cleartext tunnel handshake starts with '{' (JSON). A TLS ClientHello
+// (0x16) that offers the tunnel ALPN protocol (TunnelALPN) is a TLS tunnel
+// session. Every other connection, including every other TLS ClientHello,
+// is routed to HTTPS handling byte for byte.
 //
 // This allows the tunnel and HTTPS to share port 443, avoiding the need to
 // open an extra port on the sentinel's firewall.
@@ -42,8 +46,8 @@ func NewConnMuxFromListener(ln net.Listener) *ConnMux {
 	}
 }
 
-// TunnelListener returns a net.Listener that yields only tunnel connections
-// (those whose first byte is '{').
+// TunnelListener returns a net.Listener that yields only tunnel connections:
+// those whose first byte is '{' and TLS ClientHellos offering TunnelALPN.
 func (cm *ConnMux) TunnelListener() net.Listener {
 	return cm.tunnelLn
 }
@@ -81,28 +85,45 @@ func (cm *ConnMux) Close() error {
 	return cm.listener.Close()
 }
 
-func (cm *ConnMux) route(conn net.Conn) {
-	// Peek the first byte with a short deadline
-	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	buf := make([]byte, 1)
-	n, err := conn.Read(buf)
-	_ = conn.SetReadDeadline(time.Time{}) // clear deadline
+// muxPeekTimeout bounds how long the mux waits for the bytes it routes on:
+// the first byte, and for a TLS connection the rest of the ClientHello
+// record. A peer that stalls inside its ClientHello is handed to the HTTPS
+// path when the deadline expires, exactly as a lone first byte was before.
+const muxPeekTimeout = 5 * time.Second
 
-	if err != nil || n == 0 {
+func (cm *ConnMux) route(conn net.Conn) {
+	_ = conn.SetReadDeadline(time.Now().Add(muxPeekTimeout))
+	br := bufio.NewReaderSize(conn, maxHelloRecord)
+	first, err := br.Peek(1)
+	if err != nil {
 		_ = conn.Close()
 		return
 	}
+	tunnel := first[0] == '{' || (first[0] == 0x16 && offersTunnelALPN(br))
+	_ = conn.SetReadDeadline(time.Time{}) // clear deadline
 
-	// Wrap the connection so the peeked byte is replayed to the consumer
-	peeked := &peekedConn{Conn: conn, peeked: buf[:n]}
-
-	if buf[0] == '{' {
-		// Tunnel handshake (JSON)
+	// Wrap the connection so every peeked byte is replayed to the consumer.
+	peeked := &peekConn{Conn: conn, r: br}
+	if tunnel {
 		cm.tunnelLn.Enqueue(peeked)
 	} else {
-		// TLS/HTTPS (or any other protocol)
 		cm.httpsLn.Enqueue(peeked)
 	}
+}
+
+// offersTunnelALPN reports whether the TLS record at the head of br is a
+// ClientHello whose ALPN list includes TunnelALPN. Anything unreadable or
+// malformed is not a tunnel session; the HTTPS path deals with it as today.
+func offersTunnelALPN(br *bufio.Reader) bool {
+	full, err := peekHelloRecordFrom(br)
+	if err != nil {
+		return false
+	}
+	hello, err := parseClientHello(full)
+	if err != nil {
+		return false
+	}
+	return slices.Contains(hello.ALPN, TunnelALPN)
 }
 
 // peekedConn wraps a net.Conn and replays peeked bytes before reading from

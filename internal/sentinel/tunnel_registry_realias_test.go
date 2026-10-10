@@ -58,7 +58,7 @@ func TestRegister_ReassertsLoopbackAliasOnReconnect(t *testing.T) {
 	rec := withRecordedAliases(t)
 	r := NewTunnelRegistry()
 
-	ip1, _, err := r.Register(&TunnelHandshake{SpotID: "spot-a"}, nil)
+	ip1, _, err := r.Register(&TunnelHandshake{SpotID: "spot-a"}, nil, TunnelTransportCleartext)
 	if err != nil {
 		t.Fatalf("first Register: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestRegister_ReassertsLoopbackAliasOnReconnect(t *testing.T) {
 
 	// The backend returns after a long outage and re-registers under the same
 	// spot ID — the reconnect path.
-	ip2, _, err := r.Register(&TunnelHandshake{SpotID: "spot-a"}, nil)
+	ip2, _, err := r.Register(&TunnelHandshake{SpotID: "spot-a"}, nil, TunnelTransportCleartext)
 	if err != nil {
 		t.Fatalf("reconnect Register: %v", err)
 	}
@@ -95,12 +95,12 @@ func TestRegister_ReconnectFailsWhenTheAliasCannotBeRestored(t *testing.T) {
 	rec := withRecordedAliases(t)
 	r := NewTunnelRegistry()
 
-	if _, _, err := r.Register(&TunnelHandshake{SpotID: "spot-a"}, nil); err != nil {
+	if _, _, err := r.Register(&TunnelHandshake{SpotID: "spot-a"}, nil, TunnelTransportCleartext); err != nil {
 		t.Fatalf("first Register: %v", err)
 	}
 
 	rec.err = errors.New("RTNETLINK answers: Operation not permitted")
-	_, _, err := r.Register(&TunnelHandshake{SpotID: "spot-a"}, nil)
+	_, _, err := r.Register(&TunnelHandshake{SpotID: "spot-a"}, nil, TunnelTransportCleartext)
 	if err == nil {
 		t.Fatal("reconnect succeeded though the loopback alias could not be restored — the spot " +
 			"would be registered and unroutable, which is the silent half of this failure")
@@ -116,7 +116,7 @@ func TestRegister_FirstRegistrationUnchanged(t *testing.T) {
 	rec := withRecordedAliases(t)
 	r := NewTunnelRegistry()
 
-	if _, _, err := r.Register(&TunnelHandshake{SpotID: "spot-a"}, nil); err != nil {
+	if _, _, err := r.Register(&TunnelHandshake{SpotID: "spot-a"}, nil, TunnelTransportCleartext); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	if len(rec.added) != 1 {

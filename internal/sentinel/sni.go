@@ -54,30 +54,40 @@ func peekClientHello(conn net.Conn) (clientHello, net.Conn, error) {
 	return hello, wrapped, err
 }
 
+// maxHelloRecord is the largest TLS record the peek helpers buffer:
+// 5-byte header plus a 16384-byte body.
+const maxHelloRecord = 16389
+
 // peekHelloRecord peeks the first TLS record from conn without consuming it.
 func peekHelloRecord(conn net.Conn) ([]byte, net.Conn, error) {
-	br := bufio.NewReaderSize(conn, 16389) // max TLS record (5 hdr + 16384 body)
+	br := bufio.NewReaderSize(conn, maxHelloRecord)
 	wrapped := &peekConn{Conn: conn, r: br}
+	full, err := peekHelloRecordFrom(br)
+	return full, wrapped, err
+}
 
+// peekHelloRecordFrom peeks the first TLS record from br without consuming
+// it. br must have been created with at least maxHelloRecord of buffer.
+func peekHelloRecordFrom(br *bufio.Reader) ([]byte, error) {
 	// Peek the 5-byte record header to learn record length.
 	hdr, err := br.Peek(5)
 	if err != nil || len(hdr) < 5 {
-		return nil, wrapped, errNotTLS
+		return nil, errNotTLS
 	}
 	if hdr[0] != 0x16 { // TLS handshake content type
-		return nil, wrapped, errNotTLS
+		return nil, errNotTLS
 	}
 	recLen := int(hdr[3])<<8 | int(hdr[4])
 	total := 5 + recLen
-	if total < 5 || total > 16389 {
-		return nil, wrapped, errNotTLS
+	if total < 5 || total > maxHelloRecord {
+		return nil, errNotTLS
 	}
 
 	full, err := br.Peek(total)
 	if err != nil || len(full) < total {
-		return nil, wrapped, errNotTLS
+		return nil, errNotTLS
 	}
-	return full, wrapped, nil
+	return full, nil
 }
 
 // extractSNI parses a TLS ClientHello (record-framed, starting at byte 0)

@@ -24,24 +24,13 @@ func newTestTunnelIdentity(t *testing.T) *TunnelIdentity {
 	return id
 }
 
-// testTunnelTLSServerConfig is a test-only stand-in for the sentinel side
-// of the tunnel TLS transport: TLS 1.3, the identity's certificate, and the
-// tunnel ALPN protocol.
-func testTunnelTLSServerConfig(id *TunnelIdentity) *tls.Config {
-	return &tls.Config{
-		Certificates: []tls.Certificate{id.TLSCertificate()},
-		NextProtos:   []string{TunnelALPN},
-		MinVersion:   tls.VersionTLS13,
-	}
-}
-
 // startTLSTunnelFront terminates the tunnel TLS transport with id and
 // forwards the decrypted bytes to backendAddr (a plain TunnelServer or a
 // ConnMux). It lets tests drive an unchanged TunnelServer from a TLS client.
 // Returns the address clients dial.
 func startTLSTunnelFront(t *testing.T, id *TunnelIdentity, backendAddr string) string {
 	t.Helper()
-	ln, err := tls.Listen("tcp", "127.0.0.1:0", testTunnelTLSServerConfig(id))
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", tunnelTLSServerConfig(id))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = ln.Close() })
 
@@ -133,6 +122,7 @@ func TestTunnelTLSEndToEnd(t *testing.T) {
 	require.NoError(t, err)
 	registry := NewTunnelRegistry()
 	server := NewTunnelServer("", policyAny(token), registry, 0)
+	server.SetTunnelIdentity(id)
 	connectCh := make(chan *TunnelSpot, 1)
 	server.OnConnect = func(spot *TunnelSpot) {
 		select {
@@ -140,7 +130,7 @@ func TestTunnelTLSEndToEnd(t *testing.T) {
 		default:
 		}
 	}
-	go func() { _ = server.Serve(ctx, tls.NewListener(ln, testTunnelTLSServerConfig(id))) }()
+	go func() { _ = server.Serve(ctx, ln) }()
 
 	client := &TunnelClient{
 		SentinelAddr: ln.Addr().String(),
@@ -154,9 +144,13 @@ func TestTunnelTLSEndToEnd(t *testing.T) {
 	select {
 	case spot := <-connectCh:
 		assert.Equal(t, "tls-spot", spot.ID)
+		assert.Equal(t, TunnelTransportTLS, spot.Transport)
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout waiting for TLS tunnel registration")
 	}
+	stats := registry.SessionStats()
+	assert.Equal(t, 1, stats.TLS)
+	assert.Zero(t, stats.Cleartext)
 
 	stream, err := registry.DialTunnel("tls-spot", echoPort)
 	require.NoError(t, err)
@@ -175,36 +169,77 @@ func TestTunnelTLSEndToEnd(t *testing.T) {
 // identity the client does not pin. The client aborts inside the TLS
 // handshake, so the server side receives zero application bytes and
 // nothing registers.
+//
+// The first variant terminates TLS in front of the server so the bytes the
+// server reads are exactly the decrypted application bytes, which must be
+// zero. The second runs the server's own TLS listener path and checks the
+// outcome the sentinel observes: no registration, no callback, no refusal
+// counted.
 func TestTunnelPinMismatchAbortsBeforeHandshake(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
 	serverID := newTestTunnelIdentity(t)
 	pinnedID := newTestTunnelIdentity(t)
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	var appBytes atomic.Int64
-	registry := NewTunnelRegistry()
-	server := NewTunnelServer("", policyAny("tok"), registry, 0)
-	tlsLn := countingListener{Listener: tls.NewListener(ln, testTunnelTLSServerConfig(serverID)), n: &appBytes}
-	go func() { _ = server.Serve(ctx, tlsLn) }()
+	t.Run("zero application bytes reach the server", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
 
-	client := &TunnelClient{
-		SentinelAddr: ln.Addr().String(),
-		SentinelPins: []TunnelPin{pinnedID.Pin()},
-		Token:        "tok",
-		SpotID:       "mismatch-spot",
-		Ports:        []int{22},
-	}
-	err = client.connectAndServe(ctx)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "pin")
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		var appBytes atomic.Int64
+		registry := NewTunnelRegistry()
+		server := NewTunnelServer("", policyAny("tok"), registry, 0)
+		tlsLn := countingListener{Listener: tls.NewListener(ln, tunnelTLSServerConfig(serverID)), n: &appBytes}
+		go func() { _ = server.Serve(ctx, tlsLn) }()
 
-	// Give the server goroutine time to observe the failed handshake.
-	time.Sleep(200 * time.Millisecond)
-	assert.Zero(t, appBytes.Load(), "server must receive no application bytes")
-	assert.Zero(t, registry.Count())
+		client := &TunnelClient{
+			SentinelAddr: ln.Addr().String(),
+			SentinelPins: []TunnelPin{pinnedID.Pin()},
+			Token:        "tok",
+			SpotID:       "mismatch-spot",
+			Ports:        []int{22},
+		}
+		err = client.connectAndServe(ctx)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "pin")
+
+		// Give the server goroutine time to observe the failed handshake.
+		time.Sleep(200 * time.Millisecond)
+		assert.Zero(t, appBytes.Load(), "server must receive no application bytes")
+		assert.Zero(t, registry.Count())
+	})
+
+	t.Run("server-side TLS listener registers nothing", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		registry := NewTunnelRegistry()
+		server := NewTunnelServer("", policyAny("tok"), registry, 0)
+		server.SetTunnelIdentity(serverID)
+		var connects atomic.Int32
+		server.OnConnect = func(*TunnelSpot) { connects.Add(1) }
+		go func() { _ = server.Serve(ctx, ln) }()
+
+		client := &TunnelClient{
+			SentinelAddr: ln.Addr().String(),
+			SentinelPins: []TunnelPin{pinnedID.Pin()},
+			Token:        "tok",
+			SpotID:       "mismatch-spot",
+			Ports:        []int{22},
+		}
+		err = client.connectAndServe(ctx)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "pin")
+
+		time.Sleep(200 * time.Millisecond)
+		assert.Zero(t, registry.Count())
+		assert.Zero(t, connects.Load())
+		stats := registry.SessionStats()
+		assert.Zero(t, stats.TLS)
+		assert.Zero(t, stats.Cleartext)
+		assert.Zero(t, stats.CleartextRefused, "a failed TLS handshake is not a cleartext refusal")
+	})
 }
 
 // TestNewClientNoCleartextFallback: against a peer that does not speak TLS
