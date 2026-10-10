@@ -232,6 +232,40 @@ Fail-closed scope, stated precisely:
 There is no "fail open" switch. The break-glass for an engine outage is an
 admin clearing the inbound rules, which is itself an audited `Set`.
 
+### Policy read cache and hold latency (#2454)
+
+**Policy reads.** The gateway reuses a successful policy read for
+`InboundPolicyTTL` (default 5 s; negative reads on every call), and callers
+that arrive during a refresh share its result, so N concurrent calls cost one
+read per TTL. A read error is never cached: the last known policy is kept and
+the next call tries again, with the same refuse-only-if-it-scanned rule as
+before. `Gateway.InvalidateInboundPolicy()` makes the next call re-read, for
+the moment an admin changes the policy; without it a new rule waits at most
+one TTL. `policy_reads` on `/__gateway/status` shows the cache working.
+
+**Hold latency.** Scanned mode holds the whole generation, which is what lets
+a block be a real 502. The client therefore receives nothing until the model
+has finished, and any hop with an idle or write timeout shorter than a long
+generation will cut the call first. The effective ceiling is the smallest of:
+
+| Hop | Limit |
+| --- | --- |
+| Standalone `model-gateway` server | 120 s `WriteTimeout` (from end of request read to end of response write) |
+| Sentinel SNI passthrough proxy | 120 s idle (`sniProxyIdleTimeout`), reset by any read, so a held response is idle for its whole duration |
+| Engine scan | `InboundScanTimeout`, 15 s, after the hold |
+| Client or reverse proxy in front | its own read/idle timeout; not controlled here |
+
+A gateway mounted inside another server inherits that server's write timeout
+instead; check it before enabling a BLOCK rule. A keepalive is not an option:
+it would have to commit a 200, which defeats the clean 502.
+
+`/__gateway/status` exports `hold_seconds` and `hold_bytes` histograms
+(cumulative `le` buckets, plus `count`, `sum` and `max`) over every held
+response. Read them against the table before turning a BLOCK rule on: if
+`hold_seconds` has mass near 120 or `hold_bytes` near the 8 MiB
+`InboundHoldLimit`, raise the timeouts or the limit first, or those calls
+will fail as cut connections or `OverLimit` blocks.
+
 ### Audit entry
 
 Written through a new, optional gateway interface so the gateway keeps no

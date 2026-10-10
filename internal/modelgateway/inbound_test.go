@@ -161,13 +161,14 @@ func newInboundHarness(t *testing.T, prov string, up upstreamFn, mut func(*Confi
 	providers[prov].UpstreamURL = upSrv.URL
 	secret := []byte("shared-secret")
 	cfg := Config{
-		Secret:        secret,
-		Providers:     providers,
-		ProviderKeys:  map[string]string{prov: "REAL-KEY"},
-		Logger:        log.New(h.logs, "", 0),
-		InboundPolicy: h.provider,
-		InboundEngine: h.engine,
-		InboundAudit:  h.audit,
+		Secret:           secret,
+		Providers:        providers,
+		ProviderKeys:     map[string]string{prov: "REAL-KEY"},
+		Logger:           log.New(h.logs, "", 0),
+		InboundPolicy:    h.provider,
+		InboundEngine:    h.engine,
+		InboundAudit:     h.audit,
+		InboundPolicyTTL: -1, // tests change the policy between calls; the cache has its own tests
 	}
 	if mut != nil {
 		mut(&cfg)
@@ -1042,5 +1043,93 @@ func TestInbound_UnrecognisedContentTypeOn200StillBlocked(t *testing.T) {
 	h.assertBlocked(resp, body, guardrail.InboundReasonCoverageGap, "")
 	if st := h.gw.InboundStatus(); st.UpstreamErrors != 0 {
 		t.Errorf("200 counted as upstream error: %+v", st)
+	}
+}
+
+// slowProvider answers after a delay so concurrent callers overlap.
+type slowProvider struct {
+	*fakeProvider
+	delay time.Duration
+}
+
+func (p slowProvider) Get(ctx context.Context) (*pb.ServerGuardrailPolicy, error) {
+	time.Sleep(p.delay)
+	return p.fakeProvider.Get(ctx)
+}
+
+// #2454: concurrent calls share one policy read per TTL.
+func TestInbound_PolicyReadIsCachedAndShared(t *testing.T) {
+	fp := &fakeProvider{policy: inboundBlockPolicy()}
+	in := newInbound(Config{InboundPolicy: slowProvider{fp, 50 * time.Millisecond}, Logger: log.New(io.Discard, "", 0), InboundPolicyTTL: time.Minute})
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if m, ok := in.resolve(context.Background()); !ok || !m.scan {
+				t.Errorf("resolve = %+v ok=%v", m, ok)
+			}
+		}()
+	}
+	wg.Wait()
+	for i := 0; i < 5; i++ {
+		in.resolve(context.Background())
+	}
+	if fp.calls != 1 {
+		t.Errorf("provider reads = %d, want 1", fp.calls)
+	}
+}
+
+func TestInbound_PolicyChangeIsPickedUpAfterTTLOrInvalidate(t *testing.T) {
+	fp := &fakeProvider{}
+	in := newInbound(Config{InboundPolicy: fp, Logger: log.New(io.Discard, "", 0), InboundPolicyTTL: 80 * time.Millisecond})
+	if m, _ := in.resolve(context.Background()); m.scan {
+		t.Fatal("empty policy should not scan")
+	}
+	fp.set(inboundBlockPolicy(), nil)
+	if m, _ := in.resolve(context.Background()); m.scan {
+		t.Error("change seen before the TTL without invalidation")
+	}
+	in.invalidate()
+	if m, _ := in.resolve(context.Background()); !m.scan {
+		t.Error("invalidate did not force a re-read")
+	}
+	fp.set(&pb.ServerGuardrailPolicy{}, nil)
+	time.Sleep(120 * time.Millisecond)
+	if m, _ := in.resolve(context.Background()); m.scan {
+		t.Error("change not seen after the TTL")
+	}
+}
+
+// A read error keeps the last known policy, and is retried on the next call
+// rather than cached.
+func TestInbound_PolicyReadErrorIsNotCached(t *testing.T) {
+	fp := &fakeProvider{policy: inboundBlockPolicy()}
+	in := newInbound(Config{InboundPolicy: fp, Logger: log.New(io.Discard, "", 0), InboundPolicyTTL: 20 * time.Millisecond})
+	in.resolve(context.Background())
+	time.Sleep(40 * time.Millisecond)
+	fp.set(nil, errors.New("store down"))
+	if _, ok := in.resolve(context.Background()); ok {
+		t.Error("read error with a scanning last-known policy must refuse")
+	}
+	fp.set(inboundBlockPolicy(), nil)
+	if m, ok := in.resolve(context.Background()); !ok || !m.scan {
+		t.Errorf("recovery not picked up: %+v ok=%v", m, ok)
+	}
+}
+
+func TestInbound_HoldHistogramsExported(t *testing.T) {
+	h := newInboundHarness(t, "openai", jsonUpstream(openAIText("hello")), nil)
+	h.call(`{"model":"m"}`)
+	st := h.gw.InboundStatus()
+	if st.HoldSeconds.Count != 1 || st.HoldBytes.Count != 1 || st.HoldBytes.Sum <= 0 {
+		t.Errorf("hold histograms not recorded: %+v %+v", st.HoldSeconds, st.HoldBytes)
+	}
+	last := st.HoldBytes.Buckets[len(st.HoldBytes.Buckets)-1]
+	if last.Count != 1 {
+		t.Errorf("cumulative top bucket = %d, want 1", last.Count)
+	}
+	if st.PolicyReads == 0 {
+		t.Error("policy reads not counted")
 	}
 }

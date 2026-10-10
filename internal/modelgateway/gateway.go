@@ -91,6 +91,11 @@ type Config struct {
 	InboundAudit       InboundAuditSink
 	InboundHoldLimit   int
 	InboundScanTimeout time.Duration
+	// InboundPolicyTTL is how long a successful policy read is reused
+	// (default DefaultInboundPolicyTTL; negative = read every call). Call
+	// Gateway.InvalidateInboundPolicy when the policy changes so a new rule
+	// does not wait for the TTL.
+	InboundPolicyTTL time.Duration
 	// InboundAuditQueue bounds entries waiting for InboundAudit (default
 	// DefaultInboundAuditQueue; a full queue drops and counts) and
 	// InboundAuditTimeout bounds one sink write (default
@@ -140,6 +145,10 @@ func (g *Gateway) InboundStatus() InboundStatus { return g.inbound.status() }
 // has been handed to the sink, or ctx ends. Call it before shutting the daemon
 // down; the request path never does.
 func (g *Gateway) FlushInboundAudit(ctx context.Context) error { return g.inbound.flushAudit(ctx) }
+
+// InvalidateInboundPolicy makes the next model call re-read the inbound
+// policy instead of waiting out the cache TTL.
+func (g *Gateway) InvalidateInboundPolicy() { g.inbound.invalidate() }
 
 // Meter exposes the usage rollups (for tests / the usage endpoint).
 func (g *Gateway) Meter() *Meter { return g.meter }

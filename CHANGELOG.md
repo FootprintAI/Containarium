@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The model gateway no longer reads the inbound policy on every call (#2454). A successful read is reused for
+  `InboundPolicyTTL` (default 5 s) and concurrent callers share one refresh; a read error is not cached and still
+  keeps the last known policy. `Gateway.InvalidateInboundPolicy` forces a re-read when the policy changes.
+  `/__gateway/status` gains `hold_seconds`, `hold_bytes` histograms and `policy_reads`, and the design doc lists the
+  timeout ceilings a held response runs under.
 - The model gateway's inbound scan no longer rewrites upstream errors as guardrail blocks (#2453). A non-2xx
   response with an unrecognised content type (a 429 with a text body, a load-balancer page) is passed through with
   its real status and `Retry-After`, so client backoff works, and is counted as `upstream_errors` in

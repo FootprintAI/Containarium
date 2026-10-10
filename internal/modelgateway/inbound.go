@@ -38,6 +38,9 @@ const (
 	DefaultInboundHoldLimit = 8 << 20
 	// DefaultInboundScanTimeout bounds one engine round trip.
 	DefaultInboundScanTimeout = 15 * time.Second
+	// DefaultInboundPolicyTTL is how long a successful policy read is reused
+	// (#2454). A negative Config.InboundPolicyTTL reads on every call.
+	DefaultInboundPolicyTTL = 5 * time.Second
 	// DefaultInboundAuditQueue bounds the audit entries waiting for the sink.
 	// A full queue drops the newest entry and counts it: audit delivery is
 	// best-effort by design, because a block is never conditional on it.
@@ -107,9 +110,17 @@ type InboundStatus struct {
 	// UpstreamErrors counts non-2xx responses with an unrecognised content
 	// type (a rate limit, a load-balancer page) passed through unchanged.
 	// They are not model output and are not counted as blocks.
-	UpstreamErrors uint64            `json:"upstream_errors"`
-	Blocked        map[string]uint64 `json:"blocked"`         // by reason
-	BlockedByKind  map[string]uint64 `json:"blocked_by_kind"` // by finding kind
+	UpstreamErrors uint64 `json:"upstream_errors"`
+	// HoldSeconds and HoldBytes are histograms over every held response:
+	// how long the gateway waited for the upstream to finish, and how much
+	// it held. Compare them with the ceilings in the design doc before
+	// turning a BLOCK rule on.
+	HoldSeconds Histogram `json:"hold_seconds"`
+	HoldBytes   Histogram `json:"hold_bytes"`
+	// PolicyReads counts reads of the policy provider, to show the cache.
+	PolicyReads   uint64            `json:"policy_reads"`
+	Blocked       map[string]uint64 `json:"blocked"`         // by reason
+	BlockedByKind map[string]uint64 `json:"blocked_by_kind"` // by finding kind
 }
 
 // inboundMode is what one request runs under, resolved from the policy.
@@ -159,6 +170,16 @@ type inbound struct {
 	// type passed through unscanned (#2453). Kept apart from the block counters.
 	upstreamErrors atomic.Uint64
 
+	holdSeconds *histogram
+	holdBytes   *histogram
+
+	// Policy read cache (#2454). fetchMu serialises refreshes so concurrent
+	// calls share one read; mu guards the fields below it.
+	ttl         time.Duration
+	fetchMu     sync.Mutex
+	fetchedAt   time.Time
+	policyReads atomic.Uint64
+
 	mu            sync.Mutex
 	auditDropped  uint64
 	auditFailed   uint64
@@ -173,6 +194,11 @@ func newInbound(cfg Config) *inbound {
 		provider: cfg.InboundPolicy, engine: cfg.InboundEngine, audit: cfg.InboundAudit,
 		limit: cfg.InboundHoldLimit, timeout: cfg.InboundScanTimeout, logger: cfg.Logger,
 		blocked: map[guardrail.InboundReason]uint64{}, blockedByKind: map[pb.GuardrailKind]uint64{},
+		holdSeconds: newHistogram(holdSecondsBounds), holdBytes: newHistogram(holdBytesBounds),
+		ttl: cfg.InboundPolicyTTL,
+	}
+	if in.ttl == 0 {
+		in.ttl = DefaultInboundPolicyTTL
 	}
 	if cfg.InboundAudit != nil {
 		q := cfg.InboundAuditQueue
@@ -228,15 +254,27 @@ func (in *inbound) resolve(ctx context.Context) (mode inboundMode, ok bool) {
 	if in.provider == nil {
 		return inboundMode{}, true
 	}
+	if m, fresh := in.cached(); fresh {
+		return m, true
+	}
+	// One refresh at a time: callers that queue behind it find the result
+	// fresh and share it instead of each reading the store.
+	in.fetchMu.Lock()
+	defer in.fetchMu.Unlock()
+	if m, fresh := in.cached(); fresh {
+		return m, true
+	}
+	in.policyReads.Add(1)
 	p, err := in.provider.Get(ctx)
 	in.mu.Lock()
 	defer in.mu.Unlock()
 	switch {
 	case err == nil:
-		in.loaded, in.policy = true, p
+		in.loaded, in.policy, in.fetchedAt = true, p, time.Now()
 	case errors.Is(err, guardrailpolicy.ErrNotConfigured):
-		in.loaded, in.policy = true, nil
+		in.loaded, in.policy, in.fetchedAt = true, nil, time.Now()
 	default:
+		// fetchedAt is untouched, so the next call reads again.
 		in.logger.Printf("model-gateway: inbound guardrail policy read failed (last known revision kept): %v", err)
 		if !in.loaded {
 			return inboundMode{}, false
@@ -245,6 +283,25 @@ func (in *inbound) resolve(ctx context.Context) (mode inboundMode, ok bool) {
 		return m, !m.scan
 	}
 	return modeOf(in.policy), true
+}
+
+// cached returns the mode from the last successful read while it is within
+// the TTL. A TTL below zero disables the cache.
+func (in *inbound) cached() (inboundMode, bool) {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	if in.ttl < 0 || !in.loaded || in.fetchedAt.IsZero() || time.Since(in.fetchedAt) >= in.ttl {
+		return inboundMode{}, false
+	}
+	return modeOf(in.policy), true
+}
+
+// invalidate forgets the cached read so the next call goes to the store. The
+// last known policy is kept: a failing read still falls back to it.
+func (in *inbound) invalidate() {
+	in.mu.Lock()
+	in.fetchedAt = time.Time{}
+	in.mu.Unlock()
 }
 
 func (in *inbound) status() InboundStatus {
@@ -256,6 +313,8 @@ func (in *inbound) status() InboundStatus {
 	st.Scanning, st.PolicyRevision = m.scan, m.revision
 	st.AuditDropped, st.AuditFailed = in.auditDropped, in.auditFailed
 	st.UpstreamErrors = in.upstreamErrors.Load()
+	st.HoldSeconds, st.HoldBytes = in.holdSeconds.snapshot(), in.holdBytes.snapshot()
+	st.PolicyReads = in.policyReads.Load()
 	if in.auditQ != nil {
 		st.AuditQueued = len(in.auditQ)
 	}
@@ -443,7 +502,10 @@ func (ir *inboundRequest) enforce(resp *http.Response) error {
 	if !recognised {
 		return fail(guardrail.InboundBlocked(guardrail.InboundReasonCoverageGap))
 	}
+	holdStart := time.Now()
 	held, err := io.ReadAll(io.LimitReader(resp.Body, int64(ir.in.limit)+1))
+	ir.in.holdSeconds.observe(time.Since(holdStart).Seconds())
+	ir.in.holdBytes.observe(float64(len(held)))
 	if err != nil {
 		return fail(guardrail.InboundBlocked(guardrail.InboundReasonEngineError))
 	}
