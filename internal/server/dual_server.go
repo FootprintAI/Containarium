@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/exec"
 	"sort"
@@ -1986,6 +1987,18 @@ skipAppHosting:
 		// Separate from ENFORCE — loading signatures is harmless in observation
 		// mode (logs matches), but the per-packet scan cost only runs when set.
 		sigArmed := netCfg.PolicySignatures
+		// Egress preset (#2440): the bridge gateway is the box's DNS resolver, which a
+		// preset policy allows implicitly so an allow-list cannot blackhole resolution.
+		if gw, gerr := netip.ParseAddr(bridgeGatewayIP(networkCIDR)); gerr == nil {
+			networkPolicyEnforcer.SetImplicitGateway(gw)
+		} else {
+			log.Printf("NetworkPolicy: cannot derive the bridge gateway from %q; egress presets will not implicitly allow the resolver", networkCIDR)
+		}
+		// Plan (#2440) reads the same deny audit rows the enforcer writes.
+		if auditStore != nil {
+			planGW, _ := netip.ParseAddr(bridgeGatewayIP(networkCIDR))
+			npServer.SetPlanSources(auditStore, planGW)
+		}
 		networkPolicyEnforcer.SetSignaturesEnabled(sigArmed)
 		networkPolicyEnforcer.SetSignatureStore(npServer.SignatureStore()) // #661 PR-B: merge operator signatures
 		if enforceArmed {

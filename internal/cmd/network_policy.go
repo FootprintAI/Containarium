@@ -43,6 +43,8 @@ var (
 	npMode             string
 	npAllowMetadata    bool
 	npAllowFromTenants []string
+	npEgressPreset     string
+	npPlanSince        time.Duration
 )
 
 var networkPolicySetCmd = &cobra.Command{
@@ -50,6 +52,21 @@ var networkPolicySetCmd = &cobra.Command{
 	Short: "Create or update a tenant's network policy",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runNetworkPolicySet,
+}
+
+var networkPolicyPlanCmd = &cobra.Command{
+	Use:   "plan <tenant> [--since 1h]",
+	Short: "Show the destinations a tenant's policy denied or dropped, to write an allow-list from",
+	Long: `Aggregates the tenant's recent deny audit rows (#2440) by destination, busiest first,
+and prints each as a ready-to-paste --egress-cidr flag.
+
+Run it while the tenant is in log_only mode: every row is a flow the policy WOULD
+block once armed, so the list is exactly what an allow-list still has to cover. It
+changes nothing. Destinations the tenant's current egress CIDRs (or its preset's
+implicit resolver) already allow are left out; destinations allowed only through
+--egress-domain are not subtracted, and the output says so.`,
+	Args: cobra.ExactArgs(1),
+	RunE: runNetworkPolicyPlan,
 }
 
 var networkPolicyGetCmd = &cobra.Command{
@@ -122,7 +139,7 @@ var networkPolicyPatchListCmd = &cobra.Command{
 
 func init() {
 	rootCmd.AddCommand(networkPolicyCmd)
-	networkPolicyCmd.AddCommand(networkPolicySetCmd, networkPolicyGetCmd, networkPolicyListCmd, networkPolicyDeleteCmd)
+	networkPolicyCmd.AddCommand(networkPolicySetCmd, networkPolicyPlanCmd, networkPolicyGetCmd, networkPolicyListCmd, networkPolicyDeleteCmd)
 
 	networkPolicySetCmd.Flags().BoolVar(&npAllowIntraTenant, "allow-intra-tenant", false,
 		"Allow container↔container traffic within the same tenant")
@@ -134,9 +151,14 @@ func init() {
 		"Enforcement mode: log_only | enforce")
 	networkPolicySetCmd.Flags().StringSliceVar(&npAllowFromTenants, "allow-from-tenant", nil,
 		"Tenant whose containers may reach this tenant's containers over the bridge (repeatable; #2359). The only way to open tenant ingress to another tenant — one-directional.")
+	networkPolicySetCmd.Flags().StringVar(&npEgressPreset, "egress-preset", "",
+		"Ready-made egress posture (#2440): allow-list-only = egress limited to --egress-cidr/--egress-domain plus the box's DNS resolver, which is allowed implicitly so the list cannot blackhole name resolution. Combine with --mode log_only to soak first. Empty = just the lists.")
 	networkPolicySetCmd.Flags().BoolVar(&npAllowMetadata, "allow-metadata", false,
 		"Allow reaching the cloud metadata service (169.254.169.254); default deny even if a CIDR would cover it")
 	networkPolicySetCmd.Flags().BoolVar(&npJSONOut, "json", false, "Output the stored policy as JSON")
+
+	networkPolicyPlanCmd.Flags().DurationVar(&npPlanSince, "since", time.Hour, "Look-back window (default 1h, max 168h)")
+	networkPolicyPlanCmd.Flags().BoolVar(&npJSONOut, "json", false, "Output as JSON")
 
 	networkPolicyGetCmd.Flags().BoolVar(&npJSONOut, "json", false, "Output as JSON")
 	networkPolicyListCmd.Flags().BoolVar(&npJSONOut, "json", false, "Output as JSON")
@@ -295,6 +317,7 @@ type netPolicyJSON struct {
 	EgressDomains    []string       `json:"egressDomains"`
 	AllowMetadata    bool           `json:"allowMetadata"`
 	AllowFromTenants []string       `json:"allowFromTenants,omitempty"`
+	EgressPreset     string         `json:"egressPreset,omitempty"`
 	Mode             string         `json:"mode"`
 	Source           string         `json:"source"`
 	DenyRules        []denyRuleJSON `json:"denyRules,omitempty"`
@@ -332,11 +355,27 @@ func normalizeMode(m string) (string, error) {
 	}
 }
 
+// normalizeEgressPreset maps the friendly CLI value to the proto enum name.
+func normalizeEgressPreset(v string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "":
+		return "", nil
+	case "allow-list-only", "allow_list_only", "allowlistonly":
+		return "EGRESS_PRESET_ALLOW_LIST_ONLY", nil
+	default:
+		return "", fmt.Errorf("invalid --egress-preset %q (want allow-list-only, or leave empty)", v)
+	}
+}
+
 func runNetworkPolicySet(cmd *cobra.Command, args []string) error {
 	if serverAddr == "" {
 		return errServerRequired()
 	}
 	mode, err := normalizeMode(npMode)
+	if err != nil {
+		return err
+	}
+	preset, err := normalizeEgressPreset(npEgressPreset)
 	if err != nil {
 		return err
 	}
@@ -350,6 +389,7 @@ func runNetworkPolicySet(cmd *cobra.Command, args []string) error {
 		EgressDomains:    npEgressDomains,
 		AllowMetadata:    npAllowMetadata,
 		AllowFromTenants: npAllowFromTenants,
+		EgressPreset:     preset,
 		Mode:             mode,
 	}}
 	var out policyEnvelope
@@ -647,6 +687,10 @@ func printPolicy(w io.Writer, p netPolicyJSON) {
 	if len(p.AllowFromTenants) > 0 {
 		fmt.Fprintf(w, "  allow-from-tenants: %s\n", strings.Join(p.AllowFromTenants, ", "))
 	}
+	if p.EgressPreset != "" && p.EgressPreset != "EGRESS_PRESET_UNSPECIFIED" {
+		fmt.Fprintf(w, "  egress-preset:      %s (the box's DNS resolver is allowed implicitly)\n",
+			strings.ToLower(strings.ReplaceAll(strings.TrimPrefix(p.EgressPreset, "EGRESS_PRESET_"), "_", "-")))
+	}
 	printDenyRules(w, p.DenyRules)
 }
 
@@ -685,4 +729,75 @@ func doJSON(method, url string, body, out interface{}) error {
 		return nil
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+// planEnvelope mirrors PlanNetworkPolicyResponse's grpc-gateway JSON.
+type planEnvelope struct {
+	Tenant       string            `json:"tenant"`
+	SinceMinutes int32             `json:"sinceMinutes"`
+	Destinations []planDestination `json:"destinations"`
+	RowsScanned  uint32            `json:"rowsScanned"`
+	Truncated    bool              `json:"truncated"`
+	Notes        []string          `json:"notes"`
+}
+
+type planDestination struct {
+	IP       string `json:"ip"`
+	Port     uint32 `json:"port"`
+	Protocol string `json:"protocol"`
+	Count    uint32 `json:"count"`
+	Dropped  bool   `json:"dropped"`
+	LastSeen string `json:"lastSeen"`
+}
+
+func runNetworkPolicyPlan(cmd *cobra.Command, args []string) error {
+	if serverAddr == "" {
+		return errServerRequired()
+	}
+	minutes := int(npPlanSince / time.Minute)
+	if minutes < 1 {
+		return fmt.Errorf("--since must be at least 1m")
+	}
+	var out planEnvelope
+	url := fmt.Sprintf("%s/v1/network-policies/%s/plan?sinceMinutes=%d", strings.TrimSuffix(serverAddr, "/"), args[0], minutes)
+	if err := getJSON(url, &out); err != nil {
+		return err
+	}
+	if npJSONOut {
+		return printJSON(out)
+	}
+	printPlan(cmd.OutOrStdout(), out)
+	return nil
+}
+
+// printPlan renders a plan: a table of destinations and, below it, the
+// --egress-cidr flags to paste into `network-policy set`.
+func printPlan(w io.Writer, p planEnvelope) {
+	fmt.Fprintf(w, "Destinations %q reached that its policy denied or dropped, last %dm:\n\n", p.Tenant, p.SinceMinutes)
+	if len(p.Destinations) == 0 {
+		fmt.Fprintln(w, "  (none: the policy blocked nothing in this window)")
+	} else {
+		fmt.Fprintf(w, "  %-16s %-6s %-6s %-7s %-8s %s\n", "DESTINATION", "PORT", "PROTO", "COUNT", "STATE", "LAST SEEN")
+		seen := map[string]bool{}
+		var flags []string
+		for _, d := range p.Destinations {
+			state := "logged"
+			if d.Dropped {
+				state = "dropped"
+			}
+			fmt.Fprintf(w, "  %-16s %-6d %-6s %-7d %-8s %s\n", d.IP, d.Port, d.Protocol, d.Count, state, d.LastSeen)
+			if !seen[d.IP] {
+				seen[d.IP] = true
+				flags = append(flags, "--egress-cidr "+d.IP+"/32")
+			}
+		}
+		fmt.Fprintf(w, "\nTo allow all of the above, add to `network-policy set %s`:\n\n  %s\n", p.Tenant, strings.Join(flags, " "))
+		fmt.Fprintln(w, "\nReview before pasting: these are the addresses your tenant reached, not a judgement that they are safe.")
+	}
+	for _, n := range p.Notes {
+		fmt.Fprintf(w, "\nNote: %s\n", n)
+	}
+	if p.Truncated {
+		fmt.Fprintf(w, "\nThe audit row cap was reached after %d rows; shorten --since for the full recent picture.\n", p.RowsScanned)
+	}
 }

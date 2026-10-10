@@ -643,6 +643,20 @@ enum NetworkPolicyMode {
   NETWORK_POLICY_MODE_ENFORCE = 2;     // actually drop denied flows
 }
 
+// EgressPreset names a ready-made egress posture so a tenant lockdown is one
+// field rather than a rule set (#2440).
+enum EgressPreset {
+  // No preset: the policy is exactly what its egress lists say. The behaviour
+  // before this enum existed.
+  EGRESS_PRESET_UNSPECIFIED = 0;
+  // Allow-list only: egress is limited to egress_cidrs and egress_domains plus
+  // the box's DNS resolver (the bridge gateway), which is added implicitly so
+  // an allow-list cannot blackhole name resolution. Everything else is denied
+  // in ENFORCE mode and audited in LOG_ONLY, so the preset can be soaked
+  // before it is armed. The mode is not changed by the preset.
+  EGRESS_PRESET_ALLOW_LIST_ONLY = 1;
+}
+
 // NetworkPolicy is a tenant's network-isolation policy, enforced at each of the
 // tenant's container host-veth TC_INGRESS hooks (the sender side of every flow;
 // see the Phase 0 findings in NETWORK-ISOLATION-DESIGN.md). #315.
@@ -697,6 +711,10 @@ message NetworkPolicy {
   // rejected (use allow_intra_tenant). One-directional: listing bob here
   // lets bob reach us, not the reverse.
   repeated string allow_from_tenants = 9;
+
+  // Ready-made egress posture (#2440). UNSPECIFIED leaves the policy exactly
+  // as its lists say. See EgressPreset.
+  EgressPreset egress_preset = 10;
 }
 
 // NetworkPolicyDenyRule is one virtual-patch block rule (#660). Traffic from a
