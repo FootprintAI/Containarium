@@ -225,7 +225,8 @@ Fail-closed scope, stated precisely:
 | Held message exceeds the byte limit | Blocked (`OverLimit`); nothing released |
 | Engine reports a coverage gap | Blocked (`CoverageGap`) |
 | Engine unreachable / times out / does not support a requested kind | Blocked (`EngineError`) |
-| **(new)** Response is compressed or an unrecognised content type | **Blocked** in scanned mode. Today these pass through unmetered; an unscannable body cannot be allowed through a gate that claims to scan |
+| **(new)** 2xx response is compressed or an unrecognised content type | **Blocked** in scanned mode. Today these pass through unmetered; an unscannable body cannot be allowed through a gate that claims to scan |
+| **(new)** Non-2xx response with an unrecognised content type (a rate limit, a load-balancer page) | **Passed through unchanged**, status and headers included. It is an upstream or intermediary error, not model output. Counted as `upstream_errors` in `/__gateway/status`, never as a block, never audited. A non-2xx `application/json` body is still scanned |
 | Existing prompt-leak output filter | Unchanged: still fail-open. The new scan does not touch it |
 
 There is no "fail open" switch. The break-glass for an engine outage is an
