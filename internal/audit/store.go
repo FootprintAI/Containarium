@@ -53,6 +53,9 @@ type QueryParams struct {
 	Username     string
 	Action       string
 	ResourceType string
+	// ResourceID is an exact-match filter on the row's resource id (#2440:
+	// a tenant's network-policy audit rows carry the tenant here).
+	ResourceID string
 	// #1678 — attribution filters. Each is an exact-match equality filter,
 	// same convention as Username/Action/ResourceType above.
 	Actor   string
@@ -475,6 +478,13 @@ func (s *Store) Query(ctx context.Context, params QueryParams) ([]AuditEntry, in
 		baseQuery += fmt.Sprintf(" AND resource_type = $%d", argIdx)
 		countQuery += fmt.Sprintf(" AND resource_type = $%d", argIdx)
 		args = append(args, params.ResourceType)
+		argIdx++
+	}
+
+	if params.ResourceID != "" {
+		baseQuery += fmt.Sprintf(" AND resource_id = $%d", argIdx)
+		countQuery += fmt.Sprintf(" AND resource_id = $%d", argIdx)
+		args = append(args, params.ResourceID)
 		argIdx++
 	}
 

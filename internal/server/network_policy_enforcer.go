@@ -19,6 +19,7 @@ import (
 	"github.com/footprintai/containarium/internal/safecast"
 	"github.com/footprintai/containarium/internal/traffic"
 	"github.com/footprintai/containarium/pkg/core/incus"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // containerSuffix is the trailing tag every tenant container name carries; the
@@ -83,6 +84,11 @@ type NetworkPolicyEnforcer struct {
 	interval       time.Duration
 	enforceEnabled bool // daemon-wide guard: ENFORCE policies only drop when true
 
+	// gateway is the bridge gateway, the box's DNS resolver. A policy with an
+	// egress preset (#2440) implicitly allows it; the zero value means the
+	// daemon could not name it and the preset adds nothing.
+	gateway netip.Addr
+
 	resolver *DomainResolver // Phase C: egress_domains -> IPs (refresh cadence: min(TTL, 60s), #2379)
 
 	flowSink        FlowSink      // #627: traffic-view flow accounting (nil = disabled)
@@ -146,6 +152,11 @@ func NewNetworkPolicyEnforcer(objPath string, store NetworkPolicyStore, registry
 		ipTenantInstalled: make(map[[4]byte]uint32),
 	}
 }
+
+// SetImplicitGateway tells the enforcer the bridge gateway address, the
+// DNS resolver every box uses, so a policy with an egress preset (#2440) can
+// allow it without the operator listing it. Must be called before Start.
+func (e *NetworkPolicyEnforcer) SetImplicitGateway(a netip.Addr) { e.gateway = a }
 
 // SetFlowSink wires the traffic collector so the enforcer can feed it per-flow
 // accounting read from the BPF flows map (#627). Must be called before Start.
@@ -864,6 +875,14 @@ func (e *NetworkPolicyEnforcer) compiledPolicies(ctx context.Context) (map[strin
 			for _, ip := range e.resolver.IPs(dom) {
 				c.EgressCIDRs = append(c.EgressCIDRs, netip.PrefixFrom(ip, 32))
 			}
+		}
+		// Egress preset (#2440): fold in what the preset allows implicitly (the
+		// box's DNS resolver). Not stored on the policy, so `get` still shows
+		// what the operator wrote.
+		if imp := netpolicy.ImplicitEgress(c, e.gateway); len(imp) > 0 {
+			c.EgressCIDRs = append(c.EgressCIDRs, imp...)
+		} else if c.EgressPreset != pb.EgressPreset_EGRESS_PRESET_UNSPECIFIED {
+			log.Printf("[netpolicy] tenant %q has an egress preset but the bridge gateway is unknown; the resolver is NOT implicitly allowed", c.Tenant)
 		}
 		// Virtual-patch deny rules (#660): drop any whose expiry has passed so an
 		// expired patch self-removes from the kernel on the next reconcile. Done
