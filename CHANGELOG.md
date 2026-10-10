@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The model gateway's inbound scan no longer rewrites upstream errors as guardrail blocks (#2453). A non-2xx
+  response with an unrecognised content type (a 429 with a text body, a load-balancer page) is passed through with
+  its real status and `Retry-After`, so client backoff works, and is counted as `upstream_errors` in
+  `/__gateway/status` instead of `coverage_gap`. A 2xx with an unrecognised content type is still blocked.
+
 ## [0.101.0] - 2026-10-10
 
 ### Added

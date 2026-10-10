@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -100,11 +101,15 @@ type InboundStatus struct {
 	// AuditQueued is the audit entries waiting for the sink; AuditDropped
 	// those discarded because the queue was full; AuditFailed those the sink
 	// rejected or timed out on. A block is never conditional on any of them.
-	AuditQueued   int               `json:"audit_queued"`
-	AuditDropped  uint64            `json:"audit_dropped"`
-	AuditFailed   uint64            `json:"audit_failed"`
-	Blocked       map[string]uint64 `json:"blocked"`         // by reason
-	BlockedByKind map[string]uint64 `json:"blocked_by_kind"` // by finding kind
+	AuditQueued  int    `json:"audit_queued"`
+	AuditDropped uint64 `json:"audit_dropped"`
+	AuditFailed  uint64 `json:"audit_failed"`
+	// UpstreamErrors counts non-2xx responses with an unrecognised content
+	// type (a rate limit, a load-balancer page) passed through unchanged.
+	// They are not model output and are not counted as blocks.
+	UpstreamErrors uint64            `json:"upstream_errors"`
+	Blocked        map[string]uint64 `json:"blocked"`         // by reason
+	BlockedByKind  map[string]uint64 `json:"blocked_by_kind"` // by finding kind
 }
 
 // inboundMode is what one request runs under, resolved from the policy.
@@ -149,6 +154,10 @@ type inbound struct {
 	auditQ       chan auditJob
 	auditTimeout time.Duration
 	auditOnce    sync.Once
+
+	// upstreamErrors counts non-2xx responses with an unrecognised content
+	// type passed through unscanned (#2453). Kept apart from the block counters.
+	upstreamErrors atomic.Uint64
 
 	mu            sync.Mutex
 	auditDropped  uint64
@@ -246,6 +255,7 @@ func (in *inbound) status() InboundStatus {
 	m := modeOf(in.policy)
 	st.Scanning, st.PolicyRevision = m.scan, m.revision
 	st.AuditDropped, st.AuditFailed = in.auditDropped, in.auditFailed
+	st.UpstreamErrors = in.upstreamErrors.Load()
 	if in.auditQ != nil {
 		st.AuditQueued = len(in.auditQ)
 	}
@@ -414,15 +424,23 @@ func (ir *inboundRequest) enforce(resp *http.Response) error {
 		resp.Body = io.NopCloser(bytes.NewReader(nil))
 		return ir.in.block(ir.sub, dec, ir.mode.revision)
 	}
+	ct := resp.Header.Get("Content-Type")
+	streaming := strings.Contains(ct, "text/event-stream")
+	recognised := streaming || strings.Contains(ct, "application/json")
+	// A non-2xx response in a shape we do not scan is an upstream or
+	// intermediary error (rate limit, proxy page), not model output: pass it
+	// through with its status and headers. A 2xx of that shape stays blocked.
+	if !recognised && (resp.StatusCode < 200 || resp.StatusCode > 299) {
+		ir.in.upstreamErrors.Add(1)
+		return nil
+	}
 	// An unscannable body cannot pass a gate that claims to scan. The
 	// transport already decodes gzip the upstream chose on its own; a
 	// Content-Encoding still present means the bytes are opaque to us.
 	if resp.Header.Get("Content-Encoding") != "" {
 		return fail(guardrail.InboundBlocked(guardrail.InboundReasonCoverageGap))
 	}
-	ct := resp.Header.Get("Content-Type")
-	streaming := strings.Contains(ct, "text/event-stream")
-	if !streaming && !strings.Contains(ct, "application/json") {
+	if !recognised {
 		return fail(guardrail.InboundBlocked(guardrail.InboundReasonCoverageGap))
 	}
 	held, err := io.ReadAll(io.LimitReader(resp.Body, int64(ir.in.limit)+1))

@@ -1007,3 +1007,40 @@ func (s *tokenSink) RecordUsage(_, _, _ string, u Usage) {
 }
 
 func (s *tokenSink) total() int64 { s.mu.Lock(); defer s.mu.Unlock(); return s.n }
+
+// #2453: an upstream error in a shape we do not scan is not model output.
+func TestInbound_UpstreamErrorPassesThroughUnchanged(t *testing.T) {
+	h := newInboundHarness(t, "openai", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Retry-After", "17")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, "slow down")
+	}, nil)
+	resp, body := h.call(`{"model":"m"}`)
+	if resp.StatusCode != http.StatusTooManyRequests || resp.Header.Get("Retry-After") != "17" || string(body) != "slow down" {
+		t.Errorf("upstream error altered: %d %q retry=%q", resp.StatusCode, body, resp.Header.Get("Retry-After"))
+	}
+	if n := len(h.auditAll()); n != 0 {
+		t.Errorf("audit entries = %d, want 0", n)
+	}
+	st := h.gw.InboundStatus()
+	if len(st.Blocked) != 0 || st.UpstreamErrors != 1 {
+		t.Errorf("counters wrong: %+v", st)
+	}
+	if h.engine.Calls() != 0 {
+		t.Errorf("engine called on an upstream error")
+	}
+}
+
+// The design row is about 2xx: an unrecognised type there is still blocked.
+func TestInbound_UnrecognisedContentTypeOn200StillBlocked(t *testing.T) {
+	h := newInboundHarness(t, "openai", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = io.WriteString(w, "hello")
+	}, nil)
+	resp, body := h.call(`{"model":"m"}`)
+	h.assertBlocked(resp, body, guardrail.InboundReasonCoverageGap, "")
+	if st := h.gw.InboundStatus(); st.UpstreamErrors != 0 {
+		t.Errorf("200 counted as upstream error: %+v", st)
+	}
+}
