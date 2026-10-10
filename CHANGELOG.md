@@ -7,7 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.101.2] - 2026-10-10
+
+_Completes the sentinel tunnel TLS transport that v0.101.0 and v0.101.1 shipped half of. Those releases changed the
+tunnel **client** to require a sentinel pin and never fall back to cleartext, but the sentinel could not yet present a
+tunnel identity, so a tunnel host upgraded to either release could not reconnect. Do not run `containarium tunnel` or
+`hypervisor-agent` from v0.101.0 or v0.101.1; upgrade to v0.101.2 (see "Upgrading tunnel hosts" below)._
+
 ### Added
+
+- The sentinel now presents a tunnel identity and prints its pin (#2457). When a tunnel server runs (`--provider=tunnel`
+  or hybrid mode) the sentinel loads its tunnel identity from `--tunnel-tls-identity` (default
+  `/etc/containarium/sentinel-tunnel-identity.pem`), or generates and saves it with mode `0600` on first start, and
+  installs it on the tunnel server. A restart reuses the same identity and pin. `containarium sentinel tunnel-identity`
+  prints the pin as `sha256:<64 hex>`, the form `--sentinel-pin` takes; it only reads the file and fails if it does not
+  exist yet. `--tunnel-allow-cleartext` (default `true`) keeps accepting the legacy cleartext handshake from older
+  clients, logging a deprecation line per session, so a fleet can be moved over one host at a time; set it to `false`
+  once every tunnel client sends a pin. `docs/TUNNEL-REVERSE-PROXY.md` is rewritten for the TLS transport, ALPN routing
+  and the session-bound token proof.
+- `containarium pool join` takes `--sentinel-pin` (#2458): repeatable, comma-separated values and the tunnel client's
+  `CONTAINARIUM_TUNNEL_SENTINEL_PIN` env fallback are accepted. The pins are validated and rendered into the tunnel
+  unit it writes, and `pool join` now fails with a clear error when none is supplied, matching the tunnel client.
 
 - `containarium code run` now says, once at start, whether the run's model responses are scanned by the inbound
   guardrail (#2367): `SCANNED` (gateway credential and an inbound BLOCK rule in force), `NOT SCANNED` with the reason
@@ -28,6 +48,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keeps the last known policy. `Gateway.InvalidateInboundPolicy` forces a re-read when the policy changes.
   `/__gateway/status` gains `hold_seconds`, `hold_bytes` histograms and `policy_reads`, and the design doc lists the
   timeout ceilings a held response runs under.
+
+### Upgrading tunnel hosts
+
+Units that already exist are not rewritten by `pool join`. For each host that runs `containarium-tunnel.service` (and
+any `hypervisor-agent`): read the pin on the sentinel with `containarium sentinel tunnel-identity`, add it to the unit
+as `CONTAINARIUM_TUNNEL_SENTINEL_PIN` (a systemd drop-in is enough; a v0.100.x client ignores it), then upgrade the
+binary and restart the tunnel. A v0.100.x tunnel client keeps working against a v0.101.2 sentinel while
+`--tunnel-allow-cleartext` is `true`.
 
 ## [0.101.1] - 2026-10-10
 
