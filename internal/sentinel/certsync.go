@@ -153,7 +153,9 @@ func (cs *CertStore) Sync(backendID, backendIP string, httpPort int) error {
 	}
 	if rejected > 0 {
 		cs.mu.Lock()
-		cs.rejected[backendID] += uint64(rejected)
+		if cs.dropGen[backendID] == gen {
+			cs.rejected[backendID] += uint64(rejected)
+		}
 		cs.mu.Unlock()
 	}
 
@@ -196,11 +198,13 @@ func (cs *CertStore) Sync(backendID, backendIP string, httpPort int) error {
 
 // DropBackend removes backendID's certificate set, e.g. when its tunnel
 // disconnects. Domains it supplied fall back to the next-ranked backend's
-// certificate, or to the self-signed fallback.
+// certificate, or to the self-signed fallback. Its rejection series is
+// removed too, so /metrics carries series only for current backends.
 func (cs *CertStore) DropBackend(backendID string) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 	cs.dropGen[backendID]++
+	delete(cs.rejected, backendID)
 	if _, ok := cs.sets[backendID]; !ok {
 		return
 	}

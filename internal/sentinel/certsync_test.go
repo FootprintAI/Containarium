@@ -496,3 +496,19 @@ func TestCertSync_DropDuringSyncWins(t *testing.T) {
 		t.Fatalf("b.example.com served from %q after drop, want fallback", from)
 	}
 }
+
+// TestCertSync_DropBackendClearsRejectedSeries: a disconnected backend's
+// rejection series goes away with it, so per-connection backend IDs do not
+// accumulate on /metrics.
+func TestCertSync_DropBackendClearsRejectedSeries(t *testing.T) {
+	cs := NewCertStore()
+	cs.SetScopeResolver(scopes{}.resolve)
+	_ = syncFrom(t, cs, "tunnel-x", testCertPair(t, "app.example.com"))
+	if got := cs.RejectedCounts()["tunnel-x"]; got != 1 {
+		t.Fatalf("rejected count = %d, want 1", got)
+	}
+	cs.DropBackend("tunnel-x")
+	if _, ok := cs.RejectedCounts()["tunnel-x"]; ok {
+		t.Fatal("rejected series for a dropped backend still present")
+	}
+}
