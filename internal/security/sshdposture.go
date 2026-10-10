@@ -53,6 +53,10 @@ type SSHDPostureReconciler struct {
 	mu        sync.Mutex
 	backendID string
 	cancel    context.CancelFunc
+
+	// listenerCheck enables the rogue SSH listener probe (#2439), one exec
+	// per running box per pass. On unless an operator turns it off.
+	listenerCheck bool
 }
 
 // NewSSHDPostureReconciler builds a reconciler over backend. sink may be
@@ -62,7 +66,21 @@ func NewSSHDPostureReconciler(backend incus.Backend, sink threatdetect.FindingSi
 	if interval <= 0 {
 		interval = DefaultSSHDPostureInterval
 	}
-	return &SSHDPostureReconciler{incus: backend, sink: sink, interval: interval, now: time.Now}
+	return &SSHDPostureReconciler{incus: backend, sink: sink, interval: interval, now: time.Now, listenerCheck: true}
+}
+
+// SetListenerCheck turns the rogue SSH listener probe (#2439) on or off.
+// It is on by default; it costs one exec per running box per pass.
+func (r *SSHDPostureReconciler) SetListenerCheck(on bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.listenerCheck = on
+}
+
+func (r *SSHDPostureReconciler) listenerCheckEnabled() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.listenerCheck
 }
 
 // SetBackendID sets the backend id stamped onto findings. Deferred to the
@@ -126,12 +144,12 @@ type BoxOutcome struct {
 
 // Summary totals one ReconcileAll pass.
 type Summary struct {
-	Boxes, Skipped, Backfilled, Remediated, Findings, Errors int
+	Boxes, Skipped, Backfilled, Remediated, Findings, Listeners, Errors int
 }
 
 func (s Summary) String() string {
-	return fmt.Sprintf("boxes=%d skipped=%d backfilled=%d remediated=%d findings=%d errors=%d",
-		s.Boxes, s.Skipped, s.Backfilled, s.Remediated, s.Findings, s.Errors)
+	return fmt.Sprintf("boxes=%d skipped=%d backfilled=%d remediated=%d findings=%d rogue_listeners=%d errors=%d",
+		s.Boxes, s.Skipped, s.Backfilled, s.Remediated, s.Findings, s.Listeners, s.Errors)
 }
 
 // ReconcileAll runs ReconcileBox over every running, non-core container.
@@ -151,6 +169,14 @@ func (r *SSHDPostureReconciler) ReconcileAll(ctx context.Context) Summary {
 			continue
 		}
 		s.Boxes++
+		if r.listenerCheckEnabled() {
+			n, lerr := r.ReconcileListeners(ctx, c.Name)
+			if lerr != nil {
+				log.Printf("[sshd-posture] %s: listeners: %v", c.Name, lerr)
+				s.Errors++
+			}
+			s.Listeners += n
+		}
 		out, err := r.ReconcileBox(ctx, c.Name)
 		if err != nil {
 			log.Printf("[sshd-posture] %s: %v", c.Name, err)

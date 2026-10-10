@@ -185,6 +185,9 @@ security bad-destinations remove
 security findings
 security findings list
 security findings resolve
+security scan-opt-in allow
+security scan-opt-in list
+security scan-opt-in refuse
 security sentry status
 security-findings
 security-remediate

@@ -23,6 +23,7 @@ package sshdpolicy
 
 import (
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -174,4 +175,34 @@ func ManagedDropInIntact(dropIns []DropIn) bool {
 		}
 	}
 	return false
+}
+
+// DefaultPort is the port sshd listens on when the configuration declares
+// none.
+const DefaultPort = 22
+
+// Ports returns every port the merged configuration tells sshd to listen
+// on. Unlike most directives, Port is additive: every `Port` line counts,
+// not just the first. Globals only (reading stops at the first Match), and
+// the default applies only when no Port line is present at all.
+func Ports(config string) []int {
+	var ports []int
+	for _, line := range strings.Split(config, "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) == 0 || strings.HasPrefix(fields[0], "#") {
+			continue
+		}
+		if strings.EqualFold(fields[0], "Match") {
+			break
+		}
+		if strings.EqualFold(fields[0], "Port") && len(fields) >= 2 {
+			if n, err := strconv.Atoi(fields[1]); err == nil && n > 0 && n < 65536 {
+				ports = append(ports, n)
+			}
+		}
+	}
+	if len(ports) == 0 {
+		return []int{DefaultPort}
+	}
+	return ports
 }

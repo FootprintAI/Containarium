@@ -23,6 +23,8 @@ curl https://blog.example.com → hello world
 
 [![Containarium MCP server](https://glama.ai/mcp/servers/FootprintAI/Containarium/badges/card.svg)](https://glama.ai/mcp/servers/FootprintAI/Containarium)
 
+[![Stack Fingerprint](https://stackfingerprint.vercel.app/api/card?repo=FootprintAI/Containarium&theme=midnight&layout=classic)](https://stackfingerprint.vercel.app/?repo=FootprintAI/Containarium)
+
 [![Containarium quickstart: one command turns a fresh box into SSH + a wired agent + a live HTTPS app](docs/images/quickstart.gif)](https://youtu.be/IBDDD_tb8FY)
 
 🌐 **Project site:** [containarium.dev](https://containarium.dev) · 🎬 **55s demo:** [youtu.be/IBDDD_tb8FY](https://youtu.be/IBDDD_tb8FY) · 🚀 **Live app:** [helloworld.demo.containarium.dev](https://helloworld.demo.containarium.dev)

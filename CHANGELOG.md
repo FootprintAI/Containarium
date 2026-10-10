@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Rogue SSH listener detection (#2439). The box sshd posture pass now also probes each running box,
+  with one exec per box per pass, for listening sockets held by an SSH server (`sshd`, `dropbear`,
+  `tinysshd`) that is not the distro sshd on a port its `sshd_config` declares, and records a HIGH
+  `THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER` finding with new typed `ListenerEvidence` (port, bind
+  address, pid, binary, reason). Record-only: it never touches the tenant's process. It also catches
+  the stock sshd started with `-f`/`-o`, and works on boxes with no OpenSSH installed. Turn it off
+  with `CONTAINARIUM_SSH_LISTENER_CHECK_DISABLE`.
+
 ### Fixed
 
 - agent-box no longer drops a request its MCP client sent right before closing stdin. The stdio
@@ -47,6 +57,13 @@ _Pre-release for the dev rung of the managed backup encryption sprint (#2406). T
 verification pass clears; its notes fold this section in._
 
 ### Added
+
+- Per-container OpenVAS scan opt-in is now persisted (#2426). New `pentest_scan_opt_ins` table, `SetPentestScanOptIn`
+  and `ListPentestScanOptIns` RPCs (`PUT /v1/pentest/scan-opt-ins/{container_name}`, `GET /v1/pentest/scan-opt-ins`),
+  and `containarium security scan-opt-in allow|refuse|list`. The container's owner or an admin records the decision with
+  a reason; the latest decision is kept with who and when, and each change is written to the audit log as
+  `pentest.scan_opt_in.set`. A recorded decision wins over `CONTAINARIUM_OPENVAS_OPT_IN` in both directions (an
+  owner's refusal beats `*`), and an unreadable decision skips the container rather than assuming consent.
 
 - Guardrail deploy gate (#2368, slice C). A recipe can declare `guardrail_gate` (`dataset_path`, `require_kinds`).
   `DeployRecipe` then requires `guardrail_input` (`staging_ref` and the attestation). Before any container exists it
