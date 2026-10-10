@@ -221,7 +221,7 @@ Fail-closed scope, stated precisely:
 | Held message exceeds the byte limit | Blocked (`OverLimit`); nothing released |
 | Engine reports a coverage gap | Blocked (`CoverageGap`) |
 | Engine unreachable / times out / does not support a requested kind | Blocked (`EngineError`) |
-| **(new)** Response is compressed or an unrecognised content type | **Blocked** in scanned mode. Today these pass through unmetered; an unscannable body cannot be allowed through a gate that claims to scan |
+| **(new)** Response is compressed or an unrecognised content type | **Blocked** in scanned mode for 2xx responses (`CoverageGap`). Non-2xx upstream responses with unrecognised content types pass through unchanged with original status and headers |
 | Existing prompt-leak output filter | Unchanged: still fail-open. The new scan does not touch it |
 
 There is no "fail open" switch. The break-glass for an engine outage is an

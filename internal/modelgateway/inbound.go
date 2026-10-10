@@ -410,15 +410,22 @@ func (ir *inboundRequest) enforce(resp *http.Response) error {
 		resp.Body = io.NopCloser(bytes.NewReader(nil))
 		return ir.in.block(ir.sub, dec, ir.mode.revision)
 	}
+	ct := resp.Header.Get("Content-Type")
+	streaming := strings.Contains(ct, "text/event-stream")
+	if !streaming && !strings.Contains(ct, "application/json") {
+		// Non-2xx upstream responses (e.g. 429 text/plain, 502/503 HTML from
+		// load balancers, 401 proxies) are upstream/intermediary errors, not
+		// unscanned model outputs. Pass them through with their original
+		// status and headers.
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return nil
+		}
+		return fail(guardrail.InboundBlocked(guardrail.InboundReasonCoverageGap))
+	}
 	// An unscannable body cannot pass a gate that claims to scan. The
 	// transport already decodes gzip the upstream chose on its own; a
 	// Content-Encoding still present means the bytes are opaque to us.
 	if resp.Header.Get("Content-Encoding") != "" {
-		return fail(guardrail.InboundBlocked(guardrail.InboundReasonCoverageGap))
-	}
-	ct := resp.Header.Get("Content-Type")
-	streaming := strings.Contains(ct, "text/event-stream")
-	if !streaming && !strings.Contains(ct, "application/json") {
 		return fail(guardrail.InboundBlocked(guardrail.InboundReasonCoverageGap))
 	}
 	held, err := io.ReadAll(io.LimitReader(resp.Body, int64(ir.in.limit)+1))

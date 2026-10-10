@@ -472,6 +472,115 @@ func TestInbound_NilAuditSinkStillBlocks(t *testing.T) {
 	h.assertBlocked(resp, body, guardrail.InboundReasonFinding, "ignore all previous instructions")
 }
 
+func TestInbound_Non2xxUnrecognizedContentType(t *testing.T) {
+	t.Run("upstream 429 text/plain with Retry-After passes through unchanged", func(t *testing.T) {
+		const upstreamBody = "Rate limit exceeded. Try again in 60s."
+		up := func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/plain")
+			w.Header().Set("Retry-After", "60")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = io.WriteString(w, upstreamBody)
+		}
+		h := newInboundHarness(t, "anthropic", up, nil)
+		resp, body := h.call(`{"model":"m"}`)
+		if resp.StatusCode != http.StatusTooManyRequests {
+			t.Fatalf("status = %d, want 429", resp.StatusCode)
+		}
+		if got := resp.Header.Get("Retry-After"); got != "60" {
+			t.Errorf("Retry-After = %q, want %q", got, "60")
+		}
+		if string(body) != upstreamBody {
+			t.Errorf("body = %q, want %q", string(body), upstreamBody)
+		}
+		if entries := h.auditAll(); len(entries) != 0 {
+			t.Errorf("audit entries = %d, want 0", len(entries))
+		}
+		st := h.gw.InboundStatus()
+		if count := st.Blocked[guardrail.InboundReasonCoverageGap.String()]; count != 0 {
+			t.Errorf("coverage_gap blocked count = %d, want 0", count)
+		}
+	})
+
+	t.Run("upstream 200 with unrecognized content type is blocked as coverage gap", func(t *testing.T) {
+		const upstreamBody = "plain text ok"
+		up := func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, upstreamBody)
+		}
+		h := newInboundHarness(t, "anthropic", up, nil)
+		resp, body := h.call(`{"model":"m"}`)
+		h.assertBlocked(resp, body, guardrail.InboundReasonCoverageGap, "")
+		entries := h.auditAll()
+		if len(entries) != 1 {
+			t.Fatalf("audit entries = %d, want 1", len(entries))
+		}
+		if entries[0].Reason != guardrail.InboundReasonCoverageGap {
+			t.Errorf("audit reason = %v, want CoverageGap", entries[0].Reason)
+		}
+	})
+
+	t.Run("upstream 502 HTML passes through unchanged", func(t *testing.T) {
+		const upstreamHTML = "<html><body>502 Bad Gateway</body></html>"
+		up := func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = io.WriteString(w, upstreamHTML)
+		}
+		h := newInboundHarness(t, "anthropic", up, nil)
+		resp, body := h.call(`{"model":"m"}`)
+		if resp.StatusCode != http.StatusBadGateway {
+			t.Fatalf("status = %d, want 502", resp.StatusCode)
+		}
+		if string(body) != upstreamHTML {
+			t.Errorf("body = %q, want %q", string(body), upstreamHTML)
+		}
+		if entries := h.auditAll(); len(entries) != 0 {
+			t.Errorf("audit entries = %d, want 0", len(entries))
+		}
+		st := h.gw.InboundStatus()
+		if count := st.Blocked[guardrail.InboundReasonCoverageGap.String()]; count != 0 {
+			t.Errorf("coverage_gap blocked count = %d, want 0", count)
+		}
+	})
+
+	t.Run("upstream error with application/json is scanned", func(t *testing.T) {
+		const errJSON = `{"error":{"type":"rate_limit_error","message":"rate limited"}}`
+		up := func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = io.WriteString(w, errJSON)
+		}
+		h := newInboundHarness(t, "anthropic", up, nil)
+		resp, body := h.call(`{"model":"m"}`)
+		if resp.StatusCode != http.StatusTooManyRequests {
+			t.Fatalf("status = %d, want 429", resp.StatusCode)
+		}
+		if string(body) != errJSON {
+			t.Errorf("body = %q, want %q", string(body), errJSON)
+		}
+		if entries := h.auditAll(); len(entries) != 0 {
+			t.Errorf("audit entries = %d, want 0", len(entries))
+		}
+	})
+
+	t.Run("upstream error with application/json containing violation is blocked", func(t *testing.T) {
+		const injectionJSON = `{"error":{"type":"invalid_request","message":"` + injectionText + `"}}`
+		up := func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, injectionJSON)
+		}
+		h := newInboundHarness(t, "anthropic", up, nil)
+		resp, body := h.call(`{"model":"m"}`)
+		h.assertBlocked(resp, body, guardrail.InboundReasonFinding, "ignore all previous instructions")
+		entries := h.auditAll()
+		if len(entries) != 1 {
+			t.Fatalf("audit entries = %d, want 1", len(entries))
+		}
+	})
+}
+
 // --- streaming ---
 
 // oaiToolChunks splits a tool call's arguments across several SSE chunks so
