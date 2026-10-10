@@ -5,6 +5,7 @@ package threatdetect
 
 import (
 	"errors"
+	"slices"
 	"time"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -131,9 +132,25 @@ func (e Evidence) merged(more Evidence) Evidence {
 	return Evidence{
 		Flows:     append(append([]FlowEvidence(nil), e.Flows...), more.Flows...),
 		Denies:    append(append([]DenyEvidence(nil), e.Denies...), more.Denies...),
-		Configs:   append(append([]ConfigEvidence(nil), e.Configs...), more.Configs...),
+		Configs:   mergeConfigEvidence(e.Configs, more.Configs),
 		Listeners: append(append([]ListenerEvidence(nil), e.Listeners...), more.Listeners...),
 	}
+}
+
+// mergeConfigEvidence appends the entries of more that old does not already
+// hold. Config evidence is a state snapshot, not an event: a box that stays
+// permissive re-reports the identical entry every reconcile pass, and
+// appending each repeat would fill the capped list with copies and push out
+// anything that differs. A repeat still bumps the finding's count and
+// last-seen; the evidence grows only when something changed.
+func mergeConfigEvidence(old, more []ConfigEvidence) []ConfigEvidence {
+	out := append([]ConfigEvidence(nil), old...)
+	for _, c := range more {
+		if !slices.Contains(out, c) {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // FindingState is the lifecycle state of a Finding.
