@@ -139,3 +139,24 @@ func TestMaxSeverity(t *testing.T) {
 		}
 	}
 }
+
+// Config evidence is a state snapshot: re-merging an identical entry (a box
+// that stays permissive, pass after pass) must not grow the list, while a
+// changed entry is still added.
+func TestEvidenceMerged_ConfigEvidenceIsDeduplicated(t *testing.T) {
+	a := ConfigEvidence{Path: "/etc/ssh/sshd_config.d/0.conf", Directive: "PasswordAuthentication", Value: "yes"}
+	b := ConfigEvidence{Path: "/etc/ssh/sshd_config.d/0.conf", Directive: "PasswordAuthentication", Value: "yes", Remediated: true}
+
+	got := Evidence{Configs: []ConfigEvidence{a}}
+	for i := 0; i < 5; i++ {
+		got = got.merged(Evidence{Configs: []ConfigEvidence{a}})
+	}
+	if len(got.Configs) != 1 {
+		t.Fatalf("5 identical repeats left %d entries, want 1: %+v", len(got.Configs), got.Configs)
+	}
+
+	got = got.merged(Evidence{Configs: []ConfigEvidence{a, b, b}})
+	if len(got.Configs) != 2 || got.Configs[1] != b {
+		t.Fatalf("a changed entry must be added exactly once, got %+v", got.Configs)
+	}
+}

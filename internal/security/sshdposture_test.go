@@ -21,10 +21,11 @@ type fakeBox struct {
 	files  map[string]string
 	config map[string]string
 
-	writes   map[string]string
-	execs    []string
-	setCfg   map[string]string
-	writeErr error
+	writes    map[string]string
+	execs     []string
+	setCfg    map[string]string
+	writeErr  error
+	setCfgErr error // SetConfig fails (the marker cannot be stamped)
 }
 
 func newFakeBox(files map[string]string, marked bool) *fakeBox {
@@ -73,6 +74,9 @@ func (b *fakeBox) backend() *incustest.MockBackend {
 	}
 	m.GetRawInstanceFunc = func(string) (map[string]string, string, error) { return b.config, "", nil }
 	m.SetConfigFunc = func(_, k, v string) error {
+		if b.setCfgErr != nil {
+			return b.setCfgErr
+		}
 		b.setCfg[k] = v
 		b.config[k] = v
 		return nil
@@ -311,4 +315,55 @@ func containsPrefix(list []string, prefix string) bool {
 		}
 	}
 	return false
+}
+
+// A marker that cannot be stamped on an already-compliant box is an error
+// the pass reports (and retries next time), not a log line.
+func TestReconcileBox_MarkFailureOnCompliantBoxIsAnError(t *testing.T) {
+	box := newFakeBox(map[string]string{
+		sshdpolicy.MainConfigPath: imageDefaultMain,
+		sshdpolicy.DropInPath:     managed,
+	}, false)
+	box.setCfgErr = errors.New("incus unavailable")
+	out, err := NewSSHDPostureReconciler(box.backend(), nil, 0).ReconcileBox(context.Background(), "alice-container")
+	if err == nil || !strings.Contains(err.Error(), sshdpolicy.MarkerKey) {
+		t.Fatalf("want a marker error, got %v", err)
+	}
+	if !out.Compliant {
+		t.Errorf("box is compliant regardless of the marker: %+v", out)
+	}
+}
+
+// If the marker cannot be stamped, the backfill exemption does not apply:
+// the next pass would read the box as never-managed again, so a missing
+// drop-in found now is reported, not assumed to be the image default.
+func TestReconcileBox_MarkFailureDisablesSilentBackfill(t *testing.T) {
+	box := newFakeBox(map[string]string{sshdpolicy.MainConfigPath: imageDefaultMain}, false)
+	box.setCfgErr = errors.New("incus unavailable")
+	sink := &fakeSink{}
+	out, err := NewSSHDPostureReconciler(box.backend(), sink, 0).ReconcileBox(context.Background(), "alice-container")
+	if err == nil || !strings.Contains(err.Error(), sshdpolicy.MarkerKey) {
+		t.Fatalf("want a marker error, got %v", err)
+	}
+	if out.Backfilled || out.Finding == nil || len(sink.findings) != 1 {
+		t.Fatalf("want a finding and no backfill, got %+v (findings=%d)", out, len(sink.findings))
+	}
+	if !out.Remediated || !out.Compliant || box.writes[sshdpolicy.DropInPath] != managed {
+		t.Errorf("the drop-in must still be re-asserted: %+v writes=%v", out, box.writes)
+	}
+}
+
+// The pass tallies a box's remediation and finding even when marking it
+// also failed, and counts the failure.
+func TestReconcileAll_CountsMarkFailureAndStillTalliesOutcome(t *testing.T) {
+	box := newFakeBox(map[string]string{sshdpolicy.MainConfigPath: imageDefaultMain}, false)
+	box.setCfgErr = errors.New("incus unavailable")
+	m := box.backend()
+	m.ListContainersFunc = func() ([]incus.ContainerInfo, error) {
+		return []incus.ContainerInfo{{Name: "alice-container", State: "Running"}}, nil
+	}
+	s := NewSSHDPostureReconciler(m, &fakeSink{}, 0).ReconcileAll(context.Background())
+	if s.Errors != 1 || s.Remediated != 1 || s.Findings != 1 || s.Backfilled != 0 {
+		t.Fatalf("summary = %s", s)
+	}
 }

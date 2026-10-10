@@ -2,6 +2,7 @@ package security
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sort"
@@ -179,9 +180,10 @@ func (r *SSHDPostureReconciler) ReconcileAll(ctx context.Context) Summary {
 		}
 		out, err := r.ReconcileBox(ctx, c.Name)
 		if err != nil {
+			// The outcome is still tallied: a pass can remediate and raise
+			// a finding and also fail to mark the box.
 			log.Printf("[sshd-posture] %s: %v", c.Name, err)
 			s.Errors++
-			continue
 		}
 		switch {
 		case out.Skipped != "":
@@ -221,7 +223,9 @@ func (r *SSHDPostureReconciler) ReconcileBox(ctx context.Context, name string) (
 
 	if intact && before.Compliant() {
 		if !marked {
-			r.mark(name)
+			if err := r.mark(name); err != nil {
+				return BoxOutcome{Compliant: true}, err
+			}
 		}
 		return BoxOutcome{Compliant: true}, nil
 	}
@@ -238,26 +242,31 @@ func (r *SSHDPostureReconciler) ReconcileBox(ctx context.Context, name string) (
 	after := sshdpolicy.Evaluate(sshdpolicy.Merge(string(main), dropIns))
 	out.Compliant = after.Compliant()
 
+	var markErr error
 	if !marked {
-		r.mark(name)
-		if out.Compliant {
+		markErr = r.mark(name)
+		if markErr == nil && out.Compliant {
 			// First time under policy: the image default, not the tenant.
 			out.Backfilled = true
 			return out, nil
 		}
+		// A failed mark cannot vouch for the box: without the marker the
+		// next pass would backfill it silently again, so what this pass
+		// found is reported as a finding rather than assumed to be the
+		// image default. The error is returned so the pass counts it.
 	}
 
 	f := r.buildFinding(name, string(main), observed, before, intact, out.Remediated, out.Compliant)
 	out.Finding = f
 	if r.sink == nil {
 		log.Printf("[sshd-posture] %s: %s (no finding sink configured)", name, describe(f))
-		return out, nil
+		return out, markErr
 	}
 	if _, err := r.sink.Upsert(ctx, f); err != nil {
-		return out, fmt.Errorf("record finding: %w", err)
+		return out, errors.Join(fmt.Errorf("record finding: %w", err), markErr)
 	}
 	log.Printf("[sshd-posture] %s: finding recorded: %s", name, describe(f))
-	return out, nil
+	return out, markErr
 }
 
 // readDropIns returns every *.conf under DropInDir that could be read. A
@@ -296,10 +305,14 @@ func (r *SSHDPostureReconciler) writeDropIn(name string) error {
 	return nil
 }
 
-func (r *SSHDPostureReconciler) mark(name string) {
+// mark stamps the host-side marker. The error is returned, not just logged:
+// an unmarked box reads as "never under policy" on the next pass, which is
+// the silent-backfill exemption.
+func (r *SSHDPostureReconciler) mark(name string) error {
 	if err := r.incus.SetConfig(name, sshdpolicy.MarkerKey, sshdpolicy.MarkerValue); err != nil {
-		log.Printf("[sshd-posture] %s: set %s: %v", name, sshdpolicy.MarkerKey, err)
+		return fmt.Errorf("set %s: %w", sshdpolicy.MarkerKey, err)
 	}
+	return nil
 }
 
 // withManagedDropIn returns dropIns with the managed file replaced by (or
