@@ -163,9 +163,20 @@ and records the event as a `BOX_SSHD_PASSWORD_AUTH` security finding
 the re-assert (something of the tenant's outranks the drop-in) stays an
 open HIGH finding until an operator deals with it.
 
-What this does not cover is a tenant exposing a *different* listener — a
-second sshd on another port, or any service — to the internet over a
-reverse tunnel from inside the box. That is an egress question: a
+The same pass also looks for a *second* SSH server. Each running box is
+probed once per pass for listening TCP sockets held by `sshd`, `dropbear`
+or `tinysshd`, and anything that is not the distro sshd on a port its
+`sshd_config` declares is recorded as a HIGH `BOX_ROGUE_SSH_LISTENER`
+finding with the port, bind address, pid and binary. That covers a
+hand-started `sshd -p 2222`, a dropbear, and the stock sshd started with
+its own `-f` or `-o`. It is record-only: the platform never kills a
+tenant's process. It finds the casual and the accidental, not an owner
+who renames the binary or embeds an SSH server in another program, and
+it can be turned off with `CONTAINARIUM_SSH_LISTENER_CHECK_DISABLE`.
+
+What this does not cover is a tenant exposing a listener the probe cannot
+recognise — a renamed SSH server, or any other service — to the internet
+over a reverse tunnel from inside the box. That is an egress question: a
 tenant whose boxes must not reach arbitrary hosts gets an `ENFORCE`-mode
 network policy with an egress allow-list (see
 `NETWORK-ISOLATION-DESIGN.md`), and known tunnel services can be added to

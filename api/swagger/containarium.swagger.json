@@ -5690,6 +5690,79 @@
         ]
       }
     },
+    "/v1/pentest/scan-opt-ins": {
+      "get": {
+        "summary": "List scan opt-ins",
+        "description": "Lists the recorded scan decisions, for one container or (admin) for all.",
+        "operationId": "PentestService_ListPentestScanOptIns",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListPentestScanOptInsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "containerName",
+            "description": "Optional: only this container. Empty lists every recorded decision\n(admin only).",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Pentest"
+        ]
+      }
+    },
+    "/v1/pentest/scan-opt-ins/{containerName}": {
+      "put": {
+        "summary": "Set a container's scan opt-in",
+        "description": "Records, with the caller and a reason, whether a container may be scanned by an intrusive scanner such as OpenVAS. The container owner or an admin may call it; an explicit refusal overrides any operator-wide opt-in. Every change is written to the audit log.",
+        "operationId": "PentestService_SetPentestScanOptIn",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SetPentestScanOptInResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "containerName",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/SetPentestScanOptInBody"
+            }
+          }
+        ],
+        "tags": [
+          "Pentest"
+        ]
+      }
+    },
     "/v1/pentest/scans": {
       "get": {
         "summary": "List pentest scan runs",
@@ -12621,6 +12694,13 @@
             "type": "object",
             "$ref": "#/definitions/ConfigEvidence"
           }
+        },
+        "listeners": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/ListenerEvidence"
+          }
         }
       },
       "description": "Evidence bundles the flow, deny and configuration records that triggered\na finding. Capped by the store to the most recent entries — see\nFindingStore."
@@ -14769,6 +14849,18 @@
         }
       }
     },
+    "ListPentestScanOptInsResponse": {
+      "type": "object",
+      "properties": {
+        "optIns": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/PentestScanOptIn"
+          }
+        }
+      }
+    },
     "ListPentestScanRunsResponse": {
       "type": "object",
       "properties": {
@@ -14951,6 +15043,34 @@
           "format": "int32"
         }
       }
+    },
+    "ListenerEvidence": {
+      "type": "object",
+      "properties": {
+        "port": {
+          "type": "integer",
+          "format": "int64",
+          "description": "TCP port the listener is bound to."
+        },
+        "bindAddress": {
+          "type": "string",
+          "description": "Bind address as the box's kernel reports it, e.g. \"127.0.0.1\" or \"::\".\nA loopback bind is the shape a reverse tunnel needs."
+        },
+        "pid": {
+          "type": "integer",
+          "format": "int64",
+          "description": "Process id inside the box's pid namespace."
+        },
+        "binary": {
+          "type": "string",
+          "description": "Executable the process runs, e.g. \"/usr/sbin/dropbear\"."
+        },
+        "note": {
+          "type": "string",
+          "description": "Why this listener is not the managed sshd, e.g. \"port not in\nsshd_config\" or \"started with -f\"."
+        }
+      },
+      "description": "ListenerEvidence is one listening socket held by an SSH server that is not\nthe box's distro sshd service (#2439)."
     },
     "MetricsEvent": {
       "type": "object",
@@ -15637,6 +15757,34 @@
       },
       "title": "PentestFindingSummary provides aggregate counts"
     },
+    "PentestScanOptIn": {
+      "type": "object",
+      "properties": {
+        "containerName": {
+          "type": "string"
+        },
+        "scanner": {
+          "$ref": "#/definitions/PentestScanner"
+        },
+        "optedIn": {
+          "type": "boolean",
+          "description": "true = scanning allowed, false = explicitly refused. A refusal wins over\nan operator-wide opt-in, so an owner can always say no."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Free-text reason given when the decision was recorded."
+        },
+        "updatedBy": {
+          "type": "string",
+          "description": "Authenticated subject that recorded the decision."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "description": "PentestScanOptIn is the recorded scan decision for one container and\nscanner. It is the consent record: who decided, when, and why."
+    },
     "PentestScanRun": {
       "type": "object",
       "properties": {
@@ -15709,6 +15857,15 @@
         }
       },
       "title": "PentestScanRun represents a single penetration test scan execution"
+    },
+    "PentestScanner": {
+      "type": "string",
+      "enum": [
+        "PENTEST_SCANNER_UNSPECIFIED",
+        "PENTEST_SCANNER_OPENVAS"
+      ],
+      "default": "PENTEST_SCANNER_UNSPECIFIED",
+      "description": "PentestScanner names a scanner whose use on a container needs the\ncontainer owner's (or an operator's) explicit consent. The cheap\nbuilt-in modules (headers, TLS, ports, ...) are not listed here.\n\n - PENTEST_SCANNER_OPENVAS: OpenVAS (Greenbone) network vulnerability scanner."
     },
     "PgConnection": {
       "type": "object",
@@ -17398,6 +17555,28 @@
         }
       }
     },
+    "SetPentestScanOptInBody": {
+      "type": "object",
+      "properties": {
+        "scanner": {
+          "$ref": "#/definitions/PentestScanner"
+        },
+        "optedIn": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "SetPentestScanOptInResponse": {
+      "type": "object",
+      "properties": {
+        "optIn": {
+          "$ref": "#/definitions/PentestScanOptIn"
+        }
+      }
+    },
     "SetSecretRequest": {
       "type": "object",
       "properties": {
@@ -18179,10 +18358,11 @@
         "THREAT_RULE_ID_BAD_DESTINATION",
         "THREAT_RULE_ID_CROSS_TENANT_FLOW",
         "THREAT_RULE_ID_DENY_BURST",
-        "THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH"
+        "THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH",
+        "THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER"
       ],
       "default": "THREAT_RULE_ID_UNSPECIFIED",
-      "description": "ThreatRuleId identifies which detection rule raised a finding.\n\n - THREAT_RULE_ID_BAD_DESTINATION: Flow to a known-bad destination (e.g. a mining pool).\n - THREAT_RULE_ID_CROSS_TENANT_FLOW: Flow whose source and destination belong to different tenants.\n - THREAT_RULE_ID_DENY_BURST: Burst of policy denies for one tenant within a time window.\n - THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH: A box's effective sshd configuration permitted password login, or the\nplatform-managed key-only drop-in had been removed or altered (#2424).\nRaised by the box sshd posture reconciler after it re-asserts the\ndrop-in; the evidence names the offending directive and file."
+      "description": "ThreatRuleId identifies which detection rule raised a finding.\n\n - THREAT_RULE_ID_BAD_DESTINATION: Flow to a known-bad destination (e.g. a mining pool).\n - THREAT_RULE_ID_CROSS_TENANT_FLOW: Flow whose source and destination belong to different tenants.\n - THREAT_RULE_ID_DENY_BURST: Burst of policy denies for one tenant within a time window.\n - THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH: A box's effective sshd configuration permitted password login, or the\nplatform-managed key-only drop-in had been removed or altered (#2424).\nRaised by the box sshd posture reconciler after it re-asserts the\ndrop-in; the evidence names the offending directive and file.\n - THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER: A box is listening with an SSH server that is not the distro sshd\nservice on a port its sshd_config declares (#2439): a second sshd, a\ndropbear, or the stock sshd started with its own config. Raised by the\nsame posture pass as rule 4; record-only, the platform never kills a\ntenant's process. The evidence names the port, pid and binary."
     },
     "ThreatSeverity": {
       "type": "string",

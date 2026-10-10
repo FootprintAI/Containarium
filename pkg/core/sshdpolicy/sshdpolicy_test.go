@@ -95,3 +95,31 @@ func TestManagedDropInIntact(t *testing.T) {
 		t.Error("a rewritten drop-in must not count as intact")
 	}
 }
+
+func TestPorts(t *testing.T) {
+	cases := []struct {
+		name, cfg string
+		want      []int
+	}{
+		{"default when absent", "PermitRootLogin no\n", []int{22}},
+		{"single", "Port 2222\n", []int{2222}},
+		{"additive across lines and files", "Port 22\n#Port 99\nPort 2200\n", []int{22, 2200}},
+		{"case-insensitive keyword", "port 8022\n", []int{8022}},
+		{"stops at Match", "Port 22\nMatch User x\nPort 9999\n", []int{22}},
+		{"match before any port keeps the default", "Match User x\nPort 9999\n", []int{22}},
+		{"garbage ignored", "Port abc\nPort 70000\nPort 0\n", []int{22}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := Ports(c.cfg)
+			if len(got) != len(c.want) {
+				t.Fatalf("Ports = %v, want %v", got, c.want)
+			}
+			for i := range got {
+				if got[i] != c.want[i] {
+					t.Fatalf("Ports = %v, want %v", got, c.want)
+				}
+			}
+		})
+	}
+}
