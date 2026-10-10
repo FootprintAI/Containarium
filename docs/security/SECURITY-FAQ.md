@@ -134,6 +134,54 @@ costs you:
 Pick Containarium because those trade-offs match your workload, not
 because a sales page told you the isolation is stronger than it is.
 
+## Can a box be made to accept SSH passwords?
+
+Not through the platform, and not for long by hand.
+
+The public SSH path never reaches a box's own sshd. The sentinel's sshpiper
+offers clients only public-key authentication and pipes each session to the
+backend host's sshd, which is key-only and checked by the host posture
+check; the session enters the box through `incus exec`, not a network hop.
+A password set inside a box is therefore unreachable from the internet on
+every sentinel-fronted backend.
+
+Inside the box, every box is provisioned with a managed drop-in
+(`/etc/ssh/sshd_config.d/00-containarium.conf`) that sets
+`PasswordAuthentication no`, `KbdInteractiveAuthentication no` and
+`PermitEmptyPasswords no`. It sorts before every distro and cloud-init
+drop-in, so it wins under sshd's first-match rule, and it is baked into
+base images.
+
+A box owner has root (`NOPASSWD` sudo) and can delete that file, add one
+that sorts earlier, or run a second sshd — nothing written inside a box is
+a security boundary against its own root. So the daemon runs a posture
+reconciler (every 10 minutes by default; `CONTAINARIUM_SSHD_POSTURE_*`)
+that re-reads each running box's effective sshd configuration through the
+incus file API, rewrites the managed drop-in if it is missing or altered,
+and records the event as a `BOX_SSHD_PASSWORD_AUTH` security finding
+(`containarium security findings`). A box that is still permissive after
+the re-assert (something of the tenant's outranks the drop-in) stays an
+open HIGH finding until an operator deals with it.
+
+The same pass also looks for a *second* SSH server. Each running box is
+probed once per pass for listening TCP sockets held by `sshd`, `dropbear`
+or `tinysshd`, and anything that is not the distro sshd on a port its
+`sshd_config` declares is recorded as a HIGH `BOX_ROGUE_SSH_LISTENER`
+finding with the port, bind address, pid and binary. That covers a
+hand-started `sshd -p 2222`, a dropbear, and the stock sshd started with
+its own `-f` or `-o`. It is record-only: the platform never kills a
+tenant's process. It finds the casual and the accidental, not an owner
+who renames the binary or embeds an SSH server in another program, and
+it can be turned off with `CONTAINARIUM_SSH_LISTENER_CHECK_DISABLE`.
+
+What this does not cover is a tenant exposing a listener the probe cannot
+recognise — a renamed SSH server, or any other service — to the internet
+over a reverse tunnel from inside the box. That is an egress question: a
+tenant whose boxes must not reach arbitrary hosts gets an `ENFORCE`-mode
+network policy with an egress allow-list (see
+`NETWORK-ISOLATION-DESIGN.md`), and known tunnel services can be added to
+the bad-destination list so the sentry flags them.
+
 ## Where do I go for the operational detail?
 
 - [`SECURITY.md`](../../SECURITY.md) — vulnerability reporting,

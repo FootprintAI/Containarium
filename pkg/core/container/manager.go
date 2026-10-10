@@ -13,6 +13,7 @@ import (
 	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/footprintai/containarium/pkg/core/ospkg"
 	"github.com/footprintai/containarium/pkg/core/ostype"
+	"github.com/footprintai/containarium/pkg/core/sshdpolicy"
 	"github.com/footprintai/containarium/pkg/core/stacks"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	incusapi "github.com/lxc/incus/v7/shared/api"
@@ -461,6 +462,13 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		return nil, fmt.Errorf("failed to install packages: %w", err)
 	}
 
+	// Bring the box under the sshd policy at birth (#2424), on the baked
+	// path too (it skips installPackages, but the baked image carries the
+	// drop-in). Without the marker the posture reconciler would read a
+	// tenant edit made before its first pass as "never applied" and
+	// backfill it silently instead of raising a finding.
+	m.markSSHDPolicy(containerName)
+
 	// Make podman workloads reboot-durable (#387). Runs on BOTH the baked
 	// and full paths: the rootful half is already enabled in a baked image
 	// (idempotent re-enable, harmless), but the rootless half is per-user
@@ -788,12 +796,30 @@ func (m *Manager) installPackages(containerName string, enablePodman bool, stack
 		// (#1037) can run it into a shared base image. See issue #387.
 	}
 
+	// Key-only SSH inside the box (#2424). A box sshd otherwise inherits
+	// the image default (PasswordAuthentication yes), and the owner's
+	// NOPASSWD sudo is one `passwd` away from making that reachable. The
+	// managed drop-in sorts before every distro/cloud-init drop-in, so it
+	// wins under sshd's first-match rule. It is user-independent, so it
+	// lands in baked base images too; the posture reconciler
+	// (internal/security) re-asserts it on running boxes afterwards.
+	// Fatal on failure: a box this daemon cannot write a file into is not
+	// a box the rest of provisioning will succeed on either.
+	if err := m.incus.Exec(containerName, []string{"mkdir", "-p", sshdpolicy.DropInDir}); err != nil {
+		return fmt.Errorf("failed to create %s: %w", sshdpolicy.DropInDir, err)
+	}
+	if err := m.incus.WriteFile(containerName, sshdpolicy.DropInPath, sshdpolicy.DropInContent(), sshdpolicy.DropInMode); err != nil {
+		return fmt.Errorf("failed to write sshd policy drop-in: %w", err)
+	}
+
 	sshService := pkgMgr.SSHServiceName()
 	if err := m.incus.Exec(containerName, []string{"systemctl", "enable", sshService}); err != nil {
 		return fmt.Errorf("failed to enable %s: %w", sshService, err)
 	}
-	if err := m.incus.Exec(containerName, []string{"systemctl", "start", sshService}); err != nil {
-		return fmt.Errorf("failed to start %s: %w", sshService, err)
+	// restart, not start: an image that ships sshd already running would
+	// otherwise keep serving the pre-drop-in configuration.
+	if err := m.incus.Exec(containerName, []string{"systemctl", "restart", sshService}); err != nil {
+		return fmt.Errorf("failed to restart %s: %w", sshService, err)
 	}
 
 	// Run base scripts post-install commands as root
@@ -1537,4 +1563,14 @@ func (m *Manager) ListWithLabels(labelFilter map[string]string) ([]incus.Contain
 	}
 
 	return filtered, nil
+}
+
+// markSSHDPolicy stamps the host-side marker that tells the sshd posture
+// reconciler this box was provisioned under the key-only policy. Best
+// effort: a box without the marker is still key-only, it just gets the
+// reconciler's silent first-pass backfill instead of tamper detection.
+func (m *Manager) markSSHDPolicy(containerName string) {
+	if err := m.incus.SetConfig(containerName, sshdpolicy.MarkerKey, sshdpolicy.MarkerValue); err != nil {
+		log.Printf("[sshd-policy] %s: set %s: %v", containerName, sshdpolicy.MarkerKey, err)
+	}
 }

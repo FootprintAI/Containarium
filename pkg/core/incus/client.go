@@ -161,6 +161,11 @@ type Backend interface {
 	ExecWithExitCode(containerName string, command []string) (stdout, stderr string, exitCode int, err error)
 	WriteFile(containerName, path string, content []byte, mode string) error
 	ReadFile(containerName, path string) ([]byte, error)
+	// ListDir returns the entry names of a directory inside the container,
+	// via the incus file API — no exec, so nothing inside the box (a
+	// tenant-controlled shell, say) is on the path. A missing directory is
+	// an error; the caller decides whether that is "empty".
+	ListDir(containerName, path string) ([]string, error)
 
 	// Config & devices
 	SetConfig(containerName, key, value string) error
@@ -2595,6 +2600,22 @@ func (c *Client) PushFile(containerName, path string, content io.ReadSeeker, mod
 	}
 
 	return nil
+}
+
+// ListDir returns the entry names of a directory inside the container. See
+// Backend.ListDir.
+func (c *Client) ListDir(containerName, path string) ([]string, error) {
+	reader, resp, err := c.server.GetInstanceFile(containerName, path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list %s: %w", path, err)
+	}
+	if reader != nil {
+		_ = reader.Close()
+	}
+	if resp == nil || resp.Type != "directory" {
+		return nil, fmt.Errorf("failed to list %s: not a directory", path)
+	}
+	return resp.Entries, nil
 }
 
 // maxSymlinkHops bounds how many links ReadFile follows before

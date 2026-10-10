@@ -7,12 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Rogue SSH listener detection (#2439). The box sshd posture pass now also probes each running box,
+  with one exec per box per pass, for listening sockets held by an SSH server (`sshd`, `dropbear`,
+  `tinysshd`) that is not the distro sshd on a port its `sshd_config` declares, and records a HIGH
+  `THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER` finding with new typed `ListenerEvidence` (port, bind
+  address, pid, binary, reason). Record-only: it never touches the tenant's process. It also catches
+  the stock sshd started with `-f`/`-o`, and works on boxes with no OpenSSH installed. Turn it off
+  with `CONTAINARIUM_SSH_LISTENER_CHECK_DISABLE`.
+
+### Fixed
+
+- agent-box no longer drops a request its MCP client sent right before closing stdin. The stdio
+  server library cancels in-flight work on EOF before it drains its tool-call queue, so a
+  `process_start` from a one-shot pipe, or from an SSH session that dropped straight after the
+  call, could be lost under load. agent-box now withholds EOF from the server
+  until every request it has read is answered (bounded by a 30 s grace period). This is what made
+  `TestSpawn_SurvivesParentExit/framed` flaky in CI; that test now also asserts the
+  `process_start` response itself, so a dropped call is reported as such. The sentinel tunnel
+  tests poll for their listeners instead of sleeping 100 ms, which produced "connection refused"
+  on loaded runners.
+
+- Boxes are now key-only for SSH (#2424). A box's sshd previously inherited the image default
+  (`PasswordAuthentication yes`), and the owner's `NOPASSWD` sudo was one `passwd` away from making
+  that reachable from the tenant's other boxes, the LAN on direct in-network backends, or anywhere a
+  reverse tunnel pointed. Provisioning now writes `/etc/ssh/sshd_config.d/00-containarium.conf`
+  (`PasswordAuthentication no`, `KbdInteractiveAuthentication no`, `PermitEmptyPasswords no`) before
+  (re)starting sshd, into baked base images too. A new daemon-side posture reconciler re-reads every
+  running box's effective sshd configuration through the incus file API every 10 minutes
+  (`CONTAINARIUM_SSHD_POSTURE_INTERVAL_MINUTES`, `CONTAINARIUM_SSHD_POSTURE_DISABLE`), re-asserts the
+  drop-in when it is missing or altered, and records tampering as a `THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH`
+  security finding (MEDIUM when the pass closed it, HIGH when the box is still permissive) with
+  `ConfigEvidence` naming the directive and file. Existing boxes are backfilled silently on the first
+  pass. The public SSH ingress was already key-only (the sentinel pipes to the backend host sshd, not
+  the box); this closes the in-network and reverse-tunnel paths for the stock sshd.
+
+### Removed
+
+- The dead `SecurityConfig.require_ssh_keys` and `SecurityConfig.min_password_length` proto fields
+  (#2424). Nothing read them: `config.proto` declares no service, so `SecurityConfig` was never
+  reachable over the API, the CLI or the MCP server, and the key-only guarantee they implied is now
+  enforced by the provisioner's sshd drop-in and the posture reconciler instead. Tags 5 and 6 and
+  both names are reserved.
+
 ## [0.101.0-rc.1] - 2026-10-09
 
 _Pre-release for the dev rung of the managed backup encryption sprint (#2406). The final 0.101.0 is cut once the dev
 verification pass clears; its notes fold this section in._
 
 ### Added
+
+- Per-container OpenVAS scan opt-in is now persisted (#2426). New `pentest_scan_opt_ins` table, `SetPentestScanOptIn`
+  and `ListPentestScanOptIns` RPCs (`PUT /v1/pentest/scan-opt-ins/{container_name}`, `GET /v1/pentest/scan-opt-ins`),
+  and `containarium security scan-opt-in allow|refuse|list`. The container's owner or an admin records the decision with
+  a reason; the latest decision is kept with who and when, and each change is written to the audit log as
+  `pentest.scan_opt_in.set`. A recorded decision wins over `CONTAINARIUM_OPENVAS_OPT_IN` in both directions (an
+  owner's refusal beats `*`), and an unreadable decision skips the container rather than assuming consent.
 
 - Guardrail deploy gate (#2368, slice C). A recipe can declare `guardrail_gate` (`dataset_path`, `require_kinds`).
   `DeployRecipe` then requires `guardrail_input` (`staging_ref` and the attestation). Before any container exists it
@@ -24,6 +75,15 @@ verification pass clears; its notes fold this section in._
   `--guardrail-staging-root` and `--guardrail-snapshot-dir` (daemon-private, outside the staging root; default the OS
   temp dir). A present but empty `guardrail_gate:` in a recipe, or an unknown key under it, is refused at load. Nothing on the platform
   stages a dataset yet (the `ship` verb is a documented gap), and no built-in recipe is gated.
+
+- OpenVAS (Greenbone) pentest module (#2426, scanner side). `internal/pentest` gains an `openvas` module that drives
+  a dedicated scanner box through `gvm-cli` and imports results into the existing findings store, with CVSS mapped
+  to the pentest severity scale. Scanning is opt-in per container (`CONTAINARIUM_OPENVAS_OPT_IN`; empty scans
+  nothing), uses the "Full and fast" config that excludes dangerous NVTs, runs at most two tasks at once, and stops
+  a scan after two hours. Findings never feed auto-quarantine. Owner notification and the default-on policy are
+  tracked separately; the opt-in list is not yet persisted per box, and feed age and last-run status are not yet in
+  the API. See `docs/OPENVAS-SCANNING.md`.
+
 - Guardrail inbound foundations (#2367, slice A; the model-gateway enforcement is a later slice, so nothing is
   deployed behaviour yet). `GuardrailKind` gains `UNSAFE_CODE` and `PROMPT_INJECTION`, and the in-tree reference
   engine ships text-shape rules for them: `DOWNLOAD_EXECUTE`, `DESTRUCTIVE_SHELL` and `CREDENTIAL_EXFIL` for unsafe
@@ -66,6 +126,12 @@ verification pass clears; its notes fold this section in._
   (kernel >= 6.6, cgroup v2, `cgroup_skb` attach).
 
 ### Changed
+
+- **Breaking:** a set-but-empty or whitespace-only `CONTAINARIUM_PRIVILEGED_PODMAN_POLICY` now refuses daemon
+  startup with an error naming the variable, instead of granting privileged Podman to every caller (#2345).
+  Env files or unit templates that use `CONTAINARIUM_PRIVILEGED_PODMAN_POLICY=` to mean unset must omit the
+  assignment or specify `all`, `admin-only` or `disabled`. A truly unset variable still defaults to `all` with
+  a warning; case and whitespace variants of valid values keep working.
 
 - `containarium guardrail apply` and `guardrail verify` now read the server-side guardrail policy when a server is
   named explicitly with `--server` or `CONTAINARIUM_SERVER` (#2368, slice C). A login's default server does not count:

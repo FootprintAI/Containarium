@@ -28,6 +28,7 @@ type GRPCClient struct {
 	agentClient   pb.AgentSkillServiceClient
 	crewClient    pb.CrewServiceClient
 	clusterClient pb.ClusterServiceClient
+	auditClient   pb.AuditServiceClient // #2415
 	sandboxClient pb.SandboxServiceClient
 	anonClient    pb.AnonymousBoxServiceClient
 	trackerClient pb.TrackerServiceClient
@@ -114,6 +115,7 @@ func NewGRPCClient(serverAddr string, certsDir string, insecureConn bool) (*GRPC
 		agentClient:        agentClient,
 		crewClient:         crewClient,
 		clusterClient:      clusterClient,
+		auditClient:        pb.NewAuditServiceClient(conn),
 		sandboxClient:      sandboxClient,
 		anonClient:         anonClient,
 		trackerClient:      trackerClient,

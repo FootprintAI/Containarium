@@ -120,11 +120,36 @@ type DenyEvidence struct {
 	Count    string `json:"count"`
 }
 
+// ConfigEvidence mirrors the daemon's ConfigEvidence (#2424): one
+// configuration directive whose effective value violated policy, and
+// whether the platform re-asserted its managed configuration in the same
+// pass.
+type ConfigEvidence struct {
+	Path       string `json:"path"`
+	Directive  string `json:"directive"`
+	Value      string `json:"value"`
+	Remediated bool   `json:"remediated"`
+	Note       string `json:"note,omitempty"`
+}
+
+// ListenerEvidence mirrors the daemon's ListenerEvidence (#2439): one
+// listening socket held by an SSH server that is not the box's distro sshd.
+// Field names are the grpc-gateway (lowerCamelCase) JSON shape.
+type ListenerEvidence struct {
+	Port        uint32 `json:"port"`
+	BindAddress string `json:"bindAddress"`
+	PID         uint32 `json:"pid"`
+	Binary      string `json:"binary"`
+	Note        string `json:"note,omitempty"`
+}
+
 // SentryEvidence mirrors the daemon's Evidence message — the wire shape
 // nested under Finding.evidence, not flattened onto SentryFinding.
 type SentryEvidence struct {
-	Flows  []FlowEvidence `json:"flows,omitempty"`
-	Denies []DenyEvidence `json:"denies,omitempty"`
+	Flows     []FlowEvidence     `json:"flows,omitempty"`
+	Denies    []DenyEvidence     `json:"denies,omitempty"`
+	Configs   []ConfigEvidence   `json:"configs,omitempty"`
+	Listeners []ListenerEvidence `json:"listeners,omitempty"`
 }
 
 // SentryFinding mirrors the daemon's Finding (#1639/#1643): a single

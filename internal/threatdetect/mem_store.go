@@ -74,18 +74,16 @@ func (s *MemFindingStore) Upsert(ctx context.Context, f *Finding) (*Finding, err
 	var out *Finding
 	var rollback func()
 	if ok && existing.State == FindingStateOpen {
-		prevCount, prevLastSeen, prevEvidence := existing.Count, existing.LastSeen, existing.Evidence
+		prevCount, prevLastSeen, prevEvidence, prevSeverity := existing.Count, existing.LastSeen, existing.Evidence, existing.Severity
 		existing.Count++
 		existing.LastSeen = now
-		existing.Evidence = Evidence{
-			Flows:  append(append([]FlowEvidence(nil), existing.Evidence.Flows...), f.Evidence.Flows...),
-			Denies: append(append([]DenyEvidence(nil), existing.Evidence.Denies...), f.Evidence.Denies...),
-		}.Capped()
+		existing.Severity = maxSeverity(existing.Severity, f.Severity)
+		existing.Evidence = existing.Evidence.merged(f.Evidence).Capped()
 		out = existing
 		rollback = func() {
 			s.mu.Lock()
 			defer s.mu.Unlock()
-			existing.Count, existing.LastSeen, existing.Evidence = prevCount, prevLastSeen, prevEvidence
+			existing.Count, existing.LastSeen, existing.Evidence, existing.Severity = prevCount, prevLastSeen, prevEvidence, prevSeverity
 		}
 	} else {
 		s.nextID++

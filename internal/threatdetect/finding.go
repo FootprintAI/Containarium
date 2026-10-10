@@ -62,25 +62,78 @@ type DenyEvidence struct {
 	Count    int64  `json:"count"`
 }
 
-// Evidence bundles the flow and deny records that triggered a finding. It is
-// the named struct written into the security_findings.evidence JSONB
-// column — a storage encoding, never an ad-hoc map.
-type Evidence struct {
-	Flows  []FlowEvidence `json:"flows,omitempty"`
-	Denies []DenyEvidence `json:"denies,omitempty"`
+// ConfigEvidence is one configuration directive whose effective value
+// violated policy (#2424): which file, which directive, what value, and
+// whether the platform re-asserted its managed configuration in the same
+// pass.
+type ConfigEvidence struct {
+	Path       string `json:"path"`
+	Directive  string `json:"directive"`
+	Value      string `json:"value"`
+	Remediated bool   `json:"remediated"`
+	Note       string `json:"note,omitempty"`
 }
 
-// Capped returns a copy of e with Flows and Denies each truncated to the
-// most recent EvidenceCap entries.
+// ListenerEvidence is one listening socket held by an SSH server that is
+// not the box's distro sshd service (#2439).
+type ListenerEvidence struct {
+	Port        uint32 `json:"port"`
+	BindAddress string `json:"bind_address"`
+	PID         uint32 `json:"pid"`
+	Binary      string `json:"binary"`
+	Note        string `json:"note,omitempty"`
+}
+
+// Evidence bundles the flow, deny and configuration records that triggered
+// a finding. It is the named struct written into the
+// security_findings.evidence JSONB column — a storage encoding, never an
+// ad-hoc map.
+type Evidence struct {
+	Flows     []FlowEvidence     `json:"flows,omitempty"`
+	Denies    []DenyEvidence     `json:"denies,omitempty"`
+	Configs   []ConfigEvidence   `json:"configs,omitempty"`
+	Listeners []ListenerEvidence `json:"listeners,omitempty"`
+}
+
+// Capped returns a copy of e with each evidence kind truncated to the most
+// recent EvidenceCap entries.
 func (e Evidence) Capped() Evidence {
-	out := Evidence{Flows: e.Flows, Denies: e.Denies}
+	out := Evidence{Flows: e.Flows, Denies: e.Denies, Configs: e.Configs, Listeners: e.Listeners}
 	if len(out.Flows) > EvidenceCap {
 		out.Flows = out.Flows[len(out.Flows)-EvidenceCap:]
 	}
 	if len(out.Denies) > EvidenceCap {
 		out.Denies = out.Denies[len(out.Denies)-EvidenceCap:]
 	}
+	if len(out.Configs) > EvidenceCap {
+		out.Configs = out.Configs[len(out.Configs)-EvidenceCap:]
+	}
+	if len(out.Listeners) > EvidenceCap {
+		out.Listeners = out.Listeners[len(out.Listeners)-EvidenceCap:]
+	}
 	return out
+}
+
+// merged returns e followed by more, for the upsert paths that append a
+// re-fire's evidence onto an open finding's.
+// maxSeverity returns the more severe of a and b. A deduped repeat can only
+// raise an open finding's severity, never lower it: a box that was MEDIUM
+// (tampering undone) and is now HIGH (still permissive) must escalate, while
+// a later quieter pass must not hide that it was once worse.
+func maxSeverity(a, b pb.ThreatSeverity) pb.ThreatSeverity {
+	if b > a {
+		return b
+	}
+	return a
+}
+
+func (e Evidence) merged(more Evidence) Evidence {
+	return Evidence{
+		Flows:     append(append([]FlowEvidence(nil), e.Flows...), more.Flows...),
+		Denies:    append(append([]DenyEvidence(nil), e.Denies...), more.Denies...),
+		Configs:   append(append([]ConfigEvidence(nil), e.Configs...), more.Configs...),
+		Listeners: append(append([]ListenerEvidence(nil), e.Listeners...), more.Listeners...),
+	}
 }
 
 // FindingState is the lifecycle state of a Finding.
@@ -158,6 +211,28 @@ func (f *Finding) ToProto() *pb.Finding {
 		})
 	}
 
+	configs := make([]*pb.ConfigEvidence, 0, len(f.Evidence.Configs))
+	for _, c := range f.Evidence.Configs {
+		configs = append(configs, &pb.ConfigEvidence{
+			Path:       c.Path,
+			Directive:  c.Directive,
+			Value:      c.Value,
+			Remediated: c.Remediated,
+			Note:       c.Note,
+		})
+	}
+
+	listeners := make([]*pb.ListenerEvidence, 0, len(f.Evidence.Listeners))
+	for _, l := range f.Evidence.Listeners {
+		listeners = append(listeners, &pb.ListenerEvidence{
+			Port:        l.Port,
+			BindAddress: l.BindAddress,
+			Pid:         l.PID,
+			Binary:      l.Binary,
+			Note:        l.Note,
+		})
+	}
+
 	return &pb.Finding{
 		Id:        f.ID,
 		Rule:      f.Rule,
@@ -169,8 +244,10 @@ func (f *Finding) ToProto() *pb.Finding {
 		State:     state,
 		Count:     f.Count,
 		Evidence: &pb.Evidence{
-			Flows:  flows,
-			Denies: denies,
+			Flows:     flows,
+			Denies:    denies,
+			Configs:   configs,
+			Listeners: listeners,
 		},
 		FirstSeen: timestampProto(f.FirstSeen),
 		LastSeen:  timestampProto(f.LastSeen),
