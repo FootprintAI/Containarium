@@ -72,6 +72,16 @@ func (cs *CertStore) Sync(backendIP string, httpPort int) error {
 		return fmt.Errorf("cert sync: decode response: %w", err)
 	}
 
+	// An empty response never replaces the store. A backend whose Caddy
+	// has not issued anything yet (or whose cert dir is missing) answers
+	// with an empty list; treating that as "serve nothing" would drop every
+	// certificate the sentinel already holds until the next sync. It is
+	// not a failure either, so the store is left exactly as it was.
+	if len(certsResp.Certs) == 0 {
+		log.Printf("[certsync] %s returned no certificates; keeping the %d already held", url, cs.SyncedCount())
+		return nil
+	}
+
 	newCerts := make(map[string]tls.Certificate, len(certsResp.Certs))
 	for _, cp := range certsResp.Certs {
 		tlsCert, err := tls.X509KeyPair([]byte(cp.CertPEM), []byte(cp.KeyPEM))
@@ -80,6 +90,16 @@ func (cs *CertStore) Sync(backendIP string, httpPort int) error {
 			continue
 		}
 		newCerts[cp.Domain] = tlsCert
+	}
+
+	// Entries were sent but none parsed: the response is malformed, and
+	// like a decode error it leaves the store untouched.
+	if len(newCerts) == 0 {
+		err := fmt.Errorf("cert sync: none of the %d certificates from %s parsed", len(certsResp.Certs), url)
+		cs.mu.Lock()
+		cs.lastSyncErr = err
+		cs.mu.Unlock()
+		return err
 	}
 
 	cs.mu.Lock()
