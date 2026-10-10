@@ -29,6 +29,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The model gateway's inbound-block audit write no longer runs on the request path (#2451). It was synchronous
+  under a 15 s timeout, so with the audit store down (also the likeliest reason for policy-unavailable refusals)
+  every refused request could wait that long before getting its 503. Entries now go through a bounded queue to one
+  worker with a 3 s write timeout; a full queue drops the newest entry and counts it. `/__gateway/status` gains
+  `audit_queued`, `audit_dropped` and `audit_failed`, `Config` gains `InboundAuditQueue` and
+  `InboundAuditTimeout`, and `Gateway.FlushInboundAudit` drains the queue for shutdown.
+
 - agent-box no longer drops a request its MCP client sent right before closing stdin. The stdio
   server library cancels in-flight work on EOF before it drains its tool-call queue, so a
   `process_start` from a one-shot pipe, or from an SSH session that dropped straight after the

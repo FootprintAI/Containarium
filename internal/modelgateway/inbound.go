@@ -37,6 +37,14 @@ const (
 	DefaultInboundHoldLimit = 8 << 20
 	// DefaultInboundScanTimeout bounds one engine round trip.
 	DefaultInboundScanTimeout = 15 * time.Second
+	// DefaultInboundAuditQueue bounds the audit entries waiting for the sink.
+	// A full queue drops the newest entry and counts it: audit delivery is
+	// best-effort by design, because a block is never conditional on it.
+	DefaultInboundAuditQueue = 256
+	// DefaultInboundAuditTimeout bounds one audit write. It is separate from
+	// (and much shorter than) the engine scan timeout: the write happens off
+	// the request path, but a wedged sink must not stall the worker forever.
+	DefaultInboundAuditTimeout = 3 * time.Second
 	// InboundBlockType is the "type" of the error body a blocked response
 	// receives, so a client can tell a guardrail block from an upstream error.
 	InboundBlockType = "guardrail_inbound_block"
@@ -44,7 +52,10 @@ const (
 
 // InboundAuditSink receives one entry per blocked response. Kept an
 // interface so the gateway has no dependency on internal/audit; the daemon
-// adapts it onto audit.Store.Log. A failing sink never un-blocks a response.
+// adapts it onto audit.Store.Log. A failing sink never un-blocks a response,
+// and it is never called on the request path: entries go through a bounded
+// queue to one worker (see inbound.enqueueAudit), so a slow or down store
+// cannot delay a block or a refusal.
 type InboundAuditSink interface {
 	RecordInboundBlock(ctx context.Context, b InboundBlock) error
 }
@@ -84,10 +95,16 @@ type InboundStatus struct {
 	// start); the gateway refuses model calls until it has.
 	Ready bool `json:"ready"`
 	// Scanning is whether the last known policy has an inbound BLOCK rule.
-	Scanning       bool              `json:"scanning"`
-	PolicyRevision int64             `json:"policy_revision"`
-	Blocked        map[string]uint64 `json:"blocked"`         // by reason
-	BlockedByKind  map[string]uint64 `json:"blocked_by_kind"` // by finding kind
+	Scanning       bool  `json:"scanning"`
+	PolicyRevision int64 `json:"policy_revision"`
+	// AuditQueued is the audit entries waiting for the sink; AuditDropped
+	// those discarded because the queue was full; AuditFailed those the sink
+	// rejected or timed out on. A block is never conditional on any of them.
+	AuditQueued   int               `json:"audit_queued"`
+	AuditDropped  uint64            `json:"audit_dropped"`
+	AuditFailed   uint64            `json:"audit_failed"`
+	Blocked       map[string]uint64 `json:"blocked"`         // by reason
+	BlockedByKind map[string]uint64 `json:"blocked_by_kind"` // by finding kind
 }
 
 // inboundMode is what one request runs under, resolved from the policy.
@@ -127,7 +144,15 @@ type inbound struct {
 	timeout  time.Duration
 	logger   *log.Logger
 
+	// auditQ feeds the single audit worker, started on first use. nil when
+	// there is no sink.
+	auditQ       chan auditJob
+	auditTimeout time.Duration
+	auditOnce    sync.Once
+
 	mu            sync.Mutex
+	auditDropped  uint64
+	auditFailed   uint64
 	loaded        bool                      // a read has succeeded (policy or ErrNotConfigured)
 	policy        *pb.ServerGuardrailPolicy // last known; nil = not configured
 	blocked       map[guardrail.InboundReason]uint64
@@ -139,6 +164,17 @@ func newInbound(cfg Config) *inbound {
 		provider: cfg.InboundPolicy, engine: cfg.InboundEngine, audit: cfg.InboundAudit,
 		limit: cfg.InboundHoldLimit, timeout: cfg.InboundScanTimeout, logger: cfg.Logger,
 		blocked: map[guardrail.InboundReason]uint64{}, blockedByKind: map[pb.GuardrailKind]uint64{},
+	}
+	if cfg.InboundAudit != nil {
+		q := cfg.InboundAuditQueue
+		if q <= 0 {
+			q = DefaultInboundAuditQueue
+		}
+		in.auditQ = make(chan auditJob, q)
+		in.auditTimeout = cfg.InboundAuditTimeout
+		if in.auditTimeout <= 0 {
+			in.auditTimeout = DefaultInboundAuditTimeout
+		}
 	}
 	if in.limit <= 0 {
 		in.limit = DefaultInboundHoldLimit
@@ -209,6 +245,10 @@ func (in *inbound) status() InboundStatus {
 	st.Ready = in.provider == nil || in.loaded
 	m := modeOf(in.policy)
 	st.Scanning, st.PolicyRevision = m.scan, m.revision
+	st.AuditDropped, st.AuditFailed = in.auditDropped, in.auditFailed
+	if in.auditQ != nil {
+		st.AuditQueued = len(in.auditQ)
+	}
 	for r, n := range in.blocked {
 		st.Blocked[r.String()] = n
 	}
@@ -223,9 +263,10 @@ type inboundSubject struct {
 	tenant, skill, provider, model string
 }
 
-// block records one block: log line, counters, audit entry. It returns the
-// typed error the response is replaced with. The audit write failing is
-// logged and counted, never a reason to let the response through.
+// block records one block: log line, counters, and a queued audit entry. It
+// returns the typed error the response is replaced with. The audit write
+// happens off the request path and failing is logged and counted, never a
+// reason to let the response through or to delay it.
 func (in *inbound) block(sub inboundSubject, dec guardrail.InboundDecision, revision int64) *inboundBlockError {
 	in.logger.Printf("model-gateway: INBOUND-BLOCK tenant=%s skill=%s provider=%s model=%s reason=%s kinds=%v findings=%d gaps=%d engine=%q revision=%d",
 		sub.tenant, sub.skill, sub.provider, sub.model, dec.Reason, kindNames(dec.Kinds), dec.Findings, dec.Gaps, dec.EngineID, revision)
@@ -235,18 +276,86 @@ func (in *inbound) block(sub inboundSubject, dec guardrail.InboundDecision, revi
 		in.blockedByKind[k]++
 	}
 	in.mu.Unlock()
-	if in.audit != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), in.timeout)
-		defer cancel()
-		err := in.audit.RecordInboundBlock(ctx, InboundBlock{
-			Tenant: sub.tenant, SkillID: sub.skill, Provider: sub.provider, Model: sub.model,
-			Reason: dec.Reason, Kinds: dec.Kinds, Findings: dec.Findings, EngineID: dec.EngineID, PolicyRevision: revision,
-		})
+	in.enqueueAudit(InboundBlock{
+		Tenant: sub.tenant, SkillID: sub.skill, Provider: sub.provider, Model: sub.model,
+		Reason: dec.Reason, Kinds: dec.Kinds, Findings: dec.Findings, EngineID: dec.EngineID, PolicyRevision: revision,
+	})
+	return &inboundBlockError{dec: dec}
+}
+
+// auditJob is one queued audit entry, or (done != nil) a flush marker.
+type auditJob struct {
+	b    InboundBlock
+	done chan struct{}
+}
+
+// enqueueAudit hands a block's audit entry to the worker without ever
+// waiting: the request path must not depend on the audit store, whose outage
+// is also the likeliest reason for the policy-unavailable refusals this runs
+// for. A full queue drops the entry and counts it.
+func (in *inbound) enqueueAudit(b InboundBlock) {
+	if in.audit == nil {
+		return
+	}
+	in.startAuditWorker()
+	select {
+	case in.auditQ <- auditJob{b: b}:
+	default:
+		in.mu.Lock()
+		in.auditDropped++
+		n := in.auditDropped
+		in.mu.Unlock()
+		// First drop and every thousandth: an outage must not also flood the log.
+		if n%1000 == 1 {
+			in.logger.Printf("model-gateway: inbound block audit queue full; entry dropped (%d dropped so far); the response stays blocked", n)
+		}
+	}
+}
+
+func (in *inbound) startAuditWorker() {
+	in.auditOnce.Do(func() { go in.auditWorker() })
+}
+
+// auditWorker delivers queued entries one at a time, each under its own
+// short timeout. It runs for the life of the process.
+func (in *inbound) auditWorker() {
+	for job := range in.auditQ {
+		if job.done != nil {
+			close(job.done)
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), in.auditTimeout)
+		err := in.audit.RecordInboundBlock(ctx, job.b)
+		cancel()
 		if err != nil {
+			in.mu.Lock()
+			in.auditFailed++
+			in.mu.Unlock()
 			in.logger.Printf("model-gateway: inbound block audit write failed (response stays blocked): %v", err)
 		}
 	}
-	return &inboundBlockError{dec: dec}
+}
+
+// flushAudit waits until every entry queued before the call has been handed
+// to the sink (delivered, failed or timed out), or ctx ends. For a clean
+// daemon shutdown and for tests; the request path never calls it.
+func (in *inbound) flushAudit(ctx context.Context) error {
+	if in.audit == nil {
+		return nil
+	}
+	in.startAuditWorker()
+	done := make(chan struct{})
+	select {
+	case in.auditQ <- auditJob{done: done}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // inboundBlockError is returned from ModifyResponse so the proxy's
