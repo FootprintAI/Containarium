@@ -13,8 +13,44 @@ import (
 
 	"google.golang.org/protobuf/encoding/protojson"
 
+	"github.com/footprintai/containarium/internal/sentinel"
 	cloudv1 "github.com/footprintai/containarium/pkg/pb/containarium/cloud/v1"
 )
+
+// The pin is public, so it goes on ExecStart (not the token env file); several
+// candidate sentinels are carried as one comma-separated list.
+func TestRenderTunnelUnit_SentinelPins(t *testing.T) {
+	u := renderTunnelUnit(tunnelUnitParams{
+		SentinelAddr: "s:443",
+		SpotID:       "n",
+		Ports:        "443",
+		SentinelPins: []sentinel.TunnelPin{testPinA, testPinB},
+	})
+	want := "--sentinel-pin " + testPinA + "," + testPinB
+	if !strings.Contains(u, want) {
+		t.Errorf("tunnel unit missing %q\n%s", want, u)
+	}
+	if !strings.Contains(u[strings.Index(u, "ExecStart="):], want) {
+		t.Errorf("pin must be in ExecStart:\n%s", u)
+	}
+}
+
+func TestResolvePoolJoinPins(t *testing.T) {
+	t.Setenv(sentinelPinEnv, "")
+	if _, err := resolvePoolJoinPins(nil); err == nil || !strings.Contains(err.Error(), "--sentinel-pin") {
+		t.Fatalf("no pin: err = %v, want a --sentinel-pin error", err)
+	}
+	if _, err := resolvePoolJoinPins([]string{"sha256:zz"}); err == nil || !strings.Contains(err.Error(), "invalid --sentinel-pin") {
+		t.Fatalf("malformed pin: err = %v", err)
+	}
+	pins, err := resolvePoolJoinPins([]string{testPinA, testPinB + "," + testPinA})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pins) != 2 || pins[0] != testPinA || pins[1] != testPinB {
+		t.Errorf("pins = %v, want [A B] deduplicated", pins)
+	}
+}
 
 func TestRenderTunnelUnit_RequiredFlags(t *testing.T) {
 	u := renderTunnelUnit(tunnelUnitParams{
