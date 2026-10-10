@@ -466,3 +466,33 @@ func TestManagerInFleetBackendServesDeclaredDomains(t *testing.T) {
 		t.Fatalf("undeclared: rejected count = %d, want 1", got)
 	}
 }
+
+// TestCertSync_DropDuringSyncWins: a sync still in flight when its backend
+// is dropped must not put the backend's set back.
+func TestCertSync_DropDuringSyncWins(t *testing.T) {
+	cs := NewCertStore()
+	cs.SetScopeResolver(scopes{"b": {Hostname: "b.example.com"}}.resolve)
+
+	body := certsBody(t, testCertPairFrom(t, "b.example.com", "b"))
+	requested := make(chan struct{})
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(requested)
+		<-release
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	host, portStr, _ := net.SplitHostPort(srv.Listener.Addr().String())
+	port, _ := strconv.Atoi(portStr)
+
+	done := make(chan error, 1)
+	go func() { done <- cs.Sync("b", host, port) }()
+	<-requested
+	cs.DropBackend("b")
+	close(release)
+	<-done
+
+	if from := servedFrom(t, cs, "b.example.com"); from != "fallback" {
+		t.Fatalf("b.example.com served from %q after drop, want fallback", from)
+	}
+}

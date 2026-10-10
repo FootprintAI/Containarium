@@ -27,7 +27,11 @@ type CertStore struct {
 	sets     map[string]backendCertSet  // backend ID → its accepted certs
 	certs    map[string]tls.Certificate // merged: domain → served cert
 	rejected map[string]uint64          // backend ID → certs dropped by scope
-	fallback tls.Certificate            // self-signed fallback
+	// dropGen counts DropBackend calls per backend, so a sync that was
+	// already in flight when its backend was dropped does not put the
+	// backend's set back.
+	dropGen  map[string]uint64
+	fallback tls.Certificate // self-signed fallback
 
 	// scopeFor resolves a backend ID to the domains it is registered
 	// for. Nil means no backend is registered for anything.
@@ -55,6 +59,7 @@ func NewCertStore() *CertStore {
 		sets:     make(map[string]backendCertSet),
 		certs:    make(map[string]tls.Certificate),
 		rejected: make(map[string]uint64),
+		dropGen:  make(map[string]uint64),
 		fallback: fallback,
 	}
 }
@@ -82,6 +87,10 @@ func (cs *CertStore) scopeOf(backendID string) CertScope {
 // or malformed response, or one with nothing inside the backend's domains,
 // leaves the store unchanged.
 func (cs *CertStore) Sync(backendID, backendIP string, httpPort int) error {
+	cs.mu.RLock()
+	gen := cs.dropGen[backendID]
+	cs.mu.RUnlock()
+
 	url := fmt.Sprintf("http://%s:%d/certs", backendIP, httpPort)
 
 	client := &http.Client{Timeout: 10 * time.Second}
@@ -171,6 +180,11 @@ func (cs *CertStore) Sync(backendID, backendIP string, httpPort int) error {
 	}
 
 	cs.mu.Lock()
+	if cs.dropGen[backendID] != gen {
+		cs.mu.Unlock()
+		log.Printf("[certsync] backend %s was removed during its sync; discarding the result", backendID)
+		return nil
+	}
 	cs.sets[backendID] = backendCertSet{scope: scope, certs: newCerts}
 	cs.rebuildLocked()
 	cs.lastSync = time.Now()
@@ -186,6 +200,7 @@ func (cs *CertStore) Sync(backendID, backendIP string, httpPort int) error {
 func (cs *CertStore) DropBackend(backendID string) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
+	cs.dropGen[backendID]++
 	if _, ok := cs.sets[backendID]; !ok {
 		return
 	}
