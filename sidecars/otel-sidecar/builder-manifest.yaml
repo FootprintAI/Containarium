@@ -1,0 +1,37 @@
+# OpenTelemetry Collector Builder manifest for containarium-otel-sidecar.
+#
+# Only the five components config.yaml uses, compiled from source by the
+# Dockerfile with the image's own Go toolchain. The upstream
+# otelcol-contrib release binary is built once at release time, so its
+# embedded Go stdlib and golang.org/x/net lag behind published fixes (v0.162.0
+# shipped Go 1.26.8 and x/net 0.59.0, which failed the v0.101.0 Trivy gate on
+# CVE-2026-78667, CVE-2026-78669 and CVE-2026-97031).
+#
+# Keep every version below in sync with the collector the core LXC runs
+# (internal/server/core_otel_collector.go's otelCollectorVersion), and add a
+# component here before referencing it in config.yaml: the binary rejects a
+# config that names a component it was not built with.
+dist:
+  # The binary keeps the name the entrypoint and config path already use.
+  name: otelcol-contrib
+  description: Containarium OTel sidecar collector
+  output_path: /out
+  otelcol_version: 0.162.0
+
+receivers:
+  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.162.0
+
+processors:
+  - gomod: go.opentelemetry.io/collector/processor/batchprocessor v0.162.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/resourceprocessor v0.162.0
+
+exporters:
+  - gomod: go.opentelemetry.io/collector/exporter/otlphttpexporter v0.162.0
+
+extensions:
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/healthcheckextension v0.162.0
+
+# v0.162.0 resolves x/net v0.59.0, inside CVE-2026-78669's range (fixed in
+# v0.60.0). Drop this once a collector release requires >= v0.60.0.
+replaces:
+  - golang.org/x/net => golang.org/x/net v0.60.0
