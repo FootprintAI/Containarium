@@ -207,7 +207,11 @@ On a block the gateway:
    because the hold completes inside `ModifyResponse`, the status can still
    be set, and a stream is never half-opened),
 2. writes an audit entry (below),
-3. increments a counter labelled by kind.
+3. increments a counter labelled by kind,
+4. meters the usage the provider reported in the held bytes (the tokens were
+   billed): it counts toward the tenant's quota window and the usage sink,
+   and `blocked_calls` on the usage rollup shows the blocked share. A hold
+   that exceeded its limit is truncated, so nothing is recorded for it.
 
 Fail-closed scope, stated precisely:
 
