@@ -14,7 +14,7 @@ Use v0.101.1._
 
 ### Fixed
 
-- Sidecar images pass the release Trivy gate again. The v0.101.0 `containarium-sshpiper` and
+- Sidecar images carry fixes for the v0.101.0 release Trivy findings. The v0.101.0 `containarium-sshpiper` and
   `containarium-otel-sidecar` images shipped Go 1.26.8 and `golang.org/x/net` 0.58.0/0.59.0, which carry
   CVE-2026-78667, CVE-2026-78669 and CVE-2026-97031 (denial of service in `net/http`, HTTP/2 and `crypto/tls`).
   The sshpiper image now builds on Go 1.26.9 with `x/net` v0.60.0 pinned. The OTel sidecar no longer downloads the
