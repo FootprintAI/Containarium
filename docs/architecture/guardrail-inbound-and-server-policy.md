@@ -333,8 +333,12 @@ enum CodeModelTrafficScanning {
 ```
 
 The value is derived from the credential source `coderun` already knows
-plus the current policy; it is computed once at run start and printed by the
-CLI.
+plus the current server policy; it is computed once at run start and printed
+on stderr by `containarium code run` (and shown by the `code_run` MCP tool,
+which only runs the tenant-key path). If the policy cannot be read the value
+is `UNSPECIFIED` and the line says the status is unknown; the run is never
+blocked by that read. `guardrail.InboundBlockKinds` is the one definition of
+"an inbound BLOCK rule is in force", shared with the gateway.
 
 ## Part 2 — server-side policy and the deploy gate (#2368)
 

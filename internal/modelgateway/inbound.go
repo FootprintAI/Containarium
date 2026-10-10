@@ -132,22 +132,9 @@ type inboundMode struct {
 }
 
 func modeOf(p *pb.ServerGuardrailPolicy) inboundMode {
-	m := inboundMode{policy: p.GetPolicy(), revision: p.GetRevision()}
-	seen := map[pb.GuardrailKind]bool{}
-	for _, r := range p.GetPolicy().GetRules() {
-		k := r.GetKind()
-		if !isInboundKind(k) || r.GetAction() != pb.GuardrailAction_GUARDRAIL_ACTION_BLOCK || seen[k] {
-			continue
-		}
-		seen[k] = true
-		m.kinds = append(m.kinds, k)
-	}
+	m := inboundMode{policy: p.GetPolicy(), revision: p.GetRevision(), kinds: guardrail.InboundBlockKinds(p)}
 	m.scan = len(m.kinds) > 0
 	return m
-}
-
-func isInboundKind(k pb.GuardrailKind) bool {
-	return k == pb.GuardrailKind_GUARDRAIL_KIND_UNSAFE_CODE || k == pb.GuardrailKind_GUARDRAIL_KIND_PROMPT_INJECTION
 }
 
 // inbound is the gateway's inbound-scan state: the policy source, the last
