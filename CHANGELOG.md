@@ -14,6 +14,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keeps the last known policy. `Gateway.InvalidateInboundPolicy` forces a re-read when the policy changes.
   `/__gateway/status` gains `hold_seconds`, `hold_bytes` histograms and `policy_reads`, and the design doc lists the
   timeout ceilings a held response runs under.
+
+## [0.101.1] - 2026-10-10
+
+_Patch release: the v0.101.0 sidecar images failed the release Trivy gate, so v0.101.0 was not a complete release.
+Use v0.101.1._
+
+### Fixed
+
+- Sidecar images carry fixes for the v0.101.0 release Trivy findings. The v0.101.0 `containarium-sshpiper` and
+  `containarium-otel-sidecar` images shipped Go 1.26.8 and `golang.org/x/net` 0.58.0/0.59.0, which carry
+  CVE-2026-78667, CVE-2026-78669 and CVE-2026-97031 (denial of service in `net/http`, HTTP/2 and `crypto/tls`).
+  The sshpiper image now builds on Go 1.26.9 with `x/net` v0.60.0 pinned. The OTel sidecar no longer downloads the
+  upstream `otelcol-contrib` v0.162.0 release binary, which embeds the vulnerable versions and has no fixed release;
+  it compiles a collector from `sidecars/otel-sidecar/builder-manifest.yaml` with the collector builder, containing
+  only the components `config.yaml` uses (OTLP receiver, resource and batch processors, OTLP/HTTP exporter, health
+  check) on Go 1.26.9 with `x/net` v0.60.0. Same binary path, config and entrypoint.
+
 - The model gateway's inbound scan no longer rewrites upstream errors as guardrail blocks (#2453). A non-2xx
   response with an unrecognised content type (a 429 with a text body, a load-balancer page) is passed through with
   its real status and `Retry-After`, so client backoff works, and is counted as `upstream_errors` in
