@@ -39,6 +39,20 @@ enum GuardrailKind {
   GUARDRAIL_KIND_PROMPT_INJECTION = 4;
 }
 
+// CodeModelTrafficScanning says whether a `code run`'s model responses are
+// scanned by the inbound guardrail. Computed once at run start from the
+// credential source and the current server policy, so "no alert" is never
+// mistaken for "clean" (docs/architecture/guardrail-inbound-and-server-policy.md).
+enum CodeModelTrafficScanning {
+  CODE_MODEL_TRAFFIC_SCANNING_UNSPECIFIED = 0; // could not be determined
+  // Gateway credential and the server policy has an inbound BLOCK rule.
+  CODE_MODEL_TRAFFIC_SCANNING_SCANNED = 1;
+  // Gateway credential, but no inbound BLOCK rule is in force.
+  CODE_MODEL_TRAFFIC_SCANNING_UNSCANNED_NO_POLICY = 2;
+  // The tenant's own key: traffic does not cross the gateway.
+  CODE_MODEL_TRAFFIC_SCANNING_UNSCANNED_TENANT_KEY = 3;
+}
+
 // GuardrailAction is what the policy does with a finding of a given kind.
 enum GuardrailAction {
   GUARDRAIL_ACTION_UNSPECIFIED = 0;
