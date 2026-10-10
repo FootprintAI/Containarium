@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The model gateway no longer reads the inbound policy on every call (#2454). A successful read is reused for
+  `InboundPolicyTTL` (default 5 s) and concurrent callers share one refresh; a read error is not cached and still
+  keeps the last known policy. `Gateway.InvalidateInboundPolicy` forces a re-read when the policy changes.
+  `/__gateway/status` gains `hold_seconds`, `hold_bytes` histograms and `policy_reads`, and the design doc lists the
+  timeout ceilings a held response runs under.
+
 ## [0.101.1] - 2026-10-10
 
 _Patch release: the v0.101.0 sidecar images failed the release Trivy gate, so v0.101.0 was not a complete release.
