@@ -123,6 +123,8 @@ func TestTunnelEndToEnd(t *testing.T) {
 	// 2. Start tunnel server
 	registry := NewTunnelRegistry()
 	server := NewTunnelServer(fmt.Sprintf("127.0.0.1:%d", tunnelPort), policyAny(token), registry, 0)
+	id := newTestTunnelIdentity(t)
+	server.SetTunnelIdentity(id)
 
 	connectCh := make(chan *TunnelSpot, 1)
 	server.OnConnect = func(spot *TunnelSpot) {
@@ -132,12 +134,9 @@ func TestTunnelEndToEnd(t *testing.T) {
 	go func() { _ = server.Run(ctx) }()
 	waitForListener(t, fmt.Sprintf("127.0.0.1:%d", tunnelPort))
 
-	// 3. Start tunnel client
-	// The client speaks TLS; a test TLS front with a sentinel identity sits
-	// before the tunnel server.
-	id := newTestTunnelIdentity(t)
+	// 3. Start tunnel client, pinning the server's tunnel identity
 	client := &TunnelClient{
-		SentinelAddr: startTLSTunnelFront(t, id, fmt.Sprintf("127.0.0.1:%d", tunnelPort)),
+		SentinelAddr: fmt.Sprintf("127.0.0.1:%d", tunnelPort),
 		SentinelPins: []TunnelPin{id.Pin()},
 		Token:        token,
 		SpotID:       "test-spot",
@@ -328,6 +327,8 @@ func TestConnMuxWithTunnelClient(t *testing.T) {
 	// Start tunnel server on the mux's tunnel listener
 	registry := NewTunnelRegistry()
 	tunnelServer := NewTunnelServer("", policyAny(token), registry, 0)
+	id := newTestTunnelIdentity(t)
+	tunnelServer.SetTunnelIdentity(id)
 	connectCh := make(chan *TunnelSpot, 1)
 	tunnelServer.OnConnect = func(spot *TunnelSpot) {
 		connectCh <- spot
@@ -335,12 +336,10 @@ func TestConnMuxWithTunnelClient(t *testing.T) {
 	go func() { _ = tunnelServer.Serve(ctx, mux.TunnelListener()) }()
 	waitForListener(t, fmt.Sprintf("127.0.0.1:%d", muxPort))
 
-	// Start tunnel client pointing at the mux port (same as HTTPS)
-	// Reach the mux through a test TLS front that terminates the client's
-	// TLS transport.
-	id := newTestTunnelIdentity(t)
+	// Start tunnel client pointing at the mux port (same as HTTPS); the
+	// mux routes its TLS session by ALPN to the tunnel server.
 	client := &TunnelClient{
-		SentinelAddr: startTLSTunnelFront(t, id, fmt.Sprintf("127.0.0.1:%d", muxPort)),
+		SentinelAddr: fmt.Sprintf("127.0.0.1:%d", muxPort),
 		SentinelPins: []TunnelPin{id.Pin()},
 		Token:        token,
 		SpotID:       "mux-spot",
