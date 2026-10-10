@@ -186,11 +186,14 @@ TOKEN=$(openssl rand -hex 32)
 containariumd sentinel \
   --spot-vm my-spot-vm --zone us-west1-a --project my-project \
   --tunnel-token "$TOKEN" \
+  --backend-base-domain example.com \
   --forwarded-ports 80,443
 
 # On the sentinel host, after the first start
 PIN=$(containarium sentinel tunnel-identity)
 ```
+
+`--backend-base-domain` (with `--backend-hostname` / `--backend-alias` as needed) declares the domains the GCP spot VM serves. The sentinel serves a backend's synced certificates only for that backend's own domains, so set these **before** upgrading an existing hybrid sentinel; without them the GCP backend's certificates are not served and the maintenance page falls back to a self-signed certificate. Tunnel backends are scoped by their `--public-hostname` / `--public-aliases` / `--public-base-domain`. See [Per-Backend Certificate Scoping](SENTINEL-DESIGN.md#per-backend-certificate-scoping).
 
 This gives you:
 - **GCP spot VM** as the primary backend (auto-restart on preemption)
