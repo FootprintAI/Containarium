@@ -47,6 +47,7 @@ var (
 	sentinelTunnelTokenPolicies    []string
 	sentinelTunnelTLSIdentity      string
 	sentinelTunnelAllowCleartext   bool
+	sentinelTunnelAPIBindAddr      string
 	sentinelProxyProtocol          bool
 	sentinelAlertWebhookURL        string
 	sentinelMetricsExport          bool
@@ -95,6 +96,7 @@ func init() {
 	sentinelCmd.Flags().StringSliceVar(&sentinelTunnelTokenPolicies, "tunnel-token-policy", nil, "Pool-restricted token in the form 'token=pool1,pool2'. Repeatable. Use '*' to mean any pool. Combined with --tunnel-token if both are provided.")
 	sentinelCmd.Flags().StringVar(&sentinelTunnelTLSIdentity, "tunnel-tls-identity", sentinel.DefaultTunnelIdentityPath, "Tunnel identity file (ECDSA key + self-signed certificate, mode 0600). Created on first start if absent; its pin is logged at startup and printed by 'containarium sentinel tunnel-identity'. Keep it across redeploys: tunnel clients pin it.")
 	sentinelCmd.Flags().BoolVar(&sentinelTunnelAllowCleartext, "tunnel-allow-cleartext", true, "Also accept tunnel sessions that use the cleartext handshake from older clients. Set false once every tunnel client connects over TLS with --sentinel-pin.")
+	sentinelCmd.Flags().StringVar(&sentinelTunnelAPIBindAddr, "tunnel-api-bind-addr", sentinel.DefaultTunnelAPIBindAddr, "IP the per-backend API port of each tunnel backend binds to on the sentinel. Loopback by default; set an internal address only if a daemon on another host lists that port in --peers.")
 	sentinelCmd.Flags().StringVar(&sentinelConsoleRouterAddr, "console-router-addr", "", "If set (host:port), run the console router — makes any connected tunnel spot's advertised port publicly reachable, gated by --console-router-token. Opt-in: unset means no console router runs. See FootprintAI/Containarium#1756.")
 	sentinelCmd.Flags().StringVar(&sentinelConsoleRouterToken, "console-router-token", "", "Pre-shared token authorizing console-router requests (or CONTAINARIUM_CONSOLE_ROUTER_TOKEN env). A separate, coarser credential from --tunnel-token — the real per-guest check happens downstream at the hypervisor-agent.")
 	sentinelCmd.Flags().StringVar(&sentinelSpotVM, "spot-vm", "", "Name of the backend VM instance (required for gcp provider)")
@@ -358,6 +360,9 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 			if _, err := configureTunnelTransport(tunnelServer, sentinelTunnelTLSIdentity, sentinelTunnelAllowCleartext); err != nil {
 				return err
 			}
+			if err := applyTunnelAPIBindAddr(tunnelServer, sentinelTunnelAPIBindAddr); err != nil {
+				return err
+			}
 			tunnelServer.OnConnect = manager.OnTunnelConnect
 			tunnelServer.OnDisconnect = manager.OnTunnelDisconnect
 			manager.SetTunnelRegistry(registry)
@@ -458,6 +463,9 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 		loadPersistedTunnelTokens(tunnelPolicy)
 		tunnelServer := sentinel.NewTunnelServer("", tunnelPolicy, registry, sentinelHTTPSPort)
 		if _, err := configureTunnelTransport(tunnelServer, sentinelTunnelTLSIdentity, sentinelTunnelAllowCleartext); err != nil {
+			return err
+		}
+		if err := applyTunnelAPIBindAddr(tunnelServer, sentinelTunnelAPIBindAddr); err != nil {
 			return err
 		}
 		tunnelServer.OnConnect = manager.OnTunnelConnect

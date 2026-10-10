@@ -239,6 +239,7 @@ containariumd sentinel \
 |------|---------|-------------|
 | `--tunnel-tls-identity` | `/etc/containarium/sentinel-tunnel-identity.pem` | Tunnel identity file; created on first start if absent |
 | `--tunnel-allow-cleartext` | `true` | Also accept the legacy cleartext handshake from older clients; set `false` once every client uses TLS |
+| `--tunnel-api-bind-addr` | `127.0.0.1` | IP that each tunnel backend's per-backend API port (`18000+N`, forwarding to its port 8080) binds to. Daemons find tunnel backends through `--sentinel-url` and the sentinel's `/peer/` proxy, so loopback is enough unless a daemon on another host lists that port in `--peers` |
 
 ### Upgrading to the TLS Transport
 
