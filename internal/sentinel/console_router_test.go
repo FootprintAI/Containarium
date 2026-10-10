@@ -115,8 +115,10 @@ func TestConsoleRouterIntegration(t *testing.T) {
 
 	// The hypervisor host's tunnel client — reused completely unmodified,
 	// exactly as internal/cmd/hypervisor_agent.go does in production.
+	id := newTestTunnelIdentity(t)
 	client := &TunnelClient{
-		SentinelAddr: fmt.Sprintf("127.0.0.1:%d", muxPort),
+		SentinelAddr: startTLSTunnelFront(t, id, fmt.Sprintf("127.0.0.1:%d", muxPort)),
+		SentinelPins: []TunnelPin{id.Pin()},
 		Token:        tunnelToken,
 		SpotID:       "lab-vbox-host-1",
 		Ports:        []int{hvConsolePort},
