@@ -176,11 +176,26 @@ it can be turned off with `CONTAINARIUM_SSH_LISTENER_CHECK_DISABLE`.
 
 What this does not cover is a tenant exposing a listener the probe cannot
 recognise — a renamed SSH server, or any other service — to the internet
-over a reverse tunnel from inside the box. That is an egress question: a
-tenant whose boxes must not reach arbitrary hosts gets an `ENFORCE`-mode
-network policy with an egress allow-list (see
-`NETWORK-ISOLATION-DESIGN.md`), and known tunnel services can be added to
-the bad-destination list so the sentry flags them.
+over a reverse tunnel from inside the box. That is an egress question, and
+the answer is an allow-list rather than a list of known-bad relays: tunnel
+services are hostnames behind shared cloud and CDN addresses, so a
+bad-destination list cannot name them reliably. A tenant whose boxes must
+not reach arbitrary hosts gets the allow-list-only egress preset:
+
+```bash
+containarium network-policy set <tenant> --egress-preset allow-list-only --mode log_only
+containarium network-policy plan <tenant> --since 24h   # what the tenant reached that you have not allowed
+containarium network-policy set <tenant> --egress-preset allow-list-only \
+    --egress-cidr <reviewed destinations> --mode enforce
+```
+
+Under it a tunnel relay is blocked just by not being on the list, and while
+the tenant soaks in `log_only` the relay shows up in `plan`. The box's DNS
+resolver is allowed automatically. See "Allow-list-only preset and plan" in
+[`OPERATOR-SECURITY-RUNBOOK.md`](OPERATOR-SECURITY-RUNBOOK.md) and
+`NETWORK-ISOLATION-DESIGN.md`. An operator who has vetted one specific relay
+address can still add it with `containarium security bad-destinations add`
+so the sentry flags flows to it.
 
 ## Where do I go for the operational detail?
 
