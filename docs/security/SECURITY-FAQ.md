@@ -136,7 +136,15 @@ because a sales page told you the isolation is stronger than it is.
 
 ## Can a box be made to accept SSH passwords?
 
-Not through the platform, and not for long by hand.
+Not through the platform, and not for long by hand. There is deliberately no
+per-tenant opt-out: no setting, flag or exemption turns password login on for
+a box (decided in #2437). A password-enabled box is not a risk to its tenant
+alone, because on a direct in-network backend it is reachable from the LAN and
+from every other box of the same tenant, and the public ingress is key-only
+whatever a box allows, so there is no outside-login need a password would
+serve. If a tenant has a concrete need, raise it as an issue; the design
+sketched there (a platform-owned exemption that is audited and keeps a visible
+finding open) is the starting point.
 
 The public SSH path never reaches a box's own sshd. The sentinel's sshpiper
 offers clients only public-key authentication and pipes each session to the
