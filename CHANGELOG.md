@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.101.0] - 2026-10-10
+
 ### Added
 
 - Egress allow-list preset and plan (#2440). `containarium network-policy set <tenant> --egress-preset
@@ -26,72 +28,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   address, pid, binary, reason). Record-only: it never touches the tenant's process. It also catches
   the stock sshd started with `-f`/`-o`, and works on boxes with no OpenSSH installed. Turn it off
   with `CONTAINARIUM_SSH_LISTENER_CHECK_DISABLE`.
-
-### Fixed
-
-- Responses the model gateway's inbound scan blocks are now metered (#2452). The provider bills for the tokens
-  of a blocked response, but the block returned before the usage parse, so quota and spend never saw them. The
-  usage in the held bytes (JSON, or the final usage event of a stream) is recorded with the meter, the per-tenant
-  policy window and the usage sink, and `blocked_calls` on `/__gateway/usage` rows counts the blocked share. A
-  response that hit the hold limit is truncated, so nothing is recorded for it rather than a made-up number.
-- The model gateway's inbound-block audit write no longer runs on the request path (#2451). It was synchronous
-  under a 15 s timeout, so with the audit store down (also the likeliest reason for policy-unavailable refusals)
-  every refused request could wait that long before getting its 503. Entries now go through a bounded queue to one
-  worker with a 3 s write timeout; a full queue drops the newest entry and counts it. `/__gateway/status` gains
-  `audit_queued`, `audit_dropped` and `audit_failed`, `Config` gains `InboundAuditQueue` and
-  `InboundAuditTimeout`, and `Gateway.FlushInboundAudit` drains the queue for shutdown.
-
-- agent-box no longer drops a request its MCP client sent right before closing stdin. The stdio
-  server library cancels in-flight work on EOF before it drains its tool-call queue, so a
-  `process_start` from a one-shot pipe, or from an SSH session that dropped straight after the
-  call, could be lost under load. agent-box now withholds EOF from the server
-  until every request it has read is answered (bounded by a 30 s grace period). This is what made
-  `TestSpawn_SurvivesParentExit/framed` flaky in CI; that test now also asserts the
-  `process_start` response itself, so a dropped call is reported as such. The sentinel tunnel
-  tests poll for their listeners instead of sleeping 100 ms, which produced "connection refused"
-  on loaded runners.
-
-- Boxes are now key-only for SSH (#2424). A box's sshd previously inherited the image default
-  (`PasswordAuthentication yes`), and the owner's `NOPASSWD` sudo was one `passwd` away from making
-  that reachable from the tenant's other boxes, the LAN on direct in-network backends, or anywhere a
-  reverse tunnel pointed. Provisioning now writes `/etc/ssh/sshd_config.d/00-containarium.conf`
-  (`PasswordAuthentication no`, `KbdInteractiveAuthentication no`, `PermitEmptyPasswords no`) before
-  (re)starting sshd, into baked base images too. A new daemon-side posture reconciler re-reads every
-  running box's effective sshd configuration through the incus file API every 10 minutes
-  (`CONTAINARIUM_SSHD_POSTURE_INTERVAL_MINUTES`, `CONTAINARIUM_SSHD_POSTURE_DISABLE`), re-asserts the
-  drop-in when it is missing or altered, and records tampering as a `THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH`
-  security finding (MEDIUM when the pass closed it, HIGH when the box is still permissive) with
-  `ConfigEvidence` naming the directive and file. Existing boxes are backfilled silently on the first
-  pass. The public SSH ingress was already key-only (the sentinel pipes to the backend host sshd, not
-  the box); this closes the in-network and reverse-tunnel paths for the stock sshd.
-
-### Removed
-
-- The dead `SecurityConfig.require_ssh_keys` and `SecurityConfig.min_password_length` proto fields
-  (#2424). Nothing read them: `config.proto` declares no service, so `SecurityConfig` was never
-  reachable over the API, the CLI or the MCP server, and the key-only guarantee they implied is now
-  enforced by the provisioner's sshd drop-in and the posture reconciler instead. Tags 5 and 6 and
-  both names are reserved.
-
-- Inbound guardrail enforcement at the model gateway (#2367, slice B2). When the server guardrail policy carries a
-  BLOCK rule for an inbound kind (`UNSAFE_CODE`, `PROMPT_INJECTION`), the gateway holds each proxied model response
-  (JSON or event stream) inside the proxy until it is complete, scans its text parts and tool-call arguments through
-  the guardrail engine, and either replays the held bytes unchanged or answers a typed 502 error body
-  (`guardrail_inbound_block`) with no model output. Every failure to scan blocks: engine error or timeout, an
-  unsupported kind, a coverage gap, a compressed or unrecognised body, and a held message over the configurable byte
-  limit (default 8 MiB). A policy read error keeps the last known policy; on cold start with a provider wired the
-  gateway is not ready (`/__gateway/healthz` 503) and refuses model calls with a typed 503 until the first read. Each
-  block writes an audit entry through a new `InboundAuditSink` (kinds and counts, never the flagged text) and
-  increments a per-reason and per-kind counter on `/__gateway/status`. With no inbound BLOCK rule, no policy, or no
-  policy provider (the standalone binary, which says so at startup) the gateway behaves exactly as before. Holding a
-  stream costs time to first token for scanned tenants only.
-
-## [0.101.0-rc.1] - 2026-10-09
-
-_Pre-release for the dev rung of the managed backup encryption sprint (#2406). The final 0.101.0 is cut once the dev
-verification pass clears; its notes fold this section in._
-
-### Added
 
 - Per-container OpenVAS scan opt-in is now persisted (#2426). New `pentest_scan_opt_ins` table, `SetPentestScanOptIn`
   and `ListPentestScanOptIns` RPCs (`PUT /v1/pentest/scan-opt-ins/{container_name}`, `GET /v1/pentest/scan-opt-ins`),
@@ -190,11 +126,69 @@ verification pass clears; its notes fold this section in._
 
 ### Fixed
 
+- Responses the model gateway's inbound scan blocks are now metered (#2452). The provider bills for the tokens
+  of a blocked response, but the block returned before the usage parse, so quota and spend never saw them. The
+  usage in the held bytes (JSON, or the final usage event of a stream) is recorded with the meter, the per-tenant
+  policy window and the usage sink, and `blocked_calls` on `/__gateway/usage` rows counts the blocked share. A
+  response that hit the hold limit is truncated, so nothing is recorded for it rather than a made-up number.
+
+- The model gateway's inbound-block audit write no longer runs on the request path (#2451). It was synchronous
+  under a 15 s timeout, so with the audit store down (also the likeliest reason for policy-unavailable refusals)
+  every refused request could wait that long before getting its 503. Entries now go through a bounded queue to one
+  worker with a 3 s write timeout; a full queue drops the newest entry and counts it. `/__gateway/status` gains
+  `audit_queued`, `audit_dropped` and `audit_failed`, `Config` gains `InboundAuditQueue` and
+  `InboundAuditTimeout`, and `Gateway.FlushInboundAudit` drains the queue for shutdown.
+
+- agent-box no longer drops a request its MCP client sent right before closing stdin. The stdio
+  server library cancels in-flight work on EOF before it drains its tool-call queue, so a
+  `process_start` from a one-shot pipe, or from an SSH session that dropped straight after the
+  call, could be lost under load. agent-box now withholds EOF from the server
+  until every request it has read is answered (bounded by a 30 s grace period). This is what made
+  `TestSpawn_SurvivesParentExit/framed` flaky in CI; that test now also asserts the
+  `process_start` response itself, so a dropped call is reported as such. The sentinel tunnel
+  tests poll for their listeners instead of sleeping 100 ms, which produced "connection refused"
+  on loaded runners.
+
+- Boxes are now key-only for SSH (#2424). A box's sshd previously inherited the image default
+  (`PasswordAuthentication yes`), and the owner's `NOPASSWD` sudo was one `passwd` away from making
+  that reachable from the tenant's other boxes, the LAN on direct in-network backends, or anywhere a
+  reverse tunnel pointed. Provisioning now writes `/etc/ssh/sshd_config.d/00-containarium.conf`
+  (`PasswordAuthentication no`, `KbdInteractiveAuthentication no`, `PermitEmptyPasswords no`) before
+  (re)starting sshd, into baked base images too. A new daemon-side posture reconciler re-reads every
+  running box's effective sshd configuration through the incus file API every 10 minutes
+  (`CONTAINARIUM_SSHD_POSTURE_INTERVAL_MINUTES`, `CONTAINARIUM_SSHD_POSTURE_DISABLE`), re-asserts the
+  drop-in when it is missing or altered, and records tampering as a `THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH`
+  security finding (MEDIUM when the pass closed it, HIGH when the box is still permissive) with
+  `ConfigEvidence` naming the directive and file. Existing boxes are backfilled silently on the first
+  pass. The public SSH ingress was already key-only (the sentinel pipes to the backend host sshd, not
+  the box); this closes the in-network and reverse-tunnel paths for the stock sshd.
+
 - `scripts/tenant-guard-legit-flows-e2e.sh` no longer reports a reachable box as a timeout on its `host -> box` row. The
   probe piped the connect into `grep -q refused` under `set -o pipefail`, so the failing connect's status became the
   pipeline's even when `grep` matched, and a box with nothing listening on the port (an RST, so reachable at L3) was
   reported as a timeout. It failed on any fixture without an sshd. The output is now captured first and the captured
   text is matched, as `core-guard-legit-flows-e2e.sh` does since #2323. No guard behaviour changed.
+
+### Removed
+
+- The dead `SecurityConfig.require_ssh_keys` and `SecurityConfig.min_password_length` proto fields
+  (#2424). Nothing read them: `config.proto` declares no service, so `SecurityConfig` was never
+  reachable over the API, the CLI or the MCP server, and the key-only guarantee they implied is now
+  enforced by the provisioner's sshd drop-in and the posture reconciler instead. Tags 5 and 6 and
+  both names are reserved.
+
+- Inbound guardrail enforcement at the model gateway (#2367, slice B2). When the server guardrail policy carries a
+  BLOCK rule for an inbound kind (`UNSAFE_CODE`, `PROMPT_INJECTION`), the gateway holds each proxied model response
+  (JSON or event stream) inside the proxy until it is complete, scans its text parts and tool-call arguments through
+  the guardrail engine, and either replays the held bytes unchanged or answers a typed 502 error body
+  (`guardrail_inbound_block`) with no model output. Every failure to scan blocks: engine error or timeout, an
+  unsupported kind, a coverage gap, a compressed or unrecognised body, and a held message over the configurable byte
+  limit (default 8 MiB). A policy read error keeps the last known policy; on cold start with a provider wired the
+  gateway is not ready (`/__gateway/healthz` 503) and refuses model calls with a typed 503 until the first read. Each
+  block writes an audit entry through a new `InboundAuditSink` (kinds and counts, never the flagged text) and
+  increments a per-reason and per-kind counter on `/__gateway/status`. With no inbound BLOCK rule, no policy, or no
+  policy provider (the standalone binary, which says so at startup) the gateway behaves exactly as before. Holding a
+  stream costs time to first token for scanned tenants only.
 
 ## [0.100.0] - 2026-10-08
 
