@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The daemon's model gateway now enforces the server guardrail policy on model responses (#2367). It reads the
+  policy from the `GuardrailPolicyService` store, scans with the in-process reference engine whenever the policy
+  carries an inbound BLOCK rule, and audits each block as `model_gateway.inbound_block` (no response text). A policy
+  Set invalidates the gateway's cached read, and queued audit entries flush on shutdown. With no inbound BLOCK rule
+  nothing changes. Note that a daemon whose policy store is unreachable at start now refuses model calls until it
+  recovers (fail closed, as designed).
+
 ### Fixed
 
 - The model gateway no longer reads the inbound policy on every call (#2454). A successful read is reused for

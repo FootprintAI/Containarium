@@ -266,6 +266,21 @@ response. Read them against the table before turning a BLOCK rule on: if
 `InboundHoldLimit`, raise the timeouts or the limit first, or those calls
 will fail as cut connections or `OverLimit` blocks.
 
+### Daemon wiring
+
+The daemon's gateway reads the server policy from the same store the
+`GuardrailPolicyService` writes, scans with the in-process reference rules
+engine, and writes each block to the audit log as a
+`model_gateway.inbound_block` entry (tenant, provider, model, reason, kinds,
+counts, engine id, policy revision; no text). `SetGuardrailPolicy` invalidates
+the gateway's cached policy read, so a new rule applies on the next call.
+Queued audit entries are flushed on shutdown, before the audit store closes.
+Because a wired gateway refuses model calls until its first policy read
+succeeds, a daemon whose configured policy store is unreachable at start
+refuses model calls until it recovers; a daemon with no database uses the
+in-memory store and starts ready. The standalone `model-gateway` binary has no
+policy source and stays unscanned, as `UNSCANNED_NO_POLICY` says.
+
 ### Audit entry
 
 Written through a new, optional gateway interface so the gateway keeps no
