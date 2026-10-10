@@ -204,3 +204,35 @@ func TestMemFindingStore_ConcurrentUpsertsConvergeToOneRow(t *testing.T) {
 		}
 	}
 }
+
+// A deduped repeat can raise an open finding's severity but never lower it:
+// the sshd posture reconciler records MEDIUM when it undid tampering and
+// HIGH if the box is later still permissive (#2424).
+func TestMemFindingStore_UpsertEscalatesSeverityNeverLowers(t *testing.T) {
+	auditStore, bus := memTestDeps(t)
+	s, err := NewMemFindingStore(events.NewEmitter(bus), auditStore)
+	if err != nil {
+		t.Fatalf("NewMemFindingStore: %v", err)
+	}
+	ctx := context.Background()
+	at := func(sev pb.ThreatSeverity) *Finding {
+		f := sampleMemFinding()
+		f.Severity = sev
+		return f
+	}
+	for _, step := range []struct {
+		in, want pb.ThreatSeverity
+	}{
+		{pb.ThreatSeverity_THREAT_SEVERITY_MEDIUM, pb.ThreatSeverity_THREAT_SEVERITY_MEDIUM},
+		{pb.ThreatSeverity_THREAT_SEVERITY_HIGH, pb.ThreatSeverity_THREAT_SEVERITY_HIGH},
+		{pb.ThreatSeverity_THREAT_SEVERITY_MEDIUM, pb.ThreatSeverity_THREAT_SEVERITY_HIGH},
+	} {
+		got, err := s.Upsert(ctx, at(step.in))
+		if err != nil {
+			t.Fatalf("Upsert(%v): %v", step.in, err)
+		}
+		if got.Severity != step.want {
+			t.Fatalf("after Upsert(%v) severity = %v, want %v", step.in, got.Severity, step.want)
+		}
+	}
+}

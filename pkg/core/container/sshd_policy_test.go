@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/footprintai/containarium/pkg/core/incus/incustest"
 	"github.com/footprintai/containarium/pkg/core/ospkg"
 	"github.com/footprintai/containarium/pkg/core/ostype"
 	"github.com/footprintai/containarium/pkg/core/sshdpolicy"
@@ -72,4 +73,25 @@ func keys(m map[string][]byte) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// A new box is stamped with the host-side marker so the reconciler treats a
+// later missing or altered drop-in as tampering, not as a first-pass
+// backfill (#2424).
+func TestMarkSSHDPolicy_SetsHostSideMarker(t *testing.T) {
+	var gotBox, gotKey, gotVal string
+	b := &incustest.MockBackend{SetConfigFunc: func(box, k, v string) error {
+		gotBox, gotKey, gotVal = box, k, v
+		return nil
+	}}
+	NewWithBackend(b).markSSHDPolicy("box-container")
+	if gotBox != "box-container" || gotKey != sshdpolicy.MarkerKey || gotVal != sshdpolicy.MarkerValue {
+		t.Fatalf("SetConfig(%q, %q, %q), want (box-container, %s, %s)", gotBox, gotKey, gotVal, sshdpolicy.MarkerKey, sshdpolicy.MarkerValue)
+	}
+}
+
+// Marking is best effort: a failed SetConfig must not fail provisioning.
+func TestMarkSSHDPolicy_FailureIsNotFatal(t *testing.T) {
+	b := &incustest.MockBackend{SetConfigFunc: func(_, _, _ string) error { return errors.New("boom") }}
+	NewWithBackend(b).markSSHDPolicy("box-container") // must not panic or propagate
 }

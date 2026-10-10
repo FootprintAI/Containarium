@@ -1780,6 +1780,8 @@ skipAppHosting:
 
 	// Setup pentest manager
 	var pentestManager *pentest.Manager
+	var pentestServerRef *PentestServer // armed with the audit store once it exists
+
 	var pentestStore *pentest.Store
 	if postgresConnString != "" && !config.DisablePentestScanner {
 		pentestPool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
@@ -1807,6 +1809,7 @@ skipAppHosting:
 						pentest.ManagerConfig{},
 					)
 					pentestServer := NewPentestServer(pentestStore, pentestManager)
+					pentestServerRef = pentestServer
 					pb.RegisterPentestServiceServer(grpcServer, pentestServer)
 					log.Printf("Pentest service enabled")
 				}
@@ -1860,6 +1863,9 @@ skipAppHosting:
 				// store existed) and has been a no-op until now.
 				auditGRPCInterceptor.SetStore(auditStore)
 				codeEgressServer.SetAuditStore(auditStore)
+				if pentestServerRef != nil {
+					pentestServerRef.SetAuditStore(auditStore)
+				}
 				// #2415 — the sentinel ships its SSH session records here.
 				// Registered only when the store exists; without Postgres the
 				// RPC is simply absent (Unimplemented) rather than a stub.
@@ -2228,6 +2234,7 @@ skipAppHosting:
 		log.Printf("Warning: box sshd posture reconciler disabled: incus client: %v", perr)
 	} else {
 		sshdPosture = security.NewSSHDPostureReconciler(postureIncus, findingSink, postureCfg.Interval)
+		sshdPosture.SetListenerCheck(!postureCfg.ListenerCheckDisabled)
 		if findingSink == nil {
 			log.Printf("Box sshd posture reconciler: no finding sink (threat sentry off or unavailable); tampering will be logged, not recorded")
 		}

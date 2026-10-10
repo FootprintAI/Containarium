@@ -74,20 +74,31 @@ type ConfigEvidence struct {
 	Note       string `json:"note,omitempty"`
 }
 
+// ListenerEvidence is one listening socket held by an SSH server that is
+// not the box's distro sshd service (#2439).
+type ListenerEvidence struct {
+	Port        uint32 `json:"port"`
+	BindAddress string `json:"bind_address"`
+	PID         uint32 `json:"pid"`
+	Binary      string `json:"binary"`
+	Note        string `json:"note,omitempty"`
+}
+
 // Evidence bundles the flow, deny and configuration records that triggered
 // a finding. It is the named struct written into the
 // security_findings.evidence JSONB column — a storage encoding, never an
 // ad-hoc map.
 type Evidence struct {
-	Flows   []FlowEvidence   `json:"flows,omitempty"`
-	Denies  []DenyEvidence   `json:"denies,omitempty"`
-	Configs []ConfigEvidence `json:"configs,omitempty"`
+	Flows     []FlowEvidence     `json:"flows,omitempty"`
+	Denies    []DenyEvidence     `json:"denies,omitempty"`
+	Configs   []ConfigEvidence   `json:"configs,omitempty"`
+	Listeners []ListenerEvidence `json:"listeners,omitempty"`
 }
 
 // Capped returns a copy of e with each evidence kind truncated to the most
 // recent EvidenceCap entries.
 func (e Evidence) Capped() Evidence {
-	out := Evidence{Flows: e.Flows, Denies: e.Denies, Configs: e.Configs}
+	out := Evidence{Flows: e.Flows, Denies: e.Denies, Configs: e.Configs, Listeners: e.Listeners}
 	if len(out.Flows) > EvidenceCap {
 		out.Flows = out.Flows[len(out.Flows)-EvidenceCap:]
 	}
@@ -97,16 +108,31 @@ func (e Evidence) Capped() Evidence {
 	if len(out.Configs) > EvidenceCap {
 		out.Configs = out.Configs[len(out.Configs)-EvidenceCap:]
 	}
+	if len(out.Listeners) > EvidenceCap {
+		out.Listeners = out.Listeners[len(out.Listeners)-EvidenceCap:]
+	}
 	return out
 }
 
 // merged returns e followed by more, for the upsert paths that append a
 // re-fire's evidence onto an open finding's.
+// maxSeverity returns the more severe of a and b. A deduped repeat can only
+// raise an open finding's severity, never lower it: a box that was MEDIUM
+// (tampering undone) and is now HIGH (still permissive) must escalate, while
+// a later quieter pass must not hide that it was once worse.
+func maxSeverity(a, b pb.ThreatSeverity) pb.ThreatSeverity {
+	if b > a {
+		return b
+	}
+	return a
+}
+
 func (e Evidence) merged(more Evidence) Evidence {
 	return Evidence{
-		Flows:   append(append([]FlowEvidence(nil), e.Flows...), more.Flows...),
-		Denies:  append(append([]DenyEvidence(nil), e.Denies...), more.Denies...),
-		Configs: append(append([]ConfigEvidence(nil), e.Configs...), more.Configs...),
+		Flows:     append(append([]FlowEvidence(nil), e.Flows...), more.Flows...),
+		Denies:    append(append([]DenyEvidence(nil), e.Denies...), more.Denies...),
+		Configs:   append(append([]ConfigEvidence(nil), e.Configs...), more.Configs...),
+		Listeners: append(append([]ListenerEvidence(nil), e.Listeners...), more.Listeners...),
 	}
 }
 
@@ -196,6 +222,17 @@ func (f *Finding) ToProto() *pb.Finding {
 		})
 	}
 
+	listeners := make([]*pb.ListenerEvidence, 0, len(f.Evidence.Listeners))
+	for _, l := range f.Evidence.Listeners {
+		listeners = append(listeners, &pb.ListenerEvidence{
+			Port:        l.Port,
+			BindAddress: l.BindAddress,
+			Pid:         l.PID,
+			Binary:      l.Binary,
+			Note:        l.Note,
+		})
+	}
+
 	return &pb.Finding{
 		Id:        f.ID,
 		Rule:      f.Rule,
@@ -207,9 +244,10 @@ func (f *Finding) ToProto() *pb.Finding {
 		State:     state,
 		Count:     f.Count,
 		Evidence: &pb.Evidence{
-			Flows:   flows,
-			Denies:  denies,
-			Configs: configs,
+			Flows:     flows,
+			Denies:    denies,
+			Configs:   configs,
+			Listeners: listeners,
 		},
 		FirstSeen: timestampProto(f.FirstSeen),
 		LastSeen:  timestampProto(f.LastSeen),
