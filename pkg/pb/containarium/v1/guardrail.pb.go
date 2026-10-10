@@ -90,6 +90,65 @@ func (GuardrailKind) EnumDescriptor() ([]byte, []int) {
 	return file_containarium_v1_guardrail_proto_rawDescGZIP(), []int{0}
 }
 
+// CodeModelTrafficScanning says whether a `code run`'s model responses are
+// scanned by the inbound guardrail. Computed once at run start from the
+// credential source and the current server policy, so "no alert" is never
+// mistaken for "clean" (docs/architecture/guardrail-inbound-and-server-policy.md).
+type CodeModelTrafficScanning int32
+
+const (
+	CodeModelTrafficScanning_CODE_MODEL_TRAFFIC_SCANNING_UNSPECIFIED CodeModelTrafficScanning = 0 // could not be determined
+	// Gateway credential and the server policy has an inbound BLOCK rule.
+	CodeModelTrafficScanning_CODE_MODEL_TRAFFIC_SCANNING_SCANNED CodeModelTrafficScanning = 1
+	// Gateway credential, but no inbound BLOCK rule is in force.
+	CodeModelTrafficScanning_CODE_MODEL_TRAFFIC_SCANNING_UNSCANNED_NO_POLICY CodeModelTrafficScanning = 2
+	// The tenant's own key: traffic does not cross the gateway.
+	CodeModelTrafficScanning_CODE_MODEL_TRAFFIC_SCANNING_UNSCANNED_TENANT_KEY CodeModelTrafficScanning = 3
+)
+
+// Enum value maps for CodeModelTrafficScanning.
+var (
+	CodeModelTrafficScanning_name = map[int32]string{
+		0: "CODE_MODEL_TRAFFIC_SCANNING_UNSPECIFIED",
+		1: "CODE_MODEL_TRAFFIC_SCANNING_SCANNED",
+		2: "CODE_MODEL_TRAFFIC_SCANNING_UNSCANNED_NO_POLICY",
+		3: "CODE_MODEL_TRAFFIC_SCANNING_UNSCANNED_TENANT_KEY",
+	}
+	CodeModelTrafficScanning_value = map[string]int32{
+		"CODE_MODEL_TRAFFIC_SCANNING_UNSPECIFIED":          0,
+		"CODE_MODEL_TRAFFIC_SCANNING_SCANNED":              1,
+		"CODE_MODEL_TRAFFIC_SCANNING_UNSCANNED_NO_POLICY":  2,
+		"CODE_MODEL_TRAFFIC_SCANNING_UNSCANNED_TENANT_KEY": 3,
+	}
+)
+
+func (x CodeModelTrafficScanning) Enum() *CodeModelTrafficScanning {
+	p := new(CodeModelTrafficScanning)
+	*p = x
+	return p
+}
+
+func (x CodeModelTrafficScanning) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (CodeModelTrafficScanning) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_guardrail_proto_enumTypes[1].Descriptor()
+}
+
+func (CodeModelTrafficScanning) Type() protoreflect.EnumType {
+	return &file_containarium_v1_guardrail_proto_enumTypes[1]
+}
+
+func (x CodeModelTrafficScanning) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use CodeModelTrafficScanning.Descriptor instead.
+func (CodeModelTrafficScanning) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_guardrail_proto_rawDescGZIP(), []int{1}
+}
+
 // GuardrailAction is what the policy does with a finding of a given kind.
 type GuardrailAction int32
 
@@ -130,11 +189,11 @@ func (x GuardrailAction) String() string {
 }
 
 func (GuardrailAction) Descriptor() protoreflect.EnumDescriptor {
-	return file_containarium_v1_guardrail_proto_enumTypes[1].Descriptor()
+	return file_containarium_v1_guardrail_proto_enumTypes[2].Descriptor()
 }
 
 func (GuardrailAction) Type() protoreflect.EnumType {
-	return &file_containarium_v1_guardrail_proto_enumTypes[1]
+	return &file_containarium_v1_guardrail_proto_enumTypes[2]
 }
 
 func (x GuardrailAction) Number() protoreflect.EnumNumber {
@@ -143,7 +202,7 @@ func (x GuardrailAction) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use GuardrailAction.Descriptor instead.
 func (GuardrailAction) EnumDescriptor() ([]byte, []int) {
-	return file_containarium_v1_guardrail_proto_rawDescGZIP(), []int{1}
+	return file_containarium_v1_guardrail_proto_rawDescGZIP(), []int{2}
 }
 
 // GuardrailVerdict is the gate's answer for one subject.
@@ -181,11 +240,11 @@ func (x GuardrailVerdict) String() string {
 }
 
 func (GuardrailVerdict) Descriptor() protoreflect.EnumDescriptor {
-	return file_containarium_v1_guardrail_proto_enumTypes[2].Descriptor()
+	return file_containarium_v1_guardrail_proto_enumTypes[3].Descriptor()
 }
 
 func (GuardrailVerdict) Type() protoreflect.EnumType {
-	return &file_containarium_v1_guardrail_proto_enumTypes[2]
+	return &file_containarium_v1_guardrail_proto_enumTypes[3]
 }
 
 func (x GuardrailVerdict) Number() protoreflect.EnumNumber {
@@ -194,7 +253,7 @@ func (x GuardrailVerdict) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use GuardrailVerdict.Descriptor instead.
 func (GuardrailVerdict) EnumDescriptor() ([]byte, []int) {
-	return file_containarium_v1_guardrail_proto_rawDescGZIP(), []int{2}
+	return file_containarium_v1_guardrail_proto_rawDescGZIP(), []int{3}
 }
 
 // GuardrailTextUnit is one piece of text handed to an engine. Offsets in
@@ -1290,7 +1349,12 @@ const file_containarium_v1_guardrail_proto_rawDesc = "" +
 	"\x12GUARDRAIL_KIND_PII\x10\x01\x12\x19\n" +
 	"\x15GUARDRAIL_KIND_SECRET\x10\x02\x12\x1e\n" +
 	"\x1aGUARDRAIL_KIND_UNSAFE_CODE\x10\x03\x12#\n" +
-	"\x1fGUARDRAIL_KIND_PROMPT_INJECTION\x10\x04*\x88\x01\n" +
+	"\x1fGUARDRAIL_KIND_PROMPT_INJECTION\x10\x04*\xdb\x01\n" +
+	"\x18CodeModelTrafficScanning\x12+\n" +
+	"'CODE_MODEL_TRAFFIC_SCANNING_UNSPECIFIED\x10\x00\x12'\n" +
+	"#CODE_MODEL_TRAFFIC_SCANNING_SCANNED\x10\x01\x123\n" +
+	"/CODE_MODEL_TRAFFIC_SCANNING_UNSCANNED_NO_POLICY\x10\x02\x124\n" +
+	"0CODE_MODEL_TRAFFIC_SCANNING_UNSCANNED_TENANT_KEY\x10\x03*\x88\x01\n" +
 	"\x0fGuardrailAction\x12 \n" +
 	"\x1cGUARDRAIL_ACTION_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16GUARDRAIL_ACTION_ALLOW\x10\x01\x12\x1b\n" +
@@ -1320,57 +1384,58 @@ func file_containarium_v1_guardrail_proto_rawDescGZIP() []byte {
 	return file_containarium_v1_guardrail_proto_rawDescData
 }
 
-var file_containarium_v1_guardrail_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
+var file_containarium_v1_guardrail_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
 var file_containarium_v1_guardrail_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_containarium_v1_guardrail_proto_goTypes = []any{
 	(GuardrailKind)(0),                 // 0: containarium.v1.GuardrailKind
-	(GuardrailAction)(0),               // 1: containarium.v1.GuardrailAction
-	(GuardrailVerdict)(0),              // 2: containarium.v1.GuardrailVerdict
-	(*GuardrailTextUnit)(nil),          // 3: containarium.v1.GuardrailTextUnit
-	(*GuardrailFinding)(nil),           // 4: containarium.v1.GuardrailFinding
-	(*GuardrailScanGap)(nil),           // 5: containarium.v1.GuardrailScanGap
-	(*GuardrailScanRequest)(nil),       // 6: containarium.v1.GuardrailScanRequest
-	(*GuardrailScanResponse)(nil),      // 7: containarium.v1.GuardrailScanResponse
-	(*GuardrailRule)(nil),              // 8: containarium.v1.GuardrailRule
-	(*GuardrailPolicy)(nil),            // 9: containarium.v1.GuardrailPolicy
-	(*GuardrailKindCount)(nil),         // 10: containarium.v1.GuardrailKindCount
-	(*GuardrailAttestation)(nil),       // 11: containarium.v1.GuardrailAttestation
-	(*GuardrailTrustedSigner)(nil),     // 12: containarium.v1.GuardrailTrustedSigner
-	(*ServerGuardrailPolicy)(nil),      // 13: containarium.v1.ServerGuardrailPolicy
-	(*GetGuardrailPolicyRequest)(nil),  // 14: containarium.v1.GetGuardrailPolicyRequest
-	(*GetGuardrailPolicyResponse)(nil), // 15: containarium.v1.GetGuardrailPolicyResponse
-	(*SetGuardrailPolicyRequest)(nil),  // 16: containarium.v1.SetGuardrailPolicyRequest
-	(*SetGuardrailPolicyResponse)(nil), // 17: containarium.v1.SetGuardrailPolicyResponse
-	(*timestamppb.Timestamp)(nil),      // 18: google.protobuf.Timestamp
+	(CodeModelTrafficScanning)(0),      // 1: containarium.v1.CodeModelTrafficScanning
+	(GuardrailAction)(0),               // 2: containarium.v1.GuardrailAction
+	(GuardrailVerdict)(0),              // 3: containarium.v1.GuardrailVerdict
+	(*GuardrailTextUnit)(nil),          // 4: containarium.v1.GuardrailTextUnit
+	(*GuardrailFinding)(nil),           // 5: containarium.v1.GuardrailFinding
+	(*GuardrailScanGap)(nil),           // 6: containarium.v1.GuardrailScanGap
+	(*GuardrailScanRequest)(nil),       // 7: containarium.v1.GuardrailScanRequest
+	(*GuardrailScanResponse)(nil),      // 8: containarium.v1.GuardrailScanResponse
+	(*GuardrailRule)(nil),              // 9: containarium.v1.GuardrailRule
+	(*GuardrailPolicy)(nil),            // 10: containarium.v1.GuardrailPolicy
+	(*GuardrailKindCount)(nil),         // 11: containarium.v1.GuardrailKindCount
+	(*GuardrailAttestation)(nil),       // 12: containarium.v1.GuardrailAttestation
+	(*GuardrailTrustedSigner)(nil),     // 13: containarium.v1.GuardrailTrustedSigner
+	(*ServerGuardrailPolicy)(nil),      // 14: containarium.v1.ServerGuardrailPolicy
+	(*GetGuardrailPolicyRequest)(nil),  // 15: containarium.v1.GetGuardrailPolicyRequest
+	(*GetGuardrailPolicyResponse)(nil), // 16: containarium.v1.GetGuardrailPolicyResponse
+	(*SetGuardrailPolicyRequest)(nil),  // 17: containarium.v1.SetGuardrailPolicyRequest
+	(*SetGuardrailPolicyResponse)(nil), // 18: containarium.v1.SetGuardrailPolicyResponse
+	(*timestamppb.Timestamp)(nil),      // 19: google.protobuf.Timestamp
 }
 var file_containarium_v1_guardrail_proto_depIdxs = []int32{
 	0,  // 0: containarium.v1.GuardrailFinding.kind:type_name -> containarium.v1.GuardrailKind
-	3,  // 1: containarium.v1.GuardrailScanRequest.units:type_name -> containarium.v1.GuardrailTextUnit
+	4,  // 1: containarium.v1.GuardrailScanRequest.units:type_name -> containarium.v1.GuardrailTextUnit
 	0,  // 2: containarium.v1.GuardrailScanRequest.kinds:type_name -> containarium.v1.GuardrailKind
-	4,  // 3: containarium.v1.GuardrailScanResponse.findings:type_name -> containarium.v1.GuardrailFinding
-	5,  // 4: containarium.v1.GuardrailScanResponse.gaps:type_name -> containarium.v1.GuardrailScanGap
+	5,  // 3: containarium.v1.GuardrailScanResponse.findings:type_name -> containarium.v1.GuardrailFinding
+	6,  // 4: containarium.v1.GuardrailScanResponse.gaps:type_name -> containarium.v1.GuardrailScanGap
 	0,  // 5: containarium.v1.GuardrailRule.kind:type_name -> containarium.v1.GuardrailKind
-	1,  // 6: containarium.v1.GuardrailRule.action:type_name -> containarium.v1.GuardrailAction
-	8,  // 7: containarium.v1.GuardrailPolicy.rules:type_name -> containarium.v1.GuardrailRule
+	2,  // 6: containarium.v1.GuardrailRule.action:type_name -> containarium.v1.GuardrailAction
+	9,  // 7: containarium.v1.GuardrailPolicy.rules:type_name -> containarium.v1.GuardrailRule
 	0,  // 8: containarium.v1.GuardrailKindCount.kind:type_name -> containarium.v1.GuardrailKind
-	10, // 9: containarium.v1.GuardrailAttestation.found:type_name -> containarium.v1.GuardrailKindCount
-	10, // 10: containarium.v1.GuardrailAttestation.residual:type_name -> containarium.v1.GuardrailKindCount
-	2,  // 11: containarium.v1.GuardrailAttestation.verdict:type_name -> containarium.v1.GuardrailVerdict
-	18, // 12: containarium.v1.GuardrailAttestation.attested_at:type_name -> google.protobuf.Timestamp
+	11, // 9: containarium.v1.GuardrailAttestation.found:type_name -> containarium.v1.GuardrailKindCount
+	11, // 10: containarium.v1.GuardrailAttestation.residual:type_name -> containarium.v1.GuardrailKindCount
+	3,  // 11: containarium.v1.GuardrailAttestation.verdict:type_name -> containarium.v1.GuardrailVerdict
+	19, // 12: containarium.v1.GuardrailAttestation.attested_at:type_name -> google.protobuf.Timestamp
 	0,  // 13: containarium.v1.GuardrailAttestation.kinds_scanned:type_name -> containarium.v1.GuardrailKind
-	9,  // 14: containarium.v1.ServerGuardrailPolicy.policy:type_name -> containarium.v1.GuardrailPolicy
-	12, // 15: containarium.v1.ServerGuardrailPolicy.trusted_signers:type_name -> containarium.v1.GuardrailTrustedSigner
-	18, // 16: containarium.v1.ServerGuardrailPolicy.updated_at:type_name -> google.protobuf.Timestamp
-	13, // 17: containarium.v1.GetGuardrailPolicyResponse.policy:type_name -> containarium.v1.ServerGuardrailPolicy
-	9,  // 18: containarium.v1.SetGuardrailPolicyRequest.policy:type_name -> containarium.v1.GuardrailPolicy
-	12, // 19: containarium.v1.SetGuardrailPolicyRequest.trusted_signers:type_name -> containarium.v1.GuardrailTrustedSigner
-	13, // 20: containarium.v1.SetGuardrailPolicyResponse.policy:type_name -> containarium.v1.ServerGuardrailPolicy
-	6,  // 21: containarium.v1.GuardrailEngineService.Scan:input_type -> containarium.v1.GuardrailScanRequest
-	14, // 22: containarium.v1.GuardrailPolicyService.GetGuardrailPolicy:input_type -> containarium.v1.GetGuardrailPolicyRequest
-	16, // 23: containarium.v1.GuardrailPolicyService.SetGuardrailPolicy:input_type -> containarium.v1.SetGuardrailPolicyRequest
-	7,  // 24: containarium.v1.GuardrailEngineService.Scan:output_type -> containarium.v1.GuardrailScanResponse
-	15, // 25: containarium.v1.GuardrailPolicyService.GetGuardrailPolicy:output_type -> containarium.v1.GetGuardrailPolicyResponse
-	17, // 26: containarium.v1.GuardrailPolicyService.SetGuardrailPolicy:output_type -> containarium.v1.SetGuardrailPolicyResponse
+	10, // 14: containarium.v1.ServerGuardrailPolicy.policy:type_name -> containarium.v1.GuardrailPolicy
+	13, // 15: containarium.v1.ServerGuardrailPolicy.trusted_signers:type_name -> containarium.v1.GuardrailTrustedSigner
+	19, // 16: containarium.v1.ServerGuardrailPolicy.updated_at:type_name -> google.protobuf.Timestamp
+	14, // 17: containarium.v1.GetGuardrailPolicyResponse.policy:type_name -> containarium.v1.ServerGuardrailPolicy
+	10, // 18: containarium.v1.SetGuardrailPolicyRequest.policy:type_name -> containarium.v1.GuardrailPolicy
+	13, // 19: containarium.v1.SetGuardrailPolicyRequest.trusted_signers:type_name -> containarium.v1.GuardrailTrustedSigner
+	14, // 20: containarium.v1.SetGuardrailPolicyResponse.policy:type_name -> containarium.v1.ServerGuardrailPolicy
+	7,  // 21: containarium.v1.GuardrailEngineService.Scan:input_type -> containarium.v1.GuardrailScanRequest
+	15, // 22: containarium.v1.GuardrailPolicyService.GetGuardrailPolicy:input_type -> containarium.v1.GetGuardrailPolicyRequest
+	17, // 23: containarium.v1.GuardrailPolicyService.SetGuardrailPolicy:input_type -> containarium.v1.SetGuardrailPolicyRequest
+	8,  // 24: containarium.v1.GuardrailEngineService.Scan:output_type -> containarium.v1.GuardrailScanResponse
+	16, // 25: containarium.v1.GuardrailPolicyService.GetGuardrailPolicy:output_type -> containarium.v1.GetGuardrailPolicyResponse
+	18, // 26: containarium.v1.GuardrailPolicyService.SetGuardrailPolicy:output_type -> containarium.v1.SetGuardrailPolicyResponse
 	24, // [24:27] is the sub-list for method output_type
 	21, // [21:24] is the sub-list for method input_type
 	21, // [21:21] is the sub-list for extension type_name
@@ -1388,7 +1453,7 @@ func file_containarium_v1_guardrail_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_guardrail_proto_rawDesc), len(file_containarium_v1_guardrail_proto_rawDesc)),
-			NumEnums:      3,
+			NumEnums:      4,
 			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   2,

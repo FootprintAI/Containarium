@@ -91,6 +91,11 @@ type Config struct {
 	InboundAudit       InboundAuditSink
 	InboundHoldLimit   int
 	InboundScanTimeout time.Duration
+	// InboundPolicyTTL is how long a successful policy read is reused
+	// (default DefaultInboundPolicyTTL; negative = read every call). Call
+	// Gateway.InvalidateInboundPolicy when the policy changes so a new rule
+	// does not wait for the TTL.
+	InboundPolicyTTL time.Duration
 	// InboundAuditQueue bounds entries waiting for InboundAudit (default
 	// DefaultInboundAuditQueue; a full queue drops and counts) and
 	// InboundAuditTimeout bounds one sink write (default
@@ -140,6 +145,10 @@ func (g *Gateway) InboundStatus() InboundStatus { return g.inbound.status() }
 // has been handed to the sink, or ctx ends. Call it before shutting the daemon
 // down; the request path never does.
 func (g *Gateway) FlushInboundAudit(ctx context.Context) error { return g.inbound.flushAudit(ctx) }
+
+// InvalidateInboundPolicy makes the next model call re-read the inbound
+// policy instead of waiting out the cache TTL.
+func (g *Gateway) InvalidateInboundPolicy() { g.inbound.invalidate() }
 
 // Meter exposes the usage rollups (for tests / the usage endpoint).
 func (g *Gateway) Meter() *Meter { return g.meter }
@@ -374,6 +383,33 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 	var ir *inboundRequest
 	if inMode.scan {
 		ir = &inboundRequest{in: g.inbound, mode: inMode, sub: inSub}
+		ir.onBlocked = func(held []byte, streaming bool) {
+			m := reqModel
+			if m == "" {
+				m = pathModel
+			}
+			var u Usage
+			var ok bool
+			if streaming {
+				u, ok = usageFromSSE(held, func(b map[string]any) Usage { return prov.parseUsage(b, m) })
+				if ok && u.Model == "" {
+					u.Model = m
+				}
+			} else {
+				var decoded map[string]any
+				if json.Unmarshal(held, &decoded) == nil {
+					u, ok = prov.parseUsage(decoded, pathModel), true
+				}
+			}
+			if !ok {
+				return // no usage in the held bytes; record nothing rather than guess
+			}
+			g.meter.recordBlocked(claims.Tenant, claims.SkillID, provName, u)
+			g.policy.RecordUsage(claims.Tenant, u)
+			if g.cfg.Sink != nil {
+				g.cfg.Sink.RecordUsage(claims.Tenant, claims.SkillID, provName, u)
+			}
+		}
 	}
 
 	// Enforcement ladder. Deliberately the last gate before proxying: a denied

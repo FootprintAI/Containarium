@@ -207,7 +207,11 @@ On a block the gateway:
    because the hold completes inside `ModifyResponse`, the status can still
    be set, and a stream is never half-opened),
 2. writes an audit entry (below),
-3. increments a counter labelled by kind.
+3. increments a counter labelled by kind,
+4. meters the usage the provider reported in the held bytes (the tokens were
+   billed): it counts toward the tenant's quota window and the usage sink,
+   and `blocked_calls` on the usage rollup shows the blocked share. A hold
+   that exceeded its limit is truncated, so nothing is recorded for it.
 
 Fail-closed scope, stated precisely:
 
@@ -221,11 +225,61 @@ Fail-closed scope, stated precisely:
 | Held message exceeds the byte limit | Blocked (`OverLimit`); nothing released |
 | Engine reports a coverage gap | Blocked (`CoverageGap`) |
 | Engine unreachable / times out / does not support a requested kind | Blocked (`EngineError`) |
-| **(new)** Response is compressed or an unrecognised content type | **Blocked** in scanned mode. Today these pass through unmetered; an unscannable body cannot be allowed through a gate that claims to scan |
+| **(new)** 2xx response is compressed or an unrecognised content type | **Blocked** in scanned mode. Today these pass through unmetered; an unscannable body cannot be allowed through a gate that claims to scan |
+| **(new)** Non-2xx response with an unrecognised content type (a rate limit, a load-balancer page) | **Passed through unchanged**, status and headers included. It is an upstream or intermediary error, not model output. Counted as `upstream_errors` in `/__gateway/status`, never as a block, never audited. A non-2xx `application/json` body is still scanned |
 | Existing prompt-leak output filter | Unchanged: still fail-open. The new scan does not touch it |
 
 There is no "fail open" switch. The break-glass for an engine outage is an
 admin clearing the inbound rules, which is itself an audited `Set`.
+
+### Policy read cache and hold latency (#2454)
+
+**Policy reads.** The gateway reuses a successful policy read for
+`InboundPolicyTTL` (default 5 s; negative reads on every call), and callers
+that arrive during a refresh share its result, so N concurrent calls cost one
+read per TTL. A read error is never cached: the last known policy is kept and
+the next call tries again, with the same refuse-only-if-it-scanned rule as
+before. `Gateway.InvalidateInboundPolicy()` makes the next call re-read, for
+the moment an admin changes the policy; without it a new rule waits at most
+one TTL. `policy_reads` on `/__gateway/status` shows the cache working.
+
+**Hold latency.** Scanned mode holds the whole generation, which is what lets
+a block be a real 502. The client therefore receives nothing until the model
+has finished, and any hop with an idle or write timeout shorter than a long
+generation will cut the call first. The effective ceiling is the smallest of:
+
+| Hop | Limit |
+| --- | --- |
+| Standalone `model-gateway` server | 120 s `WriteTimeout` (from end of request read to end of response write) |
+| Sentinel SNI passthrough proxy | 120 s idle (`sniProxyIdleTimeout`), reset by any read, so a held response is idle for its whole duration |
+| Engine scan | `InboundScanTimeout`, 15 s, after the hold |
+| Client or reverse proxy in front | its own read/idle timeout; not controlled here |
+
+A gateway mounted inside another server inherits that server's write timeout
+instead; check it before enabling a BLOCK rule. A keepalive is not an option:
+it would have to commit a 200, which defeats the clean 502.
+
+`/__gateway/status` exports `hold_seconds` and `hold_bytes` histograms
+(cumulative `le` buckets, plus `count`, `sum` and `max`) over every held
+response. Read them against the table before turning a BLOCK rule on: if
+`hold_seconds` has mass near 120 or `hold_bytes` near the 8 MiB
+`InboundHoldLimit`, raise the timeouts or the limit first, or those calls
+will fail as cut connections or `OverLimit` blocks.
+
+### Daemon wiring
+
+The daemon's gateway reads the server policy from the same store the
+`GuardrailPolicyService` writes, scans with the in-process reference rules
+engine, and writes each block to the audit log as a
+`model_gateway.inbound_block` entry (tenant, provider, model, reason, kinds,
+counts, engine id, policy revision; no text). `SetGuardrailPolicy` invalidates
+the gateway's cached policy read, so a new rule applies on the next call.
+Queued audit entries are flushed on shutdown, before the audit store closes.
+Because a wired gateway refuses model calls until its first policy read
+succeeds, a daemon whose configured policy store is unreachable at start
+refuses model calls until it recovers; a daemon with no database uses the
+in-memory store and starts ready. The standalone `model-gateway` binary has no
+policy source and stays unscanned, as `UNSCANNED_NO_POLICY` says.
 
 ### Audit entry
 
@@ -279,8 +333,12 @@ enum CodeModelTrafficScanning {
 ```
 
 The value is derived from the credential source `coderun` already knows
-plus the current policy; it is computed once at run start and printed by the
-CLI.
+plus the current server policy; it is computed once at run start and printed
+on stderr by `containarium code run` (and shown by the `code_run` MCP tool,
+which only runs the tenant-key path). If the policy cannot be read the value
+is `UNSPECIFIED` and the line says the status is unknown; the run is never
+blocked by that read. `guardrail.InboundBlockKinds` is the one definition of
+"an inbound BLOCK rule is in force", shared with the gateway.
 
 ## Part 2 — server-side policy and the deploy gate (#2368)
 
