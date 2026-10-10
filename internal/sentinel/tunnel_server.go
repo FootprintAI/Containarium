@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +20,13 @@ import (
 // sessions are not allowed. It is written as the ordinary handshake
 // response so an older client prints a readable reason instead of hanging.
 const tunnelTLSRequiredError = "tls required; upgrade the tunnel client and set --sentinel-pin"
+
+// DefaultTunnelAPIBindAddr is the IP the per-backend API listener
+// (ExternalPortBase+N, forwarding to the backend's port 8080) binds to by
+// default. Everything on the sentinel reaches a backend through its loopback
+// alias or the tunnel registry; set TunnelServer.APIBindAddr to an internal
+// address only when a daemon on another host lists this port in --peers.
+const DefaultTunnelAPIBindAddr = "127.0.0.1"
 
 // TunnelServer listens for incoming tunnel connections from remote spot instances.
 // Each connected spot gets a loopback alias, and the server opens local TCP proxy
@@ -43,6 +51,10 @@ type TunnelServer struct {
 	// handshake. NewTunnelServer sets it so existing peers keep working
 	// while they move to the TLS transport; clear it to refuse them.
 	AllowCleartext bool
+
+	// APIBindAddr is the IP the per-backend API listener binds to.
+	// NewTunnelServer sets DefaultTunnelAPIBindAddr; empty means the same.
+	APIBindAddr string
 
 	// tlsConfig terminates TLS tunnel sessions. Nil until SetTunnelIdentity
 	// is called; TLS peers are closed while it is nil.
@@ -84,6 +96,7 @@ func NewTunnelServer(listenAddr string, policy *TokenPolicy, registry *TunnelReg
 		registry:       registry,
 		httpsPort:      httpsPort,
 		AllowCleartext: true,
+		APIBindAddr:    DefaultTunnelAPIBindAddr,
 		proxies:        make(map[string]proxySet),
 	}
 }
@@ -325,8 +338,9 @@ func loopbackPortsFor(ports []int, httpsPort, publicPort int) []int {
 // Connections to these listeners are proxied through the yamux session.
 // If binding to localIP fails (e.g., loopback alias not available on non-Linux),
 // it falls back to 127.0.0.1.
-// For the health port (8080), it also binds on 0.0.0.0:externalPort so that
-// the primary daemon on another VM can reach this tunnel backend's API.
+// For the health port (8080), it also binds on APIBindAddr:externalPort
+// (loopback by default), giving this tunnel backend's API a stable
+// per-backend port on the sentinel.
 func (ts *TunnelServer) startProxies(ctx context.Context, spotID string, gen uint64, localIP string, externalPort int, ports []int, session *yamux.Session) {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
@@ -368,15 +382,18 @@ func (ts *TunnelServer) startProxies(ctx context.Context, spotID string, gen uin
 		listeners = append(listeners, ln)
 		go ts.proxyLoop(ctx, ln, port, session, spotID)
 
-		// For the health/API port (8080), also bind on an externally reachable port
-		// so the primary daemon can reach this tunnel backend
+		// For the health/API port (8080), also bind the per-backend API port.
 		if port == 8080 && externalPort > 0 {
-			extAddr := fmt.Sprintf("0.0.0.0:%d", externalPort)
+			bindIP := ts.APIBindAddr
+			if bindIP == "" {
+				bindIP = DefaultTunnelAPIBindAddr
+			}
+			extAddr := net.JoinHostPort(bindIP, strconv.Itoa(externalPort))
 			extLn, extErr := net.Listen("tcp", extAddr)
 			if extErr != nil {
 				log.Printf("[tunnel-server] failed to bind external port %s for spot %s: %v", extAddr, spotID, extErr)
 			} else {
-				log.Printf("[tunnel-server] external proxy listening on %s → tunnel → spot %s (for peer discovery)", extAddr, spotID)
+				log.Printf("[tunnel-server] external proxy listening on %s → tunnel → spot %s (per-backend API port)", extAddr, spotID)
 				listeners = append(listeners, extLn)
 				go ts.proxyLoop(ctx, extLn, port, session, spotID)
 			}
