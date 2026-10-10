@@ -187,6 +187,27 @@ func newInboundHarness(t *testing.T, prov string, up upstreamFn, mut func(*Confi
 	return h
 }
 
+// auditAll returns the audit entries the sink has received. Delivery is
+// asynchronous (#2451), so it flushes the queue first.
+func (h *inboundHarness) auditAll() []InboundBlock {
+	h.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := h.gw.FlushInboundAudit(ctx); err != nil {
+		h.t.Fatalf("flush audit: %v", err)
+	}
+	return h.audit.all()
+}
+
+// auditSoFar is auditAll for callers that must not hang on a wedged sink: it
+// waits briefly for delivery and returns whatever the sink has.
+func (h *inboundHarness) auditSoFar() []InboundBlock {
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	_ = h.gw.FlushInboundAudit(ctx)
+	return h.audit.all()
+}
+
 func (h *inboundHarness) call(body string) (*http.Response, []byte) {
 	h.t.Helper()
 	req, _ := http.NewRequest("POST", h.srv.URL+h.path, strings.NewReader(body))
@@ -245,7 +266,7 @@ func (h *inboundHarness) assertBlocked(resp *http.Response, body []byte, reason 
 		if strings.Contains(h.logs.String(), flagged) {
 			h.t.Errorf("flagged text leaked into the gateway log")
 		}
-		for _, e := range h.audit.all() {
+		for _, e := range h.auditSoFar() {
 			if b, _ := json.Marshal(e); strings.Contains(string(b), flagged) {
 				h.t.Errorf("flagged text leaked into an audit entry")
 			}
@@ -300,7 +321,7 @@ func TestInbound_NonStreaming_HitIsBlocked(t *testing.T) {
 			if len(eb.Error.Kinds) != 1 || eb.Error.Kinds[0] != wantKind {
 				t.Errorf("kinds = %v, want [%s]", eb.Error.Kinds, wantKind)
 			}
-			entries := h.audit.all()
+			entries := h.auditAll()
 			if len(entries) != 1 {
 				t.Fatalf("audit entries = %d, want 1", len(entries))
 			}
@@ -338,7 +359,7 @@ func TestInbound_NonStreaming_CleanPassesUnchanged(t *testing.T) {
 	if h.engine.Calls() != 1 {
 		t.Errorf("engine calls = %d, want 1", h.engine.Calls())
 	}
-	if len(h.audit.all()) != 0 {
+	if len(h.auditAll()) != 0 {
 		t.Errorf("audit entry written for a clean response")
 	}
 	// Only the inbound BLOCK kinds are requested, never the outbound ones.
@@ -414,8 +435,8 @@ func TestInbound_FailClosed(t *testing.T) {
 			}
 			resp, body := h.call(`{"model":"m"}`)
 			h.assertBlocked(resp, body, tc.reason, "")
-			if len(h.audit.all()) != 1 {
-				t.Errorf("audit entries = %d, want 1", len(h.audit.all()))
+			if len(h.auditAll()) != 1 {
+				t.Errorf("audit entries = %d, want 1", len(h.auditAll()))
 			}
 		})
 		// The same condition with no active rule is today's behaviour: the
@@ -439,6 +460,7 @@ func TestInbound_AuditSinkFailureStillBlocks(t *testing.T) {
 	h.audit.fail = true
 	resp, body := h.call(`{"model":"m"}`)
 	h.assertBlocked(resp, body, guardrail.InboundReasonFinding, "ignore all previous instructions")
+	h.auditAll() // delivery is asynchronous; wait for the failed write to be logged
 	if !strings.Contains(h.logs.String(), "audit") {
 		t.Errorf("audit failure not logged: %s", h.logs.String())
 	}
@@ -698,7 +720,7 @@ func TestInbound_PolicyReadError_KeepsLastKnown(t *testing.T) {
 		if h.hits.Load() != 1 {
 			t.Errorf("upstream hits = %d, want 1 (the warm-up only)", h.hits.Load())
 		}
-		entries := h.audit.all()
+		entries := h.auditAll()
 		if len(entries) != 1 || entries[0].Reason != guardrail.InboundReasonPolicyUnavailable || entries[0].PolicyRevision != 7 {
 			t.Errorf("audit entries = %+v", entries)
 		}
@@ -763,5 +785,141 @@ func TestInbound_StatusReflectsPolicy(t *testing.T) {
 	}
 	if !got.Inbound.Scanning || got.Inbound.PolicyRevision != 7 {
 		t.Errorf("/__gateway/status inbound = %+v", got.Inbound)
+	}
+}
+
+// --- audit delivery is off the request path (#2451) ---
+
+// gateSink blocks every write until released, or until its context ends, and
+// counts what it received.
+type gateSink struct {
+	release chan struct{}
+	mu      sync.Mutex
+	got     []InboundBlock
+}
+
+func newGateSink() *gateSink { return &gateSink{release: make(chan struct{})} }
+
+func (g *gateSink) RecordInboundBlock(ctx context.Context, b InboundBlock) error {
+	select {
+	case <-g.release:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	g.mu.Lock()
+	g.got = append(g.got, b)
+	g.mu.Unlock()
+	return nil
+}
+
+func (g *gateSink) count() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return len(g.got)
+}
+
+func flushWithin(t *testing.T, gw *Gateway, d time.Duration) error {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	return gw.FlushInboundAudit(ctx)
+}
+
+func TestInbound_SlowAuditSinkDoesNotDelayTheBlock(t *testing.T) {
+	sink := newGateSink()
+	h := newInboundHarness(t, "anthropic", jsonUpstream(anthropicText(injectionText)), func(c *Config) { c.InboundAudit = sink })
+
+	start := time.Now()
+	resp, body := h.call(`{"model":"m"}`)
+	if el := time.Since(start); el > 2*time.Second {
+		t.Fatalf("block took %v with the audit sink wedged; the write must be off the request path", el)
+	}
+	h.assertBlocked(resp, body, guardrail.InboundReasonFinding, "ignore all previous instructions")
+	if sink.count() != 0 {
+		t.Fatal("setup: the sink should still be wedged")
+	}
+
+	close(sink.release) // store recovers
+	if err := flushWithin(t, h.gw, 5*time.Second); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	if sink.count() != 1 {
+		t.Errorf("delivered = %d, want the queued entry delivered after recovery", sink.count())
+	}
+}
+
+func TestInbound_PolicyUnavailableRefusalDoesNotWaitOnTheAuditSink(t *testing.T) {
+	sink := newGateSink()
+	h := newInboundHarness(t, "anthropic", jsonUpstream(anthropicText("fine")), func(c *Config) { c.InboundAudit = sink })
+	// Cold start with an unreadable store: every model call is refused 503.
+	h.provider.set(nil, errors.New("policy store down"))
+
+	start := time.Now()
+	resp, body := h.call(`{"model":"m"}`)
+	if el := time.Since(start); el > 2*time.Second {
+		t.Fatalf("refusal took %v waiting on the audit sink", el)
+	}
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body %s", resp.StatusCode, body)
+	}
+	close(sink.release)
+	_ = flushWithin(t, h.gw, 5*time.Second)
+}
+
+func TestInbound_AuditQueueFull_DropsNewestAndCounts(t *testing.T) {
+	sink := newGateSink()
+	h := newInboundHarness(t, "anthropic", jsonUpstream(anthropicText(injectionText)), func(c *Config) {
+		c.InboundAudit = sink
+		c.InboundAuditQueue = 2
+	})
+	const calls = 8
+	for i := 0; i < calls; i++ {
+		resp, body := h.call(`{"model":"m"}`)
+		h.assertBlocked(resp, body, guardrail.InboundReasonFinding, "ignore all previous instructions")
+	}
+	st := h.gw.InboundStatus()
+	// One entry may be in the worker's hands and two in the queue; the rest
+	// were dropped. Timing decides whether the worker had already taken the
+	// first, so allow for either.
+	if st.AuditDropped < calls-3 || st.AuditDropped > calls-2 {
+		t.Errorf("dropped = %d, want %d or %d", st.AuditDropped, calls-3, calls-2)
+	}
+	if st.AuditQueued > 2 {
+		t.Errorf("queued = %d exceeds the queue bound", st.AuditQueued)
+	}
+
+	close(sink.release)
+	if err := flushWithin(t, h.gw, 5*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if got := uint64(sink.count()) + h.gw.InboundStatus().AuditDropped; got != calls {
+		t.Errorf("delivered+dropped = %d, want %d: every entry is either delivered or counted", got, calls)
+	}
+	if !strings.Contains(h.logs.String(), "queue full") {
+		t.Errorf("first drop not logged: %s", h.logs.String())
+	}
+}
+
+func TestInbound_AuditWriteIsBoundedAndCountedWhenItFails(t *testing.T) {
+	sink := newGateSink() // never released: only the context can end the write
+	h := newInboundHarness(t, "anthropic", jsonUpstream(anthropicText(injectionText)), func(c *Config) {
+		c.InboundAudit = sink
+		c.InboundAuditTimeout = 50 * time.Millisecond
+	})
+	resp, body := h.call(`{"model":"m"}`)
+	h.assertBlocked(resp, body, guardrail.InboundReasonFinding, "ignore all previous instructions")
+
+	if err := flushWithin(t, h.gw, 5*time.Second); err != nil {
+		t.Fatalf("a wedged sink must not wedge the worker: %v", err)
+	}
+	if st := h.gw.InboundStatus(); st.AuditFailed != 1 {
+		t.Errorf("audit_failed = %d, want 1", st.AuditFailed)
+	}
+}
+
+func TestInbound_FlushWithNoSinkIsANoOp(t *testing.T) {
+	h := newInboundHarness(t, "anthropic", jsonUpstream(anthropicText("fine")), func(c *Config) { c.InboundAudit = nil })
+	if err := flushWithin(t, h.gw, time.Second); err != nil {
+		t.Errorf("flush with no sink: %v", err)
 	}
 }
