@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Egress allow-list preset and plan (#2440). `containarium network-policy set <tenant> --egress-preset
+  allow-list-only` makes the allow-list the tenant's whole egress policy and allows the box's DNS resolver
+  (the bridge gateway) implicitly, so a forgotten resolver cannot blackhole name resolution. The mode is
+  unchanged, so a tenant can soak in log-only first. New `NetworkPolicy.egress_preset` field and
+  `EgressPreset` enum, stored in a new `egress_preset` column. New `PlanNetworkPolicy` RPC
+  (`GET /v1/network-policies/{tenant}/plan`) and `containarium network-policy plan <tenant> --since 24h`
+  aggregate the tenant's deny audit rows by destination, subtract what the current egress CIDRs already
+  allow, and print ready-to-paste `--egress-cidr` flags. `audit.QueryParams` gains an exact-match
+  `ResourceID` filter. Runbook: "Allow-list-only preset and plan".
+
 - Rogue SSH listener detection (#2439). The box sshd posture pass now also probes each running box,
   with one exec per box per pass, for listening sockets held by an SSH server (`sshd`, `dropbear`,
   `tinysshd`) that is not the distro sshd on a port its `sshd_config` declares, and records a HIGH

@@ -134,6 +134,7 @@ network-policy list
 network-policy patch add
 network-policy patch list
 network-policy patch rm
+network-policy plan
 network-policy set
 network-policy signature add
 network-policy signature list

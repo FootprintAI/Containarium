@@ -4888,6 +4888,47 @@
         ]
       }
     },
+    "/v1/network-policies/{tenant}/plan": {
+      "get": {
+        "summary": "Plan network policy",
+        "description": "List the destinations a tenant's boxes reached that its policy denied or dropped in a recent window, so an egress allow-list can be written from observed behaviour and checked before enforcement. Admin-only.",
+        "operationId": "NetworkPolicyService_PlanNetworkPolicy",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/PlanNetworkPolicyResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "tenant",
+            "description": "Tenant to plan for (required).",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "sinceMinutes",
+            "description": "Look-back window in minutes. \u003c= 0 means 60; capped at 10080 (one week).",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          }
+        ],
+        "tags": [
+          "NetworkPolicy"
+        ]
+      }
+    },
     "/v1/network-policy-signatures": {
       "get": {
         "summary": "List network-policy signatures",
@@ -12431,6 +12472,15 @@
       },
       "description": "EffectiveCodingToolEgressPolicy is what a run for the tenant takes."
     },
+    "EgressPreset": {
+      "type": "string",
+      "enum": [
+        "EGRESS_PRESET_UNSPECIFIED",
+        "EGRESS_PRESET_ALLOW_LIST_ONLY"
+      ],
+      "default": "EGRESS_PRESET_UNSPECIFIED",
+      "description": "EgressPreset names a ready-made egress posture so a tenant lockdown is one\nfield rather than a rule set (#2440).\n\n - EGRESS_PRESET_UNSPECIFIED: No preset: the policy is exactly what its egress lists say. The behaviour\nbefore this enum existed.\n - EGRESS_PRESET_ALLOW_LIST_ONLY: Allow-list only: egress is limited to egress_cidrs and egress_domains plus\nthe box's DNS resolver (the bridge gateway), which is added implicitly so\nan allow-list cannot blackhole name resolution. Everything else is denied\nin ENFORCE mode and audited in LOG_ONLY, so the preset can be soaked\nbefore it is armed. The mode is not changed by the preset."
+    },
     "EnableBody": {
       "type": "object",
       "properties": {
@@ -15893,6 +15943,77 @@
         }
       },
       "description": "PgConnection carries the connection parameters pg_dump / pg_restore use\n*inside the container*. Defaults target a per-container local Postgres\nreached over loopback. db_password is never logged and is passed to the\nchild process via the PGPASSWORD environment variable, not argv."
+    },
+    "PlanDestination": {
+      "type": "object",
+      "properties": {
+        "ip": {
+          "type": "string",
+          "description": "Destination IPv4 address."
+        },
+        "port": {
+          "type": "integer",
+          "format": "int64",
+          "description": "Destination port (0 when the flow had none, e.g. ICMP)."
+        },
+        "protocol": {
+          "type": "string",
+          "description": "IP protocol: \"tcp\", \"udp\", or the number for anything else."
+        },
+        "count": {
+          "type": "integer",
+          "format": "int64",
+          "description": "Number of denied/dropped flows seen (per-flow audit rows)."
+        },
+        "dropped": {
+          "type": "boolean",
+          "description": "True when at least one of the flows was actually dropped (enforce armed),\nfalse when all were only logged (log-only or enforcement not armed)."
+        },
+        "lastSeen": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the most recent such flow was seen."
+        }
+      },
+      "description": "PlanDestination is one destination the tenant's policy denied or dropped,\naggregated over the window."
+    },
+    "PlanNetworkPolicyResponse": {
+      "type": "object",
+      "properties": {
+        "tenant": {
+          "type": "string"
+        },
+        "sinceMinutes": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Window actually used, in minutes (after defaulting and capping)."
+        },
+        "destinations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/PlanDestination"
+          },
+          "description": "Destinations the policy denied, busiest first. Excludes any destination\nthe tenant's current egress CIDRs (or the preset's implicit resolver)\nalready allow, so stale rows from before an allow-list edit do not show."
+        },
+        "rowsScanned": {
+          "type": "integer",
+          "format": "int64",
+          "description": "Audit rows examined."
+        },
+        "truncated": {
+          "type": "boolean",
+          "description": "True when the row cap was hit, so the list may be missing the oldest\nflows in the window."
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Caveats the caller should show, e.g. that destinations allowed by\negress_domains are not subtracted."
+        }
+      },
+      "description": "PlanNetworkPolicyResponse is the aggregated would-block / blocked set."
     },
     "PoolTemplateStatus": {
       "type": "object",
@@ -19696,6 +19817,10 @@
             "type": "string"
           },
           "description": "Tenants whose containers may reach this tenant's containers over the\nbridge (#2359). Consumed by the tenant network guard\n(docs/architecture/tenant-network-guard.md): every box of a listed\ntenant becomes an allowed ingress source on this tenant's NIC ACL.\nThis is the only way to open tenant ingress to another tenant; the\nper-container ACL (UpdateContainerACL) no longer carries ingress rules.\nNormalised on set: trimmed, deduplicated, sorted; the tenant itself is\nrejected (use allow_intra_tenant). One-directional: listing bob here\nlets bob reach us, not the reverse."
+        },
+        "egressPreset": {
+          "$ref": "#/definitions/EgressPreset",
+          "description": "Ready-made egress posture (#2440). UNSPECIFIED leaves the policy exactly\nas its lists say. See EgressPreset."
         }
       },
       "description": "NetworkPolicy is a tenant's network-isolation policy, enforced at each of the\ntenant's container host-veth TC_INGRESS hooks (the sender side of every flow;\nsee the Phase 0 findings in NETWORK-ISOLATION-DESIGN.md). #315."
