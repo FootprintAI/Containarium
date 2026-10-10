@@ -253,6 +253,16 @@ The daemon adapts it onto `audit.Store.Log` with action
 the audit write fails, the response is still blocked and the failure is
 logged and counted: blocking must not depend on the audit store being up.
 
+The write is also **off the request path** (#2451). A block hands its entry to
+a bounded queue (256 by default) drained by one worker, each write under a
+short timeout (3 s by default), so a wedged or down audit store cannot delay a
+block or a policy-unavailable refusal; that outage is the likeliest reason for
+the latter. A full queue drops the newest entry and counts it. `/__gateway/status`
+reports `audit_queued`, `audit_dropped` and `audit_failed`, and
+`Gateway.FlushInboundAudit` drains the queue before a clean shutdown. Audit
+delivery is therefore best-effort and the counters are how to tell it
+degraded; the block itself never is.
+
 ### Scanned or not, made visible **(new)**
 
 Runs on the tenant's own provider key bypass the gateway, so they cannot be

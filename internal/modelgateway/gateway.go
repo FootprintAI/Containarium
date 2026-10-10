@@ -2,6 +2,7 @@ package modelgateway
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -90,6 +91,12 @@ type Config struct {
 	InboundAudit       InboundAuditSink
 	InboundHoldLimit   int
 	InboundScanTimeout time.Duration
+	// InboundAuditQueue bounds entries waiting for InboundAudit (default
+	// DefaultInboundAuditQueue; a full queue drops and counts) and
+	// InboundAuditTimeout bounds one sink write (default
+	// DefaultInboundAuditTimeout). Sink writes never run on the request path.
+	InboundAuditQueue   int
+	InboundAuditTimeout time.Duration
 }
 
 // Gateway brokers every agent box's model calls: it authenticates the box's
@@ -128,6 +135,11 @@ func New(cfg Config) *Gateway {
 // wired, whether the first read has happened, whether the last known policy
 // scans, and the block counters.
 func (g *Gateway) InboundStatus() InboundStatus { return g.inbound.status() }
+
+// FlushInboundAudit waits until every inbound-block audit entry queued so far
+// has been handed to the sink, or ctx ends. Call it before shutting the daemon
+// down; the request path never does.
+func (g *Gateway) FlushInboundAudit(ctx context.Context) error { return g.inbound.flushAudit(ctx) }
 
 // Meter exposes the usage rollups (for tests / the usage endpoint).
 func (g *Gateway) Meter() *Meter { return g.meter }
