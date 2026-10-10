@@ -215,7 +215,7 @@ func (s *FindingStore) tryUpsert(ctx context.Context, f *Finding) (out *Finding,
 
 	now := time.Now()
 	row := tx.QueryRow(ctx, `
-		SELECT id, count, evidence
+		SELECT id, count, evidence, severity
 		FROM security_findings
 		WHERE rule = $1 AND tenant_id = $2 AND subject = $3 AND state = 'open'
 		FOR UPDATE
@@ -223,7 +223,8 @@ func (s *FindingStore) tryUpsert(ctx context.Context, f *Finding) (out *Finding,
 
 	var id, count int64
 	var evidenceJSON []byte
-	selErr := row.Scan(&id, &count, &evidenceJSON)
+	var storedSeverity string
+	selErr := row.Scan(&id, &count, &evidenceJSON, &storedSeverity)
 
 	switch {
 	case selErr == nil:
@@ -237,13 +238,14 @@ func (s *FindingStore) tryUpsert(ctx context.Context, f *Finding) (out *Finding,
 			return nil, false, fmt.Errorf("threatdetect: marshal merged evidence: %w", merr)
 		}
 		newCount := count + 1
+		severity := maxSeverity(pb.ThreatSeverity(pb.ThreatSeverity_value[storedSeverity]), f.Severity)
 		if _, uerr := tx.Exec(ctx, `
-			UPDATE security_findings SET count = $1, last_seen = $2, evidence = $3 WHERE id = $4
-		`, newCount, now, mergedJSON, id); uerr != nil {
+			UPDATE security_findings SET count = $1, last_seen = $2, evidence = $3, severity = $4 WHERE id = $5
+		`, newCount, now, mergedJSON, severity.String(), id); uerr != nil {
 			return nil, false, fmt.Errorf("threatdetect: update finding: %w", uerr)
 		}
 		out = &Finding{
-			ID: id, Rule: f.Rule, Severity: f.Severity, TenantID: f.TenantID,
+			ID: id, Rule: f.Rule, Severity: severity, TenantID: f.TenantID,
 			Container: f.Container, BackendID: f.BackendID, Subject: f.Subject,
 			State: FindingStateOpen, Count: newCount, Evidence: merged, LastSeen: now,
 		}
