@@ -395,6 +395,10 @@ type inboundRequest struct {
 	in   *inbound
 	mode inboundMode
 	sub  inboundSubject
+	// onBlocked meters a response the scan blocked, from the bytes already
+	// held (#2452). Nil skips metering. It is not called when the hold hit
+	// its limit: the body is truncated, so any usage in it would be invented.
+	onBlocked func(held []byte, streaming bool)
 }
 
 // enforce is the ModifyResponse pre-stage in scanned mode. It holds the
@@ -436,6 +440,9 @@ func (ir *inboundRequest) enforce(resp *http.Response) error {
 		units = inboundUnitsJSON(held)
 	}
 	if dec := ir.scan(resp.Request.Context(), units); dec.Blocked {
+		if ir.onBlocked != nil {
+			ir.onBlocked(held, streaming)
+		}
 		return fail(dec)
 	}
 	_ = resp.Body.Close()
