@@ -273,3 +273,23 @@ func inboundUnitsSSE(held []byte) []*pb.GuardrailTextUnit {
 	}
 	return b.units("stream", held)
 }
+
+// usageFromSSE returns the final usage block of a held event stream, the
+// same cumulative-last-value rule filterSSEStream applies. ok is false when
+// the stream carries none.
+func usageFromSSE(held []byte, parse func(map[string]any) Usage) (u Usage, ok bool) {
+	sc := bufio.NewScanner(bytes.NewReader(held))
+	sc.Buffer(make([]byte, 0, 64*1024), len(held)+1)
+	for sc.Scan() {
+		payload, found := strings.CutPrefix(strings.TrimSpace(sc.Text()), "data:")
+		if !found {
+			continue
+		}
+		var ch sseChunk
+		if json.Unmarshal([]byte(strings.TrimSpace(payload)), &ch) != nil || ch.Usage == nil {
+			continue
+		}
+		u, ok = parse(map[string]any{"usage": ch.Usage}), true
+	}
+	return u, ok
+}

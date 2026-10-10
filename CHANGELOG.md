@@ -29,6 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Responses the model gateway's inbound scan blocks are now metered (#2452). The provider bills for the tokens
+  of a blocked response, but the block returned before the usage parse, so quota and spend never saw them. The
+  usage in the held bytes (JSON, or the final usage event of a stream) is recorded with the meter, the per-tenant
+  policy window and the usage sink, and `blocked_calls` on `/__gateway/usage` rows counts the blocked share. A
+  response that hit the hold limit is truncated, so nothing is recorded for it rather than a made-up number.
 - The model gateway's inbound-block audit write no longer runs on the request path (#2451). It was synchronous
   under a 15 s timeout, so with the audit store down (also the likeliest reason for policy-unavailable refusals)
   every refused request could wait that long before getting its 503. Entries now go through a bounded queue to one
