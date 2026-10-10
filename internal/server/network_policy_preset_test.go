@@ -121,7 +121,7 @@ func (f *fakeAuditQuery) Query(_ context.Context, p audit.QueryParams) ([]audit.
 		return nil, 0, f.err
 	}
 	rows := f.rows[p.Action]
-	total := int32(len(rows))
+	total := int32(len(rows)) // #nosec G115 -- test fixture, tiny
 	if t, ok := f.total[p.Action]; ok {
 		total = t
 	}
