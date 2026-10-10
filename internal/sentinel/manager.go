@@ -62,6 +62,12 @@ type Config struct {
 	RecoveryBackoffMax     time.Duration
 	CertSyncInterval       time.Duration // interval for syncing TLS certs from backend (0 = default 6h)
 	KeySyncInterval        time.Duration // interval for syncing SSH keys from backend (0 = default 2m)
+	// InFleetCertScope is the set of domains the in-fleet backend (the
+	// --spot-vm / --backend-addr host, backend ID "gcp") is registered
+	// for. Its certificate sync may only supply certificates inside this
+	// scope; when empty, none of its certificates are served. Tunnel
+	// backends are scoped by their primary registration instead.
+	InFleetCertScope CertScope
 	// PrimaryReachabilityInterval is how often checkTunnelPrimaries probes
 	// every tunnel-promoted primary's Hostname/Aliases end-to-end (0 =
 	// default 30s). See #1872: registration in PrimaryRegistry proves the
@@ -414,6 +420,7 @@ func NewManager(config Config, provider CloudProvider) *Manager {
 		keyStore:   NewKeyStore(),
 		exitFn:     func() { os.Exit(1) },
 	}
+	m.certStore.SetScopeResolver(m.certScopeFor)
 	if raw := os.Getenv(appconfig.EnvSentinelAuthSecret); raw != "" {
 		if len(raw) < auth.SentinelMinSecretLen {
 			// #nosec G706 -- both args are ints (len(raw) and a
@@ -877,7 +884,7 @@ func (m *Manager) initGCPBackend(ctx context.Context) error {
 	}
 
 	b := &Backend{
-		ID:       "gcp",
+		ID:       inFleetBackendID,
 		Type:     BackendGCP,
 		IP:       ip,
 		Provider: m.provider,
@@ -889,7 +896,27 @@ func (m *Manager) initGCPBackend(ctx context.Context) error {
 	m.startSyncLoops(ctx, b)
 
 	log.Printf("[sentinel] GCP backend registered: %s", ip)
+	if m.config.InFleetCertScope.Empty() {
+		log.Printf("[sentinel] WARNING: no domains declared for the in-fleet backend (--backend-hostname / --backend-alias / --backend-base-domain); none of its certificates will be served")
+	}
 	return nil
+}
+
+// inFleetBackendID is the backend ID of the in-fleet backend registered by
+// initGCPBackend.
+const inFleetBackendID = "gcp"
+
+// certScopeFor returns the domains backendID is registered for: the
+// configured InFleetCertScope for the in-fleet backend, the primary
+// registration for a tunnel backend, and an empty scope otherwise.
+func (m *Manager) certScopeFor(backendID string) CertScope {
+	if backendID == inFleetBackendID {
+		return m.config.InFleetCertScope
+	}
+	if m.primaries == nil {
+		return CertScope{}
+	}
+	return m.primaries.ScopeForBackend(backendID)
 }
 
 // startSyncLoops starts cert and key sync loops for a backend.
@@ -901,7 +928,7 @@ func (m *Manager) startSyncLoops(parentCtx context.Context, b *Backend) {
 	if certInterval == 0 {
 		certInterval = 6 * time.Hour
 	}
-	go m.certStore.RunSyncLoop(ctx, b.IP, m.config.HealthPort, certInterval)
+	go m.certStore.RunSyncLoop(ctx, b.ID, b.IP, m.config.HealthPort, certInterval)
 
 	keyInterval := m.config.KeySyncInterval
 	if keyInterval == 0 {
@@ -1042,7 +1069,7 @@ func (m *Manager) switchToProxy(backend *Backend) error {
 	m.mu.Unlock()
 
 	// Immediate cert sync from the primary backend
-	if err := m.certStore.Sync(backend.IP, m.config.HealthPort); err != nil {
+	if err := m.certStore.Sync(backend.ID, backend.IP, m.config.HealthPort); err != nil {
 		log.Printf("[sentinel] cert sync on proxy switch failed: %v", err)
 	} else {
 		log.Printf("[sentinel] cert sync on proxy switch: %d certs", m.certStore.SyncedCount())
@@ -1817,6 +1844,9 @@ func (m *Manager) OnTunnelDisconnect(spot *TunnelSpot) {
 		if n := m.primaries.UnregisterByBackendID(backendID); n > 0 {
 			log.Printf("[sentinel] removed %d primary registration(s) for disconnected tunnel %s", n, backendID)
 		}
+	}
+	if m.certStore != nil {
+		m.certStore.DropBackend(backendID)
 	}
 	removed := m.backends.Remove(backendID)
 	if removed == nil {
