@@ -892,7 +892,7 @@ func TestInbound_AuditQueueFull_DropsNewestAndCounts(t *testing.T) {
 	if err := flushWithin(t, h.gw, 5*time.Second); err != nil {
 		t.Fatal(err)
 	}
-	if got := uint64(sink.count()) + h.gw.InboundStatus().AuditDropped; got != calls {
+	if got := uint64(sink.count()) + h.gw.InboundStatus().AuditDropped; got != calls { // #nosec G115 -- test counter, tiny
 		t.Errorf("delivered+dropped = %d, want %d: every entry is either delivered or counted", got, calls)
 	}
 	if !strings.Contains(h.logs.String(), "queue full") {
