@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"path"
 	"regexp"
@@ -239,7 +240,7 @@ func rogueListeners(snap procSnapshot, declaredPorts []int, cmdline func(pid int
 			}
 			seen[key{s.Port, pid}] = true
 			out = append(out, threatdetect.ListenerEvidence{
-				Port: uint32(s.Port), BindAddress: s.Bind, PID: uint32(pid), Binary: exe, Note: note,
+				Port: clampUint32(s.Port), BindAddress: s.Bind, PID: clampUint32(pid), Binary: exe, Note: note,
 			})
 		}
 	}
@@ -250,6 +251,19 @@ func rogueListeners(snap procSnapshot, declaredPorts []int, cmdline func(pid int
 		return out[i].PID < out[j].PID
 	})
 	return out
+}
+
+// clampUint32 converts a non-negative int to uint32, saturating instead of
+// wrapping. Ports (16 bits) and pids (kernel-bounded) fit, but the values
+// come from parsing tenant-influenced text, so the bound is explicit.
+func clampUint32(n int) uint32 {
+	if n < 0 {
+		return 0
+	}
+	if int64(n) > math.MaxUint32 {
+		return math.MaxUint32
+	}
+	return uint32(n) // #nosec G115 -- bounded above
 }
 
 // hasConfigOverride reports whether an sshd command line (NUL- or
