@@ -44,6 +44,10 @@ type CompiledPolicy struct {
 	// tenant's boxes; trimmed, deduped, sorted, never the tenant itself.
 	// Consumed by the tenant network guard, not by the eBPF program.
 	AllowFromTenants []string
+	// EgressPreset (#2440) is the ready-made egress posture; UNSPECIFIED is
+	// "just the lists". The implicit allow it implies (the DNS resolver) is
+	// added by ImplicitEgress, because the address is the daemon's to know.
+	EgressPreset pb.EgressPreset
 }
 
 // DenyRule is one normalized virtual-patch block rule (#660). The destination
@@ -110,6 +114,12 @@ func Compile(p *pb.NetworkPolicy) (CompiledPolicy, error) {
 		return CompiledPolicy{}, fmt.Errorf("network policy: unknown mode %d", int32(mode))
 	}
 
+	switch p.GetEgressPreset() {
+	case pb.EgressPreset_EGRESS_PRESET_UNSPECIFIED, pb.EgressPreset_EGRESS_PRESET_ALLOW_LIST_ONLY:
+	default:
+		return CompiledPolicy{}, fmt.Errorf("network policy: unknown egress preset %d", int32(p.GetEgressPreset()))
+	}
+
 	return CompiledPolicy{
 		Tenant:           tenant,
 		AllowIntraTenant: p.GetAllowIntraTenant(),
@@ -120,7 +130,23 @@ func Compile(p *pb.NetworkPolicy) (CompiledPolicy, error) {
 		LogOnly:          mode != pb.NetworkPolicyMode_NETWORK_POLICY_MODE_ENFORCE,
 		DenyRules:        deny,
 		AllowFromTenants: allowFrom,
+		EgressPreset:     p.GetEgressPreset(),
 	}, nil
+}
+
+// ImplicitEgress returns the destinations the policy allows without the
+// operator listing them: for ALLOW_LIST_ONLY, the box's DNS resolver, which is
+// the bridge gateway. Name resolution is itself egress, so an enforced
+// allow-list that omits it blackholes the box (the runbook's standing
+// warning); the preset makes that mistake impossible. The gateway is the
+// daemon's to know, so it is passed in; an invalid address yields nothing and
+// the caller logs it. Callers fold the result into the egress set; it is not
+// stored on the policy, so `get` shows what the operator wrote.
+func ImplicitEgress(p CompiledPolicy, gateway netip.Addr) []netip.Prefix {
+	if p.EgressPreset != pb.EgressPreset_EGRESS_PRESET_ALLOW_LIST_ONLY || !gateway.IsValid() || !gateway.Is4() {
+		return nil
+	}
+	return []netip.Prefix{netip.PrefixFrom(gateway, 32)}
 }
 
 // compileAllowFromTenants trims, drops empties, dedups and sorts the list,
@@ -179,6 +205,7 @@ func (c CompiledPolicy) ToProto() *pb.NetworkPolicy {
 		Mode:             c.Mode,
 		DenyRules:        deny,
 		AllowFromTenants: append([]string(nil), c.AllowFromTenants...),
+		EgressPreset:     c.EgressPreset,
 	}
 }
 
