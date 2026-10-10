@@ -61,6 +61,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   enforced by the provisioner's sshd drop-in and the posture reconciler instead. Tags 5 and 6 and
   both names are reserved.
 
+- Inbound guardrail enforcement at the model gateway (#2367, slice B2). When the server guardrail policy carries a
+  BLOCK rule for an inbound kind (`UNSAFE_CODE`, `PROMPT_INJECTION`), the gateway holds each proxied model response
+  (JSON or event stream) inside the proxy until it is complete, scans its text parts and tool-call arguments through
+  the guardrail engine, and either replays the held bytes unchanged or answers a typed 502 error body
+  (`guardrail_inbound_block`) with no model output. Every failure to scan blocks: engine error or timeout, an
+  unsupported kind, a coverage gap, a compressed or unrecognised body, and a held message over the configurable byte
+  limit (default 8 MiB). A policy read error keeps the last known policy; on cold start with a provider wired the
+  gateway is not ready (`/__gateway/healthz` 503) and refuses model calls with a typed 503 until the first read. Each
+  block writes an audit entry through a new `InboundAuditSink` (kinds and counts, never the flagged text) and
+  increments a per-reason and per-kind counter on `/__gateway/status`. With no inbound BLOCK rule, no policy, or no
+  policy provider (the standalone binary, which says so at startup) the gateway behaves exactly as before. Holding a
+  stream costs time to first token for scanned tenants only.
+
 ## [0.101.0-rc.1] - 2026-10-09
 
 _Pre-release for the dev rung of the managed backup encryption sprint (#2406). The final 0.101.0 is cut once the dev
