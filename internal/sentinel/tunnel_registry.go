@@ -20,6 +20,18 @@ import (
 // Each tunnel backend gets ExternalPortBase + index (e.g., 18001, 18002, ...).
 const ExternalPortBase = 18000
 
+// TunnelTransport names how a tunnel session reaches the sentinel.
+type TunnelTransport string
+
+const (
+	// TunnelTransportTLS is a session carried over TLS with the sentinel's
+	// tunnel identity.
+	TunnelTransportTLS TunnelTransport = "tls"
+	// TunnelTransportCleartext is a session carried in the clear, the
+	// transport older tunnel clients use.
+	TunnelTransportCleartext TunnelTransport = "cleartext"
+)
+
 // TunnelSpot represents a connected remote spot instance.
 type TunnelSpot struct {
 	ID           string
@@ -29,6 +41,8 @@ type TunnelSpot struct {
 	Ports        []int  // ports this spot serves
 	Pool         Pool   // optional pool tag for grouping peers; empty = unpooled
 	Connected    time.Time
+	// Transport records how this session reached the sentinel.
+	Transport TunnelTransport
 
 	// Primary self-registration via handshake (slice 6). Non-empty
 	// PublicHostname promotes this tunnel into a primary registry entry on
@@ -83,6 +97,32 @@ type TunnelRegistry struct {
 	// nextGen hands out registration generations. Monotonic across all
 	// spots; only comparisons within one spotID are meaningful.
 	nextGen uint64
+	// cleartextRefused counts cleartext sessions the tunnel server turned
+	// away. Written from accept goroutines, read by /metrics and /status.
+	cleartextRefused atomic.Uint64
+}
+
+// SessionStats returns the registered sessions split by transport plus the
+// number of cleartext sessions refused so far.
+func (r *TunnelRegistry) SessionStats() TunnelSessionStats {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var s TunnelSessionStats
+	for _, spot := range r.spots {
+		switch spot.Transport {
+		case TunnelTransportTLS:
+			s.TLS++
+		case TunnelTransportCleartext:
+			s.Cleartext++
+		}
+	}
+	s.CleartextRefused = r.cleartextRefused.Load()
+	return s
+}
+
+// noteCleartextRefused counts one refused cleartext session.
+func (r *TunnelRegistry) noteCleartextRefused() {
+	r.cleartextRefused.Add(1)
 }
 
 // NewTunnelRegistry creates a new TunnelRegistry.
@@ -97,8 +137,9 @@ func NewTunnelRegistry() *TunnelRegistry {
 // and configures it on the system. Returns the assigned loopback IP.
 // Pool, PublicHostname, PublicAliases, PublicPort are read off the
 // handshake; PublicHostname being set means the sentinel will promote
-// this tunnel into a primary registry entry on connect.
-func (r *TunnelRegistry) Register(hs *TunnelHandshake, session *yamux.Session) (string, uint64, error) {
+// this tunnel into a primary registry entry on connect. transport records
+// how the session reached the sentinel.
+func (r *TunnelRegistry) Register(hs *TunnelHandshake, session *yamux.Session, transport TunnelTransport) (string, uint64, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -169,11 +210,12 @@ func (r *TunnelRegistry) Register(hs *TunnelHandshake, session *yamux.Session) (
 		PublicBaseDomains: hs.PublicBaseDomains,
 		PublicPort:        hs.PublicPort,
 		Connected:         time.Now(),
+		Transport:         transport,
 		Generation:        gen,
 	}
 	r.spots[spotID] = spot
 
-	log.Printf("[tunnel-registry] registered spot %q at %s gen=%d (ports: %v, pool: %q, primary_host: %q)", spotID, localIP, gen, hs.Ports, hs.Pool, hs.PublicHostname)
+	log.Printf("[tunnel-registry] registered spot %q at %s gen=%d transport=%s (ports: %v, pool: %q, primary_host: %q)", spotID, localIP, gen, transport, hs.Ports, hs.Pool, hs.PublicHostname)
 	return localIP, gen, nil
 }
 

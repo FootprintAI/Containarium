@@ -173,6 +173,18 @@
             </div>
         </div>
 
+        <div class="status-box">
+            <div class="status-box-title">Tunnel Sessions</div>
+            <div class="status-row">
+                <span class="status-label">TLS <span class="value-muted">tunnel_sessions_tls</span></span>
+                <span class="status-value">{{.TunnelSessionsTLS}}</span>
+            </div>
+            <div class="status-row">
+                <span class="status-label">Cleartext <span class="value-muted">tunnel_sessions_cleartext</span></span>
+                <span class="status-value">{{if gt .TunnelSessionsCleartext 0}}<span class="value-warn">{{.TunnelSessionsCleartext}}</span>{{else}}{{.TunnelSessionsCleartext}}{{end}}</span>
+            </div>
+        </div>
+
         <div class="footer">Containarium Sentinel</div>
     </div>
 </body>

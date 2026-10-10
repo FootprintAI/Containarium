@@ -2,6 +2,8 @@ package sentinel
 
 import (
 	"context"
+	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -13,9 +15,19 @@ import (
 	"github.com/hashicorp/yamux"
 )
 
+// tunnelTLSRequiredError is the answer a cleartext peer gets when cleartext
+// sessions are not allowed. It is written as the ordinary handshake
+// response so an older client prints a readable reason instead of hanging.
+const tunnelTLSRequiredError = "tls required; upgrade the tunnel client and set --sentinel-pin"
+
 // TunnelServer listens for incoming tunnel connections from remote spot instances.
 // Each connected spot gets a loopback alias, and the server opens local TCP proxy
 // listeners that forward traffic through the yamux session to the spot.
+//
+// A session arrives either over TLS (a ClientHello offering TunnelALPN,
+// terminated here with the identity set by SetTunnelIdentity) or in the
+// clear (the legacy JSON handshake). Cleartext sessions are accepted while
+// AllowCleartext is set and refused with tunnelTLSRequiredError otherwise.
 type TunnelServer struct {
 	listenAddr string
 	policy     *TokenPolicy
@@ -26,6 +38,15 @@ type TunnelServer struct {
 	// it — see loopbackPortsFor. Zero disables the exclusion (e.g. in tests
 	// that don't run a ConnMux).
 	httpsPort int
+
+	// AllowCleartext accepts sessions that open with the cleartext JSON
+	// handshake. NewTunnelServer sets it so existing peers keep working
+	// while they move to the TLS transport; clear it to refuse them.
+	AllowCleartext bool
+
+	// tlsConfig terminates TLS tunnel sessions. Nil until SetTunnelIdentity
+	// is called; TLS peers are closed while it is nil.
+	tlsConfig *tls.Config
 
 	// Callbacks for Manager integration
 	OnConnect    func(spot *TunnelSpot)
@@ -58,12 +79,68 @@ type proxySet struct {
 // TunnelServer never runs alongside a ConnMux (e.g. in a test).
 func NewTunnelServer(listenAddr string, policy *TokenPolicy, registry *TunnelRegistry, httpsPort int) *TunnelServer {
 	return &TunnelServer{
-		listenAddr: listenAddr,
-		policy:     policy,
-		registry:   registry,
-		httpsPort:  httpsPort,
-		proxies:    make(map[string]proxySet),
+		listenAddr:     listenAddr,
+		policy:         policy,
+		registry:       registry,
+		httpsPort:      httpsPort,
+		AllowCleartext: true,
+		proxies:        make(map[string]proxySet),
 	}
+}
+
+// SetTunnelIdentity installs the identity presented to TLS tunnel peers.
+// Call it before Serve.
+func (ts *TunnelServer) SetTunnelIdentity(id *TunnelIdentity) {
+	ts.tlsConfig = tunnelTLSServerConfig(id)
+}
+
+// tunnelTLSServerConfig is the listener side of the tunnel transport: the
+// identity's certificate, TLS 1.3 only, the tunnel ALPN protocol, and no
+// client certificate (the peer is authenticated by the token inside). It
+// is separate from the HTTPS configs that serve the certificate store.
+func tunnelTLSServerConfig(id *TunnelIdentity) *tls.Config {
+	return &tls.Config{
+		Certificates: []tls.Certificate{id.TLSCertificate()},
+		NextProtos:   []string{TunnelALPN},
+		MinVersion:   tls.VersionTLS13,
+		ClientAuth:   tls.NoClientCert,
+	}
+}
+
+// acceptTransport classifies a freshly accepted connection by its first
+// byte and returns the connection the handshake is read from. A TLS record
+// (0x16) is terminated with the tunnel identity and must negotiate
+// TunnelALPN. Anything else is the cleartext handshake: passed through
+// while AllowCleartext is set, otherwise answered with
+// tunnelTLSRequiredError before its handshake line is read. The caller
+// closes the returned connection on error.
+func (ts *TunnelServer) acceptTransport(conn net.Conn) (net.Conn, TunnelTransport, error) {
+	first := make([]byte, 1)
+	if _, err := io.ReadFull(conn, first); err != nil {
+		return conn, "", fmt.Errorf("read first byte: %w", err)
+	}
+	conn = &peekedConn{Conn: conn, peeked: first}
+
+	if first[0] != 0x16 {
+		if !ts.AllowCleartext {
+			ts.registry.noteCleartextRefused()
+			_ = writeHandshakeResponse(conn, &TunnelHandshakeResponse{OK: false, Error: tunnelTLSRequiredError})
+			return conn, "", errors.New("cleartext tunnel session refused: tls required")
+		}
+		return conn, TunnelTransportCleartext, nil
+	}
+
+	if ts.tlsConfig == nil {
+		return conn, "", errors.New("TLS tunnel session but no tunnel identity is configured")
+	}
+	tlsConn := tls.Server(conn, ts.tlsConfig)
+	if err := tlsConn.Handshake(); err != nil {
+		return tlsConn, "", fmt.Errorf("tunnel TLS handshake: %w", err)
+	}
+	if proto := tlsConn.ConnectionState().NegotiatedProtocol; proto != TunnelALPN {
+		return tlsConn, "", fmt.Errorf("tunnel TLS session negotiated ALPN %q, want %q", proto, TunnelALPN)
+	}
+	return tlsConn, TunnelTransportTLS, nil
 }
 
 // Run starts the tunnel server on its own port. Blocks until ctx is cancelled.
@@ -113,8 +190,15 @@ func (ts *TunnelServer) handleConnection(ctx context.Context, conn net.Conn) {
 	remoteAddr := conn.RemoteAddr().String()
 	log.Printf("[tunnel-server] new connection from %s", remoteAddr)
 
-	// Set deadline for handshake
+	// Set deadline for the transport setup and the handshake
 	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+
+	conn, transport, err := ts.acceptTransport(conn)
+	if err != nil {
+		log.Printf("[tunnel-server] %s: %v", remoteAddr, err)
+		_ = conn.Close()
+		return
+	}
 
 	// Read handshake
 	hs, err := readHandshake(conn)
@@ -152,12 +236,15 @@ func (ts *TunnelServer) handleConnection(ctx context.Context, conn net.Conn) {
 	}
 
 	// Register in the registry (assigns loopback alias)
-	localIP, gen, err := ts.registry.Register(hs, session)
+	localIP, gen, err := ts.registry.Register(hs, session, transport)
 	if err != nil {
 		log.Printf("[tunnel-server] registration failed for %s: %v", hs.SpotID, err)
 		_ = writeHandshakeResponse(conn, &TunnelHandshakeResponse{OK: false, Error: err.Error()})
 		_ = session.Close()
 		return
+	}
+	if transport == TunnelTransportCleartext {
+		log.Printf("[tunnel-server] DEPRECATED: spot %q registered over a cleartext tunnel session; upgrade its tunnel client and set --sentinel-pin", hs.SpotID)
 	}
 
 	// Send success response
@@ -168,7 +255,7 @@ func (ts *TunnelServer) handleConnection(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	log.Printf("[tunnel-server] spot %q authenticated, assigned %s, ports %v", hs.SpotID, localIP, hs.Ports)
+	log.Printf("[tunnel-server] spot %q authenticated over %s, assigned %s, ports %v", hs.SpotID, transport, localIP, hs.Ports)
 
 	// Start local TCP proxy listeners for each port. Skip the sentinel's own
 	// HTTPS ConnMux port for every backend, not just tunnel-promoted

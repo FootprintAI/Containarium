@@ -162,7 +162,7 @@ func TestRegisterPropagatesPool(t *testing.T) {
 	withRecordedAliases(t)
 
 	r := NewTunnelRegistry()
-	_, _, err := r.Register(&TunnelHandshake{SpotID: "spot-1", Ports: []int{8080}, Pool: "prod"}, nil)
+	_, _, err := r.Register(&TunnelHandshake{SpotID: "spot-1", Ports: []int{8080}, Pool: "prod"}, nil, TunnelTransportCleartext)
 	require.NoError(t, err)
 
 	spot := r.Get("spot-1")
@@ -170,7 +170,7 @@ func TestRegisterPropagatesPool(t *testing.T) {
 	assert.Equal(t, Pool("prod"), spot.Pool)
 
 	// Empty pool stays empty (back-compat).
-	_, _, err = r.Register(&TunnelHandshake{SpotID: "spot-2", Ports: []int{8080}}, nil)
+	_, _, err = r.Register(&TunnelHandshake{SpotID: "spot-2", Ports: []int{8080}}, nil, TunnelTransportCleartext)
 	require.NoError(t, err)
 	spot2 := r.Get("spot-2")
 	require.NotNil(t, spot2)
