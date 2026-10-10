@@ -208,8 +208,10 @@ func (ts *TunnelServer) handleConnection(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	// Validate
-	if err := validateHandshake(hs, ts.policy); err != nil {
+	// Validate. Inside TLS the handshake must be v2 and its proof must
+	// match the keying material this end exports from the same session;
+	// on the cleartext path the legacy shape is checked as before.
+	if err := ts.validateFor(conn, transport, hs); err != nil {
 		log.Printf("[tunnel-server] handshake validation failed from %s: %v", remoteAddr, err)
 		_ = writeHandshakeResponse(conn, &TunnelHandshakeResponse{OK: false, Error: err.Error()})
 		_ = conn.Close()
@@ -281,6 +283,23 @@ func (ts *TunnelServer) handleConnection(ctx context.Context, conn net.Conn) {
 	// keeps this cleanup from firing against a LATER registration of the same
 	// spot (#769).
 	go ts.monitorSession(hs.SpotID, gen, session)
+}
+
+// validateFor runs the validator that matches the transport the handshake
+// arrived on.
+func (ts *TunnelServer) validateFor(conn net.Conn, transport TunnelTransport, hs *TunnelHandshake) error {
+	if transport != TunnelTransportTLS {
+		return validateHandshake(hs, ts.policy)
+	}
+	tlsConn, ok := conn.(*tls.Conn)
+	if !ok {
+		return errors.New("tls tunnel session without tls state")
+	}
+	ekm, err := tunnelTokenEKM(tlsConn.ConnectionState())
+	if err != nil {
+		return err
+	}
+	return validateHandshakeV2(hs, ts.policy, ekm)
 }
 
 // loopbackPortsFor returns the subset of ports that should get a per-spot
