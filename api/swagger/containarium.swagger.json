@@ -12694,6 +12694,13 @@
             "type": "object",
             "$ref": "#/definitions/ConfigEvidence"
           }
+        },
+        "listeners": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/ListenerEvidence"
+          }
         }
       },
       "description": "Evidence bundles the flow, deny and configuration records that triggered\na finding. Capped by the store to the most recent entries — see\nFindingStore."
@@ -15036,6 +15043,34 @@
           "format": "int32"
         }
       }
+    },
+    "ListenerEvidence": {
+      "type": "object",
+      "properties": {
+        "port": {
+          "type": "integer",
+          "format": "int64",
+          "description": "TCP port the listener is bound to."
+        },
+        "bindAddress": {
+          "type": "string",
+          "description": "Bind address as the box's kernel reports it, e.g. \"127.0.0.1\" or \"::\".\nA loopback bind is the shape a reverse tunnel needs."
+        },
+        "pid": {
+          "type": "integer",
+          "format": "int64",
+          "description": "Process id inside the box's pid namespace."
+        },
+        "binary": {
+          "type": "string",
+          "description": "Executable the process runs, e.g. \"/usr/sbin/dropbear\"."
+        },
+        "note": {
+          "type": "string",
+          "description": "Why this listener is not the managed sshd, e.g. \"port not in\nsshd_config\" or \"started with -f\"."
+        }
+      },
+      "description": "ListenerEvidence is one listening socket held by an SSH server that is not\nthe box's distro sshd service (#2439)."
     },
     "MetricsEvent": {
       "type": "object",
@@ -18323,10 +18358,11 @@
         "THREAT_RULE_ID_BAD_DESTINATION",
         "THREAT_RULE_ID_CROSS_TENANT_FLOW",
         "THREAT_RULE_ID_DENY_BURST",
-        "THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH"
+        "THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH",
+        "THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER"
       ],
       "default": "THREAT_RULE_ID_UNSPECIFIED",
-      "description": "ThreatRuleId identifies which detection rule raised a finding.\n\n - THREAT_RULE_ID_BAD_DESTINATION: Flow to a known-bad destination (e.g. a mining pool).\n - THREAT_RULE_ID_CROSS_TENANT_FLOW: Flow whose source and destination belong to different tenants.\n - THREAT_RULE_ID_DENY_BURST: Burst of policy denies for one tenant within a time window.\n - THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH: A box's effective sshd configuration permitted password login, or the\nplatform-managed key-only drop-in had been removed or altered (#2424).\nRaised by the box sshd posture reconciler after it re-asserts the\ndrop-in; the evidence names the offending directive and file."
+      "description": "ThreatRuleId identifies which detection rule raised a finding.\n\n - THREAT_RULE_ID_BAD_DESTINATION: Flow to a known-bad destination (e.g. a mining pool).\n - THREAT_RULE_ID_CROSS_TENANT_FLOW: Flow whose source and destination belong to different tenants.\n - THREAT_RULE_ID_DENY_BURST: Burst of policy denies for one tenant within a time window.\n - THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH: A box's effective sshd configuration permitted password login, or the\nplatform-managed key-only drop-in had been removed or altered (#2424).\nRaised by the box sshd posture reconciler after it re-asserts the\ndrop-in; the evidence names the offending directive and file.\n - THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER: A box is listening with an SSH server that is not the distro sshd\nservice on a port its sshd_config declares (#2439): a second sshd, a\ndropbear, or the stock sshd started with its own config. Raised by the\nsame posture pass as rule 4; record-only, the platform never kills a\ntenant's process. The evidence names the port, pid and binary."
     },
     "ThreatSeverity": {
       "type": "string",

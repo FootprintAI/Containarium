@@ -2234,6 +2234,7 @@ skipAppHosting:
 		log.Printf("Warning: box sshd posture reconciler disabled: incus client: %v", perr)
 	} else {
 		sshdPosture = security.NewSSHDPostureReconciler(postureIncus, findingSink, postureCfg.Interval)
+		sshdPosture.SetListenerCheck(!postureCfg.ListenerCheckDisabled)
 		if findingSink == nil {
 			log.Printf("Box sshd posture reconciler: no finding sink (threat sentry off or unavailable); tampering will be logged, not recorded")
 		}
