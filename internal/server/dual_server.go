@@ -37,6 +37,7 @@ import (
 	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/gateway"
 	"github.com/footprintai/containarium/internal/guacamole"
+	"github.com/footprintai/containarium/internal/guardrail"
 	"github.com/footprintai/containarium/internal/guardrailpolicy"
 	guardrailpolicypg "github.com/footprintai/containarium/internal/guardrailpolicy/pgstore"
 	"github.com/footprintai/containarium/internal/metrics"
@@ -271,6 +272,7 @@ func managementRouteDomains(cfg *DualServerConfig) []string {
 
 // DualServer runs both gRPC and HTTP/REST servers
 type DualServer struct {
+	modelGateway             *modelgateway.Gateway // nil when the gateway is disabled
 	config                   *DualServerConfig
 	grpcServer               *grpc.Server
 	internalLis              *auth.InternalListener // in-process transport for the REST gateway
@@ -1845,6 +1847,7 @@ skipAppHosting:
 
 	// Setup audit logging store and event subscriber
 	var auditStore *audit.Store
+	var modelGW *modelgateway.Gateway // set when the model gateway is enabled; drained on shutdown
 	var auditEventSubscriber *audit.EventSubscriber
 	var revocationStoreLocal *auth.PgRevocationStore
 	var ownerRevocationStoreLocal *auth.PgOwnerRevocationStore
@@ -2457,7 +2460,17 @@ skipAppHosting:
 				// CONTAINARIUM_GATEWAY_OUTPUT_FILTER=0 to disable. Streaming token
 				// metering is independent and always on.
 				OutputFilter: os.Getenv(appconfig.EnvGatewayOutputFilter) != "0",
+				// Inbound scan of model responses (#2367). The server policy
+				// decides whether it is enforced: with no inbound BLOCK rule
+				// traffic is unchanged. Blocks are audited when the daemon
+				// has an audit store. The reference rules engine runs
+				// in-process.
+				InboundPolicy: guardrailPolicyServer.Provider(),
+				InboundEngine: guardrail.RulesEngine{},
+				InboundAudit:  newGatewayInboundAudit(auditStore),
 			})
+			modelGW = gw
+			guardrailPolicyServer.SetOnChange(gw.InvalidateInboundPolicy)
 			gatewayServer.SetModelGatewayHandler(gw.Handler())
 			// ModelGatewayService's token verbs only work once the service knows
 			// which gateway to mint against and which host a box reaches it on
@@ -2745,6 +2758,7 @@ skipAppHosting:
 	}
 
 	ds := &DualServer{
+		modelGateway:           modelGW,
 		anonManager:            anonManager,
 		config:                 config,
 		agentSkillServer:       agentSkillServer,
@@ -3871,6 +3885,14 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		}
 		if ds.auditEventSubscriber != nil {
 			ds.auditEventSubscriber.Stop()
+		}
+		if ds.modelGateway != nil {
+			// Drain queued inbound-block audit entries before the store closes.
+			fctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if err := ds.modelGateway.FlushInboundAudit(fctx); err != nil {
+				log.Printf("model-gateway: flushing inbound audit on shutdown: %v", err)
+			}
+			cancel()
 		}
 		if ds.auditStore != nil {
 			ds.auditStore.Close()

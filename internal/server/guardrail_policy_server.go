@@ -35,6 +35,9 @@ type GuardrailPolicyServer struct {
 	pb.UnimplementedGuardrailPolicyServiceServer
 	store guardrailpolicy.Store
 	audit auditLogger
+	// onChange runs after a policy is stored, so the model gateway's cached
+	// read does not delay a new rule (#2454). Startup wiring only.
+	onChange func()
 }
 
 func NewGuardrailPolicyServer(store guardrailpolicy.Store) *GuardrailPolicyServer {
@@ -89,6 +92,10 @@ func (s *GuardrailPolicyServer) SetStore(store guardrailpolicy.Store) { s.store 
 // after any startup-time SetStore swap.
 func (s *GuardrailPolicyServer) Provider() guardrailpolicy.PolicyProvider { return s.store }
 
+// SetOnChange registers a callback run after every successful Set. Call
+// before the server serves.
+func (s *GuardrailPolicyServer) SetOnChange(fn func()) { s.onChange = fn }
+
 // SetAuditStore wires the audit store once the Postgres pool exists. The nil
 // check keeps a nil *audit.Store from becoming a non-nil interface.
 func (s *GuardrailPolicyServer) SetAuditStore(store *audit.Store) {
@@ -136,6 +143,9 @@ func (s *GuardrailPolicyServer) SetGuardrailPolicy(ctx context.Context, req *pb.
 		return nil, status.Errorf(codes.Internal, "hash guardrail policy: %v", err)
 	}
 	s.auditSet(ctx, subject, res, hash)
+	if s.onChange != nil {
+		s.onChange()
+	}
 	return &pb.SetGuardrailPolicyResponse{Policy: res.Current, PolicyHash: hash}, nil
 }
 
