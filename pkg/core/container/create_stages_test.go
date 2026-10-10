@@ -9,6 +9,7 @@ import (
 
 	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/footprintai/containarium/pkg/core/ostype"
+	"github.com/footprintai/containarium/pkg/core/sshdpolicy"
 )
 
 // stagesBackend fakes exactly what Create touches on the baked-image path.
@@ -21,6 +22,7 @@ type stagesBackend struct {
 	deleteCalls     int    // DeleteContainer invocations (cleanup evidence)
 	createdConfig   incus.ContainerConfig
 	setLabelsCalled bool
+	config          map[string]string // SetConfig writes, by key
 }
 
 func (b *stagesBackend) GetImageAliasProperties(string) (map[string]string, bool, error) {
@@ -42,6 +44,13 @@ func (b *stagesBackend) StopContainer(string, bool) error { return nil }
 func (b *stagesBackend) DeleteContainer(string) error     { b.deleteCalls++; return nil }
 func (b *stagesBackend) SetLabels(string, map[string]string) error {
 	b.setLabelsCalled = true
+	return nil
+}
+func (b *stagesBackend) SetConfig(_, key, value string) error {
+	if b.config == nil {
+		b.config = map[string]string{}
+	}
+	b.config[key] = value
 	return nil
 }
 func (b *stagesBackend) Exec(string, []string) error { return nil }
@@ -214,5 +223,20 @@ func assertSubsequence(t *testing.T, got, want []CreateStage) {
 	}
 	if i != len(want) {
 		t.Errorf("stage order mismatch: missing %q\n  got:  %v\n  want subsequence: %v", want[i], got, want)
+	}
+}
+
+// The baked-image path skips installPackages, but the box must still be
+// stamped as provisioned under the sshd policy (#2424); otherwise the posture
+// reconciler would silently backfill a tenant edit made before its first pass.
+func TestCreate_BakedPathMarksSSHDPolicy(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	b := &stagesBackend{}
+	if _, err := NewWithBackend(b).Create(stagesOpts()); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if got := b.config[sshdpolicy.MarkerKey]; got != sshdpolicy.MarkerValue {
+		t.Errorf("%s = %q, want %q", sshdpolicy.MarkerKey, got, sshdpolicy.MarkerValue)
 	}
 }
