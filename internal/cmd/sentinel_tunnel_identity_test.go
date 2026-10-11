@@ -148,8 +148,8 @@ func TestSentinelTunnelFlagsDefaults(t *testing.T) {
 	if cleartext == nil {
 		t.Fatal("sentinel has no --tunnel-allow-cleartext flag")
 	}
-	if cleartext.DefValue != "true" {
-		t.Errorf("--tunnel-allow-cleartext default = %s, want true", cleartext.DefValue)
+	if cleartext.DefValue != "false" {
+		t.Errorf("--tunnel-allow-cleartext default = %s, want false", cleartext.DefValue)
 	}
 	identity := sentinelCmd.Flags().Lookup("tunnel-tls-identity")
 	if identity == nil {
@@ -166,5 +166,34 @@ func TestSentinelTunnelFlagsDefaults(t *testing.T) {
 	subFlag := sub.Flags().Lookup("tunnel-tls-identity")
 	if subFlag == nil || subFlag.DefValue != sentinel.DefaultTunnelIdentityPath {
 		t.Errorf("tunnel-identity --tunnel-tls-identity flag missing or default wrong: %+v", subFlag)
+	}
+}
+
+// TestSentinelTunnelAllowCleartextOptIn: an explicit
+// --tunnel-allow-cleartext=true still turns cleartext sessions on.
+func TestSentinelTunnelAllowCleartextOptIn(t *testing.T) {
+	flag := sentinelCmd.Flags().Lookup("tunnel-allow-cleartext")
+	if flag == nil {
+		t.Fatal("sentinel has no --tunnel-allow-cleartext flag")
+	}
+	t.Cleanup(func() {
+		_ = flag.Value.Set(flag.DefValue)
+		flag.Changed = false
+	})
+	if err := sentinelCmd.ParseFlags([]string{"--tunnel-allow-cleartext=true"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if !sentinelTunnelAllowCleartext {
+		t.Fatal("--tunnel-allow-cleartext=true did not enable cleartext sessions")
+	}
+
+	captureLog(t)
+	ts := sentinel.NewTunnelServer("", sentinel.NewTokenPolicy(), sentinel.NewTunnelRegistry(), 0)
+	path := filepath.Join(t.TempDir(), "id.pem")
+	if _, err := configureTunnelTransport(ts, path, sentinelTunnelAllowCleartext); err != nil {
+		t.Fatalf("configureTunnelTransport: %v", err)
+	}
+	if !ts.AllowCleartext {
+		t.Error("AllowCleartext = false after the explicit opt-in, want true")
 	}
 }

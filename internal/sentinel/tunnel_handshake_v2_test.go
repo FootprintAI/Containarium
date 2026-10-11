@@ -59,14 +59,22 @@ func (c *recordingConn) Read(p []byte) (int, error) {
 // and returns the server, the listener (for its capture) and its address.
 func serveV2Tunnel(t *testing.T, ctx context.Context, policy *TokenPolicy, registry *TunnelRegistry, id *TunnelIdentity) (*TunnelServer, *recordingListener, string) {
 	t.Helper()
+	ts := NewTunnelServer("", policy, registry, 0)
+	ts.SetTunnelIdentity(id)
+	ln, addr := serveRecorded(t, ctx, ts)
+	return ts, ln, addr
+}
+
+// serveRecorded serves an already configured ts on a recording loopback
+// listener and returns the listener and the address peers dial.
+func serveRecorded(t *testing.T, ctx context.Context, ts *TunnelServer) (*recordingListener, string) {
+	t.Helper()
 	raw, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	ln := &recordingListener{Listener: raw}
-	ts := NewTunnelServer("", policy, registry, 0)
-	ts.SetTunnelIdentity(id)
 	go func() { _ = ts.Serve(ctx, ln) }()
 	waitForListener(t, raw.Addr().String())
-	return ts, ln, raw.Addr().String()
+	return ln, raw.Addr().String()
 }
 
 // dialTunnelTLS opens a TLS tunnel session to addr the way TunnelClient
@@ -134,8 +142,10 @@ func TestTunnelTokenNeverOnTheWire(t *testing.T) {
 	t.Run("legacy cleartext control", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		registry := NewTunnelRegistry()
-		_, ln, addr := serveV2Tunnel(t, ctx, policyAny(token), registry, newTestTunnelIdentity(t))
+		ts := NewTunnelServer("", policyAny(token), NewTunnelRegistry(), 0)
+		ts.SetTunnelIdentity(newTestTunnelIdentity(t))
+		ts.AllowCleartext = true
+		ln, addr := serveRecorded(t, ctx, ts)
 
 		conn, err := net.Dial("tcp", addr)
 		require.NoError(t, err)

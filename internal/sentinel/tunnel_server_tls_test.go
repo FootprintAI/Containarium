@@ -27,8 +27,8 @@ func startTunnelServer(t *testing.T, ctx context.Context, ts *TunnelServer) stri
 	return ln.Addr().String()
 }
 
-// TestCleartextPeerRefused: with cleartext sessions disallowed, a peer that
-// opens with the JSON handshake is answered with ok:false and closed before
+// TestCleartextPeerRefused: with the default server configuration cleartext
+// sessions are disallowed, so a peer that opens with the JSON handshake is answered with ok:false and closed before
 // its handshake line is read. The peer only ever sends the opening brace,
 // so a server that tried to read the line would hang instead of answering.
 // Nothing registers, OnConnect never fires, and the refusal is counted.
@@ -38,7 +38,7 @@ func TestCleartextPeerRefused(t *testing.T) {
 
 	registry := NewTunnelRegistry()
 	ts := NewTunnelServer("", policyAny("tok"), registry, 0)
-	ts.AllowCleartext = false
+	require.False(t, ts.AllowCleartext, "cleartext sessions are refused by default")
 	var connects atomic.Int32
 	ts.OnConnect = func(*TunnelSpot) { connects.Add(1) }
 	addr := startTunnelServer(t, ctx, ts)
@@ -53,7 +53,7 @@ func TestCleartextPeerRefused(t *testing.T) {
 	resp, err := readHandshakeResponse(conn)
 	require.NoError(t, err, "the refusal must arrive without the handshake line being read")
 	assert.False(t, resp.OK)
-	assert.Contains(t, resp.Error, "tls required")
+	assert.Equal(t, "tls required; upgrade the tunnel client and set --sentinel-pin", resp.Error)
 
 	// The server closes the connection after the refusal.
 	buf := make([]byte, 1)
@@ -68,9 +68,9 @@ func TestCleartextPeerRefused(t *testing.T) {
 	assert.Zero(t, stats.Cleartext)
 }
 
-// TestCleartextPeerAcceptedWhenAllowed pins the transition behaviour: with
-// cleartext sessions allowed (the constructor default) the legacy JSON
-// handshake still registers, and the spot is tagged as a cleartext session.
+// TestCleartextPeerAcceptedWhenAllowed pins the opt-in: with cleartext
+// sessions explicitly allowed the legacy JSON handshake still registers,
+// and the spot is tagged as a cleartext session.
 func TestCleartextPeerAcceptedWhenAllowed(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -78,7 +78,7 @@ func TestCleartextPeerAcceptedWhenAllowed(t *testing.T) {
 
 	registry := NewTunnelRegistry()
 	ts := NewTunnelServer("", policyAny("tok"), registry, 0)
-	require.True(t, ts.AllowCleartext, "cleartext sessions are allowed by default during the transition")
+	ts.AllowCleartext = true
 	connectCh := make(chan *TunnelSpot, 1)
 	ts.OnConnect = func(spot *TunnelSpot) {
 		select {

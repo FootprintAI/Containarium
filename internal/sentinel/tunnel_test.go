@@ -195,6 +195,7 @@ func TestTunnelWrongToken(t *testing.T) {
 	tunnelPort := freePort(t)
 	registry := NewTunnelRegistry()
 	server := NewTunnelServer(fmt.Sprintf("127.0.0.1:%d", tunnelPort), policyAny("correct-token"), registry, 0)
+	server.AllowCleartext = true // this test speaks the legacy cleartext handshake
 
 	go func() { _ = server.Run(ctx) }()
 	waitForListener(t, fmt.Sprintf("127.0.0.1:%d", tunnelPort))
