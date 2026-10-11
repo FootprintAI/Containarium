@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.102.0] - 2026-10-11
+
+_A sentinel release. Four things change what a sentinel does on upgrade, so read "Upgrade notes" before rolling it:
+tunnel sessions must be TLS, certificate sync is scoped per backend, the per-backend tunnel API ports bind to loopback,
+and the sentinel now fails back to its preferred primary. Hosts that run no sentinel are unaffected._
+
+### Upgrade notes
+
+- **Tunnel clients must already be on TLS with a pin.** A tunnel client still opening with the legacy cleartext
+  handshake is refused (`tls required; upgrade the tunnel client and set --sentinel-pin`). Start the sentinel with
+  `--tunnel-allow-cleartext=true` temporarily if some are not upgraded yet.
+- **A sentinel with an in-fleet backend (`--spot-vm`, `--backend-addr`, or `--provider none`) should declare that
+  backend's domains** with `--backend-hostname`, `--backend-alias` and `--backend-base-domain` before upgrading, or none
+  of that backend's certificates are served (a startup warning says so). A sentinel whose backends supply no
+  certificates sees no difference.
+- **Anything on another host that dials a sentinel's per-backend tunnel API port (`18000+N`)**, for example a daemon
+  listing it in `--peers`, needs `--tunnel-api-bind-addr=<internal IP>` on the sentinel; the default is now `127.0.0.1`.
+- **Failback is on by default.** The sentinel returns to its preferred primary on its own after it recovers;
+  `--failback-checks=-1` restores the old behaviour.
+
 ### Changed
 
 - The sentinel now requires TLS for tunnel sessions by default: `--tunnel-allow-cleartext` defaults to `false`, and
@@ -16,6 +36,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unaffected. If some tunnel clients have not been upgraded yet, start the sentinel with
   `--tunnel-allow-cleartext=true` until `sentinel_tunnel_sessions_cleartext` stays at zero, then remove the flag (see
   `docs/TUNNEL-REVERSE-PROXY.md`, "Upgrading to the TLS Transport").
+
+- Per-backend tunnel API listeners bind to loopback by default (#2467). The listener the tunnel server opens for each
+  tunnel backend (`18000+N`, forwarding to the backend's port 8080) used to bind to every interface; it now binds to
+  `127.0.0.1`. New sentinel flag `--tunnel-api-bind-addr` (default `127.0.0.1`, a bare IP) for deployments where a
+  daemon on another host lists that port in `--peers`. Nothing in the repository dials these ports from another host:
+  the sentinel reaches each backend through its loopback alias for health checks, key and cert sync and the `/peer/`
+  proxy, and daemons discover tunnel backends through `--sentinel-url`. The `containarium daemon --peers` help now
+  shows a peer daemon's own address.
+- Certificate sync is scoped per backend (#2468). The sentinel used to keep one certificate map that every backend's
+  `/certs` sync replaced. Each backend now has its own set and the served map is a merge: a sync replaces only that
+  backend's set and keeps only certificates for the domains it is registered for (a tunnel backend's primary
+  declaration; for the in-fleet backend, the new `--backend-hostname`, `--backend-alias` (repeatable) and
+  `--backend-base-domain` (repeatable) flags, which must be lowercase DNS names with at least two labels and no
+  wildcards or the sentinel refuses to start). A hostname or alias covers exactly that name; a base domain covers
+  itself, `*.<base>` and every name under it. Out-of-scope entries are dropped and counted in
+  `sentinel_cert_sync_rejected_total{backend="<id>"}`. An empty `/certs` response never replaces the store; a response
+  that does not decode, or whose entries are all out of scope, is a sync error that keeps the previous set. When two
+  backends share the best match for a domain, neither's certificate is served for it until one stops supplying it. A
+  backend with no registered domains supplies no certificates, and a sentinel with an in-fleet backend and none of the
+  flags set logs a warning at startup (`docs/SENTINEL-DESIGN.md` has the precedence rules).
 
 ### Fixed
 
