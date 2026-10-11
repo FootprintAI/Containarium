@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -1196,30 +1197,49 @@ type fallbackDial func() (net.Conn, error)
 // HTTPS listener; dialling it would loop (see startHTTPSProxy).
 var errSelfDial = errors.New("fallback target is this sentinel's own HTTPS listener")
 
-// logSelfDialRefused logs the refusal at most once every 30 s.
-func (m *Manager) logSelfDialRefused() {
+// logSelfDialRefused logs a refusal at most once every 30 s; kind says which
+// route tried to dial the sentinel's own listener ("fallback", "primary route").
+func (m *Manager) logSelfDialRefused(kind string) {
 	now := time.Now().UnixNano()
 	last := m.selfDialLogNanos.Load()
 	if now-last < int64(30*time.Second) || !m.selfDialLogNanos.CompareAndSwap(last, now) {
 		return
 	}
-	log.Printf("[sentinel] refusing to dial this sentinel's own HTTPS listener as the passthrough fallback "+
-		"(loopback:%d); unmatched connections are dropped until a routable fallback is configured", m.config.HTTPSPort)
+	log.Printf("[sentinel] refusing to dial this sentinel's own HTTPS listener (loopback:%d) for the %s; "+
+		"the connection takes the next route, or is dropped if none is routable", m.config.HTTPSPort, kind)
 }
 
-// tcpFallbackDial returns a fallbackDial that TCP-dials target, refusing a
-// loopback address on the sentinel's HTTPS port: that is always the mux itself
-// (127.0.0.0/8 is local and the mux listens on the wildcard), never a backend.
+// tcpFallbackDial returns a fallbackDial that TCP-dials target through
+// dialTCP, so it can never connect back to the sentinel's own mux.
 func (m *Manager) tcpFallbackDial(target string) fallbackDial {
-	return func() (net.Conn, error) {
-		if m.isOwnHTTPSListener(target) {
-			return nil, errSelfDial
-		}
-		return sentinelDialer.Dial("tcp", target)
-	}
+	return func() (net.Conn, error) { return m.dialTCP(target) }
 }
 
-// isOwnHTTPSListener reports whether target is loopback:<the HTTPS port>.
+// dialTCP dials target, refusing any connection that lands on the sentinel's
+// own HTTPS listener (loopback on the HTTPS port: 127.0.0.0/8 is local and the
+// mux listens on the wildcard, so such a connection is always the mux itself,
+// never a backend). Two checks, because a target need not be an IP literal:
+// a literal is refused before dialling, and anything else (a hostname that
+// resolves to loopback) is caught on the connected socket's remote address.
+func (m *Manager) dialTCP(target string) (net.Conn, error) {
+	if m.isOwnHTTPSListener(target) {
+		return nil, errSelfDial
+	}
+	conn, err := sentinelDialer.Dial("tcp", target)
+	if err != nil {
+		return nil, err
+	}
+	if ra, ok := conn.RemoteAddr().(*net.TCPAddr); ok && m.config.HTTPSPort != 0 &&
+		ra.Port == m.config.HTTPSPort && ra.IP.IsLoopback() {
+		_ = conn.Close()
+		return nil, errSelfDial
+	}
+	return conn, nil
+}
+
+// isOwnHTTPSListener reports whether target is a loopback IP literal on the
+// sentinel's HTTPS port. netip is used so an IPv6 literal with a zone
+// ("fe80::1%lo") is parsed, not skipped.
 func (m *Manager) isOwnHTTPSListener(target string) bool {
 	host, port, err := net.SplitHostPort(target)
 	if err != nil || m.config.HTTPSPort == 0 {
@@ -1228,8 +1248,8 @@ func (m *Manager) isOwnHTTPSListener(target string) bool {
 	if p, err := strconv.Atoi(port); err != nil || p != m.config.HTTPSPort {
 		return false
 	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	addr, err := netip.ParseAddr(host)
+	return err == nil && addr.Unmap().IsLoopback()
 }
 
 // selfCheckSNI is the ServerName the self-check probe presents. It is
@@ -1415,10 +1435,10 @@ func (m *Manager) buildSNIRoutingHandlerDial(fallback fallbackDial) func(net.Con
 				} else {
 					// In-VPC primary: TCP dial.
 					target := net.JoinHostPort(p.IP, fmt.Sprintf("%d", p.Port))
-					if m.isOwnHTTPSListener(target) {
-						err = errSelfDial // never dial our own mux; fall through to the fallback
-					} else {
-						dst, err = sentinelDialer.Dial("tcp", target)
+					dst, err = m.dialTCP(target)
+					if errors.Is(err, errSelfDial) {
+						m.logSelfDialRefused("primary route")
+						dst = nil // never dial our own mux; fall through to the fallback
 					}
 				}
 			}
@@ -1427,7 +1447,7 @@ func (m *Manager) buildSNIRoutingHandlerDial(fallback fallbackDial) func(net.Con
 			// No primary match (or yamux/TCP failed): fall back.
 			dst, err = fallback()
 			if errors.Is(err, errSelfDial) {
-				m.logSelfDialRefused()
+				m.logSelfDialRefused("fallback")
 			}
 		}
 		if err != nil || dst == nil {

@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"runtime"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -83,15 +84,17 @@ func TestFallbackToOwnListenerIsRefused(t *testing.T) {
 func TestIsOwnHTTPSListener(t *testing.T) {
 	m := &Manager{config: Config{HTTPSPort: 443}}
 	for target, want := range map[string]bool{
-		"127.0.0.2:443":    true,  // tunnel backend alias on the HTTPS port
-		"127.0.0.188:443":  true,  // another alias
-		"127.0.0.1:443":    true,  // plain loopback
-		"[::1]:443":        true,  // IPv6 loopback
-		"127.0.0.2:8080":   false, // loopback, but not the mux port
-		"10.140.0.51:443":  false, // a real remote backend
-		"not-a-host-port":  false,
-		"":                 false,
-		"127.0.0.2:notnum": false,
+		"127.0.0.2:443":          true,  // tunnel backend alias on the HTTPS port
+		"127.0.0.188:443":        true,  // another alias
+		"127.0.0.1:443":          true,  // plain loopback
+		"[::1]:443":              true,  // IPv6 loopback
+		"[::1%lo]:443":           true,  // IPv6 loopback with a zone identifier
+		"[::ffff:127.0.0.2]:443": true,  // IPv4-mapped loopback
+		"127.0.0.2:8080":         false, // loopback, but not the mux port
+		"10.140.0.51:443":        false, // a real remote backend
+		"not-a-host-port":        false,
+		"":                       false,
+		"127.0.0.2:notnum":       false,
 	} {
 		assert.Equalf(t, want, m.isOwnHTTPSListener(target), "target %q", target)
 	}
@@ -169,4 +172,56 @@ func TestStartHTTPSProxy_TunnelBackendFallsBackThroughTunnel(t *testing.T) {
 	got := dialThroughHandler(t, handler, &tls.Config{ServerName: "stranger.example", InsecureSkipVerify: true})
 	assert.Equal(t, "TUNNEL-BACKEND", got, "an unmatched connection must fall back through the tunnel")
 	assert.Equal(t, 1, remoteHits())
+}
+
+// TestFallbackHostnameToOwnListenerIsRefused covers a target that is not an IP
+// literal: "localhost" passes the literal check, so the refusal has to come from
+// the connected socket's remote address. The handler may open one connection to
+// find that out, but must not keep the chain going.
+func TestFallbackHostnameToOwnListenerIsRefused(t *testing.T) {
+	rawLn, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	ln := &acceptCountListener{Listener: rawLn}
+	mux := NewConnMuxFromListener(ln)
+	go mux.Run()
+	defer func() { _ = mux.Close() }()
+
+	muxPort := rawLn.Addr().(*net.TCPAddr).Port
+	dl := newDispatchListener(mux.HTTPSChanListener())
+	m := &Manager{
+		primaries:        NewPrimaryRegistry(),
+		proxyIdleTimeout: 120 * time.Second,
+		config:           Config{ProxyProtocol: true, HTTPSPort: muxPort},
+	}
+	dl.SetHandler(m.buildSNIRoutingHandler(net.JoinHostPort("localhost", strconv.Itoa(muxPort))))
+
+	client, err := net.Dial("tcp", rawLn.Addr().String())
+	require.NoError(t, err)
+	defer func() { _ = client.Close() }()
+	go func() {
+		_ = tls.Client(client, &tls.Config{ServerName: "unregistered.example", InsecureSkipVerify: true}).Handshake()
+	}()
+
+	time.Sleep(750 * time.Millisecond)
+	assert.LessOrEqualf(t, ln.accepted.Load(), int64(3),
+		"a hostname fallback that resolves to the sentinel's own listener produced %d accepted connections", ln.accepted.Load())
+}
+
+// TestPrimaryOnOwnListenerFallsThroughToFallback checks the matched-primary TCP
+// path: a primary registered with a loopback IP on the HTTPS port is refused
+// (it would be the mux itself) and the connection takes the fallback instead.
+func TestPrimaryOnOwnListenerFallsThroughToFallback(t *testing.T) {
+	fallbackAddr, fallbackHits := startEchoListener(t, "FALLBACK")
+
+	const httpsPort = 4433 // nothing listens here; the refusal must happen before any dial
+	m := &Manager{
+		primaries: NewPrimaryRegistry(),
+		config:    Config{HTTPSPort: httpsPort},
+	}
+	m.primaries.Register(Primary{Pool: "p", Hostname: "looped.example", IP: "127.0.0.1", Port: httpsPort})
+
+	handler := m.buildSNIRoutingHandler(fallbackAddr)
+	got := dialThroughHandler(t, handler, &tls.Config{ServerName: "looped.example", InsecureSkipVerify: true})
+	assert.Equal(t, "FALLBACK", got, "a primary that points at our own listener must not be dialled")
+	assert.Equal(t, 1, fallbackHits())
 }
