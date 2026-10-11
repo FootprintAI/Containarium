@@ -238,16 +238,18 @@ containariumd sentinel \
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--tunnel-tls-identity` | `/etc/containarium/sentinel-tunnel-identity.pem` | Tunnel identity file; created on first start if absent |
-| `--tunnel-allow-cleartext` | `true` | Also accept the legacy cleartext handshake from older clients; set `false` once every client uses TLS |
+| `--tunnel-allow-cleartext` | `false` | Also accept the legacy cleartext handshake from older clients; set `true` only while such clients are being upgraded |
 
 ### Upgrading to the TLS Transport
 
-Upgrade in this order:
+A sentinel refuses the legacy cleartext handshake by default: a cleartext peer receives `{"ok":false,"error":"tls required; upgrade the tunnel client and set --sentinel-pin"}` without its handshake being read, and `sentinel_tunnel_cleartext_refused_total` counts it. Fresh installs whose tunnel clients are configured with `--sentinel-pin` need no extra flag.
 
-1. **Sentinels first.** A new sentinel accepts both TLS sessions and the legacy cleartext handshake while `--tunnel-allow-cleartext=true` (the default). Existing tunnel clients keep working. Each cleartext registration logs a `DEPRECATED` line naming the spot.
+If tunnel clients that have not been upgraded yet still connect with the cleartext handshake, upgrade in this order:
+
+1. **Sentinels first, cleartext allowed temporarily.** Start the upgraded sentinel with `--tunnel-allow-cleartext=true`. It then accepts both TLS sessions and the legacy cleartext handshake, so existing tunnel clients keep working. Each cleartext registration logs a `DEPRECATED` line naming the spot.
 2. **Distribute pins.** Run `containarium sentinel tunnel-identity` on each sentinel and add the pin to every tunnel client's configuration (`--sentinel-pin` or `CONTAINARIUM_TUNNEL_SENTINEL_PIN`).
 3. **Then tunnel clients.** An upgraded client requires a pin and only speaks TLS. Against a sentinel that has not been upgraded it fails the pin check, sends nothing, and keeps retrying, so upgrade the sentinel before its clients.
-4. **Refuse cleartext.** When `sentinel_tunnel_sessions_cleartext` on the sentinel's `/metrics` stays at zero, restart the sentinel with `--tunnel-allow-cleartext=false`. A cleartext peer then receives `{"ok":false,"error":"tls required; …"}` without its handshake being read, and `sentinel_tunnel_cleartext_refused_total` counts it.
+4. **Refuse cleartext.** When `sentinel_tunnel_sessions_cleartext` on the sentinel's `/metrics` stays at zero, remove `--tunnel-allow-cleartext=true` (or set it to `false`) and restart the sentinel. Cleartext peers are refused from then on.
 
 The sentinel's `/metrics` exposes `sentinel_tunnel_sessions_tls`, `sentinel_tunnel_sessions_cleartext` and `sentinel_tunnel_cleartext_refused_total`; the status page shows the session counts by transport.
 
@@ -378,7 +380,7 @@ go test ./internal/sentinel/ -run TestTunnelIntegration -v
 - The tunnel token should be a strong random secret (e.g., `openssl rand -hex 32`).
 - The tunnel rides on port 443 alongside HTTPS — anyone can attempt a handshake. Invalid proofs and tokens are rejected before yamux session creation.
 - Keep the identity file (`0600`) private and persistent: whoever holds it can present the sentinel's identity, and replacing it means distributing a new pin to every client.
-- While `--tunnel-allow-cleartext=true`, the legacy cleartext handshake is still accepted for older clients. Set it to `false` once the cleartext session gauge stays at zero (see [Upgrading](#upgrading-to-the-tls-transport)).
+- The legacy cleartext handshake is refused by default. `--tunnel-allow-cleartext=true` accepts it again for older clients during an upgrade; remove the flag once the cleartext session gauge stays at zero (see [Upgrading](#upgrading-to-the-tls-transport)).
 - Client certificates (mutual TLS) for the spot side are a possible future addition; today the spot is authenticated by its token proof.
 
 ## Source Code

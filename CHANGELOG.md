@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The sentinel now requires TLS for tunnel sessions by default: `--tunnel-allow-cleartext` defaults to `false`, and
+  `sentinel.NewTunnelServer` leaves `AllowCleartext` unset. A tunnel client that still opens with the legacy cleartext
+  handshake is answered with `tls required; upgrade the tunnel client and set --sentinel-pin` and counted in
+  `sentinel_tunnel_cleartext_refused_total`. Tunnel clients already connecting over TLS with `--sentinel-pin` are
+  unaffected. If some tunnel clients have not been upgraded yet, start the sentinel with
+  `--tunnel-allow-cleartext=true` until `sentinel_tunnel_sessions_cleartext` stays at zero, then remove the flag (see
+  `docs/TUNNEL-REVERSE-PROXY.md`, "Upgrading to the TLS Transport").
+
 ## [0.101.3] - 2026-10-11
 
 _Patch release for the sentinel. Only the `containarium sentinel` process is affected; hosts that do not run a sentinel
