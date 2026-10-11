@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -108,6 +109,11 @@ type Manager struct {
 	provider CloudProvider // primary provider (GCP in hybrid mode)
 
 	state atomic.Value // holds State
+
+	// selfDialLogNanos is when the self-dial refusal was last logged (unix
+	// nanos); the log line is rate-limited so a flood of connections that all
+	// hit it cannot flood the journal.
+	selfDialLogNanos atomic.Int64
 
 	// Multi-backend support
 	mu       sync.RWMutex
@@ -1097,7 +1103,7 @@ func (m *Manager) switchToProxy(backend *Backend) error {
 	forwardedPorts := m.config.ForwardedPorts
 	if m.httpsDispatch != nil {
 		forwardedPorts = excludePort(forwardedPorts, m.config.HTTPSPort)
-		m.startHTTPSProxy(backend.IP)
+		m.startHTTPSProxy(backend)
 	}
 
 	// Simple-proxy mode with --proxy-protocol: route :80/:443 through a
@@ -1184,12 +1190,93 @@ func (m *Manager) switchToMaintenance() error {
 // Routing precedence per connection:
 //  1. If the TLS ClientHello carries an SNI hostname registered in
 //     m.primaries, forward to that primary's IP:Port.
-//  2. Otherwise (no SNI, unknown hostname, or non-TLS), forward to backendIP
-//     as before — preserves single-pool / unpooled behavior.
-func (m *Manager) startHTTPSProxy(backendIP string) {
-	fallback := net.JoinHostPort(backendIP, fmt.Sprintf("%d", m.config.HTTPSPort))
-	m.httpsDispatch.SetHandler(m.buildSNIRoutingHandler(fallback))
-	log.Printf("[sentinel] HTTPS proxy started → fallback %s (SNI routing via primary registry)", fallback)
+//  2. Otherwise (no SNI, unknown hostname, or non-TLS), forward to the
+//     backend as before — preserves single-pool / unpooled behavior.
+//
+// How step 2 reaches the backend depends on its type. A tunnel backend's
+// IP is a loopback alias (127.0.0.N) on THIS host, and in ConnMux mode nothing
+// listens on alias:443 except the mux itself (it listens on the wildcard), so
+// a TCP dial to it connects straight back to the sentinel: the connection is
+// routed again, falls back again, and one client connection fans out into an
+// unbounded chain that exhausts memory in a fraction of a second (a 384M
+// cgroup cap is reached in well under a second). A tunnel backend is therefore
+// reached through its tunnel, exactly like a tunnel-promoted primary. Only a
+// backend that is genuinely remote (GCP, in-VPC) is TCP-dialled.
+func (m *Manager) startHTTPSProxy(backend *Backend) {
+	target := net.JoinHostPort(backend.IP, fmt.Sprintf("%d", m.config.HTTPSPort))
+	fb := m.tcpFallbackDial(target)
+	desc := "fallback " + target
+	if backend.Type == BackendTunnel && m.tunnelRegistry != nil {
+		spotID := strings.TrimPrefix(backend.ID, "tunnel-")
+		port := m.config.HTTPSPort
+		fb = func() (net.Conn, error) { return m.tunnelRegistry.DialTunnel(spotID, port) }
+		desc = fmt.Sprintf("fallback via tunnel %s:%d", spotID, port)
+	}
+	m.httpsDispatch.SetHandler(m.buildSNIRoutingHandlerDial(fb))
+	log.Printf("[sentinel] HTTPS proxy started → %s (SNI routing via primary registry)", desc)
+}
+
+// fallbackDial opens the passthrough connection for traffic that matches no
+// registered primary.
+type fallbackDial func() (net.Conn, error)
+
+// errSelfDial is returned for a fallback target that is the sentinel's own
+// HTTPS listener; dialling it would loop (see startHTTPSProxy).
+var errSelfDial = errors.New("fallback target is this sentinel's own HTTPS listener")
+
+// logSelfDialRefused logs a refusal at most once every 30 s; kind says which
+// route tried to dial the sentinel's own listener ("fallback", "primary route").
+func (m *Manager) logSelfDialRefused(kind string) {
+	now := time.Now().UnixNano()
+	last := m.selfDialLogNanos.Load()
+	if now-last < int64(30*time.Second) || !m.selfDialLogNanos.CompareAndSwap(last, now) {
+		return
+	}
+	log.Printf("[sentinel] refusing to dial this sentinel's own HTTPS listener (loopback:%d) for the %s; "+
+		"the connection takes the next route, or is dropped if none is routable", m.config.HTTPSPort, kind)
+}
+
+// tcpFallbackDial returns a fallbackDial that TCP-dials target through
+// dialTCP, so it can never connect back to the sentinel's own mux.
+func (m *Manager) tcpFallbackDial(target string) fallbackDial {
+	return func() (net.Conn, error) { return m.dialTCP(target) }
+}
+
+// dialTCP dials target, refusing any connection that lands on the sentinel's
+// own HTTPS listener (loopback on the HTTPS port: 127.0.0.0/8 is local and the
+// mux listens on the wildcard, so such a connection is always the mux itself,
+// never a backend). Two checks, because a target need not be an IP literal:
+// a literal is refused before dialling, and anything else (a hostname that
+// resolves to loopback) is caught on the connected socket's remote address.
+func (m *Manager) dialTCP(target string) (net.Conn, error) {
+	if m.isOwnHTTPSListener(target) {
+		return nil, errSelfDial
+	}
+	conn, err := sentinelDialer.Dial("tcp", target)
+	if err != nil {
+		return nil, err
+	}
+	if ra, ok := conn.RemoteAddr().(*net.TCPAddr); ok && m.config.HTTPSPort != 0 &&
+		ra.Port == m.config.HTTPSPort && ra.IP.IsLoopback() {
+		_ = conn.Close()
+		return nil, errSelfDial
+	}
+	return conn, nil
+}
+
+// isOwnHTTPSListener reports whether target is a loopback IP literal on the
+// sentinel's HTTPS port. netip is used so an IPv6 literal with a zone
+// ("fe80::1%lo") is parsed, not skipped.
+func (m *Manager) isOwnHTTPSListener(target string) bool {
+	host, port, err := net.SplitHostPort(target)
+	if err != nil || m.config.HTTPSPort == 0 {
+		return false
+	}
+	if p, err := strconv.Atoi(port); err != nil || p != m.config.HTTPSPort {
+		return false
+	}
+	addr, err := netip.ParseAddr(host)
+	return err == nil && addr.Unmap().IsLoopback()
 }
 
 // selfCheckSNI is the ServerName the self-check probe presents. It is
@@ -1332,6 +1419,12 @@ func (m *Manager) runSelfCheckLoop(ctx context.Context) {
 // registry (avoids a sentinel-side TCP listener that would collide with
 // ConnMux on :443); BackendID empty → TCP dial to Primary.IP:Port.
 func (m *Manager) buildSNIRoutingHandler(fallbackTarget string) func(net.Conn) {
+	return m.buildSNIRoutingHandlerDial(m.tcpFallbackDial(fallbackTarget))
+}
+
+// buildSNIRoutingHandlerDial is buildSNIRoutingHandler with the fallback
+// connection supplied by fallback (a TCP dial, or a tunnel stream).
+func (m *Manager) buildSNIRoutingHandlerDial(fallback fallbackDial) func(net.Conn) {
 	return func(conn net.Conn) {
 		defer func() { _ = conn.Close() }()
 
@@ -1369,13 +1462,20 @@ func (m *Manager) buildSNIRoutingHandler(fallbackTarget string) func(net.Conn) {
 				} else {
 					// In-VPC primary: TCP dial.
 					target := net.JoinHostPort(p.IP, fmt.Sprintf("%d", p.Port))
-					dst, err = sentinelDialer.Dial("tcp", target)
+					dst, err = m.dialTCP(target)
+					if errors.Is(err, errSelfDial) {
+						m.logSelfDialRefused("primary route")
+						dst = nil // never dial our own mux; fall through to the fallback
+					}
 				}
 			}
 		}
 		if dst == nil {
 			// No primary match (or yamux/TCP failed): fall back.
-			dst, err = sentinelDialer.Dial("tcp", fallbackTarget)
+			dst, err = fallback()
+			if errors.Is(err, errSelfDial) {
+				m.logSelfDialRefused("fallback")
+			}
 		}
 		if err != nil || dst == nil {
 			return
