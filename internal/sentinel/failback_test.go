@@ -1,8 +1,11 @@
 package sentinel
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -159,15 +162,22 @@ func TestFailback_AFailedSwitchLeavesThePrimaryAndRetries(t *testing.T) {
 		return inner(b)
 	}
 
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	defer log.SetOutput(os.Stderr)
+
 	r.set("10.0.0.1", true)
 	r.tick(4)
 	assert.Equal(t, "tunnel-a", r.primaryID(), "a refused switch leaves the primary where it was")
 	assert.EqualValues(t, 0, r.m.FailbackCount(), "a switch that did not happen is not a failback")
+	assert.NotContains(t, logs.String(), "failback:", "a refused switch must not be logged as a failback")
+	assert.Contains(t, logs.String(), "refused, staying on tunnel-a")
 
 	fail = false
 	r.tick(1)
 	assert.Equal(t, "gcp", r.primaryID(), "it retries on the next check and succeeds")
 	assert.EqualValues(t, 1, r.m.FailbackCount())
+	assert.Contains(t, logs.String(), "failback: tunnel-a → gcp", "the successful switch is logged once, after it happened")
 }
 
 func TestFailback_NegativeThresholdDisablesIt(t *testing.T) {

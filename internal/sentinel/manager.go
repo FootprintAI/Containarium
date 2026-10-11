@@ -1091,12 +1091,15 @@ func (m *Manager) maybeFailback() {
 	if best == nil || best == cur || best.Priority >= cur.Priority || best.healthyCount < need {
 		return
 	}
-	log.Printf("[sentinel] failback: %s → %s (%s), healthy for %d consecutive checks", cur.ID, best.ID, best.IP, best.healthyCount)
+	checks := best.healthyCount
 	if err := m.doSwitchToProxy(best); err != nil {
-		// The primary is unchanged; try again on the next check.
-		log.Printf("[sentinel] failback failed: %v", err)
+		// The primary is unchanged; try again on the next check. Not logged as
+		// a failback: nothing moved, and a consumer counting "failback:" lines
+		// must not count a refused switch.
+		log.Printf("[sentinel] switch back to %s (%s) refused, staying on %s: %v", best.ID, best.IP, cur.ID, err)
 		return
 	}
+	log.Printf("[sentinel] failback: %s → %s (%s), healthy for %d consecutive checks", cur.ID, best.ID, best.IP, checks)
 	m.recordFailback()
 }
 
