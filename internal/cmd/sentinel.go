@@ -47,6 +47,7 @@ var (
 	sentinelTunnelTokenPolicies    []string
 	sentinelTunnelTLSIdentity      string
 	sentinelTunnelAllowCleartext   bool
+	sentinelTunnelAPIBindAddr      string
 	sentinelProxyProtocol          bool
 	sentinelAlertWebhookURL        string
 	sentinelMetricsExport          bool
@@ -55,6 +56,12 @@ var (
 	sentinelConsoleRouterAddr      string
 	sentinelConsoleRouterToken     string
 	sentinelWatchSpotVMs           []string
+
+	// Domains the in-fleet backend is registered for; its certificate
+	// sync may only supply certificates inside them.
+	sentinelBackendHostname    string
+	sentinelBackendAliases     []string
+	sentinelBackendBaseDomains []string
 
 	// SSH session shipper (#2415): ships the ssh-session-plugin's JSONL sink
 	// into each backend's tamper-evident audit chain.
@@ -95,6 +102,7 @@ func init() {
 	sentinelCmd.Flags().StringSliceVar(&sentinelTunnelTokenPolicies, "tunnel-token-policy", nil, "Pool-restricted token in the form 'token=pool1,pool2'. Repeatable. Use '*' to mean any pool. Combined with --tunnel-token if both are provided.")
 	sentinelCmd.Flags().StringVar(&sentinelTunnelTLSIdentity, "tunnel-tls-identity", sentinel.DefaultTunnelIdentityPath, "Tunnel identity file (ECDSA key + self-signed certificate, mode 0600). Created on first start if absent; its pin is logged at startup and printed by 'containarium sentinel tunnel-identity'. Keep it across redeploys: tunnel clients pin it.")
 	sentinelCmd.Flags().BoolVar(&sentinelTunnelAllowCleartext, "tunnel-allow-cleartext", false, "Also accept tunnel sessions that use the cleartext handshake from older clients. Off by default; set true only while tunnel clients that do not yet connect over TLS with --sentinel-pin are being upgraded.")
+	sentinelCmd.Flags().StringVar(&sentinelTunnelAPIBindAddr, "tunnel-api-bind-addr", sentinel.DefaultTunnelAPIBindAddr, "IP the per-backend API port of each tunnel backend binds to on the sentinel. Loopback by default; set an internal address only if a daemon on another host lists that port in --peers.")
 	sentinelCmd.Flags().StringVar(&sentinelConsoleRouterAddr, "console-router-addr", "", "If set (host:port), run the console router — makes any connected tunnel spot's advertised port publicly reachable, gated by --console-router-token. Opt-in: unset means no console router runs. See FootprintAI/Containarium#1756.")
 	sentinelCmd.Flags().StringVar(&sentinelConsoleRouterToken, "console-router-token", "", "Pre-shared token authorizing console-router requests (or CONTAINARIUM_CONSOLE_ROUTER_TOKEN env). A separate, coarser credential from --tunnel-token — the real per-guest check happens downstream at the hypervisor-agent.")
 	sentinelCmd.Flags().StringVar(&sentinelSpotVM, "spot-vm", "", "Name of the backend VM instance (required for gcp provider)")
@@ -115,6 +123,9 @@ func init() {
 	sentinelCmd.Flags().DurationVar(&sentinelRecoveryBackoffMax, "recovery-backoff-max", 5*time.Minute, "Max interval between StartInstance retries (exponential backoff cap)")
 	sentinelCmd.Flags().DurationVar(&sentinelCertSyncInterval, "cert-sync-interval", 6*time.Hour, "Interval for syncing TLS certificates from backend (0 to use default 6h)")
 	sentinelCmd.Flags().DurationVar(&sentinelKeySyncInterval, "key-sync-interval", 2*time.Minute, "Interval for syncing SSH keys from backend for sshpiper (0 to use default 2m)")
+	sentinelCmd.Flags().StringVar(&sentinelBackendHostname, "backend-hostname", "", "Hostname the in-fleet backend (--spot-vm / --backend-addr) serves. Its certificate sync may only supply certificates for this hostname, --backend-alias and --backend-base-domain; with none of the three set, none of its certificates are served.")
+	sentinelCmd.Flags().StringSliceVar(&sentinelBackendAliases, "backend-alias", nil, "Additional hostname the in-fleet backend serves, for certificate scoping. Repeatable.")
+	sentinelCmd.Flags().StringSliceVar(&sentinelBackendBaseDomains, "backend-base-domain", nil, "Base domain the in-fleet backend serves, for certificate scoping: covers the domain itself, its wildcard and every name under it. Repeatable.")
 	sentinelCmd.Flags().BoolVar(&sentinelProxyProtocol, "proxy-protocol", false, "Prepend a PROXY v2 header to forwarded HTTPS streams so the backend Caddy sees the real client IP (requires Caddy with proxy_protocol listener wrapper trusting the sentinel)")
 	sentinelCmd.Flags().BoolVar(&sentinelMetricsExport, "metrics-export", false,
 		"Push sentinel health series (state, failovers, per-backend health, RSS/goroutines/fds) to Cloud Monitoring (#1358). OFF by default: custom metrics are billed per ingested sample.")
@@ -268,6 +279,10 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("invalid forwarded-ports: %w", err)
 	}
+	inFleetCertScope, err := inFleetCertScopeFromFlags(sentinelBackendHostname, sentinelBackendAliases, sentinelBackendBaseDomains)
+	if err != nil {
+		return err
+	}
 
 	// Create cloud provider
 	ctx, cancel := context.WithCancel(context.Background())
@@ -320,6 +335,7 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 				RecoveryBackoffInitial:    sentinelRecoveryBackoffInitial,
 				RecoveryBackoffMax:        sentinelRecoveryBackoffMax,
 				CertSyncInterval:          sentinelCertSyncInterval,
+				InFleetCertScope:          inFleetCertScope,
 				KeySyncInterval:           sentinelKeySyncInterval,
 				HybridMode:                true,
 				ProxyProtocol:             sentinelProxyProtocol,
@@ -356,6 +372,9 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 			loadPersistedTunnelTokens(tunnelPolicy)
 			tunnelServer := sentinel.NewTunnelServer("", tunnelPolicy, registry, sentinelHTTPSPort)
 			if _, err := configureTunnelTransport(tunnelServer, sentinelTunnelTLSIdentity, sentinelTunnelAllowCleartext); err != nil {
+				return err
+			}
+			if err := applyTunnelAPIBindAddr(tunnelServer, sentinelTunnelAPIBindAddr); err != nil {
 				return err
 			}
 			tunnelServer.OnConnect = manager.OnTunnelConnect
@@ -427,6 +446,7 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 			RecoveryBackoffInitial:    sentinelRecoveryBackoffInitial,
 			RecoveryBackoffMax:        sentinelRecoveryBackoffMax,
 			CertSyncInterval:          sentinelCertSyncInterval,
+			InFleetCertScope:          inFleetCertScope,
 			KeySyncInterval:           sentinelKeySyncInterval,
 			TunnelMode:                true,
 			ProxyProtocol:             sentinelProxyProtocol,
@@ -458,6 +478,9 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 		loadPersistedTunnelTokens(tunnelPolicy)
 		tunnelServer := sentinel.NewTunnelServer("", tunnelPolicy, registry, sentinelHTTPSPort)
 		if _, err := configureTunnelTransport(tunnelServer, sentinelTunnelTLSIdentity, sentinelTunnelAllowCleartext); err != nil {
+			return err
+		}
+		if err := applyTunnelAPIBindAddr(tunnelServer, sentinelTunnelAPIBindAddr); err != nil {
 			return err
 		}
 		tunnelServer.OnConnect = manager.OnTunnelConnect
@@ -510,6 +533,7 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 		RecoveryBackoffInitial:    sentinelRecoveryBackoffInitial,
 		RecoveryBackoffMax:        sentinelRecoveryBackoffMax,
 		CertSyncInterval:          sentinelCertSyncInterval,
+		InFleetCertScope:          inFleetCertScope,
 		KeySyncInterval:           sentinelKeySyncInterval,
 		ProxyProtocol:             sentinelProxyProtocol,
 		AlertWebhookURL:           sentinelAlertWebhookURL,
@@ -623,4 +647,16 @@ func parseForwardedPorts(s string) ([]int, error) {
 		return nil, fmt.Errorf("at least one port is required")
 	}
 	return ports, nil
+}
+
+// inFleetCertScopeFromFlags builds the in-fleet backend's certificate scope
+// from --backend-hostname, --backend-alias and --backend-base-domain, and
+// rejects malformed names so the sentinel fails to start rather than run
+// with a scope that silently matches nothing.
+func inFleetCertScopeFromFlags(hostname string, aliases, baseDomains []string) (sentinel.CertScope, error) {
+	scope := sentinel.CertScope{Hostname: hostname, Aliases: aliases, BaseDomains: baseDomains}
+	if err := scope.Validate(); err != nil {
+		return sentinel.CertScope{}, fmt.Errorf("invalid in-fleet backend domains (--backend-hostname / --backend-alias / --backend-base-domain): %w", err)
+	}
+	return scope, nil
 }

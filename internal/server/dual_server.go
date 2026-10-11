@@ -182,7 +182,7 @@ type DualServerConfig struct {
 
 	// Multi-backend peer settings
 	SentinelURL    string   // URL for auto-discovering tunnel peers (e.g., "http://10.128.0.5:8081")
-	Peers          []string // Static peer addresses (e.g., ["10.128.0.5:18001"])
+	Peers          []string // Static peer daemon addresses (e.g., ["10.0.0.12:8080"]); tunnel backends come from SentinelURL
 	LocalBackendID string   // This daemon's backend ID (defaults to hostname)
 	Pool           string   // Pool name to filter sentinel peer discovery (empty = no filter)
 	Region         string   // Region this backend serves; recorded in the capability profile (#681). Falls back to Pool when empty.

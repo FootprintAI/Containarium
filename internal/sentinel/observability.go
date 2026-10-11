@@ -132,6 +132,9 @@ func (m *Manager) MetricsHandler() http.HandlerFunc {
 		if m.tunnelRegistry != nil {
 			fmt.Fprint(w, renderTunnelMetrics(m.tunnelRegistry.SessionStats()))
 		}
+		if m.certStore != nil {
+			fmt.Fprint(w, renderCertSyncMetrics(m.certStore.RejectedCounts()))
+		}
 	}
 }
 
