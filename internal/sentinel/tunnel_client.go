@@ -44,10 +44,11 @@ type TunnelClient struct {
 }
 
 // Run connects to the sentinel and serves tunnel traffic.
-// It reconnects with exponential backoff on failure. Blocks until ctx is cancelled.
+// It reconnects with exponential backoff across consecutive failures, starting
+// over after a session that stayed up (see reconnectBackoff). Blocks until ctx
+// is cancelled.
 func (tc *TunnelClient) Run(ctx context.Context) error {
-	backoff := time.Second
-	maxBackoff := 60 * time.Second
+	backoff := newReconnectBackoff()
 
 	for {
 		select {
@@ -56,22 +57,19 @@ func (tc *TunnelClient) Run(ctx context.Context) error {
 		default:
 		}
 
+		started := time.Now()
 		err := tc.connectAndServe(ctx)
 		if err != nil {
 			log.Printf("[tunnel-client] connection lost: %v", err)
 		}
 
+		delay := jitterDelay(backoff.next(time.Since(started)))
+		log.Printf("[tunnel-client] reconnecting to %s in %s...", tc.SentinelAddr, delay.Round(100*time.Millisecond))
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-time.After(backoff):
+		case <-time.After(delay):
 		}
-
-		backoff = backoff * 2
-		if backoff > maxBackoff {
-			backoff = maxBackoff
-		}
-		log.Printf("[tunnel-client] reconnecting to %s (backoff: %s)...", tc.SentinelAddr, backoff)
 	}
 }
 

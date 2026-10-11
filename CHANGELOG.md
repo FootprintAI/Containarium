@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The tunnel client's reconnect backoff now starts over after a session that stayed up (#2473). It used to double on
+  every disconnect up to 60 s and never reset, so a client that had reconnected a handful of times over its life waited
+  a full minute after every later sentinel restart (a long-lived client reconnected after about 60 s where a fresh one
+  took 4 s). The delay now escalates only across consecutive failed or short-lived sessions (a session of 30 s or more
+  resets it), carries up to ±20 % jitter so clients do not retry in lockstep, and the log shows the delay actually
+  waited.
+
 ## [0.101.3] - 2026-10-11
 
 _Patch release for the sentinel. Only the `containarium sentinel` process is affected; hosts that do not run a sentinel
