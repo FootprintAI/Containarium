@@ -36,6 +36,7 @@ var (
 	sentinelForwardedPorts         string
 	sentinelHealthyThreshold       int
 	sentinelUnhealthyThreshold     int
+	sentinelFailbackChecks         int
 	sentinelSelfCheckFailThreshold int
 	sentinelBinaryPort             int
 	sentinelRecoveryTimeout        time.Duration
@@ -116,6 +117,7 @@ func init() {
 	sentinelCmd.Flags().StringVar(&sentinelForwardedPorts, "forwarded-ports", "80,443", "Comma-separated ports to DNAT forward (port 22 handled by sshpiper)")
 	sentinelCmd.Flags().IntVar(&sentinelHealthyThreshold, "healthy-threshold", 2, "Consecutive healthy checks before switching to proxy")
 	sentinelCmd.Flags().IntVar(&sentinelUnhealthyThreshold, "unhealthy-threshold", 2, "Consecutive unhealthy checks before switching to maintenance")
+	sentinelCmd.Flags().IntVar(&sentinelFailbackChecks, "failback-checks", 4, "Consecutive healthy checks a better-priority backend (e.g. the recovered primary) needs before traffic fails back to it; 0 = default (4), never below --healthy-threshold, negative disables failback")
 	sentinelCmd.Flags().IntVar(&sentinelSelfCheckFailThreshold, "self-check-failure-threshold", 3, "Consecutive failed end-to-end self-checks of the sentinel's OWN proxy pipeline (independent of backend health) before it exits and lets systemd (Restart=always) recreate it; 0 disables")
 	sentinelCmd.Flags().IntVar(&sentinelBinaryPort, "binary-port", 8888, "Port to serve containarium binary for spot VM downloads (0 to disable)")
 	sentinelCmd.Flags().DurationVar(&sentinelRecoveryTimeout, "recovery-timeout", 10*time.Minute, "Warn if recovery takes longer than this (0 to disable)")
@@ -329,6 +331,7 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 				ForwardedPorts:            ports,
 				HealthyThreshold:          sentinelHealthyThreshold,
 				UnhealthyThreshold:        sentinelUnhealthyThreshold,
+				FailbackChecks:            sentinelFailbackChecks,
 				SelfCheckFailureThreshold: sentinelSelfCheckFailThreshold,
 				BinaryPort:                sentinelBinaryPort,
 				RecoveryTimeout:           sentinelRecoveryTimeout,
@@ -440,6 +443,7 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 			ForwardedPorts:            ports,
 			HealthyThreshold:          sentinelHealthyThreshold,
 			UnhealthyThreshold:        sentinelUnhealthyThreshold,
+			FailbackChecks:            sentinelFailbackChecks,
 			SelfCheckFailureThreshold: sentinelSelfCheckFailThreshold,
 			BinaryPort:                sentinelBinaryPort,
 			RecoveryTimeout:           sentinelRecoveryTimeout,
@@ -527,6 +531,7 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 		ForwardedPorts:            ports,
 		HealthyThreshold:          sentinelHealthyThreshold,
 		UnhealthyThreshold:        sentinelUnhealthyThreshold,
+		FailbackChecks:            sentinelFailbackChecks,
 		SelfCheckFailureThreshold: sentinelSelfCheckFailThreshold,
 		BinaryPort:                sentinelBinaryPort,
 		RecoveryTimeout:           sentinelRecoveryTimeout,

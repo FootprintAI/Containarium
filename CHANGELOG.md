@@ -17,6 +17,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--tunnel-allow-cleartext=true` until `sentinel_tunnel_sessions_cleartext` stays at zero, then remove the flag (see
   `docs/TUNNEL-REVERSE-PROXY.md`, "Upgrading to the TLS Transport").
 
+### Fixed
+
+- The sentinel now fails back to its preferred primary after it recovers (#2476). It already failed over when the
+  primary's health check failed, but nothing ever moved traffic back: the active primary stayed on the fallback until
+  the sentinel was restarted. Where the fallback is a tunnel backend that cannot serve the primary's hostnames, a
+  short health blip on the primary became a long outage (the CDN returned 525 for about 35 minutes in one case). A
+  backend with a better (lower) priority than the active primary is now restored once it has been healthy for
+  `--failback-checks` consecutive checks (default 4; never below `--healthy-threshold`; negative disables), logged as
+  `failback: <from> → <to>`. Backends of equal priority never displace each other, so a flapping primary does not
+  oscillate. `/metrics` gains `sentinel_failback_total` and `sentinel_primary_preferred` (0 while the sentinel is on a
+  fallback). `docs/TUNNEL-REVERSE-PROXY.md` already described this behaviour; the code now does it.
+
 ## [0.101.4] - 2026-10-11
 
 _Patch release for the tunnel **client** (`containarium-tunnel`, `hypervisor-agent`): it takes effect on each tunnel host

@@ -99,6 +99,12 @@ type Config struct {
 	// Zero disables the self-check. Only armed in ConnMux/hybrid mode
 	// (httpsDispatch != nil).
 	SelfCheckFailureThreshold int
+
+	// FailbackChecks is how many CONSECUTIVE healthy checks a backend with a
+	// better (lower) Priority than the current primary must show before the
+	// sentinel switches back to it (#2476). 0 = defaultFailbackChecks; it is
+	// never below HealthyThreshold; negative disables failback.
+	FailbackChecks int
 }
 
 // Manager is the core sentinel orchestrator.
@@ -212,6 +218,7 @@ type Manager struct {
 	// loop writes" convention; these are new, so they use the safe form
 	// rather than extending that assumption to a concurrently-read map.
 	failoverTotal   atomic.Int64
+	failbackTotal   atomic.Int64
 	backendHealthMu sync.RWMutex
 	backendHealth   map[string]bool
 
@@ -222,6 +229,10 @@ type Manager struct {
 	// test failing. Same injection pattern as byocDial below. nil = the real
 	// method; tests substitute a stub.
 	switchToProxyFn func(*Backend) error
+
+	// checkHealthFn is the seam over CheckHealth so healthCheckAll can be driven
+	// tick by tick in tests (the real probe dials the backend). nil = CheckHealth.
+	checkHealthFn func(ip string) bool
 
 	// selfCheckFn is the seam over selfCheckProxyPath so runSelfCheckLoop's
 	// wiring is testable without a real listener. nil = the real method
@@ -953,7 +964,7 @@ func (m *Manager) healthCheckAll(ctx context.Context) {
 
 	anyHealthy := false
 	for _, b := range backends {
-		healthy := CheckHealth(b.IP, m.config.HealthPort, 5*time.Second)
+		healthy := m.probeBackend(b.IP)
 
 		if healthy {
 			b.unhealthyCount = 0
@@ -1022,6 +1033,71 @@ func (m *Manager) healthCheckAll(ctx context.Context) {
 			}
 		}
 	}
+
+	// Return to the preferred backend once it has recovered and stayed healthy
+	// (#2476); failoverPrimary only ever moves traffic AWAY from it.
+	if anyHealthy {
+		m.maybeFailback()
+	}
+}
+
+// probeBackend is one health probe of a backend, through the test seam if set.
+func (m *Manager) probeBackend(ip string) bool {
+	if m.checkHealthFn != nil {
+		return m.checkHealthFn(ip)
+	}
+	return CheckHealth(ip, m.config.HealthPort, 5*time.Second)
+}
+
+// defaultFailbackChecks is 4 consecutive healthy checks: with the default 15 s
+// interval that is about a minute of stability, a hold-down long enough that a
+// flapping primary does not make traffic oscillate between backends.
+const defaultFailbackChecks = 4
+
+// failbackChecks is the effective threshold: negative = disabled (returns -1),
+// 0 = the default, and never below HealthyThreshold (a backend cannot be failed
+// back to before it is even counted healthy).
+func (m *Manager) failbackChecks() int {
+	n := m.config.FailbackChecks
+	if n < 0 {
+		return -1
+	}
+	if n == 0 {
+		n = defaultFailbackChecks
+	}
+	if n < m.config.HealthyThreshold {
+		n = m.config.HealthyThreshold
+	}
+	return n
+}
+
+// maybeFailback switches the primary back to a healthy backend with a better
+// (lower) Priority than the current one, once it has been healthy for
+// failbackChecks consecutive checks. Backends of equal priority never displace
+// each other. Called only from the health-check goroutine, which is also the
+// only writer of Backend.healthyCount.
+func (m *Manager) maybeFailback() {
+	need := m.failbackChecks()
+	if need < 0 || m.currentState() != StateProxy {
+		return
+	}
+	m.mu.RLock()
+	cur := m.primary
+	m.mu.RUnlock()
+	if cur == nil {
+		return
+	}
+	best := m.backends.SelectPrimary()
+	if best == nil || best == cur || best.Priority >= cur.Priority || best.healthyCount < need {
+		return
+	}
+	log.Printf("[sentinel] failback: %s → %s (%s), healthy for %d consecutive checks", cur.ID, best.ID, best.IP, best.healthyCount)
+	if err := m.doSwitchToProxy(best); err != nil {
+		// The primary is unchanged; try again on the next check.
+		log.Printf("[sentinel] failback failed: %v", err)
+		return
+	}
+	m.recordFailback()
 }
 
 // doSwitchToProxy calls the injected seam when one is set, else the real

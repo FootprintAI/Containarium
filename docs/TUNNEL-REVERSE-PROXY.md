@@ -266,10 +266,14 @@ GCP healthy + Tunnel healthy    → PROXY via GCP (primary), SSH routes to both
 GCP preempted + Tunnel healthy  → PROXY via Tunnel (failover), sentinel restarts GCP VM
 GCP healthy + Tunnel disconnects → PROXY via GCP (no interruption)
 Both down                       → MAINTENANCE page served
-GCP recovers                    → PROXY via GCP (failback to primary)
+GCP recovers                    → PROXY via GCP (failback to primary, after --failback-checks healthy checks)
 ```
 
 **HTTP/HTTPS routing**: always goes to the highest-priority healthy backend (GCP=0 > Tunnel=10).
+
+**Failback**: when a backend with a better (lower) priority than the active primary becomes healthy again, the sentinel switches back to it once it has been healthy for `--failback-checks` consecutive checks (default 4, about a minute at the default 15 s interval; never below `--healthy-threshold`; a negative value disables failback). The wait keeps a flapping primary from making traffic oscillate between backends. Backends of equal priority never displace each other. Each switch back logs `failback: <from> → <to>`. Before this existed, the sentinel stayed on the fallback until it was restarted, which is a long outage whenever the fallback cannot serve the hostnames the primary does.
+
+`/metrics` exposes `sentinel_failback_total` (switches back to a preferred primary) and `sentinel_primary_preferred` (1 when the active primary is the best-priority registered backend, 0 when the sentinel is sitting on a fallback; alert on 0 lasting more than a few minutes).
 
 **SSH routing**: per-user — each user is routed to the backend they were synced from. GCP users keep SSHing to GCP, and bare metal users SSH to the tunnel backend, regardless of which backend is primary for HTTP.
 
