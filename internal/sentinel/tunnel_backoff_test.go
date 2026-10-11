@@ -1,10 +1,13 @@
 package sentinel
 
 import (
+	"context"
+	"net"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestReconnectBackoff_EscalatesAcrossConsecutiveFailures(t *testing.T) {
@@ -69,4 +72,58 @@ func TestJitterStaysWithinBounds(t *testing.T) {
 		seen[jitterDelay(d)] = true
 	}
 	assert.Greater(t, len(seen), 20)
+}
+
+// The stability timer must start when a session is ESTABLISHED, not when the
+// connection attempt starts: an attempt that hangs for a long time and then
+// fails never had a session, and must not reset the backoff.
+func TestTunnelClient_SessionLastedCountsOnlyAnEstablishedSession(t *testing.T) {
+	serverID := newTestTunnelIdentity(t)
+
+	t.Run("an attempt that never established reports zero", func(t *testing.T) {
+		pinnedID := newTestTunnelIdentity(t) // not the server's identity: the TLS handshake fails
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		server := NewTunnelServer("", policyAny("tok"), NewTunnelRegistry(), 0)
+		server.SetTunnelIdentity(serverID)
+		go func() { _ = server.Serve(ctx, ln) }()
+
+		client := &TunnelClient{SentinelAddr: ln.Addr().String(), SentinelPins: []TunnelPin{pinnedID.Pin()},
+			Token: "tok", SpotID: "never-up", Ports: []int{22}}
+		client.sessionUpAt.Store(0)
+		require.Error(t, client.connectAndServe(ctx))
+		assert.Zero(t, client.sessionLasted(), "no session was established")
+	})
+
+	t.Run("an established session reports how long it has been up", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		registry := NewTunnelRegistry()
+		server := NewTunnelServer("", policyAny("tok"), registry, 0)
+		server.SetTunnelIdentity(serverID)
+		go func() { _ = server.Serve(ctx, ln) }()
+
+		client := &TunnelClient{SentinelAddr: ln.Addr().String(), SentinelPins: []TunnelPin{serverID.Pin()},
+			Token: "tok", SpotID: "is-up", Ports: []int{22}}
+		client.sessionUpAt.Store(0)
+		done := make(chan struct{})
+		go func() { _ = client.connectAndServe(ctx); close(done) }()
+
+		require.Eventually(t, func() bool { return registry.Count() == 1 }, 5*time.Second, 20*time.Millisecond)
+		time.Sleep(300 * time.Millisecond)
+		lasted := client.sessionLasted()
+		assert.GreaterOrEqual(t, lasted, 250*time.Millisecond)
+		assert.Less(t, lasted, 5*time.Second)
+
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("connectAndServe did not return after the context was cancelled")
+		}
+	})
 }

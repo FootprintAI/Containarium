@@ -1,7 +1,8 @@
 package sentinel
 
 import (
-	"math/rand/v2"
+	cryptorand "crypto/rand"
+	"math/big"
 	"time"
 )
 
@@ -43,11 +44,17 @@ func (b *reconnectBackoff) next(sessionLasted time.Duration) time.Duration {
 }
 
 // jitterDelay spreads d by up to ±20% so several clients that lost the same
-// sentinel do not all retry in the same instant.
+// sentinel do not all retry in the same instant. It reads crypto/rand because
+// the cost is irrelevant at reconnect frequency and it keeps the weak-RNG
+// scanner quiet; if the read ever fails it returns d unjittered.
 func jitterDelay(d time.Duration) time.Duration {
 	if d <= 0 {
 		return 0
 	}
 	span := int64(d / 5)
-	return d - time.Duration(span) + time.Duration(rand.Int64N(2*span+1))
+	n, err := cryptorand.Int(cryptorand.Reader, big.NewInt(2*span+1))
+	if err != nil {
+		return d
+	}
+	return d - time.Duration(span) + time.Duration(n.Int64())
 }
