@@ -101,8 +101,9 @@ func init() {
 	sentinelCmd.Flags().StringVar(&sentinelTunnelToken, "tunnel-token", "", "Pre-shared token for tunnel authentication, allowed for any pool (legacy; use --tunnel-token-policy for pool-restricted tokens, or CONTAINARIUM_TUNNEL_TOKEN env)")
 	sentinelCmd.Flags().StringSliceVar(&sentinelTunnelTokenPolicies, "tunnel-token-policy", nil, "Pool-restricted token in the form 'token=pool1,pool2'. Repeatable. Use '*' to mean any pool. Combined with --tunnel-token if both are provided.")
 	sentinelCmd.Flags().StringVar(&sentinelTunnelTLSIdentity, "tunnel-tls-identity", sentinel.DefaultTunnelIdentityPath, "Tunnel identity file (ECDSA key + self-signed certificate, mode 0600). Created on first start if absent; its pin is logged at startup and printed by 'containarium sentinel tunnel-identity'. Keep it across redeploys: tunnel clients pin it.")
-	sentinelCmd.Flags().BoolVar(&sentinelTunnelAllowCleartext, "tunnel-allow-cleartext", false, "Also accept tunnel sessions that use the cleartext handshake from older clients. Off by default; set true only while tunnel clients that do not yet connect over TLS with --sentinel-pin are being upgraded.")
+	sentinelCmd.Flags().BoolVar(&sentinelTunnelAllowCleartext, "tunnel-allow-cleartext", false, "Deprecated: cleartext tunnel sessions are no longer supported. false is accepted and does nothing; true is refused at startup.")
 	sentinelCmd.Flags().StringVar(&sentinelTunnelAPIBindAddr, "tunnel-api-bind-addr", sentinel.DefaultTunnelAPIBindAddr, "IP the per-backend API port of each tunnel backend binds to on the sentinel. Loopback by default; set an internal address only if a daemon on another host lists that port in --peers.")
+	_ = sentinelCmd.Flags().MarkDeprecated("tunnel-allow-cleartext", "tunnel sessions always require TLS; remove the flag")
 	sentinelCmd.Flags().StringVar(&sentinelConsoleRouterAddr, "console-router-addr", "", "If set (host:port), run the console router — makes any connected tunnel spot's advertised port publicly reachable, gated by --console-router-token. Opt-in: unset means no console router runs. See FootprintAI/Containarium#1756.")
 	sentinelCmd.Flags().StringVar(&sentinelConsoleRouterToken, "console-router-token", "", "Pre-shared token authorizing console-router requests (or CONTAINARIUM_CONSOLE_ROUTER_TOKEN env). A separate, coarser credential from --tunnel-token — the real per-guest check happens downstream at the hypervisor-agent.")
 	sentinelCmd.Flags().StringVar(&sentinelSpotVM, "spot-vm", "", "Name of the backend VM instance (required for gcp provider)")
@@ -274,6 +275,9 @@ func wireWatchOnlyBackends(ctx context.Context, manager *sentinel.Manager) (clea
 }
 
 func runSentinel(cmd *cobra.Command, args []string) error {
+	if err := checkDeprecatedCleartextFlag(sentinelTunnelAllowCleartext); err != nil {
+		return err
+	}
 	// Parse forwarded ports
 	ports, err := parseForwardedPorts(sentinelForwardedPorts)
 	if err != nil {
@@ -371,7 +375,7 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 			}
 			loadPersistedTunnelTokens(tunnelPolicy)
 			tunnelServer := sentinel.NewTunnelServer("", tunnelPolicy, registry, sentinelHTTPSPort)
-			if _, err := configureTunnelTransport(tunnelServer, sentinelTunnelTLSIdentity, sentinelTunnelAllowCleartext); err != nil {
+			if _, err := configureTunnelTransport(tunnelServer, sentinelTunnelTLSIdentity); err != nil {
 				return err
 			}
 			if err := applyTunnelAPIBindAddr(tunnelServer, sentinelTunnelAPIBindAddr); err != nil {
@@ -477,7 +481,7 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 		}
 		loadPersistedTunnelTokens(tunnelPolicy)
 		tunnelServer := sentinel.NewTunnelServer("", tunnelPolicy, registry, sentinelHTTPSPort)
-		if _, err := configureTunnelTransport(tunnelServer, sentinelTunnelTLSIdentity, sentinelTunnelAllowCleartext); err != nil {
+		if _, err := configureTunnelTransport(tunnelServer, sentinelTunnelTLSIdentity); err != nil {
 			return err
 		}
 		if err := applyTunnelAPIBindAddr(tunnelServer, sentinelTunnelAPIBindAddr); err != nil {

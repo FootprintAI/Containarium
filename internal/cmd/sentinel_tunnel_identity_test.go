@@ -29,7 +29,7 @@ func TestConfigureTunnelTransport_FirstStartGeneratesThenRestartReuses(t *testin
 	path := filepath.Join(t.TempDir(), "conf", "sentinel-tunnel-identity.pem")
 
 	ts1 := sentinel.NewTunnelServer("", sentinel.NewTokenPolicy(), sentinel.NewTunnelRegistry(), 0)
-	pin1, err := configureTunnelTransport(ts1, path, true)
+	pin1, err := configureTunnelTransport(ts1, path)
 	if err != nil {
 		t.Fatalf("first start: %v", err)
 	}
@@ -46,13 +46,10 @@ func TestConfigureTunnelTransport_FirstStartGeneratesThenRestartReuses(t *testin
 	if !strings.Contains(logs.String(), "generated") {
 		t.Errorf("first start should log that the identity was generated:\n%s", logs.String())
 	}
-	if !ts1.AllowCleartext {
-		t.Error("AllowCleartext = false, want true")
-	}
 
 	logs.Reset()
 	ts2 := sentinel.NewTunnelServer("", sentinel.NewTokenPolicy(), sentinel.NewTunnelRegistry(), 0)
-	pin2, err := configureTunnelTransport(ts2, path, false)
+	pin2, err := configureTunnelTransport(ts2, path)
 	if err != nil {
 		t.Fatalf("restart: %v", err)
 	}
@@ -65,9 +62,6 @@ func TestConfigureTunnelTransport_FirstStartGeneratesThenRestartReuses(t *testin
 	if !strings.Contains(logs.String(), string(pin1)) {
 		t.Errorf("restart log does not contain the pin:\n%s", logs.String())
 	}
-	if ts2.AllowCleartext {
-		t.Error("AllowCleartext = true, want false")
-	}
 }
 
 func TestConfigureTunnelTransport_UnreadableIdentityIsErrorAndKept(t *testing.T) {
@@ -78,7 +72,7 @@ func TestConfigureTunnelTransport_UnreadableIdentityIsErrorAndKept(t *testing.T)
 		t.Fatal(err)
 	}
 	ts := sentinel.NewTunnelServer("", sentinel.NewTokenPolicy(), sentinel.NewTunnelRegistry(), 0)
-	if _, err := configureTunnelTransport(ts, path, true); err == nil {
+	if _, err := configureTunnelTransport(ts, path); err == nil {
 		t.Fatal("want error for an unreadable identity file")
 	}
 	got, err := os.ReadFile(path)
@@ -169,31 +163,34 @@ func TestSentinelTunnelFlagsDefaults(t *testing.T) {
 	}
 }
 
-// TestSentinelTunnelAllowCleartextOptIn: an explicit
-// --tunnel-allow-cleartext=true still turns cleartext sessions on.
-func TestSentinelTunnelAllowCleartextOptIn(t *testing.T) {
+// TestSentinelTunnelAllowCleartextDeprecated: the removed flag still parses
+// so existing service units start. false is a no-op; true is refused with an
+// error that says cleartext tunnels are no longer supported.
+func TestSentinelTunnelAllowCleartextDeprecated(t *testing.T) {
 	flag := sentinelCmd.Flags().Lookup("tunnel-allow-cleartext")
 	if flag == nil {
 		t.Fatal("sentinel has no --tunnel-allow-cleartext flag")
+	}
+	if flag.Deprecated == "" {
+		t.Error("--tunnel-allow-cleartext is not marked deprecated")
 	}
 	t.Cleanup(func() {
 		_ = flag.Value.Set(flag.DefValue)
 		flag.Changed = false
 	})
-	if err := sentinelCmd.ParseFlags([]string{"--tunnel-allow-cleartext=true"}); err != nil {
-		t.Fatalf("parse: %v", err)
+
+	if err := sentinelCmd.ParseFlags([]string{"--tunnel-allow-cleartext=false"}); err != nil {
+		t.Fatalf("parse false: %v", err)
 	}
-	if !sentinelTunnelAllowCleartext {
-		t.Fatal("--tunnel-allow-cleartext=true did not enable cleartext sessions")
+	if err := checkDeprecatedCleartextFlag(sentinelTunnelAllowCleartext); err != nil {
+		t.Errorf("--tunnel-allow-cleartext=false must be a no-op, got %v", err)
 	}
 
-	captureLog(t)
-	ts := sentinel.NewTunnelServer("", sentinel.NewTokenPolicy(), sentinel.NewTunnelRegistry(), 0)
-	path := filepath.Join(t.TempDir(), "id.pem")
-	if _, err := configureTunnelTransport(ts, path, sentinelTunnelAllowCleartext); err != nil {
-		t.Fatalf("configureTunnelTransport: %v", err)
+	if err := sentinelCmd.ParseFlags([]string{"--tunnel-allow-cleartext=true"}); err != nil {
+		t.Fatalf("parse true: %v", err)
 	}
-	if !ts.AllowCleartext {
-		t.Error("AllowCleartext = false after the explicit opt-in, want true")
+	err := checkDeprecatedCleartextFlag(sentinelTunnelAllowCleartext)
+	if err == nil || !strings.Contains(err.Error(), "no longer supported") {
+		t.Errorf("--tunnel-allow-cleartext=true error = %v, want 'no longer supported'", err)
 	}
 }

@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The sentinel no longer accepts the legacy cleartext tunnel handshake. The cleartext session path, its token-on-the-wire
+  validation and the `AllowCleartext` field on `sentinel.TunnelServer` are removed; a tunnel client that still opens in
+  the clear is answered with `tls required; upgrade the tunnel client and set --sentinel-pin` and counted in
+  `sentinel_tunnel_cleartext_refused_total`. `--tunnel-allow-cleartext` is deprecated but still accepted so existing
+  service units start: `false` does nothing and `true` makes the sentinel exit at startup with an error. The
+  `sentinel_tunnel_sessions_cleartext` gauge and the status page's cleartext row are removed. **Upgrade tunnel clients
+  (with `--sentinel-pin`) before the sentinel**; see `docs/TUNNEL-REVERSE-PROXY.md`, "Upgrading to the TLS Transport".
 - The sentinel now requires TLS for tunnel sessions by default: `--tunnel-allow-cleartext` defaults to `false`, and
   `sentinel.NewTunnelServer` leaves `AllowCleartext` unset. A tunnel client that still opens with the legacy cleartext
   handshake is answered with `tls required; upgrade the tunnel client and set --sentinel-pin` and counted in
