@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The sentinel no longer loops its own HTTPS traffic back into itself after a failover to a tunnel backend (#2470).
+  In hybrid (ConnMux) mode the passthrough fallback for traffic matching no registered primary was a TCP dial to the
+  elected backend's loopback alias (`127.0.0.N:443`). Nothing listens on that address except the mux itself (it
+  listens on the wildcard `:443`), so the dial connected back to the sentinel, was routed again, fell back again, and a
+  single client connection became an unbounded chain of about 100 KB per hop: more than 8,000 connections in under a
+  second, enough to hit a 384M memory cap in a fraction of a second. It surfaced as the sentinel being OOM-killed (and
+  the public edge returning 520s) whenever the primary backend's daemon restarted. A tunnel backend's fallback now goes
+  through its tunnel, as a tunnel-promoted primary already did, and a TCP fallback or primary that resolves to loopback
+  on the sentinel's own HTTPS port is refused and logged (rate-limited).
+
 ## [0.101.2] - 2026-10-10
 
 _Completes the sentinel tunnel TLS transport that v0.101.0 and v0.101.1 shipped half of. Those releases changed the
