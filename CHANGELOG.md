@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.101.4] - 2026-10-11
+
+_Patch release for the tunnel **client** (`containarium-tunnel`, `hypervisor-agent`): it takes effect on each tunnel host
+only once that host's binary is upgraded and its tunnel client restarted. Hosts that run no tunnel client change nothing._
+
 ### Fixed
 
 - The tunnel client's reconnect backoff now starts over after a session that stayed up (#2473). It used to double on
