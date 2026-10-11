@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.101.3] - 2026-10-11
+
+_Patch release for the sentinel. Only the `containarium sentinel` process is affected; hosts that do not run a sentinel
+change nothing observable. Upgrade the sentinel first. Until it is upgraded, restarting the primary backend's daemon can
+take the sentinel down (see the first entry)._
+
 ### Fixed
 
 - The sentinel no longer loops its own HTTPS traffic back into itself after a failover to a tunnel backend (#2470).
