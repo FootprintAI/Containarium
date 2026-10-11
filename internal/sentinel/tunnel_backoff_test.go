@@ -98,6 +98,7 @@ func TestTunnelClient_SessionLastedCountsOnlyAnEstablishedSession(t *testing.T) 
 	})
 
 	t.Run("an established session reports how long it has been up", func(t *testing.T) {
+		stubLoopbackAliases(t) // registration would otherwise run `ip addr add`, which a CI runner cannot
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
