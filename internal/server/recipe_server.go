@@ -79,8 +79,13 @@ type recipeBoxes interface {
 // containerServerBoxes is recipeBoxes over the daemon's ContainerServer.
 type containerServerBoxes struct{ s *ContainerServer }
 
+// CreateContainer provisions under the daemon's own authority: deploy's
+// callers authorise the caller for the box name before they get here (see
+// deploy), so the public RPC's containers:write check is not repeated
+// against the caller's claims (#2504). Going through the RPC made an
+// agents:run-only token fail the first run of every skill on a daemon.
 func (c containerServerBoxes) CreateContainer(ctx context.Context, req *pb.CreateContainerRequest) (*pb.CreateContainerResponse, error) {
-	return c.s.CreateContainer(ctx, req)
+	return c.s.createContainerAuthorized(ctx, req)
 }
 func (c containerServerBoxes) Exec(name string, command []string) error {
 	return c.s.manager.Exec(name, command)
@@ -343,10 +348,18 @@ func (s *RecipeServer) DeployRecipe(ctx context.Context, req *pb.DeployRecipeReq
 	return s.deploy(ctx, req)
 }
 
-// deploy is the provisioning body shared by DeployRecipe and the
-// AgentSkillService. Callers must perform their own authorization first;
-// the inner CreateContainer still enforces containers:write + tenant authz.
+// deploy is the provisioning body shared by DeployRecipe and the skill and
+// crew run paths. Every caller MUST authorise the caller for req.Name before
+// calling it — DeployRecipe with containers:write, a skill run with
+// agents:run and a crew run with crews:run, each followed by
+// AuthorizeTenant(ctx, req.Name) — because the create below runs under the
+// daemon's own authority and does not re-check the caller's scopes (#2504).
+// What is left here is the one check no caller can forget on our behalf: an
+// authenticated subject must be present at all.
 func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) (*pb.DeployRecipeResponse, error) {
+	if _, _, ok := auth.SubjectFromGRPCContext(ctx); !ok {
+		return nil, status.Error(codes.Unauthenticated, "no authenticated subject in request context")
+	}
 	recipe, err := s.catalog.Get(req.RecipeId)
 	if err != nil {
 		return nil, status.Error(codes.NotFound, err.Error())
@@ -396,7 +409,8 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 	}
 
 	// 1. Provision the dedicated container locally (reuses all of
-	//    CreateContainer's validation, image allowlist, GPU wiring, etc.).
+	//    CreateContainer's validation, image allowlist, GPU wiring, etc. —
+	//    everything but its scope check, see containerServerBoxes).
 	//    Caller labels (e.g. a control plane's tenant-attribution labels) are
 	//    forwarded so a recipe-deployed box is labeled the same as a plain
 	//    CreateContainer — otherwise a label-filtering front-end can't see it.
