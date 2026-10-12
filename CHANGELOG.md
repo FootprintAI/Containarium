@@ -7,15 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.103.0] - 2026-10-12
+
+_Coding-agent boxes now come with the SDLC role skills, a box created without SSH keys is reachable again, and the
+sentinel drops the cleartext tunnel path for good. Read "Upgrade notes" before rolling a sentinel._
+
+### Upgrade notes
+- **The temporary cleartext opt-out is gone.** v0.102.0's notes suggested starting a sentinel with
+  `--tunnel-allow-cleartext=true` while some tunnel clients were not yet on TLS. From this release `true` makes the
+  sentinel exit at startup with an error; `false` is accepted and does nothing. Upgrade every tunnel client (with
+  `--sentinel-pin`) **before** upgrading the sentinel; see `docs/TUNNEL-REVERSE-PROXY.md`, "Upgrading to the TLS
+  Transport". Hosts that run no sentinel are unaffected.
+- **Coding-agent boxes get the SDLC skills only from a `release` that carries them.** The recipe and `code install`
+  fetch the installer and the `sdlc-skills.tar.gz` asset from the release tag they are given; an older tag is skipped
+  with a message, and any other fetch failure fails the install.
+
 ### Added
-
 - **The hosted `issue-implementer` shares its engineering principles with the box-side `engineer-implement` skill** (#2488). Set `CONTAINARIUM_SDLC_SKILLS_BUNDLE` to the pinned `sdlc-skills.tar.gz` and the daemon verifies it against the digest compiled into the binary, then appends the `Engineering principles` section of `engineer-implement` under the skill's own contract (which keeps precedence: no GitHub access, never commit, `max_files` is a hard ceiling, the final message is exactly the JSON object). Opt-in and fail-safe: no path, a bundle that fails verification, or a missing section leaves the inline prompt untouched and logs why. `containarium agent get` shows `Prompt source: inline | sdlc-pin (<pin>)`, and `AgentSkill` carries `prompt_source` / `prompt_pin`. Not yet validated with a real model; run `scripts/engineer-crew-e2e.sh` on a configured daemon before enabling it.
-
 - **Coding-agent boxes ship with the SDLC role skills** (#2065). The `coding-agent` recipe (new `sdlc_skills` parameter, default `true`) and `containarium code install` (for the Claude engine; `--no-sdlc-skills` skips) install the product, architect, engineer, QA, reviewer, DevOps, release and coordinator skills from [open-sdlc-skills](https://github.com/FootprintAI/open-sdlc-skills) into the box user's `~/.claude/skills`. The set is pinned by commit SHA and digest in `pkg/core/sdlcskills/sdlc-skills.lock` (that repo has no tags), packaged deterministically as the `sdlc-skills.tar.gz` release asset, verified by sha256 before anything is written, and rejected if the archive holds an unsafe path. Updates remove only what the installer previously wrote; `SDLC_SKILLS_OVERLAY_DIR` layers a team's own skills on top. A `release` older than this asset is skipped with a message; any other fetch failure fails the install.
+- **The sentinel exports `containarium.sentinel.primary_preferred` to Cloud Monitoring** (#2485). The gauge (1 = on the best-priority backend, 0 = on a fallback) was only on `/metrics`, so `--metrics-export` could not back an alert for the stuck-on-a-fallback condition. It reuses the same computation as the `/metrics` series; the exporter's cost is now 8 fixed series per sentinel plus one per backend.
+
+### Changed
+
+- The sentinel no longer accepts the legacy cleartext tunnel handshake. The cleartext session path, its token-on-the-wire
+  validation and the `AllowCleartext` field on `sentinel.TunnelServer` are removed; a tunnel client that still opens in
+  the clear is answered with `tls required; upgrade the tunnel client and set --sentinel-pin` and counted in
+  `sentinel_tunnel_cleartext_refused_total`. `--tunnel-allow-cleartext` is deprecated but still accepted so existing
+  service units start: `false` does nothing and `true` makes the sentinel exit at startup with an error. The
+  `sentinel_tunnel_sessions_cleartext` gauge and the status page's cleartext row are removed. **Upgrade tunnel clients
+  (with `--sentinel-pin`) before the sentinel**; see `docs/TUNNEL-REVERSE-PROXY.md`, "Upgrading to the TLS Transport".
 
 ### Fixed
-
 - **A box created with no SSH keys is reachable again** (#2489). `create_container` skipped the host-side jump-server account when no SSH key was supplied, so the box reached `RUNNING` but nothing could route SSH to it, and a later add-key failed with `host user ... does not exist`. Create now always makes the account (with no keys, failing and cleaning up like the keyed path does), and `AddSSHKey` creates a missing account for an existing, authorized box so boxes created before the fix can be repaired by registering a key.
+- **`SubjectDigest` can no longer hang on a swapped path** (#2487). A path replaced by a FIFO between the directory walk and the open blocked the open forever; files are now opened `O_NONBLOCK`, the handle is re-checked, and non-regular entries are skipped, matching the existing guardrail stage.
 
 ## [0.102.0] - 2026-10-11
 
@@ -39,13 +63,6 @@ and the sentinel now fails back to its preferred primary. Hosts that run no sent
 
 ### Changed
 
-- The sentinel no longer accepts the legacy cleartext tunnel handshake. The cleartext session path, its token-on-the-wire
-  validation and the `AllowCleartext` field on `sentinel.TunnelServer` are removed; a tunnel client that still opens in
-  the clear is answered with `tls required; upgrade the tunnel client and set --sentinel-pin` and counted in
-  `sentinel_tunnel_cleartext_refused_total`. `--tunnel-allow-cleartext` is deprecated but still accepted so existing
-  service units start: `false` does nothing and `true` makes the sentinel exit at startup with an error. The
-  `sentinel_tunnel_sessions_cleartext` gauge and the status page's cleartext row are removed. **Upgrade tunnel clients
-  (with `--sentinel-pin`) before the sentinel**; see `docs/TUNNEL-REVERSE-PROXY.md`, "Upgrading to the TLS Transport".
 - The sentinel now requires TLS for tunnel sessions by default: `--tunnel-allow-cleartext` defaults to `false`, and
   `sentinel.NewTunnelServer` leaves `AllowCleartext` unset. A tunnel client that still opens with the legacy cleartext
   handshake is answered with `tls required; upgrade the tunnel client and set --sentinel-pin` and counted in
