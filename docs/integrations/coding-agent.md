@@ -21,7 +21,7 @@ for a person (or `containarium code`) running Claude Code against a repo.
   `~/.claude/skills/<namespace>-<name>/SKILL.md` so `claude` can run
   `/engineer-implement`, `/qa-sprint-verify`, ... on first boot. They come from
   a release asset checked against a sha256, at the commit pinned in
-  `agent-runtime/sdlc-skills.lock`; nothing is copied into this repo.
+  `pkg/core/sdlcskills/sdlc-skills.lock`; nothing is copied into this repo.
 
 The recipe writes no Claude credential, environment variable, or settings key
 and creates nothing under `/etc` for Claude Code. Each user signs in to Claude

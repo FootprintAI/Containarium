@@ -174,7 +174,7 @@ jobs:
 
       - name: Build SDLC skills bundle
         # The pinned open-sdlc-skills role skills (#2065): fetched at the commit
-        # in agent-runtime/sdlc-skills.lock and packaged deterministically, so a
+        # in pkg/core/sdlcskills/sdlc-skills.lock and packaged deterministically, so a
         # lock whose sha256 does not match a rebuild fails the release here.
         # Pulled in-box by scripts/install-sdlc-skills.sh (the coding-agent
         # recipe and `containarium code install`).

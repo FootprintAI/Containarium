@@ -206,7 +206,7 @@ bundle-agent-runtime: build-agent-runtime ## Package agent-runtime as a release 
 	@scripts/verify-agent-runtime-bundle.sh $(BUILD_DIR)/agent-runtime-bundle.tar.gz
 	@echo "==> agent-runtime bundle: $(BUILD_DIR)/agent-runtime-bundle.tar.gz (publish alongside agent-box-linux-amd64; scripts/install-agent-runtime.sh consumes both)"
 
-bundle-sdlc-skills: ## Package the pinned SDLC role skills (agent-runtime/sdlc-skills.lock) as a release asset; fails if the lock's sha256 does not match a rebuild (#2065)
+bundle-sdlc-skills: ## Package the pinned SDLC role skills (pkg/core/sdlcskills/sdlc-skills.lock) as a release asset; fails if the lock's sha256 does not match a rebuild (#2065)
 	@echo "==> Packaging SDLC skills..."
 	@scripts/build-sdlc-skills-bundle.sh $(BUILD_DIR)
 

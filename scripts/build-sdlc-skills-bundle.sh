@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # build-sdlc-skills-bundle.sh — package the pinned SDLC role skills (#2065).
 #
-# Reads agent-runtime/sdlc-skills.lock, fetches exactly that commit of
+# Reads pkg/core/sdlcskills/sdlc-skills.lock, fetches exactly that commit of
 # open-sdlc-skills, and writes into <out-dir>:
 #   sdlc-skills.tar.gz         <ns>-<name>/SKILL.md per role skill, plus _shared/
 #   sdlc-skills.tar.gz.sha256  its sha256
@@ -12,7 +12,7 @@
 # Usage: build-sdlc-skills-bundle.sh [--update-lock] <out-dir>
 #   --update-lock   write the computed sha256 back into the lock (the bump step)
 # Env:
-#   SDLC_SKILLS_LOCK      lock path (default agent-runtime/sdlc-skills.lock)
+#   SDLC_SKILLS_LOCK      lock path (default pkg/core/sdlcskills/sdlc-skills.lock)
 #   SDLC_SKILLS_REPO_URL  clone URL override (tests); default https://github.com/<repo>.git
 set -euo pipefail
 
@@ -27,7 +27,7 @@ for arg in "$@"; do
 done
 [[ -n "$OUT" ]] || { echo "usage: build-sdlc-skills-bundle.sh [--update-lock] <out-dir>" >&2; exit 2; }
 
-LOCK="${SDLC_SKILLS_LOCK:-agent-runtime/sdlc-skills.lock}"
+LOCK="${SDLC_SKILLS_LOCK:-pkg/core/sdlcskills/sdlc-skills.lock}"
 [[ -f "$LOCK" ]] || { echo "build-sdlc-skills-bundle: no lock file: $LOCK" >&2; exit 2; }
 lock_get() { sed -n "s/^$1=//p" "$LOCK" | head -n1; }
 REPO="$(lock_get repo)"; REF="$(lock_get ref)"; WANT_SHA="$(lock_get sha256)"

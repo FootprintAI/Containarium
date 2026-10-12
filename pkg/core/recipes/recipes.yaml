@@ -165,7 +165,7 @@ recipes:
       - '# shellcheck disable=SC2016  # the inner script is single-quoted on purpose'
       - 'runuser -u "$CONTAINARIUM_PARAM_BOX_USER" -- env HOME="$BOX_HOME" bash -c ''set -euo pipefail; curl -fsSL https://claude.ai/install.sh | bash -s -- ${1:+"$1"}'' _ "$CONTAINARIUM_PARAM_CLAUDE_CODE_VERSION"'
       - |
-        # SDLC role skills (#2065), pinned in agent-runtime/sdlc-skills.lock and
+        # SDLC role skills (#2065), pinned in pkg/core/sdlcskills/sdlc-skills.lock and
         # shipped as a release asset. Installed AS the box user into its own
         # ~/.claude/skills. A hash mismatch or unsafe archive fails the deploy; a
         # release cut before the asset existed has no installer (HTTP 404) and is

@@ -25,7 +25,7 @@ that matters.
    `Fixed`, `Changed`, etc.).
 2. **`pkg/version/version.go`** — bump the `Version` constant to match
    the tag (no `v` prefix, e.g. `"0.48.2"`).
-3. **Only if the skills should move: `agent-runtime/sdlc-skills.lock`** —
+3. **Only if the skills should move: `pkg/core/sdlcskills/sdlc-skills.lock`** —
    the SDLC role skills shipped in coding-agent boxes are pinned to a
    commit of
    [open-sdlc-skills](https://github.com/FootprintAI/open-sdlc-skills)

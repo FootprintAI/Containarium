@@ -1,6 +1,6 @@
 name: sdlc-skills-lock
 
-# agent-runtime/sdlc-skills.lock pins the open-sdlc-skills commit and the
+# pkg/core/sdlcskills/sdlc-skills.lock pins the open-sdlc-skills commit and the
 # sha256 of the tarball built from it (#2065). This rebuilds the tarball from
 # the pinned commit and fails if the digest in the lock does not match, so a
 # hand-edited ref or a stale digest cannot reach a release.
@@ -8,14 +8,14 @@ name: sdlc-skills-lock
 on:
   pull_request:
     paths:
-      - 'agent-runtime/sdlc-skills.lock'
+      - 'pkg/core/sdlcskills/sdlc-skills.lock'
       - 'scripts/build-sdlc-skills-bundle.sh'
       - 'scripts/install-sdlc-skills.sh'
       - '.github/workflows/sdlc-skills-lock.yml'
   push:
     branches: [main]
     paths:
-      - 'agent-runtime/sdlc-skills.lock'
+      - 'pkg/core/sdlcskills/sdlc-skills.lock'
       - 'scripts/build-sdlc-skills-bundle.sh'
       - 'scripts/install-sdlc-skills.sh'
       - '.github/workflows/sdlc-skills-lock.yml'
