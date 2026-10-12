@@ -200,6 +200,39 @@ func TestBackendHealthCarriesAPerBackendAttribute(t *testing.T) {
 	}
 }
 
+// primary_preferred is the series a "stuck on a fallback" alert keys off
+// (#2476). It must read 1 on the best-priority backend, 0 once the sentinel is
+// serving from a lower-priority one, and 1 again after failback.
+func TestPrimaryPreferredIsExported(t *testing.T) {
+	m := NewManager(Config{}, &fakeRecoveryProvider{})
+	gcp := &Backend{ID: "gcp", IP: "10.0.0.1", Healthy: true, Priority: 0}
+	peer := &Backend{ID: "tunnel-a", IP: "10.0.0.2", Healthy: true, Priority: 10}
+	m.backends.Add(gcp)
+	m.backends.Add(peer)
+
+	for _, tc := range []struct {
+		name    string
+		primary *Backend
+		want    int64
+	}{
+		{"on the preferred backend", gcp, 1},
+		{"on a fallback", peer, 0},
+		{"restored after failback", gcp, 1},
+	} {
+		m.mu.Lock()
+		m.primary = tc.primary
+		m.mu.Unlock()
+
+		md := findMetric(collectOnce(t, m, "sentinel-test"), metricSentinelPrimaryPref)
+		if md == nil {
+			t.Fatalf("%s: missing %s", tc.name, metricSentinelPrimaryPref)
+		}
+		if got := gaugeValue(t, md); got != tc.want {
+			t.Errorf("%s: %s = %d, want %d", tc.name, metricSentinelPrimaryPref, got, tc.want)
+		}
+	}
+}
+
 // Every datapoint must carry the sentinel's identity, or two sentinels'
 // series collide into one meaningless line in Cloud Monitoring.
 func TestSeriesCarrySentinelIdentity(t *testing.T) {
