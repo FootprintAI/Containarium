@@ -640,7 +640,7 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 	// non-admin tenants don't auto-escalate just by setting the flag.
 	enablePodmanPrivileged := false
 	if req.EnablePodman {
-		allowed, err := authorizePrivilegedPodman(ctx)
+		allowed, err := AuthorizePrivilegedPodman(ctx)
 		if err != nil {
 			return nil, err
 		}
