@@ -97,15 +97,16 @@ func stagesOpts() CreateOptions {
 	return CreateOptions{
 		Username: "alice",
 		Image:    "images:ubuntu/24.04",
-		// No SSHKeys: the jump-account stage runs host useradd, which a unit
-		// test must not touch. Its absence is asserted below.
+		// No SSHKeys: the jump account is still created, keyless (#2489); the
+		// package TestMain stubs the host useradd so a unit test never runs it.
 	}
 }
 
 // TestCreate_ObservesStagesInOrder pins the Phase 0 instrumentation contract
 // (docs/architecture/two-digit-ms-sandbox-spawn.md): every stage that runs is
 // observed, in execution order, and stages that are skipped — baked image,
-// no SSH keys, no git source — produce no observation at all.
+// no git source — produce no observation at all. The jump account is NOT
+// skipped without SSH keys (#2489): it runs keyless.
 func TestCreate_ObservesStagesInOrder(t *testing.T) {
 	// Keep getJumpServerSSHKey from finding a real key in $HOME, which would
 	// nondeterministically add an add_ssh_keys stage on developer machines.
@@ -126,13 +127,14 @@ func TestCreate_ObservesStagesInOrder(t *testing.T) {
 		StageCreateInstance,
 		StageStartInstance,
 		StageWaitNetwork,
+		StageJumpAccount,
 		StageCreateUser,
 		StageGetInfo,
 		StageTotal,
 	}
 	assertSubsequence(t, log.stages, want)
 
-	for _, absent := range []CreateStage{StageJumpAccount, StageInstallPackages, StageGitSource, StageAddSSHKeys} {
+	for _, absent := range []CreateStage{StageInstallPackages, StageGitSource, StageAddSSHKeys} {
 		if _, ok := log.durations[absent]; ok {
 			t.Errorf("stage %q was observed but should have been skipped (observed: %v)", absent, log.stages)
 		}
