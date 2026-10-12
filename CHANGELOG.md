@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Coding-agent boxes ship with the SDLC role skills** (#2065). The `coding-agent` recipe (new `sdlc_skills` parameter, default `true`) and `containarium code install` (for the Claude engine; `--no-sdlc-skills` skips) install the product, architect, engineer, QA, reviewer, DevOps, release and coordinator skills from [open-sdlc-skills](https://github.com/FootprintAI/open-sdlc-skills) into the box user's `~/.claude/skills`. The set is pinned by commit SHA and digest in `pkg/core/sdlcskills/sdlc-skills.lock` (that repo has no tags), packaged deterministically as the `sdlc-skills.tar.gz` release asset, verified by sha256 before anything is written, and rejected if the archive holds an unsafe path. Updates remove only what the installer previously wrote; `SDLC_SKILLS_OVERLAY_DIR` layers a team's own skills on top. A `release` older than this asset is skipped with a message; any other fetch failure fails the install.
+
 ### Fixed
 
 - **A box created with no SSH keys is reachable again** (#2489). `create_container` skipped the host-side jump-server account when no SSH key was supplied, so the box reached `RUNNING` but nothing could route SSH to it, and a later add-key failed with `host user ... does not exist`. Create now always makes the account (with no keys, failing and cleaning up like the keyed path does), and `AddSSHKey` creates a missing account for an existing, authorized box so boxes created before the fix can be repaired by registering a key.
