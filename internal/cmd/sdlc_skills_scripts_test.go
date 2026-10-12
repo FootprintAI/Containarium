@@ -96,10 +96,7 @@ func members(t *testing.T, tarball string) []string {
 	if !ok {
 		t.Fatalf("tar -tzf: %s", out)
 	}
-	var m []string
-	for _, l := range strings.Split(strings.TrimSpace(out), "\n") {
-		m = append(m, l)
-	}
+	m := strings.Split(strings.TrimSpace(out), "\n")
 	sort.Strings(m)
 	return m
 }
