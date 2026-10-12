@@ -464,3 +464,246 @@ Not reproducible in CI, same as every policy in this runbook:
   against which `username` values actually show up in this metric in
   Metrics Explorer or via the API, not an alert policy on the metric
   itself.
+
+## Sentinel alerts (#2484)
+
+**Goal:** page an operator when the *sentinel* — the always-on front door
+— is serving from a fallback backend, or when a backend it fronts
+(including a BYOC tunnel peer) is unhealthy. The sentinel is the best
+observer of its own state, and these are the failure classes the
+heartbeat above cannot see: the sentinel and its backends can all be
+alive while traffic sits on a fallback that cannot serve it (#2476).
+
+**Prerequisite — sentinel export is separate from the daemon export.**
+The `containarium monitoring export` toggle controls the *daemon's*
+export. The sentinel has its own opt-in flag, off by default because
+custom metrics are billed per ingested sample:
+
+```bash
+containarium sentinel ... --metrics-export \
+  [--metrics-export-project "${PROJECT_ID}"] \
+  [--metrics-export-interval 60]
+```
+
+Add the flag to the sentinel's service unit, restart it, and confirm the startup log line
+`metrics export ON → Cloud Monitoring`. If credentials are unusable it
+logs a `WARNING: metrics export disabled` line and keeps serving — check
+for that line when the series never appear. The `containarium.sentinel.primary_preferred`
+series needs a sentinel build that includes #2485 (the first release cut after v0.102.0).
+
+### The series
+
+| Field | Value |
+|---|---|
+| Metric types | `workload.googleapis.com/containarium.sentinel.primary_preferred`, `.backend_healthy`, `.failover_total` |
+| Monitored resource | `gce_instance` (the sentinel's own instance) |
+| `primary_preferred` | gauge: `1` on the best-priority backend (or nothing elected), `0` on a fallback |
+| `backend_healthy` | gauge: `1` healthy, `0` unhealthy, one series per `backend` |
+| `failover_total` | cumulative counter of primary switches |
+| Labels | `sentinel` (hostname); `backend` on `backend_healthy` only |
+| Emit cadence | every export interval (default 60s, floor 60s) |
+
+Confirm ingestion before creating policies:
+
+```bash
+gcloud monitoring metrics-descriptors list --project="${PROJECT_ID}" \
+  --filter='metric.type = starts_with("workload.googleapis.com/containarium.sentinel.")'
+```
+
+### Alert 1 — stuck on a fallback
+
+Write `sentinel-fallback-policy.json`, replacing `${PROJECT_ID}` and
+`${CHANNEL_ID}`:
+
+```json
+{
+  "displayName": "Containarium sentinel on a fallback backend (5m)",
+  "documentation": {
+    "content": "The sentinel has been serving from a lower-priority backend for 5 minutes. After a primary recovers the sentinel fails back on its own once it has been stable for the hold-down; if this is still firing, the preferred primary is still unhealthy, or failback is not happening. Check the sentinel journal (do NOT scan the whole journal; filter by unit and a short --since) and `sentinel_backend_healthy` for which backend is down.",
+    "mimeType": "text/markdown"
+  },
+  "combiner": "OR",
+  "conditions": [
+    {
+      "displayName": "primary_preferred == 0 for 5m",
+      "conditionThreshold": {
+        "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.sentinel.primary_preferred\"",
+        "comparison": "COMPARISON_LT",
+        "thresholdValue": 1,
+        "duration": "300s",
+        "aggregations": [
+          {
+            "alignmentPeriod": "60s",
+            "perSeriesAligner": "ALIGN_MIN",
+            "crossSeriesReducer": "REDUCE_NONE",
+            "groupByFields": ["metric.label.sentinel"]
+          }
+        ],
+        "trigger": { "count": 1 }
+      }
+    }
+  ],
+  "notificationChannels": [
+    "projects/${PROJECT_ID}/notificationChannels/${CHANNEL_ID}"
+  ],
+  "alertStrategy": { "autoClose": "1800s" }
+}
+```
+
+```bash
+gcloud alpha monitoring policies create --project="${PROJECT_ID}" \
+  --policy-from-file=sentinel-fallback-policy.json
+```
+
+### Alert 2 — a backend is unhealthy (per backend)
+
+Write `sentinel-backend-down-policy.json`:
+
+```json
+{
+  "displayName": "Containarium sentinel backend unhealthy (10m)",
+  "documentation": {
+    "content": "The sentinel has seen this backend as unhealthy for 10 minutes. The `backend` label names it: the cloud primary, or a BYOC tunnel peer. For a tunnel peer, check the peer host and its tunnel; for the cloud primary, check the instance and the daemon. This fires even when the sentinel stayed up by failing over, which is why it is separate from the fallback alert.",
+    "mimeType": "text/markdown"
+  },
+  "combiner": "OR",
+  "conditions": [
+    {
+      "displayName": "backend_healthy == 0 for 10m (per backend)",
+      "conditionThreshold": {
+        "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.sentinel.backend_healthy\"",
+        "comparison": "COMPARISON_LT",
+        "thresholdValue": 1,
+        "duration": "600s",
+        "aggregations": [
+          {
+            "alignmentPeriod": "60s",
+            "perSeriesAligner": "ALIGN_MIN",
+            "crossSeriesReducer": "REDUCE_NONE",
+            "groupByFields": ["metric.label.sentinel", "metric.label.backend"]
+          }
+        ],
+        "trigger": { "count": 1 }
+      }
+    }
+  ],
+  "notificationChannels": [
+    "projects/${PROJECT_ID}/notificationChannels/${CHANNEL_ID}"
+  ],
+  "alertStrategy": { "autoClose": "1800s" }
+}
+```
+
+```bash
+gcloud alpha monitoring policies create --project="${PROJECT_ID}" \
+  --policy-from-file=sentinel-backend-down-policy.json
+```
+
+### Alert 3 (optional) — flapping
+
+A backend that bounces every few minutes may never hold a `0` long
+enough to trip alerts 1 or 2. Alert on the failover rate instead:
+`conditionThreshold` on
+`workload.googleapis.com/containarium.sentinel.failover_total` with
+`perSeriesAligner: ALIGN_DELTA`, `alignmentPeriod: 3600s`,
+`comparison: COMPARISON_GT`, `thresholdValue: 3` (more than three
+failovers in an hour), `duration: 0s`. Tune the threshold to how often
+your fleet normally fails over.
+
+### Alert 4 — BYOC peer tunnel down (primary-side)
+
+The sentinel-side `backend_healthy` alert above covers a BYOC peer while
+the sentinel is up. For the complementary view from the *cloud primary*
+(which keeps working if the sentinel's export is off), alert on the
+primary's per-peer `containarium.platform.tunnel.state` (#1084). This
+needs the daemon's `platform` group enabled (see
+`docs/CLOUD-NATIVE-METRICS-EXPORT.md`). Write `byoc-tunnel-down-policy.json`:
+
+```json
+{
+  "displayName": "Containarium BYOC peer tunnel down (10m)",
+  "documentation": {
+    "content": "A registered BYOC peer's tunnel has been down for 10 minutes (peer_id names the enrolled host). The BYOC host cannot export metrics itself, so this is the out-of-band signal. Check the peer host's power/network and its tunnel client.",
+    "mimeType": "text/markdown"
+  },
+  "combiner": "OR",
+  "conditions": [
+    {
+      "displayName": "tunnel.state == 0 for 10m (per peer)",
+      "conditionThreshold": {
+        "filter": "resource.type = \"gce_instance\" AND metric.type = \"workload.googleapis.com/containarium.platform.tunnel.state\"",
+        "comparison": "COMPARISON_LT",
+        "thresholdValue": 1,
+        "duration": "600s",
+        "aggregations": [
+          {
+            "alignmentPeriod": "60s",
+            "perSeriesAligner": "ALIGN_MIN",
+            "crossSeriesReducer": "REDUCE_NONE",
+            "groupByFields": ["metric.label.backend_id", "metric.label.peer_id"]
+          }
+        ],
+        "trigger": { "count": 1 }
+      }
+    }
+  ],
+  "notificationChannels": [
+    "projects/${PROJECT_ID}/notificationChannels/${CHANNEL_ID}"
+  ],
+  "alertStrategy": { "autoClose": "1800s" }
+}
+```
+
+```bash
+gcloud alpha monitoring policies create --project="${PROJECT_ID}" \
+  --policy-from-file=byoc-tunnel-down-policy.json
+```
+
+### Why these values
+
+- **`COMPARISON_LT 1` with `ALIGN_MIN`**: the gauges are 0/1, and taking
+  the minimum over each 60s window means a single unhealthy sample in the
+  window counts, so a blip shorter than the alignment period is not
+  smoothed away to a healthy average.
+- **5 minutes for the fallback, 10 for a backend**: failback has a
+  deliberate hold-down (several consecutive healthy checks) before it
+  switches back, so a few minutes on a fallback right after a recovery is
+  normal. A backend can be unhealthy without the sentinel being on a fallback,
+  so it is a slower, lower-urgency signal and gets the longer window.
+- **Threshold, not absence**: these series are present whenever the
+  sentinel is exporting. A dead or silent sentinel is a different
+  failure; cover it with a `conditionAbsent` policy on any
+  `containarium.sentinel.*` series (same shape as the heartbeat policy at
+  the top of this runbook), filtered to the sentinel instance.
+- **`primary_preferred` reads `1` when nothing is elected** (maintenance),
+  so alert 1 does not fire during a full outage. That case is the
+  sentinel `state` series (`0` = maintenance); alert on
+  `containarium.sentinel.state < 1` if you want it paged separately.
+
+### Verify (live)
+
+Not reproducible in CI:
+
+1. With export on, confirm all three series in Metrics Explorer, with
+   `primary_preferred` and `backend_healthy` flat at `1`.
+2. Create the policies. To exercise alert 2 safely, pick a non-critical
+   backend (e.g. a tunnel peer) and stop its daemon; after ~12 minutes the
+   policy fires, naming that backend. Restart it and confirm the incident
+   auto-closes.
+3. Do **not** induce a primary failover on a production sentinel just to
+   test alert 1; verify it on a staging sentinel, or by temporarily
+   lowering `duration` and observing a natural failover.
+
+### Tuning notes
+
+- **Decommissioned backends**: the sentinel keeps the last health value of
+  a backend it no longer fronts until it restarts, so a removed backend
+  can leave `backend_healthy == 0` behind and keep alert 2 firing. Restart
+  the sentinel after decommissioning, or scope the filter with
+  `AND metric.label.backend != "<removed-id>"`.
+- **Cost**: `primary_preferred`, `state`, `failover_total` and the process
+  series are one series each per sentinel, plus one `backend_healthy`
+  series per backend: roughly 12 series/minute for a sentinel fronting
+  four backends.
+- **Scope to one sentinel**: add
+  `AND metric.label.sentinel = "<hostname>"` to any filter above.
