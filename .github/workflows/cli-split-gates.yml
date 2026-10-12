@@ -135,6 +135,9 @@ jobs:
       - name: Windows cross-compile (client)
         run: GOOS=windows GOARCH=amd64 go build -tags containarium_client -o /dev/null ./cmd/containarium
 
+      - name: Windows cross-compile hostcheck
+        run: CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./internal/hostcheck/
+
       - name: Test hostcheck and agent-box packages
         run: go test ./internal/hostcheck/ ./internal/agentbox/ ./internal/sandbox/dialer/
 
