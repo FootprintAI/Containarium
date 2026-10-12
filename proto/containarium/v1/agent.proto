@@ -109,6 +109,29 @@ message AgentSkill {
   // in direct mode. A named engine is honoured per run — see
   // docs/architecture/agent-router.md.
   AgentEngine engine = 11;
+
+  // Where system_prompt came from (#2488). INLINE is the catalog text as
+  // written. SDLC_PIN means the catalog text with the pinned open-sdlc-skills
+  // engineering standard appended under it, so a hosted skill and a box's
+  // Claude Code skill share one source for their engineering principles.
+  // Visible here, on `agent get`/`list` and in the hosted catalog, so a
+  // deployment that never configured the pin is a visible state rather than
+  // silent drift.
+  PromptSource prompt_source = 12;
+
+  // The pin the appended standard came from, e.g.
+  // "FootprintAI/open-sdlc-skills@<sha12>". Empty unless prompt_source is
+  // PROMPT_SOURCE_SDLC_PIN.
+  string prompt_pin = 13;
+}
+
+// PromptSource says what a skill's system_prompt is composed from (#2488).
+enum PromptSource {
+  PROMPT_SOURCE_UNSPECIFIED = 0;
+  // The catalog's own text, unchanged.
+  PROMPT_SOURCE_INLINE = 1;
+  // The catalog's text plus the pinned open-sdlc-skills standard section.
+  PROMPT_SOURCE_SDLC_PIN = 2;
 }
 
 // AgentEngine identifies the in-box agent loop (agent-runtime SDK) a skill

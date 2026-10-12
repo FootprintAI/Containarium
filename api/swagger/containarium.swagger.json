@@ -9523,6 +9523,14 @@
         "engine": {
           "$ref": "#/definitions/AgentEngine",
           "description": "Agent engine (SDK) this skill runs on. AGENT_ENGINE_UNSPECIFIED keeps\ntoday's behaviour: the daemon's configured gateway primary provider\npicks the engine in gateway mode, or the box's own default/env decides\nin direct mode. A named engine is honoured per run — see\ndocs/architecture/agent-router.md."
+        },
+        "promptSource": {
+          "$ref": "#/definitions/PromptSource",
+          "description": "Where system_prompt came from (#2488). INLINE is the catalog text as\nwritten. SDLC_PIN means the catalog text with the pinned open-sdlc-skills\nengineering standard appended under it, so a hosted skill and a box's\nClaude Code skill share one source for their engineering principles.\nVisible here, on `agent get`/`list` and in the hosted catalog, so a\ndeployment that never configured the pin is a visible state rather than\nsilent drift."
+        },
+        "promptPin": {
+          "type": "string",
+          "description": "The pin the appended standard came from, e.g.\n\"FootprintAI/open-sdlc-skills@\u003csha12\u003e\". Empty unless prompt_source is\nPROMPT_SOURCE_SDLC_PIN."
         }
       },
       "description": "AgentSkill is a packaged, runnable agent: a Recipe (the box — image,\nresources, GPU) plus the agent layer (who it is, what tools it may call,\nwho it may talk to). This is the unit `containarium agent run` launches.\n\nKey invariant: allowed_scopes and allowed_peers are typed, first-class\nfields — NOT a prompt string. allowed_scopes is minted into the agent's JWT\nat launch; allowed_peers compiles into eBPF network policy (Phase 2). The\ntyping IS the security boundary."
@@ -16111,6 +16119,16 @@
         }
       },
       "description": "ProgramDigest is one loaded in-kernel program object's identity + digest."
+    },
+    "PromptSource": {
+      "type": "string",
+      "enum": [
+        "PROMPT_SOURCE_UNSPECIFIED",
+        "PROMPT_SOURCE_INLINE",
+        "PROMPT_SOURCE_SDLC_PIN"
+      ],
+      "default": "PROMPT_SOURCE_UNSPECIFIED",
+      "description": "PromptSource says what a skill's system_prompt is composed from (#2488).\n\n - PROMPT_SOURCE_INLINE: The catalog's own text, unchanged.\n - PROMPT_SOURCE_SDLC_PIN: The catalog's text plus the pinned open-sdlc-skills standard section."
     },
     "Protocol": {
       "type": "string",

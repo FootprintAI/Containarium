@@ -720,6 +720,12 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 				log.Printf("Loaded external skills from %s", dir)
 			}
 		}
+		// #2488: compose the pinned engineering standard into hosted skills
+		// that declare one. Runs after external catalogs so their skills can
+		// declare a standard too. Opt-in; any failure keeps the inline prompt.
+		if msg := applyPinnedStandard(skills.GetDefault(), os.Getenv(sdlcBundleEnv), loadSDLCBundle); msg != "" {
+			log.Print(msg)
+		}
 		if dir := os.Getenv("CONTAINARIUM_CREWS_DIR"); dir != "" {
 			if err := crews.GetDefault().LoadDirVerified(dir, catalogVerifier); err != nil {
 				log.Printf("[crew] external crews from %s: %v", dir, err)
