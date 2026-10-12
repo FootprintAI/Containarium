@@ -52,7 +52,7 @@ func tunnelTokenEKM(cs tls.ConnectionState) ([]byte, error) {
 }
 
 // TokenPolicy maps tunnel tokens to the set of pools each token is allowed
-// to join. Used by validateHandshake to reject pool spoofing — a token
+// to join. Used by validateHandshakeV2 to reject pool spoofing — a token
 // restricted to "lab" cannot register a tunnel claiming pool="prod".
 //
 // Special pool values:
@@ -220,12 +220,11 @@ func (tp *TokenPolicy) ValidateProof(tokenID, proof string, ekm []byte, pool Poo
 // TunnelHandshake is sent by the spot (tunnel client) to the sentinel (tunnel server)
 // immediately after the TCP connection is established.
 type TunnelHandshake struct {
-	// V is the handshake version: absent (0) for the legacy cleartext
-	// shape that carries Token, tunnelHandshakeV2 for the shape sent
-	// inside TLS that carries TokenID and Proof instead.
+	// V is the handshake version; only tunnelHandshakeV2, which carries
+	// TokenID and Proof, is accepted.
 	V int `json:"v,omitempty"`
-	// Token is the legacy credential field, accepted only on the cleartext
-	// path. A v2 handshake leaves it empty.
+	// Token is a removed credential field. It is still decoded so a
+	// handshake that carries it is refused rather than ignored.
 	Token string `json:"token,omitempty"`
 	// TokenID names the token (tunnelTokenID) and Proof demonstrates
 	// possession of it for this TLS session (tunnelTokenProof).
@@ -341,23 +340,6 @@ func validateHandshakeFields(hs *TunnelHandshake) error {
 		}
 	}
 	return nil
-}
-
-// validateHandshake is the legacy (cleartext) validator: required fields,
-// then the policy's answer for the presented token and pool. A v2
-// handshake is not accepted here — its proof is bound to a TLS session
-// this path does not have.
-func validateHandshake(hs *TunnelHandshake, policy *TokenPolicy) error {
-	if err := validateHandshakeFields(hs); err != nil {
-		return err
-	}
-	if hs.V >= tunnelHandshakeV2 {
-		return fmt.Errorf("handshake v%d is only accepted over tls", hs.V)
-	}
-	if policy == nil {
-		return fmt.Errorf("no token policy configured")
-	}
-	return policy.Validate(hs.Token, hs.Pool)
 }
 
 // validateHandshakeV2 is the validator for handshakes read inside a TLS

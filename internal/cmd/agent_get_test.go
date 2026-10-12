@@ -83,3 +83,41 @@ func TestFormatModel(t *testing.T) {
 		})
 	}
 }
+
+// TestFormatPromptSource pins #2488's display rule: where a skill's system
+// prompt came from is always shown, so a deployment that never configured the
+// pinned standard reads as "inline", not as nothing.
+func TestFormatPromptSource(t *testing.T) {
+	cases := []struct {
+		name  string
+		skill *pb.AgentSkill
+		want  string
+	}{
+		{"unspecified reads as inline", &pb.AgentSkill{}, "inline"},
+		{"inline", &pb.AgentSkill{PromptSource: pb.PromptSource_PROMPT_SOURCE_INLINE}, "inline"},
+		{"pinned standard names the pin", &pb.AgentSkill{
+			PromptSource: pb.PromptSource_PROMPT_SOURCE_SDLC_PIN,
+			PromptPin:    "FootprintAI/open-sdlc-skills@ba64133c4125",
+		}, "sdlc-pin (FootprintAI/open-sdlc-skills@ba64133c4125)"},
+	}
+	for _, tc := range cases {
+		if got := formatPromptSource(tc.skill); got != tc.want {
+			t.Errorf("%s: formatPromptSource = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestRunAgentGet_PrintsPromptSource(t *testing.T) {
+	out := captureStdout(t, func() {
+		if err := runAgentGet(nil, []string{"issue-implementer"}); err != nil {
+			t.Fatalf("runAgentGet: %v", err)
+		}
+	})
+	if !strings.Contains(out, "Prompt source:") {
+		t.Errorf("agent get does not print the prompt source:\n%s", out)
+	}
+	// Reading the embedded catalog applies no bundle, so this is the inline state.
+	if !strings.Contains(out, "Prompt source: inline") {
+		t.Errorf("an unconfigured catalog should report inline:\n%s", out)
+	}
+}

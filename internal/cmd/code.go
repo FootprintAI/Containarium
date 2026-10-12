@@ -92,6 +92,7 @@ var (
 
 	// `code install` only (#2030).
 	codeBootstrapURL      string
+	codeNoSDLCSkills      bool
 	codeRelease           string
 	codeClaudeCodeVersion string
 
@@ -222,6 +223,8 @@ func init() {
 
 	codeInstallCmd.Flags().StringVar(&codeBootstrapURL, "bootstrap-url", "",
 		"URL of a .tar.gz bundle to apply after the toolchain lands — unpacked into a temp dir on the box and its apply.sh run as the box user (skipped when empty)")
+	codeInstallCmd.Flags().BoolVar(&codeNoSDLCSkills, "no-sdlc-skills", false,
+		"skip installing the pinned SDLC role skills (product, architect, engineer, QA, reviewer, release, ...) into ~/.claude/skills")
 	codeInstallCmd.Flags().StringVar(&codeRelease, "release", "",
 		"release tag to pull the agent-box / mcp-server assets from, v-prefixed (default: this CLI's own version)")
 	codeInstallCmd.Flags().StringVar(&codeClaudeCodeVersion, "claude-code-version", "",
@@ -537,6 +540,27 @@ fi
 echo "agent-box installed at $HOME/.local/bin/agent-box"`
 }
 
+// sdlcSkillsInstallScript fetches the release's install-sdlc-skills.sh and runs
+// it as the box user (#2065), landing the pinned open-sdlc-skills role skills in
+// ~/.claude/skills. The release tag was already validated against
+// releaseTagPattern, so it is safe inside the double-quoted URL.
+//
+// Only a 404 means "this release predates the skills asset" and is skipped with
+// a message; any other fetch failure fails the install, so a network blip never
+// silently ships a box with no skills. A hash mismatch or unsafe archive is the
+// installer's own failure and propagates.
+func sdlcSkillsInstallScript(release string) string {
+	return `set -e
+tmp="$(mktemp)"
+trap 'rm -f "$tmp"' EXIT
+code="$(curl -sSL -o "$tmp" -w '%{http_code}' "https://raw.githubusercontent.com/` + agentBoxRepo + `/` + release + `/scripts/install-sdlc-skills.sh" </dev/null)"
+case "$code" in
+  200) RELEASE="` + release + `" REPO="` + agentBoxRepo + `" bash "$tmp" ;;
+  404) echo "release ` + release + ` has no SDLC skills installer; skipping" >&2 ;;
+  *) echo "fetching the SDLC skills installer failed: HTTP $code" >&2; exit 1 ;;
+esac`
+}
+
 // releaseTagPattern is what may be interpolated into the asset URL above.
 // The tag is a flag value and lands inside a double-quoted shell string, so
 // it is validated rather than quoted — a charset with no $, backtick, quote,
@@ -651,6 +675,15 @@ func runCodeInstall(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("install agent-box (%s) on %q: %w", release, box, err)
 	}
 	fmt.Fprintf(diag, "✓ agent-box installed on %s (from %s)\n", box, release)
+
+	// The role skills are Claude Code skills (~/.claude/skills), so only the
+	// Claude engine gets them (#2065).
+	if plan.engine.Name() == engine.NameClaude && !codeNoSDLCSkills {
+		if _, err := run(sdlcSkillsInstallScript(release)); err != nil {
+			return fmt.Errorf("install SDLC skills (%s) on %q: %w", release, box, err)
+		}
+		fmt.Fprintf(diag, "✓ SDLC skills installed on %s (from %s)\n", box, release)
+	}
 
 	if url := strings.TrimSpace(codeBootstrapURL); url != "" {
 		if _, err := run(bootstrapScript(url)); err != nil {

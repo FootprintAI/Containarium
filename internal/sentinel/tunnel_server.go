@@ -16,9 +16,9 @@ import (
 	"github.com/hashicorp/yamux"
 )
 
-// tunnelTLSRequiredError is the answer a cleartext peer gets when cleartext
-// sessions are not allowed. It is written as the ordinary handshake
-// response so an older client prints a readable reason instead of hanging.
+// tunnelTLSRequiredError is the answer a cleartext peer gets. It is written
+// as the ordinary handshake response so an older client prints a readable
+// reason instead of hanging.
 const tunnelTLSRequiredError = "tls required; upgrade the tunnel client and set --sentinel-pin"
 
 // DefaultTunnelAPIBindAddr is the IP the per-backend API listener
@@ -32,10 +32,9 @@ const DefaultTunnelAPIBindAddr = "127.0.0.1"
 // Each connected spot gets a loopback alias, and the server opens local TCP proxy
 // listeners that forward traffic through the yamux session to the spot.
 //
-// A session arrives either over TLS (a ClientHello offering TunnelALPN,
-// terminated here with the identity set by SetTunnelIdentity) or in the
-// clear (the legacy JSON handshake). Cleartext sessions are accepted while
-// AllowCleartext is set and refused with tunnelTLSRequiredError otherwise.
+// A session arrives over TLS: a ClientHello offering TunnelALPN, terminated
+// here with the identity set by SetTunnelIdentity. A peer that opens in the
+// clear is answered with tunnelTLSRequiredError and closed.
 type TunnelServer struct {
 	listenAddr string
 	policy     *TokenPolicy
@@ -46,12 +45,6 @@ type TunnelServer struct {
 	// it — see loopbackPortsFor. Zero disables the exclusion (e.g. in tests
 	// that don't run a ConnMux).
 	httpsPort int
-
-	// AllowCleartext accepts sessions that open with the cleartext JSON
-	// handshake. It is false by default, so such sessions are refused;
-	// set it to keep older peers working while they move to the TLS
-	// transport.
-	AllowCleartext bool
 
 	// APIBindAddr is the IP the per-backend API listener binds to.
 	// NewTunnelServer sets DefaultTunnelAPIBindAddr; empty means the same.
@@ -123,10 +116,9 @@ func tunnelTLSServerConfig(id *TunnelIdentity) *tls.Config {
 // acceptTransport classifies a freshly accepted connection by its first
 // byte and returns the connection the handshake is read from. A TLS record
 // (0x16) is terminated with the tunnel identity and must negotiate
-// TunnelALPN. Anything else is the cleartext handshake: passed through
-// while AllowCleartext is set, otherwise answered with
-// tunnelTLSRequiredError before its handshake line is read. The caller
-// closes the returned connection on error.
+// TunnelALPN. Anything else is answered with tunnelTLSRequiredError before
+// its handshake line is read and counted as refused. The caller closes the
+// returned connection on error.
 func (ts *TunnelServer) acceptTransport(conn net.Conn) (net.Conn, TunnelTransport, error) {
 	first := make([]byte, 1)
 	if _, err := io.ReadFull(conn, first); err != nil {
@@ -135,12 +127,9 @@ func (ts *TunnelServer) acceptTransport(conn net.Conn) (net.Conn, TunnelTranspor
 	conn = &peekedConn{Conn: conn, peeked: first}
 
 	if first[0] != 0x16 {
-		if !ts.AllowCleartext {
-			ts.registry.noteCleartextRefused()
-			_ = writeHandshakeResponse(conn, &TunnelHandshakeResponse{OK: false, Error: tunnelTLSRequiredError})
-			return conn, "", errors.New("cleartext tunnel session refused: tls required")
-		}
-		return conn, TunnelTransportCleartext, nil
+		ts.registry.noteCleartextRefused()
+		_ = writeHandshakeResponse(conn, &TunnelHandshakeResponse{OK: false, Error: tunnelTLSRequiredError})
+		return conn, "", errors.New("cleartext tunnel session refused: tls required")
 	}
 
 	if ts.tlsConfig == nil {
@@ -221,10 +210,9 @@ func (ts *TunnelServer) handleConnection(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	// Validate. Inside TLS the handshake must be v2 and its proof must
-	// match the keying material this end exports from the same session;
-	// on the cleartext path the legacy shape is checked as before.
-	if err := ts.validateFor(conn, transport, hs); err != nil {
+	// Validate. The handshake must be v2 and its proof must match the
+	// keying material this end exports from the same session.
+	if err := ts.validate(conn, hs); err != nil {
 		log.Printf("[tunnel-server] handshake validation failed from %s: %v", remoteAddr, err)
 		_ = writeHandshakeResponse(conn, &TunnelHandshakeResponse{OK: false, Error: err.Error()})
 		_ = conn.Close()
@@ -257,9 +245,6 @@ func (ts *TunnelServer) handleConnection(ctx context.Context, conn net.Conn) {
 		_ = writeHandshakeResponse(conn, &TunnelHandshakeResponse{OK: false, Error: err.Error()})
 		_ = session.Close()
 		return
-	}
-	if transport == TunnelTransportCleartext {
-		log.Printf("[tunnel-server] DEPRECATED: spot %q registered over a cleartext tunnel session; upgrade its tunnel client and set --sentinel-pin", hs.SpotID)
 	}
 
 	// Send success response
@@ -298,12 +283,9 @@ func (ts *TunnelServer) handleConnection(ctx context.Context, conn net.Conn) {
 	go ts.monitorSession(hs.SpotID, gen, session)
 }
 
-// validateFor runs the validator that matches the transport the handshake
-// arrived on.
-func (ts *TunnelServer) validateFor(conn net.Conn, transport TunnelTransport, hs *TunnelHandshake) error {
-	if transport != TunnelTransportTLS {
-		return validateHandshake(hs, ts.policy)
-	}
+// validate checks a handshake read from a TLS tunnel session against the
+// keying material exported from that session.
+func (ts *TunnelServer) validate(conn net.Conn, hs *TunnelHandshake) error {
 	tlsConn, ok := conn.(*tls.Conn)
 	if !ok {
 		return errors.New("tls tunnel session without tls state")

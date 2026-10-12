@@ -283,6 +283,8 @@ and crew catalogs in `CONTAINARIUM_CREWS_DIR`; the daemon merges them onto the
 built-ins at startup (skills first — crews reference them). Either way the
 loader validates:
 
+**Shared engineering standard (#2488).** A skill can declare `standard_from` + `standard_section` to append one section of a pinned [open-sdlc-skills](https://github.com/FootprintAI/open-sdlc-skills) skill under its own prompt; the embedded `issue-implementer` does this with the `Engineering principles` section of `engineer-implement`, the same text a coding-agent box's Claude Code uses. It is opt-in: set `CONTAINARIUM_SDLC_SKILLS_BUNDLE` to the `sdlc-skills.tar.gz` release asset. The daemon refuses any file that is not the exact pinned asset (digest compiled into the binary), and on any failure the skill keeps its inline prompt. The skill's own contract (no GitHub access, never commit, `max_files`, exactly one JSON object) always comes first and wins on conflict. `containarium agent get <skill>` shows `Prompt source: inline` or `sdlc-pin (<pin>)`.
+
 - `recipe_id`, `system_prompt`, and **at least one** `allowed_scope` are required.
 - every `allowed_scope` must be a known scope (`internal/auth/scopes.go`) — a
   typo is a load-time error, not a silently-overbroad token.

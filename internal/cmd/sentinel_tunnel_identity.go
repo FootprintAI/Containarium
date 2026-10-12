@@ -56,17 +56,26 @@ func printTunnelIdentityPin(out io.Writer, path string) error {
 	return err
 }
 
+// checkDeprecatedCleartextFlag keeps the removed --tunnel-allow-cleartext
+// flag parseable so existing service units still start: false is a no-op,
+// true is refused because cleartext tunnel sessions are no longer supported.
+func checkDeprecatedCleartextFlag(allowCleartext bool) error {
+	if allowCleartext {
+		return fmt.Errorf("--tunnel-allow-cleartext=true is no longer supported: tunnel sessions always require TLS; upgrade the tunnel clients, give them --sentinel-pin, and remove the flag")
+	}
+	return nil
+}
+
 // configureTunnelTransport loads the tunnel identity at identityPath, or
-// generates and saves it on first start, installs it on ts, and applies the
-// cleartext policy. The pin is logged on every start so operators can read
-// it from the service log as well as from 'sentinel tunnel-identity'.
-func configureTunnelTransport(ts *sentinel.TunnelServer, identityPath string, allowCleartext bool) (sentinel.TunnelPin, error) {
+// generates and saves it on first start, and installs it on ts. The pin is
+// logged on every start so operators can read it from the service log as
+// well as from 'sentinel tunnel-identity'.
+func configureTunnelTransport(ts *sentinel.TunnelServer, identityPath string) (sentinel.TunnelPin, error) {
 	id, generated, err := sentinel.LoadOrGenerateTunnelIdentity(identityPath)
 	if err != nil {
 		return "", fmt.Errorf("tunnel identity: %w", err)
 	}
 	ts.SetTunnelIdentity(id)
-	ts.AllowCleartext = allowCleartext
 
 	pin := id.Pin()
 	if generated {
@@ -74,10 +83,6 @@ func configureTunnelTransport(ts *sentinel.TunnelServer, identityPath string, al
 	} else {
 		log.Printf("[sentinel] loaded tunnel identity from %s; pin %s", identityPath, pin)
 	}
-	if allowCleartext {
-		log.Printf("[sentinel] tunnel transport: TLS, cleartext sessions accepted (--tunnel-allow-cleartext=true)")
-	} else {
-		log.Printf("[sentinel] tunnel transport: TLS only, cleartext sessions refused")
-	}
+	log.Printf("[sentinel] tunnel transport: TLS only, cleartext sessions refused")
 	return pin, nil
 }
