@@ -84,6 +84,20 @@ func newStageLog() *stageLog {
 	return &stageLog{durations: make(map[CreateStage]time.Duration)}
 }
 
+// snapshot copies the log under its lock. The jump-account stage reports from
+// its own goroutine, and since #2489 that goroutine also runs for creates with
+// no SSH keys, so tests must not read stages/durations directly.
+func (l *stageLog) snapshot() ([]CreateStage, map[CreateStage]time.Duration) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	stages := append([]CreateStage(nil), l.stages...)
+	durs := make(map[CreateStage]time.Duration, len(l.durations))
+	for k, v := range l.durations {
+		durs[k] = v
+	}
+	return stages, durs
+}
+
 func (l *stageLog) observer() StageObserver {
 	return func(s CreateStage, d time.Duration) {
 		l.mu.Lock()
@@ -127,26 +141,33 @@ func TestCreate_ObservesStagesInOrder(t *testing.T) {
 		StageCreateInstance,
 		StageStartInstance,
 		StageWaitNetwork,
-		StageJumpAccount,
 		StageCreateUser,
 		StageGetInfo,
 		StageTotal,
 	}
-	assertSubsequence(t, log.stages, want)
+	stages, durations := log.snapshot()
+	assertSubsequence(t, stages, want)
+
+	// The jump account runs concurrently with the guest stages, so WHEN it is
+	// observed is not deterministic and it stays out of the ordered list; that
+	// it ran (keyless, #2489) is the contract.
+	if _, ok := durations[StageJumpAccount]; !ok {
+		t.Errorf("jump_account stage not observed on a create with no SSH keys (observed: %v)", stages)
+	}
 
 	for _, absent := range []CreateStage{StageInstallPackages, StageGitSource, StageAddSSHKeys} {
-		if _, ok := log.durations[absent]; ok {
-			t.Errorf("stage %q was observed but should have been skipped (observed: %v)", absent, log.stages)
+		if _, ok := durations[absent]; ok {
+			t.Errorf("stage %q was observed but should have been skipped (observed: %v)", absent, stages)
 		}
 	}
 
-	for stage, d := range log.durations {
+	for stage, d := range durations {
 		if d < 0 {
 			t.Errorf("stage %q recorded negative duration %v", stage, d)
 		}
 	}
-	if log.durations[StageTotal] < log.durations[StageStartInstance] {
-		t.Errorf("total (%v) must cover start_instance (%v)", log.durations[StageTotal], log.durations[StageStartInstance])
+	if durations[StageTotal] < durations[StageStartInstance] {
+		t.Errorf("total (%v) must cover start_instance (%v)", durations[StageTotal], durations[StageStartInstance])
 	}
 }
 
@@ -176,11 +197,12 @@ func TestCreate_FailedStageIsStillObserved(t *testing.T) {
 		t.Fatal("Create should fail when WaitForNetwork fails")
 	}
 
-	if _, ok := log.durations[StageWaitNetwork]; !ok {
-		t.Errorf("failed wait_network stage was not observed (observed: %v)", log.stages)
+	stages, durations := log.snapshot()
+	if _, ok := durations[StageWaitNetwork]; !ok {
+		t.Errorf("failed wait_network stage was not observed (observed: %v)", stages)
 	}
-	if _, ok := log.durations[StageTotal]; ok {
-		t.Errorf("total must not be observed on a failed create (observed: %v)", log.stages)
+	if _, ok := durations[StageTotal]; ok {
+		t.Errorf("total must not be observed on a failed create (observed: %v)", stages)
 	}
 }
 
