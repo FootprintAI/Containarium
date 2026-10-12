@@ -2601,6 +2601,19 @@ func (s *ContainerServer) AddSSHKey(ctx context.Context, req *pb.AddSSHKeyReques
 		return nil, err
 	}
 
+	// Heal a box created before #2489 without SSH keys: it has a container but
+	// no host-side jump account, so AddAuthorizedKey would refuse it forever
+	// ("host user ... does not exist"). The tenant is already authorized above
+	// and the container must exist, so creating the (idempotent) account here
+	// cannot mint accounts for names that are not boxes.
+	if s.manager != nil {
+		if _, gerr := s.manager.Get(req.Username); gerr == nil {
+			if err := container.EnsureJumpServerAccount(req.Username); err != nil {
+				return nil, fmt.Errorf("ensure host account: %w", err)
+			}
+		}
+	}
+
 	if err := container.AddAuthorizedKey(req.Username, req.SshPublicKey); err != nil {
 		return nil, fmt.Errorf("add authorized key: %w", err)
 	}
