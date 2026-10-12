@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A token holding only `agents:run` (or `crews:run`) can now provision a skill's box** (#2504). The recipe path's inner create went through the public `CreateContainer` RPC, which checked the caller for `containers:write` a second time, so the first run of a skill on a daemon failed with `failed to provision container: … scope required: containers:write` — a hosted tracker dispatch always, `RunAgentSkill` and `RunCrew` whenever the box did not exist yet. The create now runs under the daemon's own authority once the entry point has authorised the caller for that box name (`DeployRecipe` still requires `containers:write`; a skill or crew run requires its own scope plus the tenant check on `agent-<skill>`), the public RPC is unchanged, and `deploy` refuses a context with no authenticated subject.
+
 ## [0.103.0] - 2026-10-12
 
 _Coding-agent boxes now come with the SDLC role skills, a box created without SSH keys is reachable again, and the
