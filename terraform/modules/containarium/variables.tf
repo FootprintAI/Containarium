@@ -230,6 +230,23 @@ variable "sentinel_admin_secret" {
   default     = ""
 }
 
+# `ssh_session_log_retention_days` bounds the sentinel's LOCAL copy of the SSH
+# session records (/var/log/containarium/ssh-sessions.jsonl, one JSONL line per
+# accepted/closed session) via logrotate (#2415, ISO 27001 A.8.15). The
+# authoritative copy is the tamper-evident audit chain on each backend, which
+# has its own retention; this value is how long the file on the sentinel VM
+# itself is kept after rotation.
+variable "ssh_session_log_retention_days" {
+  description = "Days of rotated SSH session records to keep on the sentinel VM (logrotate `rotate N` with `daily`). Default 90."
+  type        = number
+  default     = 90
+
+  validation {
+    condition     = var.ssh_session_log_retention_days >= 1 && var.ssh_session_log_retention_days == floor(var.ssh_session_log_retention_days)
+    error_message = "ssh_session_log_retention_days must be a whole number of days, at least 1."
+  }
+}
+
 # `enable_peer_mtls` turns on the Phase 0.5 peer-CA path. When true,
 # the sentinel auto-generates an RSA-4096 CA private key at
 # `/etc/containarium/ca.key` on first boot, mints itself a server

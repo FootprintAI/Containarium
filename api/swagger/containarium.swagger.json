@@ -26,6 +26,14 @@
       "description": "NetworkService provides network and firewall management"
     },
     {
+      "name": "GuardrailEngineService",
+      "description": "GuardrailEngineService is implemented by an ENGINE, not by the\nContainarium daemon: the CLI (and later the daemon) is its client.\nStateless by contract — nothing is persisted on the engine side and\nrepeating a request repeats the scan. No REST mapping: this is an\ninternal plug point between two processes on the same side of a trust\nboundary, not a product endpoint."
+    },
+    {
+      "name": "GuardrailPolicyService",
+      "description": "GuardrailPolicyService is the daemon's store for the server-side policy.\nGet: any authenticated caller (a data owner needs the policy to run\n`guardrail apply` against it). Set: admin role only, audited."
+    },
+    {
       "name": "RecipeService",
       "description": "RecipeService provides one-command deployment of declarative GPU/app\nrecipes onto Containarium backends."
     },
@@ -50,6 +58,10 @@
       "description": "AppService provides application deployment and management"
     },
     {
+      "name": "AuditService",
+      "description": "AuditService — the proto-defined surface of the tamper-evident audit\nstore (internal/audit). Today it carries one write RPC (#2415): the\nsentinel ships the SSH session records its sshpiperd plugin appends\nlocally (internal/sentinel/sshsession) into THIS backend's audit chain,\nso the platform's front-door logins get the same hash chain and\nexternal anchoring (#1706) as in-box sessions and API calls.\n\nReads stay on the legacy /v1/audit/logs gateway route for now."
+    },
+    {
       "name": "BackupService",
       "description": "BackupService provides logical (pg_dump) database backups for the\ndatabases running inside Containarium containers, stored off-host.\nSee docs/DB-BACKUP-OPERATIONS.md for the operational runbook and the\nISO 27001 A.8.13 control mapping."
     },
@@ -64,6 +76,10 @@
     {
       "name": "ClusterService",
       "description": "ClusterService manages tenant-facing managed Kubernetes clusters (#1413).\n\nA managed cluster is a platform-operated k3s control plane plus worker\nnodes that are Containarium VMs, grouped into typed size classes the\ncluster-autoscaler expands by fit simulation. The tenant's only surface\nis this service and the kubeconfig it returns — the control-plane VM is\nplatform territory (no tenant SSH, absent from the tenant's container\nlist), and worker VMs are cluster-internal.\n\nDesign: docs/architecture/managed-k8s-clusters.md. Provisioning is\nasynchronous: CreateCluster records the desired cluster and returns; a\ndaemon-side reconciler (#1414) converges VMs and flips the cluster to\nREADY. Kubeconfig and node-join material are read on demand from the\ncontrol-plane VM and are never persisted by the platform."
+    },
+    {
+      "name": "CodingToolEgressPolicyService",
+      "description": "CodingToolEgressPolicyService — the admin-approved egress allowlist for the\ncoding CLI's own traffic (#2370, docs/architecture/coding-cli-egress-allowlist.md).\n\nSeparate from NetworkPolicyService on purpose: a coding-tool policy never\nchanges what a tenant's own NetworkPolicy means. This service is the policy\nstore only; the kernel-side enforcement is a later increment."
     },
     {
       "name": "ComposeAutostartService"
@@ -1452,6 +1468,40 @@
         ]
       }
     },
+    "/v1/audit/ssh-sessions/ingest": {
+      "post": {
+        "summary": "Ingest sentinel SSH session records",
+        "description": "Append sentinel SSH session open/close records to this backend's tamper-evident audit chain. Idempotent per (session_id, phase); all-or-nothing per batch. Requires the audit:ingest scope.",
+        "operationId": "AuditService_IngestSSHSessionRecords",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/IngestSSHSessionRecordsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/IngestSSHSessionRecordsRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Audit"
+        ]
+      }
+    },
     "/v1/backends": {
       "get": {
         "summary": "List backends",
@@ -2179,6 +2229,239 @@
         ],
         "tags": [
           "Clusters"
+        ]
+      }
+    },
+    "/v1/code/egress-policy": {
+      "get": {
+        "summary": "Get coding-tool egress policy",
+        "description": "Return the stored and effective coding-tool egress policy. On GET /v1/code/egress-policy/{tenant} the tenant is the URL value; on the bare GET /v1/code/egress-policy it is the optional ?tenant= query parameter, and with none the cluster default (admin only). Admin, or the tenant itself holding the code-egress:read scope.",
+        "operationId": "CodingToolEgressPolicyService_GetCodingToolEgressPolicy2",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetCodingToolEgressPolicyResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "tenant",
+            "description": "Empty = the cluster default.",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "CodingToolEgressPolicy"
+        ]
+      },
+      "delete": {
+        "summary": "Delete coding-tool egress policy",
+        "description": "Remove a coding-tool egress policy (idempotent). On DELETE /v1/code/egress-policy/{tenant} the tenant is the URL value; on the bare DELETE /v1/code/egress-policy it is the optional ?tenant= query parameter, and with none the cluster default. Admin-only.",
+        "operationId": "CodingToolEgressPolicyService_DeleteCodingToolEgressPolicy2",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/DeleteCodingToolEgressPolicyResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "tenant",
+            "description": "Empty = the cluster default.",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "CodingToolEgressPolicy"
+        ]
+      },
+      "put": {
+        "summary": "Set coding-tool egress policy",
+        "description": "Create or replace the coding tool's egress allowlist. Admin-only. On PUT /v1/code/egress-policy/{policy.tenant} the tenant is the URL value, which wins over any policy.tenant in the body (path parameters are applied after the body is decoded). On the bare PUT /v1/code/egress-policy the tenant is policy.tenant from the body; an empty tenant sets the cluster default. mode is required: LOG_ONLY or ENFORCE; UNSPECIFIED is rejected with INVALID_ARGUMENT.",
+        "operationId": "CodingToolEgressPolicyService_SetCodingToolEgressPolicy2",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SetCodingToolEgressPolicyResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "policy",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/CodingToolEgressPolicy"
+            }
+          }
+        ],
+        "tags": [
+          "CodingToolEgressPolicy"
+        ]
+      }
+    },
+    "/v1/code/egress-policy/{policy.tenant}": {
+      "put": {
+        "summary": "Set coding-tool egress policy",
+        "description": "Create or replace the coding tool's egress allowlist. Admin-only. On PUT /v1/code/egress-policy/{policy.tenant} the tenant is the URL value, which wins over any policy.tenant in the body (path parameters are applied after the body is decoded). On the bare PUT /v1/code/egress-policy the tenant is policy.tenant from the body; an empty tenant sets the cluster default. mode is required: LOG_ONLY or ENFORCE; UNSPECIFIED is rejected with INVALID_ARGUMENT.",
+        "operationId": "CodingToolEgressPolicyService_SetCodingToolEgressPolicy",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SetCodingToolEgressPolicyResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "policy.tenant",
+            "description": "Empty tenant = the cluster default. On the REST path with {policy.tenant}\nthe URL value replaces whatever is sent here.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "policy",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "type": "object",
+              "properties": {
+                "mode": {
+                  "$ref": "#/definitions/containarium.v1.NetworkPolicyMode",
+                  "description": "Required. LOG_ONLY records what would be dropped, ENFORCE drops it.\nUnlike NetworkPolicy there is no default: UNSPECIFIED (or an unknown\nvalue) is INVALID_ARGUMENT, so a forgotten mode never stores a policy\nthat drops nothing."
+                },
+                "egressCidrs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Validated and normalized by the same rules as NetworkPolicy."
+                },
+                "egressDomains": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "revision": {
+                  "type": "string",
+                  "format": "int64",
+                  "description": "Server-assigned and monotonic; ignored on input."
+                },
+                "updatedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "updatedBy": {
+                  "type": "string"
+                }
+              },
+              "description": "CodingToolEgressPolicy is the admin's allowlist for the coding tool's own\ntraffic. A tenant policy replaces the cluster default; it does not merge\nwith it."
+            }
+          }
+        ],
+        "tags": [
+          "CodingToolEgressPolicy"
+        ]
+      }
+    },
+    "/v1/code/egress-policy/{tenant}": {
+      "get": {
+        "summary": "Get coding-tool egress policy",
+        "description": "Return the stored and effective coding-tool egress policy. On GET /v1/code/egress-policy/{tenant} the tenant is the URL value; on the bare GET /v1/code/egress-policy it is the optional ?tenant= query parameter, and with none the cluster default (admin only). Admin, or the tenant itself holding the code-egress:read scope.",
+        "operationId": "CodingToolEgressPolicyService_GetCodingToolEgressPolicy",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetCodingToolEgressPolicyResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "tenant",
+            "description": "Empty = the cluster default.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "CodingToolEgressPolicy"
+        ]
+      },
+      "delete": {
+        "summary": "Delete coding-tool egress policy",
+        "description": "Remove a coding-tool egress policy (idempotent). On DELETE /v1/code/egress-policy/{tenant} the tenant is the URL value; on the bare DELETE /v1/code/egress-policy it is the optional ?tenant= query parameter, and with none the cluster default. Admin-only.",
+        "operationId": "CodingToolEgressPolicyService_DeleteCodingToolEgressPolicy",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/DeleteCodingToolEgressPolicyResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "tenant",
+            "description": "Empty = the cluster default.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "CodingToolEgressPolicy"
         ]
       }
     },
@@ -3991,6 +4274,62 @@
         ]
       }
     },
+    "/v1/guardrail/policy": {
+      "get": {
+        "summary": "Get the server guardrail policy",
+        "description": "Return the cluster-wide guardrail policy, its trusted signers, revision and policy hash. configured=false when no policy was ever set. Any authenticated caller.",
+        "operationId": "GuardrailPolicyService_GetGuardrailPolicy",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetGuardrailPolicyResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "tags": [
+          "Guardrail"
+        ]
+      },
+      "put": {
+        "summary": "Set the server guardrail policy",
+        "description": "Replace the cluster-wide guardrail policy and trusted signers. Validated first (no unspecified or duplicate kind, max_residual \u003e= 0, every signer key_id equal to the SHA-256 of its Ed25519 key); an invalid policy is INVALID_ARGUMENT and the stored policy is untouched. Increments the revision and writes an audit entry. Admin role only.",
+        "operationId": "GuardrailPolicyService_SetGuardrailPolicy",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SetGuardrailPolicyResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/SetGuardrailPolicyRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Guardrail"
+        ]
+      }
+    },
     "/v1/integrity/self-measurement": {
       "get": {
         "summary": "Get a backend's signed integrity self-measurement",
@@ -4549,6 +4888,47 @@
         ]
       }
     },
+    "/v1/network-policies/{tenant}/plan": {
+      "get": {
+        "summary": "Plan network policy",
+        "description": "List the destinations a tenant's boxes reached that its policy denied or dropped in a recent window, so an egress allow-list can be written from observed behaviour and checked before enforcement. Admin-only.",
+        "operationId": "NetworkPolicyService_PlanNetworkPolicy",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/PlanNetworkPolicyResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "tenant",
+            "description": "Tenant to plan for (required).",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "sinceMinutes",
+            "description": "Look-back window in minutes. \u003c= 0 means 60; capped at 10080 (one week).",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          }
+        ],
+        "tags": [
+          "NetworkPolicy"
+        ]
+      }
+    },
     "/v1/network-policy-signatures": {
       "get": {
         "summary": "List network-policy signatures",
@@ -4756,6 +5136,30 @@
             "type": "string"
           }
         ],
+        "tags": [
+          "Network"
+        ]
+      }
+    },
+    "/v1/network/guard": {
+      "get": {
+        "summary": "Network guard status",
+        "description": "Reports the core-infra guard (#2084) and the tenant guard (#2347): arming mode, Incus firewall driver, whether this host can carry bridge NIC ACLs at all, the last pass time and error, and one entry per guarded container. Admin only.",
+        "operationId": "NetworkService_GetNetworkGuardStatus",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/NetworkGuardStatus"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
         "tags": [
           "Network"
         ]
@@ -5319,6 +5723,79 @@
             "required": true,
             "schema": {
               "$ref": "#/definitions/TriggerPentestScanRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Pentest"
+        ]
+      }
+    },
+    "/v1/pentest/scan-opt-ins": {
+      "get": {
+        "summary": "List scan opt-ins",
+        "description": "Lists the recorded scan decisions, for one container or (admin) for all.",
+        "operationId": "PentestService_ListPentestScanOptIns",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListPentestScanOptInsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "containerName",
+            "description": "Optional: only this container. Empty lists every recorded decision\n(admin only).",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Pentest"
+        ]
+      }
+    },
+    "/v1/pentest/scan-opt-ins/{containerName}": {
+      "put": {
+        "summary": "Set a container's scan opt-in",
+        "description": "Records, with the caller and a reason, whether a container may be scanned by an intrusive scanner such as OpenVAS. The container owner or an admin may call it; an explicit refusal overrides any operator-wide opt-in. Every change is written to the audit log.",
+        "operationId": "PentestService_SetPentestScanOptIn",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SetPentestScanOptInResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "containerName",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/SetPentestScanOptInBody"
             }
           }
         ],
@@ -9046,6 +9523,14 @@
         "engine": {
           "$ref": "#/definitions/AgentEngine",
           "description": "Agent engine (SDK) this skill runs on. AGENT_ENGINE_UNSPECIFIED keeps\ntoday's behaviour: the daemon's configured gateway primary provider\npicks the engine in gateway mode, or the box's own default/env decides\nin direct mode. A named engine is honoured per run — see\ndocs/architecture/agent-router.md."
+        },
+        "promptSource": {
+          "$ref": "#/definitions/PromptSource",
+          "description": "Where system_prompt came from (#2488). INLINE is the catalog text as\nwritten. SDLC_PIN means the catalog text with the pinned open-sdlc-skills\nengineering standard appended under it, so a hosted skill and a box's\nClaude Code skill share one source for their engineering principles.\nVisible here, on `agent get`/`list` and in the hosted catalog, so a\ndeployment that never configured the pin is a visible state rather than\nsilent drift."
+        },
+        "promptPin": {
+          "type": "string",
+          "description": "The pin the appended standard came from, e.g.\n\"FootprintAI/open-sdlc-skills@\u003csha12\u003e\". Empty unless prompt_source is\nPROMPT_SOURCE_SDLC_PIN."
         }
       },
       "description": "AgentSkill is a packaged, runnable agent: a Recipe (the box — image,\nresources, GPU) plus the agent layer (who it is, what tools it may call,\nwho it may talk to). This is the unit `containarium agent run` launches.\n\nKey invariant: allowed_scopes and allowed_peers are typed, first-class\nfields — NOT a prompt string. allowed_scopes is minted into the agent's JWT\nat launch; allowed_peers compiles into eBPF network policy (Phase 2). The\ntyping IS the security boundary."
@@ -9539,7 +10024,18 @@
         "BACKUP_ENGINE_HOOK"
       ],
       "default": "BACKUP_ENGINE_UNSPECIFIED",
-      "description": "BackupEngine identifies the database engine a backup was taken from.\n\nPostgres is the only engine implemented today; the enum exists so that a\nsecond one has somewhere to be named, and so that the engine a record was\ntaken with is a typed value rather than a string the reader has to trust.\n\n - BACKUP_ENGINE_UNSPECIFIED: Unset, or a record written by a daemon that predates this enum.\nRejected wherever an engine has to be chosen — never treated as\nPostgres by default, because guessing the engine of a dump is how a\nrestore silently targets the wrong one.\n - BACKUP_ENGINE_HOOK: A dump produced by a tenant-supplied backup hook (#1831): an opaque\nbyte stream the daemon captured from the hook's stdout. The daemon\ndoes not know its format, so a HOOK record can be listed, fetched,\nintegrity-checked and deleted, but is never restored or restore-tested\nby the platform — apply it with the tenant's own tooling."
+      "description": "BackupEngine identifies the database engine a backup was taken from.\n\nPostgres is the only engine implemented today; the enum exists so that a\nsecond one has somewhere to be named, and so that the engine a record was\ntaken with is a typed value rather than a string the reader has to trust.\n\n - BACKUP_ENGINE_UNSPECIFIED: Unset, or a record written by a daemon that predates this enum.\nRejected wherever an engine has to be chosen — never treated as\nPostgres by default, because guessing the engine of a dump is how a\nrestore silently targets the wrong one.\n - BACKUP_ENGINE_HOOK: A dump produced by a tenant-supplied backup hook (#1831): a byte\nstream the daemon captured from the hook's stdout. Unless the hook\ndeclared its format (see HookFormat, #2405) the daemon does not know\nit, so an opaque HOOK record can be listed, fetched, integrity-checked\nand deleted, but is never restored or restore-tested by the platform —\napply it with the tenant's own tooling."
+    },
+    "BackupKeyMode": {
+      "type": "string",
+      "enum": [
+        "BACKUP_KEY_MODE_UNSPECIFIED",
+        "BACKUP_KEY_MODE_AGE_RECIPIENT",
+        "BACKUP_KEY_MODE_MANAGED",
+        "BACKUP_KEY_MODE_BOTH"
+      ],
+      "default": "BACKUP_KEY_MODE_UNSPECIFIED",
+      "description": "BackupKeyMode names who holds the key that opens an encrypted backup\n(#2402). It replaces reading `encrypted \u0026\u0026 age_recipient != \"\"` as a\nmode: a reader that needs to know whether a backup is platform-managed\nchecks this field, not a combination of others.\n\n - BACKUP_KEY_MODE_UNSPECIFIED: On a record: not encrypted. On a request: the daemon default —\nMANAGED when the daemon has a key wrapper configured (BOTH when a\nlegacy recipient also resolves), otherwise the AGE_RECIPIENT /\nplaintext behaviour of #1831 / #1836.\n - BACKUP_KEY_MODE_AGE_RECIPIENT: Encrypted to a tenant-held age recipient only (#1831). The platform\nholds no key; restore needs the matching identity from the caller.\n - BACKUP_KEY_MODE_MANAGED: Encrypted to a per-backup ephemeral age identity whose secret is\nwrapped by the daemon's KMS wrapper and stored on the record\n(wrapped_key / kek_id). The daemon can wrap but not unwrap; only a\nholder of the KMS decrypt role can open the backup. Requesting this\non a daemon with no wrapper is an error, not a fallback.\n - BACKUP_KEY_MODE_BOTH: Both of the above in one age file: either the legacy identity or\nthe unwrapped managed identity decrypts it. Requires a recipient."
     },
     "BackupRecord": {
       "type": "object",
@@ -9601,6 +10097,22 @@
         "hook": {
           "type": "string",
           "description": "For BACKUP_ENGINE_HOOK: the absolute in-container path of the hook\nthat produced the dump. Empty for pg_dump records."
+        },
+        "wrappedKey": {
+          "type": "string",
+          "format": "byte",
+          "description": "Managed key mode (#2402). wrapped_key is the per-backup age\nidentity's secret string, wrapped by the daemon's KMS; kek_id is the\nkey version it was wrapped under (for GCP, the full CryptoKeyVersion\nresource name, so a version with backups still under it can be\nguarded against destruction). Both empty unless key_mode is MANAGED\nor BOTH. The daemon never unwraps wrapped_key: whoever restores or\nverifies unwraps it under their own KMS credentials and supplies\nthe identity in the request, as for any encrypted record."
+        },
+        "kekId": {
+          "type": "string"
+        },
+        "keyMode": {
+          "$ref": "#/definitions/BackupKeyMode",
+          "description": "Who holds the key: UNSPECIFIED for a plaintext record,\nAGE_RECIPIENT for a record encrypted to a tenant-held recipient only\n(including every record written before this field existed)."
+        },
+        "hookFormat": {
+          "$ref": "#/definitions/HookFormat",
+          "description": "For BACKUP_ENGINE_HOOK: the format the hook declared for its output\n(#2405). OPAQUE for a hook record that declared none. UNSPECIFIED for\npg_dump records."
         }
       },
       "description": "BackupRecord is the metadata index entry for one stored dump. The dump\nitself lives at `location`; this record is persisted as a small JSON\nsidecar in the daemon's backup directory so `ListBackups` works without\na database dependency (the thing we are backing up may itself be down)."
@@ -10223,10 +10735,86 @@
         "CODE_CREDENTIAL_SOURCE_UNSPECIFIED",
         "CODE_CREDENTIAL_SOURCE_INTERACTIVE",
         "CODE_CREDENTIAL_SOURCE_API_KEY",
-        "CODE_CREDENTIAL_SOURCE_NONE"
+        "CODE_CREDENTIAL_SOURCE_NONE",
+        "CODE_CREDENTIAL_SOURCE_EXPIRED"
       ],
       "default": "CODE_CREDENTIAL_SOURCE_UNSPECIFIED",
-      "description": "CodeCredentialSource is WHERE a box's `containarium code`-style coding\nengine (Claude Code today; Codex once #2273 lands) would currently find a\nhuman/headless sign-in — never the credential's value, never read, logged,\nor transmitted at any layer. Mirrors #2030's `code install` verify output\n(\"report which credential source Claude Code will use, never a value\"),\ncondensed to the one answer GetSkillBoxCredentialStatus needs (#2272).\n\nDeliberately a DIFFERENT enum from AgentCredentialSource above:\nAgentCredentialSource is where a model-GATEWAY token's upstream key comes\nfrom (daemon-held, never the box's concern); CodeCredentialSource is\nwhether a HUMAN has already completed Anthropic's own sign-in flow on this\nbox, or placed their own key, so unattended reuse of that same box needs no\ncredential of containarium's own.\n\n - CODE_CREDENTIAL_SOURCE_INTERACTIVE: The engine's own device-code/browser sign-in has already completed on\nthis box (e.g. Claude Code's own ~/.claude/.credentials.json).\n - CODE_CREDENTIAL_SOURCE_API_KEY: A user-placed provider key/token is visible to the engine's own shell\nenvironment (e.g. ANTHROPIC_API_KEY in ~/.claude/settings.json, or a 3P\nprovider env var) — the headless path #2030 documents.\n - CODE_CREDENTIAL_SOURCE_NONE: Neither of the above. Expected on a freshly provisioned box (#2272)\nuntil a human signs in or places a key."
+      "description": "CodeCredentialSource is WHERE a box's `containarium code`-style coding\nengine (Claude Code today; Codex once #2273 lands) would currently find a\nhuman/headless sign-in — never the credential's value, never read, logged,\nor transmitted at any layer. Mirrors #2030's `code install` verify output\n(\"report which credential source Claude Code will use, never a value\"),\ncondensed to the one answer GetSkillBoxCredentialStatus needs (#2272).\n\nDeliberately a DIFFERENT enum from AgentCredentialSource above:\nAgentCredentialSource is where a model-GATEWAY token's upstream key comes\nfrom (daemon-held, never the box's concern); CodeCredentialSource is\nwhether a HUMAN has already completed Anthropic's own sign-in flow on this\nbox, or placed their own key, so unattended reuse of that same box needs no\ncredential of containarium's own.\n\n - CODE_CREDENTIAL_SOURCE_INTERACTIVE: The engine's own device-code/browser sign-in has already completed on\nthis box (e.g. Claude Code's own ~/.claude/.credentials.json).\n - CODE_CREDENTIAL_SOURCE_API_KEY: A user-placed provider key/token is visible to the engine's own shell\nenvironment (e.g. ANTHROPIC_API_KEY in ~/.claude/settings.json, or a 3P\nprovider env var) — the headless path #2030 documents.\n - CODE_CREDENTIAL_SOURCE_NONE: Neither of the above. Expected on a freshly provisioned box (#2272)\nuntil a human signs in or places a key.\n - CODE_CREDENTIAL_SOURCE_EXPIRED: The engine's own device-code/browser sign-in exists on this box, but the\nexpiry timestamp recorded in its sign-in credentials file (e.g. the\n`expiresAt` field of Claude Code's ~/.claude/.credentials.json) is in\nthe past (#2371). Only that timestamp is parsed — the credential value\nis never read, logged, or transmitted. A sign-in file with no expiry\ntimestamp reports INTERACTIVE, never EXPIRED: an unknown expiry is not\nguessed to be a past one."
+    },
+    "CodingToolEgressImplicitEntry": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/CodingToolEgressImplicitKind"
+        },
+        "destination": {
+          "type": "string",
+          "description": "host:port when the daemon can name it; empty when it is resolved per box\nat run start."
+        },
+        "description": {
+          "type": "string"
+        }
+      }
+    },
+    "CodingToolEgressImplicitKind": {
+      "type": "string",
+      "enum": [
+        "CODING_TOOL_EGRESS_IMPLICIT_KIND_UNSPECIFIED",
+        "CODING_TOOL_EGRESS_IMPLICIT_KIND_DNS_RESOLVER",
+        "CODING_TOOL_EGRESS_IMPLICIT_KIND_MODEL_GATEWAY"
+      ],
+      "default": "CODING_TOOL_EGRESS_IMPLICIT_KIND_UNSPECIFIED",
+      "description": "CodingToolEgressImplicitKind names a destination that is always allowed\nwhile a policy is in effect, without the admin listing it.\n\n - CODING_TOOL_EGRESS_IMPLICIT_KIND_DNS_RESOLVER: The box's DNS resolver; without it no listed domain resolves.\n - CODING_TOOL_EGRESS_IMPLICIT_KIND_MODEL_GATEWAY: The platform's model gateway. Applies to gateway-credential runs only."
+    },
+    "CodingToolEgressPolicy": {
+      "type": "object",
+      "properties": {
+        "tenant": {
+          "type": "string",
+          "description": "Empty tenant = the cluster default. On the REST path with {policy.tenant}\nthe URL value replaces whatever is sent here."
+        },
+        "mode": {
+          "$ref": "#/definitions/containarium.v1.NetworkPolicyMode",
+          "description": "Required. LOG_ONLY records what would be dropped, ENFORCE drops it.\nUnlike NetworkPolicy there is no default: UNSPECIFIED (or an unknown\nvalue) is INVALID_ARGUMENT, so a forgotten mode never stores a policy\nthat drops nothing."
+        },
+        "egressCidrs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Validated and normalized by the same rules as NetworkPolicy."
+        },
+        "egressDomains": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "revision": {
+          "type": "string",
+          "format": "int64",
+          "description": "Server-assigned and monotonic; ignored on input."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedBy": {
+          "type": "string"
+        }
+      },
+      "description": "CodingToolEgressPolicy is the admin's allowlist for the coding tool's own\ntraffic. A tenant policy replaces the cluster default; it does not merge\nwith it."
+    },
+    "CodingToolEgressPolicySource": {
+      "type": "string",
+      "enum": [
+        "CODING_TOOL_EGRESS_POLICY_SOURCE_UNSPECIFIED",
+        "CODING_TOOL_EGRESS_POLICY_SOURCE_NONE",
+        "CODING_TOOL_EGRESS_POLICY_SOURCE_TENANT",
+        "CODING_TOOL_EGRESS_POLICY_SOURCE_CLUSTER_DEFAULT"
+      ],
+      "default": "CODING_TOOL_EGRESS_POLICY_SOURCE_UNSPECIFIED",
+      "description": "CodingToolEgressPolicySource says which stored policy a tenant's runs take.\n\n - CODING_TOOL_EGRESS_POLICY_SOURCE_NONE: Nothing configured: runs are unrestricted (decision Q7)."
     },
     "Collaborator": {
       "type": "object",
@@ -10364,6 +10952,32 @@
         }
       },
       "description": "ComposeStack is the public-safe metadata for one discovered compose\ndirectory inside a tenant's LXC. Mirrors the agent-box-side struct\nof the same name (internal/agentbox/compose.go).\n\n`running_count` + `total_count` are deliberately NOT a single\nboolean: agents need to distinguish fully-up / partial-degradation\n/ fully-down to decide whether to alert vs. restart vs. ignore.\n\"running\" matches docker compose's State=\"running\" and podman's\nequivalent; \"total\" is every service declared in the compose file\nregardless of state."
+    },
+    "ConfigEvidence": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "File the effective value came from, or the directory when the exact\nfile could not be attributed."
+        },
+        "directive": {
+          "type": "string",
+          "description": "Directive name, e.g. \"PasswordAuthentication\"."
+        },
+        "value": {
+          "type": "string",
+          "description": "Effective value at detection time, e.g. \"yes\"."
+        },
+        "remediated": {
+          "type": "boolean",
+          "description": "Whether the platform re-asserted its managed configuration in the\nsame pass (the violation is closed on the stock service, and this\nfinding records that it happened)."
+        },
+        "note": {
+          "type": "string",
+          "description": "Free-text detail, e.g. \"managed drop-in missing\"."
+        }
+      },
+      "description": "ConfigEvidence captures one configuration directive whose effective value\nviolated policy, attached to a posture finding (#2424)."
     },
     "Connection": {
       "type": "object",
@@ -10830,6 +11444,14 @@
         "ageRecipient": {
           "type": "string",
           "description": "User-held encryption (#1831): an age X25519 recipient (\"age1…\"). When\nset, the dump is encrypted to it in the daemon process before it is\nstaged or uploaded, so the daemon's disk, the object store and the\noperator only ever hold ciphertext. Restore needs the matching\nidentity, which the platform never stores."
+        },
+        "keyMode": {
+          "$ref": "#/definitions/BackupKeyMode",
+          "description": "Who should hold the key (#2402). UNSPECIFIED takes the daemon\ndefault: MANAGED when the daemon has a key wrapper configured\n(CONTAINARIUM_BACKUP_KMS_KEY_NAME), BOTH when a recipient also\nresolves, otherwise AGE_RECIPIENT with a recipient or plaintext\nwithout. An explicit mode the daemon cannot satisfy — MANAGED or\nBOTH with no wrapper (FAILED_PRECONDITION), AGE_RECIPIENT or BOTH\nwith no recipient (INVALID_ARGUMENT) — is rejected, never silently\ndowngraded."
+        },
+        "hookFormat": {
+          "$ref": "#/definitions/HookFormat",
+          "description": "Declared format of the hook's output (#2405). UNSPECIFIED means\nOPAQUE, today's behaviour. Set PG_CUSTOM only for a hook that emits a\n`pg_dump -Fc` archive: the record then gets a relation-count manifest\nread from the archive's table of contents (when pg_restore is\navailable in the container) and can be restore-tested. Rejected\nwithout `hook`."
         }
       },
       "description": "CreateBackupRequest dumps a container's database and stores it at the\nchosen destination."
@@ -11343,6 +11965,9 @@
         }
       }
     },
+    "DeleteCodingToolEgressPolicyResponse": {
+      "type": "object"
+    },
     "DeleteContainerResponse": {
       "type": "object",
       "properties": {
@@ -11598,6 +12223,10 @@
         "async": {
           "type": "boolean",
           "description": "async runs the recipe's post_start in the background: the RPC returns as\nsoon as the container is created (state CREATING) instead of blocking until\npost_start finishes. Set this when the deploy is driven over a connection\nwith a request/idle timeout shorter than the post_start (e.g. a control\nplane reaching a BYOC host through a peer-proxy): a recipe that pulls a\nmulti-GB image can exceed that timeout, which would otherwise abort the\ndeploy mid-pull. The CLI leaves this false so a human sees post_start's\nresult inline. The box becomes fully functional once the background\npost_start completes; poll the container / its workspace access to detect\nreadiness."
+        },
+        "guardrailInput": {
+          "$ref": "#/definitions/GuardrailGateInput",
+          "description": "The dataset and attestation for a recipe with guardrail_gate set.\nRequired for such a recipe (absent is FAILED_PRECONDITION); ignored for\nan ungated one. A gated recipe cannot be deployed async."
         }
       },
       "description": "DeployRecipeRequest provisions a new dedicated container from a recipe."
@@ -11801,6 +12430,64 @@
           "description": "Issues that passed every check this tick makes before inserting a\ndispatch row (routed scope, no gate or state label, depth within\npolicy) but were not dispatched because max_starts runs had already\nstarted (#2270). They have no row and no label; a later tick picks\nthem up. Always 0 when max_starts is 0."
         }
       }
+    },
+    "EffectiveCodingToolEgressPolicy": {
+      "type": "object",
+      "properties": {
+        "tenant": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/definitions/CodingToolEgressPolicySource"
+        },
+        "restricted": {
+          "type": "boolean",
+          "description": "False when no policy applies: runs take today's unrestricted path."
+        },
+        "mode": {
+          "$ref": "#/definitions/containarium.v1.NetworkPolicyMode",
+          "description": "The applied policy's mode: LOG_ONLY or ENFORCE whenever restricted is\ntrue (a stored policy always has one); UNSPECIFIED only when unrestricted."
+        },
+        "egressCidrs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "egressDomains": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "denyAll": {
+          "type": "boolean",
+          "description": "True when the policy lists nothing and is ENFORCE: no admin-listed\ndestination is reachable, only the implicit entries."
+        },
+        "implicit": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/CodingToolEgressImplicitEntry"
+          },
+          "description": "Present whenever restricted is true."
+        },
+        "revision": {
+          "type": "string",
+          "format": "int64",
+          "description": "Revision of the policy this was resolved from; 0 when unrestricted."
+        }
+      },
+      "description": "EffectiveCodingToolEgressPolicy is what a run for the tenant takes."
+    },
+    "EgressPreset": {
+      "type": "string",
+      "enum": [
+        "EGRESS_PRESET_UNSPECIFIED",
+        "EGRESS_PRESET_ALLOW_LIST_ONLY"
+      ],
+      "default": "EGRESS_PRESET_UNSPECIFIED",
+      "description": "EgressPreset names a ready-made egress posture so a tenant lockdown is one\nfield rather than a rule set (#2440).\n\n - EGRESS_PRESET_UNSPECIFIED: No preset: the policy is exactly what its egress lists say. The behaviour\nbefore this enum existed.\n - EGRESS_PRESET_ALLOW_LIST_ONLY: Allow-list only: egress is limited to egress_cidrs and egress_domains plus\nthe box's DNS resolver (the bridge gateway), which is added implicitly so\nan allow-list cannot blackhole name resolution. Everything else is denied\nin ENFORCE mode and audited in LOG_ONLY, so the preset can be soaked\nbefore it is armed. The mode is not changed by the preset."
     },
     "EnableBody": {
       "type": "object",
@@ -12058,9 +12745,23 @@
             "type": "object",
             "$ref": "#/definitions/DenyEvidence"
           }
+        },
+        "configs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/ConfigEvidence"
+          }
+        },
+        "listeners": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/ListenerEvidence"
+          }
         }
       },
-      "description": "Evidence bundles the flow and deny records that triggered a finding.\nCapped by the store to the most recent entries — see FindingStore."
+      "description": "Evidence bundles the flow, deny and configuration records that triggered\na finding. Capped by the store to the most recent entries — see\nFindingStore."
     },
     "ExchangeDelegatedTokenRequest": {
       "type": "object",
@@ -12600,6 +13301,18 @@
         }
       }
     },
+    "GetCodingToolEgressPolicyResponse": {
+      "type": "object",
+      "properties": {
+        "policy": {
+          "$ref": "#/definitions/CodingToolEgressPolicy",
+          "description": "The policy stored under exactly this key; absent when none is set."
+        },
+        "effective": {
+          "$ref": "#/definitions/EffectiveCodingToolEgressPolicy"
+        }
+      }
+    },
     "GetConnectionSummaryResponse": {
       "type": "object",
       "properties": {
@@ -12690,6 +13403,22 @@
         "envelope": {
           "type": "string",
           "format": "int64"
+        }
+      }
+    },
+    "GetGuardrailPolicyResponse": {
+      "type": "object",
+      "properties": {
+        "configured": {
+          "type": "boolean",
+          "description": "False when no policy was ever set. `policy` is then empty and consumers\nbehave as before the server policy existed (ungated deploys unaffected,\ninbound scan off). A read error is an RPC error, never configured=false."
+        },
+        "policy": {
+          "$ref": "#/definitions/ServerGuardrailPolicy"
+        },
+        "policyHash": {
+          "type": "string",
+          "description": "SHA-256 of policy.policy (the same hash an attestation records). Empty\nwhen not configured."
         }
       }
     },
@@ -13238,6 +13967,277 @@
         }
       }
     },
+    "GuardEntry": {
+      "type": "object",
+      "properties": {
+        "container": {
+          "type": "string"
+        },
+        "subject": {
+          "type": "string",
+          "description": "Role for the core guard (e.g. core-postgres); tenant for the tenant guard."
+        },
+        "ip": {
+          "type": "string"
+        },
+        "aclName": {
+          "type": "string"
+        },
+        "attached": {
+          "type": "boolean"
+        },
+        "lastError": {
+          "type": "string"
+        }
+      },
+      "description": "GuardEntry is one guarded subject (a core-role or tenant container) as of\nthe guard's last pass."
+    },
+    "GuardMode": {
+      "type": "string",
+      "enum": [
+        "GUARD_MODE_UNSPECIFIED",
+        "GUARD_MODE_OFF",
+        "GUARD_MODE_ENFORCE"
+      ],
+      "default": "GUARD_MODE_UNSPECIFIED",
+      "description": "GuardMode is a NIC-ACL guard's arming state (internal/nicguard). There\nis no audit mode: an Incus NIC ACL either drops or it doesn't.\n\n - GUARD_MODE_OFF: The guard is disabled on this host (CONTAINARIUM_*_GUARD=off).\n - GUARD_MODE_ENFORCE: The guard attaches ACLs and they drop (the default)."
+    },
+    "GuardStatus": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "$ref": "#/definitions/GuardMode"
+        },
+        "firewallDriver": {
+          "type": "string",
+          "description": "Incus firewall driver seen on the last pass (\"nftables\" is required)."
+        },
+        "unsupported": {
+          "type": "boolean",
+          "description": "Unsupported is true when this host cannot carry bridge NIC ACLs at all\n(firewall driver, or Incus without network_bridge_acl_devices): nothing\nis guarded, creates are not refused, last_error says why."
+        },
+        "lastPass": {
+          "type": "string",
+          "description": "last_pass is the RFC 3339 time of the last pass; empty before the first."
+        },
+        "lastError": {
+          "type": "string"
+        },
+        "staleSince": {
+          "type": "string",
+          "description": "stale_since is set (RFC 3339) while passes keep failing; the ACLs from\nthe last good pass stay in force meanwhile."
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/GuardEntry"
+          }
+        },
+        "unresolved": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Containers the guard could not attribute (tenant guard) or roles its\ntable does not know (core guard). Reported, never guessed."
+        },
+        "subjects": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Number of distinct subjects (tenants for the tenant guard)."
+        }
+      },
+      "description": "GuardStatus is one guard's last-pass snapshot."
+    },
+    "GuardrailAction": {
+      "type": "string",
+      "enum": [
+        "GUARDRAIL_ACTION_UNSPECIFIED",
+        "GUARDRAIL_ACTION_ALLOW",
+        "GUARDRAIL_ACTION_REDACT",
+        "GUARDRAIL_ACTION_BLOCK"
+      ],
+      "default": "GUARDRAIL_ACTION_UNSPECIFIED",
+      "description": "GuardrailAction is what the policy does with a finding of a given kind.\n\n - GUARDRAIL_ACTION_ALLOW: Leave the span as-is; count it.\n - GUARDRAIL_ACTION_REDACT: Replace the span with a stable placeholder token.\n - GUARDRAIL_ACTION_BLOCK: Any finding of this kind fails the gate for the whole subject."
+    },
+    "GuardrailAttestation": {
+      "type": "object",
+      "properties": {
+        "subjectSha256": {
+          "type": "string",
+          "description": "SHA-256 over the subject's canonical bytes (for a directory: every\nregular file, by relative path order, path and content)."
+        },
+        "engineId": {
+          "type": "string"
+        },
+        "engineVersion": {
+          "type": "string"
+        },
+        "policyHash": {
+          "type": "string",
+          "description": "SHA-256 over the canonical proto bytes of the GuardrailPolicy applied."
+        },
+        "found": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/GuardrailKindCount"
+          },
+          "description": "Findings on the ORIGINAL subject, per kind, before redaction."
+        },
+        "residual": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/GuardrailKindCount"
+          },
+          "description": "Findings on the REDACTED subject, per kind — what the gate judged."
+        },
+        "coverageGaps": {
+          "type": "string",
+          "format": "int64"
+        },
+        "verdict": {
+          "$ref": "#/definitions/GuardrailVerdict"
+        },
+        "attestedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "keyId": {
+          "type": "string",
+          "description": "Identifies the signing key (SHA-256 of the public key, hex) so a\nverifier holding several tenants' keys picks the right one."
+        },
+        "signature": {
+          "type": "string",
+          "format": "byte",
+          "description": "Ed25519 signature over the canonical proto bytes of this message with\n`signature` cleared."
+        },
+        "kindsScanned": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GuardrailKind"
+          },
+          "description": "The kinds the engine was asked for — and, because an engine that cannot\nscan a requested kind answers FAILED_PRECONDITION rather than scanning\nthe rest, the kinds that were actually covered. A consumer that needs\nSECRET covered checks for it here; a PASS that never looked for a kind\nmust be distinguishable from one that did (#2362). Sorted ascending."
+        }
+      },
+      "description": "GuardrailAttestation is the signed record a subject (a dataset directory,\na file) carries after a guardrail run. A consumer verifies the signature\nwith the signer's PUBLIC key, recomputes subject_sha256 over the bytes it\nactually received, and requires verdict == PASS before using the data.\n\nWhat it proves: that these bytes are the ones the named engine scanned\nunder the named policy, and what the gate concluded. What it does not\nprove: that the engine was any good. The key is held by whoever ran the\nguardrail — the data owner — never by the consumer, otherwise the\nconsumer could attest its own input."
+    },
+    "GuardrailGate": {
+      "type": "object",
+      "properties": {
+        "datasetPath": {
+          "type": "string",
+          "description": "Absolute path in the new box where the verified bytes are placed before\npost_start."
+        },
+        "requireKinds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/GuardrailKind"
+          },
+          "description": "Kinds the attestation must have covered, in addition to the server\npolicy's own."
+        }
+      },
+      "description": "GuardrailGate is a recipe's guardrail precondition\n(docs/architecture/guardrail-inbound-and-server-policy.md, \"The gate\")."
+    },
+    "GuardrailGateInput": {
+      "type": "object",
+      "properties": {
+        "stagingRef": {
+          "type": "string",
+          "description": "A directory under the daemon's guardrail staging root (the daemon flag\n--guardrail-staging-root), as a clean relative path. Nothing on the\nplatform stages a dataset there yet: an operator or an out-of-band copy\ndoes (the `ship` verb is a documented gap)."
+        },
+        "attestation": {
+          "$ref": "#/definitions/GuardrailAttestation",
+          "description": "The attestation `containarium guardrail apply` wrote for that directory."
+        }
+      },
+      "description": "GuardrailGateInput is the dataset a gated deploy checks."
+    },
+    "GuardrailKind": {
+      "type": "string",
+      "enum": [
+        "GUARDRAIL_KIND_UNSPECIFIED",
+        "GUARDRAIL_KIND_PII",
+        "GUARDRAIL_KIND_SECRET",
+        "GUARDRAIL_KIND_UNSAFE_CODE",
+        "GUARDRAIL_KIND_PROMPT_INJECTION"
+      ],
+      "default": "GUARDRAIL_KIND_UNSPECIFIED",
+      "description": "GuardrailKind is the family a finding belongs to. Enum, not a string: a\npolicy is keyed by it and a consumer decides by it.\n\n - GUARDRAIL_KIND_PII: Personal data: names, contact details, government identifiers,\nfinancial identifiers, addresses, amounts in a personal context.\n - GUARDRAIL_KIND_SECRET: Non-personal sensitive material: credentials, private keys, connection\nstrings, internal topology. Distinct from PII because the right action\ndiffers (a secret is never tokenized into a persisted vault).\n - GUARDRAIL_KIND_UNSAFE_CODE: Inbound (model output on its way into a box): code shapes that are\ndangerous to run, e.g. download-and-execute, destructive shell,\ncredential exfiltration (docs/architecture/guardrail-inbound-and-server-policy.md).\n - GUARDRAIL_KIND_PROMPT_INJECTION: Inbound: instruction-override signatures embedded in returned content."
+    },
+    "GuardrailKindCount": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/GuardrailKind"
+        },
+        "findings": {
+          "type": "string",
+          "format": "int64"
+        }
+      },
+      "description": "GuardrailKindCount is findings-per-kind, as a typed pair rather than a\nmap so the attestation's canonical bytes are deterministic."
+    },
+    "GuardrailPolicy": {
+      "type": "object",
+      "properties": {
+        "rules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/GuardrailRule"
+          }
+        }
+      },
+      "description": "GuardrailPolicy is the whole policy for one run. Its canonical encoding\nis hashed into the attestation so a verifier knows which policy a PASS\nwas measured against."
+    },
+    "GuardrailRule": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/GuardrailKind"
+        },
+        "action": {
+          "$ref": "#/definitions/GuardrailAction"
+        },
+        "maxResidual": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Residual findings of this kind tolerated on the re-scan of the redacted\noutput. 0 is the strict default. Only meaningful with REDACT; BLOCK\nfails on the first finding and ALLOW never fails."
+        }
+      },
+      "description": "GuardrailRule is one line of policy: what to do with findings of a kind,\nand how many may remain after redaction before the gate fails."
+    },
+    "GuardrailTrustedSigner": {
+      "type": "object",
+      "properties": {
+        "keyId": {
+          "type": "string",
+          "description": "SHA-256 of public_key, hex (matches GuardrailAttestation.key_id). Set\nrejects a signer whose key_id is not the hash of its key."
+        },
+        "publicKey": {
+          "type": "string",
+          "format": "byte",
+          "description": "Ed25519 public key, 32 bytes."
+        },
+        "label": {
+          "type": "string",
+          "description": "Reviewer-readable name. No personal data."
+        }
+      },
+      "description": "GuardrailTrustedSigner is a signing key an admin registered. A verifier\ntrusts these keys, never a key a deploy request carries."
+    },
+    "GuardrailVerdict": {
+      "type": "string",
+      "enum": [
+        "GUARDRAIL_VERDICT_UNSPECIFIED",
+        "GUARDRAIL_VERDICT_PASS",
+        "GUARDRAIL_VERDICT_FAIL"
+      ],
+      "default": "GUARDRAIL_VERDICT_UNSPECIFIED",
+      "description": "GuardrailVerdict is the gate's answer for one subject.\n\n - GUARDRAIL_VERDICT_PASS: Residual findings within policy and no coverage gaps."
+    },
     "HeartbeatRequest": {
       "type": "object",
       "description": "HeartbeatRequest is intentionally empty for v1. The host's identity\ncomes from the bearer; there's nothing else the cloud needs to\nknow to bump last_heartbeat_at. Future fields (current observed\nstate, host-side health flags) are additive."
@@ -13322,6 +14322,16 @@
       },
       "title": "HistoricalConnection represents a persisted connection record"
     },
+    "HookFormat": {
+      "type": "string",
+      "enum": [
+        "HOOK_FORMAT_UNSPECIFIED",
+        "HOOK_FORMAT_OPAQUE",
+        "HOOK_FORMAT_PG_CUSTOM"
+      ],
+      "default": "HOOK_FORMAT_UNSPECIFIED",
+      "description": "HookFormat is what a backup hook declares it writes to stdout (#2405).\n\nThe declaration is a promise made by whoever configures the hook; the\ndaemon does not inspect the bytes at create time. It decides what the\nplatform may do with a HOOK record afterwards.\n\n - HOOK_FORMAT_UNSPECIFIED: Unset. On a CreateBackupRequest with a hook it means OPAQUE; on a\nrecord it means the record is not a hook backup.\n - HOOK_FORMAT_OPAQUE: Undeclared output: stored, listed, integrity-checked, fetched and\ndeleted, never restored or restore-tested by the platform. What a\nhook record written before this field existed reads as.\n - HOOK_FORMAT_PG_CUSTOM: A `pg_dump -Fc` custom-format archive, the same bytes a database-mode\nbackup produces. Restore-testable with VerifyBackup, and restorable\ninto an explicitly named target container other than its source\n(never in place: the daemon cannot reach the source's Postgres)."
+    },
     "HostCapabilityCheck": {
       "type": "object",
       "properties": {
@@ -13382,6 +14392,53 @@
         }
       },
       "description": "HostLoad is a point-in-time sample of a backend host's real resource\nusage, taken when ListBackends was served.\n\nThis is the \"live usage\" half of backend visibility: capacity and\ncommitted sums say what has been *allocated* on a host, which can be\narbitrarily far from what it is *using*. Without this an operator cannot\nanswer \"how loaded is this machine right now?\" from the product at all,\nand placement decisions are made blind to actual load.\n\nEvery field is measured on the host itself (the same\nGetSystemResources probe that backs GetSystemInfo), not self-reported\npolicy, so it cannot be inflated by a backend advertising optimistic\nnumbers."
+    },
+    "IngestOutcome": {
+      "type": "string",
+      "enum": [
+        "INGEST_OUTCOME_UNSPECIFIED",
+        "INGEST_OUTCOME_INSERTED",
+        "INGEST_OUTCOME_DUPLICATE"
+      ],
+      "default": "INGEST_OUTCOME_UNSPECIFIED",
+      "description": "IngestOutcome is the per-record result of an OK ingest call."
+    },
+    "IngestSSHSessionRecordsRequest": {
+      "type": "object",
+      "properties": {
+        "records": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/SSHSessionRecord"
+          },
+          "description": "1..500 records in file order."
+        },
+        "sentinelId": {
+          "type": "string",
+          "description": "Informational identifier of the shipping sentinel; recorded in each\nrow's detail, never used for authorization."
+        }
+      }
+    },
+    "IngestSSHSessionRecordsResponse": {
+      "type": "object",
+      "properties": {
+        "outcomes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/IngestOutcome"
+          },
+          "description": "Same length and order as the request's records."
+        },
+        "inserted": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "duplicates": {
+          "type": "integer",
+          "format": "int32"
+        }
+      }
     },
     "InstallPentestToolRequest": {
       "type": "object",
@@ -13850,6 +14907,18 @@
         }
       }
     },
+    "ListPentestScanOptInsResponse": {
+      "type": "object",
+      "properties": {
+        "optIns": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/PentestScanOptIn"
+          }
+        }
+      }
+    },
     "ListPentestScanRunsResponse": {
       "type": "object",
       "properties": {
@@ -14032,6 +15101,34 @@
           "format": "int32"
         }
       }
+    },
+    "ListenerEvidence": {
+      "type": "object",
+      "properties": {
+        "port": {
+          "type": "integer",
+          "format": "int64",
+          "description": "TCP port the listener is bound to."
+        },
+        "bindAddress": {
+          "type": "string",
+          "description": "Bind address as the box's kernel reports it, e.g. \"127.0.0.1\" or \"::\".\nA loopback bind is the shape a reverse tunnel needs."
+        },
+        "pid": {
+          "type": "integer",
+          "format": "int64",
+          "description": "Process id inside the box's pid namespace."
+        },
+        "binary": {
+          "type": "string",
+          "description": "Executable the process runs, e.g. \"/usr/sbin/dropbear\"."
+        },
+        "note": {
+          "type": "string",
+          "description": "Why this listener is not the managed sshd, e.g. \"port not in\nsshd_config\" or \"started with -f\"."
+        }
+      },
+      "description": "ListenerEvidence is one listening socket held by an SSH server that is not\nthe box's distro sshd service (#2439)."
     },
     "MetricsEvent": {
       "type": "object",
@@ -14290,6 +15387,20 @@
         }
       },
       "title": "NetworkEdge represents a connection between nodes"
+    },
+    "NetworkGuardStatus": {
+      "type": "object",
+      "properties": {
+        "core": {
+          "$ref": "#/definitions/GuardStatus",
+          "description": "core keeps tenants off core-role containers (#2084)."
+        },
+        "tenant": {
+          "$ref": "#/definitions/GuardStatus",
+          "description": "tenant keeps tenants off each other (#2347)."
+        }
+      },
+      "description": "NetworkGuardStatus is the posture of both Incus NIC-ACL guards on this\nbackend (docs/architecture/tenant-network-guard.md)."
     },
     "NetworkInfo": {
       "type": "object",
@@ -14704,6 +15815,34 @@
       },
       "title": "PentestFindingSummary provides aggregate counts"
     },
+    "PentestScanOptIn": {
+      "type": "object",
+      "properties": {
+        "containerName": {
+          "type": "string"
+        },
+        "scanner": {
+          "$ref": "#/definitions/PentestScanner"
+        },
+        "optedIn": {
+          "type": "boolean",
+          "description": "true = scanning allowed, false = explicitly refused. A refusal wins over\nan operator-wide opt-in, so an owner can always say no."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Free-text reason given when the decision was recorded."
+        },
+        "updatedBy": {
+          "type": "string",
+          "description": "Authenticated subject that recorded the decision."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "description": "PentestScanOptIn is the recorded scan decision for one container and\nscanner. It is the consent record: who decided, when, and why."
+    },
     "PentestScanRun": {
       "type": "object",
       "properties": {
@@ -14777,6 +15916,15 @@
       },
       "title": "PentestScanRun represents a single penetration test scan execution"
     },
+    "PentestScanner": {
+      "type": "string",
+      "enum": [
+        "PENTEST_SCANNER_UNSPECIFIED",
+        "PENTEST_SCANNER_OPENVAS"
+      ],
+      "default": "PENTEST_SCANNER_UNSPECIFIED",
+      "description": "PentestScanner names a scanner whose use on a container needs the\ncontainer owner's (or an operator's) explicit consent. The cheap\nbuilt-in modules (headers, TLS, ports, ...) are not listed here.\n\n - PENTEST_SCANNER_OPENVAS: OpenVAS (Greenbone) network vulnerability scanner."
+    },
     "PgConnection": {
       "type": "object",
       "properties": {
@@ -14803,6 +15951,77 @@
         }
       },
       "description": "PgConnection carries the connection parameters pg_dump / pg_restore use\n*inside the container*. Defaults target a per-container local Postgres\nreached over loopback. db_password is never logged and is passed to the\nchild process via the PGPASSWORD environment variable, not argv."
+    },
+    "PlanDestination": {
+      "type": "object",
+      "properties": {
+        "ip": {
+          "type": "string",
+          "description": "Destination IPv4 address."
+        },
+        "port": {
+          "type": "integer",
+          "format": "int64",
+          "description": "Destination port (0 when the flow had none, e.g. ICMP)."
+        },
+        "protocol": {
+          "type": "string",
+          "description": "IP protocol: \"tcp\", \"udp\", or the number for anything else."
+        },
+        "count": {
+          "type": "integer",
+          "format": "int64",
+          "description": "Number of denied/dropped flows seen (per-flow audit rows)."
+        },
+        "dropped": {
+          "type": "boolean",
+          "description": "True when at least one of the flows was actually dropped (enforce armed),\nfalse when all were only logged (log-only or enforcement not armed)."
+        },
+        "lastSeen": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the most recent such flow was seen."
+        }
+      },
+      "description": "PlanDestination is one destination the tenant's policy denied or dropped,\naggregated over the window."
+    },
+    "PlanNetworkPolicyResponse": {
+      "type": "object",
+      "properties": {
+        "tenant": {
+          "type": "string"
+        },
+        "sinceMinutes": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Window actually used, in minutes (after defaulting and capping)."
+        },
+        "destinations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/PlanDestination"
+          },
+          "description": "Destinations the policy denied, busiest first. Excludes any destination\nthe tenant's current egress CIDRs (or the preset's implicit resolver)\nalready allow, so stale rows from before an allow-list edit do not show."
+        },
+        "rowsScanned": {
+          "type": "integer",
+          "format": "int64",
+          "description": "Audit rows examined."
+        },
+        "truncated": {
+          "type": "boolean",
+          "description": "True when the row cap was hit, so the list may be missing the oldest\nflows in the window."
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Caveats the caller should show, e.g. that destinations allowed by\negress_domains are not subtracted."
+        }
+      },
+      "description": "PlanNetworkPolicyResponse is the aggregated would-block / blocked set."
     },
     "PoolTemplateStatus": {
       "type": "object",
@@ -14900,6 +16119,16 @@
         }
       },
       "description": "ProgramDigest is one loaded in-kernel program object's identity + digest."
+    },
+    "PromptSource": {
+      "type": "string",
+      "enum": [
+        "PROMPT_SOURCE_UNSPECIFIED",
+        "PROMPT_SOURCE_INLINE",
+        "PROMPT_SOURCE_SDLC_PIN"
+      ],
+      "default": "PROMPT_SOURCE_UNSPECIFIED",
+      "description": "PromptSource says what a skill's system_prompt is composed from (#2488).\n\n - PROMPT_SOURCE_INLINE: The catalog's own text, unchanged.\n - PROMPT_SOURCE_SDLC_PIN: The catalog's text plus the pinned open-sdlc-skills standard section."
     },
     "Protocol": {
       "type": "string",
@@ -15122,6 +16351,10 @@
         "modelGatewayProvider": {
           "type": "string",
           "description": "When non-empty, the daemon brokers this recipe's model calls through the\nmanaged model-gateway for the named provider (e.g. \"gemini-openai\"): it\nmints a scoped, revocable gateway token and exports\nCONTAINARIUM_MODEL_GATEWAY_URL + CONTAINARIUM_GATEWAY_TOKEN into post_start,\nso the box uses the platform key (metered, never leaked) instead of one the\nuser supplies. Inert when the daemon holds no key for the provider — the\nbox then comes up unconfigured (self-hosted default)."
+        },
+        "guardrailGate": {
+          "$ref": "#/definitions/GuardrailGate",
+          "description": "When set, every deploy of this recipe is gated on a guardrail\nattestation (#2368): DeployRecipe verifies the dataset the request\nstages against the server guardrail policy and its trusted signers\nBEFORE the container is created, copies exactly the verified bytes to\ndataset_path, and only then runs post_start. The recipe decides whether\na gate applies; a caller cannot opt out by leaving guardrail_input out."
         }
       },
       "description": "Recipe is a declarative definition of a GPU/app workload that Containarium\ncan provision as a new dedicated container. The container is an LXC system\ncontainer; the recipe's image runs inside it via Podman (post_start),\nmirroring how the kubeflow stack runs k3s inside an LXC."
@@ -15544,6 +16777,10 @@
         "ageIdentity": {
           "type": "string",
           "description": "For a record with encrypted=true: the age X25519 identity\n(\"AGE-SECRET-KEY-1…\") that matches the record's age_recipient (#1831).\nUsed to decrypt for this one call and never stored or logged. Required\nfor an encrypted record; the daemon refuses the restore without it\nbecause it holds no decryption key of its own."
+        },
+        "targetContainer": {
+          "type": "string",
+          "description": "Container to restore into, by its container name\n(\"\u003cusername\u003e-container\"). Empty restores into the backup's own source\ncontainer, in place (#2403). The caller must be authorized for the\ntarget's tenant as well as the backup's. A hook record declared\nHOOK_FORMAT_PG_CUSTOM can only be restored this way, into a target\nother than its source (#2405)."
         }
       },
       "description": "RestoreBackupRequest streams a stored dump back into a container's\ndatabase via pg_restore. Destructive: with `clean` set it drops and\nrecreates objects before loading."
@@ -15829,6 +17066,17 @@
         }
       }
     },
+    "SSHAuthMethod": {
+      "type": "string",
+      "enum": [
+        "SSH_AUTH_METHOD_UNSPECIFIED",
+        "SSH_AUTH_METHOD_CERTIFICATE",
+        "SSH_AUTH_METHOD_PUBLICKEY",
+        "SSH_AUTH_METHOD_UNKNOWN"
+      ],
+      "default": "SSH_AUTH_METHOD_UNSPECIFIED",
+      "description": "SSHAuthMethod mirrors internal/sentinel/sshsession.AuthMethod.\n\n - SSH_AUTH_METHOD_UNKNOWN: The offered key could not be parsed; credential fields are empty."
+    },
     "SSHCAKey": {
       "type": "object",
       "properties": {
@@ -15846,6 +17094,90 @@
         }
       },
       "description": "SSHCAKey is one CA public key the host should trust for certificate-based\nSSH auth. Vendored (message body only, not the whole cloud\nSSHCertificateAuthorityService) from the cloud repo's ssh_ca.proto — see\nthe vendoring note at the top of this file."
+    },
+    "SSHCloseReason": {
+      "type": "string",
+      "enum": [
+        "SSH_CLOSE_REASON_UNSPECIFIED",
+        "SSH_CLOSE_REASON_NORMAL",
+        "SSH_CLOSE_REASON_UPSTREAM_GONE",
+        "SSH_CLOSE_REASON_PROXY_SHUTDOWN",
+        "SSH_CLOSE_REASON_ERROR",
+        "SSH_CLOSE_REASON_UNKNOWN_ORPHAN"
+      ],
+      "default": "SSH_CLOSE_REASON_UNSPECIFIED",
+      "description": "SSHCloseReason mirrors internal/sentinel/sshsession.CloseReason. Set only\non a CLOSE record.\n\n - SSH_CLOSE_REASON_UNKNOWN_ORPHAN: Emitted by the shipper's --reconcile for an OPEN record that never got\na CLOSE (plugin hard-killed), once it is older than the orphan\nthreshold. Never written by the plugin itself."
+    },
+    "SSHSessionCredential": {
+      "type": "object",
+      "properties": {
+        "keyId": {
+          "type": "string"
+        },
+        "serial": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "caKeyFingerprint": {
+          "type": "string"
+        },
+        "keyFingerprint": {
+          "type": "string"
+        }
+      },
+      "description": "SSHSessionCredential is the non-secret handle identifying the credential\na session authenticated with — fingerprints, a key_id and a serial, never\nkey material."
+    },
+    "SSHSessionPhase": {
+      "type": "string",
+      "enum": [
+        "SSH_SESSION_PHASE_UNSPECIFIED",
+        "SSH_SESSION_PHASE_OPEN",
+        "SSH_SESSION_PHASE_CLOSE"
+      ],
+      "default": "SSH_SESSION_PHASE_UNSPECIFIED",
+      "description": "SSHSessionPhase mirrors internal/sentinel/sshsession.SessionPhase."
+    },
+    "SSHSessionRecord": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "phase": {
+          "$ref": "#/definitions/SSHSessionPhase"
+        },
+        "occurredAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "clientIp": {
+          "type": "string",
+          "description": "Real downstream (client-facing) address."
+        },
+        "clientPort": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "login": {
+          "type": "string",
+          "description": "SSH username presented; under certificate auth this names the target\naccount, the credential names the person."
+        },
+        "target": {
+          "type": "string",
+          "description": "Backend endpoint (host:port) the sentinel routed the login to; may be\nempty if unresolvable at record time."
+        },
+        "authMethod": {
+          "$ref": "#/definitions/SSHAuthMethod"
+        },
+        "credential": {
+          "$ref": "#/definitions/SSHSessionCredential"
+        },
+        "closeReason": {
+          "$ref": "#/definitions/SSHCloseReason",
+          "description": "Set only when phase == SSH_SESSION_PHASE_CLOSE."
+        }
+      },
+      "description": "SSHSessionRecord is one session lifecycle event, field for field the\nsentinel's sshsession.Record."
     },
     "Sandbox": {
       "type": "object",
@@ -16145,6 +17477,44 @@
       "default": "SERVED_FROM_UNSPECIFIED",
       "description": "ServedFrom names which path actually served a SpawnSandbox call, so a\ncaller measuring the two-digit-ms SLO can tell a fast sample from a slow\none instead of an opaque latency number. See the design note's \"Latency\nbudget\" section: a latency SLO whose slow path is invisible isn't one.\n\n - SERVED_FROM_COLD: Fresh container, no warm pool involved. Always this value in Phase 1.\n - SERVED_FROM_POOL: Claimed from an already-booted, already-provisioned pool member.\nPhase 3+ only."
     },
+    "ServerGuardrailPolicy": {
+      "type": "object",
+      "properties": {
+        "policy": {
+          "$ref": "#/definitions/GuardrailPolicy",
+          "description": "The rules. GuardrailAttestation.policy_hash covers THIS message only, so\nrotating a trusted signer does not invalidate existing attestations."
+        },
+        "trustedSigners": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/GuardrailTrustedSigner"
+          }
+        },
+        "revision": {
+          "type": "string",
+          "format": "int64",
+          "description": "Server-assigned, monotonic: every successful Set increments it by one."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedBy": {
+          "type": "string",
+          "description": "Authenticated subject that made the last Set."
+        }
+      },
+      "description": "ServerGuardrailPolicy is the stored policy plus the server's bookkeeping."
+    },
+    "SetCodingToolEgressPolicyResponse": {
+      "type": "object",
+      "properties": {
+        "policy": {
+          "$ref": "#/definitions/CodingToolEgressPolicy"
+        }
+      }
+    },
     "SetContainerAttributionBody": {
       "type": "object",
       "properties": {
@@ -16212,6 +17582,34 @@
         }
       },
       "description": "SetContainerTTLResponse reports the new TTL state."
+    },
+    "SetGuardrailPolicyRequest": {
+      "type": "object",
+      "properties": {
+        "policy": {
+          "$ref": "#/definitions/GuardrailPolicy",
+          "description": "Required. An empty rule list is a valid policy (it clears every rule)."
+        },
+        "trustedSigners": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/GuardrailTrustedSigner"
+          }
+        }
+      }
+    },
+    "SetGuardrailPolicyResponse": {
+      "type": "object",
+      "properties": {
+        "policy": {
+          "$ref": "#/definitions/ServerGuardrailPolicy",
+          "description": "The stored policy, with its new revision."
+        },
+        "policyHash": {
+          "type": "string"
+        }
+      }
     },
     "SetMetricsExportRequest": {
       "type": "object",
@@ -16293,6 +17691,28 @@
         "signature": {
           "$ref": "#/definitions/NetworkPolicySignature",
           "title": "stored form, with the assigned id"
+        }
+      }
+    },
+    "SetPentestScanOptInBody": {
+      "type": "object",
+      "properties": {
+        "scanner": {
+          "$ref": "#/definitions/PentestScanner"
+        },
+        "optedIn": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "SetPentestScanOptInResponse": {
+      "type": "object",
+      "properties": {
+        "optIn": {
+          "$ref": "#/definitions/PentestScanOptIn"
         }
       }
     },
@@ -16976,6 +18396,14 @@
           "type": "number",
           "format": "double",
           "description": "cpu_overcommit_factor is the gate's configured ceiling multiple of\ntotal_cpus (the --cpu-overcommit-factor flag). 0 when the gate is\ndisabled. The ceiling in cores is total_cpus × cpu_overcommit_factor;\nthe host is over it when committed_cpu_cores exceeds that."
+        },
+        "headroom": {
+          "$ref": "#/definitions/CapacityHeadroom",
+          "description": "headroom is the spare scheduling capacity this backend currently\nadvertises (#680), or null when nothing is advertised (withdrawn or\nnever published) — null stays distinguishable from \"offering zero\".\nCarried on SystemInfo so ListBackends' existing GetSystemInfo fan-out\nsurfaces a peer's advertisement with no extra forwarded call (#2135)."
+        },
+        "capabilityProfile": {
+          "$ref": "#/definitions/CapabilityProfile",
+          "description": "capability_profile is this backend's last-recorded hardware capability\nprofile (#681), or null until ProfileBackend has run — null stays\ndistinguishable from \"profiled CPU-only\". Carried here for the same\npeer fan-out as headroom (#2135)."
         }
       },
       "title": "SystemInfo contains information about the host system"
@@ -17068,10 +18496,12 @@
         "THREAT_RULE_ID_UNSPECIFIED",
         "THREAT_RULE_ID_BAD_DESTINATION",
         "THREAT_RULE_ID_CROSS_TENANT_FLOW",
-        "THREAT_RULE_ID_DENY_BURST"
+        "THREAT_RULE_ID_DENY_BURST",
+        "THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH",
+        "THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER"
       ],
       "default": "THREAT_RULE_ID_UNSPECIFIED",
-      "description": "ThreatRuleId identifies which detection rule raised a finding.\n\n - THREAT_RULE_ID_BAD_DESTINATION: Flow to a known-bad destination (e.g. a mining pool).\n - THREAT_RULE_ID_CROSS_TENANT_FLOW: Flow whose source and destination belong to different tenants.\n - THREAT_RULE_ID_DENY_BURST: Burst of policy denies for one tenant within a time window."
+      "description": "ThreatRuleId identifies which detection rule raised a finding.\n\n - THREAT_RULE_ID_BAD_DESTINATION: Flow to a known-bad destination (e.g. a mining pool).\n - THREAT_RULE_ID_CROSS_TENANT_FLOW: Flow whose source and destination belong to different tenants.\n - THREAT_RULE_ID_DENY_BURST: Burst of policy denies for one tenant within a time window.\n - THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH: A box's effective sshd configuration permitted password login, or the\nplatform-managed key-only drop-in had been removed or altered (#2424).\nRaised by the box sshd posture reconciler after it re-asserts the\ndrop-in; the evidence names the offending directive and file.\n - THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER: A box is listening with an SSH server that is not the distro sshd\nservice on a port its sshd_config declares (#2439): a second sshd, a\ndropbear, or the stock sshd started with its own config. Raised by the\nsame posture pass as rule 4; record-only, the platform never kills a\ntenant's process. The evidence names the port, pid and binary."
     },
     "ThreatSeverity": {
       "type": "string",
@@ -17772,7 +19202,7 @@
             "type": "object",
             "$ref": "#/definitions/ACLRule"
           },
-          "title": "Custom ingress rules (only if preset is CUSTOM)"
+          "description": "Custom ingress rules. No longer accepted (#2359): tenant ingress is owned\nby the tenant network guard, and a per-container allow would be evaluated\nnext to it and could re-open what it closed. A request carrying any is\nrefused with INVALID_ARGUMENT; to admit another tenant use\nNetworkPolicy.allow_from_tenants. Presets apply their egress half only."
         },
         "egressRules": {
           "type": "array",
@@ -18398,6 +19828,17 @@
             "$ref": "#/definitions/NetworkPolicyDenyRule"
           },
           "description": "Virtual-patch deny rules (#660). Each blocks traffic to a destination\nCIDR (optionally scoped to a port/proto) and is evaluated BEFORE the\negress allow-list: deny beats allow, the same way the metadata IP does.\nUse to \"virtually patch\" a known-vulnerable destination/service until the\nreal upstream fix ships — instant, in-kernel, zero downtime. A rule whose\nexpires_at is in the past is dropped at compile time, so the patch\nself-removes once the fix lands."
+        },
+        "allowFromTenants": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Tenants whose containers may reach this tenant's containers over the\nbridge (#2359). Consumed by the tenant network guard\n(docs/architecture/tenant-network-guard.md): every box of a listed\ntenant becomes an allowed ingress source on this tenant's NIC ACL.\nThis is the only way to open tenant ingress to another tenant; the\nper-container ACL (UpdateContainerACL) no longer carries ingress rules.\nNormalised on set: trimmed, deduplicated, sorted; the tenant itself is\nrejected (use allow_intra_tenant). One-directional: listing bob here\nlets bob reach us, not the reverse."
+        },
+        "egressPreset": {
+          "$ref": "#/definitions/EgressPreset",
+          "description": "Ready-made egress posture (#2440). UNSPECIFIED leaves the policy exactly\nas its lists say. See EgressPreset."
         }
       },
       "description": "NetworkPolicy is a tenant's network-isolation policy, enforced at each of the\ntenant's container host-veth TC_INGRESS hooks (the sender side of every flow;\nsee the Phase 0 findings in NETWORK-ISOLATION-DESIGN.md). #315."

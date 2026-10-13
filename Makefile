@@ -1,4 +1,4 @@
-.PHONY: help proto build build-bpf clean clean-ui clean-all install install-client test lint fmt run-local web-ui swagger-ui build-mcp build-mcp-linux install-mcp build-agent-box build-agent-box-linux build-agent-box-all install-agent-box build-agent-runtime bundle-agent-runtime build-release sidecar-build-otel bundle-download-deps build-bundle build-bundle-all build-model-gateway build-model-gateway-linux
+.PHONY: help proto build build-bpf clean clean-ui clean-all install install-client test lint fmt run-local web-ui swagger-ui build-mcp build-mcp-linux install-mcp build-agent-box build-agent-box-linux build-agent-box-all install-agent-box build-agent-runtime bundle-agent-runtime bundle-sdlc-skills build-release sidecar-build-otel bundle-download-deps build-bundle build-bundle-all build-model-gateway build-model-gateway-linux
 
 # Variables
 # BINARY_NAME is the containarium CLIENT (cmd/containarium, always built with
@@ -205,6 +205,10 @@ bundle-agent-runtime: build-agent-runtime ## Package agent-runtime as a release 
 	@tar -czf $(BUILD_DIR)/agent-runtime-bundle.tar.gz -C agent-runtime dist package.json package-lock.json
 	@scripts/verify-agent-runtime-bundle.sh $(BUILD_DIR)/agent-runtime-bundle.tar.gz
 	@echo "==> agent-runtime bundle: $(BUILD_DIR)/agent-runtime-bundle.tar.gz (publish alongside agent-box-linux-amd64; scripts/install-agent-runtime.sh consumes both)"
+
+bundle-sdlc-skills: ## Package the pinned SDLC role skills (pkg/core/sdlcskills/sdlc-skills.lock) as a release asset; fails if the lock's sha256 does not match a rebuild (#2065)
+	@echo "==> Packaging SDLC skills..."
+	@scripts/build-sdlc-skills-bundle.sh $(BUILD_DIR)
 
 build-agent-box-linux: ## Build agent-box for Linux (the typical install target — agent-box runs INSIDE LXC containers)
 	@echo "==> Building agent-box for Linux..."

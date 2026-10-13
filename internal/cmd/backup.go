@@ -58,6 +58,22 @@ func newBackupClient() (backupAPI, error) {
 	return client.NewGRPCClient(serverAddr, certsDir, insecure)
 }
 
+// parseHookFormat maps the --hook-format flag to the proto enum (#2405).
+// Empty leaves it unspecified, which the daemon treats as opaque.
+func parseHookFormat(s string) (pb.HookFormat, error) {
+	switch s {
+	case "":
+		return pb.HookFormat_HOOK_FORMAT_UNSPECIFIED, nil
+	case "opaque":
+		return pb.HookFormat_HOOK_FORMAT_OPAQUE, nil
+	case "pg_custom":
+		return pb.HookFormat_HOOK_FORMAT_PG_CUSTOM, nil
+	default:
+		return pb.HookFormat_HOOK_FORMAT_UNSPECIFIED,
+			fmt.Errorf("invalid --hook-format %q (expected 'opaque' or 'pg_custom')", s)
+	}
+}
+
 // parseDestination maps the --dest flag to the proto enum.
 func parseDestination(s string) (pb.BackupDestination, error) {
 	switch s {
@@ -85,6 +101,39 @@ func engineLabel(e pb.BackupEngine) string {
 		// Covers a record written before the enum existed, and one whose
 		// engine this build does not know. Both are genuinely unknown to
 		// the reader, and saying so beats naming an engine on a guess.
+		return "unspecified"
+	}
+}
+
+// parseKeyMode maps the --key-mode flag to the typed enum (#2402). Empty
+// is UNSPECIFIED: the daemon's default, never a client-side guess.
+func parseKeyMode(s string) (pb.BackupKeyMode, error) {
+	switch s {
+	case "":
+		return pb.BackupKeyMode_BACKUP_KEY_MODE_UNSPECIFIED, nil
+	case "age-recipient":
+		return pb.BackupKeyMode_BACKUP_KEY_MODE_AGE_RECIPIENT, nil
+	case "managed":
+		return pb.BackupKeyMode_BACKUP_KEY_MODE_MANAGED, nil
+	case "both":
+		return pb.BackupKeyMode_BACKUP_KEY_MODE_BOTH, nil
+	default:
+		return pb.BackupKeyMode_BACKUP_KEY_MODE_UNSPECIFIED,
+			fmt.Errorf("invalid --key-mode %q (expected 'age-recipient', 'managed' or 'both')", s)
+	}
+}
+
+// keyModeLabel renders a key mode for human output, in the --key-mode
+// vocabulary so what `backup get` shows is what `backup create` takes.
+func keyModeLabel(m pb.BackupKeyMode) string {
+	switch m {
+	case pb.BackupKeyMode_BACKUP_KEY_MODE_AGE_RECIPIENT:
+		return "age-recipient"
+	case pb.BackupKeyMode_BACKUP_KEY_MODE_MANAGED:
+		return "managed"
+	case pb.BackupKeyMode_BACKUP_KEY_MODE_BOTH:
+		return "both"
+	default:
 		return "unspecified"
 	}
 }

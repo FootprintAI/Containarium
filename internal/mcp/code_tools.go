@@ -136,9 +136,13 @@ func handleCodeRun(client API, args map[string]interface{}) (string, error) {
 
 	out, next := readCodeWindow(ctx, sess, started.LogPath, 0, streamJSON)
 	return fmt.Sprintf(
-		"✓ started %q (pid %d) on %s\n\nlog_path: %s\nnext_offset: %d\n\n--- output so far ---\n%s\n"+
+		"✓ started %q (pid %d) on %s\n%s\n\nlog_path: %s\nnext_offset: %d\n\n--- output so far ---\n%s\n"+
 			"(the run continues on the box — call code_attach with name=%q and offset=%d for more)",
-		started.Name, started.PID, box, started.LogPath, next, out, started.Name, next), nil
+		started.Name, started.PID, box,
+		// This tool only builds the Claude tenant-secret command, so its
+		// traffic never crosses the gateway.
+		engine.ScanningLine(engine.ModelTrafficScanning(engine.KindSecret, nil, true)),
+		started.LogPath, next, out, started.Name, next), nil
 }
 
 // mcpStartSessionDiscovery best-effort backgrounds the lookup of this run's

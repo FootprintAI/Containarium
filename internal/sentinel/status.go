@@ -29,6 +29,9 @@ type StatusData struct {
 	KeySyncCount   int
 	KeyLastSync    string
 	KeySyncError   string
+
+	// Tunnel sessions over TLS (tunnel_sessions_tls on /metrics).
+	TunnelSessionsTLS int
 }
 
 // StatusHandler returns an HTTP handler that renders the sentinel status page.
@@ -67,6 +70,11 @@ func StatusHandler(m *Manager) http.HandlerFunc {
 			if err := m.keyStore.LastSyncErr(); err != nil {
 				data.KeySyncError = err.Error()
 			}
+		}
+
+		if m.tunnelRegistry != nil {
+			stats := m.tunnelRegistry.SessionStats()
+			data.TunnelSessionsTLS = stats.TLS
 		}
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")

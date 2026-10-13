@@ -52,7 +52,10 @@ func (f *fakeBackend) ListContainers() ([]incus.ContainerInfo, error) {
 }
 
 func (f *fakeBackend) GetServerInfo() (*api.Server, error) {
-	return &api.Server{Environment: api.ServerEnvironment{Firewall: f.firewall}}, nil
+	return &api.Server{
+		ServerUntrusted: api.ServerUntrusted{APIExtensions: []string{"network_acl", "network_bridge_acl", "network_bridge_acl_devices"}},
+		Environment:     api.ServerEnvironment{Firewall: f.firewall},
+	}, nil
 }
 
 func (f *fakeBackend) GetNetworkACL(name string) (*api.NetworkACL, error) {
@@ -485,20 +488,19 @@ func TestParseBridge(t *testing.T) {
 	}
 }
 
-// The daemon must never arm the guard by accident: only the exact word
-// "enforce" does.
+// Unset arms the guard (it is a boundary, not optional hardening — see
+// docs/architecture/tenant-network-guard.md, Rollout); only an explicit
+// off-word disables. The full table lives in internal/nicguard.
 func TestParseMode(t *testing.T) {
 	tests := []struct {
 		in   string
 		want Mode
 	}{
 		{"enforce", ModeEnforce},
-		{"", ModeOff},
+		{"", ModeEnforce},
 		{"off", ModeOff},
-		{"1", ModeOff},
-		{"true", ModeOff},
-		{"Enforce", ModeOff},
-		{"enforce ", ModeOff},
+		{"1", ModeEnforce},
+		{"Enforce", ModeEnforce},
 	}
 	for _, tc := range tests {
 		if got := ParseMode(tc.in); got != tc.want {

@@ -7,7 +7,10 @@ name: Publish Python distro to PyPI
 on:
   push:
     tags:
-      - 'v*'   # e.g. v0.20.0
+      - 'v*'     # e.g. v0.20.0
+      # A pre-release tag (v0.101.0-rc.1) is for the dev rung only. PyPI
+      # never lets a version be re-uploaded, so an rc must not burn one.
+      - '!v*-*'
   # Manual trigger for ad-hoc republishes (e.g. recovering from a
   # PyPI infra blip). version input overrides the tag-derived version.
   workflow_dispatch:

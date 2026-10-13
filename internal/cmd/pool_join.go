@@ -13,6 +13,8 @@ import (
 
 	"github.com/footprintai/containarium/internal/cloud"
 	"github.com/footprintai/containarium/internal/hostcheck"
+	"github.com/footprintai/containarium/internal/hostharden"
+	"github.com/footprintai/containarium/internal/sentinel"
 )
 
 // pool join — the turnkey, one-command path that turns a fresh Linux host
@@ -71,6 +73,7 @@ func minimalDaemonArgv() []string {
 
 var (
 	poolJoinSentinels          []string
+	poolJoinSentinelPins       []string
 	poolJoinRegion             string
 	poolJoinToken              string
 	poolJoinTokenFile          string
@@ -106,6 +109,7 @@ The join token is resolved in this order — first one present wins:
 Example:
   sudo containarium pool join \
     --sentinel sentinel.example.com:443 \
+    --sentinel-pin sha256:<64 hex> \
     --pool prod \
     --token-file /etc/containarium/join-token \
     --public-hostname node1.example.com --public-port 443
@@ -128,6 +132,7 @@ token — the webui's "Add compute" one-liner sets this automatically):
 func init() {
 	poolCmd.AddCommand(poolJoinCmd)
 	poolJoinCmd.Flags().StringArrayVar(&poolJoinSentinels, "sentinel", nil, "Sentinel this host dials, as host:port or region=host:port (repeatable). Pass several with --region auto to probe-and-select the closest (required)")
+	poolJoinCmd.Flags().StringArrayVar(&poolJoinSentinelPins, "sentinel-pin", nil, "Public-key pin of a sentinel's tunnel identity, sha256:<hex> (repeatable, or comma-separated; or "+sentinelPinEnv+" env). With several --sentinel candidates, pass one pin per candidate; the tunnel accepts any pin in the list (required)")
 	poolJoinCmd.Flags().StringVar(&poolJoinRegion, "region", "", "With multiple --sentinel candidates: 'auto' probes RTT and picks the closest, or a region name picks that one. Single --sentinel ignores this")
 	poolJoinCmd.Flags().StringVar(&poolJoinToken, "token", "", "Scoped join token for the tunnel handshake. Lowest-precedence of the three token sources (see --token-file); lands on argv and in shell history, so prefer --token-file or $CONTAINARIUM_TUNNEL_TOKEN. Required if neither of those is set")
 	poolJoinCmd.Flags().StringVar(&poolJoinTokenFile, "token-file", "", "File containing the scoped join token (read, trailing whitespace trimmed; error if empty). Takes precedence over $CONTAINARIUM_TUNNEL_TOKEN and --token — the recommended way to pass the token so it never lands on argv or in shell history")
@@ -156,6 +161,16 @@ type tunnelUnitParams struct {
 	Pool           string
 	PublicHostname string
 	PublicPort     int
+	// SentinelPins are public (unlike the token), so they are rendered on
+	// ExecStart rather than into the root-only token env file.
+	SentinelPins []sentinel.TunnelPin
+}
+
+// resolvePoolJoinPins validates the --sentinel-pin values (each may itself be
+// comma-separated) and falls back to the tunnel client's env var. No pin is an
+// error: the rendered tunnel client refuses to start without one.
+func resolvePoolJoinPins(flagValues []string) ([]sentinel.TunnelPin, error) {
+	return resolveSentinelPins(strings.Join(flagValues, ","))
 }
 
 // renderTunnelUnit renders the containarium-tunnel.service unit. Pure (no
@@ -173,6 +188,13 @@ func renderTunnelUnit(p tunnelUnitParams) string {
 	fmt.Fprintf(&b, "EnvironmentFile=%s\n", tunnelTokenSecretFile)
 	b.WriteString("ExecStart=/usr/local/bin/containariumd tunnel \\\n")
 	fmt.Fprintf(&b, "  --sentinel-addr %s \\\n", p.SentinelAddr)
+	if len(p.SentinelPins) > 0 {
+		pins := make([]string, len(p.SentinelPins))
+		for i, pin := range p.SentinelPins {
+			pins[i] = string(pin)
+		}
+		fmt.Fprintf(&b, "  --sentinel-pin %s \\\n", strings.Join(pins, ","))
+	}
 	fmt.Fprintf(&b, "  --spot-id %s \\\n", p.SpotID)
 	fmt.Fprintf(&b, "  --ports %s", p.Ports)
 	if p.Pool != "" {
@@ -392,6 +414,10 @@ func runPoolJoin(cmd *cobra.Command, args []string) error {
 	if len(poolJoinSentinels) == 0 {
 		return fmt.Errorf("--sentinel is required (the sentinel host:port this host dials; repeatable with --region auto)")
 	}
+	pins, err := resolvePoolJoinPins(poolJoinSentinelPins)
+	if err != nil {
+		return err
+	}
 	token, err := resolvePoolJoinToken(poolJoinToken, poolJoinTokenFile)
 	if err != nil {
 		return err
@@ -472,6 +498,7 @@ func runPoolJoin(cmd *cobra.Command, args []string) error {
 		Pool:           poolJoinPool,
 		PublicHostname: poolJoinPublicHostname,
 		PublicPort:     poolJoinPublicPort,
+		SentinelPins:   pins,
 	})
 
 	if poolJoinDryRun {
@@ -566,9 +593,10 @@ func runPoolJoin(cmd *cobra.Command, args []string) error {
 	// Host security posture (#1103) — printed loudly at the moment this host
 	// joins the pool, not just discoverable later via a separate `doctor` run
 	// or the cloud webui. Advisory only, same as `doctor`: it does not block
-	// the join.
+	// the join. The metadata block goes first so the posture printed reports
+	// whether it took, not the state just before it ran (#2298).
+	applyMetadataBlock(cmd, hostharden.DefaultBridge)
 	printPosture(hostcheck.RunPosture())
-	applyMetadataBlock(cmd, "incusbr0")
 
 	// 5b. Verify the tunnel handshake was actually ACCEPTED before claiming
 	// the host joined (#1051). Everything above is host-side: units enabled,

@@ -33,6 +33,9 @@
 #   RUNNER_LABELS (optional) comma-separated runner labels; defaults
 #               to "containarium,ephemeral". Workflows target with
 #               `runs-on: [self-hosted, containarium, ephemeral]`.
+#   RUNNER_GROUP (optional) organization runner group to register into;
+#               defaults to the org's default group. Organization targets
+#               only (a bare owner in GH_REPO).
 #   RUNNER_DNS  (optional) space-separated DNS server(s) to pin the box's
 #               resolver to, e.g. "8.8.8.8 8.8.4.4". Use when the box is
 #               handed a split-horizon / internal record for a host it
@@ -64,7 +67,20 @@ set -euo pipefail
 
 # ---- input validation ----
 : "${GH_REPO:?GH_REPO is required (owner/repo, or a bare owner for an org runner)}"
-: "${GH_PAT:?GH_PAT is required (PAT with repo scope)}"
+: "${GH_PAT:?GH_PAT is required (PAT with repo scope, or admin:org for an org runner)}"
+
+# Runner groups exist only at organization scope (#1217). Refuse a group on a
+# repository target here, before anything is installed, rather than letting
+# config.sh fail inside the respawn loop.
+RUNNER_GROUP="${RUNNER_GROUP:-}"
+case "$GH_REPO" in
+  */*)
+    if [ -n "$RUNNER_GROUP" ]; then
+      echo "RUNNER_GROUP is set but GH_REPO=${GH_REPO} is a repository; runner groups need an organization target (a bare owner)" >&2
+      exit 1
+    fi
+    ;;
+esac
 
 # GH_BASE_URL — the GitHub server URL. Defaults to github.com; set to
 # your GHES URL for on-prem deployments (e.g.
@@ -215,6 +231,7 @@ GH_BASE_URL=${GH_BASE_URL}
 GH_API_BASE=${GH_API_BASE}
 RUNNER_NAME=${RUNNER_NAME}
 RUNNER_LABELS=${RUNNER_LABELS}
+RUNNER_GROUP=$(printf '%q' "$RUNNER_GROUP")
 RUNNER_HOME=${RUNNER_HOME}
 EOF
 chmod 600 /etc/containarium-runner.env
@@ -275,6 +292,13 @@ fi
 # below re-claims the name on GitHub's side.
 rm -f .runner .credentials .credentials_rsaparams
 
+# Optional organization runner group (#1217). An env file written before
+# runner groups existed has no RUNNER_GROUP line, hence the default.
+RUNNER_GROUP_ARGS=()
+if [ -n "${RUNNER_GROUP:-}" ]; then
+  RUNNER_GROUP_ARGS=(--runnergroup "$RUNNER_GROUP")
+fi
+
 # Register, run ONE job, exit. --replace overwrites any stale
 # registration with the same name. --ephemeral makes run.sh exit
 # after the first job completes (success or failure).
@@ -283,6 +307,7 @@ rm -f .runner .credentials .credentials_rsaparams
   --token "$REG_TOKEN" \
   --name "$RUNNER_NAME" \
   --labels "$RUNNER_LABELS" \
+  "${RUNNER_GROUP_ARGS[@]}" \
   --ephemeral --replace --unattended
 
 ./run.sh

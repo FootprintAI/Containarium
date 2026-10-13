@@ -59,13 +59,19 @@ func TestDomainResolver_RefreshAndIPs(t *testing.T) {
 func TestDomainResolver_KeepsPriorOnError(t *testing.T) {
 	f := &fakeIPResolver{results: map[string][]netip.Addr{"x.example": addrs("1.2.3.4")}}
 	r := NewDomainResolver(f)
+	clk := newResolverClock()
+	r.now = clk.now // #2379: refreshes are TTL-scheduled; drive the clock so the retry is due
 	r.Refresh(context.Background(), []string{"x.example"})
 	if len(r.IPs("x.example")) != 1 {
 		t.Fatal("setup: expected 1 IP")
 	}
 	// Now lookups fail — prior cache must be retained, not dropped.
 	f.errs = map[string]error{"x.example": errors.New("dns timeout")}
+	clk.advance(maxDomainRefresh)
 	r.Refresh(context.Background(), []string{"x.example"})
+	if f.calls["x.example"] != 2 {
+		t.Fatalf("the failing lookup must actually run, calls = %d", f.calls["x.example"])
+	}
 	if got := r.IPs("x.example"); len(got) != 1 || got[0].String() != "1.2.3.4" {
 		t.Errorf("failed lookup must keep prior IPs, got %v", got)
 	}

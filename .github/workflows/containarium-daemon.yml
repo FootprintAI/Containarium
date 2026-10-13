@@ -63,7 +63,13 @@ jobs:
             echo "version=${version}"
             # :latest is the chart default (Chart.yaml appVersion: latest);
             # keep it in sync with the newest release tag.
-            echo "tags=${base}:v${version},${base}:${minor},${base}:latest"
+            # A pre-release tag (0.101.0-rc.1) pushes only its exact tag:
+            # the moving tags keep pointing at the newest full release.
+            case "$version" in
+              *-*) tags="${base}:v${version}" ;;
+              *)   tags="${base}:v${version},${base}:${minor},${base}:latest" ;;
+            esac
+            echo "tags=${tags}"
             echo "scan_ref=${base}:v${version}"
           } >> "$GITHUB_OUTPUT"
 

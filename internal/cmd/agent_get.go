@@ -47,6 +47,7 @@ func runAgentGet(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Box (recipe):  %s\n", s.GetRecipeId())
 	fmt.Printf("Model:         %s\n", formatModel(s))
 	fmt.Printf("Engine:        %s\n", formatEngine(s.GetEngine()))
+	fmt.Printf("Prompt source: %s\n", formatPromptSource(s))
 	fmt.Printf("Allowed scopes: %s\n", strings.Join(s.AllowedScopes, ", "))
 	peers := "(none — leaf agent)"
 	if len(s.AllowedPeers) > 0 {
@@ -58,6 +59,16 @@ func runAgentGet(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Printf("\nSystem prompt:\n%s\n", s.SystemPrompt)
 	return nil
+}
+
+// formatPromptSource says where a skill's system prompt came from (#2488):
+// "inline" (the catalog text as written, also what an unspecified value means)
+// or "sdlc-pin (<pin>)" when the pinned open-sdlc-skills standard is composed in.
+func formatPromptSource(s *pb.AgentSkill) string {
+	if s.GetPromptSource() == pb.PromptSource_PROMPT_SOURCE_SDLC_PIN {
+		return "sdlc-pin (" + s.GetPromptPin() + ")"
+	}
+	return "inline"
 }
 
 // formatEngine is the human-readable form of an AgentSkill's engine for `agent

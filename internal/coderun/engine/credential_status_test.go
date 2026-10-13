@@ -4,8 +4,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestCredentialStatusScript_UnknownEngine pins that an engine with no probe
@@ -105,6 +107,64 @@ func TestCredentialStatusScript_Claude(t *testing.T) {
 				t.Errorf("script output = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestCredentialStatusScript_Claude_Expiry (#2371) pins the expiry half of
+// the probe against a real shell: only the sign-in file's `expiresAt`
+// timestamp decides EXPIRED vs INTERACTIVE, and the placeholder token value
+// sitting next to it in the same file never reaches stdout. Claude Code
+// records expiresAt in epoch milliseconds; a 10-digit seconds value is
+// accepted too rather than misread as a date in 1970.
+func TestCredentialStatusScript_Claude_Expiry(t *testing.T) {
+	script, ok := CredentialStatusScript(NameClaude)
+	if !ok {
+		t.Fatal("CredentialStatusScript(NameClaude) ok=false")
+	}
+	const tokenPlaceholder = "placeholder-not-a-real-token-value"
+	past := time.Now().Add(-time.Hour)
+	future := time.Now().Add(time.Hour)
+	credFile := func(expiresAt string) string {
+		// Mirrors the real file's shape: the token value and the
+		// timestamp share one JSON object (minified, one line), so a
+		// probe that echoed the matching line would leak the value.
+		return `{"claudeAiOauth":{"accessToken":"` + tokenPlaceholder + `","refreshToken":"` + tokenPlaceholder + `"` + expiresAt + `,"scopes":["user:inference"]}}`
+	}
+
+	tests := []struct {
+		name    string
+		content string
+		want    CredentialStatusSource
+	}{
+		{name: "expiresAt in the past (ms)", content: credFile(`,"expiresAt":` + strconv.FormatInt(past.UnixMilli(), 10)), want: CredentialStatusExpired},
+		{name: "expiresAt in the future (ms)", content: credFile(`,"expiresAt":` + strconv.FormatInt(future.UnixMilli(), 10)), want: CredentialStatusInteractive},
+		{name: "expiresAt in the past (seconds)", content: credFile(`,"expiresAt":` + strconv.FormatInt(past.Unix(), 10)), want: CredentialStatusExpired},
+		{name: "expiresAt in the future (seconds)", content: credFile(`,"expiresAt":` + strconv.FormatInt(future.Unix(), 10)), want: CredentialStatusInteractive},
+		{name: "pretty-printed, whitespace around the colon", content: "{\n  \"claudeAiOauth\": {\n    \"accessToken\": \"" + tokenPlaceholder + "\",\n    \"expiresAt\" : " + strconv.FormatInt(past.UnixMilli(), 10) + "\n  }\n}\n", want: CredentialStatusExpired},
+		{name: "no expiresAt field is never guessed expired", content: credFile(""), want: CredentialStatusInteractive},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			mustMkdirAll(t, filepath.Join(home, ".claude"))
+			mustWriteFile(t, filepath.Join(home, ".claude", ".credentials.json"), tc.content)
+			got := runCredentialStatusScript(t, script, home, nil)
+			if strings.Contains(got, tokenPlaceholder) {
+				t.Fatalf("probe output leaked the credential value: %q", got)
+			}
+			if got != string(tc.want) {
+				t.Errorf("script output = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestParseCredentialStatusSource_Expired: the new probe value parses.
+func TestParseCredentialStatusSource_Expired(t *testing.T) {
+	got, err := ParseCredentialStatusSource("expired")
+	if err != nil || got != CredentialStatusExpired {
+		t.Fatalf("ParseCredentialStatusSource(expired) = %q, %v; want %q", got, err, CredentialStatusExpired)
 	}
 }
 

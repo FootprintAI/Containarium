@@ -28,11 +28,14 @@ type GRPCClient struct {
 	agentClient   pb.AgentSkillServiceClient
 	crewClient    pb.CrewServiceClient
 	clusterClient pb.ClusterServiceClient
+	auditClient   pb.AuditServiceClient // #2415
 	sandboxClient pb.SandboxServiceClient
 	anonClient    pb.AnonymousBoxServiceClient
 	trackerClient pb.TrackerServiceClient
 	// modelGatewayClient is the model gateway's admin + mint surface (#1726).
 	modelGatewayClient pb.ModelGatewayServiceClient
+	// guardrailPolicyClient is the server-side guardrail policy (#2368).
+	guardrailPolicyClient pb.GuardrailPolicyServiceClient
 }
 
 // NewGRPCClient creates a new gRPC client
@@ -112,10 +115,13 @@ func NewGRPCClient(serverAddr string, certsDir string, insecureConn bool) (*GRPC
 		agentClient:        agentClient,
 		crewClient:         crewClient,
 		clusterClient:      clusterClient,
+		auditClient:        pb.NewAuditServiceClient(conn),
 		sandboxClient:      sandboxClient,
 		anonClient:         anonClient,
 		trackerClient:      trackerClient,
 		modelGatewayClient: modelGatewayClient,
+
+		guardrailPolicyClient: pb.NewGuardrailPolicyServiceClient(conn),
 	}, nil
 }
 
@@ -183,10 +189,49 @@ func (c *GRPCClient) ListContainers() ([]incus.ContainerInfo, error) {
 }
 
 // CreateContainer creates a container via gRPC
-func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, isolation pb.IsolationType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string) (*incus.ContainerInfo, error) {
+func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, isolation pb.IsolationType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string, labels map[string]string) (*incus.ContainerInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute) // Container creation can take time (includes ultra-aggressive retry logic for google_guest_agent)
 	defer cancel()
+	req := newCreateContainerRequest(username, image, cpu, memory, disk, sshKeys, enablePodman, stack, gpus, osType, isolation, monitoring, pool, backendID, git, ttlSeconds, idleStopMinutes, deleteAfterStoppedSeconds, storageClass, enc, memoryRequest, cpuRequest, region, labels)
+	resp, err := c.client.CreateContainer(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create container: %w", err)
+	}
 
+	// Convert protobuf Container to incus.ContainerInfo
+	container := resp.Container
+	info := &incus.ContainerInfo{
+		Name:         container.Name,
+		Username:     container.Username,
+		SSHHost:      container.SshHost,
+		State:        container.State.String(),
+		InstanceType: ostype.InstanceTypeFromIsolation(container.Isolation),
+		Labels:       container.Labels, // what the daemon stored, incl. --labels (#2358)
+	}
+
+	if container.Network != nil {
+		info.IPAddress = container.Network.IpAddress
+	}
+
+	if container.Resources != nil {
+		info.CPU = container.Resources.Cpu
+		info.Memory = container.Resources.Memory
+	}
+
+	info.GPU = container.GpuDevice
+	info.GPUs = container.GpuDevices
+
+	if container.CreatedAt > 0 {
+		info.CreatedAt = time.Unix(container.CreatedAt, 0)
+	}
+
+	return info, nil
+}
+
+// newCreateContainerRequest builds the wire request for CreateContainer;
+// pure, so what the CLI flags turn into is unit-testable (#2358 — labels
+// used to be dropped between the CLI and this request).
+func newCreateContainerRequest(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, isolation pb.IsolationType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string, labels map[string]string) *pb.CreateContainerRequest {
 	req := &pb.CreateContainerRequest{
 		Username: username,
 		Resources: &pb.ResourceLimits{
@@ -219,38 +264,10 @@ func (c *GRPCClient) CreateContainer(username, image, cpu, memory, disk string, 
 		Region:                    region,
 	}
 
-	resp, err := c.client.CreateContainer(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create container: %w", err)
+	if len(labels) > 0 {
+		req.Labels = labels
 	}
-
-	// Convert protobuf Container to incus.ContainerInfo
-	container := resp.Container
-	info := &incus.ContainerInfo{
-		Name:         container.Name,
-		Username:     container.Username,
-		SSHHost:      container.SshHost,
-		State:        container.State.String(),
-		InstanceType: ostype.InstanceTypeFromIsolation(container.Isolation),
-	}
-
-	if container.Network != nil {
-		info.IPAddress = container.Network.IpAddress
-	}
-
-	if container.Resources != nil {
-		info.CPU = container.Resources.Cpu
-		info.Memory = container.Resources.Memory
-	}
-
-	info.GPU = container.GpuDevice
-	info.GPUs = container.GpuDevices
-
-	if container.CreatedAt > 0 {
-		info.CreatedAt = time.Unix(container.CreatedAt, 0)
-	}
-
-	return info, nil
+	return req
 }
 
 // ToggleMonitoring enables / disables OTel app telemetry on an
@@ -553,6 +570,7 @@ func (c *GRPCClient) GetContainer(username string) (*incus.ContainerInfo, error)
 		MonitoringEnabled:    container.MonitoringEnabled,
 		AutoSleepEnabled:     container.AutoSleepEnabled,
 		IdleThresholdMinutes: container.IdleThresholdMinutes,
+		Labels:               container.Labels,
 	}
 
 	if container.Network != nil {
@@ -767,17 +785,20 @@ func (c *GRPCClient) GetWorkspaceAccess(name string) (*pb.GetWorkspaceAccessResp
 }
 
 // DeployRecipe provisions a new dedicated container from a recipe via gRPC.
-func (c *GRPCClient) DeployRecipe(recipeID, name, gpu, backendID, pool string, params map[string]string) (*pb.DeployRecipeResponse, error) {
+// guardrailInput is the dataset and attestation for a guardrail-gated recipe
+// (#2368); nil for an ungated one.
+func (c *GRPCClient) DeployRecipe(recipeID, name, gpu, backendID, pool string, params map[string]string, guardrailInput *pb.GuardrailGateInput) (*pb.DeployRecipeResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // image + model pulls can take time
 	defer cancel()
 
 	req := &pb.DeployRecipeRequest{
-		RecipeId:   recipeID,
-		Name:       name,
-		Gpu:        gpu,
-		BackendId:  backendID,
-		Pool:       pool,
-		Parameters: params,
+		RecipeId:       recipeID,
+		Name:           name,
+		Gpu:            gpu,
+		BackendId:      backendID,
+		Pool:           pool,
+		Parameters:     params,
+		GuardrailInput: guardrailInput,
 	}
 	resp, err := c.recipeClient.DeployRecipe(ctx, req)
 	if err != nil {
@@ -1198,6 +1219,29 @@ func (c *GRPCClient) MigrateToEnvelope(req *pb.MigrateToEnvelopeRequest) (*pb.Mi
 	resp, err := c.kmsClient.MigrateToEnvelope(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("migrate to envelope: %w", err)
+	}
+	return resp, nil
+}
+
+// GetGuardrailPolicy reads the server-side guardrail policy via gRPC (#2368).
+func (c *GRPCClient) GetGuardrailPolicy() (*pb.GetGuardrailPolicyResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.guardrailPolicyClient.GetGuardrailPolicy(ctx, &pb.GetGuardrailPolicyRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("get guardrail policy: %w", err)
+	}
+	return resp, nil
+}
+
+// SetGuardrailPolicy replaces the server-side guardrail policy via gRPC
+// (admin only).
+func (c *GRPCClient) SetGuardrailPolicy(req *pb.SetGuardrailPolicyRequest) (*pb.SetGuardrailPolicyResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.guardrailPolicyClient.SetGuardrailPolicy(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("set guardrail policy: %w", err)
 	}
 	return resp, nil
 }

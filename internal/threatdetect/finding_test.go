@@ -119,3 +119,44 @@ func TestFinding_ToProto_ZeroTimeOmitted(t *testing.T) {
 		t.Errorf("LastSeen = %v, want nil for a zero time.Time", got.LastSeen)
 	}
 }
+
+// A deduped repeat may raise an open finding's severity, never lower it.
+func TestMaxSeverity(t *testing.T) {
+	const (
+		unspec = pb.ThreatSeverity_THREAT_SEVERITY_UNSPECIFIED
+		medium = pb.ThreatSeverity_THREAT_SEVERITY_MEDIUM
+		high   = pb.ThreatSeverity_THREAT_SEVERITY_HIGH
+	)
+	for _, c := range []struct{ a, b, want pb.ThreatSeverity }{
+		{medium, high, high},
+		{high, medium, high},
+		{medium, medium, medium},
+		{unspec, medium, medium},
+		{medium, unspec, medium},
+	} {
+		if got := maxSeverity(c.a, c.b); got != c.want {
+			t.Errorf("maxSeverity(%v, %v) = %v, want %v", c.a, c.b, got, c.want)
+		}
+	}
+}
+
+// Config evidence is a state snapshot: re-merging an identical entry (a box
+// that stays permissive, pass after pass) must not grow the list, while a
+// changed entry is still added.
+func TestEvidenceMerged_ConfigEvidenceIsDeduplicated(t *testing.T) {
+	a := ConfigEvidence{Path: "/etc/ssh/sshd_config.d/0.conf", Directive: "PasswordAuthentication", Value: "yes"}
+	b := ConfigEvidence{Path: "/etc/ssh/sshd_config.d/0.conf", Directive: "PasswordAuthentication", Value: "yes", Remediated: true}
+
+	got := Evidence{Configs: []ConfigEvidence{a}}
+	for i := 0; i < 5; i++ {
+		got = got.merged(Evidence{Configs: []ConfigEvidence{a}})
+	}
+	if len(got.Configs) != 1 {
+		t.Fatalf("5 identical repeats left %d entries, want 1: %+v", len(got.Configs), got.Configs)
+	}
+
+	got = got.merged(Evidence{Configs: []ConfigEvidence{a, b, b}})
+	if len(got.Configs) != 2 || got.Configs[1] != b {
+		t.Fatalf("a changed entry must be added exactly once, got %+v", got.Configs)
+	}
+}

@@ -8,6 +8,7 @@ package recipes
 import (
 	"embed"
 	"fmt"
+	"path"
 	"strings"
 	"sync"
 
@@ -71,6 +72,44 @@ type recipeDef struct {
 	// ModelGatewayProvider opts the recipe into the managed model-gateway for the
 	// named provider (e.g. "gemini-openai"); see the proto field for semantics.
 	ModelGatewayProvider string `yaml:"model_gateway_provider,omitempty"`
+	// GuardrailGateNode gates every deploy on a guardrail attestation; see
+	// the proto field for semantics. Kept as a node so that a present but
+	// empty or null `guardrail_gate:` is seen (and refused) rather than
+	// loading as an ungated recipe; validate decodes it into GuardrailGate.
+	GuardrailGateNode yaml.Node         `yaml:"guardrail_gate,omitempty"`
+	GuardrailGate     *guardrailGateDef `yaml:"-"`
+}
+
+// guardrailGateDef is the YAML shape of pb.GuardrailGate. require_kinds
+// are the CLI's lower-case kind names; validate maps them to the enum.
+type guardrailGateDef struct {
+	DatasetPath  string   `yaml:"dataset_path"`
+	RequireKinds []string `yaml:"require_kinds,omitempty"`
+}
+
+// guardrailKindsFromYAML maps require_kinds names to enum values; ok is
+// false for an unknown name.
+func guardrailKindsFromYAML(names []string) ([]pb.GuardrailKind, bool) {
+	out := make([]pb.GuardrailKind, 0, len(names))
+	for _, n := range names {
+		k, found := pb.GuardrailKind_value["GUARDRAIL_KIND_"+strings.ToUpper(n)]
+		if !found || k == int32(pb.GuardrailKind_GUARDRAIL_KIND_UNSPECIFIED) {
+			return nil, false
+		}
+		out = append(out, pb.GuardrailKind(k))
+	}
+	return out, true
+}
+
+func validateGuardrailGate(id string, g *guardrailGateDef) error {
+	p := g.DatasetPath
+	if p == "" || !path.IsAbs(p) || path.Clean(p) != p || p == "/" {
+		return fmt.Errorf("recipe %q guardrail_gate.dataset_path %q must be a clean absolute path other than /", id, p)
+	}
+	if _, ok := guardrailKindsFromYAML(g.RequireKinds); !ok {
+		return fmt.Errorf("recipe %q guardrail_gate.require_kinds %v: unknown kind", id, g.RequireKinds)
+	}
+	return nil
 }
 
 // ToProto converts a recipeDef to its pb.Recipe representation.
@@ -85,6 +124,10 @@ func (r *recipeDef) ToProto() *pb.Recipe {
 		PostStart:   r.PostStart,
 
 		ModelGatewayProvider: r.ModelGatewayProvider,
+	}
+	if r.GuardrailGate != nil {
+		kinds, _ := guardrailKindsFromYAML(r.GuardrailGate.RequireKinds) // validate refused unknown names
+		out.GuardrailGate = &pb.GuardrailGate{DatasetPath: r.GuardrailGate.DatasetPath, RequireKinds: kinds}
 	}
 	if r.Resources != nil {
 		out.Resources = &pb.RecipeResources{
@@ -222,6 +265,25 @@ func validate(r *recipeDef) error {
 		if p.ExternalPort != 0 && (p.ExternalPort < 0 || p.ExternalPort > 65535) {
 			return fmt.Errorf("recipe %q port %d has invalid external_port: %d", r.ID, p.ContainerPort, p.ExternalPort)
 		}
+	}
+	if n := r.GuardrailGateNode; n.Kind != 0 {
+		// The key is present: that is a gate declaration, so an empty or
+		// null value is an incomplete gate, never "no gate".
+		if n.Kind != yaml.MappingNode {
+			return fmt.Errorf("recipe %q guardrail_gate is present but not a mapping (an empty gate is refused, not ignored)", r.ID)
+		}
+		// Strict: Node.Decode ignores unknown keys, and a misspelt
+		// require_kinds would silently drop the recipe's own requirement.
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			if k := n.Content[i].Value; k != "dataset_path" && k != "require_kinds" {
+				return fmt.Errorf("recipe %q guardrail_gate: unknown key %q (want dataset_path, require_kinds)", r.ID, k)
+			}
+		}
+		r.GuardrailGate = &guardrailGateDef{}
+		if err := n.Decode(r.GuardrailGate); err != nil {
+			return fmt.Errorf("recipe %q guardrail_gate: %w", r.ID, err)
+		}
+		return validateGuardrailGate(r.ID, r.GuardrailGate)
 	}
 	return nil
 }

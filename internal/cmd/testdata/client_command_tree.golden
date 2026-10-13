@@ -51,6 +51,9 @@ cluster list
 cluster node-pool
 cluster status
 code attach
+code egress-policy delete
+code egress-policy get
+code egress-policy set
 code install
 code logs
 code run
@@ -83,6 +86,12 @@ gateway key status
 gateway mint
 gateway models
 get
+guardrail apply
+guardrail keygen
+guardrail policy get
+guardrail policy set
+guardrail scan
+guardrail verify
 info
 install-stack
 kms envelope-coverage
@@ -118,12 +127,14 @@ moved:service
 moved:sync-accounts
 moved:tunnel
 moved:upgrade-watchdog
+network-guard status
 network-policy delete
 network-policy get
 network-policy list
 network-policy patch add
 network-policy patch list
 network-policy patch rm
+network-policy plan
 network-policy set
 network-policy signature add
 network-policy signature list
@@ -175,6 +186,9 @@ security bad-destinations remove
 security findings
 security findings list
 security findings resolve
+security scan-opt-in allow
+security scan-opt-in list
+security scan-opt-in refuse
 security sentry status
 security-findings
 security-remediate

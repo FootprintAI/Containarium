@@ -38,16 +38,21 @@ const (
 	// CredentialStatusNone: neither of the above. Expected and normal on a
 	// freshly provisioned box (#2272) — never an error on its own.
 	CredentialStatusNone CredentialStatusSource = "none"
+	// CredentialStatusExpired: the engine's own sign-in file exists, but the
+	// expiry timestamp recorded in it is in the past (#2371). Only that
+	// timestamp is parsed, never the credential value. A sign-in file with
+	// no expiry timestamp is CredentialStatusInteractive, never this.
+	CredentialStatusExpired CredentialStatusSource = "expired"
 )
 
 // credentialStatusSources lists every value CredentialStatusScript's
 // rendered probe is allowed to print, for ParseCredentialStatusSource.
 var credentialStatusSources = []CredentialStatusSource{
-	CredentialStatusInteractive, CredentialStatusAPIKey, CredentialStatusNone,
+	CredentialStatusInteractive, CredentialStatusAPIKey, CredentialStatusNone, CredentialStatusExpired,
 }
 
 // ParseCredentialStatusSource validates a probe's trimmed stdout against the
-// three values above. Anything else is an error naming what was seen rather
+// values above. Anything else is an error naming what was seen rather
 // than silently defaulting to "none" — a script that printed something else
 // means the detection logic and this parser have drifted, which must fail
 // loudly, not report a possibly-wrong status.

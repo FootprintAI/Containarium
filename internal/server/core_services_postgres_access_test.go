@@ -228,24 +228,32 @@ func TestPinCoreIP(t *testing.T) {
 		cfg := incus.ContainerConfig{Name: CoreVictoriaMetricsContainer}
 		cs.pinCoreIP(&cfg, CoreVictoriaMetricsContainer)
 
-		if cfg.NIC == nil || cfg.NIC.IPv4Address != "10.100.0.239" || cfg.NIC.Network != coreBridgeName {
-			t.Fatalf("NIC = %+v, want 10.100.0.239 on %s", cfg.NIC, coreBridgeName)
+		if cfg.NIC == nil || cfg.NIC.Name != "eth0" || cfg.NIC.IPv4Address != "10.100.0.243" || cfg.NIC.Network != coreBridgeName {
+			t.Fatalf("NIC = %+v, want 10.100.0.243 on %s", cfg.NIC, coreBridgeName)
 		}
 		// The address the pg_hba rule names must be the one the container gets.
 		if want := cs.grafanaClientIP(); want != cfg.NIC.IPv4Address {
 			t.Errorf("grafanaClientIP() = %q but the container is pinned to %q", want, cfg.NIC.IPv4Address)
 		}
 	})
-	t.Run("postgres is pinned too", func(t *testing.T) {
-		cfg := incus.ContainerConfig{Name: CorePostgresContainer}
-		cs.pinCoreIP(&cfg, CorePostgresContainer)
-		if cfg.NIC == nil || cfg.NIC.IPv4Address != "10.100.0.240" {
-			t.Fatalf("NIC = %+v", cfg.NIC)
-		}
-	})
+	for _, tc := range []struct{ name, want string }{
+		{CoreCaddyContainer, "10.100.0.241"},
+		{CorePostgresContainer, "10.100.0.242"},
+		{CoreOTelCollectorContainer, "10.100.0.244"},
+		{CoreSecurityContainer, "10.100.0.245"},
+		{CoreGuacamoleContainer, "10.100.0.246"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := incus.ContainerConfig{Name: tc.name}
+			cs.pinCoreIP(&cfg, tc.name)
+			if cfg.NIC == nil || cfg.NIC.Name != "eth0" || cfg.NIC.IPv4Address != tc.want || cfg.NIC.Network != coreBridgeName {
+				t.Fatalf("NIC = %+v, want %s on %s", cfg.NIC, tc.want, coreBridgeName)
+			}
+		})
+	}
 	t.Run("an unpinned container stays on DHCP", func(t *testing.T) {
-		cfg := incus.ContainerConfig{Name: CoreSecurityContainer}
-		cs.pinCoreIP(&cfg, CoreSecurityContainer)
+		cfg := incus.ContainerConfig{Name: "unknown-container"}
+		cs.pinCoreIP(&cfg, cfg.Name)
 		if cfg.NIC != nil {
 			t.Fatalf("NIC = %+v, want none", cfg.NIC)
 		}

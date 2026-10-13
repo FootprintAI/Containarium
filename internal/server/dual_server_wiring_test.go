@@ -165,6 +165,14 @@ func TestStartResumesMetricsExportAfterIdentityIsWired(t *testing.T) {
 		t.Fatal("DualServer.Start no longer calls SetCapabilityIdentity — the resumed collector " +
 			"has no real identity to snapshot")
 	}
+	profile := indexOfCall(calls, "startCapabilityProfile")
+	if profile < 0 {
+		t.Fatal("DualServer.Start no longer starts automatic capability profiling")
+	}
+	peerPool := indexOfCall(calls, "SetPeerPool")
+	if profile < identity || peerPool < 0 || profile < peerPool {
+		t.Fatal("automatic capability profiling must start after identity and peer-pool wiring")
+	}
 
 	if resume < identity {
 		t.Errorf("StartMetricsExportIfEnabled runs before SetCapabilityIdentity (positions %d < %d): "+

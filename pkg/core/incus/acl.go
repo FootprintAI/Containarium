@@ -2,6 +2,7 @@ package incus
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/lxc/incus/v7/shared/api"
 )
@@ -239,35 +240,98 @@ func (c *Client) ListNetworkACLs() ([]api.NetworkACL, error) {
 	return acls, nil
 }
 
-// AttachACLToContainer attaches a network ACL to a container's network device
+// AttachACLToContainer attaches a network ACL to a container's network
+// device. It works on the NIC every tenant box actually has — one inherited
+// from the default profile — by shadowing it with an instance-local copy
+// first (EnsureNICDevice), appends to an existing security.acls list rather
+// than overwriting it, and issues no write when the ACL is already attached
+// (#2348).
 func (c *Client) AttachACLToContainer(containerName, aclName, deviceName string) error {
-	// Get current container configuration
+	if aclName == "" {
+		return fmt.Errorf("attach acl to %s/%s: acl name is required", containerName, deviceName)
+	}
+	return c.editNICACLs(containerName, deviceName, "attach acl "+aclName+" to "+deviceName, func(have []string) []string {
+		for _, name := range have {
+			if name == aclName {
+				return have // already attached; stay silent
+			}
+		}
+		return append(have, aclName)
+	})
+}
+
+// SetOwnedACL makes aclName the only attached ACL whose name starts with
+// ownedPrefix, leaving every other attached ACL alone. It is how a guard that
+// owns a naming family (the tenant guard owns containarium-tenant-*) moves a
+// box to a new ACL without leaving the old one attached: appending alone
+// would stack a previous tenant's allow table on top of the new one. Same
+// profile-NIC shadowing and no-write-when-converged behaviour as
+// AttachACLToContainer.
+func (c *Client) SetOwnedACL(containerName, aclName, deviceName, ownedPrefix string) error {
+	if aclName == "" {
+		return fmt.Errorf("set owned acl on %s/%s: acl name is required", containerName, deviceName)
+	}
+	if ownedPrefix == "" {
+		return fmt.Errorf("set owned acl on %s/%s: owned prefix is required (empty would own every ACL)", containerName, deviceName)
+	}
+	return c.editNICACLs(containerName, deviceName, "set owned acl "+aclName+" on "+deviceName, func(have []string) []string {
+		out := make([]string, 0, len(have)+1)
+		for _, name := range have {
+			if !strings.HasPrefix(name, ownedPrefix) {
+				out = append(out, name)
+			}
+		}
+		return append(out, aclName)
+	})
+}
+
+// editNICACLs applies edit to a NIC's security.acls list. A profile-inherited
+// NIC is shadowed by an instance-local copy carrying the profile's settings in
+// the same write; nothing is written when the resulting list equals the
+// current one.
+func (c *Client) editNICACLs(containerName, deviceName, what string, edit func(have []string) []string) error {
 	inst, etag, err := c.server.GetInstance(containerName)
 	if err != nil {
 		return fmt.Errorf("failed to get container %s: %w", containerName, err)
 	}
-
-	// Find the network device
-	device, exists := inst.Devices[deviceName]
-	if !exists {
-		return fmt.Errorf("device %s not found in container %s", deviceName, containerName)
+	device, local := inst.Devices[deviceName]
+	if !local {
+		expanded, ok := inst.ExpandedDevices[deviceName]
+		if !ok {
+			return fmt.Errorf("device %s not found in container %s", deviceName, containerName)
+		}
+		device = make(map[string]string, len(expanded)+1)
+		for k, v := range expanded {
+			device[k] = v
+		}
+		device["type"] = "nic"
+		device["name"] = deviceName
 	}
-
-	// Add ACL to the device
-	device["security.acls"] = aclName
+	have := splitACLList(device["security.acls"])
+	want := strings.Join(edit(append([]string(nil), have...)), ",")
+	if local && want == strings.Join(have, ",") {
+		return nil
+	}
+	device["security.acls"] = want
+	if inst.Devices == nil {
+		inst.Devices = map[string]map[string]string{}
+	}
 	inst.Devices[deviceName] = device
-
-	// Update the container
-	op, err := c.server.UpdateInstance(containerName, inst.Writable(), etag)
-	if err != nil {
-		return fmt.Errorf("failed to attach ACL to container: %w", err)
+	if err := c.updateInstanceDevices(containerName, inst, etag, what); err != nil {
+		return fmt.Errorf("failed to update ACLs on container: %w", err)
 	}
-
-	if err := op.Wait(); err != nil {
-		return fmt.Errorf("failed to attach ACL (operation failed): %w", err)
-	}
-
 	return nil
+}
+
+// splitACLList parses Incus's comma-separated security.acls value.
+func splitACLList(v string) []string {
+	var out []string
+	for _, part := range strings.Split(v, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // DetachACLFromContainer removes a network ACL from a container's network device
@@ -308,13 +372,16 @@ func (c *Client) GetContainerACL(containerName, deviceName string) (string, erro
 		return "", fmt.Errorf("failed to get container %s: %w", containerName, err)
 	}
 
-	device, exists := inst.Devices[deviceName]
+	// The expanded view is the effective NIC: it covers both an
+	// instance-local device and one inherited from a profile.
+	device, exists := inst.ExpandedDevices[deviceName]
+	if !exists {
+		device, exists = inst.Devices[deviceName]
+	}
 	if !exists {
 		return "", nil // No device found
 	}
-
-	aclName := device["security.acls"]
-	return aclName, nil
+	return device["security.acls"], nil
 }
 
 // EnsureACLForApp ensures an ACL exists for an app and returns its name

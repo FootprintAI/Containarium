@@ -20,12 +20,12 @@ import (
 	"github.com/footprintai/containarium/pkg/core/incus"
 )
 
-// Options controls how Host blocks are rendered. The two routing modes
-// reflect the two ways a Containarium container is reachable:
+// Options controls how Host blocks are rendered:
 //
 //  1. Direct (Sentinel == ""): user is on the same network as the
 //     container; the Host block uses the container's IP directly. This
-//     is the local-Incus / dev workstation case.
+//     is the local-Incus / dev workstation case. For a remote single VM,
+//     JumpHost adds a ProxyJump through the host's per-user account.
 //  2. Via sentinel: every connection goes to the sentinel's SSH port
 //     and sshpiper routes by username to the right backend. The Host
 //     block sets HostName=<sentinel> and User=<container-name>.
@@ -34,6 +34,10 @@ type Options struct {
 	// "<cluster>.example.com" or "sentinel.example.com:22". Empty
 	// means generate direct entries against each container's IP.
 	Sentinel string
+	// JumpHost is the VM's SSH endpoint (host or host:port). In direct
+	// mode, boxes without a daemon-reported SSHHost use it as a jump
+	// server, with the daemon-reported Username as the jump account.
+	JumpHost string
 	// SentinelPort is the SSH port on the sentinel. Default 22.
 	SentinelPort int
 	// IdentityFile, if non-empty, is rendered as IdentityFile in every
@@ -89,6 +93,14 @@ func Generate(containers []incus.ContainerInfo, opts Options) Generated {
 	copy(sorted, containers)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 
+	// Reserve every destination before choosing jump aliases, including
+	// destinations that sort after their jump's owner. Also reserve each
+	// allocated jump alias so all Host blocks remain distinct.
+	aliases := make(map[string]bool, len(sorted))
+	for _, c := range sorted {
+		aliases[strings.ToLower(c.Name)] = true
+	}
+
 	for _, c := range sorted {
 		// State spelling depends on the transport, so normalize rather
 		// than compare against one of them (cloud#1851): a local incus
@@ -106,7 +118,15 @@ func Generate(containers []incus.ContainerInfo, opts Options) Generated {
 			g.SkippedNoAddr++
 			continue
 		}
-		writeHost(&b, c, opts)
+		jumpAlias := ""
+		if opts.Sentinel == "" && c.SSHHost == "" && opts.JumpHost != "" {
+			jumpAlias = c.Name + "-jump"
+			for suffix := 2; aliases[strings.ToLower(jumpAlias)]; suffix++ {
+				jumpAlias = fmt.Sprintf("%s-jump-%d", c.Name, suffix)
+			}
+			aliases[strings.ToLower(jumpAlias)] = true
+		}
+		writeHost(&b, c, opts, jumpAlias)
 		g.Count++
 	}
 
@@ -115,7 +135,7 @@ func Generate(containers []incus.ContainerInfo, opts Options) Generated {
 	return g
 }
 
-func writeHost(b *strings.Builder, c incus.ContainerInfo, opts Options) {
+func writeHost(b *strings.Builder, c incus.ContainerInfo, opts Options, jumpAlias string) {
 	fmt.Fprintf(b, "Host %s\n", c.Name)
 
 	if opts.Sentinel != "" {
@@ -145,6 +165,9 @@ func writeHost(b *strings.Builder, c incus.ContainerInfo, opts Options) {
 		fmt.Fprintf(b, "    Port %d\n", t.Port)
 		fmt.Fprintf(b, "    User %s\n", t.User)
 	}
+	if jumpAlias != "" {
+		fmt.Fprintf(b, "    ProxyJump %s\n", jumpAlias)
+	}
 
 	if opts.IdentityFile != "" {
 		fmt.Fprintf(b, "    IdentityFile %s\n", opts.IdentityFile)
@@ -163,4 +186,18 @@ func writeHost(b *strings.Builder, c incus.ContainerInfo, opts Options) {
 		fmt.Fprintf(b, "    # backend: %s\n", c.BackendID)
 	}
 	fmt.Fprintln(b)
+	if jumpAlias != "" {
+		// ProxyJump does not inherit the destination's IdentityFile. A
+		// separate Host block pins the same key on both SSH connections.
+		host, port := hostport.Split(opts.JumpHost, 22)
+		fmt.Fprintf(b, "Host %s\n", jumpAlias)
+		fmt.Fprintf(b, "    HostName %s\n", host)
+		fmt.Fprintf(b, "    Port %d\n", port)
+		fmt.Fprintf(b, "    User %s\n", c.Username)
+		if opts.IdentityFile != "" {
+			fmt.Fprintf(b, "    IdentityFile %s\n", opts.IdentityFile)
+		}
+		fmt.Fprintln(b, "    IdentitiesOnly yes")
+		fmt.Fprintln(b)
+	}
 }

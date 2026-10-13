@@ -50,6 +50,8 @@ type API interface {
 	TailRunLog(req *pb.TailRunLogRequest) (*pb.TailRunLogResponse, error)
 	ListBoxRuns(username string) ([]*pb.BoxRun, error)
 	TailBoxRunLog(req *pb.TailBoxRunLogRequest) (*pb.TailBoxRunLogResponse, error)
+	// Coding-tool egress allowlist, read only (#2378).
+	GetCodingToolEgressPolicy(req *pb.GetCodingToolEgressPolicyRequest) (*pb.GetCodingToolEgressPolicyResponse, error)
 
 	// Backups.
 	CreateBackup(req CreateBackupRequest) (*CreateBackupResponse, error)
@@ -66,10 +68,16 @@ type API interface {
 	GetKMSStatus() (*KMSStatusResponse, error)
 	GetEnvelopeCoverage() (*EnvelopeCoverageResponse, error)
 	MigrateToEnvelope(req MigrateToEnvelopeBody) (*MigrateToEnvelopeResponse, error)
+	// Guardrail policy (#2368): read only; the write stays CLI-only.
+	GetGuardrailPolicy() (*pb.GetGuardrailPolicyResponse, error)
 
 	// Model gateway (#1726). Mint only: the key verbs are operator-gated and
 	// deliberately not exposed to an agent (see gateway_tools.go).
 	MintGatewayToken(req MintGatewayTokenBody) (*MintGatewayTokenResponse, error)
+
+	// Network guards (#2353): the tenant ↔ tenant and tenant → core NIC-ACL
+	// posture of the backend, read-only.
+	GetNetworkGuardStatus() (*NetworkGuardStatusResponse, error)
 
 	// Routes / backends.
 	AddRoute(req AddRouteRequest) (*AddRouteResponse, error)

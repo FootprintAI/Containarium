@@ -85,6 +85,9 @@ resource "google_compute_instance" "sentinel" {
       sentinel_auth_secret    = var.sentinel_auth_secret
       sentinel_admin_secret   = var.sentinel_admin_secret
       enable_peer_mtls        = var.enable_peer_mtls
+
+      # Local SSH session sink retention (#2415); its own alignment group.
+      ssh_session_log_retention_days = var.ssh_session_log_retention_days
     })
   }
 

@@ -334,3 +334,63 @@ func TestGenerate_IdentitiesOnlyEmittedWithoutIdentityFile(t *testing.T) {
 		t.Errorf("no IdentityFile was requested:\n%s", g.Content)
 	}
 }
+
+func TestGenerate_JumpHostOnlyForBoxesWithoutSSHHost(t *testing.T) {
+	g := Generate([]incus.ContainerInfo{
+		{Name: "alice-container", Username: "alice", State: "Running", IPAddress: "10.0.3.100"},
+		{Name: "bob-container", Username: "bob", State: "Running", SSHHost: "ssh.example.com"},
+		{Name: "stopped-container", Username: "stopped", State: "Stopped", IPAddress: "10.0.3.101"},
+	}, Options{JumpHost: "vm.example.com", IdentityFile: "~/.ssh/box_key"})
+	if g.Count != 2 || g.SkippedStopped != 1 {
+		t.Fatalf("Count=%d SkippedStopped=%d, want 2/1", g.Count, g.SkippedStopped)
+	}
+	alice := block(t, g.Content, "alice-container")
+	jump := block(t, g.Content, "alice-container-jump")
+	bob := block(t, g.Content, "bob-container")
+	if !strings.Contains(alice, "ProxyJump alice-container-jump") || !strings.Contains(jump, "User alice") {
+		t.Fatalf("missing per-box jump route:\n%s", g.Content)
+	}
+	for _, blk := range []string{alice, jump} {
+		if !strings.Contains(blk, "IdentityFile ~/.ssh/box_key") || !strings.Contains(blk, "IdentitiesOnly yes") {
+			t.Errorf("key must apply on both hops:\n%s", blk)
+		}
+	}
+	if strings.Contains(bob, "ProxyJump") || !strings.Contains(bob, "HostName ssh.example.com") || strings.Contains(g.Content, "Host bob-container-jump") || strings.Contains(g.Content, "Host stopped-container-jump") {
+		t.Fatalf("jump route replaced advertised SSH host or rendered a stopped box:\n%s", g.Content)
+	}
+}
+
+func TestGenerate_JumpAliasesAvoidDestinationCollisions(t *testing.T) {
+	cs := []incus.ContainerInfo{
+		{Name: "foo", Username: "alice", State: "Running", IPAddress: "10.0.3.100"},
+		{Name: "foo-jump", Username: "bob", State: "Running", IPAddress: "10.0.3.101"},
+		{Name: "foo-jump-2", Username: "charlie", State: "Running", IPAddress: "10.0.3.102"},
+	}
+	opts := Options{JumpHost: "vm.example.com"}
+	g := Generate(cs, opts)
+	aliases := make(map[string]bool)
+	for _, line := range strings.Split(g.Content, "\n") {
+		if fields := strings.Fields(line); len(fields) == 2 && fields[0] == "Host" {
+			alias := strings.ToLower(fields[1])
+			if aliases[alias] {
+				t.Errorf("duplicate Host alias %q", fields[1])
+			}
+			aliases[alias] = true
+		}
+	}
+	if len(aliases) != 2*len(cs) || g.Count != len(cs) {
+		t.Errorf("got %d unique aliases and %d boxes, want 6/3", len(aliases), g.Count)
+	}
+	for _, c := range cs {
+		if blk := block(t, g.Content, c.Name); !strings.Contains(blk, "HostName "+c.IPAddress+"\n") || !strings.Contains(blk, "User "+c.Username+"\n") {
+			t.Errorf("destination %q resolves to the wrong host or user:\n%s", c.Name, blk)
+		}
+	}
+	cs[0], cs[2] = cs[2], cs[0]
+	reversed := Generate(cs, opts)
+	for alias := range aliases {
+		if block(t, g.Content, alias) != block(t, reversed.Content, alias) {
+			t.Errorf("Host %q changed when input order changed", alias)
+		}
+	}
+}

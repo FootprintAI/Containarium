@@ -5,6 +5,7 @@ package containarium.v1;
 option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
 
 import "containarium/v1/config.proto";
+import "google/protobuf/timestamp.proto";
 import "google/api/annotations.proto";
 import "protoc-gen-openapiv2/options/annotations.proto";
 
@@ -83,6 +84,22 @@ service NetworkPolicyService {
     };
   }
 
+  // PlanNetworkPolicy reports which destinations a tenant's boxes reached
+  // that the tenant's policy denied (log-only) or dropped (enforce) in a recent
+  // window, aggregated by destination, so an allow-list can be written from
+  // what the tenant actually does and checked before it is armed (#2440).
+  // Read-only; it changes nothing.
+  rpc PlanNetworkPolicy(PlanNetworkPolicyRequest) returns (PlanNetworkPolicyResponse) {
+    option (google.api.http) = {
+      get: "/v1/network-policies/{tenant}/plan"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Plan network policy";
+      description: "List the destinations a tenant's boxes reached that its policy denied or dropped in a recent window, so an egress allow-list can be written from observed behaviour and checked before enforcement. Admin-only.";
+      tags: "NetworkPolicy";
+    };
+  }
+
   // SetNetworkPolicySignature creates or replaces a global operator exploit
   // signature (#661 Tier 2, upsert by name). Validated + normalized; the stored
   // form (with its assigned id) is echoed back.
@@ -123,4 +140,49 @@ service NetworkPolicyService {
       tags: "NetworkPolicy";
     };
   }
+}
+
+// PlanNetworkPolicyRequest selects the tenant and the look-back window.
+message PlanNetworkPolicyRequest {
+  // Tenant to plan for (required).
+  string tenant = 1;
+  // Look-back window in minutes. <= 0 means 60; capped at 10080 (one week).
+  int32 since_minutes = 2;
+}
+
+// PlanDestination is one destination the tenant's policy denied or dropped,
+// aggregated over the window.
+message PlanDestination {
+  // Destination IPv4 address.
+  string ip = 1;
+  // Destination port (0 when the flow had none, e.g. ICMP).
+  uint32 port = 2;
+  // IP protocol: "tcp", "udp", or the number for anything else.
+  string protocol = 3;
+  // Number of denied/dropped flows seen (per-flow audit rows).
+  uint32 count = 4;
+  // True when at least one of the flows was actually dropped (enforce armed),
+  // false when all were only logged (log-only or enforcement not armed).
+  bool dropped = 5;
+  // When the most recent such flow was seen.
+  google.protobuf.Timestamp last_seen = 6;
+}
+
+// PlanNetworkPolicyResponse is the aggregated would-block / blocked set.
+message PlanNetworkPolicyResponse {
+  string tenant = 1;
+  // Window actually used, in minutes (after defaulting and capping).
+  int32 since_minutes = 2;
+  // Destinations the policy denied, busiest first. Excludes any destination
+  // the tenant's current egress CIDRs (or the preset's implicit resolver)
+  // already allow, so stale rows from before an allow-list edit do not show.
+  repeated PlanDestination destinations = 3;
+  // Audit rows examined.
+  uint32 rows_scanned = 4;
+  // True when the row cap was hit, so the list may be missing the oldest
+  // flows in the window.
+  bool truncated = 5;
+  // Caveats the caller should show, e.g. that destinations allowed by
+  // egress_domains are not subtracted.
+  repeated string notes = 6;
 }

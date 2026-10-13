@@ -53,7 +53,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: '1.26.7'
+          go-version: '1.26.9'
 
       - name: Run test-cli-split-deps.sh
         run: ./scripts/test-cli-split-deps.sh
@@ -88,7 +88,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: '1.26.7'
+          go-version: '1.26.9'
 
       - name: Build release binaries (make build-all)
         # The real release recipe, minus its proto/web-ui/swagger-ui
@@ -110,7 +110,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: '1.26.7'
+          go-version: '1.26.9'
 
       - name: Build containarium (client)
         run: CGO_ENABLED=0 go build -tags containarium_client -o /dev/null ./cmd/containarium
@@ -135,8 +135,31 @@ jobs:
       - name: Windows cross-compile (client)
         run: GOOS=windows GOARCH=amd64 go build -tags containarium_client -o /dev/null ./cmd/containarium
 
+      - name: Windows cross-compile hostcheck
+        run: CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./internal/hostcheck/
+
+      - name: Test hostcheck and agent-box packages
+        run: go test ./internal/hostcheck/ ./internal/agentbox/ ./internal/sandbox/dialer/
+
+      - name: macOS cross-compile (client and agent-box)
+        run: |
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=darwin GOARCH="$arch" go build -tags containarium_client -o /dev/null ./cmd/containarium/
+            CGO_ENABLED=0 GOOS=darwin GOARCH="$arch" go build -o /dev/null ./cmd/agent-box/
+          done
+
+      - name: Keep agent-box excluded from Windows
+        run: |
+          for pkg in ./internal/agentbox/ ./cmd/agent-box/; do
+            count=$(GOOS=windows GOARCH=amd64 go list -e -f '{{len .GoFiles}}' "$pkg")
+            if [ "$count" != "0" ]; then
+              echo "::error::$pkg contains source files enabled for Windows"
+              exit 1
+            fi
+          done
+
   test-both-tag-sets:
-    name: go test ./internal/cmd/... ./internal/coderun/... (both tag sets)
+    name: go test ./internal/cmd/... ./internal/coderun/... ./internal/sshconfig/... (both tag sets)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -145,7 +168,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: '1.26.7'
+          go-version: '1.26.9'
 
       # ./internal/coderun/... joins this lane in #1727. It was in NO lane
       # before — this repo has no `go test ./...` gate (see the note in
@@ -155,14 +178,17 @@ jobs:
       # that doc calling it "the layer that runs in CI". It does now, along with
       # the engine seam's TestRunCommand / TestCodeConfigRoundTrip /
       # TestPiModelsJSON tables.
+      # ./internal/guardrail/... joins in #2367 for the same reason: its own
+      # package tests (reference rules, InboundDecision) were in no lane.
+      # The job name above is left unchanged so a required-check name stays put.
       - name: Test containariumd (default tags)
         # Includes TestContainariumdCommandTree_SupersetOfClientGolden —
         # the untagged-build parity gate.
-        run: go test -race -v ./internal/cmd/... ./internal/coderun/...
+        run: go test -race -v ./internal/cmd/... ./internal/coderun/... ./internal/sshconfig/... ./internal/guardrail/...
 
       - name: Test containarium client (containarium_client tag)
         # Includes TestClientCommandTree_MatchesGoldenAllowList — the
         # command-tree allow-list gate — and TestHybridCommands_
         # NoServer_NeverReachRealLocalMode / TestMovedServerCommands_
         # ExitTwoNamingContainariumd from #1775/#1777.
-        run: go test -race -tags containarium_client -v ./internal/cmd/... ./internal/coderun/...
+        run: go test -race -tags containarium_client -v ./internal/cmd/... ./internal/coderun/... ./internal/sshconfig/... ./internal/guardrail/...

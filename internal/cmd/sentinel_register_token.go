@@ -3,15 +3,11 @@
 package cmd
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
-	"time"
 
-	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/config"
 	"github.com/footprintai/containarium/internal/sentinel"
 	"github.com/spf13/cobra"
@@ -22,6 +18,8 @@ var (
 	sentinelRegisterTokenToken       string
 	sentinelRegisterTokenPools       []string
 	sentinelRegisterTokenSecret      string
+	sentinelRegisterTokenKind        = sentinelTokenKindTunnelJoin
+	sentinelRegisterTokenBackend     string
 )
 
 var sentinelRegisterTokenCmd = &cobra.Command{
@@ -52,7 +50,16 @@ Examples:
   # Restrict a token to specific pools
   containarium sentinel register-token \
       --url http://asia-east1.containarium.dev:8888 \
-      --token <token> --pool lab --pool prod`,
+      --token <token> --pool lab --pool prod
+
+  # Register the audit-ingest token the SSH session shipper uses for one
+  # backend (#2415). Mint it ON that backend first:
+  #   containarium token generate --username sentinel-shipper --roles service \
+  #       --scopes audit:ingest --expiry 2160h --secret-file /etc/containarium/jwt.secret
+  # Registering again for the same --backend replaces the token (rotation).
+  containarium sentinel register-token --kind audit-ingest \
+      --url http://<sentinel>:8888 \
+      --backend <backend-id> --token <jwt>`,
 	RunE: runSentinelRegisterToken,
 }
 
@@ -64,6 +71,9 @@ func init() {
 	sentinelRegisterTokenCmd.Flags().StringSliceVar(&sentinelRegisterTokenPools, "pool", nil, "Pool this token may join. Repeatable. Omit for any pool (PoolAny) — the common case for a one-off BYOC token.")
 	sentinelRegisterTokenCmd.Flags().StringVar(&sentinelRegisterTokenSecret, "secret", os.Getenv(config.EnvSentinelAdminSecret), "Sentinel admin secret (defaults to $CONTAINARIUM_SENTINEL_ADMIN_SECRET)")
 
+	sentinelRegisterTokenCmd.Flags().Var(&sentinelRegisterTokenKind, "kind", `Which credential to register: "tunnel-join" (default, BYOC join token) or "audit-ingest" (per-backend audit:ingest JWT for the SSH session shipper)`)
+	sentinelRegisterTokenCmd.Flags().StringVar(&sentinelRegisterTokenBackend, "backend", "", "Backend id the token belongs to (required for --kind audit-ingest)")
+
 	_ = sentinelRegisterTokenCmd.MarkFlagRequired("url")
 	_ = sentinelRegisterTokenCmd.MarkFlagRequired("token")
 }
@@ -73,39 +83,45 @@ func runSentinelRegisterToken(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("sentinel admin secret is required — pass --secret or set CONTAINARIUM_SENTINEL_ADMIN_SECRET")
 	}
 
-	pools := make([]sentinel.Pool, len(sentinelRegisterTokenPools))
-	for i, p := range sentinelRegisterTokenPools {
-		pools[i] = sentinel.Pool(p)
+	var (
+		endpoint string
+		body     []byte
+		err      error
+	)
+	switch sentinelRegisterTokenKind {
+	case sentinelTokenKindAuditIngest:
+		if sentinelRegisterTokenBackend == "" {
+			return fmt.Errorf("--backend is required with --kind audit-ingest")
+		}
+		if len(sentinelRegisterTokenPools) > 0 {
+			return fmt.Errorf("--pool does not apply to --kind audit-ingest (tokens are per backend, not per pool)")
+		}
+		endpoint = sentinelRegisterTokenSentinelURL + "/sentinel/audit-ingest-tokens"
+		body, err = json.Marshal(sentinel.AuditIngestTokenRegisterRequest{
+			BackendID: sentinelRegisterTokenBackend,
+			Token:     sentinelRegisterTokenToken,
+		})
+	default: // sentinelTokenKindTunnelJoin
+		if sentinelRegisterTokenBackend != "" {
+			return fmt.Errorf("--backend applies only to --kind audit-ingest")
+		}
+		pools := make([]sentinel.Pool, len(sentinelRegisterTokenPools))
+		for i, p := range sentinelRegisterTokenPools {
+			pools[i] = sentinel.Pool(p)
+		}
+		endpoint = sentinelRegisterTokenSentinelURL + "/sentinel/tunnel-tokens"
+		body, err = json.Marshal(sentinel.TunnelTokenRegisterRequest{
+			Token: sentinelRegisterTokenToken,
+			Pools: pools,
+		})
 	}
-
-	body, err := json.Marshal(sentinel.TunnelTokenRegisterRequest{
-		Token: sentinelRegisterTokenToken,
-		Pools: pools,
-	})
 	if err != nil {
 		return err
 	}
 
-	endpoint := sentinelRegisterTokenSentinelURL + "/sentinel/tunnel-tokens"
-	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("build request: %w", err)
+	if err := sendSentinelAdminRequest(http.MethodPost, endpoint, sentinelRegisterTokenSecret, body); err != nil {
+		return err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	auth.SignSentinelRequest(req, []byte(sentinelRegisterTokenSecret))
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("POST %s: %w", endpoint, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("sentinel returned %d: %s", resp.StatusCode, string(respBody))
-	}
-
 	fmt.Fprintf(cmd.OutOrStdout(), "token registered\n")
 	return nil
 }

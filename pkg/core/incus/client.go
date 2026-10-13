@@ -35,6 +35,11 @@ func detectZFSContainersDataset() bool {
 type Client struct {
 	server incus.InstanceServer
 
+	// zfsGetPropertyFn and zfsSetPropertyFn replace host ZFS commands in unit
+	// tests. Nil uses zfs get and zfs set respectively.
+	zfsGetPropertyFn func(dataset, property string) (string, error)
+	zfsSetPropertyFn func(dataset, property, value string) error
+
 	// storagePolicy decides what EnsureStorage does when a pool does not
 	// isolate tenant volumes (#1206). Zero value warns, which preserves the
 	// pre-existing behaviour for dev hosts and single-tenant boxes.
@@ -156,6 +161,11 @@ type Backend interface {
 	ExecWithExitCode(containerName string, command []string) (stdout, stderr string, exitCode int, err error)
 	WriteFile(containerName, path string, content []byte, mode string) error
 	ReadFile(containerName, path string) ([]byte, error)
+	// ListDir returns the entry names of a directory inside the container,
+	// via the incus file API — no exec, so nothing inside the box (a
+	// tenant-controlled shell, say) is on the path. A missing directory is
+	// an error; the caller decides whether that is "empty".
+	ListDir(containerName, path string) ([]string, error)
 
 	// Config & devices
 	SetConfig(containerName, key, value string) error
@@ -176,7 +186,10 @@ type Backend interface {
 	GetNetworkACL(name string) (*api.NetworkACL, error)
 	CreateNetworkACL(config ACLConfig) error
 	UpdateNetworkACL(name string, config ACLConfig) error
+	ListNetworkACLs() ([]api.NetworkACL, error)
+	DeleteNetworkACL(name string) error
 	AttachACLToContainer(containerName, aclName, deviceName string) error
+	SetOwnedACL(containerName, aclName, deviceName, ownedPrefix string) error
 	EnsureNICDevice(containerName string, want NICDevice) error
 	SetDeviceConfig(containerName, deviceName string, keys map[string]string) error
 
@@ -440,6 +453,34 @@ const RoleKey = "user.containarium.role"
 // doesn't follow the naming convention. See NETWORK-ISOLATION-DESIGN.md
 // "Cloud extension".
 const TenantLabelKey = "user.containarium.tenant"
+
+// CloudOrgIDLabel is the attribution label (under LabelPrefix) the hosted
+// control plane stamps on every container it creates via the OSS-primary
+// driver — the owning org UUID. ResolveTenant reads it as the second
+// source of tenant identity.
+const CloudOrgIDLabel = "cloud_org_id"
+
+// ContainerNameSuffix is the <tenant>-container naming convention's suffix.
+const ContainerNameSuffix = "-container"
+
+// ResolveTenant determines a container's owning tenant, in the precedence
+// every tenant-scoped control shares (the eBPF enforcer, the tenant guard):
+// the explicit tenant label (TenantLabelKey) wins; then the cloud_org_id
+// attribution label; then the <tenant>-container naming convention. ""
+// when none yields a tenant — the container is then left unmanaged and
+// reported, never guessed.
+func ResolveTenant(tenantLabel, cloudOrgID, containerName string) string {
+	if t := strings.TrimSpace(tenantLabel); t != "" {
+		return t
+	}
+	if t := strings.TrimSpace(cloudOrgID); t != "" {
+		return t
+	}
+	if !strings.HasSuffix(containerName, ContainerNameSuffix) {
+		return ""
+	}
+	return strings.TrimSuffix(containerName, ContainerNameSuffix)
+}
 
 // Role is a typed string for core container roles.
 type Role string
@@ -2032,7 +2073,8 @@ func (c *Client) SetDeviceSize(containerName, deviceName, size string) error {
 	}
 
 	// If the disk is full, Incus cannot write backup.yaml during UpdateInstance.
-	// Detect this case and temporarily expand the ZFS quota to unblock the operation.
+	// Detect this case and expand the ZFS quota to the requested size to unblock
+	// the operation.
 	if deviceName == "root" {
 		if err := c.ensureZFSQuotaHeadroom(containerName, device["pool"], size); err != nil {
 			fmt.Printf("Warning: ZFS quota pre-expand failed (non-fatal): %v\n", err)
@@ -2107,11 +2149,23 @@ func buildContainerDataset(poolSource, poolName, containerName string) string {
 	return fmt.Sprintf("%s/containers/%s", zfsPool, containerName)
 }
 
-// ensureZFSQuotaHeadroom checks if the container's ZFS dataset is at quota and
-// temporarily expands it to the target size so Incus can write its backup.yaml.
+// ensureZFSQuotaHeadroom sets the property Incus uses for this instance volume
+// to targetSize. SetDeviceSize uses this before changing a root disk size, so
+// it is a persistent resize rather than the temporary device-update path.
 func (c *Client) ensureZFSQuotaHeadroom(containerName, pool, targetSize string) error {
 	if pool == "" {
 		pool = c.StoragePool()
+	}
+	storagePool, _, err := c.server.GetStoragePool(pool)
+	if err != nil {
+		return fmt.Errorf("get storage pool %s: %w", pool, err)
+	}
+	if storagePool == nil || storagePool.Driver != "zfs" {
+		return nil
+	}
+	quotaProperty, _, err := c.zfsQuotaProperties(containerName, pool, storagePool)
+	if err != nil {
+		return err
 	}
 
 	dataset, err := c.ContainerDataset(containerName, pool)
@@ -2119,12 +2173,29 @@ func (c *Client) ensureZFSQuotaHeadroom(containerName, pool, targetSize string) 
 		return err
 	}
 
-	// Set the ZFS quota to the target size directly
-	cmd := exec.Command("zfs", "set", fmt.Sprintf("quota=%s", targetSize), dataset)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("zfs set quota failed on %s: %w (output: %s)", dataset, err, string(output))
-	}
+	return c.setZFSProperty(dataset, quotaProperty, targetSize)
+}
 
+func (c *Client) getZFSProperty(dataset, property string) (string, error) {
+	if c.zfsGetPropertyFn != nil {
+		return c.zfsGetPropertyFn(dataset, property)
+	}
+	cmd := exec.Command("zfs", "get", "-Hp", "-o", "value", property, dataset) // #nosec G204 -- dataset is resolved by Incus
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("zfs get %s failed on %s: %w (output: %s)", property, dataset, err, string(output))
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+func (c *Client) setZFSProperty(dataset, property, value string) error {
+	if c.zfsSetPropertyFn != nil {
+		return c.zfsSetPropertyFn(dataset, property, value)
+	}
+	cmd := exec.Command("zfs", "set", fmt.Sprintf("%s=%s", property, value), dataset) // #nosec G204 -- dataset is resolved by Incus
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("zfs set %s failed on %s: %w (output: %s)", property, dataset, err, string(output))
+	}
 	return nil
 }
 
@@ -2501,9 +2572,15 @@ func (c *Client) GetNetworkSubnet(networkName string) (string, error) {
 
 // WriteFile writes content to a file inside a container
 func (c *Client) WriteFile(containerName, path string, content []byte, mode string) error {
+	return c.PushFile(containerName, path, bytes.NewReader(content), mode)
+}
+
+// PushFile streams content to a file inside a container, so a caller with a
+// large file never has to hold it in memory.
+func (c *Client) PushFile(containerName, path string, content io.ReadSeeker, mode string) error {
 	// Use incus file push functionality via the API
 	args := incus.InstanceFileArgs{
-		Content:   bytes.NewReader(content),
+		Content:   content,
 		WriteMode: "overwrite",
 	}
 
@@ -2523,6 +2600,22 @@ func (c *Client) WriteFile(containerName, path string, content []byte, mode stri
 	}
 
 	return nil
+}
+
+// ListDir returns the entry names of a directory inside the container. See
+// Backend.ListDir.
+func (c *Client) ListDir(containerName, path string) ([]string, error) {
+	reader, resp, err := c.server.GetInstanceFile(containerName, path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list %s: %w", path, err)
+	}
+	if reader != nil {
+		_ = reader.Close()
+	}
+	if resp == nil || resp.Type != "directory" {
+		return nil, fmt.Errorf("failed to list %s: not a directory", path)
+	}
+	return resp.Entries, nil
 }
 
 // maxSymlinkHops bounds how many links ReadFile follows before

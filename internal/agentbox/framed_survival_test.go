@@ -1,10 +1,15 @@
+//go:build !windows
+
 package agentbox
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -34,10 +39,16 @@ func TestSpawn_SurvivesParentExit(t *testing.T) {
 			cmd := exec.Command(agentBox)
 			cmd.Stdin = strings.NewReader(script)
 			cmd.Env = append(os.Environ(), "AGENTBOX_LOG_DIR="+dir, "AGENTBOX_SELF="+agentBox)
-			if out, err := cmd.CombinedOutput(); err != nil {
+			out, err := cmd.CombinedOutput()
+			if err != nil {
 				t.Fatalf("start via agent-box: %v\n%s", err, out)
 			}
-			// agent-box has now exited. The child should still be running.
+			// agent-box has now exited. First make sure it actually answered
+			// process_start: stdin hit EOF right after the request, and a
+			// dropped request used to surface here only as "no exit
+			// sidecar" 20 seconds later (#2369's sibling in this repo).
+			requireToolCallOK(t, out, 2)
+			// The child should still be running.
 
 			logPath := filepath.Join(dir, name+".log")
 			exitPath := filepath.Join(dir, name+".exit")
@@ -51,12 +62,12 @@ func TestSpawn_SurvivesParentExit(t *testing.T) {
 
 			raw, err := os.ReadFile(exitPath)
 			if err != nil {
-				t.Fatalf("no exit sidecar — the run did not survive the parent: %v", err)
+				t.Fatalf("no exit sidecar — the run did not survive the parent: %v\n%s", err, summarizeSurvivalFailure(dir, name))
 			}
 			code := strings.Fields(string(raw))
 			if len(code) == 0 || code[0] != "5" {
 				// 141 here is SIGPIPE: the #1701 regression.
-				t.Fatalf("exit code = %q, want 5 (141 means SIGPIPE — the child was killed by the parent's exit)", raw)
+				t.Fatalf("exit code = %q, want 5 (141 means SIGPIPE — the child was killed by the parent's exit)\n%s", raw, summarizeSurvivalFailure(dir, name))
 			}
 
 			logData, err := os.ReadFile(logPath)
@@ -83,6 +94,94 @@ func TestSpawn_SurvivesParentExit(t *testing.T) {
 			}
 		})
 	}
+}
+
+// requireToolCallOK fails unless agent-box's stdout holds a successful
+// JSON-RPC result for request id, so a lost or failed tools/call is
+// reported as such rather than as its downstream symptom.
+func requireToolCallOK(t *testing.T, stdout []byte, id int) {
+	t.Helper()
+	for _, line := range strings.Split(string(stdout), "\n") {
+		var resp struct {
+			ID     *int            `json:"id"`
+			Error  json.RawMessage `json:"error"`
+			Result struct {
+				IsError bool `json:"isError"`
+				Content []struct {
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"result"`
+		}
+		if json.Unmarshal([]byte(line), &resp) != nil || resp.ID == nil || *resp.ID != id {
+			continue
+		}
+		if len(resp.Error) > 0 {
+			t.Fatalf("tools/call id=%d returned a JSON-RPC error: %s", id, resp.Error)
+		}
+		if resp.Result.IsError {
+			var texts []string
+			for _, c := range resp.Result.Content {
+				texts = append(texts, c.Text)
+			}
+			t.Fatalf("tools/call id=%d returned isError: %s", id, strings.Join(texts, " | "))
+		}
+		return
+	}
+	t.Fatalf("no response for tools/call id=%d in agent-box's output; the request was dropped at stdin EOF\n%s", id, stdout)
+}
+
+func summarizeSurvivalFailure(dir, name string) string {
+	var b strings.Builder
+	b.WriteString("-- run debug --\n")
+	logPath := filepath.Join(dir, name+".log")
+	if data, err := os.ReadFile(logPath); err == nil {
+		b.WriteString("log_path: ")
+		b.WriteString(logPath)
+		b.WriteString("\n")
+		if len(data) > 0 {
+			b.WriteString("log preview:\n")
+			preview := data
+			if len(preview) > 4096 {
+				preview = preview[:4096]
+				b.WriteString("...truncated...\n")
+			}
+			b.WriteString(string(preview))
+			if !strings.HasSuffix(string(preview), "\n") {
+				b.WriteString("\n")
+			}
+		}
+	} else {
+		b.WriteString("log read error: ")
+		b.WriteString(err.Error())
+		b.WriteString("\n")
+	}
+
+	recordPath := filepath.Join(dir, name+".json")
+	if data, err := os.ReadFile(recordPath); err == nil {
+		var rec RunRecord
+		if err := json.Unmarshal(data, &rec); err == nil {
+			fmt.Fprintf(&b, "record pid: %d\n", rec.PID)
+			if rec.PID > 0 {
+				if err := syscall.Kill(rec.PID, syscall.Signal(0)); err == nil {
+					b.WriteString("child pid alive: yes\n")
+				} else if err == syscall.ESRCH {
+					b.WriteString("child pid alive: no\n")
+				} else {
+					fmt.Fprintf(&b, "child pid alive: unknown (%v)\n", err)
+				}
+			}
+		} else {
+			b.WriteString("record parse error: ")
+			b.WriteString(err.Error())
+			b.WriteString("\n")
+		}
+	} else {
+		b.WriteString("record read error: ")
+		b.WriteString(err.Error())
+		b.WriteString("\n")
+	}
+	b.WriteString("-- end run debug --\n")
+	return b.String()
 }
 
 func mcpStartScript(name, mode, command string) string {

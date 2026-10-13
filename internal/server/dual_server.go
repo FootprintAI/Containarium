@@ -8,11 +8,13 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -28,21 +30,27 @@ import (
 	"github.com/footprintai/containarium/internal/bridgedns"
 	"github.com/footprintai/containarium/internal/cloud"
 	clusterstore "github.com/footprintai/containarium/internal/cluster"
+	"github.com/footprintai/containarium/internal/codeegress"
 	"github.com/footprintai/containarium/internal/collaborator"
 	appconfig "github.com/footprintai/containarium/internal/config"
 	"github.com/footprintai/containarium/internal/coreguard"
 	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/gateway"
 	"github.com/footprintai/containarium/internal/guacamole"
+	"github.com/footprintai/containarium/internal/guardrail"
+	"github.com/footprintai/containarium/internal/guardrailpolicy"
+	guardrailpolicypg "github.com/footprintai/containarium/internal/guardrailpolicy/pgstore"
 	"github.com/footprintai/containarium/internal/metrics"
 	"github.com/footprintai/containarium/internal/metrics/platformstats"
 	"github.com/footprintai/containarium/internal/modelgateway"
 	"github.com/footprintai/containarium/internal/mtls"
+	"github.com/footprintai/containarium/internal/nicguard"
 	"github.com/footprintai/containarium/internal/pentest"
 	"github.com/footprintai/containarium/internal/runlease"
 	"github.com/footprintai/containarium/internal/sandbox/ratelimit"
 	secretsstore "github.com/footprintai/containarium/internal/secrets"
 	"github.com/footprintai/containarium/internal/security"
+	"github.com/footprintai/containarium/internal/tenantguard"
 	"github.com/footprintai/containarium/internal/threatdetect"
 	trackerstore "github.com/footprintai/containarium/internal/tracker"
 	"github.com/footprintai/containarium/internal/traffic"
@@ -93,6 +101,13 @@ type DualServerConfig struct {
 
 	// Authentication settings
 	JWTSecret string
+
+	// GuardrailStagingRoot is the daemon-side directory gated recipe deploys
+	// read staged datasets from (#2368). Empty = gated deploys are refused.
+	GuardrailStagingRoot string
+	// GuardrailSnapshotDir is where the gate makes verification snapshots
+	// ("" = the OS temp dir). Daemon-private, outside the staging root.
+	GuardrailSnapshotDir string
 
 	// Swagger settings
 	SwaggerDir string
@@ -167,7 +182,7 @@ type DualServerConfig struct {
 
 	// Multi-backend peer settings
 	SentinelURL    string   // URL for auto-discovering tunnel peers (e.g., "http://10.128.0.5:8081")
-	Peers          []string // Static peer addresses (e.g., ["10.128.0.5:18001"])
+	Peers          []string // Static peer daemon addresses (e.g., ["10.0.0.12:8080"]); tunnel backends come from SentinelURL
 	LocalBackendID string   // This daemon's backend ID (defaults to hostname)
 	Pool           string   // Pool name to filter sentinel peer discovery (empty = no filter)
 	Region         string   // Region this backend serves; recorded in the capability profile (#681). Falls back to Pool when empty.
@@ -257,11 +272,13 @@ func managementRouteDomains(cfg *DualServerConfig) []string {
 
 // DualServer runs both gRPC and HTTP/REST servers
 type DualServer struct {
+	modelGateway             *modelgateway.Gateway // nil when the gateway is disabled
 	config                   *DualServerConfig
 	grpcServer               *grpc.Server
 	internalLis              *auth.InternalListener // in-process transport for the REST gateway
 	containerServer          *ContainerServer
-	agentSkillServer         *AgentSkillServer // run journal reaper (#2096)
+	agentSkillServer         *AgentSkillServer        // run journal reaper (#2096)
+	credentialWatcher        *alert.CredentialWatcher // credential-expiry alert (#2371); nil without Postgres
 	appServer                *AppServer
 	networkServer            *NetworkServer
 	trafficServer            *TrafficServer
@@ -293,14 +310,15 @@ type DualServer struct {
 	zapStore                 *zapscanner.Store
 	peerPool                 *PeerPool
 	autoSleepManager         *autosleep.Manager
-	ttlSweeperManager        *ttlsweeper.Manager    // ephemeral CI box auto-delete (#299)
-	anonManager              *anonbox.Manager       // anonymous-box door (#2197); nil unless CONTAINARIUM_ANON_DOOR=enable
-	sandboxServer            *SandboxServer         // set in NewDualServer when incus.New succeeds; nil otherwise (#1488)
-	sandboxTTLSweeperManager *ttlsweeper.Manager    // ephemeral sandbox auto-delete (#1488 Phase 4)
-	secretsReconciler        *secretsReconciler     // Phase 4.3 Phase B-3
-	networkPolicyEnforcer    *NetworkPolicyEnforcer // #315 Phase A — eBPF per-tenant net policy (off unless configured)
-	bridgeDNS                *bridgedns.Reconciler  // #2188 — keeps the bridge raw.dnsmasq record on core-caddy's live address
-	coreGuard                *coreguard.Reconciler  // #2084 — Incus NIC ACLs keeping tenants off core-role containers (off unless CONTAINARIUM_CORE_GUARD=enforce)
+	ttlSweeperManager        *ttlsweeper.Manager     // ephemeral CI box auto-delete (#299)
+	anonManager              *anonbox.Manager        // anonymous-box door (#2197); nil unless CONTAINARIUM_ANON_DOOR=enable
+	sandboxServer            *SandboxServer          // set in NewDualServer when incus.New succeeds; nil otherwise (#1488)
+	sandboxTTLSweeperManager *ttlsweeper.Manager     // ephemeral sandbox auto-delete (#1488 Phase 4)
+	secretsReconciler        *secretsReconciler      // Phase 4.3 Phase B-3
+	networkPolicyEnforcer    *NetworkPolicyEnforcer  // #315 Phase A — eBPF per-tenant net policy (off unless configured)
+	bridgeDNS                *bridgedns.Reconciler   // #2188 — keeps the bridge raw.dnsmasq record on core-caddy's live address
+	coreGuard                *coreguard.Reconciler   // #2084 — Incus NIC ACLs keeping tenants off core-role containers (on unless CONTAINARIUM_CORE_GUARD=off)
+	tenantGuard              *tenantguard.Reconciler // #2347 — Incus NIC ACLs keeping tenants off each other (on unless CONTAINARIUM_TENANT_GUARD=off)
 
 	// k8sNetPolicyReconciler converges tenant NetworkPolicy objects on the K8s
 	// backend from the same store the eBPF enforcer reads (#1188). Nil on
@@ -316,6 +334,7 @@ type DualServer struct {
 	// GetSentryStatus regardless, reporting DISABLED/UNAVAILABLE explicitly
 	// when the engine itself wasn't constructed.
 	threatDetectEngine    *threatdetect.Engine
+	sshdPosture           *security.SSHDPostureReconciler // box sshd key-only reconciler (#2424); nil when disabled
 	threatDetectServer    *ThreatDetectionServer
 	threatDetectNotifier  *threatdetect.WebhookNotifier // nil unless threatDetectEngine is also non-nil (#1643)
 	threatDetectSweepStop context.CancelFunc
@@ -414,6 +433,11 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// record, so fail visibly at boot.
 	if err := validateDNSPassthroughHosts(config.DNSPassthroughHosts); err != nil {
 		return nil, fmt.Errorf("dns-passthrough-host misconfigured: %w", err)
+	}
+	// #2299: an unrecognised privileged-podman policy must not silently
+	// become the permissive default, so refuse to start on one.
+	if err := validatePrivilegedPolicyEnv(); err != nil {
+		return nil, fmt.Errorf("privileged-podman policy misconfigured: %w", err)
 	}
 
 	// Create container server
@@ -626,6 +650,18 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	pb.RegisterNetworkPolicyServiceServer(grpcServer, npServer)
 	log.Printf("NetworkPolicy service enabled (in-memory store; Phase A)")
 
+	// CodingToolEgressPolicyService (#2378): the coding tool's egress
+	// allowlist. In-memory until the Postgres pool exists; store only, no
+	// enforcement yet.
+	codeEgressServer := NewCodingToolEgressPolicyServer(NewMemCodingToolEgressPolicyStore())
+	pb.RegisterCodingToolEgressPolicyServiceServer(grpcServer, codeEgressServer)
+
+	// GuardrailPolicyService (#2368): the admin-owned, cluster-wide guardrail
+	// policy. It starts fail-closed; the real store is chosen by
+	// guardrailPolicyStartupStore once postgresConnString is final (below).
+	guardrailPolicyServer := NewGuardrailPolicyServer(unavailableGuardrailPolicyStore{})
+	pb.RegisterGuardrailPolicyServiceServer(grpcServer, guardrailPolicyServer)
+
 	// Register AgentSkillService — agent-as-a-box (Phase 0) + A2A transport
 	// (Phase 1). Reuses the recipe server for box provisioning, the token
 	// manager for minting the skill's scoped in-box token, and the network
@@ -684,6 +720,12 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 				log.Printf("Loaded external skills from %s", dir)
 			}
 		}
+		// #2488: compose the pinned engineering standard into hosted skills
+		// that declare one. Runs after external catalogs so their skills can
+		// declare a standard too. Opt-in; any failure keeps the inline prompt.
+		if msg := applyPinnedStandard(skills.GetDefault(), os.Getenv(sdlcBundleEnv), loadSDLCBundle); msg != "" {
+			log.Print(msg)
+		}
 		if dir := os.Getenv("CONTAINARIUM_CREWS_DIR"); dir != "" {
 			if err := crews.GetDefault().LoadDirVerified(dir, catalogVerifier); err != nil {
 				log.Printf("[crew] external crews from %s: %v", dir, err)
@@ -698,7 +740,13 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// GCS). Orchestration over the container manager; the GCS uploader is
 	// best-effort (LOCAL-only if `gcloud` is absent). See
 	// docs/DB-BACKUP-OPERATIONS.md.
-	backupServer := NewBackupServer(containerServer)
+	// A configured-but-unloadable managed-backup key wrapper (#2402) is
+	// a startup error, not a warning: silently serving legacy backups
+	// where managed ones were configured is the failure this refuses.
+	backupServer, err := NewBackupServer(containerServer)
+	if err != nil {
+		return nil, fmt.Errorf("backup service: %w", err)
+	}
 	pb.RegisterBackupServiceServer(grpcServer, backupServer)
 	// Metrics export's backup-health series (#2294) reads the same
 	// backup core backupServer orchestrates — wired here since
@@ -1469,11 +1517,37 @@ skipAppHosting:
 	// on any failure we keep the in-memory store (policies won't survive a
 	// restart, but the service stays up). Swap happens before grpcServer.Serve,
 	// so it races with no live RPCs.
+	// policyStoreDurable says whether npServer's store is the source of truth
+	// for network policies: true with no Postgres configured (the in-memory
+	// store IS the store) or once the Postgres store is installed; false
+	// while Postgres was configured but could not be reached, because the
+	// in-memory fallback is then empty and must not be read as "no policies"
+	// (#2359 — the tenant guard would strip persisted allow_from_tenants).
+	var policyStoreDurable atomic.Bool
+	policyStoreDurable.Store(postgresConnString == "")
+	// The coding-tool egress policy store (#2378) gets the same guard: with
+	// Postgres configured it refuses every RPC until its Postgres store is
+	// installed below, instead of answering "unrestricted" from the empty
+	// in-memory stand-in.
+	codeEgressServer.SetDurable(postgresConnString == "")
+
+	// The Postgres guardrail policy store (#2368), or nil if it is not
+	// installed below; guardrailPolicyStartupStore turns nil into fail-closed.
+	var guardrailPGStore guardrailpolicy.Store
 	if postgresConnString != "" {
 		pool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
 		if poolErr != nil {
 			log.Printf("Warning: Failed to connect to PostgreSQL for network policy store: %v", poolErr)
 		} else {
+			// Wired independently of the network-policy store below, so a
+			// failure there does not leave this one on the stand-in.
+			if ceErr := codeEgressServer.InstallDurableStore(func() (CodingToolEgressPolicyStore, error) {
+				return NewPostgresCodingToolEgressPolicyStore(context.Background(), pool)
+			}); ceErr != nil {
+				log.Printf("Warning: Failed to create Postgres coding-tool egress policy store (its RPCs fail UNAVAILABLE): %v", ceErr)
+			} else {
+				log.Printf("Coding-tool egress policy persistence enabled (Postgres store)")
+			}
 			// Managed-cluster state (#1413) is wired FIRST and
 			// independently: a network-policy store failure below must
 			// not silently leave clusters on the in-memory store (the
@@ -1487,10 +1561,19 @@ skipAppHosting:
 				log.Printf("Managed-cluster persistence enabled (Postgres store)")
 			}
 
+			// Guardrail policy (#2368), independent of the netpol store below.
+			if gpStore, gErr := guardrailpolicypg.New(context.Background(), pool); gErr != nil {
+				log.Printf("Warning: Failed to create Postgres guardrail policy store: %v", gErr)
+			} else {
+				guardrailPGStore = gpStore
+				log.Printf("Guardrail policy persistence enabled (Postgres store)")
+			}
+
 			if pgStore, npErr := NewPostgresNetworkPolicyStore(context.Background(), pool); npErr != nil {
 				log.Printf("Warning: Failed to create Postgres network policy store: %v", npErr)
 			} else {
 				npServer.SetStore(pgStore)
+				policyStoreDurable.Store(true)
 				log.Printf("NetworkPolicy persistence enabled (Postgres store)")
 				// Operator signatures (#661 PR-B) share the same pool.
 				if sigStore, sErr := NewPostgresNetworkPolicySignatureStore(context.Background(), pool); sErr != nil {
@@ -1530,6 +1613,12 @@ skipAppHosting:
 				}
 			}
 		}
+	}
+	guardrailPolicyServer.SetStore(guardrailPolicyStartupStore(postgresConnString != "", guardrailPGStore))
+	// The deploy gate reads the same store (after the swap above).
+	recipeServer.SetGuardrailGate(guardrailPolicyServer.Provider(), config.GuardrailStagingRoot, config.GuardrailSnapshotDir)
+	if config.GuardrailStagingRoot == "" {
+		log.Printf("Guardrail gate: no --guardrail-staging-root; guardrail-gated recipe deploys are refused")
 	}
 
 	// Managed-cluster reconciler (#1414): converges cluster records into
@@ -1700,6 +1789,8 @@ skipAppHosting:
 
 	// Setup pentest manager
 	var pentestManager *pentest.Manager
+	var pentestServerRef *PentestServer // armed with the audit store once it exists
+
 	var pentestStore *pentest.Store
 	if postgresConnString != "" && !config.DisablePentestScanner {
 		pentestPool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
@@ -1727,6 +1818,7 @@ skipAppHosting:
 						pentest.ManagerConfig{},
 					)
 					pentestServer := NewPentestServer(pentestStore, pentestManager)
+					pentestServerRef = pentestServer
 					pb.RegisterPentestServiceServer(grpcServer, pentestServer)
 					log.Printf("Pentest service enabled")
 				}
@@ -1761,6 +1853,7 @@ skipAppHosting:
 
 	// Setup audit logging store and event subscriber
 	var auditStore *audit.Store
+	var modelGW *modelgateway.Gateway // set when the model gateway is enabled; drained on shutdown
 	var auditEventSubscriber *audit.EventSubscriber
 	var revocationStoreLocal *auth.PgRevocationStore
 	var ownerRevocationStoreLocal *auth.PgOwnerRevocationStore
@@ -1779,6 +1872,14 @@ skipAppHosting:
 				// which was registered on grpcServer above (before this
 				// store existed) and has been a no-op until now.
 				auditGRPCInterceptor.SetStore(auditStore)
+				codeEgressServer.SetAuditStore(auditStore)
+				if pentestServerRef != nil {
+					pentestServerRef.SetAuditStore(auditStore)
+				}
+				// #2415 — the sentinel ships its SSH session records here.
+				// Registered only when the store exists; without Postgres the
+				// RPC is simply absent (Unimplemented) rather than a stub.
+				pb.RegisterAuditServiceServer(grpcServer, NewAuditServer(auditStore))
 				log.Printf("Audit logging service enabled")
 			}
 
@@ -1895,6 +1996,18 @@ skipAppHosting:
 		// Separate from ENFORCE — loading signatures is harmless in observation
 		// mode (logs matches), but the per-packet scan cost only runs when set.
 		sigArmed := netCfg.PolicySignatures
+		// Egress preset (#2440): the bridge gateway is the box's DNS resolver, which a
+		// preset policy allows implicitly so an allow-list cannot blackhole resolution.
+		if gw, gerr := netip.ParseAddr(bridgeGatewayIP(networkCIDR)); gerr == nil {
+			networkPolicyEnforcer.SetImplicitGateway(gw)
+		} else {
+			log.Printf("NetworkPolicy: cannot derive the bridge gateway from %q; egress presets will not implicitly allow the resolver", networkCIDR)
+		}
+		// Plan (#2440) reads the same deny audit rows the enforcer writes.
+		if auditStore != nil {
+			planGW, _ := netip.ParseAddr(bridgeGatewayIP(networkCIDR))
+			npServer.SetPlanSources(auditStore, planGW)
+		}
 		networkPolicyEnforcer.SetSignaturesEnabled(sigArmed)
 		networkPolicyEnforcer.SetSignatureStore(npServer.SignatureStore()) // #661 PR-B: merge operator signatures
 		if enforceArmed {
@@ -1922,6 +2035,38 @@ skipAppHosting:
 			Bridge:     "incusbr0",
 			BridgeCIDR: networkCIDR,
 		})
+	}
+
+	// Tenant network guard (#2347, docs/architecture/tenant-network-guard.md):
+	// one Incus NIC ACL per tenant, ingress default-drop with host gateway +
+	// core initiators + same-tenant addresses allowed, so tenants on the
+	// shared bridge cannot reach each other. ON unless
+	// CONTAINARIUM_TENANT_GUARD=off; also consulted at container birth so a
+	// new box is guarded before it starts.
+	var tenantGuard *tenantguard.Reconciler
+	if networkIncusClient != nil {
+		tenantGuard = tenantguard.NewReconciler(networkIncusClient, tenantguard.Config{
+			Mode:       nicguard.ParseMode(netCfg.TenantGuard),
+			Bridge:     "incusbr0",
+			BridgeCIDR: networkCIDR,
+			// allow_from_tenants (#2359) comes from the network-policy store;
+			// read through npServer each pass because the store is swapped to
+			// Postgres after construction.
+			Policies: tenantguard.PolicySourceFunc(func(ctx context.Context) ([]*pb.NetworkPolicy, error) {
+				if !policyStoreDurable.Load() {
+					// An empty fallback is not "no policies": fail the pass
+					// so the ACLs from the last good pass stay in force.
+					return nil, fmt.Errorf("network-policy store is the in-memory fallback (Postgres unavailable at startup); keeping existing ACLs")
+				}
+				return npServer.Store().List(ctx)
+			}),
+		})
+		if mgr := containerServer.GetManager(); mgr != nil {
+			mgr.SetNICGuard(tenantGuard)
+		}
+	}
+	if networkServer != nil {
+		networkServer.SetGuards(coreGuard, tenantGuard)
 	}
 
 	// AnonymousBoxService (#2197): the daemon side of the `ssh new.<domain>`
@@ -2020,6 +2165,10 @@ skipAppHosting:
 	case auditStore == nil:
 		sentryUnavailableReason = "audit store unavailable (every finding must ride the audit hash chain; requires Postgres)"
 	}
+	// findingSink is also what the box sshd posture reconciler (#2424)
+	// records into; it stays nil when the sentry is off or unavailable and
+	// the reconciler then logs instead.
+	var findingSink threatdetect.FindingSink
 	if threatCfg.SentryEnabled && sentryAvailable {
 		var sink threatdetect.FindingSink
 		var findingsPool *pgxpool.Pool
@@ -2075,6 +2224,7 @@ skipAppHosting:
 				}
 			}
 
+			findingSink = sink
 			threatDetectEngine = threatdetect.NewEngine(sink, "", degraded, networkPolicyEnforcer.TenantForIP, nil)
 			// Fence-probe rules (#1642): a breached fence (cross-tenant
 			// flow) and a probed fence (deny-burst) are both continuous
@@ -2094,6 +2244,23 @@ skipAppHosting:
 	}
 	threatDetectServer := NewThreatDetectionServer(threatDetectEngine, threatCfg.SentryEnabled, sentryAvailable, sentryUnavailableReason)
 	threatDetectServer.SetFindingStore(threatDetectStore)
+
+	// Box sshd posture reconciler (#2424): keeps every running box's sshd
+	// key-only by re-asserting the managed drop-in and recording tampering
+	// as a finding. Independent of Postgres and eBPF — it needs only the
+	// incus file API — so it runs on every backend unless disabled.
+	var sshdPosture *security.SSHDPostureReconciler
+	if postureCfg := appconfig.LoadSSHDPosture(); postureCfg.Disabled {
+		log.Printf("Box sshd posture reconciler disabled (%s)", appconfig.EnvSSHDPostureDisable)
+	} else if postureIncus, perr := incus.New(); perr != nil {
+		log.Printf("Warning: box sshd posture reconciler disabled: incus client: %v", perr)
+	} else {
+		sshdPosture = security.NewSSHDPostureReconciler(postureIncus, findingSink, postureCfg.Interval)
+		sshdPosture.SetListenerCheck(!postureCfg.ListenerCheckDisabled)
+		if findingSink == nil {
+			log.Printf("Box sshd posture reconciler: no finding sink (threat sentry off or unavailable); tampering will be logged, not recorded")
+		}
+	}
 
 	// Known-bad-destination rule (#1641): constructed independent of
 	// threatCfg.SentryEnabled — an operator can curate the list via CLI/MCP
@@ -2165,6 +2332,33 @@ skipAppHosting:
 					}
 				}
 			}
+		}
+	}
+
+	// Credential-expiry watch (#2371): every CredentialWatchInterval, probe
+	// each running skill box's coding-engine sign-in (names and the expiry
+	// timestamp only, never a value) and send ONE alert per flip into
+	// expired through the operator webhook — the same DaemonConfigStore
+	// URL/secret and HMAC signing as the threat-detection notifier, and
+	// independent of VictoriaMetrics for the same reason. Needs Postgres:
+	// the last-seen state lives there so a restart does not re-fire.
+	var credentialWatcher *alert.CredentialWatcher
+	if postgresConnString != "" && config.DaemonConfigStore != nil {
+		if cwPool, poolErr := connectToPostgres(postgresConnString, 2, 3*time.Second); poolErr != nil {
+			log.Printf("Warning: credential-expiry watch Postgres connect failed (%v); watch disabled", poolErr)
+		} else if stateStore, stErr := alert.NewPGCredentialStateStore(context.Background(), cwPool); stErr != nil {
+			log.Printf("Warning: credential-expiry watch state store init failed (%v); watch disabled", stErr)
+			cwPool.Close()
+		} else {
+			var cwDelivery *alert.DeliveryStore
+			if d, dErr := alert.NewDeliveryStore(context.Background(), cwPool); dErr != nil {
+				log.Printf("Warning: credential-expiry watch delivery store init failed (%v); deliveries will be attempted but not recorded", dErr)
+			} else {
+				cwDelivery = d
+			}
+			credentialWatcher = alert.NewCredentialWatcher(agentSkillServer, stateStore,
+				alert.NewCredentialWebhookNotifier(config.DaemonConfigStore, cwDelivery))
+			log.Printf("Credential-expiry watch enabled (every %s)", alert.CredentialWatchInterval)
 		}
 	}
 
@@ -2272,12 +2466,25 @@ skipAppHosting:
 				// CONTAINARIUM_GATEWAY_OUTPUT_FILTER=0 to disable. Streaming token
 				// metering is independent and always on.
 				OutputFilter: os.Getenv(appconfig.EnvGatewayOutputFilter) != "0",
+				// Inbound scan of model responses (#2367). The server policy
+				// decides whether it is enforced: with no inbound BLOCK rule
+				// traffic is unchanged. Blocks are audited when the daemon
+				// has an audit store. The reference rules engine runs
+				// in-process.
+				InboundPolicy: guardrailPolicyServer.Provider(),
+				InboundEngine: guardrail.RulesEngine{},
+				InboundAudit:  newGatewayInboundAudit(auditStore),
 			})
+			modelGW = gw
+			guardrailPolicyServer.SetOnChange(gw.InvalidateInboundPolicy)
 			gatewayServer.SetModelGatewayHandler(gw.Handler())
 			// ModelGatewayService's token verbs only work once the service knows
 			// which gateway to mint against and which host a box reaches it on
 			// (#1726). Until this call they refuse; after it they mint.
 			modelGatewayServer.SetGateway(gw, []byte(config.JWTSecret), config.HostIP, config.HTTPPort)
+			if config.HostIP != "" && config.HTTPPort != 0 {
+				codeEgressServer.SetImplicit(codeegress.Implicit{GatewayEndpoint: net.JoinHostPort(config.HostIP, strconv.Itoa(config.HTTPPort))})
+			}
 			primary := gatewayPrimaryProvider(keys)
 			// globalProviders (#2222) is agentengine.Resolve's "ready with no
 			// owner lookup needed" set — the same `keys` map gatewayPrimaryProvider
@@ -2434,6 +2641,8 @@ skipAppHosting:
 			agentSkillServer.SetAuditStore(auditStore)
 			// Container server logs admin-initiated upgrade operations (#354).
 			containerServer.SetAuditStore(auditStore)
+			// guardrail.policy.set entries (#2368).
+			guardrailPolicyServer.SetAuditStore(auditStore)
 		}
 
 		// Wire Grafana reverse proxy if VictoriaMetrics is configured
@@ -2555,9 +2764,11 @@ skipAppHosting:
 	}
 
 	ds := &DualServer{
+		modelGateway:           modelGW,
 		anonManager:            anonManager,
 		config:                 config,
 		agentSkillServer:       agentSkillServer,
+		credentialWatcher:      credentialWatcher,
 		grpcServer:             grpcServer,
 		internalLis:            internalLis,
 		containerServer:        containerServer,
@@ -2576,6 +2787,7 @@ skipAppHosting:
 		daemonConfigStore:      config.DaemonConfigStore,
 		metricsCollector:       metricsCollector,
 		securityScanner:        securityScanner,
+		sshdPosture:            sshdPosture,
 		securityStore:          securityStore,
 		securityServer:         securityServerInstance,
 		auditStore:             auditStore,
@@ -2593,6 +2805,7 @@ skipAppHosting:
 		networkPolicyEnforcer:  networkPolicyEnforcer,
 		bridgeDNS:              bridgeDNS,
 		coreGuard:              coreGuard,
+		tenantGuard:            tenantGuard,
 		k8sNetPolicyReconciler: k8sNetPolicyReconciler,
 		cloudClient:            cloudClient,
 		startTime:              time.Now(),
@@ -2868,6 +3081,29 @@ func (ds *DualServer) handleBackendSystemInfo(w http.ResponseWriter, r *http.Req
 	w.Write(respBody)
 }
 
+// startCapabilityProfile self-profiles a joining backend once per daemon,
+// after pool identity is wired. Pool join installs --pool on the daemon;
+// restarting a pool member takes the same path. The measurement runs off the
+// startup path, and failure never prevents membership or serving requests.
+// The returned channel closes when this best-effort startup work is finished.
+func (ds *DualServer) startCapabilityProfile(ctx context.Context) <-chan struct{} {
+	done := make(chan struct{})
+	if ds.config.Pool == "" || ds.containerServer == nil {
+		close(done)
+		return done
+	}
+	go func() {
+		defer close(done)
+		if ctx.Err() != nil {
+			return
+		}
+		if _, err := ds.containerServer.recordCapabilityProfile(false, true); err != nil {
+			log.Printf("[capabilities] automatic pool-member profile failed: %v; use ProfileBackend to retry", err)
+		}
+	}()
+	return done
+}
+
 func (ds *DualServer) Start(ctx context.Context) error {
 	// Anonymous-box funnel (#2201): emit expired / killed events within a
 	// minute of a box disappearing.
@@ -2876,6 +3112,9 @@ func (ds *DualServer) Start(ctx context.Context) error {
 	}
 	if ds.agentSkillServer != nil {
 		ds.agentSkillServer.StartRunJournalReaper(ctx)
+	}
+	if ds.credentialWatcher != nil {
+		ds.credentialWatcher.Start(ctx)
 	}
 	// Register this primary with the sentinel (no-op if --public-hostname is unset).
 	runPrimaryRegistration(ctx, PrimaryRegisterConfig{
@@ -3026,6 +3265,9 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		if ds.threatDetectEngine != nil {
 			ds.threatDetectEngine.SetBackendID(ds.peerPool.LocalBackendID())
 		}
+		if ds.sshdPosture != nil {
+			ds.sshdPosture.SetBackendID(ds.peerPool.LocalBackendID())
+		}
 
 		// Register /v1/backends endpoint on gateway
 		if ds.gatewayServer != nil {
@@ -3034,6 +3276,9 @@ func (ds *DualServer) Start(ctx context.Context) error {
 			ds.gatewayServer.SetTerminalPeerProxy(ds.peerPool)
 		}
 	}
+
+	// Self-profile the joining host, never the primary's host (#2136).
+	ds.startCapabilityProfile(ctx)
 
 	// Resume cloud host-series export (#1070) if it was enabled before a
 	// restart. Sequenced here — after SetCapabilityIdentity and, when
@@ -3257,6 +3502,10 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		ds.k8sNetPolicyReconciler.Start(ctx)
 	}
 
+	if ds.sshdPosture != nil {
+		ds.sshdPosture.Start(ctx)
+	}
+
 	if ds.securityScanner != nil {
 		ds.securityScanner.Start(ctx)
 		log.Printf("Security scanner started")
@@ -3352,6 +3601,25 @@ func (ds *DualServer) Start(ctx context.Context) error {
 			}
 		}()
 		go ds.coreGuard.Run(ctx, kick)
+	}
+	if ds.tenantGuard != nil {
+		sub := events.GetBus().Subscribe(nil)
+		kick := make(chan struct{}, 1)
+		go func() {
+			defer events.GetBus().Unsubscribe(sub.ID)
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-sub.Events:
+					select {
+					case kick <- struct{}{}:
+					default: // a pass is already pending; coalesce
+					}
+				}
+			}
+		}()
+		go ds.tenantGuard.Run(ctx, kick)
 	}
 
 	// Bridge DNS record (#2188): re-apply raw.dnsmasq when core-caddy's address
@@ -3558,6 +3826,9 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		return err
 	case <-ctx.Done():
 		log.Println("Shutting down servers...")
+		if ds.credentialWatcher != nil {
+			ds.credentialWatcher.Stop()
+		}
 		if ds.routeSyncJob != nil {
 			ds.routeSyncJob.Stop()
 		}
@@ -3597,6 +3868,9 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		if ds.metricsCollector != nil {
 			ds.metricsCollector.Stop()
 		}
+		if ds.sshdPosture != nil {
+			ds.sshdPosture.Stop()
+		}
 		if ds.securityScanner != nil {
 			ds.securityScanner.Stop()
 		}
@@ -3617,6 +3891,14 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		}
 		if ds.auditEventSubscriber != nil {
 			ds.auditEventSubscriber.Stop()
+		}
+		if ds.modelGateway != nil {
+			// Drain queued inbound-block audit entries before the store closes.
+			fctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if err := ds.modelGateway.FlushInboundAudit(fctx); err != nil {
+				log.Printf("model-gateway: flushing inbound audit on shutdown: %v", err)
+			}
+			cancel()
 		}
 		if ds.auditStore != nil {
 			ds.auditStore.Close()

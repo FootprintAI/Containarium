@@ -348,9 +348,13 @@ func TestCreateGCS(t *testing.T) {
 }
 
 // fakeUploader records uploads in memory and serves them back on download.
+// uploadOrder / deleteOrder record every destURI in call order, so a test
+// can assert "dump before sidecar" (#2402) rather than just "both happened".
 type fakeUploader struct {
-	uploaded map[string]int
-	blobs    map[string][]byte
+	uploaded    map[string]int
+	blobs       map[string][]byte
+	uploadOrder []string
+	deleteOrder []string
 }
 
 func (f *fakeUploader) Upload(localPath, destURI string) error {
@@ -364,6 +368,7 @@ func (f *fakeUploader) Upload(localPath, destURI string) error {
 	}
 	f.uploaded[destURI]++
 	f.blobs[destURI] = b
+	f.uploadOrder = append(f.uploadOrder, destURI)
 	return nil
 }
 
@@ -376,6 +381,7 @@ func (f *fakeUploader) Download(destURI, localPath string) error {
 }
 
 func (f *fakeUploader) Delete(destURI string) error {
+	f.deleteOrder = append(f.deleteOrder, destURI)
 	delete(f.blobs, destURI)
 	delete(f.uploaded, destURI)
 	return nil

@@ -500,7 +500,8 @@ func TestRunLeaseAuditRows(t *testing.T) {
 //
 // (*container.Manager).Exec type-asserts its backend to the concrete
 // *incus.Client, so the seed exec ALWAYS fails on a fake backend — which is
-// exactly the failure this harness exists to exercise.
+// exactly the failure this harness exists to exercise. A test that needs the
+// seed to succeed sets s.boxOps (see TestProvisionSkillBox_GitFetch, #2161).
 func newSkillBoxHarness(t *testing.T, store auth.RevocationStore) (*AgentSkillServer, *pb.AgentSkill) {
 	t.Helper()
 	s, skill, _ := newSkillBoxHarnessInspectable(t, store)

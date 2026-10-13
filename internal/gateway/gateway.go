@@ -528,9 +528,22 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to register kms service gateway: %w", err)
 	}
 
+	// AuditService (#2415): sentinel SSH session record ingest.
+	if err := pb.RegisterAuditServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
+		return fmt.Errorf("failed to register audit service gateway: %w", err)
+	}
+
 	// Register NetworkPolicyService gateway handler (#315)
 	if err := pb.RegisterNetworkPolicyServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
 		return fmt.Errorf("failed to register network policy service gateway: %w", err)
+	}
+	// CodingToolEgressPolicyService (#2378)
+	if err := pb.RegisterCodingToolEgressPolicyServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
+		return fmt.Errorf("failed to register coding-tool egress policy service gateway: %w", err)
+	}
+	// GuardrailPolicyService (#2368): the server-side guardrail policy.
+	if err := pb.RegisterGuardrailPolicyServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
+		return fmt.Errorf("failed to register guardrail policy service gateway: %w", err)
 	}
 	// AnonymousBoxService (#2197): the ssh new.<domain> door's daemon side.
 	if err := pb.RegisterAnonymousBoxServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {

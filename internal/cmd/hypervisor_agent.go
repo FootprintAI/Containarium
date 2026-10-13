@@ -18,6 +18,7 @@ import (
 
 var (
 	hvSentinelAddr string
+	hvSentinelPin  string
 	hvTunnelToken  string
 	hvSpotID       string
 	hvConsolePort  int
@@ -52,6 +53,7 @@ changes while the VM is powered off:
 
 Examples:
   containarium hypervisor-agent --sentinel-addr sentinel.example.com:9443 \
+                                --sentinel-pin sha256:<64 hex> \
                                 --token SECRET \
                                 --spot-id lab-vbox-host-1 \
                                 --console-token CONSOLE_SECRET \
@@ -63,6 +65,7 @@ func init() {
 	rootCmd.AddCommand(hypervisorAgentCmd)
 
 	hypervisorAgentCmd.Flags().StringVar(&hvSentinelAddr, "sentinel-addr", "", "Sentinel address (host:port) to connect to (required)")
+	hypervisorAgentCmd.Flags().StringVar(&hvSentinelPin, "sentinel-pin", "", sentinelPinFlagUsage)
 	hypervisorAgentCmd.Flags().StringVar(&hvTunnelToken, "token", "", "Pre-shared tunnel registration token (or CONTAINARIUM_TUNNEL_TOKEN env) — authorizes joining the tunnel, distinct from --console-token")
 	hypervisorAgentCmd.Flags().StringVar(&hvSpotID, "spot-id", "", "Unique identifier for this hypervisor host (required) — its own identity, not any guest's")
 	hypervisorAgentCmd.Flags().IntVar(&hvConsolePort, "console-port", 8082, "Local port to advertise through the tunnel and listen on for console requests")
@@ -87,6 +90,11 @@ func runHypervisorAgent(cmd *cobra.Command, args []string) error {
 	}
 	if tunnelToken == "" {
 		return fmt.Errorf("--token or CONTAINARIUM_TUNNEL_TOKEN is required")
+	}
+
+	pins, err := resolveSentinelPins(hvSentinelPin)
+	if err != nil {
+		return err
 	}
 
 	consoleToken := hvConsoleToken
@@ -128,6 +136,7 @@ func runHypervisorAgent(cmd *cobra.Command, args []string) error {
 
 	tunnel := &sentinel.TunnelClient{
 		SentinelAddr: hvSentinelAddr,
+		SentinelPins: pins,
 		Token:        tunnelToken,
 		SpotID:       hvSpotID,
 		Ports:        []int{hvConsolePort},

@@ -1,6 +1,10 @@
 package client
 
-import pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+import (
+	"encoding/json"
+
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+)
 
 // Request payload types for the REST client.
 //
@@ -84,6 +88,10 @@ type createContainerRequest struct {
 	// (#1606) — a standalone/single-region daemon ignores it. Absent unless
 	// set, so a plain create's body is unchanged.
 	Region string `json:"region,omitempty"`
+	// Labels are user labels (`--labels k=v`), stored under the daemon's
+	// label prefix; omitted when empty so older daemons see the same body
+	// (#2358).
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 // toggleAutoSleepRequest is POST /v1/containers/{name}/autosleep.
@@ -238,6 +246,10 @@ type deployRecipeRequest struct {
 	BackendID  string            `json:"backend_id"`
 	Pool       string            `json:"pool"`
 	Parameters map[string]string `json:"parameters"`
+	// GuardrailInput is the protojson of pb.GuardrailGateInput (the
+	// attestation carries enums and bytes, so it is encoded the way the
+	// grpc-gateway decodes it, not by encoding/json).
+	GuardrailInput json.RawMessage `json:"guardrail_input,omitempty"`
 }
 
 // provisionSkillBoxRequest is POST /v1/agent-skills/{skill_id}/provision-box

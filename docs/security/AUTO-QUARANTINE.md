@@ -24,7 +24,7 @@ The epic's design docs framed a generic "a CVE finding emits a virtual-patch
 rule." Wiring it for real surfaced an **impedance mismatch** worth stating
 plainly:
 
-- **Trivy / pentest findings** describe a vulnerable *package inside* a container
+- **Trivy / OpenVAS / pentest findings** describe a vulnerable *package inside* a container
   (e.g. an outdated `libxml2`). There is **no network endpoint to block** — a
   deny rule (which blocks the tenant's *egress to a CIDR/port*) can't "patch" an
   internal package vuln. Forcing that mapping would ship a rule that looks like a

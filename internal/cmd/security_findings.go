@@ -72,8 +72,31 @@ type findingEnvelope struct {
 }
 
 type findingEvidenceEnv struct {
-	Flows  []map[string]interface{} `json:"flows"`
-	Denies []map[string]interface{} `json:"denies"`
+	Flows     []map[string]interface{}     `json:"flows"`
+	Denies    []map[string]interface{}     `json:"denies"`
+	Configs   []findingConfigEvidenceEnv   `json:"configs"`
+	Listeners []findingListenerEvidenceEnv `json:"listeners"`
+}
+
+// findingListenerEvidenceEnv mirrors ListenerEvidence's grpc-gateway JSON
+// shape (#2439). grpc-gateway renders proto3 field names in lowerCamelCase.
+type findingListenerEvidenceEnv struct {
+	Port        uint32 `json:"port"`
+	BindAddress string `json:"bindAddress"`
+	PID         uint32 `json:"pid"`
+	Binary      string `json:"binary"`
+	Note        string `json:"note"`
+}
+
+// findingConfigEvidenceEnv mirrors ConfigEvidence's grpc-gateway JSON
+// shape (#2424): a posture finding's offending directive, file and
+// whether the pass re-asserted the managed configuration.
+type findingConfigEvidenceEnv struct {
+	Path       string `json:"path"`
+	Directive  string `json:"directive"`
+	Value      string `json:"value"`
+	Remediated bool   `json:"remediated"`
+	Note       string `json:"note"`
 }
 
 type listFindingsEnvelope struct {
@@ -134,6 +157,23 @@ func runSecurityFindingsList(cmd *cobra.Command, _ []string) error {
 			f.LastSeen,
 			f.Subject,
 		)
+		for _, c := range f.Evidence.Configs {
+			detail := fmt.Sprintf("%s=%s in %s", c.Directive, c.Value, c.Path)
+			if c.Remediated {
+				detail += " (re-asserted)"
+			}
+			if c.Note != "" {
+				detail += " — " + c.Note
+			}
+			fmt.Fprintf(w, "       %s\n", detail)
+		}
+		for _, l := range f.Evidence.Listeners {
+			detail := fmt.Sprintf("ssh listener %s:%d pid %d %s", l.BindAddress, l.Port, l.PID, l.Binary)
+			if l.Note != "" {
+				detail += " — " + l.Note
+			}
+			fmt.Fprintf(w, "       %s\n", detail)
+		}
 	}
 	return nil
 }

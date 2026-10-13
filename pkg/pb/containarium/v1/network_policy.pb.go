@@ -11,7 +11,9 @@ import (
 	_ "google.golang.org/genproto/googleapis/api/annotations"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
+	sync "sync"
 	unsafe "unsafe"
 )
 
@@ -22,11 +24,270 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// PlanNetworkPolicyRequest selects the tenant and the look-back window.
+type PlanNetworkPolicyRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Tenant to plan for (required).
+	Tenant string `protobuf:"bytes,1,opt,name=tenant,proto3" json:"tenant,omitempty"`
+	// Look-back window in minutes. <= 0 means 60; capped at 10080 (one week).
+	SinceMinutes  int32 `protobuf:"varint,2,opt,name=since_minutes,json=sinceMinutes,proto3" json:"since_minutes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PlanNetworkPolicyRequest) Reset() {
+	*x = PlanNetworkPolicyRequest{}
+	mi := &file_containarium_v1_network_policy_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PlanNetworkPolicyRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PlanNetworkPolicyRequest) ProtoMessage() {}
+
+func (x *PlanNetworkPolicyRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_network_policy_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PlanNetworkPolicyRequest.ProtoReflect.Descriptor instead.
+func (*PlanNetworkPolicyRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_network_policy_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *PlanNetworkPolicyRequest) GetTenant() string {
+	if x != nil {
+		return x.Tenant
+	}
+	return ""
+}
+
+func (x *PlanNetworkPolicyRequest) GetSinceMinutes() int32 {
+	if x != nil {
+		return x.SinceMinutes
+	}
+	return 0
+}
+
+// PlanDestination is one destination the tenant's policy denied or dropped,
+// aggregated over the window.
+type PlanDestination struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Destination IPv4 address.
+	Ip string `protobuf:"bytes,1,opt,name=ip,proto3" json:"ip,omitempty"`
+	// Destination port (0 when the flow had none, e.g. ICMP).
+	Port uint32 `protobuf:"varint,2,opt,name=port,proto3" json:"port,omitempty"`
+	// IP protocol: "tcp", "udp", or the number for anything else.
+	Protocol string `protobuf:"bytes,3,opt,name=protocol,proto3" json:"protocol,omitempty"`
+	// Number of denied/dropped flows seen (per-flow audit rows).
+	Count uint32 `protobuf:"varint,4,opt,name=count,proto3" json:"count,omitempty"`
+	// True when at least one of the flows was actually dropped (enforce armed),
+	// false when all were only logged (log-only or enforcement not armed).
+	Dropped bool `protobuf:"varint,5,opt,name=dropped,proto3" json:"dropped,omitempty"`
+	// When the most recent such flow was seen.
+	LastSeen      *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=last_seen,json=lastSeen,proto3" json:"last_seen,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PlanDestination) Reset() {
+	*x = PlanDestination{}
+	mi := &file_containarium_v1_network_policy_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PlanDestination) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PlanDestination) ProtoMessage() {}
+
+func (x *PlanDestination) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_network_policy_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PlanDestination.ProtoReflect.Descriptor instead.
+func (*PlanDestination) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_network_policy_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *PlanDestination) GetIp() string {
+	if x != nil {
+		return x.Ip
+	}
+	return ""
+}
+
+func (x *PlanDestination) GetPort() uint32 {
+	if x != nil {
+		return x.Port
+	}
+	return 0
+}
+
+func (x *PlanDestination) GetProtocol() string {
+	if x != nil {
+		return x.Protocol
+	}
+	return ""
+}
+
+func (x *PlanDestination) GetCount() uint32 {
+	if x != nil {
+		return x.Count
+	}
+	return 0
+}
+
+func (x *PlanDestination) GetDropped() bool {
+	if x != nil {
+		return x.Dropped
+	}
+	return false
+}
+
+func (x *PlanDestination) GetLastSeen() *timestamppb.Timestamp {
+	if x != nil {
+		return x.LastSeen
+	}
+	return nil
+}
+
+// PlanNetworkPolicyResponse is the aggregated would-block / blocked set.
+type PlanNetworkPolicyResponse struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Tenant string                 `protobuf:"bytes,1,opt,name=tenant,proto3" json:"tenant,omitempty"`
+	// Window actually used, in minutes (after defaulting and capping).
+	SinceMinutes int32 `protobuf:"varint,2,opt,name=since_minutes,json=sinceMinutes,proto3" json:"since_minutes,omitempty"`
+	// Destinations the policy denied, busiest first. Excludes any destination
+	// the tenant's current egress CIDRs (or the preset's implicit resolver)
+	// already allow, so stale rows from before an allow-list edit do not show.
+	Destinations []*PlanDestination `protobuf:"bytes,3,rep,name=destinations,proto3" json:"destinations,omitempty"`
+	// Audit rows examined.
+	RowsScanned uint32 `protobuf:"varint,4,opt,name=rows_scanned,json=rowsScanned,proto3" json:"rows_scanned,omitempty"`
+	// True when the row cap was hit, so the list may be missing the oldest
+	// flows in the window.
+	Truncated bool `protobuf:"varint,5,opt,name=truncated,proto3" json:"truncated,omitempty"`
+	// Caveats the caller should show, e.g. that destinations allowed by
+	// egress_domains are not subtracted.
+	Notes         []string `protobuf:"bytes,6,rep,name=notes,proto3" json:"notes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PlanNetworkPolicyResponse) Reset() {
+	*x = PlanNetworkPolicyResponse{}
+	mi := &file_containarium_v1_network_policy_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PlanNetworkPolicyResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PlanNetworkPolicyResponse) ProtoMessage() {}
+
+func (x *PlanNetworkPolicyResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_network_policy_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PlanNetworkPolicyResponse.ProtoReflect.Descriptor instead.
+func (*PlanNetworkPolicyResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_network_policy_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *PlanNetworkPolicyResponse) GetTenant() string {
+	if x != nil {
+		return x.Tenant
+	}
+	return ""
+}
+
+func (x *PlanNetworkPolicyResponse) GetSinceMinutes() int32 {
+	if x != nil {
+		return x.SinceMinutes
+	}
+	return 0
+}
+
+func (x *PlanNetworkPolicyResponse) GetDestinations() []*PlanDestination {
+	if x != nil {
+		return x.Destinations
+	}
+	return nil
+}
+
+func (x *PlanNetworkPolicyResponse) GetRowsScanned() uint32 {
+	if x != nil {
+		return x.RowsScanned
+	}
+	return 0
+}
+
+func (x *PlanNetworkPolicyResponse) GetTruncated() bool {
+	if x != nil {
+		return x.Truncated
+	}
+	return false
+}
+
+func (x *PlanNetworkPolicyResponse) GetNotes() []string {
+	if x != nil {
+		return x.Notes
+	}
+	return nil
+}
+
 var File_containarium_v1_network_policy_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_network_policy_proto_rawDesc = "" +
 	"\n" +
-	"$containarium/v1/network_policy.proto\x12\x0fcontainarium.v1\x1a\x1ccontainarium/v1/config.proto\x1a\x1cgoogle/api/annotations.proto\x1a.protoc-gen-openapiv2/options/annotations.proto2\xd8\x11\n" +
+	"$containarium/v1/network_policy.proto\x12\x0fcontainarium.v1\x1a\x1ccontainarium/v1/config.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1cgoogle/api/annotations.proto\x1a.protoc-gen-openapiv2/options/annotations.proto\"W\n" +
+	"\x18PlanNetworkPolicyRequest\x12\x16\n" +
+	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12#\n" +
+	"\rsince_minutes\x18\x02 \x01(\x05R\fsinceMinutes\"\xba\x01\n" +
+	"\x0fPlanDestination\x12\x0e\n" +
+	"\x02ip\x18\x01 \x01(\tR\x02ip\x12\x12\n" +
+	"\x04port\x18\x02 \x01(\rR\x04port\x12\x1a\n" +
+	"\bprotocol\x18\x03 \x01(\tR\bprotocol\x12\x14\n" +
+	"\x05count\x18\x04 \x01(\rR\x05count\x12\x18\n" +
+	"\adropped\x18\x05 \x01(\bR\adropped\x127\n" +
+	"\tlast_seen\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\blastSeen\"\xf5\x01\n" +
+	"\x19PlanNetworkPolicyResponse\x12\x16\n" +
+	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12#\n" +
+	"\rsince_minutes\x18\x02 \x01(\x05R\fsinceMinutes\x12D\n" +
+	"\fdestinations\x18\x03 \x03(\v2 .containarium.v1.PlanDestinationR\fdestinations\x12!\n" +
+	"\frows_scanned\x18\x04 \x01(\rR\vrowsScanned\x12\x1c\n" +
+	"\ttruncated\x18\x05 \x01(\bR\ttruncated\x12\x14\n" +
+	"\x05notes\x18\x06 \x03(\tR\x05notes2\xec\x14\n" +
 	"\x14NetworkPolicyService\x12\x8d\x02\n" +
 	"\x10SetNetworkPolicy\x12(.containarium.v1.SetNetworkPolicyRequest\x1a).containarium.v1.SetNetworkPolicyResponse\"\xa3\x01\x92A\x80\x01\n" +
 	"\rNetworkPolicy\x12\x12Set network policy\x1a[Create or replace a tenant's network-isolation policy (validated + normalized). Admin-only.\x82\xd3\xe4\x93\x02\x19:\x01*\"\x14/v1/network-policies\x12\xee\x01\n" +
@@ -37,7 +298,9 @@ const file_containarium_v1_network_policy_proto_rawDesc = "" +
 	"\x13DeleteNetworkPolicy\x12+.containarium.v1.DeleteNetworkPolicyRequest\x1a,.containarium.v1.DeleteNetworkPolicyResponse\"\x94\x01\x92Al\n" +
 	"\rNetworkPolicy\x12\x15Delete network policy\x1aDRemove a tenant's network-isolation policy (idempotent). Admin-only.\x82\xd3\xe4\x93\x02\x1f*\x1d/v1/network-policies/{tenant}\x12\xac\x02\n" +
 	"\x1bPatchNetworkPolicyDenyRules\x123.containarium.v1.PatchNetworkPolicyDenyRulesRequest\x1a).containarium.v1.SetNetworkPolicyResponse\"\xac\x01\x92A\x7f\n" +
-	"\rNetworkPolicy\x12\x1fPatch network-policy deny rules\x1aMAtomically add/remove a tenant's virtual-patch deny rules (#660). Admin-only.\x82\xd3\xe4\x93\x02$:\x01*\"\x1f/v1/network-policies/deny-rules\x12\xa9\x02\n" +
+	"\rNetworkPolicy\x12\x1fPatch network-policy deny rules\x1aMAtomically add/remove a tenant's virtual-patch deny rules (#660). Admin-only.\x82\xd3\xe4\x93\x02$:\x01*\"\x1f/v1/network-policies/deny-rules\x12\x91\x03\n" +
+	"\x11PlanNetworkPolicy\x12).containarium.v1.PlanNetworkPolicyRequest\x1a*.containarium.v1.PlanNetworkPolicyResponse\"\xa4\x02\x92A\xf6\x01\n" +
+	"\rNetworkPolicy\x12\x13Plan network policy\x1a\xcf\x01List the destinations a tenant's boxes reached that its policy denied or dropped in a recent window, so an egress allow-list can be written from observed behaviour and checked before enforcement. Admin-only.\x82\xd3\xe4\x93\x02$\x12\"/v1/network-policies/{tenant}/plan\x12\xa9\x02\n" +
 	"\x19SetNetworkPolicySignature\x121.containarium.v1.SetNetworkPolicySignatureRequest\x1a2.containarium.v1.SetNetworkPolicySignatureResponse\"\xa4\x01\x92Ay\n" +
 	"\rNetworkPolicy\x12\x1cSet network-policy signature\x1aJCreate or replace a global cleartext exploit signature (#661). Admin-only.\x82\xd3\xe4\x93\x02\":\x01*\"\x1d/v1/network-policy-signatures\x12\xa5\x02\n" +
 	"\x1bListNetworkPolicySignatures\x123.containarium.v1.ListNetworkPolicySignaturesRequest\x1a4.containarium.v1.ListNetworkPolicySignaturesResponse\"\x9a\x01\x92Ar\n" +
@@ -45,45 +308,66 @@ const file_containarium_v1_network_policy_proto_rawDesc = "" +
 	"\x1cDeleteNetworkPolicySignature\x124.containarium.v1.DeleteNetworkPolicySignatureRequest\x1a5.containarium.v1.DeleteNetworkPolicySignatureResponse\"\xad\x01\x92A~\n" +
 	"\rNetworkPolicy\x12\x1fDelete network-policy signature\x1aLRemove an operator-managed exploit signature (#661, idempotent). Admin-only.\x82\xd3\xe4\x93\x02&*$/v1/network-policy-signatures/{name}BKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
 
+var (
+	file_containarium_v1_network_policy_proto_rawDescOnce sync.Once
+	file_containarium_v1_network_policy_proto_rawDescData []byte
+)
+
+func file_containarium_v1_network_policy_proto_rawDescGZIP() []byte {
+	file_containarium_v1_network_policy_proto_rawDescOnce.Do(func() {
+		file_containarium_v1_network_policy_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_containarium_v1_network_policy_proto_rawDesc), len(file_containarium_v1_network_policy_proto_rawDesc)))
+	})
+	return file_containarium_v1_network_policy_proto_rawDescData
+}
+
+var file_containarium_v1_network_policy_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
 var file_containarium_v1_network_policy_proto_goTypes = []any{
-	(*SetNetworkPolicyRequest)(nil),              // 0: containarium.v1.SetNetworkPolicyRequest
-	(*GetNetworkPolicyRequest)(nil),              // 1: containarium.v1.GetNetworkPolicyRequest
-	(*ListNetworkPoliciesRequest)(nil),           // 2: containarium.v1.ListNetworkPoliciesRequest
-	(*DeleteNetworkPolicyRequest)(nil),           // 3: containarium.v1.DeleteNetworkPolicyRequest
-	(*PatchNetworkPolicyDenyRulesRequest)(nil),   // 4: containarium.v1.PatchNetworkPolicyDenyRulesRequest
-	(*SetNetworkPolicySignatureRequest)(nil),     // 5: containarium.v1.SetNetworkPolicySignatureRequest
-	(*ListNetworkPolicySignaturesRequest)(nil),   // 6: containarium.v1.ListNetworkPolicySignaturesRequest
-	(*DeleteNetworkPolicySignatureRequest)(nil),  // 7: containarium.v1.DeleteNetworkPolicySignatureRequest
-	(*SetNetworkPolicyResponse)(nil),             // 8: containarium.v1.SetNetworkPolicyResponse
-	(*GetNetworkPolicyResponse)(nil),             // 9: containarium.v1.GetNetworkPolicyResponse
-	(*ListNetworkPoliciesResponse)(nil),          // 10: containarium.v1.ListNetworkPoliciesResponse
-	(*DeleteNetworkPolicyResponse)(nil),          // 11: containarium.v1.DeleteNetworkPolicyResponse
-	(*SetNetworkPolicySignatureResponse)(nil),    // 12: containarium.v1.SetNetworkPolicySignatureResponse
-	(*ListNetworkPolicySignaturesResponse)(nil),  // 13: containarium.v1.ListNetworkPolicySignaturesResponse
-	(*DeleteNetworkPolicySignatureResponse)(nil), // 14: containarium.v1.DeleteNetworkPolicySignatureResponse
+	(*PlanNetworkPolicyRequest)(nil),             // 0: containarium.v1.PlanNetworkPolicyRequest
+	(*PlanDestination)(nil),                      // 1: containarium.v1.PlanDestination
+	(*PlanNetworkPolicyResponse)(nil),            // 2: containarium.v1.PlanNetworkPolicyResponse
+	(*timestamppb.Timestamp)(nil),                // 3: google.protobuf.Timestamp
+	(*SetNetworkPolicyRequest)(nil),              // 4: containarium.v1.SetNetworkPolicyRequest
+	(*GetNetworkPolicyRequest)(nil),              // 5: containarium.v1.GetNetworkPolicyRequest
+	(*ListNetworkPoliciesRequest)(nil),           // 6: containarium.v1.ListNetworkPoliciesRequest
+	(*DeleteNetworkPolicyRequest)(nil),           // 7: containarium.v1.DeleteNetworkPolicyRequest
+	(*PatchNetworkPolicyDenyRulesRequest)(nil),   // 8: containarium.v1.PatchNetworkPolicyDenyRulesRequest
+	(*SetNetworkPolicySignatureRequest)(nil),     // 9: containarium.v1.SetNetworkPolicySignatureRequest
+	(*ListNetworkPolicySignaturesRequest)(nil),   // 10: containarium.v1.ListNetworkPolicySignaturesRequest
+	(*DeleteNetworkPolicySignatureRequest)(nil),  // 11: containarium.v1.DeleteNetworkPolicySignatureRequest
+	(*SetNetworkPolicyResponse)(nil),             // 12: containarium.v1.SetNetworkPolicyResponse
+	(*GetNetworkPolicyResponse)(nil),             // 13: containarium.v1.GetNetworkPolicyResponse
+	(*ListNetworkPoliciesResponse)(nil),          // 14: containarium.v1.ListNetworkPoliciesResponse
+	(*DeleteNetworkPolicyResponse)(nil),          // 15: containarium.v1.DeleteNetworkPolicyResponse
+	(*SetNetworkPolicySignatureResponse)(nil),    // 16: containarium.v1.SetNetworkPolicySignatureResponse
+	(*ListNetworkPolicySignaturesResponse)(nil),  // 17: containarium.v1.ListNetworkPolicySignaturesResponse
+	(*DeleteNetworkPolicySignatureResponse)(nil), // 18: containarium.v1.DeleteNetworkPolicySignatureResponse
 }
 var file_containarium_v1_network_policy_proto_depIdxs = []int32{
-	0,  // 0: containarium.v1.NetworkPolicyService.SetNetworkPolicy:input_type -> containarium.v1.SetNetworkPolicyRequest
-	1,  // 1: containarium.v1.NetworkPolicyService.GetNetworkPolicy:input_type -> containarium.v1.GetNetworkPolicyRequest
-	2,  // 2: containarium.v1.NetworkPolicyService.ListNetworkPolicies:input_type -> containarium.v1.ListNetworkPoliciesRequest
-	3,  // 3: containarium.v1.NetworkPolicyService.DeleteNetworkPolicy:input_type -> containarium.v1.DeleteNetworkPolicyRequest
-	4,  // 4: containarium.v1.NetworkPolicyService.PatchNetworkPolicyDenyRules:input_type -> containarium.v1.PatchNetworkPolicyDenyRulesRequest
-	5,  // 5: containarium.v1.NetworkPolicyService.SetNetworkPolicySignature:input_type -> containarium.v1.SetNetworkPolicySignatureRequest
-	6,  // 6: containarium.v1.NetworkPolicyService.ListNetworkPolicySignatures:input_type -> containarium.v1.ListNetworkPolicySignaturesRequest
-	7,  // 7: containarium.v1.NetworkPolicyService.DeleteNetworkPolicySignature:input_type -> containarium.v1.DeleteNetworkPolicySignatureRequest
-	8,  // 8: containarium.v1.NetworkPolicyService.SetNetworkPolicy:output_type -> containarium.v1.SetNetworkPolicyResponse
-	9,  // 9: containarium.v1.NetworkPolicyService.GetNetworkPolicy:output_type -> containarium.v1.GetNetworkPolicyResponse
-	10, // 10: containarium.v1.NetworkPolicyService.ListNetworkPolicies:output_type -> containarium.v1.ListNetworkPoliciesResponse
-	11, // 11: containarium.v1.NetworkPolicyService.DeleteNetworkPolicy:output_type -> containarium.v1.DeleteNetworkPolicyResponse
-	8,  // 12: containarium.v1.NetworkPolicyService.PatchNetworkPolicyDenyRules:output_type -> containarium.v1.SetNetworkPolicyResponse
-	12, // 13: containarium.v1.NetworkPolicyService.SetNetworkPolicySignature:output_type -> containarium.v1.SetNetworkPolicySignatureResponse
-	13, // 14: containarium.v1.NetworkPolicyService.ListNetworkPolicySignatures:output_type -> containarium.v1.ListNetworkPolicySignaturesResponse
-	14, // 15: containarium.v1.NetworkPolicyService.DeleteNetworkPolicySignature:output_type -> containarium.v1.DeleteNetworkPolicySignatureResponse
-	8,  // [8:16] is the sub-list for method output_type
-	0,  // [0:8] is the sub-list for method input_type
-	0,  // [0:0] is the sub-list for extension type_name
-	0,  // [0:0] is the sub-list for extension extendee
-	0,  // [0:0] is the sub-list for field type_name
+	3,  // 0: containarium.v1.PlanDestination.last_seen:type_name -> google.protobuf.Timestamp
+	1,  // 1: containarium.v1.PlanNetworkPolicyResponse.destinations:type_name -> containarium.v1.PlanDestination
+	4,  // 2: containarium.v1.NetworkPolicyService.SetNetworkPolicy:input_type -> containarium.v1.SetNetworkPolicyRequest
+	5,  // 3: containarium.v1.NetworkPolicyService.GetNetworkPolicy:input_type -> containarium.v1.GetNetworkPolicyRequest
+	6,  // 4: containarium.v1.NetworkPolicyService.ListNetworkPolicies:input_type -> containarium.v1.ListNetworkPoliciesRequest
+	7,  // 5: containarium.v1.NetworkPolicyService.DeleteNetworkPolicy:input_type -> containarium.v1.DeleteNetworkPolicyRequest
+	8,  // 6: containarium.v1.NetworkPolicyService.PatchNetworkPolicyDenyRules:input_type -> containarium.v1.PatchNetworkPolicyDenyRulesRequest
+	0,  // 7: containarium.v1.NetworkPolicyService.PlanNetworkPolicy:input_type -> containarium.v1.PlanNetworkPolicyRequest
+	9,  // 8: containarium.v1.NetworkPolicyService.SetNetworkPolicySignature:input_type -> containarium.v1.SetNetworkPolicySignatureRequest
+	10, // 9: containarium.v1.NetworkPolicyService.ListNetworkPolicySignatures:input_type -> containarium.v1.ListNetworkPolicySignaturesRequest
+	11, // 10: containarium.v1.NetworkPolicyService.DeleteNetworkPolicySignature:input_type -> containarium.v1.DeleteNetworkPolicySignatureRequest
+	12, // 11: containarium.v1.NetworkPolicyService.SetNetworkPolicy:output_type -> containarium.v1.SetNetworkPolicyResponse
+	13, // 12: containarium.v1.NetworkPolicyService.GetNetworkPolicy:output_type -> containarium.v1.GetNetworkPolicyResponse
+	14, // 13: containarium.v1.NetworkPolicyService.ListNetworkPolicies:output_type -> containarium.v1.ListNetworkPoliciesResponse
+	15, // 14: containarium.v1.NetworkPolicyService.DeleteNetworkPolicy:output_type -> containarium.v1.DeleteNetworkPolicyResponse
+	12, // 15: containarium.v1.NetworkPolicyService.PatchNetworkPolicyDenyRules:output_type -> containarium.v1.SetNetworkPolicyResponse
+	2,  // 16: containarium.v1.NetworkPolicyService.PlanNetworkPolicy:output_type -> containarium.v1.PlanNetworkPolicyResponse
+	16, // 17: containarium.v1.NetworkPolicyService.SetNetworkPolicySignature:output_type -> containarium.v1.SetNetworkPolicySignatureResponse
+	17, // 18: containarium.v1.NetworkPolicyService.ListNetworkPolicySignatures:output_type -> containarium.v1.ListNetworkPolicySignaturesResponse
+	18, // 19: containarium.v1.NetworkPolicyService.DeleteNetworkPolicySignature:output_type -> containarium.v1.DeleteNetworkPolicySignatureResponse
+	11, // [11:20] is the sub-list for method output_type
+	2,  // [2:11] is the sub-list for method input_type
+	2,  // [2:2] is the sub-list for extension type_name
+	2,  // [2:2] is the sub-list for extension extendee
+	0,  // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_network_policy_proto_init() }
@@ -98,12 +382,13 @@ func file_containarium_v1_network_policy_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_network_policy_proto_rawDesc), len(file_containarium_v1_network_policy_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   0,
+			NumMessages:   3,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_containarium_v1_network_policy_proto_goTypes,
 		DependencyIndexes: file_containarium_v1_network_policy_proto_depIdxs,
+		MessageInfos:      file_containarium_v1_network_policy_proto_msgTypes,
 	}.Build()
 	File_containarium_v1_network_policy_proto = out.File
 	file_containarium_v1_network_policy_proto_goTypes = nil

@@ -117,6 +117,8 @@ func (cs *CoreServices) EnsureOTelCollector(ctx context.Context, victoriaMetrics
 			Size: "3GB",
 		},
 	}
+	cs.pinCoreIP(&config, CoreOTelCollectorContainer)
+
 	if err := cs.incusClient.CreateContainer(config); err != nil {
 		return "", fmt.Errorf("failed to create otel collector container: %w", err)
 	}

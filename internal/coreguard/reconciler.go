@@ -2,7 +2,6 @@ package coreguard
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"net/netip"
@@ -12,37 +11,25 @@ import (
 
 	"github.com/lxc/incus/v7/shared/api"
 
+	"github.com/footprintai/containarium/internal/nicguard"
 	"github.com/footprintai/containarium/pkg/core/incus"
 )
 
-// Mode is the guard's arming state. There is no audit mode: an Incus NIC
-// ACL either drops or it doesn't. Evidence comes from the logged default
-// action, and rollout safety from the two e2e scripts, not from a soft mode.
-type Mode string
+// Mode, ParseMode and ErrUnsupportedFirewall are shared with the tenant
+// guard (internal/nicguard). Unset arms the guard; only "off" disables.
+type Mode = nicguard.Mode
 
 const (
-	ModeOff     Mode = "off"
-	ModeEnforce Mode = "enforce"
+	ModeOff     = nicguard.ModeOff
+	ModeEnforce = nicguard.ModeEnforce
 )
 
-// ParseMode maps the CONTAINARIUM_CORE_GUARD value to a Mode. Anything that
-// is not exactly "enforce" is off — the guard never arms by accident.
-func ParseMode(s string) Mode {
-	if s == string(ModeEnforce) {
-		return ModeEnforce
-	}
-	return ModeOff
-}
+// ParseMode maps the CONTAINARIUM_CORE_GUARD value to a Mode.
+func ParseMode(s string) Mode { return nicguard.ParseMode(s) }
 
 // ErrUnsupportedFirewall is returned when the host's Incus firewall driver
-// cannot enforce bridge NIC ACLs (only nftables can). The reconciler
-// refuses to attach anything rather than leave the operator believing they
-// are guarded.
-var ErrUnsupportedFirewall = errors.New("coreguard: incus firewall driver is not nftables; bridge NIC ACLs cannot be enforced")
-
-// requiredFirewall is the only Incus firewall driver that renders NIC-level
-// ACLs (doc/howto/network_acls.md, "Bridge limitations").
-const requiredFirewall = "nftables"
+// cannot enforce bridge NIC ACLs (only nftables can).
+var ErrUnsupportedFirewall = nicguard.ErrUnsupportedFirewall
 
 // DefaultInterval is the steady-state reconcile cadence; bus events
 // converge sooner.
@@ -171,14 +158,10 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) error {
 		return r.fail(err)
 	}
 
-	info, err := r.be.GetServerInfo()
+	driver, err := nicguard.CheckSupport(r.be)
 	if err != nil {
-		return r.fail(fmt.Errorf("coreguard: server info: %w", err))
-	}
-	driver := info.Environment.Firewall
-	if driver != requiredFirewall {
 		r.setStatus(func(s *Status) { s.FirewallDriver = driver })
-		return r.fail(fmt.Errorf("%w (driver=%q)", ErrUnsupportedFirewall, driver))
+		return r.fail(fmt.Errorf("coreguard: %w", err))
 	}
 
 	containers, err := r.be.ListContainers()

@@ -123,3 +123,29 @@ func TestResolveMCPSSHKey_PathConstraints(t *testing.T) {
 		})
 	}
 }
+
+// TestProvisionRunners_RunnerGroup checks the MCP tool exposes runner_group
+// and hands it to the same runner.ValidateOptions the CLI uses: a group on a
+// repository target is refused before any box or SSH work starts, which is
+// why a nil client is enough here.
+func TestProvisionRunners_RunnerGroup(t *testing.T) {
+	var schema map[string]interface{}
+	for _, tool := range runnerTools() {
+		if tool.Name == "provision_runners" {
+			schema = tool.InputSchema
+		}
+	}
+	props, _ := schema["properties"].(map[string]interface{})
+	if _, ok := props["runner_group"]; !ok {
+		t.Fatal("provision_runners schema has no runner_group property")
+	}
+
+	_, err := handleProvisionRunners(nil, map[string]interface{}{
+		"repo":         "owner/repo",
+		"github_pat":   "ghp_x",
+		"runner_group": "gpu",
+	})
+	if err == nil || !strings.Contains(err.Error(), "runner group requires an organization target") {
+		t.Fatalf("want the organization-target refusal, got %v", err)
+	}
+}

@@ -371,6 +371,40 @@ func TestFindingStore_UpsertDedupesOpenFinding(t *testing.T) {
 	}
 }
 
+// The stored severity follows the same escalate-only rule as the in-memory
+// store: MEDIUM then HIGH ends HIGH (in the returned finding and the row),
+// and a later MEDIUM does not lower it (#2424).
+func TestFindingStore_UpsertEscalatesSeverityNeverLowers(t *testing.T) {
+	ctx := context.Background()
+	pool := threatdetectPool(t)
+	fs, _, _ := newStores(t, pool)
+
+	var id int64
+	for i, step := range []struct{ in, want pb.ThreatSeverity }{
+		{pb.ThreatSeverity_THREAT_SEVERITY_MEDIUM, pb.ThreatSeverity_THREAT_SEVERITY_MEDIUM},
+		{pb.ThreatSeverity_THREAT_SEVERITY_HIGH, pb.ThreatSeverity_THREAT_SEVERITY_HIGH},
+		{pb.ThreatSeverity_THREAT_SEVERITY_MEDIUM, pb.ThreatSeverity_THREAT_SEVERITY_HIGH},
+	} {
+		f := sampleFinding()
+		f.Severity = step.in
+		got, err := fs.Upsert(ctx, f)
+		if err != nil {
+			t.Fatalf("Upsert #%d: %v", i+1, err)
+		}
+		if got.Severity != step.want {
+			t.Fatalf("Upsert #%d severity = %v, want %v", i+1, got.Severity, step.want)
+		}
+		id = got.ID
+	}
+	var stored string
+	if err := pool.QueryRow(ctx, `SELECT severity FROM security_findings WHERE id = $1`, id).Scan(&stored); err != nil {
+		t.Fatalf("read severity: %v", err)
+	}
+	if stored != pb.ThreatSeverity_THREAT_SEVERITY_HIGH.String() {
+		t.Fatalf("stored severity = %q, want HIGH", stored)
+	}
+}
+
 func drainEvent(t *testing.T, sub *events.Subscriber) {
 	t.Helper()
 	select {

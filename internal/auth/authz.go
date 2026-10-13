@@ -400,6 +400,28 @@ func RequireScope(ctx context.Context, required string) error {
 	return status.Error(codes.PermissionDenied, "scope required: "+required)
 }
 
+// RequireExplicitScope is RequireScope without the backwards-compat
+// "no scopes claim = unrestricted" fall-through (#2415). It exists for
+// write paths whose authority must never be inherited from a pre-scope
+// admin token: a token with NO scopes claim is denied whether or not
+// strict-scope mode is on, exactly as a token with the wrong scopes is.
+// The wildcard scope still passes, as everywhere else. Use it for the
+// audit-ingest RPC; keep RequireScope for the surfaces whose unscoped
+// population #1679 is still measuring.
+func RequireExplicitScope(ctx context.Context, required string) error {
+	if _, _, ok := SubjectFromGRPCContext(ctx); !ok {
+		return status.Error(codes.Unauthenticated, "no authenticated subject in request context")
+	}
+	scopes, present := ScopesFromGRPCContext(ctx)
+	if !present {
+		recordUnscopedCall()
+	}
+	if HasExplicitScope(scopes, required) {
+		return nil
+	}
+	return status.Error(codes.PermissionDenied, "scope required: "+required)
+}
+
 // AuthorizeTenant returns nil if the authenticated subject is
 // allowed to act on `requestedUsername` — either because they are
 // that user, or because they hold the admin role. Returns a

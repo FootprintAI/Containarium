@@ -47,7 +47,29 @@ func prepareCodeRun(ctx context.Context, sess *coderun.Session, box, runName str
 		}
 	}
 
+	reportModelTrafficScanning(eng, diag)
+
 	return eng.RunCommand(codeRunPrompt, codeRunStreamJSON, codeRunContinue, codeRunSession), eng, nil
+}
+
+// reportModelTrafficScanning prints, once at run start, whether this run's
+// model responses are scanned by the inbound guardrail (#2367), so a missing
+// alert is never read as "clean". Only a gateway run consults the server
+// policy; a failed read is reported as unknown and never blocks the run.
+func reportModelTrafficScanning(eng engine.Engine, diag io.Writer) {
+	cred := eng.Credential().Kind()
+	var policy *pb.ServerGuardrailPolicy
+	known := true
+	if cred == engine.KindGateway {
+		known = false
+		if api, done, err := newGuardrailPolicyAPI(); err == nil {
+			if resp, gerr := api.GetGuardrailPolicy(); gerr == nil {
+				policy, known = resp.GetPolicy(), true
+			}
+			done()
+		}
+	}
+	fmt.Fprintln(diag, engine.ScanningLine(engine.ModelTrafficScanning(cred, policy, known)))
 }
 
 // readBoxCodeConfig reads code.json off the box.

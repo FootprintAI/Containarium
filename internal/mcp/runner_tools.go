@@ -54,7 +54,7 @@ func runnerTools() []Tool {
 					},
 					"github_pat": map[string]interface{}{
 						"type":        "string",
-						"description": "GitHub Personal Access Token with `repo` scope. Used both to register the runner and to poll the runners-list API.",
+						"description": "GitHub Personal Access Token: `repo` scope for an owner/repo target, `admin:org` for an organization. Used both to register the runner and to poll the runners-list API.",
 					},
 					"count": map[string]interface{}{
 						"type":        "integer",
@@ -67,6 +67,10 @@ func runnerTools() []Tool {
 					"labels": map[string]interface{}{
 						"type":        "string",
 						"description": "Comma-separated runner labels. Default 'containarium,ephemeral'.",
+					},
+					"runner_group": map[string]interface{}{
+						"type":        "string",
+						"description": "Organization runner group to register into. Organization targets only (a bare owner); refused for an owner/repo target. Default: the org's default group.",
 					},
 					"runner_name_template": map[string]interface{}{
 						"type":        "string",
@@ -109,7 +113,7 @@ func runnerTools() []Tool {
 					},
 					"github_pat": map[string]interface{}{
 						"type":        "string",
-						"description": "GitHub PAT with `repo` scope.",
+						"description": "GitHub PAT: `repo` scope for an owner/repo target, `admin:org` for an organization.",
 					},
 					"name_prefix": map[string]interface{}{
 						"type":        "string",
@@ -139,7 +143,7 @@ func runnerTools() []Tool {
 					},
 					"github_pat": map[string]interface{}{
 						"type":        "string",
-						"description": "GitHub PAT with `repo` scope.",
+						"description": "GitHub PAT: `repo` scope for an owner/repo target, `admin:org` for an organization.",
 					},
 					"name": map[string]interface{}{
 						"type":        "string",
@@ -379,6 +383,7 @@ func handleProvisionRunners(client API, args map[string]interface{}) (string, er
 		Count:        count,
 		NamePrefix:   getStringArg(args, "name_prefix", "ci-runner"),
 		Labels:       getStringArg(args, "labels", "containarium,ephemeral"),
+		RunnerGroup:  getStringArg(args, "runner_group", ""),
 		NameTemplate: getStringArg(args, "runner_name_template", "{prefix}-{i}"),
 	}
 	if err := runner.ValidateOptions(opts); err != nil {

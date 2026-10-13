@@ -1169,8 +1169,10 @@ dependency will **break the tenant** once armed. So soak first:
 3. For every legitimate destination, add it to the allow-list (`--egress-cidr` /
    `--egress-domain`). **Include the tenant's DNS resolver / bridge gateway** —
    an enforce policy that omits its resolver blackholes the container (name
-   resolution itself is egress). Re-run `set` until the would-deny stream is
-   empty for normal operation.
+   resolution itself is egress). The [allow-list-only preset](#allow-list-only-preset-and-plan)
+   adds the resolver for you, and `network-policy plan` lists the destinations
+   to add. Re-run `set` until the would-deny stream is empty for normal
+   operation.
 4. Flip the policy to `--mode enforce` and set opt-in #2. Denied flows now drop,
    audited as `action=network_policy.deny_dropped`:
    ```bash
@@ -1179,6 +1181,50 @@ dependency will **break the tenant** once armed. So soak first:
 
 `--mode enforce` and `--mode log_only` can be flipped per tenant at any time; you
 can keep some tenants observing while others enforce.
+
+### Allow-list-only preset and plan
+
+Locking a tenant's egress down to an allow-list is already what `--mode enforce`
+with `--egress-cidr` / `--egress-domain` does. Two things made it awkward: the
+resolver had to be remembered, and the allow-list had to be written from memory.
+
+```bash
+# 1. Preset: the allow-list is the whole policy, and the box's DNS resolver (the
+#    bridge gateway) is allowed implicitly, so a forgotten resolver cannot
+#    blackhole name resolution. The mode is yours: soak in log_only first.
+containarium network-policy set alice --egress-preset allow-list-only --mode log_only
+
+# 2. Let the tenant work, then ask what the policy would have blocked:
+containarium network-policy plan alice --since 24h
+#   DESTINATION      PORT   PROTO  COUNT   STATE    LAST SEEN
+#   140.82.112.3     443    tcp    212     logged   2026-10-10T12:00:00Z
+#   ...
+#   --egress-cidr 140.82.112.3/32 --egress-cidr ...
+
+# 3. Review the addresses, re-run set with the ones you accept, repeat until the
+#    plan is empty for normal work, then flip to enforce.
+containarium network-policy set alice --egress-preset allow-list-only \
+    --egress-cidr 140.82.112.3/32 --mode enforce
+```
+
+What to know:
+
+- `set` declares the whole allow-policy, so leaving `--egress-preset` off a later
+  `set` clears the preset, like every other field.
+- The implicit entry is the bridge gateway, `/32`, and it is not stored on the
+  policy: `get` shows what you wrote. The gateway also hosts the daemon, so a
+  preset tenant can reach the host's listeners on the bridge address, exactly as
+  if you had listed it by hand as this runbook has always advised.
+- `plan` reads the deny audit rows (`deny_logged` and `deny_dropped`), so it
+  needs the daemon's audit store and an enabled enforcer; with enforcement
+  unarmed, `logged` is the honest state. It subtracts destinations your current
+  `--egress-cidr` entries already cover. Destinations allowed only through
+  `--egress-domain` are not subtracted, and it says so. Counts are denied flows,
+  not packets, and a busy tenant can hit the 5000-row cap per action (reported).
+- `plan` lists addresses a tenant *reached*. That is evidence for writing the
+  list, not a statement that they are safe; review it before pasting.
+- Under the preset a reverse-tunnel relay is simply not on the list, so it is
+  blocked in enforce mode and shows up in `plan` while soaking.
 
 ### Cloud metadata is denied by default
 

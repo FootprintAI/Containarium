@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -58,14 +59,34 @@ func (g *GcloudUploader) Download(destURI, localPath string) error {
 	return nil
 }
 
+// ErrObjectNotFound is returned by Uploader.Delete when the object was
+// not there to begin with. Delete callers treat it as "nothing to do" for
+// the sidecar object of a record written before sidecars were uploaded
+// (#2402); every other delete failure is a real one.
+var ErrObjectNotFound = errors.New("object not found")
+
 func (g *GcloudUploader) Delete(destURI string) error {
 	if err := validateGSURI(destURI); err != nil {
 		return err
 	}
 	if out, err := g.run("storage", "rm", destURI); err != nil {
+		if isGcloudNotFound(out) {
+			return fmt.Errorf("gcloud storage rm %s: %w", destURI, ErrObjectNotFound)
+		}
 		return fmt.Errorf("gcloud storage rm: %w: %s", err, strings.TrimSpace(out))
 	}
 	return nil
+}
+
+// isGcloudNotFound recognises `gcloud storage rm` (and legacy gsutil)
+// complaining that the URL matched nothing, as opposed to a permission,
+// network or bucket error.
+func isGcloudNotFound(out string) bool {
+	s := strings.ToLower(out)
+	return strings.Contains(s, "matched no objects") ||
+		strings.Contains(s, "no urls matched") ||
+		strings.Contains(s, "notfound") ||
+		strings.Contains(s, "not found")
 }
 
 func validateGSURI(uri string) error {

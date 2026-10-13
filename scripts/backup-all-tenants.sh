@@ -16,7 +16,13 @@
 #
 #   # hook mode (#1831) — for a database the platform can't reach directly,
 #   # e.g. Postgres nested inside an in-container Docker/compose stack
-#   <tenant>  --hook <in-container-hook-path>  [--label <label>]
+#   <tenant>  --hook <in-container-hook-path>  [--label <label>]  [--hook-format <fmt>]
+#
+# --hook-format (#2405) declares what the hook writes: `opaque` (the default
+# when omitted) or `pg_custom` for a hook that emits a `pg_dump -Fc` archive,
+# which makes the backup restore-testable. It is a promise about the hook's
+# output; the daemon does not check it at create time. The options after the
+# path may come in either order.
 #
 # The optional third field of plain mode names an env variable whose value
 # is passed as --db-password. Omit it when the in-container Postgres uses
@@ -75,14 +81,26 @@ while IFS= read -r line; do
   prune_database=""
 
   if [[ "${words[1]:-}" == "--hook" ]]; then
-    # Hook mode: <tenant> --hook <path> [--label <label>]
+    # Hook mode: <tenant> --hook <path> [--label <label>] [--hook-format <fmt>]
     hook_path="${words[2]:-}"
     label=""
-    if [[ "${words[3]:-}" == "--label" ]]; then
-      label="${words[4]:-}"
-    fi
+    hook_format=""
+    bad_option=""
+    # Optional "--key value" pairs after the path, in any order.
+    for ((i = 3; i < ${#words[@]}; i += 2)); do
+      case "${words[i]}" in
+        --label) label="${words[i + 1]:-}" ;;
+        --hook-format) hook_format="${words[i + 1]:-}" ;;
+        *) bad_option="${words[i]}" ;;
+      esac
+    done
     if [[ -z "$hook_path" ]]; then
       echo "[backup] WARNING: tenant=$tenant has --hook with no path; skipping" >&2
+      failed=$((failed + 1))
+      continue
+    fi
+    if [[ -n "$bad_option" ]]; then
+      echo "[backup] WARNING: tenant=$tenant has unknown hook option '$bad_option'; skipping" >&2
       failed=$((failed + 1))
       continue
     fi
@@ -91,7 +109,12 @@ while IFS= read -r line; do
       create_flags+=(--label "$label")
       prune_database="$label"
     fi
-    echo "[backup] start  tenant=$tenant hook=$hook_path"
+    if [[ -n "$hook_format" ]]; then
+      # A promise about the hook's output (#2405); the CLI rejects an
+      # unknown value, which counts as a failed tenant below.
+      create_flags+=(--hook-format "$hook_format")
+    fi
+    echo "[backup] start  tenant=$tenant hook=$hook_path${hook_format:+ format=$hook_format}"
   else
     # Plain mode: <tenant> <database> [PASSWORD_ENV_VAR]
     database="${words[1]:-}"

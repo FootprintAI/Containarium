@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/footprintai/containarium/pkg/core/ospkg"
 	"github.com/footprintai/containarium/pkg/core/ostype"
+	"github.com/footprintai/containarium/pkg/core/sshdpolicy"
 	"github.com/footprintai/containarium/pkg/core/stacks"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	incusapi "github.com/lxc/incus/v7/shared/api"
@@ -32,6 +34,9 @@ type Manager struct {
 	// default, production) uses defaultCloudInitWait; a test seam so a test
 	// exercising the wait itself doesn't cost the real 5s.
 	cloudInitWait time.Duration
+	// nicGuard, when non-nil, guards a new container's NIC between create
+	// and start (see NICGuard). Nil = no hook.
+	nicGuard NICGuard
 	// nameCache backs ExistingContainerNames — see its doc comment.
 	nameCache containerNameCache
 	// nameCacheTTL overrides existingContainerNamesCacheTTL. Zero (the
@@ -158,6 +163,9 @@ func resolveGPUDevices(b incus.Backend, inputs []string) ([]incus.GPUDevice, err
 var (
 	createJumpServerAccountFn = CreateJumpServerAccount
 	addAuthorizedKeyFn        = AddAuthorizedKey
+	// ensureJumpServerAccountFn creates the account with no key material, for
+	// boxes created without SSH keys (#2489).
+	ensureJumpServerAccountFn = EnsureJumpServerAccount
 )
 
 // Create creates a new container with full setup
@@ -324,6 +332,13 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		return nil, fmt.Errorf("failed to create container: %w", err)
 	}
 
+	// Guard the NIC before the first start (tenant network guard): a box
+	// that cannot be guarded is deleted rather than started reachable.
+	if err := m.guardNIC(containerName, opts); err != nil {
+		_ = m.incus.DeleteContainer(containerName)
+		return nil, err
+	}
+
 	// Step 2: Start container
 	if opts.Verbose {
 		fmt.Println("  [2/6] Starting container...")
@@ -385,9 +400,22 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 			})
 		}()
 	} else {
+		// No keys is not "no account" (#2489). The host-side account is what the
+		// sentinel routes SSH to; skipping it left a RUNNING box that no
+		// certificate or later key push could ever reach ("host user does not
+		// exist"). Create it empty; keys are added to it later.
 		if opts.Verbose {
-			fmt.Println("       Warning: No SSH keys provided, skipping jump server account creation")
+			fmt.Println("       No SSH keys provided, creating the jump server account without keys")
 		}
+		jumpAccountDone = make(chan error, 1)
+		go func() {
+			jumpAccountDone <- m.timed(StageJumpAccount, func() error {
+				if err := ensureJumpServerAccountFn(opts.Username); err != nil {
+					return fmt.Errorf("failed to create jump server account: %w", err)
+				}
+				return nil
+			})
+		}()
 	}
 
 	// Step 4: Wait for network
@@ -449,6 +477,13 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		_ = m.cleanup(containerName)
 		return nil, fmt.Errorf("failed to install packages: %w", err)
 	}
+
+	// Bring the box under the sshd policy at birth (#2424), on the baked
+	// path too (it skips installPackages, but the baked image carries the
+	// drop-in). Without the marker the posture reconciler would read a
+	// tenant edit made before its first pass as "never applied" and
+	// backfill it silently instead of raising a finding.
+	m.markSSHDPolicy(containerName)
 
 	// Make podman workloads reboot-durable (#387). Runs on BOTH the baked
 	// and full paths: the rootful half is already enabled in a baked image
@@ -777,12 +812,30 @@ func (m *Manager) installPackages(containerName string, enablePodman bool, stack
 		// (#1037) can run it into a shared base image. See issue #387.
 	}
 
+	// Key-only SSH inside the box (#2424). A box sshd otherwise inherits
+	// the image default (PasswordAuthentication yes), and the owner's
+	// NOPASSWD sudo is one `passwd` away from making that reachable. The
+	// managed drop-in sorts before every distro/cloud-init drop-in, so it
+	// wins under sshd's first-match rule. It is user-independent, so it
+	// lands in baked base images too; the posture reconciler
+	// (internal/security) re-asserts it on running boxes afterwards.
+	// Fatal on failure: a box this daemon cannot write a file into is not
+	// a box the rest of provisioning will succeed on either.
+	if err := m.incus.Exec(containerName, []string{"mkdir", "-p", sshdpolicy.DropInDir}); err != nil {
+		return fmt.Errorf("failed to create %s: %w", sshdpolicy.DropInDir, err)
+	}
+	if err := m.incus.WriteFile(containerName, sshdpolicy.DropInPath, sshdpolicy.DropInContent(), sshdpolicy.DropInMode); err != nil {
+		return fmt.Errorf("failed to write sshd policy drop-in: %w", err)
+	}
+
 	sshService := pkgMgr.SSHServiceName()
 	if err := m.incus.Exec(containerName, []string{"systemctl", "enable", sshService}); err != nil {
 		return fmt.Errorf("failed to enable %s: %w", sshService, err)
 	}
-	if err := m.incus.Exec(containerName, []string{"systemctl", "start", sshService}); err != nil {
-		return fmt.Errorf("failed to start %s: %w", sshService, err)
+	// restart, not start: an image that ships sshd already running would
+	// otherwise keep serving the pre-drop-in configuration.
+	if err := m.incus.Exec(containerName, []string{"systemctl", "restart", sshService}); err != nil {
+		return fmt.Errorf("failed to restart %s: %w", sshService, err)
 	}
 
 	// Run base scripts post-install commands as root
@@ -1073,6 +1126,15 @@ func (m *Manager) WriteFile(containerName, path string, content []byte, mode str
 		return real.WriteFile(containerName, path, content, mode)
 	}
 	return fmt.Errorf("WriteFile not supported on this incus backend (mock?)")
+}
+
+// PushFile is WriteFile streamed from content instead of held in memory
+// (the guardrail deploy gate delivers whole datasets this way).
+func (m *Manager) PushFile(containerName, path string, content io.ReadSeeker, mode string) error {
+	if real, ok := m.incus.(*incus.Client); ok {
+		return real.PushFile(containerName, path, content, mode)
+	}
+	return fmt.Errorf("PushFile not supported on this incus backend (mock?)")
 }
 
 // Exec runs a command inside the container. Phase 4.3 uses
@@ -1517,4 +1579,14 @@ func (m *Manager) ListWithLabels(labelFilter map[string]string) ([]incus.Contain
 	}
 
 	return filtered, nil
+}
+
+// markSSHDPolicy stamps the host-side marker that tells the sshd posture
+// reconciler this box was provisioned under the key-only policy. Best
+// effort: a box without the marker is still key-only, it just gets the
+// reconciler's silent first-pass backfill instead of tamper detection.
+func (m *Manager) markSSHDPolicy(containerName string) {
+	if err := m.incus.SetConfig(containerName, sshdpolicy.MarkerKey, sshdpolicy.MarkerValue); err != nil {
+		log.Printf("[sshd-policy] %s: set %s: %v", containerName, sshdpolicy.MarkerKey, err)
+	}
 }

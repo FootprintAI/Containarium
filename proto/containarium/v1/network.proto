@@ -465,7 +465,11 @@ message UpdateContainerACLRequest {
   // Use a preset (mutually exclusive with custom rules)
   ACLPreset preset = 2;
 
-  // Custom ingress rules (only if preset is CUSTOM)
+  // Custom ingress rules. No longer accepted (#2359): tenant ingress is owned
+  // by the tenant network guard, and a per-container allow would be evaluated
+  // next to it and could re-open what it closed. A request carrying any is
+  // refused with INVALID_ARGUMENT; to admit another tenant use
+  // NetworkPolicy.allow_from_tenants. Presets apply their egress half only.
   repeated ACLRule ingress_rules = 3;
 
   // Custom egress rules (only if preset is CUSTOM)
@@ -516,8 +520,77 @@ message ListACLPresetsResponse {
   repeated ACLPresetInfo presets = 1;
 }
 
+// GuardMode is a NIC-ACL guard's arming state (internal/nicguard). There
+// is no audit mode: an Incus NIC ACL either drops or it doesn't.
+enum GuardMode {
+  GUARD_MODE_UNSPECIFIED = 0;
+  // The guard is disabled on this host (CONTAINARIUM_*_GUARD=off).
+  GUARD_MODE_OFF = 1;
+  // The guard attaches ACLs and they drop (the default).
+  GUARD_MODE_ENFORCE = 2;
+}
+
+// GuardEntry is one guarded subject (a core-role or tenant container) as of
+// the guard's last pass.
+message GuardEntry {
+  string container = 1;
+  // Role for the core guard (e.g. core-postgres); tenant for the tenant guard.
+  string subject = 2;
+  string ip = 3;
+  string acl_name = 4;
+  bool attached = 5;
+  string last_error = 6;
+}
+
+// GuardStatus is one guard's last-pass snapshot.
+message GuardStatus {
+  GuardMode mode = 1;
+  // Incus firewall driver seen on the last pass ("nftables" is required).
+  string firewall_driver = 2;
+  // Unsupported is true when this host cannot carry bridge NIC ACLs at all
+  // (firewall driver, or Incus without network_bridge_acl_devices): nothing
+  // is guarded, creates are not refused, last_error says why.
+  bool unsupported = 3;
+  // last_pass is the RFC 3339 time of the last pass; empty before the first.
+  string last_pass = 4;
+  string last_error = 5;
+  // stale_since is set (RFC 3339) while passes keep failing; the ACLs from
+  // the last good pass stay in force meanwhile.
+  string stale_since = 6;
+  repeated GuardEntry entries = 7;
+  // Containers the guard could not attribute (tenant guard) or roles its
+  // table does not know (core guard). Reported, never guessed.
+  repeated string unresolved = 8;
+  // Number of distinct subjects (tenants for the tenant guard).
+  int32 subjects = 9;
+}
+
+message GetNetworkGuardStatusRequest {}
+
+// NetworkGuardStatus is the posture of both Incus NIC-ACL guards on this
+// backend (docs/architecture/tenant-network-guard.md).
+message NetworkGuardStatus {
+  // core keeps tenants off core-role containers (#2084).
+  GuardStatus core = 1;
+  // tenant keeps tenants off each other (#2347).
+  GuardStatus tenant = 2;
+}
+
 // NetworkService provides network and firewall management
 service NetworkService {
+  // GetNetworkGuardStatus reports both NIC-ACL guards' last-pass state.
+  rpc GetNetworkGuardStatus(GetNetworkGuardStatusRequest) returns (NetworkGuardStatus) {
+    option (google.api.http) = {
+      get: "/v1/network/guard"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Network guard status";
+      description: "Reports the core-infra guard (#2084) and the tenant guard (#2347): arming mode, Incus firewall driver, whether this host can carry bridge NIC ACLs at all, the last pass time and error, and one entry per guarded container. Admin only.";
+      tags: "Network";
+    };
+  }
+
+
   // GetRoutes lists all proxy routes (DNS to container mappings)
   rpc GetRoutes(GetRoutesRequest) returns (GetRoutesResponse) {
     option (google.api.http) = {

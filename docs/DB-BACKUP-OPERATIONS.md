@@ -107,9 +107,59 @@ in-container Docker/compose stack, where the hook is simply
   A non-zero exit or empty output fails the backup.
 - The record's engine is `hook` and its "database" slot is the hook's
   basename (override with `--label`). `--database`/`--db-*` are ignored.
-- A hook dump is an **opaque stream**: the platform stores, lists,
-  checksums, fetches and deletes it, but `backup restore` refuses it —
-  fetch the object and apply it with the tenant's own tooling.
+- By default a hook dump is an **opaque stream**: the platform stores,
+  lists, checksums, fetches and deletes it, but `backup restore` and
+  `backup verify` refuse it — fetch the object and apply it with the
+  tenant's own tooling. A hook that emits a `pg_dump -Fc` archive can say
+  so; see below.
+
+#### Declaring the hook's output format (#2405)
+
+```
+containarium backup create alice --hook /opt/backup/pg-dump-fc.sh --hook-format pg_custom --dest gcs --gcs-bucket gs://… --server <host>
+```
+
+`--hook-format` (MCP: `hook_format`) tells the platform what the hook
+writes to stdout:
+
+| Value | Meaning | What the platform does with the record |
+| --- | --- | --- |
+| `opaque` (default) | Anything: a SQL file, a tarball, another engine's dump | Store, list, checksum, fetch, delete. Never restored or restore-tested. |
+| `pg_custom` | A `pg_dump -Fc` custom-format archive, exactly what database mode produces | Everything above, plus `backup verify` (all the usual restore-test checks) and restore into an explicitly named target container other than the source |
+
+Declare `pg_custom` when the hook's last step is `pg_dump -Fc` (directly
+or via `docker exec <db> pg_dump -Fc …`) writing to stdout, unchanged.
+Leave the format undeclared for anything else: plain-SQL `pg_dump`
+output, a compressed or post-processed archive, or another engine. Only
+custom format is modelled today.
+
+**The format is a promise about the hook's output, not a check.** The
+daemon does not inspect the bytes when the backup is taken: a hook
+declared `pg_custom` that actually emits something else still produces a
+"successful" backup. The first thing that notices is `backup verify`,
+whose restore step fails and is recorded as a FAILED verification. So
+after declaring a format, run `backup verify` once against a scratch
+target to prove the promise holds, and keep verifying on a schedule.
+
+What changes with `pg_custom`:
+
+- **Relation-count manifest.** Database mode records the source's
+  user-relation count by querying its catalog; a hook's database is out
+  of the daemon's reach, so for a `pg_custom` hook the count is read from
+  the archive's own table of contents (`pg_restore --list` on the staged
+  dump, inside the container). `backup verify` then compares the restored
+  scratch database against it, as for any database-mode backup. If
+  `pg_restore` is not installed in the container where the hook ran, the
+  backup still succeeds with no manifest, and verification records the
+  restored count with nothing to compare it against.
+- **Restore only into a named target.** In-place restore into the source
+  container stays refused: the hook exists because the daemon cannot
+  reach that Postgres, and restoring through the tenant's own tooling is
+  a separate feature. Restoring into a different, explicitly named
+  container works like a database-mode restore: `backup restore <id>
+  --target <tenant>-container` (#2403).
+- Records taken before the format existed, and hooks created without
+  `--hook-format`, read as `opaque` and behave exactly as before.
 
 ### B. Encrypt the dump to a user-held key
 
@@ -168,6 +218,85 @@ binary in the tenant image) is a follow-up.
 The two compose: `--hook … --age-recipient …` captures an opaque hook
 stream and encrypts it. Plaintext `pg_dump` backups are byte-for-byte
 unchanged when neither flag is given.
+
+### C. Managed keys: a KMS-wrapped per-backup identity (#2402)
+
+A user-held recipient has one failure mode nothing above can see: the
+backup uploads, verifies, and the one person holding the identity has
+lost it. Managed key mode puts custody of the key under a KMS the
+operator controls, without ever giving the daemon the ability to read a
+backup.
+
+```
+# daemon host, alongside the existing CONTAINARIUM_KMS_BACKEND=gcp config
+CONTAINARIUM_BACKUP_KMS_KEY_NAME=projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>
+```
+
+With that set, every `backup create`:
+
+1. generates a fresh age identity for this one backup;
+2. encrypts the dump to it — and, when a recipient also resolves
+   (`--age-recipient` or the registered secret), to that recipient too,
+   in the same `.dump.age` file, so **either** identity opens it;
+3. wraps the identity's secret with the KMS key (`Encrypt` only) and
+   stores `wrapped_key`, `kek_id` (the exact key *version* used) and
+   `key_mode` (`managed` or `both`) on the record;
+4. for `--dest gcs`, uploads the sidecar `<id>.meta.json` next to the
+   dump, so the bucket alone — dump plus wrapped key — restores after a
+   host loss.
+
+The host identity needs only the KMS *encrypter* role on that key. The
+daemon can wrap but cannot unwrap: whoever restores or verifies unwraps
+`wrapped_key` under their own KMS credentials. Every unwrap is a KMS
+data-access audit event naming the principal and the key version.
+
+**Restoring a managed backup (#2403).** `backup restore --managed` and
+`backup verify --managed` fetch the record, unwrap its key *in the CLI
+process* with your own cloud identity, and send the identity over the
+same TLS-only path as `--age-identity-file` (a cleartext `--server` is
+refused before the unwrap). The identity is zeroed after the call and
+never written to disk. A principal without the decrypter role gets the
+KMS permission error before any restore or verify call reaches the host.
+On the operator machine:
+
+```bash
+export CONTAINARIUM_KMS_BACKEND=gcp
+export CONTAINARIUM_GCP_KMS_TOKEN=$(gcloud auth print-access-token)   # your own principal
+
+# newest backup of a tenant database, into a scratch container
+containarium backup restore --managed --latest --user <tenant> --database <db> \
+    --target <scratch-tenant>-container --server <host>
+containarium backup verify  --managed --latest --user <tenant> --database <db> \
+    --target <scratch-tenant> --server <host>
+```
+
+The key itself comes from the record's `kek_id`; the operator does not set
+`CONTAINARIUM_GCP_KMS_KEY_NAME`. The token is short-lived (about an hour),
+so re-run the `gcloud` line for a later session. `--latest` needs both
+`--user` and `--database` and refuses a tie rather than pick one.
+`--target` on restore names a tenant container (`<username>-container`);
+you must be authorized for that tenant too, and empty restores in place.
+A `pg_custom` hook backup restores only through `--target`. The MCP
+`restore_backup` / `verify_backup` tools take the same `managed`,
+`latest`, `username`, `database` (and on restore `target`) inputs and run
+the same code on the MCP host.
+
+- **Nothing is silent.** A KMS failure fails the backup — no file, no
+  sidecar, no upload, no fallback to plaintext or to the recipient alone.
+  A set `CONTAINARIUM_BACKUP_KMS_KEY_NAME` the daemon cannot load (backend
+  not `gcp`, bad name, missing credentials) is a startup error, not a
+  warning. `--key-mode managed` on a daemon with no key is refused.
+- **`--key-mode`** picks explicitly: `managed`, `both` (needs a
+  recipient), or `age-recipient` to opt one backup out of wrapping.
+  Omitted, the daemon default is `managed`, or `both` when a recipient
+  resolves. Without a configured key, behaviour is exactly sections A/B.
+- **Retention**: `backup prune` and `backup delete` remove the dump
+  object first, then its sidecar; a sidecar delete failure is reported
+  in the prune result, not swallowed. Records written before this
+  existed have no bucket sidecar, which is not a failure.
+- **Key destruction**: `kek_id` is a `cryptoKeyVersions/<n>` resource
+  name on purpose — before destroying a key version, list backups and
+  check none still carry it.
 
 ### Self-registering a recipient for scheduled backups (#1836)
 
@@ -231,13 +360,17 @@ chmod 0600 /etc/containarium/backup.env
 #    Plain mode:  <tenant>  <database>  [OPTIONAL_PASSWORD_ENV_VAR]
 #    Hook mode (#1831 — for a database the platform can't reach directly,
 #    e.g. Postgres nested inside an in-container Docker/compose stack):
-#                 <tenant>  --hook <in-container-hook-path>  [--label <label>]
+#                 <tenant>  --hook <in-container-hook-path>  [--label <label>]  [--hook-format <fmt>]
+#    --hook-format pg_custom declares that the hook emits a pg_dump -Fc
+#    archive (#2405; see "Declaring the hook's output format" above).
+#    Omit it for anything else; lines without it behave as before.
 cat > /etc/containarium/backup-tenants.conf <<'CONF'
 # tenant          database
 <tenant-a>        app
 <tenant-b>        app
 # tenant          --hook <path>                                    --label <label>
 <tenant-c>        --hook /opt/containarium-backup/dump.sh           --label app
+<tenant-d>        --hook /opt/containarium-backup/pg-dump-fc.sh     --label app  --hook-format pg_custom
 CONF
 
 # 5. Enable and start the timer.
@@ -506,5 +639,6 @@ rather than loading corrupt data.
 - **Restorability**: `backup verify` — a restore test against a throwaway
   target; last-verified state shows in `backup list`
 - **Host backup dir**: `/var/lib/containarium/backups` (override with `CONTAINARIUM_BACKUP_DIR`)
+- **Managed keys**: `CONTAINARIUM_BACKUP_KMS_KEY_NAME=<CryptoKey resource name>` (with `CONTAINARIUM_KMS_BACKEND=gcp`) wraps a per-backup identity; `backup create --key-mode managed|both|age-recipient` (#2402). GCS backups then carry their sidecar in the bucket.
 - **GCS requirement**: the daemon host needs `gcloud` on `PATH`; without it the daemon serves LOCAL backups and rejects GCS with a clear error
 - **Engine**: PostgreSQL (v1)

@@ -337,7 +337,7 @@ type GitSourceOpts struct {
 	WorkspacePath string // empty defaults to /workspace
 }
 
-func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, isolation pb.IsolationType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string) (*incus.ContainerInfo, error) {
+func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, isolation pb.IsolationType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string, labels map[string]string) (*incus.ContainerInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
@@ -364,6 +364,9 @@ func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, 
 		Encrypted:    enc.Encrypted,
 		TenantID:     enc.TenantID,
 		Region:       region,
+	}
+	if len(labels) > 0 {
+		req.Labels = labels
 	}
 	// The four git fields travel together: all present (even when empty)
 	// when a source is given, all absent otherwise.
@@ -1610,19 +1613,29 @@ func (c *HTTPClient) GetWorkspaceAccess(name string) (*pb.GetWorkspaceAccessResp
 }
 
 // DeployRecipe provisions a new dedicated container from a recipe via HTTP.
-func (c *HTTPClient) DeployRecipe(recipeID, name, gpu, backendID, pool string, params map[string]string) (*pb.DeployRecipeResponse, error) {
+// guardrailInput is the dataset and attestation for a guardrail-gated recipe
+// (#2368); nil for an ungated one.
+func (c *HTTPClient) DeployRecipe(recipeID, name, gpu, backendID, pool string, params map[string]string, guardrailInput *pb.GuardrailGateInput) (*pb.DeployRecipeResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // image + model pulls can take time
 	defer cancel()
 
 	path := fmt.Sprintf("/v1/recipes/%s/deploy", url.PathEscape(recipeID))
-	body, err := json.Marshal(deployRecipeRequest{
+	reqBody := deployRecipeRequest{
 		RecipeID:   recipeID,
 		Name:       name,
 		GPU:        gpu,
 		BackendID:  backendID,
 		Pool:       pool,
 		Parameters: params,
-	})
+	}
+	if guardrailInput != nil {
+		raw, err := protojson.Marshal(guardrailInput)
+		if err != nil {
+			return nil, fmt.Errorf("marshal guardrail_input: %w", err)
+		}
+		reqBody.GuardrailInput = raw
+	}
+	body, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
@@ -2265,6 +2278,47 @@ func (c *HTTPClient) MigrateToEnvelope(req *pb.MigrateToEnvelopeRequest) (*pb.Mi
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 	return out, nil
+}
+
+// GetGuardrailPolicy reads the server-side guardrail policy via HTTP (#2368).
+func (c *HTTPClient) GetGuardrailPolicy() (*pb.GetGuardrailPolicyResponse, error) {
+	out := &pb.GetGuardrailPolicyResponse{}
+	if err := c.guardrailPolicyCall(http.MethodGet, nil, out, "get guardrail policy"); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// SetGuardrailPolicy replaces the server-side guardrail policy via HTTP
+// (admin only).
+func (c *HTTPClient) SetGuardrailPolicy(req *pb.SetGuardrailPolicyRequest) (*pb.SetGuardrailPolicyResponse, error) {
+	body, err := protojson.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("encode request: %w", err)
+	}
+	out := &pb.SetGuardrailPolicyResponse{}
+	if err := c.guardrailPolicyCall(http.MethodPut, body, out, "set guardrail policy"); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *HTTPClient) guardrailPolicyCall(method string, body []byte, out proto.Message, op string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.doRequest(ctx, method, "/v1/guardrail/policy", body)
+	if err != nil {
+		return fmt.Errorf("%s: %w", op, err)
+	}
+	defer drainClose(resp)
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return httpError(bodyBytes, resp.StatusCode, op)
+	}
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(bodyBytes, out); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+	return nil
 }
 
 // httpError extracts a JSON {"error": ...} message from a gateway error body,

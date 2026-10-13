@@ -21,14 +21,21 @@
 package hostharden
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // MetadataIP is the link-local cloud-metadata address common to GCP, AWS,
 // and Azure's IMDS implementations.
 const MetadataIP = "169.254.169.254"
+
+// DefaultBridge is the incus bridge `cloud enroll` and `pool join` block, and
+// the one the host posture check (internal/hostcheck) inspects.
+const DefaultBridge = "incusbr0"
 
 // runner abstracts exec.Command so tests can substitute a fake without
 // actually invoking iptables/incus. Mirrors hostcheck/posture.go's
@@ -39,6 +46,34 @@ type runner func(name string, args ...string) ([]byte, error)
 
 func defaultRunner(name string, args ...string) ([]byte, error) {
 	return exec.Command(name, args...).CombinedOutput() // #nosec G204 -- name/args are package-internal constants ("incus", "iptables") with a caller-supplied bridge name, never raw user input
+}
+
+// probeTimeout bounds each command MetadataBlockPresent runs. The posture
+// check runs in `doctor` and in the daemon's cloud status probe every
+// heartbeat; a hung incusd must not hang either of them (#2325 was that
+// failure for the hardware scan).
+const probeTimeout = 5 * time.Second
+
+// probeWaitDelay bounds how long a timed-out command's output pipes may stay
+// open after it is killed: a child it spawned can hold them, and
+// CombinedOutput would otherwise wait for that child too.
+const probeWaitDelay = time.Second
+
+// timeoutRunner is defaultRunner with a deadline. A command that overruns it
+// is killed and reported as an error with no exit code, which
+// metadataBlockPresent treats as "could not tell", never as "absent".
+func timeoutRunner(timeout time.Duration) runner {
+	return func(name string, args ...string) ([]byte, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, name, args...) // #nosec G204 -- same callers and arguments as defaultRunner
+		cmd.WaitDelay = probeWaitDelay
+		out, err := cmd.CombinedOutput()
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return out, fmt.Errorf("%s did not finish within %s", name, timeout)
+		}
+		return out, err
+	}
 }
 
 // BridgeSubnet resolves bridge's configured IPv4 CIDR via the incus CLI
@@ -89,7 +124,7 @@ func blockMetadataFromBridge(run runner, bridge string) (bool, string, error) {
 		return false, "", fmt.Errorf("resolve bridge subnet: %w", err)
 	}
 
-	rule := []string{"FORWARD", "-s", subnet, "-d", MetadataIP, "-j", "DROP"}
+	rule := metadataRule(subnet)
 
 	if _, err := run("iptables", append([]string{"-C"}, rule...)...); err == nil {
 		return false, fmt.Sprintf("already present: iptables -A %s", strings.Join(rule, " ")), nil
@@ -100,4 +135,43 @@ func blockMetadataFromBridge(run runner, bridge string) (bool, string, error) {
 		return false, "", fmt.Errorf("iptables %s: %w: %s", strings.Join(insertArgs, " "), err, strings.TrimSpace(string(out)))
 	}
 	return true, fmt.Sprintf("inserted: iptables -I %s", strings.Join(rule, " ")), nil
+}
+
+// metadataRule is the FORWARD rule BlockMetadataFromBridge inserts and
+// MetadataBlockPresent looks for — one definition, so the posture check can
+// never look for a different rule than the one enrollment applies.
+func metadataRule(subnet string) []string {
+	return []string{"FORWARD", "-s", subnet, "-d", MetadataIP, "-j", "DROP"}
+}
+
+// MetadataBlockPresent reports whether BlockMetadataFromBridge's rule is in
+// the kernel right now, changing nothing (#2298). It backs the host posture
+// check, so it keeps "absent" and "could not tell" apart: present=false with
+// a nil error means `iptables -C` ran and found no such rule; a non-nil error
+// means the answer is unknown (bridge has no subnet, iptables missing, not
+// root, nftables-only host, or a command that did not finish within
+// probeTimeout).
+func MetadataBlockPresent(bridge string) (present bool, detail string, err error) {
+	return metadataBlockPresent(timeoutRunner(probeTimeout), bridge)
+}
+
+func metadataBlockPresent(run runner, bridge string) (bool, string, error) {
+	subnet, err := bridgeSubnet(run, bridge)
+	if err != nil {
+		return false, "", fmt.Errorf("resolve bridge subnet: %w", err)
+	}
+	rule := metadataRule(subnet)
+	checkArgs := append([]string{"-C"}, rule...)
+	out, err := run("iptables", checkArgs...)
+	if err == nil {
+		return true, fmt.Sprintf("present: iptables -A %s", strings.Join(rule, " ")), nil
+	}
+	// `iptables -C` exits 1 for "no such rule"; any other failure (exit 4
+	// for permission denied, a missing binary with no exit code at all) says
+	// nothing about the rule.
+	var exit interface{ ExitCode() int }
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return false, fmt.Sprintf("absent: iptables -A %s", strings.Join(rule, " ")), nil
+	}
+	return false, "", fmt.Errorf("iptables %s: %w: %s", strings.Join(checkArgs, " "), err, strings.TrimSpace(string(out)))
 }

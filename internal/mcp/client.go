@@ -554,6 +554,15 @@ type CreateBackupRequest struct {
 	Hook         string `json:"hook,omitempty"`
 	Label        string `json:"label,omitempty"`
 	AgeRecipient string `json:"age_recipient,omitempty"`
+
+	// #2402: the proto enum NAME ("BACKUP_KEY_MODE_MANAGED", ...). Empty
+	// is UNSPECIFIED — the daemon default.
+	KeyMode string `json:"key_mode,omitempty"`
+
+	// #2405: declared hook output format, as the pb.HookFormat value NAME
+	// (what protojson decodes). Empty is omitted, which the daemon reads
+	// as opaque.
+	HookFormat string `json:"hook_format,omitempty"`
 }
 
 // BackupRecord mirrors the proto BackupRecord on the response side
@@ -575,6 +584,13 @@ type BackupRecord struct {
 	Encrypted    bool   `json:"encrypted,omitempty"`
 	AgeRecipient string `json:"ageRecipient,omitempty"`
 	Hook         string `json:"hook,omitempty"`
+
+	// #2402: the proto enum NAME; bytes are base64 in proto JSON. The
+	// daemon never unwraps WrappedKey — whoever restores does.
+	WrappedKey string `json:"wrappedKey,omitempty"`
+	KekID      string `json:"kekId,omitempty"`
+	KeyMode    string `json:"keyMode,omitempty"`
+	HookFormat string `json:"hookFormat,omitempty"` // #2405, enum value name
 }
 
 // VerificationCheck is one assertion made during a restore test.
@@ -615,6 +631,9 @@ type RestoreBackupRequest struct {
 	Clean      bool              `json:"clean,omitempty"`
 	// AgeIdentity decrypts an encrypted record for this one call (#1831).
 	AgeIdentity string `json:"age_identity,omitempty"`
+	// TargetContainer restores into another tenant container; empty is
+	// the backup's own container (#2403).
+	TargetContainer string `json:"target_container,omitempty"`
 }
 
 // RestoreBackupResponse is the result of a restore.
@@ -1421,6 +1440,48 @@ func (c *Client) AddRoute(req AddRouteRequest) (*AddRouteResponse, error) {
 func (c *Client) DeleteRoute(domain string) error {
 	_, err := c.doRequest("DELETE", "/v1/network/routes/"+url.PathEscape(domain), nil)
 	return err
+}
+
+// GuardEntryResponse / GuardStatusResponse / NetworkGuardStatusResponse mirror
+// the proto NetworkGuardStatus as grpc-gateway renders it (GET /v1/network/guard).
+type GuardEntryResponse struct {
+	Container string `json:"container"`
+	Subject   string `json:"subject"`
+	IP        string `json:"ip"`
+	ACLName   string `json:"aclName"`
+	Attached  bool   `json:"attached"`
+	LastError string `json:"lastError"`
+}
+
+type GuardStatusResponse struct {
+	Mode           string               `json:"mode"`
+	FirewallDriver string               `json:"firewallDriver"`
+	Unsupported    bool                 `json:"unsupported"`
+	LastPass       string               `json:"lastPass"`
+	LastError      string               `json:"lastError"`
+	StaleSince     string               `json:"staleSince"`
+	Entries        []GuardEntryResponse `json:"entries"`
+	Unresolved     []string             `json:"unresolved"`
+	Subjects       int                  `json:"subjects"`
+}
+
+type NetworkGuardStatusResponse struct {
+	Core   *GuardStatusResponse `json:"core"`
+	Tenant *GuardStatusResponse `json:"tenant"`
+}
+
+// GetNetworkGuardStatus reads both NIC-ACL guards' last-pass state — the
+// same endpoint `containarium network-guard status` uses (#2353).
+func (c *Client) GetNetworkGuardStatus() (*NetworkGuardStatusResponse, error) {
+	respBody, err := c.doRequest("GET", "/v1/network/guard", nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp NetworkGuardStatusResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
 }
 
 // ListRoutes returns all proxy routes the sentinel currently serves. Both

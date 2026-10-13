@@ -49,6 +49,7 @@ import (
 // and ordinary review cover.
 var authGuardFuncs = map[string]bool{
 	"RequireScope":          true,
+	"RequireExplicitScope":  true, // #2415: RequireScope minus the unscoped fall-through
 	"RequireRole":           true,
 	"RequireRoleOrScope":    true,
 	"AuthorizeTenant":       true,
@@ -104,6 +105,12 @@ var registeredServices = []rpcSurface{
 	// #1726 — every RPC here carries an explicit gateway:admin or gateway:mint
 	// RequireScope in its own body; none is exempt.
 	{pb.ModelGatewayService_ServiceDesc, "ModelGatewayServer"},
+	// #2378 — Set/Delete RequireRole(admin); Get RequireRoleOrScope + AuthorizeTenant.
+	{pb.CodingToolEgressPolicyService_ServiceDesc, "CodingToolEgressPolicyServer"},
+	// #2368 — Set is RequireRole(admin); Get is any authenticated subject
+	// (the manual SubjectFromGRPCContext/Unauthenticated pattern).
+	{pb.GuardrailPolicyService_ServiceDesc, "GuardrailPolicyServer"},
+	{pb.AuditService_ServiceDesc, "AuditServer"}, // #2415
 }
 
 // authExemptions lists every registered RPC whose handler carries no auth
