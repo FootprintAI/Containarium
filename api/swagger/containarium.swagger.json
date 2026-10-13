@@ -19,6 +19,10 @@
       "description": "ContainerService provides container management operations"
     },
     {
+      "name": "SSHAuthzService",
+      "description": "SSHAuthzService is the per-connection identity check behind the sentinel\n(docs/architecture/ssh-live-authorization.md, component 1). The\nsentinel's ssh-authz-plugin asks the backend daemon, for every public-key\nor certificate offer, whether that credential may open a session as the\npresented login RIGHT NOW. The daemon answers from its own facts in\nself-host mode and forwards to the cloud's ActuationService.AuthorizeSSH\nin managed mode; the sentinel never talks to the cloud itself.\n\nThe REST mapping is served by grpc-gateway and mounted behind the\nexisting sentinel request signature (internal/gateway, the same verifier\nthat gates /authorized-keys), NOT behind a user JWT: this is read-only\nsentinel-to-daemon plumbing, and fail-closed enforcement must never\ndepend on an operator remembering to register a token."
+    },
+    {
       "name": "ActuationService"
     },
     {
@@ -276,6 +280,41 @@
             "in": "query",
             "required": false,
             "type": "string"
+          }
+        ],
+        "tags": [
+          "ActuationService"
+        ]
+      }
+    },
+    "/v1/actuation/ssh/authorize": {
+      "post": {
+        "summary": "AuthorizeSSH is the cloud side of SSHAuthzService.Authorize\n(containarium/v1/ssh_authz.proto): a managed-mode daemon forwards the\nsentinel's question here unchanged, with its host bearer, and relays\nthe answer unchanged. The cloud decides from its user directory, org\nmembership, box access, key age and device approvals; the daemon never\ntranslates, so a new deny reason is one proto edit.",
+        "description": "Auth: requires a valid `host-bearer` header. Like Authorize, the\nanswer is always a decision with a reason; the daemon maps a transport\nfailure to DENY UPSTREAM_UNAVAILABLE itself.",
+        "operationId": "ActuationService_AuthorizeSSH",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/AuthorizeSSHResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "AuthorizeSSHRequest is one connection attempt as the sentinel saw it.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/AuthorizeSSHRequest"
+            }
           }
         ],
         "tags": [
@@ -6874,6 +6913,41 @@
         ]
       }
     },
+    "/v1/ssh/authorize": {
+      "post": {
+        "summary": "Authorize an SSH connection",
+        "description": "Decide whether the credential offered to the sentinel may open a session as the presented login on this backend right now. Sentinel-signed; the answer is always a decision with a reason, never an error.",
+        "operationId": "SSHAuthzService_Authorize",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/AuthorizeSSHResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "AuthorizeSSHRequest is one connection attempt as the sentinel saw it.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/AuthorizeSSHRequest"
+            }
+          }
+        ],
+        "tags": [
+          "SSH"
+        ]
+      }
+    },
     "/v1/stacks": {
       "get": {
         "summary": "List available software stacks",
@@ -9892,6 +9966,58 @@
           "type": "string"
         }
       }
+    },
+    "AuthorizeSSHRequest": {
+      "type": "object",
+      "properties": {
+        "login": {
+          "type": "string",
+          "description": "SSH username presented — the jump account on this backend (the box\nowner's account, or a collaborator account)."
+        },
+        "credential": {
+          "$ref": "#/definitions/SSHCredential",
+          "description": "The credential offered."
+        },
+        "clientIp": {
+          "type": "string",
+          "description": "Real client-facing address of the connection, for the audit row and\nfor device-approval context shown to the user. Never an authorization\ninput on its own."
+        },
+        "sentinelId": {
+          "type": "string",
+          "description": "Identifier of the asking sentinel. Informational, recorded on the\naudit row; never used for authorization."
+        },
+        "approvalId": {
+          "type": "string",
+          "description": "Set on a re-poll during device approval: the approval_id the previous\nAPPROVAL_PENDING answer handed out, so the server can report that\napproval's state instead of opening a new one."
+        }
+      },
+      "description": "AuthorizeSSHRequest is one connection attempt as the sentinel saw it."
+    },
+    "AuthorizeSSHResponse": {
+      "type": "object",
+      "properties": {
+        "decision": {
+          "$ref": "#/definitions/SSHAuthzDecision",
+          "description": "ALLOW or DENY. UNSPECIFIED is treated as DENY by the sentinel."
+        },
+        "denyReason": {
+          "$ref": "#/definitions/SSHDenyReason",
+          "description": "Why, when decision is DENY. Unspecified on ALLOW."
+        },
+        "userId": {
+          "type": "string",
+          "description": "The resolved user, when the server could identify one — on DENY too,\nso the audit row names who was refused. Empty when the key is unknown."
+        },
+        "cacheTtl": {
+          "type": "string",
+          "description": "How long the sentinel may cache a positive answer for this\n(login, credential) pair before asking again. Zero or unset means do\nnot cache. Ignored on DENY."
+        },
+        "approval": {
+          "$ref": "#/definitions/SSHDeviceApproval",
+          "description": "Set only when deny_reason is APPROVAL_PENDING."
+        }
+      },
+      "description": "AuthorizeSSHResponse is the verdict for one connection attempt."
     },
     "BackendGPU": {
       "type": "object",
@@ -17077,6 +17203,16 @@
       "default": "SSH_AUTH_METHOD_UNSPECIFIED",
       "description": "SSHAuthMethod mirrors internal/sentinel/sshsession.AuthMethod.\n\n - SSH_AUTH_METHOD_UNKNOWN: The offered key could not be parsed; credential fields are empty."
     },
+    "SSHAuthzDecision": {
+      "type": "string",
+      "enum": [
+        "SSH_AUTHZ_DECISION_UNSPECIFIED",
+        "SSH_AUTHZ_DECISION_ALLOW",
+        "SSH_AUTHZ_DECISION_DENY"
+      ],
+      "default": "SSH_AUTHZ_DECISION_UNSPECIFIED",
+      "description": "SSHAuthzDecision is the verdict. UNSPECIFIED is never returned by a\nconforming server; a sentinel that receives it treats it as DENY.\n\n - SSH_AUTHZ_DECISION_ALLOW: The credential may open the session.\n - SSH_AUTHZ_DECISION_DENY: The credential may not open the session; deny_reason says why."
+    },
     "SSHCAKey": {
       "type": "object",
       "properties": {
@@ -17095,6 +17231,25 @@
       },
       "description": "SSHCAKey is one CA public key the host should trust for certificate-based\nSSH auth. Vendored (message body only, not the whole cloud\nSSHCertificateAuthorityService) from the cloud repo's ssh_ca.proto — see\nthe vendoring note at the top of this file."
     },
+    "SSHCertificateCredential": {
+      "type": "object",
+      "properties": {
+        "keyId": {
+          "type": "string",
+          "description": "The certificate's key id (the identity the CA signed for)."
+        },
+        "serial": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The certificate's serial, unique per CA."
+        },
+        "caFingerprintSha256": {
+          "type": "string",
+          "description": "SHA256 fingerprint of the CA key that signed the certificate."
+        }
+      },
+      "description": "SSHCertificateCredential identifies an OpenSSH certificate by the\nhandle fields a KRL and an audit row key on."
+    },
     "SSHCloseReason": {
       "type": "string",
       "enum": [
@@ -17107,6 +17262,89 @@
       ],
       "default": "SSH_CLOSE_REASON_UNSPECIFIED",
       "description": "SSHCloseReason mirrors internal/sentinel/sshsession.CloseReason. Set only\non a CLOSE record.\n\n - SSH_CLOSE_REASON_UNKNOWN_ORPHAN: Emitted by the shipper's --reconcile for an OPEN record that never got\na CLOSE (plugin hard-killed), once it is older than the orphan\nthreshold. Never written by the plugin itself."
+    },
+    "SSHCredential": {
+      "type": "object",
+      "properties": {
+        "publicKey": {
+          "$ref": "#/definitions/SSHPublicKeyCredential",
+          "description": "A raw or security-key public key."
+        },
+        "certificate": {
+          "$ref": "#/definitions/SSHCertificateCredential",
+          "description": "An OpenSSH certificate."
+        }
+      },
+      "description": "SSHCredential is what the client offered: exactly one of a public key\nor a certificate."
+    },
+    "SSHDenyReason": {
+      "type": "string",
+      "enum": [
+        "SSH_DENY_REASON_UNSPECIFIED",
+        "SSH_DENY_REASON_UNKNOWN_KEY",
+        "SSH_DENY_REASON_USER_INACTIVE",
+        "SSH_DENY_REASON_NO_ACCESS",
+        "SSH_DENY_REASON_KEY_EXPIRED",
+        "SSH_DENY_REASON_APPROVAL_PENDING",
+        "SSH_DENY_REASON_APPROVAL_DENIED",
+        "SSH_DENY_REASON_UPSTREAM_UNAVAILABLE"
+      ],
+      "default": "SSH_DENY_REASON_UNSPECIFIED",
+      "description": "SSHDenyReason explains a DENY. It is recorded on the audit row\n(SSHSessionRecord.deny_reason) and drives the sentinel's behaviour:\nAPPROVAL_PENDING starts the device-approval poll, UPSTREAM_UNAVAILABLE\nis the only reason the sentinel's grace window may override.\n\n - SSH_DENY_REASON_UNKNOWN_KEY: No registered key matches the fingerprint (never registered, or\nrevoked — a revoked key is forgotten, not flagged).\n - SSH_DENY_REASON_USER_INACTIVE: The key is known but its user is deactivated or no longer a member.\n - SSH_DENY_REASON_NO_ACCESS: The user is active but has no access to this login: the jump account\ndoes not exist, is orphaned, or the user is neither its owner nor a\ncollaborator.\n - SSH_DENY_REASON_KEY_EXPIRED: The key is older than the tenant's maximum key age.\n - SSH_DENY_REASON_APPROVAL_PENDING: This device has not been approved for this user yet; `approval`\ncarries the code and URL the user must confirm.\n - SSH_DENY_REASON_APPROVAL_DENIED: The user (or the approval's expiry) rejected this device.\n - SSH_DENY_REASON_UPSTREAM_UNAVAILABLE: The daemon could not reach the authority it needs (the cloud, in\nmanaged mode). The sentinel decides whether a cached positive is\nstill inside its grace window."
+    },
+    "SSHDeviceApproval": {
+      "type": "object",
+      "properties": {
+        "approvalId": {
+          "type": "string",
+          "description": "Server-side handle of the pending approval; echoed in the re-poll."
+        },
+        "code": {
+          "type": "string",
+          "description": "Short code the user types on the approval page to bind the attempt to\ntheir session."
+        },
+        "url": {
+          "type": "string",
+          "description": "Where the user confirms the device."
+        },
+        "pollAfter": {
+          "type": "string",
+          "description": "How long the sentinel waits before polling again."
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the pending approval lapses; the sentinel stops polling and\ndenies at this time."
+        }
+      },
+      "description": "SSHDeviceApproval is handed out with deny_reason APPROVAL_PENDING: the\nuser confirms the device out of band (code + URL) while the sentinel\npolls Authorize with approval_id until the approval resolves or expires."
+    },
+    "SSHKeyType": {
+      "type": "string",
+      "enum": [
+        "SSH_KEY_TYPE_UNSPECIFIED",
+        "SSH_KEY_TYPE_ED25519",
+        "SSH_KEY_TYPE_RSA",
+        "SSH_KEY_TYPE_ECDSA",
+        "SSH_KEY_TYPE_SK_ED25519",
+        "SSH_KEY_TYPE_SK_ECDSA"
+      ],
+      "default": "SSH_KEY_TYPE_UNSPECIFIED",
+      "description": "SSHKeyType classifies the public key the client offered. SK_* values are\nFIDO2 security keys (sk-ssh-ed25519@openssh.com, sk-ecdsa-sha2-nistp256@openssh.com);\na policy may treat a hardware-backed key as already device-approved.\n\nWire-compatible with the enum of the same name in the cloud control\nplane; the numbers must never change.\n\n - SSH_KEY_TYPE_ED25519: ssh-ed25519\n - SSH_KEY_TYPE_RSA: ssh-rsa\n - SSH_KEY_TYPE_ECDSA: ecdsa-sha2-nistp256 / -nistp384 / -nistp521\n - SSH_KEY_TYPE_SK_ED25519: sk-ssh-ed25519@openssh.com (FIDO2 security key)\n - SSH_KEY_TYPE_SK_ECDSA: sk-ecdsa-sha2-nistp256@openssh.com (FIDO2 security key)"
+    },
+    "SSHPublicKeyCredential": {
+      "type": "object",
+      "properties": {
+        "fingerprintSha256": {
+          "type": "string",
+          "description": "OpenSSH SHA256 fingerprint of the offered key, e.g. \"SHA256:...\"."
+        },
+        "keyType": {
+          "$ref": "#/definitions/SSHKeyType",
+          "description": "Algorithm family of the offered key, as the sentinel parsed it."
+        }
+      },
+      "description": "SSHPublicKeyCredential identifies a raw or security-key public key by\nits fingerprint. Never carries key material."
     },
     "SSHSessionCredential": {
       "type": "object",
@@ -17132,10 +17370,11 @@
       "enum": [
         "SSH_SESSION_PHASE_UNSPECIFIED",
         "SSH_SESSION_PHASE_OPEN",
-        "SSH_SESSION_PHASE_CLOSE"
+        "SSH_SESSION_PHASE_CLOSE",
+        "SSH_SESSION_PHASE_DENIED"
       ],
       "default": "SSH_SESSION_PHASE_UNSPECIFIED",
-      "description": "SSHSessionPhase mirrors internal/sentinel/sshsession.SessionPhase."
+      "description": "SSHSessionPhase mirrors internal/sentinel/sshsession.SessionPhase.\n\n - SSH_SESSION_PHASE_DENIED: The sentinel refused the connection on the backend's authorization\nanswer (SSH live authorization, docs/architecture/ssh-live-authorization.md).\nNo OPEN or CLOSE follows; stored as action ssh_session_denied."
     },
     "SSHSessionRecord": {
       "type": "object",
@@ -17175,6 +17414,22 @@
         "closeReason": {
           "$ref": "#/definitions/SSHCloseReason",
           "description": "Set only when phase == SSH_SESSION_PHASE_CLOSE."
+        },
+        "userId": {
+          "type": "string",
+          "description": "The user the backend resolved the credential to, when known — on a\nDENIED record too, so the row names who was refused."
+        },
+        "authzDecision": {
+          "$ref": "#/definitions/SSHAuthzDecision",
+          "description": "The backend's answer for this connection. Unset when the authz plugin\nwas not chained in."
+        },
+        "denyReason": {
+          "$ref": "#/definitions/SSHDenyReason",
+          "description": "Why the answer was DENY. Unset on ALLOW."
+        },
+        "enforced": {
+          "type": "boolean",
+          "description": "True when the sentinel ran in enforce mode and a DENY actually refused\nthe connection; false in audit-only mode, where a DENY is recorded but\nthe login still proceeds (phase OPEN with a DENY decision)."
         }
       },
       "description": "SSHSessionRecord is one session lifecycle event, field for field the\nsentinel's sshsession.Record."

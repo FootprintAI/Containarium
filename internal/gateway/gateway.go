@@ -549,6 +549,11 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	if err := pb.RegisterAnonymousBoxServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
 		return fmt.Errorf("failed to register anonymous box service gateway: %w", err)
 	}
+	// SSHAuthzService (#2516): the sentinel's per-connection authorization
+	// query. Reachable only through the sentinel-signed mount below.
+	if err := pb.RegisterSSHAuthzServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
+		return fmt.Errorf("failed to register ssh authz service gateway: %w", err)
+	}
 
 	// Register TrafficService gateway handler
 	if err := pb.RegisterTrafficServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
@@ -968,6 +973,15 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 		anonInner = audit.HTTPAuditMiddleware(anonInner, gs.auditStore)
 	}
 	httpMux.Handle(AnonDoorEnsurePath, anonDoorHandler(sentinelVerifier, corsHandler, anonInner, nil))
+
+	// #2516: SSH live authorization. The sentinel's ssh-authz-plugin signs
+	// Authorize with the same signature as the routes above; there is no
+	// JWT path on this route at all. Exact path, so it wins over the "/v1/"
+	// catch-all. The gateway mux is the inner handler directly: the
+	// outcome of every query is recorded by the sentinel on the SSH
+	// session record (authz_decision / deny_reason), so the HTTP audit
+	// middleware would only add a second row per login.
+	httpMux.Handle(SSHAuthorizePath, sshAuthzHandler(sentinelVerifier, mux, nil))
 
 	// Catch-all fallback: when wake-on-HTTP is enabled, Caddy
 	// forwards user traffic to this daemon while a container is

@@ -12,14 +12,20 @@ package sshsession
 
 import "time"
 
-// SessionPhase distinguishes the two records emitted per accepted SSH
-// session. Typed per this repo's strong-typing convention (CLAUDE.md) —
-// not a bare string with a comment listing the allowed values.
+// SessionPhase distinguishes the records emitted per SSH connection: open
+// and close for an accepted session, denied when the sentinel refused the
+// connection on the backend's authorization answer (SSH live
+// authorization, #2516). Typed per this repo's strong-typing convention
+// (CLAUDE.md) — not a bare string with a comment listing the allowed values.
 type SessionPhase string
 
 const (
 	SessionPhaseOpen  SessionPhase = "open"
 	SessionPhaseClose SessionPhase = "close"
+	// SessionPhaseDenied mirrors SSH_SESSION_PHASE_DENIED. Written by the
+	// ssh-authz-plugin (#2518), never by the session plugin; no open or
+	// close follows it.
+	SessionPhaseDenied SessionPhase = "denied"
 )
 
 // AuthMethod is how the client's credential was presented.

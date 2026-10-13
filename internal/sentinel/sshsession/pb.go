@@ -14,8 +14,9 @@ import (
 // TestEnumSetsMatchProto rather than at ingest time.
 
 var phaseToPB = map[SessionPhase]pb.SSHSessionPhase{
-	SessionPhaseOpen:  pb.SSHSessionPhase_SSH_SESSION_PHASE_OPEN,
-	SessionPhaseClose: pb.SSHSessionPhase_SSH_SESSION_PHASE_CLOSE,
+	SessionPhaseOpen:   pb.SSHSessionPhase_SSH_SESSION_PHASE_OPEN,
+	SessionPhaseClose:  pb.SSHSessionPhase_SSH_SESSION_PHASE_CLOSE,
+	SessionPhaseDenied: pb.SSHSessionPhase_SSH_SESSION_PHASE_DENIED,
 }
 
 var authMethodToPB = map[AuthMethod]pb.SSHAuthMethod{

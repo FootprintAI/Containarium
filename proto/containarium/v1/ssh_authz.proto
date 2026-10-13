@@ -1,0 +1,189 @@
+syntax = "proto3";
+
+package containarium.v1;
+
+option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
+
+import "google/api/annotations.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+import "protoc-gen-openapiv2/options/annotations.proto";
+
+// SSHAuthzService is the per-connection identity check behind the sentinel
+// (docs/architecture/ssh-live-authorization.md, component 1). The
+// sentinel's ssh-authz-plugin asks the backend daemon, for every public-key
+// or certificate offer, whether that credential may open a session as the
+// presented login RIGHT NOW. The daemon answers from its own facts in
+// self-host mode and forwards to the cloud's ActuationService.AuthorizeSSH
+// in managed mode; the sentinel never talks to the cloud itself.
+//
+// The REST mapping is served by grpc-gateway and mounted behind the
+// existing sentinel request signature (internal/gateway, the same verifier
+// that gates /authorized-keys), NOT behind a user JWT: this is read-only
+// sentinel-to-daemon plumbing, and fail-closed enforcement must never
+// depend on an operator remembering to register a token.
+service SSHAuthzService {
+  // Authorize decides whether the credential offered to the sentinel may
+  // open a session as `login` on this backend, right now.
+  //
+  // The answer is a decision, never an error: an unknown key, an inactive
+  // user, a revoked or expired key and an unreachable upstream are all
+  // DENY with a reason, so the sentinel's grace-window and audit-only
+  // rules see one shape. A transport failure is the only thing the caller
+  // treats as "no answer".
+  rpc Authorize(AuthorizeSSHRequest) returns (AuthorizeSSHResponse) {
+    option (google.api.http) = {
+      post: "/v1/ssh/authorize"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Authorize an SSH connection";
+      description: "Decide whether the credential offered to the sentinel may open a session as the presented login on this backend right now. Sentinel-signed; the answer is always a decision with a reason, never an error.";
+      tags: "SSH";
+    };
+  }
+}
+
+// SSHKeyType classifies the public key the client offered. SK_* values are
+// FIDO2 security keys (sk-ssh-ed25519@openssh.com, sk-ecdsa-sha2-nistp256@openssh.com);
+// a policy may treat a hardware-backed key as already device-approved.
+//
+// Wire-compatible with the enum of the same name in the cloud control
+// plane; the numbers must never change.
+enum SSHKeyType {
+  SSH_KEY_TYPE_UNSPECIFIED = 0;
+  // ssh-ed25519
+  SSH_KEY_TYPE_ED25519 = 1;
+  // ssh-rsa
+  SSH_KEY_TYPE_RSA = 2;
+  // ecdsa-sha2-nistp256 / -nistp384 / -nistp521
+  SSH_KEY_TYPE_ECDSA = 3;
+  // sk-ssh-ed25519@openssh.com (FIDO2 security key)
+  SSH_KEY_TYPE_SK_ED25519 = 4;
+  // sk-ecdsa-sha2-nistp256@openssh.com (FIDO2 security key)
+  SSH_KEY_TYPE_SK_ECDSA = 5;
+}
+
+// SSHAuthzDecision is the verdict. UNSPECIFIED is never returned by a
+// conforming server; a sentinel that receives it treats it as DENY.
+enum SSHAuthzDecision {
+  SSH_AUTHZ_DECISION_UNSPECIFIED = 0;
+  // The credential may open the session.
+  SSH_AUTHZ_DECISION_ALLOW = 1;
+  // The credential may not open the session; deny_reason says why.
+  SSH_AUTHZ_DECISION_DENY = 2;
+}
+
+// SSHDenyReason explains a DENY. It is recorded on the audit row
+// (SSHSessionRecord.deny_reason) and drives the sentinel's behaviour:
+// APPROVAL_PENDING starts the device-approval poll, UPSTREAM_UNAVAILABLE
+// is the only reason the sentinel's grace window may override.
+enum SSHDenyReason {
+  SSH_DENY_REASON_UNSPECIFIED = 0;
+  // No registered key matches the fingerprint (never registered, or
+  // revoked — a revoked key is forgotten, not flagged).
+  SSH_DENY_REASON_UNKNOWN_KEY = 1;
+  // The key is known but its user is deactivated or no longer a member.
+  SSH_DENY_REASON_USER_INACTIVE = 2;
+  // The user is active but has no access to this login: the jump account
+  // does not exist, is orphaned, or the user is neither its owner nor a
+  // collaborator.
+  SSH_DENY_REASON_NO_ACCESS = 3;
+  // The key is older than the tenant's maximum key age.
+  SSH_DENY_REASON_KEY_EXPIRED = 4;
+  // This device has not been approved for this user yet; `approval`
+  // carries the code and URL the user must confirm.
+  SSH_DENY_REASON_APPROVAL_PENDING = 5;
+  // The user (or the approval's expiry) rejected this device.
+  SSH_DENY_REASON_APPROVAL_DENIED = 6;
+  // The daemon could not reach the authority it needs (the cloud, in
+  // managed mode). The sentinel decides whether a cached positive is
+  // still inside its grace window.
+  SSH_DENY_REASON_UPSTREAM_UNAVAILABLE = 7;
+}
+
+// SSHPublicKeyCredential identifies a raw or security-key public key by
+// its fingerprint. Never carries key material.
+message SSHPublicKeyCredential {
+  // OpenSSH SHA256 fingerprint of the offered key, e.g. "SHA256:...".
+  string fingerprint_sha256 = 1;
+  // Algorithm family of the offered key, as the sentinel parsed it.
+  SSHKeyType key_type = 2;
+}
+
+// SSHCertificateCredential identifies an OpenSSH certificate by the
+// handle fields a KRL and an audit row key on.
+message SSHCertificateCredential {
+  // The certificate's key id (the identity the CA signed for).
+  string key_id = 1;
+  // The certificate's serial, unique per CA.
+  uint64 serial = 2;
+  // SHA256 fingerprint of the CA key that signed the certificate.
+  string ca_fingerprint_sha256 = 3;
+}
+
+// SSHCredential is what the client offered: exactly one of a public key
+// or a certificate.
+message SSHCredential {
+  oneof kind {
+    // A raw or security-key public key.
+    SSHPublicKeyCredential public_key = 1;
+    // An OpenSSH certificate.
+    SSHCertificateCredential certificate = 2;
+  }
+}
+
+// AuthorizeSSHRequest is one connection attempt as the sentinel saw it.
+message AuthorizeSSHRequest {
+  // SSH username presented — the jump account on this backend (the box
+  // owner's account, or a collaborator account).
+  string login = 1;
+  // The credential offered.
+  SSHCredential credential = 2;
+  // Real client-facing address of the connection, for the audit row and
+  // for device-approval context shown to the user. Never an authorization
+  // input on its own.
+  string client_ip = 3;
+  // Identifier of the asking sentinel. Informational, recorded on the
+  // audit row; never used for authorization.
+  string sentinel_id = 4;
+  // Set on a re-poll during device approval: the approval_id the previous
+  // APPROVAL_PENDING answer handed out, so the server can report that
+  // approval's state instead of opening a new one.
+  string approval_id = 5;
+}
+
+// SSHDeviceApproval is handed out with deny_reason APPROVAL_PENDING: the
+// user confirms the device out of band (code + URL) while the sentinel
+// polls Authorize with approval_id until the approval resolves or expires.
+message SSHDeviceApproval {
+  // Server-side handle of the pending approval; echoed in the re-poll.
+  string approval_id = 1;
+  // Short code the user types on the approval page to bind the attempt to
+  // their session.
+  string code = 2;
+  // Where the user confirms the device.
+  string url = 3;
+  // How long the sentinel waits before polling again.
+  google.protobuf.Duration poll_after = 4;
+  // When the pending approval lapses; the sentinel stops polling and
+  // denies at this time.
+  google.protobuf.Timestamp expires_at = 5;
+}
+
+// AuthorizeSSHResponse is the verdict for one connection attempt.
+message AuthorizeSSHResponse {
+  // ALLOW or DENY. UNSPECIFIED is treated as DENY by the sentinel.
+  SSHAuthzDecision decision = 1;
+  // Why, when decision is DENY. Unspecified on ALLOW.
+  SSHDenyReason deny_reason = 2;
+  // The resolved user, when the server could identify one — on DENY too,
+  // so the audit row names who was refused. Empty when the key is unknown.
+  string user_id = 3;
+  // How long the sentinel may cache a positive answer for this
+  // (login, credential) pair before asking again. Zero or unset means do
+  // not cache. Ignored on DENY.
+  google.protobuf.Duration cache_ttl = 4;
+  // Set only when deny_reason is APPROVAL_PENDING.
+  SSHDeviceApproval approval = 5;
+}

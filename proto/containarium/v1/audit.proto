@@ -7,6 +7,10 @@ option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;
 import "google/api/annotations.proto";
 import "google/protobuf/timestamp.proto";
 import "protoc-gen-openapiv2/options/annotations.proto";
+// SSHAuthzDecision / SSHDenyReason live in ssh_authz.proto (the
+// authorization contract) and are only referenced here, so the two files
+// never import each other both ways.
+import "containarium/v1/ssh_authz.proto";
 
 // AuditService — the proto-defined surface of the tamper-evident audit
 // store (internal/audit). Today it carries one write RPC (#2415): the
@@ -49,6 +53,10 @@ enum SSHSessionPhase {
   SSH_SESSION_PHASE_UNSPECIFIED = 0;
   SSH_SESSION_PHASE_OPEN = 1;
   SSH_SESSION_PHASE_CLOSE = 2;
+  // The sentinel refused the connection on the backend's authorization
+  // answer (SSH live authorization, docs/architecture/ssh-live-authorization.md).
+  // No OPEN or CLOSE follows; stored as action ssh_session_denied.
+  SSH_SESSION_PHASE_DENIED = 3;
 }
 
 // SSHAuthMethod mirrors internal/sentinel/sshsession.AuthMethod.
@@ -103,6 +111,23 @@ message SSHSessionRecord {
   SSHSessionCredential credential = 9;
   // Set only when phase == SSH_SESSION_PHASE_CLOSE.
   SSHCloseReason close_reason = 10;
+
+  // SSH live authorization fields (docs/architecture/ssh-live-authorization.md,
+  // component 7). All additive: a sentinel without the authz plugin leaves
+  // them unset and the record reads exactly as before.
+
+  // The user the backend resolved the credential to, when known — on a
+  // DENIED record too, so the row names who was refused.
+  string user_id = 11;
+  // The backend's answer for this connection. Unset when the authz plugin
+  // was not chained in.
+  SSHAuthzDecision authz_decision = 12;
+  // Why the answer was DENY. Unset on ALLOW.
+  SSHDenyReason deny_reason = 13;
+  // True when the sentinel ran in enforce mode and a DENY actually refused
+  // the connection; false in audit-only mode, where a DENY is recorded but
+  // the login still proceeds (phase OPEN with a DENY decision).
+  bool enforced = 14;
 }
 
 message IngestSSHSessionRecordsRequest {

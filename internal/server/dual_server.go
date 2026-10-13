@@ -2069,6 +2069,11 @@ skipAppHosting:
 		networkServer.SetGuards(coreGuard, tenantGuard)
 	}
 
+	// SSHAuthzService (#2516): the sentinel's per-connection authorization
+	// query. Contract stub — gated, answers Unimplemented until the decider
+	// (#2517) is wired in.
+	pb.RegisterSSHAuthzServiceServer(grpcServer, NewSSHAuthzServer())
+
 	// AnonymousBoxService (#2197): the daemon side of the `ssh new.<domain>`
 	// door. Opt-in — only the dedicated pool=anon backend runs it — and only
 	// over an LXC box backend: the manager needs exec + TTL capabilities and

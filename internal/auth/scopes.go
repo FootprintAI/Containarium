@@ -117,6 +117,13 @@ const (
 	ScopeAnonDoor  = "anon:door"
 	ScopeAnonAdmin = "anon:admin"
 
+	// SSH live authorization (#2516, docs/architecture/ssh-live-authorization.md).
+	// ssh:authz is what a verified sentinel request signature is mapped to
+	// on the /v1/ssh/authorize mount (gateway.sshAuthzHandler) — it may ask
+	// SSHAuthzService.Authorize whether a credential may log in, and
+	// nothing else. Read-only by construction: the answer is a decision.
+	ScopeSSHAuthz = "ssh:authz"
+
 	// managed Kubernetes clusters (ClusterServer, #1413).
 	// clusters:read lists/inspects clusters and their scale history;
 	// clusters:write creates/deletes clusters, edits node pools, and
@@ -208,6 +215,7 @@ var AllScopes = []string{
 	ScopeAgentsRead, ScopeAgentsRun, ScopeAgentsCall,
 	ScopeCrewsRead, ScopeCrewsRun,
 	ScopeAnonDoor, ScopeAnonAdmin,
+	ScopeSSHAuthz,
 	ScopeClustersRead, ScopeClustersWrite, ScopeClustersScale,
 	ScopeAuditRead, ScopeNetworkPolicyRead, ScopeTokensRead,
 	ScopeAuditIngest,

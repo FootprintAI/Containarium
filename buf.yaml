@@ -7,6 +7,22 @@ modules:
 lint:
   use:
     - STANDARD
+  ignore_only:
+    # SSH live authorization (docs/architecture/ssh-live-authorization.md,
+    # component 1): SSHAuthzService.Authorize and the cloud mirror
+    # ActuationService.AuthorizeSSH deliberately share ONE request/response
+    # pair so the daemon's managed-mode forwarder never translates. STANDARD
+    # wants a unique, RPC-named pair per RPC; the shared names are the
+    # contract, so the two rules are relaxed for exactly these files.
+    RPC_REQUEST_RESPONSE_UNIQUE:
+      - proto/containarium/v1/ssh_authz.proto
+      - proto/containarium/cloud/v1/actuation_service.proto
+    RPC_REQUEST_STANDARD_NAME:
+      - proto/containarium/v1/ssh_authz.proto
+      - proto/containarium/cloud/v1/actuation_service.proto
+    RPC_RESPONSE_STANDARD_NAME:
+      - proto/containarium/v1/ssh_authz.proto
+      - proto/containarium/cloud/v1/actuation_service.proto
 breaking:
   use:
     - FILE

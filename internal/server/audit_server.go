@@ -24,7 +24,12 @@ const maxIngestBatch = 500
 const (
 	auditActionSSHSessionOpen  = "ssh_session_open"
 	auditActionSSHSessionClose = "ssh_session_close"
-	auditResourceSSHSession    = "ssh_session"
+	// A connection the sentinel refused on the backend's authorization
+	// answer (SSH live authorization, #2516). The authorization fields on
+	// the record (user_id, decision, deny_reason, enforced) reach the row
+	// with #2519.
+	auditActionSSHSessionDenied = "ssh_session_denied"
+	auditResourceSSHSession     = "ssh_session"
 )
 
 // batchLogger is the slice of *audit.Store the ingest handler needs,
@@ -124,9 +129,18 @@ func (s *AuditServer) IngestSSHSessionRecords(ctx context.Context, req *pb.Inges
 
 // sshSessionBatchEntry maps one validated Record to its audit row.
 func sshSessionBatchEntry(rec sshsession.Record, sentinelID, jti string) (audit.BatchEntry, error) {
-	action := auditActionSSHSessionOpen
-	if rec.Phase == sshsession.SessionPhaseClose {
+	var action string
+	switch rec.Phase {
+	case sshsession.SessionPhaseOpen:
+		action = auditActionSSHSessionOpen
+	case sshsession.SessionPhaseClose:
 		action = auditActionSSHSessionClose
+	case sshsession.SessionPhaseDenied:
+		action = auditActionSSHSessionDenied
+	default:
+		// FromProto only yields the phases above; a new one must be named
+		// here, not silently filed as an open.
+		return audit.BatchEntry{}, fmt.Errorf("unknown session phase %q", rec.Phase)
 	}
 	detail, err := json.Marshal(SSHSessionDetail{
 		Target:           rec.Target,

@@ -251,3 +251,30 @@ func TestIngest_OrphanCloseHasItsOwnDedupeKey(t *testing.T) {
 		t.Fatalf("orphan close action = %q", f.got[0].Entry.Action)
 	}
 }
+
+// #2516 adds SSH_SESSION_PHASE_DENIED to the proto. A DENIED record must
+// land as its own action (the design's ssh_session_denied), never be
+// mislabelled as an open; carrying the authorization fields (user_id,
+// decision, deny_reason, enforced) into the row is #2519's.
+func TestIngest_DeniedPhaseIsItsOwnAction(t *testing.T) {
+	denied := openRec("sess-d")
+	denied.Phase = pb.SSHSessionPhase_SSH_SESSION_PHASE_DENIED
+	f := &fakeBatchLogger{}
+	_, err := NewAuditServer(f).IngestSSHSessionRecords(ingestCtx(), &pb.IngestSSHSessionRecordsRequest{
+		SentinelId: "sentinel-1",
+		Records:    []*pb.SSHSessionRecord{denied},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.got) != 1 {
+		t.Fatalf("got %d entries", len(f.got))
+	}
+	e := f.got[0]
+	if e.Entry.Action != "ssh_session_denied" {
+		t.Fatalf("action = %q, want ssh_session_denied", e.Entry.Action)
+	}
+	if e.DedupeKey != "sshsession:sess-d:denied" {
+		t.Fatalf("dedupe key = %q, want sshsession:sess-d:denied", e.DedupeKey)
+	}
+}

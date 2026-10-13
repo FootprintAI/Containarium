@@ -42,6 +42,10 @@ option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/clo
 
 import "google/api/annotations.proto";
 import "google/protobuf/timestamp.proto";
+// SSH live authorization (docs/architecture/ssh-live-authorization.md):
+// AuthorizeSSH reuses the OSS contract's messages verbatim so the daemon's
+// managed-mode forwarder is a passthrough — one message set, no translation.
+import "containarium/v1/ssh_authz.proto";
 
 // HeartbeatRequest is intentionally empty for v1. The host's identity
 // comes from the bearer; there's nothing else the cloud needs to
@@ -96,6 +100,23 @@ message ReportContainerStateResponse {
 // always the full set of live assignments for that host.
 message WatchAssignmentsRequest {}
 
+// AssignmentKind says what an Assignment asks the host to do. Added for
+// SSH live authorization (docs/architecture/ssh-live-authorization.md,
+// fan-out): the same WatchAssignments stream that delivers containers
+// also delivers "end this user's sessions" on deactivation.
+enum AssignmentKind {
+  // Not set. A cloud older than this field sends no kind; the host MUST
+  // read UNSPECIFIED as CONTAINER so existing assignments keep working.
+  ASSIGNMENT_KIND_UNSPECIFIED = 0;
+  // Actuate a container: the container_* and spec fields are populated.
+  ASSIGNMENT_KIND_CONTAINER = 1;
+  // Terminate every live SSH session of `user_id` on this host (the
+  // user was deactivated or removed from the org). The container fields
+  // are empty; the host dispatches to the same function the CLI's
+  // sessions-terminate verb calls and reports idempotently on replay.
+  ASSIGNMENT_KIND_TERMINATE_USER_SESSIONS = 2;
+}
+
 // Assignment is the cloud's view of one container the host should be
 // actuating. The fields needed to actually run the workload (name,
 // image, capacity) are embedded so the host doesn't need a separate
@@ -132,6 +153,15 @@ message Assignment {
   // network_policies (on the batch) applies. See the OSS repo's
   // docs/security/NETWORK-ISOLATION-DESIGN.md "Cloud extension".
   string org_id = 5;
+
+  // What this assignment asks for. Unset (UNSPECIFIED) means CONTAINER:
+  // a cloud that predates this field never sends it, and every
+  // assignment it sends is a container.
+  AssignmentKind kind = 6;
+
+  // The user a TERMINATE_USER_SESSIONS assignment targets. Empty for
+  // CONTAINER assignments.
+  string user_id = 7;
 
   // Container spec — embedded so the host doesn't need to fetch.
   string name = 10;
@@ -427,6 +457,23 @@ service ActuationService {
   rpc GetSSHTrustBundle(GetSSHTrustBundleRequest) returns (GetSSHTrustBundleResponse) {
     option (google.api.http) = {
       get: "/v1/actuation/ssh-trust-bundle"
+    };
+  }
+
+  // AuthorizeSSH is the cloud side of SSHAuthzService.Authorize
+  // (containarium/v1/ssh_authz.proto): a managed-mode daemon forwards the
+  // sentinel's question here unchanged, with its host bearer, and relays
+  // the answer unchanged. The cloud decides from its user directory, org
+  // membership, box access, key age and device approvals; the daemon never
+  // translates, so a new deny reason is one proto edit.
+  //
+  // Auth: requires a valid `host-bearer` header. Like Authorize, the
+  // answer is always a decision with a reason; the daemon maps a transport
+  // failure to DENY UPSTREAM_UNAVAILABLE itself.
+  rpc AuthorizeSSH(containarium.v1.AuthorizeSSHRequest) returns (containarium.v1.AuthorizeSSHResponse) {
+    option (google.api.http) = {
+      post: "/v1/actuation/ssh/authorize"
+      body: "*"
     };
   }
 }

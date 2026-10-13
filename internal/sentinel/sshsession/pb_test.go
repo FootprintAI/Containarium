@@ -8,7 +8,7 @@ import (
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
-var allPhases = []SessionPhase{SessionPhaseOpen, SessionPhaseClose}
+var allPhases = []SessionPhase{SessionPhaseOpen, SessionPhaseClose, SessionPhaseDenied}
 var allAuthMethods = []AuthMethod{AuthMethodCertificate, AuthMethodPublicKey, AuthMethodUnknown}
 var allCloseReasons = []CloseReason{
 	CloseReasonNormal, CloseReasonUpstreamGone, CloseReasonProxyShutdown,
