@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A tracker-dispatched run can call its tracker tools** (#2508). The daemon seeds the platform MCP with a plain-`http://` URL to itself over the box's bridge, and the MCP client has refused any `http://` base URL since the C-HIGH-1 hardening unless `CONTAINARIUM_MCP_ALLOW_INSECURE=true` — which nothing set. Every dispatched run therefore failed at its first tracker tool call with `MCP client refuses http:// baseURL`. The seed's command is now `env CONTAINARIUM_MCP_ALLOW_INSECURE=true mcp-server`, scoping the opt-in to that one process on the box's private bridge. The seed is rewritten on every run, so an existing skill box needs the daemon upgrade only.
+
 ## [0.103.1] - 2026-10-13
 
 _A patch release for hosted agent runs: a token that holds only `agents:run` or `crews:run` can now provision a skill's box the first time that skill runs on a daemon. Deployments that dispatch skills from the control plane (tracker dispatch) need this before the dispatch can work._

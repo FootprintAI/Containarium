@@ -18,8 +18,8 @@ function seedDirWith(files: Record<string, string>): string {
 describe("parsePlatformMcp", () => {
   it("parses the shared fixture into camelCase fields", () => {
     expect(parsePlatformMcp(fixture)).toEqual({
-      command: "mcp-server",
-      args: [],
+      command: "env",
+      args: ["CONTAINARIUM_MCP_ALLOW_INSECURE=true", "mcp-server"],
       serverUrl: "http://10.9.8.1:8080",
       tokenFile: "/etc/containarium/agent/runs/run-1/token",
       tools: "tracker_*",
