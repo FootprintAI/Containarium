@@ -49,15 +49,19 @@ func NewAuditServer(store batchLogger) *AuditServer {
 // column. A named struct, not a map, so the shape is a contract the
 // auditor-facing docs and tests can name.
 type SSHSessionDetail struct {
-	Target           string `json:"target,omitempty"`
-	AuthMethod       string `json:"auth_method,omitempty"`
-	ClientPort       int    `json:"client_port,omitempty"`
-	KeyID            string `json:"key_id,omitempty"`
-	Serial           uint64 `json:"serial,omitempty"`
-	CAKeyFingerprint string `json:"ca_key_fingerprint,omitempty"`
-	KeyFingerprint   string `json:"key_fingerprint,omitempty"`
-	CloseReason      string `json:"close_reason,omitempty"`
-	SentinelID       string `json:"sentinel_id,omitempty"`
+	Target           string                   `json:"target,omitempty"`
+	AuthMethod       string                   `json:"auth_method,omitempty"`
+	ClientPort       int                      `json:"client_port,omitempty"`
+	KeyID            string                   `json:"key_id,omitempty"`
+	Serial           uint64                   `json:"serial,omitempty"`
+	CAKeyFingerprint string                   `json:"ca_key_fingerprint,omitempty"`
+	KeyFingerprint   string                   `json:"key_fingerprint,omitempty"`
+	CloseReason      string                   `json:"close_reason,omitempty"`
+	SentinelID       string                   `json:"sentinel_id,omitempty"`
+	UserID           string                   `json:"user_id,omitempty"`
+	AuthzDecision    sshsession.AuthzDecision `json:"authz_decision,omitempty"`
+	DenyReason       sshsession.DenyReason    `json:"deny_reason,omitempty"`
+	Enforced         bool                     `json:"enforced"`
 }
 
 // IngestSSHSessionRecords appends the sentinel's SSH session records to this
@@ -138,6 +142,10 @@ func sshSessionBatchEntry(rec sshsession.Record, sentinelID, jti string) (audit.
 		KeyFingerprint:   rec.KeyFingerprint,
 		CloseReason:      string(rec.CloseReason),
 		SentinelID:       sentinelID,
+		UserID:           rec.UserID,
+		AuthzDecision:    rec.AuthzDecision,
+		DenyReason:       rec.DenyReason,
+		Enforced:         rec.Enforced,
 	})
 	if err != nil {
 		return audit.BatchEntry{}, fmt.Errorf("marshal detail: %w", err)

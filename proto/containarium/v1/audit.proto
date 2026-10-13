@@ -5,6 +5,7 @@ package containarium.v1;
 option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
 
 import "google/api/annotations.proto";
+import "containarium/v1/ssh_authz.proto";
 import "google/protobuf/timestamp.proto";
 import "protoc-gen-openapiv2/options/annotations.proto";
 
@@ -103,6 +104,10 @@ message SSHSessionRecord {
   SSHSessionCredential credential = 9;
   // Set only when phase == SSH_SESSION_PHASE_CLOSE.
   SSHCloseReason close_reason = 10;
+  string user_id = 11;
+  SSHAuthzDecision authz_decision = 12;
+  SSHDenyReason deny_reason = 13;
+  bool enforced = 14;
 }
 
 message IngestSSHSessionRecordsRequest {

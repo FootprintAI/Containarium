@@ -119,4 +119,9 @@ type Record struct {
 
 	// CloseReason is set only on a SessionPhaseClose record.
 	CloseReason CloseReason `json:"close_reason,omitempty"`
+
+	UserID        string        `json:"user_id,omitempty"`
+	AuthzDecision AuthzDecision `json:"authz_decision,omitempty"`
+	DenyReason    DenyReason    `json:"deny_reason,omitempty"`
+	Enforced      bool          `json:"enforced"`
 }

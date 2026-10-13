@@ -47,20 +47,24 @@ var (
 )
 
 // ToProto converts a Record read from the sink into its wire form. A value
-// with no proto counterpart (a hand-edited file) maps to the UNSPECIFIED
-// enum value, which the server rejects — the shipper validates with
-// FromProto before sending, so that never reaches the wire.
+// with no proto counterpart (a hand-edited file) maps to UNSPECIFIED for
+// required lifecycle fields, or an invalid enum for optional authorization
+// fields. The shipper validates with FromProto before sending.
 func ToProto(r Record) *pb.SSHSessionRecord {
 	out := &pb.SSHSessionRecord{
-		SessionId:   r.SessionID,
-		Phase:       phaseToPB[r.Phase],
-		OccurredAt:  timestamppb.New(r.OccurredAt),
-		ClientIp:    r.ClientIP,
-		ClientPort:  int32(r.ClientPort), // #nosec G115 -- a TCP port fits int32
-		Login:       r.Login,
-		Target:      r.Target,
-		AuthMethod:  authMethodToPB[r.AuthMethod],
-		CloseReason: closeReasonToPB[r.CloseReason],
+		SessionId:     r.SessionID,
+		Phase:         phaseToPB[r.Phase],
+		OccurredAt:    timestamppb.New(r.OccurredAt),
+		ClientIp:      r.ClientIP,
+		ClientPort:    int32(r.ClientPort), // #nosec G115 -- a TCP port fits int32
+		Login:         r.Login,
+		Target:        r.Target,
+		AuthMethod:    authMethodToPB[r.AuthMethod],
+		CloseReason:   closeReasonToPB[r.CloseReason],
+		UserId:        r.UserID,
+		AuthzDecision: decisionToProto(r.AuthzDecision),
+		DenyReason:    reasonToProto(r.DenyReason),
+		Enforced:      r.Enforced,
 	}
 	if r.Credential != (Credential{}) {
 		out.Credential = &pb.SSHSessionCredential{
@@ -93,13 +97,26 @@ func FromProto(p *pb.SSHSessionRecord) (Record, error) {
 		return Record{}, fmt.Errorf("session %q: missing occurred_at", p.GetSessionId())
 	}
 	r := Record{
-		SessionID:  p.GetSessionId(),
-		Phase:      phase,
-		OccurredAt: p.GetOccurredAt().AsTime(),
-		ClientIP:   p.GetClientIp(),
-		ClientPort: int(p.GetClientPort()),
-		Login:      p.GetLogin(),
-		Target:     p.GetTarget(),
+		SessionID:     p.GetSessionId(),
+		Phase:         phase,
+		OccurredAt:    p.GetOccurredAt().AsTime(),
+		ClientIP:      p.GetClientIp(),
+		ClientPort:    int(p.GetClientPort()),
+		Login:         p.GetLogin(),
+		Target:        p.GetTarget(),
+		UserID:        p.GetUserId(),
+		AuthzDecision: DecisionFromProto(p.GetAuthzDecision()),
+		DenyReason:    ReasonFromProto(p.GetDenyReason()),
+		Enforced:      p.GetEnforced(),
+	}
+	if _, ok := pb.SSHAuthzDecision_name[int32(p.GetAuthzDecision())]; !ok {
+		return Record{}, fmt.Errorf("session %q: invalid authz_decision", r.SessionID)
+	}
+	if _, ok := pb.SSHDenyReason_name[int32(p.GetDenyReason())]; !ok {
+		return Record{}, fmt.Errorf("session %q: invalid deny_reason", r.SessionID)
+	}
+	if (r.AuthzDecision == AuthzDeny) != (r.DenyReason != "") {
+		return Record{}, fmt.Errorf("session %q: deny decision and reason must occur together", r.SessionID)
 	}
 	if am := p.GetAuthMethod(); am != pb.SSHAuthMethod_SSH_AUTH_METHOD_UNSPECIFIED {
 		v, ok := authMethodFromPB[am]

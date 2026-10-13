@@ -58,6 +58,10 @@
       "description": "AppService provides application deployment and management"
     },
     {
+      "name": "SSHAuthzService",
+      "description": "SSHAuthzService is the sentinel-to-backend live SSH authorization contract.\nThe daemon mounts this service behind its sentinel-signature verifier."
+    },
+    {
       "name": "AuditService",
       "description": "AuditService — the proto-defined surface of the tamper-evident audit\nstore (internal/audit). Today it carries one write RPC (#2415): the\nsentinel ships the SSH session records its sshpiperd plugin appends\nlocally (internal/sentinel/sshsession) into THIS backend's audit chain,\nso the platform's front-door logins get the same hash chain and\nexternal anchoring (#1706) as in-box sessions and API calls.\n\nReads stay on the legacy /v1/audit/logs gateway route for now."
     },
@@ -6874,6 +6878,40 @@
         ]
       }
     },
+    "/v1/ssh/authorize": {
+      "post": {
+        "summary": "Authorize an SSH connection",
+        "description": "Sentinel-signed, read-only live authorization query.",
+        "operationId": "SSHAuthzService_Authorize",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/AuthorizeSSHResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/AuthorizeSSHRequest"
+            }
+          }
+        ],
+        "tags": [
+          "SSH Authorization"
+        ]
+      }
+    },
     "/v1/stacks": {
       "get": {
         "summary": "List available software stacks",
@@ -9890,6 +9928,49 @@
       "properties": {
         "message": {
           "type": "string"
+        }
+      }
+    },
+    "AuthorizeSSHRequest": {
+      "type": "object",
+      "properties": {
+        "login": {
+          "type": "string"
+        },
+        "credential": {
+          "$ref": "#/definitions/SSHCredential"
+        },
+        "clientIp": {
+          "type": "string"
+        },
+        "sentinelId": {
+          "type": "string",
+          "description": "Informational; never used to authorize the caller."
+        },
+        "approvalId": {
+          "type": "string"
+        }
+      }
+    },
+    "AuthorizeSSHResponse": {
+      "type": "object",
+      "properties": {
+        "decision": {
+          "$ref": "#/definitions/SSHAuthzDecision"
+        },
+        "denyReason": {
+          "$ref": "#/definitions/SSHDenyReason"
+        },
+        "userId": {
+          "type": "string",
+          "description": "Also populated on DENY when the person is known."
+        },
+        "cacheTtl": {
+          "type": "string",
+          "description": "Positive cache lifetime; absent or zero means no fresh cache reuse."
+        },
+        "approval": {
+          "$ref": "#/definitions/SSHDeviceApproval"
         }
       }
     },
@@ -17077,6 +17158,15 @@
       "default": "SSH_AUTH_METHOD_UNSPECIFIED",
       "description": "SSHAuthMethod mirrors internal/sentinel/sshsession.AuthMethod.\n\n - SSH_AUTH_METHOD_UNKNOWN: The offered key could not be parsed; credential fields are empty."
     },
+    "SSHAuthzDecision": {
+      "type": "string",
+      "enum": [
+        "SSH_AUTHZ_DECISION_UNSPECIFIED",
+        "SSH_AUTHZ_DECISION_ALLOW",
+        "SSH_AUTHZ_DECISION_DENY"
+      ],
+      "default": "SSH_AUTHZ_DECISION_UNSPECIFIED"
+    },
     "SSHCAKey": {
       "type": "object",
       "properties": {
@@ -17095,6 +17185,21 @@
       },
       "description": "SSHCAKey is one CA public key the host should trust for certificate-based\nSSH auth. Vendored (message body only, not the whole cloud\nSSHCertificateAuthorityService) from the cloud repo's ssh_ca.proto — see\nthe vendoring note at the top of this file."
     },
+    "SSHCertificateCredential": {
+      "type": "object",
+      "properties": {
+        "keyId": {
+          "type": "string"
+        },
+        "serial": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "caFingerprintSha256": {
+          "type": "string"
+        }
+      }
+    },
     "SSHCloseReason": {
       "type": "string",
       "enum": [
@@ -17107,6 +17212,75 @@
       ],
       "default": "SSH_CLOSE_REASON_UNSPECIFIED",
       "description": "SSHCloseReason mirrors internal/sentinel/sshsession.CloseReason. Set only\non a CLOSE record.\n\n - SSH_CLOSE_REASON_UNKNOWN_ORPHAN: Emitted by the shipper's --reconcile for an OPEN record that never got\na CLOSE (plugin hard-killed), once it is older than the orphan\nthreshold. Never written by the plugin itself."
+    },
+    "SSHCredential": {
+      "type": "object",
+      "properties": {
+        "publicKey": {
+          "$ref": "#/definitions/SSHPublicKeyCredential"
+        },
+        "certificate": {
+          "$ref": "#/definitions/SSHCertificateCredential"
+        }
+      }
+    },
+    "SSHDenyReason": {
+      "type": "string",
+      "enum": [
+        "SSH_DENY_REASON_UNSPECIFIED",
+        "SSH_DENY_REASON_UNKNOWN_KEY",
+        "SSH_DENY_REASON_USER_INACTIVE",
+        "SSH_DENY_REASON_NO_ACCESS",
+        "SSH_DENY_REASON_KEY_EXPIRED",
+        "SSH_DENY_REASON_APPROVAL_PENDING",
+        "SSH_DENY_REASON_APPROVAL_DENIED",
+        "SSH_DENY_REASON_UPSTREAM_UNAVAILABLE"
+      ],
+      "default": "SSH_DENY_REASON_UNSPECIFIED"
+    },
+    "SSHDeviceApproval": {
+      "type": "object",
+      "properties": {
+        "approvalId": {
+          "type": "string"
+        },
+        "code": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        },
+        "pollAfter": {
+          "type": "string"
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "SSHKeyType": {
+      "type": "string",
+      "enum": [
+        "SSH_KEY_TYPE_UNSPECIFIED",
+        "SSH_KEY_TYPE_ED25519",
+        "SSH_KEY_TYPE_RSA",
+        "SSH_KEY_TYPE_ECDSA",
+        "SSH_KEY_TYPE_SK_ED25519",
+        "SSH_KEY_TYPE_SK_ECDSA"
+      ],
+      "default": "SSH_KEY_TYPE_UNSPECIFIED"
+    },
+    "SSHPublicKeyCredential": {
+      "type": "object",
+      "properties": {
+        "fingerprintSha256": {
+          "type": "string"
+        },
+        "keyType": {
+          "$ref": "#/definitions/SSHKeyType"
+        }
+      }
     },
     "SSHSessionCredential": {
       "type": "object",
@@ -17175,6 +17349,18 @@
         "closeReason": {
           "$ref": "#/definitions/SSHCloseReason",
           "description": "Set only when phase == SSH_SESSION_PHASE_CLOSE."
+        },
+        "userId": {
+          "type": "string"
+        },
+        "authzDecision": {
+          "$ref": "#/definitions/SSHAuthzDecision"
+        },
+        "denyReason": {
+          "$ref": "#/definitions/SSHDenyReason"
+        },
+        "enforced": {
+          "type": "boolean"
         }
       },
       "description": "SSHSessionRecord is one session lifecycle event, field for field the\nsentinel's sshsession.Record."
