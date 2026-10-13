@@ -80,6 +80,27 @@ func NewKeyStore() *KeyStore {
 	}
 }
 
+// BackendForLogin resolves a login using the same sorted-backend, first-match
+// precedence as Apply. The identity is suitable for authorization cache keys;
+// it is not a daemon HTTP URL. Unknown logins must defer to the routing plugin.
+func (ks *KeyStore) BackendForLogin(login string) (string, bool) {
+	ks.mu.RLock()
+	defer ks.mu.RUnlock()
+	ids := make([]string, 0, len(ks.backends))
+	for id := range ks.backends {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		for _, user := range ks.backends[id].users {
+			if user.Username == login {
+				return id, true
+			}
+		}
+	}
+	return "", false
+}
+
 // Sync fetches authorized keys from a backend's /authorized-keys endpoint.
 // Each backend's users are tracked separately for per-user routing.
 func (ks *KeyStore) Sync(backendID, backendIP string, httpPort int) error {
