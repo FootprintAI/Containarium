@@ -7,11 +7,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/footprintai/containarium/internal/credentials"
 	"github.com/footprintai/containarium/internal/sshkey"
 )
 
@@ -64,6 +66,96 @@ func TestLogin_SSHKeyExpiryNudge(t *testing.T) {
 				t.Fatalf("expiry reminder=%v, want %v:\n%s", got, tc.warn, out.String())
 			}
 		})
+	}
+}
+
+func TestLogin_RetirementRespectsOtherServers(t *testing.T) {
+	for _, tc := range []struct {
+		name                         string
+		unavailable, retired, remove bool
+	}{
+		{"used on other server", false, false, false},
+		{"other status unknown", true, false, false},
+		{"retired on both servers", false, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := withSSHLoginHome(t)
+			loginNoSSHSetup = true
+			pubPath, pub, err := sshkey.GenerateFresh(sshkey.LocateOpts{HomeDir: home})
+			if err != nil {
+				t.Fatal(err)
+			}
+			fp, err := sshkey.Fingerprint(pub)
+			if err != nil {
+				t.Fatal(err)
+			}
+			past := time.Now().Add(-time.Hour)
+			f := newFakeLoginAndSSHKeysServer(t, 0)
+			f.keys = []sshkey.SSHKey{{Name: "laptop", Fingerprint: fp, PublicKey: pub, RetiredAt: &past}}
+			other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Authorization") != "Bearer other-token" {
+					t.Error("other server did not receive its own credential")
+				}
+				if tc.unavailable {
+					w.WriteHeader(503)
+					return
+				}
+				key := sshkey.SSHKey{Fingerprint: fp, PublicKey: pub}
+				if tc.retired {
+					key.RetiredAt = &past
+				}
+				_ = json.NewEncoder(w).Encode(listSSHKeysResp{Keys: []sshkey.SSHKey{key}})
+			}))
+			defer other.Close()
+			cf := credentials.NewCredentialsFile()
+			cf.Set(other.URL, credentials.ServerCreds{Token: "other-token"})
+			path, err := credentials.DefaultPath()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := credentials.Save(path, cf); err != nil {
+				t.Fatal(err)
+			}
+			// A per-invocation override must never be forwarded to other profiles.
+			authToken = "current-server-override"
+			if _, err := runLoginWithSSHFlagsHelper(t, f, ""); err != nil {
+				t.Fatal(err)
+			}
+			_, err = os.Stat(strings.TrimSuffix(pubPath, ".pub"))
+			if gone := os.IsNotExist(err); gone != tc.remove {
+				t.Fatalf("key removed=%v, want %v", gone, tc.remove)
+			}
+		})
+	}
+}
+
+func TestLogin_RotationHintPreservesLiteralArguments(t *testing.T) {
+	withSSHLoginHome(t)
+	loginNoSSHSetup = true
+	f := newFakeLoginAndSSHKeysServer(t, 0)
+	name := "laptop$(printf EXPANDED)"
+	f.keys = []sshkey.SSHKey{{Name: name, ExpiresAt: time.Now().Add(time.Hour)}}
+	out, err := runLoginWithSSHFlagsHelper(t, f, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hint string
+	for _, line := range strings.Split(out.String(), "\n") {
+		if _, command, ok := strings.Cut(line, "rotate it with "); ok {
+			hint = command
+		}
+	}
+	if hint == "" {
+		t.Fatal("rotation hint missing")
+	}
+	// Execute the printed hint against a shell function that only records args.
+	// Command substitution would change the name before the CLI validates it.
+	got, err := exec.Command("sh", "-c", "containarium() { printf '%s\\n' \"$@\"; }\n"+hint).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), name+"\n") {
+		t.Fatalf("shell expanded the key name: %s", got)
 	}
 }
 

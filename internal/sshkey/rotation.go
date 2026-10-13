@@ -61,6 +61,7 @@ func RemoveRetired(opts LocateOpts, keys []SSHKey, now time.Time) ([]string, err
 		if err != nil || !info.Mode().IsRegular() {
 			continue
 		}
+		// #nosec G304 -- local ~/.ssh entry with the CLI prefix, checked by Lstat; the cloud supplies only fingerprints, never paths.
 		key, err := os.ReadFile(path)
 		if err != nil {
 			continue
