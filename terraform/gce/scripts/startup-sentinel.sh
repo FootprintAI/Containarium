@@ -123,7 +123,9 @@ ExecStart=/usr/local/bin/sshpiperd \
   -i /etc/sshpiper/host_key \
   -p 22 \
   --drop-hostkeys-message \
-  /usr/local/bin/containarium sentinel ssh-session-plugin \
+  /usr/local/bin/containariumd sentinel ssh-authz-plugin \
+  -- \
+  /usr/local/bin/containariumd sentinel ssh-session-plugin \
   --records-file /var/log/containarium/ssh-sessions.jsonl \
   --sshpiper-config /etc/sshpiper/config.yaml \
   -- \

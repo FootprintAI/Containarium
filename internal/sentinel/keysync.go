@@ -6,15 +6,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/footprintai/containarium/internal/gateway"
+	"github.com/footprintai/containarium/internal/sentinel/sshauthz"
 )
 
 const (
@@ -41,7 +44,9 @@ type backendKeys struct {
 	// sshPort is the SSH ingress the backend advertised in its
 	// /authorized-keys response (KeysResponse.SSHPort). 0 = legacy
 	// convention (22 direct / 20022 tunnel-loopback) — see routeTargetPort.
-	sshPort  int
+	sshPort int
+	// httpPort is the daemon API port keysync actually polled; never the SSH port.
+	httpPort int
 	lastSync time.Time
 	lastErr  error
 }
@@ -50,6 +55,8 @@ type backendKeys struct {
 // pipe. Package-level (not local to Apply) so renderSSHPiperConfig and its test
 // can name it.
 type userRoute struct {
+	backendID      string
+	httpPort       int
 	username       string
 	authorizedKeys string
 	backendIP      string
@@ -62,6 +69,8 @@ type KeyStore struct {
 	mu            sync.RWMutex
 	backends      map[string]*backendKeys // keyed by backend ID
 	configChanged bool
+	// Set by Manager for the separately launched audit-only authorization plugin.
+	authzRoutesFile string
 
 	// caTrustContent/caTrustVersion cache the SSH CA trust bundle relayed
 	// from whichever backend's /authorized-keys response last carried one
@@ -143,6 +152,7 @@ func (ks *KeyStore) Sync(backendID, backendIP string, httpPort int) error {
 	bk := ks.ensureBackendLocked(backendID, backendIP)
 	bk.users = keysResp.Keys
 	bk.sshPort = keysResp.SSHPort
+	bk.httpPort = httpPort
 	bk.lastSync = time.Now()
 	bk.lastErr = nil
 	// Relay the SSH CA trust bundle (cloud#1928). Refuse an empty one: a
@@ -199,6 +209,8 @@ func (ks *KeyStore) Apply() error {
 			}
 			seen[u.Username] = true
 			routes = append(routes, userRoute{
+				backendID:      id,
+				httpPort:       bk.httpPort,
 				username:       u.Username,
 				authorizedKeys: u.AuthorizedKeys,
 				backendIP:      bk.backendIP,
@@ -273,6 +285,13 @@ func (ks *KeyStore) Apply() error {
 		log.Printf("[keysync] ssh ca trust bundle apply failed: %v", err)
 	}
 
+	// Publish the same selected routes for the authorization subprocess, even
+	// if the SSH YAML has not changed (an HTTP port/backend ID may have changed).
+	if err := ks.publishAuthzRoutes(routes); err != nil {
+		// Audit-only state must never prevent the existing SSH routing update.
+		log.Printf("[keysync] SSH authorization snapshot unavailable: %v (continuing audit-only routing)", err)
+	}
+
 	// Generate sshpiper YAML config with per-user backend routing.
 	newContent := renderSSHPiperConfig(routes, sshpiperCAKeysPath())
 
@@ -294,6 +313,22 @@ func (ks *KeyStore) Apply() error {
 	ks.mu.Unlock()
 
 	log.Printf("[keysync] sshpiper config updated: %d users across %d backends", len(routes), ks.backendCount())
+	return nil
+}
+
+// publishAuthzRoutes publishes exactly the routes selected by Apply.
+func (ks *KeyStore) publishAuthzRoutes(routes []userRoute) error {
+	if ks.authzRoutesFile == "" {
+		return nil
+	}
+	snapshot := sshauthz.Routes{Logins: map[string]string{}, BackendURLs: map[string]string{}}
+	for _, r := range routes {
+		snapshot.Logins[r.username] = r.backendID
+		snapshot.BackendURLs[r.backendID] = "http://" + net.JoinHostPort(r.backendIP, strconv.Itoa(r.httpPort))
+	}
+	if err := sshauthz.WriteRoutes(ks.authzRoutesFile, snapshot); err != nil {
+		return fmt.Errorf("write SSH authorization routes: %w", err)
+	}
 	return nil
 }
 

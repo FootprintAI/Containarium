@@ -19,11 +19,13 @@ import (
 	"github.com/footprintai/containarium/internal/config"
 	"github.com/footprintai/containarium/internal/metrics/cloudexport"
 	"github.com/footprintai/containarium/internal/sentinel"
+	"github.com/footprintai/containarium/internal/sentinel/sshauthz"
 	"github.com/footprintai/containarium/internal/sentinel/sshsession"
 	"github.com/spf13/cobra"
 )
 
 var (
+	sentinelSSHAuthzRoutesFile     string
 	sentinelProvider               string
 	sentinelSpotVM                 string
 	sentinelZone                   string
@@ -97,6 +99,7 @@ Examples:
 
 func init() {
 	rootCmd.AddCommand(sentinelCmd)
+	sentinelCmd.Flags().StringVar(&sentinelSSHAuthzRoutesFile, "ssh-authz-routes", sshauthz.DefaultRoutesFile, "Routing snapshot for the separate audit-only SSH authorization plugin")
 
 	sentinelCmd.Flags().StringVar(&sentinelProvider, "provider", "gcp", "Cloud provider: \"gcp\", \"none\" (local testing), or \"tunnel\" (reverse tunnel)")
 	sentinelCmd.Flags().StringVar(&sentinelTunnelToken, "tunnel-token", "", "Pre-shared token for tunnel authentication, allowed for any pool (legacy; use --tunnel-token-policy for pool-restricted tokens, or CONTAINARIUM_TUNNEL_TOKEN env)")
@@ -328,6 +331,7 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 			log.Printf("[sentinel] hybrid mode: GCP + tunnel (ConnMux on port %d)", sentinelHTTPSPort)
 
 			config := sentinel.Config{
+				SSHAuthzRoutesFile:        sentinelSSHAuthzRoutesFile,
 				HealthPort:                sentinelHealthPort,
 				CheckInterval:             sentinelCheckInterval,
 				HTTPPort:                  sentinelHTTPPort,
@@ -440,6 +444,7 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 		provider = sentinel.NewTunnelProvider(registry, "")
 
 		config := sentinel.Config{
+			SSHAuthzRoutesFile:        sentinelSSHAuthzRoutesFile,
 			HealthPort:                sentinelHealthPort,
 			CheckInterval:             sentinelCheckInterval,
 			HTTPPort:                  sentinelHTTPPort,
@@ -528,6 +533,7 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 	}
 
 	config := sentinel.Config{
+		SSHAuthzRoutesFile:        sentinelSSHAuthzRoutesFile,
 		HealthPort:                sentinelHealthPort,
 		CheckInterval:             sentinelCheckInterval,
 		HTTPPort:                  sentinelHTTPPort,

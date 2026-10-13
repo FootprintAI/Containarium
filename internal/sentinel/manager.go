@@ -22,6 +22,7 @@ import (
 
 	"github.com/footprintai/containarium/internal/auth"
 	appconfig "github.com/footprintai/containarium/internal/config"
+	"github.com/footprintai/containarium/internal/sentinel/sshauthz"
 	"github.com/footprintai/containarium/pkg/core/pki"
 )
 
@@ -41,6 +42,7 @@ var sentinelDialer = &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 15 * time.
 
 // Config holds the sentinel configuration.
 type Config struct {
+	SSHAuthzRoutesFile string // snapshot consumed by ssh-authz-plugin before ssh-session-plugin
 	HealthPort         int
 	CheckInterval      time.Duration
 	HTTPPort           int
@@ -427,6 +429,9 @@ func NewManager(config Config, provider CloudProvider) *Manager {
 	if config.RecoveryBackoffMax < config.RecoveryBackoffInitial {
 		config.RecoveryBackoffMax = config.RecoveryBackoffInitial
 	}
+	if config.SSHAuthzRoutesFile == "" {
+		config.SSHAuthzRoutesFile = sshauthz.DefaultRoutesFile
+	}
 	m := &Manager{
 		config:     config,
 		provider:   provider,
@@ -437,6 +442,7 @@ func NewManager(config Config, provider CloudProvider) *Manager {
 		keyStore:   NewKeyStore(),
 		exitFn:     func() { os.Exit(1) },
 	}
+	m.keyStore.authzRoutesFile = config.SSHAuthzRoutesFile
 	m.certStore.SetScopeResolver(m.certScopeFor)
 	if raw := os.Getenv(appconfig.EnvSentinelAuthSecret); raw != "" {
 		if len(raw) < auth.SentinelMinSecretLen {

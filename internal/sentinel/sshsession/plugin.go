@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/hostport"
+	"github.com/footprintai/containarium/internal/sentinel/sshauthz"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/tg123/sshpiper/libplugin"
 )
 
@@ -30,10 +32,10 @@ type clock func() time.Time
 // Plugin builds the sshpiperd plugin callbacks that observe a session's
 // accept and close and hand a Record to a Recorder.
 //
-// It MUST be chained as the FIRST plugin in the sshpiperd invocation,
-// ahead of the routing plugin ("yaml"): sshpiperd's ChainPlugins
+// It MUST run before the routing plugin ("yaml"), after the audit-only
+// ssh-authz-plugin when present: sshpiperd's ChainPlugins
 // dispatches PublicKeyAuth only to the "current" plugin in the chain, so
-// to see the offered credential at all, Plugin has to be asked first.
+// the preceding plugin must defer so this plugin sees the offered credential.
 // publicKeyCallback never itself accepts or rejects a key — it always
 // defers to the next plugin via UpstreamNextPluginAuth after stashing the
 // credential handle into the shared per-connection metadata map — so it
@@ -226,6 +228,21 @@ func (p *Plugin) buildRecord(conn libplugin.ConnMetadata, phase SessionPhase) Re
 			KeyFingerprint: conn.GetMeta(metaKeyFingerprint),
 		},
 	}
+
+	rec.UserID = conn.GetMeta(sshauthz.MetaUserID)
+	if n, err := strconv.ParseInt(conn.GetMeta(sshauthz.MetaDecision), 10, 32); err == nil {
+		if _, ok := pb.SSHAuthzDecision_name[int32(n)]; ok {
+			rec.AuthzDecision = pb.SSHAuthzDecision(n)
+		}
+	}
+	if n, err := strconv.ParseInt(conn.GetMeta(sshauthz.MetaDenyReason), 10, 32); err == nil {
+		if _, ok := pb.SSHDenyReason_name[int32(n)]; ok {
+			rec.DenyReason = pb.SSHDenyReason(n)
+		}
+	}
+	// Audit-only plugins never mark a connection enforced, even if a preceding
+	// plugin supplies an unexpected metadata value.
+	rec.Enforced = false
 
 	if s := conn.GetMeta(metaSerial); s != "" {
 		if v, err := strconv.ParseUint(s, 10, 64); err == nil {
