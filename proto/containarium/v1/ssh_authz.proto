@@ -14,7 +14,12 @@ import "protoc-gen-openapiv2/options/annotations.proto";
 service SSHAuthzService {
   // Authorize decides whether the offered credential may open an SSH session
   // as login on this backend at this moment.
-  rpc AuthorizeSSH(AuthorizeSSHRequest) returns (AuthorizeSSHResponse) {
+  // These message names intentionally include SSH because the cloud-side
+  // ActuationService.AuthorizeSSH RPC reuses the exact same wire contract.
+  // buf:lint:ignore RPC_REQUEST_STANDARD_NAME
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+  rpc Authorize(AuthorizeSSHRequest) returns (AuthorizeSSHResponse) {
     option (google.api.http) = {
       post: "/v1/ssh/authorize"
       body: "*"

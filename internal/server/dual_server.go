@@ -50,6 +50,7 @@ import (
 	"github.com/footprintai/containarium/internal/sandbox/ratelimit"
 	secretsstore "github.com/footprintai/containarium/internal/secrets"
 	"github.com/footprintai/containarium/internal/security"
+	sshauthzserver "github.com/footprintai/containarium/internal/server/sshauthz"
 	"github.com/footprintai/containarium/internal/tenantguard"
 	"github.com/footprintai/containarium/internal/threatdetect"
 	trackerstore "github.com/footprintai/containarium/internal/tracker"
@@ -593,6 +594,11 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 
 	// Register container service
 	pb.RegisterContainerServiceServer(grpcServer, containerServer)
+
+	// #2516 contract-only SSH authorization endpoint. Decision logic lands in
+	// the follow-up issue; until then every verified request reaches a typed,
+	// explicit Unimplemented response rather than an unregistered route.
+	pb.RegisterSSHAuthzServiceServer(grpcServer, sshauthzserver.NewServer())
 
 	// ComposeAutostartService — operator-side RPC that execs
 	// `agent-box compose <verb>` inside the tenant's LXC. Uses a

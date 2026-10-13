@@ -40,6 +40,7 @@ package containarium.cloud.v1;
 
 option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/cloud/v1;cloudv1";
 
+import "containarium/v1/ssh_authz.proto";
 import "google/api/annotations.proto";
 import "google/protobuf/timestamp.proto";
 
@@ -348,6 +349,13 @@ message GetSSHTrustBundleResponse {
 }
 
 service ActuationService {
+  // AuthorizeSSH lets an enrolled daemon forward the sentinel's live SSH
+  // authorization check to the cloud without translating request/response
+  // types. Authentication is the same host bearer used by the other
+  // actuation RPCs.
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+  rpc AuthorizeSSH(containarium.v1.AuthorizeSSHRequest) returns (containarium.v1.AuthorizeSSHResponse);
+
   // EnrollHost redeems a single-use join token and registers the BYO host.
   // Self-authenticating via the token in the body (NOT host-bearer — the row
   // doesn't exist yet).

@@ -19,7 +19,7 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	SSHAuthzService_AuthorizeSSH_FullMethodName = "/containarium.v1.SSHAuthzService/AuthorizeSSH"
+	SSHAuthzService_Authorize_FullMethodName = "/containarium.v1.SSHAuthzService/Authorize"
 )
 
 // SSHAuthzServiceClient is the client API for SSHAuthzService service.
@@ -31,7 +31,12 @@ const (
 type SSHAuthzServiceClient interface {
 	// Authorize decides whether the offered credential may open an SSH session
 	// as login on this backend at this moment.
-	AuthorizeSSH(ctx context.Context, in *AuthorizeSSHRequest, opts ...grpc.CallOption) (*AuthorizeSSHResponse, error)
+	// These message names intentionally include SSH because the cloud-side
+	// ActuationService.AuthorizeSSH RPC reuses the exact same wire contract.
+	// buf:lint:ignore RPC_REQUEST_STANDARD_NAME
+	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+	Authorize(ctx context.Context, in *AuthorizeSSHRequest, opts ...grpc.CallOption) (*AuthorizeSSHResponse, error)
 }
 
 type sSHAuthzServiceClient struct {
@@ -42,10 +47,10 @@ func NewSSHAuthzServiceClient(cc grpc.ClientConnInterface) SSHAuthzServiceClient
 	return &sSHAuthzServiceClient{cc}
 }
 
-func (c *sSHAuthzServiceClient) AuthorizeSSH(ctx context.Context, in *AuthorizeSSHRequest, opts ...grpc.CallOption) (*AuthorizeSSHResponse, error) {
+func (c *sSHAuthzServiceClient) Authorize(ctx context.Context, in *AuthorizeSSHRequest, opts ...grpc.CallOption) (*AuthorizeSSHResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(AuthorizeSSHResponse)
-	err := c.cc.Invoke(ctx, SSHAuthzService_AuthorizeSSH_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, SSHAuthzService_Authorize_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -61,7 +66,12 @@ func (c *sSHAuthzServiceClient) AuthorizeSSH(ctx context.Context, in *AuthorizeS
 type SSHAuthzServiceServer interface {
 	// Authorize decides whether the offered credential may open an SSH session
 	// as login on this backend at this moment.
-	AuthorizeSSH(context.Context, *AuthorizeSSHRequest) (*AuthorizeSSHResponse, error)
+	// These message names intentionally include SSH because the cloud-side
+	// ActuationService.AuthorizeSSH RPC reuses the exact same wire contract.
+	// buf:lint:ignore RPC_REQUEST_STANDARD_NAME
+	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+	Authorize(context.Context, *AuthorizeSSHRequest) (*AuthorizeSSHResponse, error)
 	mustEmbedUnimplementedSSHAuthzServiceServer()
 }
 
@@ -72,8 +82,8 @@ type SSHAuthzServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedSSHAuthzServiceServer struct{}
 
-func (UnimplementedSSHAuthzServiceServer) AuthorizeSSH(context.Context, *AuthorizeSSHRequest) (*AuthorizeSSHResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method AuthorizeSSH not implemented")
+func (UnimplementedSSHAuthzServiceServer) Authorize(context.Context, *AuthorizeSSHRequest) (*AuthorizeSSHResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Authorize not implemented")
 }
 func (UnimplementedSSHAuthzServiceServer) mustEmbedUnimplementedSSHAuthzServiceServer() {}
 func (UnimplementedSSHAuthzServiceServer) testEmbeddedByValue()                         {}
@@ -96,20 +106,20 @@ func RegisterSSHAuthzServiceServer(s grpc.ServiceRegistrar, srv SSHAuthzServiceS
 	s.RegisterService(&SSHAuthzService_ServiceDesc, srv)
 }
 
-func _SSHAuthzService_AuthorizeSSH_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _SSHAuthzService_Authorize_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(AuthorizeSSHRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(SSHAuthzServiceServer).AuthorizeSSH(ctx, in)
+		return srv.(SSHAuthzServiceServer).Authorize(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: SSHAuthzService_AuthorizeSSH_FullMethodName,
+		FullMethod: SSHAuthzService_Authorize_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(SSHAuthzServiceServer).AuthorizeSSH(ctx, req.(*AuthorizeSSHRequest))
+		return srv.(SSHAuthzServiceServer).Authorize(ctx, req.(*AuthorizeSSHRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -122,8 +132,8 @@ var SSHAuthzService_ServiceDesc = grpc.ServiceDesc{
 	HandlerType: (*SSHAuthzServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
-			MethodName: "AuthorizeSSH",
-			Handler:    _SSHAuthzService_AuthorizeSSH_Handler,
+			MethodName: "Authorize",
+			Handler:    _SSHAuthzService_Authorize_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

@@ -43,6 +43,7 @@
 package cloudv1
 
 import (
+	v1 "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	_ "google.golang.org/genproto/googleapis/api/annotations"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
@@ -1442,7 +1443,7 @@ var File_containarium_cloud_v1_actuation_service_proto protoreflect.FileDescript
 
 const file_containarium_cloud_v1_actuation_service_proto_rawDesc = "" +
 	"\n" +
-	"-containarium/cloud/v1/actuation_service.proto\x12\x15containarium.cloud.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x12\n" +
+	"-containarium/cloud/v1/actuation_service.proto\x12\x15containarium.cloud.v1\x1a\x1fcontainarium/v1/ssh_authz.proto\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x12\n" +
 	"\x10HeartbeatRequest\"|\n" +
 	"\x11HeartbeatResponse\x12;\n" +
 	"\vreceived_at\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
@@ -1547,8 +1548,9 @@ const file_containarium_cloud_v1_actuation_service_proto_rawDesc = "" +
 	"\x11NetworkPolicyMode\x12#\n" +
 	"\x1fNETWORK_POLICY_MODE_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cNETWORK_POLICY_MODE_LOG_ONLY\x10\x01\x12\x1f\n" +
-	"\x1bNETWORK_POLICY_MODE_ENFORCE\x10\x022\xfe\x06\n" +
-	"\x10ActuationService\x12\x82\x01\n" +
+	"\x1bNETWORK_POLICY_MODE_ENFORCE\x10\x022\xdb\a\n" +
+	"\x10ActuationService\x12[\n" +
+	"\fAuthorizeSSH\x12$.containarium.v1.AuthorizeSSHRequest\x1a%.containarium.v1.AuthorizeSSHResponse\x12\x82\x01\n" +
 	"\n" +
 	"EnrollHost\x12(.containarium.cloud.v1.EnrollHostRequest\x1a).containarium.cloud.v1.EnrollHostResponse\"\x1f\x82\xd3\xe4\x93\x02\x19:\x01*\"\x14/v1/actuation/enroll\x12\x94\x01\n" +
 	"\x10ReportHostStatus\x12..containarium.cloud.v1.ReportHostStatusRequest\x1a/.containarium.cloud.v1.ReportHostStatusResponse\"\x1f\x82\xd3\xe4\x93\x02\x19:\x01*\"\x14/v1/actuation/status\x12\x82\x01\n" +
@@ -1593,6 +1595,8 @@ var file_containarium_cloud_v1_actuation_service_proto_goTypes = []any{
 	(*GetSSHTrustBundleResponse)(nil),    // 18: containarium.cloud.v1.GetSSHTrustBundleResponse
 	nil,                                  // 19: containarium.cloud.v1.Assignment.SecretEnvEntry
 	(*timestamppb.Timestamp)(nil),        // 20: google.protobuf.Timestamp
+	(*v1.AuthorizeSSHRequest)(nil),       // 21: containarium.v1.AuthorizeSSHRequest
+	(*v1.AuthorizeSSHResponse)(nil),      // 22: containarium.v1.AuthorizeSSHResponse
 }
 var file_containarium_cloud_v1_actuation_service_proto_depIdxs = []int32{
 	20, // 0: containarium.cloud.v1.HeartbeatResponse.received_at:type_name -> google.protobuf.Timestamp
@@ -1610,20 +1614,22 @@ var file_containarium_cloud_v1_actuation_service_proto_depIdxs = []int32{
 	20, // 12: containarium.cloud.v1.ReportHostStatusResponse.received_at:type_name -> google.protobuf.Timestamp
 	16, // 13: containarium.cloud.v1.GetSSHTrustBundleResponse.ca_keys:type_name -> containarium.cloud.v1.SSHCAKey
 	20, // 14: containarium.cloud.v1.GetSSHTrustBundleResponse.generated_at:type_name -> google.protobuf.Timestamp
-	11, // 15: containarium.cloud.v1.ActuationService.EnrollHost:input_type -> containarium.cloud.v1.EnrollHostRequest
-	14, // 16: containarium.cloud.v1.ActuationService.ReportHostStatus:input_type -> containarium.cloud.v1.ReportHostStatusRequest
-	2,  // 17: containarium.cloud.v1.ActuationService.Heartbeat:input_type -> containarium.cloud.v1.HeartbeatRequest
-	4,  // 18: containarium.cloud.v1.ActuationService.ReportContainerState:input_type -> containarium.cloud.v1.ReportContainerStateRequest
-	6,  // 19: containarium.cloud.v1.ActuationService.WatchAssignments:input_type -> containarium.cloud.v1.WatchAssignmentsRequest
-	17, // 20: containarium.cloud.v1.ActuationService.GetSSHTrustBundle:input_type -> containarium.cloud.v1.GetSSHTrustBundleRequest
-	12, // 21: containarium.cloud.v1.ActuationService.EnrollHost:output_type -> containarium.cloud.v1.EnrollHostResponse
-	15, // 22: containarium.cloud.v1.ActuationService.ReportHostStatus:output_type -> containarium.cloud.v1.ReportHostStatusResponse
-	3,  // 23: containarium.cloud.v1.ActuationService.Heartbeat:output_type -> containarium.cloud.v1.HeartbeatResponse
-	5,  // 24: containarium.cloud.v1.ActuationService.ReportContainerState:output_type -> containarium.cloud.v1.ReportContainerStateResponse
-	10, // 25: containarium.cloud.v1.ActuationService.WatchAssignments:output_type -> containarium.cloud.v1.AssignmentBatch
-	18, // 26: containarium.cloud.v1.ActuationService.GetSSHTrustBundle:output_type -> containarium.cloud.v1.GetSSHTrustBundleResponse
-	21, // [21:27] is the sub-list for method output_type
-	15, // [15:21] is the sub-list for method input_type
+	21, // 15: containarium.cloud.v1.ActuationService.AuthorizeSSH:input_type -> containarium.v1.AuthorizeSSHRequest
+	11, // 16: containarium.cloud.v1.ActuationService.EnrollHost:input_type -> containarium.cloud.v1.EnrollHostRequest
+	14, // 17: containarium.cloud.v1.ActuationService.ReportHostStatus:input_type -> containarium.cloud.v1.ReportHostStatusRequest
+	2,  // 18: containarium.cloud.v1.ActuationService.Heartbeat:input_type -> containarium.cloud.v1.HeartbeatRequest
+	4,  // 19: containarium.cloud.v1.ActuationService.ReportContainerState:input_type -> containarium.cloud.v1.ReportContainerStateRequest
+	6,  // 20: containarium.cloud.v1.ActuationService.WatchAssignments:input_type -> containarium.cloud.v1.WatchAssignmentsRequest
+	17, // 21: containarium.cloud.v1.ActuationService.GetSSHTrustBundle:input_type -> containarium.cloud.v1.GetSSHTrustBundleRequest
+	22, // 22: containarium.cloud.v1.ActuationService.AuthorizeSSH:output_type -> containarium.v1.AuthorizeSSHResponse
+	12, // 23: containarium.cloud.v1.ActuationService.EnrollHost:output_type -> containarium.cloud.v1.EnrollHostResponse
+	15, // 24: containarium.cloud.v1.ActuationService.ReportHostStatus:output_type -> containarium.cloud.v1.ReportHostStatusResponse
+	3,  // 25: containarium.cloud.v1.ActuationService.Heartbeat:output_type -> containarium.cloud.v1.HeartbeatResponse
+	5,  // 26: containarium.cloud.v1.ActuationService.ReportContainerState:output_type -> containarium.cloud.v1.ReportContainerStateResponse
+	10, // 27: containarium.cloud.v1.ActuationService.WatchAssignments:output_type -> containarium.cloud.v1.AssignmentBatch
+	18, // 28: containarium.cloud.v1.ActuationService.GetSSHTrustBundle:output_type -> containarium.cloud.v1.GetSSHTrustBundleResponse
+	22, // [22:29] is the sub-list for method output_type
+	15, // [15:22] is the sub-list for method input_type
 	15, // [15:15] is the sub-list for extension type_name
 	15, // [15:15] is the sub-list for extension extendee
 	0,  // [0:15] is the sub-list for field type_name

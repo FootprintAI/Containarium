@@ -44,6 +44,7 @@ package cloudv1
 
 import (
 	context "context"
+	v1 "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
@@ -55,6 +56,7 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
+	ActuationService_AuthorizeSSH_FullMethodName         = "/containarium.cloud.v1.ActuationService/AuthorizeSSH"
 	ActuationService_EnrollHost_FullMethodName           = "/containarium.cloud.v1.ActuationService/EnrollHost"
 	ActuationService_ReportHostStatus_FullMethodName     = "/containarium.cloud.v1.ActuationService/ReportHostStatus"
 	ActuationService_Heartbeat_FullMethodName            = "/containarium.cloud.v1.ActuationService/Heartbeat"
@@ -67,6 +69,12 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type ActuationServiceClient interface {
+	// AuthorizeSSH lets an enrolled daemon forward the sentinel's live SSH
+	// authorization check to the cloud without translating request/response
+	// types. Authentication is the same host bearer used by the other
+	// actuation RPCs.
+	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+	AuthorizeSSH(ctx context.Context, in *v1.AuthorizeSSHRequest, opts ...grpc.CallOption) (*v1.AuthorizeSSHResponse, error)
 	// EnrollHost redeems a single-use join token and registers the BYO host.
 	// Self-authenticating via the token in the body (NOT host-bearer — the row
 	// doesn't exist yet).
@@ -100,8 +108,8 @@ type ActuationServiceClient interface {
 	ReportContainerState(ctx context.Context, in *ReportContainerStateRequest, opts ...grpc.CallOption) (*ReportContainerStateResponse, error)
 	// WatchAssignments is a long-lived server stream. The host opens
 	// it on startup and keeps it open; the cloud sends:
-	//  1. an immediate snapshot of the host's current assignments,
-	//  2. a fresh snapshot on each subsequent change.
+	//   1. an immediate snapshot of the host's current assignments,
+	//   2. a fresh snapshot on each subsequent change.
 	//
 	// v1 implementation polls the store on a fixed interval and sends
 	// a batch every tick. Hosts treat each batch as authoritative
@@ -135,6 +143,16 @@ type actuationServiceClient struct {
 
 func NewActuationServiceClient(cc grpc.ClientConnInterface) ActuationServiceClient {
 	return &actuationServiceClient{cc}
+}
+
+func (c *actuationServiceClient) AuthorizeSSH(ctx context.Context, in *v1.AuthorizeSSHRequest, opts ...grpc.CallOption) (*v1.AuthorizeSSHResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(v1.AuthorizeSSHResponse)
+	err := c.cc.Invoke(ctx, ActuationService_AuthorizeSSH_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *actuationServiceClient) EnrollHost(ctx context.Context, in *EnrollHostRequest, opts ...grpc.CallOption) (*EnrollHostResponse, error) {
@@ -210,6 +228,12 @@ func (c *actuationServiceClient) GetSSHTrustBundle(ctx context.Context, in *GetS
 // All implementations must embed UnimplementedActuationServiceServer
 // for forward compatibility.
 type ActuationServiceServer interface {
+	// AuthorizeSSH lets an enrolled daemon forward the sentinel's live SSH
+	// authorization check to the cloud without translating request/response
+	// types. Authentication is the same host bearer used by the other
+	// actuation RPCs.
+	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+	AuthorizeSSH(context.Context, *v1.AuthorizeSSHRequest) (*v1.AuthorizeSSHResponse, error)
 	// EnrollHost redeems a single-use join token and registers the BYO host.
 	// Self-authenticating via the token in the body (NOT host-bearer — the row
 	// doesn't exist yet).
@@ -243,8 +267,8 @@ type ActuationServiceServer interface {
 	ReportContainerState(context.Context, *ReportContainerStateRequest) (*ReportContainerStateResponse, error)
 	// WatchAssignments is a long-lived server stream. The host opens
 	// it on startup and keeps it open; the cloud sends:
-	//  1. an immediate snapshot of the host's current assignments,
-	//  2. a fresh snapshot on each subsequent change.
+	//   1. an immediate snapshot of the host's current assignments,
+	//   2. a fresh snapshot on each subsequent change.
 	//
 	// v1 implementation polls the store on a fixed interval and sends
 	// a batch every tick. Hosts treat each batch as authoritative
@@ -280,6 +304,9 @@ type ActuationServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedActuationServiceServer struct{}
 
+func (UnimplementedActuationServiceServer) AuthorizeSSH(context.Context, *v1.AuthorizeSSHRequest) (*v1.AuthorizeSSHResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AuthorizeSSH not implemented")
+}
 func (UnimplementedActuationServiceServer) EnrollHost(context.Context, *EnrollHostRequest) (*EnrollHostResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method EnrollHost not implemented")
 }
@@ -317,6 +344,24 @@ func RegisterActuationServiceServer(s grpc.ServiceRegistrar, srv ActuationServic
 		t.testEmbeddedByValue()
 	}
 	s.RegisterService(&ActuationService_ServiceDesc, srv)
+}
+
+func _ActuationService_AuthorizeSSH_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(v1.AuthorizeSSHRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ActuationServiceServer).AuthorizeSSH(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ActuationService_AuthorizeSSH_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ActuationServiceServer).AuthorizeSSH(ctx, req.(*v1.AuthorizeSSHRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
 
 func _ActuationService_EnrollHost_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -427,6 +472,10 @@ var ActuationService_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "containarium.cloud.v1.ActuationService",
 	HandlerType: (*ActuationServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "AuthorizeSSH",
+			Handler:    _ActuationService_AuthorizeSSH_Handler,
+		},
 		{
 			MethodName: "EnrollHost",
 			Handler:    _ActuationService_EnrollHost_Handler,

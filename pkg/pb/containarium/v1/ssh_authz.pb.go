@@ -690,9 +690,9 @@ const file_containarium_v1_ssh_authz_proto_rawDesc = "" +
 	"\x1bSSH_DENY_REASON_KEY_EXPIRED\x10\x04\x12$\n" +
 	" SSH_DENY_REASON_APPROVAL_PENDING\x10\x05\x12#\n" +
 	"\x1fSSH_DENY_REASON_APPROVAL_DENIED\x10\x06\x12(\n" +
-	"$SSH_DENY_REASON_UPSTREAM_UNAVAILABLE\x10\a2\x89\x02\n" +
-	"\x0fSSHAuthzService\x12\xf5\x01\n" +
-	"\fAuthorizeSSH\x12$.containarium.v1.AuthorizeSSHRequest\x1a%.containarium.v1.AuthorizeSSHResponse\"\x97\x01\x92Ax\n" +
+	"$SSH_DENY_REASON_UPSTREAM_UNAVAILABLE\x10\a2\x86\x02\n" +
+	"\x0fSSHAuthzService\x12\xf2\x01\n" +
+	"\tAuthorize\x12$.containarium.v1.AuthorizeSSHRequest\x1a%.containarium.v1.AuthorizeSSHResponse\"\x97\x01\x92Ax\n" +
 	"\x03SSH\x12\x1bAuthorize an SSH connection\x1aTPerforms a live authorization check for an SSH credential presented to the sentinel.\x82\xd3\xe4\x93\x02\x16:\x01*\"\x11/v1/ssh/authorizeBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
 
 var (
@@ -733,8 +733,8 @@ var file_containarium_v1_ssh_authz_proto_depIdxs = []int32{
 	8,  // 7: containarium.v1.AuthorizeSSHResponse.approval:type_name -> containarium.v1.SSHDeviceApproval
 	9,  // 8: containarium.v1.SSHDeviceApproval.poll_after:type_name -> google.protobuf.Duration
 	10, // 9: containarium.v1.SSHDeviceApproval.expires_at:type_name -> google.protobuf.Timestamp
-	3,  // 10: containarium.v1.SSHAuthzService.AuthorizeSSH:input_type -> containarium.v1.AuthorizeSSHRequest
-	7,  // 11: containarium.v1.SSHAuthzService.AuthorizeSSH:output_type -> containarium.v1.AuthorizeSSHResponse
+	3,  // 10: containarium.v1.SSHAuthzService.Authorize:input_type -> containarium.v1.AuthorizeSSHRequest
+	7,  // 11: containarium.v1.SSHAuthzService.Authorize:output_type -> containarium.v1.AuthorizeSSHResponse
 	11, // [11:12] is the sub-list for method output_type
 	10, // [10:11] is the sub-list for method input_type
 	10, // [10:10] is the sub-list for extension type_name

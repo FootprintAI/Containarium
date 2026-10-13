@@ -92,6 +92,7 @@ var registeredServices = []rpcSurface{
 	{pb.VolumeService_ServiceDesc, "VolumeServer"},
 	{pb.SandboxService_ServiceDesc, "SandboxServer"},
 	{pb.AnonymousBoxService_ServiceDesc, "AnonymousBoxServer"},
+	{pb.SSHAuthzService_ServiceDesc, "Server"},
 	{pb.ClusterService_ServiceDesc, "ClusterServer"},
 	{pb.KmsService_ServiceDesc, "KmsServer"},
 	{pb.TrafficService_ServiceDesc, "TrafficServer"},
@@ -132,6 +133,10 @@ var registeredServices = []rpcSurface{
 // it always was a design choice rather than a finding — see its own
 // comment below.
 var authExemptions = map[string]string{
+	// #2516: this RPC is authenticated at its dedicated HTTP mount by
+	// auth.SentinelVerifier before grpc-gateway forwards it over the trusted
+	// in-process transport. It deliberately does not accept user JWT scopes.
+	"SSHAuthzService/Authorize": "sentinel signature is verified at the dedicated /v1/ssh/authorize gateway mount — see #2516",
 	// #1685 itself: refresh is self-authenticating via the refresh_token
 	// payload's own signature (validated by tokenManager.ValidateRefreshToken)
 	// — requiring a bearer scope would be circular, since refresh exists

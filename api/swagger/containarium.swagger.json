@@ -19,6 +19,10 @@
       "description": "ContainerService provides container management operations"
     },
     {
+      "name": "SSHAuthzService",
+      "description": "SSHAuthzService performs a live authorization check for an SSH credential\r\npresented to the sentinel."
+    },
+    {
       "name": "ActuationService"
     },
     {
@@ -56,10 +60,6 @@
     {
       "name": "AppService",
       "description": "AppService provides application deployment and management"
-    },
-    {
-      "name": "SSHAuthzService",
-      "description": "SSHAuthzService performs a live authorization check for an SSH credential\r\npresented to the sentinel."
     },
     {
       "name": "AuditService",
@@ -6879,7 +6879,7 @@
       "post": {
         "summary": "Authorize an SSH connection",
         "description": "Performs a live authorization check for an SSH credential presented to the sentinel.",
-        "operationId": "SSHAuthzService_AuthorizeSSH",
+        "operationId": "SSHAuthzService_Authorize",
         "responses": {
           "200": {
             "description": "A successful response.",
