@@ -58,10 +58,18 @@ func (b *BridgeClient) ResolveBackend(ctx context.Context, login string) (string
 }
 
 func (b *BridgeClient) Authorize(ctx context.Context, backend string, in *pb.AuthorizeSSHRequest) (*pb.AuthorizeSSHResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) <= 0 {
+		return nil, context.DeadlineExceeded
+	}
 	// Put the backend in the path prefix; HTTPAuthorizer appends AuthorizePath.
 	a := &HTTPAuthorizer{Client: b.client, BackendURL: func(string) (string, error) { return "http://sentinel/backend/" + url.PathEscape(backend), nil }, Sign: func(r *http.Request) {
 		if deadline, ok := ctx.Deadline(); ok {
-			r.Header.Set("X-SSH-Authz-Timeout", time.Until(deadline).String())
+			if remaining := time.Until(deadline); remaining > 0 {
+				r.Header.Set("X-SSH-Authz-Timeout", remaining.String())
+			}
 		}
 	}}
 	return a.Authorize(ctx, backend, in)
