@@ -7,10 +7,11 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"maps"
 	"math"
 	"net/http"
 	"net/http/httptest"
-	"sort"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -49,17 +50,8 @@ type contractCase struct {
 // every field populated somewhere: both credential arms (a max uint64
 // serial), every key type, cache_ttl, and a device approval.
 func contractCases() []contractCase {
-	reasons := make([]int, 0, len(pb.SSHDenyReason_name))
-	for v := range pb.SSHDenyReason_name {
-		reasons = append(reasons, int(v))
-	}
-	sort.Ints(reasons)
-
-	keyTypes := make([]int, 0, len(pb.SSHKeyType_name))
-	for v := range pb.SSHKeyType_name {
-		keyTypes = append(keyTypes, int(v))
-	}
-	sort.Ints(keyTypes)
+	reasons := slices.Sorted(maps.Keys(pb.SSHDenyReason_name))
+	keyTypes := slices.Sorted(maps.Keys(pb.SSHKeyType_name))
 
 	// Every third case is a certificate; the rest walk the key types, so
 	// with one ALLOW plus one DENY per reason every key type is covered.
