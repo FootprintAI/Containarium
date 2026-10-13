@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **SSH live authorization contract** (#2516). `proto/containarium/v1/ssh_authz.proto` defines `SSHAuthzService.Authorize` (`POST /v1/ssh/authorize`) with its request/response messages and the `SSHKeyType`, `SSHAuthzDecision` and `SSHDenyReason` enums from `docs/architecture/ssh-live-authorization.md`. The daemon serves it as a stub that returns `Unimplemented` (HTTP 501) until the decider lands. The REST route accepts only a valid sentinel request signature: unsigned or bad signatures get 401, a JWT is not accepted, and a verified call carries the new `ssh:authorize` scope. `SSHSessionRecord` gains `user_id`, `authz_decision`, `deny_reason` and `enforced` (fields 11-14), and `SSHSessionPhase` gains `SSH_SESSION_PHASE_DENIED`; ingest does not handle them yet. The vendored actuation contract gains `ActuationService.AuthorizeSSH` (same messages) and `Assignment.kind` / `Assignment.user_id` with an `AssignmentKind` enum (`UNSPECIFIED` is read as `CONTAINER`); the daemon does not act on `kind` yet, and the cloud repo's copy of `actuation_service.proto` must be synced.
+
+## [0.103.3] - 2026-10-13
+
+_A third patch for coding-agent boxes: the `containarium` MCP server now works with Claude Code and lists its tools for a box token. Boxes keep the `mcp-server` they were provisioned with, so existing boxes need it re-installed (`code install` with this release)._
+
+### Fixed
+
+- **`mcp-server` works with Claude Code, and lists its tools for a box token** (#2529). Two defects made a coding-agent box's `containarium` MCP server unusable. (1) It answered every line it read, including *notifications* (messages with no `id`): `notifications/initialized`, which every MCP client sends to close its handshake, got `{"id":null,"error":{"code":-32601,"message":"Method not found"}}`. JSON-RPC says a server must not reply to a notification, and Claude Code's client rejects `id: null` and drops the connection about a second after it opens, so the agent saw its tools as failed. Notifications are now consumed silently (and not executed); requests still get replies, an unknown method with an id is still -32601, a parse error keeps its `id: null` reply, and `ping` is answered. (2) `tools/list` filtered the catalog by the token's scopes, and a box principal token carries `git:credential` and `mcp:user`, which no tool requires, so it listed **no tools**. A token with the `mcp:user` scope now skips this advisory client-side filter (the control plane applies the person's role on every call); every other token narrows exactly as before. Existing boxes keep the `mcp-server` they were provisioned with and need it re-installed (`code install` with this release).
+
+## [0.103.2] - 2026-10-13
+
+_A second patch for hosted tracker dispatch: a dispatched run's agent can now call its tracker tools. Runs started on 0.103.1 provisioned their box but ended at the first tool call. A daemon upgrade is enough; existing skill boxes pick it up on their next run._
+
+### Fixed
+
+- **A tracker-dispatched run can call its tracker tools** (#2508). The daemon seeds the platform MCP with a plain-`http://` URL to itself over the box's bridge, and the MCP client has refused any `http://` base URL since the C-HIGH-1 hardening unless `CONTAINARIUM_MCP_ALLOW_INSECURE=true` — which nothing set. Every dispatched run therefore failed at its first tracker tool call with `MCP client refuses http:// baseURL`. The seed's command is now `env CONTAINARIUM_MCP_ALLOW_INSECURE=true mcp-server`, scoping the opt-in to that one process on the box's private bridge. The seed is rewritten on every run, so an existing skill box needs the daemon upgrade only.
+- **Platform build constraints for `hostcheck` and `agent-box` are corrected** (#2507): the agent-box sources are excluded from Windows builds, and CI now cross-compiles `hostcheck` for Windows and the client and `agent-box` for macOS and fails if `agent-box` becomes Windows-buildable. No change to Linux behaviour.
+
+## [0.103.1] - 2026-10-13
+
+_A patch release for hosted agent runs: a token that holds only `agents:run` or `crews:run` can now provision a skill's box the first time that skill runs on a daemon. Deployments that dispatch skills from the control plane (tracker dispatch) need this before the dispatch can work._
+
+### Fixed
+
+- **A token holding only `agents:run` (or `crews:run`) can now provision a skill's box** (#2504). The recipe path's inner create went through the public `CreateContainer` RPC, which checked the caller for `containers:write` a second time, so the first run of a skill on a daemon failed with `failed to provision container: … scope required: containers:write` — a hosted tracker dispatch always, `RunAgentSkill` and `RunCrew` whenever the box did not exist yet. The create now runs under the daemon's own authority once the entry point has authorised the caller for that box name (`DeployRecipe` still requires `containers:write`; a skill or crew run requires its own scope plus the tenant check on `agent-<skill>`), the public RPC is unchanged, and `deploy` refuses a context with no authenticated subject.
+- **`containarium create` run on the daemon host applies the privileged-Podman policy** (#2495). The local create path set privileged Podman whenever Podman was enabled, without consulting `CONTAINARIUM_PRIVILEGED_PODMAN_POLICY`; it now asks the same policy check the daemon uses, as the system principal, so the setting is honoured there too.
+
 ## [0.103.0] - 2026-10-12
 
 _Coding-agent boxes now come with the SDLC role skills, a box created without SSH keys is reachable again, and the

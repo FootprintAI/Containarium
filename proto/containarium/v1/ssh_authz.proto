@@ -1,0 +1,121 @@
+syntax = "proto3";
+
+package containarium.v1;
+
+option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
+
+import "google/api/annotations.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+import "protoc-gen-openapiv2/options/annotations.proto";
+
+// SSHAuthzService is the per-connection SSH authorization contract
+// (docs/architecture/ssh-live-authorization.md, component 1; #2516). The
+// sentinel's ssh-authz plugin asks the backend daemon, at connection time,
+// whether the credential offered may open a session as `login` on this
+// backend. The daemon answers from local state (self-host) or forwards to
+// the cloud over ActuationService.AuthorizeSSH, which reuses these same
+// messages so neither side translates.
+//
+// The REST route is mounted behind the sentinel request signature
+// (auth.SentinelVerifier), not a JWT: it is sentinel-to-daemon plumbing.
+service SSHAuthzService {
+  // Authorize decides whether the credential offered to the sentinel may
+  // open a session as `login` on this backend, right now.
+  //
+  // The request/response names follow the architecture doc, and the same
+  // messages back ActuationService.AuthorizeSSH on purpose (one message set
+  // for both hops), hence the lint exemptions.
+  // buf:lint:ignore RPC_REQUEST_STANDARD_NAME
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+  rpc Authorize(AuthorizeSSHRequest) returns (AuthorizeSSHResponse) {
+    option (google.api.http) = {
+      post: "/v1/ssh/authorize"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Authorize SSH connection";
+      description: "Decide whether the credential offered to the sentinel may open a session as the given login on this backend. Sentinel-signed requests only.";
+      tags: "SSHAuthz";
+    };
+  }
+}
+
+message AuthorizeSSHRequest {
+  // SSH username presented (jump account).
+  string login = 1;
+  // What was offered.
+  SSHCredential credential = 2;
+  string client_ip = 3;
+  // Informational, never used for authorization.
+  string sentinel_id = 4;
+  // Set on re-poll during device approval.
+  string approval_id = 5;
+}
+
+message SSHCredential {
+  oneof kind {
+    // Raw or security-key (sk-*) public key.
+    SSHPublicKeyCredential public_key = 1;
+    SSHCertificateCredential certificate = 2;
+  }
+}
+
+message SSHPublicKeyCredential {
+  string fingerprint_sha256 = 1;
+  SSHKeyType key_type = 2;
+}
+
+message SSHCertificateCredential {
+  string key_id = 1;
+  uint64 serial = 2;
+  string ca_fingerprint_sha256 = 3;
+}
+
+enum SSHKeyType {
+  SSH_KEY_TYPE_UNSPECIFIED = 0;
+  SSH_KEY_TYPE_ED25519 = 1;
+  SSH_KEY_TYPE_RSA = 2;
+  SSH_KEY_TYPE_ECDSA = 3;
+  SSH_KEY_TYPE_SK_ED25519 = 4;
+  SSH_KEY_TYPE_SK_ECDSA = 5;
+}
+
+message AuthorizeSSHResponse {
+  SSHAuthzDecision decision = 1;
+  // Set when decision == SSH_AUTHZ_DECISION_DENY.
+  SSHDenyReason deny_reason = 2;
+  // Set when known, DENY included (for audit).
+  string user_id = 3;
+  // Positive cache lifetime at the sentinel.
+  google.protobuf.Duration cache_ttl = 4;
+  // Set when deny_reason == SSH_DENY_REASON_APPROVAL_PENDING.
+  SSHDeviceApproval approval = 5;
+}
+
+enum SSHAuthzDecision {
+  SSH_AUTHZ_DECISION_UNSPECIFIED = 0;
+  SSH_AUTHZ_DECISION_ALLOW = 1;
+  SSH_AUTHZ_DECISION_DENY = 2;
+}
+
+enum SSHDenyReason {
+  SSH_DENY_REASON_UNSPECIFIED = 0;
+  SSH_DENY_REASON_UNKNOWN_KEY = 1;
+  SSH_DENY_REASON_USER_INACTIVE = 2;
+  SSH_DENY_REASON_NO_ACCESS = 3;
+  SSH_DENY_REASON_KEY_EXPIRED = 4;
+  SSH_DENY_REASON_APPROVAL_PENDING = 5;
+  SSH_DENY_REASON_APPROVAL_DENIED = 6;
+  // The daemon could not reach the cloud.
+  SSH_DENY_REASON_UPSTREAM_UNAVAILABLE = 7;
+}
+
+message SSHDeviceApproval {
+  string approval_id = 1;
+  string code = 2;
+  string url = 3;
+  google.protobuf.Duration poll_after = 4;
+  google.protobuf.Timestamp expires_at = 5;
+}

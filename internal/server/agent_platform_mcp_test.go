@@ -21,8 +21,8 @@ func TestPlatformMCPSeed_MatchesSharedFixture(t *testing.T) {
 		t.Fatalf("read shared fixture: %v", err)
 	}
 	got, err := json.Marshal(platformMCPSeed{
-		Command:   "mcp-server",
-		Args:      []string{},
+		Command:   "env",
+		Args:      []string{platformMCPAllowInsecureEnv + "=true", "mcp-server"},
 		ServerURL: "http://10.9.8.1:8080",
 		TokenFile: "/etc/containarium/agent/runs/run-1/token",
 		Tools:     "tracker_*",
@@ -95,8 +95,53 @@ func TestPlatformMCPSeedScript_WritesResolvedSeed(t *testing.T) {
 	if got.Tools != "tracker_*" {
 		t.Errorf("tools = %q, want tracker_* — the in-box agent must see the tracker tools only", got.Tools)
 	}
-	if got.Command != "mcp-server" {
-		t.Errorf("command = %q, want mcp-server", got.Command)
+	if got.Command != "env" || len(got.Args) != 2 || got.Args[0] != "CONTAINARIUM_MCP_ALLOW_INSECURE=true" || got.Args[1] != "mcp-server" {
+		t.Errorf("command = %q %v, want env CONTAINARIUM_MCP_ALLOW_INSECURE=true mcp-server", got.Command, got.Args)
+	}
+}
+
+// #2508: the seed's own command line must put the plaintext opt-in into the
+// platform MCP's environment — the runtime hands that process nothing else of
+// the kind, and the MCP client refuses http:// without it. Run the command
+// exactly as the runtime would (command + args, a stub standing in for the
+// real mcp-server) and read the variable back from inside it.
+func TestPlatformMCPSeed_CommandCarriesThePlaintextOptInToTheProcess(t *testing.T) {
+	seedDir := t.TempDir()
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "ip"), []byte("#!/bin/sh\necho 'default via 10.9.8.1 dev eth0'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Stand-in for the real mcp-server: report what the MCP client would see.
+	stub := "#!/bin/sh\necho \"allow_insecure=$CONTAINARIUM_MCP_ALLOW_INSECURE\"\n"
+	if err := os.WriteFile(filepath.Join(binDir, "mcp-server"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script, ok := platformMCPSeedScript(seedDir, 8080, "default")
+	if !ok {
+		t.Fatal("no script")
+	}
+	env := append(os.Environ(), "PATH="+binDir+":"+os.Getenv("PATH"))
+	seed := exec.Command("bash", "-c", script) //nolint:gosec // test-only, script built by the code under test
+	seed.Env = env
+	if out, err := seed.CombinedOutput(); err != nil {
+		t.Fatalf("seed script failed: %v\n%s", err, out)
+	}
+	raw, err := os.ReadFile(filepath.Join(seedDir, "platform_mcp.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got platformMCPSeed
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	run := exec.Command(got.Command, got.Args...)             //nolint:gosec // test-only; the seed we just wrote
+	run.Env = append(env, "CONTAINARIUM_MCP_ALLOW_INSECURE=") // the parent (the runtime) does not set it
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("seeded command failed: %v\n%s", err, out)
+	}
+	if string(out) != "allow_insecure=true\n" {
+		t.Errorf("platform MCP process saw %q, want allow_insecure=true", out)
 	}
 }
 

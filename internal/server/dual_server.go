@@ -594,6 +594,11 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// Register container service
 	pb.RegisterContainerServiceServer(grpcServer, containerServer)
 
+	// SSHAuthzService (#2516): the per-connection SSH authorization
+	// contract. A stub returning Unimplemented until the decider (#2517);
+	// the REST route is mounted behind the sentinel signature.
+	pb.RegisterSSHAuthzServiceServer(grpcServer, NewSSHAuthzServer())
+
 	// ComposeAutostartService — operator-side RPC that execs
 	// `agent-box compose <verb>` inside the tenant's LXC. Uses a
 	// dedicated incus client (cheap; the gRPC server keeps the

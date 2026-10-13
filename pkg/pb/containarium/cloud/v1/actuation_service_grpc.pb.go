@@ -44,6 +44,7 @@ package cloudv1
 
 import (
 	context "context"
+	v1 "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
@@ -61,6 +62,7 @@ const (
 	ActuationService_ReportContainerState_FullMethodName = "/containarium.cloud.v1.ActuationService/ReportContainerState"
 	ActuationService_WatchAssignments_FullMethodName     = "/containarium.cloud.v1.ActuationService/WatchAssignments"
 	ActuationService_GetSSHTrustBundle_FullMethodName    = "/containarium.cloud.v1.ActuationService/GetSSHTrustBundle"
+	ActuationService_AuthorizeSSH_FullMethodName         = "/containarium.cloud.v1.ActuationService/AuthorizeSSH"
 )
 
 // ActuationServiceClient is the client API for ActuationService service.
@@ -127,6 +129,14 @@ type ActuationServiceClient interface {
 	//   - Unauthenticated: missing / invalid host-bearer.
 	//   - Unimplemented: this daemon has no SSH CA configured.
 	GetSSHTrustBundle(ctx context.Context, in *GetSSHTrustBundleRequest, opts ...grpc.CallOption) (*GetSSHTrustBundleResponse, error)
+	// AuthorizeSSH is the managed-mode answer to SSHAuthzService.Authorize
+	// (#2516): the daemon forwards the sentinel's question with its host
+	// bearer and relays the answer. It reuses containarium.v1's messages so
+	// the daemon never translates, hence the lint exemption.
+	//
+	// Auth: requires a valid `host-bearer` header.
+	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+	AuthorizeSSH(ctx context.Context, in *v1.AuthorizeSSHRequest, opts ...grpc.CallOption) (*v1.AuthorizeSSHResponse, error)
 }
 
 type actuationServiceClient struct {
@@ -206,6 +216,16 @@ func (c *actuationServiceClient) GetSSHTrustBundle(ctx context.Context, in *GetS
 	return out, nil
 }
 
+func (c *actuationServiceClient) AuthorizeSSH(ctx context.Context, in *v1.AuthorizeSSHRequest, opts ...grpc.CallOption) (*v1.AuthorizeSSHResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(v1.AuthorizeSSHResponse)
+	err := c.cc.Invoke(ctx, ActuationService_AuthorizeSSH_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ActuationServiceServer is the server API for ActuationService service.
 // All implementations must embed UnimplementedActuationServiceServer
 // for forward compatibility.
@@ -270,6 +290,14 @@ type ActuationServiceServer interface {
 	//   - Unauthenticated: missing / invalid host-bearer.
 	//   - Unimplemented: this daemon has no SSH CA configured.
 	GetSSHTrustBundle(context.Context, *GetSSHTrustBundleRequest) (*GetSSHTrustBundleResponse, error)
+	// AuthorizeSSH is the managed-mode answer to SSHAuthzService.Authorize
+	// (#2516): the daemon forwards the sentinel's question with its host
+	// bearer and relays the answer. It reuses containarium.v1's messages so
+	// the daemon never translates, hence the lint exemption.
+	//
+	// Auth: requires a valid `host-bearer` header.
+	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+	AuthorizeSSH(context.Context, *v1.AuthorizeSSHRequest) (*v1.AuthorizeSSHResponse, error)
 	mustEmbedUnimplementedActuationServiceServer()
 }
 
@@ -297,6 +325,9 @@ func (UnimplementedActuationServiceServer) WatchAssignments(*WatchAssignmentsReq
 }
 func (UnimplementedActuationServiceServer) GetSSHTrustBundle(context.Context, *GetSSHTrustBundleRequest) (*GetSSHTrustBundleResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetSSHTrustBundle not implemented")
+}
+func (UnimplementedActuationServiceServer) AuthorizeSSH(context.Context, *v1.AuthorizeSSHRequest) (*v1.AuthorizeSSHResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AuthorizeSSH not implemented")
 }
 func (UnimplementedActuationServiceServer) mustEmbedUnimplementedActuationServiceServer() {}
 func (UnimplementedActuationServiceServer) testEmbeddedByValue()                          {}
@@ -420,6 +451,24 @@ func _ActuationService_GetSSHTrustBundle_Handler(srv interface{}, ctx context.Co
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ActuationService_AuthorizeSSH_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(v1.AuthorizeSSHRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ActuationServiceServer).AuthorizeSSH(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ActuationService_AuthorizeSSH_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ActuationServiceServer).AuthorizeSSH(ctx, req.(*v1.AuthorizeSSHRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ActuationService_ServiceDesc is the grpc.ServiceDesc for ActuationService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -446,6 +495,10 @@ var ActuationService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetSSHTrustBundle",
 			Handler:    _ActuationService_GetSSHTrustBundle_Handler,
+		},
+		{
+			MethodName: "AuthorizeSSH",
+			Handler:    _ActuationService_AuthorizeSSH_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

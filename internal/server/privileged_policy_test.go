@@ -55,7 +55,7 @@ func TestAuthorizePrivilegedPodman_AllPolicy(t *testing.T) {
 	resetPrivilegedPolicy(t)
 
 	// "all" accepts every caller, no role check needed.
-	allowed, err := authorizePrivilegedPodman(context.Background())
+	allowed, err := AuthorizePrivilegedPodman(context.Background())
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)
 	}
@@ -69,7 +69,7 @@ func TestAuthorizePrivilegedPodman_AdminOnly_NonAdminRejected(t *testing.T) {
 	resetPrivilegedPolicy(t)
 
 	ctx := auth.ContextWithTestSubject(context.Background(), "alice", "user")
-	allowed, err := authorizePrivilegedPodman(ctx)
+	allowed, err := AuthorizePrivilegedPodman(ctx)
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("non-admin must be denied; got %v (%v)", status.Code(err), err)
 	}
@@ -83,7 +83,7 @@ func TestAuthorizePrivilegedPodman_AdminOnly_AdminAllowed(t *testing.T) {
 	resetPrivilegedPolicy(t)
 
 	ctx := auth.ContextWithSystemIdentity(context.Background())
-	allowed, err := authorizePrivilegedPodman(ctx)
+	allowed, err := AuthorizePrivilegedPodman(ctx)
 	if err != nil {
 		t.Fatalf("admin must pass: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestAuthorizePrivilegedPodman_Disabled_DowngradesEvenForAdmin(t *testing.T)
 	resetPrivilegedPolicy(t)
 
 	ctx := auth.ContextWithSystemIdentity(context.Background())
-	allowed, err := authorizePrivilegedPodman(ctx)
+	allowed, err := AuthorizePrivilegedPodman(ctx)
 	if err != nil {
 		t.Fatalf("disabled policy must not error: %v", err)
 	}
@@ -266,8 +266,8 @@ func TestAuthorizePrivilegedPodman_NormalisedVariants(t *testing.T) {
 		t.Run(fmt.Sprintf("%q", v.raw), func(t *testing.T) {
 			t.Setenv(privilegedPolicyEnv, v.raw)
 			resetPrivilegedPolicy(t)
-			adminAllowed, adminErr := authorizePrivilegedPodman(admin)
-			userAllowed, userErr := authorizePrivilegedPodman(nonAdmin)
+			adminAllowed, adminErr := AuthorizePrivilegedPodman(admin)
+			userAllowed, userErr := AuthorizePrivilegedPodman(nonAdmin)
 			switch v.want {
 			case PrivilegedPolicyAll:
 				if !adminAllowed || adminErr != nil || !userAllowed || userErr != nil {
@@ -305,7 +305,7 @@ func TestAuthorizePrivilegedPodman_MalformedNeverPrivileged(t *testing.T) {
 				"non-admin": auth.ContextWithTestSubject(context.Background(), "alice", "user"),
 				"anonymous": context.Background(),
 			} {
-				allowed, _ := authorizePrivilegedPodman(ctx)
+				allowed, _ := AuthorizePrivilegedPodman(ctx)
 				if allowed {
 					t.Fatalf("%s caller got privileged Podman under unrecognised policy %q", name, raw)
 				}
@@ -319,7 +319,7 @@ func TestAuthorizePrivilegedPodman_MalformedNeverPrivileged(t *testing.T) {
 func TestAuthorizePrivilegedPodman_UnsetStaysAll(t *testing.T) {
 	unsetPrivilegedPolicyEnv(t)
 	resetPrivilegedPolicy(t)
-	allowed, err := authorizePrivilegedPodman(context.Background())
+	allowed, err := AuthorizePrivilegedPodman(context.Background())
 	if err != nil || !allowed {
 		t.Fatalf("unset policy = (%v, %v), want (true, nil) — unset behaviour is unchanged", allowed, err)
 	}

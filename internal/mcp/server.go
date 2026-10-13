@@ -58,13 +58,10 @@ func (s *Server) Start() error {
 			log.Printf("Received: %s", string(line))
 		}
 
-		var request MCPRequest
-		if err := json.Unmarshal(line, &request); err != nil {
-			s.sendError(encoder, nil, -32700, "Parse error", err.Error())
+		response, reply := s.handleLine(line)
+		if !reply {
 			continue
 		}
-
-		response := s.handleRequest(&request)
 		if err := encoder.Encode(response); err != nil {
 			log.Printf("Failed to encode response: %v", err)
 			continue
@@ -83,6 +80,42 @@ func (s *Server) Start() error {
 	return nil
 }
 
+// handleLine turns one line read from the client into the reply to send, and
+// says whether there is one. It exists so that decision is a pure function of
+// the bytes in, testable without a pipe.
+//
+// A message with no "id" member is a NOTIFICATION. JSON-RPC 2.0 says the server
+// must not reply to one, and MCP clients send them on every connection —
+// notifications/initialized closes the handshake. This server used to run every
+// line through handleRequest, which answered the unknown method
+// notifications/initialized with an error whose id is null; Claude Code's client
+// validates responses strictly, rejects id:null and drops the connection about a
+// second after it opens, so the agent saw its MCP server as failed and had no
+// tools (#2529). Notifications are now consumed silently.
+//
+// Only a message that is not valid JSON gets an id:null error: with no id to
+// echo, JSON-RPC defines exactly that reply.
+func (s *Server) handleLine(line []byte) (*MCPResponse, bool) {
+	var request MCPRequest
+	if err := json.Unmarshal(line, &request); err != nil {
+		return s.createErrorResponse(nil, -32700, "Parse error", err.Error()), true
+	}
+
+	// Presence, not value: "id": null is a request (discouraged, but a request),
+	// a missing id is a notification. MCPRequest.ID cannot tell them apart.
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(line, &members); err == nil {
+		if _, hasID := members["id"]; !hasID {
+			if s.config.Debug {
+				log.Printf("Notification %q: no reply", request.Method)
+			}
+			return nil, false
+		}
+	}
+
+	return s.handleRequest(&request), true
+}
+
 // handleRequest handles an MCP request
 func (s *Server) handleRequest(req *MCPRequest) *MCPResponse {
 	switch req.Method {
@@ -92,6 +125,9 @@ func (s *Server) handleRequest(req *MCPRequest) *MCPResponse {
 		return s.handleToolsList(req)
 	case "tools/call":
 		return s.handleToolsCall(req)
+	case "ping":
+		// Clients use ping as a liveness check; the answer is an empty result.
+		return &MCPResponse{JSONRPC: "2.0", ID: req.ID, Result: map[string]interface{}{}}
 	default:
 		return s.createErrorResponse(req.ID, -32601, "Method not found", fmt.Sprintf("Unknown method: %s", req.Method))
 	}
@@ -222,14 +258,6 @@ func (s *Server) createErrorResponse(id interface{}, code int, message, data str
 			Message: message,
 			Data:    data,
 		},
-	}
-}
-
-// sendError sends an error response
-func (s *Server) sendError(encoder *json.Encoder, id interface{}, code int, message, data string) {
-	response := s.createErrorResponse(id, code, message, data)
-	if err := encoder.Encode(response); err != nil {
-		log.Printf("Failed to encode error response: %v", err)
 	}
 }
 

@@ -7,6 +7,7 @@ option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;
 import "google/api/annotations.proto";
 import "google/protobuf/timestamp.proto";
 import "protoc-gen-openapiv2/options/annotations.proto";
+import "containarium/v1/ssh_authz.proto";
 
 // AuditService — the proto-defined surface of the tamper-evident audit
 // store (internal/audit). Today it carries one write RPC (#2415): the
@@ -49,6 +50,10 @@ enum SSHSessionPhase {
   SSH_SESSION_PHASE_UNSPECIFIED = 0;
   SSH_SESSION_PHASE_OPEN = 1;
   SSH_SESSION_PHASE_CLOSE = 2;
+  // The sentinel's ssh-authz plugin refused the connection (#2516); no
+  // CLOSE follows. To be stored as action ssh_session_denied (#2519); until
+  // then ingest rejects it as an invalid phase.
+  SSH_SESSION_PHASE_DENIED = 3;
 }
 
 // SSHAuthMethod mirrors internal/sentinel/sshsession.AuthMethod.
@@ -103,6 +108,17 @@ message SSHSessionRecord {
   SSHSessionCredential credential = 9;
   // Set only when phase == SSH_SESSION_PHASE_CLOSE.
   SSHCloseReason close_reason = 10;
+  // Person the credential belongs to, from the authorization decision;
+  // empty when unknown (pre-authz sentinel, unknown key).
+  string user_id = 11;
+  // Authorization outcome for this connection; UNSPECIFIED from a sentinel
+  // without the ssh-authz plugin.
+  SSHAuthzDecision authz_decision = 12;
+  // Set when authz_decision == SSH_AUTHZ_DECISION_DENY.
+  SSHDenyReason deny_reason = 13;
+  // True when the decision was enforced; false in audit-only mode, where a
+  // DENY decision is recorded but the session still opens.
+  bool enforced = 14;
 }
 
 message IngestSSHSessionRecordsRequest {
