@@ -7,8 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.103.2] - 2026-10-13
+
+_A second patch for hosted tracker dispatch: a dispatched run's agent can now call its tracker tools. Runs started on 0.103.1 provisioned their box but ended at the first tool call. A daemon upgrade is enough; existing skill boxes pick it up on their next run._
+
 ### Fixed
+
 - **A tracker-dispatched run can call its tracker tools** (#2508). The daemon seeds the platform MCP with a plain-`http://` URL to itself over the box's bridge, and the MCP client has refused any `http://` base URL since the C-HIGH-1 hardening unless `CONTAINARIUM_MCP_ALLOW_INSECURE=true` — which nothing set. Every dispatched run therefore failed at its first tracker tool call with `MCP client refuses http:// baseURL`. The seed's command is now `env CONTAINARIUM_MCP_ALLOW_INSECURE=true mcp-server`, scoping the opt-in to that one process on the box's private bridge. The seed is rewritten on every run, so an existing skill box needs the daemon upgrade only.
+- **Platform build constraints for `hostcheck` and `agent-box` are corrected** (#2507): the agent-box sources are excluded from Windows builds, and CI now cross-compiles `hostcheck` for Windows and the client and `agent-box` for macOS and fails if `agent-box` becomes Windows-buildable. No change to Linux behaviour.
 
 ## [0.103.1] - 2026-10-13
 
