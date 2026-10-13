@@ -117,6 +117,18 @@ func SignRequest(req *http.Request) {
 	}
 }
 
+// SignBodyRequest uses the same configured sentinel credentials as SignRequest,
+// but binds the authorization question's exact body bytes to the signature.
+func SignBodyRequest(req *http.Request, body []byte) {
+	if priv := loadSentinelSigningKey(); len(priv) == ed25519.PrivateKeySize {
+		auth.SignSentinelBodyRequestEd25519(req, priv, body)
+	} else if secret := loadSentinelSecret(); len(secret) >= auth.SentinelMinSecretLen {
+		auth.SignSentinelBodyRequest(req, secret, body)
+	} else {
+		logSentinelMisconfigOncePerInterval()
+	}
+}
+
 func logSentinelMisconfigOncePerInterval() {
 	now := time.Now().UnixNano()
 	last := lastMisconfigLogNs.Load()

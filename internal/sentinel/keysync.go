@@ -226,6 +226,9 @@ func (ks *KeyStore) Apply() error {
 	})
 
 	if len(routes) == 0 {
+		if err := ks.publishAuthzRoutes(nil); err != nil {
+			log.Printf("[keysync] SSH authorization snapshot unavailable: %v (continuing audit-only routing)", err)
+		}
 		return fmt.Errorf("no users to configure")
 	}
 

@@ -428,20 +428,37 @@ SENTINEL_AUTH_SECRET="${sentinel_auth_secret}"
 # see variables.tf's sentinel_admin_secret doc comment. Separate secret from
 # CONTAINARIUM_SENTINEL_AUTH_SECRET on purpose (bigger capability).
 SENTINEL_ADMIN_SECRET="${sentinel_admin_secret}"
+SSH_AUTHZ_ENV_CHANGED=false
 if [ -n "$SENTINEL_AUTH_SECRET" ] || [ -n "$SENTINEL_ADMIN_SECRET" ]; then
     umask 077
-    : > /etc/containarium/env.secrets
+    secrets_tmp="$(mktemp /etc/containarium/.env.secrets.XXXXXX)"
     if [ -n "$SENTINEL_AUTH_SECRET" ]; then
-        echo "CONTAINARIUM_SENTINEL_AUTH_SECRET=$SENTINEL_AUTH_SECRET" >> /etc/containarium/env.secrets
+        echo "CONTAINARIUM_SENTINEL_AUTH_SECRET=$SENTINEL_AUTH_SECRET" >> "$secrets_tmp"
     fi
     if [ -n "$SENTINEL_ADMIN_SECRET" ]; then
-        echo "CONTAINARIUM_SENTINEL_ADMIN_SECRET=$SENTINEL_ADMIN_SECRET" >> /etc/containarium/env.secrets
+        echo "CONTAINARIUM_SENTINEL_ADMIN_SECRET=$SENTINEL_ADMIN_SECRET" >> "$secrets_tmp"
     fi
-    chmod 0600 /etc/containarium/env.secrets
-    echo "✓ /etc/containarium/env.secrets written from terraform vars"
+    chmod 0600 "$secrets_tmp"
+    if cmp -s "$secrets_tmp" /etc/containarium/env.secrets; then
+        rm -f "$secrets_tmp"
+        chmod 0600 /etc/containarium/env.secrets
+    else
+        mv -f "$secrets_tmp" /etc/containarium/env.secrets
+        SSH_AUTHZ_ENV_CHANGED=true
+    fi
+    echo "✓ /etc/containarium/env.secrets reconciled from terraform vars"
 else
-    rm -f /etc/containarium/env.secrets
+    if [ -e /etc/containarium/env.secrets ]; then
+        rm -f /etc/containarium/env.secrets
+        SSH_AUTHZ_ENV_CHANGED=true
+    fi
     echo "⚠ sentinel_auth_secret and sentinel_admin_secret terraform vars are both empty — Phase 0.4/0.6 disabled (sentinel endpoints return 401/unsigned) AND /sentinel/tunnel-tokens is disabled (dynamic BYOC join-token registration will not work — Containarium#935/#936)"
+fi
+
+# sshpiperd's authorization child caches its signing credentials per process.
+# Reload changed/removed credentials, but do not interrupt sessions on a no-op.
+if [ "$SSH_AUTHZ_ENV_CHANGED" = true ]; then
+    systemctl restart sshpiper || true
 fi
 
 # Peer-CA private key (Phase 0.5). Auto-generated on first boot if

@@ -36,11 +36,13 @@ var ErrUpstreamUnavailable = errors.New("SSH authorization upstream unavailable"
 // SSH routing addresses and daemon HTTP endpoints are different protocols.
 type HTTPAuthorizer struct {
 	BackendURL func(string) (string, error)
-	Sign       func(*http.Request)
+	Sign       func(*http.Request, []byte)
 	Client     *http.Client
 	Timeout    time.Duration
 }
 
+// Authorize signs the exact generated JSON bytes and sends a bounded query to
+// the routed daemon. Only transport/read failures and server errors permit grace.
 func (a *HTTPAuthorizer) Authorize(ctx context.Context, backend string, input *pb.AuthorizeSSHRequest) (*pb.AuthorizeSSHResponse, error) {
 	if a.BackendURL == nil || a.Sign == nil {
 		return nil, fmt.Errorf("SSH authorizer requires backend URLs and a signer")
@@ -68,7 +70,7 @@ func (a *HTTPAuthorizer) Authorize(ctx context.Context, backend string, input *p
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	a.Sign(req)
+	a.Sign(req, body)
 	client := http.Client{}
 	if a.Client != nil {
 		client = *a.Client

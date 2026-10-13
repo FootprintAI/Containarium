@@ -96,7 +96,7 @@ func TestContractRoundTripEveryDenyReason(t *testing.T) {
 				t.Fatal(err)
 			}
 			r.Header.Set("Content-Type", "application/json")
-			auth.SignSentinelRequest(r, secret)
+			auth.SignSentinelBodyRequest(r, secret, body)
 			resp, err := ts.Client().Do(r)
 			if err != nil {
 				t.Fatal(err)
@@ -140,14 +140,16 @@ func TestSignatureSecurityReachesStub(t *testing.T) {
 	}{
 		{"missing", nil, auth.NewSentinelVerifier(nil, secret), 401},
 		{"JWT is not sentinel", func(r *http.Request) { r.Header.Set("Authorization", "Bearer jwt") }, auth.NewSentinelVerifier(nil, secret), 401},
-		{"bad HMAC", func(r *http.Request) { auth.SignSentinelRequest(r, []byte(strings.Repeat("x", 32))) }, auth.NewSentinelVerifier(nil, secret), 401},
+		{"bad HMAC", func(r *http.Request) {
+			auth.SignSentinelBodyRequest(r, []byte(strings.Repeat("x", 32)), []byte(`{"login":"alice"}`))
+		}, auth.NewSentinelVerifier(nil, secret), 401},
 		{"stale", func(r *http.Request) {
-			auth.SignSentinelRequest(r, secret)
+			auth.SignSentinelBodyRequest(r, secret, []byte(`{"login":"alice"}`))
 			r.Header.Set(auth.SentinelHeaderTimestamp, "1")
 		}, auth.NewSentinelVerifier(nil, secret), 401},
-		{"unconfigured", func(r *http.Request) { auth.SignSentinelRequest(r, secret) }, auth.NewSentinelVerifier(nil, nil), 401},
-		{"HMAC reaches Unimplemented", func(r *http.Request) { auth.SignSentinelRequest(r, secret) }, auth.NewSentinelVerifier(nil, secret), 501},
-		{"ed25519 reaches Unimplemented", func(r *http.Request) { auth.SignSentinelRequestEd25519(r, priv) }, auth.NewSentinelVerifier(pub, nil), 501},
+		{"unconfigured", func(r *http.Request) { auth.SignSentinelBodyRequest(r, secret, []byte(`{"login":"alice"}`)) }, auth.NewSentinelVerifier(nil, nil), 401},
+		{"HMAC reaches Unimplemented", func(r *http.Request) { auth.SignSentinelBodyRequest(r, secret, []byte(`{"login":"alice"}`)) }, auth.NewSentinelVerifier(nil, secret), 501},
+		{"ed25519 reaches Unimplemented", func(r *http.Request) { auth.SignSentinelBodyRequestEd25519(r, priv, []byte(`{"login":"alice"}`)) }, auth.NewSentinelVerifier(pub, nil), 501},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ts := stack(t, &server.SSHAuthzServer{}, tc.verifier)

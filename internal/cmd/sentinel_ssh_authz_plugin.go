@@ -45,7 +45,7 @@ func runSentinelSSHAuthzPlugin(_ *cobra.Command, _ []string) error {
 	plugin := &sshauthz.Plugin{
 		Resolver:   resolver,
 		Cache:      sshauthz.NewPositiveCache(4096, sshAuthzGrace, nil),
-		Authorizer: &sshauthz.HTTPAuthorizer{BackendURL: resolver.BackendURL, Sign: sentinel.SignRequest, Timeout: sshAuthzTimeout},
+		Authorizer: &sshauthz.HTTPAuthorizer{BackendURL: resolver.BackendURL, Sign: sentinel.SignBodyRequest, Timeout: sshAuthzTimeout},
 		Timeout:    sshAuthzTimeout, SentinelID: sshAuthzSentinelID,
 		Logf: func(format string, args ...any) { slog.Info(fmt.Sprintf(format, args...)) },
 	}

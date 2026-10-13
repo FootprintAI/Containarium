@@ -7,7 +7,11 @@ enforcement flag or interactive device-approval flow.
 
 `Authorizer` uses the generated `SSHAuthzService` contract from #2516.
 `HTTPAuthorizer` sends a sentinel-signed `POST /v1/ssh/authorize` with a
-three-second default timeout; the command injects the same signer as keysync.
+three-second default timeout. The command uses the same configured credentials
+as keysync, but signs a domain-separated method/path/timestamp/body SHA-256
+message. The authorization gateway rejects legacy method/path-only signatures
+and restores the verified body for protobuf decoding. Other sentinel routes
+keep their existing signing format.
 Certificates and unknown logins skip authorization. Successful responses are
 cached by backend ID, login and key fingerprint for the response TTL (30s if
 absent). Live denials invalidate old positives.
@@ -24,7 +28,9 @@ to `/etc/sshpiper/authz-backends.json` atomically; the manager configures this
 snapshot path. `FileBackendResolver` reloads it on each lookup, preserving the
 same sorted-backend first-match precedence as `KeyStore.BackendForLogin`.
 The snapshot contains backend IDs and explicit HTTP URLs, never credentials;
-SSH target ports are not used as daemon HTTP ports. A missing/unreadable snapshot
+SSH target ports are not used as daemon HTTP ports. Removing the last login
+publishes an empty snapshot even when Apply returns its existing no-users error.
+A missing/unreadable snapshot
 resolves no logins, so the audit-only plugin defers to routing as usual.
 
 The command accepts `--ssh-authz-routes`, `--ssh-authz-grace` (5m),
@@ -61,3 +67,7 @@ go test -race -tags integration ./internal/sentinel/sshauthz -run TestIntegratio
 `SSHAUTHZ_YAML_PLUGIN` optionally supplies the YAML plugin binary; otherwise it
 is `plugins/yaml` beside sshpiperd. No root, Docker or model credentials are
 needed. Without the binaries this integration test reports a skip.
+
+The tenant sshpiper units load the optional root-only sentinel secrets file.
+Startup atomically reconciles that file and restarts sshpiper when credentials
+change or are removed; unchanged credentials do not interrupt live sessions.

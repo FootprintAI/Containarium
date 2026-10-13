@@ -119,6 +119,7 @@ Description=SSHPiper reverse proxy
 After=network.target
 
 [Service]
+EnvironmentFile=-/etc/containarium/env.secrets
 ExecStart=/usr/local/bin/sshpiperd \
   -i /etc/sshpiper/host_key \
   -p 22 \

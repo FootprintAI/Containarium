@@ -10,6 +10,7 @@ After=network.target
 StartLimitIntervalSec=0
 
 [Service]
+EnvironmentFile=-/etc/containarium/env.secrets
 ExecStart=/usr/local/bin/sshpiperd \
   -i /etc/sshpiper/host_key \
   -p 22 \

@@ -97,12 +97,13 @@ func TestIntegrationRealSSHPiperdAuditOnly(t *testing.T) {
 					w.WriteHeader(404)
 					return
 				}
-				if err := auth.NewSentinelVerifier(nil, []byte(secret)).VerifyRequest(r, time.Now()); err != nil {
+				data, _ := io.ReadAll(r.Body)
+				if err := auth.NewSentinelVerifier(nil, []byte(secret)).VerifyBodyRequest(r, data, time.Now()); err != nil {
 					t.Error(err)
 					w.WriteHeader(401)
 					return
 				}
-				data, _ := io.ReadAll(r.Body)
+
 				req := new(pb.AuthorizeSSHRequest)
 				if err := protojson.Unmarshal(data, req); err != nil || req.Login != "alice" || req.GetCredential().GetPublicKey().GetFingerprintSha256() != ssh.FingerprintSHA256(clientSigner.PublicKey()) {
 					t.Errorf("authorization request %v %v", req, err)

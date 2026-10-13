@@ -44,10 +44,11 @@ func TestHTTPAuthorizer(t *testing.T) {
 				if r.Method != "POST" || r.URL.Path != authz.AuthorizePath || r.Header.Get("Content-Type") != "application/json" {
 					t.Error("wrong request shape")
 				}
-				if err := auth.NewSentinelVerifier(nil, secret).VerifyRequest(r, time.Now()); err != nil {
+				data, _ := io.ReadAll(r.Body)
+				if err := auth.NewSentinelVerifier(nil, secret).VerifyBodyRequest(r, data, time.Now()); err != nil {
 					t.Error(err)
 				}
-				data, _ := io.ReadAll(r.Body)
+
 				input := new(pb.AuthorizeSSHRequest)
 				if err := protojson.Unmarshal(data, input); err != nil || input.Login != "alice" {
 					t.Errorf("body %s: %v", data, err)
@@ -64,7 +65,7 @@ func TestHTTPAuthorizer(t *testing.T) {
 					t.Error(b)
 				}
 				return ts.URL, nil
-			}, Sign: func(r *http.Request) { auth.SignSentinelRequest(r, secret) }}
+			}, Sign: func(r *http.Request, body []byte) { auth.SignSentinelBodyRequest(r, secret, body) }}
 			resp, err := a.Authorize(context.Background(), "a", &pb.AuthorizeSSHRequest{Login: "alice"})
 			if (err == nil) != tc.success || errors.Is(err, authz.ErrUpstreamUnavailable) != tc.unavailable {
 				t.Fatalf("resp=%v err=%v", resp, err)
@@ -97,7 +98,7 @@ func TestHTTPAuthorizerTimeoutAndTransport(t *testing.T) {
 				}
 				return nil, errors.New("connection refused")
 			})}
-			a := &authz.HTTPAuthorizer{Client: client, Timeout: tc.timeout, BackendURL: func(string) (string, error) { return "http://example.com", nil }, Sign: func(*http.Request) {}}
+			a := &authz.HTTPAuthorizer{Client: client, Timeout: tc.timeout, BackendURL: func(string) (string, error) { return "http://example.com", nil }, Sign: func(*http.Request, []byte) {}}
 			_, err := a.Authorize(context.Background(), "a", &pb.AuthorizeSSHRequest{})
 			if !errors.Is(err, authz.ErrUpstreamUnavailable) {
 				t.Fatal(err)

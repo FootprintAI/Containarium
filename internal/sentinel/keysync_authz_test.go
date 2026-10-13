@@ -2,7 +2,9 @@ package sentinel
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/footprintai/containarium/internal/gateway"
@@ -69,5 +71,34 @@ func TestKeyStorePublishesAuthzDaemonPorts(t *testing.T) {
 	}
 	if _, ok := (sshauthz.FileBackendResolver{Path: path}).BackendForLogin("alice"); ok {
 		t.Fatal("removed route retained")
+	}
+}
+
+func TestApplyClearsAuthzSnapshotWhenLastLoginRemoved(t *testing.T) {
+	ks := NewKeyStore()
+	ks.authzRoutesFile = filepath.Join(t.TempDir(), "routes.json")
+	if err := ks.publishAuthzRoutes([]userRoute{{username: "alice", backendID: "a", backendIP: "127.0.0.1", httpPort: 8080}}); err != nil {
+		t.Fatal(err)
+	}
+	ks.backends["a"] = &backendKeys{users: []gateway.UserKeys{{Username: "alice"}}}
+	ks.RemoveBackend("a")
+	if err := ks.Apply(); err == nil || !strings.Contains(err.Error(), "no users to configure") {
+		t.Fatalf("unexpected Apply result: %v", err)
+	}
+	resolver := sshauthz.FileBackendResolver{Path: ks.authzRoutesFile}
+	if _, ok := resolver.BackendForLogin("alice"); ok {
+		t.Fatal("Apply retained removed login in published snapshot")
+	}
+	if _, err := resolver.BackendURL("a"); err == nil {
+		t.Fatal("Apply retained removed backend URL")
+	}
+	// Failure to publish must retain the original Apply error, not block routing
+	// with a new authorization-only error.
+	ks.authzRoutesFile = filepath.Join(t.TempDir(), "not-a-directory", "routes.json")
+	if err := os.WriteFile(filepath.Dir(ks.authzRoutesFile), []byte("occupied"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ks.Apply(); err == nil || !strings.Contains(err.Error(), "no users to configure") {
+		t.Fatalf("snapshot failure changed routing error: %v", err)
 	}
 }
