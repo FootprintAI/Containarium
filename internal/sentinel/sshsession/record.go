@@ -84,6 +84,13 @@ type Credential struct {
 	KeyFingerprint string `json:"key_fingerprint,omitempty"`
 }
 
+// AuthzDecision mirrors the ssh_authz proto's SSHAuthzDecision enum name,
+// stashed by the ssh-authz-plugin into ConnMeta.Metadata (#2518).
+type AuthzDecision string
+
+// AuthzDenyReason mirrors the ssh_authz proto's SSHDenyReason enum name.
+type AuthzDenyReason string
+
 // Record is one session lifecycle event. Exactly one SessionPhaseOpen and
 // exactly one SessionPhaseClose record are emitted per accepted SSH
 // connection (barring CloseReasonProxyShutdown's own best-effort
@@ -119,4 +126,18 @@ type Record struct {
 
 	// CloseReason is set only on a SessionPhaseClose record.
 	CloseReason CloseReason `json:"close_reason,omitempty"`
+
+	// SSH live-authorization fields (#2518). Populated only when the
+	// ssh-authz-plugin is chained ahead of this plugin; empty otherwise.
+
+	// UserID is the backend's internal identifier for the authenticated
+	// user, stashed by the ssh-authz-plugin on ALLOW.
+	UserID string `json:"user_id,omitempty"`
+	// AuthzDecision is the top-level authz outcome.
+	AuthzDecision AuthzDecision `json:"authz_decision,omitempty"`
+	// AuthzDenyReason is the specific deny reason when AuthzDecision is DENY.
+	AuthzDenyReason AuthzDenyReason `json:"deny_reason,omitempty"`
+	// Enforced is false in audit-only mode (this issue) and true when the
+	// plugin is configured to actually reject connections.
+	Enforced bool `json:"enforced,omitempty"`
 }

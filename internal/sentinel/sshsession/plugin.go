@@ -24,6 +24,17 @@ const (
 	metaKeyFingerprint = "containarium.ssh_session.key_fingerprint"
 )
 
+// Metadata keys written by the ssh-authz-plugin (#2518) and read here
+// to populate the Record's live-authorization fields. The constants
+// mirror sshauthz.Meta* — copied here to avoid an import cycle
+// (sshauthz imports libplugin; sshsession should not depend on sshauthz).
+const (
+	metaAuthzUserID     = "containarium.ssh_authz.user_id"
+	metaAuthzDecision   = "containarium.ssh_authz.decision"
+	metaAuthzDenyReason = "containarium.ssh_authz.deny_reason"
+	metaAuthzEnforced   = "containarium.ssh_authz.enforced"
+)
+
 // clock lets tests fix time.Now.
 type clock func() time.Time
 
@@ -236,6 +247,13 @@ func (p *Plugin) buildRecord(conn libplugin.ConnMetadata, phase SessionPhase) Re
 	if p.Target != nil {
 		rec.Target = p.Target.Resolve(login)
 	}
+
+	// SSH live-authorization fields (#2518): populated only when the
+	// ssh-authz-plugin is chained ahead of this plugin; empty otherwise.
+	rec.UserID = conn.GetMeta(metaAuthzUserID)
+	rec.AuthzDecision = AuthzDecision(conn.GetMeta(metaAuthzDecision))
+	rec.AuthzDenyReason = AuthzDenyReason(conn.GetMeta(metaAuthzDenyReason))
+	rec.Enforced = conn.GetMeta(metaAuthzEnforced) == "true"
 
 	return rec
 }
