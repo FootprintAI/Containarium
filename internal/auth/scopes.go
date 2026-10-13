@@ -117,6 +117,12 @@ const (
 	ScopeAnonDoor  = "anon:door"
 	ScopeAnonAdmin = "anon:admin"
 
+	// ssh:authorize is what a sentinel-signed SSHAuthzService.Authorize
+	// call carries (#2516): the gateway stamps it after verifying the
+	// sentinel signature on /v1/ssh/authorize, the only way that route is
+	// reached. It grants that one query and nothing else.
+	ScopeSSHAuthorize = "ssh:authorize"
+
 	// managed Kubernetes clusters (ClusterServer, #1413).
 	// clusters:read lists/inspects clusters and their scale history;
 	// clusters:write creates/deletes clusters, edits node pools, and
@@ -208,6 +214,7 @@ var AllScopes = []string{
 	ScopeAgentsRead, ScopeAgentsRun, ScopeAgentsCall,
 	ScopeCrewsRead, ScopeCrewsRun,
 	ScopeAnonDoor, ScopeAnonAdmin,
+	ScopeSSHAuthorize,
 	ScopeClustersRead, ScopeClustersWrite, ScopeClustersScale,
 	ScopeAuditRead, ScopeNetworkPolicyRead, ScopeTokensRead,
 	ScopeAuditIngest,

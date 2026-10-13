@@ -424,10 +424,12 @@ func (gs *GatewayServer) recordRelayDelivery(ctx context.Context, alertName, web
 	}
 }
 
-// Start starts the HTTP gateway server
-func (gs *GatewayServer) Start(ctx context.Context) error {
-	// Create grpc-gateway mux with custom options
-	mux := runtime.NewServeMux(
+// NewRESTMux returns the grpc-gateway mux with the daemon's options: error
+// mapping, identity metadata, reserved-header filtering and the JSON wire
+// format. Start serves every /v1 REST route through it; contract tests use
+// it so they pin the same wire format the daemon serves.
+func NewRESTMux() *runtime.ServeMux {
+	return runtime.NewServeMux(
 		runtime.WithErrorHandler(customErrorHandler),
 		runtime.WithMetadata(annotateContext),
 		runtime.WithIncomingHeaderMatcher(incomingHeaderMatcher),
@@ -443,6 +445,12 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 			},
 		}),
 	)
+}
+
+// Start starts the HTTP gateway server
+func (gs *GatewayServer) Start(ctx context.Context) error {
+	// Create grpc-gateway mux with custom options
+	mux := NewRESTMux()
 
 	// Setup connection to gRPC server
 	var opts []grpc.DialOption
@@ -548,6 +556,11 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	// AnonymousBoxService (#2197): the ssh new.<domain> door's daemon side.
 	if err := pb.RegisterAnonymousBoxServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
 		return fmt.Errorf("failed to register anonymous box service gateway: %w", err)
+	}
+	// SSHAuthzService (#2516): per-connection SSH authorization, reached
+	// only through the sentinel-signed mount below.
+	if err := pb.RegisterSSHAuthzServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
+		return fmt.Errorf("failed to register ssh authz service gateway: %w", err)
 	}
 
 	// Register TrafficService gateway handler
@@ -968,6 +981,11 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 		anonInner = audit.HTTPAuditMiddleware(anonInner, gs.auditStore)
 	}
 	httpMux.Handle(AnonDoorEnsurePath, anonDoorHandler(sentinelVerifier, corsHandler, anonInner, nil))
+
+	// #2516: SSHAuthzService.Authorize, sentinel signature only (no JWT
+	// fallback). Same inner chain as the door: audited, identity from the
+	// verified signature.
+	MountSSHAuthz(httpMux, sentinelVerifier, anonInner)
 
 	// Catch-all fallback: when wake-on-HTTP is enabled, Caddy
 	// forwards user traffic to this daemon while a container is

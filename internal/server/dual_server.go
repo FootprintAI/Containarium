@@ -50,6 +50,7 @@ import (
 	"github.com/footprintai/containarium/internal/sandbox/ratelimit"
 	secretsstore "github.com/footprintai/containarium/internal/secrets"
 	"github.com/footprintai/containarium/internal/security"
+	coreauthz "github.com/footprintai/containarium/internal/sshauthz"
 	"github.com/footprintai/containarium/internal/tenantguard"
 	"github.com/footprintai/containarium/internal/threatdetect"
 	trackerstore "github.com/footprintai/containarium/internal/tracker"
@@ -593,6 +594,12 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 
 	// Register container service
 	pb.RegisterContainerServiceServer(grpcServer, containerServer)
+
+	// SSHAuthzService (#2516): the per-connection SSH authorization
+	// contract. A stub returning Unimplemented until the decider (#2517);
+	// the REST route is mounted behind the sentinel signature.
+	sshAuthzServer := NewSSHAuthzServer()
+	pb.RegisterSSHAuthzServiceServer(grpcServer, sshAuthzServer)
 
 	// ComposeAutostartService — operator-side RPC that execs
 	// `agent-box compose <verb>` inside the tenant's LXC. Uses a
@@ -1440,6 +1447,30 @@ skipAppHosting:
 	if cloudCfg, cerr := cloud.Load(cloudCfgPath); cerr != nil {
 		log.Printf("Warning: failed to read cloud-actuation config %s: %v (running single-tenant)", cloudCfgPath, cerr)
 	} else if cloudCfg != nil {
+		// Keep the managed forwarder behind the same local hosted-account gate
+		// used by /authorized-keys. A login for a missing/orphaned box must not
+		// consume a cloud authorization call.
+		localSSHFacts := coreauthz.LocalFactsFunc(func(_ context.Context, req *pb.AuthorizeSSHRequest) (string, bool, error) {
+			login := strings.TrimSpace(req.GetLogin())
+			if login == "" {
+				return "", false, nil
+			}
+			mgr := containerServer.GetManager()
+			if mgr == nil {
+				return "", false, fmt.Errorf("container manager unavailable")
+			}
+			names, err := mgr.ExistingContainerNames()
+			if err != nil {
+				return "", false, err
+			}
+			if names[login+"-container"] {
+				return login, true, nil
+			}
+			if collaboratorContainer, ok := container.CollaboratorJumpAccountContainer(login); ok && names[collaboratorContainer] {
+				return login, true, nil
+			}
+			return "", false, nil
+		})
 		cloudDeps := cloud.Deps{
 			Policies: newCloudPolicySink(npServer),
 			// Report this host's capability profile (hardware + headroom +
@@ -1477,6 +1508,10 @@ skipAppHosting:
 			log.Printf("Warning: cloud-actuation config invalid: %v (running single-tenant)", nerr)
 		} else {
 			cloudClient = cc
+			// Enrollment is the mode switch for managed SSH authorization. The
+			// server is registered above, but the forwarder is not constructed
+			// at all on an unenrolled daemon.
+			sshAuthzServer.SetDecider(&coreauthz.Decider{Local: localSSHFacts, Managed: true, Cloud: cc})
 			log.Printf("Cloud-actuation client configured (host=%s control-plane=%s); starts with the daemon",
 				cloudCfg.HostID, cloudCfg.ControlPlane)
 		}

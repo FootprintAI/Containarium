@@ -31,6 +31,10 @@ const (
 	SSHSessionPhase_SSH_SESSION_PHASE_UNSPECIFIED SSHSessionPhase = 0
 	SSHSessionPhase_SSH_SESSION_PHASE_OPEN        SSHSessionPhase = 1
 	SSHSessionPhase_SSH_SESSION_PHASE_CLOSE       SSHSessionPhase = 2
+	// The sentinel's ssh-authz plugin refused the connection (#2516); no
+	// CLOSE follows. To be stored as action ssh_session_denied (#2519); until
+	// then ingest rejects it as an invalid phase.
+	SSHSessionPhase_SSH_SESSION_PHASE_DENIED SSHSessionPhase = 3
 )
 
 // Enum value maps for SSHSessionPhase.
@@ -39,11 +43,13 @@ var (
 		0: "SSH_SESSION_PHASE_UNSPECIFIED",
 		1: "SSH_SESSION_PHASE_OPEN",
 		2: "SSH_SESSION_PHASE_CLOSE",
+		3: "SSH_SESSION_PHASE_DENIED",
 	}
 	SSHSessionPhase_value = map[string]int32{
 		"SSH_SESSION_PHASE_UNSPECIFIED": 0,
 		"SSH_SESSION_PHASE_OPEN":        1,
 		"SSH_SESSION_PHASE_CLOSE":       2,
+		"SSH_SESSION_PHASE_DENIED":      3,
 	}
 )
 
@@ -331,7 +337,18 @@ type SSHSessionRecord struct {
 	AuthMethod SSHAuthMethod         `protobuf:"varint,8,opt,name=auth_method,json=authMethod,proto3,enum=containarium.v1.SSHAuthMethod" json:"auth_method,omitempty"`
 	Credential *SSHSessionCredential `protobuf:"bytes,9,opt,name=credential,proto3" json:"credential,omitempty"`
 	// Set only when phase == SSH_SESSION_PHASE_CLOSE.
-	CloseReason   SSHCloseReason `protobuf:"varint,10,opt,name=close_reason,json=closeReason,proto3,enum=containarium.v1.SSHCloseReason" json:"close_reason,omitempty"`
+	CloseReason SSHCloseReason `protobuf:"varint,10,opt,name=close_reason,json=closeReason,proto3,enum=containarium.v1.SSHCloseReason" json:"close_reason,omitempty"`
+	// Person the credential belongs to, from the authorization decision;
+	// empty when unknown (pre-authz sentinel, unknown key).
+	UserId string `protobuf:"bytes,11,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	// Authorization outcome for this connection; UNSPECIFIED from a sentinel
+	// without the ssh-authz plugin.
+	AuthzDecision SSHAuthzDecision `protobuf:"varint,12,opt,name=authz_decision,json=authzDecision,proto3,enum=containarium.v1.SSHAuthzDecision" json:"authz_decision,omitempty"`
+	// Set when authz_decision == SSH_AUTHZ_DECISION_DENY.
+	DenyReason SSHDenyReason `protobuf:"varint,13,opt,name=deny_reason,json=denyReason,proto3,enum=containarium.v1.SSHDenyReason" json:"deny_reason,omitempty"`
+	// True when the decision was enforced; false in audit-only mode, where a
+	// DENY decision is recorded but the session still opens.
+	Enforced      bool `protobuf:"varint,14,opt,name=enforced,proto3" json:"enforced,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -434,6 +451,34 @@ func (x *SSHSessionRecord) GetCloseReason() SSHCloseReason {
 		return x.CloseReason
 	}
 	return SSHCloseReason_SSH_CLOSE_REASON_UNSPECIFIED
+}
+
+func (x *SSHSessionRecord) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *SSHSessionRecord) GetAuthzDecision() SSHAuthzDecision {
+	if x != nil {
+		return x.AuthzDecision
+	}
+	return SSHAuthzDecision_SSH_AUTHZ_DECISION_UNSPECIFIED
+}
+
+func (x *SSHSessionRecord) GetDenyReason() SSHDenyReason {
+	if x != nil {
+		return x.DenyReason
+	}
+	return SSHDenyReason_SSH_DENY_REASON_UNSPECIFIED
+}
+
+func (x *SSHSessionRecord) GetEnforced() bool {
+	if x != nil {
+		return x.Enforced
+	}
+	return false
 }
 
 type IngestSSHSessionRecordsRequest struct {
@@ -556,12 +601,12 @@ var File_containarium_v1_audit_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_audit_proto_rawDesc = "" +
 	"\n" +
-	"\x1bcontainarium/v1/audit.proto\x12\x0fcontainarium.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a.protoc-gen-openapiv2/options/annotations.proto\"\x9c\x01\n" +
+	"\x1bcontainarium/v1/audit.proto\x12\x0fcontainarium.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a.protoc-gen-openapiv2/options/annotations.proto\x1a\x1fcontainarium/v1/ssh_authz.proto\"\x9c\x01\n" +
 	"\x14SSHSessionCredential\x12\x15\n" +
 	"\x06key_id\x18\x01 \x01(\tR\x05keyId\x12\x16\n" +
 	"\x06serial\x18\x02 \x01(\x04R\x06serial\x12,\n" +
 	"\x12ca_key_fingerprint\x18\x03 \x01(\tR\x10caKeyFingerprint\x12'\n" +
-	"\x0fkey_fingerprint\x18\x04 \x01(\tR\x0ekeyFingerprint\"\xde\x03\n" +
+	"\x0fkey_fingerprint\x18\x04 \x01(\tR\x0ekeyFingerprint\"\x9e\x05\n" +
 	"\x10SSHSessionRecord\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x126\n" +
@@ -579,7 +624,12 @@ const file_containarium_v1_audit_proto_rawDesc = "" +
 	"credential\x18\t \x01(\v2%.containarium.v1.SSHSessionCredentialR\n" +
 	"credential\x12B\n" +
 	"\fclose_reason\x18\n" +
-	" \x01(\x0e2\x1f.containarium.v1.SSHCloseReasonR\vcloseReason\"~\n" +
+	" \x01(\x0e2\x1f.containarium.v1.SSHCloseReasonR\vcloseReason\x12\x17\n" +
+	"\auser_id\x18\v \x01(\tR\x06userId\x12H\n" +
+	"\x0eauthz_decision\x18\f \x01(\x0e2!.containarium.v1.SSHAuthzDecisionR\rauthzDecision\x12?\n" +
+	"\vdeny_reason\x18\r \x01(\x0e2\x1e.containarium.v1.SSHDenyReasonR\n" +
+	"denyReason\x12\x1a\n" +
+	"\benforced\x18\x0e \x01(\bR\benforced\"~\n" +
 	"\x1eIngestSSHSessionRecordsRequest\x12;\n" +
 	"\arecords\x18\x01 \x03(\v2!.containarium.v1.SSHSessionRecordR\arecords\x12\x1f\n" +
 	"\vsentinel_id\x18\x02 \x01(\tR\n" +
@@ -589,11 +639,12 @@ const file_containarium_v1_audit_proto_rawDesc = "" +
 	"\binserted\x18\x02 \x01(\x05R\binserted\x12\x1e\n" +
 	"\n" +
 	"duplicates\x18\x03 \x01(\x05R\n" +
-	"duplicates*m\n" +
+	"duplicates*\x8b\x01\n" +
 	"\x0fSSHSessionPhase\x12!\n" +
 	"\x1dSSH_SESSION_PHASE_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16SSH_SESSION_PHASE_OPEN\x10\x01\x12\x1b\n" +
-	"\x17SSH_SESSION_PHASE_CLOSE\x10\x02*\x8d\x01\n" +
+	"\x17SSH_SESSION_PHASE_CLOSE\x10\x02\x12\x1c\n" +
+	"\x18SSH_SESSION_PHASE_DENIED\x10\x03*\x8d\x01\n" +
 	"\rSSHAuthMethod\x12\x1f\n" +
 	"\x1bSSH_AUTH_METHOD_UNSPECIFIED\x10\x00\x12\x1f\n" +
 	"\x1bSSH_AUTH_METHOD_CERTIFICATE\x10\x01\x12\x1d\n" +
@@ -638,22 +689,26 @@ var file_containarium_v1_audit_proto_goTypes = []any{
 	(*IngestSSHSessionRecordsRequest)(nil),  // 6: containarium.v1.IngestSSHSessionRecordsRequest
 	(*IngestSSHSessionRecordsResponse)(nil), // 7: containarium.v1.IngestSSHSessionRecordsResponse
 	(*timestamppb.Timestamp)(nil),           // 8: google.protobuf.Timestamp
+	(SSHAuthzDecision)(0),                   // 9: containarium.v1.SSHAuthzDecision
+	(SSHDenyReason)(0),                      // 10: containarium.v1.SSHDenyReason
 }
 var file_containarium_v1_audit_proto_depIdxs = []int32{
-	0, // 0: containarium.v1.SSHSessionRecord.phase:type_name -> containarium.v1.SSHSessionPhase
-	8, // 1: containarium.v1.SSHSessionRecord.occurred_at:type_name -> google.protobuf.Timestamp
-	1, // 2: containarium.v1.SSHSessionRecord.auth_method:type_name -> containarium.v1.SSHAuthMethod
-	4, // 3: containarium.v1.SSHSessionRecord.credential:type_name -> containarium.v1.SSHSessionCredential
-	2, // 4: containarium.v1.SSHSessionRecord.close_reason:type_name -> containarium.v1.SSHCloseReason
-	5, // 5: containarium.v1.IngestSSHSessionRecordsRequest.records:type_name -> containarium.v1.SSHSessionRecord
-	3, // 6: containarium.v1.IngestSSHSessionRecordsResponse.outcomes:type_name -> containarium.v1.IngestOutcome
-	6, // 7: containarium.v1.AuditService.IngestSSHSessionRecords:input_type -> containarium.v1.IngestSSHSessionRecordsRequest
-	7, // 8: containarium.v1.AuditService.IngestSSHSessionRecords:output_type -> containarium.v1.IngestSSHSessionRecordsResponse
-	8, // [8:9] is the sub-list for method output_type
-	7, // [7:8] is the sub-list for method input_type
-	7, // [7:7] is the sub-list for extension type_name
-	7, // [7:7] is the sub-list for extension extendee
-	0, // [0:7] is the sub-list for field type_name
+	0,  // 0: containarium.v1.SSHSessionRecord.phase:type_name -> containarium.v1.SSHSessionPhase
+	8,  // 1: containarium.v1.SSHSessionRecord.occurred_at:type_name -> google.protobuf.Timestamp
+	1,  // 2: containarium.v1.SSHSessionRecord.auth_method:type_name -> containarium.v1.SSHAuthMethod
+	4,  // 3: containarium.v1.SSHSessionRecord.credential:type_name -> containarium.v1.SSHSessionCredential
+	2,  // 4: containarium.v1.SSHSessionRecord.close_reason:type_name -> containarium.v1.SSHCloseReason
+	9,  // 5: containarium.v1.SSHSessionRecord.authz_decision:type_name -> containarium.v1.SSHAuthzDecision
+	10, // 6: containarium.v1.SSHSessionRecord.deny_reason:type_name -> containarium.v1.SSHDenyReason
+	5,  // 7: containarium.v1.IngestSSHSessionRecordsRequest.records:type_name -> containarium.v1.SSHSessionRecord
+	3,  // 8: containarium.v1.IngestSSHSessionRecordsResponse.outcomes:type_name -> containarium.v1.IngestOutcome
+	6,  // 9: containarium.v1.AuditService.IngestSSHSessionRecords:input_type -> containarium.v1.IngestSSHSessionRecordsRequest
+	7,  // 10: containarium.v1.AuditService.IngestSSHSessionRecords:output_type -> containarium.v1.IngestSSHSessionRecordsResponse
+	10, // [10:11] is the sub-list for method output_type
+	9,  // [9:10] is the sub-list for method input_type
+	9,  // [9:9] is the sub-list for extension type_name
+	9,  // [9:9] is the sub-list for extension extendee
+	0,  // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_audit_proto_init() }
@@ -661,6 +716,7 @@ func file_containarium_v1_audit_proto_init() {
 	if File_containarium_v1_audit_proto != nil {
 		return
 	}
+	file_containarium_v1_ssh_authz_proto_init()
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

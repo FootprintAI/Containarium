@@ -2,6 +2,7 @@ package sshsession
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -114,7 +115,20 @@ func TestEnumSetsMatchProto(t *testing.T) {
 			t.Errorf("%s: %d Go constants vs %d proto values (excluding UNSPECIFIED)", name, goN, want)
 		}
 	}
-	check("phase", len(allPhases), pb.SSHSessionPhase_name)
+	// SSH_SESSION_PHASE_DENIED is on the wire contract (#2516) but the
+	// sentinel's Record does not carry it until #2519; until then
+	// TestFromProto_RejectsDeniedPhase pins that ingest refuses it.
+	check("phase", len(allPhases)+1, pb.SSHSessionPhase_name)
 	check("auth method", len(allAuthMethods), pb.SSHAuthMethod_name)
 	check("close reason", len(allCloseReasons), pb.SSHCloseReason_name)
+}
+
+// A DENIED record must be refused, not stored as an open row, until the
+// sentinel's Record carries the phase (#2519).
+func TestFromProto_RejectsDeniedPhase(t *testing.T) {
+	p := ToProto(baseRecord())
+	p.Phase = pb.SSHSessionPhase_SSH_SESSION_PHASE_DENIED
+	if _, err := FromProto(p); err == nil || !strings.Contains(err.Error(), "invalid phase") {
+		t.Fatalf("FromProto(DENIED) err = %v, want invalid phase", err)
+	}
 }
