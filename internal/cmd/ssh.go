@@ -428,6 +428,7 @@ func runSSHRotate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	path := filepath.Join(home, ".containarium", "ssh_config")
+	// #nosec G304 -- fixed config path under the user's home; no cloud input contributes to the path.
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read SSH config (run containarium ssh-config sync first): %w", err)
