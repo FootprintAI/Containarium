@@ -1,4 +1,4 @@
-# SSH live authorization — device approval spike (component 3)
+# SSH live authorization — verified device approval decision
 
 **Date:** 2026-10-13
 
@@ -6,9 +6,9 @@
 
 **Result:** verified with sshpiperd/libplugin v1.6.1 and stock OpenSSH.
 
-This records the device-approval transport decision independently of the broader proposed [SSH live authorization architecture (#2514)](https://github.com/FootprintAI/Containarium/pull/2514). Component 3 of that design was updated in [#2530](https://github.com/FootprintAI/Containarium/pull/2530), which was merged into the design branch. This note and its runnable test let the spike land on `main` without waiting for approval of the entire design.
+This document records the verified component 3 decision required by #2524. The broader [SSH live authorization architecture (#2514)](https://github.com/FootprintAI/Containarium/pull/2514) remains proposed; its other components are outside this spike. Component 3 was also updated in [#2530](https://github.com/FootprintAI/Containarium/pull/2530), which was merged into the design branch. When that proposal lands, retain this verified decision and evidence in its component 3.
 
-## Decision
+## Component 3 — device approval, sentinel side
 
 **Use keyboard-interactive on the same connection.** The client sees publickey partial success, an approval instruction and one prompt, then opens an authenticated upstream session after Enter. A banner-only flow requiring a reconnect is not needed for clients that support keyboard-interactive. Noninteractive clients cannot answer this prompt.
 
