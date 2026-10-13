@@ -9,12 +9,15 @@ import (
 	"net/http"
 	"os"
 	"os/user"
+	"path/filepath"
 	"strings"
 	"text/tabwriter"
 	"time"
 
 	"github.com/footprintai/containarium/internal/credentials"
+	"github.com/footprintai/containarium/internal/sshconfig"
 	"github.com/footprintai/containarium/internal/sshkey"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -56,6 +59,8 @@ var (
 	sshRemoveServer    string
 	sshPropagateServer string
 	sshPropagateBoxes  []string
+	sshRotateName      string
+	sshRotateServer    string
 )
 
 var sshCmd = &cobra.Command{
@@ -134,6 +139,14 @@ key column is the fingerprint, not the full public-key blob.`,
 	RunE: runSSHList,
 }
 
+var sshRotateCmd = &cobra.Command{
+	Use:   "rotate",
+	Short: "Replace this device's SSH key with proof of possession",
+	Long:  "Generate a fresh Ed25519 key, sign a server challenge, and register it under this device's name. After registration succeeds, update the managed SSH config and keep the old key during the server's overlap window.",
+	Args:  cobra.NoArgs,
+	RunE:  runSSHRotate,
+}
+
 var sshRemoveCmd = &cobra.Command{
 	Use:   "remove <name>",
 	Short: "Remove a registered SSH key by friendly name",
@@ -178,6 +191,9 @@ this into their workflow today.`,
 }
 
 func init() {
+	sshRotateCmd.Flags().StringVar(&sshRotateName, "name", "", "device key name (default: <user>@<host>)")
+	sshRotateCmd.Flags().StringVar(&sshRotateServer, "server", "", "server URL (default: default_server)")
+	sshCmd.AddCommand(sshRotateCmd)
 	sshSetupCmd.Flags().StringVar(&sshSetupName, "name", "", "friendly label for this key (default: <user>@<host>)")
 	sshSetupCmd.Flags().StringVar(&sshSetupKeyPath, "key", "", "path to public key file (default: auto-detect ~/.ssh/id_ed25519.pub or generate)")
 	sshSetupCmd.Flags().BoolVar(&sshSetupGenerate, "generate", false, "always generate a fresh ed25519 keypair (default: re-use ~/.ssh/id_ed25519.pub if present)")
@@ -296,18 +312,53 @@ func (c *sshHTTPClient) doJSON(ctx context.Context, method, path string, body, o
 }
 
 // Wire-format DTOs for the UserService SSH-key endpoints. Each
-// mirrors the .proto on the cloud side; we redeclare here so the OSS
+// mirrors the cloud JSON shape; the rotation additions follow the proposed
+// contract on #2523 pending cloud-proto confirmation. We redeclare so the OSS
 // CLI compiles without depending on a cloud-private pb package.
 //
 // Per CLAUDE.md: typed structs, not map[string]any.
 
 type addSSHKeyReq struct {
-	Name      string `json:"name"`
-	PublicKey string `json:"public_key"`
+	Name        string         `json:"name"`
+	PublicKey   string         `json:"public_key"`
+	KeyType     sshKeyTypeJSON `json:"key_type,omitempty"`
+	ChallengeID string         `json:"challenge_id,omitempty"`
+	Signature   string         `json:"signature,omitempty"`
+}
+
+// Use proto enum names for the proposed cloud JSON representation; retain the enum's type
+// internally instead of storing an independently invented algorithm string.
+type sshKeyTypeJSON pb.SSHKeyType
+
+func (t sshKeyTypeJSON) MarshalJSON() ([]byte, error) {
+	return json.Marshal(pb.SSHKeyType(t).String())
+}
+
+func (t *sshKeyTypeJSON) UnmarshalJSON(data []byte) error {
+	var name string
+	if err := json.Unmarshal(data, &name); err != nil {
+		return err
+	}
+	value, ok := pb.SSHKeyType_value[name]
+	if !ok {
+		return fmt.Errorf("unknown SSH key type %q", name)
+	}
+	*t = sshKeyTypeJSON(value)
+	return nil
+}
+
+// These additional fields follow the proposed contract on #2523; confirm
+// their JSON names and types against the cloud UserService proto before live
+// verification. A []byte nonce uses protobuf JSON's Base64 representation.
+type sshKeyChallengeReq struct{}
+type sshKeyChallengeResp struct {
+	ChallengeID string `json:"challenge_id"`
+	Nonce       []byte `json:"nonce"`
 }
 
 type addSSHKeyResp struct {
-	Key sshkey.SSHKey `json:"key"`
+	Key              sshkey.SSHKey `json:"key"`
+	OverlapExpiresAt time.Time     `json:"overlap_expires_at,omitempty"`
 }
 
 type listSSHKeysResp struct {
@@ -328,7 +379,7 @@ type propagateResp struct {
 // stored.
 func (c *sshHTTPClient) AddSSHKey(ctx context.Context, name, pub string) (*sshkey.SSHKey, error) {
 	var out addSSHKeyResp
-	if err := c.doJSON(ctx, http.MethodPost, "/v1/user/ssh-keys", addSSHKeyReq{Name: name, PublicKey: pub}, &out); err != nil {
+	if err := c.doJSON(ctx, http.MethodPost, "/v1/user/ssh-keys", addSSHKeyReq{Name: name, PublicKey: pub, KeyType: sshKeyTypeJSON(sshkey.ParseType(pub))}, &out); err != nil {
 		return nil, err
 	}
 	return &out.Key, nil
@@ -358,6 +409,81 @@ func (c *sshHTTPClient) PropagateSSHKeys(ctx context.Context, boxes []string) (*
 }
 
 // ---- command handlers --------------------------------------------------
+
+func runSSHRotate(cmd *cobra.Command, args []string) error {
+	srv := pickSSHServer(sshRotateServer)
+	name := sshRotateName
+	if name == "" {
+		name = defaultLocalKeyName()
+	}
+	if err := validateKeyName(name); err != nil {
+		return err
+	}
+	client, err := newSSHHTTPClient(srv)
+	if err != nil {
+		return err
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(home, ".containarium", "ssh_config")
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read SSH config (run containarium ssh-config sync first): %w", err)
+	}
+	if _, err := sshconfig.RotateIdentity(string(content), "preflight"); err != nil {
+		return err
+	}
+	pubPath, pub, err := sshkey.GenerateFresh(sshkey.LocateOpts{HomeDir: home})
+	if err != nil {
+		return err
+	}
+	privatePath := strings.TrimSuffix(pubPath, ".pub")
+	g, err := sshconfig.RotateIdentity(string(content), privatePath)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Generated new Ed25519 key at %s\n", privatePath)
+	parent := cmd.Context()
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
+	defer cancel()
+	var challenge sshKeyChallengeResp
+	err = client.doJSON(ctx, http.MethodPost, "/v1/user/ssh-keys:challenge", sshKeyChallengeReq{}, &challenge)
+	if isUnimplemented(err) {
+		return fmt.Errorf("SSH key rotation is not supported by %s: the challenge endpoint is unavailable; existing SSH config and old key are preserved: %w", srv, err)
+	}
+	if err != nil {
+		return fmt.Errorf("SSH key challenge: %w", err)
+	}
+	if challenge.ChallengeID == "" || len(challenge.Nonce) == 0 {
+		return fmt.Errorf("server returned an incomplete SSH key challenge")
+	}
+	signature, err := sshkey.SignChallenge(privatePath, challenge.Nonce)
+	if err != nil {
+		return err
+	}
+	var stored addSSHKeyResp
+	err = client.doJSON(ctx, http.MethodPost, "/v1/user/ssh-keys", addSSHKeyReq{Name: name, PublicKey: pub, KeyType: sshKeyTypeJSON(sshkey.ParseType(pub)), ChallengeID: challenge.ChallengeID, Signature: signature}, &stored)
+	if err != nil {
+		return fmt.Errorf("register rotation key: %w", err)
+	}
+	fp, err := sshkey.Fingerprint(pub)
+	if err != nil {
+		return err
+	}
+	if stored.Key.Fingerprint != fp || stored.OverlapExpiresAt.IsZero() {
+		return fmt.Errorf("registration response did not confirm the new fingerprint and overlap window; existing SSH config is preserved and the new key remains at %s", privatePath)
+	}
+	if _, err := sshconfig.WriteConfig(path, g, false); err != nil {
+		return fmt.Errorf("new key registered at %s, but updating SSH config failed: %w", privatePath, err)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Registered SSH key %q (%s); updated %s\nOld keys are retained; overlap ends at %s\n", name, fp, path, stored.OverlapExpiresAt.UTC().Format(time.RFC3339))
+	return nil
+}
 
 func runSSHSetup(cmd *cobra.Command, args []string) error {
 	out := cmd.OutOrStdout()
