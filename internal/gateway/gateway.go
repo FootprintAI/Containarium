@@ -610,7 +610,12 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	// Create HTTP handler with authentication middleware, then audit middleware.
 	// Audit wraps the inner handler so auth runs first (sets username in context),
 	// then audit captures the response on the way out.
-	var handler http.Handler = mux
+	//
+	// rest is the REST mux every chain below serves; GuardSSHAuthzPath keeps
+	// the sentinel-only authorize route (#2516) out of the JWT chain however
+	// its path is spelled.
+	rest := GuardSSHAuthzPath(mux)
+	handler := rest
 	if gs.auditStore != nil {
 		handler = audit.HTTPAuditMiddleware(handler, gs.auditStore)
 	}
@@ -976,7 +981,7 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	// path, so it wins over the "/v1/" catch-all. The inner chain keeps
 	// the audit middleware but skips JWT auth — the door identity comes
 	// from the verified signature instead.
-	var anonInner http.Handler = mux
+	anonInner := rest
 	if gs.auditStore != nil {
 		anonInner = audit.HTTPAuditMiddleware(anonInner, gs.auditStore)
 	}

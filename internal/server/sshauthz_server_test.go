@@ -52,7 +52,7 @@ func TestSSHAuthzServer_SentinelSignedRequestReachesStub(t *testing.T) {
 		t.Fatal(err)
 	}
 	httpMux := http.NewServeMux()
-	gateway.MountSSHAuthz(httpMux, auth.NewSentinelVerifier(nil, secret), gw)
+	gateway.MountSSHAuthz(httpMux, auth.NewSentinelVerifier(nil, secret), gateway.GuardSSHAuthzPath(gw))
 
 	signed := httptest.NewRequest(http.MethodPost, gateway.SSHAuthzAuthorizePath, strings.NewReader(`{"login":"alice"}`))
 	auth.SignSentinelRequest(signed, secret)
