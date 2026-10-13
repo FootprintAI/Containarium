@@ -101,6 +101,12 @@ message WatchAssignmentsRequest {}
 // image, capacity) are embedded so the host doesn't need a separate
 // fetch round-trip.
 message Assignment {
+  enum AssignmentKind {
+  ASSIGNMENT_KIND_UNSPECIFIED = 0;
+  ASSIGNMENT_KIND_CONTAINER = 1;
+  ASSIGNMENT_KIND_TERMINATE_USER_SESSIONS = 2;
+}
+
   // Server-allocated id of the container_assignments row. Hosts use
   // this for idempotency / dedup across reconnects.
   string assignment_id = 1;
@@ -152,6 +158,8 @@ message Assignment {
   map<string, string> secret_env = 16;
 
   google.protobuf.Timestamp updated_at = 20;
+  AssignmentKind kind = 21;
+  string user_id = 22;
 }
 
 // PortRoute is one hostname→container-port exposure (mirrors the cloud Route

@@ -113,6 +113,55 @@ func (NetworkPolicyMode) EnumDescriptor() ([]byte, []int) {
 	return file_containarium_cloud_v1_actuation_service_proto_rawDescGZIP(), []int{0}
 }
 
+type Assignment_AssignmentKind int32
+
+const (
+	Assignment_ASSIGNMENT_KIND_UNSPECIFIED             Assignment_AssignmentKind = 0
+	Assignment_ASSIGNMENT_KIND_CONTAINER               Assignment_AssignmentKind = 1
+	Assignment_ASSIGNMENT_KIND_TERMINATE_USER_SESSIONS Assignment_AssignmentKind = 2
+)
+
+// Enum value maps for Assignment_AssignmentKind.
+var (
+	Assignment_AssignmentKind_name = map[int32]string{
+		0: "ASSIGNMENT_KIND_UNSPECIFIED",
+		1: "ASSIGNMENT_KIND_CONTAINER",
+		2: "ASSIGNMENT_KIND_TERMINATE_USER_SESSIONS",
+	}
+	Assignment_AssignmentKind_value = map[string]int32{
+		"ASSIGNMENT_KIND_UNSPECIFIED":             0,
+		"ASSIGNMENT_KIND_CONTAINER":               1,
+		"ASSIGNMENT_KIND_TERMINATE_USER_SESSIONS": 2,
+	}
+)
+
+func (x Assignment_AssignmentKind) Enum() *Assignment_AssignmentKind {
+	p := new(Assignment_AssignmentKind)
+	*p = x
+	return p
+}
+
+func (x Assignment_AssignmentKind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (Assignment_AssignmentKind) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_cloud_v1_actuation_service_proto_enumTypes[1].Descriptor()
+}
+
+func (Assignment_AssignmentKind) Type() protoreflect.EnumType {
+	return &file_containarium_cloud_v1_actuation_service_proto_enumTypes[1]
+}
+
+func (x Assignment_AssignmentKind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use Assignment_AssignmentKind.Descriptor instead.
+func (Assignment_AssignmentKind) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_cloud_v1_actuation_service_proto_rawDescGZIP(), []int{5, 0}
+}
+
 // HeartbeatRequest is intentionally empty for v1. The host's identity
 // comes from the bearer; there's nothing else the cloud needs to
 // know to bump last_heartbeat_at. Future fields (current observed
@@ -422,8 +471,10 @@ type Assignment struct {
 	// Carried so the host stamps them at create. EMPTY for now — the cloud has no
 	// per-container secrets model yet; this is the forward contract the OSS host
 	// already applies (as container env) once the cloud populates it.
-	SecretEnv     map[string]string      `protobuf:"bytes,16,rep,name=secret_env,json=secretEnv,proto3" json:"secret_env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	UpdatedAt     *timestamppb.Timestamp `protobuf:"bytes,20,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	SecretEnv     map[string]string         `protobuf:"bytes,16,rep,name=secret_env,json=secretEnv,proto3" json:"secret_env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	UpdatedAt     *timestamppb.Timestamp    `protobuf:"bytes,20,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	Kind          Assignment_AssignmentKind `protobuf:"varint,21,opt,name=kind,proto3,enum=containarium.cloud.v1.Assignment_AssignmentKind" json:"kind,omitempty"`
+	UserId        string                    `protobuf:"bytes,22,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -547,6 +598,20 @@ func (x *Assignment) GetUpdatedAt() *timestamppb.Timestamp {
 		return x.UpdatedAt
 	}
 	return nil
+}
+
+func (x *Assignment) GetKind() Assignment_AssignmentKind {
+	if x != nil {
+		return x.Kind
+	}
+	return Assignment_ASSIGNMENT_KIND_UNSPECIFIED
+}
+
+func (x *Assignment) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
 }
 
 // PortRoute is one hostname→container-port exposure (mirrors the cloud Route
@@ -1391,7 +1456,7 @@ const file_containarium_cloud_v1_actuation_service_proto_rawDesc = "" +
 	"\x1cReportContainerStateResponse\x12;\n" +
 	"\vreceived_at\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"receivedAt\"\x19\n" +
-	"\x17WatchAssignmentsRequest\"\xa1\x04\n" +
+	"\x17WatchAssignmentsRequest\"\xff\x05\n" +
 	"\n" +
 	"Assignment\x12#\n" +
 	"\rassignment_id\x18\x01 \x01(\tR\fassignmentId\x12!\n" +
@@ -1409,10 +1474,16 @@ const file_containarium_cloud_v1_actuation_service_proto_rawDesc = "" +
 	"\n" +
 	"secret_env\x18\x10 \x03(\v20.containarium.cloud.v1.Assignment.SecretEnvEntryR\tsecretEnv\x129\n" +
 	"\n" +
-	"updated_at\x18\x14 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x1a<\n" +
+	"updated_at\x18\x14 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12D\n" +
+	"\x04kind\x18\x15 \x01(\x0e20.containarium.cloud.v1.Assignment.AssignmentKindR\x04kind\x12\x17\n" +
+	"\auser_id\x18\x16 \x01(\tR\x06userId\x1a<\n" +
 	"\x0eSecretEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"`\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"}\n" +
+	"\x0eAssignmentKind\x12\x1f\n" +
+	"\x1bASSIGNMENT_KIND_UNSPECIFIED\x10\x00\x12\x1d\n" +
+	"\x19ASSIGNMENT_KIND_CONTAINER\x10\x01\x12+\n" +
+	"'ASSIGNMENT_KIND_TERMINATE_USER_SESSIONS\x10\x02\"`\n" +
 	"\tPortRoute\x12\x16\n" +
 	"\x06domain\x18\x01 \x01(\tR\x06domain\x12\x1f\n" +
 	"\vtarget_port\x18\x02 \x01(\x05R\n" +
@@ -1498,62 +1569,64 @@ func file_containarium_cloud_v1_actuation_service_proto_rawDescGZIP() []byte {
 	return file_containarium_cloud_v1_actuation_service_proto_rawDescData
 }
 
-var file_containarium_cloud_v1_actuation_service_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_containarium_cloud_v1_actuation_service_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
 var file_containarium_cloud_v1_actuation_service_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
 var file_containarium_cloud_v1_actuation_service_proto_goTypes = []any{
 	(NetworkPolicyMode)(0),               // 0: containarium.cloud.v1.NetworkPolicyMode
-	(*HeartbeatRequest)(nil),             // 1: containarium.cloud.v1.HeartbeatRequest
-	(*HeartbeatResponse)(nil),            // 2: containarium.cloud.v1.HeartbeatResponse
-	(*ReportContainerStateRequest)(nil),  // 3: containarium.cloud.v1.ReportContainerStateRequest
-	(*ReportContainerStateResponse)(nil), // 4: containarium.cloud.v1.ReportContainerStateResponse
-	(*WatchAssignmentsRequest)(nil),      // 5: containarium.cloud.v1.WatchAssignmentsRequest
-	(*Assignment)(nil),                   // 6: containarium.cloud.v1.Assignment
-	(*PortRoute)(nil),                    // 7: containarium.cloud.v1.PortRoute
-	(*NetworkPolicy)(nil),                // 8: containarium.cloud.v1.NetworkPolicy
-	(*AssignmentBatch)(nil),              // 9: containarium.cloud.v1.AssignmentBatch
-	(*EnrollHostRequest)(nil),            // 10: containarium.cloud.v1.EnrollHostRequest
-	(*EnrollHostResponse)(nil),           // 11: containarium.cloud.v1.EnrollHostResponse
-	(*HostCapabilityCheck)(nil),          // 12: containarium.cloud.v1.HostCapabilityCheck
-	(*ReportHostStatusRequest)(nil),      // 13: containarium.cloud.v1.ReportHostStatusRequest
-	(*ReportHostStatusResponse)(nil),     // 14: containarium.cloud.v1.ReportHostStatusResponse
-	(*SSHCAKey)(nil),                     // 15: containarium.cloud.v1.SSHCAKey
-	(*GetSSHTrustBundleRequest)(nil),     // 16: containarium.cloud.v1.GetSSHTrustBundleRequest
-	(*GetSSHTrustBundleResponse)(nil),    // 17: containarium.cloud.v1.GetSSHTrustBundleResponse
-	nil,                                  // 18: containarium.cloud.v1.Assignment.SecretEnvEntry
-	(*timestamppb.Timestamp)(nil),        // 19: google.protobuf.Timestamp
+	(Assignment_AssignmentKind)(0),       // 1: containarium.cloud.v1.Assignment.AssignmentKind
+	(*HeartbeatRequest)(nil),             // 2: containarium.cloud.v1.HeartbeatRequest
+	(*HeartbeatResponse)(nil),            // 3: containarium.cloud.v1.HeartbeatResponse
+	(*ReportContainerStateRequest)(nil),  // 4: containarium.cloud.v1.ReportContainerStateRequest
+	(*ReportContainerStateResponse)(nil), // 5: containarium.cloud.v1.ReportContainerStateResponse
+	(*WatchAssignmentsRequest)(nil),      // 6: containarium.cloud.v1.WatchAssignmentsRequest
+	(*Assignment)(nil),                   // 7: containarium.cloud.v1.Assignment
+	(*PortRoute)(nil),                    // 8: containarium.cloud.v1.PortRoute
+	(*NetworkPolicy)(nil),                // 9: containarium.cloud.v1.NetworkPolicy
+	(*AssignmentBatch)(nil),              // 10: containarium.cloud.v1.AssignmentBatch
+	(*EnrollHostRequest)(nil),            // 11: containarium.cloud.v1.EnrollHostRequest
+	(*EnrollHostResponse)(nil),           // 12: containarium.cloud.v1.EnrollHostResponse
+	(*HostCapabilityCheck)(nil),          // 13: containarium.cloud.v1.HostCapabilityCheck
+	(*ReportHostStatusRequest)(nil),      // 14: containarium.cloud.v1.ReportHostStatusRequest
+	(*ReportHostStatusResponse)(nil),     // 15: containarium.cloud.v1.ReportHostStatusResponse
+	(*SSHCAKey)(nil),                     // 16: containarium.cloud.v1.SSHCAKey
+	(*GetSSHTrustBundleRequest)(nil),     // 17: containarium.cloud.v1.GetSSHTrustBundleRequest
+	(*GetSSHTrustBundleResponse)(nil),    // 18: containarium.cloud.v1.GetSSHTrustBundleResponse
+	nil,                                  // 19: containarium.cloud.v1.Assignment.SecretEnvEntry
+	(*timestamppb.Timestamp)(nil),        // 20: google.protobuf.Timestamp
 }
 var file_containarium_cloud_v1_actuation_service_proto_depIdxs = []int32{
-	19, // 0: containarium.cloud.v1.HeartbeatResponse.received_at:type_name -> google.protobuf.Timestamp
-	19, // 1: containarium.cloud.v1.ReportContainerStateRequest.observed_at:type_name -> google.protobuf.Timestamp
-	19, // 2: containarium.cloud.v1.ReportContainerStateResponse.received_at:type_name -> google.protobuf.Timestamp
-	7,  // 3: containarium.cloud.v1.Assignment.routes:type_name -> containarium.cloud.v1.PortRoute
-	18, // 4: containarium.cloud.v1.Assignment.secret_env:type_name -> containarium.cloud.v1.Assignment.SecretEnvEntry
-	19, // 5: containarium.cloud.v1.Assignment.updated_at:type_name -> google.protobuf.Timestamp
-	0,  // 6: containarium.cloud.v1.NetworkPolicy.mode:type_name -> containarium.cloud.v1.NetworkPolicyMode
-	6,  // 7: containarium.cloud.v1.AssignmentBatch.assignments:type_name -> containarium.cloud.v1.Assignment
-	19, // 8: containarium.cloud.v1.AssignmentBatch.generated_at:type_name -> google.protobuf.Timestamp
-	8,  // 9: containarium.cloud.v1.AssignmentBatch.network_policies:type_name -> containarium.cloud.v1.NetworkPolicy
-	12, // 10: containarium.cloud.v1.ReportHostStatusRequest.checks:type_name -> containarium.cloud.v1.HostCapabilityCheck
-	19, // 11: containarium.cloud.v1.ReportHostStatusResponse.received_at:type_name -> google.protobuf.Timestamp
-	15, // 12: containarium.cloud.v1.GetSSHTrustBundleResponse.ca_keys:type_name -> containarium.cloud.v1.SSHCAKey
-	19, // 13: containarium.cloud.v1.GetSSHTrustBundleResponse.generated_at:type_name -> google.protobuf.Timestamp
-	10, // 14: containarium.cloud.v1.ActuationService.EnrollHost:input_type -> containarium.cloud.v1.EnrollHostRequest
-	13, // 15: containarium.cloud.v1.ActuationService.ReportHostStatus:input_type -> containarium.cloud.v1.ReportHostStatusRequest
-	1,  // 16: containarium.cloud.v1.ActuationService.Heartbeat:input_type -> containarium.cloud.v1.HeartbeatRequest
-	3,  // 17: containarium.cloud.v1.ActuationService.ReportContainerState:input_type -> containarium.cloud.v1.ReportContainerStateRequest
-	5,  // 18: containarium.cloud.v1.ActuationService.WatchAssignments:input_type -> containarium.cloud.v1.WatchAssignmentsRequest
-	16, // 19: containarium.cloud.v1.ActuationService.GetSSHTrustBundle:input_type -> containarium.cloud.v1.GetSSHTrustBundleRequest
-	11, // 20: containarium.cloud.v1.ActuationService.EnrollHost:output_type -> containarium.cloud.v1.EnrollHostResponse
-	14, // 21: containarium.cloud.v1.ActuationService.ReportHostStatus:output_type -> containarium.cloud.v1.ReportHostStatusResponse
-	2,  // 22: containarium.cloud.v1.ActuationService.Heartbeat:output_type -> containarium.cloud.v1.HeartbeatResponse
-	4,  // 23: containarium.cloud.v1.ActuationService.ReportContainerState:output_type -> containarium.cloud.v1.ReportContainerStateResponse
-	9,  // 24: containarium.cloud.v1.ActuationService.WatchAssignments:output_type -> containarium.cloud.v1.AssignmentBatch
-	17, // 25: containarium.cloud.v1.ActuationService.GetSSHTrustBundle:output_type -> containarium.cloud.v1.GetSSHTrustBundleResponse
-	20, // [20:26] is the sub-list for method output_type
-	14, // [14:20] is the sub-list for method input_type
-	14, // [14:14] is the sub-list for extension type_name
-	14, // [14:14] is the sub-list for extension extendee
-	0,  // [0:14] is the sub-list for field type_name
+	20, // 0: containarium.cloud.v1.HeartbeatResponse.received_at:type_name -> google.protobuf.Timestamp
+	20, // 1: containarium.cloud.v1.ReportContainerStateRequest.observed_at:type_name -> google.protobuf.Timestamp
+	20, // 2: containarium.cloud.v1.ReportContainerStateResponse.received_at:type_name -> google.protobuf.Timestamp
+	8,  // 3: containarium.cloud.v1.Assignment.routes:type_name -> containarium.cloud.v1.PortRoute
+	19, // 4: containarium.cloud.v1.Assignment.secret_env:type_name -> containarium.cloud.v1.Assignment.SecretEnvEntry
+	20, // 5: containarium.cloud.v1.Assignment.updated_at:type_name -> google.protobuf.Timestamp
+	1,  // 6: containarium.cloud.v1.Assignment.kind:type_name -> containarium.cloud.v1.Assignment.AssignmentKind
+	0,  // 7: containarium.cloud.v1.NetworkPolicy.mode:type_name -> containarium.cloud.v1.NetworkPolicyMode
+	7,  // 8: containarium.cloud.v1.AssignmentBatch.assignments:type_name -> containarium.cloud.v1.Assignment
+	20, // 9: containarium.cloud.v1.AssignmentBatch.generated_at:type_name -> google.protobuf.Timestamp
+	9,  // 10: containarium.cloud.v1.AssignmentBatch.network_policies:type_name -> containarium.cloud.v1.NetworkPolicy
+	13, // 11: containarium.cloud.v1.ReportHostStatusRequest.checks:type_name -> containarium.cloud.v1.HostCapabilityCheck
+	20, // 12: containarium.cloud.v1.ReportHostStatusResponse.received_at:type_name -> google.protobuf.Timestamp
+	16, // 13: containarium.cloud.v1.GetSSHTrustBundleResponse.ca_keys:type_name -> containarium.cloud.v1.SSHCAKey
+	20, // 14: containarium.cloud.v1.GetSSHTrustBundleResponse.generated_at:type_name -> google.protobuf.Timestamp
+	11, // 15: containarium.cloud.v1.ActuationService.EnrollHost:input_type -> containarium.cloud.v1.EnrollHostRequest
+	14, // 16: containarium.cloud.v1.ActuationService.ReportHostStatus:input_type -> containarium.cloud.v1.ReportHostStatusRequest
+	2,  // 17: containarium.cloud.v1.ActuationService.Heartbeat:input_type -> containarium.cloud.v1.HeartbeatRequest
+	4,  // 18: containarium.cloud.v1.ActuationService.ReportContainerState:input_type -> containarium.cloud.v1.ReportContainerStateRequest
+	6,  // 19: containarium.cloud.v1.ActuationService.WatchAssignments:input_type -> containarium.cloud.v1.WatchAssignmentsRequest
+	17, // 20: containarium.cloud.v1.ActuationService.GetSSHTrustBundle:input_type -> containarium.cloud.v1.GetSSHTrustBundleRequest
+	12, // 21: containarium.cloud.v1.ActuationService.EnrollHost:output_type -> containarium.cloud.v1.EnrollHostResponse
+	15, // 22: containarium.cloud.v1.ActuationService.ReportHostStatus:output_type -> containarium.cloud.v1.ReportHostStatusResponse
+	3,  // 23: containarium.cloud.v1.ActuationService.Heartbeat:output_type -> containarium.cloud.v1.HeartbeatResponse
+	5,  // 24: containarium.cloud.v1.ActuationService.ReportContainerState:output_type -> containarium.cloud.v1.ReportContainerStateResponse
+	10, // 25: containarium.cloud.v1.ActuationService.WatchAssignments:output_type -> containarium.cloud.v1.AssignmentBatch
+	18, // 26: containarium.cloud.v1.ActuationService.GetSSHTrustBundle:output_type -> containarium.cloud.v1.GetSSHTrustBundleResponse
+	21, // [21:27] is the sub-list for method output_type
+	15, // [15:21] is the sub-list for method input_type
+	15, // [15:15] is the sub-list for extension type_name
+	15, // [15:15] is the sub-list for extension extendee
+	0,  // [0:15] is the sub-list for field type_name
 }
 
 func init() { file_containarium_cloud_v1_actuation_service_proto_init() }
@@ -1566,7 +1639,7 @@ func file_containarium_cloud_v1_actuation_service_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_cloud_v1_actuation_service_proto_rawDesc), len(file_containarium_cloud_v1_actuation_service_proto_rawDesc)),
-			NumEnums:      1,
+			NumEnums:      2,
 			NumMessages:   18,
 			NumExtensions: 0,
 			NumServices:   1,
