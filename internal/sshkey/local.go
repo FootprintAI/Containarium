@@ -40,6 +40,10 @@ type SSHKey struct {
 	PublicKey   string    `json:"public_key"`
 	Fingerprint string    `json:"fingerprint"`
 	CreatedAt   time.Time `json:"created_at,omitempty"`
+	ExpiresAt   time.Time `json:"expires_at,omitempty"`
+	// Proposed explicit retirement timestamp from #2523. Expiry alone does
+	// not authorize local private-key deletion.
+	RetiredAt *time.Time `json:"retired_at,omitempty"`
 }
 
 // DefaultPrivateKeyPath is the file we look at first when "find the
@@ -116,6 +120,10 @@ func Locate(opts LocateOpts) (pubPath string, pub string, err error) {
 // should call Locate first, or pass force=true to overwrite (the
 // containarium-prefixed variant only, not the personal keys).
 func Generate(opts LocateOpts, force bool) (pubPath string, pub string, err error) {
+	return generate(opts, force, containariumKeyName)
+}
+
+func generate(opts LocateOpts, force bool, keyName string) (pubPath string, pub string, err error) {
 	dir, err := sshDir(opts.HomeDir)
 	if err != nil {
 		return "", "", err
@@ -124,7 +132,7 @@ func Generate(opts LocateOpts, force bool) (pubPath string, pub string, err erro
 		return "", "", fmt.Errorf("create %s: %w", dir, err)
 	}
 
-	privPath := filepath.Join(dir, containariumKeyName)
+	privPath := filepath.Join(dir, keyName)
 	pubPath = privPath + containariumPubKeySuffix
 
 	if !force {
