@@ -1,3 +1,5 @@
+//go:build !windows
+
 // Package agentbox is the in-the-box MCP server library — the tools agents
 // use when working on a single Containarium box. Tools are registered onto
 // an mcp-go server.MCPServer instance by the agent-box binary.

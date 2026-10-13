@@ -135,6 +135,29 @@ jobs:
       - name: Windows cross-compile (client)
         run: GOOS=windows GOARCH=amd64 go build -tags containarium_client -o /dev/null ./cmd/containarium
 
+      - name: Windows cross-compile hostcheck
+        run: CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./internal/hostcheck/
+
+      - name: Test hostcheck and agent-box packages
+        run: go test ./internal/hostcheck/ ./internal/agentbox/ ./internal/sandbox/dialer/
+
+      - name: macOS cross-compile (client and agent-box)
+        run: |
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=darwin GOARCH="$arch" go build -tags containarium_client -o /dev/null ./cmd/containarium/
+            CGO_ENABLED=0 GOOS=darwin GOARCH="$arch" go build -o /dev/null ./cmd/agent-box/
+          done
+
+      - name: Keep agent-box excluded from Windows
+        run: |
+          for pkg in ./internal/agentbox/ ./cmd/agent-box/; do
+            count=$(GOOS=windows GOARCH=amd64 go list -e -f '{{len .GoFiles}}' "$pkg")
+            if [ "$count" != "0" ]; then
+              echo "::error::$pkg contains source files enabled for Windows"
+              exit 1
+            fi
+          done
+
   test-both-tag-sets:
     name: go test ./internal/cmd/... ./internal/coderun/... ./internal/sshconfig/... (both tag sets)
     runs-on: ubuntu-latest

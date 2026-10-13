@@ -1,3 +1,5 @@
+//go:build !windows
+
 // agent-box is the in-the-box MCP server. It runs inside every Containarium
 // box and exposes Linux-native operations (shell, files, logs, services,
 // deployment) to a remote MCP client over stdio.

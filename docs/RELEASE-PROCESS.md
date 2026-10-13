@@ -121,6 +121,30 @@ v0.48.0 below).
 That asymmetry is the reason not to push a tag "to see if the build
 works" — and the reason you don't have to.
 
+### Cross-platform build checks
+
+The released `containarium` client targets Linux/amd64, macOS/amd64,
+macOS/arm64, and Windows/amd64. Build the client with
+`-tags containarium_client`.
+
+The released `agent-box` targets Linux/amd64, macOS/amd64, and macOS/arm64.
+`internal/agentbox` and `cmd/agent-box` use Unix process and file-locking
+APIs and are excluded from Windows builds. Windows clients reach
+`agent-box` on a Linux box over SSH.
+
+Windows validation covers the client, rather than `go build ./...`:
+
+```bash
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build \
+  -tags containarium_client -o /dev/null ./cmd/containarium/
+```
+
+The `cli-split-gates.yml` workflow cross-compiles the Windows client and
+the macOS client and `agent-box` for both amd64 and arm64. It also runs
+the hostcheck, agentbox, and sandbox/dialer tests on Linux and rejects
+agent-box source files enabled for Windows. Cross-compilation checks
+build compatibility; it does not run the binaries on Windows or macOS.
+
 ### Rehearsing a release build without publishing
 
 `release.yml`, `containarium-daemon.yml` and `sidecars.yml` each accept
