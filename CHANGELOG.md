@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **SSH live authorization contract** (#2516). `proto/containarium/v1/ssh_authz.proto` defines `SSHAuthzService.Authorize` (`POST /v1/ssh/authorize`) with its request/response messages and the `SSHKeyType`, `SSHAuthzDecision` and `SSHDenyReason` enums from `docs/architecture/ssh-live-authorization.md`. The daemon serves it as a stub that returns `Unimplemented` (HTTP 501) until the decider lands. The REST route accepts only a valid sentinel request signature: unsigned or bad signatures get 401, a JWT is not accepted, and a verified call carries the new `ssh:authorize` scope. `SSHSessionRecord` gains `user_id`, `authz_decision`, `deny_reason` and `enforced` (fields 11-14), and `SSHSessionPhase` gains `SSH_SESSION_PHASE_DENIED`; ingest does not handle them yet. The vendored actuation contract gains `ActuationService.AuthorizeSSH` (same messages) and `Assignment.kind` / `Assignment.user_id` with an `AssignmentKind` enum (`UNSPECIFIED` is read as `CONTAINER`); the daemon does not act on `kind` yet, and the cloud repo's copy of `actuation_service.proto` must be synced.
+
 ## [0.103.3] - 2026-10-13
 
 _A third patch for coding-agent boxes: the `containarium` MCP server now works with Claude Code and lists its tools for a box token. Boxes keep the `mcp-server` they were provisioned with, so existing boxes need it re-installed (`code install` with this release)._

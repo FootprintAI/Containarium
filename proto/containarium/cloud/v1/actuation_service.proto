@@ -42,6 +42,7 @@ option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/clo
 
 import "google/api/annotations.proto";
 import "google/protobuf/timestamp.proto";
+import "containarium/v1/ssh_authz.proto";
 
 // HeartbeatRequest is intentionally empty for v1. The host's identity
 // comes from the bearer; there's nothing else the cloud needs to
@@ -152,6 +153,24 @@ message Assignment {
   map<string, string> secret_env = 16;
 
   google.protobuf.Timestamp updated_at = 20;
+
+  // What this assignment asks the host to do (#2516). UNSPECIFIED is read
+  // as CONTAINER, so a cloud that never sets it keeps today's meaning.
+  AssignmentKind kind = 21;
+  // Person whose sessions to end. Set only when
+  // kind == ASSIGNMENT_KIND_TERMINATE_USER_SESSIONS.
+  string user_id = 22;
+}
+
+// AssignmentKind selects how the host reconciles an Assignment.
+enum AssignmentKind {
+  // Treated as ASSIGNMENT_KIND_CONTAINER.
+  ASSIGNMENT_KIND_UNSPECIFIED = 0;
+  // Run the container described by the assignment's container fields.
+  ASSIGNMENT_KIND_CONTAINER = 1;
+  // End every live session of user_id on this host's boxes (the
+  // deactivation fan-out of docs/architecture/ssh-live-authorization.md).
+  ASSIGNMENT_KIND_TERMINATE_USER_SESSIONS = 2;
 }
 
 // PortRoute is one hostname→container-port exposure (mirrors the cloud Route
@@ -429,4 +448,13 @@ service ActuationService {
       get: "/v1/actuation/ssh-trust-bundle"
     };
   }
+
+  // AuthorizeSSH is the managed-mode answer to SSHAuthzService.Authorize
+  // (#2516): the daemon forwards the sentinel's question with its host
+  // bearer and relays the answer. It reuses containarium.v1's messages so
+  // the daemon never translates, hence the lint exemption.
+  //
+  // Auth: requires a valid `host-bearer` header.
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+  rpc AuthorizeSSH(containarium.v1.AuthorizeSSHRequest) returns (containarium.v1.AuthorizeSSHResponse);
 }
