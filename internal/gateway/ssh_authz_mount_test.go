@@ -149,3 +149,69 @@ func TestSSHAuthzMount_VerifiedRequestCarriesSentinelIdentity(t *testing.T) {
 		t.Errorf("roles = %v, want none: the sentinel is not an admin", got)
 	}
 }
+
+// countingAuthz counts calls that reached the Authorize handler.
+type countingAuthz struct {
+	pb.UnimplementedSSHAuthzServiceServer
+	calls int
+}
+
+func (c *countingAuthz) Authorize(context.Context, *pb.AuthorizeSSHRequest) (*pb.AuthorizeSSHResponse, error) {
+	c.calls++
+	return &pb.AuthorizeSSHResponse{}, nil
+}
+
+// TestSSHAuthzMount_EncodedPathCannotBypassSentinel wires the routes as Start
+// does — the REST mux behind GuardSSHAuthzPath, reached both from the "/v1/"
+// JWT chain and from MountSSHAuthz — and sends spellings of the authorize
+// path that http.ServeMux does not match to the exact-path mount but
+// grpc-gateway still routes to Authorize. The "/v1/" stand-in is a caller
+// holding a token with admin and ssh:authorize, the strongest JWT there is:
+// without a sentinel signature none of them may reach the handler.
+func TestSSHAuthzMount_EncodedPathCannotBypassSentinel(t *testing.T) {
+	probe := &countingAuthz{}
+	gw := NewRESTMux()
+	if err := pb.RegisterSSHAuthzServiceHandlerServer(context.Background(), gw, probe); err != nil {
+		t.Fatal(err)
+	}
+	rest := GuardSSHAuthzPath(gw)
+	httpMux := http.NewServeMux()
+	httpMux.Handle("/v1/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := auth.ContextWithClaims(r.Context(), &auth.Claims{
+			Username: "token-holder",
+			Roles:    []string{auth.RoleAdmin},
+			Scopes:   []string{auth.ScopeSSHAuthorize},
+		})
+		rest.ServeHTTP(w, r.WithContext(ctx))
+	}))
+	MountSSHAuthz(httpMux, auth.NewSentinelVerifier(nil, sshAuthzSecret), rest)
+
+	for _, target := range []string{
+		"/v1/ssh/authorize",
+		"/v1/ssh%2Fauthorize",
+		"/v1/ssh%2fauthorize",
+		"/v1/%73sh/authorize",
+		"/v1/ssh/%61uthorize",
+		"/v1/ssh%2F%61uthorize",
+		"/v1%2Fssh%2Fauthorize",
+	} {
+		t.Run(target, func(t *testing.T) {
+			before := probe.calls
+			req := httptest.NewRequest(http.MethodPost, "http://daemon"+target, strings.NewReader(`{"login":"alice"}`))
+			code, body := serve(httpMux, req)
+			if probe.calls != before {
+				t.Fatalf("unsigned %s reached Authorize (code %d, body %s)", target, code, body)
+			}
+			if code != http.StatusUnauthorized && code != http.StatusNotFound && code != http.StatusTemporaryRedirect && code != http.StatusMovedPermanently {
+				t.Fatalf("unsigned %s: code = %d body = %s, want a refusal", target, code, body)
+			}
+		})
+	}
+
+	// The sentinel's own canonical, signed request still gets through.
+	req := newSSHAuthzRequest()
+	auth.SignSentinelRequest(req, sshAuthzSecret)
+	if code, body := serve(httpMux, req); code != http.StatusOK || probe.calls == 0 {
+		t.Fatalf("signed canonical request: code = %d body = %s calls = %d, want 200 and a call", code, body, probe.calls)
+	}
+}

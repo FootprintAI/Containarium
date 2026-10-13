@@ -598,8 +598,7 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// SSHAuthzService (#2516): the per-connection SSH authorization
 	// contract. A stub returning Unimplemented until the decider (#2517);
 	// the REST route is mounted behind the sentinel signature.
-	sshAuthzServer := NewSSHAuthzServer()
-	pb.RegisterSSHAuthzServiceServer(grpcServer, sshAuthzServer)
+	pb.RegisterSSHAuthzServiceServer(grpcServer, NewSSHAuthzServer())
 
 	// ComposeAutostartService — operator-side RPC that execs
 	// `agent-box compose <verb>` inside the tenant's LXC. Uses a
