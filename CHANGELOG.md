@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.103.3] - 2026-10-13
+
+_A third patch for coding-agent boxes: the `containarium` MCP server now works with Claude Code and lists its tools for a box token. Boxes keep the `mcp-server` they were provisioned with, so existing boxes need it re-installed (`code install` with this release)._
+
+### Fixed
+
+- **`mcp-server` works with Claude Code, and lists its tools for a box token** (#2529). Two defects made a coding-agent box's `containarium` MCP server unusable. (1) It answered every line it read, including *notifications* (messages with no `id`): `notifications/initialized`, which every MCP client sends to close its handshake, got `{"id":null,"error":{"code":-32601,"message":"Method not found"}}`. JSON-RPC says a server must not reply to a notification, and Claude Code's client rejects `id: null` and drops the connection about a second after it opens, so the agent saw its tools as failed. Notifications are now consumed silently (and not executed); requests still get replies, an unknown method with an id is still -32601, a parse error keeps its `id: null` reply, and `ping` is answered. (2) `tools/list` filtered the catalog by the token's scopes, and a box principal token carries `git:credential` and `mcp:user`, which no tool requires, so it listed **no tools**. A token with the `mcp:user` scope now skips this advisory client-side filter (the control plane applies the person's role on every call); every other token narrows exactly as before. Existing boxes keep the `mcp-server` they were provisioned with and need it re-installed (`code install` with this release).
+
 ## [0.103.2] - 2026-10-13
 
 _A second patch for hosted tracker dispatch: a dispatched run's agent can now call its tracker tools. Runs started on 0.103.1 provisioned their box but ended at the first tool call. A daemon upgrade is enough; existing skill boxes pick it up on their next run._
