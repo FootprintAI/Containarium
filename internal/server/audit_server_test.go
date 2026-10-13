@@ -15,6 +15,7 @@ import (
 
 	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/sentinel/sshsession"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -249,5 +250,41 @@ func TestIngest_OrphanCloseHasItsOwnDedupeKey(t *testing.T) {
 	}
 	if f.got[0].Entry.Action != "ssh_session_close" {
 		t.Fatalf("orphan close action = %q", f.got[0].Entry.Action)
+	}
+}
+
+func TestIngestAuthzMetadataEveryDenyReason(t *testing.T) {
+	for n := range pb.SSHDenyReason_name {
+		t.Run(pb.SSHDenyReason(n).String(), func(t *testing.T) {
+			for _, phase := range []pb.SSHSessionPhase{pb.SSHSessionPhase_SSH_SESSION_PHASE_OPEN, pb.SSHSessionPhase_SSH_SESSION_PHASE_DENIED} {
+				rec := openRec("authz")
+				rec.Phase = phase
+				rec.UserId = "user-a"
+				rec.AuthzDecision = pb.SSHAuthzDecision_SSH_AUTHZ_DECISION_DENY
+				rec.DenyReason = pb.SSHDenyReason(n)
+				parsed, err := sshsession.FromProto(rec)
+				if err != nil {
+					t.Fatal(err)
+				}
+				entry, err := sshSessionBatchEntry(parsed, "sentinel-a", "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				var detail SSHSessionDetail
+				if err := json.Unmarshal([]byte(entry.Entry.Detail), &detail); err != nil {
+					t.Fatal(err)
+				}
+				if detail.UserID != "user-a" || detail.AuthzDecision != rec.AuthzDecision || detail.DenyReason != rec.DenyReason || detail.Enforced {
+					t.Fatalf("metadata lost in audit row: %+v", detail)
+				}
+				wantAction := auditActionSSHSessionOpen
+				if phase == pb.SSHSessionPhase_SSH_SESSION_PHASE_DENIED {
+					wantAction = auditActionSSHSessionDenied
+				}
+				if entry.Entry.Action != wantAction {
+					t.Fatalf("action=%s", entry.Entry.Action)
+				}
+			}
+		})
 	}
 }

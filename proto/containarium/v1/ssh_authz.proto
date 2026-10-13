@@ -1,0 +1,97 @@
+syntax = "proto3";
+
+package containarium.v1;
+
+option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
+
+import "google/api/annotations.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+import "protoc-gen-openapiv2/options/annotations.proto";
+
+// SSHAuthzService is the sentinel-to-daemon live SSH authorization contract.
+// Its gateway route requires a verified sentinel signature, not a user JWT.
+service SSHAuthzService {
+  // Authorize decides whether the offered credential may open a session as login.
+  // Message names follow the shared cloud/daemon design (#2514).
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+  // buf:lint:ignore RPC_REQUEST_STANDARD_NAME
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+  rpc Authorize(AuthorizeSSHRequest) returns (AuthorizeSSHResponse) {
+    option (google.api.http) = { post: "/v1/ssh/authorize" body: "*" };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Authorize an SSH credential";
+      description: "Sentinel-signed live authorization query to the backend daemon. Audit-only sentinel plugins record the outcome and always defer.";
+      tags: "SSH Authorization";
+    };
+  }
+}
+
+message AuthorizeSSHRequest {
+  string login = 1;
+  SSHCredential credential = 2;
+  string client_ip = 3;
+  // Informational; never used to establish authorization.
+  string sentinel_id = 4;
+  string approval_id = 5;
+}
+
+message SSHCredential {
+  oneof kind {
+    SSHPublicKeyCredential public_key = 1;
+    SSHCertificateCredential certificate = 2;
+  }
+}
+
+message SSHPublicKeyCredential {
+  string fingerprint_sha256 = 1;
+  SSHKeyType key_type = 2;
+}
+
+message SSHCertificateCredential {
+  string key_id = 1;
+  uint64 serial = 2;
+  string ca_fingerprint_sha256 = 3;
+}
+
+enum SSHKeyType {
+  SSH_KEY_TYPE_UNSPECIFIED = 0;
+  SSH_KEY_TYPE_ED25519 = 1;
+  SSH_KEY_TYPE_RSA = 2;
+  SSH_KEY_TYPE_ECDSA = 3;
+  SSH_KEY_TYPE_SK_ED25519 = 4;
+  SSH_KEY_TYPE_SK_ECDSA = 5;
+}
+
+message AuthorizeSSHResponse {
+  SSHAuthzDecision decision = 1;
+  SSHDenyReason deny_reason = 2;
+  string user_id = 3;
+  google.protobuf.Duration cache_ttl = 4;
+  SSHDeviceApproval approval = 5;
+}
+
+enum SSHAuthzDecision {
+  SSH_AUTHZ_DECISION_UNSPECIFIED = 0;
+  SSH_AUTHZ_DECISION_ALLOW = 1;
+  SSH_AUTHZ_DECISION_DENY = 2;
+}
+
+enum SSHDenyReason {
+  SSH_DENY_REASON_UNSPECIFIED = 0;
+  SSH_DENY_REASON_UNKNOWN_KEY = 1;
+  SSH_DENY_REASON_USER_INACTIVE = 2;
+  SSH_DENY_REASON_NO_ACCESS = 3;
+  SSH_DENY_REASON_KEY_EXPIRED = 4;
+  SSH_DENY_REASON_APPROVAL_PENDING = 5;
+  SSH_DENY_REASON_APPROVAL_DENIED = 6;
+  SSH_DENY_REASON_UPSTREAM_UNAVAILABLE = 7;
+}
+
+message SSHDeviceApproval {
+  string approval_id = 1;
+  string code = 2;
+  string url = 3;
+  google.protobuf.Duration poll_after = 4;
+  google.protobuf.Timestamp expires_at = 5;
+}

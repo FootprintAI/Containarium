@@ -41,6 +41,7 @@ package containarium.cloud.v1;
 option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/cloud/v1;cloudv1";
 
 import "google/api/annotations.proto";
+import "containarium/v1/ssh_authz.proto";
 import "google/protobuf/timestamp.proto";
 
 // HeartbeatRequest is intentionally empty for v1. The host's identity
@@ -133,6 +134,9 @@ message Assignment {
   // docs/security/NETWORK-ISOLATION-DESIGN.md "Cloud extension".
   string org_id = 5;
 
+  AssignmentKind kind = 6;
+  string user_id = 7;
+
   // Container spec — embedded so the host doesn't need to fetch.
   string name = 10;
   string image = 11;
@@ -152,6 +156,12 @@ message Assignment {
   map<string, string> secret_env = 16;
 
   google.protobuf.Timestamp updated_at = 20;
+}
+
+// AssignmentKind distinguishes ordinary workload reconciliation from user revocation.
+enum AssignmentKind {
+  ASSIGNMENT_KIND_UNSPECIFIED = 0;
+  ASSIGNMENT_KIND_TERMINATE_USER_SESSIONS = 1;
 }
 
 // PortRoute is one hostname→container-port exposure (mirrors the cloud Route
@@ -340,6 +350,12 @@ message GetSSHTrustBundleResponse {
 }
 
 service ActuationService {
+  // Same contract as the daemon endpoint, called with the host bearer.
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+  // buf:lint:ignore RPC_REQUEST_STANDARD_NAME
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+  rpc AuthorizeSSH(containarium.v1.AuthorizeSSHRequest) returns (containarium.v1.AuthorizeSSHResponse);
+
   // EnrollHost redeems a single-use join token and registers the BYO host.
   // Self-authenticating via the token in the body (NOT host-bearer — the row
   // doesn't exist yet).
@@ -411,6 +427,8 @@ service ActuationService {
   // server-streams is awkward enough that hosts (which are always
   // platform-daemons speaking real gRPC) should just use the
   // native channel.
+  // Preserve the existing wire message names for backwards compatibility.
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
   rpc WatchAssignments(WatchAssignmentsRequest) returns (stream AssignmentBatch);
 
   // GetSSHTrustBundle returns what this host needs to trust the cloud's SSH

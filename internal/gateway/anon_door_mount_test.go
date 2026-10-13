@@ -105,3 +105,18 @@ func TestAnonDoorHandler_BadSignatureIs401NeverJWT(t *testing.T) {
 		})
 	}
 }
+
+func TestSSHAuthzVerifiedMetadataCannotBeForged(t *testing.T) {
+	if _, ok := incomingHeaderMatcher("Grpc-Metadata-" + auth.SentinelSSHAuthzVerifiedMDKey); ok {
+		t.Fatal("client can forge sentinel verification metadata")
+	}
+	req := httptest.NewRequest(http.MethodPost, SSHAuthzPath, nil)
+	req.Header.Set("Grpc-Metadata-"+auth.SentinelSSHAuthzVerifiedMDKey, "1")
+	if got := annotateContext(req.Context(), req).Get(auth.SentinelSSHAuthzVerifiedMDKey); len(got) != 0 {
+		t.Fatal("unsigned request obtained verification marker")
+	}
+	req = req.WithContext(auth.ContextWithVerifiedSentinelSSHAuthz(req.Context()))
+	if got := annotateContext(req.Context(), req).Get(auth.SentinelSSHAuthzVerifiedMDKey); len(got) != 1 || got[0] != "1" {
+		t.Fatal("verified signature marker not forwarded")
+	}
+}

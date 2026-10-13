@@ -50,6 +50,7 @@ import (
 	"github.com/footprintai/containarium/internal/sandbox/ratelimit"
 	secretsstore "github.com/footprintai/containarium/internal/secrets"
 	"github.com/footprintai/containarium/internal/security"
+	sshauthzserver "github.com/footprintai/containarium/internal/server/sshauthz"
 	"github.com/footprintai/containarium/internal/tenantguard"
 	"github.com/footprintai/containarium/internal/threatdetect"
 	trackerstore "github.com/footprintai/containarium/internal/tracker"
@@ -2019,6 +2020,8 @@ skipAppHosting:
 			log.Printf("NetworkPolicy Tier 2 signature scanning enabled (CONTAINARIUM_NETWORK_POLICY_SIGNATURES=1)")
 		}
 	}
+
+	pb.RegisterSSHAuthzServiceServer(grpcServer, &sshauthzserver.SSHAuthzServer{})
 
 	// Core-infra network guard (#2084, docs/architecture/core-infra-network-guard.md):
 	// one Incus NIC ACL per core-role container, ingress default-drop with the

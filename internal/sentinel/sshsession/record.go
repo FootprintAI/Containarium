@@ -10,7 +10,10 @@
 // fail2ban regex depends on.
 package sshsession
 
-import "time"
+import (
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+	"time"
+)
 
 // SessionPhase distinguishes the two records emitted per accepted SSH
 // session. Typed per this repo's strong-typing convention (CLAUDE.md) —
@@ -18,8 +21,9 @@ import "time"
 type SessionPhase string
 
 const (
-	SessionPhaseOpen  SessionPhase = "open"
-	SessionPhaseClose SessionPhase = "close"
+	SessionPhaseOpen   SessionPhase = "open"
+	SessionPhaseClose  SessionPhase = "close"
+	SessionPhaseDenied SessionPhase = "denied"
 )
 
 // AuthMethod is how the client's credential was presented.
@@ -113,6 +117,11 @@ type Record struct {
 	// see target.go. Empty if it could not be resolved (e.g. config.yaml
 	// unreadable at record time).
 	Target string `json:"target,omitempty"`
+
+	UserID        string              `json:"user_id,omitempty"`
+	AuthzDecision pb.SSHAuthzDecision `json:"authz_decision,omitempty"`
+	DenyReason    pb.SSHDenyReason    `json:"deny_reason,omitempty"`
+	Enforced      bool                `json:"enforced"`
 
 	AuthMethod AuthMethod `json:"auth_method,omitempty"`
 	Credential

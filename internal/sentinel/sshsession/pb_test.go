@@ -8,7 +8,7 @@ import (
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
-var allPhases = []SessionPhase{SessionPhaseOpen, SessionPhaseClose}
+var allPhases = []SessionPhase{SessionPhaseOpen, SessionPhaseClose, SessionPhaseDenied}
 var allAuthMethods = []AuthMethod{AuthMethodCertificate, AuthMethodPublicKey, AuthMethodUnknown}
 var allCloseReasons = []CloseReason{
 	CloseReasonNormal, CloseReasonUpstreamGone, CloseReasonProxyShutdown,
@@ -117,4 +117,22 @@ func TestEnumSetsMatchProto(t *testing.T) {
 	check("phase", len(allPhases), pb.SSHSessionPhase_name)
 	check("auth method", len(allAuthMethods), pb.SSHAuthMethod_name)
 	check("close reason", len(allCloseReasons), pb.SSHCloseReason_name)
+}
+
+func TestAuthzFieldsRoundTripEveryDenyReason(t *testing.T) {
+	for n := range pb.SSHDenyReason_name {
+		t.Run(pb.SSHDenyReason(n).String(), func(t *testing.T) {
+			r := baseRecord()
+			r.UserID = "user-a"
+			r.AuthzDecision = pb.SSHAuthzDecision_SSH_AUTHZ_DECISION_DENY
+			r.DenyReason = pb.SSHDenyReason(n)
+			for _, ph := range []SessionPhase{SessionPhaseOpen, SessionPhaseDenied} {
+				r.Phase = ph
+				got, err := FromProto(ToProto(r))
+				if err != nil || !reflect.DeepEqual(got, r) {
+					t.Fatalf("metadata lost: %+v %v", got, err)
+				}
+			}
+		})
+	}
 }

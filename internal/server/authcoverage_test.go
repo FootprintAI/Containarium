@@ -110,7 +110,8 @@ var registeredServices = []rpcSurface{
 	// #2368 — Set is RequireRole(admin); Get is any authenticated subject
 	// (the manual SubjectFromGRPCContext/Unauthenticated pattern).
 	{pb.GuardrailPolicyService_ServiceDesc, "GuardrailPolicyServer"},
-	{pb.AuditService_ServiceDesc, "AuditServer"}, // #2415
+	{pb.AuditService_ServiceDesc, "AuditServer"},       // #2415
+	{pb.SSHAuthzService_ServiceDesc, "SSHAuthzServer"}, // #2516: guarded in server/sshauthz
 }
 
 // authExemptions lists every registered RPC whose handler carries no auth
@@ -215,6 +216,12 @@ func guardedMethods(t *testing.T) map[string]bool {
 	if len(files) == 0 {
 		t.Fatal("no .go files found — test not running from internal/server")
 	}
+	// The SSH authz contract stub is deliberately isolated in its own package.
+	authzFiles, err := filepath.Glob("sshauthz/*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	files = append(files, authzFiles...)
 	fset := token.NewFileSet()
 	byName := map[string][]*funcInfo{} // bare name -> every FuncDecl sharing it
 	var rpcCandidates []*funcInfo      // only those with a receiver

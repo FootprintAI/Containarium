@@ -146,6 +146,8 @@ type AccessType int32
 
 const (
 	// SSH access (default for Linux containers)
+	// Zero already means SSH on the deployed wire contract.
+	// buf:lint:ignore ENUM_ZERO_VALUE_SUFFIX
 	AccessType_ACCESS_TYPE_SSH AccessType = 0
 	// RDP access (for Windows VMs, via Guacamole browser-based client)
 	AccessType_ACCESS_TYPE_RDP AccessType = 1

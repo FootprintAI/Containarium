@@ -145,6 +145,8 @@ const (
 	// unscoped token: the handler gates on RequireExplicitScope, so a token
 	// must name it.
 	ScopeAuditIngest = "audit:ingest"
+	// ScopeSSHAuthorize is stamped by the sentinel-signature gateway mount.
+	ScopeSSHAuthorize = "ssh:authorize"
 
 	// code-egress:read lets a tenant read its own coding-tool egress policy
 	// (CodingToolEgressPolicyService Get, #2378). Writes stay admin-only.
@@ -210,7 +212,7 @@ var AllScopes = []string{
 	ScopeAnonDoor, ScopeAnonAdmin,
 	ScopeClustersRead, ScopeClustersWrite, ScopeClustersScale,
 	ScopeAuditRead, ScopeNetworkPolicyRead, ScopeTokensRead,
-	ScopeAuditIngest,
+	ScopeAuditIngest, ScopeSSHAuthorize,
 	ScopeCodeEgressRead,
 	ScopeSandboxesRead, ScopeSandboxesWrite,
 	ScopeTrackerRead, ScopeTrackerWrite, ScopeTrackerAdmin,

@@ -14,8 +14,9 @@ import (
 // TestEnumSetsMatchProto rather than at ingest time.
 
 var phaseToPB = map[SessionPhase]pb.SSHSessionPhase{
-	SessionPhaseOpen:  pb.SSHSessionPhase_SSH_SESSION_PHASE_OPEN,
-	SessionPhaseClose: pb.SSHSessionPhase_SSH_SESSION_PHASE_CLOSE,
+	SessionPhaseOpen:   pb.SSHSessionPhase_SSH_SESSION_PHASE_OPEN,
+	SessionPhaseClose:  pb.SSHSessionPhase_SSH_SESSION_PHASE_CLOSE,
+	SessionPhaseDenied: pb.SSHSessionPhase_SSH_SESSION_PHASE_DENIED,
 }
 
 var authMethodToPB = map[AuthMethod]pb.SSHAuthMethod{
@@ -52,6 +53,7 @@ var (
 // FromProto before sending, so that never reaches the wire.
 func ToProto(r Record) *pb.SSHSessionRecord {
 	out := &pb.SSHSessionRecord{
+		UserId: r.UserID, AuthzDecision: r.AuthzDecision, DenyReason: r.DenyReason, Enforced: r.Enforced,
 		SessionId:   r.SessionID,
 		Phase:       phaseToPB[r.Phase],
 		OccurredAt:  timestamppb.New(r.OccurredAt),
@@ -93,6 +95,7 @@ func FromProto(p *pb.SSHSessionRecord) (Record, error) {
 		return Record{}, fmt.Errorf("session %q: missing occurred_at", p.GetSessionId())
 	}
 	r := Record{
+		UserID: p.GetUserId(), AuthzDecision: p.GetAuthzDecision(), DenyReason: p.GetDenyReason(), Enforced: p.GetEnforced(),
 		SessionID:  p.GetSessionId(),
 		Phase:      phase,
 		OccurredAt: p.GetOccurredAt().AsTime(),
@@ -116,9 +119,15 @@ func FromProto(p *pb.SSHSessionRecord) (Record, error) {
 			KeyFingerprint: c.GetKeyFingerprint(),
 		}
 	}
+	if _, ok := pb.SSHAuthzDecision_name[int32(r.AuthzDecision)]; !ok {
+		return Record{}, fmt.Errorf("invalid authz_decision %v", r.AuthzDecision)
+	}
+	if _, ok := pb.SSHDenyReason_name[int32(r.DenyReason)]; !ok {
+		return Record{}, fmt.Errorf("invalid deny_reason %v", r.DenyReason)
+	}
 	cr := p.GetCloseReason()
 	switch {
-	case phase == SessionPhaseOpen && cr != pb.SSHCloseReason_SSH_CLOSE_REASON_UNSPECIFIED:
+	case phase != SessionPhaseClose && cr != pb.SSHCloseReason_SSH_CLOSE_REASON_UNSPECIFIED:
 		return Record{}, fmt.Errorf("session %q: close_reason set on an open record", r.SessionID)
 	case phase == SessionPhaseClose:
 		v, ok := closeReasonFromPB[cr]

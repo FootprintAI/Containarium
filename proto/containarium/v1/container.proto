@@ -49,6 +49,8 @@ enum IsolationType {
 // AccessType indicates how to connect to an instance
 enum AccessType {
   // SSH access (default for Linux containers)
+  // Zero already means SSH on the deployed wire contract.
+  // buf:lint:ignore ENUM_ZERO_VALUE_SUFFIX
   ACCESS_TYPE_SSH = 0;
 
   // RDP access (for Windows VMs, via Guacamole browser-based client)

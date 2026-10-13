@@ -550,6 +550,10 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to register anonymous box service gateway: %w", err)
 	}
 
+	if err := pb.RegisterSSHAuthzServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
+		return fmt.Errorf("failed to register SSH authorization gateway: %w", err)
+	}
+
 	// Register TrafficService gateway handler
 	if err := pb.RegisterTrafficServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
 		return fmt.Errorf("failed to register traffic service gateway: %w", err)
@@ -968,6 +972,7 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 		anonInner = audit.HTTPAuditMiddleware(anonInner, gs.auditStore)
 	}
 	httpMux.Handle(AnonDoorEnsurePath, anonDoorHandler(sentinelVerifier, corsHandler, anonInner, nil))
+	httpMux.Handle(SSHAuthzPath, SSHAuthzHandler(sentinelVerifier, anonInner, nil))
 
 	// Catch-all fallback: when wake-on-HTTP is enabled, Caddy
 	// forwards user traffic to this daemon while a container is
@@ -1054,6 +1059,9 @@ func annotateContext(ctx context.Context, req *http.Request) metadata.MD {
 		// skips writing a second row for the same request.
 		audit.GatewayForwardMDKey, "1",
 	)
+	if auth.VerifiedSentinelSSHAuthz(ctx) {
+		md.Set(auth.SentinelSSHAuthzVerifiedMDKey, "1")
+	}
 	if username, ok := auth.UsernameFromContext(ctx); ok && username != "" {
 		md.Set(auth.MDKeyUsername, username)
 	}
