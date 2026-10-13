@@ -84,6 +84,9 @@ func NewKeyStore() *KeyStore {
 // precedence as Apply. The identity is suitable for authorization cache keys;
 // it is not a daemon HTTP URL. Unknown logins must defer to the routing plugin.
 func (ks *KeyStore) BackendForLogin(login string) (string, bool) {
+	if login == "" {
+		return "", false
+	}
 	ks.mu.RLock()
 	defer ks.mu.RUnlock()
 	ids := make([]string, 0, len(ks.backends))
@@ -155,32 +158,6 @@ func (ks *KeyStore) Sync(backendID, backendIP string, httpPort int) error {
 	ks.mu.Unlock()
 
 	return nil
-}
-
-// BackendForLogin returns the id of the backend sshpiper routes login to,
-// using exactly Apply's rule (the first backend, sorted by id, that lists
-// the user wins). The SSH session shipper (#2415) uses it to send each
-// record to the audit chain of the backend the session actually reached.
-// ok is false when no synced backend lists the login.
-func (ks *KeyStore) BackendForLogin(login string) (backendID string, ok bool) {
-	if login == "" {
-		return "", false
-	}
-	ks.mu.RLock()
-	defer ks.mu.RUnlock()
-	ids := make([]string, 0, len(ks.backends))
-	for id := range ks.backends {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	for _, id := range ids {
-		for _, u := range ks.backends[id].users {
-			if u.Username == login {
-				return id, true
-			}
-		}
-	}
-	return "", false
 }
 
 // SyncLegacy is the backward-compatible Sync that uses a default backend ID.
