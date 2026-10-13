@@ -24,6 +24,22 @@ const (
 	metaKeyFingerprint = "containarium.ssh_session.key_fingerprint"
 )
 
+// AuthorizationResult is the outcome of a live authorization check.
+// It is intentionally small and explicit so the plugin can be used in
+// either audit-only mode (record + continue) or enforce mode (block the
+// connection before the next plugin consults static authorized_keys).
+type AuthorizationResult struct {
+	Allow  bool
+	Reason string
+	Err    error
+}
+
+// Authorizer is an optional callback used to decide whether a credential
+// should be allowed to continue through sshpiperd's auth chain.
+type Authorizer interface {
+	Authorize(conn libplugin.ConnMetadata, key []byte) (AuthorizationResult, error)
+}
+
 // clock lets tests fix time.Now.
 type clock func() time.Time
 
@@ -62,6 +78,22 @@ type Plugin struct {
 	Target   *TargetResolver
 	Now      clock // nil uses time.Now().UTC()
 
+	// Enforce is the toggle for the live authz decision. Default false keeps the
+	// original audit-only behavior: record the credential and always defer to the
+	// next plugin without interfering with sshpiper's chain. When true, a denied
+	// result is surfaced as an error from PublicKeyCallback so sshpiperd stops
+	// before consulting the static authorized_keys file.
+	Enforce bool
+
+	// Authorization is an optional decision hook. It is consulted before the
+	// callback defers to sshpiperd's next plugin, and it is ignored unless it
+	// returns a deny result when Enforce is true.
+	Authorization func(conn libplugin.ConnMetadata, key []byte) (AuthorizationResult, error)
+	DecisionFunc  func(conn libplugin.ConnMetadata, key []byte) (AuthorizationResult, error)
+	Authz         func(conn libplugin.ConnMetadata, key []byte) (AuthorizationResult, error)
+	Authorize     func(conn libplugin.ConnMetadata, key []byte) (AuthorizationResult, error)
+	Authorizer    Authorizer
+
 	mu       sync.Mutex
 	open     map[string]Record // sessionID -> last emitted open record, for Shutdown
 	shutdown bool              // true once Shutdown has run — see pipeStartCallback
@@ -84,8 +116,30 @@ func (p *Plugin) Config() libplugin.SshPiperPluginConfig {
 	}
 }
 
-// publicKeyCallback observes the offered credential and always defers —
-// see Plugin's doc comment.
+func (p *Plugin) authorize(conn libplugin.ConnMetadata, key []byte) (AuthorizationResult, error) {
+	if p == nil {
+		return AuthorizationResult{Allow: true}, nil
+	}
+
+	switch {
+	case p.Authorizer != nil:
+		return p.Authorizer.Authorize(conn, key)
+	case p.Authorization != nil:
+		return p.Authorization(conn, key)
+	case p.DecisionFunc != nil:
+		return p.DecisionFunc(conn, key)
+	case p.Authz != nil:
+		return p.Authz(conn, key)
+	case p.Authorize != nil:
+		return p.Authorize(conn, key)
+	default:
+		return AuthorizationResult{Allow: true}, nil
+	}
+}
+
+// publicKeyCallback observes the offered credential and either defers
+// to sshpiper's next plugin or, when in enforce mode, returns a deny
+// error before the static authorized_keys file is consulted.
 func (p *Plugin) publicKeyCallback(conn libplugin.ConnMetadata, key []byte) (*libplugin.Upstream, error) {
 	meta := map[string]string{}
 
@@ -110,6 +164,25 @@ func (p *Plugin) publicKeyCallback(conn libplugin.ConnMetadata, key []byte) (*li
 		}
 		if cred.KeyFingerprint != "" {
 			meta[metaKeyFingerprint] = cred.KeyFingerprint
+		}
+	}
+
+	decision, decisionErr := p.authorize(conn, key)
+	if decisionErr != nil {
+		return nil, decisionErr
+	}
+	if !decision.Allow {
+		if !p.Enforce {
+			// Audit-only mode remains best-effort: record the credential and let
+			// the next plugin decide as it always has.
+		} else if decision.Err != nil {
+			return nil, decision.Err
+		} else {
+			msg := "ssh: denied by live authorization"
+			if decision.Reason != "" {
+				msg = msg + ": " + decision.Reason
+			}
+			return nil, errors.New(msg)
 		}
 	}
 

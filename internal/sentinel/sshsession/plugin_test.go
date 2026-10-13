@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"errors"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -345,6 +346,36 @@ func TestPlugin_Shutdown_LateArrivalStillGetsCloseRecord(t *testing.T) {
 	}
 	if opens != 1 || closes != 1 {
 		t.Fatalf("late-arriving session got %d opens and %d closes, want exactly 1 of each: %+v", opens, closes, rec.recs)
+	}
+}
+
+func TestPlugin_PublicKeyCallback_EnforceDenyBlocksAuth(t *testing.T) {
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	pub, err := ssh.NewPublicKey(&priv.PublicKey)
+	if err != nil {
+		t.Fatalf("build public key: %v", err)
+	}
+
+	p := &Plugin{
+		Enforce: true,
+		Authorization: func(conn libplugin.ConnMetadata, key []byte) (AuthorizationResult, error) {
+			return AuthorizationResult{Allow: false, Reason: "key revoked"}, nil
+		},
+	}
+	conn := &libplugin.ConnMeta{UserName: "boxuser", FromAddr: "203.0.113.10:10", UniqId: "session-deny"}
+
+	upstream, err := p.Config().PublicKeyCallback(conn, pub.Marshal())
+	if err == nil {
+		t.Fatal("PublicKeyCallback returned nil error for a denied key in enforce mode")
+	}
+	if upstream != nil {
+		t.Fatalf("PublicKeyCallback returned a non-nil upstream on deny: %+v", upstream)
+	}
+	if !strings.Contains(err.Error(), "key revoked") {
+		t.Fatalf("error = %q, want it to mention the deny reason", err)
 	}
 }
 
