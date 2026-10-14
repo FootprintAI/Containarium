@@ -19,6 +19,8 @@ import "protoc-gen-openapiv2/options/annotations.proto";
 service NetworkPolicyService {
   // SetNetworkPolicy creates or replaces a tenant's policy (upsert by tenant).
   // The policy is validated + normalized; the stored form is echoed back.
+  // Preserve the published shared response type (#2481).
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
   rpc SetNetworkPolicy(SetNetworkPolicyRequest) returns (SetNetworkPolicyResponse) {
     option (google.api.http) = {
       post: "/v1/network-policies"
@@ -72,6 +74,9 @@ service NetworkPolicyService {
   // deny rules (#660) under a store-side lock, so concurrent edits don't lose
   // updates and `SetNetworkPolicy` (the allow-policy) never has to round-trip
   // through the client to preserve them. Echoes the normalized stored policy.
+  // Preserve the published shared response type (#2481).
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
   rpc PatchNetworkPolicyDenyRules(PatchNetworkPolicyDenyRulesRequest) returns (SetNetworkPolicyResponse) {
     option (google.api.http) = {
       post: "/v1/network-policies/deny-rules"

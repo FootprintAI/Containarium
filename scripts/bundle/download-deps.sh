@@ -19,7 +19,7 @@
 #   GO_VERSION     pinned in the script (override if bumping)
 #   NODE_VERSION
 #   PNPM_VERSION
-#   BUF_VERSION
+#   BUF_VERSION     pinned in scripts/buf-version.env (not overridden)
 #   GOLANGCI_LINT_VERSION
 #   RUNNER_VERSION
 #
@@ -53,7 +53,7 @@ ARCH="${ARCH:-amd64}"
 GO_VERSION="${GO_VERSION:-1.25.10}"
 NODE_VERSION="${NODE_VERSION:-22.11.0}"
 PNPM_VERSION="${PNPM_VERSION:-9.12.3}"
-BUF_VERSION="${BUF_VERSION:-1.38.0}"
+source "$(dirname "$0")/../buf-version.env"
 GOLANGCI_LINT_VERSION="${GOLANGCI_LINT_VERSION:-2.1.6}"
 RUNNER_VERSION="${RUNNER_VERSION:-2.319.1}"
 
@@ -151,10 +151,9 @@ download_pnpm() {
 
 # ---- buf ----
 download_buf() {
-  # buf ships per-platform binaries via GitHub releases.
-  local file="buf-${BUF_OS}-${BUF_ARCH}"
-  fetch "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/${file}" \
-        "$STAGING_DIR/toolchains/buf-${BUF_VERSION}-${OS}-${ARCH}"
+  # Share CI's pin and checksum validation, including on cached-file reruns.
+  "$(dirname "$0")/../install-buf.sh" \
+    "$STAGING_DIR/toolchains/buf-${BUF_VERSION}-${OS}-${ARCH}" "$BUF_OS" "$BUF_ARCH"
 }
 
 # ---- golangci-lint ----

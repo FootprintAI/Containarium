@@ -386,6 +386,8 @@ service TrafficService {
   }
 
   // SubscribeTraffic opens a streaming connection for real-time traffic events
+  // Preserve the published RPC request/response type names (#2481).
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
   rpc SubscribeTraffic(SubscribeTrafficRequest) returns (stream TrafficEvent) {
     option (google.api.http) = {
       get: "/v1/traffic/subscribe"

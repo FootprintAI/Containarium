@@ -54,16 +54,10 @@ jobs:
         # workflows pin — with no code change on our side to explain it
         # (caught rehearsing the v0.77.0 release build, 2026-09-13).
         # A pinned binary download has no such dependency on the runner's
-        # Go toolchain at all. Bump BUF_VERSION deliberately, not via a
-        # moving target.
+        # Go toolchain at all. Bump scripts/buf-version.env deliberately.
         run: |
           set -euo pipefail
-          BUF_VERSION=1.72.0
-          BUF_SHA256=8720830e26a733da55bb89bcd3cb44849c0965fc0c44fb5d691cccdc64dca5af
-          curl -sSL -o /usr/local/bin/buf \
-            "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-x86_64"
-          echo "${BUF_SHA256}  /usr/local/bin/buf" | sha256sum -c -
-          chmod +x /usr/local/bin/buf
+          ./scripts/install-buf.sh /usr/local/bin/buf
           buf --version
 
       - name: Get version
@@ -472,12 +466,7 @@ jobs:
         # buf" step for why this isn't `go install .../buf@latest`.
         run: |
           set -euo pipefail
-          BUF_VERSION=1.72.0
-          BUF_SHA256=8720830e26a733da55bb89bcd3cb44849c0965fc0c44fb5d691cccdc64dca5af
-          curl -sSL -o /usr/local/bin/buf \
-            "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-x86_64"
-          echo "${BUF_SHA256}  /usr/local/bin/buf" | sha256sum -c -
-          chmod +x /usr/local/bin/buf
+          ./scripts/install-buf.sh /usr/local/bin/buf
           buf --version
 
       - name: Install apt-rdepends
