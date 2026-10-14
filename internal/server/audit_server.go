@@ -130,9 +130,10 @@ func (s *AuditServer) IngestSSHSessionRecords(ctx context.Context, req *pb.Inges
 // sshSessionBatchEntry maps one validated Record to its audit row.
 func sshSessionBatchEntry(rec sshsession.Record, sentinelID, jti string) (audit.BatchEntry, error) {
 	action := auditActionSSHSessionOpen
-	if rec.Phase == sshsession.SessionPhaseClose {
+	switch rec.Phase {
+	case sshsession.SessionPhaseClose:
 		action = auditActionSSHSessionClose
-	} else if rec.Phase == sshsession.SessionPhaseDenied {
+	case sshsession.SessionPhaseDenied:
 		action = auditActionSSHSessionDenied
 	}
 	detail, err := json.Marshal(SSHSessionDetail{
