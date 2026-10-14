@@ -12,6 +12,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/safecast"
 	"github.com/footprintai/containarium/internal/sshauthz"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -91,7 +92,7 @@ func (f *fakeAuthorizedKeys) ops() authorizedKeysOps {
 			f.files[u] = kept
 			return nil
 		},
-		count: func(u string) (int32, error) { return int32(len(f.files[u])), nil },
+		count: func(u string) (int32, error) { return safecast.I32(len(f.files[u])), nil },
 	}
 }
 
