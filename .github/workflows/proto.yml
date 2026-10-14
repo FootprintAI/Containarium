@@ -1,0 +1,38 @@
+name: Protobuf lint and compatibility
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  proto:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install pinned buf
+        run: |
+          ./scripts/install-buf.sh "$RUNNER_TEMP/buf-bin/buf"
+          echo "$RUNNER_TEMP/buf-bin" >> "$GITHUB_PATH"
+
+      - name: Lint all project protos
+        run: make proto-lint
+
+      - name: Prove lint and breaking gates reject invalid schemas
+        run: ./scripts/test-proto-gates.sh
+
+      - name: Check breaking changes against the PR base
+        if: github.event_name == 'pull_request'
+        env:
+          PROTO_AGAINST: .git#ref=${{ github.event.pull_request.base.sha }}
+        run: make proto-breaking
