@@ -340,7 +340,10 @@ backend (`startup-spot.sh`). The startup script then:
   `AuthorizedKeysCommandUser`;
 - mints a JWT carrying only the `ssh:authorize` scope into
   `/etc/containarium-authz/ssh-authz-keys.token`, readable only by that
-  account (the sentinel secret is never exposed to it);
+  account (the sentinel secret is never exposed to it). The token lives 24h;
+  `containarium-ssh-authz-token.timer` re-mints it at boot and every 6h.
+  If you set `CONTAINARIUM_MAX_TOKEN_EXPIRY_HOURS` below 24, the token is
+  capped to that, so keep it above 6;
 - starts the daemon with `CONTAINARIUM_SSH_AUTHZ_KEYS_COMMAND=true`
   (`--ssh-authz-keys-command`), so `/v1/ssh/authorize` accepts that token
   alongside the sentinel signature. Only a token that carries

@@ -9,6 +9,9 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/footprintai/containarium/internal/auth"
 )
 
 // Guards over the sshd AuthorizedKeysCommand drop-in the module's startup
@@ -165,6 +168,57 @@ func TestSSHAuthzDropIn_ParsesUnderRealSSHD(t *testing.T) {
 			if out, err := exec.Command(sshd, "-t", "-f", main).CombinedOutput(); err != nil {
 				t.Errorf("%s enforce=%v: sshd rejected the drop-in:\n%s", filepath.Base(script), enforce, out)
 			}
+		}
+	}
+}
+
+// The daemon never accepts a non-expiring token (--expiry 0 on an access
+// token is the 15-minute default), so the install must keep re-minting it:
+// a timer that fires at boot and well inside the token's lifetime.
+func TestSSHAuthzDropIn_TokenIsRenewedBeforeItExpires(t *testing.T) {
+	for _, path := range sshAuthzStartupScripts {
+		t.Run(filepath.Base(path), func(t *testing.T) { checkSSHAuthzTokenRenewal(t, readStartupScript(t, path)) })
+	}
+}
+
+func checkSSHAuthzTokenRenewal(t *testing.T, script string) {
+	renew := regexp.MustCompile(`(?s)<<'SSHAUTHZRENEWEOF'\n(.*?)\nSSHAUTHZRENEWEOF`).FindStringSubmatch(script)
+	if renew == nil {
+		t.Fatal("found no SSHAUTHZRENEWEOF token-renewal script")
+	}
+	if regexp.MustCompile(`(?m)^[^#]*--expiry 0\b`).MatchString(script) {
+		t.Error("--expiry 0 mints a 15-minute access token, not a non-expiring one")
+	}
+	m := regexp.MustCompile(`--expiry (\S+)`).FindStringSubmatch(renew[1])
+	if m == nil {
+		t.Fatal("the renewal script does not set --expiry")
+	}
+	lifetime, err := time.ParseDuration(m[1])
+	if err != nil || lifetime <= 0 || lifetime > auth.DefaultMaxTokenExpiry {
+		t.Fatalf("--expiry %q: want a positive duration within the daemon's %s cap (err %v)", m[1], auth.DefaultMaxTokenExpiry, err)
+	}
+
+	timer := regexp.MustCompile(`(?s)containarium-ssh-authz-token\.timer <<'EOF'\n(.*?)\nEOF`).FindStringSubmatch(script)
+	if timer == nil {
+		t.Fatal("found no containarium-ssh-authz-token.timer unit")
+	}
+	d := sshdDirectives(strings.ReplaceAll(timer[1], "=", " "))
+	if d["OnBootSec"] == "" {
+		t.Error("the timer must renew at boot: a stopped VM comes back with an expired token")
+	}
+	every, err := time.ParseDuration(d["OnUnitActiveSec"])
+	if err != nil || every <= 0 || every > lifetime/2 {
+		t.Errorf("OnUnitActiveSec %q: want a renewal at most half of the %s lifetime, so one missed run is survivable", d["OnUnitActiveSec"], lifetime)
+	}
+	if !strings.Contains(script, "systemctl enable containarium-ssh-authz-token.timer") {
+		t.Error("the renewal timer is never enabled")
+	}
+
+	if sh, err := exec.LookPath("sh"); err == nil {
+		cmd := exec.Command(sh, "-n")
+		cmd.Stdin = strings.NewReader(renew[1])
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Errorf("the renewal script does not parse: %v\n%s", err, out)
 		}
 	}
 }

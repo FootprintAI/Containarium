@@ -422,15 +422,52 @@ if [ "$SSH_AUTHZ_KEYS_COMMAND" = "true" ]; then
             useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin containarium-authz
         fi
         install -d -m 0750 -o root -g containarium-authz "$SSH_AUTHZ_DIR"
-        (
-            umask 077
-            /usr/local/bin/containariumd token generate \
-                --username containarium-authz --roles "" --scopes ssh:authorize \
-                --token-type access --expiry 0 \
-                --secret-file /etc/containarium/jwt.secret --raw > "$SSH_AUTHZ_TOKEN"
-        )
-        chown containarium-authz:containarium-authz "$SSH_AUTHZ_TOKEN"
-        chmod 0400 "$SSH_AUTHZ_TOKEN"
+        # The token cannot be non-expiring: the daemon caps every token, and
+        # --expiry 0 on an access token means the 15-minute default. A timer
+        # re-mints it instead: 24h lifetime, renewed at boot and every 6h, so
+        # one missed run never leaves sshd without a valid token.
+        SSH_AUTHZ_RENEW=/usr/local/sbin/containarium-ssh-authz-token
+        cat > "$SSH_AUTHZ_RENEW" <<'SSHAUTHZRENEWEOF'
+#!/bin/sh
+# Re-mints the ssh-authz-keys token (#2527); run by
+# containarium-ssh-authz-token.timer. Written to a temp file and renamed, so
+# the AuthorizedKeysCommand never reads a half-written token.
+set -eu
+dir=/etc/containarium-authz
+tmp="$(mktemp "$dir/.ssh-authz-keys.token.XXXXXX")"
+trap 'rm -f "$tmp"' EXIT
+/usr/local/bin/containariumd token generate \
+    --username containarium-authz --roles "" --scopes ssh:authorize \
+    --token-type access --expiry 24h \
+    --secret-file /etc/containarium/jwt.secret --raw > "$tmp"
+chown containarium-authz:containarium-authz "$tmp"
+chmod 0400 "$tmp"
+mv -f "$tmp" "$dir/ssh-authz-keys.token"
+trap - EXIT
+SSHAUTHZRENEWEOF
+        chmod 0755 "$SSH_AUTHZ_RENEW"
+        cat > /etc/systemd/system/containarium-ssh-authz-token.service <<'EOF'
+[Unit]
+Description=Renew the Containarium ssh-authz-keys token (#2527)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/containarium-ssh-authz-token
+EOF
+        cat > /etc/systemd/system/containarium-ssh-authz-token.timer <<'EOF'
+[Unit]
+Description=Renew the Containarium ssh-authz-keys token (#2527)
+
+[Timer]
+OnBootSec=10s
+OnUnitActiveSec=6h
+
+[Install]
+WantedBy=timers.target
+EOF
+        chmod 0644 /etc/systemd/system/containarium-ssh-authz-token.service \
+            /etc/systemd/system/containarium-ssh-authz-token.timer
+        "$SSH_AUTHZ_RENEW"
 
         mkdir -p /etc/systemd/system/containarium.service.d
         cat > /etc/systemd/system/containarium.service.d/ssh-authz-keys.conf <<'EOF'
@@ -439,6 +476,8 @@ Environment=CONTAINARIUM_SSH_AUTHZ_KEYS_COMMAND=true
 EOF
         chmod 0644 /etc/systemd/system/containarium.service.d/ssh-authz-keys.conf
         systemctl daemon-reload
+        systemctl enable containarium-ssh-authz-token.timer
+        systemctl start containarium-ssh-authz-token.timer
         systemctl restart containarium.service
 
         SSH_AUTHZ_KEYS_ARGS="ssh-authz-keys --token-file $SSH_AUTHZ_TOKEN"
