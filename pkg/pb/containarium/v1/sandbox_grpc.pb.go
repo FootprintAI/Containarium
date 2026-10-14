@@ -421,6 +421,9 @@ type SpawnServiceClient interface {
 	// Exec runs one command to completion and returns its stdout, stderr,
 	// and exit code — the fast-path equivalent of
 	// SandboxService.ExecInSandbox, minus the Incus round-trip.
+	// Preserve the published RPC request/response type names (#2481).
+	// buf:lint:ignore RPC_REQUEST_STANDARD_NAME
+	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
 	Exec(ctx context.Context, in *AgentExecRequest, opts ...grpc.CallOption) (*AgentExecResponse, error)
 }
 
@@ -482,6 +485,9 @@ type SpawnServiceServer interface {
 	// Exec runs one command to completion and returns its stdout, stderr,
 	// and exit code — the fast-path equivalent of
 	// SandboxService.ExecInSandbox, minus the Incus round-trip.
+	// Preserve the published RPC request/response type names (#2481).
+	// buf:lint:ignore RPC_REQUEST_STANDARD_NAME
+	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
 	Exec(context.Context, *AgentExecRequest) (*AgentExecResponse, error)
 	mustEmbedUnimplementedSpawnServiceServer()
 }
