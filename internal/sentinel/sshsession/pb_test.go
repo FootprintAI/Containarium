@@ -2,14 +2,13 @@ package sshsession
 
 import (
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
-var allPhases = []SessionPhase{SessionPhaseOpen, SessionPhaseClose}
+var allPhases = []SessionPhase{SessionPhaseOpen, SessionPhaseClose, SessionPhaseDenied}
 var allAuthMethods = []AuthMethod{AuthMethodCertificate, AuthMethodPublicKey, AuthMethodUnknown}
 var allCloseReasons = []CloseReason{
 	CloseReasonNormal, CloseReasonUpstreamGone, CloseReasonProxyShutdown,
@@ -115,20 +114,21 @@ func TestEnumSetsMatchProto(t *testing.T) {
 			t.Errorf("%s: %d Go constants vs %d proto values (excluding UNSPECIFIED)", name, goN, want)
 		}
 	}
-	// SSH_SESSION_PHASE_DENIED is on the wire contract (#2516) but the
-	// sentinel's Record does not carry it until #2519; until then
-	// TestFromProto_RejectsDeniedPhase pins that ingest refuses it.
-	check("phase", len(allPhases)+1, pb.SSHSessionPhase_name)
+	check("phase", len(allPhases), pb.SSHSessionPhase_name)
 	check("auth method", len(allAuthMethods), pb.SSHAuthMethod_name)
 	check("close reason", len(allCloseReasons), pb.SSHCloseReason_name)
 }
 
-// A DENIED record must be refused, not stored as an open row, until the
-// sentinel's Record carries the phase (#2519).
-func TestFromProto_RejectsDeniedPhase(t *testing.T) {
+// #2519 completes #2516's wire contract: DENIED must retain its own phase,
+// rather than being rejected or silently mapped to an OPEN record.
+func TestFromProto_AcceptsDeniedPhase(t *testing.T) {
 	p := ToProto(baseRecord())
 	p.Phase = pb.SSHSessionPhase_SSH_SESSION_PHASE_DENIED
-	if _, err := FromProto(p); err == nil || !strings.Contains(err.Error(), "invalid phase") {
-		t.Fatalf("FromProto(DENIED) err = %v, want invalid phase", err)
+	r, err := FromProto(p)
+	if err != nil {
+		t.Fatalf("FromProto(DENIED): %v", err)
+	}
+	if r.Phase != SessionPhaseDenied || ToProto(r).GetPhase() != p.Phase {
+		t.Fatalf("DENIED phase changed during round-trip: %+v", r)
 	}
 }

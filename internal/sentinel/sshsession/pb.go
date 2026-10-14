@@ -14,8 +14,9 @@ import (
 // TestEnumSetsMatchProto rather than at ingest time.
 
 var phaseToPB = map[SessionPhase]pb.SSHSessionPhase{
-	SessionPhaseOpen:  pb.SSHSessionPhase_SSH_SESSION_PHASE_OPEN,
-	SessionPhaseClose: pb.SSHSessionPhase_SSH_SESSION_PHASE_CLOSE,
+	SessionPhaseOpen:   pb.SSHSessionPhase_SSH_SESSION_PHASE_OPEN,
+	SessionPhaseClose:  pb.SSHSessionPhase_SSH_SESSION_PHASE_CLOSE,
+	SessionPhaseDenied: pb.SSHSessionPhase_SSH_SESSION_PHASE_DENIED,
 }
 
 var authMethodToPB = map[AuthMethod]pb.SSHAuthMethod{
@@ -52,15 +53,19 @@ var (
 // FromProto before sending, so that never reaches the wire.
 func ToProto(r Record) *pb.SSHSessionRecord {
 	out := &pb.SSHSessionRecord{
-		SessionId:   r.SessionID,
-		Phase:       phaseToPB[r.Phase],
-		OccurredAt:  timestamppb.New(r.OccurredAt),
-		ClientIp:    r.ClientIP,
-		ClientPort:  int32(r.ClientPort), // #nosec G115 -- a TCP port fits int32
-		Login:       r.Login,
-		Target:      r.Target,
-		AuthMethod:  authMethodToPB[r.AuthMethod],
-		CloseReason: closeReasonToPB[r.CloseReason],
+		SessionId:     r.SessionID,
+		Phase:         phaseToPB[r.Phase],
+		OccurredAt:    timestamppb.New(r.OccurredAt),
+		ClientIp:      r.ClientIP,
+		ClientPort:    int32(r.ClientPort), // #nosec G115 -- a TCP port fits int32
+		Login:         r.Login,
+		Target:        r.Target,
+		AuthMethod:    authMethodToPB[r.AuthMethod],
+		CloseReason:   closeReasonToPB[r.CloseReason],
+		UserId:        r.UserID,
+		AuthzDecision: r.AuthzDecision,
+		DenyReason:    r.DenyReason,
+		Enforced:      r.Enforced,
 	}
 	if r.Credential != (Credential{}) {
 		out.Credential = &pb.SSHSessionCredential{
@@ -92,14 +97,24 @@ func FromProto(p *pb.SSHSessionRecord) (Record, error) {
 	if p.GetOccurredAt() == nil {
 		return Record{}, fmt.Errorf("session %q: missing occurred_at", p.GetSessionId())
 	}
+	if _, ok := pb.SSHAuthzDecision_name[int32(p.GetAuthzDecision())]; !ok {
+		return Record{}, fmt.Errorf("session %q: invalid authz_decision %v", p.GetSessionId(), p.GetAuthzDecision())
+	}
+	if _, ok := pb.SSHDenyReason_name[int32(p.GetDenyReason())]; !ok {
+		return Record{}, fmt.Errorf("session %q: invalid deny_reason %v", p.GetSessionId(), p.GetDenyReason())
+	}
 	r := Record{
-		SessionID:  p.GetSessionId(),
-		Phase:      phase,
-		OccurredAt: p.GetOccurredAt().AsTime(),
-		ClientIP:   p.GetClientIp(),
-		ClientPort: int(p.GetClientPort()),
-		Login:      p.GetLogin(),
-		Target:     p.GetTarget(),
+		SessionID:     p.GetSessionId(),
+		Phase:         phase,
+		OccurredAt:    p.GetOccurredAt().AsTime(),
+		ClientIP:      p.GetClientIp(),
+		ClientPort:    int(p.GetClientPort()),
+		Login:         p.GetLogin(),
+		Target:        p.GetTarget(),
+		UserID:        p.GetUserId(),
+		AuthzDecision: p.GetAuthzDecision(),
+		DenyReason:    p.GetDenyReason(),
+		Enforced:      p.GetEnforced(),
 	}
 	if am := p.GetAuthMethod(); am != pb.SSHAuthMethod_SSH_AUTH_METHOD_UNSPECIFIED {
 		v, ok := authMethodFromPB[am]
@@ -118,8 +133,8 @@ func FromProto(p *pb.SSHSessionRecord) (Record, error) {
 	}
 	cr := p.GetCloseReason()
 	switch {
-	case phase == SessionPhaseOpen && cr != pb.SSHCloseReason_SSH_CLOSE_REASON_UNSPECIFIED:
-		return Record{}, fmt.Errorf("session %q: close_reason set on an open record", r.SessionID)
+	case phase != SessionPhaseClose && cr != pb.SSHCloseReason_SSH_CLOSE_REASON_UNSPECIFIED:
+		return Record{}, fmt.Errorf("session %q: close_reason set on a %s record", r.SessionID, phase)
 	case phase == SessionPhaseClose:
 		v, ok := closeReasonFromPB[cr]
 		if !ok {

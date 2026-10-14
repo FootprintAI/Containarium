@@ -19,6 +19,38 @@ sshpiperd ──► ssh-session-plugin ──► /var/log/containarium/ssh-sessi
 - The shipper runs inside the sentinel process. It sends each record to the audit store of the **backend that the login was routed to**, because each backend owns its own audit database. It remembers its position in a checkpoint file and moves it forward only after the backend confirms a batch, so a crash or restart loses and duplicates nothing. The backend also deduplicates per session and phase.
 - Rows are written as `ssh_session_open` and `ssh_session_close`, with `resource_type=ssh_session` and the session id as the resource id. They join the same hash chain and external anchoring (#1706) as every other audit row.
 
+### SSH authorization metadata
+
+Authorization denials use JSONL phase `denied`, wire phase
+`SSH_SESSION_PHASE_DENIED`, and audit action `ssh_session_denied`.
+Authorization metadata travels through the same shipper and ingest RPC as
+the existing open/close records:
+
+| Field | Meaning |
+|-------|---------|
+| `user_id` | Resolved user identity when known; distinct from the SSH target login |
+| `authz_decision` | Typed `SSHAuthzDecision` value from the authorization check |
+| `deny_reason` | Typed `SSHDenyReason` value, such as unknown key or inactive user |
+| `enforced` | Whether the authorization decision was enforced for this record |
+
+The JSONL sink and audit detail encode the protobuf enums as numeric JSON
+values; generated protobuf JSON transports may use the symbolic enum names.
+For example, decision `2` is `SSH_AUTHZ_DECISION_DENY`, and reason `1` is
+`SSH_DENY_REASON_UNKNOWN_KEY`.
+
+In audit-only mode a denial decision does not necessarily block login. An
+`open` record can therefore carry `DENY` with `enforced=false`. If a denied
+record and an open record share a session id, both are retained: idempotency
+is keyed on `(session_id, phase)`, not session id alone. Replaying the same
+phase returns `DUPLICATE` without another audit row. The existing orphan-close
+suffix is unchanged.
+
+Pre-upgrade JSONL records without these fields remain readable and shippable.
+Their user identity stays empty, authorization enums remain `UNSPECIFIED`,
+and enforcement defaults to false. Those defaults mean the authorization
+metadata was not recorded; they must not be interpreted as an explicit ALLOW.
+Default-valued fields may be omitted from JSONL and audit detail.
+
 ## Retention
 
 | What | Retention | Where it is set |
@@ -94,7 +126,7 @@ To trace one login, query by the session id (`resource_id`). Each row's detail i
 
 ## What this does not cover
 
-- **Authentication failures and bans** are logged by `sshpiperd` and its ban plugin to the sentinel's journal only. They are not shipped.
+- **Other authentication failures and bans** logged only by `sshpiperd` and its ban plugin remain in the sentinel's journal and are not shipped. Authorization denials emitted as structured `denied` records are shipped as described above.
 - **Records not yet shipped** are lost if the sentinel VM is destroyed before the shipper catches up. This window is normally a few seconds, and grows while a backend is unreachable or has no token.
 - **Audit store retention** is not enforced automatically.
 - **SIEM forwarding and alerting** are tracked separately under A.8.16.
