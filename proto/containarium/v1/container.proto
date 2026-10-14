@@ -49,6 +49,8 @@ enum IsolationType {
 // AccessType indicates how to connect to an instance
 enum AccessType {
   // SSH access (default for Linux containers)
+  // Keep the established SSH zero value and its JSON name (#2481).
+  // buf:lint:ignore ENUM_ZERO_VALUE_SUFFIX
   ACCESS_TYPE_SSH = 0;
 
   // RDP access (for Windows VMs, via Guacamole browser-based client)
