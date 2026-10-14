@@ -1,5 +1,7 @@
 .PHONY: help proto build build-bpf clean clean-ui clean-all install install-client test lint fmt run-local web-ui swagger-ui build-mcp build-mcp-linux install-mcp build-agent-box build-agent-box-linux build-agent-box-all install-agent-box build-agent-runtime bundle-agent-runtime bundle-sdlc-skills build-release sidecar-build-otel bundle-download-deps build-bundle build-bundle-all build-model-gateway build-model-gateway-linux
 
+.PHONY: proto-lint proto-breaking
+
 # Variables
 # BINARY_NAME is the containarium CLIENT (cmd/containarium, always built with
 # -tags containarium_client — see build/build-fast). DAEMON_BINARY_NAME is
@@ -36,8 +38,8 @@ PKG_DIR=pkg/pb
 # the shell's own ${VAR} (real environment, escaped past Make with $$) rather
 # than Make's $(VAR) — parameter expansion never re-interprets its result as
 # a further command, closing the shell-injection half of the class too.
-$(foreach v,VERSION GIT_COMMIT BUILD_TIME,$(if $(filter command\ line environment environment\ override,$(origin $v)),$(eval override $v := $$(value $v))))
-export VERSION GIT_COMMIT BUILD_TIME
+$(foreach v,VERSION GIT_COMMIT BUILD_TIME BUF PROTO_AGAINST,$(if $(filter command\ line environment environment\ override,$(origin $v)),$(eval override $v := $$(value $v))))
+export VERSION GIT_COMMIT BUILD_TIME BUF PROTO_AGAINST
 
 LDFLAGS=-ldflags "-X github.com/footprintai/containarium/pkg/version.GitCommit=$${GIT_COMMIT} \
 	-X github.com/footprintai/containarium/pkg/version.BuildTime=$${BUILD_TIME}"
@@ -76,14 +78,9 @@ help: ## Show this help message
 
 proto: ## Generate Go code from protobuf definitions
 	@echo "==> Generating protobuf code..."
-	@if command -v buf > /dev/null; then \
-		buf generate; \
-	else \
-		echo "Error: buf is not installed. Install with: brew install bufbuild/buf/buf"; \
-		exit 1; \
-	fi
+	@./scripts/buf-command.sh generate
 	@echo "==> Generating vendored externalgrpc stubs (#1415)..."
-	@cd third_party/proto && buf generate
+	@cd third_party/proto && ../../scripts/buf-command.sh generate
 	@echo "==> Protobuf code generated successfully"
 
 swagger-ui: ## Download and install Swagger UI static files
@@ -98,11 +95,11 @@ web-ui: ## Build Web UI static files for embedding
 
 proto-lint: ## Lint protobuf definitions
 	@echo "==> Linting protobuf definitions..."
-	@buf lint
+	@./scripts/buf-command.sh lint
 
 proto-breaking: ## Check for breaking changes in protobuf definitions
 	@echo "==> Checking for breaking changes..."
-	@buf breaking --against '.git#branch=main'
+	@./scripts/buf-command.sh breaking --against "$${PROTO_AGAINST:-.git#branch=main}"
 
 build-bpf: ## Compile the eBPF network-policy object for embedding (Linux; needs clang + kernel UAPI headers)
 	@echo "==> Compiling eBPF object $(BPF_OBJ)..."
