@@ -1,0 +1,66 @@
+name: SSH device approval spike
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'internal/sentinel/anondoor/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/ssh-approval-spike.yml'
+  pull_request:
+    paths:
+      - 'internal/sentinel/anondoor/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/ssh-approval-spike.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  real-sshpiperd-openssh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.9'
+      - name: Build the pinned sshpiperd
+        # cmd/sshpiperd is a nested module; build from the same tag as
+        # images/sshpiper/Dockerfile, preserving its sshpiper.crypto fork.
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch v1.6.1 https://github.com/tg123/sshpiper "$RUNNER_TEMP/sshpiper"
+          cd "$RUNNER_TEMP/sshpiper/cmd/sshpiperd"
+          go build -trimpath -ldflags '-X main.mainver=v1.6.1' -o "$RUNNER_TEMP/sshpiperd" .
+          "$RUNNER_TEMP/sshpiperd" --version
+      - name: Prove publickey then keyboard-interactive with stock OpenSSH
+        env:
+          ANONDOOR_SSHPIPERD: ${{ runner.temp }}/sshpiperd
+        run: |
+          set -euo pipefail
+          ssh -V
+          command -v ssh-keygen
+          go test -race -tags integration -count=1 -timeout 2m -v \
+            ./internal/sentinel/anondoor \
+            -run '^TestIntegration_PublicKeyPartialSuccessKeyboardInteractive$' | tee "$RUNNER_TEMP/approval.log"
+          # A missing prerequisite must not turn the spike into a green skip.
+          if grep -q -- '--- SKIP' "$RUNNER_TEMP/approval.log"; then
+            echo '::error::The SSH approval spike skipped.'
+            exit 1
+          fi
+      - name: Preserve the spike transcript
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: ssh-approval-spike
+          path: ${{ runner.temp }}/approval.log
