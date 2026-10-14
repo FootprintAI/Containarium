@@ -58,7 +58,7 @@ On DENY it prints nothing, so sshd does not accept the key from this command.
 
 Meant to be run by sshd, not by hand. The jump host's sshd drop-in runs it as:
 
-  AuthorizedKeysCommand /usr/local/bin/containarium ssh-authz-keys %u %f %t %k
+  AuthorizedKeysCommand /usr/local/bin/containariumd ssh-authz-keys --token-file <file> %u %f %t %k
 
 <fingerprint> must match <key> (sshd's SHA256 form); a mismatch is refused.
 
