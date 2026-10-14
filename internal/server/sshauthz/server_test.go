@@ -206,7 +206,7 @@ func TestExternalPlaintextCannotForgeScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	ctx, cancel := context.WithTimeout(metadata.NewOutgoingContext(context.Background(), metadata.Pairs(auth.MDKeyUsername, "sentinel", auth.MDKeyScopes, auth.ScopeSSHAuthorize)), time.Second)
 	defer cancel()
 	_, err = pb.NewSSHAuthzServiceClient(conn).Authorize(ctx, &pb.AuthorizeSSHRequest{})

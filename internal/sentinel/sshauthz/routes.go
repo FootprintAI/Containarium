@@ -24,7 +24,7 @@ func WriteRoutes(path string, routes Routes) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0750); err != nil {
 		return err
 	}
 	f, err := os.CreateTemp(filepath.Dir(path), ".authz-routes-*")
@@ -32,7 +32,7 @@ func WriteRoutes(path string, routes Routes) error {
 		return err
 	}
 	tmp := f.Name()
-	defer os.Remove(tmp)
+	defer func() { _ = os.Remove(tmp) }()
 	if _, err = f.Write(data); err != nil {
 		_ = f.Close()
 		return err
