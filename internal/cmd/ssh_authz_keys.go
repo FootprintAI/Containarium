@@ -34,7 +34,7 @@ const (
 	// DefaultSSHAuthzKeysTokenFile holds the dedicated ssh:authorize JWT the
 	// startup script mints at install time, readable only by
 	// AuthorizedKeysCommandUser.
-	DefaultSSHAuthzKeysTokenFile = "/etc/containarium-authz/ssh-authz-keys.token"
+	DefaultSSHAuthzKeysTokenFile = "/etc/containarium-authz/ssh-authz-keys.token" // #nosec G101 -- a file PATH, not a credential
 	// DefaultSSHAuthzKeysDaemonURL is the local daemon's REST gateway.
 	DefaultSSHAuthzKeysDaemonURL = "http://127.0.0.1:8080"
 	// defaultSSHAuthzKeysTimeout bounds the daemon call: sshd waits for the
