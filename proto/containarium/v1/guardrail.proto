@@ -133,6 +133,9 @@ message GuardrailScanResponse {
 // internal plug point between two processes on the same side of a trust
 // boundary, not a product endpoint.
 service GuardrailEngineService {
+  // Preserve the published RPC request/response type names (#2481).
+  // buf:lint:ignore RPC_REQUEST_STANDARD_NAME
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
   rpc Scan(GuardrailScanRequest) returns (GuardrailScanResponse);
 }
 

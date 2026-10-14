@@ -5,6 +5,8 @@ deps:
 modules:
   - path: proto
 lint:
+  # Existing API exceptions are documented beside their declarations (#2481).
+  disallow_comment_ignores: false
   use:
     - STANDARD
 breaking:
