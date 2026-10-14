@@ -177,7 +177,7 @@ func httpSSHAuthorizer(daemonURL, tokenFile string) sshAuthorizer {
 		if err != nil {
 			return nil, err
 		}
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		return c.AuthorizeSSH(ctx, req)
 	}
 }
