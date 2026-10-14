@@ -147,6 +147,10 @@ type DualServerConfig struct {
 	// key age (#2517): a key registered at least this long ago is refused
 	// with KEY_EXPIRED. Zero = no limit.
 	SSHAuthzMaxKeyAge time.Duration
+	// SSHAuthzKeysCommand lets the jump host's AuthorizedKeysCommand call
+	// SSHAuthzService.Authorize with a JWT carrying ssh:authorize, alongside
+	// the sentinel signature (#2527). Off = the route stays sentinel-only.
+	SSHAuthzKeysCommand bool
 
 	// Caddy certificate directory for /certs endpoint (sentinel cert sync)
 	CaddyCertDir string
@@ -2567,6 +2571,13 @@ skipAppHosting:
 			gatewayServer.SetSentinelAuthSecret([]byte(secret))
 		} else {
 			log.Printf("WARNING: CONTAINARIUM_SENTINEL_AUTH_SECRET is unset — /certs, /authorized-keys, /authorized-keys/sentinel will return 401 until configured")
+		}
+
+		// #2527: the jump host's AuthorizedKeysCommand asks Authorize with an
+		// ssh:authorize JWT. Opt-in; off keeps the route sentinel-only.
+		if config.SSHAuthzKeysCommand {
+			gatewayServer.SetSSHAuthzTokenFallback(true)
+			log.Printf("SSH authorization: /v1/ssh/authorize also accepts ssh:authorize tokens (jump host AuthorizedKeysCommand)")
 		}
 
 		// Sentinel ed25519 public key (#688). When set, the sentinel

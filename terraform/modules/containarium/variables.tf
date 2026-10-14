@@ -172,6 +172,18 @@ variable "fail2ban_whitelist_cidr" {
   default     = "10.0.0.0/8"
 }
 
+variable "ssh_authz_keys_command" {
+  description = "Install sshd AuthorizedKeysCommand on the jump host so direct SSH logins (not through the sentinel) are checked against the daemon's SSH authorization, and start the daemon with --ssh-authz-keys-command (#2527). Off by default."
+  type        = bool
+  default     = false
+}
+
+variable "ssh_authz_keys_enforce" {
+  description = "With ssh_authz_keys_command: when the daemon cannot be asked, the AuthorizedKeysCommand exits 1 (enforce) instead of 0 (audit-only)."
+  type        = bool
+  default     = false
+}
+
 variable "jwt_secret" {
   description = "JWT secret for REST API authentication. If empty, auto-generated at boot."
   type        = string
