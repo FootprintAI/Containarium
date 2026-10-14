@@ -124,6 +124,43 @@ During MAINTENANCE mode, the sentinel serves HTTPS on port 443. To avoid browser
 3. The sentinel periodically fetches from `http://<spot-internal-ip>:<http-port>/certs`
 4. Certificates are stored in memory and served via SNI-based lookup
 
+### Per-Backend Certificate Scoping
+
+Every backend (the in-fleet backend and each tunnel backend) runs its own cert sync, and each backend has its **own certificate set**. A sync replaces only the syncing backend's set.
+
+A backend may only supply certificates for the domains it is registered for:
+
+| Backend | Registered domains |
+|---------|--------------------|
+| In-fleet backend (`--spot-vm` / `--backend-addr`) | `--backend-hostname`, `--backend-alias`, `--backend-base-domain` |
+| Tunnel backend that declares a primary | its `--public-hostname`, `--public-aliases`, `--public-base-domain` |
+| Tunnel backend with no primary declaration | none |
+
+A hostname or alias covers exactly that name. A base domain covers the domain itself, its wildcard (`*.<base>`) and every name under it. Entries in a `/certs` response outside the backend's domains are dropped, logged, and counted in `sentinel_cert_sync_rejected_total{backend="<id>"}` on `/metrics`; the rest of the response is applied. A backend with no registered domains supplies no certificates.
+
+A sync never empties a backend's set:
+
+- an empty response (`{"certs":[]}`) is a no-op;
+- a response that does not decode, or in which no entry parses, is a sync error;
+- a response in which every entry is outside the backend's domains is a sync error.
+
+In all three cases the backend's previous set stays in place. When a tunnel backend disconnects, its set is removed.
+
+**Merge precedence.** When more than one backend supplies a certificate for the same domain, the served one comes from the backend whose registration matches the domain most specifically:
+
+1. a hostname or alias match beats any base-domain match;
+2. between base-domain matches, the longer base domain wins (`lab.example.com` beats `example.com`);
+3. if the best match is held by two or more backends, none of their certificates is served for that domain (the self-signed fallback is used) until one of them stops supplying it.
+
+**Rollout.** Set `--backend-hostname` / `--backend-alias` / `--backend-base-domain` on every sentinel with an in-fleet backend (`--provider gcp`, including hybrid mode, and `--provider none`) **before** deploying this version. Without them, the in-fleet backend's certificates are not served: the maintenance page and the sentinel-terminated BYOC ingress use the self-signed fallback, the sentinel logs a warning at startup, and `sentinel_cert_sync_rejected_total{backend="gcp"}` increases on every sync. A malformed value makes the sentinel refuse to start. Example for a backend whose Caddy holds the cluster's wildcard certificate:
+
+```bash
+containarium sentinel --spot-vm <vm> --zone <zone> --project <project> \
+  --backend-base-domain <cluster>.example.com
+```
+
+Tunnel backends need no change: their scope comes from the primary declaration they already send.
+
 ### SNI Certificate Selection
 
 When a TLS handshake arrives, the sentinel's `CertStore.GetCertificate()` selects:
@@ -137,6 +174,9 @@ When a TLS handshake arrives, the sentinel's `CertStore.GetCertificate()` select
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--cert-sync-interval` | `6h` | How often sentinel syncs certs from spot VM |
+| `--backend-hostname` | | Hostname the in-fleet backend serves (certificate scoping) |
+| `--backend-alias` | | Additional in-fleet hostname, repeatable (certificate scoping) |
+| `--backend-base-domain` | | In-fleet base domain, repeatable (certificate scoping) |
 | `--caddy-cert-dir` (daemon) | `/var/lib/caddy/.local/share/caddy` | Caddy certificate directory on spot VM |
 
 When the sentinel switches to PROXY mode (spot VM recovered), it performs an immediate cert sync to ensure fresh certificates are available for the next maintenance window.
@@ -238,6 +278,7 @@ containariumd sentinel [flags]
 | `--binary-port` | `8888` | Port to serve binary (0 to disable) |
 | `--recovery-timeout` | `10m` | Warn if recovery exceeds this duration |
 | `--cert-sync-interval` | `6h` | TLS cert sync interval |
+| `--backend-hostname` / `--backend-alias` / `--backend-base-domain` | | Domains the in-fleet backend may supply certificates for (see [Per-Backend Certificate Scoping](#per-backend-certificate-scoping)) |
 
 ### Service Management
 

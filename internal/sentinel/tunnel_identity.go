@@ -21,6 +21,11 @@ import (
 	"time"
 )
 
+// DefaultTunnelIdentityPath is where the sentinel keeps its tunnel identity
+// unless --tunnel-tls-identity says otherwise. The file must persist across
+// restarts and redeploys: every tunnel client pins the key it holds.
+const DefaultTunnelIdentityPath = "/etc/containarium/sentinel-tunnel-identity.pem"
+
 // TunnelPinPrefix is the algorithm tag every TunnelPin starts with.
 const TunnelPinPrefix = "sha256:"
 

@@ -84,6 +84,20 @@ func newStageLog() *stageLog {
 	return &stageLog{durations: make(map[CreateStage]time.Duration)}
 }
 
+// snapshot copies the log under its lock. The jump-account stage reports from
+// its own goroutine, and since #2489 that goroutine also runs for creates with
+// no SSH keys, so tests must not read stages/durations directly.
+func (l *stageLog) snapshot() ([]CreateStage, map[CreateStage]time.Duration) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	stages := append([]CreateStage(nil), l.stages...)
+	durs := make(map[CreateStage]time.Duration, len(l.durations))
+	for k, v := range l.durations {
+		durs[k] = v
+	}
+	return stages, durs
+}
+
 func (l *stageLog) observer() StageObserver {
 	return func(s CreateStage, d time.Duration) {
 		l.mu.Lock()
@@ -97,15 +111,16 @@ func stagesOpts() CreateOptions {
 	return CreateOptions{
 		Username: "alice",
 		Image:    "images:ubuntu/24.04",
-		// No SSHKeys: the jump-account stage runs host useradd, which a unit
-		// test must not touch. Its absence is asserted below.
+		// No SSHKeys: the jump account is still created, keyless (#2489); the
+		// package TestMain stubs the host useradd so a unit test never runs it.
 	}
 }
 
 // TestCreate_ObservesStagesInOrder pins the Phase 0 instrumentation contract
 // (docs/architecture/two-digit-ms-sandbox-spawn.md): every stage that runs is
 // observed, in execution order, and stages that are skipped — baked image,
-// no SSH keys, no git source — produce no observation at all.
+// no git source — produce no observation at all. The jump account is NOT
+// skipped without SSH keys (#2489): it runs keyless.
 func TestCreate_ObservesStagesInOrder(t *testing.T) {
 	// Keep getJumpServerSSHKey from finding a real key in $HOME, which would
 	// nondeterministically add an add_ssh_keys stage on developer machines.
@@ -130,21 +145,29 @@ func TestCreate_ObservesStagesInOrder(t *testing.T) {
 		StageGetInfo,
 		StageTotal,
 	}
-	assertSubsequence(t, log.stages, want)
+	stages, durations := log.snapshot()
+	assertSubsequence(t, stages, want)
 
-	for _, absent := range []CreateStage{StageJumpAccount, StageInstallPackages, StageGitSource, StageAddSSHKeys} {
-		if _, ok := log.durations[absent]; ok {
-			t.Errorf("stage %q was observed but should have been skipped (observed: %v)", absent, log.stages)
+	// The jump account runs concurrently with the guest stages, so WHEN it is
+	// observed is not deterministic and it stays out of the ordered list; that
+	// it ran (keyless, #2489) is the contract.
+	if _, ok := durations[StageJumpAccount]; !ok {
+		t.Errorf("jump_account stage not observed on a create with no SSH keys (observed: %v)", stages)
+	}
+
+	for _, absent := range []CreateStage{StageInstallPackages, StageGitSource, StageAddSSHKeys} {
+		if _, ok := durations[absent]; ok {
+			t.Errorf("stage %q was observed but should have been skipped (observed: %v)", absent, stages)
 		}
 	}
 
-	for stage, d := range log.durations {
+	for stage, d := range durations {
 		if d < 0 {
 			t.Errorf("stage %q recorded negative duration %v", stage, d)
 		}
 	}
-	if log.durations[StageTotal] < log.durations[StageStartInstance] {
-		t.Errorf("total (%v) must cover start_instance (%v)", log.durations[StageTotal], log.durations[StageStartInstance])
+	if durations[StageTotal] < durations[StageStartInstance] {
+		t.Errorf("total (%v) must cover start_instance (%v)", durations[StageTotal], durations[StageStartInstance])
 	}
 }
 
@@ -174,11 +197,12 @@ func TestCreate_FailedStageIsStillObserved(t *testing.T) {
 		t.Fatal("Create should fail when WaitForNetwork fails")
 	}
 
-	if _, ok := log.durations[StageWaitNetwork]; !ok {
-		t.Errorf("failed wait_network stage was not observed (observed: %v)", log.stages)
+	stages, durations := log.snapshot()
+	if _, ok := durations[StageWaitNetwork]; !ok {
+		t.Errorf("failed wait_network stage was not observed (observed: %v)", stages)
 	}
-	if _, ok := log.durations[StageTotal]; ok {
-		t.Errorf("total must not be observed on a failed create (observed: %v)", log.stages)
+	if _, ok := durations[StageTotal]; ok {
+		t.Errorf("total must not be observed on a failed create (observed: %v)", stages)
 	}
 }
 

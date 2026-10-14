@@ -27,9 +27,6 @@ const (
 	// TunnelTransportTLS is a session carried over TLS with the sentinel's
 	// tunnel identity.
 	TunnelTransportTLS TunnelTransport = "tls"
-	// TunnelTransportCleartext is a session carried in the clear, the
-	// transport older tunnel clients use.
-	TunnelTransportCleartext TunnelTransport = "cleartext"
 )
 
 // TunnelSpot represents a connected remote spot instance.
@@ -109,11 +106,8 @@ func (r *TunnelRegistry) SessionStats() TunnelSessionStats {
 	defer r.mu.RUnlock()
 	var s TunnelSessionStats
 	for _, spot := range r.spots {
-		switch spot.Transport {
-		case TunnelTransportTLS:
+		if spot.Transport == TunnelTransportTLS {
 			s.TLS++
-		case TunnelTransportCleartext:
-			s.Cleartext++
 		}
 	}
 	s.CleartextRefused = r.cleartextRefused.Load()

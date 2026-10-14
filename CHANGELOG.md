@@ -9,6 +9,184 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **SSH live authorization contract** (#2516). `proto/containarium/v1/ssh_authz.proto` defines `SSHAuthzService.Authorize` (`POST /v1/ssh/authorize`) with its request/response messages and the `SSHKeyType`, `SSHAuthzDecision` and `SSHDenyReason` enums from `docs/architecture/ssh-live-authorization.md`. The daemon serves it as a stub that returns `Unimplemented` (HTTP 501) until the decider lands. The REST route accepts only a valid sentinel request signature: unsigned or bad signatures get 401, a JWT is not accepted, and a verified call carries the new `ssh:authorize` scope. `SSHSessionRecord` gains `user_id`, `authz_decision`, `deny_reason` and `enforced` (fields 11-14), and `SSHSessionPhase` gains `SSH_SESSION_PHASE_DENIED`; ingest does not handle them yet. The vendored actuation contract gains `ActuationService.AuthorizeSSH` (same messages) and `Assignment.kind` / `Assignment.user_id` with an `AssignmentKind` enum (`UNSPECIFIED` is read as `CONTAINER`); the daemon does not act on `kind` yet, and the cloud repo's copy of `actuation_service.proto` must be synced.
+
+## [0.103.3] - 2026-10-13
+
+_A third patch for coding-agent boxes: the `containarium` MCP server now works with Claude Code and lists its tools for a box token. Boxes keep the `mcp-server` they were provisioned with, so existing boxes need it re-installed (`code install` with this release)._
+
+### Fixed
+
+- **`mcp-server` works with Claude Code, and lists its tools for a box token** (#2529). Two defects made a coding-agent box's `containarium` MCP server unusable. (1) It answered every line it read, including *notifications* (messages with no `id`): `notifications/initialized`, which every MCP client sends to close its handshake, got `{"id":null,"error":{"code":-32601,"message":"Method not found"}}`. JSON-RPC says a server must not reply to a notification, and Claude Code's client rejects `id: null` and drops the connection about a second after it opens, so the agent saw its tools as failed. Notifications are now consumed silently (and not executed); requests still get replies, an unknown method with an id is still -32601, a parse error keeps its `id: null` reply, and `ping` is answered. (2) `tools/list` filtered the catalog by the token's scopes, and a box principal token carries `git:credential` and `mcp:user`, which no tool requires, so it listed **no tools**. A token with the `mcp:user` scope now skips this advisory client-side filter (the control plane applies the person's role on every call); every other token narrows exactly as before. Existing boxes keep the `mcp-server` they were provisioned with and need it re-installed (`code install` with this release).
+
+## [0.103.2] - 2026-10-13
+
+_A second patch for hosted tracker dispatch: a dispatched run's agent can now call its tracker tools. Runs started on 0.103.1 provisioned their box but ended at the first tool call. A daemon upgrade is enough; existing skill boxes pick it up on their next run._
+
+### Fixed
+
+- **A tracker-dispatched run can call its tracker tools** (#2508). The daemon seeds the platform MCP with a plain-`http://` URL to itself over the box's bridge, and the MCP client has refused any `http://` base URL since the C-HIGH-1 hardening unless `CONTAINARIUM_MCP_ALLOW_INSECURE=true` — which nothing set. Every dispatched run therefore failed at its first tracker tool call with `MCP client refuses http:// baseURL`. The seed's command is now `env CONTAINARIUM_MCP_ALLOW_INSECURE=true mcp-server`, scoping the opt-in to that one process on the box's private bridge. The seed is rewritten on every run, so an existing skill box needs the daemon upgrade only.
+- **Platform build constraints for `hostcheck` and `agent-box` are corrected** (#2507): the agent-box sources are excluded from Windows builds, and CI now cross-compiles `hostcheck` for Windows and the client and `agent-box` for macOS and fails if `agent-box` becomes Windows-buildable. No change to Linux behaviour.
+
+## [0.103.1] - 2026-10-13
+
+_A patch release for hosted agent runs: a token that holds only `agents:run` or `crews:run` can now provision a skill's box the first time that skill runs on a daemon. Deployments that dispatch skills from the control plane (tracker dispatch) need this before the dispatch can work._
+
+### Fixed
+
+- **A token holding only `agents:run` (or `crews:run`) can now provision a skill's box** (#2504). The recipe path's inner create went through the public `CreateContainer` RPC, which checked the caller for `containers:write` a second time, so the first run of a skill on a daemon failed with `failed to provision container: … scope required: containers:write` — a hosted tracker dispatch always, `RunAgentSkill` and `RunCrew` whenever the box did not exist yet. The create now runs under the daemon's own authority once the entry point has authorised the caller for that box name (`DeployRecipe` still requires `containers:write`; a skill or crew run requires its own scope plus the tenant check on `agent-<skill>`), the public RPC is unchanged, and `deploy` refuses a context with no authenticated subject.
+- **`containarium create` run on the daemon host applies the privileged-Podman policy** (#2495). The local create path set privileged Podman whenever Podman was enabled, without consulting `CONTAINARIUM_PRIVILEGED_PODMAN_POLICY`; it now asks the same policy check the daemon uses, as the system principal, so the setting is honoured there too.
+
+## [0.103.0] - 2026-10-12
+
+_Coding-agent boxes now come with the SDLC role skills, a box created without SSH keys is reachable again, and the
+sentinel drops the cleartext tunnel path for good. Read "Upgrade notes" before rolling a sentinel._
+
+### Upgrade notes
+- **The temporary cleartext opt-out is gone.** v0.102.0's notes suggested starting a sentinel with
+  `--tunnel-allow-cleartext=true` while some tunnel clients were not yet on TLS. From this release `true` makes the
+  sentinel exit at startup with an error; `false` is accepted and does nothing. Upgrade every tunnel client (with
+  `--sentinel-pin`) **before** upgrading the sentinel; see `docs/TUNNEL-REVERSE-PROXY.md`, "Upgrading to the TLS
+  Transport". Hosts that run no sentinel are unaffected.
+- **Coding-agent boxes get the SDLC skills only from a `release` that carries them.** The recipe and `code install`
+  fetch the installer and the `sdlc-skills.tar.gz` asset from the release tag they are given; an older tag is skipped
+  with a message, and any other fetch failure fails the install.
+
+### Added
+- **The hosted `issue-implementer` shares its engineering principles with the box-side `engineer-implement` skill** (#2488). Set `CONTAINARIUM_SDLC_SKILLS_BUNDLE` to the pinned `sdlc-skills.tar.gz` and the daemon verifies it against the digest compiled into the binary, then appends the `Engineering principles` section of `engineer-implement` under the skill's own contract (which keeps precedence: no GitHub access, never commit, `max_files` is a hard ceiling, the final message is exactly the JSON object). Opt-in and fail-safe: no path, a bundle that fails verification, or a missing section leaves the inline prompt untouched and logs why. `containarium agent get` shows `Prompt source: inline | sdlc-pin (<pin>)`, and `AgentSkill` carries `prompt_source` / `prompt_pin`. Not yet validated with a real model; run `scripts/engineer-crew-e2e.sh` on a configured daemon before enabling it.
+- **Coding-agent boxes ship with the SDLC role skills** (#2065). The `coding-agent` recipe (new `sdlc_skills` parameter, default `true`) and `containarium code install` (for the Claude engine; `--no-sdlc-skills` skips) install the product, architect, engineer, QA, reviewer, DevOps, release and coordinator skills from [open-sdlc-skills](https://github.com/FootprintAI/open-sdlc-skills) into the box user's `~/.claude/skills`. The set is pinned by commit SHA and digest in `pkg/core/sdlcskills/sdlc-skills.lock` (that repo has no tags), packaged deterministically as the `sdlc-skills.tar.gz` release asset, verified by sha256 before anything is written, and rejected if the archive holds an unsafe path. Updates remove only what the installer previously wrote; `SDLC_SKILLS_OVERLAY_DIR` layers a team's own skills on top. A `release` older than this asset is skipped with a message; any other fetch failure fails the install.
+- **The sentinel exports `containarium.sentinel.primary_preferred` to Cloud Monitoring** (#2485). The gauge (1 = on the best-priority backend, 0 = on a fallback) was only on `/metrics`, so `--metrics-export` could not back an alert for the stuck-on-a-fallback condition. It reuses the same computation as the `/metrics` series; the exporter's cost is now 8 fixed series per sentinel plus one per backend.
+
+### Changed
+
+- The sentinel no longer accepts the legacy cleartext tunnel handshake. The cleartext session path, its token-on-the-wire
+  validation and the `AllowCleartext` field on `sentinel.TunnelServer` are removed; a tunnel client that still opens in
+  the clear is answered with `tls required; upgrade the tunnel client and set --sentinel-pin` and counted in
+  `sentinel_tunnel_cleartext_refused_total`. `--tunnel-allow-cleartext` is deprecated but still accepted so existing
+  service units start: `false` does nothing and `true` makes the sentinel exit at startup with an error. The
+  `sentinel_tunnel_sessions_cleartext` gauge and the status page's cleartext row are removed. **Upgrade tunnel clients
+  (with `--sentinel-pin`) before the sentinel**; see `docs/TUNNEL-REVERSE-PROXY.md`, "Upgrading to the TLS Transport".
+
+### Fixed
+- **A box created with no SSH keys is reachable again** (#2489). `create_container` skipped the host-side jump-server account when no SSH key was supplied, so the box reached `RUNNING` but nothing could route SSH to it, and a later add-key failed with `host user ... does not exist`. Create now always makes the account (with no keys, failing and cleaning up like the keyed path does), and `AddSSHKey` creates a missing account for an existing, authorized box so boxes created before the fix can be repaired by registering a key.
+- **`SubjectDigest` can no longer hang on a swapped path** (#2487). A path replaced by a FIFO between the directory walk and the open blocked the open forever; files are now opened `O_NONBLOCK`, the handle is re-checked, and non-regular entries are skipped, matching the existing guardrail stage.
+
+## [0.102.0] - 2026-10-11
+
+_A sentinel release. Four things change what a sentinel does on upgrade, so read "Upgrade notes" before rolling it:
+tunnel sessions must be TLS, certificate sync is scoped per backend, the per-backend tunnel API ports bind to loopback,
+and the sentinel now fails back to its preferred primary. Hosts that run no sentinel are unaffected._
+
+### Upgrade notes
+
+- **Tunnel clients must already be on TLS with a pin.** A tunnel client still opening with the legacy cleartext
+  handshake is refused (`tls required; upgrade the tunnel client and set --sentinel-pin`). Start the sentinel with
+  `--tunnel-allow-cleartext=true` temporarily if some are not upgraded yet.
+- **A sentinel with an in-fleet backend (`--spot-vm`, `--backend-addr`, or `--provider none`) should declare that
+  backend's domains** with `--backend-hostname`, `--backend-alias` and `--backend-base-domain` before upgrading, or none
+  of that backend's certificates are served (a startup warning says so). A sentinel whose backends supply no
+  certificates sees no difference.
+- **Anything on another host that dials a sentinel's per-backend tunnel API port (`18000+N`)**, for example a daemon
+  listing it in `--peers`, needs `--tunnel-api-bind-addr=<internal IP>` on the sentinel; the default is now `127.0.0.1`.
+- **Failback is on by default.** The sentinel returns to its preferred primary on its own after it recovers;
+  `--failback-checks=-1` restores the old behaviour.
+
+### Changed
+
+- The sentinel now requires TLS for tunnel sessions by default: `--tunnel-allow-cleartext` defaults to `false`, and
+  `sentinel.NewTunnelServer` leaves `AllowCleartext` unset. A tunnel client that still opens with the legacy cleartext
+  handshake is answered with `tls required; upgrade the tunnel client and set --sentinel-pin` and counted in
+  `sentinel_tunnel_cleartext_refused_total`. Tunnel clients already connecting over TLS with `--sentinel-pin` are
+  unaffected. If some tunnel clients have not been upgraded yet, start the sentinel with
+  `--tunnel-allow-cleartext=true` until `sentinel_tunnel_sessions_cleartext` stays at zero, then remove the flag (see
+  `docs/TUNNEL-REVERSE-PROXY.md`, "Upgrading to the TLS Transport").
+
+- Per-backend tunnel API listeners bind to loopback by default (#2467). The listener the tunnel server opens for each
+  tunnel backend (`18000+N`, forwarding to the backend's port 8080) used to bind to every interface; it now binds to
+  `127.0.0.1`. New sentinel flag `--tunnel-api-bind-addr` (default `127.0.0.1`, a bare IP) for deployments where a
+  daemon on another host lists that port in `--peers`. Nothing in the repository dials these ports from another host:
+  the sentinel reaches each backend through its loopback alias for health checks, key and cert sync and the `/peer/`
+  proxy, and daemons discover tunnel backends through `--sentinel-url`. The `containarium daemon --peers` help now
+  shows a peer daemon's own address.
+- Certificate sync is scoped per backend (#2468). The sentinel used to keep one certificate map that every backend's
+  `/certs` sync replaced. Each backend now has its own set and the served map is a merge: a sync replaces only that
+  backend's set and keeps only certificates for the domains it is registered for (a tunnel backend's primary
+  declaration; for the in-fleet backend, the new `--backend-hostname`, `--backend-alias` (repeatable) and
+  `--backend-base-domain` (repeatable) flags, which must be lowercase DNS names with at least two labels and no
+  wildcards or the sentinel refuses to start). A hostname or alias covers exactly that name; a base domain covers
+  itself, `*.<base>` and every name under it. Out-of-scope entries are dropped and counted in
+  `sentinel_cert_sync_rejected_total{backend="<id>"}`. An empty `/certs` response never replaces the store; a response
+  that does not decode, or whose entries are all out of scope, is a sync error that keeps the previous set. When two
+  backends share the best match for a domain, neither's certificate is served for it until one stops supplying it. A
+  backend with no registered domains supplies no certificates, and a sentinel with an in-fleet backend and none of the
+  flags set logs a warning at startup (`docs/SENTINEL-DESIGN.md` has the precedence rules).
+
+### Fixed
+
+- The sentinel now fails back to its preferred primary after it recovers (#2476). It already failed over when the
+  primary's health check failed, but nothing ever moved traffic back: the active primary stayed on the fallback until
+  the sentinel was restarted. Where the fallback is a tunnel backend that cannot serve the primary's hostnames, a
+  short health blip on the primary became a long outage (the CDN returned 525 for about 35 minutes in one case). A
+  backend with a better (lower) priority than the active primary is now restored once it has been healthy for
+  `--failback-checks` consecutive checks (default 4; never below `--healthy-threshold`; negative disables), logged as
+  `failback: <from> → <to>`. Backends of equal priority never displace each other, so a flapping primary does not
+  oscillate. `/metrics` gains `sentinel_failback_total` and `sentinel_primary_preferred` (0 while the sentinel is on a
+  fallback). `docs/TUNNEL-REVERSE-PROXY.md` already described this behaviour; the code now does it.
+
+## [0.101.4] - 2026-10-11
+
+_Patch release for the tunnel **client** (`containarium-tunnel`, `hypervisor-agent`): it takes effect on each tunnel host
+only once that host's binary is upgraded and its tunnel client restarted. Hosts that run no tunnel client change nothing._
+
+### Fixed
+
+- The tunnel client's reconnect backoff now starts over after a session that stayed up (#2473). It used to double on
+  every disconnect up to 60 s and never reset, so a client that had reconnected a handful of times over its life waited
+  a full minute after every later sentinel restart (a long-lived client reconnected after about 60 s where a fresh one
+  took 4 s). The delay now escalates only across consecutive failed or short-lived sessions (a session of 30 s or more
+  resets it), carries up to ±20 % jitter so clients do not retry in lockstep, and the log shows the delay actually
+  waited.
+
+## [0.101.3] - 2026-10-11
+
+_Patch release for the sentinel. Only the `containarium sentinel` process is affected; hosts that do not run a sentinel
+change nothing observable. Upgrade the sentinel first. Until it is upgraded, restarting the primary backend's daemon can
+take the sentinel down (see the first entry)._
+
+### Fixed
+
+- The sentinel no longer loops its own HTTPS traffic back into itself after a failover to a tunnel backend (#2470).
+  In hybrid (ConnMux) mode the passthrough fallback for traffic matching no registered primary was a TCP dial to the
+  elected backend's loopback alias (`127.0.0.N:443`). Nothing listens on that address except the mux itself (it
+  listens on the wildcard `:443`), so the dial connected back to the sentinel, was routed again, fell back again, and a
+  single client connection became an unbounded chain of about 100 KB per hop: more than 8,000 connections in under a
+  second, enough to hit a 384M memory cap in a fraction of a second. It surfaced as the sentinel being OOM-killed (and
+  the public edge returning 520s) whenever the primary backend's daemon restarted. A tunnel backend's fallback now goes
+  through its tunnel, as a tunnel-promoted primary already did, and a TCP fallback or primary that resolves to loopback
+  on the sentinel's own HTTPS port is refused and logged (rate-limited).
+
+## [0.101.2] - 2026-10-10
+
+_Completes the sentinel tunnel TLS transport that v0.101.0 and v0.101.1 shipped half of. Those releases changed the
+tunnel **client** to require a sentinel pin and never fall back to cleartext, but the sentinel could not yet present a
+tunnel identity, so a tunnel host upgraded to either release could not reconnect. Do not run `containarium tunnel` or
+`hypervisor-agent` from v0.101.0 or v0.101.1; upgrade to v0.101.2 (see "Upgrading tunnel hosts" below)._
+
+### Added
+
+- The sentinel now presents a tunnel identity and prints its pin (#2457). When a tunnel server runs (`--provider=tunnel`
+  or hybrid mode) the sentinel loads its tunnel identity from `--tunnel-tls-identity` (default
+  `/etc/containarium/sentinel-tunnel-identity.pem`), or generates and saves it with mode `0600` on first start, and
+  installs it on the tunnel server. A restart reuses the same identity and pin. `containarium sentinel tunnel-identity`
+  prints the pin as `sha256:<64 hex>`, the form `--sentinel-pin` takes; it only reads the file and fails if it does not
+  exist yet. `--tunnel-allow-cleartext` (default `true`) keeps accepting the legacy cleartext handshake from older
+  clients, logging a deprecation line per session, so a fleet can be moved over one host at a time; set it to `false`
+  once every tunnel client sends a pin. `docs/TUNNEL-REVERSE-PROXY.md` is rewritten for the TLS transport, ALPN routing
+  and the session-bound token proof.
+- `containarium pool join` takes `--sentinel-pin` (#2458): repeatable, comma-separated values and the tunnel client's
+  `CONTAINARIUM_TUNNEL_SENTINEL_PIN` env fallback are accepted. The pins are validated and rendered into the tunnel
+  unit it writes, and `pool join` now fails with a clear error when none is supplied, matching the tunnel client.
+
 - `containarium code run` now says, once at start, whether the run's model responses are scanned by the inbound
   guardrail (#2367): `SCANNED` (gateway credential and an inbound BLOCK rule in force), `NOT SCANNED` with the reason
   (gateway credential but no inbound rule, or the box's own provider key, which never crosses the gateway), or
@@ -28,6 +206,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keeps the last known policy. `Gateway.InvalidateInboundPolicy` forces a re-read when the policy changes.
   `/__gateway/status` gains `hold_seconds`, `hold_bytes` histograms and `policy_reads`, and the design doc lists the
   timeout ceilings a held response runs under.
+
+### Upgrading tunnel hosts
+
+Units that already exist are not rewritten by `pool join`. For each host that runs `containarium-tunnel.service` (and
+any `hypervisor-agent`): read the pin on the sentinel with `containarium sentinel tunnel-identity`, add it to the unit
+as `CONTAINARIUM_TUNNEL_SENTINEL_PIN` (a systemd drop-in is enough; a v0.100.x client ignores it), then upgrade the
+binary and restart the tunnel. A v0.100.x tunnel client keeps working against a v0.101.2 sentinel while
+`--tunnel-allow-cleartext` is `true`.
 
 ## [0.101.1] - 2026-10-10
 

@@ -12,71 +12,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestTunnelHandshakeValidation(t *testing.T) {
-	tests := []struct {
-		name    string
-		hs      *TunnelHandshake
-		token   string
-		wantErr bool
-	}{
-		{
-			name:    "valid",
-			hs:      &TunnelHandshake{Token: "secret", SpotID: "spot-1", Ports: []int{80, 443}},
-			token:   "secret",
-			wantErr: false,
-		},
-		{
-			name:    "wrong token",
-			hs:      &TunnelHandshake{Token: "wrong", SpotID: "spot-1", Ports: []int{80}},
-			token:   "secret",
-			wantErr: true,
-		},
-		{
-			name:    "missing spot id",
-			hs:      &TunnelHandshake{Token: "secret", SpotID: "", Ports: []int{80}},
-			token:   "secret",
-			wantErr: true,
-		},
-		{
-			name:    "no ports",
-			hs:      &TunnelHandshake{Token: "secret", SpotID: "spot-1", Ports: nil},
-			token:   "secret",
-			wantErr: true,
-		},
-		{
-			name:    "primary handshake valid",
-			hs:      &TunnelHandshake{Token: "secret", SpotID: "spot-1", Ports: []int{443}, Pool: "lab", PublicHostname: "lab.example", PublicPort: 443},
-			token:   "secret",
-			wantErr: false,
-		},
-		{
-			name:    "primary handshake without public_port",
-			hs:      &TunnelHandshake{Token: "secret", SpotID: "spot-1", Ports: []int{443}, Pool: "lab", PublicHostname: "lab.example"},
-			token:   "secret",
-			wantErr: true,
-		},
-		{
-			name:    "primary handshake without pool",
-			hs:      &TunnelHandshake{Token: "secret", SpotID: "spot-1", Ports: []int{443}, PublicHostname: "lab.example", PublicPort: 443},
-			token:   "secret",
-			wantErr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			policy := NewTokenPolicy()
-			policy.Allow(tt.token, PoolAny)
-			err := validateHandshake(tt.hs, policy)
-			if tt.wantErr {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-			}
-		})
-	}
-}
-
 func TestTunnelRegistryAllocate(t *testing.T) {
 	registry := NewTunnelRegistry()
 
@@ -185,36 +120,6 @@ func TestTunnelEndToEnd(t *testing.T) {
 
 	assert.Equal(t, testData, string(buf))
 	t.Logf("full echo through tunnel verified: %q", string(buf))
-}
-
-// TestTunnelWrongToken verifies that a client with the wrong token is rejected.
-func TestTunnelWrongToken(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	tunnelPort := freePort(t)
-	registry := NewTunnelRegistry()
-	server := NewTunnelServer(fmt.Sprintf("127.0.0.1:%d", tunnelPort), policyAny("correct-token"), registry, 0)
-
-	go func() { _ = server.Run(ctx) }()
-	waitForListener(t, fmt.Sprintf("127.0.0.1:%d", tunnelPort))
-
-	// Connect with wrong token
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", tunnelPort), 3*time.Second)
-	require.NoError(t, err)
-	defer func() { _ = conn.Close() }()
-
-	hs := &TunnelHandshake{Token: "wrong-token", SpotID: "bad-spot", Ports: []int{80}}
-	err = writeHandshake(conn, hs)
-	require.NoError(t, err)
-
-	resp, err := readHandshakeResponse(conn)
-	require.NoError(t, err)
-	assert.False(t, resp.OK)
-	assert.Contains(t, resp.Error, "invalid token")
-
-	// Should not be registered
-	assert.False(t, registry.Connected())
 }
 
 // TestConnMuxRouting verifies that the ConnMux correctly routes connections

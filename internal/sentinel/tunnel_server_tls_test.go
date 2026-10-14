@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hashicorp/yamux"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -27,9 +26,8 @@ func startTunnelServer(t *testing.T, ctx context.Context, ts *TunnelServer) stri
 	return ln.Addr().String()
 }
 
-// TestCleartextPeerRefused: with cleartext sessions disallowed, a peer that
-// opens with the JSON handshake is answered with ok:false and closed before
-// its handshake line is read. The peer only ever sends the opening brace,
+// TestCleartextPeerRefused: a peer that opens with the JSON handshake is
+// answered with ok:false and closed before its handshake line is read. The peer only ever sends the opening brace,
 // so a server that tried to read the line would hang instead of answering.
 // Nothing registers, OnConnect never fires, and the refusal is counted.
 func TestCleartextPeerRefused(t *testing.T) {
@@ -38,7 +36,6 @@ func TestCleartextPeerRefused(t *testing.T) {
 
 	registry := NewTunnelRegistry()
 	ts := NewTunnelServer("", policyAny("tok"), registry, 0)
-	ts.AllowCleartext = false
 	var connects atomic.Int32
 	ts.OnConnect = func(*TunnelSpot) { connects.Add(1) }
 	addr := startTunnelServer(t, ctx, ts)
@@ -53,7 +50,7 @@ func TestCleartextPeerRefused(t *testing.T) {
 	resp, err := readHandshakeResponse(conn)
 	require.NoError(t, err, "the refusal must arrive without the handshake line being read")
 	assert.False(t, resp.OK)
-	assert.Contains(t, resp.Error, "tls required")
+	assert.Equal(t, "tls required; upgrade the tunnel client and set --sentinel-pin", resp.Error)
 
 	// The server closes the connection after the refusal.
 	buf := make([]byte, 1)
@@ -65,54 +62,6 @@ func TestCleartextPeerRefused(t *testing.T) {
 	stats := registry.SessionStats()
 	assert.Equal(t, uint64(1), stats.CleartextRefused)
 	assert.Zero(t, stats.TLS)
-	assert.Zero(t, stats.Cleartext)
-}
-
-// TestCleartextPeerAcceptedWhenAllowed pins the transition behaviour: with
-// cleartext sessions allowed (the constructor default) the legacy JSON
-// handshake still registers, and the spot is tagged as a cleartext session.
-func TestCleartextPeerAcceptedWhenAllowed(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	stubLoopbackAliases(t)
-
-	registry := NewTunnelRegistry()
-	ts := NewTunnelServer("", policyAny("tok"), registry, 0)
-	require.True(t, ts.AllowCleartext, "cleartext sessions are allowed by default during the transition")
-	connectCh := make(chan *TunnelSpot, 1)
-	ts.OnConnect = func(spot *TunnelSpot) {
-		select {
-		case connectCh <- spot:
-		default:
-		}
-	}
-	addr := startTunnelServer(t, ctx, ts)
-
-	conn, err := net.Dial("tcp", addr)
-	require.NoError(t, err)
-	defer func() { _ = conn.Close() }()
-	require.NoError(t, writeHandshake(conn, &TunnelHandshake{Token: "tok", SpotID: "legacy-spot", Ports: []int{22}}))
-	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-	resp, err := readHandshakeResponse(conn)
-	require.NoError(t, err)
-	require.True(t, resp.OK, "error: %s", resp.Error)
-	_ = conn.SetReadDeadline(time.Time{})
-	session, err := yamux.Server(conn, nil)
-	require.NoError(t, err)
-	defer func() { _ = session.Close() }()
-
-	select {
-	case spot := <-connectCh:
-		assert.Equal(t, "legacy-spot", spot.ID)
-		assert.Equal(t, TunnelTransportCleartext, spot.Transport)
-	case <-time.After(5 * time.Second):
-		t.Fatal("timeout waiting for the cleartext registration")
-	}
-	assert.Equal(t, TunnelTransportCleartext, registry.Get("legacy-spot").Transport)
-	stats := registry.SessionStats()
-	assert.Equal(t, 1, stats.Cleartext)
-	assert.Zero(t, stats.TLS)
-	assert.Zero(t, stats.CleartextRefused)
 }
 
 // TestTunnelServerTLSConfig pins the listener-side transport parameters:
@@ -190,12 +139,10 @@ func TestTunnelServerWithoutIdentityClosesTLSPeers(t *testing.T) {
 // TestRenderTunnelMetrics pins the exposition of the tunnel transport
 // counters.
 func TestRenderTunnelMetrics(t *testing.T) {
-	out := renderTunnelMetrics(TunnelSessionStats{TLS: 3, Cleartext: 1, CleartextRefused: 7})
+	out := renderTunnelMetrics(TunnelSessionStats{TLS: 3, CleartextRefused: 7})
 	for _, want := range []string{
 		"# TYPE sentinel_tunnel_sessions_tls gauge\n",
 		"sentinel_tunnel_sessions_tls 3\n",
-		"# TYPE sentinel_tunnel_sessions_cleartext gauge\n",
-		"sentinel_tunnel_sessions_cleartext 1\n",
 		"# TYPE sentinel_tunnel_cleartext_refused_total counter\n",
 		"sentinel_tunnel_cleartext_refused_total 7\n",
 	} {
@@ -210,8 +157,6 @@ func TestMetricsAndStatusCarryTunnelSessions(t *testing.T) {
 	registry := NewTunnelRegistry()
 	_, _, err := registry.Register(&TunnelHandshake{SpotID: "a", Ports: []int{22}}, nil, TunnelTransportTLS)
 	require.NoError(t, err)
-	_, _, err = registry.Register(&TunnelHandshake{SpotID: "b", Ports: []int{22}}, nil, TunnelTransportCleartext)
-	require.NoError(t, err)
 	registry.noteCleartextRefused()
 	registry.noteCleartextRefused()
 
@@ -222,13 +167,12 @@ func TestMetricsAndStatusCarryTunnelSessions(t *testing.T) {
 	m.MetricsHandler()(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	body := rec.Body.String()
 	assert.Contains(t, body, "sentinel_tunnel_sessions_tls 1\n")
-	assert.Contains(t, body, "sentinel_tunnel_sessions_cleartext 1\n")
+	assert.NotContains(t, body, "sentinel_tunnel_sessions_cleartext")
 	assert.Contains(t, body, "sentinel_tunnel_cleartext_refused_total 2\n")
 
 	rec = httptest.NewRecorder()
 	StatusHandler(m)(rec, httptest.NewRequest(http.MethodGet, "/status", nil))
 	page := rec.Body.String()
 	assert.Contains(t, page, "tunnel_sessions_tls")
-	assert.Contains(t, page, "tunnel_sessions_cleartext")
 	assert.True(t, strings.Contains(page, ">1<"), "session counts must be rendered")
 }

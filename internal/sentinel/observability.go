@@ -127,10 +127,14 @@ func (m *Manager) MetricsHandler() http.HandlerFunc {
 		// counters above miss a loss that failover absorbs — see
 		// backend_metrics.go for the event that proved it.
 		fmt.Fprint(w, renderBackendMetrics(m.FailoverCount(), m.BackendHealthSnapshot()))
+		fmt.Fprint(w, renderFailbackMetrics(m.FailbackCount(), m.primaryIsPreferred()))
 		// Tunnel sessions by transport, so the move to TLS is observable
 		// per sentinel.
 		if m.tunnelRegistry != nil {
 			fmt.Fprint(w, renderTunnelMetrics(m.tunnelRegistry.SessionStats()))
+		}
+		if m.certStore != nil {
+			fmt.Fprint(w, renderCertSyncMetrics(m.certStore.RejectedCounts()))
 		}
 	}
 }

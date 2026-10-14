@@ -114,7 +114,6 @@ func TestTunnelTLSEndToEnd(t *testing.T) {
 	}
 	stats := registry.SessionStats()
 	assert.Equal(t, 1, stats.TLS)
-	assert.Zero(t, stats.Cleartext)
 
 	stream, err := registry.DialTunnel("tls-spot", echoPort)
 	require.NoError(t, err)
@@ -201,7 +200,6 @@ func TestTunnelPinMismatchAbortsBeforeHandshake(t *testing.T) {
 		assert.Zero(t, connects.Load())
 		stats := registry.SessionStats()
 		assert.Zero(t, stats.TLS)
-		assert.Zero(t, stats.Cleartext)
 		assert.Zero(t, stats.CleartextRefused, "a failed TLS handshake is not a cleartext refusal")
 	})
 }

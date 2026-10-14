@@ -147,7 +147,7 @@ func validatePrivilegedPolicyEnv() error {
 	return privilegedPolicyErr
 }
 
-// authorizePrivilegedPodman decides whether the caller's
+// AuthorizePrivilegedPodman decides whether the caller's
 // `enable_podman=true` request should result in a privileged
 // container. Returns:
 //
@@ -164,7 +164,7 @@ func validatePrivilegedPolicyEnv() error {
 //   - PrivilegedPolicyAdminOnly → (true, nil) for admin; (false,
 //     PermissionDenied) for non-admin
 //   - PrivilegedPolicyDisabled  → (false, nil) — downgrade
-func authorizePrivilegedPodman(ctx context.Context) (bool, error) {
+func AuthorizePrivilegedPodman(ctx context.Context) (bool, error) {
 	switch loadPrivilegedPolicy() {
 	case PrivilegedPolicyAll:
 		return true, nil

@@ -182,7 +182,7 @@ type DualServerConfig struct {
 
 	// Multi-backend peer settings
 	SentinelURL    string   // URL for auto-discovering tunnel peers (e.g., "http://10.128.0.5:8081")
-	Peers          []string // Static peer addresses (e.g., ["10.128.0.5:18001"])
+	Peers          []string // Static peer daemon addresses (e.g., ["10.0.0.12:8080"]); tunnel backends come from SentinelURL
 	LocalBackendID string   // This daemon's backend ID (defaults to hostname)
 	Pool           string   // Pool name to filter sentinel peer discovery (empty = no filter)
 	Region         string   // Region this backend serves; recorded in the capability profile (#681). Falls back to Pool when empty.
@@ -594,6 +594,11 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// Register container service
 	pb.RegisterContainerServiceServer(grpcServer, containerServer)
 
+	// SSHAuthzService (#2516): the per-connection SSH authorization
+	// contract. A stub returning Unimplemented until the decider (#2517);
+	// the REST route is mounted behind the sentinel signature.
+	pb.RegisterSSHAuthzServiceServer(grpcServer, NewSSHAuthzServer())
+
 	// ComposeAutostartService — operator-side RPC that execs
 	// `agent-box compose <verb>` inside the tenant's LXC. Uses a
 	// dedicated incus client (cheap; the gRPC server keeps the
@@ -719,6 +724,12 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 			} else {
 				log.Printf("Loaded external skills from %s", dir)
 			}
+		}
+		// #2488: compose the pinned engineering standard into hosted skills
+		// that declare one. Runs after external catalogs so their skills can
+		// declare a standard too. Opt-in; any failure keeps the inline prompt.
+		if msg := applyPinnedStandard(skills.GetDefault(), os.Getenv(sdlcBundleEnv), loadSDLCBundle); msg != "" {
+			log.Print(msg)
 		}
 		if dir := os.Getenv("CONTAINARIUM_CREWS_DIR"); dir != "" {
 			if err := crews.GetDefault().LoadDirVerified(dir, catalogVerifier); err != nil {

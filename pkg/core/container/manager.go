@@ -163,6 +163,9 @@ func resolveGPUDevices(b incus.Backend, inputs []string) ([]incus.GPUDevice, err
 var (
 	createJumpServerAccountFn = CreateJumpServerAccount
 	addAuthorizedKeyFn        = AddAuthorizedKey
+	// ensureJumpServerAccountFn creates the account with no key material, for
+	// boxes created without SSH keys (#2489).
+	ensureJumpServerAccountFn = EnsureJumpServerAccount
 )
 
 // Create creates a new container with full setup
@@ -397,9 +400,22 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 			})
 		}()
 	} else {
+		// No keys is not "no account" (#2489). The host-side account is what the
+		// sentinel routes SSH to; skipping it left a RUNNING box that no
+		// certificate or later key push could ever reach ("host user does not
+		// exist"). Create it empty; keys are added to it later.
 		if opts.Verbose {
-			fmt.Println("       Warning: No SSH keys provided, skipping jump server account creation")
+			fmt.Println("       No SSH keys provided, creating the jump server account without keys")
 		}
+		jumpAccountDone = make(chan error, 1)
+		go func() {
+			jumpAccountDone <- m.timed(StageJumpAccount, func() error {
+				if err := ensureJumpServerAccountFn(opts.Username); err != nil {
+					return fmt.Errorf("failed to create jump server account: %w", err)
+				}
+				return nil
+			})
+		}()
 	}
 
 	// Step 4: Wait for network

@@ -350,6 +350,13 @@ skills:
       is too large for "max_files"), make no edits and reply with only
       {"files": [], "summary": "<why not>", "pr_title": "", "pr_body": "",
       "tests_run": false}.
+    # #2488: the hosted implementer shares its engineering principles with the
+    # box-side engineer-implement skill (open-sdlc-skills, pinned in
+    # pkg/core/sdlcskills). Only the "Engineering principles" section is
+    # appended, under the contract above, and only when the daemon has a
+    # verified bundle; otherwise this prompt is used as written.
+    standard_from: engineer-implement
+    standard_section: Engineering principles
     allowed_scopes:
       - containers:read
     allowed_peers:

@@ -154,11 +154,37 @@ recipes:
         description: Unprivileged user Claude Code and the bootstrap bundle are installed for. Must already exist in the image.
         type: string
         default: ubuntu
+      - name: sdlc_skills
+        label: Install SDLC skills
+        description: 'Install the pinned open-sdlc-skills role skills (product, architect, engineer, QA, reviewer, release, ...) into the box user''s ~/.claude/skills. "false" skips. A release that predates the skills asset is skipped with a message.'
+        type: string
+        default: "true"
     post_start:
       - 'curl -fsSL "https://raw.githubusercontent.com/FootprintAI/Containarium/$CONTAINARIUM_PARAM_RELEASE/scripts/install-agent-runtime.sh" | RELEASE="$CONTAINARIUM_PARAM_RELEASE" PREFIX=/usr/local/bin bash -s -- --no-agent-runtime'
       - 'BOX_HOME="$(getent passwd "$CONTAINARIUM_PARAM_BOX_USER" | cut -d: -f6)"; [ -n "$BOX_HOME" ] || { echo "box user $CONTAINARIUM_PARAM_BOX_USER not found" >&2; exit 1; }'
       - '# shellcheck disable=SC2016  # the inner script is single-quoted on purpose'
       - 'runuser -u "$CONTAINARIUM_PARAM_BOX_USER" -- env HOME="$BOX_HOME" bash -c ''set -euo pipefail; curl -fsSL https://claude.ai/install.sh | bash -s -- ${1:+"$1"}'' _ "$CONTAINARIUM_PARAM_CLAUDE_CODE_VERSION"'
+      - |
+        # SDLC role skills (#2065), pinned in pkg/core/sdlcskills/sdlc-skills.lock and
+        # shipped as a release asset. Installed AS the box user into its own
+        # ~/.claude/skills. A hash mismatch or unsafe archive fails the deploy; a
+        # release cut before the asset existed has no installer (HTTP 404) and is
+        # skipped, so pinning an older release keeps working; any other fetch
+        # failure fails the deploy rather than silently shipping no skills.
+        # shellcheck disable=SC2016  # the inner script is single-quoted on purpose
+        if [ "${CONTAINARIUM_PARAM_SDLC_SKILLS:-true}" != "false" ]; then
+          runuser -u "$CONTAINARIUM_PARAM_BOX_USER" -- env HOME="$BOX_HOME" RELEASE="$CONTAINARIUM_PARAM_RELEASE" bash -c '
+            set -euo pipefail
+            tmp="$(mktemp)"
+            code="$(curl -sSL -o "$tmp" -w "%{http_code}" "https://raw.githubusercontent.com/FootprintAI/Containarium/$RELEASE/scripts/install-sdlc-skills.sh")"
+            case "$code" in
+              200) bash "$tmp" ;;
+              404) echo "release $RELEASE has no SDLC skills installer; skipping" >&2 ;;
+              *) echo "fetching the SDLC skills installer for $RELEASE failed: HTTP $code" >&2; exit 1 ;;
+            esac
+            rm -f "$tmp"
+          '
+        fi
       - |
         # shellcheck disable=SC2016  # the inner script is single-quoted on purpose
         if [ -n "$CONTAINARIUM_PARAM_BOOTSTRAP_URL" ]; then

@@ -37,8 +37,8 @@ import (
 // larger blast radius than a self-contained meter here.
 //
 // COST SURFACE. Custom metrics are billed per ingested sample. At the 60s
-// floor this is 7 fixed series per sentinel plus one per backend
-// (backend_healthy) — roughly 11 series/minute on a sentinel fronting four
+// floor this is 8 fixed series per sentinel plus one per backend
+// (backend_healthy) — roughly 12 series/minute on a sentinel fronting four
 // backends. Additions belong in this list, deliberately, for the same
 // review-gate reason the daemon's allowlist exists.
 
@@ -48,6 +48,7 @@ const (
 	metricSentinelRecovered      = "containarium.sentinel.recovered_total"
 	metricSentinelFailover       = "containarium.sentinel.failover_total"
 	metricSentinelBackendHealthy = "containarium.sentinel.backend_healthy"
+	metricSentinelPrimaryPref    = "containarium.sentinel.primary_preferred"
 	metricSentinelRSS            = "containarium.sentinel.process.resident_memory_bytes"
 	metricSentinelGoroutines     = "containarium.sentinel.process.goroutines"
 	metricSentinelOpenFDs        = "containarium.sentinel.process.open_fds"
@@ -147,6 +148,11 @@ func registerSentinelInstruments(meter metric.Meter, m *Manager, sentinelID stri
 	if err != nil {
 		return err
 	}
+	primaryPreferred, err := meter.Int64ObservableGauge(metricSentinelPrimaryPref,
+		metric.WithDescription("1 if the active primary is the best-priority registered backend, 0 if the sentinel is on a fallback."))
+	if err != nil {
+		return err
+	}
 	rss, err := meter.Int64ObservableGauge(metricSentinelRSS,
 		metric.WithDescription("Sentinel process resident set size."),
 		metric.WithUnit("By"))
@@ -186,6 +192,14 @@ func registerSentinelInstruments(meter metric.Meter, m *Manager, sentinelID stri
 				append(append([]attribute.KeyValue{}, base...), attribute.String("backend", id))...))
 		}
 
+		// 0 for longer than a few minutes means stuck on a fallback (#2476);
+		// the alert this series exists for.
+		preferred := int64(0)
+		if m.primaryIsPreferred() {
+			preferred = 1
+		}
+		o.ObserveInt64(primaryPreferred, preferred, baseSet)
+
 		rt := collectRuntimeStats()
 		o.ObserveInt64(goroutines, int64(rt.Goroutines), baseSet)
 
@@ -201,7 +215,7 @@ func registerSentinelInstruments(meter metric.Meter, m *Manager, sentinelID stri
 			}
 		}
 		return nil
-	}, state, preempted, recovered, failover, backendHealthy, rss, goroutines, openFDs)
+	}, state, preempted, recovered, failover, backendHealthy, primaryPreferred, rss, goroutines, openFDs)
 
 	return err
 }

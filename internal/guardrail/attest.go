@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 
 	"google.golang.org/protobuf/proto"
 
@@ -30,7 +31,10 @@ import (
 //
 // Walks and opens go through os.Root (as internal/transfer does), so every
 // open is kernel-enforced to stay inside dir even if the tree changes
-// under us between the walk and the open.
+// under us between the walk and the open. Files are opened with O_NONBLOCK
+// and re-checked as regular on the open handle, so a path swapped for a
+// FIFO between the walk and the open is skipped instead of hanging
+// (#2480; same pattern as internal/guardrailstage).
 func SubjectDigest(dir string) (string, error) {
 	root, err := os.OpenRoot(dir)
 	if err != nil {
@@ -44,9 +48,18 @@ func SubjectDigest(dir string) (string, error) {
 	}
 	h := sha256.New()
 	for _, rel := range paths {
-		f, err := root.Open(filepath.FromSlash(rel))
+		f, err := root.OpenFile(filepath.FromSlash(rel), os.O_RDONLY|syscall.O_NONBLOCK, 0)
 		if err != nil {
 			return "", err
+		}
+		info, err := f.Stat()
+		if err != nil {
+			_ = f.Close()
+			return "", err
+		}
+		if !info.Mode().IsRegular() {
+			_ = f.Close()
+			continue
 		}
 		fh := sha256.New()
 		_, cerr := io.Copy(fh, f)

@@ -54,16 +54,10 @@ jobs:
         # workflows pin — with no code change on our side to explain it
         # (caught rehearsing the v0.77.0 release build, 2026-09-13).
         # A pinned binary download has no such dependency on the runner's
-        # Go toolchain at all. Bump BUF_VERSION deliberately, not via a
-        # moving target.
+        # Go toolchain at all. Bump scripts/buf-version.env deliberately.
         run: |
           set -euo pipefail
-          BUF_VERSION=1.72.0
-          BUF_SHA256=8720830e26a733da55bb89bcd3cb44849c0965fc0c44fb5d691cccdc64dca5af
-          curl -sSL -o /usr/local/bin/buf \
-            "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-x86_64"
-          echo "${BUF_SHA256}  /usr/local/bin/buf" | sha256sum -c -
-          chmod +x /usr/local/bin/buf
+          ./scripts/install-buf.sh /usr/local/bin/buf
           buf --version
 
       - name: Get version
@@ -171,6 +165,14 @@ jobs:
         # Produces bin/agent-runtime-bundle.tar.gz, pulled in-box by
         # scripts/install-agent-runtime.sh alongside agent-box-linux-amd64.
         run: make bundle-agent-runtime
+
+      - name: Build SDLC skills bundle
+        # The pinned open-sdlc-skills role skills (#2065): fetched at the commit
+        # in pkg/core/sdlcskills/sdlc-skills.lock and packaged deterministically, so a
+        # lock whose sha256 does not match a rebuild fails the release here.
+        # Pulled in-box by scripts/install-sdlc-skills.sh (the coding-agent
+        # recipe and `containarium code install`).
+        run: make bundle-sdlc-skills
 
       - name: Generate changelog
         # The boilerplate below is identical on every release, so without
@@ -368,6 +370,8 @@ jobs:
             bin/agent-box-darwin-amd64
             bin/agent-box-darwin-arm64
             bin/agent-runtime-bundle.tar.gz
+            bin/sdlc-skills.tar.gz
+            bin/sdlc-skills.tar.gz.sha256
             bin/caddy-linux-amd64
             bin/SHA256SUMS.txt
           draft: false
@@ -462,12 +466,7 @@ jobs:
         # buf" step for why this isn't `go install .../buf@latest`.
         run: |
           set -euo pipefail
-          BUF_VERSION=1.72.0
-          BUF_SHA256=8720830e26a733da55bb89bcd3cb44849c0965fc0c44fb5d691cccdc64dca5af
-          curl -sSL -o /usr/local/bin/buf \
-            "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-x86_64"
-          echo "${BUF_SHA256}  /usr/local/bin/buf" | sha256sum -c -
-          chmod +x /usr/local/bin/buf
+          ./scripts/install-buf.sh /usr/local/bin/buf
           buf --version
 
       - name: Install apt-rdepends

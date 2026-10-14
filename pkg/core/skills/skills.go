@@ -22,6 +22,7 @@ import (
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/pkg/core/catalogsig"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+	"google.golang.org/protobuf/proto"
 	"gopkg.in/yaml.v3"
 )
 
@@ -57,6 +58,12 @@ type skillDef struct {
 	// AGENT_ENGINE_UNSPECIFIED: the daemon's gateway primary / box default
 	// decides, exactly as every skill behaved before this field existed.
 	Engine string `yaml:"engine,omitempty"`
+	// StandardFrom and StandardSection (#2488) name one section of a pinned
+	// open-sdlc-skills skill whose text is appended under SystemPrompt when the
+	// daemon has a verified bundle (Manager.ApplyStandard). Both or neither.
+	// The inline SystemPrompt stays the contract and always comes first.
+	StandardFrom    string `yaml:"standard_from,omitempty"`
+	StandardSection string `yaml:"standard_section,omitempty"`
 }
 
 // ToProto converts a skillDef to its pb.AgentSkill representation. Engine's
@@ -76,6 +83,7 @@ func (s *skillDef) ToProto() *pb.AgentSkill {
 		AllowedPeers:  s.AllowedPeers,
 		Model:         s.Model,
 		Engine:        engine,
+		PromptSource:  pb.PromptSource_PROMPT_SOURCE_INLINE,
 	}
 	if s.AgentCard != nil {
 		out.AgentCard = &pb.AgentCard{
@@ -97,7 +105,94 @@ type config struct {
 // Manager holds the loaded skill catalog.
 type Manager struct {
 	skills []*pb.AgentSkill
-	mu     sync.RWMutex
+	// std records, per skill that declares a standard, the inline prompt and
+	// which section to compose under it. ApplyStandard always composes from
+	// the inline text, never from the current prompt, so applying twice (or
+	// with a newer pin) replaces the composition instead of stacking it.
+	std map[string]standardSpec
+	mu  sync.RWMutex
+}
+
+type standardSpec struct {
+	from, section, inline string
+}
+
+// StandardProvider supplies the pinned engineering standard a skill composes
+// into its prompt (#2488). *sdlcskills.Bundle satisfies it; tests fake it.
+type StandardProvider interface {
+	// Section returns one named section of one skill, or false if absent.
+	Section(skill, section string) (string, bool)
+	// Pin names the content, e.g. "FootprintAI/open-sdlc-skills@<sha12>".
+	Pin() string
+}
+
+// standardContract is the sentence that keeps the hosted contract in charge
+// when the appended standard says anything the box cannot do.
+const standardContract = "\n\n---\nEngineering standard (the %q section of the %s skill, open-sdlc-skills %s). " +
+	"It says how to do the engineering work well. Where it conflicts with the contract above — " +
+	"you have no GitHub access, you never commit or open a pull request, \"max_files\" is a hard ceiling, " +
+	"and your FINAL message is exactly the JSON object described above — the contract above wins.\n\n"
+
+// StandardSkills lists the skills that declare a standard, in catalog order.
+func (m *Manager) StandardSkills() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var ids []string
+	for _, s := range m.skills {
+		if _, ok := m.std[s.Id]; ok {
+			ids = append(ids, s.Id)
+		}
+	}
+	return ids
+}
+
+func (m *Manager) standardFor(id string) (standardSpec, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	sp, ok := m.std[id]
+	return sp, ok
+}
+
+// ApplyStandard composes, for every skill that declares one, the inline prompt
+// followed by the standard section from p (#2488). A skill whose section p
+// does not have keeps its inline prompt byte for byte and reports as missing:
+// nothing is half-applied. It returns the skills it applied and those it could
+// not. Safe to call again with a different provider; the composition is always
+// rebuilt from the inline text.
+func (m *Manager) ApplyStandard(p StandardProvider) (applied, missing []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, sk := range m.skills {
+		sp, ok := m.std[sk.Id]
+		if !ok {
+			continue
+		}
+		text, found := p.Section(sp.from, sp.section)
+		if !found || strings.TrimSpace(text) == "" {
+			missing = append(missing, sk.Id)
+			continue
+		}
+		cp, _ := proto.Clone(sk).(*pb.AgentSkill)
+		cp.SystemPrompt = sp.inline + fmt.Sprintf(standardContract, sp.section, sp.from, p.Pin()) + strings.TrimSpace(text)
+		cp.PromptSource = pb.PromptSource_PROMPT_SOURCE_SDLC_PIN
+		cp.PromptPin = p.Pin()
+		m.skills[i] = cp
+		applied = append(applied, sk.Id)
+	}
+	return applied, missing
+}
+
+func (m *Manager) recordStandards(defs []skillDef) {
+	for i := range defs {
+		d := &defs[i]
+		if d.StandardFrom == "" {
+			continue
+		}
+		if m.std == nil {
+			m.std = map[string]standardSpec{}
+		}
+		m.std[d.ID] = standardSpec{from: d.StandardFrom, section: d.StandardSection, inline: d.SystemPrompt}
+	}
 }
 
 var (
@@ -153,6 +248,8 @@ func (m *Manager) LoadFromBytes(data []byte) error {
 
 	m.mu.Lock()
 	m.skills = loaded
+	m.std = nil
+	m.recordStandards(cfg.Skills)
 	m.mu.Unlock()
 	return nil
 }
@@ -188,6 +285,11 @@ func validate(s *skillDef) error {
 		if _, err := agentengine.Parse(s.Engine); err != nil {
 			return fmt.Errorf("skill %q: %w", s.ID, err)
 		}
+	}
+	// #2488: a standard names a skill AND a section; one without the other
+	// cannot be composed and would silently never apply.
+	if (s.StandardFrom == "") != (s.StandardSection == "") {
+		return fmt.Errorf("skill %q: standard_from and standard_section must be set together", s.ID)
 	}
 	// The agent card's schemas are load-bearing: output_schema_json is what
 	// the in-box runtime hands to the engine's structured-output mechanism
@@ -290,6 +392,7 @@ func (m *Manager) mergeBytes(data []byte) error {
 		existing[def.ID] = true
 		m.skills = append(m.skills, def.ToProto())
 	}
+	m.recordStandards(cfg.Skills)
 	return nil
 }
 

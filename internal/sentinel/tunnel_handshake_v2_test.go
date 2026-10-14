@@ -59,14 +59,22 @@ func (c *recordingConn) Read(p []byte) (int, error) {
 // and returns the server, the listener (for its capture) and its address.
 func serveV2Tunnel(t *testing.T, ctx context.Context, policy *TokenPolicy, registry *TunnelRegistry, id *TunnelIdentity) (*TunnelServer, *recordingListener, string) {
 	t.Helper()
+	ts := NewTunnelServer("", policy, registry, 0)
+	ts.SetTunnelIdentity(id)
+	ln, addr := serveRecorded(t, ctx, ts)
+	return ts, ln, addr
+}
+
+// serveRecorded serves an already configured ts on a recording loopback
+// listener and returns the listener and the address peers dial.
+func serveRecorded(t *testing.T, ctx context.Context, ts *TunnelServer) (*recordingListener, string) {
+	t.Helper()
 	raw, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	ln := &recordingListener{Listener: raw}
-	ts := NewTunnelServer("", policy, registry, 0)
-	ts.SetTunnelIdentity(id)
 	go func() { _ = ts.Serve(ctx, ln) }()
 	waitForListener(t, raw.Addr().String())
-	return ts, ln, raw.Addr().String()
+	return ln, raw.Addr().String()
 }
 
 // dialTunnelTLS opens a TLS tunnel session to addr the way TunnelClient
@@ -131,23 +139,6 @@ func TestTunnelTokenNeverOnTheWire(t *testing.T) {
 		assert.False(t, bytes.Contains(wire, []byte(`"spot_id"`)), "handshake JSON must not be visible on the wire")
 	})
 
-	t.Run("legacy cleartext control", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		registry := NewTunnelRegistry()
-		_, ln, addr := serveV2Tunnel(t, ctx, policyAny(token), registry, newTestTunnelIdentity(t))
-
-		conn, err := net.Dial("tcp", addr)
-		require.NoError(t, err)
-		defer func() { _ = conn.Close() }()
-		require.NoError(t, writeHandshake(conn, &TunnelHandshake{Token: token, SpotID: "legacy", Ports: []int{22}}))
-		_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-		resp, err := readHandshakeResponse(conn)
-		require.NoError(t, err)
-		require.True(t, resp.OK, "error: %s", resp.Error)
-
-		assert.True(t, bytes.Contains(ln.captured(), []byte(token)), "the cleartext variant must expose the token to the same capture")
-	})
 }
 
 // TestHandshakeV2ProofRejectsWrongToken: a client holding the sentinel's
@@ -237,7 +228,7 @@ func TestHandshakeV1InsideTLSRejected(t *testing.T) {
 }
 
 // TestHandshakeV2OnCleartextRejected: a v2 handshake has no session to bind
-// its proof to outside TLS, so the cleartext path does not accept it.
+// its proof to outside TLS, so a cleartext peer is refused before it is read.
 func TestHandshakeV2OnCleartextRejected(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -393,14 +384,4 @@ func TestValidateHandshakeV2(t *testing.T) {
 			assert.Contains(t, err.Error(), tt.wantErr)
 		})
 	}
-}
-
-// TestValidateHandshakeV1RejectsV2Shape: the cleartext validator does not
-// accept a v2 handshake, which it has no session to check against.
-func TestValidateHandshakeV1RejectsV2Shape(t *testing.T) {
-	policy := policyAny("tok")
-	hs := (&TunnelClient{Token: "tok", SpotID: "s", Ports: []int{22}}).handshakeV2(bytes.Repeat([]byte{1}, tunnelTokenProofLen))
-	err := validateHandshake(hs, policy)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "tls")
 }

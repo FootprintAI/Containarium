@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"sync/atomic"
 	"time"
 
 	"github.com/hashicorp/yamux"
@@ -41,13 +42,29 @@ type TunnelClient struct {
 	// LoadBalancer ingress or <nodeIP>:<NodePort>), since NodePorts are
 	// not reliably reachable on 127.0.0.1.
 	Forward map[int]string
+
+	// sessionUpAt is when the current session was established (unix nanos), or
+	// 0 when no session is up. Run uses it to tell a session that stayed up
+	// from a connection attempt that never got anywhere.
+	sessionUpAt atomic.Int64
+}
+
+// sessionLasted is how long the current (or just-ended) session has been up,
+// or 0 if the last connection attempt never established one.
+func (tc *TunnelClient) sessionLasted() time.Duration {
+	up := tc.sessionUpAt.Load()
+	if up == 0 {
+		return 0
+	}
+	return time.Since(time.Unix(0, up))
 }
 
 // Run connects to the sentinel and serves tunnel traffic.
-// It reconnects with exponential backoff on failure. Blocks until ctx is cancelled.
+// It reconnects with exponential backoff across consecutive failures, starting
+// over after a session that stayed up (see reconnectBackoff). Blocks until ctx
+// is cancelled.
 func (tc *TunnelClient) Run(ctx context.Context) error {
-	backoff := time.Second
-	maxBackoff := 60 * time.Second
+	backoff := newReconnectBackoff()
 
 	for {
 		select {
@@ -56,22 +73,21 @@ func (tc *TunnelClient) Run(ctx context.Context) error {
 		default:
 		}
 
+		tc.sessionUpAt.Store(0)
 		err := tc.connectAndServe(ctx)
 		if err != nil {
 			log.Printf("[tunnel-client] connection lost: %v", err)
 		}
 
+		// Measured from when the session came up, not from when the attempt
+		// began: an attempt that hung and then failed never had a session.
+		delay := jitterDelay(backoff.next(tc.sessionLasted()))
+		log.Printf("[tunnel-client] reconnecting to %s in %s...", tc.SentinelAddr, delay.Round(100*time.Millisecond))
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-time.After(backoff):
+		case <-time.After(delay):
 		}
-
-		backoff = backoff * 2
-		if backoff > maxBackoff {
-			backoff = maxBackoff
-		}
-		log.Printf("[tunnel-client] reconnecting to %s (backoff: %s)...", tc.SentinelAddr, backoff)
 	}
 }
 
@@ -130,6 +146,7 @@ func (tc *TunnelClient) connectAndServe(ctx context.Context) error {
 	defer func() { _ = session.Close() }()
 
 	log.Printf("[tunnel-client] yamux session established, serving port forwards")
+	tc.sessionUpAt.Store(time.Now().UnixNano())
 
 	// Accept streams from sentinel and proxy to local ports
 	return tc.serveStreams(ctx, session)

@@ -25,8 +25,18 @@ that matters.
    `Fixed`, `Changed`, etc.).
 2. **`pkg/version/version.go`** — bump the `Version` constant to match
    the tag (no `v` prefix, e.g. `"0.48.2"`).
+3. **Only if the skills should move: `pkg/core/sdlcskills/sdlc-skills.lock`** —
+   the SDLC role skills shipped in coding-agent boxes are pinned to a
+   commit of
+   [open-sdlc-skills](https://github.com/FootprintAI/open-sdlc-skills)
+   (it has no tags). Ask "bump the skills pin?" at every cut: if the
+   answer is yes, set `ref` to the new full commit SHA and run
+   `scripts/build-sdlc-skills-bundle.sh --update-lock bin/` to refresh the
+   `sha256`. The release build and the `sdlc-skills-lock` check both
+   rebuild the tarball from the pin and fail on a digest mismatch, so
+   forgetting the digest cannot ship.
 
-That's it — two files, one commit, conventionally messaged
+That's it — two files (three when the skills pin moves), one commit, conventionally messaged
 `chore(release): cut vX.Y.Z — <one-line summary>` (see recent history on
 `main` for the pattern). PR it, get CI green, merge like any other
 change.
@@ -95,7 +105,7 @@ rather than after.
 
 | Workflow | What it publishes | Where | Reversible? |
 | --- | --- | --- | --- |
-| `release.yml` | 14 assets: the CLI for linux/darwin-amd64/darwin-arm64/windows, MCP server and agent-box binaries for linux/darwin-amd64/darwin-arm64, the agent-runtime bundle, the air-gapped install bundle + its `.sha256`, and a generated `SHA256SUMS.txt` | GitHub Release on the tag | Deletable, but anyone who already pulled has it |
+| `release.yml` | 16 assets: the CLI for linux/darwin-amd64/darwin-arm64/windows, MCP server and agent-box binaries for linux/darwin-amd64/darwin-arm64, the agent-runtime bundle, the SDLC skills bundle + its `.sha256` (#2065), the air-gapped install bundle + its `.sha256`, and a generated `SHA256SUMS.txt` | GitHub Release on the tag | Deletable, but anyone who already pulled has it |
 | `containarium-daemon.yml` | Daemon container image | `ghcr.io/footprintai/containarium` | Tag is mutable in principle; treat as published |
 | `sidecars.yml` | `containarium-otel-sidecar`, `containarium-sshpiper`, `containarium-agent-box` images | `ghcr.io` | Same |
 | `distros-py-release.yml` | `containarium-telemetry` Python package | **PyPI** | **No.** PyPI does not allow re-uploading a version, even after deletion |
@@ -110,6 +120,30 @@ v0.48.0 below).
 
 That asymmetry is the reason not to push a tag "to see if the build
 works" — and the reason you don't have to.
+
+### Cross-platform build checks
+
+The released `containarium` client targets Linux/amd64, macOS/amd64,
+macOS/arm64, and Windows/amd64. Build the client with
+`-tags containarium_client`.
+
+The released `agent-box` targets Linux/amd64, macOS/amd64, and macOS/arm64.
+`internal/agentbox` and `cmd/agent-box` use Unix process and file-locking
+APIs and are excluded from Windows builds. Windows clients reach
+`agent-box` on a Linux box over SSH.
+
+Windows validation covers the client, rather than `go build ./...`:
+
+```bash
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build \
+  -tags containarium_client -o /dev/null ./cmd/containarium/
+```
+
+The `cli-split-gates.yml` workflow cross-compiles the Windows client and
+the macOS client and `agent-box` for both amd64 and arm64. It also runs
+the hostcheck, agentbox, and sandbox/dialer tests on Linux and rejects
+agent-box source files enabled for Windows. Cross-compilation checks
+build compatibility; it does not run the binaries on Windows or macOS.
 
 ### Rehearsing a release build without publishing
 

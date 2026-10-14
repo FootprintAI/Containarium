@@ -489,7 +489,7 @@ func (s *ContainerServer) k8sBoxes() (box.BoxBackend, bool) {
 }
 
 // CreateContainer creates a new container
-func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateContainerRequest) (resp *pb.CreateContainerResponse, err error) {
+func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateContainerRequest) (*pb.CreateContainerResponse, error) {
 	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
 		return nil, err
 	}
@@ -499,6 +499,22 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 	}
 	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
 		return nil, err
+	}
+	return s.createContainerAuthorized(ctx, req)
+}
+
+// createContainerAuthorized is CreateContainer after its scope and tenant
+// checks: the validation and provisioning body, for a caller that has
+// already been authorised for req.Username at its own entry point. Today
+// that is only the recipe deploy path (#2504): DeployRecipe checks
+// containers:write, and a skill or crew run checks agents:run / crews:run,
+// each with AuthorizeTenant on the very box name they then hand here. That
+// is what lets an agents:run token provision the skill's own box — the
+// contract scopes.go states for it — without also holding containers:write.
+// Not a gRPC method: nothing on the wire reaches it.
+func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb.CreateContainerRequest) (resp *pb.CreateContainerResponse, err error) {
+	if req.Username == "" {
+		return nil, fmt.Errorf("username is required")
 	}
 	// Audit B-MED-1 / B-MED-2 / B-LOW-1: cap the unbounded
 	// repeated-string / map fields before any allocation-heavy
@@ -640,7 +656,7 @@ func (s *ContainerServer) CreateContainer(ctx context.Context, req *pb.CreateCon
 	// non-admin tenants don't auto-escalate just by setting the flag.
 	enablePodmanPrivileged := false
 	if req.EnablePodman {
-		allowed, err := authorizePrivilegedPodman(ctx)
+		allowed, err := AuthorizePrivilegedPodman(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -2599,6 +2615,19 @@ func (s *ContainerServer) AddSSHKey(ctx context.Context, req *pb.AddSSHKeyReques
 	}
 	if err := auth.AuthorizeTenant(ctx, req.Username); err != nil {
 		return nil, err
+	}
+
+	// Heal a box created before #2489 without SSH keys: it has a container but
+	// no host-side jump account, so AddAuthorizedKey would refuse it forever
+	// ("host user ... does not exist"). The tenant is already authorized above
+	// and the container must exist, so creating the (idempotent) account here
+	// cannot mint accounts for names that are not boxes.
+	if s.manager != nil {
+		if _, gerr := s.manager.Get(req.Username); gerr == nil {
+			if err := container.EnsureJumpServerAccount(req.Username); err != nil {
+				return nil, fmt.Errorf("ensure host account: %w", err)
+			}
+		}
 	}
 
 	if err := container.AddAuthorizedKey(req.Username, req.SshPublicKey); err != nil {
