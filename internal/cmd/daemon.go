@@ -44,6 +44,7 @@ var (
 	daemonPort             int
 	daemonHTTPPort         int
 	runJournalRetention    time.Duration
+	sshAuthzMaxKeyAge      time.Duration
 	enableMTLS             bool
 	enableREST             bool
 	daemonCertsDir         string
@@ -157,6 +158,8 @@ func init() {
 	daemonCmd.Flags().DurationVar(&runJournalRetention, "run-journal-retention", server.DefaultRunJournalRetention,
 		"How long a run's journal (/var/log/agent-runtime/runs/<run_id>) stays on an agent box before the daemon's sweep removes it")
 	daemonCmd.Flags().BoolVar(&enableREST, "rest", true, "Enable HTTP/REST API gateway")
+	daemonCmd.Flags().DurationVar(&sshAuthzMaxKeyAge, "ssh-authz-max-key-age", envDuration("CONTAINARIUM_SSH_AUTHZ_MAX_KEY_AGE", 0),
+		"Self-host SSH authorization: refuse a key registered at least this long ago (KEY_EXPIRED). 0 (default) = no limit. Applies only on a daemon with no cloud enrollment. Env: CONTAINARIUM_SSH_AUTHZ_MAX_KEY_AGE (#2517).")
 
 	// Authentication settings
 	daemonCmd.Flags().StringVar(&jwtSecret, "jwt-secret", "", "JWT secret key for REST API authentication")
@@ -229,6 +232,17 @@ func envFloat(name string, def float64) float64 {
 	if v := os.Getenv(name); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			return f
+		}
+	}
+	return def
+}
+
+// envDuration reads name as a time.Duration, returning def when unset or
+// unparseable.
+func envDuration(name string, def time.Duration) time.Duration {
+	if v := os.Getenv(name); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
 		}
 	}
 	return def
@@ -684,6 +698,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		ZFSTenantRoot:              zfsTenantRoot,
 		ZFSKeysDir:                 zfsKeysDir,
 		RunJournalRetention:        runJournalRetention,
+		SSHAuthzMaxKeyAge:          sshAuthzMaxKeyAge,
 	}
 
 	// Create dual server
