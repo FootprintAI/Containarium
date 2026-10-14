@@ -11,29 +11,33 @@ import (
 	"testing"
 )
 
-// Guards over the sshd AuthorizedKeysCommand drop-in the jump host's startup
-// script installs (#2527). The script writes the drop-in from a heredoc whose
+// Guards over the sshd AuthorizedKeysCommand drop-in the module's startup
+// scripts install (#2527), on the regular VM and on the spot backend. Each
+// script writes the drop-in from a heredoc whose
 // only variable is $SSH_AUTHZ_KEYS_ARGS (the subcommand plus --token-file and,
 // in enforce mode, --enforce); these tests render it both ways.
 
-const jumpHostStartupScript = "../../terraform/modules/containarium/scripts/startup.sh"
+var sshAuthzStartupScripts = []string{
+	"../../terraform/modules/containarium/scripts/startup.sh",
+	"../../terraform/modules/containarium/scripts/startup-spot.sh",
+}
 
-func readJumpHostStartupScript(t *testing.T) string {
+func readStartupScript(t *testing.T, path string) string {
 	t.Helper()
-	b, err := os.ReadFile(jumpHostStartupScript)
+	b, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read %s: %v", jumpHostStartupScript, err)
+		t.Fatalf("read %s: %v", path, err)
 	}
 	return string(b)
 }
 
 // renderSSHAuthzDropIn returns the drop-in exactly as the script writes it,
 // for audit-only (enforce=false) or enforce mode.
-func renderSSHAuthzDropIn(t *testing.T, enforce bool) string {
+func renderSSHAuthzDropIn(t *testing.T, script string, enforce bool) string {
 	t.Helper()
-	m := regexp.MustCompile(`(?s)<<SSHAUTHZEOF\n(.*?)\nSSHAUTHZEOF`).FindStringSubmatch(readJumpHostStartupScript(t))
+	m := regexp.MustCompile(`(?s)<<SSHAUTHZEOF\n(.*?)\nSSHAUTHZEOF`).FindStringSubmatch(readStartupScript(t, script))
 	if m == nil {
-		t.Fatal("found no SSHAUTHZEOF drop-in in the startup script — these guards would pass vacuously")
+		t.Fatalf("found no SSHAUTHZEOF drop-in in %s — these guards would pass vacuously", script)
 	}
 	args := "ssh-authz-keys --token-file /etc/containarium-authz/ssh-authz-keys.token"
 	if enforce {
@@ -60,8 +64,14 @@ func sshdDirectives(body string) map[string]string {
 }
 
 func TestSSHAuthzDropIn_RendersTheKeysCommand(t *testing.T) {
+	for _, script := range sshAuthzStartupScripts {
+		t.Run(filepath.Base(script), func(t *testing.T) { checkSSHAuthzKeysCommand(t, script) })
+	}
+}
+
+func checkSSHAuthzKeysCommand(t *testing.T, script string) {
 	for _, enforce := range []bool{false, true} {
-		body := renderSSHAuthzDropIn(t, enforce)
+		body := renderSSHAuthzDropIn(t, script, enforce)
 		if strings.Contains(body, "\nMatch ") || strings.HasPrefix(body, "Match ") {
 			t.Errorf("enforce=%v: drop-in has a Match block (#1137):\n%s", enforce, body)
 		}
@@ -102,7 +112,12 @@ func TestSSHAuthzDropIn_RendersTheKeysCommand(t *testing.T) {
 
 // Opt-in, validated, and never touching the static authorized_keys path.
 func TestSSHAuthzDropIn_InstallIsOptInAndValidated(t *testing.T) {
-	script := readJumpHostStartupScript(t)
+	for _, path := range sshAuthzStartupScripts {
+		t.Run(filepath.Base(path), func(t *testing.T) { checkSSHAuthzInstall(t, readStartupScript(t, path)) })
+	}
+}
+
+func checkSSHAuthzInstall(t *testing.T, script string) {
 	start := strings.Index(script, `if [ "$SSH_AUTHZ_KEYS_COMMAND" = "true" ]; then`)
 	if start < 0 {
 		t.Fatal("the AuthorizedKeysCommand install is not gated on ssh_authz_keys_command")
@@ -136,18 +151,20 @@ func TestSSHAuthzDropIn_ParsesUnderRealSSHD(t *testing.T) {
 	if out, err := exec.Command(keygen, "-q", "-t", "ed25519", "-f", hostKey, "-N", "").CombinedOutput(); err != nil {
 		t.Skipf("ssh-keygen failed (%v): %s", err, out)
 	}
-	for _, enforce := range []bool{false, true} {
-		dropIn := filepath.Join(dir, "containarium-ssh-authz.conf")
-		if err := os.WriteFile(dropIn, []byte(renderSSHAuthzDropIn(t, enforce)+"\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		main := filepath.Join(dir, "sshd_config")
-		cfg := "Include " + dropIn + "\nHostKey " + hostKey + "\nUsePAM yes\n"
-		if err := os.WriteFile(main, []byte(cfg), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if out, err := exec.Command(sshd, "-t", "-f", main).CombinedOutput(); err != nil {
-			t.Errorf("enforce=%v: sshd rejected the drop-in:\n%s", enforce, out)
+	for _, script := range sshAuthzStartupScripts {
+		for _, enforce := range []bool{false, true} {
+			dropIn := filepath.Join(dir, "containarium-ssh-authz.conf")
+			if err := os.WriteFile(dropIn, []byte(renderSSHAuthzDropIn(t, script, enforce)+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			main := filepath.Join(dir, "sshd_config")
+			cfg := "Include " + dropIn + "\nHostKey " + hostKey + "\nUsePAM yes\n"
+			if err := os.WriteFile(main, []byte(cfg), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if out, err := exec.Command(sshd, "-t", "-f", main).CombinedOutput(); err != nil {
+				t.Errorf("%s enforce=%v: sshd rejected the drop-in:\n%s", filepath.Base(script), enforce, out)
+			}
 		}
 	}
 }

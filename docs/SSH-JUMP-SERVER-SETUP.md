@@ -333,7 +333,8 @@ module "containarium" {
 }
 ```
 
-The startup script then:
+The variables apply to both the regular VM (`startup.sh`) and the spot
+backend (`startup-spot.sh`). The startup script then:
 
 - creates `containarium-authz`, a dedicated unprivileged
   `AuthorizedKeysCommandUser`;

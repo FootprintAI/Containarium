@@ -180,6 +180,8 @@ resource "google_compute_instance" "jump_server_spot" {
       dns_passthrough_hosts        = var.dns_passthrough_hosts
       ssh_host                     = var.ssh_host
       zfs_encryption_keyfile       = var.zfs_encryption_keyfile
+      ssh_authz_keys_command       = var.ssh_authz_keys_command
+      ssh_authz_keys_enforce       = var.ssh_authz_keys_enforce
     })
   }
 

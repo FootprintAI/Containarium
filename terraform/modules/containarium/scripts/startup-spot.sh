@@ -23,6 +23,8 @@ ENABLE_MONITORING="${enable_monitoring}"
 USE_PERSISTENT_DISK="${use_persistent_disk}"
 FAIL2BAN_WHITELIST="${fail2ban_whitelist_cidr}"
 JWT_SECRET="${jwt_secret}"
+SSH_AUTHZ_KEYS_COMMAND="${ssh_authz_keys_command}"
+SSH_AUTHZ_KEYS_ENFORCE="${ssh_authz_keys_enforce}"
 # When non-empty, the data-disk ZFS pool is created with native
 # encryption=on, keyformat=raw, keylocation=file://$ZFS_ENCRYPTION_KEYFILE.
 # The keyfile is generated on first boot if missing (32 random bytes,
@@ -980,6 +982,74 @@ EOF
 else
     echo "⚠ Containarium binary not found, service not started"
     echo "  Install binary manually and run: containarium service install"
+fi
+
+# SSH live authorization for direct logins to this backend (#2527).
+# Opt-in (ssh_authz_keys_command): an upgrade changes nothing until an
+# operator enables it. sshd's AuthorizedKeysCommand asks the local daemon
+# (containarium ssh-authz-keys -> SSHAuthzService.Authorize) about every key
+# offered on a login to this host.
+#   - containarium-authz is the dedicated unprivileged AuthorizedKeysCommandUser.
+#   - Its JWT carries only ssh:authorize, is minted here from the local JWT
+#     secret, and is readable only by that account. The sentinel secret is
+#     never exposed to it.
+#   - The daemon accepts that token only with --ssh-authz-keys-command
+#     (CONTAINARIUM_SSH_AUTHZ_KEYS_COMMAND), set below.
+# The static authorized_keys files stay as they are: they are the sentinel's
+# upstream path.
+SSH_AUTHZ_DIR="/etc/containarium-authz"
+SSH_AUTHZ_TOKEN="$SSH_AUTHZ_DIR/ssh-authz-keys.token"
+SSH_AUTHZ_DROPIN="/etc/ssh/sshd_config.d/containarium-ssh-authz.conf"
+if [ "$SSH_AUTHZ_KEYS_COMMAND" = "true" ]; then
+    if [ ! -f /usr/local/bin/containariumd ]; then
+        echo "⚠ ssh_authz_keys_command is set but the Containarium binary is missing — AuthorizedKeysCommand not installed"
+    else
+        echo "==> Enabling sshd AuthorizedKeysCommand (ssh-authz-keys)..."
+        if ! id containarium-authz &>/dev/null; then
+            useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin containarium-authz
+        fi
+        install -d -m 0750 -o root -g containarium-authz "$SSH_AUTHZ_DIR"
+        (
+            umask 077
+            /usr/local/bin/containariumd token generate \
+                --username containarium-authz --roles "" --scopes ssh:authorize \
+                --token-type access --expiry 0 \
+                --secret-file /etc/containarium/jwt.secret --raw > "$SSH_AUTHZ_TOKEN"
+        )
+        chown containarium-authz:containarium-authz "$SSH_AUTHZ_TOKEN"
+        chmod 0400 "$SSH_AUTHZ_TOKEN"
+
+        mkdir -p /etc/systemd/system/containarium.service.d
+        cat > /etc/systemd/system/containarium.service.d/ssh-authz-keys.conf <<'EOF'
+[Service]
+Environment=CONTAINARIUM_SSH_AUTHZ_KEYS_COMMAND=true
+EOF
+        chmod 0644 /etc/systemd/system/containarium.service.d/ssh-authz-keys.conf
+        systemctl daemon-reload
+        systemctl restart containarium.service
+
+        SSH_AUTHZ_KEYS_ARGS="ssh-authz-keys --token-file $SSH_AUTHZ_TOKEN"
+        if [ "$SSH_AUTHZ_KEYS_ENFORCE" = "true" ]; then
+            SSH_AUTHZ_KEYS_ARGS="$SSH_AUTHZ_KEYS_ARGS --enforce"
+        fi
+        # Global directives, no Match block (#1137).
+        cat > "$SSH_AUTHZ_DROPIN" <<SSHAUTHZEOF
+# Containarium SSH live authorization for direct logins (#2527)
+AuthorizedKeysCommand /usr/local/bin/containariumd $SSH_AUTHZ_KEYS_ARGS %u %f %t %k
+AuthorizedKeysCommandUser containarium-authz
+SSHAUTHZEOF
+        chmod 0644 "$SSH_AUTHZ_DROPIN"
+        # Validate before restarting: a bad drop-in must fail the install,
+        # not take sshd down on its next restart (#1137).
+        SSHD_BIN="$(command -v sshd || echo /usr/sbin/sshd)"
+        if "$SSHD_BIN" -t; then
+            systemctl restart sshd
+            echo "✓ sshd AuthorizedKeysCommand enabled ($SSH_AUTHZ_DROPIN)"
+        else
+            rm -f "$SSH_AUTHZ_DROPIN"
+            echo "⚠ sshd rejected $SSH_AUTHZ_DROPIN — removed it; AuthorizedKeysCommand not enabled"
+        fi
+    fi
 fi
 
 # Set up logrotate
