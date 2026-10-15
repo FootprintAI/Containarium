@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.104.0] - 2026-10-15
+
+_The SSH authorization contract and a self-hosted decider with an `ssh_keys` registry, best-effort macOS 11 client builds, and a fix that lets the OpenVAS module drive a real scanner box._
+
 ### Fixed
 
 - **OpenVAS module could not run `gvm-cli`, and reported a false critical on every box** (#2426). `gvm-cli` refuses to run as root and `incus exec` starts as root, so the module now runs it as the `_gvm` service user (HOME set to the openvas state directory, where `gvm-tools.conf` lives). Results from the "Report outdated / end-of-life Scan Engine" NVT are dropped: they score CVSS 10 but describe the scanner's own packaging, not the scanned box. `docs/OPENVAS-SCANNING.md` now lists the scanner box requirements.
