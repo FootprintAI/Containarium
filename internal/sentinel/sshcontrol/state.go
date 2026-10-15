@@ -122,6 +122,9 @@ func (c *Controller) persist() (err error) {
 			b.NextProbeAt = timestamppb.New(s.Next)
 		}
 		for _, r := range s.Risks {
+			if r.Cost < 1 || r.Cost > 65536 {
+				return errors.New("checkpoint risk outside validated policy bounds")
+			}
 			b.Risks = append(b.Risks, &pb.SSHUpstreamRisk{At: timestamppb.New(r.At), Cost: uint32(r.Cost)})
 		}
 		snapshot.Backends = append(snapshot.Backends, b)

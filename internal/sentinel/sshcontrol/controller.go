@@ -392,7 +392,7 @@ func (c *Controller) ConsumeSSHUpstreamFailure(_ context.Context, r *pb.ConsumeS
 	if err != nil {
 		return nil, err
 	}
-	count := true
+	var count bool
 	switch r.Kind {
 	case pb.SSHUpstreamFailureKind_SSH_UPSTREAM_FAILURE_KIND_AUTH:
 		count = !s.authSkip
