@@ -18,11 +18,16 @@ ExecStart=/usr/local/bin/sshpiperd \
   --records-file /var/log/containarium/ssh-sessions.jsonl \
   --sshpiper-config /etc/sshpiper/config.yaml \
   -- \
-  yaml \
-  --config /etc/sshpiper/config.yaml \
+  /usr/local/bin/containariumd sentinel ssh-upstream-plugin \
+  --listener main \
+  --upstream-control-socket /run/containarium/ssh-upstream/control.sock \
+  --plugin /usr/local/bin/yaml \
+  --plugin-arg=--config \
+  --plugin-arg=/etc/sshpiper/config.yaml \
   -- \
   /usr/local/bin/containariumd sentinel ssh-ban-plugin \
   --listener main \
+  --upstream-control-socket /run/containarium/ssh-upstream/control.sock \
   --max-failures ${ssh_ban_max_failures} \
 %{ for prefix in ssh_ban_ignore_cidrs ~}
   --ignore-ip ${prefix} \

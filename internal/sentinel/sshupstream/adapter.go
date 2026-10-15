@@ -5,13 +5,17 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
 	"os"
 	"sync"
+	"syscall"
 	"time"
 
+	"github.com/footprintai/containarium/internal/sentinel/sshcontrol"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/tg123/sshpiper/libplugin"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
@@ -28,12 +32,16 @@ type Dial func(context.Context, Attempt) (net.Conn, error)
 
 // binding is a one-use capability created only after the child selects a route.
 type binding struct {
-	attempt Attempt
-	expires time.Time
-	host    string
-	keys    []byte
-	verify  ssh.HostKeyCallback
-	conn    net.Conn
+	attempt      Attempt
+	expires      time.Time
+	host         string
+	keys         []byte
+	verify       ssh.HostKeyCallback
+	conn         net.Conn
+	ref          *pb.SSHUpstreamConnection
+	route, lease string
+	proxy        bool
+	timer        *time.Timer
 }
 
 // adapter owns bounded capabilities, never the child's authorization policy.
@@ -44,11 +52,13 @@ type adapter struct {
 	bindings      map[string]binding
 	setups        map[string]binding
 	childVerifier bool
+	control       *sshcontrol.Peer
+	routes        map[string]routeRef
 }
 
 // NewAdapter wraps the pinned routing contract and adds an attempt-correlated
 // transport callback. Unknown child capabilities fail closed at startup.
-func NewAdapter(ctx context.Context, child libplugin.SshPiperPluginClient, dial Dial) (libplugin.SshPiperPluginConfig, error) {
+func NewAdapter(ctx context.Context, child libplugin.SshPiperPluginClient, dial Dial, options ...Option) (libplugin.SshPiperPluginConfig, error) {
 	cfg := libplugin.SshPiperPluginConfig{}
 	if child == nil || dial == nil {
 		return cfg, fmt.Errorf("router and transport dialer are required")
@@ -69,9 +79,21 @@ func NewAdapter(ctx context.Context, child libplugin.SshPiperPluginClient, dial 
 		}
 	}
 	a := &adapter{ctx: ctx, dial: dial, bindings: make(map[string]binding), setups: make(map[string]binding), childVerifier: caps["VerifyHostKey"]}
+	a.routes = make(map[string]routeRef)
+	for _, option := range options {
+		option(a)
+	}
 	cfg.CreateConnCallback = a.connect
-	if caps["NewConnection"] {
+	if caps["NewConnection"] || a.control != nil {
 		cfg.NewConnectionCallback = func(c libplugin.ConnMetadata) error {
+			if a.control != nil {
+				if _, err := a.control.Open(ctx, c.UniqueID(), c.RemoteAddr()); err != nil {
+					return err
+				}
+			}
+			if !caps["NewConnection"] {
+				return nil
+			}
 			_, err := child.NewConnection(ctx, &libplugin.NewConnectionRequest{Meta: metadata(c)})
 			return err
 		}
@@ -95,6 +117,9 @@ func NewAdapter(ctx context.Context, child libplugin.SshPiperPluginClient, dial 
 	}
 	if caps["NoneAuth"] {
 		cfg.NoClientAuthCallback = func(c libplugin.ConnMetadata) (*libplugin.Upstream, error) {
+			if err := a.begin(c); err != nil {
+				return nil, err
+			}
 			r, err := child.NoneAuth(ctx, &libplugin.NoneAuthRequest{Meta: metadata(c)})
 			if err != nil {
 				return nil, err
@@ -104,6 +129,9 @@ func NewAdapter(ctx context.Context, child libplugin.SshPiperPluginClient, dial 
 	}
 	if caps["PublicKeyAuth"] {
 		cfg.PublicKeyCallback = func(c libplugin.ConnMetadata, key []byte) (*libplugin.Upstream, error) {
+			if err := a.begin(c); err != nil {
+				return nil, err
+			}
 			r, err := child.PublicKeyAuth(ctx, &libplugin.PublicKeyAuthRequest{Meta: metadata(c), PublicKey: key})
 			if err != nil {
 				return nil, err
@@ -113,6 +141,9 @@ func NewAdapter(ctx context.Context, child libplugin.SshPiperPluginClient, dial 
 	}
 	if caps["PasswordAuth"] {
 		cfg.PasswordCallback = func(c libplugin.ConnMetadata, password []byte) (*libplugin.Upstream, error) {
+			if err := a.begin(c); err != nil {
+				return nil, err
+			}
 			r, err := child.PasswordAuth(ctx, &libplugin.PasswordAuthRequest{Meta: metadata(c), Password: password})
 			if err != nil {
 				return nil, err
@@ -122,6 +153,9 @@ func NewAdapter(ctx context.Context, child libplugin.SshPiperPluginClient, dial 
 	}
 	if caps["KeyboardInteractiveAuth"] {
 		cfg.KeyboardInteractiveCallback = func(c libplugin.ConnMetadata, challenge libplugin.KeyboardInteractiveChallenge) (*libplugin.Upstream, error) {
+			if err := a.begin(c); err != nil {
+				return nil, err
+			}
 			stream, err := child.KeyboardInteractiveAuth(ctx)
 			if err != nil {
 				return nil, err
@@ -174,13 +208,18 @@ func NewAdapter(ctx context.Context, child libplugin.SshPiperPluginClient, dial 
 	}
 	// ConnOverGrpc reports a URI as RemoteAddr; restore the selected endpoint
 	// and actual socket identity before either existing verification path.
-	cfg.VerifyHostKeyCallback = func(c libplugin.ConnMetadata, hostname, _ string, key []byte) error {
+	cfg.VerifyHostKeyCallback = func(c libplugin.ConnMetadata, hostname, _ string, key []byte) (verifyErr error) {
 		a.mu.Lock()
 		b, ok := a.setups[c.UniqueID()]
 		a.mu.Unlock()
 		if !ok || b.conn == nil || hostname != b.host || c.RemoteAddr() != b.attempt.RemoteAddr || !time.Now().Before(b.expires) {
 			return fmt.Errorf("host verification has no matching active attempt")
 		}
+		defer func() {
+			if verifyErr != nil && a.control != nil {
+				a.finish(c.UniqueID(), "", pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_HOST_KEY_FAILED)
+			}
+		}()
 		if caps["VerifyHostKey"] {
 			verifyCtx, cancel := context.WithDeadline(ctx, b.expires)
 			defer cancel()
@@ -205,7 +244,7 @@ func NewAdapter(ctx context.Context, child libplugin.SshPiperPluginClient, dial 
 	cfg.UpstreamAuthFailureCallback = func(c libplugin.ConnMetadata, method string, failure error, allowed []string) {
 		// A failed upstream is no longer a pending setup. In particular, a
 		// corrected downstream password must be able to select another attempt.
-		a.finish(c.UniqueID(), "", false)
+		a.finish(c.UniqueID(), "", pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_PROXY_AUTH_REJECTED)
 		if caps["UpstreamAuthFailure"] {
 			methods := make([]libplugin.AuthMethod, 0, len(allowed))
 			for _, name := range allowed {
@@ -215,7 +254,10 @@ func NewAdapter(ctx context.Context, child libplugin.SshPiperPluginClient, dial 
 		}
 	}
 	cfg.PipeStartCallback = func(c libplugin.ConnMetadata) {
-		a.finish(c.UniqueID(), "", true)
+		a.finish(c.UniqueID(), "", pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_SSH_READY)
+		if a.control != nil {
+			a.control.Forget(c.UniqueID())
+		}
 		if caps["PipeStart"] {
 			_, _ = child.PipeStartNotice(ctx, &libplugin.PipeStartNoticeRequest{Meta: metadata(c)})
 		}
@@ -226,7 +268,15 @@ func NewAdapter(ctx context.Context, child libplugin.SshPiperPluginClient, dial 
 		}
 	}
 	cfg.PipeCreateErrorCallback = func(remote string, err error) {
-		a.finish("", remote, false)
+		a.finish("", remote, pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_SETUP_FAILED)
+		if a.control != nil {
+			if ref := a.control.ByRemote(remote); ref != nil {
+				a.control.Forget(ref.ConnectionId)
+				a.mu.Lock()
+				delete(a.routes, ref.ConnectionId)
+				a.mu.Unlock()
+			}
+		}
 		if caps["PipeCreateError"] {
 			_, _ = child.PipeCreateErrorNotice(ctx, &libplugin.PipeCreateErrorNoticeRequest{FromAddr: remote, Error: err.Error()})
 		}
@@ -286,6 +336,13 @@ func (a *adapter) bind(c libplugin.ConnMetadata, u *libplugin.Upstream) (*libplu
 		}
 	}
 	b := binding{attempt: Attempt{ID: id, ConnectionID: c.UniqueID(), RemoteAddr: c.RemoteAddr(), URI: uri}, expires: time.Now().Add(30 * time.Second), host: parsed.Host, keys: bytes.Clone(u.GetKnownHostsData()), verify: verify}
+	if a.control != nil {
+		route, ok := a.routes[c.UniqueID()]
+		if !ok || route.ref.RemoteAddr != c.RemoteAddr() {
+			return nil, fmt.Errorf("selected upstream has no guarded route")
+		}
+		b.ref, b.route, b.proxy = route.ref, route.token, u.GetPrivateKey() != nil
+	}
 	for connection, old := range a.setups {
 		if !time.Now().Before(old.expires) {
 			delete(a.setups, connection)
@@ -334,8 +391,30 @@ func (a *adapter) connect(uri string) (net.Conn, error) {
 	if !ok || !time.Now().Before(b.expires) {
 		return nil, fmt.Errorf("unknown or expired routing attempt")
 	}
-	conn, err := a.dial(a.ctx, b.attempt)
+	if a.control != nil {
+		ctx, cancel := sshcontrol.CallContext(a.ctx)
+		r, err := a.control.Client.AcquireSSHUpstream(ctx, &pb.AcquireSSHUpstreamRequest{Connection: b.ref, RouteToken: b.route, AttemptId: b.attempt.ID, Endpoint: b.host, ProxyCredential: b.proxy})
+		cancel()
+		if err != nil {
+			return nil, err
+		}
+		if !r.Admitted {
+			return nil, fmt.Errorf("backend SSH admission deferred: %s", r.Reason)
+		}
+		b.lease, b.expires = r.LeaseToken, r.GetDeadline().AsTime()
+		a.mu.Lock()
+		a.setups[b.attempt.ConnectionID] = b
+		a.mu.Unlock()
+	}
+	dialCtx, cancel := context.WithDeadline(a.ctx, b.expires)
+	conn, err := a.dial(dialCtx, b.attempt)
+	cancel()
 	if err != nil {
+		outcome := pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_CONNECT_FAILED
+		if errors.Is(err, syscall.ECONNREFUSED) {
+			outcome = pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_TCP_REFUSED
+		}
+		a.finish(b.attempt.ConnectionID, "", outcome)
 		return nil, err
 	}
 	if err := conn.SetDeadline(b.expires); err != nil {
@@ -346,6 +425,9 @@ func (a *adapter) connect(uri string) (net.Conn, error) {
 	active, ok := a.setups[b.attempt.ConnectionID]
 	if ok && active.attempt.ID == b.attempt.ID && time.Now().Before(active.expires) {
 		active.conn = conn
+		if a.control != nil {
+			active.timer = time.AfterFunc(time.Until(active.expires), func() { _ = conn.Close() })
+		}
 		a.setups[b.attempt.ConnectionID] = active
 	}
 	a.mu.Unlock()
@@ -358,14 +440,37 @@ func (a *adapter) connect(uri string) (net.Conn, error) {
 
 // finish releases only the pending setup; successful sessions keep their socket
 // and lose the setup deadline. Failed or expired setups never become sessions.
-func (a *adapter) finish(connection, remote string, ready bool) {
+func (a *adapter) finish(connection, remote string, outcome pb.SSHUpstreamOutcome) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
+	var finished []binding
 	for id, b := range a.setups {
 		if id != connection && (remote == "" || b.attempt.RemoteAddr != remote) {
 			continue
 		}
 		delete(a.setups, id)
+		for uri, pending := range a.bindings {
+			if pending.attempt.ID == b.attempt.ID {
+				delete(a.bindings, uri)
+			}
+		}
+		finished = append(finished, b)
+	}
+	a.mu.Unlock()
+	for _, b := range finished {
+		ready := outcome == pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_SSH_READY
+		result := outcome
+		if result == pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_PROXY_AUTH_REJECTED && !b.proxy {
+			result = pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_CLIENT_AUTH_REJECTED
+		}
+		if result == pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_SETUP_FAILED && !time.Now().Before(b.expires) {
+			result = pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_CONNECT_FAILED
+		}
+		if a.control != nil && b.lease != "" {
+			ready = a.report(b, result) && ready
+		}
+		if b.timer != nil {
+			b.timer.Stop()
+		}
 		if b.conn != nil {
 			if ready && time.Now().Before(b.expires) {
 				_ = b.conn.SetDeadline(time.Time{})

@@ -66,6 +66,7 @@ resource "google_compute_instance" "sentinel" {
     # never reached already-running sentinels (issue #933) — some sentinels
     # kept running months-stale, far more aggressive settings indefinitely.
     sshpiper-service-unit = local.sshpiper_service_unit
+    ssh-upstream-policy   = local.ssh_upstream_policy_json
     # The anonymous-box door's unit, same live-metadata reconcile as above
     # (#2198). Present only when the door is configured; the startup script
     # treats an absent key as "disable and remove the unit".

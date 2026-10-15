@@ -208,6 +208,34 @@ fi
 # values ARE fetchable live at any time via the metadata server, so this
 # function is installed as a periodic systemd timer (below) in addition to
 # running here at boot — the SAME source of truth both times, no drift.
+reconcile_ssh_upstream_control() {
+    policy="$(curl -fsS -H 'Metadata-Flavor: Google' \
+        'http://metadata.google.internal/computeMetadata/v1/instance/attributes/ssh-upstream-policy')" || return 1
+    install -d -m 0700 /etc/containarium/ssh-upstream
+    install -d -m 0755 /etc/systemd/system/containarium-sentinel.service.d
+    dropin=/etc/systemd/system/containarium-sentinel.service.d/ssh-upstream.conf
+    changed=false
+    if [ ! -f /etc/containarium/ssh-upstream/policy.json ] || [ "$(cat /etc/containarium/ssh-upstream/policy.json)" != "$policy" ]; then
+        printf '%s' "$policy" > /etc/containarium/ssh-upstream/policy.json
+        chmod 0600 /etc/containarium/ssh-upstream/policy.json
+        changed=true
+    fi
+    if [ ! -f "$dropin" ]; then
+        printf '%s\n' '[Service]' 'Environment=CONTAINARIUM_SSH_UPSTREAM_POLICY=/etc/containarium/ssh-upstream/policy.json' > "$dropin"
+        changed=true
+    fi
+    if [ "$changed" = true ]; then
+        systemctl daemon-reload
+        if systemctl is-active --quiet containarium-sentinel; then
+            systemctl restart containarium-sentinel
+        fi
+    fi
+}
+
+# The periodic reconciler uses this same function before switching either router.
+declare -f reconcile_ssh_upstream_control > /usr/local/bin/reconcile-ssh-upstream-control.sh
+reconcile_ssh_upstream_control
+
 reconcile_sshpiper_service() {
     desired="$(curl -fsS -H 'Metadata-Flavor: Google' \
         'http://metadata.google.internal/computeMetadata/v1/instance/attributes/sshpiper-service-unit')" || {
@@ -315,6 +343,8 @@ chmod 0644 /etc/logrotate.d/containarium-ssh-sessions
 cat > /usr/local/bin/reconcile-sshpiper-service.sh <<'RECONCILE_EOF'
 #!/bin/bash
 set -euo pipefail
+source /usr/local/bin/reconcile-ssh-upstream-control.sh
+reconcile_ssh_upstream_control
 desired="$(curl -fsS -H 'Metadata-Flavor: Google' \
     'http://metadata.google.internal/computeMetadata/v1/instance/attributes/sshpiper-service-unit')" || exit 0
 if [ -f /etc/systemd/system/sshpiper.service ] && [ "$(cat /etc/systemd/system/sshpiper.service)" = "$desired" ]; then
@@ -335,6 +365,8 @@ chmod +x /usr/local/bin/reconcile-sshpiper-service.sh
 cat > /usr/local/bin/reconcile-sshpiper-anon-service.sh <<'RECONCILE_EOF'
 #!/bin/bash
 set -euo pipefail
+source /usr/local/bin/reconcile-ssh-upstream-control.sh
+reconcile_ssh_upstream_control
 unit=/etc/systemd/system/sshpiper-anon.service
 code="$(curl -sS -o /tmp/sshpiper-anon.unit -w '%%{http_code}' -H 'Metadata-Flavor: Google' \
     'http://metadata.google.internal/computeMetadata/v1/instance/attributes/sshpiper-anon-service-unit')" || exit 0

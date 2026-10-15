@@ -31,6 +31,8 @@ const (
 	SetupFailed
 	// ProxyAuthRejected identifies rejection of the configured proxy credential.
 	ProxyAuthRejected
+	// ClientAuthRejected retains jail risk without declaring a healthy backend down.
+	ClientAuthRejected
 )
 
 // Lease binds one admitted setup to its route, incident and absolute deadline.
@@ -190,7 +192,7 @@ func (g *Gate) Acquire(key Key, route uint64, cost int) (Lease, error) {
 func (g *Gate) Complete(l Lease, outcome Outcome) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if outcome < SetupSucceeded || outcome > ProxyAuthRejected {
+	if outcome < SetupSucceeded || outcome > ClientAuthRejected {
 		return false
 	}
 	e := g.entries[l.Key]
@@ -204,8 +206,11 @@ func (g *Gate) Complete(l Lease, outcome Outcome) bool {
 		return false
 	}
 	delete(e.pending, l.ID)
-	if outcome == SetupFailed || outcome == ProxyAuthRejected {
+	if outcome == SetupFailed || outcome == ProxyAuthRejected || outcome == ClientAuthRejected {
 		e.charges = append(e.charges, charge{at: now, cost: r.cost})
+	}
+	if outcome == ClientAuthRejected && !l.Probe {
+		return true
 	}
 	g.settle(e, r, outcome == SetupSucceeded, now)
 	return true

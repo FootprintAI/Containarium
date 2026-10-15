@@ -72,6 +72,8 @@ type Config struct {
 	HTTPClient *http.Client
 	// Logf receives one line per decision; nil = silent.
 	Logf func(format string, args ...any)
+	// RegisterRoute commits the actual daemon response to private upstream control.
+	RegisterRoute func(libplugin.ConnMetadata, *pb.EnsureAnonymousBoxResponse) error
 }
 
 // Plugin builds the sshpiperd callbacks.
@@ -155,6 +157,11 @@ func (p *Plugin) publicKeyCallback(conn libplugin.ConnMetadata, key []byte) (*li
 	if err != nil {
 		p.cfg.Logf("[anondoor] %s from %s: box %s ready but upstream key unreadable: %v", fp, ip, res.GetBoxName(), err)
 		return nil, fmt.Errorf("anonymous box: upstream key: %w", err)
+	}
+	if p.cfg.RegisterRoute != nil {
+		if err := p.cfg.RegisterRoute(conn, res); err != nil {
+			return nil, err
+		}
 	}
 	p.cfg.Logf("[anondoor] %s from %s: box %s at %s:%d user %s (reused=%v previous_expired=%v)",
 		fp, ip, res.GetBoxName(), res.GetSshHost(), res.GetSshPort(), res.GetSshUser(), res.GetReused(), res.GetPreviousExpired())

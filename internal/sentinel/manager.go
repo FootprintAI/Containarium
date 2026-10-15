@@ -22,6 +22,7 @@ import (
 
 	"github.com/footprintai/containarium/internal/auth"
 	appconfig "github.com/footprintai/containarium/internal/config"
+	"github.com/footprintai/containarium/internal/sentinel/sshcontrol"
 	"github.com/footprintai/containarium/pkg/core/pki"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -42,6 +43,10 @@ var sentinelDialer = &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 15 * time.
 
 // Config holds the sentinel configuration.
 type Config struct {
+	// SSHUpstreamPolicy enables the shared private upstream controller when set.
+	SSHUpstreamPolicy  string
+	SSHUpstreamState   string
+	SSHUpstreamSocket  string
 	HealthPort         int
 	CheckInterval      time.Duration
 	HTTPPort           int
@@ -114,6 +119,7 @@ type Config struct {
 type Manager struct {
 	// sshBanSockets overrides local plugin endpoints in isolated tests.
 	sshBanSockets map[pb.SSHBanListener]string
+	sshUpstream   *sshcontrol.Controller
 	config        Config
 	provider      CloudProvider // primary provider (GCP in hybrid mode)
 
@@ -806,6 +812,11 @@ func (m *Manager) PrimariesHandler() http.HandlerFunc {
 
 // Run is the main loop. Blocks until ctx is cancelled.
 func (m *Manager) Run(ctx context.Context) error {
+	stopUpstream, err := m.startSSHUpstream()
+	if err != nil {
+		return fmt.Errorf("SSH upstream controller: %w", err)
+	}
+	defer stopUpstream()
 	log.Printf("[sentinel] starting (check-interval=%s, health-port=%d, forwarded-ports=%v, hybrid=%v)",
 		m.config.CheckInterval, m.config.HealthPort, m.config.ForwardedPorts, m.config.HybridMode)
 
@@ -975,6 +986,11 @@ func (m *Manager) healthCheckAll(ctx context.Context) {
 			if b.healthyCount >= m.config.HealthyThreshold && !b.Healthy {
 				b.Healthy = true
 				m.recordBackendHealth(b.ID, true)
+				if m.sshUpstream != nil {
+					if _, err := m.sshUpstream.HintSSHUpstreamRecovery(ctx, &pb.HintSSHUpstreamRecoveryRequest{BackendId: b.ID}); err != nil {
+						log.Printf("[sentinel] SSH recovery hint: %v", err)
+					}
+				}
 				log.Printf("[sentinel] backend %s (%s) is healthy", b.ID, b.IP)
 			}
 		} else {

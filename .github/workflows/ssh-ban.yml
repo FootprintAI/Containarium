@@ -6,6 +6,7 @@ on:
       - 'internal/sentinel/**'
       - 'internal/cmd/sentinel_ssh_*'
       - 'proto/containarium/v1/ssh_ban.proto'
+      - 'proto/containarium/v1/ssh_upstream.proto'
       - 'terraform/modules/containarium/**'
       - 'scripts/test-ssh-ban-templates.sh'
       - 'go.mod'
@@ -17,6 +18,7 @@ on:
       - 'internal/sentinel/**'
       - 'internal/cmd/sentinel_ssh_*'
       - 'proto/containarium/v1/ssh_ban.proto'
+      - 'proto/containarium/v1/ssh_upstream.proto'
       - 'terraform/modules/containarium/**'
       - 'scripts/test-ssh-ban-templates.sh'
       - 'go.mod'
@@ -32,6 +34,59 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  guarded-upstream-firewall:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.9'
+      - name: Install actual SSH, jail, tracing and isolated firewall tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y openssh-server fail2ban strace iptables iproute2
+          sudo mkdir -p /run/sshd
+      - name: Build production artifact and pinned upstream tools
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/ssh-upstream-proof"
+          gh release download v1.6.1 --repo tg123/sshpiper \
+            --pattern sshpiperd_with_plugins_linux_x86_64.tar.gz --dir "$RUNNER_TEMP/ssh-upstream-proof"
+          tar -xzf "$RUNNER_TEMP/ssh-upstream-proof/sshpiperd_with_plugins_linux_x86_64.tar.gz" \
+            -C "$RUNNER_TEMP/ssh-upstream-proof" sshpiperd plugins/yaml
+          go build -o "$RUNNER_TEMP/ssh-upstream-proof/containariumd" ./cmd/containariumd
+          go test -race -tags integration,sshfirewall -c \
+            -o "$RUNNER_TEMP/ssh-upstream-proof/firewall.test" ./internal/sentinel/sshban
+          dpkg-query -W openssh-server fail2ban iptables > "$RUNNER_TEMP/ssh-upstream-proof/versions.log"
+      - name: Prove multi-minute outage and real jail enforcement in a private network
+        run: |
+          set -euo pipefail
+          sudo unshare --net bash -c '
+            set -euo pipefail
+            ip link set lo up
+            export SSH_UPSTREAM_ISOLATED_NETNS=1
+            export SSH_BAN_SSHPIPERD="$1/sshpiperd"
+            export SSH_BAN_YAML="$1/plugins/yaml"
+            export SSH_BAN_DAEMON="$1/containariumd"
+            export SSH_UPSTREAM_EVIDENCE_DIR="$1/evidence"
+            "$1/firewall.test" -test.run "^TestIntegrationGuardedSSHLiveFirewall$" -test.v -test.timeout 18m
+          ' _ "$RUNNER_TEMP/ssh-upstream-proof" | tee "$RUNNER_TEMP/ssh-upstream-proof/verification.log"
+      - name: Make allowlisted evidence readable to artifact uploader
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" "$RUNNER_TEMP/ssh-upstream-proof"
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: guarded-upstream-firewall
+          path: |
+            ${{ runner.temp }}/ssh-upstream-proof/*.log
+            ${{ runner.temp }}/ssh-upstream-proof/evidence
+
   backend-jail-characterization:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -76,7 +131,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y strace
       - name: Verify shared backend admission with the race detector
-        run: go test -race -count=1 -v ./internal/sentinel/sshgate
+        run: go test -race -count=1 -v ./internal/sentinel/sshgate ./internal/sentinel/sshcontrol
       - name: Install pinned upstream SSH binaries
         env:
           GH_TOKEN: ${{ github.token }}

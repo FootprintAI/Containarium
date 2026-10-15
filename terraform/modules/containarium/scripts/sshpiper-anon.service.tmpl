@@ -18,11 +18,20 @@ ExecStart=/usr/local/bin/sshpiperd \
   --records-file /var/log/containarium/ssh-sessions.jsonl \
   --sshpiper-config /etc/sshpiper/config.yaml \
   -- \
-  /usr/local/bin/containarium sentinel anon-door-plugin \
-  --daemon-url ${anon_daemon_url} \
+  /usr/local/bin/containariumd sentinel ssh-upstream-plugin \
+  --listener anonymous \
+  --upstream-control-socket /run/containarium/ssh-upstream/control.sock \
+  --plugin /usr/local/bin/containariumd \
+  --plugin-arg=sentinel \
+  --plugin-arg=anon-door-plugin \
+  --plugin-arg=--daemon-url \
+  --plugin-arg=${anon_daemon_url} \
+  --plugin-arg=--upstream-control-socket \
+  --plugin-arg=/run/containarium/ssh-upstream/control.sock \
   -- \
   /usr/local/bin/containariumd sentinel ssh-ban-plugin \
   --listener anonymous \
+  --upstream-control-socket /run/containarium/ssh-upstream/control.sock \
   --max-failures ${ssh_ban_max_failures} \
 %{ for prefix in ssh_ban_ignore_cidrs ~}
   --ignore-ip ${prefix} \

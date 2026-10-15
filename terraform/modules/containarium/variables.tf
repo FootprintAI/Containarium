@@ -3,6 +3,36 @@
 # =============================================================================
 # Unified variable definitions for both dev and production consumers.
 
+variable "ssh_upstream_failure_budget" {
+  description = "Aggregate backend jail-risk budget, shared by main and anonymous SSH. Default leaves one unit below the tested maxretry=3 profile."
+  type        = number
+  default     = 2
+  validation {
+    condition     = var.ssh_upstream_failure_budget >= 1 && var.ssh_upstream_failure_budget <= 65536 && floor(var.ssh_upstream_failure_budget) == var.ssh_upstream_failure_budget
+    error_message = "Upstream failure budget must be an integer from 1 to 65536."
+  }
+}
+
+variable "ssh_upstream_risk_per_attempt" {
+  description = "Conservative matching jail records per admitted SSH setup; verify against the actual backend filter."
+  type        = number
+  default     = 1
+  validation {
+    condition     = var.ssh_upstream_risk_per_attempt >= 1 && var.ssh_upstream_risk_per_attempt <= var.ssh_upstream_failure_budget && floor(var.ssh_upstream_risk_per_attempt) == var.ssh_upstream_risk_per_attempt
+    error_message = "Per-attempt risk must be a positive integer within the aggregate budget."
+  }
+}
+
+variable "ssh_upstream_window_seconds" {
+  description = "Verified backend findtime, in seconds. Exhausted risk waits for this window; initial installation also waits once."
+  type        = number
+  default     = 600
+  validation {
+    condition     = var.ssh_upstream_window_seconds >= 1 && var.ssh_upstream_window_seconds <= 86400 && floor(var.ssh_upstream_window_seconds) == var.ssh_upstream_window_seconds
+    error_message = "Upstream risk window must be an integer from 1 to 86400 seconds."
+  }
+}
+
 variable "ssh_ban_max_failures" {
   description = "Sentinel SSH failed-callback threshold per source IP."
   type        = number

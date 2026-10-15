@@ -43,6 +43,7 @@ type retryFixture struct {
 // retryMode keeps transport and host-key comparisons explicit at each callsite.
 type retryMode struct {
 	bundled, routed, pinnedHost, anonymous, certificate, wrongPrincipal, password bool
+	controlSocket, backend, backendUser                                           string
 }
 
 // retryUnusedAddress reserves and releases an ephemeral loopback destination.
@@ -91,6 +92,9 @@ func newConfiguredRetryFixture(t *testing.T, threshold, keyCount int, mode retry
 	}
 	dir := t.TempDir()
 	f := &retryFixture{backend: retryUnusedAddress(t), addr: retryUnusedAddress(t), tracePath: filepath.Join(dir, "connect.trace"), listener: mainListener}
+	if mode.backend != "" {
+		f.backend = mode.backend
+	}
 	hostPath, host := integrationKey(t, dir, "host")
 	upstreamPath, upstream := integrationKey(t, dir, "upstream")
 	f.host, f.upstream = host, upstream
@@ -130,6 +134,9 @@ func newConfiguredRetryFixture(t *testing.T, threshold, keyCount int, mode retry
 		}
 		config = strings.Replace(config, "    ignore_host_key: true", "    known_hosts: "+strconv.Quote(knownPath), 1)
 	}
+	if mode.backendUser != "" {
+		config = strings.ReplaceAll(config, "username: fixture\n    private_key:", "username: "+mode.backendUser+"\n    private_key:")
+	}
 	configPath := filepath.Join(dir, "config.yaml")
 	if err := os.WriteFile(configPath, []byte(config), 0600); err != nil {
 		t.Fatal(err)
@@ -163,7 +170,11 @@ func newConfiguredRetryFixture(t *testing.T, threshold, keyCount int, mode retry
 		if err != nil {
 			t.Fatal(err)
 		}
-		response, err := protojson.Marshal(&pb.EnsureAnonymousBoxResponse{SshHost: host, SshPort: int32(number), SshUser: "fixture", BoxName: "synthetic-box"})
+		backendUser := mode.backendUser
+		if backendUser == "" {
+			backendUser = "fixture"
+		}
+		response, err := protojson.Marshal(&pb.EnsureAnonymousBoxResponse{SshHost: host, SshPort: int32(number), SshUser: backendUser, BoxName: "synthetic-box"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -177,9 +188,15 @@ func newConfiguredRetryFixture(t *testing.T, threshold, keyCount int, mode retry
 		}))
 		t.Cleanup(server.Close)
 		router = []string{daemon, "sentinel", "anon-door-plugin", "--daemon-url", server.URL, "--upstream-key", upstreamPath}
+		if mode.controlSocket != "" {
+			router = append(router, "--upstream-control-socket", mode.controlSocket)
+		}
 	}
 	if mode.routed {
 		args = append(args, daemon, "sentinel", "ssh-upstream-plugin", "--plugin", router[0])
+		if mode.controlSocket != "" {
+			args = append(args, "--upstream-control-socket", mode.controlSocket, "--listener", listener)
+		}
 		for _, arg := range router[1:] {
 			args = append(args, "--plugin-arg="+arg)
 		}
@@ -196,6 +213,9 @@ func newConfiguredRetryFixture(t *testing.T, threshold, keyCount int, mode retry
 		args = append(args, guard)
 	} else {
 		args = append(args, daemon, "sentinel", "ssh-ban-plugin", "--listener", listener, "--control-socket", socket)
+		if mode.controlSocket != "" {
+			args = append(args, "--upstream-control-socket", mode.controlSocket)
+		}
 	}
 	args = append(args, "--max-failures", strconv.Itoa(threshold), "--ban-duration", "5m")
 	cmd := exec.Command(tracer, args...)
