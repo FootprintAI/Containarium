@@ -26,9 +26,6 @@ service SSHAuthzService {
   // The request/response names follow the architecture doc, and the same
   // messages back ActuationService.AuthorizeSSH on purpose (one message set
   // for both hops), hence the lint exemptions.
-  // buf:lint:ignore RPC_REQUEST_STANDARD_NAME
-  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
-  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
   rpc Authorize(AuthorizeSSHRequest) returns (AuthorizeSSHResponse) {
     option (google.api.http) = {
       post: "/v1/ssh/authorize"
