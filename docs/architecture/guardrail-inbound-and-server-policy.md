@@ -510,6 +510,20 @@ Verifying before creation, rather than after, is deliberate: the existing
 failure mode for a gated `post_start` is a box that exists with a workload
 that never started.
 
+**Staging scope (#2414).** `staging_ref` resolves to
+`<staging root>/<authenticated subject>/<staging_ref>`: the subject of the
+caller's token, **never** the deploy `name`. An attestation proves data is
+clean, not that the caller may have it, so the scope must come from who the
+caller is. Admin callers are **not** exempt: an admin may deploy a box under
+any `name`, but its `staging_ref` still reads only the admin subject's own
+staging directory. For a non-admin nothing changes, because `DeployRecipe`
+already requires `name` to equal the subject (`PERMISSION_DENIED` otherwise).
+Consequence for a control plane that proxies deploys with an admin token
+and forwards a user-chosen `name`: the user can no longer reach another
+tenant's staged data by choosing `name`; the proxy's datasets must be staged
+under the proxy's own subject (or the deploy made with the user's own
+token). A subject that is not a single path component is refused.
+
 ## Contracts
 
 | Boundary | Source of truth | Generated |
