@@ -44,12 +44,17 @@ not automatically reopen admission or restart unrelated HTTP forwarding.
 
 A metadata policy change is staged as `policy.pending.json`; reconciliation
 preserves the active file and does not restart a running sentinel. A policy
-change requires a planned maintenance window: stop both SSH listeners
-and the controller, wait at least the previous setup timeout plus the longer of
-the previous/new risk windows, retain the old checkpoint for diagnosis, then
-promote the pending policy to `policy.json` and restart. The fresh-state hold
-applies again. Do not
-delete state during live traffic to work around a policy mismatch.
+change requires a planned maintenance window: stop both SSH listeners and the
+controller, then wait at least the previous setup timeout plus the longer of the
+previous/new risk windows. Move the old checkpoint away from the configured
+`StatePath` to a diagnostic backup (at defaults, archive
+`/var/lib/containarium/ssh-upstream/risk.json` as a timestamped sibling). Preserve
+the lock file. The active checkpoint path must be absent before starting the
+controller with the new policy; leaving the incompatible checkpoint there makes
+`New` reject its old policy hash. Promote the pending policy to `policy.json`,
+then restart the controller and listeners. The controller creates a compatible
+checkpoint and applies the full fresh-state hold again. Do not delete state
+during live traffic to work around a policy mismatch.
 
 For deployed verification, record the commit, backend-visible source,
 `fail2ban-client get sshd maxretry/findtime/bantime/ignoreip`, matching auth logs
