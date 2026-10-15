@@ -12,6 +12,24 @@ module "containarium" {
 
 Requires **Terraform >= 1.2** (for the `sentinel_auth_secret` precondition).
 
+## Sentinel SSH failure budgets
+
+`ssh_ban_max_failures` (default `100`), `ssh_ban_duration_seconds` (default `300`),
+and `ssh_ban_ignore_cidrs` (default `[]`) configure both SSH listener units.
+The duration is a fixed window from first connection; successful sessions do not
+consume failures. Exemptions never bypass key authentication. Use narrow,
+controlled egress CIDRs, not entire shared public-runner networks.
+
+Install `containariumd` with `sentinel ssh-ban-plugin` and the tested sshpiperd
+v1.6.1 before publishing these units to running sentinels. The existing metadata
+reconciler restarts SSH when unit content changes. Verify effective settings
+through the admin-HMAC-protected `/sentinel/ssh-bans/*` API. See
+[SSH diagnosis and rollout](../../../docs/SSH-JUMP-SERVER-SETUP.md#source-ip-failure-budgets-on-the-sentinel-shared-nat-automation).
+
+Run `bash scripts/test-ssh-ban-templates.sh` from the repository root with
+Terraform 1.13.4 to test the actual policy locals/templates without providers or
+GCP credentials. Set `TERRAFORM=/path/to/terraform` to select that binary.
+
 ---
 
 ## Migration: `0.9.x` → `0.21.x`

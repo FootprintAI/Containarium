@@ -45,6 +45,7 @@ var (
 	daemonHTTPPort         int
 	runJournalRetention    time.Duration
 	sshAuthzMaxKeyAge      time.Duration
+	sshAuthzKeysCommand    bool
 	enableMTLS             bool
 	enableREST             bool
 	daemonCertsDir         string
@@ -160,6 +161,8 @@ func init() {
 	daemonCmd.Flags().BoolVar(&enableREST, "rest", true, "Enable HTTP/REST API gateway")
 	daemonCmd.Flags().DurationVar(&sshAuthzMaxKeyAge, "ssh-authz-max-key-age", envDuration("CONTAINARIUM_SSH_AUTHZ_MAX_KEY_AGE", 0),
 		"Self-host SSH authorization: refuse a key registered at least this long ago (KEY_EXPIRED). 0 (default) = no limit. Applies only on a daemon with no cloud enrollment. Env: CONTAINARIUM_SSH_AUTHZ_MAX_KEY_AGE (#2517).")
+	daemonCmd.Flags().BoolVar(&sshAuthzKeysCommand, "ssh-authz-keys-command", envBool("CONTAINARIUM_SSH_AUTHZ_KEYS_COMMAND", false),
+		"Let the jump host's sshd AuthorizedKeysCommand (containarium ssh-authz-keys) ask this daemon about direct logins: /v1/ssh/authorize also accepts a JWT carrying the ssh:authorize scope, alongside the sentinel signature. Off by default (sentinel-only). Env: CONTAINARIUM_SSH_AUTHZ_KEYS_COMMAND (#2527).")
 
 	// Authentication settings
 	daemonCmd.Flags().StringVar(&jwtSecret, "jwt-secret", "", "JWT secret key for REST API authentication")
@@ -700,6 +703,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		ZFSKeysDir:                 zfsKeysDir,
 		RunJournalRetention:        runJournalRetention,
 		SSHAuthzMaxKeyAge:          sshAuthzMaxKeyAge,
+		SSHAuthzKeysCommand:        sshAuthzKeysCommand,
 	}
 
 	// Create dual server

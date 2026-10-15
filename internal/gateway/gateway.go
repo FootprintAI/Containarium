@@ -81,6 +81,11 @@ type GatewayServer struct {
 	// sentinel but cannot forge a request — the BYOC-safe configuration.
 	sentinelPubKey ed25519.PublicKey
 
+	// sshAuthzTokenFallback lets /v1/ssh/authorize also accept a JWT
+	// carrying ssh:authorize, for the jump host's AuthorizedKeysCommand
+	// (#2527). Off by default: the route stays sentinel-only.
+	sshAuthzTokenFallback bool
+
 	// containerExistsFn is the orphan filter used by
 	// /authorized-keys (#343). When set, the handler drops users
 	// whose container has been deleted but whose home dir survived.
@@ -241,6 +246,15 @@ func (gs *GatewayServer) SetSentinelAuthSecret(secret []byte) {
 // including BYOC, since a verifier cannot forge requests.
 func (gs *GatewayServer) SetSentinelPublicKey(pub ed25519.PublicKey) {
 	gs.sentinelPubKey = pub
+}
+
+// SetSSHAuthzTokenFallback turns on the token fallback on
+// /v1/ssh/authorize (#2527): an unsigned request authenticated by a JWT
+// that carries ssh:authorize explicitly reaches Authorize, alongside the
+// sentinel-signed path. Off by default. Source is the daemon's
+// --ssh-authz-keys-command flag.
+func (gs *GatewayServer) SetSSHAuthzTokenFallback(enabled bool) {
+	gs.sshAuthzTokenFallback = enabled
 }
 
 // SetAuthorizedKeysHandler overrides the default /authorized-keys handler
@@ -987,10 +1001,15 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	}
 	httpMux.Handle(AnonDoorEnsurePath, anonDoorHandler(sentinelVerifier, corsHandler, anonInner, nil))
 
-	// #2516: SSHAuthzService.Authorize, sentinel signature only (no JWT
-	// fallback). Same inner chain as the door: audited, identity from the
-	// verified signature.
-	MountSSHAuthz(httpMux, sentinelVerifier, anonInner)
+	// #2516: SSHAuthzService.Authorize, sentinel signature. Same inner
+	// chain as the door: audited, identity from the verified signature.
+	// #2527: when enabled, an ssh:authorize JWT is accepted too, for the
+	// jump host's AuthorizedKeysCommand; otherwise no JWT fallback.
+	var sshAuthzTokenAuth func(http.Handler) http.Handler
+	if gs.sshAuthzTokenFallback {
+		sshAuthzTokenAuth = gs.authMiddleware.HTTPMiddleware
+	}
+	MountSSHAuthz(httpMux, sentinelVerifier, sshAuthzTokenAuth, anonInner)
 
 	// Catch-all fallback: when wake-on-HTTP is enabled, Caddy
 	// forwards user traffic to this daemon while a container is
