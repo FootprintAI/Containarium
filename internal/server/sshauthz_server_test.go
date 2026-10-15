@@ -70,3 +70,34 @@ func TestSSHAuthzServer_SentinelSignedRequestReachesStub(t *testing.T) {
 		t.Fatalf("unsigned: code = %d, want 401", rr.Code)
 	}
 }
+
+type stubDecider struct {
+	got  *pb.AuthorizeSSHRequest
+	resp *pb.AuthorizeSSHResponse
+}
+
+func (d *stubDecider) Decide(_ context.Context, req *pb.AuthorizeSSHRequest) (*pb.AuthorizeSSHResponse, error) {
+	d.got = req
+	return d.resp, nil
+}
+
+// With a decider wired (the self-host decider, #2517), a scoped call is
+// answered by it; a call without the scope never reaches it.
+func TestSSHAuthzServer_DispatchesToDecider(t *testing.T) {
+	want := &pb.AuthorizeSSHResponse{Decision: pb.SSHAuthzDecision_SSH_AUTHZ_DECISION_ALLOW, UserId: "alice"}
+	d := &stubDecider{resp: want}
+	s := NewSSHAuthzServer()
+	s.SetDecider(d)
+
+	unscoped := metadata.NewIncomingContext(context.Background(), metadata.Pairs(auth.MDKeyUsername, "alice"))
+	if _, err := s.Authorize(unscoped, &pb.AuthorizeSSHRequest{Login: "alice"}); status.Code(err) != codes.PermissionDenied || d.got != nil {
+		t.Fatalf("unscoped call: err = %v, decider reached = %v", err, d.got != nil)
+	}
+
+	ctx := metadata.NewIncomingContext(context.Background(),
+		metadata.Pairs(auth.MDKeyUsername, gateway.SSHAuthzUsername, auth.MDKeyScopes, auth.ScopeSSHAuthorize))
+	resp, err := s.Authorize(ctx, &pb.AuthorizeSSHRequest{Login: "alice"})
+	if err != nil || resp != want || d.got.GetLogin() != "alice" {
+		t.Fatalf("got (%v, %v), want the decider's response", resp, err)
+	}
+}
