@@ -35,6 +35,8 @@ Each case includes one additional real invalid-user failure from `127.0.0.2`.
 This unexempt control must be counted, proving the daemon read the input even
 when the tested source contributes zero. Raw `status.log` totals therefore have
 **one extra failure** beyond the table. The control must never be banned.
+The status snapshot is taken after the ban decision/action and before explicit
+unban, so positive cases show the banned source as well as the recorded actions.
 
 ## Evidence and boundaries
 
