@@ -31,6 +31,7 @@ import (
 // retryFixture runs the production plugin chain under a syscall tracer so
 // failed TCP attempts are observable even when no backend is listening.
 type retryFixture struct {
+	listener                 pb.SSHBanListener
 	addr, backend, tracePath string
 	keys                     []ssh.Signer
 	keyPaths                 []string
@@ -88,7 +89,7 @@ func newConfiguredRetryFixture(t *testing.T, threshold, keyCount int, mode retry
 		}
 	}
 	dir := t.TempDir()
-	f := &retryFixture{backend: retryUnusedAddress(t), addr: retryUnusedAddress(t), tracePath: filepath.Join(dir, "connect.trace")}
+	f := &retryFixture{backend: retryUnusedAddress(t), addr: retryUnusedAddress(t), tracePath: filepath.Join(dir, "connect.trace"), listener: mainListener}
 	hostPath, host := integrationKey(t, dir, "host")
 	upstreamPath, upstream := integrationKey(t, dir, "upstream")
 	f.host, f.upstream = host, upstream
@@ -132,7 +133,12 @@ func newConfiguredRetryFixture(t *testing.T, threshold, keyCount int, mode retry
 	if err != nil {
 		t.Fatal(err)
 	}
-	socket := filepath.Join(dir, "private", "main.sock")
+	listener := "main"
+	if mode.anonymous {
+		listener = "anonymous"
+		f.listener = pb.SSHBanListener_SSH_BAN_LISTENER_ANONYMOUS
+	}
+	socket := filepath.Join(dir, "private", listener+".sock")
 	logPath := filepath.Join(dir, "sshpiper.log")
 	logFile, err := os.Create(logPath)
 	if err != nil {
@@ -184,7 +190,7 @@ func newConfiguredRetryFixture(t *testing.T, threshold, keyCount int, mode retry
 		}
 		args = append(args, guard)
 	} else {
-		args = append(args, daemon, "sentinel", "ssh-ban-plugin", "--control-socket", socket)
+		args = append(args, daemon, "sentinel", "ssh-ban-plugin", "--listener", listener, "--control-socket", socket)
 	}
 	args = append(args, "--max-failures", strconv.Itoa(threshold), "--ban-duration", "5m")
 	cmd := exec.Command(tracer, args...)
@@ -292,6 +298,9 @@ func TestIntegrationSSHUpstreamAnonymousTransportHook(t *testing.T) {
 	f := newConfiguredRetryFixture(t, 100, 1, retryMode{routed: true, anonymous: true})
 	if err := retryHandshake(f.addr, "127.0.0.2", f.keys[0]); err == nil {
 		t.Fatal("unavailable backend unexpectedly accepted a session")
+	}
+	if got := f.status(t, "127.0.0.2").Listener; got != pb.SSHBanListener_SSH_BAN_LISTENER_ANONYMOUS {
+		t.Fatalf("anonymous chain used the wrong failure-policy listener: %v", got)
 	}
 	if got := len(f.attempts(t)); got != 1 {
 		t.Fatalf("anonymous route bypassed transport hook: %d backend dials", got)
@@ -462,7 +471,7 @@ func (f *retryFixture) status(t *testing.T, ip string) *pb.GetSSHBanResponse {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
-	state, err := f.control.GetSSHBan(ctx, &pb.GetSSHBanRequest{Listener: mainListener, Ip: ip})
+	state, err := f.control.GetSSHBan(ctx, &pb.GetSSHBanRequest{Listener: f.listener, Ip: ip})
 	if err != nil {
 		t.Fatal(err)
 	}
