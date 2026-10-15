@@ -98,7 +98,7 @@ SSH_UPSTREAM_IDLE_OBSERVE=2m go test -tags integration ./internal/sentinel/sshba
   -count=1 -timeout 150s -v
 ```
 
-The absolute paths above describe this local run; point them at the same pinned binaries on another runner. SSH_UPSTREAM_STRACE may be omitted when strace is on PATH. The existing integration CI runner will also need strace available before these new tests are committed there.
+The absolute paths above describe this local run; point them at the same pinned binaries on another runner. SSH_UPSTREAM_STRACE may be omitted when strace is on PATH. The CI lanes install strace explicitly.
 
 Test source: [upstream_retry_integration_test.go](../../internal/sentinel/sshban/upstream_retry_integration_test.go). The fixture uses ephemeral ports, fresh synthetic keys, bounded client/server deadlines, readiness polling, and process-group teardown. Evidence copies contain only traces and logs; private-key files remain in automatically cleaned temporary fixture directories.
 

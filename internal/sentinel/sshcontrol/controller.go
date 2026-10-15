@@ -102,6 +102,9 @@ func (c *Controller) Close() error {
 	return f.Close()
 }
 
+// Faulted reports a poisoned/closed owner without exposing private storage errors.
+func (c *Controller) Faulted() bool { c.mu.Lock(); defer c.mu.Unlock(); return c.fault != nil }
+
 // connection holds transport-bound provenance for the current route only.
 type connection struct {
 	ref                                          *pb.SSHUpstreamConnection

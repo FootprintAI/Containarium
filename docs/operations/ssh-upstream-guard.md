@@ -38,11 +38,17 @@ preserve it across upgrades. On first installation or missing state, new upstrea
 setups wait a full configured window (10 minutes by default). Established sessions
 continue; an existing backend ban is never automatically cleared. Corrupt state,
 policy changes and control outages fail closed for new setups.
+Alert on `sentinel_ssh_upstream_faulted == 1`: repair storage and restart the
+controller with its unchanged policy/checkpoint. A transient write failure does
+not automatically reopen admission or restart unrelated HTTP forwarding.
 
-A policy change requires a planned maintenance window: stop both SSH listeners
+A metadata policy change is staged as `policy.pending.json`; reconciliation
+preserves the active file and does not restart a running sentinel. A policy
+change requires a planned maintenance window: stop both SSH listeners
 and the controller, wait at least the previous setup timeout plus the longer of
 the previous/new risk windows, retain the old checkpoint for diagnosis, then
-install the new policy and restart. The fresh-state hold applies again. Do not
+promote the pending policy to `policy.json` and restart. The fresh-state hold
+applies again. Do not
 delete state during live traffic to work around a policy mismatch.
 
 For deployed verification, record the commit, backend-visible source,

@@ -5,6 +5,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -19,6 +20,23 @@ import (
 // exitingRoutingChild serves a real bootstrap response before terminating.
 type exitingRoutingChild struct {
 	libplugin.UnimplementedSshPiperPluginServer
+}
+
+// TestSSHUpstreamShutdownCancelsLingeringChild bounds cleanup after parent EOF.
+func TestSSHUpstreamShutdownCancelsLingeringChild(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	exited, done := make(chan struct{}), make(chan struct{})
+	go func() { <-ctx.Done(); close(exited) }()
+	go func() {
+		stopRoutingChild(cancel, io.NopCloser(strings.NewReader("")), io.NopCloser(strings.NewReader("")), exited)
+		close(done)
+	}()
+	t.Cleanup(func() { cancel(); <-done })
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("shutdown waited for an uncanceled routing child")
+	}
 }
 
 // ListCallbacks makes a later child exit distinguishable from failed bootstrap.

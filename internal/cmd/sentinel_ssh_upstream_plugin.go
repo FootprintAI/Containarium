@@ -72,9 +72,7 @@ func newSSHUpstreamPluginCommand() *cobra.Command {
 			close(exited)
 		}()
 		defer func() {
-			_ = transport.Close()
-			_ = stderr.Close()
-			<-exited
+			stopRoutingChild(cancel, transport, stderr, exited)
 		}()
 		go func() { _, _ = io.Copy(os.Stderr, stderr) }()
 		var used atomic.Bool
@@ -117,6 +115,14 @@ func newSSHUpstreamPluginCommand() *cobra.Command {
 		}
 	}
 	return c
+}
+
+// stopRoutingChild reaps a child even when it ignores its closed stdio transport.
+func stopRoutingChild(cancel context.CancelFunc, transport, stderr io.Closer, exited <-chan struct{}) {
+	cancel()
+	_ = transport.Close()
+	_ = stderr.Close()
+	<-exited
 }
 
 // sshUpstreamListener validates the shared controller's explicit listener scope.

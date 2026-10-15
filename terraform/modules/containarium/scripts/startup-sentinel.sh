@@ -214,19 +214,35 @@ reconcile_ssh_upstream_control() {
     install -d -m 0700 /etc/containarium/ssh-upstream
     install -d -m 0755 /etc/systemd/system/containarium-sentinel.service.d
     dropin=/etc/systemd/system/containarium-sentinel.service.d/ssh-upstream.conf
+    active=/etc/containarium/ssh-upstream/policy.json
+    pending=/etc/containarium/ssh-upstream/policy.pending.json
     changed=false
-    if [ ! -f /etc/containarium/ssh-upstream/policy.json ] || [ "$(cat /etc/containarium/ssh-upstream/policy.json)" != "$policy" ]; then
-        printf '%s' "$policy" > /etc/containarium/ssh-upstream/policy.json
-        chmod 0600 /etc/containarium/ssh-upstream/policy.json
+    dropin_created=false
+    if [ ! -f "$active" ]; then
+        printf '%s' "$policy" > "$active"
+        chmod 0600 "$active"
+        changed=true
+    elif [ "$(cat "$active")" != "$policy" ]; then
+        # Keep the active policy/checkpoint pair valid even if an unrelated
+        # restart happens before the operator's maintenance window.
+        if [ ! -f "$pending" ] || [ "$(cat "$pending")" != "$policy" ]; then
+            printf '%s' "$policy" > "$pending"
+            chmod 0600 "$pending"
+            changed=true
+        fi
+        logger -t ssh-upstream-reconcile "SSH upstream policy staged in policy.pending.json; apply through the maintenance procedure"
+    elif [ -f "$pending" ]; then
+        rm -f "$pending"
         changed=true
     fi
     if [ ! -f "$dropin" ]; then
         printf '%s\n' '[Service]' 'Environment=CONTAINARIUM_SSH_UPSTREAM_POLICY=/etc/containarium/ssh-upstream/policy.json' > "$dropin"
         changed=true
+        dropin_created=true
     fi
     if [ "$changed" = true ]; then
         systemctl daemon-reload
-        if systemctl is-active --quiet containarium-sentinel; then
+        if [ "$dropin_created" = true ] && systemctl is-active --quiet containarium-sentinel; then
             systemctl restart containarium-sentinel
         fi
     fi

@@ -1,5 +1,10 @@
 # Shared SSH admission core (#1138)
 
+**Historical core milestone:** this document describes the independent #2582
+increment. The shipped listener/RPC, durable checkpoint and restart contract is
+in [the integration design](ssh-upstream-integration.md). Statements below about
+future wiring and in-memory ownership apply to this core milestone only.
+
 This increment implements the backend-state component of the proposed
 `sentinel-ssh-upstream-backoff` design in PR #2578. It is independent of that
 unmerged adapter: no production listener or RPC changes yet. PR #2581's real

@@ -4,7 +4,7 @@ on:
   pull_request:
     paths:
       - 'internal/sentinel/**'
-      - 'internal/cmd/sentinel_ssh_*'
+      - 'internal/cmd/sentinel*'
       - 'proto/containarium/v1/ssh_ban.proto'
       - 'proto/containarium/v1/ssh_upstream.proto'
       - 'terraform/modules/containarium/**'
@@ -16,7 +16,7 @@ on:
     branches: [main]
     paths:
       - 'internal/sentinel/**'
-      - 'internal/cmd/sentinel_ssh_*'
+      - 'internal/cmd/sentinel*'
       - 'proto/containarium/v1/ssh_ban.proto'
       - 'proto/containarium/v1/ssh_upstream.proto'
       - 'terraform/modules/containarium/**'

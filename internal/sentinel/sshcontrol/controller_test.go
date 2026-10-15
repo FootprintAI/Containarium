@@ -313,6 +313,9 @@ func TestControlDurabilityFailureDeniesWithoutSourcePenalty(t *testing.T) {
 	if f.acquire(f.client, ref, token, "127.0.0.1:22").Admitted {
 		t.Fatal("uncommitted risk admitted a backend setup")
 	}
+	if !f.server.Faulted() {
+		t.Fatal("durability failure had no operator health signal")
+	}
 	if f.count(ref, pb.SSHUpstreamFailureKind_SSH_UPSTREAM_FAILURE_KIND_PIPE_CREATE) {
 		t.Fatal("checkpoint outage punished source")
 	}

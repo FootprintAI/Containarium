@@ -1,8 +1,12 @@
 package sentinel
 
 import (
+	"github.com/footprintai/containarium/internal/sentinel/sshcontrol"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -22,6 +26,22 @@ func TestSSHUpstreamUsesAuthoritativeEndpointIdentity(t *testing.T) {
 	ks.RemoveBackend("direct")
 	if _, err := ks.BackendForEndpoint("192.0.2.1:32022"); err == nil {
 		t.Fatal("removed backend remained authoritative")
+	}
+}
+
+// TestSSHUpstreamFaultMetricReportsClosedOwner exposes a persistence-fault alert.
+func TestSSHUpstreamFaultMetricReportsClosedOwner(t *testing.T) {
+	m := NewManager(Config{}, &fakeRecoveryProvider{})
+	m.sshUpstream = &sshcontrol.Controller{}
+	for _, want := range []string{"0", "1"} {
+		r := httptest.NewRecorder()
+		m.MetricsHandler()(r, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+		if !strings.Contains(r.Body.String(), "sentinel_ssh_upstream_faulted "+want+"\n") {
+			t.Fatalf("missing controller fault health=%s", want)
+		}
+		if err := m.sshUpstream.Close(); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

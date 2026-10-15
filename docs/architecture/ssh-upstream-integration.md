@@ -47,14 +47,14 @@ credential failure: retain jail risk without declaring a healthy backend down.
 `proto/containarium/v1/ssh_upstream.proto` defines generated private clients,
 connection/route tokens, weighted admission, absolute lease deadline, setup
 outcomes, source-failure disposition, anonymous route registration and recovery
-hints. Unix directory0700/socket0600 is the local operator trust boundary. A
+hints. Unix directory 0700/socket 0600 is the local operator trust boundary. A
 controller generation binds each connection; restart/stale replies cannot grant
 or suppress events on a new connection. Fail closed when control is unavailable;
 do not convert that service outage into new client bans.
 
 Controller policy is strict protobuf JSON. Production defaults target the
 repository's tested 3/600s jail with one measured matching failure per admitted
-setup: reserve at most two units, window600s, setup timeout30s, backoff1s to30s
+setup: reserve at most two units, window 600s, setup timeout 30s, backoff 1s to 30s
 with nonnegative jitter. Operators must supply a conservative cost/window for
 different filters; no guarantee is made for arbitrary third-party jails. Existing
 CIDR exemptions remain unchanged. Tenant-visible authentication and approval
