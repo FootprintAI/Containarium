@@ -225,9 +225,9 @@ func TestIntegrationGuardedSSHLiveFirewall(t *testing.T) {
 		}
 	}
 	f.wait(func() bool { return strings.Contains(f.jail("get", "sshd", "banip"), "127.0.0.9") }, "actual negative-control ban")
-	if err := f.direct("127.0.0.9", main.upstream); err == nil {
-		t.Fatal("jail announced a ban without blocking authorized packets")
-	}
+	// The jail publishes its ban list before the asynchronous firewall action.
+	// Require packet enforcement itself, not merely that earlier state update.
+	f.wait(func() bool { return f.direct("127.0.0.9", main.upstream) != nil }, "actual firewall packet blocking after ban")
 	f.write("iptables-banned.log", f.command("iptables-save"))
 	f.jail("set", "sshd", "unbanip", "127.0.0.9")
 	f.wait(func() bool { return f.direct("127.0.0.9", main.upstream) == nil }, "packet recovery after unban")
