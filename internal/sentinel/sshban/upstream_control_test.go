@@ -70,4 +70,10 @@ func TestSourcePolicyUsesTypedBackendProvenance(t *testing.T) {
 	if snapshot(t, g, "192.0.2.1").Status.GetFailures() != 1 {
 		t.Fatal("later client denial inherited backend exception")
 	}
+	// A malformed/closed transport may fail before NewConnection supplies a
+	// UUID. A tracked IP's unclassified callback must retain existing policy.
+	cfg.PipeCreateErrorCallback("192.0.2.1:12346", errors.New("unclassified early client failure"))
+	if snapshot(t, g, "192.0.2.1").Status.GetFailures() != 2 {
+		t.Fatal("unregistered client failure was blanket-exempted")
+	}
 }
