@@ -70,6 +70,11 @@ func gateRefusal(format string, args ...any) error {
 // checkGuardrailGate runs steps 1-4. On success it returns the verified
 // snapshot, which the caller delivers and then removes.
 func (s *RecipeServer) checkGuardrailGate(ctx context.Context, recipe *pb.Recipe, req *pb.DeployRecipeRequest) (*guardrailstage.Snapshot, error) {
+	// Rate limit (#2404) first: a throttled caller starts no policy read, no
+	// staging access and no snapshot.
+	if err := checkGuardrailRate(ctx, s.guardrailDeployLimit); err != nil {
+		return nil, err
+	}
 	if req.GetAsync() {
 		return nil, gateRefusal("recipe %q is guardrail-gated and cannot be deployed async; deploy synchronously", recipe.GetId())
 	}

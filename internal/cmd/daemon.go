@@ -662,6 +662,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		},
 		GuardrailStagingRoot:       daemonGuardrailStagingRoot,
 		GuardrailSnapshotDir:       daemonGuardrailSnapshotDir,
+		GuardrailRateLimits:        daemonGuardrailRateLimits(),
 		CaddyAdminURL:              caddyAdminURL,
 		HostIP:                     hostIPFromCIDR(networkSubnet),
 		DaemonConfigStore:          daemonConfigStore,
