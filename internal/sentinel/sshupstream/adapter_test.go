@@ -20,11 +20,12 @@ import (
 // separately proves sshpiperd uses the advertised transport callback.
 type routingClient struct {
 	libplugin.SshPiperPluginClient
-	callbacks []string
-	upstream  *libplugin.Upstream
-	err       error
-	request   *libplugin.PublicKeyAuthRequest
-	verify    *libplugin.VerifyHostKeyRequest
+	callbacks      []string
+	upstream       *libplugin.Upstream
+	err            error
+	request        *libplugin.PublicKeyAuthRequest
+	verify         *libplugin.VerifyHostKeyRequest
+	verifyDeadline time.Time
 }
 
 // deadlineConn records promotion from bounded SSH setup to an ongoing session.
@@ -80,8 +81,9 @@ func TestAdapterSessionClearsSetupDeadline(t *testing.T) {
 }
 
 // VerifyHostKey captures the actual backend address supplied to child verifiers.
-func (c *routingClient) VerifyHostKey(_ context.Context, req *libplugin.VerifyHostKeyRequest, _ ...grpc.CallOption) (*libplugin.VerifyHostKeyResponse, error) {
+func (c *routingClient) VerifyHostKey(ctx context.Context, req *libplugin.VerifyHostKeyRequest, _ ...grpc.CallOption) (*libplugin.VerifyHostKeyResponse, error) {
 	c.verify = proto.Clone(req).(*libplugin.VerifyHostKeyRequest)
+	c.verifyDeadline, _ = ctx.Deadline()
 	return &libplugin.VerifyHostKeyResponse{Verified: c.err == nil}, c.err
 }
 
@@ -187,6 +189,9 @@ func TestAdapterForwardsChildVerifier(t *testing.T) {
 	}
 	if child.verify.Netaddress != "192.0.2.1:22" || !proto.Equal(child.verify.Meta, meta) || string(child.verify.Key) != string(key) {
 		t.Fatalf("child verifier context changed: %v", child.verify)
+	}
+	if child.verifyDeadline.IsZero() || time.Until(child.verifyDeadline) > 30*time.Second {
+		t.Fatal("child verifier can outlive its bounded SSH setup")
 	}
 	child.err = errors.New("child rejected host key")
 	if err := cfg.VerifyHostKeyCallback(meta, "backend.example:22", u.Uri, key); !errors.Is(err, child.err) {
