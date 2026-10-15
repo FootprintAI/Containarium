@@ -45,6 +45,7 @@ var (
 	daemonHTTPPort         int
 	runJournalRetention    time.Duration
 	sshAuthzMaxKeyAge      time.Duration
+	sshAuthzKeysCommand    bool
 	enableMTLS             bool
 	enableREST             bool
 	daemonCertsDir         string
@@ -146,7 +147,7 @@ func init() {
 	// gRPC settings
 	daemonCmd.Flags().StringVar(&daemonAddress, "address", "0.0.0.0", "Address to listen on")
 	daemonCmd.Flags().StringVar(&daemonGuardrailStagingRoot, "guardrail-staging-root", "",
-		"Absolute directory a guardrail-gated recipe deploy reads its staged dataset from, as <root>/<name>/<staging_ref>. Empty = gated deploys are refused")
+		"Absolute directory a guardrail-gated recipe deploy reads its staged dataset from, as <root>/<caller subject>/<staging_ref>. Empty = gated deploys are refused")
 	daemonCmd.Flags().StringVar(&daemonGuardrailSnapshotDir, "guardrail-snapshot-dir", os.Getenv("CONTAINARIUM_GUARDRAIL_SNAPSHOT_DIR"),
 		"Daemon-private directory, outside the staging root, for the gate's verification snapshots (a full copy of each staged dataset while a deploy runs; point it at provisioned storage, not tmpfs). Empty = the OS temp dir (env: CONTAINARIUM_GUARDRAIL_SNAPSHOT_DIR)")
 	daemonCmd.Flags().IntVar(&daemonPort, "port", 50051, "gRPC port to listen on")
@@ -160,6 +161,8 @@ func init() {
 	daemonCmd.Flags().BoolVar(&enableREST, "rest", true, "Enable HTTP/REST API gateway")
 	daemonCmd.Flags().DurationVar(&sshAuthzMaxKeyAge, "ssh-authz-max-key-age", envDuration("CONTAINARIUM_SSH_AUTHZ_MAX_KEY_AGE", 0),
 		"Self-host SSH authorization: refuse a key registered at least this long ago (KEY_EXPIRED). 0 (default) = no limit. Applies only on a daemon with no cloud enrollment. Env: CONTAINARIUM_SSH_AUTHZ_MAX_KEY_AGE (#2517).")
+	daemonCmd.Flags().BoolVar(&sshAuthzKeysCommand, "ssh-authz-keys-command", envBool("CONTAINARIUM_SSH_AUTHZ_KEYS_COMMAND", false),
+		"Let the jump host's sshd AuthorizedKeysCommand (containarium ssh-authz-keys) ask this daemon about direct logins: /v1/ssh/authorize also accepts a JWT carrying the ssh:authorize scope, alongside the sentinel signature. Off by default (sentinel-only). Env: CONTAINARIUM_SSH_AUTHZ_KEYS_COMMAND (#2527).")
 
 	// Authentication settings
 	daemonCmd.Flags().StringVar(&jwtSecret, "jwt-secret", "", "JWT secret key for REST API authentication")
@@ -662,6 +665,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		},
 		GuardrailStagingRoot:       daemonGuardrailStagingRoot,
 		GuardrailSnapshotDir:       daemonGuardrailSnapshotDir,
+		GuardrailRateLimits:        daemonGuardrailRateLimits(),
 		CaddyAdminURL:              caddyAdminURL,
 		HostIP:                     hostIPFromCIDR(networkSubnet),
 		DaemonConfigStore:          daemonConfigStore,
@@ -699,6 +703,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		ZFSKeysDir:                 zfsKeysDir,
 		RunJournalRetention:        runJournalRetention,
 		SSHAuthzMaxKeyAge:          sshAuthzMaxKeyAge,
+		SSHAuthzKeysCommand:        sshAuthzKeysCommand,
 	}
 
 	// Create dual server

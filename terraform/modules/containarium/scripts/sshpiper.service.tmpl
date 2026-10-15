@@ -21,9 +21,13 @@ ExecStart=/usr/local/bin/sshpiperd \
   yaml \
   --config /etc/sshpiper/config.yaml \
   -- \
-  failtoban \
-  --max-failures 100 \
-  --ban-duration 5m
+  /usr/local/bin/containariumd sentinel ssh-ban-plugin \
+  --listener main \
+  --max-failures ${ssh_ban_max_failures} \
+%{ for prefix in ssh_ban_ignore_cidrs ~}
+  --ignore-ip ${prefix} \
+%{ endfor ~}
+  --ban-duration ${ssh_ban_duration_seconds}s
 Restart=always
 RestartSec=5
 

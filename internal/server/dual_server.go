@@ -40,12 +40,14 @@ import (
 	"github.com/footprintai/containarium/internal/guardrail"
 	"github.com/footprintai/containarium/internal/guardrailpolicy"
 	guardrailpolicypg "github.com/footprintai/containarium/internal/guardrailpolicy/pgstore"
+	"github.com/footprintai/containarium/internal/guardrailrate"
 	"github.com/footprintai/containarium/internal/metrics"
 	"github.com/footprintai/containarium/internal/metrics/platformstats"
 	"github.com/footprintai/containarium/internal/modelgateway"
 	"github.com/footprintai/containarium/internal/mtls"
 	"github.com/footprintai/containarium/internal/nicguard"
 	"github.com/footprintai/containarium/internal/pentest"
+	"github.com/footprintai/containarium/internal/policyreadiness"
 	"github.com/footprintai/containarium/internal/runlease"
 	"github.com/footprintai/containarium/internal/sandbox/ratelimit"
 	secretsstore "github.com/footprintai/containarium/internal/secrets"
@@ -73,6 +75,8 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/health"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/reflection"
 )
 
@@ -109,6 +113,9 @@ type DualServerConfig struct {
 	// GuardrailSnapshotDir is where the gate makes verification snapshots
 	// ("" = the OS temp dir). Daemon-private, outside the staging root.
 	GuardrailSnapshotDir string
+	// GuardrailRateLimits are the per-subject limits on gated deploys and
+	// guardrail policy Set/Get (#2404). Zero = disabled.
+	GuardrailRateLimits GuardrailRateLimits
 
 	// Swagger settings
 	SwaggerDir string
@@ -147,6 +154,10 @@ type DualServerConfig struct {
 	// key age (#2517): a key registered at least this long ago is refused
 	// with KEY_EXPIRED. Zero = no limit.
 	SSHAuthzMaxKeyAge time.Duration
+	// SSHAuthzKeysCommand lets the jump host's AuthorizedKeysCommand call
+	// SSHAuthzService.Authorize with a JWT carrying ssh:authorize, alongside
+	// the sentinel signature (#2527). Off = the route stays sentinel-only.
+	SSHAuthzKeysCommand bool
 
 	// Caddy certificate directory for /certs endpoint (sentinel cert sync)
 	CaddyCertDir string
@@ -673,6 +684,13 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// guardrailPolicyStartupStore once postgresConnString is final (below).
 	guardrailPolicyServer := NewGuardrailPolicyServer(unavailableGuardrailPolicyStore{})
 	pb.RegisterGuardrailPolicyServiceServer(grpcServer, guardrailPolicyServer)
+
+	// Policy-store readiness (#2483): grpc.health.v1, one status per policy
+	// service, NOT_SERVING while its store is on the fail-closed stand-in.
+	// The REST gateway serves it at policyreadiness.HTTPPath for `doctor`;
+	// the cloud status probe reads it in-process.
+	policyStoreHealth := health.NewServer()
+	healthpb.RegisterHealthServer(grpcServer, policyStoreHealth)
 
 	// Register AgentSkillService — agent-as-a-box (Phase 0) + A2A transport
 	// (Phase 1). Reuses the recipe server for box provisioning, the token
@@ -1488,7 +1506,8 @@ skipAppHosting:
 			Policies: newCloudPolicySink(npServer),
 			// Report this host's capability profile (hardware + headroom +
 			// version) so the BYO fleet view goes live (#528).
-			Status: cloud.DefaultStatusProbe{},
+			// Policy-store readiness (#2483) rides along as advisory checks.
+			Status: cloud.DefaultStatusProbe{Readiness: policyreadiness.ServerCheck(policyStoreHealth)},
 		}
 		if cloudActuator, actErr := newCloudContainerActuator(routeStore); actErr != nil {
 			log.Printf("Warning: cloud container actuator unavailable (%v); policy sync only", actErr)
@@ -1590,11 +1609,15 @@ skipAppHosting:
 	// The Postgres guardrail policy store (#2368), or nil if it is not
 	// installed below; guardrailPolicyStartupStore turns nil into fail-closed.
 	var guardrailPGStore guardrailpolicy.Store
+	// The startup pool, handed to the policy-store recovery retry (#2483)
+	// when a store's bootstrap failed over a pool that did connect.
+	var policyStorePool *pgxpool.Pool
 	if postgresConnString != "" {
 		pool, poolErr := connectToPostgres(postgresConnString, 5, 3*time.Second)
 		if poolErr != nil {
 			log.Printf("Warning: Failed to connect to PostgreSQL for network policy store: %v", poolErr)
 		} else {
+			policyStorePool = pool
 			// Wired independently of the network-policy store below, so a
 			// failure there does not leave this one on the stand-in.
 			if ceErr := codeEgressServer.InstallDurableStore(func() (CodingToolEgressPolicyStore, error) {
@@ -1671,11 +1694,24 @@ skipAppHosting:
 		}
 	}
 	guardrailPolicyServer.SetStore(guardrailPolicyStartupStore(postgresConnString != "", guardrailPGStore))
+	// Either policy store still on its fail-closed stand-in is retried in the
+	// background (5 s doubling to 60 s) until Postgres answers; the install
+	// is an atomic swap, and Provider() below follows it (#2483).
+	policyStoreRetry := newPolicyStoreRecovery(guardrailPolicyServer, codeEgressServer, policyStoreHealth, postgresConnString)
+	policyStoreRetry.syncHealth()
+	if policyStoreRetry.pending() {
+		log.Printf("Policy stores: retrying the Postgres store install every %s, up to every %s, until it succeeds", policyStoreRetryInitial, policyStoreRetryMax)
+		go policyStoreRetry.Run(context.Background(), policyStorePool)
+	}
 	// The deploy gate reads the same store (after the swap above).
 	recipeServer.SetGuardrailGate(guardrailPolicyServer.Provider(), config.GuardrailStagingRoot, config.GuardrailSnapshotDir)
 	if config.GuardrailStagingRoot == "" {
 		log.Printf("Guardrail gate: no --guardrail-staging-root; guardrail-gated recipe deploys are refused")
 	}
+	recipeServer.SetGuardrailDeployRateLimit(guardrailrate.New("gated deploy", config.GuardrailRateLimits.Deploy))
+	guardrailPolicyServer.SetRateLimits(
+		guardrailrate.New("guardrail policy set", config.GuardrailRateLimits.PolicySet),
+		guardrailrate.New("guardrail policy get", config.GuardrailRateLimits.PolicyGet))
 
 	// Managed-cluster reconciler (#1414): converges cluster records into
 	// control-plane + worker VMs (pure Decide policy in
@@ -2595,6 +2631,13 @@ skipAppHosting:
 			gatewayServer.SetSentinelAuthSecret([]byte(secret))
 		} else {
 			log.Printf("WARNING: CONTAINARIUM_SENTINEL_AUTH_SECRET is unset — /certs, /authorized-keys, /authorized-keys/sentinel will return 401 until configured")
+		}
+
+		// #2527: the jump host's AuthorizedKeysCommand asks Authorize with an
+		// ssh:authorize JWT. Opt-in; off keeps the route sentinel-only.
+		if config.SSHAuthzKeysCommand {
+			gatewayServer.SetSSHAuthzTokenFallback(true)
+			log.Printf("SSH authorization: /v1/ssh/authorize also accepts ssh:authorize tokens (jump host AuthorizedKeysCommand)")
 		}
 
 		// Sentinel ed25519 public key (#688). When set, the sentinel

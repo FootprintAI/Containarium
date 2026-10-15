@@ -117,6 +117,10 @@
       "description": "SecurityService provides container security scanning and reporting"
     },
     {
+      "name": "SentinelSSHBanService",
+      "description": "SentinelSSHBanService controls the enforcing plugin, not system fail2ban.\nThe sentinel mounts REST behind its admin HMAC and forwards to a local socket."
+    },
+    {
       "name": "TokensService",
       "description": "TokensService is the admin surface for JWT lifecycle.\n\nRevokeToken requires an admin role + tokens:write scope;\ntenants can't revoke other tenants' tokens. RefreshToken\nis open to any holder of a valid refresh token — that's\nthe whole point of the exchange flow."
     },
@@ -144,6 +148,142 @@
     "application/json"
   ],
   "paths": {
+    "/sentinel/ssh-bans/{listener}": {
+      "get": {
+        "summary": "Page through current bans on one independently enforcing listener.",
+        "operationId": "SentinelSSHBanService_ListSSHBans",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListSSHBansResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "listener",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "enum": [
+              "SSH_BAN_LISTENER_UNSPECIFIED",
+              "SSH_BAN_LISTENER_MAIN",
+              "SSH_BAN_LISTENER_ANONYMOUS"
+            ]
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int64"
+          },
+          {
+            "name": "pageToken",
+            "description": "Last returned normalized IP; iteration is in lexical IP order.",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "SentinelSSHBanService"
+        ]
+      }
+    },
+    "/sentinel/ssh-bans/{listener}/unban": {
+      "post": {
+        "summary": "Atomically clear exactly one source's counter and ban; admin-only.",
+        "operationId": "SentinelSSHBanService_UnbanSSHSource",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/UnbanSSHSourceResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "listener",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "enum": [
+              "SSH_BAN_LISTENER_UNSPECIFIED",
+              "SSH_BAN_LISTENER_MAIN",
+              "SSH_BAN_LISTENER_ANONYMOUS"
+            ]
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/UnbanSSHSourceBody"
+            }
+          }
+        ],
+        "tags": [
+          "SentinelSSHBanService"
+        ]
+      }
+    },
+    "/sentinel/ssh-bans/{listener}/{ip}": {
+      "get": {
+        "summary": "Inspect one source IP, including tracked, banned, and exempt states.",
+        "operationId": "SentinelSSHBanService_GetSSHBan",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetSSHBanResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "listener",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "enum": [
+              "SSH_BAN_LISTENER_UNSPECIFIED",
+              "SSH_BAN_LISTENER_MAIN",
+              "SSH_BAN_LISTENER_ANONYMOUS"
+            ]
+          },
+          {
+            "name": "ip",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "SentinelSSHBanService"
+        ]
+      }
+    },
     "/v1/actuation/containers/{containerId}/state": {
       "post": {
         "summary": "ReportContainerState records the calling host's observed state\nfor one of its assigned containers. The cloud uses this to\nsurface the user-facing containers.state field and (in a future\nslice) to react to FAILED reports with reassignment.",
@@ -3441,6 +3581,54 @@
             "required": false,
             "type": "integer",
             "format": "int32"
+          }
+        ],
+        "tags": [
+          "Code Runs"
+        ]
+      }
+    },
+    "/v1/containers/{username}/code-runs/{runName}:stop": {
+      "post": {
+        "summary": "Stop a box's code run",
+        "description": "Sends SIGTERM (SIGKILL with force) to a running code run's process group and reports the result. Idempotent: a run that has already exited is not signaled and the call succeeds. A run whose outcome is unknown (it predates this boot, or died before its exit was recorded) is FAILED_PRECONDITION, because its PID may have been reassigned. Box owner or collaborator, ssh:write scope.",
+        "operationId": "ContainerService_StopBoxRun",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/StopBoxRunResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "The box owner's username (the box is \u003cusername\u003e-container).",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "runName",
+            "description": "The run's name, as ListBoxRuns reports it.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/StopBoxRunBody"
+            }
           }
         ],
         "tags": [
@@ -10313,6 +10501,17 @@
       "default": "BOX_RUN_OUTCOME_UNSPECIFIED",
       "description": "BoxRunOutcome classifies a run record, the same three outcomes agent-box's\nResolveOutcome reports to process_list.\n\n - BOX_RUN_OUTCOME_RUNNING: Same boot, no exit code recorded, PID still alive.\n - BOX_RUN_OUTCOME_EXITED: An exit code is recorded (by agent-box's reaper or the run's exit\nsidecar).\n - BOX_RUN_OUTCOME_UNKNOWN: No exit code, and the PID is gone or belongs to an earlier boot: the\nrun was killed, OOMed, or the box restarted. Never reported as exited."
     },
+    "BoxRunStopSignal": {
+      "type": "string",
+      "enum": [
+        "BOX_RUN_STOP_SIGNAL_UNSPECIFIED",
+        "BOX_RUN_STOP_SIGNAL_NONE",
+        "BOX_RUN_STOP_SIGNAL_SIGTERM",
+        "BOX_RUN_STOP_SIGNAL_SIGKILL"
+      ],
+      "default": "BOX_RUN_STOP_SIGNAL_UNSPECIFIED",
+      "description": "BoxRunStopSignal is the signal StopBoxRun actually sent.\n\n - BOX_RUN_STOP_SIGNAL_NONE: The run had already exited, so nothing was signaled."
+    },
     "BridgeDNSState": {
       "type": "string",
       "enum": [
@@ -13712,6 +13911,31 @@
         }
       }
     },
+    "GetSSHBanResponse": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "$ref": "#/definitions/SSHBanStatus"
+        },
+        "policy": {
+          "$ref": "#/definitions/SSHBanPolicy"
+        },
+        "generation": {
+          "type": "string"
+        },
+        "sentinelId": {
+          "type": "string"
+        },
+        "listener": {
+          "$ref": "#/definitions/SSHBanListener"
+        },
+        "observedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "description": "GetSSHBanResponse binds a live observation to its policy and process generation."
+    },
     "GetSSHTrustBundleResponse": {
       "type": "object",
       "properties": {
@@ -15045,6 +15269,38 @@
           }
         }
       }
+    },
+    "ListSSHBansResponse": {
+      "type": "object",
+      "properties": {
+        "bans": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/SSHBanStatus"
+          }
+        },
+        "nextPageToken": {
+          "type": "string"
+        },
+        "policy": {
+          "$ref": "#/definitions/SSHBanPolicy"
+        },
+        "generation": {
+          "type": "string"
+        },
+        "sentinelId": {
+          "type": "string"
+        },
+        "listener": {
+          "$ref": "#/definitions/SSHBanListener"
+        },
+        "observedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "description": "ListSSHBansResponse returns current bans; pages are not a reserved snapshot."
     },
     "ListSecretsResponse": {
       "type": "object",
@@ -17172,6 +17428,75 @@
       ],
       "default": "SSH_AUTHZ_DECISION_UNSPECIFIED"
     },
+    "SSHBanListener": {
+      "type": "string",
+      "enum": [
+        "SSH_BAN_LISTENER_UNSPECIFIED",
+        "SSH_BAN_LISTENER_MAIN",
+        "SSH_BAN_LISTENER_ANONYMOUS"
+      ],
+      "default": "SSH_BAN_LISTENER_UNSPECIFIED",
+      "description": "SSHBanListener identifies independent plugin processes on one sentinel."
+    },
+    "SSHBanPolicy": {
+      "type": "object",
+      "properties": {
+        "maxFailures": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "duration": {
+          "type": "string",
+          "description": "Fixed window beginning at first connection, as in sshpiper v1.6.1."
+        },
+        "ignoreCidrs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "hash": {
+          "type": "string"
+        },
+        "maxEntries": {
+          "type": "integer",
+          "format": "int64"
+        }
+      },
+      "description": "SSHBanPolicy is the effective enforcing policy, not desired metadata."
+    },
+    "SSHBanState": {
+      "type": "string",
+      "enum": [
+        "SSH_BAN_STATE_UNSPECIFIED",
+        "SSH_BAN_STATE_CLEAR",
+        "SSH_BAN_STATE_TRACKING",
+        "SSH_BAN_STATE_BANNED",
+        "SSH_BAN_STATE_EXEMPT"
+      ],
+      "default": "SSH_BAN_STATE_UNSPECIFIED",
+      "description": "SSHBanState distinguishes positive observations from an unavailable plugin."
+    },
+    "SSHBanStatus": {
+      "type": "object",
+      "properties": {
+        "ip": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/definitions/SSHBanState"
+        },
+        "failures": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "description": "SSHBanStatus describes one source's live counter and fixed window deadline."
+    },
     "SSHCAKey": {
       "type": "object",
       "properties": {
@@ -18339,6 +18664,32 @@
         }
       }
     },
+    "StopBoxRunBody": {
+      "type": "object",
+      "properties": {
+        "force": {
+          "type": "boolean",
+          "description": "Send SIGKILL instead of SIGTERM."
+        }
+      },
+      "description": "StopBoxRunRequest stops a box run (#2603): SIGTERM, or SIGKILL with force,\nto the run's whole process group. Idempotent: stopping a run that has\nalready exited signals nothing and succeeds."
+    },
+    "StopBoxRunResponse": {
+      "type": "object",
+      "properties": {
+        "run": {
+          "$ref": "#/definitions/BoxRun",
+          "description": "The run's record after the stop. A run stopped by this call is reported\nas exited with the conventional 128+signal status (143 for SIGTERM, 137\nfor SIGKILL)."
+        },
+        "signal": {
+          "$ref": "#/definitions/BoxRunStopSignal"
+        },
+        "exited": {
+          "type": "boolean",
+          "description": "True once the run's process group is gone. False means the signal was\nsent but the process had not exited when the call returned (SIGTERM\nignored); call again with force."
+        }
+      }
+    },
     "StopContainerBody": {
       "type": "object",
       "properties": {
@@ -19267,6 +19618,40 @@
           "title": "Human-readable message"
         }
       }
+    },
+    "UnbanSSHSourceBody": {
+      "type": "object",
+      "properties": {
+        "ip": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "description": "UnbanSSHSourceRequest targets one IP and requires a 1..1024 byte operator reason."
+    },
+    "UnbanSSHSourceResponse": {
+      "type": "object",
+      "properties": {
+        "cleared": {
+          "type": "boolean"
+        },
+        "generation": {
+          "type": "string"
+        },
+        "sentinelId": {
+          "type": "string"
+        },
+        "listener": {
+          "$ref": "#/definitions/SSHBanListener"
+        },
+        "observedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "description": "UnbanSSHSourceResponse reports whether any live counter was actually cleared."
     },
     "UnreachableBackend": {
       "type": "object",
