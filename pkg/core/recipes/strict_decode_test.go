@@ -7,6 +7,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// TestLoadRejectsUnknownRecipeFields verifies that misspelt control keys are
+// rejected with the recipe ID and key, even when the ID follows the typo.
 func TestLoadRejectsUnknownRecipeFields(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -42,6 +44,8 @@ func TestLoadRejectsUnknownRecipeFields(t *testing.T) {
 	}
 }
 
+// TestLoadUnknownFieldsNameEachRecipe checks that errors from multiple recipes
+// retain their own recipe IDs and original YAML line numbers.
 func TestLoadUnknownFieldsNameEachRecipe(t *testing.T) {
 	err := New().LoadFromBytes([]byte(`recipes:
   - id: first
@@ -66,6 +70,8 @@ func TestLoadUnknownFieldsNameEachRecipe(t *testing.T) {
 	}
 }
 
+// TestLoadUnknownFieldsInFlowRecipes verifies that recipes sharing a source
+// line receive distinct error attribution without implicating valid recipes.
 func TestLoadUnknownFieldsInFlowRecipes(t *testing.T) {
 	err := New().LoadFromBytes([]byte(`recipes: [{id: valid, image: x}, {id: first, image: x, requires_gup: true}, {id: second, image: x, requires_gup: true}]`))
 	if err == nil {
@@ -81,6 +87,8 @@ func TestLoadUnknownFieldsInFlowRecipes(t *testing.T) {
 	}
 }
 
+// TestLoadRejectsUnknownCatalogField checks that unknown document-level keys
+// are rejected without attributing the catalog error to a valid recipe.
 func TestLoadRejectsUnknownCatalogField(t *testing.T) {
 	err := New().LoadFromBytes([]byte("recipes:\n  - id: valid\n    image: x\nrecpies: []\n"))
 	if err == nil || !strings.Contains(err.Error(), "recpies") {
@@ -91,6 +99,8 @@ func TestLoadRejectsUnknownCatalogField(t *testing.T) {
 	}
 }
 
+// TestLoadUnknownFieldPreservesCatalog ensures that a failed reload leaves the
+// previous catalog intact instead of publishing a partial replacement.
 func TestLoadUnknownFieldPreservesCatalog(t *testing.T) {
 	m := New()
 	if err := m.LoadFromBytes([]byte("recipes:\n  - id: original\n    image: x\n")); err != nil {
@@ -105,6 +115,8 @@ func TestLoadUnknownFieldPreservesCatalog(t *testing.T) {
 	}
 }
 
+// TestEmbeddedCatalogLoadsEveryRecipe checks that strict decoding accepts every
+// recipe declared in the embedded catalog and makes each ID retrievable.
 func TestEmbeddedCatalogLoadsEveryRecipe(t *testing.T) {
 	data, err := embeddedFS.ReadFile("recipes.yaml")
 	if err != nil {
@@ -135,6 +147,8 @@ func TestEmbeddedCatalogLoadsEveryRecipe(t *testing.T) {
 	}
 }
 
+// TestLoadStrictCatalogPreservesValidYAML verifies that strict field checking
+// preserves shared YAML anchors and arbitrary environment variable names.
 func TestLoadStrictCatalogPreservesValidYAML(t *testing.T) {
 	m := New()
 	if err := m.LoadFromBytes([]byte(`recipes:
@@ -168,6 +182,8 @@ func TestLoadStrictCatalogPreservesValidYAML(t *testing.T) {
 	}
 }
 
+// TestLoadEmptyCatalog checks that the loader continues to accept the supported
+// empty YAML documents and empty recipe lists.
 func TestLoadEmptyCatalog(t *testing.T) {
 	for _, catalog := range []string{"", "# empty catalog\n", "null", "{}", "recipes: []", "recipes:\n"} {
 		m := New()
