@@ -79,6 +79,10 @@ func newFirewallFixture(t *testing.T) *firewallFixture {
 		t.Fatal("run with sudo unshare --net; host firewall execution is forbidden")
 	}
 	f := &firewallFixture{t: t, dir: t.TempDir(), addr: retryUnusedAddress(t), bridgeStop: make(chan struct{}), bridgeDone: make(chan struct{})}
+	// Activate connection tracking before creating baseline flows. Installing
+	// the first conntrack rule only after a handshake misclassifies that
+	// previously untracked flow as NEW and invalidates session-survival proof.
+	f.command("iptables", "-A", "INPUT", "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT")
 	_, f.port, _ = net.SplitHostPort(f.addr)
 	f.conf = filepath.Join(f.dir, "fail2ban")
 	f.command("cp", "-R", "/etc/fail2ban", f.conf)
@@ -204,9 +208,12 @@ func (f *firewallFixture) direct(source string, key ssh.Signer) error {
 // TestIntegrationGuardedSSHLiveFirewall measures a multi-minute real outage.
 func TestIntegrationGuardedSSHLiveFirewall(t *testing.T) {
 	f := newFirewallFixture(t)
-	controller, socket := guardedControl(t, f.addr, 10*time.Minute)
+	healthyAddr := retryUnusedAddress(t)
+	controller, socket := guardedControl(t, f.addr, 10*time.Minute, healthyAddr)
 	main := newConfiguredRetryFixture(t, 3, 1, retryMode{routed: true, controlSocket: socket, backend: f.addr, backendUser: "root"})
 	anon := newConfiguredRetryFixture(t, 3, 1, retryMode{routed: true, anonymous: true, controlSocket: socket, backend: f.addr, backendUser: "root"})
+	healthy := newConfiguredRetryFixture(t, 3, 1, retryMode{routed: true, controlSocket: socket, backend: healthyAddr})
+	healthy.retryBackend(t)
 	keys := string(ssh.MarshalAuthorizedKey(main.upstream.PublicKey())) + string(ssh.MarshalAuthorizedKey(anon.upstream.PublicKey()))
 	f.write("authorized_keys", keys)
 	if err := f.direct("127.0.0.9", main.upstream); err != nil {
@@ -260,6 +267,9 @@ func TestIntegrationGuardedSSHLiveFirewall(t *testing.T) {
 		}
 		wg.Wait()
 		clients += 2
+		if err := retryHandshake(healthy.addr, "127.0.0.2", healthy.keys[0]); err != nil {
+			t.Fatalf("outage blocked an unrelated healthy backend: %v", err)
+		}
 		if _, _, err := established.SendRequest("keepalive@openssh.com", true, nil); err != nil {
 			t.Fatalf("established session interrupted by setup gate: %v", err)
 		}

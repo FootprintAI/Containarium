@@ -258,6 +258,21 @@ func TestControlSuccessfulSessionsReleaseSetupCapacity(t *testing.T) {
 	}
 }
 
+// TestControlReadyRejectsRemovedInventory cannot promote a stale selected route.
+func TestControlReadyRejectsRemovedInventory(t *testing.T) {
+	f := newControlFixture(t)
+	ref := f.open(f.client, pb.SSHBanListener_SSH_BAN_LISTENER_MAIN, "removed")
+	token := f.route(f.client, ref)
+	l := f.acquire(f.client, ref, token, "127.0.0.1:22")
+	f.server.mu.Lock()
+	f.server.cfg.Resolve = func(string) (string, error) { return "", fmt.Errorf("removed route") }
+	f.server.mu.Unlock()
+	r, err := f.client.CompleteSSHUpstream(t.Context(), &pb.CompleteSSHUpstreamRequest{Connection: ref, RouteToken: token, LeaseToken: l.LeaseToken, Outcome: pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_SSH_READY})
+	if err == nil && r.GetAccepted() {
+		t.Fatal("removed inventory endpoint became an established session")
+	}
+}
+
 // TestControlUnavailableTransportIsBounded keeps private RPC calls finite.
 func TestControlUnavailableTransportIsBounded(t *testing.T) {
 	f := newControlFixture(t)

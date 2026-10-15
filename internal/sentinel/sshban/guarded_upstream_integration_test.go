@@ -3,6 +3,7 @@
 package sshban
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -11,11 +12,12 @@ import (
 
 	"github.com/footprintai/containarium/internal/sentinel/sshcontrol"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+	"golang.org/x/crypto/ssh"
 	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 // guardedControl runs the production private service with an elapsed initial hold.
-func guardedControl(t *testing.T, backend string, window time.Duration) (*sshcontrol.Controller, string) {
+func guardedControl(t *testing.T, backend string, window time.Duration, extraBackends ...string) (*sshcontrol.Controller, string) {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "upstream-integration-")
 	if err != nil {
@@ -25,6 +27,9 @@ func guardedControl(t *testing.T, backend string, window time.Duration) (*sshcon
 	var offset atomic.Int64
 	offset.Store(int64(-window))
 	p := &pb.SSHUpstreamPolicy{InitialDelay: durationpb.New(time.Second), MaxDelay: durationpb.New(8 * time.Second), Window: durationpb.New(window), SetupTimeout: durationpb.New(3 * time.Second), FailureBudget: 2, RiskPerAttempt: 1, MaxBackends: 8, MaxPending: 8, MaxConnections: 1024, Jitter: 0.25, EgressGroup: "sentinel-loopback", Routes: []*pb.SSHUpstreamRoute{{BackendId: "backend", Endpoint: backend}}}
+	for _, endpoint := range extraBackends {
+		p.Routes = append(p.Routes, &pb.SSHUpstreamRoute{BackendId: "healthy/" + endpoint, Endpoint: endpoint})
+	}
 	c, err := sshcontrol.New(sshcontrol.Config{Policy: p, StatePath: filepath.Join(dir, "risk.json"), Now: func() time.Time { return time.Now().Add(time.Duration(offset.Load())) }})
 	if err != nil {
 		t.Fatal(err)
@@ -40,6 +45,45 @@ func guardedControl(t *testing.T, backend string, window time.Duration) (*sshcon
 	}
 	t.Cleanup(stop)
 	return c, socket
+}
+
+// wrongSignatureSigner offers an allowed public key without possessing its secret.
+type wrongSignatureSigner struct {
+	allowed ssh.PublicKey
+	wrong   ssh.Signer
+}
+
+// PublicKey deliberately offers an identity that the routing child allows.
+func (s wrongSignatureSigner) PublicKey() ssh.PublicKey { return s.allowed }
+
+// Sign proves possession of a different key so real sshpiperd must reject it.
+func (s wrongSignatureSigner) Sign(r io.Reader, data []byte) (*ssh.Signature, error) {
+	return s.wrong.Sign(r, data)
+}
+
+// TestIntegrationGuardedSSHClientFailures keeps signatures/passwords accountable.
+func TestIntegrationGuardedSSHClientFailures(t *testing.T) {
+	for _, password := range []bool{false, true} {
+		t.Run(map[bool]string{false: "signature", true: "password"}[password], func(t *testing.T) {
+			backend := retryUnusedAddress(t)
+			_, socket := guardedControl(t, backend, 10*time.Minute)
+			f := newConfiguredRetryFixture(t, 100, 1, retryMode{routed: true, password: password, controlSocket: socket, backend: backend})
+			f.retryBackend(t)
+			if password {
+				if err := retryHandshakeAuth(f.addr, "127.0.0.2", ssh.Password("wrong")); err == nil {
+					t.Fatal("invalid password authenticated")
+				}
+			} else {
+				_, wrong := integrationKey(t, t.TempDir(), "signature-wrong")
+				if err := retryHandshake(f.addr, "127.0.0.2", wrongSignatureSigner{allowed: f.keys[0].PublicKey(), wrong: wrong}); err == nil {
+					t.Fatal("forged key signature authenticated")
+				}
+			}
+			if got := f.waitForFailures(t, "127.0.0.2", 1).Status.GetFailures(); got < 1 {
+				t.Fatal("client denial no longer counted")
+			}
+		})
+	}
 }
 
 // TestIntegrationGuardedSSHRefusal shares cooldown across real main/anon chains.

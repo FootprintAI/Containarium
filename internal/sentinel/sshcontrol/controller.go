@@ -33,17 +33,18 @@ type Config struct {
 // Controller is the one process-shared owner for main and anonymous admission.
 type Controller struct {
 	pb.UnimplementedSentinelSSHUpstreamServiceServer
-	mu          sync.Mutex
-	cfg         Config
-	gate        *sshgate.Gate
-	generation  string
-	readyAt     time.Time
-	aliases     map[string]string
-	versions    map[string]uint64
-	connections map[string]*connection
-	leases      map[string]reservation
-	fault       error
-	stateLock   *os.File
+	mu              sync.Mutex
+	cfg             Config
+	gate            *sshgate.Gate
+	generation      string
+	readyAt         time.Time
+	aliases         map[string]string
+	versions        map[string]uint64
+	connections     map[string]*connection
+	anonymousRoutes map[string]string
+	leases          map[string]reservation
+	fault           error
+	stateLock       *os.File
 }
 
 // New validates policy and restores conservative risk before exposing admission.
@@ -73,7 +74,7 @@ func New(cfg Config) (*Controller, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := &Controller{cfg: cfg, gate: g, generation: crand.Text(), aliases: map[string]string{}, versions: map[string]uint64{}, connections: map[string]*connection{}, leases: map[string]reservation{}}
+	c := &Controller{cfg: cfg, gate: g, generation: crand.Text(), aliases: map[string]string{}, versions: map[string]uint64{}, connections: map[string]*connection{}, leases: map[string]reservation{}, anonymousRoutes: map[string]string{}}
 	if err := privateDirectory(filepath.Dir(cfg.StatePath)); err != nil {
 		return nil, err
 	}
@@ -111,13 +112,16 @@ type connection struct {
 
 // reservation retains authority for exactly one admitted backend setup.
 type reservation struct {
-	lease        sshgate.Lease
-	owner, route string
-	proxy        bool
+	lease                  sshgate.Lease
+	owner, route, endpoint string
+	proxy                  bool
 }
 
 // validEndpoint accepts a concrete network endpoint, never an arbitrary URI.
 func validEndpoint(endpoint string) bool {
+	if len(endpoint) > 512 {
+		return false
+	}
 	host, port, err := net.SplitHostPort(endpoint)
 	n, perr := strconv.Atoi(port)
 	return err == nil && host != "" && perr == nil && n > 0 && n <= 65535
@@ -225,7 +229,7 @@ func (c *Controller) resolve(s *connection, endpoint string) (string, error) {
 			return r.BackendId, nil
 		}
 	}
-	if endpoint == s.anonymousEndpoint && s.anonymousID != "" {
+	if endpoint == s.anonymousEndpoint && s.anonymousID != "" && c.anonymousRoutes[s.anonymousID] == endpoint {
 		return s.anonymousID, nil
 	}
 	return "", errors.New("selected endpoint is absent from authoritative inventory")
@@ -233,6 +237,9 @@ func (c *Controller) resolve(s *connection, endpoint string) (string, error) {
 
 // identify preserves one budget across endpoints and stable backend aliases.
 func (c *Controller) identify(id, endpoint string) (sshgate.Key, uint64, error) {
+	if id == "" || len(id) > 512 {
+		return sshgate.Key{}, 0, errors.New("invalid canonical backend identity")
+	}
 	ia, ea := "id:"+id, "endpoint:"+endpoint
 	canonical, existing := c.aliases[ia], c.aliases[ea]
 	if canonical != "" && existing != "" && canonical != existing {
@@ -244,7 +251,14 @@ func (c *Controller) identify(id, endpoint string) (sshgate.Key, uint64, error) 
 	if canonical == "" {
 		canonical = id
 	}
-	if len(c.aliases)+2 > int(c.cfg.Policy.MaxBackends)*16 {
+	needed := 0
+	if c.aliases[ia] == "" {
+		needed++
+	}
+	if c.aliases[ea] == "" {
+		needed++
+	}
+	if len(c.aliases)+needed > int(c.cfg.Policy.MaxBackends)*16 {
 		return sshgate.Key{}, 0, errors.New("backend alias capacity")
 	}
 	version := c.versions[canonical]
@@ -301,7 +315,7 @@ func (c *Controller) AcquireSSHUpstream(_ context.Context, r *pb.AcquireSSHUpstr
 		return deny("backend admission unavailable", time.Time{})
 	}
 	token := crand.Text()
-	c.leases[token] = reservation{lease: lease, owner: connectionKey(s.ref), route: s.route, proxy: r.ProxyCredential}
+	c.leases[token] = reservation{lease: lease, owner: connectionKey(s.ref), route: s.route, proxy: r.ProxyCredential, endpoint: r.Endpoint}
 	s.lease = token
 	if err := c.persist(); err != nil {
 		return deny("cannot commit upstream reservation", time.Time{})
@@ -325,9 +339,14 @@ func (c *Controller) CompleteSSHUpstream(_ context.Context, r *pb.CompleteSSHUps
 		return &pb.CompleteSSHUpstreamResponse{}, nil
 	}
 	outcome, skip := sshgate.SetupFailed, false
+	stale := false
 	switch r.Outcome {
 	case pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_SSH_READY:
 		outcome = sshgate.SetupSucceeded
+		id, err := c.resolve(s, l.endpoint)
+		if err != nil || c.aliases["id:"+id] != l.lease.Key.Backend || l.lease.Route != c.versions[l.lease.Key.Backend] {
+			outcome, skip, stale = sshgate.SetupFailed, true, true
+		}
 	case pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_TCP_REFUSED:
 		outcome, skip = sshgate.DialRefused, true
 	case pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_CONNECT_FAILED, pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_HOST_KEY_FAILED:
@@ -344,6 +363,7 @@ func (c *Controller) CompleteSSHUpstream(_ context.Context, r *pb.CompleteSSHUps
 		return nil, status.Error(codes.InvalidArgument, "unknown upstream outcome")
 	}
 	accepted := c.gate.Complete(l.lease, outcome)
+	accepted = accepted && !stale
 	delete(c.leases, r.LeaseToken)
 	s.lease = ""
 	if skip {
@@ -408,6 +428,35 @@ func (c *Controller) RegisterSSHAnonymousRoute(_ context.Context, r *pb.Register
 		return nil, status.Error(codes.InvalidArgument, "invalid anonymous Ensure route")
 	}
 	s.anonymousID, s.anonymousEndpoint = "anonymous/"+r.BoxName, r.Endpoint
+	old := c.anonymousRoutes[s.anonymousID]
+	if old == "" && len(c.anonymousRoutes) >= int(c.cfg.Policy.MaxBackends)*16 {
+		s.authSkip, s.terminalSkip = true, true
+		return nil, status.Error(codes.ResourceExhausted, "anonymous route capacity")
+	}
+	c.anonymousRoutes[s.anonymousID] = r.Endpoint
+	id, err := c.resolve(s, r.Endpoint)
+	if err != nil {
+		return nil, err
+	}
+	key, version, err := c.identify(id, r.Endpoint)
+	if err != nil {
+		s.authSkip, s.terminalSkip = true, true
+		return nil, status.Error(codes.FailedPrecondition, "conflicting anonymous route")
+	}
+	if _, _, err := c.identify(s.anonymousID, r.Endpoint); err != nil {
+		s.authSkip, s.terminalSkip = true, true
+		return nil, status.Error(codes.FailedPrecondition, "conflicting anonymous identity")
+	}
+	if old != "" && old != r.Endpoint {
+		version++
+		if err := c.gate.Register(key, version); err != nil {
+			return nil, err
+		}
+		c.versions[key.Backend] = version
+	}
+	if err := c.persist(); err != nil {
+		return nil, status.Error(codes.Unavailable, "cannot commit anonymous identity")
+	}
 	return &pb.RegisterSSHAnonymousRouteResponse{}, nil
 }
 
