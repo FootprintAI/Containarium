@@ -40,6 +40,11 @@ Typed in-process leases/outcomes are internal Go contracts. New inter-process
 messages will be defined in `.proto` before private-socket integration; no RPC
 is introduced by this milestone.
 
+State is in memory. Before guarded listeners can use a replacement controller,
+integration must preserve prior risk history or wait out a verified jail window;
+a process restart must not silently renew its retry budget. Lease-owner binding
+rejects foreign completions but does not itself provide restart continuity.
+
 Tests must cover exponential/capped/jittered delays, shared admission, weighted
 budget/window edges, healthy-success history retention, one SSH-ready probe,
 expiry, stale/tampered/duplicate outcomes, route updates, recovery hints, backend
