@@ -147,7 +147,7 @@ func init() {
 	// gRPC settings
 	daemonCmd.Flags().StringVar(&daemonAddress, "address", "0.0.0.0", "Address to listen on")
 	daemonCmd.Flags().StringVar(&daemonGuardrailStagingRoot, "guardrail-staging-root", "",
-		"Absolute directory a guardrail-gated recipe deploy reads its staged dataset from, as <root>/<name>/<staging_ref>. Empty = gated deploys are refused")
+		"Absolute directory a guardrail-gated recipe deploy reads its staged dataset from, as <root>/<caller subject>/<staging_ref>. Empty = gated deploys are refused")
 	daemonCmd.Flags().StringVar(&daemonGuardrailSnapshotDir, "guardrail-snapshot-dir", os.Getenv("CONTAINARIUM_GUARDRAIL_SNAPSHOT_DIR"),
 		"Daemon-private directory, outside the staging root, for the gate's verification snapshots (a full copy of each staged dataset while a deploy runs; point it at provisioned storage, not tmpfs). Empty = the OS temp dir (env: CONTAINARIUM_GUARDRAIL_SNAPSHOT_DIR)")
 	daemonCmd.Flags().IntVar(&daemonPort, "port", 50051, "gRPC port to listen on")
@@ -665,6 +665,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		},
 		GuardrailStagingRoot:       daemonGuardrailStagingRoot,
 		GuardrailSnapshotDir:       daemonGuardrailSnapshotDir,
+		GuardrailRateLimits:        daemonGuardrailRateLimits(),
 		CaddyAdminURL:              caddyAdminURL,
 		HostIP:                     hostIPFromCIDR(networkSubnet),
 		DaemonConfigStore:          daemonConfigStore,

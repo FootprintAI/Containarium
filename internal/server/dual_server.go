@@ -40,6 +40,7 @@ import (
 	"github.com/footprintai/containarium/internal/guardrail"
 	"github.com/footprintai/containarium/internal/guardrailpolicy"
 	guardrailpolicypg "github.com/footprintai/containarium/internal/guardrailpolicy/pgstore"
+	"github.com/footprintai/containarium/internal/guardrailrate"
 	"github.com/footprintai/containarium/internal/metrics"
 	"github.com/footprintai/containarium/internal/metrics/platformstats"
 	"github.com/footprintai/containarium/internal/modelgateway"
@@ -112,6 +113,9 @@ type DualServerConfig struct {
 	// GuardrailSnapshotDir is where the gate makes verification snapshots
 	// ("" = the OS temp dir). Daemon-private, outside the staging root.
 	GuardrailSnapshotDir string
+	// GuardrailRateLimits are the per-subject limits on gated deploys and
+	// guardrail policy Set/Get (#2404). Zero = disabled.
+	GuardrailRateLimits GuardrailRateLimits
 
 	// Swagger settings
 	SwaggerDir string
@@ -1676,6 +1680,10 @@ skipAppHosting:
 	if config.GuardrailStagingRoot == "" {
 		log.Printf("Guardrail gate: no --guardrail-staging-root; guardrail-gated recipe deploys are refused")
 	}
+	recipeServer.SetGuardrailDeployRateLimit(guardrailrate.New("gated deploy", config.GuardrailRateLimits.Deploy))
+	guardrailPolicyServer.SetRateLimits(
+		guardrailrate.New("guardrail policy set", config.GuardrailRateLimits.PolicySet),
+		guardrailrate.New("guardrail policy get", config.GuardrailRateLimits.PolicyGet))
 
 	// Managed-cluster reconciler (#1414): converges cluster records into
 	// control-plane + worker VMs (pure Decide policy in

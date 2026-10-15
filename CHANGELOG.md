@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.104.0] - 2026-10-15
+
+_The SSH authorization contract and a self-hosted decider with an `ssh_keys` registry, best-effort macOS 11 client builds, and a fix that lets the OpenVAS module drive a real scanner box._
+
+### Fixed
+
+- **OpenVAS module could not run `gvm-cli`, and reported a false critical on every box** (#2426). `gvm-cli` refuses to run as root and `incus exec` starts as root, so the module now runs it as the `_gvm` service user (HOME set to the openvas state directory, where `gvm-tools.conf` lives). Results from the "Report outdated / end-of-life Scan Engine" NVT are dropped: they score CVSS 10 but describe the scanner's own packaging, not the scanned box. `docs/OPENVAS-SCANNING.md` now lists the scanner box requirements.
+
 ### Added
 
 - **SSH live authorization contract** (#2516). `proto/containarium/v1/ssh_authz.proto` defines `SSHAuthzService.Authorize` (`POST /v1/ssh/authorize`) with its request/response messages and the `SSHKeyType`, `SSHAuthzDecision` and `SSHDenyReason` enums from `docs/architecture/ssh-live-authorization.md`. The daemon serves it as a stub that returns `Unimplemented` (HTTP 501) until the decider lands. The REST route accepts only a valid sentinel request signature: unsigned or bad signatures get 401, a JWT is not accepted, and a verified call carries the new `ssh:authorize` scope. `SSHSessionRecord` gains `user_id`, `authz_decision`, `deny_reason` and `enforced` (fields 11-14), and `SSHSessionPhase` gains `SSH_SESSION_PHASE_DENIED`; ingest does not handle them yet. The vendored actuation contract gains `ActuationService.AuthorizeSSH` (same messages) and `Assignment.kind` / `Assignment.user_id` with an `AssignmentKind` enum (`UNSPECIFIED` is read as `CONTAINER`); the daemon does not act on `kind` yet, and the cloud repo's copy of `actuation_service.proto` must be synced.

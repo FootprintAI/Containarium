@@ -13,6 +13,7 @@ import (
 	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/guardrailpolicy"
+	"github.com/footprintai/containarium/internal/guardrailrate"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -41,6 +42,9 @@ type GuardrailPolicyServer struct {
 	// onChange runs after a policy is stored, so the model gateway's cached
 	// read does not delay a new rule (#2454). Startup wiring only.
 	onChange func()
+	// setLimit and getLimit rate-limit Set and Get per subject (#2404;
+	// nil = disabled). Admins are not exempt from setLimit.
+	setLimit, getLimit *guardrailrate.Limiter
 }
 
 func NewGuardrailPolicyServer(store guardrailpolicy.Store) *GuardrailPolicyServer {
@@ -161,6 +165,9 @@ func (s *GuardrailPolicyServer) GetGuardrailPolicy(ctx context.Context, _ *pb.Ge
 	if _, _, ok := auth.SubjectFromGRPCContext(ctx); !ok {
 		return nil, status.Error(codes.Unauthenticated, "no authenticated subject in request context")
 	}
+	if err := checkGuardrailRate(ctx, s.getLimit); err != nil {
+		return nil, err
+	}
 	p, err := s.store.Get(ctx)
 	if errors.Is(err, guardrailpolicy.ErrNotConfigured) {
 		return &pb.GetGuardrailPolicyResponse{Configured: false}, nil
@@ -181,6 +188,9 @@ func (s *GuardrailPolicyServer) GetGuardrailPolicy(ctx context.Context, _ *pb.Ge
 
 func (s *GuardrailPolicyServer) SetGuardrailPolicy(ctx context.Context, req *pb.SetGuardrailPolicyRequest) (*pb.SetGuardrailPolicyResponse, error) {
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
+	if err := checkGuardrailRate(ctx, s.setLimit); err != nil {
 		return nil, err
 	}
 	if err := guardrailpolicy.Validate(req.GetPolicy(), req.GetTrustedSigners()); err != nil {
