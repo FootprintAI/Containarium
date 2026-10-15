@@ -182,7 +182,9 @@ func NewAdapter(ctx context.Context, child libplugin.SshPiperPluginClient, dial 
 			return fmt.Errorf("host verification has no matching active attempt")
 		}
 		if caps["VerifyHostKey"] {
-			r, err := child.VerifyHostKey(ctx, &libplugin.VerifyHostKeyRequest{Meta: metadata(c), Hostname: b.host, Netaddress: b.conn.RemoteAddr().String(), Key: key})
+			verifyCtx, cancel := context.WithDeadline(ctx, b.expires)
+			defer cancel()
+			r, err := child.VerifyHostKey(verifyCtx, &libplugin.VerifyHostKeyRequest{Meta: metadata(c), Hostname: b.host, Netaddress: b.conn.RemoteAddr().String(), Key: key})
 			if err != nil {
 				return err
 			}
