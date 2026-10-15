@@ -3,6 +3,36 @@
 # =============================================================================
 # Unified variable definitions for both dev and production consumers.
 
+variable "ssh_ban_max_failures" {
+  description = "Sentinel SSH failed-callback threshold per source IP."
+  type        = number
+  default     = 100
+  validation {
+    condition     = var.ssh_ban_max_failures >= 1 && var.ssh_ban_max_failures <= 4294967295 && floor(var.ssh_ban_max_failures) == var.ssh_ban_max_failures
+    error_message = "SSH ban max failures must be a positive uint32 integer."
+  }
+}
+
+variable "ssh_ban_duration_seconds" {
+  description = "Fixed sentinel SSH failure window from the first connection."
+  type        = number
+  default     = 300
+  validation {
+    condition     = var.ssh_ban_duration_seconds >= 1 && var.ssh_ban_duration_seconds <= 86400 && floor(var.ssh_ban_duration_seconds) == var.ssh_ban_duration_seconds
+    error_message = "SSH ban duration must be an integer from 1 to 86400 seconds."
+  }
+}
+
+variable "ssh_ban_ignore_cidrs" {
+  description = "Narrow IPv4/IPv6 CIDRs exempt from sentinel IP banning, never key authentication."
+  type        = list(string)
+  default     = []
+  validation {
+    condition     = alltrue([for prefix in var.ssh_ban_ignore_cidrs : can(cidrhost(prefix, 0)) && can(regex("^[0-9a-fA-F:.]+/[0-9]+$", prefix)) && !can(regex("(?i)::ffff:", prefix))])
+    error_message = "SSH ban exemptions must be IPv4/IPv6 CIDRs without whitespace, flags, or mapped IPv4 addresses."
+  }
+}
+
 # -----------------------------------------------------------------------------
 # Project & Region
 # -----------------------------------------------------------------------------

@@ -18,7 +18,7 @@ When using the sentinel + spot VM architecture, SSH traffic flows through sshpip
                                                                         10.0.3.101
 ```
 
-- **sshpiper** (port 22) acts as an SSH reverse proxy on the sentinel. It sees real client IPs and bans brute-force attackers via the `failtoban` plugin (3 failures = 1h ban).
+- **sshpiper** (port 22) acts as an SSH reverse proxy on the sentinel. It sees real client IPs. The `containariumd sentinel ssh-ban-plugin` enforces a configurable failure budget (default 100 failed callbacks per source IP in a fixed 300-second window).
 - **sshd** on the sentinel listens on port 2222 for management/IAP access only.
 - Authorized keys are synced from the spot VM whenever the daemon's key set changes — creating a box, deleting one, or adding/removing a key makes the daemon call the sentinel's `POST /sentinel/keys/resync`, so a new box is SSH-reachable as soon as it is running. A 2-minute periodic sync remains as the convergence backstop for anything a notification missed (sentinel restart, daemon crash mid-create). sshpiper routes each user to the spot VM automatically.
 - Client SSH config is unchanged — users connect to the sentinel's static IP on port 22 as before.
@@ -241,10 +241,10 @@ ssh -p 2201 alice@35.x.x.x
 
 ### 1. SSH Brute-Force Protection (Sentinel Architecture)
 
-When using the sentinel HA architecture, SSH brute-force protection is handled by **sshpiper** with its built-in `failtoban` plugin:
+When using the sentinel HA architecture, SSH brute-force protection is handled by **sshpiper** with Containarium's `ssh-ban-plugin`, which preserves the pinned upstream `failtoban` callback accounting and adds authoritative inspection and targeted unban:
 
 - sshpiper sits on the sentinel's port 22 and sees real client IPs
-- After 3 failed auth attempts, the client IP is banned for 1 hour
+- After `ssh_ban_max_failures` failed callbacks (default 100) within the fixed `ssh_ban_duration_seconds` window from first connection (default 300s), the source IP is blocked until that window expires
 - This replaces the previous iptables DNAT approach, which masked real client IPs and caused fail2ban on the spot VM to ban the sentinel itself (blocking all users)
 
 **Verify sshpiper is running:**
@@ -291,7 +291,7 @@ ssh-add ~/.ssh/alice_container
 ### 4. Firewall Rules
 
 **With sentinel architecture**:
-- Port 22 on sentinel: sshpiper (SSH reverse proxy with failtoban)
+- Port 22 on sentinel: sshpiper (SSH reverse proxy with source-IP ban plugin)
 - Port 2222 on sentinel: sshd (management/IAP access)
 - Port 80/443/8080: DNAT'd to spot VM
 - Spot VM has no external IP (internal VPC only)
@@ -559,64 +559,76 @@ This is safe for multi-tenant deployments: the listener binds inside the box's n
 
 > **Note:** There is no single-command solution today for "create an in-box listener reachable inside the box from an outside SSH session" — this requires a design change to run an sshd inside each box. See [issue #808](https://github.com/FootprintAI/Containarium/issues/808) for discussion.
 
-### Per-source-IP rate limit on the sentinel (bursty SSH automation)
+### Source-IP failure budgets on the sentinel (shared-NAT automation)
 
-The public SSH gateway (SSHPiper "sentinel") enforces a **per-source-IP
-connection limit**. A burst of short-lived SSH connections from one IP — a CI
-deploy loop, say — can trip it: the first several succeed, then subsequent ones
-are dropped mid-handshake with a bare `Connection closed by <sentinel> port 22`
-(the TCP + SSH KEX complete, then the sentinel closes the stream), and it
-recovers after a short cooldown. There is no protocol-level way for SSHPiper to
-tell the client "you were rate-limited," so the drop looks like a generic
-connection failure (issue #933).
+The gateway tracks failed authentication and pipe-creation callbacks per source
+IP. Successful short-lived connections do not consume the failure budget.
+Pipe-creation failures can also describe negotiation or backend problems, so
+the count is not a count of proven bad keys. Clients behind one NAT share the
+budget: one broken workflow can block another workflow with a valid key (#933).
 
-**Where the limit lives.** It's SSHPiper's built-in "failtoban" limiter, set on
-the `sshpiperd` command line in
-`terraform/modules/containarium/scripts/sshpiper.service.tmpl`:
+For compatibility with `failtoban` v1.6.1, the fixed window starts at the first
+connection, not when the threshold is crossed. Increasing the count does not
+refresh that window. A persistently failing workflow can trigger a new ban in
+the next window; observing repeated bans does not prove one expiry was extended.
 
+**Configuration.** The Terraform module accepts the same policy for the main
+and enabled anonymous listeners:
+
+```hcl
+ssh_ban_max_failures     = 100
+ssh_ban_duration_seconds = 300
+ssh_ban_ignore_cidrs     = ["192.0.2.4/32", "2001:db8::/48"] # replace with controlled egress
 ```
---max-failures 100      # ban a source IP after this many failed handshakes …
---ban-duration 5m       # … for this long
-```
 
-Rapid short-lived connections that don't complete a full session can register
-as failures and accumulate toward `--max-failures`, so high-churn automation
-trips it far sooner than a human would.
+The default exemption list is empty. Exemptions skip source-IP banning only;
+keys, routing and authorization are still checked. Avoid exempting entire
+shared public-runner fleets. Invalid thresholds, durations and CIDRs fail
+validation. Each listener holds at most 65,536 live source entries; at capacity
+it rejects additional untracked sources rather than evicting active bans.
 
-**The shared-NAT trap.** CI runners commonly egress through a small pool of
-public IPs, so *many independent clients present as one source IP* and share a
-single IP's budget — one saturating client makes every other client on the same
-egress IP fail. Confirm your automation's egress IPs before assuming the limit
-is "too low."
+**Authoritative diagnosis.** The existing sentinel admin HTTP server exposes
+these protobuf-defined routes, all requiring its **admin HMAC**, like the
+tunnel-token admin API. They query the enforcing process through its private
+Unix socket; `/sentinel/fail2ban/*` controls the separate system fail2ban only.
 
-**Diagnose it.** From the backend, `containarium debug_container <user>` reports
-whether the host-side path is healthy and (when a sentinel fronts the backend)
-points at the sentinel's ban table. A drop that only happens under load, only
-from a high-volume source IP, and clears within seconds is this limiter — not
-the container's own `sshd` (whose `MaxStartups` is generous and idle under
-normal load).
+| Request | Result |
+|---------|--------|
+| `GET /sentinel/ssh-bans/SSH_BAN_LISTENER_MAIN/192.0.2.4` | State, callback count, actual expiry, effective policy/hash, generation, sentinel ID |
+| `GET /sentinel/ssh-bans/SSH_BAN_LISTENER_MAIN?page_size=100` | Bounded current-ban page; pass `next_page_token` as `page_token` |
+| `POST /sentinel/ssh-bans/SSH_BAN_LISTENER_MAIN/unban` with `{"ip":"192.0.2.4","reason":"fixed invalid deploy key"}` | Clears exactly that IP's counter and ban, leaving other sources intact |
 
-**Mitigations.**
+Use `SSH_BAN_LISTENER_ANONYMOUS` for the independently enforcing anonymous door.
+Inspect every sentinel endpoint the client might reach. A disabled listener is
+404; an unreachable enforcing process is 503 and means **unknown state**, never
+an empty ban table. Restarting the plugin clears its in-memory state and changes
+its generation. Operational journal events record policy loading, failures,
+ban/expiry transitions and targeted unban; they are not the source of truth.
 
-- **Raise the limit** for a fleet with heavy SSH automation: increase
-  `--max-failures` (and/or `--ban-duration`) in the sshpiperd unit above and
-  restart `containarium-sentinel`. These are currently baked into the service
-  template; making them tunable module variables is a small follow-up.
-- **Spread egress** across more source IPs so no single IP saturates the budget.
-- **Reuse connections** instead of opening a new SSH per command — SSH
-  `ControlMaster`/`ControlPersist` multiplexes many sessions over one
-  connection, which avoids the burst entirely:
+Both `Connection closed` and `Permission denied (publickey)` can accompany a
+blocked source; neither string alone establishes the cause. If a ban is
+confirmed, wait until the reported expiry plus jitter, bounded by the job's
+deadline. If an authoritative authorization check rejects the key, fix that
+cause. Otherwise preserve the original SSH error and use bounded backoff. Fresh
+boxes may need a short retry window for key synchronization. Do not give tenant
+CI the sentinel admin secret or label every master-connect failure a rate limit.
 
-  ```
-  # ~/.ssh/config
-  Host <sentinel-host>
-    ControlMaster auto
-    ControlPath ~/.ssh/cm-%r@%h:%p
-    ControlPersist 60s
-  ```
+Select one identity (`IdentitiesOnly=yes`, `IdentityAgent=none` with an explicit
+key when appropriate), fix unregistered deploy keys, and reuse a master
+connection with `ControlMaster`/`ControlPersist` to reduce unnecessary handshakes.
+These are mitigations; operators can now diagnose and clear the actual ban.
 
-- **Back off + retry** transient `Connection closed` drops in automation (a
-  single attempt after a brief pause succeeds once the cooldown clears).
+**Rollout.** Install a daemon binary supporting `sentinel ssh-ban-plugin` and
+confirm `sshpiperd --version` is the tested v1.6.1 before applying the new unit
+metadata. Older sentinels may retain their original sshpiperd binary because
+startup installation skips an existing binary; upgrade that explicitly first.
+The existing six-hour reconcile timer (#934)
+applies changed units; install the timer explicitly on older sentinels that
+never received it. Verify the effective policy hash on each listener. A unit
+change restarts `sshpiper.service` or `sshpiper-anon.service` and can interrupt
+sessions; schedule it accordingly. It does not require restarting the separate
+`containarium-sentinel` process. Rollback to the upstream-plugin unit also
+restarts the SSH service and clears counters.
 
 ---
 
