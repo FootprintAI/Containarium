@@ -109,6 +109,8 @@ func TestIntegrationBackendJail(t *testing.T) {
 			if strings.Join(banned, " ") != wantBanned {
 				t.Fatalf("want banned=%q; ban list=%v; %s", wantBanned, banned, status)
 			}
+			// Snapshot after the asynchronous ban action, before explicit unban.
+			f.write("status.log", f.client("status", "sshd"))
 			if tc.banned {
 				f.client("set", "sshd", "unbanip", "127.0.0.1")
 				f.waitAction("unban 127.0.0.1")
