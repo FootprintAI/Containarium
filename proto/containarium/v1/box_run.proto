@@ -133,3 +133,36 @@ message TailBoxRunLogResponse {
   // This window held stderr frames of a FRAMED log, which are not in chunk.
   bool stderr_dropped = 6;
 }
+
+// BoxRunStopSignal is the signal StopBoxRun actually sent.
+enum BoxRunStopSignal {
+  BOX_RUN_STOP_SIGNAL_UNSPECIFIED = 0;
+  // The run had already exited, so nothing was signaled.
+  BOX_RUN_STOP_SIGNAL_NONE = 1;
+  BOX_RUN_STOP_SIGNAL_SIGTERM = 2;
+  BOX_RUN_STOP_SIGNAL_SIGKILL = 3;
+}
+
+// StopBoxRunRequest stops a box run (#2603): SIGTERM, or SIGKILL with force,
+// to the run's whole process group. Idempotent: stopping a run that has
+// already exited signals nothing and succeeds.
+message StopBoxRunRequest {
+  // The box owner's username (the box is <username>-container).
+  string username = 1;
+  // The run's name, as ListBoxRuns reports it.
+  string run_name = 2;
+  // Send SIGKILL instead of SIGTERM.
+  bool force = 3;
+}
+
+message StopBoxRunResponse {
+  // The run's record after the stop. A run stopped by this call is reported
+  // as exited with the conventional 128+signal status (143 for SIGTERM, 137
+  // for SIGKILL).
+  BoxRun run = 1;
+  BoxRunStopSignal signal = 2;
+  // True once the run's process group is gone. False means the signal was
+  // sent but the process had not exited when the call returned (SIGTERM
+  // ignored); call again with force.
+  bool exited = 3;
+}

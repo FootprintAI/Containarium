@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`StopBoxRun` RPC: stop a box's code run with no SSH client** (#2603). `POST /v1/containers/{username}/code-runs/{run_name}:stop` sends SIGTERM (SIGKILL with `force`) to a running run's process group, the daemon-API counterpart to `containarium code stop`. Same access as `StartBoxRun` (ssh:write, box owner or collaborator). It is idempotent: a run that already exited is not signaled and the call succeeds. It refuses a run whose outcome is unknown (its PID may have been reassigned) and any PID the box user does not own, since the run record is writable by that user. A run it stops reads back as exited with status 143 (SIGTERM) or 137 (SIGKILL).
+
 ## [0.104.0] - 2026-10-15
 
 _The SSH authorization contract and a self-hosted decider with an `ssh_keys` registry, best-effort macOS 11 client builds, and a fix that lets the OpenVAS module drive a real scanner box._
