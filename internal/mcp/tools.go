@@ -1557,7 +1557,7 @@ func (s *Server) registerTools() {
 				"GPU recipes require the `gpu` argument. Discover recipe IDs and " +
 				"their parameters with list_recipes. For a guardrail-gated recipe, " +
 				"provide guardrail_input with both staging_ref (a relative dataset " +
-				"directory under the daemon's staging root/<name>) and attestation " +
+				"directory under the daemon's staging root/<your authenticated subject>, not <name>) and attestation " +
 				"(the signed protobuf JSON from containarium guardrail apply). " +
 				"The daemon verifies the gate before creating the container.",
 			InputSchema: map[string]interface{}{
@@ -1585,7 +1585,7 @@ func (s *Server) registerTools() {
 						"properties": map[string]interface{}{
 							"staging_ref": map[string]interface{}{
 								"type": "string", "minLength": 1,
-								"description": "Clean relative dataset directory beneath the daemon's staging root/<name>; the dataset must already be staged there.",
+								"description": "Clean relative dataset directory beneath the daemon's staging root/<your authenticated subject> (not <name>); the dataset must already be staged there.",
 							},
 							"attestation": map[string]interface{}{
 								"type":        "object",

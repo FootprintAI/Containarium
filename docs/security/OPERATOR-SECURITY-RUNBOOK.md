@@ -22,6 +22,7 @@ If a procedure here is wrong, update it.
 - [Pinning and verifying container image digests](#pinning-and-verifying-container-image-digests)
 - [Locking down `/wake/` to a known load balancer](#locking-down-wake-to-a-known-load-balancer)
 - [Pinning per-tenant network policy](#pinning-per-tenant-network-policy)
+- [Guardrail and egress policy stores unavailable (Postgres down)](#guardrail-and-egress-policy-stores-unavailable-postgres-down)
 - [Auditing recent administrative actions](#auditing-recent-administrative-actions)
 - [Verifying the audit-log hash chain](#verifying-the-audit-log-hash-chain)
 
@@ -1247,6 +1248,61 @@ The container drops back to log_only on the next reconcile (≤ a few seconds);
 the egress map entries are pruned automatically.
 
 ---
+
+## Guardrail and egress policy stores unavailable (Postgres down)
+
+The guardrail policy (`containarium guardrail policy`, `/v1/guardrail/policy`)
+and the coding-tool egress policy (`containarium code egress-policy`,
+`/v1/code/egress-policy`) are stored in the daemon's Postgres. When Postgres
+is configured, both **fail closed** until their Postgres store is installed:
+the daemon never answers from an empty in-memory store, because an empty
+store would read as "no guardrail policy" (turning the inbound scan and the
+deploy gate off) and "every tenant unrestricted", and would drop admin writes
+at the next restart. Outside Kubernetes the daemon fills in a default
+Postgres address, so this applies to most hosts.
+
+**Symptom.** Postgres is down or unreachable when the daemon starts (or the
+store's table setup fails):
+
+- `containarium guardrail policy get` / `set` fail; the REST route answers
+  HTTP 500 (`read guardrail policy failed`). Guardrail-gated recipe deploys
+  are refused (`cannot read the server guardrail policy`), and the model
+  gateway cannot load the inbound policy.
+- `containarium code egress-policy get` / `set` / `delete` fail with
+  `UNAVAILABLE` (HTTP 503).
+- The daemon log has `guardrail policy store UNAVAILABLE` and
+  `Failed to create Postgres coding-tool egress policy store`, then one line
+  per retry: `policy store still UNAVAILABLE (its APIs fail closed): ...;
+  next attempt in 10s`.
+- `containarium doctor` on the host prints, after the host checks:
+
+  ```
+  Daemon readiness (advisory — does not affect the exit code):
+    ! guardrail policy store — unavailable: ...
+    ! coding-tool egress policy store — unavailable: ...
+  ```
+
+  `doctor` reads this from the local daemon's REST gateway
+  (`--daemon-url`, default `http://localhost:8080`), which serves the
+  standard `grpc.health.v1` status at `GET /v1/health?service=<name>`: one
+  status per policy service, `containarium.v1.GuardrailPolicyService` and
+  `containarium.v1.CodingToolEgressPolicyService` (200 `SERVING`, 503
+  `NOT_SERVING`). The endpoint needs no token. A cloud-enrolled daemon also
+  reports both as advisory `readiness: <service>` checks in its status
+  report. Neither changes the doctor exit code or `self_check_ok`.
+
+**Recovery.** Start Postgres (or fix connectivity). The daemon retries the
+store install in the background: first after 5 s, then doubling to every
+60 s. On the first attempt after Postgres answers it installs the Postgres
+store, logs `Policy stores recovered`, and both readiness lines turn to
+`✓ ... — ready`. No restart is needed; the deploy gate and the model gateway
+pick up the installed store on their next read. Policies stored before the
+outage are in Postgres and come back unchanged. Restarting the daemon also
+works, and is the only option on a daemon older than this change.
+
+The retry only ever installs the Postgres store. If you want a host with no
+durable policy storage, run it without Postgres configured: then the
+in-memory store is the store, and a policy set is lost on restart.
 
 ## Auditing recent administrative actions
 

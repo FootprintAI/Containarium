@@ -3,12 +3,18 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
+	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/footprintai/containarium/internal/hostcheck"
+	"github.com/footprintai/containarium/internal/policyreadiness"
 )
 
 // doctor — the host capability self-check from the daemon deploy contract
@@ -40,7 +46,13 @@ fails.`,
 	RunE: runDoctor,
 }
 
+// doctorDaemonURL is the local daemon's REST gateway, read for policy-store
+// readiness (#2483).
+var doctorDaemonURL string
+
 func init() {
+	doctorCmd.Flags().StringVar(&doctorDaemonURL, "daemon-url", "http://localhost:8080",
+		"local daemon REST gateway to read policy-store readiness from (advisory)")
 	rootCmd.AddCommand(doctorCmd)
 }
 
@@ -59,6 +71,12 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	// read as a security pass. Whether a posture miss should block is an
 	// open product decision, so nothing here changes the exit code.
 	printPosture(hostcheck.RunPosture())
+
+	// Policy-store readiness from the running daemon (#2483), advisory.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client := &http.Client{Timeout: 3 * time.Second}
+	printDaemonReadiness(os.Stdout, policyreadiness.Run(ctx, policyreadiness.HTTPCheck(client, doctorDaemonURL)))
 
 	if failed > 0 {
 		return fmt.Errorf("doctor: %d required check(s) failed — this host cannot run the daemon's user management until fixed (see prd daemon-deploy-contract)", failed)
@@ -143,4 +161,23 @@ func printDoctor(checks []hostcheck.Check) int {
 		fmt.Println(line)
 	}
 	return failed
+}
+
+// printDaemonReadiness renders the running daemon's policy-store readiness
+// (#2483). Advisory, like the posture section: it never changes the exit
+// code, because doctor checks the host and the daemon may simply not be
+// running yet.
+func printDaemonReadiness(w io.Writer, results []policyreadiness.Result) {
+	if len(results) == 0 {
+		return
+	}
+	_, _ = fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w, "Daemon readiness (advisory — does not affect the exit code):")
+	for _, r := range results {
+		mark := "✓"
+		if !r.Ready() {
+			mark = "!"
+		}
+		_, _ = fmt.Fprintf(w, "  %s %s — %s\n", mark, r.Name(), r.Detail())
+	}
 }

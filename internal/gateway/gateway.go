@@ -22,6 +22,7 @@ import (
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/events"
 	"github.com/footprintai/containarium/internal/mtls"
+	"github.com/footprintai/containarium/internal/policyreadiness"
 	"github.com/footprintai/containarium/internal/releases"
 	"github.com/footprintai/containarium/internal/security"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -30,6 +31,7 @@ import (
 	"github.com/rs/cors"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -922,6 +924,13 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	// Health check endpoint (no auth required)
 	httpMux.HandleFunc("/health", healthHandler)
 
+	// Policy-store readiness (#2483): grpc.health.v1 through the gateway.
+	healthConn, err := grpc.NewClient(grpcTarget, opts...)
+	if err != nil {
+		return fmt.Errorf("failed to dial gRPC server for the health endpoint: %w", err)
+	}
+	MountPolicyHealth(httpMux, mux, healthpb.NewHealthClient(healthConn))
+
 	mountInternalProxies(httpMux, gs)
 
 	// Session-cookie set/clear endpoint. Lets the webui promote its
@@ -1171,4 +1180,14 @@ func healthHandler(w http.ResponseWriter, _ *http.Request) {
 		Status:  "healthy",
 		Version: version.GetVersion(),
 	})
+}
+
+// MountPolicyHealth serves grpc.health.v1.Health/Check through the
+// grpc-gateway at policyreadiness.HTTPPath (`?service=<name>`), so
+// `containarium doctor` can read policy-store readiness from the local
+// daemon (#2483). It is mounted outside the JWT chain: it carries a serving
+// status only, like /health.
+func MountPolicyHealth(httpMux *http.ServeMux, rest *runtime.ServeMux, client healthpb.HealthClient) {
+	runtime.WithHealthEndpointAt(client, policyreadiness.HTTPPath)(rest)
+	httpMux.Handle(policyreadiness.HTTPPath, rest)
 }
