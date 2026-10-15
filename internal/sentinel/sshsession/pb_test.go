@@ -8,7 +8,7 @@ import (
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
-var allPhases = []SessionPhase{SessionPhaseOpen, SessionPhaseClose}
+var allPhases = []SessionPhase{SessionPhaseOpen, SessionPhaseClose, SessionPhaseDenied}
 var allAuthMethods = []AuthMethod{AuthMethodCertificate, AuthMethodPublicKey, AuthMethodUnknown}
 var allCloseReasons = []CloseReason{
 	CloseReasonNormal, CloseReasonUpstreamGone, CloseReasonProxyShutdown,
@@ -117,4 +117,18 @@ func TestEnumSetsMatchProto(t *testing.T) {
 	check("phase", len(allPhases), pb.SSHSessionPhase_name)
 	check("auth method", len(allAuthMethods), pb.SSHAuthMethod_name)
 	check("close reason", len(allCloseReasons), pb.SSHCloseReason_name)
+}
+
+// #2519 completes #2516's wire contract: DENIED must retain its own phase,
+// rather than being rejected or silently mapped to an OPEN record.
+func TestFromProto_AcceptsDeniedPhase(t *testing.T) {
+	p := ToProto(baseRecord())
+	p.Phase = pb.SSHSessionPhase_SSH_SESSION_PHASE_DENIED
+	r, err := FromProto(p)
+	if err != nil {
+		t.Fatalf("FromProto(DENIED): %v", err)
+	}
+	if r.Phase != SessionPhaseDenied || ToProto(r).GetPhase() != p.Phase {
+		t.Fatalf("DENIED phase changed during round-trip: %+v", r)
+	}
 }

@@ -19,6 +19,10 @@
       "description": "ContainerService provides container management operations"
     },
     {
+      "name": "SSHAuthzService",
+      "description": "SSHAuthzService is the per-connection SSH authorization contract\n(docs/architecture/ssh-live-authorization.md, component 1; #2516). The\nsentinel's ssh-authz plugin asks the backend daemon, at connection time,\nwhether the credential offered may open a session as `login` on this\nbackend. The daemon answers from local state (self-host) or forwards to\nthe cloud over ActuationService.AuthorizeSSH, which reuses these same\nmessages so neither side translates.\n\nThe REST route is mounted behind the sentinel request signature\n(auth.SentinelVerifier), not a JWT: it is sentinel-to-daemon plumbing."
+    },
+    {
       "name": "ActuationService"
     },
     {
@@ -56,10 +60,6 @@
     {
       "name": "AppService",
       "description": "AppService provides application deployment and management"
-    },
-    {
-      "name": "SSHAuthzService",
-      "description": "SSHAuthzService is the sentinel-to-backend live SSH authorization contract.\nThe daemon mounts this service behind its sentinel-signature verifier."
     },
     {
       "name": "AuditService",
@@ -6880,8 +6880,8 @@
     },
     "/v1/ssh/authorize": {
       "post": {
-        "summary": "Authorize an SSH connection",
-        "description": "Sentinel-signed, read-only live authorization query.",
+        "summary": "Authorize SSH connection",
+        "description": "Decide whether the credential offered to the sentinel may open a session as the given login on this backend. Sentinel-signed requests only.",
         "operationId": "SSHAuthzService_Authorize",
         "responses": {
           "200": {
@@ -6908,7 +6908,7 @@
           }
         ],
         "tags": [
-          "SSH Authorization"
+          "SSHAuthz"
         ]
       }
     },
@@ -9150,7 +9150,7 @@
         "ACCESS_TYPE_RDP"
       ],
       "default": "ACCESS_TYPE_SSH",
-      "description": "- ACCESS_TYPE_SSH: SSH access (default for Linux containers)\n - ACCESS_TYPE_RDP: RDP access (for Windows VMs, via Guacamole browser-based client)",
+      "description": "- ACCESS_TYPE_SSH: SSH access (default for Linux containers)\nKeep the established SSH zero value and its JSON name (#2481).\nbuf:lint:ignore ENUM_ZERO_VALUE_SUFFIX\n - ACCESS_TYPE_RDP: RDP access (for Windows VMs, via Guacamole browser-based client)",
       "title": "AccessType indicates how to connect to an instance"
     },
     "AddBadDestinationRequest": {
@@ -9935,20 +9935,23 @@
       "type": "object",
       "properties": {
         "login": {
-          "type": "string"
+          "type": "string",
+          "description": "SSH username presented (jump account)."
         },
         "credential": {
-          "$ref": "#/definitions/SSHCredential"
+          "$ref": "#/definitions/SSHCredential",
+          "description": "What was offered."
         },
         "clientIp": {
           "type": "string"
         },
         "sentinelId": {
           "type": "string",
-          "description": "Informational; never used to authorize the caller."
+          "description": "Informational, never used for authorization."
         },
         "approvalId": {
-          "type": "string"
+          "type": "string",
+          "description": "Set on re-poll during device approval."
         }
       }
     },
@@ -9959,18 +9962,20 @@
           "$ref": "#/definitions/SSHAuthzDecision"
         },
         "denyReason": {
-          "$ref": "#/definitions/SSHDenyReason"
+          "$ref": "#/definitions/SSHDenyReason",
+          "description": "Set when decision == SSH_AUTHZ_DECISION_DENY."
         },
         "userId": {
           "type": "string",
-          "description": "Also populated on DENY when the person is known."
+          "description": "Set when known, DENY included (for audit)."
         },
         "cacheTtl": {
           "type": "string",
-          "description": "Positive cache lifetime; absent or zero means no fresh cache reuse."
+          "description": "Positive cache lifetime at the sentinel."
         },
         "approval": {
-          "$ref": "#/definitions/SSHDeviceApproval"
+          "$ref": "#/definitions/SSHDeviceApproval",
+          "description": "Set when deny_reason == SSH_DENY_REASON_APPROVAL_PENDING."
         }
       }
     },
@@ -17217,7 +17222,8 @@
       "type": "object",
       "properties": {
         "publicKey": {
-          "$ref": "#/definitions/SSHPublicKeyCredential"
+          "$ref": "#/definitions/SSHPublicKeyCredential",
+          "description": "Raw or security-key (sk-*) public key."
         },
         "certificate": {
           "$ref": "#/definitions/SSHCertificateCredential"
@@ -17236,7 +17242,8 @@
         "SSH_DENY_REASON_APPROVAL_DENIED",
         "SSH_DENY_REASON_UPSTREAM_UNAVAILABLE"
       ],
-      "default": "SSH_DENY_REASON_UNSPECIFIED"
+      "default": "SSH_DENY_REASON_UNSPECIFIED",
+      "description": " - SSH_DENY_REASON_UPSTREAM_UNAVAILABLE: The decision source could not be reached: the cloud, or the local\nssh_keys registry in self-host mode. The daemon fails closed."
     },
     "SSHDeviceApproval": {
       "type": "object",
@@ -17306,10 +17313,11 @@
       "enum": [
         "SSH_SESSION_PHASE_UNSPECIFIED",
         "SSH_SESSION_PHASE_OPEN",
-        "SSH_SESSION_PHASE_CLOSE"
+        "SSH_SESSION_PHASE_CLOSE",
+        "SSH_SESSION_PHASE_DENIED"
       ],
       "default": "SSH_SESSION_PHASE_UNSPECIFIED",
-      "description": "SSHSessionPhase mirrors internal/sentinel/sshsession.SessionPhase."
+      "description": "SSHSessionPhase mirrors internal/sentinel/sshsession.SessionPhase.\n\n - SSH_SESSION_PHASE_DENIED: The sentinel's ssh-authz plugin refused the connection (#2516); no\nCLOSE follows. To be stored as action ssh_session_denied (#2519); until\nthen ingest rejects it as an invalid phase."
     },
     "SSHSessionRecord": {
       "type": "object",
@@ -17351,16 +17359,20 @@
           "description": "Set only when phase == SSH_SESSION_PHASE_CLOSE."
         },
         "userId": {
-          "type": "string"
+          "type": "string",
+          "description": "Person the credential belongs to, from the authorization decision;\nempty when unknown (pre-authz sentinel, unknown key)."
         },
         "authzDecision": {
-          "$ref": "#/definitions/SSHAuthzDecision"
+          "$ref": "#/definitions/SSHAuthzDecision",
+          "description": "Authorization outcome for this connection; UNSPECIFIED from a sentinel\nwithout the ssh-authz plugin."
         },
         "denyReason": {
-          "$ref": "#/definitions/SSHDenyReason"
+          "$ref": "#/definitions/SSHDenyReason",
+          "description": "Set when authz_decision == SSH_AUTHZ_DECISION_DENY."
         },
         "enforced": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "True when the decision was enforced; false in audit-only mode, where a\nDENY decision is recorded but the session still opens."
         }
       },
       "description": "SSHSessionRecord is one session lifecycle event, field for field the\nsentinel's sshsession.Record."

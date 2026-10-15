@@ -183,11 +183,8 @@ func TestIntegrationAuditOnlyChain(t *testing.T) {
 			}
 			if len(open) > index {
 				rec := open[index]
-				if rec.UserID != user || rec.AuthzDecision != decision || rec.DenyReason != reason || rec.Enforced {
+				if rec.UserID != user || rec.AuthzDecision != sshsession.DecisionToProto(decision) || rec.DenyReason != sshsession.ReasonToProto(reason) || rec.Enforced {
 					t.Fatalf("open %d: %+v", index, rec)
-				}
-				if !bytes.Contains(data, []byte(`"enforced":false`)) {
-					t.Fatal("enforced=false absent from JSONL")
 				}
 				return
 			}

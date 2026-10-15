@@ -42,8 +42,9 @@ and authoritative denials invalidate old positives. Grace reads never
 refresh the success timestamp. The cache is concurrency-safe, prunes expired
 entries, and evicts the oldest positive at its 10,000-entry limit.
 
-The session plugin emits `user_id`, `authz_decision` (`ALLOW` / `DENY`),
-`deny_reason` and `enforced=false` in its JSONL. The shipper's proto conversion
+The session plugin emits `user_id`, `authz_decision` and `deny_reason` (the
+`SSHAuthzDecision` / `SSHDenyReason` proto enums) in its JSONL; `enforced` is
+false in this release and omitted when false. The shipper's proto conversion
 and backend audit ingestion preserve these fields in `ssh_session_open`
 and `ssh_session_close` rows. Skipped checks have no authorization decision;
 bridge failures have `DENY UPSTREAM_UNAVAILABLE`. A grace acceptance is

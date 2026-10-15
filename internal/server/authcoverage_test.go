@@ -111,6 +111,9 @@ var registeredServices = []rpcSurface{
 	// (the manual SubjectFromGRPCContext/Unauthenticated pattern).
 	{pb.GuardrailPolicyService_ServiceDesc, "GuardrailPolicyServer"},
 	{pb.AuditService_ServiceDesc, "AuditServer"}, // #2415
+	// #2516 — Authorize is RequireExplicitScope(ssh:authorize), stamped by
+	// the gateway only on a verified sentinel signature.
+	{pb.SSHAuthzService_ServiceDesc, "SSHAuthzServer"},
 }
 
 // authExemptions lists every registered RPC whose handler carries no auth

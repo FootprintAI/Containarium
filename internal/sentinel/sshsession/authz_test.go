@@ -22,7 +22,7 @@ func TestAuthorizationMetadataOnOpenCloseAndShutdown(t *testing.T) {
 		t.Fatalf("records: %v", recorder.recs)
 	}
 	for _, rec := range recorder.recs {
-		if rec.UserID != "person" || rec.AuthzDecision != AuthzDeny || rec.DenyReason != DenyUnknownKey || rec.Enforced {
+		if rec.UserID != "person" || rec.AuthzDecision != pb.SSHAuthzDecision_SSH_AUTHZ_DECISION_DENY || rec.DenyReason != pb.SSHDenyReason_SSH_DENY_REASON_UNKNOWN_KEY || rec.Enforced {
 			t.Fatalf("lost metadata: %+v", rec)
 		}
 		raw, err := json.Marshal(rec)
@@ -44,24 +44,25 @@ func TestAuthorizationProtoEveryReasonAndValidation(t *testing.T) {
 	for n := int32(1); n <= 7; n++ {
 		r := baseRecord()
 		r.UserID = "person"
-		r.AuthzDecision = AuthzDeny
-		r.DenyReason = ReasonFromProto(pb.SSHDenyReason(n))
+		r.AuthzDecision = pb.SSHAuthzDecision_SSH_AUTHZ_DECISION_DENY
+		r.DenyReason = pb.SSHDenyReason(n)
 		back, err := FromProto(ToProto(r))
 		if err != nil || !reflect.DeepEqual(back, r) {
 			t.Fatalf("reason %d: %v %v", n, back, err)
 		}
 	}
 	r := baseRecord()
-	r.AuthzDecision = AuthzAllow
+	r.AuthzDecision = pb.SSHAuthzDecision_SSH_AUTHZ_DECISION_ALLOW
 	r.UserID = "person"
 	if back, err := FromProto(ToProto(r)); err != nil || !reflect.DeepEqual(back, r) {
 		t.Fatalf("allow: %v %v", back, err)
 	}
 	for _, mut := range []func(*Record){
-		func(r *Record) { r.AuthzDecision = "INVALID" },
-		func(r *Record) { r.AuthzDecision = AuthzDeny; r.DenyReason = "INVALID" },
-		func(r *Record) { r.AuthzDecision = AuthzAllow; r.DenyReason = DenyUnknownKey },
-		func(r *Record) { r.AuthzDecision = AuthzDeny; r.DenyReason = "" },
+		func(r *Record) { r.AuthzDecision = DecisionToProto("INVALID") },
+		func(r *Record) {
+			r.AuthzDecision = pb.SSHAuthzDecision_SSH_AUTHZ_DECISION_DENY
+			r.DenyReason = ReasonToProto("INVALID")
+		},
 	} {
 		bad := r
 		mut(&bad)

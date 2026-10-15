@@ -26,12 +26,26 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
-// SSHAuthzService is the sentinel-to-backend live SSH authorization contract.
-// The daemon mounts this service behind its sentinel-signature verifier.
+// SSHAuthzService is the per-connection SSH authorization contract
+// (docs/architecture/ssh-live-authorization.md, component 1; #2516). The
+// sentinel's ssh-authz plugin asks the backend daemon, at connection time,
+// whether the credential offered may open a session as `login` on this
+// backend. The daemon answers from local state (self-host) or forwards to
+// the cloud over ActuationService.AuthorizeSSH, which reuses these same
+// messages so neither side translates.
+//
+// The REST route is mounted behind the sentinel request signature
+// (auth.SentinelVerifier), not a JWT: it is sentinel-to-daemon plumbing.
 type SSHAuthzServiceClient interface {
-	// Authorize checks the offered credential for this login on this backend.
+	// Authorize decides whether the credential offered to the sentinel may
+	// open a session as `login` on this backend, right now.
+	//
+	// The request/response names follow the architecture doc, and the same
+	// messages back ActuationService.AuthorizeSSH on purpose (one message set
+	// for both hops), hence the lint exemptions.
 	// buf:lint:ignore RPC_REQUEST_STANDARD_NAME
 	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
 	Authorize(ctx context.Context, in *AuthorizeSSHRequest, opts ...grpc.CallOption) (*AuthorizeSSHResponse, error)
 }
 
@@ -57,12 +71,26 @@ func (c *sSHAuthzServiceClient) Authorize(ctx context.Context, in *AuthorizeSSHR
 // All implementations must embed UnimplementedSSHAuthzServiceServer
 // for forward compatibility.
 //
-// SSHAuthzService is the sentinel-to-backend live SSH authorization contract.
-// The daemon mounts this service behind its sentinel-signature verifier.
+// SSHAuthzService is the per-connection SSH authorization contract
+// (docs/architecture/ssh-live-authorization.md, component 1; #2516). The
+// sentinel's ssh-authz plugin asks the backend daemon, at connection time,
+// whether the credential offered may open a session as `login` on this
+// backend. The daemon answers from local state (self-host) or forwards to
+// the cloud over ActuationService.AuthorizeSSH, which reuses these same
+// messages so neither side translates.
+//
+// The REST route is mounted behind the sentinel request signature
+// (auth.SentinelVerifier), not a JWT: it is sentinel-to-daemon plumbing.
 type SSHAuthzServiceServer interface {
-	// Authorize checks the offered credential for this login on this backend.
+	// Authorize decides whether the credential offered to the sentinel may
+	// open a session as `login` on this backend, right now.
+	//
+	// The request/response names follow the architecture doc, and the same
+	// messages back ActuationService.AuthorizeSSH on purpose (one message set
+	// for both hops), hence the lint exemptions.
 	// buf:lint:ignore RPC_REQUEST_STANDARD_NAME
 	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
 	Authorize(context.Context, *AuthorizeSSHRequest) (*AuthorizeSSHResponse, error)
 	mustEmbedUnimplementedSSHAuthzServiceServer()
 }

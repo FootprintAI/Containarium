@@ -31,6 +31,10 @@ const (
 	SSHSessionPhase_SSH_SESSION_PHASE_UNSPECIFIED SSHSessionPhase = 0
 	SSHSessionPhase_SSH_SESSION_PHASE_OPEN        SSHSessionPhase = 1
 	SSHSessionPhase_SSH_SESSION_PHASE_CLOSE       SSHSessionPhase = 2
+	// The sentinel's ssh-authz plugin refused the connection (#2516); no
+	// CLOSE follows. To be stored as action ssh_session_denied (#2519); until
+	// then ingest rejects it as an invalid phase.
+	SSHSessionPhase_SSH_SESSION_PHASE_DENIED SSHSessionPhase = 3
 )
 
 // Enum value maps for SSHSessionPhase.
@@ -39,11 +43,13 @@ var (
 		0: "SSH_SESSION_PHASE_UNSPECIFIED",
 		1: "SSH_SESSION_PHASE_OPEN",
 		2: "SSH_SESSION_PHASE_CLOSE",
+		3: "SSH_SESSION_PHASE_DENIED",
 	}
 	SSHSessionPhase_value = map[string]int32{
 		"SSH_SESSION_PHASE_UNSPECIFIED": 0,
 		"SSH_SESSION_PHASE_OPEN":        1,
 		"SSH_SESSION_PHASE_CLOSE":       2,
+		"SSH_SESSION_PHASE_DENIED":      3,
 	}
 )
 
@@ -331,11 +337,18 @@ type SSHSessionRecord struct {
 	AuthMethod SSHAuthMethod         `protobuf:"varint,8,opt,name=auth_method,json=authMethod,proto3,enum=containarium.v1.SSHAuthMethod" json:"auth_method,omitempty"`
 	Credential *SSHSessionCredential `protobuf:"bytes,9,opt,name=credential,proto3" json:"credential,omitempty"`
 	// Set only when phase == SSH_SESSION_PHASE_CLOSE.
-	CloseReason   SSHCloseReason   `protobuf:"varint,10,opt,name=close_reason,json=closeReason,proto3,enum=containarium.v1.SSHCloseReason" json:"close_reason,omitempty"`
-	UserId        string           `protobuf:"bytes,11,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	CloseReason SSHCloseReason `protobuf:"varint,10,opt,name=close_reason,json=closeReason,proto3,enum=containarium.v1.SSHCloseReason" json:"close_reason,omitempty"`
+	// Person the credential belongs to, from the authorization decision;
+	// empty when unknown (pre-authz sentinel, unknown key).
+	UserId string `protobuf:"bytes,11,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	// Authorization outcome for this connection; UNSPECIFIED from a sentinel
+	// without the ssh-authz plugin.
 	AuthzDecision SSHAuthzDecision `protobuf:"varint,12,opt,name=authz_decision,json=authzDecision,proto3,enum=containarium.v1.SSHAuthzDecision" json:"authz_decision,omitempty"`
-	DenyReason    SSHDenyReason    `protobuf:"varint,13,opt,name=deny_reason,json=denyReason,proto3,enum=containarium.v1.SSHDenyReason" json:"deny_reason,omitempty"`
-	Enforced      bool             `protobuf:"varint,14,opt,name=enforced,proto3" json:"enforced,omitempty"`
+	// Set when authz_decision == SSH_AUTHZ_DECISION_DENY.
+	DenyReason SSHDenyReason `protobuf:"varint,13,opt,name=deny_reason,json=denyReason,proto3,enum=containarium.v1.SSHDenyReason" json:"deny_reason,omitempty"`
+	// True when the decision was enforced; false in audit-only mode, where a
+	// DENY decision is recorded but the session still opens.
+	Enforced      bool `protobuf:"varint,14,opt,name=enforced,proto3" json:"enforced,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -588,7 +601,7 @@ var File_containarium_v1_audit_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_audit_proto_rawDesc = "" +
 	"\n" +
-	"\x1bcontainarium/v1/audit.proto\x12\x0fcontainarium.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1fcontainarium/v1/ssh_authz.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a.protoc-gen-openapiv2/options/annotations.proto\"\x9c\x01\n" +
+	"\x1bcontainarium/v1/audit.proto\x12\x0fcontainarium.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a.protoc-gen-openapiv2/options/annotations.proto\x1a\x1fcontainarium/v1/ssh_authz.proto\"\x9c\x01\n" +
 	"\x14SSHSessionCredential\x12\x15\n" +
 	"\x06key_id\x18\x01 \x01(\tR\x05keyId\x12\x16\n" +
 	"\x06serial\x18\x02 \x01(\x04R\x06serial\x12,\n" +
@@ -626,11 +639,12 @@ const file_containarium_v1_audit_proto_rawDesc = "" +
 	"\binserted\x18\x02 \x01(\x05R\binserted\x12\x1e\n" +
 	"\n" +
 	"duplicates\x18\x03 \x01(\x05R\n" +
-	"duplicates*m\n" +
+	"duplicates*\x8b\x01\n" +
 	"\x0fSSHSessionPhase\x12!\n" +
 	"\x1dSSH_SESSION_PHASE_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16SSH_SESSION_PHASE_OPEN\x10\x01\x12\x1b\n" +
-	"\x17SSH_SESSION_PHASE_CLOSE\x10\x02*\x8d\x01\n" +
+	"\x17SSH_SESSION_PHASE_CLOSE\x10\x02\x12\x1c\n" +
+	"\x18SSH_SESSION_PHASE_DENIED\x10\x03*\x8d\x01\n" +
 	"\rSSHAuthMethod\x12\x1f\n" +
 	"\x1bSSH_AUTH_METHOD_UNSPECIFIED\x10\x00\x12\x1f\n" +
 	"\x1bSSH_AUTH_METHOD_CERTIFICATE\x10\x01\x12\x1d\n" +

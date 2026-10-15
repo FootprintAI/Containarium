@@ -105,7 +105,7 @@ rather than after.
 
 | Workflow | What it publishes | Where | Reversible? |
 | --- | --- | --- | --- |
-| `release.yml` | 16 assets: the CLI for linux/darwin-amd64/darwin-arm64/windows, MCP server and agent-box binaries for linux/darwin-amd64/darwin-arm64, the agent-runtime bundle, the SDLC skills bundle + its `.sha256` (#2065), the air-gapped install bundle + its `.sha256`, and a generated `SHA256SUMS.txt` | GitHub Release on the tag | Deletable, but anyone who already pulled has it |
+| `release.yml` | 18 assets: the CLI for linux/darwin-amd64/darwin-arm64/windows (plus best-effort `-macos11` darwin builds from `scripts/build-macos11.sh`), MCP server and agent-box binaries for linux/darwin-amd64/darwin-arm64, the agent-runtime bundle, the SDLC skills bundle + its `.sha256` (#2065), the air-gapped install bundle + its `.sha256`, and a generated `SHA256SUMS.txt` | GitHub Release on the tag | Deletable, but anyone who already pulled has it |
 | `containarium-daemon.yml` | Daemon container image | `ghcr.io/footprintai/containarium` | Tag is mutable in principle; treat as published |
 | `sidecars.yml` | `containarium-otel-sidecar`, `containarium-sshpiper`, `containarium-agent-box` images | `ghcr.io` | Same |
 | `distros-py-release.yml` | `containarium-telemetry` Python package | **PyPI** | **No.** PyPI does not allow re-uploading a version, even after deletion |

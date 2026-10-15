@@ -46,7 +46,7 @@ func ReasonFromProto(v pb.SSHDenyReason) DenyReason {
 	return DenyReason(strings.TrimPrefix(v.String(), "SSH_DENY_REASON_"))
 }
 
-func decisionToProto(v AuthzDecision) pb.SSHAuthzDecision {
+func DecisionToProto(v AuthzDecision) pb.SSHAuthzDecision {
 	if v == "" {
 		return pb.SSHAuthzDecision_SSH_AUTHZ_DECISION_UNSPECIFIED
 	}
@@ -57,7 +57,7 @@ func decisionToProto(v AuthzDecision) pb.SSHAuthzDecision {
 	return pb.SSHAuthzDecision(n)
 }
 
-func reasonToProto(v DenyReason) pb.SSHDenyReason {
+func ReasonToProto(v DenyReason) pb.SSHDenyReason {
 	if v == "" {
 		return pb.SSHDenyReason_SSH_DENY_REASON_UNSPECIFIED
 	}

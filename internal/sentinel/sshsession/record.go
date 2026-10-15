@@ -6,20 +6,25 @@
 // auth-failure line exists. This package plugs into sshpiperd's own
 // plugin chain (see plugin.go) to emit an "open" record when a pipe is
 // established and a "close" record when it ends, correlated by
-// session_id, without touching the failure-path logging failtoban's
-// fail2ban regex depends on.
+// session_id. Authorization decisions can also be carried on a "denied"
+// record without changing failtoban's separate failure-path logging.
 package sshsession
 
-import "time"
+import (
+	"time"
 
-// SessionPhase distinguishes the two records emitted per accepted SSH
-// session. Typed per this repo's strong-typing convention (CLAUDE.md) —
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+)
+
+// SessionPhase distinguishes accepted-session lifecycle and authorization
+// denial records. Typed per this repo's strong-typing convention (CLAUDE.md) —
 // not a bare string with a comment listing the allowed values.
 type SessionPhase string
 
 const (
-	SessionPhaseOpen  SessionPhase = "open"
-	SessionPhaseClose SessionPhase = "close"
+	SessionPhaseOpen   SessionPhase = "open"
+	SessionPhaseClose  SessionPhase = "close"
+	SessionPhaseDenied SessionPhase = "denied"
 )
 
 // AuthMethod is how the client's credential was presented.
@@ -87,7 +92,9 @@ type Credential struct {
 // Record is one session lifecycle event. Exactly one SessionPhaseOpen and
 // exactly one SessionPhaseClose record are emitted per accepted SSH
 // connection (barring CloseReasonProxyShutdown's own best-effort
-// flush — see plugin.go), correlated by SessionID.
+// flush — see plugin.go), correlated by SessionID. A denied authorization
+// attempt has its own SessionPhaseDenied record, distinct from OPEN even
+// when the same attempt subsequently opens in audit-only mode.
 //
 // This is connection metadata only: it never carries a private key,
 // token, or session content (see Credential's doc comment).
@@ -120,8 +127,12 @@ type Record struct {
 	// CloseReason is set only on a SessionPhaseClose record.
 	CloseReason CloseReason `json:"close_reason,omitempty"`
 
-	UserID        string        `json:"user_id,omitempty"`
-	AuthzDecision AuthzDecision `json:"authz_decision,omitempty"`
-	DenyReason    DenyReason    `json:"deny_reason,omitempty"`
-	Enforced      bool          `json:"enforced"`
+	// Authorization metadata is absent on pre-upgrade records. A DENY
+	// decision may accompany OPEN in audit-only mode; Enforced distinguishes
+	// that observation from the decision being enforced. Never infer the
+	// decision from the phase or replace an unknown user with the login.
+	UserID        string              `json:"user_id,omitempty"`
+	AuthzDecision pb.SSHAuthzDecision `json:"authz_decision,omitempty"`
+	DenyReason    pb.SSHDenyReason    `json:"deny_reason,omitempty"`
+	Enforced      bool                `json:"enforced,omitempty"`
 }

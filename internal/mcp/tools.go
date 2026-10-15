@@ -17,6 +17,7 @@ import (
 	"github.com/footprintai/containarium/pkg/core/expose"
 	"github.com/footprintai/containarium/pkg/core/ostype"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 // ephemeralKeyDir returns the directory the MCP server writes ephemeral
@@ -1554,7 +1555,11 @@ func (s *Server) registerTools() {
 				"image inside it, and exposes the configured ports. In v1 the " +
 				"recipe deploys on the backend this MCP server's daemon manages; " +
 				"GPU recipes require the `gpu` argument. Discover recipe IDs and " +
-				"their parameters with list_recipes.",
+				"their parameters with list_recipes. For a guardrail-gated recipe, " +
+				"provide guardrail_input with both staging_ref (a relative dataset " +
+				"directory under the daemon's staging root/<name>) and attestation " +
+				"(the signed protobuf JSON from containarium guardrail apply). " +
+				"The daemon verifies the gate before creating the container.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -1573,6 +1578,21 @@ func (s *Server) registerTools() {
 					"parameters": map[string]interface{}{
 						"type":        "object",
 						"description": "Recipe parameters as key→value (e.g. {\"model\": \"llama3\"}). See the recipe's declared parameters via list_recipes / get.",
+					},
+					"guardrail_input": map[string]interface{}{
+						"type":        "object",
+						"description": "Optional dataset input for a guardrail-gated recipe; staging_ref and attestation must be provided together.",
+						"properties": map[string]interface{}{
+							"staging_ref": map[string]interface{}{
+								"type": "string", "minLength": 1,
+								"description": "Clean relative dataset directory beneath the daemon's staging root/<name>; the dataset must already be staged there.",
+							},
+							"attestation": map[string]interface{}{
+								"type":        "object",
+								"description": "Signed GuardrailAttestation protobuf JSON produced by containarium guardrail apply for the staged dataset; pass the JSON contents, not a local file path.",
+							},
+						},
+						"required": []string{"staging_ref", "attestation"},
 					},
 				},
 				"required": []string{"recipe_id", "name"},
@@ -3078,18 +3098,47 @@ func handleListRecipes(client API, _ map[string]interface{}) (string, error) {
 	return b.String(), nil
 }
 
+// deployRecipeArgs decodes the MCP boundary; guardrail_input is decoded
+// with protojson so its attestation retains protobuf wire semantics.
+type deployRecipeArgs struct {
+	RecipeID       string                 `json:"recipe_id"`
+	Name           string                 `json:"name"`
+	GPU            string                 `json:"gpu"`
+	Parameters     map[string]interface{} `json:"parameters"`
+	GuardrailInput json.RawMessage        `json:"guardrail_input"`
+}
+
+// handleDeployRecipe validates the optional gate input before calling the
+// same typed recipe deploy used by the CLI.
 func handleDeployRecipe(client API, args map[string]interface{}) (string, error) {
-	params := map[string]string{}
-	if raw, ok := args["parameters"].(map[string]interface{}); ok {
-		for k, v := range raw {
-			params[k] = fmt.Sprintf("%v", v)
+	raw, err := json.Marshal(args)
+	if err != nil {
+		return "", fmt.Errorf("encode deploy_recipe arguments: %w", err)
+	}
+	var input deployRecipeArgs
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return "", fmt.Errorf("decode deploy_recipe arguments: %w", err)
+	}
+	var gate *pb.GuardrailGateInput
+	if len(input.GuardrailInput) != 0 && string(input.GuardrailInput) != "null" {
+		gate = &pb.GuardrailGateInput{}
+		if err := protojson.Unmarshal(input.GuardrailInput, gate); err != nil {
+			return "", fmt.Errorf("decode guardrail_input: %w", err)
+		}
+		if gate.GetStagingRef() == "" || gate.GetAttestation() == nil {
+			return "", fmt.Errorf("guardrail_input.staging_ref and guardrail_input.attestation must be provided together")
 		}
 	}
+	params := map[string]string{}
+	for k, v := range input.Parameters {
+		params[k] = fmt.Sprintf("%v", v)
+	}
 	resp, err := client.DeployRecipe(DeployRecipeRequest{
-		RecipeID:   getStringArg(args, "recipe_id", ""),
-		Name:       getStringArg(args, "name", ""),
-		GPU:        getStringArg(args, "gpu", ""),
-		Parameters: params,
+		RecipeID:       input.RecipeID,
+		Name:           input.Name,
+		GPU:            input.GPU,
+		Parameters:     params,
+		GuardrailInput: gate,
 	})
 	if err != nil {
 		return "", err

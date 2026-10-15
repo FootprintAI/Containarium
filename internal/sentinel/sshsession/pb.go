@@ -14,8 +14,9 @@ import (
 // TestEnumSetsMatchProto rather than at ingest time.
 
 var phaseToPB = map[SessionPhase]pb.SSHSessionPhase{
-	SessionPhaseOpen:  pb.SSHSessionPhase_SSH_SESSION_PHASE_OPEN,
-	SessionPhaseClose: pb.SSHSessionPhase_SSH_SESSION_PHASE_CLOSE,
+	SessionPhaseOpen:   pb.SSHSessionPhase_SSH_SESSION_PHASE_OPEN,
+	SessionPhaseClose:  pb.SSHSessionPhase_SSH_SESSION_PHASE_CLOSE,
+	SessionPhaseDenied: pb.SSHSessionPhase_SSH_SESSION_PHASE_DENIED,
 }
 
 var authMethodToPB = map[AuthMethod]pb.SSHAuthMethod{
@@ -47,9 +48,9 @@ var (
 )
 
 // ToProto converts a Record read from the sink into its wire form. A value
-// with no proto counterpart (a hand-edited file) maps to UNSPECIFIED for
-// required lifecycle fields, or an invalid enum for optional authorization
-// fields. The shipper validates with FromProto before sending.
+// with no proto counterpart (a hand-edited file) maps to the UNSPECIFIED
+// enum value, which the server rejects — the shipper validates with
+// FromProto before sending, so that never reaches the wire.
 func ToProto(r Record) *pb.SSHSessionRecord {
 	out := &pb.SSHSessionRecord{
 		SessionId:     r.SessionID,
@@ -62,8 +63,8 @@ func ToProto(r Record) *pb.SSHSessionRecord {
 		AuthMethod:    authMethodToPB[r.AuthMethod],
 		CloseReason:   closeReasonToPB[r.CloseReason],
 		UserId:        r.UserID,
-		AuthzDecision: decisionToProto(r.AuthzDecision),
-		DenyReason:    reasonToProto(r.DenyReason),
+		AuthzDecision: r.AuthzDecision,
+		DenyReason:    r.DenyReason,
 		Enforced:      r.Enforced,
 	}
 	if r.Credential != (Credential{}) {
@@ -96,6 +97,12 @@ func FromProto(p *pb.SSHSessionRecord) (Record, error) {
 	if p.GetOccurredAt() == nil {
 		return Record{}, fmt.Errorf("session %q: missing occurred_at", p.GetSessionId())
 	}
+	if _, ok := pb.SSHAuthzDecision_name[int32(p.GetAuthzDecision())]; !ok {
+		return Record{}, fmt.Errorf("session %q: invalid authz_decision %v", p.GetSessionId(), p.GetAuthzDecision())
+	}
+	if _, ok := pb.SSHDenyReason_name[int32(p.GetDenyReason())]; !ok {
+		return Record{}, fmt.Errorf("session %q: invalid deny_reason %v", p.GetSessionId(), p.GetDenyReason())
+	}
 	r := Record{
 		SessionID:     p.GetSessionId(),
 		Phase:         phase,
@@ -105,18 +112,9 @@ func FromProto(p *pb.SSHSessionRecord) (Record, error) {
 		Login:         p.GetLogin(),
 		Target:        p.GetTarget(),
 		UserID:        p.GetUserId(),
-		AuthzDecision: DecisionFromProto(p.GetAuthzDecision()),
-		DenyReason:    ReasonFromProto(p.GetDenyReason()),
+		AuthzDecision: p.GetAuthzDecision(),
+		DenyReason:    p.GetDenyReason(),
 		Enforced:      p.GetEnforced(),
-	}
-	if _, ok := pb.SSHAuthzDecision_name[int32(p.GetAuthzDecision())]; !ok {
-		return Record{}, fmt.Errorf("session %q: invalid authz_decision", r.SessionID)
-	}
-	if _, ok := pb.SSHDenyReason_name[int32(p.GetDenyReason())]; !ok {
-		return Record{}, fmt.Errorf("session %q: invalid deny_reason", r.SessionID)
-	}
-	if (r.AuthzDecision == AuthzDeny) != (r.DenyReason != "") {
-		return Record{}, fmt.Errorf("session %q: deny decision and reason must occur together", r.SessionID)
 	}
 	if am := p.GetAuthMethod(); am != pb.SSHAuthMethod_SSH_AUTH_METHOD_UNSPECIFIED {
 		v, ok := authMethodFromPB[am]
@@ -135,8 +133,8 @@ func FromProto(p *pb.SSHSessionRecord) (Record, error) {
 	}
 	cr := p.GetCloseReason()
 	switch {
-	case phase == SessionPhaseOpen && cr != pb.SSHCloseReason_SSH_CLOSE_REASON_UNSPECIFIED:
-		return Record{}, fmt.Errorf("session %q: close_reason set on an open record", r.SessionID)
+	case phase != SessionPhaseClose && cr != pb.SSHCloseReason_SSH_CLOSE_REASON_UNSPECIFIED:
+		return Record{}, fmt.Errorf("session %q: close_reason set on a %s record", r.SessionID, phase)
 	case phase == SessionPhaseClose:
 		v, ok := closeReasonFromPB[cr]
 		if !ok {

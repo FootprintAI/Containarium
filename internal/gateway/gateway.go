@@ -424,10 +424,12 @@ func (gs *GatewayServer) recordRelayDelivery(ctx context.Context, alertName, web
 	}
 }
 
-// Start starts the HTTP gateway server
-func (gs *GatewayServer) Start(ctx context.Context) error {
-	// Create grpc-gateway mux with custom options
-	mux := runtime.NewServeMux(
+// NewRESTMux returns the grpc-gateway mux with the daemon's options: error
+// mapping, identity metadata, reserved-header filtering and the JSON wire
+// format. Start serves every /v1 REST route through it; contract tests use
+// it so they pin the same wire format the daemon serves.
+func NewRESTMux() *runtime.ServeMux {
+	return runtime.NewServeMux(
 		runtime.WithErrorHandler(customErrorHandler),
 		runtime.WithMetadata(annotateContext),
 		runtime.WithIncomingHeaderMatcher(incomingHeaderMatcher),
@@ -443,6 +445,12 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 			},
 		}),
 	)
+}
+
+// Start starts the HTTP gateway server
+func (gs *GatewayServer) Start(ctx context.Context) error {
+	// Create grpc-gateway mux with custom options
+	mux := NewRESTMux()
 
 	// Setup connection to gRPC server
 	var opts []grpc.DialOption
@@ -549,6 +557,11 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	if err := pb.RegisterAnonymousBoxServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
 		return fmt.Errorf("failed to register anonymous box service gateway: %w", err)
 	}
+	// SSHAuthzService (#2516): per-connection SSH authorization, reached
+	// only through the sentinel-signed mount below.
+	if err := pb.RegisterSSHAuthzServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
+		return fmt.Errorf("failed to register ssh authz service gateway: %w", err)
+	}
 
 	// Register TrafficService gateway handler
 	if err := pb.RegisterTrafficServiceHandlerFromEndpoint(ctx, mux, grpcTarget, opts); err != nil {
@@ -597,7 +610,12 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	// Create HTTP handler with authentication middleware, then audit middleware.
 	// Audit wraps the inner handler so auth runs first (sets username in context),
 	// then audit captures the response on the way out.
-	var handler http.Handler = mux
+	//
+	// rest is the REST mux every chain below serves; GuardSSHAuthzPath keeps
+	// the sentinel-only authorize route (#2516) out of the JWT chain however
+	// its path is spelled.
+	rest := GuardSSHAuthzPath(mux)
+	handler := rest
 	if gs.auditStore != nil {
 		handler = audit.HTTPAuditMiddleware(handler, gs.auditStore)
 	}
@@ -963,11 +981,16 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	// path, so it wins over the "/v1/" catch-all. The inner chain keeps
 	// the audit middleware but skips JWT auth — the door identity comes
 	// from the verified signature instead.
-	var anonInner http.Handler = mux
+	anonInner := rest
 	if gs.auditStore != nil {
 		anonInner = audit.HTTPAuditMiddleware(anonInner, gs.auditStore)
 	}
 	httpMux.Handle(AnonDoorEnsurePath, anonDoorHandler(sentinelVerifier, corsHandler, anonInner, nil))
+
+	// #2516: SSHAuthzService.Authorize, sentinel signature only (no JWT
+	// fallback). Same inner chain as the door: audited, identity from the
+	// verified signature.
+	MountSSHAuthz(httpMux, sentinelVerifier, anonInner)
 
 	// Catch-all fallback: when wake-on-HTTP is enabled, Caddy
 	// forwards user traffic to this daemon while a container is

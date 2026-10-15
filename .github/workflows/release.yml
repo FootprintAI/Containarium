@@ -54,16 +54,10 @@ jobs:
         # workflows pin — with no code change on our side to explain it
         # (caught rehearsing the v0.77.0 release build, 2026-09-13).
         # A pinned binary download has no such dependency on the runner's
-        # Go toolchain at all. Bump BUF_VERSION deliberately, not via a
-        # moving target.
+        # Go toolchain at all. Bump scripts/buf-version.env deliberately.
         run: |
           set -euo pipefail
-          BUF_VERSION=1.72.0
-          BUF_SHA256=8720830e26a733da55bb89bcd3cb44849c0965fc0c44fb5d691cccdc64dca5af
-          curl -sSL -o /usr/local/bin/buf \
-            "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-x86_64"
-          echo "${BUF_SHA256}  /usr/local/bin/buf" | sha256sum -c -
-          chmod +x /usr/local/bin/buf
+          ./scripts/install-buf.sh /usr/local/bin/buf
           buf --version
 
       - name: Get version
@@ -151,6 +145,15 @@ jobs:
         # release if containarium-* is not the client build. The eBPF object
         # built above is embedded in containariumd-* only (-tags embed_bpf).
         run: make build-release VERSION="${GITHUB_REF_NAME#v}"
+
+      - name: Build macOS 11 client (best effort)
+        # Stock Go >= 1.25 targets macOS 12+; this builds the CLIENT with a
+        # privately patched toolchain so macOS 11 machines get a working
+        # binary, published as containarium-darwin-<arch>-macos11 beside the
+        # normal assets. See scripts/build-macos11.sh for what is patched and
+        # why. It cannot be run-tested here (no macOS 11 runner): the script
+        # only gates that the macOS-12-only symbol is gone from the binary.
+        run: make build-macos11 VERSION="${GITHUB_REF_NAME#v}"
 
       - name: Build pre-built Caddy binary (#1617)
         # One Caddy binary with caddy-l4 + every DNS-01 provider baked in, so
@@ -365,6 +368,8 @@ jobs:
             bin/containarium-linux-amd64
             bin/containarium-darwin-amd64
             bin/containarium-darwin-arm64
+            bin/containarium-darwin-amd64-macos11
+            bin/containarium-darwin-arm64-macos11
             bin/containarium-windows-amd64.exe
             bin/containariumd-linux-amd64
             bin/containariumd-darwin-amd64
@@ -472,12 +477,7 @@ jobs:
         # buf" step for why this isn't `go install .../buf@latest`.
         run: |
           set -euo pipefail
-          BUF_VERSION=1.72.0
-          BUF_SHA256=8720830e26a733da55bb89bcd3cb44849c0965fc0c44fb5d691cccdc64dca5af
-          curl -sSL -o /usr/local/bin/buf \
-            "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-x86_64"
-          echo "${BUF_SHA256}  /usr/local/bin/buf" | sha256sum -c -
-          chmod +x /usr/local/bin/buf
+          ./scripts/install-buf.sh /usr/local/bin/buf
           buf --version
 
       - name: Install apt-rdepends

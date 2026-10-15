@@ -44,6 +44,8 @@ const (
 // NetworkService provides network and firewall management
 type NetworkServiceClient interface {
 	// GetNetworkGuardStatus reports both NIC-ACL guards' last-pass state.
+	// Preserve the published RPC request/response type names (#2481).
+	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
 	GetNetworkGuardStatus(ctx context.Context, in *GetNetworkGuardStatusRequest, opts ...grpc.CallOption) (*NetworkGuardStatus, error)
 	// GetRoutes lists all proxy routes (DNS to container mappings)
 	GetRoutes(ctx context.Context, in *GetRoutesRequest, opts ...grpc.CallOption) (*GetRoutesResponse, error)
@@ -256,6 +258,8 @@ func (c *networkServiceClient) StopEgressProxy(ctx context.Context, in *StopEgre
 // NetworkService provides network and firewall management
 type NetworkServiceServer interface {
 	// GetNetworkGuardStatus reports both NIC-ACL guards' last-pass state.
+	// Preserve the published RPC request/response type names (#2481).
+	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
 	GetNetworkGuardStatus(context.Context, *GetNetworkGuardStatusRequest) (*NetworkGuardStatus, error)
 	// GetRoutes lists all proxy routes (DNS to container mappings)
 	GetRoutes(context.Context, *GetRoutesRequest) (*GetRoutesResponse, error)

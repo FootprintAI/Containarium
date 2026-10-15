@@ -22,9 +22,10 @@ const maxIngestBatch = 500
 // Audit actions written for sentinel SSH session records (#2415). Named to
 // match the existing in-box collector's "ssh_login".
 const (
-	auditActionSSHSessionOpen  = "ssh_session_open"
-	auditActionSSHSessionClose = "ssh_session_close"
-	auditResourceSSHSession    = "ssh_session"
+	auditActionSSHSessionOpen   = "ssh_session_open"
+	auditActionSSHSessionClose  = "ssh_session_close"
+	auditActionSSHSessionDenied = "ssh_session_denied"
+	auditResourceSSHSession     = "ssh_session"
 )
 
 // batchLogger is the slice of *audit.Store the ingest handler needs,
@@ -49,19 +50,19 @@ func NewAuditServer(store batchLogger) *AuditServer {
 // column. A named struct, not a map, so the shape is a contract the
 // auditor-facing docs and tests can name.
 type SSHSessionDetail struct {
-	Target           string                   `json:"target,omitempty"`
-	AuthMethod       string                   `json:"auth_method,omitempty"`
-	ClientPort       int                      `json:"client_port,omitempty"`
-	KeyID            string                   `json:"key_id,omitempty"`
-	Serial           uint64                   `json:"serial,omitempty"`
-	CAKeyFingerprint string                   `json:"ca_key_fingerprint,omitempty"`
-	KeyFingerprint   string                   `json:"key_fingerprint,omitempty"`
-	CloseReason      string                   `json:"close_reason,omitempty"`
-	SentinelID       string                   `json:"sentinel_id,omitempty"`
-	UserID           string                   `json:"user_id,omitempty"`
-	AuthzDecision    sshsession.AuthzDecision `json:"authz_decision,omitempty"`
-	DenyReason       sshsession.DenyReason    `json:"deny_reason,omitempty"`
-	Enforced         bool                     `json:"enforced"`
+	Target           string              `json:"target,omitempty"`
+	AuthMethod       string              `json:"auth_method,omitempty"`
+	ClientPort       int                 `json:"client_port,omitempty"`
+	KeyID            string              `json:"key_id,omitempty"`
+	Serial           uint64              `json:"serial,omitempty"`
+	CAKeyFingerprint string              `json:"ca_key_fingerprint,omitempty"`
+	KeyFingerprint   string              `json:"key_fingerprint,omitempty"`
+	CloseReason      string              `json:"close_reason,omitempty"`
+	SentinelID       string              `json:"sentinel_id,omitempty"`
+	UserID           string              `json:"user_id,omitempty"`
+	AuthzDecision    pb.SSHAuthzDecision `json:"authz_decision,omitempty"`
+	DenyReason       pb.SSHDenyReason    `json:"deny_reason,omitempty"`
+	Enforced         bool                `json:"enforced,omitempty"`
 }
 
 // IngestSSHSessionRecords appends the sentinel's SSH session records to this
@@ -129,8 +130,11 @@ func (s *AuditServer) IngestSSHSessionRecords(ctx context.Context, req *pb.Inges
 // sshSessionBatchEntry maps one validated Record to its audit row.
 func sshSessionBatchEntry(rec sshsession.Record, sentinelID, jti string) (audit.BatchEntry, error) {
 	action := auditActionSSHSessionOpen
-	if rec.Phase == sshsession.SessionPhaseClose {
+	switch rec.Phase {
+	case sshsession.SessionPhaseClose:
 		action = auditActionSSHSessionClose
+	case sshsession.SessionPhaseDenied:
+		action = auditActionSSHSessionDenied
 	}
 	detail, err := json.Marshal(SSHSessionDetail{
 		Target:           rec.Target,

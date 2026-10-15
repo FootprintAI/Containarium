@@ -135,13 +135,15 @@ func (SSHAuthzDecision) EnumDescriptor() ([]byte, []int) {
 type SSHDenyReason int32
 
 const (
-	SSHDenyReason_SSH_DENY_REASON_UNSPECIFIED          SSHDenyReason = 0
-	SSHDenyReason_SSH_DENY_REASON_UNKNOWN_KEY          SSHDenyReason = 1
-	SSHDenyReason_SSH_DENY_REASON_USER_INACTIVE        SSHDenyReason = 2
-	SSHDenyReason_SSH_DENY_REASON_NO_ACCESS            SSHDenyReason = 3
-	SSHDenyReason_SSH_DENY_REASON_KEY_EXPIRED          SSHDenyReason = 4
-	SSHDenyReason_SSH_DENY_REASON_APPROVAL_PENDING     SSHDenyReason = 5
-	SSHDenyReason_SSH_DENY_REASON_APPROVAL_DENIED      SSHDenyReason = 6
+	SSHDenyReason_SSH_DENY_REASON_UNSPECIFIED      SSHDenyReason = 0
+	SSHDenyReason_SSH_DENY_REASON_UNKNOWN_KEY      SSHDenyReason = 1
+	SSHDenyReason_SSH_DENY_REASON_USER_INACTIVE    SSHDenyReason = 2
+	SSHDenyReason_SSH_DENY_REASON_NO_ACCESS        SSHDenyReason = 3
+	SSHDenyReason_SSH_DENY_REASON_KEY_EXPIRED      SSHDenyReason = 4
+	SSHDenyReason_SSH_DENY_REASON_APPROVAL_PENDING SSHDenyReason = 5
+	SSHDenyReason_SSH_DENY_REASON_APPROVAL_DENIED  SSHDenyReason = 6
+	// The decision source could not be reached: the cloud, or the local
+	// ssh_keys registry in self-host mode. The daemon fails closed.
 	SSHDenyReason_SSH_DENY_REASON_UPSTREAM_UNAVAILABLE SSHDenyReason = 7
 )
 
@@ -197,12 +199,15 @@ func (SSHDenyReason) EnumDescriptor() ([]byte, []int) {
 }
 
 type AuthorizeSSHRequest struct {
-	state      protoimpl.MessageState `protogen:"open.v1"`
-	Login      string                 `protobuf:"bytes,1,opt,name=login,proto3" json:"login,omitempty"`
-	Credential *SSHCredential         `protobuf:"bytes,2,opt,name=credential,proto3" json:"credential,omitempty"`
-	ClientIp   string                 `protobuf:"bytes,3,opt,name=client_ip,json=clientIp,proto3" json:"client_ip,omitempty"`
-	// Informational; never used to authorize the caller.
-	SentinelId    string `protobuf:"bytes,4,opt,name=sentinel_id,json=sentinelId,proto3" json:"sentinel_id,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// SSH username presented (jump account).
+	Login string `protobuf:"bytes,1,opt,name=login,proto3" json:"login,omitempty"`
+	// What was offered.
+	Credential *SSHCredential `protobuf:"bytes,2,opt,name=credential,proto3" json:"credential,omitempty"`
+	ClientIp   string         `protobuf:"bytes,3,opt,name=client_ip,json=clientIp,proto3" json:"client_ip,omitempty"`
+	// Informational, never used for authorization.
+	SentinelId string `protobuf:"bytes,4,opt,name=sentinel_id,json=sentinelId,proto3" json:"sentinel_id,omitempty"`
+	// Set on re-poll during device approval.
 	ApprovalId    string `protobuf:"bytes,5,opt,name=approval_id,json=approvalId,proto3" json:"approval_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -344,6 +349,7 @@ type isSSHCredential_Kind interface {
 }
 
 type SSHCredential_PublicKey struct {
+	// Raw or security-key (sk-*) public key.
 	PublicKey *SSHPublicKeyCredential `protobuf:"bytes,1,opt,name=public_key,json=publicKey,proto3,oneof"`
 }
 
@@ -468,14 +474,16 @@ func (x *SSHCertificateCredential) GetCaFingerprintSha256() string {
 }
 
 type AuthorizeSSHResponse struct {
-	state      protoimpl.MessageState `protogen:"open.v1"`
-	Decision   SSHAuthzDecision       `protobuf:"varint,1,opt,name=decision,proto3,enum=containarium.v1.SSHAuthzDecision" json:"decision,omitempty"`
-	DenyReason SSHDenyReason          `protobuf:"varint,2,opt,name=deny_reason,json=denyReason,proto3,enum=containarium.v1.SSHDenyReason" json:"deny_reason,omitempty"`
-	// Also populated on DENY when the person is known.
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Decision SSHAuthzDecision       `protobuf:"varint,1,opt,name=decision,proto3,enum=containarium.v1.SSHAuthzDecision" json:"decision,omitempty"`
+	// Set when decision == SSH_AUTHZ_DECISION_DENY.
+	DenyReason SSHDenyReason `protobuf:"varint,2,opt,name=deny_reason,json=denyReason,proto3,enum=containarium.v1.SSHDenyReason" json:"deny_reason,omitempty"`
+	// Set when known, DENY included (for audit).
 	UserId string `protobuf:"bytes,3,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	// Positive cache lifetime; absent or zero means no fresh cache reuse.
-	CacheTtl      *durationpb.Duration `protobuf:"bytes,4,opt,name=cache_ttl,json=cacheTtl,proto3" json:"cache_ttl,omitempty"`
-	Approval      *SSHDeviceApproval   `protobuf:"bytes,5,opt,name=approval,proto3" json:"approval,omitempty"`
+	// Positive cache lifetime at the sentinel.
+	CacheTtl *durationpb.Duration `protobuf:"bytes,4,opt,name=cache_ttl,json=cacheTtl,proto3" json:"cache_ttl,omitempty"`
+	// Set when deny_reason == SSH_DENY_REASON_APPROVAL_PENDING.
+	Approval      *SSHDeviceApproval `protobuf:"bytes,5,opt,name=approval,proto3" json:"approval,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -684,10 +692,10 @@ const file_containarium_v1_ssh_authz_proto_rawDesc = "" +
 	"\x1bSSH_DENY_REASON_KEY_EXPIRED\x10\x04\x12$\n" +
 	" SSH_DENY_REASON_APPROVAL_PENDING\x10\x05\x12#\n" +
 	"\x1fSSH_DENY_REASON_APPROVAL_DENIED\x10\x06\x12(\n" +
-	"$SSH_DENY_REASON_UPSTREAM_UNAVAILABLE\x10\a2\xf4\x01\n" +
-	"\x0fSSHAuthzService\x12\xe0\x01\n" +
-	"\tAuthorize\x12$.containarium.v1.AuthorizeSSHRequest\x1a%.containarium.v1.AuthorizeSSHResponse\"\x85\x01\x92Af\n" +
-	"\x11SSH Authorization\x12\x1bAuthorize an SSH connection\x1a4Sentinel-signed, read-only live authorization query.\x82\xd3\xe4\x93\x02\x16:\x01*\"\x11/v1/ssh/authorizeBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
+	"$SSH_DENY_REASON_UPSTREAM_UNAVAILABLE\x10\a2\xc1\x02\n" +
+	"\x0fSSHAuthzService\x12\xad\x02\n" +
+	"\tAuthorize\x12$.containarium.v1.AuthorizeSSHRequest\x1a%.containarium.v1.AuthorizeSSHResponse\"\xd2\x01\x92A\xb2\x01\n" +
+	"\bSSHAuthz\x12\x18Authorize SSH connection\x1a\x8b\x01Decide whether the credential offered to the sentinel may open a session as the given login on this backend. Sentinel-signed requests only.\x82\xd3\xe4\x93\x02\x16:\x01*\"\x11/v1/ssh/authorizeBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
 
 var (
 	file_containarium_v1_ssh_authz_proto_rawDescOnce sync.Once
