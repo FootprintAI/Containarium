@@ -8,12 +8,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/footprintai/containarium/internal/auth"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -34,12 +34,12 @@ func TestDeployRecipeTool_GuardrailInput(t *testing.T) {
 	require.NoError(t, json.Unmarshal(raw, &input))
 	var received pb.DeployRecipeRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, http.MethodPost, r.Method)
-		require.Equal(t, "/v1/recipes/gated/deploy", r.URL.Path)
-		require.Equal(t, "Bearer tok", r.Header.Get("Authorization"))
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "/v1/recipes/gated/deploy", r.URL.Path)
+		assert.Equal(t, "Bearer tok", r.Header.Get("Authorization"))
 		body, readErr := io.ReadAll(r.Body)
-		require.NoError(t, readErr)
-		require.NoError(t, protojson.Unmarshal(body, &received))
+		assert.NoError(t, readErr)
+		assert.NoError(t, protojson.Unmarshal(body, &received))
 		_, _ = io.WriteString(w, `{"message":"deployed","url":"https://app.example.com","container":{"name":"alice-container","state":"CONTAINER_STATE_RUNNING"}}`)
 	}))
 	defer srv.Close()
@@ -48,6 +48,7 @@ func TestDeployRecipeTool_GuardrailInput(t *testing.T) {
 		"parameters": map[string]interface{}{"model": "small", "count": float64(2)},
 	})
 	require.NoError(t, err)
+	srv.Close()
 	require.True(t, proto.Equal(want, received.GuardrailInput), "got %v", received.GuardrailInput)
 	require.Equal(t, "0", received.Gpu)
 	require.Equal(t, map[string]string{"model": "small", "count": "2"}, received.Parameters)
@@ -68,6 +69,7 @@ func (c *recipeCallCounter) DeployRecipe(DeployRecipeRequest) (*DeployRecipeResp
 
 func TestDeployRecipeTool_InvalidGuardrailInputSendsNoRequest(t *testing.T) {
 	for _, input := range []interface{}{
+		map[string]interface{}{},
 		map[string]interface{}{"staging_ref": "ds1"},
 		map[string]interface{}{"attestation": map[string]interface{}{}},
 		map[string]interface{}{"staging_ref": "ds1", "attestation": nil},
@@ -105,6 +107,7 @@ func TestDeployRecipeTool_TransportAndTokenRotation(t *testing.T) {
 		_, err := handleDeployRecipe(c, map[string]interface{}{"recipe_id": "plain", "name": "alice"})
 		require.NoError(t, err)
 	}
+	srv.Close()
 	require.Equal(t, []string{"Bearer first", "Bearer rotated"}, tokens)
 
 	t.Setenv(mcpAllowInsecureEnv, "false")
@@ -136,7 +139,7 @@ func TestDeployRecipeTool_GuardrailSchemaAndScope(t *testing.T) {
 		require.NoError(t, json.Unmarshal(schema, &shape))
 		require.Equal(t, "object", shape.Properties["guardrail_input"].Type)
 		require.ElementsMatch(t, []string{"staging_ref", "attestation"}, shape.Properties["guardrail_input"].Required)
-		require.True(t, strings.Contains(string(schema), "daemon"))
+		require.Contains(t, string(schema), "daemon")
 		return
 	}
 	t.Fatal("deploy_recipe is not registered")

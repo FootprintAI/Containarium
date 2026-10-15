@@ -22,7 +22,7 @@ import (
 )
 
 // Run the real stdio MCP server in a helper process, through the generated
-// REST gateway and daemon gate, with only container provisioning faked.
+// REST gateway and daemon gate, against the fake container backend.
 func TestDeployGate_MCP(t *testing.T) {
 	for _, withInput := range []bool{true, false} {
 		t.Run(map[bool]string{true: "valid input", false: "missing input"}[withInput], func(t *testing.T) {
@@ -37,7 +37,7 @@ func TestDeployGate_MCP(t *testing.T) {
 			defer srv.Close()
 			args := map[string]interface{}{"recipe_id": "gated", "name": "alice"}
 			if withInput {
-				raw, err := protojson.Marshal(f.req.GuardrailInput)
+				raw, err := (protojson.MarshalOptions{UseProtoNames: true}).Marshal(f.req.GuardrailInput)
 				require.NoError(t, err)
 				args["guardrail_input"] = json.RawMessage(raw)
 			}
@@ -56,6 +56,7 @@ func TestDeployGate_MCP(t *testing.T) {
 			cmd.Stderr = &stderr
 			out, err := cmd.Output()
 			require.NoError(t, err, "%s", stderr.String())
+			srv.Close()
 			var response mcp.MCPResponse
 			require.NoError(t, json.Unmarshal(out, &response), "%s", out)
 			if withInput {
