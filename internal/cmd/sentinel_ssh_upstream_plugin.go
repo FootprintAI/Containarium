@@ -40,6 +40,9 @@ func newSSHUpstreamPluginCommand() *cobra.Command {
 		}
 		ctx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 		defer cancel()
+		// #nosec G204 -- executable/argv are explicit local operator configuration
+		// for a same-UID plugin. SSH metadata and routing replies never enter argv;
+		// exec receives separate arguments and does not invoke a shell.
 		child := exec.CommandContext(ctx, executable, args...)
 		transport, stderr, err := ioconn.DialCmd(child)
 		if err != nil {

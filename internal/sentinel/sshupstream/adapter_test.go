@@ -227,6 +227,9 @@ func TestAdapterBindsEveryAuthorizedAttempt(t *testing.T) {
 		t.Fatal(err)
 	}
 	meta := &libplugin.ConnMeta{UniqId: "same-connection", UserName: "tenant", FromAddr: "127.0.0.2:12345", Metadata: map[string]string{"authz": "ALLOW", "approval": "verified"}}
+	if cfg.UpstreamAuthFailureCallback == nil {
+		t.Fatal("adapter cannot release failed setups for legitimate authentication retries")
+	}
 	var ids []string
 	for range 2 {
 		u, err := cfg.PublicKeyCallback(meta, []byte("offered-key"))
@@ -246,7 +249,7 @@ func TestAdapterBindsEveryAuthorizedAttempt(t *testing.T) {
 			t.Fatal(err)
 		}
 		_ = conn.Close()
-		cfg.PipeCreateErrorCallback(meta.FromAddr, errors.New("test setup ended"))
+		cfg.UpstreamAuthFailureCallback(meta, "publickey", errors.New("test setup ended"), []string{"publickey"})
 		ids = append(ids, attempts[len(attempts)-1].ID)
 	}
 	if len(attempts) != 2 || ids[0] == ids[1] {

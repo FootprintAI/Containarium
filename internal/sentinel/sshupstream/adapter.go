@@ -202,8 +202,11 @@ func NewAdapter(ctx context.Context, child libplugin.SshPiperPluginClient, dial 
 		}
 		return b.verify(b.host, b.conn.RemoteAddr(), pub)
 	}
-	if caps["UpstreamAuthFailure"] {
-		cfg.UpstreamAuthFailureCallback = func(c libplugin.ConnMetadata, method string, failure error, allowed []string) {
+	cfg.UpstreamAuthFailureCallback = func(c libplugin.ConnMetadata, method string, failure error, allowed []string) {
+		// A failed upstream is no longer a pending setup. In particular, a
+		// corrected downstream password must be able to select another attempt.
+		a.finish(c.UniqueID(), "", false)
+		if caps["UpstreamAuthFailure"] {
 			methods := make([]libplugin.AuthMethod, 0, len(allowed))
 			for _, name := range allowed {
 				methods = append(methods, libplugin.AuthMethodFromName(name))

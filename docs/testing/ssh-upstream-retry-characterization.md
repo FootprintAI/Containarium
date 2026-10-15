@@ -16,14 +16,16 @@ Coverage in this increment:
 | `TestIntegrationSSHUpstreamAnonymousTransportHook` | Actual anon-door routing child uses the hook for outage and recovery |
 | `TestIntegrationSSHUpstreamPinnedHostKey` | Original YAML and adapter both accept the correct pin and reject a changed host key |
 | `TestIntegrationSSHUpstreamCertificateAuthorization` | Real YAML accepts a trusted user certificate and rejects a wrong principal before dialing |
+| `TestIntegrationSSHUpstreamPasswordRetry` | A wrong password followed by a corrected password succeeds on the same downstream socket, with two actual backend dials. The initial adapter failed this test; releasing setup state on the typed upstream-auth-failure notice makes it pass. |
+| `TestIntegrationSSHUpstreamProxyCredentialFailure` | A reachable backend rejecting the configured proxy key still produces seven dials with both original YAML and the unguarded adapter. This failure class needs the follow-up gate; an accidentally retained setup must not substitute for admission policy. |
 | `TestIntegration_PublicKeyApprovalThroughTransportAdapter` | Existing OpenSSH signature/partial-success/keyboard-interactive proof remains intact; no-private-key and no-publickey cases still reject |
 | Seven `TestAdapter*` unit tests | Attempt identity, one-use replay rejection, metadata/credential preservation, revoked keys, child verifier forwarding, unsupported-contract rejection and session-deadline promotion |
 | `TestSSHUpstreamPluginStopsWhenRoutingChildExits` | A real child serves its generated bootstrap contract then exits; the adapter exits and reaps it so service supervision can recover. Demonstrated red before adding the exit watcher, then green in 0.256s. |
 | `TestIntegrationSSHUpstreamHookRetainsFailurePolicy` | Existing #933 accounting still counts three outage connections and bans that source; this increment does not pretend to fix attribution |
 
-The actual TCP dial is bounded to 2 seconds and pre-session sockets to 30 seconds. An attempt-correlated PipeStart clears the setup deadline so established sessions retain their original lifetime. Pending capabilities expire and are count-bounded. This is **not aggregate exponential backoff**: many different clients can still each open one backend connection. No shared backend gate or backend-jail prevention is claimed. The proposed follow-up requires both-listener aggregate budgeting and typed failure accounting; its recovery behavior awaits the strict-jail-budget decision described in the architecture doc.
+The actual TCP dial is bounded to 2 seconds and pre-session sockets to 30 seconds. An attempt-correlated PipeStart clears the setup deadline so established sessions retain their original lifetime. Pending capabilities expire and are count-bounded. A typed upstream-auth-failure notice releases that attempt so a legitimate corrected password or later key can select another one. This is **not aggregate exponential backoff**: different clients can each dial, and upstream credential rejection can retry on the same connection. The measured seven-to-one reduction applies to the TCP-unavailable fixture. No shared backend gate or backend-jail prevention is claimed. The proposed follow-up requires both-listener aggregate budgeting and typed failure accounting; its recovery behavior awaits the strict-jail-budget decision described in the architecture doc.
 
-CI's existing SSH enforcement lane now installs strace explicitly, runs the original tests plus these scenarios with the race detector, and uploads connect traces and logs without fixture key files. The full normal test/lint/typecheck workflows remain enabled. Local output does not substitute for a passing PR run.
+CI's existing SSH enforcement lane now installs strace explicitly, runs the original tests plus these scenarios with the race detector, and uploads connect traces and logs without fixture key files. The [first published transport-spike artifacts at commit 06a0dd69](https://github.com/FootprintAI/Containarium/actions/runs/38710280439/artifacts/11959814485) cover the earlier transport/pin/certificate/approval scenarios; the added password/proxy-credential cases run on subsequent heads of [PR #2578](https://github.com/FootprintAI/Containarium/pull/2578). The full normal test/lint/typecheck workflows remain enabled. Local output does not substitute for a passing PR run.
 
 To reproduce this increment, set the binary variables from the reproduction section below, set `ANONDOOR_SSHPIPERD=$SSH_BAN_SSHPIPERD`, and run:
 
@@ -38,7 +40,7 @@ go test -tags integration ./internal/sentinel/anondoor -count=1 -timeout 90s -v 
 
 On `78186195`, rebuilt containariumd and reran the complete `internal/sentinel/sshban` package with integration tests. It passed in **15.771 seconds**. All eight characterization scenarios retained their original results: single-key Go/OpenSSH and bundled-failtoban comparison each dialed seven times; twelve clients dialed 84 times; three keys on one connection dialed nine times; healthy handshakes did not spend failure budget; outage-induced source bans persisted until unban after the backend returned. Existing real SSH enforcement/parity tests also passed. The separate two-minute idle observation below was performed on the original `7f979bae` base and was not repeated on latest main.
 
-Latest-main daemon SHA256: `69f6a93e3caf34375e5232a04e6a34e6970898c9f57b5bfdbccbc20096df52f4`. [Latest-main test output](/tmp/containarium-1138-latest-evidence/latest-main-package.log). Initial-run identities and evidence below remain historical records of the first characterization run. Unmerged authorization/rotation PRs were inspected, not merged into this tested checkout.
+Latest-main daemon SHA256: `69f6a93e3caf34375e5232a04e6a34e6970898c9f57b5bfdbccbc20096df52f4`. Latest-main test output (local-only path: `/tmp/containarium-1138-latest-evidence/latest-main-package.log`). Initial-run identities and evidence below remain historical records of the first characterization run. Unmerged authorization/rotation PRs were inspected, not merged into this tested checkout.
 
 ## Findings
 
@@ -102,10 +104,10 @@ Test source: [upstream_retry_integration_test.go](../../internal/sentinel/sshban
 
 Local evidence:
 
-- [Eight scenarios repeated five times](/tmp/containarium-1138-evidence/eight-cases-five-runs.log)
-- [Two-minute idle observation](/tmp/containarium-1138-evidence/two-minute-idle.log)
-- [OpenSSH verbose exchange](/tmp/containarium-1138-evidence/TestIntegrationSSHPiperUpstreamRetryCharacterization-openssh_one_key_one_connection-2682588497/openssh.log)
-- [Matching process-family syscall trace](/tmp/containarium-1138-evidence/TestIntegrationSSHPiperUpstreamRetryCharacterization-openssh_one_key_one_connection-2682588497/connect.trace)
+- Eight scenarios repeated five times (local-only path: `/tmp/containarium-1138-evidence/eight-cases-five-runs.log`)
+- Two-minute idle observation (local-only path: `/tmp/containarium-1138-evidence/two-minute-idle.log`)
+- OpenSSH verbose exchange (local-only path: `/tmp/containarium-1138-evidence/TestIntegrationSSHPiperUpstreamRetryCharacterization-openssh_one_key_one_connection-2682588497/openssh.log`)
+- Matching process-family syscall trace (local-only path: `/tmp/containarium-1138-evidence/TestIntegrationSSHPiperUpstreamRetryCharacterization-openssh_one_key_one_connection-2682588497/connect.trace`)
 
 Binary identities:
 
