@@ -32,6 +32,35 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  backend-jail-characterization:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.9'
+      - name: Install real backend SSH and jail prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y openssh-server fail2ban
+          mkdir -p "$RUNNER_TEMP/backend-jail"
+          dpkg-query -W openssh-server fail2ban python3-pyasyncore > "$RUNNER_TEMP/backend-jail/versions.log"
+      - name: Characterize real SSH logs and jail decisions without host firewall changes
+        env:
+          BACKEND_JAIL_EVIDENCE: ${{ runner.temp }}/backend-jail/evidence
+        run: |
+          set -euo pipefail
+          go test -race -tags integration -count=1 -timeout 2m -v \
+            ./internal/sentinel/backendjail | tee "$RUNNER_TEMP/backend-jail/verification.log"
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: backend-jail-characterization
+          path: ${{ runner.temp }}/backend-jail
+
   ssh-enforcement:
     runs-on: ubuntu-latest
     timeout-minutes: 15
