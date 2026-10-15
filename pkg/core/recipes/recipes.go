@@ -6,8 +6,11 @@
 package recipes
 
 import (
+	"bytes"
 	"embed"
+	"errors"
 	"fmt"
+	"io"
 	"path"
 	"strings"
 	"sync"
@@ -78,6 +81,27 @@ type recipeDef struct {
 	// loading as an ungated recipe; validate decodes it into GuardrailGate.
 	GuardrailGateNode yaml.Node         `yaml:"guardrail_gate,omitempty"`
 	GuardrailGate     *guardrailGateDef `yaml:"-"`
+}
+
+// UnmarshalYAML uses the callback form to retain the parent decoder's
+// KnownFields setting, source positions and shared YAML anchors. Decode into
+// a distinct type to avoid recursion, then add the recipe ID to each error.
+func (r *recipeDef) UnmarshalYAML(decode func(any) error) error {
+	type recipeYAML recipeDef
+	var decoded recipeYAML
+	if err := decode(&decoded); err != nil {
+		var typeErr *yaml.TypeError
+		if !errors.As(err, &typeErr) {
+			return fmt.Errorf("recipe %q: %w", decoded.ID, err)
+		}
+		annotated := &yaml.TypeError{Errors: make([]string, len(typeErr.Errors))}
+		for i, message := range typeErr.Errors {
+			annotated.Errors[i] = fmt.Sprintf("recipe %q: %s", decoded.ID, message)
+		}
+		return annotated
+	}
+	*r = recipeDef(decoded)
+	return nil
 }
 
 // guardrailGateDef is the YAML shape of pb.GuardrailGate. require_kinds
@@ -221,7 +245,9 @@ func (m *Manager) LoadEmbedded() error {
 // LoadFromBytes parses and validates a YAML recipe catalog.
 func (m *Manager) LoadFromBytes(data []byte) error {
 	var cfg config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
 		return fmt.Errorf("parse recipes YAML: %w", err)
 	}
 
