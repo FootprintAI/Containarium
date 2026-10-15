@@ -31,6 +31,7 @@ import (
 // retryFixture runs the production plugin chain under a syscall tracer so
 // failed TCP attempts are observable even when no backend is listening.
 type retryFixture struct {
+	password                 bool
 	listener                 pb.SSHBanListener
 	addr, backend, tracePath string
 	keys                     []ssh.Signer
@@ -41,7 +42,7 @@ type retryFixture struct {
 
 // retryMode keeps transport and host-key comparisons explicit at each callsite.
 type retryMode struct {
-	bundled, routed, pinnedHost, anonymous, certificate, wrongPrincipal bool
+	bundled, routed, pinnedHost, anonymous, certificate, wrongPrincipal, password bool
 }
 
 // retryUnusedAddress reserves and releases an ephemeral loopback destination.
@@ -101,6 +102,10 @@ func newConfiguredRetryFixture(t *testing.T, threshold, keyCount int, mode retry
 		f.keyPaths = append(f.keyPaths, path)
 	}
 	config := fmt.Sprintf("version: \"1.0\"\npipes:\n- from:\n  - username: fixture\n    authorized_keys: [%s]\n  to:\n    host: %q\n    username: fixture\n    private_key: %q\n    ignore_host_key: true\n", strings.Join(paths, ", "), f.backend, upstreamPath)
+	if mode.password {
+		f.password = true
+		config = fmt.Sprintf("version: \"1.0\"\npipes:\n- from:\n  - username: fixture\n  to:\n    host: %q\n    username: fixture\n", f.backend)
+	}
 	if mode.certificate {
 		caPath, ca := integrationKey(t, dir, "user-ca")
 		principal := "fixture"
@@ -357,6 +362,11 @@ func TestIntegrationSSHUpstreamHookRetainsFailurePolicy(t *testing.T) {
 // retryHandshake uses one explicit downstream TCP connection and optionally
 // offers multiple authorized client identities on that same connection.
 func retryHandshake(addr, source string, keys ...ssh.Signer) error {
+	return retryHandshakeAuth(addr, source, ssh.PublicKeys(keys...))
+}
+
+// retryHandshakeAuth exercises authentication retries on one downstream socket.
+func retryHandshakeAuth(addr, source string, auth ...ssh.AuthMethod) error {
 	dialer := net.Dialer{Timeout: time.Second, LocalAddr: &net.TCPAddr{IP: net.ParseIP(source)}}
 	c, err := dialer.Dial("tcp", addr)
 	if err != nil {
@@ -364,7 +374,7 @@ func retryHandshake(addr, source string, keys ...ssh.Signer) error {
 	}
 	defer func() { _ = c.Close() }()
 	_ = c.SetDeadline(time.Now().Add(4 * time.Second))
-	cfg := &ssh.ClientConfig{User: "fixture", Auth: []ssh.AuthMethod{ssh.PublicKeys(keys...)}, HostKeyCallback: ssh.InsecureIgnoreHostKey()}
+	cfg := &ssh.ClientConfig{User: "fixture", Auth: auth, HostKeyCallback: ssh.InsecureIgnoreHostKey()}
 	conn, _, _, err := ssh.NewClientConn(c, addr, cfg)
 	if err == nil {
 		_ = conn.Close()
@@ -428,6 +438,15 @@ func (f *retryFixture) retryBackend(t *testing.T) *atomic.Int64 {
 		return nil, nil
 	}}
 	cfg.AddHostKey(f.host)
+	if f.password {
+		cfg.PublicKeyCallback = nil
+		cfg.PasswordCallback = func(_ ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
+			if string(password) != "correct-fixture-password" {
+				return nil, fmt.Errorf("incorrect fixture password")
+			}
+			return nil, nil
+		}
+	}
 	l, err := net.Listen("tcp", f.backend)
 	if err != nil {
 		t.Fatal(err)
@@ -691,5 +710,54 @@ func TestIntegrationSSHUpstreamRoutingTransportHook(t *testing.T) {
 	}
 	if got := len(f.attempts(t)); got != 2 || accepted.Load() != 1 {
 		t.Fatalf("unauthorized attempt reached backend: dials=%d accepted=%d", got, accepted.Load())
+	}
+}
+
+// TestIntegrationSSHUpstreamProxyCredentialFailure distinguishes a reachable
+// backend rejecting the configured proxy key from a refused TCP connection.
+func TestIntegrationSSHUpstreamProxyCredentialFailure(t *testing.T) {
+	for _, routed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("adapter=%v", routed), func(t *testing.T) {
+			f := newConfiguredRetryFixture(t, 100, 1, retryMode{routed: routed})
+			_, f.upstream = integrationKey(t, t.TempDir(), "different-expected-proxy-key")
+			accepted := f.retryBackend(t)
+			if err := retryHandshake(f.addr, "127.0.0.2", f.keys[0]); err == nil {
+				t.Fatal("backend accepted a rejected proxy credential")
+			}
+			calls := len(f.attempts(t))
+			if calls != 7 || int64(calls) != accepted.Load() {
+				t.Fatalf("proxy-key rejection was not measured against a reachable backend: connects=%d accepted=%d", calls, accepted.Load())
+			}
+			failures := f.waitForFailures(t, "127.0.0.2", 8).Status.Failures
+			if failures != 8 {
+				t.Fatalf("proxy auth failures changed source-policy accounting: %d callbacks, want 8", failures)
+			}
+			t.Logf("adapter=%v rejected_proxy_key=true backend_connect_calls=%d client_failure_callbacks=%d", routed, calls, failures)
+		})
+	}
+}
+
+// TestIntegrationSSHUpstreamPasswordRetry preserves a legitimate corrected
+// password on the same socket instead of mistaking it for a pending setup.
+func TestIntegrationSSHUpstreamPasswordRetry(t *testing.T) {
+	for _, routed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("adapter=%v", routed), func(t *testing.T) {
+			f := newConfiguredRetryFixture(t, 100, 1, retryMode{routed: routed, password: true})
+			f.retryBackend(t)
+			offers := 0
+			auth := ssh.RetryableAuthMethod(ssh.PasswordCallback(func() (string, error) {
+				offers++
+				if offers == 1 {
+					return "wrong-fixture-password", nil
+				}
+				return "correct-fixture-password", nil
+			}), 2)
+			if err := retryHandshakeAuth(f.addr, "127.0.0.2", auth); err != nil {
+				t.Fatalf("corrected password could not authenticate: %v", err)
+			}
+			if offers != 2 || len(f.attempts(t)) != 2 {
+				t.Fatalf("password retry changed: offers=%d backend connects=%d", offers, len(f.attempts(t)))
+			}
+		})
 	}
 }
