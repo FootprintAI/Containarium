@@ -45,10 +45,16 @@ func newSSHUpstreamPluginCommand() *cobra.Command {
 		if err != nil {
 			return err
 		}
+		exited := make(chan struct{})
+		var childErr error
+		go func() {
+			childErr = child.Wait()
+			close(exited)
+		}()
 		defer func() {
 			_ = transport.Close()
 			_ = stderr.Close()
-			_ = child.Wait()
+			<-exited
 		}()
 		go func() { _, _ = io.Copy(os.Stderr, stderr) }()
 		var used atomic.Bool
@@ -84,6 +90,8 @@ func newSSHUpstreamPluginCommand() *cobra.Command {
 		select {
 		case err := <-done:
 			return err
+		case <-exited:
+			return fmt.Errorf("routing child exited: %v", childErr)
 		case <-ctx.Done():
 			return nil
 		}
