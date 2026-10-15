@@ -431,6 +431,37 @@ unchanged; what changes is that the *policy* now originates on the platform.
 be in `trusted_signers`. Offline `verify` keeps working with an explicit
 `--public-key`, and prints that the result is not server-trusted.
 
+### Rate limits (#2404)
+
+There is no limit on how much data a gated deploy copies; what is bounded is
+how often a caller may ask for that work. Each guardrail API has a
+token bucket **per authenticated subject** (`internal/guardrailrate`, on
+`golang.org/x/time/rate`), so one caller being throttled never throttles
+another.
+
+| API | Default | Flag (env) |
+|---|---|---|
+| Gated `DeployRecipe` | 6/min, burst 3 | `--guardrail-deploy-rate-per-minute` (`CONTAINARIUM_GUARDRAIL_DEPLOY_RATE_PER_MINUTE`), `--guardrail-deploy-burst` (`CONTAINARIUM_GUARDRAIL_DEPLOY_BURST`) |
+| `GuardrailPolicyService.Set` | 10/min, burst 10 | `--guardrail-policy-set-rate-per-minute` (`CONTAINARIUM_GUARDRAIL_POLICY_SET_RATE_PER_MINUTE`), `--guardrail-policy-set-burst` (`CONTAINARIUM_GUARDRAIL_POLICY_SET_BURST`) |
+| `GuardrailPolicyService.Get` | 120/min, burst 120 | `--guardrail-policy-get-rate-per-minute` (`CONTAINARIUM_GUARDRAIL_POLICY_GET_RATE_PER_MINUTE`), `--guardrail-policy-get-burst` (`CONTAINARIUM_GUARDRAIL_POLICY_GET_BURST`) |
+
+- A rate of `0` disables that limit. A burst of `0` means "the per-minute
+  rate" (the `internal/sandbox/ratelimit` convention). An unparseable env
+  value leaves the default in force. The flag wins over the env.
+- Over the limit the call is `RESOURCE_EXHAUSTED` (HTTP 429 through
+  grpc-gateway) with a `google.rpc.RetryInfo` detail and "retry in Ns" in
+  the message. A refused call consumes no token.
+- The gated-deploy check is the gate's first step, after authorisation and
+  before the policy read, the staging root and any snapshot: a throttled
+  deploy reads nothing and creates nothing. Ungated recipes are not
+  limited. Set is checked after the admin-role check, and admins are not
+  exempt. `guardrail apply`/`verify`'s policy read is a Get and is covered
+  by the Get limit; it has none of its own.
+- Throttling is logged at most once per caller per limit per minute
+  (`[guardrail-rate] ...`), with a count of the refusals not logged.
+- A caller's bucket is dropped once it has been idle long enough to refill
+  completely, so memory is bounded by recently active callers.
+
 ### The gate **(new: dataset input)**
 
 `DeployRecipeRequest` has no way to supply a dataset, and a freshly created
@@ -478,6 +509,20 @@ Order inside `deploy`, for a recipe with `guardrail_gate` set:
 Verifying before creation, rather than after, is deliberate: the existing
 failure mode for a gated `post_start` is a box that exists with a workload
 that never started.
+
+**Staging scope (#2414).** `staging_ref` resolves to
+`<staging root>/<authenticated subject>/<staging_ref>`: the subject of the
+caller's token, **never** the deploy `name`. An attestation proves data is
+clean, not that the caller may have it, so the scope must come from who the
+caller is. Admin callers are **not** exempt: an admin may deploy a box under
+any `name`, but its `staging_ref` still reads only the admin subject's own
+staging directory. For a non-admin nothing changes, because `DeployRecipe`
+already requires `name` to equal the subject (`PERMISSION_DENIED` otherwise).
+Consequence for a control plane that proxies deploys with an admin token
+and forwards a user-chosen `name`: the user can no longer reach another
+tenant's staged data by choosing `name`; the proxy's datasets must be staged
+under the proxy's own subject (or the deploy made with the user's own
+token). A subject that is not a single path component is refused.
 
 ## Contracts
 
