@@ -27,7 +27,9 @@ const codeEgressClusterDefaultResourceID = "_cluster_default"
 // holding code-egress:read. Store only: nothing here programs the kernel.
 type CodingToolEgressPolicyServer struct {
 	pb.UnimplementedCodingToolEgressPolicyServiceServer
-	store    CodingToolEgressPolicyStore
+	// store is swapped while serving when the recovery retry installs the
+	// Postgres store (#2483).
+	store    *swappableCodeEgressStore
 	audit    auditLogger
 	implicit codeegress.Implicit
 	// durable says whether store is the source of truth: true with no
@@ -42,13 +44,48 @@ type CodingToolEgressPolicyServer struct {
 }
 
 func NewCodingToolEgressPolicyServer(store CodingToolEgressPolicyStore) *CodingToolEgressPolicyServer {
-	s := &CodingToolEgressPolicyServer{store: store}
+	s := &CodingToolEgressPolicyServer{store: &swappableCodeEgressStore{}}
+	s.store.swap(store)
 	s.durable.Store(true)
 	return s
 }
 
-// SetStore swaps the backing store. Startup only, before serving.
-func (s *CodingToolEgressPolicyServer) SetStore(store CodingToolEgressPolicyStore) { s.store = store }
+// swappableCodeEgressStore is a CodingToolEgressPolicyStore whose backing
+// store can be replaced while RPCs are in flight (#2483).
+type swappableCodeEgressStore struct {
+	cur atomic.Pointer[codeEgressStoreRef]
+}
+
+type codeEgressStoreRef struct{ CodingToolEgressPolicyStore }
+
+func (w *swappableCodeEgressStore) swap(st CodingToolEgressPolicyStore) {
+	w.cur.Store(&codeEgressStoreRef{st})
+}
+
+func (w *swappableCodeEgressStore) current() CodingToolEgressPolicyStore {
+	return w.cur.Load().CodingToolEgressPolicyStore
+}
+
+func (w *swappableCodeEgressStore) Set(ctx context.Context, p *pb.CodingToolEgressPolicy, updatedBy string) (*pb.CodingToolEgressPolicy, int64, error) {
+	return w.current().Set(ctx, p, updatedBy)
+}
+
+func (w *swappableCodeEgressStore) Get(ctx context.Context, tenant string) (*pb.CodingToolEgressPolicy, error) {
+	return w.current().Get(ctx, tenant)
+}
+
+func (w *swappableCodeEgressStore) Delete(ctx context.Context, tenant string) (int64, error) {
+	return w.current().Delete(ctx, tenant)
+}
+
+// SetStore swaps the backing store. Safe while serving; it does not change
+// the durable flag (InstallDurableStore does both).
+func (s *CodingToolEgressPolicyServer) SetStore(store CodingToolEgressPolicyStore) {
+	s.store.swap(store)
+}
+
+// Durable reports whether the current store is the source of truth.
+func (s *CodingToolEgressPolicyServer) Durable() bool { return s.durable.Load() }
 
 // SetDurable records whether the current store is the source of truth.
 // Startup only: false when Postgres is configured, until its store is
@@ -70,7 +107,7 @@ func (s *CodingToolEgressPolicyServer) InstallDurableStore(open func() (CodingTo
 
 func (s *CodingToolEgressPolicyServer) requireDurable() error {
 	if !s.durable.Load() {
-		return status.Error(codes.Unavailable, "coding-tool egress policy store unavailable: Postgres is configured but its store was not initialised at startup")
+		return status.Error(codes.Unavailable, "coding-tool egress policy store unavailable: Postgres is configured but its store is not installed yet (the daemon retries until Postgres answers)")
 	}
 	return nil
 }
