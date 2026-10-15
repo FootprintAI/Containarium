@@ -4,7 +4,7 @@ on:
   pull_request:
     paths:
       - 'internal/sentinel/**'
-      - 'internal/cmd/sentinel_ssh_ban_plugin*'
+      - 'internal/cmd/sentinel_ssh_*'
       - 'proto/containarium/v1/ssh_ban.proto'
       - 'terraform/modules/containarium/**'
       - 'scripts/test-ssh-ban-templates.sh'
@@ -15,7 +15,7 @@ on:
     branches: [main]
     paths:
       - 'internal/sentinel/**'
-      - 'internal/cmd/sentinel_ssh_ban_plugin*'
+      - 'internal/cmd/sentinel_ssh_*'
       - 'proto/containarium/v1/ssh_ban.proto'
       - 'terraform/modules/containarium/**'
       - 'scripts/test-ssh-ban-templates.sh'
@@ -42,6 +42,10 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: '1.26.9'
+      - name: Install TCP syscall tracer
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y strace
       - name: Install pinned upstream SSH binaries
         env:
           GH_TOKEN: ${{ github.token }}
@@ -60,8 +64,14 @@ jobs:
           export SSH_BAN_YAML="$RUNNER_TEMP/ssh-ban/plugins/yaml"
           export SSH_BAN_DAEMON="$RUNNER_TEMP/ssh-ban/containariumd"
           export SSH_BAN_UPSTREAM_GUARD="$RUNNER_TEMP/ssh-ban/plugins/failtoban"
+          export SSH_UPSTREAM_EVIDENCE_DIR="$RUNNER_TEMP/ssh-ban/evidence"
+          export ANONDOOR_SSHPIPERD="$SSH_BAN_SSHPIPERD"
+          go test -race -count=1 -v ./internal/sentinel/sshupstream | tee "$RUNNER_TEMP/ssh-ban/adapter-unit.log"
           go test -race -tags integration -count=1 -timeout 2m -v \
             ./internal/sentinel/sshban | tee "$RUNNER_TEMP/ssh-ban/verification.log"
+          go test -race -tags integration -count=1 -timeout 2m -v \
+            ./internal/sentinel/anondoor \
+            -run '^TestIntegration_PublicKeyApprovalThroughTransportAdapter$' | tee "$RUNNER_TEMP/ssh-ban/approval-adapter.log"
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: '1.13.4'
@@ -72,4 +82,6 @@ jobs:
         if: always()
         with:
           name: ssh-ban-verification
-          path: ${{ runner.temp }}/ssh-ban/verification.log
+          path: |
+            ${{ runner.temp }}/ssh-ban/*.log
+            ${{ runner.temp }}/ssh-ban/evidence
