@@ -62,11 +62,14 @@ type recipeCallCounter struct {
 	calls int
 }
 
+// DeployRecipe records whether validation allowed a call to reach the API.
 func (c *recipeCallCounter) DeployRecipe(DeployRecipeRequest) (*DeployRecipeResponse, error) {
 	c.calls++
 	return &DeployRecipeResponse{}, nil
 }
 
+// TestDeployRecipeTool_InvalidGuardrailInputSendsNoRequest proves partial
+// or malformed gate input is rejected before invoking the backend.
 func TestDeployRecipeTool_InvalidGuardrailInputSendsNoRequest(t *testing.T) {
 	for _, input := range []interface{}{
 		map[string]interface{}{},
@@ -89,6 +92,8 @@ func TestDeployRecipeTool_InvalidGuardrailInputSendsNoRequest(t *testing.T) {
 	}
 }
 
+// TestDeployRecipeTool_TransportAndTokenRotation guards MCP's existing CA
+// trust, per-request token rotation and refusal of unapproved plaintext.
 func TestDeployRecipeTool_TransportAndTokenRotation(t *testing.T) {
 	var tokens []string
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -116,6 +121,8 @@ func TestDeployRecipeTool_TransportAndTokenRotation(t *testing.T) {
 	require.ErrorContains(t, err, "refuses to send request")
 }
 
+// TestDeployRecipeTool_GuardrailSchemaAndScope keeps the gate discoverable
+// without changing the tool count or containers:write authorization.
 func TestDeployRecipeTool_GuardrailSchemaAndScope(t *testing.T) {
 	srv := &Server{}
 	srv.registerTools()

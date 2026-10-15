@@ -9,6 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestHTTPDeployRecipe_GateRefusalMessage preserves both grpc-gateway and
+// legacy error details when the daemon refuses a gated recipe.
 func TestHTTPDeployRecipe_GateRefusalMessage(t *testing.T) {
 	const message = "guardrail gate: guardrail_input with staging_ref and attestation is required"
 	for _, body := range []string{`{"code":9,"message":"` + message + `"}`, `{"error":"` + message + `"}`} {
