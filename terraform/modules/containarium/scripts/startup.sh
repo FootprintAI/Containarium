@@ -21,6 +21,8 @@ ENABLE_MONITORING="${enable_monitoring}"
 FAIL2BAN_WHITELIST="${fail2ban_whitelist_cidr}"
 JWT_SECRET="${jwt_secret}"
 SENTINEL_AUTH_SECRET="${sentinel_auth_secret}"
+SSH_AUTHZ_KEYS_COMMAND="${ssh_authz_keys_command}"
+SSH_AUTHZ_KEYS_ENFORCE="${ssh_authz_keys_enforce}"
 
 # System info
 echo "System: $(uname -a)"
@@ -393,6 +395,113 @@ EOF
 else
     echo "⚠ Containarium binary not found, service not started"
     echo "  Install binary manually and run: containarium service install"
+fi
+
+# SSH live authorization for direct logins to this jump host (#2527).
+# Opt-in (ssh_authz_keys_command): an upgrade changes nothing until an
+# operator enables it. sshd's AuthorizedKeysCommand asks the local daemon
+# (containarium ssh-authz-keys -> SSHAuthzService.Authorize) about every key
+# offered on a login to this host.
+#   - containarium-authz is the dedicated unprivileged AuthorizedKeysCommandUser.
+#   - Its JWT carries only ssh:authorize, is minted here from the local JWT
+#     secret, and is readable only by that account. The sentinel secret is
+#     never exposed to it.
+#   - The daemon accepts that token only with --ssh-authz-keys-command
+#     (CONTAINARIUM_SSH_AUTHZ_KEYS_COMMAND), set below.
+# The static authorized_keys files stay as they are: they are the sentinel's
+# upstream path.
+SSH_AUTHZ_DIR="/etc/containarium-authz"
+SSH_AUTHZ_TOKEN="$SSH_AUTHZ_DIR/ssh-authz-keys.token"
+SSH_AUTHZ_DROPIN="/etc/ssh/sshd_config.d/containarium-ssh-authz.conf"
+if [ "$SSH_AUTHZ_KEYS_COMMAND" = "true" ]; then
+    if [ ! -f /usr/local/bin/containariumd ]; then
+        echo "⚠ ssh_authz_keys_command is set but the Containarium binary is missing — AuthorizedKeysCommand not installed"
+    else
+        echo "==> Enabling sshd AuthorizedKeysCommand (ssh-authz-keys)..."
+        if ! id containarium-authz &>/dev/null; then
+            useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin containarium-authz
+        fi
+        install -d -m 0750 -o root -g containarium-authz "$SSH_AUTHZ_DIR"
+        # The token cannot be non-expiring: the daemon caps every token, and
+        # --expiry 0 on an access token means the 15-minute default. A timer
+        # re-mints it instead: 24h lifetime, renewed at boot and every 6h, so
+        # one missed run never leaves sshd without a valid token.
+        SSH_AUTHZ_RENEW=/usr/local/sbin/containarium-ssh-authz-token
+        cat > "$SSH_AUTHZ_RENEW" <<'SSHAUTHZRENEWEOF'
+#!/bin/sh
+# Re-mints the ssh-authz-keys token (#2527); run by
+# containarium-ssh-authz-token.timer. Written to a temp file and renamed, so
+# the AuthorizedKeysCommand never reads a half-written token.
+set -eu
+dir=/etc/containarium-authz
+tmp="$(mktemp "$dir/.ssh-authz-keys.token.XXXXXX")"
+trap 'rm -f "$tmp"' EXIT
+/usr/local/bin/containariumd token generate \
+    --username containarium-authz --roles "" --scopes ssh:authorize \
+    --token-type access --expiry 24h \
+    --secret-file /etc/containarium/jwt.secret --raw > "$tmp"
+chown containarium-authz:containarium-authz "$tmp"
+chmod 0400 "$tmp"
+mv -f "$tmp" "$dir/ssh-authz-keys.token"
+trap - EXIT
+SSHAUTHZRENEWEOF
+        chmod 0755 "$SSH_AUTHZ_RENEW"
+        cat > /etc/systemd/system/containarium-ssh-authz-token.service <<'EOF'
+[Unit]
+Description=Renew the Containarium ssh-authz-keys token (#2527)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/containarium-ssh-authz-token
+EOF
+        cat > /etc/systemd/system/containarium-ssh-authz-token.timer <<'EOF'
+[Unit]
+Description=Renew the Containarium ssh-authz-keys token (#2527)
+
+[Timer]
+OnBootSec=10s
+OnUnitActiveSec=6h
+
+[Install]
+WantedBy=timers.target
+EOF
+        chmod 0644 /etc/systemd/system/containarium-ssh-authz-token.service \
+            /etc/systemd/system/containarium-ssh-authz-token.timer
+        "$SSH_AUTHZ_RENEW"
+
+        mkdir -p /etc/systemd/system/containarium.service.d
+        cat > /etc/systemd/system/containarium.service.d/ssh-authz-keys.conf <<'EOF'
+[Service]
+Environment=CONTAINARIUM_SSH_AUTHZ_KEYS_COMMAND=true
+EOF
+        chmod 0644 /etc/systemd/system/containarium.service.d/ssh-authz-keys.conf
+        systemctl daemon-reload
+        systemctl enable containarium-ssh-authz-token.timer
+        systemctl start containarium-ssh-authz-token.timer
+        systemctl restart containarium.service
+
+        SSH_AUTHZ_KEYS_ARGS="ssh-authz-keys --token-file $SSH_AUTHZ_TOKEN"
+        if [ "$SSH_AUTHZ_KEYS_ENFORCE" = "true" ]; then
+            SSH_AUTHZ_KEYS_ARGS="$SSH_AUTHZ_KEYS_ARGS --enforce"
+        fi
+        # Global directives, no Match block (#1137).
+        cat > "$SSH_AUTHZ_DROPIN" <<SSHAUTHZEOF
+# Containarium SSH live authorization for direct logins (#2527)
+AuthorizedKeysCommand /usr/local/bin/containariumd $SSH_AUTHZ_KEYS_ARGS %u %f %t %k
+AuthorizedKeysCommandUser containarium-authz
+SSHAUTHZEOF
+        chmod 0644 "$SSH_AUTHZ_DROPIN"
+        # Validate before restarting: a bad drop-in must fail the install,
+        # not take sshd down on its next restart (#1137).
+        SSHD_BIN="$(command -v sshd || echo /usr/sbin/sshd)"
+        if "$SSHD_BIN" -t; then
+            systemctl restart sshd
+            echo "✓ sshd AuthorizedKeysCommand enabled ($SSH_AUTHZ_DROPIN)"
+        else
+            rm -f "$SSH_AUTHZ_DROPIN"
+            echo "⚠ sshd rejected $SSH_AUTHZ_DROPIN — removed it; AuthorizedKeysCommand not enabled"
+        fi
+    fi
 fi
 
 # Set up logrotate
