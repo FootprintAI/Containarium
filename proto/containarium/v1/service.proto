@@ -521,6 +521,21 @@ service ContainerService {
     };
   }
 
+  // StopBoxRun stops a box's code run (#2603): the daemon-API counterpart to
+  // `containarium code stop`, for a caller with no SSH client. Same access as
+  // StartBoxRun: ssh:write, and the box owner or one of its collaborators.
+  rpc StopBoxRun(StopBoxRunRequest) returns (StopBoxRunResponse) {
+    option (google.api.http) = {
+      post: "/v1/containers/{username}/code-runs/{run_name}:stop"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Stop a box's code run";
+      description: "Sends SIGTERM (SIGKILL with force) to a running code run's process group and reports the result. Idempotent: a run that has already exited is not signaled and the call succeeds. A run whose outcome is unknown (it predates this boot, or died before its exit was recorded) is FAILED_PRECONDITION, because its PID may have been reassigned. Box owner or collaborator, ssh:write scope.";
+      tags: "Code Runs";
+    };
+  }
+
   // AddCollaborator adds a collaborator to a container
   rpc AddCollaborator(AddCollaboratorRequest) returns (AddCollaboratorResponse) {
     option (google.api.http) = {

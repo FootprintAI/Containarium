@@ -125,6 +125,9 @@ type gateFixture struct {
 	// snapParent is where the gate makes its snapshots; every test asserts
 	// it is empty afterwards (a leaked snapshot is a full dataset copy).
 	snapParent string
+	// caller is the deploying identity; nil is tenant alice with
+	// containers:write.
+	caller context.Context
 }
 
 func (f *gateFixture) assertNoSnapshotLeft(t *testing.T) {
@@ -210,7 +213,11 @@ func (f *gateFixture) deploy(t *testing.T) (*pb.DeployRecipeResponse, error) {
 	default:
 		f.srv.guardrailPolicy = fakePolicyProvider{policy: f.policy}
 	}
-	return f.srv.DeployRecipe(tenantWithScopes("alice", auth.ScopeContainersWrite), f.req)
+	ctx := f.caller
+	if ctx == nil {
+		ctx = tenantWithScopes("alice", auth.ScopeContainersWrite)
+	}
+	return f.srv.DeployRecipe(ctx, f.req)
 }
 
 // TestDeployGate: every way a gated deploy is refused, and in EVERY refusal
@@ -373,8 +380,8 @@ func TestSetGuardrailGate_SnapshotDirIsUsed(t *testing.T) {
 	}
 }
 
-// TestGuardrailStagingRef: the deploy name scopes the ref and must be a
-// single path component (an admin may pass any name).
+// TestGuardrailStagingRef: the caller's subject scopes the ref and must be
+// a single path component.
 func TestGuardrailStagingRef(t *testing.T) {
 	for _, name := range []string{"", ".", "..", "a/b", `a\b`, "../bob", "bob/.."} {
 		if _, err := guardrailStagingRef(name, "ds1"); !errors.Is(err, guardrailstage.ErrBadRef) {
