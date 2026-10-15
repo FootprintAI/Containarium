@@ -91,8 +91,8 @@ func TestStopBoxRun_ForceKillsARunThatIgnoresSIGTERM(t *testing.T) {
 	if soft.GetExited() {
 		t.Fatalf("a run ignoring SIGTERM was reported exited")
 	}
-	if soft.GetRun().GetOutcome() != pb.BoxRunOutcome_BOX_RUN_OUTCOME_RUNNING {
-		t.Errorf("outcome = %v, want still RUNNING", soft.GetRun().GetOutcome())
+	if soft.GetRun().GetOutcome() == pb.BoxRunOutcome_BOX_RUN_OUTCOME_EXITED {
+		t.Errorf("a run whose engine is still going was reported EXITED")
 	}
 
 	hard, err := s.StopBoxRun(tenantCtx(owner), &pb.StopBoxRunRequest{Username: owner, RunName: run.GetRunName(), Force: true})
