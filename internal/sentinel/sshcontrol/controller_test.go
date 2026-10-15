@@ -273,6 +273,57 @@ func TestControlReadyRejectsRemovedInventory(t *testing.T) {
 	}
 }
 
+// TestControlAnonymousMovePreservesRisk invalidates old routes without new budget.
+func TestControlAnonymousMovePreservesRisk(t *testing.T) {
+	f := newControlFixture(t)
+	a := f.open(f.client, pb.SSHBanListener_SSH_BAN_LISTENER_ANONYMOUS, "old-anon")
+	if _, err := f.client.RegisterSSHAnonymousRoute(t.Context(), &pb.RegisterSSHAnonymousRouteRequest{Connection: a, BoxName: "stable-box", Endpoint: "127.0.0.1:22"}); err != nil {
+		t.Fatal(err)
+	}
+	at := f.route(f.client, a)
+	al := f.acquire(f.client, a, at, "127.0.0.1:22")
+	b := f.open(f.client, pb.SSHBanListener_SSH_BAN_LISTENER_ANONYMOUS, "moved-anon")
+	if _, err := f.client.RegisterSSHAnonymousRoute(t.Context(), &pb.RegisterSSHAnonymousRouteRequest{Connection: b, BoxName: "stable-box", Endpoint: "127.0.0.1:2222"}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := f.client.CompleteSSHUpstream(t.Context(), &pb.CompleteSSHUpstreamRequest{Connection: a, RouteToken: at, LeaseToken: al.LeaseToken, Outcome: pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_SSH_READY})
+	if err == nil && result.GetAccepted() {
+		t.Fatal("old anonymous route became ready after Ensure moved it")
+	}
+	bt := f.route(f.client, b)
+	if !f.acquire(f.client, b, bt, "127.0.0.1:2222").Admitted {
+		t.Fatal("one remaining risk unit was lost")
+	}
+	c := f.open(f.client, pb.SSHBanListener_SSH_BAN_LISTENER_MAIN, "same-main")
+	ct := f.route(f.client, c)
+	if f.acquire(f.client, c, ct, "127.0.0.1:22").Admitted {
+		t.Fatal("moving an anonymous route discarded its earlier risk")
+	}
+}
+
+// TestControlDurabilityFailureDeniesWithoutSourcePenalty never grants unsaved risk.
+func TestControlDurabilityFailureDeniesWithoutSourcePenalty(t *testing.T) {
+	f := newControlFixture(t)
+	ref := f.open(f.client, pb.SSHBanListener_SSH_BAN_LISTENER_MAIN, "durability")
+	token := f.route(f.client, ref)
+	dir := filepath.Dir(f.cfg.StatePath)
+	if err := os.Rename(dir, dir+".offline"); err != nil {
+		t.Fatal(err)
+	}
+	if f.acquire(f.client, ref, token, "127.0.0.1:22").Admitted {
+		t.Fatal("uncommitted risk admitted a backend setup")
+	}
+	if f.count(ref, pb.SSHUpstreamFailureKind_SSH_UPSTREAM_FAILURE_KIND_PIPE_CREATE) {
+		t.Fatal("checkpoint outage punished source")
+	}
+	if err := os.Rename(dir+".offline", dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.client.BeginSSHUpstreamRoute(t.Context(), &pb.BeginSSHUpstreamRouteRequest{Connection: ref}); err == nil {
+		t.Fatal("poisoned controller resumed without restoring durable state")
+	}
+}
+
 // TestControlUnavailableTransportIsBounded keeps private RPC calls finite.
 func TestControlUnavailableTransportIsBounded(t *testing.T) {
 	f := newControlFixture(t)

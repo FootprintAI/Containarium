@@ -104,6 +104,12 @@ resource "google_compute_instance" "sentinel" {
   allow_stopping_for_update = true
 
   lifecycle {
+    # Cross-variable validation belongs in a precondition to preserve the
+    # module's Terraform >=1.2 floor (input validation cross-references need 1.9).
+    precondition {
+      condition     = var.ssh_upstream_risk_per_attempt <= var.ssh_upstream_failure_budget
+      error_message = "Per-attempt SSH risk must fit within the shared failure budget."
+    }
     ignore_changes = [
       metadata["ssh-keys"],
     ]

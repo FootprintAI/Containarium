@@ -161,6 +161,8 @@ func (c *Controller) persist() (err error) {
 	if err = os.Rename(f.Name(), c.cfg.StatePath); err != nil {
 		return err
 	}
+	// #nosec G304 -- dir is the validated private operator checkpoint directory;
+	// opening it is required to sync the atomic rename, and no client selects it.
 	d, err := os.Open(dir)
 	if err != nil {
 		return err

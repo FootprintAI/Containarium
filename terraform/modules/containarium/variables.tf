@@ -18,8 +18,8 @@ variable "ssh_upstream_risk_per_attempt" {
   type        = number
   default     = 1
   validation {
-    condition     = var.ssh_upstream_risk_per_attempt >= 1 && var.ssh_upstream_risk_per_attempt <= var.ssh_upstream_failure_budget && floor(var.ssh_upstream_risk_per_attempt) == var.ssh_upstream_risk_per_attempt
-    error_message = "Per-attempt risk must be a positive integer within the aggregate budget."
+    condition     = var.ssh_upstream_risk_per_attempt >= 1 && var.ssh_upstream_risk_per_attempt <= 65536 && floor(var.ssh_upstream_risk_per_attempt) == var.ssh_upstream_risk_per_attempt
+    error_message = "Per-attempt risk must be an integer from 1 to 65536."
   }
 }
 

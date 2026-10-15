@@ -25,6 +25,9 @@ merging/resetting risk. Endpoint/route changes retain the canonical group's risk
 Adding an alias does not advance the group's route epoch: simultaneous main/anon
 aliases must not make each other's in-flight failures stale. Per-connection route
 tokens isolate authorization retries; the core incident epoch isolates recovery.
+Ready acknowledgements recheck authoritative endpoint identity. A new Ensure
+endpoint for the same anonymous box advances its route generation; pending old
+routes cannot reopen the replacement route or promote their socket.
 Manager backend unhealthy-to-healthy transitions publish a hint, never an
 unconditional admission. HTTP health is a hint; SSH-ready completion is the proof.
 

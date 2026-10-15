@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -118,7 +117,7 @@ func newFirewallFixture(t *testing.T) *firewallFixture {
 				t.Error(err)
 				return
 			}
-			for _, name := range []string{"auth.log", "sshd-raw.log", "fail2ban.log", "sshd.conf", "fail2ban/jail.conf", "status.log", "iptables.log"} {
+			for _, name := range []string{"auth.log", "sshd-raw.log", "fail2ban.log", "sshd.conf", "fail2ban/jail.conf", "status.log", "iptables.log", "iptables-banned.log"} {
 				data, err := os.ReadFile(filepath.Join(f.dir, name))
 				if err == nil {
 					if err := os.WriteFile(filepath.Join(root, strings.ReplaceAll(name, "/", "-")), data, 0644); err != nil {
@@ -229,7 +228,7 @@ func TestIntegrationGuardedSSHLiveFirewall(t *testing.T) {
 	if err := f.direct("127.0.0.9", main.upstream); err == nil {
 		t.Fatal("jail announced a ban without blocking authorized packets")
 	}
-	f.write("iptables.log", f.command("iptables-save"))
+	f.write("iptables-banned.log", f.command("iptables-save"))
 	f.jail("set", "sshd", "unbanip", "127.0.0.9")
 	f.wait(func() bool { return f.direct("127.0.0.9", main.upstream) == nil }, "packet recovery after unban")
 
@@ -344,5 +343,5 @@ func TestIntegrationGuardedSSHLiveFirewall(t *testing.T) {
 	f.wait(func() bool { return retryHandshake(main.addr, "127.0.0.2", main.keys[0]) == nil }, "safe recovery after real findtime")
 	f.write("status.log", f.jail("status", "sshd"))
 	f.write("iptables.log", f.command("iptables-save"))
-	t.Logf("exhausted real 600s budget retained; suppressed backend attempts=%s; recovery waited=%s", strconv.Itoa(before), time.Since(blockedAt))
+	t.Logf("exhausted real 600s budget retained; aggregate backend attempts stayed at %d during suppression; recovery waited=%s", before, time.Since(blockedAt))
 }

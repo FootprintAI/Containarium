@@ -157,7 +157,7 @@ jobs:
             ./internal/sentinel/sshban | tee "$RUNNER_TEMP/ssh-ban/verification.log"
           go test -race -tags integration -count=1 -timeout 2m -v \
             ./internal/sentinel/anondoor \
-            -run '^TestIntegration_PublicKeyApprovalThroughTransportAdapter$' | tee "$RUNNER_TEMP/ssh-ban/approval-adapter.log"
+            -run '^TestIntegration_PublicKeyApprovalThrough(Transport|Guarded)Adapter$' | tee "$RUNNER_TEMP/ssh-ban/approval-adapter.log"
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: '1.13.4'

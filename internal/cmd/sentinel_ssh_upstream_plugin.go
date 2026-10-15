@@ -25,7 +25,7 @@ import (
 	grpcinsecure "google.golang.org/grpc/credentials/insecure"
 )
 
-// init exposes the transport spike without changing either deployed listener.
+// init exposes the selected-routing adapter in the existing daemon artifact.
 func init() { sentinelCmd.AddCommand(newSSHUpstreamPluginCommand()) }
 
 // newSSHUpstreamPluginCommand delegates routing to an explicitly selected child
@@ -33,7 +33,7 @@ func init() { sentinelCmd.AddCommand(newSSHUpstreamPluginCommand()) }
 func newSSHUpstreamPluginCommand() *cobra.Command {
 	var executable, controlSocket, listener string
 	var args []string
-	c := &cobra.Command{Use: "ssh-upstream-plugin", Short: "Experimental sshpiperd routing transport adapter", Args: cobra.NoArgs}
+	c := &cobra.Command{Use: "ssh-upstream-plugin", Short: "sshpiperd routing adapter with shared backend admission", Args: cobra.NoArgs}
 	c.Flags().StringVar(&executable, "plugin", "", "Routing plugin executable")
 	c.Flags().StringArrayVar(&args, "plugin-arg", nil, "Argument passed verbatim to the routing plugin; repeatable")
 	c.Flags().StringVar(&controlSocket, "upstream-control-socket", "", "Shared private upstream controller socket")

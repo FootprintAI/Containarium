@@ -21,6 +21,8 @@ effective backend filters, source IP and exemptions before choosing other values
 An arbitrary filter can count several records per setup; increase the risk cost
 or reduce the budget accordingly. A TCP refusal has no sshd authentication record;
 only a verified refusal refunds its reservation. Unknown setup failures retain it.
+Pass-through password rejections also retain backend risk while still counting
+as client failures; they do not declare an otherwise healthy backend down.
 
 Backoff begins at one second, doubles to 30 seconds and adds up to 25% positive
 jitter within that cap. One SSH-ready probe reopens a cooled backend. A trusted
