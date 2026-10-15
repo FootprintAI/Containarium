@@ -46,14 +46,14 @@ func (f *gateFixture) take(t *testing.T, cost int) Lease {
 }
 
 // denied checks typed failure and exposes the reported retry boundary.
-func denied(t *testing.T, g *Gate, key Key, route uint64, cost int, reason Reason) *Denied {
+func denied(t *testing.T, g *Gate, key Key, route uint64, cost int, reason Reason) time.Time {
 	t.Helper()
 	_, err := g.Acquire(key, route, cost)
 	var d *Denied
 	if !errors.As(err, &d) || d.Reason != reason {
 		t.Fatalf("reason=%v, error=%v; want %v", d, err, reason)
 	}
-	return d
+	return d.RetryAt
 }
 
 // TestGateBackoffAndSSHProbe preserves one probe and ignores an old healthy setup.
@@ -65,10 +65,10 @@ func TestGateBackoffAndSSHProbe(t *testing.T) {
 	}
 	for _, delay := range []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 8 * time.Second} {
 		d := denied(t, f.g, f.key, 1, 1, Cooldown)
-		if d.RetryAt.Sub(f.now) != delay {
-			t.Fatalf("delay=%s want %s", d.RetryAt.Sub(f.now), delay)
+		if d.Sub(f.now) != delay {
+			t.Fatalf("delay=%s want %s", d.Sub(f.now), delay)
 		}
-		f.now = d.RetryAt
+		f.now = d
 		probe := f.take(t, 1)
 		if !probe.Probe {
 			t.Fatal("recovery admission is not a probe")
@@ -103,10 +103,10 @@ func TestGateBudgetSurvivesRecovery(t *testing.T) {
 	f.now = f.now.Add(10 * time.Second)
 	f.g.HintRecovery(f.key, 1)
 	d := denied(t, f.g, f.key, 1, 1, BudgetExhausted)
-	if !d.RetryAt.Equal(start.Add(time.Minute)) {
-		t.Fatalf("budget retry=%v, want first failure window edge", d.RetryAt)
+	if !d.Equal(start.Add(time.Minute)) {
+		t.Fatalf("budget retry=%v, want first failure window edge", d)
 	}
-	f.now = d.RetryAt
+	f.now = d
 	f.g.Complete(f.take(t, 1), SetupSucceeded)
 	denied(t, f.g, f.key, 1, 2, BudgetExhausted)
 	f.now = start.Add(time.Minute + time.Second)
@@ -129,10 +129,10 @@ func TestGateRefusalRefundAndExpiry(t *testing.T) {
 	}
 	f.g.HintRecovery(f.key, 1)
 	d := denied(t, f.g, f.key, 1, 1, BudgetExhausted)
-	if !d.RetryAt.Equal(lost.Deadline.Add(time.Minute)) {
-		t.Fatalf("expiry charge must start at setup deadline: %v", d.RetryAt)
+	if !d.Equal(lost.Deadline.Add(time.Minute)) {
+		t.Fatalf("expiry charge must start at setup deadline: %v", d)
 	}
-	f.now = d.RetryAt
+	f.now = d
 	_ = f.take(t, 1)
 }
 
@@ -298,10 +298,10 @@ func TestGateValidationAndJitter(t *testing.T) {
 	for range 4 {
 		f.g.Complete(f.take(t, 1), DialRefused)
 		d := denied(t, f.g, f.key, 1, 1, Cooldown)
-		delay := d.RetryAt.Sub(f.now)
+		delay := d.Sub(f.now)
 		if delay < time.Second || delay > 2*time.Second || (f.now.Unix() == 1000 && delay == time.Second) {
 			t.Fatalf("jitter/cap violated: %s", delay)
 		}
-		f.now = d.RetryAt
+		f.now = d
 	}
 }
