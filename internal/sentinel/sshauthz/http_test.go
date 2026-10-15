@@ -106,7 +106,7 @@ func TestBridgeUsesLiveRouteAndPreservesContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv := &http.Server{Handler: BridgeHandler(resolver, authorizer), ReadHeaderTimeout: time.Second}
-	defer srv.Close()
+	defer func() { _ = srv.Close() }()
 	go func() { _ = srv.Serve(ln) }()
 	client := NewBridgeClient(socket)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)

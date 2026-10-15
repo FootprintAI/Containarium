@@ -2,6 +2,7 @@ package sshauthz
 
 import (
 	"context"
+	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
@@ -258,7 +259,7 @@ func TestOfferedKeyTypes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	ecKey, err := ecdh.P256().GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +267,7 @@ func TestOfferedKeyTypes(t *testing.T) {
 		Type, Curve string
 		Key         []byte
 		Application string
-	}{ssh.KeyAlgoSKECDSA256, "nistp256", elliptic.Marshal(elliptic.P256(), ecKey.X, ecKey.Y), "ssh:test"}))
+	}{ssh.KeyAlgoSKECDSA256, "nistp256", ecKey.PublicKey().Bytes(), "ssh:test"}))
 	if err != nil {
 		t.Fatal(err)
 	}
