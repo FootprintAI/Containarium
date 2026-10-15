@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/guardrail"
 	"github.com/footprintai/containarium/internal/guardrailpolicy"
 	"github.com/footprintai/containarium/internal/guardrailstage"
@@ -50,17 +51,20 @@ func (s *RecipeServer) SetGuardrailGate(provider guardrailpolicy.PolicyProvider,
 	s.guardrailSnapshotParent = snapshotDir
 }
 
-// guardrailStagingRef scopes a request's staging_ref to the deploying
-// tenant: <staging root>/<name>/<staging_ref>. name is the tenant DeployRecipe
-// already authorised, so a ref can only reach that tenant's own staged
-// data; an attestation proves data is clean, not that the caller may have
-// it. The ref is joined WITHOUT cleaning, so a "../" in it stays visible to
-// the staging area's clean-path check and is refused there.
-func guardrailStagingRef(name, ref string) (string, error) {
-	if name == "" || strings.ContainsAny(name, `/\`) || name == "." || name == ".." {
-		return "", fmt.Errorf("%w: deploy name %q cannot scope a staging directory", guardrailstage.ErrBadRef, name)
+// guardrailStagingRef scopes a request's staging_ref to the caller:
+// <staging root>/<subject>/<staging_ref>, where subject is the AUTHENTICATED
+// subject, never the deploy name (#2414). An admin may deploy under any
+// name, so a name-derived scope would let an admin-token proxy that
+// forwards a user-chosen name read any tenant's staged data; an attestation
+// proves data is clean, not that the caller may have it. For a non-admin
+// the two are the same (AuthorizeTenant already requires name == subject).
+// The ref is joined WITHOUT cleaning, so a "../" in it stays visible to the
+// staging area's clean-path check and is refused there.
+func guardrailStagingRef(subject, ref string) (string, error) {
+	if subject == "" || strings.ContainsAny(subject, `/\`) || subject == "." || subject == ".." {
+		return "", fmt.Errorf("%w: caller subject %q cannot scope a staging directory", guardrailstage.ErrBadRef, subject)
 	}
-	return name + "/" + ref, nil
+	return subject + "/" + ref, nil
 }
 
 func gateRefusal(format string, args ...any) error {
@@ -103,7 +107,8 @@ func (s *RecipeServer) checkGuardrailGate(ctx context.Context, recipe *pb.Recipe
 		log.Printf("[recipe] guardrail gate: staging root: %v", err)
 		return nil, gateRefusal("the guardrail staging root is unavailable")
 	}
-	ref, err := guardrailStagingRef(req.GetName(), in.GetStagingRef())
+	subject, _, _ := auth.SubjectFromGRPCContext(ctx) // deploy already refused a missing subject
+	ref, err := guardrailStagingRef(subject, in.GetStagingRef())
 	if err != nil {
 		return nil, gateRefusal("staging_ref: %v", err)
 	}
