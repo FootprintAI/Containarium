@@ -108,7 +108,8 @@ enum SSHDenyReason {
   SSH_DENY_REASON_KEY_EXPIRED = 4;
   SSH_DENY_REASON_APPROVAL_PENDING = 5;
   SSH_DENY_REASON_APPROVAL_DENIED = 6;
-  // The daemon could not reach the cloud.
+  // The decision source could not be reached: the cloud, or the local
+  // ssh_keys registry in self-host mode. The daemon fails closed.
   SSH_DENY_REASON_UPSTREAM_UNAVAILABLE = 7;
 }
 

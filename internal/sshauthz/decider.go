@@ -56,26 +56,18 @@ func (d *Decider) Decide(ctx context.Context, req *pb.AuthorizeSSHRequest) (*pb.
 		var err error
 		userID, ok, err = d.Local.Check(ctx, req)
 		if err != nil || !ok {
-			return deny(pb.SSHDenyReason_SSH_DENY_REASON_NO_ACCESS, userID), nil
+			return denyResponse(pb.SSHDenyReason_SSH_DENY_REASON_NO_ACCESS, userID), nil
 		}
 	}
 	if !d.Managed {
-		return deny(pb.SSHDenyReason_SSH_DENY_REASON_NO_ACCESS, userID), nil
+		return denyResponse(pb.SSHDenyReason_SSH_DENY_REASON_NO_ACCESS, userID), nil
 	}
 	if d.Cloud == nil {
-		return deny(pb.SSHDenyReason_SSH_DENY_REASON_UPSTREAM_UNAVAILABLE, userID), nil
+		return denyResponse(pb.SSHDenyReason_SSH_DENY_REASON_UPSTREAM_UNAVAILABLE, userID), nil
 	}
 	resp, err := d.Cloud.AuthorizeSSH(ctx, req)
 	if err != nil || resp == nil {
-		return deny(pb.SSHDenyReason_SSH_DENY_REASON_UPSTREAM_UNAVAILABLE, userID), nil
+		return denyResponse(pb.SSHDenyReason_SSH_DENY_REASON_UPSTREAM_UNAVAILABLE, userID), nil
 	}
 	return resp, nil
-}
-
-func deny(reason pb.SSHDenyReason, userID string) *pb.AuthorizeSSHResponse {
-	return &pb.AuthorizeSSHResponse{
-		Decision:   pb.SSHAuthzDecision_SSH_AUTHZ_DECISION_DENY,
-		DenyReason: reason,
-		UserId:     userID,
-	}
 }

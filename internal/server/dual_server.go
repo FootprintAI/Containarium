@@ -50,7 +50,7 @@ import (
 	"github.com/footprintai/containarium/internal/sandbox/ratelimit"
 	secretsstore "github.com/footprintai/containarium/internal/secrets"
 	"github.com/footprintai/containarium/internal/security"
-	coreauthz "github.com/footprintai/containarium/internal/sshauthz"
+	"github.com/footprintai/containarium/internal/sshauthz"
 	"github.com/footprintai/containarium/internal/tenantguard"
 	"github.com/footprintai/containarium/internal/threatdetect"
 	trackerstore "github.com/footprintai/containarium/internal/tracker"
@@ -143,6 +143,10 @@ type DualServerConfig struct {
 	// RunJournalRetention is how long a run's journal stays on a member box
 	// before the reaper removes it (#2096). Zero = DefaultRunJournalRetention.
 	RunJournalRetention time.Duration
+	// SSHAuthzMaxKeyAge is the self-host SSH authorization decider's maximum
+	// key age (#2517): a key registered at least this long ago is refused
+	// with KEY_EXPIRED. Zero = no limit.
+	SSHAuthzMaxKeyAge time.Duration
 
 	// Caddy certificate directory for /certs endpoint (sentinel cert sync)
 	CaddyCertDir string
@@ -596,9 +600,11 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	pb.RegisterContainerServiceServer(grpcServer, containerServer)
 
 	// SSHAuthzService (#2516): the per-connection SSH authorization
-	// contract. A stub returning Unimplemented until the decider (#2517);
-	// the REST route is mounted behind the sentinel signature.
-	pb.RegisterSSHAuthzServiceServer(grpcServer, NewSSHAuthzServer())
+	// contract. Answers Unimplemented until a decider is wired below (the
+	// self-host decider, #2517); the REST route is mounted behind the
+	// sentinel signature.
+	sshAuthzServer := NewSSHAuthzServer()
+	pb.RegisterSSHAuthzServiceServer(grpcServer, sshAuthzServer)
 
 	// ComposeAutostartService — operator-side RPC that execs
 	// `agent-box compose <verb>` inside the tenant's LXC. Uses a
@@ -1369,6 +1375,14 @@ skipAppHosting:
 		}
 	}
 
+	// ssh_keys registry (#2517): same Postgres pool as the collaborator
+	// store. LXC runtime only — the registry, its backfill and the
+	// self-host decider read the host's /home jump accounts.
+	var selfHostSSHAuthz *sshauthz.SelfHostDecider
+	if collabStore != nil && config.Runtime != RuntimeK8s && containerServer.GetManager() != nil {
+		selfHostSSHAuthz = setupSSHKeyRegistry(context.Background(), collabStore, containerServer, config.SSHAuthzMaxKeyAge)
+	}
+
 	// Setup route persistence and Caddy sync (independent of app hosting).
 	// When app hosting is enabled, routeStore/routeSyncJob are already created above.
 	// When it's not, we still need them for the management route to work after VM recreation.
@@ -1449,7 +1463,7 @@ skipAppHosting:
 		// Keep the managed forwarder behind the same local hosted-account gate
 		// used by /authorized-keys. A login for a missing/orphaned box must not
 		// consume a cloud authorization call.
-		localSSHFacts := coreauthz.LocalFactsFunc(func(_ context.Context, req *pb.AuthorizeSSHRequest) (string, bool, error) {
+		localSSHFacts := sshauthz.LocalFactsFunc(func(_ context.Context, req *pb.AuthorizeSSHRequest) (string, bool, error) {
 			login := strings.TrimSpace(req.GetLogin())
 			if login == "" {
 				return "", false, nil
@@ -1510,10 +1524,18 @@ skipAppHosting:
 			// Enrollment is the mode switch for managed SSH authorization. The
 			// server is registered above, but the forwarder is not constructed
 			// at all on an unenrolled daemon.
-			sshAuthzServer.SetDecider(&coreauthz.Decider{Local: localSSHFacts, Managed: true, Cloud: cc})
+			sshAuthzServer.SetDecider(&sshauthz.Decider{Local: localSSHFacts, Managed: true, Cloud: cc})
 			log.Printf("Cloud-actuation client configured (host=%s control-plane=%s); starts with the daemon",
 				cloudCfg.HostID, cloudCfg.ControlPlane)
 		}
+	}
+
+	// Self-host SSH authorization (#2517): only when no cloud is enrolled.
+	// An enrolled daemon's answer comes from the cloud (#2525) through the
+	// managed forwarder wired above; it never decides locally.
+	if selfHostSSHAuthz != nil && cloudClient == nil {
+		sshAuthzServer.SetDecider(selfHostSSHAuthz)
+		log.Printf("SSH authorization: self-host decider enabled (max key age %v, 0 = no limit)", config.SSHAuthzMaxKeyAge)
 	}
 
 	// Setup passthrough route persistence and iptables sync.
