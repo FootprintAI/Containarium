@@ -35,3 +35,26 @@ covers: `login` / `connect` (token-based sign-in and shell, no SSH key
 setup), `sandbox`, `recipe`, `snapshot`, `secrets`, `backup`, `sync` /
 `push`, `runner`, `agent` / `crew`, `tracker`. These belong in a
 `docs/manual/` (one page per flow), not in the README.
+
+## Run evidence
+
+Executed (not just `--help`-checked) on a fresh Ubuntu 24.04 box on the
+hosted cloud, 2026-10-15, against the released **v0.103.3** binary. The box
+was deleted afterwards.
+
+| Command | Result |
+|---------|--------|
+| `curl -fsSL …/hacks/install-cli.sh \| sudo bash` (README step 2, variant B) | ✅ installed `containarium-linux-amd64`, reported `Installed: Containarium v0.103.3` |
+| `containarium version` | ✅ `Containarium v0.103.3` |
+| `containarium {passthrough,audit,daemon,doctor} --help` | ✅ each reports it lives in `containariumd` on the host |
+| every verb and flag the README uses (`quickstart`, `ssh-config sync`, `code run/install`, `token refresh/generate`, `passthrough-route add`, …) | ✅ present on the released binary |
+
+Not run — still 🟡 until someone does it on a fresh Ubuntu VM (an LXC box
+cannot host the daemon: no Incus or ZFS): step 1's installer,
+`systemctl is-active containarium`, `containarium quickstart alice`,
+`code install alice`, and the `ssh alice …` checks.
+
+`https://containarium.dev/install.sh` returns a 302 to the raw script from
+outside Containarium's network (carries `--quickstart`), but a bare 404
+(`wake: no matching route`, the sentinel's own response) from inside a box
+— an artifact of testing from within the platform, not a README defect.
