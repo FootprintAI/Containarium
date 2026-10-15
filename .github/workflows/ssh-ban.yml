@@ -75,6 +75,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y strace
+      - name: Verify shared backend admission with the race detector
+        run: go test -race -count=1 -v ./internal/sentinel/sshgate
       - name: Install pinned upstream SSH binaries
         env:
           GH_TOKEN: ${{ github.token }}
