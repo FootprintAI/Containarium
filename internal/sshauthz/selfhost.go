@@ -14,8 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/footprintai/containarium/pkg/core/container"
@@ -59,8 +57,10 @@ type SelfHostDecider struct {
 // Decide applies, in order: local facts (→ NO_ACCESS), the registry
 // (→ UNKNOWN_KEY, also for a revoked key), and local policy (→ KEY_EXPIRED).
 // Security-key (SK_*) types pass like any other registered key; device
-// approval is not offered in self-host mode. A registry read failure is
-// returned as codes.Unavailable rather than turned into a decision.
+// approval is not offered in self-host mode. A registry that cannot be read
+// (or is not configured) fails closed: DENY with UPSTREAM_UNAVAILABLE, the
+// local registry being the decision source in self-host mode (#2550). The
+// underlying error is never copied into the response.
 func (d *SelfHostDecider) Decide(ctx context.Context, req *pb.AuthorizeSSHRequest) (*pb.AuthorizeSSHResponse, error) {
 	login := req.GetLogin()
 	userID, ok := d.localFacts(ctx, login)
@@ -74,14 +74,14 @@ func (d *SelfHostDecider) Decide(ctx context.Context, req *pb.AuthorizeSSHReques
 		return denyResponse(pb.SSHDenyReason_SSH_DENY_REASON_UNKNOWN_KEY, userID), nil
 	}
 	if d.Keys == nil {
-		return nil, status.Error(codes.Unavailable, "ssh key registry not configured")
+		return denyResponse(pb.SSHDenyReason_SSH_DENY_REASON_UPSTREAM_UNAVAILABLE, userID), nil
 	}
 	rec, err := d.Keys.Lookup(ctx, fp)
 	if errors.Is(err, ErrKeyNotFound) {
 		return denyResponse(pb.SSHDenyReason_SSH_DENY_REASON_UNKNOWN_KEY, userID), nil
 	}
 	if err != nil {
-		return nil, status.Error(codes.Unavailable, "ssh key registry unavailable")
+		return denyResponse(pb.SSHDenyReason_SSH_DENY_REASON_UPSTREAM_UNAVAILABLE, userID), nil
 	}
 	if !rec.RevokedAt.IsZero() {
 		return denyResponse(pb.SSHDenyReason_SSH_DENY_REASON_UNKNOWN_KEY, userID), nil
