@@ -38,8 +38,10 @@ func TestOnDenyEvent_CallsDenyHook(t *testing.T) {
 	ev := netbpf.DenyEvent{TenantID: 7, Dport: 443, Proto: 6}
 	e.OnDenyEvent(context.Background(), ev)
 
-	if len(got) != 1 || got[0] != ev {
-		t.Fatalf("deny hook calls = %+v, want exactly one call with %+v", got, ev)
+	want := ev
+	want.LogOnly = true // tenant 7 has no enforce-mode policy (#2612)
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("deny hook calls = %+v, want exactly one call with %+v", got, want)
 	}
 }
 
@@ -72,5 +74,24 @@ func TestTenantForIP(t *testing.T) {
 	_, ok = e.TenantForIP(netip.MustParseAddr("::1"))
 	if ok {
 		t.Fatalf("TenantForIP(::1) = ok, want !ok for a non-IPv4 address")
+	}
+}
+
+// #2612: the deny hook must learn whether the flow was actually dropped, so
+// the engine can tell enforcement from observation.
+func TestOnDenyEvent_DenyHookCarriesLogOnly(t *testing.T) {
+	e := NewNetworkPolicyEnforcer("", nil, NewMemTenantRegistry(), nil, nil, nil, false)
+	e.mu.Lock()
+	e.enforced[7] = true
+	e.mu.Unlock()
+
+	var got []netbpf.DenyEvent
+	e.SetDenyHook(func(ev netbpf.DenyEvent) { got = append(got, ev) })
+
+	e.OnDenyEvent(context.Background(), netbpf.DenyEvent{TenantID: 7})
+	e.OnDenyEvent(context.Background(), netbpf.DenyEvent{TenantID: 8})
+
+	if len(got) != 2 || got[0].LogOnly || !got[1].LogOnly {
+		t.Fatalf("hook events = %+v, want enforced tenant 7 LogOnly=false, tenant 8 LogOnly=true", got)
 	}
 }

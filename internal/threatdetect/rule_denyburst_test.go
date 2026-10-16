@@ -228,3 +228,57 @@ func TestDenyEvidenceFromRecords_AggregatesByDestination(t *testing.T) {
 		t.Errorf("second group = %+v, want 10.0.0.3 count=1", got[1])
 	}
 }
+
+// #2612: a would-deny (LogOnly) event is an observation, not a probe of an
+// enforced fence — by default 2N of them must not raise a finding.
+func TestDenyBurstRule_LogOnlyDeniesIgnoredByDefault(t *testing.T) {
+	const n = 5
+	tenants := map[string]string{"10.0.0.1": "alice"}
+	base := time.Unix(1000, 0)
+	r := NewDenyBurstRule(n, time.Minute)
+
+	for i := 0; i < 2*n; i++ {
+		ev := netbpf.DenyEvent{Saddr: beIP(10, 0, 0, 1), Daddr: beIP(10, 0, 0, 2), Dport: 443, Proto: 6, LogOnly: true}
+		r.OnDeny(denyburstCtx(base, tenants), ev)
+	}
+	if got := r.Sweep(denyburstCtx(base, tenants), base); len(got) != 0 {
+		t.Fatalf("Sweep = %+v, want none for log_only denies by default", got)
+	}
+}
+
+// Opt-in: an operator who wants would-deny volume counted can ask for it.
+func TestDenyBurstRule_LogOnlyDeniesCountedWhenOptedIn(t *testing.T) {
+	const n = 5
+	tenants := map[string]string{"10.0.0.1": "alice"}
+	base := time.Unix(1000, 0)
+	r := NewDenyBurstRule(n, time.Minute).WithCountLogOnly(true)
+
+	for i := 0; i < 2*n; i++ {
+		ev := netbpf.DenyEvent{Saddr: beIP(10, 0, 0, 1), Daddr: beIP(10, 0, 0, 2), Dport: 443, Proto: 6, LogOnly: true}
+		r.OnDeny(denyburstCtx(base, tenants), ev)
+	}
+	if got := r.Sweep(denyburstCtx(base, tenants), base); len(got) != 1 {
+		t.Fatalf("Sweep = %+v, want exactly 1 finding with opt-in", got)
+	}
+}
+
+// Enforced drops keep firing under the default configuration, and a mixed
+// stream counts only the drops.
+func TestDenyBurstRule_EnforcedDeniesStillFireByDefault(t *testing.T) {
+	const n = 5
+	tenants := map[string]string{"10.0.0.1": "alice"}
+	base := time.Unix(1000, 0)
+	r := NewDenyBurstRule(n, time.Minute)
+
+	for i := 0; i < n-1; i++ { // n-1 drops + lots of log_only: below threshold
+		r.OnDeny(denyburstCtx(base, tenants), netbpf.DenyEvent{Saddr: beIP(10, 0, 0, 1)})
+		r.OnDeny(denyburstCtx(base, tenants), netbpf.DenyEvent{Saddr: beIP(10, 0, 0, 1), LogOnly: true})
+	}
+	if got := r.Sweep(denyburstCtx(base, tenants), base); len(got) != 0 {
+		t.Fatalf("Sweep = %+v, want none: only %d enforced drops", got, n-1)
+	}
+	r.OnDeny(denyburstCtx(base, tenants), netbpf.DenyEvent{Saddr: beIP(10, 0, 0, 1)})
+	if got := r.Sweep(denyburstCtx(base, tenants), base); len(got) != 1 {
+		t.Fatalf("Sweep = %+v, want 1 finding at %d enforced drops", got, n)
+	}
+}

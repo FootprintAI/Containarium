@@ -16,6 +16,9 @@ const EnvThreatSentry = "CONTAINARIUM_THREAT_SENTRY"
 const (
 	EnvThreatDenyBurstN             = "CONTAINARIUM_THREAT_DENY_BURST_N"
 	EnvThreatDenyBurstWindowMinutes = "CONTAINARIUM_THREAT_DENY_BURST_WINDOW_MINUTES"
+	// EnvThreatDenyBurstCountLogOnly makes deny-burst also count
+	// observation-mode (log_only) would-deny events (#2612). Off by default.
+	EnvThreatDenyBurstCountLogOnly = "CONTAINARIUM_THREAT_DENY_BURST_COUNT_LOG_ONLY"
 )
 
 // ThreatDetect is the typed view of the CONTAINARIUM_THREAT_* namespace.
@@ -31,14 +34,17 @@ type ThreatDetect struct {
 	// override when the operator actually set one.
 	DenyBurstN      int
 	DenyBurstWindow time.Duration
+	// DenyBurstCountLogOnly: also count log_only would-denies (#2612).
+	DenyBurstCountLogOnly bool
 }
 
 // LoadThreatDetect reads the CONTAINARIUM_THREAT_* namespace once, using the
 // shared truthy convention (1/true/yes/on) for the enable flag.
 func LoadThreatDetect() ThreatDetect {
 	return ThreatDetect{
-		SentryEnabled:   getBool(EnvThreatSentry),
-		DenyBurstN:      getInt(EnvThreatDenyBurstN, 0),
-		DenyBurstWindow: time.Duration(getInt(EnvThreatDenyBurstWindowMinutes, 0)) * time.Minute,
+		SentryEnabled:         getBool(EnvThreatSentry),
+		DenyBurstN:            getInt(EnvThreatDenyBurstN, 0),
+		DenyBurstWindow:       time.Duration(getInt(EnvThreatDenyBurstWindowMinutes, 0)) * time.Minute,
+		DenyBurstCountLogOnly: getBool(EnvThreatDenyBurstCountLogOnly),
 	}
 }

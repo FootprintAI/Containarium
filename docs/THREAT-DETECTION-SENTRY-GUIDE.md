@@ -59,7 +59,29 @@ Prerequisites:
 |------|----------|------------|
 | Known-bad destination | HIGH | A flow's destination matches the embedded (versioned, mining-pools-first) or operator-added bad-destination list. |
 | Cross-tenant flow | CRITICAL | A flow's source and destination resolve to containers in *different* tenants on the same backend — the continuous form of the one-shot isolation check. Never fires on an IP it can't attribute to a tenant. |
-| Deny burst | MEDIUM | A tenant accumulates ≥`CONTAINARIUM_THREAT_DENY_BURST_N` (default 20) policy denies within `CONTAINARIUM_THREAT_DENY_BURST_WINDOW_MINUTES` (default 5) minutes. Both tunable per operator, without a daemon rebuild — set the env var and restart. |
+| Deny burst | MEDIUM | A tenant accumulates ≥`CONTAINARIUM_THREAT_DENY_BURST_N` (default 20) **enforced** policy denies (packets actually dropped; `log_only` would-denies are not counted unless `CONTAINARIUM_THREAT_DENY_BURST_COUNT_LOG_ONLY=1`) within `CONTAINARIUM_THREAT_DENY_BURST_WINDOW_MINUTES` (default 5) minutes. Both tunable per operator, without a daemon rebuild — set the env var and restart. |
+
+### Observation mode and deny burst
+
+On a host whose network-policy enforcer is observation-only, the eBPF
+program still emits an event for every flow a tenant's policy *would*
+deny, and the daemon logs it as `log_only (not dropped)`. Ordinary egress
+(package mirrors, CDNs, the metadata endpoint) can produce hundreds of
+these per tenant per window, so by default the deny-burst rule ignores
+them and only counts drops from tenants in enforce mode. Set
+`CONTAINARIUM_THREAT_DENY_BURST_COUNT_LOG_ONLY=1` to count would-deny
+events as well (restart required).
+
+**Soak first** before enabling the sentry on a fleet that hasn't enforced:
+
+1. Run the enforcer observation-only (no `CONTAINARIUM_NETWORK_POLICY_ENFORCE`).
+2. Review the `[netpolicy] deny: ... log_only` volume per tenant. Expect
+   the daemon journal to grow noticeably (on a 22-tenant host, from
+   roughly 10 to a few hundred lines per minute, i.e. tens of MB/day), and
+   `netbpf: perf ring lost N samples` lines when the event stream is busy.
+3. Curate each tenant's allow-list until the would-deny volume reflects
+   only traffic you want blocked.
+4. Then enable the sentry (and, when ready, enforcement).
 
 A rule firing repeatedly for the same `(rule, tenant, subject)` dedupes
 into one open finding with an updated count, rather than creating a new

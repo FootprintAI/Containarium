@@ -448,16 +448,18 @@ func (e *NetworkPolicyEnforcer) Stop() {
 // audit log. Action network_policy.deny; the tenant name is resolved from the
 // id->name map built during reconcile.
 func (e *NetworkPolicyEnforcer) OnDenyEvent(ctx context.Context, ev netbpf.DenyEvent) {
-	// #1640: hand every deny event to the threat-detection engine, same as
-	// the audit write below — nil hook is the default (sentry disabled).
-	if e.denyHook != nil {
-		e.denyHook(ev)
-	}
-
 	e.mu.Lock()
 	tenant := e.idName[ev.TenantID]
 	dropped := e.enforced[ev.TenantID]
 	e.mu.Unlock()
+	// #1640: hand every deny event to the threat-detection engine, same as
+	// the audit write below — nil hook is the default (sentry disabled).
+	// #2612: tell it whether the packet was really dropped, so observation-mode
+	// would-denies can be told apart from enforced drops.
+	if e.denyHook != nil {
+		ev.LogOnly = !dropped
+		e.denyHook(ev)
+	}
 	// Always log the denied flow. The program emits the event whether or not it
 	// drops, so the action depends on the tenant's effective mode: a DROP under
 	// enforce, an observation under log_only. This line is the operator's signal.

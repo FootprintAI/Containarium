@@ -2327,7 +2327,7 @@ skipAppHosting:
 			// in the audit log with nothing watching. Zero-value N/window
 			// falls back to the rule's own defaults.
 			threatDetectEngine.Register(threatdetect.NewCrossTenantFlowRule())
-			threatDetectEngine.Register(threatdetect.NewDenyBurstRule(threatCfg.DenyBurstN, threatCfg.DenyBurstWindow))
+			threatDetectEngine.Register(threatdetect.NewDenyBurstRule(threatCfg.DenyBurstN, threatCfg.DenyBurstWindow).WithCountLogOnly(threatCfg.DenyBurstCountLogOnly))
 			networkPolicyEnforcer.SetFlowHook(threatDetectEngine.OnFlows)
 			networkPolicyEnforcer.SetDenyHook(threatDetectEngine.OnDeny)
 			if degraded {
