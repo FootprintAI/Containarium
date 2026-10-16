@@ -3,6 +3,7 @@ package cloud
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -742,21 +743,31 @@ func (c *Client) reconcileAssignment(a *cloudv1.Assignment) {
 // no-op reported as success. A failure is not recorded, so the next
 // delivery retries. An assignment without an id cannot be deduplicated and
 // runs on every delivery; ending sessions again is harmless.
-func (c *Client) reconcileTermination(a *cloudv1.Assignment) {
+//
+// A user_id the host cannot map to a local login (ErrUserNotMapped, #2602)
+// is logged at warn with the assignment id and counted as its own outcome,
+// never as a walk that found no sessions. It is recorded as handled: a
+// retry cannot map it later, since a deactivated user cannot log in again.
+func (c *Client) reconcileTermination(a *cloudv1.Assignment) terminationOutcome {
 	if c.sessions == nil {
-		return
+		return terminationIgnored
 	}
 	id, user := a.GetAssignmentId(), a.GetUserId()
 	if user == "" {
 		log.Printf("[cloud] terminate-sessions assignment %q has no user_id; ignored", id)
-		return
+		return terminationIgnored
 	}
 	if id != "" && c.terminationDone(id) {
-		return // already carried out
+		return terminationReplayed // already carried out
 	}
-	if err := c.sessions.TerminateUserSessions(c.ctx, user); err != nil {
+	outcome := terminationEnded
+	if err := c.sessions.TerminateUserSessions(c.ctx, user); errors.Is(err, ErrUserNotMapped) {
+		log.Printf("[cloud] WARN terminate-sessions assignment %s: %v; no sessions ended", id, err)
+		outcome = terminationUnmapped
+	} else if err != nil {
 		log.Printf("[cloud] terminate sessions for %s (assignment %s): %v", user, id, err)
-		return
+		recordTerminationOutcome(c.ctx, terminationFailed)
+		return terminationFailed
 	}
 	if id != "" {
 		c.terminatedMu.Lock()
@@ -766,7 +777,11 @@ func (c *Client) reconcileTermination(a *cloudv1.Assignment) {
 		c.terminated[id] = true
 		c.terminatedMu.Unlock()
 	}
-	log.Printf("[cloud] terminated sessions for %s (assignment %s)", user, id)
+	recordTerminationOutcome(c.ctx, outcome)
+	if outcome == terminationEnded {
+		log.Printf("[cloud] terminated sessions for %s (assignment %s)", user, id)
+	}
+	return outcome
 }
 
 func (c *Client) terminationDone(id string) bool {

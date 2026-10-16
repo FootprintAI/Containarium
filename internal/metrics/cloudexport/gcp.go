@@ -22,11 +22,15 @@ const monitoringWriteScope = "https://www.googleapis.com/auth/monitoring.write"
 
 // gcpOTLPEndpoint is Google Cloud's Telemetry API OTLP ingestion endpoint
 // (see https://cloud.google.com/stackdriver/docs/otlp-metrics/overview).
-// It accepts standard OTLP-over-gRPC and maps each metric's OTLP name to
-// a Cloud Monitoring metric type by prefixing it with
-// "workload.googleapis.com/" — the same default the deprecated
-// opentelemetry-operations-go exporter used — so instrument names defined
-// in collector.go land under identical series names post-migration.
+// It accepts standard OTLP-over-gRPC and writes each metric into Google's
+// Prometheus namespace on a prometheus_target resource: a gauge becomes
+// prometheus.googleapis.com/<name>/gauge and a monotonic counter
+// prometheus.googleapis.com/<name>/counter. The deprecated
+// opentelemetry-operations-go exporter used workload.googleapis.com/<name> on
+// gce_instance, so series names and the monitored resource CHANGED with the
+// migration (v0.100.0): alert filters and dashboards written for the old type
+// select nothing. See "Metric names and resource type" in
+// docs/METRICS-EXPORT-DEADMAN-ALERT-RUNBOOK.md.
 const gcpOTLPEndpoint = "telemetry.googleapis.com:443"
 
 // projectHeader is the header Google Cloud's OTLP ingestion reads to
@@ -96,8 +100,11 @@ func (g *gcpSink) NewExporter(ctx context.Context, cfg SinkConfig) (sdkmetric.Ex
 	return exporter, nil
 }
 
-// DetectResource resolves this host's GCP monitored-resource identity so
-// exported series land tagged as a gce_instance in Metrics Explorer. It
+// DetectResource resolves this host's GCP identity (project, zone, instance
+// id) as OTel resource attributes for the exporter. Google's OTLP ingestion
+// maps the series onto a prometheus_target monitored resource (observed:
+// location = zone, instance = the numeric GCE instance id), not a
+// gce_instance, so filters must not assume the latter. It
 // uses the OTel contrib GCP resource detector; off GCP (or with the
 // metadata server unreachable) it returns whatever partial resource the
 // detector can assemble, which the exporter maps to a generic resource

@@ -164,7 +164,10 @@ policy system.
    healthy only when the guard enforces, the host is supported, the last
    pass had no error, **every subject is attached and nothing is
    unresolved** — an unguarded tenant is a failed guard even when the pass
-   succeeded. `containarium doctor` is host-level and has no daemon token,
+   succeeded. Instances carrying no `user.containarium.*`
+   key at all (made directly in Incus, or a VM) are listed separately as
+   `unmanaged`: they are not Containarium's to attribute, stay unguarded,
+   and do not degrade the verdict or the exit code. `containarium doctor` is host-level and has no daemon token,
    so its check reads Incus directly (firewall driver, the
    `network_bridge_acl_devices` extension, and every running tenant
    container's `eth0` `security.acls`) and fails when any running tenant

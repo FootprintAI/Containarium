@@ -535,8 +535,12 @@ type ContainerInfo struct {
 	Labels       map[string]string
 	Role         Role   // Core container role (e.g., RolePostgres, RoleCaddy), empty for user containers
 	Tenant       string // Explicit owning tenant (user.containarium.tenant); empty falls back to the name convention
-	CreatedAt    time.Time
-	BackendID    string // Backend this container runs on (populated by PeerPool fan-out)
+	// Managed is true when the instance carries any user.containarium.* config
+	// key, i.e. Containarium created or adopted it. An instance made directly
+	// with `incus launch` has none.
+	Managed   bool
+	CreatedAt time.Time
+	BackendID string // Backend this container runs on (populated by PeerPool fan-out)
 
 	// MonitoringEnabled is true when the container has OTel
 	// env vars stamped (OTEL_EXPORTER_OTLP_ENDPOINT non-empty in
@@ -1149,6 +1153,7 @@ func (c *Client) fetchContainerInfo(name string) (ContainerInfo, bool) {
 			Labels:                    extractLabelsFromConfig(inst.Config),
 			Role:                      Role(inst.Config[RoleKey]),
 			Tenant:                    inst.Config[TenantLabelKey],
+			Managed:                   hasContainariumConfig(inst.Config),
 			MonitoringEnabled:         inst.Config["environment.OTEL_EXPORTER_OTLP_ENDPOINT"] != "",
 			AutoSleepEnabled:          inst.Config[AutoSleepEnabledKey] == "true",
 			IdleThresholdMinutes:      parseIdleThresholdMinutes(inst.Config),
@@ -1229,6 +1234,7 @@ func (c *Client) GetContainer(name string) (*ContainerInfo, error) {
 		Labels:               extractLabelsFromConfig(inst.Config),
 		Role:                 Role(inst.Config[RoleKey]),
 		Tenant:               inst.Config[TenantLabelKey],
+		Managed:              hasContainariumConfig(inst.Config),
 		MonitoringEnabled:    inst.Config["environment.OTEL_EXPORTER_OTLP_ENDPOINT"] != "",
 		AutoSleepEnabled:     inst.Config[AutoSleepEnabledKey] == "true",
 		IdleThresholdMinutes: parseIdleThresholdMinutes(inst.Config),
@@ -2814,6 +2820,18 @@ func formatBytesHuman(b int64) string {
 	}
 	units := []string{"KB", "MB", "GB", "TB"}
 	return fmt.Sprintf("%.1f %s", float64(b)/float64(div), units[exp])
+}
+
+// hasContainariumConfig reports whether config carries any user.containarium.*
+// key, the marker that separates an instance Containarium manages from one
+// created directly in Incus.
+func hasContainariumConfig(config map[string]string) bool {
+	for k := range config {
+		if strings.HasPrefix(k, "user.containarium.") {
+			return true
+		}
+	}
+	return false
 }
 
 // extractLabelsFromConfig extracts labels from container config

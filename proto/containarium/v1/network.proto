@@ -563,6 +563,10 @@ message GuardStatus {
   repeated string unresolved = 8;
   // Number of distinct subjects (tenants for the tenant guard).
   int32 subjects = 9;
+  // Instances carrying no user.containarium.* key (made directly in Incus,
+  // or a VM). Left unguarded and listed for information only; unlike
+  // unresolved they do not degrade the verdict (#2396).
+  repeated string unmanaged = 10;
 }
 
 message GetNetworkGuardStatusRequest {}

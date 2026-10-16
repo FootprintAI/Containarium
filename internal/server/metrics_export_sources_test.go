@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -79,5 +80,54 @@ func TestServerPlatformSources_BackupHealth_MissingDirIsEmptyNotError(t *testing
 	got := s.BackupHealth()
 	if len(got) != 0 {
 		t.Errorf("got %+v, want empty", got)
+	}
+}
+
+// #2305: a persistent read failure must be visible. The age series goes
+// empty on failure (same as "no backups"), so the failure counter is the
+// only distinguishing signal: it advances once per failed tick and does not
+// move while reads succeed.
+func TestServerPlatformSources_BackupHealth_ReadFailureIsCounted(t *testing.T) {
+	good := t.TempDir()
+	writeSidecarForTest(t, good, "alice-app-20261005T020000Z", "alice", time.Date(2026, 10, 5, 2, 0, 0, 0, time.UTC))
+
+	// A backup "directory" whose parent is a regular file cannot be read
+	// (ENOTDIR), unlike a merely-missing one, which List treats as empty.
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bad := filepath.Join(blocker, "backups")
+
+	counter := new(atomic.Int64)
+	healthy := serverPlatformSources{backupMgr: backup.NewManager(nil, nil, good), backupReadFailures: counter}
+	broken := serverPlatformSources{backupMgr: backup.NewManager(nil, nil, bad), backupReadFailures: counter}
+
+	if got := healthy.BackupHealth(); len(got) != 1 {
+		t.Fatalf("healthy read = %+v, want 1 tenant", got)
+	}
+	if n := healthy.BackupHealthReadFailures(); n != 0 {
+		t.Fatalf("failures after a healthy read = %d, want 0", n)
+	}
+	for i := 1; i <= 3; i++ {
+		if got := broken.BackupHealth(); len(got) != 0 {
+			t.Fatalf("broken read returned %+v, want empty", got)
+		}
+		if n := broken.BackupHealthReadFailures(); n != int64(i) {
+			t.Fatalf("failures after %d broken reads = %d, want %d", i, n, i)
+		}
+	}
+	if got := healthy.BackupHealth(); len(got) != 1 {
+		t.Fatalf("recovered read = %+v, want 1 tenant", got)
+	}
+	if n := healthy.BackupHealthReadFailures(); n != 3 {
+		t.Errorf("cumulative failures after recovery = %d, want 3 (a counter never decreases)", n)
+	}
+}
+
+func TestServerPlatformSources_BackupHealthReadFailures_NilCounterIsSafe(t *testing.T) {
+	var s serverPlatformSources
+	if n := s.BackupHealthReadFailures(); n != 0 {
+		t.Errorf("zero-value adapter reports %d failures, want 0", n)
 	}
 }
