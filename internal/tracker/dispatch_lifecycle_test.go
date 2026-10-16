@@ -496,3 +496,124 @@ func TestStateLabelWriters_OnlyDispatcher(t *testing.T) {
 type runStarterFunc func(ctx context.Context, req StartRunRequest) error
 
 func (f runStarterFunc) StartRun(ctx context.Context, req StartRunRequest) error { return f(ctx, req) }
+
+// captureLifecycle returns a Dispatcher whose starter keeps the run's
+// lifecycle WITHOUT reporting the start, so a test can drive RunStarted
+// itself, on a context of its choosing.
+func captureLifecycle(t *testing.T, user string, issue Issue) (*Dispatcher, *Store, *fakeDispatchProvider, *RunLifecycle, context.Context) {
+	t.Helper()
+	provider := newFakeDispatchProvider(issue)
+	var captured RunLifecycle
+	d, store, ctx := newDispatchFixture(t, user, provider, &fakeRunStarter{})
+	d.Runs = runStarterFunc(func(_ context.Context, req StartRunRequest) error {
+		captured = req.Lifecycle
+		return nil
+	})
+	if res, err := d.Tick(ctx, user, "default"); err != nil || len(res.Started) != 1 {
+		t.Fatalf("Tick = (%+v, %v)", res, err)
+	}
+	return d, store, provider, &captured, ctx
+}
+
+// TestDispatchLifecycle_RunStartedSurvivesCancelledContext pins the detach
+// in RunStarted (#2051): the start report is made from the run's goroutine
+// after the tick RPC's context is gone, and a cancelled context must not
+// leave a started run QUEUED (where the sweep would time it out as lost).
+func TestDispatchLifecycle_RunStartedSurvivesCancelledContext(t *testing.T) {
+	const user = "tracker-lifecycle-start-cancelled"
+	_, store, provider, lc, ctx := captureLifecycle(t, user, Issue{Number: 11, Labels: []string{"scope:product"}})
+	dead, cancel := context.WithCancel(ctx)
+	cancel()
+
+	if !(*lc).RunStarted(dead) {
+		t.Fatal("RunStarted on a cancelled context = false, want true (the start must be recorded)")
+	}
+	if row := onlyRow(t, store, ctx, user); row.State != pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_RUNNING {
+		t.Fatalf("row = %+v, want RUNNING", row)
+	}
+	labels := provider.labels(11)
+	if !containsString(labels, LabelAgentRunning) || containsString(labels, LabelAgentQueued) {
+		t.Errorf("labels = %v, want agent:running and no agent:queued", labels)
+	}
+}
+
+// TestDispatchLifecycle_RunStartedAfterTerminalMustNotLaunch pins the
+// compare-and-set guard in RunStarted (#2051): when the sweep already
+// failed the row while the run was provisioning, the start report says
+// "do not launch" and touches neither the row nor the issue. A repeated
+// report after a recorded start still says proceed.
+func TestDispatchLifecycle_RunStartedAfterTerminalMustNotLaunch(t *testing.T) {
+	const user = "tracker-lifecycle-start-after-terminal"
+	d, store, provider, lc, ctx := captureLifecycle(t, user, Issue{Number: 12, Labels: []string{"scope:product"}})
+	row := onlyRow(t, store, ctx, user)
+	if ok, err := store.FailDispatch(ctx, row.ID, pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_QUEUED,
+		pb.TrackerDispatchFailure_TRACKER_DISPATCH_FAILURE_TIMEOUT, "timed out while provisioning", d.Clock.Now()); err != nil || !ok {
+		t.Fatalf("simulate sweep = (%v, %v)", ok, err)
+	}
+	before := provider.labels(12)
+
+	if (*lc).RunStarted(ctx) {
+		t.Fatal("RunStarted after the row went terminal = true, want false (the run must not launch)")
+	}
+	if got := onlyRow(t, store, ctx, user); got.State != pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_FAILED {
+		t.Fatalf("row = %+v, want the sweep's FAILED untouched", got)
+	}
+	if after := provider.labels(12); strings.Join(after, ",") != strings.Join(before, ",") {
+		t.Errorf("labels changed %v -> %v on a lost start", before, after)
+	}
+
+	// Duplicate report after a recorded start: proceed, not teardown.
+	const user2 = "tracker-lifecycle-start-duplicate"
+	_, store2, _, lc2, ctx2 := captureLifecycle(t, user2, Issue{Number: 13, Labels: []string{"scope:product"}})
+	if !(*lc2).RunStarted(ctx2) {
+		t.Fatal("first RunStarted = false, want true")
+	}
+	row2 := onlyRow(t, store2, ctx2, user2)
+	if ok, err := store2.FailDispatch(ctx2, row2.ID, pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_RUNNING,
+		pb.TrackerDispatchFailure_TRACKER_DISPATCH_FAILURE_TIMEOUT, "timed out", d.Clock.Now()); err != nil || !ok {
+		t.Fatalf("simulate sweep = (%v, %v)", ok, err)
+	}
+	if !(*lc2).RunStarted(ctx2) {
+		t.Error("duplicate RunStarted after a recorded start = false, want true")
+	}
+}
+
+// cancelOnGetProvider cancels the tick's context from inside the
+// stillDispatchable re-read and fails the read with it, like a forge call
+// aborted by a cancelled RPC.
+type cancelOnGetProvider struct {
+	*fakeDispatchProvider
+	cancel context.CancelFunc
+}
+
+func (c *cancelOnGetProvider) GetIssue(ctx context.Context, _ Conn, _ int64) (Issue, error) {
+	c.cancel()
+	return Issue{}, ctx.Err()
+}
+
+// TestDispatch_RecheckAbandonSurvivesCancelledTick pins the detached
+// delete in stillDispatchable (#2051): a tick cancelled mid re-read must
+// still remove the never-started row, or it stays QUEUED forever and locks
+// the issue against every later tick.
+func TestDispatch_RecheckAbandonSurvivesCancelledTick(t *testing.T) {
+	const user = "tracker-dispatch-recheck-cancelled"
+	provider := newFakeDispatchProvider(Issue{Number: 14, Labels: []string{"scope:product"}})
+	runs := &lifecycleRunStarter{}
+	d, store, ctx := newDispatchFixture(t, user, provider, &fakeRunStarter{})
+	d.Runs = runs
+	tickCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	d.Provider = &cancelOnGetProvider{fakeDispatchProvider: provider, cancel: cancel}
+
+	_, _ = d.Tick(tickCtx, user, "default") // the cancelled tick may report an error; the row is what matters
+	if n := len(runs.started()); n != 0 {
+		t.Fatalf("StartRun calls = %d, want 0 for a cancelled tick", n)
+	}
+	rows, err := store.ListDispatches(ctx, user, "default", pb.TrackerDispatchState_TRACKER_DISPATCH_STATE_UNSPECIFIED)
+	if err != nil {
+		t.Fatalf("ListDispatches: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("rows = %+v, want the unstarted row removed even though the tick was cancelled", rows)
+	}
+}
