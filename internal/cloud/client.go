@@ -15,6 +15,7 @@ import (
 	"google.golang.org/grpc/metadata"
 
 	cloudv1 "github.com/footprintai/containarium/pkg/pb/containarium/cloud/v1"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // hostBearerMetadataKey is the gRPC metadata header the cloud-daemon's
@@ -145,6 +146,13 @@ type unaryActuation interface {
 	GetSSHTrustBundle(context.Context, *cloudv1.GetSSHTrustBundleRequest, ...grpc.CallOption) (*cloudv1.GetSSHTrustBundleResponse, error)
 }
 
+// sshAuthorizer is the managed-mode SSH authorization call. It is kept
+// separate from unaryActuation because the REST transport does not expose the
+// host-bearer gRPC channel used by AuthorizeSSH.
+type sshAuthorizer interface {
+	AuthorizeSSH(context.Context, *pb.AuthorizeSSHRequest, ...grpc.CallOption) (*pb.AuthorizeSSHResponse, error)
+}
+
 // Client is the host-side cloud-actuation client. Slice 3 implements the
 // heartbeat; WatchAssignments + the reconciler land in slice 4. The actuation
 // proto is vendored (proto/containarium/cloud/v1), so this builds in the default
@@ -166,6 +174,7 @@ type Client struct {
 	// BYOC host pulls no assignments and the watch loop is not started.
 	ac      unaryActuation
 	watchAC cloudv1.ActuationServiceClient
+	sshAC   sshAuthorizer
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -213,7 +222,7 @@ func (c *Client) Start(ctx context.Context) error {
 		}
 		c.conn = conn
 		gc := cloudv1.NewActuationServiceClient(conn)
-		c.ac, c.watchAC = gc, gc
+		c.ac, c.watchAC, c.sshAC = gc, gc, gc
 	}
 	c.ctx, c.cancel = context.WithCancel(ctx)
 
@@ -239,6 +248,18 @@ func (c *Client) Start(ctx context.Context) error {
 	log.Printf("[cloud] actuation client started: host=%s control-plane=%s (heartbeat %s, watch=%v, status=%v, driver-refresh=%v)",
 		c.cfg.HostID, c.cfg.ControlPlane, c.interval, watch, c.status != nil, c.driver != nil)
 	return nil
+}
+
+// AuthorizeSSH forwards a sentinel authorization request over the enrolled
+// host-bearer channel. The cloud call is deliberately bounded here so every
+// managed-mode caller gets the same fail-closed deadline.
+func (c *Client) AuthorizeSSH(ctx context.Context, req *pb.AuthorizeSSHRequest, opts ...grpc.CallOption) (*pb.AuthorizeSSHResponse, error) {
+	if c.sshAC == nil {
+		return nil, fmt.Errorf("cloud: SSH authorization unavailable (client not started or REST transport)")
+	}
+	ctx, cancel := context.WithTimeout(c.authContext(ctx), 2*time.Second)
+	defer cancel()
+	return c.sshAC.AuthorizeSSH(ctx, req, opts...)
 }
 
 // Stop ends the loops and closes the connection. Safe to call once after Start.

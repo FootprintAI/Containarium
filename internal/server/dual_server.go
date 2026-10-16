@@ -1478,6 +1478,30 @@ skipAppHosting:
 	if cloudCfg, cerr := cloud.Load(cloudCfgPath); cerr != nil {
 		log.Printf("Warning: failed to read cloud-actuation config %s: %v (running single-tenant)", cloudCfgPath, cerr)
 	} else if cloudCfg != nil {
+		// Keep the managed forwarder behind the same local hosted-account gate
+		// used by /authorized-keys. A login for a missing/orphaned box must not
+		// consume a cloud authorization call.
+		localSSHFacts := sshauthz.LocalFactsFunc(func(_ context.Context, req *pb.AuthorizeSSHRequest) (string, bool, error) {
+			login := strings.TrimSpace(req.GetLogin())
+			if login == "" {
+				return "", false, nil
+			}
+			mgr := containerServer.GetManager()
+			if mgr == nil {
+				return "", false, fmt.Errorf("container manager unavailable")
+			}
+			names, err := mgr.ExistingContainerNames()
+			if err != nil {
+				return "", false, err
+			}
+			if names[login+"-container"] {
+				return login, true, nil
+			}
+			if collaboratorContainer, ok := container.CollaboratorJumpAccountContainer(login); ok && names[collaboratorContainer] {
+				return login, true, nil
+			}
+			return "", false, nil
+		})
 		cloudDeps := cloud.Deps{
 			Policies: newCloudPolicySink(npServer),
 			// Report this host's capability profile (hardware + headroom +
@@ -1516,14 +1540,18 @@ skipAppHosting:
 			log.Printf("Warning: cloud-actuation config invalid: %v (running single-tenant)", nerr)
 		} else {
 			cloudClient = cc
+			// Enrollment is the mode switch for managed SSH authorization. The
+			// server is registered above, but the forwarder is not constructed
+			// at all on an unenrolled daemon.
+			sshAuthzServer.SetDecider(&sshauthz.Decider{Local: localSSHFacts, Managed: true, Cloud: cc})
 			log.Printf("Cloud-actuation client configured (host=%s control-plane=%s); starts with the daemon",
 				cloudCfg.HostID, cloudCfg.ControlPlane)
 		}
 	}
 
 	// Self-host SSH authorization (#2517): only when no cloud is enrolled.
-	// An enrolled daemon's answer comes from the cloud (#2525), so it keeps
-	// the Unimplemented answer here rather than deciding locally.
+	// An enrolled daemon's answer comes from the cloud (#2525) through the
+	// managed forwarder wired above; it never decides locally.
 	if selfHostSSHAuthz != nil && cloudClient == nil {
 		sshAuthzServer.SetDecider(selfHostSSHAuthz)
 		log.Printf("SSH authorization: self-host decider enabled (max key age %v, 0 = no limit)", config.SSHAuthzMaxKeyAge)
