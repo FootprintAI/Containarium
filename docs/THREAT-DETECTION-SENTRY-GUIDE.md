@@ -59,11 +59,28 @@ Prerequisites:
 |------|----------|------------|
 | Known-bad destination | HIGH | A flow's destination matches the embedded (versioned, mining-pools-first) or operator-added bad-destination list. |
 | Cross-tenant flow | CRITICAL | A flow's source and destination resolve to containers in *different* tenants on the same backend — the continuous form of the one-shot isolation check. Never fires on an IP it can't attribute to a tenant. |
-| Deny burst | MEDIUM | A tenant accumulates ≥`CONTAINARIUM_THREAT_DENY_BURST_N` (default 20) policy denies within `CONTAINARIUM_THREAT_DENY_BURST_WINDOW_MINUTES` (default 5) minutes. Both tunable per operator, without a daemon rebuild — set the env var and restart. |
+| Deny burst | MEDIUM | A tenant accumulates ≥`CONTAINARIUM_THREAT_DENY_BURST_N` (default 20) policy denies within `CONTAINARIUM_THREAT_DENY_BURST_WINDOW_MINUTES` (default 5) minutes. Both tunable per operator, without a daemon rebuild — set the env var and restart. **Counts enforced drops only** by default: a would-deny from a tenant whose policy is only observed (`log_only`) is not counted, so enabling the sentry on an observation-only host does not raise "fence probing" findings for ordinary egress. Set `CONTAINARIUM_THREAT_DENY_BURST_COUNT_LOG_ONLY=1` to count those too. |
 
 A rule firing repeatedly for the same `(rule, tenant, subject)` dedupes
 into one open finding with an updated count, rather than creating a new
 row or re-alerting on every repeat.
+
+### Soak first on an observation-only fleet
+
+With `CONTAINARIUM_NETWORK_POLICY_ENFORCE` unset the enforcer logs every
+flow that no allow-list covers as `deny ... log_only (not dropped)` and
+nothing is dropped. Before enforcing, and before trusting deny-burst:
+
+1. Run observation-only and review the would-deny volume per tenant in the
+   daemon journal. Expect it to be large on a fleet with no curated
+   allow-lists: one line per flow, so hundreds of lines per tenant per
+   minute is possible, and journald growth of tens of MB per day on a busy
+   host. `netbpf: perf ring lost N samples` means the event stream is
+   incomplete at that volume.
+2. Curate each tenant's allow-list until the would-deny volume reflects
+   traffic you actually want blocked.
+3. Only then enable enforcement. From that point the deny-burst rule counts
+   the drops, and a burst is a real signal.
 
 ## Reading sentry status
 

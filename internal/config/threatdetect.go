@@ -18,6 +18,11 @@ const (
 	EnvThreatDenyBurstWindowMinutes = "CONTAINARIUM_THREAT_DENY_BURST_WINDOW_MINUTES"
 )
 
+// EnvThreatDenyBurstCountLogOnly makes the deny-burst rule also count
+// would-deny events from tenants whose policy is observation-only (#2612).
+// Off by default: the rule counts enforced drops only.
+const EnvThreatDenyBurstCountLogOnly = "CONTAINARIUM_THREAT_DENY_BURST_COUNT_LOG_ONLY"
+
 // ThreatDetect is the typed view of the CONTAINARIUM_THREAT_* namespace.
 type ThreatDetect struct {
 	// SentryEnabled arms the background detection engine. Requires the eBPF
@@ -31,6 +36,9 @@ type ThreatDetect struct {
 	// override when the operator actually set one.
 	DenyBurstN      int
 	DenyBurstWindow time.Duration
+	// DenyBurstCountLogOnly counts observation-only would-deny events too
+	// (EnvThreatDenyBurstCountLogOnly). Default false: enforced drops only.
+	DenyBurstCountLogOnly bool
 }
 
 // LoadThreatDetect reads the CONTAINARIUM_THREAT_* namespace once, using the
@@ -40,5 +48,7 @@ func LoadThreatDetect() ThreatDetect {
 		SentryEnabled:   getBool(EnvThreatSentry),
 		DenyBurstN:      getInt(EnvThreatDenyBurstN, 0),
 		DenyBurstWindow: time.Duration(getInt(EnvThreatDenyBurstWindowMinutes, 0)) * time.Minute,
+
+		DenyBurstCountLogOnly: getBool(EnvThreatDenyBurstCountLogOnly),
 	}
 }
