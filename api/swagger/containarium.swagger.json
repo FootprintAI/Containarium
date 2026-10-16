@@ -9338,7 +9338,7 @@
         "ACCESS_TYPE_RDP"
       ],
       "default": "ACCESS_TYPE_SSH",
-      "description": "- ACCESS_TYPE_SSH: SSH access (default for Linux containers)\nKeep the established SSH zero value and its JSON name (#2481).\nbuf:lint:ignore ENUM_ZERO_VALUE_SUFFIX\n - ACCESS_TYPE_RDP: RDP access (for Windows VMs, via Guacamole browser-based client)",
+      "description": "- ACCESS_TYPE_SSH: SSH access (default for Linux containers)\n - ACCESS_TYPE_RDP: RDP access (for Windows VMs, via Guacamole browser-based client)",
       "title": "AccessType indicates how to connect to an instance"
     },
     "AddBadDestinationRequest": {

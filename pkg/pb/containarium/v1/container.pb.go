@@ -146,8 +146,6 @@ type AccessType int32
 
 const (
 	// SSH access (default for Linux containers)
-	// Keep the established SSH zero value and its JSON name (#2481).
-	// buf:lint:ignore ENUM_ZERO_VALUE_SUFFIX
 	AccessType_ACCESS_TYPE_SSH AccessType = 0
 	// RDP access (for Windows VMs, via Guacamole browser-based client)
 	AccessType_ACCESS_TYPE_RDP AccessType = 1

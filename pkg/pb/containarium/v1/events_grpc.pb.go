@@ -29,8 +29,6 @@ const (
 // EventService provides real-time event streaming
 type EventServiceClient interface {
 	// SubscribeEvents opens a streaming connection for real-time events
-	// Preserve the published RPC request/response type names (#2481).
-	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
 	SubscribeEvents(ctx context.Context, in *SubscribeEventsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[Event], error)
 }
 
@@ -68,8 +66,6 @@ type EventService_SubscribeEventsClient = grpc.ServerStreamingClient[Event]
 // EventService provides real-time event streaming
 type EventServiceServer interface {
 	// SubscribeEvents opens a streaming connection for real-time events
-	// Preserve the published RPC request/response type names (#2481).
-	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
 	SubscribeEvents(*SubscribeEventsRequest, grpc.ServerStreamingServer[Event]) error
 	mustEmbedUnimplementedEventServiceServer()
 }
