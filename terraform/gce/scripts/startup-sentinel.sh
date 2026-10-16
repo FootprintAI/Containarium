@@ -116,7 +116,9 @@ fi
 cat > /etc/systemd/system/sshpiper.service <<'EOF'
 [Unit]
 Description=SSHPiper reverse proxy
-After=network.target
+After=network.target containarium-sentinel.service
+BindsTo=containarium-sentinel.service
+PartOf=containarium-sentinel.service
 
 [Service]
 ExecStart=/usr/local/bin/sshpiperd \
@@ -192,14 +194,23 @@ fi
 
 # Install the shared controller policy before either guarded listener admits SSH.
 install -d -m 0700 /etc/containarium/ssh-upstream
-cat > /etc/containarium/ssh-upstream/policy.json <<'EOF'
+cat > /etc/containarium/ssh-upstream/policy.candidate.json <<'EOF'
 {"initialDelay":"1s","maxDelay":"30s","window":"600s","setupTimeout":"30s","failureBudget":2,"riskPerAttempt":1,"maxBackends":1024,"maxPending":32,"maxConnections":4096,"jitter":0.25,"egressGroup":"sentinel"}
 EOF
-chmod 0600 /etc/containarium/ssh-upstream/policy.json
+chmod 0600 /etc/containarium/ssh-upstream/policy.candidate.json
+if [ ! -f /etc/containarium/ssh-upstream/policy.json ]; then
+    mv /etc/containarium/ssh-upstream/policy.candidate.json /etc/containarium/ssh-upstream/policy.json
+elif cmp -s /etc/containarium/ssh-upstream/policy.json /etc/containarium/ssh-upstream/policy.candidate.json; then
+    rm -f /etc/containarium/ssh-upstream/policy.candidate.json /etc/containarium/ssh-upstream/policy.pending.json
+else
+    mv /etc/containarium/ssh-upstream/policy.candidate.json /etc/containarium/ssh-upstream/policy.pending.json
+    logger -t ssh-upstream-reconcile "SSH upstream policy staged; apply through the maintenance procedure"
+fi
 install -d -m 0755 /etc/systemd/system/containarium-sentinel.service.d
 cat > /etc/systemd/system/containarium-sentinel.service.d/ssh-upstream.conf <<'EOF'
 [Service]
 Environment=CONTAINARIUM_SSH_UPSTREAM_POLICY=/etc/containarium/ssh-upstream/policy.json
+ExecStartPost=-/bin/systemctl --no-block start sshpiper.service sshpiper-anon.service
 EOF
 
 # Install and start sentinel service

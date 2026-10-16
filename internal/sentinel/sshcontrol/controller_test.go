@@ -12,6 +12,7 @@ import (
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/known/durationpb"
 )
 
@@ -19,6 +20,65 @@ import (
 type controlClock struct {
 	mu sync.Mutex
 	t  time.Time
+}
+
+// TestControlAdmissionReasonIsTyped keeps denial decisions out of free text.
+func TestControlAdmissionReasonIsTyped(t *testing.T) {
+	field := (&pb.AcquireSSHUpstreamResponse{}).ProtoReflect().Descriptor().Fields().ByName("reason")
+	if field.Kind() != protoreflect.EnumKind {
+		t.Fatal("admission reason is not a protobuf enum")
+	}
+}
+
+// TestControlConnectFailureRefundsRisk keeps pure TCP outages out of jail history.
+func TestControlConnectFailureRefundsRisk(t *testing.T) {
+	f := newControlFixture(t)
+	for i := range 4 {
+		ref := f.open(f.client, pb.SSHBanListener_SSH_BAN_LISTENER_MAIN, fmt.Sprint("timeout-", i))
+		token := f.route(f.client, ref)
+		lease := f.acquire(f.client, ref, token, "127.0.0.1:22")
+		if !lease.Admitted {
+			t.Fatalf("pure connect failure consumed jail risk on attempt %d: %v", i, lease)
+		}
+		f.finish(ref, token, lease, pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_CONNECT_FAILED)
+		f.clock.advance(8 * time.Second)
+	}
+}
+
+// TestControlFaultRecoveryRetainsUncommittedRisk never resets uncertain history.
+func TestControlFaultRecoveryRetainsUncommittedRisk(t *testing.T) {
+	f := newControlFixture(t)
+	ref := f.open(f.client, pb.SSHBanListener_SSH_BAN_LISTENER_MAIN, "fault-retry")
+	token := f.route(f.client, ref)
+	dir := filepath.Dir(f.cfg.StatePath)
+	if err := os.Rename(dir, dir+".offline"); err != nil {
+		t.Fatal(err)
+	}
+	if f.acquire(f.client, ref, token, "127.0.0.1:22").Admitted {
+		t.Fatal("unsaved lease admitted")
+	}
+	if err := os.Rename(dir+".offline", dir); err != nil {
+		t.Fatal(err)
+	}
+	// A subsequent controller-owned durable retry must recover without resetting
+	// the unacknowledged lease or permitting a second checkpoint owner.
+	err := f.server.Recover()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.server.Faulted() {
+		t.Fatal("successful durable retry left a permanent fault")
+	}
+	other := f.open(f.client, pb.SSHBanListener_SSH_BAN_LISTENER_MAIN, "after-repair")
+	ot := f.route(f.client, other)
+	l := f.acquire(f.client, other, ot, "127.0.0.1:22")
+	if !l.Admitted {
+		t.Fatal("safe unit was unavailable after repair")
+	}
+	third := f.open(f.client, pb.SSHBanListener_SSH_BAN_LISTENER_MAIN, "risk-retained")
+	if f.acquire(f.client, third, f.route(f.client, third), "127.0.0.1:22").Admitted {
+		t.Fatal("repair discarded uncertain pending risk")
+	}
 }
 
 // now supplies the same deterministic instant to admission and persistence.
@@ -327,13 +387,87 @@ func TestControlDurabilityFailureDeniesWithoutSourcePenalty(t *testing.T) {
 	}
 }
 
-// TestControlUnavailableTransportIsBounded keeps private RPC calls finite.
-func TestControlUnavailableTransportIsBounded(t *testing.T) {
+// TestControlRejectsUnregisteredGeneration refuses forged process authority.
+func TestControlRejectsUnregisteredGeneration(t *testing.T) {
 	f := newControlFixture(t)
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	_, err := f.client.BeginSSHUpstreamRoute(ctx, &pb.BeginSSHUpstreamRouteRequest{Connection: &pb.SSHUpstreamConnection{Listener: pb.SSHBanListener_SSH_BAN_LISTENER_MAIN, ConnectionId: "unknown", RemoteAddr: "127.0.0.1:2000", ControllerGeneration: "forged"}})
 	if err == nil {
 		t.Fatal("unregistered connection crossed the private contract")
+	}
+}
+
+// TestControlIdleSourceCannotFillBothListeners reserves capacity for other sources.
+func TestControlIdleSourceCannotFillBothListeners(t *testing.T) {
+	f := newControlFixture(t)
+	for i := range int(f.cfg.Policy.MaxConnections) + 2 {
+		_, _ = f.client.OpenSSHUpstreamConnection(t.Context(), &pb.OpenSSHUpstreamConnectionRequest{Connection: &pb.SSHUpstreamConnection{Listener: pb.SSHBanListener_SSH_BAN_LISTENER_MAIN, ConnectionId: fmt.Sprint("idle-", i), RemoteAddr: fmt.Sprintf("192.0.2.1:%d", 10000+i)}})
+	}
+	_, err := f.client.OpenSSHUpstreamConnection(t.Context(), &pb.OpenSSHUpstreamConnectionRequest{Connection: &pb.SSHUpstreamConnection{Listener: pb.SSHBanListener_SSH_BAN_LISTENER_ANONYMOUS, ConnectionId: "legitimate", RemoteAddr: "192.0.2.2:20000"}})
+	if err != nil {
+		t.Fatalf("one idle source locked both listeners: %v", err)
+	}
+}
+
+// TestControlUnavailableTransportIsBounded calls a genuinely absent private socket.
+func TestControlUnavailableTransportIsBounded(t *testing.T) {
+	peer, err := DialPeer(filepath.Join(t.TempDir(), "absent.sock"), pb.SSHBanListener_SSH_BAN_LISTENER_MAIN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = peer.Close() }()
+	ctx, cancel := CallContext(t.Context())
+	defer cancel()
+	started := time.Now()
+	_, err = peer.Open(ctx, "unavailable", "127.0.0.2:2222")
+	if err == nil || time.Since(started) > 2*time.Second {
+		t.Fatalf("unavailable transport was not bounded: %v", err)
+	}
+}
+
+// TestControlAnonymousAddressReuseRetainsEndpointRisk avoids permanent box aliases.
+func TestControlAnonymousAddressReuseRetainsEndpointRisk(t *testing.T) {
+	f := newControlFixture(t)
+	register := func(box, endpoint string) *pb.SSHUpstreamConnection {
+		t.Helper()
+		ref := f.open(f.client, pb.SSHBanListener_SSH_BAN_LISTENER_ANONYMOUS, fmt.Sprint(box, f.clock.now().UnixNano(), endpoint))
+		if _, err := f.client.RegisterSSHAnonymousRoute(t.Context(), &pb.RegisterSSHAnonymousRouteRequest{Connection: ref, BoxName: box, Endpoint: endpoint}); err != nil {
+			t.Fatalf("trusted address reuse was rejected for %s: %v", box, err)
+		}
+		return ref
+	}
+	first := register("key-k", "127.0.0.8:22")
+	ft := f.route(f.client, first)
+	f.finish(first, ft, f.acquire(f.client, first, ft, "127.0.0.8:22"), pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_PROXY_AUTH_REJECTED)
+	f.clock.advance(8 * time.Second)
+	_ = register("key-l", "127.0.0.8:22")
+	_ = register("key-m", "127.0.0.9:22")
+	moved := register("key-l", "127.0.0.9:22")
+	mt := f.route(f.client, moved)
+	ml := f.acquire(f.client, moved, mt, "127.0.0.9:22")
+	if !ml.Admitted {
+		t.Fatal("reused address permanently denied a moved box")
+	}
+	f.finish(moved, mt, ml, pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_SSH_READY)
+	// The old physical endpoint still retains its failure; IP reuse cannot refund it.
+	old := register("key-new", "127.0.0.8:22")
+	ot := f.route(f.client, old)
+	if !f.acquire(f.client, old, ot, "127.0.0.8:22").Admitted {
+		t.Fatal("remaining safe unit lost")
+	}
+	last := register("key-last", "127.0.0.8:22")
+	if f.acquire(f.client, last, f.route(f.client, last), "127.0.0.8:22").Admitted {
+		t.Fatal("address reuse discarded old jail risk")
+	}
+	for i := range 40 {
+		f.clock.advance(6 * time.Minute)
+		ref := register(fmt.Sprint("churn-", i), fmt.Sprintf("127.0.1.%d:22", i+1))
+		token := f.route(f.client, ref)
+		lease := f.acquire(f.client, ref, token, fmt.Sprintf("127.0.1.%d:22", i+1))
+		if !lease.Admitted {
+			t.Fatalf("expired anonymous inventory exhausted capacity at %d", i)
+		}
+		f.finish(ref, token, lease, pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_SSH_READY)
 	}
 }

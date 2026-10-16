@@ -23,6 +23,80 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// SSHUpstreamAdmissionReason is a machine-readable admission decision.
+type SSHUpstreamAdmissionReason int32
+
+const (
+	SSHUpstreamAdmissionReason_SSH_UPSTREAM_ADMISSION_REASON_UNSPECIFIED       SSHUpstreamAdmissionReason = 0
+	SSHUpstreamAdmissionReason_SSH_UPSTREAM_ADMISSION_REASON_STATE_UNAVAILABLE SSHUpstreamAdmissionReason = 1
+	SSHUpstreamAdmissionReason_SSH_UPSTREAM_ADMISSION_REASON_WARMUP            SSHUpstreamAdmissionReason = 2
+	SSHUpstreamAdmissionReason_SSH_UPSTREAM_ADMISSION_REASON_UNKNOWN_ROUTE     SSHUpstreamAdmissionReason = 3
+	SSHUpstreamAdmissionReason_SSH_UPSTREAM_ADMISSION_REASON_IDENTITY_CONFLICT SSHUpstreamAdmissionReason = 4
+	SSHUpstreamAdmissionReason_SSH_UPSTREAM_ADMISSION_REASON_COOLDOWN          SSHUpstreamAdmissionReason = 5
+	SSHUpstreamAdmissionReason_SSH_UPSTREAM_ADMISSION_REASON_PROBE_BUSY        SSHUpstreamAdmissionReason = 6
+	SSHUpstreamAdmissionReason_SSH_UPSTREAM_ADMISSION_REASON_BUDGET_EXHAUSTED  SSHUpstreamAdmissionReason = 7
+	SSHUpstreamAdmissionReason_SSH_UPSTREAM_ADMISSION_REASON_CAPACITY          SSHUpstreamAdmissionReason = 8
+	SSHUpstreamAdmissionReason_SSH_UPSTREAM_ADMISSION_REASON_STALE_ROUTE       SSHUpstreamAdmissionReason = 9
+	SSHUpstreamAdmissionReason_SSH_UPSTREAM_ADMISSION_REASON_INVALID_COST      SSHUpstreamAdmissionReason = 10
+)
+
+// Enum value maps for SSHUpstreamAdmissionReason.
+var (
+	SSHUpstreamAdmissionReason_name = map[int32]string{
+		0:  "SSH_UPSTREAM_ADMISSION_REASON_UNSPECIFIED",
+		1:  "SSH_UPSTREAM_ADMISSION_REASON_STATE_UNAVAILABLE",
+		2:  "SSH_UPSTREAM_ADMISSION_REASON_WARMUP",
+		3:  "SSH_UPSTREAM_ADMISSION_REASON_UNKNOWN_ROUTE",
+		4:  "SSH_UPSTREAM_ADMISSION_REASON_IDENTITY_CONFLICT",
+		5:  "SSH_UPSTREAM_ADMISSION_REASON_COOLDOWN",
+		6:  "SSH_UPSTREAM_ADMISSION_REASON_PROBE_BUSY",
+		7:  "SSH_UPSTREAM_ADMISSION_REASON_BUDGET_EXHAUSTED",
+		8:  "SSH_UPSTREAM_ADMISSION_REASON_CAPACITY",
+		9:  "SSH_UPSTREAM_ADMISSION_REASON_STALE_ROUTE",
+		10: "SSH_UPSTREAM_ADMISSION_REASON_INVALID_COST",
+	}
+	SSHUpstreamAdmissionReason_value = map[string]int32{
+		"SSH_UPSTREAM_ADMISSION_REASON_UNSPECIFIED":       0,
+		"SSH_UPSTREAM_ADMISSION_REASON_STATE_UNAVAILABLE": 1,
+		"SSH_UPSTREAM_ADMISSION_REASON_WARMUP":            2,
+		"SSH_UPSTREAM_ADMISSION_REASON_UNKNOWN_ROUTE":     3,
+		"SSH_UPSTREAM_ADMISSION_REASON_IDENTITY_CONFLICT": 4,
+		"SSH_UPSTREAM_ADMISSION_REASON_COOLDOWN":          5,
+		"SSH_UPSTREAM_ADMISSION_REASON_PROBE_BUSY":        6,
+		"SSH_UPSTREAM_ADMISSION_REASON_BUDGET_EXHAUSTED":  7,
+		"SSH_UPSTREAM_ADMISSION_REASON_CAPACITY":          8,
+		"SSH_UPSTREAM_ADMISSION_REASON_STALE_ROUTE":       9,
+		"SSH_UPSTREAM_ADMISSION_REASON_INVALID_COST":      10,
+	}
+)
+
+func (x SSHUpstreamAdmissionReason) Enum() *SSHUpstreamAdmissionReason {
+	p := new(SSHUpstreamAdmissionReason)
+	*p = x
+	return p
+}
+
+func (x SSHUpstreamAdmissionReason) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (SSHUpstreamAdmissionReason) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_ssh_upstream_proto_enumTypes[0].Descriptor()
+}
+
+func (SSHUpstreamAdmissionReason) Type() protoreflect.EnumType {
+	return &file_containarium_v1_ssh_upstream_proto_enumTypes[0]
+}
+
+func (x SSHUpstreamAdmissionReason) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use SSHUpstreamAdmissionReason.Descriptor instead.
+func (SSHUpstreamAdmissionReason) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_ssh_upstream_proto_rawDescGZIP(), []int{0}
+}
+
 // SSHUpstreamOutcome classifies a verified stage, never an error message.
 type SSHUpstreamOutcome int32
 
@@ -72,11 +146,11 @@ func (x SSHUpstreamOutcome) String() string {
 }
 
 func (SSHUpstreamOutcome) Descriptor() protoreflect.EnumDescriptor {
-	return file_containarium_v1_ssh_upstream_proto_enumTypes[0].Descriptor()
+	return file_containarium_v1_ssh_upstream_proto_enumTypes[1].Descriptor()
 }
 
 func (SSHUpstreamOutcome) Type() protoreflect.EnumType {
-	return &file_containarium_v1_ssh_upstream_proto_enumTypes[0]
+	return &file_containarium_v1_ssh_upstream_proto_enumTypes[1]
 }
 
 func (x SSHUpstreamOutcome) Number() protoreflect.EnumNumber {
@@ -85,7 +159,7 @@ func (x SSHUpstreamOutcome) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use SSHUpstreamOutcome.Descriptor instead.
 func (SSHUpstreamOutcome) EnumDescriptor() ([]byte, []int) {
-	return file_containarium_v1_ssh_upstream_proto_rawDescGZIP(), []int{0}
+	return file_containarium_v1_ssh_upstream_proto_rawDescGZIP(), []int{1}
 }
 
 // SSHUpstreamFailureKind identifies the trailing plugin's actual callback.
@@ -122,11 +196,11 @@ func (x SSHUpstreamFailureKind) String() string {
 }
 
 func (SSHUpstreamFailureKind) Descriptor() protoreflect.EnumDescriptor {
-	return file_containarium_v1_ssh_upstream_proto_enumTypes[1].Descriptor()
+	return file_containarium_v1_ssh_upstream_proto_enumTypes[2].Descriptor()
 }
 
 func (SSHUpstreamFailureKind) Type() protoreflect.EnumType {
-	return &file_containarium_v1_ssh_upstream_proto_enumTypes[1]
+	return &file_containarium_v1_ssh_upstream_proto_enumTypes[2]
 }
 
 func (x SSHUpstreamFailureKind) Number() protoreflect.EnumNumber {
@@ -135,7 +209,7 @@ func (x SSHUpstreamFailureKind) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use SSHUpstreamFailureKind.Descriptor instead.
 func (SSHUpstreamFailureKind) EnumDescriptor() ([]byte, []int) {
-	return file_containarium_v1_ssh_upstream_proto_rawDescGZIP(), []int{1}
+	return file_containarium_v1_ssh_upstream_proto_rawDescGZIP(), []int{2}
 }
 
 // SSHUpstreamPolicy is explicit, validated controller configuration.
@@ -661,12 +735,12 @@ func (x *AcquireSSHUpstreamRequest) GetProxyCredential() bool {
 
 // AcquireSSHUpstreamResponse distinguishes actual admission from suppression.
 type AcquireSSHUpstreamResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Admitted      bool                   `protobuf:"varint,1,opt,name=admitted,proto3" json:"admitted,omitempty"`
-	LeaseToken    string                 `protobuf:"bytes,2,opt,name=lease_token,json=leaseToken,proto3" json:"lease_token,omitempty"`
-	Deadline      *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=deadline,proto3" json:"deadline,omitempty"`
-	RetryAt       *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=retry_at,json=retryAt,proto3" json:"retry_at,omitempty"`
-	Reason        string                 `protobuf:"bytes,5,opt,name=reason,proto3" json:"reason,omitempty"`
+	state         protoimpl.MessageState     `protogen:"open.v1"`
+	Admitted      bool                       `protobuf:"varint,1,opt,name=admitted,proto3" json:"admitted,omitempty"`
+	LeaseToken    string                     `protobuf:"bytes,2,opt,name=lease_token,json=leaseToken,proto3" json:"lease_token,omitempty"`
+	Deadline      *timestamppb.Timestamp     `protobuf:"bytes,3,opt,name=deadline,proto3" json:"deadline,omitempty"`
+	RetryAt       *timestamppb.Timestamp     `protobuf:"bytes,4,opt,name=retry_at,json=retryAt,proto3" json:"retry_at,omitempty"`
+	Reason        SSHUpstreamAdmissionReason `protobuf:"varint,5,opt,name=reason,proto3,enum=containarium.v1.SSHUpstreamAdmissionReason" json:"reason,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -729,11 +803,11 @@ func (x *AcquireSSHUpstreamResponse) GetRetryAt() *timestamppb.Timestamp {
 	return nil
 }
 
-func (x *AcquireSSHUpstreamResponse) GetReason() string {
+func (x *AcquireSSHUpstreamResponse) GetReason() SSHUpstreamAdmissionReason {
 	if x != nil {
 		return x.Reason
 	}
-	return ""
+	return SSHUpstreamAdmissionReason_SSH_UPSTREAM_ADMISSION_REASON_UNSPECIFIED
 }
 
 // CompleteSSHUpstreamRequest requires the exact lease and original route token.
@@ -1449,14 +1523,14 @@ const file_containarium_v1_ssh_upstream_proto_rawDesc = "" +
 	"\n" +
 	"attempt_id\x18\x03 \x01(\tR\tattemptId\x12\x1a\n" +
 	"\bendpoint\x18\x04 \x01(\tR\bendpoint\x12)\n" +
-	"\x10proxy_credential\x18\x05 \x01(\bR\x0fproxyCredential\"\xe0\x01\n" +
+	"\x10proxy_credential\x18\x05 \x01(\bR\x0fproxyCredential\"\x8d\x02\n" +
 	"\x1aAcquireSSHUpstreamResponse\x12\x1a\n" +
 	"\badmitted\x18\x01 \x01(\bR\badmitted\x12\x1f\n" +
 	"\vlease_token\x18\x02 \x01(\tR\n" +
 	"leaseToken\x126\n" +
 	"\bdeadline\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\bdeadline\x125\n" +
-	"\bretry_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\aretryAt\x12\x16\n" +
-	"\x06reason\x18\x05 \x01(\tR\x06reason\"\xe5\x01\n" +
+	"\bretry_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\aretryAt\x12C\n" +
+	"\x06reason\x18\x05 \x01(\x0e2+.containarium.v1.SSHUpstreamAdmissionReasonR\x06reason\"\xe5\x01\n" +
 	"\x1aCompleteSSHUpstreamRequest\x12F\n" +
 	"\n" +
 	"connection\x18\x01 \x01(\v2&.containarium.v1.SSHUpstreamConnectionR\n" +
@@ -1507,7 +1581,20 @@ const file_containarium_v1_ssh_upstream_proto_rawDesc = "" +
 	"policyHash\x125\n" +
 	"\bready_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\areadyAt\x12D\n" +
 	"\bbackends\x18\x03 \x03(\v2(.containarium.v1.SSHUpstreamBackendStateR\bbackends\x12C\n" +
-	"\aaliases\x18\x04 \x03(\v2).containarium.v1.SSHUpstreamIdentityAliasR\aaliases*\xdb\x02\n" +
+	"\aaliases\x18\x04 \x03(\v2).containarium.v1.SSHUpstreamIdentityAliasR\aaliases*\xa9\x04\n" +
+	"\x1aSSHUpstreamAdmissionReason\x12-\n" +
+	")SSH_UPSTREAM_ADMISSION_REASON_UNSPECIFIED\x10\x00\x123\n" +
+	"/SSH_UPSTREAM_ADMISSION_REASON_STATE_UNAVAILABLE\x10\x01\x12(\n" +
+	"$SSH_UPSTREAM_ADMISSION_REASON_WARMUP\x10\x02\x12/\n" +
+	"+SSH_UPSTREAM_ADMISSION_REASON_UNKNOWN_ROUTE\x10\x03\x123\n" +
+	"/SSH_UPSTREAM_ADMISSION_REASON_IDENTITY_CONFLICT\x10\x04\x12*\n" +
+	"&SSH_UPSTREAM_ADMISSION_REASON_COOLDOWN\x10\x05\x12,\n" +
+	"(SSH_UPSTREAM_ADMISSION_REASON_PROBE_BUSY\x10\x06\x122\n" +
+	".SSH_UPSTREAM_ADMISSION_REASON_BUDGET_EXHAUSTED\x10\a\x12*\n" +
+	"&SSH_UPSTREAM_ADMISSION_REASON_CAPACITY\x10\b\x12-\n" +
+	")SSH_UPSTREAM_ADMISSION_REASON_STALE_ROUTE\x10\t\x12.\n" +
+	"*SSH_UPSTREAM_ADMISSION_REASON_INVALID_COST\x10\n" +
+	"*\xdb\x02\n" +
 	"\x12SSHUpstreamOutcome\x12$\n" +
 	" SSH_UPSTREAM_OUTCOME_UNSPECIFIED\x10\x00\x12\"\n" +
 	"\x1eSSH_UPSTREAM_OUTCOME_SSH_READY\x10\x01\x12$\n" +
@@ -1542,80 +1629,82 @@ func file_containarium_v1_ssh_upstream_proto_rawDescGZIP() []byte {
 	return file_containarium_v1_ssh_upstream_proto_rawDescData
 }
 
-var file_containarium_v1_ssh_upstream_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_containarium_v1_ssh_upstream_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
 var file_containarium_v1_ssh_upstream_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
 var file_containarium_v1_ssh_upstream_proto_goTypes = []any{
-	(SSHUpstreamOutcome)(0),                   // 0: containarium.v1.SSHUpstreamOutcome
-	(SSHUpstreamFailureKind)(0),               // 1: containarium.v1.SSHUpstreamFailureKind
-	(*SSHUpstreamPolicy)(nil),                 // 2: containarium.v1.SSHUpstreamPolicy
-	(*SSHUpstreamRoute)(nil),                  // 3: containarium.v1.SSHUpstreamRoute
-	(*SSHUpstreamConnection)(nil),             // 4: containarium.v1.SSHUpstreamConnection
-	(*OpenSSHUpstreamConnectionRequest)(nil),  // 5: containarium.v1.OpenSSHUpstreamConnectionRequest
-	(*OpenSSHUpstreamConnectionResponse)(nil), // 6: containarium.v1.OpenSSHUpstreamConnectionResponse
-	(*BeginSSHUpstreamRouteRequest)(nil),      // 7: containarium.v1.BeginSSHUpstreamRouteRequest
-	(*BeginSSHUpstreamRouteResponse)(nil),     // 8: containarium.v1.BeginSSHUpstreamRouteResponse
-	(*AcquireSSHUpstreamRequest)(nil),         // 9: containarium.v1.AcquireSSHUpstreamRequest
-	(*AcquireSSHUpstreamResponse)(nil),        // 10: containarium.v1.AcquireSSHUpstreamResponse
-	(*CompleteSSHUpstreamRequest)(nil),        // 11: containarium.v1.CompleteSSHUpstreamRequest
-	(*CompleteSSHUpstreamResponse)(nil),       // 12: containarium.v1.CompleteSSHUpstreamResponse
-	(*ConsumeSSHUpstreamFailureRequest)(nil),  // 13: containarium.v1.ConsumeSSHUpstreamFailureRequest
-	(*ConsumeSSHUpstreamFailureResponse)(nil), // 14: containarium.v1.ConsumeSSHUpstreamFailureResponse
-	(*RegisterSSHAnonymousRouteRequest)(nil),  // 15: containarium.v1.RegisterSSHAnonymousRouteRequest
-	(*RegisterSSHAnonymousRouteResponse)(nil), // 16: containarium.v1.RegisterSSHAnonymousRouteResponse
-	(*HintSSHUpstreamRecoveryRequest)(nil),    // 17: containarium.v1.HintSSHUpstreamRecoveryRequest
-	(*HintSSHUpstreamRecoveryResponse)(nil),   // 18: containarium.v1.HintSSHUpstreamRecoveryResponse
-	(*SSHUpstreamRisk)(nil),                   // 19: containarium.v1.SSHUpstreamRisk
-	(*SSHUpstreamBackendState)(nil),           // 20: containarium.v1.SSHUpstreamBackendState
-	(*SSHUpstreamIdentityAlias)(nil),          // 21: containarium.v1.SSHUpstreamIdentityAlias
-	(*SSHUpstreamCheckpoint)(nil),             // 22: containarium.v1.SSHUpstreamCheckpoint
-	(*durationpb.Duration)(nil),               // 23: google.protobuf.Duration
-	(SSHBanListener)(0),                       // 24: containarium.v1.SSHBanListener
-	(*timestamppb.Timestamp)(nil),             // 25: google.protobuf.Timestamp
+	(SSHUpstreamAdmissionReason)(0),           // 0: containarium.v1.SSHUpstreamAdmissionReason
+	(SSHUpstreamOutcome)(0),                   // 1: containarium.v1.SSHUpstreamOutcome
+	(SSHUpstreamFailureKind)(0),               // 2: containarium.v1.SSHUpstreamFailureKind
+	(*SSHUpstreamPolicy)(nil),                 // 3: containarium.v1.SSHUpstreamPolicy
+	(*SSHUpstreamRoute)(nil),                  // 4: containarium.v1.SSHUpstreamRoute
+	(*SSHUpstreamConnection)(nil),             // 5: containarium.v1.SSHUpstreamConnection
+	(*OpenSSHUpstreamConnectionRequest)(nil),  // 6: containarium.v1.OpenSSHUpstreamConnectionRequest
+	(*OpenSSHUpstreamConnectionResponse)(nil), // 7: containarium.v1.OpenSSHUpstreamConnectionResponse
+	(*BeginSSHUpstreamRouteRequest)(nil),      // 8: containarium.v1.BeginSSHUpstreamRouteRequest
+	(*BeginSSHUpstreamRouteResponse)(nil),     // 9: containarium.v1.BeginSSHUpstreamRouteResponse
+	(*AcquireSSHUpstreamRequest)(nil),         // 10: containarium.v1.AcquireSSHUpstreamRequest
+	(*AcquireSSHUpstreamResponse)(nil),        // 11: containarium.v1.AcquireSSHUpstreamResponse
+	(*CompleteSSHUpstreamRequest)(nil),        // 12: containarium.v1.CompleteSSHUpstreamRequest
+	(*CompleteSSHUpstreamResponse)(nil),       // 13: containarium.v1.CompleteSSHUpstreamResponse
+	(*ConsumeSSHUpstreamFailureRequest)(nil),  // 14: containarium.v1.ConsumeSSHUpstreamFailureRequest
+	(*ConsumeSSHUpstreamFailureResponse)(nil), // 15: containarium.v1.ConsumeSSHUpstreamFailureResponse
+	(*RegisterSSHAnonymousRouteRequest)(nil),  // 16: containarium.v1.RegisterSSHAnonymousRouteRequest
+	(*RegisterSSHAnonymousRouteResponse)(nil), // 17: containarium.v1.RegisterSSHAnonymousRouteResponse
+	(*HintSSHUpstreamRecoveryRequest)(nil),    // 18: containarium.v1.HintSSHUpstreamRecoveryRequest
+	(*HintSSHUpstreamRecoveryResponse)(nil),   // 19: containarium.v1.HintSSHUpstreamRecoveryResponse
+	(*SSHUpstreamRisk)(nil),                   // 20: containarium.v1.SSHUpstreamRisk
+	(*SSHUpstreamBackendState)(nil),           // 21: containarium.v1.SSHUpstreamBackendState
+	(*SSHUpstreamIdentityAlias)(nil),          // 22: containarium.v1.SSHUpstreamIdentityAlias
+	(*SSHUpstreamCheckpoint)(nil),             // 23: containarium.v1.SSHUpstreamCheckpoint
+	(*durationpb.Duration)(nil),               // 24: google.protobuf.Duration
+	(SSHBanListener)(0),                       // 25: containarium.v1.SSHBanListener
+	(*timestamppb.Timestamp)(nil),             // 26: google.protobuf.Timestamp
 }
 var file_containarium_v1_ssh_upstream_proto_depIdxs = []int32{
-	23, // 0: containarium.v1.SSHUpstreamPolicy.initial_delay:type_name -> google.protobuf.Duration
-	23, // 1: containarium.v1.SSHUpstreamPolicy.max_delay:type_name -> google.protobuf.Duration
-	23, // 2: containarium.v1.SSHUpstreamPolicy.window:type_name -> google.protobuf.Duration
-	23, // 3: containarium.v1.SSHUpstreamPolicy.setup_timeout:type_name -> google.protobuf.Duration
-	3,  // 4: containarium.v1.SSHUpstreamPolicy.routes:type_name -> containarium.v1.SSHUpstreamRoute
-	24, // 5: containarium.v1.SSHUpstreamConnection.listener:type_name -> containarium.v1.SSHBanListener
-	4,  // 6: containarium.v1.OpenSSHUpstreamConnectionRequest.connection:type_name -> containarium.v1.SSHUpstreamConnection
-	25, // 7: containarium.v1.OpenSSHUpstreamConnectionResponse.ready_at:type_name -> google.protobuf.Timestamp
-	4,  // 8: containarium.v1.BeginSSHUpstreamRouteRequest.connection:type_name -> containarium.v1.SSHUpstreamConnection
-	4,  // 9: containarium.v1.AcquireSSHUpstreamRequest.connection:type_name -> containarium.v1.SSHUpstreamConnection
-	25, // 10: containarium.v1.AcquireSSHUpstreamResponse.deadline:type_name -> google.protobuf.Timestamp
-	25, // 11: containarium.v1.AcquireSSHUpstreamResponse.retry_at:type_name -> google.protobuf.Timestamp
-	4,  // 12: containarium.v1.CompleteSSHUpstreamRequest.connection:type_name -> containarium.v1.SSHUpstreamConnection
-	0,  // 13: containarium.v1.CompleteSSHUpstreamRequest.outcome:type_name -> containarium.v1.SSHUpstreamOutcome
-	4,  // 14: containarium.v1.ConsumeSSHUpstreamFailureRequest.connection:type_name -> containarium.v1.SSHUpstreamConnection
-	1,  // 15: containarium.v1.ConsumeSSHUpstreamFailureRequest.kind:type_name -> containarium.v1.SSHUpstreamFailureKind
-	4,  // 16: containarium.v1.RegisterSSHAnonymousRouteRequest.connection:type_name -> containarium.v1.SSHUpstreamConnection
-	25, // 17: containarium.v1.SSHUpstreamRisk.at:type_name -> google.protobuf.Timestamp
-	25, // 18: containarium.v1.SSHUpstreamBackendState.next_probe_at:type_name -> google.protobuf.Timestamp
-	23, // 19: containarium.v1.SSHUpstreamBackendState.delay:type_name -> google.protobuf.Duration
-	19, // 20: containarium.v1.SSHUpstreamBackendState.risks:type_name -> containarium.v1.SSHUpstreamRisk
-	25, // 21: containarium.v1.SSHUpstreamCheckpoint.ready_at:type_name -> google.protobuf.Timestamp
-	20, // 22: containarium.v1.SSHUpstreamCheckpoint.backends:type_name -> containarium.v1.SSHUpstreamBackendState
-	21, // 23: containarium.v1.SSHUpstreamCheckpoint.aliases:type_name -> containarium.v1.SSHUpstreamIdentityAlias
-	5,  // 24: containarium.v1.SentinelSSHUpstreamService.OpenSSHUpstreamConnection:input_type -> containarium.v1.OpenSSHUpstreamConnectionRequest
-	7,  // 25: containarium.v1.SentinelSSHUpstreamService.BeginSSHUpstreamRoute:input_type -> containarium.v1.BeginSSHUpstreamRouteRequest
-	9,  // 26: containarium.v1.SentinelSSHUpstreamService.AcquireSSHUpstream:input_type -> containarium.v1.AcquireSSHUpstreamRequest
-	11, // 27: containarium.v1.SentinelSSHUpstreamService.CompleteSSHUpstream:input_type -> containarium.v1.CompleteSSHUpstreamRequest
-	13, // 28: containarium.v1.SentinelSSHUpstreamService.ConsumeSSHUpstreamFailure:input_type -> containarium.v1.ConsumeSSHUpstreamFailureRequest
-	15, // 29: containarium.v1.SentinelSSHUpstreamService.RegisterSSHAnonymousRoute:input_type -> containarium.v1.RegisterSSHAnonymousRouteRequest
-	17, // 30: containarium.v1.SentinelSSHUpstreamService.HintSSHUpstreamRecovery:input_type -> containarium.v1.HintSSHUpstreamRecoveryRequest
-	6,  // 31: containarium.v1.SentinelSSHUpstreamService.OpenSSHUpstreamConnection:output_type -> containarium.v1.OpenSSHUpstreamConnectionResponse
-	8,  // 32: containarium.v1.SentinelSSHUpstreamService.BeginSSHUpstreamRoute:output_type -> containarium.v1.BeginSSHUpstreamRouteResponse
-	10, // 33: containarium.v1.SentinelSSHUpstreamService.AcquireSSHUpstream:output_type -> containarium.v1.AcquireSSHUpstreamResponse
-	12, // 34: containarium.v1.SentinelSSHUpstreamService.CompleteSSHUpstream:output_type -> containarium.v1.CompleteSSHUpstreamResponse
-	14, // 35: containarium.v1.SentinelSSHUpstreamService.ConsumeSSHUpstreamFailure:output_type -> containarium.v1.ConsumeSSHUpstreamFailureResponse
-	16, // 36: containarium.v1.SentinelSSHUpstreamService.RegisterSSHAnonymousRoute:output_type -> containarium.v1.RegisterSSHAnonymousRouteResponse
-	18, // 37: containarium.v1.SentinelSSHUpstreamService.HintSSHUpstreamRecovery:output_type -> containarium.v1.HintSSHUpstreamRecoveryResponse
-	31, // [31:38] is the sub-list for method output_type
-	24, // [24:31] is the sub-list for method input_type
-	24, // [24:24] is the sub-list for extension type_name
-	24, // [24:24] is the sub-list for extension extendee
-	0,  // [0:24] is the sub-list for field type_name
+	24, // 0: containarium.v1.SSHUpstreamPolicy.initial_delay:type_name -> google.protobuf.Duration
+	24, // 1: containarium.v1.SSHUpstreamPolicy.max_delay:type_name -> google.protobuf.Duration
+	24, // 2: containarium.v1.SSHUpstreamPolicy.window:type_name -> google.protobuf.Duration
+	24, // 3: containarium.v1.SSHUpstreamPolicy.setup_timeout:type_name -> google.protobuf.Duration
+	4,  // 4: containarium.v1.SSHUpstreamPolicy.routes:type_name -> containarium.v1.SSHUpstreamRoute
+	25, // 5: containarium.v1.SSHUpstreamConnection.listener:type_name -> containarium.v1.SSHBanListener
+	5,  // 6: containarium.v1.OpenSSHUpstreamConnectionRequest.connection:type_name -> containarium.v1.SSHUpstreamConnection
+	26, // 7: containarium.v1.OpenSSHUpstreamConnectionResponse.ready_at:type_name -> google.protobuf.Timestamp
+	5,  // 8: containarium.v1.BeginSSHUpstreamRouteRequest.connection:type_name -> containarium.v1.SSHUpstreamConnection
+	5,  // 9: containarium.v1.AcquireSSHUpstreamRequest.connection:type_name -> containarium.v1.SSHUpstreamConnection
+	26, // 10: containarium.v1.AcquireSSHUpstreamResponse.deadline:type_name -> google.protobuf.Timestamp
+	26, // 11: containarium.v1.AcquireSSHUpstreamResponse.retry_at:type_name -> google.protobuf.Timestamp
+	0,  // 12: containarium.v1.AcquireSSHUpstreamResponse.reason:type_name -> containarium.v1.SSHUpstreamAdmissionReason
+	5,  // 13: containarium.v1.CompleteSSHUpstreamRequest.connection:type_name -> containarium.v1.SSHUpstreamConnection
+	1,  // 14: containarium.v1.CompleteSSHUpstreamRequest.outcome:type_name -> containarium.v1.SSHUpstreamOutcome
+	5,  // 15: containarium.v1.ConsumeSSHUpstreamFailureRequest.connection:type_name -> containarium.v1.SSHUpstreamConnection
+	2,  // 16: containarium.v1.ConsumeSSHUpstreamFailureRequest.kind:type_name -> containarium.v1.SSHUpstreamFailureKind
+	5,  // 17: containarium.v1.RegisterSSHAnonymousRouteRequest.connection:type_name -> containarium.v1.SSHUpstreamConnection
+	26, // 18: containarium.v1.SSHUpstreamRisk.at:type_name -> google.protobuf.Timestamp
+	26, // 19: containarium.v1.SSHUpstreamBackendState.next_probe_at:type_name -> google.protobuf.Timestamp
+	24, // 20: containarium.v1.SSHUpstreamBackendState.delay:type_name -> google.protobuf.Duration
+	20, // 21: containarium.v1.SSHUpstreamBackendState.risks:type_name -> containarium.v1.SSHUpstreamRisk
+	26, // 22: containarium.v1.SSHUpstreamCheckpoint.ready_at:type_name -> google.protobuf.Timestamp
+	21, // 23: containarium.v1.SSHUpstreamCheckpoint.backends:type_name -> containarium.v1.SSHUpstreamBackendState
+	22, // 24: containarium.v1.SSHUpstreamCheckpoint.aliases:type_name -> containarium.v1.SSHUpstreamIdentityAlias
+	6,  // 25: containarium.v1.SentinelSSHUpstreamService.OpenSSHUpstreamConnection:input_type -> containarium.v1.OpenSSHUpstreamConnectionRequest
+	8,  // 26: containarium.v1.SentinelSSHUpstreamService.BeginSSHUpstreamRoute:input_type -> containarium.v1.BeginSSHUpstreamRouteRequest
+	10, // 27: containarium.v1.SentinelSSHUpstreamService.AcquireSSHUpstream:input_type -> containarium.v1.AcquireSSHUpstreamRequest
+	12, // 28: containarium.v1.SentinelSSHUpstreamService.CompleteSSHUpstream:input_type -> containarium.v1.CompleteSSHUpstreamRequest
+	14, // 29: containarium.v1.SentinelSSHUpstreamService.ConsumeSSHUpstreamFailure:input_type -> containarium.v1.ConsumeSSHUpstreamFailureRequest
+	16, // 30: containarium.v1.SentinelSSHUpstreamService.RegisterSSHAnonymousRoute:input_type -> containarium.v1.RegisterSSHAnonymousRouteRequest
+	18, // 31: containarium.v1.SentinelSSHUpstreamService.HintSSHUpstreamRecovery:input_type -> containarium.v1.HintSSHUpstreamRecoveryRequest
+	7,  // 32: containarium.v1.SentinelSSHUpstreamService.OpenSSHUpstreamConnection:output_type -> containarium.v1.OpenSSHUpstreamConnectionResponse
+	9,  // 33: containarium.v1.SentinelSSHUpstreamService.BeginSSHUpstreamRoute:output_type -> containarium.v1.BeginSSHUpstreamRouteResponse
+	11, // 34: containarium.v1.SentinelSSHUpstreamService.AcquireSSHUpstream:output_type -> containarium.v1.AcquireSSHUpstreamResponse
+	13, // 35: containarium.v1.SentinelSSHUpstreamService.CompleteSSHUpstream:output_type -> containarium.v1.CompleteSSHUpstreamResponse
+	15, // 36: containarium.v1.SentinelSSHUpstreamService.ConsumeSSHUpstreamFailure:output_type -> containarium.v1.ConsumeSSHUpstreamFailureResponse
+	17, // 37: containarium.v1.SentinelSSHUpstreamService.RegisterSSHAnonymousRoute:output_type -> containarium.v1.RegisterSSHAnonymousRouteResponse
+	19, // 38: containarium.v1.SentinelSSHUpstreamService.HintSSHUpstreamRecovery:output_type -> containarium.v1.HintSSHUpstreamRecoveryResponse
+	32, // [32:39] is the sub-list for method output_type
+	25, // [25:32] is the sub-list for method input_type
+	25, // [25:25] is the sub-list for extension type_name
+	25, // [25:25] is the sub-list for extension extendee
+	0,  // [0:25] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_ssh_upstream_proto_init() }
@@ -1629,7 +1718,7 @@ func file_containarium_v1_ssh_upstream_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_ssh_upstream_proto_rawDesc), len(file_containarium_v1_ssh_upstream_proto_rawDesc)),
-			NumEnums:      2,
+			NumEnums:      3,
 			NumMessages:   21,
 			NumExtensions: 0,
 			NumServices:   1,

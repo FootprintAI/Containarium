@@ -136,12 +136,12 @@ func (m *Manager) MetricsHandler() http.HandlerFunc {
 		if m.certStore != nil {
 			fmt.Fprint(w, renderCertSyncMetrics(m.certStore.RejectedCounts()))
 		}
-		if m.sshUpstream != nil {
+		if controller := m.sshUpstreamController(); controller != nil || m.config.SSHUpstreamPolicy != "" {
 			faulted := 0
-			if m.sshUpstream.Faulted() {
+			if m.sshUpstreamStartupFault.Load() || (controller != nil && controller.Faulted()) {
 				faulted = 1
 			}
-			fmt.Fprint(w, "# HELP sentinel_ssh_upstream_faulted Controller storage/ownership fault; repair and restart required.\n# TYPE sentinel_ssh_upstream_faulted gauge\n")
+			fmt.Fprint(w, "# HELP sentinel_ssh_upstream_faulted Controller startup/storage fault; admission closed until durable retry succeeds.\n# TYPE sentinel_ssh_upstream_faulted gauge\n")
 			fmt.Fprintf(w, "sentinel_ssh_upstream_faulted %d\n", faulted)
 		}
 	}

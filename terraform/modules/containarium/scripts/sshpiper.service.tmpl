@@ -1,6 +1,8 @@
 [Unit]
 Description=SSHPiper reverse proxy
-After=network.target
+After=network.target containarium-sentinel.service
+BindsTo=containarium-sentinel.service
+PartOf=containarium-sentinel.service
 # On a fresh deploy the routing config.yaml isn't written until the first
 # container exists (keysync). sshpiper may therefore fail to start for a
 # while; without disabling the start-rate limiter, Restart=always gives up

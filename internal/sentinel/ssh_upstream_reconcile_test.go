@@ -87,4 +87,10 @@ logger() { printf '%s\n' "$*" >> "$RECONCILE_TEST_NOTICES"; }
 	if _, err := os.Stat(filepath.Join(policyDir, "policy.pending.json")); !os.IsNotExist(err) {
 		t.Fatal("reverted metadata left a stale policy available for promotion")
 	}
+	write(filepath.Join(unitDir, "ssh-upstream.conf"), "[Service]\nEnvironment=CONTAINARIUM_SSH_UPSTREAM_POLICY=/etc/containarium/ssh-upstream/policy.json\n")
+	write(calls, "")
+	run()
+	if !strings.Contains(read(filepath.Join(unitDir, "ssh-upstream.conf")), "ExecStartPost=-/bin/systemctl --no-block start sshpiper.service sshpiper-anon.service") || strings.Contains(read(calls), "restart") {
+		t.Fatal("upgrading an existing drop-in must install listener recovery without restarting a live sentinel")
+	}
 }

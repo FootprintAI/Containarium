@@ -12,6 +12,7 @@ import (
 	"github.com/footprintai/containarium/internal/sentinel/sshcontrol"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/tg123/sshpiper/libplugin"
+	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/durationpb"
 )
 
@@ -91,8 +92,8 @@ func TestGuardedAdapterSharesCooldownAndTypedAttribution(t *testing.T) {
 	}
 }
 
-// TestGuardedAdapterRequiresReadyAcknowledgement closes setup after controller loss.
-func TestGuardedAdapterRequiresReadyAcknowledgement(t *testing.T) {
+// TestGuardedAdapterKeepsReadySessionOnControlLoss preserves authenticated SSH.
+func TestGuardedAdapterKeepsReadySessionOnControlLoss(t *testing.T) {
 	cfg, peer, _ := guardedFixture(t)
 	meta := &libplugin.ConnMeta{UniqId: "ready", FromAddr: "127.0.0.2:20003"}
 	if cfg.NewConnectionCallback == nil {
@@ -113,7 +114,29 @@ func TestGuardedAdapterRequiresReadyAcknowledgement(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg.PipeStartCallback(meta)
-	if _, err := socket.Write([]byte("must be closed")); err == nil {
-		t.Fatal("setup became a session without controller acknowledgement")
+	if err := socket.SetDeadline(time.Time{}); err != nil {
+		t.Fatalf("controller RPC failure killed an authenticated session: %v", err)
+	}
+}
+
+// outcomeRecorder captures the verified setup stage without mocking SSH itself.
+type outcomeRecorder struct {
+	pb.SentinelSSHUpstreamServiceClient
+	got pb.SSHUpstreamOutcome
+}
+
+// CompleteSSHUpstream records which risk disposition the adapter actually reports.
+func (r *outcomeRecorder) CompleteSSHUpstream(_ context.Context, req *pb.CompleteSSHUpstreamRequest, _ ...grpc.CallOption) (*pb.CompleteSSHUpstreamResponse, error) {
+	r.got = req.Outcome
+	return &pb.CompleteSSHUpstreamResponse{Accepted: true}, nil
+}
+
+// TestGuardedAdapterLateUnknownFailureRetainsRisk never refunds a post-dial timeout.
+func TestGuardedAdapterLateUnknownFailureRetainsRisk(t *testing.T) {
+	r := &outcomeRecorder{}
+	a := &adapter{ctx: t.Context(), control: &sshcontrol.Peer{Client: r}, setups: map[string]binding{"late": {attempt: Attempt{ConnectionID: "late"}, lease: "lease", expires: time.Now().Add(-time.Second)}}, bindings: map[string]binding{}}
+	a.finish("late", "", pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_SETUP_FAILED)
+	if r.got != pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_SETUP_FAILED {
+		t.Fatal("unknown failure was mislabeled as pure TCP failure and refunded")
 	}
 }

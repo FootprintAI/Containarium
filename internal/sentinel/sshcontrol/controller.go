@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -173,11 +174,30 @@ func (c *Controller) OpenSSHUpstreamConnection(_ context.Context, r *pb.OpenSSHU
 		if len(c.connections) >= int(c.cfg.Policy.MaxConnections) {
 			return nil, status.Error(codes.ResourceExhausted, "upstream connection capacity")
 		}
+		source := transportSource(ref.RemoteAddr)
+		used := 0
+		for _, conn := range c.connections {
+			if transportSource(conn.ref.RemoteAddr) == source {
+				used++
+			}
+		}
+		if used >= max(1, min(64, int(c.cfg.Policy.MaxConnections)/4)) {
+			return nil, status.Error(codes.ResourceExhausted, "upstream per-source metadata capacity")
+		}
 		copy := proto.Clone(ref).(*pb.SSHUpstreamConnection)
 		copy.ControllerGeneration = c.generation
 		c.connections[key] = &connection{ref: copy, expires: c.cfg.Now().Add(5*time.Minute + c.cfg.Policy.SetupTimeout.AsDuration())}
 	}
 	return &pb.OpenSSHUpstreamConnectionResponse{ControllerGeneration: c.generation, ReadyAt: timestamppb.New(c.readyAt)}, nil
+}
+
+// transportSource normalizes mapped IPv4 so one address cannot borrow two caps.
+func transportSource(remote string) string {
+	host, _, _ := net.SplitHostPort(remote)
+	if ip, err := netip.ParseAddr(host); err == nil {
+		return ip.Unmap().String()
+	}
+	return host
 }
 
 // reap bounds abandoned metadata without refunding pending gate risk.
@@ -191,6 +211,28 @@ func (c *Controller) reap() {
 	for token, l := range c.leases {
 		if !now.Before(l.lease.Deadline) {
 			delete(c.leases, token)
+		}
+	}
+	live := make(map[string]bool)
+	for _, s := range c.connections {
+		live[s.anonymousID] = true
+	}
+	for id := range c.anonymousRoutes {
+		if !live[id] {
+			delete(c.anonymousRoutes, id)
+		}
+	}
+	// Risk-bearing inventory cannot be evicted by address churn or capacity.
+	drained := make(map[string]bool)
+	for id, version := range c.versions {
+		if c.gate.Forget(sshgate.Key{Backend: id, Egress: c.cfg.Policy.EgressGroup}, version) {
+			delete(c.versions, id)
+			drained[id] = true
+		}
+	}
+	for alias, canonical := range c.aliases {
+		if drained[canonical] {
+			delete(c.aliases, alias)
 		}
 	}
 }
@@ -233,7 +275,9 @@ func (c *Controller) resolve(s *connection, endpoint string) (string, error) {
 		}
 	}
 	if endpoint == s.anonymousEndpoint && s.anonymousID != "" && c.anonymousRoutes[s.anonymousID] == endpoint {
-		return s.anonymousID, nil
+		// Box names authorize a live route; the physical endpoint owns jail
+		// risk across DHCP lifetimes, without permanent box/address unions.
+		return "endpoint/" + endpoint, nil
 	}
 	return "", errors.New("selected endpoint is absent from authoritative inventory")
 }
@@ -262,7 +306,7 @@ func (c *Controller) identify(id, endpoint string) (sshgate.Key, uint64, error) 
 		needed++
 	}
 	if len(c.aliases)+needed > int(c.cfg.Policy.MaxBackends)*16 {
-		return sshgate.Key{}, 0, errors.New("backend alias capacity")
+		return sshgate.Key{}, 0, &sshgate.Denied{Reason: sshgate.Capacity}
 	}
 	version := c.versions[canonical]
 	if version == 0 {
@@ -287,7 +331,7 @@ func (c *Controller) AcquireSSHUpstream(_ context.Context, r *pb.AcquireSSHUpstr
 	if r.RouteToken == "" || r.RouteToken != s.route || r.AttemptId == "" || len(r.AttemptId) > 128 || s.lease != "" {
 		return nil, status.Error(codes.InvalidArgument, "invalid or reused upstream route")
 	}
-	deny := func(reason string, retry time.Time) (*pb.AcquireSSHUpstreamResponse, error) {
+	deny := func(reason pb.SSHUpstreamAdmissionReason, retry time.Time) (*pb.AcquireSSHUpstreamResponse, error) {
 		s.authSkip, s.terminalSkip = true, true
 		out := &pb.AcquireSSHUpstreamResponse{Reason: reason}
 		if !retry.IsZero() {
@@ -296,34 +340,60 @@ func (c *Controller) AcquireSSHUpstream(_ context.Context, r *pb.AcquireSSHUpstr
 		return out, nil
 	}
 	if c.fault != nil {
-		return deny("durable upstream state unavailable", time.Time{})
+		return deny(pb.SSHUpstreamAdmissionReason_SSH_UPSTREAM_ADMISSION_REASON_STATE_UNAVAILABLE, time.Time{})
 	}
 	if c.cfg.Now().Before(c.readyAt) {
-		return deny("waiting for previous jail window", c.readyAt)
+		return deny(pb.SSHUpstreamAdmissionReason_SSH_UPSTREAM_ADMISSION_REASON_WARMUP, c.readyAt)
 	}
 	id, err := c.resolve(s, r.Endpoint)
 	if err != nil {
-		return deny(err.Error(), time.Time{})
+		return deny(pb.SSHUpstreamAdmissionReason_SSH_UPSTREAM_ADMISSION_REASON_UNKNOWN_ROUTE, time.Time{})
 	}
 	key, version, err := c.identify(id, r.Endpoint)
 	if err != nil {
-		return deny(err.Error(), time.Time{})
+		var denied *sshgate.Denied
+		if errors.As(err, &denied) {
+			return deny(admissionReason(denied.Reason), denied.RetryAt)
+		}
+		return deny(pb.SSHUpstreamAdmissionReason_SSH_UPSTREAM_ADMISSION_REASON_IDENTITY_CONFLICT, time.Time{})
 	}
 	lease, err := c.gate.Acquire(key, version, int(c.cfg.Policy.RiskPerAttempt))
 	if err != nil {
 		var d *sshgate.Denied
 		if errors.As(err, &d) {
-			return deny(fmt.Sprintf("backend admission %d", d.Reason), d.RetryAt)
+			return deny(admissionReason(d.Reason), d.RetryAt)
 		}
-		return deny("backend admission unavailable", time.Time{})
+		return deny(pb.SSHUpstreamAdmissionReason_SSH_UPSTREAM_ADMISSION_REASON_STATE_UNAVAILABLE, time.Time{})
 	}
 	token := crand.Text()
 	c.leases[token] = reservation{lease: lease, owner: connectionKey(s.ref), route: s.route, proxy: r.ProxyCredential, endpoint: r.Endpoint}
 	s.lease = token
 	if err := c.persist(); err != nil {
-		return deny("cannot commit upstream reservation", time.Time{})
+		return deny(pb.SSHUpstreamAdmissionReason_SSH_UPSTREAM_ADMISSION_REASON_STATE_UNAVAILABLE, time.Time{})
 	}
 	return &pb.AcquireSSHUpstreamResponse{Admitted: true, LeaseToken: token, Deadline: timestamppb.New(lease.Deadline)}, nil
+}
+
+// admissionReason preserves the gate's typed denial across the private contract.
+func admissionReason(reason sshgate.Reason) pb.SSHUpstreamAdmissionReason {
+	switch reason {
+	case sshgate.UnknownBackend:
+		return pb.SSHUpstreamAdmissionReason_SSH_UPSTREAM_ADMISSION_REASON_UNKNOWN_ROUTE
+	case sshgate.StaleRoute:
+		return pb.SSHUpstreamAdmissionReason_SSH_UPSTREAM_ADMISSION_REASON_STALE_ROUTE
+	case sshgate.InvalidCost:
+		return pb.SSHUpstreamAdmissionReason_SSH_UPSTREAM_ADMISSION_REASON_INVALID_COST
+	case sshgate.Cooldown:
+		return pb.SSHUpstreamAdmissionReason_SSH_UPSTREAM_ADMISSION_REASON_COOLDOWN
+	case sshgate.ProbeBusy:
+		return pb.SSHUpstreamAdmissionReason_SSH_UPSTREAM_ADMISSION_REASON_PROBE_BUSY
+	case sshgate.BudgetExhausted:
+		return pb.SSHUpstreamAdmissionReason_SSH_UPSTREAM_ADMISSION_REASON_BUDGET_EXHAUSTED
+	case sshgate.Capacity:
+		return pb.SSHUpstreamAdmissionReason_SSH_UPSTREAM_ADMISSION_REASON_CAPACITY
+	default:
+		return pb.SSHUpstreamAdmissionReason_SSH_UPSTREAM_ADMISSION_REASON_STATE_UNAVAILABLE
+	}
 }
 
 // CompleteSSHUpstream settles only the original route, lease and process.
@@ -347,12 +417,13 @@ func (c *Controller) CompleteSSHUpstream(_ context.Context, r *pb.CompleteSSHUps
 	case pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_SSH_READY:
 		outcome = sshgate.SetupSucceeded
 		id, err := c.resolve(s, l.endpoint)
-		if err != nil || c.aliases["id:"+id] != l.lease.Key.Backend || l.lease.Route != c.versions[l.lease.Key.Backend] {
-			outcome, skip, stale = sshgate.SetupFailed, true, true
+		moved := s.anonymousID != "" && c.anonymousRoutes[s.anonymousID] != l.endpoint
+		if err != nil || moved || c.aliases["id:"+id] != l.lease.Key.Backend || l.lease.Route != c.versions[l.lease.Key.Backend] {
+			outcome, skip, stale = sshgate.ClientAuthRejected, true, true
 		}
-	case pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_TCP_REFUSED:
+	case pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_TCP_REFUSED, pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_CONNECT_FAILED:
 		outcome, skip = sshgate.DialRefused, true
-	case pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_CONNECT_FAILED, pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_HOST_KEY_FAILED:
+	case pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_HOST_KEY_FAILED:
 		skip = true
 	case pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_PROXY_AUTH_REJECTED:
 		if !l.proxy {
@@ -423,6 +494,7 @@ func (c *Controller) RegisterSSHAnonymousRoute(_ context.Context, r *pb.Register
 	if c.fault != nil {
 		return nil, status.Error(codes.Unavailable, "upstream controller unavailable")
 	}
+	c.reap()
 	s, err := c.find(r.GetConnection())
 	if err != nil {
 		return nil, err
@@ -441,21 +513,10 @@ func (c *Controller) RegisterSSHAnonymousRoute(_ context.Context, r *pb.Register
 	if err != nil {
 		return nil, err
 	}
-	key, version, err := c.identify(id, r.Endpoint)
+	_, _, err = c.identify(id, r.Endpoint)
 	if err != nil {
 		s.authSkip, s.terminalSkip = true, true
 		return nil, status.Error(codes.FailedPrecondition, "conflicting anonymous route")
-	}
-	if _, _, err := c.identify(s.anonymousID, r.Endpoint); err != nil {
-		s.authSkip, s.terminalSkip = true, true
-		return nil, status.Error(codes.FailedPrecondition, "conflicting anonymous identity")
-	}
-	if old != "" && old != r.Endpoint {
-		version++
-		if err := c.gate.Register(key, version); err != nil {
-			return nil, err
-		}
-		c.versions[key.Backend] = version
 	}
 	if err := c.persist(); err != nil {
 		return nil, status.Error(codes.Unavailable, "cannot commit anonymous identity")

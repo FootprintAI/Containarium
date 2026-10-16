@@ -91,7 +91,22 @@ message AcquireSSHUpstreamResponse {
   string lease_token = 2;
   google.protobuf.Timestamp deadline = 3;
   google.protobuf.Timestamp retry_at = 4;
-  string reason = 5;
+  SSHUpstreamAdmissionReason reason = 5;
+}
+
+// SSHUpstreamAdmissionReason is a machine-readable admission decision.
+enum SSHUpstreamAdmissionReason {
+  SSH_UPSTREAM_ADMISSION_REASON_UNSPECIFIED = 0;
+  SSH_UPSTREAM_ADMISSION_REASON_STATE_UNAVAILABLE = 1;
+  SSH_UPSTREAM_ADMISSION_REASON_WARMUP = 2;
+  SSH_UPSTREAM_ADMISSION_REASON_UNKNOWN_ROUTE = 3;
+  SSH_UPSTREAM_ADMISSION_REASON_IDENTITY_CONFLICT = 4;
+  SSH_UPSTREAM_ADMISSION_REASON_COOLDOWN = 5;
+  SSH_UPSTREAM_ADMISSION_REASON_PROBE_BUSY = 6;
+  SSH_UPSTREAM_ADMISSION_REASON_BUDGET_EXHAUSTED = 7;
+  SSH_UPSTREAM_ADMISSION_REASON_CAPACITY = 8;
+  SSH_UPSTREAM_ADMISSION_REASON_STALE_ROUTE = 9;
+  SSH_UPSTREAM_ADMISSION_REASON_INVALID_COST = 10;
 }
 
 // SSHUpstreamOutcome classifies a verified stage, never an error message.

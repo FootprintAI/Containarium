@@ -74,7 +74,7 @@ jobs:
             export SSH_BAN_YAML="$1/plugins/yaml"
             export SSH_BAN_DAEMON="$1/containariumd"
             export SSH_UPSTREAM_EVIDENCE_DIR="$1/evidence"
-            "$1/firewall.test" -test.run "^TestIntegrationGuardedSSHLiveFirewall$" -test.v -test.timeout 18m
+            "$1/firewall.test" -test.run "^TestIntegrationGuardedSSH(Live|Drop)Firewall$" -test.v -test.timeout 18m
           ' _ "$RUNNER_TEMP/ssh-upstream-proof" | tee "$RUNNER_TEMP/ssh-upstream-proof/verification.log"
       - name: Make allowlisted evidence readable to artifact uploader
         if: always()

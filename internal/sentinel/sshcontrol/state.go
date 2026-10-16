@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/footprintai/containarium/internal/sentinel/sshgate"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -99,6 +100,10 @@ func (c *Controller) restore() error {
 		return err
 	}
 	for _, a := range snapshot.Aliases {
+		// Retain endpoint history while dropping legacy durable box unions.
+		if strings.HasPrefix(a.Alias, "id:anonymous/") {
+			continue
+		}
 		if a.Alias == "" || c.versions[a.BackendId] == 0 || c.aliases[a.Alias] != "" {
 			return errors.New("invalid checkpoint identity alias")
 		}
@@ -111,10 +116,25 @@ func (c *Controller) restore() error {
 // persist poisons admission on failure and atomically syncs before acknowledging.
 func (c *Controller) persist() (err error) {
 	defer func() {
-		if err != nil {
-			c.fault = err
-		}
+		c.fault = err
 	}()
+	if c.stateLock == nil {
+		return errors.New("upstream checkpoint owner closed")
+	}
+	locked, err := c.stateLock.Stat()
+	if err != nil {
+		return err
+	}
+	current, err := os.Lstat(c.cfg.StatePath + ".lock")
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(locked, current) {
+		return errors.New("upstream checkpoint lock replaced")
+	}
+	if err := privateDirectory(filepath.Dir(c.cfg.StatePath)); err != nil {
+		return err
+	}
 	snapshot := &pb.SSHUpstreamCheckpoint{PolicyHash: c.policyHash(), ReadyAt: timestamppb.New(c.readyAt)}
 	for _, s := range c.gate.Checkpoint() {
 		b := &pb.SSHUpstreamBackendState{BackendId: s.Key.Backend, RouteGeneration: s.Route, Delay: durationpb.New(s.Delay), Blocked: s.Blocked}
@@ -169,4 +189,12 @@ func (c *Controller) persist() (err error) {
 	}
 	defer func() { _ = d.Close() }()
 	return d.Sync()
+}
+
+// Recover retries the same conservative in-memory state under exclusive ownership.
+// It never reloads an older checkpoint or clears pending/uncertain reservations.
+func (c *Controller) Recover() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.persist()
 }

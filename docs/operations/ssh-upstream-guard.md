@@ -19,8 +19,9 @@ These are backend jail-risk settings, separate from the sentinel's per-client
 `sshd[publickey=any]`, one matching rejection per admitted SSH setup. Inspect
 effective backend filters, source IP and exemptions before choosing other values.
 An arbitrary filter can count several records per setup; increase the risk cost
-or reduce the budget accordingly. A TCP refusal has no sshd authentication record;
-only a verified refusal refunds its reservation. Unknown setup failures retain it.
+or reduce the budget accordingly. A pure TCP connect failure, including a timeout,
+has no sshd authentication record and refunds its reservation. Unknown post-dial
+setup failures retain it.
 Pass-through password rejections also retain backend risk while still counting
 as client failures; they do not declare an otherwise healthy backend down.
 
@@ -38,9 +39,23 @@ preserve it across upgrades. On first installation or missing state, new upstrea
 setups wait a full configured window (10 minutes by default). Established sessions
 continue; an existing backend ban is never automatically cleared. Corrupt state,
 policy changes and control outages fail closed for new setups.
-Alert on `sentinel_ssh_upstream_faulted == 1`: repair storage and restart the
-controller with its unchanged policy/checkpoint. A transient write failure does
-not automatically reopen admission or restart unrelated HTTP forwarding.
+Alert on `sentinel_ssh_upstream_faulted == 1`. Controller startup failures leave
+HTTP/HTTPS, health and sync running; new guarded SSH setups stay closed. The
+Manager retries startup or the same in-memory durable write every five seconds.
+Repair storage without changing the policy/checkpoint or lock ownership. A
+successful sync clears a transient fault without deleting pending risk; a corrupt
+or incompatible checkpoint still needs the maintenance procedure. Replacing the
+lock or closing the owner cannot be recovered by a write retry.
+
+Both SSH units follow the sentinel with After/BindsTo/PartOf, and the sentinel's
+ExecStartPost starts them again after daemon recovery. An already authenticated
+SSH session survives a completion-RPC outage; new setups remain fail closed.
+A full daemon restart stops both listener units and their sessions, then starts
+the units again; it is distinct from an in-process guard storage fault.
+Use `systemctl status containarium-sentinel sshpiper sshpiper-anon` after upgrade
+and verify listener recovery by restarting the daemon in a maintenance window.
+Initial rollout still imposes the ten-minute hold and requires an explicit
+operator go/no-go decision; neither CI nor this runbook authorizes a rollout.
 
 A metadata policy change is staged as `policy.pending.json`; reconciliation
 preserves the active file and does not restart a running sentinel. A policy
@@ -55,6 +70,20 @@ controller with the new policy; leaving the incompatible checkpoint there makes
 then restart the controller and listeners. The controller creates a compatible
 checkpoint and applies the full fresh-state hold again. Do not delete state
 during live traffic to work around a policy mismatch.
+
+The GCE boot installer follows the same staging/rollback rule. Anonymous box
+names no longer permanently union reused IPs; physical endpoint risk stays until
+its jail window drains. Idle endpoint aliases are then pruned. The metadata cap
+per normalized source is min(64, one quarter of global capacity), at least one,
+shared across listeners, so one idle source cannot fill the default global table.
+
+Known limitation under review: pinned sshpiperd may open the upstream during an
+unsigned public-key probe. If the client abandons it before PipeStart, its
+post-dial outcome is uncertain and retains risk. Two such probes can exhaust the
+default backend budget even without possession of the client's private key.
+The real regression characterizes this; it does not claim prevention. Safely
+refunding it requires a typed backend-ready result absent from the current
+plugin API. Maintainers must weigh this with the fail-closed rollout decision.
 
 For deployed verification, record the commit, backend-visible source,
 `fail2ban-client get sshd maxretry/findtime/bantime/ignoreip`, matching auth logs

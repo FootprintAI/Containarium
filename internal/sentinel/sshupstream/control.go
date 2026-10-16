@@ -48,10 +48,10 @@ func (a *adapter) begin(c libplugin.ConnMetadata) error {
 	return nil
 }
 
-// report requires a durable acknowledgement before promoting a setup socket.
-func (a *adapter) report(b binding, outcome pb.SSHUpstreamOutcome) bool {
+// report distinguishes an explicit stale-route rejection from a control outage.
+func (a *adapter) report(b binding, outcome pb.SSHUpstreamOutcome) (bool, error) {
 	ctx, cancel := sshcontrol.CallContext(a.ctx)
 	defer cancel()
 	r, err := a.control.Client.CompleteSSHUpstream(ctx, &pb.CompleteSSHUpstreamRequest{Connection: b.ref, RouteToken: b.route, LeaseToken: b.lease, Outcome: outcome})
-	return err == nil && r.GetAccepted()
+	return r.GetAccepted(), err
 }

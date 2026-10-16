@@ -3,6 +3,7 @@
 package sshban
 
 import (
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -45,6 +46,42 @@ func guardedControl(t *testing.T, backend string, window time.Duration, extraBac
 	}
 	t.Cleanup(stop)
 	return c, socket
+}
+
+// abortSignatureSigner aborts after the allowed-key probe, before signing auth.
+type abortSignatureSigner struct{ ssh.Signer }
+
+// Sign simulates a client abandoning a valid key instead of authenticating it.
+func (s abortSignatureSigner) Sign(io.Reader, []byte) (*ssh.Signature, error) {
+	return nil, errors.New("synthetic downstream abort before signature")
+}
+
+// TestIntegrationGuardedSSHAbandonedClientRisk characterizes the pinned API limit.
+// A key probe can reach the backend before downstream signature verification;
+// without a typed backend-ready event an aborted setup retains uncertain risk.
+func TestIntegrationGuardedSSHAbandonedClientRisk(t *testing.T) {
+	backend := retryUnusedAddress(t)
+	_, socket := guardedControl(t, backend, 10*time.Minute)
+	f := newConfiguredRetryFixture(t, 100, 1, retryMode{routed: true, controlSocket: socket, backend: backend})
+	f.retryBackend(t)
+	for i := range 2 {
+		if err := retryHandshake(f.addr, "127.0.0.2", abortSignatureSigner{f.keys[0]}); err == nil {
+			t.Fatal("unsigned client authenticated")
+		}
+		if i == 0 {
+			time.Sleep(1300 * time.Millisecond)
+		}
+	}
+	if got := len(f.attempts(t)); got != 2 {
+		t.Fatalf("abandoned key probes made %d backend dials, want two", got)
+	}
+	if err := retryHandshake(f.addr, "127.0.0.3", f.keys[0]); err == nil {
+		t.Fatal("unknown post-dial aborts were refunded without backend outcome proof")
+	}
+	if got := len(f.attempts(t)); got != 2 {
+		t.Fatal("exhausted uncertain risk admitted another backend dial")
+	}
+	t.Log("confirmed review item 7: two unsigned key-probe aborts retain two risk units; a typed pre-signature backend-ready callback is required to refund safely")
 }
 
 // wrongSignatureSigner offers an allowed public key without possessing its secret.

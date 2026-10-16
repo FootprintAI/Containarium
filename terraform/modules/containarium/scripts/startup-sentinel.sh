@@ -235,10 +235,13 @@ reconcile_ssh_upstream_control() {
         rm -f "$pending"
         changed=true
     fi
+    desired_dropin="$(printf '%s\n' '[Service]' 'Environment=CONTAINARIUM_SSH_UPSTREAM_POLICY=/etc/containarium/ssh-upstream/policy.json' 'ExecStartPost=-/bin/systemctl --no-block start sshpiper.service sshpiper-anon.service')"
     if [ ! -f "$dropin" ]; then
-        printf '%s\n' '[Service]' 'Environment=CONTAINARIUM_SSH_UPSTREAM_POLICY=/etc/containarium/ssh-upstream/policy.json' > "$dropin"
-        changed=true
         dropin_created=true
+    fi
+    if [ ! -f "$dropin" ] || [ "$(cat "$dropin")" != "$desired_dropin" ]; then
+        printf '%s\n' "$desired_dropin" > "$dropin"
+        changed=true
     fi
     if [ "$changed" = true ]; then
         systemctl daemon-reload

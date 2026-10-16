@@ -406,7 +406,10 @@ func (a *adapter) connect(uri string) (net.Conn, error) {
 		a.setups[b.attempt.ConnectionID] = b
 		a.mu.Unlock()
 	}
-	dialCtx, cancel := context.WithDeadline(a.ctx, b.expires)
+	// Leave time to report a pure connect timeout before the setup lease can
+	// expire into an uncertain failure. No backend SSH ran when Dial fails.
+	dialDeadline := time.Now().Add(min(5*time.Second, time.Until(b.expires)/2))
+	dialCtx, cancel := context.WithDeadline(a.ctx, dialDeadline)
 	conn, err := a.dial(dialCtx, b.attempt)
 	cancel()
 	if err != nil {
@@ -457,24 +460,27 @@ func (a *adapter) finish(connection, remote string, outcome pb.SSHUpstreamOutcom
 	}
 	a.mu.Unlock()
 	for _, b := range finished {
-		ready := outcome == pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_SSH_READY
+		ready := outcome == pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_SSH_READY && time.Now().Before(b.expires)
 		result := outcome
 		if result == pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_PROXY_AUTH_REJECTED && !b.proxy {
 			result = pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_CLIENT_AUTH_REJECTED
-		}
-		if result == pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_SETUP_FAILED && !time.Now().Before(b.expires) {
-			result = pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_CONNECT_FAILED
-		}
-		if a.control != nil && b.lease != "" {
-			ready = a.report(b, result) && ready
 		}
 		if b.timer != nil {
 			b.timer.Stop()
 		}
 		if b.conn != nil {
-			if ready && time.Now().Before(b.expires) {
+			if ready {
 				_ = b.conn.SetDeadline(time.Time{})
 			} else {
+				_ = b.conn.Close()
+			}
+		}
+		if a.control != nil && b.lease != "" {
+			accepted, err := a.report(b, result)
+			// PipeStart proves SSH authentication completed. A control RPC
+			// outage retains conservative risk but cannot kill that session.
+			// An explicit authority rejection still closes a stale route.
+			if ready && err == nil && !accepted && b.conn != nil {
 				_ = b.conn.Close()
 			}
 		}

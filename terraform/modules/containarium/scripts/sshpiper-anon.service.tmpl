@@ -1,6 +1,8 @@
 [Unit]
 Description=SSHPiper anonymous-box door (ssh new.<domain>, #2198)
-After=network.target
+After=network.target containarium-sentinel.service
+BindsTo=containarium-sentinel.service
+PartOf=containarium-sentinel.service
 # Same reasoning as sshpiper.service: never let the start-rate limiter give
 # up on the door listener.
 StartLimitIntervalSec=0

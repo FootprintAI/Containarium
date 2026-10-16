@@ -1,11 +1,14 @@
 package sentinel
 
 import (
+	"context"
 	"fmt"
 	"github.com/footprintai/containarium/internal/sentinel/sshcontrol"
+	"log"
 	"net"
 	"os"
 	"strconv"
+	"time"
 )
 
 // BackendForEndpoint resolves enforcement identity from authoritative key routes.
@@ -56,6 +59,62 @@ func (m *Manager) startSSHUpstream() (func(), error) {
 		_ = controller.Close()
 		return nil, err
 	}
+	m.sshUpstreamMu.Lock()
 	m.sshUpstream = controller
+	m.sshUpstreamMu.Unlock()
 	return func() { stop(); _ = controller.Close() }, nil
+}
+
+// sshUpstreamController snapshots the owner without racing startup retries.
+func (m *Manager) sshUpstreamController() *sshcontrol.Controller {
+	m.sshUpstreamMu.RLock()
+	defer m.sshUpstreamMu.RUnlock()
+	return m.sshUpstream
+}
+
+// superviseSSHUpstream isolates guard faults and retries without resetting risk.
+func (m *Manager) superviseSSHUpstream(ctx context.Context, interval time.Duration) func() {
+	if m.config.SSHUpstreamPolicy == "" {
+		return func() {}
+	}
+	var stop func()
+	retry := func() {
+		if c := m.sshUpstreamController(); c != nil {
+			if c.Faulted() {
+				if err := c.Recover(); err != nil {
+					log.Printf("[sentinel] SSH upstream fault remains: %v", err)
+				}
+			}
+			return
+		}
+		var err error
+		stop, err = m.startSSHUpstream()
+		m.sshUpstreamStartupFault.Store(err != nil)
+		if err != nil {
+			log.Printf("[sentinel] SSH guard unavailable; other services continue: %v", err)
+		}
+	}
+	retry()
+	worker, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-worker.Done():
+				return
+			case <-ticker.C:
+				retry()
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		<-done
+		if stop != nil {
+			stop()
+		}
+	}
 }
