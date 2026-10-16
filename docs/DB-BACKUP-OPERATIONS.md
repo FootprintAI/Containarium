@@ -428,6 +428,40 @@ The human-mode output (without `--raw`) prints the real expiry timestamp.
 directly. If it ever needs revoking, `containarium token revoke` takes it from
 here like any other token.
 
+### A least-privilege token for the restore-test verifier (#2401)
+
+A job whose purpose is to decrypt and restore backups (a nightly verifier)
+should not hold an admin token: the identity that can read every tenant's
+secrets would also be the one that unwraps backup keys. `ListBackups` and
+`VerifyBackup` need much less. Mint one **non-admin token bound to a single
+tenant**, with exactly the two backup scopes:
+
+```bash
+sudo containarium token generate \
+  --username <tenant> --roles user \
+  --scopes backups:read,backups:write \
+  --expiry 720h \
+  --secret-file /etc/containarium/jwt.secret --raw
+```
+
+- `backups:write` is required because `VerifyBackup` restores the dump into
+  a scratch database. `backups:read` covers `ListBackups`.
+- The token is bound to the tenant by its username. It can list and verify
+  **that tenant's** backups, and the restore target (`--target`) must be
+  that tenant's own container too: a token for one tenant cannot verify
+  another tenant's backup, cannot restore into another tenant's container,
+  and `ListBackups` naming another tenant returns only the caller's own
+  records. `ListContainers` and `GetSecret` are denied outright (their scopes
+  are not granted).
+- One token per backup set. The lifetime is 720h, the daemon's cap; rotate
+  it on the same timer that refreshes any other long-lived token, well before
+  it lapses (see the remote-runner note above), and revoke it with
+  `containarium token revoke` like any other.
+
+This shape is pinned by `TestBackupScopedToken_AllowsOwnBackupsOnly`
+(`internal/server/backup_scoped_token_test.go`), which fails if any of those
+denials is lifted.
+
 ### Watching and alerting
 
 ```bash
