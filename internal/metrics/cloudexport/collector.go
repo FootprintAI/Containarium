@@ -131,6 +131,17 @@ const (
 	// docs/METRICS-EXPORT-DEADMAN-ALERT-RUNBOOK.md's backup-alert
 	// section for the policy JSON.
 	MetricBackupLastSuccessAgeSeconds = "containarium.backup.last_success_age_seconds"
+
+	// MetricBackupHealthReadFailures is the self-health companion to the
+	// series above (#2305): a cumulative count of export ticks on which
+	// the daemon could not read its backup index. When that read fails,
+	// last_success_age_seconds goes empty for every tenant at once — the
+	// same shape as "nothing has ever been backed up" — so an alert on
+	// the age series alone cannot see the collector break. Observed on
+	// every tick including at zero, so a present, flat series means
+	// "reading fine" and an increasing one means "read is failing"; alert
+	// on increase > 0.
+	MetricBackupHealthReadFailures = "containarium.backup.health_read_failures"
 )
 
 // Label keys — the complete allowlist. No org/tenant identifier ever
@@ -643,6 +654,22 @@ func registerPlatformInstruments(mp *sdkmetric.MeterProvider, sources PlatformSo
 			return nil
 		},
 		backupAge,
+	)
+	if err != nil {
+		return err
+	}
+
+	readFailures, err := meter.Int64ObservableCounter(MetricBackupHealthReadFailures,
+		metric.WithDescription("Cumulative count of export ticks on which the backup index could not be read, leaving the backup-age series empty. Alert on increase > 0."))
+	if err != nil {
+		return err
+	}
+	_, err = meter.RegisterCallback(
+		func(ctx context.Context, o metric.Observer) error {
+			o.ObserveInt64(readFailures, sources.BackupHealthReadFailures(), metric.WithAttributeSet(labels.attributeSet()))
+			return nil
+		},
+		readFailures,
 	)
 	return err
 }

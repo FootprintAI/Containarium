@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync/atomic"
 
 	"github.com/footprintai/containarium/internal/metrics/cloudexport"
 	"github.com/footprintai/containarium/internal/metrics/platformstats"
@@ -97,6 +98,10 @@ type serverPlatformSources struct {
 	stats     *platformstats.Stats
 	peers     *PeerPool
 	backupMgr *backup.Manager
+	// backupReadFailures counts BackupHealth reads that failed (#2305). A
+	// pointer so the value-receiver copies the collector holds share one
+	// counter; nil (tests, harnesses) counts nothing.
+	backupReadFailures *atomic.Int64
 }
 
 // APIStats returns the current cumulative API counters. Nil-safe: a
@@ -142,7 +147,9 @@ func (s serverPlatformSources) Peers() []cloudexport.PeerState {
 // logged and degrades to an empty snapshot rather than erroring the
 // whole export tick — losing one tick of backup-health data is a far
 // smaller problem than losing the host/container/platform series
-// alongside it over a transient, unrelated I/O hiccup.
+// alongside it over a transient, unrelated I/O hiccup. Each failure also
+// bumps BackupHealthReadFailures (#2305): a persistent one would
+// otherwise be indistinguishable from "no tenant has any backup".
 func (s serverPlatformSources) BackupHealth() []cloudexport.BackupHealthState {
 	if s.backupMgr == nil {
 		return nil
@@ -150,6 +157,9 @@ func (s serverPlatformSources) BackupHealth() []cloudexport.BackupHealthState {
 	last, err := s.backupMgr.LastSuccessByUsername()
 	if err != nil {
 		log.Printf("[metrics-export] backup health snapshot failed, skipping this tick: %v", err)
+		if s.backupReadFailures != nil {
+			s.backupReadFailures.Add(1)
+		}
 		return nil
 	}
 	out := make([]cloudexport.BackupHealthState, 0, len(last))
@@ -157,4 +167,14 @@ func (s serverPlatformSources) BackupHealth() []cloudexport.BackupHealthState {
 		out = append(out, cloudexport.BackupHealthState{Username: username, LastSuccessAt: at})
 	}
 	return out
+}
+
+// BackupHealthReadFailures returns the cumulative count of failed backup
+// index reads (#2305). Nil-safe: an adapter built without the counter
+// reports zero.
+func (s serverPlatformSources) BackupHealthReadFailures() int64 {
+	if s.backupReadFailures == nil {
+		return 0
+	}
+	return s.backupReadFailures.Load()
 }
