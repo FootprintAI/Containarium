@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	gcpdetector "go.opentelemetry.io/contrib/detectors/gcp"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -103,8 +104,58 @@ func (g *gcpSink) NewExporter(ctx context.Context, cfg SinkConfig) (sdkmetric.Ex
 // rather than failing the whole export. gcpSink is the only type that
 // touches the GCP detector — the collector consumes the resulting
 // vendor-neutral *resource.Resource.
+//
+// Google's OTLP ingestion attributes series to a project via the
+// gcp.project_id resource attribute, which the detector does not set (it
+// reports the project as cloud.account.id) — withGCPProjectID bridges
+// that, falling back to the ADC project (#2590).
 func (g *gcpSink) DetectResource(ctx context.Context) (*resource.Resource, error) {
-	return resource.New(ctx, resource.WithDetectors(gcpdetector.NewDetector()))
+	res, err := resource.New(ctx, resource.WithDetectors(gcpdetector.NewDetector()))
+	if err != nil {
+		// A partial resource may still be returned alongside the error;
+		// the caller falls back to a default resource on error, which
+		// would lack gcp.project_id too, so try to repair what we have.
+		if res == nil {
+			res = resource.Empty()
+		}
+	}
+	adcProject := ""
+	if creds, cerr := gcpCredentialsLookup(ctx); cerr == nil && creds != nil {
+		adcProject = creds.ProjectID
+	}
+	fixed, ferr := withGCPProjectID(res, adcProject)
+	if ferr != nil {
+		return res, ferr
+	}
+	return fixed, err
+}
+
+// gcpProjectIDKey is the resource attribute Google Cloud's OTLP ingestion
+// requires to attribute series to a project.
+const gcpProjectIDKey = attribute.Key("gcp.project_id")
+
+// withGCPProjectID returns res with gcp.project_id set: kept if already
+// present, else taken from the detector's cloud.account.id, else from
+// fallback (the ADC project). When none is known res is returned
+// unchanged — the upload will fail loudly rather than guess a project.
+func withGCPProjectID(res *resource.Resource, fallback string) (*resource.Resource, error) {
+	var detected string
+	for _, kv := range res.Attributes() {
+		switch kv.Key {
+		case gcpProjectIDKey:
+			return res, nil
+		case "cloud.account.id":
+			detected = kv.Value.AsString()
+		}
+	}
+	project := detected
+	if project == "" {
+		project = fallback
+	}
+	if project == "" {
+		return res, nil
+	}
+	return resource.Merge(res, resource.NewSchemaless(gcpProjectIDKey.String(project)))
 }
 
 // Probe resolves ADC with the Cloud Monitoring write scope and confirms

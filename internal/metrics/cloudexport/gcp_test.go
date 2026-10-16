@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/sdk/resource"
 	colmetricpb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
@@ -298,5 +300,53 @@ func TestGCPSink_NewExporter_SeriesNamesPinned(t *testing.T) {
 func TestGCPSink_ImplementsResourceProvider(t *testing.T) {
 	if _, ok := NewGCPSink().(ResourceProvider); !ok {
 		t.Fatal("gcpSink must implement ResourceProvider for gce_instance tagging")
+	}
+}
+
+// attrOf returns the string value of key in res, and whether it was set.
+func attrOf(res *resource.Resource, key string) (string, bool) {
+	for _, kv := range res.Attributes() {
+		if string(kv.Key) == key {
+			return kv.Value.AsString(), true
+		}
+	}
+	return "", false
+}
+
+// TestWithGCPProjectID pins #2590: Google's OTLP ingestion reads the
+// target project from the gcp.project_id resource attribute, but the OTel
+// GCP detector reports it as cloud.account.id. The exported resource must
+// always carry gcp.project_id.
+func TestWithGCPProjectID(t *testing.T) {
+	tests := []struct {
+		name     string
+		in       []attribute.KeyValue
+		fallback string
+		want     string
+		wantSet  bool
+	}{
+		{"detector cloud.account.id maps over", []attribute.KeyValue{attribute.String("cloud.account.id", "proj-a")}, "adc-proj", "proj-a", true},
+		{"existing gcp.project_id is kept", []attribute.KeyValue{attribute.String("gcp.project_id", "proj-b"), attribute.String("cloud.account.id", "other")}, "adc-proj", "proj-b", true},
+		{"no detector attrs falls back to ADC project", nil, "adc-proj", "adc-proj", true},
+		{"nothing known leaves it unset", nil, "", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			in := resource.NewSchemaless(tt.in...)
+			got, err := withGCPProjectID(in, tt.fallback)
+			if err != nil {
+				t.Fatalf("withGCPProjectID: %v", err)
+			}
+			v, ok := attrOf(got, "gcp.project_id")
+			if ok != tt.wantSet || v != tt.want {
+				t.Fatalf("gcp.project_id = %q (set=%v), want %q (set=%v)", v, ok, tt.want, tt.wantSet)
+			}
+			// Other attributes must survive the merge.
+			if _, had := attrOf(in, "cloud.account.id"); had {
+				if _, kept := attrOf(got, "cloud.account.id"); !kept {
+					t.Fatal("cloud.account.id was dropped")
+				}
+			}
+		})
 	}
 }
