@@ -172,7 +172,7 @@ func init() {
 
 	// Remote server flags (HTTP mode)
 	rootCmd.PersistentFlags().BoolVar(&httpMode, "http", os.Getenv("CONTAINARIUM_HTTP") == "true", "use HTTP/REST API instead of gRPC (env: CONTAINARIUM_HTTP=true)")
-	rootCmd.PersistentFlags().StringVar(&authToken, "token", os.Getenv("CONTAINARIUM_TOKEN"), "JWT authentication token for HTTP API. Precedence: 1) --token flag, 2) CONTAINARIUM_TOKEN env, 3) ~/.containarium/credentials.json (populated by `containarium login`).")
+	secretEnvFlag(rootCmd.PersistentFlags(), &authToken, "token", "CONTAINARIUM_TOKEN", "JWT authentication token for HTTP API. Precedence: 1) --token flag, 2) CONTAINARIUM_TOKEN env, 3) ~/.containarium/credentials.json (populated by `containarium login`).")
 
 	// Version command with verbose flag
 	versionCmd.Flags().BoolVar(&verboseVersion, "verbose", false, "show detailed version information")
