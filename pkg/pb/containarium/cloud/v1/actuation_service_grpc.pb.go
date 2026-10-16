@@ -116,8 +116,6 @@ type ActuationServiceClient interface {
 	// server-streams is awkward enough that hosts (which are always
 	// platform-daemons speaking real gRPC) should just use the
 	// native channel.
-	// Preserve the published RPC request/response type names (#2481).
-	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
 	WatchAssignments(ctx context.Context, in *WatchAssignmentsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[AssignmentBatch], error)
 	// GetSSHTrustBundle returns what this host needs to trust the cloud's SSH
 	// CA and refuse revoked certificates: the CA public keys for sshd's
@@ -137,7 +135,6 @@ type ActuationServiceClient interface {
 	// the daemon never translates, hence the lint exemption.
 	//
 	// Auth: requires a valid `host-bearer` header.
-	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
 	AuthorizeSSH(ctx context.Context, in *v1.AuthorizeSSHRequest, opts ...grpc.CallOption) (*v1.AuthorizeSSHResponse, error)
 }
 
@@ -279,8 +276,6 @@ type ActuationServiceServer interface {
 	// server-streams is awkward enough that hosts (which are always
 	// platform-daemons speaking real gRPC) should just use the
 	// native channel.
-	// Preserve the published RPC request/response type names (#2481).
-	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
 	WatchAssignments(*WatchAssignmentsRequest, grpc.ServerStreamingServer[AssignmentBatch]) error
 	// GetSSHTrustBundle returns what this host needs to trust the cloud's SSH
 	// CA and refuse revoked certificates: the CA public keys for sshd's
@@ -300,7 +295,6 @@ type ActuationServiceServer interface {
 	// the daemon never translates, hence the lint exemption.
 	//
 	// Auth: requires a valid `host-bearer` header.
-	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
 	AuthorizeSSH(context.Context, *v1.AuthorizeSSHRequest) (*v1.AuthorizeSSHResponse, error)
 	mustEmbedUnimplementedActuationServiceServer()
 }

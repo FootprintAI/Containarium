@@ -37,8 +37,6 @@ type TrafficServiceClient interface {
 	// GetConnectionSummary returns aggregate connection statistics
 	GetConnectionSummary(ctx context.Context, in *GetConnectionSummaryRequest, opts ...grpc.CallOption) (*GetConnectionSummaryResponse, error)
 	// SubscribeTraffic opens a streaming connection for real-time traffic events
-	// Preserve the published RPC request/response type names (#2481).
-	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
 	SubscribeTraffic(ctx context.Context, in *SubscribeTrafficRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[TrafficEvent], error)
 	// QueryTrafficHistory queries persisted traffic data
 	QueryTrafficHistory(ctx context.Context, in *QueryTrafficHistoryRequest, opts ...grpc.CallOption) (*QueryTrafficHistoryResponse, error)
@@ -124,8 +122,6 @@ type TrafficServiceServer interface {
 	// GetConnectionSummary returns aggregate connection statistics
 	GetConnectionSummary(context.Context, *GetConnectionSummaryRequest) (*GetConnectionSummaryResponse, error)
 	// SubscribeTraffic opens a streaming connection for real-time traffic events
-	// Preserve the published RPC request/response type names (#2481).
-	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
 	SubscribeTraffic(*SubscribeTrafficRequest, grpc.ServerStreamingServer[TrafficEvent]) error
 	// QueryTrafficHistory queries persisted traffic data
 	QueryTrafficHistory(context.Context, *QueryTrafficHistoryRequest) (*QueryTrafficHistoryResponse, error)

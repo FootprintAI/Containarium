@@ -44,8 +44,6 @@ const (
 type NetworkPolicyServiceClient interface {
 	// SetNetworkPolicy creates or replaces a tenant's policy (upsert by tenant).
 	// The policy is validated + normalized; the stored form is echoed back.
-	// Preserve the published shared response type (#2481).
-	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
 	SetNetworkPolicy(ctx context.Context, in *SetNetworkPolicyRequest, opts ...grpc.CallOption) (*SetNetworkPolicyResponse, error)
 	// GetNetworkPolicy returns a tenant's policy, or NotFound if none is set.
 	GetNetworkPolicy(ctx context.Context, in *GetNetworkPolicyRequest, opts ...grpc.CallOption) (*GetNetworkPolicyResponse, error)
@@ -58,9 +56,6 @@ type NetworkPolicyServiceClient interface {
 	// deny rules (#660) under a store-side lock, so concurrent edits don't lose
 	// updates and `SetNetworkPolicy` (the allow-policy) never has to round-trip
 	// through the client to preserve them. Echoes the normalized stored policy.
-	// Preserve the published shared response type (#2481).
-	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
-	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
 	PatchNetworkPolicyDenyRules(ctx context.Context, in *PatchNetworkPolicyDenyRulesRequest, opts ...grpc.CallOption) (*SetNetworkPolicyResponse, error)
 	// PlanNetworkPolicy reports which destinations a tenant's boxes reached
 	// that the tenant's policy denied (log-only) or dropped (enforce) in a recent
@@ -192,8 +187,6 @@ func (c *networkPolicyServiceClient) DeleteNetworkPolicySignature(ctx context.Co
 type NetworkPolicyServiceServer interface {
 	// SetNetworkPolicy creates or replaces a tenant's policy (upsert by tenant).
 	// The policy is validated + normalized; the stored form is echoed back.
-	// Preserve the published shared response type (#2481).
-	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
 	SetNetworkPolicy(context.Context, *SetNetworkPolicyRequest) (*SetNetworkPolicyResponse, error)
 	// GetNetworkPolicy returns a tenant's policy, or NotFound if none is set.
 	GetNetworkPolicy(context.Context, *GetNetworkPolicyRequest) (*GetNetworkPolicyResponse, error)
@@ -206,9 +199,6 @@ type NetworkPolicyServiceServer interface {
 	// deny rules (#660) under a store-side lock, so concurrent edits don't lose
 	// updates and `SetNetworkPolicy` (the allow-policy) never has to round-trip
 	// through the client to preserve them. Echoes the normalized stored policy.
-	// Preserve the published shared response type (#2481).
-	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
-	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
 	PatchNetworkPolicyDenyRules(context.Context, *PatchNetworkPolicyDenyRulesRequest) (*SetNetworkPolicyResponse, error)
 	// PlanNetworkPolicy reports which destinations a tenant's boxes reached
 	// that the tenant's policy denied (log-only) or dropped (enforce) in a recent
