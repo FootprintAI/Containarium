@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/safecast"
+	"github.com/footprintai/containarium/pkg/core/sshdpolicy"
 	incus "github.com/lxc/incus/v7/client"
 	"github.com/lxc/incus/v7/shared/api"
 	"golang.org/x/sync/errgroup"
@@ -2822,12 +2823,23 @@ func formatBytesHuman(b int64) string {
 	return fmt.Sprintf("%.1f %s", float64(b)/float64(div), units[exp])
 }
 
-// hasContainariumConfig reports whether config carries any user.containarium.*
-// key, the marker that separates an instance Containarium manages from one
-// created directly in Incus.
+// postureMarkerKeys are host-side posture markers the daemon stamps on any
+// instance it brings under a policy, INCLUDING instances it does not own (a
+// VM or container made directly in Incus). They record "this check ran", not
+// "a tenant owns this", so they must not make an instance count as managed
+// (#2619). Add any new such marker here; an unknown user.containarium.* key is
+// deliberately treated as ownership, because mistaking an owned tenant box for
+// an unmanaged one would hide an unguarded tenant.
+var postureMarkerKeys = map[string]bool{
+	sshdpolicy.MarkerKey: true,
+}
+
+// hasContainariumConfig reports whether config carries an ownership-bearing
+// user.containarium.* key: the signal that separates an instance Containarium
+// manages from one created directly in Incus. Posture markers do not count.
 func hasContainariumConfig(config map[string]string) bool {
 	for k := range config {
-		if strings.HasPrefix(k, "user.containarium.") {
+		if strings.HasPrefix(k, "user.containarium.") && !postureMarkerKeys[k] {
 			return true
 		}
 	}
