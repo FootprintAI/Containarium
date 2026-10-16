@@ -465,6 +465,29 @@ Not reproducible in CI, same as every policy in this runbook:
   Metrics Explorer or via the API, not an alert policy on the metric
   itself.
 
+### Is the backup-health collector itself working? (#2305)
+
+`last_success_age_seconds` goes **empty for every tenant at once** when the
+daemon cannot read its backup index (permissions, disk, corruption) — the
+same shape as "no tenant has ever been backed up", and `conditionThreshold`
+stays silent on a series with no points. The companion counter makes that
+failure visible:
+
+| Field | Value |
+|---|---|
+| Metric (OTel instrument) | `containarium.backup.health_read_failures` |
+| Cloud Monitoring metric type | `workload.googleapis.com/containarium.backup.health_read_failures` |
+| Kind / value | cumulative counter: export ticks on which the backup index could not be read |
+| Labels | `backend_id`, `hostname`, `region` (no tenant label) |
+| Emit cadence | every export interval, **including at zero** — a present flat series means "reading fine" |
+
+Alert when it **increases** (`ALIGN_DELTA` over a few minutes, threshold
+`> 0`); a single transient blip is one count, a persistent fault keeps
+counting every tick. Because it is cumulative it resets on a daemon
+restart, which the delta aligner handles. The daemon log line to look for
+is `[metrics-export] backup health snapshot failed`.
+
+
 ## Sentinel alerts (#2484)
 
 **Goal:** page an operator when the *sentinel* — the always-on front door
