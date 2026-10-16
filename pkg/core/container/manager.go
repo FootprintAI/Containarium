@@ -1446,7 +1446,7 @@ func (m *Manager) InstallStack(username, stackID string) error {
 	// the package manager (#2617). Dev stacks keep the update: their
 	// pre-install steps may install packages themselves.
 	pkgs := stack.GetPackagesForFamily(familyStr)
-	if !(isBaseScript && len(pkgs) == 0) {
+	if !isBaseScript || len(pkgs) > 0 {
 		if err := m.incus.Exec(containerName, pkgMgr.UpdateCmd()); err != nil {
 			return fmt.Errorf("package repo update failed: %w", err)
 		}
