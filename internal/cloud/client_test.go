@@ -11,8 +11,10 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/test/bufconn"
+	"google.golang.org/protobuf/proto"
 
 	cloudv1 "github.com/footprintai/containarium/pkg/pb/containarium/cloud/v1"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // fakeActuation records the host-bearer metadata it saw on Heartbeat.
@@ -41,9 +43,14 @@ type fakeActuation struct {
 	// sshTrustVersion/sshTrustKeys configure the canned SSH CA trust bundle.
 	// Zero value = "no SSH CA configured": Heartbeat leaves ssh_trust_version
 	// empty and the client is expected to never call GetSSHTrustBundle.
-	sshTrustVersion string
-	sshTrustKeys    []*cloudv1.SSHCAKey
-	sshTrustCalls   int
+	sshTrustVersion      string
+	sshTrustKeys         []*cloudv1.SSHCAKey
+	sshTrustCalls        int
+	authorizeReq         *pb.AuthorizeSSHRequest
+	authorizeBearer      string
+	authorizeHasDeadline bool
+	authorizeResp        *pb.AuthorizeSSHResponse
+	authorizeErr         error
 }
 
 // EnrollHost echoes back the host id embedded in the join token (first
@@ -99,6 +106,22 @@ func (f *fakeActuation) Heartbeat(ctx context.Context, _ *cloudv1.HeartbeatReque
 		}
 	}
 	return &cloudv1.HeartbeatResponse{SshTrustVersion: f.sshTrustVersion}, nil
+}
+
+func (f *fakeActuation) AuthorizeSSH(ctx context.Context, req *pb.AuthorizeSSHRequest) (*pb.AuthorizeSSHResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.authorizeReq = req
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		if v := md.Get(hostBearerMetadataKey); len(v) > 0 {
+			f.authorizeBearer = v[0]
+		}
+	}
+	_, f.authorizeHasDeadline = ctx.Deadline()
+	if f.authorizeResp == nil && f.authorizeErr == nil {
+		return &pb.AuthorizeSSHResponse{Decision: pb.SSHAuthzDecision_SSH_AUTHZ_DECISION_ALLOW}, nil
+	}
+	return f.authorizeResp, f.authorizeErr
 }
 
 // GetSSHTrustBundle mirrors the real server's known_version short-circuit
@@ -195,10 +218,34 @@ func newTestClient(t *testing.T, cfg *Config) (*Client, *fakeActuation) {
 	t.Cleanup(func() { _ = conn.Close() })
 
 	gc := cloudv1.NewActuationServiceClient(conn)
-	c := &Client{cfg: cfg, interval: defaultHeartbeatInterval, ac: gc, watchAC: gc}
+	c := &Client{cfg: cfg, interval: defaultHeartbeatInterval, ac: gc, watchAC: gc, sshAC: gc}
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 	t.Cleanup(c.cancel)
 	return c, fake
+}
+
+func TestAuthorizeSSHSendsBearerAndDeadline(t *testing.T) {
+	cfg := &Config{ControlPlane: "bufconn", HostID: "host-1", Token: "host-1.secretbearer"}
+	c, fake := newTestClient(t, cfg)
+	req := &pb.AuthorizeSSHRequest{Login: "alice", SentinelId: "sentinel-1"}
+	resp, err := c.AuthorizeSSH(context.Background(), req)
+	if err != nil {
+		t.Fatalf("AuthorizeSSH: %v", err)
+	}
+	if resp.GetDecision() != pb.SSHAuthzDecision_SSH_AUTHZ_DECISION_ALLOW {
+		t.Fatalf("decision = %v, want ALLOW", resp.GetDecision())
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if !proto.Equal(fake.authorizeReq, req) {
+		t.Fatalf("request changed: got %v, want %v", fake.authorizeReq, req)
+	}
+	if fake.authorizeBearer != cfg.Token {
+		t.Fatalf("server saw bearer %q, want %q", fake.authorizeBearer, cfg.Token)
+	}
+	if !fake.authorizeHasDeadline {
+		t.Fatal("AuthorizeSSH request has no deadline")
+	}
 }
 
 func TestHeartbeatSendsHostBearer(t *testing.T) {
