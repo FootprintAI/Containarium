@@ -47,15 +47,9 @@ type AnonymousBoxServiceClient interface {
 	ClaimAnonymousBox(ctx context.Context, in *ClaimAnonymousBoxRequest, opts ...grpc.CallOption) (*ClaimAnonymousBoxResponse, error)
 	// GetAnonymousDoorConfig returns the door's state and the fixed limits.
 	// Requires role admin or scope anon:admin.
-	// Preserve the published shared response type (#2481).
-	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
-	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
 	GetAnonymousDoorConfig(ctx context.Context, in *GetAnonymousDoorConfigRequest, opts ...grpc.CallOption) (*AnonymousDoorConfig, error)
 	// SetAnonymousDoorConfig flips the kill switch and edits bans (#2200).
 	// Requires role admin or scope anon:admin.
-	// Preserve the published shared response type (#2481).
-	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
-	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
 	SetAnonymousDoorConfig(ctx context.Context, in *SetAnonymousDoorConfigRequest, opts ...grpc.CallOption) (*AnonymousDoorConfig, error)
 	// ListAnonymousBoxes lists every live anonymous box on this daemon.
 	// Requires role admin or scope anon:admin.
@@ -141,15 +135,9 @@ type AnonymousBoxServiceServer interface {
 	ClaimAnonymousBox(context.Context, *ClaimAnonymousBoxRequest) (*ClaimAnonymousBoxResponse, error)
 	// GetAnonymousDoorConfig returns the door's state and the fixed limits.
 	// Requires role admin or scope anon:admin.
-	// Preserve the published shared response type (#2481).
-	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
-	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
 	GetAnonymousDoorConfig(context.Context, *GetAnonymousDoorConfigRequest) (*AnonymousDoorConfig, error)
 	// SetAnonymousDoorConfig flips the kill switch and edits bans (#2200).
 	// Requires role admin or scope anon:admin.
-	// Preserve the published shared response type (#2481).
-	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
-	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
 	SetAnonymousDoorConfig(context.Context, *SetAnonymousDoorConfigRequest) (*AnonymousDoorConfig, error)
 	// ListAnonymousBoxes lists every live anonymous box on this daemon.
 	// Requires role admin or scope anon:admin.

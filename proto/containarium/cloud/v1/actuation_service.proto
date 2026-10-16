@@ -430,8 +430,6 @@ service ActuationService {
   // server-streams is awkward enough that hosts (which are always
   // platform-daemons speaking real gRPC) should just use the
   // native channel.
-  // Preserve the published RPC request/response type names (#2481).
-  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
   rpc WatchAssignments(WatchAssignmentsRequest) returns (stream AssignmentBatch);
 
   // GetSSHTrustBundle returns what this host needs to trust the cloud's SSH
@@ -457,6 +455,5 @@ service ActuationService {
   // the daemon never translates, hence the lint exemption.
   //
   // Auth: requires a valid `host-bearer` header.
-  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
   rpc AuthorizeSSH(containarium.v1.AuthorizeSSHRequest) returns (containarium.v1.AuthorizeSSHResponse);
 }

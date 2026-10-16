@@ -43,9 +43,6 @@ type SSHAuthzServiceClient interface {
 	// The request/response names follow the architecture doc, and the same
 	// messages back ActuationService.AuthorizeSSH on purpose (one message set
 	// for both hops), hence the lint exemptions.
-	// buf:lint:ignore RPC_REQUEST_STANDARD_NAME
-	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
-	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
 	Authorize(ctx context.Context, in *AuthorizeSSHRequest, opts ...grpc.CallOption) (*AuthorizeSSHResponse, error)
 }
 
@@ -88,9 +85,6 @@ type SSHAuthzServiceServer interface {
 	// The request/response names follow the architecture doc, and the same
 	// messages back ActuationService.AuthorizeSSH on purpose (one message set
 	// for both hops), hence the lint exemptions.
-	// buf:lint:ignore RPC_REQUEST_STANDARD_NAME
-	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
-	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
 	Authorize(context.Context, *AuthorizeSSHRequest) (*AuthorizeSSHResponse, error)
 	mustEmbedUnimplementedSSHAuthzServiceServer()
 }
