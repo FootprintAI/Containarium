@@ -24,6 +24,56 @@ type controlClock struct {
 	t  time.Time
 }
 
+// TestControlExpiredLeaseStillChecksAuthority revalidates delayed ready reports.
+func TestControlExpiredLeaseStillChecksAuthority(t *testing.T) {
+	for _, tc := range []struct {
+		name                        string
+		anonymous, forged, retained bool
+	}{
+		{name: "anonymous moved", anonymous: true}, {name: "main removed"},
+		{name: "forged anonymous token", anonymous: true, forged: true},
+		{name: "current anonymous authority", anonymous: true, retained: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newControlFixture(t)
+			listener := pb.SSHBanListener_SSH_BAN_LISTENER_MAIN
+			if tc.anonymous {
+				listener = pb.SSHBanListener_SSH_BAN_LISTENER_ANONYMOUS
+			}
+			ref := f.open(f.client, listener, "delayed-ready")
+			if tc.anonymous {
+				if _, err := f.client.RegisterSSHAnonymousRoute(t.Context(), &pb.RegisterSSHAnonymousRouteRequest{Connection: ref, BoxName: "stable-box", Endpoint: "127.0.0.1:22"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			token := f.route(f.client, ref)
+			lease := f.acquire(f.client, ref, token, "127.0.0.1:22")
+			f.clock.advance(6 * time.Second)
+			other := f.open(f.client, listener, "after-deadline") // reap the old lease
+			if tc.anonymous && !tc.retained {
+				if _, err := f.client.RegisterSSHAnonymousRoute(t.Context(), &pb.RegisterSSHAnonymousRouteRequest{Connection: other, BoxName: "stable-box", Endpoint: "127.0.0.1:2222"}); err != nil {
+					t.Fatal(err)
+				}
+			} else if !tc.retained {
+				f.server.mu.Lock()
+				f.server.cfg.Resolve = func(string) (string, error) { return "", fmt.Errorf("removed route") }
+				f.server.mu.Unlock()
+			}
+			if tc.forged {
+				token = "forged-route"
+			}
+			r, err := f.client.CompleteSSHUpstream(t.Context(), &pb.CompleteSSHUpstreamRequest{Connection: ref, RouteToken: token, LeaseToken: lease.LeaseToken, Outcome: pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_SSH_READY})
+			if tc.forged || tc.retained {
+				if err != nil || r.GetAccepted() {
+					t.Fatalf("ordinary stale request changed authority handling: %v", err)
+				}
+			} else if status.Code(err) != codes.PermissionDenied {
+				t.Fatalf("missing lease bypassed route revocation: %v", err)
+			}
+		})
+	}
+}
+
 // TestControlRevocationSurvivesStorageFault keeps explicit authority denial typed.
 func TestControlRevocationSurvivesStorageFault(t *testing.T) {
 	f := newControlFixture(t)

@@ -111,6 +111,7 @@ func (c *Controller) Faulted() bool { c.mu.Lock(); defer c.mu.Unlock(); return c
 type connection struct {
 	ref                                          *pb.SSHUpstreamConnection
 	route, lease, anonymousEndpoint, anonymousID string
+	selectedEndpoint, selectedIdentity           string
 	authSkip, terminalSkip                       bool
 	expires                                      time.Time
 }
@@ -263,6 +264,7 @@ func (c *Controller) BeginSSHUpstreamRoute(_ context.Context, r *pb.BeginSSHUpst
 		}
 	}
 	s.route, s.lease, s.authSkip, s.terminalSkip = crand.Text(), "", false, false
+	s.selectedEndpoint, s.selectedIdentity = "", ""
 	return &pb.BeginSSHUpstreamRouteResponse{RouteToken: s.route}, nil
 }
 
@@ -376,6 +378,7 @@ func (c *Controller) AcquireSSHUpstream(_ context.Context, r *pb.AcquireSSHUpstr
 	token := crand.Text()
 	c.leases[token] = reservation{lease: lease, owner: connectionKey(s.ref), route: s.route, proxy: r.ProxyCredential, endpoint: r.Endpoint}
 	s.lease = token
+	s.selectedEndpoint, s.selectedIdentity = r.Endpoint, id
 	if err := c.persist(); err != nil {
 		return deny(pb.SSHUpstreamAdmissionReason_SSH_UPSTREAM_ADMISSION_REASON_STATE_UNAVAILABLE, time.Time{})
 	}
@@ -415,6 +418,16 @@ func (c *Controller) CompleteSSHUpstream(_ context.Context, r *pb.CompleteSSHUps
 	}
 	l, ok := c.leases[r.LeaseToken]
 	if !ok || s.route != r.RouteToken || s.lease != r.LeaseToken || l.owner != connectionKey(s.ref) || l.route != r.RouteToken {
+		// Reaping a risk lease does not erase its connection-bound route
+		// authority. A delayed ready report must still reject a moved/revoked
+		// endpoint, while ordinary lost bookkeeping keeps authenticated SSH.
+		if !ok && s.route == r.RouteToken && s.lease == r.LeaseToken && r.Outcome == pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_SSH_READY && s.selectedEndpoint != "" {
+			id, err := c.resolve(s, s.selectedEndpoint)
+			moved := s.anonymousID != "" && c.anonymousRoutes[s.anonymousID] != s.selectedEndpoint
+			if err != nil || moved || id != s.selectedIdentity {
+				return nil, status.Error(codes.PermissionDenied, "upstream route authority revoked")
+			}
+		}
 		return &pb.CompleteSSHUpstreamResponse{}, nil
 	}
 	outcome, skip := sshgate.SetupFailed, false
