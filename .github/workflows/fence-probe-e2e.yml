@@ -221,10 +221,6 @@ jobs:
           CONTAINARIUM_THREAT_SENTRY: '1'
           CONTAINARIUM_THREAT_DENY_BURST_N: '5'
           CONTAINARIUM_THREAT_DENY_BURST_WINDOW_MINUTES: '2'
-          # This lane runs the enforcer observation-only, so its denies are
-          # log_only would-denies. Deny-burst ignores those by default (#2612);
-          # opt in so the lane still proves rule -> store -> CLI wiring.
-          CONTAINARIUM_THREAT_DENY_BURST_COUNT_LOG_ONLY: '1'
         run: |
           set -euo pipefail
           sudo -E env "PATH=$PATH" \
@@ -232,7 +228,6 @@ jobs:
             CONTAINARIUM_THREAT_SENTRY="$CONTAINARIUM_THREAT_SENTRY" \
             CONTAINARIUM_THREAT_DENY_BURST_N="$CONTAINARIUM_THREAT_DENY_BURST_N" \
             CONTAINARIUM_THREAT_DENY_BURST_WINDOW_MINUTES="$CONTAINARIUM_THREAT_DENY_BURST_WINDOW_MINUTES" \
-            CONTAINARIUM_THREAT_DENY_BURST_COUNT_LOG_ONLY="$CONTAINARIUM_THREAT_DENY_BURST_COUNT_LOG_ONLY" \
             /tmp/containarium daemon --standalone --rest \
               --jwt-secret "$JWT_SECRET" \
               --postgres "$POSTGRES_DSN" \
