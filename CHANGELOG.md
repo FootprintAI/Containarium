@@ -7,9 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.105.0] - 2026-10-16
+
+_Stop a box's code run through the daemon API, per-caller rate limits on the guardrail deploy gate and policy calls, Postgres-backed policy stores that recover without a restart, and a fix that stops a gated deploy reading another tenant's staged dataset._
+
+### Fixed
+
+- **A guardrail-gated recipe deploy reads its dataset only from the caller's own staging directory** (#2414). The staging path was derived from the request's `name`, so a proxy holding an admin token that forwards a user-chosen `name` could make the gate read another tenant's staged dataset. It now uses the authenticated subject; `name` only names the box. Non-admin behaviour is unchanged, because a non-admin deploy already required `name` to equal the subject. A proxy that wants per-user datasets must stage them under its own subject. The `--guardrail-staging-root`, `recipe deploy --guardrail-staging-ref` and MCP `deploy_recipe` help text now says so.
+
 ### Added
 
 - **`StopBoxRun` RPC: stop a box's code run with no SSH client** (#2603). `POST /v1/containers/{username}/code-runs/{run_name}:stop` sends SIGTERM (SIGKILL with `force`) to a running run's process group, the daemon-API counterpart to `containarium code stop`. Same access as `StartBoxRun` (ssh:write, box owner or collaborator). It is idempotent: a run that already exited is not signaled and the call succeeds. It refuses a run whose outcome is unknown (its PID may have been reassigned) and any PID the box user does not own, since the run record is writable by that user. A run it stops reads back as exited with status 143 (SIGTERM) or 137 (SIGKILL).
+- **Per-subject rate limits on the gated recipe deploy and the guardrail policy `Set`/`Get`** (#2404). A caller over its limit gets `RESOURCE_EXHAUSTED` (HTTP 429) with a retry hint, before the policy is read or anything is snapshotted; admins are not exempt, and ungated recipes are not limited. Defaults are 6 deploys, 10 `Set`s and 120 `Get`s per caller per minute (`--guardrail-deploy-rate-per-minute`, `--guardrail-policy-set-rate-per-minute`, `--guardrail-policy-get-rate-per-minute`, or the matching `CONTAINARIUM_GUARDRAIL_*_RATE_PER_MINUTE` variables); `0` disables a limit. See "Rate limits" in `docs/architecture/guardrail-inbound-and-server-policy.md`.
+
+### Changed
+
+- **Guardrail and coding-tool egress policy stores fail closed while Postgres is unreachable, and now recover without a restart** (#2483). Since #2394 and #2392 both stores start on a store that refuses every read and write, and switch to the Postgres store only once it is installed. Outside Kubernetes the daemon fills in a default Postgres address, so a host whose Postgres is down when the daemon starts answers `containarium guardrail policy` with an error (HTTP 500) and `containarium code egress-policy` with `UNAVAILABLE` (HTTP 503). Before #2394/#2392 it answered from an empty in-memory store, which reported "no policy" and "unrestricted". The daemon now retries the Postgres store install in the background, after 5 s and then doubling to every 60 s, with one log line per attempt. It swaps the store in atomically on the first attempt that succeeds, and the deploy gate and model gateway follow the swap. The retry never installs an in-memory store. Readiness is reported through the standard `grpc.health.v1` service, one status per policy service, served by the REST gateway at `GET /v1/health?service=<name>` (no token). `containarium doctor` prints it as an advisory "Daemon readiness" section that does not change the exit code (new `--daemon-url`, default `http://localhost:8080`). A cloud-enrolled daemon also reports it as advisory `readiness: <service>` checks in its status report. Recovery: start Postgres; the next retry installs the store. See "Guardrail and egress policy stores unavailable" in `docs/security/OPERATOR-SECURITY-RUNBOOK.md`.
 
 ## [0.104.0] - 2026-10-15
 
@@ -28,10 +41,6 @@ _The SSH authorization contract and a self-hosted decider with an `ssh_keys` reg
   `scripts/build-macos11.sh` with a privately patched toolchain (Go 1.24's certificate verification and a macOS 11.0
   minimum version). They are published beside, never instead of, the normal macOS assets. CI can only verify the build,
   not run it on macOS 11.
-
-### Changed
-
-- **Guardrail and coding-tool egress policy stores fail closed while Postgres is unreachable, and now recover without a restart** (#2483). Since #2394 and #2392 both stores start on a store that refuses every read and write, and switch to the Postgres store only once it is installed. Outside Kubernetes the daemon fills in a default Postgres address, so a host whose Postgres is down when the daemon starts answers `containarium guardrail policy` with an error (HTTP 500) and `containarium code egress-policy` with `UNAVAILABLE` (HTTP 503). Before #2394/#2392 it answered from an empty in-memory store, which reported "no policy" and "unrestricted". The daemon now retries the Postgres store install in the background, after 5 s and then doubling to every 60 s, with one log line per attempt. It swaps the store in atomically on the first attempt that succeeds, and the deploy gate and model gateway follow the swap. The retry never installs an in-memory store. Readiness is reported through the standard `grpc.health.v1` service, one status per policy service, served by the REST gateway at `GET /v1/health?service=<name>` (no token). `containarium doctor` prints it as an advisory "Daemon readiness" section that does not change the exit code (new `--daemon-url`, default `http://localhost:8080`). A cloud-enrolled daemon also reports it as advisory `readiness: <service>` checks in its status report. Recovery: start Postgres; the next retry installs the store. See "Guardrail and egress policy stores unavailable" in `docs/security/OPERATOR-SECURITY-RUNBOOK.md`.
 
 ## [0.103.3] - 2026-10-13
 
