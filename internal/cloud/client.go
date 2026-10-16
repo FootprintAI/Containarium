@@ -134,6 +134,17 @@ type Deps struct {
 	// The daemon provides this when cloud.yaml has a JWTSecretFile set (i.e.
 	// the host enrolled as a BYOC backend with a driver token).
 	Driver DriverMinter
+	// Sessions, when non-nil, handles ASSIGNMENT_KIND_TERMINATE_USER_SESSIONS
+	// assignments (#2522); nil leaves them unhandled.
+	Sessions SessionTerminator
+}
+
+// SessionTerminator ends every live SSH session a user holds on this host
+// without deleting anything. The daemon implements it with the same server
+// function `containarium sessions terminate` reaches; the interface keeps
+// internal/cloud free of an internal/server import.
+type SessionTerminator interface {
+	TerminateUserSessions(ctx context.Context, userID string) error
 }
 
 // unaryActuation is the subset of the actuation API the client drives over a
@@ -166,6 +177,15 @@ type Client struct {
 
 	status StatusProbe  // optional; nil = no capability reporting
 	driver DriverMinter // optional; nil = no driver-token refresh (#557)
+
+	sessions SessionTerminator // optional; nil = terminate assignments ignored
+	// terminated holds the assignment_ids of TERMINATE_USER_SESSIONS
+	// assignments already carried out, so the snapshot resent on every batch
+	// does not end the user's sessions again. In memory: after a daemon
+	// restart a still-live assignment runs once more, which only ends
+	// sessions the cloud still wants ended.
+	terminatedMu sync.Mutex
+	terminated   map[string]bool
 
 	conn *grpc.ClientConn
 	// ac handles the unary actuation RPCs (heartbeat + status); it is either the
@@ -201,7 +221,7 @@ func New(cfg *Config, deps Deps) (*Client, error) {
 	return &Client{
 		cfg: cfg, interval: defaultHeartbeatInterval,
 		sink: deps.Policies, containers: deps.Containers,
-		status: deps.Status, driver: deps.Driver,
+		status: deps.Status, driver: deps.Driver, sessions: deps.Sessions,
 	}, nil
 }
 
@@ -647,24 +667,42 @@ func (c *Client) watchOnce() error {
 
 // reconcile applies one batch: (1) converge per-org network policies into the
 // sink (the #315 cloud-extension loop), then (2) reconcile each assignment's
-// container toward its desired_state.
+// container toward its desired_state (or carry out its other kind).
 func (c *Client) reconcile(batch *cloudv1.AssignmentBatch) {
 	if c.sink != nil {
 		if err := c.sink.SyncNetworkPolicies(c.ctx, batch.GetNetworkPolicies()); err != nil {
 			log.Printf("[cloud] sync network policies: %v", err)
 		}
 	}
-	if c.containers != nil {
-		for _, a := range batch.GetAssignments() {
-			c.reconcileAssignment(a)
+	live := make(map[string]bool, len(batch.GetAssignments()))
+	for _, a := range batch.GetAssignments() {
+		live[a.GetAssignmentId()] = true
+		c.reconcileAssignment(a)
+	}
+	// The batch is the full live set: forget terminations the cloud has
+	// released, so the record stays bounded.
+	c.terminatedMu.Lock()
+	for id := range c.terminated {
+		if !live[id] {
+			delete(c.terminated, id)
 		}
 	}
+	c.terminatedMu.Unlock()
 }
 
-// reconcileAssignment drives one container toward its desired_state and reports
-// the observed state back. The reconcile is idempotent (the actuator no-ops a
-// converged container), so re-sent snapshots are safe.
+// reconcileAssignment dispatches on the assignment's kind. A container
+// assignment (kind UNSPECIFIED or CONTAINER) drives one container toward its
+// desired_state and reports the observed state back. The reconcile is
+// idempotent (the actuator no-ops a converged container), so re-sent
+// snapshots are safe.
 func (c *Client) reconcileAssignment(a *cloudv1.Assignment) {
+	if a.GetKind() == cloudv1.AssignmentKind_ASSIGNMENT_KIND_TERMINATE_USER_SESSIONS {
+		c.reconcileTermination(a)
+		return
+	}
+	if c.containers == nil {
+		return
+	}
 	name := localContainerName(a.GetContainerId())
 	switch a.GetDesiredState() {
 	case "running":
@@ -696,6 +734,45 @@ func (c *Client) reconcileAssignment(a *cloudv1.Assignment) {
 	default:
 		// Unknown / empty desired_state — leave it alone (informational only).
 	}
+}
+
+// reconcileTermination ends every live SSH session of a.user_id on this host
+// (the deactivation fan-out of docs/architecture/ssh-live-authorization.md).
+// It runs once per assignment_id: a replay of a carried-out assignment is a
+// no-op reported as success. A failure is not recorded, so the next
+// delivery retries. An assignment without an id cannot be deduplicated and
+// runs on every delivery; ending sessions again is harmless.
+func (c *Client) reconcileTermination(a *cloudv1.Assignment) {
+	if c.sessions == nil {
+		return
+	}
+	id, user := a.GetAssignmentId(), a.GetUserId()
+	if user == "" {
+		log.Printf("[cloud] terminate-sessions assignment %q has no user_id; ignored", id)
+		return
+	}
+	if id != "" && c.terminationDone(id) {
+		return // already carried out
+	}
+	if err := c.sessions.TerminateUserSessions(c.ctx, user); err != nil {
+		log.Printf("[cloud] terminate sessions for %s (assignment %s): %v", user, id, err)
+		return
+	}
+	if id != "" {
+		c.terminatedMu.Lock()
+		if c.terminated == nil {
+			c.terminated = map[string]bool{}
+		}
+		c.terminated[id] = true
+		c.terminatedMu.Unlock()
+	}
+	log.Printf("[cloud] terminated sessions for %s (assignment %s)", user, id)
+}
+
+func (c *Client) terminationDone(id string) bool {
+	c.terminatedMu.Lock()
+	defer c.terminatedMu.Unlock()
+	return c.terminated[id]
 }
 
 // report sends observed container state back to the cloud (best-effort). Part
