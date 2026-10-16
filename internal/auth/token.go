@@ -185,6 +185,12 @@ func NewTokenManager(secretKey string, issuer string) (*TokenManager, error) {
 	}, nil
 }
 
+// MaxTokenExpiry returns the effective maximum token lifetime (default 30d,
+// or CONTAINARIUM_MAX_TOKEN_EXPIRY_HOURS). Callers that accept an operator-
+// supplied lifetime use it to reject out-of-range values rather than relying
+// on the silent clamp in generate (#2592).
+func (tm *TokenManager) MaxTokenExpiry() time.Duration { return tm.maxTokenExpiry }
+
 // GenerateToken creates a JWT token for a user.
 //
 // SECURITY FIX: Non-expiring tokens are no longer allowed.
