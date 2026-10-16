@@ -70,11 +70,16 @@ type reportSaver interface {
 type incusCLIDevices struct{}
 
 func (incusCLIDevices) Remove(ctx context.Context, deviceName string) (string, error) {
+	// #nosec G204 -- argv, never a shell; deviceName is scanDevicePrefix plus
+	// the name of a container the daemon itself listed from Incus.
 	out, err := exec.CommandContext(ctx, "incus", "config", "device", "remove", SecurityContainerName, deviceName).CombinedOutput()
 	return string(out), err
 }
 
 func (incusCLIDevices) Add(ctx context.Context, deviceName, source, mountPath string) (string, error) {
+	// #nosec G204 -- argv, never a shell; deviceName, source and mountPath are
+	// built from the daemon's own storage pool and the name of a container it
+	// listed from Incus.
 	out, err := exec.CommandContext(ctx, "incus", "config", "device", "add",
 		SecurityContainerName, deviceName, "disk",
 		fmt.Sprintf("source=%s", source),
