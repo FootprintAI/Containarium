@@ -83,7 +83,7 @@ func TestClassifyClamScan(t *testing.T) {
 			if status != tt.wantStatus || count != tt.wantCount {
 				t.Fatalf("got (%q, %d), want (%q, %d)", status, count, tt.wantStatus, tt.wantCount)
 			}
-			if status == ScanStatusIncomplete && !strings.Contains(findings, tt.err.Error()) {
+			if tt.err != nil && !strings.Contains(findings, tt.err.Error()) {
 				t.Errorf("incomplete findings %q should carry the exec error", findings)
 			}
 		})

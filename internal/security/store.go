@@ -508,12 +508,17 @@ const (
 // can see why. Only a clean exit with no findings is "clean".
 func ClassifyClamScan(stdout, stderr string, scanErr error) (status string, findingsCount int, findings string) {
 	status, findingsCount, findings = ParseClamScanOutput(stdout)
-	if status == ScanStatusInfected || scanErr == nil {
+	if scanErr == nil {
 		return status, findingsCount, findings
 	}
 	detail := scanErr.Error()
 	if msg := strings.TrimSpace(stderr); msg != "" {
 		detail += "\n" + msg
+	}
+	if status == ScanStatusInfected {
+		// Keep the verdict and count, but record that the run also errored
+		// so an operator can tell the scan was partial.
+		return status, findingsCount, findings + "\n" + detail
 	}
 	return ScanStatusIncomplete, 0, detail
 }
