@@ -14396,6 +14396,13 @@
           "type": "integer",
           "format": "int32",
           "description": "Number of distinct subjects (tenants for the tenant guard)."
+        },
+        "unmanaged": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Instances carrying no user.containarium.* key (made directly in Incus,\nor a VM). Left unguarded and listed for information only; unlike\nunresolved they do not degrade the verdict (#2396)."
         }
       },
       "description": "GuardStatus is one guard's last-pass snapshot."

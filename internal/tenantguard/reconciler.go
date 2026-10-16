@@ -65,10 +65,16 @@ type Status struct {
 	Mode           nicguard.Mode
 	FirewallDriver string
 	Entries        []Entry
-	// Unresolved lists containers that are neither core-role nor
-	// attributable to a tenant; they are left unguarded and reported.
+	// Unresolved lists Containarium-managed containers that are neither
+	// core-role nor attributable to a tenant; they are left unguarded and
+	// reported, and an unguarded managed box is a failed guard.
 	Unresolved []string
-	Tenants    int
+	// Unmanaged lists instances carrying no user.containarium.* key at all
+	// (made directly in Incus, or a VM). They are left unguarded and listed
+	// for information; they are not Containarium's to attribute, so they do
+	// not degrade the verdict (#2396).
+	Unmanaged []string
+	Tenants   int
 	// Unsupported is set when this host cannot carry bridge NIC ACLs
 	// (firewall driver or Incus too old): nothing is guarded, creates are
 	// not refused, and LastError says why. Doctor treats it as red.
@@ -123,6 +129,7 @@ func (r *Reconciler) Status() Status {
 	st := r.status
 	st.Entries = append([]Entry(nil), r.status.Entries...)
 	st.Unresolved = append([]string(nil), r.status.Unresolved...)
+	st.Unmanaged = append([]string(nil), r.status.Unmanaged...)
 	return st
 }
 
@@ -183,7 +190,7 @@ func (r *Reconciler) Prepare(ctx context.Context, containerName, tenant string) 
 		}
 		return fmt.Errorf("tenantguard: %w", err)
 	}
-	in, _, err := r.gather(ctx)
+	in, _, _, err := r.gather(ctx)
 	if err != nil {
 		return fmt.Errorf("tenantguard: %w", err)
 	}
@@ -246,7 +253,7 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) error {
 	}
 	r.setStatus(func(s *Status) { s.Unsupported = false })
 
-	in, unresolved, err := r.gather(ctx)
+	in, unresolved, unmanaged, err := r.gather(ctx)
 	if err != nil {
 		r.setStatus(func(s *Status) { s.FirewallDriver = driver })
 		return r.fail(fmt.Errorf("tenantguard: %w", err))
@@ -310,11 +317,13 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) error {
 
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Container < entries[j].Container })
 	sort.Strings(unresolved)
+	sort.Strings(unmanaged)
 	r.setStatus(func(s *Status) {
 		s.Mode = r.cfg.Mode
 		s.FirewallDriver = driver
 		s.Entries = entries
 		s.Unresolved = unresolved
+		s.Unmanaged = unmanaged
 		s.Tenants = len(pol.ACLs)
 		s.LegacyIngressCleared += cleared
 		s.LastPass = time.Now()
@@ -334,14 +343,14 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) error {
 // gather reads the host into Inputs. Core-role containers become
 // initiators (when their role is one) and are never subjects; a container
 // with no resolvable tenant is reported, not guessed.
-func (r *Reconciler) gather(ctx context.Context) (Inputs, []string, error) {
+func (r *Reconciler) gather(ctx context.Context) (Inputs, []string, []string, error) {
 	bridge, gateway, err := nicguard.ParseBridge(r.cfg.BridgeCIDR)
 	if err != nil {
-		return Inputs{}, nil, err
+		return Inputs{}, nil, nil, err
 	}
 	containers, err := r.be.ListContainers()
 	if err != nil {
-		return Inputs{}, nil, fmt.Errorf("list containers: %w", err)
+		return Inputs{}, nil, nil, fmt.Errorf("list containers: %w", err)
 	}
 	in := Inputs{BridgeCIDR: bridge, HostGateway: gateway, Initiators: map[incus.Role][]netip.Addr{}}
 	if r.cfg.Policies != nil {
@@ -350,7 +359,7 @@ func (r *Reconciler) gather(ctx context.Context) (Inputs, []string, error) {
 			// A policy read failure must not drop cross-tenant allows that
 			// were in force (a pass would then close doors mid-flight); fail
 			// the pass and keep yesterday's ACLs.
-			return Inputs{}, nil, fmt.Errorf("list network policies: %w", perr)
+			return Inputs{}, nil, nil, fmt.Errorf("list network policies: %w", perr)
 		}
 		for _, p := range policies {
 			if len(p.GetAllowFromTenants()) > 0 {
@@ -361,7 +370,7 @@ func (r *Reconciler) gather(ctx context.Context) (Inputs, []string, error) {
 			}
 		}
 	}
-	var unresolved []string
+	var unresolved, unmanaged []string
 	for _, c := range containers {
 		// ContainerInfo.IPAddress is the daemon's "primary" address and can
 		// come from an interface that is not the bridge (a podman box
@@ -378,7 +387,11 @@ func (r *Reconciler) gather(ctx context.Context) (Inputs, []string, error) {
 		}
 		tenant := incus.ResolveTenant(c.Tenant, c.Labels[incus.CloudOrgIDLabel], c.Name)
 		if tenant == "" {
-			unresolved = append(unresolved, c.Name)
+			if c.Managed {
+				unresolved = append(unresolved, c.Name)
+			} else {
+				unmanaged = append(unmanaged, c.Name)
+			}
 			continue
 		}
 		b := Box{Name: c.Name, Tenant: tenant}
@@ -387,7 +400,7 @@ func (r *Reconciler) gather(ctx context.Context) (Inputs, []string, error) {
 		}
 		in.Boxes = append(in.Boxes, b)
 	}
-	return in, unresolved, nil
+	return in, unresolved, unmanaged, nil
 }
 
 // attach makes the NIC instance-local and sets the guard keys. Both calls

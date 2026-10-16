@@ -19,6 +19,7 @@ func TestGuardHealthy(t *testing.T) {
 		{"unsupported host", func(g *guardStatusJSON) { g.Unsupported = true }, false},
 		{"pass error", func(g *guardStatusJSON) { g.LastError = "boom" }, false},
 		{"unresolved tenant", func(g *guardStatusJSON) { g.Unresolved = []string{"mystery"} }, false},
+		{"unmanaged instances are informational", func(g *guardStatusJSON) { g.Unmanaged = []string{"hand-made", "a-vm"} }, true},
 		{"unattached subject", func(g *guardStatusJSON) { g.Entries[0].Attached = false }, false},
 		{"subject error", func(g *guardStatusJSON) { g.Entries[0].LastError = "nic device: boom" }, false},
 	}

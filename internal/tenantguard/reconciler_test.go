@@ -516,7 +516,7 @@ func TestReconcile_ACLWriteFailureIsPerTenant(t *testing.T) {
 func TestReconcile_UnresolvedIsReportedNotGuessed(t *testing.T) {
 	f := newFakeBackend("nftables",
 		box("alice", "10.100.0.17"),
-		incus.ContainerInfo{Name: "mystery", IPAddress: "10.100.0.50", State: "Running"},
+		incus.ContainerInfo{Name: "mystery", IPAddress: "10.100.0.50", State: "Running", Managed: true},
 	)
 	r := NewReconciler(f, enforceCfg())
 	if err := r.ReconcileOnce(context.Background()); err != nil {
@@ -812,5 +812,29 @@ func TestReconcile_ReattributedBoxLeavesItsOldTenantACL(t *testing.T) {
 	}
 	if !srcSet(f.acls[ACLName("alice")])["10.100.0.18/32"] {
 		t.Error("alice's ACL must now admit the moved box as a sibling")
+	}
+}
+
+// #2396: an instance with no containarium keys at all (made directly in
+// Incus, or a VM) is listed as unmanaged, not unresolved, so it cannot
+// degrade the verdict; it is still never guarded under a guessed tenant.
+func TestReconcile_UnmanagedInstanceIsListedNotUnresolved(t *testing.T) {
+	f := newFakeBackend("nftables",
+		box("alice", "10.100.0.17"),
+		incus.ContainerInfo{Name: "hand-made", IPAddress: "10.100.0.50", State: "Running"},
+	)
+	r := NewReconciler(f, enforceCfg())
+	if err := r.ReconcileOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	st := r.Status()
+	if len(st.Unmanaged) != 1 || st.Unmanaged[0] != "hand-made" {
+		t.Errorf("Unmanaged = %v", st.Unmanaged)
+	}
+	if len(st.Unresolved) != 0 {
+		t.Errorf("an unlabelled instance must not be Unresolved: %v", st.Unresolved)
+	}
+	if f.devices["hand-made"] != nil {
+		t.Error("an unmanaged instance must not be guarded under a guessed tenant")
 	}
 }

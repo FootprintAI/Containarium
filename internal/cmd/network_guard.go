@@ -59,6 +59,7 @@ type guardStatusJSON struct {
 	StaleSince     string           `json:"staleSince"`
 	Entries        []guardEntryJSON `json:"entries"`
 	Unresolved     []string         `json:"unresolved"`
+	Unmanaged      []string         `json:"unmanaged"`
 	Subjects       int              `json:"subjects"`
 }
 
@@ -91,7 +92,9 @@ func runNetworkGuardStatus(cmd *cobra.Command, _ []string) error {
 // guardHealthy is the one-line verdict: a guard is healthy only when it is
 // enforcing, supported here, its last pass had no error, every subject is
 // attached, and nothing was left unresolved — an unguarded tenant is a
-// failed guard even when the pass itself succeeded.
+// failed guard even when the pass itself succeeded. Unmanaged instances (no
+// containarium labels at all) are listed but never degrade the verdict
+// (#2396).
 func guardHealthy(g *guardStatusJSON) bool {
 	// An empty lastPass means no pass has completed yet: nothing has been
 	// verified, so nothing is healthy.
@@ -144,5 +147,8 @@ func printGuard(w interface{ Write([]byte) (int, error) }, title string, g *guar
 	}
 	for _, u := range g.Unresolved {
 		fmt.Fprintf(w, "  unresolved: %s (left unguarded, reported)\n", u)
+	}
+	for _, u := range g.Unmanaged {
+		fmt.Fprintf(w, "  unmanaged:  %s (no containarium labels; left unguarded, informational)\n", u)
 	}
 }

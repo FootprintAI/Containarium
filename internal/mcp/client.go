@@ -1479,6 +1479,7 @@ type GuardStatusResponse struct {
 	StaleSince     string               `json:"staleSince"`
 	Entries        []GuardEntryResponse `json:"entries"`
 	Unresolved     []string             `json:"unresolved"`
+	Unmanaged      []string             `json:"unmanaged"`
 	Subjects       int                  `json:"subjects"`
 }
 
