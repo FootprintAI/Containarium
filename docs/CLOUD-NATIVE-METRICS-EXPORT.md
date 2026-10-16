@@ -96,9 +96,11 @@ containarium monitoring export status
 ## 5. Verify metrics are visible
 
 Within ~2 minutes, in Cloud Monitoring → Metrics Explorer, query
-`workload.googleapis.com/containarium.host.cpu.load_1m` (or any of the
-other seven host series, or `workload.googleapis.com/containarium.export.
-heartbeat`) filtered to your project — a real, moving data point confirms
+`prometheus.googleapis.com/containarium.host.cpu.load_1m/gauge` (or any of
+the other seven host series, or
+`prometheus.googleapis.com/containarium.export.heartbeat/gauge`) filtered to
+your project (hosts below v0.100.0 write `workload.googleapis.com/containarium.*`
+instead; see "Metric names and resource type" in the dead-man runbook) — a real, moving data point confirms
 the pipeline end to end.
 
 ## 6. Create one working alert (the dead-man heartbeat)
