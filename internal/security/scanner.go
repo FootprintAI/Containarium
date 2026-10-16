@@ -34,6 +34,87 @@ type Scanner struct {
 	// The daemon wires this to the auto-quarantine hook (#659). Kept a plain
 	// callback so internal/security keeps no dependency on internal/server.
 	onScanResult func(containerName, username, status string)
+
+	// Test seams for ScanContainer (#2589). All nil in production, where the
+	// concrete incus client, the incus CLI and the Postgres store are used.
+	execer  scanExecer     // exec inside the security container; nil -> incusClient
+	devices scanDevices    // mount/unmount of the scan disk device; nil -> incus CLI
+	reports reportSaver    // persists the report; nil -> store
+	settle  *time.Duration // wait after mounting; nil -> mountSettleTime
+}
+
+// mountSettleTime is how long ScanContainer waits for the freshly added disk
+// device to appear before looking at it.
+const mountSettleTime = 2 * time.Second
+
+// scanExecer runs a command inside the security container.
+// *incus.Client satisfies it.
+type scanExecer interface {
+	ExecWithOutput(container string, cmd []string) (stdout, stderr string, err error)
+}
+
+// scanDevices mounts a target's rootfs read-only into the security container
+// and removes it again.
+type scanDevices interface {
+	Remove(ctx context.Context, deviceName string) (output string, err error)
+	Add(ctx context.Context, deviceName, source, mountPath string) (output string, err error)
+}
+
+// reportSaver persists one scan report. *Store satisfies it.
+type reportSaver interface {
+	SaveReport(ctx context.Context, report *Report) error
+}
+
+// incusCLIDevices drives the disk device through the incus CLI, which is
+// simpler than the raw API for device management.
+type incusCLIDevices struct{}
+
+func (incusCLIDevices) Remove(ctx context.Context, deviceName string) (string, error) {
+	// #nosec G204 -- argv, never a shell; deviceName is scanDevicePrefix plus
+	// the name of a container the daemon itself listed from Incus.
+	out, err := exec.CommandContext(ctx, "incus", "config", "device", "remove", SecurityContainerName, deviceName).CombinedOutput()
+	return string(out), err
+}
+
+func (incusCLIDevices) Add(ctx context.Context, deviceName, source, mountPath string) (string, error) {
+	// #nosec G204 -- argv, never a shell; deviceName, source and mountPath are
+	// built from the daemon's own storage pool and the name of a container it
+	// listed from Incus.
+	out, err := exec.CommandContext(ctx, "incus", "config", "device", "add",
+		SecurityContainerName, deviceName, "disk",
+		fmt.Sprintf("source=%s", source),
+		fmt.Sprintf("path=%s", mountPath),
+		"readonly=true",
+	).CombinedOutput()
+	return string(out), err
+}
+
+func (s *Scanner) scanExec() scanExecer {
+	if s.execer != nil {
+		return s.execer
+	}
+	return s.incusClient
+}
+
+func (s *Scanner) scanDevices() scanDevices {
+	if s.devices != nil {
+		return s.devices
+	}
+	return incusCLIDevices{}
+}
+
+func (s *Scanner) reportSaver() reportSaver {
+	if s.reports != nil {
+		return s.reports
+	}
+	return s.store
+}
+
+func (s *Scanner) settleTime() time.Duration {
+	if s.settle != nil {
+		return *s.settle
+	}
+	return mountSettleTime
 }
 
 // SetScanResultHook registers a callback invoked after each completed scan
@@ -271,39 +352,28 @@ func (s *Scanner) ScanContainer(ctx context.Context, containerName, username str
 	rootfsPath := fmt.Sprintf("/var/lib/incus/storage-pools/%s/containers/%s/rootfs", s.storagePool, containerName)
 
 	// Remove any stale device from a previous interrupted scan
-	rmStaleCmd := exec.CommandContext(ctx, "incus", "config", "device", "remove",
-		SecurityContainerName, deviceName,
-	)
-	_, _ = rmStaleCmd.CombinedOutput() // ignore errors — device may not exist
+	devices := s.scanDevices()
+	_, _ = devices.Remove(ctx, deviceName) // ignore errors — device may not exist
 
-	// Add disk device using incus CLI (simpler than raw API for device management)
-	addCmd := exec.CommandContext(ctx, "incus", "config", "device", "add",
-		SecurityContainerName, deviceName, "disk",
-		fmt.Sprintf("source=%s", rootfsPath),
-		fmt.Sprintf("path=%s", mountPath),
-		"readonly=true",
-	)
-	if out, err := addCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to mount rootfs: %w (output: %s)", err, string(out))
+	// Add the disk device (read-only)
+	if out, err := devices.Add(ctx, deviceName, rootfsPath, mountPath); err != nil {
+		return fmt.Errorf("failed to mount rootfs: %w (output: %s)", err, out)
 	}
 
-	// Ensure cleanup
+	// Ensure cleanup. Detached from ctx so a cancelled scan still unmounts.
 	defer func() {
-		rmCmd := exec.Command("incus", "config", "device", "remove",
-			SecurityContainerName, deviceName,
-		)
-		if out, err := rmCmd.CombinedOutput(); err != nil {
-			log.Printf("Warning: failed to unmount scan device %s: %v (output: %s)", deviceName, err, string(out))
+		if out, err := devices.Remove(context.WithoutCancel(ctx), deviceName); err != nil {
+			log.Printf("Warning: failed to unmount scan device %s: %v (output: %s)", deviceName, err, out)
 		}
 	}()
 
 	// Wait briefly for device to be available
-	time.Sleep(2 * time.Second)
+	time.Sleep(s.settleTime())
 
 	// Verify the mount has actual content — on ZFS backends, stopped containers
 	// or missing datasets result in an empty mount that clamdscan scans instantly,
 	// producing a false "clean" with 0s duration.
-	lsOut, _, _ := s.incusClient.ExecWithOutput(SecurityContainerName, []string{
+	lsOut, _, _ := s.scanExec().ExecWithOutput(SecurityContainerName, []string{
 		"ls", mountPath,
 	})
 	if strings.TrimSpace(lsOut) == "" {
@@ -314,7 +384,7 @@ func (s *Scanner) ScanContainer(ctx context.Context, containerName, username str
 	// memory, avoiding the expensive DB reload that clamscan performs on each
 	// invocation). Directory exclusions are configured in clamd.conf ExcludePath.
 	startTime := time.Now()
-	stdout, stderr, scanErr := s.incusClient.ExecWithOutput(SecurityContainerName, []string{
+	stdout, stderr, scanErr := s.scanExec().ExecWithOutput(SecurityContainerName, []string{
 		"clamdscan", "--infected", "--no-summary", "--multiscan",
 		mountPath,
 	})
@@ -339,7 +409,7 @@ func (s *Scanner) ScanContainer(ctx context.Context, containerName, username str
 		ScanDuration:  scanDuration.Truncate(time.Second).String(),
 	}
 
-	if err := s.store.SaveReport(ctx, report); err != nil {
+	if err := s.reportSaver().SaveReport(ctx, report); err != nil {
 		return fmt.Errorf("failed to save report: %w", err)
 	}
 
