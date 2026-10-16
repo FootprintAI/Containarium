@@ -5,10 +5,33 @@ deps:
 modules:
   - path: proto
 lint:
-  # Existing API exceptions are documented beside their declarations (#2481).
-  disallow_comment_ignores: false
+  # Legacy names kept for wire/API compatibility (#2481). Waived here rather
+  # than with in-source buf:lint:ignore comments, which are copied into the
+  # generated swagger and Go docs (#2549). Do not add new entries for new RPCs.
   use:
     - STANDARD
+  ignore_only:
+    ENUM_ZERO_VALUE_SUFFIX:
+      - proto/containarium/v1/container.proto
+    RPC_REQUEST_RESPONSE_UNIQUE:
+      - proto/containarium/cloud/v1/actuation_service.proto
+      - proto/containarium/v1/anonbox.proto
+      - proto/containarium/v1/network_policy.proto
+      - proto/containarium/v1/ssh_authz.proto
+    RPC_REQUEST_STANDARD_NAME:
+      - proto/containarium/v1/guardrail.proto
+      - proto/containarium/v1/sandbox.proto
+      - proto/containarium/v1/ssh_authz.proto
+    RPC_RESPONSE_STANDARD_NAME:
+      - proto/containarium/cloud/v1/actuation_service.proto
+      - proto/containarium/v1/anonbox.proto
+      - proto/containarium/v1/events.proto
+      - proto/containarium/v1/guardrail.proto
+      - proto/containarium/v1/network.proto
+      - proto/containarium/v1/network_policy.proto
+      - proto/containarium/v1/sandbox.proto
+      - proto/containarium/v1/ssh_authz.proto
+      - proto/containarium/v1/traffic.proto
 breaking:
   use:
     - FILE

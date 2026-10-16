@@ -270,9 +270,6 @@ service SpawnService {
   // Exec runs one command to completion and returns its stdout, stderr,
   // and exit code — the fast-path equivalent of
   // SandboxService.ExecInSandbox, minus the Incus round-trip.
-  // Preserve the published RPC request/response type names (#2481).
-  // buf:lint:ignore RPC_REQUEST_STANDARD_NAME
-  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
   rpc Exec(AgentExecRequest) returns (AgentExecResponse);
 }
 

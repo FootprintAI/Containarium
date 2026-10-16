@@ -33,9 +33,6 @@ const (
 // internal plug point between two processes on the same side of a trust
 // boundary, not a product endpoint.
 type GuardrailEngineServiceClient interface {
-	// Preserve the published RPC request/response type names (#2481).
-	// buf:lint:ignore RPC_REQUEST_STANDARD_NAME
-	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
 	Scan(ctx context.Context, in *GuardrailScanRequest, opts ...grpc.CallOption) (*GuardrailScanResponse, error)
 }
 
@@ -68,9 +65,6 @@ func (c *guardrailEngineServiceClient) Scan(ctx context.Context, in *GuardrailSc
 // internal plug point between two processes on the same side of a trust
 // boundary, not a product endpoint.
 type GuardrailEngineServiceServer interface {
-	// Preserve the published RPC request/response type names (#2481).
-	// buf:lint:ignore RPC_REQUEST_STANDARD_NAME
-	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
 	Scan(context.Context, *GuardrailScanRequest) (*GuardrailScanResponse, error)
 	mustEmbedUnimplementedGuardrailEngineServiceServer()
 }
