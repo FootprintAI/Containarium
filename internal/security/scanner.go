@@ -28,7 +28,9 @@ type Scanner struct {
 	storagePool string
 	cancel      context.CancelFunc
 	// onScanResult, if set, is called after each completed scan with the
-	// container name, owning tenant, and result status ("clean"|"infected").
+	// container name, owning tenant, and result status (ScanStatusClean |
+	// ScanStatusInfected | ScanStatusIncomplete). Only "infected" and "clean"
+	// act on the quarantine; "incomplete" must leave it untouched.
 	// The daemon wires this to the auto-quarantine hook (#659). Kept a plain
 	// callback so internal/security keeps no dependency on internal/server.
 	onScanResult func(containerName, username, status string)
@@ -312,18 +314,18 @@ func (s *Scanner) ScanContainer(ctx context.Context, containerName, username str
 	// memory, avoiding the expensive DB reload that clamscan performs on each
 	// invocation). Directory exclusions are configured in clamd.conf ExcludePath.
 	startTime := time.Now()
-	stdout, _, scanErr := s.incusClient.ExecWithOutput(SecurityContainerName, []string{
+	stdout, stderr, scanErr := s.incusClient.ExecWithOutput(SecurityContainerName, []string{
 		"clamdscan", "--infected", "--no-summary", "--multiscan",
 		mountPath,
 	})
 	scanDuration := time.Since(startTime)
 
-	// Parse output - clamdscan returns exit code 1 if infections found (not an error)
-	status, findingsCount, findings := ParseClamScanOutput(stdout)
-
-	// If scanErr is set but it's just exit code 1 (infections found), that's OK
-	if scanErr != nil && status == "clean" {
-		log.Printf("Warning: clamdscan error for %s: %v", containerName, scanErr)
+	// clamdscan exits 1 when infections are found (not an error) but 2 on a
+	// scan error, whose stdout has no FOUND lines — so stdout alone would read
+	// "clean". Classify on the exit error too (#2496).
+	status, findingsCount, findings := ClassifyClamScan(stdout, stderr, scanErr)
+	if status == ScanStatusIncomplete {
+		log.Printf("Warning: clamdscan did not complete for %s: %v", containerName, scanErr)
 	}
 
 	// Save report
@@ -341,9 +343,12 @@ func (s *Scanner) ScanContainer(ctx context.Context, containerName, username str
 		return fmt.Errorf("failed to save report: %w", err)
 	}
 
-	if status == "infected" {
+	switch status {
+	case ScanStatusInfected:
 		log.Printf("Security scan: %s (%s) INFECTED - %d findings", containerName, username, findingsCount)
-	} else {
+	case ScanStatusIncomplete:
+		log.Printf("Security scan: %s (%s) INCOMPLETE - not reported clean (took %s)", containerName, username, scanDuration.Truncate(time.Second))
+	default:
 		log.Printf("Security scan: %s (%s) clean (took %s)", containerName, username, scanDuration.Truncate(time.Second))
 	}
 

@@ -42,8 +42,20 @@
 # Optional:
 #   CONTAINARIUM_BACKUP_CONF  path to config file (default below)
 #   CONTAINARIUM_BIN          path to containarium binary (default below)
-#   CONTAINARIUM_AUTH_TOKEN   JWT for --token (omit when running on daemon host
-#                             with a root service token or peer auth)
+#   CONTAINARIUM_JWT_SECRET_FILE  path to the daemon's JWT signing secret
+#                             (e.g. /etc/containarium/jwt.secret). When set, each
+#                             run mints its own 2h token (#2592) and any
+#                             CONTAINARIUM_AUTH_TOKEN is ignored. If the mint
+#                             fails the run exits non-zero; it never falls back
+#                             to a static token. ON-HOST ONLY: root on the daemon
+#                             host already holds this file (0600 root), so this
+#                             adds no trust. NEVER copy the signing secret to a
+#                             remote runner — those use CONTAINARIUM_AUTH_TOKEN.
+#   CONTAINARIUM_AUTH_TOKEN   static JWT for --token, for remote runners that
+#                             cannot read the secret. Tokens are capped at 30d
+#                             (there are no non-expiring tokens): the owner must
+#                             re-mint it before it lapses or every run fails
+#                             with `invalid token`.
 #   CONTAINARIUM_BACKUP_KEEP  newest backups to keep per (tenant, database)
 #                             after each successful create (default: 7)
 
@@ -59,6 +71,19 @@ KEEP="${CONTAINARIUM_BACKUP_KEEP:-7}"
 if [[ ! -f "$CONF" ]]; then
   echo "[backup] config not found: $CONF" >&2
   exit 1
+fi
+
+if [[ -n "${CONTAINARIUM_JWT_SECRET_FILE:-}" ]]; then
+  # Mint a short-lived token for this run (#2592). A failure is fatal: falling
+  # back to a static token would hide the very expiry this path exists to avoid.
+  if ! TOKEN="$("$CTN" token generate \
+      --username backup-scheduler --roles admin \
+      --scopes backups:write,backups:read \
+      --expiry 2h \
+      --secret-file "$CONTAINARIUM_JWT_SECRET_FILE" --raw)" || [[ -z "$TOKEN" ]]; then
+    echo "[backup] FATAL: could not mint a token from CONTAINARIUM_JWT_SECRET_FILE=$CONTAINARIUM_JWT_SECRET_FILE" >&2
+    exit 1
+  fi
 fi
 
 auth_flags=()

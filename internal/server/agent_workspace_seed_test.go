@@ -46,6 +46,33 @@ func TestBuildWorkspaceSeedScript(t *testing.T) {
 	}
 }
 
+// TestBuildWorkspaceSeedScriptTellsAgentWhereCheckoutIs pins #2512: until the
+// runtime binds to workspace.json, the checkout path must reach the agent
+// through its system prompt, appended (never replacing the skill's prompt) and
+// quote-safe.
+func TestBuildWorkspaceSeedScriptTellsAgentWhereCheckoutIs(t *testing.T) {
+	seedDir := seedDirFor("run-1")
+	script := buildWorkspaceSeedScript(seedDir, workspaceSeed{
+		Path:      workspaceDirFor("run-1"),
+		GitSource: "https://example.com/it's/repo",
+		GitCommit: "deadbeef",
+	})
+	if !strings.Contains(script, ">> "+seedDir+"/system_prompt.txt") {
+		t.Fatalf("script does not append to the system prompt:\n%s", script)
+	}
+	if strings.Contains(script, "> "+seedDir+"/system_prompt.txt") && !strings.Contains(script, ">> "+seedDir+"/system_prompt.txt") {
+		t.Errorf("script overwrites the system prompt:\n%s", script)
+	}
+	for _, want := range []string{"/workspace/runs/run-1", "deadbeef"} {
+		if !strings.Contains(script, want) {
+			t.Errorf("prompt note missing %q:\n%s", want, script)
+		}
+	}
+	if got := buildWorkspaceSeedScript(seedDir, workspaceSeed{}); strings.Contains(got, "system_prompt.txt") {
+		t.Errorf("no checkout, but the prompt was touched:\n%s", got)
+	}
+}
+
 // TestBuildWorkspaceSeedScriptEscapesSingleQuotes proves a git_source/ref
 // carrying a single quote can't break out of the printf argument's shell
 // quoting — same defect class buildAgentSeedScript already guards

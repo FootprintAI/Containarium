@@ -382,38 +382,51 @@ systemctl list-timers containarium-backup.timer
 
 ### Auth for an unattended run
 
-A cron/timer job has no operator present to type a token, so it needs one
-that outlives any single run — `--expiry 0` mints a genuinely
-non-expiring token, the documented pattern for exactly this case
-(`containarium token --help` calls it out as a "non-expiring service
-token"). Give it its own identity (not `admin`) so scheduled runs are
-distinguishable from interactive ones in the audit log, `admin` role so
-it can act across tenants, and only the scopes it actually needs:
+A timer job has no operator present to type a token. **There is no such
+thing as a non-expiring token**: every token is capped at 30 days
+(`CONTAINARIUM_MAX_TOKEN_EXPIRY_HOURS`, default 720), and `token generate`
+rejects `--expiry 0` or anything above the cap. A static token pasted into
+`backup.env` therefore stops working after at most 30 days, and from then on
+every run fails with `Error: invalid token` until someone notices.
+
+**On the daemon host (the default): mint a short-lived token per run.**
+Point the job at the signing secret and `backup-all-tenants.sh` mints a 2h
+token for the `backup-scheduler` identity (`admin` role,
+`backups:write,backups:read` scopes) at the start of every run:
+
+```bash
+# /etc/containarium/backup.env
+CONTAINARIUM_JWT_SECRET_FILE=/etc/containarium/jwt.secret
+```
+
+- When `CONTAINARIUM_JWT_SECRET_FILE` is set, any `CONTAINARIUM_AUTH_TOKEN`
+  is ignored, so a stale token cannot win silently. Delete the old
+  `CONTAINARIUM_AUTH_TOKEN=` line from `backup.env` after cutover rather than
+  leaving a lapsed credential around.
+- If the mint fails (unreadable secret, bad path) the run exits non-zero and
+  logs `could not mint a token`; it never falls back to a static token.
+- **On-host only.** Root on the daemon host already holds `jwt.secret`
+  (mode 0600, root), so this adds no trust. Never copy the signing secret to
+  a remote runner to make backups work.
+
+**Remote runners: a static token you must rotate.** A runner that is not the
+daemon host cannot read the secret and uses `CONTAINARIUM_AUTH_TOKEN`. Mint it
+on the daemon host with an explicit lifetime of at most 30 days, and put a
+rotation on a calendar well before it lapses:
 
 ```bash
 sudo containarium token generate \
   --username backup-scheduler --roles admin \
   --scopes backups:write,backups:read \
-  --expiry 0 \
-  --secret-file /etc/containarium/jwt.secret --raw \
-  > /etc/containarium/backup-scheduler.token
-chmod 0600 /etc/containarium/backup-scheduler.token
-chown root:root /etc/containarium/backup-scheduler.token
+  --expiry 720h \
+  --secret-file /etc/containarium/jwt.secret --raw
 ```
 
+The human-mode output (without `--raw`) prints the real expiry timestamp.
 `EnvironmentFile=` (what `containarium-backup.service` uses to load
-`backup.env`) is parsed literally — no command substitution — so put the
-token's actual value in `backup.env` directly:
-
-```bash
-printf 'CONTAINARIUM_AUTH_TOKEN=%s\n' "$(cat /etc/containarium/backup-scheduler.token)" \
-  >> /etc/containarium/backup.env
-```
-
-`backup.env` is already mode 0600, root-owned, and documented as
-containing credentials, so this doesn't change its threat model. If this
-token ever needs to be revoked, `containarium token revoke` takes it from
-here same as any other.
+`backup.env`) is parsed literally, so put the token's value in `backup.env`
+directly. If it ever needs revoking, `containarium token revoke` takes it from
+here like any other token.
 
 ### Watching and alerting
 
