@@ -88,6 +88,10 @@ Examples:
 		// Recorded before resolution: --server or CONTAINARIUM_SERVER, never
 		// the credentials file's default_server. `guardrail apply/verify`
 		// contact a server only when it was named this way (#2368).
+		// Args and flags have parsed by now: any error from here on is a
+		// runtime failure (API 404, auth, network), not a usage mistake, so
+		// don't append the usage block to it (#2595).
+		cmd.SilenceUsage = true
 		explicitServerAddr = serverAddr
 		serverAddr = canonicalServerAddr(resolveServerAddr(serverAddr))
 		if authToken == "" {
@@ -173,6 +177,7 @@ func init() {
 	// Remote server flags (HTTP mode)
 	rootCmd.PersistentFlags().BoolVar(&httpMode, "http", os.Getenv("CONTAINARIUM_HTTP") == "true", "use HTTP/REST API instead of gRPC (env: CONTAINARIUM_HTTP=true)")
 	rootCmd.PersistentFlags().StringVar(&authToken, "token", os.Getenv("CONTAINARIUM_TOKEN"), "JWT authentication token for HTTP API. Precedence: 1) --token flag, 2) CONTAINARIUM_TOKEN env, 3) ~/.containarium/credentials.json (populated by `containarium login`).")
+	hideSecretFlagDefaults(rootCmd.PersistentFlags(), "token") // env-seeded JWT must not print in usage (#2595)
 
 	// Version command with verbose flag
 	versionCmd.Flags().BoolVar(&verboseVersion, "verbose", false, "show detailed version information")

@@ -92,6 +92,7 @@ func init() {
 	pf.StringVar(&nodeGPU, "gpu", "", "GPU PCI address for --kind gpu, e.g. pci=0000:01:00.0 or 0000:01:00.0")
 	pf.StringVar(&nodeSentinel, "sentinel", os.Getenv(config.EnvSentinelAddr), "sentinel address host:port (env: CONTAINARIUM_SENTINEL_ADDR)")
 	pf.StringVar(&nodeTunnelToken, "tunnel-token", os.Getenv("CONTAINARIUM_TUNNEL_TOKEN"), "tunnel auth token (prefer CONTAINARIUM_TUNNEL_TOKEN env)")
+	hideSecretFlagDefaults(pf, "tunnel-token") // #2595
 	pf.StringVar(&nodeImage, "image", nodevm.DefaultImage, "base image for the VM")
 	pf.StringVar(&nodeBinary, "binary", "", "local containarium binary to push into the VM (default: this binary)")
 
