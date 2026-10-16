@@ -450,14 +450,17 @@ func (e *NetworkPolicyEnforcer) Stop() {
 func (e *NetworkPolicyEnforcer) OnDenyEvent(ctx context.Context, ev netbpf.DenyEvent) {
 	// #1640: hand every deny event to the threat-detection engine, same as
 	// the audit write below — nil hook is the default (sentry disabled).
-	if e.denyHook != nil {
-		e.denyHook(ev)
-	}
-
 	e.mu.Lock()
 	tenant := e.idName[ev.TenantID]
 	dropped := e.enforced[ev.TenantID]
 	e.mu.Unlock()
+	// The hook learns the tenant's effective mode (#2612): the BPF program
+	// emits the event for a log_only would-deny exactly as for a drop.
+	if e.denyHook != nil {
+		hookEv := ev
+		hookEv.LogOnly = !dropped
+		e.denyHook(hookEv)
+	}
 	// Always log the denied flow. The program emits the event whether or not it
 	// drops, so the action depends on the tenant's effective mode: a DROP under
 	// enforce, an observation under log_only. This line is the operator's signal.
