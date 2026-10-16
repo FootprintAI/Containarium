@@ -49,11 +49,13 @@ are upgraded. Always confirm a filter selects data before trusting a policy
 built on it:
 
 ```bash
+START=$(date -u -d '10 minutes ago' +%FT%TZ 2>/dev/null || date -u -v-10M +%FT%TZ)  # GNU, else BSD/macOS
+END=$(date -u +%FT%TZ)
 curl -s -H "Authorization: Bearer $(gcloud auth print-access-token)" \
   -G "https://monitoring.googleapis.com/v3/projects/${PROJECT_ID}/timeSeries" \
   --data-urlencode 'filter=<the policy filter>' \
-  --data-urlencode "interval.startTime=$(date -u -v-10M +%FT%TZ)" \
-  --data-urlencode "interval.endTime=$(date -u +%FT%TZ)"
+  --data-urlencode "interval.startTime=${START}" \
+  --data-urlencode "interval.endTime=${END}"
 ```
 
 ## The heartbeat series
