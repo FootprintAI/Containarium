@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The metrics-export docs and a code comment named the wrong Cloud Monitoring series after the OTLP migration (v0.100.0)** (#2608). Since the OTLP exporter the series are written in Google's Prometheus namespace on a `prometheus_target` resource (`prometheus.googleapis.com/<name>/gauge` for gauges, `.../counter` for monotonic counters), not as `workload.googleapis.com/<name>` on `gce_instance`. `docs/METRICS-EXPORT-DEADMAN-ALERT-RUNBOOK.md` and the quickstart gave alert and Metrics Explorer filters for the old type, so a policy built from them is created without error and never selects any data; the filters in the heartbeat, provisioning-failure and backup-health examples now match a live v0.106.0 host. The sentinel and `platform.tunnel.state` examples follow from the instrument kinds in the code but have not been observed on a live host and are marked as such. The runbook also told operators to run `gcloud monitoring metrics-descriptors list`, which no current SDK has; it now uses the REST `metricDescriptors` call, and a new section explains the mapping and how to check that a filter selects data. The stale dashboard `deploy/monitoring/gcm-containarium-hosts.json` is tracked separately in #2608.
+
 ## [0.106.0] - 2026-10-16
 
 _GCP metrics export works again, scheduled backups stop depending on a token that silently expires, live SSH authorization gets an audit stage and a kill switch, and CLI errors stop printing credentials._
