@@ -896,11 +896,9 @@ func reconcileBaseScripts(incusClient *incus.Client) {
 		return
 	}
 
-	for _, c := range containers {
-		if c.State != "Running" {
-			continue
-		}
-
+	var applied, failed int
+	var failedNames []string
+	for _, c := range baseScriptTargets(containers) {
 		// Derive the lookup name for InstallStack:
 		// - "hsin-container" → pass "hsin" (InstallStack adds "-container" back)
 		// - "containarium-core-caddy" → pass as-is (fallback to literal name)
@@ -910,11 +908,46 @@ func reconcileBaseScripts(incusClient *incus.Client) {
 		}
 
 		if err := mgr.InstallStack(lookupName, "ntp"); err != nil {
-			log.Printf("Warning: failed to apply ntp to %s: %v", c.Name, err)
+			failed++
+			failedNames = append(failedNames, c.Name)
+			log.Printf("base script reconcile: ntp on %s: %v", c.Name, err)
+			continue
 		}
+		applied++
 	}
 
-	log.Printf("Base script reconciliation complete")
+	// One summary line instead of a warning per container (#2617).
+	log.Printf("Base script reconciliation complete: %d applied, %d failed%s", applied, failed, failedSuffix(failedNames))
+}
+
+// baseScriptTargets selects the containers the startup base-script reconcile
+// applies to: running ones, excluding core service containers, which are
+// platform-managed rather than tenant workloads (#2617).
+func baseScriptTargets(containers []incus.ContainerInfo) []incus.ContainerInfo {
+	var out []incus.ContainerInfo
+	for _, c := range containers {
+		if c.State != "Running" || c.Role.IsCoreRole() {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// failedSuffix renders " (a, b, c, +N more)" for the reconcile summary, empty
+// when nothing failed. Capped so a fleet-wide failure stays one short line.
+func failedSuffix(names []string) string {
+	const max = 5
+	if len(names) == 0 {
+		return ""
+	}
+	shown := names
+	more := ""
+	if len(names) > max {
+		shown = names[:max]
+		more = fmt.Sprintf(", +%d more", len(names)-max)
+	}
+	return " (" + strings.Join(shown, ", ") + more + ")"
 }
 
 // waitForCoreContainers discovers core containers by role label and waits for

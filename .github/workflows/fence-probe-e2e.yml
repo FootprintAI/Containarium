@@ -214,6 +214,11 @@ jobs:
       # _WINDOW_MINUTES are lowered from the 20/5min production defaults —
       # both are operator-tunable per the design, and the issue explicitly
       # allows tuning them for a CI-time-bounded test.
+      # CONTAINARIUM_THREAT_DENY_BURST_COUNT_LOG_ONLY=1 (#2612): this lane runs
+      # observation-only (no ENFORCE), so every deny it provokes is a log_only
+      # would-deny, which the rule ignores by default now. The opt-in keeps the
+      # lane exercising the sentry -> FindingStore -> CLI path end to end; the
+      # enforced-drop path is covered by the rule's unit tests, not by this lane.
       - name: Start the daemon (real eBPF + real Postgres + threat sentry)
         env:
           JWT_SECRET: lane-only-secret-not-a-credential
@@ -221,6 +226,7 @@ jobs:
           CONTAINARIUM_THREAT_SENTRY: '1'
           CONTAINARIUM_THREAT_DENY_BURST_N: '5'
           CONTAINARIUM_THREAT_DENY_BURST_WINDOW_MINUTES: '2'
+          CONTAINARIUM_THREAT_DENY_BURST_COUNT_LOG_ONLY: '1'
         run: |
           set -euo pipefail
           sudo -E env "PATH=$PATH" \
@@ -228,6 +234,7 @@ jobs:
             CONTAINARIUM_THREAT_SENTRY="$CONTAINARIUM_THREAT_SENTRY" \
             CONTAINARIUM_THREAT_DENY_BURST_N="$CONTAINARIUM_THREAT_DENY_BURST_N" \
             CONTAINARIUM_THREAT_DENY_BURST_WINDOW_MINUTES="$CONTAINARIUM_THREAT_DENY_BURST_WINDOW_MINUTES" \
+            CONTAINARIUM_THREAT_DENY_BURST_COUNT_LOG_ONLY="$CONTAINARIUM_THREAT_DENY_BURST_COUNT_LOG_ONLY" \
             /tmp/containarium daemon --standalone --rest \
               --jwt-secret "$JWT_SECRET" \
               --postgres "$POSTGRES_DSN" \

@@ -255,6 +255,44 @@ func TestProvisionSkillBox_GitFetch(t *testing.T) {
 		}
 	})
 
+	// #2053: a tracker-dispatched run supplies no credential (none may enter
+	// the box). The fetch must run credential-free, and a failure of it (a
+	// private repository) must leave a live, comment-capable run that has no
+	// recorded commit, which is what makes SubmitTrackerChange refuse it.
+	t.Run("no credential: fetch is credential-free and a private-repo failure is tolerated", func(t *testing.T) {
+		for _, tc := range []struct {
+			name       string
+			fetchErr   error
+			wantCommit string
+			wantWS     string
+		}{
+			{"public repo", nil, commit, workspace},
+			{"private repo", errors.New("git fetch in box failed: exit status 128: could not read Username"), "", ""},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				// Like the real manager, a failed fetch returns no commit.
+				box := &fakeAgentBox{commit: tc.wantCommit, fetchErr: tc.fetchErr}
+				store := newFakeRevocationStore()
+				s, skill := newSkillBoxHarness(t, store)
+				s.boxOps = box
+				_, _, lease, gotCommit, gotWS, _, err := s.provisionSkillBoxWith(ctxAs("admin", true), skill, "", "", "{}", runID,
+					source, ref, "", "", provisionOptions{gitSourceBestEffort: true})
+				if err != nil {
+					t.Fatalf("provisionSkillBoxWith: %v", err)
+				}
+				if len(box.fetches) != 1 || box.fetches[0].Credential != "" {
+					t.Errorf("fetches = %+v, want exactly one with an empty credential", box.fetches)
+				}
+				if gotCommit != tc.wantCommit || gotWS != tc.wantWS {
+					t.Errorf("commit/workspace = %q/%q, want %q/%q", gotCommit, gotWS, tc.wantCommit, tc.wantWS)
+				}
+				if len(lease.Credentials) == 0 {
+					t.Error("run lease has no credentials; the run must stay live to comment")
+				}
+			})
+		}
+	})
+
 	t.Run("failure ends the run lease and returns FailedPrecondition", func(t *testing.T) {
 		box := &fakeAgentBox{fetchErr: errors.New("git fetch in box failed: exit status 128: repository not found")}
 		o := provision(t, box, provisionOptions{})
