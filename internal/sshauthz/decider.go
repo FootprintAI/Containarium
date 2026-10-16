@@ -40,6 +40,9 @@ type Decider struct {
 	Local   LocalFacts
 	Cloud   CloudAuthorizer
 	Managed bool
+	// Identities, when non-nil, records each cloud ALLOW so a managed
+	// TERMINATE_USER_SESSIONS order can be resolved to local logins (#2602).
+	Identities *ManagedIdentities
 }
 
 // Decide runs local facts first and, only for an enrolled daemon, forwards the
@@ -69,5 +72,6 @@ func (d *Decider) Decide(ctx context.Context, req *pb.AuthorizeSSHRequest) (*pb.
 	if err != nil || resp == nil {
 		return denyResponse(pb.SSHDenyReason_SSH_DENY_REASON_UPSTREAM_UNAVAILABLE, userID), nil
 	}
+	d.Identities.recordDecision(req, resp)
 	return resp, nil
 }

@@ -1502,6 +1502,9 @@ skipAppHosting:
 			}
 			return "", false, nil
 		})
+		// Managed AuthorizeSSH ALLOWs record (key, control-plane user id,
+		// login) here; TERMINATE_USER_SESSIONS resolves through it (#2602).
+		managedSSHIdentities := sshauthz.NewManagedIdentities()
 		cloudDeps := cloud.Deps{
 			Policies: newCloudPolicySink(npServer),
 			// Report this host's capability profile (hardware + headroom +
@@ -1510,7 +1513,9 @@ skipAppHosting:
 			Status: cloud.DefaultStatusProbe{Readiness: policyreadiness.ServerCheck(policyStoreHealth)},
 			// TERMINATE_USER_SESSIONS assignments run the same function as
 			// `containarium sessions terminate` (#2522).
-			Sessions: cloudSessionTerminator{s: containerServer},
+			// The control-plane user id an assignment names is resolved
+			// through managedSSHIdentities (#2602).
+			Sessions: cloudSessionTerminator{s: containerServer, ids: managedSSHIdentities},
 		}
 		if cloudActuator, actErr := newCloudContainerActuator(routeStore); actErr != nil {
 			log.Printf("Warning: cloud container actuator unavailable (%v); policy sync only", actErr)
@@ -1546,7 +1551,7 @@ skipAppHosting:
 			// Enrollment is the mode switch for managed SSH authorization. The
 			// server is registered above, but the forwarder is not constructed
 			// at all on an unenrolled daemon.
-			sshAuthzServer.SetDecider(&sshauthz.Decider{Local: localSSHFacts, Managed: true, Cloud: cc})
+			sshAuthzServer.SetDecider(&sshauthz.Decider{Local: localSSHFacts, Managed: true, Cloud: cc, Identities: managedSSHIdentities})
 			log.Printf("Cloud-actuation client configured (host=%s control-plane=%s); starts with the daemon",
 				cloudCfg.HostID, cloudCfg.ControlPlane)
 		}

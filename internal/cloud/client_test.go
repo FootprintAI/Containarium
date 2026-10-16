@@ -1,9 +1,13 @@
 package cloud
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"log"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -754,5 +758,56 @@ func TestReconcileAssignment_TerminateWithoutDeps(t *testing.T) {
 	})
 	if got := term.calls(); len(got) != 0 {
 		t.Errorf("an assignment without user_id ran: %v", got)
+	}
+}
+
+// An id the host cannot map to a local login (#2602) is logged at warn with
+// the assignment id and reported as its own outcome, distinct from a walk
+// that found no live sessions. Redelivery of either is a no-op.
+func TestReconcileTermination_UnmappedIsDistinctFromZeroSessions(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	assignment := func(id, user string) *cloudv1.Assignment {
+		return &cloudv1.Assignment{AssignmentId: id, Kind: cloudv1.AssignmentKind_ASSIGNMENT_KIND_TERMINATE_USER_SESSIONS, UserId: user}
+	}
+
+	unmapped := &fakeTerminator{err: fmt.Errorf("%w: cp-user-9", ErrUserNotMapped)}
+	c := &Client{ctx: context.Background(), sessions: unmapped}
+	if got := c.reconcileTermination(assignment("as-unmapped", "cp-user-9")); got != terminationUnmapped {
+		t.Errorf("unmapped outcome = %v, want %v", got, terminationUnmapped)
+	}
+	line := buf.String()
+	if !strings.Contains(line, "WARN") || !strings.Contains(line, "as-unmapped") || !strings.Contains(line, "cp-user-9") {
+		t.Errorf("log = %q, want a warning naming the assignment and user", line)
+	}
+	if got := c.reconcileTermination(assignment("as-unmapped", "cp-user-9")); got != terminationReplayed {
+		t.Errorf("redelivered unmapped outcome = %v, want %v", got, terminationReplayed)
+	}
+	if n := len(unmapped.calls()); n != 1 {
+		t.Errorf("terminator calls = %d, want 1 (redelivery is a no-op)", n)
+	}
+
+	buf.Reset()
+	zero := &fakeTerminator{} // mapped, but the walk ended nothing
+	c = &Client{ctx: context.Background(), sessions: zero}
+	if got := c.reconcileTermination(assignment("as-zero", "alice")); got != terminationEnded {
+		t.Errorf("zero-session outcome = %v, want %v", got, terminationEnded)
+	}
+	if strings.Contains(buf.String(), "WARN") {
+		t.Errorf("a successful walk logged a warning: %q", buf.String())
+	}
+	if got := c.reconcileTermination(assignment("as-zero", "alice")); got != terminationReplayed {
+		t.Errorf("redelivered outcome = %v, want %v", got, terminationReplayed)
+	}
+	if n := len(zero.calls()); n != 1 {
+		t.Errorf("terminator calls = %d, want 1", n)
+	}
+
+	failing := &fakeTerminator{err: errors.New("db down")}
+	c = &Client{ctx: context.Background(), sessions: failing}
+	if got := c.reconcileTermination(assignment("as-fail", "alice")); got != terminationFailed {
+		t.Errorf("failure outcome = %v, want %v", got, terminationFailed)
 	}
 }

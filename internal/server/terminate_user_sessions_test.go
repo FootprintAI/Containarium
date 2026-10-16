@@ -7,11 +7,14 @@ import (
 	"sync"
 	"testing"
 
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/cloud"
 	"github.com/footprintai/containarium/internal/collaborator"
+	"github.com/footprintai/containarium/internal/sshauthz"
 	"github.com/footprintai/containarium/pkg/core/container"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -285,4 +288,89 @@ func TestCloudSessionTerminator_UsesEndUserSessions(t *testing.T) {
 	if len(rec.log) != 3 {
 		t.Errorf("commands = %v, want the owner-box sequence", rec.log)
 	}
+}
+
+// Managed mode (#2602): the assignment's user_id is the control plane's id.
+// The terminator resolves it through the logins recorded on earlier managed
+// AuthorizeSSH decisions; a self-host id with no record still works; an id
+// it cannot map is ErrUserNotMapped, not a zero-session success.
+func TestCloudSessionTerminator_ManagedUserID(t *testing.T) {
+	const cpUser = "0b9c1f7e-3d2a-4c55-9a61-7f0e2d4b8c10"
+	ids := sshauthz.NewManagedIdentities()
+	allowAs := func(login string) {
+		t.Helper()
+		d := &sshauthz.Decider{
+			Local: sshauthz.LocalFactsFunc(func(context.Context, *pb.AuthorizeSSHRequest) (string, bool, error) {
+				return login, true, nil
+			}),
+			Cloud:      fakeSSHCloud{resp: &pb.AuthorizeSSHResponse{Decision: pb.SSHAuthzDecision_SSH_AUTHZ_DECISION_ALLOW, UserId: cpUser}},
+			Managed:    true,
+			Identities: ids,
+		}
+		req := &pb.AuthorizeSSHRequest{Login: login, Credential: &pb.SSHCredential{Kind: &pb.SSHCredential_PublicKey{
+			PublicKey: &pb.SSHPublicKeyCredential{FingerprintSha256: "SHA256:alicekey"},
+		}}}
+		if _, err := d.Decide(context.Background(), req); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("control-plane id seen in an earlier decision", func(t *testing.T) {
+		rec := &sessionRecorder{
+			boxes:   map[string]string{"alice-container": "Running", "bob-container": "Running"},
+			collabs: []*collaborator.Collaborator{collab("bob", "alice")},
+			killed:  map[string]bool{"alice": true},
+		}
+		allowAs("alice")
+		allowAs("bob-container-alice") // same user also logs in as a collaborator
+		if err := (cloudSessionTerminator{s: newSessionServer(rec), ids: ids}).TerminateUserSessions(context.Background(), cpUser); err != nil {
+			t.Fatal(err)
+		}
+		want := []string{
+			"box alice-container: loginctl terminate-user alice",
+			"box alice-container: pkill -KILL -u alice",
+			"host: pkill -KILL -u alice",
+			"box bob-container: loginctl terminate-user bob-container-alice",
+			"box bob-container: pkill -KILL -u bob-container-alice",
+			"host: pkill -KILL -u bob-container-alice",
+		}
+		if strings.Join(rec.log, "\n") != strings.Join(want, "\n") {
+			t.Errorf("commands:\n%s\nwant (alice walked once):\n%s", strings.Join(rec.log, "\n"), strings.Join(want, "\n"))
+		}
+	})
+
+	t.Run("id never seen is not mapped", func(t *testing.T) {
+		rec := &sessionRecorder{boxes: map[string]string{"alice-container": "Running"}}
+		err := (cloudSessionTerminator{s: newSessionServer(rec), ids: ids}).TerminateUserSessions(context.Background(), "5f1e2d3c-0000-4000-8000-000000000000")
+		if !errors.Is(err, cloud.ErrUserNotMapped) {
+			t.Fatalf("err = %v, want ErrUserNotMapped", err)
+		}
+		if len(rec.log) != 0 {
+			t.Errorf("an unmapped id ran commands: %v", rec.log)
+		}
+	})
+
+	t.Run("not a local name at all is not mapped", func(t *testing.T) {
+		rec := &sessionRecorder{}
+		err := (cloudSessionTerminator{s: newSessionServer(rec), ids: ids}).TerminateUserSessions(context.Background(), "Not A Login")
+		if !errors.Is(err, cloud.ErrUserNotMapped) {
+			t.Fatalf("err = %v, want ErrUserNotMapped", err)
+		}
+	})
+
+	t.Run("known local id falls back to the self-host rule", func(t *testing.T) {
+		rec := &sessionRecorder{boxes: map[string]string{"carol-container": "Running"}}
+		if err := (cloudSessionTerminator{s: newSessionServer(rec), ids: ids}).TerminateUserSessions(context.Background(), "carol"); err != nil {
+			t.Fatal(err)
+		}
+		if len(rec.log) != 3 {
+			t.Errorf("commands = %v, want carol's owner-box sequence", rec.log)
+		}
+	})
+}
+
+type fakeSSHCloud struct{ resp *pb.AuthorizeSSHResponse }
+
+func (f fakeSSHCloud) AuthorizeSSH(context.Context, *pb.AuthorizeSSHRequest, ...grpc.CallOption) (*pb.AuthorizeSSHResponse, error) {
+	return f.resp, nil
 }
