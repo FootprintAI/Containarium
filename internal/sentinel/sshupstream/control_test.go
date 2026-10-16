@@ -13,6 +13,8 @@ import (
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/tg123/sshpiper/libplugin"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
 )
 
@@ -123,12 +125,46 @@ func TestGuardedAdapterKeepsReadySessionOnControlLoss(t *testing.T) {
 type outcomeRecorder struct {
 	pb.SentinelSSHUpstreamServiceClient
 	got pb.SSHUpstreamOutcome
+	err error
 }
 
 // CompleteSSHUpstream records which risk disposition the adapter actually reports.
 func (r *outcomeRecorder) CompleteSSHUpstream(_ context.Context, req *pb.CompleteSSHUpstreamRequest, _ ...grpc.CallOption) (*pb.CompleteSSHUpstreamResponse, error) {
 	r.got = req.Outcome
-	return &pb.CompleteSSHUpstreamResponse{Accepted: true}, nil
+	return &pb.CompleteSSHUpstreamResponse{}, r.err
+}
+
+// TestGuardedAdapterReadyDistinguishesRevocation preserves proof despite lost bookkeeping.
+func TestGuardedAdapterReadyDistinguishesRevocation(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		err    error
+		closed bool
+	}{
+		{name: "lease already reaped"},
+		{name: "authority revoked", err: status.Error(codes.PermissionDenied, "route revoked"), closed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, peer, _ := guardedFixture(t)
+			meta := &libplugin.ConnMeta{UniqId: "ready-decision", FromAddr: "127.0.0.2:20004"}
+			if err := cfg.NewConnectionCallback(meta); err != nil {
+				t.Fatal(err)
+			}
+			u, err := cfg.PublicKeyCallback(meta, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			conn, err := cfg.CreateConnCallback(u.Uri)
+			if err != nil {
+				t.Fatal(err)
+			}
+			peer.Client = &outcomeRecorder{SentinelSSHUpstreamServiceClient: peer.Client, err: tc.err}
+			cfg.PipeStartCallback(meta)
+			if closed := conn.SetDeadline(time.Time{}) != nil; closed != tc.closed {
+				t.Fatalf("closed=%v, want %v", closed, tc.closed)
+			}
+		})
+	}
 }
 
 // TestGuardedAdapterLateUnknownFailureRetainsRisk never refunds a post-dial timeout.

@@ -19,6 +19,8 @@ import (
 	"github.com/tg123/sshpiper/libplugin"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -476,11 +478,11 @@ func (a *adapter) finish(connection, remote string, outcome pb.SSHUpstreamOutcom
 			}
 		}
 		if a.control != nil && b.lease != "" {
-			accepted, err := a.report(b, result)
+			_, err := a.report(b, result)
 			// PipeStart proves SSH authentication completed. A control RPC
 			// outage retains conservative risk but cannot kill that session.
 			// An explicit authority rejection still closes a stale route.
-			if ready && err == nil && !accepted && b.conn != nil {
+			if ready && status.Code(err) == codes.PermissionDenied && b.conn != nil {
 				_ = b.conn.Close()
 			}
 		}

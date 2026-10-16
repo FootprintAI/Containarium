@@ -446,6 +446,9 @@ func (c *Controller) CompleteSSHUpstream(_ context.Context, r *pb.CompleteSSHUps
 	if err := c.persist(); err != nil {
 		return nil, status.Error(codes.Unavailable, "cannot commit upstream outcome")
 	}
+	if stale {
+		return nil, status.Error(codes.PermissionDenied, "upstream route authority revoked")
+	}
 	if accepted && outcome == sshgate.SetupSucceeded {
 		delete(c.connections, connectionKey(s.ref))
 	}
