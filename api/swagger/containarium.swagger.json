@@ -121,6 +121,10 @@
       "description": "SentinelSSHBanService controls the enforcing plugin, not system fail2ban.\nThe sentinel mounts REST behind its admin HMAC and forwards to a local socket."
     },
     {
+      "name": "SentinelSSHUpstreamService",
+      "description": "SentinelSSHUpstreamService is private to the local operator's Unix socket.\nIt is never registered on public gRPC or REST listeners."
+    },
+    {
       "name": "TokensService",
       "description": "TokensService is the admin surface for JWT lifecycle.\n\nRevokeToken requires an admin role + tokens:write scope;\ntenants can't revoke other tenants' tokens. RefreshToken\nis open to any holder of a valid refresh token — that's\nthe whole point of the exchange flow."
     },

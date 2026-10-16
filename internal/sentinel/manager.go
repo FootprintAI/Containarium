@@ -22,6 +22,7 @@ import (
 
 	"github.com/footprintai/containarium/internal/auth"
 	appconfig "github.com/footprintai/containarium/internal/config"
+	"github.com/footprintai/containarium/internal/sentinel/sshcontrol"
 	"github.com/footprintai/containarium/pkg/core/pki"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -42,6 +43,10 @@ var sentinelDialer = &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 15 * time.
 
 // Config holds the sentinel configuration.
 type Config struct {
+	// SSHUpstreamPolicy enables the shared private upstream controller when set.
+	SSHUpstreamPolicy  string
+	SSHUpstreamState   string
+	SSHUpstreamSocket  string
 	HealthPort         int
 	CheckInterval      time.Duration
 	HTTPPort           int
@@ -113,9 +118,12 @@ type Config struct {
 // Supports multiple backends (GCP + tunnel) in hybrid mode.
 type Manager struct {
 	// sshBanSockets overrides local plugin endpoints in isolated tests.
-	sshBanSockets map[pb.SSHBanListener]string
-	config        Config
-	provider      CloudProvider // primary provider (GCP in hybrid mode)
+	sshBanSockets           map[pb.SSHBanListener]string
+	sshUpstream             *sshcontrol.Controller
+	sshUpstreamMu           sync.RWMutex
+	sshUpstreamStartupFault atomic.Bool
+	config                  Config
+	provider                CloudProvider // primary provider (GCP in hybrid mode)
 
 	state atomic.Value // holds State
 
@@ -806,6 +814,11 @@ func (m *Manager) PrimariesHandler() http.HandlerFunc {
 
 // Run is the main loop. Blocks until ctx is cancelled.
 func (m *Manager) Run(ctx context.Context) error {
+	stopUpstream := m.superviseSSHUpstream(ctx, 5*time.Second)
+	defer stopUpstream()
+	if ctx.Err() != nil {
+		return nil
+	}
 	log.Printf("[sentinel] starting (check-interval=%s, health-port=%d, forwarded-ports=%v, hybrid=%v)",
 		m.config.CheckInterval, m.config.HealthPort, m.config.ForwardedPorts, m.config.HybridMode)
 
@@ -975,6 +988,11 @@ func (m *Manager) healthCheckAll(ctx context.Context) {
 			if b.healthyCount >= m.config.HealthyThreshold && !b.Healthy {
 				b.Healthy = true
 				m.recordBackendHealth(b.ID, true)
+				if controller := m.sshUpstreamController(); controller != nil {
+					if _, err := controller.HintSSHUpstreamRecovery(ctx, &pb.HintSSHUpstreamRecoveryRequest{BackendId: b.ID}); err != nil {
+						log.Printf("[sentinel] SSH recovery hint: %v", err)
+					}
+				}
 				log.Printf("[sentinel] backend %s (%s) is healthy", b.ID, b.IP)
 			}
 		} else {

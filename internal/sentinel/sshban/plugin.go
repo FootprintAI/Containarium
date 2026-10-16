@@ -1,10 +1,16 @@
 package sshban
 
-import "github.com/tg123/sshpiper/libplugin"
+import (
+	"context"
+	"crypto/rand"
+	"github.com/footprintai/containarium/internal/sentinel/sshcontrol"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+	"github.com/tg123/sshpiper/libplugin"
+)
 
 // PluginConfig preserves the bundled failtoban's callback and routing contract.
-func (g *Guard) PluginConfig() libplugin.SshPiperPluginConfig {
-	return libplugin.SshPiperPluginConfig{
+func (g *Guard) PluginConfig(peers ...*sshcontrol.Peer) libplugin.SshPiperPluginConfig {
+	cfg := libplugin.SshPiperPluginConfig{
 		NoClientAuthCallback: func(libplugin.ConnMetadata) (*libplugin.Upstream, error) {
 			return &libplugin.Upstream{Auth: libplugin.CreateNextPluginAuth(map[string]string{})}, nil
 		},
@@ -14,4 +20,52 @@ func (g *Guard) PluginConfig() libplugin.SshPiperPluginConfig {
 		},
 		PipeCreateErrorCallback: func(remote string, _ error) { g.Fail(remote, "pipe_create_error") },
 	}
+	if len(peers) == 0 || peers[0] == nil {
+		return cfg
+	}
+	peer := peers[0]
+	cfg.NewConnectionCallback = func(conn libplugin.ConnMetadata) error {
+		if err := g.Check(conn.RemoteAddr()); err != nil {
+			return err
+		}
+		_, err := peer.Open(context.Background(), conn.UniqueID(), conn.RemoteAddr())
+		return err
+	}
+	count := func(ref *pb.SSHUpstreamConnection, remote string, kind pb.SSHUpstreamFailureKind) bool {
+		ctx, cancel := sshcontrol.CallContext(context.Background())
+		defer cancel()
+		if ref == nil {
+			if kind != pb.SSHUpstreamFailureKind_SSH_UPSTREAM_FAILURE_KIND_PIPE_CREATE {
+				return false
+			}
+			// Early failures have a full transport address but no piper UUID.
+			// Register an accounting-only identity: without Begin/Acquire it
+			// cannot borrow any backend exception. An unavailable/full control
+			// service fails closed and is not charged to the client.
+			var err error
+			ref, err = peer.Open(ctx, "unclassified-"+rand.Text(), remote)
+			if err != nil {
+				return false
+			}
+			defer peer.Forget(ref.ConnectionId)
+		}
+		r, err := peer.Client.ConsumeSSHUpstreamFailure(ctx, &pb.ConsumeSSHUpstreamFailureRequest{Connection: ref, Kind: kind})
+		return err == nil && r.GetCountSourceFailure()
+	}
+	cfg.UpstreamAuthFailureCallback = func(conn libplugin.ConnMetadata, _ string, _ error, _ []string) {
+		if count(peer.Find(conn.UniqueID(), conn.RemoteAddr()), conn.RemoteAddr(), pb.SSHUpstreamFailureKind_SSH_UPSTREAM_FAILURE_KIND_AUTH) {
+			g.Fail(conn.RemoteAddr(), "auth_failure")
+		}
+	}
+	cfg.PipeCreateErrorCallback = func(remote string, _ error) {
+		ref := peer.ByRemote(remote)
+		if count(ref, remote, pb.SSHUpstreamFailureKind_SSH_UPSTREAM_FAILURE_KIND_PIPE_CREATE) {
+			g.Fail(remote, "pipe_create_error")
+		}
+		if ref != nil {
+			peer.Forget(ref.ConnectionId)
+		}
+	}
+	cfg.PipeStartCallback = func(conn libplugin.ConnMetadata) { peer.Forget(conn.UniqueID()) }
+	return cfg
 }
