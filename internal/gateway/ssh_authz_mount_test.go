@@ -35,7 +35,7 @@ func sshAuthzMux(t *testing.T, v auth.SentinelVerifier, srv pb.SSHAuthzServiceSe
 	httpMux.Handle("/v1/", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, jwtFallbackBody, http.StatusUnauthorized)
 	}))
-	MountSSHAuthz(httpMux, v, gw)
+	MountSSHAuthz(httpMux, v, nil, gw)
 	return httpMux
 }
 
@@ -184,7 +184,7 @@ func TestSSHAuthzMount_EncodedPathCannotBypassSentinel(t *testing.T) {
 		})
 		rest.ServeHTTP(w, r.WithContext(ctx))
 	}))
-	MountSSHAuthz(httpMux, auth.NewSentinelVerifier(nil, sshAuthzSecret), rest)
+	MountSSHAuthz(httpMux, auth.NewSentinelVerifier(nil, sshAuthzSecret), nil, rest)
 
 	for _, target := range []string{
 		"/v1/ssh/authorize",

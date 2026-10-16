@@ -74,7 +74,7 @@ func (s *Store) initSchema(ctx context.Context) error {
 type Report struct {
 	ContainerName string
 	Username      string
-	Status        string // "clean" or "infected"
+	Status        string // ScanStatusClean | ScanStatusInfected | ScanStatusIncomplete
 	FindingsCount int
 	Findings      string
 	ScannedAt     time.Time
@@ -492,6 +492,37 @@ func (s *Store) CleanupOldJobs(ctx context.Context, retentionDays int) error {
 	return err
 }
 
+// Scan report statuses. "incomplete" means clamdscan errored or never ran to
+// the end, so nothing may be concluded about the box — in particular it must
+// never be treated as clean (#2496).
+const (
+	ScanStatusClean      = "clean"
+	ScanStatusInfected   = "infected"
+	ScanStatusIncomplete = "incomplete"
+)
+
+// ClassifyClamScan turns a clamdscan run into a report status. FOUND lines
+// win (an infection is real even if another path errored); otherwise any exec
+// error — exit 2, a failed exec, a non-zero exit with no findings — is
+// "incomplete" and the stderr/exit error is kept in findings so an operator
+// can see why. Only a clean exit with no findings is "clean".
+func ClassifyClamScan(stdout, stderr string, scanErr error) (status string, findingsCount int, findings string) {
+	status, findingsCount, findings = ParseClamScanOutput(stdout)
+	if scanErr == nil {
+		return status, findingsCount, findings
+	}
+	detail := scanErr.Error()
+	if msg := strings.TrimSpace(stderr); msg != "" {
+		detail += "\n" + msg
+	}
+	if status == ScanStatusInfected {
+		// Keep the verdict and count, but record that the run also errored
+		// so an operator can tell the scan was partial.
+		return status, findingsCount, findings + "\n" + detail
+	}
+	return ScanStatusIncomplete, 0, detail
+}
+
 // ParseClamScanOutput parses clamscan output and returns status, findings count, and findings text
 func ParseClamScanOutput(output string) (status string, findingsCount int, findings string) {
 	lines := strings.Split(output, "\n")
@@ -505,7 +536,7 @@ func ParseClamScanOutput(output string) (status string, findingsCount int, findi
 	}
 
 	if len(foundLines) > 0 {
-		return "infected", len(foundLines), strings.Join(foundLines, "\n")
+		return ScanStatusInfected, len(foundLines), strings.Join(foundLines, "\n")
 	}
-	return "clean", 0, ""
+	return ScanStatusClean, 0, ""
 }

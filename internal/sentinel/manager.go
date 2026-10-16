@@ -23,6 +23,7 @@ import (
 	"github.com/footprintai/containarium/internal/auth"
 	appconfig "github.com/footprintai/containarium/internal/config"
 	"github.com/footprintai/containarium/pkg/core/pki"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // State represents the current sentinel mode.
@@ -113,8 +114,10 @@ type Config struct {
 // It health-checks backend VMs and switches between proxy and maintenance modes.
 // Supports multiple backends (GCP + tunnel) in hybrid mode.
 type Manager struct {
-	config   Config
-	provider CloudProvider // primary provider (GCP in hybrid mode)
+	// sshBanSockets overrides local plugin endpoints in isolated tests.
+	sshBanSockets map[pb.SSHBanListener]string
+	config        Config
+	provider      CloudProvider // primary provider (GCP in hybrid mode)
 
 	state atomic.Value // holds State
 

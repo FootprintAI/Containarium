@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -52,7 +53,7 @@ func TestSSHAuthzServer_SentinelSignedRequestReachesStub(t *testing.T) {
 		t.Fatal(err)
 	}
 	httpMux := http.NewServeMux()
-	gateway.MountSSHAuthz(httpMux, auth.NewSentinelVerifier(nil, secret), gateway.GuardSSHAuthzPath(gw))
+	gateway.MountSSHAuthz(httpMux, auth.NewSentinelVerifier(nil, secret), nil, gateway.GuardSSHAuthzPath(gw))
 
 	signed := httptest.NewRequest(http.MethodPost, gateway.SSHAuthzAuthorizePath, strings.NewReader(`{"login":"alice"}`))
 	auth.SignSentinelRequest(signed, secret)
@@ -99,5 +100,38 @@ func TestSSHAuthzServer_DispatchesToDecider(t *testing.T) {
 	resp, err := s.Authorize(ctx, &pb.AuthorizeSSHRequest{Login: "alice"})
 	if err != nil || resp != want || d.got.GetLogin() != "alice" {
 		t.Fatalf("got (%v, %v), want the decider's response", resp, err)
+	}
+}
+
+// TestSSHAuthzServer_TokenFallbackReachesDecider runs the jump host's path
+// end to end (#2527): an ssh:authorize JWT → gateway.MountSSHAuthz with the
+// token fallback on → the production REST mux → this server, whose scope
+// check must pass on the token's own identity and dispatch to the decider.
+func TestSSHAuthzServer_TokenFallbackReachesDecider(t *testing.T) {
+	tm, err := auth.NewTokenManager("ssh-authz-keys-e2e-test-secret-0123456789abcdef", "containarium")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := &stubDecider{resp: &pb.AuthorizeSSHResponse{Decision: pb.SSHAuthzDecision_SSH_AUTHZ_DECISION_ALLOW, UserId: "alice"}}
+	s := NewSSHAuthzServer()
+	s.SetDecider(d)
+	gw := gateway.NewRESTMux()
+	if err := pb.RegisterSSHAuthzServiceHandlerServer(context.Background(), gw, s); err != nil {
+		t.Fatal(err)
+	}
+	httpMux := http.NewServeMux()
+	gateway.MountSSHAuthz(httpMux, auth.NewSentinelVerifier(nil, nil), auth.NewAuthMiddleware(tm).HTTPMiddleware, gateway.GuardSSHAuthzPath(gw))
+
+	token, err := tm.GenerateAccessToken("ssh-authz-keys", nil, time.Hour, auth.ScopeSSHAuthorize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, gateway.SSHAuthzAuthorizePath, strings.NewReader(`{"login":"alice"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rr := httptest.NewRecorder()
+	httpMux.ServeHTTP(rr, req)
+	body, _ := io.ReadAll(rr.Result().Body)
+	if rr.Code != http.StatusOK || d.got.GetLogin() != "alice" || !strings.Contains(string(body), "ALLOW") {
+		t.Fatalf("code = %d body = %s decider reached = %v, want 200 with the decider's ALLOW", rr.Code, body, d.got != nil)
 	}
 }

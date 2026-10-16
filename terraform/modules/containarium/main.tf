@@ -146,6 +146,8 @@ resource "google_compute_instance" "jump_server" {
       jwt_secret              = var.jwt_secret
       sentinel_auth_secret    = var.sentinel_auth_secret
       fail2ban_whitelist_cidr = var.fail2ban_whitelist_cidr
+      ssh_authz_keys_command  = var.ssh_authz_keys_command
+      ssh_authz_keys_enforce  = var.ssh_authz_keys_enforce
     })
   }
 

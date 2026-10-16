@@ -1,0 +1,75 @@
+name: Sentinel SSH bans
+
+on:
+  pull_request:
+    paths:
+      - 'internal/sentinel/**'
+      - 'internal/cmd/sentinel_ssh_ban_plugin*'
+      - 'proto/containarium/v1/ssh_ban.proto'
+      - 'terraform/modules/containarium/**'
+      - 'scripts/test-ssh-ban-templates.sh'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/ssh-ban.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'internal/sentinel/**'
+      - 'internal/cmd/sentinel_ssh_ban_plugin*'
+      - 'proto/containarium/v1/ssh_ban.proto'
+      - 'terraform/modules/containarium/**'
+      - 'scripts/test-ssh-ban-templates.sh'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/ssh-ban.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ssh-enforcement:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.9'
+      - name: Install pinned upstream SSH binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/ssh-ban"
+          gh release download v1.6.1 --repo tg123/sshpiper \
+            --pattern sshpiperd_with_plugins_linux_x86_64.tar.gz --dir "$RUNNER_TEMP/ssh-ban"
+          tar -xzf "$RUNNER_TEMP/ssh-ban/sshpiperd_with_plugins_linux_x86_64.tar.gz" \
+            -C "$RUNNER_TEMP/ssh-ban" sshpiperd plugins/yaml plugins/failtoban
+      - name: Build production plugin and prove real SSH behavior
+        run: |
+          set -euo pipefail
+          go build -o "$RUNNER_TEMP/ssh-ban/containariumd" ./cmd/containariumd
+          export SSH_BAN_SSHPIPERD="$RUNNER_TEMP/ssh-ban/sshpiperd"
+          export SSH_BAN_YAML="$RUNNER_TEMP/ssh-ban/plugins/yaml"
+          export SSH_BAN_DAEMON="$RUNNER_TEMP/ssh-ban/containariumd"
+          export SSH_BAN_UPSTREAM_GUARD="$RUNNER_TEMP/ssh-ban/plugins/failtoban"
+          go test -race -tags integration -count=1 -timeout 2m -v \
+            ./internal/sentinel/sshban | tee "$RUNNER_TEMP/ssh-ban/verification.log"
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.13.4'
+          terraform_wrapper: false
+      - name: Validate real policy templates without cloud credentials
+        run: bash scripts/test-ssh-ban-templates.sh
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: ssh-ban-verification
+          path: ${{ runner.temp }}/ssh-ban/verification.log

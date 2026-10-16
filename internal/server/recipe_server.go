@@ -14,6 +14,7 @@ import (
 
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/guardrailpolicy"
+	"github.com/footprintai/containarium/internal/guardrailrate"
 	"github.com/footprintai/containarium/internal/guardrailstage"
 	"github.com/footprintai/containarium/internal/modelgateway"
 	boxlxc "github.com/footprintai/containarium/pkg/core/box/lxc"
@@ -65,6 +66,9 @@ type RecipeServer struct {
 	// (nil = the stager's Snapshot; a seam for tests).
 	guardrailSnapshotParent string
 	guardrailSnapshot       func(area *guardrailstage.Area, ref, parent string) (*guardrailstage.Snapshot, error)
+	// guardrailDeployLimit rate-limits gated deploys per subject (#2404;
+	// nil = disabled).
+	guardrailDeployLimit *guardrailrate.Limiter
 }
 
 // recipeBoxes is the box surface deploy drives.

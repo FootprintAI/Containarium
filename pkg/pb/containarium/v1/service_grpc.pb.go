@@ -47,6 +47,7 @@ const (
 	ContainerService_StartBoxRun_FullMethodName               = "/containarium.v1.ContainerService/StartBoxRun"
 	ContainerService_ListBoxRuns_FullMethodName               = "/containarium.v1.ContainerService/ListBoxRuns"
 	ContainerService_TailBoxRunLog_FullMethodName             = "/containarium.v1.ContainerService/TailBoxRunLog"
+	ContainerService_StopBoxRun_FullMethodName                = "/containarium.v1.ContainerService/StopBoxRun"
 	ContainerService_AddCollaborator_FullMethodName           = "/containarium.v1.ContainerService/AddCollaborator"
 	ContainerService_RemoveCollaborator_FullMethodName        = "/containarium.v1.ContainerService/RemoveCollaborator"
 	ContainerService_ListCollaborators_FullMethodName         = "/containarium.v1.ContainerService/ListCollaborators"
@@ -267,6 +268,10 @@ type ContainerServiceClient interface {
 	// end_offset back as start_offset) and bounded (max_bytes,
 	// follow_seconds). A framed log is demuxed to its stdout.
 	TailBoxRunLog(ctx context.Context, in *TailBoxRunLogRequest, opts ...grpc.CallOption) (*TailBoxRunLogResponse, error)
+	// StopBoxRun stops a box's code run (#2603): the daemon-API counterpart to
+	// `containarium code stop`, for a caller with no SSH client. Same access as
+	// StartBoxRun: ssh:write, and the box owner or one of its collaborators.
+	StopBoxRun(ctx context.Context, in *StopBoxRunRequest, opts ...grpc.CallOption) (*StopBoxRunResponse, error)
 	// AddCollaborator adds a collaborator to a container
 	AddCollaborator(ctx context.Context, in *AddCollaboratorRequest, opts ...grpc.CallOption) (*AddCollaboratorResponse, error)
 	// RemoveCollaborator removes a collaborator from a container
@@ -698,6 +703,16 @@ func (c *containerServiceClient) TailBoxRunLog(ctx context.Context, in *TailBoxR
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(TailBoxRunLogResponse)
 	err := c.cc.Invoke(ctx, ContainerService_TailBoxRunLog_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) StopBoxRun(ctx context.Context, in *StopBoxRunRequest, opts ...grpc.CallOption) (*StopBoxRunResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(StopBoxRunResponse)
+	err := c.cc.Invoke(ctx, ContainerService_StopBoxRun_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1273,6 +1288,10 @@ type ContainerServiceServer interface {
 	// end_offset back as start_offset) and bounded (max_bytes,
 	// follow_seconds). A framed log is demuxed to its stdout.
 	TailBoxRunLog(context.Context, *TailBoxRunLogRequest) (*TailBoxRunLogResponse, error)
+	// StopBoxRun stops a box's code run (#2603): the daemon-API counterpart to
+	// `containarium code stop`, for a caller with no SSH client. Same access as
+	// StartBoxRun: ssh:write, and the box owner or one of its collaborators.
+	StopBoxRun(context.Context, *StopBoxRunRequest) (*StopBoxRunResponse, error)
 	// AddCollaborator adds a collaborator to a container
 	AddCollaborator(context.Context, *AddCollaboratorRequest) (*AddCollaboratorResponse, error)
 	// RemoveCollaborator removes a collaborator from a container
@@ -1513,6 +1532,9 @@ func (UnimplementedContainerServiceServer) ListBoxRuns(context.Context, *ListBox
 }
 func (UnimplementedContainerServiceServer) TailBoxRunLog(context.Context, *TailBoxRunLogRequest) (*TailBoxRunLogResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method TailBoxRunLog not implemented")
+}
+func (UnimplementedContainerServiceServer) StopBoxRun(context.Context, *StopBoxRunRequest) (*StopBoxRunResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method StopBoxRun not implemented")
 }
 func (UnimplementedContainerServiceServer) AddCollaborator(context.Context, *AddCollaboratorRequest) (*AddCollaboratorResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AddCollaborator not implemented")
@@ -2152,6 +2174,24 @@ func _ContainerService_TailBoxRunLog_Handler(srv interface{}, ctx context.Contex
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ContainerServiceServer).TailBoxRunLog(ctx, req.(*TailBoxRunLogRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_StopBoxRun_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(StopBoxRunRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).StopBoxRun(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_StopBoxRun_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).StopBoxRun(ctx, req.(*StopBoxRunRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2976,6 +3016,10 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "TailBoxRunLog",
 			Handler:    _ContainerService_TailBoxRunLog_Handler,
+		},
+		{
+			MethodName: "StopBoxRun",
+			Handler:    _ContainerService_StopBoxRun_Handler,
 		},
 		{
 			MethodName: "AddCollaborator",
