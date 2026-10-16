@@ -117,6 +117,11 @@ type ContainerServer struct {
 	// sshKeys is the ssh_keys registry the key write paths record into
 	// (#2517, ssh_key_registry.go). Nil when the daemon has no Postgres.
 	sshKeys sshauthz.KeyRegistry
+	// collabAccess and hostSessionKill are test seams for
+	// TerminateUserSessions (terminate_user_sessions.go); nil means the
+	// collaborator store and container.TerminateJumpAccountSessions.
+	collabAccess    collaboratorAccess
+	hostSessionKill func(account string) bool
 	// sshKeyNow and authorizedKeys are test seams for the key write paths;
 	// zero values mean time.Now and the host's real authorized_keys files.
 	sshKeyNow      func() time.Time

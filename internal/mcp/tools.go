@@ -1819,6 +1819,8 @@ func (s *Server) registerTools() {
 	s.tools = append(s.tools, gatewayTools()...)
 	// Coding-tool egress allowlist (#2378): read only; writes are admin CLI.
 	s.tools = append(s.tools, codeEgressTools()...)
+	// SSH session control (#2522): wraps `containarium sessions terminate`.
+	s.tools = append(s.tools, sessionTools()...)
 
 	// Phase 1.7 — assign required scope per tool. Done as a
 	// post-pass so the slice literals above stay short and
@@ -1978,6 +1980,9 @@ func toolScopeAssignments() map[string]string {
 		"sync":            auth.ScopeCodeWrite,
 		"sync_ssh_config": auth.ScopeSSHWrite,
 		"connect":         auth.ScopeSSHWrite,
+		// #2522: ending a user's SSH sessions; the daemon also limits a
+		// non-admin caller to its own sessions.
+		"terminate_user_sessions": auth.ScopeSSHWrite,
 		// JWT lifecycle (admin)
 		"revoke_token": auth.ScopeTokensWrite,
 		// Runner provisioning — provision/remove create or delete

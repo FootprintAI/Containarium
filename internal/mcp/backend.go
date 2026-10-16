@@ -95,6 +95,8 @@ type API interface {
 	AddCollaborator(req AddCollaboratorRequest) (*AddCollaboratorResponse, error)
 	ListCollaborators(ownerUsername string) (*ListCollaboratorsResponse, error)
 	RemoveCollaborator(ownerUsername, collaboratorUsername string) (*RemoveCollaboratorResponse, error)
+	// SSH sessions (#2522), through the CLI's shared client.
+	TerminateUserSessions(username string) (*pb.TerminateUserSessionsResponse, error)
 
 	// Security.
 	TriggerSecurityScan(kind, containerName, username string) (*SecurityScanResponse, error)
