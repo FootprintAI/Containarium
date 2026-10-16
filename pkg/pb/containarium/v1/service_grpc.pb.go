@@ -51,6 +51,7 @@ const (
 	ContainerService_AddCollaborator_FullMethodName           = "/containarium.v1.ContainerService/AddCollaborator"
 	ContainerService_RemoveCollaborator_FullMethodName        = "/containarium.v1.ContainerService/RemoveCollaborator"
 	ContainerService_ListCollaborators_FullMethodName         = "/containarium.v1.ContainerService/ListCollaborators"
+	ContainerService_TerminateUserSessions_FullMethodName     = "/containarium.v1.ContainerService/TerminateUserSessions"
 	ContainerService_GetMetrics_FullMethodName                = "/containarium.v1.ContainerService/GetMetrics"
 	ContainerService_CleanupDisk_FullMethodName               = "/containarium.v1.ContainerService/CleanupDisk"
 	ContainerService_InstallStack_FullMethodName              = "/containarium.v1.ContainerService/InstallStack"
@@ -278,6 +279,13 @@ type ContainerServiceClient interface {
 	RemoveCollaborator(ctx context.Context, in *RemoveCollaboratorRequest, opts ...grpc.CallOption) (*RemoveCollaboratorResponse, error)
 	// ListCollaborators lists all collaborators for a container
 	ListCollaborators(ctx context.Context, in *ListCollaboratorsRequest, opts ...grpc.CallOption) (*ListCollaboratorsResponse, error)
+	// TerminateUserSessions ends every live SSH session a user holds on this
+	// backend: their owner box and every box they reach as a collaborator,
+	// in-box and on the host jump account. Nothing is deleted and no
+	// authorized_keys file changes; the user can connect again (#2522).
+	// Callers need ssh:write; the admin role (which service tokens carry) may
+	// name any user, any other caller only themselves.
+	TerminateUserSessions(ctx context.Context, in *TerminateUserSessionsRequest, opts ...grpc.CallOption) (*TerminateUserSessionsResponse, error)
 	// GetMetrics gets runtime metrics for containers
 	GetMetrics(ctx context.Context, in *GetMetricsRequest, opts ...grpc.CallOption) (*GetMetricsResponse, error)
 	// CleanupDisk frees disk space inside a container by removing temp files, package caches, and old logs
@@ -743,6 +751,16 @@ func (c *containerServiceClient) ListCollaborators(ctx context.Context, in *List
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListCollaboratorsResponse)
 	err := c.cc.Invoke(ctx, ContainerService_ListCollaborators_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) TerminateUserSessions(ctx context.Context, in *TerminateUserSessionsRequest, opts ...grpc.CallOption) (*TerminateUserSessionsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TerminateUserSessionsResponse)
+	err := c.cc.Invoke(ctx, ContainerService_TerminateUserSessions_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1298,6 +1316,13 @@ type ContainerServiceServer interface {
 	RemoveCollaborator(context.Context, *RemoveCollaboratorRequest) (*RemoveCollaboratorResponse, error)
 	// ListCollaborators lists all collaborators for a container
 	ListCollaborators(context.Context, *ListCollaboratorsRequest) (*ListCollaboratorsResponse, error)
+	// TerminateUserSessions ends every live SSH session a user holds on this
+	// backend: their owner box and every box they reach as a collaborator,
+	// in-box and on the host jump account. Nothing is deleted and no
+	// authorized_keys file changes; the user can connect again (#2522).
+	// Callers need ssh:write; the admin role (which service tokens carry) may
+	// name any user, any other caller only themselves.
+	TerminateUserSessions(context.Context, *TerminateUserSessionsRequest) (*TerminateUserSessionsResponse, error)
 	// GetMetrics gets runtime metrics for containers
 	GetMetrics(context.Context, *GetMetricsRequest) (*GetMetricsResponse, error)
 	// CleanupDisk frees disk space inside a container by removing temp files, package caches, and old logs
@@ -1544,6 +1569,9 @@ func (UnimplementedContainerServiceServer) RemoveCollaborator(context.Context, *
 }
 func (UnimplementedContainerServiceServer) ListCollaborators(context.Context, *ListCollaboratorsRequest) (*ListCollaboratorsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListCollaborators not implemented")
+}
+func (UnimplementedContainerServiceServer) TerminateUserSessions(context.Context, *TerminateUserSessionsRequest) (*TerminateUserSessionsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method TerminateUserSessions not implemented")
 }
 func (UnimplementedContainerServiceServer) GetMetrics(context.Context, *GetMetricsRequest) (*GetMetricsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetMetrics not implemented")
@@ -2246,6 +2274,24 @@ func _ContainerService_ListCollaborators_Handler(srv interface{}, ctx context.Co
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ContainerServiceServer).ListCollaborators(ctx, req.(*ListCollaboratorsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_TerminateUserSessions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TerminateUserSessionsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).TerminateUserSessions(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_TerminateUserSessions_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).TerminateUserSessions(ctx, req.(*TerminateUserSessionsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -3032,6 +3078,10 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListCollaborators",
 			Handler:    _ContainerService_ListCollaborators_Handler,
+		},
+		{
+			MethodName: "TerminateUserSessions",
+			Handler:    _ContainerService_TerminateUserSessions_Handler,
 		},
 		{
 			MethodName: "GetMetrics",

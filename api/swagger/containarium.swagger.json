@@ -8667,6 +8667,47 @@
         ]
       }
     },
+    "/v1/users/{username}/sessions:terminate": {
+      "post": {
+        "summary": "Terminate user sessions",
+        "description": "Ends every live SSH session the user holds on this backend (owner box and collaborator boxes). Deletes nothing; the user can connect again. Requires ssh:write; the admin role may name any user, any other caller only themselves.",
+        "operationId": "ContainerService_TerminateUserSessions",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/TerminateUserSessionsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "The user: the owner of \"\u003cusername\u003e-container\" and the collaborator of\nany \"\u003cowner\u003e-container-\u003cusername\u003e\" jump account. Same value as the\nself-host user id (sshauthz.UserIDForLogin).",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/TerminateUserSessionsBody"
+            }
+          }
+        ],
+        "tags": [
+          "SSHSessions"
+        ]
+      }
+    },
     "/v1/validate-gpu": {
       "post": {
         "summary": "Validate GPU passthrough",
@@ -19015,6 +19056,26 @@
         }
       },
       "description": "TailRunLogResponse is one window of a run's journal."
+    },
+    "TerminateUserSessionsBody": {
+      "type": "object",
+      "description": "TerminateUserSessionsRequest names the user whose sessions to end."
+    },
+    "TerminateUserSessionsResponse": {
+      "type": "object",
+      "properties": {
+        "terminatedSessions": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Accounts (in a box, or the host jump account) that had live processes,\nall of which were killed."
+        },
+        "boxesTouched": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Boxes on this backend the user reaches (owner box plus collaborator\nboxes) that were walked."
+        }
+      },
+      "description": "TerminateUserSessionsResponse reports what was ended."
     },
     "TestWebhookRequest": {
       "type": "object",

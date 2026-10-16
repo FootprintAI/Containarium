@@ -193,6 +193,7 @@ security sentry status
 security-findings
 security-remediate
 security-scan
+sessions terminate
 sleep
 snapshot create
 snapshot delete
