@@ -41,6 +41,10 @@ type DenyBurstRule struct {
 	n      int
 	window time.Duration
 
+	// countLogOnly makes would-deny events from an observation-only tenant
+	// count toward the burst (#2612). Off by default.
+	countLogOnly bool
+
 	mu      sync.Mutex
 	records map[string][]denyBurstRecord // tenantID -> window records, oldest first
 	dirty   map[string]bool              // tenantID -> at least one OnDeny since the last Sweep
@@ -65,6 +69,16 @@ func NewDenyBurstRule(n int, window time.Duration) *DenyBurstRule {
 	}
 }
 
+// CountLogOnlyDenies makes the rule also count would-deny events from tenants
+// whose network policy is only observed (log_only), not enforced. By default
+// it counts enforced drops only: on an observation-only host ordinary egress
+// that no allow-list covers yet would otherwise read as "fence probing"
+// (#2612). Returns the rule for chaining at construction.
+func (r *DenyBurstRule) CountLogOnlyDenies(on bool) *DenyBurstRule {
+	r.countLogOnly = on
+	return r
+}
+
 func (r *DenyBurstRule) ID() pb.ThreatRuleId { return pb.ThreatRuleId_THREAT_RULE_ID_DENY_BURST }
 
 // OnFlows: deny-burst is a deny-shaped rule; flow records carry no denial
@@ -76,6 +90,9 @@ func (r *DenyBurstRule) OnFlows(RuleContext, []netbpf.FlowRecord) []RawFinding {
 // event whose source IP doesn't resolve to a known tenant is dropped: a
 // probe from an unrecognized IP has no tenant to attribute the burst to.
 func (r *DenyBurstRule) OnDeny(ctx RuleContext, ev netbpf.DenyEvent) []RawFinding {
+	if ev.LogOnly && !r.countLogOnly {
+		return nil
+	}
 	tenantID, ok := ctx.TenantForIP(ev.Src())
 	if !ok {
 		return nil
