@@ -11,7 +11,9 @@ import (
 
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/known/durationpb"
 )
@@ -20,6 +22,89 @@ import (
 type controlClock struct {
 	mu sync.Mutex
 	t  time.Time
+}
+
+// TestControlRevocationSurvivesStorageFault keeps explicit authority denial typed.
+func TestControlRevocationSurvivesStorageFault(t *testing.T) {
+	f := newControlFixture(t)
+	ref := f.open(f.client, pb.SSHBanListener_SSH_BAN_LISTENER_MAIN, "revoked-during-fault")
+	token := f.route(f.client, ref)
+	lease := f.acquire(f.client, ref, token, "127.0.0.1:22")
+	dir := filepath.Dir(f.cfg.StatePath)
+	if err := os.Rename(dir, dir+".offline"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.server.Recover(); err == nil {
+		t.Fatal("missing storage did not fault")
+	}
+	f.server.mu.Lock()
+	f.server.cfg.Resolve = func(string) (string, error) { return "", fmt.Errorf("route removed") }
+	f.server.mu.Unlock()
+	_, err := f.client.CompleteSSHUpstream(t.Context(), &pb.CompleteSSHUpstreamRequest{Connection: ref, RouteToken: token, LeaseToken: lease.LeaseToken, Outcome: pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_SSH_READY})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("revocation hidden behind a storage failure: %v", err)
+	}
+}
+
+// TestControlActiveRefusalsKeepBackoff never prunes an actively retried outage.
+func TestControlActiveRefusalsKeepBackoff(t *testing.T) {
+	f := newControlFixture(t)
+	for i, delay := range []time.Duration{time.Second, 2 * time.Second, 4 * time.Second} {
+		ref := f.open(f.client, pb.SSHBanListener_SSH_BAN_LISTENER_MAIN, fmt.Sprint("refusal-", i))
+		token := f.route(f.client, ref)
+		lease := f.acquire(f.client, ref, token, "127.0.0.1:22")
+		if !lease.Admitted {
+			t.Fatal("due probe was not admitted")
+		}
+		f.finish(ref, token, lease, pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_TCP_REFUSED)
+		_ = f.count(ref, pb.SSHUpstreamFailureKind_SSH_UPSTREAM_FAILURE_KIND_PIPE_CREATE)
+		other := f.open(f.client, pb.SSHBanListener_SSH_BAN_LISTENER_MAIN, fmt.Sprint("cooldown-", i))
+		denied := f.acquire(f.client, other, f.route(f.client, other), "127.0.0.1:22")
+		if denied.Admitted || denied.RetryAt.AsTime().Sub(f.clock.now()) != delay {
+			t.Fatalf("retry %d lost exponential delay %s: %v", i, delay, denied)
+		}
+		_ = f.count(other, pb.SSHUpstreamFailureKind_SSH_UPSTREAM_FAILURE_KIND_PIPE_CREATE)
+		f.clock.advance(delay)
+	}
+}
+
+// TestControlFaultKeepsVerifiedSourceAccounting isolates storage from client policy.
+func TestControlFaultKeepsVerifiedSourceAccounting(t *testing.T) {
+	f := newControlFixture(t)
+	client := f.open(f.client, pb.SSHBanListener_SSH_BAN_LISTENER_MAIN, "bad-client")
+	_ = f.route(f.client, client)
+	backend := f.open(f.client, pb.SSHBanListener_SSH_BAN_LISTENER_MAIN, "backend-failure")
+	bt := f.route(f.client, backend)
+	bl := f.acquire(f.client, backend, bt, "127.0.0.1:22")
+	cause := f.open(f.client, pb.SSHBanListener_SSH_BAN_LISTENER_MAIN, "disk-fault")
+	ct := f.route(f.client, cause)
+	dir := filepath.Dir(f.cfg.StatePath)
+	if err := os.Rename(dir, dir+".offline"); err != nil {
+		t.Fatal(err)
+	}
+	if f.acquire(f.client, cause, ct, "127.0.0.1:22").Admitted {
+		t.Fatal("unsaved admission")
+	}
+	if !f.count(client, pb.SSHUpstreamFailureKind_SSH_UPSTREAM_FAILURE_KIND_AUTH) {
+		t.Fatal("storage fault exempted a genuine client denial")
+	}
+	_, _ = f.client.CompleteSSHUpstream(t.Context(), &pb.CompleteSSHUpstreamRequest{Connection: backend, RouteToken: bt, LeaseToken: bl.LeaseToken, Outcome: pb.SSHUpstreamOutcome_SSH_UPSTREAM_OUTCOME_PROXY_AUTH_REJECTED})
+	if f.count(backend, pb.SSHUpstreamFailureKind_SSH_UPSTREAM_FAILURE_KIND_AUTH) {
+		t.Fatal("confirmed backend outcome punished the client during storage fault")
+	}
+	if f.count(cause, pb.SSHUpstreamFailureKind_SSH_UPSTREAM_FAILURE_KIND_PIPE_CREATE) {
+		t.Fatal("storage refusal punished the source")
+	}
+}
+
+// TestControlStaleFailureHasNoExemption requires current provenance for a skip.
+func TestControlStaleFailureHasNoExemption(t *testing.T) {
+	f := newControlFixture(t)
+	ref := f.open(f.client, pb.SSHBanListener_SSH_BAN_LISTENER_MAIN, "stale-source")
+	ref.ControllerGeneration = "replaced-controller"
+	if !f.count(ref, pb.SSHUpstreamFailureKind_SSH_UPSTREAM_FAILURE_KIND_AUTH) {
+		t.Fatal("stale generation granted a source exemption")
+	}
 }
 
 // TestControlAdmissionReasonIsTyped keeps denial decisions out of free text.

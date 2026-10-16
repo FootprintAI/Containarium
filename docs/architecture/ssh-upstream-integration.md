@@ -25,7 +25,10 @@ Controller identity aliases keep one stable budget when main and anonymous refer
 to an authoritative backend. Anonymous-only jail identity follows the physical
 endpoint; box names authorize live Ensure routes and never permanently union
 DHCP lifetimes. Endpoint risk survives reuse. Idle entries and aliases are
-removed only after pending setups, cooldown and jail history have drained.
+removed only after pending setups, cooldown and jail history have drained and
+the identity has been unused for max(window, max delay) plus setup timeout.
+Every admission decision, including cooldown denial, refreshes that activity;
+active outages must never lose their exponential backoff during cleanup.
 Legacy box aliases are dropped on restore while endpoint history is preserved.
 Adding an alias does not advance the group's route epoch: simultaneous main/anon
 aliases must not make each other's in-flight failures stale. Per-connection route

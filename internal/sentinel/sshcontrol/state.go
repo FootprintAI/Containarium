@@ -95,6 +95,7 @@ func (c *Controller) restore() error {
 		}
 		rows = append(rows, s)
 		c.versions[b.BackendId] = b.RouteGeneration
+		c.activity[b.BackendId] = c.cfg.Now()
 	}
 	if err := c.gate.Restore(rows); err != nil {
 		return err

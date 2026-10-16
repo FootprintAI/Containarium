@@ -41,6 +41,7 @@ type Controller struct {
 	readyAt         time.Time
 	aliases         map[string]string
 	versions        map[string]uint64
+	activity        map[string]time.Time
 	connections     map[string]*connection
 	anonymousRoutes map[string]string
 	leases          map[string]reservation
@@ -75,7 +76,7 @@ func New(cfg Config) (*Controller, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := &Controller{cfg: cfg, gate: g, generation: crand.Text(), aliases: map[string]string{}, versions: map[string]uint64{}, connections: map[string]*connection{}, leases: map[string]reservation{}, anonymousRoutes: map[string]string{}}
+	c := &Controller{cfg: cfg, gate: g, generation: crand.Text(), aliases: map[string]string{}, versions: map[string]uint64{}, activity: map[string]time.Time{}, connections: map[string]*connection{}, leases: map[string]reservation{}, anonymousRoutes: map[string]string{}}
 	if err := privateDirectory(filepath.Dir(cfg.StatePath)); err != nil {
 		return nil, err
 	}
@@ -225,8 +226,13 @@ func (c *Controller) reap() {
 	// Risk-bearing inventory cannot be evicted by address churn or capacity.
 	drained := make(map[string]bool)
 	for id, version := range c.versions {
+		idle := max(c.cfg.Policy.Window.AsDuration(), c.cfg.Policy.MaxDelay.AsDuration()) + c.cfg.Policy.SetupTimeout.AsDuration()
+		if now.Before(c.activity[id].Add(idle)) {
+			continue
+		}
 		if c.gate.Forget(sshgate.Key{Backend: id, Egress: c.cfg.Policy.EgressGroup}, version) {
 			delete(c.versions, id)
+			delete(c.activity, id)
 			drained[id] = true
 		}
 	}
@@ -241,12 +247,13 @@ func (c *Controller) reap() {
 func (c *Controller) BeginSSHUpstreamRoute(_ context.Context, r *pb.BeginSSHUpstreamRouteRequest) (*pb.BeginSSHUpstreamRouteResponse, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.fault != nil {
-		return nil, status.Error(codes.Unavailable, "upstream controller unavailable")
-	}
 	s, err := c.find(r.GetConnection())
 	if err != nil {
 		return nil, err
+	}
+	if c.fault != nil {
+		s.authSkip, s.terminalSkip = true, true
+		return nil, status.Error(codes.Unavailable, "upstream controller unavailable")
 	}
 	if l, ok := c.leases[s.lease]; ok {
 		c.gate.Complete(l.lease, sshgate.SetupFailed)
@@ -317,6 +324,7 @@ func (c *Controller) identify(id, endpoint string) (sshgate.Key, uint64, error) 
 		return sshgate.Key{}, 0, err
 	}
 	c.aliases[ia], c.aliases[ea], c.versions[canonical] = canonical, canonical, version
+	c.activity[canonical] = c.cfg.Now()
 	return key, version, nil
 }
 
@@ -400,9 +408,7 @@ func admissionReason(reason sshgate.Reason) pb.SSHUpstreamAdmissionReason {
 func (c *Controller) CompleteSSHUpstream(_ context.Context, r *pb.CompleteSSHUpstreamRequest) (*pb.CompleteSSHUpstreamResponse, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.fault != nil {
-		return nil, status.Error(codes.Unavailable, "upstream durable controller unavailable")
-	}
+	faulted := c.fault != nil
 	s, err := c.find(r.GetConnection())
 	if err != nil {
 		return nil, err
@@ -443,11 +449,17 @@ func (c *Controller) CompleteSSHUpstream(_ context.Context, r *pb.CompleteSSHUps
 	if skip {
 		s.authSkip, s.terminalSkip = true, true
 	}
+	if stale {
+		if !faulted {
+			_ = c.persist()
+		}
+		return nil, status.Error(codes.PermissionDenied, "upstream route authority revoked")
+	}
+	if faulted {
+		return nil, status.Error(codes.Unavailable, "upstream outcome retained pending durable recovery")
+	}
 	if err := c.persist(); err != nil {
 		return nil, status.Error(codes.Unavailable, "cannot commit upstream outcome")
-	}
-	if stale {
-		return nil, status.Error(codes.PermissionDenied, "upstream route authority revoked")
 	}
 	if accepted && outcome == sshgate.SetupSucceeded {
 		delete(c.connections, connectionKey(s.ref))
@@ -459,15 +471,12 @@ func (c *Controller) CompleteSSHUpstream(_ context.Context, r *pb.CompleteSSHUps
 func (c *Controller) ConsumeSSHUpstreamFailure(_ context.Context, r *pb.ConsumeSSHUpstreamFailureRequest) (*pb.ConsumeSSHUpstreamFailureResponse, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.fault != nil {
-		return &pb.ConsumeSSHUpstreamFailureResponse{}, nil
-	}
-	if r.GetConnection().GetControllerGeneration() != c.generation {
-		return &pb.ConsumeSSHUpstreamFailureResponse{}, nil
+	if r.GetKind() != pb.SSHUpstreamFailureKind_SSH_UPSTREAM_FAILURE_KIND_AUTH && r.GetKind() != pb.SSHUpstreamFailureKind_SSH_UPSTREAM_FAILURE_KIND_PIPE_CREATE {
+		return nil, status.Error(codes.InvalidArgument, "unknown source failure event")
 	}
 	s, err := c.find(r.GetConnection())
 	if err != nil {
-		return nil, err
+		return &pb.ConsumeSSHUpstreamFailureResponse{CountSourceFailure: true}, nil
 	}
 	var count bool
 	switch r.Kind {
@@ -479,8 +488,8 @@ func (c *Controller) ConsumeSSHUpstreamFailure(_ context.Context, r *pb.ConsumeS
 		if l, ok := c.leases[s.lease]; ok {
 			c.gate.Complete(l.lease, sshgate.SetupFailed)
 			delete(c.leases, s.lease)
-			if err := c.persist(); err != nil {
-				return nil, err
+			if c.fault == nil {
+				_ = c.persist()
 			}
 		}
 		delete(c.connections, connectionKey(s.ref))
@@ -494,13 +503,14 @@ func (c *Controller) ConsumeSSHUpstreamFailure(_ context.Context, r *pb.ConsumeS
 func (c *Controller) RegisterSSHAnonymousRoute(_ context.Context, r *pb.RegisterSSHAnonymousRouteRequest) (*pb.RegisterSSHAnonymousRouteResponse, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.fault != nil {
-		return nil, status.Error(codes.Unavailable, "upstream controller unavailable")
-	}
 	c.reap()
 	s, err := c.find(r.GetConnection())
 	if err != nil {
 		return nil, err
+	}
+	if c.fault != nil {
+		s.authSkip, s.terminalSkip = true, true
+		return nil, status.Error(codes.Unavailable, "upstream controller unavailable")
 	}
 	if s.ref.Listener != pb.SSHBanListener_SSH_BAN_LISTENER_ANONYMOUS || r.BoxName == "" || len(r.BoxName) > 256 || !validEndpoint(r.Endpoint) {
 		return nil, status.Error(codes.InvalidArgument, "invalid anonymous Ensure route")

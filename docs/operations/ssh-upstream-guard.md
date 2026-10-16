@@ -73,7 +73,9 @@ during live traffic to work around a policy mismatch.
 
 The GCE boot installer follows the same staging/rollback rule. Anonymous box
 names no longer permanently union reused IPs; physical endpoint risk stays until
-its jail window drains. Idle endpoint aliases are then pruned. The metadata cap
+its jail window drains. Endpoint aliases are pruned only after an idle period of
+max(window, max delay) plus setup timeout as well as complete risk drain;
+active retries preserve backoff. The metadata cap
 per normalized source is min(64, one quarter of global capacity), at least one,
 shared across listeners, so one idle source cannot fill the default global table.
 
