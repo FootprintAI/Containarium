@@ -100,8 +100,11 @@ func (g *gcpSink) NewExporter(ctx context.Context, cfg SinkConfig) (sdkmetric.Ex
 	return exporter, nil
 }
 
-// DetectResource resolves this host's GCP monitored-resource identity so
-// exported series land tagged as a gce_instance in Metrics Explorer. It
+// DetectResource resolves this host's GCP identity (project, zone, instance
+// id) as OTel resource attributes for the exporter. Google's OTLP ingestion
+// maps the series onto a prometheus_target monitored resource (observed:
+// location = zone, instance = the numeric GCE instance id), not a
+// gce_instance, so filters must not assume the latter. It
 // uses the OTel contrib GCP resource detector; off GCP (or with the
 // metadata server unreachable) it returns whatever partial resource the
 // detector can assemble, which the exporter maps to a generic resource

@@ -292,9 +292,12 @@ type CollectorOptions struct {
 	// (a provider Sink's NewExporter result in production, a fake in
 	// tests). Required.
 	Exporter sdkmetric.Exporter
-	// Resource tags every series with the provider's monitored-resource
-	// identity (e.g. gce_instance from the GCP detector). Optional; nil
-	// falls back to the SDK default resource.
+	// Resource is the OTel resource the series are exported under: the
+	// provider's identity attributes (e.g. the instance id and zone from the
+	// GCP detector). Which monitored resource Cloud Monitoring records for
+	// them is the provider's own mapping, not this field's (for GCP OTLP
+	// since v0.100.0 it is prometheus_target, not gce_instance). Optional;
+	// nil falls back to the SDK default resource.
 	Resource *resource.Resource
 	// Labels is the fixed backend_id/hostname/region identity.
 	Labels Labels
