@@ -1088,6 +1088,24 @@ message RemoveCollaboratorResponse {
   string message = 1;
 }
 
+// TerminateUserSessionsRequest names the user whose sessions to end.
+message TerminateUserSessionsRequest {
+  // The user: the owner of "<username>-container" and the collaborator of
+  // any "<owner>-container-<username>" jump account. Same value as the
+  // self-host user id (sshauthz.UserIDForLogin).
+  string username = 1;
+}
+
+// TerminateUserSessionsResponse reports what was ended.
+message TerminateUserSessionsResponse {
+  // Accounts (in a box, or the host jump account) that had live processes,
+  // all of which were killed.
+  int32 terminated_sessions = 1;
+  // Boxes on this backend the user reaches (owner box plus collaborator
+  // boxes) that were walked.
+  int32 boxes_touched = 2;
+}
+
 // ListCollaboratorsRequest is the request to list collaborators for a container
 message ListCollaboratorsRequest {
   // Container owner's username

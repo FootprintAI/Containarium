@@ -2,6 +2,7 @@ package cloud
 
 import (
 	"context"
+	"errors"
 	"net"
 	"strings"
 	"sync"
@@ -606,5 +607,105 @@ func TestDefaultStatusProbe_ReportsVersionAndCPU(t *testing.T) {
 	// populated the breakdown on this (non-windows) platform.
 	if len(st.Checks) == 0 {
 		t.Error("doctor self-check should populate at least one check on non-windows")
+	}
+}
+
+// fakeTerminator records the users whose sessions the reconciler ended.
+type fakeTerminator struct {
+	mu    sync.Mutex
+	users []string
+	err   error
+}
+
+func (f *fakeTerminator) TerminateUserSessions(_ context.Context, userID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.users = append(f.users, userID)
+	return f.err
+}
+
+func (f *fakeTerminator) calls() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.users...)
+}
+
+// A TERMINATE_USER_SESSIONS assignment reaches the session terminator, never
+// the container actuator, and a replay of the same assignment_id is a no-op
+// (#2522): WatchAssignments resends the full snapshot on every batch.
+func TestReconcileAssignment_TerminateUserSessionsIdempotent(t *testing.T) {
+	cfg := &Config{ControlPlane: "bufconn", HostID: "h", Token: "h.b"}
+	c, fake := newTestClient(t, cfg)
+	act := &fakeActuator{}
+	term := &fakeTerminator{}
+	c.containers, c.sessions = act, term
+
+	batch := &cloudv1.AssignmentBatch{Assignments: []*cloudv1.Assignment{{
+		AssignmentId: "as-1",
+		Kind:         cloudv1.AssignmentKind_ASSIGNMENT_KIND_TERMINATE_USER_SESSIONS,
+		UserId:       "alice",
+	}}}
+	c.reconcile(batch)
+	c.reconcile(batch) // replay: same assignment_id
+
+	if got := term.calls(); len(got) != 1 || got[0] != "alice" {
+		t.Fatalf("terminator calls = %v, want exactly [alice]", got)
+	}
+	act.mu.Lock()
+	if len(act.running)+len(act.stopped)+len(act.deleted) != 0 {
+		t.Errorf("terminate assignment reached the container actuator: %+v", act)
+	}
+	act.mu.Unlock()
+	fake.mu.Lock()
+	if fake.reportedID != "" {
+		t.Errorf("terminate assignment reported container state for %q", fake.reportedID)
+	}
+	fake.mu.Unlock()
+
+	// A new assignment for the same user is a new request and runs.
+	c.reconcile(&cloudv1.AssignmentBatch{Assignments: []*cloudv1.Assignment{{
+		AssignmentId: "as-2",
+		Kind:         cloudv1.AssignmentKind_ASSIGNMENT_KIND_TERMINATE_USER_SESSIONS,
+		UserId:       "alice",
+	}}})
+	if got := term.calls(); len(got) != 2 {
+		t.Errorf("a new assignment_id should run again: %v", got)
+	}
+}
+
+// A failed termination is not recorded as done, so the next delivery retries.
+func TestReconcileAssignment_TerminateFailureRetries(t *testing.T) {
+	c := &Client{ctx: context.Background()}
+	term := &fakeTerminator{err: errors.New("db down")}
+	c.sessions = term
+	a := &cloudv1.Assignment{
+		AssignmentId: "as-1",
+		Kind:         cloudv1.AssignmentKind_ASSIGNMENT_KIND_TERMINATE_USER_SESSIONS,
+		UserId:       "alice",
+	}
+	c.reconcileAssignment(a)
+	term.mu.Lock()
+	term.err = nil
+	term.mu.Unlock()
+	c.reconcileAssignment(a)
+	c.reconcileAssignment(a)
+	if got := term.calls(); len(got) != 2 {
+		t.Errorf("calls = %v, want a retry after the failure and then nothing", got)
+	}
+}
+
+// Without a terminator (or without a user) nothing runs and nothing panics.
+func TestReconcileAssignment_TerminateWithoutDeps(t *testing.T) {
+	c := &Client{ctx: context.Background()}
+	c.reconcile(&cloudv1.AssignmentBatch{Assignments: []*cloudv1.Assignment{{
+		AssignmentId: "as-1", Kind: cloudv1.AssignmentKind_ASSIGNMENT_KIND_TERMINATE_USER_SESSIONS, UserId: "alice",
+	}}})
+	term := &fakeTerminator{}
+	c.sessions = term
+	c.reconcileAssignment(&cloudv1.Assignment{
+		AssignmentId: "as-2", Kind: cloudv1.AssignmentKind_ASSIGNMENT_KIND_TERMINATE_USER_SESSIONS,
+	})
+	if got := term.calls(); len(got) != 0 {
+		t.Errorf("an assignment without user_id ran: %v", got)
 	}
 }

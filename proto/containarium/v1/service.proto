@@ -573,6 +573,24 @@ service ContainerService {
     };
   }
 
+  // TerminateUserSessions ends every live SSH session a user holds on this
+  // backend: their owner box and every box they reach as a collaborator,
+  // in-box and on the host jump account. Nothing is deleted and no
+  // authorized_keys file changes; the user can connect again (#2522).
+  // Callers need ssh:write; the admin role (which service tokens carry) may
+  // name any user, any other caller only themselves.
+  rpc TerminateUserSessions(TerminateUserSessionsRequest) returns (TerminateUserSessionsResponse) {
+    option (google.api.http) = {
+      post: "/v1/users/{username}/sessions:terminate"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Terminate user sessions";
+      description: "Ends every live SSH session the user holds on this backend (owner box and collaborator boxes). Deletes nothing; the user can connect again. Requires ssh:write; the admin role may name any user, any other caller only themselves.";
+      tags: "SSHSessions";
+    };
+  }
+
   // GetMetrics gets runtime metrics for containers
   rpc GetMetrics(GetMetricsRequest) returns (GetMetricsResponse) {
     option (google.api.http) = {

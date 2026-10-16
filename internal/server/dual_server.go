@@ -1484,6 +1484,9 @@ skipAppHosting:
 			// version) so the BYO fleet view goes live (#528).
 			// Policy-store readiness (#2483) rides along as advisory checks.
 			Status: cloud.DefaultStatusProbe{Readiness: policyreadiness.ServerCheck(policyStoreHealth)},
+			// TERMINATE_USER_SESSIONS assignments run the same function as
+			// `containarium sessions terminate` (#2522).
+			Sessions: cloudSessionTerminator{s: containerServer},
 		}
 		if cloudActuator, actErr := newCloudContainerActuator(routeStore); actErr != nil {
 			log.Printf("Warning: cloud container actuator unavailable (%v); policy sync only", actErr)
