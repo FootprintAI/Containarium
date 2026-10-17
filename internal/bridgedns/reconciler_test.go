@@ -380,3 +380,37 @@ func TestNewReconcilerDefaults(t *testing.T) {
 		t.Fatalf("interval = %v; want DefaultInterval %v", r.cfg.Interval, DefaultInterval)
 	}
 }
+
+// #2194: OnPass fires once per finished pass, converged or not, with the
+// post-pass status; a pass abandoned on a done context never reports.
+func TestReconcileOnce_OnPass(t *testing.T) {
+	be := &fakeBackend{caddy: &incus.ContainerInfo{State: "Running", IPAddress: "10.0.0.5"}, raw: "stale"}
+	var got []Status
+	r := NewReconciler(be, Config{
+		Bridge: "incusbr0", CaddyContainer: testCaddy,
+		Render: func(ip string) string { return "addr=" + ip },
+		OnPass: func(s Status) { got = append(got, s) },
+	})
+	if err := r.ReconcileOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	be.getErr = errors.New("incus down")
+	if err := r.ReconcileOnce(context.Background()); err == nil {
+		t.Fatal("expected the read error")
+	}
+	if len(got) != 2 {
+		t.Fatalf("OnPass calls = %d, want 2", len(got))
+	}
+	if !got[0].InSync || got[0].DriftCount != 1 || got[0].LastPass.IsZero() {
+		t.Errorf("converged pass status = %+v", got[0])
+	}
+	if got[1].InSync || got[1].LastError == "" {
+		t.Errorf("failed pass status = %+v, want not in sync with a reason", got[1])
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_ = r.ReconcileOnce(ctx)
+	if len(got) != 2 {
+		t.Errorf("a cancelled pass reported: %d calls", len(got))
+	}
+}
