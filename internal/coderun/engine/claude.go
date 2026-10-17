@@ -174,6 +174,13 @@ if env | grep -q '^CLAUDE_CODE_USE_[A-Z0-9_]*='; then
 fi
 echo none`
 
+// ClaudeStructuredOutputFlag, appended to a Claude run command, makes
+// `claude -p` print ONE JSON result object (type "result", subtype, is_error,
+// result text, session_id, usage, ...) instead of plain text. `json` rather
+// than `stream-json`: stream-json under -p additionally requires --verbose.
+// Appending is safe because it is a trailing flag after -p/--resume/--continue.
+const ClaudeStructuredOutputFlag = " --output-format json"
+
 // RunCommand renders the command process_start spawns.
 //
 // For a tenant secret this is coderun.BuildClaudeRunCommand verbatim — the

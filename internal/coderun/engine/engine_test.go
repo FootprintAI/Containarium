@@ -570,3 +570,12 @@ func TestVerifyScript_Codex_SecretReportsSourcesByNameOnly(t *testing.T) {
 		t.Errorf("codex verify script must never expand a key value:\n%s", script)
 	}
 }
+
+// TestClaudeStructuredOutputFlag pins the flag appended for structured runs:
+// `json` (one result object), not stream-json, which `claude -p` rejects
+// without --verbose.
+func TestClaudeStructuredOutputFlag(t *testing.T) {
+	if ClaudeStructuredOutputFlag != " --output-format json" {
+		t.Errorf("ClaudeStructuredOutputFlag = %q", ClaudeStructuredOutputFlag)
+	}
+}

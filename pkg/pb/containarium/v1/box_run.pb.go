@@ -265,7 +265,7 @@ type StartBoxRunRequest struct {
 	Prompt string `protobuf:"bytes,2,opt,name=prompt,proto3" json:"prompt,omitempty"`
 	// Resume this specific session id instead of starting a fresh one
 	// (claude --resume <id>; pi --session <id>). Also becomes this run's
-	// run_name: StartBoxRun on a box whose run under this name is still RUNNING
+	// run_name unless run_name is set: StartBoxRun on a box whose run under this name is still RUNNING
 	// or UNKNOWN is FAILED_PRECONDITION naming it — no queueing. Mutually
 	// exclusive with continue_session.
 	SessionId string `protobuf:"bytes,3,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
@@ -273,8 +273,40 @@ type StartBoxRunRequest struct {
 	// directory" instead of starting a fresh one (`code run --continue`'s
 	// meaning, unchanged). Mutually exclusive with session_id.
 	ContinueSession bool `protobuf:"varint,4,opt,name=continue_session,json=continueSession,proto3" json:"continue_session,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Names this run exactly <run_name> instead of the default (the session id
+	// when resuming, else "code"). Must match [A-Za-z0-9._-]{1,128} and not be
+	// "." or ".."; anything else is INVALID_ARGUMENT, as is a name ending in
+	// ".stderr" or in ".<digits>" (those alias a run's stderr log and the
+	// rotation suffix of a finished run). The same collision rules
+	// apply to the name as to any other: a finished run under it is rotated
+	// aside, a RUNNING or UNKNOWN one is FAILED_PRECONDITION. A run with an
+	// explicit name never collides with the default "code" run, so a caller
+	// that picks a unique name per run keeps every log. ListBoxRuns,
+	// TailBoxRunLog and the CLI address the run by this name. Empty keeps the
+	// previous naming. Capability "box_run_name" in SystemInfo.capabilities.
+	RunName string `protobuf:"bytes,5,opt,name=run_name,json=runName,proto3" json:"run_name,omitempty"`
+	// When true the engine runs with `--output-format json` (Claude Code only;
+	// any other engine is FAILED_PRECONDITION, before anything on the box is
+	// touched). The run's log (<run_name>.log) is then exactly the engine's one
+	// JSON result object (type, subtype, is_error, result, session_id, usage,
+	// ...); stderr is kept apart in /tmp/agent-box/<run_name>.stderr.log, which
+	// TailBoxRunLog does not serve. Once the run has exited, ListBoxRuns reads
+	// the object and reports its TOP-LEVEL session_id as BoxRun.session_id
+	// (nested keys are ignored; truncated or invalid JSON, or an object over
+	// 1 MiB, yields no id). The object appears when the run ends: the log is
+	// empty while it runs. Default false leaves the plain-text behaviour
+	// unchanged.
+	//
+	// NORMATIVE: a caller that needs the session id reliably MUST set
+	// structured_output. Without it BoxRun.session_id of a fresh run is
+	// best-effort directory discovery (exactly one new transcript must appear
+	// while the run lives; a member's interactive session or another run
+	// starting meanwhile makes it ambiguous) and may be missing. A
+	// continue_session run gets no discovered id at all. Capability
+	// "box_run_structured_output" in SystemInfo.capabilities.
+	StructuredOutput bool `protobuf:"varint,6,opt,name=structured_output,json=structuredOutput,proto3" json:"structured_output,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *StartBoxRunRequest) Reset() {
@@ -331,6 +363,20 @@ func (x *StartBoxRunRequest) GetSessionId() string {
 func (x *StartBoxRunRequest) GetContinueSession() bool {
 	if x != nil {
 		return x.ContinueSession
+	}
+	return false
+}
+
+func (x *StartBoxRunRequest) GetRunName() string {
+	if x != nil {
+		return x.RunName
+	}
+	return ""
+}
+
+func (x *StartBoxRunRequest) GetStructuredOutput() bool {
+	if x != nil {
+		return x.StructuredOutput
 	}
 	return false
 }
@@ -793,13 +839,15 @@ const file_containarium_v1_box_run_proto_rawDesc = "" +
 	"\n" +
 	"session_id\x18\b \x01(\tR\tsessionIdB\f\n" +
 	"\n" +
-	"_exit_code\"\x92\x01\n" +
+	"_exit_code\"\xda\x01\n" +
 	"\x12StartBoxRunRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x16\n" +
 	"\x06prompt\x18\x02 \x01(\tR\x06prompt\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x03 \x01(\tR\tsessionId\x12)\n" +
-	"\x10continue_session\x18\x04 \x01(\bR\x0fcontinueSession\"@\n" +
+	"\x10continue_session\x18\x04 \x01(\bR\x0fcontinueSession\x12\x19\n" +
+	"\brun_name\x18\x05 \x01(\tR\arunName\x12+\n" +
+	"\x11structured_output\x18\x06 \x01(\bR\x10structuredOutput\"@\n" +
 	"\x13StartBoxRunResponse\x12)\n" +
 	"\x03run\x18\x01 \x01(\v2\x17.containarium.v1.BoxRunR\x03run\"0\n" +
 	"\x12ListBoxRunsRequest\x12\x1a\n" +

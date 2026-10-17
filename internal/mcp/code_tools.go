@@ -123,6 +123,10 @@ func handleCodeRun(client API, args map[string]interface{}) (string, error) {
 	}
 
 	ctx := context.Background()
+	// Snapshot the engine's session directory before the run starts, so
+	// discovery adopts only a session this run creates (a resumed run's id is
+	// the literal sessionID and needs none).
+	discover := sessionID == "" && mcpSnapshotSessionDirectory(ctx, sess, name)
 	started, err := sess.ProcessStart(ctx,
 		name,
 		command,
@@ -132,7 +136,9 @@ func handleCodeRun(client API, args map[string]interface{}) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("start run on %q: %w", box, err)
 	}
-	mcpStartSessionDiscovery(ctx, sess, started.LogPath)
+	if discover {
+		mcpStartSessionDiscovery(ctx, sess, name)
+	}
 
 	out, next := readCodeWindow(ctx, sess, started.LogPath, 0, streamJSON)
 	return fmt.Sprintf(
@@ -145,19 +151,40 @@ func handleCodeRun(client API, args map[string]interface{}) (string, error) {
 		started.LogPath, next, out, started.Name, next), nil
 }
 
+// mcpSessionSidecar is where the run called name keeps its session sidecar:
+// process_start puts every run's files under coderun.RunLogDir.
+func mcpSessionSidecar(name string) string {
+	return coderun.RunLogDir + "/" + name + ".session"
+}
+
+// mcpSnapshotSessionDirectory records the engine's existing session entries
+// before the run starts (see engine/session_discovery.go). False means no
+// snapshot, so discovery must be skipped: an absent id, never a wrong one.
+func mcpSnapshotSessionDirectory(ctx context.Context, sess *coderun.Session, name string) bool {
+	home, err := sess.HomeDir(ctx)
+	if err != nil {
+		return false
+	}
+	cmd, ok := engine.SessionDiscoveryPrepareCommand(engine.NameClaude, home, home, mcpSessionSidecar(name))
+	if !ok {
+		return false
+	}
+	_, err = sess.ShellExec(ctx, cmd)
+	return err == nil
+}
+
 // mcpStartSessionDiscovery best-effort backgrounds the lookup of this run's
 // session id on the box (#2193), the MCP-tool twin of code_run.go's
 // startSessionDiscovery. This tool only ever builds a Claude command (see
 // handleCodeRun), so the engine is fixed; a lookup failure is never fatal —
 // code_runs simply reports no session id for this run, which the AC already
 // allows.
-func mcpStartSessionDiscovery(ctx context.Context, sess *coderun.Session, logPath string) {
+func mcpStartSessionDiscovery(ctx context.Context, sess *coderun.Session, name string) {
 	home, err := sess.HomeDir(ctx)
 	if err != nil {
 		return
 	}
-	sidecarPath := strings.TrimSuffix(logPath, ".log") + ".session"
-	cmd, ok := engine.SessionDiscoveryBackgroundCommand(engine.NameClaude, home, home, sidecarPath)
+	cmd, ok := engine.SessionDiscoveryBackgroundCommand(engine.NameClaude, home, home, mcpSessionSidecar(name))
 	if !ok {
 		return
 	}

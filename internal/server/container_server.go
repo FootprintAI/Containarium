@@ -3181,6 +3181,9 @@ func (s *ContainerServer) GetSystemInfo(ctx context.Context, req *pb.GetSystemIn
 		// and the same core-role exclusion the admission gate (#1029) uses,
 		// via committedTenantCores — one summation shared by both, not two.
 		CommittedCpuCores: committedTenantCores(containers, nil),
+		// Optional API features, so a client can gate request fields an
+		// older daemon would reject.
+		Capabilities: daemonCapabilities(),
 	}
 	// The rest of the CPU budget (#2284): the platform's own core-role
 	// commitment next to the tenant one, and the gate's posture so a
