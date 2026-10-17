@@ -14,7 +14,6 @@ a future hosted Containarium service that drives many daemons.
 | `incus` | Wraps the Incus/LXC API. Exposes the `Backend` interface (mockable) and `Client` (production implementation). |
 | `incus/incustest` | `MockBackend` — a test double satisfying `incus.Backend`. |
 | `container` | Container lifecycle Manager: create, start, stop, delete; SSH/cgroup wiring. |
-| `coresys` | Manages the `_containarium-core` system container (PostgreSQL, Redis, Caddy used by the daemon itself). |
 | `network` | Bridge configuration, passthrough routing, port-forward primitives. |
 | `expose` | Port exposure orchestration (domain → IP:port). |
 | `ospkg` | OS package manager abstraction (apt, dnf). |
@@ -56,9 +55,9 @@ See `incus/incustest/example_test.go` for runnable examples.
 ## Origin
 
 These packages were extracted from `internal/` in May 2026 so consumers
-beyond the OSS daemon could import them. The original `internal/core`
-package was renamed to `coresys` during the move to avoid the awkward
-`pkg/core/core/` path.
+beyond the OSS daemon could import them. (A `coresys` package for the
+`_containarium-core` system container was part of the extraction; it had no
+importers and was removed in #2624.)
 
 The `incus.Backend` interface and `incustest.MockBackend` test double
 landed during the same extraction; they're the supported way to drive
