@@ -46,10 +46,13 @@ schema passes breaking, and deleting a field fails breaking. Mutations run
 in a temporary copy, leaving the checkout intact.
 
 Keep `STANDARD` enabled. Existing published RPC type names, shared response
-types, and `ACCESS_TYPE_SSH = 0` have declaration-level `buf:lint:ignore`
-comments with compatibility reasons. They preserve existing SDK interfaces
-and enum JSON names. New declarations still have to satisfy the rules;
-do not add blanket exclusions to make a new API pass.
+types, and `ACCESS_TYPE_SSH = 0` use rule- and file-scoped `lint.ignore_only`
+entries in `buf.yaml` for compatibility reasons (in-source `buf:lint:ignore`
+comments are not used: they leak into the generated swagger and Go docs). A
+waiver applies to the listed file, not to one declaration. These waivers
+preserve existing SDK interfaces and enum JSON names. New declarations still
+have to satisfy the rules; do not add entries for new RPCs or blanket
+exclusions to make a new API pass.
 
 The root workspace checks the project's `proto` module. Vendored upstream
 definitions under `third_party/proto` are a separate generation-only

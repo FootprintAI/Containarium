@@ -29,8 +29,8 @@ var sentinelSSHSessionPluginCmd = &cobra.Command{
 sshpiperd on the sentinel is the only place a client's SSH key or certificate is
 verified — containers run no sshd of their own — but an accepted connection has
 never produced a structured record: only the failtoban plugin's auth-failure
-line exists. This subcommand IS that missing record: chained as the FIRST
-plugin in sshpiperd's invocation (ahead of the "yaml" routing plugin), it
+line exists. This subcommand IS that missing record: chained after
+ssh-authz-plugin and ahead of the "yaml" routing plugin, it
 observes the offered credential (certificate key_id/serial/CA fingerprint, or a
 raw key's fingerprint) and the accept/close of every pipe, and appends one
 JSON line per event to --records-file. It never accepts or rejects a
@@ -41,6 +41,8 @@ failure path failtoban's fail2ban regex depends on.
 Wire it into sshpiperd's ExecStart ahead of "yaml", e.g.:
 
   sshpiperd -i host_key -p 22 \
+    containarium sentinel ssh-authz-plugin \
+    -- \
     containarium sentinel ssh-session-plugin --records-file /var/log/containarium/ssh-sessions.jsonl \
     -- yaml --config /etc/sshpiper/config.yaml \
     -- failtoban --max-failures 100 --ban-duration 5m

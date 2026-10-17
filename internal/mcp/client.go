@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/footprintai/containarium/internal/client"
 	"github.com/footprintai/containarium/internal/runlog"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/footprintai/containarium/pkg/version"
@@ -258,35 +259,51 @@ func (c *Client) ListRecipes() (*ListRecipesResponse, error) {
 
 // DeployRecipeRequest is the body for a recipe deploy.
 type DeployRecipeRequest struct {
-	RecipeID   string            `json:"recipe_id"`
-	Name       string            `json:"name"`
-	GPU        string            `json:"gpu,omitempty"`
-	BackendID  string            `json:"backend_id,omitempty"`
-	Pool       string            `json:"pool,omitempty"`
-	Parameters map[string]string `json:"parameters,omitempty"`
+	RecipeID       string                 `json:"recipe_id"`
+	Name           string                 `json:"name"`
+	GPU            string                 `json:"gpu,omitempty"`
+	BackendID      string                 `json:"backend_id,omitempty"`
+	Pool           string                 `json:"pool,omitempty"`
+	Parameters     map[string]string      `json:"parameters,omitempty"`
+	GuardrailInput *pb.GuardrailGateInput `json:"guardrail_input,omitempty"`
+}
+
+// DeployRecipeContainer is the deployed container's MCP summary.
+type DeployRecipeContainer struct {
+	Name  string `json:"name"`
+	State string `json:"state"`
 }
 
 // DeployRecipeResponse is the result of a recipe deploy.
 type DeployRecipeResponse struct {
-	URL       string `json:"url"`
-	Message   string `json:"message"`
-	Container *struct {
-		Name  string `json:"name"`
-		State string `json:"state"`
-	} `json:"container"`
+	URL       string                 `json:"url"`
+	Message   string                 `json:"message"`
+	Container *DeployRecipeContainer `json:"container"`
 }
 
-// DeployRecipe provisions a new dedicated container from a recipe.
+// DeployRecipe wraps the CLI's typed HTTP client, retaining MCP's TLS
+// restrictions, configured transport and per-request token-file rotation.
 func (c *Client) DeployRecipe(req DeployRecipeRequest) (*DeployRecipeResponse, error) {
-	respBody, err := c.doRequest("POST", "/v1/recipes/"+req.RecipeID+"/deploy", req)
+	if c.tlsConfigErr != nil {
+		return nil, fmt.Errorf("MCP client refuses to send request: %w", c.tlsConfigErr)
+	}
+	token, err := c.readToken()
+	if err != nil {
+		return nil, fmt.Errorf("authenticate: %w", err)
+	}
+	typed, err := client.NewHTTPClient(c.baseURL, token, client.WithHTTPClient(c.httpClient))
 	if err != nil {
 		return nil, err
 	}
-	var resp DeployRecipeResponse
-	if err := json.Unmarshal(respBody, &resp); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	resp, err := typed.DeployRecipe(req.RecipeID, req.Name, req.GPU, req.BackendID, req.Pool, req.Parameters, req.GuardrailInput)
+	if err != nil {
+		return nil, err
 	}
-	return &resp, nil
+	out := &DeployRecipeResponse{URL: resp.GetUrl(), Message: resp.GetMessage()}
+	if container := resp.GetContainer(); container != nil {
+		out.Container = &DeployRecipeContainer{Name: container.GetName(), State: container.GetState().String()}
+	}
+	return out, nil
 }
 
 // --- agent skills (AgentSkillService) ---
@@ -1462,6 +1479,7 @@ type GuardStatusResponse struct {
 	StaleSince     string               `json:"staleSince"`
 	Entries        []GuardEntryResponse `json:"entries"`
 	Unresolved     []string             `json:"unresolved"`
+	Unmanaged      []string             `json:"unmanaged"`
 	Subjects       int                  `json:"subjects"`
 }
 

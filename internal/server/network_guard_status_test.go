@@ -27,6 +27,7 @@ func TestTenantGuardStatusToProto(t *testing.T) {
 			{Container: "cld-1", Tenant: "org-a", LastError: "nic device: boom"},
 		},
 		Unresolved: []string{"mystery"},
+		Unmanaged:  []string{"hand-made"},
 		Tenants:    2,
 		LastPass:   at,
 	}
@@ -37,7 +38,7 @@ func TestTenantGuardStatusToProto(t *testing.T) {
 	if got.LastPass != "2026-10-06T12:00:00Z" || got.StaleSince != "" {
 		t.Errorf("times = %q / %q", got.LastPass, got.StaleSince)
 	}
-	if got.Subjects != 2 || len(got.Entries) != 2 || len(got.Unresolved) != 1 {
+	if got.Subjects != 2 || len(got.Entries) != 2 || len(got.Unresolved) != 1 || len(got.Unmanaged) != 1 || got.Unmanaged[0] != "hand-made" {
 		t.Errorf("counts = %+v", got)
 	}
 	e := got.Entries[0]

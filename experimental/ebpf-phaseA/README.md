@@ -160,6 +160,44 @@ audited as `network_policy.deny_dropped`. Safety properties:
   from the kernel map on the next reconcile, so tightening a policy actually
   takes effect.
 
+### Known limitation: replies to inbound connections (#2618)
+
+The ingress program runs on the container veth's ingress (traffic *leaving*
+the container) and judges each packet by its **destination address alone**
+(plus the metadata and virtual-patch rules). It has no connection-state
+handling, so a *reply* to a connection opened toward the container (a reverse
+proxy fetching from a service in the box, host management over SSH, a health
+probe from the bridge gateway) is evaluated exactly like a new outbound flow
+to the proxy / gateway / host address. This follows from reading the program;
+it has not been confirmed on a live host, so treat it as expected rather than
+measured.
+
+What that means in practice:
+
+- **In `log_only`** such replies show up as would-denies, typically as many
+  different high ports (the client's ephemeral ports) toward the proxy or the
+  bridge gateway. They inflate the deny counts you are asked to review before
+  arming enforcement, and (before #2612) the deny-burst finding.
+- **Before arming enforce for a tenant**, a service reached through the proxy
+  may lose its replies. The only workaround with the current key is to put the
+  proxy / gateway address in the tenant's allow-list, which allows **every
+  port** on that address to the tenant, not just replies. Treat that as a
+  deliberate widening and prefer a host you control.
+- To tell whether a would-deny is a reply: it is toward an address that
+  *contacted* the box (the proxy, the gateway, an operator host) and the
+  destination port is a high ephemeral port.
+
+To confirm on a canary in `log_only`: open an inbound connection to a service
+in the box from the proxy or host, then check the daemon log for a
+`log_only (not dropped)` deny whose destination is that client.
+
+A real fix needs per-flow state (a map of inbound-initiated flows recorded by
+the egress hook, consulted by the ingress hook). Passing every TCP segment
+that lacks a bare SYN is **not** an acceptable shortcut: it would let any
+non-SYN segment out to any destination, defeating default-deny for a
+cooperating remote endpoint. That change belongs in the BPF program and needs
+a live backend to verify.
+
 Validated on a Linux backend: with enforce armed and `--allow-cidr 8.8.8.8/32`,
 `ping 8.8.8.8` succeeds and `ping 1.1.1.1` sees 100% packet loss (dropped), while
 a policy-less neighbour container is unaffected.

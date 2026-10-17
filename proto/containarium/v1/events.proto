@@ -196,8 +196,6 @@ message SubscribeEventsRequest {
 // EventService provides real-time event streaming
 service EventService {
   // SubscribeEvents opens a streaming connection for real-time events
-  // Preserve the published RPC request/response type names (#2481).
-  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
   rpc SubscribeEvents(SubscribeEventsRequest) returns (stream Event) {
     option (google.api.http) = {
       get: "/v1/events/subscribe"

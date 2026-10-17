@@ -178,6 +178,8 @@ type fakePlatformSources struct {
 	provision platformstats.ProvisionSnapshot
 	peers     []PeerState
 	backup    []BackupHealthState
+	// backupReadFailures is the cumulative BackupHealthReadFailures value.
+	backupReadFailures int64
 }
 
 func (f *fakePlatformSources) APIStats() platformstats.APISnapshot {
@@ -194,6 +196,10 @@ func (f *fakePlatformSources) Peers() []PeerState {
 
 func (f *fakePlatformSources) BackupHealth() []BackupHealthState {
 	return f.backup
+}
+
+func (f *fakePlatformSources) BackupHealthReadFailures() int64 {
+	return f.backupReadFailures
 }
 
 // flattenPoints returns every emitted datapoint (gauge OR cumulative
@@ -1577,5 +1583,44 @@ func TestUnreportedThrottlingEmitsNoSeries(t *testing.T) {
 	// it just carries no throttling data.
 	if _, ok := byNameContainer[MetricContainerCPUUsageSeconds]["unreported-container"]; !ok {
 		t.Error("unreported-container lost its cpu.usage_seconds series — only the throttling series should be withheld")
+	}
+}
+
+// #2305: a failing backup-index read empties the age series for every
+// tenant at once, which looks exactly like "no backups exist". The read
+// failure counter is the distinct signal: it is present at zero when reads
+// are fine and carries the cumulative count once they are not.
+func TestExportedSeries_BackupHealthReadFailures(t *testing.T) {
+	platform := pb.CloudMetricsGroup_CLOUD_METRICS_GROUP_PLATFORM
+	for _, tc := range []struct {
+		name string
+		n    int64
+	}{
+		{"healthy reads still emit a zero so absence is not ambiguous", 0},
+		{"persistent failure shows the cumulative count", 7},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rm := collectGroupsOnce(t, []pb.CloudMetricsGroup{platform}, &fakeSources{sr: sampleResources()},
+				&fakePlatformSources{backupReadFailures: tc.n}, sampleLabels())
+			var found bool
+			for _, p := range flattenPoints(t, rm) {
+				if p.name != MetricBackupHealthReadFailures {
+					continue
+				}
+				found = true
+				if p.ival != tc.n {
+					t.Errorf("%s = %d, want %d", p.name, p.ival, tc.n)
+				}
+				iter := p.attrs.Iter()
+				for iter.Next() {
+					if string(iter.Attribute().Key) == LabelUsername {
+						t.Errorf("%s must not carry a tenant label", p.name)
+					}
+				}
+			}
+			if !found {
+				t.Errorf("%s not emitted", MetricBackupHealthReadFailures)
+			}
+		})
 	}
 }

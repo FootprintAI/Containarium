@@ -47,9 +47,6 @@ service AnonymousBoxService {
 
   // GetAnonymousDoorConfig returns the door's state and the fixed limits.
   // Requires role admin or scope anon:admin.
-  // Preserve the published shared response type (#2481).
-  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
-  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
   rpc GetAnonymousDoorConfig(GetAnonymousDoorConfigRequest) returns (AnonymousDoorConfig) {
     option (google.api.http) = {
       get: "/v1/anon/door"
@@ -63,9 +60,6 @@ service AnonymousBoxService {
 
   // SetAnonymousDoorConfig flips the kill switch and edits bans (#2200).
   // Requires role admin or scope anon:admin.
-  // Preserve the published shared response type (#2481).
-  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE
-  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
   rpc SetAnonymousDoorConfig(SetAnonymousDoorConfigRequest) returns (AnonymousDoorConfig) {
     option (google.api.http) = {
       put: "/v1/anon/door"

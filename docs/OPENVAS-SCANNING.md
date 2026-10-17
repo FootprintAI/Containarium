@@ -15,6 +15,27 @@ scanner box, so none appear in a command line. The module is loaded only when
 Provisioning the box and syncing the feed is an operator step; feed age and
 last-run status are not yet exposed through the API.
 
+### Scanner box requirements
+
+- Greenbone from the distribution packages (`gvm`, `gvm-tools`, `gvmd`,
+  `ospd-openvas`, `openvas-scanner`, Postgres, Redis), set up with `gvm-setup`,
+  then wait for gvmd to finish importing the feed: the "Full and fast" scan
+  config and the all-TCP port list must exist before the first scan.
+- `gvm-cli` refuses to run as root, so the daemon runs it as the `_gvm` user.
+  Put the GMP credentials in that user's `gvm-tools.conf`
+  (`/var/lib/openvas/.config/gvm-tools.conf`, mode 600). Never put them in an
+  environment variable or command line.
+- Give the box at least 8 GiB of memory; 12 GiB is safer. gvmd was killed by the
+  OOM killer while building a report in an 8 GiB box.
+- The box must reach the container network of the host it runs on. One scanner
+  covers the containers of one host.
+- Distribution packages ship an older Greenbone, whose "end-of-life Scan
+  Engine" check would otherwise add a critical finding to every scanned box.
+  The module drops that NVT's results.
+
+Provisioning the box and syncing the feed is an operator step; feed age and
+last-run status are not yet exposed through the API.
+
 ## Who gets scanned: opt-in only
 
 Scanning is an action on a workload, so nothing is scanned by default. A
