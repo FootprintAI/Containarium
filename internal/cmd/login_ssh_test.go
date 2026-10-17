@@ -50,6 +50,7 @@ func withSSHLoginHome(t *testing.T) string {
 type fakeLoginAndSSHKeysServer struct {
 	srv           *httptest.Server
 	addedKeys     []addSSHKeyReq
+	keys          []sshkey.SSHKey
 	approveAfter  int32
 	pollCount     int32
 	sawAddSSHKey  atomic.Bool
@@ -88,6 +89,10 @@ func newFakeLoginAndSSHKeysServer(t *testing.T, approveAfter int32) *fakeLoginAn
 	// assert the login → ssh-setup handoff used the freshly-issued
 	// credential.
 	mux.HandleFunc("/v1/user/ssh-keys", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_ = json.NewEncoder(w).Encode(listSSHKeysResp{Keys: f.keys})
+			return
+		}
 		f.receivedToken = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		f.sawAddSSHKey.Store(true)
 		var req addSSHKeyReq
