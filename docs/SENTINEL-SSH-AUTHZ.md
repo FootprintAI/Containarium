@@ -38,11 +38,14 @@ table on the next key sync. The plugin then treats it as an unknown login
 and defers: yaml refuses the key, and no `denied` record is written.
 
 **Fail closed.** Enforcement covers `UPSTREAM_UNAVAILABLE`. If the routed
-backend's daemon is unreachable, returns 5xx, or the local bridge fails, a
-key whose last `ALLOW` is younger than `--ssh-authz-grace` still logs in.
-After that, and for a key with no cached `ALLOW`, the login is refused until
-the daemon answers again. A daemon outage longer than the grace window
-therefore locks every raw-key login routed to that backend. Certificate
+backend's daemon is unreachable or returns 5xx, a key whose last `ALLOW` is
+younger than `--ssh-authz-grace` still logs in. After that, and for a key
+with no cached `ALLOW`, the login is refused until the daemon answers again.
+A failure of the local bridge (the sentinel manager's socket) gets no grace.
+The login cannot be resolved to a backend, the cache is keyed by backend, and
+so every raw-key login is refused until the manager is back. A daemon
+outage longer than the grace window therefore locks every raw-key login
+routed to that backend. Certificate
 logins are not checked by this plugin and are unaffected.
 
 **Scope.** Enforcement holds only for SSH that goes through the sentinel.
