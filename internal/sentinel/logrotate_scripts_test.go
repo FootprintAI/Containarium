@@ -74,10 +74,10 @@ const reopenPattern = "^/usr/local/bin/containariumd? sentinel ssh-(session|auth
 func TestSentinelScripts_ReopenPatternTargetsOnlyThePlugins(t *testing.T) {
 	re := regexp.MustCompile(reopenPattern)
 	for cmdline, want := range map[string]bool{
-		"/usr/local/bin/containarium sentinel ssh-session-plugin --records-file " + sinkPath:                       true,
-		"/usr/local/bin/containariumd sentinel ssh-authz-plugin --ssh-authz-enforce --records-file " + sinkPath:    true,
-		"/usr/local/bin/sshpiperd -i /etc/sshpiper/host_key /usr/local/bin/containarium sentinel ssh-authz-plugin": false,
-		"/usr/local/bin/containarium sentinel ssh-ban-plugin --listener main":                                      false,
+		"/usr/local/bin/containariumd sentinel ssh-session-plugin --records-file " + sinkPath:                       true,
+		"/usr/local/bin/containariumd sentinel ssh-authz-plugin --ssh-authz-enforce --records-file " + sinkPath:     true,
+		"/usr/local/bin/sshpiperd -i /etc/sshpiper/host_key /usr/local/bin/containariumd sentinel ssh-authz-plugin": false,
+		"/usr/local/bin/containariumd sentinel ssh-ban-plugin --listener main":                                      false,
 	} {
 		if re.MatchString(cmdline) != want {
 			t.Errorf("pattern match on %q = %v, want %v", cmdline, !want, want)
