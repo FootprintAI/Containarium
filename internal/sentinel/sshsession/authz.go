@@ -11,6 +11,9 @@ const (
 	MetaUserID        = "containarium.ssh_authz.user_id"
 	MetaAuthzDecision = "containarium.ssh_authz.decision"
 	MetaDenyReason    = "containarium.ssh_authz.deny_reason"
+	// MetaEnforced is "true" when ssh-authz-plugin ran in enforce mode for
+	// this credential; empty in audit-only mode or when no check ran.
+	MetaEnforced = "containarium.ssh_authz.enforced"
 )
 
 type AuthzDecision string
