@@ -30,6 +30,13 @@ retrying the key, or offering several denied keys) yields one
 `ssh_session_denied` row: the first.
 Records of allowed sessions carry `enforced=true` as well.
 
+**Revocation latency.** A cached `ALLOW` is reused without asking the
+daemon until its `cache_ttl` expires (30 seconds from the self-host
+decider). A key revoked within that window still logs in until the entry
+expires. A login that loses its last key drops out of the sentinel's routing
+table on the next key sync. The plugin then treats it as an unknown login
+and defers: yaml refuses the key, and no `denied` record is written.
+
 **Fail closed.** Enforcement covers `UPSTREAM_UNAVAILABLE`. If the routed
 backend's daemon is unreachable, returns 5xx, or the local bridge fails, a
 key whose last `ALLOW` is younger than `--ssh-authz-grace` still logs in.
@@ -116,7 +123,10 @@ The protobuf messages, service declaration and audit fields needed by this
 plugin are included here using #2516's proposed contract. The daemon's
 signature-verified gateway mount, decider, cloud mirror and remaining contract
 work are separate dependencies (#2516 / #2517). Until the endpoint is deployed,
-the plugin records `UPSTREAM_UNAVAILABLE` and SSH continues through yaml.
+the plugin records `UPSTREAM_UNAVAILABLE`. In audit-only mode SSH continues
+through yaml. In enforce mode every raw-key login routed to that backend is
+refused once the grace window has passed, so deploy the endpoint before
+turning enforcement on.
 
 ## Verification
 
@@ -163,11 +173,12 @@ same user (root in the supplied units) so the private socket is accessible.
 
 In enforce mode, on one backend behind the sentinel:
 
-4. Register a key, connect: the `ssh_session_open` row carries `user_id`
-   and `enforced=true`.
-5. Revoke it in the registry, connect again with only that key: the login
-   is refused and an `ssh_session_denied` row carries `UNKNOWN_KEY` and
-   `enforced=true`.
+4. Register two keys on the login and connect with the first: the
+   `ssh_session_open` row carries `user_id` and `enforced=true`.
+5. Remove the first key (`RemoveSSHKey`). The second key keeps the login
+   routable. Wait out the cache TTL (30 seconds), then connect offering only
+   the removed key. The login is refused, and an `ssh_session_denied` row
+   carries `UNKNOWN_KEY` and `enforced=true`.
 6. Stop the backend daemon for longer than the grace window: a new login
    is refused and the sentinel log shows `reason=UPSTREAM_UNAVAILABLE
    enforced=true`. Restart the daemon: login resumes.
