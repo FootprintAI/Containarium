@@ -665,13 +665,15 @@ func TestDefaultStatusProbe_ReportsVersionAndCPU(t *testing.T) {
 type fakeTerminator struct {
 	mu    sync.Mutex
 	users []string
+	orgs  []string // org passed with each call, parallel to users
 	err   error
 }
 
-func (f *fakeTerminator) TerminateUserSessions(_ context.Context, userID string) error {
+func (f *fakeTerminator) TerminateUserSessions(_ context.Context, userID, orgID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.users = append(f.users, userID)
+	f.orgs = append(f.orgs, orgID)
 	return f.err
 }
 
@@ -701,6 +703,9 @@ func TestReconcileAssignment_TerminateUserSessionsIdempotent(t *testing.T) {
 
 	if got := term.calls(); len(got) != 1 || got[0] != "alice" {
 		t.Fatalf("terminator calls = %v, want exactly [alice]", got)
+	}
+	if term.orgs[0] != "" {
+		t.Errorf("org on an unscoped order = %q, want empty", term.orgs[0])
 	}
 	act.mu.Lock()
 	if len(act.running)+len(act.stopped)+len(act.deleted) != 0 {
@@ -809,5 +814,22 @@ func TestReconcileTermination_UnmappedIsDistinctFromZeroSessions(t *testing.T) {
 	c = &Client{ctx: context.Background(), sessions: failing}
 	if got := c.reconcileTermination(assignment("as-fail", "alice")); got != terminationFailed {
 		t.Errorf("failure outcome = %v, want %v", got, terminationFailed)
+	}
+}
+
+// #2546: the assignment's org_id reaches the terminator.
+func TestReconcileAssignment_TerminateUserSessionsCarriesOrg(t *testing.T) {
+	cfg := &Config{ControlPlane: "bufconn", HostID: "h", Token: "h.b"}
+	c, _ := newTestClient(t, cfg)
+	term := &fakeTerminator{}
+	c.containers, c.sessions = &fakeActuator{}, term
+	c.reconcile(&cloudv1.AssignmentBatch{Assignments: []*cloudv1.Assignment{{
+		AssignmentId: "as-org",
+		Kind:         cloudv1.AssignmentKind_ASSIGNMENT_KIND_TERMINATE_USER_SESSIONS,
+		UserId:       "alice",
+		OrgId:        "org-a",
+	}}})
+	if got := term.calls(); len(got) != 1 || term.orgs[0] != "org-a" {
+		t.Fatalf("calls = %v orgs = %v, want one call scoped to org-a", got, term.orgs)
 	}
 }

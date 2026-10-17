@@ -145,7 +145,8 @@ type Deps struct {
 // function `containarium sessions terminate` reaches; the interface keeps
 // internal/cloud free of an internal/server import.
 type SessionTerminator interface {
-	TerminateUserSessions(ctx context.Context, userID string) error
+	// orgID, when non-empty, limits the walk to boxes owned by that org (#2546).
+	TerminateUserSessions(ctx context.Context, userID, orgID string) error
 }
 
 // unaryActuation is the subset of the actuation API the client drives over a
@@ -752,7 +753,7 @@ func (c *Client) reconcileTermination(a *cloudv1.Assignment) terminationOutcome 
 	if c.sessions == nil {
 		return terminationIgnored
 	}
-	id, user := a.GetAssignmentId(), a.GetUserId()
+	id, user, org := a.GetAssignmentId(), a.GetUserId(), a.GetOrgId()
 	if user == "" {
 		log.Printf("[cloud] terminate-sessions assignment %q has no user_id; ignored", id)
 		return terminationIgnored
@@ -761,7 +762,7 @@ func (c *Client) reconcileTermination(a *cloudv1.Assignment) terminationOutcome 
 		return terminationReplayed // already carried out
 	}
 	outcome := terminationEnded
-	if err := c.sessions.TerminateUserSessions(c.ctx, user); errors.Is(err, ErrUserNotMapped) {
+	if err := c.sessions.TerminateUserSessions(c.ctx, user, org); errors.Is(err, ErrUserNotMapped) {
 		log.Printf("[cloud] WARN terminate-sessions assignment %s: %v; no sessions ended", id, err)
 		outcome = terminationUnmapped
 	} else if err != nil {
