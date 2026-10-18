@@ -183,6 +183,7 @@ secrets set-kms-key
 security bad-destinations add
 security bad-destinations list
 security bad-destinations remove
+security clamav install
 security findings
 security findings list
 security findings resolve

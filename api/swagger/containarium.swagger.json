@@ -6781,6 +6781,40 @@
         ]
       }
     },
+    "/v1/security/clamav-install": {
+      "post": {
+        "summary": "Install ClamAV in a box",
+        "description": "Installs ClamAV and its signatures inside the named box so the tenant-run scan can run. Idempotent. Requires a box with at least 4 GB RAM.",
+        "operationId": "SecurityService_InstallClamav",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/InstallClamavResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/InstallClamavRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Security"
+        ]
+      }
+    },
     "/v1/security/clamav-reports": {
       "get": {
         "summary": "List ClamAV scan reports",
@@ -10985,6 +11019,19 @@
       },
       "title": "ClamavContainerSummary provides per-container scan summary"
     },
+    "ClamavInstallOutcome": {
+      "type": "string",
+      "enum": [
+        "CLAMAV_INSTALL_OUTCOME_UNSPECIFIED",
+        "CLAMAV_INSTALL_OUTCOME_INSTALLED",
+        "CLAMAV_INSTALL_OUTCOME_ALREADY_PRESENT",
+        "CLAMAV_INSTALL_OUTCOME_UNSUPPORTED_FAMILY",
+        "CLAMAV_INSTALL_OUTCOME_UNSUPPORTED_SIZE",
+        "CLAMAV_INSTALL_OUTCOME_FAILED"
+      ],
+      "default": "CLAMAV_INSTALL_OUTCOME_UNSPECIFIED",
+      "description": "ClamavInstallOutcome is the result of installing ClamAV inside a box (#2631).\n\n - CLAMAV_INSTALL_OUTCOME_INSTALLED: ClamAV and its signatures were installed.\n - CLAMAV_INSTALL_OUTCOME_ALREADY_PRESENT: Already present: nothing was run.\n - CLAMAV_INSTALL_OUTCOME_UNSUPPORTED_FAMILY: The box's OS family is not supported by this command; install manually.\n - CLAMAV_INSTALL_OUTCOME_UNSUPPORTED_SIZE: The box has less memory than ClamAV needs (4 GB).\n - CLAMAV_INSTALL_OUTCOME_FAILED: The install ran and failed, or the box could not be reached."
+    },
     "ClamavReport": {
       "type": "object",
       "properties": {
@@ -15025,6 +15072,27 @@
         "duplicates": {
           "type": "integer",
           "format": "int32"
+        }
+      }
+    },
+    "InstallClamavRequest": {
+      "type": "object",
+      "properties": {
+        "containerName": {
+          "type": "string",
+          "description": "Box to install ClamAV into. Required."
+        }
+      }
+    },
+    "InstallClamavResponse": {
+      "type": "object",
+      "properties": {
+        "outcome": {
+          "$ref": "#/definitions/ClamavInstallOutcome"
+        },
+        "message": {
+          "type": "string",
+          "description": "Short human-readable result. Never contains package-manager output or paths."
         }
       }
     },
