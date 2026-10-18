@@ -63,6 +63,11 @@ type Config struct {
 	Carveouts  []string
 	// Interval overrides DefaultInterval (tests).
 	Interval time.Duration
+	// OnPass, when set, is called with the status snapshot at the end of
+	// every finished pass, converged or not (#2194). It keeps this package
+	// free of any metrics import. It runs on the reconcile goroutine, so it
+	// must not block.
+	OnPass func(Status)
 }
 
 // Status is the reconciler's last-pass snapshot, for the status surface.
@@ -109,6 +114,15 @@ type Reconciler struct {
 	mu           sync.Mutex
 	status       Status
 	absentLogged bool
+}
+
+// SetOnPass installs the per-pass hook after construction, for callers whose
+// metrics provider does not exist yet when the reconciler is built (#2194).
+// Call it before Run.
+func (r *Reconciler) SetOnPass(f func(Status)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cfg.OnPass = f
 }
 
 // NewReconciler wires a reconciler; nothing runs until ReconcileOnce or Run.
@@ -184,6 +198,17 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	err := r.reconcileOnce()
+	r.mu.Lock()
+	hook := r.cfg.OnPass
+	r.mu.Unlock()
+	if hook != nil {
+		hook(r.Status())
+	}
+	return err
+}
+
+func (r *Reconciler) reconcileOnce() error {
 	info, err := r.be.GetContainer(r.cfg.CaddyContainer)
 	if err != nil {
 		return r.fail(fmt.Errorf("bridgedns: look up %s: %w", r.cfg.CaddyContainer, err))

@@ -521,7 +521,7 @@ failure visible:
 | Field | Value |
 |---|---|
 | Metric (OTel instrument) | `containarium.backup.health_read_failures` |
-| Cloud Monitoring metric type | `workload.googleapis.com/containarium.backup.health_read_failures` |
+| Cloud Monitoring metric type | `prometheus.googleapis.com/containarium.backup.health_read_failures/counter` (monitored resource `prometheus_target`; derived from the instrument kind, not yet observed on a live host) |
 | Kind / value | cumulative counter: export ticks on which the backup index could not be read |
 | Labels | `backend_id`, `hostname`, `region` (no tenant label) |
 | Emit cadence | every export interval, **including at zero** — a present flat series means "reading fine" |
