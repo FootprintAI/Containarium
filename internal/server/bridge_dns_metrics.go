@@ -16,12 +16,12 @@ import (
 // recorder cannot drift apart (bridge_dns_metrics_test.go pins that).
 const (
 	bridgeDNSInSyncName          = "bridge_dns.in_sync"
-	bridgeDNSDriftPassesName     = "bridge_dns.drift_passes"
-	bridgeDNSLastPassName        = "bridge_dns.last_pass_timestamp"
+	bridgeDNSDriftRoundsName     = "bridge_dns.drift_passes"
+	bridgeDNSLastRoundName       = "bridge_dns.last_pass_timestamp"
 	bridgeDNSLastAppliedName     = "bridge_dns.last_applied_timestamp"
 	bridgeDNSInSyncSeries        = "bridge_dns_in_sync"
-	bridgeDNSDriftPassesSeries   = "bridge_dns_drift_passes"
-	bridgeDNSLastPassSeries      = "bridge_dns_last_pass_timestamp"
+	bridgeDNSDriftRoundsSeries   = "bridge_dns_drift_passes"
+	bridgeDNSLastRoundSeries     = "bridge_dns_last_pass_timestamp"
 	bridgeDNSLastAppliedSeries   = "bridge_dns_last_applied_timestamp"
 	bridgeDNSOutOfSyncFor        = "10m"
 	bridgeDNSStaleSeconds        = 300
@@ -47,8 +47,8 @@ func newBridgeDNSRecorder(provider *sdkmetric.MeterProvider) (*bridgeDNSRecorder
 		unit string
 	}{
 		{&r.inSync, bridgeDNSInSyncName, "1 if the bridge held the desired DNS record at the end of the last reconcile pass, else 0", ""},
-		{&r.driftPasses, bridgeDNSDriftPassesName, "Reconcile passes that found the bridge DNS record drifted (monotonic per process)", ""},
-		{&r.lastPass, bridgeDNSLastPassName, "Unix time the last bridge DNS reconcile pass finished", "s"},
+		{&r.driftPasses, bridgeDNSDriftRoundsName, "Reconcile passes that found the bridge DNS record drifted (monotonic per process)", ""},
+		{&r.lastPass, bridgeDNSLastRoundName, "Unix time the last bridge DNS reconcile pass finished", "s"},
 		{&r.lastApplied, bridgeDNSLastAppliedName, "Unix time of the last successful bridge DNS record rewrite", "s"},
 	} {
 		opts := []otelmetric.Int64GaugeOption{otelmetric.WithDescription(g.desc)}
@@ -140,6 +140,6 @@ func bridgeDNSAlertRules() string {
           summary: "Bridge DNS record keeps drifting"
           description: "The bridge DNS record was found drifted more than %[7]d times in the last hour. Each drift is repaired, but something keeps changing it (a hand edit, a second daemon)."
 `, bridgeDNSInSyncSeries, bridgeDNSOutOfSyncFor,
-		bridgeDNSLastPassSeries, bridgeDNSStaleSeconds, bridgeDNSStaleFor,
-		bridgeDNSDriftPassesSeries, bridgeDNSDriftRepeatingLimit)
+		bridgeDNSLastRoundSeries, bridgeDNSStaleSeconds, bridgeDNSStaleFor,
+		bridgeDNSDriftRoundsSeries, bridgeDNSDriftRepeatingLimit)
 }

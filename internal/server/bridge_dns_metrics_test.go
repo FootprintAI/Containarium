@@ -44,11 +44,11 @@ func TestBridgeDNSRecorder(t *testing.T) {
 	}{
 		{"pending: nothing recorded", bridgedns.Status{}, map[string]int64{}},
 		{"in sync", bridgedns.Status{InSync: true, LastPass: pass, DriftCount: 2, LastApplied: applied},
-			map[string]int64{bridgeDNSInSyncName: 1, bridgeDNSDriftPassesName: 2, bridgeDNSLastPassName: pass.Unix(), bridgeDNSLastAppliedName: applied.Unix()}},
+			map[string]int64{bridgeDNSInSyncName: 1, bridgeDNSDriftRoundsName: 2, bridgeDNSLastRoundName: pass.Unix(), bridgeDNSLastAppliedName: applied.Unix()}},
 		{"degraded", bridgedns.Status{InSync: false, LastPass: pass, LastError: "boom"},
-			map[string]int64{bridgeDNSInSyncName: 0, bridgeDNSDriftPassesName: 0, bridgeDNSLastPassName: pass.Unix()}},
+			map[string]int64{bridgeDNSInSyncName: 0, bridgeDNSDriftRoundsName: 0, bridgeDNSLastRoundName: pass.Unix()}},
 		{"absent by opt-out is not out of sync", bridgedns.Status{Absent: true, LastPass: pass},
-			map[string]int64{bridgeDNSDriftPassesName: 0, bridgeDNSLastPassName: pass.Unix()}},
+			map[string]int64{bridgeDNSDriftRoundsName: 0, bridgeDNSLastRoundName: pass.Unix()}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rd := metric.NewManualReader()
@@ -84,13 +84,13 @@ func TestBridgeDNSRecorder_FollowsReconciler(t *testing.T) {
 	if err := r.ReconcileOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got := collectGauges(t, rd); got[bridgeDNSInSyncName] != 1 || got[bridgeDNSDriftPassesName] != 1 {
+	if got := collectGauges(t, rd); got[bridgeDNSInSyncName] != 1 || got[bridgeDNSDriftRoundsName] != 1 {
 		t.Fatalf("after repair: %v, want in_sync=1 drift_passes=1", got)
 	}
 	be.current = "stale again"
 	_ = r.ReconcileOnce(context.Background())
-	if got := collectGauges(t, rd); got[bridgeDNSDriftPassesName] != 2 {
-		t.Errorf("drift_passes = %d, want 2", got[bridgeDNSDriftPassesName])
+	if got := collectGauges(t, rd); got[bridgeDNSDriftRoundsName] != 2 {
+		t.Errorf("drift_passes = %d, want 2", got[bridgeDNSDriftRoundsName])
 	}
 	be.getErr = context.DeadlineExceeded
 	_ = r.ReconcileOnce(context.Background())
@@ -120,8 +120,8 @@ func (f *metricsBridgeBackend) SetNetworkConfigValue(_, _, v string) error { f.c
 func TestBridgeDNSAlertRules(t *testing.T) {
 	for otel, series := range map[string]string{
 		bridgeDNSInSyncName:      bridgeDNSInSyncSeries,
-		bridgeDNSDriftPassesName: bridgeDNSDriftPassesSeries,
-		bridgeDNSLastPassName:    bridgeDNSLastPassSeries,
+		bridgeDNSDriftRoundsName: bridgeDNSDriftRoundsSeries,
+		bridgeDNSLastRoundName:   bridgeDNSLastRoundSeries,
 		bridgeDNSLastAppliedName: bridgeDNSLastAppliedSeries,
 	} {
 		if strings.ReplaceAll(otel, ".", "_") != series {
@@ -135,8 +135,8 @@ func TestBridgeDNSAlertRules(t *testing.T) {
 	}
 	want := map[string]struct{ series, severity string }{
 		"BridgeDNSOutOfSync":       {bridgeDNSInSyncSeries, "critical"},
-		"BridgeDNSReconcilerStale": {bridgeDNSLastPassSeries, "warning"},
-		"BridgeDNSDriftRepeating":  {bridgeDNSDriftPassesSeries, "warning"},
+		"BridgeDNSReconcilerStale": {bridgeDNSLastRoundSeries, "warning"},
+		"BridgeDNSDriftRepeating":  {bridgeDNSDriftRoundsSeries, "warning"},
 	}
 	seen := 0
 	for _, r := range rules {
