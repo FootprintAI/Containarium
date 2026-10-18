@@ -158,7 +158,9 @@ message Assignment {
   // as CONTAINER, so a cloud that never sets it keeps today's meaning.
   AssignmentKind kind = 21;
   // Person whose sessions to end. Set only when
-  // kind == ASSIGNMENT_KIND_TERMINATE_USER_SESSIONS.
+  // kind == ASSIGNMENT_KIND_TERMINATE_USER_SESSIONS. On such an assignment
+  // the existing org_id (field 5), when set, limits the termination to that
+  // org's boxes (#2546); empty keeps the whole-host behaviour.
   string user_id = 22;
 }
 
