@@ -249,3 +249,39 @@ func TestRespondsTo(t *testing.T) {
 		}
 	}
 }
+
+// THROTTLE must be a hard CFS quota. Incus reads a bare "N%" as a soft share
+// (cpu.weight) that does nothing on an uncontended host and drops the box's
+// existing hard cap, so "N%" means N percent of ONE core and is applied as
+// "Nms/100ms" (#2676).
+func TestHardThrottleAllowance(t *testing.T) {
+	tests := []struct {
+		name, in, prev, want string
+		wantErr              bool
+	}{
+		{name: "percent of one core becomes a hard quota", in: "10%", want: "10ms/100ms"},
+		{name: "100 percent is one whole core", in: "100%", want: "100ms/100ms"},
+		{name: "explicit quota is kept", in: "25ms/100ms", want: "25ms/100ms"},
+		{name: "explicit quota with another period is kept", in: "50ms/200ms", want: "50ms/200ms"},
+		{name: "never looser than the box's existing hard cap", in: "10%", prev: "5ms/100ms", want: "5ms/100ms"},
+		{name: "tighter than the existing cap wins", in: "10%", prev: "200ms/100ms", want: "10ms/100ms"},
+		{name: "a soft previous allowance does not loosen it", in: "10%", prev: "50%", want: "10ms/100ms"},
+		{name: "no previous allowance", in: "10%", prev: "", want: "10ms/100ms"},
+		{name: "garbage is rejected", in: "ten", wantErr: true},
+		{name: "zero percent is rejected", in: "0%", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := HardThrottleAllowance(tt.in, tt.prev)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("HardThrottleAllowance(%q, %q) err = %v, wantErr %v", tt.in, tt.prev, err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Errorf("HardThrottleAllowance(%q, %q) = %q, want %q", tt.in, tt.prev, got, tt.want)
+			}
+			if err == nil && strings.Contains(got, "%") {
+				t.Errorf("result %q still a soft percentage share", got)
+			}
+		})
+	}
+}
