@@ -332,24 +332,59 @@ func TestMiningBehaviorRule_StaleFlowStopsQualifying(t *testing.T) {
 	}
 }
 
-// Review #2644 item 1: CPU history stays bounded at ceil(2 x window /
-// sample interval) even when Sweep never runs.
+// Review #2644 item 1 / #2647: CPU history stays bounded when Sweep never
+// runs — by age (2 x window behind the newest) and by a hard cap of
+// miningMaxPoints samples, independent of the sample spacing.
 func TestMiningBehaviorRule_CPUHistoryBoundedWithoutSweep(t *testing.T) {
+	cases := []struct {
+		name    string
+		n       int
+		spacing time.Duration
+		want    int
+	}{
+		{"10,000 samples close together hit the hard cap", 10_000, 10 * time.Millisecond, 256},
+		{"same timestamp (stuck clock) hits the hard cap", 10_000, 0, 256},
+		{"regular 15s samples are trimmed by age to 2 x window", 400, 15 * time.Second, 40},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newMiningFeed(t)
+			for i := 0; i < tc.n; i++ {
+				m.cpu(1)
+				m.now = m.now.Add(tc.spacing)
+			}
+			if got := m.r.pointCount("box"); got != tc.want {
+				t.Fatalf("points after %d samples without Sweep = %d, want %d", tc.n, got, tc.want)
+			}
+		})
+	}
+}
+
+// Review #2647 (blocking): one short gap between collector ticks must not
+// blind the rule. Steady 16-core samples every 30s with one extra sample 5s
+// after a tick, sweeps 3s after each tick: every sweep once a window of
+// history exists still fires.
+func TestMiningBehaviorRule_ShortGapDoesNotBlindTheRule(t *testing.T) {
 	m := newMiningFeed(t)
-	const capPoints = 40 // ceil(2 x 5m / 15s)
-	m.cpu(1)
-	for i := 0; i < 10*capPoints; i++ {
-		m.now = m.now.Add(15 * time.Second)
-		m.cpu(1)
+	var fired, sweeps int
+	for k := 0; k <= 40; k++ { // 20 minutes of 30s ticks
+		tick := miningT0.Add(time.Duration(k) * 30 * time.Second)
+		m.now = tick
+		m.cpu(16)
+		m.flow(4*time.Minute + time.Duration(k)*30*time.Second)
+		if k == 10 {
+			m.now = tick.Add(5 * time.Second) // the one short gap
+			m.cpu(16)
+		}
+		m.now = tick.Add(3 * time.Second)
+		if tick.Sub(miningT0) >= 6*time.Minute {
+			sweeps++
+			fired += m.sweep()
+		} else {
+			m.sweep()
+		}
 	}
-	if n := m.r.pointCount("box"); n != capPoints {
-		t.Fatalf("points after %d samples without Sweep = %d, want %d", 10*capPoints+1, n, capPoints)
-	}
-	// Duplicate timestamps (a stuck clock) are bounded too.
-	for i := 0; i < 10*capPoints; i++ {
-		m.cpu(1)
-	}
-	if n := m.r.pointCount("box"); n > capPoints {
-		t.Fatalf("points after duplicate-timestamp samples = %d, want <= %d", n, capPoints)
+	if fired != sweeps {
+		t.Fatalf("fired on %d of %d sweeps after a single 5s gap, want all", fired, sweeps)
 	}
 }

@@ -1,7 +1,6 @@
 package threatdetect
 
 import (
-	"math"
 	"net/netip"
 	"strconv"
 	"sync"
@@ -24,22 +23,31 @@ type miningCPUPoint struct {
 	cores float64
 }
 
+// Coverage and bound for a container's CPU history (review of #2647). None
+// depends on the spacing between samples: inferring the collector's tick
+// from observed gaps let a single short gap blind the rule.
+const (
+	// miningMinCoverage: the oldest sample inside the window must be at
+	// least this fraction of the window old.
+	miningMinCoverage = 0.8
+	// miningMinSamples: at least this many samples must be in the window.
+	miningMinSamples = 3
+	// miningMaxPoints is the hard cap on samples kept per container.
+	miningMaxPoints = 256
+)
+
 // miningContainer is one container's CPU history.
 type miningContainer struct {
 	ip     netip.Addr
 	limit  float64 // latest sample's limits.cpu, in cores
 	lastAt time.Time
-	// interval is the smallest positive gap seen between two samples: the
-	// collector's tick. A gap from a stalled collector is larger, so it
-	// never inflates this. Zero until a second sample arrives.
-	interval time.Duration
-	points   []miningCPUPoint // oldest first
+	points []miningCPUPoint // oldest first
 }
 
 // trim bounds the history whether or not Sweep runs: points older than
-// 2 x window behind the newest go, and at most ceil(2 x window / interval)
-// points are kept (oldest dropped), which also bounds a stuck clock that
-// repeats one timestamp.
+// 2 x window behind the newest go, and at most miningMaxPoints are kept
+// (oldest dropped), which also bounds a stuck clock that repeats one
+// timestamp.
 func (c *miningContainer) trim(window time.Duration) {
 	if len(c.points) == 0 {
 		return
@@ -49,12 +57,8 @@ func (c *miningContainer) trim(window time.Duration) {
 	for drop < len(c.points) && !c.points[drop].at.After(cutoff) {
 		drop++
 	}
-	interval := c.interval
-	if interval <= 0 {
-		interval = time.Second // no tick known yet; still bounded
-	}
-	if limit := int(math.Ceil(float64(2*window) / float64(interval))); len(c.points)-drop > limit {
-		drop = len(c.points) - limit
+	if len(c.points)-drop > miningMaxPoints {
+		drop = len(c.points) - miningMaxPoints
 	}
 	if drop > 0 {
 		c.points = append(c.points[:0], c.points[drop:]...)
@@ -121,11 +125,6 @@ func (r *MiningBehaviorRule) OnCPU(ctx RuleContext, samples []CPUSample) []RawFi
 		if c == nil {
 			c = &miningContainer{}
 			r.containers[s.Container] = c
-		}
-		if n := len(c.points); n > 0 {
-			if gap := s.At.Sub(c.points[n-1].at); gap > 0 && (c.interval == 0 || gap < c.interval) {
-				c.interval = gap
-			}
 		}
 		c.ip = s.IP
 		c.limit = s.LimitCores
@@ -206,11 +205,10 @@ func (r *MiningBehaviorRule) Sweep(ctx RuleContext, now time.Time) []RawFinding 
 			}
 		}
 		c.points = kept
-		// The mean must cover the whole window, not a burst at its end or a
-		// lone sample after a gap: the oldest sample inside the window must
-		// be at least window - one tick old (a sample covers the tick
-		// before it).
-		if len(kept) == 0 || c.interval <= 0 || now.Sub(kept[0].at) < th.Window-c.interval {
+		// The mean must cover the window, not a burst at its end or a lone
+		// sample after a gap: enough samples, the oldest at least
+		// miningMinCoverage x window old.
+		if len(kept) < miningMinSamples || float64(now.Sub(kept[0].at)) < miningMinCoverage*float64(th.Window) {
 			continue
 		}
 		var sum, peak float64
