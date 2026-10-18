@@ -112,6 +112,10 @@ func (s *ThreatDetectionServer) SetUnavailable(reason string) {
 	s.unavailableReason = reason
 }
 
+// degradedNoPersistenceReason is the GetSentryStatus reason when findings
+// (and therefore process-policy responses) have no Postgres persistence.
+const degradedNoPersistenceReason = "DEGRADED (no persistence): responses disabled"
+
 // GetSentryStatus reports the detection engine's on/off state and every
 // registered rule's health. Never silently reports "no findings" for a
 // backend that can't detect anything — DISABLED and UNAVAILABLE are
@@ -359,7 +363,9 @@ func (s *ThreatDetectionServer) sentryStatus() *pb.GetSentryStatusResponse {
 	reason := ""
 	if degraded {
 		state = pb.SentryState_SENTRY_STATE_DEGRADED
-		reason = "FindingStore has no Postgres connection; findings are not persisted across a restart"
+		// The process responder (#2636) shares this condition: with no
+		// persistence it cannot record what it changed, so it is ALERT-only.
+		reason = degradedNoPersistenceReason
 	}
 	rules := make([]*pb.RuleStatus, 0, len(ruleStatus))
 	reasons := []string{}

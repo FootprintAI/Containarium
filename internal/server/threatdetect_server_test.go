@@ -54,8 +54,8 @@ func TestGetSentryStatus_Degraded(t *testing.T) {
 	if resp.State != pb.SentryState_SENTRY_STATE_DEGRADED {
 		t.Errorf("state = %v, want DEGRADED", resp.State)
 	}
-	if resp.Reason == "" {
-		t.Error("reason is empty, want an explanation of the missing persistence")
+	if resp.Reason != "DEGRADED (no persistence): responses disabled" {
+		t.Errorf("reason = %q, want the process-responder degraded line (#2636)", resp.Reason)
 	}
 }
 
