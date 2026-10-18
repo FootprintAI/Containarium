@@ -67,6 +67,7 @@ type WebhookNotifier struct {
 	delivery *alert.DeliveryStore // nil = attempts are logged, not persisted
 	client   *http.Client
 	queue    chan *Finding
+	gate     *deliveryGate
 }
 
 // NewWebhookNotifier builds a notifier. config is required — without
@@ -79,7 +80,15 @@ func NewWebhookNotifier(config WebhookConfigSource, delivery *alert.DeliveryStor
 		delivery: delivery,
 		client:   &http.Client{Timeout: notifierHTTPTimeout},
 		queue:    make(chan *Finding, notifierQueueCap),
+		gate:     newDeliveryGate(DefaultRenotifyInterval),
 	}
+}
+
+// SetRenotifyInterval changes how long an open finding stays quiet after a
+// delivery before the same condition is delivered again (#2643); <= 0
+// restores DefaultRenotifyInterval. Call before the first Notify.
+func (n *WebhookNotifier) SetRenotifyInterval(d time.Duration) {
+	n.gate = newDeliveryGate(d)
 }
 
 // Start runs the delivery worker until ctx is done. Call once, before the
@@ -97,15 +106,23 @@ func (n *WebhookNotifier) Start(ctx context.Context) {
 	}()
 }
 
-// Notify enqueues f for delivery when its severity is MEDIUM or above.
+// Notify enqueues f for delivery when its severity is MEDIUM or above and
+// the gate lets it through: first sight, severity escalation, the re-notify
+// interval elapsing, or resolution (#2643); a repeat write to an open finding
+// inside the interval is not delivered again.
 // Non-blocking: if the queue is full the finding is dropped (and logged)
-// rather than backing up the caller.
+// rather than backing up the caller; a dropped finding is not marked
+// delivered, so its next write retries.
 func (n *WebhookNotifier) Notify(f *Finding) {
 	if f == nil || f.Severity < pb.ThreatSeverity_THREAT_SEVERITY_MEDIUM {
 		return
 	}
+	if !n.gate.shouldDeliver(f) {
+		return
+	}
 	select {
 	case n.queue <- f:
+		n.gate.delivered(f)
 	default:
 		log.Printf("threatdetect: webhook notify queue full (cap %d), dropping finding %d (rule=%s tenant=%s)",
 			notifierQueueCap, f.ID, f.Rule, f.TenantID)

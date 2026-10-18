@@ -442,6 +442,9 @@ func (*GetClamavSummaryRequest) Descriptor() ([]byte, []int) {
 	return file_containarium_v1_security_proto_rawDescGZIP(), []int{4}
 }
 
+// Counts are self-reported: the scan runs inside each tenant's own box (#2631),
+// so a compromised box can report "clean". Treat them as a tenant-visible
+// signal, not as platform assurance.
 type GetClamavSummaryResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Per-container summaries

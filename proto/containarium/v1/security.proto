@@ -102,6 +102,9 @@ message ListClamavReportsResponse {
 
 message GetClamavSummaryRequest {}
 
+// Counts are self-reported: the scan runs inside each tenant's own box (#2631),
+// so a compromised box can report "clean". Treat them as a tenant-visible
+// signal, not as platform assurance.
 message GetClamavSummaryResponse {
   // Per-container summaries
   repeated ClamavContainerSummary containers = 1;

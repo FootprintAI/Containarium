@@ -202,7 +202,8 @@ enum ThreatSeverity { THREAT_SEVERITY_UNSPECIFIED = 0; THREAT_SEVERITY_LOW = 1;
 enum ThreatRuleId   { THREAT_RULE_ID_UNSPECIFIED = 0; THREAT_RULE_ID_BAD_DESTINATION = 1;
                       THREAT_RULE_ID_CROSS_TENANT_FLOW = 2; THREAT_RULE_ID_DENY_BURST = 3;
                       THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH = 4;
-                      THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER = 5; }
+                      THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER = 5;
+                      THREAT_RULE_ID_SENTRY_UNAVAILABLE = 8; /* #2634, sentry-health loop */ }
 
 service ThreatDetectionService {
   rpc ListFindings(ListFindingsRequest) returns (ListFindingsResponse);          // GET  /v1/security/findings
