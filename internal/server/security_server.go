@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -337,6 +338,9 @@ func (s *SecurityServer) TriggerClamavScan(ctx context.Context, req *pb.TriggerC
 		username = strings.TrimSuffix(req.ContainerName, "-container")
 	}
 	if _, err := s.scanner.EnqueueOne(ctx, req.ContainerName, username); err != nil {
+		if errors.Is(err, security.ErrScanActive) {
+			return nil, status.Errorf(codes.AlreadyExists, "a scan for %s is already pending or running", req.ContainerName)
+		}
 		return nil, fmt.Errorf("failed to enqueue scan for %s: %w", req.ContainerName, err)
 	}
 	return &pb.TriggerClamavScanResponse{

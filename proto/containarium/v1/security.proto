@@ -18,10 +18,10 @@ message ClamavReport {
   // Username associated with the container
   string username = 3;
 
-  // Scan status. Today "clean", "infected" or "incomplete" (a scan that could
-  // not finish is never reported clean, #2496); #2631 adds never-scanned,
-  // unsupported-size and not-installed outcomes. The verdict is produced by the
-  // scan running inside the tenant's own box, so it is self-reported.
+  // Scan status: "clean", "infected", "incomplete", "unsupported_size" or
+  // "not_installed" (see status_enum; a scan that could not finish is never
+  // reported clean, #2496). The verdict is produced by the scan running inside
+  // the tenant's own box, so it is self-reported.
   string status = 4;
 
   // Number of infected files found
@@ -41,6 +41,31 @@ message ClamavReport {
 
   // Backend ID identifying which node performed the scan
   string backend_id = 10;
+
+  // Typed form of status (#2631). status stays populated for compatibility.
+  ClamavScanStatus status_enum = 11;
+
+  // Why a scan produced no verdict (status other than clean/infected); empty
+  // otherwise. Never contains file paths.
+  string reason = 12;
+}
+
+// ClamavScanStatus is the outcome of a tenant-run, in-box ClamAV scan (#2631).
+// Only a clamscan run that exits 0 with no findings is CLEAN, and even then the
+// verdict is self-reported by the scan inside the tenant's own box.
+enum ClamavScanStatus {
+  CLAMAV_SCAN_STATUS_UNSPECIFIED = 0;
+  CLAMAV_SCAN_STATUS_CLEAN = 1;
+  CLAMAV_SCAN_STATUS_INFECTED = 2;
+  // The scan could not finish or could not be started (error, timeout, out of
+  // memory, box not running). Never treated as clean.
+  CLAMAV_SCAN_STATUS_INCOMPLETE = 3;
+  // No scan has ever been requested for the box: no platform assurance.
+  CLAMAV_SCAN_STATUS_NEVER_SCANNED = 4;
+  // The box has less memory than ClamAV needs (4 GB); no scan was attempted.
+  CLAMAV_SCAN_STATUS_UNSUPPORTED_SIZE = 5;
+  // ClamAV or its signatures are not installed in the box.
+  CLAMAV_SCAN_STATUS_NOT_INSTALLED = 6;
 }
 
 // ClamavContainerSummary provides per-container scan summary
