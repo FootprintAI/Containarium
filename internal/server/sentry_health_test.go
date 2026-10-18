@@ -144,6 +144,12 @@ func TestSentryHealthCheck(t *testing.T) {
 		Reason: degrade + "; rule DENY_BURST unhealthy: panic: boom",
 		Rules:  []*pb.RuleStatus{{Rule: pb.ThreatRuleId_THREAT_RULE_ID_DENY_BURST, Healthy: false, LastError: "panic: boom"}},
 	}
+	const cpuBad = "unavailable (incus client unavailable: boom)"
+	cpuDown := &pb.GetSentryStatusResponse{State: pb.SentryState_SENTRY_STATE_OK, CpuSampler: cpuBad}
+	cpuDownAgain := &pb.GetSentryStatusResponse{State: pb.SentryState_SENTRY_STATE_OK, CpuSampler: "unavailable (incus client unavailable: different text)"}
+	cpuStandalone := &pb.GetSentryStatusResponse{State: pb.SentryState_SENTRY_STATE_OK, CpuSampler: "standalone (30s)"}
+	cpuCollector := &pb.GetSentryStatusResponse{State: pb.SentryState_SENTRY_STATE_OK, CpuSampler: "metrics-collector"}
+	degradedAndCPUDown := &pb.GetSentryStatusResponse{State: pb.SentryState_SENTRY_STATE_DEGRADED, Reason: degrade, CpuSampler: cpuBad}
 	tests := []struct {
 		name         string
 		steps        []*pb.GetSentryStatusResponse
@@ -163,6 +169,29 @@ func TestSentryHealthCheck(t *testing.T) {
 			wantNote:  unhealthyRule.Reason, // the fake keeps the first sighting's evidence
 		},
 		{name: "degraded plus unhealthy rule drops only the panic text", steps: []*pb.GetSentryStatusResponse{degradedAndUnhealthy}, wantOpen: []string{degrade + "; rule DENY_BURST unhealthy"}, wantCount: 1, wantNote: degradedAndUnhealthy.Reason},
+		{
+			name:      "cpu sampler unavailable raises with a stable subject and the full status as the note",
+			steps:     []*pb.GetSentryStatusResponse{cpuDown},
+			wantOpen:  []string{"cpu-sampler unavailable"},
+			wantCount: 1,
+			wantNote:  "cpu-sampler: " + cpuBad,
+		},
+		{
+			name:      "cpu sampler unavailable with changing detail dedupes into one row",
+			steps:     []*pb.GetSentryStatusResponse{cpuDown, cpuDownAgain},
+			wantOpen:  []string{"cpu-sampler unavailable"},
+			wantCount: 2,
+			wantNote:  "cpu-sampler: " + cpuBad, // the fake keeps the first sighting's evidence
+		},
+		{name: "cpu sampler recovering to standalone resolves", steps: []*pb.GetSentryStatusResponse{cpuDown, cpuStandalone}, wantResolved: 1},
+		{name: "cpu sampler on the metrics collector from the start raises nothing", steps: []*pb.GetSentryStatusResponse{cpuCollector}},
+		{
+			name:      "degraded plus cpu sampler unavailable reports both in one finding",
+			steps:     []*pb.GetSentryStatusResponse{degradedAndCPUDown},
+			wantOpen:  []string{degrade + "; cpu-sampler unavailable"},
+			wantCount: 1,
+			wantNote:  degrade + "; cpu-sampler: " + cpuBad,
+		},
 		{name: "ok raises nothing", steps: []*pb.GetSentryStatusResponse{statusResp(pb.SentryState_SENTRY_STATE_OK, "")}},
 		{name: "disabled raises nothing", steps: []*pb.GetSentryStatusResponse{statusResp(pb.SentryState_SENTRY_STATE_DISABLED, "CONTAINARIUM_THREAT_SENTRY is not set")}},
 		{
