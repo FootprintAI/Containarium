@@ -228,6 +228,23 @@ func (cloudClient) GetMetricsExport() (*GetMetricsExportResponse, error) {
 	return nil, errUnsupportedOnCloud("get_metrics_export", "")
 }
 
+// KMS is platform-wide and managed per OSS daemon; the control plane
+// deliberately does not proxy it (cloud#2679), so answer client-side instead
+// of a round-trip that can only return 501.
+const kmsCloudAlt = "run `containarium kms status|envelope-coverage` on the OSS daemon's own host"
+
+func (cloudClient) GetKMSStatus() (*KMSStatusResponse, error) {
+	return nil, errUnsupportedOnCloud("kms_status", kmsCloudAlt)
+}
+
+func (cloudClient) GetEnvelopeCoverage() (*EnvelopeCoverageResponse, error) {
+	return nil, errUnsupportedOnCloud("kms_envelope_coverage", kmsCloudAlt)
+}
+
+func (cloudClient) MigrateToEnvelope(MigrateToEnvelopeBody) (*MigrateToEnvelopeResponse, error) {
+	return nil, errUnsupportedOnCloud("kms_migrate_to_envelope", "run `containarium kms migrate-to-envelope` on the OSS daemon's own host")
+}
+
 // newBackend builds the API the handlers use, classifying the target from the
 // credential. Token-file mode (rotation-without-restart) is wired onto the
 // shared base either way; the classification reads the effective token once
