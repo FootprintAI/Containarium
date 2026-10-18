@@ -34,6 +34,20 @@ const (
 	miningMinSamples = 3
 	// miningMaxPoints is the hard cap on samples kept per container.
 	miningMaxPoints = 256
+
+	// miningAssumedMinTick is the shortest collector sample interval the
+	// window bound assumes (the default tick).
+	miningAssumedMinTick = 30 * time.Second
+
+	// MaxMiningWindow is the longest window the rule accepts. At most
+	// miningMaxPoints samples are kept, so at the assumed minimum tick the
+	// history spans miningMaxPoints x 30s = 128 min. Coverage needs the
+	// oldest in-window sample to be >= miningMinCoverage x window old, so
+	// a window above 256 x 30s / 0.8 = 160 min can never be satisfied and
+	// the rule would silently never fire. 128 min (the full history span,
+	// rounded down to the minute) is the accepted cap: inside that hard
+	// limit with headroom for a tick a little above 30s.
+	MaxMiningWindow = time.Duration(miningMaxPoints) * miningAssumedMinTick / time.Minute * time.Minute
 )
 
 // miningContainer is one container's CPU history.

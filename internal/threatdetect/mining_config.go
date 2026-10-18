@@ -188,6 +188,8 @@ func validateMiningThresholds(m *pb.MiningBehaviorThresholds) error {
 	// flow_min_age (or the reverse) is caught too.
 	if eff := MiningThresholdsFromProto(m); eff.Window < eff.FlowMinAge {
 		return fmt.Errorf("threatdetect: mining-behavior thresholds: window %s is shorter than flow_min_age %s", eff.Window, eff.FlowMinAge)
+	} else if eff.Window > MaxMiningWindow {
+		return fmt.Errorf("threatdetect: mining-behavior thresholds: window %s exceeds the maximum %s (the per-container sample cap cannot cover a longer window)", eff.Window, MaxMiningWindow)
 	}
 	return nil
 }
