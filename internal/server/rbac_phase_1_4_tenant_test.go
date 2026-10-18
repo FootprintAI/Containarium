@@ -253,3 +253,21 @@ func TestEgressProxy_AdminPassesCrossTenant(t *testing.T) {
 		return e
 	})
 }
+
+// #2659: InstallClamav is authorized like the per-box scan trigger.
+func TestInstallClamav_Authz(t *testing.T) {
+	srv := &SecurityServer{}
+	if _, err := srv.InstallClamav(tenantCtx("alice"), &pb.InstallClamavRequest{ContainerName: "bob-container"}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("other tenant: got %v want PermissionDenied", err)
+	}
+	if _, err := srv.InstallClamav(tenantCtx("alice"), &pb.InstallClamavRequest{}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("tenant blank name: got %v want PermissionDenied", err)
+	}
+	if _, err := srv.InstallClamav(adminCtx(), &pb.InstallClamavRequest{}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("admin blank name: got %v want InvalidArgument", err)
+	}
+	// Owner passes the gate; with no runtime it then reports Unavailable, not PermissionDenied.
+	if _, err := srv.InstallClamav(tenantCtx("alice"), &pb.InstallClamavRequest{ContainerName: "alice-container"}); status.Code(err) != codes.Unavailable {
+		t.Fatalf("owner: got %v want Unavailable (past the gate)", err)
+	}
+}

@@ -161,6 +161,9 @@ type API interface {
 	// security container. Host-level — a daemon manages exactly one
 	// security container, so there's no per-tenant scoping.
 	InstallZap() (*InstallZapResponse, error)
+	// InstallClamav installs ClamAV and its signatures inside one box so the
+	// tenant-run malware scan can run (#2659).
+	InstallClamav(containerName string) (*InstallClamavResponse, error)
 
 	// Transport-level escape hatches used by handlers that issue a raw
 	// request (compose, move, connect) or need the effective token (scope
@@ -223,6 +226,10 @@ func (cloudClient) GetBridgeDNSStatus() (*BridgeDNSStatusResponse, error) {
 
 func (cloudClient) InstallZap() (*InstallZapResponse, error) {
 	return nil, errUnsupportedOnCloud("install_zap", "the platform provisions ZAP on managed hosts")
+}
+
+func (cloudClient) InstallClamav(string) (*InstallClamavResponse, error) {
+	return nil, errUnsupportedOnCloud("install_clamav", "run this against the box owner's own daemon")
 }
 
 func (cloudClient) SetMetricsExport(bool, string, []string) (*SetMetricsExportResponse, error) {

@@ -349,6 +349,31 @@ func (s *SecurityServer) TriggerClamavScan(ctx context.Context, req *pb.TriggerC
 	}, nil
 }
 
+// InstallClamav installs ClamAV and its signatures inside one box (#2659). The
+// platform runs the package install in the box and reports a typed outcome; it
+// does not read the box's files. Authorized like TriggerClamavScan (the box's
+// owner; admins pass until #2655 decides otherwise). Boxes on a peer backend
+// are not forwarded yet: the lookup fails with a clear message.
+func (s *SecurityServer) InstallClamav(ctx context.Context, req *pb.InstallClamavRequest) (*pb.InstallClamavResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeSecurityWrite); err != nil {
+		return nil, err
+	}
+	if req.GetContainerName() == "" {
+		if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+			return nil, err
+		}
+		return nil, status.Error(codes.InvalidArgument, "container_name is required")
+	}
+	if err := auth.AuthorizeContainerAccess(ctx, req.GetContainerName()); err != nil {
+		return nil, err
+	}
+	if s.incusClient == nil {
+		return nil, status.Error(codes.Unavailable, "container runtime is not available")
+	}
+	outcome, msg := security.InstallClamav(s.incusClient, req.GetContainerName())
+	return &pb.InstallClamavResponse{Outcome: outcome, Message: msg}, nil
+}
+
 // GetScanStatus returns the current state of the scan job queue.
 // Admin-only — the queue lists work items across all containers.
 func (s *SecurityServer) GetScanStatus(ctx context.Context, req *pb.GetScanStatusRequest) (*pb.GetScanStatusResponse, error) {

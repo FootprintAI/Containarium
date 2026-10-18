@@ -1065,6 +1065,27 @@ func (s *Server) registerTools() {
 			Handler: handleInstallZap,
 		},
 		{
+			Name: "install_clamav",
+			Description: "Install ClamAV and its signatures inside ONE box so the tenant-run malware scan " +
+				"(`security_scan` with kind=clamav) can run. Started by the box owner; the platform " +
+				"runs the package install in the box and does not read the box's files.\n\n" +
+				"Requires a running Debian/Ubuntu box with at least 4 GB RAM and outbound access to the " +
+				"package mirror and the ClamAV signature servers. Idempotent: an already-installed box " +
+				"runs nothing and reports ALREADY_PRESENT. Other OS families report UNSUPPORTED_FAMILY. " +
+				"Can take several minutes.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"container_name": map[string]interface{}{
+						"type":        "string",
+						"description": "The box to install into, e.g. alice-container.",
+					},
+				},
+				"required": []string{"container_name"},
+			},
+			Handler: handleInstallClamav,
+		},
+		{
 			Name: "sync_ssh_config",
 			Description: "Generate a self-contained ssh_config covering every reachable container " +
 				"and write it to ~/.containarium/ssh_config. After this call, `ssh <username>` " +
@@ -1985,6 +2006,9 @@ func toolScopeAssignments() map[string]string {
 		// RoleAdmin server-side); scope-gated the same as the other
 		// security-write tools at the MCP layer.
 		"install_zap": auth.ScopeSecurityWrite,
+		// install_clamav runs a package install inside one box; the daemon
+		// authorizes the box owner.
+		"install_clamav": auth.ScopeSecurityWrite,
 		// developer-loop tools
 		"push":            auth.ScopeCodeWrite,
 		"sync":            auth.ScopeCodeWrite,
