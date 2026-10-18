@@ -326,3 +326,31 @@ func TestSentryStatus_PrintsDegradedNoPersistence(t *testing.T) {
 		}
 	}
 }
+
+// Thresholds that were never set are stored as zeros; `get` must show the
+// values the rule is using, not those zeros (#2675).
+func TestProcessPolicyGet_ShowsEffectiveThresholdsNotStoredZeros(t *testing.T) {
+	reply, _ := protojson.Marshal(&pb.GetProcessPolicyResponse{
+		Policy: &pb.ProcessPolicy{MiningBehavior: &pb.MiningBehaviorThresholds{Window: durationpb.New(5 * time.Minute)}},
+		Effective: &pb.ProcessPolicy{
+			Action: pb.ProcessAction_PROCESS_ACTION_ALERT,
+			MiningBehavior: &pb.MiningBehaviorThresholds{
+				MinCores: 1.5, MinFractionOfLimit: 0.75, Window: durationpb.New(5 * time.Minute),
+				FlowMinAge: durationpb.New(3 * time.Minute), StratumPorts: []uint32{3333},
+			},
+		},
+	})
+	ps := &policyServer{reply: string(reply)}
+	ps.start(t)
+	cmd := newProcessPolicyGetCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"min cores:              1.5", "min fraction of limit:  0.75", "stratum ports:          3333"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("output lacks %q:\n%s", want, buf.String())
+		}
+	}
+}
