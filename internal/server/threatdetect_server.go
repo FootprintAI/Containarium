@@ -43,6 +43,12 @@ type ThreatDetectionServer struct {
 	// than panicking, same as badDestRule.
 	store threatdetect.FindingReader
 
+	// policies and responder back the process-policy RPCs (#2636); see
+	// threatdetect_policy_server.go. Either may be nil.
+	policies  *threatdetect.ProcessPolicyStore
+	miningCfg *threatdetect.MiningThresholdsConfig
+	responder *ProcessResponder
+
 	mu                sync.Mutex // guards the fields below — SetUnavailable / SetCPUSamplerStatus run after Start()
 	ebpfAvailable     bool       // eBPF object loaded (networkPolicyEnforcer != nil) AND still running
 	unavailableReason string

@@ -50,6 +50,14 @@ enum ThreatRuleId {
   // Subject is the destination ip:port; evidence is one CPUEvidence plus
   // the qualifying flow. Thresholds: MiningBehaviorThresholds.
   THREAT_RULE_ID_MINING_BEHAVIOR = 6;
+  // Values 7 (MINER_SIGNATURE, #2638) and 8 (SENTRY_UNAVAILABLE, #2634) are
+  // assigned by their own stories.
+  //
+  // A process action (throttle or freeze, #2636) reached its TTL with no
+  // operator decision and was released automatically. MEDIUM, so an
+  // unattended containment never silently becomes permanent. Subject is the
+  // container name; the response on the original HIGH finding is EXPIRED.
+  THREAT_RULE_ID_PROCESS_ACTION_EXPIRED = 9;
 }
 
 // FindingState is the lifecycle state of a security finding.
@@ -191,6 +199,118 @@ message Finding {
   Evidence evidence = 10;
   google.protobuf.Timestamp first_seen = 11;
   google.protobuf.Timestamp last_seen = 12;
+  // What the process responder (#2636) did about this finding, if anything.
+  // Unset for findings no policy acts on.
+  FindingResponse response = 13;
+}
+
+// ProcessAction is what a HIGH mining finding does to its container (#2636).
+// Every action is reversible with ReleaseProcessAction; none destroys data.
+enum ProcessAction {
+  PROCESS_ACTION_UNSPECIFIED = 0;
+  // Record the finding, notify, do nothing to the container. The default.
+  PROCESS_ACTION_ALERT = 1;
+  // Record the box's current limits.cpu / limits.cpu.allowance, then set
+  // limits.cpu.allowance to ProcessPolicy.throttle_allowance.
+  PROCESS_ACTION_THROTTLE = 2;
+  // Pause the instance through Incus (cgroup freezer): memory and disk kept,
+  // no process runs until released.
+  PROCESS_ACTION_FREEZE = 3;
+}
+
+// ResponseState is the lifecycle of one FindingResponse.
+enum ResponseState {
+  RESPONSE_STATE_UNSPECIFIED = 0;
+  // The policy was ALERT: nothing was done to the container.
+  RESPONSE_STATE_NONE = 1;
+  // The action is in effect.
+  RESPONSE_STATE_APPLIED = 2;
+  // Incus refused the action; `error` says why. The responder does not retry
+  // — the rule's next sweep re-fires the finding, which is the retry.
+  RESPONSE_STATE_FAILED = 3;
+  // An operator released the action (ReleaseProcessAction).
+  RESPONSE_STATE_RELEASED = 4;
+  // The TTL backstop released the action with no operator decision.
+  RESPONSE_STATE_EXPIRED = 5;
+}
+
+// FindingResponse records what the process responder did about a finding
+// and when, so the finding itself tells the operator whether a box is
+// currently throttled or frozen because of it.
+message FindingResponse {
+  ProcessAction action = 1;
+  ResponseState state = 2;
+  // Reserved for the signature rule's additive kill (#2638).
+  bool process_killed = 3;
+  google.protobuf.Timestamp applied_at = 4;
+  // When the TTL backstop will release the action if no operator does.
+  google.protobuf.Timestamp expires_at = 5;
+  google.protobuf.Timestamp released_at = 6;
+  // "operator" or "ttl"; empty while the action is in effect.
+  string released_by = 7;
+  // Incus error text when state is FAILED.
+  string error = 8;
+}
+
+// ProcessPolicy says what a HIGH mining finding does to its container
+// (#2636). Stored per backend (the default) and optionally per container
+// (an override, written by SetProcessPolicy with `container` set); the
+// effective policy is override → backend default → built-in
+// {ALERT, "10%", 24h}. Empty fields inherit from the next level down.
+message ProcessPolicy {
+  ProcessAction action = 1;
+  // limits.cpu.allowance applied by THROTTLE: an Incus allowance such as
+  // "10%" (share under contention) or "10ms/100ms" (hard CFS quota).
+  // Default "10%".
+  string throttle_allowance = 2;
+  // How long an applied action stays in effect with no operator decision
+  // before the TTL backstop releases it. Default 24h.
+  google.protobuf.Duration ttl = 3;
+  // Field 4 is kill_process (signature rule, #2638); it is assigned there.
+  // Do not reuse the number.
+
+  // Thresholds of the mining-behavior rule (#2635). Backend-wide: honoured
+  // only on the backend default (container empty), rejected on a container
+  // override. Unset on Set leaves the stored thresholds untouched.
+  MiningBehaviorThresholds mining_behavior = 5;
+}
+
+message GetProcessPolicyRequest {
+  // Empty reads the backend default; a container name reads that
+  // container's override (policy is unset when none is stored).
+  string container = 1;
+}
+
+message GetProcessPolicyResponse {
+  // The policy stored at the requested level, unset if none is stored.
+  ProcessPolicy policy = 1;
+  // True when `container` was given and an override is stored for it.
+  bool is_override = 2;
+  // The fully-resolved policy the responder would apply at that level.
+  ProcessPolicy effective = 3;
+}
+
+message SetProcessPolicyRequest {
+  // Empty sets the backend default; a container name sets that container's
+  // override.
+  string container = 1;
+  ProcessPolicy policy = 2;
+  // With `container` set, removes the override instead of writing one.
+  bool clear_override = 3;
+}
+
+message SetProcessPolicyResponse {
+  ProcessPolicy effective = 1;
+}
+
+message ReleaseProcessActionRequest {
+  string container = 1;
+}
+
+message ReleaseProcessActionResponse {
+  // The finding the action belonged to, now resolved with its response in
+  // state RELEASED.
+  Finding finding = 1;
 }
 
 // SentryState is the overall on/off state of the background threat-detection
@@ -385,6 +505,49 @@ service ThreatDetectionService {
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Resolve a security finding";
       description: "Marks an open finding as resolved. Fails with FAILED_PRECONDITION if it's already resolved, NOT_FOUND if it doesn't exist.";
+      tags: "Security";
+    };
+  }
+
+  // GetProcessPolicy returns the process policy stored at one level (backend
+  // default, or one container's override) and the effective policy the
+  // responder applies there (#2636).
+  rpc GetProcessPolicy(GetProcessPolicyRequest) returns (GetProcessPolicyResponse) {
+    option (google.api.http) = {
+      get: "/v1/security/process-policy"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get the process policy";
+      description: "Returns the stored process policy (backend default, or a container's override when ?container= is given) and the effective policy after override → default → built-in ALERT resolution.";
+      tags: "Security";
+    };
+  }
+
+  // SetProcessPolicy writes the backend default, or one container's
+  // override (clear_override removes it). Admin-only: the policy decides
+  // what happens to a tenant's box.
+  rpc SetProcessPolicy(SetProcessPolicyRequest) returns (SetProcessPolicyResponse) {
+    option (google.api.http) = {
+      put: "/v1/security/process-policy"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Set the process policy";
+      description: "Sets what a HIGH mining finding does to its container: ALERT (default), THROTTLE or FREEZE, with the throttle allowance and TTL. With container set it writes a per-container override; clear_override removes one.";
+      tags: "Security";
+    };
+  }
+
+  // ReleaseProcessAction undoes the open action on a container: restores the
+  // recorded CPU limit or unfreezes it, and resolves the finding.
+  rpc ReleaseProcessAction(ReleaseProcessActionRequest) returns (ReleaseProcessActionResponse) {
+    option (google.api.http) = {
+      post: "/v1/security/process-policy/release"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Release a process action";
+      description: "Restores the container's recorded CPU limit (THROTTLE) or unfreezes it (FREEZE), marks the action released by the operator, and resolves its finding. NOT_FOUND when no action is open on the container.";
       tags: "Security";
     };
   }

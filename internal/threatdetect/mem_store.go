@@ -183,6 +183,27 @@ func (s *MemFindingStore) List(ctx context.Context, filter ListFilter) ([]*Findi
 	return matches, nil
 }
 
+// SetResponse mirrors FindingStore.SetResponse without Postgres.
+func (s *MemFindingStore) SetResponse(ctx context.Context, id int64, r FindingResponse) (*Finding, error) {
+	s.mu.Lock()
+	var f *Finding
+	for _, cand := range s.ring {
+		if cand.ID == id {
+			f = cand
+			break
+		}
+	}
+	if f == nil {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("threatdetect: finding %d: %w", id, ErrFindingNotFound)
+	}
+	cp := r
+	f.Response = &cp
+	s.mu.Unlock()
+	s.emitter.EmitSecurityFinding(f.ToProto())
+	return f, nil
+}
+
 // Resolve transitions a finding to FindingStateResolved (mirrors
 // FindingStore.Resolve, including the ErrFindingNotOpen distinction between
 // "no such finding" and "already resolved").
