@@ -10603,6 +10603,32 @@
       "default": "CPU_ADMISSION_MODE_UNSPECIFIED",
       "description": "CPUAdmissionMode is the CPU overcommit admission gate's posture\n(docs/CPU-CAPACITY-ADMISSION.md, #1029). An enum rather than a pair of\nbare flags so a client switches on typed constants and cannot mistake\n\"factor set but not enforced\" for protection (#2284).\n\n - CPU_ADMISSION_MODE_UNSPECIFIED: The backend did not report a posture (pre-#2284 daemon).\n - CPU_ADMISSION_MODE_DISABLED: No factor configured: the gate never runs (the default).\n - CPU_ADMISSION_MODE_ADVISORY: A factor is configured but over-ceiling creates are only logged, never\nrejected.\n - CPU_ADMISSION_MODE_ENFORCING: Over-ceiling creates are rejected with ResourceExhausted."
     },
+    "CPUEvidence": {
+      "type": "object",
+      "properties": {
+        "meanCores": {
+          "type": "number",
+          "format": "double",
+          "description": "Mean cores over the window's samples."
+        },
+        "peakCores": {
+          "type": "number",
+          "format": "double",
+          "description": "Highest single sample in the window."
+        },
+        "windowSeconds": {
+          "type": "string",
+          "format": "int64",
+          "description": "Length of the window the samples cover."
+        },
+        "samples": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Number of samples the mean was taken over."
+        }
+      },
+      "description": "CPUEvidence summarises a container's CPU usage over a detection window\n(#2635), measured in cores (1.0 = one core fully busy)."
+    },
     "CapabilityBenchmark": {
       "type": "object",
       "properties": {
@@ -13085,6 +13111,13 @@
             "type": "object",
             "$ref": "#/definitions/ListenerEvidence"
           }
+        },
+        "cpu": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/CPUEvidence"
+          }
         }
       },
       "description": "Evidence bundles the flow, deny and configuration records that triggered\na finding. Capped by the store to the most recent entries — see\nFindingStore."
@@ -13264,6 +13297,19 @@
         "packets": {
           "type": "string",
           "format": "int64"
+        },
+        "firstSeen": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the flow was first and last seen (#2635). The kernel stamps flows\nwith a monotonic clock, so last_seen is the flow poll that reported the\nflow and first_seen is last_seen minus the flow's own age. Set by the\nmining-behavior rule; unset on other rules' evidence."
+        },
+        "lastSeen": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "matched": {
+          "type": "string",
+          "description": "What qualified the flow: \"port:\u003cn\u003e\" for a stratum port, or\n\"bad-destination:\u003ccidr\u003e\" for a listed destination (#2635)."
         }
       },
       "description": "FlowEvidence captures one triggering flow's 5-tuple and volume, attached to\na finding as supporting evidence."
@@ -19115,10 +19161,11 @@
         "THREAT_RULE_ID_CROSS_TENANT_FLOW",
         "THREAT_RULE_ID_DENY_BURST",
         "THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH",
-        "THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER"
+        "THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER",
+        "THREAT_RULE_ID_MINING_BEHAVIOR"
       ],
       "default": "THREAT_RULE_ID_UNSPECIFIED",
-      "description": "ThreatRuleId identifies which detection rule raised a finding.\n\n - THREAT_RULE_ID_BAD_DESTINATION: Flow to a known-bad destination (e.g. a mining pool).\n - THREAT_RULE_ID_CROSS_TENANT_FLOW: Flow whose source and destination belong to different tenants.\n - THREAT_RULE_ID_DENY_BURST: Burst of policy denies for one tenant within a time window.\n - THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH: A box's effective sshd configuration permitted password login, or the\nplatform-managed key-only drop-in had been removed or altered (#2424).\nRaised by the box sshd posture reconciler after it re-asserts the\ndrop-in; the evidence names the offending directive and file.\n - THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER: A box is listening with an SSH server that is not the distro sshd\nservice on a port its sshd_config declares (#2439): a second sshd, a\ndropbear, or the stock sshd started with its own config. Raised by the\nsame posture pass as rule 4; record-only, the platform never kills a\ntenant's process. The evidence names the port, pid and binary."
+      "description": "ThreatRuleId identifies which detection rule raised a finding.\n\n - THREAT_RULE_ID_BAD_DESTINATION: Flow to a known-bad destination (e.g. a mining pool).\n - THREAT_RULE_ID_CROSS_TENANT_FLOW: Flow whose source and destination belong to different tenants.\n - THREAT_RULE_ID_DENY_BURST: Burst of policy denies for one tenant within a time window.\n - THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH: A box's effective sshd configuration permitted password login, or the\nplatform-managed key-only drop-in had been removed or altered (#2424).\nRaised by the box sshd posture reconciler after it re-asserts the\ndrop-in; the evidence names the offending directive and file.\n - THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER: A box is listening with an SSH server that is not the distro sshd\nservice on a port its sshd_config declares (#2439): a second sshd, a\ndropbear, or the stock sshd started with its own config. Raised by the\nsame posture pass as rule 4; record-only, the platform never kills a\ntenant's process. The evidence names the port, pid and binary.\n - THREAT_RULE_ID_MINING_BEHAVIOR: A box held sustained CPU while keeping a long-lived flow to a stratum\nport or a listed bad destination (#2635): the shape of a cryptominer.\nSubject is the destination ip:port; evidence is one CPUEvidence plus\nthe qualifying flow. Thresholds: MiningBehaviorThresholds."
     },
     "ThreatSeverity": {
       "type": "string",

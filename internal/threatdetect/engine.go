@@ -25,6 +25,31 @@ type RuleContext struct {
 	// Now is injected so time-window rules (deny-burst) are testable with a
 	// fake clock instead of wall time.
 	Now func() time.Time
+	// MiningThresholds returns the operator-tuned mining-behavior thresholds
+	// (#2635), read from the daemon config store by the caller. nil means
+	// DefaultMiningThresholds.
+	MiningThresholds func() MiningThresholds
+}
+
+// CPUSample is one container's CPU usage over one metrics-collector tick
+// (#2635), derived from the collector's cumulative CPUUsageSeconds. IP is
+// the container's address, which joins the sample to the flow records whose
+// source it is.
+type CPUSample struct {
+	Container string
+	IP        netip.Addr
+	// Cores is the mean number of busy cores over the tick (1.0 = one core).
+	Cores float64
+	// LimitCores is the box's limits.cpu in cores; 0 when unlimited.
+	LimitCores float64
+	At         time.Time
+}
+
+// CPUConsumer is an optional interface a Rule implements to receive CPU
+// samples. The engine type-asserts on Register, so rules that do not need
+// CPU stay unchanged.
+type CPUConsumer interface {
+	OnCPU(ctx RuleContext, samples []CPUSample) []RawFinding
 }
 
 // RawFinding is what a Rule returns when it fires: enough to build a
@@ -104,9 +129,10 @@ type Engine struct {
 
 	ruleCtx RuleContext
 
-	mu     sync.Mutex
-	rules  []Rule
-	health map[pb.ThreatRuleId]*ruleHealth
+	mu       sync.Mutex
+	rules    []Rule
+	cpuRules []CPUConsumer
+	health   map[pb.ThreatRuleId]*ruleHealth
 }
 
 // NewEngine builds a detection engine over sink. backendID is stamped onto
@@ -148,7 +174,39 @@ func (e *Engine) Register(r Rule) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.rules = append(e.rules, r)
+	if c, ok := r.(CPUConsumer); ok {
+		e.cpuRules = append(e.cpuRules, c)
+	}
 	e.health[r.ID()] = &ruleHealth{healthy: true}
+}
+
+// SetMiningThresholds wires the source of the mining-behavior thresholds
+// into every rule's RuleContext. Like Register, call it before wiring hooks.
+func (e *Engine) SetMiningThresholds(fn func() MiningThresholds) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.ruleCtx.MiningThresholds = fn
+}
+
+// OnCPU is the metrics collector's CPU hook (via the server's CPUSampler):
+// fan the samples out to every rule implementing CPUConsumer, with the same
+// panic recovery as the flow and deny paths.
+func (e *Engine) OnCPU(samples []CPUSample) {
+	e.mu.Lock()
+	rules := append([]CPUConsumer(nil), e.cpuRules...)
+	e.mu.Unlock()
+	for _, r := range rules {
+		e.upsertAll(e.evalCPU(r, samples))
+	}
+}
+
+func (e *Engine) evalCPU(r CPUConsumer, samples []CPUSample) (out []RawFinding) {
+	id := pb.ThreatRuleId_THREAT_RULE_ID_UNSPECIFIED
+	if rule, ok := r.(Rule); ok {
+		id = rule.ID()
+	}
+	defer e.recoverRule(id)
+	return r.OnCPU(e.ruleCtx, samples)
 }
 
 // OnFlows is the enforcer's flow-poll hook (SetFlowHook): fan the batch out

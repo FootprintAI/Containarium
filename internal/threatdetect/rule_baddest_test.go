@@ -268,3 +268,13 @@ func beUint32(b [4]byte) uint32 {
 }
 
 func timeNowForTest() time.Time { return time.Unix(1_700_000_000, 0) }
+
+func TestBadDestinationRule_MatchDestinationReturnsCIDR(t *testing.T) {
+	r := newBadDestinationRuleForTest(t, []BadDestinationEntry{{CIDR: "203.0.113.0/24", Label: "pool", Source: "baseline"}}, nil)
+	if cidr, ok := r.MatchDestination(netip.MustParseAddr("203.0.113.9")); !ok || cidr != "203.0.113.0/24" {
+		t.Fatalf("MatchDestination = %q/%v, want 203.0.113.0/24/true", cidr, ok)
+	}
+	if _, ok := r.MatchDestination(netip.MustParseAddr("198.51.100.1")); ok {
+		t.Fatal("unlisted IP matched")
+	}
+}
