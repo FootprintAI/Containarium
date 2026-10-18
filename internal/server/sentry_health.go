@@ -104,16 +104,16 @@ func (h *SentryHealth) Check(ctx context.Context) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	reason, unhealthy := sentryUnhealthyReason(h.status())
+	subject, note, unhealthy := sentryUnhealthySubject(h.status())
 	backendID := h.backendID()
 	h.adoptLocked(ctx, backendID)
 
-	for id, subject := range h.open {
-		if unhealthy && subject == reason {
+	for id, open := range h.open {
+		if unhealthy && open == subject {
 			continue
 		}
 		if _, err := h.store.Resolve(ctx, id); err != nil && !errors.Is(err, threatdetect.ErrFindingNotOpen) && !errors.Is(err, threatdetect.ErrFindingNotFound) {
-			log.Printf("[sentry-health] resolve finding %d (%q): %v", id, subject, err)
+			log.Printf("[sentry-health] resolve finding %d (%q): %v", id, open, err)
 			continue // retried next tick
 		}
 		delete(h.open, id)
@@ -126,11 +126,11 @@ func (h *SentryHealth) Check(ctx context.Context) {
 		Rule:      pb.ThreatRuleId_THREAT_RULE_ID_SENTRY_UNAVAILABLE,
 		Severity:  pb.ThreatSeverity_THREAT_SEVERITY_MEDIUM,
 		BackendID: backendID,
-		Subject:   reason,
-		Evidence:  threatdetect.Evidence{Configs: []threatdetect.ConfigEvidence{{Note: reason}}},
+		Subject:   subject,
+		Evidence:  threatdetect.Evidence{Configs: []threatdetect.ConfigEvidence{{Note: note}}},
 	})
 	if err != nil {
-		log.Printf("[sentry-health] upsert SENTRY_UNAVAILABLE (%q): %v", reason, err)
+		log.Printf("[sentry-health] upsert SENTRY_UNAVAILABLE (%q): %v", note, err)
 		return
 	}
 	h.open[f.ID] = f.Subject
@@ -138,46 +138,76 @@ func (h *SentryHealth) Check(ctx context.Context) {
 
 // adoptLocked loads, once, the open SENTRY_UNAVAILABLE rows for this backend
 // that an earlier daemon process left behind, so a restart onto a healthy
-// sentry resolves them instead of leaving them open forever. A List failure
-// is retried on the next tick.
+// sentry resolves them instead of leaving them open forever. The query is
+// narrowed to this rule and backend in the store, so open findings of other
+// rules cannot push a stale row out of the page; the 200-row cap then bounds
+// only distinct open reasons on one backend, which in practice is a handful.
+// A List failure is retried on the next tick.
 func (h *SentryHealth) adoptLocked(ctx context.Context, backendID string) {
 	if h.adopted {
 		return
 	}
-	rows, err := h.store.List(ctx, threatdetect.ListFilter{State: threatdetect.FindingStateOpen, Limit: 200})
+	rows, err := h.store.List(ctx, threatdetect.ListFilter{
+		State:     threatdetect.FindingStateOpen,
+		Rule:      pb.ThreatRuleId_THREAT_RULE_ID_SENTRY_UNAVAILABLE,
+		BackendID: backendID,
+		Limit:     200,
+	})
 	if err != nil {
 		log.Printf("[sentry-health] list open findings: %v", err)
 		return
 	}
 	for _, f := range rows {
-		if f.Rule != pb.ThreatRuleId_THREAT_RULE_ID_SENTRY_UNAVAILABLE {
-			continue
-		}
-		if backendID != "" && f.BackendID != backendID {
-			continue
-		}
 		h.open[f.ID] = f.Subject
 	}
 	h.adopted = true
 }
 
-// sentryUnhealthyReason reports whether resp describes an armed sentry that
-// is not running cleanly, and the reason to use as the finding subject.
-// DISABLED is not a fault (the loop never runs unarmed anyway).
-func sentryUnhealthyReason(resp *pb.GetSentryStatusResponse) (string, bool) {
+// sentryUnhealthySubject reports whether resp describes an armed sentry that
+// is not running cleanly. note is the full status reason, exactly as
+// `containarium security sentry status` prints it, and goes into the
+// finding's evidence. subject is the same reason with each unhealthy rule's
+// error text dropped ("rule DENY_BURST unhealthy: panic: …" becomes "rule
+// DENY_BURST unhealthy"): a panic message can vary between checks (an index,
+// an address), and a varying subject would resolve one finding and open
+// another on every tick instead of deduping into one row. DISABLED is not a
+// fault (the loop never runs unarmed anyway).
+func sentryUnhealthySubject(resp *pb.GetSentryStatusResponse) (subject, note string, unhealthy bool) {
 	switch resp.GetState() {
 	case pb.SentryState_SENTRY_STATE_DISABLED:
-		return "", false
+		return "", "", false
 	case pb.SentryState_SENTRY_STATE_OK:
-		for _, r := range resp.GetRules() {
-			if !r.GetHealthy() {
-				return reasonOr(resp, "a rule is unhealthy"), true
-			}
+		if !anyRuleUnhealthy(resp) {
+			return "", "", false
 		}
-		return "", false
+		note = reasonOr(resp, "a rule is unhealthy")
 	default: // UNAVAILABLE, DEGRADED, UNSPECIFIED
-		return reasonOr(resp, "sentry state "+strings.TrimPrefix(resp.GetState().String(), "SENTRY_STATE_")), true
+		note = reasonOr(resp, "sentry state "+strings.TrimPrefix(resp.GetState().String(), "SENTRY_STATE_"))
 	}
+	subject = note
+	for _, r := range resp.GetRules() {
+		if r.GetHealthy() || r.GetLastError() == "" {
+			continue
+		}
+		prefix := ruleUnhealthyPrefix(r.GetRule())
+		subject = strings.ReplaceAll(subject, prefix+": "+r.GetLastError(), prefix)
+	}
+	return subject, note, true
+}
+
+func anyRuleUnhealthy(resp *pb.GetSentryStatusResponse) bool {
+	for _, r := range resp.GetRules() {
+		if !r.GetHealthy() {
+			return true
+		}
+	}
+	return false
+}
+
+// ruleUnhealthyPrefix is the stable head of an unhealthy rule's part of the
+// status reason; ThreatDetectionServer.sentryStatus appends ": <last_error>".
+func ruleUnhealthyPrefix(rule pb.ThreatRuleId) string {
+	return "rule " + strings.TrimPrefix(rule.String(), "THREAT_RULE_ID_") + " unhealthy"
 }
 
 func reasonOr(resp *pb.GetSentryStatusResponse, fallback string) string {

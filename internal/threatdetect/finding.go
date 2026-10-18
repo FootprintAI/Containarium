@@ -173,7 +173,11 @@ type ListFilter struct {
 	TenantID string
 	Since    time.Time
 	State    FindingState // "" = any state
-	Limit    int          // <= 0 or > 200 => default/cap 50/200
+	// Rule narrows to one rule; unset (THREAT_RULE_ID_UNSPECIFIED) = any rule.
+	Rule pb.ThreatRuleId
+	// BackendID narrows to findings written by one backend; "" = any backend.
+	BackendID string
+	Limit     int // <= 0 or > 200 => default/cap 50/200
 }
 
 // Finding is a single security finding: an open or resolved instance of a

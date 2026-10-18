@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -20,6 +21,7 @@ type fakeHealthStore struct {
 	nextID  int64
 	rows    []*threatdetect.Finding
 	upserts int
+	clock   int64 // monotonic stand-in for LastSeen, so List can order newest-first
 }
 
 func (s *fakeHealthStore) Upsert(_ context.Context, f *threatdetect.Finding) (*threatdetect.Finding, error) {
@@ -29,11 +31,15 @@ func (s *fakeHealthStore) Upsert(_ context.Context, f *threatdetect.Finding) (*t
 	for _, r := range s.rows {
 		if r.State == threatdetect.FindingStateOpen && r.Rule == f.Rule && r.TenantID == f.TenantID && r.Subject == f.Subject {
 			r.Count++
+			s.clock++
+			r.LastSeen = time.Unix(s.clock, 0)
 			return r, nil
 		}
 	}
 	s.nextID++
+	s.clock++
 	cp := *f
+	cp.LastSeen = time.Unix(s.clock, 0)
 	cp.ID = s.nextID
 	cp.State = threatdetect.FindingStateOpen
 	cp.Count = 1
@@ -55,12 +61,27 @@ func (s *fakeHealthStore) Get(_ context.Context, id int64) (*threatdetect.Findin
 func (s *fakeHealthStore) List(_ context.Context, filter threatdetect.ListFilter) ([]*threatdetect.Finding, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Same filter, order and page cap as FindingStore/MemFindingStore.List.
+	limit := filter.Limit
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
 	var out []*threatdetect.Finding
 	for _, r := range s.rows {
 		if filter.State != "" && r.State != filter.State {
 			continue
 		}
+		if filter.Rule != pb.ThreatRuleId_THREAT_RULE_ID_UNSPECIFIED && r.Rule != filter.Rule {
+			continue
+		}
+		if filter.BackendID != "" && r.BackendID != filter.BackendID {
+			continue
+		}
 		out = append(out, r)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].LastSeen.After(out[j].LastSeen) })
+	if len(out) > limit {
+		out = out[:limit]
 	}
 	return out, nil
 }
@@ -110,16 +131,38 @@ func TestSentryHealthCheck(t *testing.T) {
 		Reason: "rule DENY_BURST unhealthy: panic: boom",
 		Rules:  []*pb.RuleStatus{{Rule: pb.ThreatRuleId_THREAT_RULE_ID_DENY_BURST, Healthy: false, LastError: "panic: boom"}},
 	}
+	// The same rule panicking again with different text (an index, an
+	// address): the subject must not change, or every tick would resolve
+	// one row and open another.
+	unhealthyRuleAgain := &pb.GetSentryStatusResponse{
+		State:  pb.SentryState_SENTRY_STATE_OK,
+		Reason: "rule DENY_BURST unhealthy: panic: index 7 out of range",
+		Rules:  []*pb.RuleStatus{{Rule: pb.ThreatRuleId_THREAT_RULE_ID_DENY_BURST, Healthy: false, LastError: "panic: index 7 out of range"}},
+	}
+	degradedAndUnhealthy := &pb.GetSentryStatusResponse{
+		State:  pb.SentryState_SENTRY_STATE_DEGRADED,
+		Reason: degrade + "; rule DENY_BURST unhealthy: panic: boom",
+		Rules:  []*pb.RuleStatus{{Rule: pb.ThreatRuleId_THREAT_RULE_ID_DENY_BURST, Healthy: false, LastError: "panic: boom"}},
+	}
 	tests := []struct {
 		name         string
 		steps        []*pb.GetSentryStatusResponse
 		wantOpen     []string // subjects of open rows, in insertion order
 		wantResolved int
-		wantCount    int64 // count on the single open row, when wantOpen has one
+		wantCount    int64  // count on the single open row, when wantOpen has one
+		wantNote     string // evidence note on the open row(s); "" = same as the subject
 	}{
 		{name: "unavailable raises one medium finding", steps: []*pb.GetSentryStatusResponse{statusResp(pb.SentryState_SENTRY_STATE_UNAVAILABLE, noObj)}, wantOpen: []string{noObj}, wantCount: 1},
 		{name: "degraded raises", steps: []*pb.GetSentryStatusResponse{statusResp(pb.SentryState_SENTRY_STATE_DEGRADED, degrade)}, wantOpen: []string{degrade}, wantCount: 1},
-		{name: "unhealthy rule raises", steps: []*pb.GetSentryStatusResponse{unhealthyRule}, wantOpen: []string{unhealthyRule.Reason}, wantCount: 1},
+		{name: "unhealthy rule raises with a stable subject and the full reason as the note", steps: []*pb.GetSentryStatusResponse{unhealthyRule}, wantOpen: []string{"rule DENY_BURST unhealthy"}, wantCount: 1, wantNote: unhealthyRule.Reason},
+		{
+			name:      "unhealthy rule with changing panic text dedupes into one row",
+			steps:     []*pb.GetSentryStatusResponse{unhealthyRule, unhealthyRuleAgain},
+			wantOpen:  []string{"rule DENY_BURST unhealthy"},
+			wantCount: 2,
+			wantNote:  unhealthyRule.Reason, // the fake keeps the first sighting's evidence
+		},
+		{name: "degraded plus unhealthy rule drops only the panic text", steps: []*pb.GetSentryStatusResponse{degradedAndUnhealthy}, wantOpen: []string{degrade + "; rule DENY_BURST unhealthy"}, wantCount: 1, wantNote: degradedAndUnhealthy.Reason},
 		{name: "ok raises nothing", steps: []*pb.GetSentryStatusResponse{statusResp(pb.SentryState_SENTRY_STATE_OK, "")}},
 		{name: "disabled raises nothing", steps: []*pb.GetSentryStatusResponse{statusResp(pb.SentryState_SENTRY_STATE_DISABLED, "CONTAINARIUM_THREAT_SENTRY is not set")}},
 		{
@@ -163,8 +206,12 @@ func TestSentryHealthCheck(t *testing.T) {
 				if f.TenantID != "" || f.Container != "" || f.BackendID != "backend-1" {
 					t.Errorf("open[%d] tenant/container/backend = %q/%q/%q, want \"\"/\"\"/backend-1", j, f.TenantID, f.Container, f.BackendID)
 				}
-				if len(f.Evidence.Configs) != 1 || f.Evidence.Configs[0].Note != f.Subject {
-					t.Errorf("open[%d] evidence = %+v, want one ConfigEvidence{Note: reason}", j, f.Evidence)
+				wantNote := tt.wantNote
+				if wantNote == "" {
+					wantNote = f.Subject
+				}
+				if len(f.Evidence.Configs) != 1 || f.Evidence.Configs[0].Note != wantNote {
+					t.Errorf("open[%d] evidence = %+v, want one ConfigEvidence{Note: %q}", j, f.Evidence, wantNote)
 				}
 				if len(open) == 1 && f.Count != tt.wantCount {
 					t.Errorf("count = %d, want %d", f.Count, tt.wantCount)
@@ -202,6 +249,29 @@ func TestSentryHealthCheck_ResolvesRowLeftOpenByPreviousProcess(t *testing.T) {
 	}
 	if other.State != threatdetect.FindingStateOpen || unrelated.State != threatdetect.FindingStateOpen {
 		t.Errorf("other-backend/unrelated rows = %s/%s, want both open", other.State, unrelated.State)
+	}
+}
+
+// Takeover must not depend on how many other findings are open: a stale
+// SENTRY_UNAVAILABLE row older than 250 open findings of other rules is
+// still found (the list is narrowed to this rule and backend, not paged
+// across every rule).
+func TestSentryHealthCheck_TakeoverIgnoresOtherRulesVolume(t *testing.T) {
+	store := &fakeHealthStore{}
+	ctx := context.Background()
+	stale, _ := store.Upsert(ctx, &threatdetect.Finding{Rule: pb.ThreatRuleId_THREAT_RULE_ID_SENTRY_UNAVAILABLE, BackendID: "backend-1", Subject: "old reason"})
+	for i := 0; i < 250; i++ {
+		_, _ = store.Upsert(ctx, &threatdetect.Finding{Rule: pb.ThreatRuleId_THREAT_RULE_ID_DENY_BURST, BackendID: "backend-1", TenantID: fmt.Sprintf("t%d", i)})
+	}
+
+	h := NewSentryHealth(func() *pb.GetSentryStatusResponse { return statusResp(pb.SentryState_SENTRY_STATE_OK, "") }, store, func() string { return "backend-1" }, nil, time.Minute)
+	h.Check(ctx)
+
+	if stale.State != threatdetect.FindingStateResolved {
+		t.Errorf("stale SENTRY_UNAVAILABLE row state = %s, want resolved (taken over despite 250 newer open rows)", stale.State)
+	}
+	if open := len(store.open()); open != 250 {
+		t.Errorf("open rows = %d, want the 250 other-rule rows untouched", open)
 	}
 }
 

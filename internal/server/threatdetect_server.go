@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"sync"
 
@@ -353,9 +352,9 @@ func (s *ThreatDetectionServer) sentryStatus() *pb.GetSentryStatusResponse {
 		if !r.Healthy {
 			// A panicking rule leaves the state OK (the others keep running)
 			// but must still show up in the reason, or the status reads clean
-			// while the sentry-health loop holds a finding open (#2634).
-			reasons = append(reasons, fmt.Sprintf("rule %s unhealthy: %s",
-				strings.TrimPrefix(r.Rule.String(), "THREAT_RULE_ID_"), r.LastError))
+			// while the sentry-health loop holds a finding open (#2634). The
+			// loop's finding subject drops the ": <last_error>" tail.
+			reasons = append(reasons, ruleUnhealthyPrefix(r.Rule)+": "+r.LastError)
 		}
 	}
 	return &pb.GetSentryStatusResponse{State: state, Reason: strings.Join(reasons, "; "), Rules: rules}

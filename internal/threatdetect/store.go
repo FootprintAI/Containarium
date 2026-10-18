@@ -356,6 +356,14 @@ func (s *FindingStore) List(ctx context.Context, filter ListFilter) ([]*Finding,
 		args = append(args, string(filter.State))
 		query += fmt.Sprintf(" AND state = $%d", len(args))
 	}
+	if filter.Rule != pb.ThreatRuleId_THREAT_RULE_ID_UNSPECIFIED {
+		args = append(args, filter.Rule.String())
+		query += fmt.Sprintf(" AND rule = $%d", len(args))
+	}
+	if filter.BackendID != "" {
+		args = append(args, filter.BackendID)
+		query += fmt.Sprintf(" AND backend_id = $%d", len(args))
+	}
 	args = append(args, limit)
 	query += fmt.Sprintf(" ORDER BY last_seen DESC LIMIT $%d", len(args))
 
