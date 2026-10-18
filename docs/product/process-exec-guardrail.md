@@ -310,7 +310,8 @@ first three.
 5. **Who owns the signature list.** Assumption: the repository ships a
    baseline and operators extend it locally; no central feed. If a feed
    is wanted, it is the cloud's to publish.
-6. **Kill-process on the first offender.** `kill_process` defaults off
-   because a false positive kills a tenant's process with no undo.
-   Decision for the sprint: is default-off right for the hosted free
-   tier, or should the cloud flip it there from day one?
+6. **Kill-process on the first offender.** Decided 2026-10-18 (cloud#2697):
+   `kill_process` defaults **off everywhere**, including the hosted free
+   tier; it is turned on only per org by an audited operator override.
+   A false positive kills a tenant's process with no undo, while
+   throttle and freeze are reversible.
