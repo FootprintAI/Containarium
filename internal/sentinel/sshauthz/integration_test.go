@@ -31,14 +31,27 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
-func TestIntegrationAuditOnlyChain(t *testing.T) {
+// integrationChain is one running sshpiperd with the production authz and
+// session plugins and the real yaml plugin, routing login alice to a loopback
+// upstream. allowKey is ALLOWed by the stub daemon; denyKey is denied with
+// UNKNOWN_KEY. Both are in alice's static authorized_keys, so only the authz
+// plugin can tell them apart.
+type integrationChain struct {
+	address, records, dir string
+	allowKey, denyKey     ssh.Signer
+	outage                *atomic.Bool
+	calls                 *atomic.Int32
+}
+
+func startIntegrationChain(t *testing.T, authzArgs ...string) *integrationChain {
+	t.Helper()
 	piperd, yaml, ctn := os.Getenv("SSH_AUTHZ_SSHPIPERD"), os.Getenv("SSH_AUTHZ_YAML"), os.Getenv("SSH_AUTHZ_CONTAINARIUM")
 	if piperd == "" || yaml == "" || ctn == "" {
 		t.Skip("set SSH_AUTHZ_SSHPIPERD, SSH_AUTHZ_YAML, SSH_AUTHZ_CONTAINARIUM")
 	}
 	dir := t.TempDir()
-	hostKey, upstreamKey := filepath.Join(dir, "host_key"), filepath.Join(dir, "upstream_key")
-	for _, path := range []string{hostKey, upstreamKey} {
+	hostKey, upstreamKey, denyKeyFile := filepath.Join(dir, "host_key"), filepath.Join(dir, "upstream_key"), filepath.Join(dir, "deny_key")
+	for _, path := range []string{hostKey, upstreamKey, denyKeyFile} {
 		if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", path).CombinedOutput(); err != nil {
 			t.Fatalf("ssh-keygen: %v %s", err, out)
 		}
@@ -52,14 +65,27 @@ func TestIntegrationAuditOnlyChain(t *testing.T) {
 		t.Fatal(err)
 	}
 	upstream := integrationSSHServer(t, hostSigner)
-	allowKey, denyKey := testKey(t), testKey(t)
+	// denyKey lives on disk so a stock OpenSSH client can offer it too.
+	raw, err = os.ReadFile(denyKeyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	denyKey, err := ssh.ParsePrivateKey(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowKey := testKey(t)
 	allowFP := ssh.FingerprintSHA256(allowKey.PublicKey())
 	keysFile := filepath.Join(dir, "authorized_keys")
 	if err := os.WriteFile(keysFile, append(ssh.MarshalAuthorizedKey(allowKey.PublicKey()), ssh.MarshalAuthorizedKey(denyKey.PublicKey())...), 0600); err != nil {
 		t.Fatal(err)
 	}
+	caFile := filepath.Join(dir, "trusted_user_ca_keys")
+	if err := os.WriteFile(caFile, ssh.MarshalAuthorizedKey(testKey(t).PublicKey()), 0600); err != nil {
+		t.Fatal(err)
+	}
 	configFile := filepath.Join(dir, "config.yaml")
-	config := fmt.Sprintf("version: \"1.0\"\npipes:\n  - from:\n      - username: alice\n        authorized_keys:\n          - %s\n    to:\n      username: alice\n      host: %s\n      private_key: %s\n      ignore_hostkey: true\n", keysFile, upstream, upstreamKey)
+	config := fmt.Sprintf("version: \"1.0\"\npipes:\n  - from:\n      - username: alice\n        authorized_keys:\n          - %s\n        trusted_user_ca_keys:\n          - %s\n    to:\n      username: alice\n      host: %s\n      private_key: %s\n      ignore_hostkey: true\n", keysFile, caFile, upstream, upstreamKey)
 	if err := os.WriteFile(configFile, []byte(config), 0400); err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +129,7 @@ func TestIntegrationAuditOnlyChain(t *testing.T) {
 		raw, _ := protojson.Marshal(res)
 		_, _ = w.Write(raw)
 	}))
-	defer daemon.Close()
+	t.Cleanup(daemon.Close)
 	socket := filepath.Join(dir, "authz.sock")
 	ln, err := net.Listen("unix", socket)
 	if err != nil {
@@ -114,7 +140,7 @@ func TestIntegrationAuditOnlyChain(t *testing.T) {
 	})
 	authorizer := &HTTPAuthorizer{BackendURL: func(string) (string, error) { return daemon.URL, nil }, Sign: func(r *http.Request) { auth.SignSentinelRequest(r, secret) }}
 	bridge := &http.Server{Handler: BridgeHandler(resolver, authorizer), ReadHeaderTimeout: time.Second}
-	defer bridge.Close()
+	t.Cleanup(func() { _ = bridge.Close() })
 	go func() { _ = bridge.Serve(ln) }()
 	records := filepath.Join(dir, "sessions.jsonl")
 	port := integrationFreePort(t)
@@ -122,22 +148,25 @@ func TestIntegrationAuditOnlyChain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer logFile.Close()
-	cmd := exec.Command(piperd, "-l", "127.0.0.1", "-p", strconv.Itoa(port), "-i", hostKey, "--drop-hostkeys-message",
-		ctn, "sentinel", "ssh-authz-plugin", "--ssh-authz-socket", socket, "--ssh-authz-grace", "2s", "--",
+	args := []string{"-l", "127.0.0.1", "-p", strconv.Itoa(port), "-i", hostKey, "--drop-hostkeys-message",
+		ctn, "sentinel", "ssh-authz-plugin", "--ssh-authz-socket", socket, "--ssh-authz-grace", "2s", "--records-file", records}
+	args = append(args, authzArgs...)
+	args = append(args, "--",
 		ctn, "sentinel", "ssh-session-plugin", "--records-file", records, "--sshpiper-config", configFile, "--", yaml, "--config", configFile)
+	cmd := exec.Command(piperd, args...)
 	cmd.Stdout, cmd.Stderr = logFile, logFile
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
+	t.Cleanup(func() {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
+		_ = logFile.Close()
 		if t.Failed() {
 			logs, _ := os.ReadFile(logFile.Name())
 			t.Log(string(logs))
 		}
-	}()
+	})
 	address := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
 	deadline := time.Now().Add(10 * time.Second)
 	for {
@@ -151,62 +180,92 @@ func TestIntegrationAuditOnlyChain(t *testing.T) {
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
+	return &integrationChain{address: address, records: records, dir: dir, allowKey: allowKey, denyKey: denyKey, outage: &outage, calls: &calls}
+}
 
+// dial authenticates as alice offering keys in order and runs one command.
+func (c *integrationChain) dial(keys ...ssh.Signer) error {
+	client, err := ssh.Dial("tcp", c.address, &ssh.ClientConfig{User: "alice", Auth: []ssh.AuthMethod{ssh.PublicKeys(keys...)}, HostKeyCallback: ssh.InsecureIgnoreHostKey(), Timeout: 5 * time.Second}) //nolint:gosec // loopback test
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	s, err := client.NewSession()
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	out, err := s.Output("echo audit-ok")
+	if err != nil || strings.TrimSpace(string(out)) != "audit-ok" {
+		return fmt.Errorf("session: %q %v", out, err)
+	}
+	return nil
+}
+
+// tryPhase returns the index'th record of the given phase, if written yet.
+func (c *integrationChain) tryPhase(phase sshsession.SessionPhase, index int) (sshsession.Record, bool) {
+	data, _ := os.ReadFile(c.records)
+	n := 0
+	for _, line := range bytes.Split(data, []byte("\n")) {
+		var rec sshsession.Record
+		if json.Unmarshal(line, &rec) == nil && rec.Phase == phase {
+			if n == index {
+				return rec, true
+			}
+			n++
+		}
+	}
+	return sshsession.Record{}, false
+}
+
+// phase waits for the index'th record of the given phase.
+func (c *integrationChain) phase(t *testing.T, phase sshsession.SessionPhase, index int) sshsession.Record {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if rec, ok := c.tryPhase(phase, index); ok {
+			return rec
+		}
+		if time.Now().After(deadline) {
+			data, _ := os.ReadFile(c.records)
+			t.Fatalf("missing %s record %d: %s", phase, index, data)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestIntegrationAuditOnlyChain(t *testing.T) {
+	c := startIntegrationChain(t)
 	connect := func(key ssh.Signer) {
 		t.Helper()
-		client, err := ssh.Dial("tcp", address, &ssh.ClientConfig{User: "alice", Auth: []ssh.AuthMethod{ssh.PublicKeys(key)}, HostKeyCallback: ssh.InsecureIgnoreHostKey(), Timeout: 5 * time.Second}) //nolint:gosec // loopback test
-		if err != nil {
+		if err := c.dial(key); err != nil {
 			t.Fatalf("audit-only login failed: %v", err)
-		}
-		defer client.Close()
-		s, err := client.NewSession()
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer s.Close()
-		out, err := s.Output("echo audit-ok")
-		if err != nil || strings.TrimSpace(string(out)) != "audit-ok" {
-			t.Fatalf("session: %q %v", out, err)
 		}
 	}
 	assertOpen := func(index int, decision sshsession.AuthzDecision, reason sshsession.DenyReason, user string) {
 		t.Helper()
-		deadline := time.Now().Add(5 * time.Second)
-		for {
-			data, _ := os.ReadFile(records)
-			var open []sshsession.Record
-			for _, line := range bytes.Split(data, []byte("\n")) {
-				var rec sshsession.Record
-				if json.Unmarshal(line, &rec) == nil && rec.Phase == sshsession.SessionPhaseOpen {
-					open = append(open, rec)
-				}
-			}
-			if len(open) > index {
-				rec := open[index]
-				if rec.UserID != user || rec.AuthzDecision != sshsession.DecisionToProto(decision) || rec.DenyReason != sshsession.ReasonToProto(reason) || rec.Enforced {
-					t.Fatalf("open %d: %+v", index, rec)
-				}
-				return
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("missing open %d: %s", index, data)
-			}
-			time.Sleep(10 * time.Millisecond)
+		rec := c.phase(t, sshsession.SessionPhaseOpen, index)
+		if rec.UserID != user || rec.AuthzDecision != sshsession.DecisionToProto(decision) || rec.DenyReason != sshsession.ReasonToProto(reason) || rec.Enforced {
+			t.Fatalf("open %d: %+v", index, rec)
 		}
 	}
-	connect(allowKey)
+	connect(c.allowKey)
 	assertOpen(0, sshsession.AuthzAllow, "", "user-allow")
-	connect(denyKey)
+	connect(c.denyKey)
 	assertOpen(1, sshsession.AuthzDeny, sshsession.DenyUnknownKey, "")
-	outage.Store(true)
-	connect(allowKey)
+	c.outage.Store(true)
+	connect(c.allowKey)
 	assertOpen(2, sshsession.AuthzAllow, "", "user-allow")
-	if calls.Load() != 3 {
-		t.Fatalf("grace must follow failed revalidation; calls=%d", calls.Load())
+	if c.calls.Load() != 3 {
+		t.Fatalf("grace must follow failed revalidation; calls=%d", c.calls.Load())
 	}
 	time.Sleep(2100 * time.Millisecond)
-	connect(allowKey)
+	connect(c.allowKey)
 	assertOpen(3, sshsession.AuthzDeny, sshsession.DenyUpstreamUnavailable, "")
+	data, _ := os.ReadFile(c.records)
+	if bytes.Contains(data, []byte(`"phase":"denied"`)) {
+		t.Fatalf("audit-only wrote a denied record: %s", data)
+	}
 }
 
 func integrationFreePort(t *testing.T) int {

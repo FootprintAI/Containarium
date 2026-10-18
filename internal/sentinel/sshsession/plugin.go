@@ -224,6 +224,7 @@ func (p *Plugin) buildRecord(conn libplugin.ConnMetadata, phase SessionPhase) Re
 		UserID:        conn.GetMeta(MetaUserID),
 		AuthzDecision: DecisionToProto(AuthzDecision(conn.GetMeta(MetaAuthzDecision))),
 		DenyReason:    ReasonToProto(DenyReason(conn.GetMeta(MetaDenyReason))),
+		Enforced:      conn.GetMeta(MetaEnforced) == "true",
 		Credential: Credential{
 			KeyID:          conn.GetMeta(metaKeyID),
 			CAFingerprint:  conn.GetMeta(metaCAFingerprint),
