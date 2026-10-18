@@ -244,8 +244,12 @@ func (r *ProcessResponder) recordFailure(ctx context.Context, f *threatdetect.Fi
 func (r *ProcessResponder) apply(row *threatdetect.SecurityAction, allowance string) error {
 	switch row.Action {
 	case pb.ProcessAction_PROCESS_ACTION_THROTTLE:
-		if err := r.act.SetCPULimit(row.Container, row.PrevCPUCount, allowance); err != nil {
-			return fmt.Errorf("set cpu allowance %q: %w", allowance, err)
+		hard, err := threatdetect.HardThrottleAllowance(allowance, row.PrevCPUAllowance)
+		if err != nil {
+			return fmt.Errorf("throttle allowance: %w", err)
+		}
+		if err := r.act.SetCPULimit(row.Container, row.PrevCPUCount, hard); err != nil {
+			return fmt.Errorf("set cpu allowance %q: %w", hard, err)
 		}
 		return nil
 	case pb.ProcessAction_PROCESS_ACTION_FREEZE:
