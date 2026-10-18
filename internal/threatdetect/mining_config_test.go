@@ -3,6 +3,7 @@ package threatdetect
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -136,5 +137,41 @@ func TestMiningThresholdsConfig_PersistsAcrossRestart(t *testing.T) {
 	got := reloaded.Effective()
 	if got.MinCores != 3 || got.FlowMinAge != time.Minute || !slices.Equal(got.StratumPorts, []uint32{3333, 9999}) {
 		t.Fatalf("reloaded Effective = %+v", got)
+	}
+}
+
+// A window shorter than flow_min_age (explicit or defaulted) is rejected.
+func TestMiningThresholdsConfig_RejectsWindowShorterThanFlowMinAge(t *testing.T) {
+	c, err := NewMiningThresholdsConfig(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []*pb.MiningBehaviorThresholds{
+		{Window: durationpb.New(2 * time.Minute), FlowMinAge: durationpb.New(3 * time.Minute)},
+		{Window: durationpb.New(2 * time.Minute)},      // default flow_min_age 3m
+		{FlowMinAge: durationpb.New(10 * time.Minute)}, // default window 5m
+	} {
+		if err := c.Set(context.Background(), m); err == nil {
+			t.Errorf("Set(%v) = nil error, want rejection", m)
+		}
+	}
+	if err := c.Set(context.Background(), &pb.MiningBehaviorThresholds{Window: durationpb.New(3 * time.Minute), FlowMinAge: durationpb.New(3 * time.Minute)}); err != nil {
+		t.Errorf("window == flow_min_age rejected: %v", err)
+	}
+}
+
+// A window above MaxMiningWindow can never be satisfied (the sample cap
+// cannot span it) and is rejected rather than silently never firing.
+func TestMiningThresholdsConfig_RejectsWindowAboveMax(t *testing.T) {
+	c, err := NewMiningThresholdsConfig(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Set(context.Background(), &pb.MiningBehaviorThresholds{Window: durationpb.New(MaxMiningWindow)}); err != nil {
+		t.Errorf("window == MaxMiningWindow rejected: %v", err)
+	}
+	err = c.Set(context.Background(), &pb.MiningBehaviorThresholds{Window: durationpb.New(MaxMiningWindow + time.Minute)})
+	if err == nil || !strings.Contains(err.Error(), "exceeds the maximum") || !strings.Contains(err.Error(), MaxMiningWindow.String()) {
+		t.Errorf("window > MaxMiningWindow: err = %v, want rejection naming the limit", err)
 	}
 }

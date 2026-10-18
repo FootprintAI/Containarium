@@ -48,6 +48,10 @@ func TestCloudBackend_HostOnlyOpsSuppressedWithoutNetwork(t *testing.T) {
 		{"debug_container", handleDebugContainer},
 		{"upgrade_backend", handleUpgradeBackend},
 		{"get_upgrade_status", handleGetUpgradeStatus},
+		// #2679: KMS is platform-wide per daemon; the cloud shim answers 501.
+		{"kms_status", handleKMSStatus},
+		{"kms_envelope_coverage", handleKMSCoverage},
+		{"kms_migrate_to_envelope", handleKMSMigrate},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			hit = false
