@@ -160,8 +160,7 @@ func TestMiningBehaviorRule_SubjectPerDestination(t *testing.T) {
 	}
 }
 
-// Per-container state expires when no sample arrives for 2 x window, and a
-// candidate flow not seen inside the window stops qualifying.
+// Per-container state expires when no sample arrives for 2 x window.
 func TestMiningBehaviorRule_StateExpires(t *testing.T) {
 	r := NewMiningBehaviorRule(nil)
 	s := miningScenario{cores: 4, span: 6 * time.Minute, dst: [4]byte{203, 0, 113, 9}, dport: 3333, flowAge: 4 * time.Minute, flowSeen: 4 * time.Minute}
@@ -253,5 +252,139 @@ func TestMiningBehaviorRule_FlowEvidenceSeenAndMatched(t *testing.T) {
 				t.Errorf("FirstSeen = %v, want %v (last seen minus flow age)", fl.FirstSeen, want)
 			}
 		})
+	}
+}
+
+// miningFeed is a hand-driven clock for the gap/staleness cases below.
+type miningFeed struct {
+	t   *testing.T
+	r   *MiningBehaviorRule
+	now time.Time
+}
+
+func newMiningFeed(t *testing.T) *miningFeed {
+	return &miningFeed{t: t, r: NewMiningBehaviorRule(nil), now: miningT0}
+}
+
+func (m *miningFeed) ctx() RuleContext {
+	return RuleContext{TenantForIP: fakeTenants(map[string]string{miningBoxIP: "alice"}), Now: fixedClock(m.now)}
+}
+
+// cpu feeds one sample at the current time.
+func (m *miningFeed) cpu(cores float64) {
+	m.r.OnCPU(m.ctx(), []CPUSample{{Container: "box", IP: netip.MustParseAddr(miningBoxIP), Cores: cores, At: m.now}})
+}
+
+// flow reports a :3333 flow, already flowAge old, on a poll at the current time.
+func (m *miningFeed) flow(flowAge time.Duration) {
+	m.r.OnFlows(m.ctx(), []netbpf.FlowRecord{{Saddr: beIP(10, 0, 0, 5), Daddr: beIP(203, 0, 113, 9), Sport: 40000, Dport: 3333, Proto: 6,
+		FirstNs: 1, LastNs: 1 + uint64(flowAge.Nanoseconds())}}) // #nosec G115 -- positive test duration
+}
+
+// run feeds a sample (and, if withFlow, a flow poll) every 15s for d.
+func (m *miningFeed) run(d time.Duration, cores float64, withFlow bool) {
+	end := m.now.Add(d)
+	for m.now = m.now.Add(15 * time.Second); !m.now.After(end); m.now = m.now.Add(15 * time.Second) {
+		m.cpu(cores)
+		if withFlow {
+			m.flow(4 * time.Minute)
+		}
+	}
+	m.now = end
+}
+
+func (m *miningFeed) sweep() int { return len(m.r.Sweep(m.ctx(), m.now)) }
+
+// Review #2644 item 2: coverage is measured on the samples inside the window,
+// not on the first sample ever recorded. After a gap, one high sample is not
+// a full window; five more minutes of high samples are.
+func TestMiningBehaviorRule_GapThenSingleHighSampleDoesNotFire(t *testing.T) {
+	m := newMiningFeed(t)
+	m.cpu(0.1)
+	m.run(5*time.Minute, 0.1, false)    // 5 min of samples
+	m.now = m.now.Add(10 * time.Minute) // 10 min gap, no sweeps
+	m.cpu(16)
+	m.flow(4 * time.Minute)
+	if n := m.sweep(); n != 0 {
+		t.Fatalf("one high sample after a gap fired %d findings, want 0", n)
+	}
+	m.run(5*time.Minute, 16, true)
+	if n := m.sweep(); n != 1 {
+		t.Fatalf("after 5 more minutes of high samples: %d findings, want 1", n)
+	}
+}
+
+// Review #2644 item 3: a qualifying flow last seen more than a window ago
+// stops qualifying even while CPU stays high and the container is tracked.
+func TestMiningBehaviorRule_StaleFlowStopsQualifying(t *testing.T) {
+	m := newMiningFeed(t)
+	m.cpu(4)
+	m.run(6*time.Minute, 4, true)
+	if n := m.sweep(); n != 1 {
+		t.Fatalf("precondition: %d findings, want 1", n)
+	}
+	m.run(5*time.Minute+15*time.Second, 4, false) // CPU stays high, no flow records
+	if n := m.sweep(); n != 0 {
+		t.Fatalf("flow last seen > window ago still fired %d findings, want 0", n)
+	}
+	if m.r.trackedContainers() != 1 {
+		t.Fatalf("container should still be tracked (CPU kept arriving)")
+	}
+}
+
+// Review #2644 item 1 / #2647: CPU history stays bounded when Sweep never
+// runs — by age (2 x window behind the newest) and by a hard cap of
+// miningMaxPoints samples, independent of the sample spacing.
+func TestMiningBehaviorRule_CPUHistoryBoundedWithoutSweep(t *testing.T) {
+	cases := []struct {
+		name    string
+		n       int
+		spacing time.Duration
+		want    int
+	}{
+		{"10,000 samples close together hit the hard cap", 10_000, 10 * time.Millisecond, 256},
+		{"same timestamp (stuck clock) hits the hard cap", 10_000, 0, 256},
+		{"regular 15s samples are trimmed by age to 2 x window", 400, 15 * time.Second, 40},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newMiningFeed(t)
+			for i := 0; i < tc.n; i++ {
+				m.cpu(1)
+				m.now = m.now.Add(tc.spacing)
+			}
+			if got := m.r.pointCount("box"); got != tc.want {
+				t.Fatalf("points after %d samples without Sweep = %d, want %d", tc.n, got, tc.want)
+			}
+		})
+	}
+}
+
+// Review #2647 (blocking): one short gap between collector ticks must not
+// blind the rule. Steady 16-core samples every 30s with one extra sample 5s
+// after a tick, sweeps 3s after each tick: every sweep once a window of
+// history exists still fires.
+func TestMiningBehaviorRule_ShortGapDoesNotBlindTheRule(t *testing.T) {
+	m := newMiningFeed(t)
+	var fired, sweeps int
+	for k := 0; k <= 40; k++ { // 20 minutes of 30s ticks
+		tick := miningT0.Add(time.Duration(k) * 30 * time.Second)
+		m.now = tick
+		m.cpu(16)
+		m.flow(4*time.Minute + time.Duration(k)*30*time.Second)
+		if k == 10 {
+			m.now = tick.Add(5 * time.Second) // the one short gap
+			m.cpu(16)
+		}
+		m.now = tick.Add(3 * time.Second)
+		if tick.Sub(miningT0) >= 6*time.Minute {
+			sweeps++
+			fired += m.sweep()
+		} else {
+			m.sweep()
+		}
+	}
+	if fired != sweeps {
+		t.Fatalf("fired on %d of %d sweeps after a single 5s gap, want all", fired, sweeps)
 	}
 }
