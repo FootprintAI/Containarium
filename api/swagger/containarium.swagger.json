@@ -11003,7 +11003,7 @@
         },
         "status": {
           "type": "string",
-          "description": "Scan status. Today \"clean\", \"infected\" or \"incomplete\" (a scan that could\nnot finish is never reported clean, #2496); #2631 adds never-scanned,\nunsupported-size and not-installed outcomes. The verdict is produced by the\nscan running inside the tenant's own box, so it is self-reported."
+          "description": "Scan status: \"clean\", \"infected\", \"incomplete\", \"unsupported_size\" or\n\"not_installed\" (see status_enum; a scan that could not finish is never\nreported clean, #2496). The verdict is produced by the scan running inside\nthe tenant's own box, so it is self-reported."
         },
         "findingsCount": {
           "type": "integer",
@@ -11029,9 +11029,31 @@
         "backendId": {
           "type": "string",
           "title": "Backend ID identifying which node performed the scan"
+        },
+        "statusEnum": {
+          "$ref": "#/definitions/ClamavScanStatus",
+          "description": "Typed form of status (#2631). status stays populated for compatibility."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Why a scan produced no verdict (status other than clean/infected); empty\notherwise. Never contains file paths."
         }
       },
       "title": "ClamavReport represents a single ClamAV scan result for a container"
+    },
+    "ClamavScanStatus": {
+      "type": "string",
+      "enum": [
+        "CLAMAV_SCAN_STATUS_UNSPECIFIED",
+        "CLAMAV_SCAN_STATUS_CLEAN",
+        "CLAMAV_SCAN_STATUS_INFECTED",
+        "CLAMAV_SCAN_STATUS_INCOMPLETE",
+        "CLAMAV_SCAN_STATUS_NEVER_SCANNED",
+        "CLAMAV_SCAN_STATUS_UNSUPPORTED_SIZE",
+        "CLAMAV_SCAN_STATUS_NOT_INSTALLED"
+      ],
+      "default": "CLAMAV_SCAN_STATUS_UNSPECIFIED",
+      "description": "ClamavScanStatus is the outcome of a tenant-run, in-box ClamAV scan (#2631).\nOnly a clamscan run that exits 0 with no findings is CLEAN, and even then the\nverdict is self-reported by the scan inside the tenant's own box.\n\n - CLAMAV_SCAN_STATUS_INCOMPLETE: The scan could not finish or could not be started (error, timeout, out of\nmemory, box not running). Never treated as clean.\n - CLAMAV_SCAN_STATUS_NEVER_SCANNED: No scan has ever been requested for the box: no platform assurance.\n - CLAMAV_SCAN_STATUS_UNSUPPORTED_SIZE: The box has less memory than ClamAV needs (4 GB); no scan was attempted.\n - CLAMAV_SCAN_STATUS_NOT_INSTALLED: ClamAV or its signatures are not installed in the box."
     },
     "CleanupDiskBody": {
       "type": "object",
