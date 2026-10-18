@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`process-policy get` shows the mining-behavior thresholds the rule is using** (#2675). It printed the stored message, whose fields are zero for anything never set (`min cores 0`, empty ports), instead of the effective values; it now prints the effective thresholds.
+
 - **Correction: v0.107.0 did not restore malware scans** (#2656, part of #2631). The v0.107.0 note that malware scans can read root-only files again was wrong. Running `clamd` as root inside the scanner container does not help, because the tenant rootfs is owned by host root and that user is unmapped in the scanner container's user namespace, so every scan was still recorded `incomplete`. Malware scanning is being rebuilt to run inside the tenant's own box, started by its owner (#2631). The ISO 27001 A.8.7 row is downgraded to Partial, the README no longer lists ClamAV as a platform-wide scan, and `docs/security/SECURITY-FAQ.md` states what the platform does and does not read.
 
 ### Removed

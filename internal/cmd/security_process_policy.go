@@ -155,9 +155,12 @@ func renderProcessPolicy(w io.Writer, container string, r *pb.GetProcessPolicyRe
 	}
 	fmt.Fprintln(w, "Effective:")
 	writePolicyBlock(w, r.GetEffective())
-	m := r.GetPolicy().GetMiningBehavior()
+	// The effective thresholds are the values the rule is using (stored
+	// fields over built-in defaults). The stored message carries zeros for
+	// every field that was never set, which is not what the rule uses.
+	m := r.GetEffective().GetMiningBehavior()
 	if m == nil {
-		m = r.GetEffective().GetMiningBehavior()
+		m = r.GetPolicy().GetMiningBehavior()
 	}
 	if m != nil {
 		writeMiningThresholds(w, m)
