@@ -221,7 +221,7 @@ flowchart LR
 
 ### Data flow
 
-Happy path, behavioural: collector tick (15 s) → `CPUSampler` → engine →
+Happy path, behavioural: collector tick (30 s default) → `CPUSampler` → engine →
 `mining-behavior` ring; flow poll (15 s) → enforcer hook → engine →
 candidate flow; `Sweep` (30 s) → HIGH finding → `ActingSink` →
 `FindingStore` (event bus, audit) → `Responder` reads effective policy →
