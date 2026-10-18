@@ -1,7 +1,7 @@
 # PRD: Contributor supply-chain gates — merge public contributions without merging an attack
 
 **Date:** 2026-10-18
-**Status:** draft
+**Status:** draft — tracked in #2649
 **Owner:** @hsinatfootprintai
 
 ## Problem
