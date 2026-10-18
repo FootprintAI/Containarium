@@ -1,7 +1,7 @@
 # PRD: Process guardrail — detect and contain cryptomining in tenant boxes
 
 **Date:** 2026-10-18
-**Status:** draft
+**Status:** draft — P0 stories filed as #2634 #2635 #2636 #2637 #2638 #2639
 **Owner:** @hsinatfootprintai
 
 Follows [Continuous threat detection](continuous-threat-detection.md)
@@ -110,7 +110,7 @@ Design constraints the stories inherit:
 
 ### P0 stories
 
-**Story 1: The sentry alerts when it is not running where it should be.**
+**Story 1: The sentry alerts when it is not running where it should be** (#2634)**.**
 As an operator, I want an armed backend whose sentry is unavailable or
 whose eBPF object is not loaded to raise a finding and show in
 `sentry status`, so that an abuse on that host is not invisible by
@@ -127,7 +127,7 @@ accident.
       choice, not a fault).
 **Priority:** P0 · **Size:** S
 
-**Story 2: `mining-behavior` rule over signals the daemon already has.**
+**Story 2: `mining-behavior` rule over signals the daemon already has** (#2635)**.**
 As an operator, I want a HIGH finding when a box runs at sustained high
 CPU while holding a persistent flow to a stratum port or a listed pool,
 so that the two known incidents are caught with no new telemetry.
@@ -150,7 +150,7 @@ so that the two known incidents are caught with no new telemetry.
       metrics collector; the rule adds no new polling of Incus.
 **Priority:** P0 · **Size:** M
 
-**Story 3: Process policy and the response ladder.**
+**Story 3: Process policy and the response ladder** (#2636)**.**
 As an operator, I want to choose, per backend, what a HIGH mining
 finding does (`alert`, `throttle`, `freeze`), and to undo it with one
 command, so that containment runs without me and a wrong call costs a
@@ -179,7 +179,7 @@ tenant minutes, not data.
       `release`, observe the original limit restored.
 **Priority:** P0 · **Size:** L
 
-**Story 4: Host-side exec telemetry.**
+**Story 4: Host-side exec telemetry** (#2637)**.**
 As an operator, I want to see every process exec in a tenant box from the
 host, attributed to the container, so that rules and humans can tell a
 miner from a build.
@@ -203,7 +203,7 @@ miner from a build.
       environment variables.
 **Priority:** P0 · **Size:** L
 
-**Story 5: `miner-signature` rule and the `kill-process` action.**
+**Story 5: `miner-signature` rule and the `kill-process` action** (#2638)**.**
 As an operator, I want a HIGH finding the moment a known miner is
 exec'd, matched on binary name, command-line markers, or binary hash,
 and the option to kill that process from the host, so that an obvious
@@ -231,7 +231,7 @@ miner never gets its first minute of CPU.
       named `gcc` with the same CPU profile raises nothing from this rule.
 **Priority:** P0 · **Size:** M
 
-**Story 6: Operator doc and rollout path.**
+**Story 6: Operator doc and rollout path** (#2639)**.**
 As an operator, I want one page that says how to turn this on safely, so
 that I arm it in the right order and know what it will and will not
 catch.
