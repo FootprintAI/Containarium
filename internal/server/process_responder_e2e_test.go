@@ -1,8 +1,9 @@
 //go:build incus
 
 // Real-Incus coverage for the process responder's actuator path (#2636):
-// THROTTLE drops limits.cpu.allowance to the policy's value and release
-// restores the recorded limit; FREEZE leaves the instance Frozen and release
+// THROTTLE applies the policy's allowance as a HARD CFS quota (the kernel's
+// cpu.max is checked when readable, #2676: a bare "N%" is only a soft share
+// and left the box unthrottled) and release restores the recorded limit; FREEZE leaves the instance Frozen and release
 // resumes it. Needs a running container to act on:
 //
 //	CONTAINARIUM_E2E_INCUS_CONTAINER=<name> go test -tags=incus -run TestProcessResponderE2E ./internal/server/
@@ -16,6 +17,8 @@ package server
 import (
 	"context"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -70,16 +73,36 @@ func TestProcessResponderE2E_ThrottleAndFreezeOnRealIncus(t *testing.T) {
 		}
 	}
 
-	// THROTTLE: allowance drops to 10%, limits.cpu untouched; release
-	// restores exactly what was recorded.
+	// cpu.max is the kernel's view of the hard quota ("<quota> <period>" in
+	// microseconds, or "max <period>" for none). Readable when this runs as
+	// root on the Incus host's own cgroup tree; otherwise only the config
+	// keys are checked.
+	cpuMax := func() (string, bool) {
+		for _, dir := range []string{"lxc.payload." + name, filepath.Join("lxc.payload."+name, "..", "lxc.payload."+name)} {
+			if b, err := os.ReadFile(filepath.Join("/sys/fs/cgroup", dir, "cpu.max")); err == nil {
+				return strings.TrimSpace(string(b)), true
+			}
+		}
+		return "", false
+	}
+	origMax, haveMax := cpuMax()
+
+	// THROTTLE: 10% of one core becomes the hard quota 10ms/100ms (never the
+	// soft share "10%"), limits.cpu untouched; release restores exactly what
+	// was recorded.
 	fx.setDefault(t, pb.ProcessAction_PROCESS_ACTION_THROTTLE, "10%", 0)
 	fire("203.0.113.9:3333")
 	count, allow, err := act.CPULimit(name)
 	if err != nil {
 		t.Fatalf("CPULimit after throttle: %v", err)
 	}
-	if allow != "10%" || count != origCount {
-		t.Fatalf("after throttle: limits.cpu=%q allowance=%q, want %q/10%%", count, allow, origCount)
+	if allow != "10ms/100ms" || count != origCount {
+		t.Fatalf("after throttle: limits.cpu=%q allowance=%q, want %q/10ms/100ms", count, allow, origCount)
+	}
+	if haveMax {
+		if got, _ := cpuMax(); got != "10000 100000" {
+			t.Fatalf("after throttle: kernel cpu.max = %q, want a hard quota \"10000 100000\" (was %q)", got, origMax)
+		}
 	}
 	if _, err := r.Release(ctx, name); err != nil {
 		t.Fatalf("Release throttle: %v", err)
@@ -87,6 +110,11 @@ func TestProcessResponderE2E_ThrottleAndFreezeOnRealIncus(t *testing.T) {
 	count, allow, _ = act.CPULimit(name)
 	if count != origCount || allow != origAllow {
 		t.Fatalf("after release: limits.cpu=%q allowance=%q, want original %q/%q", count, allow, origCount, origAllow)
+	}
+	if haveMax {
+		if got, _ := cpuMax(); got != origMax {
+			t.Fatalf("after release: kernel cpu.max = %q, want original %q", got, origMax)
+		}
 	}
 
 	// FREEZE: instance reports Frozen; release resumes it.

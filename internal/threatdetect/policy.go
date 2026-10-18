@@ -29,8 +29,8 @@ const (
 	// processPolicyContainerKeyPrefix prefixes one container's override key.
 	processPolicyContainerKeyPrefix = "threatdetect.process_policy.container."
 
-	// DefaultThrottleAllowance is the limits.cpu.allowance THROTTLE applies
-	// when no level sets one.
+	// DefaultThrottleAllowance is what THROTTLE applies when no level sets one:
+	// 10% of one core, as a hard quota (10ms/100ms).
 	DefaultThrottleAllowance = "10%"
 	// DefaultProcessActionTTL is how long an applied action stays in effect
 	// with no operator decision — the same 24h backstop auto_quarantine.go
@@ -84,9 +84,9 @@ var (
 	allowanceQuotaRe   = regexp.MustCompile(`^([0-9]{1,9})ms/([0-9]{1,9})ms$`)
 )
 
-// ValidateThrottleAllowance accepts the two Incus limits.cpu.allowance
-// shapes: "N%" (1–100, a share under contention) and "Nms/Mms" (a hard CFS
-// quota, both positive).
+// ValidateThrottleAllowance accepts "N%" (1–100: N percent of one core, applied
+// as the hard quota "Nms/100ms", see HardThrottleAllowance) and "Nms/Mms" (a
+// hard CFS quota, both positive).
 func ValidateThrottleAllowance(s string) error {
 	if m := allowancePercentRe.FindStringSubmatch(s); m != nil {
 		n, _ := strconv.Atoi(m[1])
@@ -270,4 +270,41 @@ func (s *ProcessPolicyStore) setRaw(ctx context.Context, key, raw string) error 
 		return fmt.Errorf("threatdetect: persist process policy %q: %w", key, err)
 	}
 	return nil
+}
+
+// HardThrottleAllowance resolves the policy's throttle_allowance to the value
+// written to limits.cpu.allowance. A throttle has to be a hard CFS quota:
+// Incus reads a bare "N%" as a soft share (cpu.weight), which does nothing on
+// an uncontended host and replaces the box's existing hard cap, so a
+// "throttled" box ran faster than before (#2676). "N%" therefore means N
+// percent of ONE core and becomes "Nms/100ms"; an explicit "Xms/Yms" is kept.
+// The result is never looser than the box's current hard cap (prev, as read
+// before the action): a throttle must not raise a limit.
+func HardThrottleAllowance(allowance, prev string) (string, error) {
+	if err := ValidateThrottleAllowance(allowance); err != nil {
+		return "", err
+	}
+	hard := allowance
+	if m := allowancePercentRe.FindStringSubmatch(allowance); m != nil {
+		n, _ := strconv.Atoi(m[1])
+		hard = fmt.Sprintf("%dms/100ms", n)
+	}
+	if pq, pp, ok := parseQuota(prev); ok {
+		if nq, np, _ := parseQuota(hard); pq*np < nq*pp { // prev ratio < new ratio
+			return prev, nil
+		}
+	}
+	return hard, nil
+}
+
+// parseQuota reads "Xms/Yms"; ok is false for anything else (empty, a soft
+// "N%" share), which imposes no hard cap to preserve.
+func parseQuota(s string) (q, p int, ok bool) {
+	m := allowanceQuotaRe.FindStringSubmatch(s)
+	if m == nil {
+		return 0, 0, false
+	}
+	q, _ = strconv.Atoi(m[1])
+	p, _ = strconv.Atoi(m[2])
+	return q, p, q > 0 && p > 0
 }
