@@ -409,6 +409,9 @@ func (s *FindingStore) Resolve(ctx context.Context, id int64) (*Finding, error) 
 		log.Printf("threatdetect: audit log resolve for finding %d: %v", f.ID, err)
 	}
 	s.emitter.EmitSecurityFinding(f.ToProto())
+	if s.notifier != nil {
+		s.notifier.Notify(f) // delivered once: the resolution (#2643)
+	}
 	return f, nil
 }
 

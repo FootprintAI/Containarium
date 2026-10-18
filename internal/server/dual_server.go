@@ -2321,6 +2321,7 @@ skipAppHosting:
 					}
 				}
 				threatDetectNotifier = threatdetect.NewWebhookNotifier(config.DaemonConfigStore, deliveryStore)
+				threatDetectNotifier.SetRenotifyInterval(threatCfg.WebhookRenotify)
 				switch st := sink.(type) {
 				case *threatdetect.FindingStore:
 					st.SetNotifier(threatDetectNotifier)

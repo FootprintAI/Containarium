@@ -213,5 +213,8 @@ func (s *MemFindingStore) Resolve(ctx context.Context, id int64) (*Finding, erro
 		log.Printf("threatdetect: audit log resolve for finding %d (degraded mode): %v", f.ID, err)
 	}
 	s.emitter.EmitSecurityFinding(f.ToProto())
+	if s.notifier != nil {
+		s.notifier.Notify(f) // delivered once: the resolution (#2643)
+	}
 	return f, nil
 }
