@@ -2,7 +2,10 @@ package server
 
 // DefaultAlertRules is the YAML content for vmalert default rules.
 // Written to /etc/vmalert/rules/default.yml inside the VictoriaMetrics container.
-const DefaultAlertRules = `groups:
+// The bridge DNS group is generated from the recorder's series names (#2194).
+var DefaultAlertRules = baseAlertRules + bridgeDNSAlertRules()
+
+const baseAlertRules = `groups:
   - name: system_alerts
     interval: 30s
     rules:

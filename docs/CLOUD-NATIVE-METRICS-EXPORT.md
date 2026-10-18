@@ -186,6 +186,16 @@ gcloud monitoring dashboards create \
   --config-from-file=deploy/monitoring/gcm-containarium-hosts.json
 ```
 
+The dashboard's filters select the series a v0.100.0-or-later host writes
+(`prometheus.googleapis.com/<name>/gauge` or `/counter`, resource
+`prometheus_target`; see "Metric names and resource type" in the
+[dead-man runbook](METRICS-EXPORT-DEADMAN-ALERT-RUNBOOK.md)). Hosts below
+v0.100.0 still write the deprecated `workload.googleapis.com/...` type on
+`gce_instance`, which these widgets do not show; a mixed fleet needs a copy of
+the dashboard with those filters until the old hosts are upgraded.
+`deploy/monitoring/dashboard_test.go` pins every filter to the exporter's
+instrument names and kinds.
+
 Re-run the same command with `dashboards update` (matching the dashboard's
 assigned name) after pulling a change to the committed JSON, so the live
 dashboard never silently drifts from what's in the repo.
