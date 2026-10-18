@@ -108,6 +108,14 @@ const (
 	// Subject is the destination ip:port; evidence is one CPUEvidence plus
 	// the qualifying flow. Thresholds: MiningBehaviorThresholds.
 	ThreatRuleId_THREAT_RULE_ID_MINING_BEHAVIOR ThreatRuleId = 6
+	// Values 7 (MINER_SIGNATURE, #2638) and 8 (SENTRY_UNAVAILABLE, #2634) are
+	// assigned by their own stories.
+	//
+	// A process action (throttle or freeze, #2636) reached its TTL with no
+	// operator decision and was released automatically. MEDIUM, so an
+	// unattended containment never silently becomes permanent. Subject is the
+	// container name; the response on the original HIGH finding is EXPIRED.
+	ThreatRuleId_THREAT_RULE_ID_PROCESS_ACTION_EXPIRED ThreatRuleId = 9
 )
 
 // Enum value maps for ThreatRuleId.
@@ -120,6 +128,7 @@ var (
 		4: "THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH",
 		5: "THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER",
 		6: "THREAT_RULE_ID_MINING_BEHAVIOR",
+		9: "THREAT_RULE_ID_PROCESS_ACTION_EXPIRED",
 	}
 	ThreatRuleId_value = map[string]int32{
 		"THREAT_RULE_ID_UNSPECIFIED":            0,
@@ -129,6 +138,7 @@ var (
 		"THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH": 4,
 		"THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER": 5,
 		"THREAT_RULE_ID_MINING_BEHAVIOR":        6,
+		"THREAT_RULE_ID_PROCESS_ACTION_EXPIRED": 9,
 	}
 )
 
@@ -209,6 +219,130 @@ func (FindingState) EnumDescriptor() ([]byte, []int) {
 	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{2}
 }
 
+// ProcessAction is what a HIGH mining finding does to its container (#2636).
+// Every action is reversible with ReleaseProcessAction; none destroys data.
+type ProcessAction int32
+
+const (
+	ProcessAction_PROCESS_ACTION_UNSPECIFIED ProcessAction = 0
+	// Record the finding, notify, do nothing to the container. The default.
+	ProcessAction_PROCESS_ACTION_ALERT ProcessAction = 1
+	// Record the box's current limits.cpu / limits.cpu.allowance, then set
+	// limits.cpu.allowance to ProcessPolicy.throttle_allowance.
+	ProcessAction_PROCESS_ACTION_THROTTLE ProcessAction = 2
+	// Pause the instance through Incus (cgroup freezer): memory and disk kept,
+	// no process runs until released.
+	ProcessAction_PROCESS_ACTION_FREEZE ProcessAction = 3
+)
+
+// Enum value maps for ProcessAction.
+var (
+	ProcessAction_name = map[int32]string{
+		0: "PROCESS_ACTION_UNSPECIFIED",
+		1: "PROCESS_ACTION_ALERT",
+		2: "PROCESS_ACTION_THROTTLE",
+		3: "PROCESS_ACTION_FREEZE",
+	}
+	ProcessAction_value = map[string]int32{
+		"PROCESS_ACTION_UNSPECIFIED": 0,
+		"PROCESS_ACTION_ALERT":       1,
+		"PROCESS_ACTION_THROTTLE":    2,
+		"PROCESS_ACTION_FREEZE":      3,
+	}
+)
+
+func (x ProcessAction) Enum() *ProcessAction {
+	p := new(ProcessAction)
+	*p = x
+	return p
+}
+
+func (x ProcessAction) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ProcessAction) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_threatdetection_proto_enumTypes[3].Descriptor()
+}
+
+func (ProcessAction) Type() protoreflect.EnumType {
+	return &file_containarium_v1_threatdetection_proto_enumTypes[3]
+}
+
+func (x ProcessAction) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ProcessAction.Descriptor instead.
+func (ProcessAction) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{3}
+}
+
+// ResponseState is the lifecycle of one FindingResponse.
+type ResponseState int32
+
+const (
+	ResponseState_RESPONSE_STATE_UNSPECIFIED ResponseState = 0
+	// The policy was ALERT: nothing was done to the container.
+	ResponseState_RESPONSE_STATE_NONE ResponseState = 1
+	// The action is in effect.
+	ResponseState_RESPONSE_STATE_APPLIED ResponseState = 2
+	// Incus refused the action; `error` says why. The responder does not retry
+	// — the rule's next sweep re-fires the finding, which is the retry.
+	ResponseState_RESPONSE_STATE_FAILED ResponseState = 3
+	// An operator released the action (ReleaseProcessAction).
+	ResponseState_RESPONSE_STATE_RELEASED ResponseState = 4
+	// The TTL backstop released the action with no operator decision.
+	ResponseState_RESPONSE_STATE_EXPIRED ResponseState = 5
+)
+
+// Enum value maps for ResponseState.
+var (
+	ResponseState_name = map[int32]string{
+		0: "RESPONSE_STATE_UNSPECIFIED",
+		1: "RESPONSE_STATE_NONE",
+		2: "RESPONSE_STATE_APPLIED",
+		3: "RESPONSE_STATE_FAILED",
+		4: "RESPONSE_STATE_RELEASED",
+		5: "RESPONSE_STATE_EXPIRED",
+	}
+	ResponseState_value = map[string]int32{
+		"RESPONSE_STATE_UNSPECIFIED": 0,
+		"RESPONSE_STATE_NONE":        1,
+		"RESPONSE_STATE_APPLIED":     2,
+		"RESPONSE_STATE_FAILED":      3,
+		"RESPONSE_STATE_RELEASED":    4,
+		"RESPONSE_STATE_EXPIRED":     5,
+	}
+)
+
+func (x ResponseState) Enum() *ResponseState {
+	p := new(ResponseState)
+	*p = x
+	return p
+}
+
+func (x ResponseState) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ResponseState) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_threatdetection_proto_enumTypes[4].Descriptor()
+}
+
+func (ResponseState) Type() protoreflect.EnumType {
+	return &file_containarium_v1_threatdetection_proto_enumTypes[4]
+}
+
+func (x ResponseState) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ResponseState.Descriptor instead.
+func (ResponseState) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{4}
+}
+
 // SentryState is the overall on/off state of the background threat-detection
 // engine, as reported by GetSentryStatus.
 type SentryState int32
@@ -258,11 +392,11 @@ func (x SentryState) String() string {
 }
 
 func (SentryState) Descriptor() protoreflect.EnumDescriptor {
-	return file_containarium_v1_threatdetection_proto_enumTypes[3].Descriptor()
+	return file_containarium_v1_threatdetection_proto_enumTypes[5].Descriptor()
 }
 
 func (SentryState) Type() protoreflect.EnumType {
-	return &file_containarium_v1_threatdetection_proto_enumTypes[3]
+	return &file_containarium_v1_threatdetection_proto_enumTypes[5]
 }
 
 func (x SentryState) Number() protoreflect.EnumNumber {
@@ -271,7 +405,7 @@ func (x SentryState) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use SentryState.Descriptor instead.
 func (SentryState) EnumDescriptor() ([]byte, []int) {
-	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{3}
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{5}
 }
 
 // FlowEvidence captures one triggering flow's 5-tuple and volume, attached to
@@ -907,10 +1041,13 @@ type Finding struct {
 	State   FindingState `protobuf:"varint,8,opt,name=state,proto3,enum=containarium.v1.FindingState" json:"state,omitempty"`
 	// How many times this rule has fired for this (tenant, subject) since
 	// first_seen, without a new row being created.
-	Count         int64                  `protobuf:"varint,9,opt,name=count,proto3" json:"count,omitempty"`
-	Evidence      *Evidence              `protobuf:"bytes,10,opt,name=evidence,proto3" json:"evidence,omitempty"`
-	FirstSeen     *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=first_seen,json=firstSeen,proto3" json:"first_seen,omitempty"`
-	LastSeen      *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=last_seen,json=lastSeen,proto3" json:"last_seen,omitempty"`
+	Count     int64                  `protobuf:"varint,9,opt,name=count,proto3" json:"count,omitempty"`
+	Evidence  *Evidence              `protobuf:"bytes,10,opt,name=evidence,proto3" json:"evidence,omitempty"`
+	FirstSeen *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=first_seen,json=firstSeen,proto3" json:"first_seen,omitempty"`
+	LastSeen  *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=last_seen,json=lastSeen,proto3" json:"last_seen,omitempty"`
+	// What the process responder (#2636) did about this finding, if anything.
+	// Unset for findings no policy acts on.
+	Response      *FindingResponse `protobuf:"bytes,13,opt,name=response,proto3" json:"response,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1029,6 +1166,507 @@ func (x *Finding) GetLastSeen() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *Finding) GetResponse() *FindingResponse {
+	if x != nil {
+		return x.Response
+	}
+	return nil
+}
+
+// FindingResponse records what the process responder did about a finding
+// and when, so the finding itself tells the operator whether a box is
+// currently throttled or frozen because of it.
+type FindingResponse struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Action ProcessAction          `protobuf:"varint,1,opt,name=action,proto3,enum=containarium.v1.ProcessAction" json:"action,omitempty"`
+	State  ResponseState          `protobuf:"varint,2,opt,name=state,proto3,enum=containarium.v1.ResponseState" json:"state,omitempty"`
+	// Reserved for the signature rule's additive kill (#2638).
+	ProcessKilled bool                   `protobuf:"varint,3,opt,name=process_killed,json=processKilled,proto3" json:"process_killed,omitempty"`
+	AppliedAt     *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=applied_at,json=appliedAt,proto3" json:"applied_at,omitempty"`
+	// When the TTL backstop will release the action if no operator does.
+	ExpiresAt  *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
+	ReleasedAt *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=released_at,json=releasedAt,proto3" json:"released_at,omitempty"`
+	// "operator" or "ttl"; empty while the action is in effect.
+	ReleasedBy string `protobuf:"bytes,7,opt,name=released_by,json=releasedBy,proto3" json:"released_by,omitempty"`
+	// Incus error text when state is FAILED.
+	Error         string `protobuf:"bytes,8,opt,name=error,proto3" json:"error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FindingResponse) Reset() {
+	*x = FindingResponse{}
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FindingResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FindingResponse) ProtoMessage() {}
+
+func (x *FindingResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FindingResponse.ProtoReflect.Descriptor instead.
+func (*FindingResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *FindingResponse) GetAction() ProcessAction {
+	if x != nil {
+		return x.Action
+	}
+	return ProcessAction_PROCESS_ACTION_UNSPECIFIED
+}
+
+func (x *FindingResponse) GetState() ResponseState {
+	if x != nil {
+		return x.State
+	}
+	return ResponseState_RESPONSE_STATE_UNSPECIFIED
+}
+
+func (x *FindingResponse) GetProcessKilled() bool {
+	if x != nil {
+		return x.ProcessKilled
+	}
+	return false
+}
+
+func (x *FindingResponse) GetAppliedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.AppliedAt
+	}
+	return nil
+}
+
+func (x *FindingResponse) GetExpiresAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ExpiresAt
+	}
+	return nil
+}
+
+func (x *FindingResponse) GetReleasedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ReleasedAt
+	}
+	return nil
+}
+
+func (x *FindingResponse) GetReleasedBy() string {
+	if x != nil {
+		return x.ReleasedBy
+	}
+	return ""
+}
+
+func (x *FindingResponse) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+// ProcessPolicy says what a HIGH mining finding does to its container
+// (#2636). Stored per backend (the default) and optionally per container
+// (an override, written by SetProcessPolicy with `container` set); the
+// effective policy is override → backend default → built-in
+// {ALERT, "10%", 24h}. Empty fields inherit from the next level down.
+type ProcessPolicy struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Action ProcessAction          `protobuf:"varint,1,opt,name=action,proto3,enum=containarium.v1.ProcessAction" json:"action,omitempty"`
+	// limits.cpu.allowance applied by THROTTLE: an Incus allowance such as
+	// "10%" (share under contention) or "10ms/100ms" (hard CFS quota).
+	// Default "10%".
+	ThrottleAllowance string `protobuf:"bytes,2,opt,name=throttle_allowance,json=throttleAllowance,proto3" json:"throttle_allowance,omitempty"`
+	// How long an applied action stays in effect with no operator decision
+	// before the TTL backstop releases it. Default 24h.
+	Ttl *durationpb.Duration `protobuf:"bytes,3,opt,name=ttl,proto3" json:"ttl,omitempty"`
+	// Thresholds of the mining-behavior rule (#2635). Backend-wide: honoured
+	// only on the backend default (container empty), rejected on a container
+	// override. Unset on Set leaves the stored thresholds untouched.
+	MiningBehavior *MiningBehaviorThresholds `protobuf:"bytes,5,opt,name=mining_behavior,json=miningBehavior,proto3" json:"mining_behavior,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *ProcessPolicy) Reset() {
+	*x = ProcessPolicy{}
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProcessPolicy) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProcessPolicy) ProtoMessage() {}
+
+func (x *ProcessPolicy) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProcessPolicy.ProtoReflect.Descriptor instead.
+func (*ProcessPolicy) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *ProcessPolicy) GetAction() ProcessAction {
+	if x != nil {
+		return x.Action
+	}
+	return ProcessAction_PROCESS_ACTION_UNSPECIFIED
+}
+
+func (x *ProcessPolicy) GetThrottleAllowance() string {
+	if x != nil {
+		return x.ThrottleAllowance
+	}
+	return ""
+}
+
+func (x *ProcessPolicy) GetTtl() *durationpb.Duration {
+	if x != nil {
+		return x.Ttl
+	}
+	return nil
+}
+
+func (x *ProcessPolicy) GetMiningBehavior() *MiningBehaviorThresholds {
+	if x != nil {
+		return x.MiningBehavior
+	}
+	return nil
+}
+
+type GetProcessPolicyRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Empty reads the backend default; a container name reads that
+	// container's override (policy is unset when none is stored).
+	Container     string `protobuf:"bytes,1,opt,name=container,proto3" json:"container,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetProcessPolicyRequest) Reset() {
+	*x = GetProcessPolicyRequest{}
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetProcessPolicyRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetProcessPolicyRequest) ProtoMessage() {}
+
+func (x *GetProcessPolicyRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetProcessPolicyRequest.ProtoReflect.Descriptor instead.
+func (*GetProcessPolicyRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *GetProcessPolicyRequest) GetContainer() string {
+	if x != nil {
+		return x.Container
+	}
+	return ""
+}
+
+type GetProcessPolicyResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The policy stored at the requested level, unset if none is stored.
+	Policy *ProcessPolicy `protobuf:"bytes,1,opt,name=policy,proto3" json:"policy,omitempty"`
+	// True when `container` was given and an override is stored for it.
+	IsOverride bool `protobuf:"varint,2,opt,name=is_override,json=isOverride,proto3" json:"is_override,omitempty"`
+	// The fully-resolved policy the responder would apply at that level.
+	Effective     *ProcessPolicy `protobuf:"bytes,3,opt,name=effective,proto3" json:"effective,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetProcessPolicyResponse) Reset() {
+	*x = GetProcessPolicyResponse{}
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetProcessPolicyResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetProcessPolicyResponse) ProtoMessage() {}
+
+func (x *GetProcessPolicyResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetProcessPolicyResponse.ProtoReflect.Descriptor instead.
+func (*GetProcessPolicyResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *GetProcessPolicyResponse) GetPolicy() *ProcessPolicy {
+	if x != nil {
+		return x.Policy
+	}
+	return nil
+}
+
+func (x *GetProcessPolicyResponse) GetIsOverride() bool {
+	if x != nil {
+		return x.IsOverride
+	}
+	return false
+}
+
+func (x *GetProcessPolicyResponse) GetEffective() *ProcessPolicy {
+	if x != nil {
+		return x.Effective
+	}
+	return nil
+}
+
+type SetProcessPolicyRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Empty sets the backend default; a container name sets that container's
+	// override.
+	Container string         `protobuf:"bytes,1,opt,name=container,proto3" json:"container,omitempty"`
+	Policy    *ProcessPolicy `protobuf:"bytes,2,opt,name=policy,proto3" json:"policy,omitempty"`
+	// With `container` set, removes the override instead of writing one.
+	ClearOverride bool `protobuf:"varint,3,opt,name=clear_override,json=clearOverride,proto3" json:"clear_override,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetProcessPolicyRequest) Reset() {
+	*x = SetProcessPolicyRequest{}
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetProcessPolicyRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetProcessPolicyRequest) ProtoMessage() {}
+
+func (x *SetProcessPolicyRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetProcessPolicyRequest.ProtoReflect.Descriptor instead.
+func (*SetProcessPolicyRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *SetProcessPolicyRequest) GetContainer() string {
+	if x != nil {
+		return x.Container
+	}
+	return ""
+}
+
+func (x *SetProcessPolicyRequest) GetPolicy() *ProcessPolicy {
+	if x != nil {
+		return x.Policy
+	}
+	return nil
+}
+
+func (x *SetProcessPolicyRequest) GetClearOverride() bool {
+	if x != nil {
+		return x.ClearOverride
+	}
+	return false
+}
+
+type SetProcessPolicyResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Effective     *ProcessPolicy         `protobuf:"bytes,1,opt,name=effective,proto3" json:"effective,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetProcessPolicyResponse) Reset() {
+	*x = SetProcessPolicyResponse{}
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetProcessPolicyResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetProcessPolicyResponse) ProtoMessage() {}
+
+func (x *SetProcessPolicyResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetProcessPolicyResponse.ProtoReflect.Descriptor instead.
+func (*SetProcessPolicyResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *SetProcessPolicyResponse) GetEffective() *ProcessPolicy {
+	if x != nil {
+		return x.Effective
+	}
+	return nil
+}
+
+type ReleaseProcessActionRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Container     string                 `protobuf:"bytes,1,opt,name=container,proto3" json:"container,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReleaseProcessActionRequest) Reset() {
+	*x = ReleaseProcessActionRequest{}
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReleaseProcessActionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReleaseProcessActionRequest) ProtoMessage() {}
+
+func (x *ReleaseProcessActionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReleaseProcessActionRequest.ProtoReflect.Descriptor instead.
+func (*ReleaseProcessActionRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *ReleaseProcessActionRequest) GetContainer() string {
+	if x != nil {
+		return x.Container
+	}
+	return ""
+}
+
+type ReleaseProcessActionResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The finding the action belonged to, now resolved with its response in
+	// state RELEASED.
+	Finding       *Finding `protobuf:"bytes,1,opt,name=finding,proto3" json:"finding,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReleaseProcessActionResponse) Reset() {
+	*x = ReleaseProcessActionResponse{}
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReleaseProcessActionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReleaseProcessActionResponse) ProtoMessage() {}
+
+func (x *ReleaseProcessActionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReleaseProcessActionResponse.ProtoReflect.Descriptor instead.
+func (*ReleaseProcessActionResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *ReleaseProcessActionResponse) GetFinding() *Finding {
+	if x != nil {
+		return x.Finding
+	}
+	return nil
+}
+
 // RuleStatus is one registered rule's health, so a single panicking rule is
 // visible without taking down the sentry status as a whole.
 type RuleStatus struct {
@@ -1044,7 +1682,7 @@ type RuleStatus struct {
 
 func (x *RuleStatus) Reset() {
 	*x = RuleStatus{}
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[8]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1056,7 +1694,7 @@ func (x *RuleStatus) String() string {
 func (*RuleStatus) ProtoMessage() {}
 
 func (x *RuleStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[8]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1069,7 +1707,7 @@ func (x *RuleStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RuleStatus.ProtoReflect.Descriptor instead.
 func (*RuleStatus) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{8}
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *RuleStatus) GetRule() ThreatRuleId {
@@ -1108,7 +1746,7 @@ type GetSentryStatusRequest struct {
 
 func (x *GetSentryStatusRequest) Reset() {
 	*x = GetSentryStatusRequest{}
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[9]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1120,7 +1758,7 @@ func (x *GetSentryStatusRequest) String() string {
 func (*GetSentryStatusRequest) ProtoMessage() {}
 
 func (x *GetSentryStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[9]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1133,7 +1771,7 @@ func (x *GetSentryStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSentryStatusRequest.ProtoReflect.Descriptor instead.
 func (*GetSentryStatusRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{9}
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{17}
 }
 
 type GetSentryStatusResponse struct {
@@ -1148,7 +1786,7 @@ type GetSentryStatusResponse struct {
 
 func (x *GetSentryStatusResponse) Reset() {
 	*x = GetSentryStatusResponse{}
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[10]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1160,7 +1798,7 @@ func (x *GetSentryStatusResponse) String() string {
 func (*GetSentryStatusResponse) ProtoMessage() {}
 
 func (x *GetSentryStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[10]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1173,7 +1811,7 @@ func (x *GetSentryStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSentryStatusResponse.ProtoReflect.Descriptor instead.
 func (*GetSentryStatusResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{10}
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *GetSentryStatusResponse) GetState() SentryState {
@@ -1214,7 +1852,7 @@ type BadDestinationEntry struct {
 
 func (x *BadDestinationEntry) Reset() {
 	*x = BadDestinationEntry{}
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[11]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1226,7 +1864,7 @@ func (x *BadDestinationEntry) String() string {
 func (*BadDestinationEntry) ProtoMessage() {}
 
 func (x *BadDestinationEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[11]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1239,7 +1877,7 @@ func (x *BadDestinationEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BadDestinationEntry.ProtoReflect.Descriptor instead.
 func (*BadDestinationEntry) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{11}
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *BadDestinationEntry) GetCidr() string {
@@ -1271,7 +1909,7 @@ type ListBadDestinationsRequest struct {
 
 func (x *ListBadDestinationsRequest) Reset() {
 	*x = ListBadDestinationsRequest{}
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[12]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1283,7 +1921,7 @@ func (x *ListBadDestinationsRequest) String() string {
 func (*ListBadDestinationsRequest) ProtoMessage() {}
 
 func (x *ListBadDestinationsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[12]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1296,7 +1934,7 @@ func (x *ListBadDestinationsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBadDestinationsRequest.ProtoReflect.Descriptor instead.
 func (*ListBadDestinationsRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{12}
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{20}
 }
 
 type ListBadDestinationsResponse struct {
@@ -1308,7 +1946,7 @@ type ListBadDestinationsResponse struct {
 
 func (x *ListBadDestinationsResponse) Reset() {
 	*x = ListBadDestinationsResponse{}
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[13]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1320,7 +1958,7 @@ func (x *ListBadDestinationsResponse) String() string {
 func (*ListBadDestinationsResponse) ProtoMessage() {}
 
 func (x *ListBadDestinationsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[13]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1333,7 +1971,7 @@ func (x *ListBadDestinationsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBadDestinationsResponse.ProtoReflect.Descriptor instead.
 func (*ListBadDestinationsResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{13}
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *ListBadDestinationsResponse) GetEntries() []*BadDestinationEntry {
@@ -1353,7 +1991,7 @@ type AddBadDestinationRequest struct {
 
 func (x *AddBadDestinationRequest) Reset() {
 	*x = AddBadDestinationRequest{}
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[14]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1365,7 +2003,7 @@ func (x *AddBadDestinationRequest) String() string {
 func (*AddBadDestinationRequest) ProtoMessage() {}
 
 func (x *AddBadDestinationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[14]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1378,7 +2016,7 @@ func (x *AddBadDestinationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddBadDestinationRequest.ProtoReflect.Descriptor instead.
 func (*AddBadDestinationRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{14}
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *AddBadDestinationRequest) GetCidr() string {
@@ -1404,7 +2042,7 @@ type AddBadDestinationResponse struct {
 
 func (x *AddBadDestinationResponse) Reset() {
 	*x = AddBadDestinationResponse{}
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[15]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1416,7 +2054,7 @@ func (x *AddBadDestinationResponse) String() string {
 func (*AddBadDestinationResponse) ProtoMessage() {}
 
 func (x *AddBadDestinationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[15]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1429,7 +2067,7 @@ func (x *AddBadDestinationResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddBadDestinationResponse.ProtoReflect.Descriptor instead.
 func (*AddBadDestinationResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{15}
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *AddBadDestinationResponse) GetEntry() *BadDestinationEntry {
@@ -1448,7 +2086,7 @@ type RemoveBadDestinationRequest struct {
 
 func (x *RemoveBadDestinationRequest) Reset() {
 	*x = RemoveBadDestinationRequest{}
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[16]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1460,7 +2098,7 @@ func (x *RemoveBadDestinationRequest) String() string {
 func (*RemoveBadDestinationRequest) ProtoMessage() {}
 
 func (x *RemoveBadDestinationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[16]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1473,7 +2111,7 @@ func (x *RemoveBadDestinationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveBadDestinationRequest.ProtoReflect.Descriptor instead.
 func (*RemoveBadDestinationRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{16}
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *RemoveBadDestinationRequest) GetCidr() string {
@@ -1491,7 +2129,7 @@ type RemoveBadDestinationResponse struct {
 
 func (x *RemoveBadDestinationResponse) Reset() {
 	*x = RemoveBadDestinationResponse{}
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[17]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1503,7 +2141,7 @@ func (x *RemoveBadDestinationResponse) String() string {
 func (*RemoveBadDestinationResponse) ProtoMessage() {}
 
 func (x *RemoveBadDestinationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[17]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1516,7 +2154,7 @@ func (x *RemoveBadDestinationResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveBadDestinationResponse.ProtoReflect.Descriptor instead.
 func (*RemoveBadDestinationResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{17}
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{25}
 }
 
 // ListFindingsRequest filters ListFindings. Every field is optional; an
@@ -1541,7 +2179,7 @@ type ListFindingsRequest struct {
 
 func (x *ListFindingsRequest) Reset() {
 	*x = ListFindingsRequest{}
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[18]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1553,7 +2191,7 @@ func (x *ListFindingsRequest) String() string {
 func (*ListFindingsRequest) ProtoMessage() {}
 
 func (x *ListFindingsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[18]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1566,7 +2204,7 @@ func (x *ListFindingsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListFindingsRequest.ProtoReflect.Descriptor instead.
 func (*ListFindingsRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{18}
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *ListFindingsRequest) GetSeverity() ThreatSeverity {
@@ -1613,7 +2251,7 @@ type ListFindingsResponse struct {
 
 func (x *ListFindingsResponse) Reset() {
 	*x = ListFindingsResponse{}
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[19]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1625,7 +2263,7 @@ func (x *ListFindingsResponse) String() string {
 func (*ListFindingsResponse) ProtoMessage() {}
 
 func (x *ListFindingsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[19]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1638,7 +2276,7 @@ func (x *ListFindingsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListFindingsResponse.ProtoReflect.Descriptor instead.
 func (*ListFindingsResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{19}
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *ListFindingsResponse) GetFindings() []*Finding {
@@ -1657,7 +2295,7 @@ type ResolveFindingRequest struct {
 
 func (x *ResolveFindingRequest) Reset() {
 	*x = ResolveFindingRequest{}
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[20]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1669,7 +2307,7 @@ func (x *ResolveFindingRequest) String() string {
 func (*ResolveFindingRequest) ProtoMessage() {}
 
 func (x *ResolveFindingRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[20]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1682,7 +2320,7 @@ func (x *ResolveFindingRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveFindingRequest.ProtoReflect.Descriptor instead.
 func (*ResolveFindingRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{20}
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *ResolveFindingRequest) GetId() int64 {
@@ -1701,7 +2339,7 @@ type ResolveFindingResponse struct {
 
 func (x *ResolveFindingResponse) Reset() {
 	*x = ResolveFindingResponse{}
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[21]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1713,7 +2351,7 @@ func (x *ResolveFindingResponse) String() string {
 func (*ResolveFindingResponse) ProtoMessage() {}
 
 func (x *ResolveFindingResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[21]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1726,7 +2364,7 @@ func (x *ResolveFindingResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveFindingResponse.ProtoReflect.Descriptor instead.
 func (*ResolveFindingResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{21}
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *ResolveFindingResponse) GetFinding() *Finding {
@@ -1793,7 +2431,7 @@ const file_containarium_v1_threatdetection_proto_rawDesc = "" +
 	"\fflow_min_age\x18\x03 \x01(\v2\x19.google.protobuf.DurationR\n" +
 	"flowMinAge\x12#\n" +
 	"\rstratum_ports\x18\x04 \x03(\rR\fstratumPorts\x121\n" +
-	"\x15min_fraction_of_limit\x18\x05 \x01(\x01R\x12minFractionOfLimit\"\xf3\x03\n" +
+	"\x15min_fraction_of_limit\x18\x05 \x01(\x01R\x12minFractionOfLimit\"\xb1\x04\n" +
 	"\aFinding\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x03R\x02id\x121\n" +
 	"\x04rule\x18\x02 \x01(\x0e2\x1d.containarium.v1.ThreatRuleIdR\x04rule\x12;\n" +
@@ -1809,7 +2447,43 @@ const file_containarium_v1_threatdetection_proto_rawDesc = "" +
 	" \x01(\v2\x19.containarium.v1.EvidenceR\bevidence\x129\n" +
 	"\n" +
 	"first_seen\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\tfirstSeen\x127\n" +
-	"\tlast_seen\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\blastSeen\"\xb8\x01\n" +
+	"\tlast_seen\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\blastSeen\x12<\n" +
+	"\bresponse\x18\r \x01(\v2 .containarium.v1.FindingResponseR\bresponse\"\x90\x03\n" +
+	"\x0fFindingResponse\x126\n" +
+	"\x06action\x18\x01 \x01(\x0e2\x1e.containarium.v1.ProcessActionR\x06action\x124\n" +
+	"\x05state\x18\x02 \x01(\x0e2\x1e.containarium.v1.ResponseStateR\x05state\x12%\n" +
+	"\x0eprocess_killed\x18\x03 \x01(\bR\rprocessKilled\x129\n" +
+	"\n" +
+	"applied_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tappliedAt\x129\n" +
+	"\n" +
+	"expires_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\x12;\n" +
+	"\vreleased_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"releasedAt\x12\x1f\n" +
+	"\vreleased_by\x18\a \x01(\tR\n" +
+	"releasedBy\x12\x14\n" +
+	"\x05error\x18\b \x01(\tR\x05error\"\xf7\x01\n" +
+	"\rProcessPolicy\x126\n" +
+	"\x06action\x18\x01 \x01(\x0e2\x1e.containarium.v1.ProcessActionR\x06action\x12-\n" +
+	"\x12throttle_allowance\x18\x02 \x01(\tR\x11throttleAllowance\x12+\n" +
+	"\x03ttl\x18\x03 \x01(\v2\x19.google.protobuf.DurationR\x03ttl\x12R\n" +
+	"\x0fmining_behavior\x18\x05 \x01(\v2).containarium.v1.MiningBehaviorThresholdsR\x0eminingBehavior\"7\n" +
+	"\x17GetProcessPolicyRequest\x12\x1c\n" +
+	"\tcontainer\x18\x01 \x01(\tR\tcontainer\"\xb1\x01\n" +
+	"\x18GetProcessPolicyResponse\x126\n" +
+	"\x06policy\x18\x01 \x01(\v2\x1e.containarium.v1.ProcessPolicyR\x06policy\x12\x1f\n" +
+	"\vis_override\x18\x02 \x01(\bR\n" +
+	"isOverride\x12<\n" +
+	"\teffective\x18\x03 \x01(\v2\x1e.containarium.v1.ProcessPolicyR\teffective\"\x96\x01\n" +
+	"\x17SetProcessPolicyRequest\x12\x1c\n" +
+	"\tcontainer\x18\x01 \x01(\tR\tcontainer\x126\n" +
+	"\x06policy\x18\x02 \x01(\v2\x1e.containarium.v1.ProcessPolicyR\x06policy\x12%\n" +
+	"\x0eclear_override\x18\x03 \x01(\bR\rclearOverride\"X\n" +
+	"\x18SetProcessPolicyResponse\x12<\n" +
+	"\teffective\x18\x01 \x01(\v2\x1e.containarium.v1.ProcessPolicyR\teffective\";\n" +
+	"\x1bReleaseProcessActionRequest\x12\x1c\n" +
+	"\tcontainer\x18\x01 \x01(\tR\tcontainer\"R\n" +
+	"\x1cReleaseProcessActionResponse\x122\n" +
+	"\afinding\x18\x01 \x01(\v2\x18.containarium.v1.FindingR\afinding\"\xb8\x01\n" +
 	"\n" +
 	"RuleStatus\x121\n" +
 	"\x04rule\x18\x01 \x01(\x0e2\x1d.containarium.v1.ThreatRuleIdR\x04rule\x12\x18\n" +
@@ -1854,7 +2528,7 @@ const file_containarium_v1_threatdetection_proto_rawDesc = "" +
 	"\x13THREAT_SEVERITY_LOW\x10\x01\x12\x1a\n" +
 	"\x16THREAT_SEVERITY_MEDIUM\x10\x02\x12\x18\n" +
 	"\x14THREAT_SEVERITY_HIGH\x10\x03\x12\x1c\n" +
-	"\x18THREAT_SEVERITY_CRITICAL\x10\x04*\x91\x02\n" +
+	"\x18THREAT_SEVERITY_CRITICAL\x10\x04*\xbc\x02\n" +
 	"\fThreatRuleId\x12\x1e\n" +
 	"\x1aTHREAT_RULE_ID_UNSPECIFIED\x10\x00\x12\"\n" +
 	"\x1eTHREAT_RULE_ID_BAD_DESTINATION\x10\x01\x12$\n" +
@@ -1862,17 +2536,30 @@ const file_containarium_v1_threatdetection_proto_rawDesc = "" +
 	"\x19THREAT_RULE_ID_DENY_BURST\x10\x03\x12)\n" +
 	"%THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH\x10\x04\x12)\n" +
 	"%THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER\x10\x05\x12\"\n" +
-	"\x1eTHREAT_RULE_ID_MINING_BEHAVIOR\x10\x06*a\n" +
+	"\x1eTHREAT_RULE_ID_MINING_BEHAVIOR\x10\x06\x12)\n" +
+	"%THREAT_RULE_ID_PROCESS_ACTION_EXPIRED\x10\t*a\n" +
 	"\fFindingState\x12\x1d\n" +
 	"\x19FINDING_STATE_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12FINDING_STATE_OPEN\x10\x01\x12\x1a\n" +
-	"\x16FINDING_STATE_RESOLVED\x10\x02*\x94\x01\n" +
+	"\x16FINDING_STATE_RESOLVED\x10\x02*\x81\x01\n" +
+	"\rProcessAction\x12\x1e\n" +
+	"\x1aPROCESS_ACTION_UNSPECIFIED\x10\x00\x12\x18\n" +
+	"\x14PROCESS_ACTION_ALERT\x10\x01\x12\x1b\n" +
+	"\x17PROCESS_ACTION_THROTTLE\x10\x02\x12\x19\n" +
+	"\x15PROCESS_ACTION_FREEZE\x10\x03*\xb8\x01\n" +
+	"\rResponseState\x12\x1e\n" +
+	"\x1aRESPONSE_STATE_UNSPECIFIED\x10\x00\x12\x17\n" +
+	"\x13RESPONSE_STATE_NONE\x10\x01\x12\x1a\n" +
+	"\x16RESPONSE_STATE_APPLIED\x10\x02\x12\x19\n" +
+	"\x15RESPONSE_STATE_FAILED\x10\x03\x12\x1b\n" +
+	"\x17RESPONSE_STATE_RELEASED\x10\x04\x12\x1a\n" +
+	"\x16RESPONSE_STATE_EXPIRED\x10\x05*\x94\x01\n" +
 	"\vSentryState\x12\x1c\n" +
 	"\x18SENTRY_STATE_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15SENTRY_STATE_DISABLED\x10\x01\x12\x1c\n" +
 	"\x18SENTRY_STATE_UNAVAILABLE\x10\x02\x12\x19\n" +
 	"\x15SENTRY_STATE_DEGRADED\x10\x03\x12\x13\n" +
-	"\x0fSENTRY_STATE_OK\x10\x042\xc5\x0e\n" +
+	"\x0fSENTRY_STATE_OK\x10\x042\xe2\x17\n" +
 	"\x16ThreatDetectionService\x12\xae\x02\n" +
 	"\x0fGetSentryStatus\x12'.containarium.v1.GetSentryStatusRequest\x1a(.containarium.v1.GetSentryStatusResponse\"\xc7\x01\x92A\xa1\x01\n" +
 	"\bSecurity\x12\"Get threat-detection sentry status\x1aqReturns the background detection engine's on/off state (disabled, unavailable, degraded, ok) and per-rule health.\x82\xd3\xe4\x93\x02\x1c\x12\x1a/v1/security/sentry/status\x12\xa5\x02\n" +
@@ -1885,7 +2572,13 @@ const file_containarium_v1_threatdetection_proto_rawDesc = "" +
 	"\fListFindings\x12$.containarium.v1.ListFindingsRequest\x1a%.containarium.v1.ListFindingsResponse\"\xd7\x01\x92A\xb6\x01\n" +
 	"\bSecurity\x12\x16List security findings\x1a\x91\x01Lists security findings with optional severity/tenant/since/state filters, most recently seen first. Non-admin callers only see their own tenant.\x82\xd3\xe4\x93\x02\x17\x12\x15/v1/security/findings\x12\xb4\x02\n" +
 	"\x0eResolveFinding\x12&.containarium.v1.ResolveFindingRequest\x1a'.containarium.v1.ResolveFindingResponse\"\xd0\x01\x92A\xa2\x01\n" +
-	"\bSecurity\x12\x1aResolve a security finding\x1azMarks an open finding as resolved. Fails with FAILED_PRECONDITION if it's already resolved, NOT_FOUND if it doesn't exist.\x82\xd3\xe4\x93\x02$\"\"/v1/security/findings/{id}/resolveBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
+	"\bSecurity\x12\x1aResolve a security finding\x1azMarks an open finding as resolved. Fails with FAILED_PRECONDITION if it's already resolved, NOT_FOUND if it doesn't exist.\x82\xd3\xe4\x93\x02$\"\"/v1/security/findings/{id}/resolve\x12\xf1\x02\n" +
+	"\x10GetProcessPolicy\x12(.containarium.v1.GetProcessPolicyRequest\x1a).containarium.v1.GetProcessPolicyResponse\"\x87\x02\x92A\xe0\x01\n" +
+	"\bSecurity\x12\x16Get the process policy\x1a\xbb\x01Returns the stored process policy (backend default, or a container's override when ?container= is given) and the effective policy after override → default → built-in ALERT resolution.\x82\xd3\xe4\x93\x02\x1d\x12\x1b/v1/security/process-policy\x12\x8c\x03\n" +
+	"\x10SetProcessPolicy\x12(.containarium.v1.SetProcessPolicyRequest\x1a).containarium.v1.SetProcessPolicyResponse\"\xa2\x02\x92A\xf8\x01\n" +
+	"\bSecurity\x12\x16Set the process policy\x1a\xd3\x01Sets what a HIGH mining finding does to its container: ALERT (default), THROTTLE or FREEZE, with the throttle allowance and TTL. With container set it writes a per-container override; clear_override removes one.\x82\xd3\xe4\x93\x02 :\x01*\x1a\x1b/v1/security/process-policy\x12\x97\x03\n" +
+	"\x14ReleaseProcessAction\x12,.containarium.v1.ReleaseProcessActionRequest\x1a-.containarium.v1.ReleaseProcessActionResponse\"\xa1\x02\x92A\xef\x01\n" +
+	"\bSecurity\x12\x18Release a process action\x1a\xc8\x01Restores the container's recorded CPU limit (THROTTLE) or unfreezes it (FREEZE), marks the action released by the operator, and resolves its finding. NOT_FOUND when no action is open on the container.\x82\xd3\xe4\x93\x02(:\x01*\"#/v1/security/process-policy/releaseBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
 
 var (
 	file_containarium_v1_threatdetection_proto_rawDescOnce sync.Once
@@ -1899,82 +2592,112 @@ func file_containarium_v1_threatdetection_proto_rawDescGZIP() []byte {
 	return file_containarium_v1_threatdetection_proto_rawDescData
 }
 
-var file_containarium_v1_threatdetection_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_containarium_v1_threatdetection_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
+var file_containarium_v1_threatdetection_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
+var file_containarium_v1_threatdetection_proto_msgTypes = make([]protoimpl.MessageInfo, 30)
 var file_containarium_v1_threatdetection_proto_goTypes = []any{
 	(ThreatSeverity)(0),                  // 0: containarium.v1.ThreatSeverity
 	(ThreatRuleId)(0),                    // 1: containarium.v1.ThreatRuleId
 	(FindingState)(0),                    // 2: containarium.v1.FindingState
-	(SentryState)(0),                     // 3: containarium.v1.SentryState
-	(*FlowEvidence)(nil),                 // 4: containarium.v1.FlowEvidence
-	(*DenyEvidence)(nil),                 // 5: containarium.v1.DenyEvidence
-	(*ConfigEvidence)(nil),               // 6: containarium.v1.ConfigEvidence
-	(*ListenerEvidence)(nil),             // 7: containarium.v1.ListenerEvidence
-	(*CPUEvidence)(nil),                  // 8: containarium.v1.CPUEvidence
-	(*Evidence)(nil),                     // 9: containarium.v1.Evidence
-	(*MiningBehaviorThresholds)(nil),     // 10: containarium.v1.MiningBehaviorThresholds
-	(*Finding)(nil),                      // 11: containarium.v1.Finding
-	(*RuleStatus)(nil),                   // 12: containarium.v1.RuleStatus
-	(*GetSentryStatusRequest)(nil),       // 13: containarium.v1.GetSentryStatusRequest
-	(*GetSentryStatusResponse)(nil),      // 14: containarium.v1.GetSentryStatusResponse
-	(*BadDestinationEntry)(nil),          // 15: containarium.v1.BadDestinationEntry
-	(*ListBadDestinationsRequest)(nil),   // 16: containarium.v1.ListBadDestinationsRequest
-	(*ListBadDestinationsResponse)(nil),  // 17: containarium.v1.ListBadDestinationsResponse
-	(*AddBadDestinationRequest)(nil),     // 18: containarium.v1.AddBadDestinationRequest
-	(*AddBadDestinationResponse)(nil),    // 19: containarium.v1.AddBadDestinationResponse
-	(*RemoveBadDestinationRequest)(nil),  // 20: containarium.v1.RemoveBadDestinationRequest
-	(*RemoveBadDestinationResponse)(nil), // 21: containarium.v1.RemoveBadDestinationResponse
-	(*ListFindingsRequest)(nil),          // 22: containarium.v1.ListFindingsRequest
-	(*ListFindingsResponse)(nil),         // 23: containarium.v1.ListFindingsResponse
-	(*ResolveFindingRequest)(nil),        // 24: containarium.v1.ResolveFindingRequest
-	(*ResolveFindingResponse)(nil),       // 25: containarium.v1.ResolveFindingResponse
-	(*timestamppb.Timestamp)(nil),        // 26: google.protobuf.Timestamp
-	(*durationpb.Duration)(nil),          // 27: google.protobuf.Duration
+	(ProcessAction)(0),                   // 3: containarium.v1.ProcessAction
+	(ResponseState)(0),                   // 4: containarium.v1.ResponseState
+	(SentryState)(0),                     // 5: containarium.v1.SentryState
+	(*FlowEvidence)(nil),                 // 6: containarium.v1.FlowEvidence
+	(*DenyEvidence)(nil),                 // 7: containarium.v1.DenyEvidence
+	(*ConfigEvidence)(nil),               // 8: containarium.v1.ConfigEvidence
+	(*ListenerEvidence)(nil),             // 9: containarium.v1.ListenerEvidence
+	(*CPUEvidence)(nil),                  // 10: containarium.v1.CPUEvidence
+	(*Evidence)(nil),                     // 11: containarium.v1.Evidence
+	(*MiningBehaviorThresholds)(nil),     // 12: containarium.v1.MiningBehaviorThresholds
+	(*Finding)(nil),                      // 13: containarium.v1.Finding
+	(*FindingResponse)(nil),              // 14: containarium.v1.FindingResponse
+	(*ProcessPolicy)(nil),                // 15: containarium.v1.ProcessPolicy
+	(*GetProcessPolicyRequest)(nil),      // 16: containarium.v1.GetProcessPolicyRequest
+	(*GetProcessPolicyResponse)(nil),     // 17: containarium.v1.GetProcessPolicyResponse
+	(*SetProcessPolicyRequest)(nil),      // 18: containarium.v1.SetProcessPolicyRequest
+	(*SetProcessPolicyResponse)(nil),     // 19: containarium.v1.SetProcessPolicyResponse
+	(*ReleaseProcessActionRequest)(nil),  // 20: containarium.v1.ReleaseProcessActionRequest
+	(*ReleaseProcessActionResponse)(nil), // 21: containarium.v1.ReleaseProcessActionResponse
+	(*RuleStatus)(nil),                   // 22: containarium.v1.RuleStatus
+	(*GetSentryStatusRequest)(nil),       // 23: containarium.v1.GetSentryStatusRequest
+	(*GetSentryStatusResponse)(nil),      // 24: containarium.v1.GetSentryStatusResponse
+	(*BadDestinationEntry)(nil),          // 25: containarium.v1.BadDestinationEntry
+	(*ListBadDestinationsRequest)(nil),   // 26: containarium.v1.ListBadDestinationsRequest
+	(*ListBadDestinationsResponse)(nil),  // 27: containarium.v1.ListBadDestinationsResponse
+	(*AddBadDestinationRequest)(nil),     // 28: containarium.v1.AddBadDestinationRequest
+	(*AddBadDestinationResponse)(nil),    // 29: containarium.v1.AddBadDestinationResponse
+	(*RemoveBadDestinationRequest)(nil),  // 30: containarium.v1.RemoveBadDestinationRequest
+	(*RemoveBadDestinationResponse)(nil), // 31: containarium.v1.RemoveBadDestinationResponse
+	(*ListFindingsRequest)(nil),          // 32: containarium.v1.ListFindingsRequest
+	(*ListFindingsResponse)(nil),         // 33: containarium.v1.ListFindingsResponse
+	(*ResolveFindingRequest)(nil),        // 34: containarium.v1.ResolveFindingRequest
+	(*ResolveFindingResponse)(nil),       // 35: containarium.v1.ResolveFindingResponse
+	(*timestamppb.Timestamp)(nil),        // 36: google.protobuf.Timestamp
+	(*durationpb.Duration)(nil),          // 37: google.protobuf.Duration
 }
 var file_containarium_v1_threatdetection_proto_depIdxs = []int32{
-	26, // 0: containarium.v1.FlowEvidence.first_seen:type_name -> google.protobuf.Timestamp
-	26, // 1: containarium.v1.FlowEvidence.last_seen:type_name -> google.protobuf.Timestamp
-	4,  // 2: containarium.v1.Evidence.flows:type_name -> containarium.v1.FlowEvidence
-	5,  // 3: containarium.v1.Evidence.denies:type_name -> containarium.v1.DenyEvidence
-	6,  // 4: containarium.v1.Evidence.configs:type_name -> containarium.v1.ConfigEvidence
-	7,  // 5: containarium.v1.Evidence.listeners:type_name -> containarium.v1.ListenerEvidence
-	8,  // 6: containarium.v1.Evidence.cpu:type_name -> containarium.v1.CPUEvidence
-	27, // 7: containarium.v1.MiningBehaviorThresholds.window:type_name -> google.protobuf.Duration
-	27, // 8: containarium.v1.MiningBehaviorThresholds.flow_min_age:type_name -> google.protobuf.Duration
+	36, // 0: containarium.v1.FlowEvidence.first_seen:type_name -> google.protobuf.Timestamp
+	36, // 1: containarium.v1.FlowEvidence.last_seen:type_name -> google.protobuf.Timestamp
+	6,  // 2: containarium.v1.Evidence.flows:type_name -> containarium.v1.FlowEvidence
+	7,  // 3: containarium.v1.Evidence.denies:type_name -> containarium.v1.DenyEvidence
+	8,  // 4: containarium.v1.Evidence.configs:type_name -> containarium.v1.ConfigEvidence
+	9,  // 5: containarium.v1.Evidence.listeners:type_name -> containarium.v1.ListenerEvidence
+	10, // 6: containarium.v1.Evidence.cpu:type_name -> containarium.v1.CPUEvidence
+	37, // 7: containarium.v1.MiningBehaviorThresholds.window:type_name -> google.protobuf.Duration
+	37, // 8: containarium.v1.MiningBehaviorThresholds.flow_min_age:type_name -> google.protobuf.Duration
 	1,  // 9: containarium.v1.Finding.rule:type_name -> containarium.v1.ThreatRuleId
 	0,  // 10: containarium.v1.Finding.severity:type_name -> containarium.v1.ThreatSeverity
 	2,  // 11: containarium.v1.Finding.state:type_name -> containarium.v1.FindingState
-	9,  // 12: containarium.v1.Finding.evidence:type_name -> containarium.v1.Evidence
-	26, // 13: containarium.v1.Finding.first_seen:type_name -> google.protobuf.Timestamp
-	26, // 14: containarium.v1.Finding.last_seen:type_name -> google.protobuf.Timestamp
-	1,  // 15: containarium.v1.RuleStatus.rule:type_name -> containarium.v1.ThreatRuleId
-	26, // 16: containarium.v1.RuleStatus.last_error_at:type_name -> google.protobuf.Timestamp
-	3,  // 17: containarium.v1.GetSentryStatusResponse.state:type_name -> containarium.v1.SentryState
-	12, // 18: containarium.v1.GetSentryStatusResponse.rules:type_name -> containarium.v1.RuleStatus
-	15, // 19: containarium.v1.ListBadDestinationsResponse.entries:type_name -> containarium.v1.BadDestinationEntry
-	15, // 20: containarium.v1.AddBadDestinationResponse.entry:type_name -> containarium.v1.BadDestinationEntry
-	0,  // 21: containarium.v1.ListFindingsRequest.severity:type_name -> containarium.v1.ThreatSeverity
-	26, // 22: containarium.v1.ListFindingsRequest.since:type_name -> google.protobuf.Timestamp
-	2,  // 23: containarium.v1.ListFindingsRequest.state:type_name -> containarium.v1.FindingState
-	11, // 24: containarium.v1.ListFindingsResponse.findings:type_name -> containarium.v1.Finding
-	11, // 25: containarium.v1.ResolveFindingResponse.finding:type_name -> containarium.v1.Finding
-	13, // 26: containarium.v1.ThreatDetectionService.GetSentryStatus:input_type -> containarium.v1.GetSentryStatusRequest
-	16, // 27: containarium.v1.ThreatDetectionService.ListBadDestinations:input_type -> containarium.v1.ListBadDestinationsRequest
-	18, // 28: containarium.v1.ThreatDetectionService.AddBadDestination:input_type -> containarium.v1.AddBadDestinationRequest
-	20, // 29: containarium.v1.ThreatDetectionService.RemoveBadDestination:input_type -> containarium.v1.RemoveBadDestinationRequest
-	22, // 30: containarium.v1.ThreatDetectionService.ListFindings:input_type -> containarium.v1.ListFindingsRequest
-	24, // 31: containarium.v1.ThreatDetectionService.ResolveFinding:input_type -> containarium.v1.ResolveFindingRequest
-	14, // 32: containarium.v1.ThreatDetectionService.GetSentryStatus:output_type -> containarium.v1.GetSentryStatusResponse
-	17, // 33: containarium.v1.ThreatDetectionService.ListBadDestinations:output_type -> containarium.v1.ListBadDestinationsResponse
-	19, // 34: containarium.v1.ThreatDetectionService.AddBadDestination:output_type -> containarium.v1.AddBadDestinationResponse
-	21, // 35: containarium.v1.ThreatDetectionService.RemoveBadDestination:output_type -> containarium.v1.RemoveBadDestinationResponse
-	23, // 36: containarium.v1.ThreatDetectionService.ListFindings:output_type -> containarium.v1.ListFindingsResponse
-	25, // 37: containarium.v1.ThreatDetectionService.ResolveFinding:output_type -> containarium.v1.ResolveFindingResponse
-	32, // [32:38] is the sub-list for method output_type
-	26, // [26:32] is the sub-list for method input_type
-	26, // [26:26] is the sub-list for extension type_name
-	26, // [26:26] is the sub-list for extension extendee
-	0,  // [0:26] is the sub-list for field type_name
+	11, // 12: containarium.v1.Finding.evidence:type_name -> containarium.v1.Evidence
+	36, // 13: containarium.v1.Finding.first_seen:type_name -> google.protobuf.Timestamp
+	36, // 14: containarium.v1.Finding.last_seen:type_name -> google.protobuf.Timestamp
+	14, // 15: containarium.v1.Finding.response:type_name -> containarium.v1.FindingResponse
+	3,  // 16: containarium.v1.FindingResponse.action:type_name -> containarium.v1.ProcessAction
+	4,  // 17: containarium.v1.FindingResponse.state:type_name -> containarium.v1.ResponseState
+	36, // 18: containarium.v1.FindingResponse.applied_at:type_name -> google.protobuf.Timestamp
+	36, // 19: containarium.v1.FindingResponse.expires_at:type_name -> google.protobuf.Timestamp
+	36, // 20: containarium.v1.FindingResponse.released_at:type_name -> google.protobuf.Timestamp
+	3,  // 21: containarium.v1.ProcessPolicy.action:type_name -> containarium.v1.ProcessAction
+	37, // 22: containarium.v1.ProcessPolicy.ttl:type_name -> google.protobuf.Duration
+	12, // 23: containarium.v1.ProcessPolicy.mining_behavior:type_name -> containarium.v1.MiningBehaviorThresholds
+	15, // 24: containarium.v1.GetProcessPolicyResponse.policy:type_name -> containarium.v1.ProcessPolicy
+	15, // 25: containarium.v1.GetProcessPolicyResponse.effective:type_name -> containarium.v1.ProcessPolicy
+	15, // 26: containarium.v1.SetProcessPolicyRequest.policy:type_name -> containarium.v1.ProcessPolicy
+	15, // 27: containarium.v1.SetProcessPolicyResponse.effective:type_name -> containarium.v1.ProcessPolicy
+	13, // 28: containarium.v1.ReleaseProcessActionResponse.finding:type_name -> containarium.v1.Finding
+	1,  // 29: containarium.v1.RuleStatus.rule:type_name -> containarium.v1.ThreatRuleId
+	36, // 30: containarium.v1.RuleStatus.last_error_at:type_name -> google.protobuf.Timestamp
+	5,  // 31: containarium.v1.GetSentryStatusResponse.state:type_name -> containarium.v1.SentryState
+	22, // 32: containarium.v1.GetSentryStatusResponse.rules:type_name -> containarium.v1.RuleStatus
+	25, // 33: containarium.v1.ListBadDestinationsResponse.entries:type_name -> containarium.v1.BadDestinationEntry
+	25, // 34: containarium.v1.AddBadDestinationResponse.entry:type_name -> containarium.v1.BadDestinationEntry
+	0,  // 35: containarium.v1.ListFindingsRequest.severity:type_name -> containarium.v1.ThreatSeverity
+	36, // 36: containarium.v1.ListFindingsRequest.since:type_name -> google.protobuf.Timestamp
+	2,  // 37: containarium.v1.ListFindingsRequest.state:type_name -> containarium.v1.FindingState
+	13, // 38: containarium.v1.ListFindingsResponse.findings:type_name -> containarium.v1.Finding
+	13, // 39: containarium.v1.ResolveFindingResponse.finding:type_name -> containarium.v1.Finding
+	23, // 40: containarium.v1.ThreatDetectionService.GetSentryStatus:input_type -> containarium.v1.GetSentryStatusRequest
+	26, // 41: containarium.v1.ThreatDetectionService.ListBadDestinations:input_type -> containarium.v1.ListBadDestinationsRequest
+	28, // 42: containarium.v1.ThreatDetectionService.AddBadDestination:input_type -> containarium.v1.AddBadDestinationRequest
+	30, // 43: containarium.v1.ThreatDetectionService.RemoveBadDestination:input_type -> containarium.v1.RemoveBadDestinationRequest
+	32, // 44: containarium.v1.ThreatDetectionService.ListFindings:input_type -> containarium.v1.ListFindingsRequest
+	34, // 45: containarium.v1.ThreatDetectionService.ResolveFinding:input_type -> containarium.v1.ResolveFindingRequest
+	16, // 46: containarium.v1.ThreatDetectionService.GetProcessPolicy:input_type -> containarium.v1.GetProcessPolicyRequest
+	18, // 47: containarium.v1.ThreatDetectionService.SetProcessPolicy:input_type -> containarium.v1.SetProcessPolicyRequest
+	20, // 48: containarium.v1.ThreatDetectionService.ReleaseProcessAction:input_type -> containarium.v1.ReleaseProcessActionRequest
+	24, // 49: containarium.v1.ThreatDetectionService.GetSentryStatus:output_type -> containarium.v1.GetSentryStatusResponse
+	27, // 50: containarium.v1.ThreatDetectionService.ListBadDestinations:output_type -> containarium.v1.ListBadDestinationsResponse
+	29, // 51: containarium.v1.ThreatDetectionService.AddBadDestination:output_type -> containarium.v1.AddBadDestinationResponse
+	31, // 52: containarium.v1.ThreatDetectionService.RemoveBadDestination:output_type -> containarium.v1.RemoveBadDestinationResponse
+	33, // 53: containarium.v1.ThreatDetectionService.ListFindings:output_type -> containarium.v1.ListFindingsResponse
+	35, // 54: containarium.v1.ThreatDetectionService.ResolveFinding:output_type -> containarium.v1.ResolveFindingResponse
+	17, // 55: containarium.v1.ThreatDetectionService.GetProcessPolicy:output_type -> containarium.v1.GetProcessPolicyResponse
+	19, // 56: containarium.v1.ThreatDetectionService.SetProcessPolicy:output_type -> containarium.v1.SetProcessPolicyResponse
+	21, // 57: containarium.v1.ThreatDetectionService.ReleaseProcessAction:output_type -> containarium.v1.ReleaseProcessActionResponse
+	49, // [49:58] is the sub-list for method output_type
+	40, // [40:49] is the sub-list for method input_type
+	40, // [40:40] is the sub-list for extension type_name
+	40, // [40:40] is the sub-list for extension extendee
+	0,  // [0:40] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_threatdetection_proto_init() }
@@ -1987,8 +2710,8 @@ func file_containarium_v1_threatdetection_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_threatdetection_proto_rawDesc), len(file_containarium_v1_threatdetection_proto_rawDesc)),
-			NumEnums:      4,
-			NumMessages:   22,
+			NumEnums:      6,
+			NumMessages:   30,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
