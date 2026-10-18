@@ -184,5 +184,12 @@ func validateMiningThresholds(m *pb.MiningBehaviorThresholds) error {
 			return fmt.Errorf("threatdetect: mining-behavior thresholds: stratum port %d out of range 1-65535", p)
 		}
 	}
+	// Checked on the resolved values, so a window set below the default
+	// flow_min_age (or the reverse) is caught too.
+	if eff := MiningThresholdsFromProto(m); eff.Window < eff.FlowMinAge {
+		return fmt.Errorf("threatdetect: mining-behavior thresholds: window %s is shorter than flow_min_age %s", eff.Window, eff.FlowMinAge)
+	} else if eff.Window > MaxMiningWindow {
+		return fmt.Errorf("threatdetect: mining-behavior thresholds: window %s exceeds the maximum %s (the per-container sample cap cannot cover a longer window)", eff.Window, MaxMiningWindow)
+	}
 	return nil
 }
