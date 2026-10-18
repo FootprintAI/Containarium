@@ -2383,8 +2383,8 @@ skipAppHosting:
 	}
 	// Mining-behavior rule (#2635): sustained CPU plus a long-lived flow to a
 	// stratum port or a listed destination. CPU arrives from the metrics
-	// collector's tick (CPUSampler, wired where the collector starts), so the
-	// rule stays inert on a daemon without VictoriaMetrics. Thresholds are
+	// collector's tick, or from a standalone Incus-polling ticker where no
+	// collector runs (#2645; both wired in Start via wireCPUSampler). Thresholds are
 	// persisted under threatdetect.MiningThresholdsConfigKey.
 	if threatDetectEngine != nil {
 		var kv threatdetect.ConfigKV
@@ -3624,11 +3624,25 @@ func (ds *DualServer) Start(ctx context.Context) error {
 				Collector: ds.trafficCollector,
 			})
 		}
-		// Feed per-container CPU to the threat-detection engine
-		// (mining-behavior rule, #2635) from this same tick.
-		if ds.threatDetectEngine != nil {
-			ds.metricsCollector.SetCPUHook(NewCPUSampler(ds.threatDetectEngine.OnCPU).Observe)
+	}
+	// Feed per-container CPU to the threat-detection engine (mining-behavior
+	// rule, #2635): from the metrics collector's tick when it runs, else from
+	// a standalone Incus-polling ticker (#2645) — never both. Wired before
+	// the collector starts so its first tick already carries the hook.
+	if ds.threatDetectEngine != nil {
+		var collector cpuHookTarget
+		if ds.metricsCollector != nil {
+			collector = ds.metricsCollector
 		}
+		cpuStatus := wireCPUSampler(ctx, ds.threatDetectEngine.OnCPU, collector,
+			func() (cpuMetricsSource, error) { return incus.New() },
+			newTimeTicker)
+		log.Printf("Threat-detection CPU sampler: %s", cpuStatus)
+		if ds.threatDetectServer != nil {
+			ds.threatDetectServer.SetCPUSamplerStatus(cpuStatus)
+		}
+	}
+	if ds.metricsCollector != nil {
 		ds.metricsCollector.Start()
 	}
 
