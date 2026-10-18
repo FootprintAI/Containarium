@@ -96,7 +96,7 @@ flowchart LR
    is a hook on it, like the flow hook on the enforcer, and adds no Incus
    polling. The collector only runs when a metrics export target is
    configured, so on a backend without one (BYOC hosts export no metrics)
-   the sampler runs its own 15 s ticker over the same `GetContainerMetrics`
+   the sampler runs its own 30 s ticker (the collector's default interval) over the same `GetContainerMetrics`
    read and feeds the same path; never both at once, and `sentry status`
    names the source (decided on #2641 Q4). A container's first sample
    after start is dropped (no delta).
