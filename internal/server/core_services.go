@@ -1589,6 +1589,7 @@ func (cs *CoreServices) EnsureSecurity(ctx context.Context) error {
 		cs.backfillConfig(CoreSecurityContainer, incus.RoleSecurity, "70")
 
 		if info.State == "Running" {
+			cs.backfillClamdUser()
 			log.Printf("Security container already running at %s", info.IPAddress)
 			return nil
 		}
@@ -1599,6 +1600,7 @@ func (cs *CoreServices) EnsureSecurity(ctx context.Context) error {
 		if _, err := cs.incusClient.WaitForNetwork(CoreSecurityContainer, 60*time.Second); err != nil {
 			return fmt.Errorf("failed to get security container IP: %w", err)
 		}
+		cs.backfillClamdUser()
 		return nil
 	}
 
@@ -1674,6 +1676,13 @@ func (cs *CoreServices) setupSecurity(ctx context.Context) error {
 		if err := cs.incusClient.Exec(CoreSecurityContainer, cmd); err != nil {
 			log.Printf("Warning: failed to configure clamd ExcludePath: %v", err)
 		}
+	}
+
+	// clamd must be able to read root-only files in a scanned rootfs (#2631).
+	// A failure here is not fatal: the scan then records `incomplete`, and the
+	// backfill on the next daemon start retries.
+	if err := cs.configureClamdUser(); err != nil {
+		log.Printf("Warning: failed to configure the clamd user: %v", err)
 	}
 
 	// Enable and start freshclam (virus database updater).
