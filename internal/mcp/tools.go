@@ -1808,6 +1808,11 @@ func (s *Server) registerTools() {
 	// Guardrail policy read (#2368, guardrail_tools.go); no write tool.
 	s.tools = append(s.tools, guardrailTools()...)
 
+	// Process policy get/set/release (#2666, process_policy_tools.go) —
+	// thin wrappers over the routes `containarium security process-policy`
+	// also calls.
+	s.tools = append(s.tools, processPolicyTools()...)
+
 	// Tracker broker agent-facing verbs (#1922 step 7, tracker_tools.go)
 	// — thin wrappers over the TrackerService gateway that
 	// `containarium tracker issue/change ...` also calls.
@@ -1955,6 +1960,11 @@ func toolScopeAssignments() map[string]string {
 		// server-side guardrail policy (#2368): a read of security config,
 		// gated like security_findings. The write has no tool.
 		"guardrail_policy_get": auth.ScopeSecurityRead,
+		// process policy (#2666): get is a read, set/release change what the
+		// responder does to a box — same split as the bad-destination list.
+		"security_process_policy_get":     auth.ScopeSecurityRead,
+		"security_process_policy_set":     auth.ScopeSecurityWrite,
+		"security_process_policy_release": auth.ScopeSecurityWrite,
 		// security tools
 		"security_scan":          auth.ScopeSecurityWrite,
 		"security_remediate":     auth.ScopeSecurityWrite,

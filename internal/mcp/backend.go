@@ -106,6 +106,11 @@ type API interface {
 	// Threat-detection sentry (#1640).
 	GetSentryStatus() (*SentryStatusResponse, error)
 
+	// Process policy (#2636, #2666): what a HIGH mining finding does to its box.
+	GetProcessPolicy(container string) (*pb.GetProcessPolicyResponse, error)
+	SetProcessPolicy(req *pb.SetProcessPolicyRequest) (*pb.SetProcessPolicyResponse, error)
+	ReleaseProcessAction(container string) (*pb.ReleaseProcessActionResponse, error)
+
 	// Bridge DNS record status (#2188).
 	GetBridgeDNSStatus() (*BridgeDNSStatusResponse, error)
 
