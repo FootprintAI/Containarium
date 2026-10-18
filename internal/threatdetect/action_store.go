@@ -42,11 +42,13 @@ func (s *PGActionStore) initSchema(ctx context.Context) error {
 			prev_cpu_allow  TEXT        NOT NULL DEFAULT '',
 			killed_pid      INTEGER,
 			error           TEXT        NOT NULL DEFAULT '',
+			pending         BOOLEAN     NOT NULL DEFAULT FALSE,
 			applied_at      TIMESTAMPTZ NOT NULL,
 			expires_at      TIMESTAMPTZ NOT NULL,
 			released_at     TIMESTAMPTZ,
 			released_by     TEXT        NOT NULL DEFAULT ''
 		);
+		ALTER TABLE security_actions ADD COLUMN IF NOT EXISTS pending BOOLEAN NOT NULL DEFAULT FALSE;
 		CREATE UNIQUE INDEX IF NOT EXISTS security_actions_open_per_container
 			ON security_actions (container) WHERE released_at IS NULL;
 	`
@@ -55,7 +57,7 @@ func (s *PGActionStore) initSchema(ctx context.Context) error {
 }
 
 const actionColumns = `id, finding_id, container, tenant_id, action, prev_cpu_count, prev_cpu_allow,
-	error, applied_at, expires_at, released_at, released_by`
+	error, pending, applied_at, expires_at, released_at, released_by`
 
 func (s *PGActionStore) Insert(ctx context.Context, a *SecurityAction) error {
 	var releasedAt *time.Time
@@ -65,11 +67,11 @@ func (s *PGActionStore) Insert(ctx context.Context, a *SecurityAction) error {
 	}
 	row := s.pool.QueryRow(ctx, `
 		INSERT INTO security_actions
-			(finding_id, container, tenant_id, action, prev_cpu_count, prev_cpu_allow, error, applied_at, expires_at, released_at, released_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			(finding_id, container, tenant_id, action, prev_cpu_count, prev_cpu_allow, error, pending, applied_at, expires_at, released_at, released_by)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		RETURNING id
 	`, a.FindingID, a.Container, a.TenantID, a.Action.String(), a.PrevCPUCount, a.PrevCPUAllowance,
-		a.Error, a.AppliedAt, a.ExpiresAt, releasedAt, a.ReleasedBy)
+		a.Error, a.Pending, a.AppliedAt, a.ExpiresAt, releasedAt, a.ReleasedBy)
 	if err := row.Scan(&a.ID); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == pgUniqueViolation {
@@ -104,9 +106,64 @@ func (s *PGActionStore) Release(ctx context.Context, id int64, releasedBy string
 }
 
 func (s *PGActionStore) ListExpired(ctx context.Context, now time.Time) ([]*SecurityAction, error) {
-	rows, err := s.pool.Query(ctx, `SELECT `+actionColumns+` FROM security_actions WHERE released_at IS NULL AND expires_at <= $1 ORDER BY expires_at`, now)
+	rows, err := s.pool.Query(ctx, `SELECT `+actionColumns+` FROM security_actions WHERE released_at IS NULL AND NOT pending AND expires_at <= $1 ORDER BY expires_at`, now)
 	if err != nil {
 		return nil, fmt.Errorf("threatdetect: list expired security actions: %w", err)
+	}
+	defer rows.Close()
+	var out []*SecurityAction
+	for rows.Next() {
+		a, err := scanAction(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("threatdetect: iterate security actions: %w", err)
+	}
+	return out, nil
+}
+
+func (s *PGActionStore) MarkApplied(ctx context.Context, id int64) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE security_actions SET pending = FALSE WHERE id = $1 AND released_at IS NULL AND pending`, id)
+	if err != nil {
+		return fmt.Errorf("threatdetect: mark security action %d applied: %w", id, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("threatdetect: action %d: %w", id, ErrNoOpenAction)
+	}
+	return nil
+}
+
+func (s *PGActionStore) Fail(ctx context.Context, id int64, cause string, at time.Time) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE security_actions SET pending = FALSE, error = $2, released_at = $3, released_by = $4 WHERE id = $1 AND released_at IS NULL`,
+		id, cause, at, ReleasedByError)
+	if err != nil {
+		return fmt.Errorf("threatdetect: fail security action %d: %w", id, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("threatdetect: action %d: %w", id, ErrNoOpenAction)
+	}
+	return nil
+}
+
+func (s *PGActionStore) Latest(ctx context.Context, container string) (*SecurityAction, error) {
+	row := s.pool.QueryRow(ctx, `SELECT `+actionColumns+` FROM security_actions WHERE container = $1 ORDER BY id DESC LIMIT 1`, container)
+	a, err := scanAction(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("threatdetect: %s: %w", container, ErrNoOpenAction)
+		}
+		return nil, err
+	}
+	return a, nil
+}
+
+func (s *PGActionStore) ListOrphaned(ctx context.Context, cutoff time.Time) ([]*SecurityAction, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+actionColumns+` FROM security_actions WHERE released_at IS NULL AND pending AND applied_at <= $1 ORDER BY applied_at`, cutoff)
+	if err != nil {
+		return nil, fmt.Errorf("threatdetect: list orphaned security actions: %w", err)
 	}
 	defer rows.Close()
 	var out []*SecurityAction
@@ -128,7 +185,7 @@ func scanAction(row rowScanner) (*SecurityAction, error) {
 	var action string
 	var releasedAt *time.Time
 	if err := row.Scan(&a.ID, &a.FindingID, &a.Container, &a.TenantID, &action, &a.PrevCPUCount, &a.PrevCPUAllowance,
-		&a.Error, &a.AppliedAt, &a.ExpiresAt, &releasedAt, &a.ReleasedBy); err != nil {
+		&a.Error, &a.Pending, &a.AppliedAt, &a.ExpiresAt, &releasedAt, &a.ReleasedBy); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, err
 		}

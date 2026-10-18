@@ -19,7 +19,15 @@ const (
 	// open slot (the rule's next sweep re-fires the finding, which is the
 	// retry).
 	ReleasedByError = "error"
+	// ReleasedByOrphanSweep marks a row that stayed PENDING (inserted, never
+	// confirmed applied — the daemon died mid-apply) and was undone by the
+	// sweep.
+	ReleasedByOrphanSweep = "orphan-sweep"
 )
+
+// PendingOrphanAfter is how long a PENDING row may wait for its actuator
+// call to be confirmed before the sweep treats it as orphaned.
+const PendingOrphanAfter = 5 * time.Minute
 
 // ErrNoOpenAction reports that a container has no action in effect.
 var ErrNoOpenAction = errors.New("no open process action for container")
@@ -43,7 +51,11 @@ type SecurityAction struct {
 	PrevCPUCount     string
 	PrevCPUAllowance string
 	// Error is the Incus failure text when the apply did not take effect.
-	Error     string
+	Error string
+	// Pending is true between the row's insert and the actuator call being
+	// confirmed (MarkApplied) or failed (Fail). The row is written first so
+	// a crash mid-apply leaves a record the sweep can undo.
+	Pending   bool
 	AppliedAt time.Time
 	ExpiresAt time.Time
 	// ReleasedAt is zero while the action is in effect.
@@ -67,6 +79,17 @@ type ActionStore interface {
 	// ListExpired returns the open actions whose expires_at is at or before
 	// now, oldest first.
 	ListExpired(ctx context.Context, now time.Time) ([]*SecurityAction, error)
+	// MarkApplied confirms pending action id took effect.
+	MarkApplied(ctx context.Context, id int64) error
+	// Fail closes pending action id as failed with cause: released at `at`
+	// by ReleasedByError, so it stops holding the open slot.
+	Fail(ctx context.Context, id int64, cause string, at time.Time) error
+	// Latest returns the container's most recent action, open or not, or
+	// ErrNoOpenAction when it has none.
+	Latest(ctx context.Context, container string) (*SecurityAction, error)
+	// ListOrphaned returns the open actions still PENDING that were applied
+	// (inserted) at or before cutoff.
+	ListOrphaned(ctx context.Context, cutoff time.Time) ([]*SecurityAction, error)
 }
 
 // memActionRingCap bounds the degraded-mode store like memFindingRingCap.
@@ -135,7 +158,56 @@ func (s *MemActionStore) ListExpired(_ context.Context, now time.Time) ([]*Secur
 	defer s.mu.Unlock()
 	var out []*SecurityAction
 	for _, r := range s.rows {
-		if r.Open() && !r.ExpiresAt.After(now) {
+		if r.Open() && !r.Pending && !r.ExpiresAt.After(now) {
+			cp := *r
+			out = append(out, &cp)
+		}
+	}
+	return out, nil
+}
+
+func (s *MemActionStore) MarkApplied(_ context.Context, id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, r := range s.rows {
+		if r.ID == id && r.Open() && r.Pending {
+			r.Pending = false
+			return nil
+		}
+	}
+	return fmt.Errorf("threatdetect: action %d: %w", id, ErrNoOpenAction)
+}
+
+func (s *MemActionStore) Fail(_ context.Context, id int64, cause string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, r := range s.rows {
+		if r.ID == id && r.Open() {
+			r.Pending, r.Error, r.ReleasedAt, r.ReleasedBy = false, cause, at, ReleasedByError
+			return nil
+		}
+	}
+	return fmt.Errorf("threatdetect: action %d: %w", id, ErrNoOpenAction)
+}
+
+func (s *MemActionStore) Latest(_ context.Context, container string) (*SecurityAction, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := len(s.rows) - 1; i >= 0; i-- {
+		if s.rows[i].Container == container {
+			cp := *s.rows[i]
+			return &cp, nil
+		}
+	}
+	return nil, fmt.Errorf("threatdetect: %s: %w", container, ErrNoOpenAction)
+}
+
+func (s *MemActionStore) ListOrphaned(_ context.Context, cutoff time.Time) ([]*SecurityAction, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []*SecurityAction
+	for _, r := range s.rows {
+		if r.Open() && r.Pending && !r.AppliedAt.After(cutoff) {
 			cp := *r
 			out = append(out, &cp)
 		}
