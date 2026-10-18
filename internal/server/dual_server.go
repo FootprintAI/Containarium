@@ -1813,6 +1813,11 @@ skipAppHosting:
 				metricsCollector = mc
 				log.Printf("OTel metrics collector configured (target: %s)", config.VictoriaMetricsURL)
 
+				// Bridge DNS drift gauges and their built-in alerts (#2194).
+				if err := attachBridgeDNSMetrics(bridgeDNS, mc.MeterProvider()); err != nil {
+					log.Printf("Warning: bridge DNS metrics disabled: %v", err)
+				}
+
 				// Per-stage create latency (Phase 0 of
 				// docs/architecture/two-digit-ms-sandbox-spawn.md).
 				if obs, err := metrics.NewCreateStageObserver(mc.MeterProvider()); err != nil {
