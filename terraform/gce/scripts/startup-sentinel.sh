@@ -166,7 +166,7 @@ cat > /etc/logrotate.d/containarium-ssh-sessions <<LOGROTATE_EOF
     notifempty
     create 0600 root root
     postrotate
-        pkill -HUP -f '^/usr/local/bin/containariumd? sentinel ssh-(session|authz)-plugin' || true
+        pkill -HUP -f '^/usr/local/bin/containariumd? sentinel ssh-session-plugin' || true
     endscript
 }
 LOGROTATE_EOF

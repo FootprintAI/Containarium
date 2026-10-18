@@ -89,8 +89,11 @@ The plugin accepts the same socket path and:
 | `--records-file` | `/var/log/containarium/ssh-sessions.jsonl` | Where enforced denials are appended; same file as `ssh-session-plugin`. Opened only with `--ssh-authz-enforce`; empty disables denied records |
 
 Both plugins append whole JSON lines to the records file with `O_APPEND`.
-The plugins reopen it on SIGHUP, and the supplied logrotate stanza signals
-both of them. With the Terraform module, set `ssh_authz_enforce = true`. It
+The plugins reopen it on SIGHUP. The module's logrotate stanza signals
+`ssh-session-plugin` and only an `ssh-authz-plugin` running with
+`--ssh-authz-enforce`, the one that holds the file. An audit-only or
+pre-enforce plugin is never signalled, so a binary older than the startup
+script is not stopped by rotation. With the Terraform module, set `ssh_authz_enforce = true`. It
 adds `--ssh-authz-enforce` and `--records-file` to the tenant listener's
 unit. The anonymous-box listener is not affected.
 
