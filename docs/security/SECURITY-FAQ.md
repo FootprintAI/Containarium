@@ -205,6 +205,25 @@ resolver is allowed automatically. See "Allow-list-only preset and plan" in
 address can still add it with `containarium security bad-destinations add`
 so the sentry flags flows to it.
 
+## Does the platform read my files to scan for malware?
+
+The malware scan is designed to run **inside your own box, with the box's own
+privileges, started by the box's owner** (#2631). The platform does not mount,
+stream or read a tenant's files in order to scan them; it receives only the
+verdict record — status, signature names and counts, duration and scanner
+version — and file paths are not reported by default.
+
+That is a commitment about the scan feature, not a claim that the platform is
+technically unable to read tenant data. As described above, root on the host
+owns everything, and operators with host access retain it. Because the scan runs
+in the box, its verdict is **self-reported**: a compromised box can report
+"clean", so Containarium does not use a clean verdict to lift a network
+quarantine or as platform assurance. A box that has never been scanned is
+shown as never scanned, not clean.
+
+Status: the previous central scanner could not read tenant files and recorded
+every scan as incomplete; the in-box scan is being built under #2631.
+
 ## Where do I go for the operational detail?
 
 - [`SECURITY.md`](../../SECURITY.md) — vulnerability reporting,

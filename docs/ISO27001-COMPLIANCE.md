@@ -76,7 +76,7 @@ This document assesses Containarium against ISO 27001:2022 Annex A controls, tra
 | A.8.4 | Access to source code | Partial | `.gitignore` excludes secrets | Gap: no branch protection rules documented |
 | A.8.5 | Secure authentication | Partial | JWT+mTLS, 30-day max expiry (`internal/auth/token.go`) | Gap: **no MFA**, tokens in browser localStorage (XSS risk) |
 | A.8.6 | Capacity management | Partial | CPU/memory/disk quotas per container (`internal/container/manager.go`) | Gap: no capacity monitoring alerts |
-| A.8.7 | Protection against malware | Present | ClamAV scanning with job queue (`internal/security/scanner.go`, `internal/security/store.go`) | 90-day retention, async workers |
+| A.8.7 | Protection against malware | Partial | Platform-side: egress deny rules and eBPF threat detection where enabled. ClamAV is a **tenant-run scan, with a self-reported verdict**, being rebuilt to run inside the tenant's own box (#2631) | Gap: the current central ClamAV scan completes no scans (every one is recorded `incomplete`), so it must not be relied on as a platform control. A tenant-run scan is a customer capability, not platform assurance |
 | A.8.8 | Technical vulnerability management | Present | Dependabot for Go modules + GitHub Actions (`.github/dependabot.yml`), Trivy filesystem scan (`.github/workflows/security.yml`), govulncheck for Go-specific CVEs | — |
 | A.8.9 | Configuration management | Partial | Terraform IaC (`terraform/`), `tfvars.example` pattern | Gap: no config baseline or drift detection |
 | A.8.10 | Information deletion | Partial | Container cleanup on deletion, 90-day scan retention | Gap: no data retention policy document |
@@ -157,7 +157,7 @@ These controls are strong evidence toward Annex A compliance:
 | Container isolation | Unprivileged LXC by default | `internal/container/manager.go` |
 | Transport encryption | mTLS (gRPC) + auto TLS (Caddy/ACME) | `internal/mtls/`, `internal/hosting/caddy.go` |
 | Network architecture | SSH jump host, sentinel HA | `internal/container/jump_server.go`, `internal/sentinel/` |
-| Malware scanning | ClamAV with async job queue | `internal/security/scanner.go` |
+| Malware scanning | Tenant-run ClamAV scan, self-reported verdict (redesign in progress, #2631) | `internal/security/scanner.go` |
 | Infrastructure as Code | Terraform with parameterized modules | `terraform/modules/containarium/` |
 | Secret hygiene | `.gitignore` excludes keys/state/env files | `.gitignore` |
 | Token expiry | Max 30-day enforcement | `internal/auth/token.go` |
