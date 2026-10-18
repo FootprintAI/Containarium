@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`process-policy set` changes only the fields it carries** (#2675). A request used to replace the stored policy wholesale, so tuning the mining thresholds wiped the configured action, allowance and TTL (the result depended on the order of two `set` calls) and a lone `--action` dropped the allowance and TTL. An unset action, `throttle_allowance` or `ttl` now keeps its stored value, at the backend default and on a container override; a thresholds-only set on a fresh backend stores no policy.
+||||||| c6bb7b17
+- **The mining-behavior window has a floor: 3 minutes** (#2674). At the 30 s CPU sample cadence a window under about 150 s can never meet the rule's coverage requirement, so it was accepted and then never fired (verified on a live guest: samples=4 coverage=1m30s against 96 s needed for a 2 m window). `process-policy set --rule mining-behavior --window` now rejects windows below `MinMiningWindow`, and a test drives every accepted window on the real cadence.
+||||||| 26ebc452
 - **THROTTLE is now a hard CPU cap** (#2676). The process responder wrote the policy's `10%` straight to Incus as `limits.cpu.allowance`, which Incus reads as a soft share: on a verified host the kernel `cpu.max` went from a 2-core quota to `max` and the "throttled" box still ran at 2.0 cores. `throttle_allowance` now means N percent of one core and is applied as the hard quota `Nms/100ms` (an explicit `Xms/Yms` is kept), never looser than the box's existing hard cap. Release still restores the recorded limits verbatim. The real-Incus e2e now reads the kernel's `cpu.max`.
 - **The sentry-unavailable finding now also fires when the CPU sampler cannot run** (#2660). An armed backend whose `cpu_sampler` status begins `unavailable` (for example no metrics collector and no usable Incus client, #2645) is blind to CPU, so the `mining-behavior` rule cannot fire; it now raises the same MEDIUM `SENTRY_UNAVAILABLE` finding with the stable subject `cpu-sampler unavailable` (the sampler's detail is in the evidence note), combined with any other sentry fault in one finding, and resolved when the sampler reports `metrics-collector` or `standalone (30s)`.
 - **`containarium security clamav install <box>` installs ClamAV and its signatures inside a box** (#2659, part of #2631). Needed for the tenant-run malware scan, which reports `not_installed` otherwise. Started by the box owner; the install runs in the box and the result is a typed `ClamavInstallOutcome` (installed, already present, unsupported OS family, unsupported size under 4 GB RAM, failed) with a fixed message, no package output kept. Idempotent. Also the `install_clamav` MCP tool and `POST /v1/security/clamav-install`. Debian/Ubuntu boxes only; boxes on a peer backend are not forwarded yet.
@@ -26,6 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`containarium create --idle-stop` help states the real default** (FootprintAI/Containarium-cloud#2759, criterion 1). It said "Empty = no auto-sleep", which is wrong on the hosted platform, where an org billed per seat defaults to a 30-minute idle-stop. The help and `docs/integrations/pi.md` now give both defaults. The matching opt-out (criterion 2) needs a contract decision and is not part of this change.
+
 - **`process-policy get` shows the mining-behavior thresholds the rule is using** (#2675). It printed the stored message, whose fields are zero for anything never set (`min cores 0`, empty ports), instead of the effective values; it now prints the effective thresholds.
 
 - **Correction: v0.107.0 did not restore malware scans** (#2656, part of #2631). The v0.107.0 note that malware scans can read root-only files again was wrong. Running `clamd` as root inside the scanner container does not help, because the tenant rootfs is owned by host root and that user is unmapped in the scanner container's user namespace, so every scan was still recorded `incomplete`. Malware scanning is being rebuilt to run inside the tenant's own box, started by its owner (#2631). The ISO 27001 A.8.7 row is downgraded to Partial, the README no longer lists ClamAV as a platform-wide scan, and `docs/security/SECURITY-FAQ.md` states what the platform does and does not read.
@@ -33,6 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - **The platform no longer starts malware scans, and no longer mounts tenant rootfs into the security container** (#2657, part of #2631). Removed: the scan 5 minutes after daemon start, the 24-hour scan loop, the scan 2 minutes after a box is created, and scan-all (`TriggerClamavScan` with a blank `container_name` is now `InvalidArgument` for an admin; the web UI's "Scan All" button is gone). The disk-device mount of a tenant's rootfs and ClamAV provisioning in the security container (including v0.107.0's clamd-as-root change, which did not help) are removed; the security container stays for the ZAP scanner. A scan requested for one box now records an `incomplete` report (never `clean`) until the in-box scan runner lands. `--disable-security-scanner` now only skips the scan job queue and report store.
+
+### Internal
+
+- **The box-run start tests no longer race their own temp dir, and skip on non-Linux** (#2677). A run started by a test kept writing its log and exit sidecar after the test returned, so `t.TempDir`'s cleanup intermittently failed with `directory not empty` in CI (`TestStartBoxRun_RotatesAFinishedRunUnderTheSameName`). The shared `boxRunStartServer` helper now drains every run the test started before the directory is removed. The same tests failed on macOS because the spawn and stop scripts use `setsid` and `ps -eo`, which only exist in the Linux boxes they model; they now skip there with that reason.
 
 ## [0.107.0] - 2026-10-18
 

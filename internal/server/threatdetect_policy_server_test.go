@@ -225,3 +225,91 @@ func TestGetProcessPolicy_EffectiveThresholds(t *testing.T) {
 		})
 	}
 }
+
+// A SetProcessPolicy that carries only some fields must change only those
+// fields. Tuning the mining thresholds used to replace the stored policy with
+// an empty one, silently wiping the configured action, allowance and TTL, and
+// the result depended on the order of two `process-policy set` calls (#2675).
+func TestSetProcessPolicy_PartialUpdatesKeepTheRest(t *testing.T) {
+	throttle := &pb.ProcessPolicy{Action: pb.ProcessAction_PROCESS_ACTION_THROTTLE, ThrottleAllowance: "20%", Ttl: durationpb.New(2 * time.Hour)}
+	thresholds := &pb.ProcessPolicy{MiningBehavior: &pb.MiningBehaviorThresholds{Window: durationpb.New(5 * time.Minute)}}
+	freezeOnly := &pb.ProcessPolicy{Action: pb.ProcessAction_PROCESS_ACTION_FREEZE}
+	for _, container := range []string{"", "box-a"} {
+		name := "backend default"
+		if container != "" {
+			name = "container override"
+		}
+		t.Run(name+"/thresholds after action keep the action", func(t *testing.T) {
+			s, cfg := newPolicyServerWithThresholds(t)
+			mustSet(t, s, container, throttle)
+			if container != "" {
+				// thresholds are backend-wide: set them at the default level
+				mustSet(t, s, "", thresholds)
+			} else {
+				mustSet(t, s, container, thresholds)
+			}
+			eff := mustEffective(t, s, container)
+			if eff.GetAction() != pb.ProcessAction_PROCESS_ACTION_THROTTLE || eff.GetThrottleAllowance() != "20%" || eff.GetTtl().AsDuration() != 2*time.Hour {
+				t.Fatalf("effective after thresholds-only set = %v, want THROTTLE/20%%/2h kept", eff)
+			}
+			if cfg.Effective().Window != 5*time.Minute {
+				t.Errorf("window = %v, want 5m applied", cfg.Effective().Window)
+			}
+		})
+		t.Run(name+"/action after thresholds keeps the thresholds", func(t *testing.T) {
+			s, cfg := newPolicyServerWithThresholds(t)
+			mustSet(t, s, "", thresholds)
+			mustSet(t, s, container, throttle)
+			if cfg.Effective().Window != 5*time.Minute {
+				t.Errorf("window = %v, want 5m kept after an action-only set", cfg.Effective().Window)
+			}
+		})
+		t.Run(name+"/changing only the action keeps allowance and ttl", func(t *testing.T) {
+			s, _ := newPolicyServerWithThresholds(t)
+			mustSet(t, s, container, throttle)
+			mustSet(t, s, container, freezeOnly)
+			eff := mustEffective(t, s, container)
+			if eff.GetAction() != pb.ProcessAction_PROCESS_ACTION_FREEZE || eff.GetThrottleAllowance() != "20%" || eff.GetTtl().AsDuration() != 2*time.Hour {
+				t.Fatalf("effective = %v, want FREEZE with allowance 20%% and ttl 2h kept", eff)
+			}
+		})
+	}
+	t.Run("thresholds only on a fresh backend does not create a stored policy", func(t *testing.T) {
+		s, _ := newPolicyServerWithThresholds(t)
+		mustSet(t, s, "", thresholds)
+		got, err := s.GetProcessPolicy(secReadCtx(), &pb.GetProcessPolicyRequest{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.GetPolicy().GetAction() != pb.ProcessAction_PROCESS_ACTION_UNSPECIFIED {
+			t.Errorf("stored action = %v, want unset", got.GetPolicy().GetAction())
+		}
+	})
+}
+
+func newPolicyServerWithThresholds(t *testing.T) (*ThreatDetectionServer, *threatdetect.MiningThresholdsConfig) {
+	t.Helper()
+	cfg, err := threatdetect.NewMiningThresholdsConfig(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _ := newPolicyServer(t)
+	s.SetMiningThresholdsConfig(cfg)
+	return s, cfg
+}
+
+func mustSet(t *testing.T, s *ThreatDetectionServer, container string, p *pb.ProcessPolicy) {
+	t.Helper()
+	if _, err := s.SetProcessPolicy(badDestAdminCtx(), &pb.SetProcessPolicyRequest{Container: container, Policy: p}); err != nil {
+		t.Fatalf("SetProcessPolicy(%q, %v): %v", container, p, err)
+	}
+}
+
+func mustEffective(t *testing.T, s *ThreatDetectionServer, container string) *pb.ProcessPolicy {
+	t.Helper()
+	resp, err := s.GetProcessPolicy(secReadCtx(), &pb.GetProcessPolicyRequest{Container: container})
+	if err != nil {
+		t.Fatalf("GetProcessPolicy(%q): %v", container, err)
+	}
+	return resp.GetEffective()
+}

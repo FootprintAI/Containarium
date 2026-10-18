@@ -137,11 +137,28 @@ func (s *ThreatDetectionServer) SetProcessPolicy(ctx context.Context, req *pb.Se
 		// policy free of a second copy.
 		pol := proto.Clone(req.GetPolicy()).(*pb.ProcessPolicy)
 		pol.MiningBehavior = nil
+		// A request sets only the fields it carries: an unset action,
+		// allowance or TTL keeps its stored value. Replacing the record
+		// wholesale made a thresholds-only set wipe the configured action,
+		// and a lone --action drop the allowance and TTL (#2675).
+		var stored *pb.ProcessPolicy
 		var err error
 		if container == "" {
-			err = s.policies.SetDefault(ctx, pol)
+			stored, err = s.policies.Default(ctx)
 		} else {
-			err = s.policies.SetOverride(ctx, container, pol)
+			stored, err = s.policies.Override(ctx, container)
+		}
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "read process policy: %v", err)
+		}
+		merged := mergeProcessPolicy(stored, pol)
+		if proto.Equal(merged, stored) || (stored == nil && proto.Equal(merged, &pb.ProcessPolicy{})) {
+			break // nothing to store (e.g. thresholds only on a fresh backend)
+		}
+		if container == "" {
+			err = s.policies.SetDefault(ctx, merged)
+		} else {
+			err = s.policies.SetOverride(ctx, container, merged)
 		}
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "set process policy: %v", err)
@@ -181,4 +198,24 @@ func (s *ThreatDetectionServer) ReleaseProcessAction(ctx context.Context, req *p
 		resp.Finding = f.ToProto()
 	}
 	return resp, nil
+}
+
+// mergeProcessPolicy overlays the fields set on update onto stored (nil is
+// an empty policy): action, throttle_allowance and ttl each replace the
+// stored value only when update carries one.
+func mergeProcessPolicy(stored, update *pb.ProcessPolicy) *pb.ProcessPolicy {
+	out := &pb.ProcessPolicy{}
+	if stored != nil {
+		out = proto.Clone(stored).(*pb.ProcessPolicy)
+	}
+	if update.GetAction() != pb.ProcessAction_PROCESS_ACTION_UNSPECIFIED {
+		out.Action = update.GetAction()
+	}
+	if update.GetThrottleAllowance() != "" {
+		out.ThrottleAllowance = update.GetThrottleAllowance()
+	}
+	if update.GetTtl() != nil && update.GetTtl().AsDuration() > 0 {
+		out.Ttl = update.GetTtl()
+	}
+	return out
 }
