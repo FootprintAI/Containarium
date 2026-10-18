@@ -350,6 +350,7 @@ type DualServer struct {
 	// GetSentryStatus regardless, reporting DISABLED/UNAVAILABLE explicitly
 	// when the engine itself wasn't constructed.
 	threatDetectEngine    *threatdetect.Engine
+	processResponder      *ProcessResponder               // process guardrail responder (#2636); nil when the sentry is off/unavailable
 	sshdPosture           *security.SSHDPostureReconciler // box sshd key-only reconciler (#2424); nil when disabled
 	threatDetectServer    *ThreatDetectionServer
 	threatDetectNotifier  *threatdetect.WebhookNotifier // nil unless threatDetectEngine is also non-nil (#1643)
@@ -2261,6 +2262,14 @@ skipAppHosting:
 	threatCfg := appconfig.LoadThreatDetect()
 	var threatDetectEngine *threatdetect.Engine
 	var threatDetectStore threatdetect.FindingReader
+	// Process policy (#2636) is settable before the sentry is armed, like
+	// the bad-destination list; the responder that acts on it exists only
+	// with a running sentry.
+	var processResponder *ProcessResponder
+	processPolicyStore := threatdetect.NewProcessPolicyStore(nil)
+	if config.DaemonConfigStore != nil {
+		processPolicyStore = threatdetect.NewProcessPolicyStore(config.DaemonConfigStore)
+	}
 	var threatDetectNotifier *threatdetect.WebhookNotifier
 	sentryAvailable := networkPolicyEnforcer != nil && auditStore != nil
 	sentryUnavailableReason := ""
@@ -2329,6 +2338,38 @@ skipAppHosting:
 				}
 			}
 
+			// Process responder (#2636): acts on HIGH mining findings per the
+			// effective ProcessPolicy and releases on operator request or TTL.
+			// Wrapped around the sink so every finding write passes through
+			// it. Without Postgres for security_actions it runs ALERT-only:
+			// a throttle whose previous-limit row could vanish on restart is
+			// worse than an alert (decided on #2641 Q2).
+			var actionStore threatdetect.ActionStore
+			if findingsPool != nil {
+				if as, aerr := threatdetect.NewActionStore(context.Background(), findingsPool); aerr != nil {
+					log.Printf("Warning: security_actions store init failed (%v); process responder running ALERT-only", aerr)
+				} else {
+					actionStore = as
+				}
+			}
+			responderDegraded := degraded || actionStore == nil
+			if actionStore == nil {
+				actionStore = threatdetect.NewMemActionStore()
+			}
+			if lifecycle, ok := sink.(findingLifecycle); !ok {
+				log.Printf("Warning: process responder disabled: finding store %T cannot record responses", sink)
+			} else if responderIncus, ierr := incus.New(); ierr != nil {
+				log.Printf("Warning: process responder disabled: incus client: %v", ierr)
+			} else {
+				processResponder = NewProcessResponder(processPolicyStore, actionStore, lifecycle, incusActuator{c: responderIncus}, auditStore, responderDegraded)
+				sink = NewActingSink(sink, processResponder)
+				if responderDegraded {
+					log.Printf("Process responder enabled — DEGRADED (no persistence): responses disabled, ALERT only")
+				} else {
+					log.Printf("Process responder enabled (policy via `containarium security process-policy`)")
+				}
+			}
+
 			findingSink = sink
 			threatDetectEngine = threatdetect.NewEngine(sink, "", degraded, networkPolicyEnforcer.TenantForIP, nil)
 			// Fence-probe rules (#1642): a breached fence (cross-tenant
@@ -2349,6 +2390,8 @@ skipAppHosting:
 	}
 	threatDetectServer := NewThreatDetectionServer(threatDetectEngine, threatCfg.SentryEnabled, sentryAvailable, sentryUnavailableReason)
 	threatDetectServer.SetFindingStore(threatDetectStore)
+	threatDetectServer.SetProcessPolicyStore(processPolicyStore)
+	threatDetectServer.SetProcessResponder(processResponder)
 
 	// Box sshd posture reconciler (#2424): keeps every running box's sshd
 	// key-only by re-asserting the managed drop-in and recording tampering
@@ -2397,6 +2440,7 @@ skipAppHosting:
 			miningCfg, _ = threatdetect.NewMiningThresholdsConfig(context.Background(), nil)
 		}
 		threatDetectEngine.SetMiningThresholds(miningCfg.Effective)
+		threatDetectServer.SetMiningThresholdsConfig(miningCfg)
 		threatDetectEngine.Register(threatdetect.NewMiningBehaviorRule(listedDestinations))
 	}
 	pb.RegisterThreatDetectionServiceServer(grpcServer, threatDetectServer)
@@ -2943,6 +2987,7 @@ skipAppHosting:
 		startTime:              time.Now(),
 		sandboxServer:          sandboxServer,
 		threatDetectEngine:     threatDetectEngine,
+		processResponder:       processResponder,
 		threatDetectServer:     threatDetectServer,
 		threatDetectNotifier:   threatDetectNotifier,
 	}
@@ -3397,6 +3442,9 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		if ds.threatDetectEngine != nil {
 			ds.threatDetectEngine.SetBackendID(ds.peerPool.LocalBackendID())
 		}
+		if ds.processResponder != nil {
+			ds.processResponder.SetBackendID(ds.peerPool.LocalBackendID())
+		}
 		if ds.sshdPosture != nil {
 			ds.sshdPosture.SetBackendID(ds.peerPool.LocalBackendID())
 		}
@@ -3639,6 +3687,11 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		ds.k8sNetPolicyReconciler.Start(ctx)
 	}
 
+	if ds.processResponder != nil {
+		// TTL backstop for process actions (#2636): every 60s, release
+		// expired throttles/freezes and raise PROCESS_ACTION_EXPIRED.
+		go ds.processResponder.Run(ctx)
+	}
 	if ds.sshdPosture != nil {
 		ds.sshdPosture.Start(ctx)
 	}

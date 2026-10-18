@@ -83,6 +83,7 @@ func (s *FindingStore) initSchema(ctx context.Context) error {
 		);
 		CREATE UNIQUE INDEX IF NOT EXISTS security_findings_open_dedupe
 			ON security_findings (rule, tenant_id, subject) WHERE state = 'open';
+		ALTER TABLE security_findings ADD COLUMN IF NOT EXISTS response JSONB;
 	`
 	_, err := s.pool.Exec(ctx, schema)
 	return err
@@ -215,16 +216,16 @@ func (s *FindingStore) tryUpsert(ctx context.Context, f *Finding) (out *Finding,
 
 	now := time.Now()
 	row := tx.QueryRow(ctx, `
-		SELECT id, count, evidence, severity
+		SELECT id, count, evidence, severity, response
 		FROM security_findings
 		WHERE rule = $1 AND tenant_id = $2 AND subject = $3 AND state = 'open'
 		FOR UPDATE
 	`, f.Rule.String(), f.TenantID, f.Subject)
 
 	var id, count int64
-	var evidenceJSON []byte
+	var evidenceJSON, responseJSON []byte
 	var storedSeverity string
-	selErr := row.Scan(&id, &count, &evidenceJSON, &storedSeverity)
+	selErr := row.Scan(&id, &count, &evidenceJSON, &storedSeverity, &responseJSON)
 
 	switch {
 	case selErr == nil:
@@ -248,6 +249,11 @@ func (s *FindingStore) tryUpsert(ctx context.Context, f *Finding) (out *Finding,
 			ID: id, Rule: f.Rule, Severity: severity, TenantID: f.TenantID,
 			Container: f.Container, BackendID: f.BackendID, Subject: f.Subject,
 			State: FindingStateOpen, Count: newCount, Evidence: merged, LastSeen: now,
+		}
+		// Carry the stored response back so the process responder's
+		// dedupe sees what it already did about this finding (#2636).
+		if out.Response, err = unmarshalResponse(responseJSON); err != nil {
+			return nil, false, err
 		}
 	case errors.Is(selErr, pgx.ErrNoRows):
 		f.FirstSeen, f.LastSeen = now, now
@@ -319,7 +325,7 @@ func (s *FindingStore) tryUpsert(ctx context.Context, f *Finding) (out *Finding,
 func (s *FindingStore) Get(ctx context.Context, id int64) (*Finding, error) {
 	row := s.pool.QueryRow(ctx, `
 		SELECT id, rule, severity, tenant_id, container, backend_id, subject,
-		       state, count, evidence, first_seen, last_seen
+		       state, count, evidence, first_seen, last_seen, response
 		FROM security_findings WHERE id = $1
 	`, id)
 	return scanFinding(row)
@@ -335,7 +341,7 @@ func (s *FindingStore) List(ctx context.Context, filter ListFilter) ([]*Finding,
 	}
 	query := `
 		SELECT id, rule, severity, tenant_id, container, backend_id, subject,
-		       state, count, evidence, first_seen, last_seen
+		       state, count, evidence, first_seen, last_seen, response
 		FROM security_findings
 		WHERE 1 = 1
 	`
@@ -412,6 +418,42 @@ func (s *FindingStore) Resolve(ctx context.Context, id int64) (*Finding, error) 
 	return f, nil
 }
 
+// SetResponse records what the process responder did about finding id
+// (#2636) and emits the updated finding. The audit entry for the action
+// itself is the responder's (category security.action); this only updates
+// the finding row.
+func (s *FindingStore) SetResponse(ctx context.Context, id int64, r FindingResponse) (*Finding, error) {
+	raw, err := json.Marshal(r)
+	if err != nil {
+		return nil, fmt.Errorf("threatdetect: marshal finding response: %w", err)
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE security_findings SET response = $1 WHERE id = $2`, raw, id)
+	if err != nil {
+		return nil, fmt.Errorf("threatdetect: set response on finding %d: %w", id, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return nil, fmt.Errorf("threatdetect: finding %d: %w", id, ErrFindingNotFound)
+	}
+	f, err := s.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	s.emitter.EmitSecurityFinding(f.ToProto())
+	return f, nil
+}
+
+// unmarshalResponse decodes the nullable response column.
+func unmarshalResponse(raw []byte) (*FindingResponse, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var r FindingResponse
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return nil, fmt.Errorf("threatdetect: unmarshal finding response: %w", err)
+	}
+	return &r, nil
+}
+
 // rowScanner is the subset of pgx.Row / pgx.Rows that scanFinding needs.
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -420,9 +462,9 @@ type rowScanner interface {
 func scanFinding(row rowScanner) (*Finding, error) {
 	var f Finding
 	var rule, severity, state string
-	var evidenceJSON []byte
+	var evidenceJSON, responseJSON []byte
 	err := row.Scan(&f.ID, &rule, &severity, &f.TenantID, &f.Container, &f.BackendID,
-		&f.Subject, &state, &f.Count, &evidenceJSON, &f.FirstSeen, &f.LastSeen)
+		&f.Subject, &state, &f.Count, &evidenceJSON, &f.FirstSeen, &f.LastSeen, &responseJSON)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrFindingNotFound
@@ -434,6 +476,9 @@ func scanFinding(row rowScanner) (*Finding, error) {
 	f.State = FindingState(state)
 	if err := json.Unmarshal(evidenceJSON, &f.Evidence); err != nil {
 		return nil, fmt.Errorf("threatdetect: unmarshal evidence: %w", err)
+	}
+	if f.Response, err = unmarshalResponse(responseJSON); err != nil {
+		return nil, err
 	}
 	return &f, nil
 }

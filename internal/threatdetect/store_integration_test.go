@@ -43,6 +43,11 @@ func threatdetectPool(t *testing.T) *pgxpool.Pool {
 	// setup and produced spurious "relation does not exist" / duplicate
 	// pg_type failures. audit.NewStore's initSchema is idempotent and safe
 	// to call against a table this package doesn't own.
+	// security_actions (#2636) references security_findings, so it goes
+	// first.
+	if _, err := pool.Exec(context.Background(), `DROP TABLE IF EXISTS security_actions`); err != nil {
+		t.Fatalf("reset (security_actions): %v", err)
+	}
 	if _, err := pool.Exec(context.Background(), `DROP TABLE IF EXISTS security_findings`); err != nil {
 		t.Fatalf("reset (security_findings): %v", err)
 	}
