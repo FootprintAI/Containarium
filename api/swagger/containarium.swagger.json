@@ -14068,7 +14068,7 @@
         },
         "reason": {
           "type": "string",
-          "description": "Human-readable explanation, always set for DISABLED/UNAVAILABLE."
+          "description": "Human-readable explanation, always set for DISABLED/UNAVAILABLE/\nDEGRADED, and also set while the state is OK but a rule is unhealthy\n(\"rule \u003cRULE\u003e unhealthy: \u003clast_error\u003e\"). The sentry-health loop (#2634)\nuses this exact string as the SENTRY_UNAVAILABLE finding's subject."
         },
         "rules": {
           "type": "array",
@@ -19115,10 +19115,11 @@
         "THREAT_RULE_ID_CROSS_TENANT_FLOW",
         "THREAT_RULE_ID_DENY_BURST",
         "THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH",
-        "THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER"
+        "THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER",
+        "THREAT_RULE_ID_SENTRY_UNAVAILABLE"
       ],
       "default": "THREAT_RULE_ID_UNSPECIFIED",
-      "description": "ThreatRuleId identifies which detection rule raised a finding.\n\n - THREAT_RULE_ID_BAD_DESTINATION: Flow to a known-bad destination (e.g. a mining pool).\n - THREAT_RULE_ID_CROSS_TENANT_FLOW: Flow whose source and destination belong to different tenants.\n - THREAT_RULE_ID_DENY_BURST: Burst of policy denies for one tenant within a time window.\n - THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH: A box's effective sshd configuration permitted password login, or the\nplatform-managed key-only drop-in had been removed or altered (#2424).\nRaised by the box sshd posture reconciler after it re-asserts the\ndrop-in; the evidence names the offending directive and file.\n - THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER: A box is listening with an SSH server that is not the distro sshd\nservice on a port its sshd_config declares (#2439): a second sshd, a\ndropbear, or the stock sshd started with its own config. Raised by the\nsame posture pass as rule 4; record-only, the platform never kills a\ntenant's process. The evidence names the port, pid and binary."
+      "description": "ThreatRuleId identifies which detection rule raised a finding.\n\n - THREAT_RULE_ID_BAD_DESTINATION: Flow to a known-bad destination (e.g. a mining pool).\n - THREAT_RULE_ID_CROSS_TENANT_FLOW: Flow whose source and destination belong to different tenants.\n - THREAT_RULE_ID_DENY_BURST: Burst of policy denies for one tenant within a time window.\n - THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH: A box's effective sshd configuration permitted password login, or the\nplatform-managed key-only drop-in had been removed or altered (#2424).\nRaised by the box sshd posture reconciler after it re-asserts the\ndrop-in; the evidence names the offending directive and file.\n - THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER: A box is listening with an SSH server that is not the distro sshd\nservice on a port its sshd_config declares (#2439): a second sshd, a\ndropbear, or the stock sshd started with its own config. Raised by the\nsame posture pass as rule 4; record-only, the platform never kills a\ntenant's process. The evidence names the port, pid and binary.\n - THREAT_RULE_ID_SENTRY_UNAVAILABLE: An armed backend (CONTAINARIUM_THREAT_SENTRY set) whose sentry is not\nrunning cleanly: UNAVAILABLE, DEGRADED, or any rule unhealthy (#2634).\nRaised by the daemon's sentry-health loop, not by a rule — a rule cannot\nrun when the engine cannot. Subject is the GetSentryStatus reason string;\nresolved automatically once the sentry reports OK. Tenant and container\nare empty: this is a backend-level finding."
     },
     "ThreatSeverity": {
       "type": "string",

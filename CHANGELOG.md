@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **An armed backend whose threat sentry is not running raises a finding** (#2634). With `CONTAINARIUM_THREAT_SENTRY=1` set, a new sentry-health loop checks `GetSentryStatus` at daemon start and every 60 s; while the state is `UNAVAILABLE` or `DEGRADED`, or a rule is unhealthy, it upserts a MEDIUM `SENTRY_UNAVAILABLE` finding (new `ThreatRuleId` 8, no tenant or container) whose subject is the reason `containarium security sentry status` prints, delivered to the findings webhook like any other finding. A changed reason opens a new finding and resolves the old one; recovery resolves it, including a row left open by an earlier daemon process. The finding store and webhook notifier are now built whenever the sentry is armed and the audit store is up, not only when the eBPF object loaded. An unhealthy rule now also appears in the status `reason` (`rule <RULE> unhealthy: <error>`). A backend without the variable set runs no loop and raises nothing. Not covered: with no audit store (no Postgres) no finding can be recorded; the daemon logs a warning and the status still reports `UNAVAILABLE`.
+
 ## [0.107.0] - 2026-10-18
 
 _Malware scans can read root-only files in scanned rootfs (they were all recorded incomplete), threat detection stops counting observation-only denies, a new alertable signal for backup-health read failures, and managed session termination reports ids it cannot map._

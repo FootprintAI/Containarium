@@ -37,6 +37,13 @@ enum ThreatRuleId {
   // same posture pass as rule 4; record-only, the platform never kills a
   // tenant's process. The evidence names the port, pid and binary.
   THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER = 5;
+  // An armed backend (CONTAINARIUM_THREAT_SENTRY set) whose sentry is not
+  // running cleanly: UNAVAILABLE, DEGRADED, or any rule unhealthy (#2634).
+  // Raised by the daemon's sentry-health loop, not by a rule — a rule cannot
+  // run when the engine cannot. Subject is the GetSentryStatus reason string;
+  // resolved automatically once the sentry reports OK. Tenant and container
+  // are empty: this is a backend-level finding.
+  THREAT_RULE_ID_SENTRY_UNAVAILABLE = 8;
 }
 
 // FindingState is the lifecycle state of a security finding.
@@ -169,7 +176,10 @@ message GetSentryStatusRequest {}
 
 message GetSentryStatusResponse {
   SentryState state = 1;
-  // Human-readable explanation, always set for DISABLED/UNAVAILABLE.
+  // Human-readable explanation, always set for DISABLED/UNAVAILABLE/
+  // DEGRADED, and also set while the state is OK but a rule is unhealthy
+  // ("rule <RULE> unhealthy: <last_error>"). The sentry-health loop (#2634)
+  // uses this exact string as the SENTRY_UNAVAILABLE finding's subject.
   string reason = 2;
   repeated RuleStatus rules = 3;
 }

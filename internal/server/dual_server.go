@@ -352,8 +352,17 @@ type DualServer struct {
 	threatDetectEngine    *threatdetect.Engine
 	sshdPosture           *security.SSHDPostureReconciler // box sshd key-only reconciler (#2424); nil when disabled
 	threatDetectServer    *ThreatDetectionServer
-	threatDetectNotifier  *threatdetect.WebhookNotifier // nil unless threatDetectEngine is also non-nil (#1643)
+	threatDetectNotifier  *threatdetect.WebhookNotifier // nil unless a finding store was built (armed + audit store) (#1643)
 	threatDetectSweepStop context.CancelFunc
+
+	// sentryHealthStore is the finding store the sentry-health loop (#2634)
+	// writes SENTRY_UNAVAILABLE into. Built whenever the sentry is armed and
+	// the audit store is up — independent of the eBPF object, because a
+	// missing object is exactly the fault the loop has to record. nil when
+	// unarmed (the loop never runs) or when no store could be built.
+	sentryHealthStore sentryHealthStore
+	threatSentryArmed bool               // CONTAINARIUM_THREAT_SENTRY=1
+	sentryHealthStop  context.CancelFunc // stops the sentry-health loop and the webhook notifier
 }
 
 // bridgeDNSRaw builds the incusbr0 `raw.dnsmasq` value for container DNS.
@@ -2269,7 +2278,13 @@ skipAppHosting:
 	// records into; it stays nil when the sentry is off or unavailable and
 	// the reconciler then logs instead.
 	var findingSink threatdetect.FindingSink
-	if threatCfg.SentryEnabled && sentryAvailable {
+	// The finding store (and its webhook notifier) is built whenever the
+	// sentry is armed and the audit store is up — NOT only when the eBPF
+	// object loaded too. The sentry-health loop (#2634) has to be able to
+	// record "the sentry is unavailable" precisely when the engine below is
+	// never constructed. The engine itself still needs the enforcer.
+	var healthStore sentryHealthStore
+	if threatCfg.SentryEnabled && auditStore != nil {
 		var sink threatdetect.FindingSink
 		var findingsPool *pgxpool.Pool
 		degraded := true
@@ -2297,6 +2312,9 @@ skipAppHosting:
 			if reader, ok := sink.(threatdetect.FindingReader); ok {
 				threatDetectStore = reader
 			}
+			if hs, ok := sink.(sentryHealthStore); ok {
+				healthStore = hs
+			}
 			// Webhook delivery (#1643): deliberately independent of
 			// config.VictoriaMetricsURL — that's the vmalert/alertmanager
 			// pipeline this notifier bypasses on purpose (design doc): a
@@ -2323,7 +2341,8 @@ skipAppHosting:
 					st.SetNotifier(threatDetectNotifier)
 				}
 			}
-
+		}
+		if sink != nil && networkPolicyEnforcer != nil {
 			findingSink = sink
 			threatDetectEngine = threatdetect.NewEngine(sink, "", degraded, networkPolicyEnforcer.TenantForIP, nil)
 			// Fence-probe rules (#1642): a breached fence (cross-tenant
@@ -2344,6 +2363,9 @@ skipAppHosting:
 	}
 	threatDetectServer := NewThreatDetectionServer(threatDetectEngine, threatCfg.SentryEnabled, sentryAvailable, sentryUnavailableReason)
 	threatDetectServer.SetFindingStore(threatDetectStore)
+	if threatCfg.SentryEnabled && healthStore == nil {
+		log.Printf("Warning: threat-detection sentry armed but no finding store (%s); a sentry-unavailable finding cannot be recorded — see `containarium security sentry status`", sentryUnavailableReason)
+	}
 
 	// Box sshd posture reconciler (#2424): keeps every running box's sshd
 	// key-only by re-asserting the managed drop-in and recording tampering
@@ -2920,6 +2942,8 @@ skipAppHosting:
 		threatDetectEngine:     threatDetectEngine,
 		threatDetectServer:     threatDetectServer,
 		threatDetectNotifier:   threatDetectNotifier,
+		sentryHealthStore:      healthStore,
+		threatSentryArmed:      threatCfg.SentryEnabled,
 	}
 
 	// Auto-sleep ticker is constructed in Start() once the traffic
@@ -3104,9 +3128,9 @@ const defaultAuditAnchorPath = "/var/lib/containarium/audit-anchors.jsonl"
 // rules on a fixed tick, separate from ctx so it can be stopped independent
 // of the daemon's own shutdown (Stop() cancels it via threatDetectSweepStop
 // before the rest of teardown runs). Only called once the enforcer this
-// engine is hooked into has actually started. Also starts the webhook
-// notifier's delivery worker (#1643) on the same lifecycle — both only make
-// sense once the engine they're downstream of is actually running.
+// engine is hooked into has actually started. The webhook notifier (#1643)
+// is started separately by startSentryHealth: it must deliver the
+// sentry-health loop's findings (#2634) even when the engine never runs.
 func (ds *DualServer) startThreatDetectSweep(ctx context.Context) {
 	sweepCtx, cancel := context.WithCancel(ctx)
 	ds.threatDetectSweepStop = cancel
@@ -3123,8 +3147,30 @@ func (ds *DualServer) startThreatDetectSweep(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+// startSentryHealth starts the webhook notifier's delivery worker (#1643)
+// and, on an armed backend with a finding store, the sentry-health loop
+// (#2634). Called after the enforcer start attempt so the loop's first,
+// immediate check already sees an enforcer that failed to start.
+func (ds *DualServer) startSentryHealth(ctx context.Context) {
+	healthCtx, cancel := context.WithCancel(ctx)
+	ds.sentryHealthStop = cancel
 	if ds.threatDetectNotifier != nil {
-		ds.threatDetectNotifier.Start(sweepCtx)
+		ds.threatDetectNotifier.Start(healthCtx)
+	}
+	if ds.threatDetectServer == nil {
+		return
+	}
+	backendID := func() string {
+		if ds.peerPool == nil {
+			return ""
+		}
+		return ds.peerPool.LocalBackendID()
+	}
+	if h := newSentryHealthIfArmed(ds.threatSentryArmed, ds.threatDetectServer.sentryStatus, ds.sentryHealthStore, backendID); h != nil {
+		go h.Run(healthCtx)
+		log.Printf("Threat-detection sentry-health loop started (every %s)", sentryHealthInterval)
 	}
 }
 
@@ -3767,6 +3813,11 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		}
 	}
 
+	// Sentry-health loop + finding webhook delivery (#2634, #1643): after the
+	// enforcer block so a failed enforcer start is already reflected in
+	// GetSentryStatus when the loop's first check runs.
+	ds.startSentryHealth(ctx)
+
 	// Tier 3 PR-1 (#662): the WAF steering proxy. OFF by default — only starts
 	// when CONTAINARIUM_WAF_TPROXY_ADDR is set, and steering needs an
 	// operator-applied nft TPROXY rule (see the runbook), so an existing
@@ -3968,6 +4019,9 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		}
 		if ds.threatDetectSweepStop != nil {
 			ds.threatDetectSweepStop()
+		}
+		if ds.sentryHealthStop != nil {
+			ds.sentryHealthStop()
 		}
 		if ds.k8sNetPolicyReconciler != nil {
 			ds.k8sNetPolicyReconciler.Stop()
