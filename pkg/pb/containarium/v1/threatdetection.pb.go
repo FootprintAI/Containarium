@@ -1790,8 +1790,14 @@ type GetSentryStatusResponse struct {
 	// DEGRADED, and also set while the state is OK but a rule is unhealthy
 	// ("rule <RULE> unhealthy: <last_error>"). The sentry-health loop (#2634)
 	// uses this exact string as the SENTRY_UNAVAILABLE finding's subject.
-	Reason        string        `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
-	Rules         []*RuleStatus `protobuf:"bytes,3,rep,name=rules,proto3" json:"rules,omitempty"`
+	Reason string        `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	Rules  []*RuleStatus `protobuf:"bytes,3,rep,name=rules,proto3" json:"rules,omitempty"`
+	// Source of the per-container CPU samples the mining-behavior rule reads
+	// (#2645): "metrics-collector" (hook on the metrics collector's tick),
+	// "standalone (30s)" (the sentry polls Incus itself because no metrics
+	// collector runs), or "unavailable (<reason>)". Set only while the
+	// sentry is running (OK/DEGRADED).
+	CpuSampler    string `protobuf:"bytes,4,opt,name=cpu_sampler,json=cpuSampler,proto3" json:"cpu_sampler,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1845,6 +1851,13 @@ func (x *GetSentryStatusResponse) GetRules() []*RuleStatus {
 		return x.Rules
 	}
 	return nil
+}
+
+func (x *GetSentryStatusResponse) GetCpuSampler() string {
+	if x != nil {
+		return x.CpuSampler
+	}
+	return ""
 }
 
 // BadDestinationEntry is one entry in the known-bad-destination list (#1641)
@@ -2503,11 +2516,13 @@ const file_containarium_v1_threatdetection_proto_rawDesc = "" +
 	"\n" +
 	"last_error\x18\x03 \x01(\tR\tlastError\x12>\n" +
 	"\rlast_error_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\vlastErrorAt\"\x18\n" +
-	"\x16GetSentryStatusRequest\"\x98\x01\n" +
+	"\x16GetSentryStatusRequest\"\xb9\x01\n" +
 	"\x17GetSentryStatusResponse\x122\n" +
 	"\x05state\x18\x01 \x01(\x0e2\x1c.containarium.v1.SentryStateR\x05state\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\x121\n" +
-	"\x05rules\x18\x03 \x03(\v2\x1b.containarium.v1.RuleStatusR\x05rules\"W\n" +
+	"\x05rules\x18\x03 \x03(\v2\x1b.containarium.v1.RuleStatusR\x05rules\x12\x1f\n" +
+	"\vcpu_sampler\x18\x04 \x01(\tR\n" +
+	"cpuSampler\"W\n" +
 	"\x13BadDestinationEntry\x12\x12\n" +
 	"\x04cidr\x18\x01 \x01(\tR\x04cidr\x12\x14\n" +
 	"\x05label\x18\x02 \x01(\tR\x05label\x12\x16\n" +

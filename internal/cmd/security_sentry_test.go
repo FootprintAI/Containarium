@@ -28,6 +28,7 @@ func TestRunSecuritySentryStatus_HitsExpectedPathAndRendersOutput(t *testing.T) 
 		w.Write([]byte(`{
 			"state": "SENTRY_STATE_OK",
 			"reason": "",
+			"cpuSampler": "standalone (30s)",
 			"rules": [
 				{"rule": "THREAT_RULE_ID_BAD_DESTINATION", "healthy": true},
 				{"rule": "THREAT_RULE_ID_DENY_BURST", "healthy": false, "lastError": "panic: boom"}
@@ -52,7 +53,7 @@ func TestRunSecuritySentryStatus_HitsExpectedPathAndRendersOutput(t *testing.T) 
 	}
 
 	out := buf.String()
-	for _, want := range []string{"Sentry: OK", "BAD_DESTINATION", "DENY_BURST", "panic: boom"} {
+	for _, want := range []string{"Sentry: OK", "cpu-sampler: standalone (30s)", "BAD_DESTINATION", "DENY_BURST", "panic: boom"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)
 		}

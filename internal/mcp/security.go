@@ -71,9 +71,12 @@ type SentryRuleStatus struct {
 // DISABLED, UNAVAILABLE, DEGRADED, OK (SentryState enum names, unprefixed)
 // — and every registered rule's health.
 type SentryStatusResponse struct {
-	State  string             `json:"state"`
-	Reason string             `json:"reason,omitempty"`
-	Rules  []SentryRuleStatus `json:"rules,omitempty"`
+	State  string `json:"state"`
+	Reason string `json:"reason,omitempty"`
+	// CPUSampler is the mining-behavior rule's CPU source (#2645):
+	// "metrics-collector", "standalone (30s)" or "unavailable (<reason>)".
+	CPUSampler string             `json:"cpuSampler,omitempty"`
+	Rules      []SentryRuleStatus `json:"rules,omitempty"`
 }
 
 // BadDestinationEntry is one entry in the known-bad-destination list

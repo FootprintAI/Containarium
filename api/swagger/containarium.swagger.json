@@ -14280,6 +14280,10 @@
             "type": "object",
             "$ref": "#/definitions/RuleStatus"
           }
+        },
+        "cpuSampler": {
+          "type": "string",
+          "description": "Source of the per-container CPU samples the mining-behavior rule reads\n(#2645): \"metrics-collector\" (hook on the metrics collector's tick),\n\"standalone (30s)\" (the sentry polls Incus itself because no metrics\ncollector runs), or \"unavailable (\u003creason\u003e)\". Set only while the\nsentry is running (OK/DEGRADED)."
         }
       }
     },

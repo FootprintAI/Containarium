@@ -37,9 +37,10 @@ Postgres persistence for findings), or OK.`,
 // sentryStatusEnvelope mirrors GetSentryStatusResponse's grpc-gateway JSON
 // shape (protojson default: camelCase, enums as their string names).
 type sentryStatusEnvelope struct {
-	State  string             `json:"state"`
-	Reason string             `json:"reason"`
-	Rules  []sentryRuleStatus `json:"rules"`
+	State      string             `json:"state"`
+	Reason     string             `json:"reason"`
+	CPUSampler string             `json:"cpuSampler"`
+	Rules      []sentryRuleStatus `json:"rules"`
 }
 
 type sentryRuleStatus struct {
@@ -73,6 +74,9 @@ func printSentryStatus(w interface{ Write([]byte) (int, error) }, out sentryStat
 	fmt.Fprintf(w, "Sentry: %s\n", state)
 	if out.Reason != "" {
 		fmt.Fprintf(w, "Reason: %s\n", out.Reason)
+	}
+	if out.CPUSampler != "" {
+		fmt.Fprintf(w, "cpu-sampler: %s\n", out.CPUSampler)
 	}
 	if len(out.Rules) == 0 {
 		return
