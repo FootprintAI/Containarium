@@ -48,6 +48,15 @@ const (
 	// rounded down to the minute) is the accepted cap: inside that hard
 	// limit with headroom for a tick a little above 30s.
 	MaxMiningWindow = time.Duration(miningMaxPoints) * miningAssumedMinTick / time.Minute * time.Minute
+
+	// MinMiningWindow is the shortest window the rule accepts. The sweep keeps
+	// samples newer than now-window, so at the assumed tick the oldest
+	// retained sample is at most window-tick old; coverage demands
+	// miningMinCoverage x window. Those meet only when
+	// (1-miningMinCoverage) x window >= tick, i.e. window >= 150s at 30s; a
+	// shorter window is accepted by the CLI and then silently never fires
+	// (#2674). Six ticks (3 min) is that limit with headroom for sweep jitter.
+	MinMiningWindow = 6 * miningAssumedMinTick
 )
 
 // miningContainer is one container's CPU history.
