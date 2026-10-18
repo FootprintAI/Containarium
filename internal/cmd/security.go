@@ -36,7 +36,8 @@ container. Default --kind=all runs all three. Scans run asynchronously
 on the daemon; use 'security-findings' to read results.
 
 Typical durations:
-  - clamav: seconds
+  - clamav: the tenant-run in-box scan is being built (#2631); until then a
+    requested ClamAV scan is recorded as incomplete, never clean
   - pentest: tens of seconds
   - zap: minutes
 

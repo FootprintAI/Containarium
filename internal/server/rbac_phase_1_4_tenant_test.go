@@ -137,10 +137,17 @@ func TestTenantGates_AdminPasses_Blank(t *testing.T) {
 		_, e := srv.ListClamavReports(ctx, &pb.ListClamavReportsRequest{})
 		return e
 	})
-	mustPass(t, "TriggerClamavScan blank", func() error {
-		_, e := srv.TriggerClamavScan(ctx, &pb.TriggerClamavScanRequest{})
-		return e
-	})
+}
+
+// #2631: scan-all is gone. A blank container_name is InvalidArgument for an
+// admin (and PermissionDenied for a tenant, see TestTriggerClamavScan_
+// RejectsTenantBlankName), never "scan every box".
+func TestTriggerClamavScan_AdminBlankNameIsInvalidArgument(t *testing.T) {
+	srv := &SecurityServer{}
+	_, err := srv.TriggerClamavScan(adminCtx(), &pb.TriggerClamavScanRequest{})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("got %v want InvalidArgument (scan-all removed)", err)
+	}
 }
 
 func TestTenantGates_AdminPasses_CrossTenant(t *testing.T) {

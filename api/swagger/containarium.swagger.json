@@ -19622,7 +19622,7 @@
       "properties": {
         "containerName": {
           "type": "string",
-          "title": "Container name to scan (empty = scan all running user containers)"
+          "description": "Container name to scan. Required: the platform no longer scans every box\n(#2631); a scan is started per box by its owner."
         }
       }
     },
