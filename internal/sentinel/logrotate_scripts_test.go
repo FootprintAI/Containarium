@@ -54,8 +54,9 @@ func TestSentinelScripts_LogrotateStanza(t *testing.T) {
 				"rotate " + sc.retentionRef,
 				"postrotate", "endscript",
 				// Anchored: sshpiperd's own command line CONTAINS the plugin's,
-				// and it must not receive the SIGHUP.
-				"pkill -HUP -f '^/usr/local/bin/containariumd? sentinel ssh-session-plugin'",
+				// and it must not receive the SIGHUP. Both plugins write the
+				// sink: ssh-authz-plugin appends enforced denials (#2520).
+				"pkill -HUP -f '" + reopenPattern + "'",
 			} {
 				if !strings.Contains(st, want) {
 					t.Errorf("stanza missing %q:\n%s", want, st)
@@ -65,6 +66,22 @@ func TestSentinelScripts_LogrotateStanza(t *testing.T) {
 				t.Errorf("copytruncate loses records written between copy and truncate and breaks the shipper's inode tracking:\n%s", st)
 			}
 		})
+	}
+}
+
+const reopenPattern = "^/usr/local/bin/containariumd? sentinel ssh-(session|authz)-plugin"
+
+func TestSentinelScripts_ReopenPatternTargetsOnlyThePlugins(t *testing.T) {
+	re := regexp.MustCompile(reopenPattern)
+	for cmdline, want := range map[string]bool{
+		"/usr/local/bin/containariumd sentinel ssh-session-plugin --records-file " + sinkPath:                       true,
+		"/usr/local/bin/containariumd sentinel ssh-authz-plugin --ssh-authz-enforce --records-file " + sinkPath:     true,
+		"/usr/local/bin/sshpiperd -i /etc/sshpiper/host_key /usr/local/bin/containariumd sentinel ssh-authz-plugin": false,
+		"/usr/local/bin/containariumd sentinel ssh-ban-plugin --listener main":                                      false,
+	} {
+		if re.MatchString(cmdline) != want {
+			t.Errorf("pattern match on %q = %v, want %v", cmdline, !want, want)
+		}
 	}
 }
 
