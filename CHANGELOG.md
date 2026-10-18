@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Correction: v0.107.0 did not restore malware scans** (#2656, part of #2631). The v0.107.0 note that malware scans can read root-only files again was wrong. Running `clamd` as root inside the scanner container does not help, because the tenant rootfs is owned by host root and that user is unmapped in the scanner container's user namespace, so every scan was still recorded `incomplete`. Malware scanning is being rebuilt to run inside the tenant's own box, started by its owner (#2631). The ISO 27001 A.8.7 row is downgraded to Partial, the README no longer lists ClamAV as a platform-wide scan, and `docs/security/SECURITY-FAQ.md` states what the platform does and does not read.
 
+### Removed
+
+- **The platform no longer starts malware scans, and no longer mounts tenant rootfs into the security container** (#2657, part of #2631). Removed: the scan 5 minutes after daemon start, the 24-hour scan loop, the scan 2 minutes after a box is created, and scan-all (`TriggerClamavScan` with a blank `container_name` is now `InvalidArgument` for an admin; the web UI's "Scan All" button is gone). The disk-device mount of a tenant's rootfs and ClamAV provisioning in the security container (including v0.107.0's clamd-as-root change, which did not help) are removed; the security container stays for the ZAP scanner. A scan requested for one box now records an `incomplete` report (never `clean`) until the in-box scan runner lands. `--disable-security-scanner` now only skips the scan job queue and report store.
+
 ## [0.107.0] - 2026-10-18
 
 _Malware scans can read root-only files in scanned rootfs (they were all recorded incomplete), threat detection stops counting observation-only denies, a new alertable signal for backup-health read failures, and managed session termination reports ids it cannot map._
