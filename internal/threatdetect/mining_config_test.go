@@ -138,3 +138,23 @@ func TestMiningThresholdsConfig_PersistsAcrossRestart(t *testing.T) {
 		t.Fatalf("reloaded Effective = %+v", got)
 	}
 }
+
+// A window shorter than flow_min_age (explicit or defaulted) is rejected.
+func TestMiningThresholdsConfig_RejectsWindowShorterThanFlowMinAge(t *testing.T) {
+	c, err := NewMiningThresholdsConfig(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []*pb.MiningBehaviorThresholds{
+		{Window: durationpb.New(2 * time.Minute), FlowMinAge: durationpb.New(3 * time.Minute)},
+		{Window: durationpb.New(2 * time.Minute)},      // default flow_min_age 3m
+		{FlowMinAge: durationpb.New(10 * time.Minute)}, // default window 5m
+	} {
+		if err := c.Set(context.Background(), m); err == nil {
+			t.Errorf("Set(%v) = nil error, want rejection", m)
+		}
+	}
+	if err := c.Set(context.Background(), &pb.MiningBehaviorThresholds{Window: durationpb.New(3 * time.Minute), FlowMinAge: durationpb.New(3 * time.Minute)}); err != nil {
+		t.Errorf("window == flow_min_age rejected: %v", err)
+	}
+}

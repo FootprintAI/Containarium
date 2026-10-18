@@ -1,6 +1,7 @@
 package threatdetect
 
 import (
+	"math"
 	"net/netip"
 	"strconv"
 	"sync"
@@ -25,11 +26,39 @@ type miningCPUPoint struct {
 
 // miningContainer is one container's CPU history.
 type miningContainer struct {
-	ip      netip.Addr
-	limit   float64 // latest sample's limits.cpu, in cores
-	firstAt time.Time
-	lastAt  time.Time
-	points  []miningCPUPoint // oldest first
+	ip     netip.Addr
+	limit  float64 // latest sample's limits.cpu, in cores
+	lastAt time.Time
+	// interval is the smallest positive gap seen between two samples: the
+	// collector's tick. A gap from a stalled collector is larger, so it
+	// never inflates this. Zero until a second sample arrives.
+	interval time.Duration
+	points   []miningCPUPoint // oldest first
+}
+
+// trim bounds the history whether or not Sweep runs: points older than
+// 2 x window behind the newest go, and at most ceil(2 x window / interval)
+// points are kept (oldest dropped), which also bounds a stuck clock that
+// repeats one timestamp.
+func (c *miningContainer) trim(window time.Duration) {
+	if len(c.points) == 0 {
+		return
+	}
+	cutoff := c.points[len(c.points)-1].at.Add(-2 * window)
+	drop := 0
+	for drop < len(c.points) && !c.points[drop].at.After(cutoff) {
+		drop++
+	}
+	interval := c.interval
+	if interval <= 0 {
+		interval = time.Second // no tick known yet; still bounded
+	}
+	if limit := int(math.Ceil(float64(2*window) / float64(interval))); len(c.points)-drop > limit {
+		drop = len(c.points) - limit
+	}
+	if drop > 0 {
+		c.points = append(c.points[:0], c.points[drop:]...)
+	}
 }
 
 type miningFlowKey struct {
@@ -81,20 +110,28 @@ func miningThresholds(ctx RuleContext) MiningThresholds {
 	return ctx.MiningThresholds()
 }
 
-// OnCPU appends each sample to its container's history. Never fires.
-func (r *MiningBehaviorRule) OnCPU(_ RuleContext, samples []CPUSample) []RawFinding {
+// OnCPU appends each sample to its container's bounded history. Never
+// fires.
+func (r *MiningBehaviorRule) OnCPU(ctx RuleContext, samples []CPUSample) []RawFinding {
+	window := miningThresholds(ctx).Window
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, s := range samples {
 		c := r.containers[s.Container]
 		if c == nil {
-			c = &miningContainer{firstAt: s.At}
+			c = &miningContainer{}
 			r.containers[s.Container] = c
+		}
+		if n := len(c.points); n > 0 {
+			if gap := s.At.Sub(c.points[n-1].at); gap > 0 && (c.interval == 0 || gap < c.interval) {
+				c.interval = gap
+			}
 		}
 		c.ip = s.IP
 		c.limit = s.LimitCores
 		c.lastAt = s.At
 		c.points = append(c.points, miningCPUPoint{at: s.At, cores: s.Cores})
+		c.trim(window)
 	}
 	return nil
 }
@@ -169,8 +206,11 @@ func (r *MiningBehaviorRule) Sweep(ctx RuleContext, now time.Time) []RawFinding 
 			}
 		}
 		c.points = kept
-		// The mean must cover the whole window, not a burst at its end.
-		if len(kept) == 0 || c.firstAt.After(cutoff) {
+		// The mean must cover the whole window, not a burst at its end or a
+		// lone sample after a gap: the oldest sample inside the window must
+		// be at least window - one tick old (a sample covers the tick
+		// before it).
+		if len(kept) == 0 || c.interval <= 0 || now.Sub(kept[0].at) < th.Window-c.interval {
 			continue
 		}
 		var sum, peak float64
@@ -240,4 +280,14 @@ func (r *MiningBehaviorRule) trackedContainers() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.containers)
+}
+
+// pointCount is for tests: how many CPU points a container holds.
+func (r *MiningBehaviorRule) pointCount(container string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if c := r.containers[container]; c != nil {
+		return len(c.points)
+	}
+	return 0
 }
