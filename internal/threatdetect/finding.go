@@ -51,6 +51,11 @@ type FlowEvidence struct {
 	Protocol string `json:"protocol"`
 	Bytes    int64  `json:"bytes"`
 	Packets  int64  `json:"packets"`
+	// FirstSeen/LastSeen and Matched are set by the mining-behavior rule
+	// (#2635) only; see pb.FlowEvidence.
+	FirstSeen time.Time `json:"first_seen,omitzero"`
+	LastSeen  time.Time `json:"last_seen,omitzero"`
+	Matched   string    `json:"matched,omitempty"`
 }
 
 // DenyEvidence is an aggregated count of policy-deny events matching one
@@ -222,13 +227,16 @@ func (f *Finding) ToProto() *pb.Finding {
 	flows := make([]*pb.FlowEvidence, 0, len(f.Evidence.Flows))
 	for _, fl := range f.Evidence.Flows {
 		flows = append(flows, &pb.FlowEvidence{
-			SrcIp:    fl.SrcIP,
-			DstIp:    fl.DstIP,
-			SrcPort:  fl.SrcPort,
-			DstPort:  fl.DstPort,
-			Protocol: fl.Protocol,
-			Bytes:    fl.Bytes,
-			Packets:  fl.Packets,
+			SrcIp:     fl.SrcIP,
+			DstIp:     fl.DstIP,
+			SrcPort:   fl.SrcPort,
+			DstPort:   fl.DstPort,
+			Protocol:  fl.Protocol,
+			Bytes:     fl.Bytes,
+			Packets:   fl.Packets,
+			FirstSeen: timestampProto(fl.FirstSeen),
+			LastSeen:  timestampProto(fl.LastSeen),
+			Matched:   fl.Matched,
 		})
 	}
 	denies := make([]*pb.DenyEvidence, 0, len(f.Evidence.Denies))

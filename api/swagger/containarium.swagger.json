@@ -13297,6 +13297,19 @@
         "packets": {
           "type": "string",
           "format": "int64"
+        },
+        "firstSeen": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the flow was first and last seen (#2635). The kernel stamps flows\nwith a monotonic clock, so last_seen is the flow poll that reported the\nflow and first_seen is last_seen minus the flow's own age. Set by the\nmining-behavior rule; unset on other rules' evidence."
+        },
+        "lastSeen": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "matched": {
+          "type": "string",
+          "description": "What qualified the flow: \"port:\u003cn\u003e\" for a stratum port, or\n\"bad-destination:\u003ccidr\u003e\" for a listed destination (#2635)."
         }
       },
       "description": "FlowEvidence captures one triggering flow's 5-tuple and volume, attached to\na finding as supporting evidence."

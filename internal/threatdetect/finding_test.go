@@ -181,3 +181,20 @@ func TestEvidence_CPU_ToProtoCappedMerged(t *testing.T) {
 		t.Fatalf("merged CPU = %+v", merged.CPU)
 	}
 }
+
+// FlowEvidence's first/last seen and matched (#2635) reach the wire; a flow
+// without them (every other rule) leaves the timestamps nil.
+func TestFlowEvidence_SeenAndMatched_ToProto(t *testing.T) {
+	first, last := time.Unix(1000, 0), time.Unix(1240, 0)
+	f := &Finding{Evidence: Evidence{Flows: []FlowEvidence{
+		{DstIP: "203.0.113.9", DstPort: 3333, FirstSeen: first, LastSeen: last, Matched: "port:3333"},
+		{DstIP: "198.51.100.7"},
+	}}}
+	got := f.ToProto().GetEvidence().GetFlows()
+	if got[0].GetFirstSeen().AsTime() != first.UTC() || got[0].GetLastSeen().AsTime() != last.UTC() || got[0].GetMatched() != "port:3333" {
+		t.Fatalf("flow 0 = %v", got[0])
+	}
+	if got[1].GetFirstSeen() != nil || got[1].GetLastSeen() != nil || got[1].GetMatched() != "" {
+		t.Fatalf("flow 1 should leave the new fields unset: %v", got[1])
+	}
+}

@@ -2,6 +2,7 @@ package threatdetect
 
 import (
 	"net/netip"
+	"strconv"
 	"sync"
 	"time"
 
@@ -10,10 +11,11 @@ import (
 )
 
 // DestinationMatcher reports whether ip is on the known-bad-destination
-// list. *BadDestinationRule satisfies it; the mining-behavior rule takes it
-// injected so a listed pool qualifies on any port.
+// list, and the matching entry's CIDR. *BadDestinationRule satisfies it; the
+// mining-behavior rule takes it injected so a listed pool qualifies on any
+// port.
 type DestinationMatcher interface {
-	MatchDestination(ip netip.Addr) (label string, ok bool)
+	MatchDestination(ip netip.Addr) (cidr string, ok bool)
 }
 
 type miningCPUPoint struct {
@@ -38,8 +40,9 @@ type miningFlowKey struct {
 
 // miningFlow is a candidate flow: to a stratum port or a listed destination.
 type miningFlow struct {
-	rec    netbpf.FlowRecord
-	seenAt time.Time // last flow poll that reported it
+	rec     netbpf.FlowRecord
+	seenAt  time.Time // last flow poll that reported it
+	matched string    // "bad-destination:<cidr>" or "port:<n>"
 }
 
 // MiningBehaviorRule implements Rule and CPUConsumer for
@@ -103,7 +106,13 @@ func (r *MiningBehaviorRule) OnFlows(ctx RuleContext, flows []netbpf.FlowRecord)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, f := range flows {
-		if !th.isStratumPort(f.Dport) && !r.listed(f.Dst()) {
+		// A list entry names the pool, so it wins over a bare port match.
+		var matched string
+		if cidr, ok := r.listed(f.Dst()); ok {
+			matched = "bad-destination:" + cidr
+		} else if th.isStratumPort(f.Dport) {
+			matched = "port:" + strconv.Itoa(int(f.Dport))
+		} else {
 			continue
 		}
 		src := f.Src()
@@ -112,17 +121,16 @@ func (r *MiningBehaviorRule) OnFlows(ctx RuleContext, flows []netbpf.FlowRecord)
 			byKey = make(map[miningFlowKey]*miningFlow)
 			r.flows[src] = byKey
 		}
-		byKey[miningFlowKey{src: src, dst: f.Dst(), sport: f.Sport, dport: f.Dport, proto: f.Proto}] = &miningFlow{rec: f, seenAt: now}
+		byKey[miningFlowKey{src: src, dst: f.Dst(), sport: f.Sport, dport: f.Dport, proto: f.Proto}] = &miningFlow{rec: f, seenAt: now, matched: matched}
 	}
 	return nil
 }
 
-func (r *MiningBehaviorRule) listed(ip netip.Addr) bool {
+func (r *MiningBehaviorRule) listed(ip netip.Addr) (string, bool) {
 	if r.matcher == nil {
-		return false
+		return "", false
 	}
-	_, ok := r.matcher.MatchDestination(ip)
-	return ok
+	return r.matcher.MatchDestination(ip)
 }
 
 // OnDeny is a no-op: the rule reads CPU and flows only.
@@ -174,15 +182,15 @@ func (r *MiningBehaviorRule) Sweep(ctx RuleContext, now time.Time) []RawFinding 
 		if mean < th.Bar(c.limit) {
 			continue
 		}
-		best := map[string]netbpf.FlowRecord{} // subject -> longest-lived flow
+		best := map[string]*miningFlow{} // subject -> longest-lived flow
 		for _, f := range r.flows[c.ip] {
 			age := f.rec.LastNs - f.rec.FirstNs
 			if f.rec.LastNs < f.rec.FirstNs || time.Duration(age) < th.FlowMinAge { // #nosec G115 -- age bounded by uptime
 				continue
 			}
 			subject := netip.AddrPortFrom(f.rec.Dst(), f.rec.Dport).String()
-			if prev, ok := best[subject]; !ok || age > prev.LastNs-prev.FirstNs {
-				best[subject] = f.rec
+			if prev, ok := best[subject]; !ok || age > prev.rec.LastNs-prev.rec.FirstNs {
+				best[subject] = f
 			}
 		}
 		if len(best) == 0 {
@@ -195,7 +203,11 @@ func (r *MiningBehaviorRule) Sweep(ctx RuleContext, now time.Time) []RawFinding 
 			WindowSeconds: int64(th.Window / time.Second),
 			Samples:       int32(min(len(kept), 1<<31-1)), // #nosec G115 -- clamped
 		}
-		for subject, f := range best {
+		for subject, mf := range best {
+			f := mf.rec
+			// The kernel stamps are monotonic, so anchor on the poll that
+			// reported the flow, as flowsToEBPF does for the traffic view.
+			age := time.Duration(f.LastNs - f.FirstNs) // #nosec G115 -- LastNs >= FirstNs checked above
 			out = append(out, RawFinding{
 				Rule:      pb.ThreatRuleId_THREAT_RULE_ID_MINING_BEHAVIOR,
 				Severity:  pb.ThreatSeverity_THREAT_SEVERITY_HIGH,
@@ -205,13 +217,16 @@ func (r *MiningBehaviorRule) Sweep(ctx RuleContext, now time.Time) []RawFinding 
 				Evidence: Evidence{
 					CPU: []CPUEvidence{cpu},
 					Flows: []FlowEvidence{{
-						SrcIP:    f.Src().String(),
-						DstIP:    f.Dst().String(),
-						SrcPort:  uint32(f.Sport),
-						DstPort:  uint32(f.Dport),
-						Protocol: badDestProtoName(f.Proto),
-						Bytes:    int64(f.Bytes),   // #nosec G115 -- one flow's counters
-						Packets:  int64(f.Packets), // #nosec G115 -- one flow's counters
+						SrcIP:     f.Src().String(),
+						DstIP:     f.Dst().String(),
+						SrcPort:   uint32(f.Sport),
+						DstPort:   uint32(f.Dport),
+						Protocol:  badDestProtoName(f.Proto),
+						Bytes:     int64(f.Bytes),   // #nosec G115 -- one flow's counters
+						Packets:   int64(f.Packets), // #nosec G115 -- one flow's counters
+						FirstSeen: mf.seenAt.Add(-age),
+						LastSeen:  mf.seenAt,
+						Matched:   mf.matched,
 					}},
 				},
 			})

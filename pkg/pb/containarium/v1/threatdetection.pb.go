@@ -283,9 +283,18 @@ type FlowEvidence struct {
 	SrcPort uint32                 `protobuf:"varint,3,opt,name=src_port,json=srcPort,proto3" json:"src_port,omitempty"`
 	DstPort uint32                 `protobuf:"varint,4,opt,name=dst_port,json=dstPort,proto3" json:"dst_port,omitempty"`
 	// IP protocol name, e.g. "tcp", "udp", "icmp".
-	Protocol      string `protobuf:"bytes,5,opt,name=protocol,proto3" json:"protocol,omitempty"`
-	Bytes         int64  `protobuf:"varint,6,opt,name=bytes,proto3" json:"bytes,omitempty"`
-	Packets       int64  `protobuf:"varint,7,opt,name=packets,proto3" json:"packets,omitempty"`
+	Protocol string `protobuf:"bytes,5,opt,name=protocol,proto3" json:"protocol,omitempty"`
+	Bytes    int64  `protobuf:"varint,6,opt,name=bytes,proto3" json:"bytes,omitempty"`
+	Packets  int64  `protobuf:"varint,7,opt,name=packets,proto3" json:"packets,omitempty"`
+	// When the flow was first and last seen (#2635). The kernel stamps flows
+	// with a monotonic clock, so last_seen is the flow poll that reported the
+	// flow and first_seen is last_seen minus the flow's own age. Set by the
+	// mining-behavior rule; unset on other rules' evidence.
+	FirstSeen *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=first_seen,json=firstSeen,proto3" json:"first_seen,omitempty"`
+	LastSeen  *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=last_seen,json=lastSeen,proto3" json:"last_seen,omitempty"`
+	// What qualified the flow: "port:<n>" for a stratum port, or
+	// "bad-destination:<cidr>" for a listed destination (#2635).
+	Matched       string `protobuf:"bytes,10,opt,name=matched,proto3" json:"matched,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -367,6 +376,27 @@ func (x *FlowEvidence) GetPackets() int64 {
 		return x.Packets
 	}
 	return 0
+}
+
+func (x *FlowEvidence) GetFirstSeen() *timestamppb.Timestamp {
+	if x != nil {
+		return x.FirstSeen
+	}
+	return nil
+}
+
+func (x *FlowEvidence) GetLastSeen() *timestamppb.Timestamp {
+	if x != nil {
+		return x.LastSeen
+	}
+	return nil
+}
+
+func (x *FlowEvidence) GetMatched() string {
+	if x != nil {
+		return x.Matched
+	}
+	return ""
 }
 
 // DenyEvidence captures an aggregated count of policy-deny events matching a
@@ -1710,7 +1740,7 @@ var File_containarium_v1_threatdetection_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_threatdetection_proto_rawDesc = "" +
 	"\n" +
-	"%containarium/v1/threatdetection.proto\x12\x0fcontainarium.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1cgoogle/api/annotations.proto\x1a.protoc-gen-openapiv2/options/annotations.proto\"\xbe\x01\n" +
+	"%containarium/v1/threatdetection.proto\x12\x0fcontainarium.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1cgoogle/api/annotations.proto\x1a.protoc-gen-openapiv2/options/annotations.proto\"\xcc\x02\n" +
 	"\fFlowEvidence\x12\x15\n" +
 	"\x06src_ip\x18\x01 \x01(\tR\x05srcIp\x12\x15\n" +
 	"\x06dst_ip\x18\x02 \x01(\tR\x05dstIp\x12\x19\n" +
@@ -1718,7 +1748,12 @@ const file_containarium_v1_threatdetection_proto_rawDesc = "" +
 	"\bdst_port\x18\x04 \x01(\rR\adstPort\x12\x1a\n" +
 	"\bprotocol\x18\x05 \x01(\tR\bprotocol\x12\x14\n" +
 	"\x05bytes\x18\x06 \x01(\x03R\x05bytes\x12\x18\n" +
-	"\apackets\x18\a \x01(\x03R\apackets\"\x8a\x01\n" +
+	"\apackets\x18\a \x01(\x03R\apackets\x129\n" +
+	"\n" +
+	"first_seen\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\tfirstSeen\x127\n" +
+	"\tlast_seen\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\blastSeen\x12\x18\n" +
+	"\amatched\x18\n" +
+	" \x01(\tR\amatched\"\x8a\x01\n" +
 	"\fDenyEvidence\x12\x15\n" +
 	"\x06dst_ip\x18\x01 \x01(\tR\x05dstIp\x12\x19\n" +
 	"\bdst_port\x18\x02 \x01(\rR\adstPort\x12\x1a\n" +
@@ -1893,51 +1928,53 @@ var file_containarium_v1_threatdetection_proto_goTypes = []any{
 	(*ListFindingsResponse)(nil),         // 23: containarium.v1.ListFindingsResponse
 	(*ResolveFindingRequest)(nil),        // 24: containarium.v1.ResolveFindingRequest
 	(*ResolveFindingResponse)(nil),       // 25: containarium.v1.ResolveFindingResponse
-	(*durationpb.Duration)(nil),          // 26: google.protobuf.Duration
-	(*timestamppb.Timestamp)(nil),        // 27: google.protobuf.Timestamp
+	(*timestamppb.Timestamp)(nil),        // 26: google.protobuf.Timestamp
+	(*durationpb.Duration)(nil),          // 27: google.protobuf.Duration
 }
 var file_containarium_v1_threatdetection_proto_depIdxs = []int32{
-	4,  // 0: containarium.v1.Evidence.flows:type_name -> containarium.v1.FlowEvidence
-	5,  // 1: containarium.v1.Evidence.denies:type_name -> containarium.v1.DenyEvidence
-	6,  // 2: containarium.v1.Evidence.configs:type_name -> containarium.v1.ConfigEvidence
-	7,  // 3: containarium.v1.Evidence.listeners:type_name -> containarium.v1.ListenerEvidence
-	8,  // 4: containarium.v1.Evidence.cpu:type_name -> containarium.v1.CPUEvidence
-	26, // 5: containarium.v1.MiningBehaviorThresholds.window:type_name -> google.protobuf.Duration
-	26, // 6: containarium.v1.MiningBehaviorThresholds.flow_min_age:type_name -> google.protobuf.Duration
-	1,  // 7: containarium.v1.Finding.rule:type_name -> containarium.v1.ThreatRuleId
-	0,  // 8: containarium.v1.Finding.severity:type_name -> containarium.v1.ThreatSeverity
-	2,  // 9: containarium.v1.Finding.state:type_name -> containarium.v1.FindingState
-	9,  // 10: containarium.v1.Finding.evidence:type_name -> containarium.v1.Evidence
-	27, // 11: containarium.v1.Finding.first_seen:type_name -> google.protobuf.Timestamp
-	27, // 12: containarium.v1.Finding.last_seen:type_name -> google.protobuf.Timestamp
-	1,  // 13: containarium.v1.RuleStatus.rule:type_name -> containarium.v1.ThreatRuleId
-	27, // 14: containarium.v1.RuleStatus.last_error_at:type_name -> google.protobuf.Timestamp
-	3,  // 15: containarium.v1.GetSentryStatusResponse.state:type_name -> containarium.v1.SentryState
-	12, // 16: containarium.v1.GetSentryStatusResponse.rules:type_name -> containarium.v1.RuleStatus
-	15, // 17: containarium.v1.ListBadDestinationsResponse.entries:type_name -> containarium.v1.BadDestinationEntry
-	15, // 18: containarium.v1.AddBadDestinationResponse.entry:type_name -> containarium.v1.BadDestinationEntry
-	0,  // 19: containarium.v1.ListFindingsRequest.severity:type_name -> containarium.v1.ThreatSeverity
-	27, // 20: containarium.v1.ListFindingsRequest.since:type_name -> google.protobuf.Timestamp
-	2,  // 21: containarium.v1.ListFindingsRequest.state:type_name -> containarium.v1.FindingState
-	11, // 22: containarium.v1.ListFindingsResponse.findings:type_name -> containarium.v1.Finding
-	11, // 23: containarium.v1.ResolveFindingResponse.finding:type_name -> containarium.v1.Finding
-	13, // 24: containarium.v1.ThreatDetectionService.GetSentryStatus:input_type -> containarium.v1.GetSentryStatusRequest
-	16, // 25: containarium.v1.ThreatDetectionService.ListBadDestinations:input_type -> containarium.v1.ListBadDestinationsRequest
-	18, // 26: containarium.v1.ThreatDetectionService.AddBadDestination:input_type -> containarium.v1.AddBadDestinationRequest
-	20, // 27: containarium.v1.ThreatDetectionService.RemoveBadDestination:input_type -> containarium.v1.RemoveBadDestinationRequest
-	22, // 28: containarium.v1.ThreatDetectionService.ListFindings:input_type -> containarium.v1.ListFindingsRequest
-	24, // 29: containarium.v1.ThreatDetectionService.ResolveFinding:input_type -> containarium.v1.ResolveFindingRequest
-	14, // 30: containarium.v1.ThreatDetectionService.GetSentryStatus:output_type -> containarium.v1.GetSentryStatusResponse
-	17, // 31: containarium.v1.ThreatDetectionService.ListBadDestinations:output_type -> containarium.v1.ListBadDestinationsResponse
-	19, // 32: containarium.v1.ThreatDetectionService.AddBadDestination:output_type -> containarium.v1.AddBadDestinationResponse
-	21, // 33: containarium.v1.ThreatDetectionService.RemoveBadDestination:output_type -> containarium.v1.RemoveBadDestinationResponse
-	23, // 34: containarium.v1.ThreatDetectionService.ListFindings:output_type -> containarium.v1.ListFindingsResponse
-	25, // 35: containarium.v1.ThreatDetectionService.ResolveFinding:output_type -> containarium.v1.ResolveFindingResponse
-	30, // [30:36] is the sub-list for method output_type
-	24, // [24:30] is the sub-list for method input_type
-	24, // [24:24] is the sub-list for extension type_name
-	24, // [24:24] is the sub-list for extension extendee
-	0,  // [0:24] is the sub-list for field type_name
+	26, // 0: containarium.v1.FlowEvidence.first_seen:type_name -> google.protobuf.Timestamp
+	26, // 1: containarium.v1.FlowEvidence.last_seen:type_name -> google.protobuf.Timestamp
+	4,  // 2: containarium.v1.Evidence.flows:type_name -> containarium.v1.FlowEvidence
+	5,  // 3: containarium.v1.Evidence.denies:type_name -> containarium.v1.DenyEvidence
+	6,  // 4: containarium.v1.Evidence.configs:type_name -> containarium.v1.ConfigEvidence
+	7,  // 5: containarium.v1.Evidence.listeners:type_name -> containarium.v1.ListenerEvidence
+	8,  // 6: containarium.v1.Evidence.cpu:type_name -> containarium.v1.CPUEvidence
+	27, // 7: containarium.v1.MiningBehaviorThresholds.window:type_name -> google.protobuf.Duration
+	27, // 8: containarium.v1.MiningBehaviorThresholds.flow_min_age:type_name -> google.protobuf.Duration
+	1,  // 9: containarium.v1.Finding.rule:type_name -> containarium.v1.ThreatRuleId
+	0,  // 10: containarium.v1.Finding.severity:type_name -> containarium.v1.ThreatSeverity
+	2,  // 11: containarium.v1.Finding.state:type_name -> containarium.v1.FindingState
+	9,  // 12: containarium.v1.Finding.evidence:type_name -> containarium.v1.Evidence
+	26, // 13: containarium.v1.Finding.first_seen:type_name -> google.protobuf.Timestamp
+	26, // 14: containarium.v1.Finding.last_seen:type_name -> google.protobuf.Timestamp
+	1,  // 15: containarium.v1.RuleStatus.rule:type_name -> containarium.v1.ThreatRuleId
+	26, // 16: containarium.v1.RuleStatus.last_error_at:type_name -> google.protobuf.Timestamp
+	3,  // 17: containarium.v1.GetSentryStatusResponse.state:type_name -> containarium.v1.SentryState
+	12, // 18: containarium.v1.GetSentryStatusResponse.rules:type_name -> containarium.v1.RuleStatus
+	15, // 19: containarium.v1.ListBadDestinationsResponse.entries:type_name -> containarium.v1.BadDestinationEntry
+	15, // 20: containarium.v1.AddBadDestinationResponse.entry:type_name -> containarium.v1.BadDestinationEntry
+	0,  // 21: containarium.v1.ListFindingsRequest.severity:type_name -> containarium.v1.ThreatSeverity
+	26, // 22: containarium.v1.ListFindingsRequest.since:type_name -> google.protobuf.Timestamp
+	2,  // 23: containarium.v1.ListFindingsRequest.state:type_name -> containarium.v1.FindingState
+	11, // 24: containarium.v1.ListFindingsResponse.findings:type_name -> containarium.v1.Finding
+	11, // 25: containarium.v1.ResolveFindingResponse.finding:type_name -> containarium.v1.Finding
+	13, // 26: containarium.v1.ThreatDetectionService.GetSentryStatus:input_type -> containarium.v1.GetSentryStatusRequest
+	16, // 27: containarium.v1.ThreatDetectionService.ListBadDestinations:input_type -> containarium.v1.ListBadDestinationsRequest
+	18, // 28: containarium.v1.ThreatDetectionService.AddBadDestination:input_type -> containarium.v1.AddBadDestinationRequest
+	20, // 29: containarium.v1.ThreatDetectionService.RemoveBadDestination:input_type -> containarium.v1.RemoveBadDestinationRequest
+	22, // 30: containarium.v1.ThreatDetectionService.ListFindings:input_type -> containarium.v1.ListFindingsRequest
+	24, // 31: containarium.v1.ThreatDetectionService.ResolveFinding:input_type -> containarium.v1.ResolveFindingRequest
+	14, // 32: containarium.v1.ThreatDetectionService.GetSentryStatus:output_type -> containarium.v1.GetSentryStatusResponse
+	17, // 33: containarium.v1.ThreatDetectionService.ListBadDestinations:output_type -> containarium.v1.ListBadDestinationsResponse
+	19, // 34: containarium.v1.ThreatDetectionService.AddBadDestination:output_type -> containarium.v1.AddBadDestinationResponse
+	21, // 35: containarium.v1.ThreatDetectionService.RemoveBadDestination:output_type -> containarium.v1.RemoveBadDestinationResponse
+	23, // 36: containarium.v1.ThreatDetectionService.ListFindings:output_type -> containarium.v1.ListFindingsResponse
+	25, // 37: containarium.v1.ThreatDetectionService.ResolveFinding:output_type -> containarium.v1.ResolveFindingResponse
+	32, // [32:38] is the sub-list for method output_type
+	26, // [26:32] is the sub-list for method input_type
+	26, // [26:26] is the sub-list for extension type_name
+	26, // [26:26] is the sub-list for extension extendee
+	0,  // [0:26] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_threatdetection_proto_init() }

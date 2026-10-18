@@ -63,6 +63,15 @@ message FlowEvidence {
   string protocol = 5;
   int64 bytes = 6;
   int64 packets = 7;
+  // When the flow was first and last seen (#2635). The kernel stamps flows
+  // with a monotonic clock, so last_seen is the flow poll that reported the
+  // flow and first_seen is last_seen minus the flow's own age. Set by the
+  // mining-behavior rule; unset on other rules' evidence.
+  google.protobuf.Timestamp first_seen = 8;
+  google.protobuf.Timestamp last_seen = 9;
+  // What qualified the flow: "port:<n>" for a stratum port, or
+  // "bad-destination:<cidr>" for a listed destination (#2635).
+  string matched = 10;
 }
 
 // DenyEvidence captures an aggregated count of policy-deny events matching a

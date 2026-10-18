@@ -13,8 +13,8 @@ import (
 type fakeDestMatcher map[string]string
 
 func (m fakeDestMatcher) MatchDestination(ip netip.Addr) (string, bool) {
-	label, ok := m[ip.String()]
-	return label, ok
+	cidr, ok := m[ip.String()]
+	return cidr, ok
 }
 
 const miningBoxIP = "10.0.0.5"
@@ -86,7 +86,7 @@ func TestMiningBehaviorRule_Table(t *testing.T) {
 		{"low CPU 0.4 cores + :3333", miningScenario{cores: 0.4, span: 6 * time.Minute, dst: pool, dport: 3333, flowAge: 4 * time.Minute, flowSeen: 4 * time.Minute}, 0},
 		{"flow younger than flow_min_age", miningScenario{cores: 4, span: 6 * time.Minute, dst: pool, dport: 3333, flowAge: 2 * time.Minute, flowSeen: 2 * time.Minute}, 0},
 		{"CPU history shorter than window", miningScenario{cores: 4, span: 3 * time.Minute, dst: pool, dport: 3333, flowAge: 4 * time.Minute, flowSeen: 3 * time.Minute}, 0},
-		{"bad-destination hit on :443 qualifies", miningScenario{cores: 4, span: 6 * time.Minute, dst: web, dport: 443, flowAge: 4 * time.Minute, flowSeen: 4 * time.Minute, matcher: fakeDestMatcher{"198.51.100.7": "pool"}}, 1},
+		{"bad-destination hit on :443 qualifies", miningScenario{cores: 4, span: 6 * time.Minute, dst: web, dport: 443, flowAge: 4 * time.Minute, flowSeen: 4 * time.Minute, matcher: fakeDestMatcher{"198.51.100.7": "198.51.100.0/24"}}, 1},
 		// AC2: thresholds from RuleContext are honoured.
 		{"operator raises min_cores to 8", miningScenario{cores: 4, span: 6 * time.Minute, dst: pool, dport: 3333, flowAge: 4 * time.Minute, flowSeen: 4 * time.Minute, thresholds: func() MiningThresholds {
 			th := DefaultMiningThresholds()
@@ -217,5 +217,41 @@ func TestMiningBehaviorRule_EngineReplay_OneFindingPerSweepSameDedupeKey(t *test
 		if f.Rule != pb.ThreatRuleId_THREAT_RULE_ID_MINING_BEHAVIOR || f.Severity != pb.ThreatSeverity_THREAT_SEVERITY_HIGH || f.TenantID != "alice" || f.Subject != "203.0.113.9:3333" {
 			t.Fatalf("upsert = %+v, want HIGH mining-behavior alice/203.0.113.9:3333", f)
 		}
+	}
+}
+
+// AC "evidence: ... first/last seen, and the matched port or list entry":
+// the qualifying flow carries wall-clock first/last seen (last = the flow
+// poll that reported it, first = last minus the flow's own age, the same
+// anchoring flowsToEBPF uses for the traffic view) and what qualified it.
+func TestMiningBehaviorRule_FlowEvidenceSeenAndMatched(t *testing.T) {
+	pool := [4]byte{203, 0, 113, 9}
+	web := [4]byte{198, 51, 100, 7}
+	cases := []struct {
+		name        string
+		s           miningScenario
+		wantMatched string
+	}{
+		{"stratum port", miningScenario{cores: 4, span: 6 * time.Minute, dst: pool, dport: 3333, flowAge: 4 * time.Minute, flowSeen: 4 * time.Minute}, "port:3333"},
+		{"listed destination on :443", miningScenario{cores: 4, span: 6 * time.Minute, dst: web, dport: 443, flowAge: 4 * time.Minute, flowSeen: 4 * time.Minute, matcher: fakeDestMatcher{"198.51.100.7": "198.51.100.0/24"}}, "bad-destination:198.51.100.0/24"},
+		{"listed destination on a stratum port names the list entry", miningScenario{cores: 4, span: 6 * time.Minute, dst: web, dport: 4444, flowAge: 4 * time.Minute, flowSeen: 4 * time.Minute, matcher: fakeDestMatcher{"198.51.100.7": "198.51.100.7/32"}}, "bad-destination:198.51.100.7/32"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			end, got := tc.s.run(t, NewMiningBehaviorRule(tc.s.matcher))
+			if len(got) != 1 || len(got[0].Evidence.Flows) != 1 {
+				t.Fatalf("got %+v, want one finding with one flow", got)
+			}
+			fl := got[0].Evidence.Flows[0]
+			if fl.Matched != tc.wantMatched {
+				t.Errorf("Matched = %q, want %q", fl.Matched, tc.wantMatched)
+			}
+			if !fl.LastSeen.Equal(end) {
+				t.Errorf("LastSeen = %v, want the last flow poll %v", fl.LastSeen, end)
+			}
+			if want := end.Add(-tc.s.flowAge); !fl.FirstSeen.Equal(want) {
+				t.Errorf("FirstSeen = %v, want %v (last seen minus flow age)", fl.FirstSeen, want)
+			}
+		})
 	}
 }
