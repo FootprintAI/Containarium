@@ -830,7 +830,7 @@ func (s *Server) registerTools() {
 				"on the daemon; this tool returns once the trigger is accepted. After waiting " +
 				"(see `pollHint` in the response), call `security_findings` to read results.\n\n" +
 				"Typical durations:\n" +
-				"  - clamav: seconds (file walk + signature match)\n" +
+				"  - clamav: in-box scan being built (#2631); until then a requested scan is recorded incomplete, never clean\n" +
 				"  - pentest: tens of seconds (per-target probe)\n" +
 				"  - zap: minutes (active spider + attack passes)\n\n" +
 				"For continuous/scheduled scanning, the cloud product offers a hosted " +

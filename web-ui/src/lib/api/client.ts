@@ -1022,7 +1022,7 @@ export class ContaineriumClient {
 
   /**
    * Trigger an on-demand ClamAV scan
-   * @param containerName - Optional container name (empty = scan all)
+   * @param containerName - Container to scan (required by the daemon: scan-all was removed, #2631)
    */
   async triggerClamavScan(containerName?: string): Promise<TriggerScanResponse> {
     const response = await this.client.post<TriggerScanResponse>('/security/clamav-scan', {

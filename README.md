@@ -661,7 +661,7 @@ audit but not in-box SSH sessions — see #1189).
   users can only proxy through to their container.
 - **fail2ban per-user**: an attack on Alice's account doesn't ban
   Bob.
-- **ClamAV + Trivy** scanning across all backends.
+- **Trivy** image/dependency scanning across backends. **ClamAV** malware scanning is a tenant-run capability (the scan runs inside a box, started by its owner, and the verdict is self-reported); it is being rebuilt in #2631 and is not a platform-wide control today.
 - **AppArmor profiles** per container.
 - **AGENTBOX_ROOT sandbox** to constrain agent-box file ops at runtime.
 

@@ -1589,7 +1589,6 @@ func (cs *CoreServices) EnsureSecurity(ctx context.Context) error {
 		cs.backfillConfig(CoreSecurityContainer, incus.RoleSecurity, "70")
 
 		if info.State == "Running" {
-			cs.backfillClamdUser()
 			log.Printf("Security container already running at %s", info.IPAddress)
 			return nil
 		}
@@ -1600,7 +1599,6 @@ func (cs *CoreServices) EnsureSecurity(ctx context.Context) error {
 		if _, err := cs.incusClient.WaitForNetwork(CoreSecurityContainer, 60*time.Second); err != nil {
 			return fmt.Errorf("failed to get security container IP: %w", err)
 		}
-		cs.backfillClamdUser()
 		return nil
 	}
 
@@ -1648,82 +1646,13 @@ func (cs *CoreServices) EnsureSecurity(ctx context.Context) error {
 	return nil
 }
 
-// setupSecurity installs ClamAV in the security container
+// setupSecurity prepares the security container. ClamAV is deliberately NOT
+// installed here any more (#2631): the central scanner mounted tenant rootfs
+// into this container, could not read them, and has been removed; malware
+// scanning moves inside each tenant's own box. The container stays because the
+// ZAP scanner is installed into it (internal/zap).
 func (cs *CoreServices) setupSecurity(ctx context.Context) error {
-	log.Printf("Installing ClamAV...")
-
-	time.Sleep(5 * time.Second)
-
-	commands := [][]string{
-		{"apt-get", "update"},
-		{"apt-get", "install", "-y", "clamav", "clamav-daemon", "clamav-freshclam"},
-	}
-
-	for _, cmd := range commands {
-		if err := cs.incusClient.Exec(CoreSecurityContainer, cmd); err != nil {
-			return fmt.Errorf("failed to run %v: %w", cmd, err)
-		}
-	}
-
-	// Configure clamd to exclude pseudo-filesystem directories in scan mounts.
-	// clamdscan does not support --exclude-dir, so we set ExcludePath in clamd.conf.
-	excludeCmds := [][]string{
-		{"bash", "-c", `echo 'ExcludePath ^/mnt/scan-.*/sys' >> /etc/clamav/clamd.conf`},
-		{"bash", "-c", `echo 'ExcludePath ^/mnt/scan-.*/proc' >> /etc/clamav/clamd.conf`},
-		{"bash", "-c", `echo 'ExcludePath ^/mnt/scan-.*/dev' >> /etc/clamav/clamd.conf`},
-	}
-	for _, cmd := range excludeCmds {
-		if err := cs.incusClient.Exec(CoreSecurityContainer, cmd); err != nil {
-			log.Printf("Warning: failed to configure clamd ExcludePath: %v", err)
-		}
-	}
-
-	// clamd must be able to read root-only files in a scanned rootfs (#2631).
-	// A failure here is not fatal: the scan then records `incomplete`, and the
-	// backfill on the next daemon start retries.
-	if err := cs.configureClamdUser(); err != nil {
-		log.Printf("Warning: failed to configure the clamd user: %v", err)
-	}
-
-	// Enable and start freshclam (virus database updater).
-	for _, cmd := range [][]string{
-		{"systemctl", "enable", "clamav-freshclam"},
-		{"systemctl", "start", "clamav-freshclam"},
-	} {
-		if err := cs.incusClient.Exec(CoreSecurityContainer, cmd); err != nil {
-			return fmt.Errorf("failed to run %v: %w", cmd, err)
-		}
-	}
-
-	// Wait for freshclam to download virus DB before starting clamd.
-	// clamd has a systemd ConditionPathExistsGlob that fails if the DB isn't ready.
-	log.Printf("Waiting for ClamAV virus database download...")
-	dbReady := false
-	for i := 0; i < 30; i++ { // up to 5 minutes
-		out, _, _ := cs.incusClient.ExecWithOutput(CoreSecurityContainer, []string{
-			"bash", "-c", "ls /var/lib/clamav/daily.c?d /var/lib/clamav/daily.inc 2>/dev/null | head -1",
-		})
-		if strings.TrimSpace(out) != "" {
-			dbReady = true
-			break
-		}
-		time.Sleep(10 * time.Second)
-	}
-	if !dbReady {
-		log.Printf("Warning: ClamAV virus DB not ready after 5 minutes, starting clamd anyway")
-	}
-
-	// Now start clamd (virus DB should be available).
-	for _, cmd := range [][]string{
-		{"systemctl", "enable", "clamav-daemon"},
-		{"systemctl", "start", "clamav-daemon"},
-	} {
-		if err := cs.incusClient.Exec(CoreSecurityContainer, cmd); err != nil {
-			return fmt.Errorf("failed to run %v: %w", cmd, err)
-		}
-	}
-
-	log.Printf("ClamAV security container setup complete")
+	log.Printf("Security container ready (no ClamAV: malware scanning runs inside the tenant's own box, #2631)")
 	return nil
 }
 

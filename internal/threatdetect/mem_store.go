@@ -168,6 +168,12 @@ func (s *MemFindingStore) List(ctx context.Context, filter ListFilter) ([]*Findi
 		if filter.State != "" && f.State != filter.State {
 			continue
 		}
+		if filter.Rule != pb.ThreatRuleId_THREAT_RULE_ID_UNSPECIFIED && f.Rule != filter.Rule {
+			continue
+		}
+		if filter.BackendID != "" && f.BackendID != filter.BackendID {
+			continue
+		}
 		matches = append(matches, f)
 	}
 	sort.Slice(matches, func(i, j int) bool { return matches[i].LastSeen.After(matches[j].LastSeen) })
@@ -234,5 +240,8 @@ func (s *MemFindingStore) Resolve(ctx context.Context, id int64) (*Finding, erro
 		log.Printf("threatdetect: audit log resolve for finding %d (degraded mode): %v", f.ID, err)
 	}
 	s.emitter.EmitSecurityFinding(f.ToProto())
+	if s.notifier != nil {
+		s.notifier.Notify(f) // delivered once: the resolution (#2643)
+	}
 	return f, nil
 }
