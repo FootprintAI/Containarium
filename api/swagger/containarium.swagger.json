@@ -13624,7 +13624,8 @@
           "type": "string",
           "title": "When the summary was last collected"
         }
-      }
+      },
+      "description": "Counts are self-reported: the scan runs inside each tenant's own box (#2631),\nso a compromised box can report \"clean\". Treat them as a tenant-visible\nsignal, not as platform assurance."
     },
     "GetClusterKubeconfigResponse": {
       "type": "object",
