@@ -85,6 +85,15 @@ type ListenerEvidence struct {
 	Note        string `json:"note,omitempty"`
 }
 
+// CPUEvidence summarises a container's CPU usage over a detection window
+// (#2635), in cores.
+type CPUEvidence struct {
+	MeanCores     float64 `json:"mean_cores"`
+	PeakCores     float64 `json:"peak_cores"`
+	WindowSeconds int64   `json:"window_seconds"`
+	Samples       int32   `json:"samples"`
+}
+
 // Evidence bundles the flow, deny and configuration records that triggered
 // a finding. It is the named struct written into the
 // security_findings.evidence JSONB column — a storage encoding, never an
@@ -94,12 +103,13 @@ type Evidence struct {
 	Denies    []DenyEvidence     `json:"denies,omitempty"`
 	Configs   []ConfigEvidence   `json:"configs,omitempty"`
 	Listeners []ListenerEvidence `json:"listeners,omitempty"`
+	CPU       []CPUEvidence      `json:"cpu,omitempty"`
 }
 
 // Capped returns a copy of e with each evidence kind truncated to the most
 // recent EvidenceCap entries.
 func (e Evidence) Capped() Evidence {
-	out := Evidence{Flows: e.Flows, Denies: e.Denies, Configs: e.Configs, Listeners: e.Listeners}
+	out := Evidence{Flows: e.Flows, Denies: e.Denies, Configs: e.Configs, Listeners: e.Listeners, CPU: e.CPU}
 	if len(out.Flows) > EvidenceCap {
 		out.Flows = out.Flows[len(out.Flows)-EvidenceCap:]
 	}
@@ -111,6 +121,9 @@ func (e Evidence) Capped() Evidence {
 	}
 	if len(out.Listeners) > EvidenceCap {
 		out.Listeners = out.Listeners[len(out.Listeners)-EvidenceCap:]
+	}
+	if len(out.CPU) > EvidenceCap {
+		out.CPU = out.CPU[len(out.CPU)-EvidenceCap:]
 	}
 	return out
 }
@@ -134,6 +147,7 @@ func (e Evidence) merged(more Evidence) Evidence {
 		Denies:    append(append([]DenyEvidence(nil), e.Denies...), more.Denies...),
 		Configs:   mergeConfigEvidence(e.Configs, more.Configs),
 		Listeners: append(append([]ListenerEvidence(nil), e.Listeners...), more.Listeners...),
+		CPU:       append(append([]CPUEvidence(nil), e.CPU...), more.CPU...),
 	}
 }
 
@@ -250,6 +264,16 @@ func (f *Finding) ToProto() *pb.Finding {
 		})
 	}
 
+	cpu := make([]*pb.CPUEvidence, 0, len(f.Evidence.CPU))
+	for _, c := range f.Evidence.CPU {
+		cpu = append(cpu, &pb.CPUEvidence{
+			MeanCores:     c.MeanCores,
+			PeakCores:     c.PeakCores,
+			WindowSeconds: c.WindowSeconds,
+			Samples:       c.Samples,
+		})
+	}
+
 	return &pb.Finding{
 		Id:        f.ID,
 		Rule:      f.Rule,
@@ -265,6 +289,7 @@ func (f *Finding) ToProto() *pb.Finding {
 			Denies:    denies,
 			Configs:   configs,
 			Listeners: listeners,
+			Cpu:       cpu,
 		},
 		FirstSeen: timestampProto(f.FirstSeen),
 		LastSeen:  timestampProto(f.LastSeen),

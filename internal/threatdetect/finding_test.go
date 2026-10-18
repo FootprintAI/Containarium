@@ -160,3 +160,24 @@ func TestEvidenceMerged_ConfigEvidenceIsDeduplicated(t *testing.T) {
 		t.Fatalf("a changed entry must be added exactly once, got %+v", got.Configs)
 	}
 }
+
+// CPU evidence (#2635) rides the same wire, cap and merge paths as the other
+// evidence kinds.
+func TestEvidence_CPU_ToProtoCappedMerged(t *testing.T) {
+	f := &Finding{Evidence: Evidence{CPU: []CPUEvidence{{MeanCores: 16, PeakCores: 16.5, WindowSeconds: 300, Samples: 20}}}}
+	got := f.ToProto().GetEvidence().GetCpu()
+	if len(got) != 1 || got[0].GetMeanCores() != 16 || got[0].GetPeakCores() != 16.5 || got[0].GetWindowSeconds() != 300 || got[0].GetSamples() != 20 {
+		t.Fatalf("ToProto CPU evidence = %v", got)
+	}
+	var many Evidence
+	for i := 0; i < EvidenceCap+3; i++ {
+		many.CPU = append(many.CPU, CPUEvidence{Samples: int32(i)}) // #nosec G115 -- small test loop
+	}
+	if capped := many.Capped(); len(capped.CPU) != EvidenceCap || capped.CPU[0].Samples != 3 {
+		t.Fatalf("Capped CPU = %+v, want the most recent %d", capped.CPU, EvidenceCap)
+	}
+	merged := Evidence{CPU: []CPUEvidence{{Samples: 1}}}.merged(Evidence{CPU: []CPUEvidence{{Samples: 2}}})
+	if len(merged.CPU) != 2 || merged.CPU[1].Samples != 2 {
+		t.Fatalf("merged CPU = %+v", merged.CPU)
+	}
+}

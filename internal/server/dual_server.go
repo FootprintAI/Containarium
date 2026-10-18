@@ -2366,13 +2366,33 @@ skipAppHosting:
 	// threatCfg.SentryEnabled — an operator can curate the list via CLI/MCP
 	// before ever turning the sentry on. Registered with the engine only
 	// when one was actually constructed above (sentry enabled + available).
+	var listedDestinations threatdetect.DestinationMatcher
 	if badDestRule, bdErr := threatdetect.NewBadDestinationRule(context.Background(), config.DaemonConfigStore); bdErr != nil {
 		log.Printf("Warning: threat-detection bad-destination rule init failed (%v); ListBadDestinations/Add/Remove unavailable", bdErr)
 	} else {
 		threatDetectServer.SetBadDestinationRule(badDestRule)
+		listedDestinations = badDestRule
 		if threatDetectEngine != nil {
 			threatDetectEngine.Register(badDestRule)
 		}
+	}
+	// Mining-behavior rule (#2635): sustained CPU plus a long-lived flow to a
+	// stratum port or a listed destination. CPU arrives from the metrics
+	// collector's tick (CPUSampler, wired where the collector starts), so the
+	// rule stays inert on a daemon without VictoriaMetrics. Thresholds are
+	// persisted under threatdetect.MiningThresholdsConfigKey.
+	if threatDetectEngine != nil {
+		var kv threatdetect.ConfigKV
+		if config.DaemonConfigStore != nil {
+			kv = config.DaemonConfigStore
+		}
+		miningCfg, mErr := threatdetect.NewMiningThresholdsConfig(context.Background(), kv)
+		if mErr != nil {
+			log.Printf("Warning: mining-behavior thresholds load failed (%v); using defaults", mErr)
+			miningCfg, _ = threatdetect.NewMiningThresholdsConfig(context.Background(), nil)
+		}
+		threatDetectEngine.SetMiningThresholds(miningCfg.Effective)
+		threatDetectEngine.Register(threatdetect.NewMiningBehaviorRule(listedDestinations))
 	}
 	pb.RegisterThreatDetectionServiceServer(grpcServer, threatDetectServer)
 
@@ -3598,6 +3618,11 @@ func (ds *DualServer) Start(ctx context.Context) error {
 			ds.metricsCollector.SetEgressFetcher(&EgressFanoutFetcherAdapter{
 				Collector: ds.trafficCollector,
 			})
+		}
+		// Feed per-container CPU to the threat-detection engine
+		// (mining-behavior rule, #2635) from this same tick.
+		if ds.threatDetectEngine != nil {
+			ds.metricsCollector.SetCPUHook(NewCPUSampler(ds.threatDetectEngine.OnCPU).Observe)
 		}
 		ds.metricsCollector.Start()
 	}

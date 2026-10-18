@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Threat detection flags cryptomining behaviour** (#2635). A new HIGH rule, `THREAT_RULE_ID_MINING_BEHAVIOR`, fires when a container's mean CPU over a 5-minute window reaches `min(1.5 cores, 0.75 × its limits.cpu)` while it holds a flow of at least 3 minutes to a stratum port (3333, 4444, 5555, 7777, 14444, 14433) or a listed bad destination; subject is the destination `ip:port` and the evidence carries a CPU summary plus the flow. CPU comes from the metrics collector's existing per-container read (no new Incus polling). Thresholds are persisted under the daemon config key `threatdetect.mining_behavior.thresholds`; the CLI to set them follows in #2636.
+
 ## [0.107.0] - 2026-10-18
 
 _Malware scans can read root-only files in scanned rootfs (they were all recorded incomplete), threat detection stops counting observation-only denies, a new alertable signal for backup-health read failures, and managed session termination reports ids it cannot map._

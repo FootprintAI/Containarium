@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package containarium.v1;
 
+import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
 import "google/api/annotations.proto";
 import "protoc-gen-openapiv2/options/annotations.proto";
@@ -37,6 +38,11 @@ enum ThreatRuleId {
   // same posture pass as rule 4; record-only, the platform never kills a
   // tenant's process. The evidence names the port, pid and binary.
   THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER = 5;
+  // A box held sustained CPU while keeping a long-lived flow to a stratum
+  // port or a listed bad destination (#2635): the shape of a cryptominer.
+  // Subject is the destination ip:port; evidence is one CPUEvidence plus
+  // the qualifying flow. Thresholds: MiningBehaviorThresholds.
+  THREAT_RULE_ID_MINING_BEHAVIOR = 6;
 }
 
 // FindingState is the lifecycle state of a security finding.
@@ -105,6 +111,19 @@ message ListenerEvidence {
   string note = 5;
 }
 
+// CPUEvidence summarises a container's CPU usage over a detection window
+// (#2635), measured in cores (1.0 = one core fully busy).
+message CPUEvidence {
+  // Mean cores over the window's samples.
+  double mean_cores = 1;
+  // Highest single sample in the window.
+  double peak_cores = 2;
+  // Length of the window the samples cover.
+  int64 window_seconds = 3;
+  // Number of samples the mean was taken over.
+  int32 samples = 4;
+}
+
 // Evidence bundles the flow, deny and configuration records that triggered
 // a finding. Capped by the store to the most recent entries — see
 // FindingStore.
@@ -113,6 +132,27 @@ message Evidence {
   repeated DenyEvidence denies = 2;
   repeated ConfigEvidence configs = 3;
   repeated ListenerEvidence listeners = 4;
+  repeated CPUEvidence cpu = 5;
+}
+
+// MiningBehaviorThresholds tunes the mining-behavior rule (#2635). Persisted
+// as protojson in the daemon config store under
+// "threatdetect.mining_behavior.thresholds". A zero or empty field means
+// "use the default" (in brackets below).
+message MiningBehaviorThresholds {
+  // Absolute CPU bar in cores [1.5]. The effective bar is
+  // min(min_cores, min_fraction_of_limit x the box's limits.cpu); a box with
+  // no CPU limit uses min_cores alone.
+  double min_cores = 1;
+  // Window the CPU mean is taken over [5m].
+  google.protobuf.Duration window = 2;
+  // Minimum age of a qualifying flow, seen within the window [3m].
+  google.protobuf.Duration flow_min_age = 3;
+  // Destination ports treated as stratum (mining pool) ports
+  // [3333, 4444, 5555, 7777, 14444, 14433].
+  repeated uint32 stratum_ports = 4;
+  // Fraction of the box's CPU limit that also trips the bar [0.75].
+  double min_fraction_of_limit = 5;
 }
 
 // Finding is a single security finding raised by the threat-detection
