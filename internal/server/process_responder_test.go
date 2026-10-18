@@ -254,7 +254,7 @@ func TestProcessResponder_Apply(t *testing.T) {
 			name: "THROTTLE records the previous limit and applies the allowance", policy: pb.ProcessAction_PROCESS_ACTION_THROTTLE,
 			rule: ruleMiningBehavior, severity: pb.ThreatSeverity_THREAT_SEVERITY_HIGH,
 			wantAction: pb.ProcessAction_PROCESS_ACTION_THROTTLE, wantState: pb.ResponseState_RESPONSE_STATE_APPLIED,
-			wantAllow: "10%", wantOpenRow: true, wantAuditOps: []string{"apply"},
+			wantAllow: "10ms/100ms", wantOpenRow: true, wantAuditOps: []string{"apply"}, // 10% of ONE core as a hard CFS quota, never Incus's soft "N%" share (#2676)
 		},
 		{
 			name: "FREEZE freezes and keeps the limit", policy: pb.ProcessAction_PROCESS_ACTION_FREEZE,
@@ -427,7 +427,7 @@ func TestProcessResponder_TTLSweep(t *testing.T) {
 	if n := fx.r.SweepExpired(context.Background(), fx.clock.Add(time.Hour)); n != 0 {
 		t.Fatalf("SweepExpired before the TTL released %d, want 0", n)
 	}
-	if fx.act.allow["box-a"] != "10%" {
+	if fx.act.allow["box-a"] != "10ms/100ms" {
 		t.Fatalf("allowance changed before the TTL: %q", fx.act.allow["box-a"])
 	}
 
@@ -458,7 +458,7 @@ func TestProcessResponder_TTLSweep(t *testing.T) {
 	}
 	// Released by the TTL: the slot is free, the next HIGH finding acts again.
 	fx.fire(t, "box-a", ruleMiningBehavior, pb.ThreatSeverity_THREAT_SEVERITY_HIGH)
-	if fx.act.allow["box-a"] != "10%" {
+	if fx.act.allow["box-a"] != "10ms/100ms" {
 		t.Errorf("re-fire after TTL did not throttle again: allowance %q", fx.act.allow["box-a"])
 	}
 }
@@ -543,8 +543,8 @@ func TestProcessResponder_UsesContainerOverride(t *testing.T) {
 	}
 	fx.fire(t, "box-a", ruleMiningBehavior, pb.ThreatSeverity_THREAT_SEVERITY_HIGH)
 	fx.fire(t, "box-b", ruleMiningBehavior, pb.ThreatSeverity_THREAT_SEVERITY_HIGH)
-	if fx.act.allow["box-a"] != "10%" {
-		t.Errorf("box-a (backend default THROTTLE) allowance = %q, want 10%%", fx.act.allow["box-a"])
+	if fx.act.allow["box-a"] != "10ms/100ms" {
+		t.Errorf("box-a (backend default THROTTLE) allowance = %q, want 10ms/100ms (hard quota)", fx.act.allow["box-a"])
 	}
 	if fx.act.allow["box-b"] != "200ms/100ms" {
 		t.Errorf("box-b (override ALERT) allowance = %q, want untouched", fx.act.allow["box-b"])
