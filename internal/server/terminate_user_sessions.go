@@ -15,6 +15,7 @@ import (
 	"github.com/footprintai/containarium/internal/collaborator"
 	"github.com/footprintai/containarium/internal/sshauthz"
 	"github.com/footprintai/containarium/pkg/core/container"
+	"github.com/footprintai/containarium/pkg/core/incus"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -37,7 +38,7 @@ func (s *ContainerServer) TerminateUserSessions(ctx context.Context, req *pb.Ter
 	if err := auth.AuthorizeTenant(ctx, req.GetUsername()); err != nil {
 		return nil, err
 	}
-	return s.EndUserSessions(ctx, req.GetUsername())
+	return s.EndUserSessions(ctx, req.GetUsername(), "")
 }
 
 // EndUserSessions is the unauthenticated core of TerminateUserSessions, shared
@@ -49,9 +50,15 @@ func (s *ContainerServer) TerminateUserSessions(ctx context.Context, req *pb.Ter
 // accounts, homes, sudoers and authorized_keys are untouched, so the user can
 // connect again.
 //
+// orgID, when non-empty, limits the walk to boxes whose owning tenant
+// (incus.ResolveTenant: tenant label, then cloud_org_id, then the name
+// convention) is that org (#2546); other orgs' boxes are left alone. Empty
+// walks every box, as before. A box whose tenant cannot be resolved to orgID
+// is skipped, never guessed.
+//
 // A failed collaborator lookup does not stop the owner box from being
 // handled; the error is returned afterwards so the caller retries.
-func (s *ContainerServer) EndUserSessions(ctx context.Context, username string) (*pb.TerminateUserSessionsResponse, error) {
+func (s *ContainerServer) EndUserSessions(ctx context.Context, username, orgID string) (*pb.TerminateUserSessionsResponse, error) {
 	if !container.IsValidAccountName(username) || strings.Contains(username, "-container-") {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid username %q", username)
 	}
@@ -84,6 +91,9 @@ func (s *ContainerServer) EndUserSessions(ctx context.Context, username string) 
 		if err != nil || info == nil {
 			continue // no such box on this backend
 		}
+		if orgID != "" && boxTenant(info) != orgID {
+			continue // another org's box on a shared host
+		}
 		resp.BoxesTouched++
 		if info.State == "Running" && s.manager.TerminateAccountSessions(t.box, t.account) {
 			resp.TerminatedSessions++
@@ -98,6 +108,12 @@ func (s *ContainerServer) EndUserSessions(ctx context.Context, username string) 
 		return resp, status.Error(codes.Unavailable, listErr.Error())
 	}
 	return resp, nil
+}
+
+// boxTenant is the org/tenant that owns a box, by the precedence every
+// tenant-scoped control shares.
+func boxTenant(info *incus.ContainerInfo) string {
+	return incus.ResolveTenant(info.Tenant, info.Labels[incus.CloudOrgIDLabel], info.Name)
 }
 
 func (s *ContainerServer) collaboratorAccessor() collaboratorAccess {
@@ -122,13 +138,13 @@ type cloudSessionTerminator struct {
 	ids *sshauthz.ManagedIdentities
 }
 
-func (t cloudSessionTerminator) TerminateUserSessions(ctx context.Context, userID string) error {
+func (t cloudSessionTerminator) TerminateUserSessions(ctx context.Context, userID, orgID string) error {
 	logins := t.ids.Logins(userID)
 	if len(logins) == 0 {
 		if !container.IsValidAccountName(userID) || strings.Contains(userID, "-container-") {
 			return fmt.Errorf("%w: %q", cloud.ErrUserNotMapped, userID)
 		}
-		resp, err := t.s.EndUserSessions(ctx, userID)
+		resp, err := t.s.EndUserSessions(ctx, userID, orgID)
 		if err == nil && resp.GetBoxesTouched() == 0 {
 			return fmt.Errorf("%w: %q", cloud.ErrUserNotMapped, userID)
 		}
@@ -142,7 +158,7 @@ func (t cloudSessionTerminator) TerminateUserSessions(ctx context.Context, userI
 			continue
 		}
 		walked[local] = true
-		if _, err := t.s.EndUserSessions(ctx, local); err != nil {
+		if _, err := t.s.EndUserSessions(ctx, local, orgID); err != nil {
 			errs = append(errs, err)
 		}
 	}

@@ -483,7 +483,9 @@ type Assignment struct {
 	// as CONTAINER, so a cloud that never sets it keeps today's meaning.
 	Kind AssignmentKind `protobuf:"varint,21,opt,name=kind,proto3,enum=containarium.cloud.v1.AssignmentKind" json:"kind,omitempty"`
 	// Person whose sessions to end. Set only when
-	// kind == ASSIGNMENT_KIND_TERMINATE_USER_SESSIONS.
+	// kind == ASSIGNMENT_KIND_TERMINATE_USER_SESSIONS. On such an assignment
+	// the existing org_id (field 5), when set, limits the termination to that
+	// org's boxes (#2546); empty keeps the whole-host behaviour.
 	UserId        string `protobuf:"bytes,22,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
