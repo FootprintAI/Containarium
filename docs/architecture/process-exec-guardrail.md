@@ -91,7 +91,8 @@ flowchart LR
    `ContainerMetrics.CPUUsageSeconds` per container from Incus), the
    sampler takes the delta since the previous tick, converts it to cores
    (`Δseconds / Δwall`), and pushes `[]threatdetect.CPUSample{Container,
-   Tenant, Cores, At}` into the engine. No new Incus polling: the sampler
+   Tenant, Cores, LimitCores, At}` into the engine (`LimitCores` is the box's
+   `limits.cpu`, 0 when unlimited). No new Incus polling: the sampler
    is a hook on the collector, like the flow hook on the enforcer. A
    container's first sample after start is dropped (no delta).
 
@@ -116,8 +117,11 @@ flowchart LR
    `rule_baddest.go`, injected). A flow's age is `LastNs - FirstNs` from
    the flow record itself; the rule only needs it to be `≥ flow_min_age`
    (default 3 min) and seen inside the window. `Sweep` (30 s) fires a HIGH
-   finding when the window's mean cores `≥ min_cores` (default 1.5) and a
-   qualifying flow exists. Subject is the destination `ip:port`, so a
+   finding when the window's mean cores is at least
+   `min(min_cores, min_fraction_of_limit × limits.cpu)` (defaults 1.5 and
+   0.75; a box with no CPU limit uses `min_cores` alone, decided on #2641
+   Q1) and a qualifying flow exists. The box's limit arrives with each
+   `CPUSample` from the same Incus read the sampler already does. Subject is the destination `ip:port`, so a
    second pool opens a second finding and the same pool dedupes. Evidence:
    one `CPUEvidence{mean_cores, peak_cores, window_seconds, samples}` and
    the qualifying `FlowEvidence`. Thresholds live in `ProcessPolicy`
@@ -164,7 +168,12 @@ flowchart LR
    `Upsert` it calls `Responder.OnFinding(before, after)`. The responder
    acts only when the finding is HIGH, its rule is `MINING_BEHAVIOR` or
    `MINER_SIGNATURE`, and no open row in `security_actions` exists for the
-   container (dedupe across rules: one action per box). Actions:
+   container (dedupe across rules: one action per box). When the finding
+   store is degraded (no Postgres) the responder applies `ALERT` only,
+   whatever the policy says, and `GetSentryStatus` reports
+   `DEGRADED (no persistence): responses disabled` (decided on #2641 Q2):
+   a throttle whose previous-limit row can vanish on restart is worse than
+   an alert. Actions:
 
    | action | apply | release |
    |---|---|---|
@@ -298,7 +307,8 @@ message FindingResponse { ProcessAction action = 1; ResponseState state = 2; boo
 message Finding { /* existing 1..12 */ FindingResponse response = 13; }
 
 message MiningBehaviorThresholds { double min_cores = 1; google.protobuf.Duration window = 2;
-                                   google.protobuf.Duration flow_min_age = 3; repeated uint32 stratum_ports = 4; }
+                                   google.protobuf.Duration flow_min_age = 3; repeated uint32 stratum_ports = 4;
+                                   double min_fraction_of_limit = 5; }  // bar = min(min_cores, fraction × limits.cpu)
 message ProcessPolicy { ProcessAction action = 1; string throttle_allowance = 2; google.protobuf.Duration ttl = 3;
                         bool kill_process = 4; MiningBehaviorThresholds mining_behavior = 5; }
 
@@ -383,7 +393,8 @@ bad-destination verbs; the cloud shim forwards them per org as it does
 
 **mining-behavior**
 - Unit (table-driven, fake clock): fires on 5 min at 2.0 cores + 4 min
-  flow to `:3333`; does not fire on 2.0 cores with only `:443` flows; does
+  flow to `:3333`; fires on a 1-vCPU box at 0.8 cores (75 % of its limit)
+  with the same flow; does not fire on that box at 0.6 cores; does not fire on 2.0 cores with only `:443` flows; does
   not fire on 0.4 cores with a `:3333` flow; fires once per destination
   and dedupes on repeat; state expires after `2 × window`; thresholds from
   `RuleContext` are honoured; a bad-destination hit on `:443` qualifies.
@@ -412,8 +423,9 @@ bad-destination verbs; the cloud shim forwards them per org as it does
   allowance; `FREEZE` freezes; a second HIGH finding on the same container
   while an action is open does not act again; `release` restores exactly
   what was stored; TTL sweep releases and raises `PROCESS_ACTION_EXPIRED`;
-  actuator error → `FAILED` state with the error, no retry; kill path
-  refuses on cgroup mismatch; effective-policy resolution table (override
+  actuator error → `FAILED` state with the error, no retry; degraded
+  store → `ALERT` applied for a `THROTTLE` policy and status reports
+  responses disabled; kill path refuses on cgroup mismatch; effective-policy resolution table (override
   → default → built-in).
 - Store integration (real Postgres, existing `store-integration` lane):
   `security_actions` unique open-per-container index, release, TTL query.

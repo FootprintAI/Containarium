@@ -132,8 +132,10 @@ As an operator, I want a HIGH finding when a box runs at sustained high
 CPU while holding a persistent flow to a stratum port or a listed pool,
 so that the two known incidents are caught with no new telemetry.
 **Acceptance criteria:**
-- [ ] Rule fires when, for one container, CPU usage ≥ `min_cores`
-      (default 1.5 cores) averaged over `window` (default 5 min) **and**
+- [ ] Rule fires when, for one container, CPU usage averaged over
+      `window` (default 5 min) is at least the lower of `min_cores`
+      (default 1.5) and `min_fraction_of_limit` (default 0.75) × the box's
+      CPU limit (no limit: `min_cores` alone; decided 2026-10-18) **and**
       a flow to a destination port in the stratum set (default 3333,
       4444, 5555, 7777, 14444, 14433) or to a bad-destination entry has
       lasted ≥ `flow_min_age` (default 3 min) within the window.
@@ -296,8 +298,9 @@ first three.
    freezing a workload identified as mining, and self-hosters set their
    own. Validate with whoever owns the terms before the default for any
    tenant class moves past `alert`.
-2. **Default thresholds.** `min_cores` 1.5 over 5 min with a 3 min
-   stratum flow is chosen from the two incidents, not from fleet data.
+2. **Default thresholds.** `min_cores` 1.5 (or 75 % of a smaller box's
+   limit, decided 2026-10-18 on #2641) over 5 min with a 3 min stratum
+   flow is chosen from the two incidents, not from fleet data.
    The 4-week `alert` period exists to tune it; a build farm tenant with
    a `:3333` service is the false positive to look for.
 3. **Freeze semantics under Incus.** Assumption: `freeze` on a running
