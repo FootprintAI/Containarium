@@ -126,7 +126,8 @@ message GetClamavSummaryResponse {
 }
 
 message TriggerClamavScanRequest {
-  // Container name to scan (empty = scan all running user containers)
+  // Container name to scan. Required: the platform no longer scans every box
+  // (#2631); a scan is started per box by its owner.
   string container_name = 1;
 }
 

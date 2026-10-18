@@ -537,7 +537,8 @@ func (x *GetClamavSummaryResponse) GetLastCollectionAt() string {
 
 type TriggerClamavScanRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Container name to scan (empty = scan all running user containers)
+	// Container name to scan. Required: the platform no longer scans every box
+	// (#2631); a scan is started per box by its owner.
 	ContainerName string `protobuf:"bytes,1,opt,name=container_name,json=containerName,proto3" json:"container_name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
