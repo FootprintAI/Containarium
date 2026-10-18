@@ -37,6 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The platform no longer starts malware scans, and no longer mounts tenant rootfs into the security container** (#2657, part of #2631). Removed: the scan 5 minutes after daemon start, the 24-hour scan loop, the scan 2 minutes after a box is created, and scan-all (`TriggerClamavScan` with a blank `container_name` is now `InvalidArgument` for an admin; the web UI's "Scan All" button is gone). The disk-device mount of a tenant's rootfs and ClamAV provisioning in the security container (including v0.107.0's clamd-as-root change, which did not help) are removed; the security container stays for the ZAP scanner. A scan requested for one box now records an `incomplete` report (never `clean`) until the in-box scan runner lands. `--disable-security-scanner` now only skips the scan job queue and report store.
 
+### Internal
+
+- **The box-run start tests no longer race their own temp dir, and skip on non-Linux** (#2677). A run started by a test kept writing its log and exit sidecar after the test returned, so `t.TempDir`'s cleanup intermittently failed with `directory not empty` in CI (`TestStartBoxRun_RotatesAFinishedRunUnderTheSameName`). The shared `boxRunStartServer` helper now drains every run the test started before the directory is removed. The same tests failed on macOS because the spawn and stop scripts use `setsid` and `ps -eo`, which only exist in the Linux boxes they model; they now skip there with that reason.
+
 ## [0.107.0] - 2026-10-18
 
 _Malware scans can read root-only files in scanned rootfs (they were all recorded incomplete), threat detection stops counting observation-only denies, a new alertable signal for backup-health read failures, and managed session termination reports ids it cannot map._
