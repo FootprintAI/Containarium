@@ -49,9 +49,10 @@ type ThreatDetectionServer struct {
 	miningCfg *threatdetect.MiningThresholdsConfig
 	responder *ProcessResponder
 
-	mu                sync.Mutex // guards the two fields below — SetUnavailable can flip them after Start()
+	mu                sync.Mutex // guards the fields below — SetUnavailable / SetCPUSamplerStatus run after Start()
 	ebpfAvailable     bool       // eBPF object loaded (networkPolicyEnforcer != nil) AND still running
 	unavailableReason string
+	cpuSamplerStatus  string // GetSentryStatus.cpu_sampler (#2645); "" until wired
 }
 
 // NewThreatDetectionServer builds the server. engine must be non-nil iff
@@ -67,6 +68,15 @@ func NewThreatDetectionServer(engine *threatdetect.Engine, sentryEnabled, ebpfAv
 		ebpfAvailable:     ebpfAvailable,
 		unavailableReason: unavailableReason,
 	}
+}
+
+// SetCPUSamplerStatus records which source feeds the mining-behavior
+// rule's CPU samples (#2645) — "metrics-collector", "standalone (30s)" or
+// "unavailable (<reason>)" — surfaced as GetSentryStatus.cpu_sampler.
+func (s *ThreatDetectionServer) SetCPUSamplerStatus(status string) {
+	s.mu.Lock()
+	s.cpuSamplerStatus = status
+	s.mu.Unlock()
 }
 
 // SetBadDestinationRule wires the known-bad-destination rule (#1641) into
@@ -337,6 +347,13 @@ func (s *ThreatDetectionServer) sentryStatus() *pb.GetSentryStatusResponse {
 		}
 	}
 
+	s.mu.Lock()
+	cpuSampler := s.cpuSamplerStatus
+	s.mu.Unlock()
+	if cpuSampler == "" {
+		cpuSampler = cpuSamplerNotStartedStatus
+	}
+
 	degraded, ruleStatus := s.engine.Status()
 	state := pb.SentryState_SENTRY_STATE_OK
 	reason := ""
@@ -363,5 +380,5 @@ func (s *ThreatDetectionServer) sentryStatus() *pb.GetSentryStatusResponse {
 			reasons = append(reasons, ruleUnhealthyPrefix(r.Rule)+": "+r.LastError)
 		}
 	}
-	return &pb.GetSentryStatusResponse{State: state, Reason: strings.Join(reasons, "; "), Rules: rules}
+	return &pb.GetSentryStatusResponse{State: state, Reason: strings.Join(reasons, "; "), Rules: rules, CpuSampler: cpuSampler}
 }

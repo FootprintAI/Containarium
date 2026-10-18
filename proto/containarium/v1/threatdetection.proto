@@ -351,6 +351,12 @@ message GetSentryStatusResponse {
   // uses this exact string as the SENTRY_UNAVAILABLE finding's subject.
   string reason = 2;
   repeated RuleStatus rules = 3;
+  // Source of the per-container CPU samples the mining-behavior rule reads
+  // (#2645): "metrics-collector" (hook on the metrics collector's tick),
+  // "standalone (30s)" (the sentry polls Incus itself because no metrics
+  // collector runs), or "unavailable (<reason>)". Set only while the
+  // sentry is running (OK/DEGRADED).
+  string cpu_sampler = 4;
 }
 
 // BadDestinationEntry is one entry in the known-bad-destination list (#1641)
