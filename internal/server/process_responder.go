@@ -27,6 +27,10 @@ const actionAuditResourceType = "security.action"
 // processActionSweepInterval is how often Run looks for expired actions.
 const processActionSweepInterval = 60 * time.Second
 
+// processActionRetryBackoff is how long after a FAILED apply the responder
+// leaves the container alone instead of retrying on every rule re-fire.
+const processActionRetryBackoff = 10 * time.Minute
+
 // containerActuator is the slice of the Incus client the responder needs.
 // An interface, not *incus.Client, so the responder is unit-testable with
 // a fake; incusActuator adapts the real client.
@@ -126,6 +130,16 @@ func (r *ProcessResponder) OnFinding(ctx context.Context, f *threatdetect.Findin
 		log.Printf("[process-responder] finding %d on %s: read open action: %v", f.ID, f.Container, err)
 		return nil
 	}
+	if last, err := r.actions.Latest(ctx, f.Container); err == nil &&
+		last.ReleasedBy == threatdetect.ReleasedByError && r.now().Sub(last.AppliedAt) < processActionRetryBackoff {
+		// The last apply failed moments ago: re-firing would only write
+		// another error row. Say so once, on the first suppressed re-fire.
+		if f.Response == nil || f.Response.State != pb.ResponseState_RESPONSE_STATE_FAILED {
+			log.Printf("[process-responder] finding %d on %s: last %s failed at %s; not retrying for %s",
+				f.ID, f.Container, last.Action, last.AppliedAt.UTC().Format(time.RFC3339), processActionRetryBackoff)
+		}
+		return nil
+	}
 	policy, err := r.policies.Effective(ctx, f.Container)
 	if err != nil {
 		// Unknown policy: do nothing rather than guess. The finding itself
@@ -160,17 +174,27 @@ func (r *ProcessResponder) OnFinding(ctx context.Context, f *threatdetect.Findin
 		FindingID: f.ID, Container: f.Container, TenantID: f.TenantID, Action: action,
 		AppliedAt: now, ExpiresAt: now.Add(policy.GetTtl().AsDuration()),
 	}
+	// Record first, act second: the row (with the previous limits a
+	// THROTTLE restores) exists before the box is touched, so a crash
+	// between the two leaves a PENDING row the sweep can undo.
+	if action == pb.ProcessAction_PROCESS_ACTION_THROTTLE {
+		count, allow, err := r.act.CPULimit(row.Container)
+		if err != nil {
+			return r.recordFailure(ctx, f, row, fmt.Errorf("read cpu limit: %w", err), detail)
+		}
+		row.PrevCPUCount, row.PrevCPUAllowance = count, allow
+	}
+	row.Pending = true
+	if err := r.actions.Insert(ctx, row); err != nil {
+		return r.recordFailure(ctx, f, nil, fmt.Errorf("record action: %w", err), detail)
+	}
 	if err := r.apply(row, policy.GetThrottleAllowance()); err != nil {
 		return r.recordFailure(ctx, f, row, err, detail)
 	}
-	if err := r.actions.Insert(ctx, row); err != nil {
-		// Applied but unrecorded: undo rather than leave a throttle no row
-		// explains (and no release could find).
-		if uerr := r.undo(row); uerr != nil {
-			log.Printf("[process-responder] undo unrecorded %s on %s: %v", row.Action, row.Container, uerr)
-		}
-		return r.recordFailure(ctx, f, nil, fmt.Errorf("record action: %w", err), detail)
+	if err := r.actions.MarkApplied(ctx, row.ID); err != nil {
+		log.Printf("[process-responder] confirm %s on %s (action %d): %v", row.Action, row.Container, row.ID, err)
 	}
+	row.Pending = false
 	out := r.setResponse(ctx, f.ID, threatdetect.FindingResponse{
 		Action: action, State: pb.ResponseState_RESPONSE_STATE_APPLIED, AppliedAt: now, ExpiresAt: row.ExpiresAt,
 	})
@@ -189,8 +213,16 @@ func (r *ProcessResponder) recordFailure(ctx context.Context, f *threatdetect.Fi
 	if row != nil {
 		action = row.Action
 		row.Error = cause.Error()
-		row.ReleasedAt, row.ReleasedBy = row.AppliedAt, threatdetect.ReleasedByError
-		if err := r.actions.Insert(ctx, row); err != nil {
+		var err error
+		if row.ID != 0 {
+			err = r.actions.Fail(ctx, row.ID, row.Error, r.now())
+		} else {
+			// Failed before any row existed: record it released on insert
+			// so it never holds the open slot.
+			row.ReleasedAt, row.ReleasedBy = row.AppliedAt, threatdetect.ReleasedByError
+			err = r.actions.Insert(ctx, row)
+		}
+		if err != nil {
 			log.Printf("[process-responder] record failed %s on %s: %v", row.Action, row.Container, err)
 		}
 	}
@@ -207,17 +239,12 @@ func (r *ProcessResponder) recordFailure(ctx context.Context, f *threatdetect.Fi
 	return out
 }
 
-// apply performs the action on the box, filling row's previous-limit
-// fields for THROTTLE.
+// apply performs the action on the box; a THROTTLE's previous limits are
+// already on row.
 func (r *ProcessResponder) apply(row *threatdetect.SecurityAction, allowance string) error {
 	switch row.Action {
 	case pb.ProcessAction_PROCESS_ACTION_THROTTLE:
-		count, allow, err := r.act.CPULimit(row.Container)
-		if err != nil {
-			return fmt.Errorf("read cpu limit: %w", err)
-		}
-		row.PrevCPUCount, row.PrevCPUAllowance = count, allow
-		if err := r.act.SetCPULimit(row.Container, count, allowance); err != nil {
+		if err := r.act.SetCPULimit(row.Container, row.PrevCPUCount, allowance); err != nil {
 			return fmt.Errorf("set cpu allowance %q: %w", allowance, err)
 		}
 		return nil
@@ -299,25 +326,31 @@ func (r *ProcessResponder) SweepExpired(ctx context.Context, now time.Time) int 
 		log.Printf("[process-responder] list expired actions: %v", err)
 		return 0
 	}
-	released := 0
+	released := r.sweepOrphans(ctx, now)
 	for _, row := range rows {
-		if err := r.expire(ctx, row, now); err != nil {
+		done, err := r.expire(ctx, row, now)
+		if err != nil {
 			log.Printf("[process-responder] expire %s on %s (action %d): %v", row.Action, row.Container, row.ID, err)
 			continue
 		}
-		released++
+		if done {
+			released++
+		}
 	}
 	return released
 }
 
-func (r *ProcessResponder) expire(ctx context.Context, row *threatdetect.SecurityAction, now time.Time) error {
+func (r *ProcessResponder) expire(ctx context.Context, row *threatdetect.SecurityAction, now time.Time) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if !r.stillOpen(ctx, row) {
+		return false, nil // released or superseded since the sweep listed it
+	}
 	if err := r.undo(row); err != nil {
-		return err
+		return false, err
 	}
 	if err := r.actions.Release(ctx, row.ID, threatdetect.ReleasedByTTL, now); err != nil {
-		return err
+		return false, err
 	}
 	r.setResponse(ctx, row.FindingID, threatdetect.FindingResponse{
 		Action: row.Action, State: pb.ResponseState_RESPONSE_STATE_EXPIRED,
@@ -340,6 +373,58 @@ func (r *ProcessResponder) expire(ctx context.Context, row *threatdetect.Securit
 	r.auditLog(ctx, "expire", fmt.Sprintf("%d", row.ID), fmt.Sprintf("finding=%d container=%s action=%s released_by=%s ttl=%s",
 		row.FindingID, row.Container, row.Action, threatdetect.ReleasedByTTL, ttl))
 	log.Printf("[process-responder] %s on %s expired after %s; released (finding %d)", row.Action, row.Container, ttl, row.FindingID)
+	return true, nil
+}
+
+// stillOpen re-reads the container's open action under the lock: the sweep
+// listed row before taking it, and an operator release or a fresh apply may
+// have landed in between. Only the very row that was listed may be undone.
+// Caller holds r.mu.
+func (r *ProcessResponder) stillOpen(ctx context.Context, row *threatdetect.SecurityAction) bool {
+	cur, err := r.actions.Open(ctx, row.Container)
+	return err == nil && cur.ID == row.ID
+}
+
+// sweepOrphans undoes PENDING rows older than PendingOrphanAfter: the daemon
+// died between recording the action and confirming it. Undoing what was
+// recorded is safe even if the box was never touched (the previous limits
+// are written back unchanged). Returns how many it released.
+func (r *ProcessResponder) sweepOrphans(ctx context.Context, now time.Time) int {
+	rows, err := r.actions.ListOrphaned(ctx, now.Add(-threatdetect.PendingOrphanAfter))
+	if err != nil {
+		log.Printf("[process-responder] list orphaned actions: %v", err)
+		return 0
+	}
+	n := 0
+	for _, row := range rows {
+		if err := r.reapOrphan(ctx, row, now); err != nil {
+			log.Printf("[process-responder] orphan %s on %s (action %d): %v", row.Action, row.Container, row.ID, err)
+			continue
+		}
+		n++
+	}
+	return n
+}
+
+func (r *ProcessResponder) reapOrphan(ctx context.Context, row *threatdetect.SecurityAction, now time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.stillOpen(ctx, row) {
+		return nil
+	}
+	if err := r.undo(row); err != nil {
+		return err
+	}
+	if err := r.actions.Release(ctx, row.ID, threatdetect.ReleasedByOrphanSweep, now); err != nil {
+		return err
+	}
+	r.setResponse(ctx, row.FindingID, threatdetect.FindingResponse{
+		Action: row.Action, State: pb.ResponseState_RESPONSE_STATE_RELEASED,
+		AppliedAt: row.AppliedAt, ExpiresAt: row.ExpiresAt, ReleasedAt: now, ReleasedBy: threatdetect.ReleasedByOrphanSweep,
+	})
+	r.auditLog(ctx, "release", fmt.Sprintf("%d", row.ID), fmt.Sprintf("finding=%d container=%s action=%s released_by=%s (pending apply never confirmed)",
+		row.FindingID, row.Container, row.Action, threatdetect.ReleasedByOrphanSweep))
+	log.Printf("[process-responder] orphaned %s on %s undone (finding %d)", row.Action, row.Container, row.FindingID)
 	return nil
 }
 

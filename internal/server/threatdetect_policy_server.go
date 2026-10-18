@@ -7,6 +7,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/threatdetect"
@@ -30,6 +31,28 @@ func (s *ThreatDetectionServer) SetProcessPolicyStore(store *threatdetect.Proces
 // reads, so `process-policy set` can tune them (ProcessPolicy.mining_behavior).
 func (s *ThreatDetectionServer) SetMiningThresholdsConfig(c *threatdetect.MiningThresholdsConfig) {
 	s.miningCfg = c
+}
+
+// withEffectiveThresholds returns a copy of p carrying the mining-behavior
+// thresholds the rule is actually using (stored values over built-in
+// defaults), so a read never shows them empty even when nothing was set.
+func (s *ThreatDetectionServer) withEffectiveThresholds(p *pb.ProcessPolicy) *pb.ProcessPolicy {
+	if s.miningCfg == nil {
+		return p
+	}
+	out := &pb.ProcessPolicy{}
+	if p != nil {
+		out = proto.Clone(p).(*pb.ProcessPolicy)
+	}
+	t := s.miningCfg.Effective()
+	out.MiningBehavior = &pb.MiningBehaviorThresholds{
+		MinCores:           t.MinCores,
+		MinFractionOfLimit: t.MinFractionOfLimit,
+		Window:             durationpb.New(t.Window),
+		FlowMinAge:         durationpb.New(t.FlowMinAge),
+		StratumPorts:       t.StratumPorts,
+	}
+	return out
 }
 
 // SetProcessResponder wires the responder ReleaseProcessAction calls. nil is
@@ -65,6 +88,7 @@ func (s *ThreatDetectionServer) GetProcessPolicy(ctx context.Context, req *pb.Ge
 	if container == "" && s.miningCfg != nil && stored != nil {
 		stored.MiningBehavior = s.miningCfg.Get()
 	}
+	effective = s.withEffectiveThresholds(effective)
 	return &pb.GetProcessPolicyResponse{
 		Policy:     stored,
 		IsOverride: container != "" && stored != nil,
@@ -127,7 +151,7 @@ func (s *ThreatDetectionServer) SetProcessPolicy(ctx context.Context, req *pb.Se
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "resolve process policy: %v", err)
 	}
-	return &pb.SetProcessPolicyResponse{Effective: effective}, nil
+	return &pb.SetProcessPolicyResponse{Effective: s.withEffectiveThresholds(effective)}, nil
 }
 
 // ReleaseProcessAction undoes the open action on a container. Admin-only

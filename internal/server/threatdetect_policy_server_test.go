@@ -191,3 +191,37 @@ func TestSetProcessPolicy_MiningBehaviorThresholds(t *testing.T) {
 		t.Fatalf("Get did not return thresholds: %v", got.GetPolicy())
 	}
 }
+
+func TestGetProcessPolicy_EffectiveThresholds(t *testing.T) {
+	tests := []struct {
+		name      string
+		set       *pb.MiningBehaviorThresholds
+		wantCores float64
+	}{
+		{"nothing ever set returns the built-in defaults", nil, threatdetect.DefaultMiningMinCores},
+		{"stored thresholds win over defaults", &pb.MiningBehaviorThresholds{MinCores: 3}, 3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := threatdetect.NewMiningThresholdsConfig(context.Background(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.set != nil {
+				if err := cfg.Set(context.Background(), tt.set); err != nil {
+					t.Fatal(err)
+				}
+			}
+			s, _ := newPolicyServer(t)
+			s.SetMiningThresholdsConfig(cfg)
+			resp, err := s.GetProcessPolicy(secReadCtx(), &pb.GetProcessPolicyRequest{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			mb := resp.GetEffective().GetMiningBehavior()
+			if mb.GetMinCores() != tt.wantCores || len(mb.GetStratumPorts()) == 0 || mb.GetWindow().AsDuration() != threatdetect.DefaultMiningWindow {
+				t.Errorf("effective.mining_behavior = %v, want min_cores %v with default window/ports", mb, tt.wantCores)
+			}
+		})
+	}
+}

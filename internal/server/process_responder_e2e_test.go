@@ -1,15 +1,16 @@
-//go:build integration
+//go:build incus
 
 // Real-Incus coverage for the process responder's actuator path (#2636):
 // THROTTLE drops limits.cpu.allowance to the policy's value and release
 // restores the recorded limit; FREEZE leaves the instance Frozen and release
 // resumes it. Needs a running container to act on:
 //
-//	CONTAINARIUM_E2E_INCUS_CONTAINER=<name> go test -tags=integration -run TestProcessResponderE2E ./internal/server/
+//	CONTAINARIUM_E2E_INCUS_CONTAINER=<name> go test -tags=incus -run TestProcessResponderE2E ./internal/server/
 //
-// Skips (does not fail) without one, because the store-integration lane has
-// Postgres but no Incus; the sprint's batched verification pass on dev runs
-// the full CPU-burner version from the issue's Verify-on-dev steps.
+// Skips (does not fail) without one. It lives under the `incus` tag (the
+// repo's real-Incus lane), so the store-integration lane never compiles it.
+// The sprint's batched verification pass on dev runs the full CPU-burner
+// version from the issue's Verify-on-dev steps.
 package server
 
 import (
