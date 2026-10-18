@@ -18,7 +18,10 @@ message ClamavReport {
   // Username associated with the container
   string username = 3;
 
-  // Scan status: "clean" or "infected"
+  // Scan status. Today "clean", "infected" or "incomplete" (a scan that could
+  // not finish is never reported clean, #2496); #2631 adds never-scanned,
+  // unsupported-size and not-installed outcomes. The verdict is produced by the
+  // scan running inside the tenant's own box, so it is self-reported.
   string status = 4;
 
   // Number of infected files found
@@ -99,6 +102,9 @@ message ListClamavReportsResponse {
 
 message GetClamavSummaryRequest {}
 
+// Counts are self-reported: the scan runs inside each tenant's own box (#2631),
+// so a compromised box can report "clean". Treat them as a tenant-visible
+// signal, not as platform assurance.
 message GetClamavSummaryResponse {
   // Per-container summaries
   repeated ClamavContainerSummary containers = 1;

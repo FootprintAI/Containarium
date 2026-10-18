@@ -10904,7 +10904,7 @@
         },
         "status": {
           "type": "string",
-          "title": "Scan status: \"clean\" or \"infected\""
+          "description": "Scan status. Today \"clean\", \"infected\" or \"incomplete\" (a scan that could\nnot finish is never reported clean, #2496); #2631 adds never-scanned,\nunsupported-size and not-installed outcomes. The verdict is produced by the\nscan running inside the tenant's own box, so it is self-reported."
         },
         "findingsCount": {
           "type": "integer",
@@ -13624,7 +13624,8 @@
           "type": "string",
           "title": "When the summary was last collected"
         }
-      }
+      },
+      "description": "Counts are self-reported: the scan runs inside each tenant's own box (#2631),\nso a compromised box can report \"clean\". Treat them as a tenant-visible\nsignal, not as platform assurance."
     },
     "GetClusterKubeconfigResponse": {
       "type": "object",
@@ -14114,7 +14115,7 @@
         },
         "reason": {
           "type": "string",
-          "description": "Human-readable explanation, always set for DISABLED/UNAVAILABLE."
+          "description": "Human-readable explanation, always set for DISABLED/UNAVAILABLE/\nDEGRADED, and also set while the state is OK but a rule is unhealthy\n(\"rule \u003cRULE\u003e unhealthy: \u003clast_error\u003e\"). The sentry-health loop (#2634)\nuses this exact string as the SENTRY_UNAVAILABLE finding's subject."
         },
         "rules": {
           "type": "array",
@@ -19166,10 +19167,11 @@
         "THREAT_RULE_ID_DENY_BURST",
         "THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH",
         "THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER",
+        "THREAT_RULE_ID_SENTRY_UNAVAILABLE",
         "THREAT_RULE_ID_MINING_BEHAVIOR"
       ],
       "default": "THREAT_RULE_ID_UNSPECIFIED",
-      "description": "ThreatRuleId identifies which detection rule raised a finding.\n\n - THREAT_RULE_ID_BAD_DESTINATION: Flow to a known-bad destination (e.g. a mining pool).\n - THREAT_RULE_ID_CROSS_TENANT_FLOW: Flow whose source and destination belong to different tenants.\n - THREAT_RULE_ID_DENY_BURST: Burst of policy denies for one tenant within a time window.\n - THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH: A box's effective sshd configuration permitted password login, or the\nplatform-managed key-only drop-in had been removed or altered (#2424).\nRaised by the box sshd posture reconciler after it re-asserts the\ndrop-in; the evidence names the offending directive and file.\n - THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER: A box is listening with an SSH server that is not the distro sshd\nservice on a port its sshd_config declares (#2439): a second sshd, a\ndropbear, or the stock sshd started with its own config. Raised by the\nsame posture pass as rule 4; record-only, the platform never kills a\ntenant's process. The evidence names the port, pid and binary.\n - THREAT_RULE_ID_MINING_BEHAVIOR: A box held sustained CPU while keeping a long-lived flow to a stratum\nport or a listed bad destination (#2635): the shape of a cryptominer.\nSubject is the destination ip:port; evidence is one CPUEvidence plus\nthe qualifying flow. Thresholds: MiningBehaviorThresholds."
+      "description": "ThreatRuleId identifies which detection rule raised a finding.\n\n - THREAT_RULE_ID_BAD_DESTINATION: Flow to a known-bad destination (e.g. a mining pool).\n - THREAT_RULE_ID_CROSS_TENANT_FLOW: Flow whose source and destination belong to different tenants.\n - THREAT_RULE_ID_DENY_BURST: Burst of policy denies for one tenant within a time window.\n - THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH: A box's effective sshd configuration permitted password login, or the\nplatform-managed key-only drop-in had been removed or altered (#2424).\nRaised by the box sshd posture reconciler after it re-asserts the\ndrop-in; the evidence names the offending directive and file.\n - THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER: A box is listening with an SSH server that is not the distro sshd\nservice on a port its sshd_config declares (#2439): a second sshd, a\ndropbear, or the stock sshd started with its own config. Raised by the\nsame posture pass as rule 4; record-only, the platform never kills a\ntenant's process. The evidence names the port, pid and binary.\n - THREAT_RULE_ID_SENTRY_UNAVAILABLE: An armed backend (CONTAINARIUM_THREAT_SENTRY set) whose sentry is not\nrunning cleanly: UNAVAILABLE, DEGRADED, or any rule unhealthy (#2634).\nRaised by the daemon's sentry-health loop, not by a rule — a rule cannot\nrun when the engine cannot. Subject is the GetSentryStatus reason string;\nresolved automatically once the sentry reports OK. Tenant and container\nare empty: this is a backend-level finding.\n - THREAT_RULE_ID_MINING_BEHAVIOR: A box held sustained CPU while keeping a long-lived flow to a stratum\nport or a listed bad destination (#2635): the shape of a cryptominer.\nSubject is the destination ip:port; evidence is one CPUEvidence plus\nthe qualifying flow. Thresholds: MiningBehaviorThresholds."
     },
     "ThreatSeverity": {
       "type": "string",

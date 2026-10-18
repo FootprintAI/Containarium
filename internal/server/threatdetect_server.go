@@ -116,59 +116,7 @@ func (s *ThreatDetectionServer) GetSentryStatus(ctx context.Context, _ *pb.GetSe
 	if err := auth.RequireScope(ctx, auth.ScopeSecurityRead); err != nil {
 		return nil, err
 	}
-	s.mu.Lock()
-	ebpfAvailable, unavailableReason := s.ebpfAvailable, s.unavailableReason
-	s.mu.Unlock()
-
-	switch {
-	case !s.sentryEnabled:
-		return &pb.GetSentryStatusResponse{
-			State:  pb.SentryState_SENTRY_STATE_DISABLED,
-			Reason: "CONTAINARIUM_THREAT_SENTRY is not set",
-		}, nil
-	case !ebpfAvailable:
-		reason := unavailableReason
-		if reason == "" {
-			reason = "eBPF object not loaded"
-		}
-		return &pb.GetSentryStatusResponse{
-			State:  pb.SentryState_SENTRY_STATE_UNAVAILABLE,
-			Reason: reason,
-		}, nil
-	case s.engine == nil:
-		// Enabled + available implies an engine was constructed; this is a
-		// wiring bug in dual_server.go, not a runtime condition an operator
-		// caused — surfaced as UNAVAILABLE rather than a 500, since it's the
-		// same "nothing is watching" fact from the operator's point of view.
-		return &pb.GetSentryStatusResponse{
-			State:  pb.SentryState_SENTRY_STATE_UNAVAILABLE,
-			Reason: "sentry engine not constructed",
-		}, nil
-	}
-
-	s.mu.Lock()
-	cpuSampler := s.cpuSamplerStatus
-	s.mu.Unlock()
-	if cpuSampler == "" {
-		cpuSampler = cpuSamplerNotStartedStatus
-	}
-
-	degraded, ruleStatus := s.engine.Status()
-	state := pb.SentryState_SENTRY_STATE_OK
-	reason := ""
-	if degraded {
-		state = pb.SentryState_SENTRY_STATE_DEGRADED
-		reason = "FindingStore has no Postgres connection; findings are not persisted across a restart"
-	}
-	rules := make([]*pb.RuleStatus, 0, len(ruleStatus))
-	for _, r := range ruleStatus {
-		rs := &pb.RuleStatus{Rule: r.Rule, Healthy: r.Healthy, LastError: r.LastError}
-		if !r.LastErrorAt.IsZero() {
-			rs.LastErrorAt = timestamppb.New(r.LastErrorAt)
-		}
-		rules = append(rules, rs)
-	}
-	return &pb.GetSentryStatusResponse{State: state, Reason: reason, Rules: rules, CpuSampler: cpuSampler}, nil
+	return s.sentryStatus(), nil
 }
 
 // ListBadDestinations returns the merged baseline + operator-added
@@ -356,4 +304,75 @@ func findingStateFromProto(s pb.FindingState) threatdetect.FindingState {
 // that needs to distinguish it.
 func isBadDestNotFound(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "not found among operator-added entries")
+}
+
+// sentryStatus computes GetSentryStatus's response without the auth gate,
+// for in-process callers: the sentry-health loop (#2634) reads it every tick
+// and uses Reason verbatim as its finding's subject, so the finding and
+// `containarium security sentry status` always name the same fault.
+func (s *ThreatDetectionServer) sentryStatus() *pb.GetSentryStatusResponse {
+	s.mu.Lock()
+	ebpfAvailable, unavailableReason := s.ebpfAvailable, s.unavailableReason
+	s.mu.Unlock()
+
+	switch {
+	case !s.sentryEnabled:
+		return &pb.GetSentryStatusResponse{
+			State:  pb.SentryState_SENTRY_STATE_DISABLED,
+			Reason: "CONTAINARIUM_THREAT_SENTRY is not set",
+		}
+	case !ebpfAvailable:
+		reason := unavailableReason
+		if reason == "" {
+			reason = "eBPF object not loaded"
+		}
+		return &pb.GetSentryStatusResponse{
+			State:  pb.SentryState_SENTRY_STATE_UNAVAILABLE,
+			Reason: reason,
+		}
+	case s.engine == nil:
+		// Enabled + available implies an engine was constructed; this is a
+		// wiring bug in dual_server.go, not a runtime condition an operator
+		// caused — surfaced as UNAVAILABLE rather than a 500, since it's the
+		// same "nothing is watching" fact from the operator's point of view.
+		return &pb.GetSentryStatusResponse{
+			State:  pb.SentryState_SENTRY_STATE_UNAVAILABLE,
+			Reason: "sentry engine not constructed",
+		}
+	}
+
+	s.mu.Lock()
+	cpuSampler := s.cpuSamplerStatus
+	s.mu.Unlock()
+	if cpuSampler == "" {
+		cpuSampler = cpuSamplerNotStartedStatus
+	}
+
+	degraded, ruleStatus := s.engine.Status()
+	state := pb.SentryState_SENTRY_STATE_OK
+	reason := ""
+	if degraded {
+		state = pb.SentryState_SENTRY_STATE_DEGRADED
+		reason = "FindingStore has no Postgres connection; findings are not persisted across a restart"
+	}
+	rules := make([]*pb.RuleStatus, 0, len(ruleStatus))
+	reasons := []string{}
+	if reason != "" {
+		reasons = append(reasons, reason)
+	}
+	for _, r := range ruleStatus {
+		rs := &pb.RuleStatus{Rule: r.Rule, Healthy: r.Healthy, LastError: r.LastError}
+		if !r.LastErrorAt.IsZero() {
+			rs.LastErrorAt = timestamppb.New(r.LastErrorAt)
+		}
+		rules = append(rules, rs)
+		if !r.Healthy {
+			// A panicking rule leaves the state OK (the others keep running)
+			// but must still show up in the reason, or the status reads clean
+			// while the sentry-health loop holds a finding open (#2634). The
+			// loop's finding subject drops the ": <last_error>" tail.
+			reasons = append(reasons, ruleUnhealthyPrefix(r.Rule)+": "+r.LastError)
+		}
+	}
+	return &pb.GetSentryStatusResponse{State: state, Reason: strings.Join(reasons, "; "), Rules: rules, CpuSampler: cpuSampler}
 }

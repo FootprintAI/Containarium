@@ -103,6 +103,13 @@ const (
 	// same posture pass as rule 4; record-only, the platform never kills a
 	// tenant's process. The evidence names the port, pid and binary.
 	ThreatRuleId_THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER ThreatRuleId = 5
+	// An armed backend (CONTAINARIUM_THREAT_SENTRY set) whose sentry is not
+	// running cleanly: UNAVAILABLE, DEGRADED, or any rule unhealthy (#2634).
+	// Raised by the daemon's sentry-health loop, not by a rule — a rule cannot
+	// run when the engine cannot. Subject is the GetSentryStatus reason string;
+	// resolved automatically once the sentry reports OK. Tenant and container
+	// are empty: this is a backend-level finding.
+	ThreatRuleId_THREAT_RULE_ID_SENTRY_UNAVAILABLE ThreatRuleId = 8
 	// A box held sustained CPU while keeping a long-lived flow to a stratum
 	// port or a listed bad destination (#2635): the shape of a cryptominer.
 	// Subject is the destination ip:port; evidence is one CPUEvidence plus
@@ -119,6 +126,7 @@ var (
 		3: "THREAT_RULE_ID_DENY_BURST",
 		4: "THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH",
 		5: "THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER",
+		8: "THREAT_RULE_ID_SENTRY_UNAVAILABLE",
 		6: "THREAT_RULE_ID_MINING_BEHAVIOR",
 	}
 	ThreatRuleId_value = map[string]int32{
@@ -128,6 +136,7 @@ var (
 		"THREAT_RULE_ID_DENY_BURST":             3,
 		"THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH": 4,
 		"THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER": 5,
+		"THREAT_RULE_ID_SENTRY_UNAVAILABLE":     8,
 		"THREAT_RULE_ID_MINING_BEHAVIOR":        6,
 	}
 )
@@ -1139,7 +1148,10 @@ func (*GetSentryStatusRequest) Descriptor() ([]byte, []int) {
 type GetSentryStatusResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	State SentryState            `protobuf:"varint,1,opt,name=state,proto3,enum=containarium.v1.SentryState" json:"state,omitempty"`
-	// Human-readable explanation, always set for DISABLED/UNAVAILABLE.
+	// Human-readable explanation, always set for DISABLED/UNAVAILABLE/
+	// DEGRADED, and also set while the state is OK but a rule is unhealthy
+	// ("rule <RULE> unhealthy: <last_error>"). The sentry-health loop (#2634)
+	// uses this exact string as the SENTRY_UNAVAILABLE finding's subject.
 	Reason string        `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
 	Rules  []*RuleStatus `protobuf:"bytes,3,rep,name=rules,proto3" json:"rules,omitempty"`
 	// Source of the per-container CPU samples the mining-behavior rule reads
@@ -1869,14 +1881,15 @@ const file_containarium_v1_threatdetection_proto_rawDesc = "" +
 	"\x13THREAT_SEVERITY_LOW\x10\x01\x12\x1a\n" +
 	"\x16THREAT_SEVERITY_MEDIUM\x10\x02\x12\x18\n" +
 	"\x14THREAT_SEVERITY_HIGH\x10\x03\x12\x1c\n" +
-	"\x18THREAT_SEVERITY_CRITICAL\x10\x04*\x91\x02\n" +
+	"\x18THREAT_SEVERITY_CRITICAL\x10\x04*\xb8\x02\n" +
 	"\fThreatRuleId\x12\x1e\n" +
 	"\x1aTHREAT_RULE_ID_UNSPECIFIED\x10\x00\x12\"\n" +
 	"\x1eTHREAT_RULE_ID_BAD_DESTINATION\x10\x01\x12$\n" +
 	" THREAT_RULE_ID_CROSS_TENANT_FLOW\x10\x02\x12\x1d\n" +
 	"\x19THREAT_RULE_ID_DENY_BURST\x10\x03\x12)\n" +
 	"%THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH\x10\x04\x12)\n" +
-	"%THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER\x10\x05\x12\"\n" +
+	"%THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER\x10\x05\x12%\n" +
+	"!THREAT_RULE_ID_SENTRY_UNAVAILABLE\x10\b\x12\"\n" +
 	"\x1eTHREAT_RULE_ID_MINING_BEHAVIOR\x10\x06*a\n" +
 	"\fFindingState\x12\x1d\n" +
 	"\x19FINDING_STATE_UNSPECIFIED\x10\x00\x12\x16\n" +
