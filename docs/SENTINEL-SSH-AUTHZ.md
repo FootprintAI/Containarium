@@ -38,14 +38,18 @@ table on the next key sync. The plugin then treats it as an unknown login
 and defers: yaml refuses the key, and no `denied` record is written.
 
 **Fail closed.** Enforcement covers `UPSTREAM_UNAVAILABLE`. If the routed
-backend's daemon is unreachable or returns 5xx, a key whose last `ALLOW` is
-younger than `--ssh-authz-grace` still logs in. After that, and for a key
-with no cached `ALLOW`, the login is refused until the daemon answers again.
+backend's daemon is unreachable or returns 5xx, a key with a cached `ALLOW`
+still logs in while that entry is fresh (younger than its `cache_ttl`, which
+is served without asking the daemon) or younger than `--ssh-authz-grace`.
+After both have passed, and for a key with no cached `ALLOW`, the login is
+refused until the daemon answers again. With the self-host decider
+(`cache_ttl` 30 seconds) and the default 5 minute grace, the grace window is
+the bound; a daemon that returns a `cache_ttl` longer than the grace extends it.
 A failure of the local bridge (the sentinel manager's socket) gets no grace.
 The login cannot be resolved to a backend, the cache is keyed by backend, and
 so every raw-key login is refused until the manager is back. A daemon
-outage longer than the grace window therefore locks every raw-key login
-routed to that backend. Certificate
+outage that outlasts both therefore locks every raw-key login routed to that
+backend. Certificate
 logins are not checked by this plugin and are unaffected.
 
 **Scope.** Enforcement holds only for SSH that goes through the sentinel.
@@ -130,9 +134,9 @@ plugin are included here using #2516's proposed contract. The daemon's
 signature-verified gateway mount, decider, cloud mirror and remaining contract
 work are separate dependencies (#2516 / #2517). Until the endpoint is deployed,
 the plugin records `UPSTREAM_UNAVAILABLE`. In audit-only mode SSH continues
-through yaml. In enforce mode every raw-key login routed to that backend is
-refused once the grace window has passed, so deploy the endpoint before
-turning enforcement on.
+through yaml. In enforce mode raw-key logins routed to that backend are
+refused as described under Fail closed (at once for a key with no cached
+`ALLOW`), so deploy the endpoint before turning enforcement on.
 
 ## Verification
 
