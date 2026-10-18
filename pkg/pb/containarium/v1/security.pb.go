@@ -23,6 +23,75 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// ClamavScanStatus is the outcome of a tenant-run, in-box ClamAV scan (#2631).
+// Only a clamscan run that exits 0 with no findings is CLEAN, and even then the
+// verdict is self-reported by the scan inside the tenant's own box.
+type ClamavScanStatus int32
+
+const (
+	ClamavScanStatus_CLAMAV_SCAN_STATUS_UNSPECIFIED ClamavScanStatus = 0
+	ClamavScanStatus_CLAMAV_SCAN_STATUS_CLEAN       ClamavScanStatus = 1
+	ClamavScanStatus_CLAMAV_SCAN_STATUS_INFECTED    ClamavScanStatus = 2
+	// The scan could not finish or could not be started (error, timeout, out of
+	// memory, box not running). Never treated as clean.
+	ClamavScanStatus_CLAMAV_SCAN_STATUS_INCOMPLETE ClamavScanStatus = 3
+	// No scan has ever been requested for the box: no platform assurance.
+	ClamavScanStatus_CLAMAV_SCAN_STATUS_NEVER_SCANNED ClamavScanStatus = 4
+	// The box has less memory than ClamAV needs (4 GB); no scan was attempted.
+	ClamavScanStatus_CLAMAV_SCAN_STATUS_UNSUPPORTED_SIZE ClamavScanStatus = 5
+	// ClamAV or its signatures are not installed in the box.
+	ClamavScanStatus_CLAMAV_SCAN_STATUS_NOT_INSTALLED ClamavScanStatus = 6
+)
+
+// Enum value maps for ClamavScanStatus.
+var (
+	ClamavScanStatus_name = map[int32]string{
+		0: "CLAMAV_SCAN_STATUS_UNSPECIFIED",
+		1: "CLAMAV_SCAN_STATUS_CLEAN",
+		2: "CLAMAV_SCAN_STATUS_INFECTED",
+		3: "CLAMAV_SCAN_STATUS_INCOMPLETE",
+		4: "CLAMAV_SCAN_STATUS_NEVER_SCANNED",
+		5: "CLAMAV_SCAN_STATUS_UNSUPPORTED_SIZE",
+		6: "CLAMAV_SCAN_STATUS_NOT_INSTALLED",
+	}
+	ClamavScanStatus_value = map[string]int32{
+		"CLAMAV_SCAN_STATUS_UNSPECIFIED":      0,
+		"CLAMAV_SCAN_STATUS_CLEAN":            1,
+		"CLAMAV_SCAN_STATUS_INFECTED":         2,
+		"CLAMAV_SCAN_STATUS_INCOMPLETE":       3,
+		"CLAMAV_SCAN_STATUS_NEVER_SCANNED":    4,
+		"CLAMAV_SCAN_STATUS_UNSUPPORTED_SIZE": 5,
+		"CLAMAV_SCAN_STATUS_NOT_INSTALLED":    6,
+	}
+)
+
+func (x ClamavScanStatus) Enum() *ClamavScanStatus {
+	p := new(ClamavScanStatus)
+	*p = x
+	return p
+}
+
+func (x ClamavScanStatus) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ClamavScanStatus) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_security_proto_enumTypes[0].Descriptor()
+}
+
+func (ClamavScanStatus) Type() protoreflect.EnumType {
+	return &file_containarium_v1_security_proto_enumTypes[0]
+}
+
+func (x ClamavScanStatus) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ClamavScanStatus.Descriptor instead.
+func (ClamavScanStatus) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_security_proto_rawDescGZIP(), []int{0}
+}
+
 // ClamavReport represents a single ClamAV scan result for a container
 type ClamavReport struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -32,10 +101,10 @@ type ClamavReport struct {
 	ContainerName string `protobuf:"bytes,2,opt,name=container_name,json=containerName,proto3" json:"container_name,omitempty"`
 	// Username associated with the container
 	Username string `protobuf:"bytes,3,opt,name=username,proto3" json:"username,omitempty"`
-	// Scan status. Today "clean", "infected" or "incomplete" (a scan that could
-	// not finish is never reported clean, #2496); #2631 adds never-scanned,
-	// unsupported-size and not-installed outcomes. The verdict is produced by the
-	// scan running inside the tenant's own box, so it is self-reported.
+	// Scan status: "clean", "infected", "incomplete", "unsupported_size" or
+	// "not_installed" (see status_enum; a scan that could not finish is never
+	// reported clean, #2496). The verdict is produced by the scan running inside
+	// the tenant's own box, so it is self-reported.
 	Status string `protobuf:"bytes,4,opt,name=status,proto3" json:"status,omitempty"`
 	// Number of infected files found
 	FindingsCount int32 `protobuf:"varint,5,opt,name=findings_count,json=findingsCount,proto3" json:"findings_count,omitempty"`
@@ -48,7 +117,12 @@ type ClamavReport struct {
 	// When the report was created in the database
 	CreatedAt string `protobuf:"bytes,9,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	// Backend ID identifying which node performed the scan
-	BackendId     string `protobuf:"bytes,10,opt,name=backend_id,json=backendId,proto3" json:"backend_id,omitempty"`
+	BackendId string `protobuf:"bytes,10,opt,name=backend_id,json=backendId,proto3" json:"backend_id,omitempty"`
+	// Typed form of status (#2631). status stays populated for compatibility.
+	StatusEnum ClamavScanStatus `protobuf:"varint,11,opt,name=status_enum,json=statusEnum,proto3,enum=containarium.v1.ClamavScanStatus" json:"status_enum,omitempty"`
+	// Why a scan produced no verdict (status other than clean/infected); empty
+	// otherwise. Never contains file paths.
+	Reason        string `protobuf:"bytes,12,opt,name=reason,proto3" json:"reason,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -149,6 +223,20 @@ func (x *ClamavReport) GetCreatedAt() string {
 func (x *ClamavReport) GetBackendId() string {
 	if x != nil {
 		return x.BackendId
+	}
+	return ""
+}
+
+func (x *ClamavReport) GetStatusEnum() ClamavScanStatus {
+	if x != nil {
+		return x.StatusEnum
+	}
+	return ClamavScanStatus_CLAMAV_SCAN_STATUS_UNSPECIFIED
+}
+
+func (x *ClamavReport) GetReason() string {
+	if x != nil {
+		return x.Reason
 	}
 	return ""
 }
@@ -880,7 +968,7 @@ var File_containarium_v1_security_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_security_proto_rawDesc = "" +
 	"\n" +
-	"\x1econtainarium/v1/security.proto\x12\x0fcontainarium.v1\x1a\x1cgoogle/api/annotations.proto\x1a.protoc-gen-openapiv2/options/annotations.proto\"\xbe\x02\n" +
+	"\x1econtainarium/v1/security.proto\x12\x0fcontainarium.v1\x1a\x1cgoogle/api/annotations.proto\x1a.protoc-gen-openapiv2/options/annotations.proto\"\x9a\x03\n" +
 	"\fClamavReport\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x03R\x02id\x12%\n" +
 	"\x0econtainer_name\x18\x02 \x01(\tR\rcontainerName\x12\x1a\n" +
@@ -895,7 +983,10 @@ const file_containarium_v1_security_proto_rawDesc = "" +
 	"created_at\x18\t \x01(\tR\tcreatedAt\x12\x1d\n" +
 	"\n" +
 	"backend_id\x18\n" +
-	" \x01(\tR\tbackendId\"\xb5\x02\n" +
+	" \x01(\tR\tbackendId\x12B\n" +
+	"\vstatus_enum\x18\v \x01(\x0e2!.containarium.v1.ClamavScanStatusR\n" +
+	"statusEnum\x12\x16\n" +
+	"\x06reason\x18\f \x01(\tR\x06reason\"\xb5\x02\n" +
 	"\x16ClamavContainerSummary\x12%\n" +
 	"\x0econtainer_name\x18\x01 \x01(\tR\rcontainerName\x12\x1a\n" +
 	"\busername\x18\x02 \x01(\tR\busername\x12 \n" +
@@ -957,7 +1048,15 @@ const file_containarium_v1_security_proto_rawDesc = "" +
 	"\rpending_count\x18\x02 \x01(\x05R\fpendingCount\x12#\n" +
 	"\rrunning_count\x18\x03 \x01(\x05R\frunningCount\x12'\n" +
 	"\x0fcompleted_count\x18\x04 \x01(\x05R\x0ecompletedCount\x12!\n" +
-	"\ffailed_count\x18\x05 \x01(\x05R\vfailedCount2\xde\b\n" +
+	"\ffailed_count\x18\x05 \x01(\x05R\vfailedCount*\x8d\x02\n" +
+	"\x10ClamavScanStatus\x12\"\n" +
+	"\x1eCLAMAV_SCAN_STATUS_UNSPECIFIED\x10\x00\x12\x1c\n" +
+	"\x18CLAMAV_SCAN_STATUS_CLEAN\x10\x01\x12\x1f\n" +
+	"\x1bCLAMAV_SCAN_STATUS_INFECTED\x10\x02\x12!\n" +
+	"\x1dCLAMAV_SCAN_STATUS_INCOMPLETE\x10\x03\x12$\n" +
+	" CLAMAV_SCAN_STATUS_NEVER_SCANNED\x10\x04\x12'\n" +
+	"#CLAMAV_SCAN_STATUS_UNSUPPORTED_SIZE\x10\x05\x12$\n" +
+	" CLAMAV_SCAN_STATUS_NOT_INSTALLED\x10\x062\xde\b\n" +
 	"\x0fSecurityService\x12\x92\x02\n" +
 	"\x11ListClamavReports\x12).containarium.v1.ListClamavReportsRequest\x1a*.containarium.v1.ListClamavReportsResponse\"\xa5\x01\x92A\x7f\n" +
 	"\bSecurity\x12\x18List ClamAV scan reports\x1aYReturns ClamAV scan reports with optional filtering by container, status, and date range.\x82\xd3\xe4\x93\x02\x1d\x12\x1b/v1/security/clamav-reports\x12\x8e\x02\n" +
@@ -980,37 +1079,40 @@ func file_containarium_v1_security_proto_rawDescGZIP() []byte {
 	return file_containarium_v1_security_proto_rawDescData
 }
 
+var file_containarium_v1_security_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
 var file_containarium_v1_security_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_containarium_v1_security_proto_goTypes = []any{
-	(*ClamavReport)(nil),              // 0: containarium.v1.ClamavReport
-	(*ClamavContainerSummary)(nil),    // 1: containarium.v1.ClamavContainerSummary
-	(*ListClamavReportsRequest)(nil),  // 2: containarium.v1.ListClamavReportsRequest
-	(*ListClamavReportsResponse)(nil), // 3: containarium.v1.ListClamavReportsResponse
-	(*GetClamavSummaryRequest)(nil),   // 4: containarium.v1.GetClamavSummaryRequest
-	(*GetClamavSummaryResponse)(nil),  // 5: containarium.v1.GetClamavSummaryResponse
-	(*TriggerClamavScanRequest)(nil),  // 6: containarium.v1.TriggerClamavScanRequest
-	(*TriggerClamavScanResponse)(nil), // 7: containarium.v1.TriggerClamavScanResponse
-	(*ScanJob)(nil),                   // 8: containarium.v1.ScanJob
-	(*GetScanStatusRequest)(nil),      // 9: containarium.v1.GetScanStatusRequest
-	(*GetScanStatusResponse)(nil),     // 10: containarium.v1.GetScanStatusResponse
+	(ClamavScanStatus)(0),             // 0: containarium.v1.ClamavScanStatus
+	(*ClamavReport)(nil),              // 1: containarium.v1.ClamavReport
+	(*ClamavContainerSummary)(nil),    // 2: containarium.v1.ClamavContainerSummary
+	(*ListClamavReportsRequest)(nil),  // 3: containarium.v1.ListClamavReportsRequest
+	(*ListClamavReportsResponse)(nil), // 4: containarium.v1.ListClamavReportsResponse
+	(*GetClamavSummaryRequest)(nil),   // 5: containarium.v1.GetClamavSummaryRequest
+	(*GetClamavSummaryResponse)(nil),  // 6: containarium.v1.GetClamavSummaryResponse
+	(*TriggerClamavScanRequest)(nil),  // 7: containarium.v1.TriggerClamavScanRequest
+	(*TriggerClamavScanResponse)(nil), // 8: containarium.v1.TriggerClamavScanResponse
+	(*ScanJob)(nil),                   // 9: containarium.v1.ScanJob
+	(*GetScanStatusRequest)(nil),      // 10: containarium.v1.GetScanStatusRequest
+	(*GetScanStatusResponse)(nil),     // 11: containarium.v1.GetScanStatusResponse
 }
 var file_containarium_v1_security_proto_depIdxs = []int32{
-	0,  // 0: containarium.v1.ListClamavReportsResponse.reports:type_name -> containarium.v1.ClamavReport
-	1,  // 1: containarium.v1.GetClamavSummaryResponse.containers:type_name -> containarium.v1.ClamavContainerSummary
-	8,  // 2: containarium.v1.GetScanStatusResponse.jobs:type_name -> containarium.v1.ScanJob
-	2,  // 3: containarium.v1.SecurityService.ListClamavReports:input_type -> containarium.v1.ListClamavReportsRequest
-	6,  // 4: containarium.v1.SecurityService.TriggerClamavScan:input_type -> containarium.v1.TriggerClamavScanRequest
-	4,  // 5: containarium.v1.SecurityService.GetClamavSummary:input_type -> containarium.v1.GetClamavSummaryRequest
-	9,  // 6: containarium.v1.SecurityService.GetScanStatus:input_type -> containarium.v1.GetScanStatusRequest
-	3,  // 7: containarium.v1.SecurityService.ListClamavReports:output_type -> containarium.v1.ListClamavReportsResponse
-	7,  // 8: containarium.v1.SecurityService.TriggerClamavScan:output_type -> containarium.v1.TriggerClamavScanResponse
-	5,  // 9: containarium.v1.SecurityService.GetClamavSummary:output_type -> containarium.v1.GetClamavSummaryResponse
-	10, // 10: containarium.v1.SecurityService.GetScanStatus:output_type -> containarium.v1.GetScanStatusResponse
-	7,  // [7:11] is the sub-list for method output_type
-	3,  // [3:7] is the sub-list for method input_type
-	3,  // [3:3] is the sub-list for extension type_name
-	3,  // [3:3] is the sub-list for extension extendee
-	0,  // [0:3] is the sub-list for field type_name
+	0,  // 0: containarium.v1.ClamavReport.status_enum:type_name -> containarium.v1.ClamavScanStatus
+	1,  // 1: containarium.v1.ListClamavReportsResponse.reports:type_name -> containarium.v1.ClamavReport
+	2,  // 2: containarium.v1.GetClamavSummaryResponse.containers:type_name -> containarium.v1.ClamavContainerSummary
+	9,  // 3: containarium.v1.GetScanStatusResponse.jobs:type_name -> containarium.v1.ScanJob
+	3,  // 4: containarium.v1.SecurityService.ListClamavReports:input_type -> containarium.v1.ListClamavReportsRequest
+	7,  // 5: containarium.v1.SecurityService.TriggerClamavScan:input_type -> containarium.v1.TriggerClamavScanRequest
+	5,  // 6: containarium.v1.SecurityService.GetClamavSummary:input_type -> containarium.v1.GetClamavSummaryRequest
+	10, // 7: containarium.v1.SecurityService.GetScanStatus:input_type -> containarium.v1.GetScanStatusRequest
+	4,  // 8: containarium.v1.SecurityService.ListClamavReports:output_type -> containarium.v1.ListClamavReportsResponse
+	8,  // 9: containarium.v1.SecurityService.TriggerClamavScan:output_type -> containarium.v1.TriggerClamavScanResponse
+	6,  // 10: containarium.v1.SecurityService.GetClamavSummary:output_type -> containarium.v1.GetClamavSummaryResponse
+	11, // 11: containarium.v1.SecurityService.GetScanStatus:output_type -> containarium.v1.GetScanStatusResponse
+	8,  // [8:12] is the sub-list for method output_type
+	4,  // [4:8] is the sub-list for method input_type
+	4,  // [4:4] is the sub-list for extension type_name
+	4,  // [4:4] is the sub-list for extension extendee
+	0,  // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_security_proto_init() }
@@ -1023,13 +1125,14 @@ func file_containarium_v1_security_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_security_proto_rawDesc), len(file_containarium_v1_security_proto_rawDesc)),
-			NumEnums:      0,
+			NumEnums:      1,
 			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_containarium_v1_security_proto_goTypes,
 		DependencyIndexes: file_containarium_v1_security_proto_depIdxs,
+		EnumInfos:         file_containarium_v1_security_proto_enumTypes,
 		MessageInfos:      file_containarium_v1_security_proto_msgTypes,
 	}.Build()
 	File_containarium_v1_security_proto = out.File

@@ -18,6 +18,9 @@ TTL, refreshed by every infected scan).
 ```
 ClamAV scan → "infected"  →  deny 0.0.0.0/0 for the tenant (note: auto-quarantine)
 ClamAV scan → "clean"     →  nothing (never releases; operator or TTL does)
+other statuses (incomplete, unsupported_size, not_installed) →  nothing
+
+The scan runs inside the tenant's own box, see [`TENANT-MALWARE-SCAN.md`](TENANT-MALWARE-SCAN.md).
 ```
 
 Enable with `CONTAINARIUM_SECURITY_AUTO_QUARANTINE=1`. Off by default.

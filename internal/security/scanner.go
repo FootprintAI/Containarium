@@ -2,6 +2,7 @@ package security
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os/exec"
@@ -27,6 +28,8 @@ const SecurityContainerName = "containarium-core-security"
 // `incomplete` report, never `clean`.
 type Scanner struct {
 	store    *Store
+	box      boxAPI // runs the scan inside the tenant's box
+	timeout  time.Duration
 	interval time.Duration // retention cleanup cadence
 	cancel   context.CancelFunc
 	// onScanResult, if set, is called after each completed scan with the
@@ -62,9 +65,11 @@ func (s *Scanner) SetScanResultHook(fn func(containerName, username, status stri
 }
 
 // NewScanner creates a new scanner
-func NewScanner(store *Store) *Scanner {
+func NewScanner(store *Store, box boxAPI) *Scanner {
 	return &Scanner{
 		store:    store,
+		box:      box,
+		timeout:  DefaultInBoxScanTimeout,
 		interval: 24 * time.Hour,
 	}
 }
@@ -162,9 +167,18 @@ func (s *Scanner) runRetentionCleanup(ctx context.Context) {
 	}
 }
 
-// EnqueueOne enqueues a scan job for a single container.
-// Returns the job ID.
+// ErrScanActive is returned by EnqueueOne when the box already has a scan
+// pending or running; the caller maps it to AlreadyExists.
+var ErrScanActive = errors.New("a scan for this box is already pending or running")
+
+// EnqueueOne enqueues a scan job for a single container, started by its owner.
+// Returns the job ID, or ErrScanActive if one is already pending or running.
 func (s *Scanner) EnqueueOne(ctx context.Context, containerName, username string) (int64, error) {
+	if _, active, err := s.store.ActiveScanJob(ctx, containerName); err != nil {
+		return 0, err
+	} else if active {
+		return 0, ErrScanActive
+	}
 	return s.store.EnqueueScanJob(ctx, containerName, username)
 }
 
@@ -223,32 +237,50 @@ func (s *Scanner) worker(ctx context.Context, id int) {
 	}
 }
 
-// incompleteNoRunner is the reason recorded while the in-box scan runner does
-// not exist yet (#2631): the central scanner that mounted tenant rootfs into a
-// platform container could not read them (host-uid-0 files are unmapped there)
-// and has been removed, so a requested scan honestly cannot complete.
-const incompleteNoRunner = "in-box scanner not available yet (#2631); this scan did not run"
-
-// ScanContainer handles one requested scan. It never mounts a tenant's rootfs
-// anywhere and never reports `clean`: until the in-box runner lands it records
-// an `incomplete` report so the requester sees an honest outcome instead of a
-// job that silently vanishes.
+// ScanContainer runs one requested scan inside the tenant's own box (#2631).
+// It never mounts or reads a tenant's files from the platform, and it reports
+// `clean` only for a clamscan exit 0 with no findings — every other outcome is
+// a distinct non-clean status with a reason (#2496). The report carries the
+// verdict only: status, signature names with counts, duration.
 func (s *Scanner) ScanContainer(ctx context.Context, containerName, username string) error {
 	startTime := time.Now()
 	report := &Report{
 		ContainerName: containerName,
 		Username:      username,
-		Status:        ScanStatusIncomplete,
-		Findings:      incompleteNoRunner,
 		ScannedAt:     startTime,
-		ScanDuration:  "0s",
 	}
+
+	if status, reason := s.preflight(s.box, containerName); status != "" {
+		report.Status, report.Findings = status, reason
+	} else {
+		version := scannerVersion(s.box, containerName)
+		stdout, _, code, err := s.box.ExecWithExitCode(containerName, inBoxScanCommand(s.timeout))
+		switch {
+		case err != nil:
+			report.Status = ScanStatusIncomplete
+			report.Findings = fmt.Sprintf(reasonExecFailedFmt, err)
+		default:
+			report.Status, report.FindingsCount, report.Findings = classifyInBoxRun(code, stdout)
+			if report.Status == ScanStatusClean {
+				report.Findings = version
+			}
+		}
+	}
+	report.ScanDuration = time.Since(startTime).Truncate(time.Second).String()
+
 	if err := s.reportSaver().SaveReport(ctx, report); err != nil {
 		return fmt.Errorf("failed to save report: %w", err)
 	}
-	log.Printf("Security scan: %s (%s) INCOMPLETE - %s", containerName, username, incompleteNoRunner)
+	switch report.Status {
+	case ScanStatusInfected:
+		log.Printf("Security scan: %s (%s) INFECTED - %d findings", containerName, username, report.FindingsCount)
+	case ScanStatusClean:
+		log.Printf("Security scan: %s (%s) clean (self-reported, took %s)", containerName, username, report.ScanDuration)
+	default:
+		log.Printf("Security scan: %s (%s) %s - %s", containerName, username, strings.ToUpper(report.Status), report.Findings)
+	}
 	if s.onScanResult != nil {
-		s.onScanResult(containerName, username, ScanStatusIncomplete)
+		s.onScanResult(containerName, username, report.Status)
 	}
 	return nil
 }

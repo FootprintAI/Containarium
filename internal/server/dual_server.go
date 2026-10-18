@@ -1867,7 +1867,7 @@ skipAppHosting:
 					log.Printf("Warning: Failed to create incus client for security: %v", incusErr)
 				} else {
 					// Create scanner first so we can pass it to the server
-					securityScanner = security.NewScanner(securityStore)
+					securityScanner = security.NewScanner(securityStore, securityIncusClient)
 
 					// Auto-quarantine (#659): on malware detection, block the
 					// tenant's egress via a deny rule; release on a clean scan.

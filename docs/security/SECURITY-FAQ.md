@@ -221,8 +221,10 @@ in the box, its verdict is **self-reported**: a compromised box can report
 quarantine or as platform assurance. A box that has never been scanned is
 shown as never scanned, not clean.
 
-Status: the previous central scanner could not read tenant files and recorded
-every scan as incomplete; the in-box scan is being built under #2631.
+Details, statuses and the exact fields stored are in
+[`TENANT-MALWARE-SCAN.md`](TENANT-MALWARE-SCAN.md). The previous central scanner
+could not read tenant files and recorded every scan as incomplete; it was removed
+in favour of the in-box scan (#2631).
 
 ## Where do I go for the operational detail?
 
