@@ -160,3 +160,41 @@ func TestEvidenceMerged_ConfigEvidenceIsDeduplicated(t *testing.T) {
 		t.Fatalf("a changed entry must be added exactly once, got %+v", got.Configs)
 	}
 }
+
+// CPU evidence (#2635) rides the same wire, cap and merge paths as the other
+// evidence kinds.
+func TestEvidence_CPU_ToProtoCappedMerged(t *testing.T) {
+	f := &Finding{Evidence: Evidence{CPU: []CPUEvidence{{MeanCores: 16, PeakCores: 16.5, WindowSeconds: 300, Samples: 20}}}}
+	got := f.ToProto().GetEvidence().GetCpu()
+	if len(got) != 1 || got[0].GetMeanCores() != 16 || got[0].GetPeakCores() != 16.5 || got[0].GetWindowSeconds() != 300 || got[0].GetSamples() != 20 {
+		t.Fatalf("ToProto CPU evidence = %v", got)
+	}
+	var many Evidence
+	for i := 0; i < EvidenceCap+3; i++ {
+		many.CPU = append(many.CPU, CPUEvidence{Samples: int32(i)}) // #nosec G115 -- small test loop
+	}
+	if capped := many.Capped(); len(capped.CPU) != EvidenceCap || capped.CPU[0].Samples != 3 {
+		t.Fatalf("Capped CPU = %+v, want the most recent %d", capped.CPU, EvidenceCap)
+	}
+	merged := Evidence{CPU: []CPUEvidence{{Samples: 1}}}.merged(Evidence{CPU: []CPUEvidence{{Samples: 2}}})
+	if len(merged.CPU) != 2 || merged.CPU[1].Samples != 2 {
+		t.Fatalf("merged CPU = %+v", merged.CPU)
+	}
+}
+
+// FlowEvidence's first/last seen and matched (#2635) reach the wire; a flow
+// without them (every other rule) leaves the timestamps nil.
+func TestFlowEvidence_SeenAndMatched_ToProto(t *testing.T) {
+	first, last := time.Unix(1000, 0), time.Unix(1240, 0)
+	f := &Finding{Evidence: Evidence{Flows: []FlowEvidence{
+		{DstIP: "203.0.113.9", DstPort: 3333, FirstSeen: first, LastSeen: last, Matched: "port:3333"},
+		{DstIP: "198.51.100.7"},
+	}}}
+	got := f.ToProto().GetEvidence().GetFlows()
+	if got[0].GetFirstSeen().AsTime() != first.UTC() || got[0].GetLastSeen().AsTime() != last.UTC() || got[0].GetMatched() != "port:3333" {
+		t.Fatalf("flow 0 = %v", got[0])
+	}
+	if got[1].GetFirstSeen() != nil || got[1].GetLastSeen() != nil || got[1].GetMatched() != "" {
+		t.Fatalf("flow 1 should leave the new fields unset: %v", got[1])
+	}
+}
