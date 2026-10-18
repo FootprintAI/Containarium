@@ -71,3 +71,19 @@ func TestAuthorizationProtoEveryReasonAndValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestEnforcedMetadataOnOpenAndClose(t *testing.T) {
+	recorder := &fakeRecorder{}
+	p := &Plugin{Recorder: recorder}
+	conn := &libplugin.ConnMeta{UserName: "alice", UniqId: "s1", FromAddr: "203.0.113.1:1234", Metadata: map[string]string{MetaUserID: "person", MetaAuthzDecision: "ALLOW", MetaEnforced: "true"}}
+	p.Config().PipeStartCallback(conn)
+	p.Config().PipeErrorCallback(conn, nil)
+	if len(recorder.recs) != 2 {
+		t.Fatalf("records: %v", recorder.recs)
+	}
+	for _, rec := range recorder.recs {
+		if !rec.Enforced || rec.AuthzDecision != pb.SSHAuthzDecision_SSH_AUTHZ_DECISION_ALLOW {
+			t.Fatalf("enforced allow lost: %+v", rec)
+		}
+	}
+}
