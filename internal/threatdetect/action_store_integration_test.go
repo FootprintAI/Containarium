@@ -147,3 +147,21 @@ func TestFindingStore_SetResponseRoundTrip(t *testing.T) {
 		t.Fatalf("SetResponse on a missing id = %v, want ErrFindingNotFound", err)
 	}
 }
+
+// The shared ActionStore contract (pending lifecycle, Fail/Latest, expiry and
+// orphan queries) against real Postgres; the in-memory half is
+// TestActionStore_ContractHoldsForMemImpl.
+func TestActionStore_ContractHoldsForPGImpl(t *testing.T) {
+	pool := threatdetectPool(t)
+	fs, _, _ := newStores(t, pool)
+	ctx := context.Background()
+	as, err := NewActionStore(ctx, pool)
+	if err != nil {
+		t.Fatalf("NewActionStore: %v", err)
+	}
+	f, err := fs.Insert(ctx, sampleFinding())
+	if err != nil {
+		t.Fatalf("Insert finding: %v", err)
+	}
+	runActionStoreContract(t, as, f.ID, "contract-")
+}
