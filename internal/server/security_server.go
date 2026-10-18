@@ -367,6 +367,30 @@ func (s *SecurityServer) InstallClamav(ctx context.Context, req *pb.InstallClama
 	if err := auth.AuthorizeContainerAccess(ctx, req.GetContainerName()); err != nil {
 		return nil, err
 	}
+	// A box on a peer backend is installed by the daemon that owns it, exactly
+	// like TriggerClamavScan (#2683). An owning peer that cannot be reached must
+	// not fall through to the local lookup, which would report the box missing.
+	if s.peerPool != nil {
+		username := strings.TrimSuffix(req.GetContainerName(), "-container")
+		peer, unreachable := s.peerPool.FindContainerPeer(username, extractAuthToken(ctx))
+		if peer != nil {
+			fctx, cancel := context.WithTimeout(ctx, installForwardTimeout)
+			defer cancel()
+			resp, err := peer.ForwardInstallClamav(fctx, extractAuthToken(ctx), req.GetContainerName())
+			switch {
+			case errors.Is(err, errPeerRouteMissing):
+				return nil, status.Error(codes.Unimplemented, "this container's backend is too old to install ClamAV; ask your operator to upgrade it")
+			case err != nil:
+				return nil, status.Errorf(codes.Unavailable, "could not install ClamAV on %s via backend %s: %v", req.GetContainerName(), peer.ID, err)
+			}
+			return resp, nil
+		}
+		if len(unreachable) > 0 {
+			return nil, status.Errorf(codes.Unavailable,
+				"cannot install ClamAV for %s: %d backend(s) unreachable (%s)",
+				req.GetContainerName(), len(unreachable), unreachable[0].Reason)
+		}
+	}
 	if s.incusClient == nil {
 		return nil, status.Error(codes.Unavailable, "container runtime is not available")
 	}
