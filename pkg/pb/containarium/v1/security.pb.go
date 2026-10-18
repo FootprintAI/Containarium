@@ -32,7 +32,10 @@ type ClamavReport struct {
 	ContainerName string `protobuf:"bytes,2,opt,name=container_name,json=containerName,proto3" json:"container_name,omitempty"`
 	// Username associated with the container
 	Username string `protobuf:"bytes,3,opt,name=username,proto3" json:"username,omitempty"`
-	// Scan status: "clean" or "infected"
+	// Scan status. Today "clean", "infected" or "incomplete" (a scan that could
+	// not finish is never reported clean, #2496); #2631 adds never-scanned,
+	// unsupported-size and not-installed outcomes. The verdict is produced by the
+	// scan running inside the tenant's own box, so it is self-reported.
 	Status string `protobuf:"bytes,4,opt,name=status,proto3" json:"status,omitempty"`
 	// Number of infected files found
 	FindingsCount int32 `protobuf:"varint,5,opt,name=findings_count,json=findingsCount,proto3" json:"findings_count,omitempty"`

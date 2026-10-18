@@ -10904,7 +10904,7 @@
         },
         "status": {
           "type": "string",
-          "title": "Scan status: \"clean\" or \"infected\""
+          "description": "Scan status. Today \"clean\", \"infected\" or \"incomplete\" (a scan that could\nnot finish is never reported clean, #2496); #2631 adds never-scanned,\nunsupported-size and not-installed outcomes. The verdict is produced by the\nscan running inside the tenant's own box, so it is self-reported."
         },
         "findingsCount": {
           "type": "integer",
