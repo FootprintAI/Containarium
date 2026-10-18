@@ -253,11 +253,11 @@ first three.
 
 ## Later phases
 
-- **P1 — Policy by tenant class (cloud repo).** Default `throttle` for
+- **P1 — Policy by tenant class (cloud repo, cloud#2695).** Default `throttle` for
   free and new orgs, `alert` for paid, opt-in for enterprise and BYOC.
   The daemon exposes the per-container policy override; the cloud sets
   it from plan and account age (cloud#2466 covers signup velocity).
-- **P1 — Org-level freeze wiring (cloud repo).** A HIGH finding on a
+- **P1 — Org-level freeze wiring (cloud repo, cloud#2696).** A HIGH finding on a
   young org escalates to `FreezeOrg` once cloud#2451 makes the freeze
   reliable. Human-confirmed in the first phase.
 - **P1 — Hostname-based pool list.** Resolve listed pool hostnames on a
@@ -292,7 +292,7 @@ first three.
 
 ## Open questions & assumptions
 
-1. **Terms.** Assumption: the hosted service's terms allow throttling or
+1. **Terms** (cloud#2697)**.** Assumption: the hosted service's terms allow throttling or
    freezing a workload identified as mining, and self-hosters set their
    own. Validate with whoever owns the terms before the default for any
    tenant class moves past `alert`.
