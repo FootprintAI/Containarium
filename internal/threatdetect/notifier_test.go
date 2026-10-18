@@ -211,7 +211,9 @@ func TestWebhookNotifier_DeadWebhookNeverBlocksNotify(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		for i := 0; i < notifierQueueCap*2; i++ {
-			n.Notify(testFinding(pb.ThreatSeverity_THREAT_SEVERITY_CRITICAL))
+			f := testFinding(pb.ThreatSeverity_THREAT_SEVERITY_CRITICAL)
+			f.ID = int64(i + 1) // distinct findings: a repeat of one would be gated (#2643)
+			n.Notify(f)
 		}
 		close(done)
 	}()
