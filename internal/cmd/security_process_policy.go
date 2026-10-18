@@ -232,7 +232,12 @@ mining-behavior thresholds are backend-wide and cannot be combined with
 			req := &pb.SetProcessPolicyRequest{Container: container}
 			if clearOverride {
 				if container == "" {
-					return fmt.Errorf("--clear-override requires --container")
+					return fmt.Errorf("--clear-override requires --container (only overrides can be cleared)")
+				}
+				for _, n := range []string{"action", "throttle-allowance", "ttl", "rule"} {
+					if flags.Changed(n) {
+						return fmt.Errorf("--clear-override cannot be combined with policy flags")
+					}
 				}
 				req.ClearOverride = true
 			} else {
@@ -269,6 +274,9 @@ mining-behavior thresholds are backend-wide and cannot be combined with
 					return fmt.Errorf("threshold flags require --rule mining-behavior")
 				}
 				if rule == "mining-behavior" {
+					if !miningFlags {
+						return fmt.Errorf("at least one threshold flag is required with --rule mining-behavior")
+					}
 					if container != "" {
 						return fmt.Errorf("mining-behavior thresholds are backend-wide; omit --container")
 					}
