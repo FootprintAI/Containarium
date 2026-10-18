@@ -92,9 +92,14 @@ flowchart LR
    sampler takes the delta since the previous tick, converts it to cores
    (`Δseconds / Δwall`), and pushes `[]threatdetect.CPUSample{Container,
    Tenant, Cores, LimitCores, At}` into the engine (`LimitCores` is the box's
-   `limits.cpu`, 0 when unlimited). No new Incus polling: the sampler
-   is a hook on the collector, like the flow hook on the enforcer. A
-   container's first sample after start is dropped (no delta).
+   `limits.cpu`, 0 when unlimited). Where the collector runs, the sampler
+   is a hook on it, like the flow hook on the enforcer, and adds no Incus
+   polling. The collector only runs when a metrics export target is
+   configured, so on a backend without one (BYOC hosts export no metrics)
+   the sampler runs its own 15 s ticker over the same `GetContainerMetrics`
+   read and feeds the same path; never both at once, and `sentry status`
+   names the source (decided on #2641 Q4). A container's first sample
+   after start is dropped (no delta).
 
 3. **Engine extension** — `internal/threatdetect/engine.go`. The `Rule`
    interface is unchanged. Two optional interfaces let a rule receive the
