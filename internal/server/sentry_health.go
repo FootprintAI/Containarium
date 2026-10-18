@@ -173,12 +173,18 @@ func (h *SentryHealth) adoptLocked(ctx context.Context, backendID string) {
 // another on every tick instead of deduping into one row. DISABLED is not a
 // fault (the loop never runs unarmed anyway).
 func sentryUnhealthySubject(resp *pb.GetSentryStatusResponse) (subject, note string, unhealthy bool) {
+	cpuDown := cpuSamplerUnavailable(resp)
 	switch resp.GetState() {
 	case pb.SentryState_SENTRY_STATE_DISABLED:
 		return "", "", false
 	case pb.SentryState_SENTRY_STATE_OK:
 		if !anyRuleUnhealthy(resp) {
-			return "", "", false
+			if !cpuDown {
+				return "", "", false
+			}
+			// Only the CPU sampler is down: the status reason is empty, so the
+			// finding is about the sampler alone (#2660).
+			return cpuSamplerSubject, "cpu-sampler: " + resp.GetCpuSampler(), true
 		}
 		note = reasonOr(resp, "a rule is unhealthy")
 	default: // UNAVAILABLE, DEGRADED, UNSPECIFIED
@@ -192,7 +198,25 @@ func sentryUnhealthySubject(resp *pb.GetSentryStatusResponse) (subject, note str
 		prefix := ruleUnhealthyPrefix(r.GetRule())
 		subject = strings.ReplaceAll(subject, prefix+": "+r.GetLastError(), prefix)
 	}
+	if cpuDown {
+		// Both faults are one finding: its subject names the sampler without
+		// its varying detail, its note carries the detail.
+		subject += "; " + cpuSamplerSubject
+		note += "; cpu-sampler: " + resp.GetCpuSampler()
+	}
 	return subject, note, true
+}
+
+// cpuSamplerSubject is the stable subject of a CPU-sampler fault; the
+// sampler's own reason ("unavailable (incus client unavailable: …)") varies
+// and lives in the finding's evidence note.
+const cpuSamplerSubject = "cpu-sampler unavailable"
+
+// cpuSamplerUnavailable reports whether the status says the CPU sampler
+// cannot run (GetSentryStatusResponse.cpu_sampler begins "unavailable"; #2645).
+// An armed backend blind to CPU is not silent (#2660).
+func cpuSamplerUnavailable(resp *pb.GetSentryStatusResponse) bool {
+	return strings.HasPrefix(resp.GetCpuSampler(), "unavailable")
 }
 
 func anyRuleUnhealthy(resp *pb.GetSentryStatusResponse) bool {
