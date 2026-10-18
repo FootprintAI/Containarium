@@ -45,6 +45,9 @@ type MockBackend struct {
 	ListDirFunc               func(containerName, path string) ([]string, error)
 	SetConfigFunc             func(containerName, key, value string) error
 	SetCPULimitFunc           func(containerName, cpu string) error
+	SetCPUConfigFunc          func(containerName, count, allowance string) error
+	FreezeContainerFunc       func(name string) error
+	UnfreezeContainerFunc     func(name string) error
 	UnsetConfigFunc           func(containerName, key string) error
 	SetDeviceSizeFunc         func(containerName, deviceName, size string) error
 	ResolveGPUInputToPCIFunc  func(input string) (string, error)
@@ -224,6 +227,27 @@ func (m *MockBackend) SetConfig(containerName, key, value string) error {
 func (m *MockBackend) SetCPULimit(containerName, cpu string) error {
 	if m.SetCPULimitFunc != nil {
 		return m.SetCPULimitFunc(containerName, cpu)
+	}
+	return nil
+}
+
+func (m *MockBackend) SetCPUConfig(containerName, count, allowance string) error {
+	if m.SetCPUConfigFunc != nil {
+		return m.SetCPUConfigFunc(containerName, count, allowance)
+	}
+	return nil
+}
+
+func (m *MockBackend) FreezeContainer(name string) error {
+	if m.FreezeContainerFunc != nil {
+		return m.FreezeContainerFunc(name)
+	}
+	return nil
+}
+
+func (m *MockBackend) UnfreezeContainer(name string) error {
+	if m.UnfreezeContainerFunc != nil {
+		return m.UnfreezeContainerFunc(name)
 	}
 	return nil
 }
