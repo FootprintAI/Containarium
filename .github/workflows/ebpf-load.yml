@@ -92,9 +92,21 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang llvm libbpf-dev linux-libc-dev linux-tools-common
           sudo apt-get install -y "linux-tools-$(uname -r)" || sudo apt-get install -y linux-tools-generic
+          # The linux-tools-common wrapper only works when the exact kernel's
+          # package resolves; the real binary lives under a flavour-specific
+          # dir (/usr/lib/linux-tools/<ver>/ on generic, /usr/lib/linux-azure-tools-<ver>/
+          # on Azure runners), so find any runnable one rather than guess.
           BPFTOOL="$(command -v bpftool || true)"
-          if [ -z "$BPFTOOL" ] || ! sudo "$BPFTOOL" version >/dev/null 2>&1; then
-            BPFTOOL="$(ls /usr/lib/linux-tools/*/bpftool | head -n1)"
+          if [ -z "$BPFTOOL" ] || ! "$BPFTOOL" version >/dev/null 2>&1; then
+            BPFTOOL=""
+            for cand in $(find /usr/lib -maxdepth 2 -type f -name bpftool 2>/dev/null | sort -r); do
+              if "$cand" version >/dev/null 2>&1; then BPFTOOL="$cand"; break; fi
+            done
+          fi
+          if [ -z "$BPFTOOL" ]; then
+            echo "::error::no runnable bpftool found after installing linux-tools; candidates:"
+            find /usr/lib /usr/sbin /usr/bin -name 'bpftool*' 2>/dev/null || true
+            exit 1
           fi
           echo "bpftool: $BPFTOOL ($("$BPFTOOL" version | head -n1))"
           echo "BPFTOOL=$BPFTOOL" >> "$GITHUB_ENV"
