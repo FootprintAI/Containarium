@@ -1,0 +1,60 @@
+# Baseline miner-signature list for the miner-signature rule (#2638).
+# Embedded into the daemon binary via go:embed and versioned like the
+# bad-destination list, so an operator can tell which baseline a daemon
+# build shipped with. Extend without a rebuild via
+# `containarium security miner-signatures add`.
+#
+# Kinds:
+#   name   — case-insensitive exact name or glob on the basename of the
+#            exec'd file and on the task comm.
+#   argv   — case-insensitive marker in the joined argv: a literal substring,
+#            or (with a glob character) space-separated glob tokens matched
+#            against consecutive arguments. A token without '=' never
+#            matches a key=value argument, so "-o *:4444" does not hit
+#            ssh's "-o ProxyJump=bastion:4444". Option tokens ("-o",
+#            "--url") match case-sensitively: "-O" is another flag.
+#   sha256 — hex SHA-256 of the executable. Deliberately none here: a hash
+#            list goes stale every upstream release and nobody owns
+#            refreshing it (decided on #2711 Q2). Operators add their own.
+#
+# A rebuilt, renamed miner with a clean command line matches none of these;
+# only the mining-behavior rule (sustained CPU + stratum flow) catches it.
+version: 1
+entries:
+  - {kind: name, pattern: "xmrig", label: "XMRig (Monero CPU/GPU miner)"}
+  - {kind: name, pattern: "minerd", label: "pooler cpuminer (minerd)"}
+  - {kind: name, pattern: "cpuminer*", label: "cpuminer family"}
+  - {kind: name, pattern: "nanominer", label: "nanominer"}
+  - {kind: name, pattern: "t-rex", label: "T-Rex GPU miner"}
+  - {kind: name, pattern: "lolminer", label: "lolMiner"}
+  - {kind: name, pattern: "nbminer", label: "NBMiner"}
+  - {kind: name, pattern: "gminer", label: "GMiner"}
+  - {kind: argv, pattern: "--donate-level", label: "XMRig donate-level flag"}
+  - {kind: argv, pattern: "stratum+tcp://", label: "stratum pool URL"}
+  - {kind: argv, pattern: "stratum+ssl://", label: "stratum pool URL (TLS)"}
+  - {kind: argv, pattern: "--coin ", label: "miner --coin flag"}
+  - {kind: argv, pattern: "--coin=*", label: "miner --coin=<coin> flag"}
+  - {kind: argv, pattern: "-o *:3333", label: "pool on stratum port 3333"}
+  - {kind: argv, pattern: "-o *:4444", label: "pool on stratum port 4444"}
+  - {kind: argv, pattern: "-o *:5555", label: "pool on stratum port 5555"}
+  - {kind: argv, pattern: "-o *:7777", label: "pool on stratum port 7777"}
+  - {kind: argv, pattern: "-o *:14444", label: "pool on stratum port 14444"}
+  - {kind: argv, pattern: "-o *:14433", label: "pool on stratum port 14433"}
+  - {kind: argv, pattern: "--url=*:3333", label: "pool on stratum port 3333 (--url=)"}
+  - {kind: argv, pattern: "--url *:3333", label: "pool on stratum port 3333 (--url)"}
+  - {kind: argv, pattern: "-o[^/]*:3333", label: "pool on stratum port 3333 (-o attached)"}
+  - {kind: argv, pattern: "--url=*:4444", label: "pool on stratum port 4444 (--url=)"}
+  - {kind: argv, pattern: "--url *:4444", label: "pool on stratum port 4444 (--url)"}
+  - {kind: argv, pattern: "-o[^/]*:4444", label: "pool on stratum port 4444 (-o attached)"}
+  - {kind: argv, pattern: "--url=*:5555", label: "pool on stratum port 5555 (--url=)"}
+  - {kind: argv, pattern: "--url *:5555", label: "pool on stratum port 5555 (--url)"}
+  - {kind: argv, pattern: "-o[^/]*:5555", label: "pool on stratum port 5555 (-o attached)"}
+  - {kind: argv, pattern: "--url=*:7777", label: "pool on stratum port 7777 (--url=)"}
+  - {kind: argv, pattern: "--url *:7777", label: "pool on stratum port 7777 (--url)"}
+  - {kind: argv, pattern: "-o[^/]*:7777", label: "pool on stratum port 7777 (-o attached)"}
+  - {kind: argv, pattern: "--url=*:14444", label: "pool on stratum port 14444 (--url=)"}
+  - {kind: argv, pattern: "--url *:14444", label: "pool on stratum port 14444 (--url)"}
+  - {kind: argv, pattern: "-o[^/]*:14444", label: "pool on stratum port 14444 (-o attached)"}
+  - {kind: argv, pattern: "--url=*:14433", label: "pool on stratum port 14433 (--url=)"}
+  - {kind: argv, pattern: "--url *:14433", label: "pool on stratum port 14433 (--url)"}
+  - {kind: argv, pattern: "-o[^/]*:14433", label: "pool on stratum port 14433 (-o attached)"}

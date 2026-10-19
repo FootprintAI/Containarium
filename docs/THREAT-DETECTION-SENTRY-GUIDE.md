@@ -64,6 +64,7 @@ Prerequisites:
 | Known-bad destination | HIGH | A flow's destination matches the embedded (versioned, mining-pools-first) or operator-added bad-destination list. |
 | Cross-tenant flow | CRITICAL | A flow's source and destination resolve to containers in *different* tenants on the same backend — the continuous form of the one-shot isolation check. Never fires on an IP it can't attribute to a tenant. |
 | Mining behavior | HIGH | A container's mean CPU over `window` (default 5 min) is at least `min(min_cores, min_fraction_of_limit × limits.cpu)` (defaults 1.5 cores and 0.75; a box with no CPU limit uses `min_cores` alone) **and** it holds a flow, at least `flow_min_age` (default 3 min) old and seen within the window, to a stratum port (default 3333, 4444, 5555, 7777, 14444, 14433) or to a listed bad destination on any port. Subject is the destination `ip:port`, so a second pool opens a second finding. Evidence: a CPU summary (mean, peak, window, samples) and the flow, with its first/last seen (anchored on the flow poll that reported it, since kernel flow stamps are monotonic) and what matched it (`port:<n>` or `bad-destination:<cidr>`). CPU samples come from the metrics collector's tick when one runs, otherwise from a standalone sampler in the daemon that reads each container's CPU counter every 30 s, so the rule does not need VictoriaMetrics. `containarium security sentry status` shows which source is active on its `cpu-sampler:` line. Thresholds are persisted in the daemon config store under `threatdetect.mining_behavior.thresholds` (protojson of `MiningBehaviorThresholds`; a zero field keeps its default) and are written with `containarium security process-policy set --rule mining-behavior` (see [Process policy](#process-policy-what-a-mining-finding-does)). |
+| Miner signature | HIGH | A process exec in a box matches the miner-signature list (#2638): a known miner's binary name (basename or comm, exact or glob, case-insensitive), a command-line marker (`--donate-level`, `stratum+tcp://`, `-o <host>:<stratum port>`, …), or an operator-added SHA-256 of the executable. Fires on the exec itself, within one detection cycle. Subject is `<kind>:<pattern>` of the entry that hit; evidence is the exec (pid, ppid, uid, comm, path, argv, and the hash when computed). See [Miner signatures and kill-process](#miner-signatures-and-kill-process). Needs exec telemetry. |
 | Deny burst | MEDIUM | A tenant accumulates ≥`CONTAINARIUM_THREAT_DENY_BURST_N` (default 20) policy denies within `CONTAINARIUM_THREAT_DENY_BURST_WINDOW_MINUTES` (default 5) minutes. Both tunable per operator, without a daemon rebuild — set the env var and restart. **Counts enforced drops only** by default: a would-deny from a tenant whose policy is only observed (`log_only`) is not counted, so enabling the sentry on an observation-only host does not raise "fence probing" findings for ordinary egress. Set `CONTAINARIUM_THREAT_DENY_BURST_COUNT_LOG_ONLY=1` to count those too. |
 
 Two further finding types are not detection rules. They are raised by the
@@ -225,6 +226,90 @@ burst that outruns the consumer is counted in `exec-events-lost`
 (10,000 undrained execs → 1,272 kept, 8,729 counted lost, no crash). The
 acceptance number is re-measured on the sprint's verification guest.
 
+## Miner signatures and kill-process
+
+The miner-signature rule (#2638) matches every exec the exec telemetry
+reports against a signature list: the embedded, versioned baseline merged
+with operator entries. Three matcher kinds:
+
+| Kind | Matches | Example |
+|------|---------|---------|
+| `name` | basename of the exec'd file, and the task comm; exact or glob, case-insensitive | `xmrig`, `cpuminer*` |
+| `argv` | the joined command line: a literal substring (case-insensitive), or, with a glob character, space-separated globs over consecutive arguments (option tokens such as `-o` case-sensitive, the rest not) | `--donate-level`, `-o *:3333` |
+| `sha256` | hex SHA-256 of the executable (`/proc/<pid>/exe`) | operator-added only |
+
+The baseline ships `name` and `argv` entries only (xmrig, minerd,
+cpuminer*, nanominer, t-rex, lolminer, nbminer, gminer; `--donate-level`,
+`stratum+tcp://`, `stratum+ssl://`, `--coin `, `--coin=*`, and for each
+default stratum port `-o <host>:<port>`, `-o<host>:<port>`, `--url <host>:<port>`
+and `--url=<host>:<port>`
+default stratum port). It carries **no hashes**: a hash list goes stale with
+every upstream release. Add your own hashes for builds you have seen; the
+daemon hashes an executable only when such entries exist and no name or
+argv entry matched, off the exec path (64 MiB cap, 200 ms budget, best
+effort: a process that exited first is not hashed).
+
+```bash
+containarium security miner-signatures list
+containarium security miner-signatures add --kind name --label SRBMiner 'srbminer*'
+containarium security miner-signatures add --kind argv -- '--algo randomx'
+containarium security miner-signatures add --kind sha256 <64 hex chars>
+containarium security miner-signatures remove --kind name 'srbminer*'
+```
+
+Additions take effect immediately and persist in the daemon config store
+(`threatdetect.miner_signatures.operator`); baseline entries cannot be
+removed. Adding and removing need `security:write` and the admin role.
+
+**What a match does.** A match always raises the HIGH finding, and the
+box's process policy applies as for any mining finding: alert (default),
+throttle or freeze (`containarium security process-policy`). With
+`kill_process` set, the daemon also sends SIGKILL to the matched process
+from the host:
+
+```bash
+containarium security process-policy set --kill-process=true                     # backend default
+containarium security process-policy set --container box-a --kill-process=false  # one box opts out
+```
+
+`kill_process` defaults to **false** at every level and is never turned on
+for you; unset inherits from the backend default. Before the kill the
+daemon pins the process with a pidfd (no pidfd, no kill), re-reads
+`/proc/<pid>/cgroup` and confirms it is still under the container's cgroup,
+so a pid reused by another process, on the host or in another box, is never
+signalled; the container's init is never killed. Every attempt is audited
+under `security.action`: `kill` names the pid, `kill-skipped` gives the
+reason (`pid reused`, `process already exited`, …). The finding's response
+shows `process killed`, and an action row opened by the same finding records
+`killed_pid`. The kill and the throttle/freeze run on the responder's own
+worker, never on the exec event path; if its queue (256) is full the
+response is dropped, logged and audited as `response-dropped`. Before
+acting, the worker re-reads the finding: one resolved, or whose action was
+released (by an operator or the TTL backstop) after the response was
+queued, is left alone and audited as `response-skipped`, so a queued
+response never undoes a release. On a degraded backend (no Postgres) responses are off, the
+kill included.
+
+**Limits.** A rebuilt, renamed miner with a clean command line matches no
+name or argv entry, and a fresh build matches no hash: only the
+mining-behavior rule (sustained CPU plus a stratum flow) catches it. The
+rule sees the exec, not later renames inside the process.
+Literal argv markers match any command line that merely mentions them:
+`grep -r -- --donate-level .` raises the finding too, and with
+`kill_process` it is killed. Keep that in mind before turning the kill on
+for boxes where people inspect miner configs. A glob token without `=`
+never matches a `key=value` argument, so ssh's `-o ProxyJump=bastion:4444`
+does not hit the `-o <host>:<port>` markers, and `-o` is case-sensitive, so
+`cc -O ...` is not a match. Pool addresses in other spellings (a config file,
+`--url` with a scheme other than stratum, a non-default port) are a known
+gap here; the mining-behavior rule covers them by CPU and flow.
+
+The kill and policy action run on the responder's queue, so a little time
+can pass between the exec and the kill. The cgroup re-check stops a pid
+reused by another box or the host, but a pid reused by another process in
+the *same* box within that window would be killed; a process start-time
+check to close it is a follow-up (#2765).
+
 ## Triaging findings
 
 ```bash
@@ -306,6 +391,9 @@ Every CLI/MCP surface above is a thin wrapper over these RPCs
 | `GET` | `/v1/security/process-policy` |
 | `PUT` | `/v1/security/process-policy` |
 | `POST` | `/v1/security/process-policy/release` |
+| `GET` | `/v1/security/miner-signatures` |
+| `POST` | `/v1/security/miner-signatures` |
+| `DELETE` | `/v1/security/miner-signatures?kind=&pattern=` |
 
 ## Known gaps
 

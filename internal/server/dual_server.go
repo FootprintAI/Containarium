@@ -351,6 +351,7 @@ type DualServer struct {
 	// when the engine itself wasn't constructed.
 	threatDetectEngine    *threatdetect.Engine
 	processResponder      *ProcessResponder               // process guardrail responder (#2636); nil when the sentry is off/unavailable
+	execHasher            *execHasher                     // miner-signature sha256 worker (#2638); nil without an engine
 	sshdPosture           *security.SSHDPostureReconciler // box sshd key-only reconciler (#2424); nil when disabled
 	threatDetectServer    *ThreatDetectionServer
 	threatDetectNotifier  *threatdetect.WebhookNotifier // nil unless a finding store was built (armed + audit store) (#1643)
@@ -2387,7 +2388,13 @@ skipAppHosting:
 				responderDisabled = "incus client unavailable"
 			} else {
 				processResponder = NewProcessResponder(processPolicyStore, actionStore, lifecycle, incusActuator{c: responderIncus}, auditStore, responderDegraded)
-				sink = NewActingSink(sink, processResponder)
+				// kill_process (#2638): SIGKILL a miner-signature match
+				// after re-checking its cgroup against the container's.
+				processResponder.SetProcessKiller(newHostProcessKiller(responderIncus.InitPID))
+				// Async: the responder's Incus calls run on its own worker,
+				// never on the exec ring consumer that writes signature
+				// findings (#2638 review).
+				sink = NewAsyncActingSink(sink, processResponder)
 				if responderDegraded {
 					log.Printf("Process responder enabled — DEGRADED (no persistence): responses disabled, ALERT only")
 				} else {
@@ -2485,6 +2492,31 @@ skipAppHosting:
 		threatDetectEngine.SetMiningThresholds(miningCfg.Effective)
 		threatDetectServer.SetMiningThresholdsConfig(miningCfg)
 		threatDetectEngine.Register(threatdetect.NewMiningBehaviorRule(listedDestinations))
+	}
+	// Miner-signature rule (#2638): a known miner's name, argv marker or
+	// executable hash on an exec. Like the bad-destination list, the list is
+	// curated whether or not the sentry is armed; the rule is registered
+	// only with an engine, and the hasher feeds its sha256 matcher off the
+	// exec path.
+	var execHash *execHasher
+	{
+		var kv threatdetect.ConfigKV
+		if config.DaemonConfigStore != nil {
+			kv = config.DaemonConfigStore
+		}
+		if minerSigRule, msErr := threatdetect.NewMinerSignatureRule(context.Background(), kv); msErr != nil {
+			log.Printf("Warning: threat-detection miner-signature rule init failed (%v); ListMinerSignatures/Add/Remove unavailable", msErr)
+		} else {
+			threatDetectServer.SetMinerSignatureRule(minerSigRule)
+			if threatDetectEngine != nil {
+				threatDetectEngine.Register(minerSigRule)
+				engine := threatDetectEngine
+				execHash = newExecHasher(func(ev threatdetect.ExecEvent) {
+					engine.RedeliverExec(pb.ThreatRuleId_THREAT_RULE_ID_MINER_SIGNATURE, ev)
+				})
+				threatDetectEngine.SetExecHasher(execHash.Request)
+			}
+		}
 	}
 	pb.RegisterThreatDetectionServiceServer(grpcServer, threatDetectServer)
 
@@ -3031,6 +3063,7 @@ skipAppHosting:
 		sandboxServer:          sandboxServer,
 		threatDetectEngine:     threatDetectEngine,
 		processResponder:       processResponder,
+		execHasher:             execHash,
 		threatDetectServer:     threatDetectServer,
 		threatDetectNotifier:   threatDetectNotifier,
 		sentryHealthStore:      healthStore,
@@ -3772,6 +3805,11 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		// TTL backstop for process actions (#2636): every 60s, release
 		// expired throttles/freezes and raise PROCESS_ACTION_EXPIRED.
 		go ds.processResponder.Run(ctx)
+	}
+	if ds.execHasher != nil {
+		// Off-path executable hashing for the miner-signature rule's
+		// sha256 entries (#2638); idle unless such entries exist.
+		go ds.execHasher.Run(ctx)
 	}
 	if ds.sshdPosture != nil {
 		ds.sshdPosture.Start(ctx)

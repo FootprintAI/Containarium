@@ -141,3 +141,34 @@ func TestRunSecurityFindingsResolve_RejectsNonNumericID(t *testing.T) {
 		t.Fatal("expected an error for a non-numeric id")
 	}
 }
+
+// TestRunSecurityFindingsList_RendersExecEvidence (#2638): a miner-signature
+// finding shows the matched exec and whether the process was killed.
+func TestRunSecurityFindingsList_RendersExecEvidence(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"findings": [{
+			"id": "7", "rule": "THREAT_RULE_ID_MINER_SIGNATURE", "severity": "THREAT_SEVERITY_HIGH",
+			"tenantId": "t1", "container": "box-1", "subject": "name:xmrig", "state": "FINDING_STATE_OPEN", "count": "1",
+			"evidence": {"execs": [{"pid": 4242, "comm": "xmrig", "filename": "/tmp/.x/xmrig", "argv": "./xmrig --donate-level 1", "matched": "name:xmrig"}]},
+			"response": {"action": "PROCESS_ACTION_ALERT", "state": "RESPONSE_STATE_NONE", "processKilled": true}
+		}]}`))
+	}))
+	defer srv.Close()
+	oldServer := serverAddr
+	serverAddr = srv.URL
+	defer func() { serverAddr = oldServer }()
+
+	cmd := testCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	if err := runSecurityFindingsList(cmd, nil); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	for _, want := range []string{"MINER_SIGNATURE", "name:xmrig", "exec pid 4242 /tmp/.x/xmrig", `"./xmrig --donate-level 1"`, "matched name:xmrig", "process killed"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}

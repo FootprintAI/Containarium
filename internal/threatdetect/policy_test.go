@@ -53,6 +53,14 @@ func policy(action pb.ProcessAction, allowance string, ttl time.Duration) *pb.Pr
 	return p
 }
 
+// effective is policy() as ResolveProcessPolicy returns it: a resolved
+// policy always carries kill_process, false unless a level set it (#2638).
+func effective(action pb.ProcessAction, allowance string, ttl time.Duration) *pb.ProcessPolicy {
+	p := policy(action, allowance, ttl)
+	p.KillProcess = proto.Bool(false)
+	return p
+}
+
 // The effective-policy resolution table from the design doc: container
 // override → backend default → built-in {ALERT, "10%", 24h}, field by field
 // so a partial override inherits what it leaves empty.
@@ -64,29 +72,29 @@ func TestResolveProcessPolicy(t *testing.T) {
 	}{
 		{
 			name: "nothing stored is the built-in ALERT",
-			want: policy(pb.ProcessAction_PROCESS_ACTION_ALERT, "10%", 24*time.Hour),
+			want: effective(pb.ProcessAction_PROCESS_ACTION_ALERT, "10%", 24*time.Hour),
 		},
 		{
 			name:    "backend default applies when no override",
 			backend: policy(pb.ProcessAction_PROCESS_ACTION_THROTTLE, "5%", 2*time.Hour),
-			want:    policy(pb.ProcessAction_PROCESS_ACTION_THROTTLE, "5%", 2*time.Hour),
+			want:    effective(pb.ProcessAction_PROCESS_ACTION_THROTTLE, "5%", 2*time.Hour),
 		},
 		{
 			name:     "override wins over backend default",
 			override: policy(pb.ProcessAction_PROCESS_ACTION_FREEZE, "", 0),
 			backend:  policy(pb.ProcessAction_PROCESS_ACTION_THROTTLE, "5%", 2*time.Hour),
-			want:     policy(pb.ProcessAction_PROCESS_ACTION_FREEZE, "5%", 2*time.Hour),
+			want:     effective(pb.ProcessAction_PROCESS_ACTION_FREEZE, "5%", 2*time.Hour),
 		},
 		{
 			name:    "partial backend default inherits built-in fields",
 			backend: policy(pb.ProcessAction_PROCESS_ACTION_THROTTLE, "", 0),
-			want:    policy(pb.ProcessAction_PROCESS_ACTION_THROTTLE, "10%", 24*time.Hour),
+			want:    effective(pb.ProcessAction_PROCESS_ACTION_THROTTLE, "10%", 24*time.Hour),
 		},
 		{
 			name:     "override can set ALERT explicitly over a THROTTLE default",
 			override: policy(pb.ProcessAction_PROCESS_ACTION_ALERT, "", 0),
 			backend:  policy(pb.ProcessAction_PROCESS_ACTION_THROTTLE, "", 0),
-			want:     policy(pb.ProcessAction_PROCESS_ACTION_ALERT, "10%", 24*time.Hour),
+			want:     effective(pb.ProcessAction_PROCESS_ACTION_ALERT, "10%", 24*time.Hour),
 		},
 	}
 	for _, tt := range tests {
@@ -186,12 +194,12 @@ func TestProcessPolicyStore_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Effective(box-a): %v", err)
 	}
-	want := policy(pb.ProcessAction_PROCESS_ACTION_FREEZE, "5%", time.Hour)
+	want := effective(pb.ProcessAction_PROCESS_ACTION_FREEZE, "5%", time.Hour)
 	if !proto.Equal(eff, want) {
 		t.Fatalf("Effective(box-a) = %v, want %v", eff, want)
 	}
 	eff, err = s.Effective(ctx, "box-b")
-	if err != nil || !proto.Equal(eff, def) {
+	if err != nil || !proto.Equal(eff, effective(pb.ProcessAction_PROCESS_ACTION_THROTTLE, "5%", time.Hour)) {
 		t.Fatalf("Effective(box-b) = %v, %v; want backend default %v", eff, err, def)
 	}
 
@@ -202,7 +210,7 @@ func TestProcessPolicyStore_RoundTrip(t *testing.T) {
 		t.Fatalf("Override after clear = %v, %v; want nil, nil", got, err)
 	}
 	eff, _ = s.Effective(ctx, "box-a")
-	if !proto.Equal(eff, def) {
+	if !proto.Equal(eff, effective(pb.ProcessAction_PROCESS_ACTION_THROTTLE, "5%", time.Hour)) {
 		t.Fatalf("Effective after clear = %v, want backend default %v", eff, def)
 	}
 }
@@ -232,13 +240,49 @@ func TestProcessPolicyStore_BackendErrorSurfaces(t *testing.T) {
 	}
 }
 
+// TestResolveProcessPolicy_KillProcess (#2638): kill_process is off unless a
+// level sets it; an unset level inherits; an explicit false on an override
+// turns a backend-default true back off.
+func TestResolveProcessPolicy_KillProcess(t *testing.T) {
+	on, off := proto.Bool(true), proto.Bool(false)
+	tests := []struct {
+		name              string
+		override, backend *bool
+		want              bool
+	}{
+		{"nothing set", nil, nil, false},
+		{"backend true", nil, on, true},
+		{"override true", on, nil, true},
+		{"override false beats backend true", off, on, false},
+		{"unset override inherits backend true", nil, on, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var ov, be *pb.ProcessPolicy
+			if tt.override != nil {
+				ov = &pb.ProcessPolicy{KillProcess: tt.override}
+			}
+			if tt.backend != nil {
+				be = &pb.ProcessPolicy{KillProcess: tt.backend}
+			}
+			got := ResolveProcessPolicy(ov, be)
+			if got.KillProcess == nil || got.GetKillProcess() != tt.want {
+				t.Fatalf("kill_process = %v, want %v (explicitly set)", got.KillProcess, tt.want)
+			}
+		})
+	}
+	if BuiltinProcessPolicy().GetKillProcess() {
+		t.Fatal("built-in policy kills processes; kill_process must default to false")
+	}
+}
+
 func TestRespondsTo(t *testing.T) {
 	tests := []struct {
 		rule pb.ThreatRuleId
 		want bool
 	}{
-		{pb.ThreatRuleId(6), true}, // MINING_BEHAVIOR (#2635)
-		{pb.ThreatRuleId(7), true}, // MINER_SIGNATURE (#2638)
+		{pb.ThreatRuleId_THREAT_RULE_ID_MINING_BEHAVIOR, true},
+		{pb.ThreatRuleId_THREAT_RULE_ID_MINER_SIGNATURE, true},
 		{pb.ThreatRuleId_THREAT_RULE_ID_BAD_DESTINATION, false},
 		{pb.ThreatRuleId_THREAT_RULE_ID_DENY_BURST, false},
 		{pb.ThreatRuleId_THREAT_RULE_ID_PROCESS_ACTION_EXPIRED, false},
@@ -247,6 +291,9 @@ func TestRespondsTo(t *testing.T) {
 		if got := RespondsTo(tt.rule); got != tt.want {
 			t.Errorf("RespondsTo(%v) = %v, want %v", tt.rule, got, tt.want)
 		}
+	}
+	if !KillsProcess(pb.ThreatRuleId_THREAT_RULE_ID_MINER_SIGNATURE) || KillsProcess(pb.ThreatRuleId_THREAT_RULE_ID_MINING_BEHAVIOR) {
+		t.Error("only the miner-signature rule may kill a process")
 	}
 }
 

@@ -58,7 +58,10 @@ func (c *Cache) Get(k CacheKey, outage bool) (string, bool) {
 	return "", false
 }
 
+// Put records an ALLOW. Its TTL is capped at grace, so a control plane's
+// cache_ttl cannot keep a key admitted past grace during an outage.
 func (c *Cache) Put(k CacheKey, userID string, ttl time.Duration) {
+	ttl = min(ttl, c.grace)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.now()

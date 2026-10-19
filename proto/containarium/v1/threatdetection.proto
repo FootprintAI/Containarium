@@ -50,9 +50,12 @@ enum ThreatRuleId {
   // Subject is the destination ip:port; evidence is one CPUEvidence plus
   // the qualifying flow. Thresholds: MiningBehaviorThresholds.
   THREAT_RULE_ID_MINING_BEHAVIOR = 6;
-  // Values 7 (MINER_SIGNATURE, #2638) and 8 (SENTRY_UNAVAILABLE, #2634) are
-  // assigned by their own stories.
-  //
+  // A process exec in a box matched a known-miner signature (#2638): the
+  // binary name, a command-line marker, or the executable's SHA-256 (see
+  // MinerSignature). HIGH. Subject is "<kind>:<pattern>" of the entry that
+  // hit; evidence is the ExecEvidence of the exec, with `matched` set. With
+  // ProcessPolicy.kill_process the responder also SIGKILLs the process.
+  THREAT_RULE_ID_MINER_SIGNATURE = 7;
   // A process action (throttle or freeze, #2636) reached its TTL with no
   // operator decision and was released automatically. MEDIUM, so an
   // unattended containment never silently becomes permanent. Subject is the
@@ -268,7 +271,8 @@ enum ResponseState {
 message FindingResponse {
   ProcessAction action = 1;
   ResponseState state = 2;
-  // Reserved for the signature rule's additive kill (#2638).
+  // True when the responder SIGKILLed the matched process (miner-signature
+  // finding with ProcessPolicy.kill_process, #2638).
   bool process_killed = 3;
   google.protobuf.Timestamp applied_at = 4;
   // When the TTL backstop will release the action if no operator does.
@@ -284,7 +288,8 @@ message FindingResponse {
 // (#2636). Stored per backend (the default) and optionally per container
 // (an override, written by SetProcessPolicy with `container` set); the
 // effective policy is override → backend default → built-in
-// {ALERT, "10%", 24h}. Empty fields inherit from the next level down.
+// {ALERT, "10%", 24h, kill_process false}. Empty fields inherit from the
+// next level down.
 message ProcessPolicy {
   ProcessAction action = 1;
   // limits.cpu.allowance applied by THROTTLE: an Incus allowance such as
@@ -294,8 +299,12 @@ message ProcessPolicy {
   // How long an applied action stays in effect with no operator decision
   // before the TTL backstop releases it. Default 24h.
   google.protobuf.Duration ttl = 3;
-  // Field 4 is kill_process (signature rule, #2638); it is assigned there.
-  // Do not reuse the number.
+  // SIGKILL the matched process from the host when a miner-signature finding
+  // fires (#2638), in addition to `action`. Applies to MINER_SIGNATURE
+  // findings only; the mining-behavior rule never kills. The pid is
+  // re-checked against the container's cgroup first, so a reused pid is
+  // never signalled. Default false at every level; unset inherits.
+  optional bool kill_process = 4;
 
   // Thresholds of the mining-behavior rule (#2635). Backend-wide: honoured
   // only on the backend default (container empty), rejected on a container
@@ -461,6 +470,60 @@ message RemoveBadDestinationRequest {
 
 message RemoveBadDestinationResponse {}
 
+// MinerSignatureKind is what a MinerSignature matches against (#2638).
+enum MinerSignatureKind {
+  MINER_SIGNATURE_KIND_UNSPECIFIED = 0;
+  // Case-insensitive exact name or glob ("cpuminer*") on the basename of the
+  // exec'd file and on the task comm.
+  MINER_SIGNATURE_KIND_NAME = 1;
+  // Case-insensitive marker in the joined argv: a literal substring
+  // ("--donate-level"), or, when the pattern holds a glob character, a
+  // sequence of space-separated glob tokens matched against consecutive
+  // arguments ("-o *:3333"). A glob token without '=' never matches a
+  // key=value argument (so "-o *:4444" does not hit "-o ProxyJump=h:4444"),
+  // and a glob option token ("-o") matches case-sensitively.
+  MINER_SIGNATURE_KIND_ARGV = 2;
+  // Lowercase hex SHA-256 of the executable (/proc/<pid>/exe), computed off
+  // the hot path only when a hash entry exists and nothing cheaper matched.
+  // The shipped baseline carries no hash entries; they are operator-added.
+  MINER_SIGNATURE_KIND_SHA256 = 3;
+}
+
+// MinerSignature is one entry of the miner-signature list: the embedded,
+// versioned baseline or an operator addition.
+message MinerSignature {
+  MinerSignatureKind kind = 1;
+  string pattern = 2;
+  string label = 3;
+  // True for a baseline entry shipped with the daemon; those cannot be
+  // removed.
+  bool builtin = 4;
+}
+
+message ListMinerSignaturesRequest {}
+
+message ListMinerSignaturesResponse {
+  repeated MinerSignature signatures = 1;
+  // Version of the embedded baseline this daemon build ships.
+  string baseline_version = 2;
+}
+
+message AddMinerSignatureRequest {
+  // kind and pattern are required; builtin is ignored.
+  MinerSignature signature = 1;
+}
+
+message AddMinerSignatureResponse {
+  MinerSignature signature = 1;
+}
+
+message RemoveMinerSignatureRequest {
+  MinerSignatureKind kind = 1;
+  string pattern = 2;
+}
+
+message RemoveMinerSignatureResponse {}
+
 // ListFindingsRequest filters ListFindings. Every field is optional; an
 // unset field matches everything. tenant_id is enforced by the server's RBAC
 // interceptor the same way ListContainersRequest.username is: a non-admin
@@ -602,7 +665,7 @@ service ThreatDetectionService {
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Set the process policy";
-      description: "Sets what a HIGH mining finding does to its container: ALERT (default), THROTTLE or FREEZE, with the throttle allowance and TTL. With container set it writes a per-container override; clear_override removes one.";
+      description: "Sets what a HIGH mining finding does to its container: ALERT (default), THROTTLE or FREEZE, with the throttle allowance and TTL, and whether a miner-signature match also SIGKILLs the process (kill_process, default false). With container set it writes a per-container override; clear_override removes one.";
       tags: "Security";
     };
   }
@@ -617,6 +680,48 @@ service ThreatDetectionService {
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Release a process action";
       description: "Restores the container's recorded CPU limit (THROTTLE) or unfreezes it (FREEZE), marks the action released by the operator, and resolves its finding. NOT_FOUND when no action is open on the container.";
+      tags: "Security";
+    };
+  }
+
+  // ListMinerSignatures returns the merged baseline + operator-added
+  // miner-signature list the miner-signature rule (#2638) matches execs
+  // against.
+  rpc ListMinerSignatures(ListMinerSignaturesRequest) returns (ListMinerSignaturesResponse) {
+    option (google.api.http) = {
+      get: "/v1/security/miner-signatures"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List miner signatures";
+      description: "Returns the merged baseline (embedded, versioned) and operator-added miner-signature list: binary names, command-line markers and executable SHA-256 hashes.";
+      tags: "Security";
+    };
+  }
+
+  // AddMinerSignature adds an operator entry to the miner-signature list,
+  // effective immediately and persisted across restarts, without a rebuild.
+  rpc AddMinerSignature(AddMinerSignatureRequest) returns (AddMinerSignatureResponse) {
+    option (google.api.http) = {
+      post: "/v1/security/miner-signatures"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Add a miner signature";
+      description: "Adds an operator-supplied name, argv or sha256 entry to the miner-signature list. Admin only.";
+      tags: "Security";
+    };
+  }
+
+  // RemoveMinerSignature removes an operator-added entry; baseline entries
+  // cannot be removed. kind and pattern travel as query parameters, since an
+  // argv marker can hold slashes and spaces.
+  rpc RemoveMinerSignature(RemoveMinerSignatureRequest) returns (RemoveMinerSignatureResponse) {
+    option (google.api.http) = {
+      delete: "/v1/security/miner-signatures"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Remove an operator-added miner signature";
+      description: "Removes a previously operator-added miner-signature entry (?kind=&pattern=). Baseline entries cannot be removed. Admin only.";
       tags: "Security";
     };
   }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -30,7 +31,8 @@ func NewActionStore(ctx context.Context, pool *pgxpool.Pool) (*PGActionStore, er
 }
 
 func (s *PGActionStore) initSchema(ctx context.Context) error {
-	// killed_pid is reserved for the signature rule's additive kill (#2638).
+	// killed_pid is the pid the signature rule's additive kill (#2638)
+	// signalled for the same finding, NULL when none.
 	schema := `
 		CREATE TABLE IF NOT EXISTS security_actions (
 			id              BIGSERIAL PRIMARY KEY,
@@ -57,7 +59,7 @@ func (s *PGActionStore) initSchema(ctx context.Context) error {
 }
 
 const actionColumns = `id, finding_id, container, tenant_id, action, prev_cpu_count, prev_cpu_allow,
-	error, pending, applied_at, expires_at, released_at, released_by`
+	killed_pid, error, pending, applied_at, expires_at, released_at, released_by`
 
 func (s *PGActionStore) Insert(ctx context.Context, a *SecurityAction) error {
 	var releasedAt *time.Time
@@ -65,13 +67,18 @@ func (s *PGActionStore) Insert(ctx context.Context, a *SecurityAction) error {
 		t := a.ReleasedAt
 		releasedAt = &t
 	}
+	var killedPID *int64
+	if a.KilledPID != 0 {
+		v := int64(a.KilledPID)
+		killedPID = &v
+	}
 	row := s.pool.QueryRow(ctx, `
 		INSERT INTO security_actions
-			(finding_id, container, tenant_id, action, prev_cpu_count, prev_cpu_allow, error, pending, applied_at, expires_at, released_at, released_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+			(finding_id, container, tenant_id, action, prev_cpu_count, prev_cpu_allow, killed_pid, error, pending, applied_at, expires_at, released_at, released_by)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		RETURNING id
 	`, a.FindingID, a.Container, a.TenantID, a.Action.String(), a.PrevCPUCount, a.PrevCPUAllowance,
-		a.Error, a.Pending, a.AppliedAt, a.ExpiresAt, releasedAt, a.ReleasedBy)
+		killedPID, a.Error, a.Pending, a.AppliedAt, a.ExpiresAt, releasedAt, a.ReleasedBy)
 	if err := row.Scan(&a.ID); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == pgUniqueViolation {
@@ -184,8 +191,9 @@ func scanAction(row rowScanner) (*SecurityAction, error) {
 	var a SecurityAction
 	var action string
 	var releasedAt *time.Time
+	var killedPID *int64
 	if err := row.Scan(&a.ID, &a.FindingID, &a.Container, &a.TenantID, &action, &a.PrevCPUCount, &a.PrevCPUAllowance,
-		&a.Error, &a.Pending, &a.AppliedAt, &a.ExpiresAt, &releasedAt, &a.ReleasedBy); err != nil {
+		&killedPID, &a.Error, &a.Pending, &a.AppliedAt, &a.ExpiresAt, &releasedAt, &a.ReleasedBy); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, err
 		}
@@ -194,6 +202,9 @@ func scanAction(row rowScanner) (*SecurityAction, error) {
 	a.Action = pb.ProcessAction(pb.ProcessAction_value[action])
 	if releasedAt != nil {
 		a.ReleasedAt = *releasedAt
+	}
+	if killedPID != nil && *killedPID > 0 && *killedPID <= math.MaxUint32 {
+		a.KilledPID = uint32(*killedPID)
 	}
 	return &a, nil
 }
