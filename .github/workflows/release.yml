@@ -463,6 +463,8 @@ jobs:
             bin/mcp-server-linux-amd64.spdx.json
             bin/agent-box-linux-amd64.spdx.json
             bin/SHA256SUMS.txt
+            LICENSE
+            NOTICE
           draft: false
           # A tag with a pre-release suffix (v0.101.0-rc.1) is a GitHub
           # pre-release: it is left out of releases/latest, so the daemon's
