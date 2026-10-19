@@ -200,8 +200,8 @@ github.com/kylelemons/godebug v1.1.0 h1:RPNrshWIDI6G2gRW9EHilWtl7Z6Sb1BR0xunSBf0
 github.com/kylelemons/godebug v1.1.0/go.mod h1:9/0rRGxNHcop5bhtWyNeEfOS8JIWk580+fNqagV/RAw=
 github.com/lxc/incus/v7 v7.5.1 h1:lMSWCgsjahtnVlCgh31LVOLe1r4cOBOzpuGU45HyO88=
 github.com/lxc/incus/v7 v7.5.1/go.mod h1:zgAs+ISzsyXpH6x1P2nt+HNmb8kJP1F9ermXKFJbyvo=
-github.com/mark3labs/mcp-go v1.2.1 h1:gd8VD3feMAVycwAM0x1nhv42Q1oLLjfOyowoUzHULB8=
-github.com/mark3labs/mcp-go v1.2.1/go.mod h1:r2fW4o3wsoJ7IMsx1Wuq5xeP8PRGXPDfNveoGAYbb/s=
+github.com/mark3labs/mcp-go v1.3.0 h1:0nqegnwaTULVV1pCQLBmDjD2+0/lSXRt6eTHS7bH1o0=
+github.com/mark3labs/mcp-go v1.3.0/go.mod h1:r2fW4o3wsoJ7IMsx1Wuq5xeP8PRGXPDfNveoGAYbb/s=
 github.com/mattn/go-colorable v0.1.1/go.mod h1:FuOcm+DKB9mbwrcAfNl7/TZVBZ6rcnceauSikq3lYCQ=
 github.com/mattn/go-colorable v0.1.2/go.mod h1:U0ppj6V5qS13XJ6of8GYAs25YV2eR4EVcfRqFIhoBtE=
 github.com/mattn/go-isatty v0.0.5/go.mod h1:Iq45c/XA43vh69/j3iqttzPXn0bhXyGjM0Hdxcsrc5s=
