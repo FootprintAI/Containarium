@@ -84,7 +84,12 @@ anyway; it's the only thing a non-release build has to go on.
    page (`sha256sum -c` passes), that
    `helm pull oci://ghcr.io/<org>/charts/containarium-k8s --version <version>`
    succeeds, and that the pulled chart is stamped `version: <version>` and
-   `appVersion: v<version>`.
+   `appVersion: v<version>`. Check that the `sign-release` job ran and
+   that every file on the Release has a `<file>.sigstore.json`
+   (`docs/security/VERIFYING-RELEASES.md`); verify one binary with the
+   documented `cosign verify-blob` command. This job and the SBOM
+   attachment run only on a real tag, so the first release after they
+   landed is their first run: expect to look.
 6. **Wait for the managed-clusters KVM e2e lane to go green on the
    tag** (`.github/workflows/cluster-e2e.yml`, also runs nightly). It
    is release-blocking (#1418): a red or missing run means the release
@@ -139,7 +144,7 @@ rather than after.
 
 | Workflow | What it publishes | Where | Reversible? |
 | --- | --- | --- | --- |
-| `release.yml` | 28 assets: the CLI for linux/darwin-amd64/darwin-arm64/windows (plus best-effort `-macos11` darwin builds from `scripts/build-macos11.sh`), MCP server and agent-box binaries for linux/darwin-amd64/darwin-arm64, the agent-runtime bundle, the SDLC skills bundle + its `.sha256` (#2065), the air-gapped install bundle + its `.sha256`, the Helm chart `containarium-k8s-<version>.tgz` + its `.sha256` (the `helm-chart` job runs after `SHA256SUMS.txt` is written, so the chart is not listed there), four SPDX SBOMs (`containariumd`, `containarium`, `mcp-server`, `agent-box`, linux/amd64; #2561), and a generated `SHA256SUMS.txt` that lists the binaries and the SBOMs. The same job also pushes the chart to GHCR as an OCI artifact (`oci://ghcr.io/<org>/charts/containarium-k8s`) | GitHub Release on the tag, and GHCR | Release assets are deletable, but anyone who already pulled has them; treat a published OCI chart version as permanent |
+| `release.yml` | 28 assets: the CLI for linux/darwin-amd64/darwin-arm64/windows (plus best-effort `-macos11` darwin builds from `scripts/build-macos11.sh`), MCP server and agent-box binaries for linux/darwin-amd64/darwin-arm64, the agent-runtime bundle, the SDLC skills bundle + its `.sha256` (#2065), the air-gapped install bundle + its `.sha256`, the Helm chart `containarium-k8s-<version>.tgz` + its `.sha256` (the `helm-chart` job runs after `SHA256SUMS.txt` is written, so the chart is not listed there), four SPDX SBOMs (`containariumd`, `containarium`, `mcp-server`, `agent-box`, linux/amd64; #2561), and a generated `SHA256SUMS.txt` that lists the binaries and the SBOMs, and a keyless cosign `<file>.sigstore.json` for each of those files (the `sign-release` job, #2561). The `helm-chart` job also pushes the chart to GHCR as an OCI artifact (`oci://ghcr.io/<org>/charts/containarium-k8s`) | GitHub Release on the tag, and GHCR | Release assets are deletable, but anyone who already pulled has them; treat a published OCI chart version as permanent |
 | `containarium-daemon.yml` | Daemon container image | `ghcr.io/footprintai/containarium` | Tag is mutable in principle; treat as published |
 | `sidecars.yml` | `containarium-otel-sidecar`, `containarium-sshpiper`, `containarium-agent-box` images | `ghcr.io` | Same |
 | `distros-py-release.yml` | `containarium-telemetry` Python package | **PyPI** | **No.** PyPI does not allow re-uploading a version, even after deletion |
