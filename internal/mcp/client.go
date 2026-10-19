@@ -2026,6 +2026,11 @@ type CreateContainerRequest struct {
 	Image        string            `json:"image,omitempty"`
 	EnablePodman bool              `json:"enablePodman,omitempty"`
 
+	// DisableAutoSleep asks for a box with no auto-sleep timer (#2759). Only
+	// meaningful on a hosted platform that defaults some orgs to auto-sleep; a
+	// standalone daemon ignores it.
+	DisableAutoSleep bool `json:"disableAutoSleep,omitempty"`
+
 	// GPU is the legacy single-GPU field. Prefer GPUs. When GPUs is set it
 	// supersedes this on the daemon side.
 	GPU string `json:"gpu,omitempty"`

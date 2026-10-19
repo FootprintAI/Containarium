@@ -6943,6 +6943,62 @@
         ]
       }
     },
+    "/v1/security/exec-events": {
+      "get": {
+        "summary": "Stream container exec events",
+        "description": "Streams process execs observed in tenant containers by the host-side eBPF exec telemetry, attributed to the container, as newline-delimited JSON (each chunk wraps one event under `result.event`). `since` replays the daemon's bounded in-memory buffer; `follow` keeps the stream open for new events. Events are not written to the audit log.",
+        "operationId": "ThreatDetectionService_StreamExecEvents",
+        "responses": {
+          "200": {
+            "description": "A successful response.(streaming responses)",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "result": {
+                  "$ref": "#/definitions/StreamExecEventsResponse"
+                },
+                "error": {
+                  "$ref": "#/definitions/rpc.Status"
+                }
+              },
+              "title": "Stream result of StreamExecEventsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "container",
+            "description": "Only this container's execs; empty streams every watched container.",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "since",
+            "description": "Replay buffered events from this far back before (or instead of) going\nlive. The daemon keeps a bounded in-memory ring of recent events (no\naudit-log writes); older than the ring holds is simply not there.\nUnset means no replay.",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "follow",
+            "description": "Keep the stream open for new events after the replay. Unset returns\nonce the replay is sent — the `exec-events` CLI without --follow.",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          }
+        ],
+        "tags": [
+          "Security"
+        ]
+      }
+    },
     "/v1/security/findings": {
       "get": {
         "summary": "List security findings",
@@ -7052,6 +7108,106 @@
         ]
       }
     },
+    "/v1/security/miner-signatures": {
+      "get": {
+        "summary": "List miner signatures",
+        "description": "Returns the merged baseline (embedded, versioned) and operator-added miner-signature list: binary names, command-line markers and executable SHA-256 hashes.",
+        "operationId": "ThreatDetectionService_ListMinerSignatures",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListMinerSignaturesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "tags": [
+          "Security"
+        ]
+      },
+      "delete": {
+        "summary": "Remove an operator-added miner signature",
+        "description": "Removes a previously operator-added miner-signature entry (?kind=\u0026pattern=). Baseline entries cannot be removed. Admin only.",
+        "operationId": "ThreatDetectionService_RemoveMinerSignature",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/RemoveMinerSignatureResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "kind",
+            "description": " - MINER_SIGNATURE_KIND_NAME: Case-insensitive exact name or glob (\"cpuminer*\") on the basename of the\nexec'd file and on the task comm.\n - MINER_SIGNATURE_KIND_ARGV: Case-insensitive marker in the joined argv: a literal substring\n(\"--donate-level\"), or, when the pattern holds a glob character, a\nsequence of space-separated glob tokens matched against consecutive\narguments (\"-o *:3333\"). A glob token without '=' never matches a\nkey=value argument (so \"-o *:4444\" does not hit \"-o ProxyJump=h:4444\"),\nand a glob option token (\"-o\") matches case-sensitively.\n - MINER_SIGNATURE_KIND_SHA256: Lowercase hex SHA-256 of the executable (/proc/\u003cpid\u003e/exe), computed off\nthe hot path only when a hash entry exists and nothing cheaper matched.\nThe shipped baseline carries no hash entries; they are operator-added.",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "enum": [
+              "MINER_SIGNATURE_KIND_UNSPECIFIED",
+              "MINER_SIGNATURE_KIND_NAME",
+              "MINER_SIGNATURE_KIND_ARGV",
+              "MINER_SIGNATURE_KIND_SHA256"
+            ],
+            "default": "MINER_SIGNATURE_KIND_UNSPECIFIED"
+          },
+          {
+            "name": "pattern",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Security"
+        ]
+      },
+      "post": {
+        "summary": "Add a miner signature",
+        "description": "Adds an operator-supplied name, argv or sha256 entry to the miner-signature list. Admin only.",
+        "operationId": "ThreatDetectionService_AddMinerSignature",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/AddMinerSignatureResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/AddMinerSignatureRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Security"
+        ]
+      }
+    },
     "/v1/security/process-policy": {
       "get": {
         "summary": "Get the process policy",
@@ -7086,7 +7242,7 @@
       },
       "put": {
         "summary": "Set the process policy",
-        "description": "Sets what a HIGH mining finding does to its container: ALERT (default), THROTTLE or FREEZE, with the throttle allowance and TTL. With container set it writes a per-container override; clear_override removes one.",
+        "description": "Sets what a HIGH mining finding does to its container: ALERT (default), THROTTLE or FREEZE, with the throttle allowance and TTL, and whether a miner-signature match also SIGKILLs the process (kill_process, default false). With container set it writes a per-container override; clear_override removes one.",
         "operationId": "ThreatDetectionService_SetProcessPolicy",
         "responses": {
           "200": {
@@ -9580,6 +9736,23 @@
         }
       },
       "title": "AddCollaboratorResponse is the response from adding a collaborator"
+    },
+    "AddMinerSignatureRequest": {
+      "type": "object",
+      "properties": {
+        "signature": {
+          "$ref": "#/definitions/MinerSignature",
+          "description": "kind and pattern are required; builtin is ignored."
+        }
+      }
+    },
+    "AddMinerSignatureResponse": {
+      "type": "object",
+      "properties": {
+        "signature": {
+          "$ref": "#/definitions/MinerSignature"
+        }
+      }
     },
     "AddPassthroughRouteRequest": {
       "type": "object",
@@ -12166,6 +12339,10 @@
         "isolation": {
           "$ref": "#/definitions/IsolationType",
           "description": "Isolation picks container (LXC) or VM (QEMU/KVM). UNSPECIFIED keeps\ntoday's behavior: Windows → VM, everything else → container.\nCONTAINER with a Windows os_type is rejected with InvalidArgument.\nOnly the LXC backend honors VM; the Kubernetes backend rejects it."
+        },
+        "disableAutoSleep": {
+          "type": "boolean",
+          "description": "Opt out of auto-sleep at create (#2759). Meaningful only on a hosted\ncontrol plane that turns auto-sleep on by default for some orgs (for\nexample a seat-billed org defaulting to 30 minutes): true asks for a box\nwith NO idle-stop timer. A standalone daemon never enables auto-sleep\nunless idle_stop_minutes \u003e 0, so it ignores this field. Setting it\ntogether with idle_stop_minutes \u003e 0 is contradictory and rejected with\nInvalidArgument."
         }
       },
       "title": "CreateContainerRequest is the request to create a new container"
@@ -13286,9 +13463,16 @@
             "type": "object",
             "$ref": "#/definitions/CPUEvidence"
           }
+        },
+        "execs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/ExecEvidence"
+          }
         }
       },
-      "description": "Evidence bundles the flow, deny and configuration records that triggered\na finding. Capped by the store to the most recent entries — see\nFindingStore."
+      "description": "Evidence bundles the flow, deny, configuration, listener, CPU and exec\nrecords that triggered a finding. Capped by the store to the most recent\nentries — see FindingStore."
     },
     "ExchangeDelegatedTokenRequest": {
       "type": "object",
@@ -13346,6 +13530,71 @@
           "description": "The roles actually granted, after intersection. Empty is a normal\nand safe result: such a token still acts for its own subject, it\njust cannot reach admin-gated RPCs or other tenants."
         }
       }
+    },
+    "ExecEvent": {
+      "type": "object",
+      "properties": {
+        "container": {
+          "type": "string"
+        },
+        "tenantId": {
+          "type": "string"
+        },
+        "at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the daemon decoded the event (host wall clock)."
+        },
+        "exec": {
+          "$ref": "#/definitions/ExecEvidence"
+        }
+      },
+      "description": "ExecEvent is one live exec in a tenant container, as streamed by\nStreamExecEvents (#2637). Not persisted: the stream is a window onto the\nkernel's ring, plus a short in-memory replay (StreamExecEventsRequest.since)."
+    },
+    "ExecEvidence": {
+      "type": "object",
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "format": "int64",
+          "description": "Process id in the HOST pid namespace (what `kill` on the host takes)."
+        },
+        "ppid": {
+          "type": "integer",
+          "format": "int64",
+          "description": "Parent process id, host pid namespace."
+        },
+        "uid": {
+          "type": "integer",
+          "format": "int64",
+          "description": "Real uid of the exec'ing task."
+        },
+        "comm": {
+          "type": "string",
+          "description": "Task comm after the exec (16 bytes max)."
+        },
+        "filename": {
+          "type": "string",
+          "description": "Resolved executable path, as the kernel saw it."
+        },
+        "argv": {
+          "type": "string",
+          "description": "Argument vector joined with single spaces. Capped at 512 bytes by the\nkernel program; never contains environment variables."
+        },
+        "argvTruncated": {
+          "type": "boolean",
+          "description": "True when argv exceeded 512 bytes and was cut."
+        },
+        "sha256": {
+          "type": "string",
+          "description": "Hex SHA-256 of the executable when a rule computed it (#2638); empty\nin the live stream."
+        },
+        "matched": {
+          "type": "string",
+          "description": "Which matcher hit, for a finding (#2638); empty in the live stream."
+        }
+      },
+      "description": "ExecEvidence is one process exec observed by the host-side exec telemetry\n(#2637): the record the execwatch eBPF program emitted, attributed to a\ncontainer. A rule that matches an exec (miner-signature, #2638) attaches it\nto its finding; the same shape is streamed live by StreamExecEvents."
     },
     "ExecInSandboxBody": {
       "type": "object",
@@ -13442,7 +13691,7 @@
         },
         "processKilled": {
           "type": "boolean",
-          "description": "Reserved for the signature rule's additive kill (#2638)."
+          "description": "True when the responder SIGKILLed the matched process (miner-signature\nfinding with ProcessPolicy.kill_process, #2638)."
         },
         "appliedAt": {
           "type": "string",
@@ -14353,6 +14602,15 @@
         "cpuSampler": {
           "type": "string",
           "description": "Source of the per-container CPU samples the mining-behavior rule reads\n(#2645): \"metrics-collector\" (hook on the metrics collector's tick),\n\"standalone (30s)\" (the sentry polls Incus itself because no metrics\ncollector runs), or \"unavailable (\u003creason\u003e)\". Set only while the\nsentry is running (OK/DEGRADED)."
+        },
+        "execTelemetry": {
+          "type": "string",
+          "description": "Host-side exec telemetry (#2637): \"ok\" while the execwatch eBPF object\nis attached and watching, or \"unavailable (\u003creason\u003e)\" when the second\nobject could not be loaded or attached (no BTF, verifier rejection,\nmissing tracepoint, object not built). The flow rules keep running\neither way; the sentry-health loop treats \"unavailable\" as a fault with\nthe stable subject \"exec-telemetry unavailable\". Set only while the\nsentry is running (OK/DEGRADED)."
+        },
+        "execEventsLost": {
+          "type": "string",
+          "format": "int64",
+          "description": "Exec events the kernel could not hand over because the ring buffer was\nfull, cumulative since the object loaded. Non-zero means a burst\noutran the consumer; the events are gone, never blocked the exec."
         }
       }
     },
@@ -15504,6 +15762,22 @@
         }
       }
     },
+    "ListMinerSignaturesResponse": {
+      "type": "object",
+      "properties": {
+        "signatures": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/MinerSignature"
+          }
+        },
+        "baselineVersion": {
+          "type": "string",
+          "description": "Version of the embedded baseline this daemon build ships."
+        }
+      }
+    },
     "ListNetworkPoliciesResponse": {
       "type": "object",
       "properties": {
@@ -15895,6 +16169,36 @@
           }
         }
       }
+    },
+    "MinerSignature": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/MinerSignatureKind"
+        },
+        "pattern": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "builtin": {
+          "type": "boolean",
+          "description": "True for a baseline entry shipped with the daemon; those cannot be\nremoved."
+        }
+      },
+      "description": "MinerSignature is one entry of the miner-signature list: the embedded,\nversioned baseline or an operator addition."
+    },
+    "MinerSignatureKind": {
+      "type": "string",
+      "enum": [
+        "MINER_SIGNATURE_KIND_UNSPECIFIED",
+        "MINER_SIGNATURE_KIND_NAME",
+        "MINER_SIGNATURE_KIND_ARGV",
+        "MINER_SIGNATURE_KIND_SHA256"
+      ],
+      "default": "MINER_SIGNATURE_KIND_UNSPECIFIED",
+      "description": "MinerSignatureKind is what a MinerSignature matches against (#2638).\n\n - MINER_SIGNATURE_KIND_NAME: Case-insensitive exact name or glob (\"cpuminer*\") on the basename of the\nexec'd file and on the task comm.\n - MINER_SIGNATURE_KIND_ARGV: Case-insensitive marker in the joined argv: a literal substring\n(\"--donate-level\"), or, when the pattern holds a glob character, a\nsequence of space-separated glob tokens matched against consecutive\narguments (\"-o *:3333\"). A glob token without '=' never matches a\nkey=value argument (so \"-o *:4444\" does not hit \"-o ProxyJump=h:4444\"),\nand a glob option token (\"-o\") matches case-sensitively.\n - MINER_SIGNATURE_KIND_SHA256: Lowercase hex SHA-256 of the executable (/proc/\u003cpid\u003e/exe), computed off\nthe hot path only when a hash entry exists and nothing cheaper matched.\nThe shipped baseline carries no hash entries; they are operator-added."
     },
     "MiningBehaviorThresholds": {
       "type": "object",
@@ -16822,14 +17126,18 @@
         },
         "ttl": {
           "type": "string",
-          "description": "How long an applied action stays in effect with no operator decision\nbefore the TTL backstop releases it. Default 24h.\n\nField 4 is kill_process (signature rule, #2638); it is assigned there.\n Do not reuse the number."
+          "description": "How long an applied action stays in effect with no operator decision\nbefore the TTL backstop releases it. Default 24h."
+        },
+        "killProcess": {
+          "type": "boolean",
+          "description": "SIGKILL the matched process from the host when a miner-signature finding\nfires (#2638), in addition to `action`. Applies to MINER_SIGNATURE\nfindings only; the mining-behavior rule never kills. The pid is\nre-checked against the container's cgroup first, so a reused pid is\nnever signalled. Default false at every level; unset inherits."
         },
         "miningBehavior": {
           "$ref": "#/definitions/MiningBehaviorThresholds",
           "description": "Thresholds of the mining-behavior rule (#2635). Backend-wide: honoured\nonly on the backend default (container empty), rejected on a container\noverride. Unset on Set leaves the stored thresholds untouched."
         }
       },
-      "description": "ProcessPolicy says what a HIGH mining finding does to its container\n(#2636). Stored per backend (the default) and optionally per container\n(an override, written by SetProcessPolicy with `container` set); the\neffective policy is override → backend default → built-in\n{ALERT, \"10%\", 24h}. Empty fields inherit from the next level down."
+      "description": "ProcessPolicy says what a HIGH mining finding does to its container\n(#2636). Stored per backend (the default) and optionally per container\n(an override, written by SetProcessPolicy with `container` set); the\neffective policy is override → backend default → built-in\n{ALERT, \"10%\", 24h, kill_process false}. Empty fields inherit from the\nnext level down."
     },
     "ProfileBackendRequest": {
       "type": "object",
@@ -17305,6 +17613,9 @@
         }
       },
       "title": "RemoveCollaboratorResponse is the response from removing a collaborator"
+    },
+    "RemoveMinerSignatureResponse": {
+      "type": "object"
     },
     "RemoveSSHKeyResponse": {
       "type": "object",
@@ -19238,6 +19549,15 @@
       "default": "STORAGE_ISOLATION_UNSPECIFIED",
       "description": "StorageIsolation says whether a storage pool hands each container its own\nfilesystem, or puts every container on one shared filesystem.\n\nThis is the property behind #1206. On a shared filesystem every tenant\nrootfs lives on one ext4 filesystem and therefore shares one jbd2 journal;\next4's default data=ordered mode writes back a transaction's dirty data\nwhile holding the journal lock, so one tenant's buffered writes block\nanother tenant's fsync() — measured at 17 ms -\u003e 11,885 ms with the host and\nthe physical device both idle. A tenant degrades its neighbours by writing\nnormally, which makes this an isolation property, not a performance one.\n\n - STORAGE_ISOLATION_UNSPECIFIED: Not known — the pool could not be read. Deliberately distinct from\nSHARED_FILESYSTEM: an unread pool must not be reported as either safe or\nunsafe.\n - STORAGE_ISOLATION_PER_CONTAINER: Each container gets its own dataset / subvolume / logical volume, so\ntenants share no filesystem journal.\n - STORAGE_ISOLATION_SHARED_FILESYSTEM: Every container's rootfs is on one filesystem — one journal, and\ncross-tenant fsync stalls.\n - STORAGE_ISOLATION_UNKNOWN_DRIVER: The driver was read but is not one we classify, so we cannot vouch for it\neither way. Distinct from UNSPECIFIED (pool unreadable) and from\nSHARED_FILESYSTEM (positively known to share)."
     },
+    "StreamExecEventsResponse": {
+      "type": "object",
+      "properties": {
+        "event": {
+          "$ref": "#/definitions/ExecEvent"
+        }
+      },
+      "description": "StreamExecEventsResponse wraps one ExecEvent per stream message."
+    },
     "SubmitTrackerChangeBody": {
       "type": "object",
       "properties": {
@@ -19555,10 +19875,11 @@
         "THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER",
         "THREAT_RULE_ID_SENTRY_UNAVAILABLE",
         "THREAT_RULE_ID_MINING_BEHAVIOR",
+        "THREAT_RULE_ID_MINER_SIGNATURE",
         "THREAT_RULE_ID_PROCESS_ACTION_EXPIRED"
       ],
       "default": "THREAT_RULE_ID_UNSPECIFIED",
-      "description": "ThreatRuleId identifies which detection rule raised a finding.\n\n - THREAT_RULE_ID_BAD_DESTINATION: Flow to a known-bad destination (e.g. a mining pool).\n - THREAT_RULE_ID_CROSS_TENANT_FLOW: Flow whose source and destination belong to different tenants.\n - THREAT_RULE_ID_DENY_BURST: Burst of policy denies for one tenant within a time window.\n - THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH: A box's effective sshd configuration permitted password login, or the\nplatform-managed key-only drop-in had been removed or altered (#2424).\nRaised by the box sshd posture reconciler after it re-asserts the\ndrop-in; the evidence names the offending directive and file.\n - THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER: A box is listening with an SSH server that is not the distro sshd\nservice on a port its sshd_config declares (#2439): a second sshd, a\ndropbear, or the stock sshd started with its own config. Raised by the\nsame posture pass as rule 4; record-only, the platform never kills a\ntenant's process. The evidence names the port, pid and binary.\n - THREAT_RULE_ID_SENTRY_UNAVAILABLE: An armed backend (CONTAINARIUM_THREAT_SENTRY set) whose sentry is not\nrunning cleanly: UNAVAILABLE, DEGRADED, or any rule unhealthy (#2634).\nRaised by the daemon's sentry-health loop, not by a rule — a rule cannot\nrun when the engine cannot. Subject is the GetSentryStatus reason string;\nresolved automatically once the sentry reports OK. Tenant and container\nare empty: this is a backend-level finding.\n - THREAT_RULE_ID_MINING_BEHAVIOR: A box held sustained CPU while keeping a long-lived flow to a stratum\nport or a listed bad destination (#2635): the shape of a cryptominer.\nSubject is the destination ip:port; evidence is one CPUEvidence plus\nthe qualifying flow. Thresholds: MiningBehaviorThresholds.\n - THREAT_RULE_ID_PROCESS_ACTION_EXPIRED: Values 7 (MINER_SIGNATURE, #2638) and 8 (SENTRY_UNAVAILABLE, #2634) are\nassigned by their own stories.\n\nA process action (throttle or freeze, #2636) reached its TTL with no\noperator decision and was released automatically. MEDIUM, so an\nunattended containment never silently becomes permanent. Subject is the\ncontainer name; the response on the original HIGH finding is EXPIRED."
+      "description": "ThreatRuleId identifies which detection rule raised a finding.\n\n - THREAT_RULE_ID_BAD_DESTINATION: Flow to a known-bad destination (e.g. a mining pool).\n - THREAT_RULE_ID_CROSS_TENANT_FLOW: Flow whose source and destination belong to different tenants.\n - THREAT_RULE_ID_DENY_BURST: Burst of policy denies for one tenant within a time window.\n - THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH: A box's effective sshd configuration permitted password login, or the\nplatform-managed key-only drop-in had been removed or altered (#2424).\nRaised by the box sshd posture reconciler after it re-asserts the\ndrop-in; the evidence names the offending directive and file.\n - THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER: A box is listening with an SSH server that is not the distro sshd\nservice on a port its sshd_config declares (#2439): a second sshd, a\ndropbear, or the stock sshd started with its own config. Raised by the\nsame posture pass as rule 4; record-only, the platform never kills a\ntenant's process. The evidence names the port, pid and binary.\n - THREAT_RULE_ID_SENTRY_UNAVAILABLE: An armed backend (CONTAINARIUM_THREAT_SENTRY set) whose sentry is not\nrunning cleanly: UNAVAILABLE, DEGRADED, or any rule unhealthy (#2634).\nRaised by the daemon's sentry-health loop, not by a rule — a rule cannot\nrun when the engine cannot. Subject is the GetSentryStatus reason string;\nresolved automatically once the sentry reports OK. Tenant and container\nare empty: this is a backend-level finding.\n - THREAT_RULE_ID_MINING_BEHAVIOR: A box held sustained CPU while keeping a long-lived flow to a stratum\nport or a listed bad destination (#2635): the shape of a cryptominer.\nSubject is the destination ip:port; evidence is one CPUEvidence plus\nthe qualifying flow. Thresholds: MiningBehaviorThresholds.\n - THREAT_RULE_ID_MINER_SIGNATURE: A process exec in a box matched a known-miner signature (#2638): the\nbinary name, a command-line marker, or the executable's SHA-256 (see\nMinerSignature). HIGH. Subject is \"\u003ckind\u003e:\u003cpattern\u003e\" of the entry that\nhit; evidence is the ExecEvidence of the exec, with `matched` set. With\nProcessPolicy.kill_process the responder also SIGKILLs the process.\n - THREAT_RULE_ID_PROCESS_ACTION_EXPIRED: A process action (throttle or freeze, #2636) reached its TTL with no\noperator decision and was released automatically. MEDIUM, so an\nunattended containment never silently becomes permanent. Subject is the\ncontainer name; the response on the original HIGH finding is EXPIRED."
     },
     "ThreatSeverity": {
       "type": "string",

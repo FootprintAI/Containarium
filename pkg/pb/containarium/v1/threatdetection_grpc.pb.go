@@ -28,6 +28,10 @@ const (
 	ThreatDetectionService_GetProcessPolicy_FullMethodName     = "/containarium.v1.ThreatDetectionService/GetProcessPolicy"
 	ThreatDetectionService_SetProcessPolicy_FullMethodName     = "/containarium.v1.ThreatDetectionService/SetProcessPolicy"
 	ThreatDetectionService_ReleaseProcessAction_FullMethodName = "/containarium.v1.ThreatDetectionService/ReleaseProcessAction"
+	ThreatDetectionService_ListMinerSignatures_FullMethodName  = "/containarium.v1.ThreatDetectionService/ListMinerSignatures"
+	ThreatDetectionService_AddMinerSignature_FullMethodName    = "/containarium.v1.ThreatDetectionService/AddMinerSignature"
+	ThreatDetectionService_RemoveMinerSignature_FullMethodName = "/containarium.v1.ThreatDetectionService/RemoveMinerSignature"
+	ThreatDetectionService_StreamExecEvents_FullMethodName     = "/containarium.v1.ThreatDetectionService/StreamExecEvents"
 )
 
 // ThreatDetectionServiceClient is the client API for ThreatDetectionService service.
@@ -72,6 +76,23 @@ type ThreatDetectionServiceClient interface {
 	// ReleaseProcessAction undoes the open action on a container: restores the
 	// recorded CPU limit or unfreezes it, and resolves the finding.
 	ReleaseProcessAction(ctx context.Context, in *ReleaseProcessActionRequest, opts ...grpc.CallOption) (*ReleaseProcessActionResponse, error)
+	// ListMinerSignatures returns the merged baseline + operator-added
+	// miner-signature list the miner-signature rule (#2638) matches execs
+	// against.
+	ListMinerSignatures(ctx context.Context, in *ListMinerSignaturesRequest, opts ...grpc.CallOption) (*ListMinerSignaturesResponse, error)
+	// AddMinerSignature adds an operator entry to the miner-signature list,
+	// effective immediately and persisted across restarts, without a rebuild.
+	AddMinerSignature(ctx context.Context, in *AddMinerSignatureRequest, opts ...grpc.CallOption) (*AddMinerSignatureResponse, error)
+	// RemoveMinerSignature removes an operator-added entry; baseline entries
+	// cannot be removed. kind and pattern travel as query parameters, since an
+	// argv marker can hold slashes and spaces.
+	RemoveMinerSignature(ctx context.Context, in *RemoveMinerSignatureRequest, opts ...grpc.CallOption) (*RemoveMinerSignatureResponse, error)
+	// StreamExecEvents streams process execs observed in tenant containers by
+	// the host-side eBPF exec telemetry (#2637), optionally replaying the
+	// daemon's short in-memory buffer first. Backs `containarium security
+	// exec-events`. UNAVAILABLE when exec telemetry is not running on this
+	// backend (see GetSentryStatus.exec_telemetry).
+	StreamExecEvents(ctx context.Context, in *StreamExecEventsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[StreamExecEventsResponse], error)
 }
 
 type threatDetectionServiceClient struct {
@@ -172,6 +193,55 @@ func (c *threatDetectionServiceClient) ReleaseProcessAction(ctx context.Context,
 	return out, nil
 }
 
+func (c *threatDetectionServiceClient) ListMinerSignatures(ctx context.Context, in *ListMinerSignaturesRequest, opts ...grpc.CallOption) (*ListMinerSignaturesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListMinerSignaturesResponse)
+	err := c.cc.Invoke(ctx, ThreatDetectionService_ListMinerSignatures_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *threatDetectionServiceClient) AddMinerSignature(ctx context.Context, in *AddMinerSignatureRequest, opts ...grpc.CallOption) (*AddMinerSignatureResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AddMinerSignatureResponse)
+	err := c.cc.Invoke(ctx, ThreatDetectionService_AddMinerSignature_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *threatDetectionServiceClient) RemoveMinerSignature(ctx context.Context, in *RemoveMinerSignatureRequest, opts ...grpc.CallOption) (*RemoveMinerSignatureResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RemoveMinerSignatureResponse)
+	err := c.cc.Invoke(ctx, ThreatDetectionService_RemoveMinerSignature_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *threatDetectionServiceClient) StreamExecEvents(ctx context.Context, in *StreamExecEventsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[StreamExecEventsResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &ThreatDetectionService_ServiceDesc.Streams[0], ThreatDetectionService_StreamExecEvents_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[StreamExecEventsRequest, StreamExecEventsResponse]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type ThreatDetectionService_StreamExecEventsClient = grpc.ServerStreamingClient[StreamExecEventsResponse]
+
 // ThreatDetectionServiceServer is the server API for ThreatDetectionService service.
 // All implementations must embed UnimplementedThreatDetectionServiceServer
 // for forward compatibility.
@@ -214,6 +284,23 @@ type ThreatDetectionServiceServer interface {
 	// ReleaseProcessAction undoes the open action on a container: restores the
 	// recorded CPU limit or unfreezes it, and resolves the finding.
 	ReleaseProcessAction(context.Context, *ReleaseProcessActionRequest) (*ReleaseProcessActionResponse, error)
+	// ListMinerSignatures returns the merged baseline + operator-added
+	// miner-signature list the miner-signature rule (#2638) matches execs
+	// against.
+	ListMinerSignatures(context.Context, *ListMinerSignaturesRequest) (*ListMinerSignaturesResponse, error)
+	// AddMinerSignature adds an operator entry to the miner-signature list,
+	// effective immediately and persisted across restarts, without a rebuild.
+	AddMinerSignature(context.Context, *AddMinerSignatureRequest) (*AddMinerSignatureResponse, error)
+	// RemoveMinerSignature removes an operator-added entry; baseline entries
+	// cannot be removed. kind and pattern travel as query parameters, since an
+	// argv marker can hold slashes and spaces.
+	RemoveMinerSignature(context.Context, *RemoveMinerSignatureRequest) (*RemoveMinerSignatureResponse, error)
+	// StreamExecEvents streams process execs observed in tenant containers by
+	// the host-side eBPF exec telemetry (#2637), optionally replaying the
+	// daemon's short in-memory buffer first. Backs `containarium security
+	// exec-events`. UNAVAILABLE when exec telemetry is not running on this
+	// backend (see GetSentryStatus.exec_telemetry).
+	StreamExecEvents(*StreamExecEventsRequest, grpc.ServerStreamingServer[StreamExecEventsResponse]) error
 	mustEmbedUnimplementedThreatDetectionServiceServer()
 }
 
@@ -250,6 +337,18 @@ func (UnimplementedThreatDetectionServiceServer) SetProcessPolicy(context.Contex
 }
 func (UnimplementedThreatDetectionServiceServer) ReleaseProcessAction(context.Context, *ReleaseProcessActionRequest) (*ReleaseProcessActionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ReleaseProcessAction not implemented")
+}
+func (UnimplementedThreatDetectionServiceServer) ListMinerSignatures(context.Context, *ListMinerSignaturesRequest) (*ListMinerSignaturesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListMinerSignatures not implemented")
+}
+func (UnimplementedThreatDetectionServiceServer) AddMinerSignature(context.Context, *AddMinerSignatureRequest) (*AddMinerSignatureResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AddMinerSignature not implemented")
+}
+func (UnimplementedThreatDetectionServiceServer) RemoveMinerSignature(context.Context, *RemoveMinerSignatureRequest) (*RemoveMinerSignatureResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RemoveMinerSignature not implemented")
+}
+func (UnimplementedThreatDetectionServiceServer) StreamExecEvents(*StreamExecEventsRequest, grpc.ServerStreamingServer[StreamExecEventsResponse]) error {
+	return status.Error(codes.Unimplemented, "method StreamExecEvents not implemented")
 }
 func (UnimplementedThreatDetectionServiceServer) mustEmbedUnimplementedThreatDetectionServiceServer() {
 }
@@ -435,6 +534,71 @@ func _ThreatDetectionService_ReleaseProcessAction_Handler(srv interface{}, ctx c
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ThreatDetectionService_ListMinerSignatures_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListMinerSignaturesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ThreatDetectionServiceServer).ListMinerSignatures(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ThreatDetectionService_ListMinerSignatures_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ThreatDetectionServiceServer).ListMinerSignatures(ctx, req.(*ListMinerSignaturesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ThreatDetectionService_AddMinerSignature_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AddMinerSignatureRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ThreatDetectionServiceServer).AddMinerSignature(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ThreatDetectionService_AddMinerSignature_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ThreatDetectionServiceServer).AddMinerSignature(ctx, req.(*AddMinerSignatureRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ThreatDetectionService_RemoveMinerSignature_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RemoveMinerSignatureRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ThreatDetectionServiceServer).RemoveMinerSignature(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ThreatDetectionService_RemoveMinerSignature_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ThreatDetectionServiceServer).RemoveMinerSignature(ctx, req.(*RemoveMinerSignatureRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ThreatDetectionService_StreamExecEvents_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(StreamExecEventsRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(ThreatDetectionServiceServer).StreamExecEvents(m, &grpc.GenericServerStream[StreamExecEventsRequest, StreamExecEventsResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type ThreatDetectionService_StreamExecEventsServer = grpc.ServerStreamingServer[StreamExecEventsResponse]
+
 // ThreatDetectionService_ServiceDesc is the grpc.ServiceDesc for ThreatDetectionService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -478,7 +642,25 @@ var ThreatDetectionService_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "ReleaseProcessAction",
 			Handler:    _ThreatDetectionService_ReleaseProcessAction_Handler,
 		},
+		{
+			MethodName: "ListMinerSignatures",
+			Handler:    _ThreatDetectionService_ListMinerSignatures_Handler,
+		},
+		{
+			MethodName: "AddMinerSignature",
+			Handler:    _ThreatDetectionService_AddMinerSignature_Handler,
+		},
+		{
+			MethodName: "RemoveMinerSignature",
+			Handler:    _ThreatDetectionService_RemoveMinerSignature_Handler,
+		},
 	},
-	Streams:  []grpc.StreamDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "StreamExecEvents",
+			Handler:       _ThreatDetectionService_StreamExecEvents_Handler,
+			ServerStreams: true,
+		},
+	},
 	Metadata: "containarium/v1/threatdetection.proto",
 }

@@ -1,7 +1,7 @@
 # PRD: Contributor supply-chain gates — merge public contributions without merging an attack
 
 **Date:** 2026-10-18
-**Status:** draft — tracked in #2649
+**Status:** reviewed — open questions decided 2026-10-19 on #2649; tracked there
 **Owner:** @hsinatfootprintai
 
 ## Problem
@@ -40,7 +40,7 @@ What exists today (verified on `main`, 2026-10-18):
 | Floating tool installs | `go install .../xcaddy@latest` in `Makefile:320` and `scripts/setup-caddy.sh:103` |
 | Security lanes | gosec, govulncheck, Trivy, two repo-specific injection gates (#1732, #1596), `go mod tidy` drift |
 | Fork PR workflows | `first_time_contributors` approval; no `pull_request_target`; self-hosted runners never run on `pull_request`; PR workflows reference no secrets a fork could reach |
-| Release artefacts | container images carry provenance + SBOM; binaries are checksummed only (signing is #2561) |
+| Release artefacts | container images carry provenance + SBOM; binaries are checksummed, signed with keyless cosign, and listed in per-binary SBOMs (#2561) |
 | Contributor policy | `CONTRIBUTING.md` covers claiming and duplicate PRs; says nothing about dependency or CI changes; no PR template |
 
 Evidence that the gap is real, not theoretical:
@@ -149,9 +149,9 @@ review of a one-line `go.mod` change starts from facts.
       on the PR.
 - [ ] A `deps-guard` job fails when a PR introduces or changes a
       `replace` directive in `go.mod`, or adds a module whose path is not
-      on the `sum.golang.org` checksum database, unless the PR carries
-      the `deps-approved` label that only code owners can apply; the
-      failure message says exactly which line and why.
+      on the `sum.golang.org` checksum database; the failure message says
+      exactly which line and why. There is no label override: the only
+      way past is a code-owner approval of the PR (decided 2026-10-19).
 - [ ] Go module integrity in CI: `go mod verify` passes, builds run with
       `GOFLAGS=-mod=readonly`, and `GOSUMDB=sum.golang.org` is set
       explicitly (no `GONOSUMDB`/`GONOSUMCHECK`); the existing
@@ -267,6 +267,12 @@ instead of an act of faith.
   and Actions weekly; switching tools is not a security gain.
 
 ## Open questions & assumptions
+
+All five were decided on 2026-10-19 (#2649): 1 both admins over the full
+path list; 2 Dependabot under the same review; 3 the allow-list is the
+current inventory; 4 hard fail with a code-owner PR approval as the only
+override (no `deps-approved` label); 5 Scorecard target 7.0. The original
+questions are kept below for the record.
 
 1. **Who are the code owners?** Assumption: the two current admins, with
    a team added when a third maintainer exists. With two owners and one

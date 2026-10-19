@@ -201,8 +201,8 @@ func (s *ThreatDetectionServer) ReleaseProcessAction(ctx context.Context, req *p
 }
 
 // mergeProcessPolicy overlays the fields set on update onto stored (nil is
-// an empty policy): action, throttle_allowance and ttl each replace the
-// stored value only when update carries one.
+// an empty policy): action, throttle_allowance, ttl and kill_process each
+// replace the stored value only when update carries one.
 func mergeProcessPolicy(stored, update *pb.ProcessPolicy) *pb.ProcessPolicy {
 	out := &pb.ProcessPolicy{}
 	if stored != nil {
@@ -216,6 +216,11 @@ func mergeProcessPolicy(stored, update *pb.ProcessPolicy) *pb.ProcessPolicy {
 	}
 	if update.GetTtl() != nil && update.GetTtl().AsDuration() > 0 {
 		out.Ttl = update.GetTtl()
+	}
+	// kill_process has presence: only an explicit true or false replaces
+	// the stored value, so a lone --action never flips it (#2638).
+	if update.KillProcess != nil {
+		out.KillProcess = proto.Bool(update.GetKillProcess())
 	}
 	return out
 }

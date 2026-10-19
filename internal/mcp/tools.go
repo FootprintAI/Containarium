@@ -185,6 +185,10 @@ func (s *Server) registerTools() {
 						"type":        "boolean",
 						"description": "Enable Podman support (default: true)",
 					},
+					"disable_auto_sleep": map[string]interface{}{
+						"type":        "boolean",
+						"description": "Create the box with NO auto-sleep timer (default: false). Only matters on a hosted platform that defaults some orgs (for example seat-billed ones) to a 30-minute idle-stop; a self-hosted daemon never auto-sleeps a new box and ignores it.",
+					},
 					"gpu": map[string]interface{}{
 						"type":        "string",
 						"description": "Deprecated single-GPU field; prefer 'gpus'. GPU device ID for passthrough (e.g., '0' for first GPU, PCI address, or empty for none)",
@@ -918,7 +922,8 @@ func (s *Server) registerTools() {
 			Name: "security_sentry_status",
 			Description: "Report the background threat-detection engine's on/off state (#1640): " +
 				"'OK' (running, findings persisted), 'DEGRADED' (running, but no Postgres — " +
-				"findings don't survive a daemon restart), 'UNAVAILABLE' (no eBPF object loaded, " +
+				"findings don't survive a daemon restart; or the process responder cannot apply " +
+				"THROTTLE/FREEZE (responses disabled); see `reason`), 'UNAVAILABLE' (no eBPF object loaded, " +
 				"or no audit store — nothing is being detected; check `reason`), or 'DISABLED' " +
 				"(CONTAINARIUM_THREAT_SENTRY unset). Also lists every registered detection rule's " +
 				"health — a rule that panicked shows healthy=false with lastError set, but the " +
@@ -2074,18 +2079,19 @@ func handleCreateContainer(client API, args map[string]interface{}) (string, err
 			Memory: getStringArg(args, "memory", "4GB"),
 			Disk:   getStringArg(args, "disk", "50GB"),
 		},
-		Image:        getStringArg(args, "image", "images:ubuntu/24.04"),
-		EnablePodman: getBoolArg(args, "enable_podman", true),
-		GPU:          getStringArg(args, "gpu", ""),
-		GPUs:         getStringSliceArg(args, "gpus"),
-		Monitoring:   getBoolArg(args, "monitoring", false),
-		Encrypted:    getBoolArg(args, "encrypted", false),
-		TenantID:     getStringArg(args, "tenant_id", ""),
-		Pool:         getStringArg(args, "pool", ""),
-		BackendID:    getStringArg(args, "backend_id", ""),
-		Region:       getStringArg(args, "region", ""),
-		Isolation:    isolationWire,
-		OSType:       osTypeWire,
+		Image:            getStringArg(args, "image", "images:ubuntu/24.04"),
+		EnablePodman:     getBoolArg(args, "enable_podman", true),
+		DisableAutoSleep: getBoolArg(args, "disable_auto_sleep", false),
+		GPU:              getStringArg(args, "gpu", ""),
+		GPUs:             getStringSliceArg(args, "gpus"),
+		Monitoring:       getBoolArg(args, "monitoring", false),
+		Encrypted:        getBoolArg(args, "encrypted", false),
+		TenantID:         getStringArg(args, "tenant_id", ""),
+		Pool:             getStringArg(args, "pool", ""),
+		BackendID:        getStringArg(args, "backend_id", ""),
+		Region:           getStringArg(args, "region", ""),
+		Isolation:        isolationWire,
+		OSType:           osTypeWire,
 	}
 
 	// Handle SSH keys. If the caller passes ssh_keys explicitly we use

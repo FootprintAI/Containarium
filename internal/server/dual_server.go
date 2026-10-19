@@ -351,6 +351,7 @@ type DualServer struct {
 	// when the engine itself wasn't constructed.
 	threatDetectEngine    *threatdetect.Engine
 	processResponder      *ProcessResponder               // process guardrail responder (#2636); nil when the sentry is off/unavailable
+	execHasher            *execHasher                     // miner-signature sha256 worker (#2638); nil without an engine
 	sshdPosture           *security.SSHDPostureReconciler // box sshd key-only reconciler (#2424); nil when disabled
 	threatDetectServer    *ThreatDetectionServer
 	threatDetectNotifier  *threatdetect.WebhookNotifier // nil unless a finding store was built (armed + audit store) (#1643)
@@ -2270,6 +2271,7 @@ skipAppHosting:
 	// so no audit store means no sentry, not a degraded one.
 	threatCfg := appconfig.LoadThreatDetect()
 	var threatDetectEngine *threatdetect.Engine
+	var execWatcher *ExecWatcher // exec telemetry (#2637); nil unless the engine is constructed
 	var threatDetectStore threatdetect.FindingReader
 	// Process policy (#2636) is settable before the sentry is armed, like
 	// the bad-destination list; the responder that acts on it exists only
@@ -2298,6 +2300,7 @@ skipAppHosting:
 	// record "the sentry is unavailable" precisely when the engine below is
 	// never constructed. The engine itself still needs the enforcer.
 	var healthStore sentryHealthStore
+	responderStatusReason := "" // why the process responder is ALERT-only (#2719); "" = can act
 	if threatCfg.SentryEnabled && auditStore != nil {
 		var sink threatdetect.FindingSink
 		var findingsPool *pgxpool.Pool
@@ -2372,22 +2375,35 @@ skipAppHosting:
 				}
 			}
 			responderDegraded := degraded || actionStore == nil
+			actionsPersisted := actionStore != nil
+			responderDisabled := ""
 			if actionStore == nil {
 				actionStore = threatdetect.NewMemActionStore()
 			}
 			if lifecycle, ok := sink.(findingLifecycle); !ok {
 				log.Printf("Warning: process responder disabled: finding store %T cannot record responses", sink)
+				responderDisabled = "finding store cannot record responses"
 			} else if responderIncus, ierr := incus.New(); ierr != nil {
 				log.Printf("Warning: process responder disabled: incus client: %v", ierr)
+				responderDisabled = "incus client unavailable"
 			} else {
 				processResponder = NewProcessResponder(processPolicyStore, actionStore, lifecycle, incusActuator{c: responderIncus}, auditStore, responderDegraded)
-				sink = NewActingSink(sink, processResponder)
+				// kill_process (#2638): SIGKILL a miner-signature match
+				// after re-checking its cgroup against the container's.
+				processResponder.SetProcessKiller(newHostProcessKiller(responderIncus.InitPID))
+				// Async: the responder's Incus calls run on its own worker,
+				// never on the exec ring consumer that writes signature
+				// findings (#2638 review).
+				sink = NewAsyncActingSink(sink, processResponder)
 				if responderDegraded {
 					log.Printf("Process responder enabled — DEGRADED (no persistence): responses disabled, ALERT only")
 				} else {
 					log.Printf("Process responder enabled (policy via `containarium security process-policy`)")
 				}
 			}
+			// Surfaced on `containarium security sentry status` and by the
+			// sentry-health finding: an ALERT-only responder is not OK (#2719).
+			responderStatusReason = processResponderDegradedReason(!degraded, actionsPersisted, responderDisabled)
 
 		}
 		if sink != nil && networkPolicyEnforcer != nil {
@@ -2402,6 +2418,12 @@ skipAppHosting:
 			threatDetectEngine.Register(threatdetect.NewDenyBurstRule(threatCfg.DenyBurstN, threatCfg.DenyBurstWindow).CountLogOnlyDenies(threatCfg.DenyBurstCountLogOnly))
 			networkPolicyEnforcer.SetFlowHook(threatDetectEngine.OnFlows)
 			networkPolicyEnforcer.SetDenyHook(threatDetectEngine.OnDeny)
+			// Exec telemetry (#2637): the watcher loads the second BPF object
+			// when the enforcer starts, keeps watched_cgroups in step on its
+			// reconcile, and feeds attributed execs to the engine's
+			// ExecConsumers and to StreamExecEvents.
+			execWatcher = NewExecWatcher(threatDetectEngine.OnExec)
+			networkPolicyEnforcer.SetExecWatcher(execWatcher)
 			if degraded {
 				log.Printf("Threat-detection sentry enabled (CONTAINARIUM_THREAT_SENTRY=1) — DEGRADED (no Postgres persistence for findings)")
 			} else {
@@ -2411,8 +2433,12 @@ skipAppHosting:
 	}
 	threatDetectServer := NewThreatDetectionServer(threatDetectEngine, threatCfg.SentryEnabled, sentryAvailable, sentryUnavailableReason)
 	threatDetectServer.SetFindingStore(threatDetectStore)
+	if execWatcher != nil {
+		threatDetectServer.SetExecTelemetry(execWatcher)
+	}
 	threatDetectServer.SetProcessPolicyStore(processPolicyStore)
 	threatDetectServer.SetProcessResponder(processResponder)
+	threatDetectServer.SetResponderDegraded(responderStatusReason)
 	if threatCfg.SentryEnabled && healthStore == nil {
 		log.Printf("Warning: threat-detection sentry armed but no finding store (%s); a sentry-unavailable finding cannot be recorded — see `containarium security sentry status`", sentryUnavailableReason)
 	}
@@ -2466,6 +2492,31 @@ skipAppHosting:
 		threatDetectEngine.SetMiningThresholds(miningCfg.Effective)
 		threatDetectServer.SetMiningThresholdsConfig(miningCfg)
 		threatDetectEngine.Register(threatdetect.NewMiningBehaviorRule(listedDestinations))
+	}
+	// Miner-signature rule (#2638): a known miner's name, argv marker or
+	// executable hash on an exec. Like the bad-destination list, the list is
+	// curated whether or not the sentry is armed; the rule is registered
+	// only with an engine, and the hasher feeds its sha256 matcher off the
+	// exec path.
+	var execHash *execHasher
+	{
+		var kv threatdetect.ConfigKV
+		if config.DaemonConfigStore != nil {
+			kv = config.DaemonConfigStore
+		}
+		if minerSigRule, msErr := threatdetect.NewMinerSignatureRule(context.Background(), kv); msErr != nil {
+			log.Printf("Warning: threat-detection miner-signature rule init failed (%v); ListMinerSignatures/Add/Remove unavailable", msErr)
+		} else {
+			threatDetectServer.SetMinerSignatureRule(minerSigRule)
+			if threatDetectEngine != nil {
+				threatDetectEngine.Register(minerSigRule)
+				engine := threatDetectEngine
+				execHash = newExecHasher(func(ev threatdetect.ExecEvent) {
+					engine.RedeliverExec(pb.ThreatRuleId_THREAT_RULE_ID_MINER_SIGNATURE, ev)
+				})
+				threatDetectEngine.SetExecHasher(execHash.Request)
+			}
+		}
 	}
 	pb.RegisterThreatDetectionServiceServer(grpcServer, threatDetectServer)
 
@@ -3012,6 +3063,7 @@ skipAppHosting:
 		sandboxServer:          sandboxServer,
 		threatDetectEngine:     threatDetectEngine,
 		processResponder:       processResponder,
+		execHasher:             execHash,
 		threatDetectServer:     threatDetectServer,
 		threatDetectNotifier:   threatDetectNotifier,
 		sentryHealthStore:      healthStore,
@@ -3753,6 +3805,11 @@ func (ds *DualServer) Start(ctx context.Context) error {
 		// TTL backstop for process actions (#2636): every 60s, release
 		// expired throttles/freezes and raise PROCESS_ACTION_EXPIRED.
 		go ds.processResponder.Run(ctx)
+	}
+	if ds.execHasher != nil {
+		// Off-path executable hashing for the miner-signature rule's
+		// sha256 entries (#2638); idle unless such entries exist.
+		go ds.execHasher.Run(ctx)
 	}
 	if ds.sshdPosture != nil {
 		ds.sshdPosture.Start(ctx)

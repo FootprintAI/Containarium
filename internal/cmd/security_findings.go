@@ -57,18 +57,27 @@ var securitySentryFindingsResolveCmd = &cobra.Command{
 // findingEnvelope mirrors *Finding's grpc-gateway JSON shape (protojson
 // default: camelCase, enums as their string names, int64 as a JSON string).
 type findingEnvelope struct {
-	ID        string             `json:"id"`
-	Rule      string             `json:"rule"`
-	Severity  string             `json:"severity"`
-	TenantID  string             `json:"tenantId"`
-	Container string             `json:"container"`
-	BackendID string             `json:"backendId"`
-	Subject   string             `json:"subject"`
-	State     string             `json:"state"`
-	Count     string             `json:"count"`
-	Evidence  findingEvidenceEnv `json:"evidence"`
-	FirstSeen string             `json:"firstSeen"`
-	LastSeen  string             `json:"lastSeen"`
+	ID        string              `json:"id"`
+	Rule      string              `json:"rule"`
+	Severity  string              `json:"severity"`
+	TenantID  string              `json:"tenantId"`
+	Container string              `json:"container"`
+	BackendID string              `json:"backendId"`
+	Subject   string              `json:"subject"`
+	State     string              `json:"state"`
+	Count     string              `json:"count"`
+	Evidence  findingEvidenceEnv  `json:"evidence"`
+	FirstSeen string              `json:"firstSeen"`
+	LastSeen  string              `json:"lastSeen"`
+	Response  *findingResponseEnv `json:"response,omitempty"`
+}
+
+// findingResponseEnv mirrors FindingResponse's grpc-gateway JSON shape
+// (#2636), as far as the list renders it.
+type findingResponseEnv struct {
+	Action        string `json:"action"`
+	State         string `json:"state"`
+	ProcessKilled bool   `json:"processKilled"`
 }
 
 type findingEvidenceEnv struct {
@@ -76,6 +85,18 @@ type findingEvidenceEnv struct {
 	Denies    []map[string]interface{}     `json:"denies"`
 	Configs   []findingConfigEvidenceEnv   `json:"configs"`
 	Listeners []findingListenerEvidenceEnv `json:"listeners"`
+	Execs     []findingExecEvidenceEnv     `json:"execs"`
+}
+
+// findingExecEvidenceEnv mirrors ExecEvidence's grpc-gateway JSON shape
+// (#2637/#2638): the exec a miner-signature finding matched.
+type findingExecEvidenceEnv struct {
+	PID      uint32 `json:"pid"`
+	Comm     string `json:"comm"`
+	Filename string `json:"filename"`
+	Argv     string `json:"argv"`
+	SHA256   string `json:"sha256"`
+	Matched  string `json:"matched"`
 }
 
 // findingListenerEvidenceEnv mirrors ListenerEvidence's grpc-gateway JSON
@@ -164,6 +185,23 @@ func runSecurityFindingsList(cmd *cobra.Command, _ []string) error {
 			}
 			if c.Note != "" {
 				detail += " — " + c.Note
+			}
+			fmt.Fprintf(w, "       %s\n", detail)
+		}
+		for _, x := range f.Evidence.Execs {
+			detail := fmt.Sprintf("exec pid %d %s (comm %s) argv %q", x.PID, x.Filename, x.Comm, x.Argv)
+			if x.SHA256 != "" {
+				detail += " sha256 " + x.SHA256
+			}
+			if x.Matched != "" {
+				detail += " — matched " + x.Matched
+			}
+			fmt.Fprintf(w, "       %s\n", detail)
+		}
+		if r := f.Response; r != nil {
+			detail := fmt.Sprintf("response %s %s", strings.TrimPrefix(r.Action, "PROCESS_ACTION_"), strings.TrimPrefix(r.State, "RESPONSE_STATE_"))
+			if r.ProcessKilled {
+				detail += ", process killed"
 			}
 			fmt.Fprintf(w, "       %s\n", detail)
 		}

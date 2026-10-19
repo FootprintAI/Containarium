@@ -48,7 +48,7 @@ func init() {
 	sentinelCmd.AddCommand(sentinelSSHAuthzPluginCmd)
 	sentinelCmd.Flags().StringVar(&sentinelSSHAuthzSocket, "ssh-authz-socket", sshauthz.DefaultSocket, "Private Unix socket serving the ssh-authz-plugin (empty disables)")
 	sentinelSSHAuthzPluginCmd.Flags().StringVar(&sentinelSSHAuthzPluginSocket, "ssh-authz-socket", sshauthz.DefaultSocket, "Sentinel manager's private authorization socket")
-	sentinelSSHAuthzPluginCmd.Flags().DurationVar(&sentinelSSHAuthzGrace, "ssh-authz-grace", sshauthz.DefaultGrace, "Maximum age of a successful authorization reused during an outage")
+	sentinelSSHAuthzPluginCmd.Flags().DurationVar(&sentinelSSHAuthzGrace, "ssh-authz-grace", sshauthz.DefaultGrace, "Maximum age of a successful authorization reused during an outage; also caps an ALLOW's cache TTL")
 	sentinelSSHAuthzPluginCmd.Flags().DurationVar(&sentinelSSHAuthzTimeout, "ssh-authz-timeout", sshauthz.DefaultTimeout, "Deadline for resolving and authorizing one offered key")
 	sentinelSSHAuthzPluginCmd.Flags().BoolVar(&sentinelSSHAuthzEnforce, "ssh-authz-enforce", false, "Refuse a key the daemon denies (fails closed after --ssh-authz-grace); false only audits")
 	sentinelSSHAuthzPluginCmd.Flags().StringVar(&sentinelSSHAuthzRecordsFile, "records-file", sshsession.DefaultRecordsFile, "Session record JSONL that enforced denials are appended to (empty disables; unused without --ssh-authz-enforce)")

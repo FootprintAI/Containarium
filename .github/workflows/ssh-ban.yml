@@ -64,13 +64,13 @@ jobs:
           export SSH_BAN_UPSTREAM_GUARD="$RUNNER_TEMP/ssh-ban/plugins/failtoban"
           go test -race -tags integration -count=1 -timeout 2m -v \
             ./internal/sentinel/sshban | tee "$RUNNER_TEMP/ssh-ban/verification.log"
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: '1.13.4'
           terraform_wrapper: false
       - name: Validate real policy templates without cloud credentials
         run: bash scripts/test-ssh-ban-templates.sh
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: ssh-ban-verification
@@ -113,7 +113,7 @@ jobs:
             grep -q -- "--- PASS: $t " "$RUNNER_TEMP/ssh-authz/verification.log" \
               || { echo "::error::$t did not run and pass (skipped or missing)"; exit 1; }
           done
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: ssh-authz-verification

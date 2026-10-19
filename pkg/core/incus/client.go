@@ -552,6 +552,11 @@ type ContainerInfo struct {
 	Managed   bool
 	CreatedAt time.Time
 	BackendID string // Backend this container runs on (populated by PeerPool fan-out)
+	// Pid is the container's init process id in the HOST pid namespace, from
+	// the same InstanceState read that supplies IPAddress; 0 when the
+	// container is not running or the state read failed. The exec-telemetry
+	// watcher (#2637) resolves /proc/<Pid>/cgroup from it.
+	Pid int64
 
 	// MonitoringEnabled is true when the container has OTel
 	// env vars stamped (OTEL_EXPORTER_OTLP_ENDPOINT non-empty in
@@ -1246,8 +1251,11 @@ func (c *Client) fetchContainerInfo(name string) (ContainerInfo, bool) {
 
 		// Get IP address - need to get state separately
 		state, _, err := c.getInstanceStateWithRetry("list "+inst.Name, inst.Name)
-		if err == nil && state.Network != nil {
-			info.IPAddress = primaryNetworkInterface(state.Network)
+		if err == nil {
+			info.Pid = state.Pid
+			if state.Network != nil {
+				info.IPAddress = primaryNetworkInterface(state.Network)
+			}
 		}
 
 		return info, true
@@ -1405,6 +1413,17 @@ func (c *Client) getInstanceStateWithRetry(what, name string) (*api.InstanceStat
 	return stateWithRetry(what, func() (*api.InstanceState, string, error) {
 		return c.server.GetInstanceState(name)
 	})
+}
+
+// InitPID returns the host pid of the instance's init process (0 when it is
+// not running). The process responder's kill path (#2638) uses it to
+// re-check that a pid still belongs to the container before signalling it.
+func (c *Client) InitPID(name string) (int64, error) {
+	state, _, err := c.getInstanceStateWithRetry("init pid "+name, name)
+	if err != nil {
+		return 0, fmt.Errorf("get instance state %s: %w", name, err)
+	}
+	return state.Pid, nil
 }
 
 // stateWithRetry is the generic retry loop behind getInstanceStateWithRetry,
