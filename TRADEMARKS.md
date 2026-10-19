@@ -100,7 +100,7 @@ an issue at <https://github.com/FootprintAI/Containarium/issues> titled
 will arrange a private channel if one is needed. Say who you are, what you want
 to do, and where the name will appear. Reports of misuse should include a link.
 
-We try to answer within two weeks. A permission is for the use you described
+We aim to respond, but make no promise about when. A permission is for the use you described
 and can be withdrawn if the use changes.
 
 ## Changes to this policy
