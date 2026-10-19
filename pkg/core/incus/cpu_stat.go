@@ -95,6 +95,11 @@ func cgroupV2PathFromProc(content string) string {
 	return ""
 }
 
+// CgroupV2PathFromProc is cgroupV2PathFromProc for callers outside this
+// package: the exec-telemetry watcher (#2637) resolves a container's init PID
+// to the cgroup path whose inode is the cgroup id the kernel reports.
+func CgroupV2PathFromProc(content string) string { return cgroupV2PathFromProc(content) }
+
 // readCPUThrottle resolves a process's cgroup and reads its throttling counters
 // from cgroupRoot.
 //

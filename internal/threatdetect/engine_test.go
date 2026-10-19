@@ -316,6 +316,51 @@ func TestEngine_OnCPU_FansOutToCPUConsumersOnly(t *testing.T) {
 	}
 }
 
+// execTestRule is a Rule that also implements ExecConsumer.
+type execTestRule struct {
+	testRule
+	onExec func(RuleContext, ExecEvent) []RawFinding
+}
+
+func (r *execTestRule) OnExec(ctx RuleContext, ev ExecEvent) []RawFinding { return r.onExec(ctx, ev) }
+
+// Engine extension (#2637): only rules implementing the optional
+// ExecConsumer interface receive exec events; a rule implementing only Rule
+// gets no exec calls; a panicking OnExec is contained to that rule and the
+// others keep running. Same shape as the CPUConsumer test above.
+func TestEngine_OnExec_FansOutToExecConsumersOnly(t *testing.T) {
+	sink := &fakeSink{}
+	e := NewEngine(sink, "b1", false, nil, fixedClock(time.Unix(0, 0)))
+	plain := &testRule{id: pb.ThreatRuleId_THREAT_RULE_ID_BAD_DESTINATION}
+	var got []ExecEvent
+	consumer := &execTestRule{testRule: testRule{id: pb.ThreatRuleId_THREAT_RULE_ID_MINING_BEHAVIOR}, onExec: func(_ RuleContext, ev ExecEvent) []RawFinding {
+		got = append(got, ev)
+		return []RawFinding{{Rule: pb.ThreatRuleId_THREAT_RULE_ID_MINING_BEHAVIOR, Subject: "name:xmrig", Evidence: Evidence{Execs: []ExecEvidence{{PID: ev.PID, Argv: ev.Argv}}}}}
+	}}
+	panicky := &execTestRule{testRule: testRule{id: pb.ThreatRuleId_THREAT_RULE_ID_DENY_BURST}, onExec: func(RuleContext, ExecEvent) []RawFinding { panic("boom") }}
+	e.Register(plain)
+	e.Register(panicky)
+	e.Register(consumer)
+
+	e.OnExec(ExecEvent{Container: "box", TenantID: "t1", PID: 4242, Comm: "xmrig", Filename: "/tmp/.x/xmrig", Argv: "./xmrig -o pool:3333"})
+
+	if len(got) != 1 || got[0].Container != "box" || got[0].PID != 4242 {
+		t.Fatalf("consumer got %+v, want the one event", got)
+	}
+	calls := sink.calls()
+	if len(calls) != 1 || calls[0].Subject != "name:xmrig" || len(calls[0].Evidence.Execs) != 1 || calls[0].Evidence.Execs[0].PID != 4242 {
+		t.Fatalf("upserts = %+v, want one from the consumer carrying the exec evidence", calls)
+	}
+	_, rules := e.Status()
+	health := map[pb.ThreatRuleId]bool{}
+	for _, r := range rules {
+		health[r.Rule] = r.Healthy
+	}
+	if health[pb.ThreatRuleId_THREAT_RULE_ID_DENY_BURST] || !health[pb.ThreatRuleId_THREAT_RULE_ID_MINING_BEHAVIOR] || !health[pb.ThreatRuleId_THREAT_RULE_ID_BAD_DESTINATION] {
+		t.Fatalf("health = %v, want only the panicking rule unhealthy", health)
+	}
+}
+
 func TestEngine_RuleContext_MiningThresholds(t *testing.T) {
 	e := NewEngine(&fakeSink{}, "b1", false, nil, nil)
 	if got := e.ruleCtx.MiningThresholds; got != nil {
