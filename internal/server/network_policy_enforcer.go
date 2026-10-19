@@ -706,17 +706,16 @@ func (e *NetworkPolicyEnforcer) reconcile(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// Exec telemetry (#2637): converge watched_cgroups with the same container
+	// list this pass gathered (no extra Incus call). Before the policy fetch:
+	// it needs only the container list, so a policy-store (Postgres) outage
+	// must not freeze the watched set.
+	e.reconcileExec()
 	policies, err := e.compiledPolicies(ctx)
 	if err != nil {
 		return err
 	}
 	plan := planReconcile(views, policies, e.enforceEnabled)
-
-	// Exec telemetry (#2637): converge watched_cgroups with the same container
-	// list this pass gathered (no extra Incus call).
-	if e.execWatcher != nil {
-		e.execWatcher.Reconcile(e.lastContainers)
-	}
 
 	// Tier 2 (#661 PR-B): pick up operator signature add/remove/toggle. A no-op
 	// when the set is unchanged, so this is cheap every pass.
@@ -803,6 +802,14 @@ func boolStr(b bool) string {
 		return "true"
 	}
 	return "false"
+}
+
+// reconcileExec converges the exec watcher with the latest gathered
+// container list; a no-op without a watcher.
+func (e *NetworkPolicyEnforcer) reconcileExec() {
+	if e.execWatcher != nil {
+		e.execWatcher.Reconcile(e.lastContainers)
+	}
 }
 
 // gather snapshots the running containers into reconcile views, resolving each

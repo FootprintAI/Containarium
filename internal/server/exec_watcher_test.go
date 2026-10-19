@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,9 +12,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cilium/ebpf/ringbuf"
+
 	"github.com/footprintai/containarium/internal/netbpf"
 	"github.com/footprintai/containarium/internal/threatdetect"
 	"github.com/footprintai/containarium/pkg/core/incus"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // fakeTree builds a fake /proc + /sys/fs/cgroup under a temp dir: for each
@@ -154,6 +158,7 @@ type fakeCgroupMap struct {
 	entries map[uint64]uint32
 	watched []uint64
 	removed []uint64
+	ops     []string // "watch <id>" / "unwatch <id>", in call order
 	err     error
 }
 
@@ -167,6 +172,7 @@ func (m *fakeCgroupMap) WatchCgroup(id uint64, idx uint32) error {
 	}
 	m.entries[id] = idx
 	m.watched = append(m.watched, id)
+	m.ops = append(m.ops, fmt.Sprintf("watch %d", id))
 	return nil
 }
 
@@ -175,6 +181,7 @@ func (m *fakeCgroupMap) UnwatchCgroup(id uint64) error {
 	defer m.mu.Unlock()
 	delete(m.entries, id)
 	m.removed = append(m.removed, id)
+	m.ops = append(m.ops, fmt.Sprintf("unwatch %d", id))
 	return nil
 }
 
@@ -468,5 +475,234 @@ func TestExecWatcher_Status(t *testing.T) {
 	}
 	if w.Lost() != 0 {
 		t.Fatalf("Lost() = %d with no kernel object, want 0", w.Lost())
+	}
+}
+
+// fakeExecRing is an execRingReader: it returns err from Read, or — with no
+// err — blocks until Close and then reports ringbuf.ErrClosed, like the real
+// reader on shutdown.
+type fakeExecRing struct {
+	err    error
+	once   sync.Once
+	closed chan struct{}
+}
+
+func newFakeExecRing(err error) *fakeExecRing {
+	return &fakeExecRing{err: err, closed: make(chan struct{})}
+}
+
+func (r *fakeExecRing) Read() (ringbuf.Record, error) {
+	if r.err != nil {
+		return ringbuf.Record{}, r.err
+	}
+	<-r.closed
+	return ringbuf.Record{}, ringbuf.ErrClosed
+}
+
+func (r *fakeExecRing) Close() error {
+	r.once.Do(func() { close(r.closed) })
+	return nil
+}
+
+func (r *fakeExecRing) isClosed() bool {
+	select {
+	case <-r.closed:
+		return true
+	case <-time.After(2 * time.Second):
+		return false
+	}
+}
+
+// A ring consumer that dies on a read error while the watcher is meant to be
+// running must not leave the status at "ok": it flips to
+// `unavailable (ring consumer exited: …)`, GetSentryStatus reports it, the
+// health loop's predicate sees it as down, and open streams are ended.
+func TestExecWatcher_ConsumerExitFlipsStatusUnavailable(t *testing.T) {
+	w := NewExecWatcher(nil)
+	w.setStatus(execTelemetryOK)
+	_, ch, cancel := w.Subscribe("", 0, 0)
+	defer cancel()
+
+	rd := newFakeExecRing(errors.New("read ring: bad file descriptor"))
+	w.wg.Add(1)
+	w.consume(context.Background(), rd)
+
+	got := w.Status()
+	if !strings.HasPrefix(got, "unavailable (ring consumer exited: ") || !strings.Contains(got, "bad file descriptor") {
+		t.Fatalf("status after consumer exit = %q, want unavailable (ring consumer exited: …bad file descriptor…)", got)
+	}
+	if w.Running() {
+		t.Fatal("Running() = true after the consumer exited")
+	}
+	if !rd.isClosed() {
+		t.Fatal("reader not closed after the consumer exited")
+	}
+	select {
+	case _, ok := <-ch:
+		if ok {
+			t.Fatal("subscriber received an event, want its channel closed")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("subscriber channel still open after the consumer exited")
+	}
+
+	s := NewThreatDetectionServer(threatdetect.NewEngine(&fakeFindingSink{}, "b", false, nil, nil), true, true, "")
+	s.SetExecTelemetry(w)
+	resp, err := s.GetSentryStatus(secReadCtx(), &pb.GetSentryStatusRequest{})
+	if err != nil {
+		t.Fatalf("GetSentryStatus: %v", err)
+	}
+	if resp.GetExecTelemetry() != got {
+		t.Fatalf("exec_telemetry = %q, want the watcher's %q", resp.GetExecTelemetry(), got)
+	}
+	if !execTelemetryDown(resp) {
+		t.Fatalf("health loop does not see %q as down; no %q finding would be raised", resp.GetExecTelemetry(), execTelemetrySubject)
+	}
+}
+
+// A consumer that returns because the watcher is stopping (ctx cancelled)
+// leaves the status to Stop.
+func TestExecWatcher_ConsumerExitOnShutdownKeepsStatus(t *testing.T) {
+	w := NewExecWatcher(nil)
+	w.setStatus(execTelemetryOK)
+	ctx, cancel := context.WithCancel(context.Background())
+	rd := newFakeExecRing(nil)
+	w.wg.Add(1)
+	go w.consume(ctx, rd)
+	cancel()
+	w.wg.Wait()
+	if got := w.Status(); got != execTelemetryOK {
+		t.Fatalf("status after a shutdown exit = %q, want it untouched (%q)", got, execTelemetryOK)
+	}
+	if !rd.isClosed() {
+		t.Fatal("reader not closed on shutdown")
+	}
+}
+
+// Stop ends every subscription (after the status has left "ok") and forgets
+// the attribution tables, so a later Start would re-register every box.
+func TestExecWatcher_StopEndsSubscriptionsAndClearsTables(t *testing.T) {
+	procRoot, cgroupRoot, ino := fakeTree(t, map[int64]string{100: "lxc.payload.box-a"})
+	w := newTestWatcher(t, procRoot, cgroupRoot, newFakeCgroupMap())
+	w.Reconcile([]incus.ContainerInfo{running("box-a", 100)})
+	if _, ok := w.lookup(ino["lxc.payload.box-a"]); !ok {
+		t.Fatal("box-a not registered before Stop")
+	}
+	_, ch, cancel := w.Subscribe("", 0, 0)
+	w.Stop()
+	defer cancel() // after Stop: must not double-close
+	if _, ok := <-ch; ok {
+		t.Fatal("subscriber channel delivered an event after Stop, want it closed")
+	}
+	if got := w.Status(); got != execTelemetryStoppedStatus {
+		t.Fatalf("status after Stop = %q, want %q", got, execTelemetryStoppedStatus)
+	}
+	if _, ok := w.lookup(ino["lxc.payload.box-a"]); ok || w.watchedCount() != 0 {
+		t.Fatal("attribution tables survived Stop")
+	}
+}
+
+// blockingCgroupMap parks WatchCgroup until released, to prove Reconcile
+// does not hold w.mu across the kernel map write.
+type blockingCgroupMap struct {
+	*fakeCgroupMap
+	block   bool
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (m *blockingCgroupMap) WatchCgroup(id uint64, idx uint32) error {
+	if m.block {
+		m.entered <- struct{}{}
+		<-m.release
+	}
+	return m.fakeCgroupMap.WatchCgroup(id, idx)
+}
+
+// OnExecEvent (the ring consumer) must keep running while Reconcile is
+// parked in a kernel map write: the resolve and the map syscalls happen
+// outside w.mu.
+func TestExecWatcher_OnExecEventNotBlockedByReconcileMapWrite(t *testing.T) {
+	procRoot, cgroupRoot, ino := fakeTree(t, map[int64]string{100: "lxc.payload.box-a", 200: "lxc.payload.box-b"})
+	m := &blockingCgroupMap{fakeCgroupMap: newFakeCgroupMap(), entered: make(chan struct{}), release: make(chan struct{})}
+	var engineCalls sync.WaitGroup
+	w := NewExecWatcher(func(threatdetect.ExecEvent) { engineCalls.Done() })
+	w.procRoot, w.cgroupRoot = procRoot, cgroupRoot
+	w.maps = m
+	w.setStatus(execTelemetryOK)
+	w.Reconcile([]incus.ContainerInfo{running("box-a", 100)})
+
+	m.block = true
+	reconciled := make(chan struct{})
+	go func() {
+		defer close(reconciled)
+		w.Reconcile([]incus.ContainerInfo{running("box-a", 100), running("box-b", 200)})
+	}()
+	select {
+	case <-m.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Reconcile never reached the map write")
+	}
+
+	engineCalls.Add(1)
+	delivered := make(chan struct{})
+	go func() {
+		w.OnExecEvent(context.Background(), kernelEvent(ino["lxc.payload.box-a"], 7, "sh", "sh"))
+		close(delivered)
+	}()
+	select {
+	case <-delivered:
+	case <-time.After(2 * time.Second):
+		close(m.release)
+		t.Fatal("OnExecEvent blocked while Reconcile was in a kernel map write (w.mu held across the write)")
+	}
+	engineCalls.Wait()
+
+	close(m.release)
+	<-reconciled
+	if _, ok := w.lookup(ino["lxc.payload.box-b"]); !ok {
+		t.Fatal("box-b not committed after the map write was released")
+	}
+}
+
+// When a stopped box's cgroup inode is reused by a box that started in the
+// same pass, the stale id's removal must reach the kernel map BEFORE the new
+// box's addition — the other order deletes the new box's entry.
+func TestWatchedCgroupsReconcile_RemovalBeforeAddOnReusedID(t *testing.T) {
+	procRoot, cgroupRoot, ino := fakeTree(t, map[int64]string{100: "lxc.payload.box-old"})
+	// box-new's init (pid 200) lives in a cgroup that resolves to the same
+	// inode as box-old's (a recycled kernfs id): a symlink to the same dir.
+	if err := os.MkdirAll(filepath.Join(procRoot, "200"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(procRoot, "200", "cgroup"), []byte("0::/lxc.payload.box-new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("lxc.payload.box-old", filepath.Join(cgroupRoot, "lxc.payload.box-new")); err != nil {
+		t.Fatal(err)
+	}
+	id := ino["lxc.payload.box-old"]
+	if got, err := cgroupIDForPID(procRoot, cgroupRoot, 200); err != nil || got != id {
+		t.Fatalf("fixture: box-new id = %d (%v), want the reused %d", got, err, id)
+	}
+
+	m := newFakeCgroupMap()
+	w := newTestWatcher(t, procRoot, cgroupRoot, m)
+	w.Reconcile([]incus.ContainerInfo{running("box-old", 100)})
+	m.ops = nil
+
+	w.Reconcile([]incus.ContainerInfo{
+		running("box-old", 0, func(c *incus.ContainerInfo) { c.State = "Stopped" }),
+		running("box-new", 200),
+	})
+	want := []string{fmt.Sprintf("unwatch %d", id), fmt.Sprintf("watch %d", id)}
+	if fmt.Sprint(m.ops) != fmt.Sprint(want) {
+		t.Fatalf("map ops = %v, want %v (removal before addition)", m.ops, want)
+	}
+	if ids := m.ids(); len(ids) != 1 || ids[0] != id {
+		t.Fatalf("kernel map = %v, want the reused id %d watched", ids, id)
+	}
+	if tgt, ok := w.lookup(id); !ok || tgt.Container != "box-new" {
+		t.Fatalf("id %d → %+v (%v), want box-new", id, tgt, ok)
 	}
 }
