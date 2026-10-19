@@ -217,14 +217,19 @@ reason, the `SENTRY_UNAVAILABLE` finding fires on an armed backend, and
 **the flow rules keep running** — the two objects are independent.
 
 Overhead, measured by `TestExecWatch_OverheadMeasurement` in the eBPF
-loading lane (paced 1,000 execs/s for 60 s, attached vs. not attached). On a
-lab host (kernel 6.8, 24 threads): ~971 execs/s sustained, **0 events
-lost**, kernel-side ≈ 25 µs per exec (≈ 2.4 % of one core, within the
-run-to-run noise of a ~300 µs fork+exec) plus ≈ 1.3 % of one core for the
-daemon's ring consumer — about 0.46 % of an 8-core host at that rate. A
-burst that outruns the consumer is counted in `exec-events-lost`
-(10,000 undrained execs → 1,272 kept, 8,729 counted lost, no crash). The
-acceptance number is re-measured on the sprint's verification guest.
+loading lane: a separate process fork+execs `/bin/true` at a steady 1,000/s
+for 60 s inside a watched cgroup; the program's cost is its own run time
+(`BPF_STATS_RUN_TIME`) and the consumer's is the consuming process's CPU. The
+kernel submits records without a wakeup and the daemon drains the ring every
+50 ms in one batch (#2774), so an exec event reaches the rules at most
+~50 ms later than it happened. On the 4-CPU lane runner (2026-10-20): 1,000
+execs/s, **0 events lost**, kernel 1.2 µs per exec (0.12 % of one core) plus
+0.25 % of one core for the consumer — 0.09 % of the host. The same run with
+the old per-event wakeup cost 0.69 % of the host; on an 8-vCPU KVM guest
+that shape had cost ~7 %, which is why the acceptance number is
+re-measured on the sprint's verification guest. A burst that outruns the
+consumer is counted in `exec-events-lost` (10,000 undrained execs → 1,272
+kept, 8,729 counted lost, no crash).
 
 ## Miner signatures and kill-process
 

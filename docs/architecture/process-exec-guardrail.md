@@ -398,6 +398,12 @@ bad-destination verbs; the cloud shim forwards them per org as it does
   and must be < 1 % of host CPU (measured on the 8-core lane runner
   2026-10-19: 2.95 % of one core = 0.37 % of the host at ~1,000 execs/s;
   the per-core bar was relaxed on #2711, consumer optimisation is #2747).
+  That lane under-reported: its load generator shared the consumer's
+  process. A KVM guest measured ~7 % of the host at ~800 execs/s, one
+  ring wakeup per event (#2774). Since #2774 records are submitted with
+  `BPF_RB_NO_WAKEUP` and drained every 50 ms; the lane generates load
+  from a separate process, uses the program's `BPF_STATS_RUN_TIME`, and
+  asserts < 1 % of host CPU (0.09 % on the 4-CPU runner, 2026-10-20).
 
 **CPUSampler**
 - Unit: `TestCPUSamplerDeltas` table: first sample dropped, steady 2.0
