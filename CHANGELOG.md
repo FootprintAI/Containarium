@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.109.0] - 2026-10-19
+
 ### Added
 
 - **`containarium create --no-auto-sleep`, the `disable_auto_sleep` create field and the MCP `create_container` input `disable_auto_sleep`** (#2759, criterion 2). The opt-out for a hosted platform that defaults some orgs to a 30-minute idle-stop; a standalone daemon never enables auto-sleep unless `idle_stop_minutes > 0`, so it ignores the field. Combining it with `--idle-stop` is rejected (`InvalidArgument`). New proto field `CreateContainerRequest.disable_auto_sleep = 28`; the client `CreateContainer` helpers gain a `disableAutoSleep` argument.
@@ -21,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The terminal WebSocket's no-`Origin` exemption follows a validated bearer, not a present one** (#2696, follows #2698). Since #2698 the terminal route accepts an upgrade with no `Origin` from a non-browser client that sends a bearer in `Sec-WebSocket-Protocol` or `Authorization`. The upgrader now grants that only when the route wrapper has run `ValidateToken` on that bearer and recorded it on the request context, so a request that reaches the upgrader with an unvalidated bearer is refused with `origin required`. Allowed-origin handling, the 403 bodies, token validation and the tenant check are unchanged.
 - **`InstallClamav` is owner-only, like the scan trigger** (#2692, follows #2655). Installing ClamAV runs commands inside the customer's box, so only the box's owner may ask: an administrator no longer bypasses the check, and a system container is refused. A service credential carrying the literal `security:trigger-for-owner` scope (the managed control plane acting for an owner it already authorized) still passes, as for `TriggerClamavScan`. A box on a peer backend is checked again by the daemon that owns it.
 - **Security claims in the README and docs now match the evidence** (#2558). The README headline no longer says "no cross-tenant leakage" (tenant-to-tenant isolation is opt-in, per `docs/security/multi-tenant-isolation.md`), and the audit-log claim says what the hash chain does and does not defend against. New `docs/security/CLAIMS.md` lists each README security claim with its status (backed, opt-in, scoped, not verified) and evidence. The model-gateway, tracker-broker and inbound-guardrail design notes no longer say "not yet built"/"proposed" for work that has shipped. A lab node name and real IPs were scrubbed from `docs/EGRESS-VIA-CLIENT-DESIGN.md`.
+
+### Fixed
+
+- **The Helm chart pins the sshpiper gateway image to the chart's appVersion, and the required gateway value is documented** (#2703, #2725).
+- **Each release publishes a `.sha256` for the Helm chart** (#2697, #2699). The `helm-chart` job attaches the chart after `SHA256SUMS.txt` is already written, so the chart had no checksum anywhere; it now uploads `containarium-k8s-<version>.tgz.sha256` beside the chart, matching the SDLC skills and air-gapped bundles. `docs/RELEASE-PROCESS.md` now describes the real asset set and the chart checks in verification.
 
 ## [0.108.0] - 2026-10-19
 
