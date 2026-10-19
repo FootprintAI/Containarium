@@ -22,9 +22,10 @@ var sentinelScripts = []struct {
 	path         string
 	retentionRef string // how `rotate <N>` references the configurable retention
 	authzHUP     bool   // the unit can run ssh-authz-plugin in enforce mode
+	banHUP       bool   // the unit can run ssh-ban-plugin with --records-file (#2419)
 }{
-	{"module", "../../terraform/modules/containarium/scripts/startup-sentinel.sh", "${ssh_session_log_retention_days}", true},
-	{"gce", "../../terraform/gce/scripts/startup-sentinel.sh", "$SSH_SESSION_LOG_RETENTION_DAYS", false},
+	{"module", "../../terraform/modules/containarium/scripts/startup-sentinel.sh", "${ssh_session_log_retention_days}", true, true},
+	{"gce", "../../terraform/gce/scripts/startup-sentinel.sh", "$SSH_SESSION_LOG_RETENTION_DAYS", false, false},
 }
 
 func stanzaOf(t *testing.T, script string) string {
@@ -69,7 +70,22 @@ func TestSentinelScripts_LogrotateStanza(t *testing.T) {
 			if got := strings.Contains(st, authzHUP); got != sc.authzHUP {
 				t.Errorf("stanza contains %q = %v, want %v:\n%s", authzHUP, got, sc.authzHUP, st)
 			}
-			if n := strings.Count(st, "pkill"); n != map[bool]int{false: 1, true: 2}[sc.authzHUP] {
+			// Likewise the ban plugin, only when it was given --records-file
+			// (#2419): without it the plugin ignores SIGHUP, but the pattern is
+			// still anchored on the flag so a plugin that predates the sink is
+			// never signalled.
+			banHUP := "pkill -HUP -f '" + banReopenPattern + "'"
+			if got := strings.Contains(st, banHUP); got != sc.banHUP {
+				t.Errorf("stanza contains %q = %v, want %v:\n%s", banHUP, got, sc.banHUP, st)
+			}
+			want := 1
+			if sc.authzHUP {
+				want++
+			}
+			if sc.banHUP {
+				want++
+			}
+			if n := strings.Count(st, "pkill"); n != want {
 				t.Errorf("stanza has %d pkill lines; an unexpected one may signal a plugin that exits on SIGHUP:\n%s", n, st)
 			}
 			if strings.Contains(st, "copytruncate") {
@@ -82,18 +98,26 @@ func TestSentinelScripts_LogrotateStanza(t *testing.T) {
 const (
 	sessionReopenPattern = "^/usr/local/bin/containariumd? sentinel ssh-session-plugin"
 	authzReopenPattern   = "^/usr/local/bin/containariumd? sentinel ssh-authz-plugin .*--ssh-authz-enforce"
+	banReopenPattern     = "^/usr/local/bin/containariumd? sentinel ssh-ban-plugin .*--records-file"
 )
 
 func TestSentinelScripts_ReopenPatternsTargetOnlyTheSinkWriters(t *testing.T) {
 	session := regexp.MustCompile(sessionReopenPattern)
 	authz := regexp.MustCompile(authzReopenPattern)
-	for cmdline, want := range map[string]struct{ session, authz bool }{
-		"/usr/local/bin/containariumd sentinel ssh-session-plugin --records-file " + sinkPath:                                            {true, false},
-		"/usr/local/bin/containariumd sentinel ssh-authz-plugin --ssh-authz-grace 5m --ssh-authz-enforce --records-file " + sinkPath:     {false, true},
-		"/usr/local/bin/containariumd sentinel ssh-authz-plugin --ssh-authz-socket /run/containarium/sentinel.sock --ssh-authz-grace 5m": {false, false},
-		"/usr/local/bin/sshpiperd -i /etc/sshpiper/host_key /usr/local/bin/containariumd sentinel ssh-authz-plugin --ssh-authz-enforce":  {false, false},
-		"/usr/local/bin/containariumd sentinel ssh-ban-plugin --listener main":                                                           {false, false},
+	ban := regexp.MustCompile(banReopenPattern)
+	for cmdline, want := range map[string]struct{ session, authz, ban bool }{
+		"/usr/local/bin/containariumd sentinel ssh-session-plugin --records-file " + sinkPath:                                            {true, false, false},
+		"/usr/local/bin/containariumd sentinel ssh-authz-plugin --ssh-authz-grace 5m --ssh-authz-enforce --records-file " + sinkPath:     {false, true, false},
+		"/usr/local/bin/containariumd sentinel ssh-authz-plugin --ssh-authz-socket /run/containarium/sentinel.sock --ssh-authz-grace 5m": {false, false, false},
+		"/usr/local/bin/sshpiperd -i /etc/sshpiper/host_key /usr/local/bin/containariumd sentinel ssh-authz-plugin --ssh-authz-enforce":  {false, false, false},
+		"/usr/local/bin/containariumd sentinel ssh-ban-plugin --listener main":                                                           {false, false, false},
+		"/usr/local/bin/containariumd sentinel ssh-ban-plugin --listener main --records-file " + sinkPath + " --ban-duration 300s":       {false, false, true},
+		// sshpiperd's own command line contains the ban plugin's, flag included.
+		"/usr/local/bin/sshpiperd -i /etc/sshpiper/host_key /usr/local/bin/containariumd sentinel ssh-ban-plugin --records-file " + sinkPath: {false, false, false},
 	} {
+		if got := ban.MatchString(cmdline); got != want.ban {
+			t.Errorf("ban pattern on %q = %v, want %v", cmdline, got, want.ban)
+		}
 		if got := session.MatchString(cmdline); got != want.session {
 			t.Errorf("session pattern on %q = %v, want %v", cmdline, got, want.session)
 		}
