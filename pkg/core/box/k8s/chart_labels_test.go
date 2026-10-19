@@ -85,9 +85,22 @@ func TestHelmChartRefusesGatewayWithoutUpstreamKey(t *testing.T) {
 	})
 
 	t.Run("gateway disabled renders successfully without an upstream key", func(t *testing.T) {
-		args := append(append([]string{}, baseArgs...), "--set", "gateway.namespace=")
-		if out, err := exec.Command(helmPath, args...).CombinedOutput(); err != nil {
+		args := append(append([]string{}, baseArgs...), "--set", "gateway.enabled=false", "--set", "gateway.namespace=")
+		out, err := exec.Command(helmPath, args...).CombinedOutput()
+		if err != nil {
 			t.Fatalf("helm template failed with gateway routing disabled: %v\n%s", err, out)
+		}
+		for _, resource := range []string{
+			"kind: Namespace\nmetadata:\n  name: agent-gateway",
+			"kind: Deployment\nmetadata:\n  name: test-release-containarium-k8s-sshpiper",
+			"kind: Service\nmetadata:\n  name: test-release-containarium-k8s-sshpiper",
+			"kind: ServiceAccount\nmetadata:\n  name: test-release-containarium-k8s-sshpiper",
+			"kind: ClusterRole\nmetadata:\n  name: test-release-containarium-k8s-sshpiper",
+			"kind: ClusterRoleBinding\nmetadata:\n  name: test-release-containarium-k8s-sshpiper",
+		} {
+			if strings.Contains(string(out), resource) {
+				t.Errorf("gateway routing is disabled but rendered sshpiper resource:\n%s", resource)
+			}
 		}
 	})
 }

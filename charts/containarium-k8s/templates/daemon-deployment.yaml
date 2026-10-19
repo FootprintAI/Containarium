@@ -1,5 +1,5 @@
 {{- if and .Values.gateway.namespace (not .Values.gateway.upstreamKeySecret) }}
-{{ fail "gateway.namespace is set (gateway routing enabled) but gateway.upstreamKeySecret is empty — the daemon will refuse to start (#1496). Generate an upstream keypair and set gateway.upstreamPublicKey/upstreamKeySecret (see values.yaml comments), or clear gateway.namespace to disable gateway routing." }}
+{{ fail "gateway.namespace is set (gateway routing enabled) but gateway.upstreamKeySecret is empty — the daemon will refuse to start (#1496). Generate an upstream keypair and set gateway.upstreamPublicKey/upstreamKeySecret (see values.yaml comments), or disable gateway routing with --set gateway.enabled=false --set gateway.namespace=\"\"." }}
 {{- end }}
 apiVersion: apps/v1
 kind: Deployment

@@ -28,8 +28,9 @@ helm install containarium oci://ghcr.io/footprintai/charts/containarium-k8s \
 `gateway.upstreamKeySecret` is required because gateway routing is on by
 default and the daemon refuses to start without an upstream credential, so a
 bare `helm template` / `helm install` with no values fails fast by design.
-Create the Secret first (see the comments in `values.yaml`), or clear
-`gateway.namespace` to disable gateway routing.
+Create the Secret first (see the comments in `values.yaml`), or set
+`gateway.enabled=false` and `gateway.namespace=""` to disable gateway routing:
+`--set gateway.enabled=false --set gateway.namespace=""`.
 
 The cloud presets (`values-gke.yaml`, `values-eks.yaml`) live in the repository
 at the release tag; pass the one you need with `-f`. The release notes for each
@@ -138,7 +139,15 @@ kubectl create namespace agent-gateway
 ssh-keygen -t ed25519 -f gateway_host_key -N ""
 kubectl -n agent-gateway create secret generic sshpiper-server-key \
   --from-file=server_key=gateway_host_key
+
+ssh-keygen -t ed25519 -N '' -f ./sshpiper_upstream -C sshpiper-upstream
+kubectl -n agent-gateway create secret generic sshpiper-upstream-key \
+  --from-file=ssh-privatekey=./sshpiper_upstream
 ```
+
+The upstream key is a dedicated key for sshpiper to authenticate to boxes.
+Keep `sshpiper_upstream` private; pass its matching public key to each chart
+install command below.
 
 ## 2. Install the chart with the cloud preset
 
@@ -149,12 +158,16 @@ with the right annotations and selects a cloud StorageClass for box workspaces.
 # GKE
 helm install containarium ./charts/containarium-k8s \
   -f charts/containarium-k8s/values-gke.yaml \
-  --set daemon.jwtSecret="$(openssl rand -hex 24)"
+  --set daemon.jwtSecret="$(openssl rand -hex 24)" \
+  --set gateway.upstreamKeySecret=sshpiper-upstream-key \
+  --set-file gateway.upstreamPublicKey=./sshpiper_upstream.pub
 
 # EKS
 helm install containarium ./charts/containarium-k8s \
   -f charts/containarium-k8s/values-eks.yaml \
-  --set daemon.jwtSecret="$(openssl rand -hex 24)"
+  --set daemon.jwtSecret="$(openssl rand -hex 24)" \
+  --set gateway.upstreamKeySecret=sshpiper-upstream-key \
+  --set-file gateway.upstreamPublicKey=./sshpiper_upstream.pub
 ```
 
 This deploys the Containarium daemon (`--runtime=k8s`), the sshpiper gateway,
@@ -215,7 +228,9 @@ cloud preset:
 helm install containarium ./charts/containarium-k8s \
   -f charts/containarium-k8s/values-gke.yaml \
   -f charts/containarium-k8s/values-devbox.yaml \
-  --set daemon.jwtSecret="$(openssl rand -hex 24)"
+  --set daemon.jwtSecret="$(openssl rand -hex 24)" \
+  --set gateway.upstreamKeySecret=sshpiper-upstream-key \
+  --set-file gateway.upstreamPublicKey=./sshpiper_upstream.pub
 ```
 
 The preset sets `agentBox.mode=shell` (the box image's `AGENTBOX_MODE`), so a
@@ -246,7 +261,9 @@ Everything above creates boxes imperatively (`containarium create`). With the
 helm install containarium ./charts/containarium-k8s \
   -f charts/containarium-k8s/values-gke.yaml \
   --set operator.enabled=true \
-  --set daemon.jwtSecret="$(openssl rand -hex 24)"
+  --set daemon.jwtSecret="$(openssl rand -hex 24)" \
+  --set gateway.upstreamKeySecret=sshpiper-upstream-key \
+  --set-file gateway.upstreamPublicKey=./sshpiper_upstream.pub
 ```
 
 ```yaml
