@@ -13,6 +13,8 @@ on:
       - 'go.mod'
       - 'go.sum'
       - 'scripts/ci/check-licenses.sh'
+      - 'scripts/ci/notice.sh'
+      - 'NOTICE'
       - '.github/workflows/licenses.yml'
   # No `branches:` filter, deliberately (#1215): a base filter leaves stacked
   # PRs with no checks at all. The `paths` filter stays.
@@ -21,6 +23,8 @@ on:
       - 'go.mod'
       - 'go.sum'
       - 'scripts/ci/check-licenses.sh'
+      - 'scripts/ci/notice.sh'
+      - 'NOTICE'
       - '.github/workflows/licenses.yml'
   schedule:
     - cron: '17 5 * * 1'
@@ -54,3 +58,6 @@ jobs:
 
       - name: Check licences of every shipped binary's dependency graph
         run: scripts/ci/check-licenses.sh
+
+      - name: Check NOTICE carries every dependency notice (#2561)
+        run: scripts/ci/notice.sh check
