@@ -2270,6 +2270,7 @@ skipAppHosting:
 	// so no audit store means no sentry, not a degraded one.
 	threatCfg := appconfig.LoadThreatDetect()
 	var threatDetectEngine *threatdetect.Engine
+	var execWatcher *ExecWatcher // exec telemetry (#2637); nil unless the engine is constructed
 	var threatDetectStore threatdetect.FindingReader
 	// Process policy (#2636) is settable before the sentry is armed, like
 	// the bad-destination list; the responder that acts on it exists only
@@ -2402,6 +2403,12 @@ skipAppHosting:
 			threatDetectEngine.Register(threatdetect.NewDenyBurstRule(threatCfg.DenyBurstN, threatCfg.DenyBurstWindow).CountLogOnlyDenies(threatCfg.DenyBurstCountLogOnly))
 			networkPolicyEnforcer.SetFlowHook(threatDetectEngine.OnFlows)
 			networkPolicyEnforcer.SetDenyHook(threatDetectEngine.OnDeny)
+			// Exec telemetry (#2637): the watcher loads the second BPF object
+			// when the enforcer starts, keeps watched_cgroups in step on its
+			// reconcile, and feeds attributed execs to the engine's
+			// ExecConsumers and to StreamExecEvents.
+			execWatcher = NewExecWatcher(threatDetectEngine.OnExec)
+			networkPolicyEnforcer.SetExecWatcher(execWatcher)
 			if degraded {
 				log.Printf("Threat-detection sentry enabled (CONTAINARIUM_THREAT_SENTRY=1) — DEGRADED (no Postgres persistence for findings)")
 			} else {
@@ -2411,6 +2418,9 @@ skipAppHosting:
 	}
 	threatDetectServer := NewThreatDetectionServer(threatDetectEngine, threatCfg.SentryEnabled, sentryAvailable, sentryUnavailableReason)
 	threatDetectServer.SetFindingStore(threatDetectStore)
+	if execWatcher != nil {
+		threatDetectServer.SetExecTelemetry(execWatcher)
+	}
 	threatDetectServer.SetProcessPolicyStore(processPolicyStore)
 	threatDetectServer.SetProcessResponder(processResponder)
 	if threatCfg.SentryEnabled && healthStore == nil {

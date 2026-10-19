@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -52,7 +53,17 @@ type ThreatDetectionServer struct {
 	mu                sync.Mutex // guards the fields below — SetUnavailable / SetCPUSamplerStatus run after Start()
 	ebpfAvailable     bool       // eBPF object loaded (networkPolicyEnforcer != nil) AND still running
 	unavailableReason string
-	cpuSamplerStatus  string // GetSentryStatus.cpu_sampler (#2645); "" until wired
+	cpuSamplerStatus  string              // GetSentryStatus.cpu_sampler (#2645); "" until wired
+	execTelemetry     execTelemetrySource // exec telemetry (#2637); nil until wired
+}
+
+// execTelemetrySource is what the server needs from the ExecWatcher (#2637):
+// its status line, the kernel's lost count, and a subscription for
+// StreamExecEvents. An interface so the handler is testable with a fake.
+type execTelemetrySource interface {
+	Status() string
+	Lost() int64
+	Subscribe(container string, since time.Duration, buffer int) (replay []ExecEventRecord, ch <-chan ExecEventRecord, cancel func())
 }
 
 // NewThreatDetectionServer builds the server. engine must be non-nil iff
@@ -76,6 +87,16 @@ func NewThreatDetectionServer(engine *threatdetect.Engine, sentryEnabled, ebpfAv
 func (s *ThreatDetectionServer) SetCPUSamplerStatus(status string) {
 	s.mu.Lock()
 	s.cpuSamplerStatus = status
+	s.mu.Unlock()
+}
+
+// SetExecTelemetry wires the exec watcher (#2637): GetSentryStatus reports
+// its Status as exec_telemetry and its Lost as exec_events_lost, and
+// StreamExecEvents subscribes to it. nil (never constructed) reads as
+// "unavailable (not started)".
+func (s *ThreatDetectionServer) SetExecTelemetry(src execTelemetrySource) {
+	s.mu.Lock()
+	s.execTelemetry = src
 	s.mu.Unlock()
 }
 
@@ -353,9 +374,14 @@ func (s *ThreatDetectionServer) sentryStatus() *pb.GetSentryStatusResponse {
 
 	s.mu.Lock()
 	cpuSampler := s.cpuSamplerStatus
+	execSrc := s.execTelemetry
 	s.mu.Unlock()
 	if cpuSampler == "" {
 		cpuSampler = cpuSamplerNotStartedStatus
+	}
+	execStatus, execLost := execTelemetryNotStartedStatus, int64(0)
+	if execSrc != nil {
+		execStatus, execLost = execSrc.Status(), execSrc.Lost()
 	}
 
 	degraded, ruleStatus := s.engine.Status()
@@ -386,5 +412,92 @@ func (s *ThreatDetectionServer) sentryStatus() *pb.GetSentryStatusResponse {
 			reasons = append(reasons, ruleUnhealthyPrefix(r.Rule)+": "+r.LastError)
 		}
 	}
-	return &pb.GetSentryStatusResponse{State: state, Reason: strings.Join(reasons, "; "), Rules: rules, CpuSampler: cpuSampler}
+	return &pb.GetSentryStatusResponse{
+		State:          state,
+		Reason:         strings.Join(reasons, "; "),
+		Rules:          rules,
+		CpuSampler:     cpuSampler,
+		ExecTelemetry:  execStatus,
+		ExecEventsLost: execLost,
+	}
+}
+
+// StreamExecEvents streams attributed exec events from the host-side exec
+// telemetry (#2637): a replay of the watcher's in-memory ring for `since`,
+// then — with `follow` — live events until the client goes away. Admin +
+// security:read, like the other fleet-wide security verbs: an exec stream
+// shows every tenant's process names and arguments. UNAVAILABLE when exec
+// telemetry is not running here (the reason is the status line); a
+// subscriber that falls behind is disconnected with RESOURCE_EXHAUSTED
+// rather than ever stalling the kernel ring consumer. When exec telemetry
+// stops (daemon shutdown) or its consumer fails, an open --follow stream
+// ends with UNAVAILABLE instead of holding up GracefulStop.
+func (s *ThreatDetectionServer) StreamExecEvents(req *pb.StreamExecEventsRequest, stream pb.ThreatDetectionService_StreamExecEventsServer) error {
+	ctx := stream.Context()
+	if err := auth.RequireScope(ctx, auth.ScopeSecurityRead); err != nil {
+		return err
+	}
+	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	src := s.execTelemetry
+	s.mu.Unlock()
+	if src == nil {
+		return status.Errorf(codes.Unavailable, "exec telemetry %s", execTelemetryNotStartedStatus)
+	}
+	if st := src.Status(); st != execTelemetryOK {
+		return status.Errorf(codes.Unavailable, "exec telemetry %s", st)
+	}
+	var since time.Duration
+	if req.GetSince() != nil {
+		since = req.GetSince().AsDuration()
+	}
+	replay, ch, cancel := src.Subscribe(req.GetContainer(), since, execSubscriberBuffer)
+	defer cancel()
+	for _, rec := range replay {
+		if err := stream.Send(&pb.StreamExecEventsResponse{Event: execEventProto(rec)}); err != nil {
+			return err
+		}
+	}
+	if !req.GetFollow() {
+		return nil
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case rec, ok := <-ch:
+			if !ok {
+				// The watcher closes a subscription for two reasons: exec
+				// telemetry stopped (daemon shutdown, consumer failure — the
+				// status has left "ok" first) or this subscriber fell behind.
+				if st := src.Status(); st != execTelemetryOK {
+					return status.Errorf(codes.Unavailable, "exec telemetry %s", st)
+				}
+				return status.Error(codes.ResourceExhausted, "exec-events subscriber fell behind and was dropped (the ring consumer never waits); reconnect")
+			}
+			if err := stream.Send(&pb.StreamExecEventsResponse{Event: execEventProto(rec)}); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+// execEventProto renders one attributed exec record as the wire message.
+func execEventProto(rec ExecEventRecord) *pb.ExecEvent {
+	return &pb.ExecEvent{
+		Container: rec.Container,
+		TenantId:  rec.TenantID,
+		At:        timestamppb.New(rec.At),
+		Exec: &pb.ExecEvidence{
+			Pid:           rec.Event.HostPID,
+			Ppid:          rec.Event.PPID,
+			Uid:           rec.Event.UID,
+			Comm:          rec.Event.Comm,
+			Filename:      rec.Event.Filename,
+			Argv:          rec.Event.ArgvString(),
+			ArgvTruncated: rec.Event.ArgvTruncated,
+		},
+	}
 }
