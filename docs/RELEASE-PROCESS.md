@@ -97,6 +97,35 @@ anyway; it's the only thing a non-release build has to go on.
    `agent-runtime-bundle.tar.gz` before it can run — so if that publish fails,
    expect this job to go red for that reason and fix the publish, not the lane.
 
+### Release checks that run for you
+
+`release.yml` runs these in the build job, before the GitHub Release is created,
+so a failure stops the publish:
+
+- **Tunnel interop smoke test** (`scripts/ci/tunnel-smoke.sh`, #2469). The built
+  `containariumd` runs as the sentinel and as the tunnel client: the pin is read
+  with `sentinel tunnel-identity`, the client must register over TLS, and a
+  request must round-trip through the tunnel. A second step repeats it with the
+  *previous release's* `containariumd` as the client, the combination a staged
+  rollout actually runs. You can run it by hand against any build:
+  `scripts/ci/tunnel-smoke.sh ./containariumd [./older-containariumd]` (needs
+  passwordless sudo; the sentinel adds a loopback alias).
+
+### Release PR checklist
+
+Before merging the release PR, check each:
+
+- **Upgrade notes.** Any change in this release that makes a client flag or
+  environment variable mandatory, or removes a fallback, has an explicit
+  "Upgrading" heading in the changelog that names the flag and what an operator
+  must do first. v0.101.0 and v0.101.1 made `--sentinel-pin` mandatory on tunnel
+  clients without saying so, and a tunnel host upgraded on release day could not
+  reconnect.
+- **Paired changes.** If a change to a client needs a counterpart on the server
+  (or the reverse), both halves are in this release. If the second half is not
+  merged yet, the first half does not ship: revert it from the release branch or
+  hold the release.
+
 ## What a tag push actually publishes
 
 A `v*` tag fires **four** workflows in parallel. Three of them publish
