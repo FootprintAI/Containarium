@@ -40,6 +40,7 @@ was deleted afterwards.
 | `containarium version` | ✅ `Containarium v0.103.3` |
 | `containarium {passthrough,audit,daemon,doctor} --help` | ✅ each reports it lives in `containariumd` on the host |
 | every verb and flag the README uses (`quickstart`, `ssh-config sync`, `code run/install`, `token refresh/generate`, `passthrough-route add`, …) | ✅ present on the released binary |
+| docs/security/CLAIMS.md | Claim → evidence table | `internal/audit/**`, `internal/modelgateway/**`, `internal/server/privileged_policy.go`, `internal/server/image_digest.go`, `internal/server/network_policy_enforcer.go`, `docs/security/multi-tenant-isolation.md` | — | `f78fa547` | 🟡 |
 
 Sections marked 🟡 above have every flag, link and config key checked but
 not every command run.
