@@ -250,8 +250,9 @@ func (r *FindingResponse) ToProto() *pb.FindingResponse {
 // satisfy it.
 type ResponseWriter interface {
 	// SetResponse replaces the finding's response, emits the updated
-	// finding on the event bus, and returns it. ErrFindingNotFound if id
-	// does not exist.
+	// finding on the event bus, hands it to the notifier (a response
+	// transition is a webhook delivery, #2718), and returns it.
+	// ErrFindingNotFound if id does not exist.
 	SetResponse(ctx context.Context, id int64, r FindingResponse) (*Finding, error)
 }
 

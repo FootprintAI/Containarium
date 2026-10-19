@@ -450,6 +450,9 @@ func (s *FindingStore) SetResponse(ctx context.Context, id int64, r FindingRespo
 		return nil, err
 	}
 	s.emitter.EmitSecurityFinding(f.ToProto())
+	if s.notifier != nil {
+		s.notifier.Notify(f) // a response transition is delivered (#2718)
+	}
 	return f, nil
 }
 
