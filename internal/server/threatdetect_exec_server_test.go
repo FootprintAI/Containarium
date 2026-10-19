@@ -248,3 +248,40 @@ func TestStreamExecEvents_SendErrorReleases(t *testing.T) {
 		t.Fatalf("cancelled = %d, want 1", src.cancelled)
 	}
 }
+
+// An open --follow stream must end when exec telemetry stops (daemon
+// shutdown), with UNAVAILABLE, instead of holding up GracefulStop until the
+// client disconnects.
+func TestStreamExecEvents_FollowReturnsAfterStop(t *testing.T) {
+	w := NewExecWatcher(nil)
+	w.setStatus(execTelemetryOK)
+	s := NewThreatDetectionServer(threatdetect.NewEngine(&fakeFindingSink{}, "b", false, nil, nil), true, true, "")
+	s.SetExecTelemetry(w)
+	done := make(chan error, 1)
+	go func() {
+		done <- s.StreamExecEvents(&pb.StreamExecEventsRequest{Follow: true}, &fakeExecStream{ctx: execAdminCtx()})
+	}()
+	deadline := time.After(2 * time.Second)
+	for {
+		w.mu.Lock()
+		n := len(w.subs)
+		w.mu.Unlock()
+		if n == 1 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("stream never subscribed")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	w.Stop()
+	select {
+	case err := <-done:
+		if status.Code(err) != codes.Unavailable || !strings.Contains(err.Error(), execTelemetryStoppedStatus) {
+			t.Fatalf("follow returned %v after Stop, want UNAVAILABLE %q", err, execTelemetryStoppedStatus)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("follow stream still open after the watcher stopped (would hold up GracefulStop)")
+	}
+}
