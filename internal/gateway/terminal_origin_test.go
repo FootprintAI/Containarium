@@ -64,7 +64,7 @@ func TestTerminalUpgrader_RefusalBodyNamesReason(t *testing.T) {
 	up := newTerminalUpgrader()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if conn, err := up.Upgrade(w, r, nil); err == nil {
-			conn.Close()
+			_ = conn.Close()
 		}
 	}))
 	defer srv.Close()
@@ -81,7 +81,7 @@ func TestTerminalUpgrader_RefusalBodyNamesReason(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bearer + no Origin should upgrade: %v", err)
 	}
-	conn.Close()
+	_ = conn.Close()
 
 	for name, tc := range map[string]struct {
 		h    http.Header
