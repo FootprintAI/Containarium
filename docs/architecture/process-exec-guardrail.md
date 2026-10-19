@@ -354,7 +354,7 @@ service ThreatDetectionService {
   rpc AddMinerSignature(AddMinerSignatureRequest) returns (AddMinerSignatureResponse)
       { option (google.api.http) = { post: "/v1/security/miner-signatures" body: "*" }; }
   rpc RemoveMinerSignature(RemoveMinerSignatureRequest) returns (RemoveMinerSignatureResponse)
-      { option (google.api.http) = { delete: "/v1/security/miner-signatures/{kind}/{pattern}" }; }
+      { option (google.api.http) = { delete: "/v1/security/miner-signatures" }; }  // ?kind=&pattern= (#2638)
   rpc StreamExecEvents(StreamExecEventsRequest) returns (stream ExecEvent)
       { option (google.api.http) = { get: "/v1/security/exec-events" }; }
 }
@@ -368,6 +368,11 @@ Kernel ↔ daemon: the `exec_event` struct is the wire contract between
 `unsafe.Sizeof` and field offsets against constants shared with the C
 header, as `ParseDenyEvent` does today. The parser tolerates longer samples
 so a newer object loads on an older daemon.
+
+`RemoveMinerSignature` takes `kind` and `pattern` as query parameters, not
+path segments: argv markers carry slashes and significant spaces
+(`stratum+tcp://`, `--coin `) that cannot travel safely in a path (as built
+in #2638).
 
 Authorization: all new RPCs are admin-scoped like the existing
 bad-destination verbs; the cloud shim forwards them per org as it does
