@@ -17,6 +17,11 @@ const DefaultRenotifyInterval = time.Hour
 // re-delivers that one finding early.
 const gateMaxEntries = 4096
 
+// releaseResolveWindow bounds the release+resolve coalescing: a resolve is
+// dropped as the second half of an operator release only when it lands this
+// soon after the RELEASED delivery (see deliveryGate).
+const releaseResolveWindow = 30 * time.Second
+
 // deliveryGate decides which store writes reach the webhook. The stores call
 // Notify on every write, including the dedupe path that only bumps count on
 // an already-open (rule, tenant, subject); delivering all of those turns one
@@ -36,9 +41,12 @@ const gateMaxEntries = 4096
 // the same call. The RELEASED write is delivered; the resolve that follows it
 // is not, because it carries nothing the operator was not just told. The
 // release is the one kept, not the resolve, so the operator still hears of it
-// when the resolve fails. Only an operator release coalesces: a TTL expiry or
-// an orphan-sweep release leaves the finding open, so a later resolve is a
-// separate event and is delivered.
+// when the resolve fails. The coalescing is bounded: only a resolve landing
+// within releaseResolveWindow of the RELEASED delivery is dropped, and only
+// once, so if the release's own resolve failed, a later resolve is delivered.
+// Only an operator release coalesces: a TTL expiry or an orphan-sweep release
+// leaves the finding open, so a later resolve is a separate event and is
+// delivered.
 type deliveryGate struct {
 	mu       sync.Mutex
 	interval time.Duration
@@ -62,12 +70,12 @@ func responseOf(f *Finding) (pb.ResponseState, string) {
 	return f.Response.State, f.Response.ReleasedBy
 }
 
-// releaseResolve reports whether a resolve of f only repeats the operator
-// release just delivered for it (see deliveryGate).
-func releaseResolve(prev gateEntry, f *Finding) bool {
+// releaseResolve reports whether a resolve of f, at now, only repeats the
+// operator release just delivered for it (see deliveryGate).
+func releaseResolve(prev gateEntry, f *Finding, now time.Time) bool {
 	state, by := responseOf(f)
 	return prev.response == pb.ResponseState_RESPONSE_STATE_RELEASED && prev.releasedBy == ReleasedByOperator &&
-		state == prev.response && by == prev.releasedBy
+		state == prev.response && by == prev.releasedBy && now.Sub(prev.at) < releaseResolveWindow
 }
 
 func newDeliveryGate(interval time.Duration) *deliveryGate {
@@ -90,8 +98,8 @@ func (g *deliveryGate) shouldDeliver(f *Finding) bool {
 	defer g.mu.Unlock()
 	prev, seen := g.last[f.ID]
 	if f.State == FindingStateResolved {
-		if seen && releaseResolve(prev, f) {
-			delete(g.last, f.ID)
+		if seen && releaseResolve(prev, f, g.now()) {
+			delete(g.last, f.ID) // forgotten: coalesced once, the next resolve delivers
 			return false
 		}
 		return true

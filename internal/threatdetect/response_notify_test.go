@@ -101,3 +101,41 @@ func TestFindingStore_ResponseTransitionsAreDelivered(t *testing.T) {
 		return s
 	})
 }
+
+// #2745 review: MemFindingStore.SetResponse queues a snapshot. A later write
+// to the stored finding (the resolve an operator release makes next, or any
+// caller holding the returned pointer) must not change what the queued
+// delivery says.
+func TestMemFindingStore_SetResponseNotifiesASnapshot(t *testing.T) {
+	ctx := context.Background()
+	auditStore, bus := memTestDeps(t)
+	s, err := NewMemFindingStore(events.NewEmitter(bus), auditStore)
+	if err != nil {
+		t.Fatalf("NewMemFindingStore: %v", err)
+	}
+	n := NewWebhookNotifier(newFakeConfigSource("http://127.0.0.1:1", ""), nil)
+	s.SetNotifier(n)
+	f, err := s.Upsert(ctx, sampleMemFinding())
+	if err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	<-n.queue
+	stored, err := s.SetResponse(ctx, f.ID, FindingResponse{Action: pb.ProcessAction_PROCESS_ACTION_THROTTLE,
+		State: pb.ResponseState_RESPONSE_STATE_RELEASED, ReleasedBy: ReleasedByOperator})
+	if err != nil {
+		t.Fatalf("SetResponse: %v", err)
+	}
+	// Mutate the stored finding after Notify.
+	stored.State = FindingStateResolved
+	stored.Count = 99
+	stored.Response.State = pb.ResponseState_RESPONSE_STATE_FAILED
+	stored.Response.Error = "mutated"
+
+	queued := <-n.queue
+	if queued.State != FindingStateOpen || queued.Count == 99 {
+		t.Errorf("queued finding changed with the store: state=%s count=%d", queued.State, queued.Count)
+	}
+	if queued.Response.State != pb.ResponseState_RESPONSE_STATE_RELEASED || queued.Response.Error != "" {
+		t.Errorf("queued response changed with the store: %+v", *queued.Response)
+	}
+}
