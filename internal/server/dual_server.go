@@ -2300,6 +2300,7 @@ skipAppHosting:
 	// record "the sentry is unavailable" precisely when the engine below is
 	// never constructed. The engine itself still needs the enforcer.
 	var healthStore sentryHealthStore
+	responderStatusReason := "" // why the process responder is ALERT-only (#2719); "" = can act
 	if threatCfg.SentryEnabled && auditStore != nil {
 		var sink threatdetect.FindingSink
 		var findingsPool *pgxpool.Pool
@@ -2374,13 +2375,17 @@ skipAppHosting:
 				}
 			}
 			responderDegraded := degraded || actionStore == nil
+			actionsPersisted := actionStore != nil
+			responderDisabled := ""
 			if actionStore == nil {
 				actionStore = threatdetect.NewMemActionStore()
 			}
 			if lifecycle, ok := sink.(findingLifecycle); !ok {
 				log.Printf("Warning: process responder disabled: finding store %T cannot record responses", sink)
+				responderDisabled = "finding store cannot record responses"
 			} else if responderIncus, ierr := incus.New(); ierr != nil {
 				log.Printf("Warning: process responder disabled: incus client: %v", ierr)
+				responderDisabled = "incus client unavailable"
 			} else {
 				processResponder = NewProcessResponder(processPolicyStore, actionStore, lifecycle, incusActuator{c: responderIncus}, auditStore, responderDegraded)
 				// kill_process (#2638): SIGKILL a miner-signature match
@@ -2396,6 +2401,9 @@ skipAppHosting:
 					log.Printf("Process responder enabled (policy via `containarium security process-policy`)")
 				}
 			}
+			// Surfaced on `containarium security sentry status` and by the
+			// sentry-health finding: an ALERT-only responder is not OK (#2719).
+			responderStatusReason = processResponderDegradedReason(!degraded, actionsPersisted, responderDisabled)
 
 		}
 		if sink != nil && networkPolicyEnforcer != nil {
@@ -2430,6 +2438,7 @@ skipAppHosting:
 	}
 	threatDetectServer.SetProcessPolicyStore(processPolicyStore)
 	threatDetectServer.SetProcessResponder(processResponder)
+	threatDetectServer.SetResponderDegraded(responderStatusReason)
 	if threatCfg.SentryEnabled && healthStore == nil {
 		log.Printf("Warning: threat-detection sentry armed but no finding store (%s); a sentry-unavailable finding cannot be recorded — see `containarium security sentry status`", sentryUnavailableReason)
 	}

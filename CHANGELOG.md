@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`containarium security sentry status` no longer reports OK while the process responder is ALERT-only** (#2719). When findings were persisted but the `security_actions` store failed to initialise, or the responder could not be constructed, THROTTLE/FREEZE policies were silently inert. The status is now `DEGRADED (<cause>): responses disabled` (e.g. `DEGRADED (security_actions store unavailable): responses disabled`), and the sentry-health loop raises a MEDIUM sentry-unavailable finding for it, as it does for a missing CPU sampler.
+
 ## [0.109.0] - 2026-10-19
 
 ### Added

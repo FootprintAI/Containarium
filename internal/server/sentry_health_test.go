@@ -125,6 +125,8 @@ func TestSentryHealthCheck(t *testing.T) {
 		noObj   = "eBPF object not loaded (set CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT)"
 		failed  = "eBPF network-policy enforcer failed to start: load: permission denied"
 		degrade = "FindingStore has no Postgres connection; findings are not persisted across a restart"
+
+		responderDown = "DEGRADED (security_actions store unavailable): responses disabled"
 	)
 	unhealthyRule := &pb.GetSentryStatusResponse{
 		State:  pb.SentryState_SENTRY_STATE_OK,
@@ -166,6 +168,10 @@ func TestSentryHealthCheck(t *testing.T) {
 	}{
 		{name: "unavailable raises one medium finding", steps: []*pb.GetSentryStatusResponse{statusResp(pb.SentryState_SENTRY_STATE_UNAVAILABLE, noObj)}, wantOpen: []string{noObj}, wantCount: 1},
 		{name: "degraded raises", steps: []*pb.GetSentryStatusResponse{statusResp(pb.SentryState_SENTRY_STATE_DEGRADED, degrade)}, wantOpen: []string{degrade}, wantCount: 1},
+		// Findings persist but the responder is ALERT-only (#2719). This only
+		// pins the status → finding mapping; the real proof (the server's own
+		// status driving the loop) is TestSentryHealth_RaisesFindingWhenOnlyResponderDegraded.
+		{name: "responder-only degraded raises", steps: []*pb.GetSentryStatusResponse{statusResp(pb.SentryState_SENTRY_STATE_DEGRADED, responderDown)}, wantOpen: []string{responderDown}, wantCount: 1},
 		{name: "unhealthy rule raises with a stable subject and the full reason as the note", steps: []*pb.GetSentryStatusResponse{unhealthyRule}, wantOpen: []string{"rule DENY_BURST unhealthy"}, wantCount: 1, wantNote: unhealthyRule.Reason},
 		{
 			name:      "unhealthy rule with changing panic text dedupes into one row",
