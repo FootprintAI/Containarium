@@ -458,7 +458,10 @@ func TestGetSentryStatus_ResponderDegradedWhileFindingsPersisted(t *testing.T) {
 func TestSentryHealth_RaisesFindingWhenOnlyResponderDegraded(t *testing.T) {
 	engine := threatdetect.NewEngine(&fakeFindingSink{}, "backend-1", false, nil, nil)
 	s := NewThreatDetectionServer(engine, true, true, "")
+	// CPU sampler and exec telemetry (#2637) healthy, so the only fault is
+	// the responder's.
 	s.SetCPUSamplerStatus("standalone (30s)")
+	s.SetExecTelemetry(&fakeExecSource{status: execTelemetryOK})
 	s.SetResponderDegraded("security_actions store unavailable")
 	store := &fakeHealthStore{}
 	h := NewSentryHealth(s.sentryStatus, store, func() string { return "backend-1" }, nil, time.Minute)
