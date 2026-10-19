@@ -11,12 +11,24 @@ import (
 // PortForwarder manages iptables port forwarding rules for Caddy
 type PortForwarder struct {
 	caddyIP     string
-	networkCIDR string // Container network CIDR to exclude from forwarding (e.g., "10.0.3.0/24")
+	networkCIDR string // Container network CIDR (e.g., "10.0.3.0/24"); the 80/443 DNAT no longer excludes it (#2732)
+
+	// ipt runs one iptables invocation. Tests substitute it to record the
+	// order of operations or to target a throwaway network namespace.
+	ipt func(args ...string) ([]byte, error)
 }
 
-// NewPortForwarder creates a new port forwarder for the given Caddy IP
-// networkCIDR is the container network to exclude from port forwarding (e.g., "10.0.3.0/24")
-// If networkCIDR is empty, it will be derived from the Caddy IP (assumes /24)
+// execIPTables runs iptables on this host.
+func execIPTables(args ...string) ([]byte, error) {
+	// #nosec G204 -- fixed binary, no shell. Arguments are this package's own
+	// rule specs (constant ports, plus a Caddy IP read from Incus or passed
+	// by a root operator via --caddy-ip) or rule specs read back from this
+	// host's own `iptables -t nat -S` output.
+	return exec.Command("iptables", args...).CombinedOutput()
+}
+
+// NewPortForwarder creates a new port forwarder for the given Caddy IP.
+// The container network CIDR is derived from the Caddy IP (assumes /24).
 func NewPortForwarder(caddyIP string) *PortForwarder {
 	return NewPortForwarderWithNetwork(caddyIP, "")
 }
@@ -30,6 +42,7 @@ func NewPortForwarderWithNetwork(caddyIP, networkCIDR string) *PortForwarder {
 	return &PortForwarder{
 		caddyIP:     caddyIP,
 		networkCIDR: networkCIDR,
+		ipt:         execIPTables,
 	}
 }
 
@@ -65,7 +78,6 @@ func deriveNetworkCIDR(ip string) string {
 // non-local address" use case.
 func (pf *PortForwarder) SetupPortForwarding() error {
 	log.Printf("Setting up port forwarding to Caddy (%s)...", pf.caddyIP)
-	log.Printf("  Excluding container network: %s", pf.networkCIDR)
 
 	// Enable IP forwarding
 	if err := pf.enableIPForwarding(); err != nil {
@@ -78,6 +90,23 @@ func (pf *PortForwarder) SetupPortForwarding() error {
 		log.Printf("  Warning: failed to set route_localnet=1: %v (tunneled-primary loopback path may not work)", err)
 	}
 
+	if err := pf.applyRules(); err != nil {
+		return err
+	}
+
+	log.Printf("  Port forwarding configured: 80,443 -> %s (PREROUTING + OUTPUT)", pf.caddyIP)
+	return nil
+}
+
+// applyRules installs the Caddy NAT rules and clears outdated ones, in an
+// order that never leaves 80/443 without a DNAT to the current Caddy:
+//
+//  1. delete rules pointing at an old Caddy IP (they would shadow the new ones),
+//  2. ensure the current rules,
+//  3. only then delete the pre-#2732 `! -s <bridge>` shape. It targets the
+//     same Caddy, so while both exist inbound traffic still lands there; if
+//     step 2 fails, the old shape is left in place and keeps serving.
+func (pf *PortForwarder) applyRules() error {
 	// Clear Caddy DNAT/MASQUERADE rules that point at a *different* IP than the
 	// current one. When core-caddy is recreated it comes back with a new
 	// container IP; the per-rule existence checks below would then ADD rules for
@@ -105,16 +134,34 @@ func (pf *PortForwarder) SetupPortForwarding() error {
 		return fmt.Errorf("failed to add masquerade rule: %w", err)
 	}
 
-	log.Printf("  Port forwarding configured: 80,443 -> %s (PREROUTING + OUTPUT)", pf.caddyIP)
+	pf.clearLegacyRules()
 	return nil
+}
+
+// caddyPreRoutingRule is the PREROUTING DNAT rule spec (chain onward, ready
+// to follow -A/-C/-D) that sends port 80/443 traffic to Caddy.
+//
+// Scoped with `-m addrtype --dst-type LOCAL`: only packets addressed to one
+// of this host's own addresses are redirected, whatever their source. That
+// makes hairpin work in the kernel — a box on the bridge that opens the
+// host's public name reaches Caddy by DNAT, same as an outside client — and
+// stops the rule capturing traffic that is only being forwarded through the
+// host (#2732). The return path for bridge clients is the POSTROUTING
+// MASQUERADE rule (addMasqueradeRule): without it Caddy would answer a
+// same-subnet box directly and the box would drop the reply.
+//
+// The pre-#2732 shape was `! -s <bridge-subnet>` with no destination match;
+// legacyCaddyPreRoutingRules clears it on upgrade.
+func caddyPreRoutingRule(port int, caddyIP string) []string {
+	return []string{"PREROUTING",
+		"-p", "tcp", "-m", "addrtype", "--dst-type", "LOCAL",
+		"--dport", fmt.Sprintf("%d", port),
+		"-j", "DNAT", "--to-destination", fmt.Sprintf("%s:%d", caddyIP, port)}
 }
 
 // ensurePreRoutingRule adds a PREROUTING DNAT rule if it's not already present.
 func (pf *PortForwarder) ensurePreRoutingRule(port int) error {
-	check := exec.Command("iptables", "-t", "nat", "-C", "PREROUTING",
-		"-p", "tcp", "!", "-s", pf.networkCIDR, "--dport", fmt.Sprintf("%d", port),
-		"-j", "DNAT", "--to-destination", fmt.Sprintf("%s:%d", pf.caddyIP, port))
-	if check.Run() == nil {
+	if _, err := pf.ipt(append([]string{"-t", "nat", "-C"}, caddyPreRoutingRule(port, pf.caddyIP)...)...); err == nil {
 		return nil
 	}
 	return pf.addPreRoutingRule(port)
@@ -122,10 +169,9 @@ func (pf *PortForwarder) ensurePreRoutingRule(port int) error {
 
 // ensureOutputRule adds an OUTPUT DNAT rule if it's not already present.
 func (pf *PortForwarder) ensureOutputRule(port int) error {
-	check := exec.Command("iptables", "-t", "nat", "-C", "OUTPUT",
+	if _, err := pf.ipt("-t", "nat", "-C", "OUTPUT",
 		"-p", "tcp", "-d", "127.0.0.0/8", "--dport", fmt.Sprintf("%d", port),
-		"-j", "DNAT", "--to-destination", fmt.Sprintf("%s:%d", pf.caddyIP, port))
-	if check.Run() == nil {
+		"-j", "DNAT", "--to-destination", fmt.Sprintf("%s:%d", pf.caddyIP, port)); err == nil {
 		return nil
 	}
 	return pf.addOutputRule(port)
@@ -153,10 +199,9 @@ func (pf *PortForwarder) enableRouteLocalnet() error {
 // container. This is the path used by tunneled-primary tunnel clients
 // (slice 6) which dial 127.0.0.1:port to forward inbound bytes.
 func (pf *PortForwarder) addOutputRule(port int) error {
-	cmd := exec.Command("iptables", "-t", "nat", "-A", "OUTPUT",
+	output, err := pf.ipt("-t", "nat", "-A", "OUTPUT",
 		"-p", "tcp", "-d", "127.0.0.0/8", "--dport", fmt.Sprintf("%d", port),
 		"-j", "DNAT", "--to-destination", fmt.Sprintf("%s:%d", pf.caddyIP, port))
-	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("iptables OUTPUT failed: %w, output: %s", err, string(output))
 	}
@@ -186,14 +231,11 @@ func EnableConntrackAccounting() error {
 	return nil
 }
 
-// addPreRoutingRule adds a PREROUTING DNAT rule for the specified port
-// The rule excludes traffic from the container network to allow containers
-// to access external HTTPS services (e.g., Docker registry, Let's Encrypt)
+// addPreRoutingRule adds a PREROUTING DNAT rule for the specified port.
+// Containers still reach external HTTPS services (registries, Let's Encrypt)
+// because the rule only matches traffic addressed to this host.
 func (pf *PortForwarder) addPreRoutingRule(port int) error {
-	cmd := exec.Command("iptables", "-t", "nat", "-A", "PREROUTING",
-		"-p", "tcp", "!", "-s", pf.networkCIDR, "--dport", fmt.Sprintf("%d", port),
-		"-j", "DNAT", "--to-destination", fmt.Sprintf("%s:%d", pf.caddyIP, port))
-	output, err := cmd.CombinedOutput()
+	output, err := pf.ipt(append([]string{"-t", "nat", "-A"}, caddyPreRoutingRule(port, pf.caddyIP)...)...)
 	if err != nil {
 		return fmt.Errorf("iptables failed: %w, output: %s", err, string(output))
 	}
@@ -203,15 +245,11 @@ func (pf *PortForwarder) addPreRoutingRule(port int) error {
 // addMasqueradeRule adds a POSTROUTING MASQUERADE rule for return traffic
 func (pf *PortForwarder) addMasqueradeRule() error {
 	// Check if rule already exists
-	checkCmd := exec.Command("iptables", "-t", "nat", "-C", "POSTROUTING",
-		"-d", pf.caddyIP, "-j", "MASQUERADE")
-	if checkCmd.Run() == nil {
+	if _, err := pf.ipt("-t", "nat", "-C", "POSTROUTING", "-d", pf.caddyIP, "-j", "MASQUERADE"); err == nil {
 		return nil // Rule already exists
 	}
 
-	cmd := exec.Command("iptables", "-t", "nat", "-A", "POSTROUTING",
-		"-d", pf.caddyIP, "-j", "MASQUERADE")
-	output, err := cmd.CombinedOutput()
+	output, err := pf.ipt("-t", "nat", "-A", "POSTROUTING", "-d", pf.caddyIP, "-j", "MASQUERADE")
 	if err != nil {
 		return fmt.Errorf("iptables failed: %w, output: %s", err, string(output))
 	}
@@ -238,10 +276,7 @@ func (pf *PortForwarder) RemovePortForwarding() error {
 
 // removePreRoutingRule removes a PREROUTING DNAT rule
 func (pf *PortForwarder) removePreRoutingRule(port int) {
-	cmd := exec.Command("iptables", "-t", "nat", "-D", "PREROUTING",
-		"-p", "tcp", "!", "-s", pf.networkCIDR, "--dport", fmt.Sprintf("%d", port),
-		"-j", "DNAT", "--to-destination", fmt.Sprintf("%s:%d", pf.caddyIP, port))
-	if err := cmd.Run(); err != nil {
+	if _, err := pf.ipt(append([]string{"-t", "nat", "-D"}, caddyPreRoutingRule(port, pf.caddyIP)...)...); err != nil {
 		log.Printf("  removePreRoutingRule: rule may not exist (ignored): %v", err)
 	}
 }
@@ -249,19 +284,16 @@ func (pf *PortForwarder) removePreRoutingRule(port int) {
 // removeOutputRule removes the OUTPUT-chain DNAT rule for tunneled-primary
 // loopback traffic.
 func (pf *PortForwarder) removeOutputRule(port int) {
-	cmd := exec.Command("iptables", "-t", "nat", "-D", "OUTPUT",
+	if _, err := pf.ipt("-t", "nat", "-D", "OUTPUT",
 		"-p", "tcp", "-d", "127.0.0.0/8", "--dport", fmt.Sprintf("%d", port),
-		"-j", "DNAT", "--to-destination", fmt.Sprintf("%s:%d", pf.caddyIP, port))
-	if err := cmd.Run(); err != nil {
+		"-j", "DNAT", "--to-destination", fmt.Sprintf("%s:%d", pf.caddyIP, port)); err != nil {
 		log.Printf("  removeOutputRule: rule may not exist (ignored): %v", err)
 	}
 }
 
 // removeMasqueradeRule removes the POSTROUTING MASQUERADE rule
 func (pf *PortForwarder) removeMasqueradeRule() {
-	cmd := exec.Command("iptables", "-t", "nat", "-D", "POSTROUTING",
-		"-d", pf.caddyIP, "-j", "MASQUERADE")
-	if err := cmd.Run(); err != nil {
+	if _, err := pf.ipt("-t", "nat", "-D", "POSTROUTING", "-d", pf.caddyIP, "-j", "MASQUERADE"); err != nil {
 		log.Printf("  removeMasqueradeRule: rule may not exist (ignored): %v", err)
 	}
 }
@@ -272,21 +304,67 @@ func (pf *PortForwarder) removeMasqueradeRule() {
 // are logged, not fatal — the subsequent ensure*Rule calls still install the
 // current rules. See SetupPortForwarding / issue #400.
 func (pf *PortForwarder) reconcileStaleRules() {
-	out, err := exec.Command("iptables", "-t", "nat", "-S").CombinedOutput()
+	pf.deleteFromSave("stale Caddy target", func(save string) [][]string {
+		return staleCaddyNATRules(save, pf.caddyIP)
+	})
+}
+
+// clearLegacyRules deletes the pre-#2732 80/443 DNAT shape. Called only
+// after the current rules are ensured (see applyRules). A legacy rule that
+// also pointed at an old IP is already gone by then, because the nat table
+// is re-read here, so no rule is deleted twice.
+func (pf *PortForwarder) clearLegacyRules() {
+	pf.deleteFromSave("pre-#2732 rule shape", func(save string) [][]string {
+		return legacyCaddyPreRoutingRules(save, pf.networkCIDR)
+	})
+}
+
+// deleteFromSave reads `iptables -t nat -S` and deletes what pick selects.
+func (pf *PortForwarder) deleteFromSave(what string, pick func(save string) [][]string) {
+	out, err := pf.ipt("-t", "nat", "-S")
 	if err != nil {
-		log.Printf("  Warning: could not enumerate nat rules to clear stale Caddy targets: %v", err)
+		log.Printf("  Warning: could not enumerate nat rules to clear %s: %v", what, err)
 		return
 	}
-	for _, args := range staleCaddyNATRules(string(out), pf.caddyIP) {
-		// #nosec G204 -- args are iptables rule specs read back from this host's
-		// own `iptables -t nat -S` output and re-issued verbatim as -D deletes;
-		// not external/user input.
-		if e := exec.Command("iptables", args...).Run(); e != nil {
-			log.Printf("  Warning: failed to delete stale Caddy rule (%v): %v", args, e)
+	for _, args := range pick(string(out)) {
+		if _, e := pf.ipt(args...); e != nil {
+			log.Printf("  Warning: failed to delete Caddy rule (%s) %v: %v", what, args, e)
 		} else {
-			log.Printf("  Cleared stale Caddy port-forward rule pointing away from %s: %v", pf.caddyIP, args)
+			log.Printf("  Cleared Caddy port-forward rule (%s; current target %s): %v", what, pf.caddyIP, args)
 		}
 	}
+}
+
+// legacyCaddyPreRoutingRules returns deletions for the pre-#2732 Caddy DNAT
+// shape: a PREROUTING DNAT on --dport 80/443 excluding the bridge subnet by
+// source (`! -s <networkCIDR>`), whatever its target. Left in place it would
+// sit ahead of the new rule and duplicate it. Passthrough DNATs keep their
+// `! -s` shape but never use 80/443, and a `! -s` rule for any other subnet
+// is not ours, so both are left alone.
+func legacyCaddyPreRoutingRules(saveOutput, networkCIDR string) [][]string {
+	var dels [][]string
+	for _, raw := range strings.Split(saveOutput, "\n") {
+		fields := strings.Fields(strings.TrimSpace(raw))
+		if len(fields) < 2 || fields[0] != "-A" || fields[1] != "PREROUTING" {
+			continue
+		}
+		var dport string
+		isDNAT, negatedSrc := false, false
+		for i, f := range fields {
+			switch {
+			case f == "--dport" && i+1 < len(fields):
+				dport = fields[i+1]
+			case f == "DNAT":
+				isDNAT = true
+			case f == "!" && i+2 < len(fields) && fields[i+1] == "-s" && fields[i+2] == networkCIDR:
+				negatedSrc = true
+			}
+		}
+		if isDNAT && negatedSrc && (dport == "80" || dport == "443") {
+			dels = append(dels, append([]string{"-t", "nat", "-D"}, fields[1:]...))
+		}
+	}
+	return dels
 }
 
 // staleCaddyNATRules scans `iptables -t nat -S` output and returns the argument
