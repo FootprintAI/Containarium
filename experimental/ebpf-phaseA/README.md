@@ -267,3 +267,43 @@ per flow; the LRU map self-evicts idle flows.
 The full on-backend acceptance procedure (verifier acceptance of the egress
 program, `bytes_received` check, history persistence, no-regression, rollback)
 is in [`VALIDATION-traffic-flows.md`](VALIDATION-traffic-flows.md).
+
+## Exec telemetry — `execwatch.bpf.c` (#2637)
+
+A **second object** next to `netpolicy.bpf.o`, for the process guardrail
+(design: [`docs/architecture/process-exec-guardrail.md`](../../docs/architecture/process-exec-guardrail.md),
+component 1). One program on the `sched/sched_process_exec` tracepoint walks
+the exec'ing task's cgroup ancestors (levels 1..12) against the
+`watched_cgroups` hash map (cgroup id → container index, filled by the daemon
+from each running container's init PID → `/proc/<pid>/cgroup` →
+`/sys/fs/cgroup/<path>` inode) and, on a hit, emits one fixed-layout record
+`{host_pid, ppid, uid, cgroup_id, comm[16], filename[256], argv[512],
+argv_truncated}` to the 1 MiB `exec_events` ring buffer. A miss at every level
+(host or core-infra process) emits nothing. `argv` is read from
+`mm->arg_start..arg_end` with CO-RE and capped at 512 bytes; the environment
+block is never read. Ring overflow is counted in `exec_stats[1]`, never
+blocks the exec.
+
+Why a separate object: the exec program is host-global, needs kernel ≥ 5.8
+(ringbuf; 5.6 for `bpf_get_current_ancestor_cgroup_id`) plus kernel BTF for
+the CO-RE reads, and a verifier rejection or missing BTF must not take flow
+enforcement down with it. The network object keeps its 5.4 floor.
+
+Build — `make build-bpf` does all of this: it generates `vmlinux.h` from the
+build host's kernel BTF (`bpftool btf dump file /sys/kernel/btf/vmlinux format c`,
+gitignored, never checked in) and compiles both objects. By hand:
+
+```sh
+bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h
+clang -O2 -g -target bpfel -I. -c execwatch.bpf.c -o execwatch.bpf.o
+```
+
+The Go side is `internal/netbpf/execwatch.go` (`LoadExecWatch`, `Attach`,
+`WatchCgroup`/`UnwatchCgroup`, `ConsumeExecEvents`, `ParseExecEvent`); the
+wire layout is pinned by `TestExecEventWireLayout`, and the real-kernel
+proof (loads, one event per watched exec, none for host execs, a 10k burst
+counts rather than panics, the measured per-exec overhead) is
+`internal/netbpf/execwatch_load_test.go` in the `ebpf-load.yml` lane. The
+daemon resolves the object from the same `CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT`
+value: `embedded` uses the embedded copy, a path loads the sibling
+`execwatch.bpf.o` next to `netpolicy.bpf.o`.

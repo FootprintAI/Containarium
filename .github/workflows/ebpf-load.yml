@@ -6,6 +6,14 @@ name: eBPF load path
 # just that it compiles. See docs/EBPF-CI-LOADING-LANE-DESIGN.md (#1663,
 # split from #1660, umbrella #1645) for the full design.
 #
+# Since #2637 the same lane also proves the SECOND object,
+# internal/netbpf/execwatch.bpf.o (exec telemetry): it loads under this
+# kernel's verifier with CO-RE against the runner's BTF, attaches to the
+# sched/sched_process_exec tracepoint, emits exactly one event for an exec
+# inside a watched cgroup and none for a host exec, counts (not crashes on)
+# a 10k-exec burst, and logs the measured per-exec overhead
+# (execwatch_load_test.go).
+#
 # release.yml already proves the OTHER half (`make build-bpf` succeeds in
 # CI); this lane exists because nothing anywhere proved the load/attach
 # half, and a verifier-rejected instruction or a broken AttachTCX call would
@@ -52,12 +60,13 @@ concurrency:
 
 jobs:
   ebpf-load:
-    name: Load + attach the real eBPF network-policy object
+    name: Load + attach the real eBPF objects (network policy, exec telemetry)
     runs-on: ubuntu-latest
     # No image pull, no Incus — this is a compile + a few `ip` commands + a
-    # short Go test. Generous headroom over the expected ~1-2 minutes for a
-    # first-run apt-get on a cold cache.
-    timeout-minutes: 15
+    # Go test. The exec-telemetry overhead measurement (#2637) runs a paced
+    # exec load for 60 s with and without the program attached, so the test
+    # step itself takes a few minutes; headroom on top for a cold apt cache.
+    timeout-minutes: 25
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -72,17 +81,38 @@ jobs:
       # via a composite action, since it's three lines and this is the only
       # other place that needs it.
       - name: Install eBPF toolchain
+        # bpftool (#2637): `make build-bpf` generates vmlinux.h from the
+        # runner kernel's BTF with it. Ubuntu ships bpftool in
+        # linux-tools-<kernel>; the wrapper in linux-tools-common refuses to
+        # run without the exact kernel's package, so try that first and fall
+        # back to linux-tools-generic's binary, which dumps BTF fine for any
+        # kernel. The resolved path is exported for the next step.
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y clang llvm libbpf-dev linux-libc-dev
+          sudo apt-get install -y clang llvm libbpf-dev linux-libc-dev linux-tools-common
+          sudo apt-get install -y "linux-tools-$(uname -r)" || sudo apt-get install -y linux-tools-generic
+          BPFTOOL="$(command -v bpftool || true)"
+          if [ -z "$BPFTOOL" ] || ! sudo "$BPFTOOL" version >/dev/null 2>&1; then
+            BPFTOOL="$(ls /usr/lib/linux-tools/*/bpftool | head -n1)"
+          fi
+          echo "bpftool: $BPFTOOL ($("$BPFTOOL" version | head -n1))"
+          echo "BPFTOOL=$BPFTOOL" >> "$GITHUB_ENV"
 
-      - name: Compile the eBPF network-policy object
+      - name: Compile both eBPF objects
         run: |
           set -euo pipefail
-          make build-bpf
+          make build-bpf BPFTOOL="$BPFTOOL"
           test -s internal/netbpf/netpolicy.bpf.o || {
             echo "::error::make build-bpf reported success but netpolicy.bpf.o is missing or empty"
+            exit 1
+          }
+          test -s internal/netbpf/execwatch.bpf.o || {
+            echo "::error::make build-bpf reported success but execwatch.bpf.o is missing or empty"
+            exit 1
+          }
+          test -s internal/netbpf/vmlinux.h || {
+            echo "::error::make build-bpf did not generate vmlinux.h"
             exit 1
           }
 
@@ -101,7 +131,7 @@ jobs:
         working-directory: internal/netbpf
         run: |
           set -euo pipefail
-          sudo -E env "PATH=$PATH" go test -tags=ebpf_load -v -count=1 -timeout 5m . | tee ebpf-load-test.log
+          sudo -E env "PATH=$PATH" go test -tags=ebpf_load -v -count=1 -timeout 12m . | tee ebpf-load-test.log
 
       # A skip here means the build tag or the environment silently didn't
       # engage — a lane whose entire purpose is proving real-kernel behavior

@@ -170,14 +170,22 @@ jobs:
       # ebpf-load.yml's (#1663) proven recipe, copied verbatim — not shared
       # cross-workflow, same reasoning both lanes already document.
       - name: Install eBPF toolchain
+        # bpftool (#2637): build-bpf now also generates vmlinux.h for the
+        # exec-telemetry object; same fallback recipe as ebpf-load.yml.
         run: |
           set -euo pipefail
-          sudo apt-get install -y clang llvm libbpf-dev linux-libc-dev
+          sudo apt-get install -y clang llvm libbpf-dev linux-libc-dev linux-tools-common
+          sudo apt-get install -y "linux-tools-$(uname -r)" || sudo apt-get install -y linux-tools-generic
+          BPFTOOL="$(command -v bpftool || true)"
+          if [ -z "$BPFTOOL" ] || ! sudo "$BPFTOOL" version >/dev/null 2>&1; then
+            BPFTOOL="$(ls /usr/lib/linux-tools/*/bpftool | head -n1)"
+          fi
+          echo "BPFTOOL=$BPFTOOL" >> "$GITHUB_ENV"
 
-      - name: Compile the eBPF network-policy object
+      - name: Compile the eBPF objects
         run: |
           set -euo pipefail
-          make build-bpf
+          make build-bpf BPFTOOL="$BPFTOOL"
           test -s internal/netbpf/netpolicy.bpf.o || {
             echo "::error::make build-bpf reported success but netpolicy.bpf.o is missing or empty"
             exit 1
