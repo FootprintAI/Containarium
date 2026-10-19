@@ -5,7 +5,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -52,8 +54,17 @@ func newFakeBoxUser(t *testing.T, exitCode int, sleep time.Duration) *fakeBoxUse
 // production would spawn actually runs the fake claude binary above.
 func boxRunStartServer(t *testing.T, u *fakeBoxUser) (*ContainerServer, string, *shBox) {
 	t.Helper()
+	// The spawn script detaches the run with setsid and the stop script reads
+	// process groups with ps -eo; both are what runs inside a (Linux) box, and
+	// neither exists on macOS, where every test using this helper used to fail
+	// with "exit status 1". CI runs on Linux, so nothing is lost there (#2677).
+	if runtime.GOOS != "linux" {
+		t.Skip("box-run scripts need Linux (setsid, ps -eo); they run inside Linux boxes")
+	}
 	dir := t.TempDir()
 	list := &shBox{}
+	var startedMu sync.Mutex
+	started := map[string]bool{}
 	s := &ContainerServer{
 		boxRunExec:   list.exec,
 		boxRunLogDir: dir,
@@ -62,6 +73,9 @@ func boxRunStartServer(t *testing.T, u *fakeBoxUser) (*ContainerServer, string, 
 			return false, nil
 		},
 		boxRunStartExec: func(box, username, script string) (string, error) {
+			startedMu.Lock()
+			started[username] = true
+			startedMu.Unlock()
 			cmd := exec.Command("sh", "-c", script)
 			cmd.Env = append(os.Environ(), "HOME="+u.home)
 			out, err := cmd.CombinedOutput()
@@ -74,7 +88,49 @@ func boxRunStartServer(t *testing.T, u *fakeBoxUser) (*ContainerServer, string, 
 			return string(out), nil
 		},
 	}
+	// #2677: a run started by the test keeps writing its log and exit sidecar
+	// into dir after the test body returns, so t.TempDir's RemoveAll could race
+	// it ("directory not empty"). Cleanups run last-in-first-out and TempDir's
+	// was registered first, so this one runs before the directory is removed:
+	// wait for every run the test started to leave RUNNING.
+	t.Cleanup(func() {
+		startedMu.Lock()
+		users := make([]string, 0, len(started))
+		for name := range started {
+			users = append(users, name)
+		}
+		startedMu.Unlock()
+		for _, name := range users {
+			drainBoxRuns(t, s, name, 10*time.Second)
+		}
+	})
 	return s, dir, list
+}
+
+// drainBoxRuns polls ListBoxRuns until none of username's runs is RUNNING (or
+// the deadline passes, which is logged, not failed: a cleanup cannot fix a run
+// that never ends, and the test body already had its say).
+func drainBoxRuns(t *testing.T, s *ContainerServer, username string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		resp, err := s.ListBoxRuns(tenantCtx(username), &pb.ListBoxRunsRequest{Username: username})
+		if err != nil {
+			return // the log dir is already gone: nothing is left to race
+		}
+		running := false
+		for _, r := range resp.Runs {
+			if r.GetOutcome() == pb.BoxRunOutcome_BOX_RUN_OUTCOME_RUNNING {
+				running = true
+				break
+			}
+		}
+		if !running {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Logf("a run for %q was still RUNNING after %s; cleanup may race it", username, timeout)
 }
 
 // waitForOutcome polls ListBoxRuns until name's outcome matches want (or the
@@ -515,5 +571,68 @@ func mustWriteFile(t *testing.T, path, content string, dir bool) {
 	}
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// #2677: drainBoxRuns is what keeps a test's still-running run from writing into
+// the temp dir while it is being removed. It must return only once the run has
+// left RUNNING, and must not wait at all when nothing is running.
+func TestDrainBoxRuns_WaitsForARunningRunToExit(t *testing.T) {
+	u := newFakeBoxUser(t, 0, 300*time.Millisecond)
+	s, _, _ := boxRunStartServer(t, u)
+
+	if _, err := s.StartBoxRun(tenantCtx("alice"), &pb.StartBoxRunRequest{
+		Username: "alice", Prompt: "p", SessionId: "sess-drain",
+	}); err != nil {
+		t.Fatalf("StartBoxRun: %v", err)
+	}
+	if got := waitForOutcome(t, s, "alice", "sess-drain", pb.BoxRunOutcome_BOX_RUN_OUTCOME_RUNNING, 3*time.Second); got == nil {
+		t.Fatal("run never showed as RUNNING")
+	}
+
+	drainBoxRuns(t, s, "alice", 5*time.Second)
+
+	resp, err := s.ListBoxRuns(tenantCtx("alice"), &pb.ListBoxRunsRequest{Username: "alice"})
+	if err != nil {
+		t.Fatalf("ListBoxRuns: %v", err)
+	}
+	for _, r := range resp.Runs {
+		if r.GetOutcome() == pb.BoxRunOutcome_BOX_RUN_OUTCOME_RUNNING {
+			t.Fatalf("drainBoxRuns returned while %q was still RUNNING", r.GetRunName())
+		}
+	}
+
+	start := time.Now()
+	drainBoxRuns(t, s, "alice", 5*time.Second)
+	if time.Since(start) > time.Second {
+		t.Errorf("drain with nothing running took %s, want ~immediate", time.Since(start))
+	}
+}
+
+// The cleanup registered by boxRunStartServer drains every user that started a
+// run, so a test that returns with a run in flight leaves no writer behind: the
+// subtest below returns straight after starting a 300 ms run, and the run must
+// have exited by the time t.Run returns (the cleanup ran).
+func TestBoxRunStartServer_CleanupWaitsForRunsTheTestStarted(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		// boxRunStartServer skips there, which would leave dir unset and make the
+		// assertion below pass vacuously.
+		t.Skip("box-run scripts need Linux (setsid, ps -eo)")
+	}
+	u := newFakeBoxUser(t, 0, 300*time.Millisecond)
+	var dir string
+	t.Run("starts a run and returns immediately", func(t *testing.T) {
+		var s *ContainerServer
+		s, dir, _ = boxRunStartServer(t, u)
+		if _, err := s.StartBoxRun(tenantCtx("alice"), &pb.StartBoxRunRequest{
+			Username: "alice", Prompt: "p", SessionId: "sess-cleanup",
+		}); err != nil {
+			t.Fatalf("StartBoxRun: %v", err)
+		}
+	})
+	// The subtest's TempDir is gone only if its cleanup (drain, then RemoveAll)
+	// completed without the "directory not empty" race.
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("the subtest's temp dir should have been removed cleanly, stat err = %v", err)
 	}
 }

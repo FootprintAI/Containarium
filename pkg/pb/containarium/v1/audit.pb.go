@@ -35,6 +35,17 @@ const (
 	// CLOSE follows. To be stored as action ssh_session_denied (#2519); until
 	// then ingest rejects it as an invalid phase.
 	SSHSessionPhase_SSH_SESSION_PHASE_DENIED SSHSessionPhase = 3
+	// Failed authentications from one source IP within one ban window (#2419),
+	// written by the sentinel's ssh-ban-plugin when the window ends. No session
+	// existed, so there is no routed backend, login or credential: the record
+	// ships to the sentinel's default backend. failure_count carries the total.
+	// With an empty client_ip it is the overflow record instead: see
+	// suppressed_count.
+	SSHSessionPhase_SSH_SESSION_PHASE_AUTH_FAILED SSHSessionPhase = 4
+	// A source IP crossed the failure budget and is banned (#2419); one record
+	// per ban. failure_count is the failures that tripped it, banned_until when
+	// the ban lapses.
+	SSHSessionPhase_SSH_SESSION_PHASE_BANNED SSHSessionPhase = 5
 )
 
 // Enum value maps for SSHSessionPhase.
@@ -44,12 +55,16 @@ var (
 		1: "SSH_SESSION_PHASE_OPEN",
 		2: "SSH_SESSION_PHASE_CLOSE",
 		3: "SSH_SESSION_PHASE_DENIED",
+		4: "SSH_SESSION_PHASE_AUTH_FAILED",
+		5: "SSH_SESSION_PHASE_BANNED",
 	}
 	SSHSessionPhase_value = map[string]int32{
 		"SSH_SESSION_PHASE_UNSPECIFIED": 0,
 		"SSH_SESSION_PHASE_OPEN":        1,
 		"SSH_SESSION_PHASE_CLOSE":       2,
 		"SSH_SESSION_PHASE_DENIED":      3,
+		"SSH_SESSION_PHASE_AUTH_FAILED": 4,
+		"SSH_SESSION_PHASE_BANNED":      5,
 	}
 )
 
@@ -348,9 +363,19 @@ type SSHSessionRecord struct {
 	DenyReason SSHDenyReason `protobuf:"varint,13,opt,name=deny_reason,json=denyReason,proto3,enum=containarium.v1.SSHDenyReason" json:"deny_reason,omitempty"`
 	// True when the decision was enforced; false in audit-only mode, where a
 	// DENY decision is recorded but the session still opens.
-	Enforced      bool `protobuf:"varint,14,opt,name=enforced,proto3" json:"enforced,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Enforced bool `protobuf:"varint,14,opt,name=enforced,proto3" json:"enforced,omitempty"`
+	// AUTH_FAILED / BANNED only (#2419): failed authentications counted.
+	FailureCount uint64 `protobuf:"varint,15,opt,name=failure_count,json=failureCount,proto3" json:"failure_count,omitempty"`
+	// BANNED only: when the ban lapses.
+	BannedUntil *timestamppb.Timestamp `protobuf:"bytes,16,opt,name=banned_until,json=bannedUntil,proto3" json:"banned_until,omitempty"`
+	// AUTH_FAILED / BANNED only: which sentinel SSH listener saw the failures.
+	BanListener SSHBanListener `protobuf:"varint,17,opt,name=ban_listener,json=banListener,proto3,enum=containarium.v1.SSHBanListener" json:"ban_listener,omitempty"`
+	// AUTH_FAILED with an empty client_ip only: failures from other sources that
+	// were not written one by one because the plugin's record rate cap was
+	// reached (a scan), aggregated here so the volume is still visible.
+	SuppressedCount uint64 `protobuf:"varint,18,opt,name=suppressed_count,json=suppressedCount,proto3" json:"suppressed_count,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *SSHSessionRecord) Reset() {
@@ -481,6 +506,34 @@ func (x *SSHSessionRecord) GetEnforced() bool {
 	return false
 }
 
+func (x *SSHSessionRecord) GetFailureCount() uint64 {
+	if x != nil {
+		return x.FailureCount
+	}
+	return 0
+}
+
+func (x *SSHSessionRecord) GetBannedUntil() *timestamppb.Timestamp {
+	if x != nil {
+		return x.BannedUntil
+	}
+	return nil
+}
+
+func (x *SSHSessionRecord) GetBanListener() SSHBanListener {
+	if x != nil {
+		return x.BanListener
+	}
+	return SSHBanListener_SSH_BAN_LISTENER_UNSPECIFIED
+}
+
+func (x *SSHSessionRecord) GetSuppressedCount() uint64 {
+	if x != nil {
+		return x.SuppressedCount
+	}
+	return 0
+}
+
 type IngestSSHSessionRecordsRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// 1..500 records in file order.
@@ -601,12 +654,12 @@ var File_containarium_v1_audit_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_audit_proto_rawDesc = "" +
 	"\n" +
-	"\x1bcontainarium/v1/audit.proto\x12\x0fcontainarium.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a.protoc-gen-openapiv2/options/annotations.proto\x1a\x1fcontainarium/v1/ssh_authz.proto\"\x9c\x01\n" +
+	"\x1bcontainarium/v1/audit.proto\x12\x0fcontainarium.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a.protoc-gen-openapiv2/options/annotations.proto\x1a\x1fcontainarium/v1/ssh_authz.proto\x1a\x1dcontainarium/v1/ssh_ban.proto\"\x9c\x01\n" +
 	"\x14SSHSessionCredential\x12\x15\n" +
 	"\x06key_id\x18\x01 \x01(\tR\x05keyId\x12\x16\n" +
 	"\x06serial\x18\x02 \x01(\x04R\x06serial\x12,\n" +
 	"\x12ca_key_fingerprint\x18\x03 \x01(\tR\x10caKeyFingerprint\x12'\n" +
-	"\x0fkey_fingerprint\x18\x04 \x01(\tR\x0ekeyFingerprint\"\x9e\x05\n" +
+	"\x0fkey_fingerprint\x18\x04 \x01(\tR\x0ekeyFingerprint\"\xf1\x06\n" +
 	"\x10SSHSessionRecord\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x126\n" +
@@ -629,7 +682,11 @@ const file_containarium_v1_audit_proto_rawDesc = "" +
 	"\x0eauthz_decision\x18\f \x01(\x0e2!.containarium.v1.SSHAuthzDecisionR\rauthzDecision\x12?\n" +
 	"\vdeny_reason\x18\r \x01(\x0e2\x1e.containarium.v1.SSHDenyReasonR\n" +
 	"denyReason\x12\x1a\n" +
-	"\benforced\x18\x0e \x01(\bR\benforced\"~\n" +
+	"\benforced\x18\x0e \x01(\bR\benforced\x12#\n" +
+	"\rfailure_count\x18\x0f \x01(\x04R\ffailureCount\x12=\n" +
+	"\fbanned_until\x18\x10 \x01(\v2\x1a.google.protobuf.TimestampR\vbannedUntil\x12B\n" +
+	"\fban_listener\x18\x11 \x01(\x0e2\x1f.containarium.v1.SSHBanListenerR\vbanListener\x12)\n" +
+	"\x10suppressed_count\x18\x12 \x01(\x04R\x0fsuppressedCount\"~\n" +
 	"\x1eIngestSSHSessionRecordsRequest\x12;\n" +
 	"\arecords\x18\x01 \x03(\v2!.containarium.v1.SSHSessionRecordR\arecords\x12\x1f\n" +
 	"\vsentinel_id\x18\x02 \x01(\tR\n" +
@@ -639,12 +696,14 @@ const file_containarium_v1_audit_proto_rawDesc = "" +
 	"\binserted\x18\x02 \x01(\x05R\binserted\x12\x1e\n" +
 	"\n" +
 	"duplicates\x18\x03 \x01(\x05R\n" +
-	"duplicates*\x8b\x01\n" +
+	"duplicates*\xcc\x01\n" +
 	"\x0fSSHSessionPhase\x12!\n" +
 	"\x1dSSH_SESSION_PHASE_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16SSH_SESSION_PHASE_OPEN\x10\x01\x12\x1b\n" +
 	"\x17SSH_SESSION_PHASE_CLOSE\x10\x02\x12\x1c\n" +
-	"\x18SSH_SESSION_PHASE_DENIED\x10\x03*\x8d\x01\n" +
+	"\x18SSH_SESSION_PHASE_DENIED\x10\x03\x12!\n" +
+	"\x1dSSH_SESSION_PHASE_AUTH_FAILED\x10\x04\x12\x1c\n" +
+	"\x18SSH_SESSION_PHASE_BANNED\x10\x05*\x8d\x01\n" +
 	"\rSSHAuthMethod\x12\x1f\n" +
 	"\x1bSSH_AUTH_METHOD_UNSPECIFIED\x10\x00\x12\x1f\n" +
 	"\x1bSSH_AUTH_METHOD_CERTIFICATE\x10\x01\x12\x1d\n" +
@@ -691,6 +750,7 @@ var file_containarium_v1_audit_proto_goTypes = []any{
 	(*timestamppb.Timestamp)(nil),           // 8: google.protobuf.Timestamp
 	(SSHAuthzDecision)(0),                   // 9: containarium.v1.SSHAuthzDecision
 	(SSHDenyReason)(0),                      // 10: containarium.v1.SSHDenyReason
+	(SSHBanListener)(0),                     // 11: containarium.v1.SSHBanListener
 }
 var file_containarium_v1_audit_proto_depIdxs = []int32{
 	0,  // 0: containarium.v1.SSHSessionRecord.phase:type_name -> containarium.v1.SSHSessionPhase
@@ -700,15 +760,17 @@ var file_containarium_v1_audit_proto_depIdxs = []int32{
 	2,  // 4: containarium.v1.SSHSessionRecord.close_reason:type_name -> containarium.v1.SSHCloseReason
 	9,  // 5: containarium.v1.SSHSessionRecord.authz_decision:type_name -> containarium.v1.SSHAuthzDecision
 	10, // 6: containarium.v1.SSHSessionRecord.deny_reason:type_name -> containarium.v1.SSHDenyReason
-	5,  // 7: containarium.v1.IngestSSHSessionRecordsRequest.records:type_name -> containarium.v1.SSHSessionRecord
-	3,  // 8: containarium.v1.IngestSSHSessionRecordsResponse.outcomes:type_name -> containarium.v1.IngestOutcome
-	6,  // 9: containarium.v1.AuditService.IngestSSHSessionRecords:input_type -> containarium.v1.IngestSSHSessionRecordsRequest
-	7,  // 10: containarium.v1.AuditService.IngestSSHSessionRecords:output_type -> containarium.v1.IngestSSHSessionRecordsResponse
-	10, // [10:11] is the sub-list for method output_type
-	9,  // [9:10] is the sub-list for method input_type
-	9,  // [9:9] is the sub-list for extension type_name
-	9,  // [9:9] is the sub-list for extension extendee
-	0,  // [0:9] is the sub-list for field type_name
+	8,  // 7: containarium.v1.SSHSessionRecord.banned_until:type_name -> google.protobuf.Timestamp
+	11, // 8: containarium.v1.SSHSessionRecord.ban_listener:type_name -> containarium.v1.SSHBanListener
+	5,  // 9: containarium.v1.IngestSSHSessionRecordsRequest.records:type_name -> containarium.v1.SSHSessionRecord
+	3,  // 10: containarium.v1.IngestSSHSessionRecordsResponse.outcomes:type_name -> containarium.v1.IngestOutcome
+	6,  // 11: containarium.v1.AuditService.IngestSSHSessionRecords:input_type -> containarium.v1.IngestSSHSessionRecordsRequest
+	7,  // 12: containarium.v1.AuditService.IngestSSHSessionRecords:output_type -> containarium.v1.IngestSSHSessionRecordsResponse
+	12, // [12:13] is the sub-list for method output_type
+	11, // [11:12] is the sub-list for method input_type
+	11, // [11:11] is the sub-list for extension type_name
+	11, // [11:11] is the sub-list for extension extendee
+	0,  // [0:11] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_audit_proto_init() }
@@ -717,6 +779,7 @@ func file_containarium_v1_audit_proto_init() {
 		return
 	}
 	file_containarium_v1_ssh_authz_proto_init()
+	file_containarium_v1_ssh_ban_proto_init()
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

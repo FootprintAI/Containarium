@@ -53,17 +53,35 @@ Prerequisites:
   instead of persisted rows — findings still flow to the event bus, the
   audit chain, and the webhook, but they do not survive a daemon restart.
 
-## The three detection rules
+## The detection rules
 
 | Rule | Severity | Fires when |
 |------|----------|------------|
 | Known-bad destination | HIGH | A flow's destination matches the embedded (versioned, mining-pools-first) or operator-added bad-destination list. |
 | Cross-tenant flow | CRITICAL | A flow's source and destination resolve to containers in *different* tenants on the same backend — the continuous form of the one-shot isolation check. Never fires on an IP it can't attribute to a tenant. |
-| Deny burst | MEDIUM | A tenant accumulates ≥`CONTAINARIUM_THREAT_DENY_BURST_N` (default 20) policy denies within `CONTAINARIUM_THREAT_DENY_BURST_WINDOW_MINUTES` (default 5) minutes. Both tunable per operator, without a daemon rebuild — set the env var and restart. |
+| Mining behavior | HIGH | A container's mean CPU over `window` (default 5 min) is at least `min(min_cores, min_fraction_of_limit × limits.cpu)` (defaults 1.5 cores and 0.75; a box with no CPU limit uses `min_cores` alone) **and** it holds a flow, at least `flow_min_age` (default 3 min) old and seen within the window, to a stratum port (default 3333, 4444, 5555, 7777, 14444, 14433) or to a listed bad destination on any port. Subject is the destination `ip:port`, so a second pool opens a second finding. Evidence: a CPU summary (mean, peak, window, samples) and the flow, with its first/last seen (anchored on the flow poll that reported it, since kernel flow stamps are monotonic) and what matched it (`port:<n>` or `bad-destination:<cidr>`). CPU comes from the metrics collector's tick, so the rule needs VictoriaMetrics configured; without it the rule stays inert. Thresholds are persisted in the daemon config store under `threatdetect.mining_behavior.thresholds` (protojson of `MiningBehaviorThresholds`; a zero field keeps its default); the `process-policy set` CLI that writes them lands with #2636. |
+| Deny burst | MEDIUM | A tenant accumulates ≥`CONTAINARIUM_THREAT_DENY_BURST_N` (default 20) policy denies within `CONTAINARIUM_THREAT_DENY_BURST_WINDOW_MINUTES` (default 5) minutes. Both tunable per operator, without a daemon rebuild — set the env var and restart. **Counts enforced drops only** by default: a would-deny from a tenant whose policy is only observed (`log_only`) is not counted, so enabling the sentry on an observation-only host does not raise "fence probing" findings for ordinary egress. Set `CONTAINARIUM_THREAT_DENY_BURST_COUNT_LOG_ONLY=1` to count those too. |
 
 A rule firing repeatedly for the same `(rule, tenant, subject)` dedupes
 into one open finding with an updated count, rather than creating a new
 row or re-alerting on every repeat.
+
+### Soak first on an observation-only fleet
+
+With `CONTAINARIUM_NETWORK_POLICY_ENFORCE` unset the enforcer logs every
+flow that no allow-list covers as `deny ... log_only (not dropped)` and
+nothing is dropped. Before enforcing, and before trusting deny-burst:
+
+1. Run observation-only and review the would-deny volume per tenant in the
+   daemon journal. Expect it to be large on a fleet with no curated
+   allow-lists: one line per flow, so hundreds of lines per tenant per
+   minute is possible, and journald growth of tens of MB per day on a busy
+   host. `netbpf: perf ring lost N samples` means the event stream is
+   incomplete at that volume.
+2. Curate each tenant's allow-list until the would-deny volume reflects
+   traffic you actually want blocked.
+3. Only then enable enforcement. From that point the deny-burst rule counts
+   the drops, and a burst is a real signal.
 
 ## Reading sentry status
 
@@ -84,8 +102,69 @@ Reports one of four states:
 panicked shows `healthy=false` with its last error, while the engine and
 every other rule keep running unaffected.
 
+Two more lines report the signal sources that feed the rules: `cpu-sampler`
+(#2645) and `exec-telemetry` (#2637, below). Each reads `ok` /
+`metrics-collector` / `standalone (30s)` when the source runs, or
+`unavailable (<reason>)` when it cannot; an `unavailable` source on an armed
+backend raises the MEDIUM `SENTRY_UNAVAILABLE` finding with the stable
+subject `cpu-sampler unavailable` or `exec-telemetry unavailable` (the
+reason is in the finding's evidence note), resolved when the source
+recovers. `exec-events-lost: N` appears when the kernel had to drop exec
+events because the ring buffer was full (a counter, not a fault).
+
 Add `--json` for the raw response. MCP equivalent: `security_sentry_status`
 (no arguments).
+
+## Exec telemetry (process guardrail)
+
+Since #2637 the daemon also watches **process execs** in tenant boxes from
+the host, with a second eBPF object (`execwatch.bpf.o`) on the
+`sched/sched_process_exec` tracepoint. Tenants have root in their box, so
+nothing inside it is trusted to report; the kernel filters in-kernel by the
+container's cgroup, so host and core-infra execs are never emitted. Each
+event carries the host pid/ppid/uid, the executable path and the argument
+vector (capped at 512 bytes, **never** the environment), attributed to the
+container. Events feed rules that implement `ExecConsumer` (the
+miner-signature rule, #2638) and a live stream; they are **not** written to
+the audit log — only matched findings are.
+
+```bash
+# the last five minutes of execs across all boxes (the daemon's in-memory buffer)
+containarium security exec-events
+
+# one box, live
+containarium security exec-events --container box-a --follow
+
+# machine-readable, one ExecEvent JSON per line
+containarium security exec-events --since 1h --json
+```
+
+Output, one line per exec:
+
+```
+2026-10-19T05:07:18Z  box-a  pid=4242 ppid=4100 uid=1000  /tmp/.x/xmrig  ./xmrig -o pool:3333
+```
+
+Requirements and failure mode: the exec object needs kernel ≥ 5.8 (ring
+buffer; 5.6 for the cgroup-ancestor helper) and kernel BTF
+(`/sys/kernel/btf/vmlinux`) for its CO-RE reads — Ubuntu 22.04 and 24.04
+LTS have both. The object is resolved from the same
+`CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT` value as the network-policy object
+(`embedded`, or the sibling `execwatch.bpf.o` of a netpolicy object path).
+When it cannot be loaded or attached, `sentry status` reports
+`exec-telemetry: unavailable (<reason>)`, `exec-events` fails with the same
+reason, the `SENTRY_UNAVAILABLE` finding fires on an armed backend, and
+**the flow rules keep running** — the two objects are independent.
+
+Overhead, measured by `TestExecWatch_OverheadMeasurement` in the eBPF
+loading lane (paced 1,000 execs/s for 60 s, attached vs. not attached). On a
+lab host (kernel 6.8, 24 threads): ~971 execs/s sustained, **0 events
+lost**, kernel-side ≈ 25 µs per exec (≈ 2.4 % of one core, within the
+run-to-run noise of a ~300 µs fork+exec) plus ≈ 1.3 % of one core for the
+daemon's ring consumer — about 0.46 % of an 8-core host at that rate. A
+burst that outruns the consumer is counted in `exec-events-lost`
+(10,000 undrained execs → 1,272 kept, 8,729 counted lost, no crash). The
+acceptance number is re-measured on the sprint's verification guest.
 
 ## Triaging findings
 
@@ -159,6 +238,7 @@ Every CLI/MCP surface above is a thin wrapper over these RPCs
 | Method | Path |
 |--------|------|
 | `GET` | `/v1/security/sentry/status` |
+| `GET` | `/v1/security/exec-events` (server stream; `container`, `since`, `follow`) |
 | `GET` | `/v1/security/findings` |
 | `POST` | `/v1/security/findings/{id}/resolve` |
 | `GET` | `/v1/security/bad-destinations` |

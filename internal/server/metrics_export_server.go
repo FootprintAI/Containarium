@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sync/atomic"
 
 	"github.com/footprintai/containarium/internal/app"
 	"github.com/footprintai/containarium/internal/auth"
@@ -291,7 +292,7 @@ func (s *ContainerServer) buildMetricsExportCollector(ctx context.Context, cfg c
 
 	return cloudexport.NewCollector(cloudexport.CollectorOptions{
 		Sources:         sources,
-		PlatformSources: serverPlatformSources{stats: s.platformStats, peers: s.peerPool, backupMgr: s.backupMgr},
+		PlatformSources: serverPlatformSources{stats: s.platformStats, peers: s.peerPool, backupMgr: s.backupMgr, backupReadFailures: new(atomic.Int64)},
 		Exporter:        exporter,
 		Resource:        res,
 		Labels:          s.currentExportLabels(sources.Hostname()),

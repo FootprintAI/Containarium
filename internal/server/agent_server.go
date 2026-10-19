@@ -80,7 +80,21 @@ type workspaceSeed struct {
 	GitCommit string `json:"git_commit"`
 }
 
-// buildWorkspaceSeedScript writes seed as JSON into seedDir/workspace.json.
+// workspacePromptNote is appended to the run's system prompt when a checkout
+// exists. The in-box runtime does not read workspace.json yet, so its file
+// tools root at the box user's HOME and the agent burns tool calls hunting for
+// a repository the daemon already cloned (#2512).
+func workspacePromptNote(seed workspaceSeed) string {
+	note := "\n\nYour repository checkout is at " + seed.Path
+	if seed.GitCommit != "" {
+		note += " (commit " + seed.GitCommit + ")"
+	}
+	return note + ". Relative paths in the task are relative to that directory; " +
+		"use absolute paths under it with the file tools, and do not search for the repository."
+}
+
+// buildWorkspaceSeedScript writes seed as JSON into seedDir/workspace.json,
+// and appends workspacePromptNote to seedDir/system_prompt.txt.
 // Mirrors buildAgentSeedScript's shape (mkdir -p, single-quoted printf) since
 // every field here — a caller-supplied repo URL and ref included — needs the
 // same shell-injection guard that function already carries.
@@ -97,6 +111,9 @@ func buildWorkspaceSeedScript(seedDir string, seed workspaceSeed) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "mkdir -p %s\n", seedDir)
 	fmt.Fprintf(&b, "printf '%%s' %s > %s/workspace.json\n", shellSingleQuote(string(raw)), seedDir)
+	if seed.Path != "" {
+		fmt.Fprintf(&b, "printf '%%s' %s >> %s/system_prompt.txt\n", shellSingleQuote(workspacePromptNote(seed)), seedDir)
+	}
 	return b.String()
 }
 

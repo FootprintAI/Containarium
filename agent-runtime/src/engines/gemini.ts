@@ -100,9 +100,13 @@ export class GeminiEngine implements Engine {
 // journalGeminiResponse journals a generateContent response: the model's
 // text and function calls and the tool responses from the automatic
 // function-calling history (the user's own prompt and model thoughts are
-// skipped), then the final text.
+// skipped), then the final text. When the model ended without a final text, or
+// ended for any reason but STOP, a status row names the finish reason (#2513):
+// the tool rows alone cannot tell a model that stopped silently from one cut
+// off by MAX_TOKENS or a safety block.
 export function journalGeminiResponse(
-  response: Pick<GenerateContentResponse, "automaticFunctionCallingHistory" | "text">,
+  response: Pick<GenerateContentResponse, "automaticFunctionCallingHistory" | "text"> &
+    Partial<Pick<GenerateContentResponse, "candidates" | "promptFeedback">>,
   journal: JournalSink,
 ): void {
   for (const content of response.automaticFunctionCallingHistory ?? []) {
@@ -123,4 +127,25 @@ export function journalGeminiResponse(
   }
   const text = response.text;
   if (text) journal.append({ kind: "assistant", text });
+  const ending = describeGeminiEnding(response, !!text?.trim());
+  if (ending) journal.append({ kind: "status", text: ending });
+}
+
+// describeGeminiEnding explains how the model's turn ended, or returns
+// undefined for the unremarkable case (a final text, finish reason STOP).
+// Only enumerated, bounded fields are used: the finish reason, the API's own
+// finish message and the prompt-block reason, never model output.
+export function describeGeminiEnding(
+  response: Partial<Pick<GenerateContentResponse, "candidates" | "promptFeedback">>,
+  hasFinalText: boolean,
+): string | undefined {
+  const candidate = response.candidates?.[0];
+  const reason = candidate?.finishReason;
+  if (hasFinalText && (reason === undefined || String(reason) === "STOP")) return undefined;
+  const fields = [`finish_reason=${reason ?? "unknown"}`];
+  if (candidate?.finishMessage) fields.push(`finish_message=${JSON.stringify(candidate.finishMessage.slice(0, 200))}`);
+  if (response.promptFeedback?.blockReason) fields.push(`block_reason=${response.promptFeedback.blockReason}`);
+  return hasFinalText
+    ? `model ended abnormally after its final message: ${fields.join(" ")}`
+    : `model ended without a final message: ${fields.join(" ")}`;
 }

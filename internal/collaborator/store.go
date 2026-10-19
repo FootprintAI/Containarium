@@ -69,6 +69,10 @@ func NewStore(ctx context.Context, connectionString string) (*Store, error) {
 	return store, nil
 }
 
+// Pool returns the store's connection pool, so other daemon tables (the
+// ssh_keys registry, #2517) share it.
+func (s *Store) Pool() *pgxpool.Pool { return s.pool }
+
 // Close closes the database connection pool
 func (s *Store) Close() {
 	if s.pool != nil {

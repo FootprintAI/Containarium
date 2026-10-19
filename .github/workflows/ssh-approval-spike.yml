@@ -29,6 +29,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@v7
         with:
           go-version: '1.26.9'
@@ -58,7 +60,7 @@ jobs:
           fi
       - name: Preserve the spike transcript
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: ssh-approval-spike
           path: ${{ runner.temp }}/approval.log

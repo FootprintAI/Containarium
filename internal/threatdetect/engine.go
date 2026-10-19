@@ -25,6 +25,59 @@ type RuleContext struct {
 	// Now is injected so time-window rules (deny-burst) are testable with a
 	// fake clock instead of wall time.
 	Now func() time.Time
+	// MiningThresholds returns the operator-tuned mining-behavior thresholds
+	// (#2635), read from the daemon config store by the caller. nil means
+	// DefaultMiningThresholds.
+	MiningThresholds func() MiningThresholds
+}
+
+// CPUSample is one container's CPU usage over one metrics-collector tick
+// (#2635), derived from the collector's cumulative CPUUsageSeconds. IP is
+// the container's address, which joins the sample to the flow records whose
+// source it is.
+type CPUSample struct {
+	Container string
+	IP        netip.Addr
+	// Cores is the mean number of busy cores over the tick (1.0 = one core).
+	Cores float64
+	// LimitCores is the box's limits.cpu in cores; 0 when unlimited.
+	LimitCores float64
+	At         time.Time
+}
+
+// CPUConsumer is an optional interface a Rule implements to receive CPU
+// samples. The engine type-asserts on Register, so rules that do not need
+// CPU stay unchanged.
+type CPUConsumer interface {
+	OnCPU(ctx RuleContext, samples []CPUSample) []RawFinding
+}
+
+// ExecEvent is one process exec inside a tenant container, as the host-side
+// exec telemetry (#2637) delivers it: the kernel record decoded and
+// attributed to its container by the server's ExecWatcher. PID and PPID are
+// host-namespace ids. Argv is joined with single spaces, capped at 512 bytes
+// by the kernel program and never containing the environment. SHA256 is
+// empty on the first delivery; a rule that needs it asks the watcher to hash
+// /proc/<pid>/exe and gets a second OnExec with it filled (#2638).
+type ExecEvent struct {
+	Container     string
+	TenantID      string
+	At            time.Time
+	PID           uint32
+	PPID          uint32
+	UID           uint32
+	Comm          string
+	Filename      string
+	Argv          string
+	ArgvTruncated bool
+	SHA256        string
+}
+
+// ExecConsumer is an optional interface a Rule implements to receive exec
+// events (#2637), the exec twin of CPUConsumer: type-asserted on Register,
+// fanned out by OnExec with the same per-rule panic recovery.
+type ExecConsumer interface {
+	OnExec(ctx RuleContext, ev ExecEvent) []RawFinding
 }
 
 // RawFinding is what a Rule returns when it fires: enough to build a
@@ -104,9 +157,11 @@ type Engine struct {
 
 	ruleCtx RuleContext
 
-	mu     sync.Mutex
-	rules  []Rule
-	health map[pb.ThreatRuleId]*ruleHealth
+	mu        sync.Mutex
+	rules     []Rule
+	cpuRules  []CPUConsumer
+	execRules []ExecConsumer
+	health    map[pb.ThreatRuleId]*ruleHealth
 }
 
 // NewEngine builds a detection engine over sink. backendID is stamped onto
@@ -148,7 +203,65 @@ func (e *Engine) Register(r Rule) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.rules = append(e.rules, r)
+	if c, ok := r.(CPUConsumer); ok {
+		e.cpuRules = append(e.cpuRules, c)
+	}
+	if c, ok := r.(ExecConsumer); ok {
+		e.execRules = append(e.execRules, c)
+	}
 	e.health[r.ID()] = &ruleHealth{healthy: true}
+}
+
+// SetMiningThresholds wires the source of the mining-behavior thresholds
+// into every rule's RuleContext. Like Register, call it before wiring hooks.
+func (e *Engine) SetMiningThresholds(fn func() MiningThresholds) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.ruleCtx.MiningThresholds = fn
+}
+
+// OnCPU is the metrics collector's CPU hook (via the server's CPUSampler):
+// fan the samples out to every rule implementing CPUConsumer, with the same
+// panic recovery as the flow and deny paths.
+func (e *Engine) OnCPU(samples []CPUSample) {
+	e.mu.Lock()
+	rules := append([]CPUConsumer(nil), e.cpuRules...)
+	e.mu.Unlock()
+	for _, r := range rules {
+		e.upsertAll(e.evalCPU(r, samples))
+	}
+}
+
+func (e *Engine) evalCPU(r CPUConsumer, samples []CPUSample) (out []RawFinding) {
+	id := pb.ThreatRuleId_THREAT_RULE_ID_UNSPECIFIED
+	if rule, ok := r.(Rule); ok {
+		id = rule.ID()
+	}
+	defer e.recoverRule(id)
+	return r.OnCPU(e.ruleCtx, samples)
+}
+
+// OnExec is the ExecWatcher's hook (#2637): fan one attributed exec event
+// out to every rule implementing ExecConsumer, with the same panic recovery
+// as the other paths. Runs synchronously on the ring consumer goroutine, so
+// a rule must stay cheap here (name/argv matching); anything slower belongs
+// off this path.
+func (e *Engine) OnExec(ev ExecEvent) {
+	e.mu.Lock()
+	rules := append([]ExecConsumer(nil), e.execRules...)
+	e.mu.Unlock()
+	for _, r := range rules {
+		e.upsertAll(e.evalExec(r, ev))
+	}
+}
+
+func (e *Engine) evalExec(r ExecConsumer, ev ExecEvent) (out []RawFinding) {
+	id := pb.ThreatRuleId_THREAT_RULE_ID_UNSPECIFIED
+	if rule, ok := r.(Rule); ok {
+		id = rule.ID()
+	}
+	defer e.recoverRule(id)
+	return r.OnExec(e.ruleCtx, ev)
 }
 
 // OnFlows is the enforcer's flow-poll hook (SetFlowHook): fan the batch out

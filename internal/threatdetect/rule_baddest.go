@@ -348,3 +348,18 @@ func badDestProtoName(proto uint8) string {
 		return ""
 	}
 }
+
+// MatchDestination reports whether ip is on the merged baseline + operator
+// list, and the matching entry's CIDR. It satisfies DestinationMatcher so
+// the mining-behavior rule (#2635) shares this rule's live list.
+func (r *BadDestinationRule) MatchDestination(ip netip.Addr) (cidr string, ok bool) {
+	r.mu.RLock()
+	m := r.matcher
+	r.mu.RUnlock()
+	for _, e := range m.entries {
+		if e.prefix.Contains(ip) {
+			return e.prefix.String(), true
+		}
+	}
+	return "", false
+}

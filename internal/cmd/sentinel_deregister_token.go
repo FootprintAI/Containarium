@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 
 	"github.com/footprintai/containarium/internal/config"
 	"github.com/footprintai/containarium/internal/sentinel"
@@ -73,7 +72,7 @@ func init() {
 	sentinelDeregisterTokenCmd.Flags().StringVar(&sentinelDeregisterTokenSentinelURL, "url", "", "Sentinel binary-server base URL, e.g. http://asia-east1.containarium.dev:8888 (required)")
 	sentinelDeregisterTokenCmd.Flags().StringVar(&sentinelDeregisterTokenToken, "token", "", "Exact tunnel-join token to revoke")
 	sentinelDeregisterTokenCmd.Flags().StringVar(&sentinelDeregisterTokenTokenPrefix, "token-prefix", "", `Host-id prefix to revoke every token under, e.g. "<host-id>." (must end with ".")`)
-	sentinelDeregisterTokenCmd.Flags().StringVar(&sentinelDeregisterTokenSecret, "secret", os.Getenv(config.EnvSentinelAdminSecret), "Sentinel admin secret (defaults to $CONTAINARIUM_SENTINEL_ADMIN_SECRET)")
+	secretEnvFlag(sentinelDeregisterTokenCmd.Flags(), &sentinelDeregisterTokenSecret, "secret", config.EnvSentinelAdminSecret, "Sentinel admin secret (defaults to $CONTAINARIUM_SENTINEL_ADMIN_SECRET)")
 
 	sentinelDeregisterTokenCmd.Flags().Var(&sentinelDeregisterTokenKind, "kind", `Which credential to remove: "tunnel-join" (default) or "audit-ingest" (a backend's SSH session shipper token, #2415)`)
 	sentinelDeregisterTokenCmd.Flags().StringVar(&sentinelDeregisterTokenBackend, "backend", "", "Backend id whose audit-ingest token to remove (required for --kind audit-ingest)")

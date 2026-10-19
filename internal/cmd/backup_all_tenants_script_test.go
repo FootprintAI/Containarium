@@ -117,3 +117,96 @@ func TestBackupAllTenantsScript_HookFormatColumn(t *testing.T) {
 		})
 	}
 }
+
+// runBackupAllTenantsMint runs the script with extra env and a stand-in
+// binary whose `token generate` prints a fixed token (or fails when
+// mintFails). It returns the combined output, every recorded invocation, and
+// the script's exit error.
+func runBackupAllTenantsMint(t *testing.T, extraEnv []string, mintFails bool) (string, []string, error) {
+	t.Helper()
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	dir := t.TempDir()
+	confPath := filepath.Join(dir, "backup-tenants.conf")
+	if err := os.WriteFile(confPath, []byte("acme appdb\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(dir, "calls.log")
+	fakeBin := filepath.Join(dir, "containarium")
+	fail := "0"
+	if mintFails {
+		fail = "1"
+	}
+	fake := "#!/usr/bin/env bash\necho \"$*\" >> " + logPath + "\n" +
+		"if [[ \"$1 $2\" == \"token generate\" ]]; then\n" +
+		"  if [[ " + fail + " == 1 ]]; then echo 'cannot read secret' >&2; exit 1; fi\n" +
+		"  printf 'minted-token'\n" +
+		"fi\n"
+	if err := os.WriteFile(fakeBin, []byte(fake), 0o700); err != nil { //nolint:gosec // test-only executable stand-in
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command("bash", backupAllTenantsScript) //nolint:gosec // test-only, fixed path
+	cmd.Env = append(os.Environ(),
+		"CONTAINARIUM_BACKUP_CONF="+confPath,
+		"CONTAINARIUM_SERVER=localhost:0",
+		"CONTAINARIUM_BACKUP_BUCKET=gs://example-bucket/pg",
+		"CONTAINARIUM_BIN="+fakeBin,
+		"CONTAINARIUM_AUTH_TOKEN=",
+		"CONTAINARIUM_JWT_SECRET_FILE=",
+	)
+	cmd.Env = append(cmd.Env, extraEnv...)
+	out, runErr := cmd.CombinedOutput()
+	var calls []string
+	if raw, err := os.ReadFile(logPath); err == nil { // #nosec G304 -- test temp dir
+		calls = strings.Split(strings.TrimSpace(string(raw)), "\n")
+	}
+	return string(out), calls, runErr
+}
+
+// #2592: with CONTAINARIUM_JWT_SECRET_FILE set the script mints a short-lived
+// token per run and ignores any static CONTAINARIUM_AUTH_TOKEN.
+func TestBackupAllTenantsScript_MintsPerRunToken(t *testing.T) {
+	out, calls, runErr := runBackupAllTenantsMint(t, []string{
+		"CONTAINARIUM_JWT_SECRET_FILE=/etc/containarium/jwt.secret",
+		"CONTAINARIUM_AUTH_TOKEN=stale-static-token",
+	}, false)
+	if runErr != nil {
+		t.Fatalf("script failed: %v\n%s", runErr, out)
+	}
+	if len(calls) < 2 || !strings.HasPrefix(calls[0], "token generate ") {
+		t.Fatalf("first call should be the mint, got %q", calls)
+	}
+	for _, want := range []string{"--expiry 2h", "--secret-file /etc/containarium/jwt.secret", "--raw", "--scopes backups:write,backups:read", "--username backup-scheduler"} {
+		if !strings.Contains(calls[0], want) {
+			t.Errorf("mint call %q missing %q", calls[0], want)
+		}
+	}
+	create := calls[1]
+	if !strings.Contains(create, "--token minted-token") {
+		t.Errorf("backup create should use the minted token: %q", create)
+	}
+	if strings.Contains(strings.Join(calls, "\n"), "stale-static-token") {
+		t.Errorf("static token must be ignored when the secret file is set: %q", calls)
+	}
+}
+
+// #2592: a failed mint is a hard exit — never a fallback to the static token.
+func TestBackupAllTenantsScript_MintFailureIsFatal(t *testing.T) {
+	out, calls, runErr := runBackupAllTenantsMint(t, []string{
+		"CONTAINARIUM_JWT_SECRET_FILE=/nonexistent/jwt.secret",
+		"CONTAINARIUM_AUTH_TOKEN=stale-static-token",
+	}, true)
+	if runErr == nil {
+		t.Fatalf("script should exit non-zero when the mint fails\n%s", out)
+	}
+	if !strings.Contains(out, "mint") {
+		t.Errorf("output should report the mint failure: %s", out)
+	}
+	for _, c := range calls {
+		if strings.HasPrefix(c, "backup create ") {
+			t.Errorf("no backup may run after a failed mint: %q", c)
+		}
+	}
+}

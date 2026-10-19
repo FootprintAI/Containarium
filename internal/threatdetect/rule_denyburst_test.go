@@ -228,3 +228,34 @@ func TestDenyEvidenceFromRecords_AggregatesByDestination(t *testing.T) {
 		t.Errorf("second group = %+v, want 10.0.0.3 count=1", got[1])
 	}
 }
+
+// #2612: a tenant with 2N log_only would-deny events is only being observed,
+// so by default it produces no burst finding; the opt-in counts them; a
+// tenant with 2N enforced drops still fires either way.
+func TestDenyBurstRule_LogOnlyDeniesCountOnlyWhenOptedIn(t *testing.T) {
+	const n = 5
+	tenants := map[string]string{"10.0.0.1": "alice"}
+	base := time.Unix(1000, 0)
+	for _, tc := range []struct {
+		name      string
+		logOnly   bool
+		countOpt  bool
+		wantFires bool
+	}{
+		{"observation denies, default", true, false, false},
+		{"observation denies, opted in", true, true, true},
+		{"enforced drops, default", false, false, true},
+		{"enforced drops, opted in", false, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := NewDenyBurstRule(n, time.Minute).CountLogOnlyDenies(tc.countOpt)
+			for i := 0; i < 2*n; i++ {
+				r.OnDeny(denyburstCtx(base, tenants), netbpf.DenyEvent{Saddr: beIP(10, 0, 0, 1), LogOnly: tc.logOnly})
+			}
+			got := r.Sweep(denyburstCtx(base, tenants), base)
+			if fired := len(got) > 0; fired != tc.wantFires {
+				t.Fatalf("fired = %v, want %v (findings %+v)", fired, tc.wantFires, got)
+			}
+		})
+	}
+}

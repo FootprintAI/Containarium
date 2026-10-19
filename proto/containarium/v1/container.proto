@@ -49,8 +49,6 @@ enum IsolationType {
 // AccessType indicates how to connect to an instance
 enum AccessType {
   // SSH access (default for Linux containers)
-  // Keep the established SSH zero value and its JSON name (#2481).
-  // buf:lint:ignore ENUM_ZERO_VALUE_SUFFIX
   ACCESS_TYPE_SSH = 0;
 
   // RDP access (for Windows VMs, via Guacamole browser-based client)
@@ -557,6 +555,15 @@ message CreateContainerRequest {
   // CONTAINER with a Windows os_type is rejected with InvalidArgument.
   // Only the LXC backend honors VM; the Kubernetes backend rejects it.
   IsolationType isolation = 27;
+
+  // Opt out of auto-sleep at create (#2759). Meaningful only on a hosted
+  // control plane that turns auto-sleep on by default for some orgs (for
+  // example a seat-billed org defaulting to 30 minutes): true asks for a box
+  // with NO idle-stop timer. A standalone daemon never enables auto-sleep
+  // unless idle_stop_minutes > 0, so it ignores this field. Setting it
+  // together with idle_stop_minutes > 0 is contradictory and rejected with
+  // InvalidArgument.
+  bool disable_auto_sleep = 28;
 }
 
 // CreateContainerResponse is the response from creating a container
@@ -1088,6 +1095,24 @@ message RemoveCollaboratorRequest {
 message RemoveCollaboratorResponse {
   // Success message
   string message = 1;
+}
+
+// TerminateUserSessionsRequest names the user whose sessions to end.
+message TerminateUserSessionsRequest {
+  // The user: the owner of "<username>-container" and the collaborator of
+  // any "<owner>-container-<username>" jump account. Same value as the
+  // self-host user id (sshauthz.UserIDForLogin).
+  string username = 1;
+}
+
+// TerminateUserSessionsResponse reports what was ended.
+message TerminateUserSessionsResponse {
+  // Accounts (in a box, or the host jump account) that had live processes,
+  // all of which were killed.
+  int32 terminated_sessions = 1;
+  // Boxes on this backend the user reaches (owner box plus collaborator
+  // boxes) that were walked.
+  int32 boxes_touched = 2;
 }
 
 // ListCollaboratorsRequest is the request to list collaborators for a container

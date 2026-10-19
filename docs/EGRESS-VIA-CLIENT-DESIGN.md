@@ -17,7 +17,7 @@ Verified live (#808):
    box. (`GatewayPorts no` also forces loopback.)
 2. **`ssh -L` from inside the box → client (workaround #1).** Requires the box
    to *reach* the client. Operator laptops are NAT'd — confirmed: the Mac is
-   tailnet-only (`100.124.9.5`), no public sshd; the cloud box is not on the
+   tailnet-only (`<tailnet-ip>`), no public sshd; the cloud box is not on the
    tailnet and cannot dial it. So "box dials client" is unavailable for the
    common case.
 3. **Daemon dials the client's SOCKS directly.** Works only if the *host* can
@@ -86,7 +86,7 @@ containarium egress-via-client <box> [--socks-port 1080] [--show]
   (a minimal, well-tested TCP forwarder) that the daemon `incus exec`s into the
   box; daemon-side relay that bridges box→upstream with source-IP restriction.
   Directly usable on a **tailnet host** (`--socks` = a host-reachable SOCKS),
-  which is the live-demoable slice (fts-13700k reaches the Mac's tailnet SOCKS).
+  which is the live-demoable slice (the lab backend reaches the Mac's tailnet SOCKS).
 - **2b — daemon-bridged `ssh -R` (OSS, IMPLEMENTED).** Refined during live
   validation: the from-scratch client→CP yamux channel proved unnecessary. The
   client always *can* SSH to the box, and `ssh -R 127.0.0.1:<p>:localhost:<socks>`
@@ -97,7 +97,7 @@ containarium egress-via-client <box> [--socks-port 1080] [--show]
   `StartEgressProxy`/`StopEgressProxy` on `NetworkService`, daemon impl +
   `egressproxy.Manager`, gRPC client, and `containarium egress-via-client`
   (starts a local SOCKS, opens the `ssh -R`, calls the RPC, tears down on exit).
-  Validated live (fts→Mac): box egress `211.75.165.177` → `36.230.33.117`.
+  Validated live (lab backend → laptop): box egress `<egress-ip-before>` → `<egress-ip-after>`.
   Remaining for the **cloud** box specifically: extend the cloud ossshim to
   forward `/v1/network/egress-proxy` (today unserved cloud paths 404) so the
   operator's CLI reaches the box's daemon through the CP.

@@ -111,13 +111,12 @@ func decodeB64Field(s string) ([]byte, error) {
 	return base64.StdEncoding.DecodeString(s)
 }
 
-// parseBoxRunList turns the list script's output into protos, newest first.
-// A record that does not decode, or whose file name is not a valid run name,
-// is skipped: one bad file must not hide every other run.
-func parseBoxRunList(out, dir string) []*pb.BoxRun {
-	var boot string
-	alive := map[int]bool{}
-	var views []boxRunView
+// parseBoxRunViews decodes the list script's output into its records (newest
+// first), the boot id, and the set of live PIDs. A record that does not decode,
+// or whose file name is not a valid run name, is skipped: one bad file must not
+// hide every other run.
+func parseBoxRunViews(out string) (views []boxRunView, boot string, alive map[int]bool) {
+	alive = map[int]bool{}
 	for _, line := range strings.Split(out, "\n") {
 		kind, rest, _ := strings.Cut(line, " ")
 		switch kind {
@@ -168,6 +167,12 @@ func parseBoxRunList(out, dir string) []*pb.BoxRun {
 		}
 		return views[i].fileName < views[j].fileName
 	})
+	return views, boot, alive
+}
+
+// parseBoxRunList turns the list script's output into protos, newest first.
+func parseBoxRunList(out, dir string) []*pb.BoxRun {
+	views, boot, alive := parseBoxRunViews(out)
 	runs := make([]*pb.BoxRun, 0, len(views))
 	for _, v := range views {
 		outcome := agentbox.ResolveOutcome(v.record, boot, func(pid int) bool { return pid > 0 && alive[pid] })

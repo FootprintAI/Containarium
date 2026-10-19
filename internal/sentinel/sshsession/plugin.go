@@ -30,10 +30,11 @@ type clock func() time.Time
 // Plugin builds the sshpiperd plugin callbacks that observe a session's
 // accept and close and hand a Record to a Recorder.
 //
-// It MUST be chained as the FIRST plugin in the sshpiperd invocation,
+// It must be chained before the routing plugin in the sshpiperd invocation,
 // ahead of the routing plugin ("yaml"): sshpiperd's ChainPlugins
 // dispatches PublicKeyAuth only to the "current" plugin in the chain, so
-// to see the offered credential at all, Plugin has to be asked first.
+// to see the offered credential, every earlier plugin (ssh-authz-plugin)
+// must defer through UpstreamNextPluginAuth.
 // publicKeyCallback never itself accepts or rejects a key — it always
 // defers to the next plugin via UpstreamNextPluginAuth after stashing the
 // credential handle into the shared per-connection metadata map — so it
@@ -213,13 +214,17 @@ func (p *Plugin) buildRecord(conn libplugin.ConnMetadata, phase SessionPhase) Re
 	ip, port := hostport.Split(conn.RemoteAddr(), 0)
 
 	rec := Record{
-		SessionID:  conn.UniqueID(),
-		Phase:      phase,
-		OccurredAt: p.now(),
-		ClientIP:   ip,
-		ClientPort: port,
-		Login:      login,
-		AuthMethod: AuthMethod(conn.GetMeta(metaAuthMethod)),
+		SessionID:     conn.UniqueID(),
+		Phase:         phase,
+		OccurredAt:    p.now(),
+		ClientIP:      ip,
+		ClientPort:    port,
+		Login:         login,
+		AuthMethod:    AuthMethod(conn.GetMeta(metaAuthMethod)),
+		UserID:        conn.GetMeta(MetaUserID),
+		AuthzDecision: DecisionToProto(AuthzDecision(conn.GetMeta(MetaAuthzDecision))),
+		DenyReason:    ReasonToProto(DenyReason(conn.GetMeta(MetaDenyReason))),
+		Enforced:      conn.GetMeta(MetaEnforced) == "true",
 		Credential: Credential{
 			KeyID:          conn.GetMeta(metaKeyID),
 			CAFingerprint:  conn.GetMeta(metaCAFingerprint),

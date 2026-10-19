@@ -31,6 +31,7 @@ import (
 	"github.com/footprintai/containarium/internal/runlease"
 	"github.com/footprintai/containarium/internal/safecast"
 	"github.com/footprintai/containarium/internal/secrets"
+	"github.com/footprintai/containarium/internal/sshauthz"
 	"github.com/footprintai/containarium/internal/tracker"
 	"github.com/footprintai/containarium/internal/tracker/submit"
 	"github.com/footprintai/containarium/pkg/core/backup"
@@ -113,6 +114,18 @@ type ContainerServer struct {
 	// panic on.
 	snapshots           *snapshotOps
 	collaboratorManager *container.CollaboratorManager
+	// sshKeys is the ssh_keys registry the key write paths record into
+	// (#2517, ssh_key_registry.go). Nil when the daemon has no Postgres.
+	sshKeys sshauthz.KeyRegistry
+	// collabAccess and hostSessionKill are test seams for
+	// TerminateUserSessions (terminate_user_sessions.go); nil means the
+	// collaborator store and container.TerminateJumpAccountSessions.
+	collabAccess    collaboratorAccess
+	hostSessionKill func(account string) bool
+	// sshKeyNow and authorizedKeys are test seams for the key write paths;
+	// zero values mean time.Now and the host's real authorized_keys files.
+	sshKeyNow      func() time.Time
+	authorizedKeys authorizedKeysOps
 	// Box code-run reader (#2123, box_run_log.go). All four are test seams:
 	// boxRunExec replaces the container manager's exec, boxRunCollaborator
 	// the collaborator lookup, boxRunLogDir agent-box's log dir, and
@@ -544,6 +557,13 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 	// 0 = no auto-sleep; > 0 enables it with that idle threshold (minutes).
 	if req.IdleStopMinutes < 0 {
 		return nil, status.Errorf(codes.InvalidArgument, "idle_stop_minutes must be >= 0, got %d", req.IdleStopMinutes)
+	}
+	// disable_auto_sleep (#2759) means "no idle-stop timer"; asking for one in
+	// the same breath is a contradiction, not something to resolve by guessing.
+	// A standalone daemon otherwise ignores the flag: it never enables
+	// auto-sleep unless idle_stop_minutes > 0.
+	if req.DisableAutoSleep && req.IdleStopMinutes > 0 {
+		return nil, status.Error(codes.InvalidArgument, "disable_auto_sleep and idle_stop_minutes > 0 are contradictory: set one")
 	}
 	// Birth stopped→delete (#525): same — reject a negative window early.
 	// 0 = never delete on stop; > 0 reaps a box left stopped that long.
@@ -1119,11 +1139,8 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 			// sshpiper validates the client against the host-side file. Mirror
 			// the request keys here so the sentinel authorizes exactly the
 			// keys the box does. Keys are already validated above. (#470)
-			for _, key := range req.SshKeys {
-				if err := container.AddAuthorizedKey(req.Username, key); err != nil {
-					log.Printf("Warning: failed to sync create-request ssh key to jump account for %s: %v", req.Username, err)
-				}
-			}
+			// Each key written is also registered in ssh_keys (#2517).
+			s.syncCreateRequestKeys(context.Background(), req.Username, req.SshKeys)
 		}()
 	}
 
@@ -2630,11 +2647,17 @@ func (s *ContainerServer) AddSSHKey(ctx context.Context, req *pb.AddSSHKeyReques
 		}
 	}
 
-	if err := container.AddAuthorizedKey(req.Username, req.SshPublicKey); err != nil {
+	if err := s.authorizedKeys.addKey(req.Username, req.SshPublicKey); err != nil {
 		return nil, fmt.Errorf("add authorized key: %w", err)
 	}
+	// Register after the file write: a registry failure leaves the key in
+	// authorized_keys but unknown to the authorization decider, so report
+	// it and let the caller retry this idempotent call.
+	if err := s.registerSSHKey(ctx, req.Username, req.SshPublicKey, sshauthz.SourceAPI); err != nil {
+		return nil, registryError("add ssh key", err)
+	}
 
-	total, err := container.CountAuthorizedKeys(req.Username)
+	total, err := s.authorizedKeys.countKeys(req.Username)
 	if err != nil {
 		// Counting failed but the add succeeded — return success with
 		// zero so the caller still knows the add went through.
@@ -2666,11 +2689,16 @@ func (s *ContainerServer) RemoveSSHKey(ctx context.Context, req *pb.RemoveSSHKey
 		return nil, err
 	}
 
-	if err := container.RemoveAuthorizedKey(req.Username, req.SshPublicKey); err != nil {
+	if err := s.authorizedKeys.removeKey(req.Username, req.SshPublicKey); err != nil {
 		return nil, fmt.Errorf("remove authorized key: %w", err)
 	}
+	// A removed key is revoked for every account that holds it (#2517
+	// decision: fails closed). A failure is reported so the caller retries.
+	if err := s.revokeSSHKey(ctx, req.Username, req.SshPublicKey); err != nil {
+		return nil, registryError("remove ssh key", err)
+	}
 
-	total, err := container.CountAuthorizedKeys(req.Username)
+	total, err := s.authorizedKeys.countKeys(req.Username)
 	if err != nil {
 		log.Printf("[remove-ssh-key] count after remove failed for %s: %v", req.Username, err)
 		total = 0
@@ -4679,6 +4707,7 @@ func (s *ContainerServer) AddCollaborator(ctx context.Context, req *pb.AddCollab
 	if err != nil {
 		return nil, fmt.Errorf("failed to add collaborator: %w", err)
 	}
+	s.registerCollaboratorKeys(ctx, collab.AccountName, sshKeys)
 
 	return &pb.AddCollaboratorResponse{
 		Message:      fmt.Sprintf("Collaborator %s added to %s-container", req.CollaboratorUsername, req.OwnerUsername),

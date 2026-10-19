@@ -219,3 +219,15 @@ func TestTokenClaims(t *testing.T) {
 		t.Errorf("expected issuer 'test-issuer', got %s", claims.Issuer)
 	}
 }
+
+// #2592: the CLI needs the effective cap to fail loud instead of clamping.
+func TestMaxTokenExpiry(t *testing.T) {
+	t.Setenv("CONTAINARIUM_MAX_TOKEN_EXPIRY_HOURS", "")
+	tm, err := NewTokenManager(string(make([]byte, MinSecretKeyLen)), "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := tm.MaxTokenExpiry(); got != DefaultMaxTokenExpiry {
+		t.Fatalf("MaxTokenExpiry() = %v, want %v", got, DefaultMaxTokenExpiry)
+	}
+}

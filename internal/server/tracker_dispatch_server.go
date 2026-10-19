@@ -386,7 +386,11 @@ func (s *AgentSkillServer) finishDispatchedRun(ctx context.Context, run *started
 	}()
 	artifact, aerr := agent(run.containerName, run.lease.SeedDir)
 	if aerr == nil && strings.TrimSpace(artifact) == "" {
-		aerr = errors.New("the agent produced no artifact")
+		// The runtime's exit was clean, so nothing else says why this is a
+		// failure (#2513): name the contract the run broke and where the
+		// evidence is, in the log and in the dispatch row's reason.
+		aerr = errors.New("the agent ended without a final message (no artifact); the skill contract requires one final JSON object — see the run journal for the tool calls it made")
+		log.Printf("[agent-skill] run %s: ended with no artifact (exit clean, empty final message)", run.runID)
 	}
 	err = aerr
 }

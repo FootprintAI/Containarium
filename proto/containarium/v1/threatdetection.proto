@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package containarium.v1;
 
+import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
 import "google/api/annotations.proto";
 import "protoc-gen-openapiv2/options/annotations.proto";
@@ -37,6 +38,26 @@ enum ThreatRuleId {
   // same posture pass as rule 4; record-only, the platform never kills a
   // tenant's process. The evidence names the port, pid and binary.
   THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER = 5;
+  // An armed backend (CONTAINARIUM_THREAT_SENTRY set) whose sentry is not
+  // running cleanly: UNAVAILABLE, DEGRADED, or any rule unhealthy (#2634).
+  // Raised by the daemon's sentry-health loop, not by a rule — a rule cannot
+  // run when the engine cannot. Subject is the GetSentryStatus reason string;
+  // resolved automatically once the sentry reports OK. Tenant and container
+  // are empty: this is a backend-level finding.
+  THREAT_RULE_ID_SENTRY_UNAVAILABLE = 8;
+  // A box held sustained CPU while keeping a long-lived flow to a stratum
+  // port or a listed bad destination (#2635): the shape of a cryptominer.
+  // Subject is the destination ip:port; evidence is one CPUEvidence plus
+  // the qualifying flow. Thresholds: MiningBehaviorThresholds.
+  THREAT_RULE_ID_MINING_BEHAVIOR = 6;
+  // Values 7 (MINER_SIGNATURE, #2638) and 8 (SENTRY_UNAVAILABLE, #2634) are
+  // assigned by their own stories.
+  //
+  // A process action (throttle or freeze, #2636) reached its TTL with no
+  // operator decision and was released automatically. MEDIUM, so an
+  // unattended containment never silently becomes permanent. Subject is the
+  // container name; the response on the original HIGH finding is EXPIRED.
+  THREAT_RULE_ID_PROCESS_ACTION_EXPIRED = 9;
 }
 
 // FindingState is the lifecycle state of a security finding.
@@ -57,6 +78,15 @@ message FlowEvidence {
   string protocol = 5;
   int64 bytes = 6;
   int64 packets = 7;
+  // When the flow was first and last seen (#2635). The kernel stamps flows
+  // with a monotonic clock, so last_seen is the flow poll that reported the
+  // flow and first_seen is last_seen minus the flow's own age. Set by the
+  // mining-behavior rule; unset on other rules' evidence.
+  google.protobuf.Timestamp first_seen = 8;
+  google.protobuf.Timestamp last_seen = 9;
+  // What qualified the flow: "port:<n>" for a stratum port, or
+  // "bad-destination:<cidr>" for a listed destination (#2635).
+  string matched = 10;
 }
 
 // DenyEvidence captures an aggregated count of policy-deny events matching a
@@ -105,14 +135,76 @@ message ListenerEvidence {
   string note = 5;
 }
 
-// Evidence bundles the flow, deny and configuration records that triggered
-// a finding. Capped by the store to the most recent entries — see
-// FindingStore.
+// CPUEvidence summarises a container's CPU usage over a detection window
+// (#2635), measured in cores (1.0 = one core fully busy).
+message CPUEvidence {
+  // Mean cores over the window's samples.
+  double mean_cores = 1;
+  // Highest single sample in the window.
+  double peak_cores = 2;
+  // Length of the window the samples cover.
+  int64 window_seconds = 3;
+  // Number of samples the mean was taken over.
+  int32 samples = 4;
+}
+
+// ExecEvidence is one process exec observed by the host-side exec telemetry
+// (#2637): the record the execwatch eBPF program emitted, attributed to a
+// container. A rule that matches an exec (miner-signature, #2638) attaches it
+// to its finding; the same shape is streamed live by StreamExecEvents.
+message ExecEvidence {
+  // Process id in the HOST pid namespace (what `kill` on the host takes).
+  uint32 pid = 1;
+  // Parent process id, host pid namespace.
+  uint32 ppid = 2;
+  // Real uid of the exec'ing task.
+  uint32 uid = 3;
+  // Task comm after the exec (16 bytes max).
+  string comm = 4;
+  // Resolved executable path, as the kernel saw it.
+  string filename = 5;
+  // Argument vector joined with single spaces. Capped at 512 bytes by the
+  // kernel program; never contains environment variables.
+  string argv = 6;
+  // True when argv exceeded 512 bytes and was cut.
+  bool argv_truncated = 7;
+  // Hex SHA-256 of the executable when a rule computed it (#2638); empty
+  // in the live stream.
+  string sha256 = 8;
+  // Which matcher hit, for a finding (#2638); empty in the live stream.
+  string matched = 9;
+}
+
+// Evidence bundles the flow, deny, configuration, listener, CPU and exec
+// records that triggered a finding. Capped by the store to the most recent
+// entries — see FindingStore.
 message Evidence {
   repeated FlowEvidence flows = 1;
   repeated DenyEvidence denies = 2;
   repeated ConfigEvidence configs = 3;
   repeated ListenerEvidence listeners = 4;
+  repeated CPUEvidence cpu = 5;
+  repeated ExecEvidence execs = 6;
+}
+
+// MiningBehaviorThresholds tunes the mining-behavior rule (#2635). Persisted
+// as protojson in the daemon config store under
+// "threatdetect.mining_behavior.thresholds". A zero or empty field means
+// "use the default" (in brackets below).
+message MiningBehaviorThresholds {
+  // Absolute CPU bar in cores [1.5]. The effective bar is
+  // min(min_cores, min_fraction_of_limit x the box's limits.cpu); a box with
+  // no CPU limit uses min_cores alone.
+  double min_cores = 1;
+  // Window the CPU mean is taken over [5m].
+  google.protobuf.Duration window = 2;
+  // Minimum age of a qualifying flow, seen within the window [3m].
+  google.protobuf.Duration flow_min_age = 3;
+  // Destination ports treated as stratum (mining pool) ports
+  // [3333, 4444, 5555, 7777, 14444, 14433].
+  repeated uint32 stratum_ports = 4;
+  // Fraction of the box's CPU limit that also trips the bar [0.75].
+  double min_fraction_of_limit = 5;
 }
 
 // Finding is a single security finding raised by the threat-detection
@@ -135,6 +227,118 @@ message Finding {
   Evidence evidence = 10;
   google.protobuf.Timestamp first_seen = 11;
   google.protobuf.Timestamp last_seen = 12;
+  // What the process responder (#2636) did about this finding, if anything.
+  // Unset for findings no policy acts on.
+  FindingResponse response = 13;
+}
+
+// ProcessAction is what a HIGH mining finding does to its container (#2636).
+// Every action is reversible with ReleaseProcessAction; none destroys data.
+enum ProcessAction {
+  PROCESS_ACTION_UNSPECIFIED = 0;
+  // Record the finding, notify, do nothing to the container. The default.
+  PROCESS_ACTION_ALERT = 1;
+  // Record the box's current limits.cpu / limits.cpu.allowance, then set
+  // limits.cpu.allowance to ProcessPolicy.throttle_allowance.
+  PROCESS_ACTION_THROTTLE = 2;
+  // Pause the instance through Incus (cgroup freezer): memory and disk kept,
+  // no process runs until released.
+  PROCESS_ACTION_FREEZE = 3;
+}
+
+// ResponseState is the lifecycle of one FindingResponse.
+enum ResponseState {
+  RESPONSE_STATE_UNSPECIFIED = 0;
+  // The policy was ALERT: nothing was done to the container.
+  RESPONSE_STATE_NONE = 1;
+  // The action is in effect.
+  RESPONSE_STATE_APPLIED = 2;
+  // Incus refused the action; `error` says why. The responder does not retry
+  // — the rule's next sweep re-fires the finding, which is the retry.
+  RESPONSE_STATE_FAILED = 3;
+  // An operator released the action (ReleaseProcessAction).
+  RESPONSE_STATE_RELEASED = 4;
+  // The TTL backstop released the action with no operator decision.
+  RESPONSE_STATE_EXPIRED = 5;
+}
+
+// FindingResponse records what the process responder did about a finding
+// and when, so the finding itself tells the operator whether a box is
+// currently throttled or frozen because of it.
+message FindingResponse {
+  ProcessAction action = 1;
+  ResponseState state = 2;
+  // Reserved for the signature rule's additive kill (#2638).
+  bool process_killed = 3;
+  google.protobuf.Timestamp applied_at = 4;
+  // When the TTL backstop will release the action if no operator does.
+  google.protobuf.Timestamp expires_at = 5;
+  google.protobuf.Timestamp released_at = 6;
+  // "operator" or "ttl"; empty while the action is in effect.
+  string released_by = 7;
+  // Incus error text when state is FAILED.
+  string error = 8;
+}
+
+// ProcessPolicy says what a HIGH mining finding does to its container
+// (#2636). Stored per backend (the default) and optionally per container
+// (an override, written by SetProcessPolicy with `container` set); the
+// effective policy is override → backend default → built-in
+// {ALERT, "10%", 24h}. Empty fields inherit from the next level down.
+message ProcessPolicy {
+  ProcessAction action = 1;
+  // limits.cpu.allowance applied by THROTTLE: an Incus allowance such as
+  // "10%" (share under contention) or "10ms/100ms" (hard CFS quota).
+  // Default "10%".
+  string throttle_allowance = 2;
+  // How long an applied action stays in effect with no operator decision
+  // before the TTL backstop releases it. Default 24h.
+  google.protobuf.Duration ttl = 3;
+  // Field 4 is kill_process (signature rule, #2638); it is assigned there.
+  // Do not reuse the number.
+
+  // Thresholds of the mining-behavior rule (#2635). Backend-wide: honoured
+  // only on the backend default (container empty), rejected on a container
+  // override. Unset on Set leaves the stored thresholds untouched.
+  MiningBehaviorThresholds mining_behavior = 5;
+}
+
+message GetProcessPolicyRequest {
+  // Empty reads the backend default; a container name reads that
+  // container's override (policy is unset when none is stored).
+  string container = 1;
+}
+
+message GetProcessPolicyResponse {
+  // The policy stored at the requested level, unset if none is stored.
+  ProcessPolicy policy = 1;
+  // True when `container` was given and an override is stored for it.
+  bool is_override = 2;
+  // The fully-resolved policy the responder would apply at that level.
+  ProcessPolicy effective = 3;
+}
+
+message SetProcessPolicyRequest {
+  // Empty sets the backend default; a container name sets that container's
+  // override.
+  string container = 1;
+  ProcessPolicy policy = 2;
+  // With `container` set, removes the override instead of writing one.
+  bool clear_override = 3;
+}
+
+message SetProcessPolicyResponse {
+  ProcessPolicy effective = 1;
+}
+
+message ReleaseProcessActionRequest {
+  string container = 1;
+}
+
+message ReleaseProcessActionResponse {
+  // The finding the action belonged to, now resolved with its response in
+  // state RELEASED.
+  Finding finding = 1;
 }
 
 // SentryState is the overall on/off state of the background threat-detection
@@ -169,9 +373,59 @@ message GetSentryStatusRequest {}
 
 message GetSentryStatusResponse {
   SentryState state = 1;
-  // Human-readable explanation, always set for DISABLED/UNAVAILABLE.
+  // Human-readable explanation, always set for DISABLED/UNAVAILABLE/
+  // DEGRADED, and also set while the state is OK but a rule is unhealthy
+  // ("rule <RULE> unhealthy: <last_error>"). The sentry-health loop (#2634)
+  // uses this exact string as the SENTRY_UNAVAILABLE finding's subject.
   string reason = 2;
   repeated RuleStatus rules = 3;
+  // Source of the per-container CPU samples the mining-behavior rule reads
+  // (#2645): "metrics-collector" (hook on the metrics collector's tick),
+  // "standalone (30s)" (the sentry polls Incus itself because no metrics
+  // collector runs), or "unavailable (<reason>)". Set only while the
+  // sentry is running (OK/DEGRADED).
+  string cpu_sampler = 4;
+  // Host-side exec telemetry (#2637): "ok" while the execwatch eBPF object
+  // is attached and watching, or "unavailable (<reason>)" when the second
+  // object could not be loaded or attached (no BTF, verifier rejection,
+  // missing tracepoint, object not built). The flow rules keep running
+  // either way; the sentry-health loop treats "unavailable" as a fault with
+  // the stable subject "exec-telemetry unavailable". Set only while the
+  // sentry is running (OK/DEGRADED).
+  string exec_telemetry = 5;
+  // Exec events the kernel could not hand over because the ring buffer was
+  // full, cumulative since the object loaded. Non-zero means a burst
+  // outran the consumer; the events are gone, never blocked the exec.
+  int64 exec_events_lost = 6;
+}
+
+// ExecEvent is one live exec in a tenant container, as streamed by
+// StreamExecEvents (#2637). Not persisted: the stream is a window onto the
+// kernel's ring, plus a short in-memory replay (StreamExecEventsRequest.since).
+message ExecEvent {
+  string container = 1;
+  string tenant_id = 2;
+  // When the daemon decoded the event (host wall clock).
+  google.protobuf.Timestamp at = 3;
+  ExecEvidence exec = 4;
+}
+
+// StreamExecEventsResponse wraps one ExecEvent per stream message.
+message StreamExecEventsResponse {
+  ExecEvent event = 1;
+}
+
+message StreamExecEventsRequest {
+  // Only this container's execs; empty streams every watched container.
+  string container = 1;
+  // Replay buffered events from this far back before (or instead of) going
+  // live. The daemon keeps a bounded in-memory ring of recent events (no
+  // audit-log writes); older than the ring holds is simply not there.
+  // Unset means no replay.
+  google.protobuf.Duration since = 2;
+  // Keep the stream open for new events after the replay. Unset returns
+  // once the replay is sent — the `exec-events` CLI without --follow.
+  bool follow = 3;
 }
 
 // BadDestinationEntry is one entry in the known-bad-destination list (#1641)
@@ -320,6 +574,65 @@ service ThreatDetectionService {
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Resolve a security finding";
       description: "Marks an open finding as resolved. Fails with FAILED_PRECONDITION if it's already resolved, NOT_FOUND if it doesn't exist.";
+      tags: "Security";
+    };
+  }
+
+  // GetProcessPolicy returns the process policy stored at one level (backend
+  // default, or one container's override) and the effective policy the
+  // responder applies there (#2636).
+  rpc GetProcessPolicy(GetProcessPolicyRequest) returns (GetProcessPolicyResponse) {
+    option (google.api.http) = {
+      get: "/v1/security/process-policy"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get the process policy";
+      description: "Returns the stored process policy (backend default, or a container's override when ?container= is given) and the effective policy after override → default → built-in ALERT resolution.";
+      tags: "Security";
+    };
+  }
+
+  // SetProcessPolicy writes the backend default, or one container's
+  // override (clear_override removes it). Admin-only: the policy decides
+  // what happens to a tenant's box.
+  rpc SetProcessPolicy(SetProcessPolicyRequest) returns (SetProcessPolicyResponse) {
+    option (google.api.http) = {
+      put: "/v1/security/process-policy"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Set the process policy";
+      description: "Sets what a HIGH mining finding does to its container: ALERT (default), THROTTLE or FREEZE, with the throttle allowance and TTL. With container set it writes a per-container override; clear_override removes one.";
+      tags: "Security";
+    };
+  }
+
+  // ReleaseProcessAction undoes the open action on a container: restores the
+  // recorded CPU limit or unfreezes it, and resolves the finding.
+  rpc ReleaseProcessAction(ReleaseProcessActionRequest) returns (ReleaseProcessActionResponse) {
+    option (google.api.http) = {
+      post: "/v1/security/process-policy/release"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Release a process action";
+      description: "Restores the container's recorded CPU limit (THROTTLE) or unfreezes it (FREEZE), marks the action released by the operator, and resolves its finding. NOT_FOUND when no action is open on the container.";
+      tags: "Security";
+    };
+  }
+
+  // StreamExecEvents streams process execs observed in tenant containers by
+  // the host-side eBPF exec telemetry (#2637), optionally replaying the
+  // daemon's short in-memory buffer first. Backs `containarium security
+  // exec-events`. UNAVAILABLE when exec telemetry is not running on this
+  // backend (see GetSentryStatus.exec_telemetry).
+  rpc StreamExecEvents(StreamExecEventsRequest) returns (stream StreamExecEventsResponse) {
+    option (google.api.http) = {
+      get: "/v1/security/exec-events"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Stream container exec events";
+      description: "Streams process execs observed in tenant containers by the host-side eBPF exec telemetry, attributed to the container, as newline-delimited JSON (each chunk wraps one event under `result.event`). `since` replays the daemon's bounded in-memory buffer; `follow` keeps the stream open for new events. Events are not written to the audit log.";
       tags: "Security";
     };
   }

@@ -1439,9 +1439,17 @@ func (m *Manager) InstallStack(username, stackID string) error {
 	pkgMgr := ospkg.ForFamily(family)
 	familyStr := string(family)
 
-	// Update package repos
-	if err := m.incus.Exec(containerName, pkgMgr.UpdateCmd()); err != nil {
-		return fmt.Errorf("package repo update failed: %w", err)
+	// Update package repos. A base script that installs no packages (the
+	// startup reconcile's timezone script) has nothing to refresh the index
+	// for; running the update anyway cost every running container a round of
+	// mirror traffic on each daemon start and failed outright on boxes without
+	// the package manager (#2617). Dev stacks keep the update: their
+	// pre-install steps may install packages themselves.
+	pkgs := stack.GetPackagesForFamily(familyStr)
+	if !isBaseScript || len(pkgs) > 0 {
+		if err := m.incus.Exec(containerName, pkgMgr.UpdateCmd()); err != nil {
+			return fmt.Errorf("package repo update failed: %w", err)
+		}
 	}
 
 	// Run pre-install commands as root
@@ -1453,7 +1461,6 @@ func (m *Manager) InstallStack(username, stackID string) error {
 	}
 
 	// Install packages
-	pkgs := stack.GetPackagesForFamily(familyStr)
 	if len(pkgs) > 0 {
 		if err := m.incus.Exec(containerName, pkgMgr.InstallCmd(pkgs)); err != nil {
 			return fmt.Errorf("package install failed: %w", err)

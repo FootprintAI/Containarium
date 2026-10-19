@@ -51,18 +51,9 @@ func TestSpawn_SurvivesParentExit(t *testing.T) {
 			// The child should still be running.
 
 			logPath := filepath.Join(dir, name+".log")
-			exitPath := filepath.Join(dir, name+".exit")
-			deadline := time.Now().Add(20 * time.Second)
-			for time.Now().Before(deadline) {
-				if _, err := os.Stat(exitPath); err == nil {
-					break
-				}
-				time.Sleep(200 * time.Millisecond)
-			}
-
-			raw, err := os.ReadFile(exitPath)
-			if err != nil {
-				t.Fatalf("no exit sidecar — the run did not survive the parent: %v\n%s", err, summarizeSurvivalFailure(dir, name))
+			raw, werr := waitForExitSidecar(dir, name, survivalDeadline)
+			if werr != nil {
+				t.Fatalf("%v\n%s", werr, summarizeSurvivalFailure(dir, name))
 			}
 			code := strings.Fields(string(raw))
 			if len(code) == 0 || code[0] != "5" {
@@ -99,6 +90,38 @@ func TestSpawn_SurvivesParentExit(t *testing.T) {
 // requireToolCallOK fails unless agent-box's stdout holds a successful
 // JSON-RPC result for request id, so a lost or failed tools/call is
 // reported as such rather than as its downstream symptom.
+// survivalDeadline is deliberately generous: the child only sleeps ~2s, so a
+// pass is fast, and the budget exists to absorb a starved CI runner rather
+// than to bound the run.
+const survivalDeadline = 60 * time.Second
+
+// waitForExitSidecar polls for <name>.exit until it appears or timeout
+// elapses, and reports WHY it failed so a flake is diagnosable: the run was
+// never recorded (the start was lost), the sidecar never appeared in time
+// (slow or killed child), or the sidecar exists but could not be read.
+func waitForExitSidecar(dir, name string, timeout time.Duration) ([]byte, error) {
+	exitPath := filepath.Join(dir, name+".exit")
+	recordPath := filepath.Join(dir, name+".json")
+	deadline := time.Now().Add(timeout)
+	for {
+		raw, err := os.ReadFile(exitPath)
+		if err == nil {
+			return raw, nil
+		}
+		if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("exit sidecar unreadable (not missing): %w", err)
+		}
+		if !time.Now().Before(deadline) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if _, err := os.Stat(recordPath); err != nil {
+		return nil, fmt.Errorf("exit sidecar missing: no run record %s either, so the run never started (not a timeout): %v", recordPath, err)
+	}
+	return nil, fmt.Errorf("timed out after %s waiting for the exit sidecar: the run was recorded but never finished in time, or did not survive the parent", timeout)
+}
+
 func requireToolCallOK(t *testing.T, stdout []byte, id int) {
 	t.Helper()
 	for _, line := range strings.Split(string(stdout), "\n") {

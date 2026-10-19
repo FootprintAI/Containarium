@@ -3,7 +3,7 @@
 > **Open-source agent runtime** · SSH-native isolation · eBPF egress policy · Kubernetes + LXC · MCP-native CLI · GPU passthrough
 
 **The open-source, self-hostable agent runtime for AI agents.**
-Each agent gets a persistent, SSH-reachable box with per-tenant network isolation — no kube-apiserver token, no host access, no cross-tenant leakage.
+Each agent gets a persistent, SSH-reachable box in an unprivileged container, with an opt-in per-tenant eBPF egress policy, audit-logged denials, and a model gateway that keeps provider API keys out of the box. What is on by default, and what each claim rests on, is in [`docs/security/CLAIMS.md`](docs/security/CLAIMS.md).
 
 Bring your own agent — Cursor, Claude Code, OpenCode, your own MCP client.
 We run the box.
@@ -18,7 +18,7 @@ curl https://blog.example.com → hello world
 ```
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![Go](https://img.shields.io/badge/go-1.25-00ADD8.svg)](go.mod)
+[![Go](https://img.shields.io/badge/go-1.26-00ADD8.svg)](go.mod)
 [![Containarium MCP server](https://glama.ai/mcp/servers/FootprintAI/Containarium/badges/score.svg)](https://glama.ai/mcp/servers/FootprintAI/Containarium)
 
 [![Containarium MCP server](https://glama.ai/mcp/servers/FootprintAI/Containarium/badges/card.svg)](https://glama.ai/mcp/servers/FootprintAI/Containarium)
@@ -97,8 +97,10 @@ containarium version               # → v0.96.0 or later
 Point the CLI at the local daemon, using the admin token the installer
 saved, and create a box called `alice`:
 
-<!-- Flip to the installer's one-liner (`… | sudo bash -s -- --quickstart alice`)
-     once the published installer is confirmed to support it (#2244). -->
+<!-- The published installer (https://containarium.dev/install.sh) now carries
+     `--quickstart <name>` (checked 2026-10-15; #2244 is closed). Flip this
+     block to the one-liner (`… | sudo bash -s -- --quickstart alice`) once a
+     fresh-VM run of it has been recorded — not before. -->
 
 ```bash
 export CONTAINARIUM_HTTP=true
@@ -340,31 +342,42 @@ unset = no constraint. See
 
 ### `mcp-server` — platform MCP server
 
-Runs on the host. Exposes outside-the-box admin operations:
-`create_container`, `list_containers`, `delete_container`,
-`start_container`, `stop_container`, `expose_port`, `get_metrics`,
-`get_system_info`. See [`cmd/mcp-server/`](cmd/mcp-server/).
+Runs on the host. Exposes the platform's outside-the-box operations as
+MCP tools — about a hundred of them, one per CLI verb: container lifecycle
+(`create_container`, `list_containers`, `start_container`,
+`stop_container`, `delete_container`, `resize_container`), networking
+(`expose_port`, `sync_ssh_config`, passthrough routes), coding-agent runs
+(`code_run`, `code_attach`, `code_status`, `code_stop`), secrets, backups,
+recipes, security scans, tracker connections, and `get_metrics` /
+`get_system_info`. A token's scopes decide which ones a client sees. See
+[`cmd/mcp-server/`](cmd/mcp-server/) and
+[`internal/mcp/`](internal/mcp/) for the catalog.
 
 ### `containarium` CLI
 
-Same surface as the platform MCP, plus deeper administration. Top-level
-verbs:
+Same surface as the platform MCP, plus deeper administration. The verbs
+this README uses (the CLI has about ninety — `containarium --help` lists
+them all):
 
 ```
+containarium quickstart         Create a box, wire SSH + your agent, optionally build a site
 containarium create             Create a new container
-containarium code               Run a coding agent ON a box (install / run / attach / status / stop)
 containarium list               List all containers
+containarium wake / sleep       Start a stopped box / stop a running one
 containarium delete             Delete a container
+containarium code               Run a coding agent ON a box (install / run / attach / logs / runs / status / stop / egress-policy)
 containarium expose-port        Expose container:port on a public hostname
-containarium ssh-config         Generate self-contained ssh_config
+containarium ssh-config         Generate self-contained ssh_config (show / sync)
 containarium route              Manage proxy routes (low-level)
-containarium passthrough        Manage TCP/UDP passthrough rules (local iptables)
 containarium passthrough-route  Manage TCP/UDP passthrough routes (daemon API)
-containarium token              Issue JWT tokens for the API
-containarium info               System info
+containarium token              Issue, inspect, refresh and revoke JWT tokens
+containarium login / connect    Device-flow sign-in to a server; open a shell on a box with that token
+containarium info               Container or system info
 containarium version            Print version
 ```
 
+Host-side verbs (`daemon`, `sentinel`, `passthrough`, `audit`, `doctor`,
+…) live in `containariumd` — see [Two binaries](#two-binaries-containarium-vs-containariumd).
 Run `containarium <verb> --help` for full options.
 
 ### Sentinel — sshpiper + Caddy + PROXY-protocol
@@ -441,7 +454,7 @@ upgrade safety; see [`docs/security/OPERATOR-SECURITY-RUNBOOK.md`](docs/security
 | `CONTAINARIUM_REQUIRE_ENVELOPE=true` | Secrets | refuse legacy master-key-only rows (Phase E retirement gate) |
 | `CONTAINARIUM_POSTGRES_URL_FILE` / `_PASSWORD_FILE` | Secrets | DB creds from disk rather than env |
 | `CONTAINARIUM_WAKE_TRUSTED_PROXIES` | Sentinel | source-IP allowlist for `/wake/` |
-| `OTEL_BEARER_REQUIRED=true` | Telemetry | collector rejects un-bearered OTLP submissions |
+| `OTEL_BEARER_REQUIRED=true` | Telemetry (collector-side; set on the OTel collector, not the daemon) | collector rejects un-bearered OTLP submissions |
 
 ---
 
@@ -648,11 +661,11 @@ audit but not in-box SSH sessions — see #1189).
   users can only proxy through to their container.
 - **fail2ban per-user**: an attack on Alice's account doesn't ban
   Bob.
-- **ClamAV + Trivy** scanning across all backends.
+- **Trivy** image/dependency scanning across backends. **ClamAV** malware scanning is a tenant-run capability (the scan runs inside a box, started by its owner, and the verdict is self-reported); it is being rebuilt in #2631 and is not a platform-wide control today.
 - **AppArmor profiles** per container.
 - **AGENTBOX_ROOT sandbox** to constrain agent-box file ops at runtime.
 
-**Zero-trust controls** (rolled out across the v0.17 → unreleased line; see [`docs/security/OPERATOR-SECURITY-RUNBOOK.md`](docs/security/OPERATOR-SECURITY-RUNBOOK.md)):
+**Zero-trust controls** (see [`docs/security/OPERATOR-SECURITY-RUNBOOK.md`](docs/security/OPERATOR-SECURITY-RUNBOOK.md); several are opt-in, see [`docs/security/CLAIMS.md`](docs/security/CLAIMS.md) for what is on by default):
 
 - **JWT with `iss` / `aud` / `jti` / `tt` / `scopes`**: 32-byte minimum
   secret enforced at startup; refresh tokens are single-use; jti-based
@@ -663,8 +676,12 @@ audit but not in-box SSH sessions — see #1189).
   Cloud KMS), with a migration tool and master-key retirement gate.
 - **tmpfs `--delivery=file`** for secrets that shouldn't be visible in
   `/proc/<pid>/environ`.
-- **Audit log with SHA-256 hash chain** + `containarium audit verify`
-  to detect tampering.
+- **Audit log with SHA-256 hash chain** + `containariumd audit verify`
+  (on the host): tamper-evident against an application- or database-level
+  attacker. An attacker who can write the database can rewrite the chain
+  consistently; the chain root can be anchored to a file outside the database
+  (`internal/audit/anchor.go`), which a database credential does not reach, but
+  a host-root attacker could still edit both.
 - **Image-registry allowlist + pre-pull simplestreams digest
   verification + post-pull `volatile.base_image` defense-in-depth**
   for supply-chain hardening.
@@ -710,8 +727,9 @@ containarium route add api.example.com --target 10.0.3.42:3000
 containarium route list
 containarium route delete api.example.com
 
-# Raw TCP/UDP passthrough via local iptables (host running the CLI only)
-containarium passthrough add --port 50051 \
+# Raw TCP/UDP passthrough via local iptables (on the host, so it's a
+# containariumd verb)
+containariumd passthrough add --port 50051 \
   --target-ip 10.0.3.150 --target-port 50051
 
 # Raw TCP/UDP passthrough via the daemon API (works against a remote box)
@@ -751,6 +769,10 @@ containarium token generate \
 
 # Use the access token
 curl -H "Authorization: Bearer <access-token>" http://localhost:8080/v1/containers
+
+# Exchange the refresh token for a new pair (same as POST /v1/tokens/refresh;
+# the refresh token is the credential, so no --token)
+containarium token refresh --refresh-token "$REFRESH" --server <host:port>
 
 # Inspect a token's claims (jti, scopes, expiry, validation)
 containarium token inspect <token> --secret-file /etc/containarium/jwt.secret
@@ -998,8 +1020,9 @@ Demoed Containarium somewhere? Open a PR and add it here.
   recompile). End-to-end validated on `kind`; 5-minute local bring-up in
   [docs/KIND-QUICKSTART.md](docs/KIND-QUICKSTART.md). See also
   [docs/K8S-AGENT-BOX-RUNTIME-DESIGN.md](docs/K8S-AGENT-BOX-RUNTIME-DESIGN.md).
-- **Q2 2026 (in flight)**: `agent-box` MCP, `ssh-config` CLI,
-  `expose-port` CLI, demo recording.
+- **Shipped**: `agent-box` MCP, `ssh-config` CLI, `expose-port` CLI, and
+  the demo recording — the [Quick start](#quick-start) above is built on
+  them.
 - **Q3 2026**: `agent-box` tier-2 (MCP Roots, background process
   management), demo-driven docs and examples.
 - **Q4 2026**: OSS v1.0 cut — stable API surface, contribution

@@ -44,6 +44,8 @@ var (
 	daemonPort             int
 	daemonHTTPPort         int
 	runJournalRetention    time.Duration
+	sshAuthzMaxKeyAge      time.Duration
+	sshAuthzKeysCommand    bool
 	enableMTLS             bool
 	enableREST             bool
 	daemonCertsDir         string
@@ -145,7 +147,7 @@ func init() {
 	// gRPC settings
 	daemonCmd.Flags().StringVar(&daemonAddress, "address", "0.0.0.0", "Address to listen on")
 	daemonCmd.Flags().StringVar(&daemonGuardrailStagingRoot, "guardrail-staging-root", "",
-		"Absolute directory a guardrail-gated recipe deploy reads its staged dataset from, as <root>/<name>/<staging_ref>. Empty = gated deploys are refused")
+		"Absolute directory a guardrail-gated recipe deploy reads its staged dataset from, as <root>/<caller subject>/<staging_ref>. Empty = gated deploys are refused")
 	daemonCmd.Flags().StringVar(&daemonGuardrailSnapshotDir, "guardrail-snapshot-dir", os.Getenv("CONTAINARIUM_GUARDRAIL_SNAPSHOT_DIR"),
 		"Daemon-private directory, outside the staging root, for the gate's verification snapshots (a full copy of each staged dataset while a deploy runs; point it at provisioned storage, not tmpfs). Empty = the OS temp dir (env: CONTAINARIUM_GUARDRAIL_SNAPSHOT_DIR)")
 	daemonCmd.Flags().IntVar(&daemonPort, "port", 50051, "gRPC port to listen on")
@@ -157,6 +159,10 @@ func init() {
 	daemonCmd.Flags().DurationVar(&runJournalRetention, "run-journal-retention", server.DefaultRunJournalRetention,
 		"How long a run's journal (/var/log/agent-runtime/runs/<run_id>) stays on an agent box before the daemon's sweep removes it")
 	daemonCmd.Flags().BoolVar(&enableREST, "rest", true, "Enable HTTP/REST API gateway")
+	daemonCmd.Flags().DurationVar(&sshAuthzMaxKeyAge, "ssh-authz-max-key-age", envDuration("CONTAINARIUM_SSH_AUTHZ_MAX_KEY_AGE", 0),
+		"Self-host SSH authorization: refuse a key registered at least this long ago (KEY_EXPIRED). 0 (default) = no limit. Applies only on a daemon with no cloud enrollment. Env: CONTAINARIUM_SSH_AUTHZ_MAX_KEY_AGE (#2517).")
+	daemonCmd.Flags().BoolVar(&sshAuthzKeysCommand, "ssh-authz-keys-command", envBool("CONTAINARIUM_SSH_AUTHZ_KEYS_COMMAND", false),
+		"Let the jump host's sshd AuthorizedKeysCommand (containarium ssh-authz-keys) ask this daemon about direct logins: /v1/ssh/authorize also accepts a JWT carrying the ssh:authorize scope, alongside the sentinel signature. Off by default (sentinel-only). Env: CONTAINARIUM_SSH_AUTHZ_KEYS_COMMAND (#2527).")
 
 	// Authentication settings
 	daemonCmd.Flags().StringVar(&jwtSecret, "jwt-secret", "", "JWT secret key for REST API authentication")
@@ -170,7 +176,7 @@ func init() {
 	daemonCmd.Flags().BoolVar(&skipInfraInit, "skip-infra-init", false, "Skip automatic infrastructure initialization (storage, network, profile)")
 	daemonCmd.Flags().BoolVar(&requireIsolatedStorage, "require-isolated-storage", false, "Refuse to start on a storage pool that does not give each container its own volume. The dir driver puts every tenant rootfs on one filesystem, so they share one journal and one tenant's writeback can stall another tenant's fsync (see #1206). Off by default: a shared journal is harmless on a dev host or a single-tenant box. Turn it on for backends running mutually untrusting tenants.")
 	daemonCmd.Flags().BoolVar(&standaloneMode, "standalone", false, "Standalone mode: skip core containers (PostgreSQL, Caddy) and start immediately")
-	daemonCmd.Flags().BoolVar(&disableSecurityScanner, "disable-security-scanner", false, "Disable the ClamAV malware scanner that otherwise starts automatically whenever Postgres is configured and auto-scans every newly created container. No independent opt-out existed before this flag — it was purely gated on Postgres being present. Off by default (scanner stays on); set true to skip it, e.g. for a throughput-sensitive deployment or a benchmark where its background work would otherwise add real per-create latency.")
+	daemonCmd.Flags().BoolVar(&disableSecurityScanner, "disable-security-scanner", false, "Disable the scan job queue and report store that otherwise start whenever Postgres is configured. The daemon no longer starts any scan on its own (#2631): scans run only when a box owner requests one. Off by default; set true to skip the queue entirely.")
 	daemonCmd.Flags().BoolVar(&disablePentestScanner, "disable-pentest-scanner", false, "Disable the network pentest scanner (headers/TLS/ports/web/DNS) that otherwise starts automatically whenever Postgres is configured. Same rationale as --disable-security-scanner; independent flag since an operator may want one scanner without the other.")
 	daemonCmd.Flags().BoolVar(&disableZapScanner, "disable-zap-scanner", false, "Disable the ZAP web-app scanner that otherwise starts automatically whenever Postgres is configured. Same rationale as --disable-security-scanner.")
 
@@ -229,6 +235,17 @@ func envFloat(name string, def float64) float64 {
 	if v := os.Getenv(name); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			return f
+		}
+	}
+	return def
+}
+
+// envDuration reads name as a time.Duration, returning def when unset or
+// unparseable.
+func envDuration(name string, def time.Duration) time.Duration {
+	if v := os.Getenv(name); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
 		}
 	}
 	return def
@@ -648,6 +665,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		},
 		GuardrailStagingRoot:       daemonGuardrailStagingRoot,
 		GuardrailSnapshotDir:       daemonGuardrailSnapshotDir,
+		GuardrailRateLimits:        daemonGuardrailRateLimits(),
 		CaddyAdminURL:              caddyAdminURL,
 		HostIP:                     hostIPFromCIDR(networkSubnet),
 		DaemonConfigStore:          daemonConfigStore,
@@ -684,6 +702,8 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		ZFSTenantRoot:              zfsTenantRoot,
 		ZFSKeysDir:                 zfsKeysDir,
 		RunJournalRetention:        runJournalRetention,
+		SSHAuthzMaxKeyAge:          sshAuthzMaxKeyAge,
+		SSHAuthzKeysCommand:        sshAuthzKeysCommand,
 	}
 
 	// Create dual server
@@ -876,11 +896,9 @@ func reconcileBaseScripts(incusClient *incus.Client) {
 		return
 	}
 
-	for _, c := range containers {
-		if c.State != "Running" {
-			continue
-		}
-
+	var applied, failed int
+	var failedNames []string
+	for _, c := range baseScriptTargets(containers) {
 		// Derive the lookup name for InstallStack:
 		// - "hsin-container" → pass "hsin" (InstallStack adds "-container" back)
 		// - "containarium-core-caddy" → pass as-is (fallback to literal name)
@@ -890,11 +908,46 @@ func reconcileBaseScripts(incusClient *incus.Client) {
 		}
 
 		if err := mgr.InstallStack(lookupName, "ntp"); err != nil {
-			log.Printf("Warning: failed to apply ntp to %s: %v", c.Name, err)
+			failed++
+			failedNames = append(failedNames, c.Name)
+			log.Printf("base script reconcile: ntp on %s: %v", c.Name, err)
+			continue
 		}
+		applied++
 	}
 
-	log.Printf("Base script reconciliation complete")
+	// One summary line instead of a warning per container (#2617).
+	log.Printf("Base script reconciliation complete: %d applied, %d failed%s", applied, failed, failedSuffix(failedNames))
+}
+
+// baseScriptTargets selects the containers the startup base-script reconcile
+// applies to: running ones, excluding core service containers, which are
+// platform-managed rather than tenant workloads (#2617).
+func baseScriptTargets(containers []incus.ContainerInfo) []incus.ContainerInfo {
+	var out []incus.ContainerInfo
+	for _, c := range containers {
+		if c.State != "Running" || c.Role.IsCoreRole() {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// failedSuffix renders " (a, b, c, +N more)" for the reconcile summary, empty
+// when nothing failed. Capped so a fleet-wide failure stays one short line.
+func failedSuffix(names []string) string {
+	const max = 5
+	if len(names) == 0 {
+		return ""
+	}
+	shown := names
+	more := ""
+	if len(names) > max {
+		shown = names[:max]
+		more = fmt.Sprintf(", +%d more", len(names)-max)
+	}
+	return " (" + strings.Join(shown, ", ") + more + ")"
 }
 
 // waitForCoreContainers discovers core containers by role label and waits for

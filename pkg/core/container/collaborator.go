@@ -275,11 +275,8 @@ func (cm *CollaboratorManager) removeCollaboratorUser(containerName, accountName
 	_ = cm.manager.incus.Exec(containerName, []string{"rm", "-f", sudoersPath})
 
 	// Terminate any live session/processes owned by the account BEFORE deleting
-	// it. Both are best-effort: loginctl exists only on systemd-based images,
-	// and pkill exits non-zero when nothing matched (a benign race), so their
-	// statuses are deliberately ignored — the KILL is what drops the shell.
-	_ = cm.manager.incus.Exec(containerName, []string{"loginctl", "terminate-user", accountName})
-	_ = cm.manager.incus.Exec(containerName, []string{"pkill", "-KILL", "-u", accountName})
+	// it — the same sequence TerminateUserSessions runs (#2522).
+	_ = cm.manager.TerminateAccountSessions(containerName, accountName)
 
 	// Delete user and home directory. -f forces removal even if the account was
 	// referenced a moment ago, so a lingering process can't block the delete
@@ -318,6 +315,12 @@ func CollaboratorJumpAccountContainer(jumpUser string) (string, bool) {
 func (cm *CollaboratorManager) ListCollaborators(ownerUsername string) ([]*collaborator.Collaborator, error) {
 	containerName := ownerUsername + "-container"
 	return cm.store.List(context.Background(), containerName)
+}
+
+// ListByCollaborator returns every box collaboratorUsername reaches as a
+// collaborator (#2522).
+func (cm *CollaboratorManager) ListByCollaborator(ctx context.Context, collaboratorUsername string) ([]*collaborator.Collaborator, error) {
+	return cm.store.ListByCollaborator(ctx, collaboratorUsername)
 }
 
 // GetCollaborator returns a specific collaborator

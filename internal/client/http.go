@@ -31,8 +31,21 @@ type HTTPClient struct {
 	httpClient *http.Client
 }
 
+// HTTPClientOption configures the HTTP transport used by the typed client.
+type HTTPClientOption func(*HTTPClient)
+
+// WithHTTPClient reuses a caller's transport, TLS trust and timeouts. The
+// caller must finish configuring it before making requests.
+func WithHTTPClient(httpClient *http.Client) HTTPClientOption {
+	return func(c *HTTPClient) {
+		if httpClient != nil {
+			c.httpClient = httpClient
+		}
+	}
+}
+
 // NewHTTPClient creates a new HTTP client
-func NewHTTPClient(baseURL string, token string) (*HTTPClient, error) {
+func NewHTTPClient(baseURL string, token string, options ...HTTPClientOption) (*HTTPClient, error) {
 	if baseURL == "" {
 		return nil, ErrNoServerConfigured
 	}
@@ -71,14 +84,18 @@ func NewHTTPClient(baseURL string, token string) (*HTTPClient, error) {
 		NextProtos: []string{"http/1.1"},
 	}
 
-	return &HTTPClient{
+	client := &HTTPClient{
 		baseURL: baseURL,
 		token:   token,
 		httpClient: &http.Client{
 			Timeout:   15 * time.Minute, // Match gRPC client timeout for container creation
 			Transport: transport,
 		},
-	}, nil
+	}
+	for _, option := range options {
+		option(client)
+	}
+	return client, nil
 }
 
 // Close closes the HTTP client (no-op for HTTP, kept for interface compatibility)
@@ -337,7 +354,7 @@ type GitSourceOpts struct {
 	WorkspacePath string // empty defaults to /workspace
 }
 
-func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, isolation pb.IsolationType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string, labels map[string]string) (*incus.ContainerInfo, error) {
+func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, sshKeys []string, enablePodman bool, stack string, gpus []string, osType pb.OSType, isolation pb.IsolationType, monitoring bool, pool, backendID string, git GitSourceOpts, ttlSeconds int64, idleStopMinutes int32, disableAutoSleep bool, deleteAfterStoppedSeconds int64, storageClass string, enc EncryptionOpts, memoryRequest, cpuRequest, region string, labels map[string]string) (*incus.ContainerInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
@@ -383,6 +400,7 @@ func (c *HTTPClient) CreateContainer(username, image, cpu, memory, disk string, 
 	if ttlSeconds > 0 {
 		req.TTLSeconds = ttlSeconds
 	}
+	req.DisableAutoSleep = disableAutoSleep
 	if idleStopMinutes > 0 {
 		req.IdleStopMinutes = idleStopMinutes
 	}
@@ -2325,10 +2343,16 @@ func (c *HTTPClient) guardrailPolicyCall(method string, body []byte, out proto.M
 // falling back to the status code.
 func httpError(bodyBytes []byte, statusCode int, op string) error {
 	var errResp struct {
-		Error string `json:"error"`
+		Error   string `json:"error"`
+		Message string `json:"message"`
 	}
-	if json.Unmarshal(bodyBytes, &errResp) == nil && errResp.Error != "" {
-		return fmt.Errorf("%s", errResp.Error)
+	if json.Unmarshal(bodyBytes, &errResp) == nil {
+		if errResp.Error != "" {
+			return fmt.Errorf("%s", errResp.Error)
+		}
+		if errResp.Message != "" {
+			return fmt.Errorf("%s", errResp.Message)
+		}
 	}
 	return fmt.Errorf("%s: status %d", op, statusCode)
 }
