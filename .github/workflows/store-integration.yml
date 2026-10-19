@@ -140,7 +140,10 @@ jobs:
           # without a build tag, gated on the DSN. Run them here too — they
           # skipped unconditionally until now, deferring to "integration tests
           # run separately", which meant nowhere.
-          go test -count=1 -timeout 5m -v \
+          # autosleep initializes the traffic schema while traffic's migration
+          # test drops its unique index. Serialize packages so initialization
+          # cannot race the migration fixtures (#2693).
+          go test -p 1 -count=1 -timeout 5m -v \
             ./internal/secrets/ ./internal/app/ ./pkg/core/network/ \
             ./internal/autosleep/ ./internal/pentest/ ./internal/security/ ./internal/traffic/ ./internal/zap/ \
             ./internal/tracker/ 2>&1 | tee -a integration.log

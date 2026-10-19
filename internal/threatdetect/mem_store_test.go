@@ -205,6 +205,37 @@ func TestMemFindingStore_ConcurrentUpsertsConvergeToOneRow(t *testing.T) {
 	}
 }
 
+// #2748: the finding Upsert returns, and the one it hands the notifier, are
+// read after the store's lock is released. A later Upsert of the same key
+// must not change them.
+func TestMemFindingStore_UpsertReturnsSnapshot(t *testing.T) {
+	auditStore, bus := memTestDeps(t)
+	s, err := NewMemFindingStore(events.NewEmitter(bus), auditStore)
+	if err != nil {
+		t.Fatalf("NewMemFindingStore: %v", err)
+	}
+	n := NewWebhookNotifier(newFakeConfigSource("http://127.0.0.1:1", ""), nil) // no worker: queue length = deliveries
+	s.SetNotifier(n)
+
+	ctx := context.Background()
+	first, err := s.Upsert(ctx, sampleMemFinding())
+	if err != nil {
+		t.Fatalf("Upsert #1: %v", err)
+	}
+	if _, err := s.Upsert(ctx, sampleMemFinding()); err != nil {
+		t.Fatalf("Upsert #2: %v", err)
+	}
+	if first.Count != 1 {
+		t.Fatalf("finding returned by Upsert #1 has count %d after Upsert #2, want 1", first.Count)
+	}
+	if got := len(n.queue); got != 1 {
+		t.Fatalf("deliveries = %d, want 1", got)
+	}
+	if delivered := <-n.queue; delivered.Count != 1 {
+		t.Fatalf("queued delivery has count %d after Upsert #2, want 1", delivered.Count)
+	}
+}
+
 // A deduped repeat can raise an open finding's severity but never lower it:
 // the sshd posture reconciler records MEDIUM when it undid tampering and
 // HIGH if the box is later still permissive (#2424).

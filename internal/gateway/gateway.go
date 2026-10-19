@@ -782,7 +782,12 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 					}
 				}
 
-				gs.consoleHandler.HandleConsole(w, r)
+				// #2721: same contract as the terminal route above — record that
+				// this bearer passed ValidateToken so the shared upgrader's
+				// no-Origin exemption (checkTerminalOrigin) can honour it.
+				// Without this record the console upgrader refuses every
+				// Origin-less request, including the CLI's.
+				gs.consoleHandler.HandleConsole(w, r.WithContext(withValidatedBearer(r.Context(), src)))
 			}))
 		}
 
