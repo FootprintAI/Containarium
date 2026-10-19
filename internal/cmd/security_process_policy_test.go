@@ -188,6 +188,7 @@ Effective:
   action:             THROTTLE
   throttle allowance: 10%
   ttl:                24h0m0s
+  kill process:       false
 Mining-behavior thresholds:
   min cores:              1.5
   min fraction of limit:  0.75
@@ -352,5 +353,34 @@ func TestProcessPolicyGet_ShowsEffectiveThresholdsNotStoredZeros(t *testing.T) {
 		if !strings.Contains(buf.String(), want) {
 			t.Errorf("output lacks %q:\n%s", want, buf.String())
 		}
+	}
+}
+
+// TestProcessPolicySet_KillProcess (#2638): --kill-process sends the
+// optional bool explicitly (true and false both), so the server's
+// field-by-field merge can tell "turn it off" from "leave it alone".
+func TestProcessPolicySet_KillProcess(t *testing.T) {
+	for _, tc := range []struct {
+		arg, want string
+	}{
+		{"--kill-process=true", `"killProcess":true`},
+		{"--kill-process=false", `"killProcess":false`},
+	} {
+		ps := &policyServer{reply: `{"effective":{"killProcess":true}}`}
+		ps.start(t)
+		if _, err := runPolicySet(t, tc.arg); err != nil {
+			t.Fatalf("%s: %v", tc.arg, err)
+		}
+		if !strings.Contains(string(ps.body), tc.want) {
+			t.Errorf("%s: body = %s, want %s", tc.arg, ps.body, tc.want)
+		}
+	}
+	ps := &policyServer{reply: `{}`}
+	ps.start(t)
+	if _, err := runPolicySet(t, "--action", "alert"); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(ps.body), "killProcess") {
+		t.Errorf("a lone --action must not send kill_process; body = %s", ps.body)
 	}
 }

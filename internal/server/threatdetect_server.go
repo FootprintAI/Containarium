@@ -50,6 +50,11 @@ type ThreatDetectionServer struct {
 	miningCfg *threatdetect.MiningThresholdsConfig
 	responder *ProcessResponder
 
+	// minerSigRule backs the miner-signature RPCs (#2638); like badDestRule
+	// it exists whether or not the sentry is armed. See
+	// threatdetect_minersig_server.go.
+	minerSigRule *threatdetect.MinerSignatureRule
+
 	mu                sync.Mutex // guards the fields below — SetUnavailable / SetCPUSamplerStatus run after Start()
 	ebpfAvailable     bool       // eBPF object loaded (networkPolicyEnforcer != nil) AND still running
 	unavailableReason string

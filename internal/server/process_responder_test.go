@@ -225,7 +225,7 @@ func (fx *responderFixture) fire(t *testing.T, container string, rule pb.ThreatR
 
 const (
 	ruleMiningBehavior = pb.ThreatRuleId(6) // THREAT_RULE_ID_MINING_BEHAVIOR (#2635)
-	ruleMinerSignature = pb.ThreatRuleId(7) // THREAT_RULE_ID_MINER_SIGNATURE (#2638)
+	ruleMinerSignature = pb.ThreatRuleId_THREAT_RULE_ID_MINER_SIGNATURE
 )
 
 // The responder's action table: what each policy does to the box, what it

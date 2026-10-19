@@ -50,6 +50,9 @@ type SecurityAction struct {
 	// limits.cpu.allowance before a THROTTLE, restored verbatim on release.
 	PrevCPUCount     string
 	PrevCPUAllowance string
+	// KilledPID is the host pid the responder SIGKILLed for the same finding
+	// (kill_process on a miner-signature finding, #2638); 0 when none.
+	KilledPID uint32
 	// Error is the Incus failure text when the apply did not take effect.
 	Error string
 	// Pending is true between the row's insert and the actuator call being

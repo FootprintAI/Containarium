@@ -29,6 +29,11 @@ type RuleContext struct {
 	// (#2635), read from the daemon config store by the caller. nil means
 	// DefaultMiningThresholds.
 	MiningThresholds func() MiningThresholds
+	// HashExec asks the host to hash the exec'd binary (/proc/<pid>/exe)
+	// off the engine's exec path and redeliver ev through OnExec with
+	// SHA256 set (#2638). Best effort: the process may be gone, and a full
+	// queue drops the request. nil when no hasher is wired.
+	HashExec func(ev ExecEvent)
 }
 
 // CPUSample is one container's CPU usage over one metrics-collector tick
@@ -218,6 +223,14 @@ func (e *Engine) SetMiningThresholds(fn func() MiningThresholds) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.ruleCtx.MiningThresholds = fn
+}
+
+// SetExecHasher wires RuleContext.HashExec (#2638). Like Register, call it
+// before wiring hooks.
+func (e *Engine) SetExecHasher(fn func(ExecEvent)) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.ruleCtx.HashExec = fn
 }
 
 // OnCPU is the metrics collector's CPU hook (via the server's CPUSampler):
