@@ -478,7 +478,7 @@ func TestExecWatcher_Status(t *testing.T) {
 	}
 }
 
-// fakeExecRing is an execRingReader: it returns err from Read, or — with no
+// fakeExecRing is an execRingReader: it returns err from ReadInto, or — with no
 // err — blocks until Close and then reports ringbuf.ErrClosed, like the real
 // reader on shutdown.
 type fakeExecRing struct {
@@ -491,13 +491,17 @@ func newFakeExecRing(err error) *fakeExecRing {
 	return &fakeExecRing{err: err, closed: make(chan struct{})}
 }
 
-func (r *fakeExecRing) Read() (ringbuf.Record, error) {
+func (r *fakeExecRing) ReadInto(*ringbuf.Record) error {
 	if r.err != nil {
-		return ringbuf.Record{}, r.err
+		return r.err
 	}
 	<-r.closed
-	return ringbuf.Record{}, ringbuf.ErrClosed
+	return ringbuf.ErrClosed
 }
+
+// SetDeadline is a no-op: the fake blocks until Close regardless, which is
+// the shutdown path these tests exercise.
+func (r *fakeExecRing) SetDeadline(time.Time) {}
 
 func (r *fakeExecRing) Close() error {
 	r.once.Do(func() { close(r.closed) })

@@ -163,9 +163,11 @@ func (w *ExecWatcher) Start(ctx context.Context, objValue string) error {
 }
 
 // execRingReader is the ring reader the consumer drains: *ringbuf.Reader in
-// the daemon, a fake in tests.
+// the daemon, a fake in tests. The consumer drains it in timed batches
+// (netbpf.ExecDrainInterval, #2774), hence ReadInto + SetDeadline.
 type execRingReader interface {
-	Read() (ringbuf.Record, error)
+	ReadInto(rec *ringbuf.Record) error
+	SetDeadline(t time.Time)
 	Close() error
 }
 

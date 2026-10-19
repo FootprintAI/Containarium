@@ -32,7 +32,8 @@
 // then runs:
 //   clang -O2 -g -target bpfel -I internal/netbpf -c execwatch.bpf.c -o execwatch.bpf.o
 //
-// Kernel floor: 5.8 (BPF_MAP_TYPE_RINGBUF), 5.6 (bpf_get_current_ancestor_cgroup_id),
+// Kernel floor: 5.8 (BPF_MAP_TYPE_RINGBUF, and with it bpf_ringbuf_query and the
+// BPF_RB_NO_WAKEUP / BPF_RB_FORCE_WAKEUP submit flags), 5.6 (bpf_get_current_ancestor_cgroup_id),
 // and CONFIG_DEBUG_INFO_BTF for the CO-RE relocations (task_struct, mm_struct,
 // the tracepoint context). Ubuntu 22.04 and 24.04 LTS ship all three. The
 // network object keeps its own 5.4 floor: a host below 5.8 loses exec
@@ -47,6 +48,23 @@
 #define EXEC_ARGV_LEN      512
 #define EXEC_CGROUP_LEVELS 12
 #define EXEC_RING_BYTES    (1 << 20) /* 1 MiB */
+
+// Wakeup batching (#2774). A plain bpf_ringbuf_submit(ev, 0) wakes the
+// consumer whenever it has caught up, which for a consumer that keeps up is
+// EVERY record: irq_work plus, on a VM, an IPI per exec, and one epoll
+// wakeup + context switch per event in the daemon. Measured on an 8-vCPU
+// KVM guest that was ~7 % of host CPU at 800 execs/s, against a < 1 % bar.
+//
+// So records are submitted with BPF_RB_NO_WAKEUP and the daemon drains the
+// ring on a short timer instead (netbpf.ExecDrainInterval, tens of
+// milliseconds — far inside the < 10 s detection budget). The kernel still
+// forces a wakeup once the unread backlog passes EXEC_WAKE_THRESHOLD, so a
+// burst wakes the consumer early instead of filling the ring while it
+// sleeps: a quarter of the ring (~320 records) leaves ~960 records of
+// headroom for the consumer to wake into. Every record past the threshold
+// forces again until the consumer catches up; irq_work coalesces those, so
+// the burst costs at most one wakeup per drain.
+#define EXEC_WAKE_THRESHOLD (EXEC_RING_BYTES / 4)
 
 // Wire shape of one exec event. This is the kernel ↔ daemon contract; the Go
 // decoder (internal/netbpf/execwatch.go, ParseExecEvent) pins the size and
@@ -93,7 +111,8 @@ struct {
 // exec_events: the ring buffer the daemon's consumer reads. One
 // struct exec_event per record. 1 MiB holds ~1,280 events; a burst beyond
 // what the consumer drains fails bpf_ringbuf_reserve and is COUNTED (below),
-// never blocks the exec.
+// never blocks the exec. Records are submitted without a wakeup and drained
+// on a timer (EXEC_WAKE_THRESHOLD above).
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, EXEC_RING_BYTES);
@@ -110,6 +129,13 @@ struct {
     __type(value, __u64);
     __uint(max_entries, 2);
 } exec_stats SEC(".maps");
+
+// exec_wake_threshold is EXEC_WAKE_THRESHOLD as a load-time constant
+// (.rodata, frozen at load, so the verifier sees a known value). The daemon
+// never changes it. The loading lane's overhead test loads a copy with 0 —
+// every record forces a wakeup — to measure the per-event-wakeup shape this
+// replaced side by side with the batched one (execwatch_load_test.go).
+volatile const __u64 exec_wake_threshold = EXEC_WAKE_THRESHOLD;
 
 static __always_inline void exec_bump(__u32 idx) {
     __u64 *v = bpf_map_lookup_elem(&exec_stats, &idx);
@@ -190,7 +216,13 @@ int execwatch(struct trace_event_raw_sched_process_exec *ctx) {
             ev->argv_truncated = 1;
     }
 
-    bpf_ringbuf_submit(ev, 0);
+    // The backlog check runs before the submit: AVAIL_DATA is producer minus
+    // consumer position, and the producer position already covers this
+    // reserved record, so the record itself counts toward the threshold.
+    __u64 wake = BPF_RB_NO_WAKEUP;
+    if (bpf_ringbuf_query(&exec_events, BPF_RB_AVAIL_DATA) >= exec_wake_threshold)
+        wake = BPF_RB_FORCE_WAKEUP;
+    bpf_ringbuf_submit(ev, wake);
     exec_bump(EXEC_STAT_EMITTED);
     return 0;
 }

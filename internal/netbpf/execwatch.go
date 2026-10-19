@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -321,43 +322,99 @@ type ExecEventSink interface {
 	OnExecEvent(ctx context.Context, ev ExecEvent)
 }
 
+// ExecDrainInterval is how often the exec ring consumer drains the ring
+// (#2774). The kernel side submits every record with BPF_RB_NO_WAKEUP, so the
+// consumer is not woken per event; it sleeps until this deadline (or until
+// the kernel forces a wakeup because the backlog passed a quarter of the
+// ring — EXEC_WAKE_THRESHOLD in execwatch.bpf.c), then drains everything
+// queued in one batch. The interval is therefore the added detection latency
+// bound for an exec event: 50 ms against the miner-signature rule's < 10 s
+// budget. At 1,000 execs/s it turns ~1,000 consumer wakeups a second into
+// ~20, each draining ~50 records (~40 KiB of the 1 MiB ring).
+const ExecDrainInterval = 50 * time.Millisecond
+
+// ExecDrainObserver is an optional extension of ExecEventSink: when the sink
+// implements it, OnExecDrain is called once per drain with the number of
+// records the drain delivered (0 for a tick that found the ring empty). The
+// lane's overhead test uses it to prove the batching; the daemon does not
+// need it.
+type ExecDrainObserver interface {
+	OnExecDrain(records int)
+}
+
 // ringRecordReader is the subset of *ringbuf.Reader ConsumeExecEvents needs,
-// so the loop is unit-testable with a fake.
+// so the loop is unit-testable with a fake. ReadInto reuses one Record (and
+// its sample buffer) for every event; ParseExecEvent copies what it keeps.
 type ringRecordReader interface {
-	Read() (ringbuf.Record, error)
+	ReadInto(rec *ringbuf.Record) error
+	SetDeadline(t time.Time)
 }
 
 // ConsumeExecEvents reads samples from the exec ring until the reader is
 // closed, decoding each and handing it to the sink — the ringbuf twin of
-// ConsumeDenyEvents, with the same contract: Read blocks, so cancelling ctx
-// alone does not return; the caller must also Close the reader when ctx
-// ends (the daemon and the lane test both do). A malformed sample is reported via
-// onError (nil to ignore) and skipped; a reader error other than ErrClosed is
-// reported and ends the loop (the caller owns restart policy). Ring
-// overflow is not visible here: the kernel counts it (ExecWatch.Stats), it
-// never blocks or crashes the exec'ing process.
+// ConsumeDenyEvents, with the same contract: a read blocks, so cancelling
+// ctx alone does not return; the caller must also Close the reader when ctx
+// ends (the daemon and the lane test both do). A malformed sample is
+// reported via onError (nil to ignore) and skipped; a reader error other
+// than ErrClosed is reported and ends the loop (the caller owns restart
+// policy). Ring overflow is not visible here: the kernel counts it
+// (ExecWatch.Stats), it never blocks or crashes the exec'ing process.
+//
+// The ring is drained in batches every ExecDrainInterval rather than one
+// wakeup per event (see ExecDrainInterval; ConsumeExecEventsEvery takes the
+// interval explicitly).
 func ConsumeExecEvents(ctx context.Context, rd ringRecordReader, sink ExecEventSink, onError func(error)) {
+	ConsumeExecEventsEvery(ctx, rd, ExecDrainInterval, sink, onError)
+}
+
+// ConsumeExecEventsEvery is ConsumeExecEvents with an explicit drain
+// interval (<= 0 means ExecDrainInterval). Each round sets the reader's
+// deadline one interval ahead; the reader sleeps in epoll until then (or an
+// early, kernel-forced wakeup), returns every queued record, and reports
+// os.ErrDeadlineExceeded once the ring is empty — which ends the round, not
+// the loop.
+func ConsumeExecEventsEvery(ctx context.Context, rd ringRecordReader, interval time.Duration, sink ExecEventSink, onError func(error)) {
+	if interval <= 0 {
+		interval = ExecDrainInterval
+	}
 	report := func(err error) {
 		if onError != nil {
 			onError(err)
 		}
 	}
+	observer, _ := sink.(ExecDrainObserver)
+	var rec ringbuf.Record
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		rec, err := rd.Read()
-		if err != nil {
+		rd.SetDeadline(time.Now().Add(interval))
+		n := 0
+		for {
+			err := rd.ReadInto(&rec)
+			if err == nil {
+				if ctx.Err() != nil {
+					return
+				}
+				ev, perr := ParseExecEvent(rec.RawSample)
+				if perr != nil {
+					report(perr)
+					continue
+				}
+				n++
+				sink.OnExecEvent(ctx, ev)
+				continue
+			}
+			if errors.Is(err, os.ErrDeadlineExceeded) {
+				break // ring drained; next round
+			}
 			if !errors.Is(err, ringbuf.ErrClosed) {
 				report(fmt.Errorf("netbpf: execwatch: ring read: %w", err))
 			}
 			return
 		}
-		ev, err := ParseExecEvent(rec.RawSample)
-		if err != nil {
-			report(err)
-			continue
+		if observer != nil {
+			observer.OnExecDrain(n)
 		}
-		sink.OnExecEvent(ctx, ev)
 	}
 }
