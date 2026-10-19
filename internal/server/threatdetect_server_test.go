@@ -398,3 +398,110 @@ func TestGetSentryStatus_CPUSampler(t *testing.T) {
 		}
 	}
 }
+
+// The finding store is on Postgres (engine not degraded) but the responder
+// was forced ALERT-only — the security_actions store failed, or the responder
+// could not be built. A THROTTLE/FREEZE policy is inert, so status must say
+// DEGRADED with the responder's reason, never OK (#2719).
+func TestGetSentryStatus_ResponderDegradedWhileFindingsPersisted(t *testing.T) {
+	tests := []struct {
+		name       string
+		responder  string
+		engineDegr bool
+		wantState  pb.SentryState
+		wantReason string
+	}{
+		{
+			name:       "actions store failed",
+			responder:  "security_actions store unavailable",
+			wantState:  pb.SentryState_SENTRY_STATE_DEGRADED,
+			wantReason: "DEGRADED (security_actions store unavailable): responses disabled",
+		},
+		{
+			name:       "responder not constructed",
+			responder:  "process responder disabled: incus client unavailable",
+			wantState:  pb.SentryState_SENTRY_STATE_DEGRADED,
+			wantReason: "DEGRADED (process responder disabled: incus client unavailable): responses disabled",
+		},
+		{
+			name:       "no responder fault stays OK",
+			wantState:  pb.SentryState_SENTRY_STATE_OK,
+			wantReason: "",
+		},
+		{
+			name:       "finding store degraded too reports the no-persistence line once",
+			responder:  "finding store has no persistence",
+			engineDegr: true,
+			wantState:  pb.SentryState_SENTRY_STATE_DEGRADED,
+			wantReason: "DEGRADED (no persistence): responses disabled",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			engine := threatdetect.NewEngine(&fakeFindingSink{}, "backend-1", tt.engineDegr, nil, nil)
+			s := NewThreatDetectionServer(engine, true, true, "")
+			s.SetResponderDegraded(tt.responder)
+			resp, err := s.GetSentryStatus(secReadCtx(), &pb.GetSentryStatusRequest{})
+			if err != nil {
+				t.Fatalf("GetSentryStatus: %v", err)
+			}
+			if resp.State != tt.wantState || resp.Reason != tt.wantReason {
+				t.Errorf("status = %v/%q, want %v/%q", resp.State, resp.Reason, tt.wantState, tt.wantReason)
+			}
+		})
+	}
+}
+
+// End to end through the sentry-health loop: findings persisted + responder
+// ALERT-only ⇒ exactly one MEDIUM SENTRY_UNAVAILABLE finding naming the
+// responder fault, deduped across ticks (#2719).
+func TestSentryHealth_RaisesFindingWhenOnlyResponderDegraded(t *testing.T) {
+	engine := threatdetect.NewEngine(&fakeFindingSink{}, "backend-1", false, nil, nil)
+	s := NewThreatDetectionServer(engine, true, true, "")
+	s.SetCPUSamplerStatus("standalone (30s)")
+	s.SetResponderDegraded("security_actions store unavailable")
+	store := &fakeHealthStore{}
+	h := NewSentryHealth(s.sentryStatus, store, func() string { return "backend-1" }, nil, time.Minute)
+	h.Check(context.Background())
+	h.Check(context.Background())
+
+	open := store.open()
+	if len(open) != 1 {
+		t.Fatalf("open findings = %d (%+v), want 1", len(open), open)
+	}
+	f := open[0]
+	if f.Rule != pb.ThreatRuleId_THREAT_RULE_ID_SENTRY_UNAVAILABLE || f.Severity != pb.ThreatSeverity_THREAT_SEVERITY_MEDIUM {
+		t.Errorf("rule/severity = %v/%v, want SENTRY_UNAVAILABLE/MEDIUM", f.Rule, f.Severity)
+	}
+	if want := "DEGRADED (security_actions store unavailable): responses disabled"; f.Subject != want {
+		t.Errorf("subject = %q, want %q", f.Subject, want)
+	}
+	if f.Count != 2 {
+		t.Errorf("count = %d, want 2 (deduped across ticks)", f.Count)
+	}
+}
+
+// The daemon wiring's reason for an ALERT-only responder (#2719): every
+// condition that forces ALERT-only has one, and only a fully wired,
+// persisted responder has none.
+func TestProcessResponderDegradedReason(t *testing.T) {
+	tests := []struct {
+		name              string
+		findingsPersisted bool
+		actionsPersisted  bool
+		disabledReason    string
+		want              string
+	}{
+		{name: "all persisted", findingsPersisted: true, actionsPersisted: true, want: ""},
+		{name: "actions store failed", findingsPersisted: true, actionsPersisted: false, want: "security_actions store unavailable"},
+		{name: "finding store in memory", findingsPersisted: false, actionsPersisted: false, want: "finding store has no persistence"},
+		{name: "responder not built wins", findingsPersisted: true, actionsPersisted: true, disabledReason: "incus client unavailable", want: "process responder disabled: incus client unavailable"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := processResponderDegradedReason(tt.findingsPersisted, tt.actionsPersisted, tt.disabledReason); got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

@@ -53,6 +53,11 @@ type ThreatDetectionServer struct {
 	ebpfAvailable     bool       // eBPF object loaded (networkPolicyEnforcer != nil) AND still running
 	unavailableReason string
 	cpuSamplerStatus  string // GetSentryStatus.cpu_sampler (#2645); "" until wired
+
+	// responderDegradedReason is why the process responder is ALERT-only
+	// ("" when it can apply THROTTLE/FREEZE). Reported as DEGRADED even when
+	// the finding store itself is persisted (#2719).
+	responderDegradedReason string
 }
 
 // NewThreatDetectionServer builds the server. engine must be non-nil iff
@@ -110,6 +115,35 @@ func (s *ThreatDetectionServer) SetUnavailable(reason string) {
 	defer s.mu.Unlock()
 	s.ebpfAvailable = false
 	s.unavailableReason = reason
+}
+
+// SetResponderDegraded records why the process responder (#2636) will not
+// apply a response — it runs ALERT-only — or "" when it can. A non-empty
+// reason turns an otherwise-OK status DEGRADED, so an operator who set
+// THROTTLE or FREEZE sees that the policy is inert, and the sentry-health
+// loop raises a finding for it (#2719). The reason becomes part of the
+// finding subject, so it must be stable: name the fault, not the error text.
+func (s *ThreatDetectionServer) SetResponderDegraded(reason string) {
+	s.mu.Lock()
+	s.responderDegradedReason = reason
+	s.mu.Unlock()
+}
+
+// processResponderDegradedReason derives SetResponderDegraded's reason from
+// the daemon wiring: findingsPersisted is the finding store on Postgres,
+// actionsPersisted the security_actions store on Postgres, disabledReason
+// non-empty when the responder could not be constructed at all. Every
+// condition that leaves the responder ALERT-only (or absent) has a reason.
+func processResponderDegradedReason(findingsPersisted, actionsPersisted bool, disabledReason string) string {
+	switch {
+	case disabledReason != "":
+		return "process responder disabled: " + disabledReason
+	case !findingsPersisted:
+		return "finding store has no persistence"
+	case !actionsPersisted:
+		return "security_actions store unavailable"
+	}
+	return ""
 }
 
 // degradedNoPersistenceReason is the GetSentryStatus reason when findings
@@ -353,6 +387,7 @@ func (s *ThreatDetectionServer) sentryStatus() *pb.GetSentryStatusResponse {
 
 	s.mu.Lock()
 	cpuSampler := s.cpuSamplerStatus
+	responderReason := s.responderDegradedReason
 	s.mu.Unlock()
 	if cpuSampler == "" {
 		cpuSampler = cpuSamplerNotStartedStatus
@@ -366,6 +401,12 @@ func (s *ThreatDetectionServer) sentryStatus() *pb.GetSentryStatusResponse {
 		// The process responder (#2636) shares this condition: with no
 		// persistence it cannot record what it changed, so it is ALERT-only.
 		reason = degradedNoPersistenceReason
+	} else if responderReason != "" {
+		// Findings persist, but the responder is ALERT-only for another
+		// reason (security_actions store failed, responder not built):
+		// a THROTTLE/FREEZE policy is inert, which is not OK (#2719).
+		state = pb.SentryState_SENTRY_STATE_DEGRADED
+		reason = "DEGRADED (" + responderReason + "): responses disabled"
 	}
 	rules := make([]*pb.RuleStatus, 0, len(ruleStatus))
 	reasons := []string{}
