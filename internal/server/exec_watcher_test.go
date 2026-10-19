@@ -18,8 +18,8 @@ import (
 
 // fakeTree builds a fake /proc + /sys/fs/cgroup under a temp dir: for each
 // pid → cgroup path, a /proc/<pid>/cgroup file naming it and the cgroup
-// directory itself (whose inode is the cgroup id). Returns the two roots and
-// the inode per cgroup path.
+// directory itself. Returns the two roots and the inode of every cgroup
+// directory on each path (the leaf and all its ancestors), keyed by path.
 func fakeTree(t *testing.T, pids map[int64]string) (procRoot, cgroupRoot string, inode map[string]uint64) {
 	t.Helper()
 	base := t.TempDir()
@@ -41,19 +41,49 @@ func fakeTree(t *testing.T, pids map[int64]string) (procRoot, cgroupRoot string,
 		if err := os.MkdirAll(cgDir, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		st, err := os.Stat(cgDir)
-		if err != nil {
-			t.Fatal(err)
+		parts := strings.Split(cg, "/")
+		for i := range parts {
+			prefix := strings.Join(parts[:i+1], "/")
+			st, err := os.Stat(filepath.Join(cgroupRoot, prefix))
+			if err != nil {
+				t.Fatal(err)
+			}
+			inode[prefix] = st.Sys().(*syscall.Stat_t).Ino
 		}
-		inode[cg] = st.Sys().(*syscall.Stat_t).Ino
 	}
 	return procRoot, cgroupRoot, inode
 }
 
+// TestContainerCgroupRoot: the id registered for a box is its payload root,
+// so an exec anywhere under it — init.scope, system.slice/ssh.service, a
+// user session — has that id among its ancestors.
+func TestContainerCgroupRoot(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"lxc.payload.box-a/init.scope", "lxc.payload.box-a"},
+		{"lxc.payload.box-a/system.slice/ssh.service", "lxc.payload.box-a"},
+		{"lxc.payload.box-a/user.slice/user-1000.slice/session-3.scope", "lxc.payload.box-a"},
+		{"lxc.payload.box/.lxc", "lxc.payload.box"},
+		{"lxc.payload.box-b", "lxc.payload.box-b"},
+		{"/lxc.payload.box-b/", "lxc.payload.box-b"},
+		{"user.slice/user-1000.slice/foo.service", "user.slice/user-1000.slice/foo.service"}, // no payload component: unchanged
+	}
+	for _, tc := range tests {
+		if got := containerCgroupRoot(tc.in); got != tc.want {
+			t.Errorf("containerCgroupRoot(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestCgroupIDForPID(t *testing.T) {
 	procRoot, cgroupRoot, ino := fakeTree(t, map[int64]string{
-		4242: "lxc.payload.box-a/init.scope",
-		4300: "lxc.payload.box-b",
+		4242: "lxc.payload.box-a/init.scope",           // systemd box: init sits in init.scope under the payload root
+		4300: "lxc.payload.box-b",                      // init still at the payload root
+		4400: "lxc.payload.box-c/.lxc",                 // liblxc's own cgroup under the root
+		4500: "user.slice/user-1000.slice/foo.service", // no payload component: the leaf itself
+		// An SSH session's shell in box-a, a SIBLING of init.scope: never read
+		// by the resolver (only init pids are), but it must share the
+		// registered ancestor — asserted below.
+		4243: "lxc.payload.box-a/system.slice/ssh.service",
 	})
 	// A pid whose /proc entry has no unified line.
 	if err := os.MkdirAll(filepath.Join(procRoot, "5000"), 0o755); err != nil {
@@ -83,8 +113,11 @@ func TestCgroupIDForPID(t *testing.T) {
 		want    uint64
 		wantErr string
 	}{
-		{name: "nested path resolves to the leaf's inode", pid: 4242, want: ino["lxc.payload.box-a/init.scope"]},
-		{name: "top-level path", pid: 4300, want: ino["lxc.payload.box-b"]},
+		{name: "init in init.scope registers the payload root, not the leaf", pid: 4242, want: ino["lxc.payload.box-a"]},
+		{name: "init at the payload root", pid: 4300, want: ino["lxc.payload.box-b"]},
+		{name: "init under .lxc registers the payload root", pid: 4400, want: ino["lxc.payload.box-c"]},
+		{name: "no payload component falls back to the leaf", pid: 4500, want: ino["user.slice/user-1000.slice/foo.service"]},
+		{name: "an ssh session's cgroup resolves to the same registered root", pid: 4243, want: ino["lxc.payload.box-a"]},
 		{name: "non-positive pid", pid: 0, wantErr: "not running"},
 		{name: "missing /proc entry", pid: 9999, wantErr: "no such file"},
 		{name: "no unified line", pid: 5000, wantErr: "no cgroup v2 path"},
@@ -107,6 +140,11 @@ func TestCgroupIDForPID(t *testing.T) {
 				t.Fatalf("id = %d, want %d", got, tc.want)
 			}
 		})
+	}
+	// The registered id must never be the leaf: an exec in
+	// system.slice/ssh.service would otherwise have no watched ancestor.
+	if ino["lxc.payload.box-a/init.scope"] == ino["lxc.payload.box-a"] {
+		t.Fatal("fixture: leaf and root share an inode; the test cannot distinguish them")
 	}
 }
 

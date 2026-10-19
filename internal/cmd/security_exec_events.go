@@ -21,6 +21,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -182,6 +184,10 @@ func gatewayErrorMessage(body []byte) string {
 // formatExecEvent renders one event on one line:
 //
 //	2026-10-19T05:07:18Z  box-a  pid=4242 ppid=4100 uid=1000  /tmp/.x/xmrig  ./xmrig -o pool:3333  [argv truncated]
+//
+// filename and argv are tenant-controlled bytes (the tenant has root in the
+// box); control characters are escaped so a crafted argv cannot rewrite or
+// spoof lines of a --follow terminal. --json passes the raw event through.
 func formatExecEvent(ev *pb.ExecEvent) string {
 	at := ""
 	if ev.GetAt() != nil {
@@ -189,12 +195,38 @@ func formatExecEvent(ev *pb.ExecEvent) string {
 	}
 	x := ev.GetExec()
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s  %s  pid=%d ppid=%d uid=%d  %s", at, ev.GetContainer(), x.GetPid(), x.GetPpid(), x.GetUid(), x.GetFilename())
+	fmt.Fprintf(&b, "%s  %s  pid=%d ppid=%d uid=%d  %s", at, escapeControl(ev.GetContainer()), x.GetPid(), x.GetPpid(), x.GetUid(), escapeControl(x.GetFilename()))
 	if argv := x.GetArgv(); argv != "" {
-		fmt.Fprintf(&b, "  %s", argv)
+		fmt.Fprintf(&b, "  %s", escapeControl(argv))
 	}
 	if x.GetArgvTruncated() {
 		b.WriteString("  [argv truncated]")
+	}
+	return b.String()
+}
+
+// escapeControl replaces every non-printable rune (ESC, CR, LF, TAB, DEL,
+// C1 controls, invalid UTF-8 …) with its Go escape (`\x1b`, `\r`, …) and
+// leaves printable text, including non-ASCII, untouched.
+func escapeControl(s string) string {
+	clean := true
+	for _, r := range s {
+		if !unicode.IsPrint(r) && r != ' ' {
+			clean = false
+			break
+		}
+	}
+	if clean && utf8.ValidString(s) {
+		return s
+	}
+	var b strings.Builder
+	for _, r := range s {
+		if (unicode.IsPrint(r) || r == ' ') && r != utf8.RuneError {
+			b.WriteRune(r)
+			continue
+		}
+		q := strconv.QuoteToASCII(string(r)) // "" with surrounding quotes
+		b.WriteString(q[1 : len(q)-1])
 	}
 	return b.String()
 }

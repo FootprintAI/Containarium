@@ -866,9 +866,6 @@ func (x *CPUEvidence) GetSamples() int32 {
 	return 0
 }
 
-// Evidence bundles the flow, deny and configuration records that triggered
-// a finding. Capped by the store to the most recent entries — see
-// FindingStore.
 // ExecEvidence is one process exec observed by the host-side exec telemetry
 // (#2637): the record the execwatch eBPF program emitted, attributed to a
 // container. A rule that matches an exec (miner-signature, #2638) attaches it
@@ -992,6 +989,9 @@ func (x *ExecEvidence) GetMatched() string {
 	return ""
 }
 
+// Evidence bundles the flow, deny, configuration, listener, CPU and exec
+// records that triggered a finding. Capped by the store to the most recent
+// entries — see FindingStore.
 type Evidence struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Flows         []*FlowEvidence        `protobuf:"bytes,1,rep,name=flows,proto3" json:"flows,omitempty"`

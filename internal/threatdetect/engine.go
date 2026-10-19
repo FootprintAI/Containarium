@@ -255,14 +255,6 @@ func (e *Engine) OnExec(ev ExecEvent) {
 	}
 }
 
-// HasExecConsumers reports whether any registered rule consumes exec
-// events — the watcher can skip the engine hand-off entirely otherwise.
-func (e *Engine) HasExecConsumers() bool {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return len(e.execRules) > 0
-}
-
 func (e *Engine) evalExec(r ExecConsumer, ev ExecEvent) (out []RawFinding) {
 	id := pb.ThreatRuleId_THREAT_RULE_ID_UNSPECIFIED
 	if rule, ok := r.(Rule); ok {

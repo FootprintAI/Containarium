@@ -331,9 +331,6 @@ func (r *execTestRule) OnExec(ctx RuleContext, ev ExecEvent) []RawFinding { retu
 func TestEngine_OnExec_FansOutToExecConsumersOnly(t *testing.T) {
 	sink := &fakeSink{}
 	e := NewEngine(sink, "b1", false, nil, fixedClock(time.Unix(0, 0)))
-	if e.HasExecConsumers() {
-		t.Fatal("HasExecConsumers = true before any ExecConsumer is registered")
-	}
 	plain := &testRule{id: pb.ThreatRuleId_THREAT_RULE_ID_BAD_DESTINATION}
 	var got []ExecEvent
 	consumer := &execTestRule{testRule: testRule{id: pb.ThreatRuleId_THREAT_RULE_ID_MINING_BEHAVIOR}, onExec: func(_ RuleContext, ev ExecEvent) []RawFinding {
@@ -344,9 +341,6 @@ func TestEngine_OnExec_FansOutToExecConsumersOnly(t *testing.T) {
 	e.Register(plain)
 	e.Register(panicky)
 	e.Register(consumer)
-	if !e.HasExecConsumers() {
-		t.Fatal("HasExecConsumers = false with two ExecConsumers registered")
-	}
 
 	e.OnExec(ExecEvent{Container: "box", TenantID: "t1", PID: 4242, Comm: "xmrig", Filename: "/tmp/.x/xmrig", Argv: "./xmrig -o pool:3333"})
 

@@ -94,6 +94,28 @@ func TestRunSecurityExecEvents_HitsExpectedPathAndRendersLines(t *testing.T) {
 	}
 }
 
+// Tenant-controlled argv/filename cannot drive the operator's terminal: ESC,
+// CR, LF and other controls are escaped in the formatted line; printable
+// non-ASCII stays; --json is untouched (TestStreamExecEvents_JSONPassthrough).
+func TestFormatExecEvent_EscapesControlCharacters(t *testing.T) {
+	ev := &pb.ExecEvent{Container: "box-a", At: timestamppb.New(mustTime(t, "2026-10-19T05:07:18Z")),
+		Exec: &pb.ExecEvidence{Pid: 1, Filename: "/tmp/\x1b[2Kfake", Argv: "sh -c \x1b[1;31mALERT\r\nroot-ok café\ttab"}}
+	got := formatExecEvent(ev)
+	for _, raw := range []string{"\x1b", "\r", "\n", "\t"} {
+		if strings.Contains(got, raw) {
+			t.Errorf("formatted line still carries a raw control byte %q:\n%q", raw, got)
+		}
+	}
+	for _, want := range []string{`/tmp/\x1b[2Kfake`, `\x1b[1;31mALERT\r\nroot-ok café\ttab`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("formatted line missing escaped %q:\n%q", want, got)
+		}
+	}
+	if escapeControl("plain ./xmrig -o pool:3333") != "plain ./xmrig -o pool:3333" {
+		t.Error("escapeControl altered a clean string")
+	}
+}
+
 // --since 0 sends no replay window and no follow by default.
 func TestRunSecurityExecEvents_ZeroSinceOmitsWindow(t *testing.T) {
 	var gotQuery string

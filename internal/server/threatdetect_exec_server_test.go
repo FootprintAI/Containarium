@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -47,10 +48,13 @@ func (f *fakeExecSource) Subscribe(container string, since time.Duration, _ int)
 	return out, f.live, func() { f.cancelled++ }
 }
 
-// fakeExecStream captures what the handler sends.
+// fakeExecStream captures what the handler sends. Send runs on the handler's
+// goroutine while the follow test reads from its own, so the slice is
+// guarded.
 type fakeExecStream struct {
 	grpc.ServerStream
 	ctx  context.Context
+	mu   sync.Mutex
 	sent []*pb.ExecEvent
 	err  error
 }
@@ -60,8 +64,16 @@ func (s *fakeExecStream) Send(ev *pb.ExecEvent) error {
 	if s.err != nil {
 		return s.err
 	}
+	s.mu.Lock()
 	s.sent = append(s.sent, ev)
+	s.mu.Unlock()
 	return nil
+}
+
+func (s *fakeExecStream) snapshot() []*pb.ExecEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]*pb.ExecEvent(nil), s.sent...)
 }
 
 func execAdminCtx() context.Context {
@@ -186,10 +198,10 @@ func TestStreamExecEvents_FollowUntilClientGone(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- s.StreamExecEvents(&pb.StreamExecEventsRequest{Follow: true}, st) }()
 	deadline := time.After(2 * time.Second)
-	for len(st.sent) < 2 {
+	for len(st.snapshot()) < 2 {
 		select {
 		case <-deadline:
-			t.Fatalf("sent %d live events, want 2", len(st.sent))
+			t.Fatalf("sent %d live events, want 2", len(st.snapshot()))
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
@@ -202,8 +214,8 @@ func TestStreamExecEvents_FollowUntilClientGone(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("handler did not return after the client went away")
 	}
-	if st.sent[0].Exec.Pid != 10 || st.sent[1].Exec.Pid != 11 {
-		t.Fatalf("live order = %+v", st.sent)
+	if sent := st.snapshot(); sent[0].Exec.Pid != 10 || sent[1].Exec.Pid != 11 {
+		t.Fatalf("live order = %+v", sent)
 	}
 }
 

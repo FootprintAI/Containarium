@@ -148,9 +148,6 @@ message CPUEvidence {
   int32 samples = 4;
 }
 
-// Evidence bundles the flow, deny and configuration records that triggered
-// a finding. Capped by the store to the most recent entries — see
-// FindingStore.
 // ExecEvidence is one process exec observed by the host-side exec telemetry
 // (#2637): the record the execwatch eBPF program emitted, attributed to a
 // container. A rule that matches an exec (miner-signature, #2638) attaches it
@@ -178,6 +175,9 @@ message ExecEvidence {
   string matched = 9;
 }
 
+// Evidence bundles the flow, deny, configuration, listener, CPU and exec
+// records that triggered a finding. Capped by the store to the most recent
+// entries — see FindingStore.
 message Evidence {
   repeated FlowEvidence flows = 1;
   repeated DenyEvidence denies = 2;

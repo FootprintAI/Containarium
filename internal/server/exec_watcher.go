@@ -55,7 +55,6 @@ type execCgroupMap interface {
 type execTarget struct {
 	Container string
 	TenantID  string
-	Index     uint32
 }
 
 // ExecEventRecord is one decoded, attributed exec event — what the engine
@@ -245,21 +244,39 @@ func (w *ExecWatcher) watchedCount() int {
 	return len(w.byName)
 }
 
+// execDesired is one running tenant container the reconcile wants watched.
+type execDesired struct {
+	id     uint64
+	tenant string
+}
+
 // Reconcile converges watched_cgroups with the running tenant containers:
 // each running, non-core container with an init pid is resolved
-// /proc/<pid>/cgroup → /sys/fs/cgroup/<path> inode and upserted; a container
-// whose id changed (restart: new init, new cgroup directory) has the old id
-// removed; stopped or vanished containers are removed. Core-role containers
-// (control plane, postgres, caddy, …) are platform infrastructure, not
-// tenants, and are never registered — their execs stay invisible by
-// design. Called from the enforcer's reconcile; a no-op before Start.
+// /proc/<pid>/cgroup → the container's root cgroup → its inode and
+// upserted; a container whose id changed (restart: new init, new cgroup
+// directory) has the old id removed; stopped or vanished containers are
+// removed. Core-role containers (control plane, postgres, caddy, …) are
+// platform infrastructure, not tenants, and are never registered — their
+// execs stay invisible by design. Called from the enforcer's reconcile; a
+// no-op before Start.
+//
+// The /proc reads and the map syscalls run OUTSIDE w.mu: OnExecEvent takes
+// the same lock for every ring event, and a pass over many containers must
+// not stall the consumer. The lock is held only to diff against and swap
+// the attribution tables. Removals are applied before additions so a
+// reused cgroup inode (kernfs ids recycle) can never have a stopped box's
+// removal delete a just-started box's entry.
 func (w *ExecWatcher) Reconcile(containers []incus.ContainerInfo) {
 	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.maps == nil {
+	maps := w.maps
+	w.mu.Unlock()
+	if maps == nil {
 		return
 	}
-	desired := make(map[string]bool, len(containers))
+
+	// Phase 1, unlocked: resolve the desired set.
+	desired := make(map[string]execDesired, len(containers))
+	failed := make(map[string]string)
 	for _, c := range containers {
 		if c.Role != "" || !strings.EqualFold(c.State, "running") || c.Pid <= 0 {
 			continue
@@ -268,61 +285,111 @@ func (w *ExecWatcher) Reconcile(containers []incus.ContainerInfo) {
 		if tenant == "" {
 			continue
 		}
-		desired[c.Name] = true
 		id, err := cgroupIDForPID(w.procRoot, w.cgroupRoot, c.Pid)
 		if err != nil {
-			if w.resolveFail[c.Name] != err.Error() {
-				log.Printf("[exec-telemetry] %s: cannot resolve cgroup id: %v (execs not watched until it resolves)", c.Name, err)
-				w.resolveFail[c.Name] = err.Error()
-			}
+			failed[c.Name] = err.Error()
 			continue
 		}
-		delete(w.resolveFail, c.Name)
-		if cur, ok := w.byName[c.Name]; ok {
-			if cur == id {
-				if t := w.byCgroup[id]; t.TenantID != tenant {
-					t.TenantID = tenant
-					w.byCgroup[id] = t
-				}
-				continue
-			}
-			// Restarted: a new init pid lives in a new cgroup directory.
-			w.unwatchLocked(c.Name, cur)
-		}
-		w.nextIndex++
-		if err := w.maps.WatchCgroup(id, w.nextIndex); err != nil {
-			log.Printf("[exec-telemetry] %s: watch cgroup %d: %v", c.Name, id, err)
-			continue
-		}
-		w.byName[c.Name] = id
-		w.byCgroup[id] = execTarget{Container: c.Name, TenantID: tenant, Index: w.nextIndex}
+		desired[c.Name] = execDesired{id: id, tenant: tenant}
 	}
-	for name, id := range w.byName {
-		if !desired[name] {
-			w.unwatchLocked(name, id)
+
+	// Phase 2, locked: diff. Removals take effect in the tables at once (a
+	// stopped box must not be attributed a reused id); additions are staged
+	// and committed after their map write succeeded.
+	type change struct {
+		name string
+		id   uint64
+	}
+	var toRemove, toAdd []change
+	w.mu.Lock()
+	for name, msg := range failed {
+		if w.resolveFail[name] != msg {
+			log.Printf("[exec-telemetry] %s: cannot resolve cgroup id: %s (execs not watched until it resolves)", name, msg)
+			w.resolveFail[name] = msg
 		}
 	}
 	for name := range w.resolveFail {
-		if !desired[name] {
+		if _, stillFailing := failed[name]; !stillFailing {
 			delete(w.resolveFail, name)
 		}
 	}
-}
-
-func (w *ExecWatcher) unwatchLocked(name string, id uint64) {
-	if err := w.maps.UnwatchCgroup(id); err != nil {
-		log.Printf("[exec-telemetry] %s: unwatch cgroup %d: %v", name, id, err)
+	for name, cur := range w.byName {
+		d, want := desired[name]
+		if !want || d.id != cur {
+			toRemove = append(toRemove, change{name, cur})
+			delete(w.byName, name)
+			delete(w.byCgroup, cur)
+		}
 	}
-	delete(w.byName, name)
-	delete(w.byCgroup, id)
+	for name, d := range desired {
+		if cur, ok := w.byName[name]; ok && cur == d.id {
+			if t := w.byCgroup[d.id]; t.TenantID != d.tenant {
+				t.TenantID = d.tenant
+				w.byCgroup[d.id] = t
+			}
+			continue
+		}
+		toAdd = append(toAdd, change{name, d.id})
+	}
+	w.mu.Unlock()
+
+	// Phase 3, unlocked: kernel map writes, removals first.
+	for _, r := range toRemove {
+		if err := maps.UnwatchCgroup(r.id); err != nil {
+			log.Printf("[exec-telemetry] %s: unwatch cgroup %d: %v", r.name, r.id, err)
+		}
+	}
+	var added []change
+	for _, a := range toAdd {
+		w.mu.Lock()
+		w.nextIndex++
+		idx := w.nextIndex
+		w.mu.Unlock()
+		if err := maps.WatchCgroup(a.id, idx); err != nil {
+			log.Printf("[exec-telemetry] %s: watch cgroup %d: %v", a.name, a.id, err)
+			continue
+		}
+		added = append(added, change{a.name, a.id})
+	}
+
+	// Phase 4, locked: commit the additions. An exec in a just-watched
+	// cgroup that lands between the map write and this commit is counted
+	// unattributed rather than guessed.
+	w.mu.Lock()
+	for _, a := range added {
+		d := desired[a.name]
+		w.byName[a.name] = a.id
+		w.byCgroup[a.id] = execTarget{Container: a.name, TenantID: d.tenant}
+	}
+	w.mu.Unlock()
 }
 
-// cgroupIDForPID resolves a host pid to its cgroup v2 id: the inode of
-// <cgroupRoot>/<path from /proc/<pid>/cgroup>, which is what
-// bpf_get_current_ancestor_cgroup_id reports. The path comes out of /proc
-// (host-derived, not tenant-supplied) but is still a variable path resolved
-// against a host directory, so it is contained with os.Root like
-// pkg/core/incus's cpu.stat reader.
+// containerCgroupRoot maps a process's cgroup path (relative to the cgroup
+// root) to the CONTAINER's root cgroup: the prefix through the Incus payload
+// component, "lxc.payload.<name>". Inside a systemd box PID 1 moves itself
+// to "<root>/init.scope", and every service and SSH session lives under
+// "<root>/system.slice/…" or "<root>/user.slice/…" — siblings of init.scope,
+// not descendants. The kernel program matches ANCESTORS of the exec'ing
+// task, so the id registered must be the payload root, or nothing but
+// init's own execs would ever be seen. A path with no payload component
+// (a non-Incus runtime) is used as is.
+func containerCgroupRoot(rel string) string {
+	parts := strings.Split(strings.Trim(rel, "/"), "/")
+	for i, p := range parts {
+		if strings.HasPrefix(p, "lxc.payload.") {
+			return strings.Join(parts[:i+1], "/")
+		}
+	}
+	return rel
+}
+
+// cgroupIDForPID resolves a container's init pid to the cgroup v2 id the
+// kernel program must match: the inode of <cgroupRoot>/<container root
+// cgroup> (containerCgroupRoot of the path in /proc/<pid>/cgroup), which is
+// what bpf_get_current_ancestor_cgroup_id reports for every task in the
+// box. The path comes out of /proc (host-derived, not tenant-supplied) but
+// is still a variable path resolved against a host directory, so it is
+// contained with os.Root like pkg/core/incus's cpu.stat reader.
 func cgroupIDForPID(procRoot, cgroupRoot string, pid int64) (uint64, error) {
 	if pid <= 0 {
 		return 0, errors.New("container not running (no init pid)")
@@ -337,6 +404,7 @@ func cgroupIDForPID(procRoot, cgroupRoot string, pid int64) (uint64, error) {
 	if rel == "" {
 		return 0, fmt.Errorf("pid %d: no cgroup v2 path in /proc/%d/cgroup", pid, pid)
 	}
+	rel = containerCgroupRoot(rel)
 	root, err := os.OpenRoot(cgroupRoot)
 	if err != nil {
 		return 0, err
