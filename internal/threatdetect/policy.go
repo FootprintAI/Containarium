@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/footprintai/containarium/internal/app"
@@ -48,12 +49,14 @@ func ProcessPolicyContainerKey(container string) string {
 }
 
 // BuiltinProcessPolicy is the policy in effect when nothing is stored:
-// ALERT. Nothing acts until an operator sets otherwise.
+// ALERT, and no process kill. Nothing acts until an operator sets otherwise;
+// kill_process defaults off everywhere (decided on cloud#2697 for #2638).
 func BuiltinProcessPolicy() *pb.ProcessPolicy {
 	return &pb.ProcessPolicy{
 		Action:            pb.ProcessAction_PROCESS_ACTION_ALERT,
 		ThrottleAllowance: DefaultThrottleAllowance,
 		Ttl:               durationpb.New(DefaultProcessActionTTL),
+		KillProcess:       proto.Bool(false),
 	}
 }
 
@@ -74,6 +77,11 @@ func ResolveProcessPolicy(override, backend *pb.ProcessPolicy) *pb.ProcessPolicy
 		}
 		if d := level.GetTtl().AsDuration(); level.GetTtl() != nil && d > 0 {
 			out.Ttl = durationpb.New(d)
+		}
+		// kill_process has presence (proto3 optional): an unset level
+		// inherits, an explicit false at a higher level turns it back off.
+		if level.KillProcess != nil {
+			out.KillProcess = proto.Bool(level.GetKillProcess())
 		}
 	}
 	return out
@@ -133,15 +141,17 @@ func ValidateProcessPolicy(p *pb.ProcessPolicy) error {
 }
 
 // RespondsTo reports whether a HIGH finding from rule is one the process
-// responder acts on: the two mining rules. The values are numeric until
-// #2635 (MINING_BEHAVIOR = 6) and #2638 (MINER_SIGNATURE = 7) land their
-// enum names in the proto; swap to the named constants then.
+// responder acts on: the two mining rules.
 func RespondsTo(rule pb.ThreatRuleId) bool {
-	const (
-		ruleMiningBehavior pb.ThreatRuleId = 6
-		ruleMinerSignature pb.ThreatRuleId = 7
-	)
-	return rule == ruleMiningBehavior || rule == ruleMinerSignature
+	return rule == pb.ThreatRuleId_THREAT_RULE_ID_MINING_BEHAVIOR ||
+		rule == pb.ThreatRuleId_THREAT_RULE_ID_MINER_SIGNATURE
+}
+
+// KillsProcess reports whether a HIGH finding from rule may SIGKILL its
+// process under kill_process: the signature rule only. The mining-behavior
+// rule names no process (its evidence is CPU and a flow), so it never kills.
+func KillsProcess(rule pb.ThreatRuleId) bool {
+	return rule == pb.ThreatRuleId_THREAT_RULE_ID_MINER_SIGNATURE
 }
 
 // PolicyConfigStore is the slice of *app.DaemonConfigStore the policy store

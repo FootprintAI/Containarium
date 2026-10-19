@@ -1403,8 +1403,19 @@ type SystemInfo struct {
 	// distinguishable from "profiled CPU-only". Carried here for the same
 	// peer fan-out as headroom (#2135).
 	CapabilityProfile *CapabilityProfile `protobuf:"bytes,29,opt,name=capability_profile,json=capabilityProfile,proto3" json:"capability_profile,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// capabilities lists the optional API features this daemon supports, as
+	// the stable names in internal/server's DaemonCap* constants. A client
+	// checks for a name BEFORE sending a request field an older daemon would
+	// reject (the REST mux rejects unknown JSON fields). Absent from an older
+	// daemon: an empty list means "none of the optional features", so a
+	// client must treat a missing name as unsupported. Names are only ever
+	// added. Currently: "box_run_name" (StartBoxRunRequest.run_name) and
+	// "box_run_structured_output" (StartBoxRunRequest.structured_output).
+	// An open string set rather than an enum so a newer daemon's extra names
+	// never fail to decode in an older client.
+	Capabilities  []string `protobuf:"bytes,30,rep,name=capabilities,proto3" json:"capabilities,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SystemInfo) Reset() {
@@ -1636,6 +1647,13 @@ func (x *SystemInfo) GetHeadroom() *CapacityHeadroom {
 func (x *SystemInfo) GetCapabilityProfile() *CapabilityProfile {
 	if x != nil {
 		return x.CapabilityProfile
+	}
+	return nil
+}
+
+func (x *SystemInfo) GetCapabilities() []string {
+	if x != nil {
+		return x.Capabilities
 	}
 	return nil
 }
@@ -5464,7 +5482,7 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"updateMask\"a\n" +
 	"\x14UpdateConfigResponse\x12\x18\n" +
 	"\amessage\x18\x01 \x01(\tR\amessage\x12/\n" +
-	"\x06config\x18\x02 \x01(\v2\x17.containarium.v1.ConfigR\x06config\"\xb5\n" +
+	"\x06config\x18\x02 \x01(\v2\x17.containarium.v1.ConfigR\x06config\"\xd9\n" +
 	"\n" +
 	"\n" +
 	"SystemInfo\x12#\n" +
@@ -5499,7 +5517,8 @@ const file_containarium_v1_config_proto_rawDesc = "" +
 	"\x12cpu_admission_mode\x18\x1a \x01(\x0e2!.containarium.v1.CPUAdmissionModeR\x10cpuAdmissionMode\x122\n" +
 	"\x15cpu_overcommit_factor\x18\x1b \x01(\x01R\x13cpuOvercommitFactor\x12=\n" +
 	"\bheadroom\x18\x1c \x01(\v2!.containarium.v1.CapacityHeadroomR\bheadroom\x12Q\n" +
-	"\x12capability_profile\x18\x1d \x01(\v2\".containarium.v1.CapabilityProfileR\x11capabilityProfile\"\xbe\x01\n" +
+	"\x12capability_profile\x18\x1d \x01(\v2\".containarium.v1.CapabilityProfileR\x11capabilityProfile\x12\"\n" +
+	"\fcapabilities\x18\x1e \x03(\tR\fcapabilities\"\xbe\x01\n" +
 	"\x0eBackendStorage\x12\x12\n" +
 	"\x04pool\x18\x01 \x01(\tR\x04pool\x126\n" +
 	"\x06driver\x18\x02 \x01(\x0e2\x1e.containarium.v1.StorageDriverR\x06driver\x12?\n" +

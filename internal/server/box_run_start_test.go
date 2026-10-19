@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -14,7 +15,9 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/footprintai/containarium/internal/agentbox"
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/coderun"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -63,6 +66,11 @@ func boxRunStartServer(t *testing.T, u *fakeBoxUser) (*ContainerServer, string, 
 	}
 	dir := t.TempDir()
 	list := &shBox{}
+	// No `setsid` shim here: StopBoxRun signals the run's PROCESS GROUP and
+	// its ownership check looks for pgid == pid, which only the real
+	// util-linux setsid (a new session per run) provides. A pass-through
+	// shim leaves the run in this test process's group, so every stop would
+	// report the run "gone". Hosts without setsid are skipped above.
 	var startedMu sync.Mutex
 	started := map[string]bool{}
 	s := &ContainerServer{
@@ -571,6 +579,231 @@ func mustWriteFile(t *testing.T, path, content string, dir bool) {
 	}
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestRunLogDirMirrorsAgentBox pins coderun.RunLogDir (used by the CLI and
+// MCP, which cannot import agentbox) to the directory process_start uses.
+func TestRunLogDirMirrorsAgentBox(t *testing.T) {
+	if coderun.RunLogDir != agentbox.DefaultLogDir {
+		t.Errorf("coderun.RunLogDir = %q, agentbox.DefaultLogDir = %q", coderun.RunLogDir, agentbox.DefaultLogDir)
+	}
+}
+
+// writeFakeClaude replaces the fake engine binary with body.
+func (u *fakeBoxUser) writeFakeClaude(t *testing.T, body string) {
+	t.Helper()
+	path := filepath.Join(u.home, ".local", "bin", "claude")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestStartBoxRun_RunNameNamesTheRun: an explicit run_name is the run's name
+// (over the default and over a session id), and the run is readable by it.
+func TestStartBoxRun_RunNameNamesTheRun(t *testing.T) {
+	u := newFakeBoxUser(t, 0, 50*time.Millisecond)
+	s, dir, _ := boxRunStartServer(t, u)
+
+	resp, err := s.StartBoxRun(tenantCtx("alice"), &pb.StartBoxRunRequest{Username: "alice", Prompt: "hi", RunName: "run-1.a_b"})
+	if err != nil {
+		t.Fatalf("StartBoxRun: %v", err)
+	}
+	if got := resp.GetRun().GetRunName(); got != "run-1.a_b" {
+		t.Errorf("run_name = %q, want run-1.a_b", got)
+	}
+	for _, ext := range []string{".json", ".log"} {
+		if _, err := os.Stat(filepath.Join(dir, "run-1.a_b"+ext)); err != nil {
+			t.Errorf("expected run-1.a_b%s on disk: %v", ext, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "code.json")); err == nil {
+		t.Error("an explicitly named run must not create the default `code` record")
+	}
+	tail, err := s.TailBoxRunLog(tenantCtx("alice"), &pb.TailBoxRunLogRequest{Username: "alice", RunName: "run-1.a_b", FollowSeconds: 2})
+	if err != nil || !strings.Contains(string(tail.Chunk), "fake claude output") {
+		t.Errorf("TailBoxRunLog by run_name = %q, %v", tail.GetChunk(), err)
+	}
+
+	// run_name wins over session_id; the resumed id is still reported.
+	resp, err = s.StartBoxRun(tenantCtx("alice"), &pb.StartBoxRunRequest{Username: "alice", Prompt: "hi", RunName: "run-2", SessionId: "sess-9"})
+	if err != nil {
+		t.Fatalf("StartBoxRun with both: %v", err)
+	}
+	if resp.GetRun().GetRunName() != "run-2" || resp.GetRun().GetSessionId() != "sess-9" {
+		t.Errorf("run = %v, want run_name run-2 and session_id sess-9", resp.GetRun())
+	}
+}
+
+// TestStartBoxRun_RunNameNeverCollidesWithTheDefault: a still-running
+// `code` run does not block a differently named run, and the same explicit
+// name is refused while running, then rotates once finished.
+func TestStartBoxRun_RunNameNeverCollidesWithTheDefault(t *testing.T) {
+	u := newFakeBoxUser(t, 0, 2*time.Second)
+	s, _, _ := boxRunStartServer(t, u)
+	ctx := tenantCtx("alice")
+
+	if _, err := s.StartBoxRun(ctx, &pb.StartBoxRunRequest{Username: "alice", Prompt: "own"}); err != nil {
+		t.Fatalf("default run: %v", err)
+	}
+	if _, err := s.StartBoxRun(ctx, &pb.StartBoxRunRequest{Username: "alice", Prompt: "platform", RunName: "platform-1"}); err != nil {
+		t.Fatalf("named run beside a running default run: %v", err)
+	}
+	_, err := s.StartBoxRun(ctx, &pb.StartBoxRunRequest{Username: "alice", Prompt: "again", RunName: "platform-1"})
+	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "platform-1") {
+		t.Errorf("same run_name while running: err = %v, want FailedPrecondition naming it", err)
+	}
+}
+
+func TestStartBoxRun_RunNameRotatesAFinishedRunOfThatName(t *testing.T) {
+	u := newFakeBoxUser(t, 0, 50*time.Millisecond)
+	s, dir, _ := boxRunStartServer(t, u)
+	ctx := tenantCtx("alice")
+	if _, err := s.StartBoxRun(ctx, &pb.StartBoxRunRequest{Username: "alice", Prompt: "1", RunName: "r"}); err != nil {
+		t.Fatal(err)
+	}
+	waitForOutcome(t, s, "alice", "r", pb.BoxRunOutcome_BOX_RUN_OUTCOME_EXITED, 3*time.Second)
+	if _, err := s.StartBoxRun(ctx, &pb.StartBoxRunRequest{Username: "alice", Prompt: "2", RunName: "r"}); err != nil {
+		t.Fatalf("second run under the same finished name: %v", err)
+	}
+	entries, _ := os.ReadDir(dir)
+	var rotated int
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "r.") && strings.HasSuffix(e.Name(), ".json") && e.Name() != "r.json" {
+			rotated++
+		}
+	}
+	if rotated != 1 {
+		t.Errorf("rotated records = %d, want 1", rotated)
+	}
+}
+
+func TestStartBoxRun_InvalidRunNameIsRefusedBeforeAnyExec(t *testing.T) {
+	for _, bad := range []string{"a/b", "..", ".", "has space", "x;rm", strings.Repeat("a", 129), "a\nb"} {
+		var execCalls int
+		s := &ContainerServer{
+			boxRunExec:      func(box, script string) (string, error) { execCalls++; return "", nil },
+			boxRunStartExec: func(box, username, script string) (string, error) { execCalls++; return "", nil },
+		}
+		_, err := s.StartBoxRun(adminCtx(), &pb.StartBoxRunRequest{Username: "alice", Prompt: "hi", RunName: bad})
+		if status.Code(err) != codes.InvalidArgument {
+			t.Errorf("run_name %q: err = %v, want InvalidArgument", bad, err)
+		}
+		if execCalls != 0 {
+			t.Errorf("run_name %q: %d box execs before validation", bad, execCalls)
+		}
+	}
+}
+
+// TestStartBoxRun_StructuredOutput: the engine runs with --output-format json,
+// the main log is exactly the JSON object, stderr goes to its own file, and
+// the session id comes from the object (readable via ListBoxRuns).
+func TestStartBoxRun_StructuredOutput(t *testing.T) {
+	u := newFakeBoxUser(t, 0, 0)
+	u.writeFakeClaude(t, `case " $* " in *" --output-format json "*) ;; *) echo "missing flag: $*" >&2; exit 9;; esac
+echo "a warning" >&2
+printf '%s' '{"type":"result","subtype":"success","is_error":false,"permission_denials":[{"tool_input":{"session_id":"nested-evil"}}],"result":"say \"session_id\":\"evil\" ok","session_id":"7b0d2e5c-1111-4222-8333-444455556666","usage":{"input_tokens":1}}'
+`)
+	s, dir, _ := boxRunStartServer(t, u)
+	ctx := tenantCtx("alice")
+
+	resp, err := s.StartBoxRun(ctx, &pb.StartBoxRunRequest{Username: "alice", Prompt: "hi", RunName: "s1", StructuredOutput: true})
+	if err != nil {
+		t.Fatalf("StartBoxRun: %v", err)
+	}
+	if resp.GetRun().GetCaptureMode() != pb.CaptureMode_CAPTURE_MODE_COMBINED {
+		t.Errorf("capture_mode = %v, want COMBINED", resp.GetRun().GetCaptureMode())
+	}
+	done := waitForOutcome(t, s, "alice", "s1", pb.BoxRunOutcome_BOX_RUN_OUTCOME_EXITED, 5*time.Second)
+	if done.GetExitCode() != 0 {
+		t.Fatalf("exit_code = %d; the engine did not receive --output-format json", done.GetExitCode())
+	}
+	if done.GetSessionId() != "7b0d2e5c-1111-4222-8333-444455556666" {
+		t.Errorf("session_id = %q, want the one in the JSON result (not the one quoted inside result text)", done.GetSessionId())
+	}
+	logBytes, _ := os.ReadFile(filepath.Join(dir, "s1.log"))
+	var obj struct {
+		Type      string `json:"type"`
+		Subtype   string `json:"subtype"`
+		IsError   bool   `json:"is_error"`
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal(logBytes, &obj); err != nil {
+		t.Fatalf("main log is not exactly one JSON object: %v\n%s", err, logBytes)
+	}
+	if obj.Type != "result" || obj.Subtype != "success" || obj.IsError {
+		t.Errorf("unexpected result object %+v", obj)
+	}
+	errBytes, _ := os.ReadFile(filepath.Join(dir, "s1.stderr.log"))
+	if !strings.Contains(string(errBytes), "a warning") {
+		t.Errorf("stderr log = %q, want the warning", errBytes)
+	}
+	// The opaque readers handle the structured log.
+	tail, err := s.TailBoxRunLog(ctx, &pb.TailBoxRunLogRequest{Username: "alice", RunName: "s1"})
+	if err != nil || string(tail.Chunk) != string(logBytes) {
+		t.Errorf("TailBoxRunLog = %q, %v; want the JSON object verbatim", tail.GetChunk(), err)
+	}
+	// stderr.log is not mistaken for a run.
+	list, _ := s.ListBoxRuns(ctx, &pb.ListBoxRunsRequest{Username: "alice"})
+	if len(list.Runs) != 1 {
+		t.Errorf("ListBoxRuns = %d runs, want 1", len(list.Runs))
+	}
+}
+
+// TestStartBoxRun_PlainTextPathIsUnchangedWhenStructuredIsFalse pins the
+// default: no --output-format flag, stderr merged into the one log, no
+// .stderr.log, and the record's command is exactly the engine's own.
+func TestStartBoxRun_PlainTextPathIsUnchangedWhenStructuredIsFalse(t *testing.T) {
+	u := newFakeBoxUser(t, 0, 0)
+	u.writeFakeClaude(t, "echo out; echo err >&2\n")
+	s, dir, _ := boxRunStartServer(t, u)
+	if _, err := s.StartBoxRun(tenantCtx("alice"), &pb.StartBoxRunRequest{Username: "alice", Prompt: "hi", RunName: "p"}); err != nil {
+		t.Fatal(err)
+	}
+	waitForOutcome(t, s, "alice", "p", pb.BoxRunOutcome_BOX_RUN_OUTCOME_EXITED, 5*time.Second)
+	logBytes, _ := os.ReadFile(filepath.Join(dir, "p.log"))
+	if !strings.Contains(string(logBytes), "out") || !strings.Contains(string(logBytes), "err") {
+		t.Errorf("plain log = %q, want stdout and stderr interleaved", logBytes)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "p.stderr.log")); err == nil {
+		t.Error("plain-text run must not create a .stderr.log")
+	}
+	rec, _ := os.ReadFile(filepath.Join(dir, "p.json"))
+	if strings.Contains(string(rec), "output-format") {
+		t.Errorf("record command carries an output-format flag: %s", rec)
+	}
+}
+
+func TestStartBoxRun_StructuredOutputRefusedForOtherEngines(t *testing.T) {
+	u := newFakeBoxUser(t, 0, 0)
+	mustWriteFile(t, filepath.Join(u.home, ".containarium"), "", true)
+	mustWriteFile(t, filepath.Join(u.home, ".containarium", "code.json"),
+		`{"version":1,"engine":"pi","credential":"secret"}`, false)
+	s, _, _ := boxRunStartServer(t, u)
+	_, err := s.StartBoxRun(tenantCtx("alice"), &pb.StartBoxRunRequest{Username: "alice", Prompt: "hi", StructuredOutput: true})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Errorf("err = %v, want FailedPrecondition", err)
+	}
+}
+
+// TestBoxRunSpawnScript_FreshRunSnapshotsBeforeLaunch: the discovery snapshot
+// is taken before the engine is launched, never after.
+func TestBoxRunSpawnScript_FreshRunSnapshotsBeforeLaunch(t *testing.T) {
+	script := boxRunSpawnScript(boxRunSpawn{dir: "/d", name: "n", command: "true", home: "/h", prelaunch: "SNAPSHOT", sessionTrailer: "POLL"})
+	snap, launch, poll := strings.Index(script, "SNAPSHOT"), strings.Index(script, "setsid"), strings.Index(script, "POLL")
+	if snap < 0 || snap >= launch || launch >= poll {
+		t.Errorf("want snapshot < launch < poll, got %d %d %d in:\n%s", snap, launch, poll, script)
+	}
+}
+
+func TestDaemonCapabilities(t *testing.T) {
+	got := daemonCapabilities()
+	want := map[string]bool{"box_run_name": true, "box_run_structured_output": true}
+	for _, c := range got {
+		delete(want, c)
+	}
+	if len(want) != 0 {
+		t.Errorf("capabilities %v missing %v", got, want)
 	}
 }
 
