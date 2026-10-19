@@ -101,6 +101,36 @@ type CPUEvidence struct {
 	Samples       int32   `json:"samples"`
 }
 
+// ExecEvidence is one process exec attached to a finding (#2637, used by the
+// miner-signature rule #2638): the host-side exec telemetry record,
+// attributed to the container. PID/PPID are host-namespace ids.
+type ExecEvidence struct {
+	PID           uint32 `json:"pid"`
+	PPID          uint32 `json:"ppid"`
+	UID           uint32 `json:"uid"`
+	Comm          string `json:"comm"`
+	Filename      string `json:"filename"`
+	Argv          string `json:"argv"`
+	ArgvTruncated bool   `json:"argv_truncated,omitempty"`
+	SHA256        string `json:"sha256,omitempty"`
+	Matched       string `json:"matched,omitempty"`
+}
+
+// ToProto renders the evidence as the wire message.
+func (e ExecEvidence) ToProto() *pb.ExecEvidence {
+	return &pb.ExecEvidence{
+		Pid:           e.PID,
+		Ppid:          e.PPID,
+		Uid:           e.UID,
+		Comm:          e.Comm,
+		Filename:      e.Filename,
+		Argv:          e.Argv,
+		ArgvTruncated: e.ArgvTruncated,
+		Sha256:        e.SHA256,
+		Matched:       e.Matched,
+	}
+}
+
 // Evidence bundles the flow, deny and configuration records that triggered
 // a finding. It is the named struct written into the
 // security_findings.evidence JSONB column — a storage encoding, never an
@@ -111,12 +141,13 @@ type Evidence struct {
 	Configs   []ConfigEvidence   `json:"configs,omitempty"`
 	Listeners []ListenerEvidence `json:"listeners,omitempty"`
 	CPU       []CPUEvidence      `json:"cpu,omitempty"`
+	Execs     []ExecEvidence     `json:"execs,omitempty"`
 }
 
 // Capped returns a copy of e with each evidence kind truncated to the most
 // recent EvidenceCap entries.
 func (e Evidence) Capped() Evidence {
-	out := Evidence{Flows: e.Flows, Denies: e.Denies, Configs: e.Configs, Listeners: e.Listeners, CPU: e.CPU}
+	out := Evidence{Flows: e.Flows, Denies: e.Denies, Configs: e.Configs, Listeners: e.Listeners, CPU: e.CPU, Execs: e.Execs}
 	if len(out.Flows) > EvidenceCap {
 		out.Flows = out.Flows[len(out.Flows)-EvidenceCap:]
 	}
@@ -131,6 +162,9 @@ func (e Evidence) Capped() Evidence {
 	}
 	if len(out.CPU) > EvidenceCap {
 		out.CPU = out.CPU[len(out.CPU)-EvidenceCap:]
+	}
+	if len(out.Execs) > EvidenceCap {
+		out.Execs = out.Execs[len(out.Execs)-EvidenceCap:]
 	}
 	return out
 }
@@ -155,6 +189,7 @@ func (e Evidence) merged(more Evidence) Evidence {
 		Configs:   mergeConfigEvidence(e.Configs, more.Configs),
 		Listeners: append(append([]ListenerEvidence(nil), e.Listeners...), more.Listeners...),
 		CPU:       append(append([]CPUEvidence(nil), e.CPU...), more.CPU...),
+		Execs:     append(append([]ExecEvidence(nil), e.Execs...), more.Execs...),
 	}
 }
 
@@ -372,6 +407,11 @@ func (f *Finding) ToProto() *pb.Finding {
 		})
 	}
 
+	execs := make([]*pb.ExecEvidence, 0, len(f.Evidence.Execs))
+	for _, x := range f.Evidence.Execs {
+		execs = append(execs, x.ToProto())
+	}
+
 	return &pb.Finding{
 		Id:        f.ID,
 		Rule:      f.Rule,
@@ -388,6 +428,7 @@ func (f *Finding) ToProto() *pb.Finding {
 			Configs:   configs,
 			Listeners: listeners,
 			Cpu:       cpu,
+			Execs:     execs,
 		},
 		FirstSeen: timestampProto(f.FirstSeen),
 		LastSeen:  timestampProto(f.LastSeen),
