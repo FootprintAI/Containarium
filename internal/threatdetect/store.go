@@ -432,13 +432,23 @@ func (s *FindingStore) Resolve(ctx context.Context, id int64) (*Finding, error) 
 // SetResponse records what the process responder did about finding id
 // (#2636) and emits the updated finding. The audit entry for the action
 // itself is the responder's (category security.action); this only updates
-// the finding row.
+// the finding row. process_killed is sticky: once a kill is on record for
+// the finding, every later response keeps it, whichever path (release,
+// expiry, a later box's action on a shared finding) rewrites the rest. The
+// OR happens in the UPDATE itself, so two writers cannot lose it.
 func (s *FindingStore) SetResponse(ctx context.Context, id int64, r FindingResponse) (*Finding, error) {
 	raw, err := json.Marshal(r)
 	if err != nil {
 		return nil, fmt.Errorf("threatdetect: marshal finding response: %w", err)
 	}
-	tag, err := s.pool.Exec(ctx, `UPDATE security_findings SET response = $1 WHERE id = $2`, raw, id)
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE security_findings
+		SET response = CASE
+			WHEN COALESCE((response->>'process_killed')::boolean, FALSE)
+				THEN $1::jsonb || '{"process_killed": true}'::jsonb
+			ELSE $1::jsonb
+		END
+		WHERE id = $2`, string(raw), id)
 	if err != nil {
 		return nil, fmt.Errorf("threatdetect: set response on finding %d: %w", id, err)
 	}
