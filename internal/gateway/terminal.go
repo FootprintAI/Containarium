@@ -41,41 +41,99 @@ func NewTerminalHandler() (*TerminalHandler, error) {
 	}
 
 	return &TerminalHandler{
-		upgrader: websocket.Upgrader{
-			CheckOrigin: func(r *http.Request) bool {
-				// SECURITY FIX: Validate WebSocket origin against allowed origins
-				origin := r.Header.Get("Origin")
-				if origin == "" {
-					// No origin header - reject for security
-					// (browsers always send Origin for cross-origin WebSocket)
-					log.Printf("WebSocket connection rejected: no Origin header")
-					return false
-				}
-
-				// Check against allowed origins
-				allowedOrigins := getTerminalAllowedOrigins()
-				for _, allowed := range allowedOrigins {
-					if origin == allowed {
-						return true
-					}
-				}
-
-				log.Printf("WebSocket connection rejected: origin %s not in allowed list", origin)
-				return false
-			},
-			// Phase 1.5 — advertise the bearer subprotocol so
-			// gorilla picks it up during negotiation and emits
-			// the right Sec-WebSocket-Protocol response header.
-			// Picking only this name means an upgrade where the
-			// client offered a different application subprotocol
-			// won't be confused with auth — apps that need a
-			// custom subprotocol will need to be wired explicitly.
-			Subprotocols:    []string{auth.WSSubprotocolBearer},
-			ReadBufferSize:  1024,
-			WriteBufferSize: 1024,
-		},
+		upgrader:    newTerminalUpgrader(),
 		incusClient: client,
 	}, nil
+}
+
+// Reasons a terminal upgrade is refused on origin grounds. They are
+// written into the 403 body so the refusal is not mistaken for a tenant
+// authorization failure (authorizeTenantWSAccess is never reached).
+const (
+	originRequired   = "origin required"
+	originNotAllowed = "origin not allowed"
+)
+
+// validatedBearerKey is the request-context key under which the terminal
+// route wrapper records the source of a bearer it has validated.
+type validatedBearerKey struct{}
+
+// withValidatedBearer records that the request's bearer, found at src, has
+// passed ValidateToken. Call it only after validation succeeded.
+func withValidatedBearer(ctx context.Context, src auth.TokenSource) context.Context {
+	return context.WithValue(ctx, validatedBearerKey{}, src)
+}
+
+// validatedBearerSource returns the source recorded by withValidatedBearer,
+// or TokenSourceNone when no validated bearer was recorded.
+func validatedBearerSource(ctx context.Context) auth.TokenSource {
+	if src, ok := ctx.Value(validatedBearerKey{}).(auth.TokenSource); ok {
+		return src
+	}
+	return auth.TokenSourceNone
+}
+
+// checkTerminalOrigin applies the terminal WebSocket origin rule.
+//
+// The check defends against cross-site WebSocket hijacking: a page on
+// another site makes the victim's browser open a socket carrying ambient
+// credentials. This endpoint takes no cookies; the bearer must be supplied
+// explicitly (Sec-WebSocket-Protocol or Authorization), which a cross-site
+// page can neither read nor attach. Browsers always send Origin on
+// upgrades, so an absent Origin plus an explicit bearer is a non-browser
+// client (a service, CLI or MCP server) and is allowed. The deprecated
+// ?token= form does not count. Token validation and the tenant check still
+// run in the route closure before the upgrade.
+//
+// The exemption follows a bearer the route wrapper VALIDATED and recorded
+// with withValidatedBearer, not a bearer that is merely present on the
+// request, so it cannot be unlocked by any path that reaches the upgrader
+// without ValidateToken.
+func checkTerminalOrigin(r *http.Request) (ok bool, reason string) {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		if src := validatedBearerSource(r.Context()); src == auth.TokenSourceSubprotocol || src == auth.TokenSourceAuthorizationHeader {
+			return true, ""
+		}
+		return false, originRequired
+	}
+	for _, allowed := range getTerminalAllowedOrigins() {
+		if origin == allowed {
+			return true, ""
+		}
+	}
+	return false, originNotAllowed
+}
+
+// newTerminalUpgrader builds the upgrader shared by the terminal routes.
+func newTerminalUpgrader() websocket.Upgrader {
+	return websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool {
+			ok, reason := checkTerminalOrigin(r)
+			if !ok {
+				log.Printf("WebSocket connection rejected: %s (origin=%q)", reason, r.Header.Get("Origin"))
+			}
+			return ok
+		},
+		// Surface the origin reason instead of gorilla's generic body.
+		Error: func(w http.ResponseWriter, r *http.Request, status int, reason error) {
+			msg := reason.Error()
+			if status == http.StatusForbidden {
+				if _, why := checkTerminalOrigin(r); why != "" {
+					msg = why
+				}
+			}
+			http.Error(w, msg, status)
+		},
+		// Phase 1.5 — advertise the bearer subprotocol so gorilla picks it
+		// up during negotiation and emits the right Sec-WebSocket-Protocol
+		// response header. Picking only this name means an upgrade where
+		// the client offered a different application subprotocol won't be
+		// confused with auth.
+		Subprotocols:    []string{auth.WSSubprotocolBearer},
+		ReadBufferSize:  1024,
+		WriteBufferSize: 1024,
+	}
 }
 
 // getTerminalAllowedOrigins returns the list of allowed origins for WebSocket connections.

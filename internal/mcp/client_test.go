@@ -721,3 +721,13 @@ func TestHandleUpgradeBackend_ShowsTargetVersion(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, out, "to version:   0.91.1")
 }
+
+// #2759: the create request carries the auto-sleep opt-out only when set.
+func TestCreateContainerRequest_DisableAutoSleepWire(t *testing.T) {
+	off, err := json.Marshal(CreateContainerRequest{Username: "alice"})
+	require.NoError(t, err)
+	assert.NotContains(t, string(off), "disableAutoSleep")
+	on, err := json.Marshal(CreateContainerRequest{Username: "alice", DisableAutoSleep: true})
+	require.NoError(t, err)
+	assert.Contains(t, string(on), `"disableAutoSleep":true`)
+}

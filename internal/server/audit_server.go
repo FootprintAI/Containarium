@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -25,7 +26,10 @@ const (
 	auditActionSSHSessionOpen   = "ssh_session_open"
 	auditActionSSHSessionClose  = "ssh_session_close"
 	auditActionSSHSessionDenied = "ssh_session_denied"
-	auditResourceSSHSession     = "ssh_session"
+	// Source-IP records from the sentinel's ssh-ban-plugin (#2419).
+	auditActionSSHAuthFailed = "ssh_auth_failed"
+	auditActionSSHBanned     = "ssh_banned"
+	auditResourceSSHSession  = "ssh_session"
 )
 
 // batchLogger is the slice of *audit.Store the ingest handler needs,
@@ -63,6 +67,12 @@ type SSHSessionDetail struct {
 	AuthzDecision    pb.SSHAuthzDecision `json:"authz_decision,omitempty"`
 	DenyReason       pb.SSHDenyReason    `json:"deny_reason,omitempty"`
 	Enforced         bool                `json:"enforced,omitempty"`
+
+	// Set only on ssh_auth_failed / ssh_banned rows (#2419).
+	FailureCount    uint64            `json:"failure_count,omitempty"`
+	BannedUntil     string            `json:"banned_until,omitempty"` // RFC 3339, UTC
+	BanListener     pb.SSHBanListener `json:"ban_listener,omitempty"`
+	SuppressedCount uint64            `json:"suppressed_count,omitempty"`
 }
 
 // IngestSSHSessionRecords appends the sentinel's SSH session records to this
@@ -135,6 +145,14 @@ func sshSessionBatchEntry(rec sshsession.Record, sentinelID, jti string) (audit.
 		action = auditActionSSHSessionClose
 	case sshsession.SessionPhaseDenied:
 		action = auditActionSSHSessionDenied
+	case sshsession.SessionPhaseAuthFailed:
+		action = auditActionSSHAuthFailed
+	case sshsession.SessionPhaseBanned:
+		action = auditActionSSHBanned
+	}
+	var bannedUntil string
+	if rec.BannedUntil != nil {
+		bannedUntil = rec.BannedUntil.UTC().Format(time.RFC3339)
 	}
 	detail, err := json.Marshal(SSHSessionDetail{
 		Target:           rec.Target,
@@ -150,6 +168,10 @@ func sshSessionBatchEntry(rec sshsession.Record, sentinelID, jti string) (audit.
 		AuthzDecision:    rec.AuthzDecision,
 		DenyReason:       rec.DenyReason,
 		Enforced:         rec.Enforced,
+		FailureCount:     rec.FailureCount,
+		BannedUntil:      bannedUntil,
+		BanListener:      rec.BanListener,
+		SuppressedCount:  rec.SuppressedCount,
 	})
 	if err != nil {
 		return audit.BatchEntry{}, fmt.Errorf("marshal detail: %w", err)
