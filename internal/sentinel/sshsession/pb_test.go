@@ -8,7 +8,7 @@ import (
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
-var allPhases = []SessionPhase{SessionPhaseOpen, SessionPhaseClose, SessionPhaseDenied}
+var allPhases = []SessionPhase{SessionPhaseOpen, SessionPhaseClose, SessionPhaseDenied, SessionPhaseAuthFailed, SessionPhaseBanned}
 var allAuthMethods = []AuthMethod{AuthMethodCertificate, AuthMethodPublicKey, AuthMethodUnknown}
 var allCloseReasons = []CloseReason{
 	CloseReasonNormal, CloseReasonUpstreamGone, CloseReasonProxyShutdown,
@@ -36,6 +36,13 @@ func TestToFromProto_RoundTripEveryEnumValue(t *testing.T) {
 			r.Phase, r.AuthMethod = ph, am
 			if ph == SessionPhaseClose {
 				r.CloseReason = CloseReasonNormal
+			}
+			if ph == SessionPhaseAuthFailed || ph == SessionPhaseBanned {
+				// Source-IP records carry no session identity (#2419).
+				if am != AuthMethodCertificate {
+					continue
+				}
+				r = sourceRecord(ph)
 			}
 			got, err := FromProto(ToProto(r))
 			if err != nil {
@@ -130,5 +137,74 @@ func TestFromProto_AcceptsDeniedPhase(t *testing.T) {
 	}
 	if r.Phase != SessionPhaseDenied || ToProto(r).GetPhase() != p.Phase {
 		t.Fatalf("DENIED phase changed during round-trip: %+v", r)
+	}
+}
+
+func sourceRecord(ph SessionPhase) Record {
+	r := Record{
+		SessionID:    "src-1",
+		Phase:        ph,
+		OccurredAt:   time.Date(2026, 10, 9, 1, 2, 3, 0, time.UTC),
+		ClientIP:     "203.0.113.9",
+		FailureCount: 12,
+		BanListener:  pb.SSHBanListener_SSH_BAN_LISTENER_MAIN,
+	}
+	if ph == SessionPhaseBanned {
+		until := r.OccurredAt.Add(5 * time.Minute)
+		r.BannedUntil = &until
+	}
+	return r
+}
+
+// The source-IP phases (#2419) round-trip with their own fields intact, and
+// the overflow shape (no client IP, only a suppressed count) is accepted.
+func TestSourceRecords_RoundTripAndOverflow(t *testing.T) {
+	for _, ph := range []SessionPhase{SessionPhaseAuthFailed, SessionPhaseBanned} {
+		r := sourceRecord(ph)
+		got, err := FromProto(ToProto(r))
+		if err != nil || !reflect.DeepEqual(got, r) {
+			t.Fatalf("%s: got %+v err %v, want %+v", ph, got, err, r)
+		}
+	}
+	overflow := Record{SessionID: "ovf-1", Phase: SessionPhaseAuthFailed, OccurredAt: time.Unix(1, 0).UTC(),
+		SuppressedCount: 900, BanListener: pb.SSHBanListener_SSH_BAN_LISTENER_ANONYMOUS}
+	if got, err := FromProto(ToProto(overflow)); err != nil || !reflect.DeepEqual(got, overflow) {
+		t.Fatalf("overflow: got %+v err %v", got, err)
+	}
+}
+
+func TestSourceRecords_Rejects(t *testing.T) {
+	mut := func(ph SessionPhase, f func(*Record)) *pb.SSHSessionRecord {
+		r := sourceRecord(ph)
+		f(&r)
+		return ToProto(r)
+	}
+	tests := []struct {
+		name string
+		p    *pb.SSHSessionRecord
+	}{
+		{"auth_failed without a listener", mut(SessionPhaseAuthFailed, func(r *Record) { r.BanListener = 0 })},
+		{"auth_failed without a count", mut(SessionPhaseAuthFailed, func(r *Record) { r.FailureCount = 0 })},
+		{"auth_failed with banned_until", mut(SessionPhaseAuthFailed, func(r *Record) { t := r.OccurredAt; r.BannedUntil = &t })},
+		{"auth_failed with a login", mut(SessionPhaseAuthFailed, func(r *Record) { r.Login = "alice" })},
+		{"auth_failed with a credential", mut(SessionPhaseAuthFailed, func(r *Record) { r.KeyFingerprint = "SHA256:x" })},
+		{"auth_failed overflow with a failure count", mut(SessionPhaseAuthFailed, func(r *Record) { r.ClientIP = ""; r.SuppressedCount = 5 })},
+		{"auth_failed with both counts", mut(SessionPhaseAuthFailed, func(r *Record) { r.SuppressedCount = 5 })},
+		{"banned without banned_until", mut(SessionPhaseBanned, func(r *Record) { r.BannedUntil = nil })},
+		{"banned without an ip", mut(SessionPhaseBanned, func(r *Record) { r.ClientIP = "" })},
+		{"banned with a suppressed count", mut(SessionPhaseBanned, func(r *Record) { r.SuppressedCount = 1 })},
+		{"open with failure fields", func() *pb.SSHSessionRecord { p := ToProto(baseRecord()); p.FailureCount = 3; return p }()},
+		{"open with a ban listener", func() *pb.SSHSessionRecord {
+			p := ToProto(baseRecord())
+			p.BanListener = pb.SSHBanListener_SSH_BAN_LISTENER_MAIN
+			return p
+		}()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := FromProto(tt.p); err == nil {
+				t.Fatal("expected an error")
+			}
+		})
 	}
 }

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Failed SSH authentications and bans reach the tamper-evident audit store** (#2419, ISO 27001 A.8.15). The sentinel's `ssh-ban-plugin` takes `--records-file` and writes what it already counts per source IP into the SSH session records file, so the existing shipper delivers it: `ssh_auth_failed` (one row per source IP when its ban window ends below the ban budget, with the failure count), `ssh_banned` (one row per ban, with the failure count and when it lapses) and, when the volume cap is hit, one overflow `ssh_auth_failed` row per minute carrying `suppressed_count`. They have no login, target or credential, and go to the sentinel's `--ssh-session-default-backend` (without one they are skipped like any unroutable record). Volume is bounded: one row per source per window, at most `--audit-max-records-per-minute` (default 600) summaries a minute, bans never capped, and the authentication path only enqueues. New wire phases `SSH_SESSION_PHASE_AUTH_FAILED` and `SSH_SESSION_PHASE_BANNED` with fields `failure_count`, `banned_until`, `ban_listener`, `suppressed_count`. Off by default (Terraform `ssh_ban_audit_records`). Upgrade backends first: an older backend rejects the new phases and the shipper stops shipping to it until upgraded. The journal line fail2ban reads is unchanged. See `docs/SENTINEL-SSH-SESSION-AUDIT.md`.
+- **A release now proves the tunnel client and sentinel work together before it is published** (#2469). `scripts/ci/tunnel-smoke.sh` runs the built `containariumd` as a sentinel and as a tunnel client (pin read with `sentinel tunnel-identity`, registration asserted over TLS, a request round-tripped through the tunnel), and a second step repeats it with the previous release's `containariumd` as the client. Both run in `release.yml` before the GitHub Release is created. Checked by hand: it passes on v0.101.2 and the current build and fails on v0.101.1, the release that shipped a client requiring a pin its sentinel could not supply. `docs/RELEASE-PROCESS.md` gains an upgrade-notes and paired-change checklist for the release PR.
+
+### Changed
+
+- **Security claims in the README and docs now match the evidence** (#2558). The README headline no longer says "no cross-tenant leakage" (tenant-to-tenant isolation is opt-in, per `docs/security/multi-tenant-isolation.md`), and the audit-log claim says what the hash chain does and does not defend against. New `docs/security/CLAIMS.md` lists each README security claim with its status (backed, opt-in, scoped, not verified) and evidence. The model-gateway, tracker-broker and inbound-guardrail design notes no longer say "not yet built"/"proposed" for work that has shipped. A lab node name and real IPs were scrubbed from `docs/EGRESS-VIA-CLIENT-DESIGN.md`.
+
 ## [0.108.0] - 2026-10-19
 
 ### Added

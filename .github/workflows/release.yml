@@ -146,6 +146,39 @@ jobs:
         # built above is embedded in containariumd-* only (-tags embed_bpf).
         run: make build-release VERSION="${GITHUB_REF_NAME#v}"
 
+      - name: Tunnel client and sentinel interoperate (#2469)
+        # Runs the built containariumd as BOTH the sentinel and the tunnel
+        # client: reads the pin with `sentinel tunnel-identity`, registers a
+        # spot over TLS and round-trips a request through the tunnel. Every
+        # in-process tunnel test builds both halves from one tree, so none of
+        # them noticed v0.101.0/.1 shipping a client that required a pin the
+        # sentinel could not yet supply. Needs passwordless sudo (the sentinel
+        # adds a loopback alias), which the runner has. Fails the release
+        # before anything is published.
+        run: |
+          chmod +x bin/containariumd-linux-amd64
+          scripts/ci/tunnel-smoke.sh bin/containariumd-linux-amd64
+
+      - name: Previous release's tunnel client still registers (#2469)
+        # The upgrade path: a tunnel host on the last release talking to the
+        # NEW sentinel. A rollout upgrades sentinels and hosts at different
+        # times, so this is the combination operators actually run. Skipped
+        # (with a notice) when there is no previous release to fetch, e.g. the
+        # first release or a rehearsal on a fork.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          prev="$(gh release list --repo "${GITHUB_REPOSITORY}" --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName' || true)"
+          if [ -z "${prev}" ] || [ "${prev}" = "${GITHUB_REF_NAME}" ]; then
+            echo "::notice::no previous release to test as a tunnel client; skipping"
+            exit 0
+          fi
+          mkdir -p prev-release
+          gh release download "${prev}" --repo "${GITHUB_REPOSITORY}" -p 'containariumd-linux-amd64' -D prev-release --clobber
+          chmod +x prev-release/containariumd-linux-amd64
+          echo "tunnel client under test: ${prev}"
+          scripts/ci/tunnel-smoke.sh bin/containariumd-linux-amd64 prev-release/containariumd-linux-amd64
+
       - name: Build macOS 11 client (best effort)
         # Stock Go >= 1.25 targets macOS 12+; this builds the CLIENT with a
         # privately patched toolchain so macOS 11 machines get a working
@@ -634,7 +667,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           helm push "dist-chart/containarium-k8s-${VERSION}.tgz" oci://ghcr.io/footprintai/charts
-          gh release upload "${GITHUB_REF_NAME}" "dist-chart/containarium-k8s-${VERSION}.tgz" --clobber
+          # SHA256SUMS.txt is already written by build-and-release before this
+          # job runs, so the chart ships its own .sha256 (same convention as
+          # the SDLC skills and air-gapped bundles) rather than racing a
+          # re-upload of that file. Relative name so `sha256sum -c` works
+          # from the download directory.
+          (cd dist-chart && sha256sum "containarium-k8s-${VERSION}.tgz" > "containarium-k8s-${VERSION}.tgz.sha256")
+          gh release upload "${GITHUB_REF_NAME}" \
+            "dist-chart/containarium-k8s-${VERSION}.tgz" \
+            "dist-chart/containarium-k8s-${VERSION}.tgz.sha256" --clobber
 
   # image build never blocks the binary release above (same reasoning
   # sidecars.yml gives for keeping its own jobs independent of each other).

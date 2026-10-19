@@ -62,6 +62,10 @@
       "description": "AppService provides application deployment and management"
     },
     {
+      "name": "SentinelSSHBanService",
+      "description": "SentinelSSHBanService controls the enforcing plugin, not system fail2ban.\nThe sentinel mounts REST behind its admin HMAC and forwards to a local socket."
+    },
+    {
       "name": "AuditService",
       "description": "AuditService — the proto-defined surface of the tamper-evident audit\nstore (internal/audit). Today it carries one write RPC (#2415): the\nsentinel ships the SSH session records its sshpiperd plugin appends\nlocally (internal/sentinel/sshsession) into THIS backend's audit chain,\nso the platform's front-door logins get the same hash chain and\nexternal anchoring (#1706) as in-box sessions and API calls.\n\nReads stay on the legacy /v1/audit/logs gateway route for now."
     },
@@ -115,10 +119,6 @@
     {
       "name": "SecurityService",
       "description": "SecurityService provides container security scanning and reporting"
-    },
-    {
-      "name": "SentinelSSHBanService",
-      "description": "SentinelSSHBanService controls the enforcing plugin, not system fail2ban.\nThe sentinel mounts REST behind its admin HMAC and forwards to a local socket."
     },
     {
       "name": "TokensService",
@@ -18079,10 +18079,12 @@
         "SSH_SESSION_PHASE_UNSPECIFIED",
         "SSH_SESSION_PHASE_OPEN",
         "SSH_SESSION_PHASE_CLOSE",
-        "SSH_SESSION_PHASE_DENIED"
+        "SSH_SESSION_PHASE_DENIED",
+        "SSH_SESSION_PHASE_AUTH_FAILED",
+        "SSH_SESSION_PHASE_BANNED"
       ],
       "default": "SSH_SESSION_PHASE_UNSPECIFIED",
-      "description": "SSHSessionPhase mirrors internal/sentinel/sshsession.SessionPhase.\n\n - SSH_SESSION_PHASE_DENIED: The sentinel's ssh-authz plugin refused the connection (#2516); no\nCLOSE follows. To be stored as action ssh_session_denied (#2519); until\nthen ingest rejects it as an invalid phase."
+      "description": "SSHSessionPhase mirrors internal/sentinel/sshsession.SessionPhase.\n\n - SSH_SESSION_PHASE_DENIED: The sentinel's ssh-authz plugin refused the connection (#2516); no\nCLOSE follows. To be stored as action ssh_session_denied (#2519); until\nthen ingest rejects it as an invalid phase.\n - SSH_SESSION_PHASE_AUTH_FAILED: Failed authentications from one source IP within one ban window (#2419),\nwritten by the sentinel's ssh-ban-plugin when the window ends. No session\nexisted, so there is no routed backend, login or credential: the record\nships to the sentinel's default backend. failure_count carries the total.\nWith an empty client_ip it is the overflow record instead: see\nsuppressed_count.\n - SSH_SESSION_PHASE_BANNED: A source IP crossed the failure budget and is banned (#2419); one record\nper ban. failure_count is the failures that tripped it, banned_until when\nthe ban lapses."
     },
     "SSHSessionRecord": {
       "type": "object",
@@ -18138,6 +18140,25 @@
         "enforced": {
           "type": "boolean",
           "description": "True when the decision was enforced; false in audit-only mode, where a\nDENY decision is recorded but the session still opens."
+        },
+        "failureCount": {
+          "type": "string",
+          "format": "uint64",
+          "description": "AUTH_FAILED / BANNED only (#2419): failed authentications counted."
+        },
+        "bannedUntil": {
+          "type": "string",
+          "format": "date-time",
+          "description": "BANNED only: when the ban lapses."
+        },
+        "banListener": {
+          "$ref": "#/definitions/SSHBanListener",
+          "description": "AUTH_FAILED / BANNED only: which sentinel SSH listener saw the failures."
+        },
+        "suppressedCount": {
+          "type": "string",
+          "format": "uint64",
+          "description": "AUTH_FAILED with an empty client_ip only: failures from other sources that\nwere not written one by one because the plugin's record rate cap was\nreached (a scan), aggregated here so the volume is still visible."
         }
       },
       "description": "SSHSessionRecord is one session lifecycle event, field for field the\nsentinel's sshsession.Record."
