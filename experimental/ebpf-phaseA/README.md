@@ -298,6 +298,14 @@ bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h
 clang -O2 -g -target bpfel -I. -c execwatch.bpf.c -o execwatch.bpf.o
 ```
 
+Overhead (lane measurement, `TestExecWatch_OverheadMeasurement`, ubuntu-latest
+8-core runner): 983 execs/s sustained for 60 s, 0 events lost, kernel-side
+1.21 % + ring consumer 1.74 % = 2.95 % of one core = **0.37 % of the host's
+CPU**. The bar is "< 1 % of host CPU at 1,000 execs/s" (decided 2026-10-19);
+bringing the Go consumer under 1 % of a core is a follow-up. A burst the
+consumer cannot drain is counted in `exec_stats[lost]` (10,000 undrained
+execs: 1,272 kept, 8,729 counted), never blocks the exec.
+
 The Go side is `internal/netbpf/execwatch.go` (`LoadExecWatch`, `Attach`,
 `WatchCgroup`/`UnwatchCgroup`, `ConsumeExecEvents`, `ParseExecEvent`); the
 wire layout is pinned by `TestExecEventWireLayout`, and the real-kernel

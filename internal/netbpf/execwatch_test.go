@@ -232,7 +232,14 @@ func (e *errRingReader) Read() (ringbuf.Record, error) { return ringbuf.Record{}
 // object fails clearly; a path is loaded as a file (the exec object is the
 // netpolicy path's sibling execwatch.bpf.o, so one env var drives both).
 func TestResolveExecWatch_EmbeddedAbsentErrors(t *testing.T) {
-	for _, mode := range []string{"embedded", "1", "TRUE", " on "} {
+	if EmbeddedExecObject() != nil {
+		// An embed_bpf build takes the load path instead; that path is the
+		// lane's job. Not a t.Skip: the ebpf_load lane fails on any skip.
+		t.Log("build embeds execwatch.bpf.o; the absent-object branch is not reachable here")
+		return
+	}
+	// The empty value means embedded too (never a CWD-relative file).
+	for _, mode := range []string{"", "  ", "embedded", "1", "TRUE", " on "} {
 		_, err := ResolveExecWatch(mode)
 		if err == nil {
 			t.Fatalf("ResolveExecWatch(%q) = nil error, want a no-embedded-object error", mode)
@@ -249,6 +256,8 @@ func TestExecObjectPathFor(t *testing.T) {
 		{"/opt/containarium/execwatch.bpf.o", "/opt/containarium/execwatch.bpf.o"},
 		{"netpolicy.bpf.o", "execwatch.bpf.o"},
 		{"/some/dir/", "/some/dir/execwatch.bpf.o"},
+		{"", ""},   // never "./execwatch.bpf.o" relative to the daemon's CWD
+		{"  ", ""}, // whitespace is empty
 	}
 	for _, tc := range tests {
 		if got := ExecObjectPathFor(tc.in); got != tc.want {
