@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A release now proves the tunnel client and sentinel work together before it is published** (#2469). `scripts/ci/tunnel-smoke.sh` runs the built `containariumd` as a sentinel and as a tunnel client (pin read with `sentinel tunnel-identity`, registration asserted over TLS, a request round-tripped through the tunnel), and a second step repeats it with the previous release's `containariumd` as the client. Both run in `release.yml` before the GitHub Release is created. Checked by hand: it passes on v0.101.2 and the current build and fails on v0.101.1, the release that shipped a client requiring a pin its sentinel could not supply. `docs/RELEASE-PROCESS.md` gains an upgrade-notes and paired-change checklist for the release PR.
+
 ### Changed
 
 - **Security claims in the README and docs now match the evidence** (#2558). The README headline no longer says "no cross-tenant leakage" (tenant-to-tenant isolation is opt-in, per `docs/security/multi-tenant-isolation.md`), and the audit-log claim says what the hash chain does and does not defend against. New `docs/security/CLAIMS.md` lists each README security claim with its status (backed, opt-in, scoped, not verified) and evidence. The model-gateway, tracker-broker and inbound-guardrail design notes no longer say "not yet built"/"proposed" for work that has shipped. A lab node name and real IPs were scrubbed from `docs/EGRESS-VIA-CLIENT-DESIGN.md`.
