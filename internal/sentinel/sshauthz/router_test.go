@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/tg123/sshpiper/libplugin"
 	"golang.org/x/crypto/ssh"
@@ -81,19 +80,18 @@ func routerCert(t *testing.T, key ssh.PublicKey, signer ssh.Signer, principal st
 func TestRouterMirrorsYAMLPlugin(t *testing.T) {
 	f := newRouterFixture(t, "")
 	stranger, untrusted := testKey(t), testKey(t)
-	expired := uint64(time.Now().Add(-time.Hour).Unix())
+	const expired = 1 // ValidBefore one second after the epoch
 	for _, tt := range []struct {
 		name, login string
 		wire        []byte
-		host        string // "" expects a refusal
-		port        int32
+		uri         string // "" expects a refusal
 	}{
-		{name: "authorized key", login: "alice", wire: f.alice.PublicKey().Marshal(), host: "192.0.2.10", port: 2222},
-		{name: "second pipe", login: "bob", wire: f.bob.PublicKey().Marshal(), host: "192.0.2.11", port: 22},
+		{name: "authorized key", login: "alice", wire: f.alice.PublicKey().Marshal(), uri: "tcp://192.0.2.10:2222"},
+		{name: "second pipe", login: "bob", wire: f.bob.PublicKey().Marshal(), uri: "tcp://192.0.2.11:22"},
 		{name: "unknown key", login: "alice", wire: stranger.PublicKey().Marshal()},
 		{name: "another login's key", login: "alice", wire: f.bob.PublicKey().Marshal()},
 		{name: "no pipe for login", login: "mallory", wire: f.alice.PublicKey().Marshal()},
-		{name: "certificate from trusted CA", login: "alice", wire: routerCert(t, stranger.PublicKey(), f.ca, "alice", ssh.CertTimeInfinity), host: "192.0.2.10", port: 2222},
+		{name: "certificate from trusted CA", login: "alice", wire: routerCert(t, stranger.PublicKey(), f.ca, "alice", ssh.CertTimeInfinity), uri: "tcp://192.0.2.10:2222"},
 		{name: "certificate from untrusted CA", login: "alice", wire: routerCert(t, stranger.PublicKey(), untrusted, "alice", ssh.CertTimeInfinity)},
 		{name: "certificate for another principal", login: "alice", wire: routerCert(t, stranger.PublicKey(), f.ca, "bob", ssh.CertTimeInfinity)},
 		{name: "expired certificate", login: "alice", wire: routerCert(t, stranger.PublicKey(), f.ca, "alice", expired)},
@@ -103,7 +101,7 @@ func TestRouterMirrorsYAMLPlugin(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			up, err := NewRouter(f.config).Route(&libplugin.ConnMeta{UserName: tt.login, FromAddr: "203.0.113.1:1234", UniqId: "conn-1"}, tt.wire)
-			if tt.host == "" {
+			if tt.uri == "" {
 				if err == nil || up != nil {
 					t.Fatalf("want refusal, got upstream %v err %v", up, err)
 				}
@@ -112,7 +110,7 @@ func TestRouterMirrorsYAMLPlugin(t *testing.T) {
 			if err != nil {
 				t.Fatalf("want upstream, got %v", err)
 			}
-			if up.Host != tt.host || up.Port != tt.port || up.UserName != tt.login || len(up.KnownHostsData) != 0 {
+			if up.GetOrGenerateUri() != tt.uri || up.UserName != tt.login || len(up.KnownHostsData) != 0 {
 				t.Fatalf("upstream = %+v", up)
 			}
 			if pk := up.GetPrivateKey(); pk == nil || !bytes.Equal(pk.PrivateKey, f.upstreamKey) || len(pk.CaPublicKey) != 0 {
