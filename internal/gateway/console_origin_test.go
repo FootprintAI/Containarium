@@ -13,6 +13,12 @@ import (
 // The console-attach route must apply the same Origin rule as the terminal
 // route (issue #2721): same header-combination table, same refusal body and
 // status, same Sec-Websocket-Version header.
+//
+// Since #2701 the no-Origin exemption follows a bearer the route wrapper
+// VALIDATED and recorded on the context (markValidated here stands in for
+// the wrapper), never a bearer that is merely present on the request. The
+// console route wrapper in gateway.go records it exactly like the terminal
+// wrapper does.
 
 func TestConsoleUpgrader_OriginTable(t *testing.T) {
 	t.Setenv("CONTAINARIUM_ALLOWED_ORIGINS", "")
@@ -23,16 +29,18 @@ func TestConsoleUpgrader_OriginTable(t *testing.T) {
 		wantOK bool
 		reason string
 	}{
-		{"empty origin + subprotocol bearer upgrades", newOriginRequest("", withSubprotocolBearer), true, ""},
-		{"empty origin + Authorization bearer upgrades", newOriginRequest("", withAuthorizationBearer), true, ""},
-		{"empty origin + no bearer refused", newOriginRequest("", nil), false, originRequired},
-		{"empty origin + only ?token= refused", newOriginRequest("", func(r *http.Request) {
+		{"empty origin + validated subprotocol bearer upgrades", markValidated(newOriginRequest("", withSubprotocolBearer)), true, ""},
+		{"empty origin + validated Authorization bearer upgrades", markValidated(newOriginRequest("", withAuthorizationBearer)), true, ""},
+		{"empty origin + subprotocol bearer never validated refused", newOriginRequest("", withSubprotocolBearer), false, originRequired},
+		{"empty origin + Authorization bearer never validated refused", newOriginRequest("", withAuthorizationBearer), false, originRequired},
+		{"empty origin + no bearer refused", markValidated(newOriginRequest("", nil)), false, originRequired},
+		{"empty origin + only validated ?token= refused", markValidated(newOriginRequest("", func(r *http.Request) {
 			r.URL.RawQuery = "token=header.payload.sig"
-		}), false, originRequired},
-		{"Origin: null + bearer refused", newOriginRequest("null", withSubprotocolBearer), false, originNotAllowed},
-		{"unlisted origin + bearer refused", newOriginRequest("https://evil.example", withSubprotocolBearer), false, originNotAllowed},
+		})), false, originRequired},
+		{"Origin: null + validated bearer refused", markValidated(newOriginRequest("null", withSubprotocolBearer)), false, originNotAllowed},
+		{"unlisted origin + validated bearer refused", markValidated(newOriginRequest("https://evil.example", withSubprotocolBearer)), false, originNotAllowed},
 		{"unlisted origin, no bearer refused", newOriginRequest("https://evil.example", nil), false, originNotAllowed},
-		{"default-allowed origin + bearer upgrades", newOriginRequest("http://localhost:3000", withSubprotocolBearer), true, ""},
+		{"default-allowed origin + validated bearer upgrades", markValidated(newOriginRequest("http://localhost:3000", withSubprotocolBearer)), true, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -69,7 +77,20 @@ type refusal struct {
 	version string
 }
 
+// upgradeServer serves the upgrader behind the route wrapper's contract:
+// the request reaches the upgrader with its bearer marked validated, as the
+// gateway's terminal and console wrappers do after ValidateToken succeeds.
 func upgradeServer(up websocket.Upgrader) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if conn, err := up.Upgrade(w, markValidated(r), nil); err == nil {
+			_ = conn.Close()
+		}
+	}))
+}
+
+// rawUpgradeServer serves the upgrader with no wrapper: a bearer on the
+// request is present but never validated.
+func rawUpgradeServer(up websocket.Upgrader) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if conn, err := up.Upgrade(w, r, nil); err == nil {
 			_ = conn.Close()
@@ -108,13 +129,32 @@ func TestConsoleUpgrader_RefusalMatchesTerminal(t *testing.T) {
 		})
 	}
 
-	// Bearer with no Origin upgrades end to end.
+	// Validated bearer with no Origin upgrades end to end.
+	bearer := http.Header{"Authorization": {"Bearer header.payload.sig"}}
 	srv := upgradeServer(newConsoleUpgrader())
 	defer srv.Close()
-	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http"),
-		http.Header{"Authorization": {"Bearer header.payload.sig"}})
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http"), bearer)
 	if err != nil {
-		t.Fatalf("bearer + no Origin should upgrade: %v", err)
+		t.Fatalf("validated bearer + no Origin should upgrade: %v", err)
 	}
 	_ = conn.Close()
+
+	// The same bearer, never validated, is refused on both routes alike
+	// (#2701): presence on the request does not unlock the exemption.
+	for name, up := range map[string]websocket.Upgrader{
+		"terminal": newTerminalUpgrader(),
+		"console":  newConsoleUpgrader(),
+	} {
+		raw := rawUpgradeServer(up)
+		_, resp, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(raw.URL, "http"), bearer)
+		raw.Close()
+		if err == nil || resp == nil {
+			t.Fatalf("%s: never-validated bearer + no Origin should be refused, got err=%v", name, err)
+		}
+		b, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden || strings.TrimSpace(string(b)) != originRequired {
+			t.Fatalf("%s: never-validated refusal = %d %q, want 403 %q", name, resp.StatusCode, b, originRequired)
+		}
+	}
 }
