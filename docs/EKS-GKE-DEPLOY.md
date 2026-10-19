@@ -20,8 +20,16 @@ so a given `--version` always installs the same daemon.
 ```bash
 helm install containarium oci://ghcr.io/footprintai/charts/containarium-k8s \
   --version <release-without-v> \
-  --set daemon.jwtSecret="$(openssl rand -hex 24)"
+  --set daemon.jwtSecret="$(openssl rand -hex 24)" \
+  --set gateway.upstreamKeySecret=sshpiper-upstream-key \
+  --set-file gateway.upstreamPublicKey=./sshpiper_upstream.pub
 ```
+
+`gateway.upstreamKeySecret` is required because gateway routing is on by
+default and the daemon refuses to start without an upstream credential, so a
+bare `helm template` / `helm install` with no values fails fast by design.
+Create the Secret first (see the comments in `values.yaml`), or clear
+`gateway.namespace` to disable gateway routing.
 
 The cloud presets (`values-gke.yaml`, `values-eks.yaml`) live in the repository
 at the release tag; pass the one you need with `-f`. The release notes for each
@@ -31,10 +39,10 @@ image tag `latest`); only the packaged chart attached to a release is stamped,
 so install from a release, not from a checkout, when you need a reproducible
 deployment.
 
-The gateway (`containarium-sshpiper`) and box (`containarium-agent-box`) images
-are still referenced by moving tags in `values.yaml`. Pin them with
-`--set gateway.sshpiper.image=...` and `--set agentBox.image=...` if you need
-those pinned as well.
+The gateway image (`containarium-sshpiper`) is pinned to the same release tag as
+the daemon. The box image (`containarium-agent-box`) is still referenced by a
+moving tag in `values.yaml`; pin it with `--set agentBox.image=...` if you need
+that pinned as well.
 
 ### What is tested
 
