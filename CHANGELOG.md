@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Only the box owner can start a ClamAV scan; the admin role no longer bypasses** (#2655, part of #2631). `TriggerClamavScan` now requires the caller's subject to be the box's owner (new `auth.RequireContainerOwner`), so an operator's admin token gets `PermissionDenied` and system containers are always refused. A service credential that has already authorized the owner (the managed control plane's driver token) passes with the new literal scope `security:trigger-for-owner`; neither the wildcard scope nor an unscoped token carries it. Reads of reports are unchanged. `InstallClamav` is not switched in this change.
 - **Auto-quarantine no longer releases on a `clean` ClamAV verdict** (#2654, part of #2631). The scan is moving inside the tenant's own box (#2631), so its verdict is self-reported and a compromised box could otherwise lift its own quarantine. An `infected` verdict still blocks the tenant's egress (24h TTL, refreshed by each infected scan); release is now by an operator removing the `auto-quarantine: clamav malware` deny rule, or by the TTL. The ClamAV summary counts are documented as self-reported.
 
 ### Fixed
