@@ -337,7 +337,9 @@ jobs:
           ```bash
           helm install containarium oci://ghcr.io/footprintai/charts/containarium-k8s \
             --version __CHART_VERSION__ \
-            --set daemon.jwtSecret="$(openssl rand -hex 24)"
+            --set daemon.jwtSecret="$(openssl rand -hex 24)" \
+            --set gateway.upstreamKeySecret=sshpiper-upstream-key \
+            --set-file gateway.upstreamPublicKey=./sshpiper_upstream.pub
           ```
 
           ### MCP client setup
@@ -645,7 +647,7 @@ jobs:
             --version "${VERSION}" --app-version "v${VERSION}" --destination dist-chart
           ls -l dist-chart
 
-      - name: Render and check the daemon image
+      - name: Render and check the daemon and gateway images
         env:
           VERSION: ${{ steps.v.outputs.version }}
         run: |
@@ -653,6 +655,10 @@ jobs:
             --set gateway.upstreamKeySecret=release-render-check)"
           grep -q "image: ghcr.io/footprintai/containarium:v${VERSION}\$" <<<"$rendered" || {
             echo "::error::chart does not pin ghcr.io/footprintai/containarium:v${VERSION}"
+            exit 1
+          }
+          grep -q "image: ghcr.io/footprintai/containarium-sshpiper:v${VERSION}\$" <<<"$rendered" || {
+            echo "::error::chart does not pin ghcr.io/footprintai/containarium-sshpiper:v${VERSION}"
             exit 1
           }
 
