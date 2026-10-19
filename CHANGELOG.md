@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`agent-runtime-bundle.tar.gz` and the Helm chart `.tgz` are now listed in the release's `SHA256SUMS.txt`** (#2702). Both were on the Release page with no checksum in that file; the chart job now downloads, appends and re-uploads it. `docs/RELEASE-PROCESS.md` adds "every asset is listed" to the post-tag verification.
+
 ### Added
 
 - **Failed SSH authentications and bans reach the tamper-evident audit store** (#2419, ISO 27001 A.8.15). The sentinel's `ssh-ban-plugin` takes `--records-file` and writes what it already counts per source IP into the SSH session records file, so the existing shipper delivers it: `ssh_auth_failed` (one row per source IP when its ban window ends below the ban budget, with the failure count), `ssh_banned` (one row per ban, with the failure count and when it lapses) and, when the volume cap is hit, one overflow `ssh_auth_failed` row per minute carrying `suppressed_count`. They have no login, target or credential, and go to the sentinel's `--ssh-session-default-backend` (without one they are skipped like any unroutable record). Volume is bounded: one row per source per window, at most `--audit-max-records-per-minute` (default 600) summaries a minute, bans never capped, and the authentication path only enqueues. New wire phases `SSH_SESSION_PHASE_AUTH_FAILED` and `SSH_SESSION_PHASE_BANNED` with fields `failure_count`, `banned_until`, `ban_listener`, `suppressed_count`. Off by default (Terraform `ssh_ban_audit_records`). Upgrade backends first: an older backend rejects the new phases and the shipper stops shipping to it until upgraded. The journal line fail2ban reads is unchanged. See `docs/SENTINEL-SSH-SESSION-AUDIT.md`.

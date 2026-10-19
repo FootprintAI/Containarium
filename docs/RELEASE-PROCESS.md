@@ -77,7 +77,8 @@ anyway; it's the only thing a non-release build has to go on.
    Pushing the tag is the point of no return for all of them.
 5. **Verify every one of them actually built and published** — don't
    treat a pushed tag as done. Check the Release page has all expected
-   artifacts and `SHA256SUMS.txt`, that `containarium version` on a
+   artifacts and `SHA256SUMS.txt`, that every asset on the page (including
+   `agent-runtime-bundle.tar.gz` and the chart `.tgz`) is listed in it, that `containarium version` on a
    freshly downloaded binary reports the new tag, and that the image
    and PyPI publishes succeeded. For the Helm chart, check that
    `containarium-k8s-<version>.tgz` and its `.sha256` are on the Release
@@ -139,7 +140,7 @@ rather than after.
 
 | Workflow | What it publishes | Where | Reversible? |
 | --- | --- | --- | --- |
-| `release.yml` | 24 assets: the CLI for linux/darwin-amd64/darwin-arm64/windows (plus best-effort `-macos11` darwin builds from `scripts/build-macos11.sh`), MCP server and agent-box binaries for linux/darwin-amd64/darwin-arm64, the agent-runtime bundle, the SDLC skills bundle + its `.sha256` (#2065), the air-gapped install bundle + its `.sha256`, the Helm chart `containarium-k8s-<version>.tgz` + its `.sha256` (the `helm-chart` job runs after `SHA256SUMS.txt` is written, so the chart is not listed there), and a generated `SHA256SUMS.txt`. The same job also pushes the chart to GHCR as an OCI artifact (`oci://ghcr.io/<org>/charts/containarium-k8s`) | GitHub Release on the tag, and GHCR | Release assets are deletable, but anyone who already pulled has them; treat a published OCI chart version as permanent |
+| `release.yml` | 24 assets: the CLI for linux/darwin-amd64/darwin-arm64/windows (plus best-effort `-macos11` darwin builds from `scripts/build-macos11.sh`), MCP server and agent-box binaries for linux/darwin-amd64/darwin-arm64, the agent-runtime bundle (listed in `SHA256SUMS.txt`), the SDLC skills bundle + its `.sha256` (#2065), the air-gapped install bundle + its `.sha256`, the Helm chart `containarium-k8s-<version>.tgz` + its `.sha256` (the `helm-chart` job runs after `SHA256SUMS.txt` is written, so it downloads that file, appends the chart and re-uploads it; #2702), and a generated `SHA256SUMS.txt`. The same job also pushes the chart to GHCR as an OCI artifact (`oci://ghcr.io/<org>/charts/containarium-k8s`) | GitHub Release on the tag, and GHCR | Release assets are deletable, but anyone who already pulled has them; treat a published OCI chart version as permanent |
 | `containarium-daemon.yml` | Daemon container image | `ghcr.io/footprintai/containarium` | Tag is mutable in principle; treat as published |
 | `sidecars.yml` | `containarium-otel-sidecar`, `containarium-sshpiper`, `containarium-agent-box` images | `ghcr.io` | Same |
 | `distros-py-release.yml` | `containarium-telemetry` Python package | **PyPI** | **No.** PyPI does not allow re-uploading a version, even after deletion |
