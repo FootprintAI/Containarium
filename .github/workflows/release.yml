@@ -216,6 +216,26 @@ jobs:
         # recipe and `containarium code install`).
         run: make bundle-sdlc-skills
 
+      - name: Install syft (SBOM generator)
+        id: syft
+        # Pinned to an exact tool version: the SPDX output differs between
+        # syft releases and a release's SBOMs should be reproducible by
+        # rerunning the same version.
+        uses: anchore/sbom-action/download-syft@v0.24.3
+        with:
+          syft-version: v1.54.1
+
+      - name: Generate SBOMs for the Linux binaries (#2561)
+        # One SPDX document per distinct program, read from the shipped binary
+        # itself (Go embeds its module list), then listed in SHA256SUMS.txt so
+        # verifying the release's checksums covers them. Fails the release if a
+        # document is empty. The container images carry their own SBOM.
+        env:
+          # The download action returns the binary's path as an output rather
+          # than promising it is on PATH.
+          SYFT: ${{ steps.syft.outputs.cmd }}
+        run: scripts/release/generate-sboms.sh bin
+
       - name: Generate changelog
         # The boilerplate below is identical on every release, so without
         # this a release page never says what actually changed in it (#1600).
@@ -330,6 +350,10 @@ jobs:
 
           Verify checksums via `SHA256SUMS.txt`.
 
+          ### SBOMs
+
+          Each Linux binary has an SPDX 2.3 SBOM next to it (`<binary>-linux-amd64.spdx.json`), generated from the shipped file and listed in `SHA256SUMS.txt`. The container images carry their own SBOM and provenance attestations.
+
           ### Kubernetes (Helm)
 
           Chart version `__CHART_VERSION__` (installs the `__RELEASE_REF__` daemon image):
@@ -430,6 +454,10 @@ jobs:
             bin/sdlc-skills.tar.gz
             bin/sdlc-skills.tar.gz.sha256
             bin/caddy-linux-amd64
+            bin/containariumd-linux-amd64.spdx.json
+            bin/containarium-linux-amd64.spdx.json
+            bin/mcp-server-linux-amd64.spdx.json
+            bin/agent-box-linux-amd64.spdx.json
             bin/SHA256SUMS.txt
           draft: false
           # A tag with a pre-release suffix (v0.101.0-rc.1) is a GitHub
