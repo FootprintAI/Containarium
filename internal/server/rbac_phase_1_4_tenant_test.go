@@ -99,6 +99,38 @@ func TestTriggerClamavScan_RejectsOtherTenant(t *testing.T) {
 	}
 }
 
+// #2655: an administrator does not bypass the owner check, and neither does an
+// unscoped or wildcard-scoped token. Only the control plane's acting-for-owner
+// scope lets a non-owner through.
+func TestTriggerClamavScan_AdminCannotStartATenantScan(t *testing.T) {
+	srv := &SecurityServer{}
+	for name, ctx := range map[string]context.Context{
+		"unscoped admin": adminCtx(),
+		"wildcard admin": auth.ContextWithTestSubjectScopes(context.Background(), "ops", []string{auth.RoleAdmin}, []string{auth.ScopeWildcard}),
+		"security:write": auth.ContextWithTestSubjectScopes(context.Background(), "ops", []string{auth.RoleAdmin}, []string{auth.ScopeSecurityWrite}),
+		"system box too": adminCtx(),
+	} {
+		box := "alice-container"
+		if name == "system box too" {
+			box = "caddy"
+		}
+		_, err := srv.TriggerClamavScan(ctx, &pb.TriggerClamavScanRequest{ContainerName: box})
+		if status.Code(err) != codes.PermissionDenied {
+			t.Fatalf("%s: got %v want PermissionDenied", name, err)
+		}
+	}
+}
+
+func TestTriggerClamavScan_ServiceActingForOwnerPasses(t *testing.T) {
+	srv := &SecurityServer{}
+	ctx := auth.ContextWithTestSubjectScopes(context.Background(), "driver", []string{auth.RoleAdmin},
+		[]string{auth.ScopeSecurityWrite, auth.ScopeSecurityTriggerForOwner})
+	mustPass(t, "acting-for-owner TriggerClamavScan", func() error {
+		_, e := srv.TriggerClamavScan(ctx, &pb.TriggerClamavScanRequest{ContainerName: "alice-container"})
+		return e
+	})
+}
+
 func TestTriggerClamavScan_RejectsTenantBlankName(t *testing.T) {
 	// Blank container_name = scan all; require admin.
 	srv := &SecurityServer{}
