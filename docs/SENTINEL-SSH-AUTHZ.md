@@ -44,7 +44,8 @@ is served without asking the daemon) or younger than `--ssh-authz-grace`.
 After both have passed, and for a key with no cached `ALLOW`, the login is
 refused until the daemon answers again. With the self-host decider
 (`cache_ttl` 30 seconds) and the default 5 minute grace, the grace window is
-the bound; a daemon that returns a `cache_ttl` longer than the grace extends it.
+the bound. A `cache_ttl` longer than the grace is capped at the grace, so no
+daemon can extend it.
 A failure of the local bridge (the sentinel manager's socket) gets no grace.
 The login cannot be resolved to a backend, the cache is keyed by backend, and
 so every raw-key login is refused until the manager is back. A daemon
@@ -87,7 +88,7 @@ The plugin accepts the same socket path and:
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--ssh-authz-grace` | `5m` | Maximum age of a positive reused during an outage; `0` disables stale reuse |
+| `--ssh-authz-grace` | `5m` | Maximum age of a positive reused during an outage, and the cap on its fresh `cache_ttl`; `0` disables reuse |
 | `--ssh-authz-timeout` | `3s` | Total deadline for login resolution and authorization |
 | `--ssh-authz-enforce` | `false` | Refuse denied keys (see Modes) |
 | `--records-file` | `/var/log/containarium/ssh-sessions.jsonl` | Where enforced denials are appended; same file as `ssh-session-plugin`. Opened only with `--ssh-authz-enforce`; empty disables denied records |
@@ -107,8 +108,8 @@ manager's backend call is also bounded and respects a timeout override.
 ## Cache and audit behavior
 
 Positive entries are keyed by `(backend, login, SHA256 fingerprint)`. Their
-fresh lifetime is the response's `cache_ttl`; an absent or zero TTL permits
-no fresh reuse. Expired positives remain available until the outage grace
+fresh lifetime is the response's `cache_ttl`, capped at `--ssh-authz-grace`;
+an absent or zero TTL permits no fresh reuse. Expired positives remain available until the outage grace
 expires. Transport failures, HTTP 5xx, and a daemon's typed
 `DENY UPSTREAM_UNAVAILABLE` may reuse them. HTTP 4xx, malformed responses,
 and authoritative denials invalidate old positives. Grace reads never
