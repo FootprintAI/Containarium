@@ -31,6 +31,8 @@ on:
       # all (#1341). Without this the wiring lands untested by the lane that
       # exists to test it.
       - 'internal/server/**'
+      # Caddy port-forward hairpin (#2732): real netns + iptables, no Incus.
+      - 'pkg/core/network/**'
       - '.github/workflows/incus-create.yml'
   # No `branches:` filter — a base filter leaves stacked PRs with no checks
   # at all, which looks the same as checks not having started (#1215).
@@ -47,6 +49,8 @@ on:
       # all (#1341). Without this the wiring lands untested by the lane that
       # exists to test it.
       - 'internal/server/**'
+      # Caddy port-forward hairpin (#2732): real netns + iptables, no Incus.
+      - 'pkg/core/network/**'
       - '.github/workflows/incus-create.yml'
 
 permissions:
@@ -233,7 +237,8 @@ jobs:
         run: |
           set -euo pipefail
           sudo -E env "PATH=$PATH" go test -tags=incus -v -count=1 -timeout 40m \
-            ./pkg/core/box/lxc/ ./pkg/core/incus/ ./internal/server/ -run 'TestIntegrationIncus' | tee incus-test.log
+            ./pkg/core/box/lxc/ ./pkg/core/incus/ ./internal/server/ ./pkg/core/network/ \
+            -run 'TestIntegrationIncus|TestIntegrationHairpin' | tee incus-test.log
 
       # #1368 — the daemon BINARY, with its flags.
       #

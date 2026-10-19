@@ -922,7 +922,8 @@ func (s *Server) registerTools() {
 			Name: "security_sentry_status",
 			Description: "Report the background threat-detection engine's on/off state (#1640): " +
 				"'OK' (running, findings persisted), 'DEGRADED' (running, but no Postgres — " +
-				"findings don't survive a daemon restart), 'UNAVAILABLE' (no eBPF object loaded, " +
+				"findings don't survive a daemon restart; or the process responder cannot apply " +
+				"THROTTLE/FREEZE (responses disabled); see `reason`), 'UNAVAILABLE' (no eBPF object loaded, " +
 				"or no audit store — nothing is being detected; check `reason`), or 'DISABLED' " +
 				"(CONTAINARIUM_THREAT_SENTRY unset). Also lists every registered detection rule's " +
 				"health — a rule that panicked shows healthy=false with lastError set, but the " +

@@ -132,9 +132,24 @@ jobs:
         # serves every little-endian backend (amd64/arm64). UAPI-only program, so
         # portable across kernel versions; the verifier still runs at load time.
         run: |
+          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y clang llvm libbpf-dev linux-libc-dev
-          make build-bpf
+          # bpftool for vmlinux.h (#2637): a pinned static release from
+          # github.com/libbpf/bpftool, checksum-verified. Not Ubuntu's
+          # linux-tools: on the Azure runner kernels the only thing those
+          # packages leave on disk is the linux-tools-common wrapper, which
+          # cannot run (proved by runs 39210535656 / 39212425801). Dumping
+          # /sys/kernel/btf/vmlinux does not need a kernel-matched binary.
+          BPFTOOL_VERSION=v7.6.0
+          BPFTOOL_SHA256=51ffd3dd4f46fdc46736433a971e828dc70835c6b18ad20cabffd10abcf00358
+          curl -sSfL -o /tmp/bpftool.tar.gz "https://github.com/libbpf/bpftool/releases/download/${BPFTOOL_VERSION}/bpftool-${BPFTOOL_VERSION}-amd64.tar.gz"
+          echo "${BPFTOOL_SHA256}  /tmp/bpftool.tar.gz" | sha256sum -c -
+          sudo tar -xzf /tmp/bpftool.tar.gz -C /usr/local/bin bpftool
+          sudo chmod 0755 /usr/local/bin/bpftool
+          BPFTOOL=/usr/local/bin/bpftool
+          echo "bpftool: $BPFTOOL ($("$BPFTOOL" version | head -n1))"
+          make build-bpf BPFTOOL="$BPFTOOL"
 
       - name: Build all release artifacts
         # `make build-release` builds containariumd (server) + mcp-server +
@@ -463,6 +478,8 @@ jobs:
             bin/mcp-server-linux-amd64.spdx.json
             bin/agent-box-linux-amd64.spdx.json
             bin/SHA256SUMS.txt
+            LICENSE
+            NOTICE
           draft: false
           # A tag with a pre-release suffix (v0.101.0-rc.1) is a GitHub
           # pre-release: it is left out of releases/latest, so the daemon's
@@ -568,8 +585,23 @@ jobs:
         # bundle's containarium binary embeds it (-tags embed_bpf, auto-enabled
         # by the Makefile when internal/netbpf/netpolicy.bpf.o is present).
         run: |
+          set -euo pipefail
           sudo apt-get install -y clang llvm libbpf-dev linux-libc-dev
-          make build-bpf
+          # bpftool for vmlinux.h (#2637): a pinned static release from
+          # github.com/libbpf/bpftool, checksum-verified. Not Ubuntu's
+          # linux-tools: on the Azure runner kernels the only thing those
+          # packages leave on disk is the linux-tools-common wrapper, which
+          # cannot run (proved by runs 39210535656 / 39212425801). Dumping
+          # /sys/kernel/btf/vmlinux does not need a kernel-matched binary.
+          BPFTOOL_VERSION=v7.6.0
+          BPFTOOL_SHA256=51ffd3dd4f46fdc46736433a971e828dc70835c6b18ad20cabffd10abcf00358
+          curl -sSfL -o /tmp/bpftool.tar.gz "https://github.com/libbpf/bpftool/releases/download/${BPFTOOL_VERSION}/bpftool-${BPFTOOL_VERSION}-amd64.tar.gz"
+          echo "${BPFTOOL_SHA256}  /tmp/bpftool.tar.gz" | sha256sum -c -
+          sudo tar -xzf /tmp/bpftool.tar.gz -C /usr/local/bin bpftool
+          sudo chmod 0755 /usr/local/bin/bpftool
+          BPFTOOL=/usr/local/bin/bpftool
+          echo "bpftool: $BPFTOOL ($("$BPFTOOL" version | head -n1))"
+          make build-bpf BPFTOOL="$BPFTOOL"
 
       - name: Build per-platform binaries
         # build-bundle depends on build-release; calling explicitly so
