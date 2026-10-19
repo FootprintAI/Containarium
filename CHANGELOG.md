@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Security claims in the README and docs now match the evidence** (#2558). The README headline no longer says "no cross-tenant leakage" (tenant-to-tenant isolation is opt-in, per `docs/security/multi-tenant-isolation.md`), and the audit-log claim says what the hash chain does and does not defend against. New `docs/security/CLAIMS.md` lists each README security claim with its status (backed, opt-in, scoped, not verified) and evidence. The model-gateway, tracker-broker and inbound-guardrail design notes no longer say "not yet built"/"proposed" for work that has shipped. A lab node name and real IPs were scrubbed from `docs/EGRESS-VIA-CLIENT-DESIGN.md`.
+
 - **Auto-quarantine no longer releases on a `clean` ClamAV verdict** (#2654, part of #2631). The scan is moving inside the tenant's own box (#2631), so its verdict is self-reported and a compromised box could otherwise lift its own quarantine. An `infected` verdict still blocks the tenant's egress (24h TTL, refreshed by each infected scan); release is now by an operator removing the `auto-quarantine: clamav malware` deny rule, or by the TTL. The ClamAV summary counts are documented as self-reported.
 
 ### Fixed

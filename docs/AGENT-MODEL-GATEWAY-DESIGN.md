@@ -1,8 +1,11 @@
 # Agent Model Gateway — Design Note
 
-> Status: **Exploration / not yet approved.** This proposes a daemon-side
+> Status: **Implemented** (`internal/modelgateway`, `cmd/model-gateway`; the
+> gateway image is published with each release). This note is kept for the
+> rationale and threat model; where it says something is "not yet built" or a
+> proposal, read the code, which is authoritative. It described a daemon-side
 > *model gateway* that every agent box calls instead of reaching the model
-> provider directly. Nothing here is built yet. Builds on the in-box loop
+> provider directly. Builds on the in-box loop
 > (`docs/AGENT-RUNTIME-INBOX-LOOP-DESIGN.md`) and the agent-skills mechanism
 > (`docs/AGENT-SKILLS-CREWS-DESIGN.md`).
 
