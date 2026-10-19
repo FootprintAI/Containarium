@@ -64,7 +64,7 @@ jobs:
           export SSH_BAN_UPSTREAM_GUARD="$RUNNER_TEMP/ssh-ban/plugins/failtoban"
           go test -race -tags integration -count=1 -timeout 2m -v \
             ./internal/sentinel/sshban | tee "$RUNNER_TEMP/ssh-ban/verification.log"
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: '1.13.4'
           terraform_wrapper: false
