@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -67,7 +68,9 @@ func (h *execHasher) Request(ev threatdetect.ExecEvent) {
 	select {
 	case h.queue <- ev:
 	default:
-		h.dropped.Add(1)
+		if n := h.dropped.Add(1); n == 1 || n%100 == 0 {
+			log.Printf("[exec-hasher] queue full (cap %d): %d hash requests dropped so far", execHashQueue, n)
+		}
 	}
 }
 
@@ -86,7 +89,12 @@ func (h *execHasher) Run(ctx context.Context) {
 func (h *execHasher) process(ev threatdetect.ExecEvent) {
 	sum, err := hashProcExe(h.procRoot, ev.PID, h.maxBytes, h.budget)
 	if err != nil {
-		h.failed.Add(1)
+		// Mostly a process that already exited; log the first and every
+		// 100th so an operator relying on sha256 entries can see hashing
+		// is not happening.
+		if n := h.failed.Add(1); n == 1 || n%100 == 0 {
+			log.Printf("[exec-hasher] pid %d (%s): %v (%d failed so far)", ev.PID, ev.Container, err, n)
+		}
 		return
 	}
 	ev.SHA256 = sum

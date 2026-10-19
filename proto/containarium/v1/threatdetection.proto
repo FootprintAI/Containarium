@@ -56,7 +56,6 @@ enum ThreatRuleId {
   // hit; evidence is the ExecEvidence of the exec, with `matched` set. With
   // ProcessPolicy.kill_process the responder also SIGKILLs the process.
   THREAT_RULE_ID_MINER_SIGNATURE = 7;
-  //
   // A process action (throttle or freeze, #2636) reached its TTL with no
   // operator decision and was released automatically. MEDIUM, so an
   // unattended containment never silently becomes permanent. Subject is the
@@ -452,6 +451,25 @@ message BadDestinationEntry {
 
 message ListBadDestinationsRequest {}
 
+message ListBadDestinationsResponse {
+  repeated BadDestinationEntry entries = 1;
+}
+
+message AddBadDestinationRequest {
+  string cidr = 1;
+  string label = 2;
+}
+
+message AddBadDestinationResponse {
+  BadDestinationEntry entry = 1;
+}
+
+message RemoveBadDestinationRequest {
+  string cidr = 1;
+}
+
+message RemoveBadDestinationResponse {}
+
 // MinerSignatureKind is what a MinerSignature matches against (#2638).
 enum MinerSignatureKind {
   MINER_SIGNATURE_KIND_UNSPECIFIED = 0;
@@ -461,7 +479,8 @@ enum MinerSignatureKind {
   // Case-insensitive marker in the joined argv: a literal substring
   // ("--donate-level"), or, when the pattern holds a glob character, a
   // sequence of space-separated glob tokens matched against consecutive
-  // arguments ("-o *:3333").
+  // arguments ("-o *:3333"). A glob token without '=' never matches a
+  // key=value argument (so "-o *:4444" does not hit "-o ProxyJump=h:4444").
   MINER_SIGNATURE_KIND_ARGV = 2;
   // Lowercase hex SHA-256 of the executable (/proc/<pid>/exe), computed off
   // the hot path only when a hash entry exists and nothing cheaper matched.
@@ -503,25 +522,6 @@ message RemoveMinerSignatureRequest {
 }
 
 message RemoveMinerSignatureResponse {}
-
-message ListBadDestinationsResponse {
-  repeated BadDestinationEntry entries = 1;
-}
-
-message AddBadDestinationRequest {
-  string cidr = 1;
-  string label = 2;
-}
-
-message AddBadDestinationResponse {
-  BadDestinationEntry entry = 1;
-}
-
-message RemoveBadDestinationRequest {
-  string cidr = 1;
-}
-
-message RemoveBadDestinationResponse {}
 
 // ListFindingsRequest filters ListFindings. Every field is optional; an
 // unset field matches everything. tenant_id is enforced by the server's RBAC

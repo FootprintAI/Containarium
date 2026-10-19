@@ -91,7 +91,8 @@ func (s *fakeFindings) Upsert(_ context.Context, f *threatdetect.Finding) (*thre
 	for _, r := range s.rows {
 		if r.State == threatdetect.FindingStateOpen && r.Rule == f.Rule && r.TenantID == f.TenantID && r.Subject == f.Subject {
 			r.Count++
-			return r, nil
+			cp := *r // a real store returns a fresh row, never its own
+			return &cp, nil
 		}
 	}
 	s.nextID++
@@ -99,7 +100,8 @@ func (s *fakeFindings) Upsert(_ context.Context, f *threatdetect.Finding) (*thre
 	f.State = threatdetect.FindingStateOpen
 	f.Count = 1
 	s.rows[f.ID] = f
-	return f, nil
+	cp := *f
+	return &cp, nil
 }
 
 func (s *fakeFindings) Get(_ context.Context, id int64) (*threatdetect.Finding, error) {
@@ -132,9 +134,10 @@ func (s *fakeFindings) SetResponse(_ context.Context, id int64, r threatdetect.F
 	if !ok {
 		return nil, threatdetect.ErrFindingNotFound
 	}
-	cp := r
-	f.Response = &cp
-	return f, nil
+	resp := r
+	f.Response = &resp
+	cp := *f
+	return &cp, nil
 }
 
 func (s *fakeFindings) byRule(rule pb.ThreatRuleId) []*threatdetect.Finding {

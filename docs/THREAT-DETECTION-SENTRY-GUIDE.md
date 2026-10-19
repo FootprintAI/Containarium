@@ -181,7 +181,7 @@ with operator entries. Three matcher kinds:
 
 The baseline ships `name` and `argv` entries only (xmrig, minerd,
 cpuminer*, nanominer, t-rex, lolminer, nbminer, gminer; `--donate-level`,
-`stratum+tcp://`, `stratum+ssl://`, `--coin `, `-o <host>:<port>` for each
+`stratum+tcp://`, `stratum+ssl://`, `--coin `, `--coin=*`, `-o <host>:<port>` for each
 default stratum port). It carries **no hashes**: a hash list goes stale with
 every upstream release. Add your own hashes for builds you have seen; the
 daemon hashes an executable only when such entries exist and no name or
@@ -213,20 +213,28 @@ containarium security process-policy set --container box-a --kill-process=false 
 
 `kill_process` defaults to **false** at every level and is never turned on
 for you; unset inherits from the backend default. Before the kill the
-daemon pins the process (a pidfd on Linux 5.3+), re-reads
+daemon pins the process with a pidfd (no pidfd, no kill), re-reads
 `/proc/<pid>/cgroup` and confirms it is still under the container's cgroup,
 so a pid reused by another process, on the host or in another box, is never
 signalled; the container's init is never killed. Every attempt is audited
 under `security.action`: `kill` names the pid, `kill-skipped` gives the
 reason (`pid reused`, `process already exited`, …). The finding's response
 shows `process killed`, and an action row opened by the same finding records
-`killed_pid`. On a degraded backend (no Postgres) responses are off, the
+`killed_pid`. The kill and the throttle/freeze run on the responder's own
+worker, never on the exec event path; if its queue (256) is full the
+response is dropped, logged and audited as `response-dropped`. On a degraded backend (no Postgres) responses are off, the
 kill included.
 
 **Limits.** A rebuilt, renamed miner with a clean command line matches no
 name or argv entry, and a fresh build matches no hash: only the
 mining-behavior rule (sustained CPU plus a stratum flow) catches it. The
 rule sees the exec, not later renames inside the process.
+Literal argv markers match any command line that merely mentions them:
+`grep -r -- --donate-level .` raises the finding too, and with
+`kill_process` it is killed. Keep that in mind before turning the kill on
+for boxes where people inspect miner configs. A glob token without `=`
+never matches a `key=value` argument, so ssh's `-o ProxyJump=bastion:4444`
+does not hit the `-o <host>:<port>` markers.
 
 ## Triaging findings
 

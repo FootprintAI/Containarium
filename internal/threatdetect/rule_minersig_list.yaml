@@ -9,7 +9,9 @@
 #            exec'd file and on the task comm.
 #   argv   — case-insensitive marker in the joined argv: a literal substring,
 #            or (with a glob character) space-separated glob tokens matched
-#            against consecutive arguments.
+#            against consecutive arguments. A token without '=' never
+#            matches a key=value argument, so "-o *:4444" does not hit
+#            ssh's "-o ProxyJump=bastion:4444".
 #   sha256 — hex SHA-256 of the executable. Deliberately none here: a hash
 #            list goes stale every upstream release and nobody owns
 #            refreshing it (decided on #2711 Q2). Operators add their own.
@@ -30,6 +32,7 @@ entries:
   - {kind: argv, pattern: "stratum+tcp://", label: "stratum pool URL"}
   - {kind: argv, pattern: "stratum+ssl://", label: "stratum pool URL (TLS)"}
   - {kind: argv, pattern: "--coin ", label: "miner --coin flag"}
+  - {kind: argv, pattern: "--coin=*", label: "miner --coin=<coin> flag"}
   - {kind: argv, pattern: "-o *:3333", label: "pool on stratum port 3333"}
   - {kind: argv, pattern: "-o *:4444", label: "pool on stratum port 4444"}
   - {kind: argv, pattern: "-o *:5555", label: "pool on stratum port 5555"}

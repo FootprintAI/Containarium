@@ -2386,7 +2386,10 @@ skipAppHosting:
 				// kill_process (#2638): SIGKILL a miner-signature match
 				// after re-checking its cgroup against the container's.
 				processResponder.SetProcessKiller(newHostProcessKiller(responderIncus.InitPID))
-				sink = NewActingSink(sink, processResponder)
+				// Async: the responder's Incus calls run on its own worker,
+				// never on the exec ring consumer that writes signature
+				// findings (#2638 review).
+				sink = NewAsyncActingSink(sink, processResponder)
 				if responderDegraded {
 					log.Printf("Process responder enabled — DEGRADED (no persistence): responses disabled, ALERT only")
 				} else {
@@ -2498,7 +2501,10 @@ skipAppHosting:
 			threatDetectServer.SetMinerSignatureRule(minerSigRule)
 			if threatDetectEngine != nil {
 				threatDetectEngine.Register(minerSigRule)
-				execHash = newExecHasher(threatDetectEngine.OnExec)
+				engine := threatDetectEngine
+				execHash = newExecHasher(func(ev threatdetect.ExecEvent) {
+					engine.RedeliverExec(pb.ThreatRuleId_THREAT_RULE_ID_MINER_SIGNATURE, ev)
+				})
 				threatDetectEngine.SetExecHasher(execHash.Request)
 			}
 		}

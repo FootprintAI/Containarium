@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/footprintai/containarium/internal/audit"
@@ -26,6 +27,14 @@ const actionAuditResourceType = "security.action"
 
 // processActionSweepInterval is how often Run looks for expired actions.
 const processActionSweepInterval = 60 * time.Second
+
+// processResponseQueue is the depth of the responder's work queue (#2638
+// review). The async ActingSink hands each upsert to it so the responder's
+// Incus calls (the kill's init-pid read, throttle, freeze) never run on the
+// goroutine that wrote the finding — for a signature finding that is the
+// exec ring consumer. A full queue drops the job (counted, logged, and
+// audited by the worker) rather than blocking that goroutine.
+const processResponseQueue = 256
 
 // processActionRetryBackoff is how long after a FAILED apply the responder
 // leaves the container alone instead of retrying on every rule re-fire.
@@ -91,6 +100,13 @@ type ProcessResponder struct {
 	// disables the kill whatever the policy says.
 	killer processKiller
 
+	// queue feeds the worker started by Run (async ActingSink only).
+	queue   chan responseJob
+	dropped atomic.Uint64
+	// droppedAudited is the dropped count the worker last wrote an audit
+	// row for; touched only by the worker goroutine.
+	droppedAudited uint64
+
 	mu        sync.Mutex
 	backendID string
 }
@@ -100,7 +116,72 @@ func NewProcessResponder(policies *threatdetect.ProcessPolicyStore, actions thre
 	return &ProcessResponder{
 		policies: policies, actions: actions, findings: findings, act: act, audit: auditLog,
 		degraded: degraded, now: time.Now,
+		queue: make(chan responseJob, processResponseQueue),
 	}
+}
+
+// respondable reports whether the responder could act on f at all: an open
+// HIGH finding from a mining rule, attributed to a container.
+func respondable(f *threatdetect.Finding) bool {
+	return f != nil && f.Container != "" && f.State == threatdetect.FindingStateOpen &&
+		f.Severity == pb.ThreatSeverity_THREAT_SEVERITY_HIGH && threatdetect.RespondsTo(f.Rule)
+}
+
+// responseJob is one finding handed to the worker, with the exec a kill
+// would target.
+type responseJob struct {
+	f      *threatdetect.Finding
+	target *threatdetect.ExecEvidence
+}
+
+// enqueue offers a job to the worker without ever blocking the caller.
+func (r *ProcessResponder) enqueue(f *threatdetect.Finding, target *threatdetect.ExecEvidence) bool {
+	cp := *f
+	job := responseJob{f: &cp}
+	if target != nil {
+		t := *target
+		job.target = &t
+	}
+	select {
+	case r.queue <- job:
+		return true
+	default:
+		if n := r.dropped.Add(1); n == 1 || n%100 == 0 {
+			log.Printf("[process-responder] work queue full (cap %d): dropped response for finding %d on %s (%d dropped so far)",
+				processResponseQueue, f.ID, f.Container, n)
+		}
+		return false
+	}
+}
+
+// DroppedResponses counts findings the responder never acted on because its
+// queue was full.
+func (r *ProcessResponder) DroppedResponses() uint64 { return r.dropped.Load() }
+
+// runQueue is the worker: it acts on queued findings one at a time, so the
+// Incus work happens here and never on the writer's goroutine.
+func (r *ProcessResponder) runQueue(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case job := <-r.queue:
+			r.onFinding(ctx, job.f, job.target)
+			r.auditDrops(ctx)
+		}
+	}
+}
+
+// auditDrops writes one audit row per batch of newly dropped responses, so a
+// drop is visible in the trail and not only in the log. Worker goroutine only.
+func (r *ProcessResponder) auditDrops(ctx context.Context) {
+	n := r.dropped.Load()
+	if n == r.droppedAudited {
+		return
+	}
+	r.auditLog(ctx, "response-dropped", "queue", fmt.Sprintf("dropped=%d total_dropped=%d queue_cap=%d",
+		n-r.droppedAudited, n, processResponseQueue))
+	r.droppedAudited = n
 }
 
 // SetProcessKiller wires the host-side kill used by kill_process (#2638).
@@ -140,17 +221,17 @@ func lastExec(f *threatdetect.Finding) *threatdetect.ExecEvidence {
 // the process that just matched, independent of how the store merged or
 // capped the stored evidence.
 func (r *ProcessResponder) onFinding(ctx context.Context, f *threatdetect.Finding, target *threatdetect.ExecEvidence) *threatdetect.Finding {
-	if f == nil || f.Container == "" || f.State != threatdetect.FindingStateOpen ||
-		f.Severity != pb.ThreatSeverity_THREAT_SEVERITY_HIGH || !threatdetect.RespondsTo(f.Rule) {
+	if !respondable(f) {
 		return nil
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
 	// kill_process (#2638) is additive and per process: it runs for every
 	// matched exec, before and independent of the one-action-per-container
-	// policy action below, which still applies.
+	// policy action below, which still applies. It needs no responder state,
+	// so it runs before the lock: its Incus read never holds up a release.
 	killedPID := r.maybeKill(ctx, f, target)
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	killed := killedPID != 0 || (f.Response != nil && f.Response.ProcessKilled)
 
 	if _, err := r.actions.Open(ctx, f.Container); err == nil {
@@ -242,7 +323,8 @@ func (r *ProcessResponder) onFinding(ctx context.Context, f *threatdetect.Findin
 // cgroup against the container. Every attempt is audited — "kill" naming the
 // pid, or "kill-skipped" with the reason (pid reused, already exited, ...).
 // Returns the killed pid, 0 when nothing was killed. Off on a degraded
-// backend like every other response (decided on #2641 Q2). Caller holds r.mu.
+// backend like every other response (decided on #2641 Q2). Called without
+// r.mu.
 func (r *ProcessResponder) maybeKill(ctx context.Context, f *threatdetect.Finding, target *threatdetect.ExecEvidence) uint32 {
 	if r.killer == nil || !threatdetect.KillsProcess(f.Rule) || target == nil || target.PID == 0 || r.degraded {
 		return 0
@@ -250,6 +332,8 @@ func (r *ProcessResponder) maybeKill(ctx context.Context, f *threatdetect.Findin
 	policy, err := r.policies.Effective(ctx, f.Container)
 	if err != nil {
 		log.Printf("[process-responder] finding %d on %s: read policy for kill: %v", f.ID, f.Container, err)
+		r.auditLog(ctx, "kill-skipped", f.Container, fmt.Sprintf("finding=%d rule=%s tenant=%s container=%s pid=%d kill_skipped=%q",
+			f.ID, f.Rule, f.TenantID, f.Container, target.PID, "read policy: "+err.Error()))
 		return 0
 	}
 	if !policy.GetKillProcess() {
@@ -518,8 +602,10 @@ func (r *ProcessResponder) reapOrphan(ctx context.Context, row *threatdetect.Sec
 	return nil
 }
 
-// Run drives the TTL sweep every processActionSweepInterval until ctx ends.
+// Run drives the work queue and the TTL sweep (every
+// processActionSweepInterval) until ctx ends.
 func (r *ProcessResponder) Run(ctx context.Context) {
+	go r.runQueue(ctx)
 	ticker := time.NewTicker(processActionSweepInterval)
 	defer ticker.Stop()
 	for {
@@ -558,11 +644,23 @@ func (r *ProcessResponder) auditLog(ctx context.Context, action, resourceID, det
 type ActingSink struct {
 	inner     threatdetect.FindingSink
 	responder *ProcessResponder
+	// async hands the responder's work to its queue instead of running it on
+	// the caller's goroutine (production; see NewAsyncActingSink).
+	async bool
 }
 
 // NewActingSink wraps inner with responder.
 func NewActingSink(inner threatdetect.FindingSink, responder *ProcessResponder) *ActingSink {
 	return &ActingSink{inner: inner, responder: responder}
+}
+
+// NewAsyncActingSink is NewActingSink whose responder work runs on the
+// responder's worker (started by ProcessResponder.Run): an upsert from the
+// exec ring consumer returns as soon as the finding is stored, and a full
+// queue drops the job instead of blocking. The returned finding then does
+// not yet carry the response; the worker records it on the stored row.
+func NewAsyncActingSink(inner threatdetect.FindingSink, responder *ProcessResponder) *ActingSink {
+	return &ActingSink{inner: inner, responder: responder, async: true}
 }
 
 // Upsert writes through inner, then lets the responder act. The finding
@@ -577,6 +675,14 @@ func (s *ActingSink) Upsert(ctx context.Context, f *threatdetect.Finding) (*thre
 	target := lastExec(f)
 	if target == nil {
 		target = lastExec(out)
+	}
+	if s.async {
+		// Only findings the responder can act on take a queue slot, so
+		// posture or health findings never crowd out a miner.
+		if respondable(out) {
+			s.responder.enqueue(out, target)
+		}
+		return out, nil
 	}
 	if acted := s.responder.onFinding(ctx, out, target); acted != nil {
 		return acted, nil

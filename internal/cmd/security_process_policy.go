@@ -122,7 +122,11 @@ func writePolicyBlock(w io.Writer, p *pb.ProcessPolicy) {
 	fmt.Fprintf(w, "  action:             %s\n", actionLabel(p.GetAction()))
 	fmt.Fprintf(w, "  throttle allowance: %s\n", p.GetThrottleAllowance())
 	fmt.Fprintf(w, "  ttl:                %s\n", p.GetTtl().AsDuration())
-	fmt.Fprintf(w, "  kill process:       %t\n", p.GetKillProcess())
+	kill := "inherit"
+	if p != nil && p.KillProcess != nil {
+		kill = fmt.Sprint(p.GetKillProcess())
+	}
+	fmt.Fprintf(w, "  kill process:       %s\n", kill)
 }
 
 func writeMiningThresholds(w io.Writer, m *pb.MiningBehaviorThresholds) {

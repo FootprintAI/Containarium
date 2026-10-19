@@ -433,7 +433,8 @@ const (
 	// Case-insensitive marker in the joined argv: a literal substring
 	// ("--donate-level"), or, when the pattern holds a glob character, a
 	// sequence of space-separated glob tokens matched against consecutive
-	// arguments ("-o *:3333").
+	// arguments ("-o *:3333"). A glob token without '=' never matches a
+	// key=value argument (so "-o *:4444" does not hit "-o ProxyJump=h:4444").
 	MinerSignatureKind_MINER_SIGNATURE_KIND_ARGV MinerSignatureKind = 2
 	// Lowercase hex SHA-256 of the executable (/proc/<pid>/exe), computed off
 	// the hot path only when a hash entry exists and nothing cheaper matched.
@@ -2385,6 +2386,226 @@ func (*ListBadDestinationsRequest) Descriptor() ([]byte, []int) {
 	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{24}
 }
 
+type ListBadDestinationsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Entries       []*BadDestinationEntry `protobuf:"bytes,1,rep,name=entries,proto3" json:"entries,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListBadDestinationsResponse) Reset() {
+	*x = ListBadDestinationsResponse{}
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListBadDestinationsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListBadDestinationsResponse) ProtoMessage() {}
+
+func (x *ListBadDestinationsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListBadDestinationsResponse.ProtoReflect.Descriptor instead.
+func (*ListBadDestinationsResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *ListBadDestinationsResponse) GetEntries() []*BadDestinationEntry {
+	if x != nil {
+		return x.Entries
+	}
+	return nil
+}
+
+type AddBadDestinationRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Cidr          string                 `protobuf:"bytes,1,opt,name=cidr,proto3" json:"cidr,omitempty"`
+	Label         string                 `protobuf:"bytes,2,opt,name=label,proto3" json:"label,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AddBadDestinationRequest) Reset() {
+	*x = AddBadDestinationRequest{}
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AddBadDestinationRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AddBadDestinationRequest) ProtoMessage() {}
+
+func (x *AddBadDestinationRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AddBadDestinationRequest.ProtoReflect.Descriptor instead.
+func (*AddBadDestinationRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *AddBadDestinationRequest) GetCidr() string {
+	if x != nil {
+		return x.Cidr
+	}
+	return ""
+}
+
+func (x *AddBadDestinationRequest) GetLabel() string {
+	if x != nil {
+		return x.Label
+	}
+	return ""
+}
+
+type AddBadDestinationResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Entry         *BadDestinationEntry   `protobuf:"bytes,1,opt,name=entry,proto3" json:"entry,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AddBadDestinationResponse) Reset() {
+	*x = AddBadDestinationResponse{}
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AddBadDestinationResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AddBadDestinationResponse) ProtoMessage() {}
+
+func (x *AddBadDestinationResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AddBadDestinationResponse.ProtoReflect.Descriptor instead.
+func (*AddBadDestinationResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *AddBadDestinationResponse) GetEntry() *BadDestinationEntry {
+	if x != nil {
+		return x.Entry
+	}
+	return nil
+}
+
+type RemoveBadDestinationRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Cidr          string                 `protobuf:"bytes,1,opt,name=cidr,proto3" json:"cidr,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RemoveBadDestinationRequest) Reset() {
+	*x = RemoveBadDestinationRequest{}
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RemoveBadDestinationRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RemoveBadDestinationRequest) ProtoMessage() {}
+
+func (x *RemoveBadDestinationRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RemoveBadDestinationRequest.ProtoReflect.Descriptor instead.
+func (*RemoveBadDestinationRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *RemoveBadDestinationRequest) GetCidr() string {
+	if x != nil {
+		return x.Cidr
+	}
+	return ""
+}
+
+type RemoveBadDestinationResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RemoveBadDestinationResponse) Reset() {
+	*x = RemoveBadDestinationResponse{}
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RemoveBadDestinationResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RemoveBadDestinationResponse) ProtoMessage() {}
+
+func (x *RemoveBadDestinationResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RemoveBadDestinationResponse.ProtoReflect.Descriptor instead.
+func (*RemoveBadDestinationResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{29}
+}
+
 // MinerSignature is one entry of the miner-signature list: the embedded,
 // versioned baseline or an operator addition.
 type MinerSignature struct {
@@ -2401,7 +2622,7 @@ type MinerSignature struct {
 
 func (x *MinerSignature) Reset() {
 	*x = MinerSignature{}
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[25]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2413,7 +2634,7 @@ func (x *MinerSignature) String() string {
 func (*MinerSignature) ProtoMessage() {}
 
 func (x *MinerSignature) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[25]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2426,7 +2647,7 @@ func (x *MinerSignature) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MinerSignature.ProtoReflect.Descriptor instead.
 func (*MinerSignature) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{25}
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *MinerSignature) GetKind() MinerSignatureKind {
@@ -2465,7 +2686,7 @@ type ListMinerSignaturesRequest struct {
 
 func (x *ListMinerSignaturesRequest) Reset() {
 	*x = ListMinerSignaturesRequest{}
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[26]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2477,7 +2698,7 @@ func (x *ListMinerSignaturesRequest) String() string {
 func (*ListMinerSignaturesRequest) ProtoMessage() {}
 
 func (x *ListMinerSignaturesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[26]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2490,7 +2711,7 @@ func (x *ListMinerSignaturesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListMinerSignaturesRequest.ProtoReflect.Descriptor instead.
 func (*ListMinerSignaturesRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{26}
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{31}
 }
 
 type ListMinerSignaturesResponse struct {
@@ -2504,7 +2725,7 @@ type ListMinerSignaturesResponse struct {
 
 func (x *ListMinerSignaturesResponse) Reset() {
 	*x = ListMinerSignaturesResponse{}
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[27]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2516,7 +2737,7 @@ func (x *ListMinerSignaturesResponse) String() string {
 func (*ListMinerSignaturesResponse) ProtoMessage() {}
 
 func (x *ListMinerSignaturesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[27]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2529,7 +2750,7 @@ func (x *ListMinerSignaturesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListMinerSignaturesResponse.ProtoReflect.Descriptor instead.
 func (*ListMinerSignaturesResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{27}
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *ListMinerSignaturesResponse) GetSignatures() []*MinerSignature {
@@ -2556,7 +2777,7 @@ type AddMinerSignatureRequest struct {
 
 func (x *AddMinerSignatureRequest) Reset() {
 	*x = AddMinerSignatureRequest{}
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[28]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2568,7 +2789,7 @@ func (x *AddMinerSignatureRequest) String() string {
 func (*AddMinerSignatureRequest) ProtoMessage() {}
 
 func (x *AddMinerSignatureRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[28]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2581,7 +2802,7 @@ func (x *AddMinerSignatureRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddMinerSignatureRequest.ProtoReflect.Descriptor instead.
 func (*AddMinerSignatureRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{28}
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *AddMinerSignatureRequest) GetSignature() *MinerSignature {
@@ -2600,7 +2821,7 @@ type AddMinerSignatureResponse struct {
 
 func (x *AddMinerSignatureResponse) Reset() {
 	*x = AddMinerSignatureResponse{}
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[29]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2612,7 +2833,7 @@ func (x *AddMinerSignatureResponse) String() string {
 func (*AddMinerSignatureResponse) ProtoMessage() {}
 
 func (x *AddMinerSignatureResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[29]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2625,7 +2846,7 @@ func (x *AddMinerSignatureResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddMinerSignatureResponse.ProtoReflect.Descriptor instead.
 func (*AddMinerSignatureResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{29}
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *AddMinerSignatureResponse) GetSignature() *MinerSignature {
@@ -2645,7 +2866,7 @@ type RemoveMinerSignatureRequest struct {
 
 func (x *RemoveMinerSignatureRequest) Reset() {
 	*x = RemoveMinerSignatureRequest{}
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[30]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2657,7 +2878,7 @@ func (x *RemoveMinerSignatureRequest) String() string {
 func (*RemoveMinerSignatureRequest) ProtoMessage() {}
 
 func (x *RemoveMinerSignatureRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[30]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2670,7 +2891,7 @@ func (x *RemoveMinerSignatureRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveMinerSignatureRequest.ProtoReflect.Descriptor instead.
 func (*RemoveMinerSignatureRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{30}
+	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *RemoveMinerSignatureRequest) GetKind() MinerSignatureKind {
@@ -2695,7 +2916,7 @@ type RemoveMinerSignatureResponse struct {
 
 func (x *RemoveMinerSignatureResponse) Reset() {
 	*x = RemoveMinerSignatureResponse{}
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[31]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2707,7 +2928,7 @@ func (x *RemoveMinerSignatureResponse) String() string {
 func (*RemoveMinerSignatureResponse) ProtoMessage() {}
 
 func (x *RemoveMinerSignatureResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[31]
+	mi := &file_containarium_v1_threatdetection_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2720,226 +2941,6 @@ func (x *RemoveMinerSignatureResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveMinerSignatureResponse.ProtoReflect.Descriptor instead.
 func (*RemoveMinerSignatureResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{31}
-}
-
-type ListBadDestinationsResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Entries       []*BadDestinationEntry `protobuf:"bytes,1,rep,name=entries,proto3" json:"entries,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ListBadDestinationsResponse) Reset() {
-	*x = ListBadDestinationsResponse{}
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[32]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ListBadDestinationsResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ListBadDestinationsResponse) ProtoMessage() {}
-
-func (x *ListBadDestinationsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[32]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ListBadDestinationsResponse.ProtoReflect.Descriptor instead.
-func (*ListBadDestinationsResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{32}
-}
-
-func (x *ListBadDestinationsResponse) GetEntries() []*BadDestinationEntry {
-	if x != nil {
-		return x.Entries
-	}
-	return nil
-}
-
-type AddBadDestinationRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Cidr          string                 `protobuf:"bytes,1,opt,name=cidr,proto3" json:"cidr,omitempty"`
-	Label         string                 `protobuf:"bytes,2,opt,name=label,proto3" json:"label,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *AddBadDestinationRequest) Reset() {
-	*x = AddBadDestinationRequest{}
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[33]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *AddBadDestinationRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*AddBadDestinationRequest) ProtoMessage() {}
-
-func (x *AddBadDestinationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[33]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use AddBadDestinationRequest.ProtoReflect.Descriptor instead.
-func (*AddBadDestinationRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{33}
-}
-
-func (x *AddBadDestinationRequest) GetCidr() string {
-	if x != nil {
-		return x.Cidr
-	}
-	return ""
-}
-
-func (x *AddBadDestinationRequest) GetLabel() string {
-	if x != nil {
-		return x.Label
-	}
-	return ""
-}
-
-type AddBadDestinationResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Entry         *BadDestinationEntry   `protobuf:"bytes,1,opt,name=entry,proto3" json:"entry,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *AddBadDestinationResponse) Reset() {
-	*x = AddBadDestinationResponse{}
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[34]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *AddBadDestinationResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*AddBadDestinationResponse) ProtoMessage() {}
-
-func (x *AddBadDestinationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[34]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use AddBadDestinationResponse.ProtoReflect.Descriptor instead.
-func (*AddBadDestinationResponse) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{34}
-}
-
-func (x *AddBadDestinationResponse) GetEntry() *BadDestinationEntry {
-	if x != nil {
-		return x.Entry
-	}
-	return nil
-}
-
-type RemoveBadDestinationRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Cidr          string                 `protobuf:"bytes,1,opt,name=cidr,proto3" json:"cidr,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *RemoveBadDestinationRequest) Reset() {
-	*x = RemoveBadDestinationRequest{}
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[35]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *RemoveBadDestinationRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*RemoveBadDestinationRequest) ProtoMessage() {}
-
-func (x *RemoveBadDestinationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[35]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use RemoveBadDestinationRequest.ProtoReflect.Descriptor instead.
-func (*RemoveBadDestinationRequest) Descriptor() ([]byte, []int) {
-	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{35}
-}
-
-func (x *RemoveBadDestinationRequest) GetCidr() string {
-	if x != nil {
-		return x.Cidr
-	}
-	return ""
-}
-
-type RemoveBadDestinationResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *RemoveBadDestinationResponse) Reset() {
-	*x = RemoveBadDestinationResponse{}
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[36]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *RemoveBadDestinationResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*RemoveBadDestinationResponse) ProtoMessage() {}
-
-func (x *RemoveBadDestinationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_containarium_v1_threatdetection_proto_msgTypes[36]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use RemoveBadDestinationResponse.ProtoReflect.Descriptor instead.
-func (*RemoveBadDestinationResponse) Descriptor() ([]byte, []int) {
 	return file_containarium_v1_threatdetection_proto_rawDescGZIP(), []int{36}
 }
 
@@ -3314,7 +3315,17 @@ const file_containarium_v1_threatdetection_proto_rawDesc = "" +
 	"\x04cidr\x18\x01 \x01(\tR\x04cidr\x12\x14\n" +
 	"\x05label\x18\x02 \x01(\tR\x05label\x12\x16\n" +
 	"\x06source\x18\x03 \x01(\tR\x06source\"\x1c\n" +
-	"\x1aListBadDestinationsRequest\"\x93\x01\n" +
+	"\x1aListBadDestinationsRequest\"]\n" +
+	"\x1bListBadDestinationsResponse\x12>\n" +
+	"\aentries\x18\x01 \x03(\v2$.containarium.v1.BadDestinationEntryR\aentries\"D\n" +
+	"\x18AddBadDestinationRequest\x12\x12\n" +
+	"\x04cidr\x18\x01 \x01(\tR\x04cidr\x12\x14\n" +
+	"\x05label\x18\x02 \x01(\tR\x05label\"W\n" +
+	"\x19AddBadDestinationResponse\x12:\n" +
+	"\x05entry\x18\x01 \x01(\v2$.containarium.v1.BadDestinationEntryR\x05entry\"1\n" +
+	"\x1bRemoveBadDestinationRequest\x12\x12\n" +
+	"\x04cidr\x18\x01 \x01(\tR\x04cidr\"\x1e\n" +
+	"\x1cRemoveBadDestinationResponse\"\x93\x01\n" +
 	"\x0eMinerSignature\x127\n" +
 	"\x04kind\x18\x01 \x01(\x0e2#.containarium.v1.MinerSignatureKindR\x04kind\x12\x18\n" +
 	"\apattern\x18\x02 \x01(\tR\apattern\x12\x14\n" +
@@ -3333,17 +3344,7 @@ const file_containarium_v1_threatdetection_proto_rawDesc = "" +
 	"\x1bRemoveMinerSignatureRequest\x127\n" +
 	"\x04kind\x18\x01 \x01(\x0e2#.containarium.v1.MinerSignatureKindR\x04kind\x12\x18\n" +
 	"\apattern\x18\x02 \x01(\tR\apattern\"\x1e\n" +
-	"\x1cRemoveMinerSignatureResponse\"]\n" +
-	"\x1bListBadDestinationsResponse\x12>\n" +
-	"\aentries\x18\x01 \x03(\v2$.containarium.v1.BadDestinationEntryR\aentries\"D\n" +
-	"\x18AddBadDestinationRequest\x12\x12\n" +
-	"\x04cidr\x18\x01 \x01(\tR\x04cidr\x12\x14\n" +
-	"\x05label\x18\x02 \x01(\tR\x05label\"W\n" +
-	"\x19AddBadDestinationResponse\x12:\n" +
-	"\x05entry\x18\x01 \x01(\v2$.containarium.v1.BadDestinationEntryR\x05entry\"1\n" +
-	"\x1bRemoveBadDestinationRequest\x12\x12\n" +
-	"\x04cidr\x18\x01 \x01(\tR\x04cidr\"\x1e\n" +
-	"\x1cRemoveBadDestinationResponse\"\xec\x01\n" +
+	"\x1cRemoveMinerSignatureResponse\"\xec\x01\n" +
 	"\x13ListFindingsRequest\x12;\n" +
 	"\bseverity\x18\x01 \x01(\x0e2\x1f.containarium.v1.ThreatSeverityR\bseverity\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x120\n" +
@@ -3475,18 +3476,18 @@ var file_containarium_v1_threatdetection_proto_goTypes = []any{
 	(*StreamExecEventsRequest)(nil),      // 29: containarium.v1.StreamExecEventsRequest
 	(*BadDestinationEntry)(nil),          // 30: containarium.v1.BadDestinationEntry
 	(*ListBadDestinationsRequest)(nil),   // 31: containarium.v1.ListBadDestinationsRequest
-	(*MinerSignature)(nil),               // 32: containarium.v1.MinerSignature
-	(*ListMinerSignaturesRequest)(nil),   // 33: containarium.v1.ListMinerSignaturesRequest
-	(*ListMinerSignaturesResponse)(nil),  // 34: containarium.v1.ListMinerSignaturesResponse
-	(*AddMinerSignatureRequest)(nil),     // 35: containarium.v1.AddMinerSignatureRequest
-	(*AddMinerSignatureResponse)(nil),    // 36: containarium.v1.AddMinerSignatureResponse
-	(*RemoveMinerSignatureRequest)(nil),  // 37: containarium.v1.RemoveMinerSignatureRequest
-	(*RemoveMinerSignatureResponse)(nil), // 38: containarium.v1.RemoveMinerSignatureResponse
-	(*ListBadDestinationsResponse)(nil),  // 39: containarium.v1.ListBadDestinationsResponse
-	(*AddBadDestinationRequest)(nil),     // 40: containarium.v1.AddBadDestinationRequest
-	(*AddBadDestinationResponse)(nil),    // 41: containarium.v1.AddBadDestinationResponse
-	(*RemoveBadDestinationRequest)(nil),  // 42: containarium.v1.RemoveBadDestinationRequest
-	(*RemoveBadDestinationResponse)(nil), // 43: containarium.v1.RemoveBadDestinationResponse
+	(*ListBadDestinationsResponse)(nil),  // 32: containarium.v1.ListBadDestinationsResponse
+	(*AddBadDestinationRequest)(nil),     // 33: containarium.v1.AddBadDestinationRequest
+	(*AddBadDestinationResponse)(nil),    // 34: containarium.v1.AddBadDestinationResponse
+	(*RemoveBadDestinationRequest)(nil),  // 35: containarium.v1.RemoveBadDestinationRequest
+	(*RemoveBadDestinationResponse)(nil), // 36: containarium.v1.RemoveBadDestinationResponse
+	(*MinerSignature)(nil),               // 37: containarium.v1.MinerSignature
+	(*ListMinerSignaturesRequest)(nil),   // 38: containarium.v1.ListMinerSignaturesRequest
+	(*ListMinerSignaturesResponse)(nil),  // 39: containarium.v1.ListMinerSignaturesResponse
+	(*AddMinerSignatureRequest)(nil),     // 40: containarium.v1.AddMinerSignatureRequest
+	(*AddMinerSignatureResponse)(nil),    // 41: containarium.v1.AddMinerSignatureResponse
+	(*RemoveMinerSignatureRequest)(nil),  // 42: containarium.v1.RemoveMinerSignatureRequest
+	(*RemoveMinerSignatureResponse)(nil), // 43: containarium.v1.RemoveMinerSignatureResponse
 	(*ListFindingsRequest)(nil),          // 44: containarium.v1.ListFindingsRequest
 	(*ListFindingsResponse)(nil),         // 45: containarium.v1.ListFindingsResponse
 	(*ResolveFindingRequest)(nil),        // 46: containarium.v1.ResolveFindingRequest
@@ -3533,13 +3534,13 @@ var file_containarium_v1_threatdetection_proto_depIdxs = []int32{
 	12, // 35: containarium.v1.ExecEvent.exec:type_name -> containarium.v1.ExecEvidence
 	27, // 36: containarium.v1.StreamExecEventsResponse.event:type_name -> containarium.v1.ExecEvent
 	49, // 37: containarium.v1.StreamExecEventsRequest.since:type_name -> google.protobuf.Duration
-	6,  // 38: containarium.v1.MinerSignature.kind:type_name -> containarium.v1.MinerSignatureKind
-	32, // 39: containarium.v1.ListMinerSignaturesResponse.signatures:type_name -> containarium.v1.MinerSignature
-	32, // 40: containarium.v1.AddMinerSignatureRequest.signature:type_name -> containarium.v1.MinerSignature
-	32, // 41: containarium.v1.AddMinerSignatureResponse.signature:type_name -> containarium.v1.MinerSignature
-	6,  // 42: containarium.v1.RemoveMinerSignatureRequest.kind:type_name -> containarium.v1.MinerSignatureKind
-	30, // 43: containarium.v1.ListBadDestinationsResponse.entries:type_name -> containarium.v1.BadDestinationEntry
-	30, // 44: containarium.v1.AddBadDestinationResponse.entry:type_name -> containarium.v1.BadDestinationEntry
+	30, // 38: containarium.v1.ListBadDestinationsResponse.entries:type_name -> containarium.v1.BadDestinationEntry
+	30, // 39: containarium.v1.AddBadDestinationResponse.entry:type_name -> containarium.v1.BadDestinationEntry
+	6,  // 40: containarium.v1.MinerSignature.kind:type_name -> containarium.v1.MinerSignatureKind
+	37, // 41: containarium.v1.ListMinerSignaturesResponse.signatures:type_name -> containarium.v1.MinerSignature
+	37, // 42: containarium.v1.AddMinerSignatureRequest.signature:type_name -> containarium.v1.MinerSignature
+	37, // 43: containarium.v1.AddMinerSignatureResponse.signature:type_name -> containarium.v1.MinerSignature
+	6,  // 44: containarium.v1.RemoveMinerSignatureRequest.kind:type_name -> containarium.v1.MinerSignatureKind
 	0,  // 45: containarium.v1.ListFindingsRequest.severity:type_name -> containarium.v1.ThreatSeverity
 	48, // 46: containarium.v1.ListFindingsRequest.since:type_name -> google.protobuf.Timestamp
 	2,  // 47: containarium.v1.ListFindingsRequest.state:type_name -> containarium.v1.FindingState
@@ -3547,29 +3548,29 @@ var file_containarium_v1_threatdetection_proto_depIdxs = []int32{
 	15, // 49: containarium.v1.ResolveFindingResponse.finding:type_name -> containarium.v1.Finding
 	25, // 50: containarium.v1.ThreatDetectionService.GetSentryStatus:input_type -> containarium.v1.GetSentryStatusRequest
 	31, // 51: containarium.v1.ThreatDetectionService.ListBadDestinations:input_type -> containarium.v1.ListBadDestinationsRequest
-	40, // 52: containarium.v1.ThreatDetectionService.AddBadDestination:input_type -> containarium.v1.AddBadDestinationRequest
-	42, // 53: containarium.v1.ThreatDetectionService.RemoveBadDestination:input_type -> containarium.v1.RemoveBadDestinationRequest
+	33, // 52: containarium.v1.ThreatDetectionService.AddBadDestination:input_type -> containarium.v1.AddBadDestinationRequest
+	35, // 53: containarium.v1.ThreatDetectionService.RemoveBadDestination:input_type -> containarium.v1.RemoveBadDestinationRequest
 	44, // 54: containarium.v1.ThreatDetectionService.ListFindings:input_type -> containarium.v1.ListFindingsRequest
 	46, // 55: containarium.v1.ThreatDetectionService.ResolveFinding:input_type -> containarium.v1.ResolveFindingRequest
 	18, // 56: containarium.v1.ThreatDetectionService.GetProcessPolicy:input_type -> containarium.v1.GetProcessPolicyRequest
 	20, // 57: containarium.v1.ThreatDetectionService.SetProcessPolicy:input_type -> containarium.v1.SetProcessPolicyRequest
 	22, // 58: containarium.v1.ThreatDetectionService.ReleaseProcessAction:input_type -> containarium.v1.ReleaseProcessActionRequest
-	33, // 59: containarium.v1.ThreatDetectionService.ListMinerSignatures:input_type -> containarium.v1.ListMinerSignaturesRequest
-	35, // 60: containarium.v1.ThreatDetectionService.AddMinerSignature:input_type -> containarium.v1.AddMinerSignatureRequest
-	37, // 61: containarium.v1.ThreatDetectionService.RemoveMinerSignature:input_type -> containarium.v1.RemoveMinerSignatureRequest
+	38, // 59: containarium.v1.ThreatDetectionService.ListMinerSignatures:input_type -> containarium.v1.ListMinerSignaturesRequest
+	40, // 60: containarium.v1.ThreatDetectionService.AddMinerSignature:input_type -> containarium.v1.AddMinerSignatureRequest
+	42, // 61: containarium.v1.ThreatDetectionService.RemoveMinerSignature:input_type -> containarium.v1.RemoveMinerSignatureRequest
 	29, // 62: containarium.v1.ThreatDetectionService.StreamExecEvents:input_type -> containarium.v1.StreamExecEventsRequest
 	26, // 63: containarium.v1.ThreatDetectionService.GetSentryStatus:output_type -> containarium.v1.GetSentryStatusResponse
-	39, // 64: containarium.v1.ThreatDetectionService.ListBadDestinations:output_type -> containarium.v1.ListBadDestinationsResponse
-	41, // 65: containarium.v1.ThreatDetectionService.AddBadDestination:output_type -> containarium.v1.AddBadDestinationResponse
-	43, // 66: containarium.v1.ThreatDetectionService.RemoveBadDestination:output_type -> containarium.v1.RemoveBadDestinationResponse
+	32, // 64: containarium.v1.ThreatDetectionService.ListBadDestinations:output_type -> containarium.v1.ListBadDestinationsResponse
+	34, // 65: containarium.v1.ThreatDetectionService.AddBadDestination:output_type -> containarium.v1.AddBadDestinationResponse
+	36, // 66: containarium.v1.ThreatDetectionService.RemoveBadDestination:output_type -> containarium.v1.RemoveBadDestinationResponse
 	45, // 67: containarium.v1.ThreatDetectionService.ListFindings:output_type -> containarium.v1.ListFindingsResponse
 	47, // 68: containarium.v1.ThreatDetectionService.ResolveFinding:output_type -> containarium.v1.ResolveFindingResponse
 	19, // 69: containarium.v1.ThreatDetectionService.GetProcessPolicy:output_type -> containarium.v1.GetProcessPolicyResponse
 	21, // 70: containarium.v1.ThreatDetectionService.SetProcessPolicy:output_type -> containarium.v1.SetProcessPolicyResponse
 	23, // 71: containarium.v1.ThreatDetectionService.ReleaseProcessAction:output_type -> containarium.v1.ReleaseProcessActionResponse
-	34, // 72: containarium.v1.ThreatDetectionService.ListMinerSignatures:output_type -> containarium.v1.ListMinerSignaturesResponse
-	36, // 73: containarium.v1.ThreatDetectionService.AddMinerSignature:output_type -> containarium.v1.AddMinerSignatureResponse
-	38, // 74: containarium.v1.ThreatDetectionService.RemoveMinerSignature:output_type -> containarium.v1.RemoveMinerSignatureResponse
+	39, // 72: containarium.v1.ThreatDetectionService.ListMinerSignatures:output_type -> containarium.v1.ListMinerSignaturesResponse
+	41, // 73: containarium.v1.ThreatDetectionService.AddMinerSignature:output_type -> containarium.v1.AddMinerSignatureResponse
+	43, // 74: containarium.v1.ThreatDetectionService.RemoveMinerSignature:output_type -> containarium.v1.RemoveMinerSignatureResponse
 	28, // 75: containarium.v1.ThreatDetectionService.StreamExecEvents:output_type -> containarium.v1.StreamExecEventsResponse
 	63, // [63:76] is the sub-list for method output_type
 	50, // [50:63] is the sub-list for method input_type

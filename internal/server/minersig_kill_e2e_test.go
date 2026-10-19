@@ -66,13 +66,45 @@ func TestMinerSignatureE2E_FindingKillAndAudit(t *testing.T) {
 	auditLog := &fakeAudit{}
 	responder := NewProcessResponder(policies, threatdetect.NewMemActionStore(), findings, incusActuator{c: client}, auditLog, false)
 	responder.SetProcessKiller(newHostProcessKiller(client.InitPID))
+	go responder.Run(ctx) // the async sink's worker, as in production
 
-	engine := threatdetect.NewEngine(NewActingSink(findings, responder), "e2e", false, nil, nil)
+	engine := threatdetect.NewEngine(NewAsyncActingSink(findings, responder), "e2e", false, nil, nil)
 	rule, err := threatdetect.NewMinerSignatureRule(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	engine.Register(rule)
+
+	// Every file goes in through the Incus file API, and each stub is
+	// started by a launcher script run with no arguments, so no exec but the
+	// stub itself ever carries a marker in its argv: a wrapper `sh -c "...
+	// --donate-level 1"` would match (and be killed) first.
+	write := func(path, content string) {
+		t.Helper()
+		if err := client.WriteFile(name, path, []byte(content), "0755"); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+	launcher := func(cmdline string) string {
+		// HUP ignored so the stub outlives the exec session; the
+		// disposition survives the stub's exec.
+		return "#!/bin/sh\ntrap '' HUP\n" + cmdline + " >/dev/null 2>&1 &\n"
+	}
+	write("/tmp/xmrig", minerStub)
+	write("/tmp/gcc", minerStub)
+	write("/tmp/worker", minerStub)
+	write("/tmp/launch-a", launcher("/tmp/xmrig --donate-level 1"))
+	write("/tmp/launch-b", launcher("/tmp/gcc -O2"))
+	write("/tmp/launch-c", launcher("/tmp/worker -o stratum+tcp://pool.invalid:3333"))
+	t.Cleanup(func() {
+		_, _, _ = client.ExecWithOutput(name, []string{"sh", "-c", "pkill -f /tmp/gcc; rm -f /tmp/xmrig /tmp/gcc /tmp/worker /tmp/launch-a /tmp/launch-b /tmp/launch-c"})
+	})
+	run := func(path string) {
+		t.Helper()
+		if _, stderr, err := client.ExecWithOutput(name, []string{path}); err != nil {
+			t.Fatalf("exec %s: %v (%s)", path, err, stderr)
+		}
+	}
 
 	watcher := NewExecWatcher(engine.OnExec)
 	if err := watcher.Start(ctx, obj); err != nil {
@@ -81,80 +113,81 @@ func TestMinerSignatureE2E_FindingKillAndAudit(t *testing.T) {
 	defer watcher.Stop()
 	watcher.Reconcile([]incus.ContainerInfo{{Name: name, State: "Running", Pid: initPID, Tenant: "e2e"}})
 
-	sh := func(script string) {
-		t.Helper()
-		if _, stderr, err := client.ExecWithOutput(name, []string{"sh", "-c", script}); err != nil {
-			t.Fatalf("exec %q: %v (%s)", script, err, stderr)
-		}
+	sigFindings := func() []*threatdetect.Finding {
+		return findings.byRule(pb.ThreatRuleId_THREAT_RULE_ID_MINER_SIGNATURE)
 	}
-	sh("printf '" + strings.ReplaceAll(minerStub, "\n", `\n`) + "' > /tmp/xmrig && cp /tmp/xmrig /tmp/gcc && chmod +x /tmp/xmrig /tmp/gcc")
-	t.Cleanup(func() {
-		_, _, _ = client.ExecWithOutput(name, []string{"sh", "-c", "pkill -f /tmp/xmrig; pkill -f /tmp/gcc; rm -f /tmp/xmrig /tmp/gcc"})
-	})
+	// killedPIDFor returns the pid of the audited kill of filename, 0 if none.
+	killedPIDFor := func(filename string) uint32 {
+		for _, d := range auditDetails(auditLog, "kill") {
+			if !strings.Contains(d, "filename="+strconv.Quote(filename)) {
+				continue
+			}
+			for _, f := range strings.Fields(d) {
+				if v, ok := strings.CutPrefix(f, "pid="); ok {
+					if n, err := strconv.ParseUint(v, 10, 32); err == nil {
+						return uint32(n)
+					}
+				}
+			}
+		}
+		return 0
+	}
+	waitFor := func(what string, d time.Duration, cond func() bool) time.Duration {
+		t.Helper()
+		start := time.Now()
+		for !cond() {
+			if time.Since(start) > d {
+				t.Fatalf("%s: not within %s", what, d)
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		return time.Since(start)
+	}
 
 	// 1. `gcc` with the same CPU profile: no signature finding.
-	sh("nohup /tmp/gcc -O2 >/dev/null 2>&1 &")
+	run("/tmp/launch-b")
 	time.Sleep(3 * time.Second)
-	if got := findings.byRule(pb.ThreatRuleId_THREAT_RULE_ID_MINER_SIGNATURE); len(got) != 0 {
+	if got := sigFindings(); len(got) != 0 {
 		t.Fatalf("gcc stub raised %+v, want no signature finding", got[0])
 	}
 
-	// 2. `xmrig --donate-level 1`: finding within 10 s, killed, audited.
-	start := time.Now()
-	sh("nohup /tmp/xmrig --donate-level 1 >/dev/null 2>&1 &")
-	var f *threatdetect.Finding
-	for time.Since(start) < 10*time.Second {
-		if got := findings.byRule(pb.ThreatRuleId_THREAT_RULE_ID_MINER_SIGNATURE); len(got) > 0 {
-			f = got[0]
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	if f == nil {
-		t.Fatal("no MINER_SIGNATURE finding within 10 s of the xmrig exec")
-	}
-	t.Logf("finding after %s: subject=%s", time.Since(start).Round(time.Millisecond), f.Subject)
+	// 2. `xmrig --donate-level 1`: finding within 10 s with the exec in
+	// evidence, killed and audited by pid.
+	run("/tmp/launch-a")
+	took := waitFor("MINER_SIGNATURE finding for xmrig", 10*time.Second, func() bool { return len(sigFindings()) > 0 })
+	f := sigFindings()[0]
+	t.Logf("finding after %s: subject=%s", took.Round(time.Millisecond), f.Subject)
 	if f.Severity != pb.ThreatSeverity_THREAT_SEVERITY_HIGH || f.Container != name || len(f.Evidence.Execs) == 0 {
 		t.Fatalf("finding = %+v", f)
 	}
-	ex := f.Evidence.Execs[len(f.Evidence.Execs)-1]
-	if !strings.Contains(ex.Argv, "--donate-level 1") || ex.PID == 0 {
-		t.Fatalf("exec evidence = %+v", ex)
+	if ex := f.Evidence.Execs[0]; ex.Filename != "/tmp/xmrig" || !strings.Contains(ex.Argv, "--donate-level 1") || ex.PID == 0 {
+		t.Fatalf("exec evidence = %+v, want the xmrig stub itself", ex)
 	}
-	if f.Response == nil || !f.Response.ProcessKilled {
-		t.Fatalf("response = %+v, want process_killed", f.Response)
+	waitFor("audited kill of /tmp/xmrig", 10*time.Second, func() bool { return killedPIDFor("/tmp/xmrig") != 0 })
+	pid := killedPIDFor("/tmp/xmrig")
+	if pid != f.Evidence.Execs[0].PID {
+		t.Fatalf("killed pid %d, but the matched exec was pid %d", pid, f.Evidence.Execs[0].PID)
 	}
-	kills := auditDetails(auditLog, "kill")
-	if len(kills) == 0 || !strings.Contains(kills[0], "pid="+strconv.FormatUint(uint64(ex.PID), 10)) {
-		t.Fatalf("kill audit = %v, want one naming pid %d", kills, ex.PID)
+	waitFor("killed pid gone from /proc", 5*time.Second, func() bool {
+		_, err := os.Stat(filepath.Join("/proc", strconv.FormatUint(uint64(pid), 10)))
+		return os.IsNotExist(err)
+	})
+	if _, _, code, err := client.ExecWithExitCode(name, []string{"pgrep", "-f", "/tmp/xmrig"}); err == nil && code == 0 {
+		t.Fatal("an xmrig process is still running in the box")
 	}
-	gone := false
-	for i := 0; i < 50 && !gone; i++ {
-		if _, err := os.Stat(filepath.Join("/proc", strconv.FormatUint(uint64(ex.PID), 10))); os.IsNotExist(err) {
-			gone = true
-		} else {
-			time.Sleep(100 * time.Millisecond)
-		}
-	}
-	if !gone {
-		t.Fatalf("pid %d still exists after the kill", ex.PID)
-	}
+	waitFor("finding marked process_killed", 5*time.Second, func() bool {
+		g := sigFindings()[0]
+		return g.Response != nil && g.Response.ProcessKilled
+	})
 
 	// 3. A renamed binary with stratum+tcp:// in argv is still caught.
-	sh("cp /tmp/gcc /tmp/worker && chmod +x /tmp/worker && nohup /tmp/worker -o stratum+tcp://pool.invalid:3333 >/dev/null 2>&1 &")
-	t.Cleanup(func() { _, _, _ = client.ExecWithOutput(name, []string{"sh", "-c", "pkill -f /tmp/worker; rm -f /tmp/worker"}) })
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		hit := false
-		for _, g := range findings.byRule(pb.ThreatRuleId_THREAT_RULE_ID_MINER_SIGNATURE) {
-			hit = hit || g.Subject == "argv:stratum+tcp://"
+	run("/tmp/launch-c")
+	waitFor("argv:stratum+tcp:// finding for the renamed binary", 10*time.Second, func() bool {
+		for _, g := range sigFindings() {
+			if g.Subject == "argv:stratum+tcp://" {
+				return true
+			}
 		}
-		if hit {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("renamed binary with stratum+tcp:// argv raised no finding")
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+		return false
+	})
 }

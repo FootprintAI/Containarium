@@ -50,7 +50,7 @@ func TestMinerSignatureBaselineParses(t *testing.T) {
 			t.Errorf("baseline missing name %q", name)
 		}
 	}
-	for _, marker := range []string{"--donate-level", "stratum+tcp://", "stratum+ssl://", "--coin ", "-o *:3333", "-o *:14444"} {
+	for _, marker := range []string{"--donate-level", "stratum+tcp://", "stratum+ssl://", "--coin ", "--coin=*", "-o *:3333", "-o *:14444"} {
 		if !hasEntry(entries, pb.MinerSignatureKind_MINER_SIGNATURE_KIND_ARGV, marker) {
 			t.Errorf("baseline missing argv marker %q", marker)
 		}
@@ -105,6 +105,12 @@ func TestMinerSignatureRule_Matchers(t *testing.T) {
 		{"coin flag", execEv("/usr/bin/svc", "svc", "svc --coin monero"), "argv:--coin "},
 		{"-o host:3333", execEv("/usr/bin/svc", "svc", "./svc -o pool.example:3333 -u wallet"), "argv:-o *:3333"},
 		{"-o host:14444", execEv("/usr/bin/svc", "svc", "./svc -a rx -o 198.51.100.7:14444"), "argv:-o *:14444"},
+		{"xmrig -o pool:3333", execEv("/opt/x", "x", "xmrig -o pool.example.com:3333"), "argv:-o *:3333"},
+		{"-o stratum url still caught by the literal", execEv("/opt/x", "x", "./x -o stratum+tcp://pool:3333"), "argv:stratum+tcp://"},
+		{"--coin=monero", execEv("/usr/bin/svc", "svc", "svc --coin=monero"), "argv:--coin=*"},
+		{"ssh -o ProxyJump=host:4444", execEv("/usr/bin/ssh", "ssh", "ssh -o ProxyJump=bastion:4444 host"), ""},
+		{"ssh -o Port=3333", execEv("/usr/bin/ssh", "ssh", "ssh -o Port=3333 host"), ""},
+		{"ssh -o key=value with stratum port", execEv("/usr/bin/ssh", "ssh", "ssh -o ProxyCommand=nc:3333 host"), ""},
 		{"gcc -O2", execEv("/usr/bin/gcc", "gcc", "gcc -O2 -o main main.c"), ""},
 		{"-o on a non-stratum port", execEv("/usr/bin/svc", "svc", "./svc -o pool.example:443"), ""},
 		{"-o output file named like a port", execEv("/usr/bin/ld", "ld", "ld -o out/a:3333.o"), ""},

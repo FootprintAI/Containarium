@@ -23,20 +23,6 @@ func (h pidfdHandle) Kill() error {
 
 func (h pidfdHandle) Close() error { return unix.Close(h.fd) }
 
-// pidHandleNoFD is the fallback for a kernel without pidfd_open: a plain
-// kill(2), with the cgroup re-check as the only reuse defence.
-type pidHandleNoFD struct{ pid int }
-
-func (h pidHandleNoFD) Kill() error {
-	err := unix.Kill(h.pid, unix.SIGKILL)
-	if errors.Is(err, unix.ESRCH) {
-		return errKillProcessGone
-	}
-	return err
-}
-
-func (pidHandleNoFD) Close() error { return nil }
-
 func openPID(pid int) (pidHandle, error) {
 	fd, err := unix.PidfdOpen(pid, 0)
 	switch {
@@ -45,7 +31,9 @@ func openPID(pid int) (pidHandle, error) {
 	case errors.Is(err, unix.ESRCH):
 		return nil, errKillProcessGone
 	case errors.Is(err, unix.ENOSYS):
-		return pidHandleNoFD{pid: pid}, nil
+		// No pidfd (kernel < 5.3, below the exec object's 5.8 floor anyway):
+		// refuse rather than fall back to a check-then-kill(2) race.
+		return nil, errors.New("pidfd_open unsupported; refusing an unpinned kill")
 	default:
 		return nil, err
 	}

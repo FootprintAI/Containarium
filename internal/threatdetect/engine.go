@@ -268,6 +268,24 @@ func (e *Engine) OnExec(ev ExecEvent) {
 	}
 }
 
+// RedeliverExec hands ev to the one exec rule with id only — the exec
+// hasher's path (#2638): a hashed event is a second delivery of an exec
+// every consumer has already seen, so it must not fan out again.
+func (e *Engine) RedeliverExec(id pb.ThreatRuleId, ev ExecEvent) {
+	e.mu.Lock()
+	var target ExecConsumer
+	for _, c := range e.execRules {
+		if r, ok := c.(Rule); ok && r.ID() == id {
+			target = c
+			break
+		}
+	}
+	e.mu.Unlock()
+	if target != nil {
+		e.upsertAll(e.evalExec(target, ev))
+	}
+}
+
 func (e *Engine) evalExec(r ExecConsumer, ev ExecEvent) (out []RawFinding) {
 	id := pb.ThreatRuleId_THREAT_RULE_ID_UNSPECIFIED
 	if rule, ok := r.(Rule); ok {

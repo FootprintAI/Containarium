@@ -160,7 +160,8 @@ func TestProcessPolicySet_SendsEnumNotString(t *testing.T) {
 }
 
 func TestProcessPolicyGet_RendersStoredAndEffective(t *testing.T) {
-	eff := &pb.ProcessPolicy{Action: pb.ProcessAction_PROCESS_ACTION_THROTTLE, ThrottleAllowance: "10%", Ttl: durationpb.New(24 * time.Hour)}
+	off := false
+	eff := &pb.ProcessPolicy{Action: pb.ProcessAction_PROCESS_ACTION_THROTTLE, ThrottleAllowance: "10%", Ttl: durationpb.New(24 * time.Hour), KillProcess: &off}
 	stored := &pb.ProcessPolicy{
 		Action: pb.ProcessAction_PROCESS_ACTION_THROTTLE,
 		MiningBehavior: &pb.MiningBehaviorThresholds{
@@ -382,5 +383,21 @@ func TestProcessPolicySet_KillProcess(t *testing.T) {
 	}
 	if strings.Contains(string(ps.body), "killProcess") {
 		t.Errorf("a lone --action must not send kill_process; body = %s", ps.body)
+	}
+}
+
+// An unset kill_process prints "inherit", not a false it may not be (#2638
+// review nit).
+func TestWritePolicyBlock_KillProcessInherit(t *testing.T) {
+	var buf bytes.Buffer
+	writePolicyBlock(&buf, &pb.ProcessPolicy{Action: pb.ProcessAction_PROCESS_ACTION_ALERT})
+	if !strings.Contains(buf.String(), "kill process:       inherit") {
+		t.Fatalf("output = %q", buf.String())
+	}
+	on := true
+	buf.Reset()
+	writePolicyBlock(&buf, &pb.ProcessPolicy{KillProcess: &on})
+	if !strings.Contains(buf.String(), "kill process:       true") {
+		t.Fatalf("output = %q", buf.String())
 	}
 }

@@ -7152,7 +7152,7 @@
         "parameters": [
           {
             "name": "kind",
-            "description": " - MINER_SIGNATURE_KIND_NAME: Case-insensitive exact name or glob (\"cpuminer*\") on the basename of the\nexec'd file and on the task comm.\n - MINER_SIGNATURE_KIND_ARGV: Case-insensitive marker in the joined argv: a literal substring\n(\"--donate-level\"), or, when the pattern holds a glob character, a\nsequence of space-separated glob tokens matched against consecutive\narguments (\"-o *:3333\").\n - MINER_SIGNATURE_KIND_SHA256: Lowercase hex SHA-256 of the executable (/proc/\u003cpid\u003e/exe), computed off\nthe hot path only when a hash entry exists and nothing cheaper matched.\nThe shipped baseline carries no hash entries; they are operator-added.",
+            "description": " - MINER_SIGNATURE_KIND_NAME: Case-insensitive exact name or glob (\"cpuminer*\") on the basename of the\nexec'd file and on the task comm.\n - MINER_SIGNATURE_KIND_ARGV: Case-insensitive marker in the joined argv: a literal substring\n(\"--donate-level\"), or, when the pattern holds a glob character, a\nsequence of space-separated glob tokens matched against consecutive\narguments (\"-o *:3333\"). A glob token without '=' never matches a\nkey=value argument (so \"-o *:4444\" does not hit \"-o ProxyJump=h:4444\").\n - MINER_SIGNATURE_KIND_SHA256: Lowercase hex SHA-256 of the executable (/proc/\u003cpid\u003e/exe), computed off\nthe hot path only when a hash entry exists and nothing cheaper matched.\nThe shipped baseline carries no hash entries; they are operator-added.",
             "in": "query",
             "required": false,
             "type": "string",
@@ -16198,7 +16198,7 @@
         "MINER_SIGNATURE_KIND_SHA256"
       ],
       "default": "MINER_SIGNATURE_KIND_UNSPECIFIED",
-      "description": "MinerSignatureKind is what a MinerSignature matches against (#2638).\n\n - MINER_SIGNATURE_KIND_NAME: Case-insensitive exact name or glob (\"cpuminer*\") on the basename of the\nexec'd file and on the task comm.\n - MINER_SIGNATURE_KIND_ARGV: Case-insensitive marker in the joined argv: a literal substring\n(\"--donate-level\"), or, when the pattern holds a glob character, a\nsequence of space-separated glob tokens matched against consecutive\narguments (\"-o *:3333\").\n - MINER_SIGNATURE_KIND_SHA256: Lowercase hex SHA-256 of the executable (/proc/\u003cpid\u003e/exe), computed off\nthe hot path only when a hash entry exists and nothing cheaper matched.\nThe shipped baseline carries no hash entries; they are operator-added."
+      "description": "MinerSignatureKind is what a MinerSignature matches against (#2638).\n\n - MINER_SIGNATURE_KIND_NAME: Case-insensitive exact name or glob (\"cpuminer*\") on the basename of the\nexec'd file and on the task comm.\n - MINER_SIGNATURE_KIND_ARGV: Case-insensitive marker in the joined argv: a literal substring\n(\"--donate-level\"), or, when the pattern holds a glob character, a\nsequence of space-separated glob tokens matched against consecutive\narguments (\"-o *:3333\"). A glob token without '=' never matches a\nkey=value argument (so \"-o *:4444\" does not hit \"-o ProxyJump=h:4444\").\n - MINER_SIGNATURE_KIND_SHA256: Lowercase hex SHA-256 of the executable (/proc/\u003cpid\u003e/exe), computed off\nthe hot path only when a hash entry exists and nothing cheaper matched.\nThe shipped baseline carries no hash entries; they are operator-added."
     },
     "MiningBehaviorThresholds": {
       "type": "object",

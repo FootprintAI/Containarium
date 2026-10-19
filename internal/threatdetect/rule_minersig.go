@@ -250,7 +250,7 @@ func matchTokenRun(tokens, args []string) bool {
 	for i := 0; i+len(tokens) <= len(args); i++ {
 		hit := true
 		for j, tok := range tokens {
-			if ok, _ := path.Match(tok, args[i+j]); !ok {
+			if !matchToken(tok, args[i+j]) {
 				hit = false
 				break
 			}
@@ -260,6 +260,19 @@ func matchTokenRun(tokens, args []string) bool {
 		}
 	}
 	return false
+}
+
+// matchToken matches one glob token against one argument. A token without
+// '=' never matches a "key=value" argument: path.Match's '*' crosses '=', so
+// "-o *:4444" would otherwise hit ssh's "-o ProxyJump=bastion:4444" (a
+// HIGH finding, and a kill with kill_process). A token that spells '=' out
+// ("--coin=*") matches the key=value form on purpose.
+func matchToken(tok, arg string) bool {
+	if !strings.Contains(tok, "=") && strings.Contains(arg, "=") {
+		return false
+	}
+	ok, _ := path.Match(tok, arg)
+	return ok
 }
 
 func (m *minerSigMatcher) matchHash(sum string) (MinerSignatureEntry, bool) {
