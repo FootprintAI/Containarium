@@ -222,6 +222,15 @@ upgrader: websocket.Upgrader{
     },
 ```
 
+**Later change (#2696, #2698):** the terminal route also accepts a request
+with no `Origin` header when the gateway has already validated a bearer sent
+in `Sec-WebSocket-Protocol` or `Authorization` (a non-browser client; browsers
+always send `Origin`, and this route takes no cookies). A request that carries
+an `Origin` must still be in `CONTAINARIUM_ALLOWED_ORIGINS` (default
+localhost), with or without a bearer; a missing `Origin` with no validated
+bearer, or with only the deprecated `?token=`, is still refused. See
+`checkTerminalOrigin` in `internal/gateway/terminal.go`.
+
 **Files to modify:**
 - `internal/gateway/gateway.go` - Add configurable CORS
 - `internal/gateway/terminal.go` - Add origin validation
