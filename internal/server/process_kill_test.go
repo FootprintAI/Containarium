@@ -212,6 +212,9 @@ func TestProcessResponder_KillProcess(t *testing.T) {
 		if f.Response == nil || !f.Response.ProcessKilled || f.Response.Action != pb.ProcessAction_PROCESS_ACTION_ALERT {
 			t.Fatalf("response = %+v, want ALERT with process_killed", f.Response)
 		}
+		if f.Response.KilledPID != 4242 {
+			t.Fatalf("killed_pid = %d, want 4242 (#2775: the webhook names it)", f.Response.KilledPID)
+		}
 		d := auditDetails(fx.audit, "kill")
 		if len(d) != 1 || !strings.Contains(d[0], "pid=4242") || !strings.Contains(d[0], `matched="name:xmrig"`) {
 			t.Fatalf("kill audit = %v", d)
@@ -226,6 +229,9 @@ func TestProcessResponder_KillProcess(t *testing.T) {
 		f := fx.fireSignature(t, "box-a", 4242)
 		if len(k.calls) != 1 || f.Response.State != pb.ResponseState_RESPONSE_STATE_APPLIED || !f.Response.ProcessKilled {
 			t.Fatalf("kills=%v response=%+v", k.calls, f.Response)
+		}
+		if f.Response.KilledPID != 4242 {
+			t.Fatalf("killed_pid = %d, want 4242", f.Response.KilledPID)
 		}
 		row, err := fx.actions.Open(context.Background(), "box-a")
 		if err != nil || row.KilledPID != 4242 || row.Action != pb.ProcessAction_PROCESS_ACTION_THROTTLE {
@@ -257,6 +263,9 @@ func TestProcessResponder_KillProcess(t *testing.T) {
 		f := fx.fireSignature(t, "box-a", 4242)
 		if f.Response == nil || f.Response.ProcessKilled {
 			t.Fatalf("response = %+v, want not killed", f.Response)
+		}
+		if !strings.Contains(f.Response.KillSkipped, "pid reused") || f.Response.KilledPID != 0 {
+			t.Fatalf("kill_skipped = %q killed_pid = %d, want the reason and no pid (#2775)", f.Response.KillSkipped, f.Response.KilledPID)
 		}
 		d := auditDetails(fx.audit, "kill-skipped")
 		if len(d) != 1 || !strings.Contains(d[0], "pid reused") || len(auditDetails(fx.audit, "kill")) != 0 {

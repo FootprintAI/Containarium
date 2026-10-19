@@ -1399,7 +1399,14 @@ type FindingResponse struct {
 	// "operator" or "ttl"; empty while the action is in effect.
 	ReleasedBy string `protobuf:"bytes,7,opt,name=released_by,json=releasedBy,proto3" json:"released_by,omitempty"`
 	// Incus error text when state is FAILED.
-	Error         string `protobuf:"bytes,8,opt,name=error,proto3" json:"error,omitempty"`
+	Error string `protobuf:"bytes,8,opt,name=error,proto3" json:"error,omitempty"`
+	// Host pid of the process the responder SIGKILLed; set with process_killed.
+	// A kill is delivered by the finding webhook (#2775), so a consumer learns
+	// which process died.
+	KilledPid uint32 `protobuf:"varint,9,opt,name=killed_pid,json=killedPid,proto3" json:"killed_pid,omitempty"`
+	// Why a kill_process attempt did not kill (pid reused, already exited, ...);
+	// empty when nothing was skipped. Delivered by the finding webhook (#2775).
+	KillSkipped   string `protobuf:"bytes,10,opt,name=kill_skipped,json=killSkipped,proto3" json:"kill_skipped,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1486,6 +1493,20 @@ func (x *FindingResponse) GetReleasedBy() string {
 func (x *FindingResponse) GetError() string {
 	if x != nil {
 		return x.Error
+	}
+	return ""
+}
+
+func (x *FindingResponse) GetKilledPid() uint32 {
+	if x != nil {
+		return x.KilledPid
+	}
+	return 0
+}
+
+func (x *FindingResponse) GetKillSkipped() string {
+	if x != nil {
+		return x.KillSkipped
 	}
 	return ""
 }
@@ -3247,7 +3268,7 @@ const file_containarium_v1_threatdetection_proto_rawDesc = "" +
 	"\n" +
 	"first_seen\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\tfirstSeen\x127\n" +
 	"\tlast_seen\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\blastSeen\x12<\n" +
-	"\bresponse\x18\r \x01(\v2 .containarium.v1.FindingResponseR\bresponse\"\x90\x03\n" +
+	"\bresponse\x18\r \x01(\v2 .containarium.v1.FindingResponseR\bresponse\"\xd2\x03\n" +
 	"\x0fFindingResponse\x126\n" +
 	"\x06action\x18\x01 \x01(\x0e2\x1e.containarium.v1.ProcessActionR\x06action\x124\n" +
 	"\x05state\x18\x02 \x01(\x0e2\x1e.containarium.v1.ResponseStateR\x05state\x12%\n" +
@@ -3260,7 +3281,11 @@ const file_containarium_v1_threatdetection_proto_rawDesc = "" +
 	"releasedAt\x12\x1f\n" +
 	"\vreleased_by\x18\a \x01(\tR\n" +
 	"releasedBy\x12\x14\n" +
-	"\x05error\x18\b \x01(\tR\x05error\"\xb0\x02\n" +
+	"\x05error\x18\b \x01(\tR\x05error\x12\x1d\n" +
+	"\n" +
+	"killed_pid\x18\t \x01(\rR\tkilledPid\x12!\n" +
+	"\fkill_skipped\x18\n" +
+	" \x01(\tR\vkillSkipped\"\xb0\x02\n" +
 	"\rProcessPolicy\x126\n" +
 	"\x06action\x18\x01 \x01(\x0e2\x1e.containarium.v1.ProcessActionR\x06action\x12-\n" +
 	"\x12throttle_allowance\x18\x02 \x01(\tR\x11throttleAllowance\x12+\n" +

@@ -275,3 +275,132 @@ func TestFinding_WebhookPayloadEncodesResponseStateAsNumber(t *testing.T) {
 		t.Errorf("payload %s: want severity=%d response.state=%d", body, pb.ThreatSeverity_THREAT_SEVERITY_HIGH, pb.ResponseState_RESPONSE_STATE_APPLIED)
 	}
 }
+
+// #2775: a kill is delivered. Under ALERT it leaves response.state at NONE, so
+// the gate keys on the kill outcome (killed pid, skip reason) as well.
+func TestWebhookNotifier_KillOutcomeIsDelivered(t *testing.T) {
+	alert := func(k FindingResponse) *FindingResponse {
+		k.Action, k.State = pb.ProcessAction_PROCESS_ACTION_ALERT, pb.ResponseState_RESPONSE_STATE_NONE
+		return &k
+	}
+	throttle := func(state pb.ResponseState, by string, k FindingResponse) *FindingResponse {
+		k.Action, k.State, k.ReleasedBy = pb.ProcessAction_PROCESS_ACTION_THROTTLE, state, by
+		return &k
+	}
+	killed := func(pid uint32) FindingResponse { return FindingResponse{ProcessKilled: true, KilledPID: pid} }
+	type step struct {
+		name     string
+		response *FindingResponse
+		resolved bool
+		want     bool
+		wantPID  uint32
+		wantSkip string
+	}
+	for _, tc := range []struct {
+		name  string
+		steps []step
+	}{
+		{"alert + kill: new finding, then killed", []step{
+			{name: "upsert", want: true},
+			{name: "alert recorded, nothing killed", response: alert(FindingResponse{})},
+			{name: "kill recorded", response: alert(killed(4242)), want: true, wantPID: 4242},
+			{name: "repeat upsert", response: alert(killed(4242))},
+		}},
+		{"throttle + kill: the APPLIED delivery carries the kill", []step{
+			{name: "upsert", want: true},
+			{name: "applied with kill", response: throttle(pb.ResponseState_RESPONSE_STATE_APPLIED, "", killed(77)), want: true, wantPID: 77},
+			{name: "repeat upsert", response: throttle(pb.ResponseState_RESPONSE_STATE_APPLIED, "", killed(77))},
+		}},
+		{"kill then operator release and resolve inside the window", []step{
+			{name: "upsert", want: true},
+			{name: "kill recorded", response: alert(killed(4242)), want: true, wantPID: 4242},
+			{name: "operator releases", response: throttle(pb.ResponseState_RESPONSE_STATE_RELEASED, ReleasedByOperator, killed(4242)), want: true, wantPID: 4242},
+			{name: "release resolves, coalesced", response: throttle(pb.ResponseState_RESPONSE_STATE_RELEASED, ReleasedByOperator, killed(4242)), resolved: true},
+		}},
+		{"kill skipped is delivered with its reason, once", []step{
+			{name: "upsert", want: true},
+			{name: "skip recorded", response: alert(FindingResponse{KillSkipped: "pid reused"}), want: true, wantSkip: "pid reused"},
+			{name: "same skip again", response: alert(FindingResponse{KillSkipped: "pid reused"})},
+			{name: "different skip", response: alert(FindingResponse{KillSkipped: "process already exited"}), want: true, wantSkip: "process already exited"},
+		}},
+		{"different pids on one finding are each delivered", []step{
+			{name: "upsert", want: true},
+			{name: "first kill", response: alert(killed(100)), want: true, wantPID: 100},
+			{name: "second kill", response: alert(killed(200)), want: true, wantPID: 200},
+			{name: "second kill repeats", response: alert(killed(200))},
+		}},
+		{"no kill: alert-only adds no delivery", []step{
+			{name: "upsert", want: true},
+			{name: "alert recorded", response: alert(FindingResponse{})},
+			{name: "repeat upsert", response: alert(FindingResponse{})},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n, clock := gatedNotifier(time.Hour)
+			for _, s := range tc.steps {
+				f := openFinding(9, pb.ThreatSeverity_THREAT_SEVERITY_HIGH)
+				f.Response = s.response
+				if s.resolved {
+					f.State = FindingStateResolved
+				}
+				n.Notify(f)
+				*clock = clock.Add(5 * time.Second)
+				want := 0
+				if s.want {
+					want = 1
+				}
+				if got := len(n.queue); got != want {
+					t.Fatalf("after %q: deliveries = %d, want %d", s.name, got, want)
+				}
+				if s.want {
+					r := (<-n.queue).ToProto().GetResponse()
+					if r.GetKilledPid() != s.wantPID || r.GetKillSkipped() != s.wantSkip {
+						t.Errorf("after %q: delivered killed_pid=%d kill_skipped=%q, want %d %q", s.name, r.GetKilledPid(), r.GetKillSkipped(), s.wantPID, s.wantSkip)
+					}
+				}
+			}
+		})
+	}
+}
+
+// #2775: the webhook body names the pid and the skip reason.
+func TestFinding_WebhookPayloadNamesKilledPIDAndSkipReason(t *testing.T) {
+	f := openFinding(1, pb.ThreatSeverity_THREAT_SEVERITY_HIGH)
+	f.Response = &FindingResponse{Action: pb.ProcessAction_PROCESS_ACTION_ALERT, State: pb.ResponseState_RESPONSE_STATE_NONE,
+		ProcessKilled: true, KilledPID: 4242, KillSkipped: "pid reused"}
+	body, err := json.Marshal(f.ToProto())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Response struct {
+			State         int32  `json:"state"`
+			ProcessKilled bool   `json:"process_killed"`
+			KilledPID     uint32 `json:"killed_pid"`
+			KillSkipped   string `json:"kill_skipped"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("payload %s: %v", body, err)
+	}
+	if got.Response.KilledPID != 4242 || !got.Response.ProcessKilled || got.Response.KillSkipped != "pid reused" || got.Response.State != 1 {
+		t.Errorf("payload %s", body)
+	}
+}
+
+// #2775: the response survives the JSONB column with its kill fields.
+func TestFindingResponse_KillFieldsRoundTripStorage(t *testing.T) {
+	in := FindingResponse{Action: pb.ProcessAction_PROCESS_ACTION_ALERT, State: pb.ResponseState_RESPONSE_STATE_NONE,
+		ProcessKilled: true, KilledPID: 4242, KillSkipped: "x"}
+	b, err := json.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out FindingResponse
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out != in {
+		t.Errorf("round trip: got %+v want %+v", out, in)
+	}
+}

@@ -31,7 +31,9 @@ const releaseResolveWindow = 30 * time.Second
 // A finding is delivered when it is new to the gate, when its severity
 // escalates, when its response state changes (#2718: NONE→APPLIED,
 // APPLIED→RELEASED/EXPIRED, anything→FAILED — what the process responder did
-// is news, not a repeat), when interval has passed since its last delivery,
+// is news, not a repeat), when its kill outcome changes (#2775: a miner
+// process killed, or a kill skipped, with or without a state change; a second
+// pid is a second kill), when interval has passed since its last delivery,
 // and once when it resolves. State is in memory: after a restart an open
 // finding is delivered again on its next write, which is a re-notify, not a
 // storm.
@@ -59,6 +61,23 @@ type gateEntry struct {
 	severity   pb.ThreatSeverity
 	response   pb.ResponseState
 	releasedBy string
+	kill       killKey
+}
+
+// killKey is the kill outcome on a finding's response: a change in it is news
+// (#2775). Under ALERT a kill leaves the response state at NONE, so the state
+// alone never shows it.
+type killKey struct {
+	killed  bool
+	pid     uint32
+	skipped string
+}
+
+func killOf(f *Finding) killKey {
+	if f.Response == nil {
+		return killKey{}
+	}
+	return killKey{f.Response.ProcessKilled, f.Response.KilledPID, f.Response.KillSkipped}
 }
 
 // responseOf is f's response state and who released it; no response yet is
@@ -105,7 +124,7 @@ func (g *deliveryGate) shouldDeliver(f *Finding) bool {
 		return true
 	}
 	state, _ := responseOf(f)
-	return !seen || f.Severity > prev.severity || state != prev.response || g.now().Sub(prev.at) >= g.interval
+	return !seen || f.Severity > prev.severity || state != prev.response || killOf(f) != prev.kill || g.now().Sub(prev.at) >= g.interval
 }
 
 // delivered records that f was queued. A resolved finding is forgotten: it
@@ -121,7 +140,7 @@ func (g *deliveryGate) delivered(f *Finding) {
 		return
 	}
 	state, by := responseOf(f)
-	g.last[f.ID] = gateEntry{at: g.now(), severity: f.Severity, response: state, releasedBy: by}
+	g.last[f.ID] = gateEntry{at: g.now(), severity: f.Severity, response: state, releasedBy: by, kill: killOf(f)}
 	if len(g.last) > gateMaxEntries {
 		g.evictOldest()
 	}

@@ -358,6 +358,21 @@ Every delivery attempt (success or failure) is recorded in the same
 never blocks detection; delivery is downstream of persistence, not the
 hot path.
 
+A finding is delivered when it is new, when its severity escalates, when
+the process responder's response changes, and once more when it
+resolves. A killed process is one of those changes: with
+`process-policy set --kill-process=true`, an `ALERT` policy delivers the
+new finding and then a second post whose `response` names the kill
+(`process_killed: true` and `killed_pid`, the host pid that was
+SIGKILLed; `response.state` stays `1`, `NONE`, because `ALERT` does
+nothing else to the box). Under `THROTTLE` or `FREEZE` the `APPLIED`
+post carries the kill. If the kill was attempted and did not happen (pid
+reused, process already gone), `response.kill_skipped` holds the reason
+and `process_killed` is absent. A second process killed on the same
+finding is delivered again with its own `killed_pid`. `response.state`
+is a number: `1` NONE, `2` APPLIED, `3` FAILED, `4` RELEASED, `5`
+EXPIRED. Fields that are zero or empty are omitted from the JSON.
+
 ## Managing the known-bad-destination list
 
 ```bash

@@ -139,3 +139,36 @@ func TestMemFindingStore_SetResponseNotifiesASnapshot(t *testing.T) {
 		t.Errorf("queued response changed with the store: %+v", *queued.Response)
 	}
 }
+
+// #2775: a kill delivered by SetResponse is a snapshot too; the pid and the
+// skip reason on the queued response do not follow later writes to the stored
+// finding.
+func TestMemFindingStore_SetResponseNotifiesAKillSnapshot(t *testing.T) {
+	ctx := context.Background()
+	auditStore, bus := memTestDeps(t)
+	s, err := NewMemFindingStore(events.NewEmitter(bus), auditStore)
+	if err != nil {
+		t.Fatalf("NewMemFindingStore: %v", err)
+	}
+	n := NewWebhookNotifier(newFakeConfigSource("http://127.0.0.1:1", ""), nil)
+	s.SetNotifier(n)
+	f, err := s.Upsert(ctx, sampleMemFinding())
+	if err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	<-n.queue
+	stored, err := s.SetResponse(ctx, f.ID, FindingResponse{Action: pb.ProcessAction_PROCESS_ACTION_ALERT,
+		State: pb.ResponseState_RESPONSE_STATE_NONE, ProcessKilled: true, KilledPID: 4242})
+	if err != nil {
+		t.Fatalf("SetResponse: %v", err)
+	}
+	if len(n.queue) != 1 {
+		t.Fatalf("kill under ALERT: deliveries = %d, want 1", len(n.queue))
+	}
+	stored.Response.KilledPID = 1
+	stored.Response.KillSkipped = "mutated"
+	queued := <-n.queue
+	if queued.Response.KilledPID != 4242 || queued.Response.KillSkipped != "" || !queued.Response.ProcessKilled {
+		t.Errorf("queued kill changed with the store: %+v", *queued.Response)
+	}
+}

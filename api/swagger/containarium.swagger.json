@@ -13713,6 +13713,15 @@
         "error": {
           "type": "string",
           "description": "Incus error text when state is FAILED."
+        },
+        "killedPid": {
+          "type": "integer",
+          "format": "int64",
+          "description": "Host pid of the process the responder SIGKILLed; set with process_killed.\nA kill is delivered by the finding webhook (#2775), so a consumer learns\nwhich process died."
+        },
+        "killSkipped": {
+          "type": "string",
+          "description": "Why a kill_process attempt did not kill (pid reused, already exited, ...);\nempty when nothing was skipped. Delivered by the finding webhook (#2775)."
         }
       },
       "description": "FindingResponse records what the process responder did about a finding\nand when, so the finding itself tells the operator whether a box is\ncurrently throttled or frozen because of it."
