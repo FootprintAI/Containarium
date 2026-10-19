@@ -60,6 +60,11 @@ func (rw *responseWriter) WriteHeader(code int) {
 	rw.ResponseWriter.WriteHeader(code)
 }
 
+// Unwrap exposes the underlying writer so http.NewResponseController can
+// reach its Flusher/Hijacker. Without it, server-streaming responses (which
+// flush after every chunk) fail with http.ErrNotSupported (#2773).
+func (rw *responseWriter) Unwrap() http.ResponseWriter { return rw.ResponseWriter }
+
 // HTTPAuditMiddleware wraps an HTTP handler to record audit log entries for
 // API requests. store takes the auditLogger interface (narrowed to
 // Log(ctx, *AuditEntry) error, same as GRPCInterceptor) rather than the

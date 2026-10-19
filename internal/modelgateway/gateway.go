@@ -627,6 +627,9 @@ func (s *statusWriter) Write(b []byte) (int, error) {
 	return s.ResponseWriter.Write(b)
 }
 
+// Unwrap lets http.NewResponseController reach the underlying writer.
+func (s *statusWriter) Unwrap() http.ResponseWriter { return s.ResponseWriter }
+
 func (s *statusWriter) Flush() {
 	if f, ok := s.ResponseWriter.(http.Flusher); ok {
 		f.Flush()

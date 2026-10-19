@@ -25,6 +25,11 @@ func (rw *responseWriter) WriteHeader(code int) {
 	rw.ResponseWriter.WriteHeader(code)
 }
 
+// Unwrap exposes the underlying writer so http.NewResponseController can
+// reach its Flusher/Hijacker. Without it, server-streaming responses (which
+// flush after every chunk) fail with http.ErrNotSupported (#2773).
+func (rw *responseWriter) Unwrap() http.ResponseWriter { return rw.ResponseWriter }
+
 // HTTPMetricsMiddleware wraps an HTTP handler to record request metrics
 func HTTPMetricsMiddleware(next http.Handler, provider *sdkmetric.MeterProvider) http.Handler {
 	if provider == nil {
