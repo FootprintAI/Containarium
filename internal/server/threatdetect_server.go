@@ -434,7 +434,9 @@ func (s *ThreatDetectionServer) sentryStatus() *pb.GetSentryStatusResponse {
 // shows every tenant's process names and arguments. UNAVAILABLE when exec
 // telemetry is not running here (the reason is the status line); a
 // subscriber that falls behind is disconnected with RESOURCE_EXHAUSTED
-// rather than ever stalling the kernel ring consumer.
+// rather than ever stalling the kernel ring consumer. When exec telemetry
+// stops (daemon shutdown) or its consumer fails, an open --follow stream
+// ends with UNAVAILABLE instead of holding up GracefulStop.
 func (s *ThreatDetectionServer) StreamExecEvents(req *pb.StreamExecEventsRequest, stream pb.ThreatDetectionService_StreamExecEventsServer) error {
 	ctx := stream.Context()
 	if err := auth.RequireScope(ctx, auth.ScopeSecurityRead); err != nil {
@@ -472,6 +474,12 @@ func (s *ThreatDetectionServer) StreamExecEvents(req *pb.StreamExecEventsRequest
 			return nil
 		case rec, ok := <-ch:
 			if !ok {
+				// The watcher closes a subscription for two reasons: exec
+				// telemetry stopped (daemon shutdown, consumer failure — the
+				// status has left "ok" first) or this subscriber fell behind.
+				if st := src.Status(); st != execTelemetryOK {
+					return status.Errorf(codes.Unavailable, "exec telemetry %s", st)
+				}
 				return status.Error(codes.ResourceExhausted, "exec-events subscriber fell behind and was dropped (the ring consumer never waits); reconnect")
 			}
 			if err := stream.Send(&pb.StreamExecEventsResponse{Event: execEventProto(rec)}); err != nil {

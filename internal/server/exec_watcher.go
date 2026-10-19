@@ -14,6 +14,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/cilium/ebpf/ringbuf"
+
 	"github.com/footprintai/containarium/internal/netbpf"
 	"github.com/footprintai/containarium/internal/threatdetect"
 	"github.com/footprintai/containarium/pkg/core/incus"
@@ -32,7 +34,9 @@ const (
 	execReplayRing = 4096
 	// execSubscriberBuffer is the per-stream channel depth. A subscriber
 	// that lets it fill is dropped (its channel closed) rather than ever
-	// blocking the ring consumer.
+	// blocking the ring consumer. Subscribe raises it to the replay's length
+	// so a `--since … --follow` stream has room for the live events that
+	// arrive while its replay is being sent.
 	execSubscriberBuffer = 256
 
 	execTelemetryOK               = "ok"
@@ -150,21 +154,62 @@ func (w *ExecWatcher) Start(ctx context.Context, objValue string) error {
 	w.maps = watch
 	w.lost = watch.Lost
 	w.cancel = cancel
+	w.status = execTelemetryOK
 	w.mu.Unlock()
 
 	w.wg.Add(1)
-	go func() {
-		defer w.wg.Done()
-		go func() { <-cctx.Done(); _ = rd.Close() }() // unblock Read on shutdown
-		netbpf.ConsumeExecEvents(cctx, rd, w, func(err error) {
-			log.Printf("[exec-telemetry] ring: %v", err)
-		})
-	}()
-	w.setStatus(execTelemetryOK)
+	go w.consume(cctx, rd)
 	return nil
 }
 
-// Stop ends the consumer, detaches the tracepoint and frees the object.
+// execRingReader is the ring reader the consumer drains: *ringbuf.Reader in
+// the daemon, a fake in tests.
+type execRingReader interface {
+	Read() (ringbuf.Record, error)
+	Close() error
+}
+
+// consume runs the ring consumer until ctx ends or the reader fails. A
+// consumer that exits while the watcher is still meant to be running (a
+// read error, not Stop) is a blind spot — the kernel keeps emitting into a
+// ring nobody drains — so the status flips to `unavailable (ring consumer
+// exited: …)`, which GetSentryStatus reports and the health loop raises,
+// and every open stream is ended rather than left waiting forever.
+func (w *ExecWatcher) consume(ctx context.Context, rd execRingReader) {
+	defer w.wg.Done()
+	done := make(chan struct{})
+	defer close(done)
+	go func() { // unblock Read on shutdown; release the reader on exit
+		select {
+		case <-ctx.Done():
+		case <-done:
+		}
+		_ = rd.Close()
+	}()
+	var last error
+	netbpf.ConsumeExecEvents(ctx, rd, w, func(err error) {
+		log.Printf("[exec-telemetry] ring: %v", err)
+		last = err
+	})
+	if ctx.Err() != nil {
+		return // Stop: it owns the status
+	}
+	reason := errors.New("ring consumer exited")
+	if last != nil {
+		reason = fmt.Errorf("ring consumer exited: %w", last)
+	}
+	log.Printf("[exec-telemetry] %v; exec telemetry is unavailable until the daemon restarts", reason)
+	w.mu.Lock()
+	w.status = execTelemetryUnavailable(reason)
+	w.closeSubscribersLocked()
+	w.mu.Unlock()
+}
+
+// Stop ends the consumer, detaches the tracepoint and frees the object. It
+// ends every open stream (closes its channel after the status has left
+// "ok", so StreamExecEvents returns UNAVAILABLE rather than holding up the
+// gRPC server's GracefulStop) and forgets the attribution tables, so a
+// later Start re-registers every box in the new kernel map.
 func (w *ExecWatcher) Stop() {
 	w.mu.Lock()
 	cancel, watch := w.cancel, w.watch
@@ -178,7 +223,25 @@ func (w *ExecWatcher) Stop() {
 		if err := watch.Close(); err != nil {
 			log.Printf("[exec-telemetry] close: %v", err)
 		}
-		w.setStatus(execTelemetryStoppedStatus)
+	}
+	w.mu.Lock()
+	if watch != nil || w.status == execTelemetryOK {
+		w.status = execTelemetryStoppedStatus
+	}
+	w.closeSubscribersLocked()
+	w.byCgroup = make(map[uint64]execTarget)
+	w.byName = make(map[string]uint64)
+	w.resolveFail = make(map[string]string)
+	w.mu.Unlock()
+}
+
+// closeSubscribersLocked ends every stream subscription. Callers hold w.mu
+// and have already moved the status off "ok", which is how the stream
+// handler tells this apart from a slow subscriber being dropped.
+func (w *ExecWatcher) closeSubscribersLocked() {
+	for id, s := range w.subs {
+		close(s.ch)
+		delete(w.subs, id)
 	}
 }
 
@@ -299,6 +362,7 @@ func (w *ExecWatcher) Reconcile(containers []incus.ContainerInfo) {
 	type change struct {
 		name string
 		id   uint64
+		idx  uint32 // map value for an addition, reserved here
 	}
 	var toRemove, toAdd []change
 	w.mu.Lock()
@@ -316,7 +380,7 @@ func (w *ExecWatcher) Reconcile(containers []incus.ContainerInfo) {
 	for name, cur := range w.byName {
 		d, want := desired[name]
 		if !want || d.id != cur {
-			toRemove = append(toRemove, change{name, cur})
+			toRemove = append(toRemove, change{name: name, id: cur})
 			delete(w.byName, name)
 			delete(w.byCgroup, cur)
 		}
@@ -329,7 +393,8 @@ func (w *ExecWatcher) Reconcile(containers []incus.ContainerInfo) {
 			}
 			continue
 		}
-		toAdd = append(toAdd, change{name, d.id})
+		w.nextIndex++
+		toAdd = append(toAdd, change{name: name, id: d.id, idx: w.nextIndex})
 	}
 	w.mu.Unlock()
 
@@ -341,15 +406,11 @@ func (w *ExecWatcher) Reconcile(containers []incus.ContainerInfo) {
 	}
 	var added []change
 	for _, a := range toAdd {
-		w.mu.Lock()
-		w.nextIndex++
-		idx := w.nextIndex
-		w.mu.Unlock()
-		if err := maps.WatchCgroup(a.id, idx); err != nil {
+		if err := maps.WatchCgroup(a.id, a.idx); err != nil {
 			log.Printf("[exec-telemetry] %s: watch cgroup %d: %v", a.name, a.id, err)
 			continue
 		}
-		added = append(added, change{a.name, a.id})
+		added = append(added, a)
 	}
 
 	// Phase 4, locked: commit the additions. An exec in a just-watched
@@ -502,8 +563,11 @@ func (w *ExecWatcher) replayLocked(container string, since time.Duration) []Exec
 // Subscribe registers a stream subscriber: it returns the replay for the
 // last `since` (taken under the same lock as the registration, so nothing is
 // missed or duplicated at the seam), the live channel, and a cancel that
-// unregisters. buffer <= 0 means execSubscriberBuffer. The channel is closed
-// by the watcher when the subscriber falls behind.
+// unregisters. buffer <= 0 means execSubscriberBuffer; the buffer is never
+// smaller than the replay, so live events arriving while a long replay is
+// sent do not get a `--since … --follow` stream dropped before it reaches
+// live mode. The channel is closed by the watcher when the subscriber falls
+// behind, and on Stop or a consumer failure (status no longer "ok").
 func (w *ExecWatcher) Subscribe(container string, since time.Duration, buffer int) (replay []ExecEventRecord, ch <-chan ExecEventRecord, cancel func()) {
 	if buffer <= 0 {
 		buffer = execSubscriberBuffer
@@ -511,6 +575,9 @@ func (w *ExecWatcher) Subscribe(container string, since time.Duration, buffer in
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	replay = w.replayLocked(container, since)
+	if len(replay) > buffer {
+		buffer = len(replay)
+	}
 	id := w.nextSub
 	w.nextSub++
 	s := &execSubscriber{container: container, ch: make(chan ExecEventRecord, buffer)}
