@@ -108,7 +108,7 @@ func TestConditionalFieldsAreOmittedWhenUnset(t *testing.T) {
 		keys := marshalKeys(t, createContainerRequest{})
 		for _, absent := range []string{
 			"gitSource", "gitRef", "gitCredential", "workspacePath",
-			"ttlSeconds", "idleStopMinutes", "deleteAfterStoppedSeconds",
+			"ttlSeconds", "idleStopMinutes", "disableAutoSleep", "deleteAfterStoppedSeconds",
 		} {
 			if contains(keys, absent) {
 				t.Errorf("%q must be absent when unset", absent)

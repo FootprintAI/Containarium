@@ -91,3 +91,38 @@ func TestHelmChartRefusesGatewayWithoutUpstreamKey(t *testing.T) {
 		}
 	})
 }
+
+// TestHelmChartPinsSshpiperToAppVersion asserts a chart stamped with a release
+// appVersion pins the sshpiper gateway image to that same tag instead of the
+// floating latest-stable (#2703), and that an explicit gateway.sshpiper.image
+// override still wins.
+func TestHelmChartPinsSshpiperToAppVersion(t *testing.T) {
+	helmPath, err := exec.LookPath("helm")
+	if err != nil {
+		t.Skip("helm not found on PATH, skipping chart-rendering test")
+	}
+	render := func(extra ...string) string {
+		args := append([]string{"template", "test-release", "../../../../charts/containarium-k8s",
+			"--set", "gateway.upstreamKeySecret=sshpiper-upstream-key",
+			"--show-only", "templates/sshpiper-deployment.yaml"}, extra...)
+		out, err := exec.Command(helmPath, args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("helm template failed: %v\n%s", err, out)
+		}
+		return string(out)
+	}
+	cases := []struct {
+		name  string
+		extra []string
+		want  string
+	}{
+		{"explicit tag", []string{"--set-string", "gateway.sshpiper.tag=v9.8.7"}, "image: ghcr.io/footprintai/containarium-sshpiper:v9.8.7\n"},
+		{"dev chart falls back to latest-stable", nil, "image: ghcr.io/footprintai/containarium-sshpiper:latest-stable\n"},
+		{"explicit image override", []string{"--set", "gateway.sshpiper.image=example.com/x/sshpiper:1"}, "image: example.com/x/sshpiper:1\n"},
+	}
+	for _, c := range cases {
+		if got := render(c.extra...); !strings.Contains(got, c.want) {
+			t.Errorf("%s: want %q in:\n%s", c.name, c.want, got)
+		}
+	}
+}
