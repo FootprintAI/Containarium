@@ -667,7 +667,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           helm push "dist-chart/containarium-k8s-${VERSION}.tgz" oci://ghcr.io/footprintai/charts
-          gh release upload "${GITHUB_REF_NAME}" "dist-chart/containarium-k8s-${VERSION}.tgz" --clobber
+          # SHA256SUMS.txt is already written by build-and-release before this
+          # job runs, so the chart ships its own .sha256 (same convention as
+          # the SDLC skills and air-gapped bundles) rather than racing a
+          # re-upload of that file. Relative name so `sha256sum -c` works
+          # from the download directory.
+          (cd dist-chart && sha256sum "containarium-k8s-${VERSION}.tgz" > "containarium-k8s-${VERSION}.tgz.sha256")
+          gh release upload "${GITHUB_REF_NAME}" \
+            "dist-chart/containarium-k8s-${VERSION}.tgz" \
+            "dist-chart/containarium-k8s-${VERSION}.tgz.sha256" --clobber
 
   # image build never blocks the binary release above (same reasoning
   # sidecars.yml gives for keeping its own jobs independent of each other).
