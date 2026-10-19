@@ -283,18 +283,30 @@ shows `process killed`, and an action row opened by the same finding records
 `killed_pid`. The kill and the throttle/freeze run on the responder's own
 worker, never on the exec event path; if its queue (256) is full the
 response is dropped, logged and audited as `response-dropped`. Before
-acting, the worker re-reads the finding and the box's own action: a
-response whose finding was resolved, or whose box had its action released
-(by an operator or the TTL backstop) after the response was queued, is left
-alone and audited as `response-skipped`, so a queued response never undoes
-a release. A signature finding is per tenant and pattern, so two boxes of
-one tenant running the same miner share one finding; a release counts only
-for the box it was made on. Releasing box A does not cancel box B's queued
-response, and while B's response is still queued the release leaves the
-shared finding open (the `release` audit row says `finding_kept_open=true`);
-releasing the last box resolves it. Resolving the finding by hand skips
-every box's queued response. On a degraded backend (no Postgres) responses are off, the
-kill included.
+acting, the worker re-reads the finding and the box's own action for that
+finding: a response whose finding was resolved, or whose box had that
+action released (by an operator or the TTL backstop) after the response was
+queued, is left alone and audited as `response-skipped`, so a queued
+response never undoes a release. A release of a different finding's action
+on the same box does not count, and a store read that fails does not skip
+the response (only a definite release or resolve does). A signature finding
+is per tenant and pattern, so two boxes of one tenant running the same miner
+share one finding; a release counts only for the box it was made on.
+Releasing box A does not cancel box B's queued response, and while B still
+holds the finding (an action open on B, or B's response still queued) the
+release leaves the shared finding open (the `release` audit row says
+`finding_kept_open=true`, the release response carries
+`finding_kept_open`, and `containarium security process-policy release`
+prints `Finding #N kept open: another box still has a response`);
+releasing the last box resolves it. If B's queued response then ends
+without an action (an ALERT policy or override, a policy read error, a
+failed apply, a degraded backend, or a skip), the worker resolves the
+finding itself (audited `resolve`), so a kept-open finding never outlives
+the last response. The shared finding's single response describes the box
+acted on last, and its `process killed` flag is per finding: once any box's
+process was killed it stays set, whichever box is released or expires
+after. Resolving the finding by hand skips every box's queued response. On
+a degraded backend (no Postgres) responses are off, the kill included.
 
 **Limits.** A rebuilt, renamed miner with a clean command line matches no
 name or argv entry, and a fresh build matches no hash: only the
