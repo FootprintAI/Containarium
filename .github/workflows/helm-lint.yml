@@ -83,6 +83,11 @@ jobs:
             grep -n 'image:' <<<"$rendered" || true
             exit 1
           fi
+          if ! grep -q 'image: ghcr.io/footprintai/containarium-sshpiper:v9.8.7$' <<<"$rendered"; then
+            echo "::error::stamped chart does not pin the sshpiper gateway image to v9.8.7 (#2703)"
+            grep -n 'image:' <<<"$rendered" || true
+            exit 1
+          fi
           if grep -q 'containarium:latest' <<<"$rendered"; then
             echo "::error::stamped chart still references the :latest daemon image"
             exit 1

@@ -60,6 +60,23 @@ Daemon image reference.
 {{- end }}
 
 {{/*
+sshpiper gateway image reference. An explicit gateway.sshpiper.image wins;
+otherwise repository:tag, where tag defaults to the chart appVersion so a
+stamped release chart pins the sidecar to its own release (#2703). The
+unstamped development chart (appVersion "latest") uses the moving
+latest-stable tag, since containarium-sshpiper:latest is not published.
+*/}}
+{{- define "containarium-k8s.sshpiperImage" -}}
+{{- if .Values.gateway.sshpiper.image }}
+{{- .Values.gateway.sshpiper.image }}
+{{- else }}
+{{- $tag := .Values.gateway.sshpiper.tag | default .Chart.AppVersion }}
+{{- if eq $tag "latest" }}{{ $tag = "latest-stable" }}{{ end }}
+{{- printf "%s:%s" .Values.gateway.sshpiper.repository $tag }}
+{{- end }}
+{{- end }}
+
+{{/*
 Name of the daemon service account.
 */}}
 {{- define "containarium-k8s.serviceAccountName" -}}
