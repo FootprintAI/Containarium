@@ -3,6 +3,7 @@ package network
 import (
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"strings"
@@ -341,7 +342,17 @@ func (pf *PortForwarder) deleteFromSave(what string, pick func(save string) [][]
 // sit ahead of the new rule and duplicate it. Passthrough DNATs keep their
 // `! -s` shape but never use 80/443, and a `! -s` rule for any other subnet
 // is not ours, so both are left alone.
+//
+// Subnets are compared as networks: callers may pass the gateway form Incus
+// reports (`10.0.3.1/24`), while `iptables -S` prints the network form
+// (`10.0.3.0/24`). If networkCIDR does not parse, nothing is deleted and
+// that is logged; the old rule is a duplicate, deleting the wrong one is not.
 func legacyCaddyPreRoutingRules(saveOutput, networkCIDR string) [][]string {
+	ours, err := networkOf(networkCIDR)
+	if err != nil {
+		log.Printf("  Warning: bridge subnet %q is not a CIDR (%v); leaving any pre-#2732 Caddy DNAT rules in place", networkCIDR, err)
+		return nil
+	}
 	var dels [][]string
 	for _, raw := range strings.Split(saveOutput, "\n") {
 		fields := strings.Fields(strings.TrimSpace(raw))
@@ -356,8 +367,10 @@ func legacyCaddyPreRoutingRules(saveOutput, networkCIDR string) [][]string {
 				dport = fields[i+1]
 			case f == "DNAT":
 				isDNAT = true
-			case f == "!" && i+2 < len(fields) && fields[i+1] == "-s" && fields[i+2] == networkCIDR:
-				negatedSrc = true
+			case f == "!" && i+2 < len(fields) && fields[i+1] == "-s":
+				if n, err := networkOf(fields[i+2]); err == nil && n == ours {
+					negatedSrc = true
+				}
 			}
 		}
 		if isDNAT && negatedSrc && (dport == "80" || dport == "443") {
@@ -365,6 +378,15 @@ func legacyCaddyPreRoutingRules(saveOutput, networkCIDR string) [][]string {
 		}
 	}
 	return dels
+}
+
+// networkOf returns the network a CIDR belongs to ("10.0.3.1/24" → "10.0.3.0/24").
+func networkOf(cidr string) (string, error) {
+	_, n, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return "", err
+	}
+	return n.String(), nil
 }
 
 // staleCaddyNATRules scans `iptables -t nat -S` output and returns the argument
