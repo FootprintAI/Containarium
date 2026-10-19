@@ -16,7 +16,7 @@ require (
 	github.com/hashicorp/yamux v0.1.2
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/lxc/incus/v7 v7.5.1
-	github.com/mark3labs/mcp-go v1.2.1
+	github.com/mark3labs/mcp-go v1.3.0
 	github.com/pires/go-proxyproto v0.15.0
 	github.com/rs/cors v1.11.1
 	github.com/spf13/cobra v1.10.2
@@ -52,7 +52,7 @@ require (
 	k8s.io/api v0.37.1
 	k8s.io/apimachinery v0.37.1
 	k8s.io/client-go v0.37.1
-	sigs.k8s.io/agent-sandbox v1.0.5
+	sigs.k8s.io/agent-sandbox v1.0.6
 	sigs.k8s.io/controller-runtime v0.25.2
 )
 

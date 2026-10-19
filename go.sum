@@ -200,8 +200,8 @@ github.com/kylelemons/godebug v1.1.0 h1:RPNrshWIDI6G2gRW9EHilWtl7Z6Sb1BR0xunSBf0
 github.com/kylelemons/godebug v1.1.0/go.mod h1:9/0rRGxNHcop5bhtWyNeEfOS8JIWk580+fNqagV/RAw=
 github.com/lxc/incus/v7 v7.5.1 h1:lMSWCgsjahtnVlCgh31LVOLe1r4cOBOzpuGU45HyO88=
 github.com/lxc/incus/v7 v7.5.1/go.mod h1:zgAs+ISzsyXpH6x1P2nt+HNmb8kJP1F9ermXKFJbyvo=
-github.com/mark3labs/mcp-go v1.2.1 h1:gd8VD3feMAVycwAM0x1nhv42Q1oLLjfOyowoUzHULB8=
-github.com/mark3labs/mcp-go v1.2.1/go.mod h1:r2fW4o3wsoJ7IMsx1Wuq5xeP8PRGXPDfNveoGAYbb/s=
+github.com/mark3labs/mcp-go v1.3.0 h1:0nqegnwaTULVV1pCQLBmDjD2+0/lSXRt6eTHS7bH1o0=
+github.com/mark3labs/mcp-go v1.3.0/go.mod h1:r2fW4o3wsoJ7IMsx1Wuq5xeP8PRGXPDfNveoGAYbb/s=
 github.com/mattn/go-colorable v0.1.1/go.mod h1:FuOcm+DKB9mbwrcAfNl7/TZVBZ6rcnceauSikq3lYCQ=
 github.com/mattn/go-colorable v0.1.2/go.mod h1:U0ppj6V5qS13XJ6of8GYAs25YV2eR4EVcfRqFIhoBtE=
 github.com/mattn/go-isatty v0.0.5/go.mod h1:Iq45c/XA43vh69/j3iqttzPXn0bhXyGjM0Hdxcsrc5s=
@@ -461,8 +461,8 @@ k8s.io/kube-openapi v0.0.0-20260721132016-d427ff9ee9ad h1:oXImqH8mQNk7PmvzKhmN3d
 k8s.io/kube-openapi v0.0.0-20260721132016-d427ff9ee9ad/go.mod h1:0/mqHCVhlumdJ3BhCfnjSZQE037nAhNodh1/hK0T8/I=
 k8s.io/utils v0.0.0-20260707023825-cf1189d6abe3 h1:jVkFFVfXdXP74B/zbO3hM3hpSFD0xvhQ5U686DPurkE=
 k8s.io/utils v0.0.0-20260707023825-cf1189d6abe3/go.mod h1:M2s5JB1lIYP3jzZdorPLHXIPJzt9vv2muW5a6L9DtNM=
-sigs.k8s.io/agent-sandbox v1.0.5 h1:7trZhnHTftwqZ6LMesEqLHLRjb9TJ6HJfuuDdTwdwjk=
-sigs.k8s.io/agent-sandbox v1.0.5/go.mod h1:rvELUpSuuSLS/PU2R1a/C2j0hYyGgY7Fkk2gReZMfSA=
+sigs.k8s.io/agent-sandbox v1.0.6 h1:YpHtU9JtJl/dli3teRhKkuKnnKRL8+q0BW7jFz5tlwk=
+sigs.k8s.io/agent-sandbox v1.0.6/go.mod h1:rvELUpSuuSLS/PU2R1a/C2j0hYyGgY7Fkk2gReZMfSA=
 sigs.k8s.io/controller-runtime v0.25.2 h1:bEkK3PVOIVK9X8QWLGVhJgmFc++47vfT6wakSzAOLsQ=
 sigs.k8s.io/controller-runtime v0.25.2/go.mod h1:4QqLdT6z/L6Olj8JJCtvztid4/fnIiYsfaTFScegctc=
 sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 h1:IpInykpT6ceI+QxKBbEflcR5EXP7sU1kvOlxwZh5txg=
