@@ -54,7 +54,8 @@ TRADEMARKS.md.
 This product includes software developed by third parties. Their licences are
 recorded per module by the dependency licence check
 (docs/security/DEPENDENCY-LICENSES.md). The notices below are the ones those
-projects ask redistributors to carry.
+projects ask redistributors to carry. The npm packages bundled into the web UI
+are attributed in web-ui/THIRD-PARTY-LICENSES.txt, which ships with the web UI.
 
 ================================================================================
 Vendored protocol definitions (third_party/proto)
