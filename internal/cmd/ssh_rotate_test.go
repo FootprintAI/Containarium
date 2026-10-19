@@ -2,10 +2,8 @@ package cmd
 
 import (
 	"bytes"
-	"crypto/sha512"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -31,56 +29,76 @@ func TestSSHRotate_CommandRegistered(t *testing.T) {
 	}
 }
 
-// Decode the documented SSHSIG format independently of the CLI signer.
-func verifyRotationProof(publicKey, signature string, nonce []byte) error {
-	block, rest := pem.Decode([]byte(signature))
-	if block == nil || block.Type != "SSH SIGNATURE" || len(bytes.TrimSpace(rest)) != 0 {
-		return fmt.Errorf("invalid SSHSIG armor")
-	}
-	var envelope struct {
-		Magic                              [6]byte
-		Version                            uint32
-		PublicKey                          []byte
-		Namespace, Reserved, HashAlgorithm string
-		Signature                          []byte
-	}
-	if err := ssh.Unmarshal(block.Bytes, &envelope); err != nil {
-		return err
-	}
+// Verify the shipped cloud contract independently of the CLI signer.
+func verifyRotationProof(publicKey string, signature, nonce []byte) error {
 	pub, _, _, _, err := ssh.ParseAuthorizedKey([]byte(publicKey))
 	if err != nil {
 		return err
 	}
-	if string(envelope.Magic[:]) != "SSHSIG" || envelope.Version != 1 || envelope.Namespace != "containarium-ssh-key-registration" || envelope.HashAlgorithm != "sha512" || !bytes.Equal(pub.Marshal(), envelope.PublicKey) {
-		return fmt.Errorf("wrong SSHSIG key or context")
-	}
-	hash := sha512.Sum512(nonce)
-	data := ssh.Marshal(struct {
-		Magic                              [6]byte
-		Namespace, Reserved, HashAlgorithm string
-		Hash                               []byte
-	}{[6]byte{'S', 'S', 'H', 'S', 'I', 'G'}, envelope.Namespace, envelope.Reserved, envelope.HashAlgorithm, hash[:]})
 	var sig ssh.Signature
-	if err := ssh.Unmarshal(envelope.Signature, &sig); err != nil {
+	if err := ssh.Unmarshal(signature, &sig); err != nil {
 		return err
 	}
-	return pub.Verify(data, &sig)
+	return pub.Verify(append([]byte("containarium-ssh-key-proof-v1\x00"), nonce...), &sig)
 }
 
 func TestSSHRotate_HTTPFlow(t *testing.T) {
 	for _, tc := range []struct {
-		name                                string
-		challengeStatus, registrationStatus int
-		success                             bool
+		name                                            string
+		challengeStatus, registrationStatus             int
+		listStatus                                      int
+		challengeBody, registrationBody, listBody       string
+		wantOverlap                                     string
+		wantErr, snakeCaseChallenge, wantNoRegistration bool
 	}{
-		{"success", 200, 200, true},
-		{"signature rejected", 200, 400, false},
-		{"challenge unimplemented", 501, 200, false},
-		{"challenge absent", 404, 200, false},
+		{name: "success with key-only registration response"},
+		{name: "snake_case challenge response", snakeCaseChallenge: true},
+		{name: "signature rejected", registrationStatus: 400, wantErr: true},
+		{name: "challenge unimplemented", challengeStatus: 501, wantErr: true, wantNoRegistration: true},
+		{name: "challenge absent", challengeStatus: 404, wantErr: true, wantNoRegistration: true},
+		{name: "challenge missing ID", challengeBody: `{"nonce":"AP8qEYABCQo="}`, wantErr: true, wantNoRegistration: true},
+		{name: "challenge missing nonce", challengeBody: `{"challengeId":"challenge-1"}`, wantErr: true, wantNoRegistration: true},
+		{name: "challenge empty nonce", challengeBody: `{"challengeId":"challenge-1","nonce":""}`, wantErr: true, wantNoRegistration: true},
+		{name: "challenge invalid base64", challengeBody: `{"challengeId":"challenge-1","nonce":"%%%"}`, wantErr: true, wantNoRegistration: true},
+		{name: "challenge malformed", challengeBody: `{`, wantErr: true, wantNoRegistration: true},
+		{name: "wrong fingerprint", registrationBody: `{"key":{"fingerprint":"SHA256:other"}}`, wantErr: true},
+		{name: "missing fingerprint", registrationBody: `{"key":{"name":"laptop"}}`, wantErr: true},
+		{name: "registration missing key", registrationBody: `{}`, wantErr: true},
+		{name: "registration null key", registrationBody: `{"key":null}`, wantErr: true},
+		{name: "registration malformed", registrationBody: `{`, wantErr: true},
+		{name: "registration conflict", registrationStatus: http.StatusConflict, wantErr: true},
+		{name: "list unavailable", listStatus: 503, wantOverlap: "overlap end is unknown"},
+		{name: "list malformed", listBody: `{`, wantOverlap: "overlap end is unknown"},
+		{name: "invalid retirement timestamp", listBody: `{"keys":[{"name":"laptop","fingerprint":"$OLD","retiredAt":"invalid"}]}`, wantOverlap: "overlap end is unknown"},
+		{name: "previous key missing", listBody: `{"keys":[]}`, wantOverlap: "overlap end is unknown"},
+		{name: "retirement missing", listBody: `{"keys":[{"name":"laptop","fingerprint":"$OLD","retiredAt":null}]}`, wantOverlap: "overlap end is unknown"},
+		{name: "snake_case retirement", listBody: `{"keys":[{"name":"laptop","fingerprint":"$OLD","retired_at":"2026-10-20T00:00:00Z"}]}`},
+		{name: "another device retired", listBody: `{"keys":[{"name":"desktop","fingerprint":"$OLD","retiredAt":"2026-10-20T00:00:00Z"}]}`, wantOverlap: "overlap end is unknown"},
+		{name: "new key retirement ignored", listBody: `{"keys":[{"name":"laptop","fingerprint":"$NEW","retiredAt":"2026-10-20T00:00:00Z"}]}`, wantOverlap: "overlap end is unknown"},
+		{name: "latest previous retirement", listBody: `{"keys":[{"name":"desktop","fingerprint":"SHA256:desktop","retiredAt":"2027-01-01T00:00:00Z"},{"name":"laptop","fingerprint":"$OLD","retiredAt":"2026-10-20T00:00:00Z"},{"name":"laptop","fingerprint":"SHA256:older","retiredAt":"2026-10-01T00:00:00Z"}]}`},
 	} {
+		if tc.challengeStatus == 0 {
+			tc.challengeStatus = http.StatusOK
+		}
+		if tc.registrationStatus == 0 {
+			tc.registrationStatus = http.StatusOK
+		}
+		if tc.listStatus == 0 {
+			tc.listStatus = http.StatusOK
+		}
+		if tc.listBody == "" {
+			tc.listBody = `{"keys":[{"name":"laptop","fingerprint":"$NEW","retiredAt":null},{"name":"laptop","fingerprint":"$OLD","retiredAt":"2026-10-20T00:00:00Z"}]}`
+		}
+		if tc.wantOverlap == "" {
+			tc.wantOverlap = "overlap ends at 2026-10-20T00:00:00Z"
+		}
 		t.Run(tc.name, func(t *testing.T) {
 			home := withSSHHome(t)
-			oldPubPath, _, err := sshkey.Generate(sshkey.LocateOpts{HomeDir: home}, false)
+			oldPubPath, oldPub, err := sshkey.Generate(sshkey.LocateOpts{HomeDir: home}, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			oldFingerprint, err := sshkey.Fingerprint(oldPub)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -95,21 +113,53 @@ func TestSSHRotate_HTTPFlow(t *testing.T) {
 				t.Fatal(err)
 			}
 			nonce := []byte{0, 255, 42, 17, 128, 1, 9, 10}
-			var challenges, registrations atomic.Int32
+			var challenges, registrations, lists atomic.Int32
 			var postedPublic atomic.Value
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Method != http.MethodPost || r.Header.Get("Authorization") != "Bearer rotate-token" {
-					t.Errorf("wrong method/auth: %s", r.Method)
+				if r.Header.Get("Authorization") != "Bearer rotate-token" {
+					t.Error("wrong rotation credential")
 				}
 				switch r.URL.Path {
 				case "/v1/user/ssh-keys:challenge":
+					if r.Method != http.MethodPost {
+						t.Errorf("wrong challenge method: %s", r.Method)
+					}
 					challenges.Add(1)
 					w.WriteHeader(tc.challengeStatus)
 					if tc.challengeStatus == 200 {
-						fmt.Fprintf(w, `{"challenge_id":"challenge-1","nonce":%q}`, base64.StdEncoding.EncodeToString(nonce))
+						if tc.challengeBody != "" {
+							_, _ = w.Write([]byte(tc.challengeBody))
+							return
+						}
+						field := "challengeId"
+						if tc.snakeCaseChallenge {
+							field = "challenge_id"
+						}
+						fmt.Fprintf(w, `{"%s":"challenge-1","nonce":%q}`, field, base64.StdEncoding.EncodeToString(nonce))
 					}
 				case "/v1/user/ssh-keys":
+					if r.Method == http.MethodGet {
+						lists.Add(1)
+						config, err := os.ReadFile(configPath)
+						if err != nil || string(config) == g.Content {
+							t.Errorf("new key must be selected before the best-effort list request: %v", err)
+						}
+						w.WriteHeader(tc.listStatus)
+						if tc.listStatus == http.StatusOK {
+							fp, _ := sshkey.Fingerprint(postedPublic.Load().(string))
+							body := strings.NewReplacer("$OLD", oldFingerprint, "$NEW", fp).Replace(tc.listBody)
+							_, _ = w.Write([]byte(body))
+						}
+						return
+					}
+					if r.Method != http.MethodPost {
+						t.Errorf("wrong registration method: %s", r.Method)
+					}
 					registrations.Add(1)
+					config, err := os.ReadFile(configPath)
+					if err != nil || string(config) != g.Content {
+						t.Errorf("config changed before registration was accepted: %v", err)
+					}
 					var req struct {
 						Name        string `json:"name"`
 						PublicKey   string `json:"public_key"`
@@ -125,14 +175,28 @@ func TestSSHRotate_HTTPFlow(t *testing.T) {
 					if req.Name != "laptop" || req.ChallengeID != "challenge-1" || req.KeyType != "SSH_KEY_TYPE_ED25519" {
 						t.Errorf("wrong registration fields: %+v", req)
 					}
-					if err := verifyRotationProof(req.PublicKey, req.Signature, nonce); err != nil {
+					// A protobuf bytes field must arrive as a standard Base64
+					// JSON string, never an array of integers or PEM armor.
+					proof, err := base64.StdEncoding.Strict().DecodeString(req.Signature)
+					if err != nil {
+						t.Errorf("signature is not standard Base64: %v", err)
+						w.WriteHeader(http.StatusBadRequest)
+						return
+					}
+					if err := verifyRotationProof(req.PublicKey, proof, nonce); err != nil {
 						t.Errorf("bad proof: %v", err)
+						w.WriteHeader(http.StatusBadRequest)
+						return
 					}
 					postedPublic.Store(req.PublicKey)
 					w.WriteHeader(tc.registrationStatus)
 					if tc.registrationStatus == 200 {
-						fp, _ := sshkey.Fingerprint(req.PublicKey)
-						fmt.Fprintf(w, `{"key":{"name":"laptop","fingerprint":%q},"overlap_expires_at":"2026-10-20T00:00:00Z"}`, fp)
+						if tc.registrationBody != "" {
+							_, _ = w.Write([]byte(tc.registrationBody))
+						} else {
+							fp, _ := sshkey.Fingerprint(req.PublicKey)
+							fmt.Fprintf(w, `{"key":{"name":"laptop","fingerprint":%q,"publicKey":%q,"createdAt":"2026-10-19T00:00:00Z"}}`, fp, req.PublicKey)
+						}
 					}
 				default:
 					t.Errorf("unexpected endpoint %s", r.URL.Path)
@@ -155,15 +219,15 @@ func TestSSHRotate_HTTPFlow(t *testing.T) {
 			var out bytes.Buffer
 			cmd.SetOut(&out)
 			err = cmd.RunE(cmd, nil)
-			if (err == nil) != tc.success {
-				t.Fatalf("error=%v, success=%v", err, tc.success)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("error=%v, wantErr=%v", err, tc.wantErr)
 			}
 			after, readErr := os.ReadFile(configPath)
 			if readErr != nil {
 				t.Fatal(readErr)
 			}
-			if tc.success {
-				if string(after) == g.Content || strings.Contains(string(after), "IdentityFile "+oldPath+"\n") || !strings.Contains(out.String(), "2026-10-20T00:00:00Z") {
+			if !tc.wantErr {
+				if string(after) == g.Content || strings.Contains(string(after), "IdentityFile "+oldPath+"\n") || !strings.Contains(out.String(), tc.wantOverlap) {
 					t.Fatalf("config/overlap not updated:\n%s\n%s", after, out.String())
 				}
 				files, err := filepath.Glob(filepath.Join(home, ".ssh", "containarium_ed25519_*.pub"))
@@ -188,8 +252,20 @@ func TestSSHRotate_HTTPFlow(t *testing.T) {
 				if registrations.Load() != 0 || !strings.Contains(err.Error(), "not supported") {
 					t.Fatalf("unimplemented challenge did not fail clearly without registration: %v", err)
 				}
-			} else if registrations.Load() != 1 {
-				t.Fatal("registration not submitted once")
+			}
+			wantRegistrations := int32(1)
+			if tc.wantNoRegistration {
+				wantRegistrations = 0
+			}
+			if registrations.Load() != wantRegistrations {
+				t.Fatalf("registration requests=%d, want %d", registrations.Load(), wantRegistrations)
+			}
+			wantLists := int32(1)
+			if tc.wantErr {
+				wantLists = 0
+			}
+			if lists.Load() != wantLists {
+				t.Fatalf("list requests=%d, want %d", lists.Load(), wantLists)
 			}
 		})
 	}

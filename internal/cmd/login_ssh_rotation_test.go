@@ -43,7 +43,7 @@ func TestLogin_SSHKeyExpiryNudge(t *testing.T) {
 						t.Errorf("expected authenticated GET after login: %s, auth=%q", r.Method, r.Header.Get("Authorization"))
 					}
 					listed.Store(true)
-					fmt.Fprintf(w, `{"keys":[{"name":"laptop","expires_at":%q}]}`, expires)
+					fmt.Fprintf(w, `{"keys":[{"name":"laptop","expiresAt":%q}]}`, expires)
 				default:
 					http.NotFound(w, r)
 				}
@@ -100,11 +100,13 @@ func TestLogin_RetirementRespectsOtherServers(t *testing.T) {
 					w.WriteHeader(503)
 					return
 				}
-				key := sshkey.SSHKey{Fingerprint: fp, PublicKey: pub}
+				retired := "null"
 				if tc.retired {
-					key.RetiredAt = &past
+					retired = fmt.Sprintf("%q", past.UTC().Format(time.RFC3339))
 				}
-				_ = json.NewEncoder(w).Encode(listSSHKeysResp{Keys: []sshkey.SSHKey{key}})
+				// A gateway-shaped response independent of the client's DTO.
+				// Omit fingerprint so cross-server protection must decode publicKey.
+				fmt.Fprintf(w, `{"keys":[{"publicKey":%q,"retiredAt":%s}]}`, pub, retired)
 			}))
 			defer other.Close()
 			cf := credentials.NewCredentialsFile()

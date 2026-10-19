@@ -312,8 +312,7 @@ func (c *sshHTTPClient) doJSON(ctx context.Context, method, path string, body, o
 }
 
 // Wire-format DTOs for the UserService SSH-key endpoints. Each
-// mirrors the cloud JSON shape; the rotation additions follow the proposed
-// contract on #2523 pending cloud-proto confirmation. We redeclare so the OSS
+// mirrors the shipped cloud JSON shape. We redeclare so the OSS
 // CLI compiles without depending on a cloud-private pb package.
 //
 // Per CLAUDE.md: typed structs, not map[string]any.
@@ -323,10 +322,10 @@ type addSSHKeyReq struct {
 	PublicKey   string         `json:"public_key"`
 	KeyType     sshKeyTypeJSON `json:"key_type,omitempty"`
 	ChallengeID string         `json:"challenge_id,omitempty"`
-	Signature   string         `json:"signature,omitempty"`
+	Signature   []byte         `json:"signature,omitempty"`
 }
 
-// Use proto enum names for the proposed cloud JSON representation; retain the enum's type
+// Use proto enum names for the cloud JSON representation; retain the enum's type
 // internally instead of storing an independently invented algorithm string.
 type sshKeyTypeJSON pb.SSHKeyType
 
@@ -347,18 +346,31 @@ func (t *sshKeyTypeJSON) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// These additional fields follow the proposed contract on #2523; confirm
-// their JSON names and types against the cloud UserService proto before live
-// verification. A []byte nonce uses protobuf JSON's Base64 representation.
+// A []byte nonce uses protobuf JSON's Base64 representation.
 type sshKeyChallengeReq struct{}
 type sshKeyChallengeResp struct {
-	ChallengeID string `json:"challenge_id"`
+	ChallengeID string `json:"challengeId"`
 	Nonce       []byte `json:"nonce"`
 }
 
+func (challenge *sshKeyChallengeResp) UnmarshalJSON(data []byte) error {
+	type challengeJSON sshKeyChallengeResp
+	var wire struct {
+		challengeJSON
+		ChallengeID string `json:"challenge_id"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	*challenge = sshKeyChallengeResp(wire.challengeJSON)
+	if challenge.ChallengeID == "" {
+		challenge.ChallengeID = wire.ChallengeID
+	}
+	return nil
+}
+
 type addSSHKeyResp struct {
-	Key              sshkey.SSHKey `json:"key"`
-	OverlapExpiresAt time.Time     `json:"overlap_expires_at,omitempty"`
+	Key sshkey.SSHKey `json:"key"`
 }
 
 type listSSHKeysResp struct {
@@ -476,13 +488,28 @@ func runSSHRotate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if stored.Key.Fingerprint != fp || stored.OverlapExpiresAt.IsZero() {
-		return fmt.Errorf("registration response did not confirm the new fingerprint and overlap window; existing SSH config is preserved and the new key remains at %s", privatePath)
+	if stored.Key.Fingerprint != fp {
+		return fmt.Errorf("registration response did not confirm the new fingerprint; existing SSH config is preserved and the new key remains at %s", privatePath)
 	}
 	if _, err := sshconfig.WriteConfig(path, g, false); err != nil {
 		return fmt.Errorf("new key registered at %s, but updating SSH config failed: %w", privatePath, err)
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "Registered SSH key %q (%s); updated %s\nOld keys are retained; overlap ends at %s\n", name, fp, path, stored.OverlapExpiresAt.UTC().Format(time.RFC3339))
+	fmt.Fprintf(cmd.OutOrStdout(), "Registered SSH key %q (%s); updated %s\n", name, fp, path)
+	// Reading overlap metadata is best-effort after the new key is selected.
+	// Multiple older generations can share the name; use the latest retirement.
+	var overlapEnd time.Time
+	if keys, err := client.ListSSHKeys(ctx); err == nil {
+		for _, key := range keys {
+			if key.Name == name && key.Fingerprint != "" && key.Fingerprint != fp && key.RetiredAt != nil && key.RetiredAt.After(overlapEnd) {
+				overlapEnd = *key.RetiredAt
+			}
+		}
+	}
+	if overlapEnd.IsZero() {
+		fmt.Fprintln(cmd.OutOrStdout(), "Old keys are retained; overlap end is unknown.")
+	} else {
+		fmt.Fprintf(cmd.OutOrStdout(), "Old keys are retained; overlap ends at %s\n", overlapEnd.UTC().Format(time.RFC3339))
+	}
 	return nil
 }
 

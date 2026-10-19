@@ -20,6 +20,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"os"
@@ -37,13 +38,42 @@ import (
 // REST shim will emit.
 type SSHKey struct {
 	Name        string    `json:"name"`
-	PublicKey   string    `json:"public_key"`
+	PublicKey   string    `json:"publicKey"`
 	Fingerprint string    `json:"fingerprint"`
-	CreatedAt   time.Time `json:"created_at,omitempty"`
-	ExpiresAt   time.Time `json:"expires_at,omitempty"`
-	// Proposed explicit retirement timestamp from #2523. Expiry alone does
-	// not authorize local private-key deletion.
-	RetiredAt *time.Time `json:"retired_at,omitempty"`
+	CreatedAt   time.Time `json:"createdAt,omitempty"`
+	ExpiresAt   time.Time `json:"expiresAt,omitempty"`
+	// Expiry alone does not authorize local private-key deletion.
+	RetiredAt *time.Time `json:"retiredAt,omitempty"`
+}
+
+// UnmarshalJSON accepts the gateway's camelCase fields and the proto field
+// names used by servers configured to emit snake_case JSON.
+func (key *SSHKey) UnmarshalJSON(data []byte) error {
+	type keyJSON SSHKey
+	var wire struct {
+		keyJSON
+		PublicKey string     `json:"public_key"`
+		CreatedAt time.Time  `json:"created_at"`
+		ExpiresAt time.Time  `json:"expires_at"`
+		RetiredAt *time.Time `json:"retired_at"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	*key = SSHKey(wire.keyJSON)
+	if key.PublicKey == "" {
+		key.PublicKey = wire.PublicKey
+	}
+	if key.CreatedAt.IsZero() {
+		key.CreatedAt = wire.CreatedAt
+	}
+	if key.ExpiresAt.IsZero() {
+		key.ExpiresAt = wire.ExpiresAt
+	}
+	if key.RetiredAt == nil {
+		key.RetiredAt = wire.RetiredAt
+	}
+	return nil
 }
 
 // DefaultPrivateKeyPath is the file we look at first when "find the
