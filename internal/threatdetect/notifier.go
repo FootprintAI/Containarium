@@ -107,9 +107,10 @@ func (n *WebhookNotifier) Start(ctx context.Context) {
 }
 
 // Notify enqueues f for delivery when its severity is MEDIUM or above and
-// the gate lets it through: first sight, severity escalation, the re-notify
-// interval elapsing, or resolution (#2643); a repeat write to an open finding
-// inside the interval is not delivered again.
+// the gate lets it through: first sight, severity escalation, a response
+// state change (#2718), the re-notify interval elapsing, or resolution
+// (#2643); a repeat write to an open finding inside the interval is not
+// delivered again.
 // Non-blocking: if the queue is full the finding is dropped (and logged)
 // rather than backing up the caller; a dropped finding is not marked
 // delivered, so its next write retries.

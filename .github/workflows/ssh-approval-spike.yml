@@ -60,7 +60,7 @@ jobs:
           fi
       - name: Preserve the spike transcript
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: ssh-approval-spike
           path: ${{ runner.temp }}/approval.log
