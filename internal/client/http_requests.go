@@ -82,6 +82,7 @@ type createContainerRequest struct {
 	// unless enabled, so a plain create's body is unchanged.
 	TTLSeconds                int64 `json:"ttlSeconds,omitempty"`
 	IdleStopMinutes           int32 `json:"idleStopMinutes,omitempty"`
+	DisableAutoSleep          bool  `json:"disableAutoSleep,omitempty"`
 	DeleteAfterStoppedSeconds int64 `json:"deleteAfterStoppedSeconds,omitempty"`
 
 	// Region places the container on a multi-region hosted control plane

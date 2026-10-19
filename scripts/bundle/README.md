@@ -128,8 +128,9 @@ alongside the per-platform binaries on the GitHub release. See the
 
 ## v0 limitations
 
-- **No cosign signing.** v0.1 adds keyless Sigstore signing of
-  `CHECKSUMS.sha256`.
+- **Inner `CHECKSUMS.sha256` is not signed on its own.** The release
+  signs the tarball and its `.sha256` (keyless cosign; see
+  `docs/security/VERIFYING-RELEASES.md`), which covers everything inside.
 - **No OCI artifact mirror.** v0.1 publishes bundles to
   `ghcr.io/footprintai/containarium-bundle:vX.Y.Z` via `oras push`.
 - **No SBOM.** v0.1 ships `bundle.sbom.json` via `syft sbom`.

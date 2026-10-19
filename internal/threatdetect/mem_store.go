@@ -199,8 +199,17 @@ func (s *MemFindingStore) SetResponse(ctx context.Context, id int64, r FindingRe
 	}
 	cp := r
 	f.Response = &cp
+	// The webhook worker reads its finding after this returns; hand it a
+	// snapshot so a later write to the ring entry (the resolve an operator
+	// release makes next) cannot change what this delivery says.
+	snap := *f
+	snapResp := cp
+	snap.Response = &snapResp // its own copy: f.Response is the stored one
 	s.mu.Unlock()
 	s.emitter.EmitSecurityFinding(f.ToProto())
+	if s.notifier != nil {
+		s.notifier.Notify(&snap) // a response transition is delivered (#2718)
+	}
 	return f, nil
 }
 
