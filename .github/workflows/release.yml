@@ -132,6 +132,7 @@ jobs:
         # serves every little-endian backend (amd64/arm64). UAPI-only program, so
         # portable across kernel versions; the verifier still runs at load time.
         run: |
+          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y clang llvm libbpf-dev linux-libc-dev
           # bpftool for vmlinux.h (#2637): a pinned static release from
@@ -578,6 +579,7 @@ jobs:
         # bundle's containarium binary embeds it (-tags embed_bpf, auto-enabled
         # by the Makefile when internal/netbpf/netpolicy.bpf.o is present).
         run: |
+          set -euo pipefail
           sudo apt-get install -y clang llvm libbpf-dev linux-libc-dev
           # bpftool for vmlinux.h (#2637): a pinned static release from
           # github.com/libbpf/bpftool, checksum-verified. Not Ubuntu's
